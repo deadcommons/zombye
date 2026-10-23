@@ -1,0 +1,14 @@
+// Asset spec (tools/blender/zasset.py reads it; .claude/skills/blender-assets/SKILL.md).
+// footprint: tiles, width (x) × depth (y) facing south; size: metres, x × y × z of the model.
+AssetSpec(
+    id: "workbench",
+    category: Furniture,
+    name: "Workbench",
+    footprint: (2, 1),
+    size: (1.84, 0.72, 1.45),
+    against_wall: true,
+    tris: 1000,
+    texture: None,
+    style: "Green-painted steel frame, raw wood top, a bank of drawers, a pegboard on the back with a few tools hanging, a vise at one corner.",
+    description: "A garage workbench with drawers.",
+)

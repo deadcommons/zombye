@@ -1,0 +1,14 @@
+// Asset spec (tools/blender/zasset.py reads it; .claude/skills/blender-assets/SKILL.md).
+// footprint: tiles, width (x) × depth (y) facing south; size: metres, x × y × z of the model.
+AssetSpec(
+    id: "dryer",
+    category: Furniture,
+    name: "Tumble dryer",
+    footprint: (1, 1),
+    size: (0.68, 0.66, 1.08),
+    against_wall: true,
+    tris: 600,
+    texture: None,
+    style: "Off-white dryer matching the washer: round front door with a dark window and chrome ring, control backsplash with dials.",
+    description: "A front-loading tumble dryer.",
+)

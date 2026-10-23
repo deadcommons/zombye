@@ -1,0 +1,14 @@
+// Asset spec (tools/blender/zasset.py reads it; .claude/skills/blender-assets/SKILL.md).
+// footprint: tiles, width (x) × depth (y) facing south; size: metres, x × y × z of the model.
+AssetSpec(
+    id: "sofa",
+    category: Furniture,
+    name: "Sofa",
+    footprint: (2, 1),
+    size: (1.84, 0.82, 0.86),
+    against_wall: true,
+    tris: 800,
+    texture: None,
+    style: "Mauve upholstery: a deep base, two seat cushions, two soft back cushions, rolled arms, short dark feet. Back against the wall.",
+    description: "A three-seat sofa.",
+)

@@ -1,0 +1,14 @@
+// Asset spec (tools/blender/zasset.py reads it; .claude/skills/blender-assets/SKILL.md).
+// footprint: tiles, width (x) × depth (y) facing south; size: metres, x × y × z of the model.
+AssetSpec(
+    id: "bed",
+    category: Furniture,
+    name: "Double bed",
+    footprint: (2, 2),
+    size: (1.5, 1.84, 0.95),
+    against_wall: true,
+    tris: 700,
+    texture: None,
+    style: "Oak frame with a plain headboard against the wall, cream sheet, blue blanket folded back, two lumpy pillows. Reads as a bed from high up: the blanket and pillows are the shapes that matter.",
+    description: "An ordinary double bed in a small-town bedroom.",
+)
