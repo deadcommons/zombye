@@ -13,9 +13,9 @@ Work is tracked on GitHub, not in the repo: the
 
 | Path | What | Licence |
 |---|---|---|
-| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`), flow fields + cache (`flow.rs`), weapons and ground items (`items.rs`), melee combat and player health (`combat.rs` + `CombatTuning`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
+| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), flow fields + cache (`flow.rs`), weapons and ground items (`items.rs`), melee combat and player health (`combat.rs` + `CombatTuning`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), content loading (`content.rs`). | MIT OR Apache-2.0 |
-| `crates/server` | `zombye-server` headless binary: bench mode and the MCP endpoint. | MIT OR Apache-2.0 |
+| `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint. | MIT OR Apache-2.0 |
 | `crates/client` | `zombye` Bevy client: camera, chunk streaming, building/tree meshes, fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd; `survivor.rs` skinned, CPU-posed players), hit feedback (`fx.rs`), ground items (`items_render.rs`), HUD, `--autoplay` (`autoplay.rs`). | MIT OR Apache-2.0 |
 | `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/weapons.ron`), later generated models/textures/audio. | MIT OR Apache-2.0 (each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md)) |
 | `docs/` | Plan and design docs. | — |
@@ -46,12 +46,14 @@ Work is tracked on GitHub, not in the repo: the
 ```bash
 cargo test -p zombye-sim --release          # sim tests incl. determinism + perf smoke test
 cargo run -p zombye-server --release -- --bench --zombies 5000
+# Issue #2's target: ~1,000 active + 20,000 virtual on a 1 km map (prints a per-tier breakdown)
+cargo run -p zombye-server --release -- --bench --ticks 400 --map-chunks 64 --zombies 21500 --players 1 --horde 1000
 cargo run -p zombye-client --release -- --zombies 1000          # the game window
 cargo run -p zombye-client --release -- --zombies 2000 --novsync --screenshot shot.png --exit-after 8
 cargo run -p zombye-client --release -- --fight-demo --autoplay --zoom 9 --screenshot fight.png --screenshot-after 2.5,4,6 --exit-after 7
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --rotate --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak`
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak`
 (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost).
@@ -66,7 +68,14 @@ it: they batter it (or the window beside it) with their backs to you, and the do
 gives (add `--zombies 0` to keep the rest of the town out of it). `--sneak` starts you sneaking (as if C was
 pressed). The game window takes keyboard focus, so typing elsewhere while it runs can move or toggle the player.
 `--at` starts the player somewhere other than the bedroom and `--time` sets the start hour, which is handy for screenshots.
-The client prints one stats line per second to stdout (time, room, stance, hp, endurance, fps, frame ms, zombies, sim tick ms).
+`--map-chunks N` makes the map N × N chunks of 16 m (default 20, 320 m; 64 is about 1 km): the same town in the
+middle with more forest round it (a map too small for the town is grown to fit). The server takes it too.
+Server bench (`zombye-server --bench`): `--ticks N`, `--zombies N`, `--seed S`, `--map-chunks N`; with no `--players`
+every zombie heads for a debug goal (all stay active); `--players N` puts players on the road west of town (in the
+forest on a big map) running in circles with a 60 m noise every 10 s, `--horde N` spawns N more zombies round the
+first, and the report adds tier counts and per-tier ms/tick.
+The client prints one stats line per second to stdout (time, room, stance, hp, endurance, fps, frame ms, zombies
+sent to it, chasing, zombies per tier active/near/virtual, sim tick ms).
 In game: WASD move, Shift run, C sneak (toggle), mouse to face, left mouse attack (swing your weapon, or
 punch), Space shove (or stomp, when a downed zombie lies right in front of you), E pick up the weapon you
 face, F open/close the door or window you face, G smash the window you face, R get up again after dying,
@@ -246,20 +255,55 @@ and kills (both counted client-side from combat events and sim ticks) and "Press
   cleared each tick) and hurt players (see Combat). Hit zombies stagger, fall `Down` or die.
 - Every number is in `ZombieTuning` (`WorldConfig::zombie`, serde with defaults), ready to become a
   data file / sandbox options. Our own values; keep them that way.
-- `set_goal` is a debug override: zombies within 120 m path distance head for that point, senses off.
+- `set_goal` is a debug override: zombies within 120 m path distance head for that point, senses off
+  (active and near zombies; virtual ones ignore it).
+
+## Simulation tiers (`sim::tiers`)
+
+Zombies far from every player get less of the simulation, so a world can hold tens of thousands
+(issues #2, #3). All tiers live in the one struct-of-arrays with a `tier` column (`zombies::Tier`): a
+zombie keeps its id, its place in id order and every AI column whatever its tier, so it keeps what it was
+doing (a zombie investigating a noise is still heading there when promoted) and `state_hash` covers all
+of them (tier included). Virtual zombies are also indexed per 64 m region (`RegionIndex`, rebuilt each
+tick), which their bulk update walks and where per-region density and migration (#4) will hook in
+(`tiers::step_virtual`). Numbers are in `TierTuning` (`WorldConfig::tiers`, serde defaults; ours):
+
+| Tier | Where (chunk distance to the nearest player) | Rate | What runs |
+|---|---|---|---|
+| Active | ≤ 60 m | every tick | everything: sight, hearing, state machine, flow fields, separation, combat. Only these go to clients. |
+| Near | ≤ 150 m | every `near_interval_ticks` (5: 4 Hz), staggered by id | hearing (the normal pass: near zombies are in the spatial hash), heading for what it heard or remembers (along a flow field active zombies already keep built, else straight), collision with walls; no sight, strikes, thumps or separation; chasers keep the spot they remember |
+| Virtual | beyond | each 64 m region every `virtual_interval_ticks` (100: 0.2 Hz), regions staggered | slow wander, or a drift toward what it heard; only sounds ≥ `virtual_hearing_min` (30 m) are checked, full radius when both ends are outdoors, else `wall_muffle` of it, no ray; moves never cross anything that blocks walking or end on a blocked tile |
+
+- **Per chunk, with hysteresis:** each tick (with at least one player; with none, nothing changes tier) every
+  chunk's distance from the nearest player (dead ones count) to its nearest point decides the tier of the zombies
+  in it (`tiers::next_tier`): promotion at the range, demotion only `hysteresis` (20 m, more than a chunk) beyond
+  it, so crossing a chunk border can't flip a zombie back and forth. A big jump goes straight to the far tier.
+- **Promotion and demotion** (`tiers::assign`): leaving the virtual tier, a zombie is settled on a free tile it can
+  walk to from where it is (`tiers::settle`: its own tile if free, else a breadth-first search over walkable steps),
+  so it never lands in a wall, tree, furniture or a sealed building it wasn't in. Demoted, a lunge or strike
+  becomes a chase from memory. Either way it forgets what it saw and keeps its state, target and timers. Corpses
+  age on every tier. Crowd separation is capped per tick (`MAX_CROWD_PUSH`), so a pile of promoted zombies spreads
+  out instead of being flung through a wall.
+- **Snapshots** list only active zombies within `interest_radius` (80 m) of a player (every active zombie when
+  there are no players); the client despawns the rest. Full interest management is #22.
+- `TickStats` has the tier counts, promotions/demotions and per-tier timings (`tier_ms` for the tier pass plus
+  index rebuilds, `active_ms`, `near_ms`, `virtual_ms`); the spatial hash only spans the area its zombies cover.
+- Perf (M-series Mac, release): 1 km map, ~1,300 active + ~20,200 virtual (+ ~950 near), a horde of ~900 chasing a
+  player: about 1.1 ms/tick average, ~3 ms worst (`tiers_hold_a_thousand_active_and_twenty_thousand_virtual`).
 
 ## Connecting an agent to the game (MCP)
 
 `zombye-server --mcp` speaks MCP over stdio. `.mcp.json` registers it as `zombye` for
 Claude Code and other MCP clients. Build it first with `cargo build -p zombye-server --release`.
+It takes the common options too (`--zombies N --seed S --map-chunks N`), e.g. a 1 km map with 20,000 zombies.
 
 The agent plays player 1, who wakes up in the bedroom. Tools: `observe` (double-resolution ASCII map
 with walls `-` `|`, shut windows `=` `!`, open windows `o`, broken windows `x`, shut doors `D` (`d`
 when damaged), open doors `/`, broken doors `#`, fences `~`, furniture, players `P` and zombies by
 state: `Z` wander, `I` investigate, `C` chase, `L` lunge, `A` attack, `B` battering a door or window;
-`S` staggered, `v` down, `%` corpse, weapons on the floor `w`, dead players `X`; plus players (HP,
+`S` staggered, `v` down, `%` corpse; zombies on the cheaper tiers `n` near, `?` virtual; weapons on the floor `w`, dead players `X`; plus players (HP,
 weapon, action, whether they're climbing or dead), weapons in view, damaged doors and windows in view
-with their HP, and the nearest zombies with HP), `zombie {id}` (one zombie's HP, AI state, target,
+with their HP, and the nearest zombies with HP), `zombie {id}` (one zombie's simulation tier and distance to the nearest player, HP, AI state, target,
 memory, timers, the edge it batters, and per player the distance, line of sight and current sight range), `edge {x, y}` (the four edges
 of a tile, with HP for doors and windows), `step_ticks` (time only advances when you call it; reports
 zombie attacks, thumps and anything broken), `move_player` (player, compass `direction` or `dx`/`dy`,
@@ -271,6 +315,7 @@ first; steps until the action has landed and the player can act again, and repor
 (debug), `make_noise {x, y, radius}`
 (debug), `set_goal` (debug: zombies head for a point, senses off), `spawn_zombies`, `skip_time`,
 `buildings`, `stats` (players with HP/weapon/dead, time of day and daylight, zombies by state
-including staggered/down/dead, weapons on the floor, tick timing, thumps, hits and sounds heard last
+including staggered/down/dead and by tier (`zombie_tiers`: active/near/virtual, last tick's promotions and
+demotions, the ranges), weapons on the floor, tick timing (tier pass, senses, flow, active, near, virtual), thumps, hits and sounds heard last
 tick, damaged edges, the state hash). `step_ticks` and `move_player` also report hits, kills, how many
 zombie strikes landed for how much, and deaths.

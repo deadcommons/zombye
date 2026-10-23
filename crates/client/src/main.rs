@@ -14,7 +14,8 @@
 //! Options: `--zombies N` `--seed S` `--time HOUR` `--at X,Y` `--rotate` `--novsync`
 //! `--screenshot PATH` (saved after `--screenshot-after SECS[,SECS...]`, default 5) `--exit-after SECS` `--zoom METRES`
 //! `--autoplay` (the player fights by itself) `--fight-demo` (a bat and a few zombies close by)
-//! `--siege` (outside your house with a bat, zombies battering its door) `--sneak` (start sneaking).
+//! `--siege` (outside your house with a bat, zombies battering its door) `--sneak` (start sneaking)
+//! `--map-chunks N` (a square map N × N chunks of 16 m; default 20).
 
 mod autoplay;
 mod camera;
@@ -61,6 +62,8 @@ pub struct Options {
     pub siege: bool,
     /// Start sneaking (as if C had been pressed; `--sneak`).
     pub sneak: bool,
+    /// A square map this many 16 m chunks a side (`--map-chunks`, default 20: 320 m).
+    pub map_chunks: Option<i32>,
 }
 
 impl Options {
@@ -89,6 +92,7 @@ impl Options {
             fight_demo: flag("--fight-demo"),
             siege: flag("--siege"),
             sneak: flag("--sneak"),
+            map_chunks: value("--map-chunks").and_then(|v| v.parse().ok()).filter(|n: &i32| (1..=256).contains(n)),
         }
     }
 }

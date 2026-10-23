@@ -12,11 +12,13 @@ const ROAD: i32 = 7;
 const SIDEWALK: i32 = 2;
 const CORRIDOR: i32 = ROAD + 2 * SIDEWALK;
 const FRONT_SETBACK: i32 = 5;
+/// Forest kept at least this wide round the town when the map is made bigger to fit it.
+const MIN_FOREST: i32 = 24;
 
 #[derive(Clone, Debug)]
 pub struct GenConfig {
     pub seed: u64,
-    /// Map size in chunks (each 16 m).
+    /// Map size in chunks (each 16 m). Grown if the town wouldn't fit.
     pub chunks: IVec2,
     pub blocks: IVec2,
 }
@@ -39,13 +41,16 @@ pub struct Generated {
 
 pub fn generate(config: &GenConfig, templates: &[BuildingTemplate]) -> Generated {
     let mut rng = Rng::new(config.seed ^ 0x70_77_4e_00);
-    let mut map = TileMap::new(config.chunks.x, config.chunks.y);
-    let size = IVec2::new(map.width(), map.height());
 
     // Street grid: block sizes vary a little per seed.
     let widths: Vec<i32> = (0..config.blocks.x).map(|_| 56 + rng.below(14) as i32).collect();
     let depths: Vec<i32> = (0..config.blocks.y).map(|_| 46 + rng.below(8) as i32).collect();
     let total = IVec2::new(widths.iter().sum::<i32>() + CORRIDOR * (config.blocks.x + 1), depths.iter().sum::<i32>() + CORRIDOR * (config.blocks.y + 1));
+    // The town sits in the middle of however big the map is (more forest round it on a bigger map),
+    // but always fits, with a margin of forest.
+    let need = (total + IVec2::splat(2 * MIN_FOREST) + IVec2::splat(CHUNK_SIZE - 1)) / CHUNK_SIZE;
+    let mut map = TileMap::new(config.chunks.x.max(need.x), config.chunks.y.max(need.y));
+    let size = IVec2::new(map.width(), map.height());
     let town_min = (size - total) / 2;
     let town_max = town_min + total;
     let mut xs = vec![town_min.x];
@@ -371,6 +376,23 @@ mod tests {
             assert_eq!(g.map.rooms[room as usize].room_type, "bedroom");
             assert!(!g.map.tile_blocked(g.player_spawn.floor().as_ivec2()));
         }
+    }
+
+    /// A bigger map keeps the same town in the middle with more forest round it, and a tiny one is
+    /// grown to fit the town.
+    #[test]
+    fn map_size_is_configurable() {
+        let small = generate(&GenConfig::default(), &templates());
+        let big = generate(&GenConfig { chunks: IVec2::splat(64), ..Default::default() }, &templates());
+        assert_eq!((big.map.width(), big.map.height()), (1024, 1024));
+        assert_eq!(big.map.buildings.len(), small.map.buildings.len());
+        assert_eq!(big.town_max - big.town_min, small.town_max - small.town_min);
+        let centre = (big.town_min + big.town_max) / 2;
+        assert!((centre - IVec2::splat(512)).abs().max_element() <= 1, "town off centre: {centre}");
+        assert!(!big.map.tile_blocked(big.player_spawn.floor().as_ivec2()));
+        let tiny = generate(&GenConfig { chunks: IVec2::splat(4), ..Default::default() }, &templates());
+        assert!(tiny.town_min.x >= MIN_FOREST && tiny.town_max.x <= tiny.map.width() - MIN_FOREST + 1, "town doesn't fit");
+        assert_eq!(tiny.map.buildings.len(), small.map.buildings.len());
     }
 
     #[test]

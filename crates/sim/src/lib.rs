@@ -17,6 +17,7 @@ pub mod rng;
 pub mod senses;
 pub mod spatial;
 pub mod template;
+pub mod tiers;
 pub mod vision;
 pub mod world;
 pub mod worldgen;
@@ -31,7 +32,8 @@ pub use players::{Action, ActionKind, Player, PlayerInput, PlayerState, Stance};
 pub use template::BuildingTemplate;
 pub use world::{World, WorldConfig};
 pub use senses::{Sound, SoundSource};
-pub use zombies::{ZombieAnim, ZombieState, Zombies};
+pub use tiers::TierTuning;
+pub use zombies::{Tier, ZombieAnim, ZombieState, Zombies};
 
 /// Simulation ticks per second.
 pub const TICK_RATE: u32 = 20;

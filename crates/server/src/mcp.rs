@@ -12,7 +12,7 @@ use zombye_net::{Intent, apply_intent};
 use zombye_sim::map::{Edge, EdgeRef, Feature, Floor, OwnedEdge, Side};
 use zombye_sim::senses::{self, Cone, Target};
 use zombye_sim::vision::line_of_sight;
-use zombye_sim::{ActionKind, HitEffect, TICK_DT, World, ZombieState};
+use zombye_sim::{ActionKind, HitEffect, TICK_DT, Tier, World, ZombieState};
 
 const MAX_STEP: u64 = 20 * 60 * 60; // one hour of game time per call
 const MAX_MOVE_TICKS: u64 = 20 * 60 * 5; // five minutes of walking per move_player call
@@ -66,7 +66,9 @@ fn handle(world: &mut World, msg: &Value) -> Option<Value> {
                 Each costs endurance; tired swings are slower and weaker; hits from behind crit. weapons lists their numbers. \
                 Use observe to see an ASCII map with walls, doors, windows, items and zombies \
                 (letters show what each is doing), zombie to inspect one, edge for a door's or window's state and hit points, \
-                and buildings to list houses."
+                and buildings to list houses. Zombies far from every player are simulated in less detail (tiers: active \
+                within about 60 m, near out to 150 m, virtual beyond; stats has the counts): only active ones fight, see and \
+                show their state on the map, but every zombie keeps heading where it was going."
         })),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({"tools": tool_list()})),
@@ -95,9 +97,10 @@ fn tool_list() -> Value {
                 shut doors D (d when damaged), open doors /, broken doors #, fences ~, \
                 floors: . grass  , road  : sidewalk/path  _ indoors; T tree, * bush, f furniture, w weapon on the floor, \
                 P player (X dead), G debug goal, @ spawn. \
-                Zombies by state: Z wandering, I investigating a sound, C chasing a player, L lunging, A attacking, \
-                B battering a door or window, S staggered, v down on the ground, % corpse. Lists players (HP, weapon, \
-                whether they're climbing through a window or dead), weapons on the floor, damaged doors \
+                Active zombies by state: Z wandering, I investigating a sound, C chasing a player, L lunging, A attacking, \
+                B battering a door or window, S staggered, v down on the ground, % corpse; zombies on the cheaper tiers \
+                far from players: n near (updated a few times a second), ? virtual (moved in bulk every few seconds). \
+                Lists players (HP, weapon, whether they're climbing through a window or dead), weapons on the floor, damaged doors \
                 and windows in view with their hit points, and the nearest zombies with HP (use zombie {id} for one zombie's details).",
             "inputSchema": {"type": "object", "properties": {
                 "x": {"type": "number", "description": "Centre x in metres"},
@@ -107,7 +110,7 @@ fn tool_list() -> Value {
         },
         {
             "name": "zombie",
-            "description": "One zombie's hit points and AI: state (including staggered, down and dead), target player or point, \
+            "description": "One zombie's hit points, simulation tier (active, near or virtual) and AI: state (including staggered, down and dead), target player or point, \
                 memory/interest timer, cooldowns, and for each player the distance, line of sight and how far this zombie could see them right now.",
             "inputSchema": {"type": "object", "required": ["id"], "properties": {"id": {"type": "integer"}}}
         },
@@ -244,7 +247,7 @@ fn tool_list() -> Value {
         },
         {
             "name": "stats",
-            "description": "Map size, tick, time of day and daylight, players (HP, weapon, dead), zombie counts by state (corpses too), weapons on the floor, last tick timing (senses, flow fields), sounds heard and the state hash (same seed + same calls = same hash).",
+            "description": "Map size, tick, time of day and daylight, players (HP, weapon, dead), zombie counts by state (corpses too) and by simulation tier (active / near / virtual, with the ranges and last tick's promotions and demotions), weapons on the floor, last tick timing (tier pass, senses, flow fields, active AI, near and virtual updates), sounds heard and the state hash (same seed + same calls = same hash).",
             "inputSchema": {"type": "object", "properties": {}}
         }
     ])
@@ -568,6 +571,21 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             "time_of_day": clock(world.time_of_day()),
             "daylight": world.daylight(),
             "zombies": world.zombies.len(),
+            "zombie_tiers": {
+                "active": world.stats.active,
+                "near": world.stats.near,
+                "virtual": world.stats.virtual_,
+                "promoted_last_tick": world.stats.promoted,
+                "demoted_last_tick": world.stats.demoted,
+                "near_updated_last_tick": world.stats.near_updated,
+                "virtual_moved_last_tick": world.stats.virtual_updated,
+                "ranges_m": {
+                    "active": world.config.tiers.active_range,
+                    "near": world.config.tiers.near_range,
+                    "hysteresis": world.config.tiers.hysteresis,
+                    "region": world.regions().size(),
+                },
+            },
             "zombie_states": {
                 "wander": state_count(world, ZombieState::Wander),
                 "investigate": state_count(world, ZombieState::Investigate),
@@ -585,8 +603,12 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             "chasing": world.stats.chasing,
             "goal": world.goal().map(|g| [g.x, g.y]),
             "last_tick_ms": world.stats.tick_ms,
+            "last_tick_tier_ms": world.stats.tier_ms,
             "last_tick_senses_ms": world.stats.senses_ms,
             "last_tick_flow_ms": world.stats.flow_ms,
+            "last_tick_active_ms": world.stats.active_ms,
+            "last_tick_near_ms": world.stats.near_ms,
+            "last_tick_virtual_ms": world.stats.virtual_ms,
             "last_tick_flow_builds": world.stats.flow_builds,
             "flow_fields_cached": world.flow_cache_len(),
             "last_tick_sight_checks": world.stats.sight_checks,
@@ -752,9 +774,26 @@ fn state_count(world: &World, state: ZombieState) -> usize {
     world.zombies.state.iter().filter(|s| **s == state).count()
 }
 
-/// "chasing N, investigating M, battering K" for tool replies.
+/// "chasing N, investigating M, battering K, ...; tiers A / N / V" for tool replies.
 fn counts(world: &World) -> String {
-    format!("chasing {}, investigating {}, battering {}, reeling {}", world.stats.chasing, world.stats.investigating, world.stats.thumping, world.stats.reeling)
+    let s = &world.stats;
+    format!(
+        "chasing {}, investigating {}, battering {}, reeling {} (active zombies); tiers {} active / {} near / {} virtual",
+        s.chasing, s.investigating, s.thumping, s.reeling, s.active, s.near, s.virtual_
+    )
+}
+
+/// "active (12.3 m from the nearest player)" and the like, for `zombie`.
+fn tier_text(world: &World, i: usize) -> String {
+    let p = world.zombies.pos[i];
+    let d = world.players.iter().map(|pl| pl.state.pos.distance(p)).fold(f32::INFINITY, f32::min);
+    let tiers = &world.config.tiers;
+    let what = match world.zombies.tier[i] {
+        Tier::Active => "active (full AI every tick)".to_string(),
+        Tier::Near => format!("near (no sight or combat; updated every {} ticks)", tiers.near_interval_ticks),
+        Tier::Virtual => format!("virtual (moved in bulk with its {:.0} m region every {} ticks)", world.regions().size(), tiers.virtual_interval_ticks),
+    };
+    if d.is_finite() { format!("{what}, {d:.1} m from the nearest player") } else { what }
 }
 
 /// Map letter for a zombie's state.
@@ -816,6 +855,7 @@ fn zombie_detail(world: &World, i: usize) -> String {
     };
     let mut out = format!(
         "zombie #{} at ({:.1}, {:.1}) in {}, {:.0} HP, facing {}, top speed {:.2} m/s, moving {:.2} m/s, anim {:?}\n\
+         tier {}\n\
          state {:?}: {}\n\
          target point ({:.1}, {:.1}), {:.1} m away; {timer}; cooldown {:.2} s{}{}\n",
         z.id[i],
@@ -827,6 +867,7 @@ fn zombie_detail(world: &World, i: usize) -> String {
         z.speed[i],
         z.vel[i].length(),
         z.anim[i],
+        tier_text(world, i),
         z.state[i],
         zombie_goal(world, i),
         z.target_pos[i].x,
@@ -835,6 +876,7 @@ fn zombie_detail(world: &World, i: usize) -> String {
         z.cooldown[i],
         if z.state[i].is_hunting() { format!("; next groan {:.1} s", z.groan_timer[i]) } else { String::new() },
         match z.state[i] {
+            _ if z.tier[i] != Tier::Active => "",
             ZombieState::Investigate | ZombieState::Chase if z.direct[i] => "; straight path to target",
             ZombieState::Investigate | ZombieState::Chase => "; no straight path (uses a flow field if one is cached)",
             _ => "",
@@ -934,7 +976,11 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
                 continue;
             }
             if let Some((x, y)) = to_cell(p) {
-                grid[y][x] = state_char(world.zombies.state[i]);
+                grid[y][x] = match world.zombies.tier[i] {
+                    Tier::Active => state_char(world.zombies.state[i]),
+                    Tier::Near => 'n',
+                    Tier::Virtual => '?',
+                };
                 if dead {
                     corpses += 1;
                 } else {
@@ -958,13 +1004,17 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
 
     let centre_place = place(world, centre);
     let mut out = format!(
-        "tick {} | {} (daylight {:.0}%) | centre ({:.1}, {:.1}) in {centre_place} | {} zombies in view (and {corpses} corpses), {} total\n(north = top row; top-left tile is ({}, {}))\n",
+        "tick {} | {} (daylight {:.0}%) | centre ({:.1}, {:.1}) in {centre_place} | {} zombies in view{} (and {corpses} corpses), {} total\n(north = top row; top-left tile is ({}, {}))\n",
         world.tick,
         clock(world.time_of_day()),
         world.daylight() * 100.0,
         centre.x,
         centre.y,
         near.len(),
+        {
+            let far = near.iter().filter(|(_, i)| world.zombies.tier[*i] != Tier::Active).count();
+            if far > 0 { format!(", {far} of them on the near/virtual tiers") } else { String::new() }
+        },
         world.zombies.len(),
         origin.x,
         origin.y
@@ -1026,7 +1076,12 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
     out.push_str("nearest zombies:\n");
     for (d, i) in near.iter().take(8) {
         let p = world.zombies.pos[*i];
-        out.push_str(&format!("  #{} at ({:.1}, {:.1}) dist {:.1} m, {:.0} HP, {}\n", world.zombies.id[*i], p.x, p.y, d, world.zombies.hp[*i], zombie_goal(world, *i)));
+        let tier = match world.zombies.tier[*i] {
+            Tier::Active => "",
+            Tier::Near => " [near tier]",
+            Tier::Virtual => " [virtual tier]",
+        };
+        out.push_str(&format!("  #{} at ({:.1}, {:.1}) dist {:.1} m, {:.0} HP, {}{tier}\n", world.zombies.id[*i], p.x, p.y, d, world.zombies.hp[*i], zombie_goal(world, *i)));
     }
     out
 }

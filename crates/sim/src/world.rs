@@ -28,8 +28,9 @@ use crate::rng::{Rng, hash01};
 use crate::senses::{self, Sound, SoundSource, Target};
 use crate::spatial::SpatialHash;
 use crate::template::BuildingTemplate;
+use crate::tiers::{self, ChunkDistances, NearCtx, RegionIndex, TierTuning};
 use crate::worldgen::{self, GenConfig};
-use crate::zombies::{ZombieState, Zombies};
+use crate::zombies::{Tier, ZombieState, Zombies};
 
 pub use crate::ai::ZOMBIE_RADIUS;
 
@@ -65,6 +66,8 @@ pub struct WorldConfig {
     pub weapons: Vec<WeaponDef>,
     /// Player health and every combat number that isn't a weapon's.
     pub combat: CombatTuning,
+    /// Simulation tiers: ranges and update rates (see [`crate::tiers`]).
+    pub tiers: TierTuning,
 }
 
 impl WorldConfig {
@@ -78,7 +81,15 @@ impl WorldConfig {
             zombie: ZombieTuning::default(),
             weapons: Vec::new(),
             combat: CombatTuning::default(),
+            tiers: TierTuning::default(),
         }
+    }
+
+    /// A square map `chunks` × `chunks` chunks (16 m each) instead of the default; the town stays
+    /// the same size in the middle, with more forest round it.
+    pub fn with_map_chunks(mut self, chunks: i32) -> Self {
+        self.generation.chunks = IVec2::splat(chunks.max(1));
+        self
     }
 
     pub fn with_weapons(mut self, weapons: Vec<WeaponDef>) -> Self {
@@ -110,6 +121,23 @@ pub struct TickStats {
     pub breaks: u32,
     /// Zombies staggered or down.
     pub reeling: u32,
+    /// Zombies on each tier after this tick's tier pass (corpses included), and how many changed
+    /// tier in it.
+    pub active: u32,
+    pub near: u32,
+    pub virtual_: u32,
+    pub promoted: u32,
+    pub demoted: u32,
+    /// Near zombies updated this tick, and virtual zombies moved.
+    pub near_updated: u32,
+    pub virtual_updated: u32,
+    /// Time for the tier pass plus rebuilding the spatial hash and the region index; the active
+    /// tier's state machine and movement (senses and flow fields are separate, above); the near
+    /// tier's update; the virtual tier's hearing and bulk moves.
+    pub tier_ms: f32,
+    pub active_ms: f32,
+    pub near_ms: f32,
+    pub virtual_ms: f32,
 }
 
 pub struct World {
@@ -171,6 +199,10 @@ pub struct World {
     /// Combat rolls (hits, crits, staggers, zombie strikes), apart from the AI's stream.
     pub(crate) combat_rng: Rng,
     pub(crate) hash: SpatialHash,
+    /// Per chunk, how far the nearest player is (for tiers); virtual zombies by region.
+    chunk_dist: ChunkDistances,
+    regions: RegionIndex,
+    scratch_tiles: Vec<IVec2>,
     next_id: u32,
     next_player_id: u32,
     scratch_pos: Vec<Vec2>,
@@ -193,6 +225,7 @@ impl World {
         let items = items::place_weapons(&generated.map, &config.weapons, generated.spawn_building, config.generation.seed, 1);
         let map = generated.map;
         let hash = SpatialHash::new(map.width() as f32, map.height() as f32, 1.0);
+        let regions = RegionIndex::new(&map, config.tiers.region_size);
         let walk = WalkGrid::new(&map);
         let mut world = Self {
             rng: Rng::new(config.generation.seed),
@@ -211,6 +244,9 @@ impl World {
             spawn_building: generated.spawn_building,
             map,
             hash,
+            chunk_dist: ChunkDistances::default(),
+            regions,
+            scratch_tiles: Vec::new(),
             zombies: Zombies::default(),
             players: Vec::new(),
             tick: 0,
@@ -262,6 +298,8 @@ impl World {
     }
 
     fn push_zombie(&mut self, p: Vec2) {
+        // Clear of trunks and walls from the start (it may not get a full update for a while).
+        let p = self.map.resolve_circle(p, ZOMBIE_RADIUS);
         let facing = self.rng.range(0.0, TAU);
         // Mostly shamblers, a few faster ones.
         let speed = if self.rng.f32() < 0.1 { self.rng.range(2.0, 3.0) } else { self.rng.range(0.6, 1.1) };
@@ -601,9 +639,15 @@ impl World {
             }
         }
 
-        // Corpses stay out of the hash: nothing senses, avoids or hits them.
-        let states = &self.zombies.state;
-        self.hash.rebuild_where(&self.zombies.pos, |i| states[i] != ZombieState::Dead);
+        // Tiers: who gets how much of the simulation this tick, by distance to the players.
+        let tier_start = Instant::now();
+        let changes = self.assign_tiers();
+        // Corpses stay out of the hash: nothing senses, avoids or hits them. Virtual zombies are
+        // indexed by region instead.
+        let (states, tier) = (&self.zombies.state, &self.zombies.tier);
+        self.hash.rebuild_where(&self.zombies.pos, |i| states[i] != ZombieState::Dead && tier[i] != Tier::Virtual);
+        self.regions.rebuild_where(&self.zombies.pos, |i| states[i] != ZombieState::Dead && tier[i] == Tier::Virtual);
+        let tier_ms = tier_start.elapsed().as_secs_f32() * 1000.0;
         self.step_player_actions();
         let t = &self.config.zombie;
         let mut sight_checks = 0;
@@ -619,12 +663,12 @@ impl World {
             sight_checks = senses::sight_pass(&mut self.zombies, &self.hash, &self.map, &self.targets, t, daylight, self.tick, seed);
             senses::hearing_pass(&mut self.zombies, &self.hash, &self.map, &self.heard, t);
         }
-        let senses_ms = start.elapsed().as_secs_f32() * 1000.0;
+        let senses_ms = start.elapsed().as_secs_f32() * 1000.0 - tier_ms;
 
         // Build the fields zombies asked for last tick, and follow moving players.
         let targets = &self.targets;
         self.flow_cache.update(&self.walk, self.tick, |id| targets.iter().find(|p| p.id == id).map(|p| p.pos.floor().as_ivec2()));
-        let flow_ms = start.elapsed().as_secs_f32() * 1000.0 - senses_ms;
+        let flow_ms = start.elapsed().as_secs_f32() * 1000.0 - senses_ms - tier_ms;
 
         self.scratch_pos.clear();
         self.scratch_pos.extend_from_slice(&self.zombies.pos);
@@ -641,14 +685,36 @@ impl World {
             thumps: &mut self.thump_events,
             tick: self.tick,
         };
+        let ai_start = Instant::now();
         let counts = ai::step_zombies(&mut self.zombies, &mut self.scratch_pos, &mut cx);
+        let active_ms = ai_start.elapsed().as_secs_f32() * 1000.0;
+        let near_start = Instant::now();
+        let mut ncx = NearCtx {
+            map: &self.map,
+            flow: &self.flow_cache,
+            goal: self.goal_flow.as_ref(),
+            tuning: &self.config.zombie,
+            tiers: &self.config.tiers,
+            rng: &mut self.rng,
+            tick: self.tick,
+        };
+        let near_updated = tiers::step_near(&mut self.zombies, &mut self.scratch_pos, &mut ncx);
+        let near_ms = near_start.elapsed().as_secs_f32() * 1000.0;
         std::mem::swap(&mut self.zombies.pos, &mut self.scratch_pos);
+        let virtual_start = Instant::now();
+        let (t, tt) = (&self.config.zombie, &self.config.tiers);
+        if self.goal.is_none() {
+            tiers::virtual_hearing(&mut self.zombies, &self.regions, &self.map, &self.heard, t, tt);
+        }
+        let virtual_updated = tiers::step_virtual(&mut self.zombies, &self.regions, &self.map, t, tt, self.tick, self.config.generation.seed);
+        let virtual_ms = virtual_start.elapsed().as_secs_f32() * 1000.0;
         self.apply_thumps();
         self.apply_zombie_attacks();
         // Last: indices into the zombie columns (the spatial hash) aren't needed after this.
         self.remove_old_corpses();
 
         self.tick += 1;
+        let tier_counts = self.tier_counts();
         self.stats = TickStats {
             tick_ms: start.elapsed().as_secs_f32() * 1000.0,
             senses_ms,
@@ -662,7 +728,52 @@ impl World {
             thumps: self.thump_events.len() as u32,
             breaks: self.break_events.len() as u32,
             reeling: counts.reeling,
+            active: tier_counts[0],
+            near: tier_counts[1],
+            virtual_: tier_counts[2],
+            promoted: changes.promoted,
+            demoted: changes.demoted,
+            near_updated,
+            virtual_updated,
+            tier_ms,
+            active_ms,
+            near_ms,
+            virtual_ms,
         };
+    }
+
+    /// The tier pass: with at least one player (and tiers enabled), every zombie moves to the tier
+    /// its chunk's distance to the nearest player calls for. With none, nothing changes tier.
+    fn assign_tiers(&mut self) -> tiers::TierChanges {
+        if !self.config.tiers.enabled || self.players.is_empty() {
+            if !self.config.tiers.enabled {
+                self.zombies.tier.iter_mut().for_each(|t| *t = Tier::Active);
+            }
+            return tiers::TierChanges::default();
+        }
+        self.chunk_dist.update(&self.map, self.players.iter().map(|p| p.state.pos));
+        tiers::assign(&mut self.zombies, &self.chunk_dist, &self.config.tiers, &self.config.zombie, &self.map, &mut self.scratch_tiles)
+    }
+
+    /// Zombies on each tier: [active, near, virtual] (corpses included).
+    pub fn tier_counts(&self) -> [u32; 3] {
+        let mut n = [0; 3];
+        for t in &self.zombies.tier {
+            n[*t as usize] += 1;
+        }
+        n
+    }
+
+    /// Should zombie `i` go to clients? Active, and within `interest_radius` of some player (any
+    /// active zombie when there are no players).
+    pub fn in_interest(&self, i: usize) -> bool {
+        let r = self.config.tiers.interest_radius;
+        self.zombies.tier[i] == Tier::Active && (self.players.is_empty() || self.players.iter().any(|p| p.state.pos.distance_squared(self.zombies.pos[i]) <= r * r))
+    }
+
+    /// Virtual zombies indexed by region, as of the start of the last tick.
+    pub fn regions(&self) -> &RegionIndex {
+        &self.regions
     }
 
     /// Hash of all zombie and player state, for determinism checks and replays.
@@ -677,7 +788,7 @@ impl World {
             mix(self.zombies.pos[i].x.to_bits());
             mix(self.zombies.pos[i].y.to_bits());
             mix(self.zombies.facing[i].to_bits());
-            mix(self.zombies.state[i] as u32 | (self.zombies.sees[i] as u32) << 8);
+            mix(self.zombies.state[i] as u32 | (self.zombies.sees[i] as u32) << 8 | (self.zombies.tier[i] as u32) << 16);
             mix(self.zombies.target_player[i]);
             mix(self.zombies.target_pos[i].x.to_bits());
             mix(self.zombies.target_pos[i].y.to_bits());
@@ -1664,5 +1775,349 @@ mod tests {
             flow / 100.0
         );
         assert!(per_tick < 50.0);
+    }
+
+    // --- Simulation tiers (crate::tiers) ---
+
+    use crate::zombies::Tier;
+
+    /// The nearest open tile to `p`.
+    fn open_tile_near(w: &World, p: Vec2) -> Vec2 {
+        let c = p.floor().as_ivec2();
+        for r in 0..40 {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    let t = c + IVec2::new(dx, dy);
+                    if (dx as i32).abs().max((dy as i32).abs()) == r && w.map.in_bounds(t) && !w.map.tile_blocked(t) && w.map.tile(t).room == 0 {
+                        return t.as_vec2() + Vec2::splat(0.5);
+                    }
+                }
+            }
+        }
+        panic!("no open tile near {p}");
+    }
+
+    /// A zombie standing in an open field changes tier as the player moves away and back: promoted
+    /// at the range, demoted only once its chunk is `hysteresis` beyond it.
+    #[test]
+    fn tiers_follow_the_player_with_hysteresis() {
+        let mut w = arena();
+        let tt = w.config.tiers.clone();
+        // Chunk (2, 10) spans x 32..48; it looks about the middle of it.
+        let z = add_zombie(&mut w, Vec2::new(40.5, 168.5), 0.0);
+        (w.zombies.state[z], w.zombies.target_pos[z], w.zombies.timer[z]) = (ZombieState::Investigate, Vec2::new(40.5, 168.5), 1e6);
+        w.add_player(Vec2::new(48.0, 168.0));
+        // Player `d` metres east of the chunk: step a tick and see the tier.
+        let at = |w: &mut World, d: f32| {
+            w.players[0].state.pos = Vec2::new(48.0 + d, 168.0);
+            w.step();
+            w.zombies.tier[z]
+        };
+        let a = tt.active_range;
+        let n = tt.near_range;
+        let h = tt.hysteresis;
+        let path = [
+            (a - 10.0, Tier::Active),
+            (a + h - 2.0, Tier::Active),
+            (a + h + 2.0, Tier::Near),
+            (a + 5.0, Tier::Near),
+            (a - 1.0, Tier::Active),
+            (n + 10.0, Tier::Near),
+            (n + h + 2.0, Tier::Virtual),
+            (n + 5.0, Tier::Virtual),
+            (n - 1.0, Tier::Near),
+            (n + h - 2.0, Tier::Near),
+            (500.0, Tier::Virtual),
+            (a - 1.0, Tier::Active),
+        ];
+        for (d, want) in path {
+            assert_eq!(at(&mut w, d), want, "player {d} m from the zombie's chunk");
+        }
+        // Lingering in the band doesn't flip it either way.
+        for k in 0..200 {
+            assert_eq!(at(&mut w, a + 2.0 + (k % 10) as f32), Tier::Active);
+        }
+        assert_eq!(w.tier_counts(), [1, 0, 0]);
+        assert!(w.zombies.pos[z].distance(Vec2::new(40.5, 168.5)) < w.config.zombie.search_radius + 1.0);
+    }
+
+    /// A virtual zombie that hears a loud noise heads there in bulk moves, is still heading there
+    /// when it becomes near, and when the player comes close enough to make it active.
+    #[test]
+    fn a_far_zombie_that_heard_a_noise_is_still_going_there_when_promoted() {
+        let mut w = arena();
+        let z = add_zombie(&mut w, Vec2::new(250.5, 160.5), 0.0);
+        let id = w.zombies.id[z];
+        w.add_player(Vec2::new(20.5, 160.5));
+        w.step();
+        assert_eq!(w.zombies.tier[z], Tier::Virtual);
+        let noise = Vec2::new(100.5, 160.5);
+        w.emit_sound(noise, 200.0);
+        w.step();
+        assert_eq!((w.zombies.state[z], w.zombies.target_pos[z]), (ZombieState::Investigate, noise), "heard it");
+        // It drifts there while virtual, every few seconds, and turns near on the way.
+        let mut last = w.zombies.pos[z].x;
+        let mut ticks = 0;
+        while w.zombies.tier[z] == Tier::Virtual {
+            w.step();
+            let x = w.zombies.pos[z].x;
+            // (Settling it when it's promoted may nudge it a few centimetres.)
+            assert!(x <= last + 0.1, "virtual zombie went the wrong way: {last} -> {x}");
+            last = x;
+            ticks += 1;
+            assert!(ticks < 20 * 120, "never became near (at {})", w.zombies.pos[z]);
+        }
+        assert_eq!(w.zombies.tier[z], Tier::Near);
+        assert!(w.zombies.pos[z].x < 200.0, "should have come a long way: {}", w.zombies.pos[z]);
+        assert_eq!((w.zombies.state[z], w.zombies.target_pos[z]), (ZombieState::Investigate, noise), "still going there when near");
+        // A few near updates: still on its way, closer.
+        let before = w.zombies.pos[z].distance(noise);
+        for _ in 0..40 {
+            w.step();
+        }
+        assert_eq!(w.zombies.tier[z], Tier::Near);
+        assert!(w.zombies.pos[z].distance(noise) < before - 1.0, "near zombie stopped going there");
+        // The player comes over: active, and it carries on to the noise with the full AI.
+        let zp = w.zombies.pos[z];
+        w.players[0].state.pos = Vec2::new(zp.x, zp.y - 40.0);
+        w.step();
+        let i = w.zombies.index_of(id).unwrap();
+        assert_eq!(w.zombies.tier[i], Tier::Active);
+        assert_eq!((w.zombies.state[i], w.zombies.target_pos[i]), (ZombieState::Investigate, noise), "kept its intent when promoted");
+        let before = w.zombies.pos[i].distance(noise);
+        for _ in 0..20 * 5 {
+            w.step();
+        }
+        assert!(w.zombies.pos[i].distance(noise) < before - 2.0, "active zombie stopped going there");
+    }
+
+    /// A chaser the player suddenly leaves far behind drops to the virtual tier still chasing, goes
+    /// on to where it last saw them, and is found there (searching) when the player comes back.
+    #[test]
+    fn a_chaser_left_behind_keeps_going_where_it_last_saw_you() {
+        let mut w = arena();
+        let z = add_zombie(&mut w, Vec2::new(92.5, 100.5), 0.0);
+        w.add_player(Vec2::new(100.5, 100.5));
+        for _ in 0..8 {
+            w.step();
+        }
+        assert_eq!(w.zombies.state[z], ZombieState::Chase);
+        let seen = w.zombies.target_pos[z];
+        w.players[0].state.pos = Vec2::new(300.5, 100.5);
+        w.step();
+        assert_eq!(w.zombies.tier[z], Tier::Virtual);
+        assert!(w.zombies.state[z].is_hunting() && w.zombies.target_pos[z].distance(seen) < 1.0, "{:?} {}", w.zombies.state[z], w.zombies.target_pos[z]);
+        for _ in 0..20 * 12 {
+            w.step();
+        }
+        w.players[0].state.pos = Vec2::new(100.5, 145.5);
+        w.step();
+        assert_eq!(w.zombies.tier[z], Tier::Active);
+        assert!(w.zombies.pos[z].distance(seen) < w.config.zombie.search_radius + 1.0, "not where it last saw the player: {}", w.zombies.pos[z]);
+        assert!(matches!(w.zombies.state[z], ZombieState::Chase | ZombieState::Investigate), "{:?}", w.zombies.state[z]);
+    }
+
+    /// Walking far away and coming back finds the same zombies (by id), roughly where they were,
+    /// after they spent the time away on the virtual tier.
+    #[test]
+    fn walking_away_and_back_finds_the_same_zombies() {
+        let mut config = WorldConfig::new(5, 1500, templates()).with_map_chunks(40);
+        // At night, so they don't spot the player and follow.
+        config.start_hour = 1.0;
+        let mut w = World::new(config);
+        let home = street_point(&w);
+        w.add_player(home);
+        w.step();
+        let watched: Vec<(u32, Vec2)> = (0..w.zombies.len()).filter(|&i| w.zombies.pos[i].distance(home) < 40.0).map(|i| (w.zombies.id[i], w.zombies.pos[i])).collect();
+        assert!(watched.len() >= 20, "only {} zombies around", watched.len());
+        assert!(watched.iter().all(|(id, _)| w.zombies.tier[w.zombies.index_of(*id).unwrap()] == Tier::Active));
+        // Walk (fast, without footsteps) 250 m along the main street, wait, and walk back.
+        let away = home + Vec2::new(250.0, 0.0);
+        let walk = |w: &mut World, from: Vec2, to: Vec2| {
+            let steps = (from.distance(to) / 0.5) as u32;
+            for k in 0..=steps {
+                w.players[0].state.pos = from.lerp(to, k as f32 / steps as f32);
+                w.step();
+            }
+        };
+        walk(&mut w, home, away);
+        for _ in 0..20 * 40 {
+            w.step();
+        }
+        for (id, _) in &watched {
+            assert_eq!(w.zombies.tier[w.zombies.index_of(*id).unwrap()], Tier::Virtual, "zombie {id} should be virtual while we're away");
+        }
+        walk(&mut w, away, home);
+        let mut moved: Vec<f32> = Vec::new();
+        for (id, was) in &watched {
+            let i = w.zombies.index_of(*id).unwrap_or_else(|| panic!("zombie {id} is gone"));
+            assert_eq!(w.zombies.tier[i], Tier::Active);
+            moved.push(w.zombies.pos[i].distance(*was));
+        }
+        moved.sort_by(f32::total_cmp);
+        let median = moved[moved.len() / 2];
+        eprintln!("walked away and back: {} zombies, moved median {median:.1} m, max {:.1} m", moved.len(), moved.last().unwrap());
+        assert!(median < 20.0, "they wandered off: median {median:.1} m");
+    }
+
+    /// The player sweeps about a shut town (every door and window shut and unbreakable), so
+    /// thousands of zombies are promoted and demoted over and over. Nobody ever ends up in a blocked
+    /// tile or overlapping a wall, nobody gets into or out of a sealed building, and it's
+    /// deterministic.
+    fn tier_churn(seed: u64, check: bool) -> (u64, u32, u32) {
+        let mut config = WorldConfig::new(seed, 2500, templates()).with_map_chunks(36);
+        config.zombie.door_hp = 1e9;
+        config.zombie.window_hp = 1e9;
+        let mut w = World::new(config);
+        for y in 0..w.map.height() {
+            for x in 0..w.map.width() {
+                for which in [OwnedEdge::North, OwnedEdge::West] {
+                    let shut = match w.map.owned_edge(IVec2::new(x, y), which) {
+                        Edge::WindowOpen => Edge::Window,
+                        Edge::DoorOpen => Edge::DoorClosed,
+                        _ => continue,
+                    };
+                    w.map.set_owned_edge(IVec2::new(x, y), which, shut);
+                }
+            }
+        }
+        w.map_changed();
+        let size = Vec2::new(w.map.width() as f32, w.map.height() as f32);
+        let stops: Vec<Vec2> = [Vec2::new(0.5, 0.5), Vec2::new(0.15, 0.2), Vec2::new(0.85, 0.5), Vec2::new(0.5, 0.85), Vec2::new(0.2, 0.8)].iter().map(|f| open_tile_near(&w, *f * size)).collect();
+        w.add_player(stops[0]);
+        // Which tiles can be walked to from outdoors (walls, shut doors and windows block; trees
+        // don't matter here): the rest are sealed buildings.
+        let (mw, mh) = (w.map.width(), w.map.height());
+        let mut open = vec![false; (mw * mh) as usize];
+        let mut queue = vec![stops[0].floor().as_ivec2()];
+        open[(queue[0].y * mw + queue[0].x) as usize] = true;
+        while let Some(t) = queue.pop() {
+            for side in Side::ALL {
+                let n = t + side.offset();
+                if w.map.in_bounds(n) && !w.map.edge(t, side).blocks_movement() && !open[(n.y * mw + n.x) as usize] {
+                    open[(n.y * mw + n.x) as usize] = true;
+                    queue.push(n);
+                }
+            }
+        }
+        let sealed_in = |w: &World, p: Vec2| {
+            let t = p.floor().as_ivec2();
+            (!open[(t.y * mw + t.x) as usize]).then(|| w.map.building_at(p))
+        };
+        let buildings: Vec<Option<Option<usize>>> = w.zombies.pos.iter().map(|p| sealed_in(&w, *p)).collect();
+        let ids = w.zombies.id.clone();
+        let mut tiers_before = w.zombies.tier.clone();
+        let (mut promoted, mut demoted) = (0, 0);
+        for t in 0..1200usize {
+            let leg = t / 150;
+            let (a, b) = (stops[leg % stops.len()], stops[(leg + 1) % stops.len()]);
+            w.players[0].state.pos = a.lerp(b, (t % 150) as f32 / 150.0);
+            w.step();
+            promoted += w.stats.promoted;
+            demoted += w.stats.demoted;
+            if !check || t % 3 != 0 {
+                continue;
+            }
+            for i in 0..w.zombies.len() {
+                let p = w.zombies.pos[i];
+                let (zid, tier) = (w.zombies.id[i], w.zombies.tier[i]);
+                let k = ids.binary_search(&zid).unwrap();
+                assert_eq!(sealed_in(&w, p), buildings[k], "zombie {zid} ({tier:?}) got into or out of a sealed building at {p}");
+                // Virtual zombies stand on free tiles; the others collide like bodies (a centre may
+                // be in a tree's tile, clear of the trunk), including the ones promoted this tick.
+                if tier == Tier::Virtual {
+                    assert!(!w.map.tile_blocked(p.floor().as_ivec2()), "zombie {zid} ({tier:?}) in a blocked tile at {p}");
+                } else {
+                    let was = tiers_before[k];
+                    assert!(w.map.resolve_circle(p, ZOMBIE_RADIUS).distance(p) < 0.05, "zombie {zid} ({tier:?}, was {was:?}) overlapping an obstacle at {p}");
+                }
+                tiers_before[k] = tier;
+            }
+        }
+        (w.state_hash(), promoted, demoted)
+    }
+
+    #[test]
+    fn promotion_never_lands_in_walls_and_tiers_are_deterministic() {
+        let a = tier_churn(2, true);
+        eprintln!("tier churn: {} promotions, {} demotions", a.1, a.2);
+        assert!(a.1 > 2000 && a.2 > 2000, "not much churn: {a:?}");
+        assert_eq!(a, tier_churn(2, false));
+        assert_ne!(a.0, tier_churn(3, false).0);
+    }
+
+    /// Issue #2's target: 1,000 active + 20,000 virtual zombies within the 50 ms tick, on a 1 km map
+    /// with the town in the middle. One player in the forest west of town with a horde round them,
+    /// running in circles and making a racket now and then; the rest of the world populated as usual.
+    #[test]
+    fn tiers_hold_a_thousand_active_and_twenty_thousand_virtual() {
+        let start = Instant::now();
+        let mut w = World::new(WorldConfig::new(1, 21_500, templates()).with_map_chunks(64));
+        let gen_ms = start.elapsed().as_secs_f32() * 1000.0;
+        let main_y = (w.town_min.y + w.town_max.y) as f32 / 2.0;
+        let camp = open_tile_near(&w, Vec2::new(w.town_min.x as f32 * 0.5, main_y));
+        w.spawn_zombies(1000, camp, 45.0);
+        let id = w.add_player(camp);
+        w.players[0].hp = 1e9;
+        let mut seq = 0;
+        let mut drive = |w: &mut World, t: u32| {
+            seq += 1;
+            let d = Vec2::from_angle(t as f32 * 0.01);
+            w.set_player_input(id, seq, PlayerInput { move_dir: d, facing: 0.0, run: true, sneak: false });
+            if t.is_multiple_of(200) {
+                w.emit_sound(w.player(id).unwrap().state.pos, 60.0);
+            }
+        };
+        for t in 0..200 {
+            drive(&mut w, t);
+            w.step();
+        }
+        let ticks = if cfg!(debug_assertions) { 20 } else { 400 };
+        let (mut total, mut worst) = (0.0f32, 0.0f32);
+        let mut sum = TickStats::default();
+        let mut tiers = [0u32; 3];
+        for t in 200..200 + ticks {
+            drive(&mut w, t);
+            let s = Instant::now();
+            w.step();
+            let ms = s.elapsed().as_secs_f32() * 1000.0;
+            (total, worst) = (total + ms, worst.max(ms));
+            let st = w.stats;
+            sum.senses_ms += st.senses_ms;
+            sum.flow_ms += st.flow_ms;
+            sum.tier_ms += st.tier_ms;
+            sum.active_ms += st.active_ms;
+            sum.near_ms += st.near_ms;
+            sum.virtual_ms += st.virtual_ms;
+            sum.near_updated += st.near_updated;
+            sum.virtual_updated += st.virtual_updated;
+            tiers = [tiers[0].max(st.active), tiers[1].max(st.near), tiers[2].max(st.virtual_)];
+        }
+        let n = ticks as f32;
+        let avg = total / n;
+        eprintln!(
+            "1 km map (generated in {gen_ms:.0} ms), {} zombies: {} active / {} near / {} virtual (now; peaks {:?}), {} hunting\n  \
+             {ticks} ticks: avg {avg:.3} ms/tick, worst {worst:.3} ms (budget 50 ms)\n  \
+             per tick: tiers+index {:.3} ms, senses {:.3} ms, flow {:.3} ms, active AI {:.3} ms, near {:.3} ms ({:.0} updated), virtual {:.3} ms ({:.0} moved)",
+            w.zombies.len(),
+            w.stats.active,
+            w.stats.near,
+            w.stats.virtual_,
+            tiers,
+            w.stats.chasing,
+            sum.tier_ms / n,
+            sum.senses_ms / n,
+            sum.flow_ms / n,
+            sum.active_ms / n,
+            sum.near_ms / n,
+            sum.near_updated as f32 / n,
+            sum.virtual_ms / n,
+            sum.virtual_updated as f32 / n,
+        );
+        assert!(w.stats.active >= 1000, "only {} active", w.stats.active);
+        assert!(w.stats.virtual_ >= 20_000, "only {} virtual", w.stats.virtual_);
+        if !cfg!(debug_assertions) {
+            assert!(avg < 10.0 && worst < 50.0, "avg {avg:.2} ms, worst {worst:.2} ms");
+        }
     }
 }

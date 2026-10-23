@@ -121,12 +121,14 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Capture every zombie (in id order; corpses the server cleared away are simply no longer
-    /// listed) and take pending map edits and edge damage. Interest management (only what a client
-    /// can see) comes with M3/M6.
+    /// Capture the active zombies within `TierTuning::interest_radius` of a player (in id order;
+    /// zombies that leave it, are demoted to a far tier, or are corpses the server cleared away
+    /// are simply no longer listed, and clients despawn them) and take pending map edits and edge
+    /// damage. Proper per-client interest management comes with #22.
     pub fn capture(world: &mut World) -> Self {
         let z = &world.zombies;
         let zombies = (0..z.len())
+            .filter(|&i| world.in_interest(i))
             .map(|i| ZombieView { id: z.id[i], pos: z.pos[i].to_array(), facing: z.facing[i], speed: z.speed[i], anim: z.anim[i] })
             .collect();
         let players = world
@@ -433,6 +435,32 @@ mod tests {
         let listed: Vec<u32> = snap.zombies.iter().map(|z| z.id).filter(|id| ids.contains(id)).collect();
         assert_eq!(listed, ids[1..]);
         assert!(snap.zombies.windows(2).all(|w| w[0].id < w[1].id), "zombies in id order");
+    }
+
+    /// Only active zombies near a player go out in snapshots: far ones (near or virtual tier) don't,
+    /// until the player comes close again.
+    #[test]
+    fn snapshots_only_carry_active_zombies_near_players() {
+        let mut server = server();
+        let id = server.join(None);
+        let me = server.world.player(id).unwrap().state.pos;
+        let near = server.world.add_zombie(me + glam::Vec2::new(5.0, 0.0), 0.0, 1.0);
+        let near_id = server.world.zombies.id[near];
+        let far_spot = glam::Vec2::new(if me.x < 160.0 { 300.0 } else { 20.0 }, me.y);
+        let far = server.world.add_zombie(far_spot, 0.0, 1.0);
+        let far_id = server.world.zombies.id[far];
+        let snap = server.tick();
+        let listed = |snap: &Snapshot, id: u32| snap.zombies.iter().any(|z| z.id == id);
+        assert!(listed(&snap, near_id));
+        assert!(!listed(&snap, far_id), "a zombie {:.0} m away was sent", far_spot.distance(me));
+        let i = server.world.zombies.index_of(far_id).unwrap();
+        assert_ne!(server.world.zombies.tier[i], zombye_sim::Tier::Active);
+        assert!(snap.zombies.iter().all(|z| glam::Vec2::from(z.pos).distance(me) <= server.world.config.tiers.interest_radius));
+        // Walk over (teleport): it's promoted and sent again.
+        let at = server.world.zombies.pos[i] - glam::Vec2::new(10.0, 0.0);
+        server.world.players[0].state.pos = server.world.map.resolve_circle(at, zombye_sim::players::PLAYER_RADIUS);
+        let snap = server.tick();
+        assert!(listed(&snap, far_id), "promoted zombie not sent");
     }
 
     #[test]

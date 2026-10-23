@@ -15,7 +15,7 @@ use crate::players::Stance;
 use crate::rng::hash01;
 use crate::spatial::SpatialHash;
 use crate::vision::line_of_sight;
-use crate::zombies::{ZombieState, Zombies};
+use crate::zombies::{Tier, ZombieState, Zombies};
 
 /// Who or what made a sound.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,8 +123,9 @@ pub(crate) fn sight_pass(z: &mut Zombies, hash: &SpatialHash, map: &TileMap, tar
         let best = Target { moving: true, ..*target };
         let reach = sight_range(t, cone, daylight, &best, 0.0, Vec2::X).max(t.rear_range) * t.chase_sight_mult.max(1.0);
         hash.for_each_within(target.pos, reach, |i| {
-            // Staggered, down or dead (killed this tick, so still in the hash): not looking.
-            if !(i as u64 + tick).is_multiple_of(interval as u64) || z.state[i].is_reeling() || z.state[i] == ZombieState::Dead {
+            // Staggered, down or dead (killed this tick, so still in the hash): not looking. Only
+            // active zombies look at all.
+            if !(i as u64 + tick).is_multiple_of(interval as u64) || z.state[i].is_reeling() || z.state[i] == ZombieState::Dead || z.tier[i] != Tier::Active {
                 return;
             }
             let to = target.pos - z.pos[i];
@@ -184,7 +185,7 @@ pub(crate) fn sight_pass(z: &mut Zombies, hash: &SpatialHash, map: &TileMap, tar
     checks
 }
 
-/// Every zombie in earshot of each sound reacts: one that isn't hunting goes to investigate the
+/// Every zombie in the spatial hash (active and near) in earshot of each sound reacts: one that isn't hunting goes to investigate the
 /// sound's position; one hunting a player it can't see updates where it thinks they are if the
 /// sound came from them. Sounds through walls only carry `wall_muffle` of their radius.
 pub(crate) fn hearing_pass(z: &mut Zombies, hash: &SpatialHash, map: &TileMap, sounds: &[Sound], t: &ZombieTuning) {
@@ -201,39 +202,44 @@ pub(crate) fn hearing_pass(z: &mut Zombies, hash: &SpatialHash, map: &TileMap, s
             if d > s.radius * t.wall_muffle && !line_of_sight(map, z.pos[i], s.pos) {
                 return;
             }
-            match z.state[i] {
-                ZombieState::Chase | ZombieState::Lunge | ZombieState::Attack => {
-                    if z.sees[i] == 0 && s.source == SoundSource::Player(z.target_player[i]) {
-                        z.target_pos[i] = s.lure;
-                        z.timer[i] = z.timer[i].max(t.memory_secs);
-                    }
-                }
-                ZombieState::Thump => {
-                    // Busy battering: only a player's noise changes where it thinks they are, and
-                    // any player's noise keeps it at it.
-                    if let SoundSource::Player(id) = s.source {
-                        if z.target_player[i] == 0 || (z.target_player[i] == id && z.sees[i] == 0) {
-                            z.target_pos[i] = s.lure;
-                        }
-                        z.timer[i] = z.timer[i].max(t.thump_interest_secs);
-                    }
-                }
-                ZombieState::Wander | ZombieState::Investigate if z.bored[i] > 0.0 && !matches!(s.source, SoundSource::Player(_)) => {
-                    // Lost interest lately: other zombies' racket doesn't draw it back yet.
-                }
-                ZombieState::Wander | ZombieState::Investigate => {
-                    // A player's noise always draws it, bored or not.
-                    z.bored[i] = 0.0;
-                    z.state[i] = ZombieState::Investigate;
-                    z.target_player[i] = 0;
-                    z.target_pos[i] = s.lure;
-                    // Time to walk there (roughly) plus time to look around.
-                    let travel = d / (z.speed[i] * t.investigate_speed_mult).max(0.1);
-                    z.timer[i] = t.investigate_secs + (travel * 1.5).min(t.max_travel_secs);
-                }
-                ZombieState::Staggered | ZombieState::Down | ZombieState::Dead => {}
-            }
+            react(z, i, s, d, t);
         });
+    }
+}
+
+/// Zombie `i`, `d` metres from sound `s`, heard it: what it does about it (the same on every tier).
+pub(crate) fn react(z: &mut Zombies, i: usize, s: &Sound, d: f32, t: &ZombieTuning) {
+    match z.state[i] {
+        ZombieState::Chase | ZombieState::Lunge | ZombieState::Attack => {
+            if z.sees[i] == 0 && s.source == SoundSource::Player(z.target_player[i]) {
+                z.target_pos[i] = s.lure;
+                z.timer[i] = z.timer[i].max(t.memory_secs);
+            }
+        }
+        ZombieState::Thump => {
+            // Busy battering: only a player's noise changes where it thinks they are, and
+            // any player's noise keeps it at it.
+            if let SoundSource::Player(id) = s.source {
+                if z.target_player[i] == 0 || (z.target_player[i] == id && z.sees[i] == 0) {
+                    z.target_pos[i] = s.lure;
+                }
+                z.timer[i] = z.timer[i].max(t.thump_interest_secs);
+            }
+        }
+        ZombieState::Wander | ZombieState::Investigate if z.bored[i] > 0.0 && !matches!(s.source, SoundSource::Player(_)) => {
+            // Lost interest lately: other zombies' racket doesn't draw it back yet.
+        }
+        ZombieState::Wander | ZombieState::Investigate => {
+            // A player's noise always draws it, bored or not.
+            z.bored[i] = 0.0;
+            z.state[i] = ZombieState::Investigate;
+            z.target_player[i] = 0;
+            z.target_pos[i] = s.lure;
+            // Time to walk there (roughly) plus time to look around.
+            let travel = d / (z.speed[i] * t.investigate_speed_mult).max(0.1);
+            z.timer[i] = t.investigate_secs + (travel * 1.5).min(t.max_travel_secs);
+        }
+        ZombieState::Staggered | ZombieState::Down | ZombieState::Dead => {}
     }
 }
 
