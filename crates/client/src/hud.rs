@@ -1,16 +1,16 @@
 //! On-screen stats; health and endurance bars, the weapon held, stance, a winded warning and the
-//! health tags (bleeding, injured leg..., from `health_ui.rs`) (bottom left); the death screen (time survived and kills this life, counted from combat
-//! events); plus the automation hooks agents and CI use: periodic stdout stats, `--screenshot`
-//! and `--exit-after`.
+//! health tags (bleeding, injured leg..., from `health_ui.rs`) and this life's kills and time alive (the
+//! server's run stats, `sim::run`) (bottom left); plus the automation hooks agents and CI use: periodic
+//! stdout stats, `--screenshot` and `--exit-after`. The death screen is `death.rs`.
 
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 
-use zombye_sim::{CombatEventKind, Stance, TICK_DT};
+use zombye_sim::Stance;
 
 use crate::Options;
 use crate::player::LocalPlayer;
-use crate::server_link::{ClientMap, CombatEventsThisFrame, JoinInfo, ServerLink};
+use crate::server_link::{ClientMap, JoinInfo, ServerLink};
 
 #[derive(Component)]
 struct HudText;
@@ -34,20 +34,6 @@ struct TallyText;
 #[derive(Component)]
 struct DevText;
 
-/// The death screen, and its "time survived · kills" line.
-#[derive(Component)]
-struct DeathScreen;
-#[derive(Component)]
-struct DeathStats;
-
-/// This life's kills and when it began (sim ticks), counted from combat events. Reset on getting up.
-#[derive(Resource, Default)]
-pub struct Tally {
-    pub kills: u32,
-    pub life_start_tick: u64,
-    pub died_tick: Option<u64>,
-}
-
 #[derive(Default)]
 struct FrameStats {
     frames: u32,
@@ -59,7 +45,7 @@ pub struct HudPlugin;
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Tally>().add_systems(Startup, spawn_hud).add_systems(Update, (count_kills, update_hud, update_vitals, automation).chain());
+        app.add_systems(Startup, spawn_hud).add_systems(Update, (update_hud, update_vitals, automation).chain());
     }
 }
 
@@ -130,43 +116,6 @@ fn spawn_hud(mut commands: Commands) {
             c.spawn((crate::health_ui::HealthTagsText, Text::new(""), font(13.0), TextColor(TEXT)));
             c.spawn((TallyText, Text::new(""), font(13.0), TextColor(DIM)));
         });
-    commands
-        .spawn((
-            DeathScreen,
-            Visibility::Hidden,
-            Node {
-                position_type: PositionType::Absolute,
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                flex_direction: FlexDirection::Column,
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                row_gap: px(14),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.1, 0.0, 0.0, 0.55)),
-        ))
-        .with_children(|c| {
-            c.spawn((Text::new("You died"), font(72.0), TextColor(Color::srgb(0.85, 0.1, 0.07))));
-            c.spawn((DeathStats, Text::new(""), font(24.0), TextColor(TEXT)));
-            c.spawn((Text::new("Press R to get up again"), font(18.0), TextColor(DIM)));
-        });
-}
-
-/// Count our kills from this frame's combat events; reset the tally when we get up again.
-fn count_kills(link: Res<ServerLink>, me: Res<LocalPlayer>, events: Res<CombatEventsThisFrame>, mut tally: ResMut<Tally>) {
-    tally.kills += events.0.iter().filter(|e| e.kind == CombatEventKind::ZombieKilled && e.player == me.id).count() as u32;
-    match (me.dead, tally.died_tick) {
-        (true, None) => tally.died_tick = Some(link.curr.tick),
-        (false, Some(_)) => *tally = Tally { kills: 0, life_start_tick: link.curr.tick, died_tick: None },
-        _ => {}
-    }
-}
-
-/// m:ss of sim time between two ticks.
-fn duration(from: u64, to: u64) -> String {
-    let secs = (to.saturating_sub(from) as f32 * TICK_DT) as u32;
-    format!("{}:{:02}", secs / 60, secs % 60)
 }
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
@@ -175,17 +124,15 @@ fn update_vitals(
     me: Res<LocalPlayer>,
     join: Res<JoinInfo>,
     link: Res<ServerLink>,
-    tally: Res<Tally>,
     mut texts: ParamSet<(
         Query<&mut Text, With<WeaponText>>,
         Query<&mut Text, With<StanceText>>,
         Query<&mut Text, With<HpNumber>>,
         Query<&mut Text, With<TallyText>>,
-        Query<&mut Text, With<DeathStats>>,
         Query<&mut Text, With<DevText>>,
     )>,
     mut fills: ParamSet<(Query<(&mut Node, &mut BackgroundColor), With<HpFill>>, Query<(&mut Node, &mut BackgroundColor), With<EnduranceFill>>)>,
-    mut shown: ParamSet<(Query<&mut Visibility, With<DeathScreen>>, Query<&mut Visibility, With<WindedText>>)>,
+    mut winded: Query<&mut Visibility, With<WindedText>>,
 ) {
     let set = |t: &mut Text, s: String| {
         if t.0 != s {
@@ -213,17 +160,12 @@ fn update_vitals(
     if let Ok(mut t) = texts.p2().single_mut() {
         set(&mut t, format!("{hp:.0}"));
     }
-    let now_tick = tally.died_tick.unwrap_or(link.curr.tick);
-    let alive_for = duration(tally.life_start_tick, now_tick);
-    if let Ok(mut t) = texts.p3().single_mut() {
-        set(&mut t, format!("kills {}   alive {alive_for}", tally.kills));
-    }
-    if let Ok(mut t) = texts.p5().single_mut() {
-        set(&mut t, dev_tags(me.dev));
+    // This life so far, as the server counts it.
+    if let (Ok(mut t), Some(run)) = (texts.p3().single_mut(), link.curr.run_of(me.id)) {
+        set(&mut t, format!("kills {}   alive {}   walked {}", run.kills, run.played(), run.distance()));
     }
     if let Ok(mut t) = texts.p4().single_mut() {
-        let kills = if tally.kills == 1 { "1 kill".to_string() } else { format!("{} kills", tally.kills) };
-        set(&mut t, format!("Survived {alive_for}  -  {kills}"));
+        set(&mut t, dev_tags(me.dev));
     }
     if let Ok((mut node, mut bg)) = fills.p0().single_mut() {
         let w = Val::Percent((hp / join.combat.player_hp.max(1.0) * 100.0).clamp(0.0, 100.0));
@@ -252,13 +194,7 @@ fn update_vitals(
         }
     }
     let vis = |on: bool| if on { Visibility::Inherited } else { Visibility::Hidden };
-    if let Ok(mut v) = shown.p0().single_mut() {
-        let want = vis(me.dead);
-        if *v != want {
-            *v = want;
-        }
-    }
-    if let Ok(mut v) = shown.p1().single_mut() {
+    if let Ok(mut v) = winded.single_mut() {
         let want = vis(s.winded && !me.dead);
         if *v != want {
             *v = want;

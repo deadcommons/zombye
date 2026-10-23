@@ -39,6 +39,7 @@ use crate::combat::{CombatEvent, CombatEventKind};
 use crate::items::BodyPart;
 use crate::players::{MoveMods, Player};
 use crate::rng::hash01;
+use crate::run::DeathCause;
 use crate::world::World;
 
 /// Wounds one player can carry at once; strikes past this still hurt but leave no new wound.
@@ -827,6 +828,7 @@ impl World {
             (self.combat_rng.range(inf.hidden_h.0, inf.hidden_h.1) * m, self.combat_rng.range(inf.feverish_h.0, inf.feverish_h.1) * m)
         });
         let bleeding = t.wound(kind).bleed_per_h > 0.0;
+        self.players[pi].run.wounds += 1;
         let h = &mut self.players[pi].health;
         let id = h.next_wound;
         h.next_wound += 1;
@@ -863,7 +865,8 @@ impl World {
         if !god {
             self.add_wound(pi, part, kind, zombie != 0, None);
         }
-        self.hurt_player(pi, damage);
+        let cause = if zombie != 0 { DeathCause::Zombie { part, wound: kind } } else { DeathCause::Glass { part } };
+        self.hurt_player_by(pi, damage, cause);
     }
 
     /// Debug / tests (MCP `wound`): give player `id` a wound of this kind here, taking its damage
@@ -878,7 +881,7 @@ impl World {
         self.add_wound(pi, part, kind, zombie, infect)?;
         let pos = self.players[pi].state.pos;
         self.push_combat_event(CombatEvent { kind: CombatEventKind::PlayerHurt, pos, dir: Vec2::X, zombie: 0, player: id, damage, crit: false, part: Some(part), wound: Some(kind) });
-        self.hurt_player(pi, damage);
+        self.hurt_player_by(pi, damage, DeathCause::Wound { part, wound: kind });
         Some(damage)
     }
 
@@ -981,6 +984,7 @@ impl World {
                 }
                 continue;
             }
+            self.players[pi].run.hours += dt_h as f64;
             let (t, inf) = (&self.config.health, &self.config.infection);
             let p = &mut self.players[pi];
             if p.health.wounds.is_empty() && p.health.infection.is_none() && p.health.food_poisoning_h <= 0.0 && p.hp >= max_hp {
@@ -1059,7 +1063,8 @@ impl World {
             }
             let after = signature(&p.health, t);
             if loss > 0.0 {
-                self.hurt_player(pi, loss);
+                let cause = self.health_cause(pi);
+                self.hurt_player_by(pi, loss, cause);
             }
             if before != after && !self.players[pi].dead {
                 self.refresh_carry(pi);

@@ -10,7 +10,7 @@ pub mod shutdown;
 
 use serde::{Deserialize, Serialize};
 use zombye_sim::map::{EdgeChange, OwnedEdge};
-use zombye_sim::{ActionKind, Burden, Carry, CombatEvent, DevFlags, GroundItem, HealthTags, HealthView, Inventory, ItemNote, ItemStack, MoveMods, Place, PlayerInput, Stance, World, WorldConfig, ZombieAnim};
+use zombye_sim::{ActionKind, Burden, Carry, CombatEvent, DevFlags, GroundItem, HealthTags, HealthView, Inventory, ItemNote, ItemStack, MoveMods, Place, PlayerInput, RunStats, Stance, World, WorldConfig, ZombieAnim};
 
 /// Something a client wants to happen. The server validates and applies it.
 ///
@@ -214,6 +214,16 @@ pub struct Snapshot {
     /// Each player's floor: the ground items it can take right now, by the server's own reach
     /// rule (`World::floor_of`), nearest first. Every snapshot; a client gets only its own.
     pub floor: Vec<FloorView>,
+    /// Each player's run so far (`sim::run`): time alive, kills, distance, things taken, wounds,
+    /// and once dead the cause. Every snapshot; a client gets only its own.
+    pub runs: Vec<RunView>,
+}
+
+/// One player's run stats ([`Snapshot::runs`]).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RunView {
+    pub player: u32,
+    pub run: RunStats,
 }
 
 /// The ground items one player can reach (ids into [`Snapshot::items`]), nearest first.
@@ -271,6 +281,7 @@ impl Snapshot {
             private,
             item_notes: std::mem::take(&mut world.item_notes),
             floor: world.players.iter().map(|p| FloorView { player: p.id, items: world.floor_ids(p.id) }).collect(),
+            runs: world.players.iter().map(|p| RunView { player: p.id, run: p.run.clone() }).collect(),
         }
     }
 
@@ -279,7 +290,13 @@ impl Snapshot {
         self.private.retain(|v| v.player == player);
         self.item_notes.retain(|n| n.player == player);
         self.floor.retain(|f| f.player == player);
+        self.runs.retain(|r| r.player == player);
         self
+    }
+
+    /// `player`'s run stats, if it is in this snapshot.
+    pub fn run_of(&self, player: u32) -> Option<&RunStats> {
+        self.runs.iter().find(|r| r.player == player).map(|r| &r.run)
     }
 
     /// The ground items `player` can reach, nearest first (empty if it isn't in this snapshot).
@@ -407,6 +424,16 @@ impl LocalServer {
         self.world = world;
         self.world.mark_all_private_dirty();
         self.inbox.clear();
+    }
+
+    /// A new run (#13, single-player): a fresh world from `config` (a running world's own, so the
+    /// same seed, map size and settings: the same town from the start, which a client can take up
+    /// under the map and meshes it already has) with one player in the bedroom. Returns the world
+    /// and that player's id; [`LocalServer::replace_world`] serves it.
+    pub fn new_run(config: &WorldConfig) -> (World, u32) {
+        let mut world = World::new(config.clone());
+        let id = world.add_player(world.player_spawn);
+        (world, id)
     }
 
     /// Join the game: spawns a player in the bedroom (or at `at`, a single-player debug option)
@@ -817,6 +844,48 @@ mod tests {
         }
         assert_eq!(mods_seen.len(), 3, "{mods_seen:?}");
         assert!(!mods_seen[2].can_run && mods_seen[2].speed < mods_seen[1].speed);
+    }
+
+    /// Run stats (#13) come with every snapshot, each client only its own; the cause of death
+    /// shows once dead; a new run starts clean: tick 0, the same map, a living player with empty
+    /// stats, no corpses or wounds.
+    #[test]
+    fn run_stats_in_snapshots_and_a_clean_new_run() {
+        use zombye_sim::{Part, WoundKind};
+        let mut server = server();
+        let id = server.join(None);
+        let other = server.join(None);
+        for seq in 1..=40u32 {
+            server.send(Intent::PlayerInput { player: id, seq, move_dir: [0.0, -1.0], facing: 0.0, run: false, sneak: false });
+            server.tick();
+        }
+        let snap = server.tick().for_player(id);
+        assert_eq!(snap.runs.len(), 1, "only our own run");
+        let run = snap.run_of(id).unwrap();
+        assert!(run.secs > 1.9 && run.distance_m > 0.5 && run.death.is_none(), "{run:?}");
+        assert!(snap.run_of(other).is_none());
+        server.world.config.infection.mode = zombye_sim::InfectionMode::Off;
+        server.world.inflict_wound(id, Part::Torso, WoundKind::Bite, Some(false)).unwrap();
+        server.world.inflict_wound(id, Part::LeftLeg, WoundKind::Gash, Some(false)).unwrap();
+        server.send(Intent::SkipTime { hours: 24.0 });
+        let snap = server.tick().for_player(id);
+        let death = snap.run_of(id).unwrap().death.expect("bled out");
+        assert!(death.describe().starts_with("Bled out from a bite"), "{}", death.describe());
+        assert!(snap.players.iter().find(|p| p.id == id).unwrap().dead);
+
+        let town = (server.world.player_spawn, server.world.map.buildings.len(), server.world.containers().len());
+        let (world, me) = LocalServer::new_run(&server.world.config);
+        server.replace_world(world);
+        let snap = server.tick().for_player(me);
+        assert_eq!(snap.tick, 1);
+        assert_eq!((server.world.player_spawn, server.world.map.buildings.len(), server.world.containers().len()), town, "the same town");
+        assert_eq!(snap.players.len(), 1);
+        let p = &snap.players[0];
+        assert!(!p.dead && p.hp == 100.0 && p.id == me);
+        let run = snap.run_of(me).unwrap();
+        assert!(run.death.is_none() && run.kills == 0 && run.hp_lost == 0.0 && run.distance_m == 0.0, "{run:?}");
+        assert!(server.world.player(me).unwrap().health.wounds.is_empty());
+        assert!(server.world.zombies.state.iter().all(|s| *s != zombye_sim::ZombieState::Dead), "no corpses");
     }
 
     #[test]

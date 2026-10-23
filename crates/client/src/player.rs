@@ -11,8 +11,7 @@
 //! (or stomp, when a downed zombie lies right in front of you), E pick up the item you face (or, with
 //! nothing on the floor within reach, search the cupboard, drawer or fridge you face), Tab or I the
 //! inventory panel (`inventory_ui`; the left mouse button doesn't swing while it's open),
-//! F open/close the door or window you face, G smash the window you face, R get up again after
-//! dying, T skip an hour, Z spawn zombies, F1 god mode and F2 ignored by zombies (dev toggles, sent as
+//! F open/close the door or window you face, G smash the window you face, T skip an hour, Z spawn zombies, F1 god mode and F2 ignored by zombies (dev toggles, sent as
 //! `Intent::Dev`; the HUD shows GOD / IGNORED from the snapshot). Climbing through an open or broken window is just
 //! walking into it (slowly, predicted like any other movement). Combat itself is all on the server;
 //! the client only sends the intents and draws what the snapshots say (the held weapon, a swing,
@@ -301,10 +300,8 @@ fn actions(
     if keys.just_pressed(KeyCode::F2) {
         link.send(Intent::Dev { player: me.id, god: None, ignored: Some(!me.dev.ignored) });
     }
+    // Dead: the death screen (`death.rs`) takes R (a new run) and Q / Esc (quit).
     if me.dead {
-        if keys.just_pressed(KeyCode::KeyR) {
-            link.send(Intent::Respawn { player: me.id });
-        }
         return;
     }
     if mouse.just_pressed(MouseButton::Left) && !panel.open {

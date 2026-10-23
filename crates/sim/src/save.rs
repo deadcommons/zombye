@@ -48,7 +48,9 @@
 //! Sections, in order: `INFO` ([`SaveInfo`]: enough to list saves without reading the rest),
 //! `CONF` (settings, RON), `MAPD` (map edits), `WRLD` (players, items, clock, RNGs, population,
 //! flow cache...), then one `ZOMB` per 64 m region holding zombies (the tiers' region grid), so a
-//! later streaming save (#3, #22) can rewrite only the regions that changed. Payloads are
+//! later streaming save (#3, #22) can rewrite only the regions that changed, then `RUNS` (each
+//! player's run stats and cause of death, `crate::run`; optional, so format 4 saves from before
+//! #13 still load, with empty records). Payloads are
 //! [postcard](https://docs.rs/postcard), and zombies are stored column by column. A file with
 //! another format version fails with [`LoadError::Version`] (format 3 added items, inventories and
 //! containers, format 4 wounds and illness on players; older saves are refused); truncated or damaged files fail with
@@ -91,6 +93,9 @@ const CONF: [u8; 4] = *b"CONF";
 const MAPD: [u8; 4] = *b"MAPD";
 const WRLD: [u8; 4] = *b"WRLD";
 const ZOMB: [u8; 4] = *b"ZOMB";
+/// Players' run stats (#13), after the zombies. Optional: a save without it (format 4 from before
+/// #13) loads with empty records, so adding it didn't change the format version.
+const RUNS: [u8; 4] = *b"RUNS";
 const END: [u8; 4] = *b"END\0";
 /// Bytes before the first section: magic and version.
 const HEADER: usize = 12;
@@ -628,6 +633,8 @@ impl World {
         for (r, indices) in by_region.iter().enumerate().filter(|(_, v)| !v.is_empty()) {
             w.section(ZOMB, &encode(&ZombieBlock::gather(zombies, r as u32, indices)));
         }
+        let runs: Vec<(u32, crate::run::RunStats)> = players.iter().map(|p| (p.id, p.run.clone())).collect();
+        w.section(RUNS, &encode(&runs));
         w.section(END, &[]);
         w.0
     }
@@ -767,14 +774,19 @@ impl World {
             w.nav.restore(ws.nav).map_err(LoadError::Corrupt)?;
         }
 
-        // Zombies: every region's block, then back into id order.
+        // Zombies: every region's block, then back into id order; then the run stats, if any.
         let mut z = Zombies::default();
+        let mut runs: Option<Vec<(u32, crate::run::RunStats)>> = None;
         loop {
             let (tag, payload) = r.next()?;
             if tag == END {
                 break;
             }
-            if tag != ZOMB {
+            if tag == RUNS && runs.is_none() {
+                runs = Some(decode(RUNS, payload)?);
+                continue;
+            }
+            if tag != ZOMB || runs.is_some() {
                 return Err(corrupt(format!("unexpected {} section", tag_name(tag))));
             }
             let block: ZombieBlock = decode(ZOMB, payload)?;
@@ -786,6 +798,11 @@ impl World {
         }
         if z.len() != ws.zombies as usize {
             return Err(corrupt(format!("{} zombies stored, {} expected", z.len(), ws.zombies)));
+        }
+        for (id, run) in runs.unwrap_or_default() {
+            let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("run stats for player {id}, who isn't in the save")))?;
+            run.check(p.dead).map_err(|why| save_check::invalid(format!("player {id}: {why}")))?;
+            p.run = run;
         }
         let mut order: Vec<usize> = (0..z.len()).collect();
         order.sort_by_key(|&i| z.id[i]);
@@ -1116,6 +1133,65 @@ pub(crate) mod tests {
         forged.section(MAPD, &[0xff; 40]);
         forged.section(END, &[]);
         assert!(matches!(load(&forged.0), Err(LoadError::Corrupt(_))));
+    }
+
+    /// Run stats and the cause of death (#13) come back from a save; a save without them (format 4
+    /// from before #13) loads with empty records; impossible ones are refused.
+    #[test]
+    fn run_stats_survive_a_save() {
+        let mut w = world(50);
+        let a = w.add_player(w.player_spawn);
+        let b = w.add_player(w.player_spawn + Vec2::new(1.0, 0.0));
+        for t in 0..120 {
+            w.set_player_input(a, t + 1, input(t));
+            w.step();
+        }
+        w.spawn_item("tinned_beans", 2, w.player(a).unwrap().state.pos + Vec2::new(0.4, 0.0));
+        w.player_pick_up(a);
+        open_nearest_container(&mut w, a);
+        w.inflict_wound(b, crate::health::Part::LeftLeg, crate::health::WoundKind::Gash, Some(false)).unwrap();
+        w.inflict_wound(b, crate::health::Part::RightLeg, crate::health::WoundKind::Gash, Some(false)).unwrap();
+        w.skip_time(20.0);
+        let (ra, rb) = (w.player(a).unwrap().run.clone(), w.player(b).unwrap().run.clone());
+        assert!(ra.distance_m > 3.0 && ra.secs > 5.0 && ra.searched == 1 && ra.items_taken >= 1, "{ra:?}");
+        assert!(rb.death.is_some_and(|d| matches!(d.cause, crate::run::DeathCause::BledOut { .. })), "{rb:?}");
+        let bytes = w.save();
+        let loaded = World::load(&bytes, &content()).unwrap();
+        assert_eq!((&loaded.player(a).unwrap().run, &loaded.player(b).unwrap().run), (&ra, &rb));
+        assert_eq!(loaded.state_hash(), w.state_hash());
+
+        // The same save with every section but RUNS, as format 4 wrote it before #13.
+        let rewrite = |runs: Option<&[u8]>| {
+            let mut r = Reader::new(&bytes).unwrap();
+            let mut out = Writer::new();
+            loop {
+                let (tag, payload) = r.next().unwrap();
+                if tag == RUNS {
+                    if let Some(p) = runs {
+                        out.section(RUNS, p);
+                    }
+                    continue;
+                }
+                out.section(tag, payload);
+                if tag == END {
+                    break;
+                }
+            }
+            out.0
+        };
+        let old = World::load(&rewrite(None), &content()).unwrap();
+        assert_eq!(old.player(a).unwrap().run, crate::run::RunStats::default());
+        assert!(old.player(b).unwrap().dead && old.player(b).unwrap().run.death.is_none());
+        assert_eq!(old.state_hash(), w.state_hash());
+
+        // A living player with a cause of death, a player who isn't there, a negative distance.
+        let forged = |runs: Vec<(u32, crate::run::RunStats)>| World::load(&rewrite(Some(&encode(&runs))), &content()).map(|_| ());
+        assert!(matches!(forged(vec![(a, rb.clone())]), Err(LoadError::Invalid(_))));
+        assert!(matches!(forged(vec![(99, ra.clone())]), Err(LoadError::Invalid(_))));
+        let bad = crate::run::RunStats { distance_m: -1.0, ..ra.clone() };
+        assert!(matches!(forged(vec![(a, bad)]), Err(LoadError::Invalid(_))));
+        let bad = crate::run::RunStats { hours: f64::NAN, ..ra };
+        assert!(matches!(forged(vec![(a, bad)]), Err(LoadError::Invalid(_))));
     }
 
     #[test]
