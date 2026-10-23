@@ -18,7 +18,7 @@ Work is tracked on GitHub, not in the repo: the
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint; `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
 | `crates/client` | `zombye` Bevy client: camera, chunk streaming, building/tree meshes, fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd; `survivor.rs` skinned, CPU-posed players), hit feedback (`fx.rs`), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), HUD, `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
 | `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/containers.ron`, `data/population.ron`), models (`models/furniture/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), later textures/audio. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
-| `tools/blender/` | Python run inside Blender to build assets: mesh builder, palette, renders, validation, GLB export (`zasset.py`, `palette.py`, `build.py`). | MIT OR Apache-2.0 |
+| `tools/blender/` | Python run inside Blender to build assets: mesh builder, palette, renders, validation, GLB export (`zasset.py`, `palette.py`, `build.py`); character clean-up, validation and skinned export (`zchar.py`); VAT bake for the crowd (`zvat.py`). | MIT OR Apache-2.0 |
 | `docs/` | Plan and design docs. | — |
 
 ## Rules
@@ -48,7 +48,11 @@ Work is tracked on GitHub, not in the repo: the
 Models (furniture, props, later characters) are built in Blender over the Blender MCP from a spec and
 a committed build script, validated, rendered from the four game angles and exported to GLB: follow
 the **[blender-assets skill](.claude/skills/blender-assets/SKILL.md)**. Walls, floors, roofs, roads and
-terrain stay code-generated.
+terrain stay code-generated. Characters and other detailed assets start in Meshy (reference image,
+image-to-3D, rig, animations) and are cleaned up in Blender with `tools/blender/zchar.py` and baked for
+the crowd with `zvat.py`: follow the **[meshy-assets skill](.claude/skills/meshy-assets/SKILL.md)**
+(paid credits, its rules first). Work in progress lives in the private art repo
+([deadcommons/zombye-art](https://github.com/deadcommons/zombye-art)) until it's promoted here.
 
 ## Commands
 
