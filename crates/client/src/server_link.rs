@@ -66,6 +66,8 @@ pub struct JoinInfo {
     pub items: Vec<ItemDef>,
     /// Combat reach and arcs, for choosing between shove and stomp.
     pub combat: CombatTuning,
+    /// The infection's settings (night sight while turning).
+    pub infection: zombye_sim::InfectionTuning,
 }
 
 /// The `FixedUpdate` system that ticks the server. Input is sent before it and reconciled after it.
@@ -186,6 +188,7 @@ fn finish_join(app: &mut App, mut server: LocalServer, player_id: u32) {
         weapons: server.world.config.weapons.clone(),
         items: server.world.config.items.clone(),
         combat: server.world.config.combat.clone(),
+        infection: server.world.config.infection.clone(),
     };
     let private = first.private.clone();
     app.insert_resource(ServerLink { server, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3], private })

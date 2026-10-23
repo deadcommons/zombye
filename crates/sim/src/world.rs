@@ -20,6 +20,7 @@ use crate::TICK_DT;
 use crate::ai::{self, Ctx, GOAL_RANGE, ZombieAttack, ZombieThump, ZombieTuning};
 use crate::combat::{ActionEvent, CombatEvent, CombatTuning, HitEvent};
 use crate::containers::{self, ContainerData, ContainerSite};
+use crate::health::{HealthTuning, InfectionTuning};
 use crate::inventory::{CarryTuning, ItemNote};
 use crate::items::{self, GroundItem, ItemDef, ItemStack, WeaponCategory, WeaponDef};
 use crate::players::Action;
@@ -79,6 +80,10 @@ pub struct WorldConfig {
     pub carry: CarryTuning,
     /// Player health and every combat number that isn't a weapon's.
     pub combat: CombatTuning,
+    /// Wounds, bleeding, festering, food poisoning ([`crate::health`]).
+    pub health: HealthTuning,
+    /// The zombie infection's sandbox settings (fatal by default).
+    pub infection: InfectionTuning,
     /// Simulation tiers: ranges and update rates (see [`crate::tiers`]).
     pub tiers: TierTuning,
     /// Where zombies live, respawn and migration (`assets/data/population.ron`, see
@@ -100,6 +105,8 @@ impl WorldConfig {
             containers: ContainerData::default(),
             carry: CarryTuning::default(),
             combat: CombatTuning::default(),
+            health: HealthTuning::default(),
+            infection: InfectionTuning::default(),
             tiers: TierTuning::default(),
             population: PopulationDef::default(),
         }
@@ -564,8 +571,11 @@ impl World {
         hours.rem_euclid(24.0)
     }
 
+    /// Move the clock forward; wounds and illness live through the hours skipped (bleeding,
+    /// healing, festering, the infection), in small steps.
     pub fn skip_time(&mut self, hours: f32) {
         self.clock_offset_hours += hours;
+        self.skip_health(hours);
     }
 
     /// Full hit points of an edge of this kind (0 for anything that can't be battered).
@@ -625,6 +635,8 @@ impl World {
         let aim = s.pos + Vec2::from_angle(s.facing) * INTERACT_AIM_AHEAD;
         let edge = self.edge_in_reach(s.pos, aim, |e| matches!(e, Edge::Window | Edge::WindowOpen))?;
         self.break_edge(edge, SoundSource::Player(id));
+        // Bare-handed, the glass may cut.
+        self.smash_cut(id);
         Some(edge)
     }
 
@@ -766,12 +778,17 @@ impl World {
         // Players move first, so zombies react to where they are now. Moving makes noise.
         self.targets.clear();
         let t = &self.config.zombie;
-        for p in &mut self.players {
+        let mut climbed_glass = Vec::new();
+        for (pi, p) in self.players.iter_mut().enumerate() {
             if p.dead {
                 continue;
             }
             let before = p.state.pos;
             players::step_movement(&self.map, &mut p.state, &p.input, TICK_DT);
+            // Starting to climb through a broken window: the glass left in the frame may cut.
+            if !self.map.in_window_opening(before) && self.map.window_opening(p.state.pos) == Some(Edge::WindowBroken) {
+                climbed_glass.push(pi);
+            }
             let moving = p.state.pos.distance_squared(before) > 1e-8;
             self.targets.push(Target { id: p.id, pos: p.state.pos, stance: p.state.stance, moving, ignored: p.dev.ignored });
             if moving && self.heard.len() < MAX_SOUNDS {
@@ -782,6 +799,10 @@ impl World {
                 };
                 self.heard.push(Sound::new(p.state.pos, radius, SoundSource::Player(p.id)));
             }
+        }
+
+        for pi in climbed_glass {
+            self.climb_cut(pi);
         }
 
         // Item moves, searches and uses that are due; containers left behind close.
@@ -885,6 +906,9 @@ impl World {
         let virtual_ms = virtual_start.elapsed().as_secs_f32() * 1000.0;
         self.apply_thumps();
         self.apply_zombie_attacks();
+        // Wounds bleed and heal, illness runs its course, an infected body rises.
+        let hours = TICK_DT * self.game_hours_per_sec();
+        self.step_health(hours, TICK_DT);
         // Last: indices into the zombie columns (the spatial hash) aren't needed after this.
         self.remove_old_corpses();
         let respawned = self.respawn();
@@ -1048,6 +1072,7 @@ impl World {
             // Dev toggles add bits only when on, so a world without them hashes as it always did.
             mix(p.state.stance as u32 | (p.state.winded as u32) << 8 | (p.dead as u32) << 9 | (p.dev.god as u32) << 10 | (p.dev.ignored as u32) << 11);
             mix(p.hp.to_bits());
+            Self::hash_health(&p.health, &mut mix);
             mix(p.weapon.map_or(u32::MAX, u32::from));
             mix(p.ready_in.to_bits());
             mix(p.action.map_or(u32::MAX, |a| a.kind as u32 | a.timer.to_bits() << 2));

@@ -242,6 +242,9 @@ pub struct ZombieAttack {
     pub player: u32,
     pub landed: bool,
     pub damage: f32,
+    /// Where a landed strike hit and the wound it left (`crate::health`).
+    pub part: Option<crate::health::Part>,
+    pub wound: Option<crate::health::WoundKind>,
 }
 
 /// A zombie battered a door or window this tick. The world applies these in order after the
@@ -510,7 +513,7 @@ fn hunt(z: &mut Zombies, i: usize, cx: &mut Ctx) -> (Vec2, bool, Option<Vec2>, b
             if z.cooldown[i] <= 0.0 {
                 // Nothing solid between (glass included; an open window is fine).
                 if clear_path(cx.map, p, target.pos) {
-                    cx.attacks.push(ZombieAttack { zombie: z.id[i], player: target.id, landed: false, damage: 0.0 });
+                    cx.attacks.push(ZombieAttack { zombie: z.id[i], player: target.id, landed: false, damage: 0.0, part: None, wound: None });
                     z.cooldown[i] = t.attack_cooldown;
                 } else {
                     // A door or window shut between us.

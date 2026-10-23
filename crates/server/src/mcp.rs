@@ -13,7 +13,7 @@ use zombye_net::{Intent, apply_intent, save_file, shutdown};
 use zombye_sim::map::{Edge, EdgeRef, Feature, Floor, OwnedEdge, Side};
 use zombye_sim::senses::{self, Cone, Target};
 use zombye_sim::vision::line_of_sight;
-use zombye_sim::{ActionKind, HitEffect, ItemStack, LoadOptions, Place, Slot, TICK_DT, Tier, World, ZombieState};
+use zombye_sim::{ActionKind, Dressing, HitEffect, InfectionStage, ItemStack, LoadOptions, Part, Place, Slot, TICK_DT, Tier, World, WoundKind, ZombieState};
 
 use crate::screenshot::{self, Renderer};
 use crate::Persist;
@@ -26,7 +26,7 @@ const COMPASS: [(&str, [f32; 2]); 8] =
     [("e", [1.0, 0.0]), ("se", [1.0, 1.0]), ("s", [0.0, 1.0]), ("sw", [-1.0, 1.0]), ("w", [-1.0, 0.0]), ("nw", [-1.0, -1.0]), ("n", [0.0, -1.0]), ("ne", [1.0, -1.0])];
 
 /// Tools that only look: they don't make the world need saving.
-const READ_ONLY: [&str; 14] = ["observe", "zombie", "edge", "weapons", "items", "inventory", "containers_near", "buildings", "regions", "stats", "saves", "save", "load", "screenshot"];
+const READ_ONLY: [&str; 15] = ["observe", "zombie", "edge", "weapons", "items", "inventory", "health", "containers_near", "buildings", "regions", "stats", "saves", "save", "load", "screenshot"];
 /// "on" / "off".
 fn on_off(b: bool) -> &'static str {
     if b { "on" } else { "off" }
@@ -376,6 +376,25 @@ fn tool_list() -> Value {
             }}
         },
         {
+            "name": "health",
+            "description": "A player's health: HP, every wound by body part (bruise, scratch, gash, bite, glass cut) with whether it \
+                bleeds and how fast, how far healed and hours to go, dressing, festering, and what it needs next; pain, HP lost per \
+                game hour, food poisoning, the zombie infection once it shows (Feverish, then Turning; before that it is hidden and \
+                this says 'unknown'), and what the wounds do (swing power and time, walk and run speed, running, endurance recovery). \
+                A game hour is 150 s of game time by default.",
+            "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}}}
+        },
+        {
+            "name": "wound",
+            "description": "Debug: give a player a wound now, taking its damage (god mode keeps the HP). part: head, torso, left_arm, \
+                right_arm, left_hand, right_hand, left_leg, right_leg, left_foot, right_foot. kind: bruise, scratch, gash, bite, glass_cut. \
+                infected: true or false forces the zombie infection on or off; left out, a scratch, gash or bite rolls for it as a \
+                zombie's would. Replies with the player's health.",
+            "inputSchema": {"type": "object", "required": ["part", "kind"], "properties": {
+                "player": {"type": "integer", "default": 1}, "part": {"type": "string"}, "kind": {"type": "string"}, "infected": {"type": "boolean"}
+            }}
+        },
+        {
             "name": "respawn",
             "description": "A dead player gets up again in the bedroom with full health and empty hands.",
             "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}}}
@@ -459,7 +478,7 @@ fn tool_list() -> Value {
         },
         {
             "name": "stats",
-            "description": "Map size, tick, time of day and daylight, players (HP, weapon, dead, dev toggles god / ignored), zombie counts by state (corpses too) and by simulation tier (active / near / virtual, with the ranges and last tick's promotions and demotions), weapons on the floor, last tick timing (tier pass, senses, flow fields, active AI, near and virtual updates), sounds heard and the state hash (same seed + same calls = same hash).",
+            "description": "Map size, tick, time of day and daylight, players (HP, weapon, dead, dev toggles god / ignored, wounds, bleeding, HP lost per game hour, pain, sick, the infection once it shows), zombie counts by state (corpses too) and by simulation tier (active / near / virtual, with the ranges and last tick's promotions and demotions), weapons on the floor, last tick timing (tier pass, senses, flow fields, active AI, near and virtual updates), sounds heard and the state hash (same seed + same calls = same hash).",
             "inputSchema": {"type": "object", "properties": {}}
         }
     ])
@@ -773,6 +792,19 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             Ok(format!("player {id}: {notes}; in hand: {} ({}); {}", def.name.to_lowercase(), weapon_line(def), load_line(world, id)))
         }
         "inventory" => inventory_text(world, player_id()),
+        "health" => health_text(world, player_id()),
+        "wound" => {
+            let id = player_id();
+            world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            let part = args.get("part").and_then(Value::as_str).ok_or("part is required")?;
+            let part = Part::from_id(part).ok_or_else(|| format!("unknown part {part:?}: one of {}", Part::ALL.map(|p| p.id()).join(", ")))?;
+            let kind = args.get("kind").and_then(Value::as_str).ok_or("kind is required")?;
+            let kind = WoundKind::from_id(kind).ok_or_else(|| format!("unknown kind {kind:?}: one of {}", WoundKind::ALL.map(|k| k.id()).join(", ")))?;
+            let infected = args.get("infected").and_then(Value::as_bool);
+            let damage = world.inflict_wound(id, part, kind, infected).ok_or_else(|| format!("player {id} is dead or has too many wounds"))?;
+            world.combat_events.clear();
+            Ok(format!("a {} on the {} for {damage:.1} HP\n{}", kind.name(), part.name(), health_text(world, id)?))
+        }
         "items" => {
             let filter = args.get("category").and_then(Value::as_str).map(str::to_lowercase);
             let mut out = String::from("id: name, category | kg | litres | stack | details\n");
@@ -877,11 +909,12 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 "shove: reach {:.2} m, arc {:.0} deg, up to {} zombies, knockback {:.2} m, always staggers, knockdown {:.0}% (x{} if staggered, x{} from behind), {:.1} s, endurance {:.3}\n\
                  stomp: downed zombie within {:.1} m centre to centre, damage {:.0}-{:.0}, {:.1} s, endurance {:.3}\n\
                  zombie hp {:.0}-{:.0}; from behind +{:.0}% crit chance; endurance below {:.0}% weakens (down to x{:.2} damage) and slows (up to x{:.1}) actions\n\
-                 zombie strikes land {:.0}% (+{:.0}% per extra zombie on you, max {:.0}%) for {:.0}-{:.0} of your {:.0} HP",
+                 zombie strikes land {:.0}% (+{:.0}% per extra zombie on you, max {:.0}%) and leave a wound (see health) on your {:.0} HP: {}",
                 c.shove_range, c.shove_arc_degrees, c.shove_targets, c.shove_knockback, c.shove_knockdown_chance * 100.0, c.staggered_knockdown_mult, c.behind_knockdown_mult, c.shove_seconds, c.shove_endurance,
                 c.stomp_range, c.stomp_damage.0, c.stomp_damage.1, c.stomp_seconds, c.stomp_endurance,
                 c.zombie_hp.0, c.zombie_hp.1, c.behind_crit_bonus * 100.0, c.tired_below * 100.0, c.tired_power, c.tired_slow,
-                c.zombie_hit_chance * 100.0, c.zombie_crowd_bonus * 100.0, c.zombie_hit_max * 100.0, c.zombie_damage.0, c.zombie_damage.1, c.player_hp
+                c.zombie_hit_chance * 100.0, c.zombie_crowd_bonus * 100.0, c.zombie_hit_max * 100.0, c.player_hp,
+                WoundKind::ALL.map(|k| { let d = world.config.health.wound(k).damage; format!("{} {:.0}-{:.0}", k.name(), d.0, d.1) }).join(", ")
             ));
             Ok(out)
         }
@@ -1005,6 +1038,12 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 "ready_in": p.ready_in,
                 "god": p.dev.god,
                 "ignored": p.dev.ignored,
+                "wounds": p.health.wounds.iter().map(|w| format!("{} on the {}", w.kind.name(), w.part.name())).collect::<Vec<_>>(),
+                "bleeding": p.health.bleeding(&world.config.health),
+                "losing_hp_per_hour": p.health.losing_per_h(&world.config.health),
+                "pain": p.health.pain(&world.config.health),
+                "sick": p.health.sick(),
+                "infection": p.health.visible_infection().map_or("unknown".to_string(), |s| format!("{s:?}")),
             })).collect::<Vec<_>>(),
             "items_on_floor": world.items().len(),
             "containers": world.containers().len(),
@@ -1084,6 +1123,8 @@ struct Events {
     total: u32,
     /// Per player: strikes, strikes that landed, damage taken.
     per_player: Vec<(u32, u32, u32, f32)>,
+    /// The first few wounds strikes left: (player, "gash on the left arm").
+    wounds: Vec<(u32, String)>,
     thumps: u32,
     broken: Vec<String>,
     /// Player hits on zombies (the first few spelled out), and kills.
@@ -1109,6 +1150,11 @@ impl Events {
             if a.landed {
                 e.2 += 1;
                 e.3 += a.damage;
+                if let (Some(part), Some(kind)) = (a.part, a.wound)
+                    && self.wounds.len() < 16
+                {
+                    self.wounds.push((a.player, format!("{} on the {}", kind.name(), part.name())));
+                }
             }
             if a.landed && world.player(a.player).is_some_and(|p| p.dead) && !self.deaths.contains(&a.player) {
                 self.deaths.push(a.player);
@@ -1168,7 +1214,15 @@ impl Events {
             out.push_str(&format!("; BROKEN: {}", self.broken.join(", ")));
         }
         if self.total > 0 {
-            let list: Vec<String> = self.per_player.iter().map(|(p, n, l, d)| format!("P{p} x{n}, {l} landed for {d:.0} HP")).collect();
+            let list: Vec<String> = self
+                .per_player
+                .iter()
+                .map(|(p, n, l, d)| {
+                    let wounds: Vec<&str> = self.wounds.iter().filter(|(w, _)| w == p).map(|(_, t)| t.as_str()).collect();
+                    let wounds = if wounds.is_empty() { String::new() } else { format!(": {}", wounds.join(", ")) };
+                    format!("P{p} x{n}, {l} landed for {d:.0} HP{wounds}")
+                })
+                .collect();
             out.push_str(&format!("; ZOMBIE ATTACKS: {} ({})", self.total, list.join("; ")));
         }
         for p in &self.deaths {
@@ -1763,6 +1817,69 @@ fn run_item_tool(world: &mut World, id: u32, intent: Intent) -> Result<String, S
     if failed { Err(text) } else { Ok(text) }
 }
 
+/// What a wound needs next (treatment itself comes with first aid, #10).
+fn wound_needs(w: &zombye_sim::WoundView) -> &'static str {
+    match w {
+        w if w.festering => "antibiotics, or clean dressings changed when dirty",
+        w if w.bleed_per_h > 0.0 && w.dressing == Dressing::None => "a dressing to stop the bleeding",
+        w if w.bleed_per_h > 0.0 => "stitches (a dressed gash still bleeds a little)",
+        w if w.dressing == Dressing::Dirty => "a clean dressing (dirty ones fester)",
+        w if w.kind != WoundKind::Bruise && w.dressing == Dressing::None => "a clean dressing to keep it from festering",
+        _ => "time",
+    }
+}
+
+/// The `health` tool's text: what the player's own client sees (the hidden infection stays hidden).
+fn health_text(world: &World, id: u32) -> Result<String, String> {
+    let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+    let h = world.health_view(id).expect("player exists");
+    let e = world.health_effects(world.players.iter().position(|q| q.id == id).expect("player exists"));
+    let infection = match h.infection {
+        None => "unknown (nothing shows)".to_string(),
+        Some(InfectionStage::Feverish) => "FEVERISH (the turn: losing HP, no healing, slow to get your breath back)".to_string(),
+        Some(s) => format!("{} (losing HP fast; night sight halved)", format!("{s:?}").to_uppercase()),
+    };
+    let mut out = format!(
+        "player {id}: {:.1} of {:.0} HP{}; losing {:.1} HP per game hour to wounds; pain {:.2}; infection: {infection}{}\n",
+        p.hp,
+        world.config.combat.player_hp,
+        if p.dead { " (dead)" } else { "" },
+        h.losing_per_h,
+        h.pain,
+        if h.food_poisoning { "; FOOD POISONING (can't eat, thirsty, slow to get your breath back)" } else { "" },
+    );
+    if h.wounds.is_empty() {
+        out.push_str("no wounds\n");
+    }
+    for part in Part::ALL {
+        for w in h.wounds.iter().filter(|w| w.part == part) {
+            let mut bits = vec![if w.bleed_per_h > 0.0 { format!("BLEEDING {:.1} HP/h", w.bleed_per_h) } else { "not bleeding".to_string() }];
+            bits.push(format!("{:.0}% healed", w.healed * 100.0));
+            bits.push(w.heals_in_h.map_or("not healing".to_string(), |h| format!("heals in ~{h:.0} h")));
+            if w.dressing != Dressing::None {
+                bits.push(format!("{:?} dressing", w.dressing).to_lowercase());
+            }
+            if w.stitched {
+                bits.push("stitched".into());
+            }
+            if w.festering {
+                bits.push("FESTERING".into());
+            }
+            out.push_str(&format!("  {}: {} ({}); needs {}\n", part.name(), w.kind.name(), bits.join(", "), wound_needs(w)));
+        }
+    }
+    out.push_str(&format!(
+        "effects: swing power x{:.2}, swing time x{:.2}, walk x{:.2}, run x{:.2}{}, endurance recovery x{:.2}",
+        e.swing_power,
+        e.swing_time,
+        e.walk,
+        e.run,
+        if e.can_run { "" } else { " (can't run)" },
+        e.regen
+    ));
+    Ok(out)
+}
+
 /// The `inventory` tool's text.
 fn inventory_text(world: &World, id: u32) -> Result<String, String> {
     let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
@@ -2005,6 +2122,25 @@ mod tests {
 
     /// An agent can search a container, take, drop, move, hold and eat things, all through tools.
     /// `dev` sets the toggles (leaving out one keeps it), and `stats` and `observe` show them.
+    #[test]
+    fn health_and_wound_tools() {
+        let mut world = small_world();
+        let dir = scratch("health");
+        let mut persist = session(&world, &dir.0);
+        let (text, err) = call(&mut world, &mut persist, "health", json!({}));
+        assert!(!err && text.contains("no wounds") && text.contains("infection: unknown"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "wound", json!({"part": "left_leg", "kind": "gash", "infected": true}));
+        assert!(!err && text.contains("gash on the left leg") && text.contains("BLEEDING 10.0 HP/h") && text.contains("can't run"), "{text}");
+        assert!(text.contains("needs a dressing") && text.contains("infection: unknown"), "the hidden infection stays hidden: {text}");
+        let (text, err) = call(&mut world, &mut persist, "wound", json!({"part": "tail", "kind": "gash"}));
+        assert!(err && text.contains("unknown part"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "stats", json!({}));
+        let stats: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(stats["players"][0]["bleeding"], 1);
+        assert_eq!(stats["players"][0]["infection"], "unknown");
+        assert_eq!(stats["players"][0]["wounds"][0], "gash on the left leg");
+    }
+
     #[test]
     fn dev_tool_sets_and_shows_the_toggles() {
         let mut world = small_world();
