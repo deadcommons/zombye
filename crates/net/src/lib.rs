@@ -10,7 +10,10 @@ pub mod shutdown;
 
 use serde::{Deserialize, Serialize};
 use zombye_sim::map::{EdgeChange, OwnedEdge};
-use zombye_sim::{ActionKind, Burden, Carry, CombatEvent, DevFlags, GroundItem, HealthTags, HealthView, Inventory, ItemNote, ItemStack, MoveMods, Place, PlayerInput, RunStats, Stance, Treatment, World, WorldConfig, ZombieAnim};
+use zombye_sim::{
+    ActionKind, Burden, Carry, CombatEvent, DevFlags, GroundItem, HealthTags, HealthView, Inventory, ItemNote, ItemStack, MoveMods, NeedsTuning, NeedsView, Place, PlayerInput, RunStats, Stance, StatusInput, StatusTag, Treatment, World,
+    WorldConfig, ZombieAnim,
+};
 
 /// Something a client wants to happen. The server validates and applies it.
 ///
@@ -61,6 +64,9 @@ pub enum Intent {
     /// the best the player carries, or nothing to take a dressing off). Takes a few seconds,
     /// standing still; a strike landing or a swing interrupts it. Checked when asked and when done.
     Treat { player: u32, wound: Option<u32>, action: Treatment, item: Option<u16> },
+    /// Lie down and sleep (`sleep: true`; on a bed or sofa within reach, else the floor), or get up
+    /// (`false`). Any other action while asleep also gets the player up, and does nothing else.
+    Sleep { player: u32, sleep: bool },
     /// Single-player / debug: a dead player gets up at the spawn point.
     Respawn { player: u32 },
     /// Dev toggles for testing (`None` leaves one as it is): `god` takes no damage and can't die,
@@ -128,6 +134,8 @@ pub struct PlayerView {
     /// What anyone can see of its health: bleeding, limping, a hurt arm, sick. The detail is only
     /// in its own [`PrivateView::health`].
     pub health: HealthTags,
+    /// Asleep (lying down; it doesn't move until it wakes).
+    pub asleep: bool,
 }
 
 /// What a container holds, for whoever has it open.
@@ -153,6 +161,8 @@ pub struct PrivateView {
     pub open: Option<ContainerView>,
     /// Wounds by body part, pain, the infection once it shows (#9).
     pub health: HealthView,
+    /// Hunger, thirst, tiredness (to 1%), sleep and soreness (#11).
+    pub needs: NeedsView,
 }
 
 impl PrivateView {
@@ -165,7 +175,29 @@ impl PrivateView {
         });
         let carry = world.carry(p);
         let health = world.health_view(id).unwrap_or_default();
-        Some(Self { player: id, inventory: p.inventory.clone(), carry, max_kg: carry.limit_kg * world.config.carry.max_load, open, health })
+        let needs = world.needs_view(id).unwrap_or_default();
+        Some(Self { player: id, inventory: p.inventory.clone(), carry, max_kg: carry.limit_kg * world.config.carry.max_load, open, health, needs })
+    }
+
+    /// Our status tags (hunger, thirst, tiredness, endurance, load, pain, bleeding, sick, asleep),
+    /// from this view, the predicted endurance and the snapshot's time scale: what the server's
+    /// `World::status_tags` says, worked out on the client.
+    pub fn status_tags(&self, needs: &NeedsTuning, endurance: f32, winded: bool, tired_below: f32, time_scale: f32) -> Vec<StatusTag> {
+        let h = &self.health;
+        let input = StatusInput {
+            needs: self.needs,
+            pain: h.pain,
+            bleeding: h.wounds.iter().filter(|w| w.bleed_per_h > 0.0).count(),
+            food_poisoned: h.food_poisoning,
+            festering: h.wounds.iter().any(|w| w.festering),
+            infection: h.infection,
+            endurance,
+            winded,
+            tired_below,
+            burden: self.carry.burden,
+            time_scale,
+        };
+        zombye_sim::needs::status_tags(needs, &input)
     }
 
     /// Has a load in this stage or worse.
@@ -199,6 +231,12 @@ pub struct Snapshot {
     pub tick: u64,
     /// Hour of day in [0, 24).
     pub time_of_day: f32,
+    /// How many times as fast game time runs now (30 while everyone sleeps, else 1; #11). The
+    /// clock above already includes it; the HUD shows it.
+    pub time_scale: f32,
+    /// The game clock in minutes since the world began (`World::game_minute`): with a stack's
+    /// `born`, how fresh food is.
+    pub game_minute: i32,
     pub players: Vec<PlayerView>,
     pub zombies: Vec<ZombieView>,
     /// Map edits (doors and windows opening, closing, breaking) since the previous snapshot. Clients apply these to their
@@ -271,12 +309,15 @@ impl Snapshot {
                 jobs: p.jobs.len().min(255) as u8,
                 dev: p.dev,
                 health: if p.dead { HealthTags::default() } else { p.health.tags(&world.config.health) },
+                asleep: p.needs.asleep(),
             })
             .collect();
         let private = world.take_private_dirty().into_iter().filter_map(|id| PrivateView::of(world, id)).collect();
         Self {
             tick: world.tick,
             time_of_day: world.time_of_day(),
+            time_scale: world.time_scale(),
+            game_minute: world.game_minute(),
             players,
             zombies,
             edge_changes: std::mem::take(&mut world.edge_changes),
@@ -326,6 +367,12 @@ impl PlayerView {
 
 /// Apply an intent to the world. The one place client requests turn into sim changes.
 pub fn apply_intent(world: &mut World, intent: &Intent) {
+    // A sleeper who does anything gets up instead (#11).
+    if let Some(player) = intent.action_by()
+        && world.wake_player(player)
+    {
+        return;
+    }
     match intent {
         Intent::PlayerInput { player, seq, move_dir, facing, run, sneak } => {
             let input = PlayerInput { move_dir: (*move_dir).into(), facing: *facing, run: *run, sneak: *sneak };
@@ -374,6 +421,13 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
         Intent::Treat { player, wound, action, item } => {
             let _ = world.player_treat(*player, *wound, *action, *item);
         }
+        Intent::Sleep { player, sleep } => {
+            if *sleep {
+                let _ = world.player_sleep(*player);
+            } else {
+                world.wake_player(*player);
+            }
+        }
         Intent::Respawn { player } => {
             world.respawn_player(*player);
         }
@@ -397,6 +451,28 @@ impl Intent {
     /// `--allow-dev` take.
     pub fn is_dev(&self) -> bool {
         matches!(self, Intent::Dev { .. })
+    }
+
+    /// The player doing something with this intent (which gets a sleeper up instead): actions and
+    /// item requests, not movement input, sleep itself, respawning or dev and debug intents.
+    pub fn action_by(&self) -> Option<u32> {
+        match *self {
+            Intent::Interact { player }
+            | Intent::SmashWindow { player }
+            | Intent::Attack { player }
+            | Intent::Shove { player }
+            | Intent::Stomp { player }
+            | Intent::PickUp { player }
+            | Intent::MoveItem { player, .. }
+            | Intent::Equip { player, .. }
+            | Intent::Wear { player, .. }
+            | Intent::Unequip { player, .. }
+            | Intent::Drop { player, .. }
+            | Intent::Use { player, .. }
+            | Intent::Search { player, .. }
+            | Intent::Treat { player, .. } => Some(player),
+            _ => None,
+        }
     }
 }
 
@@ -937,6 +1013,70 @@ mod tests {
         assert!(run.death.is_none() && run.kills == 0 && run.hp_lost == 0.0 && run.distance_m == 0.0, "{run:?}");
         assert!(server.world.player(me).unwrap().health.wounds.is_empty());
         assert!(server.world.zombies.state.iter().all(|s| *s != zombye_sim::ZombieState::Dead), "no corpses");
+    }
+
+    /// Needs change movement (exhausted walks slower, parched can't run, asleep doesn't move): the
+    /// client predicts with the modifiers from its latest snapshot and stays exact. Sleep goes
+    /// through intents, snapshots say who sleeps and how fast time runs, and acting gets you up.
+    #[test]
+    fn prediction_matches_server_with_needs_and_sleep() {
+        let mut server = server();
+        let id = server.join(None);
+        let snap = server.tick();
+        let mut predicted = snap.players.iter().find(|p| p.id == id).unwrap().state();
+        let mut mods_seen = vec![predicted.mods];
+        for seq in 1..=360u32 {
+            let a = seq as f32 * 0.05;
+            let (move_dir, facing, run) = ([a.cos(), a.sin()], a, seq % 40 < 25);
+            server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run, sneak: false });
+            step_movement(&server.world.map, &mut predicted, &PlayerInput { move_dir: move_dir.into(), facing, run, sneak: false }, TICK_DT);
+            let snap = server.tick();
+            let view = snap.players.iter().find(|p| p.id == id).unwrap();
+            assert_eq!(zombye_sim::PlayerState { mods: predicted.mods, ..view.state() }, predicted, "diverged at seq {seq}");
+            predicted.mods = view.mods;
+            if *mods_seen.last().unwrap() != view.mods {
+                mods_seen.push(view.mods);
+            }
+            // Needs change at the end of the tick (as the debug tool does), so the snapshot carries them.
+            let (hunger, thirst, tired) = match seq {
+                60 => (0.0, 0.0, 0.9),
+                150 => (0.0, 0.9, 0.9),
+                240 => (0.0, 0.0, 0.5),
+                _ => continue,
+            };
+            server.world.set_needs(id, Some(hunger), Some(thirst), Some(tired)).unwrap();
+            if seq == 240 {
+                server.world.player_sleep(id).unwrap();
+            }
+            let snap = Snapshot::capture(&mut server.world);
+            let view = snap.players.iter().find(|p| p.id == id).unwrap();
+            predicted.mods = view.mods;
+            mods_seen.push(view.mods);
+            if seq == 240 {
+                assert!(view.asleep && snap.time_scale == 30.0, "asleep, time sped up");
+                let mine = snap.clone().for_player(id);
+                let own = mine.private.iter().find(|v| v.player == id).expect("our needs changed");
+                assert!(own.needs.asleep.is_some() && own.needs.tiredness == 0.5, "{:?}", own.needs);
+                let tags = own.status_tags(&server.world.config.needs, view.endurance, view.winded, server.world.config.combat.tired_below, snap.time_scale);
+                assert_eq!(tags.iter().map(|t| t.label.clone()).collect::<Vec<_>>(), server.world.status_tags(id).iter().map(|t| t.label.clone()).collect::<Vec<_>>());
+            }
+        }
+        assert!(mods_seen.len() >= 4, "{mods_seen:?}");
+        assert!(mods_seen.iter().any(|m| m.speed < 1.0 && m.speed > 0.0), "exhausted walks slower: {mods_seen:?}");
+        assert!(mods_seen.iter().any(|m| !m.can_run && m.speed > 0.0), "parched can't run: {mods_seen:?}");
+        // (A zombie about may have woken us meanwhile.)
+        let _ = server.world.player_sleep(id);
+        let me = server.world.player(id).unwrap();
+        assert!(me.needs.asleep() && me.state.mods.speed == 0.0);
+        // Swinging while asleep gets you up instead.
+        server.send(Intent::Attack { player: id });
+        let snap = server.tick();
+        let view = snap.players.iter().find(|p| p.id == id).unwrap();
+        assert!(!view.asleep && view.action.is_none() && snap.time_scale == 1.0);
+        server.send(Intent::Sleep { player: id, sleep: true });
+        assert!(server.tick().players[0].asleep);
+        server.send(Intent::Sleep { player: id, sleep: false });
+        assert!(!server.tick().players[0].asleep);
     }
 
     #[test]

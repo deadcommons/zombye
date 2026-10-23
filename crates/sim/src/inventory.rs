@@ -176,10 +176,11 @@ pub fn stacks_volume(items: &[ItemDef], stacks: &[ItemStack]) -> f32 {
     stacks.iter().fold(0.0, |l, s| l + items.get(s.item as usize).map_or(0.0, |d| d.volume_l * s.count as f32))
 }
 
-/// Add `count` of `item` to a list of stacks: topping up stacks of it first, then new stacks.
-pub fn merge_into(stacks: &mut Vec<ItemStack>, item: u16, mut count: u16, stack_size: u16) {
+/// Add `count` of the kind of thing `like` is (its item, age and goes had; its own count doesn't
+/// matter) to a list of stacks: topping up stacks of the same kind first, then new stacks.
+pub fn merge_into(stacks: &mut Vec<ItemStack>, like: ItemStack, mut count: u16, stack_size: u16) {
     let size = stack_size.max(1);
-    for s in stacks.iter_mut().filter(|s| s.item == item && s.count < size) {
+    for s in stacks.iter_mut().filter(|s| s.same_kind(&like) && s.count < size) {
         let add = count.min(size - s.count);
         s.count += add;
         count -= add;
@@ -189,7 +190,7 @@ pub fn merge_into(stacks: &mut Vec<ItemStack>, item: u16, mut count: u16, stack_
     }
     while count > 0 {
         let n = count.min(size);
-        stacks.push(ItemStack::new(item, n));
+        stacks.push(like.with_count(n));
         count -= n;
     }
 }
@@ -411,8 +412,10 @@ impl World {
     /// After player `pi`'s inventory changed: the weapon in hand, the movement modifiers of its load,
     /// and its client to be told.
     pub(crate) fn refresh_carry(&mut self, pi: usize) {
-        // Standing still for first aid stays as it is: only `step_item_jobs` changes it.
-        let still = self.players[pi].state.mods.speed == 0.0;
+        // Standing still for first aid stays as it is: only `step_item_jobs` changes it. (Asleep
+        // is still too, but that comes from the needs, #11.)
+        let p = &self.players[pi];
+        let still = p.state.mods.speed == 0.0 && treating(&p.jobs);
         self.refresh_carry_as(pi, still);
     }
 
@@ -423,7 +426,7 @@ impl World {
         let p = &self.players[pi];
         let c = self.carry(p);
         let slow = p.inventory.bag_slow(&self.config.items);
-        let mut mods = self.health_mods(pi, self.config.carry.mods(c.weight_kg / c.limit_kg.max(0.1), slow));
+        let mut mods = self.needs_mods(pi, self.health_mods(pi, self.config.carry.mods(c.weight_kg / c.limit_kg.max(0.1), slow)));
         if still && !p.dead {
             mods = MoveMods { speed: 0.0, run_speed: 0.0, can_run: false, can_climb: false, ..mods };
         }
@@ -437,7 +440,8 @@ impl World {
     /// Every player's derived carry state (after loading).
     pub(crate) fn refresh_all_carry(&mut self) {
         for pi in 0..self.players.len() {
-            self.refresh_carry(pi);
+            let still = treating(&self.players[pi].jobs);
+            self.refresh_carry_as(pi, still);
         }
     }
 
@@ -678,7 +682,10 @@ impl World {
             let name = def.name.clone();
             return self.refuse(id, format!("can't use the {} (yet)", lower(&name)));
         }
-        let secs = self.config.carry.use_secs;
+        if let Err(why) = self.can_consume(pi, stack.item) {
+            return self.refuse(id, why);
+        }
+        let secs = self.use_secs(stack.item);
         self.queue_job(id, JobKind::Use { from, index, item: stack.item }, secs)
     }
 
@@ -795,7 +802,9 @@ impl World {
         let first = !self.opened.contains_key(&c);
         if first {
             let room_type = self.map.rooms.get(site.room as usize).map_or("", |r| r.room_type.as_str()).to_string();
-            let contents = crate::loot::fill(self.config.seed(), c, &def, &room_type, &self.config.loot, &self.config.items);
+            let mut contents = crate::loot::fill(self.config.seed(), c, &def, &room_type, &self.config.loot, &self.config.items);
+            // Food found was made before the world began (#11), some of it a while before.
+            self.age_found_food(c, &mut contents);
             self.opened.insert(c, contents);
         }
         let p = &self.players[pi];
@@ -812,28 +821,51 @@ impl World {
 
     fn do_use(&mut self, pi: usize, from: Place, index: u32, item: u16) -> Result<String, String> {
         let name = lower(&self.item_def(item).name);
+        self.can_consume(pi, item)?;
+        let uses = self.item_def(item).consumable().map_or(1, |c| c.uses.max(1));
+        // One go: the top one of the stack, used up after its last go.
+        let go = |s: &mut ItemStack| {
+            s.used += 1;
+            if s.used >= uses {
+                s.used = 0;
+                s.count -= 1;
+            }
+        };
         let mut inv = self.players[pi].inventory.clone();
-        match from {
+        let had = match from {
             Place::Carried => {
                 let k = resolve(&inv.carried, index, item).ok_or_else(|| format!("the {name} is gone"))?;
-                inv.carried[k].count -= 1;
+                let had = inv.carried[k];
+                go(&mut inv.carried[k]);
                 if inv.carried[k].count == 0 {
                     inv.carried.remove(k);
                 }
+                had
             }
             Place::Slot(s) => match inv.slot(s) {
-                Some(st) if st.item == item => *inv.slot_mut(s) = None,
+                Some(mut st) if st.item == item => {
+                    let had = st;
+                    go(&mut st);
+                    *inv.slot_mut(s) = (st.count > 0).then_some(st);
+                    had
+                }
                 _ => return Err(format!("the {name} is gone")),
             },
             _ => return Err("use what you carry or hold".into()),
-        }
+        };
         let p = &mut self.players[pi];
         p.inventory = inv;
         let id = p.id;
         self.used_items.push((id, item));
+        let effect = self.consume(pi, had);
         self.refresh_carry(pi);
         let verb = if self.item_def(item).category == ItemCategory::Drink { "drank" } else { "ate" };
-        Ok(format!("{verb} the {name}"))
+        let what = match uses - had.used - 1 {
+            _ if uses == 1 => format!("the {name}"),
+            0 => format!("the last of the {name}"),
+            n => format!("some of the {name} ({n} of {uses} goes left)"),
+        };
+        Ok(format!("{verb} {what}: {effect}"))
     }
 
     /// Carry out a move. Atomic: works on copies and commits only if everything fits.
@@ -851,24 +883,27 @@ impl World {
         let take = |have: u16| if one { 1 } else if count == 0 { have } else { count.min(have) };
         let mut src_box: Option<(u32, Vec<ItemStack>)> = None;
         let mut ground_take: Option<(usize, u16)> = None;
-        let n = match from {
+        // What moves: `n` of the stack's kind (a part-eaten top one stays behind unless all go).
+        let part = |s: ItemStack, n: u16| ItemStack { used: if n >= s.count { s.used } else { 0 }, ..s.with_count(n) };
+        let moved = match from {
             Place::Carried | Place::Worn => {
                 let list = if from == Place::Carried { &mut inv.carried } else { &mut inv.worn };
                 let k = resolve(list, index, item).ok_or_else(|| format!("the {name} is gone"))?;
                 let n = take(list[k].count);
+                let moved = part(list[k], n);
                 list[k].count -= n;
                 if list[k].count == 0 {
                     list.remove(k);
                 }
-                n
+                moved
             }
-            Place::Slot(s) => {
-                match inv.slot(s) {
-                    Some(st) if st.item == item => *inv.slot_mut(s) = None,
-                    _ => return Err(format!("the {name} is gone")),
+            Place::Slot(s) => match inv.slot(s) {
+                Some(st) if st.item == item => {
+                    *inv.slot_mut(s) = None;
+                    st.with_count(1)
                 }
-                1
-            }
+                _ => return Err(format!("the {name} is gone")),
+            },
             Place::Container(c) => {
                 if !self.container(c).is_some_and(|s| self.keeps_open(p, s)) {
                     return Err("that container isn't open (or is out of reach)".into());
@@ -876,12 +911,13 @@ impl World {
                 let mut list = self.opened.get(&c).cloned().unwrap_or_default();
                 let k = resolve(&list, index, item).ok_or_else(|| format!("the {name} is gone"))?;
                 let n = take(list[k].count);
+                let moved = part(list[k], n);
                 list[k].count -= n;
                 if list[k].count == 0 {
                     list.remove(k);
                 }
                 src_box = Some((c, list));
-                n
+                moved
             }
             Place::Ground => {
                 let k = self.items.iter().position(|it| it.id == index).ok_or_else(|| format!("the {name} is gone"))?;
@@ -890,13 +926,13 @@ impl World {
                 }
                 let n = take(self.items[k].stack.count);
                 ground_take = Some((k, n));
-                n
+                part(self.items[k].stack, n)
             }
         };
-        self.finish_move(pi, inv, before, src_box, ground_take, def, item, n, from, to, spill, pos, facing)
+        self.finish_move(pi, inv, before, src_box, ground_take, def, moved, from, to, spill, pos, facing)
     }
 
-    /// The second half of a move: put `n` of `item` at `to`, check the result and commit.
+    /// The second half of a move: put `moved` (`n` of a kind of item) at `to`, check the result and commit.
     #[allow(clippy::too_many_arguments)]
     fn finish_move(
         &mut self,
@@ -906,14 +942,14 @@ impl World {
         mut src_box: Option<(u32, Vec<ItemStack>)>,
         ground_take: Option<(usize, u16)>,
         def: ItemDef,
-        item: u16,
-        n: u16,
+        moved: ItemStack,
         from: Place,
         to: Place,
         spill: bool,
         pos: Vec2,
         facing: f32,
     ) -> Result<String, String> {
+        let n = moved.count;
         let items = &self.config.items;
         let name = lower(&def.name);
         let p = &self.players[pi];
@@ -924,7 +960,7 @@ impl World {
         let mut displaced: Vec<ItemStack> = Vec::new();
         let mut to = to;
         match to {
-            Place::Carried => merge_into(&mut inv.carried, item, n, def.stack),
+            Place::Carried => merge_into(&mut inv.carried, moved, n, def.stack),
             Place::Slot(s) => {
                 let ok = match s {
                     Slot::Hand | Slot::OffHand => true,
@@ -941,14 +977,14 @@ impl World {
                     Slot::OffHand if inv.hand.is_some_and(|h| items[h.item as usize].two_handed) => displaced.extend(inv.hand.take()),
                     _ => {}
                 }
-                *inv.slot_mut(s) = Some(ItemStack::one(item));
+                *inv.slot_mut(s) = Some(moved.with_count(1));
             }
             Place::Worn => {
                 let Some(cl) = &def.clothing else { return Err(format!("can't wear the {name}")) };
                 let clash = |s: &ItemStack| items[s.item as usize].clothing.as_ref().is_some_and(|o| o.layer == cl.layer && o.covers.iter().any(|b| cl.covers.contains(b)));
                 displaced.extend(inv.worn.iter().copied().filter(|s| clash(s)));
                 inv.worn.retain(|s| !clash(s));
-                inv.worn.push(ItemStack::one(item));
+                inv.worn.push(moved.with_count(1));
             }
             Place::Container(c) => {
                 if !open_ok(c) {
@@ -963,16 +999,16 @@ impl World {
                 if stacks_volume(items, &list) + def.volume_l * n as f32 > room + 1e-4 {
                     return Err(format!("no room for the {name} in the {}", lower(&self.container_def(site).name)));
                 }
-                merge_into(&mut list, item, n, def.stack);
+                merge_into(&mut list, moved, n, def.stack);
                 if src_box.as_ref().is_some_and(|(sc, _)| *sc == c) {
                     src_box = None;
                 }
                 dst_box = Some((c, list));
             }
-            Place::Ground => to_ground.push(ItemStack::new(item, n)),
+            Place::Ground => to_ground.push(moved),
         }
         for d in displaced {
-            merge_into(&mut inv.carried, d.item, d.count, items[d.item as usize].stack);
+            merge_into(&mut inv.carried, d, d.count, items[d.item as usize].stack);
         }
         // Does it all fit?
         let pockets = self.config.carry.pockets_l;
@@ -984,12 +1020,12 @@ impl World {
         if worse(&inv) {
             if spill && to == Place::Carried {
                 // Taking it off with no room for it: it goes on the floor instead.
-                let k = inv.carried.iter().rposition(|s| s.item == item).expect("just added");
+                let k = inv.carried.iter().rposition(|s| s.same_kind(&moved)).expect("just added");
                 inv.carried[k].count -= n.min(inv.carried[k].count);
                 if inv.carried[k].count == 0 {
                     inv.carried.remove(k);
                 }
-                to_ground.push(ItemStack::new(item, n));
+                to_ground.push(moved);
                 to = Place::Ground;
             }
             if worse(&inv) {
@@ -1045,7 +1081,7 @@ impl World {
     /// room, else as a new ground item. Returns the ground item's id.
     pub(crate) fn put_on_floor(&mut self, s: ItemStack, pos: Vec2, angle: f32) -> u32 {
         let size = self.config.items.get(s.item as usize).map_or(1, |d| d.stack);
-        if let Some(it) = self.items.iter_mut().find(|it| it.stack.item == s.item && it.pos.distance(pos) < 0.25 && it.stack.count + s.count <= size) {
+        if let Some(it) = self.items.iter_mut().find(|it| it.stack.same_kind(&s) && it.pos.distance(pos) < 0.25 && it.stack.count + s.count <= size) {
             it.stack.count += s.count;
             return it.id;
         }
@@ -1087,7 +1123,7 @@ impl World {
             let n = left.min(size);
             let gid = self.next_item_id;
             self.next_item_id += 1;
-            self.items.push(GroundItem { id: gid, stack: ItemStack::new(i, n), pos, angle: 0.0 });
+            self.items.push(GroundItem { id: gid, stack: self.fresh_stack(i, n), pos, angle: 0.0 });
             id.get_or_insert(gid);
             left -= n;
         }
@@ -1100,7 +1136,8 @@ impl World {
         let Some(i) = self.item_index(item) else { return false };
         let Some(pi) = self.players.iter().position(|p| p.id == id) else { return false };
         let size = self.item_def(i).stack;
-        merge_into(&mut self.players[pi].inventory.carried, i, count.max(1), size);
+        let like = self.fresh_stack(i, 1);
+        merge_into(&mut self.players[pi].inventory.carried, like, count.max(1), size);
         self.refresh_carry(pi);
         true
     }
@@ -1135,7 +1172,7 @@ impl World {
             if def.two_handed {
                 out.extend(inv.off_hand.take());
             }
-            inv.hand = Some(ItemStack::one(it.stack.item));
+            inv.hand = Some(it.stack.with_count(1));
             let items = &self.config.items;
             let max = self.config.carry.max_load * self.carry(p).limit_kg;
             let w0 = p.inventory.weight(items);
@@ -1147,7 +1184,7 @@ impl World {
             let mut left = Vec::new();
             for s in out {
                 let mut trial = inv.clone();
-                merge_into(&mut trial.carried, s.item, s.count, items[s.item as usize].stack);
+                merge_into(&mut trial.carried, s, s.count, items[s.item as usize].stack);
                 if trial.used(items) <= trial.room(items, self.config.carry.pockets_l) + 1e-4 && trial.weight(items) <= max {
                     inv = trial;
                 } else {
@@ -1173,14 +1210,20 @@ impl World {
         let max = self.config.carry.max_load * self.carry(p).limit_kg;
         let mut inv = p.inventory.clone();
         let mut taken = 0;
+        // Whole ones; a part-eaten top one only comes along with all the rest.
+        let whole = ItemStack { used: 0, ..it.stack };
         for _ in 0..it.stack.count {
             let mut trial = inv.clone();
-            merge_into(&mut trial.carried, it.stack.item, 1, def.stack);
+            merge_into(&mut trial.carried, whole, 1, def.stack);
             if trial.used(items) > trial.room(items, self.config.carry.pockets_l) + 1e-4 || trial.weight(items) > max {
                 break;
             }
             inv = trial;
             taken += 1;
+        }
+        if taken == it.stack.count && it.stack.used > 0 {
+            inv = p.inventory.clone();
+            merge_into(&mut inv.carried, it.stack, taken, def.stack);
         }
         if taken == 0 {
             let full = inv.weight(items) + def.weight_kg > max;
@@ -1495,11 +1538,11 @@ mod tests {
         let k = me(&w, id).inventory.carried.iter().position(|s| w.item_def(s.item).id == "apple").unwrap() as u32;
         w.player_use(id, Place::Carried, k).unwrap();
         let mut ate = false;
-        for _ in 0..40 {
+        for _ in 0..80 {
             w.step();
             ate |= w.used_items.contains(&(id, w.item_index("apple").unwrap()));
         }
-        assert!(ate && last_note(&w, id) == "ate the apple", "{}", last_note(&w, id));
+        assert!(ate && last_note(&w, id).starts_with("ate the apple: "), "{}", last_note(&w, id));
         assert_eq!(me(&w, id).inventory.carried.iter().find(|s| w.item_def(s.item).id == "apple").unwrap().count, 2);
         assert!(w.player_use(id, Place::Carried, 0).is_err(), "can't eat a knife");
     }

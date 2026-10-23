@@ -763,7 +763,7 @@ impl World {
         let (size, vol) = (def.stack, def.volume_l);
         let c = self.carry(&self.players[pi]);
         if c.used_l + vol <= c.room_l + 1e-4 {
-            merge_into(&mut self.players[pi].inventory.carried, i, 1, size);
+            merge_into(&mut self.players[pi].inventory.carried, ItemStack::new(i, 1), 1, size);
         } else {
             let p = &self.players[pi];
             let (pos, angle) = (p.state.pos, p.state.facing);

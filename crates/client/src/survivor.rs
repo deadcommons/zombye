@@ -385,8 +385,9 @@ fn animate_survivors(
         if events.0.iter().any(|e| e.kind == CombatEventKind::PlayerHurt && e.player == a.player) {
             a.hurt_at = now;
         }
-        match (view.dead, a.dead_since) {
-            // Seen dead from the start: already lying there.
+        // Asleep, a survivor lies on its back too (#11), and gets straight up when it wakes.
+        match (view.dead || view.asleep, a.dead_since) {
+            // Seen dead (or asleep) from the start: already lying there.
             (true, None) => a.dead_since = Some(if fresh { now - 10.0 } else { now }),
             (false, Some(_)) => {
                 a.dead_since = None;

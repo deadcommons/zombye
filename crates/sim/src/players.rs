@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::health::Health;
 use crate::inventory::{Inventory, ItemJob};
 use crate::map::TileMap;
+use crate::needs::Needs;
 use crate::run::RunStats;
 
 /// Player body radius in metres.
@@ -68,9 +69,10 @@ impl PlayerInput {
     }
 }
 
-/// How a player's load, wounds (#9) and later skills (#46) change its movement. Worked out by the
-/// server whenever what it carries or its wounds change (`CarryTuning::mods`, then
-/// `Health::apply_to`) and sent with the player's state, so prediction uses the same numbers.
+/// How a player's load, wounds (#9), needs and sleep (#11) and later skills (#46) change its
+/// movement. Worked out by the server whenever what it carries, its wounds or its needs change
+/// (`CarryTuning::mods`, then `Health::apply_to`, then `World::needs_mods`; asleep it doesn't move
+/// at all) and sent with the player's state, so prediction uses the same numbers.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MoveMods {
     /// Multiplies every speed.
@@ -126,6 +128,8 @@ pub struct Player {
     pub hp: f32,
     /// Wounds on body parts, the infection, food poisoning (see `crate::health`).
     pub health: Health,
+    /// Hunger, thirst, tiredness and sleep (see `crate::needs`).
+    pub needs: Needs,
     /// Dead players ignore input and aren't seen or heard. Single-player can respawn.
     pub dead: bool,
     /// The weapon in hand (index into `WorldConfig::weapons`); `None` = bare hands. Derived from
@@ -172,6 +176,7 @@ impl Player {
             last_input_seq: 0,
             hp,
             health: Health::default(),
+            needs: Needs::default(),
             dead: false,
             weapon: None,
             inventory: Inventory::default(),
