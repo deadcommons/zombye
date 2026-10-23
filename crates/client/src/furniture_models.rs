@@ -8,6 +8,10 @@
 //! furniture is turned to its `facing`, a quarter more if that lines the model's long side up with
 //! a differently shaped placement (a table's), and scaled to the placement's tiles when they differ
 //! from the footprint.
+//!
+//! `ZOMBYE_EXTRA_MODELS` (folders separated by `:`) adds GLBs that aren't in the game yet, replacing
+//! any of the same kind: a work-in-progress asset's `export/` folder in the art repo, to check it in
+//! game before it's promoted. The MCP server passes its environment on to the `screenshot` client.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -45,6 +49,11 @@ impl FurnitureModels {
             }
         }
         Self(models)
+    }
+
+    /// Adds `other`'s models, replacing any of the same kind.
+    pub fn extend(&mut self, other: FurnitureModels) {
+        self.0.extend(other.0);
     }
 
     pub fn len(&self) -> usize {

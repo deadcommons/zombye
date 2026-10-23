@@ -10,6 +10,12 @@ Each entry: name -> (sRGB hex, roughness, metallic). Materials are named `pal.<n
 """
 
 PALETTE = {
+    # Brand anchors (Dead Commons style: stylised, friendly, playful-spooky; not photoreal, not
+    # gory). Accents, used sparingly: a sign, a toy, a stripe, a zombie's skin.
+    "brand_zombie_green": ("#8db06b", 0.8, 0.0),
+    "brand_red": ("#d7262b", 0.5, 0.0),
+    "brand_bone_white": ("#f2e6c9", 0.8, 0.0),
+    "brand_near_black": ("#141414", 0.6, 0.0),
     # Wood
     "wood_pine": ("#a8875c", 0.75, 0.0),     # light stained pine: shelves, desks
     "wood_oak": ("#86643f", 0.7, 0.0),       # mid oak: tables, bed frames

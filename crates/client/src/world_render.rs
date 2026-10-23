@@ -151,7 +151,11 @@ fn setup_shared(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, option
     let door_cracks = std::array::from_fn(|k| meshes.add(crack_mesh(true, k)));
     let pane_cracks = std::array::from_fn(|k| meshes.add(crack_mesh(false, k)));
     // Models live beside the game data: `<data>/../models/furniture` (assets/models/furniture).
-    let furniture = FurnitureModels::load(&options.data.join("../models/furniture"));
+    let mut furniture = FurnitureModels::load(&options.data.join("../models/furniture"));
+    // Models still in the works, checked in game before they're promoted (see furniture_models.rs).
+    for dir in std::env::var("ZOMBYE_EXTRA_MODELS").unwrap_or_default().split(':').filter(|d| !d.is_empty()) {
+        furniture.extend(FurnitureModels::load(std::path::Path::new(dir)));
+    }
     info!("{} furniture models", furniture.len());
     commands.insert_resource(SharedMeshes { door, pane, shards, door_cracks, pane_cracks, furniture });
 }
