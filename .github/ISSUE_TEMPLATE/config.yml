@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/deadcommons/zombye/discussions
+    about: Ask how something works, share an idea, or show what you made.
+  - name: Discord
+    url: https://discord.gg/y7NsmVG2br
+    about: Chat with players, modders and people building agents.
+  - name: Code of conduct or safety problem
+    url: https://github.com/deadcommons/zombye/blob/main/CODE_OF_CONDUCT.md
+    about: Report privately as the code of conduct describes, not in a public issue.

@@ -1,0 +1,68 @@
+name: Bug report
+description: Something in the game, server or MCP tools doesn't work as it should.
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Questions and ideas are better in [Discussions](https://github.com/deadcommons/zombye/discussions).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen
+      description: Steps, the command line you ran (e.g. `cargo run -p zombye-client --release -- --seed 7 --zombies 1000`), and the seed if it matters.
+      placeholder: |
+        1. Run ...
+        2. Walk to ...
+        3. See ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The commit (`git rev-parse --short HEAD`) or the build you downloaded.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Platform
+      options:
+        - macOS
+        - Windows
+        - Linux
+        - Steam Deck
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: part
+    attributes:
+      label: Where
+      options:
+        - Game client
+        - Headless server
+        - MCP tools / agents
+        - Mods or data files
+        - Don't know
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: The client prints one stats line per second; paste the lines around the problem. Screenshots of Zombye are welcome.
+      render: text
+  - type: checkboxes
+    id: clean
+    attributes:
+      label: Clean room
+      options:
+        - label: This report contains no files, code, data or screenshots from another game.
+          required: true
