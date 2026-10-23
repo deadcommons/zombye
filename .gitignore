@@ -12,3 +12,7 @@ docs/research/
 # Agent worktrees and their build folders
 /.claude/worktrees/
 /target-*/
+
+# Python bytecode (tools/blender runs inside Blender)
+__pycache__/
+*.blend1

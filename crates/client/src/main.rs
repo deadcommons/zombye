@@ -34,6 +34,7 @@ mod autoplay;
 mod camera;
 mod daynight;
 mod fog;
+mod furniture_models;
 mod fx;
 mod hud;
 mod inventory_ui;

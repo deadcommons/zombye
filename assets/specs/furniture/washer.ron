@@ -1,0 +1,14 @@
+// Asset spec (tools/blender/zasset.py reads it; .claude/skills/blender-assets/SKILL.md).
+// footprint: tiles, width (x) × depth (y) facing south; size: metres, x × y × z of the model.
+AssetSpec(
+    id: "washer",
+    category: Furniture,
+    name: "Washing machine",
+    footprint: (1, 1),
+    size: (0.68, 0.66, 1.08),
+    against_wall: true,
+    tris: 500,
+    texture: None,
+    style: "Off-white top-loading washer: lid on top, control backsplash with dials, a plain front.",
+    description: "A top-loading washing machine.",
+)
