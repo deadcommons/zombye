@@ -23,6 +23,7 @@ use crate::items::{self, GroundItem, WeaponCategory, WeaponDef};
 use crate::players::Action;
 use crate::flow::{FlowCache, FlowField, WalkGrid};
 use crate::map::{Edge, EdgeChange, EdgeRef, OwnedEdge, TileMap};
+use crate::nav::Nav;
 use crate::players::{self, PLAYER_RADIUS, Player, PlayerInput, Stance};
 use crate::population::{NEVER, Population, PopulationDef, Zone};
 use crate::rng::{Rng, hash01};
@@ -121,6 +122,10 @@ pub struct TickStats {
     /// Senses plus flow-field builds.
     pub senses_ms: f32,
     pub flow_ms: f32,
+    /// Time making plans over the navigation graph, plans made and nodes expanded (`crate::nav`).
+    pub nav_ms: f32,
+    pub nav_plans: u32,
+    pub nav_expanded: u32,
     /// Zombies chasing, lunging at or attacking a player.
     pub chasing: u32,
     pub investigating: u32,
@@ -208,6 +213,8 @@ pub struct World {
     /// Walkable steps per tile, for flow-field searches. Kept in step with `map`.
     pub(crate) walk: WalkGrid,
     pub(crate) flow_cache: FlowCache,
+    /// The navigation graph (derived from `walk`) and the shared long-range plans (saved).
+    pub(crate) nav: Nav,
     /// Players as the senses see them this tick.
     pub(crate) targets: Vec<Target>,
     pub(crate) rng: Rng,
@@ -251,11 +258,13 @@ impl World {
     /// Generate the map from the config's seed and templates and scatter the zombies over it.
     pub fn new(config: WorldConfig) -> Self {
         let mut world = Self::generate(config);
+        world.nav = Nav::new(&world.walk);
         world.populate();
         world
     }
 
-    /// The generated world before any zombies (loading a save starts from this).
+    /// The generated world before any zombies, and without its navigation graph (loading a save
+    /// starts from this, and builds the graph once the map edits are in).
     pub(crate) fn generate(mut config: WorldConfig) -> Self {
         add_fists(&mut config.weapons);
         let unarmed = config.weapons.iter().position(|w| w.category == WeaponCategory::Unarmed).unwrap_or(0) as u16;
@@ -265,6 +274,7 @@ impl World {
         let hash = SpatialHash::new(map.width() as f32, map.height() as f32, 1.0);
         let regions = RegionIndex::new(&map, config.tiers.region_size);
         let walk = WalkGrid::new(&map);
+        let nav = Nav::default();
         let mut world = Self {
             rng: Rng::new(config.generation.seed),
             combat_rng: Rng::new(config.generation.seed ^ 0xC0_4BA7),
@@ -304,6 +314,7 @@ impl World {
             goal_flow: None,
             goal_dirty: false,
             walk,
+            nav,
             flow_cache: FlowCache::new(FLOW_CACHE_SIZE, FLOW_BUILDS_PER_TICK, PLAYER_FLOW_RANGE, POINT_FLOW_RANGE, FLOW_REBUILD_TICKS),
             targets: Vec::new(),
             next_id: 1,
@@ -447,8 +458,14 @@ impl World {
     pub fn map_changed(&mut self) {
         self.map_custom = true;
         self.walk = WalkGrid::new(&self.map);
+        self.nav.rebuild_all(&self.walk);
         self.flow_cache.invalidate();
         self.goal_dirty = true;
+    }
+
+    /// The navigation graph and the long-range plans zombies share.
+    pub fn nav(&self) -> &Nav {
+        &self.nav
     }
 
     /// Flow fields cached for zombies' targets right now.
@@ -598,6 +615,7 @@ impl World {
         self.map_edits.insert(edge.key());
         self.edge_changes.push(EdgeChange { tile: edge.tile, edge: edge.edge, kind });
         self.walk.update_around(&self.map, edge.tile);
+        self.nav.edge_changed(&self.walk, edge.tile);
         self.goal_dirty = true;
         self.flow_cache.invalidate_near(edge.tile);
     }
@@ -754,11 +772,18 @@ impl World {
         let targets = &self.targets;
         self.flow_cache.update(&self.walk, self.tick, |id| targets.iter().find(|p| p.id == id).map(|p| p.pos.floor().as_ivec2()));
         let flow_ms = start.elapsed().as_secs_f32() * 1000.0 - senses_ms - tier_ms;
+        // Plans the zombies asked for last tick.
+        let nav_start = Instant::now();
+        self.nav.update(self.tick);
+        let nav_ms = nav_start.elapsed().as_secs_f32() * 1000.0;
+        let long_paths = self.config.tiers.long_paths;
 
         self.scratch_pos.clear();
         self.scratch_pos.extend_from_slice(&self.zombies.pos);
         let mut cx = Ctx {
             map: &self.map,
+            walk: &self.walk,
+            nav: long_paths.then_some(&mut self.nav),
             hash: &self.hash,
             targets: &self.targets,
             tuning: &self.config.zombie,
@@ -776,6 +801,8 @@ impl World {
         let near_start = Instant::now();
         let mut ncx = NearCtx {
             map: &self.map,
+            walk: &self.walk,
+            nav: long_paths.then_some(&mut self.nav),
             flow: &self.flow_cache,
             goal: self.goal_flow.as_ref(),
             tuning: &self.config.zombie,
@@ -796,7 +823,8 @@ impl World {
         }
         self.population.expire(self.tick);
         let seed = self.config.generation.seed;
-        let virtual_updated = tiers::step_virtual(&mut self.zombies, &self.regions, &self.map, t, tt, &self.population, migration, self.tick, seed);
+        let nav = long_paths.then_some(&mut self.nav);
+        let virtual_updated = tiers::step_virtual(&mut self.zombies, &self.regions, &self.map, &self.walk, nav, t, tt, &self.population, migration, self.tick, seed);
         let virtual_ms = virtual_start.elapsed().as_secs_f32() * 1000.0;
         self.apply_thumps();
         self.apply_zombie_attacks();
@@ -810,6 +838,9 @@ impl World {
             tick_ms: start.elapsed().as_secs_f32() * 1000.0,
             senses_ms,
             flow_ms,
+            nav_ms,
+            nav_plans: self.nav.made,
+            nav_expanded: self.nav.expanded,
             chasing: counts.hunting,
             investigating: counts.investigating,
             sight_checks,
@@ -2209,6 +2240,10 @@ mod tests {
         let start = Instant::now();
         let mut w = World::new(WorldConfig::new(1, 21_500, templates()).with_map_chunks(64));
         let gen_ms = start.elapsed().as_secs_f32() * 1000.0;
+        let s = Instant::now();
+        let graph = crate::nav::NavGraph::new(&w.walk);
+        let nav_build_ms = s.elapsed().as_secs_f32() * 1000.0;
+        assert_eq!(&graph, w.nav().graph());
         let main_y = (w.town_min.y + w.town_max.y) as f32 / 2.0;
         let camp = open_tile_near(&w, Vec2::new(w.town_min.x as f32 * 0.5, main_y));
         w.spawn_zombies(1000, camp, 45.0);
@@ -2231,6 +2266,7 @@ mod tests {
         let (mut total, mut worst) = (0.0f32, 0.0f32);
         let mut sum = TickStats::default();
         let mut tiers = [0u32; 3];
+        let mut worst_nav = 0.0f32;
         for t in 200..200 + ticks {
             drive(&mut w, t);
             let s = Instant::now();
@@ -2246,6 +2282,10 @@ mod tests {
             sum.virtual_ms += st.virtual_ms;
             sum.near_updated += st.near_updated;
             sum.virtual_updated += st.virtual_updated;
+            sum.nav_ms += st.nav_ms;
+            sum.nav_plans += st.nav_plans;
+            sum.nav_expanded += st.nav_expanded;
+            worst_nav = worst_nav.max(st.nav_ms);
             tiers = [tiers[0].max(st.active), tiers[1].max(st.near), tiers[2].max(st.virtual_)];
         }
         let n = ticks as f32;
@@ -2253,7 +2293,8 @@ mod tests {
         eprintln!(
             "1 km map (generated in {gen_ms:.0} ms), {} zombies: {} active / {} near / {} virtual (now; peaks {:?}), {} hunting\n  \
              {ticks} ticks: avg {avg:.3} ms/tick, worst {worst:.3} ms (budget 50 ms)\n  \
-             per tick: tiers+index {:.3} ms, senses {:.3} ms, flow {:.3} ms, active AI {:.3} ms, near {:.3} ms ({:.0} updated), virtual {:.3} ms ({:.0} moved)",
+             per tick: tiers+index {:.3} ms, senses {:.3} ms, flow {:.3} ms, active AI {:.3} ms, near {:.3} ms ({:.0} updated), virtual {:.3} ms ({:.0} moved)\n  \
+             nav: graph of {} nodes / {} links built in {nav_build_ms:.1} ms; {} plans in {ticks} ticks ({} nodes expanded), {:.3} ms/tick, worst {worst_nav:.3} ms; {} cached ({} bytes saved)",
             w.zombies.len(),
             w.stats.active,
             w.stats.near,
@@ -2268,6 +2309,13 @@ mod tests {
             sum.near_updated as f32 / n,
             sum.virtual_ms / n,
             sum.virtual_updated as f32 / n,
+            graph.len(),
+            graph.link_count(),
+            sum.nav_plans,
+            sum.nav_expanded,
+            sum.nav_ms / n,
+            w.nav().plan_count(),
+            postcard::to_allocvec(&w.nav.to_saved()).unwrap().len(),
         );
         assert!(w.stats.active >= 1000, "only {} active", w.stats.active);
         assert!(w.stats.virtual_ >= 20_000, "only {} virtual", w.stats.virtual_);
@@ -2446,9 +2494,11 @@ mod tests {
 
     /// Zombies in a cluster `from` (all virtual: the player is far off), a noise of `radius` at
     /// `noise`, maybe in a closed room; steps `minutes` and returns, per minute, how many had come
-    /// within 40 m of the noise, plus the world.
-    fn migration_run(def: PopulationDef, noise: Vec2, from: Vec2, radius: f32, room: bool, lasting: bool, minutes: u32) -> (Vec<usize>, World) {
+    /// within 40 m of the noise, plus the world. `prepare` may change the world first.
+    #[allow(clippy::too_many_arguments)]
+    fn migration_run(def: PopulationDef, noise: Vec2, from: Vec2, radius: f32, room: bool, lasting: bool, minutes: u32, prepare: impl FnOnce(&mut World)) -> (Vec<usize>, World) {
         let mut w = big_arena(40, def);
+        prepare(&mut w);
         if room {
             // A shut 4 x 4 room round the noise.
             let c = noise.floor().as_ivec2();
@@ -2502,13 +2552,13 @@ mod tests {
     fn a_loud_noise_draws_the_far_horde_in_over_minutes() {
         let (noise, from) = (Vec2::new(320.5, 600.5), Vec2::new(600.5, 300.5));
         assert!(noise.distance(from) > 400.0);
-        let (arrived, _) = migration_run(PopulationDef::default(), noise, from, 120.0, false, false, 20);
+        let (arrived, _) = migration_run(PopulationDef::default(), noise, from, 120.0, false, false, 20, |_| {});
         eprintln!("outdoor noise 410 m away, arrivals by minute: {arrived:?}");
         assert!(arrived[1] == 0, "arrivals within two minutes: {arrived:?}");
         assert!(*arrived.last().unwrap() >= 300 * 6 / 10, "only {} of 300 came: {arrived:?}", arrived.last().unwrap());
         let mut off = PopulationDef::default();
         off.migration.enabled = false;
-        let (arrived, _) = migration_run(off, noise, from, 120.0, false, false, 20);
+        let (arrived, _) = migration_run(off, noise, from, 120.0, false, false, 20, |_| {});
         assert_eq!(*arrived.last().unwrap(), 0, "without migration: {arrived:?}");
     }
 
@@ -2520,12 +2570,12 @@ mod tests {
         let d = noise.distance(from);
         let def = PopulationDef::default();
         assert!(d > 120.0 * ZombieTuning::default().wall_muffle * 4.0 && d < 120.0 * def.migration.reach_mult * def.migration.indoor_mult);
-        let (arrived, _) = migration_run(def.clone(), noise, from, 120.0, true, false, 20);
+        let (arrived, _) = migration_run(def.clone(), noise, from, 120.0, true, false, 20, |_| {});
         eprintln!("indoor noise {d:.0} m away, arrivals by minute: {arrived:?}");
         assert!(*arrived.last().unwrap() >= 300 / 2, "only {} of 300 came: {arrived:?}", arrived.last().unwrap());
         let mut off = def;
         off.migration.enabled = false;
-        let (arrived, _) = migration_run(off, noise, from, 120.0, true, false, 20);
+        let (arrived, _) = migration_run(off, noise, from, 120.0, true, false, 20, |_| {});
         assert_eq!(*arrived.last().unwrap(), 0, "hearing alone shouldn't reach them: {arrived:?}");
     }
 
@@ -2561,5 +2611,135 @@ mod tests {
         assert_ne!(a.0, b.0, "a lasting attractor should show in the state hash");
         assert!(a.2 > 0, "respawn never ran");
         eprintln!("determinism run: {a:?}");
+    }
+
+    // --- Long-range paths (crate::nav) ---
+
+    /// A row of shut houses (a front and a back door and a window each) along x 380..392 from
+    /// `y0` to `y1`, joined by garden fences, with back-garden fences running `wing` metres east at
+    /// both ends: a pocket a horde coming from the east walks into. Returns each house's tile box.
+    fn house_row(w: &mut World, y0: i32, y1: i32, wing: i32) -> Vec<(IVec2, IVec2)> {
+        let (x0, x1) = (380, 392);
+        let mut houses = Vec::new();
+        let mut y = y0;
+        while y + 14 <= y1 {
+            let (lo, hi) = (IVec2::new(x0, y), IVec2::new(x1, y + 14));
+            for x in lo.x..hi.x {
+                w.map.set_edge(IVec2::new(x, lo.y), Side::N, Edge::Wall);
+                w.map.set_edge(IVec2::new(x, hi.y - 1), Side::S, Edge::Wall);
+            }
+            for yy in lo.y..hi.y {
+                w.map.set_edge(IVec2::new(lo.x, yy), Side::W, Edge::Wall);
+                w.map.set_edge(IVec2::new(hi.x - 1, yy), Side::E, Edge::Wall);
+            }
+            w.map.set_edge(IVec2::new(lo.x, lo.y + 7), Side::W, Edge::DoorClosed);
+            w.map.set_edge(IVec2::new(hi.x - 1, lo.y + 7), Side::E, Edge::DoorClosed);
+            w.map.set_edge(IVec2::new(hi.x - 1, lo.y + 10), Side::E, Edge::Window);
+            houses.push((lo, hi));
+            if y + 15 + 14 <= y1 {
+                // The garden fence across the one-metre gap to the next house.
+                w.map.set_edge(IVec2::new(x0 + 6, y + 14), Side::W, Edge::Fence);
+            }
+            y += 15;
+        }
+        let south = houses.last().unwrap().1.y - 1;
+        for x in x1..x1 + wing {
+            w.map.set_edge(IVec2::new(x, y0), Side::N, Edge::Fence);
+            w.map.set_edge(IVec2::new(x, south), Side::S, Edge::Fence);
+        }
+        w.map_changed();
+        houses
+    }
+
+    /// Issue #44's target: a far (virtual) horde drawn to a noise on the far side of a row of shut
+    /// houses goes round through the streets instead of piling up against the back gardens, which
+    /// is where straight-line movement leaves it; nobody walks through a wall or into a house, and
+    /// a few shared plans serve the whole horde.
+    #[test]
+    fn a_far_horde_finds_the_way_round_a_row_of_houses() {
+        let (noise, from) = (Vec2::new(290.5, 320.5), Vec2::new(540.5, 320.5));
+        let mut houses = Vec::new();
+        let run = |long_paths: bool, houses: &mut Vec<(IVec2, IVec2)>| {
+            migration_run(PopulationDef::default(), noise, from, 120.0, false, false, 20, |w| {
+                w.config.tiers.long_paths = long_paths;
+                *houses = house_row(w, 230, 412, 30);
+            })
+        };
+        let (with, w) = run(true, &mut houses);
+        let (without, w_off) = run(false, &mut houses);
+        eprintln!("horde 250 m off behind a row of houses, arrivals by minute:\n  long paths: {with:?}\n  straight:   {without:?}");
+        eprintln!("  {} plan searches for {} zombies ({} plans cached now)", w.nav().searches, w.zombies.len(), w.nav().plan_count());
+        let n = w.zombies.len();
+        assert!(*with.last().unwrap() >= n * 7 / 10, "only {} of {n} came round: {with:?}", with.last().unwrap());
+        assert!(*without.last().unwrap() <= n / 5, "straight-line movement got round anyway: {without:?}; make the pocket deeper");
+        assert!(w.nav().searches <= 80, "{} searches: plans aren't being shared", w.nav().searches);
+        for w in [&w, &w_off] {
+            for p in &w.zombies.pos {
+                let t = p.floor().as_ivec2();
+                assert!(!houses.iter().any(|(lo, hi)| t.x >= lo.x && t.y >= lo.y && t.x < hi.x && t.y < hi.y), "a zombie got into a shut house at {p}");
+                assert!(!w.map.tile_blocked(t));
+            }
+        }
+    }
+
+    /// The navigation graph follows the map: a door shut between two areas is a costly portal, one
+    /// broken open joins them (inside a chunk, into one node; on a chunk border, as an open
+    /// portal), shutting an open door makes it a portal again, plans through a changed door are
+    /// dropped, and the graph is always the one a fresh build would give.
+    #[test]
+    fn the_graph_follows_doors_breaking_and_shutting() {
+        use crate::nav::{NavGraph, PortalKind};
+        let mut w = big_arena(4, PopulationDef::default());
+        // A 6 x 6 shed at x 26..32, y 20..26: its east wall is on the border of chunks 1 and 2.
+        for k in 0..6 {
+            w.map.set_edge(IVec2::new(26 + k, 20), Side::N, Edge::Wall);
+            w.map.set_edge(IVec2::new(26 + k, 25), Side::S, Edge::Wall);
+            w.map.set_edge(IVec2::new(26, 20 + k), Side::W, Edge::Wall);
+            w.map.set_edge(IVec2::new(31, 20 + k), Side::E, Edge::Wall);
+        }
+        w.map.set_edge(IVec2::new(26, 22), Side::W, Edge::DoorClosed);
+        w.map.set_edge(IVec2::new(31, 23), Side::E, Edge::DoorClosed);
+        w.map_changed();
+        let (inside, west, east) = (IVec2::new(28, 22), IVec2::new(25, 22), IVec2::new(32, 23));
+        let link = |w: &World, a: IVec2, b: IVec2| -> Option<PortalKind> {
+            let g = w.nav().graph();
+            let (na, nb) = (g.node_at(a).unwrap(), g.node_at(b).unwrap());
+            if na == nb {
+                return Some(PortalKind::Open);
+            }
+            g.node(na).unwrap().links.iter().filter(|l| l.to == nb).map(|l| l.kind).min()
+        };
+        // Is there a portal of `kind` across the crossing from `a` to `b`?
+        let portal = |w: &World, a: IVec2, b: IVec2, kind: PortalKind| {
+            let g = w.nav().graph();
+            g.node(g.node_at(a).unwrap()).unwrap().links.iter().any(|l| l.via == a && l.to_tile == b && l.kind == kind)
+        };
+        let fresh = |w: &World| assert_eq!(w.nav().graph(), &NavGraph::new(&w.walk), "local update differs from a fresh build");
+        assert_eq!(link(&w, inside, west), Some(PortalKind::Door));
+        assert_eq!(link(&w, inside, east), Some(PortalKind::Door));
+        assert_ne!(w.nav().graph().node_at(inside), w.nav().graph().node_at(west));
+        // A plan from inside out through the west door.
+        let far = Vec2::new(10.5, 22.5);
+        let (from, goal) = (w.nav().graph().node_at(inside).unwrap(), w.nav().goal_of(far).unwrap().0);
+        assert_eq!(w.nav.route(from, goal, w.tick), crate::nav::Route::Pending);
+        w.nav.update(w.tick);
+        assert_eq!(w.nav().plan_count(), 1);
+        // The west door is battered in: inside and out are one area of the chunk now.
+        w.break_edge(EdgeRef::of(IVec2::new(26, 22), Side::W), SoundSource::World);
+        assert_eq!(w.nav().graph().node_at(inside), w.nav().graph().node_at(west));
+        assert_eq!(w.nav().plan_count(), 0, "the plan through the old door is dropped");
+        fresh(&w);
+        // The east door, on the chunk border: opened it's an open portal, shut again a door.
+        let east_door = EdgeRef::of(IVec2::new(31, 23), Side::E);
+        let (door_in, door_out) = (IVec2::new(31, 23), IVec2::new(32, 23));
+        assert!(portal(&w, door_in, door_out, PortalKind::Door));
+        w.toggle_edge(east_door, SoundSource::World);
+        assert_eq!(w.map.owned_edge(east_door.tile, east_door.edge), Edge::DoorOpen);
+        assert!(!portal(&w, door_in, door_out, PortalKind::Door));
+        assert_eq!(link(&w, door_in, door_out), Some(PortalKind::Open));
+        fresh(&w);
+        w.toggle_edge(east_door, SoundSource::World);
+        assert!(portal(&w, door_in, door_out, PortalKind::Door), "shut again: a door portal");
+        fresh(&w);
     }
 }

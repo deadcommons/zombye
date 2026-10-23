@@ -12,6 +12,7 @@ pub mod combat;
 pub mod flow;
 pub mod items;
 pub mod map;
+pub mod nav;
 pub mod players;
 pub mod population;
 pub mod rng;

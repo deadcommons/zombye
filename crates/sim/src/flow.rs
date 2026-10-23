@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 use crate::map::{Edge, Side, TileMap};
 
 /// Cost of a straight step and a diagonal step (×10 fixed point).
-const STRAIGHT: u32 = 10;
-const DIAGONAL: u32 = 14;
+pub(crate) const STRAIGHT: u32 = 10;
+pub(crate) const DIAGONAL: u32 = 14;
 pub const UNREACHABLE: u32 = u32::MAX;
 /// Extra path cost (same fixed point) of climbing through an open or broken window, and of
 /// battering through an intact window or a shut door. Our own values: a window is quicker to get
@@ -28,7 +28,7 @@ pub const WINDOW_BREACH_COST: u32 = 60;
 pub const DOOR_BREACH_COST: u32 = 140;
 
 /// The 8 step directions as unit vectors, indexed by [`step_index`]; index 8 means "no step".
-const STEPS: [Vec2; 9] = {
+pub(crate) const STEPS: [Vec2; 9] = {
     const D: f32 = std::f32::consts::FRAC_1_SQRT_2;
     [
         Vec2::new(1.0, 0.0),
@@ -42,7 +42,7 @@ const STEPS: [Vec2; 9] = {
         Vec2::ZERO,
     ]
 };
-const NO_STEP: u8 = 8;
+pub(crate) const NO_STEP: u8 = 8;
 
 #[derive(Clone, Debug, Default)]
 pub struct FlowField {
@@ -61,7 +61,7 @@ pub struct FlowField {
 }
 
 /// The 8 one-tile steps in [`STEPS`] order.
-const OFFSETS: [IVec2; 8] = [
+pub(crate) const OFFSETS: [IVec2; 8] = [
     IVec2::new(1, 0),
     IVec2::new(1, 1),
     IVec2::new(0, 1),
@@ -84,13 +84,14 @@ pub struct WalkGrid {
     height: i32,
     mask: Vec<u8>,
     /// Bits 0-3: climbing step (straight step `k` at bit `k / 2`); 4-7: through an intact window;
-    /// 8-11: through a shut door.
+    /// 8-11: through a shut door; bit 15: the tile itself is blocked (a tree, furniture).
     extra: Vec<u16>,
 }
 
-const CLIMB_BITS: u32 = 0;
-const WINDOW_BITS: u32 = 4;
-const DOOR_BITS: u32 = 8;
+pub(crate) const CLIMB_BITS: u32 = 0;
+pub(crate) const WINDOW_BITS: u32 = 4;
+pub(crate) const DOOR_BITS: u32 = 8;
+const BLOCKED_BIT: u16 = 1 << 15;
 
 /// The side of a tile a straight step `k` (even, in [`STEPS`] order) leaves through.
 fn step_side(k: usize) -> Side {
@@ -143,6 +144,9 @@ impl WalkGrid {
             };
             m |= (ok as u8) << k;
         }
+        if map.tile_blocked(t) {
+            extra |= BLOCKED_BIT;
+        }
         let i = (t.y * self.width + t.x) as usize;
         self.mask[i] = m;
         self.extra[i] = extra;
@@ -159,12 +163,28 @@ impl WalkGrid {
         }
     }
 
-    fn steps(&self, t: IVec2) -> u8 {
+    pub fn width(&self) -> i32 {
+        self.width
+    }
+
+    pub fn height(&self) -> i32 {
+        self.height
+    }
+
+    /// Which of the 8 steps out of `t` are walkable (bit `k` = step `k`, east first, turning
+    /// toward +y).
+    pub(crate) fn steps(&self, t: IVec2) -> u8 {
         if self.in_bounds(t) { self.mask[(t.y * self.width + t.x) as usize] } else { 0 }
     }
 
-    fn extra(&self, t: IVec2) -> u16 {
+    /// Climb, window and door bits of `t`'s straight steps (see the field docs).
+    pub(crate) fn extra(&self, t: IVec2) -> u16 {
         if self.in_bounds(t) { self.extra[(t.y * self.width + t.x) as usize] } else { 0 }
+    }
+
+    /// Is tile `t` blocked (a tree, furniture, off the map)?
+    pub(crate) fn blocked(&self, t: IVec2) -> bool {
+        !self.in_bounds(t) || self.extra[(t.y * self.width + t.x) as usize] & BLOCKED_BIT != 0
     }
 
     /// Extra cost of straight step `k` out of `t` beyond a plain step, or `None` if it isn't
