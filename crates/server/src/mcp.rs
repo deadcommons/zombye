@@ -68,7 +68,8 @@ fn handle(world: &mut World, msg: &Value) -> Option<Value> {
                 (letters show what each is doing), zombie to inspect one, edge for a door's or window's state and hit points, \
                 and buildings to list houses. Zombies far from every player are simulated in less detail (tiers: active \
                 within about 60 m, near out to 150 m, virtual beyond; stats has the counts): only active ones fight, see and \
-                show their state on the map, but every zombie keeps heading where it was going."
+                show their state on the map, but every zombie keeps heading where it was going. Loud noises also draw the \
+                far horde in slowly, over minutes (regions shows zombies per region, targets and the pull of loud events)."
         })),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({"tools": tool_list()})),
@@ -117,10 +118,14 @@ fn tool_list() -> Value {
         {
             "name": "make_noise",
             "description": "Debug: a noise at (x, y). Zombies within radius metres (40% of that through walls) come to investigate; \
-                heard on the next tick. For scale: walking 6 m, running 14 m, a door 10 m, a groan 9 m, a zombie thumping a door 15 m, breaking glass 22 m.",
+                heard on the next tick. For scale: walking 6 m, running 14 m, a door 10 m, a groan 9 m, a zombie thumping a door 15 m, breaking glass 22 m, \
+                breaking a door 26 m. A loud one (25 m or more, see population.ron) also leaves an attractor: over the next minutes far (virtual) \
+                zombies from up to 4x the radius away (less from indoors) drift in toward it. lasting: true makes that pull last 30 minutes \
+                instead of 10, like an alarm left ringing. See regions.",
             "inputSchema": {"type": "object", "required": ["x", "y", "radius"], "properties": {
                 "x": {"type": "number"}, "y": {"type": "number"},
-                "radius": {"type": "number", "minimum": 0, "maximum": 500}
+                "radius": {"type": "number", "minimum": 0, "maximum": 500},
+                "lasting": {"type": "boolean", "default": false, "description": "Leave a long-lived attractor"}
             }}
         },
         {
@@ -243,6 +248,14 @@ fn tool_list() -> Value {
         {
             "name": "buildings",
             "description": "List buildings: index, template, bounds, storeys and ground-floor rooms. Marks the one the player wakes up in.",
+            "inputSchema": {"type": "object", "properties": {}}
+        },
+        {
+            "name": "regions",
+            "description": "Population by 64 m region: ASCII heat maps of living zombies per region (all tiers) and of each region's \
+                target (from the density in population.ron), the pull of attractors (loud events drawing the far horde in) on each region \
+                with players marked, and the zone with the most open ground; then the attractors (where, reach, how far the pull has \
+                spread, strength, time left) and the regions furthest below and above their targets.",
             "inputSchema": {"type": "object", "properties": {}}
         },
         {
@@ -508,9 +521,19 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
         "make_noise" => {
             let pos = point().ok_or("x and y are required")?;
             let radius = num("radius").ok_or("radius is required")? as f32;
-            apply_intent(world, &Intent::MakeNoise { pos, radius });
-            Ok(format!("noise at ({:.1}, {:.1}) with radius {:.1} m; zombies hear it on the next tick", pos[0], pos[1], radius.clamp(0.0, 500.0)))
+            let lasting = args.get("lasting").and_then(Value::as_bool).unwrap_or(false);
+            apply_intent(world, &Intent::MakeNoise { pos, radius, lasting });
+            let m = &world.config.population.migration;
+            let pull = if lasting {
+                format!("; it leaves a lasting attractor ({:.0} min)", m.lasting_secs / 60.0)
+            } else if m.enabled && radius >= m.min_radius {
+                format!("; loud enough to leave an attractor ({:.0} min) once heard", m.life_secs / 60.0)
+            } else {
+                String::new()
+            };
+            Ok(format!("noise at ({:.1}, {:.1}) with radius {:.1} m; zombies hear it on the next tick{pull}", pos[0], pos[1], radius.clamp(0.0, 500.0)))
         }
+        "regions" => Ok(regions(world)),
         "zombie" => {
             let id = args.get("id").and_then(Value::as_u64).ok_or("id is required")? as u32;
             let i = world.zombies.index_of(id).ok_or_else(|| format!("no zombie {id}"))?;
@@ -585,6 +608,20 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                     "hysteresis": world.config.tiers.hysteresis,
                     "region": world.regions().size(),
                 },
+            },
+            "population": {
+                "target": world.population().total_target().round(),
+                "alive": world.zombies.state.iter().filter(|s| **s != ZombieState::Dead).count(),
+                "attractors": world.population().attractors.iter().map(|a| json!({
+                    "id": a.id,
+                    "pos": a.pos.to_array(),
+                    "reach_m": a.reach,
+                    "felt_m": a.felt_radius(world.tick, world.config.population.migration.spread_speed),
+                    "strength": a.strength(world.tick),
+                })).collect::<Vec<_>>(),
+                "migration": world.config.population.migration.enabled,
+                "respawn": world.config.population.respawn.enabled,
+                "respawned": world.population().respawned,
             },
             "zombie_states": {
                 "wander": state_count(world, ZombieState::Wander),
@@ -768,6 +805,108 @@ fn hp_text(world: &World, e: EdgeRef) -> String {
         Some((hp, max)) => format!(", {hp:.0}/{max:.0} HP"),
         None => String::new(),
     }
+}
+
+/// Heat-map character for a zombie count.
+fn heat(n: f32) -> char {
+    match n.round() as u32 {
+        0 => ' ',
+        1..=4 => '.',
+        5..=14 => ':',
+        15..=39 => '-',
+        40..=99 => '=',
+        100..=249 => '+',
+        250..=499 => '*',
+        _ => '#',
+    }
+}
+
+/// The `regions` tool: per-region population (actual vs target), attractor pull and zones.
+fn regions(world: &World) -> String {
+    let regions = world.regions();
+    let pop = world.population();
+    let m = &world.config.population.migration;
+    let (cols, rows) = (regions.cols(), regions.rows());
+    let mut actual = vec![0u32; regions.regions()];
+    for i in 0..world.zombies.len() {
+        if world.zombies.state[i] != ZombieState::Dead {
+            actual[regions.region_of(world.zombies.pos[i])] += 1;
+        }
+    }
+    let alive: u32 = actual.iter().sum();
+    let r = &world.config.population.respawn;
+    let mut out = format!(
+        "{cols} x {rows} regions of {:.0} m (x east, y south). {alive} zombies alive, target {:.0}; {} attractor(s); migration {}; respawn {}{}.\n",
+        regions.size(),
+        pop.total_target(),
+        pop.attractors.len(),
+        if m.enabled { "on" } else { "off" },
+        if r.enabled { "on" } else { "off" },
+        if r.enabled { format!(" ({} added so far)", pop.respawned) } else { String::new() },
+    );
+    let w = cols as usize;
+    out.push_str(&format!("{:<w$}  {:<w$}  {:<w$}  {:<w$}\n", "zombies", "target", "pull", "zone"));
+    let player_regions: Vec<usize> = world.players.iter().map(|p| regions.region_of(p.state.pos)).collect();
+    let attractor_regions: Vec<usize> = pop.attractors.iter().map(|a| regions.region_of(a.pos)).collect();
+    for y in 0..rows {
+        let mut line = String::new();
+        let row = |f: &dyn Fn(usize) -> char| (0..cols).map(|x| f((y * cols + x) as usize)).collect::<String>();
+        line.push_str(&row(&|k| heat(actual[k] as f32)));
+        line.push_str("  ");
+        line.push_str(&row(&|k| heat(pop.target[k])));
+        line.push_str("  ");
+        line.push_str(&row(&|k| {
+            if player_regions.contains(&k) {
+                return 'P';
+            }
+            if attractor_regions.contains(&k) {
+                return '@';
+            }
+            let pull = pop.pull_on(regions, k, m, world.tick);
+            if pull.strength <= 0.0 {
+                return ' ';
+            }
+            let idx = pop.attractors.iter().position(|a| a.id == pull.attractor).unwrap_or(0) as u8 % 26;
+            if pull.strength >= 0.3 { (b'A' + idx) as char } else { (b'a' + idx) as char }
+        }));
+        line.push_str("  ");
+        line.push_str(&row(&|k| pop.zone[k].letter()));
+        out.push_str(line.trim_end());
+        out.push('\n');
+    }
+    out.push_str(
+        "counts: ' ' 0, . 1-4, : 5-14, - 15-39, = 40-99, + 100-249, * 250-499, # 500+. pull: the attractor pulling hardest \
+         (a, b, ... in the list below; capital = strong, 0.3+), @ an attractor's own region, P a player. zones: C town core, \
+         S street, Y yard, I indoors, R forest road, e forest edge, f deep forest.\n",
+    );
+    for (k, a) in pop.attractors.iter().enumerate() {
+        out.push_str(&format!(
+            "attractor {} (#{}) at ({:.0}, {:.0}): reach {:.0} m, pull spread out to {:.0} m, strength {:.2}, {:.0} s left\n",
+            (b'a' + (k % 26) as u8) as char,
+            a.id,
+            a.pos.x,
+            a.pos.y,
+            a.reach,
+            a.felt_radius(world.tick, m.spread_speed),
+            a.strength(world.tick),
+            (a.life_secs - a.age_secs(world.tick)).max(0.0),
+        ));
+    }
+    let mut diff: Vec<(f32, usize)> = (0..actual.len()).map(|k| (actual[k] as f32 - pop.target[k], k)).collect();
+    diff.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    let line = |k: usize| {
+        let c = regions.corner(k);
+        format!("  ({}, {}) at {:.0},{:.0}: {} vs target {:.0} ({})\n", k as i32 % cols, k as i32 / cols, c.x, c.y, actual[k], pop.target[k], pop.zone[k].name())
+    };
+    out.push_str("furthest below target:\n");
+    for &(_, k) in diff.iter().take(5).filter(|(d, _)| *d < -0.5) {
+        out.push_str(&line(k));
+    }
+    out.push_str("furthest above target:\n");
+    for &(_, k) in diff.iter().rev().take(5).filter(|(d, _)| *d > 0.5) {
+        out.push_str(&line(k));
+    }
+    out
 }
 
 fn state_count(world: &World, state: ZombieState) -> usize {

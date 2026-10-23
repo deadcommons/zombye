@@ -16,9 +16,10 @@
 //! its id, index order and every AI column (state, target, timers) whatever tier it is on, so a
 //! zombie investigating a noise is still heading there when it's promoted, and walking away and
 //! back finds the same zombies. Virtual zombies are indexed per region ([`RegionIndex`], rebuilt
-//! each tick like the spatial hash), which is what their bulk update walks and where per-region
-//! density and migration (#4) will hook in. The per-tick cost of a virtual zombie is one skipped
-//! iteration in a couple of column scans.
+//! each tick like the spatial hash), which is what their bulk update walks; on its turn a region
+//! also feels the pull of loud events and sends some of its wanderers off toward them
+//! ([`crate::population`]). The per-tick cost of a virtual zombie is one skipped iteration in a
+//! couple of column scans.
 //!
 //! Tiers are decided per chunk ([`ChunkDistances`]): every zombie in a chunk is promoted together
 //! when the chunk comes within range of a player, with [`TierTuning::hysteresis`] metres of slack
@@ -36,6 +37,7 @@ use crate::TICK_DT;
 use crate::ai::{self, GOAL_RANGE, ZOMBIE_RADIUS, ZombieTuning};
 use crate::flow::{FlowCache, FlowField, FlowKey};
 use crate::map::{CHUNK_SIZE, Side, TileMap};
+use crate::population::{self, MigrationDef, Population};
 use crate::rng::{Rng, hash01};
 use crate::senses::{self, Sound, SoundSource};
 use crate::vision::clear_path;
@@ -167,6 +169,21 @@ impl RegionIndex {
     /// Region `r`'s min corner in metres.
     pub fn corner(&self, r: usize) -> Vec2 {
         Vec2::new((r as i32 % self.cols) as f32, (r as i32 / self.cols) as f32) * self.size
+    }
+
+    /// Region `r`'s min and max corners in metres.
+    pub fn rect(&self, r: usize) -> (Vec2, Vec2) {
+        let lo = self.corner(r);
+        (lo, lo + Vec2::splat(self.size))
+    }
+
+    /// Regions across and down.
+    pub fn cols(&self) -> i32 {
+        self.cols
+    }
+
+    pub fn rows(&self) -> i32 {
+        self.rows
     }
 
     pub fn rebuild_where(&mut self, positions: &[Vec2], keep: impl Fn(usize) -> bool) {
@@ -468,14 +485,20 @@ pub(crate) fn virtual_hearing(z: &mut Zombies, regions: &RegionIndex, map: &Tile
 /// virtual_interval_ticks == 0`) moves all its zombies in one go over the whole interval. Returns
 /// how many were updated. Randomness is a hash of (seed, tick, id), so it doesn't depend on
 /// iteration order or touch the world's RNG.
-pub(crate) fn step_virtual(z: &mut Zombies, regions: &RegionIndex, map: &TileMap, t: &ZombieTuning, tiers: &TierTuning, tick: u64, seed: u64) -> u32 {
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn step_virtual(z: &mut Zombies, regions: &RegionIndex, map: &TileMap, t: &ZombieTuning, tiers: &TierTuning, pop: &Population, migration: &MigrationDef, tick: u64, seed: u64) -> u32 {
     let every = tiers.virtual_interval_ticks.max(1) as u64;
     let mut updated = 0;
     for r in 0..regions.regions() {
         if !(r as u64 + tick).is_multiple_of(every) || regions.count(r) == 0 {
             continue;
         }
-        // Per-region behaviour (authored density, migration toward big events: #4) goes here.
+        // Migration: the region feels the strongest attractor's pull, and some of its wanderers
+        // set off toward it (as investigators, so they keep going on any tier).
+        if !pop.attractors.is_empty() {
+            let pull = pop.pull_on(regions, r, migration, tick);
+            population::migrate_region(z, regions.members(r), pull, migration, t, tick, seed);
+        }
         for &i in regions.members(r) {
             step_one_virtual(z, i as usize, map, t, every as f32 * TICK_DT, tick, seed);
             updated += 1;

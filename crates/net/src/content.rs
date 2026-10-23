@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use zombye_sim::BuildingTemplate;
 use zombye_sim::items::{WeaponDef, parse_weapons};
+use zombye_sim::population::{PopulationDef, parse_population};
 
 /// The repo's `assets/data` folder (used when running from a checkout).
 pub fn default_data_dir() -> PathBuf {
@@ -30,9 +31,33 @@ pub fn load_building_templates(data_dir: &Path) -> Result<Vec<BuildingTemplate>,
         .collect()
 }
 
+/// The population settings in `<data>/population.ron` (zombie density per zone, respawn,
+/// migration toward noise), validated. A data folder without the file gets the built-in defaults.
+pub fn load_population(data_dir: &Path) -> Result<PopulationDef, String> {
+    let path = data_dir.join("population.ron");
+    if !path.exists() {
+        return Ok(PopulationDef::default());
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    parse_population(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// The melee weapons in `<data>/items/weapons.ron`, validated.
 pub fn load_weapons(data_dir: &Path) -> Result<Vec<WeaponDef>, String> {
     let path = data_dir.join("items/weapons.ron");
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     parse_weapons(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn population_loads_and_falls_back_to_defaults() {
+        let def = load_population(&default_data_dir()).unwrap();
+        assert!(def.density.town_core > def.density.deep_forest);
+        let none = load_population(Path::new("/nonexistent-zombye-data")).unwrap();
+        assert_eq!(none, PopulationDef::default());
+    }
 }

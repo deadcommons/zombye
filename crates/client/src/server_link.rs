@@ -81,7 +81,10 @@ impl Plugin for ServerLinkPlugin {
         let options = app.world().resource::<Options>().clone();
         let templates = content::load_building_templates(&content::default_data_dir()).unwrap_or_else(|e| panic!("failed to load content: {e}"));
         let weapons = content::load_weapons(&content::default_data_dir()).unwrap_or_else(|e| panic!("failed to load content: {e}"));
-        let mut config = WorldConfig::new(options.seed, options.zombies, templates).with_weapons(weapons);
+        let population = content::load_population(&content::default_data_dir()).unwrap_or_else(|e| panic!("failed to load content: {e}"));
+        let mut config = WorldConfig::new(options.seed, 0, templates).with_weapons(weapons).with_population(population);
+        // Without --zombies, as many as the population file's densities give for this map.
+        config.zombies = options.zombies;
         if let Some(chunks) = options.map_chunks {
             config = config.with_map_chunks(chunks);
         }
@@ -99,7 +102,7 @@ impl Plugin for ServerLinkPlugin {
             server.send(Intent::SpawnItem { weapon: "baseball_bat".into(), pos: me.to_array() });
             server.send(Intent::PickUp { player: player_id });
             server.send(Intent::SpawnZombies { count: DEMO_ZOMBIES, center: (me + Vec2::X * DEMO_DISTANCE).to_array(), radius: 2.0 });
-            server.send(Intent::MakeNoise { pos: me.to_array(), radius: 12.0 });
+            server.send(Intent::MakeNoise { pos: me.to_array(), radius: 12.0, lasting: false });
         }
         if let Some((_, door, out)) = siege_at {
             siege(&mut server, player_id, door, out);
@@ -189,7 +192,7 @@ fn siege(server: &mut LocalServer, player_id: u32, door_tile: IVec2, out: IVec2)
     server.send(Intent::PickUp { player: player_id });
     let near_door = (door_tile + out * 2).as_vec2() + Vec2::splat(0.5);
     server.send(Intent::SpawnZombies { count: SIEGE_ZOMBIES, center: near_door.to_array(), radius: 1.0 });
-    server.send(Intent::MakeNoise { pos: (door_tile.as_vec2() + Vec2::splat(0.5)).to_array(), radius: 30.0 });
+    server.send(Intent::MakeNoise { pos: (door_tile.as_vec2() + Vec2::splat(0.5)).to_array(), radius: 30.0, lasting: false });
 }
 
 /// `--siege`: how far out from the door you start (tiles), and how many zombies batter it.

@@ -43,8 +43,15 @@ pub enum Intent {
     SpawnZombies { count: u32, center: [f32; 2], radius: f32 },
     /// Debug/admin: move the clock forward.
     SkipTime { hours: f32 },
-    /// Debug: a noise at `pos` that zombies within `radius` metres (less through walls) come to investigate.
-    MakeNoise { pos: [f32; 2], radius: f32 },
+    /// Debug: a noise at `pos` that zombies within `radius` metres (less through walls) come to
+    /// investigate. Loud ones draw the far horde in over the following minutes; `lasting` makes
+    /// that pull last much longer (like an alarm left ringing).
+    MakeNoise {
+        pos: [f32; 2],
+        radius: f32,
+        #[serde(default)]
+        lasting: bool,
+    },
 }
 
 /// What one zombie looks like to a client. Server-only state (AI memory, paths) is not included.
@@ -212,7 +219,7 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
             world.spawn_zombies(*count, (*center).into(), *radius);
         }
         Intent::SkipTime { hours } => world.skip_time(hours.clamp(0.0, 24.0)),
-        Intent::MakeNoise { pos, radius } => world.emit_sound((*pos).into(), radius.clamp(0.0, 500.0)),
+        Intent::MakeNoise { pos, radius, lasting } => world.make_noise((*pos).into(), radius.clamp(0.0, 500.0), *lasting),
     }
 }
 
