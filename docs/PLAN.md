@@ -45,7 +45,7 @@ All code and assets are our own; see the clean-room rules in [CONTRIBUTING.md](.
 | MP-friendly from the start | Same Rust crate runs headless as a server — no engine fork, no editor dependency. |
 | AI writes the code | 100% code and text files; `cargo test` runs the simulation without a window. No binary scene files. |
 | Mac M3 dev box | wgpu → Metal is first class. Also builds for Windows/Linux. |
-| Meshy assets | glTF/GLB is Bevy's native format, and Meshy exports GLB (rigged + animated). |
+| Our own assets | glTF/GLB is Bevy's native format; Blender (and Meshy) export GLB with rigs and animations. |
 | Open source, no royalties | MIT/Apache, so anyone can clone, build and mod with no licence, account or seat fee. Unity's licence and closed editor clash with "open source for everyone". |
 
 **Risks and mitigations**
@@ -76,7 +76,8 @@ All code and assets are our own; see the clean-room rules in [CONTRIBUTING.md](.
 - **Save data:** per-region binary files (`bincode`/`postcard`) with a version header; SQLite for metadata.
 - **Data files:** RON/TOML for items, weapons, recipes, loot tables, building templates — hot-reloadable.
 - **Audio:** `bevy_kira_audio` (Kira) with positional sound and occlusion.
-- **Assets:** Meshy API (models, rigging, animation), AI image generation for textures/UI,
+- **Assets:** Blender driven by agents over MCP (models, rigs, animation) as the main tool, Meshy for
+  some props and concepts (§6), AI image generation for textures/UI,
   ElevenLabs-style SFX generation for sound effects, Suno for music. No third-party asset packs.
 - **Scripting for mods:** Luau (sandboxed Lua, via `mlua`). Lua is familiar to most game modders, and
   Luau's sandbox keeps untrusted server mods safe. WASM mods are a possible later addition.
@@ -93,7 +94,7 @@ zombye/
     net/        # Message types, snapshot/delta encoding, interest management
     server/     # Headless binary: sim + net. Runs the authoritative world.
     client/     # Bevy app: rendering, input, audio, UI, prediction/interpolation
-    tools/      # asset pipeline (Meshy fetch, VAT bake, LODs), map builder, debug viewers
+    tools/      # asset pipeline (Blender MCP build scripts, VAT bake, LODs, Meshy import), map builder, debug viewers
   assets/       # generated GLB, textures, audio, data files (RON)
   docs/
 ```
@@ -143,7 +144,7 @@ over the network, as many survival games do. This means MP isn't a retrofit.
 - **Distribution:** a server lists its mods by content hash; clients download them on join. A mod
   index (a GitHub repo of manifests) works as the "workshop".
 - **Agent modding:** "make me a mod that adds a nail bat" → an agent writes the data entry,
-  generates the model via the Meshy tool, validates it via MCP, and hot-reloads it into a running game.
+  builds the model in Blender over MCP, validates it via MCP, and hot-reloads it into a running game.
 
 ### Hosting (income)
 - `zombye-server` ships as a single binary and a Docker image; the config is one file.
@@ -296,7 +297,7 @@ Senses:
   animation.
 - **Buildings:** each tile owns its north and west edges (wall, door, window, opening). A modular
   kit snaps to those edges (wall segments, corners, door/window frames, floors, stairs, roofs) —
-  code-generated or Meshy-generated pieces, merged into one mesh per chunk and level and rebuilt
+  code-generated or Blender-built pieces, merged into one mesh per chunk and level and rebuilt
   only when something changes. The same edge data drives collision, pathfinding and vision.
 - **Foliage:** instanced trees/bushes with 2–3 LODs; billboards at distance. Trees block sight.
 - **Lighting:** day/night cycle with a directional sun/moon, a few dynamic lights (flashlight,
@@ -305,28 +306,43 @@ Senses:
 
 ---
 
-## 6. Asset pipeline (AI-generated)
+## 6. Asset pipeline (Blender, driven by agents)
 
-1. **Spec files:** each asset is a small RON/TOML entry (prompt, style tags, target size in metres,
-  polycount budget, category).
-2. **`tools/meshy`:** batch submits text/image-to-3D → remesh (low-poly, `resize_height` to target
-  size) → for humanoids: rigging → animations from Meshy's library → downloads GLB.
-3. **`tools/bake`:** headless step (Blender CLI or Rust) that normalises scale/pivot, makes LODs, and
-  bakes zombie animations into VAT textures + atlases.
-4. **Art direction (v1): our own style, made entirely by us.** Low-poly, readable
+The main tool is **Blender, driven by agents over MCP** (a Blender MCP server). Subagents build each
+asset as an editable Blender scene (primitives and modifiers, materials, armature, animation actions),
+render previews, take feedback and iterate, then export GLB. The `.blend` source and the script or
+steps that produced it are committed with the asset (`assets/source/`), so anyone, person or agent,
+can reopen it, change it and export again. That gives us control and assets we can keep improving,
+where a one-shot generator only gives us a new roll of the dice.
+
+1. **Spec files:** each asset has a small RON entry in `assets/specs/` (name, category, target size in
+  metres, polygon and texture budget, style notes, a plain-words description).
+2. **Build in Blender over MCP:** a subagent blocks out the model, UV-unwraps it, applies palette
+  materials or simple hand-painted textures, and sets pivot and scale to the 1 m grid. Characters
+  share one humanoid base mesh and armature; outfits are variants; animations (walk, run, sneak,
+  attacks, stagger, falls, deaths) are Blender actions on that rig.
+3. **Review loop:** renders from the game's four isometric angles, plus in-game checks with the MCP
+  `screenshot` tool, are critiqued by an agent or a person, and the scene is edited, not regenerated.
+4. **Export and bake** (`tools/bake`, headless Blender CLI): GLB export, LODs, and the vertex animation
+  textures and atlases the zombie crowd renderer uses. The same step takes Meshy output.
+5. **Meshy where it helps:** organic or one-off props, quick concepts, or a base mesh to clean up.
+  Meshy output is imported into Blender and brought to the same standard (scale, pivot, palette,
+  polygon budget, rig) before it ships, and recorded in ATTRIBUTION.md (paid plan, so we own it).
+6. **Art direction (v1): our own style, made entirely by us.** Low-poly, readable
   silhouettes from high up; muted, slightly desaturated palette; simple hand-painted-looking textures
   without fine detail; early-1990s small-town rural America (wood siding, brick, chain-link fences,
   boxy cars later); zombies in everyday clothes with blood and grime as texture variants. It's
   original work: we never copy, trace or reference another game's art. A style bible (`docs/art-direction.md`) holds the fixed style
-  prompt prefix, palette, scale rules and our own reference renders, which feed every Meshy request.
+  prompt prefix, palette, scale rules and our own reference renders, which feed every Blender build
+  and every Meshy prompt.
   Higher detail can come later without changing the pipeline.
-5. **All art is ours.** No Synty or other third-party asset packs, not even as placeholders: until
-   an asset is generated, the game uses simple grey-box shapes. This also keeps the open-source
-   repo free of licence problems.
-6. **What Meshy is good for:** characters, furniture, props, weapons, vehicles (later), trees.
-   **What we generate procedurally instead:** walls, floors, roofs, roads, terrain — they must snap
-   exactly to the grid. Their textures come from AI image generation using the same style bible.
-7. **Audio:** SFX generated per category (footsteps per surface, swings, hits, shove, stomp, glass,
+7. **All art is ours.** No Synty or other third-party asset packs, not even as placeholders: until
+   an asset exists, the game uses simple grey-box shapes. This also keeps the open-source repo free of
+   licence problems. Blender-built assets are original work by Dead Commons or a contributor
+   (see assets/LICENSE and ATTRIBUTION.md).
+8. **Procedural in code:** walls, floors, roofs, roads and terrain stay code-generated so they snap
+   exactly to the grid. Their textures follow the same style bible.
+9. **Audio:** SFX generated per category (footsteps per surface, swings, hits, shove, stomp, glass,
   doors, zombie groans in many variants), music from Suno. Stored with a manifest for random variant
   selection.
 
@@ -350,8 +366,9 @@ progress. Pick up an issue there, or open one to propose work.
 - **Camera:** fixed isometric; optional setting to snap between 4 fixed angles.
 - **Town:** procedural from a seed, built from a catalogue of standard templates (6 house types,
   2 office types to start).
-- **Art:** our own low-poly, readable style for v1 (improved later), all 3D art made by us with Meshy
-  plus procedural kit pieces; no Synty or other third-party packs.
+- **Art:** our own low-poly, readable style for v1 (improved later). All 3D art is made by us, mainly
+  in Blender driven by agents over MCP, with Meshy for some pieces, plus procedural kit pieces; no Synty
+  or other third-party packs (Blender first, Meshy second since 2026-10-23).
 - **Studio and licence:** published by Dead Commons (GitHub org `deadcommons`). MIT OR Apache-2.0
   for code, CC BY-NC-SA 4.0 for art and audio, server included, no CLA (§3a).
 
