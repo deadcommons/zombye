@@ -313,6 +313,30 @@ wanderers off toward them (`tiers::step_virtual`, see Population below). Numbers
 - Perf (M-series Mac, release): 1 km map, ~1,300 active + ~20,200 virtual (+ ~950 near), a horde of ~900 chasing a
   player: about 1.1 ms/tick average, ~3 ms worst (`tiers_hold_a_thousand_active_and_twenty_thousand_virtual`).
 
+## Navigation (`sim::nav`)
+
+Long trips follow plans over a coarse graph (issue #44; the hierarchical A* of PLAN §4.3), so a far horde drawn
+to a noise comes round through streets and gaps instead of piling up behind buildings.
+
+- **Graph** (`NavGraph`, from the `WalkGrid`, built with the world: ~27 ms, ~4,200 nodes and ~17,000 links on a
+  1 km map): one node per connected open area of each 16 m chunk (id `chunk << 8 | area`), portals across chunk
+  borders (open ground, open or broken doors, arches; open windows as a climb; one per pair of areas and kind),
+  and shut doors and intact windows as breach portals (inside chunks too), at the flow fields' costs. An edit
+  through the world (`set_edge`: doors and windows opened, shut, broken) rebuilds the chunks around it
+  (`Nav::edge_changed`), always giving what a fresh build would; `map_changed` rebuilds it all. Derived, not saved.
+- **Plans** (`Nav`): A* from the zombie's node to its target's node, through breach portals only when the target
+  can't be walked to. Shared: every node along a plan is indexed with it. A miss queues a request; `Nav::update`
+  makes at most 16 a tick (and starts none after 40,000 node expansions) while the zombie goes straight. Edits drop
+  the plans through the chunks they touch. Plans and queued requests are saved (format version 2); the index is
+  rebuilt on load.
+- **Users:** near zombies with no flow field covering them (`Nav::way`: toward the next portal; they stand at a
+  door their plan leads through), virtual zombies heading somewhere (`Nav::trace`: tile by tile along small
+  in-chunk fields, so never across anything that blocks walking; they wait at doors), and active zombies whose
+  target is beyond their flow field (they batter a door their plan leads through). `TierTuning::long_paths`
+  (default on) turns it off. Stats: `TickStats::nav_ms`/`nav_plans`/`nav_expanded`, `World::nav()`.
+- `a_far_horde_finds_the_way_round_a_row_of_houses`: 300 virtual zombies 250 m off behind a row of shut houses
+  with fenced back gardens all arrive within 13 minutes; moving straight, none do in 20.
+
 ## Population (`sim::population`, `assets/data/population.ron`)
 
 Where zombies live is data (issue #4): `population.ron` (`population::PopulationDef`, validated by
@@ -382,7 +406,7 @@ over the old one: a crash mid-write leaves the previous save whole).
   with `LoadError::ContentChanged` saying what changed (weapons are named by index, templates make the map). The
   rest of `WorldConfig` (seed, map size, zombie count, start hour, day length, `ZombieTuning`, `CombatTuning`,
   `TierTuning`) is the save's own, stored as RON so a tuning field added later just takes its default.
-- **Format** (`save.rs` docs): `ZOMBYSAV`, a `u32` format version (1), then sections (4-byte tag, `u32` length,
+- **Format** (`save.rs` docs): `ZOMBYSAV`, a `u32` format version (2), then sections (4-byte tag, `u32` length,
   postcard payload, FNV-1a checksum): `INFO` (`SaveInfo`: game version, tick, time of day, seed, map size, zombies,
   players, content fingerprint), `CONF` (settings, RON), `MAPD` (edits or the full map), `WRLD` (everything else but
   zombies), one `ZOMB` per 64 m region (the tiers' region grid; zombies column by column, ids as gaps), `END`.
