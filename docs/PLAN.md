@@ -76,8 +76,8 @@ All code and assets are our own; see the clean-room rules in [CONTRIBUTING.md](.
 - **Save data:** per-region binary files (`bincode`/`postcard`) with a version header; SQLite for metadata.
 - **Data files:** RON/TOML for items, weapons, recipes, loot tables, building templates — hot-reloadable.
 - **Audio:** `bevy_kira_audio` (Kira) with positional sound and occlusion.
-- **Assets:** Blender driven by agents over MCP (models, rigs, animation) as the main tool, Meshy for
-  some props and concepts (§6), AI image generation for textures/UI,
+- **Assets:** Blender driven by agents over MCP for most assets; characters and detailed assets from
+  a ChatGPT reference image through Meshy's API, finished in Blender (§6); AI image generation for textures/UI,
   ElevenLabs-style SFX generation for sound effects, Suno for music. No third-party asset packs.
 - **Scripting for mods:** Luau (sandboxed Lua, via `mlua`). Lua is familiar to most game modders, and
   Luau's sandbox keeps untrusted server mods safe. WASM mods are a possible later addition.
@@ -315,6 +315,12 @@ steps that produced it are committed with the asset (`assets/source/`), so anyon
 can reopen it, change it and export again. That gives us control and assets we can keep improving,
 where a one-shot generator only gives us a new roll of the dice.
 
+**Characters and other detailed assets** take a second route: a reference image generated with
+ChatGPT from the style bible, then Meshy's image-to-3D API (Dead Commons' Meshy Pro account, so we
+own the output) for the model, rig and base animations, then into Blender for clean-up and to bring
+it to our standard. Simple and modular assets (props, furniture, kit pieces) are built in Blender
+directly.
+
 1. **Spec files:** each asset has a small RON entry in `assets/specs/` (name, category, target size in
   metres, polygon and texture budget, style notes, a plain-words description).
 2. **Build in Blender over MCP:** a subagent blocks out the model, UV-unwraps it, applies palette
@@ -325,9 +331,13 @@ where a one-shot generator only gives us a new roll of the dice.
   `screenshot` tool, are critiqued by an agent or a person, and the scene is edited, not regenerated.
 4. **Export and bake** (`tools/bake`, headless Blender CLI): GLB export, LODs, and the vertex animation
   textures and atlases the zombie crowd renderer uses. The same step takes Meshy output.
-5. **Meshy where it helps:** organic or one-off props, quick concepts, or a base mesh to clean up.
-  Meshy output is imported into Blender and brought to the same standard (scale, pivot, palette,
-  polygon budget, rig) before it ships, and recorded in ATTRIBUTION.md (paid plan, so we own it).
+5. **Characters and detailed assets via Meshy:** a reference image from ChatGPT (front/side views,
+  the style bible's palette and proportions), sent to Meshy's image-to-3D API on our Pro account,
+  with Meshy rigging and animation for humanoids. The result is imported into Blender over MCP and
+  brought to the same standard (scale, pivot, palette, polygon budget, a rig matching our base
+  skeleton) before it ships. The reference image, the Meshy task and the Blender clean-up are all
+  recorded with the asset, and its ATTRIBUTION.md row names the tools (ChatGPT image + Meshy Pro +
+  Blender).
 6. **Art direction (v1): our own style, made entirely by us.** Low-poly, readable
   silhouettes from high up; muted, slightly desaturated palette; simple hand-painted-looking textures
   without fine detail; early-1990s small-town rural America (wood siding, brick, chain-link fences,
@@ -366,9 +376,10 @@ progress. Pick up an issue there, or open one to propose work.
 - **Camera:** fixed isometric; optional setting to snap between 4 fixed angles.
 - **Town:** procedural from a seed, built from a catalogue of standard templates (6 house types,
   2 office types to start).
-- **Art:** our own low-poly, readable style for v1 (improved later). All 3D art is made by us, mainly
-  in Blender driven by agents over MCP, with Meshy for some pieces, plus procedural kit pieces; no Synty
-  or other third-party packs (Blender first, Meshy second since 2026-10-23).
+- **Art:** our own low-poly, readable style for v1 (improved later). All 3D art is made by us: most of it
+  in Blender driven by agents over MCP; characters and detailed assets from a ChatGPT reference image
+  through Meshy (Pro), finished in Blender; plus procedural kit pieces; no Synty or other third-party
+  packs (decided 2026-10-23).
 - **Studio and licence:** published by Dead Commons (GitHub org `deadcommons`). MIT OR Apache-2.0
   for code, CC BY-NC-SA 4.0 for art and audio, server included, no CLA (§3a).
 
