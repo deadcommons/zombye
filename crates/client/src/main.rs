@@ -15,7 +15,10 @@
 //! `--screenshot PATH` (saved after `--screenshot-after SECS[,SECS...]`, default 5) `--exit-after SECS` `--zoom METRES`
 //! `--autoplay` (the player fights by itself) `--fight-demo` (a bat and a few zombies close by)
 //! `--siege` (outside your house with a bat, zombies battering its door) `--sneak` (start sneaking)
-//! `--map-chunks N` (a square map N × N chunks of 16 m; default 20).
+//! `--map-chunks N` (a square map N × N chunks of 16 m; default 20) `--saves DIR` (where saves go;
+//! default `saves`) `--load NAME|PATH` (start from a save). F5 quicksaves, F9 quickloads, and
+//! quitting autosaves (`autosave` in the saves folder); `--quicksave-after SECS` and
+//! `--quickload-after SECS` do F5 / F9 by themselves, for verification.
 
 mod autoplay;
 mod camera;
@@ -28,6 +31,7 @@ mod materials;
 mod meshgen;
 mod player;
 mod rig;
+mod saving;
 mod server_link;
 mod survivor;
 mod world_render;
@@ -65,6 +69,14 @@ pub struct Options {
     pub sneak: bool,
     /// A square map this many 16 m chunks a side (`--map-chunks`, default 20: 320 m).
     pub map_chunks: Option<i32>,
+    /// Folder for quicksaves and the autosave (`--saves`, default `saves`).
+    pub saves: std::path::PathBuf,
+    /// Start from this save, by name in the saves folder or by path (`--load`).
+    pub load: Option<String>,
+    /// Verification: quicksave / quickload this many seconds in, as if F5 / F9 were pressed
+    /// (`--quicksave-after`, `--quickload-after`).
+    pub quicksave_after: Option<f32>,
+    pub quickload_after: Option<f32>,
 }
 
 impl Options {
@@ -94,6 +106,10 @@ impl Options {
             siege: flag("--siege"),
             sneak: flag("--sneak"),
             map_chunks: value("--map-chunks").and_then(|v| v.parse().ok()).filter(|n: &i32| (1..=256).contains(n)),
+            saves: value("--saves").map(Into::into).unwrap_or_else(|| zombye_net::save_file::DEFAULT_DIR.into()),
+            load: value("--load"),
+            quicksave_after: value("--quicksave-after").and_then(|v| v.parse().ok()),
+            quickload_after: value("--quickload-after").and_then(|v| v.parse().ok()),
         }
     }
 }
@@ -130,6 +146,7 @@ fn main() {
             fx::FxPlugin,
             survivor::SurvivorPlugin,
             autoplay::AutoplayPlugin,
+            saving::SavingPlugin,
         ))
         .run();
 }

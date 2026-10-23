@@ -10,3 +10,4 @@ repository.workspace = true
 glam.workspace = true
 serde.workspace = true
 ron.workspace = true
+postcard.workspace = true

@@ -5,6 +5,7 @@
 //! transport change, not a rewrite.
 
 pub mod content;
+pub mod save_file;
 
 use serde::{Deserialize, Serialize};
 use zombye_sim::map::{EdgeChange, OwnedEdge};
@@ -231,7 +232,18 @@ pub struct LocalServer {
 
 impl LocalServer {
     pub fn new(config: WorldConfig) -> Self {
-        Self { world: World::new(config), inbox: Vec::new() }
+        Self::from_world(World::new(config))
+    }
+
+    /// Serve an existing world (one loaded from a save).
+    pub fn from_world(world: World) -> Self {
+        Self { world, inbox: Vec::new() }
+    }
+
+    /// Swap in another world (a loaded save), dropping intents queued for the old one.
+    pub fn replace_world(&mut self, world: World) {
+        self.world = world;
+        self.inbox.clear();
     }
 
     /// Join the game: spawns a player in the bedroom (or at `at`, a single-player debug option)
@@ -468,6 +480,50 @@ mod tests {
         server.world.players[0].state.pos = server.world.map.resolve_circle(at, zombye_sim::players::PLAYER_RADIUS);
         let snap = server.tick();
         assert!(listed(&snap, far_id), "promoted zombie not sent");
+    }
+
+    /// A server loaded from a save carries on exactly like the one saved: the same snapshots for
+    /// the same intents, and a client resuming from the loaded player's view predicts it exactly.
+    #[test]
+    fn a_loaded_server_carries_on_like_the_saved_one() {
+        let mut a = server();
+        let id = a.join(None);
+        let mut seq = 0;
+        // Swings cost endurance on the server only (prediction catches up from the next snapshot),
+        // so only the part before the save swings.
+        let intents = |seq: &mut u32, swing: bool| {
+            *seq += 1;
+            let t = *seq as f32 * 0.05;
+            let mut out = vec![Intent::PlayerInput { player: id, seq: *seq, move_dir: [t.cos(), t.sin()], facing: t, run: *seq % 50 < 20, sneak: false }];
+            if swing && seq.is_multiple_of(30) {
+                out.push(Intent::Attack { player: id });
+            }
+            out
+        };
+        for _ in 0..150 {
+            for i in intents(&mut seq, true) {
+                a.send(i);
+            }
+            a.tick();
+        }
+        let loaded = World::load(&a.world.save(), &a.world.config).expect("loads");
+        let mut b = LocalServer::from_world(loaded);
+        let mut predicted = Snapshot::capture(&mut b.world).players.iter().find(|p| p.id == id).expect("our player").state();
+        assert_eq!(predicted, a.world.player(id).unwrap().state);
+        for _ in 0..200 {
+            let batch = intents(&mut seq, false);
+            for i in &batch {
+                a.send(i.clone());
+                b.send(i.clone());
+                if let Intent::PlayerInput { move_dir, facing, run, sneak, .. } = i {
+                    step_movement(&b.world.map, &mut predicted, &PlayerInput { move_dir: (*move_dir).into(), facing: *facing, run: *run, sneak: *sneak }, TICK_DT);
+                }
+            }
+            let (sa, sb) = (a.tick(), b.tick());
+            assert_eq!(format!("{sa:?}"), format!("{sb:?}"), "snapshots differ at tick {}", sa.tick);
+            assert_eq!(sb.players.iter().find(|p| p.id == id).unwrap().state(), predicted, "prediction diverged at tick {}", sb.tick);
+        }
+        assert_eq!(a.world.state_hash(), b.world.state_hash());
     }
 
     #[test]

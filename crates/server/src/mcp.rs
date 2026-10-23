@@ -4,15 +4,18 @@
 //! anything a client couldn't (admin tools will be gated separately).
 
 use std::io::{BufRead, Write};
-use std::time::Instant;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::{Duration, Instant};
 
 use glam::{IVec2, Vec2};
 use serde_json::{Value, json};
-use zombye_net::{Intent, apply_intent};
+use zombye_net::{Intent, apply_intent, save_file};
 use zombye_sim::map::{Edge, EdgeRef, Feature, Floor, OwnedEdge, Side};
 use zombye_sim::senses::{self, Cone, Target};
 use zombye_sim::vision::line_of_sight;
 use zombye_sim::{ActionKind, HitEffect, TICK_DT, Tier, World, ZombieState};
+
+use crate::{Persist, shutdown};
 
 const MAX_STEP: u64 = 20 * 60 * 60; // one hour of game time per call
 const MAX_MOVE_TICKS: u64 = 20 * 60 * 5; // five minutes of walking per move_player call
@@ -21,28 +24,60 @@ const MAX_MOVE_TICKS: u64 = 20 * 60 * 5; // five minutes of walking per move_pla
 const COMPASS: [(&str, [f32; 2]); 8] =
     [("e", [1.0, 0.0]), ("se", [1.0, 1.0]), ("s", [0.0, 1.0]), ("sw", [-1.0, 1.0]), ("w", [-1.0, 0.0]), ("nw", [-1.0, -1.0]), ("n", [0.0, -1.0]), ("ne", [1.0, -1.0])];
 
-pub fn serve(mut world: World) {
-    // The agent plays player 1, who wakes up in the bedroom like a single-player client does.
-    world.add_player(world.player_spawn);
-    let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
-    for line in stdin.lock().lines() {
-        let Ok(line) = line else { break };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let response = match serde_json::from_str::<Value>(&line) {
-            Ok(msg) => handle(&mut world, &msg),
-            Err(e) => Some(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": e.to_string()}})),
-        };
-        if let Some(response) = response {
-            let _ = writeln!(stdout, "{response}");
-            let _ = stdout.flush();
-        }
+/// Tools that only look: they don't make the world need saving.
+const READ_ONLY: [&str; 10] = ["observe", "zombie", "edge", "weapons", "buildings", "regions", "stats", "saves", "save", "load"];
+
+/// The agent plays player 1, who wakes up in the bedroom like a single-player client does. A
+/// loaded world keeps its players.
+pub fn add_agent_player(world: &mut World) {
+    if world.players.is_empty() {
+        world.add_player(world.player_spawn);
     }
 }
 
-fn handle(world: &mut World, msg: &Value) -> Option<Value> {
+pub fn serve(mut world: World, persist: &mut Persist) {
+    add_agent_player(&mut world);
+    // Read stdin on its own thread, so the main loop can wake up for autosaves and Ctrl-C.
+    let (tx, rx) = mpsc::channel::<Option<String>>();
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lock().lines() {
+            let Ok(line) = line else { break };
+            if tx.send(Some(line)).is_err() {
+                return;
+            }
+        }
+        let _ = tx.send(None);
+    });
+    let mut stdout = std::io::stdout();
+    let why = loop {
+        let line = match rx.recv_timeout(Duration::from_millis(250)) {
+            Ok(Some(line)) => Some(line),
+            Ok(None) | Err(RecvTimeoutError::Disconnected) => break "stdin closed",
+            Err(RecvTimeoutError::Timeout) => None,
+        };
+        if let Some(line) = line.filter(|l| !l.trim().is_empty()) {
+            let response = match serde_json::from_str::<Value>(&line) {
+                Ok(msg) => handle(&mut world, persist, &msg),
+                Err(e) => Some(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": e.to_string()}})),
+            };
+            if let Some(response) = response {
+                let _ = writeln!(stdout, "{response}");
+                let _ = stdout.flush();
+            }
+        }
+        if shutdown::requested() {
+            break "interrupted";
+        }
+        if persist.autosave_due() {
+            persist.save_now(&world, "autosave");
+        }
+    };
+    if persist.dirty {
+        persist.save_now(&world, why);
+    }
+}
+
+fn handle(world: &mut World, persist: &mut Persist, msg: &Value) -> Option<Value> {
     let id = msg.get("id").cloned();
     let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
     // Notifications (no id) get no response.
@@ -69,14 +104,22 @@ fn handle(world: &mut World, msg: &Value) -> Option<Value> {
                 and buildings to list houses. Zombies far from every player are simulated in less detail (tiers: active \
                 within about 60 m, near out to 150 m, virtual beyond; stats has the counts): only active ones fight, see and \
                 show their state on the map, but every zombie keeps heading where it was going. Loud noises also draw the \
-                far horde in slowly, over minutes (regions shows zombies per region, targets and the pull of loud events)."
+                far horde in slowly, over minutes (regions shows zombies per region, targets and the pull of loud events). \
+                save and load keep and restore the whole world (saves lists them); with --save the server also autosaves."
         })),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({"tools": tool_list()})),
         "tools/call" => {
             let name = msg["params"]["name"].as_str().unwrap_or("");
             let args = msg["params"].get("arguments").cloned().unwrap_or(json!({}));
-            Ok(match call_tool(world, name, &args) {
+            let result = match name {
+                "save" | "load" | "saves" => save_tool(world, persist, name, &args),
+                _ => call_tool(world, name, &args),
+            };
+            if !READ_ONLY.contains(&name) {
+                persist.dirty = true;
+            }
+            Ok(match result {
                 Ok(text) => json!({"content": [{"type": "text", "text": text}]}),
                 Err(text) => json!({"content": [{"type": "text", "text": text}], "isError": true}),
             })
@@ -259,11 +302,103 @@ fn tool_list() -> Value {
             "inputSchema": {"type": "object", "properties": {}}
         },
         {
+            "name": "save",
+            "description": "Save the whole world (map edits, players, every zombie on every tier, the clock, the RNGs) to a named save \
+                in the saves folder, or with no name to this session's --save file. Loading it gives back exactly this state: the same \
+                state hash, and the same future for the same calls.",
+            "inputSchema": {"type": "object", "properties": {"name": {"type": "string", "description": "Save name: letters, digits, - _ . (no folders)"}}}
+        },
+        {
+            "name": "load",
+            "description": "Replace the world with a save from the saves folder (see saves), or with no name the session's --save file. \
+                Fails, leaving the world as it is, if the file is damaged, from another save format, or made with different game data \
+                (building templates, weapons, population.ron).",
+            "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}}
+        },
+        {
+            "name": "saves",
+            "description": "List the saves in the saves folder: size, age, tick, time of day, seed, map size, zombies and players; and \
+                where and how often this session autosaves.",
+            "inputSchema": {"type": "object", "properties": {}}
+        },
+        {
             "name": "stats",
             "description": "Map size, tick, time of day and daylight, players (HP, weapon, dead), zombie counts by state (corpses too) and by simulation tier (active / near / virtual, with the ranges and last tick's promotions and demotions), weapons on the floor, last tick timing (tier pass, senses, flow fields, active AI, near and virtual updates), sounds heard and the state hash (same seed + same calls = same hash).",
             "inputSchema": {"type": "object", "properties": {}}
         }
     ])
+}
+
+/// `save`, `load` and `saves`: named saves in the saves folder (`--saves`, or the `--save` file's).
+fn save_tool(world: &mut World, persist: &mut Persist, name: &str, args: &Value) -> Result<String, String> {
+    let named = args.get("name").and_then(Value::as_str);
+    match name {
+        "saves" => {
+            let list = save_file::list(&persist.dir).map_err(|e| format!("can't read {}: {e}", persist.dir.display()))?;
+            let mut out = format!("saves in {}: {}\n", persist.dir.display(), list.len());
+            for e in &list {
+                let ago = e.modified.and_then(|m| std::time::SystemTime::now().duration_since(m).ok()).map_or("?".to_string(), |d| format!("{} min ago", d.as_secs() / 60));
+                out += &match &e.info {
+                    Ok(i) => format!(
+                        "  {}: {}, saved {ago}; tick {} ({}), seed {}, map {}x{} m, {} zombies ({} alive), {} players, game {}\n",
+                        e.name,
+                        save_file::size(e.bytes),
+                        i.tick,
+                        clock(i.time_of_day),
+                        i.seed,
+                        i.map_size.x,
+                        i.map_size.y,
+                        i.zombies,
+                        i.alive,
+                        i.players,
+                        i.game_version
+                    ),
+                    Err(err) => format!("  {}: {}, saved {ago}; unreadable: {err}\n", e.name, save_file::size(e.bytes)),
+                };
+            }
+            out += &match &persist.path {
+                Some(p) => format!(
+                    "this session saves to {} ({}; and on shutdown)",
+                    p.display(),
+                    persist.autosave.map_or("no autosave".to_string(), |d| format!("autosave every {} min", d.as_secs() / 60))
+                ),
+                None => "this session has no --save file: nothing is saved unless you call save".to_string(),
+            };
+            Ok(out)
+        }
+        "save" => {
+            let path = match named {
+                Some(n) => save_file::path_for(&persist.dir, n)?,
+                None => persist.path.clone().ok_or("give a name: this session has no --save file")?,
+            };
+            let saved = save_file::save(world, &path)?;
+            if persist.path.as_ref() == Some(&path) {
+                persist.dirty = false;
+                persist.last_save = Instant::now();
+            }
+            Ok(format!("saved tick {} to {saved}; hash {:016x}", world.tick, world.state_hash()))
+        }
+        _ => {
+            let path = match named {
+                Some(n) => save_file::path_for(&persist.dir, n)?,
+                None => persist.path.clone().ok_or("give the name of a save (see saves)")?,
+            };
+            let (mut loaded, ms) = save_file::load(&path, &persist.content)?;
+            add_agent_player(&mut loaded);
+            *world = loaded;
+            // Loading another file than the session's own: the session's file is now behind.
+            persist.dirty = persist.path.as_ref() != Some(&path);
+            Ok(format!(
+                "loaded {} in {ms:.0} ms: tick {}, {}; {}; {} players; hash {:016x}",
+                path.display(),
+                world.tick,
+                clock(world.time_of_day()),
+                counts(world),
+                world.players.len(),
+                world.state_hash()
+            ))
+        }
+    }
 }
 
 fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, String> {

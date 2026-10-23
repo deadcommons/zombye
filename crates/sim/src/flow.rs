@@ -12,6 +12,7 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 use glam::{IVec2, Vec2};
+use serde::{Deserialize, Serialize};
 
 use crate::map::{Edge, Side, TileMap};
 
@@ -275,6 +276,12 @@ impl FlowField {
         }
     }
 
+    /// Same window and the same paths (the search scratch aside).
+    fn same_as(&self, other: &FlowField) -> bool {
+        (self.goals == other.goals && self.origin == other.origin && self.width == other.width && self.height == other.height)
+            && (self.cost == other.cost && self.dir == other.dir)
+    }
+
     fn index(&self, t: IVec2) -> Option<usize> {
         let l = t - self.origin;
         (l.x >= 0 && l.y >= 0 && l.x < self.width && l.y < self.height).then(|| (l.y * self.width + l.x) as usize)
@@ -329,7 +336,7 @@ pub const NOISE_CELL: i32 = 6;
 const PLAYER_IDLE_TICKS: u64 = 40;
 
 /// What a cached field leads to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FlowKey {
     /// A player's current tile (the field follows the player as it moves).
     Player(u32),
@@ -505,6 +512,101 @@ impl FlowCache {
             budget -= 1;
             self.builds += 1;
         }
+    }
+}
+
+/// A flow field as saved: everything but the search scratch. Costs are stored plus one, so the
+/// many unreachable tiles take one byte each in the varint encoding.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct SavedField {
+    origin: IVec2,
+    width: i32,
+    height: i32,
+    cost: Vec<u32>,
+    dir: Vec<u8>,
+}
+
+/// A cache entry as saved. `field` is `None` when building it afresh from the current map gives
+/// exactly the same field (the usual case), so a save only carries the fields that went stale.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct SavedEntry {
+    key: FlowKey,
+    goals: Vec<IVec2>,
+    want: IVec2,
+    built_tick: u64,
+    used_tick: u64,
+    map_stale: bool,
+    field: Option<SavedField>,
+}
+
+/// The flow cache as saved: which fields it holds, in order, with their timestamps, and the
+/// queued requests. Zombies' paths after a load depend on all of it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub(crate) struct SavedFlowCache {
+    entries: Vec<SavedEntry>,
+    requests: Vec<(FlowKey, IVec2)>,
+}
+
+impl SavedFlowCache {
+    /// Fields stored whole (the rest are rebuilt on load).
+    #[cfg(test)]
+    pub(crate) fn stored_fields(&self) -> usize {
+        self.entries.iter().filter(|e| e.field.is_some()).count()
+    }
+}
+
+impl FlowCache {
+    fn range(&self, key: FlowKey) -> f32 {
+        match key {
+            FlowKey::Player(_) => self.player_range,
+            FlowKey::Point(_) => self.point_range,
+        }
+    }
+
+    /// The cache for a save. Each field is rebuilt from `walk` (the current map) and only stored
+    /// if that doesn't reproduce it exactly (a field the map made stale, built before the change).
+    pub(crate) fn to_saved(&self, walk: &WalkGrid) -> SavedFlowCache {
+        let entries = self
+            .entries
+            .iter()
+            .map(|e| {
+                let fresh = FlowField::build_multi(walk, &e.field.goals, self.range(e.key), true);
+                let field = (!fresh.same_as(&e.field)).then(|| SavedField {
+                    origin: e.field.origin,
+                    width: e.field.width,
+                    height: e.field.height,
+                    cost: e.field.cost.iter().map(|c| c.wrapping_add(1)).collect(),
+                    dir: e.field.dir.clone(),
+                });
+                SavedEntry { key: e.key, goals: e.field.goals.clone(), want: e.want, built_tick: e.built_tick, used_tick: e.used_tick, map_stale: e.map_stale, field }
+            })
+            .collect();
+        SavedFlowCache { entries, requests: self.requests.clone() }
+    }
+
+    /// Restore a saved cache (into one made with the same capacity and ranges), rebuilding the
+    /// fields the save left out from `walk`.
+    pub(crate) fn restore(&mut self, saved: SavedFlowCache, walk: &WalkGrid) -> Result<(), String> {
+        if saved.entries.len() > self.capacity || saved.requests.len() > self.capacity {
+            return Err(format!("flow cache: {} fields, {} requests (at most {})", saved.entries.len(), saved.requests.len(), self.capacity));
+        }
+        self.entries.clear();
+        for e in saved.entries {
+            let field = match e.field {
+                None => FlowField::build_multi(walk, &e.goals, self.range(e.key), true),
+                Some(f) => {
+                    let n = (f.width.max(0) as usize) * (f.height.max(0) as usize);
+                    if f.width < 0 || f.height < 0 || f.cost.len() != n || f.dir.len() != n || f.dir.iter().any(|&d| d > NO_STEP) {
+                        return Err("flow cache: a field's size doesn't match its data".into());
+                    }
+                    let cost = f.cost.iter().map(|c| c.wrapping_sub(1)).collect();
+                    FlowField { goals: e.goals, origin: f.origin, width: f.width, height: f.height, cost, dir: f.dir, heap: BinaryHeap::new() }
+                }
+            };
+            self.entries.push(Entry { key: e.key, field, want: e.want, built_tick: e.built_tick, used_tick: e.used_tick, map_stale: e.map_stale });
+        }
+        self.requests = saved.requests;
+        Ok(())
     }
 }
 

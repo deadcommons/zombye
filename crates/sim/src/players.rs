@@ -81,7 +81,7 @@ impl PlayerState {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Player {
     /// Stable network id. Players have their own id space, starting at 1.
     pub id: u32,
