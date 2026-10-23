@@ -1,0 +1,12 @@
+[package]
+name = "zombye-sim"
+description = "Zombye game simulation: world grid, zombies, pathfinding. Engine-independent and deterministic."
+license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+glam.workspace = true
+serde.workspace = true
+ron.workspace = true

@@ -1,0 +1,7 @@
+# Private reference notes (clean-room: never publish)
+docs/research/
+
+# Rust
+/target/
+
+.DS_Store

@@ -1,0 +1,16 @@
+[package]
+name = "zombye-client"
+description = "Zombye game client: rendering, input, audio, UI."
+license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "zombye"
+path = "src/main.rs"
+
+[dependencies]
+zombye-sim.workspace = true
+zombye-net.workspace = true
+bevy.workspace = true
