@@ -22,6 +22,7 @@ use crate::TICK_DT;
 use crate::ai::{self, ZOMBIE_RADIUS};
 use crate::health::{Part, WoundKind};
 use crate::items::{GroundItem, WeaponDef};
+use crate::run::DeathCause;
 use crate::players::{Action, ActionKind, DevFlags, PLAYER_RADIUS, Player, PlayerInput, RUN_MIN_ENDURANCE};
 use crate::senses::{Sound, SoundSource};
 use crate::vision::clear_path;
@@ -545,6 +546,9 @@ impl World {
         }
         let (zid, zpos) = (z.id[j], z.pos[j]);
         self.hit_events.push(HitEvent { player, zombie: zid, kind: a.kind, damage, crit, behind, effect });
+        if effect == HitEffect::Killed {
+            self.count_kill(player);
+        }
         let kind = match (effect, a.kind) {
             (HitEffect::Killed, _) => CombatEventKind::ZombieKilled,
             (_, ActionKind::Swing) => CombatEventKind::ZombieHit,
@@ -597,18 +601,11 @@ impl World {
 
     /// Take `damage` off player `pi`'s health, killing it at 0: the one place a player loses HP,
     /// so god mode (`DevFlags::god`: nothing comes off) holds for anything that hurts. Returns
-    /// whether it died.
+    /// whether it died. The death is recorded as [`DeathCause::Other`]; say what hurt with
+    /// [`World::hurt_player_by`] (`crate::run`).
+    #[allow(dead_code)] // every caller in the tree names its cause now; kept for those that can't
     pub(crate) fn hurt_player(&mut self, pi: usize, damage: f32) -> bool {
-        let p = &mut self.players[pi];
-        if p.dev.god || p.dead {
-            return false;
-        }
-        p.hp -= damage;
-        if p.hp > 0.0 {
-            return false;
-        }
-        self.kill_player(pi);
-        true
+        self.hurt_player_by(pi, damage, DeathCause::Other)
     }
 
     /// Dev toggles for player `id` (`None` leaves one as it is); returns the flags now, or `None`

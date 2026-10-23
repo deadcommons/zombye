@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::health::Health;
 use crate::inventory::{Inventory, ItemJob};
 use crate::map::TileMap;
+use crate::run::RunStats;
 
 /// Player body radius in metres.
 pub const PLAYER_RADIUS: f32 = 0.3;
@@ -145,6 +146,10 @@ pub struct Player {
     /// Developer toggles. Not saved: a loaded world has them off.
     #[serde(skip)]
     pub dev: DevFlags,
+    /// This life's stats and how it ended (`crate::run`). Saved in its own section of the save,
+    /// not here, so the player's layout (and the format) stays as it was.
+    #[serde(skip)]
+    pub run: RunStats,
 }
 
 /// Developer toggles for testing without dying (`World::set_dev`; `net::Intent::Dev`, F1 / F2 in
@@ -176,6 +181,7 @@ impl Player {
             ready_in: 0.0,
             queued: None,
             dev: DevFlags::default(),
+            run: RunStats::default(),
         }
     }
 }

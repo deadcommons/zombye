@@ -721,11 +721,25 @@ impl World {
             let job = p.jobs.remove(0);
             let id = p.id;
             self.private_dirty.insert(id);
+            // For the run stats (`crate::run`): things taken from a container or the floor, and
+            // containers searched first.
+            let held = p.inventory.stacks().map(|s| s.count as u32).sum::<u32>();
+            let fresh = matches!(job.kind, JobKind::Search { container } if !self.opened.contains_key(&container));
             let result = match job.kind {
                 JobKind::Move { from, index, item, to, count, spill } => self.do_move(pi, from, index, item, to, count, spill),
                 JobKind::Search { container } => self.do_search(pi, container),
                 JobKind::Use { from, index, item } => self.do_use(pi, from, index, item),
             };
+            if result.is_ok() {
+                let p = &mut self.players[pi];
+                match job.kind {
+                    JobKind::Move { from: Place::Container(_) | Place::Ground, .. } => {
+                        p.run.items_taken += p.inventory.stacks().map(|s| s.count as u32).sum::<u32>().saturating_sub(held);
+                    }
+                    JobKind::Search { .. } if fresh => p.run.searched += 1,
+                    _ => {}
+                }
+            }
             match result {
                 Ok(text) => self.note(id, true, text),
                 Err(why) => self.note(id, false, why),
@@ -1119,6 +1133,7 @@ impl World {
                 self.put_on_floor(s, pos, facing);
             }
             self.players[pi].inventory = inv;
+            self.players[pi].run.items_taken += 1;
             self.refresh_carry(pi);
             self.note(id, true, format!("holding the {}", lower(&def.name)));
             return Some(it.id);
@@ -1148,6 +1163,7 @@ impl World {
             self.items[k].stack.count -= taken;
         }
         self.players[pi].inventory = inv;
+        self.players[pi].run.items_taken += taken as u32;
         self.refresh_carry(pi);
         self.note(id, true, if taken > 1 { format!("took {taken} x {}", lower(&def.name)) } else { format!("took the {}", lower(&def.name)) });
         Some(it.id)

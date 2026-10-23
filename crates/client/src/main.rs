@@ -8,7 +8,7 @@
 //! Controls: WASD move, Shift run, C sneak (toggle), mouse to face, left mouse attack, Space shove
 //! (or stomp a downed zombie in front), E pick up the item you face (or search the container you
 //! face), Tab or I the inventory panel, F open/close the door or window you
-//! face, G smash the window you face, R get up again after dying, T skip an hour, mouse wheel
+//! face, G smash the window you face, T skip an hour, mouse wheel
 //! zoom, Z spawn 250 zombies, F1 god mode, F2 ignored by zombies (dev toggles), `,` / `.` rotate between the four fixed angles (only with `--rotate`,
 //! the "Camera rotation" setting).
 //!
@@ -22,7 +22,9 @@
 //! changed in a way it can't simply take, dropping what no longer fits). F5 quicksaves, F9
 //! quickloads, and quitting (closing the window, Ctrl-C or SIGTERM in the terminal) autosaves
 //! (`autosave` in the saves folder); `--quicksave-after SECS` and
-//! `--quickload-after SECS` do F5 / F9 by themselves, for verification. `--angle N` starts at
+//! `--quickload-after SECS` do F5 / F9 by themselves, for verification. Dead, the death screen
+//! (`death.rs`) sums up the run: R starts a new run (the same town from the start), Q or Esc quits;
+//! `--new-run-after SECS` presses R by itself. `--angle N` starts at
 //! one of the four fixed camera angles (0..3), `--player ID` plays as that player of a loaded
 //! save, `--data DIR` reads game data from another folder.
 //!
@@ -33,6 +35,7 @@
 mod autoplay;
 mod camera;
 mod daynight;
+mod death;
 mod fog;
 mod furniture_models;
 mod fx;
@@ -103,6 +106,9 @@ pub struct Options {
     /// (`--quicksave-after`, `--quickload-after`).
     pub quicksave_after: Option<f32>,
     pub quickload_after: Option<f32>,
+    /// Verification: once dead and this many seconds in, start a new run as if R was pressed on
+    /// the death screen (`--new-run-after`).
+    pub new_run_after: Option<f32>,
     /// The camera's starting angle, one of the four fixed ones (`--angle 0..3`).
     pub angle: i32,
     /// Play as this player of a loaded save (`--player ID`; default its first player).
@@ -172,6 +178,7 @@ impl Options {
             load_anyway: flag("--load-anyway"),
             quicksave_after: value("--quicksave-after").and_then(|v| v.parse().ok()),
             quickload_after: value("--quickload-after").and_then(|v| v.parse().ok()),
+            new_run_after: value("--new-run-after").and_then(|v| v.parse().ok()),
             angle: value("--angle").and_then(|v| v.parse::<i32>().ok()).unwrap_or(0).rem_euclid(4),
             player: value("--player").and_then(|v| v.parse().ok()),
             data: value("--data").map(Into::into).unwrap_or_else(zombye_net::content::default_data_dir),
@@ -262,7 +269,7 @@ fn main() {
             camera::IsoCameraPlugin,
             zombie_render::ZombieRenderPlugin,
             items_render::ItemsRenderPlugin,
-            (hud::HudPlugin, inventory_ui::InventoryUiPlugin, health_ui::HealthUiPlugin),
+            (hud::HudPlugin, inventory_ui::InventoryUiPlugin, health_ui::HealthUiPlugin, death::DeathPlugin),
             fx::FxPlugin,
             survivor::SurvivorPlugin,
             autoplay::AutoplayPlugin,

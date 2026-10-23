@@ -785,6 +785,9 @@ impl World {
             }
             let before = p.state.pos;
             players::step_movement(&self.map, &mut p.state, &p.input, TICK_DT);
+            // This life's time played and distance walked (`crate::run`).
+            p.run.secs += TICK_DT as f64;
+            p.run.distance_m += p.state.pos.distance(before) as f64;
             // Starting to climb through a broken window: the glass left in the frame may cut.
             if !self.map.in_window_opening(before) && self.map.window_opening(p.state.pos) == Some(Edge::WindowBroken) {
                 climbed_glass.push(pi);

@@ -478,7 +478,7 @@ fn tool_list() -> Value {
         },
         {
             "name": "stats",
-            "description": "Map size, tick, time of day and daylight, players (HP, weapon, dead, dev toggles god / ignored, wounds, bleeding, HP lost per game hour, pain, sick, the infection once it shows), zombie counts by state (corpses too) and by simulation tier (active / near / virtual, with the ranges and last tick's promotions and demotions), weapons on the floor, last tick timing (tier pass, senses, flow fields, active AI, near and virtual updates), sounds heard and the state hash (same seed + same calls = same hash).",
+            "description": "Map size, tick, time of day and daylight, players (HP, weapon, dead, dev toggles god / ignored, wounds, bleeding, HP lost per game hour, pain, sick, the infection once it shows; this life's run: time alive in game hours and seconds played, kills, metres walked, things taken, containers searched, wounds taken, HP lost; and once dead the cause of death in plain words), zombie counts by state (corpses too) and by simulation tier (active / near / virtual, with the ranges and last tick's promotions and demotions), weapons on the floor, last tick timing (tier pass, senses, flow fields, active AI, near and virtual updates), sounds heard and the state hash (same seed + same calls = same hash).",
             "inputSchema": {"type": "object", "properties": {}}
         }
     ])
@@ -621,7 +621,7 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 world.tick,
                 clock(world.time_of_day()),
                 counts(world),
-                attacks.summary(),
+                attacks.summary(world),
                 world.state_hash()
             ))
         }
@@ -673,7 +673,7 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 world.tick,
                 clock(world.time_of_day()),
                 counts(world),
-                attacks.summary(),
+                attacks.summary(world),
                 world.state_hash()
             ))
         }
@@ -774,7 +774,7 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 p.state.endurance,
                 if p.state.winded { " (winded)" } else { "" },
                 world.tick,
-                events.summary(),
+                events.summary(world),
                 world.state_hash()
             ))
         }
@@ -986,8 +986,14 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
         }
         "skip_time" => {
             let hours = num("hours").ok_or("hours is required")? as f32;
+            let alive: Vec<u32> = world.players.iter().filter(|p| !p.dead).map(|p| p.id).collect();
             apply_intent(world, &Intent::SkipTime { hours });
-            Ok(format!("it is now {}", clock(world.time_of_day())))
+            let died: String = alive
+                .iter()
+                .filter_map(|id| world.player(*id).filter(|p| p.dead))
+                .map(|p| format!("; P{} DIED: {}", p.id, p.run.cause_of_death().unwrap_or_else(|| "cause unknown".into())))
+                .collect();
+            Ok(format!("it is now {}{died}", clock(world.time_of_day())))
         }
         "buildings" => {
             let mut out = String::new();
@@ -1044,6 +1050,8 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 "pain": p.health.pain(&world.config.health),
                 "sick": p.health.sick(),
                 "infection": p.health.visible_infection().map_or("unknown".to_string(), |s| format!("{s:?}")),
+                "run": run_json(&p.run),
+                "cause_of_death": p.run.cause_of_death(),
             })).collect::<Vec<_>>(),
             "items_on_floor": world.items().len(),
             "containers": world.containers().len(),
@@ -1160,6 +1168,12 @@ impl Events {
                 self.deaths.push(a.player);
             }
         }
+        // Deaths this tick from anything (bleeding, the turn...), not only strikes.
+        for p in &world.players {
+            if p.dead && p.run.death.is_some_and(|d| d.tick + 1 == world.tick) && !self.deaths.contains(&p.id) {
+                self.deaths.push(p.id);
+            }
+        }
         for h in &world.hit_events {
             self.hits += 1;
             if h.effect == HitEffect::Killed {
@@ -1198,7 +1212,7 @@ impl Events {
         }
     }
 
-    fn summary(&self) -> String {
+    fn summary(&self, world: &World) -> String {
         let mut out = String::new();
         if self.hits > 0 {
             let more = if self.hits as usize > self.hit_lines.len() { format!(" and {} more", self.hits as usize - self.hit_lines.len()) } else { String::new() };
@@ -1226,10 +1240,35 @@ impl Events {
             out.push_str(&format!("; ZOMBIE ATTACKS: {} ({})", self.total, list.join("; ")));
         }
         for p in &self.deaths {
-            out.push_str(&format!("; P{p} DIED"));
+            let cause = world.player(*p).and_then(|p| p.run.cause_of_death()).map_or(String::new(), |c| format!(": {c}"));
+            out.push_str(&format!("; P{p} DIED{cause}"));
         }
         out
     }
+}
+
+/// A player's run stats (#13) for `stats`.
+fn run_json(r: &zombye_sim::RunStats) -> Value {
+    json!({
+        "survived": r.survived(),
+        "game_hours": r.hours,
+        "played": r.played(),
+        "seconds": r.secs,
+        "kills": r.kills,
+        "distance_m": r.distance_m,
+        "items_taken": r.items_taken,
+        "containers_searched": r.searched,
+        "wounds": r.wounds,
+        "hp_lost": r.hp_lost,
+        "death": r.death.map(|d| json!({
+            "cause": d.cause.id(),
+            "text": d.describe(),
+            "rises": d.rises,
+            "tick": d.tick,
+            "day": d.day,
+            "time_of_day": clock(d.hour),
+        })),
+    })
 }
 
 /// One weapon's numbers, for tool replies.
@@ -2139,6 +2178,39 @@ mod tests {
         assert_eq!(stats["players"][0]["bleeding"], 1);
         assert_eq!(stats["players"][0]["infection"], "unknown");
         assert_eq!(stats["players"][0]["wounds"][0], "gash on the left leg");
+    }
+
+    /// `stats` carries each player's run (#13); dying says how, in `skip_time`'s and `step_ticks`'
+    /// replies and in `stats`; `respawn` starts a new run.
+    #[test]
+    fn run_stats_and_the_cause_of_death() {
+        let mut world = small_world();
+        let dir = scratch("run");
+        let mut persist = session(&world, &dir.0);
+        let (text, err) = call(&mut world, &mut persist, "move_player", json!({"direction": "n", "ticks": 20}));
+        assert!(!err, "{text}");
+        let (text, _) = call(&mut world, &mut persist, "stats", json!({}));
+        let stats: Value = serde_json::from_str(&text).unwrap();
+        let run = &stats["players"][0]["run"];
+        assert!(run["seconds"].as_f64().unwrap() >= 1.0 && run["death"].is_null(), "{run}");
+        assert!(stats["players"][0]["cause_of_death"].is_null());
+        world.config.infection.mode = zombye_sim::InfectionMode::Off;
+        for part in ["torso", "left_leg", "right_arm"] {
+            let (text, err) = call(&mut world, &mut persist, "wound", json!({"part": part, "kind": "gash", "infected": false}));
+            assert!(!err, "{text}");
+        }
+        let (text, err) = call(&mut world, &mut persist, "skip_time", json!({"hours": 12}));
+        assert!(!err && text.contains("P1 DIED: Bled out from a gash on the torso"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "stats", json!({}));
+        let stats: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(stats["players"][0]["cause_of_death"], "Bled out from a gash on the torso");
+        assert_eq!(stats["players"][0]["run"]["death"]["cause"], "bled_out");
+        assert_eq!(stats["players"][0]["run"]["wounds"], 3);
+        let (text, err) = call(&mut world, &mut persist, "respawn", json!({}));
+        assert!(!err, "{text}");
+        let (text, _) = call(&mut world, &mut persist, "stats", json!({}));
+        let stats: Value = serde_json::from_str(&text).unwrap();
+        assert!(stats["players"][0]["cause_of_death"].is_null() && stats["players"][0]["run"]["wounds"] == 0, "{}", stats["players"][0]);
     }
 
     #[test]

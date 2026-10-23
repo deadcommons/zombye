@@ -13,10 +13,10 @@ Work is tracked on GitHub, not in the repo: the
 
 | Path | What | Licence |
 |---|---|---|
-| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
+| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), run stats and the cause of death (`run.rs`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint; `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
-| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building/tree meshes, fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd; `survivor.rs` skinned, CPU-posed players), hit feedback (`fx.rs`), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), HUD, `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
+| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building/tree meshes, fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd; `survivor.rs` skinned, CPU-posed players), hit feedback (`fx.rs`), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), HUD, the death screen and run summary (`death.rs`), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
 | `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/containers.ron`, `data/population.ron`), models (`models/furniture/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), later textures/audio. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
 | `tools/blender/` | Python to build assets: run inside Blender, mesh builder, palette, renders, validation, GLB export (`zasset.py`, `palette.py`, `build.py`), character clean-up, validation and skinned export (`zchar.py`), VAT bake for the crowd (`zvat.py`); plain Python, art-repo work folders and promotion (`artrepo.py`). | MIT OR Apache-2.0 |
 | `docs/` | Plan and design docs. | — |
@@ -76,7 +76,7 @@ cargo test --release --workspace
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --render-to PATH --size WxH --center X,Y --inventory --god --ignored`
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --inventory --god --ignored`
 (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost).
@@ -128,7 +128,7 @@ The client prints one stats line per second to stdout (time, room, stance, hp, e
 sent to it, chasing, zombies per tier active/near/virtual, sim tick ms).
 In game: WASD move, Shift run, C sneak (toggle), mouse to face, left mouse attack (swing your weapon, or
 punch), Space shove (or stomp, when a downed zombie lies right in front of you), E pick up the item you
-face (with nothing on the floor within reach: search the container you face), Tab or I the inventory panel, F open/close the door or window you face, G smash the window you face, R get up again after dying,
+face (with nothing on the floor within reach: search the container you face), Tab or I the inventory panel, F open/close the door or window you face, G smash the window you face, dead: R a new run and Q or Esc quit,
 T skip an hour, Z spawn zombies, wheel zoom, F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles). Walk into an open or broken window to climb
 through it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
 not Bevy's handler; a second Ctrl-C quits unsaved) autosaves; `--render-to` never does.
@@ -139,16 +139,23 @@ from a save (a name in the saves folder, e.g. `--load autosave`, or a path): its
 world options and `--fight-demo`/`--siege` don't apply; `--load-anyway` loads one whose game data changed in a way it
 can't simply take, for `--load` and F9 alike, with no prompt. F9 swaps the quicksave into the running game like a rejoin:
 the doors, windows and cracks that differ arrive as edge changes, the player's prediction restarts from the loaded
-state (unconfirmed inputs dropped), zombies and items follow from the first snapshot, the life's kill/time tally
-starts again at zero from the loaded tick (a save records neither kills nor when a life began; a dead player stays dead),
+state (unconfirmed inputs dropped), zombies and items follow from the first snapshot, the run stats are the save's (a dead player stays dead, with its
+death screen; a save from before #13 has none, so they start empty and the cause shows as unknown),
 and blood splats and particles are cleared (`fx::ClearFx`): they belong to the timeline left behind. A quicksave of another map (seed or size) is refused with a message: start with `--load` for that.
 `--quicksave-after SECS` / `--quickload-after SECS` press F5 / F9 by themselves, for verification. A yellow line
 under the HUD says what was saved or loaded (or why not), and stdout gets the same line.
 
 HUD: top left, the stats line and the keys. Bottom left, the weapon you hold and your stance, a health bar
 (pulses below 30), an endurance bar (orange below `tired_below`, when swings weaken; grey-blue and a WINDED tag
-when winded: no running), and this life's kills and time alive. Dead: a "You died" screen with the time survived
-and kills (both counted client-side from combat events and sim ticks) and "Press R to get up again". A cyan GOD / IGNORED
+when winded: no running), and this life's kills, time played and distance (the server's run stats). Dead: the death
+screen (`death.rs`, #13): the cause of death in plain words, the game day and hour, and the run summary (game time
+survived, time played, zombies killed, distance walked, things looted, containers searched, wounds taken, HP lost), all
+from our run in the snapshot, so it is right after a quickload or `--load` too. **R starts a new run:** a fresh world
+with the same seed, map size and settings as the one being played (the same town from the start: the client's map copy
+and meshes are built once for that map, so a new seed would mean rebuilding them; `net::LocalServer::new_run`, taken up
+like a quickload through `saving::WorldSwap`); `--at`, `--fight-demo` and `--siege` don't apply again. **Q or Esc quits**
+(autosaving). `--new-run-after SECS` presses R by itself once dead. `--autoplay` still gets up again with
+`Intent::Respawn` (a new run for that player, same world). A cyan GOD / IGNORED
 tag beside the stance (and in the stats line) while a dev toggle is on.
 
 ## The world
@@ -196,8 +203,8 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   (dev toggles, below), and the debug/admin `SetGoal`, `SpawnZombies`, `SpawnItem { item, count, pos }`, `SkipTime`, `MakeNoise`.
 - **Dev toggles** (`players::DevFlags { god, ignored }` on the player, `World::set_dev`; `Intent::Dev` with `Option<bool>`s,
   `None` = leave it): **god** takes no damage and can't die: zombie strikes still roll, land and become events and hit
-  feedback, HP just doesn't drop (`World::hurt_player` is the one place a player loses HP; anything new that hurts goes
-  through it). **ignored**: zombies don't see the player (`Target::ignored`, skipped by `sight_pass`) or hear anything it
+  feedback, HP just doesn't drop (`World::hurt_player_by(pi, damage, DeathCause)` is the one place a player loses HP;
+  anything new that hurts goes through it and names its cause, see Run stats). **ignored**: zombies don't see the player (`Target::ignored`, skipped by `sight_pass`) or hear anything it
   makes (its `SoundSource::Player` sounds are dropped in `World::step` before the senses, far tiers and migration listen),
   and turning it on makes every zombie after it (chasing, lunging, striking, battering toward it) investigate where it last
   saw it, then wander; one it hits finds nobody when it recovers. Off again, it is noticed as usual from the next tick.
@@ -315,6 +322,23 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
 - **MCP:** `health {player}` (as the player's own view, plus effects and what each wound needs next), `wound {player,
   part, kind, infected}` (debug), `stats` per player (wounds, bleeding, HP lost per hour, pain, sick, infection or
   "unknown"), and `step_ticks` / `move_player` name the wounds strikes left.
+
+## Run stats and the cause of death (`sim::run`; #13)
+
+- `Player::run` (`RunStats`): `secs` played (ticks; skipped time not counted), `hours` alive in game time (skipped time
+  included, counted in `step_health`), `kills`, `distance_m`, `items_taken` (from containers and the floor, each item of a
+  stack), `searched` (containers this player searched first), `wounds`, `hp_lost`, and `death: Option<Death>` (`cause`,
+  `tick`, game `day` and `hour`, `rises`: the infection will raise the body). Counted where things happen, one line each
+  (`combat::strike` kills, `World::step` movement, `step_item_jobs` / `player_pick_up`, `add_wound`, `hurt_player_by`).
+  A respawn or a new world starts a fresh record. Not in `state_hash` (nothing reads it back) and `#[serde(skip)]` in
+  `Player`, saved in its own `RUNS` section instead (see Saves).
+- `DeathCause`: `Zombie { part, wound }`, `BledOut { part, wound }` (the wound bleeding most), `Festering`,
+  `Infection { wound }` (the fever or the turn; "Bitten and turned"), `Glass { part }`, `Wound` (debug), `Other`.
+  `World::hurt_player_by(pi, damage, cause)` records it; plain `hurt_player` says `Other`; `step_health`'s drain picks
+  the biggest drain (`run::health_cause`: the turn always wins). **#11 adds** `Starved` / `Dehydrated`: a variant, its words
+  in `DeathCause::describe`, and `hurt_player_by` where it hurts; the client and MCP only show `describe`'s text.
+- Replication: `Snapshot::runs` (`RunView { player, run }`) every snapshot, a client only its own (`for_player`,
+  `Snapshot::run_of`). The HUD's kills / alive / walked line and the death screen read it.
 
 ## Items, inventory and containers (`sim::items`, `sim::inventory`, `sim::containers`; #7)
 
@@ -588,7 +612,9 @@ over the old one: a crash mid-write leaves the previous save whole).
 - **Format** (`save.rs` docs): `ZOMBYSAV`, a `u32` format version (4; 3 added items, inventories and containers, 4 wounds and illness, and older saves are refused), then sections (4-byte tag, `u32` length,
   postcard payload, FNV-1a checksum): `INFO` (`SaveInfo`: game version, tick, time of day, seed, map size, zombies,
   players, content fingerprint), `CONF` (settings, RON), `MAPD` (edits or the full map), `WRLD` (everything else but
-  zombies), one `ZOMB` per 64 m region (the tiers' region grid; zombies column by column, ids as gaps), `END`.
+  zombies), one `ZOMB` per 64 m region (the tiers' region grid; zombies column by column, ids as gaps), `RUNS` (each
+  player's run stats and cause of death, #13; optional, so it didn't bump the format: a format 4 save without it loads
+  with empty records), `END`.
   Per-region zombie sections are there so a later streaming save (#3, #22) can rewrite only what changed. Errors are
   `LoadError` values, never panics: `NotASave`, `Version` (older or newer), `Truncated`, `Corrupt` (bad checksum,
   undecodable or inconsistent data), `ContentChanged`, `MapChanged`, `Invalid` (below). No SQLite: a world is one file
@@ -647,11 +673,14 @@ spread, strength and time left; the regions furthest below and above target), `s
 (replaces the world; with no name, the `--save` file; refused, world untouched, if the file is damaged, holds impossible
 values or is of another format; changed game data loads with a note when compatible, else is refused unless
 `force: true`, which loads it anyway and notes what it changed), `saves` (the saves folder: size, age, tick, time, seed, map size, zombies,
-players; and where this session autosaves), `stats` (players with HP/weapon/load/burden/busy/dead/god/ignored, time of day and daylight, zombies by state
+players; and where this session autosaves), `stats` (players with HP/weapon/load/burden/busy/dead/god/ignored, `run` (this life: `survived`, `game_hours`, `played`,
+`seconds`, `kills`, `distance_m`, `items_taken`, `containers_searched`, `wounds`, `hp_lost`, and once dead `death`: `cause`
+id, `text`, `rises`, `tick`, `day`, `time_of_day`) and `cause_of_death` (plain words, null while alive), time of day and daylight, zombies by state
 including staggered/down/dead and by tier (`zombie_tiers`: active/near/virtual, last tick's promotions and
 demotions, the ranges), `population` (target vs alive, attractors, whether migration and respawn are on, respawned), items on the floor, containers and how many are opened, tick timing (tier pass, senses, flow, active, near, virtual), thumps, hits and sounds heard last
 tick, damaged edges, the state hash). `step_ticks` and `move_player` also report hits, kills, how many
-zombie strikes landed for how much, and deaths.
+zombie strikes landed for how much, and deaths with their cause (`P1 DIED: Bled out from a gash on the torso`), from
+anything, not only strikes; `skip_time` reports deaths during the skip the same way.
 
 **`screenshot`** returns a rendered PNG of the world around a player as MCP image content (`{"type": "image",
 "data": <base64>, "mimeType": "image/png"}`) followed by a text line: whose view, where the player stands (room or
