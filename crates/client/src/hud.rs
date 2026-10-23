@@ -1,5 +1,5 @@
-//! On-screen stats; health and endurance bars, the weapon held, stance and a winded warning
-//! (bottom left); the death screen (time survived and kills this life, counted from combat
+//! On-screen stats; health and endurance bars, the weapon held, stance, a winded warning and the
+//! health tags (bleeding, injured leg..., from `health_ui.rs`) (bottom left); the death screen (time survived and kills this life, counted from combat
 //! events); plus the automation hooks agents and CI use: periodic stdout stats, `--screenshot`
 //! and `--exit-after`.
 
@@ -126,6 +126,8 @@ fn spawn_hud(mut commands: Commands) {
             bar(c, "END", END_COLOR, EnduranceFill, |row| {
                 row.spawn((WindedText, Text::new("WINDED"), font(13.0), TextColor(Color::srgb(0.95, 0.55, 0.3)), Visibility::Hidden));
             });
+            // Bleeding, injured leg, feverish... (`health_ui.rs` fills it in).
+            c.spawn((crate::health_ui::HealthTagsText, Text::new(""), font(13.0), TextColor(TEXT)));
             c.spawn((TallyText, Text::new(""), font(13.0), TextColor(DIM)));
         });
     commands
@@ -312,7 +314,7 @@ fn update_hud(
     if let Ok(mut t) = text.single_mut() {
         let rotate = if options.rotate { ", . rotate | " } else { "" };
         t.0 = format!(
-            "{line}\nWASD move | Shift run | C sneak{} | mouse face | LMB attack | Space shove/stomp | E pick up / search | Tab inventory | F door/window | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load | F1 god{} | F2 ignored{}",
+            "{line}\nWASD move | Shift run | C sneak{} | mouse face | LMB attack | Space shove/stomp | E pick up / search | Tab inventory | H health | F door/window | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load | F1 god{} | F2 ignored{}",
             if me.sneak { " (on)" } else { "" },
             if me.dev.god { " (on)" } else { "" },
             if me.dev.ignored { " (on)" } else { "" }

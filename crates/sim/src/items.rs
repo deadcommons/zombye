@@ -234,7 +234,8 @@ pub struct BagDef {
     pub slow: f32,
 }
 
-/// A part of the body clothing covers (and, with #9, injuries land on).
+/// A region of the body clothing covers: both arms at once, say. Wounds land on finer parts
+/// (`crate::health::Part`, left and right apart), each in one of these.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum BodyPart {
     Head,

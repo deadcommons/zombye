@@ -328,6 +328,8 @@ pub(crate) fn check_settings(text: &str, config: &WorldConfig) -> Result<(), Loa
     if !config.day_length_secs.is_finite() || config.day_length_secs <= 0.0 {
         return Err(invalid(format!("settings: day_length_secs {} must be positive", config.day_length_secs)));
     }
+    config.health.check().map_err(|e| invalid(format!("settings: {e}")))?;
+    config.infection.check().map_err(|e| invalid(format!("settings: {e}")))?;
     Ok(())
 }
 
@@ -415,6 +417,42 @@ fn on_map(map: &TileMap, p: Vec2, field: impl FnOnce() -> String) -> Result<(), 
 
 fn tile_on_map(map: &TileMap, t: IVec2, field: impl FnOnce() -> String) -> Result<(), LoadError> {
     if map.in_bounds(t) { Ok(()) } else { Err(invalid(format!("{} {t} is off the map ({} x {} tiles)", field(), map.width(), map.height()))) }
+}
+
+/// A player's wounds and illnesses: numbers a tick could have made, ids in order.
+fn check_health(p: &Player) -> Result<(), LoadError> {
+    let (id, h) = (p.id, &p.health);
+    let name = |field: &str| format!("player {id}: {field}");
+    if h.wounds.len() > crate::health::MAX_WOUNDS {
+        return Err(invalid(format!("player {id}: {} wounds (at most {})", h.wounds.len(), crate::health::MAX_WOUNDS)));
+    }
+    for (k, w) in h.wounds.iter().enumerate() {
+        if w.id >= h.next_wound || (k > 0 && h.wounds[k - 1].id >= w.id) {
+            return Err(invalid(format!("player {id}: wound id {} is repeated, out of order or past the next id {}", w.id, h.next_wound)));
+        }
+        let what = |f: &str| name(&format!("wound {}: {f}", w.id));
+        non_negative(w.age_h, || what("age_h"))?;
+        non_negative(w.healed_h, || what("healed_h"))?;
+        non_negative(w.dressing_age_h, || what("dressing_age_h"))?;
+        if !(w.heal_h.is_finite() && w.heal_h > 0.0) || w.healed_h >= w.heal_h {
+            return Err(invalid(format!("{} {} (healed {}; must be above 0 and above what has healed)", what("heal_h"), w.heal_h, w.healed_h)));
+        }
+    }
+    if let Some(i) = h.infection {
+        non_negative(i.feverish_h, || name("infection.feverish_h"))?;
+        finite(i.left_h, || name("infection.left_h"))?;
+        if i.wound >= h.next_wound {
+            return Err(invalid(format!("player {id}: infection from wound {} past the next id {}", i.wound, h.next_wound)));
+        }
+    }
+    non_negative(h.food_poisoning_h, || name("food_poisoning_h"))?;
+    if let Some(r) = h.rise_in {
+        finite(r, || name("rise_in"))?;
+        if !p.dead {
+            return Err(invalid(name("alive and about to rise")));
+        }
+    }
+    Ok(())
 }
 
 /// Everything a tick reads from a freshly loaded world (before its derived state is rebuilt).
@@ -508,6 +546,7 @@ pub(crate) fn validate(w: &World) -> Result<(), LoadError> {
             finite(a.power, || name("action.power"))?;
             weapon(&|| name("action: "), a.weapon)?;
         }
+        check_health(p)?;
     }
 
     // Items, in id order.
@@ -951,6 +990,27 @@ mod tests {
             ("repeated player id", "player id", |w| w.players[1].id = w.players[0].id),
             ("zero player id", "player id 0", |w| w.players[0].id = 0),
             ("player ready_in NaN", "ready_in", |w| w.players[0].ready_in = f32::NAN),
+            ("wound age NaN", "age_h", |w| {
+                w.inflict_wound(1, crate::health::Part::Torso, crate::health::WoundKind::Gash, Some(false));
+                w.players[0].health.wounds[0].age_h = f32::NAN;
+            }),
+            ("wound healed past its time", "heal_h", |w| {
+                w.inflict_wound(1, crate::health::Part::LeftLeg, crate::health::WoundKind::Scratch, Some(false));
+                w.players[0].health.wounds[0].healed_h = 1e3;
+            }),
+            ("repeated wound id", "wound id", |w| {
+                w.inflict_wound(1, crate::health::Part::Head, crate::health::WoundKind::Bruise, Some(false));
+                w.inflict_wound(1, crate::health::Part::Head, crate::health::WoundKind::Bruise, Some(false));
+                w.players[0].health.wounds[1].id = 0;
+            }),
+            ("infection timer inf", "infection.left_h", |w| {
+                w.inflict_wound(1, crate::health::Part::Torso, crate::health::WoundKind::Bite, Some(true));
+                w.players[0].health.infection.as_mut().unwrap().left_h = f32::INFINITY;
+            }),
+            ("food poisoning negative", "food_poisoning_h", |w| w.players[0].health.food_poisoning_h = -2.0),
+            ("rising while alive", "about to rise", |w| w.players[0].health.rise_in = Some(3.0)),
+            ("infection stage length absurd", "stage_mult", |w| w.config.infection.stage_mult = 40.0),
+            ("wound that never heals", "health.gash", |w| w.config.health.gash.heal_h = 0.0),
             ("player input NaN", "input.move_dir", |w| w.players[0].input.move_dir = Vec2::NAN),
             ("player hand item out of range", "item index 3000", |w| w.players[0].inventory.hand = Some(ItemStack::one(3000))),
             ("carried item out of range", "item index 3001", |w| w.players[1].inventory.carried.push(ItemStack::one(3001))),

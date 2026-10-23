@@ -453,6 +453,23 @@ impl TileMap {
             || (1.0 - f.x < CLIMB_ZONE && self.tile(t + IVec2::X).west.is_climbable())
     }
 
+    /// The open or broken window a body centred at `p` is climbing through, if any (as
+    /// [`in_window_opening`](Self::in_window_opening), with which edge it is).
+    pub fn window_opening(&self, p: Vec2) -> Option<Edge> {
+        let t = p.floor().as_ivec2();
+        let f = p - t.as_vec2();
+        let tile = self.tile(t);
+        [
+            (f.y < CLIMB_ZONE, tile.north),
+            (f.x < CLIMB_ZONE, tile.west),
+            (1.0 - f.y < CLIMB_ZONE, self.tile(t + IVec2::Y).north),
+            (1.0 - f.x < CLIMB_ZONE, self.tile(t + IVec2::X).west),
+        ]
+        .into_iter()
+        .find(|(near, e)| *near && e.is_climbable())
+        .map(|(_, e)| e)
+    }
+
     /// Room id at a world position (0 = outdoors).
     pub fn room_at(&self, p: Vec2) -> u16 {
         self.tile(p.floor().as_ivec2()).room
