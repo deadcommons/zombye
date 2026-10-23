@@ -1,5 +1,9 @@
 # Zombye
 
+<p align="center">
+  <img src="docs/brand/mascot-512.png" width="200" alt="The Zombye mascot: a friendly cartoon zombie in a black hoodie, waving">
+</p>
+
 **Open-source zombie survival in real 3D.** Isometric, with hundreds of zombies on screen, built in
 Rust so that anyone (and any AI agent) can read it, mod it and host it.
 

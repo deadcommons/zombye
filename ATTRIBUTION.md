@@ -28,4 +28,4 @@ Steam requires AI-generated content to be disclosed, and this table is our recor
 
 | Asset | Author | Generator / source | Licence | Notes |
 |---|---|---|---|---|
-| _none yet_ | | | | |
+| `docs/brand/mascot.svg`, `docs/brand/mascot-512.png` | Dead Commons | AI image generator (tool and plan to be recorded); vectorised with vtracer | Brand licence ([docs/brand/LICENSE-brand.txt](docs/brand/LICENSE-brand.txt)), not CC BY-NC-SA | The Zombye mascot. Fan art is welcome (brand licence, point 4). |
