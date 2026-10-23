@@ -10,7 +10,7 @@ pub mod shutdown;
 
 use serde::{Deserialize, Serialize};
 use zombye_sim::map::{EdgeChange, OwnedEdge};
-use zombye_sim::{ActionKind, Burden, Carry, CombatEvent, DevFlags, GroundItem, HealthTags, HealthView, Inventory, ItemNote, ItemStack, MoveMods, Place, PlayerInput, RunStats, Stance, World, WorldConfig, ZombieAnim};
+use zombye_sim::{ActionKind, Burden, Carry, CombatEvent, DevFlags, GroundItem, HealthTags, HealthView, Inventory, ItemNote, ItemStack, MoveMods, Place, PlayerInput, RunStats, Stance, Treatment, World, WorldConfig, ZombieAnim};
 
 /// Something a client wants to happen. The server validates and applies it.
 ///
@@ -56,6 +56,11 @@ pub enum Intent {
     /// Search (open) a container: this one, or with `None` the one the player faces within reach.
     /// The first search takes the container's search time and fills it.
     Search { player: u32, container: Option<u32> },
+    /// First aid (#10): `action` on the player's wound `wound` (its id in the health view; `None`
+    /// for painkillers and antibiotics) with one use of `item` (an index into the items; `None`:
+    /// the best the player carries, or nothing to take a dressing off). Takes a few seconds,
+    /// standing still; a strike landing or a swing interrupts it. Checked when asked and when done.
+    Treat { player: u32, wound: Option<u32>, action: Treatment, item: Option<u16> },
     /// Single-player / debug: a dead player gets up at the spawn point.
     Respawn { player: u32 },
     /// Dev toggles for testing (`None` leaves one as it is): `god` takes no damage and can't die,
@@ -366,6 +371,9 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
         Intent::Search { player, container } => {
             let _ = world.player_search(*player, *container);
         }
+        Intent::Treat { player, wound, action, item } => {
+            let _ = world.player_treat(*player, *wound, *action, *item);
+        }
         Intent::Respawn { player } => {
             world.respawn_player(*player);
         }
@@ -561,6 +569,49 @@ mod tests {
             assert_eq!(view.last_input_seq, seq);
             assert_eq!(view.state(), predicted, "diverged at seq {seq}");
         }
+    }
+
+    /// First aid through intents (#10): dressing a bite from what the player carries, standing
+    /// still meanwhile, with the private view showing it; and each tick's prediction from the last
+    /// snapshot (as the client reconciles) matches the server through the start and the end.
+    #[test]
+    fn treating_goes_through_intents_and_predicts() {
+        use zombye_sim::{Dressing, Part, WoundKind};
+        let mut server = server();
+        let id = server.join(None);
+        server.send(Intent::Dev { player: id, god: None, ignored: Some(true) });
+        server.tick();
+        assert!(server.world.give_item(id, "gauze", 1));
+        server.world.inflict_wound(id, Part::RightLeg, WoundKind::Bite, Some(false)).unwrap();
+        let snap = server.tick();
+        let wound = snap.private.iter().find(|v| v.player == id).unwrap().health.wounds[0].id;
+        let mut last = snap.players.iter().find(|p| p.id == id).unwrap().state();
+        for t in 0..140u32 {
+            if t == 10 {
+                server.send(Intent::Treat { player: id, wound: Some(wound), action: Treatment::Dress, item: None });
+            }
+            let seq = t + 1;
+            let a = t as f32 * 0.05;
+            let (move_dir, facing) = ([a.cos(), a.sin()], a);
+            server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run: false, sneak: false });
+            let mut predicted = last;
+            step_movement(&server.world.map, &mut predicted, &PlayerInput { move_dir: move_dir.into(), facing, run: false, sneak: false }, TICK_DT);
+            let snap = server.tick();
+            let view = snap.players.iter().find(|p| p.id == id).unwrap();
+            if t > 10 && t < 85 {
+                assert_eq!(view.mods.speed, 0.0, "standing still while dressing (tick {t})");
+            }
+            // Standing still starts and ends after a tick's movement, so the snapshot always has
+            // the modifiers the next tick moves with.
+            assert_eq!(view.state().pos, predicted.pos, "tick {t}");
+            last = view.state();
+        }
+        let w = &server.world.player(id).unwrap().health.wounds[0];
+        assert_eq!(w.dressing, Dressing::Clean);
+        assert!(!w.bleeding);
+        let view = PrivateView::of(&server.world, id).unwrap();
+        assert_eq!(view.health.wounds[0].dressing, Dressing::Clean);
+        assert_eq!(view.health.aid.opened.len(), 1, "two uses left in the roll");
     }
 
     /// Climbing through a window predicts exactly too: the client keeps its own copy of the map,

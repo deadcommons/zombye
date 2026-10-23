@@ -53,7 +53,8 @@
 //! #13 still load, with empty records). Payloads are
 //! [postcard](https://docs.rs/postcard), and zombies are stored column by column. A file with
 //! another format version fails with [`LoadError::Version`] (format 3 added items, inventories and
-//! containers, format 4 wounds and illness on players; older saves are refused); truncated or damaged files fail with
+//! containers, format 4 wounds and illness on players, format 5 first aid: dressings, treatments, painkillers and
+//! antibiotics; older saves are refused); truncated or damaged files fail with
 //! [`LoadError::Truncated`] or [`LoadError::Corrupt`], never a panic.
 
 use std::fmt;
@@ -84,7 +85,7 @@ use crate::zombies::{Tier, ZombieAnim, ZombieState, Zombies};
 /// The first eight bytes of every save.
 pub const MAGIC: [u8; 8] = *b"ZOMBYSAV";
 /// Bumped whenever the layout changes; other versions are refused with a clear error.
-pub const FORMAT_VERSION: u32 = 4;
+pub const FORMAT_VERSION: u32 = 5;
 /// File extension `net::save_file` uses.
 pub const EXTENSION: &str = "zsave";
 
