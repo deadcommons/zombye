@@ -4,4 +4,7 @@ docs/research/
 # Rust
 /target/
 
+# Game saves (the client and server write to saves/ by default)
+/saves/
+
 .DS_Store

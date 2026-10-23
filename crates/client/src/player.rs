@@ -67,6 +67,20 @@ pub struct LocalPlayer {
     pub action: Option<ActionKind>,
 }
 
+impl LocalPlayer {
+    /// Start again from a loaded world's view of our player: forget unconfirmed inputs (they were
+    /// for the old world) and keep numbering inputs above anything the save has seen.
+    pub fn resume(&mut self, view: &zombye_net::PlayerView, tick: u64) {
+        self.id = view.id;
+        self.seq = self.seq.max(view.last_input_seq);
+        self.pending.clear();
+        (self.prev, self.curr) = (view.state(), view.state());
+        self.aim = view.facing;
+        self.last_snapshot_tick = tick;
+        (self.hp, self.dead, self.weapon, self.action) = (view.hp, view.dead, view.weapon, view.action);
+    }
+}
+
 /// Builds the local player's input each tick; `--autoplay` runs before it.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PlayerInputSet;

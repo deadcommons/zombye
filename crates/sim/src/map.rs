@@ -341,6 +341,19 @@ impl TileMap {
         self.chunks_x * CHUNK_SIZE
     }
 
+    /// Is this map well formed (as one read from a save must be before it's used): every chunk
+    /// there with all its tiles, the outdoors room, and every tile's room and building existing?
+    pub fn is_consistent(&self) -> bool {
+        let n = (self.chunks_x.max(0) as usize) * (self.chunks_y.max(0) as usize);
+        let rooms = self.rooms.len();
+        self.chunks_x > 0
+            && self.chunks_y > 0
+            && self.chunks.len() == n
+            && rooms > 0
+            && self.chunks.iter().all(|c| c.tiles.len() == CHUNK_TILES && c.tiles.iter().all(|t| (t.room as usize) < rooms))
+            && self.rooms.iter().skip(1).all(|r| (r.building as usize) < self.buildings.len())
+    }
+
     pub fn height(&self) -> i32 {
         self.chunks_y * CHUNK_SIZE
     }

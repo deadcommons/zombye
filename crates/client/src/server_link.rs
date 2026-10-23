@@ -9,7 +9,7 @@
 use bevy::prelude::*;
 use std::collections::HashMap;
 
-use zombye_net::{EdgeDamage, Intent, LocalServer, Snapshot, content};
+use zombye_net::{EdgeDamage, Intent, LocalServer, Snapshot, content, save_file};
 use zombye_sim::map::{Edge, EdgeChange, OwnedEdge, Side, TileMap};
 use zombye_sim::{CombatEvent, CombatTuning, TICK_RATE, WeaponDef, WorldConfig};
 
@@ -91,7 +91,33 @@ impl Plugin for ServerLinkPlugin {
         if let Some(hour) = options.start_hour {
             config.start_hour = hour;
         }
-        let mut server = LocalServer::new(config);
+        // `--load`: the saved world, with its own seed, map and players (the world options and
+        // the demo setups don't apply).
+        let loaded = options.load.as_ref().map(|name| {
+            let loaded = save_file::resolve(&options.saves, name).and_then(|path| save_file::load(&path, &config));
+            match loaded {
+                Ok((world, ms)) => {
+                    println!("loaded {name} in {ms:.0} ms: tick {}, {} zombies", world.tick, world.zombies.len());
+                    world
+                }
+                Err(e) => {
+                    eprintln!("can't load {name}: {e}");
+                    std::process::exit(1);
+                }
+            }
+        });
+        let resumed = loaded.is_some();
+        let mut server = match loaded {
+            Some(world) => LocalServer::from_world(world),
+            None => LocalServer::new(config),
+        };
+        if resumed {
+            let player_id = match server.world.players.first() {
+                Some(p) => p.id,
+                None => server.join(options.at),
+            };
+            return finish_join(app, server, player_id);
+        }
         // The fight demo wants room to swing: open ground near the house you wake up in.
         let demo_at = if options.fight_demo && options.at.is_none() { open_ground_near(&server.world.map, server.world.player_spawn).map(|p| p.to_array()) } else { None };
         let siege_at = if options.siege { siege_spot(&server.world.map, server.world.spawn_building) } else { None };
@@ -107,21 +133,46 @@ impl Plugin for ServerLinkPlugin {
         if let Some((_, door, out)) = siege_at {
             siege(&mut server, player_id, door, out);
         }
-        let first = Snapshot::capture(&mut server.world);
-        let map = ClientMap(server.world.map.clone());
-        let damage = EdgeDamageMap(EdgeDamage::all(&server.world).into_iter().map(|d| ((d.tile, d.edge), d.hp)).collect());
-        let spawn = first.players.iter().find(|p| p.id == player_id).map(|p| Vec2::from(p.pos)).unwrap_or(server.world.player_spawn);
-        let join = JoinInfo { player_id, player_spawn: spawn, weapons: server.world.config.weapons.clone(), combat: server.world.config.combat.clone() };
-        app.insert_resource(ServerLink { server, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3] })
-            .insert_resource(map)
-            .insert_resource(join)
-            .insert_resource(damage)
-            .init_resource::<EdgeChangesThisFrame>()
-            .init_resource::<EdgeDamageThisFrame>()
-            .init_resource::<CombatEventsThisFrame>()
-            .insert_resource(Time::<Fixed>::from_hz(TICK_RATE as f64))
-            .add_systems(First, clear_frame_changes)
-            .add_systems(FixedUpdate, tick_server.in_set(ServerTick));
+        finish_join(app, server, player_id);
+    }
+}
+
+/// What a client gets on joining (its map copy, the weapons, every damaged edge, a first
+/// snapshot), and the systems that tick the server.
+fn finish_join(app: &mut App, mut server: LocalServer, player_id: u32) {
+    let first = Snapshot::capture(&mut server.world);
+    let map = ClientMap(server.world.map.clone());
+    let damage = EdgeDamageMap(EdgeDamage::all(&server.world).into_iter().map(|d| ((d.tile, d.edge), d.hp)).collect());
+    let spawn = first.players.iter().find(|p| p.id == player_id).map(|p| Vec2::from(p.pos)).unwrap_or(server.world.player_spawn);
+    let join = JoinInfo { player_id, player_spawn: spawn, weapons: server.world.config.weapons.clone(), combat: server.world.config.combat.clone() };
+    app.insert_resource(ServerLink { server, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3] })
+        .insert_resource(map)
+        .insert_resource(join)
+        .insert_resource(damage)
+        .init_resource::<EdgeChangesThisFrame>()
+        .init_resource::<EdgeDamageThisFrame>()
+        .init_resource::<CombatEventsThisFrame>()
+        .insert_resource(Time::<Fixed>::from_hz(TICK_RATE as f64))
+        .add_systems(First, clear_frame_changes)
+        .add_systems(FixedUpdate, tick_server.in_set(ServerTick));
+}
+
+impl ServerLink {
+    /// The world being served (to save it).
+    pub fn world(&self) -> &zombye_sim::World {
+        &self.server.world
+    }
+
+    /// Serve `world` (a loaded save) from now on: drops queued intents and starts the snapshots
+    /// afresh from it. Returns the first snapshot.
+    pub fn replace_world(&mut self, world: zombye_sim::World) -> &Snapshot {
+        self.server.replace_world(world);
+        let first = Snapshot::capture(&mut self.server.world);
+        let s = self.server.world.stats;
+        (self.sim_ms, self.chasing, self.tiers) = (0.0, 0, [s.active, s.near, s.virtual_]);
+        self.prev = first.clone();
+        self.curr = first;
+        &self.curr
     }
 }
 

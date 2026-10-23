@@ -391,7 +391,7 @@ pub struct Population {
     pub last_seen: Vec<u64>,
     /// Live attractors, in creation (id) order.
     pub attractors: Vec<Attractor>,
-    next_attractor: u32,
+    pub(crate) next_attractor: u32,
     /// Zombies added by respawn so far.
     pub respawned: u32,
     /// Living zombies per region, filled by [`Population::count_into`] (scratch).

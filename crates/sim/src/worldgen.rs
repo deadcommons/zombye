@@ -2,6 +2,7 @@
 //! The same seed and templates always give the same map.
 
 use glam::{IVec2, Vec2};
+use serde::{Deserialize, Serialize};
 
 use crate::map::{Edge, Feature, Floor, Side, TileMap, CHUNK_SIZE};
 use crate::population::Zone;
@@ -16,7 +17,7 @@ const FRONT_SETBACK: i32 = 5;
 /// Forest kept at least this wide round the town when the map is made bigger to fit it.
 const MIN_FOREST: i32 = 24;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GenConfig {
     pub seed: u64,
     /// Map size in chunks (each 16 m). Grown if the town wouldn't fit.

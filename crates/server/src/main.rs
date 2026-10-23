@@ -13,16 +13,84 @@
 //! thousand on the default map), `--seed S` (default 1), `--map-chunks N` (a square
 //! map N × N chunks of 16 m; default 20, so 320 m; 64 is about 1 km), `--data DIR` (content
 //! folder, default the repo's `assets/data`).
+//!
+//! Saves: `--save PATH` loads that save if it exists (the world options are then ignored) or
+//! makes a new world and saves it there; the server then autosaves to it every
+//! `--autosave-mins N` minutes of real time (default 5; 0 = never) and when it shuts down (stdin
+//! closed, Ctrl-C, SIGTERM). `--saves DIR` is the folder for the MCP `save`/`load`/`saves` tools
+//! (default: the `--save` file's folder, else `saves`). `--bench --save-bench` also times saving
+//! and loading the world at the end of the run.
 
 mod mcp;
+mod shutdown;
 
-use std::path::PathBuf;
-use std::time::Instant;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
-use zombye_net::content;
+use zombye_net::{content, save_file};
 use glam::Vec2;
 use zombye_sim::world::TickStats;
 use zombye_sim::{PlayerInput, TICK_DT, World, WorldConfig};
+
+/// Where the server keeps its world, and when it last saved it.
+pub struct Persist {
+    /// `--save PATH`: autosaved and saved on shutdown.
+    pub path: Option<PathBuf>,
+    /// Folder for named saves (MCP `save` / `load` / `saves`).
+    pub dir: PathBuf,
+    /// The content saves are loaded against (templates, weapons, population).
+    pub content: WorldConfig,
+    pub autosave: Option<Duration>,
+    pub last_save: Instant,
+    /// The world changed since it was last saved or loaded.
+    pub dirty: bool,
+}
+
+impl Persist {
+    /// Is an autosave due (something changed and the interval has passed)?
+    pub fn autosave_due(&self) -> bool {
+        self.dirty && self.path.is_some() && self.autosave.is_some_and(|every| self.last_save.elapsed() >= every)
+    }
+
+    /// Save to the `--save` file, if there is one, logging to stderr (stdout may be the MCP pipe).
+    pub fn save_now(&mut self, world: &World, why: &str) {
+        let Some(path) = self.path.clone() else { return };
+        match save_file::save(world, &path) {
+            Ok(saved) => eprintln!("{why}: saved tick {} to {saved}", world.tick),
+            Err(e) => eprintln!("{why}: {e}"),
+        }
+        self.last_save = Instant::now();
+        self.dirty = false;
+    }
+}
+
+/// `--save PATH`: load the save there, or make a new world from `config`, `prepare` it (players)
+/// and save it there.
+fn load_or_create(path: &Path, config: WorldConfig, prepare: impl FnOnce(&mut World)) -> World {
+    if path.exists() {
+        match save_file::load(path, &config) {
+            Ok((world, ms)) => {
+                eprintln!("loaded {} in {ms:.0} ms: tick {}, {} zombies, {} players", path.display(), world.tick, world.zombies.len(), world.players.len());
+                world
+            }
+            Err(e) => {
+                eprintln!("can't load the save: {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        let mut world = World::new(config);
+        prepare(&mut world);
+        match save_file::save(&world, path) {
+            Ok(saved) => eprintln!("new world, saved to {saved}"),
+            Err(e) => {
+                eprintln!("can't save the new world: {e}");
+                std::process::exit(1);
+            }
+        }
+        world
+    }
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -59,23 +127,51 @@ fn main() {
         config = config.with_map_chunks(chunks.clamp(1, 256) as i32);
     }
 
+    let save_path = text("--save").map(PathBuf::from);
+    let mut persist = Persist {
+        dir: text("--saves").map(PathBuf::from).or_else(|| save_path.as_ref().and_then(|p| p.parent()).filter(|d| !d.as_os_str().is_empty()).map(Path::to_path_buf)).unwrap_or_else(|| PathBuf::from(save_file::DEFAULT_DIR)),
+        path: save_path,
+        content: config.clone(),
+        autosave: Some(text("--autosave-mins").and_then(|v| v.parse::<f64>().ok()).unwrap_or(5.0))
+            .filter(|m| *m > 0.0 && m.is_finite())
+            .map(|m| Duration::from_secs_f64(m * 60.0)),
+        last_save: Instant::now(),
+        dirty: false,
+    };
+
     if flag("--mcp") {
-        mcp::serve(World::new(config));
+        shutdown::install();
+        let world = match &persist.path {
+            Some(path) => load_or_create(path, config, mcp::add_agent_player),
+            None => World::new(config),
+        };
+        mcp::serve(world, &mut persist);
     } else if flag("--bench") {
-        bench(config, value("--ticks").unwrap_or(1000), value("--players").unwrap_or(0) as u32, value("--horde").unwrap_or(0) as u32);
+        let ticks = value("--ticks").unwrap_or(1000);
+        bench(config, &mut persist, ticks, value("--players").unwrap_or(0) as u32, value("--horde").unwrap_or(0) as u32, flag("--save-bench"));
     } else {
-        eprintln!("usage: zombye-server (--mcp | --bench [--ticks N] [--players N] [--horde N]) [--zombies N] [--seed S] [--map-chunks N] [--data DIR]");
+        eprintln!(
+            "usage: zombye-server (--mcp | --bench [--ticks N] [--players N] [--horde N] [--save-bench]) [--zombies N] [--seed S] [--map-chunks N] [--data DIR] \
+             [--save PATH] [--autosave-mins N] [--saves DIR]"
+        );
         std::process::exit(2);
     }
 }
 
-fn bench(config: WorldConfig, ticks: u64, players: u32, horde: u32) {
+fn bench(config: WorldConfig, persist: &mut Persist, ticks: u64, players: u32, horde: u32, save_bench: bool) {
     let zombies = config.zombies.map_or("natural".to_string(), |n| n.to_string());
     let start = Instant::now();
-    let mut world = World::new(config);
+    let loaded = persist.path.as_ref().is_some_and(|p| p.exists());
+    let mut world = match &persist.path {
+        Some(path) => load_or_create(path, config, |_| {}),
+        None => World::new(config),
+    };
     let gen_ms = start.elapsed().as_secs_f32() * 1000.0;
-    let mut ids = Vec::new();
-    if players == 0 {
+    let mut ids: Vec<u32> = Vec::new();
+    if loaded {
+        // A saved world keeps its own players (and goal, if it had one).
+        ids = world.players.iter().map(|p| p.id).collect();
+    } else if players == 0 {
         world.set_goal(Some(world.player_spawn));
     } else {
         let road_y = (world.town_min.y + world.town_max.y) as f32 / 2.0;
@@ -96,7 +192,8 @@ fn bench(config: WorldConfig, ticks: u64, players: u32, horde: u32) {
     for t in 0..ticks {
         for (k, &id) in ids.iter().enumerate() {
             let dir = Vec2::from_angle(t as f32 * 0.01 + k as f32);
-            world.set_player_input(id, t as u32 + 1, PlayerInput { move_dir: dir, facing: 0.0, run: true, sneak: false });
+            let seq = world.player(id).map_or(1, |p| p.last_input_seq + 1);
+            world.set_player_input(id, seq, PlayerInput { move_dir: dir, facing: 0.0, run: true, sneak: false });
             if t % 200 == 0 {
                 world.emit_sound(world.player(id).expect("joined").state.pos, 60.0);
             }
@@ -150,6 +247,49 @@ fn bench(config: WorldConfig, ticks: u64, players: u32, horde: u32) {
         world.population().attractors.len(),
         world.population().respawned,
     );
+    if save_bench {
+        let start = Instant::now();
+        let bytes = world.save();
+        let save_ms = start.elapsed().as_secs_f32() * 1000.0;
+        let start = Instant::now();
+        let loaded = World::load(&bytes, &persist.content);
+        let load_ms = start.elapsed().as_secs_f32() * 1000.0;
+        let same = loaded.as_ref().is_ok_and(|w| w.state_hash() == world.state_hash());
+        // Determinism across the save: both copies take the same inputs for a few more seconds.
+        let mut later = None;
+        if let Ok(mut copy) = loaded.as_ref().map(|_| World::load(&bytes, &persist.content).expect("loaded once")) {
+            for t in 0..100u64 {
+                for w in [&mut world, &mut copy] {
+                    for (k, &id) in ids.iter().enumerate() {
+                        let dir = Vec2::from_angle((ticks + t) as f32 * 0.01 + k as f32);
+                        let seq = w.player(id).map_or(1, |p| p.last_input_seq + 1);
+                        w.set_player_input(id, seq, PlayerInput { move_dir: dir, facing: 0.0, run: true, sneak: false });
+                    }
+                    w.step();
+                }
+            }
+            later = Some(copy.state_hash() == world.state_hash());
+        }
+        println!(
+            "save: {} ({} bytes, {:.0} per zombie) in {save_ms:.1} ms; load in {load_ms:.1} ms (map regenerated); state hash after load {}, after 100 more ticks {}",
+            save_file::size(bytes.len() as u64),
+            bytes.len(),
+            bytes.len() as f32 / world.zombies.len().max(1) as f32,
+            match &loaded {
+                Ok(_) if same => "matches".to_string(),
+                Ok(_) => "DIFFERS".to_string(),
+                Err(e) => format!("not loaded: {e}"),
+            },
+            match later {
+                Some(true) => "matches",
+                Some(false) => "DIFFERS",
+                None => "-",
+            }
+        );
+    }
+    if persist.path.is_some() {
+        persist.save_now(&world, "bench done");
+    }
 }
 
 /// The nearest open outdoor tile to `p`.

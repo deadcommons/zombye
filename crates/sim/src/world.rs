@@ -170,7 +170,7 @@ pub struct World {
     /// Map edits since the last snapshot (door toggles), for replication.
     pub edge_changes: Vec<EdgeChange>,
     /// Hours added by time skips.
-    clock_offset_hours: f32,
+    pub(crate) clock_offset_hours: f32,
     /// Zombie strikes this tick (cleared at the start of each tick).
     pub attack_events: Vec<ZombieAttack>,
     /// Zombie thumps on doors and windows this tick, in the order they were applied.
@@ -191,52 +191,73 @@ pub struct World {
     /// Index of bare hands in `config.weapons`.
     pub(crate) unarmed: u16,
     /// Hit points of damaged doors and windows, by [`EdgeRef::key`]. Missing = undamaged.
-    edge_hp: BTreeMap<(i32, i32, u8), f32>,
+    pub(crate) edge_hp: BTreeMap<(i32, i32, u8), f32>,
     /// Edges whose hit points changed since the last [`take_edge_damage`](Self::take_edge_damage),
     /// for replication (not simulation state).
-    edge_hp_dirty: BTreeSet<(i32, i32, u8)>,
+    pub(crate) edge_hp_dirty: BTreeSet<(i32, i32, u8)>,
     /// Corpses removed by the last tick, by id (cleared each tick).
     pub removed_corpses: Vec<u32>,
     /// Sounds made since the last tick; heard (and moved to `heard`) by the next one.
-    sounds: Vec<Sound>,
+    pub(crate) sounds: Vec<Sound>,
     /// Sounds zombies listened to in the last tick.
     pub(crate) heard: Vec<Sound>,
     /// Debug override (MCP `set_goal`): when set, zombies head for this tile and ignore the players.
-    goal: Option<IVec2>,
-    goal_flow: Option<FlowField>,
-    goal_dirty: bool,
+    pub(crate) goal: Option<IVec2>,
+    pub(crate) goal_flow: Option<FlowField>,
+    pub(crate) goal_dirty: bool,
     /// Walkable steps per tile, for flow-field searches. Kept in step with `map`.
-    walk: WalkGrid,
-    flow_cache: FlowCache,
+    pub(crate) walk: WalkGrid,
+    pub(crate) flow_cache: FlowCache,
     /// Players as the senses see them this tick.
-    targets: Vec<Target>,
-    rng: Rng,
+    pub(crate) targets: Vec<Target>,
+    pub(crate) rng: Rng,
     /// Combat rolls (hits, crits, staggers, zombie strikes), apart from the AI's stream.
     pub(crate) combat_rng: Rng,
     pub(crate) hash: SpatialHash,
     /// Per chunk, how far the nearest player is (for tiers); virtual zombies by region.
-    chunk_dist: ChunkDistances,
-    regions: RegionIndex,
+    pub(crate) chunk_dist: ChunkDistances,
+    pub(crate) regions: RegionIndex,
     /// Per-region population targets and sightings, and the attractors drawing the far horde.
-    population: Population,
-    scratch_tiles: Vec<IVec2>,
-    next_id: u32,
-    next_player_id: u32,
-    scratch_pos: Vec<Vec2>,
+    pub(crate) population: Population,
+    /// Map edits made through the world (doors and windows opened, shut, broken), by
+    /// [`EdgeRef::key`]: a save stores these edges on top of the map regenerated from the seed.
+    pub(crate) map_edits: BTreeSet<(i32, i32, u8)>,
+    /// The map was edited directly (tests, editors; see [`map_changed`](Self::map_changed)), so a
+    /// save stores all of it instead of the edits.
+    pub(crate) map_custom: bool,
+    /// Hash of the map as generated, so loading can tell the generator (or its data) changed.
+    pub(crate) map_base_hash: u64,
+    pub(crate) scratch_tiles: Vec<IVec2>,
+    pub(crate) next_id: u32,
+    pub(crate) next_player_id: u32,
+    pub(crate) scratch_pos: Vec<Vec2>,
     pub(crate) scratch_actions: Vec<(usize, Action)>,
     pub(crate) scratch_hits: Vec<(f32, usize)>,
 }
 
+/// Bare hands are added to weapons that have none (as the world does on creation).
+pub(crate) fn add_fists(weapons: &mut Vec<WeaponDef>) {
+    if !weapons.iter().any(|w| w.category == WeaponCategory::Unarmed) {
+        weapons.push(WeaponDef::fists());
+    }
+}
+
 /// The edge an [`EdgeRef::key`] names.
-fn edge_of_key((x, y, w): (i32, i32, u8)) -> EdgeRef {
+pub(crate) fn edge_of_key((x, y, w): (i32, i32, u8)) -> EdgeRef {
     EdgeRef::new(IVec2::new(x, y), if w == 0 { OwnedEdge::North } else { OwnedEdge::West })
 }
 
 impl World {
-    pub fn new(mut config: WorldConfig) -> Self {
-        if !config.weapons.iter().any(|w| w.category == WeaponCategory::Unarmed) {
-            config.weapons.push(WeaponDef::fists());
-        }
+    /// Generate the map from the config's seed and templates and scatter the zombies over it.
+    pub fn new(config: WorldConfig) -> Self {
+        let mut world = Self::generate(config);
+        world.populate();
+        world
+    }
+
+    /// The generated world before any zombies (loading a save starts from this).
+    pub(crate) fn generate(mut config: WorldConfig) -> Self {
+        add_fists(&mut config.weapons);
         let unarmed = config.weapons.iter().position(|w| w.category == WeaponCategory::Unarmed).unwrap_or(0) as u16;
         let generated = worldgen::generate(&config.generation, &config.templates);
         let items = items::place_weapons(&generated.map, &config.weapons, generated.spawn_building, config.generation.seed, 1);
@@ -288,9 +309,12 @@ impl World {
             next_id: 1,
             next_player_id: 1,
             scratch_pos: Vec::new(),
+            map_edits: BTreeSet::new(),
+            map_custom: false,
+            map_base_hash: 0,
             config,
         };
-        world.populate();
+        world.map_base_hash = crate::save::map_hash(&world.map);
         world
     }
 
@@ -418,8 +442,10 @@ impl World {
     }
 
     /// Call after editing `map` directly (tests, editors): refreshes pathfinding data. Doors toggled
-    /// through the world's own methods don't need this.
+    /// through the world's own methods don't need this. From then on a save stores the whole map
+    /// rather than the edits to the generated one.
     pub fn map_changed(&mut self) {
+        self.map_custom = true;
         self.walk = WalkGrid::new(&self.map);
         self.flow_cache.invalidate();
         self.goal_dirty = true;
@@ -569,6 +595,7 @@ impl World {
     /// grid, the flow fields that cover it.
     fn set_edge(&mut self, edge: EdgeRef, kind: Edge) {
         self.map.set_owned_edge(edge.tile, edge.edge, kind);
+        self.map_edits.insert(edge.key());
         self.edge_changes.push(EdgeChange { tile: edge.tile, edge: edge.edge, kind });
         self.walk.update_around(&self.map, edge.tile);
         self.goal_dirty = true;
@@ -576,7 +603,7 @@ impl World {
     }
 
     /// Open a shut door or window, or shut an open one (keeping any damage). Doors are noisier.
-    fn toggle_edge(&mut self, edge: EdgeRef, source: SoundSource) -> Edge {
+    pub(crate) fn toggle_edge(&mut self, edge: EdgeRef, source: SoundSource) -> Edge {
         let kind = match self.map.owned_edge(edge.tile, edge.edge) {
             Edge::DoorClosed => Edge::DoorOpen,
             Edge::DoorOpen => Edge::DoorClosed,
@@ -591,7 +618,7 @@ impl World {
     }
 
     /// A door or window gives way for good: loud.
-    fn break_edge(&mut self, edge: EdgeRef, source: SoundSource) {
+    pub(crate) fn break_edge(&mut self, edge: EdgeRef, source: SoundSource) {
         let kind = self.map.owned_edge(edge.tile, edge.edge);
         let broken = kind.broken();
         if broken == kind {
