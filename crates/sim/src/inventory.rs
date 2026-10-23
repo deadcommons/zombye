@@ -11,7 +11,8 @@
 //! **Slots.** Two hands ([`Slot::Hand`] swings, a two-handed item takes both), a bag on the back and
 //! one on the shoulder, and worn clothing (two worn items can't share a body part on one layer).
 //!
-//! **Moving things takes time.** Moves, searches and uses ([`JobKind`]) queue on the player
+//! **Moving things takes time.** Moves, searches, uses and treatments ([`JobKind`]; first aid in
+//! [`crate::firstaid`]) queue on the player
 //! ([`Player::jobs`]); the first counts down and happens when it's done (0.3 s a stack, more for a
 //! heavy one; a search takes the container's search time). Each is checked when it happens: the
 //! thing is still there, the container is still open and within reach, it fits. Swinging, shoving or
@@ -36,6 +37,7 @@ use serde::{Deserialize, Serialize};
 use crate::TICK_DT;
 use crate::combat::PICKUP_REACH;
 use crate::containers::{self, ContainerDef, ContainerSite};
+use crate::firstaid::{Treatment, treating};
 use crate::items::{BagCarry, GroundItem, ItemCategory, ItemDef, ItemStack};
 use crate::players::{MoveMods, Player, Stance};
 use crate::senses::SoundSource;
@@ -324,6 +326,9 @@ pub enum JobKind {
     Search { container: u32 },
     /// Eat or drink one of the stack at `from`/`index`.
     Use { from: Place, index: u32, item: u16 },
+    /// First aid (#10): `treatment` on wound `wound` (`None` for pills) with one use of `item`
+    /// (`None`: taking a dressing off). The player stands still while it's under way.
+    Treat { wound: Option<u32>, treatment: Treatment, item: Option<u16> },
 }
 
 /// A queued job and the seconds it has left (only the first counts down).
@@ -406,10 +411,22 @@ impl World {
     /// After player `pi`'s inventory changed: the weapon in hand, the movement modifiers of its load,
     /// and its client to be told.
     pub(crate) fn refresh_carry(&mut self, pi: usize) {
+        // Standing still for first aid stays as it is: only `step_item_jobs` changes it.
+        let still = self.players[pi].state.mods.speed == 0.0;
+        self.refresh_carry_as(pi, still);
+    }
+
+    /// [`World::refresh_carry`], standing still for first aid (#10) or not. Treating starts and
+    /// ends only in [`World::step_item_jobs`], after movement, so the modifiers a snapshot carries
+    /// are always the ones the next tick moves with and client prediction stays exact.
+    fn refresh_carry_as(&mut self, pi: usize, still: bool) {
         let p = &self.players[pi];
         let c = self.carry(p);
         let slow = p.inventory.bag_slow(&self.config.items);
-        let mods = self.health_mods(pi, self.config.carry.mods(c.weight_kg / c.limit_kg.max(0.1), slow));
+        let mut mods = self.health_mods(pi, self.config.carry.mods(c.weight_kg / c.limit_kg.max(0.1), slow));
+        if still && !p.dead {
+            mods = MoveMods { speed: 0.0, run_speed: 0.0, can_run: false, can_climb: false, ..mods };
+        }
         let weapon = p.inventory.hand.and_then(|s| self.item_weapon(s.item));
         let p = &mut self.players[pi];
         p.state.mods = mods;
@@ -436,7 +453,7 @@ impl World {
         self.private_dirty.extend(ids);
     }
 
-    fn note(&mut self, player: u32, ok: bool, text: String) {
+    pub(crate) fn note(&mut self, player: u32, ok: bool, text: String) {
         if self.item_notes.len() >= MAX_ITEM_NOTES {
             self.item_notes.remove(0);
         }
@@ -528,7 +545,7 @@ impl World {
 
     /// Queue a job for player `id`, checking what can be checked now. Refusals are noted for its
     /// client and returned.
-    fn queue_job(&mut self, id: u32, kind: JobKind, secs: f32) -> Result<(), String> {
+    pub(crate) fn queue_job(&mut self, id: u32, kind: JobKind, secs: f32) -> Result<(), String> {
         let Some(pi) = self.players.iter().position(|p| p.id == id) else { return Err(format!("no player {id}")) };
         let max = self.config.carry.max_jobs as usize;
         let p = &mut self.players[pi];
@@ -548,7 +565,7 @@ impl World {
         Ok(())
     }
 
-    fn refuse<T>(&mut self, id: u32, why: String) -> Result<T, String> {
+    pub(crate) fn refuse<T>(&mut self, id: u32, why: String) -> Result<T, String> {
         self.note(id, false, why.clone());
         Err(why)
     }
@@ -702,6 +719,18 @@ impl World {
     /// have walked away from. Runs each tick after movement.
     pub(crate) fn step_item_jobs(&mut self) {
         for pi in 0..self.players.len() {
+            self.step_jobs_of(pi);
+            // Treating (first aid) means standing still from the next tick, until it's done.
+            let p = &self.players[pi];
+            let still = treating(&p.jobs) && !p.dead;
+            if still != (p.state.mods.speed == 0.0) {
+                self.refresh_carry_as(pi, still);
+            }
+        }
+    }
+
+    fn step_jobs_of(&mut self, pi: usize) {
+        {
             let p = &self.players[pi];
             if let Some(c) = p.open
                 && self.container(c).is_none_or(|s| !self.keeps_open(p, s))
@@ -712,11 +741,11 @@ impl World {
             }
             let p = &mut self.players[pi];
             if p.dead || p.jobs.is_empty() {
-                continue;
+                return;
             }
             p.jobs[0].left -= TICK_DT;
             if p.jobs[0].left > 0.0 {
-                continue;
+                return;
             }
             let job = p.jobs.remove(0);
             let id = p.id;
@@ -725,6 +754,7 @@ impl World {
                 JobKind::Move { from, index, item, to, count, spill } => self.do_move(pi, from, index, item, to, count, spill),
                 JobKind::Search { container } => self.do_search(pi, container),
                 JobKind::Use { from, index, item } => self.do_use(pi, from, index, item),
+                JobKind::Treat { wound, treatment, item } => self.do_treat(pi, wound, treatment, item),
             };
             match result {
                 Ok(text) => self.note(id, true, text),

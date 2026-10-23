@@ -289,6 +289,7 @@ fn actions(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     panel: Res<crate::inventory_ui::InventoryPanel>,
+    health: Res<crate::health_ui::HealthPanel>,
     me: Res<LocalPlayer>,
     join: Res<JoinInfo>,
     players: Query<(&Transform, &Player)>,
@@ -307,7 +308,7 @@ fn actions(
         }
         return;
     }
-    if mouse.just_pressed(MouseButton::Left) && !panel.open {
+    if mouse.just_pressed(MouseButton::Left) && !panel.open && !health.open {
         link.send(Intent::Attack { player: me.id });
     }
     if keys.just_pressed(KeyCode::Space) {
