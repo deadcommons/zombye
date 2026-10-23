@@ -16,12 +16,17 @@
 //! heavy one; a search takes the container's search time). Each is checked when it happens: the
 //! thing is still there, the container is still open and within reach, it fits. Swinging, shoving or
 //! stomping drops what you were doing. Picking up the item you face (`PickUp`, E) is the one quick
-//! grab. A player who dies drops everything.
+//! grab. A player who dies drops everything. Asking again for what is already queued (a repeated
+//! click, a request crossing a snapshot) queues nothing more and refuses nothing.
 //!
-//! **Containers** ([`crate::containers`]) are opened by searching them (`Search`): filled on first
-//! open, stored sparsely in the world from then on (`World::opened`), and open to the searcher
-//! until it walks away. **The floor** is the world's ground items: those within
-//! [`PICKUP_REACH`](crate::combat::PICKUP_REACH) of a player (with a clear line) are its floor.
+//! **Containers** ([`crate::containers`]) are opened by searching them (`Search`) from within
+//! [`CONTAINER_REACH`] of the furniture's nearest edge, in its room (E picks the one faced, nearest
+//! first, else the nearest): filled on first open, stored sparsely in the world from then on
+//! (`World::opened`), and open to the searcher until it is [`CONTAINER_KEEP_OPEN`] away or leaves
+//! the room. E with no container and nothing on the floor gets one plain answer ([`NOTHING_HERE`]).
+//! **The floor** is the world's ground items: those within
+//! [`PICKUP_REACH`](crate::combat::PICKUP_REACH) of a player with no wall, shut window or door or
+//! fence between (furniture doesn't stop a hand) are its floor; snapshots send each player its floor.
 
 use std::collections::BTreeSet;
 
@@ -34,13 +39,20 @@ use crate::containers::{self, ContainerDef, ContainerSite};
 use crate::items::{BagCarry, GroundItem, ItemCategory, ItemDef, ItemStack};
 use crate::players::{MoveMods, Player, Stance};
 use crate::senses::SoundSource;
-use crate::vision::clear_path;
+use crate::vision::clear_reach;
 use crate::world::World;
 
-/// How far a container can be from a player using it (to the edge of the furniture), in the same room.
-pub const CONTAINER_REACH: f32 = 1.2;
-/// A player aims at containers this far ahead, so the one it faces wins.
-const AIM_AHEAD: f32 = 0.6;
+/// How far a container can be from a player opening it (to the nearest edge of the furniture's
+/// footprint), in the same room.
+pub const CONTAINER_REACH: f32 = 1.6;
+/// An open container stays open (and usable) until its player is this far from it, or leaves the
+/// room: some slack for shuffling about in front of it.
+pub const CONTAINER_KEEP_OPEN: f32 = 2.2;
+/// E prefers a container within this angle of where the player faces (to the nearest point of the
+/// furniture), nearest first; with none there, the nearest in reach.
+const FACING_DEGREES: f32 = 60.0;
+/// What E says with nothing on the floor within reach and no container to search.
+pub const NOTHING_HERE: &str = "nothing to pick up or search here";
 /// Item notes kept if nobody drains them.
 pub const MAX_ITEM_NOTES: usize = 64;
 
@@ -431,16 +443,39 @@ impl World {
         self.item_notes.push(ItemNote { player, ok, text });
     }
 
-    /// Can player `p` reach container `site`? Same room, within [`CONTAINER_REACH`] of the furniture.
+    /// Can player `p` open container `site`? Same room, within [`CONTAINER_REACH`] of the nearest
+    /// edge of the furniture.
     fn reaches(&self, p: &Player, site: &ContainerSite) -> bool {
-        !p.dead && self.map.room_at(p.state.pos) == site.room && site.distance(p.state.pos) <= CONTAINER_REACH
+        self.within(p, site, CONTAINER_REACH)
     }
 
-    /// The container player `id` faces within reach, if any.
+    /// Is container `site` still usable by player `p`, which has it open? Same room, within
+    /// [`CONTAINER_KEEP_OPEN`] of the furniture.
+    fn keeps_open(&self, p: &Player, site: &ContainerSite) -> bool {
+        p.open == Some(site.id) && self.within(p, site, CONTAINER_KEEP_OPEN)
+    }
+
+    fn within(&self, p: &Player, site: &ContainerSite, reach: f32) -> bool {
+        !p.dead && self.map.room_at(p.state.pos) == site.room && site.distance(p.state.pos) <= reach
+    }
+
+    /// The container player `id` faces within reach, if any: of those within [`FACING_DEGREES`]
+    /// of its facing (toward the nearest point of the furniture; one it stands against counts as
+    /// faced), the nearest; else the nearest in reach. Ties go to the lower id.
     pub fn container_in_reach(&self, id: u32) -> Option<u32> {
         let p = self.player(id)?;
-        let aim = p.state.pos + Vec2::from_angle(p.state.facing) * AIM_AHEAD;
-        self.sites.iter().filter(|s| self.reaches(p, s)).min_by(|a, b| a.distance(aim).total_cmp(&b.distance(aim))).map(|s| s.id)
+        let (pos, ahead) = (p.state.pos, Vec2::from_angle(p.state.facing));
+        let cone = FACING_DEGREES.to_radians().cos();
+        let faced = |s: &ContainerSite| {
+            let lo = s.min.as_vec2();
+            let to = pos.clamp(lo, lo + s.size.as_vec2()) - pos;
+            to.length() < 0.05 || ahead.dot(to.normalize()) >= cone
+        };
+        self.sites
+            .iter()
+            .filter(|s| self.reaches(p, s))
+            .min_by(|a, b| (!faced(a)).cmp(&!faced(b)).then(a.distance(pos).total_cmp(&b.distance(pos))).then(a.id.cmp(&b.id)))
+            .map(|s| s.id)
     }
 
     /// The containers player `id` can reach, nearest first.
@@ -455,13 +490,22 @@ impl World {
     pub fn floor_of(&self, id: u32) -> Vec<GroundItem> {
         let Some(p) = self.player(id) else { return Vec::new() };
         let from = p.state.pos;
-        let mut v: Vec<GroundItem> = self.items.iter().filter(|it| it.pos.distance(from) <= PICKUP_REACH && clear_path(&self.map, from, it.pos)).copied().collect();
+        let mut v: Vec<GroundItem> = self.items.iter().filter(|it| self.floor_reaches(p, it)).copied().collect();
         v.sort_by(|a, b| a.pos.distance(from).total_cmp(&b.pos.distance(from)).then(a.id.cmp(&b.id)));
         v
     }
 
+    /// Can player `p` take ground item `it`? Within [`PICKUP_REACH`] of its feet with no wall,
+    /// shut window or door or fence between (furniture doesn't stop a hand: [`clear_reach`]). The
+    /// one rule for the floor: [`World::floor_of`], moves from the floor and `PickUp` all use it,
+    /// and snapshots send each player its floor by it.
     fn floor_reaches(&self, p: &Player, it: &GroundItem) -> bool {
-        it.pos.distance(p.state.pos) <= PICKUP_REACH && clear_path(&self.map, p.state.pos, it.pos)
+        !p.dead && it.pos.distance(p.state.pos) <= PICKUP_REACH && clear_reach(&self.map, p.state.pos, it.pos)
+    }
+
+    /// The ids of the ground items player `id` can reach, nearest first (its floor, for snapshots).
+    pub fn floor_ids(&self, id: u32) -> Vec<u32> {
+        self.floor_of(id).into_iter().map(|it| it.id).collect()
     }
 
     /// The stack at `from`/`index` for player `pi` right now (for queueing: what item it is).
@@ -520,10 +564,40 @@ impl World {
         if from == to && !matches!(from, Place::Ground) {
             return self.refuse(id, "it's already there".into());
         }
-        let Some(stack) = self.stack_at(pi, from, index) else { return self.refuse(id, format!("nothing at {from:?} {index} (or out of reach)")) };
+        let Some(stack) = self.stack_at(pi, from, index) else { return self.refuse(id, self.missing(pi, from, index)) };
+        // Asked again for what is already on its way (a repeated click, a request crossing the
+        // last snapshot): nothing more to do, and nothing to complain about.
+        if self.queued_from(pi, from, index, stack.item) >= stack.count as u32 {
+            return Ok(());
+        }
         let n = if count == 0 { stack.count } else { count.min(stack.count) };
         let secs = self.move_secs(stack.item, n);
         self.queue_job(id, JobKind::Move { from, index, item: stack.item, to, count, spill }, secs)
+    }
+
+    /// How many of the stack at `from`/`index` (holding `item`) player `pi` has queued moves for
+    /// already (a whole-stack move counts as all of it).
+    fn queued_from(&self, pi: usize, from: Place, index: u32, item: u16) -> u32 {
+        let whole = |count: u16| if count == 0 || matches!(from, Place::Slot(_) | Place::Worn) { u16::MAX as u32 } else { count as u32 };
+        self.players[pi].jobs.iter().map(|j| match j.kind {
+            JobKind::Move { from: f, index: i, item: it, count, .. } if f == from && i == index && it == item => whole(count),
+            _ => 0,
+        }).sum()
+    }
+
+    /// Why there's nothing to move at `from`/`index` for player `pi`, in words.
+    fn missing(&self, pi: usize, from: Place, index: u32) -> String {
+        let p = &self.players[pi];
+        match from {
+            Place::Ground => match self.items.iter().find(|it| it.id == index) {
+                Some(it) => format!("the {} is out of reach", lower(&self.item_def(it.stack.item).name)),
+                None => "that's no longer on the floor".into(),
+            },
+            Place::Container(c) if p.open != Some(c) => "that container isn't open (search it first)".into(),
+            Place::Container(_) => "that's no longer in there".into(),
+            Place::Slot(_) => "nothing there".into(),
+            Place::Carried | Place::Worn => "you don't have that any more".into(),
+        }
     }
 
     /// Player `id` puts the carried stack `index` where it belongs: a bag in its slot (a hand bag in
@@ -595,11 +669,24 @@ impl World {
     /// container's search time the first time (longer sneaking), a moment after that.
     pub fn player_search(&mut self, id: u32, container: Option<u32>) -> Result<(), String> {
         let Some(pi) = self.players.iter().position(|p| p.id == id) else { return Err(format!("no player {id}")) };
-        let Some(c) = container.or_else(|| self.container_in_reach(id)) else { return self.refuse(id, "no container within reach".into()) };
+        let Some(c) = container.or_else(|| self.container_in_reach(id)) else {
+            // E with no container about: the floor, if anything lies within reach (the client's
+            // view may be a tick behind), else one plain answer.
+            if !self.floor_of(id).is_empty() {
+                return self.player_pick_up(id).map(|_| ()).ok_or_else(|| "couldn't pick it up".to_string());
+            }
+            return self.refuse(id, NOTHING_HERE.into());
+        };
         let Some(site) = self.container(c).cloned() else { return self.refuse(id, format!("no container {c}")) };
-        if !self.reaches(&self.players[pi], &site) {
-            let name = self.container_def(&site).name.clone();
-            return self.refuse(id, format!("the {} is out of reach", lower(&name)));
+        let p = &self.players[pi];
+        let name = lower(&self.container_def(&site).name);
+        if p.jobs.iter().any(|j| j.kind == JobKind::Search { container: c }) {
+            // Already on it.
+            return Ok(());
+        }
+        // Open already, it reopens (quickly) from as far as it would stay open.
+        if !(self.reaches(p, &site) || self.keeps_open(p, &site)) {
+            return self.refuse(id, format!("the {name} is out of reach"));
         }
         let t = &self.config.carry;
         let secs = if self.opened.contains_key(&c) {
@@ -617,7 +704,7 @@ impl World {
         for pi in 0..self.players.len() {
             let p = &self.players[pi];
             if let Some(c) = p.open
-                && self.container(c).is_none_or(|s| !self.reaches(p, s))
+                && self.container(c).is_none_or(|s| !self.keeps_open(p, s))
             {
                 let id = p.id;
                 self.players[pi].open = None;
@@ -657,7 +744,8 @@ impl World {
     fn do_search(&mut self, pi: usize, c: u32) -> Result<String, String> {
         let site = self.container(c).cloned().ok_or_else(|| format!("no container {c}"))?;
         let def = self.container_def(&site).clone();
-        if !self.reaches(&self.players[pi], &site) {
+        let p = &self.players[pi];
+        if !(self.reaches(p, &site) || self.keeps_open(p, &site)) {
             return Err(format!("the {} is out of reach", lower(&def.name)));
         }
         let first = !self.opened.contains_key(&c);
@@ -738,7 +826,7 @@ impl World {
                 1
             }
             Place::Container(c) => {
-                if !(p.open == Some(c) && self.container(c).is_some_and(|s| self.reaches(p, s))) {
+                if !self.container(c).is_some_and(|s| self.keeps_open(p, s)) {
                     return Err("that container isn't open (or is out of reach)".into());
                 }
                 let mut list = self.opened.get(&c).cloned().unwrap_or_default();
@@ -785,7 +873,7 @@ impl World {
         let items = &self.config.items;
         let name = lower(&def.name);
         let p = &self.players[pi];
-        let open_ok = |c: u32| p.open == Some(c) && self.container(c).is_some_and(|s| self.reaches(p, s));
+        let open_ok = |c: u32| self.container(c).is_some_and(|s| self.keeps_open(p, s));
         let mut dst_box: Option<(u32, Vec<ItemStack>)> = None;
         let mut to_ground: Vec<ItemStack> = Vec::new();
         // Whatever a slot or a layer had in the way goes into pockets and bags.
@@ -1074,6 +1162,7 @@ mod tests {
     use crate::players::PlayerInput;
     use crate::template::BuildingTemplate;
     use crate::world::WorldConfig;
+    use glam::IVec2;
 
     fn content(seed: u64) -> WorldConfig {
         let templates = [include_str!("../../../assets/data/buildings/bungalow.ron"), include_str!("../../../assets/data/buildings/family_two_storey.ron")]
@@ -1387,5 +1476,217 @@ mod tests {
         assert!(p.inventory.is_empty() && p.weapon.is_none());
         assert_eq!(w.items().len(), n);
         assert!(w.items().iter().all(|it| it.pos.distance(p.state.pos) < 0.5));
+    }
+
+    /// Drain the notes; panic on any refusal (`what` says what was going on).
+    fn no_refusals(w: &mut World, what: &str) -> Vec<String> {
+        let notes = std::mem::take(&mut w.item_notes);
+        let bad: Vec<&ItemNote> = notes.iter().filter(|n| !n.ok).collect();
+        assert!(bad.is_empty(), "{what}: refused {bad:?}");
+        notes.into_iter().map(|n| n.text).collect()
+    }
+
+    /// Step until player `id` has nothing queued, checking every note on the way.
+    fn settle_clean(w: &mut World, id: u32, what: &str) -> Vec<String> {
+        let mut said = Vec::new();
+        for _ in 0..400 {
+            said.extend(no_refusals(w, what));
+            if w.player(id).unwrap().jobs.is_empty() {
+                return said;
+            }
+            w.step();
+        }
+        panic!("{what}: jobs never finished");
+    }
+
+    /// The playtest of #48: standing at the kitchen counter, the counter, the fridge and the oven
+    /// beside it can all be searched, emptied and filled again (with repeated clicks and a little
+    /// shuffling about) without a single refusal.
+    #[test]
+    fn a_kitchen_from_the_counter() {
+        let mut w = World::new(content(3));
+        let id = w.add_player(w.player_spawn);
+        assert!(w.hold_item(id, Slot::Back, "hiking_pack"));
+        let kind = |w: &World, s: &ContainerSite| w.container_def(s).id.clone();
+        let mut kitchens = 0;
+        let rooms: Vec<u16> = w.containers().iter().filter(|s| kind(&w, s) == "kitchen_cupboard").map(|s| s.room).collect();
+        for room in rooms {
+            let here: Vec<ContainerSite> = w.containers().iter().filter(|s| s.room == room).cloned().collect();
+            let find = |k: &str| here.iter().find(|s| kind(&w, s) == k).cloned();
+            let (Some(counter), Some(fridge), Some(oven)) = (find("kitchen_cupboard"), find("fridge"), find("oven")) else { continue };
+            kitchens += 1;
+            // Somewhere a body fits at the counter (within 0.6 m of it), as near as it gets to all three.
+            let (lo, hi) = (counter.min - IVec2::splat(2), counter.min + counter.size + IVec2::splat(2));
+            let mut best: Option<(f32, Vec2)> = None;
+            for y in (lo.y * 10)..(hi.y * 10) {
+                for x in (lo.x * 10)..(hi.x * 10) {
+                    let p = Vec2::new(x as f32, y as f32) * 0.1 + Vec2::splat(0.05);
+                    if w.map.room_at(p) != room || w.map.resolve_circle(p, crate::players::PLAYER_RADIUS).distance(p) > 1e-3 || counter.distance(p) > 0.6 {
+                        continue;
+                    }
+                    let worst = [&counter, &fridge, &oven].iter().map(|s| s.distance(p)).fold(0.0, f32::max);
+                    if best.is_none_or(|(d, _)| worst < d) {
+                        best = Some((worst, p));
+                    }
+                }
+            }
+            let (worst, at) = best.expect("room to stand at the counter");
+            assert!(worst <= CONTAINER_REACH - 0.05, "room {room}: the furthest of counter, fridge and oven is {worst} m from the best spot at the counter");
+            let pi = w.players.iter().position(|p| p.id == id).unwrap();
+            w.players[pi].state.pos = at;
+            w.players[pi].jobs.clear();
+            // Facing the counter, E opens the counter.
+            let lo = counter.min.as_vec2();
+            let to = at.clamp(lo, lo + counter.size.as_vec2()) - at;
+            w.players[pi].state.facing = to.y.atan2(to.x);
+            assert_eq!(w.container_in_reach(id), Some(counter.id));
+            for site in [&counter, &fridge, &oven] {
+                let what = format!("room {room}, the {}", kind(&w, site));
+                w.player_search(id, if site.id == counter.id { None } else { Some(site.id) }).unwrap();
+                // A second press while it's under way changes nothing.
+                w.player_search(id, Some(site.id)).unwrap();
+                let said = settle_clean(&mut w, id, &what);
+                assert!(said.iter().any(|t| t.starts_with("searched") || t.starts_with("opened")), "{what}: {said:?}");
+                assert_eq!(me(&w, id).open, Some(site.id));
+                // Shuffle half a step aside: still open.
+                w.players[pi].state.pos = w.map.resolve_circle(at + Vec2::new(0.25, 0.25), crate::players::PLAYER_RADIUS);
+                w.step();
+                assert_eq!(me(&w, id).open, Some(site.id), "{what}: closed after a small step");
+                // Take everything, each row clicked twice.
+                let n = w.container_contents(site.id).unwrap().len();
+                for _ in 0..n {
+                    w.player_move_item(id, Place::Container(site.id), 0, Place::Carried, 0).unwrap();
+                    w.player_move_item(id, Place::Container(site.id), 0, Place::Carried, 0).unwrap();
+                    settle_clean(&mut w, id, &what);
+                }
+                assert!(w.container_contents(site.id).unwrap().is_empty(), "{what}: left {:?}", w.container_contents(site.id));
+                w.players[pi].state.pos = at;
+                // And put one thing back.
+                if !me(&w, id).inventory.carried.is_empty() {
+                    w.player_move_item(id, Place::Carried, 0, Place::Container(site.id), 1).unwrap();
+                    settle_clean(&mut w, id, &what);
+                    assert!(!w.container_contents(site.id).unwrap().is_empty(), "{what}");
+                }
+                // Empty pockets for the next one (room is another test's business).
+                w.players[pi].inventory.carried.clear();
+                w.refresh_carry(pi);
+            }
+        }
+        assert!(kitchens >= 2, "both houses have kitchens: {kitchens}");
+    }
+
+    /// Reach is to the nearest edge of the furniture (1.6 m), and an open container stays open
+    /// until 2.2 m or another room.
+    #[test]
+    fn container_reach_edges() {
+        let (mut w, id) = field();
+        let def = w.config.containers.lookup("fridge", "kitchen").unwrap();
+        // A 2 x 1 fridge east of the player, its west edge at x = 62.
+        w.sites.push(ContainerSite { id: 7, def, building: 0, room: 0, min: IVec2::new(62, 60), size: IVec2::new(2, 1) });
+        let at = |w: &mut World, x: f32| {
+            w.players[0].state.pos = Vec2::new(x, 60.5);
+            w.players[0].jobs.clear();
+        };
+        at(&mut w, 62.0 - CONTAINER_REACH - 0.05);
+        assert!(w.player_search(id, Some(7)).is_err());
+        assert!(last_note(&w, id).contains("out of reach"), "{}", last_note(&w, id));
+        assert_eq!(w.container_in_reach(id), None);
+        at(&mut w, 62.0 - CONTAINER_REACH + 0.05);
+        assert_eq!(w.container_in_reach(id), Some(7));
+        w.player_search(id, None).unwrap();
+        settle(&mut w, id);
+        assert_eq!(me(&w, id).open, Some(7));
+        // Stepping back a little keeps it open; usable too, and it can be searched again from there.
+        at(&mut w, 62.0 - CONTAINER_KEEP_OPEN + 0.05);
+        w.step();
+        assert_eq!(me(&w, id).open, Some(7));
+        w.item_notes.clear();
+        w.player_search(id, Some(7)).unwrap();
+        settle_clean(&mut w, id, "reopening from 2.1 m");
+        w.give_item(id, "apple", 1);
+        w.player_move_item(id, Place::Carried, 0, Place::Container(7), 0).unwrap();
+        settle_clean(&mut w, id, "putting an apple in from 2.1 m");
+        // Further: it closes.
+        at(&mut w, 62.0 - CONTAINER_KEEP_OPEN - 0.05);
+        w.step();
+        assert_eq!(me(&w, id).open, None);
+        // Another room never reaches, however near.
+        at(&mut w, 61.5);
+        w.sites[0].room = 3;
+        assert_eq!(w.container_in_reach(id), None);
+    }
+
+    /// E prefers the container the player faces, nearest first; with none ahead, the nearest.
+    #[test]
+    fn e_prefers_the_container_you_face() {
+        let (mut w, id) = field();
+        let def = w.config.containers.lookup("counter", "kitchen").unwrap();
+        // Player at (60.5, 60.5): one cupboard south-west (0.71 m to its corner), one east
+        // (0.5 m), one further east behind it (1.5 m, in reach).
+        w.sites.push(ContainerSite { id: 1, def, building: 0, room: 0, min: IVec2::new(59, 61), size: IVec2::ONE });
+        w.sites.push(ContainerSite { id: 2, def, building: 0, room: 0, min: IVec2::new(61, 60), size: IVec2::ONE });
+        w.sites.push(ContainerSite { id: 3, def, building: 0, room: 0, min: IVec2::new(62, 59), size: IVec2::new(1, 3) });
+        w.players[0].state.facing = 0.0; // east
+        assert_eq!(w.container_in_reach(id), Some(2), "the nearest of those ahead");
+        w.players[0].state.facing = std::f32::consts::PI; // west: nothing ahead within 60 degrees but #1 (south-west, 45)
+        assert_eq!(w.container_in_reach(id), Some(1));
+        w.players[0].state.facing = -std::f32::consts::FRAC_PI_2; // north: none ahead, the nearest
+        assert_eq!(w.container_in_reach(id), Some(2));
+    }
+
+    /// E with nothing about says so once per press, in plain words; repeated or crossing requests
+    /// for one move queue it once and refuse nothing.
+    #[test]
+    fn e_with_nothing_here_and_repeated_requests() {
+        let (mut w, id) = field();
+        assert!(w.player_search(id, None).is_err());
+        assert_eq!(w.item_notes.len(), 1);
+        assert_eq!(last_note(&w, id), NOTHING_HERE);
+        // With something on the floor, a search falls back to picking it up.
+        w.item_notes.clear();
+        w.spawn_item("apple", 1, Vec2::new(61.0, 60.5));
+        w.player_search(id, None).unwrap();
+        assert!(last_note(&w, id).contains("apple") && w.items().is_empty(), "{}", last_note(&w, id));
+        // Three clicks on one stack on the floor: one job, the stack taken, no refusals.
+        let g = w.spawn_item("tinned_beans", 3, Vec2::new(61.0, 60.5)).unwrap();
+        for _ in 0..3 {
+            w.player_move_item(id, Place::Ground, g, Place::Carried, 0).unwrap();
+        }
+        assert_eq!(me(&w, id).jobs.len(), 1);
+        settle_clean(&mut w, id, "three clicks");
+        // Shift-clicks one at a time: as many as there are, then nothing more.
+        w.player_drop(id, Place::Carried, 1, 0).unwrap();
+        settle_clean(&mut w, id, "dropping the beans");
+        let g = w.floor_of(id)[0].id;
+        for _ in 0..5 {
+            w.player_move_item(id, Place::Ground, g, Place::Carried, 1).unwrap();
+        }
+        assert_eq!(me(&w, id).jobs.len(), 3);
+        settle_clean(&mut w, id, "five shift-clicks on three");
+        assert!(w.items().is_empty());
+        // A request for something long gone says what's wrong in words.
+        assert!(w.player_move_item(id, Place::Ground, 999, Place::Carried, 0).is_err());
+        assert_eq!(last_note(&w, id), "that's no longer on the floor");
+    }
+
+    /// The floor is what a hand reaches: furniture in between doesn't stop it, a wall does.
+    #[test]
+    fn the_floor_reaches_over_furniture_not_through_walls() {
+        let (mut w, id) = field();
+        w.map.tile_mut(IVec2::new(61, 60)).unwrap().feature = crate::map::Feature::Furniture;
+        let over = w.spawn_item("towel", 1, Vec2::new(61.5, 60.5)).unwrap();
+        let beyond = w.spawn_item("towel", 1, Vec2::new(60.5, 61.6)).unwrap();
+        w.map.set_edge(IVec2::new(60, 60), crate::map::Side::S, crate::map::Edge::Wall);
+        w.map_changed();
+        assert_eq!(w.floor_ids(id), vec![over]);
+        w.player_move_item(id, Place::Ground, over, Place::Carried, 0).unwrap();
+        assert!(w.player_move_item(id, Place::Ground, beyond, Place::Carried, 0).is_err());
+        assert_eq!(last_note(&w, id), "the towel is out of reach");
+        settle(&mut w, id);
+        assert_eq!(me(&w, id).inventory.carried.len(), 1);
+        // Something dropped lands at your feet and is on your floor at once.
+        w.player_drop(id, Place::Carried, 0, 0).unwrap();
+        settle(&mut w, id);
+        assert_eq!(w.floor_ids(id).len(), 1);
     }
 }

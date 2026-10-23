@@ -322,9 +322,9 @@ fn actions(
         link.send(if downed { Intent::Stomp { player: me.id } } else { Intent::Shove { player: me.id } });
     }
     if keys.just_pressed(KeyCode::KeyE) {
-        // Something on the floor within reach: pick it up. Otherwise search what we face.
-        let reach = zombye_sim::combat::PICKUP_REACH;
-        let floor = link.curr.items.iter().any(|it| it.pos.distance(me.curr.pos) <= reach);
+        // Something on our floor (the snapshot's, by the server's reach rule): pick it up.
+        // Otherwise search what we face; with nothing there either, the server says so once.
+        let floor = !link.curr.floor_of(me.id).is_empty();
         link.send(if floor { Intent::PickUp { player: me.id } } else { Intent::Search { player: me.id, container: None } });
     }
     if keys.just_pressed(KeyCode::KeyF) {

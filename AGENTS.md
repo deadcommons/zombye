@@ -287,17 +287,26 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   to a kind, `room: "any"` the fallback (a sink is a bathroom cabinet in a bathroom, an under-sink cupboard
   elsewhere; a wardrobe in a hall is a coat cupboard). Ground-floor furniture that maps to one is a `ContainerSite`
   (`World::containers()`), id = the furniture's place in the map (buildings in order, each one's furniture in order),
-  reachable from the same room within `CONTAINER_REACH` (1.2 m of the furniture). New furniture kinds `shelf` (in the
+  opened from the same room within `CONTAINER_REACH` (1.6 m of the nearest edge of the furniture's footprint; E takes
+  the one faced, within 60 degrees, nearest first, else the nearest in reach). New furniture kinds `shelf` (in the
   family house's laundry) and `workbench`. A container is filled the first time anyone searches it, by
   `containers::fill(seed, id, def, room_type, items)` (a hash of seed and id, never the world RNG, so the same in any
   order): **the hook #8's loot tables replace.** Opened containers are stored sparsely (`World::opened`, saved, in
-  `state_hash`); a searched container stays open to that player (`Player::open`) until it walks away. The floor has
-  unlimited room; ground items within reach are the player's floor (`World::floor_of`).
+  `state_hash`); a searched container stays open (and usable) to that player (`Player::open`) until it is `CONTAINER_KEEP_OPEN`
+  (2.2 m) away or leaves the room. The floor has unlimited room; ground items within `PICKUP_REACH` with no wall,
+  shut window or door or fence between (furniture doesn't block a hand: `vision::clear_reach`) are the player's floor
+  (`World::floor_of`, the one rule for moves, `PickUp` and the panel); every snapshot carries each player's floor as
+  ground item ids (`Snapshot::floor`, `FloorView`; a client gets its own). A request for what is already queued
+  (a repeated click) queues nothing and refuses nothing; E with no container and an empty floor says "nothing to pick
+  up or search here" (`inventory::NOTHING_HERE`).
 - **Client:** the inventory panel (`inventory_ui.rs`, Tab or I): your slots, worn and carried stacks with weights, load
   against the limit with the burden stage, the open container and the floor side by side. Click a row to move it
   (yours into the open container, or the floor; theirs into your bags; slots off), Shift-click for one, right-click a
   carried stack to equip, wear or eat it. The latest note shows at its foot, and under the HUD for a few seconds when
-  it's shut. Left mouse doesn't swing while it's open. Ground items are drawn as boxes of their size and colour,
+  it's shut (the same note again only keeps it up, and isn't printed again). One click is one request: row observers
+  only record presses, `send_clicks` sends at most one per button per frame and none for a stack already on its way
+  (`InFlight`, until the snapshot shows the answer, a refusal, or 3 s); a floor item being taken leaves the Floor
+  column at once. The Floor column and E use the snapshot's floor, not a distance guess. Left mouse doesn't swing while it's open. Ground items are drawn as boxes of their size and colour,
   weapons as bars.
 
 ## Characters on screen (`crates/client`)

@@ -6,11 +6,19 @@
 //! one of a stack. Everything goes to the server as intents; the panel only shows what the latest
 //! snapshot said. Moving takes a moment (the server queues it): the header shows how busy you are.
 //! The last answer to a request (done, or why not) shows at the foot of the panel, and for a few
-//! seconds under the HUD when the panel is shut.
+//! seconds under the HUD when the panel is shut (the same answer again just stays up longer).
+//!
+//! **One click, one request.** A press on a row is only recorded by its observer ([`Clicks`]);
+//! [`send_clicks`] turns at most one press per button per frame into an intent, and not one for
+//! a stack that is already on its way ([`InFlight`]: what was asked, until the snapshot shows the
+//! answer, a refusal comes, or 3 s pass). A floor item being taken drops out of the Floor column
+//! at once, and the other rows being moved say so.
+//!
+//! **The floor** is the server's: the ground items the snapshot says this player can reach
+//! (`Snapshot::floor`, by the same rule the server checks moves with), not a guess from distance.
 
 use bevy::prelude::*;
 use zombye_net::{Intent, PrivateView};
-use zombye_sim::combat::PICKUP_REACH;
 use zombye_sim::{Burden, ItemCategory, ItemDef, ItemStack, Place, Slot};
 
 use crate::player::LocalPlayer;
@@ -46,13 +54,89 @@ const ROW_HOVER: Color = Color::srgba(0.28, 0.26, 0.2, 0.95);
 const OK: Color = Color::srgb(0.95, 0.85, 0.35);
 const NO: Color = Color::srgb(0.95, 0.5, 0.35);
 const NOTE_SECS: f32 = 4.0;
+/// A request with no answer after this long is forgotten (and its row can be clicked again).
+const FLIGHT_SECS: f32 = 3.0;
+
+/// One press on a row, as its observer saw it; [`send_clicks`] decides what it sends.
+#[derive(Clone, Debug)]
+struct RowClick {
+    action: RowAction,
+    button: PointerButton,
+    /// Shift was down: just one of the stack.
+    one: bool,
+}
+
+/// Presses on rows since [`send_clicks`] last ran.
+#[derive(Resource, Default)]
+struct Clicks(Vec<RowClick>);
+
+/// Item intents from the panel for the server, sent on by [`flush`].
+#[derive(Resource, Default)]
+struct Outbox(Vec<Intent>);
+
+/// A request the panel sent: `n` of the stack of `item` at `from`/`index`, at time `at`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Asked {
+    from: Place,
+    index: u32,
+    item: u16,
+    n: u32,
+    at: f32,
+}
+
+/// What the panel has asked for and not yet seen answered. The answer is the snapshot's view
+/// changing (what you have, the open container, your floor), a refusal, or [`FLIGHT_SECS`] going by;
+/// any of them forgets everything asked (indices may have moved; the server drops repeats of a
+/// request still queued, so a second request after that costs nothing).
+#[derive(Resource, Default)]
+struct InFlight {
+    asked: Vec<Asked>,
+    /// The view the requests were made against.
+    content: String,
+}
+
+impl InFlight {
+    /// How many of the stack at `from`/`index` are asked for already.
+    fn asked_for(&self, from: Place, index: u32, item: u16) -> u32 {
+        self.asked.iter().filter(|a| a.from == from && a.index == index && a.item == item).map(|a| a.n).sum()
+    }
+
+    /// Ask for all of `stack` at `from`/`index` (or one, `one`). False, asking nothing, when that
+    /// many are on their way already.
+    fn ask(&mut self, from: Place, index: u32, stack: ItemStack, one: bool, now: f32) -> bool {
+        let have = stack.count.max(1) as u32;
+        let before = self.asked_for(from, index, stack.item);
+        if before >= have {
+            return false;
+        }
+        let n = if one { 1 } else { have - before };
+        self.asked.push(Asked { from, index, item: stack.item, n, at: now });
+        true
+    }
+
+    /// The latest view (`content`), whether a refusal just came, and the time.
+    fn update(&mut self, content: String, refused: bool, now: f32) {
+        if content != self.content || refused {
+            self.asked.clear();
+            self.content = content;
+        }
+        self.asked.retain(|a| now - a.at < FLIGHT_SECS);
+    }
+}
 
 pub struct InventoryUiPlugin;
 
 impl Plugin for InventoryUiPlugin {
     fn build(&self, app: &mut App) {
         let open = app.world().get_resource::<crate::Options>().is_some_and(|o| o.inventory);
-        app.insert_resource(InventoryPanel { open }).init_resource::<LastNote>().init_resource::<Shown>().add_systems(Startup, spawn).add_systems(Update, (toggle, keep_note, rebuild).chain());
+        app.insert_resource(InventoryPanel { open })
+            .init_resource::<LastNote>()
+            .init_resource::<Shown>()
+            .init_resource::<Clicks>()
+            .init_resource::<Outbox>()
+            .init_resource::<InFlight>()
+            .add_systems(Startup, spawn)
+            .add_systems(Update, (toggle, keep_note, track_flight, send_clicks, flush, rebuild).chain());
     }
 }
 
@@ -93,9 +177,14 @@ fn toggle(keys: Res<ButtonInput<KeyCode>>, mut panel: ResMut<InventoryPanel>) {
 }
 
 fn keep_note(time: Res<Time>, notes: Res<ItemNotesThisFrame>, panel: Res<InventoryPanel>, mut last: ResMut<LastNote>, mut line: Query<(&mut Text, &mut TextColor), With<NoteLine>>) {
-    if let Some(n) = notes.0.last() {
-        *last = LastNote { text: n.text.clone(), ok: n.ok, at: time.elapsed_secs() };
-        println!("item: {}{}", if n.ok { "" } else { "refused: " }, n.text);
+    let now = time.elapsed_secs();
+    for n in &notes.0 {
+        // The same answer again (E pressed over and over where there's nothing): keep it up, once.
+        let again = n.text == last.text && n.ok == last.ok && now - last.at < NOTE_SECS;
+        *last = LastNote { text: n.text.clone(), ok: n.ok, at: now };
+        if !again {
+            println!("item: {}{}", if n.ok { "" } else { "refused: " }, n.text);
+        }
     }
     let Ok((mut t, mut c)) = line.single_mut() else { return };
     let show = !panel.open && !last.text.is_empty() && time.elapsed_secs() - last.at < NOTE_SECS;
@@ -115,11 +204,76 @@ fn stack_kg(items: &[ItemDef], s: &ItemStack) -> f32 {
     items.get(s.item as usize).map_or(0.0, |d| d.weight_kg * s.count as f32)
 }
 
-/// What a click on a row sends: left (whole stack, or one with Shift) and right.
-#[derive(Clone)]
+/// What a click on a row sends: left (whole stack, or one with Shift) and right (always about
+/// one of a carried stack). `stack` is what the row shows.
+#[derive(Clone, Debug)]
 struct RowAction {
+    stack: ItemStack,
     left: Option<(Place, u32, Place)>,
     right: Option<Intent>,
+}
+
+/// What the panel shows and the requests are checked against: our private view and our floor
+/// (ground item id and stack, nearest first), from the latest snapshot.
+fn panel_view(link: &ServerLink, me: u32) -> (Option<PrivateView>, Vec<(u32, ItemStack)>) {
+    let floor = link.curr.floor_of(me).iter().filter_map(|g| link.curr.items.iter().find(|it| it.id == *g)).map(|it| (it.id, it.stack)).collect();
+    (link.own(me).cloned(), floor)
+}
+
+fn track_flight(time: Res<Time>, link: Res<ServerLink>, me: Res<LocalPlayer>, notes: Res<ItemNotesThisFrame>, mut flight: ResMut<InFlight>) {
+    let (view, floor) = panel_view(&link, me.id);
+    flight.update(format!("{view:?}|{floor:?}"), notes.0.iter().any(|n| !n.ok), time.elapsed_secs());
+}
+
+/// The intent a click sends, if any (`None`: nothing for that button, or already on its way).
+fn click_intent(click: &RowClick, player: u32, flight: &mut InFlight, now: f32) -> Option<Intent> {
+    let a = &click.action;
+    match click.button {
+        PointerButton::Primary => {
+            let (from, index, to) = a.left?;
+            if !flight.ask(from, index, a.stack, click.one, now) {
+                return None;
+            }
+            let count = if click.one { 1 } else { 0 };
+            Some(match (from, to) {
+                (Place::Slot(_) | Place::Worn, Place::Carried) => Intent::Unequip { player, from, index },
+                (_, Place::Ground) => Intent::Drop { player, from, index, count },
+                _ => Intent::MoveItem { player, from, index, to, count },
+            })
+        }
+        PointerButton::Secondary => {
+            let intent = a.right.clone()?;
+            let index = match intent {
+                Intent::Use { index, .. } | Intent::Wear { index, .. } | Intent::Equip { index, .. } => index,
+                _ => return Some(intent),
+            };
+            flight.ask(Place::Carried, index, a.stack, true, now).then_some(intent)
+        }
+        _ => None,
+    }
+}
+
+/// This frame's presses on rows, as intents: at most one per button (one physical click is one
+/// press, however many times picking reports it), none for what is already on its way.
+fn send_clicks(time: Res<Time>, me: Res<LocalPlayer>, mut clicks: ResMut<Clicks>, mut flight: ResMut<InFlight>, mut out: ResMut<Outbox>) {
+    drain_clicks(me.id, time.elapsed_secs(), &mut clicks, &mut flight, &mut out);
+}
+
+fn drain_clicks(player: u32, now: f32, clicks: &mut Clicks, flight: &mut InFlight, out: &mut Outbox) {
+    let mut buttons: Vec<PointerButton> = Vec::new();
+    for click in clicks.0.drain(..) {
+        if buttons.contains(&click.button) {
+            continue;
+        }
+        buttons.push(click.button);
+        out.0.extend(click_intent(&click, player, flight, now));
+    }
+}
+
+fn flush(mut out: ResMut<Outbox>, mut link: ResMut<ServerLink>) {
+    for intent in out.0.drain(..) {
+        link.send(intent);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -131,6 +285,7 @@ fn rebuild(
     join: Res<JoinInfo>,
     me: Res<LocalPlayer>,
     last: Res<LastNote>,
+    flight: Res<InFlight>,
     mut shown: ResMut<Shown>,
     mut root: Query<(Entity, &mut Visibility), With<PanelRoot>>,
 ) {
@@ -142,12 +297,12 @@ fn rebuild(
     if !panel.open {
         return;
     }
-    let view = link.own(me.id).cloned();
-    let pos = me.curr.pos;
-    let floor: Vec<(u32, ItemStack)> = link.curr.items.iter().filter(|it| it.pos.distance(pos) <= PICKUP_REACH).map(|it| (it.id, it.stack)).collect();
+    let (view, mut floor) = panel_view(&link, me.id);
+    // What's being taken off the floor is gone from it as far as we're concerned.
+    floor.retain(|(id, s)| flight.asked_for(Place::Ground, *id, s.item) < s.count as u32);
     let busy = link.curr.players.iter().find(|p| p.id == me.id).map_or((0.0, 0), |p| (p.busy, p.jobs));
     let note_fresh = time.elapsed_secs() - last.at < NOTE_SECS * 2.0;
-    let signature = format!("{view:?}|{floor:?}|{:.1}|{}|{}|{}", busy.0, busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead);
+    let signature = format!("{view:?}|{floor:?}|{:.1}|{}|{}|{}|{:?}", busy.0, busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked);
     if shown.0 == signature {
         return;
     }
@@ -164,12 +319,12 @@ fn rebuild(
                 let inv = &v.inventory;
                 for (label, slot) in [("Hand", Slot::Hand), ("Other hand", Slot::OffHand), ("Back", Slot::Back), ("Shoulder", Slot::Shoulder)] {
                     match inv.slot(slot) {
-                        Some(s) => row(col, format!("{label}: {}", name_of(items, &s)), format!("{:.1} kg", stack_kg(items, &s)), RowAction { left: Some((Place::Slot(slot), 0, Place::Carried)), right: None }, me.id),
+                        Some(s) => row(col, format!("{label}: {}{}", name_of(items, &s), moving(&flight, Place::Slot(slot), 0, &s)), format!("{:.1} kg", stack_kg(items, &s)), RowAction { stack: s, left: Some((Place::Slot(slot), 0, Place::Carried)), right: None }),
                         None => dim(col, format!("{label}: -")),
                     }
                 }
                 for (k, s) in inv.worn.iter().enumerate() {
-                    row(col, format!("Worn: {}", name_of(items, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { left: Some((Place::Worn, k as u32, Place::Carried)), right: None }, me.id);
+                    row(col, format!("Worn: {}{}", name_of(items, s), moving(&flight, Place::Worn, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Worn, k as u32, Place::Carried)), right: None });
                 }
                 dim(col, format!("Carried ({:.1} of {:.0} L):", v.carry.used_l, v.carry.room_l));
                 if inv.carried.is_empty() {
@@ -183,7 +338,7 @@ fn rebuild(
                         ItemCategory::Clothing => Intent::Wear { player: me.id, index: k as u32 },
                         _ => Intent::Equip { player: me.id, index: k as u32 },
                     });
-                    row(col, format!("  {}", name_of(items, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { left: Some((Place::Carried, k as u32, to)), right }, me.id);
+                    row(col, format!("  {}{}", name_of(items, s), moving(&flight, Place::Carried, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Carried, k as u32, to)), right });
                 }
             });
             // The open container.
@@ -194,7 +349,7 @@ fn rebuild(
                         dim(col, "empty".into());
                     }
                     for (k, s) in cv.stacks.iter().enumerate() {
-                        row(col, name_of(items, s), format!("{:.1} kg", stack_kg(items, s)), RowAction { left: Some((Place::Container(cv.id), k as u32, Place::Carried)), right: None }, me.id);
+                        row(col, format!("{}{}", name_of(items, s), moving(&flight, Place::Container(cv.id), k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Container(cv.id), k as u32, Place::Carried)), right: None });
                     }
                 });
             }
@@ -204,7 +359,7 @@ fn rebuild(
                     dim(col, "nothing within reach".into());
                 }
                 for (id, s) in &floor {
-                    row(col, name_of(items, s), format!("{:.1} kg", stack_kg(items, s)), RowAction { left: Some((Place::Ground, *id, Place::Carried)), right: None }, me.id);
+                    row(col, format!("{}{}", name_of(items, s), moving(&flight, Place::Ground, *id, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Ground, *id, Place::Carried)), right: None });
                 }
                 if open.is_none() {
                     dim(col, "E: search the cupboard,".into());
@@ -217,6 +372,11 @@ fn rebuild(
             c.spawn((Text::new(last.text.clone()), font(14.0), TextColor(if last.ok { OK } else { NO })));
         }
     });
+}
+
+/// " (moving)" after a row some of which is on its way.
+fn moving(flight: &InFlight, from: Place, index: u32, s: &ItemStack) -> &'static str {
+    if flight.asked_for(from, index, s.item) > 0 { "  (moving)" } else { "" }
 }
 
 fn header(c: &mut ChildSpawnerCommands, view: Option<&PrivateView>, busy: (f32, u8)) {
@@ -256,9 +416,9 @@ fn dim(col: &mut ChildSpawnerCommands, text: String) {
     col.spawn((Text::new(text), font(13.0), TextColor(DIM)));
 }
 
-/// A clickable row: `label` on the left, `kg` on the right.
-fn row(col: &mut ChildSpawnerCommands, label: String, kg: String, action: RowAction, player: u32) {
-    let (left, right) = (action.clone(), action);
+/// A clickable row: `label` on the left, `kg` on the right. A press is only recorded here
+/// ([`Clicks`]); [`send_clicks`] decides what it sends.
+fn row(col: &mut ChildSpawnerCommands, label: String, kg: String, action: RowAction) {
     col.spawn((
         Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, column_gap: px(10), padding: UiRect::axes(px(6), px(2)), ..default() },
         BackgroundColor(ROW),
@@ -277,26 +437,150 @@ fn row(col: &mut ChildSpawnerCommands, label: String, kg: String, action: RowAct
             bg.0 = ROW;
         }
     })
-    .observe(move |ev: On<PointerPress>, keys: Res<ButtonInput<KeyCode>>, mut link: ResMut<ServerLink>| {
+    .observe(move |ev: On<PointerPress>, keys: Res<ButtonInput<KeyCode>>, mut clicks: ResMut<Clicks>| {
         let one = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-        match ev.button {
-            PointerButton::Primary => {
-                if let Some((from, index, to)) = left.left {
-                    let count = if one { 1 } else { 0 };
-                    let intent = match (from, to) {
-                        (Place::Slot(_) | Place::Worn, Place::Carried) => Intent::Unequip { player, from, index },
-                        (_, Place::Ground) => Intent::Drop { player, from, index, count },
-                        _ => Intent::MoveItem { player, from, index, to, count },
-                    };
-                    link.send(intent);
-                }
-            }
-            PointerButton::Secondary => {
-                if let Some(i) = right.right.clone() {
-                    link.send(i);
-                }
-            }
-            _ => {}
-        }
+        clicks.0.push(RowClick { action: action.clone(), button: ev.button, one });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::input::ButtonState;
+    use bevy::input::mouse::MouseButtonInput;
+    use bevy::window::{CursorMoved, PrimaryWindow, WindowEvent};
+
+    fn beans(n: u16) -> ItemStack {
+        ItemStack::new(3, n)
+    }
+
+    fn click(left: Option<(Place, u32, Place)>, stack: ItemStack, button: PointerButton, one: bool) -> RowClick {
+        RowClick { action: RowAction { stack, left, right: None }, button, one }
+    }
+
+    /// A stack asked for is asked for once; one at a time (Shift) as many times as there are;
+    /// once the view changes (the answer came), it can be asked for again.
+    #[test]
+    fn a_stack_on_its_way_is_not_asked_for_again() {
+        let mut f = InFlight::default();
+        let take = Some((Place::Container(4), 0, Place::Carried));
+        let c = click(take, beans(1), PointerButton::Primary, false);
+        assert!(matches!(click_intent(&c, 1, &mut f, 0.0), Some(Intent::MoveItem { count: 0, .. })));
+        assert!(click_intent(&c, 1, &mut f, 0.1).is_none(), "the same row again while it moves");
+        f.update("same".into(), false, 0.2);
+        f.update("same".into(), false, 0.3);
+        // The snapshot changed: answered. (`update` first takes the content as it is.)
+        f.update("after".into(), false, 0.4);
+        assert!(click_intent(&c, 1, &mut f, 0.5).is_some());
+        // Shift-clicks on three: three requests, then none.
+        let mut f = InFlight::default();
+        let one = click(take, beans(3), PointerButton::Primary, true);
+        let sent = (0..5).filter(|k| click_intent(&one, 1, &mut f, *k as f32 * 0.01).is_some()).count();
+        assert_eq!(sent, 3);
+        // A refusal or a long silence forgets them.
+        f.update(f.content.clone(), true, 0.1);
+        assert!(click_intent(&one, 1, &mut f, 0.2).is_some());
+        f.update(f.content.clone(), false, 0.2 + FLIGHT_SECS);
+        assert!(f.asked.is_empty());
+        // Dropping goes to the floor; a slot comes off.
+        let mut f = InFlight::default();
+        let drop = click(Some((Place::Carried, 2, Place::Ground)), beans(2), PointerButton::Primary, true);
+        assert!(matches!(click_intent(&drop, 1, &mut f, 0.0), Some(Intent::Drop { index: 2, count: 1, .. })));
+        let off = click(Some((Place::Slot(Slot::Hand), 0, Place::Carried)), beans(1), PointerButton::Primary, false);
+        assert!(matches!(click_intent(&off, 1, &mut f, 0.0), Some(Intent::Unequip { .. })));
+        assert!(click_intent(&off, 1, &mut f, 0.0).is_none());
+    }
+
+    /// The real input path, headless: Bevy's mouse input, UI layout and picking on a window with a
+    /// panel row in it. One press of the button on the row is one recorded press and one intent,
+    /// however many frames go by and even if the panel is rebuilt under the cursor meanwhile; a
+    /// second press on the same row while its stack is on its way sends nothing more.
+    #[test]
+    fn one_click_on_a_row_is_one_intent() {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::input::InputPlugin,
+            bevy::window::WindowPlugin::default(),
+            bevy::asset::AssetPlugin::default(),
+            bevy::image::ImagePlugin::default(),
+            bevy::image::TextureAtlasPlugin,
+            bevy::mesh::MeshPlugin,
+            bevy::a11y::AccessibilityPlugin,
+            bevy::input_focus::InputFocusPlugin,
+            bevy::transform::TransformPlugin,
+            bevy::camera::CameraPlugin,
+            bevy::text::TextPlugin,
+            bevy::ui::UiPlugin,
+            bevy::picking::DefaultPickingPlugins,
+        ));
+        app.init_resource::<Clicks>().init_resource::<InFlight>().init_resource::<Outbox>().init_resource::<ButtonInput<KeyCode>>();
+        // `send_clicks` as the plugin runs it, for player 7, without the server behind it.
+        let player = 7u32;
+        // How many presses picking reported on rows (what the old panel sent an intent for, each).
+        #[derive(Resource, Default)]
+        struct Presses(usize);
+        app.init_resource::<Presses>();
+        app.add_systems(Update, move |time: Res<Time>, mut presses: ResMut<Presses>, mut clicks: ResMut<Clicks>, mut flight: ResMut<InFlight>, mut out: ResMut<Outbox>| {
+            presses.0 += clicks.0.len();
+            drain_clicks(player, time.elapsed_secs(), &mut clicks, &mut flight, &mut out);
+        });
+        app.world_mut().spawn(Camera2d);
+        let spawn_panel = |world: &mut World| {
+            let mut commands = world.commands();
+            commands.spawn(Node { position_type: PositionType::Absolute, top: px(0), left: px(0), flex_direction: FlexDirection::Column, ..default() }).with_children(|col| {
+                row(col, "Alarm clock".into(), "0.4 kg".into(), RowAction { stack: beans(1), left: Some((Place::Container(4), 0, Place::Carried)), right: None });
+            });
+            world.flush();
+        };
+        spawn_panel(app.world_mut());
+        for _ in 0..3 {
+            app.update();
+        }
+        let window = app.world_mut().query_filtered::<Entity, With<PrimaryWindow>>().single(app.world()).unwrap();
+        let send = |app: &mut App, e: WindowEvent| {
+            app.world_mut().write_message(e);
+        };
+        let press = |app: &mut App, state: ButtonState| {
+            let e = MouseButtonInput { button: MouseButton::Left, state, window };
+            app.world_mut().write_message(e);
+            send(app, WindowEvent::MouseButtonInput(e));
+        };
+        let at = Vec2::new(20.0, 8.0);
+        let moved = CursorMoved { window, position: at, delta: None };
+        app.world_mut().write_message(moved.clone());
+        send(&mut app, WindowEvent::CursorMoved(moved));
+        app.update();
+        app.update();
+        press(&mut app, ButtonState::Pressed);
+        app.update();
+        // Hold it a few frames, then rebuild the row under the cursor (as a snapshot would) and let go.
+        for _ in 0..3 {
+            app.update();
+        }
+        let rows: Vec<Entity> = app.world_mut().query_filtered::<Entity, With<Node>>().iter(app.world()).collect();
+        for e in rows {
+            if let Ok(ec) = app.world_mut().get_entity_mut(e) {
+                ec.despawn();
+            }
+        }
+        spawn_panel(app.world_mut());
+        app.update();
+        press(&mut app, ButtonState::Released);
+        for _ in 0..5 {
+            app.update();
+        }
+        let out = &app.world().resource::<Outbox>().0;
+        assert_eq!(out.len(), 1, "one click: {out:?}");
+        assert_eq!(app.world().resource::<Presses>().0, 1, "picking reports one press per click");
+        assert!(matches!(out[0], Intent::MoveItem { player: 7, from: Place::Container(4), index: 0, to: Place::Carried, count: 0 }));
+        // Click it again before the answer: no second request.
+        press(&mut app, ButtonState::Pressed);
+        app.update();
+        press(&mut app, ButtonState::Released);
+        app.update();
+        assert_eq!(app.world().resource::<Outbox>().0.len(), 1);
+        assert_eq!(app.world().resource::<Presses>().0, 2);
+        assert!(app.world().resource::<Clicks>().0.is_empty());
+    }
 }

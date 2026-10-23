@@ -205,6 +205,16 @@ pub struct Snapshot {
     pub private: Vec<PrivateView>,
     /// What came of players' item requests since the previous snapshot (done, or why not).
     pub item_notes: Vec<ItemNote>,
+    /// Each player's floor: the ground items it can take right now, by the server's own reach
+    /// rule (`World::floor_of`), nearest first. Every snapshot; a client gets only its own.
+    pub floor: Vec<FloorView>,
+}
+
+/// The ground items one player can reach (ids into [`Snapshot::items`]), nearest first.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FloorView {
+    pub player: u32,
+    pub items: Vec<u32>,
 }
 
 impl Snapshot {
@@ -253,6 +263,7 @@ impl Snapshot {
             hits: std::mem::take(&mut world.combat_events),
             private,
             item_notes: std::mem::take(&mut world.item_notes),
+            floor: world.players.iter().map(|p| FloorView { player: p.id, items: world.floor_ids(p.id) }).collect(),
         }
     }
 
@@ -260,7 +271,13 @@ impl Snapshot {
     pub fn for_player(mut self, player: u32) -> Self {
         self.private.retain(|v| v.player == player);
         self.item_notes.retain(|n| n.player == player);
+        self.floor.retain(|f| f.player == player);
         self
+    }
+
+    /// The ground items `player` can reach, nearest first (empty if it isn't in this snapshot).
+    pub fn floor_of(&self, player: u32) -> &[u32] {
+        self.floor.iter().find(|f| f.player == player).map_or(&[], |f| f.items.as_slice())
     }
 }
 
@@ -755,5 +772,45 @@ mod tests {
         server.tick();
         let moved = server.world.player(id).unwrap().state.pos.distance(start);
         assert!(moved <= zombye_sim::players::WALK_SPEED * TICK_DT + 1e-4, "moved {moved} m in one tick");
+    }
+
+    /// The floor a snapshot lists is exactly what the server takes: every listed item moves
+    /// without a refusal, nothing within a metre and a bit but behind a wall is listed, and a
+    /// taken item is gone from the next snapshot's list.
+    #[test]
+    fn the_floor_in_snapshots_is_what_the_server_accepts() {
+        let mut server = server();
+        let id = server.join(None);
+        server.world.hold_item(id, zombye_sim::Slot::Back, "hiking_pack");
+        let me = server.world.player(id).unwrap().state.pos;
+        // A ring of towels round the player in the bedroom: some through its walls.
+        let mut ring = Vec::new();
+        for k in 0..12 {
+            let at = me + glam::Vec2::from_angle(k as f32 * std::f32::consts::TAU / 12.0) * 1.2;
+            ring.extend(server.world.spawn_item("towel", 1, at));
+        }
+        let snap = server.tick().for_player(id);
+        let listed = snap.floor_of(id).to_vec();
+        assert!(!listed.is_empty() && listed.len() < ring.len(), "some in reach, some behind walls: {} of {}", listed.len(), ring.len());
+        assert_eq!(snap.floor.len(), 1, "only our own floor");
+        for &g in &ring {
+            server.send(Intent::MoveItem { player: id, from: Place::Ground, index: g, to: Place::Carried, count: 0 });
+            let notes = server.tick().item_notes;
+            let refused = notes.iter().any(|n| !n.ok && n.text.contains("towel"));
+            assert_eq!(refused, !listed.contains(&g), "towel {g}: listed {}, notes {notes:?}", listed.contains(&g));
+        }
+        // Each listed one goes, and the snapshots stop listing it once it has.
+        let mut snap = server.tick();
+        for _ in 0..200 {
+            if server.world.player(id).unwrap().jobs.is_empty() {
+                break;
+            }
+            snap = server.tick();
+            assert!(snap.item_notes.iter().all(|n| n.ok), "{:?}", snap.item_notes);
+            for g in snap.floor_of(id) {
+                assert!(server.world.items().iter().any(|it| it.id == *g), "lists {g}, which is gone");
+            }
+        }
+        assert!(snap.floor_of(id).iter().all(|g| !listed.contains(g)), "{:?}", snap.floor_of(id));
     }
 }
