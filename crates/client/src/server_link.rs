@@ -70,6 +70,8 @@ pub struct JoinInfo {
     pub infection: zombye_sim::InfectionTuning,
     /// First aid's numbers (treatment times shown in the health panel).
     pub first_aid: zombye_sim::FirstAidTuning,
+    /// The needs' numbers (status tags, the view cone while tired).
+    pub needs: zombye_sim::NeedsTuning,
 }
 
 /// The `FixedUpdate` system that ticks the server. Input is sent before it and reconciled after it.
@@ -192,6 +194,7 @@ fn finish_join(app: &mut App, mut server: LocalServer, player_id: u32) {
         combat: server.world.config.combat.clone(),
         infection: server.world.config.infection.clone(),
         first_aid: server.world.config.health.first_aid.clone(),
+        needs: server.world.config.needs,
     };
     let private = first.private.clone();
     app.insert_resource(ServerLink { server, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3], private })

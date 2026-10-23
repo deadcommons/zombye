@@ -13,7 +13,7 @@ Work is tracked on GitHub, not in the repo: the
 
 | Path | What | Licence |
 |---|---|---|
-| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), first aid (`firstaid.rs` + `FirstAidTuning`), run stats and the cause of death (`run.rs`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
+| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), run stats and the cause of death (`run.rs`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint; `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
 | `crates/client` | `zombye` Bevy client: camera, chunk streaming, building/tree meshes, fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd; `survivor.rs` skinned, CPU-posed players), hit feedback (`fx.rs`), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), HUD, the death screen and run summary (`death.rs`), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
@@ -133,7 +133,7 @@ sent to it, chasing, zombies per tier active/near/virtual, sim tick ms).
 In game: WASD move, Shift run, C sneak (toggle), mouse to face, left mouse attack (swing your weapon, or
 punch), Space shove (or stomp, when a downed zombie lies right in front of you), E pick up the item you
 face (with nothing on the floor within reach: search the container you face), Tab or I the inventory panel, F open/close the door or window you face, G smash the window you face, dead: R a new run and Q or Esc quit,
-T skip an hour, Z spawn zombies, wheel zoom, F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles). Walk into an open or broken window to climb
+B sleep (B again or WASD to get up), T skip an hour, Z spawn zombies, wheel zoom, F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles). Walk into an open or broken window to climb
 through it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
 not Bevy's handler; a second Ctrl-C quits unsaved) autosaves; `--render-to` never does.
 
@@ -151,7 +151,8 @@ under the HUD says what was saved or loaded (or why not), and stdout gets the sa
 
 HUD: top left, the stats line and the keys. Bottom left, the weapon you hold and your stance, a health bar
 (pulses below 30), an endurance bar (orange below `tired_below`, when swings weaken; grey-blue and a WINDED tag
-when winded: no running), and this life's kills, time played and distance (the server's run stats). Dead: the death
+when winded: no running), and this life's kills, time played and distance (the server's run stats); right of it the status tags (`needs_ui.rs`, see
+Needs; hover one for what it does). Dead: the death
 screen (`death.rs`, #13): the cause of death in plain words, the game day and hour, and the run summary (game time
 survived, time played, zombies killed, distance walked, things looted, containers searched, wounds taken, HP lost), all
 from our run in the snapshot, so it is right after a quickload or `--load` too. **R starts a new run:** a fresh world
@@ -203,6 +204,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   `window_noise`; broken ones can't be shut), `SmashWindow { player }` (breaks the shut or open window
   it faces; loud, `glass_break_noise`), `Attack`, `Shove`, `Stomp`, `PickUp` (all `{ player }`, see
   Combat and Items), the item intents (`MoveItem`, `Equip`, `Wear`, `Unequip`, `Drop`, `Use`, `Search`, see Items),
+  `Sleep { player, sleep }` (lie down or get up, see Needs; an action or item intent from a sleeper only gets it up),
   `Respawn { player }` (single-player/debug: a dead player gets up at the spawn point), `Dev { player, god, ignored }`
   (dev toggles, below), and the debug/admin `SetGoal`, `SpawnZombies`, `SpawnItem { item, count, pos }`, `SkipTime`, `MakeNoise`.
 - **Dev toggles** (`players::DevFlags { god, ignored }` on the player, `World::set_dev`; `Intent::Dev` with `Option<bool>`s,
@@ -372,6 +374,47 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
 - Replication: `Snapshot::runs` (`RunView { player, run }`) every snapshot, a client only its own (`for_player`,
   `Snapshot::run_of`). The HUD's kills / alive / walked line and the death screen read it.
 
+## Needs (`sim::needs`; #11)
+
+- **Hunger, thirst, tiredness** (`Player::needs`, 0 fine to 1 worst) rise per game hour (`NeedsTuning`,
+  `WorldConfig::needs`, serde defaults, saved with the settings; ours): hunger +0.04 (asleep +0.02), thirst +0.06 (+0.03;
+  x2 with food poisoning; +0.02/h running, +0.002 a swing), tiredness +0.05 awake, -0.12 / -0.09 / -0.06 asleep on a bed /
+  sofa / the floor. Levels at 0.35 / 0.6 / 0.85: Peckish, Hungry (no HP back, endurance recovery x0.85), Starving (-2 HP/h,
+  swing power x0.85); Dry, Thirsty (recovery x0.75), Parched (-3 HP/h, no running); Drowsy, Tired (swing time x1.1, the
+  client's view cone x0.85), Exhausted (swing time x1.25, walking x0.9). Pain (wounds plus a night on the floor) at 0.2 /
+  0.45 / 0.75 weakens swings x0.95 / x0.85 / x0.7. Movement effects go into `MoveMods` (`World::needs_mods`, from
+  `refresh_carry` whenever a level or sleep changes); HP loss goes through `hurt_player` (god mode holds). `World::step`
+  runs `step_needs` after `step_health`; `skip_time` steps both in 0.1 h steps. `NeedsTuning::off()`: needs never rise
+  (other systems' long-skip tests use it).
+- **Eating and drinking** is the `Use` job: `2 + 8 x (|hunger| + |thirst|)` s, 2 to 5; one go off the top item
+  (`ItemStack::used`; the item goes after its `uses`); the item's amounts come off (negative ones add). Food with hunger
+  under 0.1 does nothing for hunger; food poisoning refuses food (`Health::can_eat`).
+- **Spoiling:** `ItemStack::born` is the game minute it was made (`World::game_minute`, from `game_hours()`: ticks plus
+  skips, never wrapping; 0 for things that keep). Fresh until `spoils_hours`, Stale to twice that (x0.7 of what it gives,
+  `HealthTuning::poison_stale` 10%), then Mouldy (x0.4, `poison_rotten` 70%), through `World::poison_player` (combat RNG).
+  Food found in furniture (`World::age_found_food` on first search) was made 0-60% of its `spoils_hours` before the world
+  began (seeded per container and stack). No per-tick aging; fridges don't slow it yet (no power).
+- **Sleep** (`World::player_sleep`, `Intent::Sleep`, B, MCP `sleep`): needs tiredness 0.3+ and no agony; on a bed (else a
+  sofa) within 1 m of its footprint in your room, else the floor (wakes you sore: +0.1 pain for 2 h). Asleep: `MoveMods`
+  speed 0, HP back at `regen_asleep_per_h` (5/h). Wakes (`World::woke`, per tick, `WakeReason`) when tiredness < 0.05, a
+  zombie's strike lands (god too), a sound reaches you within 20 m (`heard`, not your own), an active zombie sees you, in
+  agony, after an hour starving or parched, or on getting up (B, WASD, or any action or item intent). **Time:** while every
+  living player sleeps (`World::time_scale`), game time runs `sleep_time_scale` (30) x as fast: each tick adds 29 extra
+  ticks' hours to the clock offset and steps health and needs by 30 ticks' worth; zombies keep real time. Single-player
+  that's whenever you sleep; on a server, only once everyone is asleep (a lone sleeper rests in real time). Snapshots carry
+  `time_scale` and `game_minute`; `PlayerView::asleep` (the survivor lies on its back).
+- **Status tags** (`needs::status_tags`, from a `StatusInput` the client builds with `PrivateView::status_tags`, so the HUD
+  and `World::status_tags` agree): Hunger, Thirst, Tiredness, Endurance (Short of breath / Winded), Load (Burdened / Heavy
+  / Overloaded), Pain (Sore / Hurting / Agony), Bleeding (xN), Sick (Queasy food poisoning / Sick festering / Feverish /
+  Turning), and Asleep (x30), each with severity and a tooltip. Client: `needs_ui.rs` (right of the vitals; hover for the
+  tip), the stats line, stale/mouldy and goes left in the inventory panel, a narrower cone when tired and a closed-eyes
+  fog asleep (`fog.rs`).
+- **Saves:** needs, sleep, soreness and each stack's `born`/`used` (format 6), in `state_hash`; checked on load
+  (`save_check::check_needs`, `check_stack_state`: needs 0..1, goes below `uses`, made no later than now) and
+  `NeedsTuning::check`. **MCP:** `stats` (needs, asleep, tags, `time_scale`), `health` (a needs line and each tag's tip),
+  `observe` (tags per player), `use` (what it will do first), `sleep {player, max_hours}` (steps until awake; why, hours,
+  needs and HP before and after), `set_needs` (debug).
+
 ## Items, inventory and containers (`sim::items`, `sim::inventory`, `sim::containers`; #7)
 
 - **Items are data:** `assets/data/items/items.ron`, a list of `items::ItemDef` (id, name, `category`: Food, Drink,
@@ -381,7 +424,9 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   (an id in `weapons.ron`), grey-box `color`). About 70 ordinary things with real-world weights; validated by
   `items::parse_items` (unknown fields refused), loaded by `net::content::load_items` (all content at once:
   `content::load_config`). A weapon with no item gets a plain 1 kg one (`items::complete_items`), so bare configs and
-  tests work. Things are `ItemStack { item, count }` (index into `WorldConfig::items`).
+  tests work. Things are `ItemStack { item, count, born, used }` (index into `WorldConfig::items`; `born`, the game minute
+  food was made, and `used`, goes had of the top one, see Needs; stacks merge only when all but the count agree:
+  `ItemStack::same_kind`, `merge_into(stacks, like, n, size)`).
 - **Inventory** (`Player::inventory`): `hand` (swings), `off_hand`, `back` and `shoulder` (bags), `worn` (clothing;
   two can't share a body part and layer), `carried` (pockets and bags). Two limits (`CarryTuning`, ours): *room*,
   pockets 3 L plus the bags in the slots (held and worn items take none); *weight*, everything in full (bags add room,
@@ -392,7 +437,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   OffHand | Back | Shoulder)`, `Worn`, `Container(id)`, `Ground` with the ground item id as `index`; count 0 = all),
   `Equip { index }` (a carried stack where it belongs), `Wear { index }`, `Unequip { from, index }` (into bags, or the
   floor if there's no room; a bag can't come off while its contents wouldn't fit), `Drop { from, index, count }`,
-  `Use { from, index }` (eat or drink one; the effect waits for #11, `World::used_items` lists them per tick) and
+  `Use { from, index }` (eat or drink one go, 2-5 s by the item; see Needs; `World::used_items` lists them per tick) and
   `Search { container }` queue an `ItemJob` on the player (`Player::jobs`, at most 16). The first counts down and
   happens when due (0.3 s a stack, 0.6 s over 3 kg; use 1 s; a first search the container's search time, x1.5
   sneaking; reopening 0.3 s), checked again then: still there (by index, else the first stack of that item), in reach,
@@ -671,7 +716,8 @@ over the old one: a crash mid-write leaves the previous save whole).
   flow fields rebuilt as asked for. `World::load` is `load_with` without force, dropping the notes. The
   rest of `WorldConfig` (seed, map size, zombie count, start hour, day length, `ZombieTuning`, `CombatTuning`,
   `TierTuning`, `CarryTuning`) is the save's own, stored as RON so a tuning field added later just takes its default.
-- **Format** (`save.rs` docs): `ZOMBYSAV`, a `u32` format version (5; 3 added items, inventories and containers, 4 wounds and illness, 5 first aid, and older saves are refused), then sections (4-byte tag, `u32` length,
+- **Format** (`save.rs` docs): `ZOMBYSAV`, a `u32` format version (6; 3 added items, inventories and containers, 4 wounds and illness, 5 first aid, 6 needs and sleep and each
+stack's `born`/`used`, and older saves are refused), then sections (4-byte tag, `u32` length,
   postcard payload, FNV-1a checksum): `INFO` (`SaveInfo`: game version, tick, time of day, seed, map size, zombies,
   players, content fingerprint), `CONF` (settings, RON), `MAPD` (edits or the full map), `WRLD` (everything else but
   zombies), one `ZOMB` per 64 m region (the tiers' region grid; zombies column by column, ids as gaps), `RUNS` (each
@@ -729,7 +775,9 @@ often each item turns up; read-only), `search {player, container}`, `take
 {player, from: container|ground, index, count}`, `move_item {player, from, index, to, count}` (places: carried, hand,
 off_hand, back, shoulder, worn, container, ground), `drop {player, from, index, count}`, `equip {player, index}`, `wear
 {player, index}`, `unequip {player, from, index}`, `use {player, from, index}` (each queues the job and steps the world
-until the player's queue is empty, then reports what happened and the inventory), `respawn`, `spawn_item {item, count,
+until the player's queue is empty, then reports what happened and the inventory; `use` also says beforehand what it will
+do, and the needs before and after), `sleep {player, max_hours}` and `set_needs {player, hunger, thirst, tiredness}` (see
+Needs), `respawn`, `spawn_item {item, count,
 x, y}` (debug; any item id, `weapon` still accepted), `make_noise {x, y, radius, lasting}`
 (debug; a loud one leaves an attractor, `lasting: true` a 30-minute one), `regions` (ASCII heat maps per 64 m region of
 living zombies and of their targets, the attractors' pull with players marked, and zones; the attractors with reach,
@@ -738,9 +786,9 @@ spread, strength and time left; the regions furthest below and above target), `s
 (replaces the world; with no name, the `--save` file; refused, world untouched, if the file is damaged, holds impossible
 values or is of another format; changed game data loads with a note when compatible, else is refused unless
 `force: true`, which loads it anyway and notes what it changed), `saves` (the saves folder: size, age, tick, time, seed, map size, zombies,
-players; and where this session autosaves), `stats` (players with HP/weapon/load/burden/busy/dead/god/ignored, `run` (this life: `survived`, `game_hours`, `played`,
+players; and where this session autosaves), `stats` (players with HP/weapon/load/burden/busy/dead/god/ignored/needs/asleep/tags, `run` (this life: `survived`, `game_hours`, `played`,
 `seconds`, `kills`, `distance_m`, `items_taken`, `containers_searched`, `wounds`, `hp_lost`, and once dead `death`: `cause`
-id, `text`, `rises`, `tick`, `day`, `time_of_day`) and `cause_of_death` (plain words, null while alive), time of day and daylight, zombies by state
+id, `text`, `rises`, `tick`, `day`, `time_of_day`) and `cause_of_death` (plain words, null while alive), time of day, daylight and time scale, zombies by state
 including staggered/down/dead and by tier (`zombie_tiers`: active/near/virtual, last tick's promotions and
 demotions, the ranges), `population` (target vs alive, attractors, whether migration and respawn are on, respawned), items on the floor, containers and how many are opened, tick timing (tier pass, senses, flow, active, near, virtual), thumps, hits and sounds heard last
 tick, damaged edges, the state hash). `step_ticks` and `move_player` also report hits, kills, how many

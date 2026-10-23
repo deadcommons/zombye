@@ -80,7 +80,15 @@ fn update_fog(
     // Sight range: long in daylight, short at night, and shorter still at night while turning (#9).
     let turning = link.own(me.id).is_some_and(|v| v.health.infection == Some(zombye_sim::InfectionStage::Turning));
     let night = if turning { join.infection.turning_night_sight.clamp(0.0, 1.0) } else { 1.0 };
-    let max = 18.0 * (night + (1.0 - night) * daylight.0) + 52.0 * daylight.0;
+    let mut max = 18.0 * (night + (1.0 - night) * daylight.0) + 52.0 * daylight.0;
+    // Tired: a narrower view cone; asleep, eyes shut: only what's right around you (#11).
+    let needs = link.own(me.id).map(|v| v.needs).unwrap_or_default();
+    if needs.asleep.is_some() {
+        max = (max * 0.15).max(CLOSE_RADIUS + 1.0);
+    }
+    let narrow = if join.needs.level(needs.tiredness) >= zombye_sim::needs::Level::Strong { join.needs.tired_sight.clamp(0.3, 1.0) } else { 1.0 };
+    let (cone_lo, cone_hi) = ((-0.6f32).acos() * narrow, (-0.25f32).acos() * narrow);
+    let (cone_lo, cone_hi) = (cone_lo.cos(), cone_hi.cos());
     let rays = vision::visibility_rays(&map.0, eye, max, RAYS);
     let facing = Vec2::from_angle(player.facing);
 
@@ -108,7 +116,7 @@ fn update_fog(
                     1.0
                 } else {
                     let c = facing.dot(d / dist.max(1e-4));
-                    BEHIND + (1.0 - BEHIND) * smoothstep(-0.6, -0.25, c)
+                    BEHIND + (1.0 - BEHIND) * smoothstep(cone_lo, cone_hi, c)
                 };
                 los * range * cone
             };
