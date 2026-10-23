@@ -10,15 +10,17 @@
 //! action makes a noise.
 //!
 //! Zombie strikes ([`crate::ai::ZombieAttack`]) land with `zombie_hit_chance`, more likely the more
-//! zombies are on the same player, and do `zombie_damage`. A player at 0 HP is dead: input is
-//! ignored, zombies lose interest, and the weapon falls to the floor. Every number is in
-//! [`CombatTuning`] or the weapon data; all ours.
+//! zombies are on the same player, and leave a wound on a body part ([`crate::health`]: where it
+//! lands, what it leaves and what it takes at once). A player at 0 HP is dead: input is ignored,
+//! zombies lose interest, and the weapon falls to the floor. Every number is in [`CombatTuning`],
+//! [`crate::health::HealthTuning`] or the weapon data; all ours.
 
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
 use crate::TICK_DT;
 use crate::ai::{self, ZOMBIE_RADIUS};
+use crate::health::{Part, WoundKind};
 use crate::items::{GroundItem, WeaponDef};
 use crate::players::{Action, ActionKind, DevFlags, PLAYER_RADIUS, Player, PlayerInput, RUN_MIN_ENDURANCE};
 use crate::senses::{Sound, SoundSource};
@@ -91,11 +93,10 @@ pub struct CombatTuning {
 
     // Zombie strikes.
     /// Chance a strike lands, plus this for every other zombie attacking the same player, at most
-    /// `zombie_hit_max`.
+    /// `zombie_hit_max`. What a landed strike does is up to the wound it leaves (`HealthTuning`).
     pub zombie_hit_chance: f32,
     pub zombie_crowd_bonus: f32,
     pub zombie_hit_max: f32,
-    pub zombie_damage: (f32, f32),
 }
 
 impl Default for CombatTuning {
@@ -140,7 +141,6 @@ impl Default for CombatTuning {
             zombie_hit_chance: 0.5,
             zombie_crowd_bonus: 0.12,
             zombie_hit_max: 0.9,
-            zombie_damage: (7.0, 12.0),
         }
     }
 }
@@ -208,6 +208,9 @@ pub struct CombatEvent {
     pub player: u32,
     pub damage: f32,
     pub crit: bool,
+    /// `PlayerHurt`: the body part hit and the wound it left.
+    pub part: Option<Part>,
+    pub wound: Option<WoundKind>,
 }
 
 /// Combat events kept for replication if nobody drains them (headless servers, tests).
@@ -306,9 +309,17 @@ impl World {
         };
         // A heavy load makes every action more tiring.
         let cost = if self.carry(&self.players[pi]).burden >= crate::inventory::Burden::Heavy { cost * self.config.carry.heavy_action_cost } else { cost };
+        // Wounded arms and hands swing weaker and slower.
+        let (arm_power, arm_time) = if kind == ActionKind::Swing {
+            let e = self.health_effects(pi);
+            (e.swing_power, e.swing_time)
+        } else {
+            (1.0, 1.0)
+        };
         let c = &self.config.combat;
         let p = &mut self.players[pi];
         let (power, slow) = c.fatigue(p.state.endurance);
+        let (power, slow) = (power * arm_power, slow * arm_time);
         p.state.endurance = (p.state.endurance - cost).max(0.0);
         if p.state.endurance <= RUN_MIN_ENDURANCE {
             p.state.winded = true;
@@ -323,12 +334,14 @@ impl World {
     pub fn respawn_player(&mut self, id: u32) -> bool {
         let spawn = self.map.resolve_circle(self.player_spawn, PLAYER_RADIUS);
         let hp = self.config.combat.player_hp;
-        let Some(p) = self.players.iter_mut().find(|p| p.id == id) else { return false };
-        if !p.dead {
+        let Some(pi) = self.players.iter().position(|p| p.id == id) else { return false };
+        if !self.players[pi].dead {
             return false;
         }
+        // An infected body left behind gets up now.
+        self.rise(pi);
+        let p = &mut self.players[pi];
         *p = Player { last_input_seq: p.last_input_seq, input: PlayerInput::default(), dev: p.dev, ..Player::new(id, spawn, hp) };
-        let pi = self.players.iter().position(|p| p.id == id).expect("just found");
         self.refresh_carry(pi);
         true
     }
@@ -538,7 +551,7 @@ impl World {
             (_, ActionKind::Shove) => CombatEventKind::Shove,
             (_, ActionKind::Stomp) => CombatEventKind::Stomp,
         };
-        self.push_combat_event(CombatEvent { kind, pos: zpos, dir, zombie: zid, player, damage, crit });
+        self.push_combat_event(CombatEvent { kind, pos: zpos, dir, zombie: zid, player, damage, crit, part: None, wound: None });
     }
 
     pub(crate) fn push_combat_event(&mut self, e: CombatEvent) {
@@ -570,13 +583,15 @@ impl World {
             if self.combat_rng.f32() >= chance {
                 continue;
             }
-            let damage = self.combat_rng.range(c.zombie_damage.0, c.zombie_damage.1);
-            self.attack_events[k].landed = true;
-            self.attack_events[k].damage = damage;
-            let from = self.zombies.index_of(a.zombie).map_or(pos, |j| self.zombies.pos[j]);
+            // Where it lands and what it leaves: from behind (the player faces the way the blow
+            // goes), with others on them too, or from a zombie on the ground.
+            let (from, low) = self.zombies.index_of(a.zombie).map_or((pos, false), |j| (self.zombies.pos[j], self.zombies.state[j] == ZombieState::Down));
             let dir = (pos - from).normalize_or(Vec2::X);
-            self.push_combat_event(CombatEvent { kind: CombatEventKind::PlayerHurt, pos, dir, zombie: a.zombie, player: a.player, damage, crit: false });
-            self.hurt_player(pi, damage);
+            let behind = Vec2::from_angle(self.players[pi].state.facing).dot(dir) > self.config.health.behind_dot;
+            let (part, wound, damage) = self.roll_zombie_wound(pi, behind, on >= 2, low);
+            let e = &mut self.attack_events[k];
+            (e.landed, e.damage, e.part, e.wound) = (true, damage, Some(part), Some(wound));
+            self.wound_player(pi, part, wound, damage, from, a.zombie);
         }
     }
 
@@ -625,6 +640,8 @@ impl World {
         p.action = None;
         p.queued = None;
         p.input.move_dir = Vec2::ZERO;
+        // An infected body rises later.
+        self.health_on_death(pi);
         // Everything it had falls where it lay.
         self.drop_everything(pi);
     }
@@ -892,6 +909,8 @@ mod tests {
         }
         let z = zombie(&mut w, Vec2::new(101.5, 100.5), PI);
         w.zombies.hp[z] = 1e9;
+        // It strikes back the whole time: this is about endurance, so don't die of it.
+        w.players[0].hp = 1e6;
         // Each swing costs its endurance.
         let e0 = w.player(id).unwrap().state.endurance;
         w.player_attack(id);
@@ -950,7 +969,8 @@ mod tests {
                 attacks += w.attack_events.len();
                 landed += w.attack_events.iter().filter(|a| a.landed).count();
                 for a in w.attack_events.iter().filter(|a| a.landed) {
-                    assert!(a.damage >= w.config.combat.zombie_damage.0 && a.damage <= w.config.combat.zombie_damage.1);
+                    let d = w.config.health.wound(a.wound.unwrap()).damage;
+                    assert!(a.damage >= d.0 && a.damage <= d.1);
                 }
             }
             assert!(attacks > 20, "{n} zombies: only {attacks} attacks");

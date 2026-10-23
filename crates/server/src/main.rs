@@ -27,6 +27,9 @@
 //! render with (default `$ZOMBYE_CLIENT`, else `zombye` next to this binary) and
 //! `--screenshot-timeout SECS` how long a render may take (default 60).
 
+// The MCP tool list is one big `json!`.
+#![recursion_limit = "256"]
+
 mod mcp;
 mod screenshot;
 

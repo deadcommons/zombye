@@ -397,7 +397,7 @@ impl World {
         let p = &self.players[pi];
         let c = self.carry(p);
         let slow = p.inventory.bag_slow(&self.config.items);
-        let mods = self.config.carry.mods(c.weight_kg / c.limit_kg.max(0.1), slow);
+        let mods = self.health_mods(pi, self.config.carry.mods(c.weight_kg / c.limit_kg.max(0.1), slow));
         let weapon = p.inventory.hand.and_then(|s| self.item_weapon(s.item));
         let p = &mut self.players[pi];
         p.state.mods = mods;

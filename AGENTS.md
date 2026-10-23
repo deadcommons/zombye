@@ -249,9 +249,56 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   `ZombieAnim`: `Idle`, `Walk`,
   `Attack`, `Stagger`, `Down`, `Dead`, `GetUp`, `Thump` (battering a door or window).
 - **Player health:** `hp` (100). Each `ZombieAttack` lands with `zombie_hit_chance`, plus
-  `zombie_crowd_bonus` per extra zombie attacking that player, and does `zombie_damage`
-  (`landed`/`damage` on the event). At 0 the player is dead: no movement or actions, zombies lose them.
+  `zombie_crowd_bonus` per extra zombie attacking that player, and leaves a wound on a body part (see Health and
+  wounds; `landed`/`damage`/`part`/`wound` on the event). At 0 the player is dead: no movement or actions, zombies lose them.
 - Every number not in the weapon file is in `CombatTuning` (`WorldConfig::combat`, serde defaults). Ours.
+
+## Health and wounds (`sim::health`; #9)
+
+- **One HP pool, wounds on ten parts** (`health::Part`: head, torso, left/right arm, hand, leg, foot; clothing still
+  covers the six coarse `items::BodyPart` regions, `Part::region`). `Player::health` (`Health`: wounds, the infection,
+  food poisoning, `rise_in`) is saved with the player (format 4) and in `state_hash`. Every HP loss goes through
+  `World::hurt_player`, so god mode holds: strikes and glass on a god still land as events but leave no wound or HP loss
+  (the debug `inflict_wound` adds the wound, not the loss).
+- **Wound kinds** (`WoundKind`, numbers in `HealthTuning`, `WorldConfig::health`, ours; hours are game hours, 150 s each
+  by default): bruise 4–6 HP at once, no bleeding, heals in 4 h; scratch 6–9, bleeds 3/h for 1 h, 10 h; gash 9–13, 10/h,
+  40 h; bite 12–18, 14/h, 60 h; glass cut 5–8, 8/h, 18 h (each wound rolls ±25% of its heal time). Gashes, bites and glass
+  cuts bleed until dressed (#10), so untreated they kill in hours.
+- **Zombie strikes** (`World::roll_zombie_wound`, combat RNG): a part by weight (`front` / `behind` tables: upper body
+  likeliest, more head and torso from behind; a zombie on the ground hits legs and feet only), then scratch 50 / gash 30 /
+  bite 20 (+15 bite when two or more are on you or from behind), then the worn clothing on that region
+  (`World::protection`: layers multiply what gets through) may stop it to a bruise (protection in full against scratches,
+  x0.7 gashes, x0.5 bites). **Glass:** smashing a window bare-handed cuts the right hand 60% (gloves 10%); starting to
+  climb through a broken window cuts a hand, arm or leg 15% (clothing protects).
+- **Effects while open** (`Health::effects`; scratches count half, bruises nothing): arm/hand -12% swing power and +8%
+  swing time each (caps 40% / 25%), applied when a swing starts; leg/foot -8% walk and -12% run each (cap 30%), a gash or
+  bite on a leg means no running; torso -20% endurance recovery each (cap 50%); pain per wound, easing as it heals, x2 on the
+  head (`Health::pain`, for #11). Movement effects go into `MoveMods` (`speed`, the new `run_speed`, `can_run`, `regen`)
+  through `World::refresh_carry` whenever wounds change, so the snapshot carries them and prediction stays exact.
+- **Over time** (`World::step_health`, every tick; `skip_time` runs it too in 0.1 h steps): bleeding and festering drain
+  HP; HP comes back 2/h with nothing bleeding or festering and no fever; wounds heal (a third as fast festering, twice
+  stitched, not at all feverish). **Festering:** a seeded `hash01` roll per wound per game hour (undressed 4%, dirty
+  dressing 6%, clean 0.5%, halved if cleaned): +0.1 pain, -1 HP/h, slow healing. **Food poisoning** is a hook for #11:
+  `World::poison_player(id, chance)`; `Health::can_eat`, `thirst_mult`, endurance x0.7.
+- **The infection** ("the turn", `InfectionTuning`, `WorldConfig::infection`): each wound a zombie leaves rolls once (bite
+  60%, gash 8%, scratch 0; `mode: Off | Default | Custom { bite, gash, scratch }`). Hidden 6–12 h (not in any view, not to
+  the player, the HUD or an agent), Feverish 12–24 h (sick, -1 HP/h, endurance x0.6, no healing), then Turning (-6 HP/h,
+  the client halves night sight) until death; the body rises as a zombie 30 s later where it fell (at once if the player
+  respawns first). `fatal: false` makes it burn out after the fever, leaving 30 HP; `stage_mult` 0.5–3. Fatal by default.
+- **#10 builds on** `Wound::dressing` (`None | Clean | Dirty`), `dressing_age_h`, `cleaned`, `stitched` and
+  `Wound::bleed_per_h` (a dressing stops bleeding, a dressed gash keeps `dressed_gash_bleed` 25% until stitched) and
+  `fester_chance`; nothing sets them yet.
+- **Replication:** `PlayerView::health` is the coarse `HealthTags` everyone sees (bleeding, limping, injured arm, sick);
+  `PrivateView::health` (`HealthView`: wounds by part with bleeding, healed in 5% steps, hours to go, dressing, festering;
+  HP lost per hour, pain, the infection once it shows) only to the player's own client, sent when it changes. `PlayerHurt`
+  combat events carry `part` and `wound`. Saves check every wound and illness value (`save_check::check_health`) and the
+  tunings (`HealthTuning::check`, `InfectionTuning::check`).
+- **Client** (`health_ui.rs`): H opens the health panel (wounds by part, head to feet, colour for bleeding and festering);
+  a tags line in the vitals panel (BLEEDING xN, FEVERISH / TURNING, FOOD POISONING, FESTERING, INJURED LEG / ARM, and
+  for 3 s where the last strike landed).
+- **MCP:** `health {player}` (as the player's own view, plus effects and what each wound needs next), `wound {player,
+  part, kind, infected}` (debug), `stats` per player (wounds, bleeding, HP lost per hour, pain, sick, infection or
+  "unknown"), and `step_ticks` / `move_player` name the wounds strikes left.
 
 ## Items, inventory and containers (`sim::items`, `sim::inventory`, `sim::containers`; #7)
 
@@ -513,7 +560,7 @@ over the old one: a crash mid-write leaves the previous save whole).
   flow fields rebuilt as asked for. `World::load` is `load_with` without force, dropping the notes. The
   rest of `WorldConfig` (seed, map size, zombie count, start hour, day length, `ZombieTuning`, `CombatTuning`,
   `TierTuning`, `CarryTuning`) is the save's own, stored as RON so a tuning field added later just takes its default.
-- **Format** (`save.rs` docs): `ZOMBYSAV`, a `u32` format version (3; 3 added items, inventories and containers, and older saves are refused), then sections (4-byte tag, `u32` length,
+- **Format** (`save.rs` docs): `ZOMBYSAV`, a `u32` format version (4; 3 added items, inventories and containers, 4 wounds and illness, and older saves are refused), then sections (4-byte tag, `u32` length,
   postcard payload, FNV-1a checksum): `INFO` (`SaveInfo`: game version, tick, time of day, seed, map size, zombies,
   players, content fingerprint), `CONF` (settings, RON), `MAPD` (edits or the full map), `WRLD` (everything else but
   zombies), one `ZOMB` per 64 m region (the tiers' region grid; zombies column by column, ids as gaps), `END`.
