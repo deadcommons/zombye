@@ -11,6 +11,7 @@
 //! behind are cleared. A quicksave of another map (other seed or size) can't be swapped
 //! in under the meshes already built; start the client with `--load` for that.
 
+use bevy::app::OnAppExitSystems;
 use bevy::input::InputSystems;
 use bevy::prelude::*;
 use zombye_net::{EdgeDamage, Intent, save_file};
@@ -35,9 +36,16 @@ impl Plugin for SavingPlugin {
             .add_systems(Startup, spawn_notice)
             // Before Update, so renderers see this frame's edge changes from a quickload.
             .add_systems(PreUpdate, quick_save_load.after(InputSystems))
-            .add_systems(Update, show_notice)
-            .add_systems(Last, autosave_on_exit);
+            .add_systems(Update, show_notice);
+        add_autosave(app);
     }
+}
+
+/// The autosave on quitting runs in `Last` after Bevy's own exit systems (closing the window sends
+/// its `AppExit` from `Last`, in `ExitSystems`), so whichever way the game quits, the exit that ends
+/// the frame is seen before the frame ends. (Unordered, it could run first and miss it.)
+fn add_autosave(app: &mut App) {
+    app.add_systems(Last, autosave_on_exit.in_set(OnAppExitSystems));
 }
 
 /// A short message under the HUD ("Saved ...", "Loaded ...", or what went wrong).
@@ -224,6 +232,44 @@ fn edge_differences(from: &TileMap, to: &TileMap) -> Vec<EdgeChange> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::window::{ExitCondition, WindowPlugin};
+
+    /// Every way of quitting autosaves: closing the window (Bevy's exit system in `Last`), an
+    /// `AppExit` sent during the frame (`--exit-after` from `Update`, Ctrl-C from `First`).
+    #[test]
+    fn quitting_autosaves_however_it_happens() {
+        let dir = std::env::temp_dir().join(format!("zombye-autosave-test-{}", std::process::id()));
+        for how in ["window", "update", "first"] {
+            let _ = std::fs::remove_dir_all(&dir);
+            let mut app = App::new();
+            app.add_plugins((MinimalPlugins, WindowPlugin { exit_condition: ExitCondition::OnAllClosed, ..default() }));
+            let (link, _) = ServerLink::for_test();
+            app.insert_resource(link).insert_resource(Options::parse(&["--saves".to_string(), dir.display().to_string()]));
+            add_autosave(&mut app);
+            let quit = |mut exit: MessageWriter<AppExit>, mut frames: Local<u32>| {
+                *frames += 1;
+                if *frames == 2 {
+                    exit.write(AppExit::Success);
+                }
+            };
+            match how {
+                "update" => app.add_systems(Update, quit),
+                "first" => app.add_systems(First, quit),
+                _ => &mut app,
+            };
+            app.update();
+            assert!(app.should_exit().is_none(), "{how}: quit too soon");
+            if how == "window" {
+                let mut windows = app.world_mut().query_filtered::<Entity, With<Window>>();
+                let window = windows.single(app.world()).expect("a primary window");
+                app.world_mut().despawn(window);
+            }
+            app.update();
+            assert!(app.should_exit().is_some(), "{how}: didn't quit");
+            assert!(dir.join("autosave.zsave").exists(), "{how}: no autosave");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_quickload_starts_the_tally_afresh() {

@@ -296,7 +296,7 @@ fn tool_list() -> Value {
             "name": "containers_near",
             "description": "Furniture that holds things near a player (default within 8 m): container id, kind, the furniture \
                 and room, distance, whether it has been searched (and what it holds), and whether the player can reach it now \
-                (same room, within 1.2 m of the furniture).",
+                (same room, within 1.6 m of the nearest edge of the furniture; once open it stays open to 2.2 m).",
             "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}, "radius": {"type": "number", "default": 8}}}
         },
         {
@@ -2042,7 +2042,7 @@ mod tests {
         let (text, err) = call(&mut world, &mut persist, "drop", json!({"index": 0, "count": 1}));
         assert!(!err && text.contains("dropped the tin of beans") && text.contains("Tin of beans"), "{text}");
         let (text, err) = call(&mut world, &mut persist, "take", json!({"from": "container", "index": 999}));
-        assert!(err && text.contains("nothing at"), "{text}");
+        assert!(err && text.contains("no longer in there"), "{text}");
         // A weapon picked up goes in hand (spawned where the player looks, so it's the one picked up).
         let aim = me + Vec2::from_angle(world.players[0].state.facing) * 0.5;
         call(&mut world, &mut persist, "spawn_item", json!({"weapon": "kitchen_knife", "x": aim.x, "y": aim.y}));

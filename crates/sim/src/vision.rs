@@ -19,6 +19,15 @@ pub fn clear_path(map: &TileMap, a: Vec2, b: Vec2) -> bool {
     len < 1e-4 || cast(map, a, d / len, len, |map, tile, side| !map.can_step(tile, side)) >= len - 1e-3
 }
 
+/// Can a hand reach from `a` to `b` in a straight line? Walls, shut windows, closed doors and
+/// fences in the way say no; furniture and trees don't (you reach over a sink or round a table).
+/// For picking things off the floor.
+pub fn clear_reach(map: &TileMap, a: Vec2, b: Vec2) -> bool {
+    let d = b - a;
+    let len = d.length();
+    len < 1e-4 || cast(map, a, d / len, len, |map, tile, side| !map.in_bounds(tile + side.offset()) || map.edge(tile, side).blocks_movement()) >= len - 1e-3
+}
+
 /// Walk the tiles a ray crosses (DDA) until `blocks(map, tile, side)` says the crossing out of
 /// `tile` through `side` is blocked. Returns the distance travelled, capped at `max`.
 fn cast(map: &TileMap, origin: Vec2, dir: Vec2, max: f32, blocks: impl Fn(&TileMap, IVec2, Side) -> bool) -> f32 {

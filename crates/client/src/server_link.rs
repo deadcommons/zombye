@@ -202,6 +202,22 @@ fn finish_join(app: &mut App, mut server: LocalServer, player_id: u32) {
 }
 
 impl ServerLink {
+    /// Tests: a link to a small world (the bungalow alone, a 4 x 4 chunk map) with one player
+    /// joined, and that player's id.
+    #[cfg(test)]
+    pub fn for_test() -> (Self, u32) {
+        use zombye_sim::{BuildingTemplate, WorldConfig};
+        let templates = vec![BuildingTemplate::from_ron(include_str!("../../../assets/data/buildings/bungalow.ron")).unwrap()];
+        let weapons = zombye_sim::items::parse_weapons(include_str!("../../../assets/data/items/weapons.ron")).unwrap();
+        let items = zombye_sim::items::parse_items(include_str!("../../../assets/data/items/items.ron"), &weapons).unwrap();
+        let containers = zombye_sim::containers::parse_containers(include_str!("../../../assets/data/containers.ron")).unwrap();
+        let mut server = LocalServer::new(WorldConfig::new(4, 0, templates).with_weapons(weapons).with_items(items).with_containers(containers));
+        let id = server.join(None);
+        let first = server.tick();
+        let private = first.private.clone();
+        (Self { server, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3], private }, id)
+    }
+
     /// The world being served (to save it).
     pub fn world(&self) -> &zombye_sim::World {
         &self.server.world
