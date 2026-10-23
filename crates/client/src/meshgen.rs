@@ -85,6 +85,21 @@ impl MeshBuilder {
         self.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
 
+    /// A triangle with its own vertex normals (imported models).
+    pub fn triangle_with_normals(&mut self, corners: [Vec3; 3], normals: [Vec3; 3], color: LinearRgba) {
+        let base = self.positions.len() as u32;
+        for (c, n) in corners.into_iter().zip(normals) {
+            self.push_vertex(c, n, color);
+        }
+        self.indices.extend_from_slice(&[base, base + 1, base + 2]);
+    }
+
+    /// Smallest and largest corner of everything added so far.
+    #[cfg(test)]
+    pub fn bounds(&self) -> (Vec3, Vec3) {
+        self.positions.iter().map(|p| Vec3::from(*p)).fold((Vec3::MAX, Vec3::MIN), |(lo, hi), p| (lo.min(p), hi.max(p)))
+    }
+
     pub fn triangle(&mut self, corners: [Vec3; 3], color: LinearRgba) {
         let normal = (corners[1] - corners[0]).cross(corners[2] - corners[0]).normalize_or_zero();
         let base = self.positions.len() as u32;

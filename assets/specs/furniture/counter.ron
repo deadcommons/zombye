@@ -1,0 +1,14 @@
+// Asset spec (tools/blender/zasset.py reads it; .claude/skills/blender-assets/SKILL.md).
+// footprint: tiles, width (x) × depth (y) facing south; size: metres, x × y × z of the model.
+AssetSpec(
+    id: "counter",
+    category: Furniture,
+    name: "Kitchen counter",
+    footprint: (2, 1),
+    size: (1.84, 0.64, 0.92),
+    against_wall: true,
+    tris: 700,
+    texture: None,
+    style: "Oak cupboard doors under an almond laminate top with a small overhang, a drawer row, chrome pulls, dark recessed plinth.",
+    description: "Two metres of base cupboards with a worktop.",
+)
