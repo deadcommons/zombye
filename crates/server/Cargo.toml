@@ -1,0 +1,18 @@
+[package]
+name = "zombye-server"
+description = "Zombye headless authoritative server, with a built-in MCP endpoint for agents."
+license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "zombye-server"
+path = "src/main.rs"
+
+[dependencies]
+zombye-sim.workspace = true
+zombye-net.workspace = true
+glam.workspace = true
+serde.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,39 @@
+Zombye and Dead Commons brand: license
+
+The names "Zombye" and "Dead Commons", their wordmarks and logos, including every file in this
+directory in every colour, size and format (the "Marks"), are owned by Dead Commons. They are
+trademarks and are NOT open source. They are not covered by the MIT or Apache-2.0 licenses
+in this repository, and nothing in those licenses, in NOTICE or in any other file of this
+repository grants any right to them.
+
+What you may do without asking
+
+  1. Keep the Marks in unmodified copies of this repository, and in forks kept only to propose
+     changes back to it.
+  2. Use the Marks in official Zombye builds, documentation and the official website.
+  3. Say, in plain text, what is true: that your server "runs Zombye", that your mod is
+     "a mod for Zombye", or that your project "is based on Zombye by Dead Commons".
+     Use the plain name only, not the logo, and don't make it the most prominent part of your
+     own name or branding.
+
+What needs written permission
+
+  - Using the Marks in the name, logo, icon, domain, social media handle, app-store or Steam
+    listing of anything other than official Zombye.
+  - Calling a server, hosting service, launcher, build or fork "official", "verified",
+    "endorsed" or similar, or suggesting in any way that Dead Commons made, sponsors, certifies
+    or supports it.
+  - Modifying the logos (redrawing, recolouring, cropping, combining them with other marks).
+  - Selling merchandise with the Marks.
+
+Forks and modified versions
+
+If you distribute or publish a modified version of Zombye, including running it as a public
+hosted service, you must give it your own name and remove the Zombye logos (or replace them
+with your own). You may say, in plain text, that it is based on Zombye by Dead Commons.
+
+Everything else
+
+Any use not permitted here needs prior written permission from Dead Commons. Dead Commons may
+update this license; uses that were permitted before an update stay permitted for copies already
+published.

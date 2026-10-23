@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "zombye": {
+      "command": "./target/release/zombye-server",
+      "args": ["--mcp", "--zombies", "1000"]
+    }
+  }
+}

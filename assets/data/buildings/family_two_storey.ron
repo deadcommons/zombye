@@ -1,0 +1,94 @@
+// Two-storey family house. One character per tile; "." is outside.
+// The bottom row is the front of the house and faces the street.
+// Openings are (x, y, side): side N/E/S/W of tile (x, y).
+BuildingTemplate(
+    id: "house_family_two_storey",
+    name: "Two-storey family house",
+    kind: House,
+    roof: GableX,
+    rooms: {
+        'K': (name: "Kitchen", room_type: "kitchen", floor: TileFloor),
+        'D': (name: "Dining room", room_type: "dining", floor: Wood),
+        'H': (name: "Hall", room_type: "hall", floor: Wood),
+        'L': (name: "Living room", room_type: "living", floor: Carpet),
+        'b': (name: "Bathroom", room_type: "bathroom", floor: TileFloor),
+        'u': (name: "Laundry", room_type: "laundry", floor: Concrete),
+        'B': (name: "Bedroom", room_type: "bedroom", floor: Carpet),
+        'C': (name: "Kids' bedroom", room_type: "bedroom", floor: Carpet),
+        'M': (name: "Main bedroom", room_type: "bedroom", floor: Carpet),
+    },
+    levels: [
+        (
+            layout: [
+                "KKKKKDDDDD",
+                "KKKKKDDDDD",
+                "KKKKKDDDDD",
+                "KKKKKDDDDD",
+                "HHHHHHHHHH",
+                "LLLLLLHHbb",
+                "LLLLLLHHbb",
+                "LLLLLLHHuu",
+                "LLLLLLHHuu",
+            ],
+            doors: [
+                (6, 8, S), // front door
+                (2, 0, N), // back door
+                (8, 5, N), // bathroom
+                (8, 8, W), // laundry
+            ],
+            arches: [(2, 3, S), (7, 3, S), (4, 1, E), (3, 5, N), (5, 6, E)],
+            windows: [
+                (1, 0, N), (0, 2, W),
+                (7, 0, N), (9, 2, E),
+                (0, 6, W), (2, 8, S), (4, 8, S),
+                (9, 5, E), (9, 7, E),
+                (0, 4, W), (9, 4, E),
+            ],
+            furniture: [
+                (kind: "stairs", at: (7, 5), size: (1, 3), facing: N),
+                (kind: "fridge", at: (0, 0)),
+                (kind: "stove", at: (1, 0)),
+                (kind: "counter", at: (3, 0), size: (2, 1)),
+                (kind: "table", at: (6, 1), size: (2, 2)),
+                (kind: "sofa", at: (0, 6), size: (1, 2), facing: E),
+                (kind: "coffee_table", at: (2, 6)),
+                (kind: "tv", at: (5, 8), facing: W),
+                (kind: "sink", at: (9, 5), facing: W),
+                (kind: "toilet", at: (9, 6), facing: W),
+                (kind: "dryer", at: (9, 7), facing: W),
+                (kind: "washer", at: (9, 8), facing: W),
+            ],
+        ),
+        (
+            layout: [
+                "BBBBBCCCCC",
+                "BBBBBCCCCC",
+                "BBBBBCCCCC",
+                "BBBBBCCCCC",
+                "HHHHHHHHHH",
+                "MMMMMMHHbb",
+                "MMMMMMHHbb",
+                "MMMMMMHHbb",
+                "MMMMMMHHbb",
+            ],
+            doors: [(2, 3, S), (7, 3, S), (3, 5, N), (8, 5, N)],
+            windows: [
+                (1, 0, N), (0, 2, W),
+                (7, 0, N), (9, 2, E),
+                (0, 6, W), (2, 8, S), (4, 8, S),
+                (9, 7, E), (0, 4, W),
+            ],
+            furniture: [
+                (kind: "bed", at: (1, 0), size: (2, 2)),
+                (kind: "wardrobe", at: (4, 0)),
+                (kind: "bed", at: (6, 0), size: (2, 2)),
+                (kind: "desk", at: (9, 1), facing: W),
+                (kind: "bed", at: (0, 7), size: (2, 2), facing: E),
+                (kind: "wardrobe", at: (5, 8), facing: N),
+                (kind: "sink", at: (9, 5), facing: W),
+                (kind: "bathtub", at: (8, 8)),
+                (kind: "toilet", at: (9, 8), facing: W),
+            ],
+        ),
+    ],
+)

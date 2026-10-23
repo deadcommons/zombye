@@ -1,0 +1,12 @@
+[package]
+name = "zombye-net"
+description = "Zombye client/server messages: intents in, snapshots out."
+license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+zombye-sim.workspace = true
+serde.workspace = true
+glam.workspace = true
