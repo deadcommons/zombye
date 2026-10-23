@@ -188,8 +188,8 @@ impl ItemCategory {
     pub const ALL: [ItemCategory; 10] = [Self::Food, Self::Drink, Self::Medical, Self::Tool, Self::Material, Self::Clothing, Self::Bag, Self::Weapon, Self::Light, Self::Junk];
 }
 
-/// Something eaten or drunk (`food` / `drink`). Hunger and thirst are on a 0..1 scale (restored per
-/// go; negative makes it worse). The needs themselves come with #11.
+/// Something eaten or drunk (`food` / `drink`). Hunger and thirst are on a 0..1 scale (taken off
+/// the need per go; negative makes it worse; see [`crate::needs`]).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Consumable {
@@ -495,19 +495,37 @@ pub fn complete_items(items: &mut Vec<ItemDef>, weapons: &[WeaponDef]) -> Vec<Op
 }
 
 /// Some of one kind of item: `item` indexes `WorldConfig::items`; `count` is at least 1.
+///
+/// Food and drink carry two more things (#11): when it was made (`born`, game minutes from the
+/// world's start, `World::game_minute`; negative for food from before it, 0 for anything that
+/// doesn't spoil), which says how fresh it is ([`crate::needs::Freshness`]), and how many goes of
+/// the top one have been had (`used`, below its `uses`). Stacks only merge when all three agree
+/// ([`ItemStack::same_kind`]), so a stale loaf never hides among fresh ones.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemStack {
     pub item: u16,
     pub count: u16,
+    pub born: i32,
+    pub used: u8,
 }
 
 impl ItemStack {
     pub fn new(item: u16, count: u16) -> Self {
-        Self { item, count }
+        Self { item, count, born: 0, used: 0 }
     }
 
     pub fn one(item: u16) -> Self {
-        Self { item, count: 1 }
+        Self::new(item, 1)
+    }
+
+    /// The same kind of thing (item, age and goes had), `n` of them.
+    pub fn with_count(self, count: u16) -> Self {
+        Self { count, ..self }
+    }
+
+    /// Can these share a stack: the same item, made at the same time, with the same goes had.
+    pub fn same_kind(&self, o: &ItemStack) -> bool {
+        self.item == o.item && self.born == o.born && self.used == o.used
     }
 }
 

@@ -522,7 +522,7 @@ pub struct HealthTuning {
     pub stitched_heal_speed: f32,
     /// A dressed but unstitched gash still bleeds at this share of its rate (#10).
     pub dressed_gash_bleed: f32,
-    /// HP back per game hour with nothing bleeding or festering and no fever; asleep (later) more.
+    /// HP back per game hour with nothing bleeding or festering, no fever and not hungry; asleep more (#11).
     pub regen_awake_per_h: f32,
     pub regen_asleep_per_h: f32,
 
@@ -1049,9 +1049,11 @@ impl World {
                 h.infection = None;
             }
             h.food_poisoning_h = (h.food_poisoning_h - dt_h).max(0.0);
-            let regen = !h.healing_stopped() && h.losing_per_h(t) <= 0.0;
+            // Hungry, nothing comes back (#11); asleep, it comes back faster.
+            let regen = !h.healing_stopped() && h.losing_per_h(t) <= 0.0 && !p.needs.stops_healing(&self.config.needs);
             if regen && p.hp < max_hp {
-                p.hp = (p.hp + t.regen_awake_per_h * dt_h).min(max_hp);
+                let rate = if p.needs.asleep() { t.regen_asleep_per_h } else { t.regen_awake_per_h };
+                p.hp = (p.hp + rate * dt_h).min(max_hp);
             }
             if burnt_out && p.hp > inf.survivor_hp {
                 // The fever leaves you weak.
@@ -1148,6 +1150,8 @@ mod tests {
         let items = items::parse_items(include_str!("../../../assets/data/items/items.ron"), &weapons).unwrap();
         let mut c = WorldConfig::new(seed, 0, templates()).with_weapons(weapons).with_items(items);
         c.start_hour = 12.0;
+        // Days go by in these tests: no starving meanwhile (#11 has its own).
+        c.needs = crate::needs::NeedsTuning::off();
         c
     }
 
@@ -1391,7 +1395,8 @@ mod tests {
         w.players[0].state.endurance = 1.0;
         assert!(w.player_attack(id));
         let a = me(&w, id).action.unwrap();
-        assert!((a.power - e.swing_power).abs() < 1e-4);
+        // (The wounds' pain weakens it a little more, #11.)
+        assert!((a.power - e.swing_power * w.config.needs.pain_power(w.pain_of(0))).abs() < 1e-4);
         let bat = w.config.weapons.iter().find(|x| x.category == crate::WeaponCategory::Unarmed).unwrap();
         assert!((me(&w, id).ready_in - bat.swing_seconds * e.swing_time).abs() < 1e-4);
         w.inflict_wound(id, Part::Torso, WoundKind::Bite, Some(false)).unwrap();

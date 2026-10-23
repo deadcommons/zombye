@@ -4,7 +4,7 @@
 //! **What's stored.** Everything that isn't derived and that the future depends on: the world
 //! settings (seed, map size, tunings), map edits, door and window damage, ground items, players
 //! (with their queued inputs and actions, inventories, open container, item jobs, wounds and
-//! illnesses), the contents
+//! illnesses, needs and sleep), the contents
 //! of every container opened so far (unopened ones fill from the seed when first opened, so they
 //! aren't stored), every zombie on every tier with all its AI columns, the
 //! population state, the clock and tick, both RNG streams, the sounds waiting to be heard, the
@@ -31,7 +31,7 @@
 //! save uses removed, an opened container that no longer is one), unless
 //! [`LoadOptions::force`] says to load anyway (see [`crate::save_check`]). Tunings that are not
 //! in data files yet (`ZombieTuning`, `CombatTuning`, `TierTuning`, `CarryTuning`, `HealthTuning`,
-//! `InfectionTuning`) are saved with the world, as RON
+//! `InfectionTuning`, `NeedsTuning`) are saved with the world, as RON
 //! text, so a save keeps its own numbers and an added field just takes its default.
 //!
 //! **Validation.** Values read from a save are checked before the world is used (finite numbers,
@@ -51,7 +51,8 @@
 //! later streaming save (#3, #22) can rewrite only the regions that changed. Payloads are
 //! [postcard](https://docs.rs/postcard), and zombies are stored column by column. A file with
 //! another format version fails with [`LoadError::Version`] (format 3 added items, inventories and
-//! containers, format 4 wounds and illness on players; older saves are refused); truncated or damaged files fail with
+//! containers, format 4 wounds and illness on players, format 5 needs and sleep on players and each
+//! stack's age and goes had; older saves are refused); truncated or damaged files fail with
 //! [`LoadError::Truncated`] or [`LoadError::Corrupt`], never a panic.
 
 use std::fmt;
@@ -68,6 +69,7 @@ use crate::inventory::CarryTuning;
 use crate::items::{GroundItem, ItemStack, complete_items};
 use crate::map::{EdgeChange, EdgeRef, TileMap};
 use crate::nav::SavedNav;
+use crate::needs::NeedsTuning;
 use crate::players::Player;
 use crate::population::{Attractor, Population, Zone};
 use crate::rng::Rng;
@@ -82,7 +84,7 @@ use crate::zombies::{Tier, ZombieAnim, ZombieState, Zombies};
 /// The first eight bytes of every save.
 pub const MAGIC: [u8; 8] = *b"ZOMBYSAV";
 /// Bumped whenever the layout changes; other versions are refused with a clear error.
-pub const FORMAT_VERSION: u32 = 4;
+pub const FORMAT_VERSION: u32 = 5;
 /// File extension `net::save_file` uses.
 pub const EXTENSION: &str = "zsave";
 
@@ -227,6 +229,8 @@ struct Settings {
     health: HealthTuning,
     #[serde(default)]
     infection: InfectionTuning,
+    #[serde(default)]
+    needs: NeedsTuning,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -541,6 +545,7 @@ impl World {
             removed_corpses: _,
             item_notes: _,
             used_items: _,
+            woke: _,
             private_dirty: _,
             // Scratch, refilled every tick.
             targets: _,
@@ -574,6 +579,7 @@ impl World {
             carry: config.carry.clone(),
             health: config.health.clone(),
             infection: config.infection.clone(),
+            needs: config.needs,
         };
         w.section(CONF, ron::to_string(&settings).expect("settings serialize").as_bytes());
         let layout = if *map_custom {
@@ -662,6 +668,7 @@ impl World {
         config.carry = settings.carry;
         config.health = settings.health;
         config.infection = settings.infection;
+        config.needs = settings.needs;
         save_check::check_settings(text, &config)?;
         let map_save: MapSave = decode(MAPD, r.expect(MAPD)?)?;
         let mut ws: WorldSave = decode(WRLD, r.expect(WRLD)?)?;
@@ -755,6 +762,10 @@ impl World {
         w.players = ws.players;
         w.items = ws.items;
         w.opened = ws.opened.into_iter().collect();
+        // Items whose number of goes changed: what was had of one can't be more than it has now.
+        if plan.item_map.is_some() {
+            save_check::fit_goes(&mut w);
+        }
         w.edge_hp = ws.edge_hp.into_iter().collect();
         w.sounds = ws.sounds;
         w.heard = ws.heard;
