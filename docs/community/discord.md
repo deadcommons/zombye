@@ -3,6 +3,7 @@
 The Zombye community server, as set up on 2026-10-23. This page records the setup so it can
 be recreated or audited. Change it in the same PR whenever the server changes.
 
+- **Name:** Zombye. Renamed from Shamblewood on 2026-10-23 (server, webhook and #welcome).
 - **Invite:** <https://discord.gg/y7NsmVG2br> (never expires, no use limit, lands in #welcome)
 - **Access:** invite only. Not Discoverable, no "Apply to Join".
 - **Bots and integrations:** one webhook, **Zombye GitHub**, posting to #devlog (Server
@@ -164,9 +165,6 @@ Bug reports and playtests get their own channels once there's a playable build. 
 ```
 
 ## Later
-
-- The game was renamed from Shamblewood to Zombye on 2026-10-23. In Discord, rename the server
-  and the webhook (it was "Shamblewood GitHub"), and repost #welcome from the copy above.
 
 - #bugs (forum) and #playtest, when there's a playable build. Add Playtester to the playtest
   channel and ping it for builds.
