@@ -2,8 +2,9 @@
 //! carry limit, beside the container you have open (search one with E) and the floor within reach.
 //! Click a row to move it: from you into the open container (or onto the floor if none is open),
 //! from a container or the floor into your pockets and bags, off a slot into your bags.
-//! Right-click one of your carried stacks to equip, wear, eat or drink it. Shift-click moves just
-//! one of a stack. Everything goes to the server as intents; the panel only shows what the latest
+//! Right-click one of your carried stacks to equip, wear, eat or drink it, take a pill, or use a
+//! dressing, antiseptic or sewing kit on a wound (it opens the health panel to pick the wound,
+//! #10). Shift-click moves just one of a stack. Everything goes to the server as intents; the panel only shows what the latest
 //! snapshot said. Moving takes a moment (the server queues it): the header shows how busy you are.
 //! The last answer to a request (done, or why not) shows at the foot of the panel, and for a few
 //! seconds under the HUD when the panel is shut (the same answer again just stays up longer).
@@ -19,7 +20,7 @@
 
 use bevy::prelude::*;
 use zombye_net::{Intent, PrivateView};
-use zombye_sim::{Burden, ItemCategory, ItemDef, ItemStack, Place, Slot};
+use zombye_sim::{Burden, ItemCategory, ItemDef, ItemStack, Place, Slot, Treatment};
 
 use crate::player::LocalPlayer;
 use crate::server_link::{ItemNotesThisFrame, JoinInfo, ServerLink};
@@ -211,6 +212,8 @@ struct RowAction {
     stack: ItemStack,
     left: Option<(Place, u32, Place)>,
     right: Option<Intent>,
+    /// Right-click: use this item on a wound (the health panel picks which).
+    use_on: Option<u16>,
 }
 
 /// What the panel shows and the requests are checked against: our private view and our floor
@@ -255,7 +258,11 @@ fn click_intent(click: &RowClick, player: u32, flight: &mut InFlight, now: f32) 
 
 /// This frame's presses on rows, as intents: at most one per button (one physical click is one
 /// press, however many times picking reports it), none for what is already on its way.
-fn send_clicks(time: Res<Time>, me: Res<LocalPlayer>, mut clicks: ResMut<Clicks>, mut flight: ResMut<InFlight>, mut out: ResMut<Outbox>) {
+fn send_clicks(time: Res<Time>, me: Res<LocalPlayer>, mut clicks: ResMut<Clicks>, mut flight: ResMut<InFlight>, mut out: ResMut<Outbox>, mut health: ResMut<crate::health_ui::HealthPanel>) {
+    // "Use on…": the health panel opens to pick the wound.
+    if let Some(item) = clicks.0.iter().find(|c| c.button == PointerButton::Secondary).and_then(|c| c.action.use_on) {
+        (health.open, health.use_item, health.selected) = (true, Some(item), None);
+    }
     drain_clicks(me.id, time.elapsed_secs(), &mut clicks, &mut flight, &mut out);
 }
 
@@ -319,12 +326,12 @@ fn rebuild(
                 let inv = &v.inventory;
                 for (label, slot) in [("Hand", Slot::Hand), ("Other hand", Slot::OffHand), ("Back", Slot::Back), ("Shoulder", Slot::Shoulder)] {
                     match inv.slot(slot) {
-                        Some(s) => row(col, format!("{label}: {}{}", name_of(items, &s), moving(&flight, Place::Slot(slot), 0, &s)), format!("{:.1} kg", stack_kg(items, &s)), RowAction { stack: s, left: Some((Place::Slot(slot), 0, Place::Carried)), right: None }),
+                        Some(s) => row(col, format!("{label}: {}{}", name_of(items, &s), moving(&flight, Place::Slot(slot), 0, &s)), format!("{:.1} kg", stack_kg(items, &s)), RowAction { stack: s, left: Some((Place::Slot(slot), 0, Place::Carried)), right: None, use_on: None }),
                         None => dim(col, format!("{label}: -")),
                     }
                 }
                 for (k, s) in inv.worn.iter().enumerate() {
-                    row(col, format!("Worn: {}{}", name_of(items, s), moving(&flight, Place::Worn, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Worn, k as u32, Place::Carried)), right: None });
+                    row(col, format!("Worn: {}{}", name_of(items, s), moving(&flight, Place::Worn, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Worn, k as u32, Place::Carried)), right: None, use_on: None });
                 }
                 dim(col, format!("Carried ({:.1} of {:.0} L):", v.carry.used_l, v.carry.room_l));
                 if inv.carried.is_empty() {
@@ -333,12 +340,22 @@ fn rebuild(
                 for (k, s) in inv.carried.iter().enumerate() {
                     let def = items.get(s.item as usize);
                     let to = open.map_or(Place::Ground, Place::Container);
-                    let right = def.map(|d| match d.category {
-                        ItemCategory::Food | ItemCategory::Drink => Intent::Use { player: me.id, from: Place::Carried, index: k as u32 },
-                        ItemCategory::Clothing => Intent::Wear { player: me.id, index: k as u32 },
-                        _ => Intent::Equip { player: me.id, index: k as u32 },
+                    let treats = def.and_then(Treatment::of_item);
+                    let right = def.and_then(|d| match (d.category, treats) {
+                        // A pill: take it. A dressing, antiseptic or sewing kit: use it on a wound.
+                        (_, Some(t)) if !t.on_wound() => Some(Intent::Treat { player: me.id, wound: None, action: t, item: Some(s.item) }),
+                        (_, Some(_)) => None,
+                        (ItemCategory::Food | ItemCategory::Drink, _) => Some(Intent::Use { player: me.id, from: Place::Carried, index: k as u32 }),
+                        (ItemCategory::Clothing, _) => Some(Intent::Wear { player: me.id, index: k as u32 }),
+                        _ => Some(Intent::Equip { player: me.id, index: k as u32 }),
                     });
-                    row(col, format!("  {}{}", name_of(items, s), moving(&flight, Place::Carried, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Carried, k as u32, to)), right });
+                    let use_on = treats.filter(|t| t.on_wound()).map(|_| s.item);
+                    // Uses left in the opened one (a box of plasters, a roll of gauze).
+                    let left = match (def.and_then(|d| d.medical.as_ref()), v.health.aid.opened.iter().find(|o| o.item == s.item)) {
+                        (Some(m), Some(o)) => format!(" ({} of {} left)", m.uses.saturating_sub(o.used), m.uses),
+                        _ => String::new(),
+                    };
+                    row(col, format!("  {}{left}{}", name_of(items, s), moving(&flight, Place::Carried, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Carried, k as u32, to)), right, use_on });
                 }
             });
             // The open container.
@@ -349,7 +366,7 @@ fn rebuild(
                         dim(col, "empty".into());
                     }
                     for (k, s) in cv.stacks.iter().enumerate() {
-                        row(col, format!("{}{}", name_of(items, s), moving(&flight, Place::Container(cv.id), k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Container(cv.id), k as u32, Place::Carried)), right: None });
+                        row(col, format!("{}{}", name_of(items, s), moving(&flight, Place::Container(cv.id), k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Container(cv.id), k as u32, Place::Carried)), right: None, use_on: None });
                     }
                 });
             }
@@ -359,7 +376,7 @@ fn rebuild(
                     dim(col, "nothing within reach".into());
                 }
                 for (id, s) in &floor {
-                    row(col, format!("{}{}", name_of(items, s), moving(&flight, Place::Ground, *id, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Ground, *id, Place::Carried)), right: None });
+                    row(col, format!("{}{}", name_of(items, s), moving(&flight, Place::Ground, *id, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Ground, *id, Place::Carried)), right: None, use_on: None });
                 }
                 if open.is_none() {
                     dim(col, "E: search the cupboard,".into());
@@ -367,7 +384,7 @@ fn rebuild(
                 }
             });
         });
-        c.spawn((Text::new("Click: move   Shift-click: just one   Right-click: equip / wear / eat   Tab: close"), font(12.0), TextColor(DIM)));
+        c.spawn((Text::new("Click: move   Shift-click: just one   Right-click: equip / wear / eat / use on a wound   Tab: close"), font(12.0), TextColor(DIM)));
         if note_fresh && !last.text.is_empty() {
             c.spawn((Text::new(last.text.clone()), font(14.0), TextColor(if last.ok { OK } else { NO })));
         }
@@ -455,7 +472,7 @@ mod tests {
     }
 
     fn click(left: Option<(Place, u32, Place)>, stack: ItemStack, button: PointerButton, one: bool) -> RowClick {
-        RowClick { action: RowAction { stack, left, right: None }, button, one }
+        RowClick { action: RowAction { stack, left, right: None, use_on: None }, button, one }
     }
 
     /// A stack asked for is asked for once; one at a time (Shift) as many times as there are;
@@ -529,7 +546,7 @@ mod tests {
         let spawn_panel = |world: &mut World| {
             let mut commands = world.commands();
             commands.spawn(Node { position_type: PositionType::Absolute, top: px(0), left: px(0), flex_direction: FlexDirection::Column, ..default() }).with_children(|col| {
-                row(col, "Alarm clock".into(), "0.4 kg".into(), RowAction { stack: beans(1), left: Some((Place::Container(4), 0, Place::Carried)), right: None });
+                row(col, "Alarm clock".into(), "0.4 kg".into(), RowAction { stack: beans(1), left: Some((Place::Container(4), 0, Place::Carried)), right: None, use_on: None });
             });
             world.flush();
         };

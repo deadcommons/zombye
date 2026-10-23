@@ -1100,6 +1100,7 @@ impl World {
                     crate::inventory::JobKind::Move { index, item, count, .. } => index ^ (item as u32) << 8 ^ (count as u32) << 20,
                     crate::inventory::JobKind::Search { container } => container ^ 0x5EA4_0000,
                     crate::inventory::JobKind::Use { index, item, .. } => index ^ (item as u32) << 8 ^ 0x0E00_0000,
+                    crate::inventory::JobKind::Treat { wound, treatment, item } => wound.unwrap_or(0xFFFF) ^ (treatment as u32) << 16 ^ item.map_or(0xFF, u32::from) << 20 ^ 0x7000_0000,
                 });
             }
         }
