@@ -1,0 +1,82 @@
+// Zombie population: where they live, whether emptied places fill up again, and how loud events
+// draw the far horde in. Schema: zombye_sim::population::PopulationDef (validated on load; every
+// field is optional and defaults to the values below, which are the same as the built-in ones).
+// All numbers are our own.
+(
+    // Zombies per km² of open ground (tiles not blocked by walls, trees or furniture) in each zone.
+    // The town generator decides the zones: indoors is any room; outdoors in town, the middle of it
+    // (core_fraction of its width and height) is the town core, the rest is streets (roads and
+    // sidewalks) and yards; outside town, roads are forest roads and the rest is forest edge (within
+    // forest_edge_width metres of town) or deep forest. On the default 320 m map this comes to about
+    // a thousand zombies; a bigger map adds forest, so mostly a sparse scattering.
+    density: (
+        town_core: 40000.0,
+        street: 32000.0,
+        yard: 19000.0,
+        indoors: 10000.0,
+        forest_road: 7000.0,
+        forest_edge: 2600.0,
+        deep_forest: 650.0,
+    ),
+    // Multipliers on `indoors` by room type (others 1): kitchens and living rooms fill up, the small
+    // rooms less so.
+    rooms: {
+        "kitchen": 1.3,
+        "living": 1.3,
+        "dining": 1.1,
+        "hall": 1.0,
+        "bedroom": 0.8,
+        "bathroom": 0.6,
+        "laundry": 0.7,
+    },
+    core_fraction: 0.5,
+    forest_edge_width: 60.0,
+    // Multiplies every density (a sandbox "population" setting). `--zombies N` sets the total
+    // instead, keeping the proportions.
+    scale: 1.0,
+    // One in ten is fast. Speeds in m/s, uniform in the range.
+    fast_share: 0.1,
+    fast_speed: (2.0, 3.0),
+    slow_speed: (0.6, 1.1),
+
+    // Topping up emptied regions (64 m squares) far from everyone. Off by default. Every
+    // interval_secs, a region at least min_distance from every player, that nobody has been within
+    // seen_distance of for unseen_secs, and that holds fewer than top_up_below of its share, gets
+    // back up to its share (at most max_per_region at a time, max_per_check in all). Never in or
+    // right by the house the player wakes up in.
+    respawn: (
+        enabled: false,
+        interval_secs: 120.0,
+        min_distance: 250.0,
+        seen_distance: 100.0,
+        unseen_secs: 1800.0,
+        top_up_below: 0.75,
+        max_per_region: 6,
+        max_per_check: 60,
+    ),
+
+    // Migration toward noise. A sound at least min_radius loud (metres; breaking a door is 26, a
+    // shot will be more) leaves an attractor where it lures to. Its pull spreads outward at
+    // spread_speed m/s to reach_mult × the sound's radius (at most max_reach; from indoors only
+    // indoor_mult of that), fades out over life_secs (lasting_secs for the lasting kind: MCP
+    // make_noise with `lasting`, later alarms), and falls off toward the edge of its reach. Far
+    // (virtual) zombies wandering in a region that feels it set off for it a few at a time: each
+    // region update (every 5 s) with a chance of join_chance × the pull. They head for a point
+    // within gather_radius of it at investigating pace, so a big noise brings the horde in over
+    // minutes. A loud sound within merge_radius of an attractor strengthens that one instead; at
+    // most max_attractors at once (the weakest gives way).
+    migration: (
+        enabled: true,
+        min_radius: 25.0,
+        reach_mult: 4.0,
+        max_reach: 700.0,
+        indoor_mult: 0.6,
+        life_secs: 600.0,
+        lasting_secs: 1800.0,
+        spread_speed: 3.0,
+        join_chance: 0.5,
+        gather_radius: 12.0,
+        merge_radius: 24.0,
+        max_attractors: 16,
+    ),
+)

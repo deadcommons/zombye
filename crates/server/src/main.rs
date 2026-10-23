@@ -9,7 +9,8 @@
 //!   circles and make a 60 m noise every 10 s, `--horde N` spawns N more zombies round the first,
 //!   and the report breaks the tick down by tier.
 //!
-//! Common options: `--zombies N` (default 1000), `--seed S` (default 1), `--map-chunks N` (a square
+//! Common options: `--zombies N` (default: as many as `population.ron` gives for the map, about a
+//! thousand on the default map), `--seed S` (default 1), `--map-chunks N` (a square
 //! map N × N chunks of 16 m; default 20, so 320 m; 64 is about 1 km), `--data DIR` (content
 //! folder, default the repo's `assets/data`).
 
@@ -44,7 +45,16 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let mut config = WorldConfig::new(value("--seed").unwrap_or(1), value("--zombies").unwrap_or(1000) as u32, templates).with_weapons(weapons);
+    let population = match content::load_population(&data) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("failed to load content: {e}");
+            std::process::exit(1);
+        }
+    };
+    let mut config = WorldConfig::new(value("--seed").unwrap_or(1), 0, templates).with_weapons(weapons).with_population(population);
+    // Without --zombies, as many as the population file's densities give for the map.
+    config.zombies = value("--zombies").map(|n| n as u32);
     if let Some(chunks) = value("--map-chunks") {
         config = config.with_map_chunks(chunks.clamp(1, 256) as i32);
     }
@@ -60,7 +70,7 @@ fn main() {
 }
 
 fn bench(config: WorldConfig, ticks: u64, players: u32, horde: u32) {
-    let zombies = config.zombies;
+    let zombies = config.zombies.map_or("natural".to_string(), |n| n.to_string());
     let start = Instant::now();
     let mut world = World::new(config);
     let gen_ms = start.elapsed().as_secs_f32() * 1000.0;
@@ -110,7 +120,8 @@ fn bench(config: WorldConfig, ticks: u64, players: u32, horde: u32) {
         "map {}x{} m, {} buildings, generated in {gen_ms:.0} ms; {} zombies ({zombies} + horde {horde}), {} players, {ticks} ticks ({:.0} s of game time) in {:.2} s: \
          avg {:.3} ms/tick, worst {:.3} ms, budget {:.0} ms, hash {:016x}\n\
          tiers now: {} active, {} near, {} virtual ({} hunting); {} promotions, {} demotions\n\
-         per tick: tiers+index {:.3} ms, senses {:.3} ms, flow {:.3} ms, active AI {:.3} ms, near {:.3} ms, virtual {:.3} ms",
+         per tick: tiers+index {:.3} ms, senses {:.3} ms, flow {:.3} ms, active AI {:.3} ms, near {:.3} ms, virtual {:.3} ms\n\
+         population: target {:.0} in {} regions, {} attractors now, {} respawned",
         world.map.width(),
         world.map.height(),
         world.map.buildings.len(),
@@ -134,6 +145,10 @@ fn bench(config: WorldConfig, ticks: u64, players: u32, horde: u32) {
         sum.active_ms / n,
         sum.near_ms / n,
         sum.virtual_ms / n,
+        world.population().total_target(),
+        world.regions().regions(),
+        world.population().attractors.len(),
+        world.population().respawned,
     );
 }
 

@@ -4,6 +4,7 @@
 use glam::{IVec2, Vec2};
 
 use crate::map::{Edge, Feature, Floor, Side, TileMap, CHUNK_SIZE};
+use crate::population::Zone;
 use crate::rng::Rng;
 use crate::template::{BuildingTemplate, Placement};
 
@@ -296,19 +297,33 @@ fn find_bedroom_tile(map: &TileMap, building: usize, rng: &mut Rng) -> Option<Ve
     (!tiles.is_empty()).then(|| tiles[rng.below(tiles.len() as u32) as usize].as_vec2() + Vec2::splat(0.5))
 }
 
-/// Zombie spawn weight for a tile: streets busy, yards and houses quieter, forest sparse.
-pub fn spawn_weight(map: &TileMap, t: IVec2, town_min: IVec2, town_max: IVec2) -> f32 {
+/// The population zone of tile `t` (see [`crate::population::Zone`]) on a map whose town spans
+/// `town_min..town_max`: indoors anywhere; outdoors in town, the middle `core_fraction` of it is the
+/// town core, else roads and sidewalks are street and the rest yards; outside town, roads are
+/// forest roads and the rest forest, edge within `edge_width` metres of the town, deep beyond.
+pub fn zone_at(map: &TileMap, town_min: IVec2, town_max: IVec2, t: IVec2, core_fraction: f32, edge_width: f32) -> Zone {
     let tile = map.tile(t);
-    if !map.in_bounds(t) || map.tile_blocked(t) {
-        return 0.0;
+    if tile.room != 0 {
+        return Zone::Indoors;
     }
     let in_town = t.x >= town_min.x && t.y >= town_min.y && t.x < town_max.x && t.y < town_max.y;
-    match (in_town, tile.room != 0, tile.floor) {
-        (_, true, _) => 0.3,
-        (true, false, f) if f.is_road() || f == Floor::Sidewalk => 1.0,
-        (true, false, _) => 0.6,
-        (false, false, f) if f.is_road() => 0.25,
-        _ => 0.04,
+    let road = tile.floor.is_road();
+    if in_town {
+        let centre = (town_min + town_max).as_vec2() * 0.5;
+        let half = (town_max - town_min).as_vec2() * (core_fraction * 0.5);
+        let off = (t.as_vec2() + Vec2::splat(0.5) - centre).abs();
+        if off.x <= half.x && off.y <= half.y {
+            Zone::TownCore
+        } else if road || tile.floor == Floor::Sidewalk {
+            Zone::Street
+        } else {
+            Zone::Yard
+        }
+    } else if road {
+        Zone::ForestRoad
+    } else {
+        let outside = (town_min - t).max(t - (town_max - IVec2::ONE)).max(IVec2::ZERO);
+        if outside.max_element() as f32 <= edge_width { Zone::ForestEdge } else { Zone::DeepForest }
     }
 }
 

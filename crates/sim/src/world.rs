@@ -24,6 +24,7 @@ use crate::players::Action;
 use crate::flow::{FlowCache, FlowField, WalkGrid};
 use crate::map::{Edge, EdgeChange, EdgeRef, OwnedEdge, TileMap};
 use crate::players::{self, PLAYER_RADIUS, Player, PlayerInput, Stance};
+use crate::population::{NEVER, Population, PopulationDef, Zone};
 use crate::rng::{Rng, hash01};
 use crate::senses::{self, Sound, SoundSource, Target};
 use crate::spatial::SpatialHash;
@@ -54,7 +55,9 @@ const INTERACT_AIM_AHEAD: f32 = 0.6;
 #[derive(Clone, Debug)]
 pub struct WorldConfig {
     pub generation: GenConfig,
-    pub zombies: u32,
+    /// How many zombies to place at the start. `None`: as many as the population densities give
+    /// for this map (`population`); a number keeps their proportions but sets the total.
+    pub zombies: Option<u32>,
     pub templates: Vec<BuildingTemplate>,
     /// Hour of day at tick 0.
     pub start_hour: f32,
@@ -68,13 +71,16 @@ pub struct WorldConfig {
     pub combat: CombatTuning,
     /// Simulation tiers: ranges and update rates (see [`crate::tiers`]).
     pub tiers: TierTuning,
+    /// Where zombies live, respawn and migration (`assets/data/population.ron`, see
+    /// [`crate::population`]).
+    pub population: PopulationDef,
 }
 
 impl WorldConfig {
     pub fn new(seed: u64, zombies: u32, templates: Vec<BuildingTemplate>) -> Self {
         Self {
             generation: GenConfig { seed, ..Default::default() },
-            zombies,
+            zombies: Some(zombies),
             templates,
             start_hour: 9.0,
             day_length_secs: 3600.0,
@@ -82,6 +88,7 @@ impl WorldConfig {
             weapons: Vec::new(),
             combat: CombatTuning::default(),
             tiers: TierTuning::default(),
+            population: PopulationDef::default(),
         }
     }
 
@@ -94,6 +101,11 @@ impl WorldConfig {
 
     pub fn with_weapons(mut self, weapons: Vec<WeaponDef>) -> Self {
         self.weapons = weapons;
+        self
+    }
+
+    pub fn with_population(mut self, population: PopulationDef) -> Self {
+        self.population = population;
         self
     }
 
@@ -131,6 +143,9 @@ pub struct TickStats {
     /// Near zombies updated this tick, and virtual zombies moved.
     pub near_updated: u32,
     pub virtual_updated: u32,
+    /// Zombies added by respawn this tick, and attractors alive after it.
+    pub respawned: u32,
+    pub attractors: u32,
     /// Time for the tier pass plus rebuilding the spatial hash and the region index; the active
     /// tier's state machine and movement (senses and flow fields are separate, above); the near
     /// tier's update; the virtual tier's hearing and bulk moves.
@@ -202,6 +217,8 @@ pub struct World {
     /// Per chunk, how far the nearest player is (for tiers); virtual zombies by region.
     chunk_dist: ChunkDistances,
     regions: RegionIndex,
+    /// Per-region population targets and sightings, and the attractors drawing the far horde.
+    population: Population,
     scratch_tiles: Vec<IVec2>,
     next_id: u32,
     next_player_id: u32,
@@ -245,6 +262,7 @@ impl World {
             map,
             hash,
             chunk_dist: ChunkDistances::default(),
+            population: Population::default(),
             regions,
             scratch_tiles: Vec::new(),
             zombies: Zombies::default(),
@@ -272,24 +290,46 @@ impl World {
             scratch_pos: Vec::new(),
             config,
         };
-        world.populate(world.config.zombies);
+        world.populate();
         world
     }
 
-    /// Scatter zombies over the map by spawn weight (busy streets, quiet forest).
-    fn populate(&mut self, n: u32) {
+    /// Can a zombie be placed on tile `t` at the start or by respawn? Not near where the player
+    /// wakes up, nor in that house.
+    fn spawnable(&self, t: IVec2) -> bool {
+        let c = t.as_vec2() + Vec2::splat(0.5);
+        c.distance(self.player_spawn) >= SPAWN_CLEAR_RADIUS && self.map.building_at(c) != Some(self.spawn_building)
+    }
+
+    /// Work out every region's target from the population densities, then scatter zombies over
+    /// the map by density (busy streets, quiet forest): `config.zombies` of them, or the natural
+    /// number for this map.
+    fn populate(&mut self) {
+        let def = &self.config.population;
+        let town = (self.town_min, self.town_max);
+        let mut pop = Population::new(&self.map, &self.regions, def, town, |t| self.spawnable(t));
+        let natural = pop.total_target();
+        let n = self.config.zombies.unwrap_or(natural.round() as u32);
+        if natural > 0.0 {
+            pop.scale_targets(n as f32 / natural);
+        }
+        self.population = pop;
+        let max = def.max_density();
+        if max <= 0.0 {
+            return;
+        }
         let (w, h) = (self.map.width() as u32, self.map.height() as u32);
         let mut spawned = 0;
-        let mut attempts = 0;
-        while spawned < n && attempts < n * 200 {
+        let mut attempts = 0u64;
+        while spawned < n && attempts < n as u64 * 2000 {
             attempts += 1;
             let t = IVec2::new(self.rng.below(w) as i32, self.rng.below(h) as i32);
-            let weight = worldgen::spawn_weight(&self.map, t, self.town_min, self.town_max);
+            let weight = self.config.population.tile_density(&self.map, town, t) / max;
             if self.rng.f32() >= weight {
                 continue;
             }
             let p = t.as_vec2() + Vec2::new(self.rng.range(0.2, 0.8), self.rng.range(0.2, 0.8));
-            if p.distance(self.player_spawn) < SPAWN_CLEAR_RADIUS || self.map.building_at(p) == Some(self.spawn_building) {
+            if !self.spawnable(t) {
                 continue;
             }
             self.push_zombie(p);
@@ -297,13 +337,14 @@ impl World {
         }
     }
 
-    fn push_zombie(&mut self, p: Vec2) {
+    fn push_zombie(&mut self, p: Vec2) -> usize {
         // Clear of trunks and walls from the start (it may not get a full update for a while).
         let p = self.map.resolve_circle(p, ZOMBIE_RADIUS);
         let facing = self.rng.range(0.0, TAU);
         // Mostly shamblers, a few faster ones.
-        let speed = if self.rng.f32() < 0.1 { self.rng.range(2.0, 3.0) } else { self.rng.range(0.6, 1.1) };
-        self.add_zombie(p, facing, speed);
+        let (share, roll) = (self.rng.f32(), self.rng.f32());
+        let speed = self.config.population.speed(share, roll);
+        self.add_zombie(p, facing, speed)
     }
 
     /// Add one zombie exactly here (tests, debug tools). Its hit points come from a hash of its id,
@@ -393,6 +434,17 @@ impl World {
     /// on the next tick.
     pub fn emit_sound(&mut self, pos: Vec2, radius: f32) {
         self.emit_sound_from(pos, radius, SoundSource::World);
+    }
+
+    /// Debug noise (MCP `make_noise`): a sound, and with `lasting` an attractor that keeps
+    /// drawing the far horde in for `migration.lasting_secs` (like an alarm left ringing).
+    pub fn make_noise(&mut self, pos: Vec2, radius: f32, lasting: bool) {
+        self.emit_sound(pos, radius);
+        let m = &self.config.population.migration;
+        if lasting && m.enabled && pos.is_finite() && radius > 0.0 {
+            let indoors = self.map.room_at(pos) != 0;
+            self.population.attract(pos, radius, indoors, m.lasting_secs, m, self.tick);
+        }
     }
 
     pub fn emit_sound_from(&mut self, pos: Vec2, radius: f32, source: SoundSource) {
@@ -639,6 +691,12 @@ impl World {
             }
         }
 
+        // Which regions players are near (respawn keeps away from those for a while).
+        if !self.players.is_empty() {
+            let seen = self.config.population.respawn.seen_distance;
+            self.population.update_seen(&self.regions, self.players.iter().map(|p| p.state.pos), seen, self.tick);
+        }
+
         // Tiers: who gets how much of the simulation this tick, by distance to the players.
         let tier_start = Instant::now();
         let changes = self.assign_tiers();
@@ -703,15 +761,21 @@ impl World {
         std::mem::swap(&mut self.zombies.pos, &mut self.scratch_pos);
         let virtual_start = Instant::now();
         let (t, tt) = (&self.config.zombie, &self.config.tiers);
+        let migration = &self.config.population.migration;
         if self.goal.is_none() {
             tiers::virtual_hearing(&mut self.zombies, &self.regions, &self.map, &self.heard, t, tt);
+            // Loud sounds leave attractors that draw the far horde in over the next minutes.
+            self.population.hear(&self.heard, &self.map, migration, self.tick);
         }
-        let virtual_updated = tiers::step_virtual(&mut self.zombies, &self.regions, &self.map, t, tt, self.tick, self.config.generation.seed);
+        self.population.expire(self.tick);
+        let seed = self.config.generation.seed;
+        let virtual_updated = tiers::step_virtual(&mut self.zombies, &self.regions, &self.map, t, tt, &self.population, migration, self.tick, seed);
         let virtual_ms = virtual_start.elapsed().as_secs_f32() * 1000.0;
         self.apply_thumps();
         self.apply_zombie_attacks();
         // Last: indices into the zombie columns (the spatial hash) aren't needed after this.
         self.remove_old_corpses();
+        let respawned = self.respawn();
 
         self.tick += 1;
         let tier_counts = self.tier_counts();
@@ -735,6 +799,8 @@ impl World {
             demoted: changes.demoted,
             near_updated,
             virtual_updated,
+            respawned,
+            attractors: self.population.attractors.len() as u32,
             tier_ms,
             active_ms,
             near_ms,
@@ -753,6 +819,67 @@ impl World {
         }
         self.chunk_dist.update(&self.map, self.players.iter().map(|p| p.state.pos));
         tiers::assign(&mut self.zombies, &self.chunk_dist, &self.config.tiers, &self.config.zombie, &self.map, &mut self.scratch_tiles)
+    }
+
+    /// Respawn (if on): every `interval_secs`, each region far from every player and unseen for
+    /// `unseen_secs` that has fewer than `top_up_below` of its target gets topped up, on open
+    /// ground picked by density, never near where the player woke up or in that house. New
+    /// zombies start on the virtual tier. Returns how many were added.
+    fn respawn(&mut self) -> u32 {
+        let r = self.config.population.respawn.clone();
+        let every = ((r.interval_secs / TICK_DT).round() as u64).max(1);
+        if !r.enabled || self.players.is_empty() || self.tick == 0 || !self.tick.is_multiple_of(every) {
+            return 0;
+        }
+        self.population.count_into(&self.zombies, &self.regions);
+        let (town, max, seed, tick) = ((self.town_min, self.town_max), self.config.population.max_density(), self.config.seed(), self.tick);
+        let (unseen, far2) = ((r.unseen_secs / TICK_DT) as u64, r.min_distance * r.min_distance);
+        let mut budget = r.max_per_check;
+        let mut added = 0;
+        for reg in 0..self.regions.regions() {
+            if budget == 0 || max <= 0.0 {
+                break;
+            }
+            let (target, count, seen) = (self.population.target[reg], self.population.counts[reg], self.population.last_seen[reg]);
+            if target < 1.0 || count as f32 >= target * r.top_up_below || (seen != NEVER && tick - seen < unseen) {
+                continue;
+            }
+            let (lo, hi) = self.regions.rect(reg);
+            if self.players.iter().any(|p| p.state.pos.clamp(lo, hi).distance_squared(p.state.pos) < far2) {
+                continue;
+            }
+            let want = (target.round() as u32).saturating_sub(count).min(r.max_per_region).min(budget);
+            let size = self.regions.size();
+            let mut placed = 0;
+            for k in 0..want as u64 * 400 {
+                if placed == want {
+                    break;
+                }
+                let roll = |j: u64| hash01(seed ^ 0x5245_5350, tick, reg as u64, k * 4 + j);
+                let p = lo + Vec2::new(roll(0), roll(1)) * size;
+                let t = p.floor().as_ivec2();
+                if !self.map.in_bounds(t) || roll(2) >= self.config.population.tile_density(&self.map, town, t) / max || !self.spawnable(t) {
+                    continue;
+                }
+                let i = self.push_zombie(p);
+                self.zombies.tier[i] = Tier::Virtual;
+                placed += 1;
+            }
+            budget -= placed;
+            added += placed;
+        }
+        self.population.respawned += added;
+        added
+    }
+
+    /// The population state: per-region targets, zones and sightings, and the live attractors.
+    pub fn population(&self) -> &Population {
+        &self.population
+    }
+
+    /// The population zone of tile `t` (from the generator and the population file).
+    pub fn zone_at(&self, t: IVec2) -> Zone {
+        self.config.population.zone_at(&self.map, (self.town_min, self.town_max), t)
     }
 
     /// Zombies on each tier: [active, near, virtual] (corpses included).
@@ -821,6 +948,7 @@ impl World {
             mix(w as u32);
             mix(hp.to_bits());
         }
+        self.population.hash_into(&mut mix);
         h
     }
 }
@@ -2119,5 +2247,292 @@ mod tests {
         if !cfg!(debug_assertions) {
             assert!(avg < 10.0 && worst < 50.0, "avg {avg:.2} ms, worst {worst:.2} ms");
         }
+    }
+
+    // --- Population: density from data, respawn, migration toward noise (crate::population) ---
+
+    use crate::population::{PopulationDef, Zone, parse_population};
+
+    /// Living zombies per open tile in each zone, and the open tiles per zone.
+    fn zone_densities(w: &World) -> ([f64; 7], [u32; 7]) {
+        let mut area = [0u32; 7];
+        for y in 0..w.map.height() {
+            for x in 0..w.map.width() {
+                let t = IVec2::new(x, y);
+                if !w.map.tile_blocked(t) {
+                    area[w.zone_at(t) as usize] += 1;
+                }
+            }
+        }
+        let mut count = [0u32; 7];
+        for p in &w.zombies.pos {
+            count[w.zone_at(p.floor().as_ivec2()) as usize] += 1;
+        }
+        let mut per = [0.0; 7];
+        for k in 0..7 {
+            per[k] = count[k] as f64 / area[k].max(1) as f64;
+        }
+        (per, area)
+    }
+
+    fn populated(population: PopulationDef, zombies: Option<u32>) -> World {
+        let mut config = WorldConfig::new(1, 0, templates()).with_map_chunks(64).with_population(population);
+        config.zombies = zombies;
+        World::new(config)
+    }
+
+    /// The world is populated by the data file: the town core is denser than the deep forest by the
+    /// ratio of their densities (within sampling noise), and changing the file changes that.
+    #[test]
+    fn population_follows_the_data_file() {
+        let file = include_str!("../../../assets/data/population.ron");
+        let def = parse_population(file).unwrap();
+        let w = populated(def.clone(), Some(20_000));
+        assert_eq!(w.zombies.len(), 20_000);
+        assert!((w.population().total_target() - 20_000.0).abs() < 1.0, "targets add up to {}", w.population().total_target());
+        let (per, _) = zone_densities(&w);
+        let ratio = |per: &[f64; 7], a: Zone, b: Zone| per[a as usize] / per[b as usize];
+        let want = (def.density.town_core / def.density.deep_forest) as f64;
+        let got = ratio(&per, Zone::TownCore, Zone::DeepForest);
+        eprintln!("town core / deep forest: {got:.1} (file says {want:.1}); street / yard {:.2} (file {:.2})", ratio(&per, Zone::Street, Zone::Yard), def.density.street / def.density.yard);
+        assert!((got / want - 1.0).abs() < 0.15, "core/deep forest {got:.1}, want {want:.1}");
+        assert!((ratio(&per, Zone::Street, Zone::Yard) / (def.density.street / def.density.yard) as f64 - 1.0).abs() < 0.15);
+        // Nobody near where the player wakes up, or in that house.
+        assert!(w.zombies.pos.iter().all(|p| p.distance(w.player_spawn) >= SPAWN_CLEAR_RADIUS - 1.0 && w.map.building_at(*p) != Some(w.spawn_building)));
+
+        // Ten times the deep forest in the file: ten times as dense there relative to the core.
+        let edited = parse_population(&file.replace("deep_forest: 650.0", "deep_forest: 6500.0")).unwrap();
+        let w2 = populated(edited.clone(), Some(20_000));
+        let (per2, _) = zone_densities(&w2);
+        let got2 = ratio(&per2, Zone::TownCore, Zone::DeepForest);
+        let want2 = (edited.density.town_core / edited.density.deep_forest) as f64;
+        assert!((got2 / want2 - 1.0).abs() < 0.15, "edited: core/deep forest {got2:.1}, want {want2:.1}");
+        assert_ne!(w.state_hash(), w2.state_hash());
+        // Without a count the file's densities set the total; `scale` multiplies it.
+        let natural = populated(def.clone(), None).zombies.len();
+        let doubled = populated(PopulationDef { scale: 2.0, ..def.clone() }, None).zombies.len();
+        let busier = populated(edited, None).zombies.len();
+        eprintln!("natural population of a 1 km map: {natural}; scale 2: {doubled}; ten times the deep forest: {busier}");
+        assert!((doubled as f32 / natural as f32 - 2.0).abs() < 0.01, "{natural} -> {doubled}");
+        assert!(busier > natural * 3, "{natural} -> {busier}");
+        // The default map comes to about a thousand.
+        let mut config = WorldConfig::new(1, 0, templates()).with_population(def);
+        config.zombies = None;
+        let n = World::new(config).zombies.len();
+        assert!((800..1200).contains(&n), "default map: {n} zombies");
+    }
+
+    /// An empty grass field `chunks` chunks a side, at noon, with no zombies.
+    fn big_arena(chunks: i32, population: PopulationDef) -> World {
+        let mut config = WorldConfig::new(11, 0, templates()).with_map_chunks(chunks).with_population(population);
+        config.start_hour = 12.0;
+        let mut w = World::new(config);
+        w.map = TileMap::new(chunks, chunks);
+        w.map_changed();
+        w
+    }
+
+    /// Respawn tops up regions far from the player that nobody has been near lately, and nowhere
+    /// else: not near the player, not where the player just was, never in the house they woke up in.
+    #[test]
+    #[allow(clippy::needless_range_loop)]
+    fn respawn_tops_up_far_unseen_regions_only() {
+        let respawn = crate::population::RespawnDef {
+            enabled: true,
+            interval_secs: 10.0,
+            min_distance: 200.0,
+            seen_distance: 100.0,
+            unseen_secs: 120.0,
+            top_up_below: 0.75,
+            max_per_region: 1000,
+            max_per_check: 100_000,
+        };
+        let def = PopulationDef { respawn, ..Default::default() };
+        let mut config = WorldConfig::new(5, 1500, templates()).with_map_chunks(40).with_population(def.clone());
+        config.start_hour = 1.0;
+        let mut w = World::new(config);
+        let home = open_tile_near(&w, Vec2::new(40.0, 40.0));
+        let far_corner = open_tile_near(&w, Vec2::new(610.0, 610.0));
+        w.add_player(far_corner);
+        w.step();
+        w.players[0].state.pos = home;
+        w.step();
+        let seen = w.regions().region_of(far_corner);
+        assert!(w.population().target[seen] >= 1.0, "pick a corner with zombies");
+        // Everyone gone.
+        w.zombies.remove_where(|_| true);
+        for _ in 0..20 * 25 {
+            w.step();
+            if w.stats.respawned > 0 && w.stats.respawned as usize == w.zombies.len() {
+                // Just placed: on open ground, never by or in the house the player woke up in, far.
+                for (i, p) in w.zombies.pos.iter().enumerate() {
+                    assert_ne!(w.map.building_at(*p), Some(w.spawn_building), "respawned in the spawn house");
+                    assert!(p.distance(w.player_spawn) >= SPAWN_CLEAR_RADIUS - 1.0, "respawned right by the spawn");
+                    assert!(!w.map.tile_blocked(p.floor().as_ivec2()));
+                    assert!(p.distance(home) >= def.respawn.min_distance);
+                    assert_eq!(w.zombies.tier[i], Tier::Virtual);
+                }
+            }
+        }
+        let regions = w.regions().clone();
+        let mut counts = vec![0u32; regions.regions()];
+        for p in &w.zombies.pos {
+            counts[regions.region_of(*p)] += 1;
+        }
+        let (mut eligible, mut refilled) = (0.0, 0);
+        for r in 0..regions.regions() {
+            let (lo, hi) = regions.rect(r);
+            let d = home.clamp(lo, hi).distance(home);
+            if d < def.respawn.min_distance {
+                assert_eq!(counts[r], 0, "region {r} near the player was topped up");
+            } else if r == seen {
+                assert_eq!(counts[r], 0, "region {r} was seen just now");
+            } else if w.population().target[r] >= 1.0 {
+                eligible += w.population().target[r];
+                refilled += counts[r];
+                // (Wandering about can carry one or two over a region border.)
+                assert!(counts[r] as f32 <= w.population().target[r] * 1.1 + 3.0, "region {r} overfilled: {} for {}", counts[r], w.population().target[r]);
+            }
+        }
+        eprintln!("respawn: {refilled} zombies back (eligible targets {eligible:.0})");
+        assert!(refilled as f32 > eligible * 0.9, "only {refilled} of {eligible:.0}");
+        assert_eq!(w.population().respawned as usize, w.zombies.len());
+        assert!(w.zombies.tier.iter().all(|t| *t == Tier::Virtual));
+        // Long after the player left the corner, it fills up too; still nothing near the player.
+        for _ in 0..20 * 120 {
+            w.step();
+        }
+        let count_in = |w: &World, r: usize| w.zombies.pos.iter().filter(|p| w.regions().region_of(**p) == r).count();
+        assert!(count_in(&w, seen) > 0, "the corner never filled up");
+        assert!(w.zombies.pos.iter().all(|p| p.distance(home) > def.respawn.min_distance - 64.0));
+        // Off (the default), nothing comes back.
+        let mut config = WorldConfig::new(5, 1500, templates()).with_map_chunks(40);
+        config.start_hour = 1.0;
+        let mut w = World::new(config);
+        w.add_player(home);
+        w.zombies.remove_where(|_| true);
+        for _ in 0..20 * 30 {
+            w.step();
+        }
+        assert_eq!(w.zombies.len(), 0);
+    }
+
+    /// Zombies in a cluster `from` (all virtual: the player is far off), a noise of `radius` at
+    /// `noise`, maybe in a closed room; steps `minutes` and returns, per minute, how many had come
+    /// within 40 m of the noise, plus the world.
+    fn migration_run(def: PopulationDef, noise: Vec2, from: Vec2, radius: f32, room: bool, lasting: bool, minutes: u32) -> (Vec<usize>, World) {
+        let mut w = big_arena(40, def);
+        if room {
+            // A shut 4 x 4 room round the noise.
+            let c = noise.floor().as_ivec2();
+            w.map.rooms.push(crate::map::Room { building: 999, name: "Shed".into(), room_type: "shed".into(), floor: crate::map::Floor::Concrete });
+            let id = (w.map.rooms.len() - 1) as u16;
+            for dy in -2..2 {
+                for dx in -2..2 {
+                    w.map.tile_mut(c + IVec2::new(dx, dy)).unwrap().room = id;
+                }
+            }
+            for k in -2..2 {
+                w.map.set_edge(c + IVec2::new(k, -2), Side::N, Edge::Wall);
+                w.map.set_edge(c + IVec2::new(k, 1), Side::S, Edge::Wall);
+                w.map.set_edge(c + IVec2::new(-2, k), Side::W, Edge::Wall);
+                w.map.set_edge(c + IVec2::new(1, k), Side::E, Edge::Wall);
+            }
+            w.map_changed();
+            assert_ne!(w.map.room_at(noise), 0);
+        }
+        w.add_player(Vec2::new(20.5, 20.5));
+        let n = w.spawn_zombies(300, from, 30.0) as usize;
+        w.step();
+        w.step();
+        assert_eq!(w.tier_counts(), [0, 0, n as u32], "all far off");
+        w.make_noise(noise, radius, lasting);
+        let mut arrived = vec![false; w.zombies.len()];
+        let mut per_minute = Vec::new();
+        for t in 1..=minutes * 60 * 20 {
+            w.step();
+            if t % 20 == 0 {
+                for (k, p) in w.zombies.pos.iter().enumerate() {
+                    arrived[k] |= p.distance(noise) < 40.0;
+                }
+            }
+            if t % (60 * 20) == 0 {
+                per_minute.push(arrived.iter().filter(|a| **a).count());
+            }
+            if t == 20 * 20 {
+                // Twenty seconds on: nobody far away has reacted yet.
+                assert!(w.zombies.state.iter().all(|s| *s == ZombieState::Wander), "the far horde reacted at once");
+                assert!(w.zombies.pos.iter().all(|p| p.distance(noise) > 200.0));
+            }
+        }
+        assert_eq!(w.tier_counts(), [0, 0, n as u32], "the test should stay on the virtual tier");
+        (per_minute, w)
+    }
+
+    /// A loud noise draws virtual zombies in from 400 m away over minutes (and does nothing at
+    /// once); with migration off they stay put.
+    #[test]
+    fn a_loud_noise_draws_the_far_horde_in_over_minutes() {
+        let (noise, from) = (Vec2::new(320.5, 600.5), Vec2::new(600.5, 300.5));
+        assert!(noise.distance(from) > 400.0);
+        let (arrived, _) = migration_run(PopulationDef::default(), noise, from, 120.0, false, false, 20);
+        eprintln!("outdoor noise 410 m away, arrivals by minute: {arrived:?}");
+        assert!(arrived[1] == 0, "arrivals within two minutes: {arrived:?}");
+        assert!(*arrived.last().unwrap() >= 300 * 6 / 10, "only {} of 300 came: {arrived:?}", arrived.last().unwrap());
+        let mut off = PopulationDef::default();
+        off.migration.enabled = false;
+        let (arrived, _) = migration_run(off, noise, from, 120.0, false, false, 20);
+        assert_eq!(*arrived.last().unwrap(), 0, "without migration: {arrived:?}");
+    }
+
+    /// A really loud noise inside a shut room still pulls the far horde in (muffled: from less far
+    /// than outdoors), where hearing alone only carries `wall_muffle` of it.
+    #[test]
+    fn an_indoor_loud_noise_still_draws_the_far_horde() {
+        let (noise, from) = (Vec2::new(320.5, 500.5), Vec2::new(500.5, 350.5));
+        let d = noise.distance(from);
+        let def = PopulationDef::default();
+        assert!(d > 120.0 * ZombieTuning::default().wall_muffle * 4.0 && d < 120.0 * def.migration.reach_mult * def.migration.indoor_mult);
+        let (arrived, _) = migration_run(def.clone(), noise, from, 120.0, true, false, 20);
+        eprintln!("indoor noise {d:.0} m away, arrivals by minute: {arrived:?}");
+        assert!(*arrived.last().unwrap() >= 300 / 2, "only {} of 300 came: {arrived:?}", arrived.last().unwrap());
+        let mut off = def;
+        off.migration.enabled = false;
+        let (arrived, _) = migration_run(off, noise, from, 120.0, true, false, 20);
+        assert_eq!(*arrived.last().unwrap(), 0, "hearing alone shouldn't reach them: {arrived:?}");
+    }
+
+    /// Migration and respawn are deterministic, and the attractors are part of the state hash.
+    #[test]
+    fn migration_and_respawn_are_deterministic() {
+        let run = |lasting: bool| {
+            let mut def = PopulationDef::default();
+            def.respawn.enabled = true;
+            def.respawn.interval_secs = 15.0;
+            def.respawn.unseen_secs = 0.0;
+            let mut config = WorldConfig::new(9, 3000, templates()).with_map_chunks(48).with_population(def);
+            config.start_hour = 1.0;
+            let mut w = World::new(config);
+            let me = open_tile_near(&w, Vec2::new(60.0, 384.0));
+            w.add_player(me);
+            // Thin everyone out so respawn has work to do.
+            w.zombies.remove_where(|i| i % 2 == 0);
+            w.step();
+            w.make_noise(open_tile_near(&w, Vec2::new(384.0, 384.0)), 150.0, lasting);
+            let after_noise = {
+                w.step();
+                w.state_hash()
+            };
+            for _ in 0..20 * 90 {
+                w.step();
+            }
+            (after_noise, w.state_hash(), w.population().respawned, w.zombies.len())
+        };
+        let a = run(true);
+        assert_eq!(a, run(true));
+        let b = run(false);
+        assert_ne!(a.0, b.0, "a lasting attractor should show in the state hash");
+        assert!(a.2 > 0, "respawn never ran");
+        eprintln!("determinism run: {a:?}");
     }
 }

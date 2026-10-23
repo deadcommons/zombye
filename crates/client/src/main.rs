@@ -39,7 +39,8 @@ use bevy::window::PresentMode;
 /// Command-line options, available to every system.
 #[derive(Resource, Clone, Debug)]
 pub struct Options {
-    pub zombies: u32,
+    /// `--zombies N`; without it, as many as `assets/data/population.ron` gives for the map.
+    pub zombies: Option<u32>,
     pub seed: u64,
     pub start_hour: Option<f32>,
     /// Debug: start the player here instead of the bedroom (`--at X,Y`).
@@ -72,7 +73,7 @@ impl Options {
         let value = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
         let flag = |name: &str| args.iter().any(|a| a == name);
         Self {
-            zombies: value("--zombies").and_then(|v| v.parse().ok()).unwrap_or(1000),
+            zombies: value("--zombies").and_then(|v| v.parse().ok()),
             seed: value("--seed").and_then(|v| v.parse().ok()).unwrap_or(1),
             start_hour: value("--time").and_then(|v| v.parse().ok()),
             at: value("--at").and_then(|v| {
