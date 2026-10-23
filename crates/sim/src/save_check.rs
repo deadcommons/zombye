@@ -153,6 +153,7 @@ pub(crate) fn remap_weapons(plan: &ContentPlan, players: &mut [Player], force: b
 fn job_item(kind: &JobKind) -> Option<u16> {
     match *kind {
         JobKind::Move { item, .. } | JobKind::Use { item, .. } => Some(item),
+        JobKind::Treat { item, .. } => item,
         JobKind::Search { .. } => None,
     }
 }
@@ -174,6 +175,9 @@ pub(crate) fn remap_items(plan: &ContentPlan, ground: &mut Vec<GroundItem>, play
             if let Some(i) = job_item(&j.kind) {
                 range(&|| format!("player {}'s job:", p.id), i)?;
             }
+        }
+        for o in &p.health.aid.opened {
+            range(&|| format!("player {}'s opened medical item:", p.id), o.item)?;
         }
     }
     for (c, stacks) in opened.iter() {
@@ -218,9 +222,14 @@ pub(crate) fn remap_items(plan: &ContentPlan, ground: &mut Vec<GroundItem>, play
         for j in &mut p.jobs {
             match &mut j.kind {
                 JobKind::Move { item, .. } | JobKind::Use { item, .. } => *item = to(*item).expect("kept"),
-                JobKind::Search { .. } => {}
+                JobKind::Treat { item: Some(item), .. } => *item = to(*item).expect("kept"),
+                JobKind::Treat { item: None, .. } | JobKind::Search { .. } => {}
             }
         }
+        // Uses gone from an opened item that's no longer in the content: nothing to count.
+        let opened = &mut p.health.aid.opened;
+        opened.retain(|o| !gone(o.item));
+        opened.iter_mut().for_each(|o| o.item = to(o.item).expect("kept"));
     }
     for (_, list) in opened.iter_mut() {
         list.retain(|s| !gone(s.item));
@@ -420,7 +429,7 @@ fn tile_on_map(map: &TileMap, t: IVec2, field: impl FnOnce() -> String) -> Resul
 }
 
 /// A player's wounds and illnesses: numbers a tick could have made, ids in order.
-fn check_health(p: &Player) -> Result<(), LoadError> {
+fn check_health(p: &Player, items: usize) -> Result<(), LoadError> {
     let (id, h) = (p.id, &p.health);
     let name = |field: &str| format!("player {id}: {field}");
     if h.wounds.len() > crate::health::MAX_WOUNDS {
@@ -434,6 +443,7 @@ fn check_health(p: &Player) -> Result<(), LoadError> {
         non_negative(w.age_h, || what("age_h"))?;
         non_negative(w.healed_h, || what("healed_h"))?;
         non_negative(w.dressing_age_h, || what("dressing_age_h"))?;
+        non_negative(w.clean_for_h, || what("clean_for_h"))?;
         if !(w.heal_h.is_finite() && w.heal_h > 0.0) || w.healed_h >= w.heal_h {
             return Err(invalid(format!("{} {} (healed {}; must be above 0 and above what has healed)", what("heal_h"), w.heal_h, w.healed_h)));
         }
@@ -446,6 +456,24 @@ fn check_health(p: &Player) -> Result<(), LoadError> {
         }
     }
     non_negative(h.food_poisoning_h, || name("food_poisoning_h"))?;
+    let aid = &h.aid;
+    use crate::firstaid::{MAX_DOSES, MAX_OPENED};
+    if aid.painkillers.len() > MAX_DOSES || aid.stings.len() > MAX_DOSES || aid.opened.len() > MAX_OPENED {
+        return Err(invalid(format!("player {id}: too many painkiller doses, stings or opened items ({}, {}, {})", aid.painkillers.len(), aid.stings.len(), aid.opened.len())));
+    }
+    aid.painkillers.iter().try_for_each(|d| non_negative(*d, || name("a painkiller dose")))?;
+    for s in &aid.stings {
+        non_negative(s.pain, || name("a sting's pain"))?;
+        non_negative(s.left_h, || name("a sting's hours"))?;
+    }
+    if let Some(c) = aid.course {
+        non_negative(c.since_h, || name("antibiotic course since_h"))?;
+    }
+    for (k, o) in aid.opened.iter().enumerate() {
+        if o.item as usize >= items || aid.opened[..k].iter().any(|e| e.item == o.item) {
+            return Err(invalid(format!("player {id}: opened item {} is out of range ({items} items) or listed twice", o.item)));
+        }
+    }
     if let Some(r) = h.rise_in {
         finite(r, || name("rise_in"))?;
         if !p.dead {
@@ -546,7 +574,7 @@ pub(crate) fn validate(w: &World) -> Result<(), LoadError> {
             finite(a.power, || name("action.power"))?;
             weapon(&|| name("action: "), a.weapon)?;
         }
-        check_health(p)?;
+        check_health(p, items)?;
     }
 
     // Items, in id order.
@@ -1008,6 +1036,19 @@ mod tests {
                 w.players[0].health.infection.as_mut().unwrap().left_h = f32::INFINITY;
             }),
             ("food poisoning negative", "food_poisoning_h", |w| w.players[0].health.food_poisoning_h = -2.0),
+            ("dressing clean for NaN hours", "clean_for_h", |w| {
+                w.inflict_wound(1, crate::health::Part::Torso, crate::health::WoundKind::Gash, Some(false));
+                w.players[0].health.wounds[0].clean_for_h = f32::NAN;
+            }),
+            ("painkiller dose negative", "painkiller dose", |w| w.players[0].health.aid.painkillers.push(-1.0)),
+            ("too many painkiller doses", "too many painkiller", |w| w.players[0].health.aid.painkillers = vec![1.0; 40]),
+            ("antibiotic course NaN", "since_h", |w| w.players[0].health.aid.course = Some(crate::firstaid::Course { doses: 1, since_h: f32::NAN })),
+            ("opened item out of range", "item index 5000", |w| w.players[0].health.aid.opened.push(crate::firstaid::Opened { item: 5000, used: 1 })),
+            ("treatment item out of range", "item index 5001", |w| {
+                let kind = crate::inventory::JobKind::Treat { wound: None, treatment: crate::firstaid::Treatment::Painkiller, item: Some(5001) };
+                w.players[1].jobs.push(crate::inventory::ItemJob { kind, left: 1.0 })
+            }),
+            ("first aid tuning absurd", "first_aid.stitch_secs", |w| w.config.health.first_aid.stitch_secs = -3.0),
             ("rising while alive", "about to rise", |w| w.players[0].health.rise_in = Some(3.0)),
             ("infection stage length absurd", "stage_mult", |w| w.config.infection.stage_mult = 40.0),
             ("wound that never heals", "health.gash", |w| w.config.health.gash.heal_h = 0.0),

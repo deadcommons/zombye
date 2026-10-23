@@ -24,9 +24,10 @@
 //!   `InfectionTuning::fatal` off makes it burn out after the fever, leaving you at 30 HP.
 //! - **Food poisoning** is a hook for the needs (#11): [`World::poison_player`] starts it.
 //!
-//! First aid (#10) builds on [`Wound::dressing`], [`Wound::cleaned`], [`Wound::stitched`] and
-//! [`Wound::bleed_per_h`]: a dressing stops bleeding (a gash keeps a quarter until stitched),
-//! dirty dressings fester more, clean ones much less.
+//! First aid (#10, [`crate::firstaid`]) sets [`Wound::dressing`], [`Wound::cleaned`] and
+//! [`Wound::stitched`]: a dressing stops bleeding (a gash keeps a quarter until stitched), clean
+//! dressings turn dirty in time, dirty ones fester more, clean ones much less; painkillers and
+//! treatments' stings change [`Health::pain`]; antibiotics ([`Health::aid`]) cure festering.
 //!
 //! Every roll comes from the combat RNG or a seeded hash, never the clock. Times are game hours
 //! (a day is `WorldConfig::day_length_secs`, 3,600 s by default: one game hour is 150 s). All
@@ -36,6 +37,7 @@ use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
 use crate::combat::{CombatEvent, CombatEventKind};
+use crate::firstaid::{Aid, AidView, FirstAidTuning};
 use crate::items::BodyPart;
 use crate::players::{MoveMods, Player};
 use crate::rng::hash01;
@@ -181,6 +183,10 @@ pub struct Wound {
     /// Stitched (#10): stops a gash bleeding and heals twice as fast.
     pub stitched: bool,
     pub festering: bool,
+    /// The dressing on it is a plaster (#10): nothing to give back when it comes off.
+    pub plaster: bool,
+    /// Game hours a clean dressing on it stays clean (set when it goes on, #10).
+    pub clean_for_h: f32,
 }
 
 impl Wound {
@@ -226,6 +232,25 @@ impl Wound {
         let p = t.wound(self.kind).pain * (1.0 - self.healed()) + if self.festering { t.fester_pain } else { 0.0 };
         if self.part == Part::Head { p * t.head_pain_mult } else { p }
     }
+
+    /// As its owner sees it (`stopped`: the fever stops all healing).
+    pub fn view(&self, t: &HealthTuning, stopped: bool) -> WoundView {
+        let speed = if stopped { 0.0 } else { self.heal_speed(t) };
+        WoundView {
+            id: self.id,
+            part: self.part,
+            kind: self.kind,
+            bleed_per_h: self.bleed_per_h(t),
+            healed: (self.healed() * 20.0).floor() / 20.0,
+            heals_in_h: (speed > 0.0).then(|| ((self.heal_h - self.healed_h).max(0.0) / speed).ceil()),
+            dressing: self.dressing,
+            plaster: self.plaster,
+            dirty_in_h: (self.dressing == Dressing::Clean).then(|| (self.clean_for_h - self.dressing_age_h).max(0.0).ceil()),
+            cleaned: self.cleaned,
+            stitched: self.stitched,
+            festering: self.festering,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,6 +287,8 @@ pub struct Health {
     pub food_poisoning_h: f32,
     /// Dead and infected: seconds until the body rises as a zombie.
     pub rise_in: Option<f32>,
+    /// First aid in effect: painkillers, treatments' stings, antibiotics, opened medical items (#10).
+    pub aid: Aid,
 }
 
 /// What wounds and illness do to a player right now (1 = no effect).
@@ -294,6 +321,8 @@ pub struct HealthTags {
 /// One wound as its owner sees it.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WoundView {
+    /// The wound's id, for treating it (`Intent::Treat`).
+    pub id: u32,
     pub part: Part,
     pub kind: WoundKind,
     /// HP per game hour it is bleeding (0: not bleeding).
@@ -303,6 +332,10 @@ pub struct WoundView {
     /// Game hours until it heals at the speed it heals now, rounded up (`None`: not healing).
     pub heals_in_h: Option<f32>,
     pub dressing: Dressing,
+    /// The dressing is a plaster.
+    pub plaster: bool,
+    /// A clean dressing: game hours until it turns dirty, rounded up.
+    pub dirty_in_h: Option<f32>,
     pub cleaned: bool,
     pub stitched: bool,
     pub festering: bool,
@@ -319,6 +352,8 @@ pub struct HealthView {
     pub infection: Option<InfectionStage>,
     pub food_poisoning: bool,
     pub tags: HealthTags,
+    /// Painkillers, antibiotics and opened medical items (#10).
+    pub aid: AidView,
 }
 
 impl Health {
@@ -331,8 +366,10 @@ impl Health {
         self.wounds.iter().map(|w| w.bleed_per_h(t) + if w.festering { t.fester_hp_per_h } else { 0.0 }).sum()
     }
 
+    /// Pain now: the wounds' and treatments' less what painkillers take away (#10).
     pub fn pain(&self, t: &HealthTuning) -> f32 {
-        self.wounds.iter().map(|w| w.pain(t)).sum()
+        let wounds: f32 = self.wounds.iter().map(|w| w.pain(t)).sum();
+        (wounds + self.aid.sting_pain() - self.aid.relief(&t.first_aid)).max(0.0)
     }
 
     /// The infection's stage once it shows (never `Hidden`).
@@ -409,25 +446,16 @@ impl Health {
 
     pub fn view(&self, t: &HealthTuning) -> HealthView {
         let stopped = self.healing_stopped();
-        let wounds = self
-            .wounds
-            .iter()
-            .map(|w| {
-                let speed = if stopped { 0.0 } else { w.heal_speed(t) };
-                WoundView {
-                    part: w.part,
-                    kind: w.kind,
-                    bleed_per_h: w.bleed_per_h(t),
-                    healed: (w.healed() * 20.0).floor() / 20.0,
-                    heals_in_h: (speed > 0.0).then(|| ((w.heal_h - w.healed_h).max(0.0) / speed).ceil()),
-                    dressing: w.dressing,
-                    cleaned: w.cleaned,
-                    stitched: w.stitched,
-                    festering: w.festering,
-                }
-            })
-            .collect();
-        HealthView { wounds, losing_per_h: self.losing_per_h(t), pain: self.pain(t), infection: self.visible_infection(), food_poisoning: self.food_poisoned(), tags: self.tags(t) }
+        let wounds = self.wounds.iter().map(|w| w.view(t, stopped)).collect();
+        HealthView {
+            wounds,
+            losing_per_h: self.losing_per_h(t),
+            pain: self.pain(t),
+            infection: self.visible_infection(),
+            food_poisoning: self.food_poisoned(),
+            tags: self.tags(t),
+            aid: self.aid.view(&t.first_aid),
+        }
     }
 }
 
@@ -572,6 +600,9 @@ pub struct HealthTuning {
     pub poison_rotten: f32,
     pub poison_stale: f32,
     pub poison_water: f32,
+
+    /// First aid (#10): treatment times, dressings, painkillers, antibiotics.
+    pub first_aid: FirstAidTuning,
 }
 
 impl Default for HealthTuning {
@@ -624,6 +655,8 @@ impl Default for HealthTuning {
             poison_rotten: 0.7,
             poison_stale: 0.1,
             poison_water: 0.3,
+
+            first_aid: FirstAidTuning::default(),
         }
     }
 }
@@ -667,7 +700,7 @@ impl HealthTuning {
         if self.poison_hours.0 < 0.0 || self.poison_hours.1 < self.poison_hours.0 {
             return Err(format!("health.poison_hours {:?} must be a range from 0 up", self.poison_hours));
         }
-        Ok(())
+        self.first_aid.check()
     }
 }
 
@@ -843,6 +876,8 @@ impl World {
             cleaned: false,
             stitched: false,
             festering: false,
+            plaster: false,
+            clean_for_h: 0.0,
         });
         if let Some((hidden, feverish)) = stages
             && h.infection.is_none()
@@ -863,6 +898,8 @@ impl World {
         if !god {
             self.add_wound(pi, part, kind, zombie != 0, None);
         }
+        // Being hit stops first aid (#10).
+        self.interrupt_treatment(pi);
         self.hurt_player(pi, damage);
     }
 
@@ -983,13 +1020,16 @@ impl World {
             }
             let (t, inf) = (&self.config.health, &self.config.infection);
             let p = &mut self.players[pi];
-            if p.health.wounds.is_empty() && p.health.infection.is_none() && p.health.food_poisoning_h <= 0.0 && p.hp >= max_hp {
+            if p.health.wounds.is_empty() && p.health.infection.is_none() && p.health.food_poisoning_h <= 0.0 && p.health.aid.is_empty() && p.hp >= max_hp {
                 continue;
             }
             let before = signature(&p.health, t);
             let pid = p.id as u64;
             let h = &mut p.health;
             let stopped = h.healing_stopped();
+            // An antibiotic dose working: nothing starts festering (#10).
+            let covered = h.aid.covered(&t.first_aid);
+            h.aid.step(dt_h, &t.first_aid);
             let mut loss = 0.0;
             for w in &mut h.wounds {
                 let wt = t.wound(w.kind);
@@ -997,6 +1037,9 @@ impl World {
                 w.age_h += dt_h;
                 if w.dressing != Dressing::None {
                     w.dressing_age_h += dt_h;
+                    if w.dressing == Dressing::Clean && w.dressing_age_h >= w.clean_for_h {
+                        w.dressing = Dressing::Dirty;
+                    }
                 }
                 match wt.bleeds_for_h {
                     // Stops by itself: it bleeds only for the part of this step before then.
@@ -1009,7 +1052,7 @@ impl World {
                 // Festering: one seeded roll per game hour of the wound's life.
                 let mut k = hour + 1.0;
                 while k <= w.age_h && !w.festering {
-                    if hash01(seed, pid, w.id as u64, k as u64) < w.fester_chance(t) {
+                    if !covered && hash01(seed, pid, w.id as u64, k as u64) < w.fester_chance(t) {
                         w.festering = true;
                     }
                     k += 1.0;
@@ -1092,8 +1135,10 @@ impl World {
             mix(w.heal_h.to_bits());
             mix(w.healed_h.to_bits());
             mix(w.dressing_age_h.to_bits());
-            mix(w.bleeding as u32 | (w.festering as u32) << 1 | (w.cleaned as u32) << 2 | (w.stitched as u32) << 3 | (w.dressing as u32) << 4);
+            mix(w.bleeding as u32 | (w.festering as u32) << 1 | (w.cleaned as u32) << 2 | (w.stitched as u32) << 3 | (w.dressing as u32) << 4 | (w.plaster as u32) << 6);
+            mix(w.clean_for_h.to_bits());
         }
+        h.aid.hash(mix);
         if let Some(i) = h.infection {
             mix(i.stage as u32 | 0x1F00);
             mix(i.left_h.to_bits());
@@ -1115,11 +1160,20 @@ fn signature(h: &Health, t: &HealthTuning) -> u64 {
     };
     for w in &h.wounds {
         mix(w.id as u64);
-        mix((w.healed() * 20.0) as u64 | ((w.bleed_per_h(t) > 0.0) as u64) << 10 | (w.festering as u64) << 12 | (w.dressing as u64) << 13);
+        mix((w.healed() * 20.0) as u64 | ((w.bleed_per_h(t) > 0.0) as u64) << 10 | (w.festering as u64) << 12 | (w.dressing as u64) << 13 | (w.cleaned as u64) << 16 | (w.stitched as u64) << 17 | (w.plaster as u64) << 18);
         mix(((w.heal_h - w.healed_h) / w.heal_speed(t).max(1e-3)).ceil() as u64);
+        mix((w.clean_for_h - w.dressing_age_h).max(0.0).ceil() as u64);
     }
     mix(h.visible_infection().map_or(9, |s| s as u64));
     mix(h.food_poisoned() as u64);
+    // First aid: what the view shows, in whole hours.
+    let aid = h.aid.view(&t.first_aid);
+    mix(aid.painkillers_h.map_or(u64::MAX, |x| x as u64) ^ (aid.drowsy as u64) << 40);
+    if let Some(c) = aid.course {
+        mix(c.doses as u64 | (c.next_in_h as u64) << 8 | c.lapses_in_h.map_or(0xFFFF, |x| x as u64) << 24 | (c.covered as u64) << 48);
+    }
+    mix((h.aid.sting_pain() * 100.0) as u64 | (h.aid.stings.len() as u64) << 32);
+    h.aid.opened.iter().for_each(|o| mix(o.item as u64 | (o.used as u64) << 16));
     s
 }
 

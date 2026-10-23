@@ -13,7 +13,7 @@ use zombye_net::{Intent, apply_intent, save_file, shutdown};
 use zombye_sim::map::{Edge, EdgeRef, Feature, Floor, OwnedEdge, Side};
 use zombye_sim::senses::{self, Cone, Target};
 use zombye_sim::vision::line_of_sight;
-use zombye_sim::{ActionKind, Dressing, HitEffect, InfectionStage, ItemStack, LoadOptions, Part, Place, Slot, TICK_DT, Tier, World, WoundKind, ZombieState};
+use zombye_sim::{ActionKind, Dressing, HitEffect, InfectionStage, ItemStack, LoadOptions, Part, Place, Slot, TICK_DT, Tier, Treatment, World, WoundKind, ZombieState, firstaid};
 
 use crate::screenshot::{self, Renderer};
 use crate::Persist;
@@ -392,6 +392,21 @@ fn tool_list() -> Value {
                 zombie's would. Replies with the player's health.",
             "inputSchema": {"type": "object", "required": ["part", "kind"], "properties": {
                 "player": {"type": "integer", "default": 1}, "part": {"type": "string"}, "kind": {"type": "string"}, "infected": {"type": "boolean"}
+            }}
+        },
+        {
+            "name": "treat",
+            "description": "First aid: a player treats one of its wounds, or takes a pill, with what it carries or holds. action: dress \
+                (a plaster, gauze, a clean rag or a rag; on a dressed wound it changes the dressing), clean (antiseptic, on an \
+                undressed wound), stitch (a sewing kit, a gash), remove (take a dressing off: a dirty rag back), painkillers, \
+                antibiotics. Say which wound by `wound` (its # in health) or `part` (the most urgent wound there it fits); with \
+                neither, the most urgent wound it fits. item: an item id (see items); left out, the best the player has (a \
+                plaster where one will do, then a clean dressing, then a rag). Left out, action follows from the item. Takes a \
+                few seconds standing still (dress 4 s, a plaster 2 s, a hand x1.5, clean 3 s, stitch 8 s, a pill or removing 1 s); \
+                a strike landing interrupts it. Steps the world until it's done and replies with what changed and the health.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1}, "action": {"type": "string"}, "wound": {"type": "integer"},
+                "part": {"type": "string"}, "item": {"type": "string"}
             }}
         },
         {
@@ -898,6 +913,11 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             let from = place_arg(world, id, args.get("from").and_then(Value::as_str).unwrap_or("carried"))?;
             let index = args.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
             run_item_tool(world, id, Intent::Use { player: id, from, index })
+        }
+        "treat" => {
+            let id = player_id();
+            let intent = treat_intent(world, id, args)?;
+            run_job(world, id, intent, health_text)
         }
         "weapons" => {
             let mut out = String::from("id: name, category | damage | reach m | arc deg | windup/swing s | targets | knockback m | stagger/knockdown/crit (x mult) | endurance | noise m\n");
@@ -1791,6 +1811,11 @@ fn take_notes(world: &mut World, id: u32) -> String {
 /// Send an item intent for player `id` and step the world until its queue is empty; then say what
 /// happened and what it has now.
 fn run_item_tool(world: &mut World, id: u32, intent: Intent) -> Result<String, String> {
+    run_job(world, id, intent, inventory_text)
+}
+
+/// [`run_item_tool`], ending with `tail`'s text about the player instead of its inventory.
+fn run_job(world: &mut World, id: u32, intent: Intent, tail: fn(&World, u32) -> Result<String, String>) -> Result<String, String> {
     let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
     if p.dead {
         return Err(format!("player {id} is dead (respawn to play on)"));
@@ -1812,21 +1837,55 @@ fn run_item_tool(world: &mut World, id: u32, intent: Intent) -> Result<String, S
     }
     world.edge_changes.clear();
     world.combat_events.clear();
-    let failed = notes.iter().all(|n| n.starts_with("refused"));
-    let text = format!("{} ({} ticks, {:.1} s)\n{}", notes.join("; "), world.tick - start, (world.tick - start) as f32 * TICK_DT, inventory_text(world, id)?);
+    let failed = notes.iter().all(|n| n.starts_with("refused") || n.starts_with("interrupted"));
+    let text = format!("{} ({} ticks, {:.1} s)\n{}", notes.join("; "), world.tick - start, (world.tick - start) as f32 * TICK_DT, tail(world, id)?);
     if failed { Err(text) } else { Ok(text) }
 }
 
-/// What a wound needs next (treatment itself comes with first aid, #10).
-fn wound_needs(w: &zombye_sim::WoundView) -> &'static str {
-    match w {
-        w if w.festering => "antibiotics, or clean dressings changed when dirty",
-        w if w.bleed_per_h > 0.0 && w.dressing == Dressing::None => "a dressing to stop the bleeding",
-        w if w.bleed_per_h > 0.0 => "stitches (a dressed gash still bleeds a little)",
-        w if w.dressing == Dressing::Dirty => "a clean dressing (dirty ones fester)",
-        w if w.kind != WoundKind::Bruise && w.dressing == Dressing::None => "a clean dressing to keep it from festering",
-        _ => "time",
-    }
+/// The `treat` tool's intent: the action from `action` or the item, the wound from `wound`,
+/// `part` or the most urgent one it fits, the item from `item` or (by the server) the best carried.
+fn treat_intent(world: &World, id: u32, args: &Value) -> Result<Intent, String> {
+    let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+    let item = match args.get("item").and_then(Value::as_str) {
+        Some(name) => Some(world.item_index(name).ok_or_else(|| format!("unknown item {name:?} (see items)"))?),
+        None => None,
+    };
+    let action = match args.get("action").and_then(Value::as_str) {
+        Some(a) => Treatment::from_id(a).ok_or_else(|| format!("unknown action {a:?}: one of {}", Treatment::ALL.map(|t| t.id()).join(", ")))?,
+        None => item
+            .and_then(|i| Treatment::of_item(world.item_def(i)))
+            .ok_or("say what to do (action: dress, clean, stitch, remove, painkillers, antibiotics) or with what (item)")?,
+    };
+    let view = world.health_view(id).expect("player exists");
+    let wound = if !action.on_wound() {
+        None
+    } else if let Some(w) = args.get("wound").and_then(Value::as_u64) {
+        Some(w as u32)
+    } else {
+        let part = match args.get("part").and_then(Value::as_str) {
+            Some(s) => Some(Part::from_id(s).ok_or_else(|| format!("unknown part {s:?}: one of {}", Part::ALL.map(|p| p.id()).join(", ")))?),
+            None => None,
+        };
+        // The most urgent wound it fits: bleeding hardest, then festering, then dirty, then any.
+        let def = |w: &zombye_sim::WoundView| match item {
+            Some(i) => Some(world.item_def(i)),
+            None => firstaid::pick_item(action, Some(w), &p.inventory, &world.config.items).map(|i| world.item_def(i)),
+        };
+        let mut fits: Vec<&zombye_sim::WoundView> = view.wounds.iter().filter(|w| part.is_none_or(|p| w.part == p) && firstaid::check(action, Some(w), def(w)).is_ok()).collect();
+        fits.sort_by(|a, b| b.bleed_per_h.total_cmp(&a.bleed_per_h).then(b.festering.cmp(&a.festering)).then((b.dressing == Dressing::Dirty).cmp(&(a.dressing == Dressing::Dirty))).then(a.id.cmp(&b.id)));
+        match fits.first() {
+            Some(w) => Some(w.id),
+            None => {
+                let first = view.wounds.iter().find(|w| part.is_none_or(|p| w.part == p));
+                let why = match first {
+                    Some(w) => firstaid::check(action, Some(w), def(w)).err().unwrap_or_default(),
+                    None => "no wound there".into(),
+                };
+                return Err(format!("nothing to {} {}: {why}", action.verb(), part.map_or("".to_string(), |p| format!("on the {}", p.name()))));
+            }
+        }
+    };
+    Ok(Intent::Treat { player: id, wound, action, item })
 }
 
 /// The `health` tool's text: what the player's own client sees (the hidden infection stays hidden).
@@ -1856,8 +1915,13 @@ fn health_text(world: &World, id: u32) -> Result<String, String> {
             let mut bits = vec![if w.bleed_per_h > 0.0 { format!("BLEEDING {:.1} HP/h", w.bleed_per_h) } else { "not bleeding".to_string() }];
             bits.push(format!("{:.0}% healed", w.healed * 100.0));
             bits.push(w.heals_in_h.map_or("not healing".to_string(), |h| format!("heals in ~{h:.0} h")));
-            if w.dressing != Dressing::None {
-                bits.push(format!("{:?} dressing", w.dressing).to_lowercase());
+            match (w.dressing, w.dirty_in_h) {
+                (Dressing::None, _) => bits.push("no dressing".into()),
+                (Dressing::Clean, Some(h)) => bits.push(format!("clean {} (dirty in ~{h:.0} h)", if w.plaster { "plaster" } else { "dressing" })),
+                (d, _) => bits.push(format!("{} {}", format!("{d:?}").to_lowercase(), if w.plaster { "plaster" } else { "dressing" })),
+            }
+            if w.cleaned {
+                bits.push("cleaned".into());
             }
             if w.stitched {
                 bits.push("stitched".into());
@@ -1865,8 +1929,39 @@ fn health_text(world: &World, id: u32) -> Result<String, String> {
             if w.festering {
                 bits.push("FESTERING".into());
             }
-            out.push_str(&format!("  {}: {} ({}); needs {}\n", part.name(), w.kind.name(), bits.join(", "), wound_needs(w)));
+            out.push_str(&format!("  #{} {}: {} ({}); needs {}\n", w.id, part.name(), w.kind.name(), bits.join(", "), firstaid::needs(w)));
         }
+    }
+    let a = &h.aid;
+    let mut aid = Vec::new();
+    if let Some(hours) = a.painkillers_h {
+        aid.push(format!("painkillers working for ~{hours:.0} h{}", if a.drowsy { " (two doses: DROWSY)" } else { "" }));
+    }
+    if let Some(c) = a.course {
+        let next = if c.next_in_h > 0.0 { format!("next dose in ~{:.0} h", c.next_in_h) } else { "next dose now".into() };
+        match c.lapses_in_h {
+            Some(l) => aid.push(format!("antibiotics: {} of {} doses, {next}, lapses in ~{l:.0} h", c.doses, c.of)),
+            None => aid.push(format!("antibiotics: course done{}", if c.covered { ", still working (nothing starts festering)" } else { "" })),
+        }
+    }
+    for o in &a.opened {
+        let d = world.item_def(o.item);
+        let uses = d.medical.as_ref().map_or(1, |m| m.uses);
+        aid.push(format!("{}: {} of {uses} uses left in the opened one", d.name.to_lowercase(), uses.saturating_sub(o.used)));
+    }
+    if !aid.is_empty() {
+        out.push_str(&format!("first aid: {}\n", aid.join("; ")));
+    }
+    let pi = world.players.iter().position(|q| q.id == id).expect("player exists");
+    let can: Vec<String> = firstaid::options(None, &world.players[pi].inventory, &world.config.items)
+        .into_iter()
+        .chain(h.wounds.iter().flat_map(|w| firstaid::options(Some(w), &world.players[pi].inventory, &world.config.items)))
+        .map(|(t, i)| format!("{}{}", t.id(), i.map_or(String::new(), |i| format!(" with {}", world.config.items[i as usize].id))))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if !can.is_empty() {
+        out.push_str(&format!("can treat with what it carries: {}\n", can.join(", ")));
     }
     out.push_str(&format!(
         "effects: swing power x{:.2}, swing time x{:.2}, walk x{:.2}, run x{:.2}{}, endurance recovery x{:.2}",
@@ -2139,6 +2234,36 @@ mod tests {
         assert_eq!(stats["players"][0]["bleeding"], 1);
         assert_eq!(stats["players"][0]["infection"], "unknown");
         assert_eq!(stats["players"][0]["wounds"][0], "gash on the left leg");
+    }
+
+    /// First aid through the tools: `treat` picks the item and the wound, steps until it's done
+    /// and says what changed; `health` shows the dressing, what's next and what it can do.
+    #[test]
+    fn treat_tool_dresses_stitches_and_takes_pills() {
+        let mut world = small_world();
+        let dir = scratch("treat");
+        let mut persist = session(&world, &dir.0);
+        call(&mut world, &mut persist, "dev", json!({"ignored": true}));
+        let (_, err) = call(&mut world, &mut persist, "wound", json!({"part": "left_arm", "kind": "gash", "infected": false}));
+        assert!(!err);
+        let (text, err) = call(&mut world, &mut persist, "treat", json!({"action": "dress"}));
+        assert!(err && text.contains("nothing to dress"), "{text}");
+        for it in ["gauze", "sewing_kit", "painkillers"] {
+            assert!(world.give_item(1, it, 1));
+        }
+        let (text, _) = call(&mut world, &mut persist, "health", json!({}));
+        assert!(text.contains("can treat with what it carries:") && text.contains("dress with gauze") && text.contains("stitch with sewing_kit"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "treat", json!({"part": "left_arm", "action": "dress"}));
+        assert!(!err && text.contains("dressed the gash on your left arm with the gauze roll (2 uses left)"), "{text}");
+        assert!(text.contains("clean dressing (dirty in ~6 h)") && text.contains("needs stitches") && text.contains("BLEEDING 2.5 HP/h"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "treat", json!({"item": "sewing_kit"}));
+        assert!(!err && text.contains("stitched the gash") && text.contains("not bleeding"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "treat", json!({"action": "painkillers"}));
+        assert!(!err && text.contains("took painkillers") && text.contains("painkillers working for ~4 h"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "treat", json!({"action": "stitch"}));
+        assert!(err && text.contains("stitched already"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "treat", json!({"action": "bandage-ish"}));
+        assert!(err && text.contains("unknown action"), "{text}");
     }
 
     #[test]

@@ -13,7 +13,7 @@ Work is tracked on GitHub, not in the repo: the
 
 | Path | What | Licence |
 |---|---|---|
-| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
+| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), first aid (`firstaid.rs` + `FirstAidTuning`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint; `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
 | `crates/client` | `zombye` Bevy client: camera, chunk streaming, building/tree meshes, fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd; `survivor.rs` skinned, CPU-posed players), hit feedback (`fx.rs`), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), HUD, `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
@@ -277,7 +277,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
 
 - **One HP pool, wounds on ten parts** (`health::Part`: head, torso, left/right arm, hand, leg, foot; clothing still
   covers the six coarse `items::BodyPart` regions, `Part::region`). `Player::health` (`Health`: wounds, the infection,
-  food poisoning, `rise_in`) is saved with the player (format 4) and in `state_hash`. Every HP loss goes through
+  food poisoning, `rise_in`, first aid's `aid`) is saved with the player (format 5) and in `state_hash`. Every HP loss goes through
   `World::hurt_player`, so god mode holds: strikes and glass on a god still land as events but leave no wound or HP loss
   (the debug `inflict_wound` adds the wound, not the loss).
 - **Wound kinds** (`WoundKind`, numbers in `HealthTuning`, `WorldConfig::health`, ours; hours are game hours, 150 s each
@@ -305,20 +305,48 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   the player, the HUD or an agent), Feverish 12–24 h (sick, -1 HP/h, endurance x0.6, no healing), then Turning (-6 HP/h,
   the client halves night sight) until death; the body rises as a zombie 30 s later where it fell (at once if the player
   respawns first). `fatal: false` makes it burn out after the fever, leaving 30 HP; `stage_mult` 0.5–3. Fatal by default.
-- **#10 builds on** `Wound::dressing` (`None | Clean | Dirty`), `dressing_age_h`, `cleaned`, `stitched` and
-  `Wound::bleed_per_h` (a dressing stops bleeding, a dressed gash keeps `dressed_gash_bleed` 25% until stitched) and
-  `fester_chance`; nothing sets them yet.
+- **Treatment state** (#10) is `Wound::dressing` (`None | Clean | Dirty`), `plaster`, `clean_for_h`,
+  `dressing_age_h`, `cleaned` and `stitched`, and `Health::aid` (`Aid`): painkiller doses, treatments' stings, the
+  antibiotics course and the uses gone from each opened medical item.
+- **First aid** (`sim::firstaid`, `FirstAidTuning` in `HealthTuning::first_aid`, ours; #10): `Intent::Treat { player,
+  wound, action, item }` (`Treatment`: `Dress`, `Clean`, `Stitch`, `Painkiller`, `Antibiotic`, `Undress`; `wound` is the
+  wound's id, `None` for pills; `item` an item index, `None` the best carried, `firstaid::best_item`) queues a
+  `JobKind::Treat` (`World::player_treat`): checked when asked and when due by one pure rule over the client's view
+  (`firstaid::check`, `options`, `needs`), so the health panel offers only what the server does. Times: dress 4 s
+  (plaster 2 s, a hand x1.5, a dressed wound +1 s to change it), clean 3 s, stitch 8 s, a pill or taking a dressing off
+  1 s. The player stands still while its first job is a treatment: `MoveMods` speed 0, switched only in
+  `step_item_jobs` after movement, so snapshots carry what the next tick moves with and prediction stays exact. A strike
+  landing (`wound_player`) drops queued treatments; swinging, shoving and stomping drop the whole queue.
+  Items by tag: `plaster`/`bandage` dress (`clean` ones and plasters go on clean, a rag dirty; a plaster only on a bruise
+  or scratch), `disinfects` cleans (undressed wounds; halves festering until that wound's next dressing comes off; +0.1
+  pain for 1 h), `stitches` stitches a gash (no bleeding, heals x2; +0.2 pain for 2 h; a hand's dressing must come off
+  first), `painkiller` (-0.4 pain for 4 h; two doses at once: `Health::drowsy`, the hook for #11), `antibiotic` (a
+  course of 2, the next dose counting from 12 h and lapsing after 36 h; the last cures every festering wound; each dose
+  keeps festering from starting for 24 h; never the zombie infection). A dressing stops a scratch, glass cut or bite
+  bleeding for good (`bleeding` false); a dressed gash bleeds 25% until stitched, 100% again undressed. A clean dressing
+  turns dirty after 12 h (6 h if the wound bled when it went on, a plaster 24 h). Dressing a dressed wound changes it;
+  taking a dressing off gives a dirty `rag` back (not a plaster). Medical uses (`MedicalDef::uses`) are counted per
+  player and item kind (`Aid::opened`, the opened one); the last use takes the item. Per-stack uses (that follow a
+  dropped box) can come with the food's uses (#11). Ripping clothes into rags is #12's recipe.
 - **Replication:** `PlayerView::health` is the coarse `HealthTags` everyone sees (bleeding, limping, injured arm, sick);
-  `PrivateView::health` (`HealthView`: wounds by part with bleeding, healed in 5% steps, hours to go, dressing, festering;
-  HP lost per hour, pain, the infection once it shows) only to the player's own client, sent when it changes. `PlayerHurt`
-  combat events carry `part` and `wound`. Saves check every wound and illness value (`save_check::check_health`) and the
-  tunings (`HealthTuning::check`, `InfectionTuning::check`).
-- **Client** (`health_ui.rs`): H opens the health panel (wounds by part, head to feet, colour for bleeding and festering);
-  a tags line in the vitals panel (BLEEDING xN, FEVERISH / TURNING, FOOD POISONING, FESTERING, INJURED LEG / ARM, and
-  for 3 s where the last strike landed).
-- **MCP:** `health {player}` (as the player's own view, plus effects and what each wound needs next), `wound {player,
-  part, kind, infected}` (debug), `stats` per player (wounds, bleeding, HP lost per hour, pain, sick, infection or
-  "unknown"), and `step_ticks` / `move_player` name the wounds strikes left.
+  `PrivateView::health` (`HealthView`: wounds by part with their id, bleeding, healed in 5% steps, hours to go, dressing
+  and hours until a clean one turns dirty, cleaned, stitched, festering; HP lost per hour, pain, the infection once it
+  shows; `aid`: painkiller hours, drowsy, the course, opened items) only to the player's own client, sent when it
+  changes. `PlayerHurt` combat events carry `part` and `wound`. Saves check every wound, illness and first-aid value
+  (`save_check::check_health`; opened items and treatment jobs are remapped like other item indices) and the tunings
+  (`HealthTuning::check` with `FirstAidTuning::check`, `InfectionTuning::check`).
+- **Client** (`health_ui.rs`): H opens the health panel (wounds by part, head to feet, colour for bleeding and festering,
+  the dressing state); click a wound for what it needs and the treatments you can do with what you carry (with times and
+  uses left), click one to do it; pills at the foot. Right-click a dressing, antiseptic or sewing kit in the inventory to
+  use it on a wound (the panel opens with the wounds it fits marked; right-click cancels); right-click a pill to take it.
+  Left mouse doesn't swing while the panel is open. A tags line in the vitals panel (BLEEDING xN, FEVERISH / TURNING,
+  FOOD POISONING, FESTERING, DROWSY, INJURED LEG / ARM, and for 3 s where the last strike landed).
+- **MCP:** `health {player}` (as the player's own view, plus wound ids (`#n`), dressings, effects, painkillers and
+  antibiotics, what each wound needs next and what it can treat with what it carries), `treat {player, action, wound |
+  part, item}` (action follows from the item if left out; the wound from `part`, else the most urgent it fits; steps
+  until done and replies with the health), `wound {player, part, kind, infected}` (debug), `stats` per player (wounds,
+  bleeding, HP lost per hour, pain, sick, infection or "unknown"), and `step_ticks` / `move_player` name the wounds
+  strikes left.
 
 ## Items, inventory and containers (`sim::items`, `sim::inventory`, `sim::containers`; #7)
 
@@ -589,7 +617,7 @@ over the old one: a crash mid-write leaves the previous save whole).
   flow fields rebuilt as asked for. `World::load` is `load_with` without force, dropping the notes. The
   rest of `WorldConfig` (seed, map size, zombie count, start hour, day length, `ZombieTuning`, `CombatTuning`,
   `TierTuning`, `CarryTuning`) is the save's own, stored as RON so a tuning field added later just takes its default.
-- **Format** (`save.rs` docs): `ZOMBYSAV`, a `u32` format version (4; 3 added items, inventories and containers, 4 wounds and illness, and older saves are refused), then sections (4-byte tag, `u32` length,
+- **Format** (`save.rs` docs): `ZOMBYSAV`, a `u32` format version (5; 3 added items, inventories and containers, 4 wounds and illness, 5 first aid, and older saves are refused), then sections (4-byte tag, `u32` length,
   postcard payload, FNV-1a checksum): `INFO` (`SaveInfo`: game version, tick, time of day, seed, map size, zombies,
   players, content fingerprint), `CONF` (settings, RON), `MAPD` (edits or the full map), `WRLD` (everything else but
   zombies), one `ZOMB` per 64 m region (the tiers' region grid; zombies column by column, ids as gaps), `END`.
