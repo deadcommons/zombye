@@ -5,7 +5,10 @@
 //! A quickload swaps the loaded world into the local server and the client takes it up like a
 //! rejoin: the map edits and edge damage that differ arrive as changes (so doors, windows and
 //! cracks update), the player's prediction restarts from the loaded state, and zombies and items
-//! follow from the first snapshot. A quicksave of another map (other seed or size) can't be swapped
+//! follow from the first snapshot. The kill and time-alive tally starts again at zero from the loaded
+//! tick (a save doesn't record kills or when a life began, so that is the honest count: "since the
+//! load"; dead in the save, it shows dead), and the blood splats and particles of the timeline left
+//! behind are cleared. A quicksave of another map (other seed or size) can't be swapped
 //! in under the meshes already built; start the client with `--load` for that.
 
 use bevy::input::InputSystems;
@@ -14,6 +17,7 @@ use zombye_net::{EdgeDamage, save_file};
 use zombye_sim::map::{CHUNK_SIZE, EdgeChange, OwnedEdge, TileMap};
 
 use crate::Options;
+use crate::fx::ClearFx;
 use crate::hud::Tally;
 use crate::player::LocalPlayer;
 use crate::server_link::{ClientMap, EdgeChangesThisFrame, EdgeDamageMap, EdgeDamageThisFrame, JoinInfo, ServerLink};
@@ -88,6 +92,7 @@ fn quick_save_load(
     mut me: ResMut<LocalPlayer>,
     mut join: ResMut<JoinInfo>,
     mut tally: ResMut<Tally>,
+    mut clear_fx: MessageWriter<ClearFx>,
     mut notice: ResMut<Notice>,
     mut automated: Local<(bool, bool)>,
 ) {
@@ -114,12 +119,16 @@ fn quick_save_load(
         if !path.exists() {
             return Err(format!("no quicksave yet ({}): press F5 first", path.display()));
         }
-        save_file::load(&path, &link.world().config)
+        save_file::load(&path, &link.world().config, options.load_options()).map_err(|e| e.hint("starting with --load-anyway"))
     });
-    let (world, ms) = match loaded {
+    let (loaded, ms) = match loaded {
         Ok(l) => l,
         Err(e) => return notice.say(now, format!("Load failed: {e}")),
     };
+    for note in &loaded.notes {
+        println!("note: {note}");
+    }
+    let world = loaded.world;
     if !same_ground(&map.0, &world.map) {
         let g = &world.config.generation;
         return notice.say(now, format!("The quicksave is of another map (seed {}, {}x{} chunks): start with --load {QUICKSAVE}", g.seed, g.chunks.x, g.chunks.y));
@@ -139,25 +148,39 @@ fn quick_save_load(
     damage.0.extend(fresh);
     let (tick, zombies) = (world.tick, world.zombies.len());
     let snap = link.replace_world(world);
+    let dead = snap.players.iter().find(|p| p.id == join.player_id).or(snap.players.first()).is_some_and(|p| p.dead);
     if let Some(view) = snap.players.iter().find(|p| p.id == join.player_id).or(snap.players.first()) {
         me.resume(view, snap.tick);
         join.player_id = view.id;
     }
-    *tally = Tally { kills: 0, life_start_tick: snap.tick, died_tick: None };
-    notice.say(now, format!("Loaded {QUICKSAVE} in {ms:.0} ms: tick {tick}, {zombies} zombies"));
+    *tally = tally_after_load(snap.tick, dead);
+    clear_fx.write(ClearFx);
+    let noted = if loaded.notes.is_empty() { String::new() } else { format!(" ({} notes on stdout: the game data changed)", loaded.notes.len()) };
+    notice.say(now, format!("Loaded {QUICKSAVE} in {ms:.0} ms: tick {tick}, {zombies} zombies{noted}"));
 }
 
-/// Quitting (closing the window, `--exit-after`) saves to `autosave`. An offscreen render
-/// (`--render-to`) never saves: it only looks.
+/// The tally after a quickload at `tick`: no kills, this life counted from the load (the save has no
+/// record of either), and over already if the loaded player is dead.
+fn tally_after_load(tick: u64, dead: bool) -> Tally {
+    Tally { kills: 0, life_start_tick: tick, died_tick: dead.then_some(tick) }
+}
+
+/// Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal,
+/// which `main.rs` turns into an `AppExit`) saves to `autosave`; a second Ctrl-C quits at once,
+/// unsaved. An offscreen render (`--render-to`) never saves: it only looks.
 fn autosave_on_exit(mut exit: MessageReader<AppExit>, link: Res<ServerLink>, options: Res<Options>, mut done: Local<bool>) {
-    if exit.read().next().is_none() || *done || options.offscreen() {
+    if exit.read().next().is_none() || *done {
         return;
     }
     *done = true;
-    match save_to(&link, &options, AUTOSAVE) {
-        Ok(saved) => println!("Autosaved: {saved}"),
-        Err(e) => eprintln!("Autosave failed: {e}"),
+    if !options.offscreen() {
+        match save_to(&link, &options, AUTOSAVE) {
+            Ok(saved) => println!("Autosaved: {saved}"),
+            Err(e) => eprintln!("Autosave failed: {e}"),
+        }
     }
+    // A Windows console being closed waits for this before the process is ended.
+    zombye_net::shutdown::finished();
 }
 
 /// Same size, floors, trees, furniture and rooms: only edges (doors, windows) may differ.
@@ -191,4 +214,17 @@ fn edge_differences(from: &TileMap, to: &TileMap) -> Vec<EdgeChange> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_quickload_starts_the_tally_afresh() {
+        let t = tally_after_load(1234, false);
+        assert_eq!((t.kills, t.life_start_tick, t.died_tick), (0, 1234, None));
+        let t = tally_after_load(99, true);
+        assert_eq!((t.kills, t.life_start_tick, t.died_tick), (0, 99, Some(99)));
+    }
 }

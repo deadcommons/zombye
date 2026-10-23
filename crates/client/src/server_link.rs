@@ -94,9 +94,13 @@ impl Plugin for ServerLinkPlugin {
         // `--load`: the saved world, with its own seed, map and players (the world options and
         // the demo setups don't apply).
         let loaded = options.load.as_ref().map(|name| {
-            let loaded = save_file::resolve(&options.saves, name).and_then(|path| save_file::load(&path, &config));
+            let loaded = save_file::resolve(&options.saves, name).and_then(|path| save_file::load(&path, &config, options.load_options()).map_err(|e| e.hint("--load-anyway")));
             match loaded {
-                Ok((world, ms)) => {
+                Ok((loaded, ms)) => {
+                    for note in &loaded.notes {
+                        println!("note: {note}");
+                    }
+                    let world = loaded.world;
                     println!("loaded {name} in {ms:.0} ms: tick {}, {} zombies", world.tick, world.zombies.len());
                     world
                 }

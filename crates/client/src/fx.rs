@@ -3,6 +3,8 @@
 //! when you get hurt, a red flash at the screen edges and a little camera shake. The hit zombie's
 //! own flash and jolt are in [`crate::zombie_render`], your flinch in [`crate::survivor`].
 //!
+//! A quickload ([`ClearFx`]) clears all of it: that blood belongs to the timeline left behind.
+//!
 //! Kept cheap so it survives hundreds of zombies: every particle shares one mesh and material (one
 //! instanced batch), live particles and decals are capped, and nothing is allocated per frame.
 
@@ -40,10 +42,16 @@ impl Plugin for FxPlugin {
         app.init_resource::<CameraShake>()
             .init_resource::<HurtFlash>()
             .init_resource::<Decals>()
+            .add_message::<ClearFx>()
             .add_systems(Startup, setup)
-            .add_systems(Update, (spawn_fx, move_particles, fade_flash).chain());
+            .add_systems(Update, (clear_fx, spawn_fx, move_particles, fade_flash).chain());
     }
 }
+
+/// Remove every blood particle and splat and stop the hurt flash and camera shake (sent by a
+/// quickload: the world swapped in has none of that blood).
+#[derive(Message, Default)]
+pub struct ClearFx;
 
 /// Camera shake, 0..1 (the camera reads it; it decays by itself).
 #[derive(Resource, Default)]
@@ -253,6 +261,26 @@ fn spawn_fx(
     }
 }
 
+fn clear_fx(
+    mut clear: MessageReader<ClearFx>,
+    mut commands: Commands,
+    mut decals: ResMut<Decals>,
+    mut shake: ResMut<CameraShake>,
+    mut flash: ResMut<HurtFlash>,
+    particles: Query<Entity, With<Particle>>,
+) {
+    if clear.read().count() == 0 {
+        return;
+    }
+    for (e, ..) in decals.0.drain(..) {
+        commands.entity(e).despawn();
+    }
+    for e in &particles {
+        commands.entity(e).despawn();
+    }
+    (shake.trauma, flash.0) = (0.0, 0.0);
+}
+
 fn move_particles(time: Res<Time>, mut commands: Commands, mut particles: Query<(Entity, &mut Particle, &mut Transform)>) {
     let dt = time.delta_secs();
     for (e, mut p, mut tf) in &mut particles {
@@ -280,6 +308,30 @@ fn fade_flash(time: Res<Time>, mut flash: ResMut<HurtFlash>, mut shake: ResMut<C
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A quickload's `ClearFx` takes every splat and particle away, and the flash and shake.
+    #[test]
+    fn clear_fx_removes_the_old_blood() {
+        let mut app = App::new();
+        app.init_resource::<Decals>().init_resource::<CameraShake>().init_resource::<HurtFlash>().add_message::<ClearFx>().add_systems(Update, clear_fx);
+        let world = app.world_mut();
+        let splats: Vec<Entity> = (0..5).map(|_| world.spawn(Transform::default()).id()).collect();
+        let drops: Vec<Entity> = (0..7).map(|_| world.spawn(Particle { vel: Vec3::ZERO, life: 1.0 }).id()).collect();
+        let keep = world.spawn(Transform::default()).id();
+        world.resource_mut::<Decals>().0.extend(splats.iter().map(|&e| (e, Vec2::ZERO, 0.5, 0)));
+        world.resource_mut::<CameraShake>().trauma = 0.7;
+        world.resource_mut::<HurtFlash>().0 = 0.8;
+        // Nothing happens without the message.
+        app.update();
+        assert!(app.world().get_entity(splats[0]).is_ok() && app.world().resource::<Decals>().0.len() == 5);
+        app.world_mut().write_message(ClearFx);
+        app.update();
+        let world = app.world();
+        assert!(splats.iter().chain(&drops).all(|&e| world.get_entity(e).is_err()), "every splat and drop is gone");
+        assert!(world.get_entity(keep).is_ok(), "nothing else is touched");
+        assert!(world.resource::<Decals>().0.is_empty());
+        assert_eq!((world.resource::<CameraShake>().trauma, world.resource::<HurtFlash>().0), (0.0, 0.0));
+    }
 
     /// Overlapping splats always get different heights, newest on top while there's room.
     #[test]

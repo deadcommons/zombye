@@ -9,14 +9,14 @@ use std::time::{Duration, Instant};
 
 use glam::{IVec2, Vec2};
 use serde_json::{Value, json};
-use zombye_net::{Intent, apply_intent, save_file};
+use zombye_net::{Intent, apply_intent, save_file, shutdown};
 use zombye_sim::map::{Edge, EdgeRef, Feature, Floor, OwnedEdge, Side};
 use zombye_sim::senses::{self, Cone, Target};
 use zombye_sim::vision::line_of_sight;
-use zombye_sim::{ActionKind, HitEffect, TICK_DT, Tier, World, ZombieState};
+use zombye_sim::{ActionKind, HitEffect, LoadOptions, TICK_DT, Tier, World, ZombieState};
 
 use crate::screenshot::{self, Renderer};
-use crate::{Persist, shutdown};
+use crate::Persist;
 
 const MAX_STEP: u64 = 20 * 60 * 60; // one hour of game time per call
 const MAX_MOVE_TICKS: u64 = 20 * 60 * 5; // five minutes of walking per move_player call
@@ -76,6 +76,7 @@ pub fn serve(mut world: World, persist: &mut Persist, renderer: &Renderer) {
     if persist.dirty {
         persist.save_now(&world, why);
     }
+    shutdown::finished();
 }
 
 fn handle(world: &mut World, persist: &mut Persist, renderer: &Renderer, msg: &Value) -> Option<Value> {
@@ -320,9 +321,14 @@ fn tool_list() -> Value {
         {
             "name": "load",
             "description": "Replace the world with a save from the saves folder (see saves), or with no name the session's --save file. \
-                Fails, leaving the world as it is, if the file is damaged, from another save format, or made with different game data \
-                (building templates, weapons, population.ron).",
-            "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}}
+                Fails, leaving the world as it is, if the file is damaged, holds impossible values, or is from another save format. \
+                Game data changed since the save was made: compatible changes (weapon numbers, weapons added, population.ron) load \
+                with a note; a building template that changes the map, or a removed weapon the save uses, fails unless force is true, \
+                which loads it anyway, dropping what no longer fits, and says what it changed.",
+            "inputSchema": {"type": "object", "properties": {
+                "name": {"type": "string"},
+                "force": {"type": "boolean", "description": "Load anyway when the game data changed in a way the save can't simply take. Default false"}
+            }}
         },
         {
             "name": "saves",
@@ -409,13 +415,16 @@ fn save_tool(world: &mut World, persist: &mut Persist, name: &str, args: &Value)
                 Some(n) => save_file::path_for(&persist.dir, n)?,
                 None => persist.path.clone().ok_or("give the name of a save (see saves)")?,
             };
-            let (mut loaded, ms) = save_file::load(&path, &persist.content)?;
-            add_agent_player(&mut loaded);
-            *world = loaded;
+            let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
+            let (loaded, ms) = save_file::load(&path, &persist.content, LoadOptions { force }).map_err(|e| e.hint("load with force: true"))?;
+            let mut loaded_world = loaded.world;
+            add_agent_player(&mut loaded_world);
+            *world = loaded_world;
             // Loading another file than the session's own: the session's file is now behind.
             persist.dirty = persist.path.as_ref() != Some(&path);
+            let notes: String = loaded.notes.iter().map(|n| format!("\nnote: {n}")).collect();
             Ok(format!(
-                "loaded {} in {ms:.0} ms: tick {}, {}; {}; {} players; hash {:016x}",
+                "loaded {} in {ms:.0} ms: tick {}, {}; {}; {} players; hash {:016x}{notes}",
                 path.display(),
                 world.tick,
                 clock(world.time_of_day()),
@@ -1485,6 +1494,7 @@ mod tests {
         path
     }
 
+    #[cfg(unix)]
     fn renderer(dir: &Path, client: PathBuf, timeout: Duration) -> Renderer {
         let mut r = Renderer::new(Some(client), content::default_data_dir(), timeout);
         r.temp_dir = dir.join("tmp");
@@ -1492,6 +1502,7 @@ mod tests {
         r
     }
 
+    #[cfg(unix)]
     fn leftovers(r: &Renderer) -> Vec<String> {
         std::fs::read_dir(&r.temp_dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect()
     }
@@ -1536,8 +1547,8 @@ mod tests {
         assert_eq!((world.state_hash(), world.tick), (hash, tick));
         assert!(!persist.dirty);
         assert!(leftovers(&r).is_empty(), "{:?}", leftovers(&r));
-        let (given, _) = save_file::load(&dir.join("given.zsave"), &world.config).unwrap();
-        assert_eq!(given.state_hash(), hash);
+        let (given, _) = save_file::load(&dir.join("given.zsave"), &world.config, LoadOptions::default()).unwrap();
+        assert_eq!(given.world.state_hash(), hash);
     }
 
     #[cfg(unix)]
@@ -1565,5 +1576,140 @@ mod tests {
         let missing = renderer(&dir, dir.join("no-such-client"), Duration::from_secs(20));
         assert!(call(&missing, json!({})).contains("no game client at"));
         assert!(call(&missing, json!({"player": 9})).contains("no player 9"));
+    }
+
+    /// A session with no `--save` file, saving into `dir`.
+    fn session(world: &World, dir: &Path) -> Persist {
+        Persist { path: None, dir: dir.to_path_buf(), content: world.config.clone(), autosave: None, last_save: std::time::Instant::now(), dirty: false }
+    }
+
+    /// One `tools/call` through the JSON-RPC handler: the text and whether it's a tool error.
+    fn call(world: &mut World, persist: &mut Persist, name: &str, args: Value) -> (String, bool) {
+        let r = Renderer::new(None, content::default_data_dir(), Duration::from_secs(1));
+        let msg = json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": name, "arguments": args}});
+        let response = handle(world, persist, &r, &msg).expect("a response");
+        assert_eq!(response["id"], 7);
+        let result = &response["result"];
+        (result["content"][0]["text"].as_str().expect("text content").to_string(), result.get("isError") == Some(&json!(true)))
+    }
+
+    #[test]
+    fn save_then_load_restores_the_world() {
+        let scratch = scratch("save-load");
+        let mut world = small_world();
+        let mut persist = session(&world, &scratch.0);
+        let (hash, tick) = (world.state_hash(), world.tick);
+        let (text, err) = call(&mut world, &mut persist, "save", json!({"name": "first"}));
+        assert!(!err && text.contains(&format!("hash {hash:016x}")) && scratch.0.join("first.zsave").exists(), "{text}");
+        assert!(!persist.dirty, "saving doesn't need saving");
+        let (text, err) = call(&mut world, &mut persist, "step_ticks", json!({"n": 30}));
+        assert!(!err, "{text}");
+        assert!(persist.dirty && world.state_hash() != hash);
+        let (text, err) = call(&mut world, &mut persist, "load", json!({"name": "first"}));
+        assert!(!err && text.contains(&format!("hash {hash:016x}")) && !text.contains("note:"), "{text}");
+        assert_eq!((world.state_hash(), world.tick), (hash, tick));
+        assert_eq!(world.players.len(), 1, "the agent's player came back, no second one added");
+        // The loaded world carries on like the saved one did.
+        let mut again = small_world();
+        for _ in 0..30 {
+            world.step();
+            again.step();
+        }
+        assert_eq!(world.state_hash(), again.state_hash());
+
+        // No name and no --save file: nothing to save to or load from.
+        let (text, err) = call(&mut world, &mut persist, "save", json!({}));
+        assert!(err && text.contains("give a name"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "load", json!({}));
+        assert!(err && text.contains("give the name"), "{text}");
+        // With one, no name means the session's file, and saving there catches the session up.
+        persist.path = Some(scratch.0.join("session.zsave"));
+        persist.dirty = true;
+        let (text, err) = call(&mut world, &mut persist, "save", json!({}));
+        assert!(!err && text.contains("session.zsave"), "{text}");
+        assert!(!persist.dirty);
+        let (_, err) = call(&mut world, &mut persist, "load", json!({}));
+        assert!(!err && !persist.dirty);
+        // Loading another file leaves the session's own behind.
+        let (_, err) = call(&mut world, &mut persist, "load", json!({"name": "first"}));
+        assert!(!err && persist.dirty);
+    }
+
+    #[test]
+    fn saves_lists_them_with_their_info() {
+        let scratch = scratch("list");
+        let mut world = small_world();
+        let mut persist = session(&world, &scratch.0);
+        let (text, err) = call(&mut world, &mut persist, "saves", json!({}));
+        assert!(!err && text.starts_with(&format!("saves in {}: 0", scratch.0.display())), "{text}");
+        call(&mut world, &mut persist, "save", json!({"name": "early"}));
+        world.step();
+        call(&mut world, &mut persist, "save", json!({"name": "later.zsave"}));
+        std::fs::write(scratch.0.join("broken.zsave"), b"ZOMBYSAV\x01\0\0\0junk").unwrap();
+        std::fs::write(scratch.0.join("notes.txt"), b"not a save").unwrap();
+        let (text, err) = call(&mut world, &mut persist, "saves", json!({}));
+        assert!(!err, "{text}");
+        assert!(text.contains(": 3\n"), "three saves, the .txt ignored: {text}");
+        let line = |name: &str| text.lines().find(|l| l.trim_start().starts_with(&format!("{name}:"))).unwrap_or_else(|| panic!("no {name} in {text}")).to_string();
+        let (map, z) = (format!("map {}x{} m", world.map.width(), world.map.height()), world.zombies.len());
+        for (name, tick) in [("early", world.tick - 1), ("later", world.tick)] {
+            let l = line(name);
+            assert!(l.contains(&format!("tick {tick} ")) && l.contains("seed 7") && l.contains(&map) && l.contains(&format!("{z} zombies")) && l.contains("1 players"), "{l}");
+        }
+        assert!(line("broken").contains("unreadable"), "{text}");
+        assert!(text.ends_with("this session has no --save file: nothing is saved unless you call save"), "{text}");
+        persist.path = Some(scratch.0.join("auto.zsave"));
+        persist.autosave = Some(Duration::from_secs(300));
+        let (text, _) = call(&mut world, &mut persist, "saves", json!({}));
+        assert!(text.ends_with("auto.zsave (autosave every 5 min; and on shutdown)"), "{text}");
+    }
+
+    #[test]
+    fn save_names_cant_leave_the_saves_folder() {
+        let scratch = scratch("names");
+        let inside = scratch.0.join("saves");
+        let mut world = small_world();
+        let mut persist = session(&world, &inside);
+        let hash = world.state_hash();
+        for bad in ["../escaped", "../../etc/passwd", "/tmp/abs", "a/b", "..", ".hidden", "x\\y", "", "a b"] {
+            for tool in ["save", "load"] {
+                let (text, err) = call(&mut world, &mut persist, tool, json!({"name": bad}));
+                assert!(err && text.contains("bad save name"), "{tool} {bad:?}: {text}");
+            }
+        }
+        assert!(!scratch.0.join("escaped.zsave").exists() && !inside.exists(), "nothing written anywhere");
+        assert_eq!(world.state_hash(), hash);
+    }
+
+    #[test]
+    fn a_bad_save_is_a_clear_tool_error_and_changes_nothing() {
+        let scratch = scratch("bad");
+        let mut world = small_world();
+        let mut persist = session(&world, &scratch.0);
+        call(&mut world, &mut persist, "save", json!({"name": "good"}));
+        let bytes = std::fs::read(scratch.0.join("good.zsave")).unwrap();
+        let mut flipped = bytes.clone();
+        flipped[bytes.len() / 2] ^= 0x55;
+        std::fs::write(scratch.0.join("flipped.zsave"), &flipped).unwrap();
+        std::fs::write(scratch.0.join("cut.zsave"), &bytes[..bytes.len() / 3]).unwrap();
+        std::fs::write(scratch.0.join("text.zsave"), b"hello").unwrap();
+        world.step();
+        let hash = world.state_hash();
+        for (name, says) in [("flipped", "save file is damaged"), ("cut", "truncated"), ("text", "not a Zombye save"), ("missing", "couldn't read")] {
+            let (text, err) = call(&mut world, &mut persist, "load", json!({"name": name}));
+            assert!(err && text.contains(says) && text.contains(&format!("{name}.zsave")), "{name}: {text}");
+            assert!(!text.contains("force"), "{name}: loading anyway wouldn't help: {text}");
+            assert_eq!(world.state_hash(), hash, "{name}: the world is untouched");
+        }
+
+        // Game data changed so the map would differ: refused, saying how to load anyway; force does.
+        persist.content.templates.truncate(1);
+        let (text, err) = call(&mut world, &mut persist, "load", json!({"name": "good"}));
+        assert!(err && text.contains("templates") && text.contains("load with force: true loads it anyway"), "{text}");
+        assert_eq!(world.state_hash(), hash);
+        let (text, err) = call(&mut world, &mut persist, "load", json!({"name": "good", "force": true}));
+        assert!(!err && text.contains("note: loaded anyway"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "step_ticks", json!({"n": 20}));
+        assert!(!err, "{text}");
     }
 }
