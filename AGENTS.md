@@ -13,11 +13,11 @@ Work is tracked on GitHub, not in the repo: the
 
 | Path | What | Licence |
 |---|---|---|
-| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), weapons and ground items (`items.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
+| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint; `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
 | `crates/client` | `zombye` Bevy client: camera, chunk streaming, building/tree meshes, fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd; `survivor.rs` skinned, CPU-posed players), hit feedback (`fx.rs`), ground items (`items_render.rs`), HUD, `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
-| `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/weapons.ron`, `data/population.ron`), later generated models/textures/audio. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
+| `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/containers.ron`, `data/population.ron`), later generated models/textures/audio. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
 | `docs/` | Plan and design docs. | — |
 
 ## Rules
@@ -60,7 +60,7 @@ cargo run -p zombye-client --release -- --render-to shot.png --load saves/autosa
 cargo test --release --workspace
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --render-to PATH --size WxH --center X,Y`
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --render-to PATH --size WxH --center X,Y --inventory`
 (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost).
@@ -74,6 +74,7 @@ first, so it faces the camera), with a bat and five zombies between you and the 
 it: they batter it (or the window beside it) with their backs to you, and the door or window shows cracks as it
 gives (add `--zombies 0` to keep the rest of the town out of it). `--sneak` starts you sneaking (as if C was
 pressed). The game window takes keyboard focus, so typing elsewhere while it runs can move or toggle the player.
+`--inventory` starts with the inventory panel open (for screenshots of it).
 `--at` starts the player somewhere other than the bedroom and `--time` sets the start hour, which is handy for screenshots.
 `--angle N` starts the camera at one of the four fixed angles (0 = the default, each step a quarter turn), `--player ID`
 plays as that player of a `--load`ed save (default its first), `--data DIR` reads game data from another folder (as the
@@ -109,8 +110,8 @@ console; a second Ctrl-C stops at once, unsaved; bench: at the end of the run).
 The client prints one stats line per second to stdout (time, room, stance, hp, endurance, fps, frame ms, zombies
 sent to it, chasing, zombies per tier active/near/virtual, sim tick ms).
 In game: WASD move, Shift run, C sneak (toggle), mouse to face, left mouse attack (swing your weapon, or
-punch), Space shove (or stomp, when a downed zombie lies right in front of you), E pick up the weapon you
-face, F open/close the door or window you face, G smash the window you face, R get up again after dying,
+punch), Space shove (or stomp, when a downed zombie lies right in front of you), E pick up the item you
+face (with nothing on the floor within reach: search the container you face), Tab or I the inventory panel, F open/close the door or window you face, G smash the window you face, R get up again after dying,
 T skip an hour, Z spawn zombies, wheel zoom, F5 quicksave, F9 quickload. Walk into an open or broken window to climb
 through it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
 not Bevy's handler; a second Ctrl-C quits unsaved) autosaves; `--render-to` never does.
@@ -162,22 +163,30 @@ and kills (both counted client-side from combat events and sim ticks) and "Press
 - A player is a server entity (`sim::players::Player`): position, facing, stance (Walk 3 m/s, Run 5.5 m/s,
   Sneak 1.4 m/s; at most `CLIMB_SPEED` 0.7 m/s while climbing through a window) and endurance (0..1; running drains it, and once it runs out you can't run until it
   recovers a bit). `players::step_movement` is the one movement function: the server tick and the
-  client's prediction both call it, so keep it pure (map + state + input + dt in, state out).
+  client's prediction both call it, so keep it pure (map + state + input + dt in, state out). What the
+  player carries changes movement through `PlayerState::mods` (`MoveMods`: speed, run drain, regen, can run,
+  can climb), which the server sets from the load (`World::refresh_carry`) and snapshots carry (`PlayerView::mods`),
+  so prediction with the snapshot's modifiers stays exact (#46's skill effects on movement belong there too).
 - `Intent`s (`crates/net`): `PlayerInput { player, seq, move_dir, facing, run, sneak }` every tick
   (the server keeps the newest by `seq` and applies it once per tick; `move_dir` is clamped to
   length 1), `Interact { player }` (opens or closes the door or window that player faces, within
   1.6 m of its server position, otherwise ignored; doors make `door_noise`, windows the quieter
   `window_noise`; broken ones can't be shut), `SmashWindow { player }` (breaks the shut or open window
   it faces; loud, `glass_break_noise`), `Attack`, `Shove`, `Stomp`, `PickUp` (all `{ player }`, see
-  Combat), `Respawn { player }` (single-player/debug: a dead player gets up at the spawn point), and the
-  debug/admin `SetGoal`, `SpawnZombies`, `SpawnItem { weapon, pos }`, `SkipTime`, `MakeNoise`.
+  Combat and Items), the item intents (`MoveItem`, `Equip`, `Wear`, `Unequip`, `Drop`, `Use`, `Search`, see Items),
+  `Respawn { player }` (single-player/debug: a dead player gets up at the spawn point), and the
+  debug/admin `SetGoal`, `SpawnZombies`, `SpawnItem { item, count, pos }`, `SkipTime`, `MakeNoise`.
 - `LocalServer::join` adds your player and returns its id. Snapshots carry `players` with
   `last_input_seq` (plus `hp`, `dead`, `weapon`, `action`, and `action_left` / `ready_in`: seconds until the
   action lands and until the player can act again, which time the swing animation); the client resets its predicted player to
   that state and replays newer inputs. Swings cost endurance on the server only, so prediction is
   corrected by the next snapshot when you swing (movement itself stays exact). Snapshots also carry
-  the full list of ground `items` (small for now). On joining the client also gets the weapon
-  definitions; snapshots name weapons by index into them.
+  the full list of ground `items` (small for now), each player's `busy` (seconds left on its item job) and `jobs`
+  (queued), `private` views (`PrivateView`: inventory, load, the open container's contents) only for players whose
+  inventory, open container or queue changed since the last snapshot (`World::take_private_dirty`; the client keeps
+  the latest, and `Snapshot::for_player` keeps only a client's own), and `item_notes` (what came of item requests:
+  done, or why not). On joining the client also gets the weapon and item definitions; snapshots name weapons and
+  items by index into them.
 
 ## Combat (`sim::combat`, `sim::items`)
 
@@ -187,11 +196,11 @@ and kills (both counted client-side from combat events and sim ticks) and "Press
   room types, grey-box length and colour), validated by `items::parse_weapons` and loaded by
   `net::content::load_weapons` into `WorldConfig::weapons`. Exactly one is `Unarmed` (bare hands);
   if the content has none, `WeaponDef::fists()` is added. Add a weapon by adding an entry.
-- **Ground items:** `World::items()` (`GroundItem { id, weapon, pos, angle }`). The world places 0–2
-  weapons per house on free ground-floor tiles (at least one in the spawn house), weighted by
-  `spawn_weight` and ×3 in `found_in` rooms, from its own seeded RNG. `PickUp` takes the item within
-  `PICKUP_REACH` (1.3 m) nearest to where the player faces and equips it; what you held is left in its
-  place. A player who dies drops their weapon.
+- **Weapons are items** (an item with `weapon: Some(id)`, see Items): the weapon swung is the one the item in the
+  player's `Hand` slot names (`Player::weapon`, derived from the hand). The world places 0–2 weapon items per house
+  on free ground-floor tiles (at least one in the spawn house), weighted by `spawn_weight` and ×3 in `found_in`
+  rooms, from its own seeded RNG (`GroundItem { id, stack, pos, angle }`). A player who dies drops everything it has
+  where it fell.
 - **Actions** (`players::ActionKind`: `Swing`, `Shove`, `Stomp`): start when the intent arrives (or are
   queued if it comes within `action_buffer_secs` of the last one ending), cost endurance at once, and
   land after a windup. At impact the server finds zombies in reach and arc of the player's facing with
@@ -228,6 +237,53 @@ and kills (both counted client-side from combat events and sim ticks) and "Press
   `zombie_crowd_bonus` per extra zombie attacking that player, and does `zombie_damage`
   (`landed`/`damage` on the event). At 0 the player is dead: no movement or actions, zombies lose them.
 - Every number not in the weapon file is in `CombatTuning` (`WorldConfig::combat`, serde defaults). Ours.
+
+## Items, inventory and containers (`sim::items`, `sim::inventory`, `sim::containers`; #7)
+
+- **Items are data:** `assets/data/items/items.ron`, a list of `items::ItemDef` (id, name, `category`: Food, Drink,
+  Medical, Tool, Material, Clothing, Bag, Weapon, Light, Junk; `weight_kg`, `volume_l`, `stack`, `tags`,
+  `two_handed`, and per category `food`/`drink` (hunger, thirst, uses, spoils_hours), `medical` (uses), `bag`
+  (capacity_l, carried Back/Shoulder/Hand, slow), `clothing` (covers body parts, protection, layer), `light`, `weapon`
+  (an id in `weapons.ron`), grey-box `color`). About 70 ordinary things with real-world weights; validated by
+  `items::parse_items` (unknown fields refused), loaded by `net::content::load_items` (all content at once:
+  `content::load_config`). A weapon with no item gets a plain 1 kg one (`items::complete_items`), so bare configs and
+  tests work. Things are `ItemStack { item, count }` (index into `WorldConfig::items`).
+- **Inventory** (`Player::inventory`): `hand` (swings), `off_hand`, `back` and `shoulder` (bags), `worn` (clothing;
+  two can't share a body part and layer), `carried` (pockets and bags). Two limits (`CarryTuning`, ours): *room*,
+  pockets 3 L plus the bags in the slots (held and worn items take none); *weight*, everything in full (bags add room,
+  not lightness). Limit 14 kg (+1.5 kg per Strength level, #46: `CarryTuning::limit(strength)`, 0 for now); over 100%
+  Burdened (x0.9 speed, running drains x1.3), over 130% Heavy (x0.75, no running, actions cost x1.2), over 160%
+  Overloaded (x0.5, no running or climbing); nothing more picked up past 200%. `World::carry(p)` says where a player is.
+- **Moving things takes time:** `MoveItem { player, from, index, to, count }` (`Place`: `Carried`, `Slot(Hand |
+  OffHand | Back | Shoulder)`, `Worn`, `Container(id)`, `Ground` with the ground item id as `index`; count 0 = all),
+  `Equip { index }` (a carried stack where it belongs), `Wear { index }`, `Unequip { from, index }` (into bags, or the
+  floor if there's no room; a bag can't come off while its contents wouldn't fit), `Drop { from, index, count }`,
+  `Use { from, index }` (eat or drink one; the effect waits for #11, `World::used_items` lists them per tick) and
+  `Search { container }` queue an `ItemJob` on the player (`Player::jobs`, at most 16). The first counts down and
+  happens when due (0.3 s a stack, 0.6 s over 3 kg; use 1 s; a first search the container's search time, x1.5
+  sneaking; reopening 0.3 s), checked again then: still there (by index, else the first stack of that item), in reach,
+  open, fits, not too heavy; slots take one item and push what was in the way into the bags; moves are atomic.
+  Swinging, shoving or stomping drops the queue. `PickUp` (E) is the one instant grab: the item nearest to where the
+  player faces within `PICKUP_REACH` (1.3 m, clear line): a weapon into the hand (what was held into the bags if it
+  fits, else left on the floor), anything else into the bags, as many as fit. Refusals and results become
+  `World::item_notes` (to the snapshot).
+- **Containers:** `assets/data/containers.ron` (`containers::ContainerData`): container kinds (room in litres,
+  search time, noise; and a placeholder `holds`/`fill` until loot tables) and a map from `(furniture kind, room type)`
+  to a kind, `room: "any"` the fallback (a sink is a bathroom cabinet in a bathroom, an under-sink cupboard
+  elsewhere; a wardrobe in a hall is a coat cupboard). Ground-floor furniture that maps to one is a `ContainerSite`
+  (`World::containers()`), id = the furniture's place in the map (buildings in order, each one's furniture in order),
+  reachable from the same room within `CONTAINER_REACH` (1.2 m of the furniture). New furniture kinds `shelf` (in the
+  family house's laundry) and `workbench`. A container is filled the first time anyone searches it, by
+  `containers::fill(seed, id, def, room_type, items)` (a hash of seed and id, never the world RNG, so the same in any
+  order): **the hook #8's loot tables replace.** Opened containers are stored sparsely (`World::opened`, saved, in
+  `state_hash`); a searched container stays open to that player (`Player::open`) until it walks away. The floor has
+  unlimited room; ground items within reach are the player's floor (`World::floor_of`).
+- **Client:** the inventory panel (`inventory_ui.rs`, Tab or I): your slots, worn and carried stacks with weights, load
+  against the limit with the burden stage, the open container and the floor side by side. Click a row to move it
+  (yours into the open container, or the floor; theirs into your bags; slots off), Shift-click for one, right-click a
+  carried stack to equip, wear or eat it. The latest note shows at its foot, and under the HUD for a few seconds when
+  it's shut. Left mouse doesn't swing while it's open. Ground items are drawn as boxes of their size and colour,
+  weapons as bars.
 
 ## Characters on screen (`crates/client`)
 
@@ -410,10 +466,11 @@ over the old one: a crash mid-write leaves the previous save whole).
   and saves again mid-run; `net`'s `a_loaded_server_carries_on_like_the_saved_one` compares snapshots and prediction.
   So everything the future depends on is saved, hash or not: both RNG streams, players with their latest input,
   queued and under-way actions and cooldowns, every zombie column on every tier, sounds made but not yet heard,
-  door/window hit points, items, population (targets, zones, last seen, attractors, ids), the clock offset, the debug
+  door/window hit points, ground items, inventories and item jobs, opened containers, population (targets, zones, last seen, attractors, ids), the clock offset, the debug
   goal, and the flow-field cache (which fields, in order, with their build/use ticks and queued requests; a field is
   rebuilt on load from the map unless that wouldn't reproduce it, e.g. one gone stale after a door changed, which is
-  stored whole). Rebuilt on load: walk grid, spatial hash, region index, chunk distances, the goal's field.
+  stored whole). Rebuilt on load: walk grid, spatial hash, region index, chunk distances, the goal's field, the
+  container sites, each player's weapon in hand and load modifiers.
   Replication queues (edge changes, edge damage, combat events) and last tick's outputs are not saved: a joining
   client gets the full state. `TickStats` after a load only has the tier counts.
 - **Adding state:** `World::save` destructures every `World` field, so a new field doesn't compile until it is saved
@@ -425,21 +482,23 @@ over the old one: a crash mid-write leaves the previous save whole).
   (~0.2 s on 1 km, ~20 ms on the default map). A hash of the generated map (`map_base_hash`) is checked on load
   (`LoadError::MapChanged` if the generator changed). After `World::map_changed` (a hand-edited map: tests,
   editors) the whole map is stored instead.
-- **Content vs settings.** The caller passes content (templates, weapons, population, as for `World::new`); the save
+- **Content vs settings.** The caller passes content (templates, weapons, items, containers, population, as for `World::new`); the save
   keeps a fingerprint of each (`save::ContentPrint`, hashes plus ids). `World::load_with(bytes, content, LoadOptions)`
   returns `Loaded { world, notes }`, and `save_check::plan_content` sorts changed content. Compatible, loaded with a
   note: a weapon's numbers (the new ones apply), weapons added, reordered or removed when the save uses none of the
-  removed ones (saved weapon indices are matched up by id), `population.ron` (respawn and migration settings apply;
+  removed ones (saved weapon indices are matched up by id), the same for items (their numbers apply; indices matched
+  by id), `containers.ron` while every opened container is still one, `population.ron` (respawn and migration settings apply;
   regions keep their saved targets), templates that leave the generated map the same, and any template change for a
   save that stores its map whole. Incompatible, `LoadError::ContentChanged` (`MapChanged` if only the generator
-  changed): templates that change the map, a removed weapon the save uses. `LoadOptions { force: true }` (server
-  `--load-anyway`, MCP `load {force: true}`, client `--load-anyway`) loads those anyway and notes what it did: items of a
-  missing weapon dropped, hands emptied, swings called off; on a new map only the door/window edits that still fit,
+  changed): templates that change the map, a removed weapon a swing under way uses, a removed item the save holds
+  anywhere, an opened container that is no longer a container. `LoadOptions { force: true }` (server
+  `--load-anyway`, MCP `load {force: true}`, client `--load-anyway`) loads those anyway and notes what it did: stacks of a
+  missing item dropped (and jobs naming it), swings with a missing weapon called off, gone containers' contents dropped; on a new map only the door/window edits that still fit,
   damage only on edges that are still doors or windows, players and zombies on now-blocked tiles moved to free ground,
   flow fields rebuilt as asked for. `World::load` is `load_with` without force, dropping the notes. The
   rest of `WorldConfig` (seed, map size, zombie count, start hour, day length, `ZombieTuning`, `CombatTuning`,
-  `TierTuning`) is the save's own, stored as RON so a tuning field added later just takes its default.
-- **Format** (`save.rs` docs): `ZOMBYSAV`, a `u32` format version (2), then sections (4-byte tag, `u32` length,
+  `TierTuning`, `CarryTuning`) is the save's own, stored as RON so a tuning field added later just takes its default.
+- **Format** (`save.rs` docs): `ZOMBYSAV`, a `u32` format version (3; 3 added items, inventories and containers, and older saves are refused), then sections (4-byte tag, `u32` length,
   postcard payload, FNV-1a checksum): `INFO` (`SaveInfo`: game version, tick, time of day, seed, map size, zombies,
   players, content fingerprint), `CONF` (settings, RON), `MAPD` (edits or the full map), `WRLD` (everything else but
   zombies), one `ZOMB` per 64 m region (the tiers' region grid; zombies column by column, ids as gaps), `END`.
@@ -451,8 +510,8 @@ over the old one: a crash mid-write leaves the previous save whole).
   crafted, so values are checked before the world is used, and anything a tick couldn't have made is
   `LoadError::Invalid` naming the field: non-finite numbers (and, in the settings, ones over 1e6), positions off the
   map, zombie speeds or velocities over 50 m/s, zero, repeated, out-of-order or too-new ids, indices out of range
-  (weapons, upper-floor rooms, spawn building, hunted players, zombie regions, edge sides), damage on an edge with no
-  hit points, negative HP, a living player or zombie with no HP, a dead one with HP or an action under way, a lunge or
+  (weapons, items in every stack, upper-floor rooms, spawn building, hunted players, zombie regions, edge sides), damage on an edge with no
+  hit points, negative HP, a living player or zombie with no HP, a dead one with HP, an action, jobs or an open container, an empty stack or a slot holding more than one, a lunge or
   strike off the active tier, a map edit that makes a door or window of something else. The tests mutate a valid world
   and save it (every checksum right) for each case, forge sections, and fuzz section bytes with fixed-up checksums
   (each load fails cleanly or gives a world that steps).
@@ -472,10 +531,10 @@ between calls, so an autosave only happens after a call that changed something.
 
 The agent plays player 1, who wakes up in the bedroom. Tools: `screenshot` (below), `observe` (double-resolution ASCII map
 with walls `-` `|`, shut windows `=` `!`, open windows `o`, broken windows `x`, shut doors `D` (`d`
-when damaged), open doors `/`, broken doors `#`, fences `~`, furniture, players `P` and zombies by
+when damaged), open doors `/`, broken doors `#`, fences `~`, furniture `f`, containers `c` (not searched yet) and `o` (searched; on a tile, not a wall line), players `P` and zombies by
 state: `Z` wander, `I` investigate, `C` chase, `L` lunge, `A` attack, `B` battering a door or window;
-`S` staggered, `v` down, `%` corpse; zombies on the cheaper tiers `n` near, `?` virtual; weapons on the floor `w`, dead players `X`; plus players (HP,
-weapon, action, whether they're climbing or dead), weapons in view, damaged doors and windows in view
+`S` staggered, `v` down, `%` corpse; zombies on the cheaper tiers `n` near, `?` virtual; weapons on the floor `w`, other items `i`, dead players `X`; plus players (HP,
+weapon, action, load, whether they're climbing or dead), items in view, damaged doors and windows in view
 with their HP, and the nearest zombies with HP), `zombie {id}` (one zombie's simulation tier and distance to the nearest player, HP, AI state, target,
 memory, timers, the edge it batters, and per player the distance, line of sight and current sight range), `edge {x, y}` (the four edges
 of a tile, with HP for doors and windows), `step_ticks` (time only advances when you call it; reports
@@ -484,8 +543,15 @@ zombie attacks, thumps and anything broken), `move_player` (player, compass `dir
 (opens/closes the door or window player 1, or `player`, faces; `toggle_door` is an old alias),
 `smash_window`, `attack` / `shove` / `stomp` (player, optional `facing` or `target` zombie id to turn
 first; steps until the action has landed and the player can act again, and reports what it hit),
-`pick_up`, `weapons` (the weapon table and combat numbers), `respawn`, `spawn_item {weapon, x, y}`
-(debug), `make_noise {x, y, radius, lasting}`
+`pick_up` (the instant grab, as E), `weapons` (the weapon table and combat numbers), `items {category}` (the item table
+and the carry numbers), `inventory {player}` (slots, worn and carried stacks with indices, load and burden, the open
+container, the floor in reach with ground item ids, containers in reach, the job queue), `containers_near {player, radius}`
+(id, kind, furniture, room, distance, searched or not and what's in it, in reach), `search {player, container}`, `take
+{player, from: container|ground, index, count}`, `move_item {player, from, index, to, count}` (places: carried, hand,
+off_hand, back, shoulder, worn, container, ground), `drop {player, from, index, count}`, `equip {player, index}`, `wear
+{player, index}`, `unequip {player, from, index}`, `use {player, from, index}` (each queues the job and steps the world
+until the player's queue is empty, then reports what happened and the inventory), `respawn`, `spawn_item {item, count,
+x, y}` (debug; any item id, `weapon` still accepted), `make_noise {x, y, radius, lasting}`
 (debug; a loud one leaves an attractor, `lasting: true` a 30-minute one), `regions` (ASCII heat maps per 64 m region of
 living zombies and of their targets, the attractors' pull with players marked, and zones; the attractors with reach,
 spread, strength and time left; the regions furthest below and above target), `set_goal` (debug: zombies head for a point, senses off), `spawn_zombies`, `skip_time`,
@@ -493,9 +559,9 @@ spread, strength and time left; the regions furthest below and above target), `s
 (replaces the world; with no name, the `--save` file; refused, world untouched, if the file is damaged, holds impossible
 values or is of another format; changed game data loads with a note when compatible, else is refused unless
 `force: true`, which loads it anyway and notes what it changed), `saves` (the saves folder: size, age, tick, time, seed, map size, zombies,
-players; and where this session autosaves), `stats` (players with HP/weapon/dead, time of day and daylight, zombies by state
+players; and where this session autosaves), `stats` (players with HP/weapon/load/burden/busy/dead, time of day and daylight, zombies by state
 including staggered/down/dead and by tier (`zombie_tiers`: active/near/virtual, last tick's promotions and
-demotions, the ranges), `population` (target vs alive, attractors, whether migration and respawn are on, respawned), weapons on the floor, tick timing (tier pass, senses, flow, active, near, virtual), thumps, hits and sounds heard last
+demotions, the ranges), `population` (target vs alive, attractors, whether migration and respawn are on, respawned), items on the floor, containers and how many are opened, tick timing (tier pass, senses, flow, active, near, virtual), thumps, hits and sounds heard last
 tick, damaged edges, the state hash). `step_ticks` and `move_player` also report hits, kills, how many
 zombie strikes landed for how much, and deaths.
 

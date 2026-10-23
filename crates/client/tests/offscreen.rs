@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use zombye_net::{content, save_file};
-use zombye_sim::{World, WorldConfig};
+use zombye_sim::World;
 
 /// A folder of its own for one test, removed when dropped (whether it passes, fails or skips).
 struct Scratch(PathBuf);
@@ -29,10 +29,8 @@ fn scratch(name: &str) -> Scratch {
 /// A small world (8 × 8 chunks, a few zombies) a second into the game, saved to `dir`.
 fn saved_world(dir: &Path) -> PathBuf {
     let data = content::default_data_dir();
-    let config = WorldConfig::new(3, 40, content::load_building_templates(&data).unwrap())
-        .with_weapons(content::load_weapons(&data).unwrap())
-        .with_population(content::load_population(&data).unwrap())
-        .with_map_chunks(8);
+    let mut config = content::load_config(&data, 3).unwrap().with_map_chunks(8);
+    config.zombies = Some(40);
     let mut world = World::new(config);
     world.add_player(world.player_spawn);
     let near = world.player_spawn + bevy::math::Vec2::new(6.0, 4.0);

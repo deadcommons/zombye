@@ -57,6 +57,7 @@ BuildingTemplate(
                 (kind: "toilet", at: (9, 6), facing: W),
                 (kind: "dryer", at: (9, 7), facing: W),
                 (kind: "washer", at: (9, 8), facing: W),
+                (kind: "shelf", at: (8, 7), facing: S),
             ],
         ),
         (

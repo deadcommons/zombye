@@ -4,7 +4,8 @@
 use std::path::{Path, PathBuf};
 
 use zombye_sim::BuildingTemplate;
-use zombye_sim::items::{WeaponDef, parse_weapons};
+use zombye_sim::containers::{ContainerData, parse_containers};
+use zombye_sim::items::{ItemDef, WeaponDef, parse_items, parse_weapons};
 use zombye_sim::population::{PopulationDef, parse_population};
 
 /// The repo's `assets/data` folder (used when running from a checkout).
@@ -49,6 +50,41 @@ pub fn load_weapons(data_dir: &Path) -> Result<Vec<WeaponDef>, String> {
     parse_weapons(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// The items in `<data>/items/items.ron`, validated against `weapons` (each `weapon` must name one).
+/// A data folder without the file has no items but the plain ones the world makes for weapons.
+pub fn load_items(data_dir: &Path, weapons: &[WeaponDef]) -> Result<Vec<ItemDef>, String> {
+    let path = data_dir.join("items/items.ron");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    parse_items(&text, weapons).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Which furniture holds things: `<data>/containers.ron`, validated. A data folder without the file
+/// has no containers.
+pub fn load_containers(data_dir: &Path) -> Result<ContainerData, String> {
+    let path = data_dir.join("containers.ron");
+    if !path.exists() {
+        return Ok(ContainerData::default());
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    parse_containers(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Everything a world is made from in `<data>`: building templates, weapons, items, containers and
+/// the population file, as a config for `seed` (the zombie count as the population file gives).
+pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig, String> {
+    let templates = load_building_templates(data_dir)?;
+    let weapons = load_weapons(data_dir)?;
+    let items = load_items(data_dir, &weapons)?;
+    let containers = load_containers(data_dir)?;
+    let population = load_population(data_dir)?;
+    let mut config = zombye_sim::WorldConfig::new(seed, 0, templates).with_weapons(weapons).with_items(items).with_containers(containers).with_population(population);
+    config.zombies = None;
+    Ok(config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,5 +95,13 @@ mod tests {
         assert!(def.density.town_core > def.density.deep_forest);
         let none = load_population(Path::new("/nonexistent-zombye-data")).unwrap();
         assert_eq!(none, PopulationDef::default());
+    }
+
+    #[test]
+    fn items_and_containers_load() {
+        let c = load_config(&default_data_dir(), 1).unwrap();
+        assert!(c.items.len() >= 50 && !c.containers.containers.is_empty());
+        assert!(load_items(Path::new("/nonexistent-zombye-data"), &c.weapons).unwrap().is_empty());
+        assert_eq!(load_containers(Path::new("/nonexistent-zombye-data")).unwrap(), ContainerData::default());
     }
 }

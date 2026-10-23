@@ -1,0 +1,44 @@
+// Furniture that holds things. Schema: zombye_sim::containers::ContainerData (validated on load;
+// unknown fields are refused). All names and numbers are our own.
+//
+// `containers` are the kinds of container: room in litres, how long the first search takes
+// (seconds; x1.5 when sneaking, which is quieter), and the noise opening it makes (metres).
+// `holds` and `fill` are a placeholder filling until loot tables (#8) replace them: a container is
+// filled the first time anyone opens it, with `fill` (min, max) items picked from the item
+// categories in `holds`, from a hash of the world seed and the container's id.
+//
+// `furniture` maps (furniture kind, room type) to a container kind. `room: "any"` is the fallback
+// for a kind in any other room; a kind with no entry isn't a container (beds, sofas, tables...).
+(
+    containers: [
+        (id: "fridge", name: "Fridge", room_l: 60.0, search_secs: 1.0, noise_m: 3.0, holds: [Food, Drink], fill: (1, 4)),
+        (id: "kitchen_cupboard", name: "Kitchen cupboard", room_l: 40.0, search_secs: 1.5, noise_m: 4.0, holds: [Food, Tool, Junk], fill: (2, 5)),
+        (id: "oven", name: "Oven", room_l: 20.0, search_secs: 0.8, noise_m: 4.0, holds: [Junk], fill: (0, 1)),
+        (id: "under_sink", name: "Under-sink cupboard", room_l: 25.0, search_secs: 1.2, noise_m: 4.0, holds: [Tool, Medical, Junk], fill: (0, 2)),
+        (id: "bathroom_cabinet", name: "Bathroom cabinet", room_l: 12.0, search_secs: 0.8, noise_m: 4.0, holds: [Medical], fill: (1, 3)),
+        (id: "wardrobe", name: "Wardrobe", room_l: 80.0, search_secs: 2.0, noise_m: 4.0, holds: [Clothing, Bag], fill: (2, 5)),
+        (id: "coat_cupboard", name: "Coat cupboard", room_l: 60.0, search_secs: 1.5, noise_m: 4.0, holds: [Clothing, Light], fill: (1, 3)),
+        (id: "desk_drawers", name: "Desk drawers", room_l: 20.0, search_secs: 1.2, noise_m: 4.0, holds: [Junk, Light, Tool], fill: (1, 3)),
+        (id: "drawer", name: "Drawer", room_l: 8.0, search_secs: 0.8, noise_m: 4.0, holds: [Junk, Light], fill: (1, 2)),
+        (id: "drum", name: "Drum", room_l: 15.0, search_secs: 0.8, noise_m: 3.0, holds: [Clothing, Material], fill: (0, 2)),
+        (id: "tv_shelf", name: "TV stand shelf", room_l: 10.0, search_secs: 0.8, noise_m: 3.0, holds: [Junk, Light], fill: (0, 2)),
+        (id: "shelves", name: "Shelves", room_l: 30.0, search_secs: 1.0, noise_m: 3.0, holds: [Tool, Material, Light], fill: (1, 3)),
+        (id: "workbench", name: "Bench and drawers", room_l: 40.0, search_secs: 1.5, noise_m: 4.0, holds: [Tool, Material], fill: (2, 4)),
+    ],
+    furniture: [
+        (furniture: "fridge", room: "any", container: "fridge"),
+        (furniture: "counter", room: "any", container: "kitchen_cupboard"),
+        (furniture: "stove", room: "any", container: "oven"),
+        (furniture: "sink", room: "bathroom", container: "bathroom_cabinet"),
+        (furniture: "sink", room: "any", container: "under_sink"),
+        (furniture: "wardrobe", room: "hall", container: "coat_cupboard"),
+        (furniture: "wardrobe", room: "any", container: "wardrobe"),
+        (furniture: "desk", room: "any", container: "desk_drawers"),
+        (furniture: "coffee_table", room: "any", container: "drawer"),
+        (furniture: "washer", room: "any", container: "drum"),
+        (furniture: "dryer", room: "any", container: "drum"),
+        (furniture: "tv", room: "any", container: "tv_shelf"),
+        (furniture: "shelf", room: "any", container: "shelves"),
+        (furniture: "workbench", room: "any", container: "workbench"),
+    ],
+)

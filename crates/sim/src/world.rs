@@ -19,7 +19,9 @@ use glam::{IVec2, Vec2};
 use crate::TICK_DT;
 use crate::ai::{self, Ctx, GOAL_RANGE, ZombieAttack, ZombieThump, ZombieTuning};
 use crate::combat::{ActionEvent, CombatEvent, CombatTuning, HitEvent};
-use crate::items::{self, GroundItem, WeaponCategory, WeaponDef};
+use crate::containers::{self, ContainerData, ContainerSite};
+use crate::inventory::{CarryTuning, ItemNote};
+use crate::items::{self, GroundItem, ItemDef, ItemStack, WeaponCategory, WeaponDef};
 use crate::players::Action;
 use crate::flow::{FlowCache, FlowField, WalkGrid};
 use crate::map::{Edge, EdgeChange, EdgeRef, OwnedEdge, TileMap};
@@ -68,6 +70,13 @@ pub struct WorldConfig {
     pub zombie: ZombieTuning,
     /// Melee weapons (`assets/data/items/weapons.ron`). Bare hands are added if missing.
     pub weapons: Vec<WeaponDef>,
+    /// Every item (`assets/data/items/items.ron`). A weapon without an item gets a plain one
+    /// ([`items::complete_items`]).
+    pub items: Vec<ItemDef>,
+    /// Which furniture holds things (`assets/data/containers.ron`).
+    pub containers: ContainerData,
+    /// Carry limits, burden and how long handling items takes.
+    pub carry: CarryTuning,
     /// Player health and every combat number that isn't a weapon's.
     pub combat: CombatTuning,
     /// Simulation tiers: ranges and update rates (see [`crate::tiers`]).
@@ -87,6 +96,9 @@ impl WorldConfig {
             day_length_secs: 3600.0,
             zombie: ZombieTuning::default(),
             weapons: Vec::new(),
+            items: Vec::new(),
+            containers: ContainerData::default(),
+            carry: CarryTuning::default(),
             combat: CombatTuning::default(),
             tiers: TierTuning::default(),
             population: PopulationDef::default(),
@@ -102,6 +114,16 @@ impl WorldConfig {
 
     pub fn with_weapons(mut self, weapons: Vec<WeaponDef>) -> Self {
         self.weapons = weapons;
+        self
+    }
+
+    pub fn with_items(mut self, items: Vec<ItemDef>) -> Self {
+        self.items = items;
+        self
+    }
+
+    pub fn with_containers(mut self, containers: ContainerData) -> Self {
+        self.containers = containers;
         self
     }
 
@@ -190,9 +212,24 @@ pub struct World {
     /// `edge_changes`; at most [`crate::combat::MAX_COMBAT_EVENTS`] are kept if nobody does. Not simulation
     /// state (not in the state hash).
     pub combat_events: Vec<CombatEvent>,
-    /// Weapons lying about, in id order.
+    /// Items lying about, in id order.
     pub(crate) items: Vec<GroundItem>,
     pub(crate) next_item_id: u32,
+    /// Per item in `config.items`, the weapon it swings as (derived from the content).
+    pub(crate) item_weapons: Vec<Option<u16>>,
+    /// Every container in the map, in id order (derived from the map and `config.containers`).
+    pub(crate) sites: Vec<ContainerSite>,
+    /// What opened containers hold, by container id; unopened ones aren't here (they fill on first
+    /// open, from the seed). Sorted, so walking it is deterministic.
+    pub(crate) opened: BTreeMap<u32, Vec<ItemStack>>,
+    /// What players asked of their items and how it went, for their clients (not simulation state;
+    /// drained by whoever replicates the world, at most [`crate::inventory::MAX_ITEM_NOTES`] kept).
+    pub item_notes: Vec<ItemNote>,
+    /// Items eaten or drunk this tick: (player, item). For the needs (#11).
+    pub used_items: Vec<(u32, u16)>,
+    /// Players whose inventory, open container or job queue changed since the last snapshot took
+    /// them (replication, not simulation state).
+    pub(crate) private_dirty: BTreeSet<u32>,
     /// Index of bare hands in `config.weapons`.
     pub(crate) unarmed: u16,
     /// Hit points of damaged doors and windows, by [`EdgeRef::key`]. Missing = undamaged.
@@ -267,9 +304,12 @@ impl World {
     /// starts from this, and builds the graph once the map edits are in).
     pub(crate) fn generate(mut config: WorldConfig) -> Self {
         add_fists(&mut config.weapons);
+        let weapon_items = items::complete_items(&mut config.items, &config.weapons);
+        let item_weapons = (0..config.items.len()).map(|i| weapon_items.iter().position(|w| *w == Some(i as u16)).map(|w| w as u16)).collect();
         let unarmed = config.weapons.iter().position(|w| w.category == WeaponCategory::Unarmed).unwrap_or(0) as u16;
         let generated = worldgen::generate(&config.generation, &config.templates);
-        let items = items::place_weapons(&generated.map, &config.weapons, generated.spawn_building, config.generation.seed, 1);
+        let items = items::place_weapons(&generated.map, &config.weapons, &weapon_items, generated.spawn_building, config.generation.seed, 1);
+        let sites = containers::find_sites(&generated.map, &config.containers);
         let map = generated.map;
         let hash = SpatialHash::new(map.width() as f32, map.height() as f32, 1.0);
         let regions = RegionIndex::new(&map, config.tiers.region_size);
@@ -280,6 +320,12 @@ impl World {
             combat_rng: Rng::new(config.generation.seed ^ 0xC0_4BA7),
             next_item_id: items.len() as u32 + 1,
             items,
+            item_weapons,
+            sites,
+            opened: BTreeMap::new(),
+            item_notes: Vec::new(),
+            used_items: Vec::new(),
+            private_dirty: BTreeSet::new(),
             unarmed,
             action_events: Vec::new(),
             hit_events: Vec::new(),
@@ -416,6 +462,7 @@ impl World {
         self.next_player_id += 1;
         let pos = self.map.resolve_circle(pos, PLAYER_RADIUS);
         self.players.push(Player::new(id, pos, self.config.combat.player_hp));
+        self.private_dirty.insert(id);
         id
     }
 
@@ -711,6 +758,7 @@ impl World {
         self.removed_corpses.clear();
         self.action_events.clear();
         self.hit_events.clear();
+        self.used_items.clear();
         // Sounds made since the last tick are heard now; groans made during this one, next tick.
         std::mem::swap(&mut self.sounds, &mut self.heard);
         self.sounds.clear();
@@ -735,6 +783,9 @@ impl World {
                 self.heard.push(Sound::new(p.state.pos, radius, SoundSource::Player(p.id)));
             }
         }
+
+        // Item moves, searches and uses that are due; containers left behind close.
+        self.step_item_jobs();
 
         // Which regions players are near (respawn keeps away from those for a while).
         if !self.players.is_empty() {
@@ -993,12 +1044,33 @@ impl World {
             mix(p.weapon.map_or(u32::MAX, u32::from));
             mix(p.ready_in.to_bits());
             mix(p.action.map_or(u32::MAX, |a| a.kind as u32 | a.timer.to_bits() << 2));
+            for s in p.inventory.stacks() {
+                mix(s.item as u32 | (s.count as u32) << 16);
+            }
+            let inv = &p.inventory;
+            mix(inv.worn.len() as u32 | (inv.carried.len() as u32) << 8 | (inv.hand.is_some() as u32) << 16 | (inv.off_hand.is_some() as u32) << 17 | (inv.back.is_some() as u32) << 18 | (inv.shoulder.is_some() as u32) << 19);
+            mix(p.open.unwrap_or(u32::MAX));
+            for j in &p.jobs {
+                mix(j.left.to_bits());
+                mix(match j.kind {
+                    crate::inventory::JobKind::Move { index, item, count, .. } => index ^ (item as u32) << 8 ^ (count as u32) << 20,
+                    crate::inventory::JobKind::Search { container } => container ^ 0x5EA4_0000,
+                    crate::inventory::JobKind::Use { index, item, .. } => index ^ (item as u32) << 8 ^ 0x0E00_0000,
+                });
+            }
         }
         for it in &self.items {
             mix(it.id);
-            mix(it.weapon as u32);
+            mix(it.stack.item as u32 | (it.stack.count as u32) << 16);
             mix(it.pos.x.to_bits());
             mix(it.pos.y.to_bits());
+        }
+        for (&c, stacks) in &self.opened {
+            mix(c);
+            mix(stacks.len() as u32);
+            for s in stacks {
+                mix(s.item as u32 | (s.count as u32) << 16);
+            }
         }
         for (&(x, y, w), hp) in &self.edge_hp {
             mix(x as u32);

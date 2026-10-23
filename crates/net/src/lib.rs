@@ -10,7 +10,7 @@ pub mod shutdown;
 
 use serde::{Deserialize, Serialize};
 use zombye_sim::map::{EdgeChange, OwnedEdge};
-use zombye_sim::{ActionKind, CombatEvent, GroundItem, PlayerInput, Stance, World, WorldConfig, ZombieAnim};
+use zombye_sim::{ActionKind, Burden, Carry, CombatEvent, GroundItem, Inventory, ItemNote, ItemStack, MoveMods, Place, PlayerInput, Stance, World, WorldConfig, ZombieAnim};
 
 /// Something a client wants to happen. The server validates and applies it.
 ///
@@ -33,13 +33,33 @@ pub enum Intent {
     Shove { player: u32 },
     /// Stamp on a downed zombie at the player's feet, in front.
     Stomp { player: u32 },
-    /// Pick up the weapon nearest to where the player faces (within reach) and equip it, dropping
-    /// the one held.
+    /// Pick up the item nearest to where the player faces (within reach of its feet), at once: a
+    /// weapon into the hand (what was held into pockets and bags, or left on the floor), anything
+    /// else into pockets and bags, as many as fit.
     PickUp { player: u32 },
+    /// Move `count` (0 = all) of the stack at `from`/`index` to `to`: between pockets and bags
+    /// (`Carried`), hands and bag slots, worn clothing, the open container and the floor (`Ground`,
+    /// where `index` is the ground item's id). Takes a moment (queued on the server; checked again
+    /// when it happens: still there, in reach, fits, not too heavy).
+    MoveItem { player: u32, from: Place, index: u32, to: Place, count: u16 },
+    /// Put the carried stack `index` where it belongs: a bag on, clothing on, anything else in hand.
+    Equip { player: u32, index: u32 },
+    /// Put on the carried clothing `index`.
+    Wear { player: u32, index: u32 },
+    /// Take off or let go of what's at `from` (a slot, or `Worn` and an index) into pockets and
+    /// bags, or onto the floor if there's no room.
+    Unequip { player: u32, from: Place, index: u32 },
+    /// Drop `count` (0 = all) of the stack at `from`/`index` at the player's feet.
+    Drop { player: u32, from: Place, index: u32, count: u16 },
+    /// Eat or drink one of the stack at `from`/`index` (carried or held).
+    Use { player: u32, from: Place, index: u32 },
+    /// Search (open) a container: this one, or with `None` the one the player faces within reach.
+    /// The first search takes the container's search time and fills it.
+    Search { player: u32, container: Option<u32> },
     /// Single-player / debug: a dead player gets up at the spawn point.
     Respawn { player: u32 },
-    /// Debug: put a weapon (by data id, e.g. `baseball_bat`) on the ground.
-    SpawnItem { weapon: String, pos: [f32; 2] },
+    /// Debug: put `count` of an item (by data id, e.g. `baseball_bat` or `tinned_beans`) on the ground.
+    SpawnItem { item: String, count: u16, pos: [f32; 2] },
     /// Debug: make zombies chase this point instead of the players. `None` goes back to the players.
     SetGoal { pos: Option<[f32; 2]> },
     SpawnZombies { count: u32, center: [f32; 2], radius: f32 },
@@ -89,6 +109,52 @@ pub struct PlayerView {
     /// renderer times swings with these.
     pub action_left: f32,
     pub ready_in: f32,
+    /// What its load does to its movement. Needed to predict movement exactly.
+    pub mods: MoveMods,
+    /// Busy with its things: seconds left on the item job under way (0 if none), and jobs queued.
+    pub busy: f32,
+    pub jobs: u8,
+}
+
+/// What a container holds, for whoever has it open.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ContainerView {
+    pub id: u32,
+    /// Its kind (an id in `containers.ron`) and name.
+    pub kind: String,
+    pub name: String,
+    pub room_l: f32,
+    pub stacks: Vec<ItemStack>,
+}
+
+/// The part of a player only its own client gets: everything it has, its load, and the container
+/// it has open.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PrivateView {
+    pub player: u32,
+    pub inventory: Inventory,
+    pub carry: Carry,
+    /// The weight past which nothing more can be picked up (kg).
+    pub max_kg: f32,
+    pub open: Option<ContainerView>,
+}
+
+impl PrivateView {
+    pub fn of(world: &World, id: u32) -> Option<Self> {
+        let p = world.player(id)?;
+        let open = p.open.and_then(|c| {
+            let site = world.container(c)?;
+            let def = world.container_def(site);
+            Some(ContainerView { id: c, kind: def.id.clone(), name: def.name.clone(), room_l: def.room_l, stacks: world.container_contents(c).unwrap_or(&[]).to_vec() })
+        });
+        let carry = world.carry(p);
+        Some(Self { player: id, inventory: p.inventory.clone(), carry, max_kg: carry.limit_kg * world.config.carry.max_load, open })
+    }
+
+    /// Has a load in this stage or worse.
+    pub fn at_least(&self, b: Burden) -> bool {
+        self.carry.burden >= b
+    }
 }
 
 /// A door or window whose hit points changed: how much of its full hit points it has left (0..1;
@@ -123,10 +189,16 @@ pub struct Snapshot {
     pub edge_changes: Vec<EdgeChange>,
     /// Doors and windows whose hit points changed since the previous snapshot (each once).
     pub edge_damage: Vec<EdgeDamage>,
-    /// Every weapon lying about (a short list for now; interest management later).
+    /// Every item lying about (a short list for now; interest management later).
     pub items: Vec<GroundItem>,
     /// Hits, kills, shoves, stomps and wounds since the previous snapshot, for hit feedback.
     pub hits: Vec<CombatEvent>,
+    /// Players' private views (inventory, load, open container) that changed since the previous
+    /// snapshot, each once; a client keeps the latest of its own. A networked server sends each
+    /// client only its own ([`Snapshot::for_player`]).
+    pub private: Vec<PrivateView>,
+    /// What came of players' item requests since the previous snapshot (done, or why not).
+    pub item_notes: Vec<ItemNote>,
 }
 
 impl Snapshot {
@@ -157,8 +229,12 @@ impl Snapshot {
                 action: p.action.map(|a| a.kind),
                 action_left: p.action.map_or(0.0, |a| a.timer.max(0.0)),
                 ready_in: p.ready_in,
+                mods: p.state.mods,
+                busy: p.jobs.first().map_or(0.0, |j| j.left.max(0.0)),
+                jobs: p.jobs.len().min(255) as u8,
             })
             .collect();
+        let private = world.take_private_dirty().into_iter().filter_map(|id| PrivateView::of(world, id)).collect();
         Self {
             tick: world.tick,
             time_of_day: world.time_of_day(),
@@ -168,7 +244,16 @@ impl Snapshot {
             edge_damage: world.take_edge_damage().into_iter().map(|(e, hp)| EdgeDamage { tile: e.tile, edge: e.edge, hp }).collect(),
             items: world.items().to_vec(),
             hits: std::mem::take(&mut world.combat_events),
+            private,
+            item_notes: std::mem::take(&mut world.item_notes),
         }
+    }
+
+    /// This snapshot as client `player` should get it: only its own private view and notes.
+    pub fn for_player(mut self, player: u32) -> Self {
+        self.private.retain(|v| v.player == player);
+        self.item_notes.retain(|n| n.player == player);
+        self
     }
 }
 
@@ -181,6 +266,7 @@ impl PlayerView {
             stance: self.stance,
             endurance: self.endurance,
             winded: self.winded,
+            mods: self.mods,
         }
     }
 }
@@ -210,11 +296,33 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
         Intent::PickUp { player } => {
             world.player_pick_up(*player);
         }
+        // Refusals are noted for the player's client (`Snapshot::item_notes`); nothing else to do.
+        Intent::MoveItem { player, from, index, to, count } => {
+            let _ = world.player_move_item(*player, *from, *index, *to, *count);
+        }
+        Intent::Equip { player, index } => {
+            let _ = world.player_equip(*player, *index);
+        }
+        Intent::Wear { player, index } => {
+            let _ = world.player_wear(*player, *index);
+        }
+        Intent::Unequip { player, from, index } => {
+            let _ = world.player_unequip(*player, *from, *index);
+        }
+        Intent::Drop { player, from, index, count } => {
+            let _ = world.player_drop(*player, *from, *index, *count);
+        }
+        Intent::Use { player, from, index } => {
+            let _ = world.player_use(*player, *from, *index);
+        }
+        Intent::Search { player, container } => {
+            let _ = world.player_search(*player, *container);
+        }
         Intent::Respawn { player } => {
             world.respawn_player(*player);
         }
-        Intent::SpawnItem { weapon, pos } => {
-            world.spawn_item(weapon, (*pos).into());
+        Intent::SpawnItem { item, count, pos } => {
+            world.spawn_item(item, (*count).max(1), (*pos).into());
         }
         Intent::SetGoal { pos } => world.set_goal(pos.map(Into::into)),
         Intent::SpawnZombies { count, center, radius } => {
@@ -241,9 +349,11 @@ impl LocalServer {
         Self { world, inbox: Vec::new() }
     }
 
-    /// Swap in another world (a loaded save), dropping intents queued for the old one.
+    /// Swap in another world (a loaded save), dropping intents queued for the old one. The next
+    /// snapshot carries every player's private view again.
     pub fn replace_world(&mut self, world: World) {
         self.world = world;
+        self.world.mark_all_private_dirty();
         self.inbox.clear();
     }
 
@@ -277,7 +387,9 @@ mod tests {
     fn server() -> LocalServer {
         let templates = [include_str!("../../../assets/data/buildings/bungalow.ron")].iter().map(|t| BuildingTemplate::from_ron(t).unwrap()).collect();
         let weapons = zombye_sim::items::parse_weapons(include_str!("../../../assets/data/items/weapons.ron")).unwrap();
-        LocalServer::new(WorldConfig::new(4, 50, templates).with_weapons(weapons))
+        let items = zombye_sim::items::parse_items(include_str!("../../../assets/data/items/items.ron"), &weapons).unwrap();
+        let containers = zombye_sim::containers::parse_containers(include_str!("../../../assets/data/containers.ron")).unwrap();
+        LocalServer::new(WorldConfig::new(4, 50, templates).with_weapons(weapons).with_items(items).with_containers(containers))
     }
 
     /// Picking up, swinging and getting hurt all go through intents and show up in snapshots.
@@ -289,14 +401,21 @@ mod tests {
         assert!(!snap.items.is_empty(), "weapons should lie about");
         let me = server.world.player(id).unwrap().state;
         let ahead = me.pos + glam::Vec2::from_angle(me.facing) * 0.4;
-        server.send(Intent::SpawnItem { weapon: "baseball_bat".into(), pos: ahead.to_array() });
+        server.send(Intent::SpawnItem { item: "baseball_bat".into(), count: 1, pos: ahead.to_array() });
         server.tick();
         server.send(Intent::PickUp { player: id });
         let snap = server.tick();
         let view = *snap.players.iter().find(|p| p.id == id).unwrap();
         let bat = server.world.weapon_index("baseball_bat").unwrap();
         assert_eq!(view.weapon, Some(bat));
-        assert!(snap.items.iter().all(|it| it.weapon != bat || it.pos.distance(ahead) > 0.01));
+        let bat_item = server.world.item_index("baseball_bat").unwrap();
+        assert!(snap.items.iter().all(|it| it.stack.item != bat_item || it.pos.distance(ahead) > 0.01));
+        // Our private view says so too (it changed, so it came with this snapshot).
+        let mine = snap.clone().for_player(id);
+        assert_eq!(mine.private.len(), 1);
+        assert_eq!(mine.private[0].inventory.hand, Some(ItemStack::one(bat_item)));
+        assert!(mine.item_notes.iter().any(|n| n.ok && n.text.contains("baseball bat")), "{:?}", mine.item_notes);
+        assert!(server.tick().private.is_empty(), "sent again with nothing changed");
         server.send(Intent::Attack { player: id });
         let snap = server.tick();
         assert_eq!(snap.players[0].action, Some(ActionKind::Swing));
@@ -525,6 +644,51 @@ mod tests {
             assert_eq!(sb.players.iter().find(|p| p.id == id).unwrap().state(), predicted, "prediction diverged at tick {}", sb.tick);
         }
         assert_eq!(a.world.state_hash(), b.world.state_hash());
+    }
+
+    /// Items going in and out of an inventory change the load, and with it movement; the client
+    /// predicts with the modifiers from its latest snapshot and stays exact.
+    #[test]
+    fn prediction_matches_server_with_a_changing_load() {
+        let mut server = server();
+        let id = server.join(None);
+        let at = server.world.player(id).unwrap().state.pos;
+        // A rucksack on (50 L), and a heap of planks on the floor at our feet, 2 kg each: taking them one by one goes past
+        // the carry limit (14 kg) and into heavy (18.2) while we walk and run about.
+        for _ in 0..10 {
+            server.send(Intent::SpawnItem { item: "wooden_plank".into(), count: 1, pos: at.to_array() });
+        }
+        assert!(server.world.hold_item(id, zombye_sim::Slot::Back, "hiking_pack"));
+        let snap = server.tick();
+        let mut predicted = snap.players.iter().find(|p| p.id == id).unwrap().state();
+        let mut mods_seen = vec![predicted.mods];
+        let mut seq = 0;
+        for t in 0..300u32 {
+            seq += 1;
+            let a = t as f32 * 0.05;
+            // Small circles, so the planks stay within reach.
+            let (move_dir, facing, run) = ([a.cos() * 0.06, a.sin() * 0.06], a, t % 40 < 25);
+            server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run, sneak: false });
+            if t % 15 == 0 {
+                let floor = server.world.floor_of(id);
+                if let Some(g) = floor.first() {
+                    server.send(Intent::MoveItem { player: id, from: Place::Ground, index: g.id, to: Place::Carried, count: 0 });
+                }
+            }
+            step_movement(&server.world.map, &mut predicted, &PlayerInput { move_dir: move_dir.into(), facing, run, sneak: false }, TICK_DT);
+            let snap = server.tick();
+            let view = snap.players.iter().find(|p| p.id == id).unwrap();
+            // (A job done at the end of the tick may have changed the modifiers for the next one.)
+            assert_eq!(zombye_sim::PlayerState { mods: predicted.mods, ..view.state() }, predicted, "diverged at seq {seq}");
+            // What a reconcile would take from the snapshot: the load's modifiers.
+            predicted.mods = view.mods;
+            if *mods_seen.last().unwrap() != view.mods {
+                mods_seen.push(view.mods);
+            }
+        }
+        let carried: u16 = server.world.player(id).unwrap().inventory.carried.iter().map(|s| s.count).sum();
+        assert_eq!(carried, 10, "{:?}", server.world.item_notes);
+        assert!(mods_seen.len() >= 3 && !mods_seen.last().unwrap().can_run, "burdened, then heavy: {mods_seen:?}");
     }
 
     #[test]

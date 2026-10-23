@@ -9,9 +9,9 @@
 use bevy::prelude::*;
 use std::collections::HashMap;
 
-use zombye_net::{EdgeDamage, Intent, LocalServer, Snapshot, content, save_file};
+use zombye_net::{EdgeDamage, Intent, LocalServer, PrivateView, Snapshot, content, save_file};
 use zombye_sim::map::{Edge, EdgeChange, OwnedEdge, Side, TileMap};
-use zombye_sim::{CombatEvent, CombatTuning, TICK_RATE, WeaponDef, WorldConfig};
+use zombye_sim::{CombatEvent, CombatTuning, ItemDef, ItemNote, TICK_RATE, WeaponDef};
 
 use crate::Options;
 
@@ -25,9 +25,26 @@ pub struct ServerLink {
     pub sim_ms: f32,
     pub chasing: u32,
     pub tiers: [u32; 3],
+    /// The latest private view (inventory, load, open container) of each player we've heard about;
+    /// snapshots only carry one when it changed.
+    pub private: Vec<PrivateView>,
 }
 
 impl ServerLink {
+    /// Our player's latest private view.
+    pub fn own(&self, player: u32) -> Option<&PrivateView> {
+        self.private.iter().find(|v| v.player == player)
+    }
+
+    fn keep_private(&mut self, views: &[PrivateView]) {
+        for v in views {
+            match self.private.iter_mut().find(|o| o.player == v.player) {
+                Some(o) => *o = v.clone(),
+                None => self.private.push(v.clone()),
+            }
+        }
+    }
+
     pub fn send(&mut self, intent: Intent) {
         self.server.send(intent);
     }
@@ -45,6 +62,8 @@ pub struct JoinInfo {
     pub player_spawn: Vec2,
     /// The weapon definitions; snapshots name weapons by index into this.
     pub weapons: Vec<WeaponDef>,
+    /// The item definitions; stacks name items by index into this.
+    pub items: Vec<ItemDef>,
     /// Combat reach and arcs, for choosing between shove and stomp.
     pub combat: CombatTuning,
 }
@@ -60,6 +79,10 @@ pub struct EdgeChangesThisFrame(pub Vec<EdgeChange>);
 /// Combat events (hits, kills, shoves, stomps, wounds) received this frame, for hit feedback.
 #[derive(Resource, Default)]
 pub struct CombatEventsThisFrame(pub Vec<CombatEvent>);
+
+/// What came of our item requests this frame (done, or why not), for the HUD.
+#[derive(Resource, Default)]
+pub struct ItemNotesThisFrame(pub Vec<ItemNote>);
 
 /// How battered each damaged door and window is (fraction of its hit points left; missing =
 /// undamaged), kept from the join and snapshots, for drawing cracks.
@@ -79,10 +102,7 @@ pub struct ServerLinkPlugin;
 impl Plugin for ServerLinkPlugin {
     fn build(&self, app: &mut App) {
         let options = app.world().resource::<Options>().clone();
-        let templates = content::load_building_templates(&options.data).unwrap_or_else(|e| panic!("failed to load content: {e}"));
-        let weapons = content::load_weapons(&options.data).unwrap_or_else(|e| panic!("failed to load content: {e}"));
-        let population = content::load_population(&options.data).unwrap_or_else(|e| panic!("failed to load content: {e}"));
-        let mut config = WorldConfig::new(options.seed, 0, templates).with_weapons(weapons).with_population(population);
+        let mut config = content::load_config(&options.data, options.seed).unwrap_or_else(|e| panic!("failed to load content: {e}"));
         // Without --zombies, as many as the population file's densities give for this map.
         config.zombies = options.zombies;
         if let Some(chunks) = options.map_chunks {
@@ -136,7 +156,7 @@ impl Plugin for ServerLinkPlugin {
         if options.fight_demo {
             // A bat in hand and a small group just ahead (the player faces +x), called over by a noise.
             let me = server.world.player(player_id).map(|p| p.state.pos).unwrap_or(server.world.player_spawn);
-            server.send(Intent::SpawnItem { weapon: "baseball_bat".into(), pos: me.to_array() });
+            server.send(Intent::SpawnItem { item: "baseball_bat".into(), count: 1, pos: me.to_array() });
             server.send(Intent::PickUp { player: player_id });
             server.send(Intent::SpawnZombies { count: DEMO_ZOMBIES, center: (me + Vec2::X * DEMO_DISTANCE).to_array(), radius: 2.0 });
             server.send(Intent::MakeNoise { pos: me.to_array(), radius: 12.0, lasting: false });
@@ -155,14 +175,22 @@ fn finish_join(app: &mut App, mut server: LocalServer, player_id: u32) {
     let map = ClientMap(server.world.map.clone());
     let damage = EdgeDamageMap(EdgeDamage::all(&server.world).into_iter().map(|d| ((d.tile, d.edge), d.hp)).collect());
     let spawn = first.players.iter().find(|p| p.id == player_id).map(|p| Vec2::from(p.pos)).unwrap_or(server.world.player_spawn);
-    let join = JoinInfo { player_id, player_spawn: spawn, weapons: server.world.config.weapons.clone(), combat: server.world.config.combat.clone() };
-    app.insert_resource(ServerLink { server, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3] })
+    let join = JoinInfo {
+        player_id,
+        player_spawn: spawn,
+        weapons: server.world.config.weapons.clone(),
+        items: server.world.config.items.clone(),
+        combat: server.world.config.combat.clone(),
+    };
+    let private = first.private.clone();
+    app.insert_resource(ServerLink { server, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3], private })
         .insert_resource(map)
         .insert_resource(join)
         .insert_resource(damage)
         .init_resource::<EdgeChangesThisFrame>()
         .init_resource::<EdgeDamageThisFrame>()
         .init_resource::<CombatEventsThisFrame>()
+        .init_resource::<ItemNotesThisFrame>()
         .insert_resource(Time::<Fixed>::from_hz(TICK_RATE as f64))
         .add_systems(First, clear_frame_changes)
         .add_systems(FixedUpdate, tick_server.in_set(ServerTick).run_if(crate::live));
@@ -181,18 +209,21 @@ impl ServerLink {
         let first = Snapshot::capture(&mut self.server.world);
         let s = self.server.world.stats;
         (self.sim_ms, self.chasing, self.tiers) = (0.0, 0, [s.active, s.near, s.virtual_]);
+        self.private = first.private.clone();
         self.prev = first.clone();
         self.curr = first;
         &self.curr
     }
 }
 
-fn clear_frame_changes(mut changes: ResMut<EdgeChangesThisFrame>, mut damage: ResMut<EdgeDamageThisFrame>, mut hits: ResMut<CombatEventsThisFrame>) {
+fn clear_frame_changes(mut changes: ResMut<EdgeChangesThisFrame>, mut damage: ResMut<EdgeDamageThisFrame>, mut hits: ResMut<CombatEventsThisFrame>, mut notes: ResMut<ItemNotesThisFrame>) {
     changes.0.clear();
     damage.0.clear();
     hits.0.clear();
+    notes.0.clear();
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tick_server(
     mut link: ResMut<ServerLink>,
     mut map: ResMut<ClientMap>,
@@ -200,8 +231,13 @@ fn tick_server(
     mut damage_map: ResMut<EdgeDamageMap>,
     mut damage: ResMut<EdgeDamageThisFrame>,
     mut hits: ResMut<CombatEventsThisFrame>,
+    mut notes: ResMut<ItemNotesThisFrame>,
+    join: Res<JoinInfo>,
 ) {
-    let snapshot = link.server.tick();
+    // A remote server sends us only our own private view and notes; do as it will.
+    let snapshot = link.server.tick().for_player(join.player_id);
+    link.keep_private(&snapshot.private);
+    notes.0.extend(snapshot.item_notes.iter().cloned());
     link.sim_ms = link.server.world.stats.tick_ms;
     link.chasing = link.server.world.stats.chasing;
     let s = link.server.world.stats;
@@ -250,7 +286,7 @@ fn siege_spot(map: &TileMap, house: usize) -> Option<(Vec2, IVec2, IVec2)> {
 /// noise just inside it (not yours), so they batter it with their backs to you.
 fn siege(server: &mut LocalServer, player_id: u32, door_tile: IVec2, out: IVec2) {
     let me = server.world.player(player_id).map(|p| p.state.pos).unwrap_or(server.world.player_spawn);
-    server.send(Intent::SpawnItem { weapon: "baseball_bat".into(), pos: me.to_array() });
+    server.send(Intent::SpawnItem { item: "baseball_bat".into(), count: 1, pos: me.to_array() });
     server.send(Intent::PickUp { player: player_id });
     let near_door = (door_tile + out * 2).as_vec2() + Vec2::splat(0.5);
     server.send(Intent::SpawnZombies { count: SIEGE_ZOMBIES, center: near_door.to_array(), radius: 1.0 });

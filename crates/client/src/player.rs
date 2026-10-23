@@ -8,7 +8,9 @@
 //! two predicted states. Other players are drawn from snapshots, interpolated like zombies.
 //!
 //! Keys: WASD move, Shift run, C sneak, left mouse swing the weapon you hold (or punch), Space shove
-//! (or stomp, when a downed zombie lies right in front of you), E pick up the weapon you face,
+//! (or stomp, when a downed zombie lies right in front of you), E pick up the item you face (or, with
+//! nothing on the floor within reach, search the cupboard, drawer or fridge you face), Tab or I the
+//! inventory panel (`inventory_ui`; the left mouse button doesn't swing while it's open),
 //! F open/close the door or window you face, G smash the window you face, R get up again after
 //! dying, T skip an hour, Z spawn zombies. Climbing through an open or broken window is just
 //! walking into it (slowly, predicted like any other movement). Combat itself is all on the server;
@@ -278,9 +280,11 @@ fn face_cursor(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn actions(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
+    panel: Res<crate::inventory_ui::InventoryPanel>,
     me: Res<LocalPlayer>,
     join: Res<JoinInfo>,
     players: Query<(&Transform, &Player)>,
@@ -292,7 +296,7 @@ fn actions(
         }
         return;
     }
-    if mouse.just_pressed(MouseButton::Left) {
+    if mouse.just_pressed(MouseButton::Left) && !panel.open {
         link.send(Intent::Attack { player: me.id });
     }
     if keys.just_pressed(KeyCode::Space) {
@@ -307,7 +311,10 @@ fn actions(
         link.send(if downed { Intent::Stomp { player: me.id } } else { Intent::Shove { player: me.id } });
     }
     if keys.just_pressed(KeyCode::KeyE) {
-        link.send(Intent::PickUp { player: me.id });
+        // Something on the floor within reach: pick it up. Otherwise search what we face.
+        let reach = zombye_sim::combat::PICKUP_REACH;
+        let floor = link.curr.items.iter().any(|it| it.pos.distance(me.curr.pos) <= reach);
+        link.send(if floor { Intent::PickUp { player: me.id } } else { Intent::Search { player: me.id, container: None } });
     }
     if keys.just_pressed(KeyCode::KeyF) {
         // The server picks the door or window this player faces and checks it's within reach.

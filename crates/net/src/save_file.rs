@@ -190,9 +190,9 @@ mod tests {
 
     fn config() -> WorldConfig {
         let data = content::default_data_dir();
-        WorldConfig::new(3, 80, content::load_building_templates(&data).unwrap())
-            .with_weapons(content::load_weapons(&data).unwrap())
-            .with_population(content::load_population(&data).unwrap())
+        let mut c = content::load_config(&data, 3).unwrap();
+        c.zombies = Some(80);
+        c
     }
 
     #[test]

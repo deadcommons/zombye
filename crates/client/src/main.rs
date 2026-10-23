@@ -6,7 +6,8 @@
 //! fight (weapons found in houses, shoves, stomps) or flee.
 //!
 //! Controls: WASD move, Shift run, C sneak (toggle), mouse to face, left mouse attack, Space shove
-//! (or stomp a downed zombie in front), E pick up a weapon, F open/close the door or window you
+//! (or stomp a downed zombie in front), E pick up the item you face (or search the container you
+//! face), Tab or I the inventory panel, F open/close the door or window you
 //! face, G smash the window you face, R get up again after dying, T skip an hour, mouse wheel
 //! zoom, Z spawn 250 zombies, `,` / `.` rotate between the four fixed angles (only with `--rotate`,
 //! the "Camera rotation" setting).
@@ -15,6 +16,7 @@
 //! `--screenshot PATH` (saved after `--screenshot-after SECS[,SECS...]`, default 5) `--exit-after SECS` `--zoom METRES`
 //! `--autoplay` (the player fights by itself) `--fight-demo` (a bat and a few zombies close by)
 //! `--siege` (outside your house with a bat, zombies battering its door) `--sneak` (start sneaking)
+//! `--inventory` (start with the inventory panel open)
 //! `--map-chunks N` (a square map N × N chunks of 16 m; default 20) `--saves DIR` (where saves go;
 //! default `saves`) `--load NAME|PATH` (start from a save; `--load-anyway` loads one whose game data
 //! changed in a way it can't simply take, dropping what no longer fits). F5 quicksaves, F9
@@ -34,6 +36,7 @@ mod daynight;
 mod fog;
 mod fx;
 mod hud;
+mod inventory_ui;
 mod items_render;
 mod materials;
 mod meshgen;
@@ -80,6 +83,8 @@ pub struct Options {
     pub siege: bool,
     /// Start sneaking (as if C had been pressed; `--sneak`).
     pub sneak: bool,
+    /// Start with the inventory panel open (as if Tab had been pressed; `--inventory`).
+    pub inventory: bool,
     /// A square map this many 16 m chunks a side (`--map-chunks`, default 20: 320 m).
     pub map_chunks: Option<i32>,
     /// Folder for quicksaves and the autosave (`--saves`, default `saves`).
@@ -153,6 +158,7 @@ impl Options {
             fight_demo: flag("--fight-demo"),
             siege: flag("--siege"),
             sneak: flag("--sneak"),
+            inventory: flag("--inventory"),
             map_chunks: value("--map-chunks").and_then(|v| v.parse().ok()).filter(|n: &i32| (1..=256).contains(n)),
             saves: value("--saves").map(Into::into).unwrap_or_else(|| zombye_net::save_file::DEFAULT_DIR.into()),
             load: value("--load"),
@@ -249,7 +255,7 @@ fn main() {
             camera::IsoCameraPlugin,
             zombie_render::ZombieRenderPlugin,
             items_render::ItemsRenderPlugin,
-            hud::HudPlugin,
+            (hud::HudPlugin, inventory_ui::InventoryUiPlugin),
             fx::FxPlugin,
             survivor::SurvivorPlugin,
             autoplay::AutoplayPlugin,
