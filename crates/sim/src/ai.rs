@@ -21,8 +21,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::TICK_DT;
 use crate::combat::MAX_KNOCKBACK_SPEED;
-use crate::flow::{FlowCache, FlowField, FlowKey};
+use crate::flow::{FlowCache, FlowField, FlowKey, WalkGrid};
 use crate::map::{EdgeRef, TileMap};
+use crate::nav::{Nav, Way};
 use crate::players::PLAYER_RADIUS;
 use crate::rng::Rng;
 use crate::senses::{Sound, SoundSource, Target};
@@ -269,6 +270,9 @@ pub(crate) struct Counts {
 /// Everything the zombie tick reads or writes besides the zombies themselves.
 pub(crate) struct Ctx<'a> {
     pub map: &'a TileMap,
+    pub walk: &'a WalkGrid,
+    /// The navigation graph and plans, for targets beyond a flow field (unless `long_paths` is off).
+    pub nav: Option<&'a mut Nav>,
     pub hash: &'a SpatialHash,
     pub targets: &'a [Target],
     pub tuning: &'a ZombieTuning,
@@ -721,8 +725,8 @@ fn thump(z: &mut Zombies, i: usize, cx: &mut Ctx) -> (Vec2, bool, Option<Vec2>) 
 }
 
 /// How zombie `i` gets toward `target`: straight there when the line is clear, else along the
-/// cached flow field for `key` when there is one covering it, else straight anyway (sliding along
-/// walls). When the field's next step goes through a shut door or window, it says
+/// cached flow field for `key` when there is one covering it, else along its plan over the
+/// navigation graph ([`crate::nav`]), else straight anyway (sliding along walls). When the field's next step goes through a shut door or window, it says
 /// [`Steer::Breach`] (walk up to it, and batter it once in reach). [`Steer::Arrived`] once it's there (with nothing solid
 /// between), or can't get closer (at the field's goal with the target out of sight behind a wall).
 /// [`Steer::Unreachable`] when a player's field (which always leads to the open tile the player
@@ -742,7 +746,9 @@ fn steer(cx: &mut Ctx, z: &mut Zombies, i: usize, key: FlowKey, target: Vec2) ->
         return Steer::Go(to / d);
     }
     let goal_tile = target.floor().as_ivec2();
+    let mut covered = false;
     if let Some(field) = cx.flow.get(key, goal_tile, cx.tick) {
+        covered = field.distance(p).is_some();
         match field.distance(p) {
             Some(fd) if fd > 1.5 => {
                 // The way on through a shut door or window: from this tile, or (crowding in at
@@ -774,6 +780,14 @@ fn steer(cx: &mut Ctx, z: &mut Zombies, i: usize, key: FlowKey, target: Vec2) ->
             // Well inside the field's range and still no way there.
             None if matches!(key, FlowKey::Player(_)) && d <= UNREACHABLE_NEAR => return Steer::Unreachable,
             _ => {}
+        }
+    }
+    // Beyond the field (or before it's built): the long way round, along the navigation graph.
+    if !covered && let Some(nav) = cx.nav.as_deref_mut() {
+        match nav.way(cx.walk, p, target, cx.tick) {
+            Some(Way::Go(dir)) => return Steer::Go(dir),
+            Some(Way::Breach(edge)) => return Steer::Breach(edge, edge.distance(p)),
+            None => {}
         }
     }
     Steer::Go(to / d)
