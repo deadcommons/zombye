@@ -1,0 +1,23 @@
+Art and audio licence
+
+The art and audio in this directory and its subdirectories (3D models, textures, animations,
+images and UI art, sounds and music) are Copyright (c) 2026 Dead Commons and the Zombye
+contributors, and are licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0
+International licence (CC BY-NC-SA 4.0): https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+Not covered by this licence (MIT OR Apache-2.0, like the code):
+- assets/data/ (building templates, items, population and other game data)
+- assets/shaders/ (shader source code)
+
+An asset whose row in ATTRIBUTION.md names a different licence (for example CC0, or a third-party
+CC BY asset) is under that licence instead.
+
+Commercial use of the art and audio needs written permission from Dead Commons
+(hello@getzombye.com).
+
+Videos, streams and screenshots: you may record, stream and publish videos and screenshots of
+Zombye, including monetised ones, without asking. This permission is in addition to
+CC BY-NC-SA 4.0.
+
+The Zombye and Dead Commons names and logos are trademarks covered by
+docs/brand/LICENSE-brand.txt, not by this licence.

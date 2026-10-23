@@ -122,7 +122,7 @@ Zombye is an open-source survival sandbox: isometric zombie survival in real 3D,
 
 **Links**
 • Source: <https://github.com/deadcommons/zombye>
-• Licence: MIT OR Apache-2.0. The Zombye and Dead Commons names and logos are trademarks.
+• Licence: code MIT OR Apache-2.0; art and audio CC BY-NC-SA 4.0. The Zombye and Dead Commons names and logos are trademarks.
 ```
 
 ### #welcome: rules
