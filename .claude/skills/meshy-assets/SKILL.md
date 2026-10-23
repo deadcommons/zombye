@@ -9,6 +9,11 @@ description: Make Zombye characters and other detailed assets with Meshy over it
 **Use plain Blender** ([blender-assets](../blender-assets/SKILL.md)) for props, furniture and kit pieces:
 cheaper, exact, palette colours, editable. Walls, floors, roofs, roads and terrain stay code-generated.
 
+**First read [docs/asset-pipeline.md](../../../docs/asset-pipeline.md):** every asset starts from an
+approved reference and stops at four gates (reference, blockout, look, in game) for the owner to approve
+screenshots before going on, and it lists the sizes every asset must fit (character heights, rigs,
+budgets). This skill is how to do the Meshy part of it.
+
 ## Rules first
 
 - **Credits are money.** Check `meshy_check_balance` (free) before every paid call and keep a running

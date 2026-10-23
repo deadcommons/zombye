@@ -10,6 +10,11 @@ cleaned up with `zchar.py`: the [meshy-assets skill](../meshy-assets/SKILL.md) (
 **Not for** walls, floors, roofs, roads or terrain: they stay code-generated so they snap to the grid
 (PLAN §6.8). Stairs are part of the building kit, not furniture.
 
+**First read [docs/asset-pipeline.md](../../../docs/asset-pipeline.md):** every asset starts from an
+approved reference and stops at four gates (reference, blockout, look, in game) for the owner to approve
+screenshots before going on, and it lists the sizes every asset must fit (walls, doors, windows,
+furniture heights, characters, budgets). This skill is how to do the Blender part of it.
+
 ## Two repos
 
 - **Work in progress** lives in the private art repo, deadcommons/zombye-art (`~/games/zombye-art`, or
