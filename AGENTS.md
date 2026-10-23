@@ -55,6 +55,10 @@ code-generated. Characters and other detailed assets start in Meshy (reference i
 animations) and are cleaned up in Blender with `tools/blender/zchar.py` and baked for the crowd with
 `zvat.py`: follow the **[meshy-assets skill](.claude/skills/meshy-assets/SKILL.md)** (paid credits, its
 rules first).
+**[docs/asset-pipeline.md](docs/asset-pipeline.md)** is the process for every asset, Blender
+or Meshy (from an approved reference through four review gates the owner approves with screenshots) and
+the sizes they all share: storey 3.0 m, walls 0.16 m, doors 1 × 2.1 m, window sill 0.9 m and head 2.1 m,
+and the rest. Change a building number in the code, change it there too.
 
 ## Commands
 
