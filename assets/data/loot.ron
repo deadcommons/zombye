@@ -1,0 +1,364 @@
+// What furniture holds. Schema: zombye_sim::loot::LootData (validated on load against items.ron
+// and containers.ron; unknown fields are refused). All names, weights and odds are our own.
+//
+// A table is keyed by (room type, container kind), either of which may be "any". A container uses
+// the first table of: (room, container), (any, container), (room, any), (any, any); with none it
+// holds nothing. So a fridge is a fridge wherever it stands unless a room says otherwise, and
+// furniture whose kind has no "any" table here (shelves, a workbench) holds what its room holds.
+//
+// A table: `empty` (chance it holds nothing at all), `rolls` (how many picks, (min, max)), and
+// `entries`: an item id, a `weight` among the table's entries (default 1), a `count` per pick
+// ((min, max), default (1, 1)) and `rare: true` for the few that `rare_scale` should touch.
+// `groups` are extra lists rolled after the picks, each with a `chance` and its own `rolls`. The
+// same item picked twice adds up; a pick that doesn't fit in the container's room is cut to what
+// fits, or skipped.
+//
+// A container is filled the first time anyone opens it, from a hash of the world seed and its id
+// (never the world's random stream), so it holds the same whenever and in whatever order houses
+// are searched. Editing this file only changes containers nobody has opened yet: a save made
+// before loads with a note.
+//
+// Room types now in the templates: kitchen, bathroom, bedroom, living, dining, hall, laundry. The
+// shed, garage, office and shop tables (shop, pharmacy, hardware: a shop's stock is its room type)
+// are ready for the buildings #17 adds.
+(
+    // Sandbox loot abundance: multiplies every table's and group's rolls (0.25 scarce ... 2 plenty).
+    scale: 1.0,
+    // Multiplies the weight of entries marked `rare` (0: never found).
+    rare_scale: 1.0,
+    tables: [
+        // ---- Kitchen -------------------------------------------------------------------------
+        (room: "kitchen", container: "fridge", empty: 0.15, rolls: (1, 4), entries: [
+            (item: "soda_can", weight: 3, count: (1, 4)),
+            (item: "milk", weight: 3),
+            (item: "cheese", weight: 3),
+            (item: "apple", weight: 3, count: (1, 4)),
+            (item: "juice_carton", weight: 2, count: (1, 2)),
+            (item: "water_bottle", weight: 2, count: (1, 2)),
+            (item: "bread", weight: 1),
+        ]),
+        (room: "kitchen", container: "kitchen_cupboard", empty: 0.1, rolls: (2, 5), entries: [
+            (item: "tinned_beans", weight: 4, count: (1, 3)),
+            (item: "tinned_soup", weight: 4, count: (1, 3)),
+            (item: "tinned_fruit", weight: 3, count: (1, 2)),
+            (item: "crackers", weight: 3),
+            (item: "cereal", weight: 3),
+            (item: "peanut_butter", weight: 2),
+            (item: "crisps", weight: 2),
+            (item: "mug", weight: 4, count: (1, 2)),
+            (item: "empty_bottle", weight: 2),
+            (item: "plastic_bag", weight: 2, count: (1, 3)),
+            (item: "matches", weight: 1),
+            (item: "frying_pan", weight: 1),
+        ], groups: [
+            // One cupboard in three is the one with the cutlery drawer.
+            (name: "cutlery drawer", chance: 0.35, rolls: (1, 1), entries: [
+                (item: "kitchen_knife", weight: 3),
+                (item: "tin_opener", weight: 3),
+                (item: "scissors", weight: 1),
+            ]),
+        ]),
+        (room: "kitchen", container: "under_sink", empty: 0.3, rolls: (1, 2), entries: [
+            (item: "plastic_bag", weight: 3, count: (1, 4)),
+            (item: "duct_tape", weight: 2),
+            (item: "candle", weight: 2),
+            (item: "rag", weight: 2, count: (1, 2)),
+            (item: "empty_bottle", weight: 1),
+            (item: "antiseptic", weight: 1),
+        ]),
+        // Any shelves in a kitchen: the pantry.
+        (room: "kitchen", container: "any", empty: 0.2, rolls: (1, 4), entries: [
+            (item: "tinned_beans", weight: 3, count: (1, 2)),
+            (item: "tinned_soup", weight: 3, count: (1, 2)),
+            (item: "cereal", weight: 2),
+            (item: "crackers", weight: 2),
+            (item: "mug", weight: 2),
+            (item: "baking_tray", weight: 1),
+        ]),
+
+        // ---- Containers that are the same in any room -----------------------------------------
+        (room: "any", container: "fridge", empty: 0.3, rolls: (1, 3), entries: [
+            (item: "soda_can", weight: 4, count: (1, 4)),
+            (item: "water_bottle", weight: 3, count: (1, 2)),
+            (item: "milk", weight: 1),
+            (item: "cheese", weight: 1),
+        ]),
+        (room: "any", container: "kitchen_cupboard", empty: 0.3, rolls: (1, 3), entries: [
+            (item: "mug", weight: 3, count: (1, 2)),
+            (item: "plastic_bag", weight: 2, count: (1, 3)),
+            (item: "crisps", weight: 2),
+            (item: "chocolate_bar", weight: 2),
+            (item: "empty_bottle", weight: 2),
+        ]),
+        (room: "any", container: "oven", empty: 0.7, rolls: (1, 1), entries: [
+            (item: "frying_pan", weight: 3),
+            (item: "baking_tray", weight: 2),
+        ]),
+        (room: "any", container: "under_sink", empty: 0.35, rolls: (1, 2), entries: [
+            (item: "rag", weight: 3, count: (1, 3)),
+            (item: "plastic_bag", weight: 2, count: (1, 2)),
+            (item: "empty_bottle", weight: 2),
+            (item: "duct_tape", weight: 1),
+            (item: "candle", weight: 1),
+        ]),
+        (room: "any", container: "bathroom_cabinet", empty: 0.2, rolls: (1, 3), entries: [
+            (item: "plasters", weight: 4),
+            (item: "painkillers", weight: 3),
+            (item: "gauze", weight: 2),
+            (item: "antiseptic", weight: 2),
+            (item: "towel", weight: 2),
+            (item: "scissors", weight: 1),
+            (item: "sewing_kit", weight: 0.5),
+            (item: "antibiotics", weight: 0.3, rare: true),
+        ]),
+        // A wardrobe, in a bedroom or anywhere but a hall (there it's a coat cupboard).
+        (room: "any", container: "wardrobe", empty: 0.1, rolls: (2, 5), entries: [
+            (item: "t_shirt", weight: 4, count: (1, 3)),
+            (item: "jumper", weight: 3),
+            (item: "jeans", weight: 3),
+            (item: "hoodie", weight: 2),
+            (item: "trainers", weight: 2),
+            (item: "bed_sheet", weight: 2),
+            (item: "tote_bag", weight: 1),
+            (item: "school_backpack", weight: 1),
+            (item: "duffel_bag", weight: 0.6),
+            (item: "baseball_bat", weight: 0.6),
+            (item: "work_boots", weight: 0.5),
+            (item: "leather_jacket", weight: 0.5, rare: true),
+            (item: "hiking_pack", weight: 0.2, rare: true),
+        ]),
+        // The coat cupboard in a hall: outdoor gear.
+        (room: "any", container: "coat_cupboard", empty: 0.15, rolls: (1, 3), entries: [
+            (item: "umbrella", weight: 3),
+            (item: "hoodie", weight: 2),
+            (item: "trainers", weight: 2),
+            (item: "flashlight", weight: 2),
+            (item: "batteries", weight: 2),
+            (item: "leather_jacket", weight: 1),
+            (item: "work_gloves", weight: 1),
+            (item: "tote_bag", weight: 1),
+            (item: "golf_club", weight: 0.5),
+            (item: "baseball_bat", weight: 0.4),
+        ]),
+        (room: "any", container: "desk_drawers", empty: 0.25, rolls: (1, 3), entries: [
+            (item: "pen", weight: 4, count: (1, 3)),
+            (item: "magazine", weight: 3),
+            (item: "batteries", weight: 2),
+            (item: "scissors", weight: 2),
+            (item: "chocolate_bar", weight: 2),
+            (item: "alarm_clock", weight: 1),
+            (item: "painkillers", weight: 1),
+            (item: "flashlight", weight: 1),
+            (item: "school_backpack", weight: 0.8),
+        ]),
+        // The drawer in a coffee table.
+        (room: "any", container: "drawer", empty: 0.3, rolls: (1, 2), entries: [
+            (item: "tv_remote", weight: 4),
+            (item: "magazine", weight: 3),
+            (item: "chocolate_bar", weight: 2),
+            (item: "lighter", weight: 2),
+            (item: "candle", weight: 2),
+            (item: "batteries", weight: 2),
+            (item: "pen", weight: 2),
+            (item: "painkillers", weight: 1),
+        ]),
+        (room: "any", container: "tv_shelf", empty: 0.4, rolls: (1, 2), entries: [
+            (item: "magazine", weight: 3),
+            (item: "batteries", weight: 2),
+            (item: "candle", weight: 2),
+            (item: "picture_frame", weight: 2),
+            (item: "tv_remote", weight: 1),
+            (item: "flashlight", weight: 1),
+        ]),
+        // A washer's or dryer's drum.
+        (room: "any", container: "drum", empty: 0.5, rolls: (1, 2), entries: [
+            (item: "t_shirt", weight: 3),
+            (item: "towel", weight: 3),
+            (item: "jeans", weight: 2),
+            (item: "jumper", weight: 2),
+            (item: "bed_sheet", weight: 2),
+            (item: "rag", weight: 2, count: (1, 3)),
+        ]),
+
+        // ---- Rooms, for furniture that holds what its room holds (shelves, benches) ------------
+        (room: "bathroom", container: "any", empty: 0.3, rolls: (1, 2), entries: [
+            (item: "towel", weight: 3),
+            (item: "plasters", weight: 2),
+            (item: "rag", weight: 2, count: (1, 2)),
+            (item: "painkillers", weight: 1),
+        ]),
+        (room: "bedroom", container: "any", empty: 0.3, rolls: (1, 3), entries: [
+            (item: "magazine", weight: 3),
+            (item: "alarm_clock", weight: 2),
+            (item: "picture_frame", weight: 2),
+            (item: "t_shirt", weight: 2),
+            (item: "batteries", weight: 1),
+            (item: "candle", weight: 1),
+            (item: "cushion", weight: 1),
+        ]),
+        (room: "living", container: "any", empty: 0.3, rolls: (1, 3), entries: [
+            (item: "picture_frame", weight: 3),
+            (item: "magazine", weight: 3),
+            (item: "candle", weight: 2),
+            (item: "cushion", weight: 2),
+            (item: "batteries", weight: 1),
+            (item: "lighter", weight: 1),
+            (item: "golf_club", weight: 0.3),
+        ]),
+        // A dresser or sideboard in a dining room.
+        (room: "dining", container: "any", empty: 0.3, rolls: (1, 3), entries: [
+            (item: "mug", weight: 3, count: (1, 3)),
+            (item: "candle", weight: 3, count: (1, 2)),
+            (item: "matches", weight: 2),
+            (item: "picture_frame", weight: 2),
+            (item: "bed_sheet", weight: 1),
+            (item: "kitchen_knife", weight: 0.8),
+        ]),
+        (room: "hall", container: "any", empty: 0.3, rolls: (1, 2), entries: [
+            (item: "umbrella", weight: 3),
+            (item: "flashlight", weight: 2),
+            (item: "batteries", weight: 2),
+            (item: "work_gloves", weight: 1),
+            (item: "plastic_bag", weight: 2, count: (1, 3)),
+        ]),
+        // Laundry shelves: cleaning things and the odd tool.
+        (room: "laundry", container: "any", empty: 0.2, rolls: (1, 3), entries: [
+            (item: "duct_tape", weight: 2),
+            (item: "screwdriver", weight: 2),
+            (item: "batteries", weight: 2),
+            (item: "towel", weight: 2),
+            (item: "rag", weight: 2, count: (1, 3)),
+            (item: "nails", weight: 1),
+            (item: "rope", weight: 1),
+            (item: "flashlight", weight: 1),
+            (item: "work_gloves", weight: 1),
+            (item: "candle", weight: 1),
+        ], groups: [
+            (name: "toolbox", chance: 0.35, rolls: (1, 1), entries: [
+                (item: "claw_hammer", weight: 3),
+                (item: "wooden_plank", weight: 2),
+                (item: "crowbar", weight: 1.2),
+                (item: "fire_axe", weight: 0.3, rare: true),
+            ]),
+        ]),
+        // The shed's shelves and bench: tools and materials.
+        (room: "shed", container: "any", empty: 0.15, rolls: (2, 4), entries: [
+            (item: "nails", weight: 3),
+            (item: "wooden_plank", weight: 3, count: (1, 3)),
+            (item: "claw_hammer", weight: 2),
+            (item: "saw", weight: 2),
+            (item: "screwdriver", weight: 2),
+            (item: "duct_tape", weight: 2),
+            (item: "rope", weight: 2),
+            (item: "work_gloves", weight: 2),
+            (item: "crowbar", weight: 1),
+            (item: "batteries", weight: 1),
+            (item: "empty_bottle", weight: 1),
+            (item: "fire_axe", weight: 0.5, rare: true),
+        ]),
+        // Like a shed, with a lot more junk.
+        (room: "garage", container: "any", empty: 0.15, rolls: (2, 5), entries: [
+            (item: "empty_bottle", weight: 3, count: (1, 3)),
+            (item: "rag", weight: 3, count: (1, 3)),
+            (item: "nails", weight: 2),
+            (item: "wooden_plank", weight: 2, count: (1, 2)),
+            (item: "screwdriver", weight: 2),
+            (item: "duct_tape", weight: 2),
+            (item: "plastic_bag", weight: 2, count: (1, 3)),
+            (item: "rope", weight: 1.5),
+            (item: "work_gloves", weight: 1.5),
+            (item: "claw_hammer", weight: 1.5),
+            (item: "saw", weight: 1),
+            (item: "magazine", weight: 1),
+            (item: "batteries", weight: 1),
+            (item: "flashlight", weight: 1),
+            (item: "crowbar", weight: 0.8),
+            (item: "golf_club", weight: 0.8),
+            (item: "baseball_bat", weight: 0.5),
+            (item: "fire_axe", weight: 0.3, rare: true),
+        ]),
+        (room: "office", container: "desk_drawers", empty: 0.2, rolls: (1, 3), entries: [
+            (item: "pen", weight: 4, count: (1, 4)),
+            (item: "magazine", weight: 2),
+            (item: "scissors", weight: 2),
+            (item: "chocolate_bar", weight: 2),
+            (item: "mug", weight: 2),
+            (item: "painkillers", weight: 1),
+            (item: "batteries", weight: 1),
+            (item: "school_backpack", weight: 0.6),
+            (item: "flashlight", weight: 0.6),
+        ]),
+        (room: "office", container: "any", empty: 0.3, rolls: (1, 2), entries: [
+            (item: "pen", weight: 3, count: (1, 3)),
+            (item: "magazine", weight: 3),
+            (item: "mug", weight: 2),
+            (item: "picture_frame", weight: 1),
+            (item: "umbrella", weight: 1),
+        ]),
+
+        // ---- Shops: worth the noise of getting in ----------------------------------------------
+        // A corner shop's shelves.
+        (room: "shop", container: "any", empty: 0.05, rolls: (3, 8), entries: [
+            (item: "tinned_beans", weight: 4, count: (1, 4)),
+            (item: "tinned_soup", weight: 4, count: (1, 4)),
+            (item: "crisps", weight: 4, count: (1, 3)),
+            (item: "chocolate_bar", weight: 4, count: (1, 5)),
+            (item: "soda_can", weight: 4, count: (1, 6)),
+            (item: "tinned_fruit", weight: 3, count: (1, 3)),
+            (item: "crackers", weight: 3, count: (1, 2)),
+            (item: "water_bottle", weight: 3, count: (1, 3)),
+            (item: "cereal", weight: 2),
+            (item: "peanut_butter", weight: 2),
+            (item: "batteries", weight: 2, count: (1, 2)),
+            (item: "plastic_bag", weight: 2, count: (1, 5)),
+            (item: "matches", weight: 1),
+            (item: "lighter", weight: 1),
+            (item: "candle", weight: 1, count: (1, 2)),
+            (item: "painkillers", weight: 1),
+            (item: "magazine", weight: 1, count: (1, 3)),
+        ]),
+        (room: "shop", container: "fridge", empty: 0.05, rolls: (3, 8), entries: [
+            (item: "soda_can", weight: 4, count: (2, 6)),
+            (item: "water_bottle", weight: 3, count: (1, 3)),
+            (item: "juice_carton", weight: 2, count: (1, 2)),
+            (item: "milk", weight: 2, count: (1, 2)),
+            (item: "cheese", weight: 1, count: (1, 2)),
+        ]),
+        (room: "pharmacy", container: "any", empty: 0.05, rolls: (3, 8), entries: [
+            (item: "plasters", weight: 4, count: (1, 3)),
+            (item: "painkillers", weight: 4, count: (1, 3)),
+            (item: "gauze", weight: 3, count: (1, 3)),
+            (item: "antiseptic", weight: 3, count: (1, 2)),
+            (item: "sewing_kit", weight: 1),
+            (item: "thread", weight: 1, count: (1, 2)),
+            (item: "chocolate_bar", weight: 1, count: (1, 3)),
+            (item: "water_bottle", weight: 1),
+            (item: "antibiotics", weight: 1, rare: true),
+        ]),
+        (room: "hardware", container: "any", empty: 0.05, rolls: (3, 8), entries: [
+            (item: "duct_tape", weight: 3, count: (1, 2)),
+            (item: "nails", weight: 3, count: (1, 3)),
+            (item: "batteries", weight: 3, count: (1, 3)),
+            (item: "rope", weight: 2),
+            (item: "screwdriver", weight: 2),
+            (item: "work_gloves", weight: 2),
+            (item: "flashlight", weight: 2),
+            (item: "saw", weight: 1.5),
+            (item: "claw_hammer", weight: 1.5),
+            (item: "wooden_plank", weight: 1, count: (1, 2)),
+            (item: "crowbar", weight: 0.8),
+            (item: "fire_axe", weight: 0.3, rare: true),
+        ]),
+
+        // ---- Anywhere else: everyday clutter ----------------------------------------------------
+        (room: "any", container: "any", empty: 0.4, rolls: (1, 2), entries: [
+            (item: "magazine", weight: 3),
+            (item: "mug", weight: 2),
+            (item: "pen", weight: 2, count: (1, 2)),
+            (item: "plastic_bag", weight: 2),
+            (item: "candle", weight: 1),
+            (item: "picture_frame", weight: 1),
+            (item: "batteries", weight: 1),
+        ]),
+    ],
+)
