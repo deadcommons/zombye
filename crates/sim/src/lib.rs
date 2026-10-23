@@ -9,7 +9,9 @@
 
 pub mod ai;
 pub mod combat;
+pub mod containers;
 pub mod flow;
+pub mod inventory;
 pub mod items;
 pub mod map;
 pub mod nav;
@@ -29,10 +31,12 @@ pub mod zombies;
 
 pub use ai::{ZombieAttack, ZombieThump, ZombieTuning};
 pub use combat::{ActionEvent, CombatEvent, CombatEventKind, CombatTuning, HitEffect, HitEvent};
-pub use items::{GroundItem, WeaponCategory, WeaponDef};
+pub use containers::{ContainerData, ContainerDef, ContainerSite};
+pub use inventory::{Burden, Carry, CarryTuning, Inventory, ItemJob, ItemNote, JobKind, Place, Slot};
+pub use items::{GroundItem, ItemCategory, ItemDef, ItemStack, WeaponCategory, WeaponDef};
 pub use flow::FlowField;
 pub use map::TileMap;
-pub use players::{Action, ActionKind, Player, PlayerInput, PlayerState, Stance};
+pub use players::{Action, ActionKind, MoveMods, Player, PlayerInput, PlayerState, Stance};
 pub use population::{Attractor, PopulationDef, Zone};
 pub use template::BuildingTemplate;
 pub use save::{LoadError, LoadOptions, Loaded, SaveInfo};

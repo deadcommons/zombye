@@ -6,16 +6,21 @@
 //!
 //! - *Compatible*, loaded with a note: a weapon's numbers changed (the new numbers apply), weapons
 //!   added, removed or reordered when nothing in the save uses the removed ones (the save's weapon
-//!   indices are matched up by id), `population.ron` changed (its respawn and migration settings
+//!   indices are matched up by id), the same for items (`items.ron`: weights, sizes and other numbers
+//!   apply from now on; a load that no longer fits just slows you down), `containers.ron` changed
+//!   while every container the save has opened is still a container (new room sizes and search
+//!   times apply; unopened ones fill by the new rules), `population.ron` changed (its respawn and migration settings
 //!   apply from now on; each region keeps the target it was saved with), and building templates that
 //!   changed without changing the map they generate (or a save that stores its map whole).
 //! - *Incompatible*, refused with [`LoadError::ContentChanged`]: templates that change the
 //!   regenerated map (the save's door and window edits, positions and paths would be on another
-//!   town), and a weapon the save refers to (on the ground, in a hand, mid-swing) that is gone.
+//!   town), a weapon the save refers to (mid-swing) or an item it holds anywhere (on the floor, in an
+//!   inventory, in a container, in a queued job) that is gone, and an opened container that isn't a
+//!   container any more (its contents would be lost).
 //!
 //! [`LoadOptions::force`](crate::save::LoadOptions::force) ("load anyway") loads those too, doing its best and saying what it did:
-//! items of a missing weapon are dropped, players holding one go bare-handed, a swing with one is
-//! called off; on a changed map, only the door and window edits that still fit are applied, damage
+//! stacks of a missing item are dropped (and jobs moving or using one), a swing with a missing
+//! weapon is called off, the contents of containers that are gone are dropped; on a changed map, only the door and window edits that still fit are applied, damage
 //! on edges that are no longer doors or windows is dropped, and players and zombies standing where
 //! something is now built are moved to the nearest free ground. A map stored whole is kept as it is.
 //!
@@ -28,7 +33,8 @@
 
 use glam::{IVec2, Vec2};
 
-use crate::items::GroundItem;
+use crate::inventory::JobKind;
+use crate::items::{GroundItem, ItemStack};
 use crate::map::{Edge, TileMap};
 use crate::players::Player;
 use crate::save::{ContentPrint, LoadError};
@@ -46,6 +52,11 @@ pub(crate) struct ContentPlan {
     pub saved_weapons: Vec<String>,
     /// Saved weapon index → index in the content now (`None`: gone). `None` when nothing moved.
     pub weapon_map: Option<Vec<Option<u16>>>,
+    /// The same for items.
+    pub saved_items: Vec<String>,
+    pub item_map: Option<Vec<Option<u16>>>,
+    /// `containers.ron` changed.
+    pub containers_changed: bool,
 }
 
 /// Compare the content a save was made with to the content now.
@@ -67,6 +78,21 @@ pub(crate) fn plan_content(saved: &ContentPrint, now: &ContentPrint) -> ContentP
             weapon_map = Some(saved.weapon_ids.iter().map(|id| now.weapon_ids.iter().position(|n| n == id).map(|i| i as u16)).collect());
         }
     }
+    let mut item_map = None;
+    if saved.items != now.items {
+        if saved.item_ids == now.item_ids {
+            notes.push("items.ron changed (the same items, other numbers): the new numbers apply".to_string());
+        } else {
+            let added: Vec<&String> = now.item_ids.iter().filter(|id| !saved.item_ids.contains(id)).collect();
+            let removed: Vec<&String> = saved.item_ids.iter().filter(|id| !now.item_ids.contains(id)).collect();
+            notes.push(format!("items.ron changed (added: {}; removed: {}): the save's items are matched up by id, and the numbers in the file apply", list(&added), list(&removed)));
+            item_map = Some(saved.item_ids.iter().map(|id| now.item_ids.iter().position(|n| n == id).map(|i| i as u16)).collect());
+        }
+    }
+    let containers_changed = saved.containers != now.containers;
+    if containers_changed {
+        notes.push("containers.ron changed: opened containers keep what they hold under the new rules; unopened ones fill by them".to_string());
+    }
     if saved.population != now.population {
         notes.push("population.ron changed: its respawn and migration settings apply from now on; each region keeps the zombie target it was saved with".to_string());
     }
@@ -78,69 +104,154 @@ pub(crate) fn plan_content(saved: &ContentPrint, now: &ContentPrint) -> ContentP
             format!("building templates changed (saved with {}; now {}), so the map would differ", ids(&saved.template_ids), ids(&now.template_ids))
         }
     });
-    ContentPlan { notes, templates, saved_weapons: saved.weapon_ids.clone(), weapon_map }
+    ContentPlan { notes, templates, saved_weapons: saved.weapon_ids.clone(), weapon_map, saved_items: saved.item_ids.clone(), item_map, containers_changed }
 }
 
-/// Every weapon index in the saved items and players must name a weapon of the save's own list;
-/// then they are moved to the content's list. A weapon that's gone is refused (the returned
-/// `blocking` line) unless `force`, which drops those items, empties those hands and calls off
-/// those swings (said in `notes`).
-pub(crate) fn remap_weapons(plan: &ContentPlan, items: &mut Vec<GroundItem>, players: &mut [Player], force: bool, notes: &mut Vec<String>) -> Result<Option<String>, LoadError> {
+/// Every weapon index in the saved players' actions must name a weapon of the save's own list;
+/// then they are moved to the content's list. (The weapon in hand follows from the item held and is
+/// worked out again after loading.) A weapon that's gone is refused (the returned `blocking` line)
+/// unless `force`, which calls off those swings (said in `notes`).
+pub(crate) fn remap_weapons(plan: &ContentPlan, players: &mut [Player], force: bool, notes: &mut Vec<String>) -> Result<Option<String>, LoadError> {
     let n = plan.saved_weapons.len();
-    let range = |what: String, i: u16| if (i as usize) < n { Ok(()) } else { Err(invalid(format!("{what} weapon index {i} is out of range (the save lists {n} weapons)"))) };
-    for it in items.iter() {
-        range(format!("item {}:", it.id), it.weapon)?;
-    }
     for p in players.iter() {
-        if let Some(w) = p.weapon {
-            range(format!("player {}:", p.id), w)?;
-        }
-        if let Some(a) = p.action {
-            range(format!("player {}'s action:", p.id), a.weapon)?;
+        if let Some(a) = p.action
+            && a.weapon as usize >= n
+        {
+            return Err(invalid(format!("player {}'s action: weapon index {} is out of range (the save lists {n} weapons)", p.id, a.weapon)));
         }
     }
     let Some(map) = &plan.weapon_map else { return Ok(None) };
     let gone = |i: u16| map[i as usize].is_none();
-    let on_ground = items.iter().filter(|it| gone(it.weapon)).count();
-    let held: Vec<u32> = players.iter().filter(|p| p.weapon.is_some_and(gone)).map(|p| p.id).collect();
-    let swinging: Vec<u32> = players.iter().filter(|p| p.action.is_some_and(|a| gone(a.weapon))).map(|p| p.id).collect();
-    if on_ground + held.len() + swinging.len() > 0 {
+    let swinging: Vec<&Player> = players.iter().filter(|p| p.action.is_some_and(|a| gone(a.weapon))).collect();
+    if !swinging.is_empty() {
         let mut missing: Vec<&str> = Vec::new();
-        let used = items.iter().map(|it| it.weapon).chain(players.iter().filter_map(|p| p.weapon)).chain(players.iter().filter_map(|p| p.action.map(|a| a.weapon)));
-        for i in used.filter(|&i| gone(i)) {
-            let id = plan.saved_weapons[i as usize].as_str();
+        for p in &swinging {
+            let id = plan.saved_weapons[p.action.expect("swinging").weapon as usize].as_str();
             if !missing.contains(&id) {
                 missing.push(id);
             }
         }
-        let ids = |v: &[u32]| v.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
-        let mut uses = Vec::new();
-        if on_ground > 0 {
-            uses.push(format!("{on_ground} on the ground"));
-        }
-        if !held.is_empty() {
-            uses.push(format!("held by player {}", ids(&held)));
-        }
-        if !swinging.is_empty() {
-            uses.push(format!("swung by player {}", ids(&swinging)));
-        }
-        let what = format!("weapon {} is gone from weapons.ron but the save uses it ({})", missing.join(", "), uses.join(", "));
+        let ids = swinging.iter().map(|p| p.id.to_string()).collect::<Vec<_>>().join(", ");
+        let what = format!("weapon {} is gone from weapons.ron but the save uses it (swung by player {ids})", missing.join(", "));
         if !force {
             return Ok(Some(what));
         }
-        notes.push(format!("loaded anyway: {what}; dropped those items, emptied those hands and called off those swings"));
-    }
-    items.retain(|it| !gone(it.weapon));
-    for it in items.iter_mut() {
-        it.weapon = map[it.weapon as usize].expect("kept");
+        notes.push(format!("loaded anyway: {what}; called off those swings"));
     }
     for p in players.iter_mut() {
-        p.weapon = p.weapon.and_then(|w| map[w as usize]);
         if p.action.is_some_and(|a| gone(a.weapon)) {
             p.action = None;
         }
         if let Some(a) = &mut p.action {
             a.weapon = map[a.weapon as usize].expect("kept");
+        }
+    }
+    Ok(None)
+}
+
+/// The item a job names, if any.
+fn job_item(kind: &JobKind) -> Option<u16> {
+    match *kind {
+        JobKind::Move { item, .. } | JobKind::Use { item, .. } => Some(item),
+        JobKind::Search { .. } => None,
+    }
+}
+
+/// Every item index in the save (ground items, inventories, jobs, opened containers) must name an
+/// item of the save's own list; then they are moved to the content's. An item that's gone is
+/// refused (the returned `blocking` line) unless `force`, which drops those stacks and jobs.
+pub(crate) fn remap_items(plan: &ContentPlan, ground: &mut Vec<GroundItem>, players: &mut [Player], opened: &mut [(u32, Vec<ItemStack>)], force: bool, notes: &mut Vec<String>) -> Result<Option<String>, LoadError> {
+    let n = plan.saved_items.len();
+    let range = |what: &dyn Fn() -> String, i: u16| if (i as usize) < n { Ok(()) } else { Err(invalid(format!("{} item index {i} is out of range (the save lists {n} items)", what()))) };
+    for it in ground.iter() {
+        range(&|| format!("ground item {}:", it.id), it.stack.item)?;
+    }
+    for p in players.iter() {
+        for s in p.inventory.stacks() {
+            range(&|| format!("player {}'s inventory:", p.id), s.item)?;
+        }
+        for j in &p.jobs {
+            if let Some(i) = job_item(&j.kind) {
+                range(&|| format!("player {}'s job:", p.id), i)?;
+            }
+        }
+    }
+    for (c, stacks) in opened.iter() {
+        for s in stacks {
+            range(&|| format!("container {c}:"), s.item)?;
+        }
+    }
+    let Some(map) = &plan.item_map else { return Ok(None) };
+    let gone = |i: u16| map[i as usize].is_none();
+    let mut missing: Vec<&str> = Vec::new();
+    let mut note = |i: u16| {
+        if gone(i) && !missing.contains(&plan.saved_items[i as usize].as_str()) {
+            missing.push(plan.saved_items[i as usize].as_str());
+        }
+    };
+    ground.iter().for_each(|it| note(it.stack.item));
+    for p in players.iter() {
+        p.inventory.stacks().for_each(|s| note(s.item));
+        p.jobs.iter().filter_map(|j| job_item(&j.kind)).for_each(&mut note);
+    }
+    opened.iter().flat_map(|(_, v)| v).for_each(|s| note(s.item));
+    if !missing.is_empty() {
+        let what = format!("item {} is gone from items.ron but the save has some (on the floor, carried or in a container)", missing.join(", "));
+        if !force {
+            return Ok(Some(what));
+        }
+        notes.push(format!("loaded anyway: {what}; dropped them"));
+    }
+    let to = |i: u16| map[i as usize];
+    ground.retain(|it| !gone(it.stack.item));
+    ground.iter_mut().for_each(|it| it.stack.item = to(it.stack.item).expect("kept"));
+    for p in players.iter_mut() {
+        let inv = &mut p.inventory;
+        for slot in [&mut inv.hand, &mut inv.off_hand, &mut inv.back, &mut inv.shoulder] {
+            *slot = slot.and_then(|s| to(s.item).map(|item| ItemStack { item, ..s }));
+        }
+        for list in [&mut inv.worn, &mut inv.carried] {
+            list.retain(|s| !gone(s.item));
+            list.iter_mut().for_each(|s| s.item = to(s.item).expect("kept"));
+        }
+        p.jobs.retain(|j| job_item(&j.kind).is_none_or(|i| !gone(i)));
+        for j in &mut p.jobs {
+            match &mut j.kind {
+                JobKind::Move { item, .. } | JobKind::Use { item, .. } => *item = to(*item).expect("kept"),
+                JobKind::Search { .. } => {}
+            }
+        }
+    }
+    for (_, list) in opened.iter_mut() {
+        list.retain(|s| !gone(s.item));
+        list.iter_mut().for_each(|s| s.item = to(s.item).expect("kept"));
+    }
+    Ok(None)
+}
+
+/// Every opened container must be a container of the map as loaded. One that isn't (the map or
+/// `containers.ron` changed) is refused (the returned line) unless `force`, which drops it and what it
+/// held; with the same content and map that can only be a damaged save. Players with a container
+/// open that's gone have it closed.
+pub(crate) fn fit_containers(w: &mut World, plan: &ContentPlan, new_map: bool, force: bool, notes: &mut Vec<String>) -> Result<Option<String>, LoadError> {
+    let stale: Vec<u32> = w.opened.keys().copied().filter(|&c| w.container(c).is_none()).collect();
+    if !stale.is_empty() {
+        if !plan.containers_changed && !new_map {
+            return Err(invalid(format!("opened container {} isn't a container of this map", stale[0])));
+        }
+        let held: usize = stale.iter().map(|c| w.opened[c].len()).sum();
+        let what = format!("{} opened containers are no longer containers ({held} stacks in them)", stale.len());
+        if !force {
+            return Ok(Some(what));
+        }
+        notes.push(format!("loaded anyway: {what}; dropped them"));
+        for c in stale {
+            w.opened.remove(&c);
+        }
+    }
+    for pi in 0..w.players.len() {
+        if w.players[pi].open.is_some_and(|c| w.container(c).is_none()) {
+            w.players[pi].open = None;
         }
     }
     Ok(None)
@@ -332,6 +443,7 @@ pub(crate) fn validate(w: &World) -> Result<(), LoadError> {
 
     // Players.
     let weapons = w.config.weapons.len();
+    let items = w.config.items.len();
     let weapon = |what: &dyn Fn() -> String, i: u16| {
         if (i as usize) < weapons { Ok(()) } else { Err(invalid(format!("{}weapon index {i} is out of range ({weapons} weapons)", what()))) }
     };
@@ -359,6 +471,38 @@ pub(crate) fn validate(w: &World) -> Result<(), LoadError> {
         if let Some(i) = p.weapon {
             weapon(&|| name(""), i)?;
         }
+        let stack = |what: &str, s: &ItemStack| {
+            if (s.item as usize) >= items || s.count == 0 {
+                Err(invalid(format!("player {id}: {what}: item {} x {} (items 0..{items}, at least one)", s.item, s.count)))
+            } else {
+                Ok(())
+            }
+        };
+        let inv = &p.inventory;
+        for (what, slot) in [("hand", inv.hand), ("off hand", inv.off_hand), ("back", inv.back), ("shoulder", inv.shoulder)] {
+            if let Some(s) = slot {
+                stack(what, &s)?;
+                if s.count != 1 {
+                    return Err(invalid(format!("player {id}: {what} holds {} items (one at a time)", s.count)));
+                }
+            }
+        }
+        inv.worn.iter().try_for_each(|s| stack("worn", s))?;
+        inv.carried.iter().try_for_each(|s| stack("carried", s))?;
+        if p.jobs.len() > 256 {
+            return Err(invalid(format!("player {id}: {} jobs queued", p.jobs.len())));
+        }
+        for j in &p.jobs {
+            if !(j.left.is_finite() && j.left >= 0.0 && j.left < 3600.0) {
+                return Err(invalid(format!("player {id}: a job's time left is {}", j.left)));
+            }
+            if job_item(&j.kind).is_some_and(|i| i as usize >= items) {
+                return Err(invalid(format!("player {id}: a job's item is out of range ({items} items)")));
+            }
+        }
+        if p.dead && (!p.jobs.is_empty() || p.open.is_some()) {
+            return Err(invalid(name("dead with things to do")));
+        }
         if let Some(a) = p.action {
             finite(a.timer, || name("action.timer"))?;
             finite(a.power, || name("action.power"))?;
@@ -372,9 +516,18 @@ pub(crate) fn validate(w: &World) -> Result<(), LoadError> {
         if it.id == 0 || it.id >= w.next_item_id || (k > 0 && w.items[k - 1].id >= it.id) {
             return Err(invalid(format!("item id {} is zero, repeated, out of order or past the next id {}", it.id, w.next_item_id)));
         }
-        weapon(&|| name(""), it.weapon)?;
+        if it.stack.item as usize >= items || it.stack.count == 0 {
+            return Err(invalid(format!("{}item {} x {} (items 0..{items}, at least one)", name(""), it.stack.item, it.stack.count)));
+        }
         on_map(map, it.pos, || name("pos"))?;
         finite(it.angle, || name("angle"))?;
+    }
+
+    // Opened containers (each one a container of this map, checked by `fit_containers`).
+    for (c, stacks) in &w.opened {
+        if let Some(s) = stacks.iter().find(|s| s.item as usize >= items || s.count == 0) {
+            return Err(invalid(format!("container {c}: item {} x {} (items 0..{items}, at least one)", s.item, s.count)));
+        }
     }
 
     // Door and window damage: only on doors and windows that can still be battered.
@@ -485,8 +638,13 @@ mod tests {
         parse_weapons(include_str!("../../../assets/data/items/weapons.ron")).unwrap()
     }
 
+    fn items() -> Vec<crate::items::ItemDef> {
+        crate::items::parse_items(include_str!("../../../assets/data/items/items.ron"), &weapons()).unwrap()
+    }
+
     fn content() -> WorldConfig {
-        WorldConfig::new(5, 0, templates()).with_weapons(weapons()).with_map_chunks(8)
+        let containers = crate::containers::parse_containers(include_str!("../../../assets/data/containers.ron")).unwrap();
+        WorldConfig::new(5, 0, templates()).with_weapons(weapons()).with_items(items()).with_containers(containers).with_map_chunks(8)
     }
 
     fn first_edge(w: &World, kind: impl Fn(Edge) -> bool) -> EdgeRef {
@@ -516,9 +674,13 @@ mod tests {
         for p in &mut w.players {
             p.hp = 1e5;
         }
-        w.spawn_item("baseball_bat", spawn + Vec2::new(0.4, 0.0));
+        w.spawn_item("baseball_bat", 1, spawn + Vec2::new(0.4, 0.0));
         w.player_pick_up(a);
-        w.spawn_item("baseball_bat", spawn + Vec2::new(-0.4, 0.0));
+        w.spawn_item("baseball_bat", 1, spawn + Vec2::new(-0.4, 0.0));
+        // The second player searched a container and carries a few things.
+        let b = w.players[1].id;
+        crate::save::tests::open_nearest_container(&mut w, b);
+        w.give_item(b, "tinned_beans", 2);
         w.spawn_zombies(12, spawn + Vec2::new(8.0, 0.0), 4.0);
         let door = first_edge(&w, |e| e == Edge::DoorClosed);
         w.edge_hp.insert(door.key(), 5.0);
@@ -545,7 +707,7 @@ mod tests {
         let w = busy();
         let bytes = w.save();
         let hash = w.state_hash();
-        let ids = |w: &World| -> Vec<String> { w.items.iter().map(|it| w.config.weapons[it.weapon as usize].id.clone()).collect() };
+        let ids = |w: &World| -> Vec<String> { w.items.iter().map(|it| w.config.items[it.stack.item as usize].id.clone()).collect() };
         let held = |w: &World| w.players[0].weapon.map(|i| w.config.weapons[i as usize].id.clone());
 
         // A weapon's numbers changed: the new ones apply, nothing else moves.
@@ -566,14 +728,32 @@ mod tests {
         assert_eq!((ids(&l.world), held(&l.world)), (ids(&w), held(&w)));
         assert!(held(&w).is_some());
 
-        // A weapon nothing in the save uses, removed.
-        let used: Vec<String> = ids(&w).into_iter().chain(held(&w)).collect();
+        // A weapon (and its item) nothing in the save uses, removed.
+        let used: Vec<String> = ids(&w).into_iter().chain(held(&w)).chain(w.players.iter().flat_map(|p| p.inventory.stacks().map(|s| w.config.items[s.item as usize].id.clone()))).collect();
         let mut c = content();
         let spare = c.weapons.iter().position(|d| !used.contains(&d.id) && d.category != crate::items::WeaponCategory::Unarmed).expect("an unused weapon");
         let gone = c.weapons.remove(spare).id;
+        c.items.retain(|d| d.id != gone);
         let l = World::load_with(&bytes, &c, LoadOptions::default()).unwrap();
         assert!(l.notes[0].contains(&format!("removed: {gone}")), "{:?}", l.notes);
+        assert!(l.notes[1].contains("items.ron") && l.notes[1].contains(&format!("removed: {gone}")), "{:?}", l.notes);
         assert_eq!((ids(&l.world), held(&l.world)), (ids(&w), held(&w)));
+
+        // An item's weight changed: it loads, and the new number counts.
+        let mut c = content();
+        c.items.iter_mut().find(|d| d.id == "tinned_beans").unwrap().weight_kg = 5.0;
+        let l = World::load_with(&bytes, &c, LoadOptions::default()).unwrap();
+        assert!(l.notes.len() == 1 && l.notes[0].contains("items.ron changed (the same items"), "{:?}", l.notes);
+        let b = &l.world.players[1];
+        assert!(l.world.carry(b).weight_kg > w.carry(&w.players[1]).weight_kg + 8.0);
+
+        // A container got bigger: the opened one keeps its contents.
+        let mut c = content();
+        c.containers.containers.iter_mut().for_each(|d| d.room_l *= 2.0);
+        let l = World::load_with(&bytes, &c, LoadOptions::default()).unwrap();
+        assert!(l.notes.len() == 1 && l.notes[0].contains("containers.ron"), "{:?}", l.notes);
+        assert_eq!(l.world.opened, w.opened);
+        assert_eq!(l.world.state_hash(), hash);
 
         // Population settings.
         let mut c = content();
@@ -590,25 +770,32 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_weapon_the_save_uses_needs_load_anyway() {
+    fn a_missing_item_the_save_uses_needs_load_anyway() {
         let w = busy();
         let bytes = w.save();
-        let bat = w.config.weapons.iter().position(|d| d.id == "baseball_bat").unwrap() as u16;
-        let bats = w.items.iter().filter(|it| it.weapon == bat).count();
-        assert!(bats >= 1 && w.players[0].weapon == Some(bat));
+        let bat_weapon = w.config.weapons.iter().position(|d| d.id == "baseball_bat").unwrap() as u16;
+        let bat = w.item_index("baseball_bat").unwrap();
+        let bats = w.items.iter().filter(|it| it.stack.item == bat).count();
+        assert!(bats >= 1 && w.players[0].weapon == Some(bat_weapon));
+        // The weapon alone gone: the bat is still an item (it just doesn't swing like one).
         let mut c = content();
         c.weapons.retain(|d| d.id != "baseball_bat");
+        let l = World::load_with(&bytes, &c, LoadOptions::default()).unwrap();
+        assert_eq!(l.world.players[0].weapon, None);
+        assert_eq!(l.world.players[0].inventory.hand.map(|s| l.world.item_def(s.item).id.clone()).as_deref(), Some("baseball_bat"));
+        // The item gone too: refused, unless forced.
+        c.items.retain(|d| d.id != "baseball_bat");
         let err = World::load_with(&bytes, &c, LoadOptions::default()).err().unwrap();
         let LoadError::ContentChanged(what) = &err else { panic!("{err}") };
-        assert!(what.len() == 1 && what[0].contains("baseball_bat") && what[0].contains("held by player 1"), "{err}");
+        assert!(what.len() == 1 && what[0].contains("item baseball_bat is gone"), "{err}");
         assert!(err.forceable());
 
         let l = World::load_with(&bytes, &c, LoadOptions { force: true }).unwrap();
         assert!(l.notes.iter().any(|n| n.contains("loaded anyway") && n.contains("baseball_bat")), "{:?}", l.notes);
         let mut world = l.world;
         assert_eq!(world.items.len(), w.items.len() - bats);
-        assert_eq!(world.players[0].weapon, None);
-        assert!(world.items.iter().all(|it| world.config.weapons[it.weapon as usize].id != "baseball_bat"));
+        assert_eq!((world.players[0].weapon, world.players[0].inventory.hand), (None, None));
+        assert!(world.items.iter().all(|it| world.config.items[it.stack.item as usize].id != "baseball_bat"));
         for _ in 0..40 {
             world.step();
         }
@@ -765,14 +952,27 @@ mod tests {
             ("zero player id", "player id 0", |w| w.players[0].id = 0),
             ("player ready_in NaN", "ready_in", |w| w.players[0].ready_in = f32::NAN),
             ("player input NaN", "input.move_dir", |w| w.players[0].input.move_dir = Vec2::NAN),
-            ("player weapon out of range", "weapon index 300", |w| w.players[0].weapon = Some(300)),
+            ("player hand item out of range", "item index 3000", |w| w.players[0].inventory.hand = Some(ItemStack::one(3000))),
+            ("carried item out of range", "item index 3001", |w| w.players[1].inventory.carried.push(ItemStack::one(3001))),
+            ("a carried stack of none", "at least one", |w| w.players[1].inventory.carried[0].count = 0),
+            ("two things in one hand", "one at a time", |w| w.players[0].inventory.hand.as_mut().unwrap().count = 2),
+            ("job time NaN", "time left", |w| {
+                w.players[1].jobs.push(crate::inventory::ItemJob { kind: crate::inventory::JobKind::Search { container: 0 }, left: f32::NAN })
+            }),
+            ("opened container that isn't one", "isn't a container", |w| {
+                w.opened.insert(9_999_999, Vec::new());
+            }),
+            ("container item out of range", "item index 4000", |w| {
+                w.opened.values_mut().next().unwrap().push(ItemStack::one(4000));
+            }),
             ("player action weapon out of range", "action: weapon index 301", |w| {
                 w.players[0].action = Some(crate::players::Action { kind: crate::players::ActionKind::Swing, timer: 0.1, power: 1.0, weapon: 301 })
             }),
             ("player action timer NaN", "action.timer", |w| {
                 w.players[0].action = Some(crate::players::Action { kind: crate::players::ActionKind::Swing, timer: f32::NAN, power: 1.0, weapon: 0 })
             }),
-            ("item weapon out of range", "weapon index 999", |w| w.items[0].weapon = 999),
+            ("ground item out of range", "item index 999", |w| w.items[0].stack.item = 999),
+            ("ground stack of none", "at least one", |w| w.items[0].stack.count = 0),
             ("item pos inf", "pos", |w| w.items[0].pos.x = f32::INFINITY),
             ("item off the map", "off the map", |w| w.items[0].pos = Vec2::new(-1.0, -1.0)),
             ("item angle NaN", "angle", |w| w.items[0].angle = f32::NAN),

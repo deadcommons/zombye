@@ -5,13 +5,16 @@
 //! predicted position only diverges from the server's when the world changed under it (a door, later
 //! a shove), and reconciliation fixes that. Climbing through an open or broken window is part of
 //! movement (slow while inside the window opening), and depends only on the map, so it predicts
-//! exactly too.
+//! exactly too. What a player carries changes how it moves ([`MoveMods`], worked out by the server
+//! from the load and part of [`PlayerState`]), so a client predicting from its snapshot state moves
+//! exactly as the server does.
 //!
 //! [`TICK_DT`]: crate::TICK_DT
 
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
+use crate::inventory::{Inventory, ItemJob};
 use crate::map::TileMap;
 
 /// Player body radius in metres.
@@ -63,7 +66,30 @@ impl PlayerInput {
     }
 }
 
-/// The part of a player that movement changes, and that clients predict.
+/// How a player's load (and later skills, #46) changes its movement. Worked out by the server
+/// whenever what it carries changes (`CarryTuning::mods`) and sent with the player's state, so
+/// prediction uses the same numbers.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MoveMods {
+    /// Multiplies every speed.
+    pub speed: f32,
+    /// Multiplies the endurance running drains.
+    pub run_drain: f32,
+    /// Multiplies the endurance regained walking or sneaking.
+    pub regen: f32,
+    pub can_run: bool,
+    /// Can start climbing through an open or broken window.
+    pub can_climb: bool,
+}
+
+impl Default for MoveMods {
+    fn default() -> Self {
+        Self { speed: 1.0, run_drain: 1.0, regen: 1.0, can_run: true, can_climb: true }
+    }
+}
+
+/// The part of a player that movement changes, and that clients predict (with what it depends on
+/// besides the map and the input: `mods`).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlayerState {
     pub pos: Vec2,
@@ -73,11 +99,13 @@ pub struct PlayerState {
     pub endurance: f32,
     /// Ran out of breath; can't run until endurance recovers to [`RUN_RECOVER_ENDURANCE`].
     pub winded: bool,
+    /// From the load: set by the server, read by movement.
+    pub mods: MoveMods,
 }
 
 impl PlayerState {
     pub fn new(pos: Vec2) -> Self {
-        Self { pos, facing: 0.0, stance: Stance::Walk, endurance: 1.0, winded: false }
+        Self { pos, facing: 0.0, stance: Stance::Walk, endurance: 1.0, winded: false, mods: MoveMods::default() }
     }
 }
 
@@ -94,8 +122,15 @@ pub struct Player {
     pub hp: f32,
     /// Dead players ignore input and aren't seen or heard. Single-player can respawn.
     pub dead: bool,
-    /// Equipped weapon (index into `WorldConfig::weapons`); `None` = bare hands.
+    /// The weapon in hand (index into `WorldConfig::weapons`); `None` = bare hands. Derived from
+    /// `inventory.hand` whenever it changes (`World::refresh_carry`).
     pub weapon: Option<u16>,
+    /// What it carries, holds and wears.
+    pub inventory: Inventory,
+    /// The container it has open (searched), if any: its contents go to this player's client.
+    pub open: Option<u32>,
+    /// Item moves, searches and uses queued, the first under way (see `crate::inventory`).
+    pub jobs: Vec<ItemJob>,
     /// The swing, shove or stomp under way, until it lands.
     pub action: Option<Action>,
     /// Seconds until the next action can start.
@@ -114,6 +149,9 @@ impl Player {
             hp,
             dead: false,
             weapon: None,
+            inventory: Inventory::default(),
+            open: None,
+            jobs: Vec::new(),
             action: None,
             ready_in: 0.0,
             queued: None,
@@ -154,7 +192,8 @@ pub fn step_movement(map: &TileMap, state: &mut PlayerState, input: &PlayerInput
     if state.winded && state.endurance > RUN_RECOVER_ENDURANCE {
         state.winded = false;
     }
-    let can_run = !state.winded && state.endurance > RUN_MIN_ENDURANCE;
+    let mods = state.mods;
+    let can_run = mods.can_run && !state.winded && state.endurance > RUN_MIN_ENDURANCE;
     // Running beats sneaking: holding run while sneak is toggled on means "get out of here".
     state.stance = if input.run && moving && can_run {
         Stance::Run
@@ -166,24 +205,26 @@ pub fn step_movement(map: &TileMap, state: &mut PlayerState, input: &PlayerInput
 
     match state.stance {
         Stance::Run => {
-            state.endurance = (state.endurance - RUN_DRAIN * dt).max(0.0);
+            state.endurance = (state.endurance - RUN_DRAIN * mods.run_drain * dt).max(0.0);
             if state.endurance <= RUN_MIN_ENDURANCE {
                 state.winded = true;
             }
         }
-        Stance::Sneak => state.endurance = (state.endurance + SNEAK_REGEN * dt).min(1.0),
-        Stance::Walk => state.endurance = (state.endurance + REGEN * dt).min(1.0),
+        Stance::Sneak => state.endurance = (state.endurance + SNEAK_REGEN * mods.regen * dt).min(1.0),
+        Stance::Walk => state.endurance = (state.endurance + REGEN * mods.regen * dt).min(1.0),
     }
 
     if !moving {
         return;
     }
-    let mut speed = match state.stance {
-        Stance::Run => RUN_SPEED,
-        Stance::Walk => WALK_SPEED,
-        Stance::Sneak => SNEAK_SPEED,
-    };
-    if map.in_window_opening(state.pos) {
+    let mut speed = mods.speed
+        * match state.stance {
+            Stance::Run => RUN_SPEED,
+            Stance::Walk => WALK_SPEED,
+            Stance::Sneak => SNEAK_SPEED,
+        };
+    let climbing = map.in_window_opening(state.pos);
+    if climbing {
         speed = speed.min(CLIMB_SPEED);
     }
     let step = input.move_dir * speed * dt;
@@ -192,7 +233,12 @@ pub fn step_movement(map: &TileMap, state: &mut PlayerState, input: &PlayerInput
     let part = step / n as f32;
     let mut p = state.pos;
     for _ in 0..n {
-        p = map.resolve_circle(p + part, PLAYER_RADIUS);
+        let next = map.resolve_circle(p + part, PLAYER_RADIUS);
+        // Too loaded to climb: a window opening is a wall (unless already in it).
+        if !mods.can_climb && !climbing && map.in_window_opening(next) {
+            break;
+        }
+        p = next;
     }
     state.pos = p;
 }
@@ -329,6 +375,36 @@ mod tests {
         assert!(map.in_window_opening(Vec2::new(16.1, 8.5)) && !map.in_window_opening(Vec2::new(15.5, 8.5)));
         // Walking along the wall past the window isn't climbing.
         assert!(!map.in_window_opening(Vec2::new(16.0 - PLAYER_RADIUS - 0.08, 8.5)));
+    }
+
+    /// A heavy load slows movement, drains running faster and can forbid running and climbing.
+    #[test]
+    fn load_modifiers_change_movement() {
+        let map = TileMap::new(4, 1);
+        let start = Vec2::new(5.5, 8.5);
+        let go = |mods: MoveMods, input: PlayerInput| {
+            let mut s = PlayerState { mods, ..PlayerState::new(start) };
+            for _ in 0..20 {
+                step_movement(&map, &mut s, &input, TICK_DT);
+            }
+            s
+        };
+        let slow = MoveMods { speed: 0.5, run_drain: 2.0, ..MoveMods::default() };
+        let s = go(slow, PlayerInput { run: false, ..run_east() });
+        assert!((s.pos.distance(start) - WALK_SPEED * 0.5).abs() < 0.01);
+        let s = go(slow, run_east());
+        assert_eq!(s.stance, Stance::Run);
+        assert!((s.endurance - (1.0 - 2.0 * RUN_DRAIN)).abs() < 0.01, "{}", s.endurance);
+        let s = go(MoveMods { can_run: false, ..MoveMods::default() }, run_east());
+        assert_eq!(s.stance, Stance::Walk);
+        // Can't climb: an open window stops you like a wall.
+        let mut map = walled_map();
+        map.set_edge(IVec2::new(16, 8), Side::W, Edge::WindowOpen);
+        let mut s = PlayerState { mods: MoveMods { can_climb: false, ..MoveMods::default() }, ..PlayerState::new(Vec2::new(14.5, 8.5)) };
+        for _ in 0..100 {
+            step_movement(&map, &mut s, &PlayerInput { run: false, ..run_east() }, TICK_DT);
+        }
+        assert!(s.pos.x < 16.0 && !map.in_window_opening(s.pos), "climbed out overloaded: {}", s.pos);
     }
 
     #[test]

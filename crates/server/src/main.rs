@@ -109,28 +109,13 @@ fn main() {
     let value = |name: &str| text(name).and_then(|v| v.parse::<u64>().ok());
 
     let data = text("--data").map(PathBuf::from).unwrap_or_else(content::default_data_dir);
-    let templates = match content::load_building_templates(&data) {
-        Ok(t) => t,
+    let mut config = match content::load_config(&data, value("--seed").unwrap_or(1)) {
+        Ok(c) => c,
         Err(e) => {
             eprintln!("failed to load content: {e}");
             std::process::exit(1);
         }
     };
-    let weapons = match content::load_weapons(&data) {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("failed to load content: {e}");
-            std::process::exit(1);
-        }
-    };
-    let population = match content::load_population(&data) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("failed to load content: {e}");
-            std::process::exit(1);
-        }
-    };
-    let mut config = WorldConfig::new(value("--seed").unwrap_or(1), 0, templates).with_weapons(weapons).with_population(population);
     // Without --zombies, as many as the population file's densities give for the map.
     config.zombies = value("--zombies").map(|n| n as u32);
     if let Some(chunks) = value("--map-chunks") {

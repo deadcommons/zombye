@@ -233,6 +233,30 @@ pub fn add_furniture(mb: &mut MeshBuilder, kind: &str, min: Vec2, size: Vec2, fa
             block(mb, a + Vec2::splat(0.05), b - Vec2::splat(0.05), 0.5, 1.05, rgb(0.08, 0.08, 0.09));
         }
         "toilet" => block(mb, lo + Vec2::splat(0.15), hi - Vec2::splat(0.15), 0.0, 0.45, rgb(0.92, 0.92, 0.90)),
+        "shelf" => {
+            // Uprights and four boards against the wall.
+            let (a, b) = against_wall(0.4);
+            let c = rgb(0.52, 0.42, 0.30);
+            for k in 0..4 {
+                let h = 0.05 + k as f32 * 0.55;
+                block(mb, a, b, h, h + 0.04, c);
+            }
+            let side = |mb: &mut MeshBuilder, x0: Vec2, x1: Vec2| block(mb, x0, x1, 0.0, 1.8, c);
+            match facing {
+                Side::N | Side::S => {
+                    side(mb, a, Vec2::new(a.x + 0.05, b.y));
+                    side(mb, Vec2::new(b.x - 0.05, a.y), b);
+                }
+                Side::E | Side::W => {
+                    side(mb, a, Vec2::new(b.x, a.y + 0.05));
+                    side(mb, Vec2::new(a.x, b.y - 0.05), b);
+                }
+            }
+        }
+        "workbench" => {
+            block(mb, lo, hi, 0.0, 0.85, rgb(0.38, 0.34, 0.30));
+            block(mb, lo, hi, 0.85, 0.92, rgb(0.62, 0.50, 0.34));
+        }
         "bathtub" => block(mb, lo, hi, 0.0, 0.55, rgb(0.90, 0.90, 0.88)),
         "stairs" => {
             // Steps rising toward `facing`, up to the next floor.

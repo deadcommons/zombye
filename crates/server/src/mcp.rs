@@ -13,7 +13,7 @@ use zombye_net::{Intent, apply_intent, save_file, shutdown};
 use zombye_sim::map::{Edge, EdgeRef, Feature, Floor, OwnedEdge, Side};
 use zombye_sim::senses::{self, Cone, Target};
 use zombye_sim::vision::line_of_sight;
-use zombye_sim::{ActionKind, HitEffect, LoadOptions, TICK_DT, Tier, World, ZombieState};
+use zombye_sim::{ActionKind, HitEffect, ItemStack, LoadOptions, Place, Slot, TICK_DT, Tier, World, ZombieState};
 
 use crate::screenshot::{self, Renderer};
 use crate::Persist;
@@ -26,7 +26,9 @@ const COMPASS: [(&str, [f32; 2]); 8] =
     [("e", [1.0, 0.0]), ("se", [1.0, 1.0]), ("s", [0.0, 1.0]), ("sw", [-1.0, 1.0]), ("w", [-1.0, 0.0]), ("nw", [-1.0, -1.0]), ("n", [0.0, -1.0]), ("ne", [1.0, -1.0])];
 
 /// Tools that only look: they don't make the world need saving.
-const READ_ONLY: [&str; 11] = ["observe", "zombie", "edge", "weapons", "buildings", "regions", "stats", "saves", "save", "load", "screenshot"];
+const READ_ONLY: [&str; 14] = ["observe", "zombie", "edge", "weapons", "items", "inventory", "containers_near", "buildings", "regions", "stats", "saves", "save", "load", "screenshot"];
+/// Longest an item tool waits for a player's queue to empty (ticks).
+const MAX_JOB_TICKS: u64 = 20 * 60;
 
 /// The agent plays player 1, who wakes up in the bedroom like a single-player client does. A
 /// loaded world keeps its players.
@@ -149,12 +151,13 @@ fn tool_list() -> Value {
             "description": "Look at the world around a point (default: player 1). ASCII map at double resolution: \
                 tiles sit between wall lines. Walls - |, shut windows = !, open windows o, broken windows x, \
                 shut doors D (d when damaged), open doors /, broken doors #, fences ~, \
-                floors: . grass  , road  : sidewalk/path  _ indoors; T tree, * bush, f furniture, w weapon on the floor, \
+                floors: . grass  , road  : sidewalk/path  _ indoors; T tree, * bush, f furniture, c a container not searched yet, \
+                o (on a tile) a searched container, w a weapon on the floor, i any other item on the floor, \
                 P player (X dead), G debug goal, @ spawn. \
                 Active zombies by state: Z wandering, I investigating a sound, C chasing a player, L lunging, A attacking, \
                 B battering a door or window, S staggered, v down on the ground, % corpse; zombies on the cheaper tiers \
                 far from players: n near (updated a few times a second), ? virtual (moved in bulk every few seconds). \
-                Lists players (HP, weapon, whether they're climbing through a window or dead), weapons on the floor, damaged doors \
+                Lists players (HP, weapon, load, whether they're climbing through a window or dead), items on the floor, damaged doors \
                 and windows in view with their hit points, and the nearest zombies with HP (use zombie {id} for one zombie's details).",
             "inputSchema": {"type": "object", "properties": {
                 "x": {"type": "number", "description": "Centre x in metres"},
@@ -265,9 +268,94 @@ fn tool_list() -> Value {
         },
         {
             "name": "pick_up",
-            "description": "A player picks up the weapon on the floor nearest to where it faces, within 1.3 m, and equips it; \
-                the one it held is left in its place.",
+            "description": "A player picks up the item on the floor nearest to where it faces, within 1.3 m, at once: a weapon goes \
+                into its hand (what it held goes into its pockets and bags if there's room, else stays on the floor), anything else \
+                into its pockets and bags, as many as fit (room and weight permitting).",
             "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}}}
+        },
+        {
+            "name": "inventory",
+            "description": "What a player has: hands, back, shoulder, worn clothing and carried stacks (pockets and bags) with \
+                indices, weights and room; its load (kg of the carry limit, the burden stage and what it does); the container it \
+                has open and what's in it; the floor within reach (ground item ids); containers within reach; its queue of item jobs.",
+            "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}}}
+        },
+        {
+            "name": "items",
+            "description": "The item table (assets/data/items/items.ron): id, name, category, kg, litres, stack size, and its \
+                food/drink/medical/bag/clothing/light/weapon data. Optional category filter (Food, Drink, Medical, Tool, Material, \
+                Clothing, Bag, Weapon, Light, Junk).",
+            "inputSchema": {"type": "object", "properties": {"category": {"type": "string"}}}
+        },
+        {
+            "name": "containers_near",
+            "description": "Furniture that holds things near a player (default within 8 m): container id, kind, the furniture \
+                and room, distance, whether it has been searched (and what it holds), and whether the player can reach it now \
+                (same room, within 1.2 m of the furniture).",
+            "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}, "radius": {"type": "number", "default": 8}}}
+        },
+        {
+            "name": "search",
+            "description": "A player searches (opens) a container within reach: `container` by id (see containers_near), or the one \
+                it faces. The first search takes the container's search time (x1.5 sneaking, half the noise) and fills it; \
+                reopening is quick. Steps the world until it's done and lists what's inside. It stays open until the player walks off.",
+            "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}, "container": {"type": "integer"}}}
+        },
+        {
+            "name": "take",
+            "description": "A player takes `count` (default all) of a stack into its pockets and bags: from the open container \
+                (`from`: \"container\", `index` as listed by inventory) or the floor (`from`: \"ground\", `index` = the ground item id). \
+                0.3 s a stack (0.6 s over 3 kg); steps the world until done. Refused if there's no room or it would be too heavy.",
+            "inputSchema": {"type": "object", "required": ["index"], "properties": {
+                "player": {"type": "integer", "default": 1}, "from": {"type": "string", "default": "container"},
+                "index": {"type": "integer"}, "count": {"type": "integer", "default": 0}
+            }}
+        },
+        {
+            "name": "move_item",
+            "description": "Move `count` (default all) of the stack at `from`/`index` to `to`. Places: carried (pockets and bags), \
+                hand, off_hand, back, shoulder, worn, container (the open one), ground (index = ground item id). Slots take one \
+                item; whatever was in the way goes into pockets and bags. Steps the world until done.",
+            "inputSchema": {"type": "object", "required": ["from", "to"], "properties": {
+                "player": {"type": "integer", "default": 1}, "from": {"type": "string"}, "index": {"type": "integer", "default": 0},
+                "to": {"type": "string"}, "count": {"type": "integer", "default": 0}
+            }}
+        },
+        {
+            "name": "drop",
+            "description": "A player drops `count` (default all) of the stack at `from` (default carried) / `index` at its feet.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1}, "from": {"type": "string", "default": "carried"},
+                "index": {"type": "integer", "default": 0}, "count": {"type": "integer", "default": 0}
+            }}
+        },
+        {
+            "name": "equip",
+            "description": "A player puts the carried stack `index` where it belongs: a bag on its back, shoulder or in a hand, \
+                clothing on, anything else (a weapon) in its hand. A two-handed weapon frees the other hand.",
+            "inputSchema": {"type": "object", "required": ["index"], "properties": {"player": {"type": "integer", "default": 1}, "index": {"type": "integer"}}}
+        },
+        {
+            "name": "wear",
+            "description": "A player puts on the carried clothing `index` (what it wore on the same body part and layer comes off into its bags).",
+            "inputSchema": {"type": "object", "required": ["index"], "properties": {"player": {"type": "integer", "default": 1}, "index": {"type": "integer"}}}
+        },
+        {
+            "name": "unequip",
+            "description": "A player takes off or lets go of what's at `from` (hand, off_hand, back, shoulder, or worn with `index`) \
+                into its pockets and bags, or onto the floor if there's no room. A bag that's holding things can't come off until \
+                they fit in what's left.",
+            "inputSchema": {"type": "object", "required": ["from"], "properties": {
+                "player": {"type": "integer", "default": 1}, "from": {"type": "string"}, "index": {"type": "integer", "default": 0}
+            }}
+        },
+        {
+            "name": "use",
+            "description": "A player eats or drinks one of the stack at `from` (default carried) / `index`. (Hunger and thirst come later; \
+                for now it's used up.)",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1}, "from": {"type": "string", "default": "carried"}, "index": {"type": "integer", "default": 0}
+            }}
         },
         {
             "name": "weapons",
@@ -277,9 +365,9 @@ fn tool_list() -> Value {
         },
         {
             "name": "spawn_item",
-            "description": "Debug: put a weapon on the ground at (x, y), by id (see weapons).",
-            "inputSchema": {"type": "object", "required": ["weapon", "x", "y"], "properties": {
-                "weapon": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"}
+            "description": "Debug: put `count` (default 1) of an item on the ground at (x, y), by id (see items; weapons are items too).",
+            "inputSchema": {"type": "object", "required": ["item", "x", "y"], "properties": {
+                "item": {"type": "string"}, "count": {"type": "integer", "default": 1}, "x": {"type": "number"}, "y": {"type": "number"}
             }}
         },
         {
@@ -657,15 +745,111 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
         }
         "pick_up" => {
             let id = player_id();
-            let before = world.player(id).ok_or_else(|| format!("no player {id}"))?.weapon;
-            let floor = world.items().to_vec();
+            world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            world.item_notes.clear();
             apply_intent(world, &Intent::PickUp { player: id });
-            if world.items() == floor.as_slice() {
-                return Err(format!("no weapon within reach of player {id} (1.3 m; the one nearest to where it faces wins)"));
+            let notes = take_notes(world, id);
+            if world.item_notes.is_empty() && notes.is_empty() {
+                return Err(format!("nothing within reach of player {id} (1.3 m of its feet; the item nearest to where it faces wins)"));
             }
-            let def = world.wielded(world.player(id).and_then(|p| p.weapon));
-            let dropped = before.map(|b| format!(", left the {} on the floor", world.config.weapons[b as usize].name.to_lowercase())).unwrap_or_default();
-            Ok(format!("player {id} picked up the {}{dropped} ({})", def.name.to_lowercase(), weapon_line(def)))
+            let p = world.player(id).expect("exists");
+            let def = world.wielded(p.weapon);
+            Ok(format!("player {id}: {notes}; in hand: {} ({}); {}", def.name.to_lowercase(), weapon_line(def), load_line(world, id)))
+        }
+        "inventory" => inventory_text(world, player_id()),
+        "items" => {
+            let filter = args.get("category").and_then(Value::as_str).map(str::to_lowercase);
+            let mut out = String::from("id: name, category | kg | litres | stack | details\n");
+            for d in world.config.items.iter().filter(|d| filter.as_ref().is_none_or(|f| format!("{:?}", d.category).to_lowercase() == *f)) {
+                out.push_str(&format!("{}: {}, {:?} | {} | {} | {} | {}\n", d.id, d.name, d.category, d.weight_kg, d.volume_l, d.stack, item_details(d)));
+            }
+            let t = &world.config.carry;
+            out.push_str(&format!(
+                "carrying: limit {} kg (+{} per Strength level, later); pockets {} L; burdened over {}x (speed x{}, running drains x{}), \
+                 heavy over {}x (speed x{}, no running, actions cost x{}), overloaded over {}x (speed x{}, no running or climbing); \
+                 nothing more past {}x; moving a stack {} s ({} s over {} kg), eating/drinking {} s, reopening a container {} s",
+                t.limit_kg, t.strength_kg, t.pockets_l, t.burdened_at, t.burdened_speed, t.burdened_run_drain, t.heavy_at, t.heavy_speed, t.heavy_action_cost,
+                t.overloaded_at, t.overloaded_speed, t.max_load, t.move_secs, t.heavy_move_secs, t.heavy_stack_kg, t.use_secs, t.reopen_secs
+            ));
+            Ok(out)
+        }
+        "containers_near" => {
+            let id = player_id();
+            let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            let pos = p.state.pos;
+            let radius = num("radius").unwrap_or(8.0).clamp(1.0, 60.0) as f32;
+            let reach = world.containers_in_reach(id);
+            let mut near: Vec<_> = world.containers().iter().filter(|s| s.distance(pos) <= radius).collect();
+            near.sort_by(|a, b| a.distance(pos).total_cmp(&b.distance(pos)));
+            if near.is_empty() {
+                return Ok(format!("no containers within {radius:.0} m of player {id}"));
+            }
+            let mut out = format!("containers within {radius:.0} m of player {id} (nearest first):\n");
+            for s in near {
+                let def = world.container_def(s);
+                let furniture = furniture_kind(world, s.id);
+                let held = match world.container_contents(s.id) {
+                    None => "not searched".to_string(),
+                    Some([]) => "searched: empty".to_string(),
+                    Some(v) => format!("searched: {}", stacks_text(world, v)),
+                };
+                out.push_str(&format!(
+                    "  #{} {} ({furniture}) in the {}, {:.1} m, {:.0} L, search {:.1} s; {held}{}{}\n",
+                    s.id,
+                    def.name,
+                    world.map.rooms[s.room as usize].name.to_lowercase(),
+                    s.distance(pos),
+                    def.room_l,
+                    def.search_secs,
+                    if reach.contains(&s.id) { "; in reach" } else { "" },
+                    if p.open == Some(s.id) { "; OPEN" } else { "" },
+                ));
+            }
+            Ok(out)
+        }
+        "search" => {
+            let id = player_id();
+            let container = args.get("container").and_then(Value::as_u64).map(|c| c as u32);
+            run_item_tool(world, id, Intent::Search { player: id, container })
+        }
+        "take" => {
+            let id = player_id();
+            let from = place_arg(world, id, args.get("from").and_then(Value::as_str).unwrap_or("container"))?;
+            let index = args.get("index").and_then(Value::as_u64).ok_or("index is required")? as u32;
+            let count = args.get("count").and_then(Value::as_u64).unwrap_or(0).min(u16::MAX as u64) as u16;
+            run_item_tool(world, id, Intent::MoveItem { player: id, from, index, to: Place::Carried, count })
+        }
+        "move_item" => {
+            let id = player_id();
+            let from = place_arg(world, id, args.get("from").and_then(Value::as_str).ok_or("from is required")?)?;
+            let to = place_arg(world, id, args.get("to").and_then(Value::as_str).ok_or("to is required")?)?;
+            let index = args.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let count = args.get("count").and_then(Value::as_u64).unwrap_or(0).min(u16::MAX as u64) as u16;
+            run_item_tool(world, id, Intent::MoveItem { player: id, from, index, to, count })
+        }
+        "drop" => {
+            let id = player_id();
+            let from = place_arg(world, id, args.get("from").and_then(Value::as_str).unwrap_or("carried"))?;
+            let index = args.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let count = args.get("count").and_then(Value::as_u64).unwrap_or(0).min(u16::MAX as u64) as u16;
+            run_item_tool(world, id, Intent::Drop { player: id, from, index, count })
+        }
+        "equip" | "wear" => {
+            let id = player_id();
+            let index = args.get("index").and_then(Value::as_u64).ok_or("index is required")? as u32;
+            run_item_tool(world, id, if name == "equip" { Intent::Equip { player: id, index } } else { Intent::Wear { player: id, index } })
+        }
+        "unequip" => {
+            let id = player_id();
+            let from = place_arg(world, id, args.get("from").and_then(Value::as_str).ok_or("from is required")?)?;
+            let index = args.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
+            run_item_tool(world, id, Intent::Unequip { player: id, from, index })
+        }
+        "use" => {
+            let id = player_id();
+            let from = place_arg(world, id, args.get("from").and_then(Value::as_str).unwrap_or("carried"))?;
+            let index = args.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
+            run_item_tool(world, id, Intent::Use { player: id, from, index })
         }
         "weapons" => {
             let mut out = String::from("id: name, category | damage | reach m | arc deg | windup/swing s | targets | knockback m | stagger/knockdown/crit (x mult) | endurance | noise m\n");
@@ -687,14 +871,15 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
         }
         "spawn_item" => {
             let pos = point().ok_or("x and y are required")?;
-            let weapon = args.get("weapon").and_then(Value::as_str).ok_or("weapon is required")?.to_string();
-            let before = world.items().len();
-            apply_intent(world, &Intent::SpawnItem { weapon: weapon.clone(), pos });
-            if world.items().len() == before {
-                return Err(format!("can't place {weapon:?} there (unknown weapon id, bare hands, or off the map); see weapons"));
+            let item = args.get("item").or_else(|| args.get("weapon")).and_then(Value::as_str).ok_or("item is required")?.to_string();
+            let count = args.get("count").and_then(Value::as_u64).unwrap_or(1).clamp(1, 1000) as u16;
+            let before = world.items().last().map(|it| it.id);
+            apply_intent(world, &Intent::SpawnItem { item: item.clone(), count, pos });
+            let new: Vec<String> = world.items().iter().filter(|it| before.is_none_or(|b| it.id > b)).map(|it| format!("#{} {}", it.id, stack_text(world, &it.stack))).collect();
+            if new.is_empty() {
+                return Err(format!("can't place {item:?} there (unknown item id, or off the map); see items"));
             }
-            let it = world.items().last().expect("just placed");
-            Ok(format!("item #{} ({}) on the floor at ({:.1}, {:.1})", it.id, world.config.weapons[it.weapon as usize].name, pos[0], pos[1]))
+            Ok(format!("on the floor at ({:.1}, {:.1}): {}", pos[0], pos[1], new.join(", ")))
         }
         "respawn" => {
             let id = player_id();
@@ -788,10 +973,15 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 "hp": p.hp,
                 "dead": p.dead,
                 "weapon": world.wielded(p.weapon).id,
+                "load_kg": world.carry(p).weight_kg,
+                "burden": format!("{:?}", world.carry(p).burden),
+                "busy": p.jobs.first().map_or(0.0, |j| j.left),
                 "action": p.action.map(|a| format!("{:?}", a.kind)),
                 "ready_in": p.ready_in,
             })).collect::<Vec<_>>(),
             "items_on_floor": world.items().len(),
+            "containers": world.containers().len(),
+            "containers_opened": world.opened_containers().count(),
             "tick": world.tick,
             "time_of_day": clock(world.time_of_day()),
             "daylight": world.daylight(),
@@ -1302,9 +1492,18 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
         let d = p.floor().as_ivec2() - origin;
         (d.x >= 0 && d.y >= 0 && d.x < n as i32 && d.y < n as i32).then(|| (2 * d.x as usize + 1, 2 * d.y as usize + 1))
     };
+    for s in world.containers() {
+        for dy in 0..s.size.y {
+            for dx in 0..s.size.x {
+                if let Some((x, y)) = to_cell((s.min + IVec2::new(dx, dy)).as_vec2() + Vec2::splat(0.5)) {
+                    grid[y][x] = if world.container_contents(s.id).is_some() { 'o' } else { 'c' };
+                }
+            }
+        }
+    }
     for it in world.items() {
         if let Some((x, y)) = to_cell(it.pos) {
-            grid[y][x] = 'w';
+            grid[y][x] = if world.item_weapon(it.stack.item).is_some() { 'w' } else { 'i' };
         }
     }
     let mut near: Vec<(f32, usize)> = Vec::new();
@@ -1368,7 +1567,7 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
     for p in &world.players {
         let s = &p.state;
         out.push_str(&format!(
-            "  P{} at ({:.1}, {:.1}) in {}, facing {}, {:?}, {:.0} HP{}, {}, endurance {:.2}{}{}{}\n",
+            "  P{} at ({:.1}, {:.1}) in {}, facing {}, {:?}, {:.0} HP{}, {}, endurance {:.2}{}{}{}; {}\n",
             p.id,
             s.pos.x,
             s.pos.y,
@@ -1385,7 +1584,8 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
                 Some(a) => format!(", mid-{:?} ({:.2} s to land)", a.kind, a.timer).to_lowercase(),
                 None if p.ready_in > 0.0 => format!(", recovering {:.2} s", p.ready_in),
                 None => String::new(),
-            }
+            },
+            load_line(world, p.id)
         ));
     }
     let lo_items = origin.as_vec2();
@@ -1394,10 +1594,10 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
         .items()
         .iter()
         .filter(|it| it.pos.x >= lo_items.x && it.pos.y >= lo_items.y && it.pos.x < hi_items.x && it.pos.y < hi_items.y)
-        .map(|it| format!("  #{} {} at ({:.1}, {:.1}), {:.1} m away\n", it.id, world.config.weapons[it.weapon as usize].name, it.pos.x, it.pos.y, it.pos.distance(centre)))
+        .map(|it| format!("  #{} {} at ({:.1}, {:.1}), {:.1} m away\n", it.id, stack_text(world, &it.stack), it.pos.x, it.pos.y, it.pos.distance(centre)))
         .collect();
     if !items.is_empty() {
-        out.push_str("weapons on the floor:\n");
+        out.push_str("items on the floor:\n");
         items.iter().for_each(|l| out.push_str(l));
     }
     let lo = origin.as_vec2();
@@ -1427,6 +1627,166 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
     out
 }
 
+/// "Tin of beans x3" or "Baseball bat".
+fn stack_text(world: &World, s: &ItemStack) -> String {
+    let name = &world.item_def(s.item).name;
+    if s.count > 1 { format!("{name} x{}", s.count) } else { name.clone() }
+}
+
+fn stacks_text(world: &World, stacks: &[ItemStack]) -> String {
+    stacks.iter().enumerate().map(|(k, s)| format!("[{k}] {}", stack_text(world, s))).collect::<Vec<_>>().join(", ")
+}
+
+/// The furniture a container is (its kind in the building template).
+fn furniture_kind(world: &World, id: u32) -> String {
+    world.map.buildings.iter().flat_map(|b| &b.furniture).nth(id as usize).map_or("?".to_string(), |f| f.kind.clone())
+}
+
+/// "load 6.2/14 kg (Burdened), room 2.1/23 L".
+fn load_line(world: &World, id: u32) -> String {
+    let Some(p) = world.player(id) else { return String::new() };
+    let c = world.carry(p);
+    let busy = if p.jobs.is_empty() { String::new() } else { format!(", busy {:.1} s ({} queued)", p.jobs[0].left, p.jobs.len()) };
+    format!("load {:.1}/{:.0} kg ({:?}), room {:.1}/{:.0} L{busy}", c.weight_kg, c.limit_kg, c.burden, c.used_l, c.room_l)
+}
+
+fn item_details(d: &zombye_sim::ItemDef) -> String {
+    let mut v = Vec::new();
+    if let Some(w) = &d.weapon {
+        v.push(format!("weapon {w}{}", if d.two_handed { ", two-handed" } else { "" }));
+    }
+    if let Some(c) = d.consumable() {
+        v.push(format!("hunger {:+.2}, thirst {:+.2}, {} goes{}", c.hunger, c.thirst, c.uses, c.spoils_hours.map_or(String::new(), |h| format!(", spoils in {h:.0} h"))));
+    }
+    if let Some(m) = &d.medical {
+        v.push(format!("{} uses", m.uses));
+    }
+    if let Some(b) = &d.bag {
+        v.push(format!("bag {} L on the {:?}{}", b.capacity_l, b.carried, if b.slow > 0.0 { format!(", {:.0}% slower", b.slow * 100.0) } else { String::new() }));
+    }
+    if let Some(c) = &d.clothing {
+        v.push(format!("covers {:?} ({:?} layer), protection {:.2}", c.covers, c.layer, c.protection));
+    }
+    if let Some(l) = &d.light {
+        v.push(format!("light {} m for {} h", l.radius_m, l.hours));
+    }
+    if !d.tags.is_empty() {
+        v.push(format!("tags {}", d.tags.join(" ")));
+    }
+    v.join("; ")
+}
+
+/// A place named in a tool's arguments; "container" is the one the player has open.
+fn place_arg(world: &World, id: u32, name: &str) -> Result<Place, String> {
+    Ok(match name {
+        "carried" | "inventory" | "pockets" => Place::Carried,
+        "hand" => Place::Slot(Slot::Hand),
+        "off_hand" => Place::Slot(Slot::OffHand),
+        "back" => Place::Slot(Slot::Back),
+        "shoulder" => Place::Slot(Slot::Shoulder),
+        "worn" => Place::Worn,
+        "ground" | "floor" => Place::Ground,
+        "container" => match world.player(id).and_then(|p| p.open) {
+            Some(c) => Place::Container(c),
+            None => return Err(format!("player {id} has no container open: search one first")),
+        },
+        other => return Err(format!("unknown place {other:?}: carried, hand, off_hand, back, shoulder, worn, container or ground")),
+    })
+}
+
+/// Player `id`'s item notes since they were last taken, joined.
+fn take_notes(world: &mut World, id: u32) -> String {
+    let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut world.item_notes).into_iter().partition(|n| n.player == id);
+    world.item_notes = rest;
+    mine.iter().map(|n| if n.ok { n.text.clone() } else { format!("refused: {}", n.text) }).collect::<Vec<_>>().join("; ")
+}
+
+/// Send an item intent for player `id` and step the world until its queue is empty; then say what
+/// happened and what it has now.
+fn run_item_tool(world: &mut World, id: u32, intent: Intent) -> Result<String, String> {
+    let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+    if p.dead {
+        return Err(format!("player {id} is dead (respawn to play on)"));
+    }
+    let queued = p.jobs.len();
+    take_notes(world, id);
+    apply_intent(world, &intent);
+    if world.player(id).expect("exists").jobs.len() <= queued {
+        return Err(take_notes(world, id));
+    }
+    let start = world.tick;
+    let mut notes = Vec::new();
+    while !world.player(id).expect("exists").jobs.is_empty() && world.tick - start < MAX_JOB_TICKS {
+        world.step();
+        let n = take_notes(world, id);
+        if !n.is_empty() {
+            notes.push(n);
+        }
+    }
+    world.edge_changes.clear();
+    world.combat_events.clear();
+    let failed = notes.iter().all(|n| n.starts_with("refused"));
+    let text = format!("{} ({} ticks, {:.1} s)\n{}", notes.join("; "), world.tick - start, (world.tick - start) as f32 * TICK_DT, inventory_text(world, id)?);
+    if failed { Err(text) } else { Ok(text) }
+}
+
+/// The `inventory` tool's text.
+fn inventory_text(world: &World, id: u32) -> Result<String, String> {
+    let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+    let inv = &p.inventory;
+    let c = world.carry(p);
+    let t = &world.config.carry;
+    let effect = match c.burden {
+        zombye_sim::Burden::None => "no effect".to_string(),
+        zombye_sim::Burden::Burdened => format!("speed x{}, running tires x{}", t.burdened_speed, t.burdened_run_drain),
+        zombye_sim::Burden::Heavy => format!("speed x{}, can't run, actions cost x{}", t.heavy_speed, t.heavy_action_cost),
+        zombye_sim::Burden::Overloaded => format!("speed x{}, can't run or climb", t.overloaded_speed),
+    };
+    let slot = |s: Option<ItemStack>| s.map_or("-".to_string(), |s| stack_text(world, &s));
+    let mut out = format!(
+        "player {id}: {:.1} of {:.0} kg ({:?}: {effect}; nothing more past {:.0} kg); room {:.1} of {:.0} L\n\
+         hand: {} | off_hand: {} | back: {} | shoulder: {}\nworn: {}\ncarried: {}\n",
+        c.weight_kg,
+        c.limit_kg,
+        c.burden,
+        c.limit_kg * t.max_load,
+        c.used_l,
+        c.room_l,
+        slot(inv.hand),
+        slot(inv.off_hand),
+        slot(inv.back),
+        slot(inv.shoulder),
+        if inv.worn.is_empty() { "-".to_string() } else { stacks_text(world, &inv.worn) },
+        if inv.carried.is_empty() { "-".to_string() } else { stacks_text(world, &inv.carried) },
+    );
+    if let Some(cid) = p.open
+        && let Some(site) = world.container(cid)
+    {
+        let def = world.container_def(site);
+        let stacks = world.container_contents(cid).unwrap_or(&[]);
+        let used: f32 = stacks.iter().map(|s| world.item_def(s.item).volume_l * s.count as f32).sum();
+        out.push_str(&format!("open: #{cid} {} ({used:.1} of {:.0} L): {}\n", def.name, def.room_l, if stacks.is_empty() { "empty".to_string() } else { stacks_text(world, stacks) }));
+    }
+    let floor = world.floor_of(id);
+    out.push_str(&format!(
+        "floor within reach: {}\n",
+        if floor.is_empty() { "-".to_string() } else { floor.iter().map(|it| format!("#{} {}", it.id, stack_text(world, &it.stack))).collect::<Vec<_>>().join(", ") }
+    ));
+    let reach = world.containers_in_reach(id);
+    out.push_str(&format!(
+        "containers within reach: {}",
+        if reach.is_empty() {
+            "-".to_string()
+        } else {
+            reach.iter().map(|&c| format!("#{c} {}{}", world.container_def(world.container(c).expect("exists")).name, if world.container_contents(c).is_some() { " (searched)" } else { "" })).collect::<Vec<_>>().join(", ")
+        }
+    ));
+    if !p.jobs.is_empty() {
+        out.push_str(&format!("\nbusy: {:.1} s on the current job, {} queued", p.jobs[0].left, p.jobs.len()));
+    }
+    Ok(out)
+}
+
 fn edge_char(e: Edge, horizontal: bool, damaged: bool) -> char {
     match e {
         Edge::None | Edge::Arch => ' ',
@@ -1448,14 +1808,11 @@ mod tests {
     use std::time::Duration;
 
     use zombye_net::content;
-    use zombye_sim::WorldConfig;
 
     fn small_world() -> World {
         let data = content::default_data_dir();
-        let config = WorldConfig::new(7, 30, content::load_building_templates(&data).unwrap())
-            .with_weapons(content::load_weapons(&data).unwrap())
-            .with_population(content::load_population(&data).unwrap())
-            .with_map_chunks(8);
+        let mut config = content::load_config(&data, 7).unwrap().with_map_chunks(8);
+        config.zombies = Some(30);
         let mut world = World::new(config);
         add_agent_player(&mut world);
         for _ in 0..40 {
@@ -1591,6 +1948,74 @@ mod tests {
         assert_eq!(response["id"], 7);
         let result = &response["result"];
         (result["content"][0]["text"].as_str().expect("text content").to_string(), result.get("isError") == Some(&json!(true)))
+    }
+
+    /// Put player 1 on a free tile beside the spawn house's nearest container. Returns its id.
+    fn beside_a_container(world: &mut World) -> u32 {
+        let spawn = world.player_spawn;
+        let mut sites: Vec<_> = world.containers().iter().filter(|s| s.building as usize == world.spawn_building).cloned().collect();
+        sites.sort_by(|a, b| a.distance(spawn).total_cmp(&b.distance(spawn)));
+        for site in sites {
+            for dy in -1..=site.size.y {
+                for dx in -1..=site.size.x {
+                    let t = site.min + IVec2::new(dx, dy);
+                    let c = t.as_vec2() + Vec2::splat(0.5);
+                    if world.map.in_bounds(t) && !world.map.tile_blocked(t) && world.map.tile(t).room == site.room && site.distance(c) <= 1.0 {
+                        world.players[0].state.pos = c;
+                        return site.id;
+                    }
+                }
+            }
+        }
+        panic!("no container to stand by");
+    }
+
+    /// An agent can search a container, take, drop, move, hold and eat things, all through tools.
+    #[test]
+    fn items_and_containers_through_tools() {
+        let mut world = small_world();
+        let dir = scratch("items");
+        let mut persist = session(&world, &dir.0);
+        let c = beside_a_container(&mut world);
+        let (text, err) = call(&mut world, &mut persist, "containers_near", json!({}));
+        assert!(!err && text.contains(&format!("#{c} ")) && text.contains("in reach") && text.contains("not searched"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "search", json!({"container": c}));
+        assert!(!err && text.contains("searched the") && text.contains(&format!("open: #{c}")), "{text}");
+        let me = world.players[0].state.pos;
+        let (text, err) = call(&mut world, &mut persist, "spawn_item", json!({"item": "tinned_beans", "count": 3, "x": me.x, "y": me.y}));
+        assert!(!err && text.contains("Tin of beans x3"), "{text}");
+        let id = world.items().last().unwrap().id;
+        let (text, err) = call(&mut world, &mut persist, "take", json!({"from": "ground", "index": id}));
+        assert!(!err && text.contains("took the 3 x tin of beans") && text.contains("carried: [0] Tin of beans x3"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "move_item", json!({"from": "carried", "index": 0, "to": "container", "count": 1}));
+        assert!(!err && text.contains("put the tin of beans in the"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "drop", json!({"index": 0, "count": 1}));
+        assert!(!err && text.contains("dropped the tin of beans") && text.contains("Tin of beans"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "take", json!({"from": "container", "index": 999}));
+        assert!(err && text.contains("nothing at"), "{text}");
+        // A weapon picked up goes in hand (spawned where the player looks, so it's the one picked up).
+        let aim = me + Vec2::from_angle(world.players[0].state.facing) * 0.5;
+        call(&mut world, &mut persist, "spawn_item", json!({"weapon": "kitchen_knife", "x": aim.x, "y": aim.y}));
+        let (text, err) = call(&mut world, &mut persist, "pick_up", json!({}));
+        assert!(!err && text.contains("in hand: kitchen knife"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "unequip", json!({"from": "hand"}));
+        assert!(!err && text.contains("took the kitchen knife"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "inventory", json!({}));
+        let k = text.lines().find(|l| l.starts_with("carried:")).and_then(|l| l.split("[").find(|p| p.contains("Kitchen knife"))).and_then(|p| p.split(']').next()).expect("knife carried");
+        assert!(!err, "{text}");
+        let (text, err) = call(&mut world, &mut persist, "equip", json!({"index": k.parse::<u32>().unwrap()}));
+        assert!(!err && text.contains("hand: Kitchen knife"), "{text}");
+        // Eating.
+        call(&mut world, &mut persist, "spawn_item", json!({"item": "apple", "x": aim.x, "y": aim.y}));
+        call(&mut world, &mut persist, "pick_up", json!({}));
+        let (text, _) = call(&mut world, &mut persist, "inventory", json!({}));
+        let k = text.lines().find(|l| l.starts_with("carried:")).and_then(|l| l.split("[").find(|p| p.contains("Apple"))).and_then(|p| p.split(']').next()).expect("apple carried");
+        let (text, err) = call(&mut world, &mut persist, "use", json!({"index": k.parse::<u32>().unwrap()}));
+        assert!(!err && text.contains("ate the apple"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "observe", json!({"radius": 6}));
+        assert!(text.contains("items on the floor") && text.contains("load "), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "items", json!({"category": "Bag"}));
+        assert!(!err && text.contains("school_backpack") && !text.contains("tinned_beans"), "{text}");
     }
 
     #[test]

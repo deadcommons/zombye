@@ -3,11 +3,14 @@
 //!
 //! **What's stored.** Everything that isn't derived and that the future depends on: the world
 //! settings (seed, map size, tunings), map edits, door and window damage, ground items, players
-//! (with their queued inputs and actions), every zombie on every tier with all its AI columns, the
+//! (with their queued inputs and actions, inventories, open container and item jobs), the contents
+//! of every container opened so far (unopened ones fill from the seed when first opened, so they
+//! aren't stored), every zombie on every tier with all its AI columns, the
 //! population state, the clock and tick, both RNG streams, the sounds waiting to be heard, the
 //! flow-field cache and the long-range plans (`crate::nav`). Derived state is rebuilt on load: the
 //! walk grid, the navigation graph and the plans' index, spatial hash, region index, chunk
-//! distances and the debug goal's field. Events for replication (edge changes, edge damage,
+//! distances, the debug goal's field, the container sites (from the map and `containers.ron`) and
+//! each player's weapon in hand and load modifiers (from its inventory). Events for replication (edge changes, edge damage,
 //! combat events) and per-tick outputs are not saved: a client (re)joining gets the full picture.
 //! So save, load and step gives the same [`World::state_hash`] as stepping the original.
 //!
@@ -18,13 +21,15 @@
 //! guards against the generator having changed. A map edited by hand ([`World::map_changed`]:
 //! tests, editors) is stored whole instead.
 //!
-//! **Content** (building templates, weapons, population file) comes from the caller, as for a new
-//! world; the save records a fingerprint of each. Loading against changed content goes on with a
-//! note when the change is compatible (weapon numbers, weapons added, `population.ron`; saved weapon
-//! indices are matched up by id) and fails with [`LoadError::ContentChanged`] when it isn't
-//! (templates that change the map, a weapon the save uses removed), unless
+//! **Content** (building templates, weapons, items, containers, population file) comes from the
+//! caller, as for a new world; the save records a fingerprint of each. Loading against changed
+//! content goes on with a note when the change is compatible (weapon and item numbers, weapons and
+//! items added, `containers.ron` changes that leave every opened container a container,
+//! `population.ron`; saved weapon and item indices are matched up by id) and fails with
+//! [`LoadError::ContentChanged`] when it isn't (templates that change the map, a weapon or item the
+//! save uses removed, an opened container that no longer is one), unless
 //! [`LoadOptions::force`] says to load anyway (see [`crate::save_check`]). Tunings that are not
-//! in data files yet (`ZombieTuning`, `CombatTuning`, `TierTuning`) are saved with the world, as RON
+//! in data files yet (`ZombieTuning`, `CombatTuning`, `TierTuning`, `CarryTuning`) are saved with the world, as RON
 //! text, so a save keeps its own numbers and an added field just takes its default.
 //!
 //! **Validation.** Values read from a save are checked before the world is used (finite numbers,
@@ -43,7 +48,8 @@
 //! flow cache...), then one `ZOMB` per 64 m region holding zombies (the tiers' region grid), so a
 //! later streaming save (#3, #22) can rewrite only the regions that changed. Payloads are
 //! [postcard](https://docs.rs/postcard), and zombies are stored column by column. A file with
-//! another format version fails with [`LoadError::Version`]; truncated or damaged files fail with
+//! another format version fails with [`LoadError::Version`] (format 3 added items, inventories and
+//! containers; older saves are refused); truncated or damaged files fail with
 //! [`LoadError::Truncated`] or [`LoadError::Corrupt`], never a panic.
 
 use std::fmt;
@@ -55,7 +61,8 @@ use serde::{Deserialize, Serialize};
 use crate::ai::ZombieTuning;
 use crate::combat::CombatTuning;
 use crate::flow::{SavedFlowCache, WalkGrid};
-use crate::items::GroundItem;
+use crate::inventory::CarryTuning;
+use crate::items::{GroundItem, ItemStack, complete_items};
 use crate::map::{EdgeChange, EdgeRef, TileMap};
 use crate::nav::SavedNav;
 use crate::players::Player;
@@ -72,7 +79,7 @@ use crate::zombies::{Tier, ZombieAnim, ZombieState, Zombies};
 /// The first eight bytes of every save.
 pub const MAGIC: [u8; 8] = *b"ZOMBYSAV";
 /// Bumped whenever the layout changes; other versions are refused with a clear error.
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 /// File extension `net::save_file` uses.
 pub const EXTENSION: &str = "zsave";
 
@@ -112,6 +119,10 @@ pub struct ContentPrint {
     pub template_ids: Vec<String>,
     pub weapons: u64,
     pub weapon_ids: Vec<String>,
+    /// Items (with the plain ones made for weapons that have none) and containers.
+    pub items: u64,
+    pub item_ids: Vec<String>,
+    pub containers: u64,
     pub population: u64,
 }
 
@@ -120,11 +131,16 @@ impl ContentPrint {
     pub fn of(config: &WorldConfig) -> Self {
         let mut weapons = config.weapons.clone();
         add_fists(&mut weapons);
+        let mut items = config.items.clone();
+        complete_items(&mut items, &weapons);
         Self {
             templates: fnv(&encode(&config.templates)),
             template_ids: config.templates.iter().map(|t| t.id.clone()).collect(),
             weapons: fnv(&encode(&weapons)),
             weapon_ids: weapons.iter().map(|w| w.id.clone()).collect(),
+            items: fnv(&encode(&items)),
+            item_ids: items.iter().map(|d| d.id.clone()).collect(),
+            containers: fnv(&encode(&config.containers)),
             population: fnv(&encode(&config.population)),
         }
     }
@@ -202,6 +218,8 @@ struct Settings {
     zombie: ZombieTuning,
     combat: CombatTuning,
     tiers: TierTuning,
+    #[serde(default)]
+    carry: CarryTuning,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -244,6 +262,8 @@ struct WorldSave {
     next_item_id: u32,
     players: Vec<Player>,
     items: Vec<GroundItem>,
+    /// Opened containers' contents, by container id, in id order.
+    opened: Vec<(u32, Vec<ItemStack>)>,
     /// Damaged doors and windows by [`EdgeRef::key`], in key order.
     edge_hp: Vec<((i32, i32, u8), f32)>,
     /// Sounds made since the last tick (heard by the next), and those heard by the last.
@@ -476,6 +496,7 @@ impl World {
             clock_offset_hours,
             items,
             next_item_id,
+            opened,
             edge_hp,
             sounds,
             heard,
@@ -492,8 +513,10 @@ impl World {
             map_edits,
             map_custom,
             map_base_hash,
-            // Rebuilt on load: from the weapons, the map, the zombies or the players.
+            // Rebuilt on load: from the content, the map, the zombies or the players.
             unarmed: _,
+            item_weapons: _,
+            sites: _,
             goal_flow: _,
             goal_dirty: _,
             hash: _,
@@ -509,6 +532,9 @@ impl World {
             action_events: _,
             hit_events: _,
             removed_corpses: _,
+            item_notes: _,
+            used_items: _,
+            private_dirty: _,
             // Scratch, refilled every tick.
             targets: _,
             scratch_tiles: _,
@@ -538,6 +564,7 @@ impl World {
             zombie: config.zombie.clone(),
             combat: config.combat.clone(),
             tiers: config.tiers.clone(),
+            carry: config.carry.clone(),
         };
         w.section(CONF, ron::to_string(&settings).expect("settings serialize").as_bytes());
         let layout = if *map_custom {
@@ -566,6 +593,7 @@ impl World {
             next_item_id: *next_item_id,
             players: players.clone(),
             items: items.clone(),
+            opened: opened.iter().map(|(k, v)| (*k, v.clone())).collect(),
             edge_hp: edge_hp.iter().map(|(k, v)| (*k, *v)).collect(),
             sounds: sounds.clone(),
             heard: heard.clone(),
@@ -622,11 +650,14 @@ impl World {
         config.zombie = settings.zombie;
         config.combat = settings.combat;
         config.tiers = settings.tiers;
+        config.carry = settings.carry;
         save_check::check_settings(text, &config)?;
         let map_save: MapSave = decode(MAPD, r.expect(MAPD)?)?;
         let mut ws: WorldSave = decode(WRLD, r.expect(WRLD)?)?;
         // Weapons are named by index into the save's own list: move them to the content's.
-        let mut blocking: Vec<String> = save_check::remap_weapons(&plan, &mut ws.items, &mut ws.players, force, &mut notes)?.into_iter().collect();
+        let mut blocking: Vec<String> = save_check::remap_weapons(&plan, &mut ws.players, force, &mut notes)?.into_iter().collect();
+        // Items too, wherever they are.
+        blocking.extend(save_check::remap_items(&plan, &mut ws.items, &mut ws.players, &mut ws.opened, force, &mut notes)?);
 
         let mut w = World::generate(config);
         let mut new_map = false;
@@ -712,6 +743,7 @@ impl World {
         (w.next_id, w.next_player_id, w.next_item_id) = (ws.next_id, ws.next_player_id, ws.next_item_id);
         w.players = ws.players;
         w.items = ws.items;
+        w.opened = ws.opened.into_iter().collect();
         w.edge_hp = ws.edge_hp.into_iter().collect();
         w.sounds = ws.sounds;
         w.heard = ws.heard;
@@ -750,6 +782,12 @@ impl World {
         if new_map {
             save_check::fit_to_new_map(&mut w, &mut notes);
         }
+        // Opened containers must still be containers (on a new map, or with containers.ron changed).
+        if let Some(what) = save_check::fit_containers(&mut w, &plan, new_map, force, &mut notes)? {
+            return Err(LoadError::ContentChanged(vec![what]));
+        }
+        // What's in hand and what the load does to movement follow from the inventories.
+        w.refresh_all_carry();
         save_check::validate(&w)?;
 
         // Derived state, as the end of a tick leaves it.
@@ -766,7 +804,7 @@ impl World {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::items::parse_weapons;
     use crate::map::{Edge, Side};
@@ -785,7 +823,9 @@ mod tests {
     }
 
     fn content() -> WorldConfig {
-        WorldConfig::new(5, 0, templates()).with_weapons(weapons())
+        let items = crate::items::parse_items(include_str!("../../../assets/data/items/items.ron"), &weapons()).unwrap();
+        let containers = crate::containers::parse_containers(include_str!("../../../assets/data/containers.ron")).unwrap();
+        WorldConfig::new(5, 0, templates()).with_weapons(weapons()).with_items(items).with_containers(containers)
     }
 
     fn world(zombies: u32) -> World {
@@ -845,7 +885,7 @@ mod tests {
         for p in &mut w.players {
             p.hp = 1e5;
         }
-        w.spawn_item("baseball_bat", spawn + Vec2::new(0.4, 0.0));
+        w.spawn_item("baseball_bat", 1, spawn + Vec2::new(0.4, 0.0));
         w.player_pick_up(a);
         w.spawn_zombies(60, spawn + Vec2::new(12.0, 0.0), 8.0);
         // Break one door of the house, batter another.
@@ -859,8 +899,43 @@ mod tests {
             (w.zombies.state[i], w.zombies.hp[i], w.zombies.timer[i]) = (ZombieState::Dead, 0.0, k as f32);
         }
         w.make_noise(spawn, 120.0, true);
-        let _ = b;
+        // Player b has things: a backpack on, food, a container of the spawn house searched (so it is
+        // open and stored), and a move under way when the save is made.
+        open_nearest_container(&mut w, b);
+        assert!(w.hold_item(b, crate::inventory::Slot::Back, "school_backpack"));
+        assert!(w.give_item(b, "tinned_beans", 3) && w.give_item(b, "jeans", 1));
+        w.player_wear(b, 1).unwrap();
+        w.player_drop(b, crate::inventory::Place::Carried, 0, 1).unwrap();
         w
+    }
+
+    /// Put player `id` next to the spawn house's nearest container and search it to the end.
+    /// Returns the container's id.
+    pub(crate) fn open_nearest_container(w: &mut World, id: u32) -> u32 {
+        let spawn = w.player_spawn;
+        let site = w.containers().iter().filter(|s| s.building as usize == w.spawn_building).min_by(|a, b| a.distance(spawn).total_cmp(&b.distance(spawn))).expect("a container in the spawn house").clone();
+        // Stand on a free tile of its room next to it.
+        let mut best = None;
+        for dy in -2..site.size.y + 2 {
+            for dx in -2..site.size.x + 2 {
+                let t = site.min + IVec2::new(dx, dy);
+                let c = t.as_vec2() + Vec2::splat(0.5);
+                if w.map.in_bounds(t) && !w.map.tile_blocked(t) && w.map.tile(t).room == site.room && site.distance(c) <= 1.0 && best.is_none_or(|(d, _)| site.distance(c) < d) {
+                    best = Some((site.distance(c), c));
+                }
+            }
+        }
+        let (_, at) = best.expect("room to stand by the container");
+        let pi = w.players.iter().position(|p| p.id == id).unwrap();
+        w.players[pi].state.pos = at;
+        w.player_search(id, Some(site.id)).unwrap();
+        for _ in 0..200 {
+            w.step();
+            if w.player(id).unwrap().open == Some(site.id) {
+                return site.id;
+            }
+        }
+        panic!("the search never finished: {:?}", w.item_notes);
     }
 
     fn door_edges(w: &World) -> Vec<EdgeRef> {

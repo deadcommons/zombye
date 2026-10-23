@@ -294,7 +294,7 @@ fn update_hud(
     if let Ok(mut t) = text.single_mut() {
         let rotate = if options.rotate { ", . rotate | " } else { "" };
         t.0 = format!(
-            "{line}\nWASD move | Shift run | C sneak{} | mouse face | LMB attack | Space shove/stomp | E pick up | F door/window | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load",
+            "{line}\nWASD move | Shift run | C sneak{} | mouse face | LMB attack | Space shove/stomp | E pick up / search | Tab inventory | F door/window | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load",
             if me.sneak { " (on)" } else { "" }
         );
     }

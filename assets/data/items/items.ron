@@ -1,0 +1,152 @@
+// Items: everything a survivor can carry. Schema: zombye_sim::items::ItemDef (validated on load;
+// unknown fields are refused). All names and numbers are our own, using real-world weights and
+// sizes so a new item's numbers can be guessed without a table.
+//
+//   id          lowercase letters, digits and _ (saves and loot tables name items by it)
+//   category    Food, Drink, Medical, Tool, Material, Clothing, Bag, Weapon, Light or Junk
+//   weight_kg   counts in full wherever it is carried (hands, pockets, bags, worn)
+//   volume_l    room it takes in pockets, bags and furniture (held and worn items take none)
+//   stack       how many share one slot (default 1)
+//   tags        for rules that recipes and actions check: needs_tin_opener, opens_tins, cuts,
+//               rippable, fire, fuel, light_source, junk, bandage, clean, disinfects, ...
+//   two_handed  held in both hands (default false)
+//   weapon      Some("id") of a weapon in weapons.ron: the item swings like it. Every weapon there
+//               (but bare hands) should have an item here; one without gets a plain 1 kg item.
+//   food, drink Some((hunger: 0..1 restored, thirst: 0..1 restored (negative: makes you thirsty),
+//               uses: goes, spoils_hours: Some(game hours) or None)). Effects come with #11.
+//   medical     Some((uses: n)). What it treats comes with #9 and #10 (by tag).
+//   bag         Some((capacity_l: room it adds, carried: Back | Shoulder | Hand, slow: 0..1
+//               speed lost while carried))
+//   clothing    Some((covers: [Head, Torso, Arms, Hands, Legs, Feet], protection: 0..1,
+//               layer: Base | Mid | Outer)). Two worn items can't share a body part and layer.
+//   light       Some((radius_m, hours)): a light source (comes with night lighting).
+//   color       grey-box colour on the floor, linear-ish RGB 0..1
+[
+    // ---- Food ----------------------------------------------------------------------------------
+    (id: "tinned_beans", name: "Tin of beans", category: Food, weight_kg: 0.45, volume_l: 0.4, stack: 6, tags: ["needs_tin_opener"],
+        food: Some((hunger: 0.30, thirst: -0.02)), color: (0.55, 0.55, 0.58)),
+    (id: "tinned_soup", name: "Tin of soup", category: Food, weight_kg: 0.42, volume_l: 0.4, stack: 6, tags: ["needs_tin_opener"],
+        food: Some((hunger: 0.22, thirst: 0.08)), color: (0.6, 0.35, 0.3)),
+    (id: "tinned_fruit", name: "Tin of fruit", category: Food, weight_kg: 0.43, volume_l: 0.4, stack: 6,
+        food: Some((hunger: 0.15, thirst: 0.10)), color: (0.75, 0.6, 0.3)),
+    (id: "crackers", name: "Box of crackers", category: Food, weight_kg: 0.25, volume_l: 0.8, stack: 4,
+        food: Some((hunger: 0.18, thirst: -0.05)), color: (0.8, 0.65, 0.4)),
+    (id: "peanut_butter", name: "Jar of peanut butter", category: Food, weight_kg: 0.4, volume_l: 0.4, stack: 4,
+        food: Some((hunger: 0.35, uses: 4)), color: (0.6, 0.42, 0.25)),
+    (id: "cereal", name: "Box of cereal", category: Food, weight_kg: 0.5, volume_l: 2.5, stack: 2,
+        food: Some((hunger: 0.25, uses: 3)), color: (0.85, 0.7, 0.3)),
+    (id: "chocolate_bar", name: "Chocolate bar", category: Food, weight_kg: 0.05, volume_l: 0.05, stack: 10,
+        food: Some((hunger: 0.06)), color: (0.35, 0.2, 0.12)),
+    (id: "crisps", name: "Bag of crisps", category: Food, weight_kg: 0.1, volume_l: 0.6, stack: 6,
+        food: Some((hunger: 0.08, thirst: -0.03)), color: (0.85, 0.2, 0.2)),
+    (id: "bread", name: "Loaf of bread", category: Food, weight_kg: 0.5, volume_l: 2.0, stack: 2,
+        food: Some((hunger: 0.30, uses: 3, spoils_hours: Some(48.0))), color: (0.78, 0.6, 0.38)),
+    (id: "apple", name: "Apple", category: Food, weight_kg: 0.18, volume_l: 0.2, stack: 8,
+        food: Some((hunger: 0.08, thirst: 0.04, spoils_hours: Some(120.0))), color: (0.7, 0.1, 0.08)),
+    (id: "cheese", name: "Block of cheese", category: Food, weight_kg: 0.25, volume_l: 0.25, stack: 4,
+        food: Some((hunger: 0.20, uses: 2, spoils_hours: Some(48.0))), color: (0.92, 0.8, 0.35)),
+
+    // ---- Drink ---------------------------------------------------------------------------------
+    (id: "water_bottle", name: "Bottle of water", category: Drink, weight_kg: 1.05, volume_l: 1.0, stack: 4, tags: ["refillable"],
+        drink: Some((thirst: 0.5, uses: 2)), color: (0.55, 0.75, 0.9)),
+    (id: "empty_bottle", name: "Empty bottle", category: Junk, weight_kg: 0.05, volume_l: 1.0, stack: 4, tags: ["refillable"],
+        color: (0.7, 0.8, 0.85)),
+    (id: "soda_can", name: "Can of soda", category: Drink, weight_kg: 0.35, volume_l: 0.35, stack: 6,
+        drink: Some((thirst: 0.25, hunger: 0.03)), color: (0.75, 0.15, 0.15)),
+    (id: "juice_carton", name: "Carton of juice", category: Drink, weight_kg: 1.05, volume_l: 1.0, stack: 3,
+        drink: Some((thirst: 0.35, hunger: 0.05, uses: 3, spoils_hours: Some(96.0))), color: (0.95, 0.6, 0.15)),
+    (id: "milk", name: "Bottle of milk", category: Drink, weight_kg: 1.05, volume_l: 1.0, stack: 3,
+        drink: Some((thirst: 0.35, hunger: 0.08, uses: 3, spoils_hours: Some(72.0))), color: (0.95, 0.95, 0.92)),
+
+    // ---- Medical -------------------------------------------------------------------------------
+    (id: "plasters", name: "Box of plasters", category: Medical, weight_kg: 0.05, volume_l: 0.1, stack: 5, tags: ["plaster"],
+        medical: Some((uses: 8)), color: (0.85, 0.7, 0.6)),
+    (id: "gauze", name: "Gauze roll", category: Medical, weight_kg: 0.08, volume_l: 0.15, stack: 5, tags: ["bandage", "clean"],
+        medical: Some((uses: 3)), color: (0.95, 0.95, 0.95)),
+    (id: "rag", name: "Rag", category: Medical, weight_kg: 0.05, volume_l: 0.1, stack: 10, tags: ["bandage"],
+        medical: Some((uses: 1)), color: (0.6, 0.55, 0.45)),
+    (id: "clean_rag", name: "Clean rag", category: Medical, weight_kg: 0.05, volume_l: 0.1, stack: 10, tags: ["bandage", "clean"],
+        medical: Some((uses: 1)), color: (0.85, 0.85, 0.8)),
+    (id: "antiseptic", name: "Bottle of antiseptic", category: Medical, weight_kg: 0.3, volume_l: 0.3, stack: 3, tags: ["disinfects"],
+        medical: Some((uses: 10)), color: (0.55, 0.3, 0.2)),
+    (id: "painkillers", name: "Painkillers", category: Medical, weight_kg: 0.05, volume_l: 0.05, stack: 5, tags: ["painkiller"],
+        medical: Some((uses: 12)), color: (0.9, 0.9, 0.95)),
+    (id: "antibiotics", name: "Antibiotics", category: Medical, weight_kg: 0.05, volume_l: 0.05, stack: 5, tags: ["antibiotic"],
+        medical: Some((uses: 7)), color: (0.9, 0.85, 0.5)),
+    (id: "sewing_kit", name: "Sewing kit", category: Medical, weight_kg: 0.1, volume_l: 0.15, tags: ["stitches"],
+        medical: Some((uses: 6)), color: (0.6, 0.4, 0.6)),
+
+    // ---- Tools ---------------------------------------------------------------------------------
+    (id: "tin_opener", name: "Tin opener", category: Tool, weight_kg: 0.15, volume_l: 0.1, tags: ["opens_tins"], color: (0.6, 0.6, 0.62)),
+    (id: "screwdriver", name: "Screwdriver", category: Tool, weight_kg: 0.15, volume_l: 0.1, color: (0.85, 0.75, 0.2)),
+    (id: "scissors", name: "Scissors", category: Tool, weight_kg: 0.1, volume_l: 0.1, tags: ["cuts"], color: (0.2, 0.3, 0.7)),
+    (id: "saw", name: "Hand saw", category: Tool, weight_kg: 0.6, volume_l: 1.2, tags: ["saws"], color: (0.65, 0.65, 0.68)),
+    (id: "lighter", name: "Lighter", category: Tool, weight_kg: 0.03, volume_l: 0.02, stack: 5, tags: ["fire"], color: (0.8, 0.2, 0.5)),
+    (id: "matches", name: "Box of matches", category: Tool, weight_kg: 0.02, volume_l: 0.03, stack: 10, tags: ["fire"], color: (0.85, 0.3, 0.2)),
+    (id: "duct_tape", name: "Roll of duct tape", category: Tool, weight_kg: 0.3, volume_l: 0.3, stack: 4, color: (0.55, 0.57, 0.6)),
+    (id: "nails", name: "Box of nails", category: Material, weight_kg: 0.5, volume_l: 0.2, stack: 5, color: (0.45, 0.45, 0.47)),
+    (id: "rope", name: "Rope", category: Material, weight_kg: 0.8, volume_l: 1.5, stack: 2, color: (0.7, 0.6, 0.4)),
+
+    // ---- Light ---------------------------------------------------------------------------------
+    (id: "flashlight", name: "Flashlight", category: Light, weight_kg: 0.25, volume_l: 0.3, tags: ["light_source"],
+        light: Some((radius_m: 12.0, hours: 6.0)), color: (0.15, 0.15, 0.17)),
+    (id: "batteries", name: "Batteries", category: Light, weight_kg: 0.1, volume_l: 0.05, stack: 8, color: (0.3, 0.5, 0.3)),
+    (id: "candle", name: "Candle", category: Light, weight_kg: 0.1, volume_l: 0.1, stack: 6, tags: ["light_source", "needs_fire"],
+        light: Some((radius_m: 3.0, hours: 4.0)), color: (0.95, 0.92, 0.8)),
+
+    // ---- Materials -----------------------------------------------------------------------------
+    (id: "bed_sheet", name: "Bed sheet", category: Material, weight_kg: 0.6, volume_l: 1.5, stack: 2, tags: ["rippable"], color: (0.85, 0.85, 0.9)),
+    (id: "towel", name: "Towel", category: Material, weight_kg: 0.5, volume_l: 1.5, stack: 2, tags: ["rippable"], color: (0.4, 0.6, 0.75)),
+    (id: "thread", name: "Reel of thread", category: Material, weight_kg: 0.02, volume_l: 0.02, stack: 10, color: (0.85, 0.85, 0.85)),
+
+    // ---- Clothing ------------------------------------------------------------------------------
+    (id: "t_shirt", name: "T-shirt", category: Clothing, weight_kg: 0.15, volume_l: 0.5, tags: ["rippable"],
+        clothing: Some((covers: [Torso], protection: 0.05, layer: Base)), color: (0.85, 0.85, 0.82)),
+    (id: "jumper", name: "Jumper", category: Clothing, weight_kg: 0.4, volume_l: 1.2, tags: ["rippable"],
+        clothing: Some((covers: [Torso, Arms], protection: 0.15, layer: Mid)), color: (0.3, 0.35, 0.55)),
+    (id: "hoodie", name: "Hoodie", category: Clothing, weight_kg: 0.5, volume_l: 1.5, tags: ["rippable"],
+        clothing: Some((covers: [Torso, Arms, Head], protection: 0.15, layer: Mid)), color: (0.4, 0.4, 0.42)),
+    (id: "jeans", name: "Jeans", category: Clothing, weight_kg: 0.6, volume_l: 1.2, tags: ["rippable"],
+        clothing: Some((covers: [Legs], protection: 0.25, layer: Base)), color: (0.2, 0.3, 0.5)),
+    (id: "leather_jacket", name: "Leather jacket", category: Clothing, weight_kg: 1.6, volume_l: 3.0,
+        clothing: Some((covers: [Torso, Arms], protection: 0.45, layer: Outer)), color: (0.18, 0.12, 0.08)),
+    (id: "work_gloves", name: "Work gloves", category: Clothing, weight_kg: 0.2, volume_l: 0.3,
+        clothing: Some((covers: [Hands], protection: 0.35, layer: Base)), color: (0.7, 0.55, 0.3)),
+    (id: "trainers", name: "Trainers", category: Clothing, weight_kg: 0.7, volume_l: 2.0,
+        clothing: Some((covers: [Feet], protection: 0.2, layer: Outer)), color: (0.9, 0.9, 0.9)),
+    (id: "work_boots", name: "Work boots", category: Clothing, weight_kg: 1.4, volume_l: 3.0,
+        clothing: Some((covers: [Feet, Legs], protection: 0.5, layer: Outer)), color: (0.35, 0.25, 0.15)),
+
+    // ---- Bags ----------------------------------------------------------------------------------
+    (id: "plastic_bag", name: "Plastic bag", category: Bag, weight_kg: 0.02, volume_l: 0.05, stack: 10,
+        bag: Some((capacity_l: 8.0, carried: Hand)), color: (0.9, 0.9, 0.85)),
+    (id: "tote_bag", name: "Tote bag", category: Bag, weight_kg: 0.2, volume_l: 0.5,
+        bag: Some((capacity_l: 12.0, carried: Shoulder)), color: (0.8, 0.75, 0.6)),
+    (id: "school_backpack", name: "School backpack", category: Bag, weight_kg: 0.5, volume_l: 1.0,
+        bag: Some((capacity_l: 20.0, carried: Back)), color: (0.2, 0.4, 0.7)),
+    (id: "duffel_bag", name: "Duffel bag", category: Bag, weight_kg: 1.0, volume_l: 2.0,
+        bag: Some((capacity_l: 40.0, carried: Hand, slow: 0.1)), color: (0.25, 0.3, 0.2)),
+    (id: "hiking_pack", name: "Hiking rucksack", category: Bag, weight_kg: 1.6, volume_l: 3.0,
+        bag: Some((capacity_l: 50.0, carried: Back)), color: (0.6, 0.3, 0.15)),
+
+    // ---- Weapons (combat numbers in weapons.ron) -------------------------------------------------
+    (id: "kitchen_knife", name: "Kitchen knife", category: Weapon, weight_kg: 0.2, volume_l: 0.3, tags: ["cuts"], weapon: Some("kitchen_knife"), color: (0.75, 0.75, 0.78)),
+    (id: "claw_hammer", name: "Claw hammer", category: Weapon, weight_kg: 0.6, volume_l: 0.5, weapon: Some("claw_hammer"), color: (0.45, 0.3, 0.2)),
+    (id: "frying_pan", name: "Frying pan", category: Weapon, weight_kg: 1.2, volume_l: 2.0, weapon: Some("frying_pan"), color: (0.15, 0.15, 0.16)),
+    (id: "baseball_bat", name: "Baseball bat", category: Weapon, weight_kg: 1.0, volume_l: 2.5, two_handed: true, weapon: Some("baseball_bat"), color: (0.7, 0.55, 0.35)),
+    (id: "golf_club", name: "Golf club", category: Weapon, weight_kg: 0.4, volume_l: 2.0, two_handed: true, weapon: Some("golf_club"), color: (0.75, 0.75, 0.8)),
+    (id: "wooden_plank", name: "Wooden plank", category: Weapon, weight_kg: 2.0, volume_l: 4.0, two_handed: true, tags: ["wood", "fuel"], weapon: Some("wooden_plank"), color: (0.6, 0.45, 0.28)),
+    (id: "crowbar", name: "Crowbar", category: Weapon, weight_kg: 1.5, volume_l: 1.2, tags: ["pries"], weapon: Some("crowbar"), color: (0.5, 0.15, 0.12)),
+    (id: "fire_axe", name: "Fire axe", category: Weapon, weight_kg: 2.5, volume_l: 4.0, two_handed: true, tags: ["chops"], weapon: Some("fire_axe"), color: (0.75, 0.15, 0.1)),
+
+    // ---- Junk: everyday clutter (light, mostly useless; some taken apart later) ---------------------
+    (id: "mug", name: "Mug", category: Junk, weight_kg: 0.3, volume_l: 0.4, stack: 4, tags: ["junk"], color: (0.9, 0.9, 0.85)),
+    (id: "magazine", name: "Magazine", category: Junk, weight_kg: 0.2, volume_l: 0.3, stack: 5, tags: ["junk", "fuel"], color: (0.8, 0.4, 0.5)),
+    (id: "tv_remote", name: "TV remote", category: Junk, weight_kg: 0.15, volume_l: 0.15, tags: ["junk"], color: (0.1, 0.1, 0.1)),
+    (id: "picture_frame", name: "Picture frame", category: Junk, weight_kg: 0.4, volume_l: 0.6, tags: ["junk"], color: (0.6, 0.5, 0.35)),
+    (id: "pen", name: "Pen", category: Junk, weight_kg: 0.01, volume_l: 0.01, stack: 10, tags: ["junk"], color: (0.1, 0.2, 0.6)),
+    (id: "umbrella", name: "Umbrella", category: Junk, weight_kg: 0.5, volume_l: 1.0, tags: ["junk"], color: (0.15, 0.15, 0.2)),
+    (id: "baking_tray", name: "Baking tray", category: Junk, weight_kg: 0.6, volume_l: 1.5, tags: ["junk"], color: (0.5, 0.5, 0.52)),
+    (id: "alarm_clock", name: "Alarm clock", category: Junk, weight_kg: 0.3, volume_l: 0.4, tags: ["junk"], color: (0.8, 0.3, 0.2)),
+    (id: "cushion", name: "Cushion", category: Junk, weight_kg: 0.4, volume_l: 3.0, tags: ["junk"], color: (0.5, 0.3, 0.45)),
+]

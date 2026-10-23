@@ -28,7 +28,6 @@ use crate::zombies::{ZombieAnim, ZombieState};
 
 /// How far from its position a player can pick something up, and how far ahead it aims.
 pub const PICKUP_REACH: f32 = 1.3;
-const PICKUP_AIM_AHEAD: f32 = 0.5;
 /// A knocked-back zombie moves at most this fast (m/s), so one tick's step (0.25 m) stays under its
 /// body radius and it can't be knocked through a wall.
 pub const MAX_KNOCKBACK_SPEED: f32 = 5.0;
@@ -254,7 +253,7 @@ impl World {
         self.config.weapons.iter().position(|w| w.id == id).map(|i| i as u16)
     }
 
-    /// Weapons lying about, by id.
+    /// Items lying about, by id.
     pub fn items(&self) -> &[GroundItem] {
         &self.items
     }
@@ -277,10 +276,12 @@ impl World {
     fn request_action(&mut self, id: u32, kind: ActionKind) -> bool {
         let buffer = self.config.combat.action_buffer_secs;
         let Some(pi) = self.players.iter().position(|p| p.id == id) else { return false };
-        let p = &mut self.players[pi];
-        if p.dead {
+        if self.players[pi].dead {
             return false;
         }
+        // Fighting drops whatever you were doing with your things.
+        self.cancel_jobs(pi);
+        let p = &mut self.players[pi];
         if p.action.is_none() && p.ready_in <= 0.0 {
             self.begin_action(pi, kind);
             true
@@ -303,6 +304,9 @@ impl World {
             ActionKind::Shove => (c.shove_windup, c.shove_seconds, c.shove_endurance),
             ActionKind::Stomp => (c.stomp_windup, c.stomp_seconds, c.stomp_endurance),
         };
+        // A heavy load makes every action more tiring.
+        let cost = if self.carry(&self.players[pi]).burden >= crate::inventory::Burden::Heavy { cost * self.config.carry.heavy_action_cost } else { cost };
+        let c = &self.config.combat;
         let p = &mut self.players[pi];
         let (power, slow) = c.fatigue(p.state.endurance);
         p.state.endurance = (p.state.endurance - cost).max(0.0);
@@ -312,54 +316,6 @@ impl World {
         p.action = Some(Action { kind, timer: windup * slow, power, weapon });
         p.ready_in = total * slow;
         p.queued = None;
-    }
-
-    /// Player `id` picks up the weapon nearest to where it's facing within [`PICKUP_REACH`] and
-    /// equips it, dropping what it held in its place. Returns the item id taken.
-    pub fn player_pick_up(&mut self, id: u32) -> Option<u32> {
-        let pi = self.players.iter().position(|p| p.id == id)?;
-        let p = &self.players[pi];
-        if p.dead || p.action.is_some() {
-            return None;
-        }
-        let aim = p.state.pos + Vec2::from_angle(p.state.facing) * PICKUP_AIM_AHEAD;
-        let from = p.state.pos;
-        let k = self
-            .items
-            .iter()
-            .enumerate()
-            .filter(|(_, it)| it.pos.distance(from) <= PICKUP_REACH && clear_path(&self.map, from, it.pos))
-            .min_by(|(_, a), (_, b)| a.pos.distance(aim).total_cmp(&b.pos.distance(aim)))
-            .map(|(k, _)| k)?;
-        let item = self.items[k];
-        let old = self.players[pi].weapon.replace(item.weapon);
-        match old {
-            Some(w) => {
-                // Swap: what you held lands at your feet.
-                self.items[k].weapon = w;
-                self.items[k].pos = from;
-            }
-            None => {
-                self.items.remove(k);
-            }
-        }
-        Some(item.id)
-    }
-
-    /// Debug: put a weapon (by id) on the ground. Returns the new item's id.
-    pub fn spawn_item(&mut self, weapon: &str, pos: Vec2) -> Option<u32> {
-        let w = self.weapon_index(weapon)?;
-        if w == self.unarmed || !pos.is_finite() || !self.map.in_bounds(pos.floor().as_ivec2()) {
-            return None;
-        }
-        Some(self.drop_item(w, pos, 0.0))
-    }
-
-    fn drop_item(&mut self, weapon: u16, pos: Vec2, angle: f32) -> u32 {
-        let id = self.next_item_id;
-        self.next_item_id += 1;
-        self.items.push(GroundItem { id, weapon, pos, angle });
-        id
     }
 
     /// Single-player / debug: a dead player gets up again at the spawn point with full health and
@@ -372,6 +328,8 @@ impl World {
             return false;
         }
         *p = Player { last_input_seq: p.last_input_seq, input: PlayerInput::default(), ..Player::new(id, spawn, hp) };
+        let pi = self.players.iter().position(|p| p.id == id).expect("just found");
+        self.refresh_carry(pi);
         true
     }
 
@@ -626,17 +584,15 @@ impl World {
         }
     }
 
-    fn kill_player(&mut self, pi: usize) {
+    pub(crate) fn kill_player(&mut self, pi: usize) {
         let p = &mut self.players[pi];
         p.hp = 0.0;
         p.dead = true;
         p.action = None;
         p.queued = None;
         p.input.move_dir = Vec2::ZERO;
-        let (weapon, pos, facing) = (p.weapon.take(), p.state.pos, p.state.facing);
-        if let Some(w) = weapon {
-            self.drop_item(w, pos, facing);
-        }
+        // Everything it had falls where it lay.
+        self.drop_everything(pi);
     }
 }
 
@@ -667,13 +623,17 @@ mod tests {
         items::parse_weapons(include_str!("../../../assets/data/items/weapons.ron")).unwrap()
     }
 
+    fn items() -> Vec<crate::items::ItemDef> {
+        items::parse_items(include_str!("../../../assets/data/items/items.ron"), &weapons()).unwrap()
+    }
+
     fn world(seed: u64, zombies: u32) -> World {
-        World::new(WorldConfig::new(seed, zombies, templates()).with_weapons(weapons()))
+        World::new(WorldConfig::new(seed, zombies, templates()).with_weapons(weapons()).with_items(items()))
     }
 
     /// An empty grass field at noon with one player at (100.5, 100.5) facing east and nothing else.
     fn arena(seed: u64) -> (World, u32) {
-        let mut config = WorldConfig::new(seed, 0, templates()).with_weapons(weapons());
+        let mut config = WorldConfig::new(seed, 0, templates()).with_weapons(weapons()).with_items(items());
         config.start_hour = 12.0;
         let mut w = World::new(config);
         w.map = TileMap::new(w.map.width() / crate::map::CHUNK_SIZE, w.map.height() / crate::map::CHUNK_SIZE);
@@ -683,9 +643,11 @@ mod tests {
         (w, id)
     }
 
+    /// Put a weapon (its item) in player `id`'s hand. Returns the weapon's index.
     fn equip(w: &mut World, id: u32, weapon: &str) -> u16 {
+        assert!(w.hold_item(id, crate::inventory::Slot::Hand, weapon));
         let k = w.weapon_index(weapon).unwrap();
-        w.players.iter_mut().find(|p| p.id == id).unwrap().weapon = Some(k);
+        assert_eq!(w.player(id).unwrap().weapon, Some(k));
         k
     }
 
@@ -966,7 +928,8 @@ mod tests {
 
         // Three on you with no fight back: dead in well under a minute.
         let (mut w, id) = arena(9);
-        let bat = equip(&mut w, id, "baseball_bat");
+        equip(&mut w, id, "baseball_bat");
+        let bat = w.item_index("baseball_bat").unwrap();
         for k in 0..3 {
             let a = k as f32 * 2.1;
             zombie(&mut w, Vec2::new(100.5, 100.5) + Vec2::from_angle(a) * 0.75, a + PI);
@@ -985,7 +948,8 @@ mod tests {
         let p = w.player(id).unwrap();
         assert_eq!(p.hp, 0.0);
         assert!(p.weapon.is_none());
-        assert!(w.items().iter().any(|it| it.weapon == bat && it.pos.distance(p.state.pos) < 0.01), "the bat should drop");
+        assert!(w.items().iter().any(|it| it.stack.item == bat && it.pos.distance(p.state.pos) < 0.01), "the bat should drop");
+        assert!(p.inventory.is_empty() && p.state.mods == crate::players::MoveMods::default());
         // Dead: input is ignored and the zombies lose interest.
         let at = p.state.pos;
         w.set_player_input(id, 1, PlayerInput { move_dir: Vec2::X, facing: 0.0, run: true, sneak: false });
@@ -1079,26 +1043,35 @@ mod tests {
         for it in w.items() {
             let t = it.pos.floor().as_ivec2();
             assert!(w.map.building_at(it.pos).is_some() && !w.map.tile_blocked(t), "item {} at {}", it.id, it.pos);
-            assert_ne!(it.weapon, w.unarmed());
+            assert!(w.item_weapon(it.stack.item).is_some_and(|k| k != w.unarmed()));
         }
 
         let (mut w, id) = arena(11);
         assert!(w.player_pick_up(id).is_none(), "nothing to pick up");
-        let bat = w.spawn_item("baseball_bat", Vec2::new(101.3, 100.5)).unwrap();
-        let knife = w.spawn_item("kitchen_knife", Vec2::new(103.5, 100.5)).unwrap();
-        assert!(w.spawn_item("fists", Vec2::new(101.0, 100.5)).is_none());
+        let bat = w.spawn_item("baseball_bat", 1, Vec2::new(101.3, 100.5)).unwrap();
+        let knife = w.spawn_item("kitchen_knife", 1, Vec2::new(103.5, 100.5)).unwrap();
+        let axe = w.spawn_item("fire_axe", 1, Vec2::new(105.5, 100.5)).unwrap();
+        assert!(w.spawn_item("fists", 1, Vec2::new(101.0, 100.5)).is_none(), "bare hands aren't an item");
         assert_eq!(w.player_pick_up(id), Some(bat));
         assert_eq!(w.wielded(w.player(id).unwrap().weapon).id, "baseball_bat");
-        assert_eq!(w.items().len(), 1);
+        assert_eq!(w.items().len(), 2);
         // Out of reach.
         assert!(w.player_pick_up(id).is_none());
-        // Swap: the bat stays behind where you stood.
+        // Picking up another weapon: the bat goes into your pockets (2.5 of 3 litres)...
         w.players[0].state.pos = Vec2::new(102.8, 100.5);
         assert_eq!(w.player_pick_up(id), Some(knife));
         assert_eq!(w.wielded(w.player(id).unwrap().weapon).id, "kitchen_knife");
-        let left = w.items().iter().find(|it| it.id == knife).unwrap();
-        assert_eq!(w.config.weapons[left.weapon as usize].id, "baseball_bat");
-        assert_eq!(left.pos, Vec2::new(102.8, 100.5));
+        let bat_item = w.item_index("baseball_bat").unwrap();
+        assert_eq!(w.player(id).unwrap().inventory.carried, vec![crate::items::ItemStack::one(bat_item)]);
+        // ...and with no room for the knife (a mug fills the pockets up), it stays on the floor where
+        // you stood.
+        assert!(w.give_item(id, "mug", 1));
+        w.players[0].state.pos = Vec2::new(104.8, 100.5);
+        assert_eq!(w.player_pick_up(id), Some(axe));
+        assert_eq!(w.wielded(w.player(id).unwrap().weapon).id, "fire_axe");
+        let knife_item = w.item_index("kitchen_knife").unwrap();
+        let left = w.items().iter().find(|it| it.stack.item == knife_item).unwrap();
+        assert_eq!(left.pos, Vec2::new(104.8, 100.5));
     }
 
     #[test]
