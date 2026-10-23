@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use zombye_sim::BuildingTemplate;
 use zombye_sim::containers::{ContainerData, parse_containers};
 use zombye_sim::items::{ItemDef, WeaponDef, parse_items, parse_weapons};
+use zombye_sim::loot::LootData;
 use zombye_sim::population::{PopulationDef, parse_population};
 
 /// The repo's `assets/data` folder (used when running from a checkout).
@@ -72,15 +73,32 @@ pub fn load_containers(data_dir: &Path) -> Result<ContainerData, String> {
     parse_containers(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Everything a world is made from in `<data>`: building templates, weapons, items, containers and
-/// the population file, as a config for `seed` (the zombie count as the population file gives).
+/// What containers hold: `<data>/loot.ron`, validated, every item id checked against `items` (and
+/// the plain items weapons without one get) and every container kind against `containers`. A data
+/// folder without the file has no loot tables: every container holds nothing.
+pub fn load_loot(data_dir: &Path, items: &[ItemDef], weapons: &[WeaponDef], containers: &ContainerData) -> Result<LootData, String> {
+    let path = data_dir.join("loot.ron");
+    if !path.exists() {
+        return Ok(LootData::default());
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut all = items.to_vec();
+    zombye_sim::items::complete_items(&mut all, weapons);
+    LootData::parse_for(&text, &all, containers).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Everything a world is made from in `<data>`: building templates, weapons, items, containers,
+/// loot tables and the population file, as a config for `seed` (the zombie count as the
+/// population file gives).
 pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig, String> {
     let templates = load_building_templates(data_dir)?;
     let weapons = load_weapons(data_dir)?;
     let items = load_items(data_dir, &weapons)?;
     let containers = load_containers(data_dir)?;
+    let loot = load_loot(data_dir, &items, &weapons, &containers)?;
     let population = load_population(data_dir)?;
-    let mut config = zombye_sim::WorldConfig::new(seed, 0, templates).with_weapons(weapons).with_items(items).with_containers(containers).with_population(population);
+    let mut config =
+        zombye_sim::WorldConfig::new(seed, 0, templates).with_weapons(weapons).with_items(items).with_containers(containers).with_loot(loot).with_population(population);
     config.zombies = None;
     Ok(config)
 }
@@ -103,5 +121,20 @@ mod tests {
         assert!(c.items.len() >= 50 && !c.containers.containers.is_empty());
         assert!(load_items(Path::new("/nonexistent-zombye-data"), &c.weapons).unwrap().is_empty());
         assert_eq!(load_containers(Path::new("/nonexistent-zombye-data")).unwrap(), ContainerData::default());
+    }
+
+    /// The loot tables load against the items and containers, and a mistake in them names the file
+    /// and the table.
+    #[test]
+    fn loot_loads_and_names_its_mistakes() {
+        let c = load_config(&default_data_dir(), 1).unwrap();
+        assert!(c.loot.tables.len() >= 20 && c.loot.find("kitchen", "fridge").is_some());
+        assert_eq!(load_loot(Path::new("/nonexistent-zombye-data"), &c.items, &c.weapons, &c.containers).unwrap(), LootData::default());
+        let dir = std::env::temp_dir().join(format!("zombye-loot-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("loot.ron"), "(tables: [(room: \"kitchen\", container: \"fridge\", entries: [(item: \"unobtainium\")])])").unwrap();
+        let err = load_loot(&dir, &c.items, &c.weapons, &c.containers).unwrap_err();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(err.contains("loot.ron") && err.contains("(kitchen, fridge)") && err.contains("unobtainium"), "{err}");
     }
 }

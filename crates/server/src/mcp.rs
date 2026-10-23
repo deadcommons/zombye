@@ -26,7 +26,7 @@ const COMPASS: [(&str, [f32; 2]); 8] =
     [("e", [1.0, 0.0]), ("se", [1.0, 1.0]), ("s", [0.0, 1.0]), ("sw", [-1.0, 1.0]), ("w", [-1.0, 0.0]), ("nw", [-1.0, -1.0]), ("n", [0.0, -1.0]), ("ne", [1.0, -1.0])];
 
 /// Tools that only look: they don't make the world need saving.
-const READ_ONLY: [&str; 14] = ["observe", "zombie", "edge", "weapons", "items", "inventory", "containers_near", "buildings", "regions", "stats", "saves", "save", "load", "screenshot"];
+const READ_ONLY: [&str; 15] = ["observe", "zombie", "edge", "weapons", "items", "inventory", "containers_near", "loot", "buildings", "regions", "stats", "saves", "save", "load", "screenshot"];
 /// "on" / "off".
 fn on_off(b: bool) -> &'static str {
     if b { "on" } else { "off" }
@@ -295,9 +295,19 @@ fn tool_list() -> Value {
         {
             "name": "containers_near",
             "description": "Furniture that holds things near a player (default within 8 m): container id, kind, the furniture \
-                and room, distance, whether it has been searched (and what it holds), and whether the player can reach it now \
+                and room, distance, whether it has been searched (and what it holds, or else the loot table it will fill from), and whether the player can reach it now \
                 (same room, within 1.2 m of the furniture).",
             "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}, "radius": {"type": "number", "default": 8}}}
+        },
+        {
+            "name": "loot",
+            "description": "The loot tables (assets/data/loot.ron), for tuning without walking. With no arguments: every table's \
+                (room, container) key and the scale. With `room` (a room type: kitchen, shed, ...) and `container` (a container \
+                kind from containers.ron, or a furniture kind such as counter or sink, mapped as in that room): which table that \
+                container fills from (exact or which fallback), its empty chance, rolls, entries with weights, chance per pick \
+                and counts, and groups; then `n` sample fills (default 200, at most 5000; seeded from the world seed but only \
+                rolled, never placed) with how often each item turned up and how many on average. Read-only.",
+            "inputSchema": {"type": "object", "properties": {"room": {"type": "string"}, "container": {"type": "string"}, "n": {"type": "integer", "default": 200}}}
         },
         {
             "name": "search",
@@ -804,8 +814,12 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             for s in near {
                 let def = world.container_def(s);
                 let furniture = furniture_kind(world, s.id);
+                let room_type = &world.map.rooms[s.room as usize].room_type;
                 let held = match world.container_contents(s.id) {
-                    None => "not searched".to_string(),
+                    None => match world.config.loot.find(room_type, &def.id) {
+                        Some(t) => format!("not searched (fills from loot table {})", t.key()),
+                        None => "not searched (no loot table: holds nothing)".to_string(),
+                    },
                     Some([]) => "searched: empty".to_string(),
                     Some(v) => format!("searched: {}", stacks_text(world, v)),
                 };
@@ -822,6 +836,12 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 ));
             }
             Ok(out)
+        }
+        "loot" => {
+            let room = args.get("room").and_then(Value::as_str);
+            let container = args.get("container").and_then(Value::as_str);
+            let n = args.get("n").and_then(Value::as_u64).unwrap_or(200).min(5000) as u32;
+            loot_text(world, room, container, n)
         }
         "search" => {
             let id = player_id();
@@ -1671,6 +1691,93 @@ fn stacks_text(world: &World, stacks: &[ItemStack]) -> String {
 }
 
 /// The furniture a container is (its kind in the building template).
+/// The `loot` tool: the list of tables, or one table and `n` sample fills of it.
+fn loot_text(world: &World, room: Option<&str>, container: Option<&str>, n: u32) -> Result<String, String> {
+    let loot = &world.config.loot;
+    let (Some(room), Some(container)) = (room, container) else {
+        let mut out = format!("{} loot tables (scale {}, rare_scale {}); a container uses the first of (room, container), (any, container), (room, any), (any, any):\n", loot.tables.len(), loot.scale, loot.rare_scale);
+        for t in &loot.tables {
+            out.push_str(&format!("  {}: empty {:.0}%, rolls {}-{}, {} entries, {} groups\n", t.key(), t.empty * 100.0, t.rolls.0, t.rolls.1, t.entries.len(), t.groups.len()));
+        }
+        out.push_str("ask for one with {room, container} (a container kind or a furniture kind) to see its entries and sample fills");
+        return Ok(out);
+    };
+    let kinds = &world.config.containers;
+    let def = match kinds.containers.iter().find(|c| c.id == container) {
+        Some(d) => d,
+        None => match kinds.lookup(container, room) {
+            Some(k) => &kinds.containers[k as usize],
+            None => return Err(format!("{container:?} is neither a container kind nor furniture that is one in a {room} (kinds: {})", kinds.containers.iter().map(|c| c.id.as_str()).collect::<Vec<_>>().join(", "))),
+        },
+    };
+    let Some(table) = loot.find(room, &def.id) else {
+        return Ok(format!("a {} ({}) in a {room} has no loot table: it holds nothing", def.name.to_lowercase(), def.id));
+    };
+    let how = if table.room == room && table.container == def.id { "its own table".to_string() } else { format!("the fallback {}", table.key()) };
+    let mut out = format!(
+        "a {} ({}, {:.0} L) in a {room} fills from {how}: empty {:.0}%, rolls {}-{} (x scale {}), rare entries x{}\n",
+        def.name.to_lowercase(),
+        def.id,
+        def.room_l,
+        table.empty * 100.0,
+        table.rolls.0,
+        table.rolls.1,
+        loot.scale,
+        loot.rare_scale
+    );
+    let list = |out: &mut String, entries: &[zombye_sim::loot::LootEntry]| {
+        let weight = |e: &zombye_sim::loot::LootEntry| e.weight * if e.rare { loot.rare_scale } else { 1.0 };
+        let total: f32 = entries.iter().map(weight).sum::<f32>().max(1e-6);
+        for e in entries {
+            out.push_str(&format!("    {} | weight {}{} | {:.0}% a pick | count {}-{}\n", e.item, e.weight, if e.rare { " (rare)" } else { "" }, weight(e) / total * 100.0, e.count.0, e.count.1));
+        }
+    };
+    out.push_str("  entries (item | weight | chance per pick | count):\n");
+    list(&mut out, &table.entries);
+    for g in &table.groups {
+        out.push_str(&format!("  group {:?}: {:.0}% of fills, rolls {}-{}:\n", g.name, g.chance * 100.0, g.rolls.0, g.rolls.1));
+        list(&mut out, &g.entries);
+    }
+    if n == 0 {
+        return Ok(out);
+    }
+    // Sample fills, as containers that don't exist would get them: from the world seed and ids past
+    // any real container's, so nothing in the world is touched.
+    let items = &world.config.items;
+    let mut seen: std::collections::BTreeMap<u16, (u32, u32)> = std::collections::BTreeMap::new();
+    let (mut empty, mut stacks, mut litres, mut kg) = (0u32, 0u32, 0.0f32, 0.0f32);
+    for k in 0..n {
+        let got = zombye_sim::loot::fill(world.config.seed(), u32::MAX - k, def, room, loot, items);
+        empty += got.is_empty() as u32;
+        stacks += got.len() as u32;
+        let mut here = std::collections::BTreeSet::new();
+        for s in &got {
+            let d = &items[s.item as usize];
+            litres += d.volume_l * s.count as f32;
+            kg += d.weight_kg * s.count as f32;
+            let e = seen.entry(s.item).or_default();
+            e.1 += s.count as u32;
+            if here.insert(s.item) {
+                e.0 += 1;
+            }
+        }
+    }
+    let nf = n as f32;
+    out.push_str(&format!(
+        "{n} sample fills: {:.0}% empty, on average {:.1} stacks, {:.1} L, {:.1} kg; item | in % of fills | average count when found:\n",
+        empty as f32 / nf * 100.0,
+        stacks as f32 / nf,
+        litres / nf,
+        kg / nf
+    ));
+    let mut rows: Vec<_> = seen.into_iter().collect();
+    rows.sort_by(|a, b| b.1.0.cmp(&a.1.0).then(a.0.cmp(&b.0)));
+    for (item, (fills, count)) in rows {
+        out.push_str(&format!("    {} | {:.1}% | {:.1}\n", items[item as usize].id, fills as f32 / nf * 100.0, count as f32 / fills as f32));
+    }
+    Ok(out)
+}
+
 fn furniture_kind(world: &World, id: u32) -> String {
     world.map.buildings.iter().flat_map(|b| &b.furniture).nth(id as usize).map_or("?".to_string(), |f| f.kind.clone())
 }
@@ -2001,6 +2108,31 @@ mod tests {
             }
         }
         panic!("no container to stand by");
+    }
+
+    /// `loot` lists the tables, previews one (by container or furniture kind, with the fallback it
+    /// took) and samples it without touching the world; `containers_near` says which table an
+    /// unsearched container fills from.
+    #[test]
+    fn loot_tool_previews_tables() {
+        let mut world = small_world();
+        let dir = scratch("loot");
+        let mut persist = session(&world, &dir.0);
+        let hash = world.state_hash();
+        let (text, err) = call(&mut world, &mut persist, "loot", json!({}));
+        assert!(!err && text.contains("(kitchen, fridge)") && text.contains("(any, any)"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "loot", json!({"room": "kitchen", "container": "fridge", "n": 300}));
+        assert!(!err && text.contains("its own table") && text.contains("milk | weight 3") && text.contains("300 sample fills"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "loot", json!({"room": "shed", "container": "shelf"}));
+        assert!(!err && text.contains("the fallback (shed, any)") && text.contains("claw_hammer"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "loot", json!({"room": "kitchen", "container": "counter", "n": 50}));
+        assert!(!err && text.contains("group \"cutlery drawer\"") && text.contains("50 sample fills"), "{text}");
+        assert!(call(&mut world, &mut persist, "loot", json!({"room": "kitchen", "container": "bed"})).1, "a bed holds nothing");
+        assert_eq!(world.state_hash(), hash, "previewing loot changes nothing");
+        assert!(!persist.dirty);
+        beside_a_container(&mut world);
+        let (text, _) = call(&mut world, &mut persist, "containers_near", json!({}));
+        assert!(text.contains("not searched (fills from loot table ("), "{text}");
     }
 
     /// An agent can search a container, take, drop, move, hold and eat things, all through tools.

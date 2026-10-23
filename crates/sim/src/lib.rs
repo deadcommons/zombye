@@ -13,6 +13,7 @@ pub mod containers;
 pub mod flow;
 pub mod inventory;
 pub mod items;
+pub mod loot;
 pub mod map;
 pub mod nav;
 pub mod players;
@@ -34,6 +35,7 @@ pub use combat::{ActionEvent, CombatEvent, CombatEventKind, CombatTuning, HitEff
 pub use containers::{ContainerData, ContainerDef, ContainerSite};
 pub use inventory::{Burden, Carry, CarryTuning, Inventory, ItemJob, ItemNote, JobKind, Place, Slot};
 pub use items::{GroundItem, ItemCategory, ItemDef, ItemStack, WeaponCategory, WeaponDef};
+pub use loot::{LootData, LootTable};
 pub use flow::FlowField;
 pub use map::TileMap;
 pub use players::{Action, ActionKind, DevFlags, MoveMods, Player, PlayerInput, PlayerState, Stance};
