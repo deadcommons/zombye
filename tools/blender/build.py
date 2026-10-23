@@ -2,12 +2,14 @@
 
     /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup \
         --python tools/blender/build.py -- furniture/bed furniture/sofa
-    ... --python tools/blender/build.py -- furniture          # every spec in assets/specs/furniture
+    ... --python tools/blender/build.py -- furniture          # every furniture asset, in either repo
     ... --python tools/blender/build.py -- --check furniture  # validate only: no renders, no files
     ... --python tools/blender/build.py -- ~/games/zombye-art/characters/zombie-01   # a character (zchar)
 
-A character is an asset folder (a directory holding `<folder name>.ron`); with `--check` it is
-validated from its saved `.blend`. Prints each asset's validation report and exits 1 if any failed.
+Each asset is built where it's being worked on: its folder in the art repo when it has one, else the
+game repo's copy (tools/blender/artrepo.py). A character is given as its art-repo folder (a directory
+holding `<folder name>.ron`, built by zchar); with `--check` it is validated from its saved `.blend`.
+Prints each asset's validation report and exits 1 if any failed.
 """
 
 import sys
@@ -28,7 +30,7 @@ for a in args:
     elif "/" in a:
         assets.append(a)
     else:
-        assets += [f"{a}/{p.stem}" for p in sorted((zasset.REPO / "assets" / "specs" / a).glob("*.ron"))]
+        assets += zasset.artrepo.list_assets(a)
 if not assets:
     print(__doc__)
     sys.exit(2)

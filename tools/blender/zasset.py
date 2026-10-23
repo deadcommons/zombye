@@ -1,9 +1,11 @@
 """Zombye asset helpers, run inside Blender (5.x).
 
-Builds an asset from its spec (`assets/specs/<category>/<id>.ron`) and its build script
-(`assets/source/<category>/<id>/<id>.py`, which defines `build(a)`), then validates it, renders the
-game's four isometric angles, saves the `.blend` beside the script and exports the GLB to
-`assets/models/<category>/<id>.glb`. See `.claude/skills/blender-assets/SKILL.md`.
+Builds an asset from its spec (`<id>.ron`) and its build script (`<id>.py`, which defines
+`build(a)`), then validates it, renders the game's four isometric angles, saves the `.blend` beside
+the script and exports the GLB. Work happens in the private art repo's folder for the asset
+(`<kind>/<category>-<id>/`: spec, script, .blend, renders/, export/) when there is one, else on the
+game repo's copy (assets/specs, assets/source, assets/models); `artrepo.py` makes work folders and
+promotes finished assets. See `.claude/skills/blender-assets/SKILL.md`.
 
 Live (Blender open, MCP add-on server running) or headless (`execute_blender_code_for_cli` on any
 `.blend`, or `tools/blender/build.py` from a shell):
@@ -33,9 +35,12 @@ import bpy
 from mathutils import Vector
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import artrepo  # noqa: E402
 import palette  # noqa: E402
 
-importlib.reload(palette)  # a live session picks up palette edits with importlib.reload(zasset)
+# A live session picks up palette and path changes with importlib.reload(zasset).
+importlib.reload(palette)
+importlib.reload(artrepo)
 
 REPO = Path(__file__).resolve().parents[2]
 ASSET_COLLECTION = "Asset"
@@ -50,16 +55,9 @@ RENDER_PX = 400
 # ---------------------------------------------------------------- paths and specs
 
 def paths(asset):
-    """`"furniture/bed"` -> the spec, script, `.blend`, review sheet and GLB paths."""
-    category, name = asset.split("/")
-    src = REPO / "assets" / "source" / category / name
-    return {
-        "spec": REPO / "assets" / "specs" / category / f"{name}.ron",
-        "script": src / f"{name}.py",
-        "blend": src / f"{name}.blend",
-        "sheet": src / f"{name}_iso.png",
-        "glb": REPO / "assets" / "models" / category / f"{name}.glb",
-    }
+    """`"furniture/bed"` -> the spec, script, `.blend`, review sheet and GLB paths: in the art repo's
+    work folder when the asset has one, else the game repo's copy (`artrepo.paths`)."""
+    return artrepo.paths(asset)
 
 
 def read_ron(text):
@@ -656,6 +654,7 @@ def build(asset, render=True, export=True, save=True, sheet=True):
         m.finish(spec)
     report = validate(spec)
     report["asset"] = asset
+    report["where"] = p["where"]
     if render and report["ok"]:
         report["renders"] = render_angles(spec, sheet_path=p["sheet"] if sheet else None)
     if save:
@@ -666,10 +665,12 @@ def build(asset, render=True, export=True, save=True, sheet=True):
 
 
 def rel(path):
-    try:
-        return os.path.relpath(path, REPO)
-    except ValueError:
-        return str(path)
+    """A path relative to the game repo, or `art:` and relative to the art repo."""
+    p = Path(path)
+    art = artrepo.art_root()
+    if art is not None and p.is_relative_to(art):
+        return "art:" + os.path.relpath(p, art)
+    return os.path.relpath(p, REPO) if p.is_relative_to(REPO) else str(p)
 
 
 def summary(report):
