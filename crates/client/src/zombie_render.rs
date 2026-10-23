@@ -9,7 +9,7 @@
 //! Zombies the server no longer lists (corpses it cleared away) are despawned.
 //!
 //! M0 builds a grey-box low-poly zombie procedurally; the same bake step will later take rigged and
-//! animated Meshy GLBs (docs/PLAN.md §6).
+//! animated GLBs from the Blender pipeline (docs/PLAN.md §6).
 
 use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
