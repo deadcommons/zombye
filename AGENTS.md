@@ -13,11 +13,11 @@ Work is tracked on GitHub, not in the repo: the
 
 | Path | What | Licence |
 |---|---|---|
-| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), run stats and the cause of death (`run.rs`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
+| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), run stats and the cause of death (`run.rs`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint; `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
 | `crates/client` | `zombye` Bevy client: camera, chunk streaming, building/tree meshes, fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd; `survivor.rs` skinned, CPU-posed players), hit feedback (`fx.rs`), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), HUD, the death screen and run summary (`death.rs`), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
-| `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/containers.ron`, `data/population.ron`), models (`models/furniture/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), later textures/audio. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
+| `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`), models (`models/furniture/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), later textures/audio. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
 | `tools/blender/` | Python to build assets: run inside Blender, mesh builder, palette, renders, validation, GLB export (`zasset.py`, `palette.py`, `build.py`), character clean-up, validation and skinned export (`zchar.py`), VAT bake for the crowd (`zvat.py`); plain Python, art-repo work folders and promotion (`artrepo.py`). | MIT OR Apache-2.0 |
 | `docs/` | Plan and design docs. | — |
 
@@ -370,15 +370,14 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   fits, else left on the floor), anything else into the bags, as many as fit. Refusals and results become
   `World::item_notes` (to the snapshot).
 - **Containers:** `assets/data/containers.ron` (`containers::ContainerData`): container kinds (room in litres,
-  search time, noise; and a placeholder `holds`/`fill` until loot tables) and a map from `(furniture kind, room type)`
+  search time, noise) and a map from `(furniture kind, room type)`
   to a kind, `room: "any"` the fallback (a sink is a bathroom cabinet in a bathroom, an under-sink cupboard
   elsewhere; a wardrobe in a hall is a coat cupboard). Ground-floor furniture that maps to one is a `ContainerSite`
   (`World::containers()`), id = the furniture's place in the map (buildings in order, each one's furniture in order),
   opened from the same room within `CONTAINER_REACH` (1.6 m of the nearest edge of the furniture's footprint; E takes
   the one faced, within 60 degrees, nearest first, else the nearest in reach). New furniture kinds `shelf` (in the
-  family house's laundry) and `workbench`. A container is filled the first time anyone searches it, by
-  `containers::fill(seed, id, def, room_type, items)` (a hash of seed and id, never the world RNG, so the same in any
-  order): **the hook #8's loot tables replace.** Opened containers are stored sparsely (`World::opened`, saved, in
+  family house's laundry) and `workbench`. A container is filled the first time anyone searches it, from its loot
+  table (see Loot; a hash of seed and id, never the world RNG, so the same in any order). Opened containers are stored sparsely (`World::opened`, saved, in
   `state_hash`); a searched container stays open (and usable) to that player (`Player::open`) until it is `CONTAINER_KEEP_OPEN`
   (2.2 m) away or leaves the room. The floor has unlimited room; ground items within `PICKUP_REACH` with no wall,
   shut window or door or fence between (furniture doesn't block a hand: `vision::clear_reach`) are the player's floor
@@ -395,6 +394,36 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   (`InFlight`, until the snapshot shows the answer, a refusal, or 3 s); a floor item being taken leaves the Floor
   column at once. The Floor column and E use the snapshot's floor, not a distance guess. Left mouse doesn't swing while it's open. Ground items are drawn as boxes of their size and colour,
   weapons as bars.
+
+## Loot (`sim::loot`, `assets/data/loot.ron`; #8)
+
+- **Tables by room and container:** `loot::LootData` (`scale`, `rare_scale`, `tables`), validated by `loot::parse_loot`
+  (numbers, empty tables, a key twice, an item listed twice, unknown fields) and checked by `LootData::check` (item ids
+  in `items.ron`, container kinds in `containers.ron`; errors name the table, e.g. `(kitchen, fridge)`), loaded by
+  `net::content::load_loot` into `WorldConfig::loot` (no file: no tables, every container holds nothing). A
+  `LootTable` is `room` (a room type or `any`), `container` (a kind or `any`), `empty` (chance of nothing), `rolls`
+  (min, max picks), `entries` (`item`, `weight`, `count` per pick, `rare`) and `groups` (extra lists rolled after
+  the picks with their own `chance` and `rolls`: the kitchen's "cutlery drawer", the laundry's "toolbox"). A container
+  uses the first of `(room, container)`, `(any, container)`, `(room, any)`, `(any, any)` (`LootData::find`): a fridge
+  is a fridge anywhere, and shelves and workbenches (no `any` table of their own) hold what their room holds.
+- **Filling** (`loot::fill(seed, id, def, room_type, loot, items)`, called on a container's first search): from a
+  stream seeded by the world seed and container id only (`loot::container_rng`), so the same in any opening order and
+  across a save; picks add up into stacks of the item's stack size; a pick that doesn't fit the container's litres
+  is cut to what fits. **Sandbox:** `scale` multiplies every table's and group's rolls (a fraction rounds by chance;
+  0.25 scarce, 2 plenty), `rare_scale` the weight of `rare` entries.
+- **Tables shipped** (ours): kitchen (fridge, cupboard with the cutlery-drawer group, under-sink, pantry shelves),
+  any-room fridge, cupboard, oven, under-sink, bathroom cabinet, wardrobe, coat cupboard, desk drawers, coffee-table
+  drawer, TV shelf, drum; room tables for bathroom, bedroom, living, dining, hall, laundry (with a toolbox group),
+  shed, garage, office (and its desk), shop (and its fridge), pharmacy, hardware (a shop's stock is its room type,
+  for #17); `(any, any)` clutter. On the default town that is about three weeks of food for one player at 2.0
+  hunger a day (`the_default_town_feeds_one_player_for_weeks`).
+- **Weapons** are loot entries too (knives in the cutlery drawer, a pan in the oven, a bat in a wardrobe, a golf club
+  in the coat cupboard, hammers and crowbars on laundry, shed and garage shelves, a rare fire axe). The floor weapons
+  (`items::place_weapons`, `found_in`, at least one in the spawn house) stay for now, so the spawn house always has
+  something to fight with; `found_in` folds into the tables when that is retired.
+- **Saves:** `loot.ron` shares the `containers` fingerprint with `containers.ron` (no format change); a change loads
+  with a note: opened containers keep what they hold, unopened ones fill from the tables as they are now. Not yet:
+  food starting partly spoiled (needs item freshness, #11).
 
 ## Characters on screen (`crates/client`)
 
@@ -598,7 +627,8 @@ over the old one: a crash mid-write leaves the previous save whole).
   returns `Loaded { world, notes }`, and `save_check::plan_content` sorts changed content. Compatible, loaded with a
   note: a weapon's numbers (the new ones apply), weapons added, reordered or removed when the save uses none of the
   removed ones (saved weapon indices are matched up by id), the same for items (their numbers apply; indices matched
-  by id), `containers.ron` while every opened container is still one, `population.ron` (respawn and migration settings apply;
+  by id), `containers.ron` while every opened container is still one, `loot.ron` (only unopened containers fill
+  from the new tables), `population.ron` (respawn and migration settings apply;
   regions keep their saved targets), templates that leave the generated map the same, and any template change for a
   save that stores its map whole. Incompatible, `LoadError::ContentChanged` (`MapChanged` if only the generator
   changed): templates that change the map, a removed weapon a swing under way uses, a removed item the save holds
@@ -660,7 +690,10 @@ first; steps until the action has landed and the player can act again, and repor
 `stats` gives each player's `god`/`ignored` and `observe` tags them `[GOD]` / `[IGNORED]`), `weapons` (the weapon table and combat numbers), `items {category}` (the item table
 and the carry numbers), `inventory {player}` (slots, worn and carried stacks with indices, load and burden, the open
 container, the floor in reach with ground item ids, containers in reach, the job queue), `containers_near {player, radius}`
-(id, kind, furniture, room, distance, searched or not and what's in it, in reach), `search {player, container}`, `take
+(id, kind, furniture, room, distance, searched or not and what's in it, or the loot table it will fill from, in reach),
+`loot {room, container, n}` (no arguments: every table; with a room type and a container or furniture kind: the table
+it fills from and which fallback, entries with chance per pick, groups, and `n` sample fills, default 200, with how
+often each item turns up; read-only), `search {player, container}`, `take
 {player, from: container|ground, index, count}`, `move_item {player, from, index, to, count}` (places: carried, hand,
 off_hand, back, shoulder, worn, container, ground), `drop {player, from, index, count}`, `equip {player, index}`, `wear
 {player, index}`, `unequip {player, from, index}`, `use {player, from, index}` (each queues the job and steps the world
