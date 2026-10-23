@@ -6,18 +6,16 @@
 //! Every ground-floor piece of furniture that maps to a container is a [`ContainerSite`], found
 //! from the map when the world is made ([`find_sites`]); its id is the furniture's place in the
 //! map (buildings in order, each building's furniture in order), so it stays the same for the same
-//! map whatever `containers.ron` says. Contents are filled the first time anyone opens a container
-//! ([`fill`], from a hash of the world seed and the container id, never the world RNG), so an
-//! unopened house costs nothing to save and fills the same whenever and in whatever order it is
-//! searched. [`fill`] is the hook loot tables (#8) replace: for now it picks a few items from the
-//! container's `holds` categories.
+//! map whatever `containers.ron` says. What a container holds comes from the loot tables
+//! (`assets/data/loot.ron`, [`crate::loot`]): it is filled the first time anyone opens it
+//! ([`crate::loot::fill`], from a hash of the world seed and the container id, never the world RNG),
+//! so an unopened house costs nothing to save and fills the same whenever and in whatever order it
+//! is searched.
 
 use glam::{IVec2, Vec2};
 use serde::{Deserialize, Serialize};
 
-use crate::items::{ItemCategory, ItemDef, ItemStack};
 use crate::map::TileMap;
-use crate::rng::Rng;
 
 /// The room type that matches any room in `containers.ron`'s furniture map.
 pub const ANY_ROOM: &str = "any";
@@ -34,12 +32,6 @@ pub struct ContainerDef {
     pub search_secs: f32,
     /// Radius of the noise opening it makes (halved when sneaking).
     pub noise_m: f32,
-    /// Placeholder filling until loot tables (#8): item categories it may hold...
-    #[serde(default)]
-    pub holds: Vec<ItemCategory>,
-    /// ...and how many items, (min, max).
-    #[serde(default)]
-    pub fill: (u8, u8),
 }
 
 /// One line of the furniture map: furniture `furniture` in a room of type `room` (or `any`) is a
@@ -85,12 +77,6 @@ impl ContainerData {
             }
             if !(0.0..=50.0).contains(&c.noise_m) {
                 return Err(format!("{id}: noise_m must be in 0..50, got {}", c.noise_m));
-            }
-            if c.fill.0 > c.fill.1 || c.fill.1 > 20 {
-                return Err(format!("{id}: fill must be (min, max) with min <= max <= 20, got {:?}", c.fill));
-            }
-            if c.fill.1 > 0 && c.holds.is_empty() {
-                return Err(format!("{id}: fill is {:?} but `holds` names no item categories", c.fill));
             }
         }
         for (i, f) in self.furniture.iter().enumerate() {
@@ -172,40 +158,9 @@ pub fn find_sites(map: &TileMap, data: &ContainerData) -> Vec<ContainerSite> {
     out
 }
 
-/// What a container holds when it is first opened. Deterministic from `(seed, container id)` and
-/// the data alone, so containers fill the same in any order. **The loot hook (#8):** replace the
-/// body with a roll of the loot table for `(room_type, def.id)`. For now: `def.fill` items, each
-/// picked evenly from the items of `def.holds` categories, skipping picks that don't fit its room;
-/// the same item twice adds to one stack (up to its stack size).
-pub fn fill(seed: u64, id: u32, def: &ContainerDef, _room_type: &str, items: &[ItemDef]) -> Vec<ItemStack> {
-    let mut out: Vec<ItemStack> = Vec::new();
-    let pool: Vec<u16> = (0..items.len()).filter(|&i| def.holds.contains(&items[i].category)).map(|i| i as u16).collect();
-    if pool.is_empty() || def.fill.1 == 0 {
-        return out;
-    }
-    let mut rng = Rng::new(seed ^ 0xC0_47A1_4E25 ^ (id as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-    let (lo, hi) = (def.fill.0 as u32, def.fill.1 as u32);
-    let n = lo + rng.below(hi - lo + 1);
-    let mut used = 0.0;
-    for _ in 0..n {
-        let item = pool[rng.below(pool.len() as u32) as usize];
-        let d = &items[item as usize];
-        if used + d.volume_l > def.room_l {
-            continue;
-        }
-        used += d.volume_l;
-        match out.iter_mut().find(|s| s.item == item && s.count < d.stack) {
-            Some(s) => s.count += 1,
-            None => out.push(ItemStack::one(item)),
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::items::{parse_items, parse_weapons};
 
     fn data() -> ContainerData {
         parse_containers(include_str!("../../../assets/data/containers.ron")).unwrap()
@@ -238,24 +193,5 @@ mod tests {
         d.furniture.push(d.furniture[0].clone());
         assert!(d.validate().unwrap_err().contains("mapped twice"));
         assert!(parse_containers("(containers: [], furniture: [], extra: 1)").is_err());
-    }
-
-    #[test]
-    fn filling_is_deterministic_and_fits() {
-        let weapons = parse_weapons(include_str!("../../../assets/data/items/weapons.ron")).unwrap();
-        let items = parse_items(include_str!("../../../assets/data/items/items.ron"), &weapons).unwrap();
-        let d = data();
-        let fridge = &d.containers[d.lookup("fridge", "kitchen").unwrap() as usize];
-        let mut filled = 0;
-        for id in 0..50 {
-            let a = fill(7, id, fridge, "kitchen", &items);
-            assert_eq!(a, fill(7, id, fridge, "kitchen", &items));
-            let volume: f32 = a.iter().map(|s| items[s.item as usize].volume_l * s.count as f32).sum();
-            assert!(volume <= fridge.room_l);
-            assert!(a.iter().all(|s| matches!(items[s.item as usize].category, ItemCategory::Food | ItemCategory::Drink)));
-            filled += !a.is_empty() as u32;
-        }
-        assert!(filled > 40, "fridges are mostly not empty: {filled} of 50");
-        assert!((0..50).any(|id| fill(7, id, fridge, "kitchen", &items) != fill(8, id, fridge, "kitchen", &items)), "the seed matters");
     }
 }

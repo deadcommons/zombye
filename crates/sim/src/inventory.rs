@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::TICK_DT;
 use crate::combat::PICKUP_REACH;
-use crate::containers::{self, ContainerDef, ContainerSite};
+use crate::containers::{ContainerDef, ContainerSite};
 use crate::items::{BagCarry, GroundItem, ItemCategory, ItemDef, ItemStack};
 use crate::players::{MoveMods, Player, Stance};
 use crate::senses::SoundSource;
@@ -663,7 +663,7 @@ impl World {
         let first = !self.opened.contains_key(&c);
         if first {
             let room_type = self.map.rooms.get(site.room as usize).map_or("", |r| r.room_type.as_str()).to_string();
-            let contents = containers::fill(self.config.seed(), c, &def, &room_type, &self.config.items);
+            let contents = crate::loot::fill(self.config.seed(), c, &def, &room_type, &self.config.loot, &self.config.items);
             self.opened.insert(c, contents);
         }
         let p = &self.players[pi];
@@ -1082,8 +1082,8 @@ mod tests {
             .collect();
         let weapons = parse_weapons(include_str!("../../../assets/data/items/weapons.ron")).unwrap();
         let items = parse_items(include_str!("../../../assets/data/items/items.ron"), &weapons).unwrap();
-        let containers = containers::parse_containers(include_str!("../../../assets/data/containers.ron")).unwrap();
-        let mut c = WorldConfig::new(seed, 0, templates).with_weapons(weapons).with_items(items).with_containers(containers).with_map_chunks(8);
+        let containers = crate::containers::parse_containers(include_str!("../../../assets/data/containers.ron")).unwrap();
+        let mut c = WorldConfig::new(seed, 0, templates).with_weapons(weapons).with_items(items).with_containers(containers).with_loot(crate::loot::tests::shipped()).with_map_chunks(8);
         c.start_hour = 12.0;
         c
     }

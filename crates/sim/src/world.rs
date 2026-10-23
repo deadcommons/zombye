@@ -20,6 +20,7 @@ use crate::TICK_DT;
 use crate::ai::{self, Ctx, GOAL_RANGE, ZombieAttack, ZombieThump, ZombieTuning};
 use crate::combat::{ActionEvent, CombatEvent, CombatTuning, HitEvent};
 use crate::containers::{self, ContainerData, ContainerSite};
+use crate::loot::LootData;
 use crate::inventory::{CarryTuning, ItemNote};
 use crate::items::{self, GroundItem, ItemDef, ItemStack, WeaponCategory, WeaponDef};
 use crate::players::Action;
@@ -75,6 +76,8 @@ pub struct WorldConfig {
     pub items: Vec<ItemDef>,
     /// Which furniture holds things (`assets/data/containers.ron`).
     pub containers: ContainerData,
+    /// What containers hold, by room type and container kind (`assets/data/loot.ron`).
+    pub loot: LootData,
     /// Carry limits, burden and how long handling items takes.
     pub carry: CarryTuning,
     /// Player health and every combat number that isn't a weapon's.
@@ -98,6 +101,7 @@ impl WorldConfig {
             weapons: Vec::new(),
             items: Vec::new(),
             containers: ContainerData::default(),
+            loot: LootData::default(),
             carry: CarryTuning::default(),
             combat: CombatTuning::default(),
             tiers: TierTuning::default(),
@@ -124,6 +128,11 @@ impl WorldConfig {
 
     pub fn with_containers(mut self, containers: ContainerData) -> Self {
         self.containers = containers;
+        self
+    }
+
+    pub fn with_loot(mut self, loot: LootData) -> Self {
+        self.loot = loot;
         self
     }
 

@@ -21,11 +21,11 @@
 //! guards against the generator having changed. A map edited by hand ([`World::map_changed`]:
 //! tests, editors) is stored whole instead.
 //!
-//! **Content** (building templates, weapons, items, containers, population file) comes from the
-//! caller, as for a new world; the save records a fingerprint of each. Loading against changed
-//! content goes on with a note when the change is compatible (weapon and item numbers, weapons and
-//! items added, `containers.ron` changes that leave every opened container a container,
-//! `population.ron`; saved weapon and item indices are matched up by id) and fails with
+//! **Content** (building templates, weapons, items, containers, loot tables, population file) comes
+//! from the caller, as for a new world; the save records a fingerprint of each. Loading against
+//! changed content goes on with a note when the change is compatible (weapon and item numbers,
+//! weapons and items added, `containers.ron` changes that leave every opened container a container,
+//! `loot.ron` (it only decides what unopened containers will hold), `population.ron`; saved weapon and item indices are matched up by id) and fails with
 //! [`LoadError::ContentChanged`] when it isn't (templates that change the map, a weapon or item the
 //! save uses removed, an opened container that no longer is one), unless
 //! [`LoadOptions::force`] says to load anyway (see [`crate::save_check`]). Tunings that are not
@@ -122,6 +122,8 @@ pub struct ContentPrint {
     /// Items (with the plain ones made for weapons that have none) and containers.
     pub items: u64,
     pub item_ids: Vec<String>,
+    /// `containers.ron` and `loot.ron` together: both only say how containers fill (one hash, so
+    /// the save layout didn't change when loot tables came in).
     pub containers: u64,
     pub population: u64,
 }
@@ -140,7 +142,7 @@ impl ContentPrint {
             weapon_ids: weapons.iter().map(|w| w.id.clone()).collect(),
             items: fnv(&encode(&items)),
             item_ids: items.iter().map(|d| d.id.clone()).collect(),
-            containers: fnv(&encode(&config.containers)),
+            containers: fnv(&encode(&(&config.containers, &config.loot))),
             population: fnv(&encode(&config.population)),
         }
     }
@@ -825,7 +827,7 @@ pub(crate) mod tests {
     fn content() -> WorldConfig {
         let items = crate::items::parse_items(include_str!("../../../assets/data/items/items.ron"), &weapons()).unwrap();
         let containers = crate::containers::parse_containers(include_str!("../../../assets/data/containers.ron")).unwrap();
-        WorldConfig::new(5, 0, templates()).with_weapons(weapons()).with_items(items).with_containers(containers)
+        WorldConfig::new(5, 0, templates()).with_weapons(weapons()).with_items(items).with_containers(containers).with_loot(crate::loot::tests::shipped())
     }
 
     fn world(zombies: u32) -> World {

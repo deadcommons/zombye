@@ -9,7 +9,8 @@
 //!   indices are matched up by id), the same for items (`items.ron`: weights, sizes and other numbers
 //!   apply from now on; a load that no longer fits just slows you down), `containers.ron` changed
 //!   while every container the save has opened is still a container (new room sizes and search
-//!   times apply; unopened ones fill by the new rules), `population.ron` changed (its respawn and migration settings
+//!   times apply; unopened ones fill by the new rules), `loot.ron` changed (only containers nobody
+//!   has opened yet fill from the new tables; what was opened keeps what it held), `population.ron` changed (its respawn and migration settings
 //!   apply from now on; each region keeps the target it was saved with), and building templates that
 //!   changed without changing the map they generate (or a save that stores its map whole).
 //! - *Incompatible*, refused with [`LoadError::ContentChanged`]: templates that change the
@@ -55,7 +56,7 @@ pub(crate) struct ContentPlan {
     /// The same for items.
     pub saved_items: Vec<String>,
     pub item_map: Option<Vec<Option<u16>>>,
-    /// `containers.ron` changed.
+    /// `containers.ron` or `loot.ron` changed.
     pub containers_changed: bool,
 }
 
@@ -91,7 +92,10 @@ pub(crate) fn plan_content(saved: &ContentPrint, now: &ContentPrint) -> ContentP
     }
     let containers_changed = saved.containers != now.containers;
     if containers_changed {
-        notes.push("containers.ron changed: opened containers keep what they hold under the new rules; unopened ones fill by them".to_string());
+        notes.push(
+            "containers.ron or loot.ron changed: opened containers keep what they hold under the new rules; unopened ones fill from the loot tables as they are now"
+                .to_string(),
+        );
     }
     if saved.population != now.population {
         notes.push("population.ron changed: its respawn and migration settings apply from now on; each region keeps the zombie target it was saved with".to_string());
@@ -644,7 +648,7 @@ mod tests {
 
     fn content() -> WorldConfig {
         let containers = crate::containers::parse_containers(include_str!("../../../assets/data/containers.ron")).unwrap();
-        WorldConfig::new(5, 0, templates()).with_weapons(weapons()).with_items(items()).with_containers(containers).with_map_chunks(8)
+        WorldConfig::new(5, 0, templates()).with_weapons(weapons()).with_items(items()).with_containers(containers).with_loot(crate::loot::tests::shipped()).with_map_chunks(8)
     }
 
     fn first_edge(w: &World, kind: impl Fn(Edge) -> bool) -> EdgeRef {
@@ -754,6 +758,18 @@ mod tests {
         assert!(l.notes.len() == 1 && l.notes[0].contains("containers.ron"), "{:?}", l.notes);
         assert_eq!(l.world.opened, w.opened);
         assert_eq!(l.world.state_hash(), hash);
+
+        // Loot tables changed (scarcer, and a table gone): compatible. What was opened stays as it
+        // was; the new tables are what unopened containers will fill from.
+        assert!(!w.opened.is_empty());
+        let mut c = content();
+        c.loot.scale = 0.25;
+        c.loot.tables.remove(0);
+        let l = World::load_with(&bytes, &c, LoadOptions::default()).unwrap();
+        assert!(l.notes.len() == 1 && l.notes[0].contains("loot.ron") && l.notes[0].contains("unopened"), "{:?}", l.notes);
+        assert_eq!(l.world.opened, w.opened);
+        assert_eq!(l.world.state_hash(), hash);
+        assert_eq!(l.world.config.loot, c.loot);
 
         // Population settings.
         let mut c = content();
