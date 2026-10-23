@@ -20,9 +20,11 @@ pub struct ServerLink {
     server: LocalServer,
     pub prev: Snapshot,
     pub curr: Snapshot,
-    /// Last tick's sim time and chasing count, for the HUD.
+    /// Last tick's sim time and chasing count, and zombies per simulation tier (active, near,
+    /// virtual), for the HUD.
     pub sim_ms: f32,
     pub chasing: u32,
+    pub tiers: [u32; 3],
 }
 
 impl ServerLink {
@@ -80,6 +82,9 @@ impl Plugin for ServerLinkPlugin {
         let templates = content::load_building_templates(&content::default_data_dir()).unwrap_or_else(|e| panic!("failed to load content: {e}"));
         let weapons = content::load_weapons(&content::default_data_dir()).unwrap_or_else(|e| panic!("failed to load content: {e}"));
         let mut config = WorldConfig::new(options.seed, options.zombies, templates).with_weapons(weapons);
+        if let Some(chunks) = options.map_chunks {
+            config = config.with_map_chunks(chunks);
+        }
         if let Some(hour) = options.start_hour {
             config.start_hour = hour;
         }
@@ -104,7 +109,7 @@ impl Plugin for ServerLinkPlugin {
         let damage = EdgeDamageMap(EdgeDamage::all(&server.world).into_iter().map(|d| ((d.tile, d.edge), d.hp)).collect());
         let spawn = first.players.iter().find(|p| p.id == player_id).map(|p| Vec2::from(p.pos)).unwrap_or(server.world.player_spawn);
         let join = JoinInfo { player_id, player_spawn: spawn, weapons: server.world.config.weapons.clone(), combat: server.world.config.combat.clone() };
-        app.insert_resource(ServerLink { server, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0 })
+        app.insert_resource(ServerLink { server, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3] })
             .insert_resource(map)
             .insert_resource(join)
             .insert_resource(damage)
@@ -134,6 +139,8 @@ fn tick_server(
     let snapshot = link.server.tick();
     link.sim_ms = link.server.world.stats.tick_ms;
     link.chasing = link.server.world.stats.chasing;
+    let s = link.server.world.stats;
+    link.tiers = [s.active, s.near, s.virtual_];
     for c in &snapshot.edge_changes {
         map.0.set_owned_edge(c.tile, c.edge, c.kind);
         changes.0.push(*c);

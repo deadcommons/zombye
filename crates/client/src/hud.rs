@@ -273,7 +273,7 @@ fn update_hud(
     let s = &me.curr;
     let winded = if s.winded { " (winded)" } else { "" };
     let line = format!(
-        "{:02}:{:02} | {place} | {:?} | hp {:.0}{} | endurance {:.0}%{winded} | fps {:.0} | frame {:.2} ms (worst {:.2}) | zombies {} (chasing {}) | sim tick {:.3} ms",
+        "{:02}:{:02} | {place} | {:?} | hp {:.0}{} | endurance {:.0}%{winded} | fps {:.0} | frame {:.2} ms (worst {:.2}) | zombies {} (chasing {}; tiers {}/{}/{}) | sim tick {:.3} ms",
         hour.floor() as u32,
         ((hour - hour.floor()) * 60.0) as u32,
         s.stance,
@@ -285,6 +285,9 @@ fn update_hud(
         stats.worst * 1000.0,
         link.curr.zombies.len(),
         link.chasing,
+        link.tiers[0],
+        link.tiers[1],
+        link.tiers[2],
         link.sim_ms,
     );
     println!("{line}");

@@ -404,6 +404,12 @@ impl FlowCache {
         }
     }
 
+    /// The field for `key` if it is already built, without asking for one or counting as a use
+    /// (near-tier zombies ride along on fields active zombies keep alive, but never cause builds).
+    pub fn peek(&self, key: FlowKey) -> Option<&FlowField> {
+        self.entries.iter().find(|e| e.key == key).map(|e| &e.field)
+    }
+
     /// The map changed: every field needs rebuilding (they keep serving until then).
     pub fn invalidate(&mut self) {
         self.entries.iter_mut().for_each(|e| e.map_stale = true);

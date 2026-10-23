@@ -28,12 +28,15 @@ use crate::rng::Rng;
 use crate::senses::{Sound, SoundSource, Target};
 use crate::spatial::SpatialHash;
 use crate::vision::{clear_path, line_of_sight};
-use crate::zombies::{GET_UP_SECS, ZombieAnim, ZombieState, Zombies};
+use crate::zombies::{GET_UP_SECS, Tier, ZombieAnim, ZombieState, Zombies};
 
 /// Zombie body radius in metres.
 pub const ZOMBIE_RADIUS: f32 = 0.3;
 /// With the debug goal set, zombies within this path distance of it head there.
 pub const GOAL_RANGE: f32 = 120.0;
+/// Most crowd separation moves a zombie in one tick. With the knockback cap this keeps a step
+/// under a body radius plus half a wall, so nothing tunnels through a wall.
+const MAX_CROWD_PUSH: f32 = 0.12;
 /// Each zombie rechecks whether it can walk straight at its target once every this many ticks.
 const DIRECT_CHECK_TICKS: u64 = 8;
 /// Targets farther than this always go by flow field (a long straight line is rarely clear and
@@ -280,7 +283,9 @@ pub(crate) struct Ctx<'a> {
     pub tick: u64,
 }
 
-/// Run every zombie's state machine and move it. New positions go to `next_pos` (same order).
+/// Run every active zombie's state machine and move it (and age every corpse, whatever its tier).
+/// New positions go to `next_pos` (same order); zombies on the other tiers are left alone here
+/// (see [`crate::tiers`]).
 // Indexing by `i` across the struct-of-arrays columns is the point.
 #[allow(clippy::needless_range_loop)]
 pub(crate) fn step_zombies(z: &mut Zombies, next_pos: &mut [Vec2], cx: &mut Ctx) -> Counts {
@@ -298,6 +303,9 @@ pub(crate) fn step_zombies(z: &mut Zombies, next_pos: &mut [Vec2], cx: &mut Ctx)
             } else {
                 p
             };
+            continue;
+        }
+        if z.tier[i] != Tier::Active {
             continue;
         }
         z.sees[i] = z.sees[i].saturating_sub(1);
@@ -326,11 +334,11 @@ pub(crate) fn step_zombies(z: &mut Zombies, next_pos: &mut [Vec2], cx: &mut Ctx)
                     z.timer[i] = t.investigate_secs;
                     desired = goal.direction(p) * z.speed[i];
                 }
-                _ => desired = wander(z, i, cx.rng, t),
+                _ => desired = wander(z, i, cx.rng, t, TICK_DT),
             }
         } else {
             match z.state[i] {
-                ZombieState::Wander => desired = wander(z, i, cx.rng, t),
+                ZombieState::Wander => desired = wander(z, i, cx.rng, t, TICK_DT),
                 ZombieState::Investigate => {
                     z.timer[i] -= TICK_DT;
                     if z.timer[i] <= 0.0 {
@@ -341,11 +349,11 @@ pub(crate) fn step_zombies(z: &mut Zombies, next_pos: &mut [Vec2], cx: &mut Ctx)
                         let speed = z.speed[i] * t.investigate_speed_mult;
                         if z.bored[i] > 0.0 {
                             // Given up: only looking about where it stopped.
-                            desired = mill(z, i, cx.rng, t, target);
+                            desired = mill(z, i, cx.rng, t, target, TICK_DT);
                         } else {
                         match steer(cx, z, i, FlowKey::point(target), target) {
                             Steer::Go(dir) => (desired, pressing) = (dir * speed, true),
-                            Steer::Arrived => desired = mill(z, i, cx.rng, t, target),
+                            Steer::Arrived => desired = mill(z, i, cx.rng, t, target, TICK_DT),
                             Steer::Breach(edge, d) if can_batter(z, i, cx, edge, d) => (attacking, look) = start_thump(z, i, cx, edge),
                             Steer::Breach(edge, _) => (desired, pressing) = (approach(z, i, edge) * speed, true),
                             Steer::Unreachable => lose_interest(z, i, t),
@@ -423,7 +431,10 @@ pub(crate) fn step_zombies(z: &mut Zombies, next_pos: &mut [Vec2], cx: &mut Ctx)
             // Clambering through a window frame.
             vel = vel.clamp_length_max(t.climb_speed);
         }
-        let new_p = p + vel * TICK_DT + push * 0.5;
+        // The crowd's shove is capped too: a pile of zombies on one spot (say, near-tier ones
+        // that queued up against a wall and were just promoted) spreads out over a few ticks
+        // instead of flinging one through the wall.
+        let new_p = p + vel * TICK_DT + (push * 0.5).clamp_length_max(MAX_CROWD_PUSH);
         let resolved = cx.map.resolve_circle(new_p, ZOMBIE_RADIUS);
         next_pos[i] = resolved;
         z.vel[i] = vel;
@@ -541,7 +552,7 @@ fn hunt(z: &mut Zombies, i: usize, cx: &mut Ctx) -> (Vec2, bool, Option<Vec2>, b
             match steer(cx, z, i, key, goal) {
                 Steer::Go(dir) => (dir * z.speed[i], false, None, true),
                 // At the last known spot and nobody there: search around it.
-                Steer::Arrived => (mill(z, i, cx.rng, t, goal), false, None, false),
+                Steer::Arrived => (mill(z, i, cx.rng, t, goal, TICK_DT), false, None, false),
                 Steer::Breach(edge, d) if can_batter(z, i, cx, edge, d) => {
                     let (a, l) = start_thump(z, i, cx, edge);
                     (Vec2::ZERO, a, l, false)
@@ -558,7 +569,7 @@ fn hunt(z: &mut Zombies, i: usize, cx: &mut Ctx) -> (Vec2, bool, Option<Vec2>, b
 
 /// Back on its feet after a stagger or knockdown: after whoever hit it (it can't see them yet,
 /// so it heads for where they were), or back to wandering.
-fn recover(z: &mut Zombies, i: usize, t: &ZombieTuning) {
+pub(crate) fn recover(z: &mut Zombies, i: usize, t: &ZombieTuning) {
     if z.target_player[i] != 0 {
         z.state[i] = ZombieState::Chase;
         z.timer[i] = t.memory_secs;
@@ -575,7 +586,7 @@ fn start_attack(z: &mut Zombies, i: usize, t: &ZombieTuning) {
 }
 
 /// Lost (or lost interest in) its player: investigate the last known spot for a while.
-fn start_investigating(z: &mut Zombies, i: usize, t: &ZombieTuning) {
+pub(crate) fn start_investigating(z: &mut Zombies, i: usize, t: &ZombieTuning) {
     z.state[i] = ZombieState::Investigate;
     z.target_player[i] = 0;
     z.timer[i] = t.investigate_secs;
@@ -585,7 +596,7 @@ fn start_investigating(z: &mut Zombies, i: usize, t: &ZombieTuning) {
 /// Gives up on getting where it was going (stuck against walls, no way there at all, or a
 /// thumper nobody has given a reason to keep at it): mills about where it stands, then wanders,
 /// and stays bored for a while (see [`ZombieTuning::bored_secs`]).
-fn lose_interest(z: &mut Zombies, i: usize, t: &ZombieTuning) {
+pub(crate) fn lose_interest(z: &mut Zombies, i: usize, t: &ZombieTuning) {
     start_investigating(z, i, t);
     z.target_pos[i] = z.pos[i];
     z.bored[i] = t.bored_secs;
@@ -768,9 +779,10 @@ fn steer(cx: &mut Ctx, z: &mut Zombies, i: usize, key: FlowKey, target: Vec2) ->
     Steer::Go(to / d)
 }
 
-/// Idle shuffling: pick a direction (or stand) every few seconds.
-fn wander(z: &mut Zombies, i: usize, rng: &mut Rng, t: &ZombieTuning) -> Vec2 {
-    z.wander_timer[i] -= TICK_DT;
+/// Idle shuffling: pick a direction (or stand) every few seconds. `dt` is the time since its last
+/// update (one tick when active, more on the near tier).
+pub(crate) fn wander(z: &mut Zombies, i: usize, rng: &mut Rng, t: &ZombieTuning, dt: f32) -> Vec2 {
+    z.wander_timer[i] -= dt;
     if z.wander_timer[i] <= 0.0 {
         z.wander_timer[i] = rng.range(3.0, 9.0);
         z.wander[i] = if rng.f32() < 0.5 { Vec2::ZERO } else { Vec2::from_angle(rng.range(0.0, TAU)) * t.wander_speed };
@@ -779,8 +791,8 @@ fn wander(z: &mut Zombies, i: usize, rng: &mut Rng, t: &ZombieTuning) -> Vec2 {
 }
 
 /// Milling about near `centre` (searching a spot): short hops, turning back when it strays.
-fn mill(z: &mut Zombies, i: usize, rng: &mut Rng, t: &ZombieTuning, centre: Vec2) -> Vec2 {
-    z.wander_timer[i] -= TICK_DT;
+pub(crate) fn mill(z: &mut Zombies, i: usize, rng: &mut Rng, t: &ZombieTuning, centre: Vec2, dt: f32) -> Vec2 {
+    z.wander_timer[i] -= dt;
     if z.wander_timer[i] <= 0.0 {
         z.wander_timer[i] = rng.range(1.0, 3.0);
         let back = centre - z.pos[i];

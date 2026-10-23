@@ -74,6 +74,21 @@ impl ZombieState {
     }
 }
 
+/// How much of the simulation a zombie gets, by how far it is from the nearest player (see
+/// [`crate::tiers`]). Server-only: clients are only sent active zombies.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum Tier {
+    /// Everything, every tick: senses, the full state machine, flow fields, crowd separation, combat.
+    #[default]
+    Active = 0,
+    /// A few times a second (staggered): hearing, heading for what it heard or remembers, simple
+    /// collision. No sight, combat or separation. Not sent to clients.
+    Near = 1,
+    /// Moved in bulk per region every few seconds: slow wander, drifting toward loud noises.
+    Virtual = 2,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Zombies {
     /// Stable network/entity id. Never reused within a world.
@@ -116,6 +131,9 @@ pub struct Zombies {
     pub stuck: Vec<f32>,
     /// Seconds left of having lost interest (`ZombieTuning::bored_secs`).
     pub bored: Vec<f32>,
+    /// Level of detail it is simulated at (see [`Tier`]). Every other column is kept as is across
+    /// tier changes, so a zombie keeps what it was doing.
+    pub tier: Vec<Tier>,
 }
 
 impl Zombies {
@@ -149,6 +167,7 @@ impl Zombies {
         self.anchor.push(pos);
         self.stuck.push(0.0);
         self.bored.push(0.0);
+        self.tier.push(Tier::Active);
     }
 
     /// Remove every zombie `remove` picks (by index), keeping the rest in order, so ids stay
@@ -183,6 +202,7 @@ impl Zombies {
         retain(&mut self.anchor, &keep);
         retain(&mut self.stuck, &keep);
         retain(&mut self.bored, &keep);
+        retain(&mut self.tier, &keep);
     }
 
     pub fn is_dead(&self, i: usize) -> bool {
