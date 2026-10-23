@@ -14,6 +14,7 @@
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
+use crate::health::Health;
 use crate::inventory::{Inventory, ItemJob};
 use crate::map::TileMap;
 
@@ -66,13 +67,15 @@ impl PlayerInput {
     }
 }
 
-/// How a player's load (and later skills, #46) changes its movement. Worked out by the server
-/// whenever what it carries changes (`CarryTuning::mods`) and sent with the player's state, so
-/// prediction uses the same numbers.
+/// How a player's load, wounds (#9) and later skills (#46) change its movement. Worked out by the
+/// server whenever what it carries or its wounds change (`CarryTuning::mods`, then
+/// `Health::apply_to`) and sent with the player's state, so prediction uses the same numbers.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MoveMods {
     /// Multiplies every speed.
     pub speed: f32,
+    /// Multiplies running speed on top of `speed` (leg wounds slow running more than walking, #9).
+    pub run_speed: f32,
     /// Multiplies the endurance running drains.
     pub run_drain: f32,
     /// Multiplies the endurance regained walking or sneaking.
@@ -84,7 +87,7 @@ pub struct MoveMods {
 
 impl Default for MoveMods {
     fn default() -> Self {
-        Self { speed: 1.0, run_drain: 1.0, regen: 1.0, can_run: true, can_climb: true }
+        Self { speed: 1.0, run_speed: 1.0, run_drain: 1.0, regen: 1.0, can_run: true, can_climb: true }
     }
 }
 
@@ -120,6 +123,8 @@ pub struct Player {
     pub last_input_seq: u32,
     /// Hit points (see `CombatTuning::player_hp`); dead at 0.
     pub hp: f32,
+    /// Wounds on body parts, the infection, food poisoning (see `crate::health`).
+    pub health: Health,
     /// Dead players ignore input and aren't seen or heard. Single-player can respawn.
     pub dead: bool,
     /// The weapon in hand (index into `WorldConfig::weapons`); `None` = bare hands. Derived from
@@ -161,6 +166,7 @@ impl Player {
             input: PlayerInput::default(),
             last_input_seq: 0,
             hp,
+            health: Health::default(),
             dead: false,
             weapon: None,
             inventory: Inventory::default(),
@@ -234,7 +240,7 @@ pub fn step_movement(map: &TileMap, state: &mut PlayerState, input: &PlayerInput
     }
     let mut speed = mods.speed
         * match state.stance {
-            Stance::Run => RUN_SPEED,
+            Stance::Run => RUN_SPEED * mods.run_speed,
             Stance::Walk => WALK_SPEED,
             Stance::Sneak => SNEAK_SPEED,
         };

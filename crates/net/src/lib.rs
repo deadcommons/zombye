@@ -10,7 +10,7 @@ pub mod shutdown;
 
 use serde::{Deserialize, Serialize};
 use zombye_sim::map::{EdgeChange, OwnedEdge};
-use zombye_sim::{ActionKind, Burden, Carry, CombatEvent, DevFlags, GroundItem, Inventory, ItemNote, ItemStack, MoveMods, Place, PlayerInput, Stance, World, WorldConfig, ZombieAnim};
+use zombye_sim::{ActionKind, Burden, Carry, CombatEvent, DevFlags, GroundItem, HealthTags, HealthView, Inventory, ItemNote, ItemStack, MoveMods, Place, PlayerInput, Stance, World, WorldConfig, ZombieAnim};
 
 /// Something a client wants to happen. The server validates and applies it.
 ///
@@ -120,6 +120,9 @@ pub struct PlayerView {
     pub jobs: u8,
     /// Dev toggles on for this player (god mode, ignored by zombies), for the HUD.
     pub dev: DevFlags,
+    /// What anyone can see of its health: bleeding, limping, a hurt arm, sick. The detail is only
+    /// in its own [`PrivateView::health`].
+    pub health: HealthTags,
 }
 
 /// What a container holds, for whoever has it open.
@@ -133,8 +136,8 @@ pub struct ContainerView {
     pub stacks: Vec<ItemStack>,
 }
 
-/// The part of a player only its own client gets: everything it has, its load, and the container
-/// it has open.
+/// The part of a player only its own client gets: everything it has, its load, the container it
+/// has open, and its wounds and illnesses.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PrivateView {
     pub player: u32,
@@ -143,6 +146,8 @@ pub struct PrivateView {
     /// The weight past which nothing more can be picked up (kg).
     pub max_kg: f32,
     pub open: Option<ContainerView>,
+    /// Wounds by body part, pain, the infection once it shows (#9).
+    pub health: HealthView,
 }
 
 impl PrivateView {
@@ -154,7 +159,8 @@ impl PrivateView {
             Some(ContainerView { id: c, kind: def.id.clone(), name: def.name.clone(), room_l: def.room_l, stacks: world.container_contents(c).unwrap_or(&[]).to_vec() })
         });
         let carry = world.carry(p);
-        Some(Self { player: id, inventory: p.inventory.clone(), carry, max_kg: carry.limit_kg * world.config.carry.max_load, open })
+        let health = world.health_view(id).unwrap_or_default();
+        Some(Self { player: id, inventory: p.inventory.clone(), carry, max_kg: carry.limit_kg * world.config.carry.max_load, open, health })
     }
 
     /// Has a load in this stage or worse.
@@ -249,6 +255,7 @@ impl Snapshot {
                 busy: p.jobs.first().map_or(0.0, |j| j.left.max(0.0)),
                 jobs: p.jobs.len().min(255) as u8,
                 dev: p.dev,
+                health: if p.dead { HealthTags::default() } else { p.health.tags(&world.config.health) },
             })
             .collect();
         let private = world.take_private_dirty().into_iter().filter_map(|id| PrivateView::of(world, id)).collect();
@@ -761,6 +768,55 @@ mod tests {
         let carried: u16 = server.world.player(id).unwrap().inventory.carried.iter().map(|s| s.count).sum();
         assert_eq!(carried, 10, "{:?}", server.world.item_notes);
         assert!(mods_seen.len() >= 3 && !mods_seen.last().unwrap().can_run, "burdened, then heavy: {mods_seen:?}");
+    }
+
+    /// Wounds on the legs come and go while we walk and run (a gash stops running): the client
+    /// predicts with the modifiers from its latest snapshot and stays exact. Our own snapshot
+    /// carries our wounds; everyone sees only the coarse tags.
+    #[test]
+    fn prediction_matches_server_with_leg_wounds() {
+        use zombye_sim::{Part, WoundKind};
+        let mut server = server();
+        let id = server.join(None);
+        let other = server.join(None);
+        let snap = server.tick();
+        let mut predicted = snap.players.iter().find(|p| p.id == id).unwrap().state();
+        let mut mods_seen = vec![predicted.mods];
+        for seq in 1..=300u32 {
+            let a = seq as f32 * 0.05;
+            let (move_dir, facing, run) = ([a.cos(), a.sin()], a, seq % 40 < 25);
+            server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run, sneak: false });
+            step_movement(&server.world.map, &mut predicted, &PlayerInput { move_dir: move_dir.into(), facing, run, sneak: false }, TICK_DT);
+            let snap = server.tick();
+            let view = snap.players.iter().find(|p| p.id == id).unwrap();
+            assert_eq!(zombye_sim::PlayerState { mods: predicted.mods, ..view.state() }, predicted, "diverged at seq {seq}");
+            predicted.mods = view.mods;
+            if *mods_seen.last().unwrap() != view.mods {
+                mods_seen.push(view.mods);
+            }
+            // Hurt at the end of the tick (as a zombie's strike is), so the snapshot carries it.
+            let wound = match seq {
+                40 => (Part::LeftFoot, WoundKind::Scratch),
+                120 => (Part::RightLeg, WoundKind::Gash),
+                _ => continue,
+            };
+            server.world.inflict_wound(id, wound.0, wound.1, Some(false)).unwrap();
+            let snap = Snapshot::capture(&mut server.world);
+            let view = snap.players.iter().find(|p| p.id == id).unwrap();
+            predicted.mods = view.mods;
+            mods_seen.push(view.mods);
+            if seq == 120 {
+                let mine = snap.clone().for_player(id);
+                let h = &mine.private.iter().find(|v| v.player == id).expect("our health changed").health;
+                assert_eq!(h.wounds.len(), 2);
+                assert!(h.wounds.iter().any(|w| w.part == Part::RightLeg && w.kind == WoundKind::Gash && w.bleed_per_h > 0.0));
+                assert!(h.tags.bleeding && h.tags.limping);
+                assert!(snap.clone().for_player(other).private.iter().all(|v| v.player != id), "only our own client gets our wounds");
+                assert!(view.health.bleeding && view.health.limping && !view.health.sick);
+            }
+        }
+        assert_eq!(mods_seen.len(), 3, "{mods_seen:?}");
+        assert!(!mods_seen[2].can_run && mods_seen[2].speed < mods_seen[1].speed);
     }
 
     #[test]

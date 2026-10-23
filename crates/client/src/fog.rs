@@ -68,14 +68,19 @@ impl Plugin for FogPlugin {
 fn update_fog(
     map: Res<ClientMap>,
     daylight: Res<Daylight>,
+    link: Res<crate::server_link::ServerLink>,
+    join: Res<crate::server_link::JoinInfo>,
+    me: Res<crate::player::LocalPlayer>,
     player: Query<(&Transform, &Player)>,
     mut fog: ResMut<FogState>,
     mut images: ResMut<Assets<Image>>,
 ) {
     let Ok((tf, player)) = player.single() else { return };
     let eye = Vec2::new(tf.translation.x, tf.translation.z);
-    // Sight range: long in daylight, short at night.
-    let max = 18.0 + 52.0 * daylight.0;
+    // Sight range: long in daylight, short at night, and shorter still at night while turning (#9).
+    let turning = link.own(me.id).is_some_and(|v| v.health.infection == Some(zombye_sim::InfectionStage::Turning));
+    let night = if turning { join.infection.turning_night_sight.clamp(0.0, 1.0) } else { 1.0 };
+    let max = 18.0 * (night + (1.0 - night) * daylight.0) + 52.0 * daylight.0;
     let rays = vision::visibility_rays(&map.0, eye, max, RAYS);
     let facing = Vec2::from_angle(player.facing);
 

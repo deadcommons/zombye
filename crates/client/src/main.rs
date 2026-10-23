@@ -35,6 +35,7 @@ mod camera;
 mod daynight;
 mod fog;
 mod fx;
+mod health_ui;
 mod hud;
 mod inventory_ui;
 mod items_render;
@@ -260,7 +261,7 @@ fn main() {
             camera::IsoCameraPlugin,
             zombie_render::ZombieRenderPlugin,
             items_render::ItemsRenderPlugin,
-            (hud::HudPlugin, inventory_ui::InventoryUiPlugin),
+            (hud::HudPlugin, inventory_ui::InventoryUiPlugin, health_ui::HealthUiPlugin),
             fx::FxPlugin,
             survivor::SurvivorPlugin,
             autoplay::AutoplayPlugin,
