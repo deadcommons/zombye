@@ -4,12 +4,13 @@
 
 use std::f32::consts::FRAC_PI_2;
 
-use bevy::camera::ScalingMode;
+use bevy::camera::{RenderTarget, ScalingMode, ShadowLodOrigin};
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 
 use crate::Options;
 use crate::fx::CameraShake;
+use crate::offscreen::OffscreenTarget;
 use crate::player::Player;
 use crate::server_link::JoinInfo;
 
@@ -55,12 +56,15 @@ impl Plugin for IsoCameraPlugin {
     }
 }
 
-fn spawn_camera(mut commands: Commands, join: Res<JoinInfo>, options: Res<Options>) {
-    let focus = Vec3::new(join.player_spawn.x, 0.0, join.player_spawn.y);
+fn spawn_camera(mut commands: Commands, join: Res<JoinInfo>, options: Res<Options>, offscreen: Option<Res<OffscreenTarget>>) {
+    // `--center` only applies offscreen (a live camera follows the player).
+    let at = options.center.filter(|_| offscreen.is_some()).map_or(join.player_spawn, Vec2::from);
+    let focus = Vec3::new(at.x, 0.0, at.y);
     let zoom = options.zoom.unwrap_or(26.0).clamp(MIN_ZOOM, MAX_ZOOM);
-    let cam = IsoCamera { angle_index: 0, yaw: std::f32::consts::FRAC_PI_4, zoom, focus };
+    let mut cam = IsoCamera { angle_index: options.angle, yaw: 0.0, zoom, focus };
+    cam.yaw = cam.target_yaw();
     let transform = Transform::from_translation(cam.focus + cam.offset_dir() * DISTANCE).looking_at(cam.focus, Vec3::Y);
-    commands.spawn((
+    let mut camera = commands.spawn((
         Camera3d::default(),
         Projection::from(OrthographicProjection {
             scaling_mode: ScalingMode::FixedVertical { viewport_height: cam.zoom },
@@ -73,6 +77,10 @@ fn spawn_camera(mut commands: Commands, join: Res<JoinInfo>, options: Res<Option
         Msaa::Sample4,
         cam,
     ));
+    if let Some(target) = offscreen {
+        // The only camera: it is also the origin for point-light shadow detail.
+        camera.insert((RenderTarget::Image(target.0.clone().into()), ShadowLodOrigin));
+    }
 }
 
 fn rotate_and_zoom(
@@ -107,12 +115,14 @@ fn rotate_and_zoom(
 
 fn follow(
     time: Res<Time>,
+    options: Res<Options>,
     shake: Res<CameraShake>,
     player: Query<&Transform, (With<Player>, Without<IsoCamera>)>,
     mut cams: Query<(&mut IsoCamera, &mut Transform)>,
 ) {
     let Ok((mut cam, mut transform)) = cams.single_mut() else { return };
-    if let Ok(p) = player.single() {
+    // An offscreen render keeps the camera where it was put (on the player, or `--center`).
+    if let Some(p) = player.single().ok().filter(|_| !options.offscreen()) {
         let t = 1.0 - (-8.0 * time.delta_secs()).exp();
         cam.focus = cam.focus.lerp(p.translation.with_y(0.0), t);
     }

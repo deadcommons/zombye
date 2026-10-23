@@ -20,8 +20,13 @@
 //! closed, Ctrl-C, SIGTERM). `--saves DIR` is the folder for the MCP `save`/`load`/`saves` tools
 //! (default: the `--save` file's folder, else `saves`). `--bench --save-bench` also times saving
 //! and loading the world at the end of the run.
+//!
+//! Screenshots (MCP `screenshot`, `screenshot.rs`): `--client PATH` is the game client binary to
+//! render with (default `$ZOMBYE_CLIENT`, else `zombye` next to this binary) and
+//! `--screenshot-timeout SECS` how long a render may take (default 60).
 
 mod mcp;
+mod screenshot;
 mod shutdown;
 
 use std::path::{Path, PathBuf};
@@ -145,14 +150,16 @@ fn main() {
             Some(path) => load_or_create(path, config, mcp::add_agent_player),
             None => World::new(config),
         };
-        mcp::serve(world, &mut persist);
+        let timeout = text("--screenshot-timeout").and_then(|v| v.parse::<f64>().ok()).filter(|s| *s > 0.0 && s.is_finite()).map_or(screenshot::DEFAULT_TIMEOUT, Duration::from_secs_f64);
+        let renderer = screenshot::Renderer::new(text("--client").map(PathBuf::from), data.clone(), timeout);
+        mcp::serve(world, &mut persist, &renderer);
     } else if flag("--bench") {
         let ticks = value("--ticks").unwrap_or(1000);
         bench(config, &mut persist, ticks, value("--players").unwrap_or(0) as u32, value("--horde").unwrap_or(0) as u32, flag("--save-bench"));
     } else {
         eprintln!(
             "usage: zombye-server (--mcp | --bench [--ticks N] [--players N] [--horde N] [--save-bench]) [--zombies N] [--seed S] [--map-chunks N] [--data DIR] \
-             [--save PATH] [--autosave-mins N] [--saves DIR]"
+             [--save PATH] [--autosave-mins N] [--saves DIR] [--client PATH] [--screenshot-timeout SECS]"
         );
         std::process::exit(2);
     }

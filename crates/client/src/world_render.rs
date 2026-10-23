@@ -11,6 +11,7 @@ use std::f32::consts::FRAC_PI_2;
 use bevy::prelude::*;
 use zombye_sim::map::{Building, CHUNK_SIZE, Edge, Feature, OwnedEdge, RoofStyle, TileMap};
 
+use crate::Options;
 use crate::camera::IsoCamera;
 use crate::materials::{self, WorldMaterials};
 use crate::meshgen::{self, CutKind, CutTag, MeshBuilder, add_blob, add_cone, add_furniture, add_prism, floor_color, hash01, rgb, shade};
@@ -241,11 +242,18 @@ fn stream(
     mut streamer: ResMut<Streamer>,
     mut meshes: ResMut<Assets<Mesh>>,
     damage: Res<EdgeDamageMap>,
+    options: Res<Options>,
     player: Query<&Transform, With<Player>>,
+    cams: Query<&IsoCamera>,
 ) {
     let (Some(mats), Some(shared), Ok(p)) = (mats, shared, player.single()) else { return };
     let map = &map.0;
-    let here = IVec2::new(p.translation.x as i32, p.translation.z as i32).div_euclid(IVec2::splat(CHUNK_SIZE));
+    // Around the player; an offscreen render centred elsewhere (`--center`) loads around that.
+    let at = match cams.single() {
+        Ok(cam) if options.offscreen() => cam.focus,
+        _ => p.translation,
+    };
+    let here = IVec2::new(at.x as i32, at.z as i32).div_euclid(IVec2::splat(CHUNK_SIZE));
     let first_load = streamer.chunks.is_empty();
     let budget = if first_load { usize::MAX } else { MAX_LOADS_PER_FRAME };
 

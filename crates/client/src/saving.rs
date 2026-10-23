@@ -147,9 +147,10 @@ fn quick_save_load(
     notice.say(now, format!("Loaded {QUICKSAVE} in {ms:.0} ms: tick {tick}, {zombies} zombies"));
 }
 
-/// Quitting (closing the window, `--exit-after`) saves to `autosave`.
+/// Quitting (closing the window, `--exit-after`) saves to `autosave`. An offscreen render
+/// (`--render-to`) never saves: it only looks.
 fn autosave_on_exit(mut exit: MessageReader<AppExit>, link: Res<ServerLink>, options: Res<Options>, mut done: Local<bool>) {
-    if exit.read().next().is_none() || *done {
+    if exit.read().next().is_none() || *done || options.offscreen() {
         return;
     }
     *done = true;

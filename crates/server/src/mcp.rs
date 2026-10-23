@@ -15,6 +15,7 @@ use zombye_sim::senses::{self, Cone, Target};
 use zombye_sim::vision::line_of_sight;
 use zombye_sim::{ActionKind, HitEffect, TICK_DT, Tier, World, ZombieState};
 
+use crate::screenshot::{self, Renderer};
 use crate::{Persist, shutdown};
 
 const MAX_STEP: u64 = 20 * 60 * 60; // one hour of game time per call
@@ -25,7 +26,7 @@ const COMPASS: [(&str, [f32; 2]); 8] =
     [("e", [1.0, 0.0]), ("se", [1.0, 1.0]), ("s", [0.0, 1.0]), ("sw", [-1.0, 1.0]), ("w", [-1.0, 0.0]), ("nw", [-1.0, -1.0]), ("n", [0.0, -1.0]), ("ne", [1.0, -1.0])];
 
 /// Tools that only look: they don't make the world need saving.
-const READ_ONLY: [&str; 10] = ["observe", "zombie", "edge", "weapons", "buildings", "regions", "stats", "saves", "save", "load"];
+const READ_ONLY: [&str; 11] = ["observe", "zombie", "edge", "weapons", "buildings", "regions", "stats", "saves", "save", "load", "screenshot"];
 
 /// The agent plays player 1, who wakes up in the bedroom like a single-player client does. A
 /// loaded world keeps its players.
@@ -35,7 +36,7 @@ pub fn add_agent_player(world: &mut World) {
     }
 }
 
-pub fn serve(mut world: World, persist: &mut Persist) {
+pub fn serve(mut world: World, persist: &mut Persist, renderer: &Renderer) {
     add_agent_player(&mut world);
     // Read stdin on its own thread, so the main loop can wake up for autosaves and Ctrl-C.
     let (tx, rx) = mpsc::channel::<Option<String>>();
@@ -57,7 +58,7 @@ pub fn serve(mut world: World, persist: &mut Persist) {
         };
         if let Some(line) = line.filter(|l| !l.trim().is_empty()) {
             let response = match serde_json::from_str::<Value>(&line) {
-                Ok(msg) => handle(&mut world, persist, &msg),
+                Ok(msg) => handle(&mut world, persist, renderer, &msg),
                 Err(e) => Some(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": e.to_string()}})),
             };
             if let Some(response) = response {
@@ -77,7 +78,7 @@ pub fn serve(mut world: World, persist: &mut Persist) {
     }
 }
 
-fn handle(world: &mut World, persist: &mut Persist, msg: &Value) -> Option<Value> {
+fn handle(world: &mut World, persist: &mut Persist, renderer: &Renderer, msg: &Value) -> Option<Value> {
     let id = msg.get("id").cloned();
     let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
     // Notifications (no id) get no response.
@@ -105,13 +106,21 @@ fn handle(world: &mut World, persist: &mut Persist, msg: &Value) -> Option<Value
                 within about 60 m, near out to 150 m, virtual beyond; stats has the counts): only active ones fight, see and \
                 show their state on the map, but every zombie keeps heading where it was going. Loud noises also draw the \
                 far horde in slowly, over minutes (regions shows zombies per region, targets and the pull of loud events). \
-                save and load keep and restore the whole world (saves lists them); with --save the server also autosaves."
+                save and load keep and restore the whole world (saves lists them); with --save the server also autosaves. \
+                screenshot returns a rendered PNG of what a player sees (fog of war included), to check visuals; it takes a \
+                second or two and changes nothing."
         })),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({"tools": tool_list()})),
         "tools/call" => {
             let name = msg["params"]["name"].as_str().unwrap_or("");
             let args = msg["params"].get("arguments").cloned().unwrap_or(json!({}));
+            if name == "screenshot" {
+                return Some(json!({"jsonrpc": "2.0", "id": id, "result": match screenshot_tool(world, renderer, &args) {
+                    Ok(content) => json!({"content": content}),
+                    Err(text) => json!({"content": [{"type": "text", "text": text}], "isError": true}),
+                }}));
+            }
             let result = match name {
                 "save" | "load" | "saves" => save_tool(world, persist, name, &args),
                 _ => call_tool(world, name, &args),
@@ -322,6 +331,23 @@ fn tool_list() -> Value {
             "inputSchema": {"type": "object", "properties": {}}
         },
         {
+            "name": "screenshot",
+            "description": "A rendered picture (PNG) of the world around a player, as the game client draws it: 3D isometric view, \
+                buildings with the walls and roofs between the camera and the player cut away, zombies, items, day/night lighting, \
+                and fog of war from that player's view (what they can't see is darkened, and zombies there aren't drawn). No HUD. \
+                Takes a second or two (the server runs the game client offscreen on a copy of the world; no window opens) and \
+                changes nothing: no time passes. Use observe for exact positions and states; use this to check how things look.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "description": "Whose view (fog of war, cutaways), and the centre unless x/y are given. Default 1"},
+                "x": {"type": "number", "description": "Centre on this point instead (metres; give y too). Fog is still the player's: zombies far from players aren't drawn"},
+                "y": {"type": "number"},
+                "zoom": {"type": "number", "description": "Metres of world visible top to bottom, 8 to 90. Default 26 (the game's default)"},
+                "angle": {"type": "integer", "description": "Camera angle, one of the four fixed ones: 0 (default, looking north-west), 1, 2, 3 (each a quarter turn)"},
+                "width": {"type": "integer", "description": "Pixels, 64 to 1920. Default 1280"},
+                "height": {"type": "integer", "description": "Pixels, 64 to 1080. Default 720"}
+            }}
+        },
+        {
             "name": "stats",
             "description": "Map size, tick, time of day and daylight, players (HP, weapon, dead), zombie counts by state (corpses too) and by simulation tier (active / near / virtual, with the ranges and last tick's promotions and demotions), weapons on the floor, last tick timing (tier pass, senses, flow fields, active AI, near and virtual updates), sounds heard and the state hash (same seed + same calls = same hash).",
             "inputSchema": {"type": "object", "properties": {}}
@@ -399,6 +425,38 @@ fn save_tool(world: &mut World, persist: &mut Persist, name: &str, args: &Value)
             ))
         }
     }
+}
+
+/// `screenshot`: the PNG and a line saying what it shows. Only reads the world.
+fn screenshot_tool(world: &World, renderer: &Renderer, args: &Value) -> Result<Value, String> {
+    let req = screenshot::Request::from_args(args)?;
+    let Some(p) = world.player(req.player) else {
+        let ids: Vec<String> = world.players.iter().map(|p| p.id.to_string()).collect();
+        return Err(format!("no player {}: the players are [{}]", req.player, ids.join(", ")));
+    };
+    let pos = p.state.pos;
+    let (png, ms) = screenshot::render(world, renderer, &req)?;
+    let centre = match req.center {
+        Some([x, y]) => format!(", centred on ({x:.1}, {y:.1}) {}", place(world, Vec2::new(x, y))),
+        None => String::new(),
+    };
+    let text = format!(
+        "screenshot {}x{} of player {}'s view: player at ({:.1}, {:.1}) {}{}{centre}; tick {}, {} (daylight {:.0}%); zoom {} m, angle {}; PNG {} KB, rendered in {ms:.0} ms",
+        req.size[0],
+        req.size[1],
+        req.player,
+        pos.x,
+        pos.y,
+        place(world, pos),
+        if p.dead { " (dead)" } else { "" },
+        world.tick,
+        clock(world.time_of_day()),
+        world.daylight() * 100.0,
+        req.zoom,
+        req.angle,
+        png.len().div_ceil(1024),
+    );
+    Ok(screenshot::content(&png, &text))
 }
 
 fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, String> {
@@ -1371,5 +1429,141 @@ fn edge_char(e: Edge, horizontal: bool, damaged: bool) -> char {
         Edge::DoorOpen => '/',
         Edge::DoorBroken => '#',
         Edge::Fence => '~',
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+    use std::time::Duration;
+
+    use zombye_net::content;
+    use zombye_sim::WorldConfig;
+
+    fn small_world() -> World {
+        let data = content::default_data_dir();
+        let config = WorldConfig::new(7, 30, content::load_building_templates(&data).unwrap())
+            .with_weapons(content::load_weapons(&data).unwrap())
+            .with_population(content::load_population(&data).unwrap())
+            .with_map_chunks(8);
+        let mut world = World::new(config);
+        add_agent_player(&mut world);
+        for _ in 0..40 {
+            world.step();
+        }
+        world
+    }
+
+    /// A folder of its own for one test, removed when dropped (pass or fail).
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn scratch(name: &str) -> Scratch {
+        let dir = std::env::temp_dir().join(format!("zombye-mcp-test-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        Scratch(dir)
+    }
+
+    /// A stand-in for the game client: a shell script (`body` runs with `$out` = the `--render-to`
+    /// path and `$save` = the `--load` path, and its arguments in `args.txt`).
+    #[cfg(unix)]
+    fn fake_client(dir: &Path, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("fake-zombye");
+        let script = format!(
+            "#!/bin/sh\necho \"$@\" > '{}/args.txt'\nwhile [ $# -gt 0 ]; do case \"$1\" in --render-to) out=\"$2\"; shift;; --load) save=\"$2\"; shift;; esac; shift; done\n{body}\n",
+            dir.display()
+        );
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    fn renderer(dir: &Path, client: PathBuf, timeout: Duration) -> Renderer {
+        let mut r = Renderer::new(Some(client), content::default_data_dir(), timeout);
+        r.temp_dir = dir.join("tmp");
+        std::fs::create_dir_all(&r.temp_dir).unwrap();
+        r
+    }
+
+    fn leftovers(r: &Renderer) -> Vec<String> {
+        std::fs::read_dir(&r.temp_dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect()
+    }
+
+    /// The tool saves the world for the client, passes the request on, returns the PNG as image
+    /// content plus a line of text, cleans up, and leaves the world exactly as it was.
+    #[cfg(unix)]
+    #[test]
+    fn screenshot_returns_the_clients_png_and_changes_nothing() {
+        let scratch = scratch("ok");
+        let dir = scratch.0.clone();
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        png.extend(640u32.to_be_bytes());
+        png.extend(360u32.to_be_bytes());
+        png.extend([7u8; 40]);
+        std::fs::write(dir.join("picture.png"), &png).unwrap();
+        // The fake client also keeps a copy of the save it was given.
+        let client = fake_client(&dir, &format!("cp \"$save\" '{0}/given.zsave' && cp '{0}/picture.png' \"$out\"", dir.display()));
+        let r = renderer(&dir, client, Duration::from_secs(20));
+        let mut world = small_world();
+        let (hash, tick) = (world.state_hash(), world.tick);
+        let mut persist = Persist {
+            path: None,
+            dir: dir.clone(),
+            content: world.config.clone(),
+            autosave: None,
+            last_save: std::time::Instant::now(),
+            dirty: false,
+        };
+        let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "screenshot", "arguments": {"width": 640, "height": 360, "angle": 1}}});
+        let response = handle(&mut world, &mut persist, &r, &msg).unwrap();
+        let content = &response["result"]["content"];
+        assert_eq!(response["result"].get("isError"), None, "{response}");
+        assert_eq!(content[0]["type"], "image");
+        assert_eq!(content[0]["mimeType"], "image/png");
+        assert_eq!(content[0]["data"], screenshot::base64(&png));
+        let text = content[1]["text"].as_str().unwrap();
+        assert!(text.starts_with("screenshot 640x360 of player 1's view") && text.contains("angle 1"), "{text}");
+        let args = std::fs::read_to_string(dir.join("args.txt")).unwrap();
+        assert!(args.contains("--player 1 --size 640x360 --zoom 26 --angle 1"), "{args}");
+        // Nothing changed, nothing left behind, and the client got the world as it is.
+        assert_eq!((world.state_hash(), world.tick), (hash, tick));
+        assert!(!persist.dirty);
+        assert!(leftovers(&r).is_empty(), "{:?}", leftovers(&r));
+        let (given, _) = save_file::load(&dir.join("given.zsave"), &world.config).unwrap();
+        assert_eq!(given.state_hash(), hash);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn screenshot_errors_are_reported_and_cleaned_up() {
+        let scratch = scratch("errors");
+        let dir = scratch.0.clone();
+        let world = small_world();
+        let call = |r: &Renderer, args: Value| screenshot_tool(&world, r, &args).unwrap_err();
+
+        let failing = renderer(&dir, fake_client(&dir, "echo 'render failed: no GPU here' >&2; exit 3"), Duration::from_secs(20));
+        let e = call(&failing, json!({}));
+        assert!(e.contains("failed to render") && e.contains("render failed: no GPU here"), "{e}");
+        assert!(leftovers(&failing).is_empty());
+
+        let silent = renderer(&dir, fake_client(&dir, "exit 0"), Duration::from_secs(20));
+        assert!(call(&silent, json!({})).contains("wrote no picture"));
+
+        let slow = renderer(&dir, fake_client(&dir, "sleep 5"), Duration::from_millis(300));
+        let start = std::time::Instant::now();
+        let e = call(&slow, json!({}));
+        assert!(e.contains("longer than 0.3 s") && start.elapsed() < Duration::from_secs(3), "{e}");
+        assert!(leftovers(&slow).is_empty());
+
+        let missing = renderer(&dir, dir.join("no-such-client"), Duration::from_secs(20));
+        assert!(call(&missing, json!({})).contains("no game client at"));
+        assert!(call(&missing, json!({"player": 9})).contains("no player 9"));
     }
 }
