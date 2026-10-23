@@ -5,8 +5,8 @@ description: Build Zombye game assets (furniture, props, characters) in Blender 
 
 # Building assets in Blender
 
-**Use it for** props, furniture and characters (characters and other detailed assets start from a
-ChatGPT reference image through Meshy, then come here to be brought to standard: docs/PLAN.md §6.5).
+**Use it for** props and furniture. Characters and other detailed assets start in Meshy and are
+cleaned up with `zchar.py`: the [meshy-assets skill](../meshy-assets/SKILL.md) (docs/PLAN.md §6.5).
 **Not for** walls, floors, roofs, roads or terrain: they stay code-generated so they snap to the grid
 (PLAN §6.8). Stairs are part of the building kit, not furniture.
 
