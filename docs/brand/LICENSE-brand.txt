@@ -1,7 +1,8 @@
 Zombye and Dead Commons brand: license
 
-The names "Zombye" and "Dead Commons", their wordmarks and logos, including every file in this
-directory in every colour, size and format (the "Marks"), are owned by Dead Commons. They are
+The names "Zombye" and "Dead Commons", their wordmarks and logos, and the Zombye mascot (the
+waving zombie in the hoodie), including every file in this directory in every colour, size and
+format (the "Marks"), are owned by Dead Commons. They are
 trademarks and are NOT open source. They are not covered by the MIT or Apache-2.0 licenses
 in this repository, and nothing in those licenses, in NOTICE or in any other file of this
 repository grants any right to them.
@@ -15,6 +16,9 @@ What you may do without asking
      "a mod for Zombye", or that your project "is based on Zombye by Dead Commons".
      Use the plain name only, not the logo, and don't make it the most prominent part of your
      own name or branding.
+  4. Make and share fan art of the mascot: draw it, remix it, dress it up, animate it, put it
+     in your mods, videos, streams and posts. Fan art must not be sold, and must not be used as
+     the logo, icon or main branding of anything other than official Zombye.
 
 What needs written permission
 
@@ -23,7 +27,8 @@ What needs written permission
   - Calling a server, hosting service, launcher, build or fork "official", "verified",
     "endorsed" or similar, or suggesting in any way that Dead Commons made, sponsors, certifies
     or supports it.
-  - Modifying the logos (redrawing, recolouring, cropping, combining them with other marks).
+  - Modifying the logos (redrawing, recolouring, cropping, combining them with other marks),
+    other than fan art of the mascot as allowed in point 4.
   - Selling merchandise with the Marks.
 
 Forks and modified versions
