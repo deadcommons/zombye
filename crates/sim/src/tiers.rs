@@ -6,10 +6,12 @@
 //! - **Near** (out to [`TierTuning::near_range`]): every [`TierTuning::near_interval_ticks`] ticks,
 //!   staggered by id ([`step_near`]): hearing (the normal pass: near zombies are in the spatial
 //!   hash), heading for what it heard or remembers (along a flow field active zombies already keep
-//!   built, else straight), sliding along walls. No sight, no strikes, no thumps, no separation.
+//!   built, else along a plan over the navigation graph, [`crate::nav`]), sliding along walls. No
+//!   sight, no strikes, no thumps, no separation.
 //! - **Virtual** (beyond): bulk updates per [`TierTuning::region_size`] region, each region every
 //!   [`TierTuning::virtual_interval_ticks`] ticks ([`step_virtual`]): a slow wander, or a drift
-//!   toward whatever it last heard (loud noises reach them, [`virtual_hearing`]). Moves never cross
+//!   toward whatever it last heard (loud noises reach them, [`virtual_hearing`]), tile by tile along a
+//!   plan over the navigation graph ([`crate::nav`]) through streets and gaps. Moves never cross
 //!   anything that blocks walking, so a virtual zombie stays on the side of every wall it was on.
 //!
 //! All tiers live in the one struct-of-arrays ([`Zombies`], with a [`Tier`] column): a zombie keeps
@@ -35,8 +37,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::TICK_DT;
 use crate::ai::{self, GOAL_RANGE, ZOMBIE_RADIUS, ZombieTuning};
-use crate::flow::{FlowCache, FlowField, FlowKey};
+use crate::flow::{FlowCache, FlowField, FlowKey, WalkGrid};
 use crate::map::{CHUNK_SIZE, Side, TileMap};
+use crate::nav::{Nav, Way};
 use crate::population::{self, MigrationDef, Population};
 use crate::rng::{Rng, hash01};
 use crate::senses::{self, Sound, SoundSource};
@@ -67,6 +70,10 @@ pub struct TierTuning {
     pub virtual_hearing_min: f32,
     /// Snapshots list active zombies within this distance of a player.
     pub interest_radius: f32,
+    /// Long trips follow plans over the navigation graph ([`crate::nav`]): near and virtual
+    /// zombies, and active ones whose target is beyond their flow field. Off: straight lines with
+    /// the old detours (for comparison).
+    pub long_paths: bool,
 }
 
 impl Default for TierTuning {
@@ -81,6 +88,7 @@ impl Default for TierTuning {
             region_size: 64.0,
             virtual_hearing_min: 30.0,
             interest_radius: 80.0,
+            long_paths: true,
         }
     }
 }
@@ -334,7 +342,10 @@ pub fn settle(map: &TileMap, p: Vec2, scratch: &mut Vec<IVec2>) -> Vec2 {
 /// What the near-tier update reads or writes besides the zombies.
 pub(crate) struct NearCtx<'a> {
     pub map: &'a TileMap,
+    pub walk: &'a WalkGrid,
     pub flow: &'a FlowCache,
+    /// The navigation graph and plans, unless `long_paths` is off.
+    pub nav: Option<&'a mut Nav>,
     pub goal: Option<&'a FlowField>,
     pub tuning: &'a ZombieTuning,
     pub tiers: &'a TierTuning,
@@ -398,7 +409,7 @@ pub(crate) fn step_near(z: &mut Zombies, next_pos: &mut [Vec2], cx: &mut NearCtx
                         desired = ai::mill(z, i, cx.rng, t, target, dt);
                     } else {
                         let speed = if chasing { z.speed[i] } else { z.speed[i] * t.investigate_speed_mult };
-                        desired = match heading(cx.flow, p, target) {
+                        desired = match heading(cx.flow, cx.nav.as_deref_mut(), cx.walk, p, target, cx.tick) {
                             Some(dir) => dir * speed,
                             None => ai::mill(z, i, cx.rng, t, target, dt),
                         };
@@ -441,8 +452,10 @@ pub(crate) fn step_near(z: &mut Zombies, next_pos: &mut [Vec2], cx: &mut NearCtx
 }
 
 /// Which way a near zombie at `p` goes for `target`: along a flow field that active zombies keep
-/// built for that spot, if one covers it, else straight. `None` once it's there.
-fn heading(flow: &FlowCache, p: Vec2, target: Vec2) -> Option<Vec2> {
+/// built for that spot, if one covers it, else along its plan over the navigation graph (standing
+/// at a shut door or window the plan leads through: it can't batter it on this tier), else
+/// straight. `None` once it's there.
+fn heading(flow: &FlowCache, nav: Option<&mut Nav>, walk: &WalkGrid, p: Vec2, target: Vec2, tick: u64) -> Option<Vec2> {
     let to = target - p;
     let d = to.length();
     if d <= 1.5 {
@@ -456,7 +469,11 @@ fn heading(flow: &FlowCache, p: Vec2, target: Vec2) -> Option<Vec2> {
             return Some(dir);
         }
     }
-    Some(to / d)
+    match nav.and_then(|nav| nav.way(walk, p, target, tick)) {
+        Some(Way::Go(dir)) => Some(dir),
+        Some(Way::Breach(_)) => Some(Vec2::ZERO),
+        None => Some(to / d),
+    }
 }
 
 /// Sounds loud enough to reach the virtual tier: virtual zombies in earshot react as any zombie
@@ -484,9 +501,22 @@ pub(crate) fn virtual_hearing(z: &mut Zombies, regions: &RegionIndex, map: &Tile
 /// The virtual tier's update: each region whose turn it is (`(region + tick) %
 /// virtual_interval_ticks == 0`) moves all its zombies in one go over the whole interval. Returns
 /// how many were updated. Randomness is a hash of (seed, tick, id), so it doesn't depend on
-/// iteration order or touch the world's RNG.
+/// iteration order or touch the world's RNG. With `nav`, zombies heading somewhere follow their
+/// plans ([`Nav::trace`]).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn step_virtual(z: &mut Zombies, regions: &RegionIndex, map: &TileMap, t: &ZombieTuning, tiers: &TierTuning, pop: &Population, migration: &MigrationDef, tick: u64, seed: u64) -> u32 {
+pub(crate) fn step_virtual(
+    z: &mut Zombies,
+    regions: &RegionIndex,
+    map: &TileMap,
+    walk: &WalkGrid,
+    mut nav: Option<&mut Nav>,
+    t: &ZombieTuning,
+    tiers: &TierTuning,
+    pop: &Population,
+    migration: &MigrationDef,
+    tick: u64,
+    seed: u64,
+) -> u32 {
     let every = tiers.virtual_interval_ticks.max(1) as u64;
     let mut updated = 0;
     for r in 0..regions.regions() {
@@ -500,16 +530,20 @@ pub(crate) fn step_virtual(z: &mut Zombies, regions: &RegionIndex, map: &TileMap
             population::migrate_region(z, regions.members(r), pull, migration, t, tick, seed);
         }
         for &i in regions.members(r) {
-            step_one_virtual(z, i as usize, map, t, every as f32 * TICK_DT, tick, seed);
+            step_one_virtual(z, i as usize, map, walk, nav.as_deref_mut(), t, every as f32 * TICK_DT, tick, seed);
             updated += 1;
         }
     }
     updated
 }
 
-fn step_one_virtual(z: &mut Zombies, i: usize, map: &TileMap, t: &ZombieTuning, dt: f32, tick: u64, seed: u64) {
+#[allow(clippy::too_many_arguments)]
+fn step_one_virtual(z: &mut Zombies, i: usize, map: &TileMap, walk: &WalkGrid, nav: Option<&mut Nav>, t: &ZombieTuning, dt: f32, tick: u64, seed: u64) {
     let roll = |k: u64| hash01(seed ^ 0x5649_5254, tick, z.id[i] as u64, k);
     let p = z.pos[i];
+    // Where along a path it walks: its own spot in each tile, so a horde doesn't pile onto one point.
+    let jitter = |k: u64| (hash01(seed ^ 0x4A49_5454, 0, z.id[i] as u64, k) - 0.5) * 0.6;
+    let mut traced = None;
     z.sees[i] = 0;
     z.cooldown[i] = (z.cooldown[i] - dt).max(0.0);
     z.bored[i] = (z.bored[i] - dt).max(0.0);
@@ -556,12 +590,15 @@ fn step_one_virtual(z: &mut Zombies, i: usize, map: &TileMap, t: &ZombieTuning, 
                     to = p + (hop - p).clamp_length_max(t.wander_speed * 1.5 * dt);
                 } else {
                     let speed = if chasing { z.speed[i] } else { z.speed[i] * t.investigate_speed_mult };
-                    to = p + off / d * (speed * dt).min(d);
+                    let dist = (speed * dt).min(d);
+                    traced = nav.and_then(|nav| nav.trace(walk, p, target, dist, Vec2::new(jitter(0), jitter(1)), tick));
+                    to = p + off / d * dist;
                 }
             }
         }
     }
-    let q = virtual_move(map, p, to);
+    // A traced path already keeps to walkable steps (and bends, so the straight check doesn't apply).
+    let q = traced.unwrap_or_else(|| virtual_move(map, p, to));
     if q != p {
         let d = q - p;
         z.facing[i] = d.y.atan2(d.x);
@@ -581,8 +618,10 @@ fn virtual_move(map: &TileMap, p: Vec2, to: Vec2) -> Vec2 {
     if len < 1e-4 {
         return p;
     }
-    let ok = |q: Vec2| map.in_bounds(q.floor().as_ivec2()) && !map.tile_blocked(q.floor().as_ivec2()) && clear_path(map, p, q);
     let dir = off / len;
+    // The path is checked a little past `q`: `clear_path` allows a millimetre at the end, which
+    // would let a move end just over a wall line, on the far side.
+    let ok = |q: Vec2| map.in_bounds(q.floor().as_ivec2()) && !map.tile_blocked(q.floor().as_ivec2()) && clear_path(map, p, q + (q - p).normalize_or_zero() * 0.01);
     for (angle, frac) in [(0.0, 1.0), (0.785, 0.8), (-0.785, 0.8), (1.571, 0.5), (-1.571, 0.5)] {
         let q = p + Vec2::from_angle(angle).rotate(dir) * len * frac;
         if ok(q) {

@@ -4,9 +4,10 @@
 //! **What's stored.** Everything that isn't derived and that the future depends on: the world
 //! settings (seed, map size, tunings), map edits, door and window damage, ground items, players
 //! (with their queued inputs and actions), every zombie on every tier with all its AI columns, the
-//! population state, the clock and tick, both RNG streams, the sounds waiting to be heard and the
-//! flow-field cache. Derived state is rebuilt on load: the walk grid, spatial hash, region index,
-//! chunk distances and the debug goal's field. Events for replication (edge changes, edge damage,
+//! population state, the clock and tick, both RNG streams, the sounds waiting to be heard, the
+//! flow-field cache and the long-range plans (`crate::nav`). Derived state is rebuilt on load: the
+//! walk grid, the navigation graph and the plans' index, spatial hash, region index, chunk
+//! distances and the debug goal's field. Events for replication (edge changes, edge damage,
 //! combat events) and per-tick outputs are not saved: a client (re)joining gets the full picture.
 //! So save, load and step gives the same [`World::state_hash`] as stepping the original.
 //!
@@ -56,6 +57,7 @@ use crate::combat::CombatTuning;
 use crate::flow::{SavedFlowCache, WalkGrid};
 use crate::items::GroundItem;
 use crate::map::{EdgeChange, EdgeRef, TileMap};
+use crate::nav::SavedNav;
 use crate::players::Player;
 use crate::population::{Attractor, Population, Zone};
 use crate::rng::Rng;
@@ -70,7 +72,7 @@ use crate::zombies::{Tier, ZombieAnim, ZombieState, Zombies};
 /// The first eight bytes of every save.
 pub const MAGIC: [u8; 8] = *b"ZOMBYSAV";
 /// Bumped whenever the layout changes; other versions are refused with a clear error.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 /// File extension `net::save_file` uses.
 pub const EXTENSION: &str = "zsave";
 
@@ -250,6 +252,8 @@ struct WorldSave {
     goal: Option<IVec2>,
     population: PopulationSave,
     flow: SavedFlowCache,
+    /// Long-range plans and queued plan requests.
+    nav: SavedNav,
     /// Zombies in all the `ZOMB` sections together.
     zombies: u32,
 }
@@ -478,6 +482,7 @@ impl World {
             goal,
             walk,
             flow_cache,
+            nav,
             rng,
             combat_rng,
             regions,
@@ -574,6 +579,7 @@ impl World {
                 respawned: population.respawned,
             },
             flow: flow_cache.to_saved(walk),
+            nav: nav.to_saved(),
             zombies: zombies.len() as u32,
         };
         w.section(WRLD, &encode(&world));
@@ -682,6 +688,8 @@ impl World {
         if !new_map {
             (w.town_min, w.town_max, w.player_spawn, w.spawn_building) = (map_save.town_min, map_save.town_max, map_save.player_spawn, map_save.spawn_building as usize);
         }
+        // The navigation graph, from the map as it is now.
+        w.nav = crate::nav::Nav::new(&w.walk);
 
         let regions = w.regions.regions();
         let pop = ws.population;
@@ -709,9 +717,11 @@ impl World {
         w.heard = ws.heard;
         w.goal = ws.goal;
         w.goal_dirty = true;
-        // Fields saved for another map would lead zombies astray: on a new one they're rebuilt as asked for.
+        // Fields and plans saved for another map would lead zombies astray: on a new one they're
+        // rebuilt as asked for.
         if !new_map {
             w.flow_cache.restore(ws.flow, &w.walk).map_err(LoadError::Corrupt)?;
+            w.nav.restore(ws.nav).map_err(LoadError::Corrupt)?;
         }
 
         // Zombies: every region's block, then back into id order.
@@ -902,6 +912,7 @@ mod tests {
         assert!(a.zombies.state.contains(&ZombieState::Dead), "corpses");
         assert!(!a.population().attractors.is_empty(), "an attractor");
         assert!(a.flow_cache_len() > 0, "cached flow fields");
+        assert!(a.nav().plan_count() > 0, "long-range plans");
         assert!(a.damaged_edges().count() > 0 || !a.map_edits.is_empty());
         let mut loaded = World::load(&a.save(), &a.config).unwrap();
         assert_eq!(loaded.state_hash(), a.state_hash());
@@ -931,6 +942,40 @@ mod tests {
         assert!(a.flow_cache.to_saved(&a.walk).stored_fields() > 0, "some field went stale");
         let mut loaded = World::load(&a.save(), &a.config).unwrap();
         step_both(&mut loaded, &mut b, 120, 200);
+    }
+
+    /// A far horde on its way across town to a lasting noise, following long-range plans (some
+    /// dropped by doors changing on the way, more being made): saved and loaded mid-trip, it keeps
+    /// going exactly as the original does.
+    #[test]
+    fn long_range_plans_survive_a_save() {
+        let make = || {
+            let mut config = content();
+            config.zombies = Some(500);
+            config.generation.chunks = IVec2::splat(32);
+            let mut w = World::new(config);
+            let spawn = w.player_spawn;
+            w.add_player(spawn);
+            let far = Vec2::new(w.map.width() as f32, w.map.height() as f32) - spawn;
+            w.make_noise(far.clamp(Vec2::splat(20.0), Vec2::splat(490.0)), 150.0, true);
+            w
+        };
+        let (mut a, mut b) = (make(), make());
+        step_both(&mut a, &mut b, 0, 1200);
+        // Doors change on the way: plans through those chunks are dropped and made again.
+        for e in door_edges(&a).into_iter().take(2) {
+            a.toggle_edge(e, crate::senses::SoundSource::World);
+            b.toggle_edge(e, crate::senses::SoundSource::World);
+        }
+        step_both(&mut a, &mut b, 1200, 5);
+        assert!(a.nav().plan_count() > 0, "no long-range plans in use");
+        let moving = a.zombies.state.iter().zip(&a.zombies.tier).filter(|(s, t)| **s == ZombieState::Investigate && **t != Tier::Active).count();
+        assert!(moving > 20, "only {moving} far zombies heading somewhere");
+        let mut loaded = World::load(&a.save(), &a.config).unwrap();
+        assert_eq!(loaded.nav().plan_count(), a.nav().plan_count());
+        assert_eq!(loaded.nav().pending(), a.nav().pending());
+        assert_eq!(loaded.nav().graph(), a.nav().graph());
+        step_both(&mut loaded, &mut b, 1205, 1500);
     }
 
     #[test]
