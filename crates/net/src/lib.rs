@@ -10,7 +10,7 @@ pub mod shutdown;
 
 use serde::{Deserialize, Serialize};
 use zombye_sim::map::{EdgeChange, OwnedEdge};
-use zombye_sim::{ActionKind, Burden, Carry, CombatEvent, GroundItem, Inventory, ItemNote, ItemStack, MoveMods, Place, PlayerInput, Stance, World, WorldConfig, ZombieAnim};
+use zombye_sim::{ActionKind, Burden, Carry, CombatEvent, DevFlags, GroundItem, Inventory, ItemNote, ItemStack, MoveMods, Place, PlayerInput, Stance, World, WorldConfig, ZombieAnim};
 
 /// Something a client wants to happen. The server validates and applies it.
 ///
@@ -58,6 +58,10 @@ pub enum Intent {
     Search { player: u32, container: Option<u32> },
     /// Single-player / debug: a dead player gets up at the spawn point.
     Respawn { player: u32 },
+    /// Dev toggles for testing (`None` leaves one as it is): `god` takes no damage and can't die,
+    /// `ignored` isn't seen or heard by zombies (those after the player lose them). A hosted server
+    /// refuses it unless started with `--allow-dev` ([`LocalServer::hosted`]).
+    Dev { player: u32, god: Option<bool>, ignored: Option<bool> },
     /// Debug: put `count` of an item (by data id, e.g. `baseball_bat` or `tinned_beans`) on the ground.
     SpawnItem { item: String, count: u16, pos: [f32; 2] },
     /// Debug: make zombies chase this point instead of the players. `None` goes back to the players.
@@ -114,6 +118,8 @@ pub struct PlayerView {
     /// Busy with its things: seconds left on the item job under way (0 if none), and jobs queued.
     pub busy: f32,
     pub jobs: u8,
+    /// Dev toggles on for this player (god mode, ignored by zombies), for the HUD.
+    pub dev: DevFlags,
 }
 
 /// What a container holds, for whoever has it open.
@@ -232,6 +238,7 @@ impl Snapshot {
                 mods: p.state.mods,
                 busy: p.jobs.first().map_or(0.0, |j| j.left.max(0.0)),
                 jobs: p.jobs.len().min(255) as u8,
+                dev: p.dev,
             })
             .collect();
         let private = world.take_private_dirty().into_iter().filter_map(|id| PrivateView::of(world, id)).collect();
@@ -321,6 +328,9 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
         Intent::Respawn { player } => {
             world.respawn_player(*player);
         }
+        Intent::Dev { player, god, ignored } => {
+            world.set_dev(*player, *god, *ignored);
+        }
         Intent::SpawnItem { item, count, pos } => {
             world.spawn_item(item, (*count).max(1), (*pos).into());
         }
@@ -333,10 +343,22 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
     }
 }
 
+impl Intent {
+    /// A developer toggle ([`Intent::Dev`]), which only single-player and servers started with
+    /// `--allow-dev` take.
+    pub fn is_dev(&self) -> bool {
+        matches!(self, Intent::Dev { .. })
+    }
+}
+
 /// In-process server for single-player: owns the world, takes intents, produces snapshots.
 pub struct LocalServer {
     pub world: World,
     inbox: Vec<Intent>,
+    /// Takes [`Intent::Dev`] (single-player: yes; a hosted server: only with `--allow-dev`).
+    pub allow_dev: bool,
+    /// Dev intents refused so far.
+    pub refused_dev: u32,
 }
 
 impl LocalServer {
@@ -344,9 +366,15 @@ impl LocalServer {
         Self::from_world(World::new(config))
     }
 
-    /// Serve an existing world (one loaded from a save).
+    /// Serve an existing world (one loaded from a save), single-player: dev toggles allowed.
     pub fn from_world(world: World) -> Self {
-        Self { world, inbox: Vec::new() }
+        Self { world, inbox: Vec::new(), allow_dev: true, refused_dev: 0 }
+    }
+
+    /// A server other people join (multiplayer, M6): dev toggles are refused unless `allow_dev`
+    /// (its `--allow-dev`), so nobody makes themselves unkillable or invisible to zombies.
+    pub fn hosted(world: World, allow_dev: bool) -> Self {
+        Self { allow_dev, ..Self::from_world(world) }
     }
 
     /// Swap in another world (a loaded save), dropping intents queued for the old one. The next
@@ -371,6 +399,10 @@ impl LocalServer {
     /// Apply queued intents, advance one tick, and return the new snapshot.
     pub fn tick(&mut self) -> Snapshot {
         for intent in self.inbox.drain(..) {
+            if intent.is_dev() && !self.allow_dev {
+                self.refused_dev += 1;
+                continue;
+            }
             apply_intent(&mut self.world, &intent);
         }
         self.world.step();
@@ -435,6 +467,29 @@ mod tests {
         server.send(Intent::Respawn { player: id });
         let snap = server.tick();
         assert!(!snap.players[0].dead && snap.players[0].hp == 100.0);
+    }
+
+    /// Single-player takes dev toggles and snapshots show them; a hosted server refuses them
+    /// unless started with `--allow-dev`.
+    #[test]
+    fn dev_toggles_single_player_yes_hosted_only_with_allow_dev() {
+        let mut solo = server();
+        let id = solo.join(None);
+        solo.send(Intent::Dev { player: id, god: Some(true), ignored: None });
+        let snap = solo.tick();
+        assert_eq!(snap.players[0].dev, DevFlags { god: true, ignored: false });
+        solo.send(Intent::Dev { player: id, god: None, ignored: Some(true) });
+        assert_eq!(solo.tick().players[0].dev, DevFlags { god: true, ignored: true });
+
+        for allow in [false, true] {
+            let mut hosted = LocalServer::hosted(server().world, allow);
+            let id = hosted.join(None);
+            hosted.send(Intent::Dev { player: id, god: Some(true), ignored: Some(true) });
+            let view = hosted.tick().players[0];
+            assert_eq!(view.dev, if allow { DevFlags { god: true, ignored: true } } else { DevFlags::default() }, "allow_dev {allow}");
+            assert_eq!(hosted.refused_dev, !allow as u32);
+            assert_eq!(hosted.world.player(id).unwrap().dev, view.dev);
+        }
     }
 
     /// The client predicts with the same function the server runs, so with no world changes the

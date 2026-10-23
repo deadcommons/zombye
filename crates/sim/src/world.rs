@@ -773,7 +773,7 @@ impl World {
             let before = p.state.pos;
             players::step_movement(&self.map, &mut p.state, &p.input, TICK_DT);
             let moving = p.state.pos.distance_squared(before) > 1e-8;
-            self.targets.push(Target { id: p.id, pos: p.state.pos, stance: p.state.stance, moving });
+            self.targets.push(Target { id: p.id, pos: p.state.pos, stance: p.state.stance, moving, ignored: p.dev.ignored });
             if moving && self.heard.len() < MAX_SOUNDS {
                 let radius = match p.state.stance {
                     Stance::Sneak => t.sneak_noise,
@@ -803,6 +803,12 @@ impl World {
         self.regions.rebuild_where(&self.zombies.pos, |i| states[i] != ZombieState::Dead && tier[i] == Tier::Virtual);
         let tier_ms = tier_start.elapsed().as_secs_f32() * 1000.0;
         self.step_player_actions();
+        // Ignored players (dev) aren't heard: their footsteps, swings, doors and searches are
+        // dropped here, before anything listens (senses, the far tiers, migration).
+        if self.players.iter().any(|p| p.dev.ignored) {
+            let players = &self.players;
+            self.heard.retain(|s| !matches!(s.source, SoundSource::Player(id) if players.iter().any(|p| p.id == id && p.dev.ignored)));
+        }
         let t = &self.config.zombie;
         let mut sight_checks = 0;
         if self.goal.is_some() {
@@ -1039,7 +1045,8 @@ impl World {
             mix(p.state.pos.y.to_bits());
             mix(p.state.facing.to_bits());
             mix(p.state.endurance.to_bits());
-            mix(p.state.stance as u32 | (p.state.winded as u32) << 8 | (p.dead as u32) << 9);
+            // Dev toggles add bits only when on, so a world without them hashes as it always did.
+            mix(p.state.stance as u32 | (p.state.winded as u32) << 8 | (p.dead as u32) << 9 | (p.dev.god as u32) << 10 | (p.dev.ignored as u32) << 11);
             mix(p.hp.to_bits());
             mix(p.weapon.map_or(u32::MAX, u32::from));
             mix(p.ready_in.to_bits());

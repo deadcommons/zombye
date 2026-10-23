@@ -60,7 +60,7 @@ cargo run -p zombye-client --release -- --render-to shot.png --load saves/autosa
 cargo test --release --workspace
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --render-to PATH --size WxH --center X,Y --inventory`
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --render-to PATH --size WxH --center X,Y --inventory --god --ignored`
 (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost).
@@ -74,7 +74,8 @@ first, so it faces the camera), with a bat and five zombies between you and the 
 it: they batter it (or the window beside it) with their backs to you, and the door or window shows cracks as it
 gives (add `--zombies 0` to keep the rest of the town out of it). `--sneak` starts you sneaking (as if C was
 pressed). The game window takes keyboard focus, so typing elsewhere while it runs can move or toggle the player.
-`--inventory` starts with the inventory panel open (for screenshots of it).
+`--inventory` starts with the inventory panel open (for screenshots of it). `--god` and `--ignored` start with the dev
+toggles on (as if F1 / F2 were pressed; see Dev toggles).
 `--at` starts the player somewhere other than the bedroom and `--time` sets the start hour, which is handy for screenshots.
 `--angle N` starts the camera at one of the four fixed angles (0 = the default, each step a quarter turn), `--player ID`
 plays as that player of a `--load`ed save (default its first), `--data DIR` reads game data from another folder (as the
@@ -112,7 +113,7 @@ sent to it, chasing, zombies per tier active/near/virtual, sim tick ms).
 In game: WASD move, Shift run, C sneak (toggle), mouse to face, left mouse attack (swing your weapon, or
 punch), Space shove (or stomp, when a downed zombie lies right in front of you), E pick up the item you
 face (with nothing on the floor within reach: search the container you face), Tab or I the inventory panel, F open/close the door or window you face, G smash the window you face, R get up again after dying,
-T skip an hour, Z spawn zombies, wheel zoom, F5 quicksave, F9 quickload. Walk into an open or broken window to climb
+T skip an hour, Z spawn zombies, wheel zoom, F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles). Walk into an open or broken window to climb
 through it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
 not Bevy's handler; a second Ctrl-C quits unsaved) autosaves; `--render-to` never does.
 
@@ -131,7 +132,8 @@ under the HUD says what was saved or loaded (or why not), and stdout gets the sa
 HUD: top left, the stats line and the keys. Bottom left, the weapon you hold and your stance, a health bar
 (pulses below 30), an endurance bar (orange below `tired_below`, when swings weaken; grey-blue and a WINDED tag
 when winded: no running), and this life's kills and time alive. Dead: a "You died" screen with the time survived
-and kills (both counted client-side from combat events and sim ticks) and "Press R to get up again".
+and kills (both counted client-side from combat events and sim ticks) and "Press R to get up again". A cyan GOD / IGNORED
+tag beside the stance (and in the stats line) while a dev toggle is on.
 
 ## The world
 
@@ -174,8 +176,21 @@ and kills (both counted client-side from combat events and sim ticks) and "Press
   `window_noise`; broken ones can't be shut), `SmashWindow { player }` (breaks the shut or open window
   it faces; loud, `glass_break_noise`), `Attack`, `Shove`, `Stomp`, `PickUp` (all `{ player }`, see
   Combat and Items), the item intents (`MoveItem`, `Equip`, `Wear`, `Unequip`, `Drop`, `Use`, `Search`, see Items),
-  `Respawn { player }` (single-player/debug: a dead player gets up at the spawn point), and the
-  debug/admin `SetGoal`, `SpawnZombies`, `SpawnItem { item, count, pos }`, `SkipTime`, `MakeNoise`.
+  `Respawn { player }` (single-player/debug: a dead player gets up at the spawn point), `Dev { player, god, ignored }`
+  (dev toggles, below), and the debug/admin `SetGoal`, `SpawnZombies`, `SpawnItem { item, count, pos }`, `SkipTime`, `MakeNoise`.
+- **Dev toggles** (`players::DevFlags { god, ignored }` on the player, `World::set_dev`; `Intent::Dev` with `Option<bool>`s,
+  `None` = leave it): **god** takes no damage and can't die: zombie strikes still roll, land and become events and hit
+  feedback, HP just doesn't drop (`World::hurt_player` is the one place a player loses HP; anything new that hurts goes
+  through it). **ignored**: zombies don't see the player (`Target::ignored`, skipped by `sight_pass`) or hear anything it
+  makes (its `SoundSource::Player` sounds are dropped in `World::step` before the senses, far tiers and migration listen),
+  and turning it on makes every zombie after it (chasing, lunging, striking, battering toward it) investigate where it last
+  saw it, then wander; one it hits finds nobody when it recovers. Off again, it is noticed as usual from the next tick.
+  Zombies still walk round its body. Not saved (`#[serde(skip)]`; the save format is unchanged and a loaded world has
+  them off; the client's F9 sends them again), kept on respawn, in `state_hash` only as bits that are 0 when off (so
+  worlds without them hash as before). `PlayerView::dev` carries them. Single-player (`LocalServer::new`/`from_world`)
+  takes `Intent::Dev`; a server others join (`LocalServer::hosted(world, allow_dev)`) drops it (counted in `refused_dev`)
+  unless `allow_dev`, which the hosted multiplayer server (M6; there is none yet) sets from its `--allow-dev`. The MCP
+  server, a dev tool, always allows it.
 - `LocalServer::join` adds your player and returns its id. Snapshots carry `players` with
   `last_input_seq` (plus `hp`, `dead`, `weapon`, `action`, and `action_left` / `ready_in`: seconds until the
   action lands and until the player can act again, which time the swing animation); the client resets its predicted player to
@@ -543,7 +558,8 @@ zombie attacks, thumps and anything broken), `move_player` (player, compass `dir
 (opens/closes the door or window player 1, or `player`, faces; `toggle_door` is an old alias),
 `smash_window`, `attack` / `shove` / `stomp` (player, optional `facing` or `target` zombie id to turn
 first; steps until the action has landed and the player can act again, and reports what it hit),
-`pick_up` (the instant grab, as E), `weapons` (the weapon table and combat numbers), `items {category}` (the item table
+`pick_up` (the instant grab, as E), `dev {player, god, ignored}` (the dev toggles; a field left out stays as it is;
+`stats` gives each player's `god`/`ignored` and `observe` tags them `[GOD]` / `[IGNORED]`), `weapons` (the weapon table and combat numbers), `items {category}` (the item table
 and the carry numbers), `inventory {player}` (slots, worn and carried stacks with indices, load and burden, the open
 container, the floor in reach with ground item ids, containers in reach, the job queue), `containers_near {player, radius}`
 (id, kind, furniture, room, distance, searched or not and what's in it, in reach), `search {player, container}`, `take
@@ -559,7 +575,7 @@ spread, strength and time left; the regions furthest below and above target), `s
 (replaces the world; with no name, the `--save` file; refused, world untouched, if the file is damaged, holds impossible
 values or is of another format; changed game data loads with a note when compatible, else is refused unless
 `force: true`, which loads it anyway and notes what it changed), `saves` (the saves folder: size, age, tick, time, seed, map size, zombies,
-players; and where this session autosaves), `stats` (players with HP/weapon/load/burden/busy/dead, time of day and daylight, zombies by state
+players; and where this session autosaves), `stats` (players with HP/weapon/load/burden/busy/dead/god/ignored, time of day and daylight, zombies by state
 including staggered/down/dead and by tier (`zombie_tiers`: active/near/virtual, last tick's promotions and
 demotions, the ranges), `population` (target vs alive, attractors, whether migration and respawn are on, respawned), items on the floor, containers and how many are opened, tick timing (tier pass, senses, flow, active, near, virtual), thumps, hits and sounds heard last
 tick, damaged edges, the state hash). `step_ticks` and `move_player` also report hits, kills, how many

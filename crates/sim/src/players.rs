@@ -137,6 +137,20 @@ pub struct Player {
     pub ready_in: f32,
     /// An action asked for just before the last one finished; starts as soon as it can.
     pub queued: Option<ActionKind>,
+    /// Developer toggles. Not saved: a loaded world has them off.
+    #[serde(skip)]
+    pub dev: DevFlags,
+}
+
+/// Developer toggles for testing without dying (`World::set_dev`; `net::Intent::Dev`, F1 / F2 in
+/// the client, MCP `dev`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DevFlags {
+    /// Takes no damage and can't die: zombie strikes still land (events, hit feedback), HP just
+    /// doesn't drop (`World::hurt_player`).
+    pub god: bool,
+    /// Zombies don't see or hear this player, and those after it lose it.
+    pub ignored: bool,
 }
 
 impl Player {
@@ -155,6 +169,7 @@ impl Player {
             action: None,
             ready_in: 0.0,
             queued: None,
+            dev: DevFlags::default(),
         }
     }
 }

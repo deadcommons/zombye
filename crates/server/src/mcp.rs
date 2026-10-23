@@ -27,6 +27,11 @@ const COMPASS: [(&str, [f32; 2]); 8] =
 
 /// Tools that only look: they don't make the world need saving.
 const READ_ONLY: [&str; 14] = ["observe", "zombie", "edge", "weapons", "items", "inventory", "containers_near", "buildings", "regions", "stats", "saves", "save", "load", "screenshot"];
+/// "on" / "off".
+fn on_off(b: bool) -> &'static str {
+    if b { "on" } else { "off" }
+}
+
 /// Longest an item tool waits for a player's queue to empty (ticks).
 const MAX_JOB_TICKS: u64 = 20 * 60;
 
@@ -157,7 +162,7 @@ fn tool_list() -> Value {
                 Active zombies by state: Z wandering, I investigating a sound, C chasing a player, L lunging, A attacking, \
                 B battering a door or window, S staggered, v down on the ground, % corpse; zombies on the cheaper tiers \
                 far from players: n near (updated a few times a second), ? virtual (moved in bulk every few seconds). \
-                Lists players (HP, weapon, load, whether they're climbing through a window or dead), items on the floor, damaged doors \
+                Lists players (HP, weapon, load, whether they're climbing through a window or dead, dev toggles [GOD] [IGNORED]), items on the floor, damaged doors \
                 and windows in view with their hit points, and the nearest zombies with HP (use zombie {id} for one zombie's details).",
             "inputSchema": {"type": "object", "properties": {
                 "x": {"type": "number", "description": "Centre x in metres"},
@@ -376,6 +381,17 @@ fn tool_list() -> Value {
             "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}}}
         },
         {
+            "name": "dev",
+            "description": "Dev toggles for a player, for testing without dying (allowed here: the MCP server is a dev tool). \
+                god: takes no damage and can't die (zombie strikes still land and are reported, HP doesn't drop). \
+                ignored: zombies can't see or hear the player, and those chasing, lunging at, attacking or battering their way to \
+                it lose it (they look where they last saw it, then wander). Leave one out to keep it as it is. Not saved: a loaded \
+                world has both off. stats and observe show them.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1}, "god": {"type": "boolean"}, "ignored": {"type": "boolean"}
+            }}
+        },
+        {
             "name": "edge",
             "description": "The four edges of tile (x, y): what each is (wall, window shut/open/broken, door shut/open/broken, \
                 arch, fence) and, for shut or open doors and windows, hit points left of full.",
@@ -443,7 +459,7 @@ fn tool_list() -> Value {
         },
         {
             "name": "stats",
-            "description": "Map size, tick, time of day and daylight, players (HP, weapon, dead), zombie counts by state (corpses too) and by simulation tier (active / near / virtual, with the ranges and last tick's promotions and demotions), weapons on the floor, last tick timing (tier pass, senses, flow fields, active AI, near and virtual updates), sounds heard and the state hash (same seed + same calls = same hash).",
+            "description": "Map size, tick, time of day and daylight, players (HP, weapon, dead, dev toggles god / ignored), zombie counts by state (corpses too) and by simulation tier (active / near / virtual, with the ranges and last tick's promotions and demotions), weapons on the floor, last tick timing (tier pass, senses, flow fields, active AI, near and virtual updates), sounds heard and the state hash (same seed + same calls = same hash).",
             "inputSchema": {"type": "object", "properties": {}}
         }
     ])
@@ -891,6 +907,15 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             }
             Ok(format!("player {id} is at ({:.1}, {:.1}) in {} with {:.0} HP", p.state.pos.x, p.state.pos.y, place(world, p.state.pos), p.hp))
         }
+        "dev" => {
+            let id = player_id();
+            world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            let flag = |k: &str| args.get(k).and_then(Value::as_bool);
+            apply_intent(world, &Intent::Dev { player: id, god: flag("god"), ignored: flag("ignored") });
+            let d = world.player(id).expect("player exists").dev;
+            let after = world.zombies.state.iter().zip(&world.zombies.target_player).filter(|(s, t)| **t == id && s.is_after(id)).count();
+            Ok(format!("player {id}: god {}, ignored {}; {after} zombies after it", on_off(d.god), on_off(d.ignored)))
+        }
         "edge" => {
             let (x, y) = (num("x").ok_or("x is required")?, num("y").ok_or("y is required")?);
             let t = IVec2::new(x.floor() as i32, y.floor() as i32);
@@ -978,6 +1003,8 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 "busy": p.jobs.first().map_or(0.0, |j| j.left),
                 "action": p.action.map(|a| format!("{:?}", a.kind)),
                 "ready_in": p.ready_in,
+                "god": p.dev.god,
+                "ignored": p.dev.ignored,
             })).collect::<Vec<_>>(),
             "items_on_floor": world.items().len(),
             "containers": world.containers().len(),
@@ -1417,7 +1444,7 @@ fn zombie_detail(world: &World, i: usize) -> String {
     for pl in &world.players {
         let to = pl.state.pos - p;
         let d = to.length();
-        let target = Target { id: pl.id, pos: pl.state.pos, stance: pl.state.stance, moving: pl.input.move_dir.length_squared() > 1e-4 };
+        let target = Target { id: pl.id, pos: pl.state.pos, stance: pl.state.stance, moving: pl.input.move_dir.length_squared() > 1e-4, ignored: pl.dev.ignored };
         let range = senses::sight_range(t, cone, daylight, &target, z.facing[i], to.normalize_or_zero());
         out.push_str(&format!(
             "  P{}: {:.1} m {}, line of sight {}, could be seen out to {:.1} m from here ({:?}{})\n",
@@ -1575,7 +1602,13 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
             compass(s.facing),
             s.stance,
             p.hp,
-            if p.dead { " DEAD (respawn to play on)" } else { "" },
+            match (p.dead, p.dev.god, p.dev.ignored) {
+                (true, ..) => " DEAD (respawn to play on)",
+                (_, true, true) => " [GOD, IGNORED]",
+                (_, true, false) => " [GOD]",
+                (_, false, true) => " [IGNORED]",
+                _ => "",
+            },
             world.wielded(p.weapon).name.to_lowercase(),
             s.endurance,
             if s.winded { " (winded)" } else { "" },
@@ -1971,6 +2004,23 @@ mod tests {
     }
 
     /// An agent can search a container, take, drop, move, hold and eat things, all through tools.
+    /// `dev` sets the toggles (leaving out one keeps it), and `stats` and `observe` show them.
+    #[test]
+    fn dev_tool_sets_and_shows_the_toggles() {
+        let mut world = small_world();
+        let dir = scratch("dev");
+        let mut persist = session(&world, &dir.0);
+        let (text, err) = call(&mut world, &mut persist, "dev", json!({"god": true}));
+        assert!(!err && text.contains("god on, ignored off"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "dev", json!({"player": 1, "ignored": true}));
+        assert!(!err && text.contains("god on, ignored on"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "stats", json!({}));
+        assert!(text.contains("\"god\":true") && text.contains("\"ignored\":true"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "observe", json!({}));
+        assert!(text.contains("[GOD, IGNORED]"), "{text}");
+        assert!(call(&mut world, &mut persist, "dev", json!({"player": 9, "god": true})).1, "no player 9");
+    }
+
     #[test]
     fn items_and_containers_through_tools() {
         let mut world = small_world();

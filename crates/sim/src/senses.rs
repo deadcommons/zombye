@@ -51,6 +51,9 @@ pub struct Target {
     pub stance: Stance,
     /// Moved this tick. Standing still is harder to spot.
     pub moving: bool,
+    /// Dev toggle (`DevFlags::ignored`): never seen, and whoever is after them loses them. Still a
+    /// body zombies walk round.
+    pub ignored: bool,
 }
 
 const SUNRISE: f32 = 6.0;
@@ -118,7 +121,7 @@ pub(crate) fn sight_pass(z: &mut Zombies, hash: &SpatialHash, map: &TileMap, tar
     let interval = t.sight_interval_ticks.max(1);
     let cone = Cone::new(t);
     let mut checks = 0;
-    for target in targets {
+    for target in targets.iter().filter(|t| !t.ignored) {
         // The farthest this player could be seen from: dead ahead by a zombie already after them.
         let best = Target { moving: true, ..*target };
         let reach = sight_range(t, cone, daylight, &best, 0.0, Vec2::X).max(t.rear_range) * t.chase_sight_mult.max(1.0);
@@ -260,7 +263,7 @@ mod tests {
     fn sight_range_depends_on_cone_light_and_stance() {
         let t = ZombieTuning::default();
         let cone = Cone::new(&t);
-        let walker = Target { id: 1, pos: Vec2::ZERO, stance: Stance::Walk, moving: true };
+        let walker = Target { id: 1, pos: Vec2::ZERO, stance: Stance::Walk, moving: true, ignored: false };
         let ahead = sight_range(&t, cone, 1.0, &walker, 0.0, Vec2::X);
         let side = sight_range(&t, cone, 1.0, &walker, 0.0, Vec2::Y);
         let behind = sight_range(&t, cone, 1.0, &walker, 0.0, -Vec2::X);

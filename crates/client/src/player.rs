@@ -12,7 +12,8 @@
 //! nothing on the floor within reach, search the cupboard, drawer or fridge you face), Tab or I the
 //! inventory panel (`inventory_ui`; the left mouse button doesn't swing while it's open),
 //! F open/close the door or window you face, G smash the window you face, R get up again after
-//! dying, T skip an hour, Z spawn zombies. Climbing through an open or broken window is just
+//! dying, T skip an hour, Z spawn zombies, F1 god mode and F2 ignored by zombies (dev toggles, sent as
+//! `Intent::Dev`; the HUD shows GOD / IGNORED from the snapshot). Climbing through an open or broken window is just
 //! walking into it (slowly, predicted like any other movement). Combat itself is all on the server;
 //! the client only sends the intents and draws what the snapshots say (the held weapon, a swing,
 //! lying dead). The body is a [`crate::survivor`] rig.
@@ -24,7 +25,7 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use zombye_net::Intent;
 use zombye_sim::players::step_movement;
-use zombye_sim::{ActionKind, PlayerInput, PlayerState, TICK_DT, ZombieAnim};
+use zombye_sim::{ActionKind, DevFlags, PlayerInput, PlayerState, TICK_DT, ZombieAnim};
 
 use crate::autoplay::AutoInput;
 use crate::camera::IsoCamera;
@@ -67,6 +68,8 @@ pub struct LocalPlayer {
     pub dead: bool,
     pub weapon: Option<u16>,
     pub action: Option<ActionKind>,
+    /// Dev toggles the server has on for us (god mode, ignored by zombies).
+    pub dev: DevFlags,
 }
 
 impl LocalPlayer {
@@ -79,7 +82,7 @@ impl LocalPlayer {
         (self.prev, self.curr) = (view.state(), view.state());
         self.aim = view.facing;
         self.last_snapshot_tick = tick;
-        (self.hp, self.dead, self.weapon, self.action) = (view.hp, view.dead, view.weapon, view.action);
+        (self.hp, self.dead, self.weapon, self.action, self.dev) = (view.hp, view.dead, view.weapon, view.action, view.dev);
     }
 }
 
@@ -122,6 +125,7 @@ fn spawn_player(
         dead: false,
         weapon: None,
         action: None,
+        dev: DevFlags::default(),
     });
 
     let assets = SurvivorAssets::new(&mut meshes, &mut materials, &mut bindposes);
@@ -188,7 +192,7 @@ fn reconcile(link: Res<ServerLink>, map: Res<ClientMap>, mut me: ResMut<LocalPla
     let me = &mut *me;
     me.last_snapshot_tick = link.curr.tick;
     let Some(view) = link.curr.players.iter().find(|p| p.id == me.id) else { return };
-    (me.hp, me.dead, me.weapon, me.action) = (view.hp, view.dead, view.weapon, view.action);
+    (me.hp, me.dead, me.weapon, me.action, me.dev) = (view.hp, view.dead, view.weapon, view.action, view.dev);
     if me.dead {
         // Lying where we fell (or just respawned): take the server's word for it.
         me.pending.clear();
@@ -290,6 +294,13 @@ fn actions(
     players: Query<(&Transform, &Player)>,
     mut link: ResMut<ServerLink>,
 ) {
+    // Dev toggles: flip what the server last said.
+    if keys.just_pressed(KeyCode::F1) {
+        link.send(Intent::Dev { player: me.id, god: Some(!me.dev.god), ignored: None });
+    }
+    if keys.just_pressed(KeyCode::F2) {
+        link.send(Intent::Dev { player: me.id, god: None, ignored: Some(!me.dev.ignored) });
+    }
     if me.dead {
         if keys.just_pressed(KeyCode::KeyR) {
             link.send(Intent::Respawn { player: me.id });
