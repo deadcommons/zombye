@@ -17,7 +17,9 @@
 //! Saves: `--save PATH` loads that save if it exists (the world options are then ignored) or
 //! makes a new world and saves it there; the server then autosaves to it every
 //! `--autosave-mins N` minutes of real time (default 5; 0 = never) and when it shuts down (stdin
-//! closed, Ctrl-C, SIGTERM). `--saves DIR` is the folder for the MCP `save`/`load`/`saves` tools
+//! closed, Ctrl-C, SIGTERM or SIGHUP; on Windows also closing the console window). A save made with game data changed since in ways it can't take (a building
+//! template that changes the map, a weapon it uses removed) is refused unless `--load-anyway`, which
+//! loads it dropping what no longer fits; compatible changes load with a note. `--saves DIR` is the folder for the MCP `save`/`load`/`saves` tools
 //! (default: the `--save` file's folder, else `saves`). `--bench --save-bench` also times saving
 //! and loading the world at the end of the run.
 //!
@@ -27,15 +29,14 @@
 
 mod mcp;
 mod screenshot;
-mod shutdown;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use zombye_net::{content, save_file};
+use zombye_net::{content, save_file, shutdown};
 use glam::Vec2;
 use zombye_sim::world::TickStats;
-use zombye_sim::{PlayerInput, TICK_DT, World, WorldConfig};
+use zombye_sim::{LoadOptions, PlayerInput, TICK_DT, World, WorldConfig};
 
 /// Where the server keeps its world, and when it last saved it.
 pub struct Persist {
@@ -69,17 +70,21 @@ impl Persist {
     }
 }
 
-/// `--save PATH`: load the save there, or make a new world from `config`, `prepare` it (players)
-/// and save it there.
-fn load_or_create(path: &Path, config: WorldConfig, prepare: impl FnOnce(&mut World)) -> World {
+/// `--save PATH`: load the save there (anyway, with `--load-anyway`), or make a new world from
+/// `config`, `prepare` it (players) and save it there.
+fn load_or_create(path: &Path, config: WorldConfig, options: LoadOptions, prepare: impl FnOnce(&mut World)) -> World {
     if path.exists() {
-        match save_file::load(path, &config) {
-            Ok((world, ms)) => {
+        match save_file::load(path, &config, options) {
+            Ok((loaded, ms)) => {
+                for note in &loaded.notes {
+                    eprintln!("note: {note}");
+                }
+                let world = loaded.world;
                 eprintln!("loaded {} in {ms:.0} ms: tick {}, {} zombies, {} players", path.display(), world.tick, world.zombies.len(), world.players.len());
                 world
             }
             Err(e) => {
-                eprintln!("can't load the save: {e}");
+                eprintln!("can't load the save: {}", e.hint("--load-anyway"));
                 std::process::exit(1);
             }
         }
@@ -133,6 +138,7 @@ fn main() {
     }
 
     let save_path = text("--save").map(PathBuf::from);
+    let load_options = LoadOptions { force: flag("--load-anyway") };
     let mut persist = Persist {
         dir: text("--saves").map(PathBuf::from).or_else(|| save_path.as_ref().and_then(|p| p.parent()).filter(|d| !d.as_os_str().is_empty()).map(Path::to_path_buf)).unwrap_or_else(|| PathBuf::from(save_file::DEFAULT_DIR)),
         path: save_path,
@@ -147,7 +153,7 @@ fn main() {
     if flag("--mcp") {
         shutdown::install();
         let world = match &persist.path {
-            Some(path) => load_or_create(path, config, mcp::add_agent_player),
+            Some(path) => load_or_create(path, config, load_options, mcp::add_agent_player),
             None => World::new(config),
         };
         let timeout = text("--screenshot-timeout").and_then(|v| v.parse::<f64>().ok()).filter(|s| *s > 0.0 && s.is_finite()).map_or(screenshot::DEFAULT_TIMEOUT, Duration::from_secs_f64);
@@ -155,22 +161,22 @@ fn main() {
         mcp::serve(world, &mut persist, &renderer);
     } else if flag("--bench") {
         let ticks = value("--ticks").unwrap_or(1000);
-        bench(config, &mut persist, ticks, value("--players").unwrap_or(0) as u32, value("--horde").unwrap_or(0) as u32, flag("--save-bench"));
+        bench(config, &mut persist, load_options, ticks, value("--players").unwrap_or(0) as u32, value("--horde").unwrap_or(0) as u32, flag("--save-bench"));
     } else {
         eprintln!(
             "usage: zombye-server (--mcp | --bench [--ticks N] [--players N] [--horde N] [--save-bench]) [--zombies N] [--seed S] [--map-chunks N] [--data DIR] \
-             [--save PATH] [--autosave-mins N] [--saves DIR] [--client PATH] [--screenshot-timeout SECS]"
+             [--save PATH] [--load-anyway] [--autosave-mins N] [--saves DIR] [--client PATH] [--screenshot-timeout SECS]"
         );
         std::process::exit(2);
     }
 }
 
-fn bench(config: WorldConfig, persist: &mut Persist, ticks: u64, players: u32, horde: u32, save_bench: bool) {
+fn bench(config: WorldConfig, persist: &mut Persist, load_options: LoadOptions, ticks: u64, players: u32, horde: u32, save_bench: bool) {
     let zombies = config.zombies.map_or("natural".to_string(), |n| n.to_string());
     let start = Instant::now();
     let loaded = persist.path.as_ref().is_some_and(|p| p.exists());
     let mut world = match &persist.path {
-        Some(path) => load_or_create(path, config, |_| {}),
+        Some(path) => load_or_create(path, config, load_options, |_| {}),
         None => World::new(config),
     };
     let gen_ms = start.elapsed().as_secs_f32() * 1000.0;

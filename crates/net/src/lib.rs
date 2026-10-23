@@ -6,6 +6,7 @@
 
 pub mod content;
 pub mod save_file;
+pub mod shutdown;
 
 use serde::{Deserialize, Serialize};
 use zombye_sim::map::{EdgeChange, OwnedEdge};

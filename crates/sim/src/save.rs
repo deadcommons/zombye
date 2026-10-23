@@ -18,11 +18,17 @@
 //! tests, editors) is stored whole instead.
 //!
 //! **Content** (building templates, weapons, population file) comes from the caller, as for a new
-//! world; the save records a fingerprint of each, and loading against different content fails
-//! with [`LoadError::ContentChanged`] naming what changed (a different weapon list would change
-//! what every weapon index means, and different templates a different map). Tunings that are not
+//! world; the save records a fingerprint of each. Loading against changed content goes on with a
+//! note when the change is compatible (weapon numbers, weapons added, `population.ron`; saved weapon
+//! indices are matched up by id) and fails with [`LoadError::ContentChanged`] when it isn't
+//! (templates that change the map, a weapon the save uses removed), unless
+//! [`LoadOptions::force`] says to load anyway (see [`crate::save_check`]). Tunings that are not
 //! in data files yet (`ZombieTuning`, `CombatTuning`, `TierTuning`) are saved with the world, as RON
 //! text, so a save keeps its own numbers and an added field just takes its default.
+//!
+//! **Validation.** Values read from a save are checked before the world is used (finite numbers,
+//! positions on the map, ids, indices, states that go together): a crafted file with good checksums
+//! fails with [`LoadError::Invalid`] naming the field rather than breaking a tick.
 //!
 //! **Format** (all integers little-endian):
 //!
@@ -53,6 +59,7 @@ use crate::map::{EdgeChange, EdgeRef, TileMap};
 use crate::players::Player;
 use crate::population::{Attractor, Population, Zone};
 use crate::rng::Rng;
+use crate::save_check;
 use crate::senses::Sound;
 use crate::spatial::SpatialHash;
 use crate::tiers::{RegionIndex, TierTuning};
@@ -119,30 +126,6 @@ impl ContentPrint {
             population: fnv(&encode(&config.population)),
         }
     }
-
-    /// What differs between the content a save was made with (`self`) and `now`, in words.
-    pub fn differences(&self, now: &ContentPrint) -> Vec<String> {
-        let list = |ids: &[String]| if ids.is_empty() { "none".to_string() } else { ids.join(", ") };
-        let mut out = Vec::new();
-        if self.templates != now.templates {
-            out.push(if self.template_ids == now.template_ids {
-                format!("building templates changed (same ones: {}), so the map would differ", list(&now.template_ids))
-            } else {
-                format!("building templates changed (saved with {}; now {}), so the map would differ", list(&self.template_ids), list(&now.template_ids))
-            });
-        }
-        if self.weapons != now.weapons {
-            out.push(if self.weapon_ids == now.weapon_ids {
-                format!("weapons changed (same ids, different numbers: {})", list(&now.weapon_ids))
-            } else {
-                format!("weapons changed (saved with {}; now {})", list(&self.weapon_ids), list(&now.weapon_ids))
-            });
-        }
-        if self.population != now.population {
-            out.push("population settings (population.ron) changed".to_string());
-        }
-        out
-    }
 }
 
 /// Why a save couldn't be loaded.
@@ -156,11 +139,37 @@ pub enum LoadError {
     Truncated,
     /// Damaged or inconsistent: a bad checksum, undecodable data, or values that don't fit.
     Corrupt(String),
-    /// Made with different content; each entry says what changed.
+    /// Made with content changed in ways it can't take without [`LoadOptions::force`]; each entry
+    /// says what changed.
     ContentChanged(Vec<String>),
     /// The map generated from the saved seed and templates isn't the one the save was made on
-    /// (the generator changed).
+    /// (the generator changed). [`LoadOptions::force`] loads it onto the new map.
     MapChanged,
+    /// Intact, but holding a value no tick could have made (NaN, off the map, a repeated id, an index
+    /// past the end of what it indexes...): says which field.
+    Invalid(String),
+}
+
+impl LoadError {
+    /// Would loading anyway ([`LoadOptions::force`]) get past this?
+    pub fn forceable(&self) -> bool {
+        matches!(self, Self::ContentChanged(_) | Self::MapChanged)
+    }
+}
+
+/// How to load a save.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LoadOptions {
+    /// Load anyway when the content or map changed in a way the save can't simply take: drop what
+    /// no longer fits (see [`crate::save_check`]) and say so in [`Loaded::notes`].
+    pub force: bool,
+}
+
+/// A loaded world, and what loading it had to say (`notes`): compatible content changes, and what a
+/// forced load changed. No notes for a save loaded against the content it was made with.
+pub struct Loaded {
+    pub world: World,
+    pub notes: Vec<String>,
 }
 
 impl fmt::Display for LoadError {
@@ -174,6 +183,7 @@ impl fmt::Display for LoadError {
             Self::Corrupt(why) => write!(f, "save file is damaged: {why}"),
             Self::ContentChanged(what) => write!(f, "save was made with different game data: {}", what.join("; ")),
             Self::MapChanged => write!(f, "the map generator has changed since this save was made, so its map can't be rebuilt"),
+            Self::Invalid(why) => write!(f, "save file holds impossible values: {why}"),
         }
     }
 }
@@ -581,15 +591,21 @@ impl World {
 
     /// Rebuild a world from [`World::save`]'s bytes. `content` supplies the building templates,
     /// weapons and population settings (as for [`World::new`]); everything else in it is replaced
-    /// by what was saved. Fails, without panicking, on anything that isn't an intact save of this
-    /// format made with the same content.
+    /// by what was saved. Compatible content changes load (see [`World::load_with`] for what they
+    /// were); anything that isn't an intact save of this format, holding values a tick could have
+    /// made, fails without panicking.
     pub fn load(bytes: &[u8], content: &WorldConfig) -> Result<World, LoadError> {
+        Self::load_with(bytes, content, LoadOptions::default()).map(|l| l.world)
+    }
+
+    /// [`World::load`], with options (load anyway), returning what loading had to say about
+    /// changed content and what a forced load changed.
+    pub fn load_with(bytes: &[u8], content: &WorldConfig, options: LoadOptions) -> Result<Loaded, LoadError> {
+        let force = options.force;
         let mut r = Reader::new(bytes)?;
         let info: SaveInfo = decode(INFO, r.expect(INFO)?)?;
-        let changed = info.content.differences(&ContentPrint::of(content));
-        if !changed.is_empty() {
-            return Err(LoadError::ContentChanged(changed));
-        }
+        let plan = save_check::plan_content(&info.content, &ContentPrint::of(content));
+        let mut notes = plan.notes.clone();
         let text = std::str::from_utf8(r.expect(CONF)?).map_err(|_| corrupt("settings aren't text"))?;
         let settings: Settings = ron::from_str(text).map_err(|e| corrupt(format!("settings: {e}")))?;
         let mut config = content.clone();
@@ -600,31 +616,59 @@ impl World {
         config.zombie = settings.zombie;
         config.combat = settings.combat;
         config.tiers = settings.tiers;
-        let chunks = config.generation.chunks;
-        if chunks.x < 1 || chunks.y < 1 || chunks.x > 256 || chunks.y > 256 {
-            return Err(corrupt(format!("map size {chunks} chunks")));
-        }
+        save_check::check_settings(text, &config)?;
         let map_save: MapSave = decode(MAPD, r.expect(MAPD)?)?;
-        let ws: WorldSave = decode(WRLD, r.expect(WRLD)?)?;
+        let mut ws: WorldSave = decode(WRLD, r.expect(WRLD)?)?;
+        // Weapons are named by index into the save's own list: move them to the content's.
+        let mut blocking: Vec<String> = save_check::remap_weapons(&plan, &mut ws.items, &mut ws.players, force, &mut notes)?.into_iter().collect();
 
         let mut w = World::generate(config);
+        let mut new_map = false;
         match map_save.layout {
             MapLayout::Edits(edits) => {
                 if w.map_base_hash != map_save.base_hash {
-                    return Err(LoadError::MapChanged);
+                    match (&plan.templates, force) {
+                        (_, true) => new_map = true,
+                        (Some(why), false) => blocking.insert(0, why.clone()),
+                        (None, false) => return Err(LoadError::MapChanged),
+                    }
+                } else if plan.templates.is_some() {
+                    notes.push("building templates changed, but the map they make is the same".to_string());
                 }
+                if !blocking.is_empty() {
+                    return Err(LoadError::ContentChanged(blocking));
+                }
+                let mut dropped = 0;
                 for c in edits {
                     if !w.map.in_bounds(c.tile) {
-                        return Err(corrupt(format!("map edit outside the map at {}", c.tile)));
+                        return Err(save_check::invalid(format!("map edit at {} is off the map", c.tile)));
+                    }
+                    let generated = w.map.owned_edge(c.tile, c.edge);
+                    if !save_check::edit_fits(generated, c.kind) {
+                        if new_map {
+                            dropped += 1;
+                            continue;
+                        }
+                        return Err(save_check::invalid(format!("map edit at {} {:?} turns a {generated:?} into a {:?}", c.tile, c.edge, c.kind)));
                     }
                     w.map.set_owned_edge(c.tile, c.edge, c.kind);
                     w.walk.update_around(&w.map, c.tile);
                     w.map_edits.insert(EdgeRef::new(c.tile, c.edge).key());
                 }
+                if new_map {
+                    let why = plan.templates.as_deref().unwrap_or("the map generator changed, so the map differs");
+                    notes.push(format!("loaded anyway: {why}; regenerated it and applied the door and window changes that still fit ({dropped} dropped)"));
+                }
             }
             MapLayout::Full(map) => {
+                if !blocking.is_empty() {
+                    return Err(LoadError::ContentChanged(blocking));
+                }
                 if !map.is_consistent() {
                     return Err(corrupt("the stored map is malformed"));
+                }
+                if plan.templates.is_some() {
+                    notes.push("building templates changed; the save stores its map whole, so that map is kept".to_string());
                 }
                 w.map = map;
                 w.map_custom = true;
@@ -634,20 +678,15 @@ impl World {
                 w.hash = SpatialHash::new(w.map.width() as f32, w.map.height() as f32, 1.0);
             }
         }
-        (w.town_min, w.town_max, w.player_spawn, w.spawn_building) = (map_save.town_min, map_save.town_max, map_save.player_spawn, map_save.spawn_building as usize);
-
-        // Weapons are named by index: every index must be in the (unchanged) weapon list.
-        let weapons = w.config.weapons.len();
-        let bad_weapon = |i: u16| i as usize >= weapons;
-        if ws.items.iter().any(|it| bad_weapon(it.weapon))
-            || ws.players.iter().any(|p| p.weapon.is_some_and(bad_weapon) || p.action.is_some_and(|a| bad_weapon(a.weapon)))
-        {
-            return Err(corrupt("a weapon index is out of range"));
+        // On a new map the town, the spawn and its house are the new map's.
+        if !new_map {
+            (w.town_min, w.town_max, w.player_spawn, w.spawn_building) = (map_save.town_min, map_save.town_max, map_save.player_spawn, map_save.spawn_building as usize);
         }
+
         let regions = w.regions.regions();
         let pop = ws.population;
         if pop.target.len() != regions || pop.zone.len() != regions || pop.last_seen.len() != regions {
-            return Err(corrupt(format!("population has {} regions, the map {regions}", pop.target.len())));
+            return Err(save_check::invalid(format!("population has {} regions, the map {regions}", pop.target.len())));
         }
         w.population = Population {
             target: pop.target,
@@ -670,7 +709,10 @@ impl World {
         w.heard = ws.heard;
         w.goal = ws.goal;
         w.goal_dirty = true;
-        w.flow_cache.restore(ws.flow, &w.walk).map_err(LoadError::Corrupt)?;
+        // Fields saved for another map would lead zombies astray: on a new one they're rebuilt as asked for.
+        if !new_map {
+            w.flow_cache.restore(ws.flow, &w.walk).map_err(LoadError::Corrupt)?;
+        }
 
         // Zombies: every region's block, then back into id order.
         let mut z = Zombies::default();
@@ -686,6 +728,7 @@ impl World {
             if !block.columns_agree() {
                 return Err(corrupt(format!("zombie columns of region {} have different lengths", block.region)));
             }
+            save_check::zombie_region(block.region, &block.pos, block.id_gaps.first().copied().unwrap_or(0), &w.regions, &w.map)?;
             block.append_to(&mut z);
         }
         if z.len() != ws.zombies as usize {
@@ -693,14 +736,11 @@ impl World {
         }
         let mut order: Vec<usize> = (0..z.len()).collect();
         order.sort_by_key(|&i| z.id[i]);
-        let z = reorder(z, &order);
-        if z.id.windows(2).any(|p| p[0] >= p[1]) || z.id.last().is_some_and(|&id| id >= w.next_id) || z.id.first() == Some(&0) {
-            return Err(corrupt("zombie ids repeat or run past the next id"));
+        w.zombies = reorder(z, &order);
+        if new_map {
+            save_check::fit_to_new_map(&mut w, &mut notes);
         }
-        if z.target_player.iter().zip(&z.state).any(|(&p, s)| p != 0 && p >= w.next_player_id && *s != ZombieState::Dead) {
-            return Err(corrupt("a zombie hunts a player that never existed"));
-        }
-        w.zombies = z;
+        save_check::validate(&w)?;
 
         // Derived state, as the end of a tick leaves it.
         let (states, tier) = (&w.zombies.state, &w.zombies.tier);
@@ -711,7 +751,7 @@ impl World {
         }
         // No tick has run since: only the tier counts are known.
         [w.stats.active, w.stats.near, w.stats.virtual_] = w.tier_counts();
-        Ok(w)
+        Ok(Loaded { world: w, notes })
     }
 }
 
@@ -955,22 +995,18 @@ mod tests {
     fn changed_content_is_reported() {
         let w = world(10);
         let bytes = w.save();
-        // A weapon's numbers changed.
+        // A weapon's numbers changed: loads, with a note (more in `save_check`'s tests).
         let mut changed = content();
         changed.weapons[0].range += 0.1;
-        let err = World::load(&bytes, &changed).err().unwrap();
-        assert!(matches!(&err, LoadError::ContentChanged(what) if what.len() == 1 && what[0].contains("weapons")), "{err}");
-        // A weapon removed.
-        let mut fewer = content();
-        let gone = fewer.weapons.remove(0).id;
-        let err = World::load(&bytes, &fewer).err().unwrap().to_string();
-        assert!(err.contains("weapons") && err.contains(&gone), "{err}");
-        // Templates and population.
+        let loaded = World::load_with(&bytes, &changed, LoadOptions::default()).unwrap();
+        assert!(loaded.notes.len() == 1 && loaded.notes[0].contains("weapons"), "{:?}", loaded.notes);
+        // Templates that change the map don't load (unless forced); population changes do.
         let mut other = content();
         other.templates.truncate(1);
         other.population.scale = 2.0;
         let err = World::load(&bytes, &other).err().unwrap();
-        assert!(matches!(&err, LoadError::ContentChanged(what) if what.len() == 2), "{err}");
+        assert!(matches!(&err, LoadError::ContentChanged(what) if what.len() == 1 && what[0].contains("templates")), "{err}");
+        assert!(err.forceable());
         // Settings that aren't content (seed, size, tunings) come from the save, whatever is passed.
         let mut settings = content();
         settings.generation.seed = 99;

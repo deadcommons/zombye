@@ -13,8 +13,8 @@ Work is tracked on GitHub, not in the repo: the
 
 | Path | What | Licence |
 |---|---|---|
-| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), weapons and ground items (`items.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), saving and loading the world to and from bytes (`save.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
-| `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), content loading (`content.rs`), save files on disk (`save_file.rs`). | MIT OR Apache-2.0 |
+| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), weapons and ground items (`items.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
+| `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint; `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
 | `crates/client` | `zombye` Bevy client: camera, chunk streaming, building/tree meshes, fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd; `survivor.rs` skinned, CPU-posed players), hit feedback (`fx.rs`), ground items (`items_render.rs`), HUD, `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
 | `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/weapons.ron`, `data/population.ron`), later generated models/textures/audio. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
@@ -60,7 +60,7 @@ cargo run -p zombye-client --release -- --render-to shot.png --load saves/autosa
 cargo test --release --workspace
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --player ID --data DIR --quicksave-after SECS --quickload-after SECS --render-to PATH --size WxH --center X,Y`
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --render-to PATH --size WxH --center X,Y`
 (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost).
@@ -100,9 +100,11 @@ every zombie heads for a debug goal (all stay active); `--players N` puts player
 forest on a big map) running in circles with a 60 m noise every 10 s, `--horde N` spawns N more zombies round the
 first, and the report adds tier counts, per-tier ms/tick and a population line (total target, attractors, respawned);
 `--save-bench` adds a line timing a save and a load of the world at the end. Saves (server, both modes): `--save PATH`
-loads that save if it exists (the world options are then ignored; content must match, see Saves) or makes a new world
+loads that save if it exists (the world options are then ignored; content must fit, see Saves; `--load-anyway` loads it
+when it doesn't) or makes a new world
 and saves it there, then autosaves to it every `--autosave-mins N` minutes of real time (default 5, fractions allowed,
-0 = off) when something changed, and on shutdown (stdin closed, Ctrl-C or SIGTERM; bench: at the end of the run).
+0 = off) when something changed, and on shutdown (stdin closed, Ctrl-C, SIGTERM or SIGHUP, on Windows also closing the
+console; a second Ctrl-C stops at once, unsaved; bench: at the end of the run).
 `--saves DIR` is the folder for named saves (MCP `save`/`load`/`saves`; default the `--save` file's folder, else `saves`).
 The client prints one stats line per second to stdout (time, room, stance, hp, endurance, fps, frame ms, zombies
 sent to it, chasing, zombies per tier active/near/virtual, sim tick ms).
@@ -110,15 +112,18 @@ In game: WASD move, Shift run, C sneak (toggle), mouse to face, left mouse attac
 punch), Space shove (or stomp, when a downed zombie lies right in front of you), E pick up the weapon you
 face, F open/close the door or window you face, G smash the window you face, R get up again after dying,
 T skip an hour, Z spawn zombies, wheel zoom, F5 quicksave, F9 quickload. Walk into an open or broken window to climb
-through it. Quitting (closing the window, or `--exit-after`) autosaves.
+through it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
+not Bevy's handler; a second Ctrl-C quits unsaved) autosaves; `--render-to` never does.
 
 Saves in the client: `quicksave.zsave` (F5) and `autosave.zsave` (on quit) in the saves folder (`--saves DIR`,
 default `saves/` in the working directory, git-ignored; point it elsewhere when testing). `--load NAME|PATH` starts
 from a save (a name in the saves folder, e.g. `--load autosave`, or a path): its own seed, map and players, so the
-world options and `--fight-demo`/`--siege` don't apply. F9 swaps the quicksave into the running game like a rejoin:
+world options and `--fight-demo`/`--siege` don't apply; `--load-anyway` loads one whose game data changed in a way it
+can't simply take, for `--load` and F9 alike, with no prompt. F9 swaps the quicksave into the running game like a rejoin:
 the doors, windows and cracks that differ arrive as edge changes, the player's prediction restarts from the loaded
-state (unconfirmed inputs dropped), zombies and items follow from the first snapshot, and the life's kill/time tally
-restarts. A quicksave of another map (seed or size) is refused with a message: start with `--load` for that.
+state (unconfirmed inputs dropped), zombies and items follow from the first snapshot, the life's kill/time tally
+starts again at zero from the loaded tick (a save records neither kills nor when a life began; a dead player stays dead),
+and blood splats and particles are cleared (`fx::ClearFx`): they belong to the timeline left behind. A quicksave of another map (seed or size) is refused with a message: start with `--load` for that.
 `--quicksave-after SECS` / `--quickload-after SECS` press F5 / F9 by themselves, for verification. A yellow line
 under the HUD says what was saved or loaded (or why not), and stdout gets the same line.
 
@@ -397,8 +402,17 @@ over the old one: a crash mid-write leaves the previous save whole).
   (`LoadError::MapChanged` if the generator changed). After `World::map_changed` (a hand-edited map: tests,
   editors) the whole map is stored instead.
 - **Content vs settings.** The caller passes content (templates, weapons, population, as for `World::new`); the save
-  keeps a fingerprint of each (`save::ContentPrint`, hashes plus ids) and loading against different content fails
-  with `LoadError::ContentChanged` saying what changed (weapons are named by index, templates make the map). The
+  keeps a fingerprint of each (`save::ContentPrint`, hashes plus ids). `World::load_with(bytes, content, LoadOptions)`
+  returns `Loaded { world, notes }`, and `save_check::plan_content` sorts changed content. Compatible, loaded with a
+  note: a weapon's numbers (the new ones apply), weapons added, reordered or removed when the save uses none of the
+  removed ones (saved weapon indices are matched up by id), `population.ron` (respawn and migration settings apply;
+  regions keep their saved targets), templates that leave the generated map the same, and any template change for a
+  save that stores its map whole. Incompatible, `LoadError::ContentChanged` (`MapChanged` if only the generator
+  changed): templates that change the map, a removed weapon the save uses. `LoadOptions { force: true }` (server
+  `--load-anyway`, MCP `load {force: true}`, client `--load-anyway`) loads those anyway and notes what it did: items of a
+  missing weapon dropped, hands emptied, swings called off; on a new map only the door/window edits that still fit,
+  damage only on edges that are still doors or windows, players and zombies on now-blocked tiles moved to free ground,
+  flow fields rebuilt as asked for. `World::load` is `load_with` without force, dropping the notes. The
   rest of `WorldConfig` (seed, map size, zombie count, start hour, day length, `ZombieTuning`, `CombatTuning`,
   `TierTuning`) is the save's own, stored as RON so a tuning field added later just takes its default.
 - **Format** (`save.rs` docs): `ZOMBYSAV`, a `u32` format version (1), then sections (4-byte tag, `u32` length,
@@ -407,8 +421,17 @@ over the old one: a crash mid-write leaves the previous save whole).
   zombies), one `ZOMB` per 64 m region (the tiers' region grid; zombies column by column, ids as gaps), `END`.
   Per-region zombie sections are there so a later streaming save (#3, #22) can rewrite only what changed. Errors are
   `LoadError` values, never panics: `NotASave`, `Version` (older or newer), `Truncated`, `Corrupt` (bad checksum,
-  undecodable or inconsistent data), `ContentChanged`, `MapChanged`. No SQLite: a world is one file and its metadata
-  is the info section.
+  undecodable or inconsistent data), `ContentChanged`, `MapChanged`, `Invalid` (below). No SQLite: a world is one file
+  and its metadata is the info section.
+- **Validation** (`save_check::validate`, `check_settings`, `zombie_region`): a save with good checksums can still be
+  crafted, so values are checked before the world is used, and anything a tick couldn't have made is
+  `LoadError::Invalid` naming the field: non-finite numbers (and, in the settings, ones over 1e6), positions off the
+  map, zombie speeds or velocities over 50 m/s, zero, repeated, out-of-order or too-new ids, indices out of range
+  (weapons, upper-floor rooms, spawn building, hunted players, zombie regions, edge sides), damage on an edge with no
+  hit points, negative HP, a living player or zombie with no HP, a dead one with HP or an action under way, a lunge or
+  strike off the active tier, a map edit that makes a door or window of something else. The tests mutate a valid world
+  and save it (every checksum right) for each case, forge sections, and fuzz section bytes with fixed-up checksums
+  (each load fails cleanly or gives a world that steps).
 - **Size and speed** (M-series Mac, release, `--save-bench`): the default map with ~980 zombies is about 89 KB, saved
   in ~1-6 ms, loaded in ~22 ms; the 1 km map with 22,500 zombies (21,500 + a 1,000 horde on a player) is 2.0 MB
   (~87 bytes a zombie), saved in ~14 ms and loaded in ~200 ms, nearly all of that regenerating the map.
@@ -442,9 +465,10 @@ first; steps until the action has landed and the player can act again, and repor
 (debug; a loud one leaves an attractor, `lasting: true` a 30-minute one), `regions` (ASCII heat maps per 64 m region of
 living zombies and of their targets, the attractors' pull with players marked, and zones; the attractors with reach,
 spread, strength and time left; the regions furthest below and above target), `set_goal` (debug: zombies head for a point, senses off), `spawn_zombies`, `skip_time`,
-`buildings`, `save {name}` (to `name` in the saves folder, or with no name to the `--save` file), `load {name}`
-(replaces the world; with no name, the `--save` file; refused, world untouched, if the file is damaged, of another
-format or made with other content), `saves` (the saves folder: size, age, tick, time, seed, map size, zombies,
+`buildings`, `save {name}` (to `name` in the saves folder, or with no name to the `--save` file), `load {name, force}`
+(replaces the world; with no name, the `--save` file; refused, world untouched, if the file is damaged, holds impossible
+values or is of another format; changed game data loads with a note when compatible, else is refused unless
+`force: true`, which loads it anyway and notes what it changed), `saves` (the saves folder: size, age, tick, time, seed, map size, zombies,
 players; and where this session autosaves), `stats` (players with HP/weapon/dead, time of day and daylight, zombies by state
 including staggered/down/dead and by tier (`zombie_tiers`: active/near/virtual, last tick's promotions and
 demotions, the ranges), `population` (target vs alive, attractors, whether migration and respawn are on, respawned), weapons on the floor, tick timing (tier pass, senses, flow, active, near, virtual), thumps, hits and sounds heard last

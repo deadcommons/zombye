@@ -16,8 +16,10 @@
 //! `--autoplay` (the player fights by itself) `--fight-demo` (a bat and a few zombies close by)
 //! `--siege` (outside your house with a bat, zombies battering its door) `--sneak` (start sneaking)
 //! `--map-chunks N` (a square map N × N chunks of 16 m; default 20) `--saves DIR` (where saves go;
-//! default `saves`) `--load NAME|PATH` (start from a save). F5 quicksaves, F9 quickloads, and
-//! quitting autosaves (`autosave` in the saves folder); `--quicksave-after SECS` and
+//! default `saves`) `--load NAME|PATH` (start from a save; `--load-anyway` loads one whose game data
+//! changed in a way it can't simply take, dropping what no longer fits). F5 quicksaves, F9
+//! quickloads, and quitting (closing the window, Ctrl-C or SIGTERM in the terminal) autosaves
+//! (`autosave` in the saves folder); `--quicksave-after SECS` and
 //! `--quickload-after SECS` do F5 / F9 by themselves, for verification. `--angle N` starts at
 //! one of the four fixed camera angles (0..3), `--player ID` plays as that player of a loaded
 //! save, `--data DIR` reads game data from another folder.
@@ -84,6 +86,9 @@ pub struct Options {
     pub saves: std::path::PathBuf,
     /// Start from this save, by name in the saves folder or by path (`--load`).
     pub load: Option<String>,
+    /// Load `--load`'s save (and F9's quicksave) even when the game data changed in a way it can't
+    /// simply take, dropping what no longer fits (`--load-anyway`); no prompt.
+    pub load_anyway: bool,
     /// Verification: quicksave / quickload this many seconds in, as if F5 / F9 were pressed
     /// (`--quicksave-after`, `--quickload-after`).
     pub quicksave_after: Option<f32>,
@@ -151,6 +156,7 @@ impl Options {
             map_chunks: value("--map-chunks").and_then(|v| v.parse().ok()).filter(|n: &i32| (1..=256).contains(n)),
             saves: value("--saves").map(Into::into).unwrap_or_else(|| zombye_net::save_file::DEFAULT_DIR.into()),
             load: value("--load"),
+            load_anyway: flag("--load-anyway"),
             quicksave_after: value("--quicksave-after").and_then(|v| v.parse().ok()),
             quickload_after: value("--quickload-after").and_then(|v| v.parse().ok()),
             angle: value("--angle").and_then(|v| v.parse::<i32>().ok()).unwrap_or(0).rem_euclid(4),
@@ -160,6 +166,11 @@ impl Options {
             size: value("--size").and_then(|v| parse_size(&v)).unwrap_or(DEFAULT_RENDER_SIZE),
             center: value("--center").and_then(|v| parse_point(&v)),
         }
+    }
+
+    /// How to load saves (`--load-anyway`).
+    pub fn load_options(&self) -> zombye_sim::LoadOptions {
+        zombye_sim::LoadOptions { force: self.load_anyway }
     }
 
     /// Rendering one frame offscreen (`--render-to`) rather than playing in a window.
@@ -174,8 +185,28 @@ pub fn live(options: Res<Options>) -> bool {
     !options.offscreen()
 }
 
+/// Ctrl-C, SIGTERM or SIGHUP in the terminal (`zombye_net::shutdown`): quit as if the window was
+/// closed, so `saving.rs` autosaves. (Our own handler rather than Bevy's `TerminalCtrlCHandlerPlugin`,
+/// whose `ctrlc` gives up on every signal when one was ignored at start, and has no SIGTERM.)
+fn exit_on_signal(mut exit: MessageWriter<AppExit>, mut sent: Local<bool>) {
+    if !*sent && zombye_net::shutdown::requested() {
+        *sent = true;
+        println!("Interrupted: quitting");
+        exit.write(AppExit::from_code(130));
+    }
+}
+
 fn main() {
     let options = Options::from_args();
+    zombye_net::shutdown::install();
+    // Wake the window's event loop when a signal comes in while it idles (unfocused), as Bevy's own
+    // handler would; the loop then runs `exit_on_signal`.
+    std::thread::spawn(|| {
+        while !zombye_net::shutdown::requested() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        bevy::app::TerminalCtrlCHandlerPlugin::gracefully_exit();
+    });
     let assets = AssetPlugin { file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets").into(), ..default() };
     let plugins = if options.offscreen() {
         // No window, ever: no primary window, no winit (on macOS it would make this a foreground
@@ -187,6 +218,7 @@ fn main() {
             .disable::<bevy::winit::WinitPlugin>()
             .disable::<bevy::audio::AudioPlugin>()
             .disable::<bevy::gilrs::GilrsPlugin>()
+            .disable::<bevy::app::TerminalCtrlCHandlerPlugin>()
     } else {
         DefaultPlugins
             .set(WindowPlugin {
@@ -199,10 +231,11 @@ fn main() {
                 ..default()
             })
             .set(assets)
+            .disable::<bevy::app::TerminalCtrlCHandlerPlugin>()
     };
     let offscreen = options.offscreen();
     let mut app = App::new();
-    app.insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06))).add_plugins(plugins).insert_resource(options);
+    app.insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06))).add_plugins(plugins).insert_resource(options).add_systems(First, exit_on_signal);
     if offscreen {
         app.add_plugins((ScheduleRunnerPlugin::run_loop(Duration::ZERO), offscreen::OffscreenPlugin));
     }

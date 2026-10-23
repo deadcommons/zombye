@@ -1,5 +1,5 @@
 //! Save files on disk. The sim turns a world into bytes and back ([`World::save`],
-//! [`World::load`]); this module does the I/O: atomic writes into a saves folder, listing the
+//! [`World::load_with`]); this module does the I/O: atomic writes into a saves folder, listing the
 //! saves there (from each file's small info section) and loading one.
 //!
 //! A save is one `.zsave` file (format in `zombye_sim::save`). Writes go to a temporary file in the
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
 
 use zombye_sim::save::{EXTENSION, read_info};
-use zombye_sim::{SaveInfo, World, WorldConfig};
+use zombye_sim::{LoadOptions, Loaded, SaveInfo, World, WorldConfig};
 
 /// The saves folder used when none is given (relative to the working directory).
 pub const DEFAULT_DIR: &str = "saves";
@@ -92,13 +92,41 @@ pub fn save(world: &World, path: &Path) -> Result<Saved, String> {
     Ok(Saved { path: path.to_path_buf(), bytes: bytes.len(), encode_ms, write_ms: start.elapsed().as_secs_f32() * 1000.0 })
 }
 
+/// Why [`load`] failed: the message, and whether loading anyway ([`LoadOptions::force`]) might
+/// work (the content or the map changed).
+#[derive(Clone, Debug)]
+pub struct LoadFailed {
+    pub message: String,
+    pub forceable: bool,
+}
+
+impl LoadFailed {
+    /// The message, plus how to load anyway (`how`, e.g. "--load-anyway") when that might work.
+    pub fn hint(self, how: &str) -> String {
+        if self.forceable { format!("{} ({how} loads it anyway, dropping what no longer fits)", self.message) } else { self.message }
+    }
+}
+
+impl std::fmt::Display for LoadFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl From<LoadFailed> for String {
+    fn from(e: LoadFailed) -> String {
+        e.message
+    }
+}
+
 /// Load the save at `path`, with `content` supplying the building templates, weapons and population
-/// settings (see [`World::load`]). Returns the world and how long loading took (ms).
-pub fn load(path: &Path, content: &WorldConfig) -> Result<(World, f32), String> {
-    let bytes = fs::read(path).map_err(|e| format!("couldn't read {}: {e}", path.display()))?;
+/// settings (see [`World::load_with`]). Returns the world with what loading had to say about changed
+/// content ([`Loaded::notes`]), and how long loading took (ms).
+pub fn load(path: &Path, content: &WorldConfig, options: LoadOptions) -> Result<(Loaded, f32), LoadFailed> {
+    let bytes = fs::read(path).map_err(|e| LoadFailed { message: format!("couldn't read {}: {e}", path.display()), forceable: false })?;
     let start = Instant::now();
-    let world = World::load(&bytes, content).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok((world, start.elapsed().as_secs_f32() * 1000.0))
+    let loaded = World::load_with(&bytes, content, options).map_err(|e| LoadFailed { message: format!("{}: {e}", path.display()), forceable: e.forceable() })?;
+    Ok((loaded, start.elapsed().as_secs_f32() * 1000.0))
 }
 
 /// One save in a folder.
@@ -203,9 +231,18 @@ mod tests {
         let one = listed.iter().find(|e| e.name == "one").unwrap();
         assert_eq!(one.info.as_ref().unwrap().tick, 21);
         assert!(listed.iter().find(|e| e.name == "junk").unwrap().info.is_err());
-        let (loaded, _) = load(&path, &config()).unwrap();
-        assert_eq!(loaded.state_hash(), world.state_hash());
-        assert!(load(&dir.join("junk.zsave"), &config()).err().unwrap().contains("not a Zombye save"));
+        let (loaded, _) = load(&path, &config(), LoadOptions::default()).unwrap();
+        assert_eq!(loaded.world.state_hash(), world.state_hash());
+        assert!(loaded.notes.is_empty());
+        let junk = load(&dir.join("junk.zsave"), &config(), LoadOptions::default()).err().unwrap();
+        assert!(junk.message.contains("not a Zombye save") && !junk.forceable);
+        // Other content: refused, with a way to load anyway.
+        let mut other = config();
+        other.templates.truncate(1);
+        let changed = load(&path, &other, LoadOptions::default()).err().unwrap();
+        assert!(changed.forceable);
+        assert!(changed.hint("--load-anyway").ends_with("(--load-anyway loads it anyway, dropping what no longer fits)"));
+        assert!(load(&path, &other, LoadOptions { force: true }).is_ok());
         assert!(list(&dir.join("missing")).unwrap().is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
