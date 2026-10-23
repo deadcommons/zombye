@@ -1,0 +1,14 @@
+// Asset spec (tools/blender/zasset.py reads it; .claude/skills/blender-assets/SKILL.md).
+// footprint: tiles, width (x) × depth (y) facing south; size: metres, x × y × z of the model.
+AssetSpec(
+    id: "coffee_table",
+    category: Furniture,
+    name: "Coffee table",
+    footprint: (1, 1),
+    size: (0.8, 0.5, 0.42),
+    against_wall: false,
+    tris: 400,
+    texture: None,
+    style: "Oak top on four legs, a lower shelf with a magazine, a shallow drawer under the top.",
+    description: "A low living-room table with a drawer.",
+)

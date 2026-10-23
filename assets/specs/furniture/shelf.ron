@@ -1,0 +1,14 @@
+// Asset spec (tools/blender/zasset.py reads it; .claude/skills/blender-assets/SKILL.md).
+// footprint: tiles, width (x) × depth (y) facing south; size: metres, x × y × z of the model.
+AssetSpec(
+    id: "shelf",
+    category: Furniture,
+    name: "Shelving unit",
+    footprint: (1, 1),
+    size: (0.84, 0.38, 1.8),
+    against_wall: true,
+    tris: 700,
+    texture: None,
+    style: "Grey steel utility shelving: four corner posts, four shelves, with cardboard boxes, detergent bottles and a paint can on them.",
+    description: "Metal shelves in a laundry or garage.",
+)

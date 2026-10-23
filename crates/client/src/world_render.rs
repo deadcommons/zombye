@@ -13,6 +13,7 @@ use zombye_sim::map::{Building, CHUNK_SIZE, Edge, Feature, OwnedEdge, RoofStyle,
 
 use crate::Options;
 use crate::camera::IsoCamera;
+use crate::furniture_models::FurnitureModels;
 use crate::materials::{self, WorldMaterials};
 use crate::meshgen::{self, CutKind, CutTag, MeshBuilder, add_blob, add_cone, add_furniture, add_prism, floor_color, hash01, rgb, shade};
 use crate::player::Player;
@@ -52,6 +53,8 @@ struct SharedMeshes {
     /// Damage overlays per stage (see [`crack_stage`]), in the leaf's and the pane's own frames.
     door_cracks: [Handle<Mesh>; CRACK_STAGES],
     pane_cracks: [Handle<Mesh>; CRACK_STAGES],
+    /// Blender-built furniture, drawn instead of the grey-box shapes where there is a model.
+    furniture: FurnitureModels,
 }
 
 /// The crack overlay drawn on a door leaf or window pane (a child entity, so it swings and slides
@@ -112,7 +115,7 @@ impl Plugin for WorldRenderPlugin {
     }
 }
 
-fn setup_shared(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
+fn setup_shared(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, options: Res<Options>) {
     // Door leaf with its hinge at the origin, lying along +x.
     let mut mb = MeshBuilder::default();
     mb.set_tag(CutTag { kind: CutKind::Structure, ..default() });
@@ -147,7 +150,14 @@ fn setup_shared(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
     let shards = meshes.add(mb.build());
     let door_cracks = std::array::from_fn(|k| meshes.add(crack_mesh(true, k)));
     let pane_cracks = std::array::from_fn(|k| meshes.add(crack_mesh(false, k)));
-    commands.insert_resource(SharedMeshes { door, pane, shards, door_cracks, pane_cracks });
+    // Models live beside the game data: `<data>/../models/furniture` (assets/models/furniture).
+    let mut furniture = FurnitureModels::load(&options.data.join("../models/furniture"));
+    // Models still in the works, checked in game before they're promoted (see furniture_models.rs).
+    for dir in std::env::var("ZOMBYE_EXTRA_MODELS").unwrap_or_default().split(':').filter(|d| !d.is_empty()) {
+        furniture.extend(FurnitureModels::load(std::path::Path::new(dir)));
+    }
+    info!("{} furniture models", furniture.len());
+    commands.insert_resource(SharedMeshes { door, pane, shards, door_cracks, pane_cracks, furniture });
 }
 
 /// Grey-box damage for a door leaf (dark cracks, and pale splintered wood when it's nearly gone)
@@ -489,7 +499,10 @@ fn spawn_building(
     }
     for f in b.furniture.iter() {
         let target = if f.level == 0 { &mut lower } else { &mut upper };
-        add_furniture(target, &f.kind, f.min.as_vec2(), f.size.as_vec2(), f.facing, STOREY * f.level as f32);
+        let (min, size, base) = (f.min.as_vec2(), f.size.as_vec2(), STOREY * f.level as f32);
+        if !shared.furniture.add(target, &f.kind, min, size, f.facing, base) {
+            add_furniture(target, &f.kind, min, size, f.facing, base);
+        }
     }
     // Upper storeys: floor slabs and walls.
     for (level, t, room) in &b.upper_floors {

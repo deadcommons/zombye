@@ -12,3 +12,10 @@ docs/research/
 # Agent worktrees and their build folders
 /.claude/worktrees/
 /target-*/
+
+# Python bytecode (tools/blender runs inside Blender)
+__pycache__/
+*.blend1
+
+# Raw Meshy downloads (never committed; what ships goes through Blender into assets/)
+/meshy_output/

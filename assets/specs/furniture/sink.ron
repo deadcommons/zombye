@@ -1,0 +1,14 @@
+// Asset spec (tools/blender/zasset.py reads it; .claude/skills/blender-assets/SKILL.md).
+// footprint: tiles, width (x) × depth (y) facing south; size: metres, x × y × z of the model.
+AssetSpec(
+    id: "sink",
+    category: Furniture,
+    name: "Bathroom sink",
+    footprint: (1, 1),
+    size: (0.72, 0.52, 0.98),
+    against_wall: true,
+    tris: 500,
+    texture: None,
+    style: "Oak vanity cabinet with one door, almond laminate top with a porcelain basin sunk into it, chrome tap. Elsewhere it's an under-sink cupboard; same model.",
+    description: "A vanity unit with a basin.",
+)

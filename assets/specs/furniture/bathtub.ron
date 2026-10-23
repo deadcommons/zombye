@@ -1,0 +1,14 @@
+// Asset spec (tools/blender/zasset.py reads it; .claude/skills/blender-assets/SKILL.md).
+// footprint: tiles, width (x) × depth (y) facing south; size: metres, x × y × z of the model.
+AssetSpec(
+    id: "bathtub",
+    category: Furniture,
+    name: "Bathtub",
+    footprint: (2, 1),
+    size: (1.7, 0.74, 0.62),
+    against_wall: true,
+    tris: 500,
+    texture: None,
+    style: "Off-white porcelain tub with a visible inside and a thin rim, long side against the wall, chrome tap at one end. The hollow must show from above.",
+    description: "A built-in bathtub along a bathroom wall.",
+)

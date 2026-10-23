@@ -16,8 +16,9 @@ Work is tracked on GitHub, not in the repo: the
 | `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint; `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
-| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building/tree meshes, fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd; `survivor.rs` skinned, CPU-posed players), hit feedback (`fx.rs`), ground items (`items_render.rs`), HUD, `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
-| `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/containers.ron`, `data/population.ron`), later generated models/textures/audio. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
+| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building/tree meshes, fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd; `survivor.rs` skinned, CPU-posed players), hit feedback (`fx.rs`), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), HUD, `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
+| `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/containers.ron`, `data/population.ron`), models (`models/furniture/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), later textures/audio. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
+| `tools/blender/` | Python to build assets: run inside Blender, mesh builder, palette, renders, validation, GLB export (`zasset.py`, `palette.py`, `build.py`), character clean-up, validation and skinned export (`zchar.py`), VAT bake for the crowd (`zvat.py`); plain Python, art-repo work folders and promotion (`artrepo.py`). | MIT OR Apache-2.0 |
 | `docs/` | Plan and design docs. | — |
 
 ## Rules
@@ -42,6 +43,19 @@ Work is tracked on GitHub, not in the repo: the
 7. **Data over code** for anything a modder would want to change (items, weapons, recipes, loot,
    building templates), once those systems exist.
 
+## Assets built in Blender
+
+Models (furniture, props, later characters) are built in Blender over the Blender MCP from a spec and
+a build script, validated, rendered from the four game angles and exported to GLB: follow the
+**[blender-assets skill](.claude/skills/blender-assets/SKILL.md)**. Work in progress lives in the private
+art repo (deadcommons/zombye-art); an asset comes here only when it's finished, promoted with
+`tools/blender/artrepo.py` (the pipeline code itself lives here). `ZOMBYE_EXTRA_MODELS=DIR[:DIR]` makes the
+client draw work-in-progress GLBs to check them in game. Walls, floors, roofs, roads and terrain stay
+code-generated. Characters and other detailed assets start in Meshy (reference image, image-to-3D, rig,
+animations) and are cleaned up in Blender with `tools/blender/zchar.py` and baked for the crowd with
+`zvat.py`: follow the **[meshy-assets skill](.claude/skills/meshy-assets/SKILL.md)** (paid credits, its
+rules first).
+
 ## Commands
 
 ```bash
@@ -58,6 +72,8 @@ cargo run -p zombye-client --release -- --fight-demo --autoplay --zoom 9 --scree
 cargo run -p zombye-client --release -- --render-to shot.png --load saves/autosave.zsave --size 1280x720 --angle 1 --zoom 30
 # Tests: the offscreen render test needs a GPU; it skips itself if there is none, or set ZOMBYE_SKIP_GPU_TESTS=1
 cargo test --release --workspace
+# Rebuild, validate, render and export every furniture model (Blender 5.x; see the blender-assets skill)
+/Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
 Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --render-to PATH --size WxH --center X,Y --inventory --god --ignored`

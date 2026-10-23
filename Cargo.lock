@@ -6545,6 +6545,9 @@ name = "zombye-client"
 version = "0.0.1"
 dependencies = [
  "bevy",
+ "gltf",
+ "serde",
+ "serde_json",
  "zombye-net",
  "zombye-sim",
 ]
