@@ -307,6 +307,13 @@ fn actions(
         }
         return;
     }
+    // B lies down to sleep or gets up; asleep, setting off (WASD) gets up too (#11). Anything
+    // else done asleep gets up on the server.
+    let asleep = link.curr.players.iter().any(|p| p.id == me.id && p.asleep);
+    let moving = keys.any_just_pressed([KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD]);
+    if keys.just_pressed(KeyCode::KeyB) || (asleep && moving) {
+        link.send(Intent::Sleep { player: me.id, sleep: !asleep });
+    }
     if mouse.just_pressed(MouseButton::Left) && !panel.open {
         link.send(Intent::Attack { player: me.id });
     }

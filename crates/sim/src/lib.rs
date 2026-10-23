@@ -16,6 +16,7 @@ pub mod inventory;
 pub mod items;
 pub mod map;
 pub mod nav;
+pub mod needs;
 pub mod players;
 pub mod population;
 pub mod rng;
@@ -38,6 +39,7 @@ pub use inventory::{Burden, Carry, CarryTuning, Inventory, ItemJob, ItemNote, Jo
 pub use items::{GroundItem, ItemCategory, ItemDef, ItemStack, WeaponCategory, WeaponDef};
 pub use flow::FlowField;
 pub use map::TileMap;
+pub use needs::{Freshness, Needs, NeedsTuning, NeedsView, SleepSpot, StatusInput, StatusTag, TagKind, WakeReason};
 pub use players::{Action, ActionKind, DevFlags, MoveMods, Player, PlayerInput, PlayerState, Stance};
 pub use population::{Attractor, PopulationDef, Zone};
 pub use template::BuildingTemplate;

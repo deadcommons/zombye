@@ -279,7 +279,7 @@ impl World {
     fn request_action(&mut self, id: u32, kind: ActionKind) -> bool {
         let buffer = self.config.combat.action_buffer_secs;
         let Some(pi) = self.players.iter().position(|p| p.id == id) else { return false };
-        if self.players[pi].dead {
+        if self.players[pi].dead || self.players[pi].needs.asleep() {
             return false;
         }
         // Fighting drops whatever you were doing with your things.
@@ -310,9 +310,11 @@ impl World {
         // A heavy load makes every action more tiring.
         let cost = if self.carry(&self.players[pi]).burden >= crate::inventory::Burden::Heavy { cost * self.config.carry.heavy_action_cost } else { cost };
         // Wounded arms and hands swing weaker and slower.
+        // So do hunger, tiredness and pain (#11), and swinging makes you thirsty.
         let (arm_power, arm_time) = if kind == ActionKind::Swing {
             let e = self.health_effects(pi);
-            (e.swing_power, e.swing_time)
+            let (power, time) = self.needs_swing(pi);
+            (e.swing_power * power, e.swing_time * time)
         } else {
             (1.0, 1.0)
         };

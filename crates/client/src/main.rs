@@ -42,6 +42,7 @@ mod inventory_ui;
 mod items_render;
 mod materials;
 mod meshgen;
+mod needs_ui;
 mod offscreen;
 mod player;
 mod rig;
@@ -262,7 +263,7 @@ fn main() {
             camera::IsoCameraPlugin,
             zombie_render::ZombieRenderPlugin,
             items_render::ItemsRenderPlugin,
-            (hud::HudPlugin, inventory_ui::InventoryUiPlugin, health_ui::HealthUiPlugin),
+            (hud::HudPlugin, inventory_ui::InventoryUiPlugin, health_ui::HealthUiPlugin, needs_ui::NeedsUiPlugin),
             fx::FxPlugin,
             survivor::SurvivorPlugin,
             autoplay::AutoplayPlugin,

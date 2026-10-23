@@ -195,9 +195,22 @@ fn keep_note(time: Res<Time>, notes: Res<ItemNotesThisFrame>, panel: Res<Invento
     c.0 = if last.ok { OK } else { NO };
 }
 
-fn name_of(items: &[ItemDef], s: &ItemStack) -> String {
-    let name = items.get(s.item as usize).map_or("?", |d| d.name.as_str());
-    if s.count > 1 { format!("{name} x{}", s.count) } else { name.to_string() }
+/// "Loaf of bread x2 (stale, 2/3 left)": the name, how many, and for food and drink how fresh it
+/// is at game minute `now` and the goes left of the top one (#11).
+fn name_of(items: &[ItemDef], now: i32, s: &ItemStack) -> String {
+    let Some(def) = items.get(s.item as usize) else { return "?".into() };
+    let mut out = if s.count > 1 { format!("{} x{}", def.name, s.count) } else { def.name.clone() };
+    let mut notes = Vec::new();
+    if let Some(f) = zombye_sim::needs::freshness(def, s, now).filter(|f| *f != zombye_sim::Freshness::Fresh) {
+        notes.push(f.name().to_string());
+    }
+    if let Some(c) = def.consumable().filter(|_| s.used > 0) {
+        notes.push(format!("{}/{} left", c.uses - s.used, c.uses));
+    }
+    if !notes.is_empty() {
+        out.push_str(&format!(" ({})", notes.join(", ")));
+    }
+    out
 }
 
 fn stack_kg(items: &[ItemDef], s: &ItemStack) -> f32 {
@@ -302,7 +315,9 @@ fn rebuild(
     floor.retain(|(id, s)| flight.asked_for(Place::Ground, *id, s.item) < s.count as u32);
     let busy = link.curr.players.iter().find(|p| p.id == me.id).map_or((0.0, 0), |p| (p.busy, p.jobs));
     let note_fresh = time.elapsed_secs() - last.at < NOTE_SECS * 2.0;
-    let signature = format!("{view:?}|{floor:?}|{:.1}|{}|{}|{}|{:?}", busy.0, busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked);
+    // (The game hour too: food goes off as time passes.)
+    let now = link.curr.game_minute;
+    let signature = format!("{view:?}|{floor:?}|{:.1}|{}|{}|{}|{:?}|{}", busy.0, busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, now / 60);
     if shown.0 == signature {
         return;
     }
@@ -319,12 +334,12 @@ fn rebuild(
                 let inv = &v.inventory;
                 for (label, slot) in [("Hand", Slot::Hand), ("Other hand", Slot::OffHand), ("Back", Slot::Back), ("Shoulder", Slot::Shoulder)] {
                     match inv.slot(slot) {
-                        Some(s) => row(col, format!("{label}: {}{}", name_of(items, &s), moving(&flight, Place::Slot(slot), 0, &s)), format!("{:.1} kg", stack_kg(items, &s)), RowAction { stack: s, left: Some((Place::Slot(slot), 0, Place::Carried)), right: None }),
+                        Some(s) => row(col, format!("{label}: {}{}", name_of(items, now, &s), moving(&flight, Place::Slot(slot), 0, &s)), format!("{:.1} kg", stack_kg(items, &s)), RowAction { stack: s, left: Some((Place::Slot(slot), 0, Place::Carried)), right: None }),
                         None => dim(col, format!("{label}: -")),
                     }
                 }
                 for (k, s) in inv.worn.iter().enumerate() {
-                    row(col, format!("Worn: {}{}", name_of(items, s), moving(&flight, Place::Worn, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Worn, k as u32, Place::Carried)), right: None });
+                    row(col, format!("Worn: {}{}", name_of(items, now, s), moving(&flight, Place::Worn, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Worn, k as u32, Place::Carried)), right: None });
                 }
                 dim(col, format!("Carried ({:.1} of {:.0} L):", v.carry.used_l, v.carry.room_l));
                 if inv.carried.is_empty() {
@@ -338,7 +353,7 @@ fn rebuild(
                         ItemCategory::Clothing => Intent::Wear { player: me.id, index: k as u32 },
                         _ => Intent::Equip { player: me.id, index: k as u32 },
                     });
-                    row(col, format!("  {}{}", name_of(items, s), moving(&flight, Place::Carried, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Carried, k as u32, to)), right });
+                    row(col, format!("  {}{}", name_of(items, now, s), moving(&flight, Place::Carried, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Carried, k as u32, to)), right });
                 }
             });
             // The open container.
@@ -349,7 +364,7 @@ fn rebuild(
                         dim(col, "empty".into());
                     }
                     for (k, s) in cv.stacks.iter().enumerate() {
-                        row(col, format!("{}{}", name_of(items, s), moving(&flight, Place::Container(cv.id), k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Container(cv.id), k as u32, Place::Carried)), right: None });
+                        row(col, format!("{}{}", name_of(items, now, s), moving(&flight, Place::Container(cv.id), k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Container(cv.id), k as u32, Place::Carried)), right: None });
                     }
                 });
             }
@@ -359,7 +374,7 @@ fn rebuild(
                     dim(col, "nothing within reach".into());
                 }
                 for (id, s) in &floor {
-                    row(col, format!("{}{}", name_of(items, s), moving(&flight, Place::Ground, *id, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Ground, *id, Place::Carried)), right: None });
+                    row(col, format!("{}{}", name_of(items, now, s), moving(&flight, Place::Ground, *id, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Ground, *id, Place::Carried)), right: None });
                 }
                 if open.is_none() {
                     dim(col, "E: search the cupboard,".into());

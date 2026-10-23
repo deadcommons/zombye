@@ -271,6 +271,7 @@ fn update_hud(
     link: Res<ServerLink>,
     map: Res<ClientMap>,
     me: Res<LocalPlayer>,
+    join: Res<JoinInfo>,
     options: Res<Options>,
     mut stats: Local<FrameStats>,
     mut text: Query<&mut Text, With<HudText>>,
@@ -292,8 +293,15 @@ fn update_hud(
         t if t.is_empty() => t,
         t => format!(" | {t}"),
     };
+    // The status tags (#11), and time running fast while asleep.
+    let tags = match link.own(me.id) {
+        Some(v) if !me.dead => v.status_tags(&join.needs, s.endurance, s.winded, join.combat.tired_below, link.curr.time_scale),
+        _ => Vec::new(),
+    };
+    let tags = if tags.is_empty() { String::new() } else { format!(" | {}", zombye_sim::needs::tags_line(&tags)) };
+    let fast = if link.curr.time_scale > 1.0 { format!(" x{:.0}", link.curr.time_scale) } else { String::new() };
     let line = format!(
-        "{:02}:{:02} | {place} | {:?} | hp {:.0}{}{dev} | endurance {:.0}%{winded} | fps {:.0} | frame {:.2} ms (worst {:.2}) | zombies {} (chasing {}; tiers {}/{}/{}) | sim tick {:.3} ms",
+        "{:02}:{:02}{fast} | {place} | {:?} | hp {:.0}{}{dev}{tags} | endurance {:.0}%{winded} | fps {:.0} | frame {:.2} ms (worst {:.2}) | zombies {} (chasing {}; tiers {}/{}/{}) | sim tick {:.3} ms",
         hour.floor() as u32,
         ((hour - hour.floor()) * 60.0) as u32,
         s.stance,
@@ -314,7 +322,7 @@ fn update_hud(
     if let Ok(mut t) = text.single_mut() {
         let rotate = if options.rotate { ", . rotate | " } else { "" };
         t.0 = format!(
-            "{line}\nWASD move | Shift run | C sneak{} | mouse face | LMB attack | Space shove/stomp | E pick up / search | Tab inventory | H health | F door/window | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load | F1 god{} | F2 ignored{}",
+            "{line}\nWASD move | Shift run | C sneak{} | mouse face | LMB attack | Space shove/stomp | E pick up / search | Tab inventory | H health | B sleep | F door/window | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load | F1 god{} | F2 ignored{}",
             if me.sneak { " (on)" } else { "" },
             if me.dev.god { " (on)" } else { "" },
             if me.dev.ignored { " (on)" } else { "" }

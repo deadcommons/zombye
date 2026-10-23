@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use zombye_net::{Intent, apply_intent, save_file, shutdown};
 use zombye_sim::map::{Edge, EdgeRef, Feature, Floor, OwnedEdge, Side};
 use zombye_sim::senses::{self, Cone, Target};
+use zombye_sim::needs;
 use zombye_sim::vision::line_of_sight;
 use zombye_sim::{ActionKind, Dressing, HitEffect, InfectionStage, ItemStack, LoadOptions, Part, Place, Slot, TICK_DT, Tier, World, WoundKind, ZombieState};
 
@@ -356,10 +357,33 @@ fn tool_list() -> Value {
         },
         {
             "name": "use",
-            "description": "A player eats or drinks one of the stack at `from` (default carried) / `index`. (Hunger and thirst come later; \
-                for now it's used up.)",
+            "description": "A player eats or drinks one go of the stack at `from` (default carried) / `index` (2-5 s by the item; \
+                an item with several goes, like a loaf or a bottle, lasts that many). It lowers hunger and thirst by the item's amounts \
+                (see items; negative raises it). Stale food gives 70% and may poison you, mouldy 40% and usually does; food eaten with \
+                hunger under 10% does nothing for hunger; food poisoning means no eating. The reply says beforehand what it will do \
+                (freshness, waste), then what it did, with the needs before and after.",
             "inputSchema": {"type": "object", "properties": {
                 "player": {"type": "integer", "default": 1}, "from": {"type": "string", "default": "carried"}, "index": {"type": "integer", "default": 0}
+            }}
+        },
+        {
+            "name": "sleep",
+            "description": "A player lies down and sleeps (tiredness 30% or more, not in agony): on a bed (rests fastest) or a sofa \
+                within 1 m in its room, else the floor (slow, and you wake up sore). Steps the world until it wakes, and says why \
+                (rested below 5% tiredness, hit, a noise within 20 m that reaches it, a zombie seeing it, agony, an hour starving or \
+                parched; or max_hours of game time), how long it slept and its needs and HP before and after. While every player \
+                sleeps, game time runs 30x as fast (clock, needs, wounds; zombies keep real time), so a night is a minute or two \
+                of simulation.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1}, "max_hours": {"type": "number", "default": 12, "maximum": 24}
+            }}
+        },
+        {
+            "name": "set_needs",
+            "description": "Debug: set a player's hunger, thirst and tiredness (0 fine to 1 worst; leave one out to keep it). \
+                Replies with the needs and status tags.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1}, "hunger": {"type": "number"}, "thirst": {"type": "number"}, "tiredness": {"type": "number"}
             }}
         },
         {
@@ -381,6 +405,9 @@ fn tool_list() -> Value {
                 bleeds and how fast, how far healed and hours to go, dressing, festering, and what it needs next; pain, HP lost per \
                 game hour, food poisoning, the zombie infection once it shows (Feverish, then Turning; before that it is hidden and \
                 this says 'unknown'), and what the wounds do (swing power and time, walk and run speed, running, endurance recovery). \
+                Then the needs: hunger, thirst and tiredness (0-100%, with their level), asleep or not, and the status tags \
+                (Peckish/Hungry/Starving, Dry/Thirsty/Parched, Drowsy/Tired/Exhausted, Short of breath/Winded, Burdened/Heavy/\
+                Overloaded, Sore/Hurting/Agony, Bleeding xN, Queasy/Sick/Feverish/Turning, Asleep) with what each does. \
                 A game hour is 150 s of game time by default.",
             "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}}}
         },
@@ -478,7 +505,7 @@ fn tool_list() -> Value {
         },
         {
             "name": "stats",
-            "description": "Map size, tick, time of day and daylight, players (HP, weapon, dead, dev toggles god / ignored, wounds, bleeding, HP lost per game hour, pain, sick, the infection once it shows), zombie counts by state (corpses too) and by simulation tier (active / near / virtual, with the ranges and last tick's promotions and demotions), weapons on the floor, last tick timing (tier pass, senses, flow fields, active AI, near and virtual updates), sounds heard and the state hash (same seed + same calls = same hash).",
+            "description": "Map size, tick, time of day and daylight, players (HP, weapon, dead, dev toggles god / ignored, wounds, bleeding, HP lost per game hour, pain, sick, the infection once it shows, hunger / thirst / tiredness, asleep, status tags), the time scale (30 while everyone sleeps), zombie counts by state (corpses too) and by simulation tier (active / near / virtual, with the ranges and last tick's promotions and demotions), weapons on the floor, last tick timing (tier pass, senses, flow fields, active AI, near and virtual updates), sounds heard and the state hash (same seed + same calls = same hash).",
             "inputSchema": {"type": "object", "properties": {}}
         }
     ])
@@ -897,7 +924,19 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             let id = player_id();
             let from = place_arg(world, id, args.get("from").and_then(Value::as_str).unwrap_or("carried"))?;
             let index = args.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
-            run_item_tool(world, id, Intent::Use { player: id, from, index })
+            let ahead = use_preview(world, id, from, index);
+            let before = needs_line(world, id);
+            match run_item_tool(world, id, Intent::Use { player: id, from, index }) {
+                Ok(t) => Ok(format!("{ahead}{t}\nneeds before: {before}\nneeds now: {}", needs_line(world, id))),
+                Err(t) => Err(format!("{ahead}{t}")),
+            }
+        }
+        "sleep" => sleep_tool(world, player_id(), args.get("max_hours").and_then(Value::as_f64).unwrap_or(12.0).clamp(0.1, 24.0) as f32),
+        "set_needs" => {
+            let id = player_id();
+            let n = |k: &str| num(k).map(|v| v as f32);
+            world.set_needs(id, n("hunger"), n("thirst"), n("tiredness")).ok_or_else(|| format!("no player {id}"))?;
+            Ok(format!("player {id}: {}", needs_line(world, id)))
         }
         "weapons" => {
             let mut out = String::from("id: name, category | damage | reach m | arc deg | windup/swing s | targets | knockback m | stagger/knockdown/crit (x mult) | endurance | noise m\n");
@@ -1044,7 +1083,13 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 "pain": p.health.pain(&world.config.health),
                 "sick": p.health.sick(),
                 "infection": p.health.visible_infection().map_or("unknown".to_string(), |s| format!("{s:?}")),
+                "hunger": p.needs.hunger,
+                "thirst": p.needs.thirst,
+                "tiredness": p.needs.tiredness,
+                "asleep": p.needs.sleep.map(|s| s.spot.name()),
+                "tags": world.status_tags(p.id).iter().map(|t| t.label.clone()).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
+            "time_scale": world.time_scale(),
             "items_on_floor": world.items().len(),
             "containers": world.containers().len(),
             "containers_opened": world.opened_containers().count(),
@@ -1648,7 +1693,7 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
     for p in &world.players {
         let s = &p.state;
         out.push_str(&format!(
-            "  P{} at ({:.1}, {:.1}) in {}, facing {}, {:?}, {:.0} HP{}, {}, endurance {:.2}{}{}{}; {}\n",
+            "  P{} at ({:.1}, {:.1}) in {}, facing {}, {:?}, {:.0} HP{}, {}, endurance {:.2}{}{}{}; {}{}\n",
             p.id,
             s.pos.x,
             s.pos.y,
@@ -1672,7 +1717,11 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
                 None if p.ready_in > 0.0 => format!(", recovering {:.2} s", p.ready_in),
                 None => String::new(),
             },
-            load_line(world, p.id)
+            load_line(world, p.id),
+            match world.status_tags(p.id) {
+                tags if tags.is_empty() => String::new(),
+                tags => format!("; {}", needs::tags_line(&tags)),
+            }
         ));
     }
     let lo_items = origin.as_vec2();
@@ -1877,7 +1926,108 @@ fn health_text(world: &World, id: u32) -> Result<String, String> {
         if e.can_run { "" } else { " (can't run)" },
         e.regen
     ));
+    out.push_str(&format!("\nneeds: {}", needs_line(world, id)));
+    for t in world.status_tags(id) {
+        out.push_str(&format!("\n  {}: {}", t.label, t.tip));
+    }
     Ok(out)
+}
+
+/// A player's needs in a line: each with its level, sleep, and the status tags.
+fn needs_line(world: &World, id: u32) -> String {
+    let Some(p) = world.player(id) else { return String::new() };
+    let (t, n) = (&world.config.needs, &p.needs);
+    let level = |v: f32, names: [&str; 3]| match t.level(v) {
+        needs::Level::Fine => String::new(),
+        l => format!(" ({})", names[l as usize - 1]),
+    };
+    let asleep = n.sleep.map_or(String::new(), |s| format!(", asleep on the {} for {:.1} h", s.spot.name(), s.hours));
+    let tags = world.status_tags(id);
+    format!(
+        "hunger {:.0}%{}, thirst {:.0}%{}, tiredness {:.0}%{}{asleep}; HP {:.0}; tags: {}",
+        n.hunger * 100.0,
+        level(n.hunger, ["peckish", "hungry", "starving"]),
+        n.thirst * 100.0,
+        level(n.thirst, ["dry", "thirsty", "parched"]),
+        n.tiredness * 100.0,
+        level(n.tiredness, ["drowsy", "tired", "exhausted"]),
+        p.hp,
+        if tags.is_empty() { "none".to_string() } else { needs::tags_line(&tags) }
+    )
+}
+
+/// What eating or drinking the stack at `from`/`index` will do, before it's done (empty if it
+/// isn't something to eat or drink).
+fn use_preview(world: &World, id: u32, from: Place, index: u32) -> String {
+    let Some(p) = world.player(id) else { return String::new() };
+    let s = match from {
+        Place::Carried => p.inventory.carried.get(index as usize).copied(),
+        Place::Slot(slot) => p.inventory.slot(slot),
+        _ => None,
+    };
+    let Some(s) = s else { return String::new() };
+    let def = world.item_def(s.item);
+    let Some(c) = def.consumable() else { return String::new() };
+    let t = &world.config.needs;
+    let mut bits = vec![format!("{}: hunger {:+.0}%, thirst {:+.0}% a go, {} of {} goes left", def.name, -c.hunger * 100.0, -c.thirst * 100.0, c.uses.max(1) - s.used, c.uses.max(1))];
+    match (world.freshness_of(&s), c.spoils_hours) {
+        (Some(needs::Freshness::Fresh), Some(h)) => bits.push(format!("fresh (goes stale {h:.0} h after it was made)")),
+        (Some(needs::Freshness::Stale), _) => bits.push(format!("STALE: {:.0}% of that, {:.0}% chance of food poisoning", t.stale_food * 100.0, world.config.health.poison_stale * 100.0)),
+        (Some(needs::Freshness::Mouldy), _) => bits.push(format!("MOULDY: {:.0}% of that, {:.0}% chance of food poisoning", t.mouldy_food * 100.0, world.config.health.poison_rotten * 100.0)),
+        _ => bits.push("keeps".into()),
+    }
+    if def.food.is_some() && !p.health.can_eat() {
+        bits.push("you have food poisoning: you can't eat".into());
+    } else if def.food.is_some() && c.hunger > 0.0 && p.needs.hunger < t.waste_below {
+        bits.push(format!("you're not hungry (under {:.0}%): it will do nothing for your hunger", t.waste_below * 100.0));
+    }
+    format!("ahead: {}\n", bits.join("; "))
+}
+
+/// The `sleep` tool: lie down, step until awake (or `max_hours` of game time), say why.
+fn sleep_tool(world: &mut World, id: u32, max_hours: f32) -> Result<String, String> {
+    let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+    if p.dead {
+        return Err(format!("player {id} is dead (respawn to play on)"));
+    }
+    let (hp, before, from) = (p.hp, needs_line(world, id), world.game_hours());
+    take_notes(world, id);
+    apply_intent(world, &Intent::Sleep { player: id, sleep: true });
+    let Some(sleep) = world.player(id).expect("exists").needs.sleep else { return Err(take_notes(world, id)) };
+    let start = world.tick;
+    let mut events = Events::default();
+    let mut why = None;
+    while world.game_hours() - from < max_hours as f64 && world.tick - start < MAX_STEP {
+        world.step();
+        events.add(world);
+        if let Some(&(_, r)) = world.woke.iter().find(|(p, _)| *p == id) {
+            why = Some(r);
+            break;
+        }
+    }
+    let why = match why {
+        Some(r) => r.text().to_string(),
+        None => {
+            world.wake_player(id);
+            format!("got up after {max_hours} game hours")
+        }
+    };
+    world.edge_changes.clear();
+    world.combat_events.clear();
+    take_notes(world, id);
+    let ticks = world.tick - start;
+    Ok(format!(
+        "slept on the {} {:.1} game hours ({ticks} ticks, {:.0} s of simulation; time ran up to {:.0}x): woke because {why}; now {}; HP {:.0} -> {:.0}{}\nneeds before: {before}\nneeds now: {}",
+        sleep.spot.name(),
+        world.game_hours() - from,
+        ticks as f32 * TICK_DT,
+        world.config.needs.sleep_time_scale,
+        clock(world.time_of_day()),
+        hp,
+        world.player(id).expect("exists").hp,
+        events.summary(),
+        needs_line(world, id)
+    ))
 }
 
 /// The `inventory` tool's text.
@@ -2139,6 +2289,34 @@ mod tests {
         assert_eq!(stats["players"][0]["bleeding"], 1);
         assert_eq!(stats["players"][0]["infection"], "unknown");
         assert_eq!(stats["players"][0]["wounds"][0], "gash on the left leg");
+    }
+
+    /// Needs through tools: `set_needs`, `use` (what it will do, then what it did), `sleep` (until
+    /// awake, and why), and `stats` / `health` showing needs and tags.
+    #[test]
+    fn needs_and_sleep_tools() {
+        let mut world = small_world();
+        let dir = scratch("needs");
+        let mut persist = session(&world, &dir.0);
+        let (text, err) = call(&mut world, &mut persist, "set_needs", json!({"hunger": 0.7, "thirst": 0.4, "tiredness": 0.9}));
+        assert!(!err && text.contains("hunger 70% (hungry)") && text.contains("Exhausted"), "{text}");
+        world.give_item(1, "water_bottle", 1);
+        let k = world.player(1).unwrap().inventory.carried.iter().position(|s| world.item_def(s.item).id == "water_bottle").unwrap();
+        let (text, err) = call(&mut world, &mut persist, "use", json!({"index": k}));
+        assert!(!err && text.starts_with("ahead: Bottle of water") && text.contains("needs now: hunger 70% (hungry), thirst 0%"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "health", json!({}));
+        assert!(text.contains("needs: hunger 70%") && text.contains("Hungry: health doesn't come back"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "stats", json!({}));
+        let stats: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(stats["players"][0]["tags"][0], "Hungry");
+        assert_eq!(stats["time_scale"], 1.0);
+        let clock = world.game_hours();
+        let (text, err) = call(&mut world, &mut persist, "sleep", json!({"max_hours": 3}));
+        assert!(!err && text.contains("slept on the") && text.contains("woke because"), "{text}");
+        assert!(!world.player(1).unwrap().needs.asleep() && world.game_hours() > clock);
+        call(&mut world, &mut persist, "set_needs", json!({"tiredness": 0.1}));
+        let (text, err) = call(&mut world, &mut persist, "sleep", json!({}));
+        assert!(err && text.contains("not tired enough"), "{text}");
     }
 
     #[test]

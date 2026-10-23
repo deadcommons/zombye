@@ -27,6 +27,7 @@ use crate::players::Action;
 use crate::flow::{FlowCache, FlowField, WalkGrid};
 use crate::map::{Edge, EdgeChange, EdgeRef, OwnedEdge, TileMap};
 use crate::nav::Nav;
+use crate::needs::{NeedsTuning, WakeReason};
 use crate::players::{self, PLAYER_RADIUS, Player, PlayerInput, Stance};
 use crate::population::{NEVER, Population, PopulationDef, Zone};
 use crate::rng::{Rng, hash01};
@@ -84,6 +85,8 @@ pub struct WorldConfig {
     pub health: HealthTuning,
     /// The zombie infection's sandbox settings (fatal by default).
     pub infection: InfectionTuning,
+    /// Hunger, thirst, tiredness, food going off and sleep ([`crate::needs`]).
+    pub needs: NeedsTuning,
     /// Simulation tiers: ranges and update rates (see [`crate::tiers`]).
     pub tiers: TierTuning,
     /// Where zombies live, respawn and migration (`assets/data/population.ron`, see
@@ -107,6 +110,7 @@ impl WorldConfig {
             combat: CombatTuning::default(),
             health: HealthTuning::default(),
             infection: InfectionTuning::default(),
+            needs: NeedsTuning::default(),
             tiers: TierTuning::default(),
             population: PopulationDef::default(),
         }
@@ -232,8 +236,10 @@ pub struct World {
     /// What players asked of their items and how it went, for their clients (not simulation state;
     /// drained by whoever replicates the world, at most [`crate::inventory::MAX_ITEM_NOTES`] kept).
     pub item_notes: Vec<ItemNote>,
-    /// Items eaten or drunk this tick: (player, item). For the needs (#11).
+    /// Items eaten or drunk this tick: (player, item).
     pub used_items: Vec<(u32, u16)>,
+    /// Sleepers who woke this tick, and why (cleared each tick).
+    pub woke: Vec<(u32, WakeReason)>,
     /// Players whose inventory, open container or job queue changed since the last snapshot took
     /// them (replication, not simulation state).
     pub(crate) private_dirty: BTreeSet<u32>,
@@ -293,6 +299,15 @@ pub(crate) fn add_fists(weapons: &mut Vec<WeaponDef>) {
     }
 }
 
+/// Fold a stack into the state hash (its age and goes had only when set, #11).
+fn mix_stack(mix: &mut impl FnMut(u32), s: &ItemStack) {
+    mix(s.item as u32 | (s.count as u32) << 16);
+    if s.born != 0 || s.used != 0 {
+        mix(s.born as u32);
+        mix(s.used as u32 | 0x0B00_0000);
+    }
+}
+
 /// The edge an [`EdgeRef::key`] names.
 pub(crate) fn edge_of_key((x, y, w): (i32, i32, u8)) -> EdgeRef {
     EdgeRef::new(IVec2::new(x, y), if w == 0 { OwnedEdge::North } else { OwnedEdge::West })
@@ -332,6 +347,7 @@ impl World {
             opened: BTreeMap::new(),
             item_notes: Vec::new(),
             used_items: Vec::new(),
+            woke: Vec::new(),
             private_dirty: BTreeSet::new(),
             unarmed,
             action_events: Vec::new(),
@@ -572,10 +588,12 @@ impl World {
     }
 
     /// Move the clock forward; wounds and illness live through the hours skipped (bleeding,
-    /// healing, festering, the infection), in small steps.
+    /// healing, festering, the infection), and needs too (hunger, thirst, tiredness, sleep), in
+    /// small steps.
     pub fn skip_time(&mut self, hours: f32) {
         self.clock_offset_hours += hours;
         self.skip_health(hours);
+        self.skip_needs(hours);
     }
 
     /// Full hit points of an edge of this kind (0 for anything that can't be battered).
@@ -771,6 +789,7 @@ impl World {
         self.action_events.clear();
         self.hit_events.clear();
         self.used_items.clear();
+        self.woke.clear();
         // Sounds made since the last tick are heard now; groans made during this one, next tick.
         std::mem::swap(&mut self.sounds, &mut self.heard);
         self.sounds.clear();
@@ -906,9 +925,13 @@ impl World {
         let virtual_ms = virtual_start.elapsed().as_secs_f32() * 1000.0;
         self.apply_thumps();
         self.apply_zombie_attacks();
-        // Wounds bleed and heal, illness runs its course, an infected body rises.
-        let hours = TICK_DT * self.game_hours_per_sec();
+        // Wounds bleed and heal, illness runs its course, an infected body rises; needs rise and
+        // sleepers rest (or wake). With everyone asleep, game time runs faster (#11).
+        let real = TICK_DT * self.game_hours_per_sec();
+        let hours = real * self.time_scale();
+        self.clock_offset_hours += hours - real;
         self.step_health(hours, TICK_DT);
+        self.step_needs(hours, true);
         // Last: indices into the zombie columns (the spatial hash) aren't needed after this.
         self.remove_old_corpses();
         let respawned = self.respawn();
@@ -1073,11 +1096,12 @@ impl World {
             mix(p.state.stance as u32 | (p.state.winded as u32) << 8 | (p.dead as u32) << 9 | (p.dev.god as u32) << 10 | (p.dev.ignored as u32) << 11);
             mix(p.hp.to_bits());
             Self::hash_health(&p.health, &mut mix);
+            Self::hash_needs(&p.needs, &mut mix);
             mix(p.weapon.map_or(u32::MAX, u32::from));
             mix(p.ready_in.to_bits());
             mix(p.action.map_or(u32::MAX, |a| a.kind as u32 | a.timer.to_bits() << 2));
             for s in p.inventory.stacks() {
-                mix(s.item as u32 | (s.count as u32) << 16);
+                mix_stack(&mut mix, s);
             }
             let inv = &p.inventory;
             mix(inv.worn.len() as u32 | (inv.carried.len() as u32) << 8 | (inv.hand.is_some() as u32) << 16 | (inv.off_hand.is_some() as u32) << 17 | (inv.back.is_some() as u32) << 18 | (inv.shoulder.is_some() as u32) << 19);
@@ -1093,7 +1117,7 @@ impl World {
         }
         for it in &self.items {
             mix(it.id);
-            mix(it.stack.item as u32 | (it.stack.count as u32) << 16);
+            mix_stack(&mut mix, &it.stack);
             mix(it.pos.x.to_bits());
             mix(it.pos.y.to_bits());
         }
@@ -1101,7 +1125,7 @@ impl World {
             mix(c);
             mix(stacks.len() as u32);
             for s in stacks {
-                mix(s.item as u32 | (s.count as u32) << 16);
+                mix_stack(&mut mix, s);
             }
         }
         for (&(x, y, w), hp) in &self.edge_hp {

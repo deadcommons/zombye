@@ -330,6 +330,56 @@ pub(crate) fn check_settings(text: &str, config: &WorldConfig) -> Result<(), Loa
     }
     config.health.check().map_err(|e| invalid(format!("settings: {e}")))?;
     config.infection.check().map_err(|e| invalid(format!("settings: {e}")))?;
+    config.needs.check().map_err(|e| invalid(format!("settings: {e}")))?;
+    Ok(())
+}
+
+/// Food made this long before the world began is past any spoiling (game minutes, 10 years).
+const OLDEST_FOOD_MIN: i32 = -10 * 365 * 24 * 60;
+
+/// A stack's age and goes had (#11): goes below the item's uses, made no later than now and not
+/// absurdly long before the world began. Run after the item index is known to be in range.
+fn check_stack_state(w: &World, s: &ItemStack, what: &dyn Fn() -> String) -> Result<(), LoadError> {
+    let uses = w.config.items[s.item as usize].consumable().map_or(1, |c| c.uses.max(1));
+    if s.used >= uses {
+        return Err(invalid(format!("{}: {} goes had of an item with {uses}", what(), s.used)));
+    }
+    if s.born > w.game_minute() + 1 || s.born < OLDEST_FOOD_MIN {
+        return Err(invalid(format!("{}: made at game minute {}, now {}", what(), s.born, w.game_minute())));
+    }
+    Ok(())
+}
+
+/// After items.ron changed (a compatible change): goes had of a stack's top item stay below the
+/// item's `uses` as it is now.
+pub(crate) fn fit_goes(w: &mut World) {
+    let items = &w.config.items;
+    let fit = |s: &mut ItemStack| {
+        let uses = items.get(s.item as usize).and_then(|d| d.consumable()).map_or(1, |c| c.uses.max(1));
+        s.used = s.used.min(uses - 1);
+    };
+    for p in &mut w.players {
+        p.inventory.stacks_mut().for_each(&fit);
+    }
+    w.items.iter_mut().for_each(|it| fit(&mut it.stack));
+    w.opened.values_mut().flatten().for_each(&fit);
+}
+
+/// A player's needs and sleep: values a tick could have made.
+fn check_needs(p: &Player) -> Result<(), LoadError> {
+    let n = &p.needs;
+    for (field, v) in [("hunger", n.hunger), ("thirst", n.thirst), ("tiredness", n.tiredness)] {
+        if !(0.0..=1.0).contains(&v) {
+            return Err(invalid(format!("player {}: needs.{field} is {v} (must be 0 to 1)", p.id)));
+        }
+    }
+    non_negative(n.sore_h, || format!("player {}: needs.sore_h", p.id))?;
+    if let Some(s) = n.sleep {
+        non_negative(s.hours, || format!("player {}: sleep hours", p.id))?;
+        if p.dead {
+            return Err(invalid(format!("player {}: dead and asleep", p.id)));
+        }
+    }
     Ok(())
 }
 
@@ -513,7 +563,7 @@ pub(crate) fn validate(w: &World) -> Result<(), LoadError> {
             if (s.item as usize) >= items || s.count == 0 {
                 Err(invalid(format!("player {id}: {what}: item {} x {} (items 0..{items}, at least one)", s.item, s.count)))
             } else {
-                Ok(())
+                check_stack_state(w, s, &|| format!("player {id}: {what}"))
             }
         };
         let inv = &p.inventory;
@@ -547,6 +597,7 @@ pub(crate) fn validate(w: &World) -> Result<(), LoadError> {
             weapon(&|| name("action: "), a.weapon)?;
         }
         check_health(p)?;
+        check_needs(p)?;
     }
 
     // Items, in id order.
@@ -558,6 +609,7 @@ pub(crate) fn validate(w: &World) -> Result<(), LoadError> {
         if it.stack.item as usize >= items || it.stack.count == 0 {
             return Err(invalid(format!("{}item {} x {} (items 0..{items}, at least one)", name(""), it.stack.item, it.stack.count)));
         }
+        check_stack_state(w, &it.stack, &|| format!("item {}", it.id))?;
         on_map(map, it.pos, || name("pos"))?;
         finite(it.angle, || name("angle"))?;
     }
@@ -567,6 +619,7 @@ pub(crate) fn validate(w: &World) -> Result<(), LoadError> {
         if let Some(s) = stacks.iter().find(|s| s.item as usize >= items || s.count == 0) {
             return Err(invalid(format!("container {c}: item {} x {} (items 0..{items}, at least one)", s.item, s.count)));
         }
+        stacks.iter().try_for_each(|s| check_stack_state(w, s, &|| format!("container {c}")))?;
     }
 
     // Door and window damage: only on doors and windows that can still be battered.

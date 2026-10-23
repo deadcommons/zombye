@@ -68,6 +68,8 @@ pub struct JoinInfo {
     pub combat: CombatTuning,
     /// The infection's settings (night sight while turning).
     pub infection: zombye_sim::InfectionTuning,
+    /// The needs' numbers (status tags, the view cone while tired).
+    pub needs: zombye_sim::NeedsTuning,
 }
 
 /// The `FixedUpdate` system that ticks the server. Input is sent before it and reconciled after it.
@@ -189,6 +191,7 @@ fn finish_join(app: &mut App, mut server: LocalServer, player_id: u32) {
         items: server.world.config.items.clone(),
         combat: server.world.config.combat.clone(),
         infection: server.world.config.infection.clone(),
+        needs: server.world.config.needs,
     };
     let private = first.private.clone();
     app.insert_resource(ServerLink { server, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3], private })
