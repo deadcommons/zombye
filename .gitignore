@@ -16,3 +16,6 @@ docs/research/
 # Python bytecode (tools/blender runs inside Blender)
 __pycache__/
 *.blend1
+
+# Raw Meshy downloads (never committed; what ships goes through Blender into assets/)
+/meshy_output/
