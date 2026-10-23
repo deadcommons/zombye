@@ -91,7 +91,7 @@ impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_player)
             .add_systems(Update, (toggle_sneak, face_cursor, actions))
-            .add_systems(FixedUpdate, (predict.in_set(PlayerInputSet).before(ServerTick), reconcile.after(ServerTick)))
+            .add_systems(FixedUpdate, (predict.in_set(PlayerInputSet).before(ServerTick).run_if(crate::live), reconcile.after(ServerTick)))
             // After the fixed ticks of this frame, before anything in Update reads the player's transform.
             .add_systems(RunFixedMainLoop, (place_player, sync_other_players).in_set(RunFixedMainLoopSystems::AfterFixedMainLoop));
     }

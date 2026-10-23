@@ -8,3 +8,7 @@ docs/research/
 /saves/
 
 .DS_Store
+
+# Agent worktrees and their build folders
+/.claude/worktrees/
+/target-*/

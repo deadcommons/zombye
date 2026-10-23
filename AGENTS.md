@@ -15,9 +15,9 @@ Work is tracked on GitHub, not in the repo: the
 |---|---|---|
 | `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), weapons and ground items (`items.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), saving and loading the world to and from bytes (`save.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), content loading (`content.rs`), save files on disk (`save_file.rs`). | MIT OR Apache-2.0 |
-| `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint; `--save` with autosave. | MIT OR Apache-2.0 |
-| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building/tree meshes, fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd; `survivor.rs` skinned, CPU-posed players), hit feedback (`fx.rs`), ground items (`items_render.rs`), HUD, `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`). | MIT OR Apache-2.0 |
-| `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/weapons.ron`, `data/population.ron`), later generated models/textures/audio. | MIT OR Apache-2.0 (each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md)) |
+| `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint; `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
+| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building/tree meshes, fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd; `survivor.rs` skinned, CPU-posed players), hit feedback (`fx.rs`), ground items (`items_render.rs`), HUD, `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
+| `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/weapons.ron`, `data/population.ron`), later generated models/textures/audio. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
 | `docs/` | Plan and design docs. | — |
 
 ## Rules
@@ -54,9 +54,13 @@ cargo run -p zombye-server --release -- --bench --ticks 200 --map-chunks 64 --zo
 cargo run -p zombye-client --release -- --zombies 1000          # the game window
 cargo run -p zombye-client --release -- --zombies 2000 --novsync --screenshot shot.png --exit-after 8
 cargo run -p zombye-client --release -- --fight-demo --autoplay --zoom 9 --screenshot fight.png --screenshot-after 2.5,4,6 --exit-after 7
+# One picture of a save, rendered offscreen: no window opens, nothing takes focus (about 0.5 s plus loading)
+cargo run -p zombye-client --release -- --render-to shot.png --load saves/autosave.zsave --size 1280x720 --angle 1 --zoom 30
+# Tests: the offscreen render test needs a GPU; it skips itself if there is none, or set ZOMBYE_SKIP_GPU_TESTS=1
+cargo test --release --workspace
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --quicksave-after SECS --quickload-after SECS`
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --player ID --data DIR --quicksave-after SECS --quickload-after SECS --render-to PATH --size WxH --center X,Y`
 (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost).
@@ -71,6 +75,21 @@ it: they batter it (or the window beside it) with their backs to you, and the do
 gives (add `--zombies 0` to keep the rest of the town out of it). `--sneak` starts you sneaking (as if C was
 pressed). The game window takes keyboard focus, so typing elsewhere while it runs can move or toggle the player.
 `--at` starts the player somewhere other than the bedroom and `--time` sets the start hour, which is handy for screenshots.
+`--angle N` starts the camera at one of the four fixed angles (0 = the default, each step a quarter turn), `--player ID`
+plays as that player of a `--load`ed save (default its first), `--data DIR` reads game data from another folder (as the
+server's `--data`; a save only loads against the content it was made with).
+**Offscreen (`--render-to PATH`, `offscreen.rs`):** renders one PNG and exits without ever opening a window: no primary
+window, no winit (on macOS that would make it a foreground app and take keyboard focus), no audio or gamepads; the
+camera draws into an image (`--size WxH`, default 1280x720, at most 3840x2160) that is read back. Usually with `--load`:
+the local server doesn't tick and the player isn't predicted (`crate::live` run condition), so it shows the saved state
+exactly, from `--player`'s point of view (fog of war, cutaways, night lamp), with `--zoom`, `--angle` and optionally
+`--center X,Y` (the camera, and chunk streaming, centred there; fog is still the player's). No HUD (the UI only draws on
+a window's camera), no autosave. It waits for the frame to be stable rather than a fixed time: visual time runs at a fixed
+1/30 s a frame for 30 frames (eased poses settle), then stops; once the render world has had no pipelines waiting for a
+few frames it reads the image back, and two readbacks in a row that match (all but 1 byte in 10,000) are written. It
+prints `rendered PATH: WxH, N frames, N readbacks, MS ms` (plus a warning if it never settled; 40 s limit) and exits 0,
+or exits 1 with the reason on stderr. Prefer it to `--screenshot` for checking visuals: the windowed client pops up and
+steals focus. Not rendered: client-only effects that aren't in the save (blood splats, hit flashes).
 `--map-chunks N` makes the map N × N chunks of 16 m (default 20, 320 m; 64 is about 1 km): the same town in the
 middle with more forest round it (a map too small for the town is grown to fit). The server takes it too.
 Without `--zombies` (client and server) the world holds as many zombies as `assets/data/population.ron` gives for the
@@ -397,12 +416,14 @@ over the old one: a crash mid-write leaves the previous save whole).
 ## Connecting an agent to the game (MCP)
 
 `zombye-server --mcp` speaks MCP over stdio. `.mcp.json` registers it as `zombye` for
-Claude Code and other MCP clients. Build it first with `cargo build -p zombye-server --release`.
+Claude Code and other MCP clients. Build it first with `cargo build -p zombye-server --release` (and
+`-p zombye-client` too, for `screenshot`).
 It takes the common options too (`--zombies N --seed S --map-chunks N`), e.g. a 1 km map with 20,000 zombies, and
-`--save PATH` (load-or-create, autosave, save on exit) with `--autosave-mins N` and `--saves DIR`. Time is paused
+`--save PATH` (load-or-create, autosave, save on exit) with `--autosave-mins N` and `--saves DIR`, and for `screenshot`
+`--client PATH` and `--screenshot-timeout SECS`. Time is paused
 between calls, so an autosave only happens after a call that changed something.
 
-The agent plays player 1, who wakes up in the bedroom. Tools: `observe` (double-resolution ASCII map
+The agent plays player 1, who wakes up in the bedroom. Tools: `screenshot` (below), `observe` (double-resolution ASCII map
 with walls `-` `|`, shut windows `=` `!`, open windows `o`, broken windows `x`, shut doors `D` (`d`
 when damaged), open doors `/`, broken doors `#`, fences `~`, furniture, players `P` and zombies by
 state: `Z` wander, `I` investigate, `C` chase, `L` lunge, `A` attack, `B` battering a door or window;
@@ -429,3 +450,21 @@ including staggered/down/dead and by tier (`zombie_tiers`: active/near/virtual, 
 demotions, the ranges), `population` (target vs alive, attractors, whether migration and respawn are on, respawned), weapons on the floor, tick timing (tier pass, senses, flow, active, near, virtual), thumps, hits and sounds heard last
 tick, damaged edges, the state hash). `step_ticks` and `move_player` also report hits, kills, how many
 zombie strikes landed for how much, and deaths.
+
+**`screenshot`** returns a rendered PNG of the world around a player as MCP image content (`{"type": "image",
+"data": <base64>, "mimeType": "image/png"}`) followed by a text line: whose view, where the player stands (room or
+outdoors, dead or not), the centre if given, tick, time of day and daylight, zoom, angle, PNG size and render time.
+Arguments: `player` (default 1: whose fog of war and cutaways, and the centre), `x` and `y` (centre there instead;
+fog is still the player's and only zombies within 80 m of a player are sent, so far from players you see terrain and
+buildings, darkened, and no zombies), `zoom` (metres visible top to bottom, 8-90, default 26), `angle` (0-3, the four
+fixed camera angles), `width` / `height` (default 1280x720, at most 1920x1080). How: the server saves the world to a
+temporary file in the system temp folder, runs the game client on it offscreen (`zombye --render-to PNG --load SAVE
+--player ... --size ... --data ...`, see Offscreen above; no window opens), waits up to `--screenshot-timeout SECS`
+(default 60) and deletes both files. It only reads the world: no ticks, no RNG, the state hash is the same before and
+after (and it doesn't mark the world as needing a save). The client binary is `--client PATH`, else `$ZOMBYE_CLIENT`,
+else `zombye` next to `zombye-server`: build both (`cargo build --release -p zombye-server -p zombye-client`). A missing
+client, a failed render (the client's last log lines are included) and a timeout are tool errors. It takes about
+0.4-0.7 s on an M-series Mac (default map or 1 km; the first call after a build can take 1.5-2 s). Use `observe` for exact
+positions and states and `screenshot` to check how things look: after changing rendering, meshes or building templates,
+or to see a fight, a siege or the fog at night. Each image is large (about 1 MB of base64 at 1280x720), so ask for a
+smaller `width`/`height` when the detail isn't needed.

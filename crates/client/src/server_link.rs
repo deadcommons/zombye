@@ -79,9 +79,9 @@ pub struct ServerLinkPlugin;
 impl Plugin for ServerLinkPlugin {
     fn build(&self, app: &mut App) {
         let options = app.world().resource::<Options>().clone();
-        let templates = content::load_building_templates(&content::default_data_dir()).unwrap_or_else(|e| panic!("failed to load content: {e}"));
-        let weapons = content::load_weapons(&content::default_data_dir()).unwrap_or_else(|e| panic!("failed to load content: {e}"));
-        let population = content::load_population(&content::default_data_dir()).unwrap_or_else(|e| panic!("failed to load content: {e}"));
+        let templates = content::load_building_templates(&options.data).unwrap_or_else(|e| panic!("failed to load content: {e}"));
+        let weapons = content::load_weapons(&options.data).unwrap_or_else(|e| panic!("failed to load content: {e}"));
+        let population = content::load_population(&options.data).unwrap_or_else(|e| panic!("failed to load content: {e}"));
         let mut config = WorldConfig::new(options.seed, 0, templates).with_weapons(weapons).with_population(population);
         // Without --zombies, as many as the population file's densities give for this map.
         config.zombies = options.zombies;
@@ -112,9 +112,16 @@ impl Plugin for ServerLinkPlugin {
             None => LocalServer::new(config),
         };
         if resumed {
-            let player_id = match server.world.players.first() {
-                Some(p) => p.id,
-                None => server.join(options.at),
+            // `--player ID` plays (or renders) as that player; otherwise the save's first.
+            let player_id = match (options.player, server.world.players.first()) {
+                (Some(id), _) if server.world.player(id).is_some() => id,
+                (Some(id), _) => {
+                    let ids: Vec<String> = server.world.players.iter().map(|p| p.id.to_string()).collect();
+                    eprintln!("no player {id} in {}: it has players [{}]", options.load.as_deref().unwrap_or("the save"), ids.join(", "));
+                    std::process::exit(1);
+                }
+                (None, Some(p)) => p.id,
+                (None, None) => server.join(options.at),
             };
             return finish_join(app, server, player_id);
         }
@@ -154,7 +161,7 @@ fn finish_join(app: &mut App, mut server: LocalServer, player_id: u32) {
         .init_resource::<CombatEventsThisFrame>()
         .insert_resource(Time::<Fixed>::from_hz(TICK_RATE as f64))
         .add_systems(First, clear_frame_changes)
-        .add_systems(FixedUpdate, tick_server.in_set(ServerTick));
+        .add_systems(FixedUpdate, tick_server.in_set(ServerTick).run_if(crate::live));
 }
 
 impl ServerLink {

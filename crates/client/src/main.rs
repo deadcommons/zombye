@@ -18,7 +18,13 @@
 //! `--map-chunks N` (a square map N × N chunks of 16 m; default 20) `--saves DIR` (where saves go;
 //! default `saves`) `--load NAME|PATH` (start from a save). F5 quicksaves, F9 quickloads, and
 //! quitting autosaves (`autosave` in the saves folder); `--quicksave-after SECS` and
-//! `--quickload-after SECS` do F5 / F9 by themselves, for verification.
+//! `--quickload-after SECS` do F5 / F9 by themselves, for verification. `--angle N` starts at
+//! one of the four fixed camera angles (0..3), `--player ID` plays as that player of a loaded
+//! save, `--data DIR` reads game data from another folder.
+//!
+//! `--render-to PATH` renders one PNG offscreen and exits, without ever opening a window
+//! (`offscreen.rs`): usually with `--load`, plus `--size WxH`, `--zoom`, `--angle`, `--player` and
+//! `--center X,Y`. The MCP `screenshot` tool runs the client this way.
 
 mod autoplay;
 mod camera;
@@ -29,6 +35,7 @@ mod hud;
 mod items_render;
 mod materials;
 mod meshgen;
+mod offscreen;
 mod player;
 mod rig;
 mod saving;
@@ -37,8 +44,12 @@ mod survivor;
 mod world_render;
 mod zombie_render;
 
+use std::path::PathBuf;
+use std::time::Duration;
+
+use bevy::app::ScheduleRunnerPlugin;
 use bevy::prelude::*;
-use bevy::window::PresentMode;
+use bevy::window::{ExitCondition, PresentMode};
 
 /// Command-line options, available to every system.
 #[derive(Resource, Clone, Debug)]
@@ -77,21 +88,53 @@ pub struct Options {
     /// (`--quicksave-after`, `--quickload-after`).
     pub quicksave_after: Option<f32>,
     pub quickload_after: Option<f32>,
+    /// The camera's starting angle, one of the four fixed ones (`--angle 0..3`).
+    pub angle: i32,
+    /// Play as this player of a loaded save (`--player ID`; default its first player).
+    pub player: Option<u32>,
+    /// Game data folder (`--data`, default the repo's `assets/data`): templates, weapons, population.
+    pub data: PathBuf,
+    /// Render one frame offscreen to this PNG and exit, with no window (`--render-to`).
+    pub render_to: Option<PathBuf>,
+    /// Size of that image (`--size WxH`, default 1280x720).
+    pub size: UVec2,
+    /// Centre the offscreen camera here instead of on the player (`--center X,Y`). Fog of war and
+    /// cutaways are still the player's.
+    pub center: Option<[f32; 2]>,
+}
+
+/// Default and largest `--size` for `--render-to`.
+pub const DEFAULT_RENDER_SIZE: UVec2 = UVec2::new(1280, 720);
+pub const MAX_RENDER_SIZE: UVec2 = UVec2::new(3840, 2160);
+
+/// `"1280x720"` → (1280, 720); each side at least 16 and at most [`MAX_RENDER_SIZE`].
+pub fn parse_size(text: &str) -> Option<UVec2> {
+    let (w, h) = text.trim().split_once(['x', 'X'])?;
+    let size = UVec2::new(w.trim().parse().ok()?, h.trim().parse().ok()?);
+    (size.cmpge(UVec2::splat(16)).all()).then(|| size.min(MAX_RENDER_SIZE))
+}
+
+/// `"12.5,-3"` → [12.5, -3].
+fn parse_point(text: &str) -> Option<[f32; 2]> {
+    let (x, y) = text.split_once(',')?;
+    let p = [x.trim().parse().ok()?, y.trim().parse().ok()?];
+    p.iter().all(|v: &f32| v.is_finite()).then_some(p)
 }
 
 impl Options {
     fn from_args() -> Self {
-        let args: Vec<String> = std::env::args().skip(1).collect();
+        Self::parse(&std::env::args().skip(1).collect::<Vec<_>>())
+    }
+
+    /// Options from command-line arguments (without the program name).
+    pub fn parse(args: &[String]) -> Self {
         let value = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
         let flag = |name: &str| args.iter().any(|a| a == name);
         Self {
             zombies: value("--zombies").and_then(|v| v.parse().ok()),
             seed: value("--seed").and_then(|v| v.parse().ok()).unwrap_or(1),
             start_hour: value("--time").and_then(|v| v.parse().ok()),
-            at: value("--at").and_then(|v| {
-                let (x, y) = v.split_once(',')?;
-                Some([x.trim().parse().ok()?, y.trim().parse().ok()?])
-            }),
+            at: value("--at").and_then(|v| parse_point(&v)),
             rotate: flag("--rotate"),
             novsync: flag("--novsync"),
             screenshot: value("--screenshot"),
@@ -110,29 +153,60 @@ impl Options {
             load: value("--load"),
             quicksave_after: value("--quicksave-after").and_then(|v| v.parse().ok()),
             quickload_after: value("--quickload-after").and_then(|v| v.parse().ok()),
+            angle: value("--angle").and_then(|v| v.parse::<i32>().ok()).unwrap_or(0).rem_euclid(4),
+            player: value("--player").and_then(|v| v.parse().ok()),
+            data: value("--data").map(Into::into).unwrap_or_else(zombye_net::content::default_data_dir),
+            render_to: value("--render-to").map(Into::into),
+            size: value("--size").and_then(|v| parse_size(&v)).unwrap_or(DEFAULT_RENDER_SIZE),
+            center: value("--center").and_then(|v| parse_point(&v)),
         }
     }
+
+    /// Rendering one frame offscreen (`--render-to`) rather than playing in a window.
+    pub fn offscreen(&self) -> bool {
+        self.render_to.is_some()
+    }
+}
+
+/// Run condition: the game is live (not a frozen offscreen render). The local server doesn't tick
+/// and the player isn't predicted in an offscreen render, so it shows the loaded state exactly.
+pub fn live(options: Res<Options>) -> bool {
+    !options.offscreen()
 }
 
 fn main() {
     let options = Options::from_args();
-    App::new()
-        .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06)))
-        .add_plugins(
-            DefaultPlugins
-                .set(WindowPlugin {
-                    primary_window: Some(Window {
-                        title: "Zombye".into(),
-                        resolution: (1600, 900).into(),
-                        present_mode: if options.novsync { PresentMode::AutoNoVsync } else { PresentMode::AutoVsync },
-                        ..default()
-                    }),
+    let assets = AssetPlugin { file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets").into(), ..default() };
+    let plugins = if options.offscreen() {
+        // No window, ever: no primary window, no winit (on macOS it would make this a foreground
+        // app that takes focus), no audio device, no gamepads. The loop is driven by the schedule
+        // runner and `offscreen.rs` exits when the picture is written.
+        DefaultPlugins
+            .set(WindowPlugin { primary_window: None, exit_condition: ExitCondition::DontExit, ..default() })
+            .set(assets)
+            .disable::<bevy::winit::WinitPlugin>()
+            .disable::<bevy::audio::AudioPlugin>()
+            .disable::<bevy::gilrs::GilrsPlugin>()
+    } else {
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "Zombye".into(),
+                    resolution: (1600, 900).into(),
+                    present_mode: if options.novsync { PresentMode::AutoNoVsync } else { PresentMode::AutoVsync },
                     ..default()
-                })
-                .set(AssetPlugin { file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets").into(), ..default() }),
-        )
-        .insert_resource(options)
-        .add_plugins((
+                }),
+                ..default()
+            })
+            .set(assets)
+    };
+    let offscreen = options.offscreen();
+    let mut app = App::new();
+    app.insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06))).add_plugins(plugins).insert_resource(options);
+    if offscreen {
+        app.add_plugins((ScheduleRunnerPlugin::run_loop(Duration::ZERO), offscreen::OffscreenPlugin));
+    }
+    app.add_plugins((
             server_link::ServerLinkPlugin,
             fog::FogPlugin,
             materials::WorldMaterialPlugin,
@@ -147,6 +221,45 @@ fn main() {
             survivor::SurvivorPlugin,
             autoplay::AutoplayPlugin,
             saving::SavingPlugin,
-        ))
-        .run();
+        ));
+    if app.run().is_error() {
+        std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(line: &str) -> Vec<String> {
+        line.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn offscreen_options_parse() {
+        let o = Options::parse(&args("--render-to /tmp/x.png --load /tmp/w.zsave --size 640x360 --zoom 30 --angle 2 --player 3 --center 10.5,-2"));
+        assert!(o.offscreen());
+        assert_eq!(o.render_to.as_deref(), Some(std::path::Path::new("/tmp/x.png")));
+        assert_eq!(o.load.as_deref(), Some("/tmp/w.zsave"));
+        assert_eq!((o.size, o.zoom, o.angle, o.player, o.center), (UVec2::new(640, 360), Some(30.0), 2, Some(3), Some([10.5, -2.0])));
+
+        let o = Options::parse(&args("--zombies 10"));
+        assert!(!o.offscreen());
+        assert_eq!((o.size, o.angle, o.player, o.center), (DEFAULT_RENDER_SIZE, 0, None, None));
+        assert_eq!(Options::parse(&args("--angle 5")).angle, 1);
+        assert_eq!(Options::parse(&args("--angle -1")).angle, 3);
+    }
+
+    #[test]
+    fn sizes_are_checked_and_capped() {
+        assert_eq!(parse_size("1280x720"), Some(UVec2::new(1280, 720)));
+        assert_eq!(parse_size(" 800 X 600 "), Some(UVec2::new(800, 600)));
+        assert_eq!(parse_size("99999x99999"), Some(MAX_RENDER_SIZE));
+        for bad in ["", "1280", "8x8", "0x720", "axb", "-5x10"] {
+            assert_eq!(parse_size(bad), None, "{bad:?}");
+        }
+        assert_eq!(parse_point("1,2"), Some([1.0, 2.0]));
+        assert_eq!(parse_point("1;2"), None);
+        assert_eq!(parse_point("nan,2"), None);
+    }
 }
