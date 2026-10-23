@@ -30,6 +30,9 @@ struct EnduranceFill;
 struct WindedText;
 #[derive(Component)]
 struct TallyText;
+/// "GOD" / "IGNORED" while the dev toggles are on.
+#[derive(Component)]
+struct DevText;
 
 /// The death screen, and its "time survived · kills" line.
 #[derive(Component)]
@@ -68,6 +71,12 @@ const HP_COLOR: Color = Color::srgb(0.78, 0.12, 0.1);
 const END_COLOR: Color = Color::srgb(0.85, 0.75, 0.25);
 const END_TIRED: Color = Color::srgb(0.9, 0.45, 0.15);
 const END_WINDED: Color = Color::srgb(0.45, 0.5, 0.6);
+const DEV_COLOR: Color = Color::srgb(0.35, 0.9, 1.0);
+
+/// "GOD IGNORED", "GOD", "IGNORED" or "" for the dev toggles on.
+fn dev_tags(dev: zombye_sim::DevFlags) -> String {
+    [(dev.god, "GOD"), (dev.ignored, "IGNORED")].iter().filter(|(on, _)| *on).map(|(_, t)| *t).collect::<Vec<_>>().join(" ")
+}
 
 fn font(size: f32) -> TextFont {
     TextFont { font_size: bevy::text::FontSize::Px(size), ..default() }
@@ -109,6 +118,7 @@ fn spawn_hud(mut commands: Commands) {
             c.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Baseline, column_gap: px(10), ..default() }).with_children(|row| {
                 row.spawn((WeaponText, Text::new(""), font(20.0), TextColor(TEXT)));
                 row.spawn((StanceText, Text::new(""), font(14.0), TextColor(DIM)));
+                row.spawn((DevText, Text::new(""), font(14.0), TextColor(DEV_COLOR)));
             });
             bar(c, "HP", HP_COLOR, HpFill, |row| {
                 row.spawn((HpNumber, Text::new(""), font(14.0), TextColor(TEXT)));
@@ -170,6 +180,7 @@ fn update_vitals(
         Query<&mut Text, With<HpNumber>>,
         Query<&mut Text, With<TallyText>>,
         Query<&mut Text, With<DeathStats>>,
+        Query<&mut Text, With<DevText>>,
     )>,
     mut fills: ParamSet<(Query<(&mut Node, &mut BackgroundColor), With<HpFill>>, Query<(&mut Node, &mut BackgroundColor), With<EnduranceFill>>)>,
     mut shown: ParamSet<(Query<&mut Visibility, With<DeathScreen>>, Query<&mut Visibility, With<WindedText>>)>,
@@ -204,6 +215,9 @@ fn update_vitals(
     let alive_for = duration(tally.life_start_tick, now_tick);
     if let Ok(mut t) = texts.p3().single_mut() {
         set(&mut t, format!("kills {}   alive {alive_for}", tally.kills));
+    }
+    if let Ok(mut t) = texts.p5().single_mut() {
+        set(&mut t, dev_tags(me.dev));
     }
     if let Ok(mut t) = texts.p4().single_mut() {
         let kills = if tally.kills == 1 { "1 kill".to_string() } else { format!("{} kills", tally.kills) };
@@ -272,8 +286,12 @@ fn update_hud(
     let place = if room == 0 { "Outdoors".to_string() } else { map.0.rooms[room as usize].name.clone() };
     let s = &me.curr;
     let winded = if s.winded { " (winded)" } else { "" };
+    let dev = match dev_tags(me.dev) {
+        t if t.is_empty() => t,
+        t => format!(" | {t}"),
+    };
     let line = format!(
-        "{:02}:{:02} | {place} | {:?} | hp {:.0}{} | endurance {:.0}%{winded} | fps {:.0} | frame {:.2} ms (worst {:.2}) | zombies {} (chasing {}; tiers {}/{}/{}) | sim tick {:.3} ms",
+        "{:02}:{:02} | {place} | {:?} | hp {:.0}{}{dev} | endurance {:.0}%{winded} | fps {:.0} | frame {:.2} ms (worst {:.2}) | zombies {} (chasing {}; tiers {}/{}/{}) | sim tick {:.3} ms",
         hour.floor() as u32,
         ((hour - hour.floor()) * 60.0) as u32,
         s.stance,
@@ -294,8 +312,10 @@ fn update_hud(
     if let Ok(mut t) = text.single_mut() {
         let rotate = if options.rotate { ", . rotate | " } else { "" };
         t.0 = format!(
-            "{line}\nWASD move | Shift run | C sneak{} | mouse face | LMB attack | Space shove/stomp | E pick up / search | Tab inventory | F door/window | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load",
-            if me.sneak { " (on)" } else { "" }
+            "{line}\nWASD move | Shift run | C sneak{} | mouse face | LMB attack | Space shove/stomp | E pick up / search | Tab inventory | F door/window | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load | F1 god{} | F2 ignored{}",
+            if me.sneak { " (on)" } else { "" },
+            if me.dev.god { " (on)" } else { "" },
+            if me.dev.ignored { " (on)" } else { "" }
         );
     }
     *stats = FrameStats::default();

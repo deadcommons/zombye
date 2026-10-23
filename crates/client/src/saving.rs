@@ -13,7 +13,7 @@
 
 use bevy::input::InputSystems;
 use bevy::prelude::*;
-use zombye_net::{EdgeDamage, save_file};
+use zombye_net::{EdgeDamage, Intent, save_file};
 use zombye_sim::map::{CHUNK_SIZE, EdgeChange, OwnedEdge, TileMap};
 
 use crate::Options;
@@ -147,6 +147,8 @@ fn quick_save_load(
     damage_map.0 = fresh.iter().map(|d| ((d.tile, d.edge), d.hp)).collect();
     damage.0.extend(fresh);
     let (tick, zombies) = (world.tick, world.zombies.len());
+    // Dev toggles aren't saved; they're this session's, so they carry over to the loaded world.
+    let dev = me.dev;
     let snap = link.replace_world(world);
     let dead = snap.players.iter().find(|p| p.id == join.player_id).or(snap.players.first()).is_some_and(|p| p.dead);
     if let Some(view) = snap.players.iter().find(|p| p.id == join.player_id).or(snap.players.first()) {
@@ -154,6 +156,9 @@ fn quick_save_load(
         join.player_id = view.id;
     }
     *tally = tally_after_load(snap.tick, dead);
+    if dev != zombye_sim::DevFlags::default() {
+        link.send(Intent::Dev { player: join.player_id, god: Some(dev.god), ignored: Some(dev.ignored) });
+    }
     clear_fx.write(ClearFx);
     let noted = if loaded.notes.is_empty() { String::new() } else { format!(" ({} notes on stdout: the game data changed)", loaded.notes.len()) };
     notice.say(now, format!("Loaded {QUICKSAVE} in {ms:.0} ms: tick {tick}, {zombies} zombies{noted}"));

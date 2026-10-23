@@ -171,6 +171,11 @@ impl Plugin for ServerLinkPlugin {
 /// What a client gets on joining (its map copy, the weapons, every damaged edge, a first
 /// snapshot), and the systems that tick the server.
 fn finish_join(app: &mut App, mut server: LocalServer, player_id: u32) {
+    // `--god` / `--ignored`: as if F1 / F2 were pressed at once.
+    let options = app.world().resource::<Options>();
+    if options.god || options.ignored {
+        server.send(Intent::Dev { player: player_id, god: options.god.then_some(true), ignored: options.ignored.then_some(true) });
+    }
     let first = Snapshot::capture(&mut server.world);
     let map = ClientMap(server.world.map.clone());
     let damage = EdgeDamageMap(EdgeDamage::all(&server.world).into_iter().map(|d| ((d.tile, d.edge), d.hp)).collect());

@@ -36,7 +36,7 @@ pub use inventory::{Burden, Carry, CarryTuning, Inventory, ItemJob, ItemNote, Jo
 pub use items::{GroundItem, ItemCategory, ItemDef, ItemStack, WeaponCategory, WeaponDef};
 pub use flow::FlowField;
 pub use map::TileMap;
-pub use players::{Action, ActionKind, MoveMods, Player, PlayerInput, PlayerState, Stance};
+pub use players::{Action, ActionKind, DevFlags, MoveMods, Player, PlayerInput, PlayerState, Stance};
 pub use population::{Attractor, PopulationDef, Zone};
 pub use template::BuildingTemplate;
 pub use save::{LoadError, LoadOptions, Loaded, SaveInfo};

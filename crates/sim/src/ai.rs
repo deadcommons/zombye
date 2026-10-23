@@ -478,7 +478,7 @@ pub(crate) fn step_zombies(z: &mut Zombies, next_pos: &mut [Vec2], cx: &mut Ctx)
 fn hunt(z: &mut Zombies, i: usize, cx: &mut Ctx) -> (Vec2, bool, Option<Vec2>, bool) {
     let t = cx.tuning;
     let p = z.pos[i];
-    let Some(target) = cx.targets.iter().find(|tg| tg.id == z.target_player[i]).copied() else {
+    let Some(target) = cx.targets.iter().find(|tg| tg.id == z.target_player[i] && !tg.ignored).copied() else {
         // Its player is gone: go and look where they were.
         start_investigating(z, i, t);
         return (Vec2::ZERO, false, None, false);
@@ -673,7 +673,7 @@ fn thump(z: &mut Zombies, i: usize, cx: &mut Ctx) -> (Vec2, bool, Option<Vec2>) 
     let player = z.target_player[i];
     let mut key = FlowKey::point(z.target_pos[i]);
     if player != 0 {
-        match cx.targets.iter().find(|tg| tg.id == player) {
+        match cx.targets.iter().find(|tg| tg.id == player && !tg.ignored) {
             Some(tg) if z.sees[i] > 0 => {
                 z.target_pos[i] = tg.pos;
                 key = FlowKey::Player(player);

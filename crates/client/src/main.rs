@@ -9,14 +9,14 @@
 //! (or stomp a downed zombie in front), E pick up the item you face (or search the container you
 //! face), Tab or I the inventory panel, F open/close the door or window you
 //! face, G smash the window you face, R get up again after dying, T skip an hour, mouse wheel
-//! zoom, Z spawn 250 zombies, `,` / `.` rotate between the four fixed angles (only with `--rotate`,
+//! zoom, Z spawn 250 zombies, F1 god mode, F2 ignored by zombies (dev toggles), `,` / `.` rotate between the four fixed angles (only with `--rotate`,
 //! the "Camera rotation" setting).
 //!
 //! Options: `--zombies N` `--seed S` `--time HOUR` `--at X,Y` `--rotate` `--novsync`
 //! `--screenshot PATH` (saved after `--screenshot-after SECS[,SECS...]`, default 5) `--exit-after SECS` `--zoom METRES`
 //! `--autoplay` (the player fights by itself) `--fight-demo` (a bat and a few zombies close by)
 //! `--siege` (outside your house with a bat, zombies battering its door) `--sneak` (start sneaking)
-//! `--inventory` (start with the inventory panel open)
+//! `--inventory` (start with the inventory panel open) `--god` / `--ignored` (start with F1 / F2 on)
 //! `--map-chunks N` (a square map N × N chunks of 16 m; default 20) `--saves DIR` (where saves go;
 //! default `saves`) `--load NAME|PATH` (start from a save; `--load-anyway` loads one whose game data
 //! changed in a way it can't simply take, dropping what no longer fits). F5 quicksaves, F9
@@ -85,6 +85,9 @@ pub struct Options {
     pub sneak: bool,
     /// Start with the inventory panel open (as if Tab had been pressed; `--inventory`).
     pub inventory: bool,
+    /// Start with the dev toggles on, as if F1 / F2 had been pressed (`--god`, `--ignored`).
+    pub god: bool,
+    pub ignored: bool,
     /// A square map this many 16 m chunks a side (`--map-chunks`, default 20: 320 m).
     pub map_chunks: Option<i32>,
     /// Folder for quicksaves and the autosave (`--saves`, default `saves`).
@@ -159,6 +162,8 @@ impl Options {
             siege: flag("--siege"),
             sneak: flag("--sneak"),
             inventory: flag("--inventory"),
+            god: flag("--god"),
+            ignored: flag("--ignored"),
             map_chunks: value("--map-chunks").and_then(|v| v.parse().ok()).filter(|n: &i32| (1..=256).contains(n)),
             saves: value("--saves").map(Into::into).unwrap_or_else(|| zombye_net::save_file::DEFAULT_DIR.into()),
             load: value("--load"),

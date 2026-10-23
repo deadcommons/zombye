@@ -18,9 +18,9 @@ use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
 use crate::TICK_DT;
-use crate::ai::ZOMBIE_RADIUS;
+use crate::ai::{self, ZOMBIE_RADIUS};
 use crate::items::{GroundItem, WeaponDef};
-use crate::players::{Action, ActionKind, PLAYER_RADIUS, Player, PlayerInput, RUN_MIN_ENDURANCE};
+use crate::players::{Action, ActionKind, DevFlags, PLAYER_RADIUS, Player, PlayerInput, RUN_MIN_ENDURANCE};
 use crate::senses::{Sound, SoundSource};
 use crate::vision::clear_path;
 use crate::world::World;
@@ -327,7 +327,7 @@ impl World {
         if !p.dead {
             return false;
         }
-        *p = Player { last_input_seq: p.last_input_seq, input: PlayerInput::default(), ..Player::new(id, spawn, hp) };
+        *p = Player { last_input_seq: p.last_input_seq, input: PlayerInput::default(), dev: p.dev, ..Player::new(id, spawn, hp) };
         let pi = self.players.iter().position(|p| p.id == id).expect("just found");
         self.refresh_carry(pi);
         true
@@ -576,14 +576,48 @@ impl World {
             let from = self.zombies.index_of(a.zombie).map_or(pos, |j| self.zombies.pos[j]);
             let dir = (pos - from).normalize_or(Vec2::X);
             self.push_combat_event(CombatEvent { kind: CombatEventKind::PlayerHurt, pos, dir, zombie: a.zombie, player: a.player, damage, crit: false });
-            let p = &mut self.players[pi];
-            p.hp -= damage;
-            if p.hp <= 0.0 {
-                self.kill_player(pi);
-            }
+            self.hurt_player(pi, damage);
         }
     }
 
+    /// Take `damage` off player `pi`'s health, killing it at 0: the one place a player loses HP,
+    /// so god mode (`DevFlags::god`: nothing comes off) holds for anything that hurts. Returns
+    /// whether it died.
+    pub(crate) fn hurt_player(&mut self, pi: usize, damage: f32) -> bool {
+        let p = &mut self.players[pi];
+        if p.dev.god || p.dead {
+            return false;
+        }
+        p.hp -= damage;
+        if p.hp > 0.0 {
+            return false;
+        }
+        self.kill_player(pi);
+        true
+    }
+
+    /// Dev toggles for player `id` (`None` leaves one as it is); returns the flags now, or `None`
+    /// if there's no such player. Turning `ignored` on makes every zombie after that player (chasing,
+    /// lunging, striking, battering its way to them) lose them at once: it goes to look where it
+    /// last saw them, then wanders as usual. Off, they can be seen and heard again from the next tick.
+    pub fn set_dev(&mut self, id: u32, god: Option<bool>, ignored: Option<bool>) -> Option<DevFlags> {
+        let p = self.players.iter_mut().find(|p| p.id == id)?;
+        p.dev.god = god.unwrap_or(p.dev.god);
+        p.dev.ignored = ignored.unwrap_or(p.dev.ignored);
+        let dev = p.dev;
+        if dev.ignored {
+            let (z, t) = (&mut self.zombies, &self.config.zombie);
+            for i in 0..z.len() {
+                if z.target_player[i] == id && z.state[i].is_after(id) {
+                    ai::start_investigating(z, i, t);
+                    z.sees[i] = 0;
+                }
+            }
+        }
+        Some(dev)
+    }
+
+    /// Dead at once (see [`World::hurt_player`] for damage, which god mode stops).
     pub(crate) fn kill_player(&mut self, pi: usize) {
         let p = &mut self.players[pi];
         p.hp = 0.0;
@@ -610,7 +644,7 @@ mod tests {
     use crate::world::WorldConfig;
     use crate::{PlayerInput, items};
     use glam::IVec2;
-    use std::f32::consts::PI;
+    use std::f32::consts::{PI, TAU};
 
     fn templates() -> Vec<BuildingTemplate> {
         [include_str!("../../../assets/data/buildings/bungalow.ron"), include_str!("../../../assets/data/buildings/family_two_storey.ron")]
@@ -1174,5 +1208,134 @@ mod tests {
         let up = anims.iter().position(|a| *a == ZombieAnim::GetUp).expect("never got up");
         assert_eq!(anims[up - 1], ZombieAnim::Down, "{anims:?}");
         assert!(!matches!(anims[up + 1], ZombieAnim::Down | ZombieAnim::GetUp), "{anims:?}");
+    }
+
+    /// Zombies all round the player, every one facing them, close enough to strike at once.
+    fn horde(w: &mut World, n: usize) -> Vec<usize> {
+        (0..n)
+            .map(|k| {
+                let a = k as f32 * TAU / n as f32;
+                zombie(w, Vec2::new(100.5, 100.5) + Vec2::from_angle(a) * (0.8 + 0.6 * (k % 2) as f32), a + PI)
+            })
+            .collect()
+    }
+
+    /// How many zombies are after player `id` (chasing, lunging, striking or battering toward them).
+    fn after(w: &World, id: u32) -> usize {
+        (0..w.zombies.len()).filter(|&i| w.zombies.target_player[i] == id && w.zombies.state[i].is_after(id)).count()
+    }
+
+    /// God mode: a horde strikes (the strikes land and are reported) but the player keeps 100 HP;
+    /// with it off again, the same horde kills them.
+    #[test]
+    fn god_mode_survives_a_horde() {
+        let (mut w, id) = arena(41);
+        assert_eq!(w.player(id).unwrap().hp, 100.0);
+        assert_eq!(w.set_dev(id, Some(true), None), Some(DevFlags { god: true, ignored: false }));
+        horde(&mut w, 12);
+        let (mut landed, mut hurt) = (0, 0);
+        for _ in 0..20 * 60 {
+            w.step();
+            landed += w.attack_events.iter().filter(|a| a.landed && a.player == id).count();
+            hurt += w.combat_events.drain(..).filter(|e| e.kind == CombatEventKind::PlayerHurt && e.player == id).count();
+            let p = w.player(id).unwrap();
+            assert!(!p.dead && p.hp == 100.0, "god mode lost HP: {}", p.hp);
+        }
+        assert!(landed > 50 && hurt == landed, "{landed} strikes landed, {hurt} hurt events");
+        assert_eq!(w.set_dev(id, Some(false), None), Some(DevFlags::default()));
+        let mut ticks = 0;
+        while !w.player(id).unwrap().dead {
+            w.step();
+            ticks += 1;
+            assert!(ticks < 20 * 60, "survived a minute without god mode");
+        }
+        assert_eq!(w.set_dev(99, Some(true), None), None, "no such player");
+    }
+
+    /// Ignored: a zombie looking straight at the player doesn't see them, one behind a running
+    /// (noisy) player doesn't hear them, and one it shoves doesn't come for it. Not ignored, each
+    /// does (the control).
+    #[test]
+    fn ignored_players_are_neither_seen_nor_heard() {
+        let watch = |ignored: bool, setup: fn(&mut World, u32) -> usize, run: bool| {
+            let (mut w, id) = arena(43);
+            w.set_dev(id, None, Some(ignored));
+            let z = setup(&mut w, id);
+            let mut noticed = false;
+            for t in 0..20 * 10u32 {
+                if run {
+                    let a = t as f32 * 0.3;
+                    w.set_player_input(id, t + 1, PlayerInput { move_dir: Vec2::from_angle(a), facing: PI, run: true, sneak: false });
+                }
+                w.step();
+                assert!(!ignored || w.attack_events.is_empty(), "struck an ignored player");
+                noticed |= w.zombies.state[z] != ZombieState::Wander && !w.zombies.state[z].is_reeling();
+            }
+            noticed
+        };
+        // Sight: 6 m ahead, facing the player, who stands still in daylight (no noise).
+        let ahead: fn(&mut World, u32) -> usize = |w, _| zombie(w, Vec2::new(106.5, 100.5), PI);
+        // Hearing: 10 m off with its back to the player, who runs about.
+        let behind: fn(&mut World, u32) -> usize = |w, _| zombie(w, Vec2::new(110.5, 100.5), 0.0);
+        assert!(watch(false, ahead, false) && !watch(true, ahead, false), "sight");
+        assert!(watch(false, behind, true) && !watch(true, behind, true), "hearing");
+        // Being hit: shoved, it turns on the player when it recovers, finds nobody and goes to look.
+        let (mut w, id) = arena(43);
+        w.set_dev(id, None, Some(true));
+        let z = zombie(&mut w, Vec2::new(101.3, 100.5), PI);
+        assert!(w.player_shove(id));
+        for _ in 0..20 * 10 {
+            w.step();
+            assert!(w.attack_events.is_empty(), "struck an ignored player");
+        }
+        assert_eq!(after(&w, id), 0, "{:?}", w.zombies.state[z]);
+    }
+
+    /// Turning ignored on makes the zombies after the player lose them at once (they look where
+    /// they last saw them, then wander); off again, they notice the player as usual.
+    #[test]
+    fn ignoring_drops_chasers_and_turning_it_off_brings_them_back() {
+        let (mut w, id) = arena(47);
+        w.set_dev(id, Some(true), None);
+        horde(&mut w, 6);
+        for _ in 0..20 * 5 {
+            w.step();
+        }
+        assert!(after(&w, id) >= 4, "only {} after the player", after(&w, id));
+        w.set_dev(id, None, Some(true));
+        assert_eq!(after(&w, id), 0);
+        assert!(w.zombies.state.iter().all(|s| matches!(s, ZombieState::Investigate | ZombieState::Staggered | ZombieState::Down)), "{:?}", w.zombies.state);
+        let secs = w.config.zombie.investigate_secs + 5.0;
+        for _ in 0..(secs / TICK_DT) as u32 {
+            w.step();
+            assert_eq!(after(&w, id), 0);
+            assert!(w.attack_events.is_empty());
+        }
+        assert!(w.zombies.state.iter().all(|s| *s == ZombieState::Wander), "{:?}", w.zombies.state);
+        w.set_dev(id, None, Some(false));
+        let mut t = 0u32;
+        while after(&w, id) == 0 {
+            t += 1;
+            w.set_player_input(id, t, PlayerInput { move_dir: Vec2::from_angle(t as f32 * 0.2), facing: 0.0, run: false, sneak: false });
+            w.step();
+            assert!(t < 20 * 20, "nobody noticed the player again in 20 s");
+        }
+    }
+
+    /// Dev toggles leave the state hash alone while off, change it while on, and aren't saved.
+    #[test]
+    fn dev_flags_hash_only_when_on_and_are_not_saved() {
+        let mut w = World::new(WorldConfig::new(53, 0, templates()).with_weapons(weapons()).with_items(items()));
+        let id = w.add_player(w.player_spawn);
+        w.step();
+        let (hash, bytes) = (w.state_hash(), w.save());
+        w.set_dev(id, Some(true), Some(true));
+        assert_ne!(w.state_hash(), hash);
+        assert_eq!(w.save(), bytes, "dev toggles are not in the save");
+        let loaded = World::load(&w.save(), &w.config).unwrap();
+        assert_eq!(loaded.player(id).unwrap().dev, DevFlags::default());
+        assert_eq!(loaded.state_hash(), hash);
+        w.set_dev(id, Some(false), Some(false));
+        assert_eq!(w.state_hash(), hash);
     }
 }
