@@ -59,8 +59,14 @@ ideas, or find people to mod and build with.
 
 ## License
 
-Zombye is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option:
-the game, the server, tools, data, docs and our own assets.
+Zombye's code (the game, the server, tools, data, shaders and docs) is dual-licensed under
+[MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option. Our art and audio (models,
+textures, animations, images, sounds and music) are licensed under
+[CC BY-NC-SA 4.0](assets/LICENSE): use them in mods, fan work and non-commercial projects;
+commercial use needs our permission.
+
+**Videos and streams:** you're welcome to record, stream and monetise videos and screenshots of
+Zombye without asking.
 
 Copyright (c) 2026 Dead Commons and the Zombye contributors. Required notices are in
 [NOTICE](NOTICE), and every asset is listed in [ATTRIBUTION.md](ATTRIBUTION.md). The Zombye and Dead Commons

@@ -151,8 +151,10 @@ over the network, as many survival games do. This means MP isn't a retrofit.
   and an agent/MCP admin endpoint. It's promoted in the README, the launcher and the server browser.
 - Self-hosting stays free and documented. That's what makes the open-source community trust it,
   and our income comes from convenience, not lock-in.
-- **Licence:** **MIT OR Apache-2.0 for everything, server included**, like the ArtCraft apps. No CLA
-  or sign-off: contributions come in under the same licence. Anyone may run or resell Zombye
+- **Licence:** **MIT OR Apache-2.0 for all code, server included**, like the ArtCraft apps. No CLA
+  or sign-off: contributions come in under the same licence. Art and audio are CC BY-NC-SA 4.0
+  (contributed art comes in under CC BY 4.0), so nobody can sell our art in a clone; videos and
+  streams are always allowed. Anyone may run or resell Zombye
   servers, even modified ones. The hosting business is protected by the brand, not the licence:
   the Zombye and Dead Commons names and logos are trademarks
   ([docs/brand/LICENSE-brand.txt](brand/LICENSE-brand.txt)), so only Dead Commons can offer
@@ -351,7 +353,7 @@ progress. Pick up an issue there, or open one to propose work.
 - **Art:** our own low-poly, readable style for v1 (improved later), all 3D art made by us with Meshy
   plus procedural kit pieces; no Synty or other third-party packs.
 - **Studio and licence:** published by Dead Commons (GitHub org `deadcommons`). MIT OR Apache-2.0
-  for everything, server included, no CLA (§3a).
+  for code, CC BY-NC-SA 4.0 for art and audio, server included, no CLA (§3a).
 
 - **Engine:** Rust + Bevy 0.20.
 - **Scale:** 1 tile = 1 m.
