@@ -115,7 +115,7 @@ steals focus. Not rendered: client-only effects that aren't in the save (blood s
 `--map-chunks N` makes the map N × N chunks of 16 m (default 30, 480 m; 64 is about 1 km): the same town in the
 middle with more forest round it (a map too small for the town is grown to fit). The server takes it too.
 Without `--zombies` (client and server) the world holds as many zombies as `assets/data/population.ron` gives for the
-map: about 2,600 on the default map, about 3,100 on a 1 km one (the extra ground is sparse forest); `--zombies N`
+map: about 2,950 on the default map, about 3,450 on a 1 km one (the extra ground is sparse forest); `--zombies N`
 sets the total and keeps the file's proportions.
 Server bench (`zombye-server --bench`): `--ticks N`, `--zombies N`, `--seed S`, `--map-chunks N`; with no `--players`
 every zombie heads for a debug goal (all stay active); `--players N` puts players on the road west of town (in the
@@ -190,22 +190,43 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   Shipped (#17): six houses (bungalow, two-storey family house, ranch with garage, narrow townhouse,
   cottage with an open porch, L-shaped house round a covered patio), two offices (`kind: Office`: a
   small one-storey office, a two-storey office block) and two shops (`kind: Shop`: a corner pharmacy,
-  a general store and hardware). Houses are at most 13 × 15 tiles to fit a lot.
-- `sim::worldgen` (#18, PLAN §4.1a) lays out a seeded grid of street blocks (`GenConfig::blocks`, default 5 × 4,
-  about 380 × 260 m) round a **main street**: the middle east–west street, wider (9 m of asphalt, 3 m sidewalks, a
-  solid centre line), running on out of town both ways; one street also leaves north and one south. Along the main
-  street in the middle `commercial_blocks` columns (default 3; serde default, so older settings load) both rows facing
-  it are **shops and offices** (`kind: Shop` / `Office`), packed side by side 1–3 m apart on shallow lots 1–2 m back
-  from the sidewalk and paved up to their fronts, now and then a parking lot (asphalt with bays), and a parking or
-  vacant lot where nothing fits; a fence runs behind them. Every other row is **house** lots (`kind: House`, any
-  template that fits, 5–6 m back with a garden path; wider lots on the edge of town): mostly houses, some bare yards
-  and overgrown vacant lots (dirt, bushes), one pocket park per town, back fences and yard trees. Templates are
-  rotated to face their street and mirrored at random. With no shop or office templates the main street gets houses;
-  with no houses, residential lots stay empty. Forest all round. The player wakes up in a ground-floor bedroom of a
-  house. The town core (`World::town_core`, from the generator, not saved) is the commercial blocks either side of the
-  main street. The default town holds about 94 buildings (seed 1: 74 houses, 11 shops, 9 offices) on a 480 m map,
-  generated in about 50 ms (world included); a save of one regenerates the map in about 45 ms. Lot details use
-  coordinates relative to their lot, so a bigger map gives the same town.
+  a general store and hardware). Houses are at most 13 × 15 tiles to fit a lot. `kind: Civic` (none
+  shipped yet) is for landmarks: town hall, courthouse, church, school, up to about 40 × 40 m (see worldgen).
+- `sim::worldgen` (#18, #77, PLAN §4.1a) lays the town out **by district** (`GenConfig::blocks` is its nominal size
+  in blocks of about 74 × 66 m, default 5 × 4: about 370–420 × 275–320 m, grown to fit its core). A **main street**
+  runs east–west across it (9 m of asphalt, 3 m sidewalks, a solid centre line) and on out of town both ways. Its
+  middle is the **core**: the **civic district** (north of the street a landmark block beside the **town square**, a
+  green with a paved middle, paths and a ring of trees; south of it one wide block of two **landmark lots**, about
+  42–52 × 48–54 m), with **commercial blocks** either side (`commercial_blocks` on each side of the street, default
+  2, split between the two ends; serde default, so older settings load; 50–70 m wide): **shops and offices** facing
+  the main street (`kind: Shop` / `Office`, shops twice as likely), packed 1–3 m apart on shallow lots paved up to
+  their fronts, now and then a parking lot, half the time an **alley** (4 m of asphalt) behind them, and a row of
+  houses behind facing the back street. The blocks south of the street are sized so their side streets either line
+  up with the north side's or are clearly offset, so most meet the main street at a T. A back street runs behind
+  each side's row of core blocks, and a long street at each end of the row runs out to the forest. The
+  **residential districts** (beyond the ends of the core, and behind it) are split again and again by narrower side
+  streets (6 m of asphalt) into blocks of varied sizes (`TownBuilder::split`: T-junctions, crossings that carry
+  straight on or are clearly offset, now and then a long block), filled with rows of house lots facing whichever
+  streets run round them (houses turned to face north, south, east or west; corner lots on the side streets) or, in
+  up to three blocks (at least one), a **cul-de-sac**: a dead end with a turning circle (asphalt within 8.5 m) and
+  houses round it. Blocks on the edge of town stop short of it by their own few metres and the woods come up to
+  them, so streets run on into the trees and stop at the forest (some with a dirt track); lots backing onto the
+  forest are **outer** lots, wider, set further back and wilder. The street out north and the one out south are the
+  dead ends nearest the middle of town, with a dog-leg in the forest. House lots take any `kind: House` template
+  that fits (5–6 m back, a garden path to the street): mostly houses, some bare yards and overgrown vacant lots, one
+  pocket park per town, back fences and yard trees. **Landmark lots** take the biggest `kind: Civic` template that
+  fits (a town hall, courthouse, church, school; or a shop or office too big for the strip, over 24 × 16), with a
+  paved forecourt and parking beside it; with none (none ship yet), each becomes the biggest office that fits with
+  parking, a green, or a parking lot (never the same twice running). Templates are chosen by kind and footprint,
+  rotated to face their street and mirrored at random. With no shop or office templates the commercial blocks get
+  houses; with no houses, residential lots stay empty. The player wakes up in a ground-floor bedroom of a house. The
+  town core (`World::town_core`, from the generator, not saved: two rectangles, the core blocks north of the main
+  street with the street, and those south of it) is the civic and commercial blocks. `Generated::plan`
+  (`worldgen::Plan`) lists the blocks with their district (`Civic`, `Commercial`, `Residential`, `Outer`) and use, the
+  streets, the square, landmark lots, cul-de-sacs, alleys and dead ends (tests, tools; not kept by the world). The
+  default town holds about 95–120 buildings (seed 1: 82 houses, 7 shops, 6 offices) on a 480 m map, generated in
+  about 50–60 ms (world included). Lot details use coordinates relative to their lot, so a bigger map gives the same
+  town. `print_town` (an ignored test; `ZOMBYE_SEED`, and `ZOMBYE_PPM=PATH` for a one-pixel-a-tile picture) prints it.
 
 ## Players, intents and prediction
 
@@ -770,8 +791,9 @@ Where zombies live is data (issue #4): `population.ron` (`population::Population
 All numbers are ours.
 
 - **Zones** come from the generator (`worldgen::zone_at`, `World::zone_at`): `Indoors` (any room, scaled per room
-  type by `rooms`), and outdoors in town the `TownCore` (the main street's shops and offices, `World::town_core`; `core_fraction`,
-  default 1, of its length along the street round its middle), `Street` (roads, parking lots, sidewalks) and `Yard`; outside town `ForestRoad`, `ForestEdge` (within `forest_edge_width` of
+  type by `rooms`), and outdoors in town the `TownCore` (the civic and commercial blocks along the main street and the
+  street itself, `World::town_core`: one rectangle north of the street, one south; `core_fraction`, default 1, of each
+  one's length along the street round its middle), `Street` (roads, parking lots, sidewalks) and `Yard`; outside town `ForestRoad`, `ForestEdge` (within `forest_edge_width` of
   town) and `DeepForest`. `density` is zombies per km² of open (unblocked) ground per zone; `scale` multiplies it.
   `World::populate` places them by rejection sampling on tile density (none within 14 m of the player's start or in
   that house), `WorldConfig::zombies` (`Option`) either sets the total (proportions kept) or, `None`, takes the
@@ -865,8 +887,8 @@ stack's `born`/`used`, 7 crafting: craft jobs and the recipes in the content fin
   strike off the active tier, a map edit that makes a door or window of something else. The tests mutate a valid world
   and save it (every checksum right) for each case, forge sections, and fuzz section bytes with fixed-up checksums
   (each load fails cleanly or gives a world that steps).
-- **Size and speed** (M-series Mac, release, `--save-bench`): the default map with ~2,600 zombies is about 234 KB, saved
-  in ~1 ms, loaded in ~47 ms; the 1 km map with 22,500 zombies (21,500 + a 1,000 horde on a player) is 2.0 MB
+- **Size and speed** (M-series Mac, release, `--save-bench`): the default map with ~2,950 zombies is about 267 KB, saved
+  in ~1-4 ms, loaded in ~50 ms; the 1 km map with 22,500 zombies (21,500 + a 1,000 horde on a player) is 2.0 MB
   (~87 bytes a zombie), saved in ~14 ms and loaded in ~200 ms, nearly all of that regenerating the map.
 
 ## Connecting an agent to the game (MCP)

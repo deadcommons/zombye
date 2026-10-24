@@ -1006,8 +1006,13 @@ mod tests {
         let mut server = server();
         let id = server.join(None);
         let other = server.join(None);
+        // Walk 2 s whichever way the bedroom has room (the town layout decides where its walls are).
+        let start = server.world.player_spawn.floor().as_ivec2();
+        let map = &server.world.map;
+        let side = zombye_sim::map::Side::ALL.into_iter().max_by_key(|&s| (0..3).take_while(|&k| map.can_step(start + s.offset() * k, s)).count()).unwrap();
+        let dir = side.offset().as_vec2();
         for seq in 1..=40u32 {
-            server.send(Intent::PlayerInput { player: id, seq, move_dir: [0.0, -1.0], facing: 0.0, run: false, sneak: false });
+            server.send(Intent::PlayerInput { player: id, seq, move_dir: [dir.x, dir.y], facing: 0.0, run: false, sneak: false });
             server.tick();
         }
         let snap = server.tick().for_player(id);

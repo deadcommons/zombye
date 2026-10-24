@@ -204,8 +204,8 @@ pub struct PopulationDef {
     pub density: ZoneDensity,
     /// Multipliers on `density.indoors` by room type (`kitchen`, `bedroom`, ...); others 1.
     pub rooms: BTreeMap<String, f32>,
-    /// The town core is the main street's shops and offices (the generator lays it out): this
-    /// fraction of its length along the street, round its middle (1 = all of it).
+    /// The town core is the civic and commercial blocks along the main street (the generator lays
+    /// it out): this fraction of its length along the street, round its middle (1 = all of it).
     pub core_fraction: f32,
     /// Forest within this many metres of the town is forest edge; beyond is deep forest.
     pub forest_edge_width: f32,
