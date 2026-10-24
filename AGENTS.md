@@ -18,7 +18,7 @@ Work is tracked on GitHub, not in the repo: the
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint; `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
 | `crates/client` | `zombye` Bevy client: camera, chunk streaming, building meshes, the outdoors per chunk from the tile map alone (`meshgen/landscape.rs`: lawns, verges, forest floor and litter, road paint at real scale, kerbs, slab joints, driveways, front beds, fences and hedges; `meshgen/trees.rs`: faceted broadleaves, birches, pines, spruces; colours in `meshgen/land_palette.rs`), fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd, or a character baked offline read from a `.zvat` (`zvat.rs`); `survivor.rs` skinned, CPU-posed players), hit feedback (`fx.rs`), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), HUD, the death screen and run summary (`death.rs`), the skills panel and level-up line (`skills_ui.rs`), sound (`audio.rs`, see Sound), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
 | `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/items/recipes.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`), models (`models/furniture/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), sound (`audio/sfx/*.wav`, `audio/ambience/*.wav`, listed in `data/sounds.ron`), later textures. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
-| `tools/blender/` | Python to build assets: run inside Blender, mesh builder, palette, renders, validation, GLB export (`zasset.py`, `palette.py`, `build.py`), character clean-up, validation and skinned export (`zchar.py`), VAT bake for the crowd (`zvat.py`); plain Python, art-repo work folders and promotion (`artrepo.py`). | MIT OR Apache-2.0 |
+| `tools/blender/` | Python to build assets: run inside Blender, mesh builder, palette, renders, validation, GLB export (`zasset.py`, `palette.py`, `build.py`), character clean-up, validation and skinned export (`zchar.py`), VAT bake for the crowd, outfit variants with palette swatches (`zvat.py`, `build.py -- --crowd`); plain Python, art-repo work folders and promotion (`artrepo.py`). | MIT OR Apache-2.0 |
 | `tools/audio/` | `synth.py`: the placeholder sounds, synthesised from noise, tones and filters (plain Python, deterministic). | MIT OR Apache-2.0 |
 | `docs/` | Plan and design docs. | — |
 
@@ -81,7 +81,7 @@ cargo test --release --workspace
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --inventory --god --ignored --crowd-vat PATH|none --mute --volume V`
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --inventory --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --mute --volume V`
 (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost).
@@ -312,7 +312,8 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
 - **Zombie health and states:** per-zombie `hp` (`CombatTuning::zombie_hp`, from a hash of the id).
   `Staggered` (brief; no attacking, no senses) and `Down` (a few seconds on the ground; no attacking, no
   senses, out of crowd separation) end with the zombie going after whoever hit it; the last `GET_UP_SECS`
-  (1.1 s) of being down show `ZombieAnim::GetUp` (still `Down` to the AI, so still stompable). `Dead` zombies are
+  (2.0 s, the crowd character's get-up clip, #53) of being down (`down_secs` 4-6 s: the client's 1.3 s fall, a moment
+  lying, the get-up) show `ZombieAnim::GetUp` (still `Down` to the AI, so still stompable). `Dead` zombies are
   corpses: left out of the spatial hash, the AI, senses, separation and swings; their `timer` counts up from death,
   and at the end of each tick the world removes those older than `ZombieTuning::corpse_secs` (900) and the
   oldest beyond `max_corpses` (300), keeping the columns in id order (`Zombies::remove_where`; ids are never
@@ -663,35 +664,48 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
 
 - Both are grey-box boxes on a small skeleton (`rig.rs`: bones as parent + rest pivot, a pose is a rotation
   per bone plus a root offset; positive X swings a hanging limb backward, positive Z toward the model's left).
-- **Zombies** (`zombie_render.rs`, `zombie_vat.wesl`): 7 bones, poses baked into a vertex animation texture,
-  one instanced batch for the whole horde. The VAT has more clips than `ZombieAnim`: Idle, Walk (rate from speed
-  / stride), Attack, Thump, Stagger, Fall then a Down loop, GetUp, and three deaths (backward, forward when hit
-  from behind, and limp when killed on the ground). The client picks the clip and, for one-shots, its position
-  (from when the anim changed), so one-shots start at frame 0 and stop on their last frame; clips are authored to
-  start and end near each other's poses (`clips_join_up` test). Switches between the looping clips (Idle, Walk,
-  Attack, Thump: clips 0-3) crossfade over 0.2 s in the shader. The MeshTag: bits 0-3 clip, 4-9 outfit, 10
-  direct position, 27 hit flash, then either (looping) 11-16 phase, 17-24 speed, 25-26 the looping clip it fades
-  from and 28-31 that clip's weight (0 = no fade), or (direct) 11-26 a 16-bit clip position.
-  The VAT is RGBA16F (one column per vertex, at most 8,192; one row per frame); the mesh's bounds are two
-  zero-area triangles at the corners of the box every baked frame fits in (`POSE_BOUNDS` for the grey-box).
-- **A baked crowd character** (#53) replaces the grey-box when there is one: `--crowd-vat PATH`, else
-  `ZOMBYE_CROWD_VAT=PATH` (the MCP `screenshot` client inherits it, so a work-in-progress `.zvat` from the art
-  repo can be reviewed in game), else the first `assets/models/characters/*.zvat` by name (where a promoted one
-  goes); `none` forces the grey-box, and a file that won't load is a warning and the grey-box. `zvat.rs` reads
-  the file `tools/blender/zvat.py` writes (validated: sizes, indices, finite positions, unique clip names) and
-  its texture: `ZOMBYE_CROWD_TEXTURE`, else `<stem>.png`/`.jpg`/`_base_color.png`/`.jpg` beside it, else the
-  base-colour image in the `<stem>.glb` beside it (Bevy's `jpeg` feature is on for this); mip-mapped on load
-  (linear-light averages), at most 1024 px. File clips fill `CLIPS` slots by name (`idle`, `walk`, `attack`,
-  `thump`, `stagger`, `fall`, `down`, `getup`, `dieback`, `diefront`, `diedown`; case, `_` and `-` ignored);
-  loops keep their own rate (the walk its stride), one-shots play over the grey-box clip's length. Slots the
-  file lacks get stand-ins (`Source`): idle and walk stand in for each other; attack and thump are the idle (else
-  the walk) leaned forward 0.3 / 0.12 rad; the one-shots and the Down loop move the idle's first frame as one
-  piece by the grey-box clip's root motion (toppling about the feet, getting up, reeling back), its lowest point
-  kept on the ground. The shader samples the texture by UV and tints it per outfit (`outfit_tint`: 8 washes
-  times a brightness); the grey-box binds a 1 × 1 white texture and keeps its body-part colours. Cost: about
-  2,970 vertices against the grey-box's 318, so the crowd is vertex-bound: ~2,000 zombies in view at
-  1920 × 1080 took ~8.9 ms a frame against ~5.5 ms (M-series Mac, offscreen); a lower-detail mesh for distant
-  zombies is the fix (not done).
+- **Zombies** (`zombie_render.rs`, `zombie_vat.wesl`): poses baked into a vertex animation texture, one instanced
+  batch per outfit variant. The VAT has more clips than `ZombieAnim` (13 slots, `Clip`): Idle, Walk (rate from
+  speed / stride), Attack, Thump (loops, clips 0-3), Stagger and Stagger2 (a stagger plays one or the other, picked
+  per stagger from the zombie id and its count of staggers, so every client agrees), Fall then a Down loop, GetUp,
+  three deaths (backward, forward when hit from behind, and limp when killed on the ground) and Groan (baked, not
+  played: the sim's groans aren't in the snapshots, and a hunting zombie is moving, which an on-the-spot roar
+  can't show). The client picks the clip and, for one-shots, its position (from when the anim changed), so
+  one-shots start at frame 0 and stop on their last frame. **Every clip change crossfades over 0.2 s**
+  (`FADE_SECS`): loop to loop with both playing on the shader's clock (`Fade::Loop`); into or out of a one-shot or
+  the ground loop the old clip is held where it was (`Fade::Held`) while the new one fades in, the new one played
+  at a position the client works out (`loop_position`, the shader's own sum on `Time::elapsed_secs_wrapped`, so the
+  hand-over to the shader's clock after the fade doesn't jump). Clips are also authored to start and end near each
+  other's poses (`clips_join_up`). The MeshTag: bits 0-3 clip, 4-9 outfit, 10 direct, 11 hit flash, then either
+  (looping) 12-17 phase, 18-25 speed (1/48 m/s), 26-27 the looping clip it fades from and 28-31 its weight (/15),
+  or (direct) 12-19 the clip position (/255), 20-23 the clip it fades from, 24-28 where that one is held (/31) and
+  29-31 its weight (/7). The VAT is RGBA16F (one column per vertex, at most 8,192; one row per frame); the mesh's
+  bounds are two zero-area triangles at the corners of the box every baked frame fits in (`POSE_BOUNDS` for the
+  grey-box, 7 bones of boxes, the fallback).
+- **A baked crowd character** (#53) replaces the grey-box when there is one: `--crowd-vat`, else
+  `ZOMBYE_CROWD_VAT` (the MCP `screenshot` client inherits it, so a work-in-progress bake from the art repo can be
+  reviewed in game), else every `assets/models/characters/*.zvat` by name (where promoted ones go). The value is a
+  `.zvat`, a folder (every `.zvat` in it, by name) or several separated by `,` (or `:`); `none` forces the
+  grey-box, and a file that won't load is a warning and left out (none left: the grey-box). **Several files are
+  outfit variants:** each its own mesh, VAT, texture and material (one draw batch each), and each zombie wears one
+  by a hash of its id (`variant_of`). `zvat.rs` reads the file `tools/blender/zvat.py` writes (validated: sizes,
+  indices, finite positions, unique clip names) and its texture: `ZOMBYE_CROWD_TEXTURE` (for every variant), else
+  `<stem>.png`/`.jpg`/`_base_color.png`/`.jpg` beside it, else the base-colour image in the `<stem>.glb` beside it;
+  mip-mapped on load (linear-light averages), at most 1024 px. File clips fill the slots by name (`idle`, `walk`,
+  `attack`, `thump`, `stagger`, `stagger2`, `fall`, `down`, `getup`, `dieback`, `diefront`, `diedown`, `groan`;
+  case, `_` and `-` ignored); loops keep their own rate (the walk its stride, the down loop its length). One-shots
+  play over their own length sped up to a cap (`baked_max_secs`: stagger 1.0 s, stagger2 0.9, fall 1.3, deaths
+  2.0 / 1.5 / 1.7, groan 3.0; the sim's stagger lasts 0.6-0.9 s and the crossfade covers the cut) and the get-up
+  over exactly `GET_UP_SECS`. Slots the file lacks get stand-ins (`Source`): idle and walk stand in for each other;
+  attack and thump are the idle (else the walk) leaned forward 0.3 / 0.12 rad; the one-shots and the Down loop move
+  the idle's first frame as one piece by the grey-box clip's root motion (toppling about the feet, getting up,
+  reeling back), its lowest point kept on the ground. The shader samples the texture by UV and tints it per outfit
+  (`outfit_tint`: 8 washes times a brightness); the grey-box binds a 1 × 1 white texture and keeps its body-part
+  colours. Cost, measured with the first crowd character in review (#53: a ~600-triangle crowd LOD, 879 vertices,
+  and an outfit variant with a wearable, 1,063) at 1920 × 1080 offscreen with 2,000 zombies in view (M-series Mac):
+  at the default zoom (26 m) a frame took ~4.1 ms (one variant) / ~4.3 ms (both mixed) against the grey-box's
+  ~3.7 ms (a full-detail 2,970-vertex body: 6.5 ms); at 60 m ~5.9 / ~6.2 ms against ~5.6 ms. Keep crowd meshes to
+  about this size: the crowd is vertex-bound.
 - **Survivors** (`survivor.rs`): 12 bones (knees, elbows, a right hand), a Bevy skinned mesh with
   StandardMaterial (lit, casts shadows), posed on the CPU each frame with blending: locomotion (idle, walk, run,
   sneak crouch; the cycle advances with distance actually moved), actions on top (punch / one-handed chop /

@@ -9,6 +9,7 @@
     ... --python tools/blender/build.py -- --g3 furniture/bed   # also the Gate 3 sheet (renders/bed_g3.png)
     ... --python tools/blender/build.py -- --refs a.png,b.png furniture/bed   # Gate 3 beside these instead
     ... --python tools/blender/build.py -- --out /tmp/scratch furniture/bed   # write nothing in either repo
+    ... --python tools/blender/build.py -- --crowd ~/games/zombye-art/characters/zombie-02  # crowd VATs only
 
 Each asset is built where it's being worked on: its folder in the art repo when it has one, else the
 game repo's copy (tools/blender/artrepo.py). A character is given as its art-repo folder (a directory
@@ -17,6 +18,8 @@ Every review sheet has the scale figure and the door frame. `--g3` adds the Gate
 sheet beside the asset's approved reference and one or two approved sheets of its category
 (`zasset.gate3_refs`); `--refs A,B` puts those images beside it instead (implies `--g3`). `--out DIR`
 writes the renders, `.blend` and exports to DIR (a folder per asset) and only reads the work folder.
+`--crowd` bakes a character's crowd `.zvat` outfit variants (the spec's `crowd` section, `zvat.crowd`) from its
+saved `.blend` into its `export/` (or `--out DIR`), and nothing else.
 Prints each asset's validation report and exits 1 if any failed.
 """
 
@@ -27,13 +30,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import zasset  # noqa: E402
 import zchar  # noqa: E402
 import zgarment  # noqa: E402
+import zvat  # noqa: E402
 
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-check_only, g3, refs, out_dir, args = False, False, None, None, []
+check_only, g3, refs, out_dir, crowd, args = False, False, None, None, False, []
 while argv:
     a = argv.pop(0)
     if a == "--check":
         check_only = True
+    elif a == "--crowd":
+        crowd = True
     elif a == "--g3":
         g3 = True
     elif a == "--refs" and argv:
@@ -54,6 +60,18 @@ for a in args:
 if not assets:
     print(__doc__)
     sys.exit(2)
+
+if crowd:
+    import json
+
+    import bpy
+    for asset in assets:
+        bpy.ops.wm.open_mainfile(filepath=str(zchar.paths(asset)["blend"]))
+        spec = zchar.load_spec(asset)
+        export = (out_dir / asset.name / "export") if out_dir else zchar.paths(asset)["export"]
+        for v in zvat.crowd(spec, export):
+            print("crowd: " + json.dumps(v))
+    sys.exit(0)
 
 failed = []
 for asset in assets:
