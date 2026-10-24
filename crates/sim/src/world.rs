@@ -220,9 +220,9 @@ pub struct World {
     pub map: TileMap,
     pub town_min: IVec2,
     pub town_max: IVec2,
-    /// The town core, the main street's shops and offices (`min..max`, tiles): from the generator,
-    /// derived (not saved).
-    pub town_core: (IVec2, IVec2),
+    /// The town core, the civic and commercial blocks along the main street, north of it and south
+    /// of it (`min..max`, tiles; see [`Town`]): from the generator, derived (not saved).
+    pub town_core: [(IVec2, IVec2); 2],
     pub player_spawn: Vec2,
     pub spawn_building: usize,
     pub zombies: Zombies,
@@ -390,7 +390,7 @@ impl World {
             scratch_hits: Vec::new(),
             town_min: generated.town_min,
             town_max: generated.town_max,
-            town_core: (generated.core_min, generated.core_max),
+            town_core: generated.core,
             player_spawn: generated.player_spawn,
             spawn_building: generated.spawn_building,
             map,
@@ -1087,7 +1087,7 @@ impl World {
 
     /// The town's bounds and core.
     pub fn town(&self) -> Town {
-        Town { min: self.town_min, max: self.town_max, core_min: self.town_core.0, core_max: self.town_core.1 }
+        Town { min: self.town_min, max: self.town_max, core: self.town_core }
     }
 
     /// The population zone of tile `t` (from the generator and the population file).
@@ -1211,11 +1211,15 @@ mod tests {
         World::new(WorldConfig::new(seed, zombies, templates()))
     }
 
-    /// A point on the main street, outside any building.
+    /// A point on the main street in the middle of town, outside any building: the first road
+    /// tile down the middle of town on a road that runs the town's whole width (#77: the first
+    /// road from the top used to be the town's edge street; now it can be a side street that ends
+    /// in the woods).
     fn street_point(w: &World) -> Vec2 {
+        let road = |x: i32, y: i32| w.map.tile(IVec2::new(x, y)).floor.is_road();
         for y in w.town_min.y..w.town_max.y {
             let p = IVec2::new((w.town_min.x + w.town_max.x) / 2, y);
-            if w.map.tile(p).floor.is_road() && !w.map.tile_blocked(p) {
+            if road(p.x, y) && road(w.town_min.x + 1, y) && road(w.town_max.x - 2, y) && !w.map.tile_blocked(p) {
                 return p.as_vec2() + Vec2::splat(0.5);
             }
         }
@@ -1712,7 +1716,9 @@ mod tests {
             let broke = broke.unwrap_or_else(|| panic!("seed {seed}: nothing broke"));
             let inside = inside.unwrap_or_else(|| panic!("seed {seed}: no zombie got in"));
             let struck = struck.unwrap_or_else(|| panic!("seed {seed}: nobody reached the player"));
-            assert!(broke <= inside && inside <= struck, "seed {seed}: broke {broke}, inside {inside}, struck {struck}");
+            // Nothing gets in or strikes before something breaks (a zombie at a broken window can
+            // strike a player standing by it before any zombie has climbed in).
+            assert!(broke <= inside && broke <= struck, "seed {seed}: broke {broke}, inside {inside}, struck {struck}");
             // Nobody walked through a wall: every zombie inside came through a broken edge.
             assert!(w.edge_changes.iter().any(|c| c.kind == Edge::WindowBroken || c.kind == Edge::DoorBroken));
             eprintln!("seed {seed}: first break after {:.1} s, first zombie inside {:.1} s, first strike {:.1} s", broke as f32 * TICK_DT, inside as f32 * TICK_DT, struck as f32 * TICK_DT);
@@ -2663,7 +2669,9 @@ mod tests {
             let (lo, hi) = regions.rect(r);
             let d = home.clamp(lo, hi).distance(home);
             if d < def.respawn.min_distance {
-                assert_eq!(counts[r], 0, "region {r} near the player was topped up");
+                // Nothing is placed there (checked as they're placed, above), but one may since have
+                // wandered over from a region next door.
+                assert!(counts[r] <= 2, "region {r} near the player was topped up: {}", counts[r]);
             } else if r == seen {
                 assert_eq!(counts[r], 0, "region {r} was seen just now");
             } else if w.population().target[r] >= 1.0 {
