@@ -3,8 +3,8 @@
 Muted, slightly desaturated early-1990s small-town colours (docs/PLAN.md §6.6): stained pine and
 oak, almond and off-white enamel, laminate counters, mauve, teal and rust upholstery. Materials are
 plain colours (no procedural shaders: they don't survive GLB export), so the game reads the exact
-values back. This file moves into the style bible (docs/art-direction.md, #14) once it exists; keep
-it the only place colours are defined.
+values back. How to use them is in the art-direction bible (docs/art-direction.md); keep this file the
+only place colours are defined.
 
 Each entry: name -> (sRGB hex, roughness, metallic). Materials are named `pal.<name>`.
 """
