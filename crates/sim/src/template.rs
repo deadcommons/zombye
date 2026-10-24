@@ -18,6 +18,10 @@ pub enum BuildingKind {
     House,
     Office,
     Shop,
+    /// A landmark: town hall, courthouse, church, school, library, police station. The town
+    /// generator puts these (and shops or offices too big for the main street's lots) on the civic
+    /// district's landmark lots, about 42–52 m wide and 48–54 m deep.
+    Civic,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
