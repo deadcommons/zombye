@@ -773,7 +773,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   survivor is body + outfit + held weapon + ring draws. An item with no model is a grey-box: clothing tints the regions
   it covers (sampling a light texel of the shirt, so the colour shows), an accessory is a box on its socket, a bag a box
   on the back (or the left hip from the shoulder). The held weapon sits on `hand_r`. Players are told apart by a flat
-  ring round their feet, ours mustard, others teal.
+  ring round their feet, ours mustard, others teal, unlit but dimmed with the daylight to 15% at night (no glow in the dark).
 - **Rising in what it wore** (#63): a player who dies infected has what it wore noted (`World::rise_looks`, item ids,
   before it drops everything), the zombie it rises as keeps it (`World::risen_look`, until the corpse is cleared away),
   and `Snapshot::risen` sends it for the zombies listed; the crowd draws the baked variant nearest to it
