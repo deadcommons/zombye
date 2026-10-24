@@ -109,19 +109,35 @@ tear): `zvat.py` bakes the skinned mesh's positions per frame instead, any rig, 
 one cycle per loop (`zchar.loop_frames`: Meshy bakes several cycles into a clip), with the walk's stride
 for speed-matched playback.
 
-**In game:** the client draws the crowd with a `.zvat` given by `--crowd-vat PATH` or
-`ZOMBYE_CROWD_VAT=PATH` (the MCP `screenshot` tool's client inherits the variable), else the first
-`assets/models/characters/*.zvat` (a promoted one), else the grey-box. Review a work-in-progress bake with
-`ZOMBYE_CROWD_VAT=<art>/<kind>/<asset>/export/<id>.zvat` and an offscreen render (`--render-to`, with
-`--load` of a save that has zombies near the player). The texture comes from `<id>.glb` beside it (or
-`<id>.png`/`.jpg`, or `ZOMBYE_CROWD_TEXTURE`). Name clips for the slots they fill: `idle`, `walk`, `attack`,
-`thump`, `stagger`, `fall`, `down`, `getup`, `dieback`, `diefront`, `diedown` (loops: idle, walk, attack,
-thump, down; the rest once). Missing ones get stand-ins (idle leaned in for attack and thump; the idle's first
-frame toppled or raised as one piece for the falls, deaths and getting up), so a walk + idle bake already plays
-everything; see `zombie_render.rs`. One-shots play over the client's fixed lengths (stagger 0.8 s, fall
-0.5 s, get-up 1.1 s, deaths 0.75 / 0.85 / 0.4 s), so bake them at about that length; the walk plays at the
-zombie's speed / its stride, so a slow shamble's stride makes fast zombies (2-3 m/s) cycle it several times
-too fast (a run clip is still to come). Keep a character under ~3,000 vertices: the crowd is vertex-bound.
+**Bake** a modular character's crowd VATs with `build.py -- --crowd <art folder>` (from its saved `.blend`, nothing
+else rebuilt): the spec's `crowd` section names the mesh (its LOD), the clips (`(action, "cycle" | "loop" | "once")`,
+every source frame; `cycle` = the action's range is one closed cycle, as cleaned-up clips are) and the **outfit
+variants**, each `(id, wear: [wearables])`: one `.zvat` per variant in `export/`, the body with the regions its
+wearables `hide` cut away plus the wearables, baked together (the crowd draws one textured mesh per batch). A
+wearable in flat palette materials gets **swatches**: its colours painted into a copy of the body texture where that
+variant's visible body never samples (≥ 24 px clear of it, the main colour filling all that free space so it survives
+the small mips), its vertices' UVs on its colour's swatch, written as `<variant>.png`; a variant with no swatches gets
+the body texture copied as `<variant>.jpg`. The report gives vertices, rows, per clip its length, stride, how well a
+loop closes and the top and lowest point per frame (lying poses, the stoop's height). The first crowd character:
+879 vertices (its LOD body), 1,063 with a hoodie; 617 rows (13 clips at 24 fps), 4.2 / 5.0 MB of VAT.
+
+**In game:** the client draws the crowd with the `.zvat`s given by `--crowd-vat` or `ZOMBYE_CROWD_VAT` (a file, a
+folder of them, or a `,`-separated list; the MCP `screenshot` tool's client inherits the variable), else every
+`assets/models/characters/*.zvat` (promoted ones), else the grey-box. Several are outfit variants, worn by zombie id.
+Review a work-in-progress bake with `ZOMBYE_CROWD_VAT=<art>/<kind>/<asset>/export` and an offscreen render
+(`--render-to`, with `--load` of a save that has zombies near the player and in front of them: fog of war hides what
+the player doesn't face). The texture comes from `<stem>.png`/`.jpg` beside each `.zvat` (or `<stem>.glb`, or
+`ZOMBYE_CROWD_TEXTURE`). Name clips for the slots they fill: `idle`, `walk`, `attack`, `thump`, `stagger`,
+`stagger_2`, `fall`, `down`, `get_up`, `die_back`, `die_front`, `die_down`, `groan` (loops: idle, walk, attack,
+thump, down; the rest once). Missing ones get stand-ins (idle leaned in for attack and thump; the idle's first frame
+toppled or raised as one piece for the falls, deaths and getting up), so a walk + idle bake already plays everything;
+see `zombie_render.rs`. One-shots play over their own length, sped up to the client's caps (stagger 1.0 s, stagger_2
+0.9, fall 1.3: down within ~0.6 s, deaths 2.0 / 1.5 / 1.7, groan 3.0) and the get-up over the sim's `GET_UP_SECS`
+(2.0 s): bake a fall that reaches the floor early. Start and end standing one-shots on the idle's first pose and lying
+ones on the down pose; the client also crossfades every change over 0.2 s. The walk plays at the zombie's speed /
+its stride, so a slow shamble's stride makes fast zombies (2-3 m/s) cycle it several times too fast (a run clip is
+still to come). Keep a crowd mesh lean (the LOD: ~600 triangles, ~900 vertices after UV splits): the crowd is
+vertex-bound.
 
 ## Gotchas
 

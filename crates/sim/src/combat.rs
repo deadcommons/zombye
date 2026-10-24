@@ -65,7 +65,8 @@ pub struct CombatTuning {
     pub behind_knockdown_mult: f32,
     /// Knockdown chance multiplier against a zombie already staggered.
     pub staggered_knockdown_mult: f32,
-    /// How long a stagger and a knockdown last.
+    /// How long a stagger and a knockdown last. A knockdown's last `zombies::GET_UP_SECS` (2 s) are
+    /// getting up; before that the client plays a 1.3 s fall, so the shortest leaves ~0.7 s lying still.
     pub stagger_secs: (f32, f32),
     pub down_secs: (f32, f32),
 
@@ -118,7 +119,7 @@ impl Default for CombatTuning {
             behind_knockdown_mult: 1.6,
             staggered_knockdown_mult: 1.5,
             stagger_secs: (0.6, 0.9),
-            down_secs: (3.0, 5.0),
+            down_secs: (4.0, 6.0),
 
             shove_range: 0.75,
             shove_arc_degrees: 150.0,
@@ -1257,7 +1258,7 @@ mod tests {
             until_ready(&mut w, id);
         }
         let mut anims = vec![w.zombies.anim[z]];
-        for _ in 0..20 * 6 {
+        for _ in 0..20 * 9 {
             w.step();
             if anims.last() != Some(&w.zombies.anim[z]) {
                 anims.push(w.zombies.anim[z]);
