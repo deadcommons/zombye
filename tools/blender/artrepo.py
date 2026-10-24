@@ -24,7 +24,7 @@ from pathlib import Path
 
 GAME = Path(__file__).resolve().parents[2]
 # Game asset category -> the art repo's top-level folder.
-ART_KINDS = {"furniture": "props"}
+ART_KINDS = {"furniture": "props", "street": "props"}
 STATUSES = ("wip", "review", "ready", "promoted")
 META_FIELDS = ("name", "status", "tool", "plan_owns_output", "generated", "prompt", "author", "notes", "promoted")
 
