@@ -693,6 +693,14 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   to draw.
 - **The crowd** lights itself (`zombie_vat.wesl`: sun and ambient uniforms, darker at night); it neither casts nor
   receives shadows nor takes the flashlight yet.
+- **Cutaways** (`materials.rs`, `world.wesl`, `world_render.rs`; #84): outdoors, a ground-floor wall drops to a 0.4 m
+  stub only when it covers the player (within 5.5 m in front, 1.6 m to either side). Indoors, only the walls that hide
+  part of your room drop: a wall piece is cut when the floor behind it on screen (5.5 m away from the camera, what a
+  3 m wall covers from 30° up) runs into the room's bounds (`inside_rect`, the box round the player's ground-floor
+  room), so its far walls and the rest of the building stand. Roofs and upper storeys never drop from outside: anything
+  above 3.05 m nearer the camera than the player opens a soft, dithered hole about 2.2 m round them on screen
+  (`hole_at`); a building's upper storeys and roof are hidden whole only while you're inside it. Door leaves and panes
+  follow the same wall rule on the CPU (`materials::wall_is_cut`). Cut walls still cast shadows.
 - **F3, the light preview** (`dev_time.rs`): a slider at the foot of the screen (drag, or hold `[` / `]`) for the hour the
   light is drawn at (sun, moon, ambient, grade, held light, crowd, sight range); the server's clock, zombies' senses and
   the HUD's time don't follow it. F3 again goes back to the server's hour.

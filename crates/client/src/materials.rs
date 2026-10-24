@@ -1,9 +1,11 @@
 //! The world material: `StandardMaterial` plus two tricks done in the fragment shader:
 //! - **fog of war**: anything outside the player's line of sight is darkened and desaturated;
-//! - **cutaway**: walls on the camera side of the player drop to knee-high stubs as whole pieces,
-//!   roofs that hide the player disappear, and the foliage of trees in front of the player fades
-//!   out over a quarter of a second, leaving their trunk and branches dimmed and thinned, so your
-//!   character is never hidden. Inside a building, all of its camera-side walls drop.
+//! - **cutaway**: walls that would hide the player drop to knee-high stubs as whole pieces, and the
+//!   foliage of trees in front of the player fades out over a quarter of a second, leaving their
+//!   trunk and branches dimmed and thinned, so your character is never hidden. Inside a building,
+//!   only the walls that hide part of your room drop: its far walls and the rest of the building's
+//!   walls stand (#84). Roofs and upper storeys are hidden whole on the CPU when they cover you
+//!   (`world_render::hide_upper_floors`).
 //!
 //! Every world mesh uses one of a handful of [`WorldMaterial`]s, and their shared parameters are
 //! refreshed once per frame. Only materials that need it are built with the cutaway (`CUTAWAY` in
@@ -65,7 +67,7 @@ pub struct WorldParams {
     pub fog_rect: Vec4,
     /// rgb = tint for unseen areas, w = how dark unseen areas get (0..1).
     pub fog_tint: Vec4,
-    /// Bounds of the building the player is in: (min x, min z, max x, max z). min > max = outdoors.
+    /// Bounds of the ground-floor room the player is in: (min x, min z, max x, max z). min > max = outdoors.
     pub inside_rect: Vec4,
     /// x = how many entries of `trees` are in use.
     pub tree_count: Vec4,
@@ -108,28 +110,64 @@ pub fn crown_hides(t: &crate::meshgen::trees::TreeSpec, player: Vec3, camera_dir
     perp < t.crown_r.max(t.crown_h * 0.9) * 0.9 + 0.6
 }
 
+/// How far behind a wall (on the ground, away from the camera) it can hide things: a 3 m wall seen
+/// from 30° up covers about 5.2 m of floor behind it. Same as `WALL_REACH` in world.wesl.
+const WALL_REACH: f32 = 5.5;
+
+/// Does the ground segment from `p` to `p - c * WALL_REACH` pass through the rectangle?
+fn behind_hits(p: Vec2, c: Vec2, lo: Vec2, hi: Vec2) -> bool {
+    let d = -c * WALL_REACH;
+    let (mut t0, mut t1) = (0.0f32, 1.0f32);
+    for i in 0..2 {
+        if d[i].abs() < 1e-5 {
+            if p[i] < lo[i] || p[i] > hi[i] {
+                return false;
+            }
+        } else {
+            let (a, b) = ((lo[i] - p[i]) / d[i], (hi[i] - p[i]) / d[i]);
+            t0 = t0.max(a.min(b));
+            t1 = t1.min(a.max(b));
+        }
+    }
+    t0 <= t1
+}
+
 /// The shader's wall rule (`wall_cut` in world.wesl), for things drawn as separate entities (door
-/// leaves, window panes).
-pub fn wall_is_cut(mid: Vec2, player: Vec2, camera_dir: Vec3, inside: Vec4) -> bool {
+/// leaves, window panes). Indoors (`room` = the player's room's bounds) a piece is cut only if it
+/// hides part of that room; outdoors only if it covers the player.
+pub fn wall_is_cut(mid: Vec2, player: Vec2, camera_dir: Vec3, room: Vec4) -> bool {
     let c = camera_dir.xz().normalize_or_zero();
+    if room.x <= room.z {
+        let (lo, hi) = (Vec2::new(room.x, room.y) + 0.03, Vec2::new(room.z, room.w) - 0.03);
+        let half = if (mid.x.fract() - 0.5).abs() < 0.25 { Vec2::new(0.45, 0.0) } else { Vec2::new(0.0, 0.45) };
+        return [mid, mid - half, mid + half].into_iter().any(|p| behind_hits(p, c, lo, hi));
+    }
     let d = mid - player;
     let along = d.dot(c);
     let perp = (d - along * c).length();
-    if inside.x <= inside.z && mid.x >= inside.x - 0.1 && mid.y >= inside.y - 0.1 && mid.x <= inside.z + 0.1 && mid.y <= inside.w + 0.1 {
-        return along > 0.0;
-    }
-    along > 0.0 && along < 5.5 && perp < 1.6
+    along > 0.0 && along < WALL_REACH && perp < 1.6
 }
 
-/// `inside_rect` for the building containing `p`.
+/// Bounds (min x, min z, max x, max z) of the ground-floor room containing `p`; min > max outdoors.
+/// An L-shaped room gives the box round it.
 pub fn inside_rect(map: &TileMap, p: Vec2) -> Vec4 {
-    match map.building_at(p) {
-        Some(i) => {
-            let b = &map.buildings[i];
-            Vec4::new(b.min.x as f32, b.min.y as f32, (b.min.x + b.size.x) as f32, (b.min.y + b.size.y) as f32)
+    let room = map.room_at(p);
+    let Some(i) = map.building_at(p) else { return Vec4::new(1.0, 1.0, 0.0, 0.0) };
+    let b = &map.buildings[i];
+    let (mut lo, mut hi) = (IVec2::MAX, IVec2::MIN);
+    for y in b.min.y..b.min.y + b.size.y {
+        for x in b.min.x..b.min.x + b.size.x {
+            let t = IVec2::new(x, y);
+            if map.tile(t).room == room {
+                lo = lo.min(t);
+                hi = hi.max(t + 1);
+            }
         }
-        None => Vec4::new(1.0, 1.0, 0.0, 0.0),
     }
+    if lo.x > hi.x {
+        return Vec4::new(1.0, 1.0, 0.0, 0.0);
+    }
+    Vec4::new(lo.x as f32, lo.y as f32, hi.x as f32, hi.y as f32)
 }
 
 impl MaterialExtension for WorldExt {
@@ -276,5 +314,43 @@ pub fn update_params(
         if let Some(mut m) = materials.get_mut(h) {
             m.extension.params = params.clone();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Inside, only walls that hide part of your room drop: its near walls and walls just in front
+    /// of it; its far walls and walls behind it stand, and so do walls well in front (#84).
+    #[test]
+    fn indoors_only_walls_hiding_your_room_drop() {
+        // The default camera: yaw 45°, so it looks from +x, +z (south-east) down at 30°.
+        let yaw = std::f32::consts::FRAC_PI_4;
+        let elev = 30f32.to_radians();
+        let cam = Vec3::new(yaw.sin() * elev.cos(), elev.sin(), yaw.cos() * elev.cos());
+        let room = Vec4::new(10.0, 10.0, 14.0, 13.0);
+        let player = Vec2::new(11.5, 11.5);
+        let cut = |x: f32, z: f32| wall_is_cut(Vec2::new(x, z), player, cam, room);
+        // Far walls: north (z = 10) and west (x = 10), every piece, the ones at the near ends too.
+        for x in [10.5, 11.5, 12.5, 13.5] {
+            assert!(!cut(x, 10.0), "north wall piece at x {x}");
+        }
+        for z in [10.5, 11.5, 12.5] {
+            assert!(!cut(10.0, z), "west wall piece at z {z}");
+        }
+        // Near walls: south (z = 13) and east (x = 14).
+        for x in [10.5, 11.5, 12.5, 13.5] {
+            assert!(cut(x, 13.0), "south wall piece at x {x}");
+        }
+        for z in [10.5, 11.5, 12.5] {
+            assert!(cut(14.0, z), "east wall piece at z {z}");
+        }
+        // A wall just in front of the room, one behind it, and one well in front.
+        assert!(cut(12.5, 15.0));
+        assert!(!cut(12.5, 7.0));
+        assert!(!cut(20.5, 20.0));
+        // Beside the room, not in front of it on screen.
+        assert!(!cut(5.0, 11.5));
     }
 }
