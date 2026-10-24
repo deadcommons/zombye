@@ -10,6 +10,7 @@
 pub mod ai;
 pub mod combat;
 pub mod containers;
+pub mod crafting;
 pub mod firstaid;
 pub mod flow;
 pub mod health;
@@ -37,6 +38,7 @@ pub mod zombies;
 pub use ai::{ZombieAttack, ZombieThump, ZombieTuning};
 pub use combat::{ActionEvent, CombatEvent, CombatEventKind, CombatTuning, HitEffect, HitEvent};
 pub use containers::{ContainerData, ContainerDef, ContainerSite};
+pub use crafting::{RecipeDef, RecipeItem, Tool};
 pub use firstaid::{Aid, AidView, CourseView, FirstAidTuning, Treatment};
 pub use health::{Dressing, Health, HealthTags, HealthTuning, HealthView, InfectionMode, InfectionStage, InfectionTuning, Part, Wound, WoundKind, WoundView};
 pub use inventory::{Burden, Carry, CarryTuning, Inventory, ItemJob, ItemNote, JobKind, Place, Slot};

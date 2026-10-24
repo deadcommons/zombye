@@ -11,7 +11,9 @@
 //!   while every container the save has opened is still a container (new room sizes and search
 //!   times apply; unopened ones fill by the new rules), `loot.ron` changed (only containers nobody
 //!   has opened yet fill from the new tables; what was opened keeps what it held), `population.ron` changed (its respawn and migration settings
-//!   apply from now on; each region keeps the target it was saved with), and building templates that
+//!   apply from now on; each region keeps the target it was saved with), `recipes.ron` changed (queued
+//!   crafts are matched up by id; those of a recipe that's gone are called off, nothing having been
+//!   used up yet), and building templates that
 //!   changed without changing the map they generate (or a save that stores its map whole).
 //! - *Incompatible*, refused with [`LoadError::ContentChanged`]: templates that change the
 //!   regenerated map (the save's door and window edits, positions and paths would be on another
@@ -58,6 +60,9 @@ pub(crate) struct ContentPlan {
     pub item_map: Option<Vec<Option<u16>>>,
     /// `containers.ron` or `loot.ron` changed.
     pub containers_changed: bool,
+    /// The same as for items, for recipes (#12).
+    pub saved_recipes: Vec<String>,
+    pub recipe_map: Option<Vec<Option<u16>>>,
 }
 
 /// Compare the content a save was made with to the content now.
@@ -97,6 +102,17 @@ pub(crate) fn plan_content(saved: &ContentPrint, now: &ContentPrint) -> ContentP
                 .to_string(),
         );
     }
+    let mut recipe_map = None;
+    if saved.recipes != now.recipes {
+        if saved.recipe_ids == now.recipe_ids {
+            notes.push("recipes.ron changed (the same recipes, other numbers): the new ones apply, to crafts under way too when they're done".to_string());
+        } else {
+            let added: Vec<&String> = now.recipe_ids.iter().filter(|id| !saved.recipe_ids.contains(id)).collect();
+            let removed: Vec<&String> = saved.recipe_ids.iter().filter(|id| !now.recipe_ids.contains(id)).collect();
+            notes.push(format!("recipes.ron changed (added: {}; removed: {}): queued crafts are matched up by id; any of a removed recipe are called off", list(&added), list(&removed)));
+            recipe_map = Some(saved.recipe_ids.iter().map(|id| now.recipe_ids.iter().position(|n| n == id).map(|i| i as u16)).collect());
+        }
+    }
     if saved.population != now.population {
         notes.push("population.ron changed: its respawn and migration settings apply from now on; each region keeps the zombie target it was saved with".to_string());
     }
@@ -108,7 +124,17 @@ pub(crate) fn plan_content(saved: &ContentPrint, now: &ContentPrint) -> ContentP
             format!("building templates changed (saved with {}; now {}), so the map would differ", ids(&saved.template_ids), ids(&now.template_ids))
         }
     });
-    ContentPlan { notes, templates, saved_weapons: saved.weapon_ids.clone(), weapon_map, saved_items: saved.item_ids.clone(), item_map, containers_changed }
+    ContentPlan {
+        notes,
+        templates,
+        saved_weapons: saved.weapon_ids.clone(),
+        weapon_map,
+        saved_items: saved.item_ids.clone(),
+        item_map,
+        containers_changed,
+        saved_recipes: saved.recipe_ids.clone(),
+        recipe_map,
+    }
 }
 
 /// Every weapon index in the saved players' actions must name a weapon of the save's own list;
@@ -158,7 +184,7 @@ fn job_item(kind: &JobKind) -> Option<u16> {
     match *kind {
         JobKind::Move { item, .. } | JobKind::Use { item, .. } => Some(item),
         JobKind::Treat { item, .. } => item,
-        JobKind::Search { .. } => None,
+        JobKind::Search { .. } | JobKind::Craft { .. } => None,
     }
 }
 
@@ -227,7 +253,7 @@ pub(crate) fn remap_items(plan: &ContentPlan, ground: &mut Vec<GroundItem>, play
             match &mut j.kind {
                 JobKind::Move { item, .. } | JobKind::Use { item, .. } => *item = to(*item).expect("kept"),
                 JobKind::Treat { item: Some(item), .. } => *item = to(*item).expect("kept"),
-                JobKind::Treat { item: None, .. } | JobKind::Search { .. } => {}
+                JobKind::Treat { item: None, .. } | JobKind::Search { .. } | JobKind::Craft { .. } => {}
             }
         }
         // Uses gone from an opened item that's no longer in the content: nothing to count.
@@ -240,6 +266,38 @@ pub(crate) fn remap_items(plan: &ContentPlan, ground: &mut Vec<GroundItem>, play
         list.iter_mut().for_each(|s| s.item = to(s.item).expect("kept"));
     }
     Ok(None)
+}
+
+/// Every recipe index in the saved players' queued crafts must name a recipe of the save's own
+/// list; then they are moved to the content's. Crafts of a recipe that's gone are called off (said
+/// in `notes`): nothing was used up yet, so that's never a reason to refuse the save.
+pub(crate) fn remap_recipes(plan: &ContentPlan, players: &mut [Player], notes: &mut Vec<String>) -> Result<(), LoadError> {
+    let n = plan.saved_recipes.len();
+    for p in players.iter() {
+        for j in &p.jobs {
+            if let JobKind::Craft { recipe } = j.kind
+                && recipe as usize >= n
+            {
+                return Err(invalid(format!("player {}'s craft: recipe index {recipe} is out of range (the save lists {n} recipes)", p.id)));
+            }
+        }
+    }
+    let Some(map) = &plan.recipe_map else { return Ok(()) };
+    let mut called_off = 0;
+    for p in players.iter_mut() {
+        let before = p.jobs.len();
+        p.jobs.retain(|j| !matches!(j.kind, JobKind::Craft { recipe } if map[recipe as usize].is_none()));
+        called_off += before - p.jobs.len();
+        for j in &mut p.jobs {
+            if let JobKind::Craft { recipe } = &mut j.kind {
+                *recipe = map[*recipe as usize].expect("kept");
+            }
+        }
+    }
+    if called_off > 0 {
+        notes.push(format!("called off {called_off} queued craft{} of a recipe no longer in recipes.ron", if called_off == 1 { "" } else { "s" }));
+    }
+    Ok(())
 }
 
 /// Every opened container must be a container of the map as loaded. One that isn't (the map or
@@ -619,6 +677,11 @@ pub(crate) fn validate(w: &World) -> Result<(), LoadError> {
             if job_item(&j.kind).is_some_and(|i| i as usize >= items) {
                 return Err(invalid(format!("player {id}: a job's item is out of range ({items} items)")));
             }
+            if let JobKind::Craft { recipe } = j.kind
+                && recipe as usize >= w.config.recipes.len()
+            {
+                return Err(invalid(format!("player {id}: a craft's recipe is out of range ({} recipes)", w.config.recipes.len())));
+            }
         }
         if p.dead && (!p.jobs.is_empty() || p.open.is_some()) {
             return Err(invalid(name("dead with things to do")));
@@ -905,6 +968,48 @@ mod tests {
         assert_eq!(l.world.save(), bytes);
     }
 
+    /// Recipes changed (#12): new numbers, reordered and removed recipes all load with a note;
+    /// queued crafts are matched up by id, and those of a recipe that's gone are called off.
+    #[test]
+    fn recipe_changes_load_with_a_note() {
+        let recipes = crate::crafting::parse_recipes_for(include_str!("../../../assets/data/items/recipes.ron"), &items()).unwrap();
+        let with = |r: Vec<crate::crafting::RecipeDef>| content().with_recipes(r);
+        let mut w = World::new(with(recipes.clone()));
+        let id = w.add_player(w.player_spawn);
+        w.give_item(id, "t_shirt", 1);
+        w.give_item(id, "towel", 1);
+        w.player_craft(id, w.recipe_index("rip_t_shirt").unwrap()).unwrap();
+        w.player_craft(id, w.recipe_index("rip_towel").unwrap()).unwrap();
+        let bytes = w.save();
+        let crafts = |w: &World| -> Vec<String> {
+            w.players[0].jobs.iter().filter_map(|j| match j.kind {
+                JobKind::Craft { recipe } => Some(w.config.recipes[recipe as usize].id.clone()),
+                _ => None,
+            }).collect()
+        };
+        assert_eq!(crafts(&w), ["rip_t_shirt", "rip_towel"]);
+        // Other numbers: a note.
+        let mut r = recipes.clone();
+        r[0].secs = 9.0;
+        let l = World::load_with(&bytes, &with(r), LoadOptions::default()).unwrap();
+        assert!(l.notes.len() == 1 && l.notes[0].contains("recipes.ron changed (the same recipes"), "{:?}", l.notes);
+        // Reordered: matched up by id.
+        let mut r = recipes.clone();
+        r.reverse();
+        let l = World::load_with(&bytes, &with(r), LoadOptions::default()).unwrap();
+        assert_eq!(crafts(&l.world), ["rip_t_shirt", "rip_towel"]);
+        // One gone: its craft is called off, the other kept.
+        let r: Vec<_> = recipes.iter().filter(|x| x.id != "rip_t_shirt").cloned().collect();
+        let l = World::load_with(&bytes, &with(r), LoadOptions::default()).unwrap();
+        assert_eq!(crafts(&l.world), ["rip_towel"]);
+        assert!(l.notes.iter().any(|n| n.contains("removed: rip_t_shirt")) && l.notes.iter().any(|n| n.contains("called off 1 queued craft ")), "{:?}", l.notes);
+        let mut world = l.world;
+        for _ in 0..300 {
+            world.step();
+        }
+        assert!(world.players[0].jobs.is_empty() && world.players[0].inventory.carried.iter().any(|s| world.item_def(s.item).id == "rag"));
+    }
+
     #[test]
     fn a_missing_item_the_save_uses_needs_load_anyway() {
         let w = busy();
@@ -1113,6 +1218,9 @@ mod tests {
             ("too many painkiller doses", "too many painkiller", |w| w.players[0].health.aid.painkillers = vec![1.0; 40]),
             ("antibiotic course NaN", "since_h", |w| w.players[0].health.aid.course = Some(crate::firstaid::Course { doses: 1, since_h: f32::NAN })),
             ("opened item out of range", "item index 5000", |w| w.players[0].health.aid.opened.push(crate::firstaid::Opened { item: 5000, used: 1 })),
+            ("craft recipe out of range", "recipe index 7", |w| {
+                w.players[1].jobs.push(crate::inventory::ItemJob { kind: crate::inventory::JobKind::Craft { recipe: 7 }, left: 1.0 })
+            }),
             ("treatment item out of range", "item index 5001", |w| {
                 let kind = crate::inventory::JobKind::Treat { wound: None, treatment: crate::firstaid::Treatment::Painkiller, item: Some(5001) };
                 w.players[1].jobs.push(crate::inventory::ItemJob { kind, left: 1.0 })

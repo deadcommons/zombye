@@ -11,8 +11,8 @@
 //! **Slots.** Two hands ([`Slot::Hand`] swings, a two-handed item takes both), a bag on the back and
 //! one on the shoulder, and worn clothing (two worn items can't share a body part on one layer).
 //!
-//! **Moving things takes time.** Moves, searches, uses and treatments ([`JobKind`]; first aid in
-//! [`crate::firstaid`]) queue on the player
+//! **Moving things takes time.** Moves, searches, uses, treatments and crafts ([`JobKind`]; first
+//! aid in [`crate::firstaid`], crafting in [`crate::crafting`]) queue on the player
 //! ([`Player::jobs`]); the first counts down and happens when it's done (0.3 s a stack, more for a
 //! heavy one; a search takes the container's search time). Each is checked when it happens: the
 //! thing is still there, the container is still open and within reach, it fits. Swinging, shoving or
@@ -330,6 +330,9 @@ pub enum JobKind {
     /// First aid (#10): `treatment` on wound `wound` (`None` for pills) with one use of `item`
     /// (`None`: taking a dressing off). The player stands still while it's under way.
     Treat { wound: Option<u32>, treatment: Treatment, item: Option<u16> },
+    /// Crafting (#12): make recipe `recipe` (an index into `WorldConfig::recipes`) from what the
+    /// player carries and holds (see [`crate::crafting`]).
+    Craft { recipe: u16 },
 }
 
 /// A queued job and the seconds it has left (only the first counts down).
@@ -766,6 +769,7 @@ impl World {
                 JobKind::Search { container } => self.do_search(pi, container),
                 JobKind::Use { from, index, item } => self.do_use(pi, from, index, item),
                 JobKind::Treat { wound, treatment, item } => self.do_treat(pi, wound, treatment, item),
+                JobKind::Craft { recipe } => self.do_craft(pi, recipe),
             };
             if result.is_ok() {
                 let p = &mut self.players[pi];

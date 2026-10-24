@@ -611,11 +611,12 @@ impl World {
         self.queue_job(id, JobKind::Treat { wound, treatment: t, item }, secs)
     }
 
-    /// Strikes interrupt treating: a wound landing on player `pi` drops its queued treatments.
+    /// Strikes interrupt treating and crafting (#12): a wound landing on player `pi` drops its
+    /// queued treatments and crafts.
     pub(crate) fn interrupt_treatment(&mut self, pi: usize) {
         let p = &mut self.players[pi];
         let before = p.jobs.len();
-        p.jobs.retain(|j| !matches!(j.kind, JobKind::Treat { .. }));
+        p.jobs.retain(|j| !matches!(j.kind, JobKind::Treat { .. } | JobKind::Craft { .. }));
         if p.jobs.len() != before {
             let id = p.id;
             self.private_dirty.insert(id);
