@@ -18,3 +18,5 @@ serde.workspace = true
 serde_json.workspace = true
 # Reads the furniture GLBs at startup (MIT OR Apache-2.0; Bevy uses the same crate).
 gltf = { version = "1.4", default-features = false, features = ["utils", "extras"] }
+# Half floats for the crowd's vertex animation texture (MIT OR Apache-2.0; already in Bevy's tree).
+half = "2"

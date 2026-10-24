@@ -107,8 +107,21 @@ Zombies draw as one instanced VAT batch (`zombie_render.rs`), today a procedural
 Don't retarget Meshy's 24 bones onto those 7 (knees and elbows lost, rest pose differs, rigid seams
 tear): `zvat.py` bakes the skinned mesh's positions per frame instead, any rig, in game model space,
 one cycle per loop (`zchar.loop_frames`: Meshy bakes several cycles into a clip), with the walk's stride
-for speed-matched playback. Loading `.zvat` in the client, texture sampling and the other crowd clips
-are #53.
+for speed-matched playback.
+
+**In game:** the client draws the crowd with a `.zvat` given by `--crowd-vat PATH` or
+`ZOMBYE_CROWD_VAT=PATH` (the MCP `screenshot` tool's client inherits the variable), else the first
+`assets/models/characters/*.zvat` (a promoted one), else the grey-box. Review a work-in-progress bake with
+`ZOMBYE_CROWD_VAT=<art>/<kind>/<asset>/export/<id>.zvat` and an offscreen render (`--render-to`, with
+`--load` of a save that has zombies near the player). The texture comes from `<id>.glb` beside it (or
+`<id>.png`/`.jpg`, or `ZOMBYE_CROWD_TEXTURE`). Name clips for the slots they fill: `idle`, `walk`, `attack`,
+`thump`, `stagger`, `fall`, `down`, `getup`, `dieback`, `diefront`, `diedown` (loops: idle, walk, attack,
+thump, down; the rest once). Missing ones get stand-ins (idle leaned in for attack and thump; the idle's first
+frame toppled or raised as one piece for the falls, deaths and getting up), so a walk + idle bake already plays
+everything; see `zombie_render.rs`. One-shots play over the client's fixed lengths (stagger 0.8 s, fall
+0.5 s, get-up 1.1 s, deaths 0.75 / 0.85 / 0.4 s), so bake them at about that length; the walk plays at the
+zombie's speed / its stride, so a slow shamble's stride makes fast zombies (2-3 m/s) cycle it several times
+too fast (a run clip is still to come). Keep a character under ~3,000 vertices: the crowd is vertex-bound.
 
 ## Gotchas
 

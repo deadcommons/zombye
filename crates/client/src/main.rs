@@ -31,6 +31,9 @@
 //! `--render-to PATH` renders one PNG offscreen and exits, without ever opening a window
 //! (`offscreen.rs`): usually with `--load`, plus `--size WxH`, `--zoom`, `--angle`, `--player` and
 //! `--center X,Y`. The MCP `screenshot` tool runs the client this way.
+//!
+//! `--crowd-vat PATH` (or `ZOMBYE_CROWD_VAT=PATH`) draws the zombies with a character baked by
+//! `tools/blender/zvat.py` instead of the grey-box (`none` forces the grey-box); see `zombie_render.rs`.
 
 mod autoplay;
 mod camera;
@@ -55,6 +58,7 @@ mod skills_ui;
 mod survivor;
 mod world_render;
 mod zombie_render;
+mod zvat;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -124,6 +128,9 @@ pub struct Options {
     /// Centre the offscreen camera here instead of on the player (`--center X,Y`). Fog of war and
     /// cutaways are still the player's.
     pub center: Option<[f32; 2]>,
+    /// Draw the crowd with this baked character (`--crowd-vat PATH`, else `ZOMBYE_CROWD_VAT`; `none`
+    /// for the grey-box). See `zombie_render.rs`.
+    pub crowd_vat: Option<String>,
 }
 
 /// Default and largest `--size` for `--render-to`.
@@ -187,6 +194,7 @@ impl Options {
             render_to: value("--render-to").map(Into::into),
             size: value("--size").and_then(|v| parse_size(&v)).unwrap_or(DEFAULT_RENDER_SIZE),
             center: value("--center").and_then(|v| parse_point(&v)),
+            crowd_vat: value("--crowd-vat"),
         }
     }
 
