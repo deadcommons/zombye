@@ -1,0 +1,91 @@
+// One-storey L-shaped house: a bedroom wing down one side, the kitchen and living room down the
+// other, round a covered back patio (open on two sides, under the main roof), with a laundry off
+// the kitchen. One character per tile; "." is outside. The bottom row is the front of the house
+// and faces the street. Openings are (x, y, side): side N/E/S/W of tile (x, y).
+BuildingTemplate(
+    id: "house_l_shaped_patio",
+    name: "L-shaped house with patio",
+    kind: House,
+    roof: GableX,
+    rooms: {
+        'M': (name: "Main bedroom", room_type: "bedroom", floor: Carpet),
+        'b': (name: "Bathroom", room_type: "bathroom", floor: TileFloor),
+        'u': (name: "Laundry", room_type: "laundry", floor: Concrete),
+        'P': (name: "Patio", room_type: "porch", floor: Concrete),
+        'H': (name: "Hall", room_type: "hall", floor: Wood),
+        'K': (name: "Kitchen", room_type: "kitchen", floor: TileFloor),
+        'B': (name: "Bedroom", room_type: "bedroom", floor: Carpet),
+        'C': (name: "Kids' bedroom", room_type: "bedroom", floor: Carpet),
+        'L': (name: "Living room", room_type: "living", floor: Carpet),
+    },
+    levels: [
+        (
+            layout: [
+                "MMMMMbbuuPPP",
+                "MMMMMbbuuPPP",
+                "MMMMMbbuuPPP",
+                "MMMMMbbuuPPP",
+                "HHHHHHHKKKKK",
+                "BBBBBHHKKKKK",
+                "BBBBBHHKKKKK",
+                "BBBBBHHKKKKK",
+                "BBBBBHHLLLLL",
+                "CCCCCHHLLLLL",
+                "CCCCCHHLLLLL",
+                "CCCCCHHLLLLL",
+            ],
+            doors: [
+                (5, 11, S), // front door
+                (2, 4, N), // main bedroom
+                (5, 4, N), // bathroom
+                (7, 4, N), // kitchen to laundry
+                (10, 4, N), // kitchen to patio
+                (5, 6, W), // bedroom
+                (5, 10, W), // kids' bedroom
+            ],
+            arches: [
+                (6, 5, E), (6, 9, E), (9, 7, S),
+                // The patio, open to the back garden.
+                (9, 0, N), (10, 0, N), (11, 0, N),
+                (11, 0, E), (11, 1, E), (11, 2, E), (11, 3, E),
+            ],
+            windows: [
+                (0, 1, W), (3, 0, N),
+                (6, 0, N),
+                (7, 0, N),
+                (0, 4, W),
+                (0, 7, W),
+                (1, 11, S), (3, 11, S), (0, 10, W),
+                (11, 7, E),
+                (8, 11, S), (10, 11, S), (11, 8, E),
+            ],
+            furniture: [
+                (kind: "bed", at: (1, 0), size: (2, 2)),
+                (kind: "wardrobe", at: (4, 0)),
+                (kind: "desk", at: (0, 3), facing: E),
+                (kind: "bathtub", at: (5, 0), size: (1, 2), facing: E),
+                (kind: "toilet", at: (6, 0)),
+                (kind: "sink", at: (6, 3), facing: W),
+                (kind: "washer", at: (7, 0)),
+                (kind: "dryer", at: (8, 0)),
+                (kind: "shelf", at: (8, 2), facing: W),
+                (kind: "table", at: (9, 1), size: (2, 1)),
+                (kind: "counter", at: (8, 4), size: (2, 1)),
+                (kind: "fridge", at: (11, 4), facing: W),
+                (kind: "sink", at: (11, 5), facing: W),
+                (kind: "stove", at: (11, 6), facing: W),
+                (kind: "table", at: (8, 6), size: (2, 1)),
+                (kind: "bed", at: (0, 5), size: (2, 2), facing: E),
+                (kind: "wardrobe", at: (3, 5)),
+                (kind: "desk", at: (0, 8), facing: E),
+                (kind: "bed", at: (0, 9), size: (2, 2), facing: E),
+                (kind: "wardrobe", at: (4, 9), facing: W),
+                (kind: "desk", at: (2, 11), facing: N),
+                (kind: "wardrobe", at: (6, 11), facing: N),
+                (kind: "sofa", at: (11, 9), size: (1, 2), facing: W),
+                (kind: "coffee_table", at: (9, 10)),
+                (kind: "tv", at: (7, 10), facing: E),
+            ],
+        ),
+    ],
+)
