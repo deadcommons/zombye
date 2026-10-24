@@ -4,8 +4,8 @@ How every model in Zombye is made, whether it's built in Blender or starts in Me
 from an approved reference, passes review gates where the owner approves screenshots, and only
 then goes into the game. Then the shared rules: the numbers every asset has to fit.
 
-- **The look** (style sentence, palette, mood board, prompt prefix) is the art-direction bible, #14.
-  Until it exists, the palette in `tools/blender/palette.py` is the only source of colours.
+- **The look** (style sentence, palette, mood board, prompt prefix) is the art-direction bible,
+  [art-direction.md](art-direction.md). Colours live only in `tools/blender/palette.py`.
 - **The tooling** (build, render, validate, export, promote) is #15 and two skills:
   [blender-assets](../.claude/skills/blender-assets/SKILL.md) (`tools/blender/zasset.py`, `artrepo.py`) and
   [meshy-assets](../.claude/skills/meshy-assets/SKILL.md) (Meshy over its MCP, then `zchar.py` clean-up
@@ -97,8 +97,8 @@ What an asset is measured against, in order of strength:
 1. **Approved assets.** Once an asset passes Gate 4, its review sheet becomes a reference for
    everything after it in that category (`style/approved/<category>/` in the art repo). New assets
    are always reviewed beside one or two of them. This keeps a set consistent more than anything else.
-2. **The mood board** (#14): a few images we generated from the fixed style prompt, picked by the
-   owner, standing for the game's look. Until #14 lands, each brief states the style it's aiming for.
+2. **The mood board** ([art-direction.md](art-direction.md#mood-board)): a few images we generated from
+   the fixed style prompt, picked by the owner, standing for the game's look.
 3. **Asset references**, made per asset before Gate 1: images generated with Meshy's own image
    tools (on our Pro plan) from our own words, kept in the asset's `refs/` with the prompt that
    made them. Front and side views for anything Meshy will turn into 3D.
@@ -195,9 +195,3 @@ At the default zoom (26 m of world on a 720-pixel-high view) one pixel is about 
 Colours come only from the palette (validation refuses others). Plain palette materials for
 Blender-built assets; textures (2K at most) for Meshy assets, toned to the palette in Blender.
 No procedural shaders: they don't survive GLB export.
-
-## Open decisions
-
-- **Which look wins:** PLAN §6.6 says muted, slightly desaturated early-1990s small-town; the brand
-  brief says stylised, friendly and playful-spooky with zombie green, red, bone white and near-black.
-  The palette currently treats the brand colours as accents on the muted look. #14 decides.

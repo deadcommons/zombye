@@ -24,7 +24,8 @@ budgets). This skill is how to do the Meshy part of it.
   output is CC BY 4.0 and can't ship. Record the plan as `Meshy (Pro)`.
 - **All art is ours, clean room.** Prompts in our own words describing our own design; never name,
   reference or imitate another game or its art, never feed it screenshots or other people's images.
-  Brand: stylised, playful-spooky, not photoreal, not gory (blood as muted stains).
+  The look is [docs/art-direction.md](../../../docs/art-direction.md): start every prompt with its style prefix
+  and use its character template (faceted low-poly, flat colour blocks, no gore: blood as muted stains).
 - **Work in progress is private.** Everything goes to the art repo (`~/games/zombye-art`, deadcommons/
   zombye-art; read its AGENTS.md): `<kind>/<asset>/` with `meta.yml`, `raw/`, the spec and clean-up
   script, `.blend`, `textures/`, `renders/`, `export/`. Nothing about it (files, renders, descriptions)
@@ -41,7 +42,7 @@ budgets). This skill is how to do the Meshy part of it.
 | Step | Tool and settings that worked | Credits |
 |---|---|---|
 | 1. Spec | `<asset>.ron` in the art folder: id, size (rest-pose box; height exact), tris, texture, `source` (raw GLB), `animations`, `vat` clips, style. ~3,000 tris for a crowd of hundreds. | 0 |
-| 2. Reference image | `meshy_text_to_image`, `nano-banana-pro` (GPT Image models cost the same), `pose_mode: t-pose`, `remove_background: true`. Front view, full body, flat lighting, "low-poly, hand-painted, broad flat colour". Look at it before going on. | 9 |
+| 2. Reference image | `meshy_text_to_image`, `nano-banana-pro` (GPT Image models cost the same), `pose_mode: t-pose`, `remove_background: true`. Front view, full body, flat lighting: the art bible's style prefix and character template. Look at it before going on. | 9 |
 | 3. Image to 3D | `meshy_image_to_3d` with `input_task_id` = the image, `model_type: smart-topology`, `ai_model: meshy-t2.5`, `target_polycount` ≈ the budget, `texture_resolution: 2k`, `pose_mode: t-pose`, `target_formats: [glb]`. ~1 min. Lands within ~5% of the target. | 15 |
 | 4. Rig | `meshy_rig` with `input_task_id` = the model, `height_meters`. 24-bone humanoid; includes a free walk and run (not in place). | 5 |
 | 5. Animations | `meshy_list_animations` (free; search "walk", "idle", "injur", "limp", "knock", "dead") → one `meshy_animate` with `action_ids` (one file, one clip per id). Use the `_inplace` variants for crowd clips. Text-to-motion for anything the library lacks (3 swift / 10 prime). | 3 per clip |

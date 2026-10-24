@@ -82,10 +82,10 @@ furniture heights, characters, budgets). This skill is how to do the Blender par
   wall stub, sun, camera; never exported).
 - Budgets: small props 100–400 triangles, furniture 400–1,000. Low-poly, flat-shaded, no textures
   (`texture: None`); UVs are box-projected at 1 m per UV unit for later tiling textures.
-- Style (until `docs/art-direction.md`, #14): stylised, friendly, playful-spooky; not photoreal, not gory.
-  Muted early-1990s small-town America for the everyday world, readable silhouettes from high up; the brand
-  anchors (`brand_*` in `palette.py`: zombie green, red, bone white, near-black) as sparing accents. Colours
-  only from `palette.py` (add one there, never inline).
+- Style: follow [docs/art-direction.md](../../../docs/art-direction.md) (faceted, flat-shaded low-poly, 3–6
+  palette colours per asset with one dominant, two or three telling details of at least 5 cm, muted early-1990s
+  small town with the `brand_*` colours as sparing accents; its review checklist). Colours only from
+  `palette.py` (add one there, never inline).
 
 ## Rules
 
