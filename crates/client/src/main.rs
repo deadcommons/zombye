@@ -45,6 +45,7 @@ mod autoplay;
 mod camera;
 mod character;
 mod daynight;
+mod dev_time;
 mod death;
 mod fog;
 mod furniture_models;
@@ -142,8 +143,6 @@ pub struct Options {
     /// Draw survivors as this modular character (`--survivor PATH`, a body GLB or a folder with one,
     /// else `ZOMBYE_SURVIVOR`; `none` for the grey-box). See `survivor_model.rs`.
     pub survivor: Option<String>,
-    /// With `--render-to`: time this many frames after the picture (`--frame-times N`, see `offscreen.rs`).
-    pub frame_times: u32,
     /// Hold our survivor in one pose, for reviewing animation in offscreen pictures (`--pose
     /// walk:0.3`, see `survivor.rs`).
     pub pose: Option<String>,
@@ -216,7 +215,6 @@ impl Options {
             center: value("--center").and_then(|v| parse_point(&v)),
             crowd_vat: value("--crowd-vat"),
             survivor: value("--survivor"),
-            frame_times: value("--frame-times").and_then(|v| v.parse().ok()).unwrap_or(0).min(10_000),
             pose: value("--pose"),
             mute: flag("--mute"),
             volume: value("--volume").and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite()).map_or(1.0, |v| v.clamp(0.0, 2.0)),
@@ -300,6 +298,7 @@ fn main() {
             materials::WorldMaterialPlugin,
             world_render::WorldRenderPlugin,
             daynight::DayNightPlugin,
+            dev_time::DevTimePlugin,
             player::PlayerPlugin,
             camera::IsoCameraPlugin,
             zombie_render::ZombieRenderPlugin,
