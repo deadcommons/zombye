@@ -1,18 +1,42 @@
 // Zombie crowd shader: vertex animation texture (VAT) + per-instance MeshTag.
 // See crates/client/src/zombie_render.rs for the texture layout and tag packing.
+// The main pass shades with Bevy's PBR lighting (sun, moon, ambient, held lights, shadows), and
+// the prepass (shadow maps) runs the same animation, so zombies cast and receive shadows (#85).
 
 import bevy_pbr::render::{
     mesh_functions,
     view_transformations::position_world_to_clip,
-    mesh_view_bindings::{globals, view},
+    mesh_view_bindings::view,
+};
+
+@if(PREPASS_PIPELINE)
+import bevy_render::globals::Globals;
+
+@if(!PREPASS_PIPELINE)
+import bevy_pbr::render::{
+    mesh_view_bindings::globals,
+    mesh_bindings::mesh,
+    pbr_types,
+    pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing, calculate_view},
 };
 
 struct VatSettings {
     clips: array<vec4<f32>, 16>,
-    sun: vec4<f32>,
-    sun_color: vec4<f32>,
-    ambient: vec4<f32>,
 };
+
+// The shadow pass's view layout keeps the globals (the shader clock) at binding 1, the main
+// pass's at 11 (mesh_view_bindings), so the clock is read from whichever this pass has.
+@if(PREPASS_PIPELINE)
+@group(0) @binding(1) var<uniform> prepass_globals: Globals;
+
+fn clock() -> f32 {
+@if(PREPASS_PIPELINE) {
+    return prepass_globals.time;
+}
+@if(!PREPASS_PIPELINE) {
+    return globals.time;
+}
+}
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var vat: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(1) var<uniform> settings: VatSettings;
@@ -35,6 +59,16 @@ struct VertexOutput {
     @location(2) uv: vec2<f32>,
     // 1 while just hit.
     @location(3) flash: f32,
+    // For the mesh's flags (shadow receiving).
+    @location(4) @interpolate(flat) instance_index: u32,
+};
+
+// The shadow pass only needs the animated position (and, where the GPU can't clip depth, the
+// depth to write itself, as Bevy's own prepass does).
+struct ShadowOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @if(UNCLIPPED_DEPTH_ORTHO_EMULATION)
+    @location(6) unclipped_depth: f32,
 };
 
 fn hash(n: u32) -> f32 {
@@ -89,7 +123,7 @@ fn sample_loop(index: u32, phase: f32, speed: f32, vid: u32) -> vec3<f32> {
     if (clip.w > 0.0) {
         rate = speed / clip.w;
     }
-    return sample_cycle(clip, fract(globals.time * rate + phase), vid);
+    return sample_cycle(clip, fract(clock() * rate + phase), vid);
 }
 
 // Vertex `vid` of clip `index` at `pos` (0..1) chosen by the client: a one-shot (w < 0) from its
@@ -106,17 +140,15 @@ fn sample_at(index: u32, pos: f32, vid: u32) -> vec3<f32> {
     return sample_cycle(clip, pos, vid);
 }
 
-@vertex
-fn vertex(vertex: Vertex) -> VertexOutput {
+// The vertex's position in model space now: its clip, crossfades included.
+fn animate(vertex: Vertex) -> vec3<f32> {
     let tag = mesh_functions::get_tag(vertex.instance_index);
     // Bits 0-3 clip, 4-9 outfit, 10 direct, 11 hit flash; then (looping) 12-17 phase, 18-25 speed,
     // 26-27 the looping clip it's fading from and 28-31 how much of it still shows, or (direct)
     // 12-19 the clip position chosen by the client, 20-23 the clip it's fading from, 24-28 where that
     // clip is held and 29-31 how much of it still shows (see pack_tag in zombie_render.rs).
     let clip_index = tag & 15u;
-    let outfit = (tag >> 4u) & 63u;
     let direct = ((tag >> 10u) & 1u) == 1u;
-    let flash = ((tag >> 11u) & 1u) == 1u;
     let vid = u32(vertex.vat_info.x);
 
     var local = vec3(0.0);
@@ -137,8 +169,38 @@ fn vertex(vertex: Vertex) -> VertexOutput {
             local = mix(local, sample_loop((tag >> 26u) & 3u, phase, speed, vid), fade);
         }
     }
+    return local;
+}
 
+@if(PREPASS_PIPELINE)
+@vertex
+fn vertex(vertex: Vertex) -> ShadowOutput {
+    let world_from_local = mesh_functions::get_world_from_local(vertex.instance_index);
+    let world = mesh_functions::mesh_position_local_to_world(world_from_local, vec4(animate(vertex), 1.0));
+    var out: ShadowOutput;
+    out.clip_position = position_world_to_clip(world.xyz);
+@if(UNCLIPPED_DEPTH_ORTHO_EMULATION) {
+    out.unclipped_depth = out.clip_position.z;
+    out.clip_position.z = min(out.clip_position.z, 1.0);
+}
+    return out;
+}
+
+@if(PREPASS_PIPELINE && UNCLIPPED_DEPTH_ORTHO_EMULATION)
+@fragment
+fn fragment(in: ShadowOutput) -> @builtin(frag_depth) f32 {
+    return in.unclipped_depth;
+}
+
+@if(!PREPASS_PIPELINE)
+@vertex
+fn vertex(vertex: Vertex) -> VertexOutput {
+    let tag = mesh_functions::get_tag(vertex.instance_index);
+    let outfit = (tag >> 4u) & 63u;
+    let flash = ((tag >> 11u) & 1u) == 1u;
+    let local = animate(vertex);
     var out: VertexOutput;
+    out.instance_index = vertex.instance_index;
     let world_from_local = mesh_functions::get_world_from_local(vertex.instance_index);
     let world = mesh_functions::mesh_position_local_to_world(world_from_local, vec4(local, 1.0));
     out.world_position = world.xyz;
@@ -168,6 +230,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     return out;
 }
 
+@if(!PREPASS_PIPELINE)
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // Flat shading from screen-space derivatives: faceted low-poly look, no normals needed.
@@ -175,12 +238,23 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     if (dot(n, view.world_position - in.world_position) < 0.0) {
         n = -n;
     }
-    let diffuse = max(dot(n, normalize(settings.sun.xyz)), 0.0) * settings.sun.w;
-    let sky = 0.5 + 0.5 * n.y;
     // Always sampled (uniform control flow); the grey-box's texture is white.
-    var base = textureSample(base_color, base_sampler, in.uv).rgb * in.color;
-    // Just hit: a brief pale flash so the blow reads.
-    base = mix(base, vec3(1.0, 0.82, 0.75), 0.7 * in.flash);
-    let lit = base * (settings.ambient.rgb * sky * 1.4 + settings.sun_color.rgb * 1.5 * diffuse);
-    return vec4(lit, 1.0);
+    let base = textureSample(base_color, base_sampler, in.uv).rgb * in.color;
+    var pbr = pbr_types::pbr_input_new();
+    pbr.material.base_color = vec4(base, 1.0);
+    pbr.material.perceptual_roughness = 0.9;
+    pbr.material.reflectance = vec3(0.2);
+    // Just hit: a brief pale flash so the blow reads, even in the dark.
+    pbr.material.emissive = vec4(vec3(1.0, 0.82, 0.75) * 0.6 * in.flash, 1.0);
+    pbr.frag_coord = in.clip_position;
+    pbr.world_position = vec4(in.world_position, 1.0);
+    pbr.world_normal = n;
+    pbr.N = n;
+    pbr.is_orthographic = view.clip_from_view[3].w == 1.0;
+    pbr.V = calculate_view(pbr.world_position, pbr.is_orthographic);
+    pbr.flags = mesh[in.instance_index].flags;
+    var color = apply_pbr_lighting(pbr);
+    // A hit shows its flash colour on top of the lit body too.
+    color = vec4(mix(color.rgb, color.rgb + vec3(0.25, 0.2, 0.18), in.flash), 1.0);
+    return main_pass_post_lighting_processing(pbr, color);
 }

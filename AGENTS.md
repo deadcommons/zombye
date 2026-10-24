@@ -709,8 +709,13 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   `FogState::sight`) and `world.wesl`'s `fog_at` works out what's seen per pixel by the same rule as the mask, so
   line-of-sight edges are smooth, not the mask's half-metre steps. The mask still says what's indoors and which zombies
   to draw.
-- **The crowd** lights itself (`zombie_vat.wesl`: sun and ambient uniforms, darker at night); it neither casts nor
-  receives shadows nor takes the flashlight yet.
+- **The crowd is in the scene's light** (#85): `zombie_vat.wesl` shades zombies with Bevy's PBR lighting (flat normals
+  from screen derivatives, the hit flash as emissive), so the sun, moon, ambient, held lights and shadows reach them,
+  and its prepass entry points run the same VAT animation (crossfades included) into the shadow maps, so they cast
+  animated shadows too (the shadow pass reads the shader clock from its own view layout, binding 1, see `clock()`).
+  Zombies the fog of war hides cast none. Cost with 2,000 zombies round the player (1920x1080): no more than before
+  (day 10.5-10.7 against 11.7-14.6 ms at 26 m; night with a flashlight 9.0-10.5 against 10.0-11.4 ms), the per-frame
+  crowd lighting update it replaced having cost about as much as the extra shadow pass.
 - **Cutaways** (`materials.rs`, `world.wesl`, `world_render.rs`; #84): outdoors, a ground-floor wall drops to a 0.4 m
   stub only when it covers the player (within 5.5 m in front, 1.6 m to either side). Indoors, only the walls that hide
   part of your room drop: a wall piece is cut when the floor behind it on screen (5.5 m away from the camera, what a

@@ -21,7 +21,6 @@ use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use std::path::{Path, PathBuf};
 
 use bevy::asset::RenderAssetUsages;
-use bevy::light::NotShadowCaster;
 use bevy::mesh::{Indices, MeshTag, MeshVertexAttribute, MeshVertexBufferLayoutRef, PrimitiveTopology};
 use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
 use bevy::prelude::*;
@@ -35,7 +34,6 @@ use zombye_sim::zombies::GET_UP_SECS;
 use zombye_sim::{CombatEventKind, ZombieAnim};
 
 use crate::Options;
-use crate::daynight::sky_at;
 use crate::fog::FogState;
 use crate::rig::{Bone, Pose, box_faces, rx, ry, rz, skin_matrices, smooth};
 use crate::server_link::{CombatEventsThisFrame, JoinInfo, ServerLink};
@@ -52,7 +50,7 @@ impl Plugin for ZombieRenderPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<ZombieMaterial>::default())
             .add_systems(Startup, setup_zombie_assets)
-            .add_systems(Update, (sync_zombies, light_zombies));
+            .add_systems(Update, sync_zombies);
     }
 }
 
@@ -74,12 +72,6 @@ pub struct VatSettings {
     /// fixed rate, w = stride in metres (0 = fixed rate; otherwise the loop rate is the zombie's
     /// speed / stride so feet don't slide; < 0 = a one-shot clip). Room for 16 (4 tag bits).
     pub clips: [Vec4; 16],
-    /// xyz = direction toward the sun (or moon), w = its strength.
-    pub sun: Vec4,
-    /// rgb = sun colour, w unused.
-    pub sun_color: Vec4,
-    /// rgb = ambient colour × strength.
-    pub ambient: Vec4,
 }
 
 impl Material for ZombieMaterial {
@@ -88,6 +80,15 @@ impl Material for ZombieMaterial {
     }
 
     fn fragment_shader() -> ShaderRef {
+        SHADER.into()
+    }
+
+    // The shadow maps draw the crowd animated, with the same VAT sampling (#85).
+    fn prepass_vertex_shader() -> ShaderRef {
+        SHADER.into()
+    }
+
+    fn prepass_fragment_shader() -> ShaderRef {
         SHADER.into()
     }
 
@@ -834,7 +835,7 @@ fn setup_zombie_assets(
         .map(|((baked, texture, _), wears)| {
             let material = materials.add(ZombieMaterial {
                 vat: images.add(baked.image()),
-                settings: VatSettings { clips: baked.clips, sun: Vec4::new(0.4, 0.8, 0.3, 1.0), sun_color: Vec4::ONE, ambient: Vec4::splat(0.5) },
+                settings: VatSettings { clips: baked.clips },
                 base_color: images.add(texture),
             });
             Variant { mesh: meshes.add(baked.mesh), material, timing: Timing { clips: baked.clips, play: baked.play }, wears }
@@ -1122,8 +1123,6 @@ fn sync_zombies(
                     MeshTag::new(tag),
                     transform,
                     visibility,
-                    // The default shadow pass would draw the rest pose; animated shadows come later.
-                    NotShadowCaster,
                 ))
                 .id();
             entities.0.insert(z.id, tr);
@@ -1159,22 +1158,6 @@ fn sync_zombies(
                 commands.entity(t.entity).despawn();
             }
         }
-    }
-}
-
-/// Keep the zombie shader's simple lighting in step with the day/night cycle (and the dev light
-/// preview, `dev_time.rs`). At night they're barely there, like everything else (#83).
-fn light_zombies(link: Res<ServerLink>, preview: Res<crate::dev_time::LightPreview>, assets: Option<Res<ZombieAssets>>, mut materials: ResMut<Assets<ZombieMaterial>>) {
-    let Some(assets) = assets else { return };
-    let (dir, color, lux, day) = sky_at(preview.hour_or(link.curr.time_of_day));
-    let c = color.to_linear();
-    let night = Vec3::new(0.03, 0.04, 0.07);
-    let noon = Vec3::new(0.42, 0.44, 0.5);
-    for v in &assets.variants {
-        let Some(mut m) = materials.get_mut(&v.material) else { continue };
-        m.settings.sun = (-dir).extend((lux / 10_000.0).max(0.02));
-        m.settings.sun_color = Vec4::new(c.red, c.green, c.blue, 1.0);
-        m.settings.ambient = night.lerp(noon, day).extend(1.0);
     }
 }
 
