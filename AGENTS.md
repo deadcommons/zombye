@@ -183,10 +183,17 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   pale splinters on doors, white star cracks on glass) as child overlays of the leaf or pane (`world_render.rs`).
 - Buildings are **templates** in `assets/data/buildings/*.ron`: ASCII room layouts per storey, plus
   doors, windows, arches and furniture by `(x, y, side)`. Walls appear wherever rooms differ. The
-  bottom row is the street-facing front. `BuildingTemplate::validate` explains mistakes. Add a house
-  by adding a file.
-- `sim::worldgen` lays out a seeded street grid, fills lots with templates (rotated/mirrored), and
-  plants forest around the town. The player wakes up in a ground-floor bedroom.
+  bottom row is the street-facing front. `BuildingTemplate::validate` explains mistakes (furniture
+  outside, overlapping or across a wall between rooms, two openings on one edge). Add a house by adding
+  a file; the template tests walk every shipped one (every room reachable from outside, upstairs from
+  the stairs, no doorway blocked, every piece of furniture reachable, containers mapping as meant).
+  Shipped (#17): six houses (bungalow, two-storey family house, ranch with garage, narrow townhouse,
+  cottage with an open porch, L-shaped house round a covered patio), two offices (`kind: Office`: a
+  small one-storey office, a two-storey office block) and two shops (`kind: Shop`: a corner pharmacy,
+  a general store and hardware). Houses are at most 13 × 15 tiles to fit a lot.
+- `sim::worldgen` lays out a seeded street grid, fills lots with house templates (`kind: House`,
+  rotated/mirrored; offices and shops are never put on house lots), and plants forest around the
+  town. The player wakes up in a ground-floor bedroom.
 
 ## Players, intents and prediction
 
@@ -580,8 +587,8 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
 - **Tables shipped** (ours): kitchen (fridge, cupboard with the cutlery-drawer group, under-sink, pantry shelves),
   any-room fridge, cupboard, oven, under-sink, bathroom cabinet, wardrobe, coat cupboard, desk drawers, coffee-table
   drawer, TV shelf, drum; room tables for bathroom, bedroom, living, dining, hall, laundry (with a toolbox group),
-  shed, garage, office (and its desk), shop (and its fridge), pharmacy, hardware (a shop's stock is its room type,
-  for #17); `(any, any)` clutter. On the default town that is about three weeks of food for one player at 2.0
+  shed, garage, office (and its desk), shop (and its fridge), pharmacy, hardware (a shop's stock is its room type;
+  shops keep it on shelves, never counters, which would hold kitchen things); `(any, any)` clutter. On the default town that is about three weeks of food for one player at 2.0
   hunger a day (`the_default_town_feeds_one_player_for_weeks`).
 - **Weapons** are loot entries too (knives in the cutlery drawer, a pan in the oven, a bat in a wardrobe, a golf club
   in the coat cupboard, hammers and crowbars on laundry, shed and garage shelves, a rare fire axe). The floor weapons

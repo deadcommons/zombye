@@ -1,0 +1,71 @@
+// Corner pharmacy: a sales floor of shelves with the dispensary counter at the back, doors on
+// the front and the side (for a corner lot), and behind it a stockroom, a restroom and the
+// pharmacist's office. One character per tile; "." is outside. The bottom row is the front of
+// the building and faces the street. Openings are (x, y, side): side N/E/S/W of tile (x, y).
+BuildingTemplate(
+    id: "shop_pharmacy",
+    name: "Corner pharmacy",
+    kind: Shop,
+    roof: Flat,
+    rooms: {
+        'T': (name: "Stockroom", room_type: "pharmacy", floor: Concrete),
+        'b': (name: "Restroom", room_type: "bathroom", floor: TileFloor),
+        'O': (name: "Pharmacist's office", room_type: "office", floor: Carpet),
+        'H': (name: "Back hall", room_type: "hall", floor: Concrete),
+        'P': (name: "Pharmacy", room_type: "pharmacy", floor: TileFloor),
+    },
+    levels: [
+        (
+            layout: [
+                "TTTTTTbbOOOO",
+                "TTTTTTbbOOOO",
+                "TTTTTTbbOOOO",
+                "TTTTTTHHOOOO",
+                "PPPPPPPPPPPP",
+                "PPPPPPPPPPPP",
+                "PPPPPPPPPPPP",
+                "PPPPPPPPPPPP",
+                "PPPPPPPPPPPP",
+                "PPPPPPPPPPPP",
+                "PPPPPPPPPPPP",
+                "PPPPPPPPPPPP",
+            ],
+            doors: [
+                (9, 11, S), // front door
+                (11, 10, E), // side door
+                (2, 0, N), // back door, from the stockroom
+                (6, 3, W), // stockroom
+                (6, 3, N), // restroom
+                (7, 3, E), // office
+                (7, 3, S), // staff door to the shop floor
+            ],
+            windows: [
+                (9, 0, N), (11, 1, E),
+                (6, 0, N),
+                (1, 11, S), (2, 11, S), (3, 11, S), (5, 11, S), (6, 11, S), (7, 11, S),
+                (11, 8, E), (0, 8, W),
+            ],
+            furniture: [
+                (kind: "shelf", at: (0, 0), size: (1, 2), facing: E),
+                (kind: "shelf", at: (0, 2), size: (1, 2), facing: E),
+                (kind: "shelf", at: (4, 0), size: (2, 1)),
+                (kind: "sink", at: (6, 0)),
+                (kind: "toilet", at: (7, 0)),
+                (kind: "shelf", at: (8, 0)),
+                (kind: "desk", at: (9, 1)),
+                // Prescriptions behind the counter, and the counter itself.
+                (kind: "shelf", at: (0, 4), size: (2, 1)),
+                (kind: "shelf", at: (2, 4), size: (2, 1)),
+                (kind: "shelf", at: (4, 4), size: (2, 1)),
+                (kind: "desk", at: (1, 6), size: (3, 1)),
+                // Aisles.
+                (kind: "shelf", at: (7, 6), size: (1, 2), facing: W),
+                (kind: "shelf", at: (8, 6), size: (1, 2), facing: E),
+                (kind: "shelf", at: (3, 8), size: (2, 1), facing: N),
+                (kind: "shelf", at: (3, 9), size: (2, 1)),
+                (kind: "shelf", at: (11, 4), size: (1, 2), facing: W),
+                (kind: "shelf", at: (11, 6), size: (1, 2), facing: W),
+            ],
+        ),
+    ],
+)
