@@ -2,7 +2,7 @@ Zombye and Dead Commons brand: license
 
 The names "Zombye" and "Dead Commons", their wordmarks and logos, and the Zombye mascot (the
 waving zombie in the hoodie), including every file in this directory in every colour, size and
-format (the "Marks"), are owned by Dead Commons. They are
+format (the "Marks"), are owned by Grillo Ltd, trading as Dead Commons ("Dead Commons"). They are
 trademarks and are NOT open source. They are not covered by the MIT or Apache-2.0 licenses
 in this repository, and nothing in those licenses, in NOTICE or in any other file of this
 repository grants any right to them.

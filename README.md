@@ -68,6 +68,6 @@ commercial use needs our permission.
 **Videos and streams:** you're welcome to record, stream and monetise videos and screenshots of
 Zombye without asking.
 
-Copyright (c) 2026 Dead Commons and the Zombye contributors. Required notices are in
+Copyright (c) 2026 Grillo Ltd (trading as Dead Commons) and the Zombye contributors. Required notices are in
 [NOTICE](NOTICE), and every asset is listed in [ATTRIBUTION.md](ATTRIBUTION.md). The Zombye and Dead Commons
 names and logos are trademarks; see [docs/brand/LICENSE-brand.txt](docs/brand/LICENSE-brand.txt).
