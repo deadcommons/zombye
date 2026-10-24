@@ -446,10 +446,10 @@ impl TownBuilder<'_> {
         }
         for _ in 0..6 + self.rng.below(6) {
             let p = lot.min + IVec2::new(1 + self.rng.below((lot.size.x - 2).max(1) as u32) as i32, 1 + self.rng.below((lot.size.y - 2).max(1) as u32) as i32);
-            if clear_around(&self.map, p, 0) {
-                if let Some(t) = self.map.tile_mut(p) {
-                    t.feature = if self.rng.f32() < 0.8 { Feature::Bush } else { Feature::Tree };
-                }
+            if clear_around(&self.map, p, 0)
+                && let Some(t) = self.map.tile_mut(p)
+            {
+                t.feature = if self.rng.f32() < 0.8 { Feature::Bush } else { Feature::Tree };
             }
         }
     }
@@ -467,10 +467,11 @@ impl TownBuilder<'_> {
             let inset = (t - lot.min).min(lot.max() - IVec2::ONE - t);
             let ring = inset.min_element() == 2 && (inset.x + inset.y) % 3 == 0;
             let roll = self.rng.f32();
-            if ((ring && roll < 0.8) || (!ring && inset.min_element() > 2 && roll < 0.03)) && clear_around(&self.map, t, 1) {
-                if let Some(tile) = self.map.tile_mut(t) {
-                    tile.feature = if ring { Feature::Tree } else { Feature::Bush };
-                }
+            if ((ring && roll < 0.8) || (!ring && inset.min_element() > 2 && roll < 0.03))
+                && clear_around(&self.map, t, 1)
+                && let Some(tile) = self.map.tile_mut(t)
+            {
+                tile.feature = if ring { Feature::Tree } else { Feature::Bush };
             }
         }
     }
@@ -513,11 +514,11 @@ fn set_ground(map: &mut TileMap, t: IVec2, floor: Floor) {
 
 /// Set an outdoor tile's floor, clearing anything on it.
 fn set_floor(map: &mut TileMap, t: IVec2, floor: Floor) {
-    if let Some(tile) = map.tile_mut(t) {
-        if tile.room == 0 {
-            tile.floor = floor;
-            tile.feature = Feature::None;
-        }
+    if let Some(tile) = map.tile_mut(t)
+        && tile.room == 0
+    {
+        tile.floor = floor;
+        tile.feature = Feature::None;
     }
 }
 
