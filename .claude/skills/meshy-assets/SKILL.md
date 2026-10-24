@@ -32,6 +32,10 @@ budgets). This skill is how to do the Meshy part of it.
   goes in this repo, its issues or PRs until it's **promoted** (reviewed in game, exported, `meta.yml`
   complete): then `export/` → `assets/models/`, the `.blend` and script → `assets/source/`, an
   ATTRIBUTION.md row (`Meshy (Pro)` + the image model + Blender), `promoted:` set there, a PROMOTED.md line.
+  `tools/blender/artrepo.py promote characters/<id>` does this for a modular character (status `ready`, an
+  `renders/ingame*.png`): the body export as `assets/models/characters/<id>.glb`, each wearable into
+  `assets/models/wearables/`, spec, script, `.blend`, textures and the in-game picture into `assets/source/`,
+  and a row per file from the generator its GLB records; then `record <commit> characters/<id>`.
 - **Keep AI identifiers** (ToS §2.4): commit Meshy's PNGs byte-for-byte (they carry XMP AI-generation
   tags); `zchar` writes `ai_generated`, the generator and the task ids into the GLB's extras.
 - **Download at once:** API output is deleted after 3 days (ToS §2.5). `raw/` is then the only copy, and
