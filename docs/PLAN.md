@@ -80,7 +80,8 @@ All code and assets are our own; see the clean-room rules in [CONTRIBUTING.md](.
 - **Pathfinding:** tile-grid flow fields for crowds plus hierarchical A* for individuals (§4.3).
 - **Save data:** per-region binary files (`bincode`/`postcard`) with a version header; SQLite for metadata.
 - **Data files:** RON/TOML for items, weapons, recipes, loot tables, building templates — hot-reloadable.
-- **Audio:** `bevy_kira_audio` (Kira) with positional sound and occlusion.
+- **Audio:** Bevy's audio with our own source (`crates/client/src/audio.rs`): distance falloff, panning
+  by the camera, a low-pass through walls; what plays for each cue is data (`assets/data/sounds.ron`).
 - **Assets:** Blender driven by agents over MCP for most assets; characters and detailed assets from
   a ChatGPT reference image through Meshy's API, finished in Blender (§6); AI image generation for textures/UI,
   ElevenLabs-style SFX generation for sound effects, Suno for music. No third-party asset packs.

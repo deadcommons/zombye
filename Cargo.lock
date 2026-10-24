@@ -6549,6 +6549,7 @@ dependencies = [
  "bevy",
  "gltf",
  "half",
+ "ron",
  "serde",
  "serde_json",
  "zombye-net",

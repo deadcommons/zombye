@@ -16,9 +16,10 @@ Work is tracked on GitHub, not in the repo: the
 | `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), skills that improve with practice (`skills.rs` + `SkillTuning`), run stats and the cause of death (`run.rs`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint; `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
-| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building/tree meshes, fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd, or a character baked offline read from a `.zvat` (`zvat.rs`); `survivor.rs` skinned, CPU-posed players), hit feedback (`fx.rs`), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), HUD, the death screen and run summary (`death.rs`), the skills panel and level-up line (`skills_ui.rs`), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
-| `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/items/recipes.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`), models (`models/furniture/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), later textures/audio. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
+| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building/tree meshes, fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd, or a character baked offline read from a `.zvat` (`zvat.rs`); `survivor.rs` skinned, CPU-posed players), hit feedback (`fx.rs`), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), HUD, the death screen and run summary (`death.rs`), the skills panel and level-up line (`skills_ui.rs`), sound (`audio.rs`, see Sound), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
+| `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/items/recipes.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`), models (`models/furniture/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), sound (`audio/sfx/*.wav`, `audio/ambience/*.wav`, listed in `data/sounds.ron`), later textures. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
 | `tools/blender/` | Python to build assets: run inside Blender, mesh builder, palette, renders, validation, GLB export (`zasset.py`, `palette.py`, `build.py`), character clean-up, validation and skinned export (`zchar.py`), VAT bake for the crowd (`zvat.py`); plain Python, art-repo work folders and promotion (`artrepo.py`). | MIT OR Apache-2.0 |
+| `tools/audio/` | `synth.py`: the placeholder sounds, synthesised from noise, tones and filters (plain Python, deterministic). | MIT OR Apache-2.0 |
 | `docs/` | Plan and design docs. | — |
 
 ## Rules
@@ -80,7 +81,7 @@ cargo test --release --workspace
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --inventory --god --ignored --crowd-vat PATH|none`
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --inventory --god --ignored --crowd-vat PATH|none --mute --volume V`
 (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost).
@@ -129,11 +130,11 @@ and saves it there, then autosaves to it every `--autosave-mins N` minutes of re
 console; a second Ctrl-C stops at once, unsaved; bench: at the end of the run).
 `--saves DIR` is the folder for named saves (MCP `save`/`load`/`saves`; default the `--save` file's folder, else `saves`).
 The client prints one stats line per second to stdout (time, room, stance, hp, endurance, fps, frame ms, zombies
-sent to it, chasing, zombies per tier active/near/virtual, sim tick ms).
+sent to it, chasing, zombies per tier active/near/virtual, sim tick ms, and the sounds started that second: `sounds 9 (Groan 4, FootstepHard 3, ...)` or `sound off`).
 In game: WASD move, Shift run, C sneak (toggle), mouse to face, left mouse attack (swing your weapon, or
 punch), Space shove (or stomp, when a downed zombie lies right in front of you), E pick up the item you
 face (with nothing on the floor within reach: search the container you face), Tab or I the inventory panel, K the skills panel, F open/close the door or window you face, G smash the window you face, dead: R a new run and Q or Esc quit,
-B sleep (B again or WASD to get up), T skip an hour, Z spawn zombies, wheel zoom, F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles). Walk into an open or broken window to climb
+B sleep (B again or WASD to get up), T skip an hour, Z spawn zombies, wheel zoom, F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), M mute. Walk into an open or broken window to climb
 through it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
 not Bevy's handler; a second Ctrl-C quits unsaved) autosaves; `--render-to` never does.
 
@@ -609,6 +610,33 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
 - **Saves:** `loot.ron` shares the `containers` fingerprint with `containers.ron` (no format change); a change loads
   with a note: opened containers keep what they hold, unopened ones fill from the tables as they are now. Not yet:
   food starting partly spoiled (needs item freshness, #11).
+
+## Sound (`crates/client/src/audio.rs`; #16)
+
+- **Cues are data:** `assets/data/sounds.ron` maps each `audio::Cue` (footsteps hard and soft, zombie shuffle and groan,
+  light and heavy swing, blunt and blade hits, punch, body fall, stomp, shove, player hurt, door and window open, shut and
+  break, battering a door or window, rummage, pickup, level-up, bird, and the wind, room-tone and cricket loops) to its WAV
+  files under `assets/audio/` (one picked at random), `volume`, `pitch` range, `reach` (metres to silence), `muffle` (how
+  much gets through a wall) and `voices` (at most that many at once, nearest first); `audio::parse_sounds` refuses a
+  missing cue, an unknown field and bad numbers. Change a sound by changing its files. `--data DIR` with its own
+  `sounds.ron` uses it, and the files next to it in `../audio`.
+- **Placeholders for now:** every file is synthesised by `tools/audio/synth.py` (plain Python, standard library,
+  deterministic; `--attribution` prints the ATTRIBUTION.md rows). The real sounds (ElevenLabs SFX, Suno music, groans we
+  record) replace them file for file in #78. Files are 16-bit PCM WAV (mono or stereo, 8-96 kHz; we decode them ourselves,
+  `audio::parse_wav`). Every file has an ATTRIBUTION.md row and is used by a cue (a test checks both).
+- **What plays when** (client only, from the snapshots; nothing in the sim): footsteps from each player's movement, one per
+  stride by stance (sneak quiet), hard or soft by the floor, none while climbing or asleep; active zombies within 16 m
+  walking shuffle; groans per zombie every 2-5 s attacking or battering, 4-10 s walking, 8-22 s idle (staggered, so a crowd
+  doesn't groan together); door and window changes the server sends (`server_link::EdgeTransitionsThisFrame`, the edge
+  before and after; a quickload's differences make none); a thump per battered door or window per frame (edge damage);
+  combat events (hit sound by the attacker's weapon category, a kill adds a body falling, shoves once per player); a swing's
+  whoosh timed to land with the blow; an item gone from the floor next to a player; rummaging while our first job is a
+  search; our level-ups; wind (quieter indoors), room tone indoors, crickets at night, birds now and then by day outdoors.
+- **How it sounds:** falls off with the square of distance to `reach`; low-passed and down to `muffle` when a wall, shut
+  door or window is between (`vision::clear_reach` from our survivor); panned by the camera's right. Our own Bevy audio
+  source (`audio::Voice`) does the panning, pitch, low-pass and looping (rodio's spatial sink pans the wrong way close up).
+  Asleep, everything is quieter. `--mute` / `--volume V` (0-2) / M; the stats line says `sounds N (...)` each second.
+  Offscreen renders have no audio.
 
 ## Characters on screen (`crates/client`)
 

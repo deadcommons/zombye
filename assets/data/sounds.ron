@@ -1,0 +1,44 @@
+// What the client plays for each sound cue (#16). Files are relative to assets/audio/; a cue with
+// several picks one at random each time. Change a sound by changing its files here: the code only
+// knows the cue names.
+//
+//   volume   loudness at the source, 0..2 (1 = as recorded)
+//   pitch    playback speed is picked in this range each time (variation; 1 = as recorded)
+//   reach    metres at which it fades to nothing; it falls off with the square of the distance
+//   muffle   through a wall, shut door or window: this much of the volume, and low-passed
+//   voices   at most this many of the cue playing at once (the nearest win)
+//
+// Ambience loops (Wind, Room, Crickets) and Bird are heard where the listener is; reach and muffle
+// don't apply to them. All placeholders from tools/audio/synth.py until the real sounds (#78) replace them.
+(
+    sounds: {
+        FootstepHard: (files: ["sfx/footstep_hard_1.wav", "sfx/footstep_hard_2.wav", "sfx/footstep_hard_3.wav", "sfx/footstep_hard_4.wav"], volume: 0.35, pitch: (0.9, 1.1), reach: 25.0, voices: 6),
+        FootstepSoft: (files: ["sfx/footstep_soft_1.wav", "sfx/footstep_soft_2.wav", "sfx/footstep_soft_3.wav", "sfx/footstep_soft_4.wav"], volume: 0.3, pitch: (0.9, 1.1), reach: 20.0, voices: 6),
+        Shuffle: (files: ["sfx/shuffle_1.wav", "sfx/shuffle_2.wav", "sfx/shuffle_3.wav"], volume: 0.25, pitch: (0.8, 1.1), reach: 14.0, voices: 4),
+        SwingLight: (files: ["sfx/swing_light_1.wav", "sfx/swing_light_2.wav"], volume: 0.45, pitch: (0.92, 1.1), reach: 20.0, voices: 4),
+        SwingHeavy: (files: ["sfx/swing_heavy_1.wav", "sfx/swing_heavy_2.wav"], volume: 0.55, pitch: (0.9, 1.05), reach: 20.0, voices: 4),
+        HitBlunt: (files: ["sfx/hit_blunt_1.wav", "sfx/hit_blunt_2.wav", "sfx/hit_blunt_3.wav"], volume: 0.9, pitch: (0.9, 1.1), reach: 35.0, voices: 6),
+        HitBlade: (files: ["sfx/hit_blade_1.wav", "sfx/hit_blade_2.wav", "sfx/hit_blade_3.wav"], volume: 0.8, pitch: (0.9, 1.1), reach: 35.0, voices: 6),
+        Punch: (files: ["sfx/punch_1.wav", "sfx/punch_2.wav"], volume: 0.7, pitch: (0.9, 1.12), reach: 25.0, voices: 4),
+        BodyFall: (files: ["sfx/body_fall_1.wav", "sfx/body_fall_2.wav"], volume: 0.75, pitch: (0.85, 1.05), reach: 30.0, voices: 4),
+        Stomp: (files: ["sfx/stomp_1.wav", "sfx/stomp_2.wav"], volume: 0.85, pitch: (0.9, 1.1), reach: 30.0, voices: 3),
+        Shove: (files: ["sfx/shove_1.wav", "sfx/shove_2.wav"], volume: 0.6, pitch: (0.9, 1.1), reach: 20.0, voices: 3),
+        PlayerHurt: (files: ["sfx/player_hurt_1.wav", "sfx/player_hurt_2.wav", "sfx/player_hurt_3.wav"], volume: 0.9, pitch: (0.95, 1.08), reach: 35.0, voices: 3),
+        Groan: (files: ["sfx/groan_1.wav", "sfx/groan_2.wav", "sfx/groan_3.wav", "sfx/groan_4.wav", "sfx/groan_5.wav", "sfx/groan_6.wav"], volume: 0.55, pitch: (0.78, 1.15), reach: 40.0, muffle: 0.45, voices: 6),
+        DoorOpen: (files: ["sfx/door_open_1.wav", "sfx/door_open_2.wav"], volume: 0.6, pitch: (0.92, 1.08), reach: 30.0, voices: 3),
+        DoorClose: (files: ["sfx/door_close_1.wav", "sfx/door_close_2.wav"], volume: 0.7, pitch: (0.92, 1.08), reach: 35.0, voices: 3),
+        WindowOpen: (files: ["sfx/window_open.wav"], volume: 0.5, pitch: (0.92, 1.08), reach: 25.0, voices: 2),
+        WindowClose: (files: ["sfx/window_close.wav"], volume: 0.55, pitch: (0.92, 1.08), reach: 25.0, voices: 2),
+        GlassBreak: (files: ["sfx/glass_break_1.wav", "sfx/glass_break_2.wav"], volume: 1.0, pitch: (0.92, 1.08), reach: 60.0, muffle: 0.5, voices: 3),
+        DoorBreak: (files: ["sfx/door_break_1.wav", "sfx/door_break_2.wav"], volume: 1.0, pitch: (0.9, 1.05), reach: 60.0, muffle: 0.5, voices: 2),
+        ThumpDoor: (files: ["sfx/thump_door_1.wav", "sfx/thump_door_2.wav", "sfx/thump_door_3.wav"], volume: 0.85, pitch: (0.88, 1.08), reach: 45.0, muffle: 0.55, voices: 5),
+        ThumpWindow: (files: ["sfx/thump_window_1.wav", "sfx/thump_window_2.wav"], volume: 0.75, pitch: (0.9, 1.1), reach: 40.0, muffle: 0.55, voices: 4),
+        Rummage: (files: ["sfx/rummage_1.wav", "sfx/rummage_2.wav", "sfx/rummage_3.wav"], volume: 0.5, pitch: (0.92, 1.08), reach: 15.0, voices: 2),
+        Pickup: (files: ["sfx/pickup.wav"], volume: 0.5, pitch: (0.9, 1.1), reach: 10.0, voices: 2),
+        LevelUp: (files: ["sfx/level_up.wav"], volume: 0.4, pitch: (1.0, 1.0), reach: 10.0, voices: 1),
+        Bird: (files: ["sfx/bird_1.wav", "sfx/bird_2.wav", "sfx/bird_3.wav"], volume: 0.18, pitch: (0.9, 1.15), reach: 10.0, voices: 2),
+        Wind: (files: ["ambience/wind_loop.wav"], volume: 0.3, pitch: (1.0, 1.0), reach: 10.0, voices: 1),
+        Room: (files: ["ambience/room_loop.wav"], volume: 0.12, pitch: (1.0, 1.0), reach: 10.0, voices: 1),
+        Crickets: (files: ["ambience/crickets_loop.wav"], volume: 0.16, pitch: (1.0, 1.0), reach: 10.0, voices: 1),
+    },
+)
