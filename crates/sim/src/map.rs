@@ -319,6 +319,20 @@ pub struct EdgeChange {
     pub kind: Edge,
 }
 
+/// A cul-de-sac's turning circle as the generator laid it out: tiles whose middles are within
+/// `road` of `centre` are asphalt, then sidewalk out to `walk`. The street into it comes from the
+/// `entry` side, its asphalt `stem` either side of the line through the centre and its sidewalks
+/// out to `stem_walk`. Only for drawing it round (the tiles are what count).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TurningCircle {
+    pub centre: Vec2,
+    pub road: f32,
+    pub walk: f32,
+    pub entry: Side,
+    pub stem: f32,
+    pub stem_walk: f32,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TileMap {
     /// Size in chunks.
@@ -328,13 +342,17 @@ pub struct TileMap {
     /// `rooms[0]` is the "outdoors" placeholder.
     pub rooms: Vec<Room>,
     pub buildings: Vec<Building>,
+    /// The generator's turning circles, for the client to draw round. Derived: not saved (a map
+    /// stored whole, after hand edits, has none) and not part of any hash.
+    #[serde(skip)]
+    pub turning_circles: Vec<TurningCircle>,
 }
 
 impl TileMap {
     pub fn new(chunks_x: i32, chunks_y: i32) -> Self {
         let chunks = (0..chunks_x * chunks_y).map(|_| Chunk { tiles: vec![Tile::default(); CHUNK_TILES] }).collect();
         let outdoors = Room { building: u16::MAX, name: "Outdoors".into(), room_type: "outdoors".into(), floor: Floor::Grass };
-        Self { chunks_x, chunks_y, chunks, rooms: vec![outdoors], buildings: Vec::new() }
+        Self { chunks_x, chunks_y, chunks, rooms: vec![outdoors], buildings: Vec::new(), turning_circles: Vec::new() }
     }
 
     pub fn width(&self) -> i32 {

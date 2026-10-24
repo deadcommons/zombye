@@ -1,0 +1,63 @@
+// Character spec (zombye tools/blender/zchar.py and zgarment.py read it; zombye .claude/skills/meshy-assets/SKILL.md).
+// size: the rest pose's bounding box in metres, x (arm span) × y (front to back) × z (height); the
+// height must match within 2 cm, width and depth are upper limits. footprint: the tile it stands on.
+// A modular character: the base body plus garments, separate meshes skinned to the same rig.
+AssetSpec(
+    id: "survivor_01",
+    category: Character,
+    name: "Survivor base body (1)",
+    footprint: (1, 1),
+    size: (1.75, 0.35, 1.78),
+    // The body's triangle budget (Gate 3, the owner's pick "b": 1,800). Perf matters: players and
+    // survivors are skinned meshes, one per person on screen.
+    tris: 1800,
+    // "flat" (every face one plane), or auto-smooth: smooth, with edges sharper than this many degrees
+    // hard. Gate 3 pick "b": 30. The same rule for the body and every garment.
+    shading: 30.0,
+    texture: Some("2048 px base colour, toned to the palette"),
+    // The approved reference (Gate 1, round 2), for the Gate 3 sheet.
+    reference: "raw/reference-base-r2.png",
+    // The raw GLB in raw/ the clean-up script starts from (Meshy: rigged, idle + casual walk + crouch
+    // walk); the free run and walk (raw/running.glb, raw/walking.glb) are merged onto its armature.
+    source: "animations.glb",
+    // walk = Meshy's in-place casual walk (one cycle of it); walk_alt = Meshy's free walk, kept to compare.
+    animations: ["idle", "walk", "run", "sneak", "walk_alt"],
+    // Body regions, as the game's items::BodyPart: each body vertex belongs to the region of its
+    // heaviest bone (vertex groups region_<Region>, and the `_region` vertex attribute in the GLB: the
+    // index in Head, Torso, Arms, Hands, Legs, Feet). The hips' and thighs' vertices then go by the
+    // colour under them: shirt to Torso, trousers to Legs. Head includes the neck and the hair.
+    regions: (
+        Head: ["Head", "neck", "head_end", "headfront"],
+        Torso: ["Hips", "Spine02", "Spine01", "Spine", "LeftShoulder", "RightShoulder"],
+        Arms: ["LeftArm", "LeftForeArm", "RightArm", "RightForeArm"],
+        Hands: ["LeftHand", "RightHand"],
+        Legs: ["LeftUpLeg", "LeftLeg", "RightUpLeg", "RightLeg"],
+        Feet: ["LeftFoot", "LeftToeBase", "RightFoot", "RightToeBase"],
+    ),
+    // Sockets: attachment points for rigid wearables (zgarment.py, the wearable format): a bone, an
+    // offset in metres from the bone's head and a rotation in degrees (XYZ), on the armature's axes in
+    // the rest pose (+X the character's left, -Y forward, +Z up).
+    sockets: (
+        eyes: (bone: "Head", offset: (0.0, -0.142, 0.114), rotation: (0.0, 0.0, 0.0)),      // on the nose bridge, between the pupils
+        head_top: (bone: "Head", offset: (0.0, -0.007, 0.262), rotation: (0.0, 0.0, 0.0)),  // the crown of the head
+        neck: (bone: "neck", offset: (0.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0)),           // the base of the neck
+        hand_r: (bone: "RightHand", offset: (-0.08, 0.0, -0.01), rotation: (0.0, 0.0, 0.0)), // in the grip (T-pose)
+        hand_l: (bone: "LeftHand", offset: (0.08, 0.0, -0.01), rotation: (0.0, 0.0, 0.0)),
+        back: (bone: "Spine", offset: (0.0, 0.13, -0.05), rotation: (0.0, 0.0, 0.0)),        // between the shoulder blades
+    ),
+    // Wearables (garments and accessories), each its own mesh `survivor_01_<id>` and GLB
+    // (export/wearables/<id>.glb), interchangeable on any body built on this one. `item`: the id in
+    // items.ron (None: no item yet). `kind`: Skinned (weights from the body) or Rigid (on `socket`'s bone).
+    // `layer`: items::Layer (None for accessories). `occupies`: body regions or accessory slots (face,
+    // head_top, neck, hand_r, hand_l, back). `hides`: the body regions the game hides while it is worn
+    // (what it visibly covers: the hoodie's hood is down, so not Head, though the item protects the head).
+    // `tris`: its budget.
+    wearables: [
+        (id: "hoodie", item: Some("hoodie"), kind: Skinned, socket: None, layer: Some(Mid),
+         occupies: [Torso, Arms], hides: [Torso, Arms], tris: 800),
+        (id: "glasses", item: None, kind: Rigid, socket: Some("eyes"), layer: None,
+         occupies: [face], hides: [], tris: 100),
+    ],
+    style: "An ordinary, weary, slim man in his mid thirties from an early-1990s small American town: tired, haunted face, stubble, untidy brown hair, pale skin. The base body wears a plain fitted grey t-shirt, dark grey trousers and dark shoes; the look comes from garments on top (a hoodie, glasses: a nerd in a hoodie). Muted, slightly desaturated palette; flat colour areas; garments in palette colours.",
+    description: "The modular survivor base body (players and survivors), with its first wearables: a hoodie (skinned, hood down) and glasses (rigid, on the eyes socket).",
+)

@@ -639,18 +639,18 @@ pub(crate) fn dress_survivors(
 mod tests {
     use super::*;
 
-    /// The work-in-progress survivor in the art repo, when it's there (`ZOMBYE_ART`).
-    fn art_body() -> Option<(Body, PathBuf)> {
-        let dir = PathBuf::from(std::env::var("ZOMBYE_ART").ok()?).join("characters/survivor-01/export");
-        let path = dir.join("survivor_01_body.glb");
-        Some((parse_body(&std::fs::read(&path).ok()?).unwrap(), dir))
+    /// The promoted survivor and its wearables' folder.
+    fn shipped_body() -> (Body, PathBuf) {
+        let models = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/models");
+        let path = models.join(format!("characters/{DEFAULT_BODY}.glb"));
+        (parse_body(&std::fs::read(&path).unwrap()).unwrap(), models.join("wearables"))
     }
 
-    /// The real body: clips, sockets, regions; the retarget leaves the reference pose as it is for
+    /// The shipped body: clips, sockets, regions; the retarget leaves the reference pose as it is for
     /// the grey-box's rest, and its clips stride like a walk, a run and a sneak.
     #[test]
     fn the_survivor_body_reads_and_retargets() {
-        let Some((body, dir)) = art_body() else { return };
+        let (body, wearables) = shipped_body();
         assert!(body.mesh.triangles() > 1000 && body.rig.len() >= 20);
         for clip in ["idle", "walk", "run", "sneak"] {
             assert!(body.clip(clip).is_some(), "no {clip}");
@@ -670,33 +670,13 @@ mod tests {
         let p = eyes.w_axis.truncate();
         assert!((1.55..1.75).contains(&p.y) && p.z > 0.05, "eyes at {p}");
         let mut wardrobe = HashMap::new();
-        load_wearables(&dir.join("wearables"), &body, &mut wardrobe);
+        load_wearables(&wearables, &body, &mut wardrobe);
         assert_eq!(wardrobe.get("hoodie").map(|w| w.hides.clone()), Some(vec![BodyPart::Torso, BodyPart::Arms]));
         assert!(wardrobe.get("glasses").is_some_and(|w| w.mesh.triangles() <= 100));
         let walk = body.clips.iter().position(|c| c.name == "walk").unwrap();
         let run = body.clips.iter().position(|c| c.name == "run").unwrap();
         let (_, ws) = phase_and_stride(&body, walk);
         let (_, rs) = phase_and_stride(&body, run);
-        let sneak = body.clips.iter().position(|c| c.name == "sneak").unwrap();
-        println!("strides: walk {ws:.2} run {rs:.2} sneak {:.2} m", phase_and_stride(&body, sneak).1);
         assert!((0.8..2.5).contains(&ws) && rs > ws, "walk {ws} run {rs}");
-        for (name, pose) in [("rest", body.rig.rest()), ("idle0", body.clip("idle").unwrap().frames[0].clone()), ("walk0", body.clip("walk").unwrap().frames[0].clone())] {
-            let m = body.rig.skin_matrices(&pose);
-            let mesh = &body.mesh;
-            let (mut lo, mut hi) = (Vec3::MAX, Vec3::MIN);
-            for v in 0..mesh.vertices() {
-                let p: Vec3 = (0..4).map(|k| mesh.weights[v][k] * m[mesh.joints[v][k] as usize].transform_point3(mesh.positions[v])).sum();
-                (lo, hi) = (lo.min(p), hi.max(p));
-            }
-            println!("{name}: {lo} .. {hi}");
-            let g = body.rig.globals(&pose);
-            let at = |n: &str| g[body.rig.find(n).unwrap()].w_axis.truncate();
-            let arm = (at("LeftForeArm") - at("LeftArm")).normalize();
-            println!("  upper arm dir {arm} ({:.0} deg from down), hand {}", arm.angle_between(Vec3::NEG_Y).to_degrees(), at("LeftHand"));
-            for b in ["Hips", "LeftArm", "LeftForeArm", "LeftUpLeg"] {
-                let i = body.rig.find(b).unwrap();
-                println!("  {b} rest r {:?} t {:?} / pose r {:?} t {:?}", body.rig.bones[i].r, body.rig.bones[i].t, pose.r[i], pose.t[i]);
-            }
-        }
     }
 }

@@ -13,7 +13,17 @@ Only a finished asset is promoted into this (public) repo: specs in assets/specs
 script, .blend and review sheet in assets/source/<category>/<id>/, the GLB in assets/models/<category>/,
 and an ATTRIBUTION.md row. Without the art repo (or before an asset has a folder there) the tools
 work on the game repo's copy directly.
+
+Characters (`characters/survivor_01`) live in the art repo's `characters/<id with dashes>/` (e.g.
+characters/survivor-01/), files named after the folder (survivor-01.ron, .py, .blend). A modular one
+(zgarment.py, #63) promotes its body export (`export/<id>_body.glb`) as `assets/models/characters/<id>.glb`,
+every wearable in `export/wearables/` into `assets/models/wearables/`, its textures beside the source, and
+an ATTRIBUTION.md row per file with the generator its GLB records (`ai_generated`, `generator`, task ids).
+Its review sheet is the in-game check (`renders/ingame*.png`, the newest).
 """
+
+import json
+import struct
 
 import datetime
 import os
@@ -40,11 +50,17 @@ def split(asset):
     return category, name
 
 
+def is_character(asset):
+    return split(asset)[0] == "characters"
+
+
 def art_dir(asset):
     root = art_root()
     if root is None:
         return None
     category, name = split(asset)
+    if is_character(asset):
+        return root / "characters" / name.replace("_", "-")
     return root / ART_KINDS.get(category, category) / f"{category}-{name.replace('_', '-')}"
 
 
@@ -64,6 +80,22 @@ def game_paths(asset):
 def art_paths(asset):
     d = art_dir(asset)
     _, name = split(asset)
+    if is_character(asset):
+        stem = d.name
+        ingame = sorted((d / "renders").glob("ingame*.png"))
+        return {
+            "where": "art",
+            "dir": d,
+            "meta": d / "meta.yml",
+            "spec": d / f"{stem}.ron",
+            "script": d / f"{stem}.py",
+            "blend": d / f"{stem}.blend",
+            "renders": d / "renders",
+            "sheet": ingame[-1] if ingame else d / "renders" / "ingame.png",
+            "glb": d / "export" / f"{name}_body.glb",
+            "wearables": d / "export" / "wearables",
+            "textures": d / "textures",
+        }
     return {
         "where": "art",
         "dir": d,
@@ -185,9 +217,66 @@ def attribution_row(asset, name):
             f"Spec `assets/specs/{category}/{ident}.ron`; palette colours only |")
 
 
+def glb_extras(path):
+    """The extras of a GLB's skinned mesh node (or its first node with extras)."""
+    data = Path(path).read_bytes()
+    doc = json.loads(data[20:20 + struct.unpack_from("<I", data, 12)[0]])
+    nodes = doc.get("nodes", [])
+    node = next((n for n in nodes if "mesh" in n and "skin" in n and n.get("extras")), None) or next((n for n in nodes if n.get("extras")), {})
+    return node.get("extras", {})
+
+
+def character_row(model, source, name, extras):
+    """An ATTRIBUTION.md row for one of a character's files, from what its GLB records."""
+    generator = extras.get("generator") or "Built in Blender by an agent (Claude)"
+    tasks = f"; Meshy tasks {extras['meshy_tasks']}" if extras.get("meshy_tasks") else ""
+    if extras.get("ai_generated") and extras.get("meshy_tasks"):
+        ai = "AI-generated (Meshy (Pro), paid plan: we own the output), cleaned up in Blender"
+    elif extras.get("ai_generated"):
+        ai = "Built in Blender over the AI-generated body (its row above); no generator of its own"
+    else:
+        ai = "no generator"
+    return (f"| `{model}` ({name}; source, script and renders in `{source}`) | Dead Commons | {generator}{tasks} | "
+            f"CC BY-NC-SA 4.0 | {ai} |")
+
+
+def promote_character(asset, force=False):
+    """A modular character: the body, its wearables, its source, and a row each."""
+    problems = check_ready(asset, force)
+    a = art_paths(asset)
+    if not a["wearables"].is_dir():
+        problems.append("missing export/wearables/")
+    if problems:
+        raise SystemExit(f"{asset} isn't ready to promote:\n  " + "\n  ".join(problems))
+    g = game_paths(asset)
+    _, ident = split(asset)
+    src = g["script"].parent
+    copies = [(a["spec"], g["spec"]), (a["script"], g["script"]), (a["blend"], g["blend"]), (a["sheet"], src / f"{ident}_ingame.png"), (a["glb"], g["glb"])]
+    copies += [(t, src / t.name) for t in sorted(a["textures"].glob("*")) if t.is_file()]
+    wearables = sorted(a["wearables"].glob("*.glb"))
+    copies += [(w, GAME / "assets" / "models" / "wearables" / w.name) for w in wearables]
+    for frm, to in copies:
+        to.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(frm, to)
+    m = re.search(r'name:\s*"([^"]+)"', a["spec"].read_text())
+    source = f"assets/source/characters/{ident}/"
+    rows = [(f"assets/models/characters/{ident}.glb", m.group(1) if m else ident, glb_extras(a["glb"]))]
+    rows += [(f"assets/models/wearables/{w.name}", f"{w.stem} for {ident}", glb_extras(w)) for w in wearables]
+    attribution = GAME / "ATTRIBUTION.md"
+    text = attribution.read_text()
+    for model, name, extras in rows:
+        if f"`{model}`" not in text:
+            text = text.rstrip("\n") + "\n" + character_row(model, source, name, extras) + "\n"
+    attribution.write_text(text)
+    print(f"promoted {asset} into {GAME}:\n  " + "\n  ".join([str(to.relative_to(GAME)) for _, to in copies] + ["ATTRIBUTION.md"]))
+    print(f"Commit those in the game repo (Refs the issue), then: python3 {Path(__file__).relative_to(GAME)} record <commit> {asset}")
+
+
 def promote(asset, force=False):
     """Copies a ready asset into the game repo and adds its ATTRIBUTION.md row. Commit there, then
     run `record <commit>`."""
+    if is_character(asset):
+        return promote_character(asset, force)
     problems = check_ready(asset, force)
     if problems:
         raise SystemExit(f"{asset} isn't ready to promote:\n  " + "\n  ".join(problems))
@@ -215,6 +304,8 @@ def record(commit, asset, date=None):
     set_meta(a["meta"], status="promoted", promoted=commit)
     category, ident = split(asset)
     files = f"`assets/models/{category}/{ident}.glb`, `assets/source/{category}/{ident}/`, `assets/specs/{category}/{ident}.ron`"
+    if is_character(asset) and a["wearables"].is_dir():
+        files += "".join(f", `assets/models/wearables/{w.name}`" for w in sorted(a["wearables"].glob("*.glb")))
     line = f"| {date or datetime.date.today().isoformat()} | {a['dir'].relative_to(art_root())} | {commit} | {files} |"
     promoted = art_root() / "PROMOTED.md"
     text = promoted.read_text()
