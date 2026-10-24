@@ -16,17 +16,25 @@ struct VatSettings {
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var vat: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(1) var<uniform> settings: VatSettings;
+// A baked character's base colour; 1 x 1 white for the grey-box.
+@group(constants::MATERIAL_BIND_GROUP) @binding(2) var base_color: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(3) var base_sampler: sampler;
 
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
     @location(0) position: vec3<f32>,
     @location(1) vat_info: vec2<f32>,
+    @location(2) uv: vec2<f32>,
 };
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) world_position: vec3<f32>,
+    // The grey-box's body-part colour, or a baked character's outfit tint (times its texture).
     @location(1) color: vec3<f32>,
+    @location(2) uv: vec2<f32>,
+    // 1 while just hit.
+    @location(3) flash: f32,
 };
 
 fn hash(n: u32) -> f32 {
@@ -49,6 +57,16 @@ fn pants_color(o: u32) -> vec3<f32> {
         vec3(0.07, 0.11, 0.22), vec3(0.28, 0.24, 0.15), vec3(0.05, 0.05, 0.05), vec3(0.16, 0.16, 0.17),
     );
     return palette[(o >> 3u) % 4u];
+}
+
+// A baked character's outfit variety: mild washes of colour and brightness over its texture, so a
+// crowd of one model doesn't look cloned.
+fn outfit_tint(o: u32) -> vec3<f32> {
+    let palette = array<vec3<f32>, 8>(
+        vec3(1.0, 1.0, 1.0), vec3(1.10, 0.95, 0.86), vec3(0.86, 0.95, 1.10), vec3(0.94, 1.06, 0.90),
+        vec3(0.92, 0.92, 0.92), vec3(1.06, 0.90, 0.94), vec3(0.96, 1.0, 1.06), vec3(1.10, 1.02, 0.84),
+    );
+    return palette[o % 8u] * (0.82 + 0.3 * hash(o + 5u));
 }
 
 fn vat_load(vid: u32, clip: vec4<f32>, frame: u32) -> vec3<f32> {
@@ -114,7 +132,13 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     out.world_position = world.xyz;
     out.clip_position = position_world_to_clip(world.xyz);
 
+    out.uv = vertex.uv;
+    out.flash = select(0.0, 1.0, flash);
     let kind = u32(vertex.vat_info.y);
+    if (kind == 4u) {
+        out.color = outfit_tint(outfit);
+        return out;
+    }
     let skin = mix(vec3(0.28, 0.32, 0.24), vec3(0.40, 0.38, 0.30), hash(outfit));
     var color = skin;
     if (kind == 1u) {
@@ -127,10 +151,6 @@ fn vertex(vertex: Vertex) -> VertexOutput {
         color = pants_color(outfit);
     } else if (kind == 3u) {
         color = vec3(0.05, 0.035, 0.025);
-    }
-    if (flash) {
-        // Just hit: a brief pale flash so the blow reads.
-        color = mix(color, vec3(1.0, 0.82, 0.75), 0.7);
     }
     out.color = color;
     return out;
@@ -145,6 +165,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     let diffuse = max(dot(n, normalize(settings.sun.xyz)), 0.0) * settings.sun.w;
     let sky = 0.5 + 0.5 * n.y;
-    let lit = in.color * (settings.ambient.rgb * sky * 1.4 + settings.sun_color.rgb * 1.5 * diffuse);
+    // Always sampled (uniform control flow); the grey-box's texture is white.
+    var base = textureSample(base_color, base_sampler, in.uv).rgb * in.color;
+    // Just hit: a brief pale flash so the blow reads.
+    base = mix(base, vec3(1.0, 0.82, 0.75), 0.7 * in.flash);
+    let lit = base * (settings.ambient.rgb * sky * 1.4 + settings.sun_color.rgb * 1.5 * diffuse);
     return vec4(lit, 1.0);
 }
