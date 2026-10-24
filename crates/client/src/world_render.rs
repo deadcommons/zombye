@@ -1,21 +1,23 @@
-//! Streams the world around the player into meshes: ground and trees per 16 m chunk, and one set
-//! of meshes per building (ground floor, upper floor, roof) plus an entity per door leaf and per
-//! window pane, which follow the map's edge changes (doors swing, sash windows slide up, broken
-//! glass leaves jagged shards, a broken door's leaf is gone). Battered doors and windows show
+//! Streams the world around the player into meshes: the ground and props (trees, bushes, fences
+//! and hedges) per 16 m chunk (`meshgen::landscape`), and one set of meshes per building (ground
+//! floor, upper floor, roof) plus an entity per door leaf and per window pane, which follow the
+//! map's edge changes (doors swing, sash windows slide up, broken glass leaves jagged shards, a
+//! broken door's leaf is gone). Battered doors and windows show
 //! cracks (and splinters) in three stages as their hit points run down (`EdgeDamage` in snapshots).
 //! The upper floor and roof of the building you're in are hidden so you can see inside.
 
 use std::collections::HashMap;
 use std::f32::consts::FRAC_PI_2;
 
+use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
-use zombye_sim::map::{Building, CHUNK_SIZE, Edge, Feature, OwnedEdge, RoofStyle, TileMap};
+use zombye_sim::map::{Building, CHUNK_SIZE, Edge, OwnedEdge, RoofStyle, TileMap};
 
 use crate::Options;
 use crate::camera::IsoCamera;
 use crate::furniture_models::FurnitureModels;
 use crate::materials::{self, WorldMaterials};
-use crate::meshgen::{self, CutKind, CutTag, MeshBuilder, add_blob, add_cone, add_furniture, add_prism, floor_color, hash01, rgb, shade};
+use crate::meshgen::{self, CutKind, CutTag, MeshBuilder, add_furniture, floor_color, landscape, rgb, shade};
 use crate::player::Player;
 use crate::server_link::{ClientMap, EdgeChangesThisFrame, EdgeDamageMap, EdgeDamageThisFrame};
 
@@ -26,7 +28,9 @@ const WALL_T: f32 = 0.08;
 const STUB_HEIGHT: f32 = 0.4;
 /// Chunks within this many chunks of the player are loaded.
 const LOAD_RADIUS: i32 = 6;
-const MAX_LOADS_PER_FRAME: usize = 6;
+/// Chunks (and, separately, buildings) built per frame while streaming: a chunk of landscape
+/// takes about 0.15-0.2 ms to build, so this keeps streaming under a millisecond a frame.
+const MAX_LOADS_PER_FRAME: usize = 4;
 
 #[derive(Default)]
 struct BuildingRender {
@@ -105,12 +109,17 @@ struct WindowPane {
 /// How far an open sash slides up.
 const SASH_LIFT: f32 = 0.6;
 
+/// The props mesh (trees, bushes, fences) of a chunk.
+#[derive(Component)]
+struct ChunkProps(IVec2);
+
 pub struct WorldRenderPlugin;
 
 impl Plugin for WorldRenderPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Streamer>()
             .add_systems(Startup, setup_shared)
+            .add_systems(PostUpdate, fade_chunks.after(materials::update_params))
             .add_systems(Update, (stream, apply_edge_changes, apply_edge_damage, animate_doors, animate_panes, hide_upper_floors, cut_edge_pieces).chain());
     }
 }
@@ -312,72 +321,14 @@ fn stream(
 }
 
 fn spawn_chunk(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &WorldMaterials, map: &TileMap, c: IVec2) -> Vec<Entity> {
-    let mut ground = MeshBuilder::default();
-    let mut props = MeshBuilder::default();
-    let min = c * CHUNK_SIZE;
-    for y in min.y..min.y + CHUNK_SIZE {
-        for x in min.x..min.x + CHUNK_SIZE {
-            let t = IVec2::new(x, y);
-            let tile = map.tile(t);
-            let (x0, z0) = (x as f32, y as f32);
-            ground.quad(
-                [Vec3::new(x0, 0.0, z0), Vec3::new(x0, 0.0, z0 + 1.0), Vec3::new(x0 + 1.0, 0.0, z0 + 1.0), Vec3::new(x0 + 1.0, 0.0, z0)],
-                Vec3::Y,
-                floor_color(tile.floor, x, y),
-            );
-            let jitter = Vec3::new(hash01(x, y, 3) - 0.5, 0.0, hash01(x, y, 4) - 0.5) * 0.3;
-            let centre = Vec3::new(x0 + 0.5, 0.0, z0 + 0.5) + jitter;
-            let s = 0.8 + 0.5 * hash01(x, y, 5);
-            match tile.feature {
-                Feature::Tree => {
-                    props.set_tag(CutTag::default());
-                    add_prism(&mut props, centre, 0.16 * s, 2.4 * s, 6, rgb(0.30, 0.22, 0.16));
-                    props.set_tag(CutTag { kind: CutKind::Canopy, anchor: centre.xz(), radius: 1.6 * s });
-                    let leaf = [rgb(0.22, 0.36, 0.16), rgb(0.30, 0.40, 0.18), rgb(0.36, 0.38, 0.16)][(hash01(x, y, 6) * 3.0) as usize % 3];
-                    add_blob(&mut props, centre + Vec3::Y * 2.9 * s, Vec3::new(1.5, 1.25, 1.5) * s, leaf, (x * 31 + y) as u32);
-                }
-                Feature::PineTree => {
-                    props.set_tag(CutTag::default());
-                    add_prism(&mut props, centre, 0.14 * s, 1.2 * s, 5, rgb(0.28, 0.20, 0.15));
-                    props.set_tag(CutTag { kind: CutKind::Canopy, anchor: centre.xz(), radius: 1.3 * s });
-                    let green = rgb(0.14, 0.26, 0.16);
-                    add_cone(&mut props, centre + Vec3::Y * 0.9 * s, 1.3 * s, 2.4 * s, 7, green);
-                    add_cone(&mut props, centre + Vec3::Y * 2.2 * s, 1.0 * s, 2.0 * s, 7, shade(green, 1.1));
-                    add_cone(&mut props, centre + Vec3::Y * 3.4 * s, 0.7 * s, 1.6 * s, 7, shade(green, 1.2));
-                }
-                Feature::Bush => {
-                    props.set_tag(CutTag::default());
-                    add_blob(&mut props, centre + Vec3::Y * 0.4, Vec3::new(0.6, 0.45, 0.6) * s, rgb(0.24, 0.34, 0.17), (x * 17 + y * 5) as u32);
-                }
-                _ => {}
-            }
-            // Fences on the edges this tile owns.
-            for (which, kind) in [(OwnedEdge::North, tile.north), (OwnedEdge::West, tile.west)] {
-                if kind == Edge::Fence {
-                    props.set_tag(CutTag::default());
-                    add_fence(&mut props, t, which);
-                }
-            }
-        }
-    }
-    let mut out = vec![commands.spawn((Mesh3d(meshes.add(ground.build())), MeshMaterial3d(mats.ground.clone()), Transform::IDENTITY)).id()];
+    let landscape::ChunkMeshes { ground, props } = landscape::build_chunk(map, c);
+    // The ground is flat but for ankle-high clutter (kerbs, tufts, ferns, rocks): it receives
+    // shadows and casts none, which keeps it out of every shadow cascade.
+    let mut out = vec![commands.spawn((Mesh3d(meshes.add(ground.build())), MeshMaterial3d(mats.ground.clone()), Transform::IDENTITY, NotShadowCaster)).id()];
     if !props.is_empty() {
-        out.push(commands.spawn((Mesh3d(meshes.add(props.build())), MeshMaterial3d(mats.building.clone()), Transform::IDENTITY)).id());
+        out.push(commands.spawn((Mesh3d(meshes.add(props.build())), MeshMaterial3d(mats.props.clone()), Transform::IDENTITY, ChunkProps(c))).id());
     }
     out
-}
-
-fn add_fence(mb: &mut MeshBuilder, t: IVec2, which: OwnedEdge) {
-    let (a, b) = TileMap::edge_segment(t, which);
-    let wood = rgb(0.55, 0.48, 0.38);
-    let along = (b - a).normalize();
-    let half = Vec2::new(along.y.abs(), along.x.abs()) * 0.03;
-    for (h0, h1) in [(0.35, 0.45), (0.8, 0.9)] {
-        let lo = a.min(b) - half;
-        let hi = a.max(b) + half;
-        mb.add_box(Vec3::new(lo.x, h0, lo.y), Vec3::new(hi.x, h1, hi.y), meshgen::same(wood));
-    }
-    mb.add_box(Vec3::new(a.x - 0.05, 0.0, a.y - 0.05), Vec3::new(a.x + 0.05, 1.05, a.y + 0.05), meshgen::same(shade(wood, 0.8)));
 }
 
 /// Colour of one side of a wall: the room's paint inside, the building's siding outside.
@@ -722,6 +673,19 @@ fn cut_edge_pieces(
         let want = if piece.shown && !cut { Visibility::Inherited } else { Visibility::Hidden };
         if *vis != want {
             *vis = want;
+        }
+    }
+}
+
+/// Chunks holding a tree whose foliage is fading draw their props with the cutaway material;
+/// the rest without it, keeping the GPU's hidden-surface removal (see `materials.rs`).
+fn fade_chunks(mats: Option<Res<WorldMaterials>>, fades: Res<materials::TreeFades>, mut props: Query<(&ChunkProps, &mut MeshMaterial3d<materials::WorldMaterial>)>) {
+    let Some(mats) = mats else { return };
+    for (chunk, mut material) in &mut props {
+        let fading = fades.0.iter().any(|f| f.0.div_euclid(IVec2::splat(CHUNK_SIZE)) == chunk.0);
+        let want = if fading { &mats.props_cut } else { &mats.props };
+        if material.0 != *want {
+            material.0 = want.clone();
         }
     }
 }

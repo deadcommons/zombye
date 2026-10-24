@@ -7,6 +7,10 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use zombye_sim::map::{Floor, Side};
 
+pub mod land_palette;
+pub mod landscape;
+pub mod trees;
+
 /// What a piece of geometry is, for the cutaway shader (stored in the second UV channel).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum CutKind {
@@ -16,13 +20,15 @@ pub enum CutKind {
     Wall = 1,
     /// A roof: disappears as a whole when it hides the player.
     Roof = 2,
-    /// A tree canopy: fades when it hides the player.
+    /// A tree's foliage: fades out when it hides the player.
     Canopy = 3,
     /// The flat top of a wall stub: only drawn while its wall is cut.
     WallCap = 4,
     /// Other building structure (door leaves): never cut by the shader, but like walls it stays
     /// readable in unseen rooms.
     Structure = 5,
+    /// A tree's trunk and branches: dimmed and thinned (not removed) while its foliage fades.
+    Wood = 6,
 }
 
 /// Cutaway data shared by all vertices of one piece: its kind, an anchor point on the ground
@@ -60,6 +66,25 @@ pub fn same(c: LinearRgba) -> FaceColors {
 }
 
 impl MeshBuilder {
+    /// A builder with room for about this many triangles.
+    pub fn with_capacity(triangles: usize) -> Self {
+        let v = triangles * 3;
+        Self {
+            positions: Vec::with_capacity(v),
+            normals: Vec::with_capacity(v),
+            colors: Vec::with_capacity(v),
+            uv0: Vec::with_capacity(v),
+            uv1: Vec::with_capacity(v),
+            indices: Vec::with_capacity(v),
+            tag: CutTag::default(),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn tri_count(&self) -> usize {
+        self.indices.len() / 3
+    }
+
     pub fn is_empty(&self) -> bool {
         self.indices.is_empty()
     }
@@ -289,59 +314,5 @@ pub fn add_furniture(mb: &mut MeshBuilder, kind: &str, min: Vec2, size: Vec2, fa
             }
         }
         _ => block(mb, lo, hi, 0.0, 0.8, rgb(0.5, 0.45, 0.4)),
-    }
-}
-
-/// Vertical n-sided prism (tree trunks, posts).
-pub fn add_prism(mb: &mut MeshBuilder, base: Vec3, radius: f32, height: f32, sides: u32, color: LinearRgba) {
-    let ring = |i: u32| {
-        let a = i as f32 / sides as f32 * std::f32::consts::TAU;
-        Vec3::new(a.cos() * radius, 0.0, a.sin() * radius)
-    };
-    for i in 0..sides {
-        let (a, b) = (base + ring(i), base + ring(i + 1));
-        let up = Vec3::Y * height;
-        let normal = ((a + b) * 0.5 - base).with_y(0.0).normalize_or_zero();
-        mb.quad([a, a + up, b + up, b], normal, color);
-    }
-}
-
-/// Cone from a base ring up to a tip (pine tiers).
-pub fn add_cone(mb: &mut MeshBuilder, base: Vec3, radius: f32, height: f32, sides: u32, color: LinearRgba) {
-    let tip = base + Vec3::Y * height;
-    for i in 0..sides {
-        let a0 = i as f32 / sides as f32 * std::f32::consts::TAU;
-        let a1 = (i + 1) as f32 / sides as f32 * std::f32::consts::TAU;
-        let p0 = base + Vec3::new(a0.cos(), 0.0, a0.sin()) * radius;
-        let p1 = base + Vec3::new(a1.cos(), 0.0, a1.sin()) * radius;
-        mb.triangle([p0, tip, p1], if i % 2 == 0 { color } else { shade(color, 0.9) });
-    }
-}
-
-/// Low-poly blob (icosahedron) for leafy canopies and bushes.
-pub fn add_blob(mb: &mut MeshBuilder, centre: Vec3, scale: Vec3, color: LinearRgba, seed: u32) {
-    let t = (1.0 + 5.0_f32.sqrt()) / 2.0;
-    let v = [
-        Vec3::new(-1.0, t, 0.0), Vec3::new(1.0, t, 0.0), Vec3::new(-1.0, -t, 0.0), Vec3::new(1.0, -t, 0.0),
-        Vec3::new(0.0, -1.0, t), Vec3::new(0.0, 1.0, t), Vec3::new(0.0, -1.0, -t), Vec3::new(0.0, 1.0, -t),
-        Vec3::new(t, 0.0, -1.0), Vec3::new(t, 0.0, 1.0), Vec3::new(-t, 0.0, -1.0), Vec3::new(-t, 0.0, 1.0),
-    ];
-    const F: [[usize; 3]; 20] = [
-        [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
-        [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9], [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1],
-    ];
-    let len = v[0].length();
-    // Jitter vertices a little so every tree is lumpy in its own way.
-    let pts: Vec<Vec3> = v
-        .iter()
-        .enumerate()
-        .map(|(i, p)| {
-            let j = 0.85 + 0.3 * hash01(i as i32, seed as i32, 7);
-            centre + (*p / len) * scale * j
-        })
-        .collect();
-    for (i, f) in F.iter().enumerate() {
-        let k = 0.85 + 0.25 * hash01(i as i32, seed as i32, 9);
-        mb.triangle([pts[f[0]], pts[f[1]], pts[f[2]]], shade(color, k));
     }
 }
