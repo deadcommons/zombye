@@ -5,6 +5,7 @@
     ... --python tools/blender/build.py -- furniture          # every furniture asset, in either repo
     ... --python tools/blender/build.py -- --check furniture  # validate only: no renders, no files
     ... --python tools/blender/build.py -- ~/games/zombye-art/characters/zombie-01   # a character (zchar)
+    ... --python tools/blender/build.py -- ~/games/zombye-art/characters/survivor-01  # body + garments (zgarment)
     ... --python tools/blender/build.py -- --g3 furniture/bed   # also the Gate 3 sheet (renders/bed_g3.png)
     ... --python tools/blender/build.py -- --refs a.png,b.png furniture/bed   # Gate 3 beside these instead
     ... --python tools/blender/build.py -- --out /tmp/scratch furniture/bed   # write nothing in either repo
@@ -25,6 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import zasset  # noqa: E402
 import zchar  # noqa: E402
+import zgarment  # noqa: E402
 
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 check_only, g3, refs, out_dir, args = False, False, None, None, []
@@ -58,7 +60,8 @@ for asset in assets:
     try:
         out = out_dir / (asset.name if isinstance(asset, Path) else asset.replace("/", "-")) if out_dir else None
         if isinstance(asset, Path):
-            report = zchar.build(asset, render=not check_only, export=not check_only, save=not check_only,
+            builder = zgarment.build if zgarment.is_modular(asset) else zchar.build  # garments in the spec
+            report = builder(asset, render=not check_only, export=not check_only, save=not check_only,
                                  from_blend=check_only, out_dir=out, g3=g3, refs=refs)
         else:
             report = zasset.build(asset, render=not check_only, export=not check_only, save=not check_only,
