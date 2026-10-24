@@ -26,8 +26,9 @@ pub enum ZombieAnim {
 }
 
 /// A knocked-down zombie spends the last this-many seconds on the ground getting up
-/// ([`ZombieAnim::GetUp`]); it can still be stomped meanwhile.
-pub const GET_UP_SECS: f32 = 1.1;
+/// ([`ZombieAnim::GetUp`]); it can still be stomped meanwhile. The crowd character's get-up clip is
+/// as long (2 s, #53); `CombatTuning::down_secs` leaves room before it for the fall and a moment lying.
+pub const GET_UP_SECS: f32 = 2.0;
 
 /// What a zombie is doing (see `ai`). Server-only: clients see [`ZombieAnim`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
