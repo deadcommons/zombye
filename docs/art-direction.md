@@ -110,19 +110,33 @@ palette with the building kit work (see Follow-ups).
 
 ## Characters
 
-- **Proportions:** survivors 1.78 m, zombies 1.72 m stooped (asset-pipeline.md). Stylised but
-  human: a slightly large head and hands, a sturdy torso, never voxel-blocky or doll-like.
+- **Modular: one base body, interchangeable wearables.** Every character is a base body in a plain
+  fitted base layer on one shared rig, plus wearables: clothes (shirts, hoodies, jackets, trousers,
+  shoes, gloves) and accessories (glasses, hats, scarves, bags). Each wearable is its own mesh, made
+  against the base body's rest pose, so it fits anyone on that body: any survivor, and the zombies,
+  who reuse the same body and wardrobe (a player who turns rises in what they wore). Soft wearables
+  are skinned to the rig; rigid ones (glasses, hats) sit on a named socket (`eyes`, `head_top`,
+  `neck`, `hand_r`, `hand_l`, `back`). A wearable hides the body regions it covers (head, torso,
+  arms, hands, legs, feet) so nothing pokes through, and stands off the body like the real thing:
+  glasses a centimetre in front of the face, not wrapped round it.
+- **Build and proportions:** survivors 1.78 m, zombies 1.72 m stooped (asset-pipeline.md).
+  Ordinary, grounded people: slim to average builds, realistic proportions with only a slightly
+  large head and hands; not heroic, muscular, fat, cartoonish, voxel-blocky or doll-like. The
+  survivor is someone going through something terrible: tired, worried, unsmiling.
+- **Shading:** smooth within a facet, sharp across edges over 30°; about 1,800 triangles for a body,
+  under 800 for a garment, under 100 for a small accessory (performance matters: every wearable
+  adds to the body).
 - **Faces:** a few planes; eyes and brows as dark shapes; no fine features. Zombies: sunken dark eyes,
   slack mouth.
 - **Skin:** survivors in natural tones; zombies grey-green, toned from `brand_zombie_green` toward
   grey (around #8A9A7C), never bright.
-- **Clothing:** everyday early-1990s small-town: flannel, work jackets, jeans, scrubs, short-sleeved
-  office shirts and ties, tracksuits, dresses, uniforms. One or two muted colours per garment; outfits
-  are variants on one base mesh per body type.
+- **Clothing:** everyday early-1990s small-town: flannel, work jackets, hoodies, jeans, scrubs,
+  short-sleeved office shirts and ties, tracksuits, dresses, uniforms. One or two muted colours per
+  garment, hanging close to the body (a fabric's thickness off it, never bulging).
 - **Blood and grime:** a few muted dark-brown or dark-red stains, no wounds, gore or bones.
 - **No protected emblems:** no red cross on a white field (use a plain stripe or a different mark for
   medical things), no real logos, brands or police insignia.
-- **The player** reads at a glance: mustard jacket (`JACKET_ME`); other players teal.
+- **The player** reads at a glance by what they wear; other players differ by their wearables.
 
 ## Light and time of day
 
