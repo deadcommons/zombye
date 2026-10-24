@@ -379,11 +379,12 @@ def validate(spec):
 
 # ---------------------------------------------------------------- renders
 
-def render_angles(spec, sheet_path):
+def render_angles(spec, sheet_path, posed=False):
     """A 2 × 2 sheet of the four game angles of the rest pose (`zasset.render_angles`, with the scale
-    figure and door frame); the single angles go to a temporary folder."""
+    figure and door frame); the single angles go to a temporary folder. `posed`: as the armature is
+    posed now (e.g. the rest pose with a stoop layered on), not its rest pose."""
     arm = character_objects()[0][0]
-    arm.data.pose_position = "REST"
+    arm.data.pose_position = "POSE" if posed else "REST"
     try:
         return zasset.render_angles(spec, sheet_path=sheet_path)[-1]
     finally:
