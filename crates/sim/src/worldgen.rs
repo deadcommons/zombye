@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::map::{Edge, Feature, Floor, Side, TileMap, CHUNK_SIZE};
 use crate::population::Zone;
 use crate::rng::Rng;
-use crate::template::{BuildingTemplate, Placement};
+use crate::template::{BuildingKind, BuildingTemplate, Placement};
 
 /// Asphalt width of a street, and the sidewalk on each side.
 const ROAD: i32 = 7;
@@ -167,11 +167,13 @@ fn set_ground(map: &mut TileMap, t: IVec2, floor: Floor) {
     }
 }
 
-/// Place a random fitting house on a lot. Returns its building index and whether it's a bungalow.
+/// Place a random fitting house (a `kind: House` template; offices and shops are not placed on
+/// house lots) on a lot. Returns its building index and whether it's a bungalow.
 fn place_house(map: &mut TileMap, rng: &mut Rng, templates: &[BuildingTemplate], lot: (IVec2, IVec2), faces_north: bool) -> Option<(usize, bool)> {
     let turns = if faces_north { 2 } else { 0 };
     let fitting: Vec<&BuildingTemplate> = templates
         .iter()
+        .filter(|t| matches!(t.kind, BuildingKind::House))
         .filter(|t| {
             let s = t.rotated_size(turns);
             s.x + 4 <= lot.1.x && s.y + FRONT_SETBACK + 3 <= lot.1.y
@@ -425,5 +427,36 @@ mod tests {
             }
         }
         assert!(trees_outside > 3000, "only {trees_outside} trees");
+    }
+
+    /// With every shipped template, each house type turns up in the town for some seed, offices
+    /// and shops stay off the house lots, houses never overlap, and you still wake up in a bedroom.
+    #[test]
+    fn every_house_type_turns_up_in_towns() {
+        use crate::template::BuildingKind;
+        let all = crate::template::tests::shipped_templates();
+        let houses: Vec<&str> = all.iter().filter(|t| matches!(t.kind, BuildingKind::House)).map(|t| t.id.as_str()).collect();
+        let mut seen = std::collections::BTreeMap::new();
+        for seed in 1..=4 {
+            let g = generate(&GenConfig { seed, ..Default::default() }, &all);
+            assert!(g.map.buildings.len() >= 12, "seed {seed}: only {} houses", g.map.buildings.len());
+            let mut owner = vec![usize::MAX; (g.map.width() * g.map.height()) as usize];
+            for (i, b) in g.map.buildings.iter().enumerate() {
+                assert!(houses.contains(&b.template.as_str()), "seed {seed}: {} placed on a house lot", b.template);
+                *seen.entry(b.template.clone()).or_insert(0) += 1;
+                for y in b.min.y..b.min.y + b.size.y {
+                    for x in b.min.x..b.min.x + b.size.x {
+                        let cell = &mut owner[(y * g.map.width() + x) as usize];
+                        assert_eq!(*cell, usize::MAX, "seed {seed}: {} overlaps another building at ({x}, {y})", b.template);
+                        *cell = i;
+                    }
+                }
+            }
+            let room = g.map.room_at(g.player_spawn);
+            assert_eq!(g.map.rooms[room as usize].room_type, "bedroom", "seed {seed}: spawn outside a bedroom");
+        }
+        for id in houses {
+            assert!(seen.contains_key(id), "{id} never placed in four towns: {seen:?}");
+        }
     }
 }

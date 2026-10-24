@@ -1,0 +1,83 @@
+// One-storey ranch house with an attached single garage, its door rolled up. One character per
+// tile; "." is outside. The bottom row is the front of the house and faces the street.
+// Openings are (x, y, side): side N/E/S/W of tile (x, y).
+BuildingTemplate(
+    id: "house_ranch_garage",
+    name: "Ranch house with garage",
+    kind: House,
+    roof: GableX,
+    rooms: {
+        'u': (name: "Laundry", room_type: "laundry", floor: Concrete),
+        'G': (name: "Garage", room_type: "garage", floor: Concrete),
+        'K': (name: "Kitchen", room_type: "kitchen", floor: TileFloor),
+        'L': (name: "Living room", room_type: "living", floor: Carpet),
+        'H': (name: "Hall", room_type: "hall", floor: Wood),
+        'M': (name: "Main bedroom", room_type: "bedroom", floor: Carpet),
+        'b': (name: "Bathroom", room_type: "bathroom", floor: TileFloor),
+        'B': (name: "Bedroom", room_type: "bedroom", floor: Carpet),
+    },
+    levels: [
+        (
+            layout: [
+                "uuuuKKKKKMMMM",
+                "uuuuKKKKKMMMM",
+                "uuuuKKKKKMMMM",
+                "GGGGKKKKKMMMM",
+                "GGGGLLLLLHbbb",
+                "GGGGLLLLLHbbb",
+                "GGGGLLLLLHBBB",
+                "GGGGLLLLLHBBB",
+                "GGGGLLLLLHBBB",
+                "GGGGLLLLLHBBB",
+            ],
+            doors: [
+                (5, 9, S), // front door
+                (1, 0, N), // back door, from the laundry
+                (2, 3, N), // garage to laundry
+                (3, 1, E), // laundry to kitchen
+                (9, 4, N), // main bedroom
+                (9, 5, E), // bathroom
+                (9, 7, E), // bedroom
+            ],
+            // The garage door, rolled up; the kitchen opens onto the living room.
+            arches: [(0, 9, S), (1, 9, S), (2, 9, S), (6, 3, S), (7, 3, S), (8, 6, E)],
+            windows: [
+                (0, 1, W),
+                (6, 0, N), (7, 0, N),
+                (9, 0, N), (12, 2, E),
+                (12, 4, E),
+                (12, 8, E), (11, 9, S),
+                (7, 9, S), (8, 9, S),
+                (0, 5, W),
+            ],
+            furniture: [
+                (kind: "washer", at: (2, 0)),
+                (kind: "dryer", at: (3, 0)),
+                (kind: "shelf", at: (0, 2), facing: E),
+                (kind: "workbench", at: (0, 3), size: (2, 1)),
+                (kind: "shelf", at: (3, 3)),
+                (kind: "shelf", at: (0, 6), facing: E),
+                (kind: "shelf", at: (0, 7), facing: E),
+                (kind: "fridge", at: (4, 0)),
+                (kind: "stove", at: (5, 0)),
+                (kind: "counter", at: (6, 0), size: (2, 1)),
+                (kind: "sink", at: (8, 0)),
+                (kind: "counter", at: (8, 1), size: (1, 2), facing: W),
+                (kind: "table", at: (5, 2), size: (2, 1)),
+                (kind: "shelf", at: (4, 4), facing: E),
+                (kind: "sofa", at: (4, 6), size: (1, 2), facing: E),
+                (kind: "coffee_table", at: (6, 6)),
+                (kind: "tv", at: (8, 7), facing: W),
+                (kind: "wardrobe", at: (9, 9), facing: N),
+                (kind: "bed", at: (10, 0), size: (2, 2)),
+                (kind: "wardrobe", at: (12, 0)),
+                (kind: "sink", at: (10, 4)),
+                (kind: "bathtub", at: (11, 4), size: (2, 1)),
+                (kind: "toilet", at: (12, 5), facing: W),
+                (kind: "bed", at: (11, 6), size: (2, 2), facing: W),
+                (kind: "wardrobe", at: (10, 9), facing: N),
+                (kind: "desk", at: (12, 9), facing: N),
+            ],
+        ),
+    ],
+)
