@@ -275,6 +275,68 @@ def fix_slots(arm):
                 s.action_slot = s.action.slots[0]
 
 
+# ---------------------------------------------------------------- pose layers (a zombie's stoop)
+
+def layer_quaternion(arm, bone, degrees):
+    """A pose layer's rotation for `bone`: `degrees` (XYZ Euler, on the armature's axes, about the
+    bone's head, as sockets are given) as a rotation in the bone's own rest frame, the form a pose
+    bone's quaternion takes."""
+    from mathutils import Euler
+    rest = arm.data.bones[bone].matrix_local.to_3x3()
+    world = Euler([math.radians(a) for a in degrees], "XYZ").to_matrix()
+    return (rest.inverted() @ world @ rest).to_quaternion()
+
+
+def apply_pose_layer(arm, action, layer, weight=None):
+    """Adds the pose layer `layer` ({bone: (x, y, z) degrees}, as `layer_quaternion`) over `action`:
+    each bone's rotation key q becomes slerp(1, layer, w) @ q, so the layer turns the bone relative
+    to its (animated) parent whatever the clip does with it. `weight(frame) -> 0..1` scales it per
+    key (e.g. fading a stoop out while the body lies on the ground); None: 1 everywhere. The keys keep
+    their times; the four channels are keyed together at every time any of them has a key."""
+    from mathutils import Quaternion
+    by_path = {}
+    for fc in zchar.action_fcurves(action):
+        by_path.setdefault(fc.data_path, {})[fc.array_index] = fc
+    for bone, degrees in layer.items():
+        fcs = by_path.get(f'pose.bones["{bone}"].rotation_quaternion')
+        if not fcs or len(fcs) != 4:
+            raise ValueError(f"{action.name}: {bone} has no rotation keys to layer onto")
+        add = layer_quaternion(arm, bone, degrees)
+        times = sorted({round(k.co.x, 4) for fc in fcs.values() for k in fc.keyframe_points})
+        out, prev = [], None
+        for t in times:
+            q = Quaternion([fcs[i].evaluate(t) for i in range(4)])
+            w = 1.0 if weight is None else max(0.0, min(1.0, float(weight(t))))
+            r = Quaternion().slerp(add, w) @ q
+            if prev is not None and r.dot(prev) < 0:
+                r.negate()
+            out.append(r)
+            prev = r
+        for i in range(4):
+            fc = fcs[i]
+            fc.keyframe_points.clear()
+            fc.keyframe_points.add(len(times))
+            for k, (t, r) in zip(fc.keyframe_points, zip(times, out)):
+                k.co = (t, r[i])
+                k.interpolation = "LINEAR"
+            fc.update()
+
+
+def set_pose_layer(arm, layer):
+    """Poses `arm` (no action) in its rest pose with `layer` on: for renders of the rest pose with a
+    stoop. `layer` None or empty clears every bone back to the rest pose."""
+    from mathutils import Quaternion
+    ad = arm.animation_data
+    if ad:
+        ad.action = None
+    for pb in arm.pose.bones:
+        pb.rotation_mode = "QUATERNION"
+        pb.location = (0.0, 0.0, 0.0)
+        pb.scale = (1.0, 1.0, 1.0)
+        pb.rotation_quaternion = layer_quaternion(arm, pb.name, layer[pb.name]) if layer and pb.name in layer else Quaternion()
+    bpy.context.view_layer.update()
+
+
 # ---------------------------------------------------------------- shading
 
 def shade(obj, shading):
@@ -934,18 +996,25 @@ def undress(spec):
 
 
 def render_sheet(spec, worn, sheet_path):
-    """The four game angles (scale figure and door frame) in the rest pose with `worn` on."""
+    """The four game angles (scale figure and door frame) in the rest pose with `worn` on (and the
+    spec's `stoop` pose layer, if it has one)."""
     dress(spec, worn)
+    arm = objects(spec)[0]
+    layer = spec.get("stoop")
+    if layer:  # the rest pose stooped, as every clip is
+        set_pose_layer(arm, layer)
     try:
-        return zchar.render_angles(spec, sheet_path)
+        return zchar.render_angles(spec, sheet_path, posed=bool(layer))
     finally:
         undress(spec)
+        if layer:
+            set_pose_layer(arm, None)
 
 
 def render_strip(spec, actions, outfits, out_path, frames=6, angle=0):
     """One row per outfit (a list of garment ids each), `frames` poses spread over each action's (one
-    cycle) frame range from game angle `angle`, all at one scale; one PNG per action at
-    `out_path.format(action)`. Returns the paths."""
+    cycle) frame range from game angle `angle` (a one-shot's, non-cyclic, from its first frame to its
+    last), all at one scale; one PNG per action at `out_path.format(action)`. Returns the paths."""
     arm, body, garments = objects(spec)
     scene = bpy.context.scene
     out = []
@@ -955,7 +1024,9 @@ def render_strip(spec, actions, outfits, out_path, frames=6, angle=0):
     for name in actions:
         action = bpy.data.actions[name]
         f0, f1 = action.frame_range
-        poses = [f0 + (f1 - f0) * k / frames for k in range(frames)]
+        # A loop's last frame is its first again; a one-shot's last frame is where it ends up.
+        span = frames if action.use_cyclic else max(frames - 1, 1)
+        poses = [f0 + (f1 - f0) * k / span for k in range(frames)]
         cam, sun = zasset._review_set(spec)
         yaw, d, rot, right, up = zasset._view(angle)
         # Frame every pose of every outfit at one scale: the union of the posed bounds.
@@ -1174,6 +1245,10 @@ def build(folder, render=True, export=True, save=True, from_blend=False, out_dir
     if export and report["ok"]:
         report["glb"] = export_glb(spec, p["export"] / f"{spec['id']}.glb", c.extras or None)
         report["body_glb"] = export_body_glb(spec, p["export"] / f"{spec['id']}_body.glb", c.extras or None)
+        # A wearable borrowed from another body (`shared_from`) is exported there, not again here.
         report["wearable_glbs"] = [export_wearable_glb(spec, g["id"], p["export"] / "wearables" / f"{g['id']}.glb", c.extras or None)
-                                   for g in wearables(spec)]
+                                   for g in wearables(spec) if not g.get("shared_from")]
+    after = getattr(c, "after_build", None)  # the script's extra steps once built (e.g. a crowd LOD)
+    if after and report["ok"] and report["from"] == "raw":
+        after(report, render=render, export=export)
     return report
