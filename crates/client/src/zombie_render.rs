@@ -8,11 +8,17 @@
 //! [`FADE_SECS`]; one-shot clips are authored to start and end near the looping poses instead.
 //! Zombies the server no longer lists (corpses it cleared away) are despawned.
 //!
-//! M0 builds a grey-box low-poly zombie procedurally; the same bake step will later take rigged and
-//! animated GLBs from the Blender pipeline (docs/PLAN.md §6).
+//! The character is either a `.zvat` baked offline by `tools/blender/zvat.py` (a textured mesh and its
+//! clips, see [`crate::zvat`]), or, when there is none, a grey-box low-poly zombie built and baked
+//! here at startup. Which one: `--crowd-vat PATH`, else `ZOMBYE_CROWD_VAT`, else the first
+//! `assets/models/characters/*.zvat` by name (where a promoted one goes); `none` (or a file that
+//! won't load, with a warning) means the grey-box. A baked file's clips go into [`CLIPS`]' slots by name; the slots it
+//! has no clip for get stand-ins made from what it has ([`Source`], [`sources`]), so every anim plays
+//! something sensible and nothing T-poses.
 
 use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
+use std::path::{Path, PathBuf};
 
 use bevy::asset::RenderAssetUsages;
 use bevy::light::NotShadowCaster;
@@ -28,14 +34,16 @@ use bevy::shader::ShaderRef;
 use zombye_sim::zombies::GET_UP_SECS;
 use zombye_sim::{CombatEventKind, ZombieAnim};
 
+use crate::Options;
 use crate::daynight::sky_at;
 use crate::fog::FogState;
 use crate::rig::{Bone, Pose, box_faces, rx, ry, rz, skin_matrices, smooth};
 use crate::server_link::{CombatEventsThisFrame, ServerLink};
+use crate::zvat::{self, Zvat};
 
 const SHADER: &str = "shaders/zombie_vat.wesl";
 
-/// x = vertex index into the VAT, y = body-part kind (see [`Kind`]).
+/// x = vertex index into the VAT (its column), y = body-part kind (see [`Kind`]).
 const ATTRIBUTE_VAT: MeshVertexAttribute = MeshVertexAttribute::new("ZombieVat", 7_301_552_011, VertexFormat::Float32x2);
 
 pub struct ZombieRenderPlugin;
@@ -54,6 +62,10 @@ pub struct ZombieMaterial {
     pub vat: Handle<Image>,
     #[uniform(1)]
     pub settings: VatSettings,
+    /// The baked character's base colour (1 × 1 white for the grey-box, which colours by [`Kind`]).
+    #[texture(2)]
+    #[sampler(3)]
+    pub base_color: Handle<Image>,
 }
 
 #[derive(ShaderType, Debug, Clone)]
@@ -86,7 +98,7 @@ impl Material for ZombieMaterial {
         _key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         let vertex_layout =
-            layout.0.get_layout(&[Mesh::ATTRIBUTE_POSITION.at_shader_location(0), ATTRIBUTE_VAT.at_shader_location(1)])?;
+            layout.0.get_layout(&[Mesh::ATTRIBUTE_POSITION.at_shader_location(0), ATTRIBUTE_VAT.at_shader_location(1), Mesh::ATTRIBUTE_UV_0.at_shader_location(2)])?;
         descriptor.vertex.buffers = vec![vertex_layout];
         Ok(())
     }
@@ -111,6 +123,8 @@ enum Kind {
     Shirt = 1,
     Pants = 2,
     Shoes = 3,
+    /// A baked character's vertex: coloured by its texture, tinted per outfit.
+    Textured = 4,
 }
 
 const PELVIS: usize = 0;
@@ -366,12 +380,70 @@ fn clip_secs(clip: Clip) -> f32 {
     CLIPS[clip as usize].4
 }
 
-/// Corners of the box every pose fits in (lying down reaches well past the standing body, the
-/// thump raises the arms high), added to the mesh as two zero-area triangles so frustum culling
-/// uses it.
+/// Corners of the box every pose of the grey-box fits in (lying down reaches well past the standing
+/// body, the thump raises the arms high), added to the mesh as two zero-area triangles so frustum
+/// culling uses it. A baked character's box is worked out from its frames instead ([`Baked::bounds`]).
 const POSE_BOUNDS: [Vec3; 2] = [Vec3::new(-1.2, -0.2, -2.0), Vec3::new(1.2, 2.6, 2.0)];
 
-fn build_zombie() -> (Mesh, Image, [Vec4; 16]) {
+/// The largest VAT side: one column per vertex, one row per frame. 8,192 is what every GPU wgpu
+/// runs on allows.
+const MAX_VAT_SIDE: usize = 8192;
+
+/// A character baked into a VAT: per row (frame), one position per column (vertex).
+struct Baked {
+    mesh: Mesh,
+    texels: Vec<Vec3>,
+    width: u32,
+    rows: u32,
+    clips: [Vec4; 16],
+    /// The box every frame fits in (the mesh's culling bounds).
+    #[cfg_attr(not(test), allow(dead_code))]
+    bounds: [Vec3; 2],
+}
+
+impl Baked {
+    /// The VAT as RGBA16F (8 bytes a texel, half of RGBA32F; about a millimetre of precision at
+    /// 2 m, far below a pixel).
+    fn image(&self) -> Image {
+        let bytes: Vec<u8> =
+            self.texels.iter().flat_map(|p| [p.x, p.y, p.z, 1.0]).flat_map(|f| half::f16::from_f32(f).to_le_bytes()).collect();
+        Image::new(
+            Extent3d { width: self.width, height: self.rows, depth_or_array_layers: 1 },
+            TextureDimension::D2,
+            bytes,
+            TextureFormat::Rgba16Float,
+            RenderAssetUsages::RENDER_WORLD,
+        )
+    }
+
+    /// One row's positions.
+    #[cfg(test)]
+    fn row(&self, row: u32) -> &[Vec3] {
+        let w = self.width as usize;
+        &self.texels[row as usize * w..(row as usize + 1) * w]
+    }
+}
+
+/// Adds the two bounds corners as degenerate triangles (all three corners at one point: never
+/// drawn, but they widen the mesh's bounding box to cover every pose) and builds the mesh.
+fn finish_mesh(mut positions: Vec<[f32; 3]>, mut vat: Vec<[f32; 2]>, mut uvs: Vec<[f32; 2]>, mut indices: Vec<u32>, bounds: [Vec3; 2]) -> Mesh {
+    for corner in bounds {
+        let base = positions.len() as u32;
+        for _ in 0..3 {
+            vat.push([positions.len() as f32, Kind::Skin as u32 as f32]);
+            positions.push(corner.to_array());
+            uvs.push([0.0, 0.0]);
+        }
+        indices.extend_from_slice(&[base, base + 1, base + 2]);
+    }
+    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+        .with_inserted_attribute(ATTRIBUTE_VAT, vat)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+        .with_inserted_indices(Indices::U32(indices))
+}
+
+fn build_zombie() -> Baked {
     // 24 vertices per box (flat-shaded faces), with the bone each vertex follows.
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut vat: Vec<[f32; 2]> = Vec::new();
@@ -388,23 +460,13 @@ fn build_zombie() -> (Mesh, Image, [Vec4; 16]) {
             indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
         }
     }
-    // Degenerate triangles (all three corners at one point): never drawn, but they widen the
-    // mesh's bounding box to cover the lying poses. Baked unskinned so they stay put.
-    let first_bound = positions.len();
-    for corner in POSE_BOUNDS {
-        let base = positions.len() as u32;
-        for _ in 0..3 {
-            vat.push([positions.len() as f32, Kind::Skin as u32 as f32]);
-            positions.push(corner.to_array());
-            bones.push(PELVIS);
-        }
-        indices.extend_from_slice(&[base, base + 1, base + 2]);
-    }
+    let uvs = vec![[0.0, 0.0]; positions.len()];
 
-    // Bake every frame of every clip into rows of the VAT.
-    let width = positions.len() as u32;
+    // Bake every frame of every clip into rows of the VAT; the bounds corners (the last 6 columns)
+    // stay put.
+    let width = positions.len() as u32 + 6;
     let rows: u32 = CLIPS.iter().map(|c| c.1).sum();
-    let mut texels: Vec<f32> = Vec::with_capacity((width * rows * 4) as usize);
+    let mut texels: Vec<Vec3> = Vec::with_capacity((width * rows) as usize);
     let mut clips = [Vec4::ZERO; 16];
     let mut row = 0u32;
     for (clip, frames, rate, stride, secs) in CLIPS {
@@ -413,41 +475,243 @@ fn build_zombie() -> (Mesh, Image, [Vec4; 16]) {
         for f in 0..frames {
             let t = if secs > 0.0 { f as f32 / (frames - 1).max(1) as f32 } else { f as f32 / frames as f32 };
             let m = skin_matrices(&BONES, &pose(clip, t));
-            for (i, p) in positions.iter().enumerate() {
-                let v = if i >= first_bound { Vec3::from_array(*p) } else { m[bones[i]].transform_point3(Vec3::from_array(*p)) };
-                texels.extend_from_slice(&[v.x, v.y, v.z, 1.0]);
-            }
+            texels.extend(positions.iter().enumerate().map(|(i, p)| m[bones[i]].transform_point3(Vec3::from_array(*p))));
+            texels.extend(POSE_BOUNDS.iter().flat_map(|&c| [c; 3]));
         }
         row += frames;
     }
-    let bytes: Vec<u8> = texels.iter().flat_map(|f| f.to_le_bytes()).collect();
-    let image = Image::new(
-        Extent3d { width, height: rows, depth_or_array_layers: 1 },
-        TextureDimension::D2,
-        bytes,
-        TextureFormat::Rgba32Float,
-        RenderAssetUsages::RENDER_WORLD,
-    );
+    let mesh = finish_mesh(positions, vat, uvs, indices, POSE_BOUNDS);
+    Baked { mesh, texels, width, rows, clips, bounds: POSE_BOUNDS }
+}
 
-    let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
-        .with_inserted_attribute(ATTRIBUTE_VAT, vat)
-        .with_inserted_indices(Indices::U32(indices));
-    (mesh, image, clips)
+// ---------------------------------------------------------------------------------------------
+// A character baked offline (`.zvat`).
+
+/// The name a `.zvat` clip needs to fill each slot (compared as [`zvat::clip_key`]: case, `_` and
+/// `-` don't matter, so `get_up` and `DieBack` work too).
+fn clip_name(clip: Clip) -> &'static str {
+    match clip {
+        Clip::Idle => "idle",
+        Clip::Walk => "walk",
+        Clip::Attack => "attack",
+        Clip::Thump => "thump",
+        Clip::Stagger => "stagger",
+        Clip::Fall => "fall",
+        Clip::Down => "down",
+        Clip::GetUp => "getup",
+        Clip::DieBack => "dieback",
+        Clip::DieFront => "diefront",
+        Clip::DieDown => "diedown",
+    }
+}
+
+/// Where each clip slot of a baked character comes from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Source {
+    /// The file's clip of that name (by index in the file).
+    File(usize),
+    /// Idle and walk stand in for each other: that file clip at its own fixed rate.
+    Other(usize),
+    /// Attack and thump: that looping file clip (the idle, else the walk) with the whole body leaned
+    /// forward by this many radians, at the clip's own rate.
+    Leaned(usize, f32),
+    /// The one-shots and the ground loop: the base pose (the idle's first frame, else the walk's)
+    /// moved as one piece by the grey-box clip's root motion ([`rigid_motion`]: toppling onto its
+    /// back or face, getting up, reeling), over the grey-box clip's frames and timing, its lowest
+    /// point kept where the base pose's is (on the ground).
+    Rigid,
+}
+
+/// How far attack and thump stand-ins lean in.
+const ATTACK_LEAN: f32 = 0.3;
+const THUMP_LEAN: f32 = 0.12;
+
+/// The file clip other clips are made from: the idle, else the walk, else the first.
+fn base_clip(z: &Zvat) -> usize {
+    z.clip("idle").or(z.clip("walk")).unwrap_or(0)
+}
+
+/// The source of every slot for `z`, by [`Clip`] index.
+fn sources(z: &Zvat) -> [Source; 11] {
+    let base = base_clip(z);
+    CLIPS.map(|(clip, ..)| match (z.clip(clip_name(clip)), clip) {
+        (Some(i), _) => Source::File(i),
+        (None, Clip::Idle | Clip::Walk) => Source::Other(base),
+        (None, Clip::Attack) => Source::Leaned(base, ATTACK_LEAN),
+        (None, Clip::Thump) => Source::Leaned(base, THUMP_LEAN),
+        (None, _) => Source::Rigid,
+    })
+}
+
+/// The whole-body motion a [`Source::Rigid`] stand-in follows at `t`: the grey-box clip's root
+/// (pelvis) transform, which tips the body about its feet; a stagger, which only shifts the
+/// grey-box's root, also reels back.
+fn rigid_motion(clip: Clip, t: f32) -> Mat4 {
+    if clip == Clip::Stagger {
+        let k = if t < 0.18 { smooth(0.0, 0.18, t) } else { 1.0 - smooth(0.18, 1.0, t) };
+        return Mat4::from_translation(Vec3::new(0.0, 0.0, -0.14 * k)) * Mat4::from_quat(rx(-0.25 * k));
+    }
+    skin_matrices(&BONES, &pose(clip, t))[PELVIS]
+}
+
+/// `frame` moved by `m`, then raised or lowered so its lowest point is at `ground`.
+fn moved(frame: &[Vec3], m: Mat4, ground: f32) -> Vec<Vec3> {
+    let out: Vec<Vec3> = frame.iter().map(|p| m.transform_point3(*p)).collect();
+    let dy = ground - lowest(&out);
+    out.into_iter().map(|p| p + Vec3::Y * dy).collect()
+}
+
+fn lowest(frame: &[Vec3]) -> f32 {
+    frame.iter().map(|p| p.y).fold(f32::MAX, f32::min)
+}
+
+/// Bakes a `.zvat`'s clips (and stand-ins for the slots it has no clip for) into a VAT.
+fn build_baked(z: &Zvat) -> Result<Baked, String> {
+    let v = z.vertices();
+    if v + 6 > MAX_VAT_SIDE {
+        return Err(format!("{v} vertices: the VAT has a column per vertex, at most {}", MAX_VAT_SIDE - 6));
+    }
+    let src = sources(z);
+    let base = z.frame(base_clip(z), 0);
+    let ground = lowest(base);
+
+    let mut frames_out: Vec<Vec3> = Vec::new();
+    let mut clips = [Vec4::ZERO; 16];
+    // Where each file clip's frames went, so a clip used twice is stored once.
+    let mut file_rows: Vec<Option<u32>> = vec![None; z.clips.len()];
+    let mut row = 0u32;
+    for (slot, (clip, frames, _, _, secs)) in CLIPS.into_iter().enumerate() {
+        let one_shot = secs > 0.0;
+        let first = row;
+        clips[clip as usize] = match src[slot] {
+            Source::File(i) | Source::Other(i) => {
+                let c = &z.clips[i];
+                let first = *file_rows[i].get_or_insert_with(|| {
+                    (0..c.frames).for_each(|f| frames_out.extend_from_slice(z.frame(i, f)));
+                    row += c.frames;
+                    first
+                });
+                let own = matches!(src[slot], Source::File(_));
+                let w = if one_shot { -1.0 } else if own { c.stride } else { 0.0 };
+                let rate = if clip == Clip::Down { DOWN_RATE } else if w != 0.0 { 0.0 } else { 1.0 / c.secs };
+                Vec4::new(first as f32, c.frames as f32, rate, w)
+            }
+            Source::Leaned(i, lean) => {
+                let c = &z.clips[i];
+                let m = Mat4::from_quat(rx(lean));
+                for f in 0..c.frames {
+                    let frame = z.frame(i, f);
+                    frames_out.extend(moved(frame, m, lowest(frame)));
+                }
+                row += c.frames;
+                Vec4::new(first as f32, c.frames as f32, 1.0 / c.secs, 0.0)
+            }
+            Source::Rigid => {
+                for f in 0..frames {
+                    let t = if one_shot { f as f32 / (frames - 1).max(1) as f32 } else { f as f32 / frames as f32 };
+                    frames_out.extend(moved(base, rigid_motion(clip, t), ground));
+                }
+                row += frames;
+                let rate = if clip == Clip::Down { DOWN_RATE } else { 0.0 };
+                Vec4::new(first as f32, frames as f32, rate, if one_shot { -1.0 } else { 0.0 })
+            }
+        };
+    }
+    if row as usize > MAX_VAT_SIDE {
+        return Err(format!("{row} frames in all: the VAT has a row per frame, at most {MAX_VAT_SIDE}"));
+    }
+
+    // The box every frame fits in, a little padded, as the last 6 columns of every row.
+    let (lo, hi) = frames_out.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+    let bounds = [lo - Vec3::splat(0.05), hi + Vec3::splat(0.05)];
+    let width = v as u32 + 6;
+    let mut texels = Vec::with_capacity(width as usize * row as usize);
+    for r in frames_out.chunks_exact(v) {
+        texels.extend_from_slice(r);
+        texels.extend(bounds.iter().flat_map(|&c| [c; 3]));
+    }
+
+    let positions: Vec<[f32; 3]> = base.iter().map(|p| p.to_array()).collect();
+    let vat: Vec<[f32; 2]> = (0..v).map(|i| [i as f32, Kind::Textured as u32 as f32]).collect();
+    let mesh = finish_mesh(positions, vat, z.uvs.clone(), z.indices.clone(), bounds);
+    Ok(Baked { mesh, texels, width, rows: row, clips, bounds })
+}
+
+/// The `.zvat` to draw the crowd with, if any: `--crowd-vat PATH`, else `ZOMBYE_CROWD_VAT`, else
+/// the first `.zvat` by name in `<data>/../models/characters` (assets/models/characters, where a
+/// promoted crowd character goes as `<id>.zvat`). `none` (or an empty value) asks for the grey-box.
+fn crowd_vat_path(options: &Options) -> Option<PathBuf> {
+    let asked = options.crowd_vat.clone().or_else(|| std::env::var("ZOMBYE_CROWD_VAT").ok());
+    match asked {
+        Some(p) if p.is_empty() || p.eq_ignore_ascii_case("none") => None,
+        Some(p) => Some(p.into()),
+        None => first_zvat(&options.data.join("../models/characters")),
+    }
+}
+
+/// The first `*.zvat` in `dir` by file name.
+fn first_zvat(dir: &Path) -> Option<PathBuf> {
+    let mut found: Vec<PathBuf> =
+        std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "zvat")).collect();
+    found.sort();
+    found.into_iter().next()
+}
+
+/// A baked crowd character, its texture (if one was found) and a line saying what was loaded, or
+/// why it couldn't be.
+fn load_baked(path: &Path) -> Result<(Baked, Option<Image>, String), String> {
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let z = Zvat::parse(&bytes)?;
+    let baked = build_baked(&z)?;
+    let (texture, note) = match zvat::find_texture(path) {
+        Some((from, bytes, ext)) => match zvat::texture_image(&bytes, ext) {
+            Ok(image) => (Some(image), format!("texture from {}", from.display())),
+            Err(e) => (None, format!("texture {} unreadable ({e}): untextured", from.display())),
+        },
+        None => (None, "no texture found: untextured".into()),
+    };
+    let from_file: Vec<&str> =
+        CLIPS.iter().zip(sources(&z)).filter(|(_, s)| matches!(s, Source::File(_))).map(|((c, ..), _)| clip_name(*c)).collect();
+    let summary = format!(
+        "crowd character {}: {} vertices, {} triangles, {} VAT rows ({:.1} MB); clips from the file: {}; stand-ins for the rest; {note}",
+        path.display(),
+        z.vertices(),
+        z.indices.len() / 3,
+        baked.rows,
+        (baked.width as usize * baked.rows as usize * 8) as f32 / (1 << 20) as f32,
+        from_file.join(", "),
+    );
+    Ok((baked, texture, summary))
 }
 
 fn setup_zombie_assets(
     mut commands: Commands,
+    options: Res<Options>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<ZombieMaterial>>,
 ) {
-    let (mesh, image, clips) = build_zombie();
-    let material = materials.add(ZombieMaterial {
-        vat: images.add(image),
-        settings: VatSettings { clips, sun: Vec4::new(0.4, 0.8, 0.3, 1.0), sun_color: Vec4::ONE, ambient: Vec4::splat(0.5) },
+    let loaded = crowd_vat_path(&options).and_then(|path| match load_baked(&path) {
+        Ok(l) => Some(l),
+        Err(e) => {
+            warn!("crowd character {} not loaded ({e}): drawing the grey-box", path.display());
+            None
+        }
     });
-    commands.insert_resource(ZombieAssets { mesh: meshes.add(mesh), material });
+    let (baked, texture) = match loaded {
+        Some((baked, texture, summary)) => {
+            info!("{summary}");
+            // Untextured: a plain zombie grey-green, still tinted per outfit.
+            (baked, texture.unwrap_or_else(|| zvat::mipmapped(1, 1, &[96, 104, 84, 255])))
+        }
+        None => (build_zombie(), zvat::mipmapped(1, 1, &[255, 255, 255, 255])),
+    };
+    let material = materials.add(ZombieMaterial {
+        vat: images.add(baked.image()),
+        settings: VatSettings { clips: baked.clips, sun: Vec4::new(0.4, 0.8, 0.3, 1.0), sun_color: Vec4::ONE, ambient: Vec4::splat(0.5) },
+        base_color: images.add(texture),
+    });
+    commands.insert_resource(ZombieAssets { mesh: meshes.add(baked.mesh), material });
     commands.init_resource::<ZombieEntities>();
 }
 
@@ -679,8 +943,9 @@ mod tests {
 
     #[test]
     fn every_clip_is_baked_and_fits_the_tag() {
-        let (_, image, clips) = build_zombie();
-        let rows = image.height();
+        let baked = build_zombie();
+        let (rows, clips) = (baked.rows, baked.clips);
+        assert_eq!(baked.image().height(), rows);
         for (clip, frames, _, _, secs) in CLIPS {
             let c = clips[clip as usize];
             assert!(c.y == frames as f32 && c.x + c.y <= rows as f32, "{clip:?}: {c}");
@@ -774,5 +1039,146 @@ mod tests {
             assert!(lo.y > -0.05 && lo.y < 0.12, "{clip:?} lowest point {lo} (part {lowest_part})");
             assert!(lo.cmpge(POSE_BOUNDS[0]).all() && hi.cmple(POSE_BOUNDS[1]).all(), "{clip:?} {lo} {hi}");
         }
+    }
+
+    // --- Baked characters (`.zvat`), from small synthetic files written here. ---
+
+    /// A stick figure 1.7 m tall facing +Z, feet at 0: a box per "limb", `walk` (stride 1 m) and
+    /// `idle` swinging the arms, plus whatever extra clips are named.
+    fn figure(extra: &[(&str, u32, bool)]) -> Zvat {
+        let mut uvs = Vec::new();
+        let mut indices = Vec::new();
+        let mut rest = Vec::new();
+        for (min, max) in [
+            (Vec3::new(-0.18, 0.0, -0.1), Vec3::new(0.18, 1.45, 0.12)),
+            (Vec3::new(-0.11, 1.45, -0.11), Vec3::new(0.11, 1.7, 0.12)),
+            (Vec3::new(0.2, 0.8, -0.05), Vec3::new(0.3, 1.42, 0.05)),
+            (Vec3::new(-0.3, 0.8, -0.05), Vec3::new(-0.2, 1.42, 0.05)),
+        ] {
+            for (quad, _) in box_faces(min, max) {
+                let b = rest.len() as u32;
+                rest.extend(quad);
+                uvs.extend([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+                indices.extend([b, b + 1, b + 2, b, b + 2, b + 3]);
+            }
+        }
+        let arms = |t: f32| -> Vec<Vec3> {
+            let m = Mat4::from_translation(Vec3::Y * 1.42) * Mat4::from_quat(rx(-0.5 - 0.3 * (t * TAU).sin())) * Mat4::from_translation(-Vec3::Y * 1.42);
+            rest.iter().enumerate().map(|(i, p)| if i >= 48 { m.transform_point3(*p) } else { *p }).collect()
+        };
+        let mut clips = vec![
+            zvat::ZvatClip { name: "walk".into(), frames: 6, secs: 1.0, stride: 1.0, one_shot: false },
+            zvat::ZvatClip { name: "idle".into(), frames: 4, secs: 3.0, stride: 0.0, one_shot: false },
+        ];
+        for &(name, frames, one_shot) in extra {
+            clips.push(zvat::ZvatClip { name: name.into(), frames, secs: 0.8, stride: 0.0, one_shot });
+        }
+        let positions = clips.iter().flat_map(|c| (0..c.frames).flat_map(|f| arms(f as f32 / c.frames as f32)).collect::<Vec<_>>()).collect();
+        Zvat { uvs, indices, clips, positions }
+    }
+
+    fn baked(z: &Zvat) -> Baked {
+        // Through the bytes, as a file would come.
+        build_baked(&Zvat::parse(&z.to_bytes()).unwrap()).unwrap()
+    }
+
+    /// The lowest and highest point of a clip's frame `f` (the bounds columns left out).
+    fn extent(b: &Baked, clip: Clip, f: u32) -> (Vec3, Vec3) {
+        let c = b.clips[clip as usize];
+        let row = &b.row(c.x as u32 + f)[..b.width as usize - 6];
+        row.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(lo, hi), p| (lo.min(*p), hi.max(*p)))
+    }
+
+    /// Every slot gets frames: the file's walk and idle as they are, stand-ins for the rest.
+    #[test]
+    fn a_baked_character_fills_every_clip() {
+        let z = figure(&[]);
+        let b = baked(&z);
+        assert_eq!(sources(&z)[Clip::Walk as usize], Source::File(0));
+        assert_eq!(sources(&z)[Clip::Attack as usize], Source::Leaned(1, ATTACK_LEAN));
+        assert_eq!(sources(&z)[Clip::DieBack as usize], Source::Rigid);
+        assert_eq!(b.width as usize, z.vertices() + 6);
+        assert_eq!(b.texels.len(), (b.width * b.rows) as usize);
+        assert_eq!(b.image().height(), b.rows);
+        let walk = b.clips[Clip::Walk as usize];
+        assert_eq!((walk.y, walk.z, walk.w), (6.0, 0.0, 1.0), "the file's walk, played at speed / stride");
+        assert_eq!(b.row(walk.x as u32 + 2)[..z.vertices()], *z.frame(0, 2));
+        let idle = b.clips[Clip::Idle as usize];
+        assert_eq!((idle.y, idle.z, idle.w), (4.0, 1.0 / 3.0, 0.0), "the idle at its own rate");
+        assert_eq!(b.row(idle.x as u32)[..z.vertices()], *z.frame(1, 0));
+        for (clip, _, _, _, secs) in CLIPS {
+            let c = b.clips[clip as usize];
+            assert!(c.y >= 1.0 && c.x + c.y <= b.rows as f32, "{clip:?}: {c}");
+            assert_eq!(c.w < 0.0, secs > 0.0, "{clip:?}: one-shots marked as such");
+        }
+        // Every frame inside the culling bounds.
+        assert!(b.texels.iter().all(|p| p.cmpge(b.bounds[0]).all() && p.cmple(b.bounds[1]).all()));
+        // The attack stand-in leans in, feet still on the ground.
+        let (lo, hi) = extent(&b, Clip::Attack, 0);
+        let (_, idle_hi) = extent(&b, Clip::Idle, 0);
+        assert!(lo.y.abs() < 1e-4 && hi.z > idle_hi.z + 0.15, "{lo} {hi} vs {idle_hi}");
+    }
+
+    /// The rigid stand-ins start standing, end lying on the ground (back or face), and get up again.
+    #[test]
+    fn baked_stand_ins_fall_lie_and_get_up() {
+        let b = baked(&figure(&[]));
+        let standing = |clip: Clip, f: u32| {
+            let (lo, hi) = extent(&b, clip, f);
+            lo.y.abs() < 0.02 && hi.y > 1.6
+        };
+        let lying = |clip: Clip, f: u32| {
+            let (lo, hi) = extent(&b, clip, f);
+            lo.y > -0.05 && lo.y < 0.12 && hi.y < 0.6
+        };
+        let last = |clip: Clip| b.clips[clip as usize].y as u32 - 1;
+        for clip in [Clip::Fall, Clip::DieBack, Clip::DieFront] {
+            assert!(standing(clip, 0), "{clip:?} starts standing");
+            assert!(lying(clip, last(clip)), "{clip:?} ends lying {:?}", extent(&b, clip, last(clip)));
+        }
+        for f in 0..last(Clip::Down) + 1 {
+            assert!(lying(Clip::Down, f), "the ground loop stays down");
+        }
+        assert!(lying(Clip::DieDown, 0) && lying(Clip::DieDown, last(Clip::DieDown)));
+        assert!(lying(Clip::GetUp, 0) && standing(Clip::GetUp, last(Clip::GetUp)));
+        assert!(standing(Clip::Stagger, 0) && standing(Clip::Stagger, last(Clip::Stagger)));
+        // Backward falls lie toward -Z (behind), forward ones toward +Z.
+        assert!(extent(&b, Clip::DieBack, last(Clip::DieBack)).0.z < -1.2);
+        assert!(extent(&b, Clip::DieFront, last(Clip::DieFront)).1.z > 1.2);
+    }
+
+    /// A clip in the file takes its slot; a file without an idle uses its walk for it.
+    #[test]
+    fn file_clips_replace_stand_ins() {
+        let z = figure(&[("Stagger", 5, true), ("die_back", 3, true), ("attack", 4, false)]);
+        let s = sources(&z);
+        assert_eq!((s[Clip::Stagger as usize], s[Clip::DieBack as usize], s[Clip::Attack as usize]), (Source::File(2), Source::File(3), Source::File(4)));
+        let b = baked(&z);
+        assert_eq!(b.clips[Clip::Stagger as usize].y, 5.0);
+        assert_eq!(b.clips[Clip::Attack as usize].z, 1.0 / 0.8);
+
+        let mut walk_only = figure(&[]);
+        walk_only.clips.truncate(1);
+        walk_only.positions.truncate(6 * walk_only.vertices());
+        assert_eq!(sources(&walk_only)[Clip::Idle as usize], Source::Other(0));
+        let b = baked(&walk_only);
+        let (idle, walk) = (b.clips[Clip::Idle as usize], b.clips[Clip::Walk as usize]);
+        assert_eq!((idle.x, idle.y, idle.z, idle.w), (walk.x, 6.0, 1.0, 0.0), "the walk's frames, stored once, at a fixed rate");
+    }
+
+    #[test]
+    fn the_crowd_vat_path() {
+        let opts = |args: &str| Options::parse(&args.split_whitespace().map(String::from).collect::<Vec<_>>());
+        assert_eq!(crowd_vat_path(&opts("--crowd-vat /x/z.zvat")), Some(PathBuf::from("/x/z.zvat")));
+        assert_eq!(crowd_vat_path(&opts("--crowd-vat none")), None);
+        assert_eq!(crowd_vat_path(&opts("--crowd-vat none --data /nowhere")), None);
+        let dir = std::env::temp_dir().join(format!("zombye-crowd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(first_zvat(&dir), None);
+        for name in ["b.zvat", "a.zvat", "a.glb"] {
+            std::fs::write(dir.join(name), b"").unwrap();
+        }
+        assert_eq!(first_zvat(&dir), Some(dir.join("a.zvat")));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

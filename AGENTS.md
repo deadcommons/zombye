@@ -16,7 +16,7 @@ Work is tracked on GitHub, not in the repo: the
 | `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), skills that improve with practice (`skills.rs` + `SkillTuning`), run stats and the cause of death (`run.rs`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint; `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
-| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building/tree meshes, fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd; `survivor.rs` skinned, CPU-posed players), hit feedback (`fx.rs`), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), HUD, the death screen and run summary (`death.rs`), the skills panel and level-up line (`skills_ui.rs`), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
+| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building/tree meshes, fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd, or a character baked offline read from a `.zvat` (`zvat.rs`); `survivor.rs` skinned, CPU-posed players), hit feedback (`fx.rs`), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), HUD, the death screen and run summary (`death.rs`), the skills panel and level-up line (`skills_ui.rs`), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
 | `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/items/recipes.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`), models (`models/furniture/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), later textures/audio. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
 | `tools/blender/` | Python to build assets: run inside Blender, mesh builder, palette, renders, validation, GLB export (`zasset.py`, `palette.py`, `build.py`), character clean-up, validation and skinned export (`zchar.py`), VAT bake for the crowd (`zvat.py`); plain Python, art-repo work folders and promotion (`artrepo.py`). | MIT OR Apache-2.0 |
 | `docs/` | Plan and design docs. | — |
@@ -80,7 +80,7 @@ cargo test --release --workspace
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --inventory --god --ignored`
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --inventory --god --ignored --crowd-vat PATH|none`
 (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost).
@@ -604,6 +604,26 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   Attack, Thump: clips 0-3) crossfade over 0.2 s in the shader. The MeshTag: bits 0-3 clip, 4-9 outfit, 10
   direct position, 27 hit flash, then either (looping) 11-16 phase, 17-24 speed, 25-26 the looping clip it fades
   from and 28-31 that clip's weight (0 = no fade), or (direct) 11-26 a 16-bit clip position.
+  The VAT is RGBA16F (one column per vertex, at most 8,192; one row per frame); the mesh's bounds are two
+  zero-area triangles at the corners of the box every baked frame fits in (`POSE_BOUNDS` for the grey-box).
+- **A baked crowd character** (#53) replaces the grey-box when there is one: `--crowd-vat PATH`, else
+  `ZOMBYE_CROWD_VAT=PATH` (the MCP `screenshot` client inherits it, so a work-in-progress `.zvat` from the art
+  repo can be reviewed in game), else the first `assets/models/characters/*.zvat` by name (where a promoted one
+  goes); `none` forces the grey-box, and a file that won't load is a warning and the grey-box. `zvat.rs` reads
+  the file `tools/blender/zvat.py` writes (validated: sizes, indices, finite positions, unique clip names) and
+  its texture: `ZOMBYE_CROWD_TEXTURE`, else `<stem>.png`/`.jpg`/`_base_color.png`/`.jpg` beside it, else the
+  base-colour image in the `<stem>.glb` beside it (Bevy's `jpeg` feature is on for this); mip-mapped on load
+  (linear-light averages), at most 1024 px. File clips fill `CLIPS` slots by name (`idle`, `walk`, `attack`,
+  `thump`, `stagger`, `fall`, `down`, `getup`, `dieback`, `diefront`, `diedown`; case, `_` and `-` ignored);
+  loops keep their own rate (the walk its stride), one-shots play over the grey-box clip's length. Slots the
+  file lacks get stand-ins (`Source`): idle and walk stand in for each other; attack and thump are the idle (else
+  the walk) leaned forward 0.3 / 0.12 rad; the one-shots and the Down loop move the idle's first frame as one
+  piece by the grey-box clip's root motion (toppling about the feet, getting up, reeling back), its lowest point
+  kept on the ground. The shader samples the texture by UV and tints it per outfit (`outfit_tint`: 8 washes
+  times a brightness); the grey-box binds a 1 × 1 white texture and keeps its body-part colours. Cost: about
+  2,970 vertices against the grey-box's 318, so the crowd is vertex-bound: ~2,000 zombies in view at
+  1920 × 1080 took ~8.9 ms a frame against ~5.5 ms (M-series Mac, offscreen); a lower-detail mesh for distant
+  zombies is the fix (not done).
 - **Survivors** (`survivor.rs`): 12 bones (knees, elbows, a right hand), a Bevy skinned mesh with
   StandardMaterial (lit, casts shadows), posed on the CPU each frame with blending: locomotion (idle, walk, run,
   sneak crouch; the cycle advances with distance actually moved), actions on top (punch / one-handed chop /
