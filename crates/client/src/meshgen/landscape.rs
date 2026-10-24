@@ -176,13 +176,18 @@ impl<'a> Land<'a> {
     }
 
     /// A parking-bay line: road paint with more paint three tiles to one side (bays are 3 m wide)
-    /// and none right beside it in that direction. Street centre lines never have paint 3 m
-    /// across from them.
+    /// and none right beside it in that direction, on a line at least two tiles long whose next
+    /// tile also has paint three tiles over. Street centre lines never have paint 3 m across from
+    /// them, except where two of them meet at a corner or junction, and there only one tile of
+    /// one line has it.
     fn is_bay(&self, t: IVec2) -> bool {
-        self.is_paint(t)
-            && [IVec2::X, IVec2::Y].iter().any(|&d| {
-                (self.is_paint(t + d * 3) || self.is_paint(t - d * 3)) && !self.is_paint(t + d) && !self.is_paint(t - d)
-            })
+        let spaced = |p: IVec2, d: IVec2| {
+            self.is_paint(p) && (self.is_paint(p + d * 3) || self.is_paint(p - d * 3)) && !self.is_paint(p + d) && !self.is_paint(p - d)
+        };
+        [IVec2::X, IVec2::Y].iter().any(|&d| {
+            let run = IVec2::new(d.y, d.x);
+            spaced(t, d) && (spaced(t + run, d) || spaced(t - run, d))
+        })
     }
 
     fn is_centre_paint(&self, t: IVec2) -> bool {
@@ -217,31 +222,55 @@ impl<'a> Land<'a> {
         let hi = (across + after + 1) as f32;
         let centre = (lo + hi) * 0.5;
         let rows = [(centre - 0.5).floor() as i32, centre.floor() as i32];
-        let (mut near, mut close) = (0, 0);
-        for d in -6..=6 {
-            for (i, &row) in rows.iter().enumerate() {
-                if i == 1 && row == rows[0] {
-                    continue;
+        // Look for the paint only along this same stretch of road: each step along must still be
+        // road from kerb to kerb with no road beyond, so the search stops at a sidewalk, a junction
+        // or a lot, and never picks up a crossing street's line (an unpainted alley meeting a
+        // street did) or a lot's bay lines.
+        let (first, last) = (across - before, across + after);
+        let same_section = |a: i32| {
+            let road = |c: i32| self.is_road(join(a, c, along_x));
+            road(first) && road(last) && !road(first - 1) && !road(last + 1)
+        };
+        let mut steps = [0i32; 13];
+        let mut n = 1;
+        for dir in [1, -1] {
+            for k in 1..=6 {
+                if !same_section(along + k * dir) {
+                    break;
                 }
-                if self.is_centre_paint(join(along + d, row, along_x)) {
-                    near += 1;
-                    close += (d.abs() <= 3) as i32;
-                }
+                steps[n] = k * dir;
+                n += 1;
+            }
+        }
+        // Solid if every step within 3 m carries paint (3 m dashes always leave a gap in 4 or
+        // more steps), dashed if only some do, none if none do.
+        let (mut near, mut close, mut close_steps) = (0, 0, 0);
+        for &d in &steps[..n] {
+            let paint = rows.iter().any(|&row| self.is_centre_paint(join(along + d, row, along_x)));
+            near += paint as i32;
+            if d.abs() <= 3 {
+                close_steps += 1;
+                close += paint as i32;
             }
         }
         if near == 0 {
             return None;
         }
-        Some(Street { along_x, lo, hi, paint: if close >= 6 { Line::Solid } else { Line::Dashed } })
+        let solid = close == close_steps && close_steps >= 4;
+        Some(Street { along_x, lo, hi, paint: if solid { Line::Solid } else { Line::Dashed } })
     }
 
-    /// How many tiles ahead (1..=3, along `dir` = ±1) a junction with a crossing street starts,
+    /// How many tiles ahead (1..=4, along `dir` = ±1) a junction with a crossing street starts,
     /// seen from street tile `t`. A junction is road that isn't a street, with road running a
     /// street's width or more both ways across: not a T we pass the mouth of, not a turning circle.
-    fn junction_ahead(&self, t: IVec2, st: &Street, dir: i32) -> Option<i32> {
+    /// With `t_too`, a T counts as well when a painted street leaves it on one side (crossings on
+    /// the main street; not at an alley's mouth).
+    fn junction_ahead(&self, t: IVec2, st: &Street, dir: i32, t_too: bool) -> Option<i32> {
         let step = if st.along_x { IVec2::X } else { IVec2::Y } * dir;
         let side = if st.along_x { IVec2::Y } else { IVec2::X };
-        for k in 1..=3 {
+        // Four, not three: the crossing's band is in the last three metres, and the centre line
+        // stops a metre before it (so no stub of line is left between two offset T-junctions).
+        for k in 1..=4 {
             let p = t + step * k;
             if !self.is_road(p) {
                 return None;
@@ -251,7 +280,9 @@ impl<'a> Land<'a> {
             }
             let need = st.width() + 2;
             let road = |q: IVec2| self.is_road(q);
-            let crossing = self.run(p, side, road) >= need && self.run(p, -side, road) >= need;
+            let (a, b) = (self.run(p, side, road) >= need, self.run(p, -side, road) >= need);
+            let street_off = |d: IVec2| self.street(p + d * need).is_some_and(|s| s.along_x != st.along_x);
+            let crossing = (a && b) || (t_too && ((a && street_off(side)) || (b && street_off(-side))));
             return crossing.then_some(k);
         }
         None
@@ -740,7 +771,7 @@ fn road_paint(paint: &mut Paint, land: &Land, t: IVec2) {
     }
     let yellow = pal::PAINT_YELLOW.lin();
     let white = pal::PAINT_WHITE.lin();
-    let ahead = [1, -1].map(|dir| land.junction_ahead(t, &st, dir).map(|k| (dir, k)));
+    let ahead = [1, -1].map(|dir| land.junction_ahead(t, &st, dir, st.paint == Line::Solid).map(|k| (dir, k)));
     // Main street: zebra crossings before each junction, the centre line stopping short of them.
     if st.paint == Line::Solid {
         let mut crossing = false;
@@ -1231,8 +1262,14 @@ mod tests {
                     for x in land.min.x..land.min.x + CHUNK_SIZE {
                         let t = IVec2::new(x, y);
                         bays += land.is_bay(t) as u32;
+                        // Bay lines are in lots, never on a street (where two centre lines meet at
+                        // a corner, a dash can have paint 3 m to its side).
+                        assert!(!(land.is_bay(t) && land.street(t).is_some()), "a centre line taken for a bay line at {t}");
                         if let Some(st) = land.street(t) {
-                            assert!(st.hi - st.lo >= 5.0 && st.hi - st.lo <= MAX_STREET as f32, "{t} {st:?}");
+                            assert!(st.hi - st.lo >= 4.0 && st.hi - st.lo <= MAX_STREET as f32, "{t} {st:?}");
+                            // The only 4 m roads are the alleys behind shops, which have no centre
+                            // line: never a street with paint.
+                            assert!(st.hi - st.lo > 4.5, "an unpainted alley taken for a street at {t}: {st:?}");
                             match st.paint {
                                 Line::Solid => solid += 1,
                                 Line::Dashed => dashed += 1,
