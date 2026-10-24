@@ -11,8 +11,8 @@ pub mod shutdown;
 use serde::{Deserialize, Serialize};
 use zombye_sim::map::{EdgeChange, OwnedEdge};
 use zombye_sim::{
-    ActionKind, Burden, Carry, CombatEvent, DevFlags, GroundItem, HealthTags, HealthView, Inventory, ItemNote, ItemStack, LevelUp, MoveMods, NeedsTuning, NeedsView, Place, PlayerInput, RunStats, Skill, SkillView, Stance, StatusInput, StatusTag,
-    Treatment, World, WorldConfig, ZombieAnim,
+    ActionKind, Burden, Carry, CombatEvent, DevFlags, GroundItem, HealthTags, HealthView, Inventory, ItemNote, ItemStack, JobKind, LevelUp, MoveMods, NeedsTuning, NeedsView, Place, PlayerInput, RunStats, Skill, SkillView, Stance,
+    StatusInput, StatusTag, Treatment, World, WorldConfig, ZombieAnim,
 };
 
 /// Something a client wants to happen. The server validates and applies it.
@@ -64,6 +64,10 @@ pub enum Intent {
     /// the best the player carries, or nothing to take a dressing off). Takes a few seconds,
     /// standing still; a strike landing or a swing interrupts it. Checked when asked and when done.
     Treat { player: u32, wound: Option<u32>, action: Treatment, item: Option<u16> },
+    /// Crafting (#12): make `recipe` (an index into the recipes the client got on joining) from
+    /// what the player carries and holds. Takes the recipe's time; a strike landing or a swing
+    /// interrupts it. Checked when asked and when done.
+    Craft { player: u32, recipe: u16 },
     /// Lie down and sleep (`sleep: true`; on a bed or sofa within reach, else the floor), or get up
     /// (`false`). Any other action while asleep also gets the player up, and does nothing else.
     Sleep { player: u32, sleep: bool },
@@ -165,6 +169,9 @@ pub struct PrivateView {
     pub needs: NeedsView,
     /// Every skill's level and whole XP (#46).
     pub skills: Vec<SkillView>,
+    /// Its item jobs, the one under way first (`PlayerView::busy` has its seconds left): what the
+    /// inventory panel shows as being made (#12).
+    pub jobs: Vec<JobKind>,
 }
 
 impl PrivateView {
@@ -179,7 +186,8 @@ impl PrivateView {
         let health = world.health_view(id).unwrap_or_default();
         let needs = world.needs_view(id).unwrap_or_default();
         let skills = world.skills_view(id).unwrap_or_default();
-        Some(Self { player: id, inventory: p.inventory.clone(), carry, max_kg: carry.limit_kg * world.config.carry.max_load, open, health, needs, skills })
+        let jobs = p.jobs.iter().map(|j| j.kind).collect();
+        Some(Self { player: id, inventory: p.inventory.clone(), carry, max_kg: carry.limit_kg * world.config.carry.max_load, open, health, needs, skills, jobs })
     }
 
     /// Our status tags (hunger, thirst, tiredness, endurance, load, pain, bleeding, sick, asleep),
@@ -433,6 +441,9 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
         Intent::Treat { player, wound, action, item } => {
             let _ = world.player_treat(*player, *wound, *action, *item);
         }
+        Intent::Craft { player, recipe } => {
+            let _ = world.player_craft(*player, *recipe);
+        }
         Intent::Sleep { player, sleep } => {
             if *sleep {
                 let _ = world.player_sleep(*player);
@@ -482,7 +493,8 @@ impl Intent {
             | Intent::Drop { player, .. }
             | Intent::Use { player, .. }
             | Intent::Search { player, .. }
-            | Intent::Treat { player, .. } => Some(player),
+            | Intent::Treat { player, .. }
+            | Intent::Craft { player, .. } => Some(player),
             _ => None,
         }
     }
@@ -1151,6 +1163,34 @@ mod tests {
         }
         assert_eq!(mods_seen.len(), 3, "{mods_seen:?}");
         assert!(mods_seen[1].speed == 1.0 && mods_seen[2].run_drain < mods_seen[1].run_drain && mods_seen[2].regen > mods_seen[1].regen, "{mods_seen:?}");
+    }
+
+    /// Crafting through intents (#12): asked for by a sleeper it only gets it up; asked again it
+    /// queues, the private view shows the job under way, and the rags arrive.
+    #[test]
+    fn crafting_goes_through_intents_and_wakes_a_sleeper() {
+        let mut server = server();
+        let recipes = zombye_sim::crafting::parse_recipes_for(include_str!("../../../assets/data/items/recipes.ron"), &server.world.config.items).unwrap();
+        server.world.config.recipes = recipes;
+        let id = server.join(None);
+        server.world.give_item(id, "t_shirt", 1);
+        let recipe = server.world.recipe_index("rip_t_shirt").unwrap();
+        server.world.set_needs(id, None, None, Some(0.9)).unwrap();
+        server.world.player_sleep(id).unwrap();
+        server.send(Intent::Craft { player: id, recipe });
+        server.tick();
+        let me = server.world.player(id).unwrap();
+        assert!(!me.needs.asleep() && me.jobs.is_empty(), "got up, nothing else");
+        server.send(Intent::Craft { player: id, recipe });
+        let snap = server.tick().for_player(id);
+        let own = snap.private.iter().find(|v| v.player == id).expect("our queue changed");
+        assert_eq!(own.jobs, vec![zombye_sim::JobKind::Craft { recipe }]);
+        assert!(snap.players[0].busy > 2.5);
+        let rag = server.world.item_index("rag").unwrap();
+        for _ in 0..80 {
+            server.tick();
+        }
+        assert_eq!(server.world.player(id).unwrap().inventory.carried.iter().filter(|s| s.item == rag).map(|s| s.count).sum::<u16>(), 3);
     }
 
     #[test]
