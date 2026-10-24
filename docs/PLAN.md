@@ -19,7 +19,10 @@ All code and assets are our own; see the clean-room rules in [CONTRIBUTING.md](.
 - Save and load.
 
 **Designed in from day one, built later**
-- Multiplayer (dedicated server, co-op). The single-player game already runs a local server.
+- Multiplayer on a dedicated server, **open PvP by default** (§4.8): you survive the dead and the
+  living, avoiding both or teaming up. Co-op is a server setting (PvP off). The single-player game
+  already runs a local server.
+- A first-person camera, as a client option and a server rule (§5).
 - Cars, farming, electricity/water shut-off, advanced crafting, NPCs.
 
 **Simplicity rule for v1 art:** low-poly, flat-ish textures, easy to read from the isometric camera. Detail comes later.
@@ -111,8 +114,11 @@ over the network, as many survival games do. This means MP isn't a retrofit.
 - **Interest management:** each client receives only entities inside its area of interest
   (≈ its loaded chunks). Off-screen zombies stay on the server — exactly the "server knows where
   everything is, client renders it when you get close" requirement.
-- Melee hit detection runs on the server with short lag compensation (rewind zombie positions to
-  the client's view time).
+- **Other players are sent only when your survivor could see or hear them** (worked out on the
+  server, with the same sight and hearing rules as everything else), so a modified client can't see
+  through walls. The camera never decides what you know; the server does (§4.8, §5).
+- Melee hit detection runs on the server with short lag compensation (rewind zombie and player
+  positions to the attacker's view time).
 
 ---
 
@@ -275,6 +281,35 @@ Senses:
 - Containers get rolled from loot tables per `room_type` × `container_type` on first visit (server-side,
   seeded), so loot is consistent and MP-safe.
 
+### 4.8 Players and each other (open PvP)
+On a multiplayer server PvP is on by default. Other survivors are the second danger: you can avoid
+them, fight them, rob them or team up with them. Nothing in the game decides who is a friend.
+- **One combat system.** Swings, shoves and stomps hit players as they hit zombies: the same reach and
+  arc, the same wounds on body parts, clothing protection, bleeding and infection. A death names its
+  killer in plain words ("killed by a survivor with a crowbar"). A dead player drops everything where
+  they fell, as now.
+- **Noise is the price of a fight.** Every swing, scream, broken window and (later) gunshot is a sound
+  the zombies hear, and loud ones draw the far horde in over minutes. Fighting another survivor is
+  always a gamble, which makes avoiding each other, or making a deal, a real choice.
+- **Fair information.** You only learn about another player through your survivor's senses: the server
+  sends a player to your client only when you could see or hear them, and nothing else (no name tags
+  over strangers, no other players on the map). Agents connect through the same rules, so an AI
+  survivor is a fair player, not a cheat.
+- **Alliances come from play.** Proximity text and voice chat (heard near the speaker, quieter through
+  walls) and a few gestures. You recognise people by their clothes. Later: restraints for hold-ups and an
+  optional group (shared map markers, seeing your group's names); groups never switch damage off.
+- **Spawns and logging out.** New survivors start spread round the edge of the town with little, not
+  in one bedroom. A survivor who logs out stays in the world for a short while (so leaving can't end a
+  fight), and a fresh spawn gets a few seconds of protection.
+- **Bases matter more.** Barricades, locked doors and safehouses protect you from people as well as the
+  dead; raiding them is part of the game.
+- **Server rules** (the server config, shown in the server browser): `pvp` on or off, the camera (§5),
+  whether agents may join and whether they are marked, logout timer, spawn protection.
+- **Size.** M6 aims at 32 players on a server and is designed for 64, on maps of 1-2 km. Players are
+  cheap; the zombies awake around them are what costs (§4.2), so a server's zombie count and map size
+  go with its player count.
+- Single-player and co-op are the same game with `pvp` off.
+
 ---
 
 ## 5. Rendering
@@ -284,6 +319,12 @@ Senses:
   **Settings option:** "Camera rotation" (off by default). When on, Q/E snap between the four fixed
   angles (45°, 135°, 225°, 315°) with a short eased turn. Never free rotation. Because the scene is
   real 3D, rotation costs nothing extra; cutaways, LOS and the UI just use the current angle.
+- **First person (later):** because the world is real 3D, a first-person camera is mostly client work:
+  mouse look, arms and the held weapon in view, ceilings and close-up detail indoors, better character
+  models. The sim stays camera-agnostic: aiming gets a pitch with ranged weapons, and what a player
+  knows comes from the server's sight rules, not the camera. The isometric camera sees over walls and
+  round corners, so in PvP the camera is a server rule (isometric, or first person only) rather than
+  mixed on one server.
 - **Visibility ("what you can see"):** compute a 2D line-of-sight visibility polygon from the player
   on the tile grid each frame (cheap). Zombies/items outside it are not drawn; terrain outside it is
   darkened and desaturated (fog of war). Behind you is dimmer (view cone).
@@ -385,6 +426,11 @@ progress. Pick up an issue there, or open one to propose work.
 
 - **Engine:** Rust + Bevy 0.20.
 - **Scale:** 1 tile = 1 m.
+
+**Decided (2026-10-24)**
+- **Open PvP by default** on multiplayer servers; co-op is `pvp` off (§4.8). M6 aims at 32 players a
+  server, designed for 64.
+- **First person later**, as a client option and a server rule; the sim stays camera-agnostic (§5).
 
 ---
 
