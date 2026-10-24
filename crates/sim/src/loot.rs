@@ -635,7 +635,7 @@ pub(crate) mod tests {
 
     /// The food in every container of the default town is enough for one player for about two
     /// months at the default scale (#8 aimed at two to four weeks for the old town of 26 houses; the
-    /// full town of #18 has three times the houses; ours to tune). How much hunger a day
+    /// full town of #18 has three times the houses, and shops; ours to tune). How much hunger a day
     /// takes is our assumption until needs (#11) set it: 2.0, about 2,000 kcal at a tin of beans'
     /// 0.30 for some 350 kcal.
     #[test]

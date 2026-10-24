@@ -2594,7 +2594,7 @@ mod tests {
         assert!((doubled as f32 / natural as f32 - 2.0).abs() < 0.01, "{natural} -> {doubled}");
         // (The town holds most of a 1 km map's zombies, so ten times the deep forest a bit over doubles it.)
         assert!(busier > natural * 2, "{natural} -> {busier}");
-        // The default map comes to about 2,700 (the full town of #18; the old small one held about a thousand).
+        // The default map comes to about 2,600 (the full town of #18; the old small one held about a thousand).
         let mut config = WorldConfig::new(1, 0, templates()).with_population(def);
         config.zombies = None;
         let n = World::new(config).zombies.len();

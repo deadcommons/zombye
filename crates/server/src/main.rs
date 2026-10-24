@@ -9,9 +9,9 @@
 //!   circles and make a 60 m noise every 10 s, `--horde N` spawns N more zombies round the first,
 //!   and the report breaks the tick down by tier.
 //!
-//! Common options: `--zombies N` (default: as many as `population.ron` gives for the map, about a
-//! thousand on the default map), `--seed S` (default 1), `--map-chunks N` (a square
-//! map N × N chunks of 16 m; default 20, so 320 m; 64 is about 1 km), `--data DIR` (content
+//! Common options: `--zombies N` (default: as many as `population.ron` gives for the map, about 2,600
+//! on the default map), `--seed S` (default 1), `--map-chunks N` (a square
+//! map N × N chunks of 16 m; default 30, so 480 m; 64 is about 1 km), `--data DIR` (content
 //! folder, default the repo's `assets/data`).
 //!
 //! Saves: `--save PATH` loads that save if it exists (the world options are then ignored) or

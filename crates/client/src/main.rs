@@ -17,7 +17,7 @@
 //! `--autoplay` (the player fights by itself) `--fight-demo` (a bat and a few zombies close by)
 //! `--siege` (outside your house with a bat, zombies battering its door) `--sneak` (start sneaking)
 //! `--inventory` (start with the inventory panel open) `--god` / `--ignored` (start with F1 / F2 on)
-//! `--map-chunks N` (a square map N × N chunks of 16 m; default 20) `--saves DIR` (where saves go;
+//! `--map-chunks N` (a square map N × N chunks of 16 m; default 30) `--saves DIR` (where saves go;
 //! default `saves`) `--load NAME|PATH` (start from a save; `--load-anyway` loads one whose game data
 //! changed in a way it can't simply take, dropping what no longer fits). F5 quicksaves, F9
 //! quickloads, and quitting (closing the window, Ctrl-C or SIGTERM in the terminal) autosaves
@@ -95,7 +95,7 @@ pub struct Options {
     /// Start with the dev toggles on, as if F1 / F2 had been pressed (`--god`, `--ignored`).
     pub god: bool,
     pub ignored: bool,
-    /// A square map this many 16 m chunks a side (`--map-chunks`, default 20: 320 m).
+    /// A square map this many 16 m chunks a side (`--map-chunks`, default 30: 480 m).
     pub map_chunks: Option<i32>,
     /// Folder for quicksaves and the autosave (`--saves`, default `saves`).
     pub saves: std::path::PathBuf,
