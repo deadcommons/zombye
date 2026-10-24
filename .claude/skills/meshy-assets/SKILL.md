@@ -63,9 +63,15 @@ contrast, lift, tint), `name_things` (`<id>`, `<id>_rig`, actions renamed, each 
 `build.py -- <art folder>` then validates (one armature + mesh, transforms applied, feet at 0, height
 ±2 cm, width/depth within the spec, centred, facing south by the toes, budget, no loose geometry, every
 vertex weighted ≤ 4 bones, one textured material, UVs, the spec's animations), renders the four game
-angles (`renders/<asset>_iso.png`) and a six-pose strip of one cycle per animation, saves the `.blend`
-(script inside) and exports `export/<id>.glb` (skin + clips, JPEG texture, provenance extras) and, with
-`vat` in the spec, `export/<id>.zvat`. `--check` validates the saved `.blend` alone.
+angles of the rest pose beside the 1.78 m scale figure in a 1 m × 2.1 m door frame
+(`renders/<asset>_iso.png`, the Gate 2 sheet, as for Blender-built assets) and a six-pose strip of one
+cycle per animation (no scale set), saves the `.blend` (script inside) and exports `export/<id>.glb`
+(skin + clips, JPEG texture, provenance extras) and, with `vat` in the spec, `export/<id>.zvat`.
+`--check` validates the saved `.blend` alone. `--g3` adds the Gate 3 sheet, `renders/<asset>_g3.png`:
+the review sheet beside the reference image (the spec's `reference`, else the only image in `refs/`,
+else `raw/reference.png`) and the newest one or two sheets in `style/approved/character/`; `--refs
+a.png,b.png` picks them instead. `--out DIR` writes renders, textures, `.blend` and exports to a scratch
+folder and only reads the art folder.
 
 ## The crowd: VAT, not retargeting
 

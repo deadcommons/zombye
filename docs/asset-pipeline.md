@@ -62,10 +62,11 @@ Credits are spent only after the owner says yes (Meshy: say the expected cost fi
    **Gate 1: reference.** The owner picks or rejects. Nothing 3D is made before this.
 3. **Blockout.** Plain grey shapes at the right size, or for Meshy the raw model brought to scale.
    Proportions and silhouette only, no colour.
-   **Gate 2: blockout.** Rendered from the four game angles beside the scale figure and a door.
+   **Gate 2: blockout.** Rendered from the four game angles beside the scale figure and a door
+   (every build's review sheet, `<asset>_iso.png`).
 4. **Look.** Palette colours, materials, detail, textures, rig if it moves.
    **Gate 3: look.** The review sheet beside the reference and one or two approved assets of the
-   same kind.
+   same kind (`build.py -- --g3`, `<asset>_g3.png`).
 5. **In game.** Exported and drawn in the game before promotion (`ZOMBYE_EXTRA_MODELS`, then
    `--render-to` or the MCP `screenshot` tool): default zoom (26 m) and close up (12 m), by day and
    at night, in the room or street it belongs in.
@@ -113,13 +114,24 @@ screenshots or mods, asset packs, or images we don't own. Reference images are o
 Every render for a gate uses the same set, so assets can be compared fairly:
 
 - orthographic camera at the game's angles: 30° elevation, four yaws of 45° + 90° × k (`camera.rs`);
-- the same sun and sky, on 1 m floor tiles with the footprint lighter, a wall stub at the back for
-  things that stand against a wall;
-- a **scale figure** (a 1.78 m survivor silhouette) and a **door frame** (1 m × 2.1 m) beside it;
-- at Gate 3, the reference and the approved neighbours in the same sheet.
+- the same sun and sky, on 1 m floor tiles with the footprint lighter, a wall stub along the back
+  of the footprint for things that stand against a wall;
+- a **scale figure** (a 1.78 m grey survivor silhouette, facing the camera) standing in a **door
+  frame** (a 1 m × 2.1 m opening in a 0.16 m wall, in a wall parallel to the asset's back) beside
+  the asset, on the camera's left at every angle so neither hides nor shades it; the camera frames
+  the asset, its footprint and them, so anything shorter than the door is drawn at the same scale on
+  every sheet;
+- at Gate 3, the reference and the approved neighbours in the same sheet: one row of same-size
+  tiles, the asset's 2 × 2 sheet first.
 
-`zasset.render_angles` does the first two today; the scale figure, door frame and side-by-side
-references are still to add (#15).
+`zasset.render_angles` draws every gate render this way, for both routes (`build.py`, and `zchar`'s
+`renders/<asset>_iso.png`; the animation strips leave the scale set out). `build.py -- --g3 <asset>`
+adds the Gate 3 sheet, `<asset>_g3.png` beside the review sheet: the asset's reference (the spec's
+`reference`, a path or list relative to its folder; else the only image in `refs/`; else Meshy's
+`raw/reference.png`) and the newest one or two sheets in `style/approved/<category>/` (the spec's
+category in lower case: `furniture`, `street`, `character`). `--refs a.png,b.png` puts those images
+beside it instead. `--out DIR` writes renders, `.blend` and exports to a scratch folder and only reads
+the work folder. The figure and door are in the `Review` collection: never validated or exported.
 
 ## Shared rules
 
