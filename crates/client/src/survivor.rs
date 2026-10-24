@@ -419,8 +419,11 @@ fn animate_survivors(
             _ => {}
         }
 
-        if let Some(pose) = options.pose.as_deref().filter(|_| local.is_some()) {
-            hold_pose(a, pose, now);
+        if let Some(pose) = options.pose.as_deref() {
+            // Every survivor, each the next step through the cycle (a strip from players in a row).
+            let players = &link.curr.players;
+            let k = players.iter().position(|p| p.id == a.player).unwrap_or(0);
+            hold_pose(a, pose, k as f32 / players.len().max(1) as f32, now);
         }
         let category = join.weapons.get(view.weapon.map_or(usize::MAX, |w| w as usize)).map_or(WeaponCategory::Unarmed, |w| w.category);
         let armed = view.weapon.is_some();
@@ -452,12 +455,13 @@ fn animate_survivors(
     }
 }
 
-/// `--pose NAME[:U]`: hold a survivor in one pose, to review animation in offscreen pictures
-/// (where nothing moves). `walk`, `run` and `sneak` at `U` of the way through the locomotion cycle
-/// (0..1); `swing`, `shove` and `stomp` at `U` of the way through the action (the blow lands at
-/// 0.45); `idle`, `dead`.
-fn hold_pose(a: &mut SurvivorAnim, pose: &str, now: f32) {
+/// `--pose NAME[:U]`: hold survivors in one pose, to review animation in offscreen pictures (where
+/// nothing moves). `walk`, `run` and `sneak` at `U` of the way through the locomotion cycle (0..1);
+/// `swing`, `shove` and `stomp` at `U` of the way through the action (the blow lands at 0.45);
+/// `idle`, `dead`. Each survivor is `step` further along (`U` wraps).
+fn hold_pose(a: &mut SurvivorAnim, pose: &str, step: f32, now: f32) {
     let (name, u) = pose.split_once(':').map_or((pose, 0.25), |(n, u)| (n, u.parse::<f32>().unwrap_or(0.25).clamp(0.0, 1.0)));
+    let u = (u + step).fract();
     let locomotion = |a: &mut SurvivorAnim, run: f32, sneak: f32, moving: f32| {
         (a.run_w, a.sneak_w, a.move_w, a.cycle) = (run, sneak, moving, u);
         a.action = None;

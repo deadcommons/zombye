@@ -115,7 +115,7 @@ prints `rendered PATH: WxH, N frames, N readbacks, MS ms` (plus a warning if it 
 or exits 1 with the reason on stderr. Prefer it to `--screenshot` for checking visuals: the windowed client pops up and
 steals focus. `ZOMBYE_FRAME_BENCH=N` then renders N more frames of the same picture, waiting for the GPU each frame, and
 prints `frame cost: M ms mean, W ms worst` (how frame costs in this file are measured: 1920x1080, 2,000 zombies, 120 frames). Not rendered: client-only effects that aren't in the save (blood splats, hit flashes).
-`--pose NAME[:U]` holds our survivor in one pose, for reviewing animation in offscreen pictures where nothing moves:
+`--pose NAME[:U]` holds every survivor in one pose, each the next step through it (players in a row make a strip), for reviewing animation in offscreen pictures where nothing moves:
 `walk`, `run`, `sneak` at `U` (0..1) of the locomotion cycle, `swing`, `shove`, `stomp` at `U` of the action (the blow
 lands at 0.45), `idle`, `dead`.
 `--map-chunks N` makes the map N × N chunks of 16 m (default 30, 480 m; 64 is about 1 km): the same town in the

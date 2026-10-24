@@ -56,6 +56,14 @@ const CUT_ABOVE_HEM: f32 = 0.03;
 /// How bright the marker rings are at night, of their daytime colour.
 const RING_NIGHT: f32 = 0.15;
 
+/// Each stance's clip (the first of these the body has) and how much wider its legs swing
+/// ([`amplify`]): the game's walk (3 m/s) and run (5.5 m/s) are brisker than the clips were made at,
+/// and played faster to keep the feet planted they'd step comically quickly. Wider steps keep the
+/// cadence of a real hurried walk and a tired run (about 2.9 steps a second each) with no foot slide.
+/// The approved `walk` can't stretch that far (4 steps a second at best), so the walk is `walk_alt`.
+const GAITS: [(&[&str], f32); 3] = [(&["walk_alt", "walk"], 1.4), (&["run"], 1.25), (&["sneak"], 1.0)];
+const LEG_BONES: [&str; 6] = ["LeftUpLeg", "LeftLeg", "LeftFoot", "RightUpLeg", "RightLeg", "RightFoot"];
+
 /// The body file, when `--survivor` / `ZOMBYE_SURVIVOR` don't name one.
 const DEFAULT_BODY: &str = "survivor_01";
 
@@ -260,6 +268,25 @@ fn face_forward(body: &mut Body) {
     }
 }
 
+/// Swings `bones` of a clip wider (k > 1) or narrower round their mean pose over the clip: each
+/// frame's turn away from the mean is scaled by `k` (a longer stride from the legs, a bigger arm swing).
+fn amplify(clip: &mut crate::character::Clip, bones: &[usize], k: f32) {
+    for &b in bones {
+        let first = clip.frames[0].r[b];
+        let sum = clip.frames.iter().fold(Vec4::ZERO, |acc, f| {
+            let q = f.r[b];
+            acc + if q.dot(first) < 0.0 { -Vec4::from(q) } else { Vec4::from(q) }
+        });
+        let mean = Quat::from_vec4(sum).normalize();
+        for f in &mut clip.frames {
+            let d = mean.inverse() * f.r[b];
+            let (axis, angle) = d.to_axis_angle();
+            let angle = if angle > std::f32::consts::PI { angle - TAU } else { angle };
+            f.r[b] = (mean * Quat::from_axis_angle(axis, angle * k)).normalize();
+        }
+    }
+}
+
 /// Where model-less clothing's tint samples the body texture: the lightest texel any torso vertex
 /// sits on (the base layer's shirt), so a colour multiplied onto it shows as itself.
 fn light_uv(body: &Body, texture: &Image) -> Option<[f32; 2]> {
@@ -326,7 +353,13 @@ impl SurvivorModel {
         }
         let clip = |name: &str| body.clips.iter().position(|c| c.name.eq_ignore_ascii_case(name));
         let idle = clip("idle");
-        let loops = [clip("walk"), clip("run"), clip("sneak")];
+        let loops = GAITS.map(|(names, _)| names.iter().find_map(|n| clip(n)));
+        let legs: Vec<usize> = LEG_BONES.iter().filter_map(|n| body.rig.find(n)).collect();
+        for (c, (_, k)) in loops.iter().zip(GAITS) {
+            if let Some(c) = c {
+                amplify(&mut body.clips[*c], &legs, k);
+            }
+        }
         let reference = idle.map_or_else(|| body.rig.rest(), |i| body.clips[i].frames[0].clone());
         let retarget = Retarget::new(&body, reference);
         let mut phase = [0.0; 3];
@@ -705,10 +738,17 @@ mod tests {
         load_wearables(&wearables, &body, &mut wardrobe);
         assert_eq!(wardrobe.get("hoodie").map(|w| w.hides.clone()), Some(vec![BodyPart::Torso, BodyPart::Arms]));
         assert!(wardrobe.get("glasses").is_some_and(|w| w.mesh.triangles() <= 100));
-        let walk = body.clips.iter().position(|c| c.name == "walk").unwrap();
-        let run = body.clips.iter().position(|c| c.name == "run").unwrap();
-        let (_, ws) = phase_and_stride(&body, walk);
-        let (_, rs) = phase_and_stride(&body, run);
-        assert!((0.8..2.5).contains(&ws) && rs > ws, "walk {ws} run {rs}");
+        // Each stance's cadence at its speed, with the legs swung as the game swings them: a believable
+        // 2-3.4 steps a second (the owner: the run was "comically fast"), the feet planted.
+        let mut body = body;
+        let speeds = [zombye_sim::players::WALK_SPEED, zombye_sim::players::RUN_SPEED, zombye_sim::players::SNEAK_SPEED];
+        let legs: Vec<usize> = LEG_BONES.iter().filter_map(|n| body.rig.find(n)).collect();
+        for ((names, k), speed) in GAITS.iter().zip(speeds) {
+            let c = names.iter().find_map(|n| body.clips.iter().position(|c| c.name == *n)).unwrap();
+            amplify(&mut body.clips[c], &legs, *k);
+            let (_, stride) = phase_and_stride(&body, c);
+            let steps = 2.0 * speed / stride;
+            assert!((1.6..3.4).contains(&steps), "{names:?}: {steps:.2} steps a second ({stride:.2} m a cycle at {speed} m/s)");
+        }
     }
 }

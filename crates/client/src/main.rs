@@ -143,7 +143,7 @@ pub struct Options {
     /// Draw survivors as this modular character (`--survivor PATH`, a body GLB or a folder with one,
     /// else `ZOMBYE_SURVIVOR`; `none` for the grey-box). See `survivor_model.rs`.
     pub survivor: Option<String>,
-    /// Hold our survivor in one pose, for reviewing animation in offscreen pictures (`--pose
+    /// Hold every survivor in one pose (each a step further), for reviewing animation in offscreen pictures (`--pose
     /// walk:0.3`, see `survivor.rs`).
     pub pose: Option<String>,
     /// Start with the sound off (`--mute`; M toggles it).
