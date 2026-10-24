@@ -32,7 +32,7 @@ use crate::map::TileMap;
 use crate::rng::hash01;
 use crate::senses::Sound;
 use crate::tiers::RegionIndex;
-use crate::worldgen;
+use crate::worldgen::{self, Town};
 use crate::zombies::{ZombieState, Zombies};
 
 /// What kind of ground a tile is, for population density. Decided by the town generator
@@ -204,7 +204,8 @@ pub struct PopulationDef {
     pub density: ZoneDensity,
     /// Multipliers on `density.indoors` by room type (`kitchen`, `bedroom`, ...); others 1.
     pub rooms: BTreeMap<String, f32>,
-    /// The town core is the middle of town: this fraction of its width and of its height.
+    /// The town core is the main street's shops and offices (the generator lays it out): this
+    /// fraction of its length along the street, round its middle (1 = all of it).
     pub core_fraction: f32,
     /// Forest within this many metres of the town is forest edge; beyond is deep forest.
     pub forest_edge_width: f32,
@@ -225,7 +226,7 @@ impl Default for PopulationDef {
         Self {
             density: ZoneDensity::default(),
             rooms: rooms.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
-            core_fraction: 0.5,
+            core_fraction: 1.0,
             forest_edge_width: 60.0,
             scale: 1.0,
             fast_share: 0.1,
@@ -294,13 +295,13 @@ impl PopulationDef {
         Ok(())
     }
 
-    /// The zone of tile `t` on a map whose town spans `town_min..town_max`.
-    pub fn zone_at(&self, map: &TileMap, town: (IVec2, IVec2), t: IVec2) -> Zone {
-        worldgen::zone_at(map, town.0, town.1, t, self.core_fraction, self.forest_edge_width)
+    /// The zone of tile `t` on a map with `town` on it.
+    pub fn zone_at(&self, map: &TileMap, town: &Town, t: IVec2) -> Zone {
+        worldgen::zone_at(map, town, t, self.core_fraction, self.forest_edge_width)
     }
 
     /// Zombies per km² on tile `t` (0 where nothing can stand), `scale` included.
-    pub fn tile_density(&self, map: &TileMap, town: (IVec2, IVec2), t: IVec2) -> f32 {
+    pub fn tile_density(&self, map: &TileMap, town: &Town, t: IVec2) -> f32 {
         if !map.in_bounds(t) || map.tile_blocked(t) {
             return 0.0;
         }
@@ -402,7 +403,7 @@ impl Population {
     /// Targets and zones per region for `map`, from the densities. `spawnable(t)` rules out tiles
     /// nothing should spawn on (the player's start). Targets are the natural numbers (density ×
     /// area); scale them with [`Population::scale_targets`] to hit a given total.
-    pub fn new(map: &TileMap, regions: &RegionIndex, def: &PopulationDef, town: (IVec2, IVec2), spawnable: impl Fn(IVec2) -> bool) -> Self {
+    pub fn new(map: &TileMap, regions: &RegionIndex, def: &PopulationDef, town: &Town, spawnable: impl Fn(IVec2) -> bool) -> Self {
         let n = regions.regions();
         let mut target = vec![0.0f64; n];
         let mut zone_tiles = vec![[0u32; 7]; n];

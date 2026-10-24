@@ -4,11 +4,12 @@
 // All numbers are our own.
 (
     // Zombies per km² of open ground (tiles not blocked by walls, trees or furniture) in each zone.
-    // The town generator decides the zones: indoors is any room; outdoors in town, the middle of it
-    // (core_fraction of its width and height) is the town core, the rest is streets (roads and
-    // sidewalks) and yards; outside town, roads are forest roads and the rest is forest edge (within
-    // forest_edge_width metres of town) or deep forest. On the default 320 m map this comes to about
-    // a thousand zombies; a bigger map adds forest, so mostly a sparse scattering.
+    // The town generator decides the zones: indoors is any room; outdoors in town, the town core is
+    // the main street's shops and offices (core_fraction of its length along the street, round its
+    // middle), the rest is streets (roads, parking lots and sidewalks) and yards; outside town, roads
+    // are forest roads and the rest is forest edge (within forest_edge_width metres of town) or deep
+    // forest. On the default 480 m map this comes to about NNNN zombies; a bigger map adds forest, so
+    // mostly a sparse scattering.
     density: (
         town_core: 40000.0,
         street: 32000.0,
@@ -29,7 +30,7 @@
         "bathroom": 0.6,
         "laundry": 0.7,
     },
-    core_fraction: 0.5,
+    core_fraction: 1.0,
     forest_edge_width: 60.0,
     // Multiplies every density (a sandbox "population" setting). `--zombies N` sets the total
     // instead, keeping the proportions.
