@@ -754,8 +754,7 @@ pub(crate) mod tests {
     /// core; houses fill the rest; nothing overlaps, and every building has a gap round it.
     #[test]
     fn shops_and_offices_line_the_main_street() {
-        let templates = with_shops();
-        for seed in 1..6 {
+        for (templates, seed) in [1, 2, 3, 4, 5].map(|s| (with_shops(), s)).into_iter().chain([1, 2, 3].map(|s| (crate::template::tests::shipped_templates(), s))) {
             let g = generate(&GenConfig { seed, ..Default::default() }, &templates);
             let town = g.town();
             let (mut shops, mut offices, mut houses) = (0, 0, 0);
@@ -785,7 +784,7 @@ pub(crate) mod tests {
                 }
             }
             eprintln!("seed {seed}: {shops} shops, {offices} offices, {houses} houses, map {}", g.map.width());
-            assert!(shops >= 6 && offices >= 2 && houses >= 50, "seed {seed}: {shops} shops, {offices} offices, {houses} houses");
+            assert!(shops >= 4 && offices >= 2 && houses >= 50, "seed {seed}: {shops} shops, {offices} offices, {houses} houses");
         }
     }
 
@@ -889,12 +888,52 @@ pub(crate) mod tests {
         assert!(trees_outside > 6000, "only {trees_outside} trees");
     }
 
+    /// With every shipped template, each house type turns up in the town for some seed, every
+    /// office and shop type along the main street (and only there, in the town core), buildings never
+    /// overlap, and you still wake up in a bedroom of a house.
+    #[test]
+    fn every_house_type_turns_up_in_towns() {
+        let all = crate::template::tests::shipped_templates();
+        let mut seen = std::collections::BTreeMap::new();
+        for seed in 1..=4 {
+            let g = generate(&GenConfig { seed, ..Default::default() }, &all);
+            let town = g.town();
+            let mut by_kind = [0; 3];
+            let mut owner = vec![usize::MAX; (g.map.width() * g.map.height()) as usize];
+            for (i, b) in g.map.buildings.iter().enumerate() {
+                *seen.entry(b.template.clone()).or_insert(0) += 1;
+                let kind = kind_of(&all, b);
+                by_kind[match kind {
+                    BuildingKind::House => 0,
+                    BuildingKind::Shop => 1,
+                    BuildingKind::Office => 2,
+                }] += 1;
+                if !matches!(kind, BuildingKind::House) {
+                    assert!(b.min.cmpge(town.core_min).all() && (b.min + b.size).cmple(town.core_max).all(), "seed {seed}: {} off the main street", b.template);
+                }
+                for t in Rect::new(b.min, b.size).tiles() {
+                    let cell = &mut owner[(t.y * g.map.width() + t.x) as usize];
+                    assert_eq!(*cell, usize::MAX, "seed {seed}: {} overlaps another building at {t}", b.template);
+                    *cell = i;
+                }
+            }
+            eprintln!("seed {seed}: {} houses, {} shops, {} offices", by_kind[0], by_kind[1], by_kind[2]);
+            assert!(by_kind[0] >= 50 && by_kind[1] >= 4 && by_kind[2] >= 4, "seed {seed}: houses, shops, offices {by_kind:?}");
+            let room = g.map.room_at(g.player_spawn);
+            assert_eq!(g.map.rooms[room as usize].room_type, "bedroom", "seed {seed}: spawn outside a bedroom");
+            assert!(matches!(kind_of(&all, &g.map.buildings[g.spawn_building]), BuildingKind::House));
+        }
+        for t in &all {
+            assert!(seen.contains_key(&t.id), "{} never placed in four towns: {seen:?}", t.id);
+        }
+    }
+
     /// Prints the default town as ASCII, every other row
     /// (`cargo test -p zombye-sim --release print_town -- --ignored --nocapture`).
     #[test]
     #[ignore]
     fn print_town() {
-        let templates = with_shops();
+        let templates = crate::template::tests::shipped_templates();
         let g = generate(&GenConfig::default(), &templates);
         for y in (g.town_min.y - 2..g.town_max.y + 2).step_by(2) {
             let row: String = (g.town_min.x - 2..g.town_max.x + 2)

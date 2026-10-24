@@ -1,0 +1,84 @@
+// Small one-storey office: a reception at the front, an open office of desks behind it, the
+// manager's office, a store room, restrooms and a break room. One character per tile; "." is
+// outside. The bottom row is the front of the building and faces the street.
+// Openings are (x, y, side): side N/E/S/W of tile (x, y).
+BuildingTemplate(
+    id: "office_small",
+    name: "Small office",
+    kind: Office,
+    roof: Flat,
+    rooms: {
+        'M': (name: "Manager's office", room_type: "office", floor: Carpet),
+        'O': (name: "Office", room_type: "office", floor: Carpet),
+        'c': (name: "Store room", room_type: "office", floor: Concrete),
+        'b': (name: "Restroom", room_type: "bathroom", floor: TileFloor),
+        'R': (name: "Reception", room_type: "office", floor: Carpet),
+        'K': (name: "Break room", room_type: "kitchen", floor: TileFloor),
+    },
+    levels: [
+        (
+            layout: [
+                "MMMMOOOOOOOOOO",
+                "MMMMOOOOOOOOOO",
+                "MMMMOOOOOOOOOO",
+                "MMMMOOOOOOOOOO",
+                "MMMMOOOOOOOOOO",
+                "ccccOOOOOOOOOO",
+                "ccccRRRRRRKKKK",
+                "bbbbRRRRRRKKKK",
+                "bbbbRRRRRRKKKK",
+                "bbbbRRRRRRKKKK",
+            ],
+            doors: [
+                (6, 9, S), (7, 9, S), // front doors
+                (12, 0, N), // fire exit
+                (13, 8, E), // side door from the break room
+                (3, 2, E), // manager's office
+                (3, 5, E), // store room
+                (4, 8, W), // restroom
+                (11, 5, S), // office to break room
+                (9, 7, E), // reception to break room
+            ],
+            arches: [(7, 5, S), (8, 5, S)],
+            windows: [
+                (1, 0, N), (0, 1, W), (0, 3, W),
+                (5, 0, N), (7, 0, N), (9, 0, N), (10, 0, N), (13, 3, E),
+                (0, 8, W),
+                (4, 9, S), (5, 9, S), (8, 9, S), (9, 9, S),
+                (11, 9, S), (12, 9, S),
+            ],
+            furniture: [
+                (kind: "shelf", at: (0, 0)),
+                (kind: "shelf", at: (2, 0)),
+                (kind: "desk", at: (1, 2), facing: E),
+                (kind: "sofa", at: (0, 4), size: (2, 1), facing: N),
+                (kind: "desk", at: (5, 1)),
+                (kind: "desk", at: (7, 1)),
+                (kind: "desk", at: (9, 1)),
+                (kind: "desk", at: (11, 1)),
+                (kind: "desk", at: (5, 3)),
+                (kind: "desk", at: (7, 3)),
+                (kind: "desk", at: (9, 3)),
+                (kind: "desk", at: (11, 3)),
+                (kind: "shelf", at: (13, 1), facing: W),
+                (kind: "shelf", at: (13, 2), facing: W),
+                (kind: "shelf", at: (0, 5), facing: E),
+                (kind: "shelf", at: (0, 6), facing: E),
+                (kind: "shelf", at: (1, 6), facing: N),
+                (kind: "shelf", at: (2, 6), facing: N),
+                (kind: "toilet", at: (0, 7), facing: E),
+                (kind: "toilet", at: (0, 9), facing: E),
+                (kind: "sink", at: (1, 7)),
+                (kind: "sink", at: (2, 7)),
+                (kind: "desk", at: (5, 7)),
+                (kind: "desk", at: (6, 7)),
+                (kind: "sofa", at: (9, 8), size: (1, 2), facing: W),
+                (kind: "coffee_table", at: (8, 8)),
+                (kind: "fridge", at: (10, 6)),
+                (kind: "counter", at: (12, 6), size: (2, 1)),
+                (kind: "sink", at: (13, 7), facing: W),
+                (kind: "table", at: (11, 8), size: (2, 1)),
+            ],
+        ),
+    ],
+)
