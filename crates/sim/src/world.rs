@@ -38,7 +38,7 @@ use crate::skills::{LevelUp, Skill, SkillTuning, Skills};
 use crate::spatial::SpatialHash;
 use crate::template::BuildingTemplate;
 use crate::tiers::{self, ChunkDistances, NearCtx, RegionIndex, TierTuning};
-use crate::worldgen::{self, GenConfig};
+use crate::worldgen::{self, GenConfig, Town};
 use crate::zombies::{Tier, ZombieState, Zombies};
 
 pub use crate::ai::ZOMBIE_RADIUS;
@@ -220,6 +220,9 @@ pub struct World {
     pub map: TileMap,
     pub town_min: IVec2,
     pub town_max: IVec2,
+    /// The town core, the main street's shops and offices (`min..max`, tiles): from the generator,
+    /// derived (not saved).
+    pub town_core: (IVec2, IVec2),
     pub player_spawn: Vec2,
     pub spawn_building: usize,
     pub zombies: Zombies,
@@ -387,6 +390,7 @@ impl World {
             scratch_hits: Vec::new(),
             town_min: generated.town_min,
             town_max: generated.town_max,
+            town_core: (generated.core_min, generated.core_max),
             player_spawn: generated.player_spawn,
             spawn_building: generated.spawn_building,
             map,
@@ -440,8 +444,8 @@ impl World {
     /// number for this map.
     fn populate(&mut self) {
         let def = &self.config.population;
-        let town = (self.town_min, self.town_max);
-        let mut pop = Population::new(&self.map, &self.regions, def, town, |t| self.spawnable(t));
+        let town = self.town();
+        let mut pop = Population::new(&self.map, &self.regions, def, &town, |t| self.spawnable(t));
         let natural = pop.total_target();
         let n = self.config.zombies.unwrap_or(natural.round() as u32);
         if natural > 0.0 {
@@ -458,7 +462,7 @@ impl World {
         while spawned < n && attempts < n as u64 * 2000 {
             attempts += 1;
             let t = IVec2::new(self.rng.below(w) as i32, self.rng.below(h) as i32);
-            let weight = self.config.population.tile_density(&self.map, town, t) / max;
+            let weight = self.config.population.tile_density(&self.map, &town, t) / max;
             if self.rng.f32() >= weight {
                 continue;
             }
@@ -1036,7 +1040,7 @@ impl World {
             return 0;
         }
         self.population.count_into(&self.zombies, &self.regions);
-        let (town, max, seed, tick) = ((self.town_min, self.town_max), self.config.population.max_density(), self.config.seed(), self.tick);
+        let (town, max, seed, tick) = (self.town(), self.config.population.max_density(), self.config.seed(), self.tick);
         let (unseen, far2) = ((r.unseen_secs / TICK_DT) as u64, r.min_distance * r.min_distance);
         let mut budget = r.max_per_check;
         let mut added = 0;
@@ -1062,7 +1066,7 @@ impl World {
                 let roll = |j: u64| hash01(seed ^ 0x5245_5350, tick, reg as u64, k * 4 + j);
                 let p = lo + Vec2::new(roll(0), roll(1)) * size;
                 let t = p.floor().as_ivec2();
-                if !self.map.in_bounds(t) || roll(2) >= self.config.population.tile_density(&self.map, town, t) / max || !self.spawnable(t) {
+                if !self.map.in_bounds(t) || roll(2) >= self.config.population.tile_density(&self.map, &town, t) / max || !self.spawnable(t) {
                     continue;
                 }
                 let i = self.push_zombie(p);
@@ -1081,9 +1085,14 @@ impl World {
         &self.population
     }
 
+    /// The town's bounds and core.
+    pub fn town(&self) -> Town {
+        Town { min: self.town_min, max: self.town_max, core_min: self.town_core.0, core_max: self.town_core.1 }
+    }
+
     /// The population zone of tile `t` (from the generator and the population file).
     pub fn zone_at(&self, t: IVec2) -> Zone {
-        self.config.population.zone_at(&self.map, (self.town_min, self.town_max), t)
+        self.config.population.zone_at(&self.map, &self.town(), t)
     }
 
     /// Zombies on each tier: [active, near, virtual] (corpses included).
@@ -1230,7 +1239,9 @@ mod tests {
 
     #[test]
     fn zombies_converge_on_goal_and_never_cross_walls() {
-        let mut w = world(3, 300);
+        // The same share of the natural population (about 2,700 on the default map) as 300 were of
+        // the old small town's 980.
+        let mut w = world(3, 850);
         let goal = street_point(&w);
         w.set_goal(Some(goal));
         let rooms_before: Vec<u16> = w.zombies.pos.iter().map(|p| w.map.room_at(*p)).collect();
@@ -1245,10 +1256,20 @@ mod tests {
             let again = w.map.resolve_circle(*p, ZOMBIE_RADIUS);
             assert!(again.distance(*p) < 0.05, "zombie overlapping an obstacle at {p}");
         }
-        // Zombies shut inside a building (no open way out) are still inside that building.
+        // Zombies shut inside a building (no open way out: every outside door and window shut) are
+        // still inside that building.
+        let sealed = |b: usize| {
+            let b = &w.map.buildings[b];
+            (b.min.y..b.min.y + b.size.y).all(|y| {
+                (b.min.x..b.min.x + b.size.x).all(|x| {
+                    let t = IVec2::new(x, y);
+                    w.map.tile(t).room == 0 || Side::ALL.iter().all(|&s| w.map.tile(t + s.offset()).room != 0 || w.map.edge(t, s).blocks_movement())
+                })
+            })
+        };
         for (i, p) in w.zombies.pos.iter().enumerate() {
             let room = rooms_before[i];
-            if room != 0 && w.flow().and_then(|f| f.distance(*p)).is_none() {
+            if room != 0 && sealed(w.map.rooms[room as usize].building as usize) {
                 let building = w.map.rooms[room as usize].building as usize;
                 assert_eq!(w.map.building_at(*p), Some(building), "zombie {i} escaped a sealed building");
             }
@@ -1357,7 +1378,9 @@ mod tests {
     /// player and attack.
     #[test]
     fn a_loud_noise_pulls_a_horde_onto_a_player() {
-        let mut w = world(3, 300);
+        // A little over a third of the natural population (about 2,700 on the default map; 300
+        // were a third of the old small town's 980), enough that 30 come.
+        let mut w = world(3, 1000);
         let id = w.add_player(street_point(&w));
         // Tough enough to outlast the horde, so we can watch it keep coming.
         w.players[0].hp = 1e6;
@@ -1382,7 +1405,8 @@ mod tests {
 
     #[test]
     fn noise_splits_zombies_between_two_players() {
-        let mut w = world(3, 400);
+        // The same share of the natural population as 400 were of the old small town's 980.
+        let mut w = world(3, 1100);
         let roads = road_points(&w);
         let a = roads[0];
         let b = *roads.iter().max_by(|p, q| p.distance(a).total_cmp(&q.distance(a))).unwrap();
@@ -1575,20 +1599,26 @@ mod tests {
     fn players_only_toggle_doors_in_reach() {
         let mut w = world(1, 0);
         let b = &w.map.buildings[w.spawn_building];
+        // An outside door, and which way is out (nothing else to open 4 m out from it).
         let mut found = None;
         'outer: for y in b.min.y - 1..b.min.y + b.size.y + 1 {
             for x in b.min.x - 1..b.min.x + b.size.x + 1 {
                 for which in [OwnedEdge::North, OwnedEdge::West] {
-                    if w.map.owned_edge(IVec2::new(x, y), which).is_door() {
-                        found = Some(TileMap::edge_segment(IVec2::new(x, y), which));
+                    let t = IVec2::new(x, y);
+                    let other = t - if which == OwnedEdge::North { IVec2::Y } else { IVec2::X };
+                    if w.map.owned_edge(t, which).is_door() && (w.map.tile(t).room == 0) != (w.map.tile(other).room == 0) {
+                        found = Some((TileMap::edge_segment(t, which), if w.map.tile(t).room == 0 { t } else { other }));
                         break 'outer;
                     }
                 }
             }
         }
-        let (a, bb) = found.expect("a door");
+        let ((a, bb), outside) = found.expect("an outside door");
         let mid = (a + bb) * 0.5;
-        let normal = (bb - a).perp().normalize();
+        let mut normal = (bb - a).perp().normalize();
+        if normal.dot(outside.as_vec2() + Vec2::splat(0.5) - mid) < 0.0 {
+            normal = -normal;
+        }
         let far = w.add_player(mid + normal * 4.0);
         assert!(w.player_interact(far).is_none(), "door toggled from 4 m away");
         assert!(w.edge_changes.is_empty());
@@ -2562,12 +2592,13 @@ mod tests {
         let busier = populated(edited, None).zombies.len();
         eprintln!("natural population of a 1 km map: {natural}; scale 2: {doubled}; ten times the deep forest: {busier}");
         assert!((doubled as f32 / natural as f32 - 2.0).abs() < 0.01, "{natural} -> {doubled}");
-        assert!(busier > natural * 3, "{natural} -> {busier}");
-        // The default map comes to about a thousand.
+        // (The town holds most of a 1 km map's zombies, so ten times the deep forest a bit over doubles it.)
+        assert!(busier > natural * 2, "{natural} -> {busier}");
+        // The default map comes to about 2,600 (the full town of #18; the old small one held about a thousand).
         let mut config = WorldConfig::new(1, 0, templates()).with_population(def);
         config.zombies = None;
         let n = World::new(config).zombies.len();
-        assert!((800..1200).contains(&n), "default map: {n} zombies");
+        assert!((2200..3200).contains(&n), "default map: {n} zombies");
     }
 
     /// An empty grass field `chunks` chunks a side, at noon, with no zombies.

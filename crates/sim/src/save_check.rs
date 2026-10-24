@@ -396,6 +396,9 @@ pub(crate) fn check_settings(text: &str, config: &WorldConfig) -> Result<(), Loa
     if g.blocks.x < 1 || g.blocks.y < 1 || g.blocks.x > 32 || g.blocks.y > 32 {
         return Err(invalid(format!("settings: generation.blocks {} (1 to 32 a side)", g.blocks)));
     }
+    if !(0..=32).contains(&g.commercial_blocks) {
+        return Err(invalid(format!("settings: generation.commercial_blocks {} (0 to 32)", g.commercial_blocks)));
+    }
     if !config.day_length_secs.is_finite() || config.day_length_secs <= 0.0 {
         return Err(invalid(format!("settings: day_length_secs {} must be positive", config.day_length_secs)));
     }
@@ -842,9 +845,16 @@ mod tests {
         crate::items::parse_items(include_str!("../../../assets/data/items/items.ron"), &weapons()).unwrap()
     }
 
+    /// The shipped content plus one weapon that is never placed (its spawn weight is 0, and no
+    /// loot table names it), so there is always one a save doesn't use: the town has a weapon or two
+    /// in most buildings, so every shipped kind turns up somewhere.
     fn content() -> WorldConfig {
         let containers = crate::containers::parse_containers(include_str!("../../../assets/data/containers.ron")).unwrap();
-        WorldConfig::new(5, 0, templates()).with_weapons(weapons()).with_items(items()).with_containers(containers).with_loot(crate::loot::tests::shipped()).with_map_chunks(8)
+        let mut weapons = weapons();
+        let mut spare = weapons.iter().find(|w| w.category != crate::items::WeaponCategory::Unarmed).unwrap().clone();
+        (spare.id, spare.name, spare.spawn_weight) = ("spare_pipe".into(), "Spare pipe".into(), 0.0);
+        weapons.push(spare);
+        WorldConfig::new(5, 0, templates()).with_weapons(weapons).with_items(items()).with_containers(containers).with_loot(crate::loot::tests::shipped()).with_map_chunks(8)
     }
 
     fn first_edge(w: &World, kind: impl Fn(Edge) -> bool) -> EdgeRef {
