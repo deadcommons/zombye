@@ -37,11 +37,12 @@ private art repo at `style/moodboard/`, with their prompts. What each is a refer
 | Image | Use it for | Don't copy |
 |---|---|---|
 | Residential street | house shapes and colours: wood siding, white trim, porches, chimneys; olive lawns; muted blue, brown and olive houses | the ink outlines, the blocky people |
-| House cutaway | interiors: a wall colour per room, plank floors, chunky furniture, a few boxes about | — (closest to the target) |
-| Character lineup | people: faceted, slightly chunky, simple faces, flat clothing colours, stooped zombies | the pixel-pattern stains (stains are big simple shapes), the red-cross emblem |
+| House cutaway (**picked**) | interiors: a wall colour per room, plank floors, chunky furniture, a few boxes about | the player: too basic; people follow the character lineup |
+| Character lineup (**picked**) | people, the survivor included: faceted, slightly chunky, simple faces, flat clothing colours, stooped zombies | the pixel-pattern stains (stains are big simple shapes), the red-cross emblem |
 | Main street at night | night lighting: cool blue moonlight, warm pools from lamps and windows; shopfront shapes | the outlines, the bright toy-green zombies |
 
-New images join the board only when the owner picks them. Approved assets
+The owner picked the cutaway and the lineup (2026-10-24); the street and night images stand for houses
+and night light only. New images join the board only when the owner picks them. Approved assets
 (`style/approved/<category>/`) outrank the board as references once they exist.
 
 ## Colour
