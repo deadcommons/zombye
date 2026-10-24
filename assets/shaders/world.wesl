@@ -25,12 +25,14 @@ struct WorldParams {
     fog_tint: vec4<f32>,
     inside_rect: vec4<f32>,
     tree_count: vec4<f32>,
+    sight: array<vec4<f32>, 3>,
     trees: array<vec4<f32>, 32>,
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> world_params: WorldParams;
 @group(constants::MATERIAL_BIND_GROUP) @binding(101) var fog_tex: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(102) var fog_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(103) var rays_tex: texture_2d<f32>;
 
 // 4×4 ordered dither threshold in [0, 1).
 fn bayer4(p: vec2<u32>) -> f32 {
@@ -91,8 +93,39 @@ fn fog_sample(xz: vec2<f32>) -> vec2<f32> {
     return textureSampleLevel(fog_tex, fog_sampler, uv, 0.0).rg;
 }
 
+// How visible a ground point is, worked out here per pixel from the sight rays (crates/client/src/
+// fog.rs: the same rule as its mask, so edges are smooth lines instead of the mask's half-metre steps).
 fn fog_at(xz: vec2<f32>) -> f32 {
-    return fog_sample(xz).x;
+    let s0 = world_params.sight[0];
+    let s1 = world_params.sight[1];
+    let s2 = world_params.sight[2];
+    if (s2.w < 0.5) {
+        return fog_sample(xz).x;
+    }
+    let d = xz - s0.xy;
+    let dist = length(d);
+    let dir = d / max(dist, 1e-4);
+    // Along a flashlight's beam the sight range is the beam's reach.
+    var range_m = s0.z;
+    if (s0.w > s0.z && dist > 0.1) {
+        range_m = mix(s0.z, s0.w, smoothstep(s2.x - 0.04, s2.x + 0.04, dot(s1.xy, dir)));
+    }
+    if (dist > range_m + 1.5) {
+        return 0.0;
+    }
+    let n = textureDimensions(rays_tex).x;
+    let a = fract(atan2(d.y, d.x) / 6.2831853) * f32(n);
+    let i0 = u32(floor(a)) % n;
+    let i1 = (i0 + 1u) % n;
+    // The nearer of the two rays either side, so light doesn't leak past corners.
+    let reach = min(textureLoad(rays_tex, vec2<u32>(i0, 0u), 0).r, textureLoad(rays_tex, vec2<u32>(i1, 0u), 0).r);
+    let los = 1.0 - smoothstep(reach + 0.3, reach + 1.1, dist);
+    let range = 1.0 - smoothstep(range_m * 0.5, range_m, dist);
+    var cone = 1.0;
+    if (dist >= s2.z) {
+        cone = s2.y + (1.0 - s2.y) * smoothstep(s1.z, s1.w, dot(s1.xy, dir));
+    }
+    return los * range * cone;
 }
 
 @fragment
@@ -161,7 +194,7 @@ fn fragment(
         at += normalize(n.xz) * 0.3;
     }
     let mask = fog_sample(at);
-    var seen = mask.x;
+    var seen = fog_at(at);
     var indoors = mask.y;
     if (piece_kind == 2u) {
         indoors = 0.0;

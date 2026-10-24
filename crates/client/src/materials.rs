@@ -35,6 +35,9 @@ pub struct WorldExt {
     #[texture(101)]
     #[sampler(102)]
     pub fog: Handle<Image>,
+    /// The sight rays' reach, one texel each (`fog.rs`).
+    #[texture(103, sample_type = "float", filterable = false)]
+    pub rays: Handle<Image>,
     /// Built with the cutaway (walls, roofs, fading foliage)? Fixed when the material is made.
     pub cutaway: bool,
 }
@@ -66,6 +69,8 @@ pub struct WorldParams {
     pub inside_rect: Vec4,
     /// x = how many entries of `trees` are in use.
     pub tree_count: Vec4,
+    /// Sight for the per-pixel fog of war (`FogState::sight`).
+    pub sight: [Vec4; 3],
     /// Trees whose foliage is fading: (trunk foot x, z, fade 0..1 (1 = foliage gone), 0).
     pub trees: [Vec4; MAX_FADING_TREES],
 }
@@ -79,6 +84,7 @@ impl Default for WorldParams {
             fog_tint: Vec4::ZERO,
             inside_rect: Vec4::ZERO,
             tree_count: Vec4::ZERO,
+            sight: [Vec4::ZERO; 3],
             trees: [Vec4::ZERO; MAX_FADING_TREES],
         }
     }
@@ -178,7 +184,7 @@ impl Plugin for WorldMaterialPlugin {
 fn create_materials(mut commands: Commands, fog: Res<FogState>, mut materials: ResMut<Assets<WorldMaterial>>) {
     let mut all = Vec::new();
     let mut make = |base: StandardMaterial, cutaway: bool| {
-        let h = materials.add(ExtendedMaterial { base, extension: WorldExt { params: WorldParams::default(), fog: fog.image.clone(), cutaway } });
+        let h = materials.add(ExtendedMaterial { base, extension: WorldExt { params: WorldParams::default(), fog: fog.image.clone(), rays: fog.rays.clone(), cutaway } });
         all.push(h.clone());
         h
     };
@@ -209,6 +215,7 @@ pub fn update_params(
     fog: Res<FogState>,
     map: Res<ClientMap>,
     time: Res<Time>,
+    daylight: Res<crate::daynight::Daylight>,
     world_materials: Option<Res<WorldMaterials>>,
     mut materials: ResMut<Assets<WorldMaterial>>,
     mut fades: ResMut<TreeFades>,
@@ -258,9 +265,11 @@ pub fn update_params(
         player: chest.extend(0.0),
         camera_dir: camera_dir.extend(0.0),
         fog_rect: Vec4::new(fog.origin.x, fog.origin.y, fog.size_m, 0.0),
-        fog_tint: Vec4::new(0.55, 0.6, 0.75, 0.72),
+        // What you can't see goes dim and grey by day and nearly black at night (#83).
+        fog_tint: Vec4::new(0.55, 0.6, 0.75, 0.72 + 0.14 * (1.0 - daylight.0)),
         inside_rect: inside_rect(&map.0, p.translation.xz()),
         tree_count: Vec4::new(n as f32, 0.0, 0.0, 0.0),
+        sight: fog.sight,
         trees,
     };
     for h in &wm.all {

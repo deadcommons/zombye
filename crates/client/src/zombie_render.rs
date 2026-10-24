@@ -1123,16 +1123,17 @@ fn sync_zombies(
     }
 }
 
-/// Keep the zombie shader's simple lighting in step with the day/night cycle.
-fn light_zombies(link: Res<ServerLink>, assets: Option<Res<ZombieAssets>>, mut materials: ResMut<Assets<ZombieMaterial>>) {
+/// Keep the zombie shader's simple lighting in step with the day/night cycle (and the dev light
+/// preview, `dev_time.rs`). At night they're barely there, like everything else (#83).
+fn light_zombies(link: Res<ServerLink>, preview: Res<crate::dev_time::LightPreview>, assets: Option<Res<ZombieAssets>>, mut materials: ResMut<Assets<ZombieMaterial>>) {
     let Some(assets) = assets else { return };
-    let (dir, color, lux, day) = sky_at(link.curr.time_of_day);
+    let (dir, color, lux, day) = sky_at(preview.hour_or(link.curr.time_of_day));
     let c = color.to_linear();
-    let night = Vec3::new(0.12, 0.15, 0.26);
-    let noon = Vec3::new(0.55, 0.58, 0.65);
+    let night = Vec3::new(0.03, 0.04, 0.07);
+    let noon = Vec3::new(0.42, 0.44, 0.5);
     for v in &assets.variants {
         let Some(mut m) = materials.get_mut(&v.material) else { continue };
-        m.settings.sun = (-dir).extend((lux / 10_000.0).max(0.08));
+        m.settings.sun = (-dir).extend((lux / 10_000.0).max(0.02));
         m.settings.sun_color = Vec4::new(c.red, c.green, c.blue, 1.0);
         m.settings.ambient = night.lerp(noon, day).extend(1.0);
     }

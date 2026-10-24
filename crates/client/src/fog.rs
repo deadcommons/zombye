@@ -2,10 +2,14 @@
 //!
 //! Every frame we cast rays from the player through the client's copy of the map (walls and
 //! closed doors block sight; windows don't), then rasterise the result into a small mask texture
-//! around the player: red = how visible, green = indoors. The world shader darkens whatever is
-//! unseen, and turns unseen indoor areas near-black, so a cutaway wall doesn't reveal a room you
+//! around the player: red = how visible, green = indoors. The rays themselves also go to the GPU
+//! (one texel each, [`FogState::rays`]) with the sight range and view cone ([`FogState::sight`]),
+//! so the world shader works out what's seen per pixel: line-of-sight edges are smooth lines, not
+//! the mask's half-metre steps (the mask still says what's indoors, and which zombies to draw). The
+//! world shader darkens whatever is unseen, and turns unseen indoor areas near-black, so a cutaway wall doesn't reveal a room you
 //! can't actually see into. Zombies outside the mask aren't drawn at all. A view cone makes what's
-//! behind you dimmer, and darkness shortens how far you can see.
+//! behind you dimmer, and darkness shortens how far you can see: at night only a few metres,
+//! except along a held flashlight's beam or round a candle (#83).
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::ImageSampler;
@@ -25,6 +29,8 @@ const RAYS: usize = 1024;
 const CLOSE_RADIUS: f32 = 2.5;
 /// Brightness multiplier for what's behind you.
 const BEHIND: f32 = 0.28;
+/// How far you see at night with no light in hand (m).
+const NIGHT_SIGHT: f32 = 10.0;
 
 #[derive(Resource)]
 pub struct FogState {
@@ -34,6 +40,11 @@ pub struct FogState {
     pub size_m: f32,
     /// Two bytes per texel: visibility, indoors.
     values: Vec<u8>,
+    /// Each ray's reach in metres, one `R32Float` texel per ray (`RAYS` × 1).
+    pub rays: Handle<Image>,
+    /// For the shader: (eye x, eye z, sight range, beam reach), (facing x, z, cone cos lo, hi),
+    /// (beam cos, behind, close radius, 1 = in use).
+    pub sight: [Vec4; 3],
 }
 
 impl FogState {
@@ -60,7 +71,23 @@ impl Plugin for FogPlugin {
         );
         image.sampler = ImageSampler::linear();
         let handle = app.world_mut().resource_mut::<Assets<Image>>().add(image);
-        app.insert_resource(FogState { image: handle, origin: Vec2::ZERO, size_m: TEXELS as f32 * TEXEL_M, values: vec![0; (TEXELS * TEXELS * 2) as usize] })
+        let mut rays = Image::new(
+            Extent3d { width: RAYS as u32, height: 1, depth_or_array_layers: 1 },
+            TextureDimension::D2,
+            vec![0; RAYS * 4],
+            TextureFormat::R32Float,
+            RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
+        );
+        rays.sampler = ImageSampler::nearest();
+        let rays = app.world_mut().resource_mut::<Assets<Image>>().add(rays);
+        app.insert_resource(FogState {
+            image: handle,
+            origin: Vec2::ZERO,
+            size_m: TEXELS as f32 * TEXEL_M,
+            values: vec![0; (TEXELS * TEXELS * 2) as usize],
+            rays,
+            sight: [Vec4::ZERO; 3],
+        })
             .add_systems(Update, update_fog);
     }
 }
@@ -80,7 +107,14 @@ fn update_fog(
     // Sight range: long in daylight, short at night, and shorter still at night while turning (#9).
     let turning = link.own(me.id).is_some_and(|v| v.health.infection == Some(zombye_sim::InfectionStage::Turning));
     let night = if turning { join.infection.turning_night_sight.clamp(0.0, 1.0) } else { 1.0 };
-    let mut max = 18.0 * (night + (1.0 - night) * daylight.0) + 52.0 * daylight.0;
+    let dark = 1.0 - daylight.0;
+    let mut max = NIGHT_SIGHT * (night + (1.0 - night) * daylight.0) + (70.0 - NIGHT_SIGHT) * daylight.0;
+    // A light in hand: a flashlight sees far along its beam, a candle a little way all round.
+    let held = crate::daynight::held_light(&join, &link, me.id);
+    let beam = held.filter(|l| !l.flame).map_or(0.0, |l| (l.radius_m + 2.0) * dark);
+    if let Some(l) = held.filter(|l| l.flame) {
+        max = max.max(lerp(max, l.radius_m + 1.5, dark));
+    }
     // Tired: a narrower view cone; asleep, eyes shut: only what's right around you (#11).
     let needs = link.own(me.id).map(|v| v.needs).unwrap_or_default();
     if needs.asleep.is_some() {
@@ -89,7 +123,9 @@ fn update_fog(
     let narrow = if join.needs.level(needs.tiredness) >= zombye_sim::needs::Level::Strong { join.needs.tired_sight.clamp(0.3, 1.0) } else { 1.0 };
     let (cone_lo, cone_hi) = ((-0.6f32).acos() * narrow, (-0.25f32).acos() * narrow);
     let (cone_lo, cone_hi) = (cone_lo.cos(), cone_hi.cos());
-    let rays = vision::visibility_rays(&map.0, eye, max, RAYS);
+    let reach_max = max.max(beam);
+    let beam_cos = (crate::daynight::BEAM_OUTER * 1.15).cos();
+    let rays = vision::visibility_rays(&map.0, eye, reach_max, RAYS);
     let facing = Vec2::from_angle(player.facing);
 
     // Snap the mask to the texel grid so it doesn't shimmer as you move.
@@ -102,6 +138,9 @@ fn update_fog(
             let q = origin + (Vec2::new(tx as f32, ty as f32) + 0.5) * TEXEL_M;
             let d = q - eye;
             let dist = d.length();
+            // Along the beam the sight range is the beam's reach.
+            let in_beam = if beam > max && dist > 0.1 { smoothstep(beam_cos - 0.04, beam_cos + 0.04, facing.dot(d / dist)) } else { 0.0 };
+            let max = lerp(max, beam, in_beam);
             let v = if dist > max + 1.5 {
                 0.0
             } else {
@@ -111,7 +150,7 @@ fn update_fog(
                 let i1 = (i0 + 1) % RAYS;
                 let reach = rays[i0].min(rays[i1]);
                 let los = 1.0 - smoothstep(reach + 0.3, reach + 1.1, dist);
-                let range = 1.0 - smoothstep(max * 0.75, max, dist);
+                let range = 1.0 - smoothstep(max * 0.5, max, dist);
                 let cone = if dist < CLOSE_RADIUS {
                     1.0
                 } else {
@@ -125,12 +164,25 @@ fn update_fog(
             fog.values[i + 1] = if map.0.tile(q.floor().as_ivec2()).room != 0 { 255 } else { 0 };
         }
     }
+    fog.sight = [Vec4::new(eye.x, eye.y, max, beam), Vec4::new(facing.x, facing.y, cone_lo, cone_hi), Vec4::new(beam_cos, BEHIND, CLOSE_RADIUS, 1.0)];
     let handle = fog.image.clone();
     if let Some(mut image) = images.get_mut(&handle) {
         if let Some(data) = image.data.as_mut() {
             data.copy_from_slice(&fog.values);
         }
     }
+    let handle = fog.rays.clone();
+    if let Some(mut image) = images.get_mut(&handle) {
+        if let Some(data) = image.data.as_mut() {
+            for (out, r) in data.chunks_exact_mut(4).zip(&rays) {
+                out.copy_from_slice(&r.to_le_bytes());
+            }
+        }
+    }
+}
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
 }
 
 fn smoothstep(a: f32, b: f32, x: f32) -> f32 {

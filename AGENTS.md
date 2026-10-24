@@ -113,7 +113,8 @@ a window's camera), no autosave. It waits for the frame to be stable rather than
 few frames it reads the image back, and two readbacks in a row that match (all but 1 byte in 10,000) are written. It
 prints `rendered PATH: WxH, N frames, N readbacks, MS ms` (plus a warning if it never settled; 40 s limit) and exits 0,
 or exits 1 with the reason on stderr. Prefer it to `--screenshot` for checking visuals: the windowed client pops up and
-steals focus. Not rendered: client-only effects that aren't in the save (blood splats, hit flashes).
+steals focus. `ZOMBYE_FRAME_BENCH=N` then renders N more frames of the same picture, waiting for the GPU each frame, and
+prints `frame cost: M ms mean, W ms worst` (how frame costs in this file are measured: 1920x1080, 2,000 zombies, 120 frames). Not rendered: client-only effects that aren't in the save (blood splats, hit flashes).
 `--map-chunks N` makes the map N × N chunks of 16 m (default 30, 480 m; 64 is about 1 km): the same town in the
 middle with more forest round it (a map too small for the town is grown to fit). The server takes it too.
 Without `--zombies` (client and server) the world holds as many zombies as `assets/data/population.ron` gives for the
@@ -135,7 +136,7 @@ sent to it, chasing, zombies per tier active/near/virtual, sim tick ms, and the 
 In game: WASD move, Shift run, C sneak (toggle), mouse to face, left mouse attack (swing your weapon, or
 punch), Space shove (or stomp, when a downed zombie lies right in front of you), E pick up the item you
 face (with nothing on the floor within reach: search the container you face), Tab or I the inventory panel, K the skills panel, F open/close the door or window you face, G smash the window you face, dead: R a new run and Q or Esc quit,
-B sleep (B again or WASD to get up), T skip an hour, Z spawn zombies, wheel zoom, F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), M mute. Walk into an open or broken window to climb
+B sleep (B again or WASD to get up), T skip an hour, Z spawn zombies, wheel zoom, F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), F3 the light preview (a time-of-day slider, see Light and mood), M mute. Walk into an open or broken window to climb
 through it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
 not Bevy's handler; a second Ctrl-C quits unsaved) autosaves; `--render-to` never does.
 
@@ -660,6 +661,34 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   source (`audio::Voice`) does the panning, pitch, low-pass and looping (rodio's spatial sink pans the wrong way close up).
   Asleep, everything is quieter. `--mute` / `--volume V` (0-2) / M; the stats line says `sounds N (...)` each second.
   Offscreen renders have no audio.
+
+## Light and mood (`daynight.rs`, `camera.rs`, `fog.rs`; #83)
+
+- **The look is isolation and fear** (docs/art-direction.md, "Light and mood"). The camera is HDR with a filmic tone map
+  (TonyMcMapface), bloom only above sunlit brightness (light sources), a colour grade and a vignette that `daynight.rs`
+  sets from the hour: warm and a little faded by day, warmest and richest at dawn and dusk, cold and closed in at night.
+- **Sun:** never more than about 35° up, so shadows stay long; little ambient fill. One shadow cascade fitted round what
+  the camera sees at the current zoom (`sun_cascade`; the camera is orthographic and 120 m back, so the default cascades
+  put the whole view in the coarsest one), 4096 map: about 3 cm a texel at the default zoom.
+- **Night:** moonlight and ambient low enough that only edges and silhouettes read; the fog of war's unseen areas go
+  nearly black (`fog_tint`); you see 10 m with no light (`fog::NIGHT_SIGHT`). A faint glow round the player lights its
+  own feet.
+- **Held lights:** an item with `light` in either hand (`daynight::held_light`, from our `PrivateView`): a flashlight is a
+  shadow-casting `SpotLight` cone along the facing (`BEAM_OUTER`, aimed 4.5 m ahead), seeing out to its `radius_m` + 2
+  along the beam at night; a candle (`needs_fire`) a small warm shadow-casting pool. Only the local player's (others'
+  inventories don't reach the client yet); zombies don't react to light (a sim change of its own).
+- **Fog of war per pixel:** the sight rays go to the GPU (`FogState::rays`, 1,024 × 1 `R32Float`, with the range and cone in
+  `FogState::sight`) and `world.wesl`'s `fog_at` works out what's seen per pixel by the same rule as the mask, so
+  line-of-sight edges are smooth, not the mask's half-metre steps. The mask still says what's indoors and which zombies
+  to draw.
+- **The crowd** lights itself (`zombie_vat.wesl`: sun and ambient uniforms, darker at night); it neither casts nor
+  receives shadows nor takes the flashlight yet.
+- **F3, the light preview** (`dev_time.rs`): a slider at the foot of the screen (drag, or hold `[` / `]`) for the hour the
+  light is drawn at (sun, moon, ambient, grade, held light, crowd, sight range); the server's clock, zombies' senses and
+  the HUD's time don't follow it. F3 again goes back to the server's hour.
+- **Cost** (M-series Mac, 1920 × 1080 offscreen, 2,000 zombies, under the same background load): within about 1 ms of
+  before (day 9.1 against 7.9 ms, dusk 8.0 against 8.3, 60 m 9.4 against 9.8); a lit flashlight adds about 0.8 ms (its
+  shadow map).
 
 ## Characters on screen (`crates/client`)
 

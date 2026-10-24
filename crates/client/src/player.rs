@@ -289,6 +289,7 @@ fn actions(
     mouse: Res<ButtonInput<MouseButton>>,
     panel: Res<crate::inventory_ui::InventoryPanel>,
     health: Res<crate::health_ui::HealthPanel>,
+    preview: Res<crate::dev_time::LightPreview>,
     me: Res<LocalPlayer>,
     join: Res<JoinInfo>,
     players: Query<(&Transform, &Player)>,
@@ -312,7 +313,7 @@ fn actions(
     if keys.just_pressed(KeyCode::KeyB) || (asleep && moving) {
         link.send(Intent::Sleep { player: me.id, sleep: !asleep });
     }
-    if mouse.just_pressed(MouseButton::Left) && !panel.open && !health.open {
+    if mouse.just_pressed(MouseButton::Left) && !panel.open && !health.open && !preview.hovered {
         link.send(Intent::Attack { player: me.id });
     }
     if keys.just_pressed(KeyCode::Space) {

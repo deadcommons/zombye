@@ -7,26 +7,36 @@ this doc says how to use them.
 
 ## The look in one sentence
 
-**A quiet early-1990s American small town after the end, in faceted low-poly: flat blocks of muted
-colour, simple chunky shapes with a few telling details, read from high above; a little spooky and a
-little playful, never gory.**
+**A small early-1990s American town after the end, in faceted low-poly, where you are alone and
+something is always out there: a lived-in, decaying world of muted colour, shaped by light, warm and
+hazy by day and truly dark at night, read from high above; frightening by what you can't see, never
+by gore.**
 
-Five rules follow from it:
+The mood is **isolation and fear** (the owner, 2026-10-24). Everything on screen serves it: the town
+was full of people a few weeks ago and isn't now; the light shows you a little and hides the rest.
+Six rules follow:
 
-1. **Faceted, flat-shaded, hard edges.** Every face reads as a plane of one colour. No smooth
+1. **Light makes the mood.** A low warm sun with long hard shadows and haze by day; real darkness at
+   night and in unlit rooms, where light comes only from sources (a flashlight, a candle, moonlight
+   through a window) and pools of it are islands. What's beyond your light or your sight is dark, not
+   just dimmer. Every frame is graded (see Light and mood), so the palette is the starting point,
+   not what ends up on screen.
+2. **Faceted, flat-shaded, hard edges.** Every face reads as a plane of one colour. No smooth
    shading on hard-surface things, no outlines or ink lines, no painted shading baked into colours.
-2. **Few colours per asset.** Three to six palette colours for a prop or a house, one of them
-   dominant. Variety comes from picking a different set per building or outfit, not from more colours
-   on one thing.
-3. **Simple shapes, a few telling details.** The silhouette says what it is; then two or three
+3. **Lived-in, then left.** Nothing is pristine: cracked and heaved asphalt, weeds in the cracks,
+   leaf litter, paper, rubble, broken fences, cars left where they stopped, doors ajar, things dropped
+   in a hurry. Every frame should hold a few things that tell you what happened here (see Decay and
+   clutter). Emptiness reads as a game not finished, not as loneliness.
+4. **Few colours per asset, a muted world, sparing accents.** Three to six palette colours for a prop
+   or a house, one dominant; variety from picking a different set per building or outfit. The town is
+   desaturated and dusty; the brand colours (zombie green, red, bone white, near-black) are accents: a
+   sign, a hydrant, a zombie's skin, the UI.
+5. **Simple shapes, a few telling details.** The silhouette says what it is; then two or three
    details make it ours: window trim and a porch on a house, a handle and door line on a fridge,
    burners on a stove, a flag on a mailbox. Nothing that matters is smaller than about 5 cm (one
    pixel at default zoom is ~3.6 cm).
-4. **Muted world, sparing accents.** The town is desaturated and a little dusty. The brand colours
-   (zombie green, red, bone white, near-black) are accents: a sign, a hydrant, a toy, a zombie's
-   skin, the UI. If the brand colours dominate a frame, there's too much of them.
-5. **Playful-spooky from shape, not colour or gore.** Stooped, shambling, slightly chunky zombies;
-   lopsided props, a tipped-over bin, a door left open. Blood is a few muted dark stains, never
+6. **Fear from what you can't see, not from gore.** Darkness, silence, a door left open, a shape at
+   the edge of the light, a stooped figure that doesn't move. Blood is a few muted dark stains, never
    wounds, organs or bones.
 
 ## Mood board
@@ -139,15 +149,54 @@ Both move into the shared palette with the building kit work (see Follow-ups).
   medical things), no real logos, brands or police insignia.
 - **The player** reads at a glance by what they wear; other players differ by their wearables.
 
-## Light and time of day
+## Light and mood
 
-- **Day:** warm sun from high up, soft long shadows, a pale blue sky fill. Colours as in the palette.
-- **Dusk:** warmer, longer shadows.
-- **Night:** cool blue moonlight, low; warm practical lights (lamps, windows, the player's light)
-  are the only warm pools. Dark enough that sneaking matters, light enough to read silhouettes.
-- **Fog of war** darkens and desaturates what the player can't see. Every asset must still read
-  as a silhouette there: check it dimmed (Gate 4).
-- Review renders use the Standard view transform (asset-pipeline.md), so the palette is what you see.
+Light is the first tool for the mood, and most of it is code (`daynight.rs`, `camera.rs`, the fog of
+war in `fog.rs` and `world.wesl`). Numbers live there; this is what they're for.
+
+- **Grade (every frame):** a filmic tone map; a warm, slightly desaturated grade (amber highlights,
+  shadows a touch cool and lifted so dark areas stay readable as shapes); a soft vignette that draws
+  the eye to the player and makes the edges of the world feel far away. Bloom only on real light
+  sources (a flashlight, a candle, a lit window), never on sunlit surfaces.
+- **Day:** a low, warm sun for most of the day (never overhead), long hard shadows, little fill light,
+  so a building's shadow side is clearly darker. A faint haze. Late afternoon is the look to aim for.
+- **Dusk:** deep amber turning to grey-blue; shadows stretch across the street; the town goes quiet.
+- **Night:** dark. Cool, very low moonlight outdoors is enough to read the edges of roads, roofs and a
+  silhouette close by, no more. Unlit interiors are darker than outdoors. What you see is what your
+  light reaches: a **flashlight** is a narrow, hard-edged cone along your facing that casts shadows
+  (furniture and zombies throw long ones away from you); a **candle** is a small warm pool. Without a
+  light you see a few metres. Zombies' senses are the sim's own (`ZombieTuning`); a light that draws
+  them is a sim change of its own.
+- **Inside by day:** windows are the light; the far side of a room is dimmer; a room with no window
+  is dark.
+- **Fog of war** darkens and desaturates what the player can't see, and at night turns it nearly
+  black. Every asset must still read as a silhouette dimmed, and buildings' outlines and ways in stay
+  readable (Gate 4: check it dimmed and at night by flashlight).
+- **Frame cost** is reported for every lighting change (offscreen 1920 × 1080 with 2,000 zombies at
+  26 m and 60 m, `ZOMBYE_FRAME_BENCH`). Screen-space effects that need a depth prepass (ambient
+  occlusion, contact shadows) wait until the cutaway works with one.
+- Review renders in Blender use the Standard view transform (asset-pipeline.md), so the palette is
+  what you see there; in game the grade warms and darkens it, which is why Gate 4 is in game.
+
+## Decay and clutter
+
+The world's generated parts and its props both carry the story. Targets for a default-zoom frame
+(26 m) of an ordinary street, not a rule for every square metre:
+
+- **Ground:** asphalt with cracks, a few heaved or sunken slabs and potholes, darker patches; weeds
+  and grass in cracks and along kerbs; drifts of leaf litter in corners and gutters; loose paper,
+  cans, bottles; a few dark stains. Lawns gone long and patchy, vacant lots and verges in tall grass
+  with a few wildflowers (muted red, white, yellow) (#81).
+- **Things left behind:** two or three per street frame: a car left with a door open or rusting on
+  flat tyres, a bike on its side, bins tipped over, a pram, suitcases, boxes, pallets, tyres, barrels;
+  near the core, barricades: sandbags, boards, a police cordon (#61).
+- **Buildings:** boarded windows here and there, a broken pane, a door ajar, gutters hanging, roofs
+  with rows of shingles and the odd gap, brick on shops and offices, units and vents on flat roofs,
+  porches with railings, faded signs (#59).
+- **Inside:** clutter on floors and counters (papers, boxes, a fallen chair), drawers left open after
+  a search, a few stains (#19, with the loot work).
+- **Density never costs the crowd:** clutter is merged into chunk meshes or instanced, with a budget
+  per chunk, and measured like any other rendering change.
 
 ## UI
 
@@ -186,8 +235,8 @@ asset vendor, and never use their images as input.
 > smoothing, rendered in 3D with no outlines or ink lines; simple chunky shapes with a few telling
 > details. Flat blocks of colour from a small, muted, slightly desaturated palette: no gradients, no
 > photo textures, no fine patterns. Sparing accents of soft zombie green, signal red and bone white.
-> Early-1990s small-town rural America. Mood: quiet, eerie, a little playful; never gory. No text, no
-> user interface.
+> Early-1990s small-town rural America, abandoned and decaying. Mood: lonely, tense, quietly
+> frightening; never gory. No text, no user interface.
 
 **Character reference** (then image-to-3D; meshy-assets skill):
 
@@ -207,21 +256,25 @@ asset vendor, and never use their images as input.
 **Scene or mood image:**
 
 > [prefix] Seen from high above at a 30 degree isometric angle with an orthographic camera. [Light:
-> soft daylight / dusk / cool moonlight with warm lamp pools.] Subject: [scene].
+> low warm late-afternoon sun with long shadows and haze / deep amber dusk / near-darkness lit only by
+> a flashlight cone or a candle.] Subject: [scene].
 
 Record every prompt, model and task id in the asset's `meta.yml` (art repo).
 
 ## Checklist for every review
 
-- [ ] Reads from high up at default zoom, from all four angles, and dimmed in fog.
+- [ ] Reads from high up at default zoom, from all four angles, dimmed in fog, under the day grade,
+      and at night by flashlight.
 - [ ] Flat-shaded, faceted, no outlines, no smooth blobs on hard things.
 - [ ] Three to six palette colours, one dominant; brand colours only as accents.
 - [ ] Two or three telling details, none smaller than 5 cm; tops and fronts carry them.
 - [ ] Early-1990s small town; no logos, readable text, protected emblems or gore.
 - [ ] Sits beside the approved assets of its kind without standing out.
+- [ ] Looks used or left, not new (rule 3), unless it's meant to be new.
 
 ## Follow-ups
 
 The look asks for things the game doesn't do yet; each is its own issue on the board:
-the building kit's details (trim, porches, chimneys, siding lines, shopfronts and awnings, #59) and the
-generated world's colours moved into the shared palette (#60).
+the light and grade (#83), decay and tall grass on the ground (#81), things left behind in the streets
+(#61), the building kit's details (trim, porches, chimneys, siding lines, shopfronts and awnings,
+boarded windows, #59) and the generated world's colours moved into the shared palette (#60).

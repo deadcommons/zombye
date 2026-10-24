@@ -4,9 +4,12 @@
 
 use std::f32::consts::FRAC_PI_2;
 
-use bevy::camera::{RenderTarget, ScalingMode, ShadowLodOrigin};
+use bevy::camera::{Hdr, RenderTarget, ScalingMode, ShadowLodOrigin};
 use bevy::input::mouse::MouseWheel;
+use bevy::post_process::bloom::{Bloom, BloomPrefilter};
+use bevy::post_process::effect_stack::Vignette;
 use bevy::prelude::*;
+use bevy::render::view::{ColorGrading, Tonemapping};
 
 use crate::Options;
 use crate::fx::CameraShake;
@@ -15,7 +18,7 @@ use crate::player::Player;
 use crate::server_link::JoinInfo;
 
 const ELEVATION: f32 = 30.0_f32 * std::f32::consts::PI / 180.0;
-const DISTANCE: f32 = 120.0;
+pub const DISTANCE: f32 = 120.0;
 const MIN_ZOOM: f32 = 8.0;
 const MAX_ZOOM: f32 = 90.0;
 
@@ -76,6 +79,16 @@ fn spawn_camera(mut commands: Commands, join: Res<JoinInfo>, options: Res<Option
         // Window glass is drawn with alpha to coverage, which needs multisampling.
         Msaa::Sample4,
         cam,
+    ));
+    // The mood (#83): HDR so light sources can glow, a filmic tone map, and the grade and
+    // vignette that `daynight.rs` sets from the time of day. Bloom picks up only what's brighter
+    // than sunlit ground: a flashlight's hot spot, a candle, a lit window.
+    camera.insert((
+        Hdr,
+        Tonemapping::TonyMcMapface,
+        Bloom { intensity: 0.18, prefilter: BloomPrefilter { threshold: 1.1, threshold_softness: 0.4 }, ..Bloom::NATURAL },
+        ColorGrading::default(),
+        Vignette { intensity: 0.45, radius: 0.8, smoothness: 2.2, ..default() },
     ));
     if let Some(target) = offscreen {
         // The only camera: it is also the origin for point-light shadow detail.

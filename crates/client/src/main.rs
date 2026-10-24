@@ -42,6 +42,7 @@ mod audio;
 mod autoplay;
 mod camera;
 mod daynight;
+mod dev_time;
 mod death;
 mod fog;
 mod furniture_models;
@@ -285,6 +286,7 @@ fn main() {
             materials::WorldMaterialPlugin,
             world_render::WorldRenderPlugin,
             daynight::DayNightPlugin,
+            dev_time::DevTimePlugin,
             player::PlayerPlugin,
             camera::IsoCameraPlugin,
             zombie_render::ZombieRenderPlugin,
