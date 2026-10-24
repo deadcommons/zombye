@@ -278,6 +278,28 @@ pub struct Snapshot {
     pub runs: Vec<RunView>,
     /// Skill level-ups since the previous snapshot (#46), each once; a client gets only its own.
     pub level_ups: Vec<LevelUp>,
+    /// What every player has on (#63), every snapshot: the client draws it, for us and for others.
+    pub outfits: Vec<OutfitView>,
+    /// What the zombies listed above that rose from players wore (#63), every snapshot.
+    pub risen: Vec<OutfitView>,
+}
+
+/// What a body has on, for drawing it (#63): the clothing and accessories it wears in the order put
+/// on, and the bags on its back and shoulder, as item indices (into the item definitions the client
+/// got on joining). `id` is a player's in [`Snapshot::outfits`], a zombie's in [`Snapshot::risen`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct OutfitView {
+    pub id: u32,
+    pub worn: Vec<u16>,
+    pub back: Option<u16>,
+    pub shoulder: Option<u16>,
+}
+
+impl OutfitView {
+    pub fn of(p: &zombye_sim::Player) -> Self {
+        let inv = &p.inventory;
+        Self { id: p.id, worn: inv.worn.iter().map(|s| s.item).collect(), back: inv.back.map(|s| s.item), shoulder: inv.shoulder.map(|s| s.item) }
+    }
 }
 
 /// One player's run stats ([`Snapshot::runs`]).
@@ -301,9 +323,13 @@ impl Snapshot {
     /// damage. Proper per-client interest management comes with #22.
     pub fn capture(world: &mut World) -> Self {
         let z = &world.zombies;
-        let zombies = (0..z.len())
+        let zombies: Vec<ZombieView> = (0..z.len())
             .filter(|&i| world.in_interest(i))
             .map(|i| ZombieView { id: z.id[i], pos: z.pos[i].to_array(), facing: z.facing[i], speed: z.speed[i], anim: z.anim[i] })
+            .collect();
+        let risen = zombies
+            .iter()
+            .filter_map(|v| world.risen_look(v.id).map(|look| OutfitView { id: v.id, worn: look.iter().filter_map(|i| world.item_index(i)).collect(), back: None, shoulder: None }))
             .collect();
         let players = world
             .players
@@ -347,6 +373,8 @@ impl Snapshot {
             floor: world.players.iter().map(|p| FloorView { player: p.id, items: world.floor_ids(p.id) }).collect(),
             runs: world.players.iter().map(|p| RunView { player: p.id, run: p.run.clone() }).collect(),
             level_ups: world.take_level_ups(),
+            outfits: world.players.iter().map(OutfitView::of).collect(),
+            risen,
         }
     }
 
@@ -995,6 +1023,31 @@ mod tests {
         }
         assert_eq!(mods_seen.len(), 3, "{mods_seen:?}");
         assert!(!mods_seen[2].can_run && mods_seen[2].speed < mods_seen[1].speed);
+    }
+
+    /// What every player wears is in every snapshot (#63), so all clients draw it; putting
+    /// something on or taking it off shows in the next one.
+    #[test]
+    fn outfits_in_snapshots() {
+        let mut server = server();
+        let id = server.join(None);
+        let other = server.join(None);
+        let snap = server.tick();
+        assert_eq!(snap.outfits.iter().map(|o| o.id).collect::<Vec<_>>(), [id, other]);
+        assert!(snap.outfits.iter().all(|o| o.worn.is_empty() && o.back.is_none()));
+        server.world.give_item(id, "glasses", 1);
+        let k = server.world.player(id).unwrap().inventory.carried.iter().position(|s| server.world.item_def(s.item).id == "glasses").unwrap();
+        server.send(Intent::Wear { player: id, index: k as u32 });
+        let glasses = server.world.item_index("glasses").unwrap();
+        let mut seen = false;
+        for _ in 0..40 {
+            let snap = server.tick();
+            if snap.clone().for_player(other).outfits.iter().any(|o| o.id == id && o.worn == [glasses]) {
+                seen = true;
+                break;
+            }
+        }
+        assert!(seen, "the other client sees our glasses go on");
     }
 
     /// Run stats (#13) come with every snapshot, each client only its own; the cause of death

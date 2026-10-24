@@ -38,7 +38,7 @@ use crate::Options;
 use crate::daynight::sky_at;
 use crate::fog::FogState;
 use crate::rig::{Bone, Pose, box_faces, rx, ry, rz, skin_matrices, smooth};
-use crate::server_link::{CombatEventsThisFrame, ServerLink};
+use crate::server_link::{CombatEventsThisFrame, JoinInfo, ServerLink};
 use crate::zvat::{self, Zvat};
 
 const SHADER: &str = "shaders/zombie_vat.wesl";
@@ -755,6 +755,9 @@ struct Variant {
     mesh: Handle<Mesh>,
     material: Handle<ZombieMaterial>,
     timing: Timing,
+    /// What it wears, from its file name past the plainest variant's (`zombie_02_hoodie` beside
+    /// `zombie_02`: "hoodie"): wearable model names joined by `_`.
+    wears: String,
 }
 
 /// What the client needs of a variant's clip table to time its clips.
@@ -776,6 +779,27 @@ fn variant_of(id: u32, n: usize) -> usize {
     (id.wrapping_mul(0x85EB_CA6B).rotate_right(13) as usize) % n.max(1)
 }
 
+/// What each variant wears, from file stems: the part past the shortest stem that starts all of them
+/// (none: every stem is its own).
+fn variant_wears(stems: &[String]) -> Vec<String> {
+    let base = stems.iter().min_by_key(|s| s.len()).filter(|b| stems.iter().all(|s| s.starts_with(b.as_str())));
+    stems.iter().map(|s| base.map_or(String::new(), |b| s[b.len()..].trim_matches('_').to_string())).collect()
+}
+
+/// The variant nearest to what a player who rose wore (#63): the most of its wearables (model names)
+/// and the fewest besides, the plainest on a tie; `None` if no variant wears any of them and none is
+/// plain.
+fn variant_for(variants: &[&str], wore: &[&str]) -> Option<usize> {
+    let tokens = |s: &str| s.split('_').filter(|t| !t.is_empty()).count() as i32;
+    let score = |wears: &str| {
+        let padded = format!("_{wears}_");
+        let hit: Vec<&&str> = wore.iter().filter(|m| padded.contains(&format!("_{m}_"))).collect();
+        let covered: i32 = hit.iter().map(|m| tokens(m)).sum();
+        2 * hit.len() as i32 - (tokens(wears) - covered)
+    };
+    (0..variants.len()).filter(|&v| score(variants[v]) >= 0).max_by_key(|&v| (score(variants[v]), -tokens(variants[v]), -(v as i32)))
+}
+
 fn setup_zombie_assets(
     mut commands: Commands,
     options: Res<Options>,
@@ -783,13 +807,14 @@ fn setup_zombie_assets(
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<ZombieMaterial>>,
 ) {
-    let mut loaded: Vec<(Baked, Image)> = crowd_vat_paths(&options)
+    let mut loaded: Vec<(Baked, Image, String)> = crowd_vat_paths(&options)
         .into_iter()
         .filter_map(|path| match load_baked(&path) {
             Ok((baked, texture, summary)) => {
                 info!("{summary}");
+                let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
                 // Untextured: a plain zombie grey-green, still tinted per outfit.
-                Some((baked, texture.unwrap_or_else(|| zvat::mipmapped(1, 1, &[96, 104, 84, 255]))))
+                Some((baked, texture.unwrap_or_else(|| zvat::mipmapped(1, 1, &[96, 104, 84, 255])), stem))
             }
             Err(e) => {
                 warn!("crowd character {} not loaded ({e}): left out", path.display());
@@ -798,19 +823,21 @@ fn setup_zombie_assets(
         })
         .collect();
     if loaded.is_empty() {
-        loaded.push((build_zombie(), zvat::mipmapped(1, 1, &[255, 255, 255, 255])));
+        loaded.push((build_zombie(), zvat::mipmapped(1, 1, &[255, 255, 255, 255]), String::new()));
     } else {
         info!("crowd: {} outfit variant(s), each zombie wears one by its id", loaded.len());
     }
+    let wears = variant_wears(&loaded.iter().map(|l| l.2.clone()).collect::<Vec<_>>());
     let variants = loaded
         .into_iter()
-        .map(|(baked, texture)| {
+        .zip(wears)
+        .map(|((baked, texture, _), wears)| {
             let material = materials.add(ZombieMaterial {
                 vat: images.add(baked.image()),
                 settings: VatSettings { clips: baked.clips, sun: Vec4::new(0.4, 0.8, 0.3, 1.0), sun_color: Vec4::ONE, ambient: Vec4::splat(0.5) },
                 base_color: images.add(texture),
             });
-            Variant { mesh: meshes.add(baked.mesh), material, timing: Timing { clips: baked.clips, play: baked.play } }
+            Variant { mesh: meshes.add(baked.mesh), material, timing: Timing { clips: baked.clips, play: baked.play }, wears }
         })
         .collect();
     commands.insert_resource(ZombieAssets { variants });
@@ -1037,6 +1064,7 @@ fn sync_zombies(
     time: Res<Time>,
     fixed: Res<Time<Fixed>>,
     events: Res<CombatEventsThisFrame>,
+    join: Res<JoinInfo>,
     assets: Option<Res<ZombieAssets>>,
     entities: Option<ResMut<ZombieEntities>>,
     mut query: Query<(&mut Transform, &mut MeshTag, &mut Visibility)>,
@@ -1071,8 +1099,19 @@ fn sync_zombies(
         let Some(tr) = entities.0.get_mut(&z.id) else {
             // First sight. A corpse is already lying still.
             let since = if z.anim == ZombieAnim::Dead { -100.0 } else { now };
-            let v = &assets.variants[variant_of(z.id, n)];
-            let mut tr = Tracked::new(z.id, variant_of(z.id, n), z.anim, since, z.speed, tick);
+            // A player who turned wears what it wore, as near as the variants allow.
+            let variant = link
+                .curr
+                .risen
+                .iter()
+                .find(|r| r.id == z.id)
+                .and_then(|r| {
+                    let wore: Vec<&str> = r.worn.iter().filter_map(|&i| join.items.get(i as usize)).filter_map(|d| d.model.as_deref()).collect();
+                    variant_for(&assets.variants.iter().map(|v| v.wears.as_str()).collect::<Vec<_>>(), &wore)
+                })
+                .unwrap_or_else(|| variant_of(z.id, n));
+            let v = &assets.variants[variant];
+            let mut tr = Tracked::new(z.id, variant, z.anim, since, z.speed, tick);
             let (clip, play) = tr.play(now, t, &v.timing);
             let tag = pack_tag(z.id, clip, play, z.speed, false);
             let transform = Transform { translation: Vec3::new(pos.x, 0.0, pos.y), rotation, scale: Vec3::ONE };
@@ -1258,6 +1297,19 @@ mod tests {
             }
         }
         assert!(seen[0] > 30 && seen[1] > 30, "{seen:?}");
+    }
+
+    #[test]
+    fn a_risen_player_wears_the_nearest_variant() {
+        let wears = variant_wears(&["zombie_02".into(), "zombie_02_hoodie".into(), "zombie_02_hoodie_glasses".into()]);
+        assert_eq!(wears, ["", "hoodie", "hoodie_glasses"]);
+        let v: Vec<&str> = wears.iter().map(String::as_str).collect();
+        assert_eq!(variant_for(&v, &["hoodie"]), Some(1));
+        assert_eq!(variant_for(&v, &["glasses", "hoodie"]), Some(2));
+        assert_eq!(variant_for(&v, &[]), Some(0), "the plain one");
+        assert_eq!(variant_for(&v, &["work_boots"]), Some(0));
+        assert_eq!(variant_for(&["hoodie"], &["jeans"]), None, "nothing near: by id");
+        assert_eq!(variant_wears(&["a".into(), "b".into()]), ["", ""], "no common stem");
     }
 
     #[test]

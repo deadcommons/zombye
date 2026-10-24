@@ -523,6 +523,19 @@ pub(crate) fn zombie_region(region: u32, pos: &[Vec2], first_id: u32, regions: &
     Ok(())
 }
 
+/// What bodies that rise wore (#63) is kept only for players and zombies in the save. Item ids that
+/// are no longer in the content are fine: the client draws what it knows.
+pub(crate) fn check_looks(w: &World) -> Result<(), LoadError> {
+    let looks = &w.rise_looks;
+    if let Some(id) = looks.bodies.keys().find(|id| !w.players.iter().any(|p| p.id == **id)) {
+        return Err(invalid(format!("what player {id} wore, who isn't in the save")));
+    }
+    if let Some(id) = looks.risen.keys().find(|id| w.zombies.id.binary_search(id).is_err()) {
+        return Err(invalid(format!("what zombie {id} wore, which isn't in the save")));
+    }
+    Ok(())
+}
+
 pub(crate) fn invalid(why: impl Into<String>) -> LoadError {
     LoadError::Invalid(why.into())
 }

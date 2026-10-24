@@ -16,6 +16,11 @@
 //! once none have been for a few frames the image is read back. Two readbacks in a row that match
 //! (all but a few bytes, see [`settled`]) are written as the PNG (or the last one, with a warning, if it never settles), then the
 //! app exits.
+//!
+//! `--frame-times N` measures what a frame costs once the PNG is written: N more frames of the same
+//! picture (time stopped, every system and draw still running), each waiting for the GPU to finish
+//! before the next starts, then `frame times: mean X ms, median Y ms, ...` on stdout. Serialised
+//! like that, a frame's time is its CPU and GPU work together: an upper bound, for comparing.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -60,7 +65,13 @@ enum Phase {
     Warm,
     Settle,
     Capture,
+    /// `--frame-times`: frames timed so far.
+    Time,
 }
+
+/// Set while frames are being timed: the render world waits for the GPU after each frame.
+#[derive(Resource, Clone, Default)]
+struct WaitForGpu(Arc<std::sync::atomic::AtomicBool>);
 
 #[derive(Resource)]
 struct Job {
@@ -71,6 +82,9 @@ struct Job {
     settled: u32,
     captures: u32,
     previous: Option<Image>,
+    /// `--frame-times`: when the last frame started, and every frame's time since (ms).
+    last: Option<Instant>,
+    times: Vec<f64>,
 }
 
 pub struct OffscreenPlugin;
@@ -84,20 +98,28 @@ impl Plugin for OffscreenPlugin {
         image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
         let handle = app.world_mut().resource_mut::<Assets<Image>>().add(image);
         let pending = PendingPipelines::default();
+        let wait = WaitForGpu::default();
         app.insert_resource(OffscreenTarget(handle))
             .insert_resource(pending.clone())
+            .insert_resource(wait.clone())
             .init_resource::<Readback>()
             .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(FRAME_SECS)))
-            .insert_resource(Job { path, started: Instant::now(), frame: 0, phase: Phase::Warm, settled: 0, captures: 0, previous: None })
+            .insert_resource(Job { path, started: Instant::now(), frame: 0, phase: Phase::Warm, settled: 0, captures: 0, previous: None, last: None, times: Vec::new() })
             .add_systems(Last, drive);
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app.insert_resource(pending).add_systems(Render, count_pending.in_set(RenderSystems::Cleanup));
+            render_app.insert_resource(pending).insert_resource(wait).add_systems(Render, (count_pending, wait_for_gpu).in_set(RenderSystems::Cleanup));
         }
     }
 }
 
 fn count_pending(cache: Res<PipelineCache>, pending: Res<PendingPipelines>) {
     pending.0.store(cache.waiting_pipelines().count(), Ordering::Relaxed);
+}
+
+fn wait_for_gpu(wait: Res<WaitForGpu>, device: Res<bevy::render::renderer::RenderDevice>) {
+    if wait.0.load(Ordering::Relaxed) {
+        let _ = device.poll(bevy::render::render_resource::PollType::wait_indefinitely());
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -107,11 +129,26 @@ fn drive(
     target: Res<OffscreenTarget>,
     pending: Res<PendingPipelines>,
     readback: Res<Readback>,
+    wait: Res<WaitForGpu>,
     options: Res<Options>,
     mut time: ResMut<Time<Virtual>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     job.frame += 1;
+    if job.phase == Phase::Time {
+        let now = Instant::now();
+        if let Some(last) = job.last.replace(now) {
+            job.times.push((now - last).as_secs_f64() * 1000.0);
+        }
+        if job.times.len() as u32 >= options.frame_times {
+            let mut t = job.times.clone();
+            t.sort_by(f64::total_cmp);
+            let mean = t.iter().sum::<f64>() / t.len() as f64;
+            println!("frame times: mean {mean:.2} ms, median {:.2} ms, best {:.2} ms, worst {:.2} ms over {} frames", t[t.len() / 2], t[0], t[t.len() - 1], t.len());
+            exit.write(AppExit::Success);
+        }
+        return;
+    }
     if job.started.elapsed() > DEADLINE {
         let ms = job.started.elapsed().as_millis();
         match job.previous.take() {
@@ -144,7 +181,16 @@ fn drive(
             let Some(image) = readback.0.lock().expect("readback lock").take() else { return };
             job.captures += 1;
             let same = job.previous.as_ref().is_some_and(|p| settled(p, &image));
-            if same {
+            if same && options.frame_times > 0 {
+                // Write it, then keep going: time the frames that follow.
+                if write_png(image, &job.path).map_err(|e| eprintln!("render failed: {e}")).is_err() {
+                    exit.write(AppExit::error());
+                    return;
+                }
+                println!("rendered {}; timing {} frames", job.path.display(), options.frame_times);
+                wait.0.store(true, Ordering::Relaxed);
+                job.phase = Phase::Time;
+            } else if same {
                 finish(&job, image, &options, "", &mut exit);
             } else if job.captures >= MAX_CAPTURES {
                 finish(&job, image, &options, &format!("; warning: no two of {} readbacks matched", job.captures), &mut exit);
@@ -155,6 +201,8 @@ fn drive(
                 job.phase = Phase::Settle;
             }
         }
+        // Handled above.
+        Phase::Time => {}
     }
 }
 

@@ -16,6 +16,10 @@
 //! - **dead**: a fall onto the back.
 //!
 //! Every pose is then pushed down so the lowest foot touches the ground.
+//!
+//! This grey-box is the fallback. With a modular character's files (#62, #63) a survivor is drawn as
+//! that body with what it wears ([`crate::survivor_model`]): its own clips for locomotion, and the
+//! action, flinch and death poses here carried over onto its skeleton.
 
 use std::f32::consts::{FRAC_PI_2, TAU};
 
@@ -30,28 +34,29 @@ use crate::items_render::WeaponLooks;
 use crate::player::LocalPlayer;
 use crate::rig::{Bone, Pose, box_faces, mix, rx, ry, rz, skin_matrices, smooth};
 use crate::server_link::{CombatEventsThisFrame, JoinInfo, ServerLink};
+use crate::survivor_model::SurvivorModel;
 
-const N: usize = 12;
-type SPose = Pose<N>;
+pub(crate) const N: usize = 12;
+pub(crate) type SPose = Pose<N>;
 
-const PELVIS: usize = 0;
-const TORSO: usize = 1;
-const HEAD: usize = 2;
-const UARM_L: usize = 3;
-const FARM_L: usize = 4;
-const UARM_R: usize = 5;
-const FARM_R: usize = 6;
-const HAND_R: usize = 7;
-const THIGH_L: usize = 8;
-const SHIN_L: usize = 9;
-const THIGH_R: usize = 10;
-const SHIN_R: usize = 11;
+pub(crate) const PELVIS: usize = 0;
+pub(crate) const TORSO: usize = 1;
+pub(crate) const HEAD: usize = 2;
+pub(crate) const UARM_L: usize = 3;
+pub(crate) const FARM_L: usize = 4;
+pub(crate) const UARM_R: usize = 5;
+pub(crate) const FARM_R: usize = 6;
+pub(crate) const HAND_R: usize = 7;
+pub(crate) const THIGH_L: usize = 8;
+pub(crate) const SHIN_L: usize = 9;
+pub(crate) const THIGH_R: usize = 10;
+pub(crate) const SHIN_R: usize = 11;
 
 /// Hip height at rest.
-const HIP: f32 = 0.95;
+pub(crate) const HIP: f32 = 0.95;
 
 /// (parent, rest pivot). The model faces +Z, its left is +X, feet at y = 0.
-const BONES: [Bone; N] = [
+pub(crate) const BONES: [Bone; N] = [
     (None, Vec3::new(0.0, HIP, 0.0)),
     (Some(PELVIS), Vec3::new(0.0, 1.0, 0.0)),
     (Some(TORSO), Vec3::new(0.0, 1.5, 0.0)),
@@ -201,12 +206,18 @@ impl SurvivorAssets {
 /// The weapon in a survivor's right hand: a bar in the weapon's colour, child of the hand joint.
 #[derive(Component)]
 pub struct HeldWeapon {
-    player: u32,
+    pub(crate) player: u32,
 }
 
 /// Build a survivor's joints, skinned body and held weapon under `root` (which carries the
-/// position and facing). `local` picks the local player's look.
-pub fn attach(commands: &mut Commands, assets: &SurvivorAssets, root: Entity, player: u32, local: bool) {
+/// position and facing): the modular character when there is one, else the grey-box. `local` picks
+/// the local player's look.
+pub fn attach(commands: &mut Commands, assets: &SurvivorAssets, model: Option<&SurvivorModel>, root: Entity, player: u32, local: bool) {
+    if let Some(model) = model {
+        let joints = crate::survivor_model::attach(commands, model, root, player, local);
+        commands.entity(root).insert(SurvivorAnim::new(player, Look::Model(joints), model.strides()));
+        return;
+    }
     let mut joints = [Entity::PLACEHOLDER; N];
     for (b, (parent, pivot)) in BONES.iter().enumerate() {
         let local_pivot = match parent {
@@ -227,18 +238,18 @@ pub fn attach(commands: &mut Commands, assets: &SurvivorAssets, root: Entity, pl
         Transform::default(),
         ChildOf(root),
     ));
-    commands.entity(root).insert(SurvivorAnim::new(player, joints));
+    commands.entity(root).insert(SurvivorAnim::new(player, Look::Grey(joints), GREY_STRIDES));
 }
 
 /// How a weapon is swung.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Style {
+pub(crate) enum Style {
     Punch,
     OneHand,
     TwoHand,
 }
 
-fn style(category: WeaponCategory) -> Style {
+pub(crate) fn style(category: WeaponCategory) -> Style {
     match category {
         WeaponCategory::Unarmed => Style::Punch,
         WeaponCategory::ShortBlade | WeaponCategory::ShortBlunt => Style::OneHand,
@@ -248,8 +259,8 @@ fn style(category: WeaponCategory) -> Style {
 
 /// One action on the local clock: started, lands, recovered.
 #[derive(Clone, Copy, Debug)]
-struct ActionClock {
-    kind: ActionKind,
+pub(crate) struct ActionClock {
+    pub(crate) kind: ActionKind,
     start: f32,
     land: f32,
     /// Set once the server says it landed.
@@ -261,7 +272,7 @@ const U_HIT: f32 = 0.45;
 
 impl ActionClock {
     /// Normalised clip time now.
-    fn u(&self, now: f32) -> f32 {
+    pub(crate) fn u(&self, now: f32) -> f32 {
         if now < self.land {
             U_HIT * ((now - self.start) / (self.land - self.start).max(1e-3)).clamp(0.0, 1.0)
         } else {
@@ -273,31 +284,41 @@ impl ActionClock {
     }
 }
 
+/// What a survivor is drawn as: its joints.
+pub(crate) enum Look {
+    Grey([Entity; N]),
+    /// The modular character ([`crate::survivor_model`]), one joint per bone of its skeleton.
+    Model(Vec<Entity>),
+}
+
 /// Animation state of one survivor.
 #[derive(Component)]
 pub struct SurvivorAnim {
-    player: u32,
-    joints: [Entity; N],
+    pub(crate) player: u32,
+    look: Look,
+    /// Metres covered by one locomotion cycle (two steps) walking, running and sneaking.
+    strides: [f32; 3],
     last_pos: Option<Vec2>,
     /// Smoothed ground speed (m/s), stance weights and the moving/standing weight.
-    speed: f32,
-    run_w: f32,
-    sneak_w: f32,
-    move_w: f32,
+    pub(crate) speed: f32,
+    pub(crate) run_w: f32,
+    pub(crate) sneak_w: f32,
+    pub(crate) move_w: f32,
     /// Locomotion cycle in [0, 1) and the idle breathing clock.
-    cycle: f32,
-    idle: f32,
-    action: Option<ActionClock>,
+    pub(crate) cycle: f32,
+    pub(crate) idle: f32,
+    pub(crate) action: Option<ActionClock>,
     last_tick: u64,
-    hurt_at: f32,
-    dead_since: Option<f32>,
+    pub(crate) hurt_at: f32,
+    pub(crate) dead_since: Option<f32>,
 }
 
 impl SurvivorAnim {
-    fn new(player: u32, joints: [Entity; N]) -> Self {
+    fn new(player: u32, look: Look, strides: [f32; 3]) -> Self {
         Self {
             player,
-            joints,
+            look,
+            strides,
             last_pos: None,
             speed: 0.0,
             run_w: 0.0,
@@ -313,18 +334,17 @@ impl SurvivorAnim {
     }
 }
 
-/// Distance covered by one full locomotion cycle (two steps), per stance.
-const WALK_CYCLE_M: f32 = 1.5;
-const RUN_CYCLE_M: f32 = 2.5;
-const SNEAK_CYCLE_M: f32 = 0.95;
+/// Distance covered by one full locomotion cycle (two steps) of the grey-box, per stance: walking,
+/// running, sneaking.
+const GREY_STRIDES: [f32; 3] = [1.5, 2.5, 0.95];
 const DEAD_FALL_SECS: f32 = 0.8;
-const FLINCH_SECS: f32 = 0.35;
+pub(crate) const FLINCH_SECS: f32 = 0.35;
 
 pub struct SurvivorPlugin;
 
 impl Plugin for SurvivorPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (animate_survivors, show_held_weapons));
+        app.add_systems(Update, (animate_survivors, show_held_weapons, crate::survivor_model::dress_survivors));
     }
 }
 
@@ -335,6 +355,8 @@ fn animate_survivors(
     me: Option<Res<LocalPlayer>>,
     join: Res<JoinInfo>,
     events: Res<CombatEventsThisFrame>,
+    model: Option<Res<SurvivorModel>>,
+    options: Res<crate::Options>,
     mut survivors: Query<(&mut SurvivorAnim, &Transform)>,
     mut joints: Query<&mut Transform, Without<SurvivorAnim>>,
 ) {
@@ -357,7 +379,8 @@ fn animate_survivors(
         a.run_w += ((stance == Stance::Run) as u8 as f32 - a.run_w) * k(8.0);
         a.sneak_w += ((stance == Stance::Sneak) as u8 as f32 - a.sneak_w) * k(8.0);
         a.move_w += (smooth(0.15, 0.8, a.speed) - a.move_w) * k(10.0);
-        let cycle_m = mix(mix(WALK_CYCLE_M, RUN_CYCLE_M, a.run_w), SNEAK_CYCLE_M, a.sneak_w);
+        let [walk_m, run_m, sneak_m] = a.strides;
+        let cycle_m = mix(mix(walk_m, run_m, a.run_w), sneak_m, a.sneak_w);
         a.cycle = (a.cycle + a.speed * dt / cycle_m).fract();
         a.idle = (a.idle + dt * 0.3).fract();
 
@@ -396,45 +419,112 @@ fn animate_survivors(
             _ => {}
         }
 
+        if let Some(pose) = options.pose.as_deref().filter(|_| local.is_some()) {
+            hold_pose(a, pose, now);
+        }
         let category = join.weapons.get(view.weapon.map_or(usize::MAX, |w| w as usize)).map_or(WeaponCategory::Unarmed, |w| w.category);
         let armed = view.weapon.is_some();
-        let pose = compose(a, now, style(category), armed);
-        for (b, (parent, pivot)) in BONES.iter().enumerate() {
-            if let Ok(mut jt) = joints.get_mut(a.joints[b]) {
-                let local_pivot = match parent {
-                    Some(pa) => *pivot - BONES[*pa].1,
-                    None => *pivot + pose.offset,
-                };
-                jt.translation = local_pivot;
-                jt.rotation = pose.rot[b];
+        match &a.look {
+            Look::Grey(js) => {
+                let pose = compose(a, now, style(category), armed);
+                for (b, (parent, pivot)) in BONES.iter().enumerate() {
+                    if let Ok(mut jt) = joints.get_mut(js[b]) {
+                        let local_pivot = match parent {
+                            Some(pa) => *pivot - BONES[*pa].1,
+                            None => *pivot + pose.offset,
+                        };
+                        jt.translation = local_pivot;
+                        jt.rotation = pose.rot[b];
+                    }
+                }
+            }
+            Look::Model(js) => {
+                let Some(model) = &model else { continue };
+                let pose = model.compose(a, now, style(category), armed);
+                for (b, e) in js.iter().enumerate() {
+                    if let Ok(mut jt) = joints.get_mut(*e) {
+                        jt.translation = pose.t[b];
+                        jt.rotation = pose.r[b];
+                    }
+                }
             }
         }
     }
 }
 
+/// `--pose NAME[:U]`: hold a survivor in one pose, to review animation in offscreen pictures
+/// (where nothing moves). `walk`, `run` and `sneak` at `U` of the way through the locomotion cycle
+/// (0..1); `swing`, `shove` and `stomp` at `U` of the way through the action (the blow lands at
+/// 0.45); `idle`, `dead`.
+fn hold_pose(a: &mut SurvivorAnim, pose: &str, now: f32) {
+    let (name, u) = pose.split_once(':').map_or((pose, 0.25), |(n, u)| (n, u.parse::<f32>().unwrap_or(0.25).clamp(0.0, 1.0)));
+    let locomotion = |a: &mut SurvivorAnim, run: f32, sneak: f32, moving: f32| {
+        (a.run_w, a.sneak_w, a.move_w, a.cycle) = (run, sneak, moving, u);
+        a.action = None;
+        a.dead_since = None;
+    };
+    let act = |a: &mut SurvivorAnim, kind: ActionKind| {
+        locomotion(a, 0.0, 0.0, 0.0);
+        // Started, landing and recovering so that the clip is at `u` now.
+        a.action = Some(if u <= U_HIT {
+            ActionClock { kind, start: now - u, land: now + (U_HIT - u), end: None }
+        } else {
+            ActionClock { kind, start: now - 1.0, land: now - (u - U_HIT), end: Some(now + (1.0 - u)) }
+        });
+    };
+    match name {
+        "walk" => locomotion(a, 0.0, 0.0, 1.0),
+        "run" => locomotion(a, 1.0, 0.0, 1.0),
+        "sneak" => locomotion(a, 0.0, 1.0, 1.0),
+        "swing" => act(a, ActionKind::Swing),
+        "shove" => act(a, ActionKind::Shove),
+        "stomp" => act(a, ActionKind::Stomp),
+        "dead" => {
+            locomotion(a, 0.0, 0.0, 0.0);
+            a.dead_since = Some(now - 10.0);
+        }
+        _ => locomotion(a, 0.0, 0.0, 0.0),
+    }
+}
+
 /// Upper-body bones an action takes over.
-const UPPER: [usize; 7] = [TORSO, HEAD, UARM_L, FARM_L, UARM_R, FARM_R, HAND_R];
+pub(crate) const UPPER: [usize; 7] = [TORSO, HEAD, UARM_L, FARM_L, UARM_R, FARM_R, HAND_R];
 const ALL: [usize; N] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+
+/// Standing and moving blended by stance and speed.
+pub(crate) fn locomotion(a: &SurvivorAnim, armed: bool) -> SPose {
+    let standing = idle(a.idle, armed).blend(&crouch(0.0, armed, 0.0), a.sneak_w);
+    let moving = walk(a.cycle, armed).blend(&run(a.cycle, armed), a.run_w).blend(&crouch(a.cycle, armed, 1.0), a.sneak_w);
+    standing.blend(&moving, a.move_w)
+}
+
+/// The action under way: its pose, how much of the body it takes (the stomp all of it, the rest the
+/// upper body) and its weight now.
+pub(crate) fn action_now(a: &SurvivorAnim, now: f32, style: Style, armed: bool) -> Option<(SPose, bool, f32)> {
+    let c = a.action?;
+    let u = c.u(now);
+    let w = smooth(0.0, 0.06, u) * (1.0 - smooth(0.88, 1.0, u));
+    Some((action(c.kind, style, armed, u), c.kind == ActionKind::Stomp, w))
+}
+
+/// How far into the hurt flinch it is now (0 = none).
+pub(crate) fn flinch_weight(a: &SurvivorAnim, now: f32) -> f32 {
+    let e = now - a.hurt_at;
+    if !(0.0..FLINCH_SECS).contains(&e) {
+        return 0.0;
+    }
+    if e < 0.05 { e / 0.05 } else { (1.0 - (e - 0.05) / (FLINCH_SECS - 0.05)).powi(2) }
+}
 
 /// The full pose of a survivor now.
 fn compose(a: &SurvivorAnim, now: f32, style: Style, armed: bool) -> SPose {
-    let standing = idle(a.idle, armed).blend(&crouch(0.0, armed, 0.0), a.sneak_w);
-    let moving = walk(a.cycle, armed).blend(&run(a.cycle, armed), a.run_w).blend(&crouch(a.cycle, armed, 1.0), a.sneak_w);
-    let mut pose = standing.blend(&moving, a.move_w);
-    if let Some(c) = a.action {
-        let u = c.u(now);
-        let w = smooth(0.0, 0.06, u) * (1.0 - smooth(0.88, 1.0, u));
-        let act = action(c.kind, style, armed, u);
-        if c.kind == ActionKind::Stomp {
-            pose.blend_bones(&act, w, &ALL, false);
-        } else {
-            pose.blend_bones(&act, w, &UPPER, false);
-        }
+    let mut pose = locomotion(a, armed);
+    if let Some((act, whole, w)) = action_now(a, now, style, armed) {
+        pose.blend_bones(&act, w, if whole { &ALL } else { &UPPER }, false);
     }
     // A flinch on top of whatever it's doing.
-    let e = now - a.hurt_at;
-    if (0.0..FLINCH_SECS).contains(&e) {
-        let w = if e < 0.05 { e / 0.05 } else { (1.0 - (e - 0.05) / (FLINCH_SECS - 0.05)).powi(2) };
+    let w = flinch_weight(a, now);
+    if w > 0.0 {
         let f = flinch();
         for b in UPPER {
             pose.rot[b] *= Quat::IDENTITY.slerp(f.rot[b], w);
@@ -636,13 +726,13 @@ fn action(kind: ActionKind, style: Style, armed: bool, u: f32) -> SPose {
 }
 
 /// Recoiling from a blow (applied on top of the current pose).
-fn flinch() -> SPose {
+pub(crate) fn flinch() -> SPose {
     let q = Quat::IDENTITY;
     upper(rx(-0.28) * ry(0.12), rx(-0.35), rz(0.25) * rx(-0.45), q, rz(-0.2) * rx(-0.35), q, q)
 }
 
 /// Dead: falls onto its back over [`DEAD_FALL_SECS`] (pivoting about the feet), then lies still.
-fn dead(e: f32) -> SPose {
+pub(crate) fn dead(e: f32) -> SPose {
     let mut end = SPose::default();
     end.rot[HEAD] = ry(0.8) * rx(-0.1);
     end.rot[UARM_L] = rz(1.2) * rx(-0.2);

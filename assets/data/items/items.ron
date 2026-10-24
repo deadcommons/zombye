@@ -17,8 +17,12 @@
 //   medical     Some((uses: n)). What it treats comes with #9 and #10 (by tag).
 //   bag         Some((capacity_l: room it adds, carried: Back | Shoulder | Hand, slow: 0..1
 //               speed lost while carried))
-//   clothing    Some((covers: [Head, Torso, Arms, Hands, Legs, Feet], protection: 0..1,
-//               layer: Base | Mid | Outer)). Two worn items can't share a body part and layer.
+//   clothing    Some((covers: [Head, Torso, Arms, Hands, Legs, Feet], takes: [Face, HeadTop, Neck],
+//               protection: 0..1, layer: Base | Mid | Outer, hood: false)). Two worn items can't share
+//               a body part or a place they take on one layer. Accessories (glasses, hats, scarves)
+//               take a place; a hood covers the head while nothing is on the head top.
+//   model       Some("name"): what the client draws while it's worn, held or on your back
+//               (assets/models/wearables/<name>.glb); none (or no file): a grey-box in its colour.
 //   light       Some((radius_m, hours)): a light source (comes with night lighting).
 //   color       grey-box colour on the floor, linear-ish RGB 0..1
 [
@@ -105,7 +109,7 @@
     (id: "jumper", name: "Jumper", category: Clothing, weight_kg: 0.4, volume_l: 1.2, tags: ["rippable"],
         clothing: Some((covers: [Torso, Arms], protection: 0.15, layer: Mid)), color: (0.3, 0.35, 0.55)),
     (id: "hoodie", name: "Hoodie", category: Clothing, weight_kg: 0.5, volume_l: 1.5, tags: ["rippable"],
-        clothing: Some((covers: [Torso, Arms, Head], protection: 0.15, layer: Mid)), color: (0.4, 0.4, 0.42)),
+        clothing: Some((covers: [Torso, Arms], protection: 0.15, layer: Mid, hood: true)), model: Some("hoodie"), color: (0.33, 0.38, 0.26)),
     (id: "jeans", name: "Jeans", category: Clothing, weight_kg: 0.6, volume_l: 1.2, tags: ["rippable"],
         clothing: Some((covers: [Legs], protection: 0.25, layer: Base)), color: (0.2, 0.3, 0.5)),
     (id: "leather_jacket", name: "Leather jacket", category: Clothing, weight_kg: 1.6, volume_l: 3.0,
@@ -116,6 +120,18 @@
         clothing: Some((covers: [Feet], protection: 0.2, layer: Outer)), color: (0.9, 0.9, 0.9)),
     (id: "work_boots", name: "Work boots", category: Clothing, weight_kg: 1.4, volume_l: 3.0,
         clothing: Some((covers: [Feet, Legs], protection: 0.5, layer: Outer)), color: (0.35, 0.25, 0.15)),
+
+    // ---- Accessories (clothing that takes a place on the body: Face, HeadTop, Neck) -------------
+    (id: "glasses", name: "Glasses", category: Clothing, weight_kg: 0.03, volume_l: 0.1,
+        clothing: Some((takes: [Face], layer: Base)), model: Some("glasses"), color: (0.05, 0.05, 0.06)),
+    (id: "baseball_cap", name: "Baseball cap", category: Clothing, weight_kg: 0.1, volume_l: 0.5,
+        clothing: Some((covers: [Head], takes: [HeadTop], protection: 0.03, layer: Outer)), color: (0.55, 0.15, 0.12)),
+    (id: "beanie", name: "Beanie", category: Clothing, weight_kg: 0.08, volume_l: 0.3, tags: ["rippable"],
+        clothing: Some((covers: [Head], takes: [HeadTop], protection: 0.04, layer: Outer)), color: (0.18, 0.2, 0.25)),
+    (id: "woolly_hat", name: "Woolly hat", category: Clothing, weight_kg: 0.12, volume_l: 0.5, tags: ["rippable"],
+        clothing: Some((covers: [Head], takes: [HeadTop], protection: 0.05, layer: Outer)), color: (0.6, 0.45, 0.25)),
+    (id: "scarf", name: "Scarf", category: Clothing, weight_kg: 0.2, volume_l: 0.6, tags: ["rippable"],
+        clothing: Some((takes: [Neck], protection: 0.0, layer: Outer)), color: (0.5, 0.18, 0.15)),
 
     // ---- Bags ----------------------------------------------------------------------------------
     (id: "plastic_bag", name: "Plastic bag", category: Bag, weight_kg: 0.02, volume_l: 0.05, stack: 10,

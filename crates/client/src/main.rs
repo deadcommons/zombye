@@ -34,6 +34,8 @@
 //!
 //! `--crowd-vat PATH` (or `ZOMBYE_CROWD_VAT=PATH`) draws the zombies with a character baked by
 //! `tools/blender/zvat.py` instead of the grey-box (`none` forces the grey-box); see `zombie_render.rs`.
+//! `--survivor PATH` (or `ZOMBYE_SURVIVOR=PATH`) draws survivors as a modular character's body GLB
+//! (or the `*_body.glb` in a folder) with its wearables; see `survivor_model.rs`.
 //!
 //! Sound (`audio.rs`): `--mute` starts with it off, `--volume V` sets the master volume (0..2,
 //! default 1), M mutes and unmutes.
@@ -41,6 +43,7 @@
 mod audio;
 mod autoplay;
 mod camera;
+mod character;
 mod daynight;
 mod death;
 mod fog;
@@ -60,6 +63,7 @@ mod saving;
 mod server_link;
 mod skills_ui;
 mod survivor;
+mod survivor_model;
 mod world_render;
 mod zombie_render;
 mod zvat;
@@ -135,6 +139,14 @@ pub struct Options {
     /// Draw the crowd with this baked character (`--crowd-vat PATH`, else `ZOMBYE_CROWD_VAT`; `none`
     /// for the grey-box). See `zombie_render.rs`.
     pub crowd_vat: Option<String>,
+    /// Draw survivors as this modular character (`--survivor PATH`, a body GLB or a folder with one,
+    /// else `ZOMBYE_SURVIVOR`; `none` for the grey-box). See `survivor_model.rs`.
+    pub survivor: Option<String>,
+    /// With `--render-to`: time this many frames after the picture (`--frame-times N`, see `offscreen.rs`).
+    pub frame_times: u32,
+    /// Hold our survivor in one pose, for reviewing animation in offscreen pictures (`--pose
+    /// walk:0.3`, see `survivor.rs`).
+    pub pose: Option<String>,
     /// Start with the sound off (`--mute`; M toggles it).
     pub mute: bool,
     /// Master volume (`--volume V`, 0..2, default 1).
@@ -203,6 +215,9 @@ impl Options {
             size: value("--size").and_then(|v| parse_size(&v)).unwrap_or(DEFAULT_RENDER_SIZE),
             center: value("--center").and_then(|v| parse_point(&v)),
             crowd_vat: value("--crowd-vat"),
+            survivor: value("--survivor"),
+            frame_times: value("--frame-times").and_then(|v| v.parse().ok()).unwrap_or(0).min(10_000),
+            pose: value("--pose"),
             mute: flag("--mute"),
             volume: value("--volume").and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite()).map_or(1.0, |v| v.clamp(0.0, 2.0)),
         }
