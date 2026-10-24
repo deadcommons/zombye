@@ -28,3 +28,11 @@ opt-level = 3
 [profile.release]
 codegen-units = 1
 lto = "thin"
+
+# Playtesting: release speed in game, but our crates rebuild in seconds, not minutes (many codegen
+# units, no LTO, incremental). `cargo run -p zombye-client --profile play -- ...`
+[profile.play]
+inherits = "release"
+codegen-units = 16
+lto = false
+incremental = true

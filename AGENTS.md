@@ -71,6 +71,7 @@ cargo run -p zombye-server --release -- --bench --ticks 400 --map-chunks 64 --zo
 # ...and time saving and loading that world (size, ms, and that the hash matches after load and 100 more ticks)
 cargo run -p zombye-server --release -- --bench --ticks 200 --map-chunks 64 --zombies 21500 --players 1 --horde 1000 --save-bench
 cargo run -p zombye-client --release -- --zombies 1000          # the game window
+cargo run -p zombye-client --profile play -- --zombies 1000     # the same, rebuilding in seconds after a change (for playtesting)
 cargo run -p zombye-client --release -- --zombies 2000 --novsync --screenshot shot.png --exit-after 8
 cargo run -p zombye-client --release -- --fight-demo --autoplay --zoom 9 --screenshot fight.png --screenshot-after 2.5,4,6 --exit-after 7
 # One picture of a save, rendered offscreen: no window opens, nothing takes focus (about 0.5 s plus loading)
