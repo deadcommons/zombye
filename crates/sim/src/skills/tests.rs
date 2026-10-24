@@ -405,6 +405,9 @@ fn skills_save_and_load_in_lockstep() {
     let id = w.add_player(w.player_spawn);
     let out = w.map.resolve_circle(w.player_spawn + Vec2::new(6.0, 3.0), 0.3);
     w.add_zombie(out, 0.0, 1.0);
+    // Knocked down for the whole test, so it's never after the player whatever it could see from
+    // where it lies (sneaking past it still earns Stealth).
+    (w.zombies.state[0], w.zombies.timer[0]) = (ZombieState::Down, 600.0);
     for (k, s) in Skill::ALL.into_iter().enumerate() {
         w.award_xp(0, s, 37.5 * k as f32 + 0.25);
     }
