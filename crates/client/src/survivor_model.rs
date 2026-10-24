@@ -19,7 +19,8 @@
 //! covers, an accessory or a bag is a box on its socket (`eyes`, `head_top`, `neck`, `back`).
 //!
 //! **Telling players apart:** a flat ring on the ground round each survivor, ours mustard, others
-//! teal (the grey-box's jacket colours).
+//! teal (the grey-box's jacket colours). Unlit, but dimmed with the daylight to [`RING_NIGHT`] of
+//! its colour at night (light comes only from sources: a ring mustn't glow in the dark).
 //!
 //! **Files:** the body is `--survivor PATH` (a body GLB, or a folder holding a `*_body.glb`, such as
 //! a character's `export/` folder in the art repo), else `ZOMBYE_SURVIVOR` (the MCP `screenshot`
@@ -48,6 +49,9 @@ use crate::survivor::{
     self, FARM_L, FARM_R, HAND_R, HEAD, HIP, HeldWeapon, JACKET_ME, JACKET_OTHER, PELVIS, SHIN_L, SHIN_R, SPose, Style, SurvivorAnim, THIGH_L,
     THIGH_R, TORSO, UARM_L, UARM_R, UPPER,
 };
+
+/// How bright the marker rings are at night, of their daytime colour.
+const RING_NIGHT: f32 = 0.15;
 
 /// The body file, when `--survivor` / `ZOMBYE_SURVIVOR` don't name one.
 const DEFAULT_BODY: &str = "survivor_01";
@@ -580,6 +584,22 @@ type OutfitKey = (Vec<u16>, Option<u16>, Option<u16>);
 /// Outfits already built, by what's worn: (body, outfit).
 #[derive(Default)]
 pub(crate) struct OutfitMeshes(HashMap<OutfitKey, (Handle<Mesh>, Option<Handle<Mesh>>)>);
+
+/// Dim the marker rings with the daylight ([`RING_NIGHT`] at night).
+pub(crate) fn dim_rings(daylight: Option<Res<crate::daynight::Daylight>>, model: Option<Res<SurvivorModel>>, mut materials: ResMut<Assets<StandardMaterial>>, mut last: Local<Option<f32>>) {
+    let (Some(daylight), Some(model)) = (daylight, model) else { return };
+    let k = RING_NIGHT + (1.0 - RING_NIGHT) * daylight.0.clamp(0.0, 1.0);
+    if last.is_some_and(|l| (l - k).abs() < 0.005) {
+        return;
+    }
+    *last = Some(k);
+    for (handle, colour) in [(&model.ring_me, JACKET_ME), (&model.ring_other, JACKET_OTHER)] {
+        if let Some(mut m) = materials.get_mut(handle) {
+            let c = colour.to_linear();
+            m.base_color = Color::LinearRgba(LinearRgba::new(c.red * k, c.green * k, c.blue * k, 0.75));
+        }
+    }
+}
 
 /// Dress every survivor as the snapshot says, the moment it changes.
 pub(crate) fn dress_survivors(

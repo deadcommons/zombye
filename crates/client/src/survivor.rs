@@ -344,7 +344,7 @@ pub struct SurvivorPlugin;
 
 impl Plugin for SurvivorPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (animate_survivors, show_held_weapons, crate::survivor_model::dress_survivors));
+        app.add_systems(Update, (animate_survivors, show_held_weapons, crate::survivor_model::dress_survivors, crate::survivor_model::dim_rings));
     }
 }
 
