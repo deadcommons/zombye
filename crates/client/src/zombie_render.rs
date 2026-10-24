@@ -1,20 +1,20 @@
 //! Zombie crowd rendering with vertex animation textures (VAT).
 //!
-//! Every zombie shares one mesh and one material, so Bevy draws the whole horde as one instanced
-//! batch. Animation happens entirely on the GPU: each clip's poses are baked into a float texture
-//! (one column per vertex, one row per frame), and the vertex shader reads the right rows from the
-//! per-instance [`MeshTag`] (clip, phase, outfit, speed, and the clip it's fading from) plus the
-//! global time. Switching between looping clips (idle, walk, attack, thump) crossfades over
-//! [`FADE_SECS`]; one-shot clips are authored to start and end near the looping poses instead.
-//! Zombies the server no longer lists (corpses it cleared away) are despawned.
+//! Every zombie of one outfit variant shares one mesh and one material, so Bevy draws the horde as one
+//! instanced batch per variant. Animation happens entirely on the GPU: each clip's poses are baked into
+//! a float texture (one column per vertex, one row per frame), and the vertex shader reads the right rows
+//! from the per-instance [`MeshTag`] (clip, phase, outfit, speed, and what it's fading from) plus the
+//! global time. Every clip change crossfades over [`FADE_SECS`]: between looping clips (idle, walk,
+//! attack, thump) both keep playing; into or out of a one-shot the old clip is held where it was
+//! ([`Fade`], [`Play`]). Zombies the server no longer lists (corpses it cleared away) are despawned.
 //!
-//! The character is either a `.zvat` baked offline by `tools/blender/zvat.py` (a textured mesh and its
-//! clips, see [`crate::zvat`]), or, when there is none, a grey-box low-poly zombie built and baked
-//! here at startup. Which one: `--crowd-vat PATH`, else `ZOMBYE_CROWD_VAT`, else the first
-//! `assets/models/characters/*.zvat` by name (where a promoted one goes); `none` (or a file that
-//! won't load, with a warning) means the grey-box. A baked file's clips go into [`CLIPS`]' slots by name; the slots it
-//! has no clip for get stand-ins made from what it has ([`Source`], [`sources`]), so every anim plays
-//! something sensible and nothing T-poses.
+//! The character is either one or more `.zvat`s baked offline by `tools/blender/zvat.py` (a textured mesh
+//! and its clips each, see [`crate::zvat`]; several are outfit variants, worn by zombie id), or, when there
+//! is none, a grey-box low-poly zombie built and baked here at startup. Which: `--crowd-vat`, else
+//! `ZOMBYE_CROWD_VAT` (a file, a folder, or a list), else every `assets/models/characters/*.zvat` by name
+//! (where promoted ones go); `none` (or no file that loads, with a warning) means the grey-box. A baked
+//! file's clips go into [`CLIPS`]' slots by name; the slots it has no clip for get stand-ins made from what
+//! it has ([`Source`], [`sources`]), so every anim plays something sensible and nothing T-poses.
 
 use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
@@ -104,12 +104,6 @@ impl Material for ZombieMaterial {
     }
 }
 
-#[derive(Resource)]
-struct ZombieAssets {
-    mesh: Handle<Mesh>,
-    material: Handle<ZombieMaterial>,
-}
-
 /// Sim zombie id → render entity.
 #[derive(Resource, Default)]
 struct ZombieEntities(HashMap<u32, Tracked>);
@@ -184,7 +178,14 @@ enum Clip {
     DieBack = 8,
     DieFront = 9,
     DieDown = 10,
+    /// A second, smaller reel: a stagger plays one or the other, picked per hit ([`Tracked::set_anim`]).
+    Stagger2 = 11,
+    /// A roar on the spot. Baked and ready, not played yet: the sim's groans aren't in the snapshots.
+    Groan = 12,
 }
+
+/// How many clip slots there are (the shader's table has room for 16: 4 tag bits).
+const SLOTS: usize = 13;
 
 /// Hip height at rest (the pelvis pivot).
 const HIP: f32 = 0.9;
@@ -351,6 +352,31 @@ fn pose(clip: Clip, t: f32) -> ZPose {
             // Finished off on the ground: the arms drop.
             p = pose(Clip::Down, 0.0).blend(&limp_on_back(), smooth(0.0, 1.0, t));
         }
+        Clip::Stagger2 => {
+            // A smaller flinch to one side, recovering quickly.
+            let k = if t < 0.25 { smooth(0.0, 0.25, t) } else { 1.0 - smooth(0.25, 1.0, t) };
+            let mut peak = ZPose::default();
+            peak.rot[TORSO] = rx(-0.15) * rz(-0.25);
+            peak.rot[HEAD] = rx(-0.3) * rz(0.3);
+            peak.rot[ARM_L] = rx(-0.6) * rz(0.3);
+            peak.rot[ARM_R] = rx(-0.5) * rz(-0.5);
+            peak.rot[LEG_R] = rx(0.2);
+            peak.offset = Vec3::new(0.05, -0.04, -0.06);
+            p = reach().blend(&peak, k);
+        }
+        Clip::Groan => {
+            // Head thrown back, chest out, arms spread: a roar, then back to reaching.
+            let k = (t * PI).sin().max(0.0).powf(0.7);
+            let mut peak = ZPose::default();
+            peak.rot[TORSO] = rx(-0.2);
+            peak.rot[HEAD] = rx(-0.6);
+            peak.rot[ARM_L] = rx(-0.5) * rz(0.6);
+            peak.rot[ARM_R] = rx(-0.5) * rz(-0.6);
+            peak.rot[LEG_L] = rx(-0.1);
+            peak.rot[LEG_R] = rx(0.1);
+            peak.offset.y = -0.06;
+            p = reach().blend(&peak, k);
+        }
     }
     p
 }
@@ -358,7 +384,7 @@ fn pose(clip: Clip, t: f32) -> ZPose {
 /// Clip layout in the VAT: (clip, frames, loops/s at fixed rate, stride metres or 0, one-shot
 /// length in seconds or 0 = looping). Looping clips with a stride play at the zombie's speed /
 /// stride, so feet don't slide. One-shots are timed by the client from when the anim changed.
-const CLIPS: [(Clip, u32, f32, f32, f32); 11] = [
+const CLIPS: [(Clip, u32, f32, f32, f32); SLOTS] = [
     (Clip::Idle, 24, 0.35, 0.0, 0.0),
     (Clip::Walk, 24, 0.0, 1.1, 0.0),
     (Clip::Attack, 16, 1.3, 0.0, 0.0),
@@ -370,14 +396,31 @@ const CLIPS: [(Clip, u32, f32, f32, f32); 11] = [
     (Clip::DieBack, 14, 0.0, 0.0, 0.75),
     (Clip::DieFront, 14, 0.0, 0.0, 0.85),
     (Clip::DieDown, 8, 0.0, 0.0, 0.4),
+    (Clip::Stagger2, 14, 0.0, 0.0, 0.6),
+    (Clip::Groan, 24, 0.0, 0.0, 2.0),
 ];
 
 const STAGGER_SECS: f32 = 0.8;
 const FALL_SECS: f32 = 0.5;
 const DOWN_RATE: f32 = 0.6;
 
-fn clip_secs(clip: Clip) -> f32 {
-    CLIPS[clip as usize].4
+/// How long a baked character's one-shots play at most (seconds): its own length, sped up to fit.
+/// The sim decides how long a stagger lasts (0.6-0.9 s; past it the clip crossfades into the next one)
+/// and that a downed zombie is stompable at once, so the fall gets him onto the floor in about half a
+/// second; a killed one is out of the crowd at once, so the deaths don't stand about. The get-up plays
+/// over exactly the sim's [`GET_UP_SECS`].
+fn baked_max_secs(clip: Clip) -> f32 {
+    match clip {
+        Clip::Stagger => 1.0,
+        Clip::Stagger2 => 0.9,
+        Clip::Fall => 1.3,
+        Clip::GetUp => GET_UP_SECS,
+        Clip::DieBack => 2.0,
+        Clip::DieFront => 1.5,
+        Clip::DieDown => 1.7,
+        Clip::Groan => 3.0,
+        _ => f32::MAX,
+    }
 }
 
 /// Corners of the box every pose of the grey-box fits in (lying down reaches well past the standing
@@ -396,6 +439,8 @@ struct Baked {
     width: u32,
     rows: u32,
     clips: [Vec4; 16],
+    /// Seconds each one-shot slot plays over (0 for the loops).
+    play: [f32; 16],
     /// The box every frame fits in (the mesh's culling bounds).
     #[cfg_attr(not(test), allow(dead_code))]
     bounds: [Vec3; 2],
@@ -468,10 +513,12 @@ fn build_zombie() -> Baked {
     let rows: u32 = CLIPS.iter().map(|c| c.1).sum();
     let mut texels: Vec<Vec3> = Vec::with_capacity((width * rows) as usize);
     let mut clips = [Vec4::ZERO; 16];
+    let mut play = [0.0; 16];
     let mut row = 0u32;
     for (clip, frames, rate, stride, secs) in CLIPS {
         // w < 0 marks a one-shot clip (its last frame is its final pose, no wrapping).
         clips[clip as usize] = Vec4::new(row as f32, frames as f32, rate, if secs > 0.0 { -1.0 } else { stride });
+        play[clip as usize] = secs;
         for f in 0..frames {
             let t = if secs > 0.0 { f as f32 / (frames - 1).max(1) as f32 } else { f as f32 / frames as f32 };
             let m = skin_matrices(&BONES, &pose(clip, t));
@@ -481,7 +528,7 @@ fn build_zombie() -> Baked {
         row += frames;
     }
     let mesh = finish_mesh(positions, vat, uvs, indices, POSE_BOUNDS);
-    Baked { mesh, texels, width, rows, clips, bounds: POSE_BOUNDS }
+    Baked { mesh, texels, width, rows, clips, play, bounds: POSE_BOUNDS }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -502,6 +549,8 @@ fn clip_name(clip: Clip) -> &'static str {
         Clip::DieBack => "dieback",
         Clip::DieFront => "diefront",
         Clip::DieDown => "diedown",
+        Clip::Stagger2 => "stagger2",
+        Clip::Groan => "groan",
     }
 }
 
@@ -532,7 +581,7 @@ fn base_clip(z: &Zvat) -> usize {
 }
 
 /// The source of every slot for `z`, by [`Clip`] index.
-fn sources(z: &Zvat) -> [Source; 11] {
+fn sources(z: &Zvat) -> [Source; SLOTS] {
     let base = base_clip(z);
     CLIPS.map(|(clip, ..)| match (z.clip(clip_name(clip)), clip) {
         (Some(i), _) => Source::File(i),
@@ -550,6 +599,10 @@ fn rigid_motion(clip: Clip, t: f32) -> Mat4 {
     if clip == Clip::Stagger {
         let k = if t < 0.18 { smooth(0.0, 0.18, t) } else { 1.0 - smooth(0.18, 1.0, t) };
         return Mat4::from_translation(Vec3::new(0.0, 0.0, -0.14 * k)) * Mat4::from_quat(rx(-0.25 * k));
+    }
+    if clip == Clip::Stagger2 {
+        let k = if t < 0.25 { smooth(0.0, 0.25, t) } else { 1.0 - smooth(0.25, 1.0, t) };
+        return Mat4::from_translation(Vec3::new(0.04 * k, 0.0, -0.06 * k)) * Mat4::from_quat(rz(-0.12 * k));
     }
     skin_matrices(&BONES, &pose(clip, t))[PELVIS]
 }
@@ -577,6 +630,7 @@ fn build_baked(z: &Zvat) -> Result<Baked, String> {
 
     let mut frames_out: Vec<Vec3> = Vec::new();
     let mut clips = [Vec4::ZERO; 16];
+    let mut play = [0.0; 16];
     // Where each file clip's frames went, so a clip used twice is stored once.
     let mut file_rows: Vec<Option<u32>> = vec![None; z.clips.len()];
     let mut row = 0u32;
@@ -593,7 +647,10 @@ fn build_baked(z: &Zvat) -> Result<Baked, String> {
                 });
                 let own = matches!(src[slot], Source::File(_));
                 let w = if one_shot { -1.0 } else if own { c.stride } else { 0.0 };
-                let rate = if clip == Clip::Down { DOWN_RATE } else if w != 0.0 { 0.0 } else { 1.0 / c.secs };
+                let rate = if w != 0.0 { 0.0 } else { 1.0 / c.secs };
+                if one_shot {
+                    play[slot] = if clip == Clip::GetUp { GET_UP_SECS } else { c.secs.min(baked_max_secs(clip)) };
+                }
                 Vec4::new(first as f32, c.frames as f32, rate, w)
             }
             Source::Leaned(i, lean) => {
@@ -607,6 +664,7 @@ fn build_baked(z: &Zvat) -> Result<Baked, String> {
                 Vec4::new(first as f32, c.frames as f32, 1.0 / c.secs, 0.0)
             }
             Source::Rigid => {
+                play[slot] = secs;
                 for f in 0..frames {
                     let t = if one_shot { f as f32 / (frames - 1).max(1) as f32 } else { f as f32 / frames as f32 };
                     frames_out.extend(moved(base, rigid_motion(clip, t), ground));
@@ -634,27 +692,35 @@ fn build_baked(z: &Zvat) -> Result<Baked, String> {
     let positions: Vec<[f32; 3]> = base.iter().map(|p| p.to_array()).collect();
     let vat: Vec<[f32; 2]> = (0..v).map(|i| [i as f32, Kind::Textured as u32 as f32]).collect();
     let mesh = finish_mesh(positions, vat, z.uvs.clone(), z.indices.clone(), bounds);
-    Ok(Baked { mesh, texels, width, rows: row, clips, bounds })
+    Ok(Baked { mesh, texels, width, rows: row, clips, play, bounds })
 }
 
-/// The `.zvat` to draw the crowd with, if any: `--crowd-vat PATH`, else `ZOMBYE_CROWD_VAT`, else
-/// the first `.zvat` by name in `<data>/../models/characters` (assets/models/characters, where a
-/// promoted crowd character goes as `<id>.zvat`). `none` (or an empty value) asks for the grey-box.
-fn crowd_vat_path(options: &Options) -> Option<PathBuf> {
+/// The `.zvat`s to draw the crowd with (its outfit variants), in order: `--crowd-vat`, else
+/// `ZOMBYE_CROWD_VAT`, else every `.zvat` by name in `<data>/../models/characters`
+/// (assets/models/characters, where promoted crowd characters go as `<id>.zvat`). The value is a file,
+/// a folder (every `.zvat` in it by name), or several of them separated by `,` (or the system's path
+/// separator, `:` here). `none` (or an empty value) asks for the grey-box.
+fn crowd_vat_paths(options: &Options) -> Vec<PathBuf> {
     let asked = options.crowd_vat.clone().or_else(|| std::env::var("ZOMBYE_CROWD_VAT").ok());
     match asked {
-        Some(p) if p.is_empty() || p.eq_ignore_ascii_case("none") => None,
-        Some(p) => Some(p.into()),
-        None => first_zvat(&options.data.join("../models/characters")),
+        Some(p) if p.trim().is_empty() || p.trim().eq_ignore_ascii_case("none") => Vec::new(),
+        Some(p) => p
+            .split(',')
+            .flat_map(|part| std::env::split_paths(part.trim()).collect::<Vec<_>>())
+            .filter(|p| !p.as_os_str().is_empty())
+            .flat_map(|p| if p.is_dir() { zvats_in(&p) } else { vec![p] })
+            .collect(),
+        None => zvats_in(&options.data.join("../models/characters")),
     }
 }
 
-/// The first `*.zvat` in `dir` by file name.
-fn first_zvat(dir: &Path) -> Option<PathBuf> {
-    let mut found: Vec<PathBuf> =
-        std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "zvat")).collect();
+/// Every `*.zvat` in `dir`, by file name.
+fn zvats_in(dir: &Path) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map(|d| d.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "zvat")).collect())
+        .unwrap_or_default();
     found.sort();
-    found.into_iter().next()
+    found
 }
 
 /// A baked crowd character, its texture (if one was found) and a line saying what was loaded, or
@@ -684,6 +750,32 @@ fn load_baked(path: &Path) -> Result<(Baked, Option<Image>, String), String> {
     Ok((baked, texture, summary))
 }
 
+/// One outfit variant of the crowd: its own mesh, VAT and texture (one instanced batch each).
+struct Variant {
+    mesh: Handle<Mesh>,
+    material: Handle<ZombieMaterial>,
+    timing: Timing,
+}
+
+/// What the client needs of a variant's clip table to time its clips.
+#[derive(Clone, Copy, Debug)]
+struct Timing {
+    /// As [`VatSettings::clips`].
+    clips: [Vec4; 16],
+    /// Seconds each one-shot plays over.
+    play: [f32; 16],
+}
+
+#[derive(Resource)]
+struct ZombieAssets {
+    variants: Vec<Variant>,
+}
+
+/// Which outfit variant zombie `id` wears (of `n`): by a hash of its id, so it never changes.
+fn variant_of(id: u32, n: usize) -> usize {
+    (id.wrapping_mul(0x85EB_CA6B).rotate_right(13) as usize) % n.max(1)
+}
+
 fn setup_zombie_assets(
     mut commands: Commands,
     options: Res<Options>,
@@ -691,27 +783,37 @@ fn setup_zombie_assets(
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<ZombieMaterial>>,
 ) {
-    let loaded = crowd_vat_path(&options).and_then(|path| match load_baked(&path) {
-        Ok(l) => Some(l),
-        Err(e) => {
-            warn!("crowd character {} not loaded ({e}): drawing the grey-box", path.display());
-            None
-        }
-    });
-    let (baked, texture) = match loaded {
-        Some((baked, texture, summary)) => {
-            info!("{summary}");
-            // Untextured: a plain zombie grey-green, still tinted per outfit.
-            (baked, texture.unwrap_or_else(|| zvat::mipmapped(1, 1, &[96, 104, 84, 255])))
-        }
-        None => (build_zombie(), zvat::mipmapped(1, 1, &[255, 255, 255, 255])),
-    };
-    let material = materials.add(ZombieMaterial {
-        vat: images.add(baked.image()),
-        settings: VatSettings { clips: baked.clips, sun: Vec4::new(0.4, 0.8, 0.3, 1.0), sun_color: Vec4::ONE, ambient: Vec4::splat(0.5) },
-        base_color: images.add(texture),
-    });
-    commands.insert_resource(ZombieAssets { mesh: meshes.add(baked.mesh), material });
+    let mut loaded: Vec<(Baked, Image)> = crowd_vat_paths(&options)
+        .into_iter()
+        .filter_map(|path| match load_baked(&path) {
+            Ok((baked, texture, summary)) => {
+                info!("{summary}");
+                // Untextured: a plain zombie grey-green, still tinted per outfit.
+                Some((baked, texture.unwrap_or_else(|| zvat::mipmapped(1, 1, &[96, 104, 84, 255]))))
+            }
+            Err(e) => {
+                warn!("crowd character {} not loaded ({e}): left out", path.display());
+                None
+            }
+        })
+        .collect();
+    if loaded.is_empty() {
+        loaded.push((build_zombie(), zvat::mipmapped(1, 1, &[255, 255, 255, 255])));
+    } else {
+        info!("crowd: {} outfit variant(s), each zombie wears one by its id", loaded.len());
+    }
+    let variants = loaded
+        .into_iter()
+        .map(|(baked, texture)| {
+            let material = materials.add(ZombieMaterial {
+                vat: images.add(baked.image()),
+                settings: VatSettings { clips: baked.clips, sun: Vec4::new(0.4, 0.8, 0.3, 1.0), sun_color: Vec4::ONE, ambient: Vec4::splat(0.5) },
+                base_color: images.add(texture),
+            });
+            Variant { mesh: meshes.add(baked.mesh), material, timing: Timing { clips: baked.clips, play: baked.play } }
+        })
+        .collect();
+    commands.insert_resource(ZombieAssets { variants });
     commands.init_resource::<ZombieEntities>();
 }
 
@@ -721,44 +823,95 @@ fn is_loop(clip: Clip) -> bool {
     (clip as u8) < 4
 }
 
-/// How long a switch between looping clips crossfades.
+/// How long a switch from one clip to another crossfades.
 const FADE_SECS: f32 = 0.2;
 
+/// A zombie's loop phase (fraction of a cycle, in 64ths), from its id, so a crowd doesn't step in time.
+fn phase_of(id: u32) -> u32 {
+    (id.wrapping_mul(0x9E37_79B9) >> 8) & 63
+}
+
+/// A speed as the tag carries it: 1/48 m/s steps, at most 255.
+fn speed_steps(speed: f32) -> u32 {
+    ((speed * 48.0).round() as u32).min(255)
+}
+
+/// Where in its cycle (0..1) a looping clip `c` (a [`VatSettings::clips`] entry) is at shader time `t`
+/// (`Time::elapsed_secs_wrapped`, what `globals.time` is), as `sample_loop` in zombie_vat.wesl works it out.
+fn loop_position(c: Vec4, phase: u32, speed: u32, t: f32) -> f32 {
+    let rate = if c.w > 0.0 { speed as f32 / 48.0 / c.w } else { c.z };
+    (t * rate + phase as f32 / 64.0).rem_euclid(1.0)
+}
+
+/// How a zombie's clip is played this frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Play {
+    /// A looping clip on the shader's clock, maybe fading from another looping clip (with this much of
+    /// it still showing).
+    Loop { fade: Option<(Clip, f32)> },
+    /// At a position chosen here (0..1: a one-shot's first to last frame, or a loop's cycle), maybe
+    /// fading from another clip held at a position (clip, its position, how much of it still shows).
+    Direct { pos: f32, fade: Option<(Clip, f32, f32)> },
+}
+
 /// Pack per-instance data for the shader. Must match `vertex` in zombie_vat.wesl:
-/// bits 0-3 clip, 4-9 outfit, 10 one-shot/direct, 27 hit flash; then either (looping clips) 11-16
-/// phase, 17-24 speed (×1/48 m/s), 25-26 the looping clip it's fading from and 28-31 how much of
-/// that clip is still showing (0 = none, 15 = all), or (direct) 11-26 the clip position in 0..1.
-fn pack_tag(id: u32, clip: Clip, position: Option<f32>, speed: f32, flash: bool, fade: Option<(Clip, f32)>) -> u32 {
-    let h = id.wrapping_mul(0x9E37_79B9);
-    let outfit = (h >> 20) & 63;
-    let mut tag = (clip as u32 & 15) | (outfit << 4) | ((flash as u32) << 27);
-    match position {
-        Some(p) => tag |= (1 << 10) | (((p.clamp(0.0, 1.0) * 65535.0).round() as u32) << 11),
-        None => {
-            let phase = (h >> 8) & 63;
-            let speed = ((speed * 48.0).round() as u32).min(255);
-            tag |= (phase << 11) | (speed << 17);
+/// bits 0-3 clip, 4-9 outfit, 10 direct, 11 hit flash; then either (looping) 12-17 phase, 18-25 speed
+/// (×1/48 m/s), 26-27 the looping clip it's fading from and 28-31 how much of it still shows (0 = none,
+/// 15 = all), or (direct) 12-19 the clip position (/255), 20-23 the clip it's fading from, 24-28 that
+/// clip's held position (/31) and 29-31 how much of it still shows (/7).
+fn pack_tag(id: u32, clip: Clip, play: Play, speed: f32, flash: bool) -> u32 {
+    let outfit = (id.wrapping_mul(0x9E37_79B9) >> 20) & 63;
+    let mut tag = (clip as u32 & 15) | (outfit << 4) | ((flash as u32) << 11);
+    let q = |x: f32, steps: u32| ((x.clamp(0.0, 1.0) * steps as f32).round() as u32).min(steps);
+    match play {
+        Play::Direct { pos, fade } => {
+            tag |= (1 << 10) | (q(pos, 255) << 12);
+            if let Some((from, at, w)) = fade.filter(|f| f.0 != clip || f.1 != pos) {
+                let w = q(w, 7);
+                if w > 0 {
+                    tag |= ((from as u32 & 15) << 20) | (q(at, 31) << 24) | (w << 29);
+                }
+            }
+        }
+        Play::Loop { fade } => {
+            tag |= (phase_of(id) << 12) | (speed_steps(speed) << 18);
             if let Some((from, w)) = fade.filter(|(from, _)| is_loop(*from) && *from != clip) {
-                let w = ((w.clamp(0.0, 1.0) * 15.0).round() as u32).min(15);
-                tag |= ((from as u32 & 3) << 25) | (w << 28);
+                tag |= ((from as u32 & 3) << 26) | (q(w, 15) << 28);
             }
         }
     }
     tag
 }
 
+/// What a zombie fades from after its clip changed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Fade {
+    /// A looping clip into a looping clip: the old one keeps playing on the shader's clock as it fades.
+    Loop(Clip),
+    /// Into or out of a one-shot (or the ground loop): the old clip held where it was, at that position.
+    Held(Clip, f32),
+}
+
 /// Render-side state of one zombie: what it's playing since when, and recent blows.
 struct Tracked {
+    id: u32,
     entity: Entity,
+    /// Its outfit variant (index into [`ZombieAssets::variants`]).
+    variant: usize,
     anim: ZombieAnim,
     /// When `anim` started (seconds, `Time` clock).
     since: f32,
-    /// The looping clip it was playing before `anim`, if it's fading from one.
-    fade_from: Option<Clip>,
+    /// What it's fading from since `since`, if anything.
+    fade_from: Option<Fade>,
+    /// Its speed, in the tag's steps (the walk's rate follows it).
+    speed: u32,
     /// The snapshot tick it was last listed in.
     seen: u64,
     /// Which fall a death plays (picked when it dies).
     death: Clip,
+    /// Which reel a stagger plays (picked per stagger), and how many it has had.
+    stagger: Clip,
+    staggers: u32,
     flash_until: f32,
     /// Direction and time of the last blow, for the kickback and which way it falls.
     blow: Vec2,
@@ -771,37 +924,63 @@ const KICK_M: f32 = 0.16;
 const KICK_SECS: f32 = 0.22;
 
 impl Tracked {
+    fn new(id: u32, variant: usize, anim: ZombieAnim, since: f32, speed: f32, seen: u64) -> Self {
+        Tracked {
+            id,
+            entity: Entity::PLACEHOLDER,
+            variant,
+            anim,
+            since,
+            fade_from: None,
+            speed: speed_steps(speed),
+            seen,
+            death: Clip::DieBack,
+            stagger: Clip::Stagger,
+            staggers: 0,
+            flash_until: 0.0,
+            blow: Vec2::ZERO,
+            blow_at: -100.0,
+        }
+    }
+
     /// The clip to play now, and its position for one-shots (and the ground loop, which must start
     /// where the fall ended).
-    fn clip(&self, now: f32) -> (Clip, Option<f32>) {
+    fn clip(&self, now: f32, tm: &Timing) -> (Clip, Option<f32>) {
         let e = (now - self.since).max(0.0);
-        let once = |c: Clip| (c, Some(e / clip_secs(c)));
+        let once = |c: Clip| (c, Some((e / tm.play[c as usize].max(1e-3)).min(1.0)));
+        let fall = tm.play[Clip::Fall as usize];
         match self.anim {
             ZombieAnim::Idle => (Clip::Idle, None),
             ZombieAnim::Walk => (Clip::Walk, None),
             ZombieAnim::Attack => (Clip::Attack, None),
             ZombieAnim::Thump => (Clip::Thump, None),
-            ZombieAnim::Stagger => once(Clip::Stagger),
-            ZombieAnim::Down if e < FALL_SECS => once(Clip::Fall),
-            ZombieAnim::Down => (Clip::Down, Some(((e - FALL_SECS) * DOWN_RATE).fract())),
+            ZombieAnim::Stagger => once(self.stagger),
+            ZombieAnim::Down if e < fall => once(Clip::Fall),
+            ZombieAnim::Down => (Clip::Down, Some(((e - fall) * tm.clips[Clip::Down as usize].z).fract())),
             ZombieAnim::GetUp => once(Clip::GetUp),
             ZombieAnim::Dead => once(self.death),
         }
     }
 
-    /// The looping clip it's fading from and how much of it still shows, while a crossfade lasts.
-    fn fade(&self, now: f32) -> Option<(Clip, f32)> {
-        let e = now - self.since;
-        self.fade_from.filter(|_| e < FADE_SECS).map(|c| (c, 1.0 - e / FADE_SECS))
+    /// The clip showing now and where in it (a loop's position from the shader clock `t`).
+    fn showing(&self, now: f32, t: f32, tm: &Timing) -> (Clip, f32) {
+        let (clip, pos) = self.clip(now, tm);
+        (clip, pos.unwrap_or_else(|| loop_position(tm.clips[clip as usize], phase_of(self.id), self.speed, t)))
     }
 
-    /// Switch to a new anim from the snapshot.
-    fn set_anim(&mut self, anim: ZombieAnim, facing: f32, now: f32) {
-        // Fade from one looping clip into another (from the one mostly showing, if mid-fade).
-        let (old, _) = self.clip(now);
-        let showing = match self.fade(now) {
-            Some((from, w)) if w > 0.5 => from,
-            _ => old,
+    /// What it's fading from and how much of it still shows, while a crossfade lasts.
+    fn fade(&self, now: f32) -> Option<(Fade, f32)> {
+        let e = now - self.since;
+        self.fade_from.filter(|_| e < FADE_SECS).map(|f| (f, 1.0 - e / FADE_SECS))
+    }
+
+    /// Switch to a new anim from the snapshot at `now` (shader clock `t`).
+    fn set_anim(&mut self, anim: ZombieAnim, facing: f32, now: f32, t: f32, tm: &Timing) {
+        // Fade from what is showing (the clip mostly showing, if mid-fade).
+        let (old, at) = match self.fade(now) {
+            Some((Fade::Loop(from), w)) if w > 0.5 => (from, loop_position(tm.clips[from as usize], phase_of(self.id), self.speed, t)),
+            Some((Fade::Held(from, at), w)) if w > 0.5 => (from, at),
+            _ => self.showing(now, t, tm),
         };
         if anim == ZombieAnim::Dead {
             let from_behind = Vec2::from_angle(facing).dot(self.blow) > 0.3 && now - self.blow_at < 0.5;
@@ -811,10 +990,34 @@ impl Tracked {
                 _ => Clip::DieBack,
             };
         }
+        if anim == ZombieAnim::Stagger {
+            // Seeded by the zombie and its count of staggers: the same on every client.
+            self.staggers += 1;
+            let h = self.id.wrapping_mul(0x2C1B_3C6D) ^ self.staggers.wrapping_mul(0x297A_2D39);
+            self.stagger = if h.rotate_right(11) & 1 == 0 { Clip::Stagger } else { Clip::Stagger2 };
+        }
         self.anim = anim;
         self.since = now;
-        let (new, _) = self.clip(now);
-        self.fade_from = (is_loop(showing) && is_loop(new) && showing != new).then_some(showing);
+        let (new, _) = self.clip(now, tm);
+        self.fade_from = if is_loop(old) && is_loop(new) {
+            (old != new).then_some(Fade::Loop(old))
+        } else {
+            Some(Fade::Held(old, at))
+        };
+    }
+
+    /// How to play its clip now (shader clock `t`).
+    fn play(&self, now: f32, t: f32, tm: &Timing) -> (Clip, Play) {
+        let (clip, pos) = self.clip(now, tm);
+        let play = match (self.fade(now), pos) {
+            (Some((Fade::Held(from, at), w)), _) => {
+                let pos = pos.unwrap_or_else(|| loop_position(tm.clips[clip as usize], phase_of(self.id), self.speed, t));
+                Play::Direct { pos, fade: Some((from, at, w)) }
+            }
+            (fade, None) => Play::Loop { fade: fade.and_then(|(f, w)| if let Fade::Loop(c) = f { Some((c, w)) } else { None }) },
+            (_, Some(pos)) => Play::Direct { pos, fade: None },
+        };
+        (clip, play)
     }
 }
 
@@ -840,6 +1043,8 @@ fn sync_zombies(
 ) {
     let (Some(assets), Some(mut entities)) = (assets, entities) else { return };
     let now = time.elapsed_secs();
+    // The shader's clock (`globals.time`).
+    let t = time.elapsed_secs_wrapped();
     for ev in &events.0 {
         if ev.kind == CombatEventKind::PlayerHurt {
             continue;
@@ -853,6 +1058,7 @@ fn sync_zombies(
     let alpha = fixed.overstep_fraction();
     let tick = link.curr.tick;
     let prev_list = &link.prev.zombies;
+    let n = assets.variants.len();
     for (i, z) in link.curr.zombies.iter().enumerate() {
         // Both lists are in id order; usually at the same index, unless corpses were cleared away.
         let prev = prev_list.get(i).filter(|p| p.id == z.id).or_else(|| prev_list.binary_search_by_key(&z.id, |p| p.id).ok().map(|k| &prev_list[k])).unwrap_or(z);
@@ -862,17 +1068,18 @@ fn sync_zombies(
         // Sim angle 0 = +x, counter-clockwise toward +y (= Bevy +z). The mesh faces +Z.
         let rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - facing);
 
-        let Some(t) = entities.0.get_mut(&z.id) else {
+        let Some(tr) = entities.0.get_mut(&z.id) else {
             // First sight. A corpse is already lying still.
             let since = if z.anim == ZombieAnim::Dead { -100.0 } else { now };
-            let mut t = Tracked { entity: Entity::PLACEHOLDER, anim: z.anim, since, fade_from: None, seen: tick, death: Clip::DieBack, flash_until: 0.0, blow: Vec2::ZERO, blow_at: -100.0 };
-            let (clip, position) = t.clip(now);
-            let tag = pack_tag(z.id, clip, position, z.speed, false, None);
+            let v = &assets.variants[variant_of(z.id, n)];
+            let mut tr = Tracked::new(z.id, variant_of(z.id, n), z.anim, since, z.speed, tick);
+            let (clip, play) = tr.play(now, t, &v.timing);
+            let tag = pack_tag(z.id, clip, play, z.speed, false);
             let transform = Transform { translation: Vec3::new(pos.x, 0.0, pos.y), rotation, scale: Vec3::ONE };
-            t.entity = commands
+            tr.entity = commands
                 .spawn((
-                    Mesh3d(assets.mesh.clone()),
-                    MeshMaterial3d(assets.material.clone()),
+                    Mesh3d(v.mesh.clone()),
+                    MeshMaterial3d(v.material.clone()),
                     MeshTag::new(tag),
                     transform,
                     visibility,
@@ -880,21 +1087,23 @@ fn sync_zombies(
                     NotShadowCaster,
                 ))
                 .id();
-            entities.0.insert(z.id, t);
+            entities.0.insert(z.id, tr);
             continue;
         };
-        t.seen = tick;
-        if z.anim != t.anim {
-            t.set_anim(z.anim, z.facing, now);
+        let timing = &assets.variants[tr.variant.min(n - 1)].timing;
+        tr.seen = tick;
+        tr.speed = speed_steps(z.speed);
+        if z.anim != tr.anim {
+            tr.set_anim(z.anim, z.facing, now, t, timing);
         }
-        let kick = now - t.blow_at;
+        let kick = now - tr.blow_at;
         if kick < KICK_SECS {
             let k = 1.0 - kick / KICK_SECS;
-            pos += t.blow * KICK_M * k * k;
+            pos += tr.blow * KICK_M * k * k;
         }
-        let (clip, position) = t.clip(now);
-        let tag = pack_tag(z.id, clip, position, z.speed, now < t.flash_until, t.fade(now));
-        if let Ok((mut tf, mut mt, mut vis)) = query.get_mut(t.entity) {
+        let (clip, play) = tr.play(now, t, timing);
+        let tag = pack_tag(z.id, clip, play, z.speed, now < tr.flash_until);
+        if let Ok((mut tf, mut mt, mut vis)) = query.get_mut(tr.entity) {
             *tf = Transform { translation: Vec3::new(pos.x, 0.0, pos.y), rotation, scale: Vec3::ONE };
             if mt.value != tag {
                 mt.value = tag;
@@ -918,13 +1127,15 @@ fn sync_zombies(
 fn light_zombies(link: Res<ServerLink>, assets: Option<Res<ZombieAssets>>, mut materials: ResMut<Assets<ZombieMaterial>>) {
     let Some(assets) = assets else { return };
     let (dir, color, lux, day) = sky_at(link.curr.time_of_day);
-    let Some(mut m) = materials.get_mut(&assets.material) else { return };
     let c = color.to_linear();
-    m.settings.sun = (-dir).extend((lux / 10_000.0).max(0.08));
-    m.settings.sun_color = Vec4::new(c.red, c.green, c.blue, 1.0);
     let night = Vec3::new(0.12, 0.15, 0.26);
     let noon = Vec3::new(0.55, 0.58, 0.65);
-    m.settings.ambient = night.lerp(noon, day).extend(1.0);
+    for v in &assets.variants {
+        let Some(mut m) = materials.get_mut(&v.material) else { continue };
+        m.settings.sun = (-dir).extend((lux / 10_000.0).max(0.08));
+        m.settings.sun_color = Vec4::new(c.red, c.green, c.blue, 1.0);
+        m.settings.ambient = night.lerp(noon, day).extend(1.0);
+    }
 }
 
 pub(crate) fn lerp_angle(a: f32, b: f32, t: f32) -> f32 {
@@ -941,6 +1152,11 @@ pub(crate) fn lerp_angle(a: f32, b: f32, t: f32) -> f32 {
 mod tests {
     use super::*;
 
+    fn grey_timing() -> Timing {
+        let b = build_zombie();
+        Timing { clips: b.clips, play: b.play }
+    }
+
     #[test]
     fn every_clip_is_baked_and_fits_the_tag() {
         let baked = build_zombie();
@@ -950,49 +1166,117 @@ mod tests {
             let c = clips[clip as usize];
             assert!(c.y == frames as f32 && c.x + c.y <= rows as f32, "{clip:?}: {c}");
             assert_eq!(c.w < 0.0, secs > 0.0);
-            let tag = pack_tag(0xDEAD_BEEF, clip, None, 3.0, true, Some((Clip::Walk, 0.5)));
+            assert_eq!(baked.play[clip as usize], secs);
+            let tag = pack_tag(0xDEAD_BEEF, clip, Play::Loop { fade: Some((Clip::Walk, 0.5)) }, 3.0, true);
             assert_eq!(tag & 15, clip as u32);
-            assert_eq!((tag >> 17) & 255, 144, "speed survives");
-            assert_eq!((tag >> 27) & 1, 1, "flash survives");
+            assert_eq!((tag >> 10) & 1, 0);
+            assert_eq!((tag >> 12) & 63, phase_of(0xDEAD_BEEF), "phase survives");
+            assert_eq!((tag >> 18) & 255, 144, "speed survives");
+            assert_eq!((tag >> 11) & 1, 1, "flash survives");
             if clip != Clip::Walk {
-                assert_eq!(((tag >> 25) & 3, tag >> 28), (Clip::Walk as u32, 8), "fade survives");
+                assert_eq!(((tag >> 26) & 3, tag >> 28), (Clip::Walk as u32, 8), "fade survives");
             } else {
-                assert_eq!(tag >> 28, 0, "no fade into the same clip");
+                assert_eq!(tag >> 26, 0, "no fade into the same clip");
             }
-            let tag = pack_tag(7, clip, Some(0.5), 3.0, false, Some((Clip::Walk, 0.5)));
+            let tag = pack_tag(7, clip, Play::Direct { pos: 0.5, fade: Some((Clip::Stagger2, 0.25, 0.5)) }, 3.0, false);
+            assert_eq!(tag & 15, clip as u32);
             assert_eq!((tag >> 10) & 1, 1);
-            assert_eq!((tag >> 11) & 0xFFFF, 32768);
-            assert_eq!(tag >> 27, 0, "one-shots don't fade");
+            assert_eq!((tag >> 11) & 1, 0);
+            assert_eq!((tag >> 12) & 255, 128, "position");
+            assert_eq!((tag >> 20) & 15, Clip::Stagger2 as u32, "the clip faded from");
+            assert_eq!((tag >> 24) & 31, 8, "where it's held");
+            assert_eq!(tag >> 29, 4, "how much shows");
+            let tag = pack_tag(7, clip, Play::Direct { pos: 1.0, fade: None }, 3.0, false);
+            assert_eq!(((tag >> 12) & 255, tag >> 20), (255, 0));
         }
-        // The looping clips are the ones the shader can fade between (2 bits).
+        // The looping clips are the ones the shader can fade between in loop mode (2 bits).
         for (clip, _, _, _, secs) in CLIPS {
             assert_eq!(is_loop(clip), secs == 0.0 && clip != Clip::Down, "{clip:?}");
         }
+        const { assert!(SLOTS <= 16, "4 bits of clip") };
     }
 
-    /// Switching between looping clips fades from the old one over FADE_SECS; into or out of a
-    /// one-shot it doesn't.
+    /// Where the client says a loop is matches the shader's sum: speed / stride (walk) or a fixed rate.
     #[test]
-    fn looping_clips_crossfade() {
-        let mut t = Tracked { entity: Entity::PLACEHOLDER, anim: ZombieAnim::Walk, since: 0.0, fade_from: None, seen: 0, death: Clip::DieBack, flash_until: 0.0, blow: Vec2::ZERO, blow_at: -1.0 };
-        t.set_anim(ZombieAnim::Idle, 0.0, 10.0);
-        assert_eq!(t.fade(10.0), Some((Clip::Walk, 1.0)));
+    fn loop_positions_follow_the_shader_clock() {
+        let walk = Vec4::new(0.0, 24.0, 0.0, 1.5);
+        // 1.5 m/s on a 1.5 m stride: one cycle a second; phase 16/64 = a quarter.
+        assert!((loop_position(walk, 16, 72, 10.25) - 0.5).abs() < 1e-4);
+        let idle = Vec4::new(0.0, 24.0, 0.5, 0.0);
+        assert!((loop_position(idle, 0, 72, 3.0) - 0.5).abs() < 1e-4);
+    }
+
+    /// Switching between looping clips fades from the old one, still playing; into or out of a one-shot
+    /// (and from the ground loop) the old clip is held where it was while the new one fades in.
+    #[test]
+    fn clips_crossfade() {
+        let tm = grey_timing();
+        let mut t = Tracked::new(9, 0, ZombieAnim::Walk, 0.0, 1.0, 0);
+        t.set_anim(ZombieAnim::Idle, 0.0, 10.0, 10.0, &tm);
+        assert_eq!(t.fade(10.0), Some((Fade::Loop(Clip::Walk), 1.0)));
         let (_, w) = t.fade(10.0 + FADE_SECS * 0.5).unwrap();
         assert!((w - 0.5).abs() < 1e-4);
         assert_eq!(t.fade(10.0 + FADE_SECS + 0.01), None);
-        t.set_anim(ZombieAnim::Thump, 0.0, 11.0);
-        assert_eq!(t.fade(11.0).map(|f| f.0), Some(Clip::Idle));
-        t.set_anim(ZombieAnim::Stagger, 0.0, 12.0);
-        assert_eq!(t.fade(12.0), None, "into a one-shot");
-        t.set_anim(ZombieAnim::Walk, 0.0, 13.0);
-        assert_eq!(t.fade(13.0), None, "out of a one-shot");
+        assert!(matches!(t.play(10.05, 10.05, &tm), (Clip::Idle, Play::Loop { fade: Some((Clip::Walk, _)) })));
+        t.set_anim(ZombieAnim::Thump, 0.0, 11.0, 11.0, &tm);
+        assert_eq!(t.fade(11.0).map(|f| f.0), Some(Fade::Loop(Clip::Idle)));
+        // Into a one-shot: the thump held at where it was.
+        t.set_anim(ZombieAnim::Stagger, 0.0, 12.0, 12.0, &tm);
+        let held = loop_position(tm.clips[Clip::Thump as usize], phase_of(9), t.speed, 12.0);
+        assert_eq!(t.fade(12.0), Some((Fade::Held(Clip::Thump, held), 1.0)));
+        let (clip, play) = t.play(12.1, 12.1, &tm);
+        assert!(matches!(clip, Clip::Stagger | Clip::Stagger2));
+        assert!(matches!(play, Play::Direct { fade: Some((Clip::Thump, _, w)), .. } if (w - 0.5).abs() < 1e-3), "{play:?}");
+        // Out of a one-shot into a loop: direct while it fades (the loop where the shader has it), then the
+        // shader's own clock.
+        t.set_anim(ZombieAnim::Walk, 0.0, 12.5, 12.5, &tm);
+        assert!(matches!(t.fade(12.5), Some((Fade::Held(Clip::Stagger | Clip::Stagger2, _), _))));
+        let (clip, play) = t.play(12.6, 12.6, &tm);
+        let at = loop_position(tm.clips[Clip::Walk as usize], phase_of(9), t.speed, 12.6);
+        assert!(clip == Clip::Walk && matches!(play, Play::Direct { pos, fade: Some(_) } if (pos - at).abs() < 1e-5), "{play:?}");
+        assert_eq!(t.play(13.0, 13.0, &tm), (Clip::Walk, Play::Loop { fade: None }));
+    }
+
+    /// A stagger picks one of the two reels per hit, the same on every client, and both turn up.
+    #[test]
+    fn staggers_pick_a_reel_per_hit() {
+        let tm = grey_timing();
+        let mut seen = [0; 2];
+        for id in 0..40 {
+            let mut a = Tracked::new(id, 0, ZombieAnim::Walk, 0.0, 1.0, 0);
+            let mut b = Tracked::new(id, 0, ZombieAnim::Walk, 0.0, 1.0, 0);
+            for k in 0..3 {
+                let now = 1.0 + k as f32 * 2.0;
+                for t in [&mut a, &mut b] {
+                    t.set_anim(ZombieAnim::Stagger, 0.0, now, now, &tm);
+                }
+                assert_eq!(a.stagger, b.stagger);
+                seen[(a.stagger == Clip::Stagger2) as usize] += 1;
+                for t in [&mut a, &mut b] {
+                    t.set_anim(ZombieAnim::Walk, 0.0, now + 1.0, now + 1.0, &tm);
+                }
+            }
+        }
+        assert!(seen[0] > 30 && seen[1] > 30, "{seen:?}");
+    }
+
+    #[test]
+    fn variants_are_worn_by_id() {
+        assert_eq!(variant_of(5, 1), 0);
+        let mut n = [0; 3];
+        for id in 0..300 {
+            let v = variant_of(id, 3);
+            assert_eq!(v, variant_of(id, 3));
+            n[v] += 1;
+        }
+        assert!(n.iter().all(|&k| k > 70), "{n:?}");
     }
 
     #[test]
     fn zombies_no_longer_listed_are_stale() {
         let mut m = HashMap::new();
         for (id, seen) in [(1, 5), (2, 4), (3, 5)] {
-            m.insert(id, Tracked { entity: Entity::PLACEHOLDER, anim: ZombieAnim::Dead, since: 0.0, fade_from: None, seen, death: Clip::DieBack, flash_until: 0.0, blow: Vec2::ZERO, blow_at: -1.0 });
+            m.insert(id, Tracked::new(id, 0, ZombieAnim::Dead, 0.0, 1.0, seen));
         }
         assert_eq!(stale(&m, 5), vec![2]);
     }
@@ -1009,10 +1293,14 @@ mod tests {
         assert!(close(&pose(Clip::GetUp, 0.0), &pose(Clip::Down, 0.0)), "get-up starts from the ground loop");
         assert!(close(&pose(Clip::GetUp, 1.0), &pose(Clip::Idle, 0.0)), "get-up ends standing");
         assert!(close(&pose(Clip::DieDown, 0.0), &pose(Clip::Down, 0.0)));
-        let mut t = Tracked { entity: Entity::PLACEHOLDER, anim: ZombieAnim::Idle, since: 0.0, fade_from: None, seen: 0, death: Clip::DieBack, flash_until: 0.0, blow: Vec2::ZERO, blow_at: -1.0 };
+        for clip in [Clip::Stagger, Clip::Stagger2, Clip::Groan] {
+            assert!(close(&pose(clip, 0.0), &reach()) && close(&pose(clip, 1.0), &reach()), "{clip:?} starts and ends reaching");
+        }
+        let tm = grey_timing();
+        let mut t = Tracked::new(1, 0, ZombieAnim::Idle, 0.0, 1.0, 0);
         for anim in [ZombieAnim::Idle, ZombieAnim::Walk, ZombieAnim::Attack, ZombieAnim::Thump, ZombieAnim::Stagger, ZombieAnim::Down, ZombieAnim::GetUp, ZombieAnim::Dead] {
-            t.set_anim(anim, 0.0, 1.0);
-            let (_, position) = t.clip(1.2);
+            t.set_anim(anim, 0.0, 1.0, 1.0, &tm);
+            let (_, position) = t.clip(1.2, &tm);
             assert!(position.is_none_or(|p| (0.0..=1.0).contains(&p)));
         }
     }
@@ -1156,6 +1444,26 @@ mod tests {
         let b = baked(&z);
         assert_eq!(b.clips[Clip::Stagger as usize].y, 5.0);
         assert_eq!(b.clips[Clip::Attack as usize].z, 1.0 / 0.8);
+        // One-shots play over their own length (0.8 s here), at most the slot's cap; the stand-ins over
+        // the grey-box's lengths.
+        assert_eq!((b.play[Clip::Stagger as usize], b.play[Clip::DieBack as usize]), (0.8, 0.8));
+        assert_eq!(b.play[Clip::Fall as usize], FALL_SECS);
+        assert_eq!(b.play[Clip::Attack as usize], 0.0, "loops have no length");
+
+        // A long file clip is sped up to its cap, and the get-up always takes the sim's GET_UP_SECS.
+        let mut z = figure(&[("stagger_2", 6, true), ("get_up", 6, true), ("fall", 6, true), ("groan", 6, true)]);
+        for c in z.clips.iter_mut().skip(2) {
+            c.secs = 4.0;
+        }
+        let s = sources(&z);
+        assert_eq!((s[Clip::Stagger2 as usize], s[Clip::GetUp as usize], s[Clip::Groan as usize]), (Source::File(2), Source::File(3), Source::File(5)));
+        let b = baked(&z);
+        assert_eq!(b.play[Clip::Stagger2 as usize], baked_max_secs(Clip::Stagger2));
+        assert_eq!(b.play[Clip::GetUp as usize], GET_UP_SECS);
+        assert_eq!(b.play[Clip::Fall as usize], 1.3);
+        assert_eq!(b.play[Clip::Groan as usize], 3.0);
+        // Without its own, the second reel is a stand-in like the first.
+        assert_eq!(sources(&figure(&[]))[Clip::Stagger2 as usize], Source::Rigid);
 
         let mut walk_only = figure(&[]);
         walk_only.clips.truncate(1);
@@ -1167,18 +1475,22 @@ mod tests {
     }
 
     #[test]
-    fn the_crowd_vat_path() {
+    fn the_crowd_vat_paths() {
         let opts = |args: &str| Options::parse(&args.split_whitespace().map(String::from).collect::<Vec<_>>());
-        assert_eq!(crowd_vat_path(&opts("--crowd-vat /x/z.zvat")), Some(PathBuf::from("/x/z.zvat")));
-        assert_eq!(crowd_vat_path(&opts("--crowd-vat none")), None);
-        assert_eq!(crowd_vat_path(&opts("--crowd-vat none --data /nowhere")), None);
+        assert_eq!(crowd_vat_paths(&opts("--crowd-vat /x/z.zvat")), vec![PathBuf::from("/x/z.zvat")]);
+        assert_eq!(crowd_vat_paths(&opts("--crowd-vat /x/a.zvat,/y/b.zvat")), vec![PathBuf::from("/x/a.zvat"), PathBuf::from("/y/b.zvat")]);
+        assert_eq!(crowd_vat_paths(&opts("--crowd-vat /x/a.zvat:/y/b.zvat")), vec![PathBuf::from("/x/a.zvat"), PathBuf::from("/y/b.zvat")]);
+        assert!(crowd_vat_paths(&opts("--crowd-vat none")).is_empty());
+        assert!(crowd_vat_paths(&opts("--crowd-vat none --data /nowhere")).is_empty());
         let dir = std::env::temp_dir().join(format!("zombye-crowd-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(first_zvat(&dir), None);
+        assert!(zvats_in(&dir).is_empty());
         for name in ["b.zvat", "a.zvat", "a.glb"] {
             std::fs::write(dir.join(name), b"").unwrap();
         }
-        assert_eq!(first_zvat(&dir), Some(dir.join("a.zvat")));
+        assert_eq!(zvats_in(&dir), vec![dir.join("a.zvat"), dir.join("b.zvat")]);
+        // A folder means every .zvat in it.
+        assert_eq!(crowd_vat_paths(&opts(&format!("--crowd-vat {}", dir.display()))), vec![dir.join("a.zvat"), dir.join("b.zvat")]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

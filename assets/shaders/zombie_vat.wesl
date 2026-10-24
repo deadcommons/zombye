@@ -92,37 +92,49 @@ fn sample_loop(index: u32, phase: f32, speed: f32, vid: u32) -> vec3<f32> {
     return sample_cycle(clip, fract(globals.time * rate + phase), vid);
 }
 
+// Vertex `vid` of clip `index` at `pos` (0..1) chosen by the client: a one-shot (w < 0) from its
+// first to its last frame, no wrapping; a looping clip at that point of its cycle.
+fn sample_at(index: u32, pos: f32, vid: u32) -> vec3<f32> {
+    let clip = settings.clips[index];
+    if (clip.w < 0.0) {
+        let frames = u32(clip.y);
+        let p = pos * (clip.y - 1.0);
+        let f0 = min(u32(floor(p)), frames - 1u);
+        let f1 = min(f0 + 1u, frames - 1u);
+        return mix(vat_load(vid, clip, f0), vat_load(vid, clip, f1), fract(p));
+    }
+    return sample_cycle(clip, pos, vid);
+}
+
 @vertex
 fn vertex(vertex: Vertex) -> VertexOutput {
     let tag = mesh_functions::get_tag(vertex.instance_index);
-    // Bits 0-3 clip, 4-9 outfit, 10 direct, 27 hit flash; then (looping) 11-16 phase, 17-24 speed,
-    // 25-26 the looping clip it's fading from and 28-31 how much of it still shows, or (direct)
-    // 11-26 the clip position chosen by the client (see pack_tag in zombie_render.rs).
+    // Bits 0-3 clip, 4-9 outfit, 10 direct, 11 hit flash; then (looping) 12-17 phase, 18-25 speed,
+    // 26-27 the looping clip it's fading from and 28-31 how much of it still shows, or (direct)
+    // 12-19 the clip position chosen by the client, 20-23 the clip it's fading from, 24-28 where that
+    // clip is held and 29-31 how much of it still shows (see pack_tag in zombie_render.rs).
     let clip_index = tag & 15u;
     let outfit = (tag >> 4u) & 63u;
     let direct = ((tag >> 10u) & 1u) == 1u;
-    let flash = ((tag >> 27u) & 1u) == 1u;
+    let flash = ((tag >> 11u) & 1u) == 1u;
     let vid = u32(vertex.vat_info.x);
 
-    let clip = settings.clips[clip_index];
     var local = vec3(0.0);
-    if (direct && clip.w < 0.0) {
-        // One-shot: 0..1 spans the first to the last frame, no wrapping.
-        let frames = u32(clip.y);
-        let pos = f32((tag >> 11u) & 65535u) / 65535.0 * (clip.y - 1.0);
-        let f0 = min(u32(floor(pos)), frames - 1u);
-        let f1 = min(f0 + 1u, frames - 1u);
-        local = mix(vat_load(vid, clip, f0), vat_load(vid, clip, f1), fract(pos));
-    } else if (direct) {
-        local = sample_cycle(clip, f32((tag >> 11u) & 65535u) / 65535.0, vid);
+    if (direct) {
+        local = sample_at(clip_index, f32((tag >> 12u) & 255u) / 255.0, vid);
+        // Crossfade from the clip it was showing a moment ago, held where it was.
+        let fade = f32((tag >> 29u) & 7u) / 7.0;
+        if (fade > 0.0) {
+            local = mix(local, sample_at((tag >> 20u) & 15u, f32((tag >> 24u) & 31u) / 31.0, vid), fade);
+        }
     } else {
-        let phase = f32((tag >> 11u) & 63u) / 64.0;
-        let speed = f32((tag >> 17u) & 255u) / 48.0;
+        let phase = f32((tag >> 12u) & 63u) / 64.0;
+        let speed = f32((tag >> 18u) & 255u) / 48.0;
         local = sample_loop(clip_index, phase, speed, vid);
         // Crossfade from the looping clip it was playing a moment ago.
         let fade = f32((tag >> 28u) & 15u) / 15.0;
         if (fade > 0.0) {
-            local = mix(local, sample_loop((tag >> 25u) & 3u, phase, speed, vid), fade);
+            local = mix(local, sample_loop((tag >> 26u) & 3u, phase, speed, vid), fade);
         }
     }
 
