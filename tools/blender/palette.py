@@ -51,6 +51,11 @@ PALETTE = {
     "sheet_cream": ("#d6cdb8", 0.95, 0.0),
     "pillow_white": ("#e0dbcd", 0.95, 0.0),
     "blanket_blue": ("#5d728c", 0.95, 0.0),
+    # Clothes (wearables on the survivor's body, #63): worn everyday things, faded, never bright.
+    "denim": ("#4a5a72", 0.95, 0.0),          # jeans
+    "denim_dark": ("#343f52", 0.95, 0.0),     # waistbands, pockets, hems
+    "cotton_red": ("#8a4a42", 0.95, 0.0),     # a faded red t-shirt
+    "trainer_white": ("#d9d5ca", 0.6, 0.0),   # canvas and leather trainers, off-white
 }
 
 

@@ -475,7 +475,21 @@ impl SurvivorModel {
         let mut worn = SkinMesh::default();
         let colour = |d: &ItemDef| Color::srgb(d.color.0, d.color.1, d.color.2).to_linear().to_f32_array();
         let model_of = |d: &ItemDef| d.model.as_ref().and_then(|m| self.wardrobe.get(m));
-        for d in outfit.worn.iter().filter_map(|&i| items.get(i as usize)) {
+        let worn_defs: Vec<&ItemDef> = outfit.worn.iter().filter_map(|&i| items.get(i as usize)).collect();
+        // A garment entirely under a model on a higher layer that hides what it covers (a t-shirt
+        // under a hoodie) isn't drawn: it would only show through the outer one's edges.
+        let buried = |d: &ItemDef| {
+            let Some(c) = d.clothing.as_ref().filter(|c| c.takes.is_empty() && !c.covers.is_empty()) else { return false };
+            c.covers.iter().all(|r| {
+                worn_defs.iter().any(|o| {
+                    o.clothing.as_ref().is_some_and(|oc| oc.layer > c.layer) && model_of(o).is_some_and(|w| w.hides.contains(r))
+                })
+            })
+        };
+        for &d in &worn_defs {
+            if buried(d) {
+                continue;
+            }
             if let Some(w) = model_of(d) {
                 worn.append(&w.mesh);
                 for r in &w.hides {
