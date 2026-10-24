@@ -18,9 +18,10 @@
 // are searched. Editing this file only changes containers nobody has opened yet: a save made
 // before loads with a note.
 //
-// Room types now in the templates: kitchen, bathroom, bedroom, living, dining, hall, laundry. The
-// shed, garage, office and shop tables (shop, pharmacy, hardware: a shop's stock is its room type)
-// are ready for the buildings #17 adds.
+// Room types now in the templates: kitchen (offices' break rooms too), bathroom, bedroom, living,
+// dining, hall, laundry, porch, garage, office, and the shops' shop, pharmacy and hardware (a shop's
+// stock is its room type: shelves and workbenches there have no table of their own, so they fill
+// from the room's). The shed table is ready for a shed.
 (
     // Sandbox loot abundance: multiplies every table's and group's rolls (0.25 scarce ... 2 plenty).
     scale: 1.0,

@@ -1,0 +1,74 @@
+// Small one-storey cottage with an open front porch under the main roof. One character per tile;
+// "." is outside. The bottom row is the front of the house and faces the street.
+// Openings are (x, y, side): side N/E/S/W of tile (x, y). The porch is open on its front and
+// side (arches); the front door leads from it into the living room.
+BuildingTemplate(
+    id: "house_cottage_porch",
+    name: "Cottage with porch",
+    kind: House,
+    roof: GableX,
+    rooms: {
+        'K': (name: "Kitchen", room_type: "kitchen", floor: TileFloor),
+        'L': (name: "Living room", room_type: "living", floor: Wood),
+        'H': (name: "Hall", room_type: "hall", floor: Wood),
+        'B': (name: "Bedroom", room_type: "bedroom", floor: Carpet),
+        'b': (name: "Bathroom", room_type: "bathroom", floor: TileFloor),
+        'C': (name: "Small bedroom", room_type: "bedroom", floor: Carpet),
+        'P': (name: "Porch", room_type: "porch", floor: Wood),
+    },
+    levels: [
+        (
+            layout: [
+                "KKKKKBBBB",
+                "KKKKKBBBB",
+                "KKKKKBBBB",
+                "KKKKKHbbb",
+                "LLLLLHbbb",
+                "LLLLLHCCC",
+                "LLLLLHCCC",
+                "LLLLLHCCC",
+                "PPPPPPCCC",
+                "PPPPPPCCC",
+            ],
+            doors: [
+                (2, 7, S), // front door, off the porch
+                (1, 0, N), // back door
+                (5, 3, N), // bedroom
+                (5, 4, E), // bathroom
+                (5, 6, E), // small bedroom
+            ],
+            arches: [
+                (2, 3, S), (4, 6, E),
+                // The open porch.
+                (0, 9, S), (1, 9, S), (2, 9, S), (3, 9, S), (4, 9, S), (5, 9, S),
+                (0, 8, W), (0, 9, W),
+            ],
+            windows: [
+                (3, 0, N), (0, 2, W),
+                (0, 4, W), (0, 7, S), (4, 7, S), (5, 7, S),
+                (5, 0, N), (8, 1, E),
+                (8, 3, E),
+                (8, 8, E), (7, 9, S),
+            ],
+            furniture: [
+                (kind: "fridge", at: (0, 0)),
+                (kind: "sink", at: (0, 1), facing: E),
+                (kind: "counter", at: (2, 0), size: (2, 1)),
+                (kind: "stove", at: (4, 0)),
+                (kind: "table", at: (3, 2), size: (2, 1)),
+                (kind: "sofa", at: (0, 5), size: (1, 2), facing: E),
+                (kind: "coffee_table", at: (2, 5)),
+                (kind: "tv", at: (4, 4), facing: W),
+                (kind: "sofa", at: (4, 8), size: (2, 1)),
+                (kind: "bed", at: (6, 0), size: (2, 2)),
+                (kind: "wardrobe", at: (8, 0)),
+                (kind: "sink", at: (6, 3)),
+                (kind: "bathtub", at: (7, 3), size: (2, 1)),
+                (kind: "toilet", at: (8, 4), facing: W),
+                (kind: "bed", at: (7, 5), size: (2, 2), facing: W),
+                (kind: "desk", at: (6, 9), facing: N),
+                (kind: "wardrobe", at: (8, 9), facing: N),
+            ],
+        ),
+    ],
+)
