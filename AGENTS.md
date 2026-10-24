@@ -795,7 +795,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   back when dead or asleep; then grounded on the lowest foot vertex. `step_movement` and prediction are untouched.
   **Dressing:** `Snapshot::outfits` (`net::OutfitView`: worn items, the back and shoulder bags, by item index; every
   player, every snapshot) says what's drawn, for us and for others, changing the moment it does: the body with the
-  regions worn wearables hide cut away, and every worn model merged into one more mesh (both cached per outfit; a garment whose regions are all hidden by a model on a higher layer, a t-shirt under a hoodie, isn't drawn), so a
+  regions worn wearables hide cut away, and every worn model merged into one more mesh (both cached per outfit; a garment whose regions are all hidden by a model on a higher layer, a t-shirt under a hoodie, isn't drawn), and a worn model with a hem (`hem_z` in its extras: shirts, hoodies) cuts away, 3 cm above it, the faces other garments have in the regions it hides (a wearable can carry a `_REGION` per vertex: the jeans' top is Torso), so trousers never show through a shirt worn out over them, so a
   survivor is body + outfit + held weapon + ring draws. An item with no model is a grey-box: clothing tints the regions
   it covers (sampling a light texel of the shirt, so the colour shows), an accessory is a box on its socket, a bag a box
   on the back (or the left hip from the shoulder). The held weapon sits on `hand_r`. Players are told apart by a flat

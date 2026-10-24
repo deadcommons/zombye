@@ -105,19 +105,19 @@
 
     // ---- Clothing ------------------------------------------------------------------------------
     (id: "t_shirt", name: "T-shirt", category: Clothing, weight_kg: 0.15, volume_l: 0.5, tags: ["rippable"],
-        clothing: Some((covers: [Torso], protection: 0.05, layer: Base)), color: (0.85, 0.85, 0.82)),
+        clothing: Some((covers: [Torso], protection: 0.05, layer: Base)), model: Some("t_shirt"), color: (0.54, 0.29, 0.26)),
     (id: "jumper", name: "Jumper", category: Clothing, weight_kg: 0.4, volume_l: 1.2, tags: ["rippable"],
         clothing: Some((covers: [Torso, Arms], protection: 0.15, layer: Mid)), color: (0.3, 0.35, 0.55)),
     (id: "hoodie", name: "Hoodie", category: Clothing, weight_kg: 0.5, volume_l: 1.5, tags: ["rippable"],
         clothing: Some((covers: [Torso, Arms], protection: 0.15, layer: Mid, hood: true)), model: Some("hoodie"), color: (0.33, 0.38, 0.26)),
     (id: "jeans", name: "Jeans", category: Clothing, weight_kg: 0.6, volume_l: 1.2, tags: ["rippable"],
-        clothing: Some((covers: [Legs], protection: 0.25, layer: Base)), color: (0.2, 0.3, 0.5)),
+        clothing: Some((covers: [Legs], protection: 0.25, layer: Base)), model: Some("jeans"), color: (0.29, 0.35, 0.45)),
     (id: "leather_jacket", name: "Leather jacket", category: Clothing, weight_kg: 1.6, volume_l: 3.0,
         clothing: Some((covers: [Torso, Arms], protection: 0.45, layer: Outer)), color: (0.18, 0.12, 0.08)),
     (id: "work_gloves", name: "Work gloves", category: Clothing, weight_kg: 0.2, volume_l: 0.3,
         clothing: Some((covers: [Hands], protection: 0.35, layer: Base)), color: (0.7, 0.55, 0.3)),
     (id: "trainers", name: "Trainers", category: Clothing, weight_kg: 0.7, volume_l: 2.0,
-        clothing: Some((covers: [Feet], protection: 0.2, layer: Outer)), color: (0.9, 0.9, 0.9)),
+        clothing: Some((covers: [Feet], protection: 0.2, layer: Outer)), model: Some("trainers"), color: (0.85, 0.84, 0.79)),
     (id: "work_boots", name: "Work boots", category: Clothing, weight_kg: 1.4, volume_l: 3.0,
         clothing: Some((covers: [Feet, Legs], protection: 0.5, layer: Outer)), color: (0.35, 0.25, 0.15)),
 

@@ -50,6 +50,9 @@ use crate::survivor::{
     THIGH_R, TORSO, UARM_L, UARM_R, UPPER,
 };
 
+/// How far above a garment's hem (`hem_z`) the garments under it are cut away.
+const CUT_ABOVE_HEM: f32 = 0.03;
+
 /// How bright the marker rings are at night, of their daytime colour.
 const RING_NIGHT: f32 = 0.15;
 
@@ -486,12 +489,27 @@ impl SurvivorModel {
                 })
             })
         };
+        // Garments drawn as models: each cuts, in the regions it hides, what other garments have
+        // there above its hem (the jeans' top under a shirt worn out), whatever the pose.
+        let drawn: Vec<&Wearable> = worn_defs.iter().filter(|d| !buried(d)).filter_map(|d| model_of(d)).collect();
         for &d in &worn_defs {
             if buried(d) {
                 continue;
             }
             if let Some(w) = model_of(d) {
-                worn.append(&w.mesh);
+                let cuts: Vec<(u8, f32)> = drawn
+                    .iter()
+                    .filter(|o| !std::ptr::eq(**o, w))
+                    .filter_map(|o| o.hem_z.map(|h| (o, h)))
+                    .flat_map(|(o, h)| o.hides.iter().filter_map(move |r| REGIONS.iter().position(|x| x == r).map(|k| (k as u8, h + CUT_ABOVE_HEM))))
+                    .collect();
+                match (&w.regions, cuts.is_empty()) {
+                    (Some(regions), false) => {
+                        let cut = |v: u32| cuts.iter().any(|&(r, h)| regions[v as usize] == r && w.mesh.positions[v as usize].y > h);
+                        worn.append_where(&w.mesh, |t| !t.iter().all(|&v| cut(v)));
+                    }
+                    _ => worn.append(&w.mesh),
+                }
                 for r in &w.hides {
                     hidden[REGIONS.iter().position(|x| x == r).unwrap()] = true;
                 }
