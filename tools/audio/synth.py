@@ -299,23 +299,33 @@ def shove(rng):
     return s
 
 
+def smooth_noise(sec, rng, hz):
+    """Slow random wander in -1..1 (low-passed noise, normalised)."""
+    w = filt(white(sec + 0.1, rng), "lp", hz, 0.7)
+    top = max(abs(x) for x in w) or 1.0
+    return [x / top for x in w]
+
+
 def voice(sec, rng, f0, vowel_a, vowel_b, breath=0.2, rough=0.3):
-    """A crude voiced sound: a jittery saw through three moving formants, plus breath."""
-    wander = filt(white(sec + 0.1, rng), "lp", 3, 0.7)
-    top = max(abs(x) for x in wander) or 1.0
-    contour = lambda t: f0 * (0.85 + 0.25 * math.sin(math.pi * min(t / sec, 1.0))) * (1 + 0.12 * wander[min(samples(t), len(wander) - 1)] / top)
+    """A crude voiced sound: a saw that rises a little then sags, through three moving formants,
+    with breath shaped by the same formants. Roughness is irregular (random shimmer), never a
+    steady wobble: a steady one at tens of hertz sounds like an engine."""
+    wander = smooth_noise(sec, rng, 3)
+    shimmer = smooth_noise(sec, rng, 14)
+    at = lambda t, arr: arr[min(samples(t), len(arr) - 1)]
+    contour = lambda t: f0 * (1.0 + 0.12 * math.sin(math.pi * min(t / sec, 1.0)) - 0.25 * min(t / sec, 1.0)) * (1 + 0.06 * at(t, wander))
     src = osc(sec, contour, "saw")
-    # Vocal roughness: a subharmonic flutter and a slow growl.
-    src = [x * (1 - rough + rough * abs(math.sin(math.pi * i * f0 / 2 / RATE)))
-           * (1 - 0.25 * rough + 0.25 * rough * math.sin(2 * math.pi * 28 * i / RATE)) for i, x in enumerate(src)]
-    src = filt(src, "lp", 3200, 0.7)
+    src = [x * (1 - rough * 0.5 * (1 + shimmer[i])) for i, x in enumerate(src)]
+    src = filt(src, "lp", 2200, 0.7)
+    air = white(sec, rng)
     out = [0.0] * len(src)
-    for k, g in ((0, 1.0), (1, 0.55), (2, 0.25)):
+    for k, g in ((0, 1.0), (1, 0.6), (2, 0.3)):
         fa, fb = vowel_a[k], vowel_b[k]
-        part = sweep(src, "bp", lambda t, fa=fa, fb=fb: fa + (fb - fa) * min(t / sec, 1.0), 5.0 + 2 * k)
-        out = [a + b * g for a, b in zip(out, part)]
-    air = filt(white(sec, rng), "bp", 1400, 0.8)
-    return [a + b * breath for a, b in zip(out, air)]
+        f_of_t = lambda t, fa=fa, fb=fb: fa + (fb - fa) * min(t / sec, 1.0)
+        tone = sweep(src, "bp", f_of_t, 3.5 + 1.5 * k)
+        hiss = sweep(air, "bp", f_of_t, 2.0 + k)
+        out = [a + (b + c * breath * 2.5) * g for a, b, c in zip(out, tone, hiss)]
+    return out
 
 
 VOWELS = {"uh": (600, 1000, 2400), "oh": (480, 820, 2300), "ah": (740, 1150, 2500), "oo": (380, 800, 2200)}
@@ -324,7 +334,7 @@ VOWELS = {"uh": (600, 1000, 2400), "oh": (480, 820, 2300), "ah": (740, 1150, 250
 def groan(rng):
     dur = rng.uniform(1.0, 1.8)
     a, b = rng.sample(sorted(VOWELS), 2)
-    v = voice(dur, rng, rng.uniform(70, 105), VOWELS[a], VOWELS[b], breath=rng.uniform(0.25, 0.45), rough=rng.uniform(0.3, 0.5))
+    v = voice(dur, rng, rng.uniform(95, 140), VOWELS[a], VOWELS[b], breath=rng.uniform(0.5, 0.8), rough=rng.uniform(0.25, 0.45))
     shape = [min(1.0, x * 1.6) for x in bell(dur, rng.uniform(0.3, 0.55))]
     return mul(v, shape)
 

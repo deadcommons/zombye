@@ -623,12 +623,12 @@ fn footsteps(local: Res<LocalPlayer>, link: Res<ServerLink>, map: Res<ClientMap>
     for z in &link.curr.zombies {
         let pos = Vec2::from(z.pos);
         seen.insert(z.id);
-        if z.anim != ZombieAnim::Walk || pos.distance(ear) > 16.0 {
+        if z.anim != ZombieAnim::Walk || pos.distance(ear) > 12.0 {
             track.zombie_steps.remove(&z.id);
             continue;
         }
-        let t = track.zombie_steps.entry(z.id).or_insert((pos, 0.4));
-        if stepped(t, pos, 0.8) {
+        let t = track.zombie_steps.entry(z.id).or_insert((pos, 0.6));
+        if stepped(t, pos, 1.2) {
             queue.at(Cue::Shuffle, pos, 1.0);
         }
     }
@@ -638,9 +638,9 @@ fn footsteps(local: Res<LocalPlayer>, link: Res<ServerLink>, map: Res<ClientMap>
 /// Seconds between groans, by what a zombie is doing; `None`: it doesn't groan now.
 fn groan_gap(anim: ZombieAnim) -> Option<(f32, f32)> {
     match anim {
-        ZombieAnim::Attack | ZombieAnim::Thump => Some((2.0, 5.0)),
-        ZombieAnim::Walk => Some((4.0, 10.0)),
-        ZombieAnim::Idle => Some((8.0, 22.0)),
+        ZombieAnim::Attack | ZombieAnim::Thump => Some((3.0, 7.0)),
+        ZombieAnim::Walk => Some((7.0, 15.0)),
+        ZombieAnim::Idle => Some((12.0, 30.0)),
         _ => None,
     }
 }
