@@ -380,8 +380,8 @@ def validate(spec):
 # ---------------------------------------------------------------- renders
 
 def render_angles(spec, sheet_path):
-    """A 2 × 2 sheet of the four game angles of the rest pose (`zasset.render_angles`); the single
-    angles go to a temporary folder."""
+    """A 2 × 2 sheet of the four game angles of the rest pose (`zasset.render_angles`, with the scale
+    figure and door frame); the single angles go to a temporary folder."""
     arm = character_objects()[0][0]
     arm.data.pose_position = "REST"
     try:
@@ -431,7 +431,7 @@ def render_strip(spec, action, out_path, frames=6, angle=0, cols=6):
     scene = bpy.context.scene
     for k in range(frames):
         scene.frame_set(int(round(f0 + (f1 - f0) * k / frames)))
-        cam_files = zasset.render_angles(spec, out_dir=tmp)
+        cam_files = zasset.render_angles(spec, out_dir=tmp, scale=False)
         files.append(cam_files[angle])
     ad.action = None
     scene.frame_set(0)
@@ -495,17 +495,25 @@ class Character:
     tris = staticmethod(tris)
 
 
-def build(folder, render=True, export=True, save=True, from_blend=False):
+def build(folder, render=True, export=True, save=True, from_blend=False, out_dir=None, g3=False, refs=None):
     """Builds the character in `folder`: runs its clean-up script on the raw GLB (or, when that's
-    gone or `from_blend`, opens the saved `.blend`), validates, renders the four angles and a strip
-    per animation, saves the `.blend` and exports the GLB. Nothing is exported when validation fails.
-    Provenance (`c.extras`) is kept on the mesh, so a build from the `.blend` exports it too."""
+    gone or `from_blend`, opens the saved `.blend`), validates, renders the four angles (with the
+    scale figure and door frame) and a strip per animation, saves the `.blend` and exports the GLB.
+    Nothing is exported when validation fails. Provenance (`c.extras`) is kept on the mesh, so a build
+    from the `.blend` exports it too. `out_dir` writes everything (renders, textures, `.blend`, export)
+    there instead of the folder, which is then only read: a scratch build. `g3` (or `refs`, image
+    paths to put beside it instead of the ones found) adds the Gate 3 sheet, `renders/<name>_g3.png`."""
     p = paths(folder)
+    blend = p["blend"]
+    if out_dir:
+        out = Path(out_dir).expanduser()
+        p.update(blend=out / p["blend"].name, textures=out / "textures", renders=out / "renders", export=out / "export")
     spec = load_spec(folder)
     c = Character(spec, folder)
+    c.paths = p
     report = {"asset": str(p["folder"]), "notes": c.notes}
     if from_blend or not c.raw.exists():
-        bpy.ops.wm.open_mainfile(filepath=str(p["blend"]))
+        bpy.ops.wm.open_mainfile(filepath=str(blend))
         report["from"] = "blend"
     else:
         zasset.reset_scene()
@@ -523,7 +531,11 @@ def build(folder, render=True, export=True, save=True, from_blend=False):
         report["from"] = "raw"
     report.update(validate(spec))
     if render and report["ok"]:
-        report["renders"] = [render_angles(spec, p["renders"] / f"{p['folder'].name}_iso.png")]
+        sheet = p["renders"] / f"{p['folder'].name}_iso.png"
+        report["renders"] = [render_angles(spec, sheet)]
+        report["sheet"] = str(sheet)
+        if g3 or refs:
+            zasset.add_gate3(report, spec, p["folder"], sheet, refs)
         for name in spec.get("animations", []):
             report["renders"].append(render_strip(spec, name, p["renders"] / f"{p['folder'].name}_{name}.png"))
     if save and report["from"] == "raw":

@@ -452,25 +452,86 @@ def validate(spec):
 
 # ---------------------------------------------------------------- review renders
 
-def _review_set(spec):
-    """Floor tiles under and around the footprint (the footprint lighter), a low wall stub along
-    the back for things that stand against a wall, a sun and a camera. Never exported."""
+# The scale set on every gate render (docs/asset-pipeline.md, "The review sheet"): a survivor-height
+# figure standing in a door opening the size of the game's, beside the asset on the camera's left
+# (the sun's shadows fall that way, so neither shades the asset). In the doorway the figure takes no
+# width of its own, so small props stay big in the frame.
+FIGURE_HEIGHT = 1.78
+DOOR_WIDTH, DOOR_HEIGHT = 1.0, 2.1
+WALL_T = 0.16
+DOOR_JAMB, DOOR_LINTEL = 0.12, 0.2
+SCALE_GAP = 0.3  # across the screen, between the asset and the door frame (metres)
+SCALE_COLOUR = "plastic_grey"
+
+
+def scale_figure():
+    """A 1.78 m survivor silhouette from faceted boxes and prisms, feet on the origin, facing -Y.
+    Ours: no mesh from anywhere else. `render_angles` moves it to the Review collection."""
+    m = Mesh("review_figure")
+    g = SCALE_COLOUR
+    for sx in (-1, 1):
+        m.block(sx * 0.085, -0.03, 0.0, 0.11, 0.26, 0.07, g)                                # boot
+        m.block(sx * 0.085, 0.0, 0.07, 0.13, 0.15, 0.80, g, top_inset=(-0.01, 0.0))         # leg
+        m.block(sx * 0.27, 0.0, 0.80, 0.085, 0.11, 0.62, g, top_inset=(-0.005, -0.005))     # arm
+        m.block(sx * 0.27, 0.0, 0.68, 0.075, 0.09, 0.12, g)                                 # hand
+    m.block(0.0, 0.0, 0.82, 0.32, 0.18, 0.12, g)                                            # hips
+    m.box((-0.2, -0.11, 0.92), (0.2, 0.11, 1.44), g, top_inset=(-0.03, 0.0))                # torso
+    m.prism((0.0, 0.0, 1.43), 0.055, 0.11, g, sides=6)                                      # neck
+    m.prism((0.0, -0.01, 1.53), 0.105, FIGURE_HEIGHT - 1.53, g, sides=8, radius2=0.095)     # head
+    return m
+
+
+def door_frame():
+    """A door opening as the game makes them, 1 m wide and 2.1 m high in a 0.16 m wall: two jambs
+    and a lintel, centred on the origin, the wall along X."""
+    m = Mesh("review_door")
+    hw, t = DOOR_WIDTH / 2, WALL_T / 2
+    for sx in (-1, 1):
+        x0, x1 = sorted((sx * hw, sx * (hw + DOOR_JAMB)))
+        m.box((x0, -t, 0.0), (x1, t, DOOR_HEIGHT), "sheet_cream")
+    m.box((-hw - DOOR_JAMB, -t, DOOR_HEIGHT), (hw + DOOR_JAMB, t, DOOR_HEIGHT + DOOR_LINTEL), "sheet_cream")
+    return m
+
+
+def _to_review(m):
+    obj = m.finish()
+    collection(ASSET_COLLECTION).objects.unlink(obj)
+    collection(REVIEW_COLLECTION).objects.link(obj)
+    return obj
+
+
+def _wall_stub(spec):
+    """(lo, hi) of the low wall stub along the back of a thing that stands against a wall (the
+    footprint's width, on the wall line), else None."""
+    if not spec.get("against_wall"):
+        return None
+    fw, fd = spec["footprint"]
+    return (-fw / 2, fd / 2 - WALL_MARGIN, 0.0), (fw / 2, fd / 2 + WALL_MARGIN, 0.25)
+
+
+def _review_set(spec, cover=()):
+    """Floor tiles under and around the footprint (the footprint lighter; out to every rectangle
+    (x0, y0, x1, y1) in `cover`, where the scale set stands), a low wall stub along the back for
+    things that stand against a wall, a sun and a camera. Never exported."""
     c = collection(REVIEW_COLLECTION)
     for o in list(c.objects):
         bpy.data.objects.remove(o)
     fw, fd = spec["footprint"]
+    tx0, tx1, ty0, ty1 = -1, fw, -1, fd
+    for x0, y0, x1, y1 in cover:
+        tx0, tx1 = min(tx0, math.floor(x0 + fw / 2)), max(tx1, math.floor(x1 + fw / 2))
+        ty0, ty1 = min(ty0, math.floor(y0 + fd / 2)), max(ty1, math.floor(y1 + fd / 2))
     m = Mesh("review_floor")
-    for tx in range(-1, fw + 1):
-        for ty in range(-1, fd + 1):
+    for tx in range(tx0, tx1 + 1):
+        for ty in range(ty0, ty1 + 1):
             x0, y0 = tx - fw / 2, ty - fd / 2
             in_print = 0 <= tx < fw and 0 <= ty < fd
             m.box((x0 + 0.01, y0 + 0.01, -0.02), (x0 + 0.99, y0 + 0.99, 0.0),
                   "fabric_beige" if in_print else "plastic_grey")
-    if spec.get("against_wall"):
-        m.box((-fw / 2 - 1, fd / 2 - WALL_MARGIN, 0.0), (fw / 2 + 1, fd / 2 + WALL_MARGIN, 0.25), "sheet_cream")
-    floor = m.finish()
-    collection(ASSET_COLLECTION).objects.unlink(floor)
-    c.objects.link(floor)
+    stub = _wall_stub(spec)
+    if stub:
+        m.box(*stub, "sheet_cream")
+    _to_review(m)
 
     sun_data = bpy.data.lights.new("review_sun", "SUN")
     sun_data.energy = 3.2
@@ -510,27 +571,59 @@ def _review_set(spec):
     return cam, sun
 
 
-def render_angles(spec, out_dir=None, sheet_path=None):
+def _view(k):
+    """Game angle `k`: (yaw, direction to the camera, camera rotation, screen right, screen up)."""
+    yaw = math.radians(45 + 90 * k)
+    # Client camera offset (sin yaw, cos yaw) in game x/z; game z is Blender -Y.
+    d = Vector((math.sin(yaw) * math.cos(ELEVATION), -math.cos(yaw) * math.cos(ELEVATION), math.sin(ELEVATION)))
+    rot = d.to_track_quat("Z", "Y")
+    return yaw, d, rot, rot @ Vector((1, 0, 0)), rot @ Vector((0, 1, 0))
+
+
+def render_angles(spec, out_dir=None, sheet_path=None, scale=True):
     """Renders the four fixed game angles (orthographic, 30° elevation, yaw 45° + 90° × k, as the
     client camera) to PNGs and, with `sheet_path`, a 2 × 2 sheet of them (angle 0 top left, then
-    1, 2, 3). Returns the paths."""
-    cam, sun = _review_set(spec)
+    1, 2, 3). With `scale` (the default, for every gate render) the scale figure stands in the door
+    frame beside the asset, on the camera's left at every angle, the figure facing the camera and the
+    door in a wall along X (parallel to the asset's back); the camera frames the asset, its footprint
+    and them. Without it, the asset alone as before (animation strips). Returns the paths."""
     obj = asset_objects()[0]
     fw, fd = spec["footprint"]
-    pts = [Vector(c) for c in obj.bound_box]
-    pts += [Vector((sx * (fw / 2 + 0.3), sy * (fd / 2 + 0.3), 0)) for sx in (-1, 1) for sy in (-1, 1)]
+    asset_pts = [Vector(c) for c in obj.bound_box]
+    pts = asset_pts + [Vector((sx * (fw / 2 + 0.3), sy * (fd / 2 + 0.3), 0)) for sx in (-1, 1) for sy in (-1, 1)]
+    views = [_view(k) for k in range(4)]
+    places, cover = [], []
+    stub = _wall_stub(spec)
+    if stub:  # the scale set keeps clear of the wall stub too
+        asset_pts = asset_pts + [Vector((x, y, 0.0)) for x in (stub[0][0], stub[1][0]) for y in (stub[0][1], stub[1][1])]
+    if scale:
+        hw, t, top = DOOR_WIDTH / 2 + DOOR_JAMB, WALL_T / 2, DOOR_HEIGHT + DOOR_LINTEL
+        door_pts = [Vector((sx * hw, sy * t, z)) for sx in (-1, 1) for sy in (-1, 1) for z in (0.0, top)]
+        for yaw, d, rot, right, up in views:
+            across = Vector((right.x, right.y, 0.0)).normalized()
+            near = min(p.dot(across) for p in asset_pts)
+            half = max(p.dot(across) for p in door_pts)
+            at = across * (near - SCALE_GAP - half)
+            places.append(at)
+            cover.append((at.x - hw - 0.3, at.y - hw - 0.3, at.x + hw + 0.3, at.y + hw + 0.3))
+    cam, sun = _review_set(spec, cover)
+    if scale:
+        door, figure = _to_review(door_frame()), _to_review(scale_figure())
+        fig_pts = [v.co.copy() for v in figure.data.vertices]
     out_dir = Path(out_dir or tempfile.mkdtemp(prefix=f"zasset_{spec['id']}_"))
     out_dir.mkdir(parents=True, exist_ok=True)
     files = []
     scene = bpy.context.scene
-    for k in range(4):
-        yaw = math.radians(45 + 90 * k)
-        # Client camera offset (sin yaw, cos yaw) in game x/z; game z is Blender -Y.
-        d = Vector((math.sin(yaw) * math.cos(ELEVATION), -math.cos(yaw) * math.cos(ELEVATION), math.sin(ELEVATION)))
-        rot = d.to_track_quat("Z", "Y")
-        right, up = rot @ Vector((1, 0, 0)), rot @ Vector((0, 1, 0))
-        xs = [p.dot(right) for p in pts]
-        ys = [p.dot(up) for p in pts]
+    for k, (yaw, d, rot, right, up) in enumerate(views):
+        frame = pts
+        if scale:
+            at = places[k]
+            door.location = figure.location = at
+            figure.rotation_euler = (0.0, 0.0, yaw)  # facing the camera
+            turn = figure.rotation_euler.to_matrix()
+            frame = pts + [at + p for p in door_pts] + [at + turn @ p for p in fig_pts]
+        xs = [p.dot(right) for p in frame]
+        ys = [p.dot(up) for p in frame]
         centre = right * (min(xs) + max(xs)) / 2 + up * (min(ys) + max(ys)) / 2
         cam.rotation_euler = rot.to_euler()
         cam.location = centre + d * 20
@@ -550,22 +643,43 @@ def render_angles(spec, out_dir=None, sheet_path=None):
     return files
 
 
-def montage(files, out, cols=2, shrink=1):
+# The review renders' sky as it lands in a PNG (display values): what a reference is laid on.
+SHEET_BACKDROP = (0.64, 0.66, 0.69)
+
+
+def montage(files, out, cols=2, shrink=1, fit=False, line=1):
     """Tiles PNGs (all the same size) into one, `cols` across, in reading order, each shrunk by the
-    whole factor `shrink`, with thin dark lines between them. For the 2 × 2 review sheet, or a
-    contact sheet of many assets' sheets to critique at once."""
+    whole factor `shrink`, with dark lines between them (`line` pixels in from each edge). For the
+    2 × 2 review sheet, or a contact sheet of many assets' sheets to critique at once. With `fit`,
+    images of any size are scaled to fit the first one's tile (aspect kept) and laid on the review
+    backdrop, transparent parts too: a reference image beside a review sheet (`gate3_sheet`)."""
     import numpy as np
     imgs = []
     for f in files:
         im = bpy.data.images.load(str(f), check_existing=False)
         w, h = im.size
+        if fit and imgs:
+            th, tw = imgs[0].shape[:2]
+            k = min(tw / w, th / h)
+            w, h = max(1, round(w * k)), max(1, round(h * k))
+            if (w, h) != tuple(im.size):
+                im.scale(w, h)
         a = np.empty(w * h * 4, dtype=np.float32)
         im.pixels.foreach_get(a)
         a = a.reshape(h, w, 4)
+        bpy.data.images.remove(im)
+        if fit and imgs:
+            tile = np.empty((th, tw, 4), dtype=np.float32)
+            tile[..., :3] = SHEET_BACKDROP
+            tile[..., 3] = 1.0
+            y0, x0 = (th - h) // 2, (tw - w) // 2
+            alpha = a[..., 3:4]
+            tile[y0:y0 + h, x0:x0 + w, :3] = a[..., :3] * alpha + tile[y0:y0 + h, x0:x0 + w, :3] * (1.0 - alpha)
+            imgs.append(tile)  # already the (shrunk) first tile's size
+            continue
         if shrink > 1:
             a = a[:h - h % shrink, :w - w % shrink].reshape(h // shrink, shrink, w // shrink, shrink, 4).mean(axis=(1, 3))
         imgs.append(a)
-        bpy.data.images.remove(im)
     h, w = imgs[0].shape[:2]
     rows = (len(imgs) + cols - 1) // cols
     sheet = np.full((rows * h, cols * w, 4), 0.15, dtype=np.float32)
@@ -573,7 +687,7 @@ def montage(files, out, cols=2, shrink=1):
     # Image rows run bottom to top: the first images go at the top.
     for k, a in enumerate(imgs):
         r, c = rows - 1 - k // cols, k % cols
-        sheet[r * h + 1:(r + 1) * h - 1, c * w + 1:(c + 1) * w - 1] = a[1:-1, 1:-1]
+        sheet[r * h + line:(r + 1) * h - line, c * w + line:(c + 1) * w - line] = a[line:-line, line:-line]
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     im = bpy.data.images.new("review_sheet", cols * w, rows * h, alpha=False)
@@ -583,6 +697,55 @@ def montage(files, out, cols=2, shrink=1):
     im.save_render(str(out), scene=bpy.context.scene)
     bpy.data.images.remove(im)
     return str(out)
+
+
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg")
+
+
+def gate3_refs(spec, folder):
+    """What stands beside an asset at Gate 3 (docs/asset-pipeline.md, References), found in the
+    asset's `folder`: its approved reference image, the spec's `reference` (a path, or a list, relative
+    to the folder), else the only image in `refs/`, else `raw/reference.png` (Meshy's); then the
+    newest one or two approved review sheets of its category (`style/approved/<category>/` in the art
+    repo, the spec's category in lower case: furniture, street, character), not its own. Only reads.
+    Returns (paths, notes)."""
+    folder = Path(folder)
+    found, notes = [], []
+    named = spec.get("reference")
+    if named:
+        for r in [named] if isinstance(named, str) else named:
+            p = folder / r
+            if p.is_file():
+                found.append(p)
+            else:
+                notes.append(f"reference {r} isn't there")
+    else:
+        refs = sorted(p for p in (folder / "refs").glob("*") if p.suffix.lower() in IMAGE_SUFFIXES)
+        if len(refs) == 1:
+            found.append(refs[0])
+        elif refs:
+            notes.append(f"{len(refs)} images in refs/: say which is the approved one (`reference` in the spec, or --refs)")
+        elif (folder / "raw" / "reference.png").is_file():
+            found.append(folder / "raw" / "reference.png")
+        else:
+            notes.append("no reference image (refs/ is empty)")
+    root = artrepo.art_root()
+    category = str(spec.get("category", "")).lower()
+    approved = root / "style" / "approved" / category if root else None
+    own = {spec["id"], folder.name}
+    sheets = sorted((p for p in (approved.glob("*") if approved and approved.is_dir() else [])
+                     if p.suffix.lower() in IMAGE_SUFFIXES and not any(p.stem.startswith(o) for o in own)),
+                    key=lambda p: (-p.stat().st_mtime, p.name))[:2]
+    found += sheets
+    if not sheets:
+        notes.append(f"no approved {category} sheets yet (style/approved/{category}/)")
+    return found, notes
+
+
+def gate3_sheet(sheet, refs, out):
+    """The Gate 3 sheet: the asset's 2 × 2 review sheet, then each of `refs` (its reference image,
+    approved neighbours' sheets) beside it in one row, every tile the size of the asset's sheet."""
+    return montage([sheet, *refs], out, cols=1 + len(refs), fit=True, line=4)  # wider lines between assets
 
 
 # ---------------------------------------------------------------- export
@@ -634,11 +797,41 @@ class Build:
         return Mesh(self.spec["id"])
 
 
-def build(asset, render=True, export=True, save=True, sheet=True):
+def g3_path(sheet):
+    """`renders/<name>_iso.png` -> `renders/<name>_g3.png`."""
+    sheet = Path(sheet)
+    name = sheet.stem[:-4] if sheet.stem.endswith("_iso") else sheet.stem
+    return sheet.with_name(f"{name}_g3.png")
+
+
+def add_gate3(report, spec, folder, sheet, refs=None):
+    """Makes the Gate 3 sheet beside `sheet` (`<name>_g3.png`): the asset's sheet, then `refs` if given
+    (paths), else what `gate3_refs` finds. Adds `g3` and notes saying what each tile is."""
+    notes = report.setdefault("notes", [])
+    if refs is None:
+        refs, missing = gate3_refs(spec, folder)
+        notes += [f"Gate 3: {m}" for m in missing]
+    refs = [Path(r).expanduser() for r in refs]
+    for r in refs:
+        if not r.is_file():
+            raise FileNotFoundError(f"Gate 3 reference {r} isn't there")
+    report["g3"] = gate3_sheet(sheet, refs, g3_path(sheet))
+    notes.append("Gate 3 sheet, left to right: this asset" + "".join(f", {rel(r)}" for r in refs))
+    return report["g3"]
+
+
+def build(asset, render=True, export=True, save=True, sheet=True, out_dir=None, g3=False, refs=None):
     """Builds `asset` ("category/id") from scratch: reset, run its script, validate, render the four
-    angles, save the .blend and export the GLB. Returns the validation report plus file paths.
-    Nothing is exported when validation fails."""
-    p = paths(asset)
+    angles (with the scale figure and door frame), save the .blend and export the GLB. Returns the
+    validation report plus file paths. Nothing is exported when validation fails. `out_dir` writes the
+    sheet, .blend and GLB there instead of the work folder (a scratch build; spec and script are only
+    read). `g3` (or `refs`, a list of image paths to put beside it instead of the ones found) adds the
+    Gate 3 sheet, `<id>_g3.png` beside the review sheet."""
+    p = dict(paths(asset))
+    if out_dir:
+        out = Path(out_dir).expanduser()
+        for key in ("sheet", "blend", "glb"):
+            p[key] = out / p[key].name
     spec = load_spec(asset)
     reset_scene()
     source = p["script"].read_text()
@@ -655,8 +848,13 @@ def build(asset, render=True, export=True, save=True, sheet=True):
     report = validate(spec)
     report["asset"] = asset
     report["where"] = p["where"]
+    report["notes"] = []
     if render and report["ok"]:
-        report["renders"] = render_angles(spec, sheet_path=p["sheet"] if sheet else None)
+        report["renders"] = render_angles(spec, sheet_path=p["sheet"] if sheet or g3 or refs else None)
+        if sheet or g3 or refs:
+            report["sheet"] = str(p["sheet"])
+        if g3 or refs:
+            add_gate3(report, spec, p["spec"].parent, p["sheet"], refs)
     if save:
         report["blend"] = save_blend(p["blend"], source, f"{spec['id']}.py")
     if export and report["ok"]:
