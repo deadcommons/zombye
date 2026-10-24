@@ -10,7 +10,7 @@ There's no CLA and no sign-off. By opening a pull request you agree that:
 - code, data, shaders and docs you contribute are licensed under MIT OR Apache-2.0, like the rest
   of the code;
 - art and audio you contribute (models, textures, animations, images, sounds, music) are licensed
-  under CC BY 4.0. That lets Dead Commons publish them in the game's art set under CC BY-NC-SA 4.0
+  under CC BY 4.0. That lets Dead Commons (Grillo Ltd) publish them in the game's art set under CC BY-NC-SA 4.0
   and use them in official releases, including paid ones.
 
 You keep the copyright to your work. Only submit work you have the right to license this way, and
