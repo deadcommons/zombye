@@ -51,6 +51,7 @@ mod player;
 mod rig;
 mod saving;
 mod server_link;
+mod skills_ui;
 mod survivor;
 mod world_render;
 mod zombie_render;
@@ -270,7 +271,7 @@ fn main() {
             camera::IsoCameraPlugin,
             zombie_render::ZombieRenderPlugin,
             items_render::ItemsRenderPlugin,
-            (hud::HudPlugin, inventory_ui::InventoryUiPlugin, health_ui::HealthUiPlugin, death::DeathPlugin, needs_ui::NeedsUiPlugin),
+            (hud::HudPlugin, inventory_ui::InventoryUiPlugin, health_ui::HealthUiPlugin, death::DeathPlugin, needs_ui::NeedsUiPlugin, skills_ui::SkillsUiPlugin),
             fx::FxPlugin,
             survivor::SurvivorPlugin,
             autoplay::AutoplayPlugin,

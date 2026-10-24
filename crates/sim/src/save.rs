@@ -4,7 +4,7 @@
 //! **What's stored.** Everything that isn't derived and that the future depends on: the world
 //! settings (seed, map size, tunings), map edits, door and window damage, ground items, players
 //! (with their queued inputs and actions, inventories, open container, item jobs, wounds and
-//! illnesses, needs and sleep), the contents
+//! illnesses, needs and sleep, skills), the contents
 //! of every container opened so far (unopened ones fill from the seed when first opened, so they
 //! aren't stored), every zombie on every tier with all its AI columns, the
 //! population state, the clock and tick, both RNG streams, the sounds waiting to be heard, the
@@ -31,7 +31,7 @@
 //! save uses removed, an opened container that no longer is one), unless
 //! [`LoadOptions::force`] says to load anyway (see [`crate::save_check`]). Tunings that are not
 //! in data files yet (`ZombieTuning`, `CombatTuning`, `TierTuning`, `CarryTuning`, `HealthTuning`,
-//! `InfectionTuning`, `NeedsTuning`) are saved with the world, as RON
+//! `InfectionTuning`, `NeedsTuning`, `SkillTuning`) are saved with the world, as RON
 //! text, so a save keeps its own numbers and an added field just takes its default.
 //!
 //! **Validation.** Values read from a save are checked before the world is used (finite numbers,
@@ -55,7 +55,7 @@
 //! another format version fails with [`LoadError::Version`] (format 3 added items, inventories and
 //! containers, format 4 wounds and illness on players, format 5 first aid: dressings, treatments,
 //! painkillers and antibiotics, format 6 needs and sleep on players and each stack's age and goes
-//! had; older saves are refused); truncated or damaged files fail with [`LoadError::Truncated`] or
+//! had, format 7 skills: each player's XP in every skill; older saves are refused); truncated or damaged files fail with [`LoadError::Truncated`] or
 //! [`LoadError::Corrupt`], never a panic.
 
 use std::fmt;
@@ -73,6 +73,7 @@ use crate::items::{GroundItem, ItemStack, complete_items};
 use crate::map::{EdgeChange, EdgeRef, TileMap};
 use crate::nav::SavedNav;
 use crate::needs::NeedsTuning;
+use crate::skills::SkillTuning;
 use crate::players::Player;
 use crate::population::{Attractor, Population, Zone};
 use crate::rng::Rng;
@@ -87,7 +88,7 @@ use crate::zombies::{Tier, ZombieAnim, ZombieState, Zombies};
 /// The first eight bytes of every save.
 pub const MAGIC: [u8; 8] = *b"ZOMBYSAV";
 /// Bumped whenever the layout changes; other versions are refused with a clear error.
-pub const FORMAT_VERSION: u32 = 6;
+pub const FORMAT_VERSION: u32 = 7;
 /// File extension `net::save_file` uses.
 pub const EXTENSION: &str = "zsave";
 
@@ -239,6 +240,8 @@ struct Settings {
     infection: InfectionTuning,
     #[serde(default)]
     needs: NeedsTuning,
+    #[serde(default)]
+    skills: SkillTuning,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -554,6 +557,8 @@ impl World {
             item_notes: _,
             used_items: _,
             woke: _,
+            level_ups: _,
+            skill_mods_due: _,
             private_dirty: _,
             // Scratch, refilled every tick.
             targets: _,
@@ -588,6 +593,7 @@ impl World {
             health: config.health.clone(),
             infection: config.infection.clone(),
             needs: config.needs,
+            skills: config.skills.clone(),
         };
         w.section(CONF, ron::to_string(&settings).expect("settings serialize").as_bytes());
         let layout = if *map_custom {
@@ -679,6 +685,7 @@ impl World {
         config.health = settings.health;
         config.infection = settings.infection;
         config.needs = settings.needs;
+        config.skills = settings.skills;
         save_check::check_settings(text, &config)?;
         let map_save: MapSave = decode(MAPD, r.expect(MAPD)?)?;
         let mut ws: WorldSave = decode(WRLD, r.expect(WRLD)?)?;
@@ -1212,9 +1219,9 @@ pub(crate) mod tests {
     fn other_versions_are_refused() {
         let w = world(10);
         let mut bytes = w.save();
-        bytes[8..12].copy_from_slice(&7u32.to_le_bytes());
+        bytes[8..12].copy_from_slice(&8u32.to_le_bytes());
         let err = World::load(&bytes, &content()).err().unwrap();
-        assert_eq!(err, LoadError::Version { found: 7, supported: FORMAT_VERSION });
+        assert_eq!(err, LoadError::Version { found: 8, supported: FORMAT_VERSION });
         assert!(err.to_string().contains("newer"), "{err}");
     }
 

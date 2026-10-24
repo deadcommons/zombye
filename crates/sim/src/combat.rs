@@ -25,6 +25,7 @@ use crate::items::{GroundItem, WeaponDef};
 use crate::run::DeathCause;
 use crate::players::{Action, ActionKind, DevFlags, PLAYER_RADIUS, Player, PlayerInput, RUN_MIN_ENDURANCE};
 use crate::senses::{Sound, SoundSource};
+use crate::skills::Skill;
 use crate::vision::clear_path;
 use crate::world::World;
 use crate::zombies::{ZombieAnim, ZombieState};
@@ -319,10 +320,24 @@ impl World {
         } else {
             (1.0, 1.0)
         };
+        // A practised hand swings cheaper and quicker (Bludgeon, Edged; #46), and swinging a heavy
+        // weapon builds Strength.
+        let (skill_cost, skill_time) = if kind == ActionKind::Swing {
+            let skill = self.config.weapons[weapon as usize].skill();
+            let level = self.skill_level(pi, skill);
+            let heavy = self.players[pi].inventory.hand.is_some_and(|s| self.item_def(s.item).weight_kg > self.config.skills.heavy_weapon_kg);
+            if heavy {
+                self.award_xp(pi, Skill::Strength, self.config.skills.heavy_swing_xp);
+            }
+            (self.config.skills.cost_mult(skill, level), self.config.skills.time_mult(skill, level))
+        } else {
+            (1.0, 1.0)
+        };
+        let cost = cost * skill_cost;
         let c = &self.config.combat;
         let p = &mut self.players[pi];
         let (power, slow) = c.fatigue(p.state.endurance);
-        let (power, slow) = (power * arm_power, slow * arm_time);
+        let (power, slow) = (power * arm_power, slow * arm_time * skill_time);
         p.state.endurance = (p.state.endurance - cost).max(0.0);
         if p.state.endurance <= RUN_MIN_ENDURANCE {
             p.state.winded = true;
@@ -333,7 +348,7 @@ impl World {
     }
 
     /// Single-player / debug: a dead player gets up again at the spawn point with full health and
-    /// empty hands. Returns whether it respawned.
+    /// empty hands, a new survivor (its skills start over). Returns whether it respawned.
     pub fn respawn_player(&mut self, id: u32) -> bool {
         let spawn = self.map.resolve_circle(self.player_spawn, PLAYER_RADIUS);
         let hp = self.config.combat.player_hp;
@@ -343,8 +358,10 @@ impl World {
         }
         // An infected body left behind gets up now.
         self.rise(pi);
+        // A new survivor: its skills start over (#46).
+        let skills = crate::skills::Skills::start(&self.config.skills);
         let p = &mut self.players[pi];
-        *p = Player { last_input_seq: p.last_input_seq, input: PlayerInput::default(), dev: p.dev, ..Player::new(id, spawn, hp) };
+        *p = Player { last_input_seq: p.last_input_seq, input: PlayerInput::default(), dev: p.dev, skills, ..Player::new(id, spawn, hp) };
         self.refresh_carry(pi);
         true
     }
@@ -385,17 +402,23 @@ impl World {
     /// An action lands: find its targets and hit them.
     fn land(&mut self, pi: usize, a: Action) {
         let c = &self.config.combat;
+        // Skills (#46): Strength knocks back farther and shoves down more often, so does Brawl;
+        // the weapon's skill (Brawl for stomps) hits harder.
+        let sk = &self.config.skills;
+        let level = |s: Skill| self.players[pi].skills.level(s, sk);
+        let knock = sk.knockback_mult(level(Skill::Strength));
         let s = match a.kind {
             ActionKind::Swing => {
                 let w = &self.config.weapons[a.weapon as usize];
+                let dm = sk.damage_mult(w.skill(), level(w.skill()));
                 Strike {
                     range: w.range,
                     half_arc: (w.arc_degrees * 0.5).to_radians(),
                     max_targets: w.max_targets,
-                    damage: w.damage,
+                    damage: (w.damage.0 * dm, w.damage.1 * dm),
                     crit_chance: w.crit_chance,
                     crit_multiplier: w.crit_multiplier,
-                    knockback: w.knockback,
+                    knockback: w.knockback * knock,
                     stagger_chance: w.stagger_chance,
                     knockdown_chance: w.knockdown_chance,
                     noise: w.noise_radius,
@@ -408,16 +431,19 @@ impl World {
                 damage: (0.0, 0.0),
                 crit_chance: 0.0,
                 crit_multiplier: 1.0,
-                knockback: c.shove_knockback,
+                knockback: c.shove_knockback * knock,
                 stagger_chance: 1.0,
-                knockdown_chance: c.shove_knockdown_chance,
+                knockdown_chance: (c.shove_knockdown_chance + sk.shove_knockdown_bonus(level(Skill::Strength), level(Skill::Brawl))).min(1.0),
                 noise: c.shove_noise,
             },
             ActionKind::Stomp => Strike {
                 range: c.stomp_range,
                 half_arc: (c.stomp_arc_degrees * 0.5).to_radians(),
                 max_targets: 1,
-                damage: c.stomp_damage,
+                damage: {
+                    let dm = sk.damage_mult(Skill::Brawl, level(Skill::Brawl));
+                    (c.stomp_damage.0 * dm, c.stomp_damage.1 * dm)
+                },
                 crit_chance: c.stomp_crit_chance,
                 crit_multiplier: c.stomp_crit_multiplier,
                 knockback: 0.0,
@@ -468,8 +494,17 @@ impl World {
                 continue;
             }
             let falloff = self.config.combat.multi_hit_falloff.powi(hits as i32);
-            self.strike(player, a, &s, origin, forward, j, falloff);
+            let effect = self.strike(player, a, &s, origin, forward, j, falloff);
             hits += 1;
+            // Practice (#46): a hit with a weapon or fist, a kill instead, a zombie shoved, a stomp that kills.
+            let sk = &self.config.skills;
+            let killed = effect == HitEffect::Killed;
+            let (skill, xp) = match a.kind {
+                ActionKind::Swing => (self.config.weapons[a.weapon as usize].skill(), if killed { sk.kill_xp } else { sk.hit_xp }),
+                ActionKind::Shove => (Skill::Brawl, sk.shove_xp),
+                ActionKind::Stomp => (Skill::Brawl, if killed { sk.stomp_kill_xp } else { 0.0 }),
+            };
+            self.award_xp(pi, skill, xp);
         }
         self.scratch_hits = found;
         self.action_events.push(ActionEvent { player, kind: a.kind, weapon: a.weapon, hits });
@@ -479,9 +514,9 @@ impl World {
         }
     }
 
-    /// Hit zombie `j` from `origin`.
+    /// Hit zombie `j` from `origin`. Returns what it did.
     #[allow(clippy::too_many_arguments)]
-    fn strike(&mut self, player: u32, a: Action, s: &Strike, origin: Vec2, forward: Vec2, j: usize, falloff: f32) {
+    fn strike(&mut self, player: u32, a: Action, s: &Strike, origin: Vec2, forward: Vec2, j: usize, falloff: f32) -> HitEffect {
         let c = &self.config.combat;
         let zt = &self.config.zombie;
         let rng = &mut self.combat_rng;
@@ -558,6 +593,7 @@ impl World {
             (_, ActionKind::Stomp) => CombatEventKind::Stomp,
         };
         self.push_combat_event(CombatEvent { kind, pos: zpos, dir, zombie: zid, player, damage, crit, part: None, wound: None });
+        effect
     }
 
     pub(crate) fn push_combat_event(&mut self, e: CombatEvent) {
@@ -1002,7 +1038,7 @@ mod tests {
         assert_eq!(p.hp, 0.0);
         assert!(p.weapon.is_none());
         assert!(w.items().iter().any(|it| it.stack.item == bat && it.pos.distance(p.state.pos) < 0.01), "the bat should drop");
-        assert!(p.inventory.is_empty() && p.state.mods == crate::players::MoveMods::default());
+        assert!(p.inventory.is_empty() && p.state.mods == w.config.skills.move_mods(1, crate::players::MoveMods::default()));
         // Dead: input is ignored and the zombies lose interest.
         let at = p.state.pos;
         w.set_player_input(id, 1, PlayerInput { move_dir: Vec2::X, facing: 0.0, run: true, sneak: false });
@@ -1027,6 +1063,8 @@ mod tests {
         let trials = 400;
         let mut downs = 0;
         for _ in 0..trials {
+            // A new survivor every time (Strength 1, Brawl 0): shoving practises Brawl, which floors more.
+            w.players[0].skills = crate::skills::Skills::start(&w.config.skills);
             (w.zombies.pos[z], w.zombies.vel[z], w.zombies.facing[z]) = (Vec2::new(101.3, 100.5), Vec2::ZERO, facing);
             (w.zombies.state[z], w.zombies.timer[z], w.zombies.anim[z]) = (ZombieState::Wander, 0.0, ZombieAnim::Idle);
             rest(&mut w, id);
@@ -1038,11 +1076,12 @@ mod tests {
         downs as f32 / trials as f32
     }
 
-    /// A shove knocks a lone zombie down now and then (about one in four from the front), more
-    /// often from behind.
+    /// A shove knocks a lone zombie down now and then (a little more than one in four from the
+    /// front, with a new survivor's Strength), more often from behind.
     #[test]
     fn shove_sometimes_knocks_down_a_lone_zombie() {
-        let c = CombatTuning::default();
+        let mut c = CombatTuning::default();
+        c.shove_knockdown_chance += crate::skills::SkillTuning::default().shove_knockdown_bonus(1, 0);
         let front = shove_knockdown_rate(PI);
         let behind = shove_knockdown_rate(0.0);
         eprintln!("shove knockdowns: {front:.2} from the front, {behind:.2} from behind (chance {}, ×{} behind)", c.shove_knockdown_chance, c.behind_knockdown_mult);

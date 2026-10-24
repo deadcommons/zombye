@@ -27,7 +27,7 @@ const COMPASS: [(&str, [f32; 2]); 8] =
     [("e", [1.0, 0.0]), ("se", [1.0, 1.0]), ("s", [0.0, 1.0]), ("sw", [-1.0, 1.0]), ("w", [-1.0, 0.0]), ("nw", [-1.0, -1.0]), ("n", [0.0, -1.0]), ("ne", [1.0, -1.0])];
 
 /// Tools that only look: they don't make the world need saving.
-const READ_ONLY: [&str; 16] = ["observe", "zombie", "edge", "weapons", "items", "inventory", "health", "containers_near", "loot", "buildings", "regions", "stats", "saves", "save", "load", "screenshot"];
+const READ_ONLY: [&str; 17] = ["observe", "zombie", "edge", "weapons", "items", "inventory", "health", "skills", "containers_near", "loot", "buildings", "regions", "stats", "saves", "save", "load", "screenshot"];
 /// "on" / "off".
 fn on_off(b: bool) -> &'static str {
     if b { "on" } else { "off" }
@@ -422,6 +422,15 @@ fn tool_list() -> Value {
             "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}}}
         },
         {
+            "name": "skills",
+            "description": "A player's skills (#46): Fitness, Strength, Bludgeon, Edged, Brawl, Stealth, First Aid, Scavenging, \
+                Handiwork. For each: its level (0-5; levels at 100, 250, 500, 900 and 1500 XP in all), XP so far and to the next \
+                level, what its level gives now and what the next level gives, and how XP is earned (practice only: running, \
+                heavy swings and moving overloaded, hits and kills with blunt or edged weapons or fists, shoves, stomp kills, \
+                sneaking near zombies that aren't after you, treatments, first searches, crafting). Read-only.",
+            "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}}}
+        },
+        {
             "name": "wound",
             "description": "Debug: give a player a wound now, taking its damage (god mode keeps the HP). part: head, torso, left_arm, \
                 right_arm, left_hand, right_hand, left_leg, right_leg, left_foot, right_foot. kind: bruise, scratch, gash, bite, glass_cut. \
@@ -530,7 +539,7 @@ fn tool_list() -> Value {
         },
         {
             "name": "stats",
-            "description": "Map size, tick, time of day and daylight, players (HP, weapon, dead, dev toggles god / ignored, wounds, bleeding, HP lost per game hour, pain, sick, the infection once it shows, hunger / thirst / tiredness, asleep, status tags; this life's run: time alive in game hours and seconds played, kills, metres walked, things taken, containers searched, wounds taken, HP lost; and once dead the cause of death in plain words), the time scale (30 while everyone sleeps), zombie counts by state (corpses too) and by simulation tier (active / near / virtual, with the ranges and last tick's promotions and demotions), weapons on the floor, last tick timing (tier pass, senses, flow fields, active AI, near and virtual updates), sounds heard and the state hash (same seed + same calls = same hash).",
+            "description": "Map size, tick, time of day and daylight, players (HP, weapon, dead, dev toggles god / ignored, wounds, bleeding, HP lost per game hour, pain, sick, the infection once it shows, hunger / thirst / tiredness, asleep, status tags, skill levels; this life's run: time alive in game hours and seconds played, kills, metres walked, things taken, containers searched, wounds taken, HP lost; and once dead the cause of death in plain words), the time scale (30 while everyone sleeps), zombie counts by state (corpses too) and by simulation tier (active / near / virtual, with the ranges and last tick's promotions and demotions), weapons on the floor, last tick timing (tier pass, senses, flow fields, active AI, near and virtual updates), sounds heard and the state hash (same seed + same calls = same hash).",
             "inputSchema": {"type": "object", "properties": {}}
         }
     ])
@@ -845,6 +854,7 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
         }
         "inventory" => inventory_text(world, player_id()),
         "health" => health_text(world, player_id()),
+        "skills" => skills_text(world, player_id()),
         "wound" => {
             let id = player_id();
             world.player(id).ok_or_else(|| format!("no player {id}"))?;
@@ -979,9 +989,9 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             run_job(world, id, intent, health_text)
         }
         "weapons" => {
-            let mut out = String::from("id: name, category | damage | reach m | arc deg | windup/swing s | targets | knockback m | stagger/knockdown/crit (x mult) | endurance | noise m\n");
+            let mut out = String::from("id: name, category (skill) | damage | reach m | arc deg | windup/swing s | targets | knockback m | stagger/knockdown/crit (x mult) | endurance | noise m\n");
             for w in &world.config.weapons {
-                out.push_str(&format!("{}: {}, {:?} | {}\n", w.id, w.name, w.category, weapon_line(w)));
+                out.push_str(&format!("{}: {}, {:?} ({:?}) | {}\n", w.id, w.name, w.category, w.skill(), weapon_line(w)));
             }
             let c = &world.config.combat;
             out.push_str(&format!(
@@ -1136,6 +1146,7 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 "tiredness": p.needs.tiredness,
                 "asleep": p.needs.sleep.map(|s| s.spot.name()),
                 "tags": world.status_tags(p.id).iter().map(|t| t.label.clone()).collect::<Vec<_>>(),
+                "skills": zombye_sim::Skill::ALL.iter().map(|&s| (s.id().to_string(), json!(p.skills.level(s, &world.config.skills)))).collect::<serde_json::Map<_, _>>(),
             })).collect::<Vec<_>>(),
             "time_scale": world.time_scale(),
             "items_on_floor": world.items().len(),
@@ -1225,10 +1236,13 @@ struct Events {
     hit_lines: Vec<String>,
     kills: u32,
     deaths: Vec<u32>,
+    /// Skill level-ups (#46), taken from the world as they happen.
+    level_ups: Vec<zombye_sim::LevelUp>,
 }
 
 impl Events {
-    fn add(&mut self, world: &World) {
+    fn add(&mut self, world: &mut World) {
+        self.level_ups.extend(world.take_level_ups());
         for a in &world.attack_events {
             self.total += 1;
             let i = match self.per_player.iter().position(|e| e.0 == a.player) {
@@ -1323,6 +1337,10 @@ impl Events {
                 })
                 .collect();
             out.push_str(&format!("; ZOMBIE ATTACKS: {} ({})", self.total, list.join("; ")));
+        }
+        if !self.level_ups.is_empty() {
+            let ups: Vec<String> = self.level_ups.iter().map(|l| format!("P{} {}", l.player, l.text())).collect();
+            out.push_str(&format!("; LEVEL UP: {}", ups.join(", ")));
         }
         for p in &self.deaths {
             let cause = world.player(*p).and_then(|p| p.run.cause_of_death()).map_or(String::new(), |c| format!(": {c}"));
@@ -1622,7 +1640,7 @@ fn zombie_detail(world: &World, i: usize) -> String {
     for pl in &world.players {
         let to = pl.state.pos - p;
         let d = to.length();
-        let target = Target { id: pl.id, pos: pl.state.pos, stance: pl.state.stance, moving: pl.input.move_dir.length_squared() > 1e-4, ignored: pl.dev.ignored };
+        let target = Target { id: pl.id, pos: pl.state.pos, stance: pl.state.stance, moving: pl.input.move_dir.length_squared() > 1e-4, ignored: pl.dev.ignored, sight_mult: world.player_sight_mult(pl.id) };
         let range = senses::sight_range(t, cone, daylight, &target, z.facing[i], to.normalize_or_zero());
         out.push_str(&format!(
             "  P{}: {:.1} m {}, line of sight {}, could be seen out to {:.1} m from here ({:?}{})\n",
@@ -2084,6 +2102,29 @@ fn treat_intent(world: &World, id: u32, args: &Value) -> Result<Intent, String> 
 }
 
 /// The `health` tool's text: what the player's own client sees (the hidden infection stays hidden).
+/// A player's skills (#46): level, XP, what it gives now and next, how it's earned.
+fn skills_text(world: &World, id: u32) -> Result<String, String> {
+    let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+    let t = &world.config.skills;
+    let (carry, aid) = (&world.config.carry, &world.config.health.first_aid);
+    let levels: Vec<String> = t.levels.iter().map(|n| format!("{n:.0}")).collect();
+    let mut out = format!("player {id}{} skills (levels 1-5 at {} XP in all; practice only, nothing is lost):\n", if p.dead { " (dead)" } else { "" }, levels.join(", "));
+    for v in p.skills.view(t) {
+        let s = v.skill;
+        let next = match v.next_at {
+            Some(n) => format!("level {} at {n:.0} XP, {:.0} to go", v.level + 1, (n - p.skills.xp(s)).max(0.0).ceil()),
+            None => "the top level".to_string(),
+        };
+        out.push_str(&format!("{}: {} {}, {:.0} XP ({next})\n", s.id(), s.name(), v.level, v.xp));
+        out.push_str(&format!("  now: {}\n", t.gives(s, v.level, carry, aid)));
+        if v.level < zombye_sim::skills::MAX_LEVEL {
+            out.push_str(&format!("  level {}: {}\n", v.level + 1, t.gives(s, v.level + 1, carry, aid)));
+        }
+        out.push_str(&format!("  earned by: {}\n", t.earned_by(s)));
+    }
+    Ok(out)
+}
+
 fn health_text(world: &World, id: u32) -> Result<String, String> {
     let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
     let h = world.health_view(id).expect("player exists");
@@ -2646,6 +2687,35 @@ mod tests {
         call(&mut world, &mut persist, "set_needs", json!({"tiredness": 0.1}));
         let (text, err) = call(&mut world, &mut persist, "sleep", json!({}));
         assert!(err && text.contains("not tired enough"), "{text}");
+    }
+
+    /// `skills` (#46): every skill with its level, XP, what it gives now and next, and how it's
+    /// earned; read-only. `stats` has the levels, and stepping reports level-ups.
+    #[test]
+    fn skills_tool() {
+        let mut world = small_world();
+        let dir = scratch("skills");
+        let mut persist = session(&world, &dir.0);
+        let hash = world.state_hash();
+        let (text, err) = call(&mut world, &mut persist, "skills", json!({}));
+        assert!(!err && text.starts_with("player 1 skills"), "{text}");
+        assert!(text.contains("fitness: Fitness 1, 100 XP (level 2 at 250 XP, 150 to go)"), "{text}");
+        assert!(text.contains("  now: endurance drains 6% slower and recovers 6% faster"), "{text}");
+        assert!(text.contains("  level 2: carry limit 17.0 kg"), "{text}");
+        assert!(text.contains("edged: Edged 0, 0 XP") && text.contains("  now: nothing yet") && text.contains("knives and axes: damage +6%"), "{text}");
+        assert!(text.contains("handiwork: Handiwork 0") && text.contains("earned by: each thing crafted (5 XP)"), "{text}");
+        assert_eq!(world.state_hash(), hash);
+        assert!(!persist.dirty, "read-only");
+        assert!(call(&mut world, &mut persist, "skills", json!({"player": 9})).1);
+        world.award_xp(0, zombye_sim::Skill::FirstAid, 1600.0);
+        let (text, _) = call(&mut world, &mut persist, "skills", json!({}));
+        assert!(text.contains("first_aid: First Aid 5, 1500 XP (the top level)") && text.contains("stitching hurts half as much"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "stats", json!({}));
+        let stats: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(stats["players"][0]["skills"]["first_aid"], 5);
+        assert_eq!(stats["players"][0]["skills"]["strength"], 1);
+        let (text, _) = call(&mut world, &mut persist, "step_ticks", json!({"n": 1}));
+        assert!(text.contains("LEVEL UP: P1 First Aid 5"), "{text}");
     }
 
     #[test]

@@ -344,6 +344,7 @@ pub(crate) fn check_settings(text: &str, config: &WorldConfig) -> Result<(), Loa
     config.health.check().map_err(|e| invalid(format!("settings: {e}")))?;
     config.infection.check().map_err(|e| invalid(format!("settings: {e}")))?;
     config.needs.check().map_err(|e| invalid(format!("settings: {e}")))?;
+    config.skills.check().map_err(|e| invalid(format!("settings: {e}")))?;
     Ok(())
 }
 
@@ -376,6 +377,17 @@ pub(crate) fn fit_goes(w: &mut World) {
     }
     w.items.iter_mut().for_each(|it| fit(&mut it.stack));
     w.opened.values_mut().flatten().for_each(&fit);
+}
+
+/// A player's skills (#46): XP from 0 up to the top level's.
+fn check_skills(p: &Player, t: &crate::skills::SkillTuning) -> Result<(), LoadError> {
+    for s in crate::skills::Skill::ALL {
+        let xp = p.skills.xp(s);
+        if !(xp.is_finite() && (0.0..=t.max_xp()).contains(&xp)) {
+            return Err(invalid(format!("player {}: {} XP is {xp} (must be 0 to {})", p.id, s.id(), t.max_xp())));
+        }
+    }
+    Ok(())
 }
 
 /// A player's needs and sleep: values a tick could have made.
@@ -630,6 +642,7 @@ pub(crate) fn validate(w: &World) -> Result<(), LoadError> {
         }
         check_health(p, items)?;
         check_needs(p)?;
+        check_skills(p, &w.config.skills)?;
     }
 
     // Items, in id order.

@@ -19,6 +19,7 @@ use crate::inventory::{Inventory, ItemJob};
 use crate::map::TileMap;
 use crate::needs::Needs;
 use crate::run::RunStats;
+use crate::skills::Skills;
 
 /// Player body radius in metres.
 pub const PLAYER_RADIUS: f32 = 0.3;
@@ -69,10 +70,11 @@ impl PlayerInput {
     }
 }
 
-/// How a player's load, wounds (#9), needs and sleep (#11) and later skills (#46) change its
-/// movement. Worked out by the server whenever what it carries, its wounds or its needs change
-/// (`CarryTuning::mods`, then `Health::apply_to`, then `World::needs_mods`; asleep it doesn't move
-/// at all) and sent with the player's state, so prediction uses the same numbers.
+/// How a player's load, Fitness (#46), wounds (#9), needs and sleep (#11) change its movement.
+/// Worked out by the server whenever what it carries, its skills, its wounds or its needs change
+/// (`CarryTuning::mods`, then `SkillTuning::move_mods`, then `Health::apply_to`, then
+/// `World::needs_mods`; asleep it doesn't move at all) and sent with the player's state, so
+/// prediction uses the same numbers.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MoveMods {
     /// Multiplies every speed.
@@ -130,6 +132,8 @@ pub struct Player {
     pub health: Health,
     /// Hunger, thirst, tiredness and sleep (see `crate::needs`).
     pub needs: Needs,
+    /// XP in each skill (see `crate::skills`).
+    pub skills: Skills,
     /// Dead players ignore input and aren't seen or heard. Single-player can respawn.
     pub dead: bool,
     /// The weapon in hand (index into `WorldConfig::weapons`); `None` = bare hands. Derived from
@@ -177,6 +181,7 @@ impl Player {
             hp,
             health: Health::default(),
             needs: Needs::default(),
+            skills: Skills::default(),
             dead: false,
             weapon: None,
             inventory: Inventory::default(),

@@ -11,8 +11,8 @@ pub mod shutdown;
 use serde::{Deserialize, Serialize};
 use zombye_sim::map::{EdgeChange, OwnedEdge};
 use zombye_sim::{
-    ActionKind, Burden, Carry, CombatEvent, DevFlags, GroundItem, HealthTags, HealthView, Inventory, ItemNote, ItemStack, MoveMods, NeedsTuning, NeedsView, Place, PlayerInput, RunStats, Stance, StatusInput, StatusTag, Treatment, World,
-    WorldConfig, ZombieAnim,
+    ActionKind, Burden, Carry, CombatEvent, DevFlags, GroundItem, HealthTags, HealthView, Inventory, ItemNote, ItemStack, LevelUp, MoveMods, NeedsTuning, NeedsView, Place, PlayerInput, RunStats, Skill, SkillView, Stance, StatusInput, StatusTag,
+    Treatment, World, WorldConfig, ZombieAnim,
 };
 
 /// Something a client wants to happen. The server validates and applies it.
@@ -163,6 +163,8 @@ pub struct PrivateView {
     pub health: HealthView,
     /// Hunger, thirst, tiredness (to 1%), sleep and soreness (#11).
     pub needs: NeedsView,
+    /// Every skill's level and whole XP (#46).
+    pub skills: Vec<SkillView>,
 }
 
 impl PrivateView {
@@ -176,7 +178,8 @@ impl PrivateView {
         let carry = world.carry(p);
         let health = world.health_view(id).unwrap_or_default();
         let needs = world.needs_view(id).unwrap_or_default();
-        Some(Self { player: id, inventory: p.inventory.clone(), carry, max_kg: carry.limit_kg * world.config.carry.max_load, open, health, needs })
+        let skills = world.skills_view(id).unwrap_or_default();
+        Some(Self { player: id, inventory: p.inventory.clone(), carry, max_kg: carry.limit_kg * world.config.carry.max_load, open, health, needs, skills })
     }
 
     /// Our status tags (hunger, thirst, tiredness, endurance, load, pain, bleeding, sick, asleep),
@@ -198,6 +201,11 @@ impl PrivateView {
             time_scale,
         };
         zombye_sim::needs::status_tags(needs, &input)
+    }
+
+    /// Our level in `skill` (#46).
+    pub fn skill_level(&self, skill: Skill) -> u32 {
+        self.skills.iter().find(|s| s.skill == skill).map_or(0, |s| s.level)
     }
 
     /// Has a load in this stage or worse.
@@ -260,6 +268,8 @@ pub struct Snapshot {
     /// Each player's run so far (`sim::run`): time alive, kills, distance, things taken, wounds,
     /// and once dead the cause. Every snapshot; a client gets only its own.
     pub runs: Vec<RunView>,
+    /// Skill level-ups since the previous snapshot (#46), each once; a client gets only its own.
+    pub level_ups: Vec<LevelUp>,
 }
 
 /// One player's run stats ([`Snapshot::runs`]).
@@ -328,6 +338,7 @@ impl Snapshot {
             item_notes: std::mem::take(&mut world.item_notes),
             floor: world.players.iter().map(|p| FloorView { player: p.id, items: world.floor_ids(p.id) }).collect(),
             runs: world.players.iter().map(|p| RunView { player: p.id, run: p.run.clone() }).collect(),
+            level_ups: world.take_level_ups(),
         }
     }
 
@@ -337,6 +348,7 @@ impl Snapshot {
         self.item_notes.retain(|n| n.player == player);
         self.floor.retain(|f| f.player == player);
         self.runs.retain(|r| r.player == player);
+        self.level_ups.retain(|l| l.player == player);
         self
     }
 
@@ -1077,6 +1089,68 @@ mod tests {
         assert!(server.tick().players[0].asleep);
         server.send(Intent::Sleep { player: id, sleep: false });
         assert!(!server.tick().players[0].asleep);
+    }
+
+    /// Skills change movement (#46): Fitness through the endurance modifiers, Strength through
+    /// the carry limit. A level-up, even one from a heavy swing asked for in the same tick as the
+    /// movement, changes the modifiers only at the end of the tick, so the client predicting with
+    /// those of its latest snapshot stays exact. Our level-ups come in our own snapshot, our skills
+    /// in our private view.
+    #[test]
+    fn prediction_matches_server_with_skills() {
+        let mut server = server();
+        let id = server.join(None);
+        let other = server.join(None);
+        // 16.5 kg: burdened at Strength 1 (a 15.5 kg limit), not at 2 (17 kg).
+        assert!(server.world.give_item(id, "wooden_plank", 7));
+        assert!(server.world.hold_item(id, zombye_sim::Slot::Hand, "fire_axe"));
+        let pi = server.world.players.iter().position(|p| p.id == id).unwrap();
+        let snap = server.tick();
+        let mut predicted = snap.players.iter().find(|p| p.id == id).unwrap().state();
+        assert!(predicted.mods.speed < 1.0, "burdened: {:?}", predicted.mods);
+        let mut mods_seen = vec![predicted.mods];
+        for seq in 1..=300u32 {
+            let a = seq as f32 * 0.05;
+            let (move_dir, facing, run) = ([a.cos(), a.sin()], a, seq % 40 < 25);
+            server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run, sneak: false });
+            if seq == 100 {
+                // A swing of a 2.5 kg axe: Strength 2 on the spot.
+                server.send(Intent::Attack { player: id });
+            }
+            step_movement(&server.world.map, &mut predicted, &PlayerInput { move_dir: move_dir.into(), facing, run, sneak: false }, TICK_DT);
+            let snap = server.tick();
+            let view = snap.players.iter().find(|p| p.id == id).unwrap();
+            if seq == 100 {
+                // The swing cost endurance on the server (not predicted); where we went is exact.
+                assert_eq!((view.state().pos, view.state().stance), (predicted.pos, predicted.stance), "diverged at seq {seq}");
+                predicted = view.state();
+                let mine = snap.clone().for_player(id);
+                assert_eq!(mine.level_ups, [LevelUp { player: id, skill: Skill::Strength, level: 2 }]);
+                assert!(snap.clone().for_player(other).level_ups.is_empty(), "only ours");
+                assert_eq!(mine.private.iter().find(|v| v.player == id).expect("our skills changed").skill_level(Skill::Strength), 2);
+            } else {
+                assert_eq!(zombye_sim::PlayerState { mods: predicted.mods, ..view.state() }, predicted, "diverged at seq {seq}");
+            }
+            predicted.mods = view.mods;
+            if *mods_seen.last().unwrap() != view.mods {
+                mods_seen.push(view.mods);
+            }
+            // Put XP just short of a level at the end of a tick (as the debug tools do).
+            let w = &mut server.world;
+            match seq {
+                99 => {
+                    let to = 249.5 - w.players[pi].skills.xp(Skill::Strength);
+                    assert_eq!(w.award_xp(pi, Skill::Strength, to), None);
+                }
+                200 => {
+                    let to = 250.0 - w.players[pi].skills.xp(Skill::Fitness);
+                    assert_eq!(w.award_xp(pi, Skill::Fitness, to), Some(2));
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(mods_seen.len(), 3, "{mods_seen:?}");
+        assert!(mods_seen[1].speed == 1.0 && mods_seen[2].run_drain < mods_seen[1].run_drain && mods_seen[2].regen > mods_seen[1].regen, "{mods_seen:?}");
     }
 
     #[test]

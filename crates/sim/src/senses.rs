@@ -54,6 +54,8 @@ pub struct Target {
     /// Dev toggle (`DevFlags::ignored`): never seen, and whoever is after them loses them. Still a
     /// body zombies walk round.
     pub ignored: bool,
+    /// Multiplies every sight range against this player (Stealth, #46: 1 at level 0).
+    pub sight_mult: f32,
 }
 
 const SUNRISE: f32 = 6.0;
@@ -93,7 +95,7 @@ fn stance_mult(t: &ZombieTuning, stance: Stance) -> f32 {
 /// How far away a zombie facing `facing` can spot `target` lying in unit direction `dir`
 /// (before line of sight). Full range ahead, less at the sides, only `rear_range` behind.
 pub fn sight_range(t: &ZombieTuning, cone: Cone, daylight: f32, target: &Target, facing: f32, dir: Vec2) -> f32 {
-    let stance = stance_mult(t, target.stance);
+    let stance = stance_mult(t, target.stance) * target.sight_mult;
     let ahead = Vec2::from_angle(facing).dot(dir);
     if ahead < cone.peripheral {
         return t.rear_range * stance;
@@ -263,7 +265,7 @@ mod tests {
     fn sight_range_depends_on_cone_light_and_stance() {
         let t = ZombieTuning::default();
         let cone = Cone::new(&t);
-        let walker = Target { id: 1, pos: Vec2::ZERO, stance: Stance::Walk, moving: true, ignored: false };
+        let walker = Target { id: 1, pos: Vec2::ZERO, stance: Stance::Walk, moving: true, ignored: false, sight_mult: 1.0 };
         let ahead = sight_range(&t, cone, 1.0, &walker, 0.0, Vec2::X);
         let side = sight_range(&t, cone, 1.0, &walker, 0.0, Vec2::Y);
         let behind = sight_range(&t, cone, 1.0, &walker, 0.0, -Vec2::X);
@@ -275,6 +277,9 @@ mod tests {
         let run = sight_range(&t, cone, 1.0, &Target { stance: Stance::Run, ..walker }, 0.0, Vec2::X);
         let still = sight_range(&t, cone, 1.0, &Target { moving: false, ..walker }, 0.0, Vec2::X);
         assert!(sneak < still && still < ahead && ahead < run, "{sneak} {still} {ahead} {run}");
+        // Stealth (#46) shortens every range by its multiplier.
+        let stealthy = sight_range(&t, cone, 1.0, &Target { sight_mult: 0.88, ..walker }, 0.0, Vec2::X);
+        assert!((stealthy - ahead * 0.88).abs() < 1e-4, "{stealthy} {ahead}");
         assert_eq!(notice_chance(&t, 0.1), 1.0);
         assert!(notice_chance(&t, 0.9) < 0.05);
     }

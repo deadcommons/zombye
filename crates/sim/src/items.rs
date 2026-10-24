@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::map::{Feature, TileMap};
 use crate::rng::Rng;
+use crate::skills::Skill;
 
-/// What kind of weapon it is. Informational for now (skills and animations will key off it).
+/// What kind of weapon it is: how it hits, which decides its skill (#46) and its swing animation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WeaponCategory {
     /// Bare hands. Exactly one weapon must be this; it's what a player without a weapon uses.
@@ -22,6 +23,18 @@ pub enum WeaponCategory {
     Axe,
 }
 
+impl WeaponCategory {
+    /// The skill weapons of this category use unless the data says otherwise: Bludgeon for blunt
+    /// ones, Edged for knives and axes, Brawl for bare hands.
+    pub fn skill(self) -> Skill {
+        match self {
+            Self::Unarmed => Skill::Brawl,
+            Self::ShortBlade | Self::Axe => Skill::Edged,
+            Self::ShortBlunt | Self::LongBlunt => Skill::Bludgeon,
+        }
+    }
+}
+
 /// One melee weapon. Distances in metres (reach is measured to the target's body), times in
 /// seconds, chances in 0..1. All numbers are ours.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -29,6 +42,10 @@ pub struct WeaponDef {
     pub id: String,
     pub name: String,
     pub category: WeaponCategory,
+    /// The skill it trains and that makes it better (#46): Bludgeon, Edged or Brawl. Left out, its
+    /// category's ([`WeaponCategory::skill`]); every weapon of a category must name the same one.
+    #[serde(default)]
+    pub skill: Option<Skill>,
     /// Damage per hit, rolled uniformly (zombies have about 100 hit points).
     pub damage: (f32, f32),
     /// Reach from the player's centre to the edge of a zombie's body.
@@ -73,12 +90,18 @@ fn default_color() -> (f32, f32, f32) {
 }
 
 impl WeaponDef {
+    /// The skill it uses (#46).
+    pub fn skill(&self) -> Skill {
+        self.skill.unwrap_or(self.category.skill())
+    }
+
     /// Built-in bare hands, used when the content has no `Unarmed` weapon (tests, bare configs).
     pub fn fists() -> Self {
         Self {
             id: "fists".into(),
             name: "Bare hands".into(),
             category: WeaponCategory::Unarmed,
+            skill: Some(Skill::Brawl),
             damage: (4.0, 7.0),
             range: 0.6,
             arc_degrees: 60.0,
@@ -137,6 +160,12 @@ impl WeaponDef {
         if !(self.spawn_weight >= 0.0 && self.spawn_weight.is_finite()) {
             return Err(format!("{id}: spawn_weight must be >= 0"));
         }
+        if !self.skill().is_weapon_skill() {
+            return Err(format!("{id}: skill {:?} isn't a weapon skill (Bludgeon, Edged or Brawl)", self.skill()));
+        }
+        if self.category == WeaponCategory::Unarmed && self.skill() != Skill::Brawl {
+            return Err(format!("{id}: bare hands are Brawl, not {:?}", self.skill()));
+        }
         if self.category == WeaponCategory::Unarmed && self.spawn_weight > 0.0 {
             return Err(format!("{id}: an Unarmed weapon can't lie about (spawn_weight must be 0)"));
         }
@@ -160,6 +189,10 @@ pub fn validate_weapons(defs: &[WeaponDef]) -> Result<(), String> {
         d.validate()?;
         if defs[..i].iter().any(|o| o.id == d.id) {
             return Err(format!("weapon id {:?} is used twice", d.id));
+        }
+        // A category hits one way, so it trains one skill.
+        if let Some(o) = defs[..i].iter().find(|o| o.category == d.category && o.skill() != d.skill()) {
+            return Err(format!("{}: {:?} weapons use {:?} (as {} does), not {:?}", d.id, d.category, o.skill(), o.id, d.skill()));
         }
     }
     match defs.iter().filter(|d| d.category == WeaponCategory::Unarmed).count() {
@@ -608,6 +641,10 @@ mod tests {
         assert!(w.len() >= 9, "only {} weapons", w.len());
         assert_eq!(w.iter().filter(|d| d.category == WeaponCategory::Unarmed).count(), 1);
         assert!(w.iter().filter(|d| d.spawn_weight > 0.0).count() >= 8);
+        // Every weapon names its skill (#46), and it is the one its category hits with.
+        for d in &w {
+            assert_eq!(d.skill, Some(d.category.skill()), "{} names {:?}", d.id, d.skill);
+        }
     }
 
     #[test]
@@ -624,6 +661,22 @@ mod tests {
         let w: Vec<WeaponDef> = weapons().into_iter().filter(|d| d.category != WeaponCategory::Unarmed).collect();
         assert!(validate_weapons(&w).unwrap_err().contains("Unarmed"));
         assert!(parse_weapons("[(id: \"x\")]").is_err());
+        // Skills (#46): only weapon skills, bare hands are Brawl, one skill per category.
+        let mut w = weapons();
+        w[1].skill = Some(Skill::Stealth);
+        assert!(validate_weapons(&w).unwrap_err().contains("isn't a weapon skill"));
+        let mut w = weapons();
+        w[0].skill = Some(Skill::Edged);
+        assert!(validate_weapons(&w).unwrap_err().contains("bare hands are Brawl"));
+        let mut w = weapons();
+        let k = w.iter().rposition(|d| d.category == WeaponCategory::LongBlunt).unwrap();
+        w[k].skill = Some(Skill::Edged);
+        assert!(validate_weapons(&w).unwrap_err().contains("LongBlunt weapons use Bludgeon"));
+        // Left out, a weapon uses its category's.
+        let mut w = weapons();
+        w.iter_mut().for_each(|d| d.skill = None);
+        validate_weapons(&w).unwrap();
+        assert_eq!(w.iter().find(|d| d.category == WeaponCategory::Axe).unwrap().skill(), Skill::Edged);
     }
 
     fn items() -> Vec<ItemDef> {

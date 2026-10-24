@@ -214,7 +214,8 @@ fn wound_line(w: &WoundView) -> (String, Color) {
 /// The button text for a treatment ("Dress with the gauze roll (2 of 3 left), 4 s").
 fn option_label(t: Treatment, item: Option<u16>, w: Option<&WoundView>, view: &PrivateView, items: &[ItemDef], join: &JoinInfo) -> String {
     let def = item.and_then(|i| items.get(i as usize));
-    let secs = join.first_aid.secs(t, w, def, 0);
+    // Faster with First Aid (#46).
+    let secs = join.first_aid.secs(t, w, def, view.skill_level(zombye_sim::Skill::FirstAid));
     let mut s = t.verb().to_string();
     s[..1].make_ascii_uppercase();
     if let (Some(d), Some(i)) = (def, item)
