@@ -66,9 +66,10 @@ stay four.
 
 ### The generated world
 
-Walls, roofs, floors, ground and trees are made by the client's code (`meshgen.rs`, `world_render.rs`)
-and follow the same rules. Their colours today are tuned by eye in code; they move into the shared
-palette with the building kit work (see Follow-ups).
+Walls, roofs, floors, ground and trees are made by the client's code (`meshgen.rs`, `world_render.rs`;
+the outdoors in `meshgen/landscape.rs` and `meshgen/trees.rs`) and follow the same rules. Building
+colours are still tuned by eye in code; the outdoors' are one named table, `meshgen/land_palette.rs`.
+Both move into the shared palette with the building kit work (see Follow-ups).
 
 | Surface | Look |
 |---|---|
@@ -77,8 +78,8 @@ palette with the building kit work (see Follow-ups).
 | Roofs | dark slate, brown, rust red, moss, slate blue; a shade darker on the far slope |
 | Shops and offices | brick red and tan, flat roofs with a parapet, awnings in one muted colour and bone white |
 | Interiors | a wall colour per room type (kitchen cream, bathroom pale blue, bedroom dusty rose, living warm beige); plank wood, carpet, checker tile |
-| Ground | olive-grey grass in patches, grey asphalt with faded yellow lines, pale concrete sidewalks, brown dirt |
-| Trees | dark green cones (pines) and lumpy round crowns (broadleaf), a few greens per tree type, brown trunks |
+| Ground | olive-grey lawns in broad patches, longer yellower grass at edges, verges and vacant lots, a darker forest floor with ferns, rocks, stumps and logs; grey asphalt with darker repair patches and wheel tracks; paint at real scale (10–12 cm faded yellow centre lines, off-white bays, crossings and stop lines); pale concrete sidewalks with slab joints and a kerb; concrete driveways; brown dirt |
+| Trees | pines and spruces as tiers of drooping faceted skirts; broadleaves as a tapering trunk forking into a few branches, each ending in a faceted clump; slim pale birches; two or three greens per tree, brown trunks, a gentle lean and size per tree |
 
 ## Shape and detail
 

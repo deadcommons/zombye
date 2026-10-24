@@ -1,4 +1,5 @@
-// World material: StandardMaterial lighting + fog of war + camera-side cutaway.
+// World material: StandardMaterial lighting + fog of war + camera-side cutaway (only in
+// materials built with CUTAWAY; see crates/client/src/materials.rs).
 // See crates/client/src/materials.rs.
 
 import bevy_pbr::render::{
@@ -23,6 +24,8 @@ struct WorldParams {
     fog_rect: vec4<f32>,
     fog_tint: vec4<f32>,
     inside_rect: vec4<f32>,
+    tree_count: vec4<f32>,
+    trees: array<vec4<f32>, 32>,
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> world_params: WorldParams;
@@ -66,6 +69,19 @@ fn occluder_distance(centre: vec2<f32>) -> f32 {
     return length(centre - (p + c * s));
 }
 
+// How far the foliage of the tree whose trunk foot is `anchor` has faded (0 shown, 1 gone).
+fn tree_fade(anchor: vec2<f32>) -> f32 {
+    let n = u32(world_params.tree_count.x + 0.5);
+    for (var i = 0u; i < n; i++) {
+        let t = world_params.trees[i];
+        if (all(abs(t.xy - anchor) < vec2(0.01))) {
+            let f = t.z;
+            return f * f * (3.0 - 2.0 * f);
+        }
+    }
+    return 0.0;
+}
+
 // Fog mask at a ground point: x = how visible, y = indoors.
 fn fog_sample(xz: vec2<f32>) -> vec2<f32> {
     let uv = (xz - world_params.fog_rect.xy) / world_params.fog_rect.z;
@@ -89,7 +105,8 @@ fn fragment(
     // Cutaway (see crates/client/src/materials.rs, `wall_is_cut`): every vertex of a
     // piece carries the same anchor in UV0 and its kind in UV1, so a whole wall drops to a stub at
     // once, with a crisp, grid-aligned top edge.
-@if(VERTEX_UVS_A && VERTEX_UVS_B) {
+    var wood_fade = 0.0;
+@if(CUTAWAY && VERTEX_UVS_A && VERTEX_UVS_B) {
     let cut_kind = u32(in.uv_b.x + 0.5);
     if (cut_kind == 1u) {
         if (wp.y > STUB_HEIGHT && wall_cut(in.uv)) {
@@ -104,9 +121,15 @@ fn fragment(
             discard;
         }
     } else if (cut_kind == 3u) {
-        // Foliage fades softly instead.
-        let keep = smoothstep(in.uv_b.y * 0.5, in.uv_b.y * 1.2, occluder_distance(in.uv));
-        if (keep < bayer4(vec2<u32>(in.position.xy))) {
+        // A tree's foliage dithers away while the tree hides the player (materials.rs).
+        let fade = tree_fade(in.uv);
+        if (fade > 0.0 && 1.0 - fade < bayer4(vec2<u32>(in.position.xy))) {
+            discard;
+        }
+    } else if (cut_kind == 6u) {
+        // Its trunk and branches stay, thinned to every other pixel and darkened (below).
+        wood_fade = tree_fade(in.uv);
+        if (wood_fade > 0.0 && bayer4(vec2<u32>(in.position.xy)) < 0.5 * wood_fade) {
             discard;
         }
     }
@@ -161,6 +184,7 @@ fn fragment(
     }
     unseen = mix(unseen, out.color.rgb * vec3(0.03, 0.03, 0.04), hide_contents);
     out.color = vec4(mix(unseen, out.color.rgb, seen), out.color.a);
+    out.color = vec4(out.color.rgb * (1.0 - 0.55 * wood_fade), out.color.a);
 
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
 }
