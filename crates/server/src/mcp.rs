@@ -14,7 +14,7 @@ use zombye_sim::map::{Edge, EdgeRef, Feature, Floor, OwnedEdge, Side};
 use zombye_sim::senses::{self, Cone, Target};
 use zombye_sim::needs;
 use zombye_sim::vision::line_of_sight;
-use zombye_sim::{ActionKind, Dressing, HitEffect, InfectionStage, ItemStack, LoadOptions, Part, Place, Slot, TICK_DT, Tier, Treatment, World, WoundKind, ZombieState, firstaid};
+use zombye_sim::{ActionKind, Dressing, HitEffect, InfectionStage, ItemStack, LoadOptions, Part, Place, Slot, TICK_DT, Tier, Treatment, World, WoundKind, ZombieState, crafting, firstaid};
 
 use crate::screenshot::{self, Renderer};
 use crate::Persist;
@@ -27,7 +27,7 @@ const COMPASS: [(&str, [f32; 2]); 8] =
     [("e", [1.0, 0.0]), ("se", [1.0, 1.0]), ("s", [0.0, 1.0]), ("sw", [-1.0, 1.0]), ("w", [-1.0, 0.0]), ("nw", [-1.0, -1.0]), ("n", [0.0, -1.0]), ("ne", [1.0, -1.0])];
 
 /// Tools that only look: they don't make the world need saving.
-const READ_ONLY: [&str; 16] = ["observe", "zombie", "edge", "weapons", "items", "inventory", "health", "containers_near", "loot", "buildings", "regions", "stats", "saves", "save", "load", "screenshot"];
+const READ_ONLY: [&str; 17] = ["observe", "zombie", "edge", "weapons", "items", "inventory", "health", "containers_near", "loot", "recipes", "buildings", "regions", "stats", "saves", "save", "load", "screenshot"];
 /// "on" / "off".
 fn on_off(b: bool) -> &'static str {
     if b { "on" } else { "off" }
@@ -115,6 +115,7 @@ fn handle(world: &mut World, persist: &mut Persist, renderer: &Renderer, msg: &V
                 within about 60 m, near out to 150 m, virtual beyond; stats has the counts): only active ones fight, see and \
                 show their state on the map, but every zombie keeps heading where it was going. Loud noises also draw the \
                 far horde in slowly, over minutes (regions shows zombies per region, targets and the pull of loud events). \
+                craft makes things from what you carry (rags from clothes, clean rags to dress wounds with; recipes lists them). \
                 save and load keep and restore the whole world (saves lists them); with --save the server also autosaves. \
                 screenshot returns a rendered PNG of what a player sees (fog of war included), to check visuals; it takes a \
                 second or two and changes nothing."
@@ -444,6 +445,24 @@ fn tool_list() -> Value {
             "inputSchema": {"type": "object", "properties": {
                 "player": {"type": "integer", "default": 1}, "action": {"type": "string"}, "wound": {"type": "integer"},
                 "part": {"type": "string"}, "item": {"type": "string"}
+            }}
+        },
+        {
+            "name": "recipes",
+            "description": "The crafting recipes (assets/data/items/recipes.ron): each one's id, name, inputs (used up), tools \
+                (kept: an item, or any item with a tag), outputs and seconds. Read-only; craft makes one.",
+            "inputSchema": {"type": "object", "properties": {}}
+        },
+        {
+            "name": "craft",
+            "description": "Crafting: a player makes a recipe (see recipes) from what it carries and holds in its hands (not what it \
+                wears; only whole items count as inputs: a part-drunk bottle won't do). With no recipe: what it can make now, and \
+                for the rest what's missing. With `recipe` (an id): queues it, steps the world until it's done (the recipe's \
+                seconds; you can walk meanwhile, but a strike landing or a swing interrupts it) and replies with what was made, \
+                what changed in its inventory and on the floor (outputs with no room in pockets and bags go at its feet) and the \
+                inventory. E.g. rip clothing into rags, wash rags into clean rags (a clean dressing for treat).",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1}, "recipe": {"type": "string"}
             }}
         },
         {
@@ -978,6 +997,8 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             let intent = treat_intent(world, id, args)?;
             run_job(world, id, intent, health_text)
         }
+        "recipes" => recipes_text(world),
+        "craft" => craft_tool(world, player_id(), args.get("recipe").and_then(Value::as_str)),
         "weapons" => {
             let mut out = String::from("id: name, category | damage | reach m | arc deg | windup/swing s | targets | knockback m | stagger/knockdown/crit (x mult) | endurance | noise m\n");
             for w in &world.config.weapons {
@@ -2037,6 +2058,76 @@ fn run_job(world: &mut World, id: u32, intent: Intent, tail: fn(&World, u32) -> 
     if failed { Err(text) } else { Ok(text) }
 }
 
+/// The `recipes` tool: every recipe in brief.
+fn recipes_text(world: &World) -> Result<String, String> {
+    let items = &world.config.items;
+    let mut out = format!("{} recipes (inputs are used up, tools kept; Handiwork, when skills come, makes them faster):\n", world.config.recipes.len());
+    for r in &world.config.recipes {
+        out.push_str(&format!("{}: {}: {}\n", r.id, r.name, crafting::describe(r, items)));
+    }
+    Ok(out)
+}
+
+/// Item counts: in player `id`'s inventory, and on its floor (within reach).
+fn item_counts(world: &World, id: u32) -> (std::collections::BTreeMap<u16, i64>, std::collections::BTreeMap<u16, i64>) {
+    let (mut inv, mut floor) = (std::collections::BTreeMap::new(), std::collections::BTreeMap::new());
+    if let Some(p) = world.player(id) {
+        for s in p.inventory.stacks() {
+            *inv.entry(s.item).or_insert(0) += s.count as i64;
+        }
+    }
+    for g in world.floor_of(id) {
+        *floor.entry(g.stack.item).or_insert(0) += g.stack.count as i64;
+    }
+    (inv, floor)
+}
+
+/// "t-shirt -1, rag +3": what changed between two counts.
+fn count_changes(world: &World, before: &std::collections::BTreeMap<u16, i64>, after: &std::collections::BTreeMap<u16, i64>) -> String {
+    let keys: std::collections::BTreeSet<u16> = before.keys().chain(after.keys()).copied().collect();
+    let mut diffs: Vec<(u16, i64)> = keys.into_iter().map(|k| (k, after.get(&k).copied().unwrap_or(0) - before.get(&k).copied().unwrap_or(0))).filter(|(_, d)| *d != 0).collect();
+    // What went, then what came.
+    diffs.sort_by_key(|&(k, d)| (d > 0, k));
+    let out: Vec<String> = diffs.into_iter().map(|(k, d)| format!("{} {d:+}", world.item_def(k).id)).collect();
+    if out.is_empty() { "nothing".into() } else { out.join(", ") }
+}
+
+/// The `craft` tool: with no recipe, what player `id` can make and what the rest need; with one,
+/// make it (stepping until done) and say what changed.
+fn craft_tool(world: &mut World, id: u32, recipe: Option<&str>) -> Result<String, String> {
+    let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+    let items = &world.config.items;
+    let Some(name) = recipe else {
+        let (mut can, mut cant) = (Vec::new(), Vec::new());
+        for (k, r) in world.config.recipes.iter().enumerate() {
+            let secs = world.craft_secs(id, k as u16).unwrap_or(r.secs);
+            let line = format!("  {}: {}: {} [{secs:.1} s for you]", r.id, r.name, crafting::describe(r, items));
+            match crafting::check(r, &p.inventory, items) {
+                Ok(()) => can.push(line),
+                Err(why) => cant.push(format!("{line}\n      {why}")),
+            }
+        }
+        if world.config.recipes.is_empty() {
+            return Ok("no recipes in this game's data (assets/data/items/recipes.ron)".into());
+        }
+        let can = if can.is_empty() { "  nothing yet".to_string() } else { can.join("\n") };
+        let cant = if cant.is_empty() { "  nothing".to_string() } else { cant.join("\n") };
+        return Ok(format!("player {id} can make now (craft with recipe: <id>):\n{can}\nnot yet (what's missing):\n{cant}"));
+    };
+    let recipe = world.recipe_index(name).ok_or_else(|| {
+        let ids: Vec<&str> = world.config.recipes.iter().map(|r| r.id.as_str()).collect();
+        format!("unknown recipe {name:?}: one of {}", ids.join(", "))
+    })?;
+    let (inv0, floor0) = item_counts(world, id);
+    let done = run_job(world, id, Intent::Craft { player: id, recipe }, inventory_text);
+    let (inv1, floor1) = item_counts(world, id);
+    let changed = format!("changed: carried and held {}; on the floor {}", count_changes(world, &inv0, &inv1), count_changes(world, &floor0, &floor1));
+    match done {
+        Ok(t) => Ok(format!("{t}\n{changed}")),
+        Err(t) => Err(t),
+    }
+}
+
 /// The `treat` tool's intent: the action from `action` or the item, the wound from `wound`,
 /// `part` or the most urgent one it fits, the item from `item` or (by the server) the best carried.
 fn treat_intent(world: &World, id: u32, args: &Value) -> Result<Intent, String> {
@@ -2618,6 +2709,36 @@ mod tests {
         assert!(err && text.contains("stitched already"), "{text}");
         let (text, err) = call(&mut world, &mut persist, "treat", json!({"action": "bandage-ish"}));
         assert!(err && text.contains("unknown action"), "{text}");
+    }
+
+    /// `craft` with no recipe lists what can be made and what the rest need; with one it makes it,
+    /// stepping until done, and says what changed; `recipes` lists them all and changes nothing.
+    #[test]
+    fn craft_tool_lists_and_makes_recipes() {
+        let mut world = small_world();
+        let dir = scratch("craft");
+        let mut persist = session(&world, &dir.0);
+        call(&mut world, &mut persist, "dev", json!({"ignored": true}));
+        let hash = world.state_hash();
+        let (text, err) = call(&mut world, &mut persist, "recipes", json!({}));
+        assert!(!err && text.contains("rip_t_shirt: Rip a T-shirt into rags: t-shirt -> rag x3 (3 s)") && text.contains("wash_rags"), "{text}");
+        assert_eq!(world.state_hash(), hash, "recipes changes nothing");
+        // Clear the hands and pockets, so what can be made is only what we give.
+        world.players[0].inventory = Default::default();
+        world.give_item(1, "jeans", 1);
+        let (text, err) = call(&mut world, &mut persist, "craft", json!({}));
+        assert!(!err && text.contains("can make now (craft with recipe: <id>):\n  nothing yet"), "{text}");
+        assert!(text.contains("cut_jeans") && text.contains("needs scissors or kitchen knife to hand (kept)"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "craft", json!({"recipe": "cut_jeans"}));
+        assert!(err && text.contains("can't cut jeans into rags: needs scissors"), "{text}");
+        world.give_item(1, "scissors", 1);
+        let (text, _) = call(&mut world, &mut persist, "craft", json!({}));
+        assert!(text.contains("can make now (craft with recipe: <id>):\n  cut_jeans"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "craft", json!({"recipe": "cut_jeans"}));
+        assert!(!err && text.contains("made 4 x rag from the jeans"), "{text}");
+        assert!(text.contains("changed: carried and held jeans -1, rag +4; on the floor nothing"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "craft", json!({"recipe": "teleporter"}));
+        assert!(err && text.contains("unknown recipe") && text.contains("rip_t_shirt"), "{text}");
     }
 
     /// Needs through tools: `set_needs`, `use` (what it will do, then what it did), `sleep` (until

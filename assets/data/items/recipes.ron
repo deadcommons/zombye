@@ -1,0 +1,33 @@
+// Recipes: what a survivor can make from what it carries. Schema: zombye_sim::crafting::RecipeDef
+// (validated on load against items.ron; unknown fields are refused). All recipes and numbers are
+// our own.
+//
+//   id       lowercase letters, digits and _ (saves and tools name recipes by it)
+//   name     what it's called in the inventory panel and in notes
+//   secs     seconds it takes (Handiwork, #46, makes it 10% faster per level)
+//   inputs   [(item: "id", count: n)]: used up (count defaults to 1). Only whole items count: a
+//            part-drunk bottle won't do. Carried or held, not worn (take it off first).
+//   tools    [Item("id")] or [Tag("tag")] (any item with that tag in items.ron): needed, kept
+//   outputs  [(item: "id", count: n)]: made, into pockets and bags while they have room, the rest
+//            at your feet. An output can't also be an input.
+[
+    // ---- Rags from cloth ------------------------------------------------------------------------
+    (id: "rip_t_shirt", name: "Rip a T-shirt into rags", secs: 3.0,
+        inputs: [(item: "t_shirt")], outputs: [(item: "rag", count: 3)]),
+    (id: "rip_jumper", name: "Rip a jumper into rags", secs: 4.0,
+        inputs: [(item: "jumper")], outputs: [(item: "rag", count: 4)]),
+    (id: "rip_hoodie", name: "Rip a hoodie into rags", secs: 5.0,
+        inputs: [(item: "hoodie")], outputs: [(item: "rag", count: 5)]),
+    // Denim won't tear by hand: cut it.
+    (id: "cut_jeans", name: "Cut jeans into rags", secs: 6.0,
+        inputs: [(item: "jeans")], tools: [Tag("cuts")], outputs: [(item: "rag", count: 4)]),
+    (id: "rip_bed_sheet", name: "Tear a bed sheet into rags", secs: 5.0,
+        inputs: [(item: "bed_sheet")], outputs: [(item: "rag", count: 6)]),
+    (id: "rip_towel", name: "Rip a towel into rags", secs: 4.0,
+        inputs: [(item: "towel")], outputs: [(item: "rag", count: 4)]),
+
+    // ---- Dressings ------------------------------------------------------------------------------
+    // A rag dresses a wound dirty (it may fester); washed in clean water it goes on clean, like gauze.
+    (id: "wash_rags", name: "Wash rags in clean water", secs: 12.0,
+        inputs: [(item: "rag", count: 3), (item: "water_bottle")], outputs: [(item: "clean_rag", count: 3), (item: "empty_bottle")]),
+]

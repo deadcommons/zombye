@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use zombye_sim::BuildingTemplate;
 use zombye_sim::containers::{ContainerData, parse_containers};
+use zombye_sim::crafting::{RecipeDef, parse_recipes_for};
 use zombye_sim::items::{ItemDef, WeaponDef, parse_items, parse_weapons};
 use zombye_sim::loot::LootData;
 use zombye_sim::population::{PopulationDef, parse_population};
@@ -87,8 +88,22 @@ pub fn load_loot(data_dir: &Path, items: &[ItemDef], weapons: &[WeaponDef], cont
     LootData::parse_for(&text, &all, containers).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// What can be made from what: `<data>/items/recipes.ron` (#12), validated, every item id checked
+/// against `items` (and the plain items weapons without one get) and every tool tag against the
+/// items' tags. A data folder without the file has no recipes.
+pub fn load_recipes(data_dir: &Path, items: &[ItemDef], weapons: &[WeaponDef]) -> Result<Vec<RecipeDef>, String> {
+    let path = data_dir.join("items/recipes.ron");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut all = items.to_vec();
+    zombye_sim::items::complete_items(&mut all, weapons);
+    parse_recipes_for(&text, &all).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// Everything a world is made from in `<data>`: building templates, weapons, items, containers,
-/// loot tables and the population file, as a config for `seed` (the zombie count as the
+/// loot tables, recipes and the population file, as a config for `seed` (the zombie count as the
 /// population file gives).
 pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig, String> {
     let templates = load_building_templates(data_dir)?;
@@ -96,9 +111,15 @@ pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig
     let items = load_items(data_dir, &weapons)?;
     let containers = load_containers(data_dir)?;
     let loot = load_loot(data_dir, &items, &weapons, &containers)?;
+    let recipes = load_recipes(data_dir, &items, &weapons)?;
     let population = load_population(data_dir)?;
-    let mut config =
-        zombye_sim::WorldConfig::new(seed, 0, templates).with_weapons(weapons).with_items(items).with_containers(containers).with_loot(loot).with_population(population);
+    let mut config = zombye_sim::WorldConfig::new(seed, 0, templates)
+        .with_weapons(weapons)
+        .with_items(items)
+        .with_containers(containers)
+        .with_loot(loot)
+        .with_recipes(recipes)
+        .with_population(population);
     config.zombies = None;
     Ok(config)
 }
@@ -136,5 +157,34 @@ mod tests {
         let err = load_loot(&dir, &c.items, &c.weapons, &c.containers).unwrap_err();
         let _ = std::fs::remove_dir_all(&dir);
         assert!(err.contains("loot.ron") && err.contains("(kitchen, fridge)") && err.contains("unobtainium"), "{err}");
+    }
+
+    /// The recipes load against the items (#12), and a mistake in them names the file and the
+    /// recipe; with no file there are none.
+    #[test]
+    fn recipes_load_and_name_their_mistakes() {
+        let c = load_config(&default_data_dir(), 1).unwrap();
+        assert!(c.recipes.len() >= 7 && c.recipes.iter().any(|r| r.id == "rip_t_shirt"));
+        assert!(load_recipes(Path::new("/nonexistent-zombye-data"), &c.items, &c.weapons).unwrap().is_empty());
+        let dir = std::env::temp_dir().join(format!("zombye-recipes-test-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("items")).unwrap();
+        let write = |text: &str| {
+            std::fs::write(dir.join("items/recipes.ron"), text).unwrap();
+            load_recipes(&dir, &c.items, &c.weapons).unwrap_err()
+        };
+        let rec = |inputs: &str, secs: &str, outputs: &str| format!("(id: \"sling\", name: \"Tie a sling\", secs: {secs}, inputs: [{inputs}], outputs: [{outputs}])");
+        let one = |inputs: &str, secs: &str, outputs: &str| format!("[{}]", rec(inputs, secs, outputs));
+        let shirt = rec("(item: \"t_shirt\")", "3.0", "(item: \"rag\")");
+        let errs = [
+            (write(&one("(item: \"unobtainium\")", "3.0", "(item: \"rag\")")), "input \"unobtainium\" isn't in items.ron"),
+            (write(&one("(item: \"t_shirt\", count: 0)", "3.0", "(item: \"rag\")")), "count 0"),
+            (write(&one("(item: \"t_shirt\")", "0.0", "(item: \"rag\")")), "secs must be in (0"),
+            (write(&one("(item: \"rag\")", "3.0", "(item: \"rag\", count: 2)")), "both an input and an output"),
+            (write(&format!("[{shirt}, {shirt}]")), "used twice"),
+        ];
+        let _ = std::fs::remove_dir_all(&dir);
+        for (err, want) in errs {
+            assert!(err.contains("recipes.ron") && err.contains(want), "{err} should mention {want}");
+        }
     }
 }

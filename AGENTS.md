@@ -13,11 +13,11 @@ Work is tracked on GitHub, not in the repo: the
 
 | Path | What | Licence |
 |---|---|---|
-| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), run stats and the cause of death (`run.rs`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
+| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), run stats and the cause of death (`run.rs`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint; `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
 | `crates/client` | `zombye` Bevy client: camera, chunk streaming, building/tree meshes, fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd; `survivor.rs` skinned, CPU-posed players), hit feedback (`fx.rs`), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), HUD, the death screen and run summary (`death.rs`), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
-| `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`), models (`models/furniture/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), later textures/audio. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
+| `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/items/recipes.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`), models (`models/furniture/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), later textures/audio. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
 | `tools/blender/` | Python to build assets: run inside Blender, mesh builder, palette, renders, validation, GLB export (`zasset.py`, `palette.py`, `build.py`), character clean-up, validation and skinned export (`zchar.py`), VAT bake for the crowd (`zvat.py`); plain Python, art-repo work folders and promotion (`artrepo.py`). | MIT OR Apache-2.0 |
 | `docs/` | Plan and design docs. | — |
 
@@ -203,7 +203,8 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   1.6 m of its server position, otherwise ignored; doors make `door_noise`, windows the quieter
   `window_noise`; broken ones can't be shut), `SmashWindow { player }` (breaks the shut or open window
   it faces; loud, `glass_break_noise`), `Attack`, `Shove`, `Stomp`, `PickUp` (all `{ player }`, see
-  Combat and Items), the item intents (`MoveItem`, `Equip`, `Wear`, `Unequip`, `Drop`, `Use`, `Search`, see Items),
+  Combat and Items), the item intents (`MoveItem`, `Equip`, `Wear`, `Unequip`, `Drop`, `Use`, `Search`, see Items), `Craft { player, recipe }`
+  (see Crafting),
   `Sleep { player, sleep }` (lie down or get up, see Needs; an action or item intent from a sleeper only gets it up),
   `Respawn { player }` (single-player/debug: a dead player gets up at the spawn point), `Dev { player, god, ignored }`
   (dev toggles, below), and the debug/admin `SetGoal`, `SpawnZombies`, `SpawnItem { item, count, pos }`, `SkipTime`, `MakeNoise`.
@@ -226,7 +227,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   that state and replays newer inputs. Swings cost endurance on the server only, so prediction is
   corrected by the next snapshot when you swing (movement itself stays exact). Snapshots also carry
   the full list of ground `items` (small for now), each player's `busy` (seconds left on its item job) and `jobs`
-  (queued), `private` views (`PrivateView`: inventory, load, the open container's contents) only for players whose
+  (queued), `private` views (`PrivateView`: inventory, load, the open container's contents, the job queue's kinds) only for players whose
   inventory, open container or queue changed since the last snapshot (`World::take_private_dirty`; the client keeps
   the latest, and `Snapshot::for_player` keeps only a client's own), and `item_notes` (what came of item requests:
   done, or why not). On joining the client also gets the weapon and item definitions; snapshots name weapons and
@@ -336,7 +337,8 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   turns dirty after 12 h (6 h if the wound bled when it went on, a plaster 24 h). Dressing a dressed wound changes it;
   taking a dressing off gives a dirty `rag` back (not a plaster). Medical uses (`MedicalDef::uses`) are counted per
   player and item kind (`Aid::opened`, the opened one); the last use takes the item. Per-stack uses (that follow a
-  dropped box) can come with the food's uses (#11). Ripping clothes into rags is #12's recipe.
+  dropped box) can come with the food's uses (#11). Ripping clothes into rags is a recipe (see Crafting), and so is
+  washing rags into clean rags (a clean dressing).
 - **Replication:** `PlayerView::health` is the coarse `HealthTags` everyone sees (bleeding, limping, injured arm, sick);
   `PrivateView::health` (`HealthView`: wounds by part with their id, bleeding, healed in 5% steps, hours to go, dressing
   and hours until a clean one turns dirty, cleaned, stitched, festering; HP lost per hour, pain, the infection once it
@@ -409,7 +411,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   Turning), and Asleep (x30), each with severity and a tooltip. Client: `needs_ui.rs` (right of the vitals; hover for the
   tip), the stats line, stale/mouldy and goes left in the inventory panel, a narrower cone when tired and a closed-eyes
   fog asleep (`fog.rs`).
-- **Saves:** needs, sleep, soreness and each stack's `born`/`used` (format 6), in `state_hash`; checked on load
+- **Saves:** needs, sleep, soreness and each stack's `born`/`used` (format 6; 7 with crafting), in `state_hash`; checked on load
   (`save_check::check_needs`, `check_stack_state`: needs 0..1, goes below `uses`, made no later than now) and
   `NeedsTuning::check`. **MCP:** `stats` (needs, asleep, tags, `time_scale`), `health` (a needs line and each tag's tip),
   `observe` (tags per player), `use` (what it will do first), `sleep {player, max_hours}` (steps until awake; why, hours,
@@ -470,7 +472,43 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   only record presses, `send_clicks` sends at most one per button per frame and none for a stack already on its way
   (`InFlight`, until the snapshot shows the answer, a refusal, or 3 s); a floor item being taken leaves the Floor
   column at once. The Floor column and E use the snapshot's floor, not a distance guess. Left mouse doesn't swing while it's open. Ground items are drawn as boxes of their size and colour,
-  weapons as bars.
+  weapons as bars. Under the columns, the Make list (see Crafting).
+
+## Crafting (`sim::crafting`, `assets/data/items/recipes.ron`; #12)
+
+- **Recipes are data:** a list of `crafting::RecipeDef` (`id`, `name`, `secs`, `inputs` and `outputs` as
+  `(item, count)`, `tools` as `Item("id")` or `Tag("tag")`: any item with that tag in `items.ron`, needed but kept),
+  validated by `crafting::parse_recipes` (ids, a name, secs in (0, 600], counts 1..100, at least one input and output,
+  nothing listed twice, a tool that is also an input, an output that is also an input (it would loop), a recipe id twice,
+  unknown fields) and checked against the items by `crafting::check_recipes` (every input, output and tool item in
+  `items.ron`, some item with each tool tag; errors name the recipe), loaded by `net::content::load_recipes` into
+  `WorldConfig::recipes` (no file: no recipes). Add a recipe by adding an entry.
+- **Shipped** (ours): rip a T-shirt (3 rags), a jumper (4), a hoodie (5), a towel (4), tear a bed sheet (6), cut jeans
+  (4, a `cuts` tool: scissors or a kitchen knife), and wash 3 rags in a bottle of water into 3 clean rags (and an empty
+  bottle). A rag dresses a wound dirty, a clean rag clean (first aid's `bandage` / `clean` tags).
+- **Crafting is an item job** (`JobKind::Craft { recipe }`, `World::player_craft`, `Intent::Craft { player, recipe }`
+  with an index into the recipes the client got on joining): checked when asked and again when due by one pure rule
+  over an inventory (`crafting::check` / `check_times`, which the inventory panel uses too), taking the recipe's `secs`
+  (`crafting::craft_secs`: Handiwork, #46, 10% faster a level down to half; `World::handiwork_level` is a stub returning
+  0, and `World::on_crafted` the no-op where 5 Handiwork XP a craft will be given). Inputs and tools are what the player
+  carries and holds (`firstaid::usable`), not what it wears (the refusal says to take it off); only whole items count
+  as inputs (`crafting::whole`: the part-used top one of a stack doesn't). Like eating, it doesn't stop you walking; a
+  strike landing drops queued crafts with the treatments (`interrupt_treatment`), and swinging, shoving or stomping
+  drops the whole queue; a sleeper's `Craft` only gets it up. Asking again for a recipe already queued queues another
+  only if there's enough for both, else nothing (a repeated click). When done the inputs go and the outputs are made
+  new (`World::fresh_stack`: food made now is fresh, `used` 0), into pockets and bags while there's room, the rest at
+  the player's feet (`put_on_floor`), and the note says what was made from what.
+- **Saves:** craft jobs are saved with the player's queue (format 7); `recipes.ron` is in the content fingerprint
+  (`ContentPrint::recipes` / `recipe_ids`): any change loads with a note, queued crafts matched up by id
+  (`save_check::remap_recipes`), and those of a recipe that's gone called off (nothing was used up yet). A craft's
+  recipe index out of range is `LoadError::Invalid`.
+- **Client:** the inventory panel's Make list (`inventory_ui.rs`): every recipe; the ones you can make (by
+  `crafting::check` over your private view) are rows to click (one request until the answer, like moves), with what
+  they make and their time; the one under way shows its seconds left, queued ones how many; the rest say what's
+  missing. No key of its own.
+- **MCP:** `recipes` (the table; read-only), `craft {player, recipe}` (no recipe: what the player can make now, and what
+  the rest need; with a recipe id: queues it, steps until done, and says what was made and what changed, carried and on
+  the floor).
 
 ## Loot (`sim::loot`, `assets/data/loot.ron`; #8)
 
@@ -699,14 +737,15 @@ over the old one: a crash mid-write leaves the previous save whole).
   (~0.2 s on 1 km, ~20 ms on the default map). A hash of the generated map (`map_base_hash`) is checked on load
   (`LoadError::MapChanged` if the generator changed). After `World::map_changed` (a hand-edited map: tests,
   editors) the whole map is stored instead.
-- **Content vs settings.** The caller passes content (templates, weapons, items, containers, population, as for `World::new`); the save
+- **Content vs settings.** The caller passes content (templates, weapons, items, containers, loot, recipes, population, as for `World::new`); the save
   keeps a fingerprint of each (`save::ContentPrint`, hashes plus ids). `World::load_with(bytes, content, LoadOptions)`
   returns `Loaded { world, notes }`, and `save_check::plan_content` sorts changed content. Compatible, loaded with a
   note: a weapon's numbers (the new ones apply), weapons added, reordered or removed when the save uses none of the
   removed ones (saved weapon indices are matched up by id), the same for items (their numbers apply; indices matched
   by id), `containers.ron` while every opened container is still one, `loot.ron` (only unopened containers fill
   from the new tables), `population.ron` (respawn and migration settings apply;
-  regions keep their saved targets), templates that leave the generated map the same, and any template change for a
+  regions keep their saved targets), `recipes.ron` (queued crafts matched up by id; those of a removed recipe called
+  off), templates that leave the generated map the same, and any template change for a
   save that stores its map whole. Incompatible, `LoadError::ContentChanged` (`MapChanged` if only the generator
   changed): templates that change the map, a removed weapon a swing under way uses, a removed item the save holds
   anywhere, an opened container that is no longer a container. `LoadOptions { force: true }` (server
@@ -716,8 +755,8 @@ over the old one: a crash mid-write leaves the previous save whole).
   flow fields rebuilt as asked for. `World::load` is `load_with` without force, dropping the notes. The
   rest of `WorldConfig` (seed, map size, zombie count, start hour, day length, `ZombieTuning`, `CombatTuning`,
   `TierTuning`, `CarryTuning`) is the save's own, stored as RON so a tuning field added later just takes its default.
-- **Format** (`save.rs` docs): `ZOMBYSAV`, a `u32` format version (6; 3 added items, inventories and containers, 4 wounds and illness, 5 first aid, 6 needs and sleep and each
-stack's `born`/`used`, and older saves are refused), then sections (4-byte tag, `u32` length,
+- **Format** (`save.rs` docs): `ZOMBYSAV`, a `u32` format version (7; 3 added items, inventories and containers, 4 wounds and illness, 5 first aid, 6 needs and sleep and each
+stack's `born`/`used`, 7 crafting: craft jobs and the recipes in the content fingerprint; older saves are refused), then sections (4-byte tag, `u32` length,
   postcard payload, FNV-1a checksum): `INFO` (`SaveInfo`: game version, tick, time of day, seed, map size, zombies,
   players, content fingerprint), `CONF` (settings, RON), `MAPD` (edits or the full map), `WRLD` (everything else but
   zombies), one `ZOMB` per 64 m region (the tiers' region grid; zombies column by column, ids as gaps), `RUNS` (each
@@ -731,7 +770,7 @@ stack's `born`/`used`, and older saves are refused), then sections (4-byte tag, 
   crafted, so values are checked before the world is used, and anything a tick couldn't have made is
   `LoadError::Invalid` naming the field: non-finite numbers (and, in the settings, ones over 1e6), positions off the
   map, zombie speeds or velocities over 50 m/s, zero, repeated, out-of-order or too-new ids, indices out of range
-  (weapons, items in every stack, upper-floor rooms, spawn building, hunted players, zombie regions, edge sides), damage on an edge with no
+  (weapons, items in every stack, recipes in queued crafts, upper-floor rooms, spawn building, hunted players, zombie regions, edge sides), damage on an edge with no
   hit points, negative HP, a living player or zombie with no HP, a dead one with HP, an action, jobs or an open container, an empty stack or a slot holding more than one, a lunge or
   strike off the active tier, a map edit that makes a door or window of something else. The tests mutate a valid world
   and save it (every checksum right) for each case, forge sections, and fuzz section bytes with fixed-up checksums
@@ -776,7 +815,8 @@ often each item turns up; read-only), `search {player, container}`, `take
 off_hand, back, shoulder, worn, container, ground), `drop {player, from, index, count}`, `equip {player, index}`, `wear
 {player, index}`, `unequip {player, from, index}`, `use {player, from, index}` (each queues the job and steps the world
 until the player's queue is empty, then reports what happened and the inventory; `use` also says beforehand what it will
-do, and the needs before and after), `sleep {player, max_hours}` and `set_needs {player, hunger, thirst, tiredness}` (see
+do, and the needs before and after), `recipes` (every crafting recipe: inputs, tools, outputs, seconds; read-only) and
+`craft {player, recipe}` (see Crafting), `sleep {player, max_hours}` and `set_needs {player, hunger, thirst, tiredness}` (see
 Needs), `respawn`, `spawn_item {item, count,
 x, y}` (debug; any item id, `weapon` still accepted), `make_noise {x, y, radius, lasting}`
 (debug; a loud one leaves an attractor, `lasting: true` a 30-minute one), `regions` (ASCII heat maps per 64 m region of

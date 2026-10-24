@@ -64,6 +64,8 @@ pub struct JoinInfo {
     pub weapons: Vec<WeaponDef>,
     /// The item definitions; stacks name items by index into this.
     pub items: Vec<ItemDef>,
+    /// The crafting recipes (#12); `Intent::Craft` names one by index into this.
+    pub recipes: Vec<zombye_sim::RecipeDef>,
     /// Combat reach and arcs, for choosing between shove and stomp.
     pub combat: CombatTuning,
     /// The infection's settings (night sight while turning).
@@ -191,6 +193,7 @@ fn finish_join(app: &mut App, mut server: LocalServer, player_id: u32) {
         player_spawn: spawn,
         weapons: server.world.config.weapons.clone(),
         items: server.world.config.items.clone(),
+        recipes: server.world.config.recipes.clone(),
         combat: server.world.config.combat.clone(),
         infection: server.world.config.infection.clone(),
         first_aid: server.world.config.health.first_aid.clone(),

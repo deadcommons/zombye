@@ -21,6 +21,7 @@ use crate::ai::{self, Ctx, GOAL_RANGE, ZombieAttack, ZombieThump, ZombieTuning};
 use crate::combat::{ActionEvent, CombatEvent, CombatTuning, HitEvent};
 use crate::containers::{self, ContainerData, ContainerSite};
 use crate::health::{HealthTuning, InfectionTuning};
+use crate::crafting::RecipeDef;
 use crate::loot::LootData;
 use crate::inventory::{CarryTuning, ItemNote};
 use crate::items::{self, GroundItem, ItemDef, ItemStack, WeaponCategory, WeaponDef};
@@ -80,6 +81,8 @@ pub struct WorldConfig {
     pub containers: ContainerData,
     /// What containers hold, by room type and container kind (`assets/data/loot.ron`).
     pub loot: LootData,
+    /// What can be made from what (`assets/data/items/recipes.ron`, see [`crate::crafting`]).
+    pub recipes: Vec<RecipeDef>,
     /// Carry limits, burden and how long handling items takes.
     pub carry: CarryTuning,
     /// Player health and every combat number that isn't a weapon's.
@@ -110,6 +113,7 @@ impl WorldConfig {
             items: Vec::new(),
             containers: ContainerData::default(),
             loot: LootData::default(),
+            recipes: Vec::new(),
             carry: CarryTuning::default(),
             combat: CombatTuning::default(),
             health: HealthTuning::default(),
@@ -144,6 +148,11 @@ impl WorldConfig {
 
     pub fn with_loot(mut self, loot: LootData) -> Self {
         self.loot = loot;
+        self
+    }
+
+    pub fn with_recipes(mut self, recipes: Vec<RecipeDef>) -> Self {
+        self.recipes = recipes;
         self
     }
 
@@ -1125,6 +1134,7 @@ impl World {
                     crate::inventory::JobKind::Search { container } => container ^ 0x5EA4_0000,
                     crate::inventory::JobKind::Use { index, item, .. } => index ^ (item as u32) << 8 ^ 0x0E00_0000,
                     crate::inventory::JobKind::Treat { wound, treatment, item } => wound.unwrap_or(0xFFFF) ^ (treatment as u32) << 16 ^ item.map_or(0xFF, u32::from) << 20 ^ 0x7000_0000,
+                    crate::inventory::JobKind::Craft { recipe } => recipe as u32 ^ 0xC4AF_0000,
                 });
             }
         }

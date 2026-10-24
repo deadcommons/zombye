@@ -901,7 +901,7 @@ impl World {
             self.add_wound(pi, part, kind, zombie != 0, None);
         }
         let cause = if zombie != 0 { DeathCause::Zombie { part, wound: kind } } else { DeathCause::Glass { part } };
-        // Being hit stops first aid (#10).
+        // Being hit stops first aid (#10) and crafting (#12).
         self.interrupt_treatment(pi);
         self.hurt_player_by(pi, damage, cause);
     }
