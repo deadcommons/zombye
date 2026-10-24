@@ -23,6 +23,8 @@ All code and assets are our own; see the clean-room rules in [CONTRIBUTING.md](.
   living, avoiding both or teaming up. Co-op is a server setting (PvP off). The single-player game
   already runs a local server.
 - A first-person camera, as a client option and a server rule (§5).
+- A huge open world: several towns and the land between, streamed in regions near players, with
+  hordes, fires and other survivors carrying on far from anyone (built on the tiers of §4.2).
 - Cars, farming, electricity/water shut-off, advanced crafting, NPCs.
 
 **Simplicity rule for v1 art:** low-poly, flat-ish textures, easy to read from the isometric camera. Detail comes later.
