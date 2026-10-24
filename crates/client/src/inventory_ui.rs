@@ -17,10 +17,15 @@
 //!
 //! **The floor** is the server's: the ground items the snapshot says this player can reach
 //! (`Snapshot::floor`, by the same rule the server checks moves with), not a guess from distance.
+//!
+//! **Make** (#12): under the columns, every recipe; the ones you have the inputs and tools for
+//! (by the server's own rule, `crafting::check`, over our private view) can be clicked to make
+//! them, the rest say what's missing. The one under way shows the seconds it has left (our queue is
+//! in the private view), and queued ones how many.
 
 use bevy::prelude::*;
 use zombye_net::{Intent, PrivateView};
-use zombye_sim::{Burden, ItemCategory, ItemDef, ItemStack, Place, Slot, Treatment};
+use zombye_sim::{Burden, ItemCategory, ItemDef, ItemStack, JobKind, Place, Slot, Treatment, crafting};
 
 use crate::player::LocalPlayer;
 use crate::server_link::{ItemNotesThisFrame, JoinInfo, ServerLink};
@@ -92,6 +97,8 @@ struct Asked {
 #[derive(Resource, Default)]
 struct InFlight {
     asked: Vec<Asked>,
+    /// Recipes asked to be made, and when.
+    crafts: Vec<(u16, f32)>,
     /// The view the requests were made against.
     content: String,
 }
@@ -115,13 +122,24 @@ impl InFlight {
         true
     }
 
+    /// Ask for recipe `recipe` to be made. False, asking nothing, when it's on its way already.
+    fn ask_craft(&mut self, recipe: u16, now: f32) -> bool {
+        if self.crafts.iter().any(|(r, _)| *r == recipe) {
+            return false;
+        }
+        self.crafts.push((recipe, now));
+        true
+    }
+
     /// The latest view (`content`), whether a refusal just came, and the time.
     fn update(&mut self, content: String, refused: bool, now: f32) {
         if content != self.content || refused {
             self.asked.clear();
+            self.crafts.clear();
             self.content = content;
         }
         self.asked.retain(|a| now - a.at < FLIGHT_SECS);
+        self.crafts.retain(|(_, at)| now - at < FLIGHT_SECS);
     }
 }
 
@@ -227,6 +245,8 @@ struct RowAction {
     right: Option<Intent>,
     /// Right-click: use this item on a wound (the health panel picks which).
     use_on: Option<u16>,
+    /// Left click: make this recipe (a row of the Make list; `stack` and `left` are unused).
+    craft: Option<u16>,
 }
 
 /// What the panel shows and the requests are checked against: our private view and our floor
@@ -246,6 +266,9 @@ fn click_intent(click: &RowClick, player: u32, flight: &mut InFlight, now: f32) 
     let a = &click.action;
     match click.button {
         PointerButton::Primary => {
+            if let Some(recipe) = a.craft {
+                return flight.ask_craft(recipe, now).then_some(Intent::Craft { player, recipe });
+            }
             let (from, index, to) = a.left?;
             if !flight.ask(from, index, a.stack, click.one, now) {
                 return None;
@@ -324,7 +347,7 @@ fn rebuild(
     let note_fresh = time.elapsed_secs() - last.at < NOTE_SECS * 2.0;
     // (The game hour too: food goes off as time passes.)
     let now = link.curr.game_minute;
-    let signature = format!("{view:?}|{floor:?}|{:.1}|{}|{}|{}|{:?}|{}", busy.0, busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, now / 60);
+    let signature = format!("{view:?}|{floor:?}|{:.1}|{}|{}|{}|{:?}|{:?}|{}", busy.0, busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60);
     if shown.0 == signature {
         return;
     }
@@ -341,12 +364,12 @@ fn rebuild(
                 let inv = &v.inventory;
                 for (label, slot) in [("Hand", Slot::Hand), ("Other hand", Slot::OffHand), ("Back", Slot::Back), ("Shoulder", Slot::Shoulder)] {
                     match inv.slot(slot) {
-                        Some(s) => row(col, format!("{label}: {}{}", name_of(items, now, &s), moving(&flight, Place::Slot(slot), 0, &s)), format!("{:.1} kg", stack_kg(items, &s)), RowAction { stack: s, left: Some((Place::Slot(slot), 0, Place::Carried)), right: None, use_on: None }),
+                        Some(s) => row(col, format!("{label}: {}{}", name_of(items, now, &s), moving(&flight, Place::Slot(slot), 0, &s)), format!("{:.1} kg", stack_kg(items, &s)), RowAction { stack: s, left: Some((Place::Slot(slot), 0, Place::Carried)), right: None, use_on: None, craft: None }),
                         None => dim(col, format!("{label}: -")),
                     }
                 }
                 for (k, s) in inv.worn.iter().enumerate() {
-                    row(col, format!("Worn: {}{}", name_of(items, now, s), moving(&flight, Place::Worn, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Worn, k as u32, Place::Carried)), right: None, use_on: None });
+                    row(col, format!("Worn: {}{}", name_of(items, now, s), moving(&flight, Place::Worn, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Worn, k as u32, Place::Carried)), right: None, use_on: None, craft: None });
                 }
                 dim(col, format!("Carried ({:.1} of {:.0} L):", v.carry.used_l, v.carry.room_l));
                 if inv.carried.is_empty() {
@@ -370,7 +393,7 @@ fn rebuild(
                         (Some(m), Some(o)) => format!(" ({} of {} left)", m.uses.saturating_sub(o.used), m.uses),
                         _ => String::new(),
                     };
-                    row(col, format!("  {}{left}{}", name_of(items, now, s), moving(&flight, Place::Carried, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Carried, k as u32, to)), right, use_on });
+                    row(col, format!("  {}{left}{}", name_of(items, now, s), moving(&flight, Place::Carried, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Carried, k as u32, to)), right, use_on, craft: None });
                 }
             });
             // The open container.
@@ -381,7 +404,7 @@ fn rebuild(
                         dim(col, "empty".into());
                     }
                     for (k, s) in cv.stacks.iter().enumerate() {
-                        row(col, format!("{}{}", name_of(items, now, s), moving(&flight, Place::Container(cv.id), k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Container(cv.id), k as u32, Place::Carried)), right: None, use_on: None });
+                        row(col, format!("{}{}", name_of(items, now, s), moving(&flight, Place::Container(cv.id), k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Container(cv.id), k as u32, Place::Carried)), right: None, use_on: None, craft: None });
                     }
                 });
             }
@@ -391,7 +414,7 @@ fn rebuild(
                     dim(col, "nothing within reach".into());
                 }
                 for (id, s) in &floor {
-                    row(col, format!("{}{}", name_of(items, now, s), moving(&flight, Place::Ground, *id, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Ground, *id, Place::Carried)), right: None, use_on: None });
+                    row(col, format!("{}{}", name_of(items, now, s), moving(&flight, Place::Ground, *id, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Ground, *id, Place::Carried)), right: None, use_on: None, craft: None });
                 }
                 if open.is_none() {
                     dim(col, "E: search the cupboard,".into());
@@ -399,11 +422,43 @@ fn rebuild(
                 }
             });
         });
-        c.spawn((Text::new("Click: move   Shift-click: just one   Right-click: equip / wear / eat / use on a wound   Tab: close"), font(12.0), TextColor(DIM)));
+        if let Some(v) = &view {
+            make(c, &join, v, busy.0, &flight);
+        }
+        c.spawn((Text::new("Click: move (a recipe: make it)   Shift-click: just one   Right-click: equip / wear / eat / use on a wound   Tab: close"), font(12.0), TextColor(DIM)));
         if note_fresh && !last.text.is_empty() {
             c.spawn((Text::new(last.text.clone()), font(14.0), TextColor(if last.ok { OK } else { NO })));
         }
     });
+}
+
+/// The Make list (#12): each recipe, clickable when we have what it takes, else what's missing;
+/// the one under way with its seconds left (`busy`), queued ones counted.
+fn make(c: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f32, flight: &InFlight) {
+    if join.recipes.is_empty() {
+        return;
+    }
+    let items = &join.items;
+    c.spawn((Text::new("Make"), font(15.0), TextColor(TEXT)));
+    for (k, r) in join.recipes.iter().enumerate() {
+        let k = k as u16;
+        let craft = JobKind::Craft { recipe: k };
+        let queued = v.jobs.iter().filter(|j| **j == craft).count();
+        let state = match (v.jobs.first() == Some(&craft), queued) {
+            (true, 1) => format!("  (making: {busy:.1} s left)"),
+            (true, n) => format!("  (making: {busy:.1} s left, {} more queued)", n - 1),
+            (false, 0) if flight.crafts.iter().any(|(x, _)| *x == k) => "  (asked)".to_string(),
+            (false, 0) => String::new(),
+            (false, n) => format!("  ({n} queued)"),
+        };
+        let makes = r.outputs.iter().map(|o| crafting::amount(items, &o.item, o.count)).collect::<Vec<_>>().join(" + ");
+        match crafting::check(r, &v.inventory, items) {
+            Ok(()) => row(c, format!("{}{state}", r.name), format!("{makes}, {:.0} s", r.secs * join.skills.craft_time_mult(v.skill_level(zombye_sim::Skill::Handiwork))), RowAction { stack: ItemStack::one(0), left: None, right: None, use_on: None, craft: Some(k) }),
+            // Under way with what it takes set aside already.
+            Err(_) if queued > 0 => dim(c, format!("{}{state}", r.name)),
+            Err(why) => dim(c, format!("{}: {why}", r.name)),
+        }
+    }
 }
 
 /// " (moving)" after a row some of which is on its way.
@@ -487,7 +542,7 @@ mod tests {
     }
 
     fn click(left: Option<(Place, u32, Place)>, stack: ItemStack, button: PointerButton, one: bool) -> RowClick {
-        RowClick { action: RowAction { stack, left, right: None, use_on: None }, button, one }
+        RowClick { action: RowAction { stack, left, right: None, use_on: None, craft: None }, button, one }
     }
 
     /// A stack asked for is asked for once; one at a time (Shift) as many times as there are;
@@ -521,6 +576,18 @@ mod tests {
         let off = click(Some((Place::Slot(Slot::Hand), 0, Place::Carried)), beans(1), PointerButton::Primary, false);
         assert!(matches!(click_intent(&off, 1, &mut f, 0.0), Some(Intent::Unequip { .. })));
         assert!(click_intent(&off, 1, &mut f, 0.0).is_none());
+    }
+
+    /// A click on a recipe asks for it once until the answer comes (#12).
+    #[test]
+    fn a_recipe_is_asked_for_once() {
+        let mut f = InFlight::default();
+        let c = RowClick { action: RowAction { stack: ItemStack::one(0), left: None, right: None, use_on: None, craft: Some(2) }, button: PointerButton::Primary, one: false };
+        assert!(matches!(click_intent(&c, 1, &mut f, 0.0), Some(Intent::Craft { player: 1, recipe: 2 })));
+        assert!(click_intent(&c, 1, &mut f, 0.1).is_none(), "on its way");
+        f.update("queued".into(), false, 0.2);
+        assert!(click_intent(&c, 1, &mut f, 0.3).is_some(), "answered: another can be asked for");
+        assert!(click_intent(&RowClick { button: PointerButton::Secondary, ..c }, 1, &mut f, 0.4).is_none(), "right-click does nothing");
     }
 
     /// The real input path, headless: Bevy's mouse input, UI layout and picking on a window with a
@@ -561,7 +628,7 @@ mod tests {
         let spawn_panel = |world: &mut World| {
             let mut commands = world.commands();
             commands.spawn(Node { position_type: PositionType::Absolute, top: px(0), left: px(0), flex_direction: FlexDirection::Column, ..default() }).with_children(|col| {
-                row(col, "Alarm clock".into(), "0.4 kg".into(), RowAction { stack: beans(1), left: Some((Place::Container(4), 0, Place::Carried)), right: None, use_on: None });
+                row(col, "Alarm clock".into(), "0.4 kg".into(), RowAction { stack: beans(1), left: Some((Place::Container(4), 0, Place::Carried)), right: None, use_on: None, craft: None });
             });
             world.flush();
         };

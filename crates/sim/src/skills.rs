@@ -22,7 +22,7 @@
 //! `ShortBlunt`/`LongBlunt` Bludgeon, `ShortBlade`/`Axe` Edged, `Unarmed` Brawl). A blow that kills
 //! gives the kill's XP instead of the hit's.
 //!
-//! XP is earned in the sim (deterministic), saved with the player (format 7) and in `state_hash`.
+//! XP is earned in the sim (deterministic), saved with the player (format 8) and in `state_hash`.
 //! Effects are applied where those numbers are already used: Fitness through [`MoveMods`] (so the
 //! snapshot carries it and client prediction stays exact; a Fitness or Strength level-up refreshes the
 //! modifiers at the end of the tick, after movement, like every other change to them), Strength in the
@@ -30,8 +30,9 @@
 //! footsteps, First Aid in `firstaid`, Scavenging in searching. Each level-up is a [`LevelUp`] in
 //! `World::level_ups`, drained into snapshots for the client's HUD line ("Edged 2").
 //!
-//! **For crafting (#12):** [`World::skill_level`] and [`World::award_xp`] (by player index), with
-//! [`SkillTuning::craft_xp`] per craft and [`SkillTuning::craft_time_mult`] for its time.
+//! **Crafting (#12)** uses [`World::skill_level`] and [`World::award_xp`] (by player index):
+//! [`SkillTuning::craft_xp`] per craft done (`crafting`'s `on_crafted`) and
+//! [`SkillTuning::craft_time_mult`] for its time (`World::craft_secs`).
 //!
 //! Every number is ours ([`SkillTuning`], serde defaults, saved with the world's settings).
 
@@ -281,7 +282,7 @@ impl Default for SkillTuning {
             stealth_sight: 0.06,
             search_faster: 0.1,
             search_quieter: 0.1,
-            craft_faster: 0.1,
+            craft_faster: crate::crafting::HANDIWORK_FASTER_PER_LEVEL,
         }
     }
 }
@@ -367,9 +368,10 @@ impl SkillTuning {
         down(self.search_quieter, scavenging)
     }
 
-    /// For crafting (#12): a craft's time at this Handiwork is its usual time times this.
+    /// A craft's time at this Handiwork is its recipe's time times this (never below
+    /// `crafting::HANDIWORK_MIN_MULT`).
     pub fn craft_time_mult(&self, handiwork: u32) -> f32 {
-        down(self.craft_faster, handiwork)
+        down(self.craft_faster, handiwork).max(crate::crafting::HANDIWORK_MIN_MULT)
     }
 
     /// Movement with Fitness on top: running drains endurance slower, it comes back faster.

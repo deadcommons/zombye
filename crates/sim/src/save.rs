@@ -22,11 +22,13 @@
 //! guards against the generator having changed. A map edited by hand ([`World::map_changed`]:
 //! tests, editors) is stored whole instead.
 //!
-//! **Content** (building templates, weapons, items, containers, loot tables, population file) comes
-//! from the caller, as for a new world; the save records a fingerprint of each. Loading against
-//! changed content goes on with a note when the change is compatible (weapon and item numbers,
-//! weapons and items added, `containers.ron` changes that leave every opened container a container,
-//! `loot.ron` (it only decides what unopened containers will hold), `population.ron`; saved weapon and item indices are matched up by id) and fails with
+//! **Content** (building templates, weapons, items, containers, loot tables, population file,
+//! recipes) comes from the caller, as for a new world; the save records a fingerprint of each.
+//! Loading against changed content goes on with a note when the change is compatible (weapon and
+//! item numbers, weapons and items added, `containers.ron` changes that leave every opened container
+//! a container, `loot.ron` (it only decides what unopened containers will hold), `population.ron`,
+//! `recipes.ron` (queued crafts of a recipe that's gone are called off); saved weapon, item and
+//! recipe indices are matched up by id) and fails with
 //! [`LoadError::ContentChanged`] when it isn't (templates that change the map, a weapon or item the
 //! save uses removed, an opened container that no longer is one), unless
 //! [`LoadOptions::force`] says to load anyway (see [`crate::save_check`]). Tunings that are not
@@ -55,7 +57,9 @@
 //! another format version fails with [`LoadError::Version`] (format 3 added items, inventories and
 //! containers, format 4 wounds and illness on players, format 5 first aid: dressings, treatments,
 //! painkillers and antibiotics, format 6 needs and sleep on players and each stack's age and goes
-//! had, format 7 skills: each player's XP in every skill; older saves are refused); truncated or damaged files fail with [`LoadError::Truncated`] or
+//! had, format 7 crafting: craft jobs in players' queues and the recipes in the content
+//! fingerprint, format 8 skills: each player's XP in every skill; older saves are refused);
+//! truncated or damaged files fail with [`LoadError::Truncated`] or
 //! [`LoadError::Corrupt`], never a panic.
 
 use std::fmt;
@@ -88,7 +92,7 @@ use crate::zombies::{Tier, ZombieAnim, ZombieState, Zombies};
 /// The first eight bytes of every save.
 pub const MAGIC: [u8; 8] = *b"ZOMBYSAV";
 /// Bumped whenever the layout changes; other versions are refused with a clear error.
-pub const FORMAT_VERSION: u32 = 7;
+pub const FORMAT_VERSION: u32 = 8;
 /// File extension `net::save_file` uses.
 pub const EXTENSION: &str = "zsave";
 
@@ -138,6 +142,9 @@ pub struct ContentPrint {
     /// the save layout didn't change when loot tables came in).
     pub containers: u64,
     pub population: u64,
+    /// `recipes.ron` (#12, format 7): queued crafts name recipes by index, matched up by id.
+    pub recipes: u64,
+    pub recipe_ids: Vec<String>,
 }
 
 impl ContentPrint {
@@ -156,6 +163,8 @@ impl ContentPrint {
             item_ids: items.iter().map(|d| d.id.clone()).collect(),
             containers: fnv(&encode(&(&config.containers, &config.loot))),
             population: fnv(&encode(&config.population)),
+            recipes: fnv(&encode(&config.recipes)),
+            recipe_ids: config.recipes.iter().map(|r| r.id.clone()).collect(),
         }
     }
 }
@@ -693,6 +702,8 @@ impl World {
         let mut blocking: Vec<String> = save_check::remap_weapons(&plan, &mut ws.players, force, &mut notes)?.into_iter().collect();
         // Items too, wherever they are.
         blocking.extend(save_check::remap_items(&plan, &mut ws.items, &mut ws.players, &mut ws.opened, force, &mut notes)?);
+        // And recipes, in queued crafts.
+        save_check::remap_recipes(&plan, &mut ws.players, &mut notes)?;
 
         let mut w = World::generate(config);
         let mut new_map = false;
@@ -1219,9 +1230,9 @@ pub(crate) mod tests {
     fn other_versions_are_refused() {
         let w = world(10);
         let mut bytes = w.save();
-        bytes[8..12].copy_from_slice(&8u32.to_le_bytes());
+        bytes[8..12].copy_from_slice(&(FORMAT_VERSION + 1).to_le_bytes());
         let err = World::load(&bytes, &content()).err().unwrap();
-        assert_eq!(err, LoadError::Version { found: 8, supported: FORMAT_VERSION });
+        assert_eq!(err, LoadError::Version { found: FORMAT_VERSION + 1, supported: FORMAT_VERSION });
         assert!(err.to_string().contains("newer"), "{err}");
     }
 
