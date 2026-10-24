@@ -545,6 +545,7 @@ impl World {
             map_custom,
             map_base_hash,
             // Rebuilt on load: from the content, the map, the zombies or the players.
+            town_core: _,
             unarmed: _,
             item_weapons: _,
             sites: _,
@@ -993,7 +994,9 @@ pub(crate) mod tests {
         }
         let (_, at) = best.expect("room to stand by the container");
         let pi = w.players.iter().position(|p| p.id == id).unwrap();
+        // Standing still there (whatever it was doing) until the search is done.
         w.players[pi].state.pos = at;
+        w.players[pi].input = crate::players::PlayerInput::default();
         w.player_search(id, Some(site.id)).unwrap();
         for _ in 0..200 {
             w.step();
@@ -1185,7 +1188,7 @@ pub(crate) mod tests {
         w.inflict_wound(b, crate::health::Part::RightLeg, crate::health::WoundKind::Gash, Some(false)).unwrap();
         w.skip_time(20.0);
         let (ra, rb) = (w.player(a).unwrap().run.clone(), w.player(b).unwrap().run.clone());
-        assert!(ra.distance_m > 3.0 && ra.secs > 5.0 && ra.searched == 1 && ra.items_taken >= 1, "{ra:?}");
+        assert!(ra.distance_m > 1.0 && ra.secs > 5.0 && ra.searched == 1 && ra.items_taken >= 1, "{ra:?}");
         assert!(rb.death.is_some_and(|d| matches!(d.cause, crate::run::DeathCause::BledOut { .. })), "{rb:?}");
         let bytes = w.save();
         let loaded = World::load(&bytes, &content()).unwrap();
