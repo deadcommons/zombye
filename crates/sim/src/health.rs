@@ -33,6 +33,8 @@
 //! (a day is `WorldConfig::day_length_secs`, 3,600 s by default: one game hour is 150 s). All
 //! numbers are ours ([`HealthTuning`], [`InfectionTuning`]).
 
+use std::collections::BTreeMap;
+
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +45,15 @@ use crate::players::{MoveMods, Player};
 use crate::rng::hash01;
 use crate::run::DeathCause;
 use crate::world::World;
+
+/// What bodies that rise wore, by item id (#63), for drawing them: players who died infected (until
+/// they rise) and the zombies they rose as (until their corpses are cleared away). Nothing in the
+/// simulation reads it back, so it isn't in the state hash; saves keep it in a section of its own.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RiseLooks {
+    pub bodies: BTreeMap<u32, Vec<String>>,
+    pub risen: BTreeMap<u32, Vec<String>>,
+}
 
 /// Wounds one player can carry at once; strikes past this still hurt but leave no new wound.
 pub const MAX_WOUNDS: usize = 64;
@@ -804,13 +815,14 @@ impl World {
     }
 
     /// Chance (0..1) that clothing a player wears stops a strike on this region: each worn item
-    /// covering it lets `1 - protection` through, layers multiplying.
+    /// covering it lets `1 - protection` through, layers multiplying. A hood covers the head while
+    /// nothing is worn on the head top.
     pub fn protection(&self, p: &Player, region: BodyPart) -> f32 {
+        let items = &self.config.items;
+        let worn = || p.inventory.worn.iter().filter_map(|s| items.get(s.item as usize).and_then(|d| d.clothing.as_ref()));
         let mut through = 1.0;
-        for s in &p.inventory.worn {
-            if let Some(c) = self.config.items.get(s.item as usize).and_then(|d| d.clothing.as_ref())
-                && c.covers.contains(&region)
-            {
+        for c in worn() {
+            if c.covers_with(region, worn()) {
                 through *= 1.0 - c.protection.clamp(0.0, 1.0);
             }
         }
@@ -984,24 +996,36 @@ impl World {
         self.wound_player(pi, part, WoundKind::GlassCut, damage, from, 0);
     }
 
-    /// A player died: an infected body rises as a zombie a little later (when the turn is fatal).
+    /// A player died: an infected body rises as a zombie a little later (when the turn is fatal),
+    /// in what it wore (noted before it drops everything).
     pub(crate) fn health_on_death(&mut self, pi: usize) {
         let inf = &self.config.infection;
         let h = &mut self.players[pi].health;
         if inf.fatal && h.infection.is_some() && h.rise_in.is_none() {
             h.rise_in = Some(inf.rise_secs.max(0.0));
+            let p = &self.players[pi];
+            let wore = p.inventory.worn.iter().map(|s| self.config.items[s.item as usize].id.clone()).collect();
+            self.rise_looks.bodies.insert(p.id, wore);
         }
     }
 
-    /// The body of player `pi` gets up as a zombie where it lies.
+    /// The body of player `pi` gets up as a zombie where it lies, in what it wore.
     pub(crate) fn rise(&mut self, pi: usize) {
         if self.players[pi].health.rise_in.take().is_none() {
             return;
         }
         let (pos, facing) = (self.players[pi].state.pos, self.players[pi].state.facing);
         let speed = self.config.population.speed(1.0, 0.5);
-        self.add_zombie(pos, facing, speed);
+        let zi = self.add_zombie(pos, facing, speed);
+        if let Some(wore) = self.rise_looks.bodies.remove(&self.players[pi].id) {
+            self.rise_looks.risen.insert(self.zombies.id[zi], wore);
+        }
         self.private_dirty.insert(self.players[pi].id);
+    }
+
+    /// What zombie `id` wore as a player, by item id, if it rose from one (#63).
+    pub fn risen_look(&self, id: u32) -> Option<&[String]> {
+        self.rise_looks.risen.get(&id).map(Vec::as_slice)
     }
 
     /// Time passes for everyone's wounds and illnesses: `dt_h` game hours (`dt_secs` real seconds
@@ -1493,6 +1517,46 @@ mod tests {
         assert!(p.health.pain(&w.config.health) > 0.15, "festering hurts");
         assert!(p.health.losing_per_h(&w.config.health) == 1.0, "a festering wound costs 1 HP an hour");
         assert!(p.hp < 100.0 - 6.0 - 1.9);
+    }
+
+    /// A turned player rises in what it wore (#63), though its things fell where it lay; the look
+    /// survives a save, and goes when the corpse is cleared away.
+    #[test]
+    fn a_turned_player_rises_in_what_it_wore() {
+        // A real town (a save needs one) with no zombies in it.
+        let mut c = config(29);
+        c.zombies = Some(0);
+        let mut w = World::new(c);
+        let id = w.add_player(w.player_spawn);
+        for item in ["hoodie", "glasses"] {
+            let i = w.item_index(item).unwrap();
+            w.players[0].inventory.worn.push(crate::ItemStack::one(i));
+        }
+        w.inflict_wound(id, Part::LeftArm, WoundKind::Bite, Some(true)).unwrap();
+        w.players[0].hp = 1.0;
+        w.players[0].health.infection.as_mut().unwrap().stage = InfectionStage::Turning;
+        while !me(&w, id).dead {
+            w.skip_time(0.01);
+        }
+        assert!(me(&w, id).inventory.worn.is_empty(), "everything fell where it lay");
+        let zombies = w.zombies.len();
+        for _ in 0..(31.0 / TICK_DT) as u32 {
+            w.step();
+        }
+        assert_eq!(w.zombies.len(), zombies + 1, "the body rose");
+        let zid = w.zombies.id[zombies];
+        assert_eq!(w.risen_look(zid), Some(&["hoodie".to_string(), "glasses".to_string()][..]));
+        let back = World::load(&w.save(), &w.config).unwrap();
+        assert_eq!(back.risen_look(zid), w.risen_look(zid));
+        assert_eq!(back.state_hash(), w.state_hash());
+        let mut forged = World::load(&w.save(), &w.config).unwrap();
+        forged.rise_looks.risen.insert(9999, vec!["scarf".into()]);
+        assert!(matches!(World::load(&forged.save(), &w.config), Err(crate::save::LoadError::Invalid(_))), "a look for a zombie that isn't there");
+        // Killed and cleared away: the look goes with it.
+        w.zombies.state[zombies] = ZombieState::Dead;
+        w.zombies.timer[zombies] = 1e6;
+        w.step();
+        assert_eq!(w.risen_look(zid), None);
     }
 
     /// Bitten and infected: hidden for hours (the view doesn't show it), then feverish, then

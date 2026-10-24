@@ -20,7 +20,7 @@ use crate::TICK_DT;
 use crate::ai::{self, Ctx, GOAL_RANGE, ZombieAttack, ZombieThump, ZombieTuning};
 use crate::combat::{ActionEvent, CombatEvent, CombatTuning, HitEvent};
 use crate::containers::{self, ContainerData, ContainerSite};
-use crate::health::{HealthTuning, InfectionTuning};
+use crate::health::{HealthTuning, InfectionTuning, RiseLooks};
 use crate::crafting::RecipeDef;
 use crate::loot::LootData;
 use crate::inventory::{CarryTuning, ItemNote};
@@ -274,6 +274,8 @@ pub struct World {
     /// Players whose inventory, open container or job queue changed since the last snapshot took
     /// them (replication, not simulation state).
     pub(crate) private_dirty: BTreeSet<u32>,
+    /// What bodies that rise wore (#63), for drawing them: not simulation state.
+    pub(crate) rise_looks: RiseLooks,
     /// Index of bare hands in `config.weapons`.
     pub(crate) unarmed: u16,
     /// Hit points of damaged doors and windows, by [`EdgeRef::key`]. Missing = undamaged.
@@ -382,6 +384,7 @@ impl World {
             level_ups: Vec::new(),
             skill_mods_due: Vec::new(),
             private_dirty: BTreeSet::new(),
+            rise_looks: RiseLooks::default(),
             unarmed,
             action_events: Vec::new(),
             hit_events: Vec::new(),
@@ -813,6 +816,7 @@ impl World {
         removed.extend(dead.iter().enumerate().filter(|(k, (age, _))| *k < excess || *age >= t.corpse_secs).map(|(_, (_, id))| *id));
         removed.sort_unstable();
         let gone: Vec<bool> = z.id.iter().map(|id| removed.binary_search(id).is_ok()).collect();
+        self.rise_looks.risen.retain(|id, _| removed.binary_search(id).is_err());
         self.zombies.remove_where(|i| gone[i]);
     }
 

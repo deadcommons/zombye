@@ -17,18 +17,17 @@
 //! (all but a few bytes, see [`settled`]) are written as the PNG (or the last one, with a warning, if it never settles), then the
 //! app exits.
 //!
-//! `ZOMBYE_FRAME_BENCH=N` measures frame cost: after the PNG is written the same still scene is
-//! drawn N more times (no readbacks) and the mean and median wall time a frame are printed
-//! (`frame bench: N frames, mean X ms, median Y ms`): with no vsync the loop runs as fast as the
-//! slower of the CPU and the GPU allows.
+//! `ZOMBYE_FRAME_BENCH=N` times the frame cost: after the PNG it renders N more frames of the same
+//! picture, waiting for the GPU to finish each one, and prints their mean and worst in ms.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bevy::prelude::*;
-use bevy::render::render_resource::{PipelineCache, TextureFormat, TextureUsages};
+use bevy::render::render_resource::{PipelineCache, PollType, TextureFormat, TextureUsages};
+use bevy::render::renderer::RenderDevice;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
 use bevy::render::{Render, RenderApp, RenderSystems};
 use bevy::time::TimeUpdateStrategy;
@@ -56,6 +55,11 @@ pub struct OffscreenTarget(pub Handle<Image>);
 #[derive(Resource, Clone, Default)]
 struct PendingPipelines(Arc<AtomicUsize>);
 
+/// Set while benchmarking: the render world waits for the GPU at the end of every frame, so a
+/// frame's wall time includes its GPU work.
+#[derive(Resource, Clone, Default)]
+struct SyncGpu(Arc<AtomicBool>);
+
 /// The latest readback, from the screenshot observer.
 #[derive(Resource, Clone, Default)]
 struct Readback(Arc<Mutex<Option<Image>>>);
@@ -65,7 +69,6 @@ enum Phase {
     Warm,
     Settle,
     Capture,
-    /// Drawing the still scene again to time frames (`ZOMBYE_FRAME_BENCH`).
     Bench,
 }
 
@@ -78,9 +81,9 @@ struct Job {
     settled: u32,
     captures: u32,
     previous: Option<Image>,
-    /// Frames still to time, and the wall time of each one timed so far.
+    /// Frames to time after the PNG (`ZOMBYE_FRAME_BENCH`), and the frame times so far.
     bench: u32,
-    frame_ms: Vec<f32>,
+    times: Vec<f32>,
     last: Instant,
 }
 
@@ -95,31 +98,30 @@ impl Plugin for OffscreenPlugin {
         image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
         let handle = app.world_mut().resource_mut::<Assets<Image>>().add(image);
         let pending = PendingPipelines::default();
+        let sync = SyncGpu::default();
+        let bench = std::env::var("ZOMBYE_FRAME_BENCH").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let now = Instant::now();
         app.insert_resource(OffscreenTarget(handle))
             .insert_resource(pending.clone())
+            .insert_resource(sync.clone())
             .init_resource::<Readback>()
             .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(FRAME_SECS)))
-            .insert_resource(Job {
-                path,
-                started: Instant::now(),
-                frame: 0,
-                phase: Phase::Warm,
-                settled: 0,
-                captures: 0,
-                previous: None,
-                bench: std::env::var("ZOMBYE_FRAME_BENCH").ok().and_then(|n| n.parse().ok()).unwrap_or(0),
-                frame_ms: Vec::new(),
-                last: Instant::now(),
-            })
+            .insert_resource(Job { path, started: now, frame: 0, phase: Phase::Warm, settled: 0, captures: 0, previous: None, bench, times: Vec::new(), last: now })
             .add_systems(Last, drive);
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app.insert_resource(pending).add_systems(Render, count_pending.in_set(RenderSystems::Cleanup));
+            render_app.insert_resource(pending).insert_resource(sync).add_systems(Render, (count_pending, wait_for_gpu).in_set(RenderSystems::Cleanup));
         }
     }
 }
 
 fn count_pending(cache: Res<PipelineCache>, pending: Res<PendingPipelines>) {
     pending.0.store(cache.waiting_pipelines().count(), Ordering::Relaxed);
+}
+
+fn wait_for_gpu(sync: Res<SyncGpu>, device: Res<RenderDevice>) {
+    if sync.0.load(Ordering::Relaxed) {
+        let _ = device.poll(PollType::wait_indefinitely());
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -129,6 +131,7 @@ fn drive(
     target: Res<OffscreenTarget>,
     pending: Res<PendingPipelines>,
     readback: Res<Readback>,
+    sync: Res<SyncGpu>,
     options: Res<Options>,
     mut time: ResMut<Time<Virtual>>,
     mut exit: MessageWriter<AppExit>,
@@ -138,13 +141,13 @@ fn drive(
         let now = Instant::now();
         let ms = (now - job.last).as_secs_f32() * 1000.0;
         job.last = now;
-        job.frame_ms.push(ms);
-        if job.frame_ms.len() as u32 >= job.bench {
-            job.frame_ms.remove(0);
-            let n = job.frame_ms.len();
-            let mean = job.frame_ms.iter().sum::<f32>() / n as f32;
-            job.frame_ms.sort_by(f32::total_cmp);
-            println!("frame bench: {n} frames, mean {mean:.2} ms, median {:.2} ms", job.frame_ms[n / 2]);
+        // The first frame or two still overlap the readback.
+        job.times.push(ms);
+        if job.times.len() as u32 >= job.bench + 2 {
+            let t = &job.times[2..];
+            let mean = t.iter().sum::<f32>() / t.len() as f32;
+            let worst = t.iter().copied().fold(0.0, f32::max);
+            println!("frame cost: {mean:.2} ms mean, {worst:.2} ms worst over {} frames", t.len());
             exit.write(AppExit::Success);
         }
         return;
@@ -152,7 +155,10 @@ fn drive(
     if job.started.elapsed() > DEADLINE {
         let ms = job.started.elapsed().as_millis();
         match job.previous.take() {
-            Some(image) => finish(&job, image, &options, &format!("; warning: still changing after {ms} ms"), &mut exit),
+            Some(image) => {
+                let ok = finish(&job, image, &options, &format!("; warning: still changing after {ms} ms"));
+                exit.write(if ok { AppExit::Success } else { AppExit::error() });
+            }
             None => {
                 eprintln!("render failed: nothing to read back after {ms} ms ({} frames, {} pipelines waiting)", job.frame, pending.0.load(Ordering::Relaxed));
                 exit.write(AppExit::error());
@@ -181,25 +187,30 @@ fn drive(
             let Some(image) = readback.0.lock().expect("readback lock").take() else { return };
             job.captures += 1;
             let same = job.previous.as_ref().is_some_and(|p| settled(p, &image));
-            if same && job.bench > 0 {
-                // Written: now draw on and time it (the first frame, after the readback, is left
-                // out).
-                if write(&job, image, &options, "") {
-                    job.phase = Phase::Bench;
-                    job.bench += 1;
-                    job.last = Instant::now();
-                } else {
-                    exit.write(AppExit::error());
-                }
-            } else if same {
-                finish(&job, image, &options, "", &mut exit);
+            let note = if same {
+                Some(String::new())
             } else if job.captures >= MAX_CAPTURES {
-                finish(&job, image, &options, &format!("; warning: no two of {} readbacks matched", job.captures), &mut exit);
+                Some(format!("; warning: no two of {} readbacks matched", job.captures))
             } else {
-                // Read back again next frame (sooner if nothing is waiting).
-                job.previous = Some(image);
-                job.settled = SETTLE_FRAMES - 1;
-                job.phase = Phase::Settle;
+                None
+            };
+            match note {
+                Some(note) => {
+                    let ok = finish(&job, image, &options, &note);
+                    if ok && job.bench > 0 {
+                        sync.0.store(true, Ordering::Relaxed);
+                        job.last = Instant::now();
+                        job.phase = Phase::Bench;
+                    } else {
+                        exit.write(if ok { AppExit::Success } else { AppExit::error() });
+                    }
+                }
+                None => {
+                    // Read back again next frame (sooner if nothing is waiting).
+                    job.previous = Some(image);
+                    job.settled = SETTLE_FRAMES - 1;
+                    job.phase = Phase::Settle;
+                }
             }
         }
         Phase::Bench => {}
@@ -216,13 +227,8 @@ fn settled(a: &Image, b: &Image) -> bool {
     }
 }
 
-/// Write the PNG, say so on stdout, and exit.
-fn finish(job: &Job, image: Image, options: &Options, note: &str, exit: &mut MessageWriter<AppExit>) {
-    exit.write(if write(job, image, options, note) { AppExit::Success } else { AppExit::error() });
-}
-
-/// Write the PNG and say so on stdout (or why not on stderr).
-fn write(job: &Job, image: Image, options: &Options, note: &str) -> bool {
+/// Write the PNG and say so on stdout (or why not on stderr); true if it was written.
+fn finish(job: &Job, image: Image, options: &Options, note: &str) -> bool {
     match write_png(image, &job.path) {
         Ok(()) => {
             let s = options.size;

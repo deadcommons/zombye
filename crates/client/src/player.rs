@@ -31,6 +31,7 @@ use crate::camera::IsoCamera;
 use crate::fog::FogState;
 use crate::server_link::{ClientMap, JoinInfo, ServerLink, ServerTick};
 use crate::survivor::{self, SurvivorAssets};
+use crate::survivor_model::SurvivorModel;
 use crate::zombie_render::lerp_angle;
 
 /// Unconfirmed inputs kept for replay; older ones are dropped (the server is far behind or gone).
@@ -109,6 +110,7 @@ fn spawn_player(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut bindposes: ResMut<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
     let state = link.curr.players.iter().find(|p| p.id == join.player_id).map(|v| v.state()).unwrap_or_else(|| PlayerState::new(join.player_spawn));
     commands.insert_resource(LocalPlayer {
@@ -128,11 +130,15 @@ fn spawn_player(
     });
 
     let assets = SurvivorAssets::new(&mut meshes, &mut materials, &mut bindposes);
+    let model = SurvivorModel::load(&options, &mut meshes, &mut materials, &mut images, &mut bindposes);
     let p = state.pos;
     let yaw = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - state.facing);
     let me = commands.spawn((Player { facing: state.facing }, Transform::from_xyz(p.x, 0.0, p.y).with_rotation(yaw), Visibility::default())).id();
-    survivor::attach(&mut commands, &assets, me, join.player_id, true);
+    survivor::attach(&mut commands, &assets, model.as_ref(), me, join.player_id, true);
     commands.insert_resource(assets);
+    if let Some(model) = model {
+        commands.insert_resource(model);
+    }
 }
 
 fn toggle_sneak(keys: Res<ButtonInput<KeyCode>>, mut me: ResMut<LocalPlayer>) {
@@ -224,6 +230,7 @@ fn sync_other_players(
     fog: Res<FogState>,
     fixed: Res<Time<Fixed>>,
     assets: Option<Res<SurvivorAssets>>,
+    model: Option<Res<SurvivorModel>>,
     mut others: Query<(Entity, &OtherPlayer, &mut Transform, &mut Visibility)>,
 ) {
     let Some(assets) = assets else { return };
@@ -244,7 +251,7 @@ fn sync_other_players(
     for v in link.curr.players.iter().filter(|p| p.id != me.id && !seen.contains(&p.id)) {
         let tf = Transform::from_xyz(v.pos[0], 0.0, v.pos[1]).with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - v.facing));
         let e = commands.spawn((OtherPlayer(v.id), tf, Visibility::default())).id();
-        survivor::attach(&mut commands, &assets, e, v.id, false);
+        survivor::attach(&mut commands, &assets, model.as_deref(), e, v.id, false);
     }
 }
 
@@ -289,6 +296,7 @@ fn actions(
     mouse: Res<ButtonInput<MouseButton>>,
     panel: Res<crate::inventory_ui::InventoryPanel>,
     health: Res<crate::health_ui::HealthPanel>,
+    preview: Res<crate::dev_time::LightPreview>,
     me: Res<LocalPlayer>,
     join: Res<JoinInfo>,
     players: Query<(&Transform, &Player)>,
@@ -312,7 +320,7 @@ fn actions(
     if keys.just_pressed(KeyCode::KeyB) || (asleep && moving) {
         link.send(Intent::Sleep { player: me.id, sleep: !asleep });
     }
-    if mouse.just_pressed(MouseButton::Left) && !panel.open && !health.open {
+    if mouse.just_pressed(MouseButton::Left) && !panel.open && !health.open && !preview.hovered {
         link.send(Intent::Attack { player: me.id });
     }
     if keys.just_pressed(KeyCode::Space) {

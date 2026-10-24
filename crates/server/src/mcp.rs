@@ -480,6 +480,13 @@ fn tool_list() -> Value {
             "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}}}
         },
         {
+            "name": "add_player",
+            "description": "Another player joins (as a second client would), standing at (x, y) (default: beside player 1), \
+                facing east. Replies with its id: give it as `player` to the other tools. For testing what several \
+                players look like together (screenshot) and how the world copes with them.",
+            "inputSchema": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}}}
+        },
+        {
             "name": "dev",
             "description": "Dev toggles for a player, for testing without dying (allowed here: the MCP server is a dev tool). \
                 god: takes no damage and can't die (zombie strikes still land and are reported, HP doesn't drop). \
@@ -1049,6 +1056,16 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 return Err(format!("player {id} is dead and couldn't respawn"));
             }
             Ok(format!("player {id} is at ({:.1}, {:.1}) in {} with {:.0} HP", p.state.pos.x, p.state.pos.y, place(world, p.state.pos), p.hp))
+        }
+        "add_player" => {
+            let beside = world.players.first().map_or(Vec2::ZERO, |p| p.state.pos + Vec2::new(1.2, 0.0));
+            let at = Vec2::new(num("x").map_or(beside.x, |x| x as f32), num("y").map_or(beside.y, |y| y as f32));
+            if !at.is_finite() || !world.map.in_bounds(at.floor().as_ivec2()) {
+                return Err(format!("({:.1}, {:.1}) is off the map", at.x, at.y));
+            }
+            let id = world.add_player(at);
+            let p = world.player(id).expect("just added");
+            Ok(format!("player {id} joined at ({:.1}, {:.1}) in {}", p.state.pos.x, p.state.pos.y, place(world, p.state.pos)))
         }
         "dev" => {
             let id = player_id();
@@ -2006,7 +2023,20 @@ fn item_details(d: &zombye_sim::ItemDef) -> String {
         v.push(format!("bag {} L on the {:?}{}", b.capacity_l, b.carried, if b.slow > 0.0 { format!(", {:.0}% slower", b.slow * 100.0) } else { String::new() }));
     }
     if let Some(c) = &d.clothing {
-        v.push(format!("covers {:?} ({:?} layer), protection {:.2}", c.covers, c.layer, c.protection));
+        let mut on = Vec::new();
+        if !c.covers.is_empty() {
+            on.push(format!("covers {:?}", c.covers));
+        }
+        if !c.takes.is_empty() {
+            on.push(format!("takes {:?}", c.takes));
+        }
+        if c.hood {
+            on.push("a hood (up over a bare head)".into());
+        }
+        v.push(format!("{} ({:?} layer), protection {:.2}", on.join(", "), c.layer, c.protection));
+    }
+    if let Some(m) = &d.model {
+        v.push(format!("model {m}"));
     }
     if let Some(l) = &d.light {
         v.push(format!("light {} m for {} h", l.radius_m, l.hours));

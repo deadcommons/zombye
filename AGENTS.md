@@ -16,7 +16,7 @@ Work is tracked on GitHub, not in the repo: the
 | `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), skills that improve with practice (`skills.rs` + `SkillTuning`), run stats and the cause of death (`run.rs`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint; `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
-| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building meshes, the outdoors per chunk from the tile map alone (`meshgen/landscape.rs`: lawns, verges, forest floor and litter, road paint at real scale, kerbs, slab joints, driveways, front beds, fences and hedges; `meshgen/trees.rs`: faceted broadleaves, birches, pines, spruces; colours in `meshgen/land_palette.rs`), fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd, or a character baked offline read from a `.zvat` (`zvat.rs`); `survivor.rs` skinned, CPU-posed players), hit feedback (`fx.rs`), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), HUD, the death screen and run summary (`death.rs`), the skills panel and level-up line (`skills_ui.rs`), sound (`audio.rs`, see Sound), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
+| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building meshes, the outdoors per chunk from the tile map alone (`meshgen/landscape.rs`: lawns, verges, forest floor and litter, road paint at real scale, kerbs, slab joints, driveways, front beds, fences and hedges; `meshgen/trees.rs`: faceted broadleaves, birches, pines, spruces; colours in `meshgen/land_palette.rs`), fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd, or a character baked offline read from a `.zvat` (`zvat.rs`); `survivor.rs` skinned, CPU-posed players; `character.rs` reads a modular character's body and wearable GLBs and `survivor_model.rs` draws players as it, dressed in what they wear), hit feedback (`fx.rs`), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), HUD, the death screen and run summary (`death.rs`), the skills panel and level-up line (`skills_ui.rs`), sound (`audio.rs`, see Sound), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
 | `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/items/recipes.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`), models (`models/furniture/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), sound (`audio/sfx/*.wav`, `audio/ambience/*.wav`, listed in `data/sounds.ron`), later textures. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
 | `tools/blender/` | Python to build assets: run inside Blender, mesh builder, palette, renders, validation, GLB export (`zasset.py`, `palette.py`, `build.py`), character clean-up, validation and skinned export (`zchar.py`), VAT bake for the crowd, outfit variants with palette swatches (`zvat.py`, `build.py -- --crowd`); plain Python, art-repo work folders and promotion (`artrepo.py`). | MIT OR Apache-2.0 |
 | `tools/audio/` | `synth.py`: the placeholder sounds, synthesised from noise, tones and filters (plain Python, deterministic). | MIT OR Apache-2.0 |
@@ -82,7 +82,7 @@ cargo test --release --workspace
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --inventory --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --mute --volume V`
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --inventory --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V`
 (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost).
@@ -113,7 +113,11 @@ a window's camera), no autosave. It waits for the frame to be stable rather than
 few frames it reads the image back, and two readbacks in a row that match (all but 1 byte in 10,000) are written. It
 prints `rendered PATH: WxH, N frames, N readbacks, MS ms` (plus a warning if it never settled; 40 s limit) and exits 0,
 or exits 1 with the reason on stderr. Prefer it to `--screenshot` for checking visuals: the windowed client pops up and
-steals focus. Not rendered: client-only effects that aren't in the save (blood splats, hit flashes).
+steals focus. `ZOMBYE_FRAME_BENCH=N` then renders N more frames of the same picture, waiting for the GPU each frame, and
+prints `frame cost: M ms mean, W ms worst` (how frame costs in this file are measured: 1920x1080, 2,000 zombies, 120 frames). Not rendered: client-only effects that aren't in the save (blood splats, hit flashes).
+`--pose NAME[:U]` holds our survivor in one pose, for reviewing animation in offscreen pictures where nothing moves:
+`walk`, `run`, `sneak` at `U` (0..1) of the locomotion cycle, `swing`, `shove`, `stomp` at `U` of the action (the blow
+lands at 0.45), `idle`, `dead`.
 `--map-chunks N` makes the map N × N chunks of 16 m (default 30, 480 m; 64 is about 1 km): the same town in the
 middle with more forest round it (a map too small for the town is grown to fit). The server takes it too.
 Without `--zombies` (client and server) the world holds as many zombies as `assets/data/population.ron` gives for the
@@ -135,7 +139,7 @@ sent to it, chasing, zombies per tier active/near/virtual, sim tick ms, and the 
 In game: WASD move, Shift run, C sneak (toggle), mouse to face, left mouse attack (swing your weapon, or
 punch), Space shove (or stomp, when a downed zombie lies right in front of you), E pick up the item you
 face (with nothing on the floor within reach: search the container you face), Tab or I the inventory panel, K the skills panel, F open/close the door or window you face, G smash the window you face, dead: R a new run and Q or Esc quit,
-B sleep (B again or WASD to get up), T skip an hour, Z spawn zombies, wheel zoom, F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), M mute. Walk into an open or broken window to climb
+B sleep (B again or WASD to get up), T skip an hour, Z spawn zombies, wheel zoom, F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), F3 the light preview (a time-of-day slider, see Light and mood), M mute. Walk into an open or broken window to climb
 through it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
 not Bevy's handler; a second Ctrl-C quits unsaved) autosaves; `--render-to` never does.
 
@@ -516,15 +520,22 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
 - **Items are data:** `assets/data/items/items.ron`, a list of `items::ItemDef` (id, name, `category`: Food, Drink,
   Medical, Tool, Material, Clothing, Bag, Weapon, Light, Junk; `weight_kg`, `volume_l`, `stack`, `tags`,
   `two_handed`, and per category `food`/`drink` (hunger, thirst, uses, spoils_hours), `medical` (uses), `bag`
-  (capacity_l, carried Back/Shoulder/Hand, slow), `clothing` (covers body parts, protection, layer), `light`, `weapon`
-  (an id in `weapons.ron`), grey-box `color`). About 70 ordinary things with real-world weights; validated by
+  (capacity_l, carried Back/Shoulder/Hand, slow), `clothing` (covers body parts, takes accessory places, protection,
+  layer, hood), `light`, `weapon` (an id in `weapons.ron`), `model` (the wearable the client draws, #63) and grey-box
+  `color`). About 70 ordinary things with real-world weights; validated by
   `items::parse_items` (unknown fields refused), loaded by `net::content::load_items` (all content at once:
   `content::load_config`). A weapon with no item gets a plain 1 kg one (`items::complete_items`), so bare configs and
   tests work. Things are `ItemStack { item, count, born, used }` (index into `WorldConfig::items`; `born`, the game minute
   food was made, and `used`, goes had of the top one, see Needs; stacks merge only when all but the count agree:
   `ItemStack::same_kind`, `merge_into(stacks, like, n, size)`).
-- **Inventory** (`Player::inventory`): `hand` (swings), `off_hand`, `back` and `shoulder` (bags), `worn` (clothing;
-  two can't share a body part and layer), `carried` (pockets and bags). Two limits (`CarryTuning`, ours): *room*,
+- **Accessories** (#63) are clothing that `takes` a place (`items::WearSlot`: `Face`, `HeadTop`, `Neck`): glasses (the
+  face), a baseball cap, beanie or woolly hat (the head top; they cover the head too), a scarf (the neck); later masks. A
+  `hood` (the hoodie's) covers the head while nothing takes the head top: putting a hat on pulls it down
+  (`ClothingDef::covers_with`, used by `World::protection`; the note says so). Each item can name its `model`, the
+  wearable GLB the client draws (`assets/models/wearables/<model>.glb`); none, or no file: a grey-box (see Characters
+  on screen). A new wearable is a model file plus an `items.ron` entry, no code.
+- **Inventory** (`Player::inventory`): `hand` (swings), `off_hand`, `back` and `shoulder` (bags), `worn` (clothing and
+  accessories; two can't share a body part or an accessory place on one layer, `ClothingDef::clashes`), `carried` (pockets and bags). Two limits (`CarryTuning`, ours): *room*,
   pockets 3 L plus the bags in the slots (held and worn items take none); *weight*, everything in full (bags add room,
   not lightness). Limit 14 kg (+1.5 kg per Strength level, #46: `CarryTuning::limit(strength)`; a new survivor's Strength 1 makes it 15.5 kg); over 100%
   Burdened (x0.9 speed, running drains x1.3), over 130% Heavy (x0.75, no running, actions cost x1.2), over 160%
@@ -661,6 +672,34 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   Asleep, everything is quieter. `--mute` / `--volume V` (0-2) / M; the stats line says `sounds N (...)` each second.
   Offscreen renders have no audio.
 
+## Light and mood (`daynight.rs`, `camera.rs`, `fog.rs`; #83)
+
+- **The look is isolation and fear** (docs/art-direction.md, "Light and mood"). The camera is HDR with a filmic tone map
+  (TonyMcMapface), bloom only above sunlit brightness (light sources), a colour grade and a vignette that `daynight.rs`
+  sets from the hour: warm and a little faded by day, warmest and richest at dawn and dusk, cold and closed in at night.
+- **Sun:** never more than about 35° up, so shadows stay long; little ambient fill. One shadow cascade fitted round what
+  the camera sees at the current zoom (`sun_cascade`; the camera is orthographic and 120 m back, so the default cascades
+  put the whole view in the coarsest one), 4096 map: about 3 cm a texel at the default zoom.
+- **Night:** moonlight and ambient low enough that only edges and silhouettes read; the fog of war's unseen areas go
+  nearly black (`fog_tint`); you see 10 m with no light (`fog::NIGHT_SIGHT`). A faint glow round the player lights its
+  own feet.
+- **Held lights:** an item with `light` in either hand (`daynight::held_light`, from our `PrivateView`): a flashlight is a
+  shadow-casting `SpotLight` cone along the facing (`BEAM_OUTER`, aimed 4.5 m ahead), seeing out to its `radius_m` + 2
+  along the beam at night; a candle (`needs_fire`) a small warm shadow-casting pool. Only the local player's (others'
+  inventories don't reach the client yet); zombies don't react to light (a sim change of its own).
+- **Fog of war per pixel:** the sight rays go to the GPU (`FogState::rays`, 1,024 × 1 `R32Float`, with the range and cone in
+  `FogState::sight`) and `world.wesl`'s `fog_at` works out what's seen per pixel by the same rule as the mask, so
+  line-of-sight edges are smooth, not the mask's half-metre steps. The mask still says what's indoors and which zombies
+  to draw.
+- **The crowd** lights itself (`zombie_vat.wesl`: sun and ambient uniforms, darker at night); it neither casts nor
+  receives shadows nor takes the flashlight yet.
+- **F3, the light preview** (`dev_time.rs`): a slider at the foot of the screen (drag, or hold `[` / `]`) for the hour the
+  light is drawn at (sun, moon, ambient, grade, held light, crowd, sight range); the server's clock, zombies' senses and
+  the HUD's time don't follow it. F3 again goes back to the server's hour.
+- **Cost** (M-series Mac, 1920 × 1080 offscreen, 2,000 zombies, under the same background load): within about 1 ms of
+  before (day 9.1 against 7.9 ms, dusk 8.0 against 8.3, 60 m 9.4 against 9.8); a lit flashlight adds about 0.8 ms (its
+  shadow map).
+
 ## Characters on screen (`crates/client`)
 
 - Both are grey-box boxes on a small skeleton (`rig.rs`: bones as parent + rest pivot, a pose is a rotation
@@ -712,7 +751,34 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   sneak crouch; the cycle advances with distance actually moved), actions on top (punch / one-handed chop /
   two-handed sweep by weapon category, shove, stomp; timed so the blow lands when the server lands it), an
   additive hurt flinch, and a fall onto the back when dead. Every pose is grounded (lowest boot on the floor).
-  The held weapon is a child of the hand joint. Your jacket is mustard, other players' teal.
+  The held weapon is a child of the hand joint. Your jacket is mustard, other players' teal. This grey-box is the
+  fallback when there's no modular character.
+- **The modular survivor** (#62, #63; `character.rs` reads, `survivor_model.rs` draws): one base body on one skeleton
+  (`tools/blender/zgarment.py`'s body GLB: the skinned body with a `_REGION` attribute per vertex, its clips idle, walk,
+  run, sneak, and its sockets `eyes`, `head_top`, `neck`, `hand_r`, `hand_l`, `back` in the body node's extras) and a
+  GLB per wearable, skinned to the same skeleton by bone name (rigid ones wholly to their socket's bone), with the body
+  regions it `hides` in its extras. Files: `--survivor PATH` (a body GLB, or a folder with a `*_body.glb`, e.g. a
+  character's `export/` in the art repo), else `ZOMBYE_SURVIVOR` (the MCP `screenshot` client inherits it, for review
+  before promotion), else `assets/models/characters/survivor_01.glb`; `none`, or no file: the grey-box. Wearables: every
+  GLB in `assets/models/wearables/`, then `wearables/` beside the body, by file name (an item's `model`).
+  **Animation:** locomotion from the body's own clips, sampled on the same distance-driven cycle, each clip's stride
+  measured from its planted feet and its mean hip turn taken out (so it faces where the player faces); the grey-box's
+  poses carried over onto the skeleton for the rest (`Retarget`: each grey-box bone's turn from its rest put on the
+  matching bones in the idle's first frame; the spine shares the torso's turn, the neck half the head's): the arm
+  holding a weapon at the ready, swing / shove / stomp (timed as before), the flinch (additive) and the fall onto the
+  back when dead or asleep; then grounded on the lowest foot vertex. `step_movement` and prediction are untouched.
+  **Dressing:** `Snapshot::outfits` (`net::OutfitView`: worn items, the back and shoulder bags, by item index; every
+  player, every snapshot) says what's drawn, for us and for others, changing the moment it does: the body with the
+  regions worn wearables hide cut away, and every worn model merged into one more mesh (both cached per outfit), so a
+  survivor is body + outfit + held weapon + ring draws. An item with no model is a grey-box: clothing tints the regions
+  it covers (sampling a light texel of the shirt, so the colour shows), an accessory is a box on its socket, a bag a box
+  on the back (or the left hip from the shoulder). The held weapon sits on `hand_r`. Players are told apart by a flat
+  ring round their feet, ours mustard, others teal.
+- **Rising in what it wore** (#63): a player who dies infected has what it wore noted (`World::rise_looks`, item ids,
+  before it drops everything), the zombie it rises as keeps it (`World::risen_look`, until the corpse is cleared away),
+  and `Snapshot::risen` sends it for the zombies listed; the crowd draws the baked variant nearest to it
+  (`zombie_render::variant_for`: a variant's wearables are its file name past the plainest one's, `zombie_02_hoodie` is
+  "hoodie"; most matches and fewest extras, else by id as usual).
 
 ## Zombies
 
@@ -916,7 +982,8 @@ stack's `born`/`used`, 7 crafting: craft jobs and the recipes in the content fin
   players, content fingerprint), `CONF` (settings, RON), `MAPD` (edits or the full map), `WRLD` (everything else but
   zombies), one `ZOMB` per 64 m region (the tiers' region grid; zombies column by column, ids as gaps), `RUNS` (each
   player's run stats and cause of death, #13; optional, so it didn't bump the format: a format 4 save without it loads
-  with empty records), `END`.
+  with empty records), `LOOK` (what bodies that rise wore, #63: `health::RiseLooks`, item ids by player and zombie id;
+  optional too, checked by `save_check::check_looks`), `END`.
   Per-region zombie sections are there so a later streaming save (#3, #22) can rewrite only what changed. Errors are
   `LoadError` values, never panics: `NotASave`, `Version` (older or newer), `Truncated`, `Corrupt` (bad checksum,
   undecodable or inconsistent data), `ContentChanged`, `MapChanged`, `Invalid` (below). No SQLite: a world is one file
@@ -972,7 +1039,8 @@ off_hand, back, shoulder, worn, container, ground), `drop {player, from, index, 
 until the player's queue is empty, then reports what happened and the inventory; `use` also says beforehand what it will
 do, and the needs before and after), `recipes` (every crafting recipe: inputs, tools, outputs, seconds; read-only) and
 `craft {player, recipe}` (see Crafting), `sleep {player, max_hours}` and `set_needs {player, hunger, thirst, tiredness}` (see
-Needs), `respawn`, `spawn_item {item, count,
+Needs), `respawn`, `add_player {x, y}` (another player joins there, default beside player 1; for screenshots of several
+players and testing with them), `spawn_item {item, count,
 x, y}` (debug; any item id, `weapon` still accepted), `make_noise {x, y, radius, lasting}`
 (debug; a loud one leaves an attractor, `lasting: true` a 30-minute one), `regions` (ASCII heat maps per 64 m region of
 living zombies and of their targets, the attractors' pull with players marked, and zones; the attractors with reach,

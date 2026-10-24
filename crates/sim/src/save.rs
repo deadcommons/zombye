@@ -52,7 +52,8 @@
 //! flow cache...), then one `ZOMB` per 64 m region holding zombies (the tiers' region grid), so a
 //! later streaming save (#3, #22) can rewrite only the regions that changed, then `RUNS` (each
 //! player's run stats and cause of death, `crate::run`; optional, so format 4 saves from before
-//! #13 still load, with empty records). Payloads are
+//! #13 still load, with empty records), then `LOOK` (what bodies that rise wore, #63; optional too).
+//! Payloads are
 //! [postcard](https://docs.rs/postcard), and zombies are stored column by column. A file with
 //! another format version fails with [`LoadError::Version`] (format 3 added items, inventories and
 //! containers, format 4 wounds and illness on players, format 5 first aid: dressings, treatments,
@@ -104,6 +105,8 @@ const ZOMB: [u8; 4] = *b"ZOMB";
 /// Players' run stats (#13), after the zombies. Optional: a save without it (format 4 from before
 /// #13) loads with empty records, so adding it didn't change the format version.
 const RUNS: [u8; 4] = *b"RUNS";
+/// What bodies that rise wore (#63; optional, like `RUNS`).
+const LOOK: [u8; 4] = *b"LOOK";
 const END: [u8; 4] = *b"END\0";
 /// Bytes before the first section: magic and version.
 const HEADER: usize = 12;
@@ -570,6 +573,7 @@ impl World {
             level_ups: _,
             skill_mods_due: _,
             private_dirty: _,
+            rise_looks,
             // Scratch, refilled every tick.
             targets: _,
             scratch_tiles: _,
@@ -660,6 +664,7 @@ impl World {
         }
         let runs: Vec<(u32, crate::run::RunStats)> = players.iter().map(|p| (p.id, p.run.clone())).collect();
         w.section(RUNS, &encode(&runs));
+        w.section(LOOK, &encode(rise_looks));
         w.section(END, &[]);
         w.0
     }
@@ -810,6 +815,7 @@ impl World {
         // Zombies: every region's block, then back into id order; then the run stats, if any.
         let mut z = Zombies::default();
         let mut runs: Option<Vec<(u32, crate::run::RunStats)>> = None;
+        let mut looks: Option<crate::health::RiseLooks> = None;
         loop {
             let (tag, payload) = r.next()?;
             if tag == END {
@@ -819,7 +825,11 @@ impl World {
                 runs = Some(decode(RUNS, payload)?);
                 continue;
             }
-            if tag != ZOMB || runs.is_some() {
+            if tag == LOOK && looks.is_none() {
+                looks = Some(decode(LOOK, payload)?);
+                continue;
+            }
+            if tag != ZOMB || runs.is_some() || looks.is_some() {
                 return Err(corrupt(format!("unexpected {} section", tag_name(tag))));
             }
             let block: ZombieBlock = decode(ZOMB, payload)?;
@@ -840,6 +850,8 @@ impl World {
         let mut order: Vec<usize> = (0..z.len()).collect();
         order.sort_by_key(|&i| z.id[i]);
         w.zombies = reorder(z, &order);
+        w.rise_looks = looks.unwrap_or_default();
+        save_check::check_looks(&w)?;
         if new_map {
             save_check::fit_to_new_map(&mut w, &mut notes);
         }

@@ -288,15 +288,48 @@ pub enum Layer {
     Outer,
 }
 
+/// A place on the body an accessory takes (#63), beside the regions clothing covers: glasses on the
+/// face, a hat on the head top, a scarf round the neck. Two worn items can't take one on one layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum WearSlot {
+    Face,
+    HeadTop,
+    Neck,
+}
+
+/// Clothing and accessories: worn ([`crate::inventory::Place::Worn`]), two of them never sharing a
+/// body part or a [`WearSlot`] on one layer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClothingDef {
+    /// Body regions it covers (and protects).
+    #[serde(default)]
     pub covers: Vec<BodyPart>,
+    /// Accessory places it takes (glasses the face, a hat the head top).
+    #[serde(default)]
+    pub takes: Vec<WearSlot>,
     /// Chance (0..1) a strike on a covered part only bruises (#9); layers combine.
     #[serde(default)]
     pub protection: f32,
     #[serde(default)]
     pub layer: Layer,
+    /// Has a hood: up over a bare head (it covers the head too), down while anything is worn on the
+    /// head top (a hat can't go on with a hood up, so putting one on pulls the hood down).
+    #[serde(default)]
+    pub hood: bool,
+}
+
+impl ClothingDef {
+    /// Can't be worn with `o` (both on one layer, sharing a body part or an accessory place).
+    pub fn clashes(&self, o: &ClothingDef) -> bool {
+        self.layer == o.layer && (self.covers.iter().any(|b| o.covers.contains(b)) || self.takes.iter().any(|s| o.takes.contains(s)))
+    }
+
+    /// Covers `region` while worn with the clothing in `worn` (a hood is up unless something takes
+    /// the head top).
+    pub fn covers_with<'a>(&self, region: BodyPart, mut worn: impl Iterator<Item = &'a ClothingDef>) -> bool {
+        self.covers.contains(&region) || (self.hood && region == BodyPart::Head && !worn.any(|o| o.takes.contains(&WearSlot::HeadTop)))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -353,6 +386,11 @@ pub struct ItemDef {
     pub clothing: Option<ClothingDef>,
     #[serde(default)]
     pub light: Option<LightDef>,
+    /// The model the client draws while it's worn, held or carried on the back (#63): a wearable's
+    /// file name without `.glb` (`assets/models/wearables/<model>.glb`). None, or a model the client
+    /// doesn't have: a grey-box in its colour.
+    #[serde(default)]
+    pub model: Option<String>,
     /// Grey-box colour (linear-ish RGB 0..1).
     #[serde(default = "grey")]
     pub color: (f32, f32, f32),
@@ -382,6 +420,7 @@ impl ItemDef {
             bag: None,
             clothing: None,
             light: None,
+            model: None,
             color: w.color,
         }
     }
@@ -474,12 +513,20 @@ impl ItemDef {
             }
         }
         if let Some(c) = &self.clothing {
-            if c.covers.is_empty() {
-                return Err(format!("{id}: clothing must cover at least one body part"));
+            if c.covers.is_empty() && c.takes.is_empty() {
+                return Err(format!("{id}: clothing must cover at least one body part or take an accessory place"));
+            }
+            if c.hood && c.takes.contains(&WearSlot::HeadTop) {
+                return Err(format!("{id}: a hood can't take the head top"));
             }
             if !(0.0..=1.0).contains(&c.protection) {
                 return Err(format!("{id}: protection must be in 0..1, got {}", c.protection));
             }
+        }
+        if let Some(m) = &self.model
+            && !valid_id(m)
+        {
+            return Err(format!("{id}: model {m:?} must be lowercase letters, digits and _ (a file name without .glb)"));
         }
         if let Some(l) = &self.light
             && !(l.radius_m > 0.0 && l.radius_m <= 100.0 && l.hours > 0.0 && l.hours.is_finite())
@@ -715,6 +762,8 @@ mod tests {
         bad(|it| it.iter_mut().find(|d| d.weapon.is_some()).unwrap().weapon = Some("lightsaber".into()), "isn't in weapons.ron");
         bad(|it| it.iter_mut().find(|d| d.bag.is_some()).unwrap().bag.as_mut().unwrap().capacity_l = -1.0, "capacity_l");
         bad(|it| it.iter_mut().find(|d| d.clothing.is_some()).unwrap().clothing.as_mut().unwrap().covers.clear(), "body part");
+        bad(|it| it.iter_mut().find(|d| d.id == "glasses").unwrap().model = Some("Glasses.glb".into()), "model");
+        bad(|it| it.iter_mut().find(|d| d.id == "hoodie").unwrap().clothing.as_mut().unwrap().takes.push(WearSlot::HeadTop), "hood");
         bad(|it| it[0].stack = 0, "stack");
         assert!(parse_items("[(id: \"x\", name: \"X\", category: Junk, weight_kg: 1.0, volume_l: 1.0, colour: (1.0, 1.0, 1.0))]", &w).unwrap_err().contains("colour"), "unknown fields are refused");
         // A bare config: every weapon gets a plain item.

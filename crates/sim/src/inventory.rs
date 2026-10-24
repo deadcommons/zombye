@@ -9,7 +9,8 @@
 //! moves exactly as the server does.
 //!
 //! **Slots.** Two hands ([`Slot::Hand`] swings, a two-handed item takes both), a bag on the back and
-//! one on the shoulder, and worn clothing (two worn items can't share a body part on one layer).
+//! one on the shoulder, and worn clothing and accessories (two worn items can't share a body part or an accessory place,
+//! [`WearSlot`](crate::items::WearSlot), on one layer).
 //!
 //! **Moving things takes time.** Moves, searches, uses, treatments and crafts ([`JobKind`]; first
 //! aid in [`crate::firstaid`], crafting in [`crate::crafting`]) queue on the player
@@ -38,7 +39,7 @@ use crate::TICK_DT;
 use crate::combat::PICKUP_REACH;
 use crate::containers::{ContainerDef, ContainerSite};
 use crate::firstaid::{Treatment, treating};
-use crate::items::{BagCarry, GroundItem, ItemCategory, ItemDef, ItemStack};
+use crate::items::{BagCarry, GroundItem, ItemCategory, ItemDef, ItemStack, WearSlot};
 use crate::players::{MoveMods, Player, Stance};
 use crate::senses::SoundSource;
 use crate::vision::clear_reach;
@@ -994,7 +995,7 @@ impl World {
             }
             Place::Worn => {
                 let Some(cl) = &def.clothing else { return Err(format!("can't wear the {name}")) };
-                let clash = |s: &ItemStack| items[s.item as usize].clothing.as_ref().is_some_and(|o| o.layer == cl.layer && o.covers.iter().any(|b| cl.covers.contains(b)));
+                let clash = |s: &ItemStack| items[s.item as usize].clothing.as_ref().is_some_and(|o| o.clashes(cl));
                 displaced.extend(inv.worn.iter().copied().filter(|s| clash(s)));
                 inv.worn.retain(|s| !clash(s));
                 inv.worn.push(moved.with_count(1));
@@ -1078,7 +1079,15 @@ impl World {
             Place::Slot(Slot::OffHand) => format!("holding the {what} in the other hand"),
             Place::Slot(Slot::Back) => format!("put the {what} on your back"),
             Place::Slot(Slot::Shoulder) => format!("slung the {what} over your shoulder"),
-            Place::Worn => format!("put on the {what}"),
+            Place::Worn => {
+                let worn = || self.players[pi].inventory.worn.iter().filter_map(|s| self.config.items[s.item as usize].clothing.as_ref());
+                let on_top = def.clothing.as_ref().is_some_and(|c| c.takes.contains(&WearSlot::HeadTop));
+                if on_top && worn().any(|c| c.hood) {
+                    format!("put on the {what} (the hood comes down)")
+                } else {
+                    format!("put on the {what}")
+                }
+            }
             Place::Container(c) => format!("put the {what} in the {}", lower(&self.container_def(self.container(c).expect("exists")).name)),
             Place::Ground => format!("dropped the {what}"),
         })
@@ -1560,6 +1569,33 @@ mod tests {
         assert!(ate && last_note(&w, id).starts_with("ate the apple: "), "{}", last_note(&w, id));
         assert_eq!(me(&w, id).inventory.carried.iter().find(|s| w.item_def(s.item).id == "apple").unwrap().count, 2);
         assert!(w.player_use(id, Place::Carried, 0).is_err(), "can't eat a knife");
+    }
+
+    /// Accessories (#63) wear like clothing: glasses on the face, one hat on the head top (a new one
+    /// swaps it), a scarf round the neck, all together; a hat over a hoodie pulls the hood down, so
+    /// the hood stops covering the head.
+    #[test]
+    fn accessories_take_their_places() {
+        let (mut w, id) = field();
+        let wear = |w: &mut World, item: &str| {
+            w.give_item(id, item, 1);
+            let k = me(w, id).inventory.carried.iter().position(|s| w.item_def(s.item).id == item).unwrap();
+            w.player_wear(id, k as u32).unwrap();
+            settle(w, id);
+        };
+        let worn = |w: &World| me(w, id).inventory.worn.iter().map(|s| w.item_def(s.item).id.clone()).collect::<Vec<_>>();
+        wear(&mut w, "hoodie");
+        let head = |w: &World| w.protection(me(w, id), crate::items::BodyPart::Head);
+        assert!(head(&w) > 0.1, "the hood is up over a bare head");
+        for item in ["glasses", "scarf", "beanie"] {
+            wear(&mut w, item);
+        }
+        assert_eq!(last_note(&w, id), "put on the beanie (the hood comes down)");
+        assert_eq!(worn(&w), ["hoodie", "glasses", "scarf", "beanie"]);
+        assert!((head(&w) - 0.04).abs() < 1e-5, "only the beanie covers the head now: {}", head(&w));
+        wear(&mut w, "baseball_cap");
+        assert_eq!(worn(&w), ["hoodie", "glasses", "scarf", "baseball_cap"], "one hat at a time");
+        assert!(me(&w, id).inventory.carried.iter().any(|s| w.item_def(s.item).id == "beanie"), "the beanie went into the pockets");
     }
 
     /// A swing calls off what you were doing; dying drops everything where you fell.

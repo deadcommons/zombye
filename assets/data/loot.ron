@@ -120,6 +120,9 @@
             (item: "hoodie", weight: 2),
             (item: "trainers", weight: 2),
             (item: "bed_sheet", weight: 2),
+            (item: "beanie", weight: 1),
+            (item: "baseball_cap", weight: 1),
+            (item: "scarf", weight: 0.8),
             (item: "tote_bag", weight: 1),
             (item: "school_backpack", weight: 1),
             (item: "duffel_bag", weight: 0.6),
@@ -138,6 +141,10 @@
             (item: "leather_jacket", weight: 1),
             (item: "work_gloves", weight: 1),
             (item: "tote_bag", weight: 1),
+            (item: "woolly_hat", weight: 1.5),
+            (item: "scarf", weight: 1.5),
+            (item: "baseball_cap", weight: 1),
+            (item: "beanie", weight: 1),
             (item: "golf_club", weight: 0.5),
             (item: "baseball_bat", weight: 0.4),
         ]),
@@ -151,6 +158,7 @@
             (item: "painkillers", weight: 1),
             (item: "flashlight", weight: 1),
             (item: "school_backpack", weight: 0.8),
+            (item: "glasses", weight: 0.8),
         ]),
         // The drawer in a coffee table.
         (room: "any", container: "drawer", empty: 0.3, rolls: (1, 2), entries: [
@@ -196,6 +204,7 @@
             (item: "batteries", weight: 1),
             (item: "candle", weight: 1),
             (item: "cushion", weight: 1),
+            (item: "glasses", weight: 0.8),
         ]),
         (room: "living", container: "any", empty: 0.3, rolls: (1, 3), entries: [
             (item: "picture_frame", weight: 3),
@@ -288,6 +297,7 @@
             (item: "batteries", weight: 1),
             (item: "school_backpack", weight: 0.6),
             (item: "flashlight", weight: 0.6),
+            (item: "glasses", weight: 0.6),
         ]),
         (room: "office", container: "any", empty: 0.3, rolls: (1, 2), entries: [
             (item: "pen", weight: 3, count: (1, 3)),
