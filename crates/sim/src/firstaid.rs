@@ -32,6 +32,10 @@
 //! The rules on what can be done to which wound with which item are one pure function over the
 //! view a client has ([`check`], [`options`], [`best_item`]), so the health panel offers only what
 //! the server will do. Numbers are ours ([`FirstAidTuning`], in `HealthTuning::first_aid`).
+//!
+//! Every treatment done is First Aid XP (`SkillTuning::treat_xp`, #46); each First Aid level makes
+//! treatment [`FirstAidTuning::skill_faster_per_level`] faster, and from
+//! [`FirstAidTuning::skill_stitch_level`] stitching hurts half as much.
 
 use serde::{Deserialize, Serialize};
 
@@ -547,9 +551,9 @@ pub(crate) fn treating(jobs: &[crate::ItemJob]) -> bool {
 }
 
 impl World {
-    /// The First Aid level of player `pi` (#46; everyone is 0 until skills exist).
-    fn first_aid_level(&self, _pi: usize) -> u32 {
-        0
+    /// The First Aid level of player `pi` (#46).
+    fn first_aid_level(&self, pi: usize) -> u32 {
+        self.skill_level(pi, crate::skills::Skill::FirstAid)
     }
 
     fn wound_view(&self, pi: usize, wound: u32) -> Option<WoundView> {
@@ -727,6 +731,8 @@ impl World {
             self.give_back(pi, RAG_ITEM);
         }
         self.refresh_carry(pi);
+        // First Aid (#46): practice.
+        self.award_xp(pi, crate::skills::Skill::FirstAid, self.config.skills.treat_xp);
         Ok(text)
     }
 

@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use zombye_net::{EdgeDamage, Intent, LocalServer, PrivateView, Snapshot, content, save_file};
 use zombye_sim::map::{Edge, EdgeChange, OwnedEdge, Side, TileMap};
-use zombye_sim::{CombatEvent, CombatTuning, ItemDef, ItemNote, TICK_RATE, WeaponDef};
+use zombye_sim::{CombatEvent, CombatTuning, ItemDef, ItemNote, LevelUp, TICK_RATE, WeaponDef};
 
 use crate::Options;
 
@@ -72,6 +72,9 @@ pub struct JoinInfo {
     pub first_aid: zombye_sim::FirstAidTuning,
     /// The needs' numbers (status tags, the view cone while tired).
     pub needs: zombye_sim::NeedsTuning,
+    /// The skills' numbers, and the carry limit Strength adds to (the skills panel, #46).
+    pub skills: zombye_sim::SkillTuning,
+    pub carry: zombye_sim::CarryTuning,
 }
 
 /// The `FixedUpdate` system that ticks the server. Input is sent before it and reconciled after it.
@@ -89,6 +92,10 @@ pub struct CombatEventsThisFrame(pub Vec<CombatEvent>);
 /// What came of our item requests this frame (done, or why not), for the HUD.
 #[derive(Resource, Default)]
 pub struct ItemNotesThisFrame(pub Vec<ItemNote>);
+
+/// Our skill level-ups this frame (#46), for the HUD's line.
+#[derive(Resource, Default)]
+pub struct LevelUpsThisFrame(pub Vec<LevelUp>);
 
 /// How battered each damaged door and window is (fraction of its hit points left; missing =
 /// undamaged), kept from the join and snapshots, for drawing cracks.
@@ -195,6 +202,8 @@ fn finish_join(app: &mut App, mut server: LocalServer, player_id: u32) {
         infection: server.world.config.infection.clone(),
         first_aid: server.world.config.health.first_aid.clone(),
         needs: server.world.config.needs,
+        skills: server.world.config.skills.clone(),
+        carry: server.world.config.carry.clone(),
     };
     let private = first.private.clone();
     app.insert_resource(ServerLink { server, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3], private })
@@ -205,6 +214,7 @@ fn finish_join(app: &mut App, mut server: LocalServer, player_id: u32) {
         .init_resource::<EdgeDamageThisFrame>()
         .init_resource::<CombatEventsThisFrame>()
         .init_resource::<ItemNotesThisFrame>()
+        .init_resource::<LevelUpsThisFrame>()
         .insert_resource(Time::<Fixed>::from_hz(TICK_RATE as f64))
         .add_systems(First, clear_frame_changes)
         .add_systems(FixedUpdate, tick_server.in_set(ServerTick).run_if(crate::live));
@@ -246,7 +256,14 @@ impl ServerLink {
     }
 }
 
-fn clear_frame_changes(mut changes: ResMut<EdgeChangesThisFrame>, mut damage: ResMut<EdgeDamageThisFrame>, mut hits: ResMut<CombatEventsThisFrame>, mut notes: ResMut<ItemNotesThisFrame>) {
+fn clear_frame_changes(
+    mut changes: ResMut<EdgeChangesThisFrame>,
+    mut damage: ResMut<EdgeDamageThisFrame>,
+    mut hits: ResMut<CombatEventsThisFrame>,
+    mut notes: ResMut<ItemNotesThisFrame>,
+    mut ups: ResMut<LevelUpsThisFrame>,
+) {
+    ups.0.clear();
     changes.0.clear();
     damage.0.clear();
     hits.0.clear();
@@ -262,12 +279,14 @@ fn tick_server(
     mut damage: ResMut<EdgeDamageThisFrame>,
     mut hits: ResMut<CombatEventsThisFrame>,
     mut notes: ResMut<ItemNotesThisFrame>,
+    mut ups: ResMut<LevelUpsThisFrame>,
     join: Res<JoinInfo>,
 ) {
     // A remote server sends us only our own private view and notes; do as it will.
     let snapshot = link.server.tick().for_player(join.player_id);
     link.keep_private(&snapshot.private);
     notes.0.extend(snapshot.item_notes.iter().cloned());
+    ups.0.extend_from_slice(&snapshot.level_ups);
     link.sim_ms = link.server.world.stats.tick_ms;
     link.chasing = link.server.world.stats.chasing;
     let s = link.server.world.stats;

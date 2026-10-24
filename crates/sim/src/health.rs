@@ -1459,7 +1459,9 @@ mod tests {
         let bat = w.config.weapons.iter().find(|x| x.category == crate::WeaponCategory::Unarmed).unwrap();
         assert!((me(&w, id).ready_in - bat.swing_seconds * e.swing_time).abs() < 1e-4);
         w.inflict_wound(id, Part::Torso, WoundKind::Bite, Some(false)).unwrap();
-        assert!((me(&w, id).state.mods.regen - 0.8).abs() < 1e-4);
+        // (On top of a new survivor's Fitness, #46.)
+        let fit = w.config.skills.move_mods(1, crate::players::MoveMods::default()).regen;
+        assert!((me(&w, id).state.mods.regen - 0.8 * fit).abs() < 1e-4);
     }
 
     /// Untreated wounds fester now and then (seeded, the same every run), which costs HP and slows healing.
@@ -1651,11 +1653,12 @@ mod tests {
         assert!(w.poison_player(id, 1.0));
         let p = me(&w, id);
         assert!(!p.health.can_eat() && p.health.sick() && p.health.thirst_mult(&w.config.health) == 2.0);
-        assert!((p.state.mods.regen - 0.7).abs() < 1e-5);
+        let fit = w.config.skills.move_mods(1, crate::players::MoveMods::default()).regen;
+        assert!((p.state.mods.regen - 0.7 * fit).abs() < 1e-5);
         assert!(w.health_view(id).unwrap().food_poisoning);
         w.skip_time(14.5);
         let p = me(&w, id);
-        assert!(p.health.can_eat() && p.state.mods.regen == 1.0 && p.hp == 100.0);
+        assert!(p.health.can_eat() && p.state.mods.regen == fit && p.hp == 100.0);
     }
 
     /// Wounds, infection and all are saved: a loaded world steps exactly like the original.

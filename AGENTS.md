@@ -13,10 +13,10 @@ Work is tracked on GitHub, not in the repo: the
 
 | Path | What | Licence |
 |---|---|---|
-| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), run stats and the cause of death (`run.rs`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
+| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), skills that improve with practice (`skills.rs` + `SkillTuning`), run stats and the cause of death (`run.rs`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint; `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
-| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building/tree meshes, fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd; `survivor.rs` skinned, CPU-posed players), hit feedback (`fx.rs`), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), HUD, the death screen and run summary (`death.rs`), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
+| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building/tree meshes, fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd; `survivor.rs` skinned, CPU-posed players), hit feedback (`fx.rs`), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), HUD, the death screen and run summary (`death.rs`), the skills panel and level-up line (`skills_ui.rs`), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
 | `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`), models (`models/furniture/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), later textures/audio. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
 | `tools/blender/` | Python to build assets: run inside Blender, mesh builder, palette, renders, validation, GLB export (`zasset.py`, `palette.py`, `build.py`), character clean-up, validation and skinned export (`zchar.py`), VAT bake for the crowd (`zvat.py`); plain Python, art-repo work folders and promotion (`artrepo.py`). | MIT OR Apache-2.0 |
 | `docs/` | Plan and design docs. | — |
@@ -132,7 +132,7 @@ The client prints one stats line per second to stdout (time, room, stance, hp, e
 sent to it, chasing, zombies per tier active/near/virtual, sim tick ms).
 In game: WASD move, Shift run, C sneak (toggle), mouse to face, left mouse attack (swing your weapon, or
 punch), Space shove (or stomp, when a downed zombie lies right in front of you), E pick up the item you
-face (with nothing on the floor within reach: search the container you face), Tab or I the inventory panel, F open/close the door or window you face, G smash the window you face, dead: R a new run and Q or Esc quit,
+face (with nothing on the floor within reach: search the container you face), Tab or I the inventory panel, K the skills panel, F open/close the door or window you face, G smash the window you face, dead: R a new run and Q or Esc quit,
 B sleep (B again or WASD to get up), T skip an hour, Z spawn zombies, wheel zoom, F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles). Walk into an open or broken window to climb
 through it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
 not Bevy's handler; a second Ctrl-C quits unsaved) autosaves; `--render-to` never does.
@@ -196,7 +196,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   client's prediction both call it, so keep it pure (map + state + input + dt in, state out). What the
   player carries changes movement through `PlayerState::mods` (`MoveMods`: speed, run drain, regen, can run,
   can climb), which the server sets from the load (`World::refresh_carry`) and snapshots carry (`PlayerView::mods`),
-  so prediction with the snapshot's modifiers stays exact (#46's skill effects on movement belong there too).
+  so prediction with the snapshot's modifiers stays exact (Fitness, #46, goes there too).
 - `Intent`s (`crates/net`): `PlayerInput { player, seq, move_dir, facing, run, sneak }` every tick
   (the server keeps the newest by `seq` and applies it once per tick; `move_dir` is clamped to
   length 1), `Interact { player }` (opens or closes the door or window that player faces, within
@@ -237,7 +237,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
 - **Weapons are data:** `assets/data/items/weapons.ron`, a list of `items::WeaponDef` (damage
   range, reach to the zombie's body, arc, windup and swing time, max targets, knockback,
   stagger/knockdown/crit chances, crit multiplier, endurance cost, noise, spawn weight, `found_in`
-  room types, grey-box length and colour), validated by `items::parse_weapons` and loaded by
+  room types, grey-box length and colour, and `skill`: the skill it trains, see Skills), validated by `items::parse_weapons` and loaded by
   `net::content::load_weapons` into `WorldConfig::weapons`. Exactly one is `Unarmed` (bare hands);
   if the content has none, `WeaponDef::fists()` is added. Add a weapon by adding an entry.
 - **Weapons are items** (an item with `weapon: Some(id)`, see Items): the weapon swung is the one the item in the
@@ -254,8 +254,8 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   behind (the zombie faces away) crits are more likely and knockdowns easier; knockdowns are easier
   on a staggered zombie. Below `tired_below` endurance actions get weaker and slower; running out
   winds you. Each action makes a noise heard that tick. **Shove:** short reach, wide arc, up to 3, no
-  damage, always staggers, may knock down (`shove_knockdown_chance` 0.25: about one shove in four floors a lone
-  zombie facing you, 0.4 from behind). **Stomp:** hits a downed zombie at your feet in front.
+  damage, always staggers, may knock down (`shove_knockdown_chance` 0.25, +0.03 for a new survivor's Strength 1:
+  a little over one shove in four floors a lone zombie facing you, 0.45 from behind). **Stomp:** hits a downed zombie at your feet in front.
   Swings and shoves pass over downed zombies. Results are in `World::action_events` and `hit_events`.
 - **Combat events (hit feedback):** every hit, kill, shove, stomp and wound is also pushed to
   `World::combat_events` (`combat::CombatEvent { kind, pos, dir, zombie, player, damage, crit }`, kinds
@@ -415,6 +415,56 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   `observe` (tags per player), `use` (what it will do first), `sleep {player, max_hours}` (steps until awake; why, hours,
   needs and HP before and after), `set_needs` (debug).
 
+## Skills (`sim::skills`; #46)
+
+- **Nine skills, levels 0-5, raised only by practice.** `Player::skills` (`Skills { xp: [f32; 9] }`, by `Skill as usize`)
+  holds XP; the level is worked out from it at the cumulative thresholds `SkillTuning::levels` (100, 250, 500, 900, 1,500;
+  XP stops at the top). A new survivor (`add_player`, a respawn, a new run) has Fitness and Strength at 1 (100 XP), the
+  rest 0 (`Skills::start`). Nothing is lost when a skill isn't used; no skill books. Every number is in `SkillTuning`
+  (`WorldConfig::skills`, serde defaults, saved with the settings; ours), except Strength's carry kg
+  (`CarryTuning::strength_kg`) and First Aid's speed and stitching (`FirstAidTuning::skill_faster_per_level`,
+  `skill_stitch_level`), which stay where those numbers are used.
+
+| Skill | XP from | Each level |
+|---|---|---|
+| Fitness | running: 0.1 a second | running drains endurance 6% slower, it recovers 6% faster (`MoveMods`) |
+| Strength | a swing of a weapon over 1.5 kg (by its item's weight): 1; moving over the carry limit, awake: 1 a game minute | carry limit +1.5 kg, shove knockdown chance +0.03, knockback of swings and shoves +5% |
+| Bludgeon / Edged | each zombie hit with a weapon of that skill: 2, a kill 5 instead | damage +6%, endurance cost -5%, windup and swing time -3% |
+| Brawl | each punch that lands 2 (a kill 5), each zombie shoved 2, a stomp that kills 5 | punch and stomp damage +10%, shove knockdown chance +0.04 |
+| Stealth | sneaking and moving within 15 m of a living zombie that isn't after you (not while ignored): 0.2 a second | sneaking footsteps 8% quieter; every sight range against you 6% shorter (`senses::Target::sight_mult`) |
+| First Aid | each treatment done: 10 | treatment 10% faster; from 3, stitching stings half as much |
+| Scavenging | each container searched for the first time: 2 | first searches 10% faster and 10% quieter |
+| Handiwork | each craft (#12): 5 | crafting 10% faster (`SkillTuning::craft_time_mult`) |
+
+- **Weapon skills follow how a weapon hits:** each entry in `weapons.ron` names its `skill` (`Some(Bludgeon)`, `Some(Edged)`
+  or `Some(Brawl)`; left out, `WeaponCategory::skill`: `ShortBlunt`/`LongBlunt` Bludgeon, `ShortBlade`/`Axe` Edged,
+  `Unarmed` Brawl). `parse_weapons` refuses a non-weapon skill, bare hands that aren't Brawl, and two weapons of one
+  category naming different skills. `WeaponDef::skill()`.
+- **Where effects apply:** Fitness in `SkillTuning::move_mods`, inside `World::refresh_carry` (load, then skills, then
+  wounds, then needs); Strength in `World::carry` (the limit) and `combat::land` (knockback, shove knockdown); the weapon
+  skills in `combat::begin_action` (cost, time) and `land` (damage); Stealth in `World::step` (footsteps, the sight target);
+  First Aid in `firstaid` (`first_aid_level`); Scavenging in `player_search` and `do_search`. XP is awarded where the
+  activity happens (`World::award_xp(pi, skill, xp)`, one line each), and the per-tick ones (running, overload,
+  sneaking) in `World::step_skills` after the senses.
+- **Prediction stays exact:** a Fitness or Strength level-up never changes `MoveMods` at once; the player goes on
+  `World::skill_mods_due` and `refresh_skill_mods` refreshes it at the end of the tick, after movement (even for a heavy
+  swing asked for by an intent before that tick's movement), so the snapshot carries what the next tick moves with
+  (`net`'s `prediction_matches_server_with_skills`).
+- **Level-ups:** `World::level_ups` (`LevelUp { player, skill, level }`, kept until drained, at most 64; not saved, not in
+  the hash) go out in `Snapshot::level_ups` (a client gets only its own); the client shows `LevelUp::text` ("Edged 2") as
+  the yellow line under the HUD and prints it (`skills_ui.rs`). `PrivateView::skills` (`SkillView`: level, whole XP,
+  the next level's XP, progress) goes to the player's own client when a whole XP point or a level changes.
+- **Client:** K opens the skills panel (`skills_ui.rs`): each skill's level, a bar to the next level with XP, what the
+  level gives now and what the next gives (`SkillTuning::gives`), and how XP is earned (`earned_by`). The health panel's
+  treatment times use our First Aid level.
+- **For crafting (#12):** `World::skill_level(pi, Skill::Handiwork)` and `World::award_xp(pi, Skill::Handiwork,
+  config.skills.craft_xp)` per thing crafted (both by player index, as the item jobs are); a craft's time is its base
+  time times `SkillTuning::craft_time_mult(level)`.
+- **Saves:** XP per skill with the player (format 7), in `state_hash`; checked on load (`save_check::check_skills`: finite,
+  0 to the top level's XP) and `SkillTuning::check`. **MCP:** `skills {player}` (each skill's level, XP and to go, what it
+  gives now and at the next level, how it's earned; read-only), `stats` (each player's `skills` levels by id),
+  `step_ticks` / `move_player` / `attack` report `LEVEL UP: P1 Edged 2`, and `weapons` shows each weapon's skill.
+
 ## Items, inventory and containers (`sim::items`, `sim::inventory`, `sim::containers`; #7)
 
 - **Items are data:** `assets/data/items/items.ron`, a list of `items::ItemDef` (id, name, `category`: Food, Drink,
@@ -430,7 +480,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
 - **Inventory** (`Player::inventory`): `hand` (swings), `off_hand`, `back` and `shoulder` (bags), `worn` (clothing;
   two can't share a body part and layer), `carried` (pockets and bags). Two limits (`CarryTuning`, ours): *room*,
   pockets 3 L plus the bags in the slots (held and worn items take none); *weight*, everything in full (bags add room,
-  not lightness). Limit 14 kg (+1.5 kg per Strength level, #46: `CarryTuning::limit(strength)`, 0 for now); over 100%
+  not lightness). Limit 14 kg (+1.5 kg per Strength level, #46: `CarryTuning::limit(strength)`; a new survivor's Strength 1 makes it 15.5 kg); over 100%
   Burdened (x0.9 speed, running drains x1.3), over 130% Heavy (x0.75, no running, actions cost x1.2), over 160%
   Overloaded (x0.5, no running or climbing); nothing more picked up past 200%. `World::carry(p)` says where a player is.
 - **Moving things takes time:** `MoveItem { player, from, index, to, count }` (`Place`: `Carried`, `Slot(Hand |
@@ -683,7 +733,7 @@ over the old one: a crash mid-write leaves the previous save whole).
   and saves again mid-run; `net`'s `a_loaded_server_carries_on_like_the_saved_one` compares snapshots and prediction.
   So everything the future depends on is saved, hash or not: both RNG streams, players with their latest input,
   queued and under-way actions and cooldowns, every zombie column on every tier, sounds made but not yet heard,
-  door/window hit points, ground items, inventories and item jobs, opened containers, population (targets, zones, last seen, attractors, ids), the clock offset, the debug
+  door/window hit points, ground items, inventories and item jobs, skills' XP, opened containers, population (targets, zones, last seen, attractors, ids), the clock offset, the debug
   goal, and the flow-field cache (which fields, in order, with their build/use ticks and queued requests; a field is
   rebuilt on load from the map unless that wouldn't reproduce it, e.g. one gone stale after a door changed, which is
   stored whole). Rebuilt on load: walk grid, spatial hash, region index, chunk distances, the goal's field, the
@@ -715,9 +765,9 @@ over the old one: a crash mid-write leaves the previous save whole).
   damage only on edges that are still doors or windows, players and zombies on now-blocked tiles moved to free ground,
   flow fields rebuilt as asked for. `World::load` is `load_with` without force, dropping the notes. The
   rest of `WorldConfig` (seed, map size, zombie count, start hour, day length, `ZombieTuning`, `CombatTuning`,
-  `TierTuning`, `CarryTuning`) is the save's own, stored as RON so a tuning field added later just takes its default.
-- **Format** (`save.rs` docs): `ZOMBYSAV`, a `u32` format version (6; 3 added items, inventories and containers, 4 wounds and illness, 5 first aid, 6 needs and sleep and each
-stack's `born`/`used`, and older saves are refused), then sections (4-byte tag, `u32` length,
+  `TierTuning`, `CarryTuning`, `HealthTuning`, `InfectionTuning`, `NeedsTuning`, `SkillTuning`) is the save's own, stored as RON so a tuning field added later just takes its default.
+- **Format** (`save.rs` docs): `ZOMBYSAV`, a `u32` format version (7; 3 added items, inventories and containers, 4 wounds and illness, 5 first aid, 6 needs and sleep and each
+stack's `born`/`used`, 7 skills: each player's XP, and older saves are refused), then sections (4-byte tag, `u32` length,
   postcard payload, FNV-1a checksum): `INFO` (`SaveInfo`: game version, tick, time of day, seed, map size, zombies,
   players, content fingerprint), `CONF` (settings, RON), `MAPD` (edits or the full map), `WRLD` (everything else but
   zombies), one `ZOMB` per 64 m region (the tiers' region grid; zombies column by column, ids as gaps), `RUNS` (each
@@ -766,7 +816,7 @@ zombie attacks, thumps and anything broken), `move_player` (player, compass `dir
 first; steps until the action has landed and the player can act again, and reports what it hit),
 `pick_up` (the instant grab, as E), `dev {player, god, ignored}` (the dev toggles; a field left out stays as it is;
 `stats` gives each player's `god`/`ignored` and `observe` tags them `[GOD]` / `[IGNORED]`), `weapons` (the weapon table and combat numbers), `items {category}` (the item table
-and the carry numbers), `inventory {player}` (slots, worn and carried stacks with indices, load and burden, the open
+and the carry numbers), `skills {player}` (see Skills), `inventory {player}` (slots, worn and carried stacks with indices, load and burden, the open
 container, the floor in reach with ground item ids, containers in reach, the job queue), `containers_near {player, radius}`
 (id, kind, furniture, room, distance, searched or not and what's in it, or the loot table it will fill from, in reach),
 `loot {room, container, n}` (no arguments: every table; with a room type and a container or furniture kind: the table

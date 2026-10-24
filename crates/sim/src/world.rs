@@ -33,6 +33,7 @@ use crate::players::{self, PLAYER_RADIUS, Player, PlayerInput, Stance};
 use crate::population::{NEVER, Population, PopulationDef, Zone};
 use crate::rng::{Rng, hash01};
 use crate::senses::{self, Sound, SoundSource, Target};
+use crate::skills::{LevelUp, Skill, SkillTuning, Skills};
 use crate::spatial::SpatialHash;
 use crate::template::BuildingTemplate;
 use crate::tiers::{self, ChunkDistances, NearCtx, RegionIndex, TierTuning};
@@ -90,6 +91,8 @@ pub struct WorldConfig {
     pub infection: InfectionTuning,
     /// Hunger, thirst, tiredness, food going off and sleep ([`crate::needs`]).
     pub needs: NeedsTuning,
+    /// Skills: XP per level, what earns it and what each level gives ([`crate::skills`]).
+    pub skills: SkillTuning,
     /// Simulation tiers: ranges and update rates (see [`crate::tiers`]).
     pub tiers: TierTuning,
     /// Where zombies live, respawn and migration (`assets/data/population.ron`, see
@@ -115,6 +118,7 @@ impl WorldConfig {
             health: HealthTuning::default(),
             infection: InfectionTuning::default(),
             needs: NeedsTuning::default(),
+            skills: SkillTuning::default(),
             tiers: TierTuning::default(),
             population: PopulationDef::default(),
         }
@@ -249,6 +253,12 @@ pub struct World {
     pub used_items: Vec<(u32, u16)>,
     /// Sleepers who woke this tick, and why (cleared each tick).
     pub woke: Vec<(u32, WakeReason)>,
+    /// Skill level-ups since the last snapshot took them (replication, not simulation state; at
+    /// most [`crate::skills::MAX_LEVEL_UPS`] kept).
+    pub level_ups: Vec<LevelUp>,
+    /// Players whose Fitness or Strength went up this tick: their movement modifiers are refreshed
+    /// at its end (`World::refresh_skill_mods`).
+    pub(crate) skill_mods_due: Vec<u32>,
     /// Players whose inventory, open container or job queue changed since the last snapshot took
     /// them (replication, not simulation state).
     pub(crate) private_dirty: BTreeSet<u32>,
@@ -357,6 +367,8 @@ impl World {
             item_notes: Vec::new(),
             used_items: Vec::new(),
             woke: Vec::new(),
+            level_ups: Vec::new(),
+            skill_mods_due: Vec::new(),
             private_dirty: BTreeSet::new(),
             unarmed,
             action_events: Vec::new(),
@@ -493,8 +505,10 @@ impl World {
         let id = self.next_player_id;
         self.next_player_id += 1;
         let pos = self.map.resolve_circle(pos, PLAYER_RADIUS);
-        self.players.push(Player::new(id, pos, self.config.combat.player_hp));
-        self.private_dirty.insert(id);
+        let skills = Skills::start(&self.config.skills);
+        self.players.push(Player { skills, ..Player::new(id, pos, self.config.combat.player_hp) });
+        // Its movement from the start (Fitness, #46).
+        self.refresh_carry(self.players.len() - 1);
         id
     }
 
@@ -821,10 +835,13 @@ impl World {
                 climbed_glass.push(pi);
             }
             let moving = p.state.pos.distance_squared(before) > 1e-8;
-            self.targets.push(Target { id: p.id, pos: p.state.pos, stance: p.state.stance, moving, ignored: p.dev.ignored });
+            // Stealth (#46): harder to see, and quieter sneaking.
+            let stealth = p.skills.level(Skill::Stealth, &self.config.skills);
+            let sight_mult = self.config.skills.sight_mult(stealth);
+            self.targets.push(Target { id: p.id, pos: p.state.pos, stance: p.state.stance, moving, ignored: p.dev.ignored, sight_mult });
             if moving && self.heard.len() < MAX_SOUNDS {
                 let radius = match p.state.stance {
-                    Stance::Sneak => t.sneak_noise,
+                    Stance::Sneak => t.sneak_noise * self.config.skills.footstep_mult(stealth),
                     Stance::Walk => t.walk_noise,
                     Stance::Run => t.run_noise,
                 };
@@ -876,6 +893,8 @@ impl World {
             senses::hearing_pass(&mut self.zombies, &self.hash, &self.map, &self.heard, t);
         }
         let senses_ms = start.elapsed().as_secs_f32() * 1000.0 - tier_ms;
+        // XP for running, moving overloaded and sneaking near zombies (#46).
+        self.step_skills();
 
         // Build the fields zombies asked for last tick, and follow moving players.
         let targets = &self.targets;
@@ -944,6 +963,8 @@ impl World {
         self.clock_offset_hours += hours - real;
         self.step_health(hours, TICK_DT);
         self.step_needs(hours, true);
+        // Fitness or Strength went up: the snapshot carries the new movement.
+        self.refresh_skill_mods();
         // Last: indices into the zombie columns (the spatial hash) aren't needed after this.
         self.remove_old_corpses();
         let respawned = self.respawn();
@@ -1109,6 +1130,7 @@ impl World {
             mix(p.hp.to_bits());
             Self::hash_health(&p.health, &mut mix);
             Self::hash_needs(&p.needs, &mut mix);
+            Self::hash_skills(&p.skills, &mut mix);
             mix(p.weapon.map_or(u32::MAX, u32::from));
             mix(p.ready_in.to_bits());
             mix(p.action.map_or(u32::MAX, |a| a.kind as u32 | a.timer.to_bits() << 2));

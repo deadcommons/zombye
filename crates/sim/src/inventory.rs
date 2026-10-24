@@ -274,7 +274,7 @@ impl Default for CarryTuning {
 }
 
 impl CarryTuning {
-    /// The carry limit (kg) at a Strength level (#46; 0 until skills exist).
+    /// The carry limit (kg) at a Strength level (#46).
     pub fn limit(&self, strength: u32) -> f32 {
         self.limit_kg + self.strength_kg * strength as f32
     }
@@ -404,8 +404,8 @@ impl World {
         let items = &self.config.items;
         let t = &self.config.carry;
         let weight_kg = p.inventory.weight(items);
-        // Strength (#46) adds to the limit; everyone is level 0 until skills exist.
-        let limit_kg = t.limit(0);
+        // Strength (#46) adds to the limit.
+        let limit_kg = t.limit(p.skills.level(crate::skills::Skill::Strength, &self.config.skills));
         Carry { weight_kg, limit_kg, room_l: p.inventory.room(items, t.pockets_l), used_l: p.inventory.used(items), burden: t.burden(weight_kg / limit_kg.max(0.1)) }
     }
 
@@ -426,7 +426,9 @@ impl World {
         let p = &self.players[pi];
         let c = self.carry(p);
         let slow = p.inventory.bag_slow(&self.config.items);
-        let mut mods = self.needs_mods(pi, self.health_mods(pi, self.config.carry.mods(c.weight_kg / c.limit_kg.max(0.1), slow)));
+        let fitness = p.skills.level(crate::skills::Skill::Fitness, &self.config.skills);
+        let load = self.config.skills.move_mods(fitness, self.config.carry.mods(c.weight_kg / c.limit_kg.max(0.1), slow));
+        let mut mods = self.needs_mods(pi, self.health_mods(pi, load));
         if still && !p.dead {
             mods = MoveMods { speed: 0.0, run_speed: 0.0, can_run: false, can_climb: false, ..mods };
         }
@@ -717,7 +719,9 @@ impl World {
             t.reopen_secs
         } else {
             let sneak = if self.players[pi].state.stance == Stance::Sneak { t.sneak_search_mult } else { 1.0 };
-            self.container_def(&site).search_secs * sneak
+            // Scavenging (#46) makes first searches faster.
+            let skill = self.config.skills.search_time_mult(self.skill_level(pi, crate::skills::Skill::Scavenging));
+            self.container_def(&site).search_secs * sneak * skill
         };
         self.queue_job(id, JobKind::Search { container: c }, secs)
     }
@@ -776,6 +780,10 @@ impl World {
                     JobKind::Search { .. } if fresh => p.run.searched += 1,
                     _ => {}
                 }
+                if fresh {
+                    // Scavenging (#46): a container searched for the first time.
+                    self.award_xp(pi, crate::skills::Skill::Scavenging, self.config.skills.search_xp);
+                }
             }
             match result {
                 Ok(text) => self.note(id, true, text),
@@ -809,7 +817,8 @@ impl World {
         }
         let p = &self.players[pi];
         let (id, sneaking, at) = (p.id, p.state.stance == Stance::Sneak, site.centre());
-        let noise = def.noise_m * if sneaking { self.config.carry.sneak_noise_mult } else { 1.0 };
+        let quieter = if first { self.config.skills.search_noise_mult(self.skill_level(pi, crate::skills::Skill::Scavenging)) } else { 1.0 };
+        let noise = def.noise_m * quieter * if sneaking { self.config.carry.sneak_noise_mult } else { 1.0 };
         if noise > 0.0 {
             self.emit_sound_from(at, noise, SoundSource::Player(id));
         }
@@ -1344,6 +1353,8 @@ mod tests {
     #[test]
     fn weight_slows_and_tires_and_has_a_cap() {
         let (mut w, id) = field();
+        // No Strength (#46): the plain limit.
+        w.players[0].skills.xp[crate::skills::Skill::Strength as usize] = 0.0;
         let t = w.config.carry.clone();
         let run = PlayerInput { move_dir: Vec2::Y, facing: 0.0, run: true, sneak: false };
         let trial = |w: &mut World, kg_bricks: u16| {
