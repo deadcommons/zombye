@@ -7,6 +7,7 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use zombye_sim::map::{Floor, Side};
 
+pub mod curves;
 pub mod land_palette;
 pub mod landscape;
 pub mod trees;

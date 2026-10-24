@@ -16,6 +16,11 @@
 //! once none have been for a few frames the image is read back. Two readbacks in a row that match
 //! (all but a few bytes, see [`settled`]) are written as the PNG (or the last one, with a warning, if it never settles), then the
 //! app exits.
+//!
+//! `ZOMBYE_FRAME_BENCH=N` measures frame cost: after the PNG is written the same still scene is
+//! drawn N more times (no readbacks) and the mean and median wall time a frame are printed
+//! (`frame bench: N frames, mean X ms, median Y ms`): with no vsync the loop runs as fast as the
+//! slower of the CPU and the GPU allows.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -60,6 +65,8 @@ enum Phase {
     Warm,
     Settle,
     Capture,
+    /// Drawing the still scene again to time frames (`ZOMBYE_FRAME_BENCH`).
+    Bench,
 }
 
 #[derive(Resource)]
@@ -71,6 +78,10 @@ struct Job {
     settled: u32,
     captures: u32,
     previous: Option<Image>,
+    /// Frames still to time, and the wall time of each one timed so far.
+    bench: u32,
+    frame_ms: Vec<f32>,
+    last: Instant,
 }
 
 pub struct OffscreenPlugin;
@@ -88,7 +99,18 @@ impl Plugin for OffscreenPlugin {
             .insert_resource(pending.clone())
             .init_resource::<Readback>()
             .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(FRAME_SECS)))
-            .insert_resource(Job { path, started: Instant::now(), frame: 0, phase: Phase::Warm, settled: 0, captures: 0, previous: None })
+            .insert_resource(Job {
+                path,
+                started: Instant::now(),
+                frame: 0,
+                phase: Phase::Warm,
+                settled: 0,
+                captures: 0,
+                previous: None,
+                bench: std::env::var("ZOMBYE_FRAME_BENCH").ok().and_then(|n| n.parse().ok()).unwrap_or(0),
+                frame_ms: Vec::new(),
+                last: Instant::now(),
+            })
             .add_systems(Last, drive);
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app.insert_resource(pending).add_systems(Render, count_pending.in_set(RenderSystems::Cleanup));
@@ -112,6 +134,21 @@ fn drive(
     mut exit: MessageWriter<AppExit>,
 ) {
     job.frame += 1;
+    if job.phase == Phase::Bench {
+        let now = Instant::now();
+        let ms = (now - job.last).as_secs_f32() * 1000.0;
+        job.last = now;
+        job.frame_ms.push(ms);
+        if job.frame_ms.len() as u32 >= job.bench {
+            job.frame_ms.remove(0);
+            let n = job.frame_ms.len();
+            let mean = job.frame_ms.iter().sum::<f32>() / n as f32;
+            job.frame_ms.sort_by(f32::total_cmp);
+            println!("frame bench: {n} frames, mean {mean:.2} ms, median {:.2} ms", job.frame_ms[n / 2]);
+            exit.write(AppExit::Success);
+        }
+        return;
+    }
     if job.started.elapsed() > DEADLINE {
         let ms = job.started.elapsed().as_millis();
         match job.previous.take() {
@@ -144,7 +181,17 @@ fn drive(
             let Some(image) = readback.0.lock().expect("readback lock").take() else { return };
             job.captures += 1;
             let same = job.previous.as_ref().is_some_and(|p| settled(p, &image));
-            if same {
+            if same && job.bench > 0 {
+                // Written: now draw on and time it (the first frame, after the readback, is left
+                // out).
+                if write(&job, image, &options, "") {
+                    job.phase = Phase::Bench;
+                    job.bench += 1;
+                    job.last = Instant::now();
+                } else {
+                    exit.write(AppExit::error());
+                }
+            } else if same {
                 finish(&job, image, &options, "", &mut exit);
             } else if job.captures >= MAX_CAPTURES {
                 finish(&job, image, &options, &format!("; warning: no two of {} readbacks matched", job.captures), &mut exit);
@@ -155,6 +202,7 @@ fn drive(
                 job.phase = Phase::Settle;
             }
         }
+        Phase::Bench => {}
     }
 }
 
@@ -170,6 +218,11 @@ fn settled(a: &Image, b: &Image) -> bool {
 
 /// Write the PNG, say so on stdout, and exit.
 fn finish(job: &Job, image: Image, options: &Options, note: &str, exit: &mut MessageWriter<AppExit>) {
+    exit.write(if write(job, image, options, note) { AppExit::Success } else { AppExit::error() });
+}
+
+/// Write the PNG and say so on stdout (or why not on stderr).
+fn write(job: &Job, image: Image, options: &Options, note: &str) -> bool {
     match write_png(image, &job.path) {
         Ok(()) => {
             let s = options.size;
@@ -185,11 +238,11 @@ fn finish(job: &Job, image: Image, options: &Options, note: &str, exit: &mut Mes
             if !note.is_empty() {
                 eprintln!("{}", note.trim_start_matches("; "));
             }
-            exit.write(AppExit::Success);
+            true
         }
         Err(e) => {
             eprintln!("render failed: {e}");
-            exit.write(AppExit::error());
+            false
         }
     }
 }

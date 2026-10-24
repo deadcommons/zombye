@@ -19,7 +19,7 @@
 use glam::{IVec2, Vec2};
 use serde::{Deserialize, Serialize};
 
-use crate::map::{Edge, Feature, Floor, Side, TileMap, CHUNK_SIZE};
+use crate::map::{Edge, Feature, Floor, Side, TileMap, TurningCircle, CHUNK_SIZE};
 use crate::population::Zone;
 use crate::rng::Rng;
 use crate::template::{BuildingKind, BuildingTemplate, Placement};
@@ -1015,6 +1015,8 @@ impl TownBuilder<'_> {
             }
         }
         self.plan.cul_de_sacs.push(c);
+        let stem = CUL_ROAD as f32 / 2.0;
+        self.map.turning_circles.push(TurningCircle { centre: c, road: BULB_RADIUS, walk: BULB_OUTER, entry, stem, stem_walk: stem + SIDEWALK as f32 });
         let end_lot = Lot { r: frame.sub((uc - 14).max(0), (uc + 14).min(w), d - CUL_END_LOT, d), front: entry };
         if let Some(b) = self.place_house(end_lot, false) {
             self.homes.push(b);
