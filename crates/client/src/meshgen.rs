@@ -7,6 +7,7 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use zombye_sim::map::{Floor, Side};
 
+pub mod curves;
 pub mod land_palette;
 pub mod landscape;
 pub mod trees;
@@ -18,7 +19,8 @@ pub enum CutKind {
     Never = 0,
     /// A wall piece: drops to a stub as a whole when it's on the camera side of the player.
     Wall = 1,
-    /// A roof: disappears as a whole when it hides the player.
+    /// A roof: hidden whole with its building's upper storeys when it covers the player
+    /// (`world_render::hide_upper_floors`); the shader only counts it as outdoors for the fog.
     Roof = 2,
     /// A tree's foliage: fades out when it hides the player.
     Canopy = 3,

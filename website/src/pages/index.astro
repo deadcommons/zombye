@@ -1,0 +1,745 @@
+---
+import '@fontsource/anton/400.css';
+import '@fontsource-variable/inter';
+import { Image } from 'astro:assets';
+import siege from '../assets/shots/siege.png';
+import town from '../assets/shots/town.png';
+import night from '../assets/shots/night.png';
+import observe from '../assets/observe.txt?raw';
+
+const repo = 'https://github.com/deadcommons/zombye';
+const discord = 'https://discord.gg/y7NsmVG2br';
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const docs = (path = '') => `${base}/docs/${path}`;
+
+const features = [
+	{
+		title: 'Slow-burn survival',
+		text: 'Wake up in a house in a small town, the day after. Scavenge, sneak or fight, patch your wounds, eat, sleep, and see how long you last. Death is permanent.',
+	},
+	{
+		title: 'Real 3D hordes',
+		text: 'A fixed isometric camera over a real 3D world. Thousands of zombies simulated across the map, hundreds on screen, and every one of them can hear you.',
+	},
+	{
+		title: 'Built for agents',
+		text: 'The server speaks MCP. Point Claude Code or any MCP client at it and your agent can look around, loot, fight, take screenshots and test your mods.',
+	},
+	{
+		title: 'Moddable by default',
+		text: 'Every item, weapon, recipe, loot table, building and zombie number lives in a plain data file. Change a file, start the game, play your mod.',
+	},
+	{
+		title: 'Open source',
+		text: 'The code, server and tools are MIT or Apache-2.0. Read it, fork it, build it, host it. No account, no fee, no closed editor.',
+	},
+	{
+		title: 'Host it anywhere',
+		text: 'One headless server binary. Self-hosting is free and documented, and official one-click hosting from Dead Commons is on its way.',
+	},
+];
+
+const zombies = [
+	['Wander', 'drifts about until something catches its ear'],
+	['Investigate', 'heads for the noise you made, not for you'],
+	['Chase', 'has seen you and is coming'],
+	['Thump', 'batters the door you hid behind until it gives'],
+];
+
+const modExample = `// items/weapons.ron
+(
+    id: "nail_bat",
+    name: "Nail bat",
+    category: LongBlunt,
+    damage: (32.0, 44.0),
+    range: 1.25,
+    arc_degrees: 110.0,
+    crit_chance: 0.18,
+    // ...
+),
+
+// items/recipes.ron
+(id: "make_nail_bat", name: "Hammer nails into a bat", secs: 20.0,
+    inputs: [(item: "baseball_bat"), (item: "nails")],
+    tools: [Item("claw_hammer")],
+    outputs: [(item: "nail_bat")]),`;
+
+const milestones = [
+	['M0', 'Tech spike', 'done'],
+	['M1', 'World and visibility', 'done'],
+	['M2', 'Player and combat', 'now'],
+	['M3', 'Population', 'now'],
+	['M4', 'Survival and items', 'done'],
+	['M5', 'Content and art', 'now'],
+	['M6', 'Multiplayer and mods', 'next'],
+	['M7', 'Hosting launch', 'next'],
+];
+---
+
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Zombye: open-source zombie survival in real 3D</title>
+		<meta name="description" content="Slow-burn zombie survival in real 3D. Open source, moddable from plain data files, and built so AI agents can play, test and mod it over MCP." />
+		<link rel="icon" href={`${base}/favicon.svg`} type="image/svg+xml" />
+		<meta property="og:title" content="Zombye" />
+		<meta property="og:description" content="Open-source zombie survival in real 3D, built for players, modders and AI agents." />
+	</head>
+	<body>
+		<header class="nav">
+			<a class="wordmark" href={`${base}/`}>Zombye</a>
+			<nav>
+				<a href="#survive">Survive</a>
+				<a href="#agents">Agents</a>
+				<a href="#mods">Mods</a>
+				<a href={docs()}>Docs</a>
+				<a class="pill" href={repo}>GitHub</a>
+			</nav>
+		</header>
+
+		<section class="hero">
+			<Image src={siege} alt="Five zombies batter the door of a house at dusk while a survivor with a bat comes up behind them" class="hero-img" widths={[800, 1600]} sizes="100vw" loading="eager" />
+			<div class="hero-shade"></div>
+			<div class="hero-text wrap">
+				<p class="tag">Pre-alpha · open source · free</p>
+				<h1>The dead are everywhere.<br /><span>The code is yours.</span></h1>
+				<p class="lede">
+					Zombye is slow-burn zombie survival in real 3D. One small town, thousands of zombies, and a
+					server your AI agent can play.
+				</p>
+				<div class="ctas">
+					<a class="btn primary" href={docs('start/install')}>Build and play</a>
+					<a class="btn" href={docs('agents')}>Play with your agent</a>
+					<a class="btn ghost" href={discord}>Join the Discord</a>
+				</div>
+			</div>
+		</section>
+
+		<section class="features wrap">
+			{
+				features.map((f) => (
+					<article>
+						<h3>{f.title}</h3>
+						<p>{f.text}</p>
+					</article>
+				))
+			}
+		</section>
+
+		<section id="survive" class="split wrap">
+			<div class="copy">
+				<p class="kicker">Survive</p>
+				<h2>An ordinary person. An ordinary town. The day after.</h2>
+				<p>
+					No quest markers and no superpowers. You wake up in a bedroom in an early-1990s American small town
+					ringed by forest, and everything you need is somewhere in those houses: tins in the cupboards,
+					a bat in the wardrobe, gauze in the bathroom cabinet.
+				</p>
+				<p>
+					Zombies see you in a cone and hear you through walls. Running is loud, sneaking is slow, and a
+					door you shut behind you only holds for so long.
+				</p>
+				<ul class="states">
+					{
+						zombies.map(([name, text]) => (
+							<li>
+								<b>{name}</b> {text}
+							</li>
+						))
+					}
+				</ul>
+				<a class="more" href={docs('play/first-night')}>Your first night →</a>
+			</div>
+			<figure>
+				<Image src={night} alt="A survivor in the dark, lit by a flashlight, with zombies closing in" widths={[700, 1400]} sizes="(max-width: 900px) 100vw, 50vw" />
+				<figcaption>At night you see what your flashlight sees.</figcaption>
+			</figure>
+		</section>
+
+		<section class="body-list wrap">
+			<div>
+				<h3>Your body keeps score</h3>
+				<p>Scratches, gashes and bites on ten body parts. Bleeding, festering, fever, and the infection you won't know you have until it's too late.</p>
+			</div>
+			<div>
+				<h3>Loot that makes sense</h3>
+				<p>Fridges hold food, wardrobes hold clothes, the garage holds a crowbar if you're lucky. Food goes off. Everything has a weight.</p>
+			</div>
+			<div>
+				<h3>Craft from junk</h3>
+				<p>Rip a T-shirt into rags, wash them in clean water, dress the wound. Get better at what you do: nine skills, raised only by doing.</p>
+			</div>
+		</section>
+
+		<section id="agents" class="agents">
+			<div class="wrap split rev">
+				<div class="copy">
+					<p class="kicker">Agents</p>
+					<h2>Your agent can play too.</h2>
+					<p>
+						<code>zombye-server --mcp</code> is a Model Context Protocol server. Add it to Claude Code, or any
+						MCP client, and your agent gets the same view and the same moves a player has: look around, open
+						doors, search cupboards, swing a bat, dress a wound, sleep.
+					</p>
+					<p>
+						Time only moves when the agent asks it to, so it can think as long as it likes between steps. It can
+						take screenshots of the world, run the same fight again from a save, and tell you exactly why it
+						died.
+					</p>
+					<pre class="cmd"><code>claude mcp add zombye -- ./target/release/zombye-server --mcp</code></pre>
+					<a class="more" href={docs('agents/tutorial')}>Tutorial: an agent survives →</a>
+				</div>
+				<div class="terminal" aria-label="What an agent sees when it calls observe">
+					<div class="bar"><i></i><i></i><i></i><span>observe</span></div>
+					<pre>{observe}</pre>
+				</div>
+			</div>
+		</section>
+
+		<section id="mods" class="split wrap">
+			<div class="copy">
+				<p class="kicker">Mods</p>
+				<h2>Everything is a data file.</h2>
+				<p>
+					Items, weapons, recipes, loot tables, furniture, houses, how many zombies live in the woods, what
+					a door sounds like when it breaks: it's all plain text in <code>assets/data</code>, checked when the
+					game loads it, with errors that point at the line.
+				</p>
+				<p>
+					Copy the folder, change it, start the game with <code>--data</code>. Or ask your agent to make the
+					mod, play it, and show you a screenshot.
+				</p>
+				<a class="more" href={docs('modding/first-mod')}>Make a nail bat in ten minutes →</a>
+			</div>
+			<pre class="code"><code>{modExample}</code></pre>
+		</section>
+
+		<section class="town">
+			<Image src={town} alt="The town from above at dusk: houses, gardens, streets and the forest beyond" widths={[1000, 1600]} sizes="100vw" />
+			<p class="wrap caption">Every town is generated from a seed: a main street, a square, shops, cul-de-sacs and woods all round.</p>
+		</section>
+
+		<section class="open wrap">
+			<div>
+				<p class="kicker">Open source</p>
+				<h2>Yours to read, run, fork and host.</h2>
+				<p>
+					Code under MIT or Apache-2.0. Art and audio under CC BY-NC-SA 4.0, free for mods and fan work.
+					Record, stream and monetise videos of it without asking. Self-hosting is free forever; official
+					one-click hosting is how we'll pay for development.
+				</p>
+				<div class="ctas">
+					<a class="btn primary" href={repo}>Star it on GitHub</a>
+					<a class="btn" href={`${repo}/blob/main/CONTRIBUTING.md`}>Contribute</a>
+				</div>
+			</div>
+			<ol class="roadmap">
+				{
+					milestones.map(([id, name, state]) => (
+						<li class={state}>
+							<span class="id">{id}</span>
+							<span class="name">{name}</span>
+							<span class="state">{state === 'now' ? 'in progress' : state}</span>
+						</li>
+					))
+				}
+				<li class="link"><a href="https://github.com/orgs/deadcommons/projects/2">The full board on GitHub →</a></li>
+			</ol>
+		</section>
+
+		<footer>
+			<div class="wrap foot">
+				<span class="wordmark small">Zombye</span>
+				<nav>
+					<a href={docs()}>Docs</a>
+					<a href={repo}>GitHub</a>
+					<a href={discord}>Discord</a>
+					<a href={`${repo}/blob/main/README.md#license`}>Licence</a>
+				</nav>
+				<p>
+					© 2026 Grillo Ltd (trading as Dead Commons) and the Zombye contributors. Zombye and Dead Commons
+					are trademarks.
+				</p>
+			</div>
+		</footer>
+	</body>
+</html>
+
+<style is:global>
+	:root {
+		--bone: #f1e9da;
+		--paper: #f8f3e9;
+		--ink: #1b1916;
+		--ink-2: #4a443c;
+		--blood: #b8322a;
+		--mustard: #d69e2e;
+		--night: #13161a;
+		--display: 'Anton', Impact, 'Arial Narrow', sans-serif;
+		color-scheme: light;
+	}
+	* {
+		box-sizing: border-box;
+	}
+	html {
+		scroll-behavior: smooth;
+	}
+	body {
+		margin: 0;
+		background: var(--bone);
+		color: var(--ink);
+		font: 17px/1.6 'Inter Variable', system-ui, sans-serif;
+		-webkit-font-smoothing: antialiased;
+	}
+	a {
+		color: inherit;
+	}
+	code {
+		font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+		font-size: 0.88em;
+	}
+	img {
+		display: block;
+		max-width: 100%;
+		height: auto;
+	}
+	.wrap {
+		width: min(1160px, 100% - 32px);
+		margin-inline: auto;
+	}
+	h1,
+	h2,
+	h3,
+	.wordmark,
+	.kicker,
+	.tag {
+		font-family: var(--display);
+		font-weight: 400;
+		text-transform: uppercase;
+		letter-spacing: 0.02em;
+		line-height: 1.02;
+	}
+	h2 {
+		font-size: clamp(2rem, 4.5vw, 3.2rem);
+		margin: 0.2em 0 0.5em;
+	}
+	h3 {
+		font-size: 1.35rem;
+		margin: 0 0 0.4em;
+	}
+	.kicker {
+		color: var(--blood);
+		font-size: 1rem;
+		letter-spacing: 0.12em;
+		margin: 0;
+	}
+
+	/* Nav */
+	.nav {
+		position: absolute;
+		inset: 0 0 auto;
+		z-index: 3;
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		padding: 18px max(16px, calc((100% - 1160px) / 2));
+		color: var(--bone);
+	}
+	.wordmark {
+		font-size: 2rem;
+		text-decoration: none;
+		letter-spacing: 0.05em;
+	}
+	.wordmark.small {
+		font-size: 1.6rem;
+	}
+	.nav nav {
+		display: flex;
+		gap: 22px;
+		align-items: center;
+		font-weight: 600;
+		font-size: 0.95rem;
+	}
+	.nav nav a {
+		text-decoration: none;
+		opacity: 0.9;
+	}
+	.nav nav a:hover {
+		opacity: 1;
+		text-decoration: underline;
+	}
+	.pill {
+		border: 1.5px solid currentColor;
+		border-radius: 999px;
+		padding: 5px 14px;
+	}
+
+	/* Hero */
+	.hero {
+		position: relative;
+		min-height: min(92vh, 860px);
+		display: flex;
+		align-items: flex-end;
+		color: var(--bone);
+		background: var(--night);
+		overflow: hidden;
+	}
+	.hero-img {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+	}
+	.hero-shade {
+		position: absolute;
+		inset: 0;
+		background:
+			linear-gradient(180deg, rgba(10, 10, 12, 0.55) 0%, rgba(10, 10, 12, 0) 22%),
+			linear-gradient(0deg, rgba(12, 11, 10, 0.92) 0%, rgba(12, 11, 10, 0.55) 38%, rgba(12, 11, 10, 0) 70%);
+	}
+	.hero-text {
+		position: relative;
+		padding-block: 120px 64px;
+	}
+	.tag {
+		display: inline-block;
+		background: var(--blood);
+		color: var(--bone);
+		font-size: 0.95rem;
+		letter-spacing: 0.1em;
+		padding: 6px 12px 4px;
+		margin: 0 0 18px;
+		transform: rotate(-1.5deg);
+	}
+	h1 {
+		font-size: clamp(2.8rem, 8vw, 6.4rem);
+		margin: 0 0 0.25em;
+		max-width: 13ch;
+		text-shadow: 0 2px 24px rgba(0, 0, 0, 0.5);
+	}
+	h1 span {
+		color: var(--mustard);
+	}
+	.lede {
+		font-size: clamp(1.05rem, 2vw, 1.3rem);
+		max-width: 36em;
+		margin: 0 0 28px;
+		color: #eae2d2;
+	}
+	.ctas {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 12px;
+	}
+	.btn {
+		display: inline-block;
+		padding: 12px 20px;
+		border-radius: 6px;
+		border: 2px solid currentColor;
+		font-weight: 700;
+		text-decoration: none;
+		transition: transform 0.15s ease;
+	}
+	.btn:hover {
+		transform: translateY(-2px);
+	}
+	.btn.primary {
+		background: var(--blood);
+		border-color: var(--blood);
+		color: var(--bone);
+	}
+	.btn.ghost {
+		border-color: transparent;
+		text-decoration: underline;
+		text-underline-offset: 4px;
+	}
+
+	/* Features */
+	.features {
+		display: grid;
+		grid-template-columns: repeat(3, 1fr);
+		gap: 0;
+		margin-block: 72px;
+		border-top: 3px solid var(--ink);
+	}
+	.features article {
+		padding: 26px 26px 26px 0;
+		border-bottom: 1px solid rgba(27, 25, 22, 0.18);
+	}
+	.features article:nth-child(3n + 2),
+	.features article:nth-child(3n + 3) {
+		padding-left: 26px;
+		border-left: 1px solid rgba(27, 25, 22, 0.18);
+	}
+	.features p {
+		margin: 0;
+		color: var(--ink-2);
+	}
+
+	/* Split sections */
+	.split {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 56px;
+		align-items: center;
+		margin-block: 96px;
+	}
+	.split.rev > :first-child {
+		order: 2;
+	}
+	.copy p {
+		color: var(--ink-2);
+	}
+	figure {
+		margin: 0;
+	}
+	figure img {
+		border-radius: 8px;
+		box-shadow: 0 30px 60px -30px rgba(0, 0, 0, 0.55);
+	}
+	figcaption {
+		font-size: 0.9rem;
+		color: var(--ink-2);
+		margin-top: 10px;
+	}
+	.states {
+		list-style: none;
+		padding: 0;
+		margin: 22px 0;
+		display: grid;
+		gap: 8px;
+	}
+	.states li {
+		padding-left: 14px;
+		border-left: 3px solid var(--blood);
+		color: var(--ink-2);
+	}
+	.states b {
+		color: var(--ink);
+		text-transform: uppercase;
+		font-size: 0.85rem;
+		letter-spacing: 0.06em;
+		margin-right: 6px;
+	}
+	.more {
+		font-weight: 700;
+		color: var(--blood);
+		text-decoration: none;
+	}
+	.more:hover {
+		text-decoration: underline;
+	}
+
+	.body-list {
+		display: grid;
+		grid-template-columns: repeat(3, 1fr);
+		gap: 32px;
+		padding: 36px 0 0;
+		border-top: 3px solid var(--ink);
+		margin-bottom: 96px;
+	}
+	.body-list p {
+		color: var(--ink-2);
+		margin: 0;
+	}
+
+	/* Agents */
+	.agents {
+		background: var(--night);
+		color: var(--bone);
+		padding-block: 8px;
+	}
+	.agents .copy p {
+		color: #cfc7b8;
+	}
+	.agents code {
+		color: var(--mustard);
+	}
+	.agents .more {
+		color: var(--mustard);
+	}
+	.cmd {
+		background: #0a0c0e;
+		border: 1px solid #2a2e33;
+		border-radius: 6px;
+		padding: 12px 14px;
+		overflow-x: auto;
+		margin: 22px 0;
+	}
+	.terminal {
+		background: #0a0c0e;
+		border: 1px solid #2a2e33;
+		border-radius: 10px;
+		overflow: hidden;
+		box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.8);
+		min-width: 0;
+	}
+	.terminal .bar {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 10px 12px;
+		background: #171a1e;
+		font: 600 0.8rem ui-monospace, Menlo, monospace;
+		color: #8b9097;
+	}
+	.terminal .bar i {
+		width: 10px;
+		height: 10px;
+		border-radius: 50%;
+		background: #3a3f45;
+	}
+	.terminal .bar span {
+		margin-left: 8px;
+	}
+	.terminal pre {
+		margin: 0;
+		padding: 14px 16px;
+		font: 12px/1.35 ui-monospace, 'SF Mono', Menlo, monospace;
+		color: #c9d1b8;
+		overflow-x: auto;
+		max-height: 520px;
+	}
+
+	/* Mods */
+	.code {
+		background: var(--ink);
+		color: #e8dfcd;
+		border-radius: 10px;
+		padding: 22px 24px;
+		font: 13.5px/1.55 ui-monospace, 'SF Mono', Menlo, monospace;
+		overflow-x: auto;
+		margin: 0;
+		min-width: 0;
+		box-shadow: 0 30px 60px -30px rgba(0, 0, 0, 0.55);
+	}
+
+	/* Town */
+	.town {
+		background: var(--night);
+	}
+	.town img {
+		width: 100%;
+		max-height: 720px;
+		object-fit: cover;
+	}
+	.town .caption {
+		color: #cfc7b8;
+		padding-block: 16px 22px;
+		margin-block: 0;
+		font-size: 0.95rem;
+	}
+
+	/* Open source + roadmap */
+	.open {
+		display: grid;
+		grid-template-columns: 1.2fr 1fr;
+		gap: 56px;
+		margin-block: 96px;
+		align-items: start;
+	}
+	.open p {
+		color: var(--ink-2);
+	}
+	.open .ctas {
+		margin-top: 24px;
+	}
+	.open .btn:not(.primary) {
+		color: var(--ink);
+	}
+	.roadmap {
+		list-style: none;
+		padding: 0;
+		margin: 0;
+		border-top: 3px solid var(--ink);
+	}
+	.roadmap li {
+		display: grid;
+		grid-template-columns: 3em 1fr auto;
+		gap: 12px;
+		padding: 11px 0;
+		border-bottom: 1px solid rgba(27, 25, 22, 0.18);
+		align-items: baseline;
+	}
+	.roadmap .id {
+		font-family: var(--display);
+		font-size: 1.15rem;
+	}
+	.roadmap .state {
+		font-size: 0.78rem;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--ink-2);
+	}
+	.roadmap .done .state {
+		color: #4f6b35;
+	}
+	.roadmap .now .state {
+		color: var(--blood);
+	}
+	.roadmap .next {
+		opacity: 0.6;
+	}
+	.roadmap li.link {
+		display: block;
+		border-bottom: 0;
+	}
+	.roadmap li.link a {
+		font-weight: 700;
+		color: var(--blood);
+		text-decoration: none;
+	}
+
+	footer {
+		background: var(--ink);
+		color: #cfc7b8;
+		padding-block: 36px;
+		font-size: 0.9rem;
+	}
+	.foot {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 16px 32px;
+		align-items: center;
+	}
+	.foot .wordmark {
+		color: var(--bone);
+	}
+	.foot nav {
+		display: flex;
+		gap: 20px;
+	}
+	.foot p {
+		flex-basis: 100%;
+		margin: 0;
+		opacity: 0.7;
+	}
+
+	@media (max-width: 900px) {
+		.features,
+		.body-list {
+			grid-template-columns: 1fr;
+		}
+		.features article,
+		.features article:nth-child(3n + 2),
+		.features article:nth-child(3n + 3) {
+			padding: 22px 0;
+			border-left: 0;
+		}
+		.split,
+		.open {
+			grid-template-columns: 1fr;
+			gap: 32px;
+			margin-block: 64px;
+		}
+		.split.rev > :first-child {
+			order: 0;
+		}
+		.nav nav a:not(.pill):not([href$='/docs/']) {
+			display: none;
+		}
+	}
+</style>

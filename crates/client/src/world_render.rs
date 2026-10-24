@@ -599,23 +599,14 @@ fn animate_doors(time: Res<Time>, mut leaves: Query<(&DoorLeaf, &mut Transform)>
     }
 }
 
-/// Hide a building's upper storeys and roof while you're inside it, or while it stands between
-/// you and the camera, so you always see your character and the floor you're on.
-fn hide_upper_floors(
-    map: Res<ClientMap>,
-    streamer: Res<Streamer>,
-    player: Query<&Transform, With<Player>>,
-    cams: Query<&IsoCamera>,
-    mut vis: Query<&mut Visibility>,
-) {
-    let (Ok(p), Ok(cam)) = (player.single(), cams.single()) else { return };
-    let pos = p.translation.xz();
-    let inside = map.0.building_at(pos);
-    let toward_cam = cam.offset_dir();
+/// Hide a building's upper storeys and roof while you're inside it, so you see the floor you're on.
+/// From outside, roofs and upper storeys that would cover you open a see-through hole round you in
+/// the shader instead (`hole_at` in world.wesl, #84), and the rest of the building stays closed.
+fn hide_upper_floors(map: Res<ClientMap>, streamer: Res<Streamer>, player: Query<&Transform, With<Player>>, mut vis: Query<&mut Visibility>) {
+    let Ok(p) = player.single() else { return };
+    let inside = map.0.building_at(p.translation.xz());
     for (i, render) in &streamer.buildings {
-        let b = &map.0.buildings[*i];
-        let hide = Some(*i) == inside || hides_player(b, pos, toward_cam);
-        let want = if hide { Visibility::Hidden } else { Visibility::Inherited };
+        let want = if Some(*i) == inside { Visibility::Hidden } else { Visibility::Inherited };
         for e in &render.upper {
             if let Ok(mut v) = vis.get_mut(*e) {
                 if *v != want {
@@ -624,33 +615,6 @@ fn hide_upper_floors(
             }
         }
     }
-}
-
-/// Does any part of the building above the ground floor cover the player on screen? Walks the line
-/// from the player's body toward the camera and checks whether it passes through the building's
-/// footprint below its top.
-fn hides_player(b: &Building, player: Vec2, toward_cam: Vec3) -> bool {
-    let top = STOREY * b.levels as f32 + 2.5;
-    let min = b.min.as_vec2() - Vec2::splat(0.4);
-    let max = (b.min + b.size).as_vec2() + Vec2::splat(0.4);
-    let ground = toward_cam.xz().normalize_or_zero();
-    let rise = toward_cam.y / toward_cam.xz().length().max(1e-4);
-    for body_height in [0.3, 1.6] {
-        let mut s = 0.0;
-        while s < 16.0 {
-            let q = player + ground * s;
-            let h = body_height + rise * s;
-            if h > top {
-                break;
-            }
-            // Only the part above the ground-floor walls: the ground floor has its own cutaway.
-            if h > STOREY - 0.2 && q.x >= min.x && q.y >= min.y && q.x <= max.x && q.y <= max.y {
-                return true;
-            }
-            s += 0.5;
-        }
-    }
-    false
 }
 
 /// Door leaves and window panes drop with their wall (same rule as the shader's wall cutaway).

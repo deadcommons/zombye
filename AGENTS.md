@@ -16,7 +16,7 @@ Work is tracked on GitHub, not in the repo: the
 | `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), skills that improve with practice (`skills.rs` + `SkillTuning`), run stats and the cause of death (`run.rs`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint; `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
-| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building meshes, the outdoors per chunk from the tile map alone (`meshgen/landscape.rs`: lawns, verges, forest floor and litter, road paint at real scale, kerbs, slab joints, driveways, front beds, fences and hedges; `meshgen/trees.rs`: faceted broadleaves, birches, pines, spruces; colours in `meshgen/land_palette.rs`), fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd, or a character baked offline read from a `.zvat` (`zvat.rs`); `survivor.rs` skinned, CPU-posed players; `character.rs` reads a modular character's body and wearable GLBs and `survivor_model.rs` draws players as it, dressed in what they wear), hit feedback (`fx.rs`), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), HUD, the death screen and run summary (`death.rs`), the skills panel and level-up line (`skills_ui.rs`), sound (`audio.rs`, see Sound), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
+| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building meshes, the outdoors per chunk from the tile map alone (`meshgen/landscape.rs`: lawns, verges, forest floor and litter, road paint at real scale, kerbs, slab joints, driveways, front beds, fences and hedges; `meshgen/curves.rs`: what's drawn round over the tiles, see Curves under The world; `meshgen/trees.rs`: faceted broadleaves, birches, pines, spruces; colours in `meshgen/land_palette.rs`), fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd, or a character baked offline read from a `.zvat` (`zvat.rs`); `survivor.rs` skinned, CPU-posed players; `character.rs` reads a modular character's body and wearable GLBs and `survivor_model.rs` draws players as it, dressed in what they wear), hit feedback (`fx.rs`), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), HUD, the death screen and run summary (`death.rs`), the skills panel and level-up line (`skills_ui.rs`), sound (`audio.rs`, see Sound), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
 | `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/items/recipes.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`), models (`models/furniture/*.glb`; the survivor's body `models/characters/survivor_01.glb` and its wearables `models/wearables/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), sound (`audio/sfx/*.wav`, `audio/ambience/*.wav`, listed in `data/sounds.ron`), later textures. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
 | `tools/blender/` | Python to build assets: run inside Blender, mesh builder, palette, renders, validation, GLB export (`zasset.py`, `palette.py`, `build.py`), character clean-up, validation and skinned export (`zchar.py`), VAT bake for the crowd, outfit variants with palette swatches (`zvat.py`, `build.py -- --crowd`); plain Python, art-repo work folders and promotion (`artrepo.py`). | MIT OR Apache-2.0 |
 | `tools/audio/` | `synth.py`: the placeholder sounds, synthesised from noise, tones and filters (plain Python, deterministic). | MIT OR Apache-2.0 |
@@ -215,7 +215,8 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   straight on or are clearly offset, now and then a long block), filled with rows of house lots facing whichever
   streets run round them (houses turned to face north, south, east or west; corner lots on the side streets) or, in
   up to three blocks (at least one), a **cul-de-sac**: a dead end with a turning circle (asphalt within 8.5 m) and
-  houses round it. Blocks on the edge of town stop short of it by their own few metres and the woods come up to
+  houses round it (the generator leaves each one on the map as a `map::TurningCircle`, for drawing it round; not
+  saved). Blocks on the edge of town stop short of it by their own few metres and the woods come up to
   them, so streets run on into the trees and stop at the forest (some with a dirt track); lots backing onto the
   forest are **outer** lots, wider, set further back and wilder. The street out north and the one out south are the
   dead ends nearest the middle of town, with a dog-leg in the forest. House lots take any `kind: House` template
@@ -233,6 +234,23 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   default town holds about 95–120 buildings (seed 1: 82 houses, 7 shops, 6 offices) on a 480 m map, generated in
   about 50–60 ms (world included). Lot details use coordinates relative to their lot, so a bigger map gives the same
   town. `print_town` (an ignored test; `ZOMBYE_SEED`, and `ZOMBYE_PPM=PATH` for a one-pixel-a-tile picture) prints it.
+- **Curves (#82, `meshgen/curves.rs`):** the tiles stay square (walking, sight and the sim go by them), but what's
+  drawn follows real curves, faceted, never stepped. Turning circles are true circles (48 facets) of asphalt, kerb and
+  a sidewalk ring with slab joints across it, opening into their street through a 4 m reverse curve each side. Every
+  sidewalk corner with road on its three other sides gets a rounded kerb: 4 m at junctions (the back of the sidewalk
+  follows at the same width where it meets open lawn), 1.5 m where the sidewalk is all there is (half of its width at
+  the end of a strip between two roads, so the curves meet). The tiles have no way from an alley or a parking lot
+  through the sidewalk to the street, so one is drawn: asphalt across the sidewalk where an alley ends or a lot's
+  aisle meets it (up to 6 m), kerbs turning in. Driveways flare (1.5 m) where they meet the sidewalk, and the
+  dog-legs on the roads out are bends of constant width (inside radius up to 6 m, less where a tree stands in the
+  way) with the dashed centre line round them. Stop lines sit back where the kerb still runs straight; zebra bars run
+  out to a curved kerb as far as it leaves room. How: `Curves::find` works out the shapes reaching a chunk from the
+  tiles round it (its eight neighbours, read once) and the turning circles; each is a list of convex regions drawn
+  as another surface; a tile one crosses is cut into convex pieces (`Curves::pieces`): its own look clipped to what's
+  still its own, plain asphalt, concrete or the neighbouring ground on the rest; straight kerbs and gutter grit along
+  tile edges stop where a curve takes over (`Curves::kerb_span`), and curved kerbs, grit, ring joints and bend
+  centre lines are drawn by the chunk each stretch's middle is in. Cost: chunk building about 0.24 ms (0.22 without
+  curves; `chunk_build_time`, an ignored test, times every chunk of the default map), frames the same.
 
 ## Players, intents and prediction
 
@@ -693,6 +711,14 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   to draw.
 - **The crowd** lights itself (`zombie_vat.wesl`: sun and ambient uniforms, darker at night); it neither casts nor
   receives shadows nor takes the flashlight yet.
+- **Cutaways** (`materials.rs`, `world.wesl`, `world_render.rs`; #84): outdoors, a ground-floor wall drops to a 0.4 m
+  stub only when it covers the player (within 5.5 m in front, 1.6 m to either side). Indoors, only the walls that hide
+  part of your room drop: a wall piece is cut when the floor behind it on screen (5.5 m away from the camera, what a
+  3 m wall covers from 30° up) runs into the room's bounds (`inside_rect`, the box round the player's ground-floor
+  room), so its far walls and the rest of the building stand. Roofs and upper storeys never drop from outside: anything
+  above 3.05 m nearer the camera than the player opens a soft, dithered hole about 2.2 m round them on screen
+  (`hole_at`); a building's upper storeys and roof are hidden whole only while you're inside it. Door leaves and panes
+  follow the same wall rule on the CPU (`materials::wall_is_cut`). Cut walls still cast shadows.
 - **F3, the light preview** (`dev_time.rs`): a slider at the foot of the screen (drag, or hold `[` / `]`) for the hour the
   light is drawn at (sun, moon, ambient, grade, held light, crowd, sight range); the server's clock, zombies' senses and
   the HUD's time don't follow it. F3 again goes back to the server's hour.

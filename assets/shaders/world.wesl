@@ -5,6 +5,7 @@
 import bevy_pbr::render::{
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::alpha_discard,
+    view_transformations::{position_world_to_ndc, ndc_to_frag_coord},
 };
 
 @if(PREPASS_PIPELINE)
@@ -41,34 +42,78 @@ fn bayer4(p: vec2<u32>) -> f32 {
 }
 
 const STUB_HEIGHT: f32 = 0.4;
+// Above the ground-floor walls: roofs and upper storeys, which open a hole round the player
+// instead of dropping (the whole of them goes only while you're inside that building, on the CPU).
+const UPPER_Y: f32 = 3.05;
+// The hole's radius round the player's chest on screen, in metres.
+const HOLE_M: f32 = 2.2;
+
+// 0 outside the see-through hole round the player, 1 in the middle of it, for a fragment at `wp`
+// (pixel `frag`): only things nearer the camera than the player open up.
+fn hole_at(wp: vec3<f32>, frag: vec2<f32>) -> f32 {
+    let chest = world_params.player.xyz;
+    if (dot(wp - chest, world_params.camera_dir.xyz) < 0.5) {
+        return 0.0;
+    }
+    let centre = ndc_to_frag_coord(position_world_to_ndc(chest).xy);
+    let up = ndc_to_frag_coord(position_world_to_ndc(chest + vec3(0.0, 1.0, 0.0)).xy);
+    let metre = max(length(up - centre), 1e-3);
+    let d = length(frag - centre) / metre;
+    return 1.0 - smoothstep(HOLE_M * 0.7, HOLE_M, d);
+}
 
 fn ground_camera_dir() -> vec2<f32> {
     let c = world_params.camera_dir.xz;
     return c / max(length(c), 1e-4);
 }
 
-// Is the wall with this midpoint on the camera side of the player, close enough to hide them?
-// Inside a building, every camera-side wall of that building drops.
+// How far behind a wall (away from the camera, on the ground) it can hide things: a 3 m wall seen
+// from 30° up covers about 5.2 m of floor behind it.
+const WALL_REACH: f32 = 5.5;
+
+// Does the ground segment from `p` to `p - c * WALL_REACH` pass through the rectangle (min, max)?
+fn behind_hits(p: vec2<f32>, c: vec2<f32>, lo: vec2<f32>, hi: vec2<f32>) -> bool {
+    let d = -c * WALL_REACH;
+    var t0 = 0.0;
+    var t1 = 1.0;
+    for (var i = 0; i < 2; i++) {
+        if (abs(d[i]) < 1e-5) {
+            if (p[i] < lo[i] || p[i] > hi[i]) {
+                return false;
+            }
+        } else {
+            let a = (lo[i] - p[i]) / d[i];
+            let b = (hi[i] - p[i]) / d[i];
+            t0 = max(t0, min(a, b));
+            t1 = min(t1, max(a, b));
+        }
+    }
+    return t0 <= t1;
+}
+
+// Is the wall piece with this midpoint (pieces are 1 m long, along x or z) cut down to a stub?
+// Indoors: only if it hides part of the player's room, i.e. the floor behind it on screen runs into
+// the room. The room's far walls and everything behind the room stand, so the room still feels
+// enclosed and the rest of the building keeps its walls. Must match `materials::wall_is_cut`.
 fn wall_cut(mid: vec2<f32>) -> bool {
     let c = ground_camera_dir();
+    let r = world_params.inside_rect;
+    if (r.x <= r.z) {
+        let lo = r.xy + vec2(0.03);
+        let hi = r.zw - vec2(0.03);
+        // A piece along x has its midpoint half-way along a tile.
+        var half = vec2(0.0, 0.45);
+        if (abs(fract(mid.x) - 0.5) < 0.25) {
+            half = vec2(0.45, 0.0);
+        }
+        return behind_hits(mid, c, lo, hi) || behind_hits(mid - half, c, lo, hi) || behind_hits(mid + half, c, lo, hi);
+    }
+    // Outdoors: only walls that actually cover the character: up to about 5 m in front of them,
+    // and a little to either side.
     let d = mid - world_params.player.xz;
     let along = dot(d, c);
     let perp = length(d - along * c);
-    let r = world_params.inside_rect;
-    if (r.x <= r.z && all(mid >= r.xy - vec2(0.1)) && all(mid <= r.zw + vec2(0.1))) {
-        return along > 0.0;
-    }
-    // Outdoors: only walls that actually cover the character. A 3 m wall hides the player's feet
-    // up to about 5 m in front of them (the camera looks down at 30°), and a little to either side.
-    return along > 0.0 && along < 5.5 && perp < 1.6;
-}
-
-// Distance on the ground from `centre` to the line running from the player toward the camera.
-fn occluder_distance(centre: vec2<f32>) -> f32 {
-    let c = ground_camera_dir();
-    let p = world_params.player.xz;
-    let s = clamp(dot(centre - p, c), 0.0, 14.0);
-    return length(centre - (p + c * s));
+    return along > 0.0 && along < WALL_REACH && perp < 1.6;
 }
 
 // How far the foliage of the tree whose trunk foot is `anchor` has faded (0 shown, 1 gone).
@@ -142,11 +187,7 @@ fn fragment(
 @if(CUTAWAY && VERTEX_UVS_A && VERTEX_UVS_B) {
     let cut_kind = u32(in.uv_b.x + 0.5);
     if (cut_kind == 1u) {
-        if (wp.y > STUB_HEIGHT && wall_cut(in.uv)) {
-            discard;
-        }
-    } else if (cut_kind == 2u) {
-        if (occluder_distance(in.uv) < in.uv_b.y) {
+        if (wp.y > STUB_HEIGHT && wp.y < UPPER_Y && wall_cut(in.uv)) {
             discard;
         }
     } else if (cut_kind == 4u) {
@@ -163,6 +204,13 @@ fn fragment(
         // Its trunk and branches stay, thinned to every other pixel and darkened (below).
         wood_fade = tree_fade(in.uv);
         if (wood_fade > 0.0 && bayer4(vec2<u32>(in.position.xy)) < 0.5 * wood_fade) {
+            discard;
+        }
+    }
+    // Roofs and upper storeys (not trees) between the camera and the player: a soft hole round them.
+    if (wp.y > UPPER_Y && cut_kind != 3u && cut_kind != 6u) {
+        let hole = hole_at(wp, in.position.xy);
+        if (hole > 0.0 && hole > bayer4(vec2<u32>(in.position.xy))) {
             discard;
         }
     }
