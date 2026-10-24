@@ -202,6 +202,7 @@ fn update_vitals(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_hud(
     time: Res<Time>,
     link: Res<ServerLink>,
@@ -209,6 +210,7 @@ fn update_hud(
     me: Res<LocalPlayer>,
     join: Res<JoinInfo>,
     options: Res<Options>,
+    mut sounds: Option<ResMut<crate::audio::SoundCount>>,
     mut stats: Local<FrameStats>,
     mut text: Query<&mut Text, With<HudText>>,
 ) {
@@ -236,8 +238,10 @@ fn update_hud(
     };
     let tags = if tags.is_empty() { String::new() } else { format!(" | {}", zombye_sim::needs::tags_line(&tags)) };
     let fast = if link.curr.time_scale > 1.0 { format!(" x{:.0}", link.curr.time_scale) } else { String::new() };
+    // Sounds started since the last line (audio.rs), so a run shows what was heard.
+    let heard = sounds.as_deref_mut().map_or(String::new(), |c| format!(" | {}", c.take_line()));
     let line = format!(
-        "{:02}:{:02}{fast} | {place} | {:?} | hp {:.0}{}{dev}{tags} | endurance {:.0}%{winded} | fps {:.0} | frame {:.2} ms (worst {:.2}) | zombies {} (chasing {}; tiers {}/{}/{}) | sim tick {:.3} ms",
+        "{:02}:{:02}{fast} | {place} | {:?} | hp {:.0}{}{dev}{tags} | endurance {:.0}%{winded} | fps {:.0} | frame {:.2} ms (worst {:.2}) | zombies {} (chasing {}; tiers {}/{}/{}) | sim tick {:.3} ms{heard}",
         hour.floor() as u32,
         ((hour - hour.floor()) * 60.0) as u32,
         s.stance,
@@ -258,7 +262,7 @@ fn update_hud(
     if let Ok(mut t) = text.single_mut() {
         let rotate = if options.rotate { ", . rotate | " } else { "" };
         t.0 = format!(
-            "{line}\nWASD move | Shift run | C sneak{} | mouse face | LMB attack | Space shove/stomp | E pick up / search | Tab inventory | H health | K skills | B sleep | F door/window | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load | F1 god{} | F2 ignored{}",
+            "{line}\nWASD move | Shift run | C sneak{} | mouse face | LMB attack | Space shove/stomp | E pick up / search | Tab inventory | H health | K skills | B sleep | F door/window | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load | F1 god{} | F2 ignored{} | M mute",
             if me.sneak { " (on)" } else { "" },
             if me.dev.god { " (on)" } else { "" },
             if me.dev.ignored { " (on)" } else { "" }

@@ -87,6 +87,11 @@ pub struct ServerTick;
 #[derive(Resource, Default)]
 pub struct EdgeChangesThisFrame(pub Vec<EdgeChange>);
 
+/// The map edits the server sent this frame, each with what the edge was before (a door opening,
+/// a window breaking), for sound. A quickload's differences aren't here: nobody did them.
+#[derive(Resource, Default)]
+pub struct EdgeTransitionsThisFrame(pub Vec<(EdgeChange, Edge)>);
+
 /// Combat events (hits, kills, shoves, stomps, wounds) received this frame, for hit feedback.
 #[derive(Resource, Default)]
 pub struct CombatEventsThisFrame(pub Vec<CombatEvent>);
@@ -214,6 +219,7 @@ fn finish_join(app: &mut App, mut server: LocalServer, player_id: u32) {
         .insert_resource(join)
         .insert_resource(damage)
         .init_resource::<EdgeChangesThisFrame>()
+        .init_resource::<EdgeTransitionsThisFrame>()
         .init_resource::<EdgeDamageThisFrame>()
         .init_resource::<CombatEventsThisFrame>()
         .init_resource::<ItemNotesThisFrame>()
@@ -261,6 +267,7 @@ impl ServerLink {
 
 fn clear_frame_changes(
     mut changes: ResMut<EdgeChangesThisFrame>,
+    mut transitions: ResMut<EdgeTransitionsThisFrame>,
     mut damage: ResMut<EdgeDamageThisFrame>,
     mut hits: ResMut<CombatEventsThisFrame>,
     mut notes: ResMut<ItemNotesThisFrame>,
@@ -268,6 +275,7 @@ fn clear_frame_changes(
 ) {
     ups.0.clear();
     changes.0.clear();
+    transitions.0.clear();
     damage.0.clear();
     hits.0.clear();
     notes.0.clear();
@@ -278,6 +286,7 @@ fn tick_server(
     mut link: ResMut<ServerLink>,
     mut map: ResMut<ClientMap>,
     mut changes: ResMut<EdgeChangesThisFrame>,
+    mut transitions: ResMut<EdgeTransitionsThisFrame>,
     mut damage_map: ResMut<EdgeDamageMap>,
     mut damage: ResMut<EdgeDamageThisFrame>,
     mut hits: ResMut<CombatEventsThisFrame>,
@@ -295,6 +304,7 @@ fn tick_server(
     let s = link.server.world.stats;
     link.tiers = [s.active, s.near, s.virtual_];
     for c in &snapshot.edge_changes {
+        transitions.0.push((*c, map.0.owned_edge(c.tile, c.edge)));
         map.0.set_owned_edge(c.tile, c.edge, c.kind);
         changes.0.push(*c);
     }

@@ -34,7 +34,11 @@
 //!
 //! `--crowd-vat PATH` (or `ZOMBYE_CROWD_VAT=PATH`) draws the zombies with a character baked by
 //! `tools/blender/zvat.py` instead of the grey-box (`none` forces the grey-box); see `zombie_render.rs`.
+//!
+//! Sound (`audio.rs`): `--mute` starts with it off, `--volume V` sets the master volume (0..2,
+//! default 1), M mutes and unmutes.
 
+mod audio;
 mod autoplay;
 mod camera;
 mod daynight;
@@ -131,6 +135,10 @@ pub struct Options {
     /// Draw the crowd with this baked character (`--crowd-vat PATH`, else `ZOMBYE_CROWD_VAT`; `none`
     /// for the grey-box). See `zombie_render.rs`.
     pub crowd_vat: Option<String>,
+    /// Start with the sound off (`--mute`; M toggles it).
+    pub mute: bool,
+    /// Master volume (`--volume V`, 0..2, default 1).
+    pub volume: f32,
 }
 
 /// Default and largest `--size` for `--render-to`.
@@ -195,6 +203,8 @@ impl Options {
             size: value("--size").and_then(|v| parse_size(&v)).unwrap_or(DEFAULT_RENDER_SIZE),
             center: value("--center").and_then(|v| parse_point(&v)),
             crowd_vat: value("--crowd-vat"),
+            mute: flag("--mute"),
+            volume: value("--volume").and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite()).map_or(1.0, |v| v.clamp(0.0, 2.0)),
         }
     }
 
@@ -285,6 +295,10 @@ fn main() {
             autoplay::AutoplayPlugin,
             saving::SavingPlugin,
         ));
+    // An offscreen render has no audio device (Bevy's audio is off there).
+    if !offscreen {
+        app.add_plugins(audio::GameAudioPlugin);
+    }
     if app.run().is_error() {
         std::process::exit(1);
     }
