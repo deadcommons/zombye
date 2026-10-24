@@ -73,6 +73,34 @@ else `raw/reference.png`) and the newest one or two sheets in `style/approved/ch
 a.png,b.png` picks them instead. `--out DIR` writes renders, textures, `.blend` and exports to a scratch
 folder and only reads the art folder.
 
+## Wearables: clothes and accessories on a base body (`tools/blender/zgarment.py`)
+
+A modular character (the survivor) is a base body plus **wearables**, each its own mesh on the same
+skeleton, interchangeable on any character built on that body. The format is at the top of `zgarment.py`;
+in short: the body's spec lists `sockets` (bone + offset + rotation in the rest pose: `eyes`, `head_top`,
+`neck`, `hand_r`, `hand_l`, `back`) and `wearables` (`id`, `item`, `kind: Skinned | Rigid`, `socket`,
+`layer`, `occupies`, `hides`, `tris`). `build.py -- <art folder>` builds it with `zgarment.build` when the spec
+has `wearables`, and exports `export/<id>.glb` (preview), `export/<id>_body.glb` (body + clips) and
+`export/wearables/<wearable>.glb` (one mesh on the skeleton, its spec entry and socket in the extras).
+
+To make a new wearable (built in Blender, our own work; the owner approves each one at the gates):
+
+1. **Spec entry** in the body's `.ron` `wearables`: its item id from items.ron, kind, layer, the slots it
+   occupies, the body regions it hides (what it visibly covers), a lean budget (perf matters: a hoodie
+   ≤ 800, glasses ≤ 100).
+2. **Make it in the body's script** (`make_<id>(c, body, arm)`), against the base body's **rest pose**:
+   - *Skinned* (clothes, scarves, gloves): `shell_from_regions` over the regions it covers, ease it off the
+     body by a fabric thickness (1–2 cm: more makes him look fat), bands with `lip` onto the body at the
+     open edges, details from primitives (`tube`, bars, panels on `on_surface`), then
+     `transfer_weights(body, obj, arm)`.
+   - *Rigid* (glasses, hats, held things): build it in its socket's frame (`socket_matrix`), standing off
+     the body where a real one would, then `bind_to_socket(obj, arm, spec, socket)`.
+   - Palette materials only (`palette_material`), the spec's shading (`finish_garment`), a `garment_part`
+     face attribute (0 the cover over the body, 1 details) for the poke-through check.
+3. **Check** with `poke_through` over every clip (vertices that change side of the cover against the rest
+   pose, and the wearable sinking into the body), `validate`, and the renders: the dressed sheet, the
+   strips (body row and dressed row) and, for face things, `render_head` (front, profile, 30° and above).
+
 ## The crowd: VAT, not retargeting
 
 Zombies draw as one instanced VAT batch (`zombie_render.rs`), today a procedural 7-bone grey-box.
