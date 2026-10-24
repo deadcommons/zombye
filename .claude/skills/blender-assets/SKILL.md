@@ -49,9 +49,15 @@ furniture heights, characters, budgets). This skill is how to do the Blender par
    From a shell: `Blender --background --factory-startup --python tools/blender/build.py -- furniture/lamp`
    (`-- furniture` builds a whole category, `--check` validates only). It builds in the work folder.
 4. **Render and critique** `renders/<id>_iso.png`: the game's four angles (orthographic, 30° elevation, yaw
-   45° + 90°·k, as `camera.rs`) on floor tiles, the footprint lighter, a wall stub at the back. Does it read
-   from high up at game zoom? Silhouette, the one or two shapes that say what it is, contrast between parts.
-   `zasset.montage(files, out, cols, shrink)` tiles many sheets to review at once.
+   45° + 90°·k, as `camera.rs`) on floor tiles, the footprint lighter, a wall stub along the back, and on the
+   camera's left the scale figure (1.78 m) standing in a door frame (1 m × 2.1 m): that sheet is Gate 2's.
+   Does it read from high up at game zoom? Silhouette, the one or two shapes that say what it is, contrast
+   between parts, size against the figure and the door. **Gate 3:** `build.py -- --g3 furniture/lamp` adds
+   `renders/<id>_g3.png`, the sheet beside the asset's reference (the spec's `reference`, else the only image
+   in `refs/`) and the newest one or two sheets in the art repo's `style/approved/<category>/` (only read);
+   `--refs a.png,b.png` picks the images instead. `--out DIR` builds into a scratch folder (renders, `.blend`,
+   GLB), leaving the work folder as it is: for trying tooling changes. `zasset.montage(files, out, cols, shrink)`
+   tiles many sheets to review at once.
 5. **Edit, don't regenerate**: change the lines of the script that are wrong, rebuild, compare.
 6. **Validate** (every build does; nothing is exported on a failure): one mesh named after the spec,
    transform applied, pivot at the base, size within 2 cm of the spec, inside the footprint less the wall
@@ -79,7 +85,7 @@ furniture heights, characters, budgets). This skill is how to do the Blender par
   the spec the footprint the templates mostly use.
 - Names: asset id = file stem = the template's furniture kind; work folders kebab-case
   (`furniture-coffee-table`); materials `pal.<name>`; collections `Asset` (exported) and `Review` (floor,
-  wall stub, sun, camera; never exported).
+  wall stub, scale figure, door frame, sun, camera; never validated or exported).
 - Budgets: small props 100–400 triangles, furniture 400–1,000. Low-poly, flat-shaded, no textures
   (`texture: None`); UVs are box-projected at 1 m per UV unit for later tiling textures.
 - Style: follow [docs/art-direction.md](../../../docs/art-direction.md) (faceted, flat-shaded low-poly, 3–6

@@ -1,0 +1,85 @@
+// General store and hardware: groceries on one side (drinks coolers along the wall), tools and
+// supplies on the other, open to each other, each with its own front door and till; behind them
+// a stockroom with a loading door, a restroom and the office. One character per tile; "." is
+// outside. The bottom row is the front of the building and faces the street.
+// Openings are (x, y, side): side N/E/S/W of tile (x, y).
+BuildingTemplate(
+    id: "shop_general_hardware",
+    name: "General store and hardware",
+    kind: Shop,
+    roof: GableY,
+    rooms: {
+        'W': (name: "Stockroom", room_type: "hardware", floor: Concrete),
+        'b': (name: "Restroom", room_type: "bathroom", floor: TileFloor),
+        'O': (name: "Office", room_type: "office", floor: Wood),
+        'H': (name: "Back hall", room_type: "hall", floor: Concrete),
+        'G': (name: "General store", room_type: "shop", floor: TileFloor),
+        'R': (name: "Hardware", room_type: "hardware", floor: Concrete),
+    },
+    levels: [
+        (
+            layout: [
+                "WWWWWWWWWbbOOO",
+                "WWWWWWWWWbbOOO",
+                "WWWWWWWWWbbOOO",
+                "WWWWWWWWWHHOOO",
+                "GGGGGGGRRRRRRR",
+                "GGGGGGGRRRRRRR",
+                "GGGGGGGRRRRRRR",
+                "GGGGGGGRRRRRRR",
+                "GGGGGGGRRRRRRR",
+                "GGGGGGGRRRRRRR",
+                "GGGGGGGRRRRRRR",
+                "GGGGGGGRRRRRRR",
+                "GGGGGGGRRRRRRR",
+            ],
+            doors: [
+                (3, 12, S), // general store front door
+                (10, 12, S), // hardware front door
+                (4, 0, N), // loading door, from the stockroom
+                (2, 3, S), (3, 3, S), // stockroom double doors to the store
+                (8, 3, E), // stockroom to the back hall
+                (9, 3, N), // restroom
+                (10, 3, E), // office
+                (10, 3, S), // staff door to the hardware side
+            ],
+            arches: [(6, 5, E), (6, 6, E), (6, 10, E), (6, 11, E)],
+            windows: [
+                (1, 0, N), (5, 0, N),
+                (12, 0, N), (13, 1, E),
+                (0, 12, S), (1, 12, S), (4, 12, S), (5, 12, S),
+                (8, 12, S), (9, 12, S), (11, 12, S), (12, 12, S),
+                (0, 11, W), (13, 11, E),
+            ],
+            furniture: [
+                (kind: "shelf", at: (0, 0), size: (1, 2), facing: E),
+                (kind: "shelf", at: (0, 2), size: (1, 2), facing: E),
+                (kind: "shelf", at: (2, 0), size: (2, 1)),
+                (kind: "workbench", at: (6, 0), size: (2, 1)),
+                (kind: "shelf", at: (8, 0)),
+                (kind: "sink", at: (9, 0)),
+                (kind: "toilet", at: (10, 0)),
+                (kind: "shelf", at: (11, 0)),
+                (kind: "desk", at: (12, 1)),
+                // General store: drinks coolers, shelves, aisles and the till.
+                (kind: "fridge", at: (0, 4), facing: E),
+                (kind: "fridge", at: (0, 5), facing: E),
+                (kind: "fridge", at: (0, 6), facing: E),
+                (kind: "shelf", at: (0, 8), size: (1, 2), facing: E),
+                (kind: "shelf", at: (2, 6), size: (1, 2), facing: W),
+                (kind: "shelf", at: (3, 6), size: (1, 2), facing: E),
+                (kind: "shelf", at: (2, 9), size: (1, 2), facing: W),
+                (kind: "shelf", at: (3, 9), size: (1, 2), facing: E),
+                (kind: "desk", at: (5, 11), facing: W),
+                // Hardware: wall racks, an aisle and the till.
+                (kind: "shelf", at: (11, 4), size: (2, 1)),
+                (kind: "shelf", at: (13, 5), size: (1, 2), facing: W),
+                (kind: "shelf", at: (13, 8), size: (1, 2), facing: W),
+                (kind: "shelf", at: (9, 6), size: (1, 2), facing: W),
+                (kind: "shelf", at: (10, 6), size: (1, 2), facing: E),
+                (kind: "workbench", at: (9, 9), size: (2, 1)),
+                (kind: "desk", at: (8, 11), facing: E),
+            ],
+        ),
+    ],
+)
