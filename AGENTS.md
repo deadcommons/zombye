@@ -646,8 +646,8 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   record) replace them file for file in #78. Files are 16-bit PCM WAV (mono or stereo, 8-96 kHz; we decode them ourselves,
   `audio::parse_wav`). Every file has an ATTRIBUTION.md row and is used by a cue (a test checks both).
 - **What plays when** (client only, from the snapshots; nothing in the sim): footsteps from each player's movement, one per
-  stride by stance (sneak quiet), hard or soft by the floor, none while climbing or asleep; active zombies within 16 m
-  walking shuffle; groans per zombie every 2-5 s attacking or battering, 4-10 s walking, 8-22 s idle (staggered, so a crowd
+  stride by stance (sneak quiet), hard or soft by the floor, none while climbing or asleep; active zombies within 12 m
+  walking shuffle (a drag every 1.2 m); groans per zombie every 3-7 s attacking or battering, 7-15 s walking, 12-30 s idle (staggered, so a crowd
   doesn't groan together); door and window changes the server sends (`server_link::EdgeTransitionsThisFrame`, the edge
   before and after; a quickload's differences make none); a thump per battered door or window per frame (edge damage);
   combat events (hit sound by the attacker's weapon category, a kill adds a body falling, shoves once per player); a swing's
