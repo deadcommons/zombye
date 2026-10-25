@@ -60,6 +60,13 @@ AssetSpec(
          occupies: [Torso, Arms], hides: [Torso, Arms], tris: 800),
         (id: "glasses", item: Some("glasses"), kind: Rigid, socket: Some("eyes"), layer: None,
          occupies: [face], hides: [], tris: 100),
+        // Batch 1 of the wardrobe (#63): the everyday basics.
+        (id: "t_shirt", item: Some("t_shirt"), kind: Skinned, socket: None, layer: Some(Base),
+         occupies: [Torso], hides: [Torso], tris: 600),
+        (id: "jeans", item: Some("jeans"), kind: Skinned, socket: None, layer: Some(Base),
+         occupies: [Legs], hides: [Legs], tris: 700),
+        (id: "trainers", item: Some("trainers"), kind: Skinned, socket: None, layer: Some(Outer),
+         occupies: [Feet], hides: [Feet], tris: 400),
     ],
     style: "An ordinary, weary, slim man in his mid thirties from an early-1990s small American town: tired, haunted face, stubble, untidy brown hair, pale skin. The base body wears a plain fitted grey t-shirt, dark grey trousers and dark shoes; the look comes from garments on top (a hoodie, glasses: a nerd in a hoodie). Muted, slightly desaturated palette; flat colour areas; garments in palette colours.",
     description: "The modular survivor base body (players and survivors), with its first wearables: a hoodie (skinned, hood down) and glasses (rigid, on the eyes socket).",

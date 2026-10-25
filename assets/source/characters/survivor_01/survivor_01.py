@@ -1,6 +1,7 @@
 """survivor_01 clean-up and wearables: Meshy's rigged, animated GLB (raw/animations.glb) to our standard,
 plus Meshy's free run and walk (raw/running.glb, raw/walking.glb) on the same armature, then the
-wearables built in Blender over the body: a hoodie (skinned, hood down) and glasses (rigid, on the eyes socket).
+wearables built in Blender over the body: a hoodie (skinned, hood down), glasses (rigid, on the eyes socket),
+and the everyday basics: a t-shirt, jeans and trainers (skinned).
 
 Run by zombye's tools/blender/zgarment.py (`build.py -- <zombye-art>/characters/survivor-01`, which sees
 `wearables` in the spec), which then validates, renders and exports. Every number below is ours.
@@ -57,6 +58,26 @@ GLASSES_BAR, GLASSES_DEPTH, GLASSES_TEMPLE = 0.005, 0.005, 0.004
 GLASSES_STAND_OFF, GLASSES_WRAP, GLASSES_TEMPLE_END = 0.013, 0.006, 0.15
 GLASSES_END, GLASSES_TEMPLE_TUCK = 0.006, 0.003  # end pieces past the rims; temples into the hair
 
+# T-shirt: a faded red over the base layer's grey; sleeves to SLEEVE of the way down the upper arm.
+TSHIRT_COLOURS = ("cotton_red",)
+TSHIRT_EASE, TSHIRT_SLEEVE_EASE, TSHIRT_SLEEVE = 0.007, 0.010, 0.62
+TSHIRT_HEM_DROP = 0.03  # the hem hangs a little below where the base layer's shirt ends
+# Below TSHIRT_LOOSE_Z the shirt stands off by TSHIRT_HEM_EASE: worn out, over the jeans' waistband.
+TSHIRT_LOOSE_Z, TSHIRT_LOOSE_SPAN, TSHIRT_HEM_EASE = 1.08, 0.10, 0.024
+# Jeans: denim, a darker waistband, hems that fall over the top of the shoe, back pockets.
+JEANS_COLOURS = ("denim", "denim_dark")
+JEANS_EASE, JEANS_HEM_DROP, JEANS_HEM_OUT = 0.009, 0.025, 0.007
+# Snug at the waist like a real waistband: over the top JEANS_SNUG metres the ease goes down to
+# JEANS_TOP_EASE, so a shirt worn out over the jeans clears them in every pose (Gate 3 round 1:
+# "i can see the trousers poking through the bottom of his shirt").
+JEANS_SNUG, JEANS_TOP_EASE = 0.10, 0.003
+# The jeans above JEANS_HIPS_Z are tagged Torso (their `_region`): under a shirt or hoodie worn out over
+# them the game cuts them away above that garment's hem (its `hem_z`), so they can't show through it
+# whatever the pose (Gate 3 round 1).
+JEANS_HIPS_Z = 0.70
+# Trainers: off-white uppers, grey soles up to SOLE_Z.
+TRAINER_COLOURS = ("trainer_white", "plastic_grey")
+TRAINER_EASE, TRAINER_SOLE_Z = 0.008, 0.028
 
 
 def build(c):
@@ -163,7 +184,8 @@ def build(c):
     counts = g.region_groups(mesh, spec["regions"], split)
     c.note("regions (vertices): " + ", ".join(f"{r} {n}" for r, n in counts.items()))
 
-    made = [(make_hoodie(c, mesh, arm), "hoodie"), (make_glasses(c, mesh, arm), "glasses")]
+    made = [(make_hoodie(c, mesh, arm), "hoodie"), (make_glasses(c, mesh, arm), "glasses"),
+            (make_tshirt(c, mesh, arm), "t_shirt"), (make_jeans(c, mesh, arm), "jeans"), (make_trainers(c, mesh, arm), "trainers")]
     for o, _ in made:
         o.data.update()
 
@@ -358,7 +380,7 @@ def make_hoodie(c, body, arm):
     g.transfer_weights(body, shell, arm)
     shell["ai_generated"] = True  # its cover is the Meshy body's faces, eased out and reshaped
     shell["generator"] = "Blender (Dead Commons): shell over the Meshy-generated body; hood, pocket, strings from primitives"
-    shell["hem_z"] = HEM_Z  # the game cuts what's under it above this (trousers' tops)
+    shell["hem_z"] = HEM_Z  # the game cuts what's under it above this (the jeans' top)
     t = zchar.tris(shell)
     assert t <= budget, f"hoodie: {t} triangles over its budget {budget}"
     return shell
@@ -479,3 +501,192 @@ def make_glasses(c, body, arm):
     budget = next(x for x in g.wearables(spec) if x["id"] == "glasses")["tris"]
     assert zchar.tris(obj) <= budget, f"glasses: {zchar.tris(obj)} triangles over {budget}"
     return obj
+
+
+# ---------------------------------------------------------------- the everyday basics (#63, batch 1)
+
+def _shell(c, body, gid, regions, smooth=0.5):
+    """A garment's starting shell over `regions`, smoothed (not at its open edges); bmesh, its
+    `garment_part` layer (0: the cover) and the object."""
+    shell = g.shell_from_regions(body, regions, gid)
+    bm = bmesh.new()
+    bm.from_mesh(shell.data)
+    part = bm.faces.layers.int.new(g.PART_ATTRIBUTE)
+    for f in bm.faces:
+        f.material_index = 0
+    inner = [v for v in bm.verts if not v.is_boundary]
+    bmesh.ops.smooth_vert(bm, verts=inner, factor=smooth, use_axis_x=True, use_axis_y=True, use_axis_z=True)
+    bm.normal_update()
+    return shell, bm, part
+
+
+def _centre(loop):
+    return sum((v.co for v in loop), Vector()) / len(loop)
+
+
+def _level(loop, axis, value=None):
+    """Cuts an opening straight: every vertex of `loop` to one value along `axis` (0 x, 2 z; the
+    loop's mean by default), so a hem or cuff doesn't follow the body regions' ragged edge."""
+    if value is None:
+        value = sum(v.co[axis] for v in loop) / len(loop)
+    for v in loop:
+        v.co[axis] = value
+    return value
+
+
+def _hang(bm, loop, drop, out):
+    """A hem hanging straight down `drop` from a level `loop`, `out` further from its centre."""
+    c = _centre(loop)
+    def at(v):
+        d = Vector((v.co.x - c.x, v.co.y - c.y, 0.0))
+        d = d.normalized() if d.length > 1e-6 else Vector()
+        return v.co + d * out - Vector((0, 0, drop))
+    return g.lip(bm, loop, at)
+
+
+def _outward(bm, faces, centre_of):
+    """Turns each connected piece of `faces` to face away from `centre_of(face)`."""
+    bmesh.ops.recalc_face_normals(bm, faces=faces)
+    if sum(f.normal.dot(f.calc_center_median() - centre_of(f)) for f in faces) < 0:
+        bmesh.ops.reverse_faces(bm, faces=faces)
+
+
+def _finish(c, shell, bm, part, colours, gid, generator):
+    cover = set(bm.faces)
+    for f in bm.faces:
+        if f not in cover:
+            f[part] = 1
+    bm.to_mesh(shell.data)
+    bm.free()
+    g.palette_material(shell, *colours)
+    g.finish_garment(shell, c.spec["shading"])
+    g.transfer_weights(c.body, shell, c.arm)
+    shell["ai_generated"] = True  # its cover is the Meshy body's faces, eased out and reshaped
+    shell["generator"] = f"Blender (Dead Commons): shell over the Meshy-generated body; {generator}"
+    budget = next(x for x in g.wearables(c.spec) if x["id"] == gid)["tris"]
+    t = zchar.tris(shell)
+    assert t <= budget, f"{gid}: {t} triangles over its budget {budget}"
+    c.note(f"{gid}: {t} triangles (budget {budget})")
+    return shell
+
+
+def make_tshirt(c, body, arm):
+    """A plain crew-neck t-shirt: the torso and the upper arms to TSHIRT_SLEEVE of the way to the elbow,
+    eased off the body, a hem a little lower than the base layer's, the sleeves and neck closed onto the
+    body with a narrow band."""
+    c.body, c.arm = body, arm
+    gid = f"{c.spec['id']}_t_shirt"
+    bones = arm.data.bones
+    shoulder, elbow = bones["LeftArm"].head_local.x, bones["LeftForeArm"].head_local.x
+    sleeve_x = shoulder + TSHIRT_SLEEVE * (elbow - shoulder)
+    shell, bm, part = _shell(c, body, gid, {"Torso", "Arms"})
+    cut = [f for f in bm.faces if abs(f.calc_center_median().x) > sleeve_x]
+    bmesh.ops.delete(bm, geom=cut, context="FACES")
+    bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context="VERTS")
+    bm.normal_update()
+    for v in bm.verts:
+        if abs(v.co.x) > shoulder:
+            ease = TSHIRT_SLEEVE_EASE
+        else:
+            k = min(1.0, max(0.0, (TSHIRT_LOOSE_Z - v.co.z) / TSHIRT_LOOSE_SPAN))
+            ease = TSHIRT_EASE + (TSHIRT_HEM_EASE - TSHIRT_EASE) * k
+        v.co += v.normal * ease
+    bm.normal_update()
+    tree = g.surface_tree(body)
+    loops = g.boundary_loops(bm)
+    sleeves = [l for l in loops if abs(_centre(l).x) > shoulder]
+    rest = [l for l in loops if abs(_centre(l).x) <= shoulder]
+    assert len(sleeves) == 2 and len(rest) == 2, f"t-shirt shell: {len(loops)} open edge loops, expected neck, hem, two sleeves"
+    hem, neck = min(rest, key=lambda l: _centre(l).z), max(rest, key=lambda l: _centre(l).z)
+    _level(hem, 2, min(v.co.z for v in hem))
+    _hang(bm, hem, TSHIRT_HEM_DROP, 0.004)
+    for loop in sleeves:
+        _level(loop, 0, math.copysign(sleeve_x, _centre(loop).x))
+    hem_z = min(v.co.z for v in hem) - TSHIRT_HEM_DROP
+    g.lip(bm, neck, lambda v: g.nearest_on(tree, v.co, 0.003))
+    _outward(bm, list(bm.faces), lambda f: Vector((0, -0.03, f.calc_center_median().z)) if abs(f.calc_center_median().x) < shoulder
+             else Vector((f.calc_center_median().x, 0, bones["LeftArm"].head_local.z)))
+    shell = _finish(c, shell, bm, part, TSHIRT_COLOURS, "t_shirt", "plain crew-neck t-shirt")
+    shell["hem_z"] = round(hem_z, 4)  # the game cuts what's under it above this (the jeans' top)
+    return shell
+
+
+def make_jeans(c, body, arm):
+    """Straight jeans: the legs eased off the body, a darker waistband closed onto the waist, hems that
+    fall over the top of the shoe and back pockets."""
+    c.body, c.arm = body, arm
+    gid = f"{c.spec['id']}_jeans"
+    shell, bm, part = _shell(c, body, gid, {"Legs"})
+    top_z = max(v.co.z for v in bm.verts)
+    for v in bm.verts:
+        k = min(1.0, max(0.0, (v.co.z - (top_z - JEANS_SNUG)) / JEANS_SNUG))
+        v.co += v.normal * (JEANS_EASE + (JEANS_TOP_EASE - JEANS_EASE) * k)
+    bm.normal_update()
+    tree = g.surface_tree(body)
+    loops = g.boundary_loops(bm)
+    assert len(loops) == 3, f"jeans shell: {len(loops)} open edge loops, expected the waist and two ankles"
+    waist = max(loops, key=lambda l: _centre(l).z)
+    ankles = [l for l in loops if l is not waist]
+    # Hems: down over the top of the shoe, a little flared, then in onto the foot.
+    for loop in ankles:
+        _level(loop, 2, max(v.co.z for v in loop))
+        _hang(bm, loop, JEANS_HEM_DROP, JEANS_HEM_OUT)
+    # The waistband: the top cut level and darker.
+    _level(waist, 2, max(v.co.z for v in waist))
+    # Snug already (JEANS_TOP_EASE off the body): no band to close the gap.
+    cover = list(bm.faces)
+    _outward(bm, cover, lambda f: Vector((math.copysign(0.09, f.calc_center_median().x) if f.calc_center_median().z < 0.8 else 0, 0.0, f.calc_center_median().z)))
+    zt = max(v.co.z for v in waist)
+    for f in cover:
+        if f.calc_center_median().z > zt - 0.025:
+            f.material_index = 1
+    # Back pockets: raised patches on the seat (+Y is the back).
+    shell_tree = BVHTree.FromBMesh(bm)
+    pockets = []
+    for side in (-1, 1):
+        x0, x1 = side * 0.035, side * 0.135
+        zb, zp = zt - 0.20, zt - 0.07
+        outline = [(x0, zp), (x1, zp), (x1 * 0.97, zb + 0.02), ((x0 + x1) / 2, zb), (x0 * 1.1, zb + 0.02)]
+        rim = [g.on_surface(shell_tree, (x, 1.0, z), (0, -1, 0), lift=0.001) for x, z in outline]
+        top_ = [g.on_surface(shell_tree, (x, 1.0, z), (0, -1, 0), lift=0.005) for x, z in outline]
+        if any(p is None for p in rim + top_):
+            continue
+        rv = [bm.verts.new(p) for p in rim]
+        tv = [bm.verts.new(p) for p in top_]
+        faces = [bm.faces.new(tv)]
+        for i in range(len(rv)):
+            j = (i + 1) % len(rv)
+            faces.append(bm.faces.new((rv[i], rv[j], tv[j], tv[i])))
+        _outward(bm, faces, lambda f: Vector((f.calc_center_median().x, 0.0, f.calc_center_median().z)))
+        for f in faces:
+            f.material_index = 1
+            f[part] = 1
+        pockets += faces
+    shell = _finish(c, shell, bm, part, JEANS_COLOURS, "jeans", "waistband and back pockets from primitives")
+    torso, legs = g.REGIONS.index("Torso"), g.REGIONS.index("Legs")
+    attr = shell.data.attributes.new(g.REGION_ATTRIBUTE, "FLOAT", "POINT")
+    attr.data.foreach_set("value", [float(torso if v.co.z > JEANS_HIPS_Z else legs) for v in shell.data.vertices])
+    return shell
+
+
+def make_trainers(c, body, arm):
+    """Off-white trainers: the feet eased off the body, grey soles up to TRAINER_SOLE_Z, flat on the
+    ground, the collar closed onto the ankle."""
+    c.body, c.arm = body, arm
+    gid = f"{c.spec['id']}_trainers"
+    shell, bm, part = _shell(c, body, gid, {"Feet"}, smooth=0.3)
+    for v in bm.verts:
+        v.co += v.normal * TRAINER_EASE
+        v.co.z = max(v.co.z, 0.0)
+    bm.normal_update()
+    tree = g.surface_tree(body)
+    loops = g.boundary_loops(bm)
+    assert len(loops) == 2, f"trainers shell: {len(loops)} open edge loops, expected two collars"
+    for loop in loops:
+        _level(loop, 2)
+        g.lip(bm, loop, lambda v: g.nearest_on(tree, v.co, 0.003))
+    _outward(bm, list(bm.faces), lambda f: Vector((math.copysign(0.09, f.calc_center_median().x), -0.06, 0.05)))
+    for f in bm.faces:
+        if f.calc_center_median().z < TRAINER_SOLE_Z:
+            f.material_index = 1
+    return _finish(c, shell, bm, part, TRAINER_COLOURS, "trainers", "soles by height")
