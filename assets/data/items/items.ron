@@ -125,13 +125,13 @@
     (id: "glasses", name: "Glasses", category: Clothing, weight_kg: 0.03, volume_l: 0.1,
         clothing: Some((takes: [Face], layer: Base)), model: Some("glasses"), color: (0.05, 0.05, 0.06)),
     (id: "baseball_cap", name: "Baseball cap", category: Clothing, weight_kg: 0.1, volume_l: 0.5,
-        clothing: Some((covers: [Head], takes: [HeadTop], protection: 0.03, layer: Outer)), color: (0.55, 0.15, 0.12)),
+        clothing: Some((covers: [Head], takes: [HeadTop], protection: 0.03, layer: Outer)), model: Some("baseball_cap"), color: (0.48, 0.23, 0.2)),
     (id: "beanie", name: "Beanie", category: Clothing, weight_kg: 0.08, volume_l: 0.3, tags: ["rippable"],
-        clothing: Some((covers: [Head], takes: [HeadTop], protection: 0.04, layer: Outer)), color: (0.18, 0.2, 0.25)),
+        clothing: Some((covers: [Head], takes: [HeadTop], protection: 0.04, layer: Outer)), model: Some("beanie"), color: (0.21, 0.23, 0.26)),
     (id: "woolly_hat", name: "Woolly hat", category: Clothing, weight_kg: 0.12, volume_l: 0.5, tags: ["rippable"],
-        clothing: Some((covers: [Head], takes: [HeadTop], protection: 0.05, layer: Outer)), color: (0.6, 0.45, 0.25)),
+        clothing: Some((covers: [Head], takes: [HeadTop], protection: 0.05, layer: Outer)), model: Some("woolly_hat"), color: (0.6, 0.45, 0.26)),
     (id: "scarf", name: "Scarf", category: Clothing, weight_kg: 0.2, volume_l: 0.6, tags: ["rippable"],
-        clothing: Some((takes: [Neck], protection: 0.0, layer: Outer)), color: (0.5, 0.18, 0.15)),
+        clothing: Some((takes: [Neck], protection: 0.0, layer: Outer)), model: Some("scarf"), color: (0.42, 0.18, 0.17)),
 
     // ---- Bags ----------------------------------------------------------------------------------
     (id: "plastic_bag", name: "Plastic bag", category: Bag, weight_kg: 0.02, volume_l: 0.05, stack: 10,

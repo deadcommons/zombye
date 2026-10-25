@@ -91,6 +91,16 @@ BOOT_EASE, BOOT_SHAFT_EASE, BOOT_TOP, BOOT_SOLE_Z = 0.012, 0.024, 0.17, 0.035
 # Work gloves: a snug shell over the hands, a cuff over the wrist.
 GLOVE_COLOURS = ("glove_tan",)
 GLOVE_EASE, GLOVE_CUFF = 0.005, 0.04
+# Accessories. Hats: a crown cast onto the head (hair and all) and eased off it, down to a rim that
+# sits lower behind than in front (angles from the top of the head: front, sides, back), on the head_top
+# socket. The cap has a brim; the beanie and the woolly hat a turned-up cuff, the woolly hat a bobble.
+CAP_COLOURS, CAP_EASE, CAP_RIM = ("cap_red",), 0.014, (62.0, 82.0, 94.0)
+CAP_BRIM = 0.075  # how far the brim reaches out in front
+BEANIE_COLOURS, BEANIE_EASE, BEANIE_RIM = ("wool_charcoal",), 0.013, (66.0, 94.0, 104.0)
+WOOLLY_COLOURS, WOOLLY_EASE, WOOLLY_RIM = ("wool_ochre",), 0.016, (70.0, 100.0, 110.0)
+HAT_CUFF, BOBBLE = 0.03, 0.035
+# Scarf: wound round the base of the neck (a fat tube), one end hanging down the chest.
+SCARF_COLOURS, SCARF_RADIUS, SCARF_TAIL = ("wool_maroon",), 0.019, 0.26
 
 
 def build(c):
@@ -200,7 +210,9 @@ def build(c):
     made = [(make_hoodie(c, mesh, arm), "hoodie"), (make_glasses(c, mesh, arm), "glasses"),
             (make_tshirt(c, mesh, arm), "t_shirt"), (make_jeans(c, mesh, arm), "jeans"), (make_trainers(c, mesh, arm), "trainers"),
             (make_jumper(c, mesh, arm), "jumper"), (make_jacket(c, mesh, arm), "leather_jacket"),
-            (make_boots(c, mesh, arm), "work_boots"), (make_gloves(c, mesh, arm), "work_gloves")]
+            (make_boots(c, mesh, arm), "work_boots"), (make_gloves(c, mesh, arm), "work_gloves"),
+            (make_hat(c, mesh, arm, "baseball_cap"), "baseball_cap"), (make_hat(c, mesh, arm, "beanie"), "beanie"),
+            (make_hat(c, mesh, arm, "woolly_hat"), "woolly_hat"), (make_scarf(c, mesh, arm), "scarf")]
     for o, _ in made:
         o.data.update()
 
@@ -825,3 +837,140 @@ def make_gloves(c, body, arm):
         g.lip(bm, loop, lambda v: g.nearest_on(tree, v.co - Vector((side * GLOVE_CUFF, 0, 0)), 0.009))
     _outward(bm, list(bm.faces), lambda f: Vector((math.copysign(0.75, f.calc_center_median().x), 0.0, arm.data.bones["LeftHand"].head_local.z)))
     return _finish(c, shell, bm, part, GLOVE_COLOURS, "work_gloves", "gloves")
+
+
+# ---------------------------------------------------------------- accessories (#63)
+
+def _new_object(c, gid):
+    import zasset
+    obj = bpy.data.objects.new(f"{c.spec['id']}_{gid}", bpy.data.meshes.new(f"{c.spec['id']}_{gid}"))
+    zasset.collection(zasset.ASSET_COLLECTION).objects.link(obj)
+    return obj
+
+
+def make_hat(c, body, arm, gid):
+    """A hat on the head_top socket: a crown cast onto the head and eased off it, down to a rim lower
+    behind than in front; then the cap's brim, or the beanie's and woolly hat's cuff (and bobble)."""
+    spec = c.spec
+    colours, ease, (front, side, back) = {"baseball_cap": (CAP_COLOURS, CAP_EASE, CAP_RIM),
+                                          "beanie": (BEANIE_COLOURS, BEANIE_EASE, BEANIE_RIM),
+                                          "woolly_hat": (WOOLLY_COLOURS, WOOLLY_EASE, WOOLLY_RIM)}[gid]
+    tree = g.surface_tree(body)
+    crown = g.socket_matrix(arm, spec, "head_top").to_translation()
+    centre = crown - Vector((0.0, -0.01, 0.105))
+    rows, segs = 7, 16
+
+    def rim(phi):
+        cf = math.cos(phi)
+        return math.radians(side + (front - side) * max(0.0, cf) + (back - side) * max(0.0, -cf))
+
+    def on_head(theta, phi, extra=0.0):
+        d = Vector((math.sin(theta) * math.sin(phi), -math.sin(theta) * math.cos(phi), math.cos(theta)))
+        hit = g.on_surface(tree, centre + d * 0.4, -d)
+        p = hit if hit is not None and (hit - centre).dot(d) > 0 else centre + d * 0.1
+        return p + d * (ease + extra)
+
+    bm = bmesh.new()
+    part = bm.faces.layers.int.new(g.PART_ATTRIBUTE)
+    top = bm.verts.new(on_head(0.0, 0.0))
+    grid = [[bm.verts.new(on_head(rim(2 * math.pi * j / segs) * (i + 1) / rows, 2 * math.pi * j / segs)) for j in range(segs)] for i in range(rows)]
+    faces = [bm.faces.new((top, grid[0][j], grid[0][(j + 1) % segs])) for j in range(segs)]
+    for i in range(rows - 1):
+        for j in range(segs):
+            k = (j + 1) % segs
+            faces.append(bm.faces.new((grid[i][j], grid[i + 1][j], grid[i + 1][k], grid[i][k])))
+    edge = grid[-1]
+    if gid == "baseball_cap":
+        # The brim: out from the front of the rim (within 70° of straight ahead), tipped a little down.
+        front_js = [j for j in range(segs) if math.cos(2 * math.pi * j / segs) > math.cos(math.radians(70))]
+        front_js.sort(key=lambda j: ((2 * math.pi * j / segs + math.pi) % (2 * math.pi)))
+        tips = {}
+        for j in front_js:
+            phi = 2 * math.pi * j / segs
+            out = Vector((math.sin(phi) * 0.8, -math.cos(phi), -0.18)).normalized()
+            reach = CAP_BRIM * (0.55 + 0.45 * math.cos(phi))
+            tips[j] = bm.verts.new(edge[j].co + out * reach)
+        for a, b in zip(front_js, front_js[1:]):
+            faces.append(bm.faces.new((edge[a], tips[a], tips[b], edge[b])))
+    else:
+        # The cuff: a turned-up band hugging the crown above the rim, a few millimetres proud of it.
+        lift = HAT_CUFF / 0.1  # radians of crown the band covers (the head is about 10 cm round)
+        up = [bm.verts.new(on_head(rim(2 * math.pi * j / segs) - lift, 2 * math.pi * j / segs, 0.006)) for j in range(segs)]
+        down = [bm.verts.new(v.co + (v.co - centre).normalized() * 0.006) for v in edge]
+        for j in range(segs):
+            k = (j + 1) % segs
+            faces.append(bm.faces.new((down[j], down[k], up[k], up[j])))
+            faces.append(bm.faces.new((edge[j], edge[k], down[k], down[j])))
+        if gid == "woolly_hat":
+            # The bobble: a little ball on the top.
+            ball = bmesh.ops.create_icosphere(bm, subdivisions=1, radius=BOBBLE)["verts"]
+            for v in ball:
+                v.co += top.co + Vector((0, 0, BOBBLE * 0.7))
+            faces += list({f for v in ball for f in v.link_faces})
+    bmesh.ops.recalc_face_normals(bm, faces=faces)
+    for f in faces:
+        if f.normal.dot(f.calc_center_median() - centre) < 0:
+            f.normal_flip()
+    for f in bm.faces:
+        f[part] = 1  # an accessory: only checked for sinking into the head
+    obj = _new_object(c, gid)
+    bm.to_mesh(obj.data)
+    bm.free()
+    g.palette_material(obj, *colours)
+    g.finish_garment(obj, spec["shading"])
+    g.bind_to_socket(obj, arm, spec, "head_top")
+    obj["ai_generated"] = False
+    obj["generator"] = "Blender (Dead Commons), from primitives cast onto the head"
+    budget = next(x for x in g.wearables(spec) if x["id"] == gid)["tris"]
+    t = zchar.tris(obj)
+    assert t <= budget, f"{gid}: {t} triangles over {budget}"
+    c.note(f"{gid}: {t} triangles (budget {budget})")
+    return obj
+
+
+def make_scarf(c, body, arm):
+    """A scarf wound round the base of the neck (a fat tube following the neck's surface), one end
+    hanging down the chest; skinned, so it follows the neck and chest."""
+    spec = c.spec
+    c.body, c.arm = body, arm
+    tree = g.surface_tree(body)
+    neck = g.socket_matrix(arm, spec, "neck").to_translation()
+    centre = neck + Vector((0.0, 0.0, 0.03))
+    path, n = [], 12
+    for k in range(n + 1):
+        phi = 2 * math.pi * k / n
+        d = Vector((math.sin(phi), -math.cos(phi), 0.0))
+        hit = g.on_surface(tree, centre + d * 0.3, -d)
+        p = hit if hit is not None else centre + d * 0.07
+        path.append(p + d * (SCARF_RADIUS * 0.9))
+    bm = bmesh.new()
+    part = bm.faces.layers.int.new(g.PART_ATTRIBUTE)
+    faces = g.tube(bm, path, lambda i: SCARF_RADIUS, 6, 0)
+    # The tail: from the front of the loop down the chest, a flat band on the surface.
+    start = path[0]
+    rows = []
+    for k in range(6):
+        z = start.z - 0.02 - SCARF_TAIL * k / 5
+        x = start.x + 0.03 + 0.01 * k
+        p = g.on_surface(tree, (x, -1.0, z), (0, 1, 0), lift=0.014 + 0.003 * k)
+        if p is None:
+            break
+        rows.append((bm.verts.new(p + Vector((-0.035, 0, 0))), bm.verts.new(p + Vector((0.035, 0, 0)))))
+    tail = [bm.faces.new((rows[i][0], rows[i][1], rows[i + 1][1], rows[i + 1][0])) for i in range(len(rows) - 1)]
+    if sum(f.normal.y for f in tail) > 0:
+        bmesh.ops.reverse_faces(bm, faces=tail)
+    for f in bm.faces:
+        f[part] = 1
+    obj = _new_object(c, "scarf")
+    bm.to_mesh(obj.data)
+    bm.free()
+    g.palette_material(obj, *SCARF_COLOURS)
+    g.finish_garment(obj, spec["shading"])
+    g.transfer_weights(body, obj, arm)
+    obj["ai_generated"] = False
+    obj["generator"] = "Blender (Dead Commons), from primitives on the body"
+    budget = next(x for x in g.wearables(spec) if x["id"] == "scarf")["tris"]
+    t = zchar.tris(obj)
+    assert t <= budget, f"scarf: {t} triangles over {budget}"
+    c.note(f"scarf: {t} triangles (budget {budget})")
+    return obj

@@ -59,6 +59,10 @@ PALETTE = {
     "leather_brown": ("#3f2c22", 0.55, 0.0),  # a worn leather jacket
     "boot_brown": ("#5a4231", 0.7, 0.0),      # work boots' leather
     "glove_tan": ("#9a7a50", 0.85, 0.0),      # work gloves, suede
+    "cap_red": ("#7a3a32", 0.85, 0.0),        # a faded baseball cap
+    "wool_charcoal": ("#363a42", 0.95, 0.0),  # a beanie
+    "wool_ochre": ("#9a7342", 0.95, 0.0),     # a woolly hat
+    "wool_maroon": ("#6a2f2b", 0.95, 0.0),    # a scarf
 }
 
 
