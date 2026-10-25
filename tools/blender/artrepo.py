@@ -4,6 +4,7 @@ Plain Python (no Blender), so it runs from a shell:
     python3 tools/blender/artrepo.py start furniture/lamp     # make its work folder in the art repo
     python3 tools/blender/artrepo.py status [furniture/lamp]  # where each asset stands
     python3 tools/blender/artrepo.py promote furniture/lamp   # copy a ready asset into the game repo
+    python3 tools/blender/artrepo.py promote characters/survivor_01 --wearables hoodie,glasses   # only the approved wearables
     python3 tools/blender/artrepo.py record <commit> furniture/lamp   # after committing it there
 
 Work in progress lives in the private art repo (deadcommons/zombye-art, `$ZOMBYE_ART`, default
@@ -240,8 +241,9 @@ def character_row(model, source, name, extras):
             f"CC BY-NC-SA 4.0 | {ai} |")
 
 
-def promote_character(asset, force=False):
-    """A modular character: the body, its wearables, its source, and a row each."""
+def promote_character(asset, force=False, only=None):
+    """A modular character: the body, its wearables (only those named in `only`, when given: the
+    approved ones), its source, and a row each (an existing row is brought up to date)."""
     problems = check_ready(asset, force)
     a = art_paths(asset)
     if not a["wearables"].is_dir():
@@ -253,7 +255,9 @@ def promote_character(asset, force=False):
     src = g["script"].parent
     copies = [(a["spec"], g["spec"]), (a["script"], g["script"]), (a["blend"], g["blend"]), (a["sheet"], src / f"{ident}_ingame.png"), (a["glb"], g["glb"])]
     copies += [(t, src / t.name) for t in sorted(a["textures"].glob("*")) if t.is_file()]
-    wearables = sorted(a["wearables"].glob("*.glb"))
+    wearables = sorted(w for w in a["wearables"].glob("*.glb") if only is None or w.stem in only)
+    if only is not None and len(wearables) != len(only):
+        raise SystemExit(f"no wearables {sorted(set(only) - {w.stem for w in wearables})} in {a['wearables']}")
     copies += [(w, GAME / "assets" / "models" / "wearables" / w.name) for w in wearables]
     for frm, to in copies:
         to.parent.mkdir(parents=True, exist_ok=True)
@@ -265,18 +269,19 @@ def promote_character(asset, force=False):
     attribution = GAME / "ATTRIBUTION.md"
     text = attribution.read_text()
     for model, name, extras in rows:
-        if f"`{model}`" not in text:
-            text = text.rstrip("\n") + "\n" + character_row(model, source, name, extras) + "\n"
+        row = character_row(model, source, name, extras)
+        old = re.search(rf"(?m)^\| `{re.escape(model)}`.*$", text)
+        text = text.replace(old.group(0), row) if old else text.rstrip("\n") + "\n" + row + "\n"
     attribution.write_text(text)
     print(f"promoted {asset} into {GAME}:\n  " + "\n  ".join([str(to.relative_to(GAME)) for _, to in copies] + ["ATTRIBUTION.md"]))
     print(f"Commit those in the game repo (Refs the issue), then: python3 {Path(__file__).relative_to(GAME)} record <commit> {asset}")
 
 
-def promote(asset, force=False):
+def promote(asset, force=False, only=None):
     """Copies a ready asset into the game repo and adds its ATTRIBUTION.md row. Commit there, then
     run `record <commit>`."""
     if is_character(asset):
-        return promote_character(asset, force)
+        return promote_character(asset, force, only)
     problems = check_ready(asset, force)
     if problems:
         raise SystemExit(f"{asset} isn't ready to promote:\n  " + "\n  ".join(problems))
@@ -332,6 +337,11 @@ def status(assets):
 if __name__ == "__main__":
     args = sys.argv[1:]
     force = "--force" in args
+    only = None
+    if "--wearables" in args:
+        i = args.index("--wearables")
+        only = [w for w in args[i + 1].split(",") if w]
+        del args[i:i + 2]
     args = [a for a in args if a != "--force"]
     if not args:
         raise SystemExit(__doc__)
@@ -341,7 +351,7 @@ if __name__ == "__main__":
     elif cmd == "status":
         status([a for r in (rest or ["furniture"]) for a in (list_assets(r) if "/" not in r else [r])])
     elif cmd == "promote" and len(rest) == 1:
-        promote(rest[0], force)
+        promote(rest[0], force, only)
     elif cmd == "record" and len(rest) == 2:
         record(rest[0], rest[1])
     else:

@@ -21,7 +21,10 @@ AssetSpec(
     // walk); the free run and walk (raw/running.glb, raw/walking.glb) are merged onto its armature.
     source: "animations.glb",
     // walk = Meshy's in-place casual walk (one cycle of it); walk_alt = Meshy's free walk, kept to compare.
-    animations: ["idle", "walk", "run", "sneak", "walk_alt"],
+    // Directional (2026-10-25, "he needs strafe animations"): walk_left/right/back, sneak_left/right/back,
+    // run_back_left/right (Meshy library + text-to-motion; walk_right is walk_left mirrored).
+    animations: ["idle", "walk", "run", "sneak", "walk_alt", "walk_back", "walk_left", "walk_right",
+                 "sneak_back", "sneak_left", "sneak_right", "run_back_left", "run_back_right"],
     // Body regions, as the game's items::BodyPart: each body vertex belongs to the region of its
     // heaviest bone (vertex groups region_<Region>, and the `_region` vertex attribute in the GLB: the
     // index in Head, Torso, Arms, Hands, Legs, Feet). The hips' and thighs' vertices then go by the
@@ -55,7 +58,7 @@ AssetSpec(
     wearables: [
         (id: "hoodie", item: Some("hoodie"), kind: Skinned, socket: None, layer: Some(Mid),
          occupies: [Torso, Arms], hides: [Torso, Arms], tris: 800),
-        (id: "glasses", item: None, kind: Rigid, socket: Some("eyes"), layer: None,
+        (id: "glasses", item: Some("glasses"), kind: Rigid, socket: Some("eyes"), layer: None,
          occupies: [face], hides: [], tris: 100),
     ],
     style: "An ordinary, weary, slim man in his mid thirties from an early-1990s small American town: tired, haunted face, stubble, untidy brown hair, pale skin. The base body wears a plain fitted grey t-shirt, dark grey trousers and dark shoes; the look comes from garments on top (a hoodie, glasses: a nerd in a hoodie). Muted, slightly desaturated palette; flat colour areas; garments in palette colours.",

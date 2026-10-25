@@ -1,5 +1,5 @@
 """survivor_01 clean-up and wearables: Meshy's rigged, animated GLB (raw/animations.glb) to our standard,
-plus Meshy's free run and walk (raw/running.glb, raw/walking.glb) on the same armature, then the first
+plus Meshy's free run and walk (raw/running.glb, raw/walking.glb) on the same armature, then the
 wearables built in Blender over the body: a hoodie (skinned, hood down) and glasses (rigid, on the eyes socket).
 
 Run by zombye's tools/blender/zgarment.py (`build.py -- <zombye-art>/characters/survivor-01`, which sees
@@ -20,6 +20,17 @@ import zgarment as g
 # than the free walk); the free walk is kept as walk_alt for comparison.
 ACTIONS = {"Idle": "idle", "Casual_Walk_inplace": "walk", "Cautious_Crouch_Walk_Forward_inplace": "sneak"}
 EXTRA_CLIPS = [("running.glb", "run"), ("walking.glb", "walk_alt")]
+# Directional clips (the owner: "he needs strafe animations"): Meshy's library on the same rig (one file)
+# and a walk left from text-to-motion; walk right is walk left mirrored.
+DIRECTIONAL = ("directional.glb", {
+    "Walk_Backward_inplace": "walk_back",
+    "Cautious_Crouch_Walk_Backward_inplace": "sneak_back",
+    "Cautious_Crouch_Walk_Left_inplace": "sneak_left",
+    "Cautious_Crouch_Walk_Right_inplace": "sneak_right",
+    "BackLeft_run": "run_back_left",
+    "BackRight_Run": "run_back_right",
+})
+WALK_LEFT = ("walk_left.glb", "walk_left")
 
 # The hips' and thighs' vertices go by the colour under them: the shirt is light, the trousers dark.
 SHIRT_ABOVE, TROUSERS_BELOW = 0.42, 0.35
@@ -47,13 +58,16 @@ GLASSES_STAND_OFF, GLASSES_WRAP, GLASSES_TEMPLE_END = 0.013, 0.006, 0.15
 GLASSES_END, GLASSES_TEMPLE_TUCK = 0.006, 0.003  # end pieces past the rims; temples into the hair
 
 
+
 def build(c):
     c.extras = {
         "ai_generated": True,
-        "generator": "Meshy (Pro): nano-banana-pro image, meshy-t2.5 image-to-3D, auto-rig, animation; "
+        "generator": "Meshy (Pro): nano-banana-pro image, meshy-t2.5 image-to-3D, auto-rig, animation, text-to-motion; "
                      "cleaned in Blender; garments built in Blender over the body",
         "meshy_tasks": "image 01a16ce1-c617-761c-b4f2-2a283e4646f1, model 01a16ce2-f3ae-74b0-ac00-467749581ab6, "
-                       "rig 01a16ce5-1792-7245-b97e-9ca41b7aa2dd, animation 01a16ce5-b344-7075-9734-5fd40440002e",
+                       "rig 01a16ce5-1792-7245-b97e-9ca41b7aa2dd, animation 01a16ce5-b344-7075-9734-5fd40440002e, "
+                       "directional animation 01a174b0-b8b3-7104-8408-77c8982ab53a, "
+                       "text-to-motion 01a174b0-8d1f-7552-bdf8-8f82ecac98c4 (on the rig 01a174b0-d41a-73a5-8ec4-46a7c55e0e7c)",
         "author": "Dead Commons",
     }
     spec = c.spec
@@ -61,6 +75,16 @@ def build(c):
     actions = dict(ACTIONS)
     for file, name in EXTRA_CLIPS:
         g.merge_clip(arm, c.paths["raw"] / file, name)
+        actions[name] = name
+    directional = list(g.merge_clips(arm, c.paths["raw"] / DIRECTIONAL[0], DIRECTIONAL[1]))
+    g.merge_clip(arm, c.paths["raw"] / WALK_LEFT[0], WALK_LEFT[1])
+    g.mirror_clip(bpy.data.actions["walk_left"], "walk_right")
+    # Meshy's back-right run strides much shorter than its back-left (1.9 m a cycle against 2.7 m: it
+    # would patter at the game's speed): the back-left one mirrored instead, so the two match.
+    bpy.data.actions.remove(bpy.data.actions["run_back_right"])
+    g.mirror_clip(bpy.data.actions["run_back_left"], "run_back_right")
+    directional += ["walk_left", "walk_right"]
+    for name in directional:
         actions[name] = name
     c.to_asset_collection(arm, mesh)
 
@@ -79,6 +103,18 @@ def build(c):
         metres, speed = g.strip_root_motion(arm, bpy.data.actions[name])
         c.note(f"{name} (from {file}): travels {metres * 100:.1f} cm over the clip"
                + (" (already in place)" if metres < 0.01 else f", taken out ({speed:.2f} m/s)"))
+    # The directional clips: in place, one cycle each.
+    # Meshy's library clips are one cycle each; the text-to-motion walk holds a few (cut to one).
+    for name in directional:
+        a = bpy.data.actions[name]
+        metres, speed = g.strip_root_motion(arm, a)
+        if name.startswith("walk_") and name != "walk_back":
+            frames, err = g.one_cycle(arm, a)
+        else:
+            g.set_cyclic(a)
+            frames, err = a.frame_range[1] - a.frame_range[0], g.pose_error(arm, a, *a.frame_range)
+        c.note(f"{name}: " + ("in place" if metres < 0.01 else f"travel taken out ({speed:.2f} m/s)")
+               + f"; one cycle of {frames:.0f} frames (closes within {err * 100:.1f} cm)")
     frames, err = g.one_cycle(arm, bpy.data.actions["Casual_Walk_inplace"])
     c.note(f"walk = Meshy's in-place casual walk, cut to one cycle of {frames} frames "
            f"(it holds three; closes within {err * 100:.1f} cm)")
@@ -127,15 +163,14 @@ def build(c):
     counts = g.region_groups(mesh, spec["regions"], split)
     c.note("regions (vertices): " + ", ".join(f"{r} {n}" for r, n in counts.items()))
 
-    hoodie = make_hoodie(c, mesh, arm)
-    glasses = make_glasses(c, mesh, arm)
-    for o in (hoodie, glasses):
+    made = [(make_hoodie(c, mesh, arm), "hoodie"), (make_glasses(c, mesh, arm), "glasses")]
+    for o, _ in made:
         o.data.update()
 
     garments = {gm["id"]: gm for gm in g.wearables(spec)}
     clips = list(actions.values())
     c.poke_through = {}
-    for obj, gid in ((hoodie, "hoodie"), (glasses, "glasses")):
+    for obj, gid in made:
         c.poke_through[gid] = g.poke_through(mesh, obj, arm, clips, set(garments[gid].get("hides") or []))
         c.note(f"{obj.name}: {zchar.tris(obj)} triangles; poke-through, worst frame per clip: "
                + g.describe_poke(c.poke_through[gid]))
@@ -323,6 +358,7 @@ def make_hoodie(c, body, arm):
     g.transfer_weights(body, shell, arm)
     shell["ai_generated"] = True  # its cover is the Meshy body's faces, eased out and reshaped
     shell["generator"] = "Blender (Dead Commons): shell over the Meshy-generated body; hood, pocket, strings from primitives"
+    shell["hem_z"] = HEM_Z  # the game cuts what's under it above this (trousers' tops)
     t = zchar.tris(shell)
     assert t <= budget, f"hoodie: {t} triangles over its budget {budget}"
     return shell
