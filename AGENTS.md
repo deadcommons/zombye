@@ -115,7 +115,7 @@ prints `rendered PATH: WxH, N frames, N readbacks, MS ms` (plus a warning if it 
 or exits 1 with the reason on stderr. Prefer it to `--screenshot` for checking visuals: the windowed client pops up and
 steals focus. `ZOMBYE_FRAME_BENCH=N` then renders N more frames of the same picture, waiting for the GPU each frame, and
 prints `frame cost: M ms mean, W ms worst` (how frame costs in this file are measured: 1920x1080, 2,000 zombies, 120 frames). Not rendered: client-only effects that aren't in the save (blood splats, hit flashes).
-`--pose NAME[:U]` holds our survivor in one pose, for reviewing animation in offscreen pictures where nothing moves:
+`--pose NAME[:U]` holds every survivor in one pose, each the next step through it (players in a row make a strip), for reviewing animation in offscreen pictures where nothing moves:
 `walk`, `run`, `sneak` at `U` (0..1) of the locomotion cycle, `swing`, `shove`, `stomp` at `U` of the action (the blow
 lands at 0.45), `idle`, `dead`.
 `--map-chunks N` makes the map N × N chunks of 16 m (default 30, 480 m; 64 is about 1 km): the same town in the
@@ -793,14 +793,14 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   before promotion), else `assets/models/characters/survivor_01.glb`; `none`, or no file: the grey-box. Wearables: every
   GLB in `assets/models/wearables/`, then `wearables/` beside the body, by file name (an item's `model`).
   **Animation:** locomotion from the body's own clips, sampled on the same distance-driven cycle, each clip's stride
-  measured from its planted feet and its mean hip turn taken out (so it faces where the player faces); the grey-box's
+  measured from its planted feet after its legs are swung wider (`GAITS`: the walk is `walk_alt` x1.4, the run x1.25, so the game's brisk 3 and 5.5 m/s come at about 2.9 steps a second with the feet planted) and its mean hip turn taken out (so it faces where the player faces); the grey-box's
   poses carried over onto the skeleton for the rest (`Retarget`: each grey-box bone's turn from its rest put on the
   matching bones in the idle's first frame; the spine shares the torso's turn, the neck half the head's): the arm
   holding a weapon at the ready, swing / shove / stomp (timed as before), the flinch (additive) and the fall onto the
   back when dead or asleep; then grounded on the lowest foot vertex. `step_movement` and prediction are untouched.
   **Dressing:** `Snapshot::outfits` (`net::OutfitView`: worn items, the back and shoulder bags, by item index; every
   player, every snapshot) says what's drawn, for us and for others, changing the moment it does: the body with the
-  regions worn wearables hide cut away, and every worn model merged into one more mesh (both cached per outfit; a garment whose regions are all hidden by a model on a higher layer, a t-shirt under a hoodie, isn't drawn), so a
+  regions worn wearables hide cut away, and every worn model merged into one more mesh (both cached per outfit; a garment whose regions are all hidden by a model on a higher layer, a t-shirt under a hoodie, isn't drawn), and a worn model with a hem (`hem_z` in its extras: shirts, hoodies) cuts away, 3 cm above it, the faces other garments have in the regions it hides (a wearable can carry a `_REGION` per vertex: the jeans' top is Torso), so trousers never show through a shirt worn out over them, so a
   survivor is body + outfit + held weapon + ring draws. An item with no model is a grey-box: clothing tints the regions
   it covers (sampling a light texel of the shirt, so the colour shows), an accessory is a box on its socket, a bag a box
   on the back (or the left hip from the shoulder). The held weapon sits on `hand_r`. Players are told apart by a flat

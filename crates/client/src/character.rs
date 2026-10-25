@@ -165,6 +165,11 @@ impl SkinMesh {
 
     /// Adds `other`'s triangles.
     pub fn append(&mut self, other: &SkinMesh) {
+        self.append_where(other, |_| true);
+    }
+
+    /// Adds `other`'s triangles that `keep` (given their vertex indices in `other`).
+    pub fn append_where(&mut self, other: &SkinMesh, keep: impl Fn([u32; 3]) -> bool) {
         let base = self.positions.len() as u32;
         self.positions.extend_from_slice(&other.positions);
         self.normals.extend_from_slice(&other.normals);
@@ -172,7 +177,11 @@ impl SkinMesh {
         self.joints.extend_from_slice(&other.joints);
         self.weights.extend_from_slice(&other.weights);
         self.colors.extend_from_slice(&other.colors);
-        self.indices.extend(other.indices.iter().map(|i| i + base));
+        for t in other.indices.as_chunks::<3>().0 {
+            if keep(*t) {
+                self.indices.extend(t.iter().map(|i| i + base));
+            }
+        }
     }
 
     /// A box from `min` to `max` in a frame `frame` (rest-pose model space), all on bone `bone`.
@@ -246,6 +255,12 @@ pub struct Wearable {
     pub mesh: SkinMesh,
     /// Body regions hidden while it's worn.
     pub hides: Vec<BodyPart>,
+    /// Per vertex, the body region it lies over (its `_REGION`, an index in [`REGIONS`]), if it has one:
+    /// a part of it another garment worn over it can cut away (the jeans' top under a shirt).
+    pub regions: Option<Vec<u8>>,
+    /// Its hem's height in the rest pose (`hem_z`): another garment's faces in the regions this one
+    /// hides are cut away above it.
+    pub hem_z: Option<f32>,
 }
 
 type Doc = gltf::Gltf;
@@ -506,6 +521,7 @@ struct SocketSpec {
 #[derive(serde::Deserialize, Default)]
 struct WearableExtras {
     hides: Option<String>,
+    hem_z: Option<f32>,
 }
 
 /// Read a body GLB.
@@ -547,7 +563,7 @@ pub fn parse_wearable(bytes: &[u8], rig: &Rig) -> Result<Wearable, String> {
         let name = j.name().unwrap_or_default();
         map.push(rig.find(name).ok_or_else(|| format!("bone {name:?} isn't in the body's skeleton"))? as u16);
     }
-    let (mesh, _) = read_skinned(&doc, &node, &map)?;
+    let (mesh, regions) = read_skinned(&doc, &node, &map)?;
     let extras: WearableExtras = node.extras().as_ref().and_then(|e| serde_json::from_str(e.get()).ok()).unwrap_or_default();
     let hides = match extras.hides {
         Some(text) => {
@@ -556,7 +572,7 @@ pub fn parse_wearable(bytes: &[u8], rig: &Rig) -> Result<Wearable, String> {
         }
         None => Vec::new(),
     };
-    Ok(Wearable { mesh, hides })
+    Ok(Wearable { mesh, hides, regions, hem_z: extras.hem_z.filter(|h| h.is_finite()) })
 }
 
 #[cfg(test)]
