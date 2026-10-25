@@ -1,0 +1,62 @@
+---
+// A marked slot for a screenshot we don't have yet (the game is pre-alpha). Replace with an <Image> of the real
+// shot once there is one; `label` says what the picture should show.
+interface Props {
+	label: string;
+	ratio?: string;
+	dark?: boolean;
+}
+const { label, ratio = '16 / 9', dark = false } = Astro.props;
+---
+
+<div class:list={['shot', { dark }]} style={`aspect-ratio: ${ratio}`} role="img" aria-label={`Screenshot to come: ${label}`}>
+	<span class="badge">Screenshot to come</span>
+	<p>{label}</p>
+	<small>Zombye is pre-alpha: final pictures when the look is done.</small>
+</div>
+
+<style>
+	.shot {
+		position: relative;
+		width: 100%;
+		display: grid;
+		place-content: center;
+		gap: 8px;
+		padding: 24px;
+		text-align: center;
+		border: 2px dashed rgba(27, 25, 22, 0.35);
+		border-radius: 8px;
+		color: #4a443c;
+		background:
+			repeating-linear-gradient(30deg, transparent 0 22px, rgba(27, 25, 22, 0.05) 22px 23px),
+			repeating-linear-gradient(-30deg, transparent 0 22px, rgba(27, 25, 22, 0.05) 22px 23px),
+			#ebe2d0;
+	}
+	.shot.dark {
+		border-color: rgba(241, 233, 218, 0.25);
+		color: #cfc7b8;
+		background:
+			repeating-linear-gradient(30deg, transparent 0 22px, rgba(241, 233, 218, 0.05) 22px 23px),
+			repeating-linear-gradient(-30deg, transparent 0 22px, rgba(241, 233, 218, 0.05) 22px 23px),
+			#191c21;
+	}
+	.badge {
+		justify-self: center;
+		font-family: 'Anton', Impact, sans-serif;
+		text-transform: uppercase;
+		letter-spacing: 0.1em;
+		font-size: 0.8rem;
+		background: #b8322a;
+		color: #f1e9da;
+		padding: 4px 10px 2px;
+		transform: rotate(-1.5deg);
+	}
+	p {
+		margin: 0;
+		font-weight: 600;
+		max-width: 28em;
+	}
+	small {
+		opacity: 0.7;
+	}
+</style>

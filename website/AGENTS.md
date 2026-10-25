@@ -1,22 +1,12 @@
-## Development
+# AGENTS.md: the Zombye website
 
-When starting the dev server, use background mode:
+Astro Starlight site: the landing page is `src/pages/index.astro`, the docs are Markdown in `src/content/docs/docs/`
+(served under `/docs/`), and the sidebar is in `astro.config.mjs`. See [README.md](README.md) for commands.
 
-```
-astro dev --background
-```
+Rules:
 
-Manage the background server with `astro dev stop`, `astro dev status`, and `astro dev logs`.
-
-## Documentation
-
-Full documentation: https://docs.astro.build
-
-Consult these guides before working on related tasks:
-
-- [Adding pages, dynamic routes, or middleware](https://docs.astro.build/en/guides/routing/)
-- [Working with Astro components](https://docs.astro.build/en/basics/astro-components/)
-- [Using React, Vue, Svelte, or other framework components](https://docs.astro.build/en/guides/framework-components/)
-- [Adding or managing content](https://docs.astro.build/en/guides/content-collections/)
-- [Adding styles or using Tailwind](https://docs.astro.build/en/guides/styling/)
-- [Supporting multiple languages](https://docs.astro.build/en/guides/internationalization/)
+- The repo's own [AGENTS.md](../AGENTS.md) rules apply, including never naming other games.
+- Docs describe what the game does now. Check facts against the code, the data files' header comments and the MCP
+  server's own tool descriptions (`tools/list`) rather than memory; quote real tool output, never made-up output.
+- Change the docs in the same change as the game feature they describe.
+- Run `npm run build` before committing: broken links to docs pages and bad frontmatter fail the build.

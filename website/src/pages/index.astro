@@ -1,10 +1,8 @@
 ---
 import '@fontsource/anton/400.css';
 import '@fontsource-variable/inter';
-import { Image } from 'astro:assets';
-import siege from '../assets/shots/siege.png';
-import town from '../assets/shots/town.png';
-import night from '../assets/shots/night.png';
+import Skyline from '../components/Skyline.astro';
+import ShotPlaceholder from '../components/ShotPlaceholder.astro';
 import observe from '../assets/observe.txt?raw';
 
 const repo = 'https://github.com/deadcommons/zombye';
@@ -100,7 +98,7 @@ const milestones = [
 		</header>
 
 		<section class="hero">
-			<Image src={siege} alt="Five zombies batter the door of a house at dusk while a survivor with a bat comes up behind them" class="hero-img" widths={[800, 1600]} sizes="100vw" loading="eager" />
+			<Skyline class="hero-img" />
 			<div class="hero-shade"></div>
 			<div class="hero-text wrap">
 				<p class="tag">Pre-alpha · open source · free</p>
@@ -153,8 +151,7 @@ const milestones = [
 				<a class="more" href={docs('play/first-night')}>Your first night →</a>
 			</div>
 			<figure>
-				<Image src={night} alt="A survivor in the dark, lit by a flashlight, with zombies closing in" widths={[700, 1400]} sizes="(max-width: 900px) 100vw, 50vw" />
-				<figcaption>At night you see what your flashlight sees.</figcaption>
+				<ShotPlaceholder label="Night: zombies crowd round a bedroom window while the survivor inside holds a flashlight." ratio="4 / 3" />
 			</figure>
 		</section>
 
@@ -217,7 +214,7 @@ const milestones = [
 		</section>
 
 		<section class="town">
-			<Image src={town} alt="The town from above at dusk: houses, gardens, streets and the forest beyond" widths={[1000, 1600]} sizes="100vw" />
+			<div class="wrap town-shot"><ShotPlaceholder label="The town from above at dusk: main street, houses, gardens and the forest all round." ratio="21 / 9" dark /></div>
 			<p class="wrap caption">Every town is generated from a seed: a main street, a square, shops, cul-de-sacs and woods all round.</p>
 		</section>
 
@@ -620,10 +617,8 @@ const milestones = [
 	.town {
 		background: var(--night);
 	}
-	.town img {
-		width: 100%;
-		max-height: 720px;
-		object-fit: cover;
+	.town-shot {
+		padding-top: 40px;
 	}
 	.town .caption {
 		color: #cfc7b8;

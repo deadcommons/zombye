@@ -1,0 +1,110 @@
+---
+// The hero's backdrop: a small town at dusk with the forest behind it, drawn, not rendered from the game (the
+// game is pre-alpha and its look isn't final). Swap for a real screenshot once there is one worth showing.
+interface Props {
+	class?: string;
+}
+const { class: className } = Astro.props;
+---
+
+<svg class={className} viewBox="0 0 1600 900" preserveAspectRatio="xMidYMax slice" aria-hidden="true">
+	<defs>
+		<linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+			<stop offset="0" stop-color="#1a1d2b" />
+			<stop offset="0.45" stop-color="#4a2f3a" />
+			<stop offset="0.72" stop-color="#b25a35" />
+			<stop offset="0.86" stop-color="#e3a04a" />
+		</linearGradient>
+		<radialGradient id="sun" cx="0.5" cy="0.5" r="0.5">
+			<stop offset="0" stop-color="#ffd98a" />
+			<stop offset="0.35" stop-color="#f3a64a" stop-opacity="0.8" />
+			<stop offset="1" stop-color="#e3a04a" stop-opacity="0" />
+		</radialGradient>
+		<linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+			<stop offset="0" stop-color="#17140f" />
+			<stop offset="1" stop-color="#0c0b09" />
+		</linearGradient>
+		<g id="pine">
+			<path d="M0 0 L-16 34 L-8 34 L-22 64 L-10 64 L-28 98 L28 98 L10 64 L22 64 L8 34 L16 34 Z" />
+			<rect x="-3" y="98" width="6" height="12" />
+		</g>
+		<g id="shambler">
+			<!-- a zombie mid-shuffle: hunched, one arm reaching -->
+			<circle cx="6" cy="6" r="6" />
+			<path d="M2 12 L12 12 L16 34 L10 36 L12 60 L6 60 L4 40 L0 60 L-6 60 L-2 34 L-2 18 Z" />
+			<path d="M10 15 L32 22 L31 27 L9 22 Z" />
+			<path d="M0 16 L-8 34 L-4 35 L4 20 Z" />
+		</g>
+	</defs>
+
+	<rect width="1600" height="900" fill="url(#sky)" />
+	<circle cx="1120" cy="640" r="230" fill="url(#sun)" />
+	<circle cx="1120" cy="640" r="62" fill="#ffd98a" opacity="0.85" />
+
+	<!-- far forest -->
+	<g fill="#2a1f22" opacity="0.9">
+		{
+			Array.from({ length: 34 }, (_, i) => {
+				const x = i * 50 + ((i * 37) % 23);
+				const s = 0.8 + ((i * 53) % 7) / 10;
+				return <use href="#pine" transform={`translate(${x} ${600 - 98 * s}) scale(${s})`} />;
+			})
+		}
+	</g>
+
+	<!-- the town: gables, a shopfront, a water tower, a church -->
+	<g fill="#1c1714">
+		<path d="M0 760 V640 L70 590 L140 640 V760 Z" />
+		<path d="M150 760 V660 L230 610 L310 660 V760 Z" />
+		<rect x="320" y="600" width="170" height="160" />
+		<rect x="320" y="588" width="170" height="14" />
+		<path d="M505 760 V630 L560 590 L615 630 V760 Z" />
+		<rect x="560" y="520" width="14" height="74" />
+		<path d="M545 520 L567 470 L589 520 Z" />
+		<path d="M640 760 V650 L720 600 L800 650 V760 Z" />
+		<rect x="840" y="460" width="8" height="300" />
+		<rect x="900" y="460" width="8" height="300" />
+		<path d="M836 470 L912 470 L904 520 L844 520 Z" />
+		<path d="M826 470 Q874 420 922 470 Z" />
+		<path d="M930 760 V660 L1000 615 L1070 660 V760 Z" />
+		<path d="M1240 760 V650 L1310 605 L1380 650 V760 Z" />
+		<path d="M1390 760 V670 L1460 625 L1530 670 V760 Z" />
+		<rect x="1530" y="690" width="70" height="70" />
+	</g>
+	<!-- lit windows: someone's home, or was -->
+	<g fill="#f3b25a">
+		<rect x="42" y="672" width="16" height="20" opacity="0.9" />
+		<rect x="350" y="640" width="30" height="40" opacity="0.55" />
+		<rect x="700" y="676" width="16" height="22" opacity="0.8" />
+		<rect x="1450" y="690" width="14" height="18" opacity="0.4" />
+	</g>
+
+	<!-- near forest edge -->
+	<g fill="#120f0c">
+		{
+			[[1150, 1.5], [1195, 1.9], [1240, 1.3], [-10, 1.7], [40, 1.2], [1560, 2.1], [1600, 1.6]].map(([x, s]) => (
+				<use href="#pine" transform={`translate(${x} ${770 - 110 * s}) scale(${s})`} />
+			))
+		}
+	</g>
+
+	<!-- the street -->
+	<rect y="760" width="1600" height="140" fill="url(#ground)" />
+	<g fill="#3a2e22" opacity="0.7">
+		<rect x="80" y="822" width="90" height="5" />
+		<rect x="330" y="822" width="90" height="5" />
+		<rect x="580" y="822" width="90" height="5" />
+		<rect x="830" y="822" width="90" height="5" />
+		<rect x="1080" y="822" width="90" height="5" />
+		<rect x="1330" y="822" width="90" height="5" />
+	</g>
+
+	<!-- the dead, coming down the street -->
+	<g fill="#0a0908">
+		<use href="#shambler" transform="translate(1010 742) scale(1.2)" />
+		<use href="#shambler" transform="translate(1085 752) scale(1.35)" />
+		<use href="#shambler" transform="translate(1180 736) scale(1.05)" />
+		<use href="#shambler" transform="translate(1290 760) scale(1.5)" />
+		<use href="#shambler" transform="translate(1400 744) scale(1.15)" />
+	</g>
+</svg>

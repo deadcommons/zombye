@@ -1,0 +1,111 @@
+---
+// The path box on "Connect your agent": the visitor types where their zombye-server binary is, and every code
+// block on the page that shows the placeholder path shows theirs instead (text and copy button), plus one-click
+// install links for Cursor and VS Code. The path stays in this browser (localStorage), nowhere else.
+const PLACEHOLDER = '/path/to/zombye/target/release/zombye-server';
+---
+
+<div class="mcp-setup not-content">
+	<label for="zombye-path">Where is <code>zombye-server</code> on your machine?</label>
+	<input id="zombye-path" type="text" spellcheck="false" autocomplete="off" placeholder={PLACEHOLDER} />
+	<p class="hint">
+		In the repository, run <code>echo "$PWD/target/release/zombye-server"</code> and paste the result. Every snippet
+		below updates as you type. Nothing leaves your browser.
+	</p>
+	<div class="installs">
+		<a class="install" data-install="cursor" href="#">Add to Cursor</a>
+		<a class="install" data-install="vscode" href="#">Install in VS Code</a>
+	</div>
+</div>
+
+<script define:vars={{ PLACEHOLDER }}>
+	const ARGS = ['--mcp', '--zombies', '1000'];
+	const input = document.getElementById('zombye-path');
+	let current = PLACEHOLDER;
+
+	// Replace `from` with `to` in every code block's text and copy button.
+	function swap(from, to) {
+		if (from === to) return;
+		document.querySelectorAll('.expressive-code').forEach((block) => {
+			const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+			for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+				if (node.nodeValue.includes(from)) node.nodeValue = node.nodeValue.split(from).join(to);
+			}
+			block.querySelectorAll('[data-code]').forEach((button) => {
+				button.dataset.code = button.dataset.code.split(from).join(to);
+			});
+		});
+	}
+
+	function links(path) {
+		const cursor = btoa(JSON.stringify({ command: path, args: ARGS }));
+		const vscode = encodeURIComponent(JSON.stringify({ name: 'zombye', type: 'stdio', command: path, args: ARGS }));
+		document.querySelector('[data-install="cursor"]').href =
+			`cursor://anysphere.cursor-deeplink/mcp/install?name=zombye&config=${cursor}`;
+		document.querySelector('[data-install="vscode"]').href = `vscode:mcp/install?${vscode}`;
+	}
+
+	function update() {
+		const path = input.value.trim() || PLACEHOLDER;
+		swap(current, path);
+		current = path;
+		links(path);
+		try {
+			localStorage.setItem('zombye-server-path', input.value.trim());
+		} catch {}
+	}
+
+	try {
+		input.value = localStorage.getItem('zombye-server-path') || '';
+	} catch {}
+	input.addEventListener('input', update);
+	update();
+</script>
+
+<style>
+	.mcp-setup {
+		border: 1px solid var(--sl-color-gray-5);
+		border-left: 4px solid var(--sl-color-accent);
+		border-radius: 6px;
+		padding: 16px 18px;
+		margin: 1.5rem 0;
+		background: var(--sl-color-gray-7, var(--sl-color-gray-6));
+	}
+	label {
+		display: block;
+		font-weight: 600;
+		margin-bottom: 8px;
+	}
+	input {
+		width: 100%;
+		font: 0.9rem ui-monospace, 'SF Mono', Menlo, monospace;
+		padding: 9px 11px;
+		border-radius: 4px;
+		border: 1px solid var(--sl-color-gray-4);
+		background: var(--sl-color-black);
+		color: var(--sl-color-white);
+	}
+	.hint {
+		font-size: 0.85rem;
+		color: var(--sl-color-gray-3);
+		margin: 8px 0 12px;
+	}
+	.installs {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 10px;
+	}
+	.install {
+		display: inline-block;
+		padding: 7px 14px;
+		border-radius: 4px;
+		font-weight: 600;
+		font-size: 0.9rem;
+		text-decoration: none;
+		color: var(--sl-color-white);
+		border: 1.5px solid var(--sl-color-gray-4);
+	}
+	.install:hover {
+		border-color: var(--sl-color-accent);
+	}
+</style>
