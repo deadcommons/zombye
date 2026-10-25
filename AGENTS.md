@@ -719,13 +719,12 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   Zombies the fog of war hides cast none. Cost with 2,000 zombies round the player (1920x1080): no more than before
   (day 10.5-10.7 against 11.7-14.6 ms at 26 m; night with a flashlight 9.0-10.5 against 10.0-11.4 ms), the per-frame
   crowd lighting update it replaced having cost about as much as the extra shadow pass.
-- **Cutaways** (`materials.rs`, `world.wesl`, `world_render.rs`; #84): outdoors, a ground-floor wall drops to a 0.4 m
-  stub only when it covers the player (within 5.5 m in front, 1.6 m to either side). Indoors, only the walls that hide
-  part of your room drop: a wall piece is cut when the floor behind it on screen (5.5 m away from the camera, what a
-  3 m wall covers from 30° up) runs into the room's bounds (`inside_rect`, the box round the player's ground-floor
-  room), so its far walls and the rest of the building stand. Roofs and upper storeys never drop from outside: anything
-  above 3.05 m nearer the camera than the player opens a soft, dithered hole about 2.2 m round them on screen
-  (`hole_at`); a building's upper storeys and roof are hidden whole only while you're inside it. Door leaves and panes
+- **Cutaways** (`materials.rs`, `world.wesl`, `world_render.rs`; #84): a ground-floor wall piece drops to a 0.4 m stub
+  only when it hides something: the floor behind it on screen (5.5 m away from the camera, what a 3 m wall covers from
+  30° up) runs into the player's room (`inside_rect`, the box round the player's ground-floor room) indoors, or into the
+  0.6 m square the player stands in outdoors. So a room's far walls, the rest of its building and the facade you walk
+  along stand. Roofs and upper storeys never drop from outside: anything above 3.05 m nearer the camera than the player
+  opens a soft, dithered oval round the player's body on screen (2 m wide, feet to just over the head; `hole_at`); a building's upper storeys and roof are hidden whole only while you're inside it. Door leaves and panes
   follow the same wall rule on the CPU (`materials::wall_is_cut`). Cut walls still cast shadows.
 - **F3, the light preview** (`dev_time.rs`): a slider at the foot of the screen (drag, or hold `[` / `]`) for the hour the
   light is drawn at (sun, moon, ambient, grade, held light, crowd, sight range); the server's clock, zombies' senses and

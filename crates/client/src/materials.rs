@@ -132,20 +132,21 @@ fn behind_hits(p: Vec2, c: Vec2, lo: Vec2, hi: Vec2) -> bool {
     t0 <= t1
 }
 
+/// Half a side of the square the player stands in, for the outdoor wall rule (`BODY_HALF` in world.wesl).
+const BODY_HALF: f32 = 0.3;
+
 /// The shader's wall rule (`wall_cut` in world.wesl), for things drawn as separate entities (door
-/// leaves, window panes). Indoors (`room` = the player's room's bounds) a piece is cut only if it
-/// hides part of that room; outdoors only if it covers the player.
+/// leaves, window panes). A piece is cut only if the floor behind it on screen runs into the
+/// player's room (`room`, its bounds, indoors) or the square the player stands in (outdoors).
 pub fn wall_is_cut(mid: Vec2, player: Vec2, camera_dir: Vec3, room: Vec4) -> bool {
     let c = camera_dir.xz().normalize_or_zero();
-    if room.x <= room.z {
-        let (lo, hi) = (Vec2::new(room.x, room.y) + 0.03, Vec2::new(room.z, room.w) - 0.03);
-        let half = if (mid.x.fract() - 0.5).abs() < 0.25 { Vec2::new(0.45, 0.0) } else { Vec2::new(0.0, 0.45) };
-        return [mid, mid - half, mid + half].into_iter().any(|p| behind_hits(p, c, lo, hi));
-    }
-    let d = mid - player;
-    let along = d.dot(c);
-    let perp = (d - along * c).length();
-    along > 0.0 && along < WALL_REACH && perp < 1.6
+    let (lo, hi) = if room.x <= room.z {
+        (Vec2::new(room.x, room.y) + 0.03, Vec2::new(room.z, room.w) - 0.03)
+    } else {
+        (player - BODY_HALF, player + BODY_HALF)
+    };
+    let half = if (mid.x.fract() - 0.5).abs() < 0.25 { Vec2::new(0.45, 0.0) } else { Vec2::new(0.0, 0.45) };
+    [mid, mid - half, mid + half].into_iter().any(|p| behind_hits(p, c, lo, hi))
 }
 
 /// Bounds (min x, min z, max x, max z) of the ground-floor room containing `p`; min > max outdoors.
@@ -352,5 +353,27 @@ mod tests {
         assert!(!cut(20.5, 20.0));
         // Beside the room, not in front of it on screen.
         assert!(!cut(5.0, 11.5));
+    }
+
+    /// Outdoors, a wall drops only when it covers the player: the facade you walk along stands,
+    /// the one between you and the camera goes.
+    #[test]
+    fn outdoors_only_walls_covering_you_drop() {
+        let yaw = std::f32::consts::FRAC_PI_4;
+        let elev = 30f32.to_radians();
+        let cam = Vec3::new(yaw.sin() * elev.cos(), elev.sin(), yaw.cos() * elev.cos());
+        let outdoors = Vec4::new(1.0, 1.0, 0.0, 0.0);
+        // Walking along a facade at x = 20 on its camera side (the camera looks from +x, +z), half a
+        // metre off it: the wall is behind you, so none of it drops, the pieces level with you too.
+        let player = Vec2::new(20.5, 30.5);
+        let cut = |x: f32, z: f32| wall_is_cut(Vec2::new(x, z), player, cam, outdoors);
+        for z in [28.5, 29.5, 30.5, 31.5, 32.5] {
+            assert!(!cut(20.0, z), "facade piece at z {z} beside the player");
+        }
+        // A wall a metre or two between the player and the camera (south-east).
+        assert!(cut(21.5, 32.0));
+        // One behind the player, and one off to the side.
+        assert!(!cut(18.5, 28.0));
+        assert!(!cut(24.5, 27.0));
     }
 }
