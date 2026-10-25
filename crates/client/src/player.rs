@@ -1,14 +1,16 @@
 //! The local player: a survivor simulated on the server, predicted on the client.
 //!
-//! Every fixed tick the keys (WASD relative to the camera, Shift run, C toggles sneak) and the mouse
-//! facing become a numbered [`PlayerInput`]. It is sent to the server as [`Intent::PlayerInput`] and
+//! Every fixed tick the keys (WASD relative to the camera, Shift run, C toggles sneak, the right mouse
+//! held to aim) and the facing become a numbered [`PlayerInput`]. Not aiming, the survivor faces the
+//! way it walks; aiming (right mouse), it faces the mouse cursor and strafes or backs off, slower and
+//! unable to run, and only then can it attack, shove or stomp. It is sent to the server as [`Intent::PlayerInput`] and
 //! applied locally with the same [`step_movement`] the server runs (prediction). When a snapshot
 //! arrives, the server's state for our player replaces the prediction and the inputs the server hasn't
 //! applied yet are replayed on top (reconciliation). The body is drawn interpolated between the last
 //! two predicted states. Other players are drawn from snapshots, interpolated like zombies.
 //!
-//! Keys: WASD move, Shift run, C sneak, left mouse swing the weapon you hold (or punch), Space shove
-//! (or stomp, when a downed zombie lies right in front of you), E pick up the item you face (or, with
+//! Keys: WASD move, Shift run, C sneak, right mouse (held) aim, and while aiming left mouse swing the
+//! weapon you hold (or punch) and Space shove (or stomp, when a downed zombie lies right in front of you), E pick up the item you face (or, with
 //! nothing on the floor within reach, search the cupboard, drawer or fridge you face), Tab or I the
 //! inventory panel (`inventory_ui`; the left mouse button doesn't swing while it's open),
 //! F open/close the door or window you face, G smash the window you face, T skip an hour, Z spawn zombies, F1 god mode and F2 ignored by zombies (dev toggles, sent as
@@ -60,8 +62,10 @@ pub struct LocalPlayer {
     pub curr: PlayerState,
     /// Sneak is a toggle (C).
     pub sneak: bool,
-    /// Facing toward the mouse cursor (or chosen by `--autoplay`), sent with the next input.
+    /// Facing toward the mouse cursor (or chosen by `--autoplay`), sent with the next input while aiming.
     pub aim: f32,
+    /// Aiming: the right mouse held (not over an open panel), or `--autoplay`.
+    pub aiming: bool,
     last_snapshot_tick: u64,
     /// From the latest snapshot: health, dead, weapon held, action under way.
     pub hp: f32,
@@ -121,6 +125,7 @@ fn spawn_player(
         curr: state,
         sneak: options.sneak,
         aim: state.facing,
+        aiming: false,
         last_snapshot_tick: link.curr.tick,
         hp: 100.0,
         dead: false,
@@ -170,14 +175,25 @@ fn predict(
     if auto.active {
         (move_dir, run) = (auto.move_dir, auto.run);
     }
-    let input = PlayerInput { move_dir, facing: me.aim, run, sneak: me.sneak };
+    // Aiming, face the aim; otherwise the way we walk (standing still, as we were).
+    let facing = if me.aiming {
+        me.aim
+    } else if move_dir != Vec2::ZERO {
+        move_dir.y.atan2(move_dir.x)
+    } else {
+        me.curr.facing
+    };
+    if !me.aiming {
+        me.aim = facing;
+    }
+    let input = PlayerInput { move_dir, facing, run, sneak: me.sneak, aim: me.aiming };
     if me.dead {
         // The server ignores a dead player's input; nothing to predict.
         return;
     }
     me.seq += 1;
     let seq = me.seq;
-    link.send(Intent::PlayerInput { player: me.id, seq, move_dir: input.move_dir.to_array(), facing: input.facing, run, sneak: input.sneak });
+    link.send(Intent::PlayerInput { player: me.id, seq, move_dir: input.move_dir.to_array(), facing: input.facing, run, sneak: input.sneak, aim: input.aim });
 
     if me.pending.len() >= MAX_PENDING {
         me.pending.pop_front();
@@ -255,18 +271,32 @@ fn sync_other_players(
     }
 }
 
-/// Turn to face the point under the mouse cursor on the ground.
+/// Aiming (the right mouse held), turn to face the point under the mouse cursor on the ground;
+/// otherwise turn (smoothly) to the way we walk.
+#[allow(clippy::too_many_arguments)]
 fn face_cursor(
     windows: Query<&Window, With<PrimaryWindow>>,
     cams: Query<(&Camera, &GlobalTransform), With<IsoCamera>>,
     auto: Res<AutoInput>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    panel: Res<crate::inventory_ui::InventoryPanel>,
+    health: Res<crate::health_ui::HealthPanel>,
+    time: Res<Time>,
     mut players: Query<(&mut Player, &mut Transform)>,
     mut me: ResMut<LocalPlayer>,
 ) {
+    me.aiming = auto.active || (mouse.pressed(MouseButton::Right) && !panel.open && !health.open);
     if me.dead {
         return;
     }
     let Ok((mut player, mut tf)) = players.single_mut() else { return };
+    if !me.aiming {
+        let target = me.curr.facing;
+        let turn = (target - player.facing + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+        player.facing += turn * (1.0 - (-14.0 * time.delta_secs()).exp());
+        tf.rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - player.facing);
+        return;
+    }
     if auto.active {
         // `--autoplay` aims for us.
         player.facing = me.aim;
@@ -320,10 +350,11 @@ fn actions(
     if keys.just_pressed(KeyCode::KeyB) || (asleep && moving) {
         link.send(Intent::Sleep { player: me.id, sleep: !asleep });
     }
-    if mouse.just_pressed(MouseButton::Left) && !panel.open && !health.open && !preview.hovered {
+    // Fighting is for aiming (right mouse held); the server refuses it otherwise.
+    if me.aiming && mouse.just_pressed(MouseButton::Left) && !panel.open && !health.open && !preview.hovered {
         link.send(Intent::Attack { player: me.id });
     }
-    if keys.just_pressed(KeyCode::Space) {
+    if me.aiming && keys.just_pressed(KeyCode::Space) {
         // Stomp if a downed zombie lies right in front, else shove (the server decides what it hits).
         let c = &join.combat;
         let forward = Vec2::from_angle(me.aim);

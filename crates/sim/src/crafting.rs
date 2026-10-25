@@ -739,7 +739,7 @@ mod tests {
         assert_eq!(loaded.players, w.players);
         assert_eq!(loaded.state_hash(), w.state_hash());
         for t in 0..400u32 {
-            let input = PlayerInput { move_dir: Vec2::from_angle(t as f32 * 0.05), facing: t as f32 * 0.05, run: false, sneak: false };
+            let input = PlayerInput { move_dir: Vec2::from_angle(t as f32 * 0.05), facing: t as f32 * 0.05, run: false, sneak: false, aim: false };
             for world in [&mut w, &mut loaded] {
                 world.set_player_input(id, t + 1, input);
                 world.step();

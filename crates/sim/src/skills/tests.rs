@@ -80,7 +80,7 @@ fn hold(w: &mut World, id: u32, input: PlayerInput, ticks: u32) {
 }
 
 fn run_east() -> PlayerInput {
-    PlayerInput { move_dir: Vec2::X, facing: 0.0, run: true, sneak: false }
+    PlayerInput { move_dir: Vec2::X, facing: 0.0, run: true, sneak: false, aim: false }
 }
 
 /// Levels come from cumulative XP; a new survivor has Fitness and Strength 1; XP stops at the top.
@@ -270,7 +270,7 @@ fn weapon_levels_change_the_swing() {
 /// sneaking footsteps.
 #[test]
 fn sneaking_near_unaware_zombies_trains_stealth() {
-    let sneak = PlayerInput { move_dir: Vec2::Y, facing: PI / 2.0, run: false, sneak: true };
+    let sneak = PlayerInput { move_dir: Vec2::Y, facing: PI / 2.0, run: false, sneak: true, aim: false };
     let (mut w, id) = arena(6);
     hold(&mut w, id, sneak, 100);
     assert_eq!(xp(&w, id, Skill::Stealth), 0.0, "no zombie about");
@@ -416,7 +416,7 @@ fn skills_save_and_load_in_lockstep() {
     assert_eq!(loaded.players, w.players);
     assert_eq!(loaded.state_hash(), w.state_hash());
     for t in 0..400u32 {
-        let input = PlayerInput { move_dir: Vec2::from_angle(t as f32 * 0.03), facing: t as f32 * 0.03, run: t % 120 < 50, sneak: t % 120 > 80 };
+        let input = PlayerInput { move_dir: Vec2::from_angle(t as f32 * 0.03), facing: t as f32 * 0.03, run: t % 120 < 50, sneak: t % 120 > 80, aim: false };
         for world in [&mut w, &mut loaded] {
             world.set_player_input(id, t + 1, input);
             world.step();
@@ -448,7 +448,7 @@ fn skills_are_deterministic_and_hashed() {
         assert!(w.hold_item(id, Slot::Hand, "fire_axe"));
         w.spawn_zombies(6, Vec2::new(104.0, 100.5), 2.0);
         for t in 0..600u32 {
-            let input = PlayerInput { move_dir: Vec2::from_angle(t as f32 * 0.02) * 0.5, facing: 0.0, run: t % 200 < 60, sneak: t % 200 > 150 };
+            let input = PlayerInput { move_dir: Vec2::from_angle(t as f32 * 0.02) * 0.5, facing: 0.0, run: t % 200 < 60, sneak: t % 200 > 150, aim: false };
             w.set_player_input(id, t + 1, input);
             if t % 15 == 0 {
                 w.player_attack(id);

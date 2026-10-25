@@ -910,7 +910,7 @@ mod tests {
         w.make_noise(spawn, 120.0, true);
         for t in 0..60u32 {
             let seq = t + 1;
-            w.set_player_input(a, seq, crate::players::PlayerInput { move_dir: Vec2::from_angle(t as f32 * 0.1), facing: 0.0, run: false, sneak: false });
+            w.set_player_input(a, seq, crate::players::PlayerInput { move_dir: Vec2::from_angle(t as f32 * 0.1), facing: 0.0, run: false, sneak: false, aim: false });
             if t % 20 == 0 {
                 w.player_attack(a);
             }

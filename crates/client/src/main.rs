@@ -5,7 +5,7 @@
 //! in-process server. M2: the player is simulated by that server and predicted locally, and can
 //! fight (weapons found in houses, shoves, stomps) or flee.
 //!
-//! Controls: WASD move, Shift run, C sneak (toggle), mouse to face, left mouse attack, Space shove
+//! Controls: WASD move, Shift run, C sneak (toggle), right mouse (held) aim at the cursor, and aiming: left mouse attack, Space shove
 //! (or stomp a downed zombie in front), E pick up the item you face (or search the container you
 //! face), Tab or I the inventory panel, F open/close the door or window you
 //! face, G smash the window you face, T skip an hour, mouse wheel

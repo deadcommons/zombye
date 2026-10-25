@@ -1042,7 +1042,7 @@ mod tests {
         assert!(p.inventory.is_empty() && p.state.mods == w.config.skills.move_mods(1, crate::players::MoveMods::default()));
         // Dead: input is ignored and the zombies lose interest.
         let at = p.state.pos;
-        w.set_player_input(id, 1, PlayerInput { move_dir: Vec2::X, facing: 0.0, run: true, sneak: false });
+        w.set_player_input(id, 1, PlayerInput { move_dir: Vec2::X, facing: 0.0, run: true, sneak: false, aim: false });
         assert!(!w.player_attack(id));
         for _ in 0..40 {
             w.step();
@@ -1178,7 +1178,7 @@ mod tests {
             let mut kills = 0;
             for t in 0..20 * 30u32 {
                 let a = t as f32 * 0.07;
-                w.set_player_input(id, t + 1, PlayerInput { move_dir: Vec2::ZERO, facing: a, run: false, sneak: false });
+                w.set_player_input(id, t + 1, PlayerInput { move_dir: Vec2::ZERO, facing: a, run: false, sneak: false, aim: false });
                 match (t + offset) % 23 {
                     0 => _ = w.player_attack(id),
                     9 => _ = w.player_shove(id),
@@ -1324,7 +1324,7 @@ mod tests {
             for t in 0..20 * 10u32 {
                 if run {
                     let a = t as f32 * 0.3;
-                    w.set_player_input(id, t + 1, PlayerInput { move_dir: Vec2::from_angle(a), facing: PI, run: true, sneak: false });
+                    w.set_player_input(id, t + 1, PlayerInput { move_dir: Vec2::from_angle(a), facing: PI, run: true, sneak: false, aim: false });
                 }
                 w.step();
                 assert!(!ignored || w.attack_events.is_empty(), "struck an ignored player");
@@ -1375,7 +1375,7 @@ mod tests {
         let mut t = 0u32;
         while after(&w, id) == 0 {
             t += 1;
-            w.set_player_input(id, t, PlayerInput { move_dir: Vec2::from_angle(t as f32 * 0.2), facing: 0.0, run: false, sneak: false });
+            w.set_player_input(id, t, PlayerInput { move_dir: Vec2::from_angle(t as f32 * 0.2), facing: 0.0, run: false, sneak: false, aim: false });
             w.step();
             assert!(t < 20 * 20, "nobody noticed the player again in 20 s");
         }

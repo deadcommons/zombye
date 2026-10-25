@@ -202,7 +202,9 @@ fn tool_list() -> Value {
         {
             "name": "move_player",
             "description": "Drive a player: hold a movement input for some ticks (the world advances), then stop. \
-                Walk 3 m/s, run 5.5 m/s (drains endurance; needs some left), sneak 1.4 m/s. Faces the way it moves unless facing is given.",
+                Walk 3 m/s, run 5.5 m/s (drains endurance; needs some left), sneak 1.4 m/s. Faces the way it moves unless facing is given. \
+                aim: aiming (as the right mouse held): walks at 2.2 m/s, can't run, faces `facing`; only an aiming player attacks \
+                (attack, shove and stomp aim by themselves).",
             "inputSchema": {"type": "object", "properties": {
                 "player": {"type": "integer", "default": 1},
                 "direction": {"type": "string", "enum": ["n", "ne", "e", "se", "s", "sw", "w", "nw", "stop"], "description": "Compass direction; north is up (-y). Or give dx/dy."},
@@ -211,6 +213,7 @@ fn tool_list() -> Value {
                 "ticks": {"type": "integer", "minimum": 1, "maximum": MAX_MOVE_TICKS, "default": 20},
                 "run": {"type": "boolean", "default": false},
                 "sneak": {"type": "boolean", "default": false},
+                "aim": {"type": "boolean", "default": false},
                 "facing": {"type": "number", "description": "Facing in radians (0 = east, pi/2 = south)"}
             }}
         },
@@ -721,7 +724,8 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 None => Vec2::new(num("dx").unwrap_or(0.0) as f32, num("dy").unwrap_or(0.0) as f32).clamp_length_max(1.0),
             };
             let facing = num("facing").map(|f| f as f32).unwrap_or(if dir == Vec2::ZERO { start.facing } else { dir.y.atan2(dir.x) });
-            let (run, sneak) = (args.get("run").and_then(Value::as_bool).unwrap_or(false), args.get("sneak").and_then(Value::as_bool).unwrap_or(false));
+            let flag = |k: &str| args.get(k).and_then(Value::as_bool).unwrap_or(false);
+            let (run, sneak, aim) = (flag("run"), flag("sneak"), flag("aim"));
             let ticks = args.get("ticks").and_then(Value::as_u64).unwrap_or(20).clamp(1, MAX_MOVE_TICKS);
             let input = |world: &World, move_dir: Vec2| Intent::PlayerInput {
                 player: id,
@@ -730,6 +734,7 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 facing,
                 run,
                 sneak,
+                aim,
             };
             let mut attacks = Events::default();
             for _ in 0..ticks {
@@ -820,9 +825,9 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 }
                 None => num("facing").map(|f| f as f32),
             };
-            if let Some(facing) = facing {
-                apply_intent(world, &Intent::PlayerInput { player: id, seq: seq + 1, move_dir: [0.0, 0.0], facing, run: false, sneak });
-            }
+            // Only an aiming player fights: aim (and turn, if asked).
+            let facing = facing.unwrap_or(world.player(id).map_or(0.0, |p| p.state.facing));
+            apply_intent(world, &Intent::PlayerInput { player: id, seq: seq + 1, move_dir: [0.0, 0.0], facing, run: false, sneak, aim: true });
             let (intent, verb) = match name {
                 "attack" => (Intent::Attack { player: id }, format!("swung the {}", world.wielded(weapon).name.to_lowercase())),
                 "shove" => (Intent::Shove { player: id }, "shoved".to_string()),

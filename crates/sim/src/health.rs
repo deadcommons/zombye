@@ -1432,7 +1432,7 @@ mod tests {
             let mut s: PlayerState = me(w, id).state;
             let start = s.pos;
             for _ in 0..20 {
-                crate::players::step_movement(&w.map, &mut s, &PlayerInput { move_dir: Vec2::X, facing: 0.0, run, sneak: false }, TICK_DT);
+                crate::players::step_movement(&w.map, &mut s, &PlayerInput { move_dir: Vec2::X, facing: 0.0, run, sneak: false, aim: false }, TICK_DT);
             }
             (s.pos.distance(start), s.stance)
         };
@@ -1458,7 +1458,7 @@ mod tests {
         w.players[0].hp = 100.0;
         let mut predicted = me(&w, id).state;
         for t in 0..40u32 {
-            let input = PlayerInput { move_dir: Vec2::from_angle(t as f32 * 0.1), facing: 0.0, run: t % 3 == 0, sneak: false };
+            let input = PlayerInput { move_dir: Vec2::from_angle(t as f32 * 0.1), facing: 0.0, run: t % 3 == 0, sneak: false, aim: false };
             w.set_player_input(id, t + 1, input);
             crate::players::step_movement(&w.map, &mut predicted, &input, TICK_DT);
             w.step();
@@ -1694,7 +1694,7 @@ mod tests {
                 w.refresh_carry(0);
                 w.players[0].state.pos = Vec2::new(101.8, 100.5);
                 for t in 0..80u32 {
-                    w.set_player_input(id, k * 100 + t + 1, PlayerInput { move_dir: Vec2::X, facing: 0.0, run: false, sneak: false });
+                    w.set_player_input(id, k * 100 + t + 1, PlayerInput { move_dir: Vec2::X, facing: 0.0, run: false, sneak: false, aim: false });
                     w.step();
                 }
                 assert!(me(&w, id).state.pos.x > 103.5, "didn't get through");
@@ -1746,7 +1746,7 @@ mod tests {
         assert_eq!(loaded.players, w.players);
         assert_eq!(loaded.state_hash(), w.state_hash());
         for t in 0..600u32 {
-            let input = PlayerInput { move_dir: Vec2::from_angle(t as f32 * 0.05), facing: t as f32 * 0.05, run: t % 50 < 20, sneak: false };
+            let input = PlayerInput { move_dir: Vec2::from_angle(t as f32 * 0.05), facing: t as f32 * 0.05, run: t % 50 < 20, sneak: false, aim: false };
             for world in [&mut w, &mut loaded] {
                 world.set_player_input(id, t + 1, input);
                 world.step();

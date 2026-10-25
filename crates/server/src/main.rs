@@ -194,7 +194,7 @@ fn bench(config: WorldConfig, persist: &mut Persist, load_options: LoadOptions, 
         for (k, &id) in ids.iter().enumerate() {
             let dir = Vec2::from_angle(t as f32 * 0.01 + k as f32);
             let seq = world.player(id).map_or(1, |p| p.last_input_seq + 1);
-            world.set_player_input(id, seq, PlayerInput { move_dir: dir, facing: 0.0, run: true, sneak: false });
+            world.set_player_input(id, seq, PlayerInput { move_dir: dir, facing: 0.0, run: true, sneak: false, aim: false });
             if t % 200 == 0 {
                 world.emit_sound(world.player(id).expect("joined").state.pos, 60.0);
             }
@@ -264,7 +264,7 @@ fn bench(config: WorldConfig, persist: &mut Persist, load_options: LoadOptions, 
                     for (k, &id) in ids.iter().enumerate() {
                         let dir = Vec2::from_angle((ticks + t) as f32 * 0.01 + k as f32);
                         let seq = w.player(id).map_or(1, |p| p.last_input_seq + 1);
-                        w.set_player_input(id, seq, PlayerInput { move_dir: dir, facing: 0.0, run: true, sneak: false });
+                        w.set_player_input(id, seq, PlayerInput { move_dir: dir, facing: 0.0, run: true, sneak: false, aim: false });
                     }
                     w.step();
                 }

@@ -910,7 +910,7 @@ pub(crate) mod tests {
     /// Player input for tick `t` of a scripted run: wander about, run and sneak now and then.
     fn input(t: u32) -> PlayerInput {
         let a = t as f32 * 0.031;
-        PlayerInput { move_dir: Vec2::from_angle(a) * if t % 90 < 60 { 1.0 } else { 0.0 }, facing: a, run: t % 200 < 40, sneak: t % 200 > 170 }
+        PlayerInput { move_dir: Vec2::from_angle(a) * if t % 90 < 60 { 1.0 } else { 0.0 }, facing: a, run: t % 200 < 40, sneak: t % 200 > 170, aim: false }
     }
 
     /// Drive both worlds through the same inputs and intents for `ticks` ticks from tick `from`,

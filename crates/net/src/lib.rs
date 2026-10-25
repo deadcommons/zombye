@@ -22,8 +22,18 @@ use zombye_sim::{
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Intent {
     /// Movement input, sent every tick. The server keeps the newest (by `seq`, starting at 1) and
-    /// applies it once per tick. `move_dir` is a ground-plane vector of length ≤ 1 (clamped).
-    PlayerInput { player: u32, seq: u32, move_dir: [f32; 2], facing: f32, run: bool, sneak: bool },
+    /// applies it once per tick. `move_dir` is a ground-plane vector of length ≤ 1 (clamped). `aim`:
+    /// the right mouse held (slower, no running; only an aiming player can attack, shove or stomp).
+    PlayerInput {
+        player: u32,
+        seq: u32,
+        move_dir: [f32; 2],
+        facing: f32,
+        run: bool,
+        sneak: bool,
+        #[serde(default)]
+        aim: bool,
+    },
     /// Open or close the door or window the player faces, if it's within reach of the player's
     /// server position. Broken ones can't be shut.
     Interact { player: u32 },
@@ -140,6 +150,8 @@ pub struct PlayerView {
     pub health: HealthTags,
     /// Asleep (lying down; it doesn't move until it wakes).
     pub asleep: bool,
+    /// Aiming (the right mouse held): facing its aim, at the ready.
+    pub aiming: bool,
 }
 
 /// What a container holds, for whoever has it open.
@@ -354,6 +366,7 @@ impl Snapshot {
                 dev: p.dev,
                 health: if p.dead { HealthTags::default() } else { p.health.tags(&world.config.health) },
                 asleep: p.needs.asleep(),
+                aiming: p.input.aim && !p.dead,
             })
             .collect();
         let private = world.take_private_dirty().into_iter().filter_map(|id| PrivateView::of(world, id)).collect();
@@ -422,10 +435,12 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
         return;
     }
     match intent {
-        Intent::PlayerInput { player, seq, move_dir, facing, run, sneak } => {
-            let input = PlayerInput { move_dir: (*move_dir).into(), facing: *facing, run: *run, sneak: *sneak };
+        Intent::PlayerInput { player, seq, move_dir, facing, run, sneak, aim } => {
+            let input = PlayerInput { move_dir: (*move_dir).into(), facing: *facing, run: *run, sneak: *sneak, aim: *aim };
             world.set_player_input(*player, *seq, input);
         }
+        // Only an aiming player fights.
+        Intent::Attack { player } | Intent::Shove { player } | Intent::Stomp { player } if !world.aiming(*player) => {}
         Intent::Interact { player } => {
             world.player_interact(*player);
         }
@@ -635,6 +650,13 @@ mod tests {
         assert_eq!(mine.private[0].inventory.hand, Some(ItemStack::one(bat_item)));
         assert!(mine.item_notes.iter().any(|n| n.ok && n.text.contains("baseball bat")), "{:?}", mine.item_notes);
         assert!(server.tick().private.is_empty(), "sent again with nothing changed");
+        // Only an aiming player fights.
+        server.send(Intent::Attack { player: id });
+        let snap = server.tick();
+        assert_eq!(snap.players[0].action, None, "not aiming");
+        server.send(Intent::PlayerInput { player: id, seq: 1, move_dir: [0.0, 0.0], facing: me.facing, run: false, sneak: false, aim: true });
+        server.tick();
+        assert!(server.tick().players[0].aiming);
         server.send(Intent::Attack { player: id });
         let snap = server.tick();
         assert_eq!(snap.players[0].action, Some(ActionKind::Swing));
@@ -690,8 +712,8 @@ mod tests {
         for seq in 1..=200u32 {
             let a = seq as f32 * 0.07;
             let (move_dir, facing, run, sneak) = ([a.cos(), a.sin()], a, seq % 60 < 30, seq % 60 > 50);
-            server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run, sneak });
-            step_movement(&server.world.map, &mut predicted, &PlayerInput { move_dir: move_dir.into(), facing, run, sneak }, TICK_DT);
+            server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run, sneak, aim: false });
+            step_movement(&server.world.map, &mut predicted, &PlayerInput { move_dir: move_dir.into(), facing, run, sneak, aim: false }, TICK_DT);
             let snap = server.tick();
             let view = snap.players.iter().find(|p| p.id == id).unwrap();
             assert_eq!(view.last_input_seq, seq);
@@ -721,9 +743,9 @@ mod tests {
             let seq = t + 1;
             let a = t as f32 * 0.05;
             let (move_dir, facing) = ([a.cos(), a.sin()], a);
-            server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run: false, sneak: false });
+            server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run: false, sneak: false, aim: false });
             let mut predicted = last;
-            step_movement(&server.world.map, &mut predicted, &PlayerInput { move_dir: move_dir.into(), facing, run: false, sneak: false }, TICK_DT);
+            step_movement(&server.world.map, &mut predicted, &PlayerInput { move_dir: move_dir.into(), facing, run: false, sneak: false, aim: false }, TICK_DT);
             let snap = server.tick();
             let view = snap.players.iter().find(|p| p.id == id).unwrap();
             if t > 10 && t < 85 {
@@ -775,8 +797,8 @@ mod tests {
         let mut drive = |server: &mut LocalServer, client_map: &mut zombye_sim::TileMap, predicted: &mut zombye_sim::PlayerState, move_dir: [f32; 2], ticks: u32| {
             for _ in 0..ticks {
                 seq += 1;
-                server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run: false, sneak: false });
-                step_movement(client_map, predicted, &PlayerInput { move_dir: move_dir.into(), facing, run: false, sneak: false }, TICK_DT);
+                server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run: false, sneak: false, aim: false });
+                step_movement(client_map, predicted, &PlayerInput { move_dir: move_dir.into(), facing, run: false, sneak: false, aim: false }, TICK_DT);
                 let snap = server.tick();
                 for c in &snap.edge_changes {
                     client_map.set_owned_edge(c.tile, c.edge, c.kind);
@@ -899,7 +921,7 @@ mod tests {
         let intents = |seq: &mut u32, swing: bool| {
             *seq += 1;
             let t = *seq as f32 * 0.05;
-            let mut out = vec![Intent::PlayerInput { player: id, seq: *seq, move_dir: [t.cos(), t.sin()], facing: t, run: *seq % 50 < 20, sneak: false }];
+            let mut out = vec![Intent::PlayerInput { player: id, seq: *seq, move_dir: [t.cos(), t.sin()], facing: t, run: *seq % 50 < 20, sneak: false, aim: false }];
             if swing && seq.is_multiple_of(30) {
                 out.push(Intent::Attack { player: id });
             }
@@ -921,7 +943,7 @@ mod tests {
                 a.send(i.clone());
                 b.send(i.clone());
                 if let Intent::PlayerInput { move_dir, facing, run, sneak, .. } = i {
-                    step_movement(&b.world.map, &mut predicted, &PlayerInput { move_dir: (*move_dir).into(), facing: *facing, run: *run, sneak: *sneak }, TICK_DT);
+                    step_movement(&b.world.map, &mut predicted, &PlayerInput { move_dir: (*move_dir).into(), facing: *facing, run: *run, sneak: *sneak, aim: false }, TICK_DT);
                 }
             }
             let (sa, sb) = (a.tick(), b.tick());
@@ -953,14 +975,14 @@ mod tests {
             let a = t as f32 * 0.05;
             // Small circles, so the planks stay within reach.
             let (move_dir, facing, run) = ([a.cos() * 0.06, a.sin() * 0.06], a, t % 40 < 25);
-            server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run, sneak: false });
+            server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run, sneak: false, aim: false });
             if t % 15 == 0 {
                 let floor = server.world.floor_of(id);
                 if let Some(g) = floor.first() {
                     server.send(Intent::MoveItem { player: id, from: Place::Ground, index: g.id, to: Place::Carried, count: 0 });
                 }
             }
-            step_movement(&server.world.map, &mut predicted, &PlayerInput { move_dir: move_dir.into(), facing, run, sneak: false }, TICK_DT);
+            step_movement(&server.world.map, &mut predicted, &PlayerInput { move_dir: move_dir.into(), facing, run, sneak: false, aim: false }, TICK_DT);
             let snap = server.tick();
             let view = snap.players.iter().find(|p| p.id == id).unwrap();
             // (A job done at the end of the tick may have changed the modifiers for the next one.)
@@ -991,8 +1013,8 @@ mod tests {
         for seq in 1..=300u32 {
             let a = seq as f32 * 0.05;
             let (move_dir, facing, run) = ([a.cos(), a.sin()], a, seq % 40 < 25);
-            server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run, sneak: false });
-            step_movement(&server.world.map, &mut predicted, &PlayerInput { move_dir: move_dir.into(), facing, run, sneak: false }, TICK_DT);
+            server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run, sneak: false, aim: false });
+            step_movement(&server.world.map, &mut predicted, &PlayerInput { move_dir: move_dir.into(), facing, run, sneak: false, aim: false }, TICK_DT);
             let snap = server.tick();
             let view = snap.players.iter().find(|p| p.id == id).unwrap();
             assert_eq!(zombye_sim::PlayerState { mods: predicted.mods, ..view.state() }, predicted, "diverged at seq {seq}");
@@ -1065,7 +1087,7 @@ mod tests {
         let side = zombye_sim::map::Side::ALL.into_iter().max_by_key(|&s| (0..3).take_while(|&k| map.can_step(start + s.offset() * k, s)).count()).unwrap();
         let dir = side.offset().as_vec2();
         for seq in 1..=40u32 {
-            server.send(Intent::PlayerInput { player: id, seq, move_dir: [dir.x, dir.y], facing: 0.0, run: false, sneak: false });
+            server.send(Intent::PlayerInput { player: id, seq, move_dir: [dir.x, dir.y], facing: 0.0, run: false, sneak: false, aim: false });
             server.tick();
         }
         let snap = server.tick().for_player(id);
@@ -1110,8 +1132,8 @@ mod tests {
         for seq in 1..=360u32 {
             let a = seq as f32 * 0.05;
             let (move_dir, facing, run) = ([a.cos(), a.sin()], a, seq % 40 < 25);
-            server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run, sneak: false });
-            step_movement(&server.world.map, &mut predicted, &PlayerInput { move_dir: move_dir.into(), facing, run, sneak: false }, TICK_DT);
+            server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run, sneak: false, aim: false });
+            step_movement(&server.world.map, &mut predicted, &PlayerInput { move_dir: move_dir.into(), facing, run, sneak: false, aim: false }, TICK_DT);
             let snap = server.tick();
             let view = snap.players.iter().find(|p| p.id == id).unwrap();
             assert_eq!(zombye_sim::PlayerState { mods: predicted.mods, ..view.state() }, predicted, "diverged at seq {seq}");
@@ -1182,12 +1204,14 @@ mod tests {
         for seq in 1..=300u32 {
             let a = seq as f32 * 0.05;
             let (move_dir, facing, run) = ([a.cos(), a.sin()], a, seq % 40 < 25);
-            server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run, sneak: false });
+            // Aiming on the tick it swings (only an aiming player fights).
+            let aim = seq == 100;
+            server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run, sneak: false, aim });
             if seq == 100 {
                 // A swing of a 2.5 kg axe: Strength 2 on the spot.
                 server.send(Intent::Attack { player: id });
             }
-            step_movement(&server.world.map, &mut predicted, &PlayerInput { move_dir: move_dir.into(), facing, run, sneak: false }, TICK_DT);
+            step_movement(&server.world.map, &mut predicted, &PlayerInput { move_dir: move_dir.into(), facing, run, sneak: false, aim }, TICK_DT);
             let snap = server.tick();
             let view = snap.players.iter().find(|p| p.id == id).unwrap();
             if seq == 100 {
@@ -1256,7 +1280,7 @@ mod tests {
         let mut server = server();
         let id = server.join(None);
         let start = server.world.player(id).unwrap().state.pos;
-        server.send(Intent::PlayerInput { player: id, seq: 1, move_dir: [0.0, 100.0], facing: 0.0, run: false, sneak: false });
+        server.send(Intent::PlayerInput { player: id, seq: 1, move_dir: [0.0, 100.0], facing: 0.0, run: false, sneak: false, aim: false });
         server.tick();
         let moved = server.world.player(id).unwrap().state.pos.distance(start);
         assert!(moved <= zombye_sim::players::WALK_SPEED * TICK_DT + 1e-4, "moved {moved} m in one tick");

@@ -93,7 +93,7 @@ fn needs_rise_over_a_game_day_and_with_skip_time() {
     let (mut r, _) = arena(1);
     for k in 0..ticks_per_hour(&r) {
         // Back and forth, never winded for long.
-        let input = PlayerInput { move_dir: Vec2::from_angle(k as f32 * 0.01), facing: 0.0, run: true, sneak: false };
+        let input = PlayerInput { move_dir: Vec2::from_angle(k as f32 * 0.01), facing: 0.0, run: true, sneak: false, aim: false };
         r.set_player_input(id, k + 1, input);
         r.step();
     }
@@ -391,7 +391,7 @@ fn needs_save_and_load_in_lockstep() {
             w.wake_player(id);
             loaded.wake_player(id);
         }
-        let input = PlayerInput { move_dir: Vec2::from_angle(t as f32 * 0.05) * (t % 3) as f32 * 0.5, facing: t as f32 * 0.05, run: t % 50 < 20, sneak: false };
+        let input = PlayerInput { move_dir: Vec2::from_angle(t as f32 * 0.05) * (t % 3) as f32 * 0.5, facing: t as f32 * 0.05, run: t % 50 < 20, sneak: false, aim: false };
         for world in [&mut w, &mut loaded] {
             world.set_player_input(id, t + 1, input);
             world.step();

@@ -27,6 +27,8 @@ pub const PLAYER_RADIUS: f32 = 0.3;
 pub const WALK_SPEED: f32 = 3.0;
 pub const RUN_SPEED: f32 = 5.5;
 pub const SNEAK_SPEED: f32 = 1.4;
+/// Walking while aiming (right mouse held): slower and steadier, facing the aim; no running.
+pub const AIM_SPEED: f32 = 2.2;
 /// Top speed while climbing through an open or broken window (whatever the stance). Crossing the
 /// opening takes about a second.
 pub const CLIMB_SPEED: f32 = 0.7;
@@ -59,6 +61,11 @@ pub struct PlayerInput {
     pub facing: f32,
     pub run: bool,
     pub sneak: bool,
+    /// Aiming (the right mouse held): walks at [`AIM_SPEED`] (sneaking stays as slow), can't run, and
+    /// only an aiming player attacks (the server's intents check it). Not saved (a loaded world's
+    /// players aren't aiming until their next input).
+    #[serde(skip)]
+    pub aim: bool,
 }
 
 impl PlayerInput {
@@ -232,7 +239,7 @@ pub fn step_movement(map: &TileMap, state: &mut PlayerState, input: &PlayerInput
     let mods = state.mods;
     let can_run = mods.can_run && !state.winded && state.endurance > RUN_MIN_ENDURANCE;
     // Running beats sneaking: holding run while sneak is toggled on means "get out of here".
-    state.stance = if input.run && moving && can_run {
+    state.stance = if input.run && moving && can_run && !input.aim {
         Stance::Run
     } else if input.sneak {
         Stance::Sneak
@@ -257,6 +264,7 @@ pub fn step_movement(map: &TileMap, state: &mut PlayerState, input: &PlayerInput
     let mut speed = mods.speed
         * match state.stance {
             Stance::Run => RUN_SPEED * mods.run_speed,
+            Stance::Walk if input.aim => AIM_SPEED,
             Stance::Walk => WALK_SPEED,
             Stance::Sneak => SNEAK_SPEED,
         };
@@ -297,7 +305,7 @@ mod tests {
     }
 
     fn run_east() -> PlayerInput {
-        PlayerInput { move_dir: Vec2::X, facing: 0.0, run: true, sneak: false }
+        PlayerInput { move_dir: Vec2::X, facing: 0.0, run: true, sneak: false, aim: false }
     }
 
     #[test]
@@ -317,6 +325,24 @@ mod tests {
                 assert!(s.pos.x < 16.0, "crossed the wall diagonally (run {run}, dt {dt}): {}", s.pos);
             }
         }
+    }
+
+    /// Aiming walks slower, can't run (the run key is ignored), and sneaking stays as slow.
+    #[test]
+    fn aiming_is_slower_and_never_runs() {
+        let map = TileMap::new(4, 1);
+        let start = Vec2::new(5.5, 8.5);
+        let one_second = |input: PlayerInput| {
+            let mut s = PlayerState::new(start);
+            for _ in 0..20 {
+                step_movement(&map, &mut s, &input, TICK_DT);
+            }
+            (s.pos.distance(start), s.stance)
+        };
+        let (d, stance) = one_second(PlayerInput { aim: true, ..run_east() });
+        assert!((d - AIM_SPEED).abs() < 0.01 && stance == Stance::Walk, "aiming with run held: {d} {stance:?}");
+        let (d, stance) = one_second(PlayerInput { aim: true, run: false, sneak: true, ..run_east() });
+        assert!((d - SNEAK_SPEED).abs() < 0.01 && stance == Stance::Sneak, "aiming sneak: {d}");
     }
 
     #[test]

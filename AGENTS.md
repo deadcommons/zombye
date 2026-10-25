@@ -115,7 +115,7 @@ prints `rendered PATH: WxH, N frames, N readbacks, MS ms` (plus a warning if it 
 or exits 1 with the reason on stderr. Prefer it to `--screenshot` for checking visuals: the windowed client pops up and
 steals focus. `ZOMBYE_FRAME_BENCH=N` then renders N more frames of the same picture, waiting for the GPU each frame, and
 prints `frame cost: M ms mean, W ms worst` (how frame costs in this file are measured: 1920x1080, 2,000 zombies, 120 frames). Not rendered: client-only effects that aren't in the save (blood splats, hit flashes).
-`--pose NAME[:U]` holds every survivor in one pose, each the next step through it (players in a row make a strip), for reviewing animation in offscreen pictures where nothing moves:
+`--pose NAME[@DEG][+aim][:U]` (`@DEG` moving that many degrees off the aim, `+aim` aiming) holds every survivor in one pose, each the next step through it (players in a row make a strip), for reviewing animation in offscreen pictures where nothing moves:
 `walk`, `run`, `sneak` at `U` (0..1) of the locomotion cycle, `swing`, `shove`, `stomp` at `U` of the action (the blow
 lands at 0.45), `idle`, `dead`.
 `--map-chunks N` makes the map N × N chunks of 16 m (default 30, 480 m; 64 is about 1 km): the same town in the
@@ -136,8 +136,9 @@ console; a second Ctrl-C stops at once, unsaved; bench: at the end of the run).
 `--saves DIR` is the folder for named saves (MCP `save`/`load`/`saves`; default the `--save` file's folder, else `saves`).
 The client prints one stats line per second to stdout (time, room, stance, hp, endurance, fps, frame ms, zombies
 sent to it, chasing, zombies per tier active/near/virtual, sim tick ms, and the sounds started that second: `sounds 9 (Groan 4, FootstepHard 3, ...)` or `sound off`).
-In game: WASD move, Shift run, C sneak (toggle), mouse to face, left mouse attack (swing your weapon, or
-punch), Space shove (or stomp, when a downed zombie lies right in front of you), E pick up the item you
+In game: WASD move (he faces the way he walks), Shift run, C sneak (toggle), right mouse held: aim (he faces the
+cursor and strafes or backs off at 2.2 m/s, no running, in a guard stance), and only while aiming left mouse attack
+(swing your weapon, or punch) and Space shove (or stomp, when a downed zombie lies right in front of you), E pick up the item you
 face (with nothing on the floor within reach: search the container you face), Tab or I the inventory panel, K the skills panel, F open/close the door or window you face, G smash the window you face, dead: R a new run and Q or Esc quit,
 B sleep (B again or WASD to get up), T skip an hour, Z spawn zombies, wheel zoom, F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), F3 the light preview (a time-of-day slider, see Light and mood), M mute. Walk into an open or broken window to climb
 through it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
@@ -261,7 +262,9 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   player carries changes movement through `PlayerState::mods` (`MoveMods`: speed, run drain, regen, can run,
   can climb), which the server sets from the load (`World::refresh_carry`) and snapshots carry (`PlayerView::mods`),
   so prediction with the snapshot's modifiers stays exact (Fitness, #46, goes there too).
-- `Intent`s (`crates/net`): `PlayerInput { player, seq, move_dir, facing, run, sneak }` every tick
+- `Intent`s (`crates/net`): `PlayerInput { player, seq, move_dir, facing, run, sneak, aim }` every tick (`aim`: the
+  right mouse held; `step_movement` walks an aiming player at `AIM_SPEED` 2.2 m/s with no running, `PlayerView::aiming`
+  says so, and the server takes `Attack`, `Shove` and `Stomp` only from an aiming player; not saved)
   (the server keeps the newest by `seq` and applies it once per tick; `move_dir` is clamped to
   length 1), `Interact { player }` (opens or closes the door or window that player faces, within
   1.6 m of its server position, otherwise ignored; doors make `door_noise`, windows the quieter

@@ -1186,7 +1186,7 @@ mod tests {
             if t == 21 {
                 assert_eq!(me(&w, id).state.mods.speed, 0.0, "standing still from the tick after");
             }
-            let input = PlayerInput { move_dir: Vec2::from_angle(t as f32 * 0.03), facing: 0.0, run: t % 7 == 0, sneak: false };
+            let input = PlayerInput { move_dir: Vec2::from_angle(t as f32 * 0.03), facing: 0.0, run: t % 7 == 0, sneak: false, aim: false };
             let mut predicted: PlayerState = me(&w, id).state;
             crate::players::step_movement(&w.map, &mut predicted, &input, TICK_DT);
             let before = me(&w, id).state.pos;
@@ -1232,7 +1232,7 @@ mod tests {
         assert_eq!(loaded.state_hash(), w.state_hash());
         assert_eq!(loaded.player(id).unwrap().state.mods, me(&w, id).state.mods, "still standing still after loading");
         for t in 0..400u32 {
-            let input = PlayerInput { move_dir: Vec2::from_angle(t as f32 * 0.05), facing: t as f32 * 0.05, run: false, sneak: false };
+            let input = PlayerInput { move_dir: Vec2::from_angle(t as f32 * 0.05), facing: t as f32 * 0.05, run: false, sneak: false, aim: false };
             for world in [&mut w, &mut loaded] {
                 world.set_player_input(id, t + 1, input);
                 world.step();

@@ -586,6 +586,10 @@ impl SurvivorModel {
             let held = self.retarget.apply(body, &survivor::locomotion(a, armed));
             pose.blend_bones(&held, 1.0, Some(&self.right_arm));
         }
+        if a.aim_w > 0.0 {
+            // Aiming: the guard over the upper body.
+            pose.blend_bones(&self.retarget.apply(body, &survivor::guard(style, armed)), a.aim_w, Some(&self.upper));
+        }
         if let Some((act, whole, w)) = survivor::action_now(a, now, style, armed) {
             pose.blend_bones(&self.retarget.apply(body, &act), w, Some(if whole { &self.all } else { &self.upper }));
         }

@@ -1369,7 +1369,7 @@ mod tests {
         // No Strength (#46): the plain limit.
         w.players[0].skills.xp[crate::skills::Skill::Strength as usize] = 0.0;
         let t = w.config.carry.clone();
-        let run = PlayerInput { move_dir: Vec2::Y, facing: 0.0, run: true, sneak: false };
+        let run = PlayerInput { move_dir: Vec2::Y, facing: 0.0, run: true, sneak: false, aim: false };
         let trial = |w: &mut World, kg_bricks: u16| {
             let pi = w.players.iter().position(|p| p.id == id).unwrap();
             w.players[pi].inventory = Inventory::default();

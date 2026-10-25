@@ -306,6 +306,8 @@ pub struct SurvivorAnim {
     pub(crate) move_w: f32,
     /// Which way it moves relative to where it faces (radians: 0 ahead, +π/2 to its left), smoothed.
     pub(crate) move_angle: f32,
+    /// Aiming (the right mouse held), eased in and out: the ready stance.
+    pub(crate) aim_w: f32,
     /// Locomotion cycle in [0, 1) and the idle breathing clock.
     pub(crate) cycle: f32,
     pub(crate) idle: f32,
@@ -327,6 +329,7 @@ impl SurvivorAnim {
             sneak_w: 0.0,
             move_w: 0.0,
             move_angle: 0.0,
+            aim_w: 0.0,
             cycle: 0.0,
             idle: 0.0,
             action: None,
@@ -389,6 +392,8 @@ fn animate_survivors(
         a.run_w += ((stance == Stance::Run) as u8 as f32 - a.run_w) * k(8.0);
         a.sneak_w += ((stance == Stance::Sneak) as u8 as f32 - a.sneak_w) * k(8.0);
         a.move_w += (smooth(0.15, 0.8, a.speed) - a.move_w) * k(10.0);
+        let aiming = local.map_or(view.aiming, |m| m.aiming) && !view.dead && !view.asleep;
+        a.aim_w += (aiming as u8 as f32 - a.aim_w) * k(12.0);
         let cycle_m = match (&a.look, &model) {
             (Look::Model(_), Some(m)) => m.cycle_metres(a),
             _ => {
@@ -475,6 +480,9 @@ fn animate_survivors(
 /// `swing`, `shove` and `stomp` at `U` of the way through the action (the blow lands at 0.45);
 /// `idle`, `dead`. Each survivor is `step` further along (`U` wraps).
 fn hold_pose(a: &mut SurvivorAnim, pose: &str, step: f32, now: f32) {
+    // `+aim` anywhere: aiming (the guard).
+    a.aim_w = pose.contains("+aim") as u8 as f32;
+    let pose = pose.replace("+aim", "");
     // `NAME@DEG[:U]`: moving DEG degrees off where it faces (90 to its left, -90 its right, 180 back).
     let (pose, deg) = match pose.split_once('@') {
         Some((n, rest)) => {
@@ -533,7 +541,42 @@ pub(crate) fn action_now(a: &SurvivorAnim, now: f32, style: Style, armed: bool) 
     let c = a.action?;
     let u = c.u(now);
     let w = smooth(0.0, 0.06, u) * (1.0 - smooth(0.88, 1.0, u));
-    Some((action(c.kind, style, armed, u), c.kind == ActionKind::Stomp, w))
+    // From the stance it's in: the guard when aiming.
+    let ready = idle(0.0, armed).blend(&guard(style, armed), a.aim_w);
+    Some((action(c.kind, style, armed, u, &ready), c.kind == ActionKind::Stomp, w))
+}
+
+/// Aiming (the right mouse held): at the ready, leaning in. Bare-handed, fists up; with a one-handed
+/// weapon, it raised beside the head and the free hand up to fend; with a two-handed one, both hands on
+/// it, held up across the body.
+pub(crate) fn guard(style: Style, armed: bool) -> SPose {
+    let mut p = idle(0.0, armed);
+    p.rot[TORSO] = rx(0.08);
+    p.rot[HEAD] = rx(-0.22);
+    match (style, armed) {
+        (Style::TwoHand, true) => {
+            p.rot[UARM_R] = rz(-0.25) * rx(-0.75);
+            p.rot[FARM_R] = rx(-1.45);
+            p.rot[HAND_R] = rx(0.75);
+            p.rot[UARM_L] = rz(-0.35) * rx(-0.85);
+            p.rot[FARM_L] = rx(-1.35);
+        }
+        (Style::OneHand, true) => {
+            p.rot[UARM_R] = rz(-0.25) * rx(-0.85);
+            p.rot[FARM_R] = rx(-1.4);
+            p.rot[HAND_R] = rx(0.35);
+            p.rot[UARM_L] = rz(0.12) * rx(-0.6);
+            p.rot[FARM_L] = rx(-1.7);
+        }
+        _ => {
+            // Elbows in, forearms up in front of the chest, fists at chin height.
+            p.rot[UARM_L] = rz(-0.12) * rx(-0.3);
+            p.rot[FARM_L] = ry(-0.5) * rx(-1.75);
+            p.rot[UARM_R] = rz(0.12) * rx(-0.3);
+            p.rot[FARM_R] = ry(0.5) * rx(-1.75);
+        }
+    }
+    p
 }
 
 /// How far into the hurt flinch it is now (0 = none).
@@ -548,6 +591,7 @@ pub(crate) fn flinch_weight(a: &SurvivorAnim, now: f32) -> f32 {
 /// The full pose of a survivor now.
 fn compose(a: &SurvivorAnim, now: f32, style: Style, armed: bool) -> SPose {
     let mut pose = locomotion(a, armed);
+    pose.blend_bones(&guard(style, armed), a.aim_w, &UPPER, false);
     if let Some((act, whole, w)) = action_now(a, now, style, armed) {
         pose.blend_bones(&act, w, if whole { &ALL } else { &UPPER }, false);
     }
@@ -702,8 +746,8 @@ fn upper(torso: Quat, head: Quat, uarm_l: Quat, farm_l: Quat, uarm_r: Quat, farm
 }
 
 /// An action's pose at normalised time `u` (the blow lands at [`U_HIT`]).
-fn action(kind: ActionKind, style: Style, armed: bool, u: f32) -> SPose {
-    let ready = idle(0.0, armed);
+fn action(kind: ActionKind, style: Style, armed: bool, u: f32, ready: &SPose) -> SPose {
+    let ready = ready.clone();
     let q = Quat::IDENTITY;
     match (kind, style) {
         (ActionKind::Swing, Style::Punch) => {
@@ -867,7 +911,7 @@ mod tests {
     fn swings_wind_up_and_land_in_front() {
         for style in [Style::OneHand, Style::TwoHand] {
             let dir = |u: f32| {
-                let p = action(ActionKind::Swing, style, true, u);
+                let p = action(ActionKind::Swing, style, true, u, &idle(0.0, true));
                 (globals(&BONES, &p)[HAND_R].transform_vector3(Vec3::Z), globals(&BONES, &p)[HAND_R].transform_point3(Vec3::ZERO))
             };
             let (wind, _) = dir(0.32);

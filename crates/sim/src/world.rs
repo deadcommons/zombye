@@ -532,6 +532,19 @@ impl World {
         self.players.iter().find(|p| p.id == id)
     }
 
+    /// Is player `id` aiming (its latest input)? Only an aiming player's attack, shove and stomp
+    /// intents are taken.
+    pub fn aiming(&self, id: u32) -> bool {
+        self.player(id).is_some_and(|p| p.input.aim)
+    }
+
+    /// Debug and agents (MCP): player `id` aims, or stops, as if its input said so.
+    pub fn set_aim(&mut self, id: u32, aim: bool) {
+        if let Some(p) = self.players.iter_mut().find(|p| p.id == id) {
+            p.input.aim = aim;
+        }
+    }
+
     /// Store a player's latest input; it is applied on every tick until a newer one arrives.
     /// Sequence numbers start at 1; stale or repeated ones are ignored. Returns whether it was taken.
     pub fn set_player_input(&mut self, id: u32, seq: u32, input: PlayerInput) -> bool {
@@ -1352,7 +1365,7 @@ mod tests {
                 let dir = Vec2::from_angle(k as f32 * TAU / 8.0 + 0.3);
                 for _ in 0..100 {
                     seq += 1;
-                    w.set_player_input(id, seq, PlayerInput { move_dir: dir, facing: 0.0, run: k % 2 == 0, sneak: false });
+                    w.set_player_input(id, seq, PlayerInput { move_dir: dir, facing: 0.0, run: k % 2 == 0, sneak: false, aim: false });
                     w.step();
                     let p = w.player(id).unwrap().state.pos;
                     assert_eq!(w.map.building_at(p), Some(w.spawn_building), "seed {seed}: left the house at {p}");
@@ -1369,7 +1382,7 @@ mod tests {
             let id = w.add_player(street_point(&w));
             for t in 0..400u32 {
                 let a = t as f32 * 0.05 + wiggle;
-                let input = PlayerInput { move_dir: Vec2::from_angle(a), facing: a, run: t % 100 < 50, sneak: t % 100 > 80 };
+                let input = PlayerInput { move_dir: Vec2::from_angle(a), facing: a, run: t % 100 < 50, sneak: t % 100 > 80, aim: false };
                 assert!(w.set_player_input(id, t + 1, input));
                 w.step();
             }
@@ -1490,7 +1503,7 @@ mod tests {
             let mut noticed = None;
             for t in 0..200u32 {
                 let dir = if (t / 20) % 2 == 0 { Vec2::Y } else { -Vec2::Y };
-                w.set_player_input(id, t + 1, PlayerInput { move_dir: dir, facing: 0.0, run, sneak: !run });
+                w.set_player_input(id, t + 1, PlayerInput { move_dir: dir, facing: 0.0, run, sneak: !run, aim: false });
                 w.step();
                 if noticed.is_none() && w.zombies.state[z] != ZombieState::Wander {
                     noticed = Some(w.zombies.state[z]);
@@ -1591,7 +1604,7 @@ mod tests {
             let id = w.add_player(street_point(&w));
             for t in 0..600u32 {
                 let a = t as f32 * 0.03;
-                w.set_player_input(id, t + 1, PlayerInput { move_dir: Vec2::from_angle(a), facing: a, run: t % 120 < 40, sneak: t % 120 > 90 });
+                w.set_player_input(id, t + 1, PlayerInput { move_dir: Vec2::from_angle(a), facing: a, run: t % 120 < 40, sneak: t % 120 > 90, aim: false });
                 if t % 150 == 0 {
                     w.emit_sound(w.player(id).unwrap().state.pos, 40.0);
                 }
@@ -1880,7 +1893,7 @@ mod tests {
         let mut walk = |w: &mut World, d: Vec2, ticks: u32| {
             for _ in 0..ticks {
                 seq += 1;
-                w.set_player_input(id, seq, PlayerInput { move_dir: d, facing: d.y.atan2(d.x), run: false, sneak: false });
+                w.set_player_input(id, seq, PlayerInput { move_dir: d, facing: d.y.atan2(d.x), run: false, sneak: false, aim: false });
                 w.step();
             }
         };
@@ -2148,8 +2161,8 @@ mod tests {
         let mut drive = |w: &mut World, t: u32| {
             seq += 1;
             let d = Vec2::from_angle(t as f32 * 0.02);
-            w.set_player_input(a, seq, PlayerInput { move_dir: d, facing: 0.0, run: true, sneak: false });
-            w.set_player_input(b, seq, PlayerInput { move_dir: -d, facing: 0.0, run: false, sneak: false });
+            w.set_player_input(a, seq, PlayerInput { move_dir: d, facing: 0.0, run: true, sneak: false, aim: false });
+            w.set_player_input(b, seq, PlayerInput { move_dir: -d, facing: 0.0, run: false, sneak: false, aim: false });
             if t.is_multiple_of(200) {
                 w.emit_sound(w.player(a).unwrap().state.pos, 60.0);
             }
@@ -2466,7 +2479,7 @@ mod tests {
         let mut drive = |w: &mut World, t: u32| {
             seq += 1;
             let d = Vec2::from_angle(t as f32 * 0.01);
-            w.set_player_input(id, seq, PlayerInput { move_dir: d, facing: 0.0, run: true, sneak: false });
+            w.set_player_input(id, seq, PlayerInput { move_dir: d, facing: 0.0, run: true, sneak: false, aim: false });
             if t.is_multiple_of(200) {
                 w.emit_sound(w.player(id).unwrap().state.pos, 60.0);
             }
