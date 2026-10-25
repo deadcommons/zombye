@@ -45,8 +45,11 @@ const STUB_HEIGHT: f32 = 0.4;
 // Above the ground-floor walls: roofs and upper storeys, which open a hole round the player
 // instead of dropping (the whole of them goes only while you're inside that building, on the CPU).
 const UPPER_Y: f32 = 3.05;
-// The hole's radius round the player's chest on screen, in metres.
-const HOLE_M: f32 = 2.2;
+// The hole round the player on screen, in metres: half its width, and how far it reaches below
+// and above the chest (feet to a little over the head).
+const HOLE_HALF_W: f32 = 1.0;
+const HOLE_DOWN: f32 = 1.3;
+const HOLE_UP: f32 = 1.1;
 
 // 0 outside the see-through hole round the player, 1 in the middle of it, for a fragment at `wp`
 // (pixel `frag`): only things nearer the camera than the player open up.
@@ -58,8 +61,11 @@ fn hole_at(wp: vec3<f32>, frag: vec2<f32>) -> f32 {
     let centre = ndc_to_frag_coord(position_world_to_ndc(chest).xy);
     let up = ndc_to_frag_coord(position_world_to_ndc(chest + vec3(0.0, 1.0, 0.0)).xy);
     let metre = max(length(up - centre), 1e-3);
-    let d = length(frag - centre) / metre;
-    return 1.0 - smoothstep(HOLE_M * 0.7, HOLE_M, d);
+    // In metres on screen from the chest, y up.
+    let o = vec2(frag.x - centre.x, centre.y - frag.y) / metre;
+    let reach = select(HOLE_DOWN, HOLE_UP, o.y > 0.0);
+    let d = length(vec2(o.x / HOLE_HALF_W, o.y / reach));
+    return 1.0 - smoothstep(0.75, 1.0, d);
 }
 
 fn ground_camera_dir() -> vec2<f32> {
@@ -91,29 +97,28 @@ fn behind_hits(p: vec2<f32>, c: vec2<f32>, lo: vec2<f32>, hi: vec2<f32>) -> bool
     return t0 <= t1;
 }
 
+// The square the player stands in, for the outdoor wall rule: half a side in metres.
+const BODY_HALF: f32 = 0.3;
+
 // Is the wall piece with this midpoint (pieces are 1 m long, along x or z) cut down to a stub?
-// Indoors: only if it hides part of the player's room, i.e. the floor behind it on screen runs into
-// the room. The room's far walls and everything behind the room stand, so the room still feels
-// enclosed and the rest of the building keeps its walls. Must match `materials::wall_is_cut`.
+// Only if it hides something that matters: the floor behind it on screen runs into the player's
+// room (indoors) or the square the player stands in (outdoors). So the room's far walls, the rest
+// of the building, and walls beside you stand. Must match `materials::wall_is_cut`.
 fn wall_cut(mid: vec2<f32>) -> bool {
     let c = ground_camera_dir();
     let r = world_params.inside_rect;
+    var lo = world_params.player.xz - vec2(BODY_HALF);
+    var hi = world_params.player.xz + vec2(BODY_HALF);
     if (r.x <= r.z) {
-        let lo = r.xy + vec2(0.03);
-        let hi = r.zw - vec2(0.03);
-        // A piece along x has its midpoint half-way along a tile.
-        var half = vec2(0.0, 0.45);
-        if (abs(fract(mid.x) - 0.5) < 0.25) {
-            half = vec2(0.45, 0.0);
-        }
-        return behind_hits(mid, c, lo, hi) || behind_hits(mid - half, c, lo, hi) || behind_hits(mid + half, c, lo, hi);
+        lo = r.xy + vec2(0.03);
+        hi = r.zw - vec2(0.03);
     }
-    // Outdoors: only walls that actually cover the character: up to about 5 m in front of them,
-    // and a little to either side.
-    let d = mid - world_params.player.xz;
-    let along = dot(d, c);
-    let perp = length(d - along * c);
-    return along > 0.0 && along < WALL_REACH && perp < 1.6;
+    // A piece along x has its midpoint half-way along a tile.
+    var half = vec2(0.0, 0.45);
+    if (abs(fract(mid.x) - 0.5) < 0.25) {
+        half = vec2(0.45, 0.0);
+    }
+    return behind_hits(mid, c, lo, hi) || behind_hits(mid - half, c, lo, hi) || behind_hits(mid + half, c, lo, hi);
 }
 
 // How far the foliage of the tree whose trunk foot is `anchor` has faded (0 shown, 1 gone).
