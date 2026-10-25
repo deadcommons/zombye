@@ -60,6 +60,10 @@ const CUT_ABOVE_HEM: f32 = 0.03;
 
 /// How bright the marker rings are at night, of their daytime colour.
 const RING_NIGHT: f32 = 0.15;
+/// How much bigger a hat is drawn over a balaclava (see `dress`), about the head's centre, which is
+/// this far below the crown (the `head_top` socket).
+const OVER_HEAD_TOP: f32 = 1.06;
+const HEAD_CENTRE_BELOW_TOP: f32 = 0.105;
 
 /// Each stance's clips, walking, running and sneaking: every direction it has (each the first of
 /// these names the body has; a missing one is left out). Which way each travels is measured from its
@@ -685,8 +689,23 @@ impl SurvivorModel {
         // Garments drawn as models: each cuts, in the regions it hides, what other garments have
         // there above its hem (the jeans' top under a shirt worn out), whatever the pose.
         let drawn: Vec<&Wearable> = worn_defs.iter().filter(|d| !buried(d)).filter_map(|d| model_of(d)).collect();
+        // A hat over a model on a lower layer that takes the head top (a balaclava, #92) is drawn
+        // `OVER_HEAD_TOP` bigger about the head's centre, so it sits over the knit, not through it.
+        let takes_top = |d: &ItemDef| d.clothing.as_ref().filter(|c| c.takes.contains(&WearSlot::HeadTop)).map(|c| c.layer);
+        let under_top = worn_defs.iter().filter(|d| model_of(d).is_some()).filter_map(|d| takes_top(d)).min();
+        let head_centre = self.body.socket_frame("head_top").map(|(_, f)| f.transform_point3(Vec3::ZERO) - Vec3::Y * HEAD_CENTRE_BELOW_TOP);
         for &d in &worn_defs {
             if buried(d) {
+                continue;
+            }
+            if let (Some(w), Some(layer), Some(under), Some(c)) = (model_of(d), takes_top(d), under_top, head_centre)
+                && layer > under
+            {
+                let mut big = w.mesh.clone();
+                for p in &mut big.positions {
+                    *p = c + (*p - c) * OVER_HEAD_TOP;
+                }
+                worn.append(&big);
                 continue;
             }
             if let Some(w) = model_of(d) {

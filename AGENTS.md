@@ -550,7 +550,9 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   food was made, and `used`, goes had of the top one, see Needs; stacks merge only when all but the count agree:
   `ItemStack::same_kind`, `merge_into(stacks, like, n, size)`).
 - **Accessories** (#63) are clothing that `takes` a place (`items::WearSlot`: `Face`, `HeadTop`, `Neck`): glasses (the
-  face), a baseball cap, beanie or woolly hat (the head top; they cover the head too), a scarf (the neck); later masks. A
+  face), a baseball cap, beanie or woolly hat (the head top; they cover the head too), a scarf (the neck), and masks (#92:
+  a dust mask, a bandana, the face on the Mid layer, so over glasses and one at a time; a balaclava, the face and the head
+  top, under any hat, which the client then draws 6% bigger about the head's centre so it sits over the knit). A
   `hood` (the hoodie's) covers the head while nothing takes the head top: putting a hat on pulls it down
   (`ClothingDef::covers_with`, used by `World::protection`; the note says so). Each item can name its `model`, the
   wearable GLB the client draws (`assets/models/wearables/<model>.glb`); none, or no file: a grey-box (see Characters

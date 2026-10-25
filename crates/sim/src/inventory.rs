@@ -1596,6 +1596,14 @@ mod tests {
         wear(&mut w, "baseball_cap");
         assert_eq!(worn(&w), ["hoodie", "glasses", "scarf", "baseball_cap"], "one hat at a time");
         assert!(me(&w, id).inventory.carried.iter().any(|s| w.item_def(s.item).id == "beanie"), "the beanie went into the pockets");
+        // Masks (#92): over glasses, one at a time; a balaclava takes the head top too, under a hat.
+        wear(&mut w, "dust_mask");
+        assert_eq!(worn(&w), ["hoodie", "glasses", "scarf", "baseball_cap", "dust_mask"], "a mask goes on over glasses");
+        wear(&mut w, "bandana");
+        assert_eq!(worn(&w), ["hoodie", "glasses", "scarf", "baseball_cap", "bandana"], "one mask at a time");
+        wear(&mut w, "balaclava");
+        assert_eq!(worn(&w), ["hoodie", "glasses", "scarf", "baseball_cap", "balaclava"], "the balaclava goes under the cap");
+        assert!((head(&w) - (1.0 - 0.97 * 0.95)).abs() < 1e-5, "the cap and the balaclava both cover the head: {}", head(&w));
     }
 
     /// A swing calls off what you were doing; dying drops everything where you fell.
