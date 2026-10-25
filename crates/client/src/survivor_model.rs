@@ -641,11 +641,17 @@ impl SurvivorModel {
         let worn_defs: Vec<&ItemDef> = outfit.worn.iter().filter_map(|&i| items.get(i as usize)).collect();
         // A garment entirely under a model on a higher layer that hides what it covers (a t-shirt
         // under a hoodie) isn't drawn: it would only show through the outer one's edges.
+        // (Not when the outer one is shorter: a t-shirt shows below a leather jacket.)
         let buried = |d: &ItemDef| {
             let Some(c) = d.clothing.as_ref().filter(|c| c.takes.is_empty() && !c.covers.is_empty()) else { return false };
+            let inner_hem = model_of(d).and_then(|w| w.hem_z);
             c.covers.iter().all(|r| {
                 worn_defs.iter().any(|o| {
-                    o.clothing.as_ref().is_some_and(|oc| oc.layer > c.layer) && model_of(o).is_some_and(|w| w.hides.contains(r))
+                    let low_enough = |w: &Wearable| match (w.hem_z, inner_hem) {
+                        (Some(outer), Some(inner)) => outer <= inner + 0.01,
+                        _ => true,
+                    };
+                    o.clothing.as_ref().is_some_and(|oc| oc.layer > c.layer) && model_of(o).is_some_and(|w| w.hides.contains(r) && low_enough(w))
                 })
             })
         };

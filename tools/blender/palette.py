@@ -56,6 +56,9 @@ PALETTE = {
     "denim_dark": ("#343f52", 0.95, 0.0),     # waistbands, pockets, hems
     "cotton_red": ("#8a4a42", 0.95, 0.0),     # a faded red t-shirt
     "trainer_white": ("#d9d5ca", 0.6, 0.0),   # canvas and leather trainers, off-white
+    "leather_brown": ("#3f2c22", 0.55, 0.0),  # a worn leather jacket
+    "boot_brown": ("#5a4231", 0.7, 0.0),      # work boots' leather
+    "glove_tan": ("#9a7a50", 0.85, 0.0),      # work gloves, suede
 }
 
 
