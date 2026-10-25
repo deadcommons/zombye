@@ -52,7 +52,7 @@ AssetSpec(
     // (export/wearables/<id>.glb), interchangeable on any body built on this one. `item`: the id in
     // items.ron (None: no item yet). `kind`: Skinned (weights from the body) or Rigid (on `socket`'s bone).
     // `layer`: items::Layer (None for accessories). `occupies`: body regions or accessory slots (face,
-    // head_top, neck, hand_r, hand_l, back). `hides`: the body regions the game hides while it is worn
+    // head_top, neck, hand_r, hand_l, back, shoulder). `hides`: the body regions the game hides while it is worn
     // (what it visibly covers: the hoodie's hood is down, so not Head, though the item protects the head).
     // `tris`: its budget.
     wearables: [
@@ -85,6 +85,18 @@ AssetSpec(
          occupies: [head_top], hides: [], tris: 400),
         (id: "scarf", item: Some("scarf"), kind: Skinned, socket: None, layer: Some(Outer),
          occupies: [neck], hides: [], tris: 400),
+        // Bags (#91): packs on the back and a tote on the left shoulder (the bag on its bone, the straps
+        // skinned), and bags carried in the hand (rigid on hand_r; the game mirrors them to the left hand).
+        (id: "school_backpack", item: Some("school_backpack"), kind: Skinned, socket: None, layer: None,
+         occupies: [back], hides: [], tris: 400),
+        (id: "hiking_pack", item: Some("hiking_pack"), kind: Skinned, socket: None, layer: None,
+         occupies: [back], hides: [], tris: 500),
+        (id: "tote_bag", item: Some("tote_bag"), kind: Skinned, socket: None, layer: None,
+         occupies: [shoulder], hides: [], tris: 300),
+        (id: "plastic_bag", item: Some("plastic_bag"), kind: Rigid, socket: Some("hand_r"), layer: None,
+         occupies: [hand_r], hides: [], tris: 200),
+        (id: "duffel_bag", item: Some("duffel_bag"), kind: Rigid, socket: Some("hand_r"), layer: None,
+         occupies: [hand_r], hides: [], tris: 300),
     ],
     style: "An ordinary, weary, slim man in his mid thirties from an early-1990s small American town: tired, haunted face, stubble, untidy brown hair, pale skin. The base body wears a plain fitted grey t-shirt, dark grey trousers and dark shoes; the look comes from garments on top (a hoodie, glasses: a nerd in a hoodie). Muted, slightly desaturated palette; flat colour areas; garments in palette colours.",
     description: "The modular survivor base body (players and survivors), with its first wearables: a hoodie (skinned, hood down) and glasses (rigid, on the eyes socket).",

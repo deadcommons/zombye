@@ -101,6 +101,17 @@ WOOLLY_COLOURS, WOOLLY_EASE, WOOLLY_RIM = ("wool_ochre",), 0.016, (70.0, 100.0, 
 HAT_CUFF, BOBBLE = 0.03, 0.035
 # Scarf: wound round the base of the neck (a fat tube), one end hanging down the chest.
 SCARF_COLOURS, SCARF_RADIUS, SCARF_TAIL = ("wool_maroon",), 0.019, 0.26
+# Bags (#91), from the body as built (T-pose, metres, facing -y; his left is +x): the back's surface is about
+# 0.11 m behind the spine from the waist to the shoulders, the shoulder tops 1.45 m up, the hips 0.17 m out
+# at 0.95 m. Packs: (width, height, depth, top z, bevel). Straps are webbing 6 cm wide, 1.2 cm off the body.
+BACKPACK_COLOURS, BACKPACK = ("pack_blue", "plastic_black"), (0.30, 0.40, 0.14, 1.43, 0.04)
+HIKING_COLOURS, HIKING = ("pack_rust", "plastic_black", "pack_rust_dark"), (0.32, 0.58, 0.20, 1.56, 0.05)
+STRAP_W, STRAP_LIFT, STRAP_X = 0.055, 0.012, 0.095
+# Tote: a canvas bag at the left hip, a little behind it, its two handles over the left shoulder.
+TOTE_COLOURS, TOTE = ("canvas_natural", "canvas_natural_dark"), (0.34, 0.34, 0.06, 1.06)  # w, h, d, top z
+# Hand bags hang from the right hand's grip (hand_r); in the T-pose that is out along -x.
+PLASTIC_COLOURS, PLASTIC = ("plastic_white",), (0.28, 0.36, 0.11)  # width (y), length (down), thickness (z)
+DUFFEL_COLOURS, DUFFEL = ("canvas_olive", "plastic_black"), (0.56, 0.135, 0.17)  # length (y), radius, handle drop
 
 
 def build(c):
@@ -212,7 +223,10 @@ def build(c):
             (make_jumper(c, mesh, arm), "jumper"), (make_jacket(c, mesh, arm), "leather_jacket"),
             (make_boots(c, mesh, arm), "work_boots"), (make_gloves(c, mesh, arm), "work_gloves"),
             (make_hat(c, mesh, arm, "baseball_cap"), "baseball_cap"), (make_hat(c, mesh, arm, "beanie"), "beanie"),
-            (make_hat(c, mesh, arm, "woolly_hat"), "woolly_hat"), (make_scarf(c, mesh, arm), "scarf")]
+            (make_hat(c, mesh, arm, "woolly_hat"), "woolly_hat"), (make_scarf(c, mesh, arm), "scarf"),
+            (make_pack(c, mesh, arm, "school_backpack"), "school_backpack"), (make_pack(c, mesh, arm, "hiking_pack"), "hiking_pack"),
+            (make_tote(c, mesh, arm), "tote_bag"), (make_plastic_bag(c, mesh, arm), "plastic_bag"),
+            (make_duffel(c, mesh, arm), "duffel_bag")]
     for o, _ in made:
         o.data.update()
 
@@ -974,3 +988,236 @@ def make_scarf(c, body, arm):
     assert t <= budget, f"scarf: {t} triangles over {budget}"
     c.note(f"scarf: {t} triangles (budget {budget})")
     return obj
+
+
+# ---------------------------------------------------------------- bags (#91)
+
+def _linspace(a, b, n):
+    return [a + (b - a) * k / (n - 1) for k in range(n)]
+
+
+def _rbox(bm, lo, hi, bevel, mat, rigid=None):
+    """A box from `lo` to `hi` with its edges chamfered by `bevel`; its faces get material `mat`, its
+    vertices `rigid` = 1 (they go on one bone). Returns the faces."""
+    before = set(bm.faces)
+    verts = bmesh.ops.create_cube(bm, size=1.0)["verts"]
+    for v in verts:
+        v.co = Vector(tuple(l + (x + 0.5) * (h - l) for l, h, x in zip(lo, hi, v.co)))
+    if bevel > 0:
+        edges = list({e for v in verts for e in v.link_edges})
+        bmesh.ops.bevel(bm, geom=edges, offset=bevel, segments=1, affect="EDGES", profile=0.5)
+    faces = [f for f in bm.faces if f not in before]
+    for f in faces:
+        f.material_index = mat
+        if rigid is not None:
+            for v in f.verts:
+                v[rigid] = 1
+    return faces
+
+
+def _band(bm, pts, side, width, mat):
+    """A flat strip along `pts`, `width` across in the direction `side(point)`. Returns its faces."""
+    rows = [(bm.verts.new(p - side(p) * width / 2), bm.verts.new(p + side(p) * width / 2)) for p in pts]
+    faces = []
+    for a, b in zip(rows, rows[1:]):
+        f = bm.faces.new((a[0], a[1], b[1], b[0]))
+        f.material_index = mat
+        faces.append(f)
+    return faces
+
+
+def _over_shoulder(tree, x, z_front, z_back, lift=STRAP_LIFT, arc=7):
+    """Points up the front of the chest at `x` from `z_front`, over the top of the shoulder and down the
+    back to `z_back`, `lift` off the body."""
+    pts = [g.on_surface(tree, (x, -1.0, z), (0, 1, 0), lift) for z in _linspace(z_front, 1.34, 4)]
+    c = Vector((x, 0.0, 1.36))
+    for k in range(1, arc):
+        th = -math.pi / 2 + math.pi * k / arc
+        d = Vector((0.0, math.sin(th), math.cos(th)))
+        pts.append(g.on_surface(tree, c + d * 0.6, -d, lift))
+    pts += [g.on_surface(tree, (x, 1.0, z), (0, -1, 0), lift) for z in _linspace(1.34, z_back, 3)]
+    return [p for p in pts if p is not None]
+
+
+def _round_side(tree, x_sign, z0, z1, phi1, lift=STRAP_LIFT, n=6):
+    """Points round the side of the torso from the front (at height `z0`) to `phi1` degrees round toward
+    the back (at `z1`), on the side `x_sign`."""
+    pts = []
+    for k in range(n):
+        phi = math.radians(phi1) * k / (n - 1)
+        z = z0 + (z1 - z0) * k / (n - 1)
+        d = Vector((x_sign * math.sin(phi), -math.cos(phi), 0.0))
+        c = Vector((0.0, -0.02, z))
+        pts.append(g.on_surface(tree, c + d * 0.6, -d, lift))
+    return [p for p in pts if p is not None]
+
+
+def _face_out(bm, faces, tree):
+    """Turns each face to face away from the body (by the nearest surface's normal)."""
+    for f in faces:
+        loc, normal, _, _ = tree.find_nearest(f.calc_center_median())
+        if f.normal.dot(normal) < 0:
+            f.normal_flip()
+
+
+def _bag_object(c, gid, bm, colours, body, arm, rigid_bone=None, rigid=None, socket=None):
+    """The bag `gid` from `bm`: palette materials, UVs and shading, then weights: on `socket`'s bone
+    (rigid), or the body's weights with the `rigid` vertices moved wholly onto `rigid_bone`."""
+    spec = c.spec
+    for f in bm.faces:
+        f[bm.faces.layers.int.get(g.PART_ATTRIBUTE)] = 1  # a bag only sits on the body: checked for sinking
+    obj = _new_object(c, gid)
+    bm.to_mesh(obj.data)
+    bm.free()
+    g.palette_material(obj, *colours)
+    g.finish_garment(obj, spec["shading"])
+    if socket:
+        g.bind_to_socket(obj, arm, spec, socket)
+    else:
+        g.transfer_weights(body, obj, arm)
+        if rigid_bone:
+            marks = obj.data.attributes["rigid"].data
+            ids = [i for i in range(len(obj.data.vertices)) if marks[i].value]
+            for grp in obj.vertex_groups:
+                grp.remove(ids)
+            grp = obj.vertex_groups.get(rigid_bone) or obj.vertex_groups.new(name=rigid_bone)
+            grp.add(ids, 1.0, "REPLACE")
+            for grp in [x for x in obj.vertex_groups if not any(x.index == y.group for v in obj.data.vertices for y in v.groups)]:
+                obj.vertex_groups.remove(grp)
+    if "rigid" in obj.data.attributes:
+        obj.data.attributes.remove(obj.data.attributes["rigid"])
+    obj["ai_generated"] = False
+    obj["generator"] = "Blender (Dead Commons), from primitives on the body"
+    budget = next(x for x in g.wearables(spec) if x["id"] == gid)["tris"]
+    t = zchar.tris(obj)
+    assert t <= budget, f"{gid}: {t} triangles over {budget}"
+    c.note(f"{gid}: {t} triangles (budget {budget})")
+    return obj
+
+
+def _new_bm():
+    bm = bmesh.new()
+    bm.faces.layers.int.new(g.PART_ATTRIBUTE)
+    return bm, bm.verts.layers.int.new("rigid")
+
+
+def make_pack(c, body, arm, gid):
+    """A pack on the back: a chamfered box clear of the shoulder blades on the upper spine, a front
+    pocket, and two shoulder straps over the shoulders and back round under the arms to its lower
+    corners (the hiking pack also a lid and a hip belt round the front)."""
+    tree = g.surface_tree(body)
+    hiking = gid == "hiking_pack"
+    colours, (w, h, d, top, bevel) = (HIKING_COLOURS, HIKING) if hiking else (BACKPACK_COLOURS, BACKPACK)
+    bottom = top - h
+    back = max(g.on_surface(tree, (0.0, 1.0, z), (0, -1, 0)).y for z in _linspace(max(bottom, 0.9), min(top, 1.42), 6))
+    y0 = back + 0.012
+    bm, rigid = _new_bm()
+    _rbox(bm, (-w / 2, y0, bottom), (w / 2, y0 + d, top), bevel, 0, rigid)
+    pocket_h = h * (0.32 if hiking else 0.42)
+    _rbox(bm, (-w * 0.36, y0 + d - 0.01, bottom + 0.04), (w * 0.36, y0 + d + 0.05, bottom + 0.04 + pocket_h), 0.02,
+          2 if hiking else 0, rigid)
+    if hiking:
+        # The lid: a flatter box over the top, a little proud of the pack.
+        _rbox(bm, (-w / 2 - 0.01, y0 - 0.005, top - 0.08), (w / 2 + 0.01, y0 + d + 0.02, top + 0.02), 0.025, 2, rigid)
+    straps = []
+    for s in (-1, 1):
+        x = s * STRAP_X
+        over = _over_shoulder(tree, x, 1.16, 1.36)
+        straps += _band(bm, over, lambda p: Vector((1.0, 0.0, 0.0)), STRAP_W, 1)
+        under = _round_side(tree, s, 1.16, bottom + 0.1 if not hiking else 1.04, 150, n=7)
+        straps += _band(bm, under, lambda p: Vector((0.0, 0.0, 1.0)), STRAP_W * 0.7, 1)
+    if hiking:
+        # The hip belt: from the pack's lower corners round the front of the waist, padded.
+        belt = []
+        for s in (-1, 1):
+            belt.append(_round_side(tree, s, 1.0, 1.0, 120, lift=0.016, n=6))
+        path = list(reversed(belt[0])) + belt[1][1:]
+        straps += _band(bm, path, lambda p: Vector((0.0, 0.0, 1.0)), 0.07, 1)
+    _face_out(bm, straps, tree)
+    bm_faces = [f for f in bm.faces if f not in straps]
+    centre = Vector((0.0, y0 + d / 2, (top + bottom) / 2))
+    for f in bm_faces:
+        if f.normal.dot(f.calc_center_median() - centre) < 0:
+            f.normal_flip()
+    return _bag_object(c, gid, bm, colours, body, arm, rigid_bone="Spine01", rigid=rigid)
+
+
+def make_tote(c, body, arm):
+    """A canvas tote at the left hip, a little behind it, hanging from two handles over the left shoulder."""
+    tree = g.surface_tree(body)
+    w, h, d, top = TOTE
+    side = max(g.on_surface(tree, (1.0, 0.04, z), (-1, 0, 0)).x for z in _linspace(top - h, top, 5))
+    x0 = side + 0.012
+    y_mid = 0.05
+    bm, rigid = _new_bm()
+    box = _rbox(bm, (x0, y_mid - w / 2, top - h), (x0 + d, y_mid + w / 2, top), 0.012, 0, rigid)
+    centre = Vector((x0 + d / 2, y_mid, top - h / 2))
+    for f in box:
+        if f.normal.dot(f.calc_center_median() - centre) < 0:
+            f.normal_flip()
+    # Each handle: from the bag's top (front or back) up to the chest or back at 1.18 m, over the
+    # shoulder at x 0.14, and back down the other side to the other end of the bag's top.
+    handles = []
+    for dy in (-0.07, 0.07):
+        over = _over_shoulder(tree, 0.14 + dy * 0.2, 1.2, 1.2, arc=6)
+        a = Vector((x0 + d / 2, y_mid - w / 2 + 0.06, top - 0.005))
+        b = Vector((x0 + d / 2, y_mid + w / 2 - 0.06, top - 0.005))
+        path = [a, a.lerp(over[0], 0.5) + Vector((0.01, 0, 0))] + over + [over[-1].lerp(b, 0.5) + Vector((0.01, 0, 0)), b]
+        handles += _band(bm, path, lambda p: Vector((1.0, 0.0, 0.0)), 0.03, 1)
+    _face_out(bm, handles, tree)
+    return _bag_object(c, "tote_bag", bm, TOTE_COLOURS, body, arm, rigid_bone="Hips", rigid=rigid)
+
+
+def _hand_frame(arm, spec):
+    """The right hand's grip in the T-pose, and the way a bag hangs from it there (out along the arm)."""
+    grip = g.socket_matrix(arm, spec, "hand_r").to_translation()
+    return grip, Vector((-1.0, 0.0, 0.0))
+
+
+def make_plastic_bag(c, body, arm):
+    """A carrier bag hanging from the right hand: two thin handles from the grip to a bag that widens
+    and bulges toward its bottom (rigid on hand_r)."""
+    grip, down = _hand_frame(arm, c.spec)
+    w, length, t = PLASTIC
+    bm, _ = _new_bm()
+    top = grip + down * 0.07
+    rings = []
+    for k, (u, wf, tf) in enumerate(((0.0, 0.62, 0.35), (0.3, 0.92, 0.85), (0.75, 1.0, 1.0), (1.0, 0.86, 0.7))):
+        p = top + down * (length * u)
+        hw, ht = w * wf / 2, t * tf / 2
+        rings.append([bm.verts.new(p + Vector((0, y, z))) for y, z in ((-hw, -ht), (hw, -ht), (hw, ht), (-hw, ht))])
+    faces = []
+    for a, b in zip(rings, rings[1:]):
+        for j in range(4):
+            k = (j + 1) % 4
+            faces.append(bm.faces.new((a[j], a[k], b[k], b[j])))
+    faces.append(bm.faces.new(list(rings[-1])))
+    faces.append(bm.faces.new(list(reversed(rings[0]))))
+    centre = top + down * (length / 2)
+    for f in faces:
+        if f.normal.dot(f.calc_center_median() - centre) < 0:
+            f.normal_flip()
+    # The handles: from the top corners up to the grip, each a thin strip (both sides drawn).
+    for s in (-1, 1):
+        a = top + Vector((0, s * w * 0.31 * 0.8, 0))
+        path = [a, a.lerp(grip, 0.5) + Vector((0, s * 0.015, 0)), grip + Vector((0, s * 0.01, 0))]
+        g.tube(bm, path, lambda i: 0.006, 4, 0, cap=False)
+    return _bag_object(c, "plastic_bag", bm, PLASTIC_COLOURS, body, arm, socket="hand_r")
+
+
+def make_duffel(c, body, arm):
+    """A duffel bag hanging from the right hand: a long canvas tube along the way he walks, darker ends,
+    and two webbing handles up to the grip (rigid on hand_r)."""
+    grip, down = _hand_frame(arm, c.spec)
+    length, r, drop = DUFFEL
+    bm, _ = _new_bm()
+    axis_c = grip + down * (drop + r)
+    path = [axis_c + Vector((0, y, 0)) for y in _linspace(-length / 2, length / 2, 4)]
+    faces = g.tube(bm, path, lambda i: r * (0.86 if i in (0, len(path) - 1) else 1.0), 8, 0, up=Vector((1.0, 0.0, 0.0)))
+    for f in faces[-2:]:
+        f.material_index = 1  # the round ends
+    for s in (-1, 1):
+        a = axis_c - down * r + Vector((0, s * 0.11, 0))
+        b = grip + Vector((0, s * 0.012, 0))
+        g.tube(bm, [a, a.lerp(b, 0.5), b], lambda i: 0.009, 4, 1, cap=False)
+    return _bag_object(c, "duffel_bag", bm, DUFFEL_COLOURS, body, arm, socket="hand_r")

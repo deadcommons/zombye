@@ -135,15 +135,15 @@
 
     // ---- Bags ----------------------------------------------------------------------------------
     (id: "plastic_bag", name: "Plastic bag", category: Bag, weight_kg: 0.02, volume_l: 0.05, stack: 10,
-        bag: Some((capacity_l: 8.0, carried: Hand)), color: (0.9, 0.9, 0.85)),
+        bag: Some((capacity_l: 8.0, carried: Hand)), model: Some("plastic_bag"), color: (0.83, 0.82, 0.78)),
     (id: "tote_bag", name: "Tote bag", category: Bag, weight_kg: 0.2, volume_l: 0.5,
-        bag: Some((capacity_l: 12.0, carried: Shoulder)), color: (0.8, 0.75, 0.6)),
+        bag: Some((capacity_l: 12.0, carried: Shoulder)), model: Some("tote_bag"), color: (0.7, 0.65, 0.52)),
     (id: "school_backpack", name: "School backpack", category: Bag, weight_kg: 0.5, volume_l: 1.0,
-        bag: Some((capacity_l: 20.0, carried: Back)), color: (0.2, 0.4, 0.7)),
+        bag: Some((capacity_l: 20.0, carried: Back)), model: Some("school_backpack"), color: (0.27, 0.38, 0.49)),
     (id: "duffel_bag", name: "Duffel bag", category: Bag, weight_kg: 1.0, volume_l: 2.0,
-        bag: Some((capacity_l: 40.0, carried: Hand, slow: 0.1)), color: (0.25, 0.3, 0.2)),
+        bag: Some((capacity_l: 40.0, carried: Hand, slow: 0.1)), model: Some("duffel_bag"), color: (0.31, 0.34, 0.25)),
     (id: "hiking_pack", name: "Hiking rucksack", category: Bag, weight_kg: 1.6, volume_l: 3.0,
-        bag: Some((capacity_l: 50.0, carried: Back)), color: (0.6, 0.3, 0.15)),
+        bag: Some((capacity_l: 50.0, carried: Back)), model: Some("hiking_pack"), color: (0.54, 0.33, 0.2)),
 
     // ---- Weapons (combat numbers in weapons.ron) -------------------------------------------------
     (id: "kitchen_knife", name: "Kitchen knife", category: Weapon, weight_kg: 0.2, volume_l: 0.3, tags: ["cuts"], weapon: Some("kitchen_knife"), color: (0.75, 0.75, 0.78)),

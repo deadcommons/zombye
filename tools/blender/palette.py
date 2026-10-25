@@ -63,6 +63,13 @@ PALETTE = {
     "wool_charcoal": ("#363a42", 0.95, 0.0),  # a beanie
     "wool_ochre": ("#9a7342", 0.95, 0.0),     # a woolly hat
     "wool_maroon": ("#6a2f2b", 0.95, 0.0),    # a scarf
+    "pack_blue": ("#45607e", 0.8, 0.0),       # a school backpack's nylon
+    "pack_rust": ("#8a5532", 0.8, 0.0),       # a hiking rucksack
+    "pack_rust_dark": ("#5e3a24", 0.8, 0.0),  # its lid and pocket
+    "canvas_natural": ("#b3a785", 0.95, 0.0), # a tote bag
+    "canvas_natural_dark": ("#8c7f60", 0.95, 0.0),  # its handles
+    "canvas_olive": ("#4f5640", 0.9, 0.0),    # a duffel bag
+    "plastic_white": ("#d3d1c6", 0.45, 0.0),  # a carrier bag
 }
 
 
