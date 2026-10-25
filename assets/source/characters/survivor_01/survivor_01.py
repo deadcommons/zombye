@@ -78,6 +78,19 @@ JEANS_HIPS_Z = 0.70
 # Trainers: off-white uppers, grey soles up to SOLE_Z.
 TRAINER_COLOURS = ("trainer_white", "plastic_grey")
 TRAINER_EASE, TRAINER_SOLE_Z = 0.008, 0.028
+# Batch 2. Jumper: navy wool, long sleeves with cuffs, a ribbed hem a little below the waist.
+JUMPER_COLOURS = ("fabric_navy",)
+JUMPER_EASE, JUMPER_SLEEVE_EASE, JUMPER_HEM_Z = 0.012, 0.015, 0.90
+# Leather jacket: the outer layer, roomy enough to close over a hoodie or jumper; collar, zip, cuffs.
+JACKET_COLOURS = ("leather_brown", "steel")
+JACKET_EASE, JACKET_SLEEVE_EASE, JACKET_HEM_Z = 0.026, 0.028, 0.93
+# Work boots: ankle-high over the shin up to BOOT_TOP, the shaft roomy enough to take jeans tucked in,
+# thick dark soles up to BOOT_SOLE_Z, a lace strip down the front.
+BOOT_COLOURS = ("boot_brown", "rubber")
+BOOT_EASE, BOOT_SHAFT_EASE, BOOT_TOP, BOOT_SOLE_Z = 0.012, 0.024, 0.17, 0.035
+# Work gloves: a snug shell over the hands, a cuff over the wrist.
+GLOVE_COLOURS = ("glove_tan",)
+GLOVE_EASE, GLOVE_CUFF = 0.005, 0.04
 
 
 def build(c):
@@ -185,7 +198,9 @@ def build(c):
     c.note("regions (vertices): " + ", ".join(f"{r} {n}" for r, n in counts.items()))
 
     made = [(make_hoodie(c, mesh, arm), "hoodie"), (make_glasses(c, mesh, arm), "glasses"),
-            (make_tshirt(c, mesh, arm), "t_shirt"), (make_jeans(c, mesh, arm), "jeans"), (make_trainers(c, mesh, arm), "trainers")]
+            (make_tshirt(c, mesh, arm), "t_shirt"), (make_jeans(c, mesh, arm), "jeans"), (make_trainers(c, mesh, arm), "trainers"),
+            (make_jumper(c, mesh, arm), "jumper"), (make_jacket(c, mesh, arm), "leather_jacket"),
+            (make_boots(c, mesh, arm), "work_boots"), (make_gloves(c, mesh, arm), "work_gloves")]
     for o, _ in made:
         o.data.update()
 
@@ -690,3 +705,123 @@ def make_trainers(c, body, arm):
         if f.calc_center_median().z < TRAINER_SOLE_Z:
             f.material_index = 1
     return _finish(c, shell, bm, part, TRAINER_COLOURS, "trainers", "soles by height")
+
+
+# ---------------------------------------------------------------- batch 2 (#63): warmer and tougher things
+
+def _top(c, body, arm, gid, ease, sleeve_ease, hem_z, colours, generator, details=None):
+    """A long-sleeved top over the torso and arms (a jumper, a jacket): eased off the body, the hem
+    cut level at `hem_z` with a band, cuffs at the wrists, the neck closed onto the body; `details`
+    adds to the bmesh (part 1) before it's finished. Records its `hem_z`."""
+    c.body, c.arm = body, arm
+    shoulder = arm.data.bones["LeftArm"].head_local.x
+    shell, bm, part = _shell(c, body, f"{c.spec['id']}_{gid}", {"Torso", "Arms"})
+    for v in bm.verts:
+        v.co += v.normal * (sleeve_ease if abs(v.co.x) > shoulder else ease)
+    bm.normal_update()
+    tree = g.surface_tree(body)
+    loops = g.boundary_loops(bm)
+    cuffs = [l for l in loops if abs(_centre(l).x) > shoulder]
+    rest = [l for l in loops if abs(_centre(l).x) <= shoulder]
+    assert len(cuffs) == 2 and len(rest) == 2, f"{gid} shell: {len(loops)} open edge loops, expected neck, hem, two cuffs"
+    hem, neck = min(rest, key=lambda l: _centre(l).z), max(rest, key=lambda l: _centre(l).z)
+    # The hem: down (or up) to hem_z, level, then a band in onto the body.
+    for v in hem:
+        v.co.z = min(v.co.z, hem_z + 0.03)
+    _level(hem, 2, hem_z + 0.03)
+    band = _hang(bm, hem, 0.03, -0.003)
+    g.lip(bm, band, lambda v: g.nearest_on(tree, v.co, 0.004))
+    for loop in cuffs:
+        side = 1.0 if _centre(loop).x > 0 else -1.0
+        _level(loop, 0)
+        band = g.lip(bm, loop, lambda v: g.nearest_on(tree, v.co + Vector((side * 0.025, 0, 0)), 0.008))
+        g.lip(bm, band, lambda v: g.nearest_on(tree, v.co, 0.003))
+    g.lip(bm, neck, lambda v: g.nearest_on(tree, v.co, 0.004))
+    _outward(bm, list(bm.faces), lambda f: Vector((0, -0.03, f.calc_center_median().z)) if abs(f.calc_center_median().x) < shoulder
+             else Vector((f.calc_center_median().x, 0, arm.data.bones["LeftArm"].head_local.z)))
+    if details:
+        details(bm, part, BVHTree.FromBMesh(bm), _centre(neck))
+    shell = _finish(c, shell, bm, part, colours, gid, generator)
+    shell["hem_z"] = round(hem_z, 4)
+    return shell
+
+
+def make_jumper(c, body, arm):
+    """A plain navy crew-neck jumper."""
+    return _top(c, body, arm, "jumper", JUMPER_EASE, JUMPER_SLEEVE_EASE, JUMPER_HEM_Z, JUMPER_COLOURS, "plain crew-neck jumper")
+
+
+def make_jacket(c, body, arm):
+    """A worn brown leather jacket, zipped: roomy enough to close over a hoodie or jumper, a stand-up
+    collar round the neck, a steel zip line down the front."""
+    def details(bm, part, tree, nc):
+        new = []
+        # The collar: a band standing up round the back and sides of the neck.
+        path = []
+        for k in range(9):
+            th = math.radians(-110 + 27.5 * k)
+            x, y = nc.x + 0.085 * math.sin(th), nc.y + 0.075 * math.cos(th)
+            hit = g.on_surface(tree, (x, y, 2.0), (0, 0, -1))
+            path.append(Vector((x, y, (hit.z if hit is not None else nc.z) + 0.015)))
+        new += g.tube(bm, path, lambda i: 0.016, 4, 0)
+        # The zip: a thin steel line down the front, from the collar to the hem.
+        top, bottom = nc.z - 0.02, JACKET_HEM_Z + 0.02
+        pts = [g.on_surface(tree, (nc.x, -1.0, top - (top - bottom) * k / 5), (0, 1, 0), lift=0.003) for k in range(6)]
+        pts = [p for p in pts if p is not None]
+        left = [bm.verts.new(p + Vector((-0.005, 0, 0))) for p in pts]
+        right = [bm.verts.new(p + Vector((0.005, 0, 0))) for p in pts]
+        zip_faces = [bm.faces.new((left[i], right[i], right[i + 1], left[i + 1])) for i in range(len(pts) - 1)]
+        if sum(f.normal.y for f in zip_faces) > 0:
+            bmesh.ops.reverse_faces(bm, faces=zip_faces)
+        for f in zip_faces:
+            f.material_index = 1
+        for f in new + zip_faces:
+            f[part] = 1
+    return _top(c, body, arm, "leather_jacket", JACKET_EASE, JACKET_SLEEVE_EASE, JACKET_HEM_Z, JACKET_COLOURS,
+                "zipped leather jacket; collar and zip from primitives", details)
+
+
+def make_boots(c, body, arm):
+    """Ankle-high work boots: the feet and the shins up to BOOT_TOP, the shaft roomy (jeans tucked in),
+    thick dark soles, a darker lace strip down the front of each."""
+    c.body, c.arm = body, arm
+    gid = f"{c.spec['id']}_work_boots"
+    shell, bm, part = _shell(c, body, gid, {"Feet", "Legs"}, smooth=0.3)
+    cut = [f for f in bm.faces if f.calc_center_median().z > BOOT_TOP]
+    bmesh.ops.delete(bm, geom=cut, context="FACES")
+    bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context="VERTS")
+    bm.normal_update()
+    for v in bm.verts:
+        k = min(1.0, max(0.0, (v.co.z - 0.06) / 0.06))
+        v.co += v.normal * (BOOT_EASE + (BOOT_SHAFT_EASE - BOOT_EASE) * k)
+        v.co.z = max(v.co.z, 0.0)
+    bm.normal_update()
+    loops = g.boundary_loops(bm)
+    assert len(loops) == 2, f"boots shell: {len(loops)} open edge loops, expected two tops"
+    for loop in loops:
+        _level(loop, 2, BOOT_TOP)
+    _outward(bm, list(bm.faces), lambda f: Vector((math.copysign(0.09, f.calc_center_median().x), -0.04, 0.06)))
+    for f in bm.faces:
+        if f.calc_center_median().z < BOOT_SOLE_Z:
+            f.material_index = 1
+    return _finish(c, shell, bm, part, BOOT_COLOURS, "work_boots", "ankle boots, soles by height")
+
+
+def make_gloves(c, body, arm):
+    """Work gloves: a snug shell over the hands (fingers and all), a cuff over the wrist."""
+    c.body, c.arm = body, arm
+    gid = f"{c.spec['id']}_work_gloves"
+    shell, bm, part = _shell(c, body, gid, {"Hands"}, smooth=0.2)
+    for v in bm.verts:
+        v.co += v.normal * GLOVE_EASE
+    bm.normal_update()
+    tree = g.surface_tree(body)
+    loops = g.boundary_loops(bm)
+    assert len(loops) == 2, f"gloves shell: {len(loops)} open edge loops, expected two wrists"
+    for loop in loops:
+        side = 1.0 if _centre(loop).x > 0 else -1.0
+        _level(loop, 0)
+        # The cuff: back over the wrist, a little loose.
+        g.lip(bm, loop, lambda v: g.nearest_on(tree, v.co - Vector((side * GLOVE_CUFF, 0, 0)), 0.009))
+    _outward(bm, list(bm.faces), lambda f: Vector((math.copysign(0.75, f.calc_center_median().x), 0.0, arm.data.bones["LeftHand"].head_local.z)))
+    return _finish(c, shell, bm, part, GLOVE_COLOURS, "work_gloves", "gloves")
