@@ -18,6 +18,11 @@
 //! An item whose model isn't there is a grey-box in its colour: clothing tints the regions it
 //! covers, an accessory or a bag is a box on its socket (`eyes`, `head_top`, `neck`, `back`).
 //!
+//! **Bags in the hand** (#91) hang straight down from the grip, whatever the hand is doing: each hand
+//! has a hang joint past the rig's bones (`hang`), at its grip but upright (the T-pose's arm turned
+//! down), and a bag held there is skinned to it. Its model is built on the right hand (`hand_r`) and
+//! mirrored for the left.
+//!
 //! **Telling players apart:** a flat ring on the ground round each survivor, ours mustard, others
 //! teal (the grey-box's jacket colours). Unlit, but dimmed with the daylight to [`RING_NIGHT`] of
 //! its colour at night (light comes only from sources: a ring mustn't glow in the dark).
@@ -207,6 +212,8 @@ pub struct SurvivorModel {
     /// A light texel of the body's texture, for tinting (see [`light_uv`]).
     light_uv: Option<[f32; 2]>,
     hand_r: usize,
+    /// Per hand (right, left): its bone and its grip in the rest pose, for the hang joints.
+    hang: [(usize, Vec3); 2],
     weapon_frame: Transform,
     bare: Handle<Mesh>,
     body_material: Handle<StandardMaterial>,
@@ -455,7 +462,17 @@ impl SurvivorModel {
         let outfit_material = materials.add(StandardMaterial { perceptual_roughness: 0.85, cull_mode: None, double_sided: true, ..default() });
         let mut ring_material = |c: Color| materials.add(StandardMaterial { base_color: c.with_alpha(0.75), unlit: true, alpha_mode: AlphaMode::Blend, depth_bias: 50.0, ..default() });
         let (ring_me, ring_other) = (ring_material(JACKET_ME), ring_material(JACKET_OTHER));
-        let bindposes = bindposes.add(SkinnedMeshInverseBindposes::from(rig.inverse_bind.clone()));
+        // The hang joints: at each hand's grip in the rest pose, after the rig's bones.
+        let hang = [("hand_r", "RightHand"), ("hand_l", "LeftHand")].map(|(socket, bone)| match body.socket_frame(socket) {
+            Some((b, frame)) => (b, frame.transform_point3(Vec3::ZERO)),
+            None => {
+                let b = rig.find(bone).unwrap_or(0);
+                (b, rig.inverse_bind[b].inverse().transform_point3(Vec3::ZERO))
+            }
+        });
+        let mut inverse_bind = rig.inverse_bind.clone();
+        inverse_bind.extend(hang.map(|(_, grip)| Mat4::from_translation(-grip)));
+        let bindposes = bindposes.add(SkinnedMeshInverseBindposes::from(inverse_bind));
         let model = Self {
             idle,
             gaits,
@@ -467,6 +484,7 @@ impl SurvivorModel {
             feet,
             light_uv: light,
             hand_r,
+            hang,
             weapon_frame,
             retarget,
             bare: Handle::default(),
@@ -575,6 +593,15 @@ impl SurvivorModel {
     }
 
     /// The pose of survivor `a` now: see the module docs.
+    /// The hang joints' transforms (right hand, left) for `pose`: at each hand's grip, the arm of the
+    /// T-pose turned to point down, so a bag held there hangs straight.
+    pub fn hang_joints(&self, pose: &RigPose) -> [Transform; 2] {
+        let rig = &self.body.rig;
+        let globals = rig.globals(pose);
+        [(self.hang[0], std::f32::consts::FRAC_PI_2), (self.hang[1], -std::f32::consts::FRAC_PI_2)]
+            .map(|((bone, grip), turn)| Transform::from_translation((globals[bone] * rig.inverse_bind[bone]).transform_point3(grip)).with_rotation(Quat::from_rotation_z(turn)))
+    }
+
     pub fn compose(&self, a: &SurvivorAnim, now: f32, style: Style, armed: bool) -> RigPose {
         let body = &self.body;
         let [walk, run, sneak] = std::array::from_fn(|k| self.moving(k, a));
@@ -716,6 +743,21 @@ impl SurvivorModel {
             };
             self.socket_box(&mut worn, socket, min, max, colour(d));
         }
+        // Bags in the hands, on the hang joints (see the module docs): the model mirrored for the left
+        // hand, else a box hanging from the grip.
+        let rig_len = self.body.rig.len();
+        for (k, item) in [outfit.hand, outfit.off_hand].into_iter().enumerate() {
+            let Some(d) = item.and_then(|i| items.get(i as usize)).filter(|d| d.bag.is_some()) else { continue };
+            let joint = (rig_len + k) as u16;
+            if let Some(w) = model_of(d) {
+                worn.append(&w.mesh.hung(joint, k == 1));
+                continue;
+            }
+            let s = (d.bag.as_ref().map_or(10.0, |b| b.capacity_l).clamp(5.0, 60.0) / 20.0).cbrt();
+            let out = if k == 0 { -1.0 } else { 1.0 };
+            let (a, b) = (Vec3::new(out * 0.08, -0.06 * s, -0.15 * s), Vec3::new(out * (0.08 + 0.32 * s), 0.06 * s, 0.15 * s));
+            worn.add_box(Mat4::from_translation(self.hang[k].1), a.min(b), a.max(b), joint, colour(d));
+        }
         let src = &self.body.mesh;
         let mut body = SkinMesh { indices: Vec::with_capacity(src.indices.len()), ..src.clone() };
         let region = |v: u32| self.body.regions[v as usize] as usize;
@@ -765,6 +807,10 @@ pub fn attach(commands: &mut Commands, model: &SurvivorModel, root: Entity, play
         let parent = b.parent.map_or(root, |p| joints[p]);
         joints.push(commands.spawn((Transform { translation: b.t, rotation: b.r, scale: b.s }, Visibility::Inherited, ChildOf(parent))).id());
     }
+    // The hang joints for bags in the hands, posed by `hang_joints`.
+    for _ in 0..2 {
+        joints.push(commands.spawn((Transform::default(), Visibility::Inherited, ChildOf(root))).id());
+    }
     let skin = SkinnedMesh { inverse_bindposes: model.bindposes.clone(), joints: joints.clone() };
     // Posed far from the rest pose (lying down), so don't cull by the rest-pose bounds.
     let body = commands.spawn((Mesh3d(model.bare.clone()), MeshMaterial3d(model.body_material.clone()), skin.clone(), NoFrustumCulling, Transform::default(), ChildOf(root))).id();
@@ -776,8 +822,8 @@ pub fn attach(commands: &mut Commands, model: &SurvivorModel, root: Entity, play
     joints
 }
 
-/// What's worn: the worn items, the back bag and the shoulder bag.
-type OutfitKey = (Vec<u16>, Option<u16>, Option<u16>);
+/// What's worn: the worn items, the back bag, the shoulder bag and what's in each hand.
+type OutfitKey = (Vec<u16>, Option<u16>, Option<u16>, Option<u16>, Option<u16>);
 
 /// Outfits already built, by what's worn: (body, outfit).
 #[derive(Default)]
@@ -815,7 +861,7 @@ pub(crate) fn dress_survivors(
         if d.worn.as_ref() == Some(&now) {
             continue;
         }
-        let key = (now.worn.clone(), now.back, now.shoulder);
+        let key = (now.worn.clone(), now.back, now.shoulder, now.hand, now.off_hand);
         let (body, outfit) = built
             .0
             .entry(key)

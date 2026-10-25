@@ -297,20 +297,32 @@ pub struct Snapshot {
 }
 
 /// What a body has on, for drawing it (#63): the clothing and accessories it wears in the order put
-/// on, and the bags on its back and shoulder, as item indices (into the item definitions the client
-/// got on joining). `id` is a player's in [`Snapshot::outfits`], a zombie's in [`Snapshot::risen`].
+/// on, the bags on its back and shoulder, and what it holds in each hand (the client draws a bag
+/// there; #91), as item indices (into the item definitions the client got on joining). `id` is a
+/// player's in [`Snapshot::outfits`], a zombie's in [`Snapshot::risen`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OutfitView {
     pub id: u32,
     pub worn: Vec<u16>,
     pub back: Option<u16>,
     pub shoulder: Option<u16>,
+    #[serde(default)]
+    pub hand: Option<u16>,
+    #[serde(default)]
+    pub off_hand: Option<u16>,
 }
 
 impl OutfitView {
     pub fn of(p: &zombye_sim::Player) -> Self {
         let inv = &p.inventory;
-        Self { id: p.id, worn: inv.worn.iter().map(|s| s.item).collect(), back: inv.back.map(|s| s.item), shoulder: inv.shoulder.map(|s| s.item) }
+        Self {
+            id: p.id,
+            worn: inv.worn.iter().map(|s| s.item).collect(),
+            back: inv.back.map(|s| s.item),
+            shoulder: inv.shoulder.map(|s| s.item),
+            hand: inv.hand.map(|s| s.item),
+            off_hand: inv.off_hand.map(|s| s.item),
+        }
     }
 }
 
@@ -341,7 +353,7 @@ impl Snapshot {
             .collect();
         let risen = zombies
             .iter()
-            .filter_map(|v| world.risen_look(v.id).map(|look| OutfitView { id: v.id, worn: look.iter().filter_map(|i| world.item_index(i)).collect(), back: None, shoulder: None }))
+            .filter_map(|v| world.risen_look(v.id).map(|look| OutfitView { id: v.id, worn: look.iter().filter_map(|i| world.item_index(i)).collect(), ..Default::default() }))
             .collect();
         let players = world
             .players
@@ -1070,6 +1082,13 @@ mod tests {
             }
         }
         assert!(seen, "the other client sees our glasses go on");
+        // A bag in the hand (#91) shows too.
+        server.world.give_item(id, "plastic_bag", 1);
+        let k = server.world.player(id).unwrap().inventory.carried.iter().position(|s| server.world.item_def(s.item).id == "plastic_bag").unwrap();
+        server.send(Intent::Equip { player: id, index: k as u32 });
+        let bag = server.world.item_index("plastic_bag").unwrap();
+        let held = (0..40).any(|_| server.tick().for_player(other).outfits.iter().any(|o| o.id == id && o.hand == Some(bag)));
+        assert!(held, "the other client sees the bag in our hand");
     }
 
     /// Run stats (#13) come with every snapshot, each client only its own; the cause of death

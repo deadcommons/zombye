@@ -29,7 +29,7 @@ A body's spec lists its `sockets` and its `wearables`; each wearable entry gives
 - `kind`: `Skinned` or `Rigid`; `socket`: the socket a rigid one sits on;
 - `layer`: the clothing layer (items::Layer: Base, Mid, Outer; None for accessories);
 - `occupies`: the slots it takes (body regions Head, Torso, Arms, Hands, Legs, Feet, or the accessory
-  slots face, head_top, neck, hand_r, hand_l, back): two wearables can't share a slot on one layer;
+  slots face, head_top, neck, hand_r, hand_l, back, shoulder): two wearables can't share a slot on one layer;
 - `hides`: the body regions the game hides while it's worn (what it visibly covers);
 - `tris`: its triangle budget.
 
@@ -91,7 +91,7 @@ def region_group(region):
     return f"{REGION_PREFIX}{region}"
 
 
-SLOTS = REGIONS + ("face", "head_top", "neck", "hand_r", "hand_l", "back")
+SLOTS = REGIONS + ("face", "head_top", "neck", "hand_r", "hand_l", "back", "shoulder")
 KINDS = ("Skinned", "Rigid")
 LAYERS = ("Base", "Mid", "Outer")
 

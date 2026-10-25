@@ -800,12 +800,15 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   matching bones in the idle's first frame; the spine shares the torso's turn, the neck half the head's): the arm
   holding a weapon at the ready, swing / shove / stomp (timed as before), the flinch (additive) and the fall onto the
   back when dead or asleep; then grounded on the lowest foot vertex. `step_movement` and prediction are untouched.
-  **Dressing:** `Snapshot::outfits` (`net::OutfitView`: worn items, the back and shoulder bags, by item index; every
-  player, every snapshot) says what's drawn, for us and for others, changing the moment it does: the body with the
+  **Dressing:** `Snapshot::outfits` (`net::OutfitView`: worn items, the back and shoulder bags, what's in each hand,
+  by item index; every player, every snapshot) says what's drawn, for us and for others, changing the moment it does: the body with the
   regions worn wearables hide cut away, and every worn model merged into one more mesh (both cached per outfit; a garment whose regions are all hidden by a model on a higher layer that reaches at least as low, a t-shirt under a hoodie, isn't drawn; under a shorter leather jacket it is), and a worn model with a hem (`hem_z` in its extras: shirts, hoodies) cuts away, 3 cm above it, the faces other garments have in the regions it hides (a wearable can carry a `_REGION` per vertex: the jeans' top is Torso), so trousers never show through a shirt worn out over them, so a
   survivor is body + outfit + held weapon + ring draws. An item with no model is a grey-box: clothing tints the regions
   it covers (sampling a light texel of the shirt, so the colour shows), an accessory is a box on its socket, a bag a box
-  on the back (or the left hip from the shoulder). The held weapon sits on `hand_r`. Players are told apart by a flat
+  on the back (or the left hip from the shoulder). **A bag in the hand** (#91: a carrier bag, a duffel) hangs straight
+  down from the grip whatever the arm does: each hand has a hang joint past the rig's bones, posed every frame at its
+  grip with the T-pose's arm turned down (`SurvivorModel::hang_joints`), and the bag is skinned to it; its model is
+  built on the right hand and mirrored for the left (`SkinMesh::hung`). The held weapon sits on `hand_r`. Players are told apart by a flat
   ring round their feet, ours mustard, others teal, unlit but dimmed with the daylight to 15% at night (no glow in the dark).
 - **Rising in what it wore** (#63): a player who dies infected has what it wore noted (`World::rise_looks`, item ids,
   before it drops everything), the zombie it rises as keeps it (`World::risen_look`, until the corpse is cleared away),

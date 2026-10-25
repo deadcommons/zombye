@@ -464,10 +464,15 @@ fn animate_survivors(
             Look::Model(js) => {
                 let Some(model) = &model else { continue };
                 let pose = model.compose(a, now, style(category), armed);
-                for (b, e) in js.iter().enumerate() {
+                for (b, e) in js.iter().take(pose.t.len()).enumerate() {
                     if let Ok(mut jt) = joints.get_mut(*e) {
                         jt.translation = pose.t[b];
                         jt.rotation = pose.r[b];
+                    }
+                }
+                for (e, t) in js.iter().skip(pose.t.len()).zip(model.hang_joints(&pose)) {
+                    if let Ok(mut jt) = joints.get_mut(*e) {
+                        *jt = t;
                     }
                 }
             }

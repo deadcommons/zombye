@@ -184,6 +184,23 @@ impl SkinMesh {
         }
     }
 
+    /// A copy wholly on joint `joint` (a hand bag on its hang joint), mirrored left for right when
+    /// `mirror` (x negated, triangles turned back the right way round).
+    pub fn hung(&self, joint: u16, mirror: bool) -> SkinMesh {
+        let mut m = self.clone();
+        m.joints.fill([joint, 0, 0, 0]);
+        m.weights.fill([1.0, 0.0, 0.0, 0.0]);
+        if mirror {
+            for p in m.positions.iter_mut().chain(m.normals.iter_mut()) {
+                p.x = -p.x;
+            }
+            for t in m.indices.as_chunks_mut::<3>().0 {
+                t.swap(1, 2);
+            }
+        }
+        m
+    }
+
     /// A box from `min` to `max` in a frame `frame` (rest-pose model space), all on bone `bone`.
     pub fn add_box(&mut self, frame: Mat4, min: Vec3, max: Vec3, bone: u16, color: [f32; 4]) {
         for (quad, n) in crate::rig::box_faces(min, max) {
@@ -578,6 +595,25 @@ pub fn parse_wearable(bytes: &[u8], rig: &Rig) -> Result<Wearable, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A hand bag's mesh put wholly on its hang joint, and mirrored for the other hand: x negated,
+    /// each triangle turned so it still faces out.
+    #[test]
+    fn a_hung_mesh_is_on_one_joint_and_mirrors() {
+        let mut m = SkinMesh::default();
+        m.add_box(Mat4::from_translation(Vec3::new(-0.7, 1.3, 0.0)), Vec3::splat(-0.1), Vec3::splat(0.1), 3, [1.0; 4]);
+        let hung = m.hung(25, true);
+        assert!(hung.joints.iter().all(|j| *j == [25, 0, 0, 0]) && hung.weights.iter().all(|w| *w == [1.0, 0.0, 0.0, 0.0]));
+        assert!(hung.positions.iter().all(|p| p.x > 0.5));
+        for (a, b) in m.indices.as_chunks::<3>().0.iter().zip(hung.indices.as_chunks::<3>().0) {
+            let n = |mesh: &SkinMesh, t: &[u32; 3]| {
+                let [p0, p1, p2] = t.map(|i| mesh.positions[i as usize]);
+                (p1 - p0).cross(p2 - p0)
+            };
+            let (na, nb) = (n(&m, a), n(&hung, b));
+            assert!((nb - Vec3::new(-na.x, na.y, na.z)).length() < 1e-5, "winding kept facing out");
+        }
+    }
 
     #[test]
     fn keys_interpolate_and_clamp() {
