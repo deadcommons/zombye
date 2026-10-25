@@ -56,13 +56,41 @@ const CUT_ABOVE_HEM: f32 = 0.03;
 /// How bright the marker rings are at night, of their daytime colour.
 const RING_NIGHT: f32 = 0.15;
 
-/// Each stance's clip (the first of these the body has) and how much wider its legs swing
-/// ([`amplify`]): the game's walk (3 m/s) and run (5.5 m/s) are brisker than the clips were made at,
-/// and played faster to keep the feet planted they'd step comically quickly. Wider steps keep the
-/// cadence of a real hurried walk and a tired run (about 2.9 steps a second each) with no foot slide.
-/// The approved `walk` can't stretch that far (4 steps a second at best), so the walk is `walk_alt`.
-const GAITS: [(&[&str], f32); 3] = [(&["walk_alt", "walk"], 1.4), (&["run"], 1.25), (&["sneak"], 1.0)];
+/// Each stance's clips, walking, running and sneaking: every direction it has (each the first of
+/// these names the body has; a missing one is left out). Which way each travels is measured from its
+/// planted feet, not taken from its name.
+const STANCE_CLIPS: [&[&[&str]]; 3] = [
+    &[&["walk_alt", "walk"], &["walk_left"], &["walk_right"], &["walk_back"]],
+    &[&["run"], &["run_back_left"], &["run_back_right"]],
+    &[&["sneak"], &["sneak_left"], &["sneak_right"], &["sneak_back"]],
+];
+/// The cadence (cycles a second, two steps each) each stance's clips are widened to reach
+/// ([`amplify`], at most [`MAX_SWING`]): the game's walk (3 m/s) and run (5.5 m/s) are brisker than the
+/// clips were made at, and played faster to keep the feet planted they'd step comically quickly
+/// (the owner). About 2.9 steps a second walking and running; the sneak as made.
+const CADENCE: [f32; 3] = [1.45, 1.45, 0.9];
+const MAX_SWING: f32 = 1.6;
 const LEG_BONES: [&str; 6] = ["LeftUpLeg", "LeftLeg", "LeftFoot", "RightUpLeg", "RightLeg", "RightFoot"];
+/// Clips further apart than this (radians) aren't blended (two different runs' legs would mush):
+/// the nearer plays, its hips turned the rest of the way.
+const BLEND_SPAN: f32 = 1.75;
+
+/// One locomotion clip: which way it travels relative to where the survivor faces (radians: 0 ahead,
+/// +π/2 to its left, ±π back), its phase (the left foot furthest along that way) and its stride
+/// (metres a cycle).
+#[derive(Clone, Copy, Debug)]
+struct Gait {
+    clip: usize,
+    angle: f32,
+    phase: f32,
+    stride: f32,
+}
+
+/// `a` - `b` wrapped into (-π, π].
+fn angle_diff(a: f32, b: f32) -> f32 {
+    let d = (a - b).rem_euclid(TAU);
+    if d > std::f32::consts::PI { d - TAU } else { d }
+}
 
 /// The body file, when `--survivor` / `ZOMBYE_SURVIVOR` don't name one.
 const DEFAULT_BODY: &str = "survivor_01";
@@ -163,12 +191,11 @@ pub struct SurvivorModel {
     /// Wearables by model name.
     wardrobe: HashMap<String, Wearable>,
     retarget: Retarget,
-    /// The locomotion clips (indices into the body's clips): idle, walk, run, sneak; each loop's
-    /// phase where the left foot is furthest forward, and its stride (metres per cycle).
+    /// The idle clip, and each stance's locomotion clips (walk, run, sneak) by direction.
     idle: Option<usize>,
-    loops: [Option<usize>; 3],
-    phase: [f32; 3],
-    stride: [f32; 3],
+    gaits: [Vec<Gait>; 3],
+    /// The bones the hips' turn is taken back out of (the spine's first, under the hips).
+    spine_base: Vec<usize>,
     /// Bones an action takes over (the upper body: everything from the spine up), the arm that holds
     /// a weapon, the bones the flinch turns, all of them.
     upper: Vec<usize>,
@@ -223,37 +250,45 @@ fn load_wearables(dir: &Path, body: &Body, into: &mut HashMap<String, Wearable>)
     }
 }
 
-/// A looping clip's phase (where the left foot is furthest forward) and stride: while a foot is
-/// planted (in the lowest fifth of its height) it slides back at the walking speed.
-fn phase_and_stride(body: &Body, clip: usize) -> (f32, f32) {
+/// A looping clip's way of travel, phase and stride: while a foot is planted (in the lowest fifth of
+/// its height) it slides against the way the body would travel, at its speed (as `zvat.py` measures
+/// a stride). `None` if no foot is planted for long (an idle).
+fn gait_of(body: &Body, clip: usize) -> Option<Gait> {
     let rig = &body.rig;
     let c = &body.clips[clip];
-    let (Some(l), Some(r)) = (rig.find("LeftFoot"), rig.find("RightFoot")) else { return (0.0, 0.0) };
+    let (l, r) = (rig.find("LeftFoot")?, rig.find("RightFoot")?);
     let feet: Vec<[Vec3; 2]> = c.frames.iter().map(|p| rig.globals(p)).map(|g| [g[l].w_axis.truncate(), g[r].w_axis.truncate()]).collect();
     let n = feet.len();
-    let best = (0..n).max_by(|&a, &b| (feet[a][0].z - feet[a][1].z).total_cmp(&(feet[b][0].z - feet[b][1].z))).unwrap_or(0);
-    let phase = best as f32 / (n - 1).max(1) as f32;
     let dt = c.secs / (n - 1).max(1) as f32;
-    let mut speeds = Vec::new();
+    let mut slides: Vec<Vec2> = Vec::new();
     for side in 0..2 {
         let (lo, hi) = feet.iter().fold((f32::MAX, f32::MIN), |(lo, hi), f| (lo.min(f[side].y), hi.max(f[side].y)));
         let low = lo + (hi - lo) * 0.2;
         for w in feet.windows(2) {
             if w[0][side].y < low && w[1][side].y < low {
-                speeds.push((w[0][side].z - w[1][side].z) / dt);
+                slides.push((w[0][side].xz() - w[1][side].xz()) / dt);
             }
         }
     }
+    let mean = slides.iter().sum::<Vec2>() / slides.len().max(1) as f32;
+    let way = mean.try_normalize()?;
+    let mut speeds: Vec<f32> = slides.iter().map(|v| v.dot(way)).collect();
     speeds.sort_by(f32::total_cmp);
-    let stride = speeds.get(speeds.len() / 2).copied().unwrap_or(0.0).max(0.0) * c.secs;
-    (phase, if stride > 0.05 { stride } else { 0.0 })
+    let stride = speeds[speeds.len() / 2].max(0.0) * c.secs;
+    if stride < 0.05 {
+        return None;
+    }
+    let along = |f: &[Vec3; 2]| (f[0].xz() - f[1].xz()).dot(way);
+    let best = (0..n).max_by(|&a, &b| along(&feet[a]).total_cmp(&along(&feet[b]))).unwrap_or(0);
+    Some(Gait { clip, angle: way.x.atan2(way.y), phase: best as f32 / (n - 1).max(1) as f32, stride })
 }
 
-/// Turn every clip so the body faces the way the survivor does: take out the root's mean heading
-/// over the clip (Meshy's idle stands turned 40° off its forward), keeping its sway within the clip.
+/// Turn the idle so the body faces the way the survivor does: take out the root's mean heading over
+/// the clip (Meshy's idle stands turned 40° off its forward), keeping its sway within it. Not the
+/// moving clips: a diagonal one's hips are turned on purpose.
 fn face_forward(body: &mut Body) {
     let Some(root) = (0..body.rig.len()).find(|&b| body.rig.bones[b].parent.is_none()) else { return };
-    for clip in &mut body.clips {
+    for clip in body.clips.iter_mut().filter(|c| c.name.eq_ignore_ascii_case("idle")) {
         let (sin, cos) = clip.frames.iter().fold((0.0, 0.0), |(s, c), f| {
             let fwd = f.r[root] * Vec3::Z;
             let yaw = fwd.x.atan2(fwd.z);
@@ -308,6 +343,39 @@ fn light_uv(body: &Body, texture: &Image) -> Option<[f32; 2]> {
         })
 }
 
+/// Each stance's clips ([`STANCE_CLIPS`]), their legs widened to reach its [`CADENCE`] at its speed
+/// (if they fall short), then measured.
+fn gaits(body: &mut Body) -> [Vec<Gait>; 3] {
+    use zombye_sim::players::{RUN_SPEED, SNEAK_SPEED, WALK_SPEED};
+    let legs: Vec<usize> = LEG_BONES.iter().filter_map(|n| body.rig.find(n)).collect();
+    let speeds = [WALK_SPEED, RUN_SPEED, SNEAK_SPEED];
+    std::array::from_fn(|s| {
+        let want = speeds[s] / CADENCE[s];
+        let mut out = Vec::new();
+        for names in STANCE_CLIPS[s] {
+            let Some(c) = names.iter().find_map(|n| body.clips.iter().position(|x| x.name.eq_ignore_ascii_case(n))) else { continue };
+            let Some(g) = gait_of(body, c) else { continue };
+            if g.stride < want {
+                // Stride grows about in step with the swing: two tries to land near the target.
+                let original = body.clips[c].clone();
+                let mut k = (want / g.stride).min(MAX_SWING);
+                for _ in 0..2 {
+                    body.clips[c] = original.clone();
+                    amplify(&mut body.clips[c], &legs, k);
+                    let got = gait_of(body, c).map_or(g.stride, |g| g.stride);
+                    k = (k * want / got).clamp(1.0, MAX_SWING);
+                }
+                body.clips[c] = original;
+                amplify(&mut body.clips[c], &legs, k);
+            }
+            if let Some(g) = gait_of(body, c) {
+                out.push(g);
+            }
+        }
+        out
+    })
+}
+
 /// A flat ring round a survivor's feet.
 fn ring_mesh() -> Mesh {
     let (inner, outer, n) = (0.36, 0.44, 40);
@@ -351,25 +419,12 @@ impl SurvivorModel {
         if let Some(dir) = path.parent() {
             load_wearables(&dir.join("wearables"), &body, &mut wardrobe);
         }
-        let clip = |name: &str| body.clips.iter().position(|c| c.name.eq_ignore_ascii_case(name));
-        let idle = clip("idle");
-        let loops = GAITS.map(|(names, _)| names.iter().find_map(|n| clip(n)));
-        let legs: Vec<usize> = LEG_BONES.iter().filter_map(|n| body.rig.find(n)).collect();
-        for (c, (_, k)) in loops.iter().zip(GAITS) {
-            if let Some(c) = c {
-                amplify(&mut body.clips[*c], &legs, k);
-            }
-        }
+        let idle = body.clips.iter().position(|c| c.name.eq_ignore_ascii_case("idle"));
+        let gaits = gaits(&mut body);
         let reference = idle.map_or_else(|| body.rig.rest(), |i| body.clips[i].frames[0].clone());
         let retarget = Retarget::new(&body, reference);
-        let mut phase = [0.0; 3];
-        let mut stride = [0.0; 3];
-        for (k, c) in loops.iter().enumerate() {
-            if let Some(c) = c {
-                (phase[k], stride[k]) = phase_and_stride(&body, *c);
-            }
-        }
         let rig = &body.rig;
+        let spine_base = (0..rig.len()).filter(|&b| rig.bones[b].parent.is_some_and(|p| rig.bones[p].parent.is_none()) && rig.bones[b].name.to_lowercase().starts_with("spine")).collect();
         let upper: Vec<usize> = {
             let mut up = vec![false; rig.len()];
             for b in 0..rig.len() {
@@ -403,9 +458,8 @@ impl SurvivorModel {
         let bindposes = bindposes.add(SkinnedMeshInverseBindposes::from(rig.inverse_bind.clone()));
         let model = Self {
             idle,
-            loops,
-            phase,
-            stride,
+            gaits,
+            spine_base,
             upper,
             right_arm,
             flinching,
@@ -428,33 +482,102 @@ impl SurvivorModel {
         let (bare, _) = model.dress(&[], &OutfitView::default());
         let model = Self { bare: meshes.add(bare.to_mesh()), ..model };
         info!(
-            "survivor: {} ({} bones, {} triangles, clips {}), strides walk {:.2} run {:.2} sneak {:.2} m, {} wearables",
+            "survivor: {} ({} bones, {} triangles), gaits {}, {} wearables",
             path.display(),
             model.body.rig.len(),
             model.body.mesh.triangles(),
-            model.body.clips.iter().map(|c| format!("{} {:.2}s", c.name, c.secs)).collect::<Vec<_>>().join(", "),
-            model.stride[0],
-            model.stride[1],
-            model.stride[2],
+            model
+                .gaits
+                .iter()
+                .flatten()
+                .map(|g| format!("{} {:+.0}° {:.2} m", model.body.clips[g.clip].name, g.angle.to_degrees(), g.stride))
+                .collect::<Vec<_>>()
+                .join(", "),
             model.wardrobe.len()
         );
         Some(model)
-    }
-
-    /// Metres per locomotion cycle walking, running and sneaking (the grey-box's where a clip has none).
-    pub fn strides(&self) -> [f32; 3] {
-        let grey = [1.5, 2.5, 0.95];
-        std::array::from_fn(|k| if self.stride[k] > 0.0 { self.stride[k] } else { grey[k] })
     }
 
     fn clip_at(&self, clip: Option<usize>, u: f32) -> RigPose {
         clip.map_or_else(|| self.retarget.reference.clone(), |i| self.body.clips[i].sample(u))
     }
 
+    /// Which of stance `s`'s clips play moving at `angle` (relative to the facing), how much of each,
+    /// and how far each one's hips turn to point its legs that way: the two either side of it blended,
+    /// or, further apart than [`BLEND_SPAN`], the nearer turned (crossfading across the middle).
+    fn mix(&self, s: usize, angle: f32) -> Vec<(Gait, f32, f32)> {
+        let gaits = &self.gaits[s];
+        match gaits.len() {
+            0 => return Vec::new(),
+            // A body with only a forward clip: as before directions existed (no turning).
+            1 => return vec![(gaits[0], 1.0, 0.0)],
+            _ => {}
+        }
+        // The nearest clip counter-clockwise (at or before `angle`) and the next one round.
+        let before = |g: &Gait| angle_diff(angle, g.angle).rem_euclid(TAU);
+        let a = *gaits.iter().min_by(|x, y| before(x).total_cmp(&before(y))).unwrap();
+        let b = *gaits.iter().filter(|g| g.clip != a.clip).min_by(|x, y| (-before(x)).rem_euclid(TAU).total_cmp(&(-before(y)).rem_euclid(TAU))).unwrap();
+        let span = angle_diff(b.angle, a.angle).rem_euclid(TAU).max(1e-3);
+        let t = (before(&a) / span).clamp(0.0, 1.0);
+        if span <= BLEND_SPAN {
+            vec![(a, 1.0 - t, 0.0), (b, t, 0.0)]
+        } else {
+            let w = smooth(0.4, 0.6, t);
+            vec![(a, 1.0 - w, angle_diff(angle, a.angle)), (b, w, angle_diff(angle, b.angle))]
+        }
+    }
+
+    /// Metres per locomotion cycle for `a` now (its stances' clips at its direction of travel).
+    pub fn cycle_metres(&self, a: &SurvivorAnim) -> f32 {
+        let grey = [1.5, 2.5, 0.95];
+        let weights = [(1.0 - a.run_w) * (1.0 - a.sneak_w), a.run_w * (1.0 - a.sneak_w), a.sneak_w];
+        (0..3)
+            .map(|s| {
+                let m = self.mix(s, a.move_angle);
+                let stride = if m.is_empty() { grey[s] } else { m.iter().map(|(g, w, _)| g.stride * w).sum() };
+                weights[s] * stride
+            })
+            .sum::<f32>()
+            .max(0.1)
+    }
+
+    /// Stance `s` moving at `a`'s direction and cycle: its clips blended, hips turned as [`Self::mix`] says.
+    fn moving(&self, s: usize, a: &SurvivorAnim) -> RigPose {
+        let mut out: Option<RigPose> = None;
+        let mut total = 0.0;
+        for (g, w, turn) in self.mix(s, a.move_angle) {
+            if w <= 0.0 {
+                continue;
+            }
+            let mut p = self.body.clips[g.clip].sample(a.cycle + g.phase);
+            self.turn_hips(&mut p, turn);
+            total += w;
+            out = Some(match out {
+                None => p,
+                Some(o) => o.blend(&p, w / total),
+            });
+        }
+        out.unwrap_or_else(|| self.retarget.reference.clone())
+    }
+
+    /// Turns the legs (the hips) `turn` radians about the vertical, the chest kept where it was.
+    fn turn_hips(&self, pose: &mut RigPose, turn: f32) {
+        if turn.abs() < 1e-3 {
+            return;
+        }
+        let root = 0;
+        let hips = pose.r[root];
+        let yaw = Quat::from_rotation_y(turn);
+        pose.r[root] = yaw * hips;
+        for &b in &self.spine_base {
+            pose.r[b] = hips.inverse() * yaw.inverse() * hips * pose.r[b];
+        }
+    }
+
     /// The pose of survivor `a` now: see the module docs.
     pub fn compose(&self, a: &SurvivorAnim, now: f32, style: Style, armed: bool) -> RigPose {
         let body = &self.body;
-        let [walk, run, sneak] = std::array::from_fn(|k| self.clip_at(self.loops[k], a.cycle + self.phase[k]));
+        let [walk, run, sneak] = std::array::from_fn(|k| self.moving(k, a));
         let idle_u = self.idle.map_or(0.0, |i| now / body.clips[i].secs + a.player as f32 * 0.37);
         let standing = self.clip_at(self.idle, idle_u).blend(&sneak, a.sneak_w);
         let moving = walk.blend(&run, a.run_w).blend(&sneak, a.sneak_w);
@@ -704,11 +827,19 @@ pub(crate) fn dress_survivors(
 mod tests {
     use super::*;
 
-    /// The promoted survivor and its wearables' folder.
+    /// The promoted survivor and its wearables' folder (or a work-in-progress export: `ZOMBYE_SURVIVOR`).
     fn shipped_body() -> (Body, PathBuf) {
+        if let Some(dir) = std::env::var_os("ZOMBYE_SURVIVOR").map(PathBuf::from) {
+            let path = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).find(|p| p.to_string_lossy().ends_with("_body.glb")).unwrap();
+            let mut body = parse_body(&std::fs::read(&path).unwrap()).unwrap();
+            face_forward(&mut body);
+            return (body, dir.join("wearables"));
+        }
         let models = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/models");
         let path = models.join(format!("characters/{DEFAULT_BODY}.glb"));
-        (parse_body(&std::fs::read(&path).unwrap()).unwrap(), models.join("wearables"))
+        let mut body = parse_body(&std::fs::read(&path).unwrap()).unwrap();
+        face_forward(&mut body);
+        (body, models.join("wearables"))
     }
 
     /// The shipped body: clips, sockets, regions; the retarget leaves the reference pose as it is for
@@ -738,17 +869,29 @@ mod tests {
         load_wearables(&wearables, &body, &mut wardrobe);
         assert_eq!(wardrobe.get("hoodie").map(|w| w.hides.clone()), Some(vec![BodyPart::Torso, BodyPart::Arms]));
         assert!(wardrobe.get("glasses").is_some_and(|w| w.mesh.triangles() <= 100));
-        // Each stance's cadence at its speed, with the legs swung as the game swings them: a believable
-        // 2-3.4 steps a second (the owner: the run was "comically fast"), the feet planted.
+        // Every stance's clips, as the game swings them: a believable 2-3.6 steps a second at its speed
+        // (the owner: the run was "comically fast"), feet planted; and each travels the way its name says
+        // (walk_right is walk_left mirrored).
         let mut body = body;
+        let gaits = gaits(&mut body);
         let speeds = [zombye_sim::players::WALK_SPEED, zombye_sim::players::RUN_SPEED, zombye_sim::players::SNEAK_SPEED];
-        let legs: Vec<usize> = LEG_BONES.iter().filter_map(|n| body.rig.find(n)).collect();
-        for ((names, k), speed) in GAITS.iter().zip(speeds) {
-            let c = names.iter().find_map(|n| body.clips.iter().position(|c| c.name == *n)).unwrap();
-            amplify(&mut body.clips[c], &legs, *k);
-            let (_, stride) = phase_and_stride(&body, c);
-            let steps = 2.0 * speed / stride;
-            assert!((1.6..3.4).contains(&steps), "{names:?}: {steps:.2} steps a second ({stride:.2} m a cycle at {speed} m/s)");
+        for (s, gs) in gaits.iter().enumerate() {
+            if std::env::var_os("ZOMBYE_SURVIVOR").is_none() && gs.len() == 1 {
+                continue; // the promoted body before its directional clips
+            }
+            assert!(gs.len() >= 3, "stance {s}: {} clips", gs.len());
+            for g in gs {
+                let name = &body.clips[g.clip].name;
+                let steps = 2.0 * speeds[s] / g.stride;
+                // Backward at full speed is quicker on the feet (the clip can only stretch so far).
+                let most = if g.angle.abs() > 1.75 { 4.3 } else { 3.6 };
+                assert!((1.6..most).contains(&steps), "{name}: {steps:.2} steps a second ({:.2} m a cycle)", g.stride);
+                let want: f32 = if name.ends_with("back_left") { 135.0 } else if name.ends_with("back_right") { -135.0 } else if name.ends_with("left") { 90.0 }
+                    else if name.ends_with("right") { -90.0 } else if name.ends_with("back") { 180.0 } else { 0.0 };
+                let off = angle_diff(g.angle, want.to_radians()).to_degrees();
+                println!("{name}: {steps:.2} steps a second, {:.2} m a cycle, travels {:.0}°", g.stride, g.angle.to_degrees());
+                assert!(off.abs() < 30.0, "{name} travels at {:.0}°, not {want}°", g.angle.to_degrees());
+            }
         }
     }
 }

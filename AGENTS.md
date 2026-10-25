@@ -788,7 +788,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   before promotion), else `assets/models/characters/survivor_01.glb`; `none`, or no file: the grey-box. Wearables: every
   GLB in `assets/models/wearables/`, then `wearables/` beside the body, by file name (an item's `model`).
   **Animation:** locomotion from the body's own clips, sampled on the same distance-driven cycle, each clip's stride
-  measured from its planted feet after its legs are swung wider (`GAITS`: the walk is `walk_alt` x1.4, the run x1.25, so the game's brisk 3 and 5.5 m/s come at about 2.9 steps a second with the feet planted) and its mean hip turn taken out (so it faces where the player faces); the grey-box's
+  measured from its planted feet (which way it travels, its phase and stride) after its legs are swung wider to reach `CADENCE` (about 2.9 steps a second at the game's brisk 3 and 5.5 m/s, feet planted; the walk is `walk_alt`), the idle's 40° turn taken out. **Directions** (`STANCE_CLIPS`): by the way he moves off his aim, walking and sneaking blend the clips either side (forward, left, right, back), running (forward and the back diagonals) plays the nearer one with the hips turned the rest of the way and the chest kept on the aim (`--pose run@90:0` holds that); the grey-box's
   poses carried over onto the skeleton for the rest (`Retarget`: each grey-box bone's turn from its rest put on the
   matching bones in the idle's first frame; the spine shares the torso's turn, the neck half the head's): the arm
   holding a weapon at the ready, swing / shove / stomp (timed as before), the flinch (additive) and the fall onto the

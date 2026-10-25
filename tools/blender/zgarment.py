@@ -161,6 +161,67 @@ def merge_clip(arm, path, name):
     return action
 
 
+def merge_clips(arm, path, names):
+    """As `merge_clip` for a GLB holding several clips of the same rig (Meshy's multi-action file):
+    keeps each action named in `names` (its name in the file -> ours) on `arm`'s slot and drops the
+    rest. Returns {our name: action}."""
+    before_objs, before_actions = set(bpy.data.objects), set(bpy.data.actions)
+    bpy.ops.import_scene.gltf(filepath=str(path))
+    new = {a.name: a for a in bpy.data.actions if a not in before_actions}
+    out = {}
+    for theirs, ours in names.items():
+        action = next((a for n, a in new.items() if n == theirs or n.startswith(theirs + "|") or n.split("|")[-1] == theirs), None)
+        if action is None:
+            raise ValueError(f"{path}: no clip {theirs!r} (it has {sorted(new)})")
+        action.name = ours
+        for slot in action.slots:
+            slot.name_display = arm.name
+        action.use_fake_user = True
+        out[ours] = action
+    for a in new.values():
+        if a not in out.values():
+            bpy.data.actions.remove(a)
+    for o in [o for o in bpy.data.objects if o not in before_objs]:
+        bpy.data.objects.remove(o)
+    _purge_orphans()
+    return out
+
+
+def _mirror_name(name):
+    for a, b in (("Left", "Right"), ("left", "right"), (".L", ".R"), ("_L", "_R")):
+        if a in name:
+            return name.replace(a, b)
+        if b in name:
+            return name.replace(b, a)
+    return name
+
+
+def mirror_clip(action, name):
+    """A copy of `action` mirrored across the character's middle (its left side becomes its right):
+    each bone's channels go to its mirror bone, locations negated on X and rotations (quaternions) on
+    Y and Z, as Blender's paste-flipped pose does for a rig whose rest pose is symmetric. Returns it."""
+    m = action.copy()
+    m.name = name
+    m.use_fake_user = True
+    import re
+    for fc in zchar.action_fcurves(m):
+        hit = re.match(r'pose\.bones\["([^"]+)"\]\.(location|rotation_quaternion|rotation_euler|scale)', fc.data_path)
+        if not hit:
+            continue
+        bone, prop = hit.groups()
+        flip = (prop == "location" and fc.array_index == 0) or (prop == "rotation_quaternion" and fc.array_index in (2, 3)) \
+            or (prop == "rotation_euler" and fc.array_index in (1, 2))
+        if flip:
+            for k in fc.keyframe_points:
+                k.co.y, k.handle_left.y, k.handle_right.y = -k.co.y, -k.handle_left.y, -k.handle_right.y
+        other = _mirror_name(bone)
+        if other != bone:
+            fc.data_path = fc.data_path.replace(f'["{bone}"]', f'["~{other}"]')  # marked, so pairs don't collide
+    for fc in zchar.action_fcurves(m):
+        fc.data_path = fc.data_path.replace('["~', '["')
+    return m
+
+
 def _hips(arm):
     return next(b for b in arm.pose.bones if b.parent is None)
 

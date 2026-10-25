@@ -215,7 +215,7 @@ pub struct HeldWeapon {
 pub fn attach(commands: &mut Commands, assets: &SurvivorAssets, model: Option<&SurvivorModel>, root: Entity, player: u32, local: bool) {
     if let Some(model) = model {
         let joints = crate::survivor_model::attach(commands, model, root, player, local);
-        commands.entity(root).insert(SurvivorAnim::new(player, Look::Model(joints), model.strides()));
+        commands.entity(root).insert(SurvivorAnim::new(player, Look::Model(joints), GREY_STRIDES));
         return;
     }
     let mut joints = [Entity::PLACEHOLDER; N];
@@ -304,6 +304,8 @@ pub struct SurvivorAnim {
     pub(crate) run_w: f32,
     pub(crate) sneak_w: f32,
     pub(crate) move_w: f32,
+    /// Which way it moves relative to where it faces (radians: 0 ahead, +π/2 to its left), smoothed.
+    pub(crate) move_angle: f32,
     /// Locomotion cycle in [0, 1) and the idle breathing clock.
     pub(crate) cycle: f32,
     pub(crate) idle: f32,
@@ -324,6 +326,7 @@ impl SurvivorAnim {
             run_w: 0.0,
             sneak_w: 0.0,
             move_w: 0.0,
+            move_angle: 0.0,
             cycle: 0.0,
             idle: 0.0,
             action: None,
@@ -372,6 +375,13 @@ fn animate_survivors(
         let pos = tf.translation.xz();
         let fresh = a.last_pos.is_none();
         let moved = a.last_pos.map_or(0.0, |p| p.distance(pos));
+        if let Some(prev) = a.last_pos.filter(|_| moved > 1e-4 && moved < 2.0) {
+            // The way it moved, in its own frame (it faces +Z, its left is +X).
+            let d = tf.rotation.inverse() * Vec3::new(pos.x - prev.x, 0.0, pos.y - prev.y);
+            let target = d.x.atan2(d.z);
+            let turn = (target - a.move_angle + std::f32::consts::PI).rem_euclid(TAU) - std::f32::consts::PI;
+            a.move_angle += turn * (1.0 - (-10.0 * dt).exp());
+        }
         a.last_pos = Some(pos);
         let inst = if moved > 2.0 { 0.0 } else { (moved / dt).min(8.0) };
         let k = |rate: f32| 1.0 - (-rate * dt).exp();
@@ -379,8 +389,13 @@ fn animate_survivors(
         a.run_w += ((stance == Stance::Run) as u8 as f32 - a.run_w) * k(8.0);
         a.sneak_w += ((stance == Stance::Sneak) as u8 as f32 - a.sneak_w) * k(8.0);
         a.move_w += (smooth(0.15, 0.8, a.speed) - a.move_w) * k(10.0);
-        let [walk_m, run_m, sneak_m] = a.strides;
-        let cycle_m = mix(mix(walk_m, run_m, a.run_w), sneak_m, a.sneak_w);
+        let cycle_m = match (&a.look, &model) {
+            (Look::Model(_), Some(m)) => m.cycle_metres(a),
+            _ => {
+                let [walk_m, run_m, sneak_m] = a.strides;
+                mix(mix(walk_m, run_m, a.run_w), sneak_m, a.sneak_w)
+            }
+        };
         a.cycle = (a.cycle + a.speed * dt / cycle_m).fract();
         a.idle = (a.idle + dt * 0.3).fract();
 
@@ -460,6 +475,16 @@ fn animate_survivors(
 /// `swing`, `shove` and `stomp` at `U` of the way through the action (the blow lands at 0.45);
 /// `idle`, `dead`. Each survivor is `step` further along (`U` wraps).
 fn hold_pose(a: &mut SurvivorAnim, pose: &str, step: f32, now: f32) {
+    // `NAME@DEG[:U]`: moving DEG degrees off where it faces (90 to its left, -90 its right, 180 back).
+    let (pose, deg) = match pose.split_once('@') {
+        Some((n, rest)) => {
+            let (d, u) = rest.split_once(':').map_or((rest, None), |(d, u)| (d, Some(u)));
+            (u.map_or(n.to_string(), |u| format!("{n}:{u}")), d.parse::<f32>().unwrap_or(0.0))
+        }
+        None => (pose.to_string(), 0.0),
+    };
+    a.move_angle = deg.to_radians();
+    let pose = pose.as_str();
     let (name, u) = pose.split_once(':').map_or((pose, 0.25), |(n, u)| (n, u.parse::<f32>().unwrap_or(0.25).clamp(0.0, 1.0)));
     let u = (u + step).fract();
     let locomotion = |a: &mut SurvivorAnim, run: f32, sneak: f32, moving: f32| {
