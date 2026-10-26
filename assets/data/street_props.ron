@@ -1,7 +1,7 @@
 // Street props (#61): what stands outside on lawns and sidewalks, and where the town generator puts
 // it (crates/sim/src/street_props.rs). Our own numbers.
 //
-// kinds: `id`; `model`, the furniture model the client draws (`<model>.glb` in assets/models/furniture
+// kinds: `id`; `model`, the furniture model the client draws (`<model>.glb` in assets/models/street, assets/models/furniture
 // or a ZOMBYE_EXTRA_MODELS folder; the id when left out); `size`, metres (width, depth, height) of the
 // grey-box drawn when there's no model; `color`, its sRGB colour; `blocks` (default true), whether it
 // blocks walking (its tile is blocked for paths, and bodies are kept `radius` metres from its middle;

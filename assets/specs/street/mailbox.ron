@@ -1,0 +1,14 @@
+// Asset spec (tools/blender/zasset.py reads it; .claude/skills/blender-assets/SKILL.md).
+// footprint: tiles, width (x) × depth (y) facing south; size: metres, x × y × z of the model.
+AssetSpec(
+    id: "mailbox",
+    category: Street,
+    name: "Mailbox",
+    footprint: (1, 1),
+    size: (0.268, 0.555, 1.15),
+    against_wall: false,
+    tris: 500,
+    texture: None,
+    style: "Off-white enamel box with a rounded top on an oak post leaning a little, the door facing the street (south), a red flag raised on the right side. Faceted, flat-shaded; enamel white dominant, oak, brand red flag, iron black latch.",
+    description: "An early-1990s rural curbside mailbox on a wooden post, flag up.",
+)

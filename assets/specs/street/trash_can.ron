@@ -1,0 +1,14 @@
+// Asset spec (tools/blender/zasset.py reads it; .claude/skills/blender-assets/SKILL.md).
+// footprint: tiles, width (x) × depth (y) facing south; size: metres, x × y × z of the model.
+AssetSpec(
+    id: "trash_can",
+    category: Street,
+    name: "Trash can",
+    footprint: (1, 1),
+    size: (0.66, 0.61, 1.05),
+    against_wall: false,
+    tris: 500,
+    texture: None,
+    style: "Galvanised steel curbside can, ten-sided and tapering out to the top, two ribs and a rim, dark side handles; the lid knocked askew by a black trash bag bulging out, a crumpled newspaper on top. Steel dominant, plastic black, iron black, paper.",
+    description: "An early-1990s galvanised curbside trash can, lid askew.",
+)

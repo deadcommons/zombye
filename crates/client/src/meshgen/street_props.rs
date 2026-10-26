@@ -68,6 +68,7 @@ mod tests {
     /// The furniture models, plus `ZOMBYE_EXTRA_MODELS` as the client takes them.
     fn models() -> FurnitureModels {
         let mut m = FurnitureModels::load(&data().join("../models/furniture"));
+        m.extend(FurnitureModels::load(&data().join("../models/street")));
         for dir in std::env::var("ZOMBYE_EXTRA_MODELS").unwrap_or_default().split(':').filter(|d| !d.is_empty()) {
             m.extend(FurnitureModels::load(std::path::Path::new(dir)));
         }
@@ -105,8 +106,8 @@ mod tests {
         }
     }
 
-    /// Street-prop models (when there are any, here or in `ZOMBYE_EXTRA_MODELS`) stand at their own
-    /// size, inside their tile, whichever way they face.
+    /// Every shipped street prop has a model (assets/models/street), standing at its own size, inside
+    /// its tile, whichever way it faces.
     #[test]
     fn models_keep_their_own_size() {
         let models = models();
@@ -114,9 +115,7 @@ mod tests {
         for kind in &map.prop_kinds {
             for facing in Side::ALL {
                 let mut mb = MeshBuilder::default();
-                if !models.add_at(&mut mb, kind.model(), Vec2::new(10.5, 20.5), facing, 0.0) {
-                    continue;
-                }
+                assert!(models.add_at(&mut mb, kind.model(), Vec2::new(10.5, 20.5), facing, 0.0), "no model for {}", kind.id);
                 let (lo, hi) = mb.bounds();
                 let size = hi - lo;
                 let (w, d) = if matches!(facing, Side::E | Side::W) { (kind.size.1, kind.size.0) } else { (kind.size.0, kind.size.1) };

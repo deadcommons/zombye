@@ -1,0 +1,14 @@
+// Asset spec (tools/blender/zasset.py reads it; .claude/skills/blender-assets/SKILL.md).
+// footprint: tiles, width (x) × depth (y) facing south; size: metres, x × y × z of the model.
+AssetSpec(
+    id: "fire_hydrant",
+    category: Street,
+    name: "Fire hydrant",
+    footprint: (1, 1),
+    size: (0.44, 0.42, 0.75),
+    against_wall: false,
+    tris: 500,
+    texture: None,
+    style: "Squat faceted (eight-sided) red barrel on a wide flange, a bone-white bonnet with a dark operating nut, bone-white caps on two side nozzles and a bigger pumper nozzle facing the street (south). Brand red dominant, bone white, iron black.",
+    description: "An early-1990s street fire hydrant.",
+)
