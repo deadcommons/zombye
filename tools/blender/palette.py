@@ -70,6 +70,9 @@ PALETTE = {
     "canvas_natural_dark": ("#8c7f60", 0.95, 0.0),  # its handles
     "canvas_olive": ("#4f5640", 0.9, 0.0),    # a duffel bag
     "plastic_white": ("#d3d1c6", 0.45, 0.0),  # a carrier bag
+    "mask_white": ("#dcdad2", 0.85, 0.0),     # a dust mask
+    "bandana_red": ("#8a3b33", 0.95, 0.0),    # a bandana
+    "wool_black": ("#2b2b2e", 0.95, 0.0),     # a balaclava
 }
 
 

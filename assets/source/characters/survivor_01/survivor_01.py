@@ -112,6 +112,11 @@ TOTE_COLOURS, TOTE = ("canvas_natural", "canvas_natural_dark"), (0.34, 0.34, 0.0
 # Hand bags hang from the right hand's grip (hand_r); in the T-pose that is out along -x.
 PLASTIC_COLOURS, PLASTIC = ("plastic_white",), (0.28, 0.36, 0.11)  # width (y), length (down), thickness (z)
 DUFFEL_COLOURS, DUFFEL = ("canvas_olive", "plastic_black"), (0.56, 0.135, 0.17)  # length (y), radius, handle drop
+# Masks (#92), from the eyes socket (the nose bridge): the dust mask a cup over the nose and mouth with a
+# strap round the head; the bandana a cloth from the nose bridge to a point below the chin, knotted behind;
+# the balaclava cast over the head and neck like the hats, an opening for the eyes.
+DUST_COLOURS, BANDANA_COLOURS, BALACLAVA_COLOURS = ("mask_white", "plastic_grey"), ("bandana_red",), ("wool_black",)
+BALACLAVA_EASE, BALACLAVA_NECK = 0.012, 0.03  # metres off the head (the game draws a hat over it a little bigger); where it stops above the neck's base
 
 
 def build(c):
@@ -226,7 +231,9 @@ def build(c):
             (make_hat(c, mesh, arm, "woolly_hat"), "woolly_hat"), (make_scarf(c, mesh, arm), "scarf"),
             (make_pack(c, mesh, arm, "school_backpack"), "school_backpack"), (make_pack(c, mesh, arm, "hiking_pack"), "hiking_pack"),
             (make_tote(c, mesh, arm), "tote_bag"), (make_plastic_bag(c, mesh, arm), "plastic_bag"),
-            (make_duffel(c, mesh, arm), "duffel_bag")]
+            (make_duffel(c, mesh, arm), "duffel_bag"),
+            (make_face_mask(c, mesh, arm, "dust_mask"), "dust_mask"), (make_face_mask(c, mesh, arm, "bandana"), "bandana"),
+            (make_balaclava(c, mesh, arm), "balaclava")]
     for o, _ in made:
         o.data.update()
 
@@ -1221,3 +1228,153 @@ def make_duffel(c, body, arm):
         b = grip + Vector((0, s * 0.012, 0))
         g.tube(bm, [a, a.lerp(b, 0.5), b], lambda i: 0.009, 4, 1, cap=False)
     return _bag_object(c, "duffel_bag", bm, DUFFEL_COLOURS, body, arm, socket="hand_r")
+
+
+# ---------------------------------------------------------------- masks (#92)
+
+def _strap_round_head(bm, tree, centre, z, ends, lift, radius, mat):
+    """A thin strap round the back of the head at height `z`, from the mask's edge at `ends[0]` round
+    to `ends[1]`."""
+    a0 = math.atan2(ends[0].x - centre.x, -(ends[0].y - centre.y))
+    a1 = math.atan2(ends[1].x - centre.x, -(ends[1].y - centre.y))
+    if a1 < a0:
+        a1 += 2 * math.pi
+    pts = []
+    for k in range(9):
+        a = a0 + (a1 - a0) * k / 8
+        d = Vector((math.sin(a), -math.cos(a), 0.0))
+        p = g.on_surface(tree, Vector((centre.x, centre.y, z)) + d * 0.3, -d, lift)
+        if p is not None:
+            pts.append(p)
+    return g.tube(bm, [ends[0]] + pts[1:-1] + [ends[1]], lambda i: radius, 4, mat, cap=False)
+
+
+def make_face_mask(c, body, arm, gid):
+    """A dust mask (a cup over the nose and mouth, a strap round the head) or a bandana (a cloth from
+    the nose bridge to a point below the chin, knotted behind), rigid on the head (the eyes socket)."""
+    spec = c.spec
+    tree = g.surface_tree(body)
+    eyes = g.socket_matrix(arm, spec, "eyes").to_translation()
+    dust = gid == "dust_mask"
+    half, top, bottom, cols, rows = (0.056, 0.012, 0.105, 6, 5) if dust else (0.07, 0.012, 0.15, 7, 6)
+    bm, _ = _new_bm()
+    grid = []
+    chin = None
+    for i in range(rows):
+        z = eyes.z - top - (bottom - top) * i / (rows - 1)
+        row = []
+        for j in range(cols):
+            u = -1 + 2 * j / (cols - 1)
+            x = eyes.x + u * half
+            lift = (0.008 + 0.016 * max(0.0, 1 - u * u) * math.sin(math.pi * (0.25 + 0.75 * i / (rows - 1)))) if dust else 0.014
+            p = g.on_surface(tree, (x, eyes.y - 0.5, z), (0, 1, 0), lift)
+            if p is None or p.y > eyes.y + 0.09:  # below the jaw the ray reaches the neck: the cloth hangs
+                prev = grid[-1][j] if grid else None
+                p = (prev.co if prev else Vector((x, eyes.y + 0.02, z))) - Vector((0, 0, (bottom - top) / (rows - 1)))
+                if not dust:
+                    p.x *= 0.85
+            row.append(bm.verts.new(p))
+        grid.append(row)
+    if not dust:
+        # Cloth, not skin: it tents from the most forward points (the nose, the chin) across and down
+        # rather than following every hollow of the face.
+        for row in grid:
+            ys = [v.co.y for v in row]
+            for j, v in enumerate(row):
+                v.co.y = min(ys[k] + 0.7 * abs(row[j].co.x - row[k].co.x) for k in range(cols))
+        for j in range(cols):
+            for i in range(1, rows):
+                above = grid[i - 1][j].co
+                grid[i][j].co.y = min(grid[i][j].co.y, above.y + 0.3 * abs(grid[i][j].co.z - above.z))
+            for i in range(rows - 2, -1, -1):  # taut up from the nose tip to the bridge
+                below = grid[i + 1][j].co
+                grid[i][j].co.y = min(grid[i][j].co.y, below.y + 0.5 * abs(grid[i][j].co.z - below.z))
+    faces = []
+    for i in range(rows - 1):
+        for j in range(cols - 1):
+            f = bm.faces.new((grid[i][j], grid[i][j + 1], grid[i + 1][j + 1], grid[i + 1][j]))
+            faces.append(f)
+    if not dust:
+        # The point: the bottom edge drawn down to a tip below the middle of the chin.
+        tip = bm.verts.new(grid[-1][cols // 2].co + Vector((0, -0.01, -0.07)))
+        for j in range(cols - 1):
+            faces.append(bm.faces.new((grid[-1][j], grid[-1][j + 1], tip)))
+    for f in faces:
+        if f.normal.y > 0:
+            f.normal_flip()
+    centre = Vector((eyes.x, eyes.y + 0.09, eyes.z))
+    z_strap = eyes.z - (0.06 if dust else top + 0.01)
+    ends = (min((grid[r][0].co for r in range(rows)), key=lambda p: abs(p.z - z_strap)),
+            min((grid[r][-1].co for r in range(rows)), key=lambda p: abs(p.z - z_strap)))
+    _strap_round_head(bm, tree, centre, z_strap, (ends[1], ends[0]), 0.006, 0.004 if dust else 0.008, 1 if dust else 0)
+    if not dust:
+        # The knot at the back of the head: a small lump and two short ends hanging.
+        back = g.on_surface(tree, Vector((centre.x, centre.y + 0.4, z_strap)), (0, -1, 0), 0.015)
+        if back is not None:
+            knot = bmesh.ops.create_icosphere(bm, subdivisions=1, radius=0.018)["verts"]
+            for v in knot:
+                v.co += back
+            for s in (-1, 1):
+                g.tube(bm, [back, back + Vector((s * 0.02, 0.01, -0.07))], lambda i: 0.008, 4, 0, cap=True)
+    return _bag_object(c, gid, bm, DUST_COLOURS if dust else BANDANA_COLOURS, body, arm, socket="eyes")
+
+
+def make_balaclava(c, body, arm):
+    """A balaclava: knitted wool cast over the head and down the neck (rigid on the head), with an
+    opening for the eyes."""
+    spec = c.spec
+    tree = g.surface_tree(body)
+    crown = g.socket_matrix(arm, spec, "head_top").to_translation()
+    eyes = g.socket_matrix(arm, spec, "eyes").to_translation()
+    centre = crown - Vector((0.0, -0.01, 0.105))
+    rows, segs = 9, 16
+    bm, _ = _new_bm()
+
+    def on_head(theta, phi):
+        d = Vector((math.sin(theta) * math.sin(phi), -math.sin(theta) * math.cos(phi), math.cos(theta)))
+        hit = g.on_surface(tree, centre + d * 0.4, -d)
+        p = hit if hit is not None and (hit - centre).dot(d) > 0 else centre + d * 0.1
+        return p + d * BALACLAVA_EASE * (1.0 + 0.6 * max(0.0, -d.y))
+
+    # The dome: over the crown down to the head's middle, cast out from its centre.
+    top = bm.verts.new(on_head(0.0, 0.0))
+    dome = [[bm.verts.new(on_head(math.radians(90.0) * (i + 1) / 6, 2 * math.pi * j / segs)) for j in range(segs)] for i in range(6)]
+    # Below it, rings cast in level toward an axis that runs from the head's centre down to the neck:
+    # round the jaw and chin, then the neck, so it never reaches out to the shoulders.
+    neck = g.socket_matrix(arm, spec, "neck").to_translation()
+    rings = []
+    n = 8
+    for i in range(1, n + 1):
+        z = centre.z + (neck.z + BALACLAVA_NECK - centre.z) * i / n
+        axis = centre.lerp(Vector((neck.x, neck.y, z)), i / n)
+        axis.z = z
+        ring = []
+        for j in range(segs):
+            phi = 2 * math.pi * j / segs
+            d = Vector((math.sin(phi), -math.cos(phi), 0.0))
+            # A little more room over the face (the nose, the stubble) than round the back.
+            p = g.on_surface(tree, axis + d * 0.3, -d, BALACLAVA_EASE * (1.0 + 0.6 * max(0.0, math.cos(phi))))
+            ring.append(bm.verts.new(p if p is not None else axis + d * 0.06))
+        rings.append(ring)
+    # Over the face it hangs straight down from the nose and chin rather than tucking in under them.
+    for j in range(segs):
+        if math.cos(2 * math.pi * j / segs) > 0.3:
+            for i in range(1, len(rings)):
+                above = rings[i - 1][j].co
+                rings[i][j].co.y = min(rings[i][j].co.y, above.y + 0.35 * abs(rings[i][j].co.z - above.z))
+    grid = dome + rings
+    faces = [bm.faces.new((top, grid[0][j], grid[0][(j + 1) % segs])) for j in range(segs)]
+    for i in range(len(grid) - 1):
+        for j in range(segs):
+            k = (j + 1) % segs
+            quad = (grid[i][j], grid[i + 1][j], grid[i + 1][k], grid[i][k])
+            mid = sum((v.co for v in quad), Vector()) / 4
+            # The eye opening: the front, across the eyes' height.
+            if abs(mid.x - eyes.x) < 0.07 and mid.y < eyes.y + 0.05 and abs(mid.z - (eyes.z + 0.004)) < 0.026:
+                continue
+            faces.append(bm.faces.new(quad))
+    bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context="VERTS")  # inside the eye opening
+    for f in faces:
+        if f.normal.dot(f.calc_center_median() - centre) < 0:
+            f.normal_flip()
+    return _bag_object(c, "balaclava", bm, BALACLAVA_COLOURS, body, arm, socket="head_top")

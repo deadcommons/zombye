@@ -97,6 +97,14 @@ AssetSpec(
          occupies: [hand_r], hides: [], tris: 200),
         (id: "duffel_bag", item: Some("duffel_bag"), kind: Rigid, socket: Some("hand_r"), layer: None,
          occupies: [hand_r], hides: [], tris: 300),
+        // Masks (#92): over the nose and mouth (rigid on the head), a balaclava over the whole head
+        // and neck with an opening for the eyes.
+        (id: "dust_mask", item: Some("dust_mask"), kind: Rigid, socket: Some("eyes"), layer: Some(Mid),
+         occupies: [face], hides: [], tris: 200),
+        (id: "bandana", item: Some("bandana"), kind: Rigid, socket: Some("eyes"), layer: Some(Mid),
+         occupies: [face], hides: [], tris: 200),
+        (id: "balaclava", item: Some("balaclava"), kind: Rigid, socket: Some("head_top"), layer: Some(Mid),
+         occupies: [face, head_top], hides: [], tris: 500),
     ],
     style: "An ordinary, weary, slim man in his mid thirties from an early-1990s small American town: tired, haunted face, stubble, untidy brown hair, pale skin. The base body wears a plain fitted grey t-shirt, dark grey trousers and dark shoes; the look comes from garments on top (a hoodie, glasses: a nerd in a hoodie). Muted, slightly desaturated palette; flat colour areas; garments in palette colours.",
     description: "The modular survivor base body (players and survivors), with its first wearables: a hoodie (skinned, hood down) and glasses (rigid, on the eyes socket).",
