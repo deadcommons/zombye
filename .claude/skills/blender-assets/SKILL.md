@@ -27,7 +27,7 @@ furniture heights, characters, budgets). This skill is how to do the Blender par
   an ATTRIBUTION.md row. Nothing else about unreleased art goes public: no files, renders or descriptions
   in this repo, its issues or PRs.
 - **The pipeline is code** and lives here: `tools/blender/zasset.py` (builder, palette materials, UVs,
-  renders, validation, export; runs inside Blender), `palette.py` (the only place colours live),
+  renders, validation, export; runs inside Blender), `palette.py` (reads the colours from `assets/data/palette.ron`, the only place colours live),
   `build.py` (shell runner), `artrepo.py` (plain Python: work folders, status, promotion).
 - Without the art repo (a public contributor) the same tools work on this repo's copy directly.
 
@@ -91,7 +91,7 @@ furniture heights, characters, budgets). This skill is how to do the Blender par
 - Style: follow [docs/art-direction.md](../../../docs/art-direction.md) (faceted, flat-shaded low-poly, 3–6
   palette colours per asset with one dominant, two or three telling details of at least 5 cm, muted early-1990s
   small town with the `brand_*` colours as sparing accents; its review checklist). Colours only from
-  `palette.py` (add one there, never inline).
+  `assets/data/palette.ron` (add one there, never inline; the client's generated world uses the same file).
 
 ## Rules
 

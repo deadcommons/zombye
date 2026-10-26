@@ -13,7 +13,7 @@ use std::f32::consts::TAU;
 use bevy::prelude::*;
 use zombye_sim::map::Feature;
 
-use super::land_palette::{self as pal, Swatch};
+use super::palette::{self, pal};
 use super::{CutKind, CutTag, MeshBuilder, hash01, shade};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,8 +104,8 @@ pub fn add_tree(mb: &mut MeshBuilder, t: &TreeSpec, simple: bool) {
     match t.kind {
         TreeKind::Broadleaf => broadleaf(mb, t, simple, wood, leaves),
         TreeKind::Birch => birch(mb, t, simple, wood, leaves),
-        TreeKind::Pine => conifer(mb, t, if simple { 3 } else { 4 }, 7, pal::PINE, 0.2, wood, leaves),
-        TreeKind::Spruce => conifer(mb, t, if simple { 4 } else { 5 }, 6, pal::SPRUCE, 0.12, wood, leaves),
+        TreeKind::Pine => conifer(mb, t, if simple { 3 } else { 4 }, 7, &pal().pine, 0.2, wood, leaves),
+        TreeKind::Spruce => conifer(mb, t, if simple { 4 } else { 5 }, 6, &pal().spruce, 0.12, wood, leaves),
     }
 }
 
@@ -113,10 +113,11 @@ fn broadleaf(mb: &mut MeshBuilder, t: &TreeSpec, simple: bool, wood: CutTag, lea
     let s = t.scale;
     let fork = t.base + Vec3::Y * t.fork;
     mb.set_tag(wood);
-    frustum(mb, t, t.base, fork, 0.17 * s, 0.11 * s, 5, pal::BARK.lin());
-    let main = (t.h(10) * 4.0) as usize % 4;
-    let second = (main + 1 + (t.h(11) * 2.0) as usize) % 4;
-    let greens = [pal::LEAF[main].lin(), pal::LEAF[second].lin()];
+    frustum(mb, t, t.base, fork, 0.17 * s, 0.11 * s, 5, pal().bark);
+    let leaf = &pal().leaf;
+    let main = (t.h(10) * leaf.len() as f32) as usize % leaf.len();
+    let second = (main + 1 + (t.h(11) * 2.0) as usize) % leaf.len();
+    let greens = [leaf[main], leaf[second]];
     let branches = if simple { 1 } else if t.h(12) < 0.5 { 2 } else { 3 };
     let az0 = t.h(13) * TAU;
     let mut clumps: Vec<(Vec3, f32)> = Vec::with_capacity(4);
@@ -126,12 +127,12 @@ fn broadleaf(mb: &mut MeshBuilder, t: &TreeSpec, simple: bool, wood: CutTag, lea
         let len = (1.15 + 0.55 * t.h(40 + i)) * s;
         let dir = Vec3::new(az.cos() * elev.cos(), elev.sin(), az.sin() * elev.cos());
         let end = fork + dir * len;
-        spike(mb, t, fork - dir * 0.1 * s, end, 0.075 * s, 4, pal::BARK_DARK.lin());
+        spike(mb, t, fork - dir * 0.1 * s, end, 0.075 * s, 4, pal().bark_dark);
         clumps.push((end + Vec3::Y * 0.25 * s, (1.05 + 0.25 * t.h(50 + i)) * s));
     }
     // The leader, carrying the top of the crown.
     let top = fork + Vec3::new((t.h(14) - 0.5) * 0.3, 1.3, (t.h(15) - 0.5) * 0.3) * s;
-    spike(mb, t, fork, top, 0.08 * s, 4, pal::BARK.lin());
+    spike(mb, t, fork, top, 0.08 * s, 4, pal().bark);
     clumps.push((top + Vec3::Y * 0.15 * s, (1.15 + 0.2 * t.h(16)) * s));
     mb.set_tag(leaves);
     // One canopy: every clump is lit as part of the crown round `heart`, and lighter towards its top.
@@ -143,7 +144,7 @@ fn broadleaf(mb: &mut MeshBuilder, t: &TreeSpec, simple: bool, wood: CutTag, lea
 
 fn birch(mb: &mut MeshBuilder, t: &TreeSpec, simple: bool, wood: CutTag, leaves: CutTag) {
     let s = t.scale;
-    let (pale, mark) = (pal::BIRCH_BARK.lin(), pal::BIRCH_MARK.lin());
+    let (pale, mark) = (pal().birch_bark, pal().birch_mark);
     let at = |y: f32| t.base + Vec3::Y * y;
     let r = 0.085 * s;
     let clumps = if simple { 3 } else { 4 };
@@ -170,21 +171,21 @@ fn birch(mb: &mut MeshBuilder, t: &TreeSpec, simple: bool, wood: CutTag, leaves:
     let pick = (t.h(10) * 2.0) as usize % 2;
     let heart = Canopy { centre: t.crown, bottom: t.crown.y - t.crown_h, top: t.crown.y + t.crown_h };
     for (i, (c, r)) in centres.iter().enumerate() {
-        let colour = pal::BIRCH_LEAF[(pick + i) % 2].lin();
+        let colour = palette::pick(&pal().birch_leaf, pick + i);
         clump(mb, t, *c, Vec3::new(r * 0.9, r * 1.2, r * 0.9), colour, i as u32, Some(heart));
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn conifer(mb: &mut MeshBuilder, t: &TreeSpec, tiers: u32, points: u32, greens: [Swatch; 2], droop: f32, wood: CutTag, leaves: CutTag) {
+fn conifer(mb: &mut MeshBuilder, t: &TreeSpec, tiers: u32, points: u32, greens: &[LinearRgba], droop: f32, wood: CutTag, leaves: CutTag) {
     let s = t.scale;
     let at = |y: f32| t.base + Vec3::Y * y;
     mb.set_tag(wood);
-    frustum(mb, t, at(0.0), at(t.fork + 0.5 * s), 0.15 * s, 0.12 * s, 5, pal::BARK.lin());
+    frustum(mb, t, at(0.0), at(t.fork + 0.5 * s), 0.15 * s, 0.12 * s, 5, pal().bark);
     // The trunk runs on up inside the tiers: what's left to see while the foliage is faded.
-    spike(mb, t, at(t.fork + 0.5 * s), at(t.height * 0.85), 0.12 * s, 4, pal::BARK_DARK.lin());
+    spike(mb, t, at(t.fork + 0.5 * s), at(t.height * 0.85), 0.12 * s, 4, pal().bark_dark);
     mb.set_tag(leaves);
-    let green = greens[(t.h(10) * 2.0) as usize % 2].lin();
+    let green = palette::pick(greens, (t.h(10) * 2.0) as usize);
     // Tiers from the lowest (widest) up; the top one is a spire.
     let span = t.height - t.fork - 1.9 * s;
     let narrow = if points == 6 { 0.8 } else { 1.0 };
@@ -369,7 +370,7 @@ pub fn add_bush(mb: &mut MeshBuilder, x: i32, y: i32, centre: Vec3, size: f32) {
         y,
     };
     mb.set_tag(CutTag::default());
-    let colour = pal::SHRUB[(t.h(10) * 2.0) as usize % 2].lin();
+    let colour = palette::pick(&pal().shrub, (t.h(10) * 2.0) as usize);
     let n = if t.h(11) < 0.5 { 2 } else { 3 };
     for i in 0..n {
         let a = t.h(12 + i) * TAU;

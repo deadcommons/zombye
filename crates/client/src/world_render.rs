@@ -17,7 +17,8 @@ use crate::Options;
 use crate::camera::IsoCamera;
 use crate::furniture_models::FurnitureModels;
 use crate::materials::{self, WorldMaterials};
-use crate::meshgen::{self, CutKind, CutTag, MeshBuilder, add_furniture, building_kit, floor_color, landscape, rgb, shade};
+use crate::meshgen::palette::pal;
+use crate::meshgen::{self, CutKind, CutTag, MeshBuilder, add_furniture, building_kit, floor_color, landscape, shade};
 use crate::player::Player;
 use crate::server_link::{ClientMap, EdgeChangesThisFrame, EdgeDamageMap, EdgeDamageThisFrame};
 
@@ -142,14 +143,14 @@ fn setup_shared(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, option
     // Door leaf with its hinge at the origin, lying along +x.
     let mut mb = MeshBuilder::default();
     mb.set_tag(CutTag { kind: CutKind::Structure, ..default() });
-    let c = rgb(0.42, 0.28, 0.18);
-    mb.add_box(Vec3::new(0.04, 0.0, -0.025), Vec3::new(0.96, 2.05, 0.025), meshgen::same(c));
-    mb.add_box(Vec3::new(0.8, 1.0, -0.05), Vec3::new(0.86, 1.06, 0.05), meshgen::same(rgb(0.75, 0.7, 0.4)));
+    let p = pal();
+    mb.add_box(Vec3::new(0.04, 0.0, -0.025), Vec3::new(0.96, 2.05, 0.025), meshgen::same(p.door_leaf));
+    mb.add_box(Vec3::new(0.8, 1.0, -0.05), Vec3::new(0.86, 1.06, 0.05), meshgen::same(p.door_handle));
     let door = meshes.add(mb.build());
 
     // Window glass along +x from the edge's start, filling the frame between sill and header.
     // Structure, like door leaves: dimmed but readable in unseen rooms, cut away with its wall.
-    let glass = LinearRgba::new(0.55, 0.68, 0.78, 0.32);
+    let glass = p.window_glass.with_alpha(0.32);
     let pane_mesh = |kind: CutKind| {
         let mut mb = MeshBuilder::default();
         mb.set_tag(CutTag { kind, ..default() });
@@ -205,9 +206,9 @@ fn crack_mesh(door: bool, stage: usize) -> Mesh {
         (seed >> 8) as f32 / (1u32 << 24) as f32
     };
     let (lo, hi, face, width, color) = if door {
-        (Vec2::new(0.1, 0.12), Vec2::new(0.9, 1.95), 0.03, 0.022, rgb(0.08, 0.05, 0.03))
+        (Vec2::new(0.1, 0.12), Vec2::new(0.9, 1.95), 0.03, 0.022, pal().crack_door)
     } else {
-        (Vec2::new(0.07, WINDOW_SILL + 0.03), Vec2::new(0.93, WINDOW_HEAD - 0.03), 0.016, 0.013, rgb(0.88, 0.92, 0.95))
+        (Vec2::new(0.07, WINDOW_SILL + 0.03), Vec2::new(0.93, WINDOW_HEAD - 0.03), 0.016, 0.013, pal().crack_glass)
     };
     let line = |mb: &mut MeshBuilder, a: Vec2, b: Vec2, w: f32, color: LinearRgba| {
         let n = (b - a).perp().normalize_or_zero() * w * 0.5;
@@ -256,7 +257,7 @@ fn crack_mesh(door: bool, stage: usize) -> Mesh {
         }
         if door && k == 2 {
             // Nearly through: pale splintered wood showing where chunks came off.
-            let pale = rgb(0.66, 0.5, 0.32);
+            let pale = pal().splinter;
             for _ in 0..6 {
                 let c = lo + (hi - lo) * Vec2::new(0.2 + 0.6 * rand(), 0.25 + 0.5 * rand());
                 let pts = [c + Vec2::new(-0.07, -0.03), c + Vec2::new(0.06 + 0.04 * rand(), -0.05), c + Vec2::new(0.01, 0.12 + 0.08 * rand())];

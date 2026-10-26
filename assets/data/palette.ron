@@ -1,0 +1,257 @@
+// The palette: every colour in the game's art, in one place (docs/art-direction.md). Blender-built
+// assets use the named colours as materials (`pal.<name>`, through tools/blender/palette.py); the
+// client's generated world (ground, roads, trees, buildings, interiors, grey-box furniture) looks
+// them up by name and through the named sets below. Recolour the town by editing this file.
+//
+// colours: name -> ("#rrggbb" sRGB, roughness, metallic). Roughness and metallic matter to Blender
+// materials; the generated world is drawn with one material and uses only the colour.
+// sets: name -> colours, in order. The client checks every name it needs when it starts.
+//
+// Keep one entry to a line: tools/blender/palette.py reads this file line by line.
+(
+    colours: {
+        // Brand anchors (Dead Commons style: stylised, friendly, playful-spooky; not photoreal, not
+        // gory). Accents, used sparingly: a sign, a toy, a stripe, a zombie's skin.
+        "brand_zombie_green": ("#8db06b", 0.8, 0.0),
+        "brand_red": ("#d7262b", 0.5, 0.0),
+        "brand_bone_white": ("#f2e6c9", 0.8, 0.0),
+        "brand_near_black": ("#141414", 0.6, 0.0),
+        // Wood
+        "wood_pine": ("#a8875c", 0.75, 0.0),             // light stained pine: shelves, desks
+        "wood_oak": ("#86643f", 0.7, 0.0),               // mid oak: tables, bed frames
+        "wood_walnut": ("#5c4130", 0.7, 0.0),            // dark veneer: wardrobes, TV cabinets
+        "wood_raw": ("#b69a72", 0.9, 0.0),               // unfinished boards: workbench top
+        // Kitchen and bathroom
+        "laminate_almond": ("#cdbf98", 0.45, 0.0),       // counter tops
+        "cabinet_oak": ("#9a7650", 0.65, 0.0),           // kitchen cupboard doors
+        "enamel_white": ("#dad6ca", 0.35, 0.0),          // fridge, washer, dryer
+        "enamel_almond": ("#d3c6a6", 0.35, 0.0),         // stove body
+        "porcelain": ("#e4e1d8", 0.2, 0.0),              // toilet, bathtub, basin
+        "water": ("#8fa4a6", 0.1, 0.0),                  // still water in a bowl
+        // Metal and plastic
+        "steel": ("#8b8e90", 0.4, 0.8),
+        "chrome": ("#bfc2c2", 0.2, 0.9),
+        "iron_black": ("#2a2a2c", 0.6, 0.3),             // stove top, grates
+        "plastic_black": ("#242426", 0.5, 0.0),
+        "plastic_grey": ("#76787a", 0.55, 0.0),
+        "plastic_beige": ("#c2b79e", 0.5, 0.0),          // TV and appliance trim
+        "screen": ("#2c3836", 0.15, 0.0),                // CRT glass, oven door glass
+        "rubber": ("#363634", 0.9, 0.0),
+        "paint_green": ("#5d6a52", 0.7, 0.0),            // workbench frame
+        "plastic_red": ("#8c3f33", 0.5, 0.0),            // tool handles, bottle caps
+        "plastic_blue": ("#4f6d8c", 0.5, 0.0),           // detergent bottles
+        "cardboard": ("#a3825a", 0.95, 0.0),
+        "paper": ("#d8d2c0", 0.95, 0.0),
+        // Fabric
+        "fabric_mauve": ("#8a6d78", 0.95, 0.0),
+        "fabric_teal": ("#4e7170", 0.95, 0.0),
+        "fabric_rust": ("#955a3d", 0.95, 0.0),
+        "fabric_navy": ("#3e4961", 0.95, 0.0),
+        "fabric_beige": ("#b5a487", 0.95, 0.0),
+        "sheet_cream": ("#d6cdb8", 0.95, 0.0),
+        "pillow_white": ("#e0dbcd", 0.95, 0.0),
+        "blanket_blue": ("#5d728c", 0.95, 0.0),
+        // Clothes (wearables on the survivor's body, #63): worn everyday things, faded, never bright.
+        "denim": ("#4a5a72", 0.95, 0.0),                 // jeans
+        "denim_dark": ("#343f52", 0.95, 0.0),            // waistbands, pockets, hems
+        "cotton_red": ("#8a4a42", 0.95, 0.0),            // a faded red t-shirt
+        "trainer_white": ("#d9d5ca", 0.6, 0.0),          // canvas and leather trainers, off-white
+        "leather_brown": ("#3f2c22", 0.55, 0.0),         // a worn leather jacket
+        "boot_brown": ("#5a4231", 0.7, 0.0),             // work boots' leather
+        "glove_tan": ("#9a7a50", 0.85, 0.0),             // work gloves, suede
+        "cap_red": ("#7a3a32", 0.85, 0.0),               // a faded baseball cap
+        "wool_charcoal": ("#363a42", 0.95, 0.0),         // a beanie
+        "wool_ochre": ("#9a7342", 0.95, 0.0),            // a woolly hat
+        "wool_maroon": ("#6a2f2b", 0.95, 0.0),           // a scarf
+        "pack_blue": ("#45607e", 0.8, 0.0),              // a school backpack's nylon
+        "pack_rust": ("#8a5532", 0.8, 0.0),              // a hiking rucksack
+        "pack_rust_dark": ("#5e3a24", 0.8, 0.0),         // its lid and pocket
+        "canvas_natural": ("#b3a785", 0.95, 0.0),        // a tote bag
+        "canvas_natural_dark": ("#8c7f60", 0.95, 0.0),   // its handles
+        "canvas_olive": ("#4f5640", 0.9, 0.0),           // a duffel bag
+        "plastic_white": ("#d3d1c6", 0.45, 0.0),         // a carrier bag
+        "mask_white": ("#dcdad2", 0.85, 0.0),            // a dust mask
+        "bandana_red": ("#8a3b33", 0.95, 0.0),           // a bandana
+        "wool_black": ("#2b2b2e", 0.95, 0.0),            // a balaclava
+
+        // Ground and roads (meshgen/landscape.rs)
+        "asphalt": ("#424245", 0.9, 0.0),
+        "asphalt_patch": ("#333336", 0.9, 0.0),          // repair patches: newer, darker tar
+        "wheel_track": ("#3d3d40", 0.9, 0.0),            // the worn bands where the wheels run
+        "gutter": ("#4f4c47", 0.9, 0.0),                 // dust and grit along the kerb
+        "paint_yellow": ("#bd9e4c", 0.9, 0.0),           // faded centre lines
+        "paint_white": ("#ccc9bd", 0.9, 0.0),            // bays, crossings, stop lines
+        "oil_stain": ("#2b2b2b", 0.9, 0.0),
+        "sidewalk": ("#99968c", 0.9, 0.0),
+        "sidewalk_joint": ("#737069", 0.9, 0.0),
+        "kerb_top": ("#adaba1", 0.9, 0.0),
+        "kerb_face": ("#807d75", 0.9, 0.0),
+        "kerb_joint": ("#615e59", 0.9, 0.0),             // the line behind a kerb that reads from afar
+        "driveway": ("#828075", 0.9, 0.0),
+        "path": ("#8c8273", 0.9, 0.0),                   // garden paths
+        "lawn_1": ("#5e6e40", 0.9, 0.0),
+        "lawn_2": ("#57693b", 0.9, 0.0),
+        "lawn_3": ("#667345", 0.9, 0.0),
+        "long_grass": ("#6e7345", 0.9, 0.0),             // round fences and walls, vacant lots
+        "verge": ("#73704a", 0.9, 0.0),                  // rough grass by roads with no sidewalk
+        "tuft": ("#828752", 0.9, 0.0),
+        "tuft_dry": ("#998f5e", 0.9, 0.0),
+        "dirt": ("#695740", 0.9, 0.0),
+        "soil": ("#4a3b2e", 0.9, 0.0),                   // flower beds
+        "flower_red": ("#9e4540", 0.9, 0.0),
+        "flower_cream": ("#dbd4b5", 0.9, 0.0),
+        "flower_mustard": ("#c7a852", 0.9, 0.0),
+        "flower_mauve": ("#8a6994", 0.9, 0.0),
+        "shrub_1": ("#3d572e", 0.9, 0.0),
+        "shrub_2": ("#4a5e30", 0.9, 0.0),
+        "hedge": ("#38522b", 0.9, 0.0),
+        "hedge_top": ("#456133", 0.9, 0.0),
+        "fence_wood": ("#8c7a61", 0.9, 0.0),
+        "forest_floor_1": ("#474c30", 0.9, 0.0),
+        "forest_floor_2": ("#40452b", 0.9, 0.0),
+        "needles": ("#574730", 0.9, 0.0),                // brown needle litter under pines
+        "fern_1": ("#405c2e", 0.9, 0.0),
+        "fern_2": ("#4f6130", 0.9, 0.0),
+        "rock": ("#808078", 0.9, 0.0),
+        "deadwood": ("#5c4733", 0.9, 0.0),
+        "cut_wood": ("#9e8057", 0.9, 0.0),               // the cut face of a stump or log
+
+        // Trees (meshgen/trees.rs)
+        "bark": ("#755e47", 0.9, 0.0),
+        "bark_dark": ("#634f3d", 0.9, 0.0),
+        "birch_bark": ("#ccc7b8", 0.9, 0.0),
+        "birch_mark": ("#3b3836", 0.9, 0.0),
+        "leaf_deep": ("#3d5c2e", 0.9, 0.0),
+        "leaf_mid": ("#4c6933", 0.9, 0.0),
+        "leaf_olive": ("#5e6930", 0.9, 0.0),
+        "leaf_dusty": ("#4a572e", 0.9, 0.0),
+        "birch_leaf_1": ("#708040", 0.9, 0.0),
+        "birch_leaf_2": ("#63783b", 0.9, 0.0),
+        "pine_1": ("#29472e", 0.9, 0.0),
+        "pine_2": ("#304f30", 0.9, 0.0),
+        "spruce_1": ("#213b30", 0.9, 0.0),
+        "spruce_2": ("#294538", 0.9, 0.0),
+
+        // Buildings (world_render.rs, meshgen/building_kit.rs)
+        "siding_cream": ("#dbd6c7", 0.9, 0.0),
+        "siding_almond": ("#ccbd94", 0.9, 0.0),
+        "siding_butter": ("#d6cc8f", 0.9, 0.0),
+        "siding_dusty_blue": ("#94a8b8", 0.9, 0.0),
+        "siding_sage": ("#99a885", 0.9, 0.0),
+        "siding_grey": ("#9e9e99", 0.9, 0.0),
+        "siding_tan": ("#b29975", 0.9, 0.0),
+        "siding_oxblood": ("#945242", 0.9, 0.0),
+        "roof_slate": ("#3d3d42", 0.9, 0.0),
+        "roof_brown": ("#5c4233", 0.9, 0.0),
+        "roof_rust": ("#6b3329", 0.9, 0.0),
+        "roof_moss": ("#475447", 0.9, 0.0),
+        "roof_slate_blue": ("#424c61", 0.9, 0.0),
+        "brick_buff": ("#9e9485", 0.9, 0.0),
+        "brick_tan": ("#a88a66", 0.9, 0.0),
+        "brick_red": ("#8c4a38", 0.9, 0.0),
+        "awning_red": ("#853d33", 0.9, 0.0),
+        "awning_green": ("#4c6654", 0.9, 0.0),
+        "awning_blue": ("#475773", 0.9, 0.0),
+        "awning_ochre": ("#a38547", 0.9, 0.0),
+        "trim_light": ("#e0dbcc", 0.9, 0.0),             // trim on most houses, porch posts and railings
+        "trim_dark": ("#454c47", 0.9, 0.0),              // trim on pale houses
+        "shopfront": ("#333b36", 0.9, 0.0),              // shopfront frames and stall risers
+        "foundation": ("#78756e", 0.9, 0.0),
+        "step": ("#949187", 0.9, 0.0),
+        "deck": ("#80705c", 0.9, 0.0),
+        "rain_gutter": ("#333638", 0.9, 0.0),
+        "chimney": ("#854533", 0.9, 0.0),
+        "chimney_cap": ("#8c8a82", 0.9, 0.0),
+        "flue": ("#1f1f1f", 0.9, 0.0),
+        "aerial": ("#85878c", 0.9, 0.0),
+        "roof_unit": ("#9ea19c", 0.9, 0.0),
+        "coping": ("#a8a396", 0.9, 0.0),
+        "sign": ("#d6ccb0", 0.9, 0.0),
+        "bone": ("#dbd1b5", 0.9, 0.0),                   // awning stripes
+        "gable_glass": ("#292e36", 0.9, 0.0),            // dark glass in gable windows
+        "door_leaf": ("#6b472e", 0.9, 0.0),
+        "door_handle": ("#bfb266", 0.9, 0.0),
+        "window_glass": ("#c4d7e5", 0.9, 0.0),           // see-through (its alpha is in code)
+        "crack_door": ("#140d08", 0.9, 0.0),             // splits in a battered door
+        "crack_glass": ("#e0ebf2", 0.9, 0.0),            // star cracks in glass
+        "splinter": ("#a88052", 0.9, 0.0),               // pale wood where chunks came off
+
+        // Inside: wall colours by room type (interior_<room type>, else interior_default) and floors
+        "interior_kitchen": ("#d6d1b2", 0.9, 0.0),
+        "interior_bathroom": ("#bdd1d6", 0.9, 0.0),
+        "interior_bedroom": ("#c7b8ad", 0.9, 0.0),
+        "interior_living": ("#ccbd9e", 0.9, 0.0),
+        "interior_laundry": ("#b8b8b2", 0.9, 0.0),
+        "interior_default": ("#d1ccbd", 0.9, 0.0),
+        "floor_grass_1": ("#4c6133", 0.9, 0.0),
+        "floor_grass_2": ("#5c733b", 0.9, 0.0),
+        "floor_dirt_1": ("#5c4c38", 0.9, 0.0),
+        "floor_dirt_2": ("#665438", 0.9, 0.0),
+        "floor_asphalt_1": ("#363638", 0.9, 0.0),
+        "floor_asphalt_2": ("#3b3b3d", 0.9, 0.0),
+        "floor_sidewalk_1": ("#85827a", 0.9, 0.0),
+        "floor_sidewalk_2": ("#8c8a82", 0.9, 0.0),
+        "floor_path_1": ("#7a7366", 0.9, 0.0),
+        "floor_path_2": ("#827a66", 0.9, 0.0),
+        "floor_wood_1": ("#735233", 0.9, 0.0),
+        "floor_wood_2": ("#7d5933", 0.9, 0.0),
+        "floor_carpet_1": ("#6b5c52", 0.9, 0.0),
+        "floor_carpet_2": ("#6b6152", 0.9, 0.0),
+        "floor_tile_1": ("#b8b8ad", 0.9, 0.0),
+        "floor_tile_2": ("#9ea199", 0.9, 0.0),
+        "floor_concrete_1": ("#808080", 0.9, 0.0),
+        "floor_concrete_2": ("#858580", 0.9, 0.0),
+        "floor_road_line": ("#9e8c47", 0.9, 0.0),
+
+        // Grey-box furniture, for kinds with no model (meshgen.rs)
+        "greybox_bed": ("#6b4c38", 0.9, 0.0),
+        "greybox_bed_sheet": ("#ccc7bd", 0.9, 0.0),
+        "greybox_wardrobe": ("#66472e", 0.9, 0.0),
+        "greybox_fridge": ("#dbdbd6", 0.9, 0.0),
+        "greybox_stove": ("#333336", 0.9, 0.0),
+        "greybox_counter": ("#9e8566", 0.9, 0.0),
+        "greybox_washer": ("#e0e0db", 0.9, 0.0),
+        "greybox_table": ("#755438", 0.9, 0.0),
+        "greybox_coffee_table": ("#664733", 0.9, 0.0),
+        "greybox_sofa": ("#5c4c6b", 0.9, 0.0),
+        "greybox_sofa_back": ("#524261", 0.9, 0.0),
+        "greybox_tv_stand": ("#4c3829", 0.9, 0.0),
+        "greybox_tv_screen": ("#141417", 0.9, 0.0),
+        "greybox_toilet": ("#ebebe6", 0.9, 0.0),
+        "greybox_shelf": ("#856b4c", 0.9, 0.0),
+        "greybox_workbench": ("#61574c", 0.9, 0.0),
+        "greybox_workbench_top": ("#9e8057", 0.9, 0.0),
+        "greybox_bathtub": ("#e6e6e0", 0.9, 0.0),
+        "greybox_stairs": ("#705238", 0.9, 0.0),
+        "greybox_other": ("#807366", 0.9, 0.0),
+    },
+    sets: {
+        // Lawns in broad patches: three close olive greens
+        "lawn": ["lawn_1", "lawn_2", "lawn_3"],
+        "flowers": ["flower_red", "flower_cream", "flower_mustard", "flower_mauve"],
+        "shrub": ["shrub_1", "shrub_2"],
+        "forest_floor": ["forest_floor_1", "forest_floor_2"],
+        "fern": ["fern_1", "fern_2"],
+        // Broadleaf crowns: two or three of these per tree
+        "leaf": ["leaf_deep", "leaf_mid", "leaf_olive", "leaf_dusty"],
+        "birch_leaf": ["birch_leaf_1", "birch_leaf_2"],
+        "pine": ["pine_1", "pine_2"],
+        "spruce": ["spruce_1", "spruce_2"],
+        // One per house (the generator picks by index, so keep the first eight in this order)
+        "siding": ["siding_cream", "siding_almond", "siding_butter", "siding_dusty_blue", "siding_sage", "siding_grey", "siding_tan", "siding_oxblood"],
+        "roof": ["roof_slate", "roof_brown", "roof_rust", "roof_moss", "roof_slate_blue"],
+        // Shops and offices, by their siding pick
+        "brick": ["brick_buff", "brick_tan", "brick_red"],
+        "awning": ["awning_red", "awning_green", "awning_blue", "awning_ochre"],
+        // Floors: a colour between the two, by tile (tile floors alternate them)
+        "floor_grass": ["floor_grass_1", "floor_grass_2"],
+        "floor_dirt": ["floor_dirt_1", "floor_dirt_2"],
+        "floor_asphalt": ["floor_asphalt_1", "floor_asphalt_2"],
+        "floor_sidewalk": ["floor_sidewalk_1", "floor_sidewalk_2"],
+        "floor_path": ["floor_path_1", "floor_path_2"],
+        "floor_wood": ["floor_wood_1", "floor_wood_2"],
+        "floor_carpet": ["floor_carpet_1", "floor_carpet_2"],
+        "floor_tile": ["floor_tile_1", "floor_tile_2"],
+        "floor_concrete": ["floor_concrete_1", "floor_concrete_2"],
+    },
+)

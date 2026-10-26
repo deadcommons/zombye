@@ -5,7 +5,7 @@ from an approved reference, passes review gates where the owner approves screens
 then goes into the game. Then the shared rules: the numbers every asset has to fit.
 
 - **The look** (style sentence, palette, mood board, prompt prefix) is the art-direction bible,
-  [art-direction.md](art-direction.md). Colours live only in `tools/blender/palette.py`.
+  [art-direction.md](art-direction.md). Colours live only in `assets/data/palette.ron` (read by `tools/blender/palette.py` and the client).
 - **The tooling** (build, render, validate, export, promote) is #15 and two skills:
   [blender-assets](../.claude/skills/blender-assets/SKILL.md) (`tools/blender/zasset.py`, `artrepo.py`) and
   [meshy-assets](../.claude/skills/meshy-assets/SKILL.md) (Meshy over its MCP, then `zchar.py` clean-up

@@ -251,6 +251,11 @@ fn exit_on_signal(mut exit: MessageWriter<AppExit>, mut sent: Local<bool>) {
 
 fn main() {
     let options = Options::from_args();
+    // The world's colours, from the data folder's palette.ron (#60), before anything is drawn.
+    if let Err(e) = meshgen::palette::load(&options.data) {
+        eprintln!("can't use the palette: {e}");
+        std::process::exit(1);
+    }
     zombye_net::shutdown::install();
     // Wake the window's event loop when a signal comes in while it idles (unfocused), as Bevy's own
     // handler would; the loop then runs `exit_on_signal`.

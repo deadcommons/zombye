@@ -22,43 +22,15 @@
 //! the player, and hidden with the upper storeys while you're inside); posts, railings, decks and
 //! steps are never cut.
 //!
-//! Colours are tuned by eye here, in one table, like `land_palette.rs`; #60 moves them to the shared
-//! palette.
+//! Colours come from the palette file (`assets/data/palette.ron`, through [`super::palette`]).
 
 use bevy::prelude::*;
 use zombye_sim::map::{Building, Edge, Feature, Floor, OwnedEdge, RoofStyle, Side, TileMap};
 use zombye_sim::template::{BuildingKind, BuildingLook, Porch};
 
-use super::land_palette::Swatch;
+use super::palette::{self, pal};
 use super::{CutKind, CutTag, FaceColors, MeshBuilder, hash01, same, shade};
 use crate::world_render::{STOREY, STUB_HEIGHT, WALL_T, WINDOW_HEAD, WINDOW_SILL};
-
-// The palette (sRGB).
-/// Trim on most houses, porch posts and railings.
-const TRIM_LIGHT: Swatch = Swatch(0.88, 0.86, 0.80);
-/// Trim on pale houses.
-const TRIM_DARK: Swatch = Swatch(0.27, 0.30, 0.28);
-/// Shopfront frames and stall risers.
-const SHOPFRONT: Swatch = Swatch(0.20, 0.23, 0.21);
-const FOUNDATION: Swatch = Swatch(0.47, 0.46, 0.43);
-const STEP: Swatch = Swatch(0.58, 0.57, 0.53);
-const DECK: Swatch = Swatch(0.50, 0.44, 0.36);
-const GUTTER: Swatch = Swatch(0.20, 0.21, 0.22);
-const CHIMNEY: Swatch = Swatch(0.52, 0.27, 0.20);
-const CHIMNEY_CAP: Swatch = Swatch(0.55, 0.54, 0.51);
-const FLUE: Swatch = Swatch(0.12, 0.12, 0.12);
-const AERIAL: Swatch = Swatch(0.52, 0.53, 0.55);
-const ROOF_UNIT: Swatch = Swatch(0.62, 0.63, 0.61);
-const COPING: Swatch = Swatch(0.66, 0.64, 0.59);
-const SIGN: Swatch = Swatch(0.84, 0.80, 0.69);
-const BONE: Swatch = Swatch(0.86, 0.82, 0.71);
-/// Dark glass in gable windows (lit ones glow at night instead).
-const GABLE_GLASS: Swatch = Swatch(0.16, 0.18, 0.21);
-/// Brick for shops and offices, by the building's siding pick (the generator gives them grey, tan
-/// or brick): buff, tan, brick red.
-const BRICK: [Swatch; 3] = [Swatch(0.62, 0.58, 0.52), Swatch(0.66, 0.54, 0.40), Swatch(0.55, 0.29, 0.22)];
-/// Awnings: one muted colour each, striped with bone white.
-const AWNING: [Swatch; 4] = [Swatch(0.52, 0.24, 0.20), Swatch(0.30, 0.40, 0.33), Swatch(0.28, 0.34, 0.45), Swatch(0.64, 0.52, 0.28)];
 
 // Sizes, in metres.
 /// Top of the foundation and of the water-table board above it (both under the 0.4 m stub).
@@ -213,14 +185,14 @@ impl<'a> Kit<'a> {
     pub fn new(map: &'a TileMap, index: usize, b: &'a Building) -> Self {
         let look = b.look.unwrap_or(BuildingLook { kind: BuildingKind::House, front: Side::S, porch: None });
         let commercial = !matches!(look.kind, BuildingKind::House);
-        let wall = if commercial { BRICK[(b.siding as usize + 1) % BRICK.len()].lin() } else { super::siding_color(b.siding) };
+        let wall = if commercial { palette::pick(&pal().brick, b.siding as usize + 1) } else { super::siding_color(b.siding) };
         // Dark trim on the palest sidings (cream, butter), off-white on the rest.
         let trim = if commercial {
-            SHOPFRONT.lin()
+            pal().shopfront
         } else if matches!(b.siding % 8, 0 | 2) {
-            TRIM_DARK.lin()
+            pal().trim_dark
         } else {
-            TRIM_LIGHT.lin()
+            pal().trim_light
         };
         let line = shade(wall, if commercial { 0.84 } else { 0.78 });
         let porch = look.porch.filter(|p| p.room != 0 || yard_has_room(map, p));
@@ -246,7 +218,7 @@ impl<'a> Kit<'a> {
             let (step, first) = if self.commercial { (BRICK_COURSE, 0.35) } else { (BOARD, STRIPE_TOP + 0.02) };
             for &(h0, h1) in pieces(kind) {
                 if base == 0.0 && h0 == 0.0 {
-                    f.cube(mb, t0, t1, 0.0, FOUNDATION_TOP, face - 0.01, face + 0.025, lit_box(FOUNDATION.lin()));
+                    f.cube(mb, t0, t1, 0.0, FOUNDATION_TOP, face - 0.01, face + 0.025, lit_box(pal().foundation));
                     if !self.commercial {
                         f.cube(mb, t0, t1, FOUNDATION_TOP, STRIPE_TOP, face - 0.01, face + 0.02, lit_box(self.trim));
                     }
@@ -274,7 +246,7 @@ impl<'a> Kit<'a> {
                 f.cube(mb, -0.05, 1.05, sill - 0.07, sill, face - 0.04, face + 0.07, c);
                 if self.commercial && base == 0.0 && side_dir(self.look.front) == f.out && matches!(self.look.kind, BuildingKind::Shop) {
                     // A shopfront's stall riser under the glass.
-                    f.cube(mb, -0.02, 1.02, FOUNDATION_TOP, sill - 0.07, face - 0.01, face + 0.03, lit_box(SHOPFRONT.lin()));
+                    f.cube(mb, -0.02, 1.02, FOUNDATION_TOP, sill - 0.07, face - 0.01, face + 0.03, lit_box(pal().shopfront));
                 }
             } else if is_door(kind) {
                 let c = lit_box(self.trim);
@@ -389,7 +361,7 @@ impl<'a> Kit<'a> {
         let ridge = eave + (vm - v0 + o) * PITCH;
         let roof_at = |v: f32| ridge - (v - vm).abs() * PITCH;
         let roof_c = super::roof_color(b.roof_color);
-        let trim = lit_box(if self.commercial { COPING.lin() } else { self.trim });
+        let trim = lit_box(if self.commercial { pal().coping } else { self.trim });
         let un = |u: f32| if along_x { Vec3::new(u, 0.0, 0.0) } else { Vec3::new(0.0, 0.0, u) };
 
         // Gable walls up to the roof, at the wall's outer face, with board lines and a window.
@@ -417,7 +389,7 @@ impl<'a> Kit<'a> {
                     mb.set_tag(CutTag { kind: CutKind::Lit, ..tag });
                 }
                 let ug = u(PROUD + 0.004);
-                mb.quad_facing([w(ug, y0, vm - hw), w(ug, y0, vm + hw), w(ug, y1, vm + hw), w(ug, y1, vm - hw)], n, GABLE_GLASS.lin());
+                mb.quad_facing([w(ug, y0, vm - hw), w(ug, y0, vm + hw), w(ug, y1, vm + hw), w(ug, y1, vm - hw)], n, pal().gable_glass);
                 mb.set_tag(tag);
                 let um = (u(PROUD), u(PROUD + 0.02));
                 wbox(mb, um.0.min(um.1), um.0.max(um.1), y0, y1, vm - 0.025, vm + 0.025, trim);
@@ -431,7 +403,7 @@ impl<'a> Kit<'a> {
             let (a, c) = (v(-0.01), v(0.03));
             wbox(mb, u0 - o - 0.03, u1 + o + 0.03, eave - 0.18, eave + 0.01, a.min(c), a.max(c), trim);
             let (a, c) = (v(0.03), v(0.11));
-            wbox(mb, u0 - o, u1 + o, eave - 0.15, eave - 0.05, a.min(c), a.max(c), lit_box(GUTTER.lin()));
+            wbox(mb, u0 - o, u1 + o, eave - 0.15, eave - 0.05, a.min(c), a.max(c), lit_box(pal().rain_gutter));
         }
         // Fascia up the gables (rakes), hanging under the roof's edge.
         for (ue, sign) in [(u0 - o - 0.01, -1.0), (u1 + o + 0.01, 1.0)] {
@@ -459,14 +431,14 @@ impl<'a> Kit<'a> {
             let (hu, hv) = (0.36, 0.3);
             let foot = roof_at(vc + side * hv) - 0.05;
             let top = ridge + 0.7;
-            wbox(mb, uc - hu, uc + hu, foot, top, vc - hv, vc + hv, lit_box(CHIMNEY.lin()));
-            wbox(mb, uc - hu - 0.06, uc + hu + 0.06, top, top + 0.08, vc - hv - 0.06, vc + hv + 0.06, lit_box(CHIMNEY_CAP.lin()));
-            wbox(mb, uc - 0.12, uc + 0.12, top + 0.08, top + 0.22, vc - 0.12, vc + 0.12, lit_box(FLUE.lin()));
+            wbox(mb, uc - hu, uc + hu, foot, top, vc - hv, vc + hv, lit_box(pal().chimney));
+            wbox(mb, uc - hu - 0.06, uc + hu + 0.06, top, top + 0.08, vc - hv - 0.06, vc + hv + 0.06, lit_box(pal().chimney_cap));
+            wbox(mb, uc - 0.12, uc + 0.12, top + 0.08, top + 0.22, vc - 0.12, vc + 0.12, lit_box(pal().flue));
         }
         // A TV aerial on a thin mast on others, at the other end of the ridge.
         if hash01(bx, by, 83) < 0.4 && length >= 5.0 {
             let uc = if end { u1 - 1.6 } else { u0 + 1.6 };
-            let c = lit_box(AERIAL.lin());
+            let c = lit_box(pal().aerial);
             let top = ridge + 1.6;
             wbox(mb, uc - 0.03, uc + 0.03, ridge - 0.05, top, vm - 0.03, vm + 0.03, c);
             wbox(mb, uc - 0.55, uc + 0.55, top - 0.1, top - 0.05, vm - 0.025, vm + 0.025, c);
@@ -495,7 +467,7 @@ impl<'a> Kit<'a> {
         };
         // 2 cm proud of the slab, so their faces never share a plane.
         ring(mb, top - 0.22, top + h, 0.02, t + 0.02, wall);
-        ring(mb, top + h, top + h + 0.07, 0.06, t + 0.1, lit_box(COPING.lin()));
+        ring(mb, top + h, top + h + 0.07, 0.06, t + 0.1, lit_box(pal().coping));
         // A rooftop unit and a vent pipe toward the back, on roofs big enough.
         let size = b.size.as_vec2();
         if size.min_element() >= 6.0 {
@@ -503,18 +475,18 @@ impl<'a> Kit<'a> {
             let centre = b.min.as_vec2() + size * 0.5 + back * (size * 0.25);
             let r = hash01(b.min.x, b.min.y, 84) - 0.5;
             let c = centre + back.perp() * r * size.max_element() * 0.4;
-            let unit = lit_box(ROOF_UNIT.lin());
+            let unit = lit_box(pal().roof_unit);
             mb.add_box(Vec3::new(c.x - 0.7, top, c.y - 0.55), Vec3::new(c.x + 0.7, top + 0.85, c.y + 0.55), unit);
-            mb.add_box(Vec3::new(c.x - 0.4, top + 0.85, c.y - 0.4), Vec3::new(c.x + 0.4, top + 0.95, c.y + 0.4), lit_box(GUTTER.lin()));
+            mb.add_box(Vec3::new(c.x - 0.4, top + 0.85, c.y - 0.4), Vec3::new(c.x + 0.4, top + 0.95, c.y + 0.4), lit_box(pal().rain_gutter));
             let v = c + back.perp() * 1.6;
-            mb.add_box(Vec3::new(v.x - 0.1, top, v.y - 0.1), Vec3::new(v.x + 0.1, top + 0.6, v.y + 0.1), lit_box(GUTTER.lin()));
+            mb.add_box(Vec3::new(v.x - 0.1, top, v.y - 0.1), Vec3::new(v.x + 0.1, top + 0.6, v.y + 0.1), lit_box(pal().rain_gutter));
         }
         mb.set_tag(CutTag::default());
     }
 
     /// Two steps up to every outside door with no porch (one low step on shops and offices).
     fn steps(&self, mb: &mut MeshBuilder, ground: &[(IVec2, OwnedEdge, Edge, (u16, u16))]) {
-        let c = lit_box(STEP.lin());
+        let c = lit_box(pal().step);
         for &(owner, which, kind, rooms) in ground {
             if !is_door(kind) {
                 continue;
@@ -565,7 +537,7 @@ impl<'a> Kit<'a> {
             }
         }
         lower.set_tag(CutTag { kind: CutKind::Structure, ..default() });
-        let deck = DECK.lin();
+        let deck = pal().deck;
         let mut faces = same(shade(deck, 0.8));
         faces[2] = deck;
         f.cube(lower, 0.0, len, 0.0, DECK_TOP, WALL_T - 0.01, depth, faces);
@@ -578,7 +550,7 @@ impl<'a> Kit<'a> {
             t += 0.3;
         }
         // Steps down from the way in.
-        let step = lit_box(STEP.lin());
+        let step = lit_box(pal().step);
         f.cube(lower, entry - 0.6, entry + 0.6, 0.0, DECK_TOP * 0.5, depth - 0.01, depth + 0.34, step);
         // Posts along the front, either side of the way in and at the corners, at most 2.6 m apart.
         let post_o = depth - 0.12;
@@ -602,7 +574,7 @@ impl<'a> Kit<'a> {
             }
             i += 1;
         }
-        let pale = lit_box(TRIM_LIGHT.lin());
+        let pale = lit_box(pal().trim_light);
         let beam_y = roof_y(depth) - 0.06;
         for &t in &posts {
             f.cube(lower, t - 0.07, t + 0.07, DECK_TOP, beam_y, post_o - 0.07, post_o + 0.07, pale);
@@ -626,7 +598,7 @@ impl<'a> Kit<'a> {
         let up = (Vec3::Y + f.normal() * PORCH_ROOF_FALL).normalize();
         let roof_c = super::roof_color(self.b.roof_color);
         roof.quad_facing([f.world(t0, y0, o0), f.world(t1, y0, o0), f.world(t1, y1, o1), f.world(t0, y1, o1)], up, roof_c);
-        let soffit = shade(TRIM_LIGHT.lin(), 0.85);
+        let soffit = shade(pal().trim_light, 0.85);
         roof.quad_facing([f.world(t0, y0 - 0.06, o0), f.world(t1, y0 - 0.06, o0), f.world(t1, y1 - 0.06, o1), f.world(t0, y1 - 0.06, o1)], -up, soffit);
         f.cube(roof, 0.0, len, beam_y - 0.16, beam_y, post_o - 0.08, post_o + 0.08, pale);
         f.cube(roof, t0 - 0.02, t1 + 0.02, y1 - 0.2, y1 + 0.02, o1 - 0.03, o1, lit_box(self.trim));
@@ -647,7 +619,7 @@ impl<'a> Kit<'a> {
             return;
         }
         let dir = (b - a) / len;
-        let c = lit_box(TRIM_LIGHT.lin());
+        let c = lit_box(pal().trim_light);
         // A bar from `s0` to `s1` along the railing, `half` either side of it.
         let part = |mb: &mut MeshBuilder, s0: f32, s1: f32, y0: f32, y1: f32, half: f32| {
             let side = dir.perp() * half;
@@ -704,7 +676,7 @@ impl<'a> Kit<'a> {
             entry = (0..open.len()).min_by(|&i, &j| key(&open[i]).total_cmp(&key(&open[j])));
         }
         mb.set_tag(CutTag { kind: CutKind::Structure, ..default() });
-        let pale = lit_box(TRIM_LIGHT.lin());
+        let pale = lit_box(pal().trim_light);
         // Posts at the ends and corners of the open sides, and every other metre along them.
         let mut verts: Vec<Vec2> = open.iter().flat_map(|e| [e.0, e.1]).collect();
         verts.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
@@ -731,14 +703,14 @@ impl<'a> Kit<'a> {
     /// A shopfront: a blank sign board along the front and a striped awning over it.
     fn shopfront(&self, lower: &mut MeshBuilder, roof: &mut MeshBuilder, sides: &[WallSide]) {
         let front = side_dir(self.look.front);
-        let sign = SIGN.lin();
+        let sign = pal().sign;
         let pick = hash01(self.b.min.x, self.b.min.y, 85);
-        let awning = AWNING[(pick * AWNING.len() as f32) as usize % AWNING.len()].lin();
-        let bone = BONE.lin();
+        let awning = palette::pick(&pal().awning, (pick * pal().awning.len() as f32) as usize);
+        let bone = pal().bone;
         for s in sides.iter().filter(|s| s.frame.out == front) {
             let f = s.frame;
             lower.set_tag(CutTag { kind: CutKind::Wall, anchor: s.anchor, radius: 0.0 });
-            f.cube(lower, -WALL_T, 1.0 + WALL_T, 2.32, 2.96, WALL_T - 0.01, WALL_T + 0.05, lit_box(SHOPFRONT.lin()));
+            f.cube(lower, -WALL_T, 1.0 + WALL_T, 2.32, 2.96, WALL_T - 0.01, WALL_T + 0.05, lit_box(pal().shopfront));
             f.cube(lower, -WALL_T, 1.0 + WALL_T, 2.38, 2.90, WALL_T, WALL_T + 0.07, lit_box(sign));
             lower.set_tag(CutTag::default());
             // The awning: stripes 0.5 m wide by their place along the street, so they line up.
@@ -770,7 +742,7 @@ impl<'a> Kit<'a> {
             }
             for s in wall_sides(owner, which, kind, 0.0, rooms, self.map) {
                 if self.map.tile(s.frame.at(0.5, 0.5).floor().as_ivec2()).room == 0 {
-                    s.frame.cube(roof, -0.45, 1.45, 2.42, 2.56, WALL_T - 0.01, WALL_T + 1.1, lit_box(COPING.lin()));
+                    s.frame.cube(roof, -0.45, 1.45, 2.42, 2.56, WALL_T - 0.01, WALL_T + 1.1, lit_box(pal().coping));
                 }
             }
         }

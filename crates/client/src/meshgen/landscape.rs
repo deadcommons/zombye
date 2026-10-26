@@ -11,7 +11,7 @@
 //! shadows) and `props`. Paint, joints, patches and the like are cut into each ground tile as
 //! rectangles that don't overlap ([`Paint`]), so no ground pixel is shaded twice. Variation comes
 //! from [`hash01`] of tile coordinates, so a chunk always builds the same. Colours are in
-//! [`super::land_palette`]. Turning circles, kerb corners, ways into parking lots and bends are
+//! [`super::palette`] (`assets/data/palette.ron`). Turning circles, kerb corners, ways into parking lots and bends are
 //! drawn as curves over the tiles ([`super::curves`]): a tile a curve crosses is cut into convex
 //! pieces, and kerbs follow the curve.
 
@@ -21,7 +21,7 @@ use bevy::prelude::*;
 use zombye_sim::map::{CHUNK_SIZE, Edge, Feature, Floor, OwnedEdge, Side, Tile, TileMap};
 
 use super::curves::{ArcSpan, Curves, Kerb, PieceBuf, Poly, Surface};
-use super::land_palette::{self as pal, Swatch};
+use super::palette::{self, pal};
 use super::trees::{self, add_bush, add_tree};
 use super::{CutTag, MeshBuilder, floor_color, hash01, shade};
 
@@ -648,13 +648,13 @@ impl<'a> Land<'a> {
     /// comes up to it).
     fn foreign_colour(&self, t: IVec2, poly: &Poly, surface: Surface) -> LinearRgba {
         match surface {
-            Surface::Road => pal::ASPHALT.lin(),
-            Surface::Walk => pal::SIDEWALK.lin(),
-            Surface::Drive => pal::DRIVEWAY.lin(),
+            Surface::Road => pal().asphalt,
+            Surface::Walk => pal().sidewalk,
+            Surface::Drive => pal().driveway,
             Surface::Soft => {
                 let p = poly.centroid();
                 if self.driveways.iter().any(|d| inside(p, d.min.min(d.cut_min), d.max.max(d.cut_max))) {
-                    return pal::DRIVEWAY.lin();
+                    return pal().driveway;
                 }
                 let d = p - (t.as_vec2() + Vec2::splat(0.5));
                 let step = |v: f32| if v.abs() > 0.15 { v.signum() as i32 } else { 0 };
@@ -664,12 +664,12 @@ impl<'a> Land<'a> {
                         continue;
                     }
                     return match self.floor(n) {
-                        Floor::Path => pal::PATH.lin(),
-                        Floor::Concrete => pal::SIDEWALK.lin(),
+                        Floor::Path => pal().path,
+                        Floor::Concrete => pal().sidewalk,
                         f => SoftLook::new(self, n, f == Floor::Dirt).colour(p),
                     };
                 }
-                pal::LAWN[0].lin()
+                pal().lawn[0]
             }
         }
     }
@@ -909,7 +909,7 @@ pub fn build_chunk(map: &TileMap, c: IVec2) -> ChunkMeshes {
                 Floor::Concrete => {
                     let (_, _, z0, x0) = slab_grid(&land, t, |p| land.is_sidewalk(p) || (land.outdoors(p) && land.floor(p) == Floor::Concrete));
                     slab_joints(&mut paint, t, true, true, z0, x0);
-                    paint.draw(&mut ground, pal::SIDEWALK.lin());
+                    paint.draw(&mut ground, pal().sidewalk);
                 }
                 Floor::Path => path_tile(&mut paint, &mut ground, &land, t),
                 _ => soft_tile(&mut paint, &mut ground, &mut props, &land, &looks, t),
@@ -1002,7 +1002,7 @@ fn tri_up_shaded(mb: &mut MeshBuilder, [a, b, c]: [Vec3; 3], [ca, cb, cc]: [Line
 
 fn road_tile(paint: &mut Paint, mb: &mut MeshBuilder, land: &Land, t: IVec2) {
     road_paint(paint, mb, land, t);
-    paint.draw(mb, pal::ASPHALT.lin());
+    paint.draw(mb, pal().asphalt);
     // Oil where cars stood in the bays (small, so drawn over the asphalt).
     // A bay is the two tiles after a bay line; the stain sits in its middle.
     let bay = [IVec2::X, IVec2::Y].into_iter().find(|&d| land.is_bay(t - d) && land.is_bay(t + d * 2));
@@ -1031,7 +1031,7 @@ fn road_paint(paint: &mut Paint, mb: &mut MeshBuilder, land: &Land, t: IVec2) {
             if hash01(k.x, k.y, 31) < 0.16 {
                 let min = k.as_vec2() * 5.0 + Vec2::new(hash01(k.x, k.y, 32), hash01(k.x, k.y, 33)) * 3.0;
                 let size = Vec2::new(1.2 + 2.6 * hash01(k.x, k.y, 34), 1.0 + 2.2 * hash01(k.x, k.y, 35));
-                paint.rect(min, min + size, pal::ASPHALT_PATCH.lin());
+                paint.rect(min, min + size, pal().asphalt_patch);
             }
         }
     }
@@ -1041,7 +1041,7 @@ fn road_paint(paint: &mut Paint, mb: &mut MeshBuilder, land: &Land, t: IVec2) {
             let (a, b) = side_segment(t, side);
             let inward = -side.offset().as_vec2() * GUTTER_WIDTH;
             let (p, q) = (a + (b - a) * s0, a + (b - a) * s1 + inward);
-            paint.rect(p.min(q), p.max(q), pal::GUTTER.lin());
+            paint.rect(p.min(q), p.max(q), pal().gutter);
         }
     }
     if land.is_bay(t) {
@@ -1057,12 +1057,12 @@ fn road_paint(paint: &mut Paint, mb: &mut MeshBuilder, land: &Land, t: IVec2) {
     if lane >= 2.6 {
         for mid in [st.lo + lane * 0.5, c + lane * 0.5] {
             for p in [mid - 0.82, mid + 0.82] {
-                paint.street(st.along_x, a0, a1, p - 0.3, p + 0.3, pal::WHEEL_TRACK.lin());
+                paint.street(st.along_x, a0, a1, p - 0.3, p + 0.3, pal().wheel_track);
             }
         }
     }
-    let yellow = pal::PAINT_YELLOW.lin();
-    let white = pal::PAINT_WHITE.lin();
+    let yellow = pal().paint_yellow;
+    let white = pal().paint_white;
     // Four tiles, not three: the crossing's band is in the last three metres, and the centre line
     // stops a metre before it (so no stub of line is left between two offset T-junctions).
     let ahead = [1, -1].map(|dir| land.junction_ahead(t, &st, dir, st.paint == Line::Solid, 4).map(|k| (dir, k)));
@@ -1142,7 +1142,7 @@ fn bay_line(paint: &mut Paint, land: &Land, t: IVec2) {
     let a0 = along as f32 + if next(-1) { 0.0 } else { 0.25 };
     let a1 = along as f32 + 1.0 - if next(1) { 0.0 } else { 0.25 };
     let c = across as f32 + 0.5;
-    paint.street(along_x, a0, a1, c - 0.05, c + 0.05, pal::PAINT_WHITE.lin());
+    paint.street(along_x, a0, a1, c - 0.05, c + 0.05, pal().paint_white);
 }
 
 fn sidewalk_tile(paint: &mut Paint, mb: &mut MeshBuilder, land: &Land, t: IVec2) {
@@ -1158,7 +1158,7 @@ fn sidewalk_tile(paint: &mut Paint, mb: &mut MeshBuilder, land: &Land, t: IVec2)
             }
         }
     }
-    paint.draw(mb, pal::SIDEWALK.lin());
+    paint.draw(mb, pal().sidewalk);
 }
 
 /// A kerb on a sidewalk tile's edge facing `side`, from `s0` to `s1` of the way along it (+x or
@@ -1166,7 +1166,7 @@ fn sidewalk_tile(paint: &mut Paint, mb: &mut MeshBuilder, land: &Land, t: IVec2)
 /// and its face toward the road.
 fn kerb(mb: &mut MeshBuilder, tv: Vec2, side: Side, s0: f32, s1: f32) {
     let (w, h, j) = (KERB_WIDTH, KERB_HEIGHT, KERB_JOINT);
-    let (top, joint, face) = (pal::KERB_TOP.lin(), pal::KERB_JOINT.lin(), pal::KERB_FACE.lin());
+    let (top, joint, face) = (pal().kerb_top, pal().kerb_joint, pal().kerb_face);
     // A point `a` of the way along the edge, `d` in from it toward the sidewalk, at height `y`.
     let p = |a: f32, d: f32, y: f32| {
         let (x, z) = match side {
@@ -1186,7 +1186,7 @@ fn kerb(mb: &mut MeshBuilder, tv: Vec2, side: Side, s0: f32, s1: f32) {
 /// A kerb along a curve, with grit in the gutter in front of it: the stretches whose middles are
 /// in this chunk, dropped in front of driveways.
 fn curved_kerb(mb: &mut MeshBuilder, k: &Kerb, driveways: &[Driveway], ours: impl Fn(Vec2) -> bool) {
-    let (top, joint, face, grit) = (pal::KERB_TOP.lin(), pal::KERB_JOINT.lin(), pal::KERB_FACE.lin(), pal::GUTTER.lin());
+    let (top, joint, face, grit) = (pal().kerb_top, pal().kerb_joint, pal().kerb_face, pal().gutter);
     let (w, h, g, j) = (KERB_WIDTH, KERB_HEIGHT, GUTTER_WIDTH, KERB_JOINT);
     let v = |p: Vec2, y: f32| Vec3::new(p.x, y, p.y);
     let dropped = |p: Vec2| driveways.iter().any(|d| inside(p, d.cut_min - Vec2::splat(0.1), d.cut_max + Vec2::splat(0.1)));
@@ -1211,7 +1211,7 @@ fn curved_kerb(mb: &mut MeshBuilder, k: &Kerb, driveways: &[Driveway], ours: imp
 /// The dashed centre line round a bend: 3 m dashes, 9 m gaps, 12 cm wide, in short straight
 /// pieces.
 fn centre_dashes(mb: &mut MeshBuilder, arc: &ArcSpan, ours: impl Fn(Vec2) -> bool) {
-    let yellow = pal::PAINT_YELLOW.lin();
+    let yellow = pal().paint_yellow;
     let len = arc.length();
     let v = |p: Vec2| Vec3::new(p.x, Y_OVERLAY, p.y);
     let mut s = 4.5;
@@ -1234,7 +1234,7 @@ fn centre_dashes(mb: &mut MeshBuilder, arc: &ArcSpan, ours: impl Fn(Vec2) -> boo
 
 /// Slab joints across a turning circle's sidewalk, about every 1.5 m round it.
 fn ring_joints(mb: &mut MeshBuilder, ring: &ArcSpan, outer: f32, ours: impl Fn(Vec2) -> bool) {
-    let colour = pal::SIDEWALK_JOINT.lin();
+    let colour = pal().sidewalk_joint;
     let n = (ring.turn.abs() * (ring.r + outer) * 0.5 / 1.5).round() as usize;
     let v = |p: Vec2| Vec3::new(p.x, Y_OVERLAY, p.y);
     for i in 1..n {
@@ -1281,7 +1281,7 @@ fn slab_grid(land: &Land, t: IVec2, paved: impl Fn(IVec2) -> bool) -> (bool, boo
 }
 
 fn slab_joints(paint: &mut Paint, t: IVec2, across_x: bool, across_z: bool, z0: f32, x0: f32) {
-    let colour = pal::SIDEWALK_JOINT.lin();
+    let colour = pal().sidewalk_joint;
     let tv = t.as_vec2();
     let lines = |from: f32, base: f32| {
         let mut out = Vec::new();
@@ -1309,7 +1309,7 @@ fn slab_joints(paint: &mut Paint, t: IVec2, across_x: bool, across_z: bool, z0: 
 
 fn path_tile(paint: &mut Paint, mb: &mut MeshBuilder, land: &Land, t: IVec2) {
     // Square slabs: a joint where this tile meets the next along the path.
-    let colour = pal::SIDEWALK_JOINT.lin();
+    let colour = pal().sidewalk_joint;
     let tv = t.as_vec2();
     if land.floor(t + IVec2::Y) == Floor::Path {
         paint.rect(Vec2::new(tv.x, tv.y + 0.95), Vec2::new(tv.x + 1.0, tv.y + 1.0), colour);
@@ -1317,7 +1317,7 @@ fn path_tile(paint: &mut Paint, mb: &mut MeshBuilder, land: &Land, t: IVec2) {
     if land.floor(t + IVec2::X) == Floor::Path {
         paint.rect(Vec2::new(tv.x + 0.95, tv.y), Vec2::new(tv.x + 1.0, tv.y + 1.0), colour);
     }
-    paint.draw(mb, pal::PATH.lin());
+    paint.draw(mb, pal().path);
 }
 
 /// How a tile of grass or dirt looks: how unkempt it is, and whether it's forest floor or a
@@ -1358,20 +1358,20 @@ impl SoftLook {
     /// The ground's colour at `c`.
     fn colour(&self, c: Vec2) -> LinearRgba {
         if self.dirt {
-            shade(pal::DIRT.lin(), 0.94 + 0.1 * noise(c, 2.5, 43))
+            shade(pal().dirt, 0.94 + 0.1 * noise(c, 2.5, 43))
         } else if self.forest {
             let n = noise(c, 4.0, 44) + 0.25 * hash01((c.x * 3.0) as i32, (c.y * 3.0) as i32, 45);
-            if self.pines > 0 && n > 0.75 { pal::NEEDLES.lin() } else { pal::FOREST_FLOOR[(n > 0.6) as usize].lin() }
+            if self.pines > 0 && n > 0.75 { pal().needles } else { pal().forest_floor[(n > 0.6) as usize] }
         } else {
             // Small blobs (not single triangles) where long grass meets the lawn.
             let fine = noise(c, 1.8, 46);
             if self.verge && fine < 0.7 {
-                pal::VERGE.lin()
+                pal().verge
             } else if self.rough + 0.35 * fine > 0.85 {
-                pal::LONG_GRASS.lin()
+                pal().long_grass
             } else {
                 let n = noise(c, 7.0, 47) * 0.85 + noise(c, 2.5, 48) * 0.15;
-                pal::LAWN[if n < 0.4 { 1 } else if n < 0.62 { 0 } else { 2 }].lin()
+                pal().lawn[if n < 0.4 { 1 } else if n < 0.62 { 0 } else { 2 }]
             }
         }
     }
@@ -1467,7 +1467,7 @@ fn soft_tile(paint: &mut Paint, mb: &mut MeshBuilder, props: &mut MeshBuilder, l
             continue;
         }
         let dry = hash01(x, y, 80 + i as u32) < 0.35;
-        tuft(mb, p, 0.15 + 0.08 * hash01(x, y, 90 + i as u32), 0.16 + 0.16 * rough * hash01(x, y, 100 + i as u32), if dry { pal::TUFT_DRY } else { pal::TUFT }, hash01(x, y, 110 + i as u32));
+        tuft(mb, p, 0.15 + 0.08 * hash01(x, y, 90 + i as u32), 0.16 + 0.16 * rough * hash01(x, y, 100 + i as u32), if dry { pal().tuft_dry } else { pal().tuft }, hash01(x, y, 110 + i as u32));
     }
     if tile.feature != Feature::None {
         return;
@@ -1497,7 +1497,7 @@ fn soft_tile(paint: &mut Paint, mb: &mut MeshBuilder, props: &mut MeshBuilder, l
 }
 
 /// A tuft of long grass: a thin three-sided spike.
-fn tuft(mb: &mut MeshBuilder, p: Vec3, r: f32, h: f32, colour: Swatch, k: f32) {
+fn tuft(mb: &mut MeshBuilder, p: Vec3, r: f32, h: f32, colour: LinearRgba, k: f32) {
     let a0 = k * TAU;
     let lean = Vec3::new((k * 7.0).sin(), 0.0, (k * 5.0).cos()) * h * 0.25;
     let apex = p + Vec3::Y * h + lean;
@@ -1506,7 +1506,7 @@ fn tuft(mb: &mut MeshBuilder, p: Vec3, r: f32, h: f32, colour: Swatch, k: f32) {
         p + Vec3::new(a.cos(), 0.0, a.sin()) * r
     };
     let inside = p + Vec3::Y * h * 0.3;
-    let c = colour.lin();
+    let c = colour;
     for i in 0..3 {
         tri_out(mb, [base(i), base(i + 1), apex], inside, shade(c, 0.92 + 0.06 * i as f32));
     }
@@ -1514,7 +1514,7 @@ fn tuft(mb: &mut MeshBuilder, p: Vec3, r: f32, h: f32, colour: Swatch, k: f32) {
 
 /// A low fern: four folded fronds arching out from the middle.
 fn fern(mb: &mut MeshBuilder, p: Vec3, size: f32, k: f32) {
-    let colour = pal::FERN[(k * 2.0) as usize % 2].lin();
+    let colour = palette::pick(&pal().fern, (k * 2.0) as usize);
     for i in 0..4 {
         let a = k * TAU + i as f32 * TAU / 4.0 + (hash01(i, (k * 977.0) as i32, 7) - 0.5) * 0.6;
         let dir = Vec3::new(a.cos(), 0.0, a.sin());
@@ -1531,7 +1531,7 @@ fn fern(mb: &mut MeshBuilder, p: Vec3, size: f32, k: f32) {
 
 /// A grey rock: a low, lopsided six-sided pyramid.
 fn rock(mb: &mut MeshBuilder, p: Vec3, r: f32, k: f32) {
-    let colour = pal::ROCK.lin();
+    let colour = pal().rock;
     let top = p + Vec3::new((k - 0.5) * r * 0.5, r * (0.5 + 0.3 * k), (0.5 - k) * r * 0.3);
     let ring = |i: u32| {
         let a = k * TAU + i as f32 * TAU / 6.0;
@@ -1552,9 +1552,9 @@ fn stump(mb: &mut MeshBuilder, p: Vec3, r: f32, k: f32) {
     };
     let inside = p + Vec3::Y * h * 0.5;
     for i in 0..5 {
-        tri_out(mb, [ring(i, 0.0, r * 1.15), ring(i + 1, 0.0, r * 1.15), ring(i + 1, h, r)], inside, pal::DEADWOOD.lin());
-        tri_out(mb, [ring(i, 0.0, r * 1.15), ring(i + 1, h, r), ring(i, h, r)], inside, pal::DEADWOOD.lin());
-        tri_up(mb, [p + Vec3::Y * h, ring(i, h, r), ring(i + 1, h, r)], pal::CUT_WOOD.lin());
+        tri_out(mb, [ring(i, 0.0, r * 1.15), ring(i + 1, 0.0, r * 1.15), ring(i + 1, h, r)], inside, pal().deadwood);
+        tri_out(mb, [ring(i, 0.0, r * 1.15), ring(i + 1, h, r), ring(i, h, r)], inside, pal().deadwood);
+        tri_up(mb, [p + Vec3::Y * h, ring(i, h, r), ring(i + 1, h, r)], pal().cut_wood);
     }
 }
 
@@ -1570,13 +1570,13 @@ fn log(mb: &mut MeshBuilder, p: Vec3, len: f32, r: f32, k: f32) {
     };
     let (e0, e1) = (-len * 0.5, len * 0.5);
     for i in 0..6 {
-        tri_out(mb, [ring(i, e0), ring(i + 1, e0), ring(i + 1, e1)], centre, pal::DEADWOOD.lin());
-        tri_out(mb, [ring(i, e0), ring(i + 1, e1), ring(i, e1)], centre, pal::DEADWOOD.lin());
+        tri_out(mb, [ring(i, e0), ring(i + 1, e0), ring(i + 1, e1)], centre, pal().deadwood);
+        tri_out(mb, [ring(i, e0), ring(i + 1, e1), ring(i, e1)], centre, pal().deadwood);
     }
     for e in [e0, e1] {
         let mid = centre + dir * e;
         for i in 0..6 {
-            tri_out(mb, [mid, ring(i, e), ring(i + 1, e)], centre, pal::CUT_WOOD.lin());
+            tri_out(mb, [mid, ring(i, e), ring(i + 1, e)], centre, pal().cut_wood);
         }
     }
 }
@@ -1606,7 +1606,7 @@ fn fence_or_hedge(mb: &mut MeshBuilder, land: &Land, t: IVec2, which: OwnedEdge)
 
 fn fence(mb: &mut MeshBuilder, t: IVec2, which: OwnedEdge) {
     let (a, b) = TileMap::edge_segment(t, which);
-    let wood = pal::FENCE_WOOD.lin();
+    let wood = pal().fence_wood;
     let along = (b - a).normalize();
     let half = Vec2::new(along.y.abs(), along.x.abs()) * 0.03;
     for (h0, h1) in [(0.35, 0.45), (0.8, 0.9)] {
@@ -1630,8 +1630,8 @@ fn hedge(mb: &mut MeshBuilder, a: Vec2, b: Vec2, h: f32, cap_a: bool, cap_b: boo
         Vec3::new(q.x, y, q.y)
     };
     let mid = Vec3::new((a.x + b.x) * 0.5, h * 0.5, (a.y + b.y) * 0.5);
-    let side = pal::HEDGE.lin();
-    let top = pal::HEDGE_TOP.lin();
+    let side = pal().hedge;
+    let top = pal().hedge_top;
     for i in 0..section.len() - 1 {
         let colour = match i {
             0 | 4 => side,
@@ -1656,8 +1656,8 @@ fn hedge(mb: &mut MeshBuilder, a: Vec2, b: Vec2, h: f32, cap_a: bool, cap_b: boo
 
 /// A driveway's concrete on one tile, with a joint every 3 m.
 fn driveway_paint(paint: &mut Paint, d: &Driveway) {
-    paint.rect(d.min, d.max, pal::DRIVEWAY.lin());
-    let joint = pal::SIDEWALK_JOINT.lin();
+    paint.rect(d.min, d.max, pal().driveway);
+    let joint = pal().sidewalk_joint;
     let (u0, u1) = if d.along_x { (d.min.x, d.max.x) } else { (d.min.y, d.max.y) };
     let mut u = u0 + 3.0;
     while u < u1 - 0.5 {
@@ -1679,7 +1679,7 @@ fn driveway_stain(mb: &mut MeshBuilder, d: &Driveway, lo: Vec2, hi: Vec2) {
 
 /// A dark, irregular oil stain on the ground.
 fn stain(mb: &mut MeshBuilder, centre: Vec2, size: f32, k: f32) {
-    let colour = pal::OIL_STAIN.lin();
+    let colour = pal().oil_stain;
     let r = Vec2::new(0.45, 0.32) * size;
     for i in 0..7 {
         let a0 = i as f32 * TAU / 7.0;
@@ -1706,20 +1706,20 @@ fn bed_tile(paint: &mut Paint, ground: &mut MeshBuilder, props: &mut MeshBuilder
     let mid = (min + max) * 0.5;
     match b.bed {
         Bed::Flowers => {
-            paint.rect(min, max, pal::SOIL.lin());
+            paint.rect(min, max, pal().soil);
             for i in 0..3 {
                 let along = Vec2::new(into.y.abs(), into.x.abs());
                 let p = mid + along * (-0.33 + 0.33 * i as f32 + (hash01(x, y, 150 + i) - 0.5) * 0.15) + into * (hash01(x, y, 160 + i) - 0.5) * 0.35;
-                let colour = pal::FLOWERS[(hash01(x, y, 170) * 4.0) as usize % 4];
-                let leaf = pal::SHRUB[0];
+                let colour = palette::pick(&pal().flowers, (hash01(x, y, 170) * 4.0) as usize);
+                let leaf = pal().shrub[0];
                 let base = Vec3::new(p.x, 0.0, p.y);
                 tuft(ground, base, 0.12, 0.22, leaf, hash01(x, y, 180 + i));
                 let bloom = base + Vec3::Y * (0.2 + 0.08 * hash01(x, y, 190 + i));
-                blossom(ground, bloom, 0.09, colour.lin(), hash01(x, y, 200 + i));
+                blossom(ground, bloom, 0.09, colour, hash01(x, y, 200 + i));
             }
         }
         Bed::Shrubs => {
-            paint.rect(min, max, shade(pal::SOIL.lin(), 1.15));
+            paint.rect(min, max, shade(pal().soil, 1.15));
             if (x + y).rem_euclid(2) == 0 {
                 add_bush(props, x, y, Vec3::new(mid.x, 0.0, mid.y), 0.6 + 0.15 * hash01(x, y, 210));
             }

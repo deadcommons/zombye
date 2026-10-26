@@ -7,10 +7,12 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use zombye_sim::map::{Floor, Side};
 
+use palette::{between, pal};
+
 pub mod building_kit;
 pub mod curves;
-pub mod land_palette;
 pub mod landscape;
+pub mod palette;
 pub mod street_props;
 pub mod trees;
 
@@ -211,61 +213,38 @@ pub fn hash01(x: i32, y: i32, salt: u32) -> f32 {
 
 pub fn floor_color(floor: Floor, x: i32, y: i32) -> LinearRgba {
     let n = hash01(x, y, 1);
+    let p = pal();
     match floor {
-        Floor::Grass => {
-            let patch = hash01(x / 3, y / 3, 2) * 0.5 + n * 0.5;
-            rgb(0.30 + patch * 0.06, 0.38 + patch * 0.07, 0.20 + patch * 0.03)
-        }
-        Floor::Dirt => rgb(0.36 + n * 0.04, 0.30 + n * 0.03, 0.22),
-        Floor::Asphalt => rgb(0.21 + n * 0.02, 0.21 + n * 0.02, 0.22 + n * 0.02),
-        Floor::RoadLine => rgb(0.62, 0.55, 0.28),
-        Floor::Sidewalk => rgb(0.52 + n * 0.03, 0.51 + n * 0.03, 0.48 + n * 0.03),
-        Floor::Path => rgb(0.48 + n * 0.03, 0.45 + n * 0.03, 0.40),
-        Floor::Wood => rgb(0.45 + n * 0.04, 0.32 + n * 0.03, 0.20),
-        Floor::Carpet => rgb(0.42, 0.36 + n * 0.02, 0.32),
-        Floor::TileFloor => {
-            if (x + y) % 2 == 0 { rgb(0.72, 0.72, 0.68) } else { rgb(0.62, 0.63, 0.60) }
-        }
-        Floor::Concrete => rgb(0.50 + n * 0.02, 0.50 + n * 0.02, 0.50),
+        Floor::Grass => between(&p.floor_grass, hash01(x / 3, y / 3, 2) * 0.5 + n * 0.5),
+        Floor::Dirt => between(&p.floor_dirt, n),
+        Floor::Asphalt => between(&p.floor_asphalt, n),
+        Floor::RoadLine => p.floor_road_line,
+        Floor::Sidewalk => between(&p.floor_sidewalk, n),
+        Floor::Path => between(&p.floor_path, n),
+        Floor::Wood => between(&p.floor_wood, n),
+        Floor::Carpet => between(&p.floor_carpet, n),
+        Floor::TileFloor => palette::pick(&p.floor_tile, (x + y).rem_euclid(2) as usize),
+        Floor::Concrete => between(&p.floor_concrete, n),
     }
 }
 
 /// Exterior siding colours, picked per building by the generator.
 pub fn siding_color(i: u8) -> LinearRgba {
-    const C: [(f32, f32, f32); 8] = [
-        (0.86, 0.84, 0.78),
-        (0.80, 0.74, 0.58),
-        (0.84, 0.80, 0.56),
-        (0.58, 0.66, 0.72),
-        (0.60, 0.66, 0.52),
-        (0.62, 0.62, 0.60),
-        (0.70, 0.60, 0.46),
-        (0.58, 0.32, 0.26),
-    ];
-    let c = C[i as usize % C.len()];
-    rgb(c.0, c.1, c.2)
+    palette::pick(&pal().siding, i as usize)
 }
 
 pub fn roof_color(i: u8) -> LinearRgba {
-    const C: [(f32, f32, f32); 5] = [(0.24, 0.24, 0.26), (0.36, 0.26, 0.20), (0.42, 0.20, 0.16), (0.28, 0.33, 0.28), (0.26, 0.30, 0.38)];
-    let c = C[i as usize % C.len()];
-    rgb(c.0, c.1, c.2)
+    palette::pick(&pal().roof, i as usize)
 }
 
 pub fn interior_color(room_type: &str) -> LinearRgba {
-    match room_type {
-        "kitchen" => rgb(0.84, 0.82, 0.70),
-        "bathroom" => rgb(0.74, 0.82, 0.84),
-        "bedroom" => rgb(0.78, 0.72, 0.68),
-        "living" => rgb(0.80, 0.74, 0.62),
-        "laundry" => rgb(0.72, 0.72, 0.70),
-        _ => rgb(0.82, 0.80, 0.74),
-    }
+    pal().interior(room_type)
 }
 
 /// A piece of furniture as one or two boxes inside its tile rectangle (`min`, `size` in metres).
 pub fn add_furniture(mb: &mut MeshBuilder, kind: &str, min: Vec2, size: Vec2, facing: Side, base_y: f32) {
     let inset = 0.08;
+    let p = pal();
     let lo = min + Vec2::splat(inset);
     let hi = min + size - Vec2::splat(inset);
     let block = |mb: &mut MeshBuilder, lo: Vec2, hi: Vec2, h0: f32, h1: f32, c: LinearRgba| {
@@ -284,34 +263,34 @@ pub fn add_furniture(mb: &mut MeshBuilder, kind: &str, min: Vec2, size: Vec2, fa
     };
     match kind {
         "bed" => {
-            block(mb, lo, hi, 0.0, 0.42, rgb(0.42, 0.30, 0.22));
-            block(mb, lo + Vec2::splat(0.04), hi - Vec2::splat(0.04), 0.42, 0.58, rgb(0.80, 0.78, 0.74));
+            block(mb, lo, hi, 0.0, 0.42, p.greybox_bed);
+            block(mb, lo + Vec2::splat(0.04), hi - Vec2::splat(0.04), 0.42, 0.58, p.greybox_bed_sheet);
         }
         "wardrobe" => {
             let (a, b) = against_wall(0.6);
-            block(mb, a, b, 0.0, 2.0, rgb(0.40, 0.28, 0.18));
+            block(mb, a, b, 0.0, 2.0, p.greybox_wardrobe);
         }
-        "fridge" => block(mb, lo, hi, 0.0, 1.8, rgb(0.86, 0.86, 0.84)),
-        "stove" => block(mb, lo, hi, 0.0, 0.9, rgb(0.20, 0.20, 0.21)),
-        "counter" | "sink" => block(mb, lo, hi, 0.0, 0.9, rgb(0.62, 0.52, 0.40)),
-        "washer" | "dryer" => block(mb, lo, hi, 0.0, 0.9, rgb(0.88, 0.88, 0.86)),
-        "table" | "desk" => block(mb, lo, hi, 0.68, 0.76, rgb(0.46, 0.33, 0.22)),
-        "coffee_table" => block(mb, lo + Vec2::splat(0.1), hi - Vec2::splat(0.1), 0.0, 0.42, rgb(0.40, 0.28, 0.20)),
+        "fridge" => block(mb, lo, hi, 0.0, 1.8, p.greybox_fridge),
+        "stove" => block(mb, lo, hi, 0.0, 0.9, p.greybox_stove),
+        "counter" | "sink" => block(mb, lo, hi, 0.0, 0.9, p.greybox_counter),
+        "washer" | "dryer" => block(mb, lo, hi, 0.0, 0.9, p.greybox_washer),
+        "table" | "desk" => block(mb, lo, hi, 0.68, 0.76, p.greybox_table),
+        "coffee_table" => block(mb, lo + Vec2::splat(0.1), hi - Vec2::splat(0.1), 0.0, 0.42, p.greybox_coffee_table),
         "sofa" => {
-            block(mb, lo, hi, 0.0, 0.45, rgb(0.36, 0.30, 0.42));
+            block(mb, lo, hi, 0.0, 0.45, p.greybox_sofa);
             let (a, b) = against_wall(0.25);
-            block(mb, a, b, 0.45, 0.85, rgb(0.32, 0.26, 0.38));
+            block(mb, a, b, 0.45, 0.85, p.greybox_sofa_back);
         }
         "tv" => {
-            block(mb, lo + Vec2::splat(0.1), hi - Vec2::splat(0.1), 0.0, 0.5, rgb(0.30, 0.22, 0.16));
+            block(mb, lo + Vec2::splat(0.1), hi - Vec2::splat(0.1), 0.0, 0.5, p.greybox_tv_stand);
             let (a, b) = against_wall(0.18);
-            block(mb, a + Vec2::splat(0.05), b - Vec2::splat(0.05), 0.5, 1.05, rgb(0.08, 0.08, 0.09));
+            block(mb, a + Vec2::splat(0.05), b - Vec2::splat(0.05), 0.5, 1.05, p.greybox_tv_screen);
         }
-        "toilet" => block(mb, lo + Vec2::splat(0.15), hi - Vec2::splat(0.15), 0.0, 0.45, rgb(0.92, 0.92, 0.90)),
+        "toilet" => block(mb, lo + Vec2::splat(0.15), hi - Vec2::splat(0.15), 0.0, 0.45, p.greybox_toilet),
         "shelf" => {
             // Uprights and four boards against the wall.
             let (a, b) = against_wall(0.4);
-            let c = rgb(0.52, 0.42, 0.30);
+            let c = p.greybox_shelf;
             for k in 0..4 {
                 let h = 0.05 + k as f32 * 0.55;
                 block(mb, a, b, h, h + 0.04, c);
@@ -329,10 +308,10 @@ pub fn add_furniture(mb: &mut MeshBuilder, kind: &str, min: Vec2, size: Vec2, fa
             }
         }
         "workbench" => {
-            block(mb, lo, hi, 0.0, 0.85, rgb(0.38, 0.34, 0.30));
-            block(mb, lo, hi, 0.85, 0.92, rgb(0.62, 0.50, 0.34));
+            block(mb, lo, hi, 0.0, 0.85, p.greybox_workbench);
+            block(mb, lo, hi, 0.85, 0.92, p.greybox_workbench_top);
         }
-        "bathtub" => block(mb, lo, hi, 0.0, 0.55, rgb(0.90, 0.90, 0.88)),
+        "bathtub" => block(mb, lo, hi, 0.0, 0.55, p.greybox_bathtub),
         "stairs" => {
             // Steps rising toward `facing`, up to the next floor.
             let steps = 10;
@@ -345,9 +324,9 @@ pub fn add_furniture(mb: &mut MeshBuilder, kind: &str, min: Vec2, size: Vec2, fa
                     Side::E => (Vec2::new(lo.x + (hi.x - lo.x) * t0, lo.y), Vec2::new(lo.x + (hi.x - lo.x) * t1, hi.y)),
                     Side::W => (Vec2::new(hi.x - (hi.x - lo.x) * t1, lo.y), Vec2::new(hi.x - (hi.x - lo.x) * t0, hi.y)),
                 };
-                block(mb, a, b, 0.0, 3.0 * t1, rgb(0.44, 0.32, 0.22));
+                block(mb, a, b, 0.0, 3.0 * t1, p.greybox_stairs);
             }
         }
-        _ => block(mb, lo, hi, 0.0, 0.8, rgb(0.5, 0.45, 0.4)),
+        _ => block(mb, lo, hi, 0.0, 0.8, p.greybox_other),
     }
 }
