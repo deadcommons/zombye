@@ -409,49 +409,26 @@ fn add_roof(mb: &mut MeshBuilder, b: &Building, siding: LinearRgba) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn spawn_building(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    mats: &WorldMaterials,
-    shared: &SharedMeshes,
-    map: &TileMap,
-    index: usize,
-    b: &Building,
-    edges: &mut HashMap<(IVec2, OwnedEdge), Entity>,
-    damage: &EdgeDamageMap,
-) -> BuildingRender {
+/// A building's merged meshes: the ground floor (walls and furniture), the upper storeys, and the
+/// roof. Pure (map in, meshes out), so it can be timed (`building_build_time`).
+pub struct BuildingMeshes {
+    pub lower: MeshBuilder,
+    pub upper: MeshBuilder,
+    pub roof: MeshBuilder,
+}
+
+pub fn build_building(map: &TileMap, index: usize, b: &Building, furniture: &FurnitureModels) -> BuildingMeshes {
     let siding = meshgen::siding_color(b.siding);
     let mut lower = MeshBuilder::default();
     let mut upper = MeshBuilder::default();
     let mut roof = MeshBuilder::default();
-    let mut render = BuildingRender::default();
-    let belongs = |room: u16| room != 0 && map.rooms[room as usize].building as usize == index;
-
-    // Ground floor walls: every edge in (and just around) the footprint touching one of our rooms.
-    for y in b.min.y..=b.min.y + b.size.y {
-        for x in b.min.x..=b.min.x + b.size.x {
-            let owner = IVec2::new(x, y);
-            let tile = map.tile(owner);
-            for (which, kind, other) in [(OwnedEdge::North, tile.north, owner - IVec2::Y), (OwnedEdge::West, tile.west, owner - IVec2::X)] {
-                let rooms = (map.tile(other).room, tile.room);
-                if kind == Edge::None || kind == Edge::Fence || !(belongs(rooms.0) || belongs(rooms.1)) {
-                    continue;
-                }
-                add_wall(&mut lower, map, owner, which, kind, 0.0, rooms, siding);
-                let hp = damage.0.get(&(owner, which)).copied().unwrap_or(1.0);
-                if let Some(e) = spawn_edge_piece(commands, shared, mats, owner, which, 0.0, kind, hp) {
-                    edges.insert((owner, which), e);
-                    render.edge_keys.push((owner, which));
-                    render.lower.push(e);
-                }
-            }
-        }
+    for (owner, which, kind, rooms) in ground_edges(map, index, b) {
+        add_wall(&mut lower, map, owner, which, kind, 0.0, rooms, siding);
     }
     for f in b.furniture.iter() {
         let target = if f.level == 0 { &mut lower } else { &mut upper };
         let (min, size, base) = (f.min.as_vec2(), f.size.as_vec2(), STOREY * f.level as f32);
-        if !shared.furniture.add(target, &f.kind, min, size, f.facing, base) {
+        if !furniture.add(target, &f.kind, min, size, f.facing, base) {
             add_furniture(target, &f.kind, min, size, f.facing, base);
         }
     }
@@ -465,12 +442,62 @@ fn spawn_building(
     for (level, e) in &b.upper_edges {
         let base = STOREY * *level as f32;
         add_wall(&mut upper, map, e.tile, e.edge, e.kind, base, e.rooms, siding);
+    }
+    add_roof(&mut roof, b, siding);
+    BuildingMeshes { lower, upper, roof }
+}
+
+/// The ground-floor edges of building `index` with something on them (walls, doors, windows,
+/// arches): every edge in and just around its footprint touching one of its rooms, with the rooms
+/// either side (north/west, south/east).
+fn ground_edges(map: &TileMap, index: usize, b: &Building) -> Vec<(IVec2, OwnedEdge, Edge, (u16, u16))> {
+    let belongs = |room: u16| room != 0 && map.rooms[room as usize].building as usize == index;
+    let mut out = Vec::new();
+    for y in b.min.y..=b.min.y + b.size.y {
+        for x in b.min.x..=b.min.x + b.size.x {
+            let owner = IVec2::new(x, y);
+            let tile = map.tile(owner);
+            for (which, kind, other) in [(OwnedEdge::North, tile.north, owner - IVec2::Y), (OwnedEdge::West, tile.west, owner - IVec2::X)] {
+                let rooms = (map.tile(other).room, tile.room);
+                if kind == Edge::None || kind == Edge::Fence || !(belongs(rooms.0) || belongs(rooms.1)) {
+                    continue;
+                }
+                out.push((owner, which, kind, rooms));
+            }
+        }
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_building(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    mats: &WorldMaterials,
+    shared: &SharedMeshes,
+    map: &TileMap,
+    index: usize,
+    b: &Building,
+    edges: &mut HashMap<(IVec2, OwnedEdge), Entity>,
+    damage: &EdgeDamageMap,
+) -> BuildingRender {
+    let mut render = BuildingRender::default();
+    // Door leaves and window panes, one entity each.
+    for (owner, which, kind, _) in ground_edges(map, index, b) {
+        let hp = damage.0.get(&(owner, which)).copied().unwrap_or(1.0);
+        if let Some(e) = spawn_edge_piece(commands, shared, mats, owner, which, 0.0, kind, hp) {
+            edges.insert((owner, which), e);
+            render.edge_keys.push((owner, which));
+            render.lower.push(e);
+        }
+    }
+    for (level, e) in &b.upper_edges {
+        let base = STOREY * *level as f32;
         if let Some(d) = spawn_edge_piece(commands, shared, mats, e.tile, e.edge, base, e.kind, 1.0) {
             render.upper.push(d);
         }
     }
-    add_roof(&mut roof, b, siding);
-
+    let BuildingMeshes { lower, upper, roof } = build_building(map, index, b, &shared.furniture);
     for (mb, group) in [(lower, 0), (upper, 1), (roof, 1)] {
         if mb.is_empty() {
             continue;
@@ -657,6 +684,35 @@ fn fade_chunks(mats: Option<Res<WorldMaterials>>, fades: Res<materials::TreeFade
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn town() -> TileMap {
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/data");
+        let templates = zombye_net::content::load_building_templates(&data).expect("templates");
+        zombye_sim::worldgen::generate(&zombye_sim::worldgen::GenConfig::default(), &templates).map
+    }
+
+    /// Building meshes (walls, trim, furniture, upper storeys, roof), over every building of the
+    /// default map (`cargo test -p zombye-client --release building_build_time -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn building_build_time() {
+        let map = town();
+        let furniture = FurnitureModels::load(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/models/furniture"));
+        let mut times = Vec::new();
+        let mut tris = 0;
+        for _ in 0..3 {
+            for (i, b) in map.buildings.iter().enumerate() {
+                let start = std::time::Instant::now();
+                let m = build_building(&map, i, b, &furniture);
+                times.push(start.elapsed().as_secs_f64() * 1000.0);
+                tris += m.lower.tri_count() + m.upper.tri_count() + m.roof.tri_count();
+            }
+        }
+        times.sort_by(f64::total_cmp);
+        let n = times.len();
+        let mean = times.iter().sum::<f64>() / n as f64;
+        eprintln!("building build: {} buildings x 3, mean {mean:.3} ms, median {:.3} ms, max {:.3} ms; {} triangles a building", n / 3, times[n / 2], times[n - 1], tris / n);
+    }
 
     /// Cracks appear once a door or window is properly battered and get worse in stages, each
     /// overlay adding to the last and staying on the leaf or pane.
