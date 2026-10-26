@@ -109,7 +109,7 @@ struct WindowPane {
 /// How far an open sash slides up.
 const SASH_LIFT: f32 = 0.6;
 
-/// The props mesh (trees, bushes, fences) of a chunk.
+/// The props mesh (trees, bushes, fences, street props) of a chunk.
 #[derive(Component)]
 struct ChunkProps(IVec2);
 
@@ -288,7 +288,7 @@ fn stream(
     }
     wanted.sort_by_key(|c| (*c - here).length_squared());
     for c in wanted.into_iter().take(budget) {
-        let entities = spawn_chunk(&mut commands, &mut meshes, &mats, map, c);
+        let entities = spawn_chunk(&mut commands, &mut meshes, &mats, map, c, &shared.furniture);
         streamer.chunks.insert(c, entities);
     }
     let far: Vec<IVec2> = streamer.chunks.keys().copied().filter(|c| (*c - here).abs().max_element() > LOAD_RADIUS + 1).collect();
@@ -320,8 +320,9 @@ fn stream(
     }
 }
 
-fn spawn_chunk(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &WorldMaterials, map: &TileMap, c: IVec2) -> Vec<Entity> {
-    let landscape::ChunkMeshes { ground, props } = landscape::build_chunk(map, c);
+fn spawn_chunk(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &WorldMaterials, map: &TileMap, c: IVec2, models: &FurnitureModels) -> Vec<Entity> {
+    let landscape::ChunkMeshes { ground, mut props } = landscape::build_chunk(map, c);
+    meshgen::street_props::add(&mut props, map, c, models);
     // The ground is flat but for ankle-high clutter (kerbs, tufts, ferns, rocks): it receives
     // shadows and casts none, which keeps it out of every shadow cascade.
     let mut out = vec![commands.spawn((Mesh3d(meshes.add(ground.build())), MeshMaterial3d(mats.ground.clone()), Transform::IDENTITY, NotShadowCaster)).id()];

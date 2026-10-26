@@ -10,6 +10,7 @@ use zombye_sim::map::{Floor, Side};
 pub mod curves;
 pub mod land_palette;
 pub mod landscape;
+pub mod street_props;
 pub mod trees;
 
 /// What a piece of geometry is, for the cutaway shader (stored in the second UV channel).

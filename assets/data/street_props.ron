@@ -1,0 +1,29 @@
+// Street props (#61): what stands outside on lawns and sidewalks, and where the town generator puts
+// it (crates/sim/src/street_props.rs). Our own numbers.
+//
+// kinds: `id`; `model`, the furniture model the client draws (`<model>.glb` in assets/models/furniture
+// or a ZOMBYE_EXTRA_MODELS folder; the id when left out); `size`, metres (width, depth, height) of the
+// grey-box drawn when there's no model; `color`, its sRGB colour; `blocks` (default true), whether it
+// blocks walking (its tile is blocked for paths, and bodies are kept `radius` metres from its middle;
+// `radius` defaults to half the larger of width and depth, at most 0.5).
+//
+// rules, applied in order (a later rule never puts a prop on or next to an earlier one's):
+//   GardenPath  on the lawn beside the street end of a house's garden path (`chance` per house)
+//   HouseKerb   at the kerb in front of a house, 2-3 m to one side of its path (`chance` per house)
+//   ShopKerb    at the kerb in front of a shop or office on the main street (`chance` per building)
+//   Kerb        along every straight kerb in town, `spacing: (min, max)` metres apart
+// Props stand in the middle of a tile, facing the street, never on a road, path or driveway, beside
+// a door, at a corner, junction or turning circle, or where an alley or parking lot meets the street.
+(
+    kinds: [
+        (id: "mailbox", size: (0.27, 0.56, 1.15), color: (0.90, 0.88, 0.82), radius: Some(0.2)),
+        (id: "fire_hydrant", size: (0.44, 0.42, 0.75), color: (0.84, 0.15, 0.17)),
+        (id: "trash_can", size: (0.66, 0.61, 1.05), color: (0.55, 0.57, 0.58)),
+    ],
+    rules: [
+        (kind: "mailbox", place: GardenPath, chance: 0.85),
+        (kind: "trash_can", place: ShopKerb, chance: 0.5),
+        (kind: "trash_can", place: HouseKerb, chance: 0.3),
+        (kind: "fire_hydrant", place: Kerb, spacing: Some((40.0, 60.0))),
+    ],
+)

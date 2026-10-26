@@ -13,11 +13,11 @@ Work is tracked on GitHub, not in the repo: the
 
 | Path | What | Licence |
 |---|---|---|
-| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), skills that improve with practice (`skills.rs` + `SkillTuning`), run stats and the cause of death (`run.rs`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
+| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), skills that improve with practice (`skills.rs` + `SkillTuning`), street props placed by the town generator from data (`street_props.rs`), run stats and the cause of death (`run.rs`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint; `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
-| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building meshes, the outdoors per chunk from the tile map alone (`meshgen/landscape.rs`: lawns, verges, forest floor and litter, road paint at real scale, kerbs, slab joints, driveways, front beds, fences and hedges; `meshgen/curves.rs`: what's drawn round over the tiles, see Curves under The world; `meshgen/trees.rs`: faceted broadleaves, birches, pines, spruces; colours in `meshgen/land_palette.rs`), fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd, or a character baked offline read from a `.zvat` (`zvat.rs`); `survivor.rs` skinned, CPU-posed players; `character.rs` reads a modular character's body and wearable GLBs and `survivor_model.rs` draws players as it, dressed in what they wear), hit feedback (`fx.rs`), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), HUD, the death screen and run summary (`death.rs`), the skills panel and level-up line (`skills_ui.rs`), sound (`audio.rs`, see Sound), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
-| `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/items/recipes.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`), models (`models/furniture/*.glb`; the survivor's body `models/characters/survivor_01.glb` and its wearables `models/wearables/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), sound (`audio/sfx/*.wav`, `audio/ambience/*.wav`, listed in `data/sounds.ron`), later textures. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
+| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building meshes, the outdoors per chunk from the tile map alone (`meshgen/landscape.rs`: lawns, verges, forest floor and litter, road paint at real scale, kerbs, slab joints, driveways, front beds, fences and hedges; `meshgen/curves.rs`: what's drawn round over the tiles, see Curves under The world; `meshgen/trees.rs`: faceted broadleaves, birches, pines, spruces; colours in `meshgen/land_palette.rs`), fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd, or a character baked offline read from a `.zvat` (`zvat.rs`); `survivor.rs` skinned, CPU-posed players; `character.rs` reads a modular character's body and wearable GLBs and `survivor_model.rs` draws players as it, dressed in what they wear), hit feedback (`fx.rs`), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), street props merged into each chunk's props mesh from the same models (`meshgen/street_props.rs`, see Street props under The world), HUD, the death screen and run summary (`death.rs`), the skills panel and level-up line (`skills_ui.rs`), sound (`audio.rs`, see Sound), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
+| `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/items/recipes.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`, `data/street_props.ron`), models (`models/furniture/*.glb`; the survivor's body `models/characters/survivor_01.glb` and its wearables `models/wearables/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), sound (`audio/sfx/*.wav`, `audio/ambience/*.wav`, listed in `data/sounds.ron`), later textures. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
 | `tools/blender/` | Python to build assets: run inside Blender, mesh builder, palette, renders, validation, GLB export (`zasset.py`, `palette.py`, `build.py`), character clean-up, validation and skinned export (`zchar.py`), VAT bake for the crowd, outfit variants with palette swatches (`zvat.py`, `build.py -- --crowd`); plain Python, art-repo work folders and promotion (`artrepo.py`). | MIT OR Apache-2.0 |
 | `tools/audio/` | `synth.py`: the placeholder sounds, synthesised from noise, tones and filters (plain Python, deterministic). | MIT OR Apache-2.0 |
 | `docs/` | Plan and design docs. | — |
@@ -252,6 +252,33 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   tile edges stop where a curve takes over (`Curves::kerb_span`), and curved kerbs, grit, ring joints and bend
   centre lines are drawn by the chunk each stretch's middle is in. Cost: chunk building about 0.24 ms (0.22 without
   curves; `chunk_build_time`, an ignored test, times every chunk of the default map), frames the same.
+- **Street props (#61, `sim::street_props`, `assets/data/street_props.ron`):** mailboxes, fire hydrants and bins
+  that the generator puts outside. The file lists the kinds (`id`; `model`, the furniture model drawn, the id when
+  left out; grey-box `size` and `color`; `blocks`, default true; `radius`, how far a body is kept from its middle,
+  default half its larger side, at most 0.5) and the rules, applied in order: `GardenPath` (on the lawn beside the
+  street end of a house's garden path, facing the street; `chance` per house), `HouseKerb` (at the kerb 2-3 m to one
+  side of a house's path), `ShopKerb` (at the kerb in front of a shop or office on the main street), `Kerb` (along
+  every straight kerb in town, `spacing: (min, max)` metres apart). Validated by `parse_street_props` (unknown fields,
+  ids, sizes, colours, radius, chances, spacing, a rule naming a missing kind; errors name the kind or rule), loaded by
+  `net::content::load_street_props` into `WorldConfig::street_props`; **a data folder without the file has none**
+  (as `WorldConfig::new`). Placed last by `worldgen::generate_with` (`generate` places none), each rule from its own
+  seeded stream, so the rest of the town is the same with or without them and the same seed gives the same props. A
+  prop stands in the middle of its tile, turned a quarter at a time to face the street; never on a road, path or
+  driveway (straight out from a garage door to the road, a tile either side, as the client draws them), beside a
+  door, or next to another prop (each keeps the eight tiles round it free); kerb props only on a straight kerb (5 m
+  of it each way: clear of the 4 m kerb curves at junctions), away from turning circles, alley mouths and parking-lot
+  entries, and not in front of a garden path. Shipped: all three block; seed 1 has 48 mailboxes (most of the houses
+  whose front door has a path), 28 bins and 101 hydrants (both kerbs of every street). The map keeps them in
+  `TileMap::street_props` (sorted by tile; `street_prop(t)`) with their kinds in `TileMap::prop_kinds`; a blocking
+  one's tile is `Feature::StreetProp`, so the walk grid, flow fields, the nav graph, `clear_path` and every
+  `tile_blocked` check go round it like a tree, and `TileMap::resolve_circle` keeps bodies the kind's `radius` from
+  its middle (`street_prop_radius`; 0.3 m for one whose kind isn't known), the same function for the server and the
+  client's prediction. Not saved (regenerated with the map; a map stored whole gets the generated map's props where
+  its tiles still have them). The client draws each with `FurnitureModels::add_at` (the model at its own size, never
+  stretched to the tile; `ZOMBYE_EXTRA_MODELS` for ones still in the art repo), a grey-box of its size and colour
+  without one, merged into the chunk's props mesh (`meshgen/street_props.rs`, called from `spawn_chunk`): no draw
+  call of its own. Cost: town generation the same (~6 ms, the props under 1 ms), chunk building +0.003 ms,
+  frames the same.
 
 ## Players, intents and prediction
 
@@ -995,8 +1022,12 @@ over the old one: a crash mid-write leaves the previous save whole).
   (several MB even packed) while a game's edits are a few hundred bytes; the price is regenerating on load
   (~0.2 s on 1 km, ~45 ms on the default map). A hash of the generated map (`map_base_hash`) is checked on load
   (`LoadError::MapChanged` if the generator changed). After `World::map_changed` (a hand-edited map: tests,
-  editors) the whole map is stored instead.
-- **Content vs settings.** The caller passes content (templates, weapons, items, containers, loot, recipes, population, as for `World::new`); the save
+  editors) the whole map is stored instead. **Street props (#61) changed every shipped map:** saves made before
+  them no longer match (`ContentPrint::templates` now hashes the templates with `street_props.ron`, and the map has
+  props), so they're refused as `ContentChanged` ("building templates or street props changed") and load only with
+  `--load-anyway` / `load {force: true}` (onto the new map, door and window edits that still fit). The save format
+  didn't change (no version bump).
+- **Content vs settings.** The caller passes content (templates, weapons, items, containers, loot, recipes, population, street props, as for `World::new`); the save
   keeps a fingerprint of each (`save::ContentPrint`, hashes plus ids). `World::load_with(bytes, content, LoadOptions)`
   returns `Loaded { world, notes }`, and `save_check::plan_content` sorts changed content. Compatible, loaded with a
   note: a weapon's numbers (the new ones apply), weapons added, reordered or removed when the save uses none of the
@@ -1051,7 +1082,7 @@ between calls, so an autosave only happens after a call that changed something.
 
 The agent plays player 1, who wakes up in the bedroom. Tools: `screenshot` (below), `observe` (double-resolution ASCII map
 with walls `-` `|`, shut windows `=` `!`, open windows `o`, broken windows `x`, shut doors `D` (`d`
-when damaged), open doors `/`, broken doors `#`, fences `~`, furniture `f`, containers `c` (not searched yet) and `o` (searched; on a tile, not a wall line), players `P` and zombies by
+when damaged), open doors `/`, broken doors `#`, fences `~`, furniture `f`, street props `^`, containers `c` (not searched yet) and `o` (searched; on a tile, not a wall line), players `P` and zombies by
 state: `Z` wander, `I` investigate, `C` chase, `L` lunge, `A` attack, `B` battering a door or window;
 `S` staggered, `v` down, `%` corpse; zombies on the cheaper tiers `n` near, `?` virtual; weapons on the floor `w`, other items `i`, dead players `X`; plus players (HP,
 weapon, action, load, whether they're climbing or dead), items in view, damaged doors and windows in view

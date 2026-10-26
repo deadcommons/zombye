@@ -9,6 +9,7 @@ use zombye_sim::crafting::{RecipeDef, parse_recipes_for};
 use zombye_sim::items::{ItemDef, WeaponDef, parse_items, parse_weapons};
 use zombye_sim::loot::LootData;
 use zombye_sim::population::{PopulationDef, parse_population};
+use zombye_sim::street_props::{StreetPropsDef, parse_street_props};
 
 /// The repo's `assets/data` folder (used when running from a checkout).
 pub fn default_data_dir() -> PathBuf {
@@ -43,6 +44,17 @@ pub fn load_population(data_dir: &Path) -> Result<PopulationDef, String> {
     }
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     parse_population(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The street props in `<data>/street_props.ron` (#61: mailboxes, hydrants, bins and where the town
+/// generator puts them), validated. A data folder without the file has none.
+pub fn load_street_props(data_dir: &Path) -> Result<StreetPropsDef, String> {
+    let path = data_dir.join("street_props.ron");
+    if !path.exists() {
+        return Ok(StreetPropsDef::default());
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    parse_street_props(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// The melee weapons in `<data>/items/weapons.ron`, validated.
@@ -103,7 +115,7 @@ pub fn load_recipes(data_dir: &Path, items: &[ItemDef], weapons: &[WeaponDef]) -
 }
 
 /// Everything a world is made from in `<data>`: building templates, weapons, items, containers,
-/// loot tables, recipes and the population file, as a config for `seed` (the zombie count as the
+/// loot tables, recipes, the population file and the street props, as a config for `seed` (the zombie count as the
 /// population file gives).
 pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig, String> {
     let templates = load_building_templates(data_dir)?;
@@ -113,13 +125,15 @@ pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig
     let loot = load_loot(data_dir, &items, &weapons, &containers)?;
     let recipes = load_recipes(data_dir, &items, &weapons)?;
     let population = load_population(data_dir)?;
+    let street_props = load_street_props(data_dir)?;
     let mut config = zombye_sim::WorldConfig::new(seed, 0, templates)
         .with_weapons(weapons)
         .with_items(items)
         .with_containers(containers)
         .with_loot(loot)
         .with_recipes(recipes)
-        .with_population(population);
+        .with_population(population)
+        .with_street_props(street_props);
     config.zombies = None;
     Ok(config)
 }
@@ -134,6 +148,37 @@ mod tests {
         assert!(def.density.town_core > def.density.deep_forest);
         let none = load_population(Path::new("/nonexistent-zombye-data")).unwrap();
         assert_eq!(none, PopulationDef::default());
+    }
+
+    /// The street props load (#61), a mistake names the file and the kind or rule, and with no file
+    /// there are none.
+    #[test]
+    fn street_props_load_and_name_their_mistakes() {
+        let def = load_street_props(&default_data_dir()).unwrap();
+        for id in ["mailbox", "fire_hydrant", "trash_can"] {
+            assert!(def.kinds.iter().any(|k| k.id == id), "no {id}");
+        }
+        assert!(!def.rules.is_empty());
+        assert_eq!(load_street_props(Path::new("/nonexistent-zombye-data")).unwrap(), StreetPropsDef::default());
+        let dir = std::env::temp_dir().join(format!("zombye-props-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |text: &str| {
+            std::fs::write(dir.join("street_props.ron"), text).unwrap();
+            load_street_props(&dir).unwrap_err()
+        };
+        let kind = |extra: &str| format!("(id: \"bin\", size: (0.5, 0.5, 1.0), color: (0.5, 0.5, 0.5){extra})");
+        let errs = [
+            (write(&format!("(kinds: [{}], rules: [(kind: \"bench\", place: Kerb, spacing: Some((40.0, 60.0)))])", kind(""))), "no kind \"bench\""),
+            (write(&format!("(kinds: [{}])", kind(", radius: Some(0.8)"))), "radius must be"),
+            (write(&format!("(kinds: [{}, {}])", kind(""), kind(""))), "used twice"),
+            (write(&format!("(kinds: [{}], rules: [(kind: \"bin\", place: Kerb)])", kind(""))), "Kerb needs spacing"),
+            (write(&format!("(kinds: [{}], rules: [(kind: \"bin\", place: GardenPath, chance: 1.5)])", kind(""))), "chance must be"),
+            (write(&format!("(kinds: [{}])", kind(", wobble: 2"))), "wobble"),
+        ];
+        let _ = std::fs::remove_dir_all(&dir);
+        for (err, want) in errs {
+            assert!(err.contains("street_props.ron") && err.contains(want), "{err} should mention {want}");
+        }
     }
 
     #[test]

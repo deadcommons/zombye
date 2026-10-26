@@ -119,9 +119,9 @@ pub(crate) fn plan_content(saved: &ContentPrint, now: &ContentPrint) -> ContentP
     let templates = (saved.templates != now.templates).then(|| {
         let ids = |v: &[String]| list(&v.iter().collect::<Vec<_>>());
         if saved.template_ids == now.template_ids {
-            format!("building templates changed (the same ones: {}), so the map would differ", ids(&now.template_ids))
+            format!("building templates or street props changed (the same templates: {}), so the map would differ", ids(&now.template_ids))
         } else {
-            format!("building templates changed (saved with {}; now {}), so the map would differ", ids(&saved.template_ids), ids(&now.template_ids))
+            format!("building templates or street props changed (templates saved with {}; now {}), so the map would differ", ids(&saved.template_ids), ids(&now.template_ids))
         }
     });
     ContentPlan {

@@ -158,7 +158,7 @@ fn tool_list() -> Value {
             "description": "Look at the world around a point (default: player 1). ASCII map at double resolution: \
                 tiles sit between wall lines. Walls - |, shut windows = !, open windows o, broken windows x, \
                 shut doors D (d when damaged), open doors /, broken doors #, fences ~, \
-                floors: . grass  , road  : sidewalk/path  _ indoors; T tree, * bush, f furniture, c a container not searched yet, \
+                floors: . grass  , road  : sidewalk/path  _ indoors; T tree, * bush, f furniture, ^ a street prop (mailbox, hydrant, bin), c a container not searched yet, \
                 o (on a tile) a searched container, w a weapon on the floor, i any other item on the floor, \
                 P player (X dead), G debug goal, @ spawn. \
                 Active zombies by state: Z wandering, I investigating a sound, C chasing a player, L lunging, A attacking, \
@@ -1732,6 +1732,8 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
             let (gx, gy) = (2 * i as usize, 2 * j as usize);
             if (i as usize) < n && (j as usize) < n {
                 grid[gy + 1][gx + 1] = match tile.feature {
+                    _ if map.street_prop(t).is_some() => '^',
+                    Feature::StreetProp => '^',
                     Feature::Tree | Feature::PineTree => 'T',
                     Feature::Bush => '*',
                     Feature::Furniture => 'f',

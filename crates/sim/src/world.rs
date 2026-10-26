@@ -32,6 +32,7 @@ use crate::nav::Nav;
 use crate::needs::{NeedsTuning, WakeReason};
 use crate::players::{self, PLAYER_RADIUS, Player, PlayerInput, Stance};
 use crate::population::{NEVER, Population, PopulationDef, Zone};
+use crate::street_props::StreetPropsDef;
 use crate::rng::{Rng, hash01};
 use crate::senses::{self, Sound, SoundSource, Target};
 use crate::skills::{LevelUp, Skill, SkillTuning, Skills};
@@ -101,6 +102,9 @@ pub struct WorldConfig {
     /// Where zombies live, respawn and migration (`assets/data/population.ron`, see
     /// [`crate::population`]).
     pub population: PopulationDef,
+    /// Mailboxes, hydrants, bins: the kinds and where the town generator puts them
+    /// (`assets/data/street_props.ron`, see [`crate::street_props`]). None by default.
+    pub street_props: StreetPropsDef,
 }
 
 impl WorldConfig {
@@ -125,6 +129,7 @@ impl WorldConfig {
             skills: SkillTuning::default(),
             tiers: TierTuning::default(),
             population: PopulationDef::default(),
+            street_props: StreetPropsDef::default(),
         }
     }
 
@@ -162,6 +167,11 @@ impl WorldConfig {
 
     pub fn with_population(mut self, population: PopulationDef) -> Self {
         self.population = population;
+        self
+    }
+
+    pub fn with_street_props(mut self, street_props: StreetPropsDef) -> Self {
+        self.street_props = street_props;
         self
     }
 
@@ -362,7 +372,7 @@ impl World {
         let weapon_items = items::complete_items(&mut config.items, &config.weapons);
         let item_weapons = (0..config.items.len()).map(|i| weapon_items.iter().position(|w| *w == Some(i as u16)).map(|w| w as u16)).collect();
         let unarmed = config.weapons.iter().position(|w| w.category == WeaponCategory::Unarmed).unwrap_or(0) as u16;
-        let generated = worldgen::generate(&config.generation, &config.templates);
+        let generated = worldgen::generate_with(&config.generation, &config.templates, &config.street_props);
         let items = items::place_weapons(&generated.map, &config.weapons, &weapon_items, generated.spawn_building, config.generation.seed, 1);
         let sites = containers::find_sites(&generated.map, &config.containers);
         let map = generated.map;

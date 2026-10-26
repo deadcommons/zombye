@@ -22,7 +22,7 @@
 //! guards against the generator having changed. A map edited by hand ([`World::map_changed`]:
 //! tests, editors) is stored whole instead.
 //!
-//! **Content** (building templates, weapons, items, containers, loot tables, population file,
+//! **Content** (building templates, weapons, items, containers, loot tables, population file, street props,
 //! recipes) comes from the caller, as for a new world; the save records a fingerprint of each.
 //! Loading against changed content goes on with a note when the change is compatible (weapon and
 //! item numbers, weapons and items added, `containers.ron` changes that leave every opened container
@@ -134,6 +134,7 @@ pub struct SaveInfo {
 /// population file, plus the ids, to say what changed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ContentPrint {
+    /// The building templates and `street_props.ron` (#61) together: both decide the map.
     pub templates: u64,
     pub template_ids: Vec<String>,
     pub weapons: u64,
@@ -158,7 +159,9 @@ impl ContentPrint {
         let mut items = config.items.clone();
         complete_items(&mut items, &weapons);
         Self {
-            templates: fnv(&encode(&config.templates)),
+            // The street props decide the map too: hashed with the templates (no change to the save
+            // layout; with none, the hash is the templates' alone, as before them).
+            templates: if config.street_props.is_empty() { fnv(&encode(&config.templates)) } else { fnv(&encode(&(&config.templates, &config.street_props))) },
             template_ids: config.templates.iter().map(|t| t.id.clone()).collect(),
             weapons: fnv(&encode(&weapons)),
             weapon_ids: weapons.iter().map(|w| w.id.clone()).collect(),
@@ -432,6 +435,11 @@ pub(crate) fn map_hash(map: &TileMap) -> u64 {
                 mix(t.floor as u64 | (t.north as u64) << 8 | (t.west as u64) << 16 | (t.feature as u64) << 24 | (t.room as u64) << 32);
             }
         }
+    }
+    // Street props (#61), the ones that don't block too.
+    for p in &map.street_props {
+        mix((p.tile.x as u32 as u64) | (p.tile.y as u32 as u64) << 32);
+        mix(p.kind as u64 | (p.facing as u64) << 16);
     }
     h
 }
@@ -722,7 +730,7 @@ impl World {
                         (None, false) => return Err(LoadError::MapChanged),
                     }
                 } else if plan.templates.is_some() {
-                    notes.push("building templates changed, but the map they make is the same".to_string());
+                    notes.push("building templates or street props changed, but the map they make is the same".to_string());
                 }
                 if !blocking.is_empty() {
                     return Err(LoadError::ContentChanged(blocking));
@@ -757,8 +765,20 @@ impl World {
                     return Err(corrupt("the stored map is malformed"));
                 }
                 if plan.templates.is_some() {
-                    notes.push("building templates changed; the save stores its map whole, so that map is kept".to_string());
+                    notes.push("building templates or street props changed; the save stores its map whole, so that map is kept".to_string());
                 }
+                // Street props aren't stored: the generated map's, where the stored tiles still have them.
+                let mut map = map;
+                let kinds = std::mem::take(&mut w.map.prop_kinds);
+                map.street_props = std::mem::take(&mut w.map.street_props)
+                    .into_iter()
+                    .filter(|p| {
+                        let tile = map.tile(p.tile);
+                        let blocks = kinds.get(p.kind as usize).is_some_and(|k| k.blocks);
+                        if blocks { tile.feature == crate::map::Feature::StreetProp } else { tile.room == 0 && tile.feature == crate::map::Feature::None }
+                    })
+                    .collect();
+                map.prop_kinds = kinds;
                 w.map = map;
                 w.map_custom = true;
                 w.map_base_hash = map_save.base_hash;

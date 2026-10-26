@@ -29,6 +29,7 @@ pub mod save_check;
 pub mod senses;
 pub mod skills;
 pub mod spatial;
+pub mod street_props;
 pub mod template;
 pub mod tiers;
 pub mod vision;

@@ -121,13 +121,29 @@ pub enum Feature {
     Bush,
     /// Furniture occupying the tile (see the building's furniture list for what it is).
     Furniture,
+    /// A street prop that blocks walking: a hydrant, a bin, a mailbox (see
+    /// [`TileMap::street_props`] for which, and `crate::street_props`).
+    StreetProp,
 }
 
 impl Feature {
     pub fn blocks_movement(self) -> bool {
-        matches!(self, Feature::Tree | Feature::PineTree | Feature::Furniture)
+        matches!(self, Feature::Tree | Feature::PineTree | Feature::Furniture | Feature::StreetProp)
     }
 }
+
+/// A street prop the town generator placed (`crate::street_props`): its kind (an index into
+/// [`TileMap::prop_kinds`]), its tile (it stands in the middle) and which way its front faces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StreetProp {
+    pub kind: u16,
+    pub tile: IVec2,
+    pub facing: Side,
+}
+
+/// How far a body is kept from the middle of a blocking street prop whose kind isn't known (a map
+/// stored whole whose props aren't the generator's any more).
+pub const STREET_PROP_RADIUS: f32 = 0.3;
 
 /// Which owned edge of a tile.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -346,13 +362,21 @@ pub struct TileMap {
     /// stored whole, after hand edits, has none) and not part of any hash.
     #[serde(skip)]
     pub turning_circles: Vec<TurningCircle>,
+    /// The generator's street props (#61), sorted by tile (row by row), and their kinds (from
+    /// `street_props.ron`). Derived like the rest of the generated map: not saved (a save
+    /// regenerates its map; one stored whole gets them from the map generated on load) and not
+    /// part of the tile data. A blocking one's tile is also a [`Feature::StreetProp`].
+    #[serde(skip)]
+    pub street_props: Vec<StreetProp>,
+    #[serde(skip)]
+    pub prop_kinds: Vec<crate::street_props::PropKind>,
 }
 
 impl TileMap {
     pub fn new(chunks_x: i32, chunks_y: i32) -> Self {
         let chunks = (0..chunks_x * chunks_y).map(|_| Chunk { tiles: vec![Tile::default(); CHUNK_TILES] }).collect();
         let outdoors = Room { building: u16::MAX, name: "Outdoors".into(), room_type: "outdoors".into(), floor: Floor::Grass };
-        Self { chunks_x, chunks_y, chunks, rooms: vec![outdoors], buildings: Vec::new(), turning_circles: Vec::new() }
+        Self { chunks_x, chunks_y, chunks, rooms: vec![outdoors], buildings: Vec::new(), turning_circles: Vec::new(), street_props: Vec::new(), prop_kinds: Vec::new() }
     }
 
     pub fn width(&self) -> i32 {
@@ -488,6 +512,16 @@ impl TileMap {
         .map(|(_, e)| e)
     }
 
+    /// The street prop on tile `t`, if any.
+    pub fn street_prop(&self, t: IVec2) -> Option<&StreetProp> {
+        self.street_props.binary_search_by_key(&(t.y, t.x), |p| (p.tile.y, p.tile.x)).ok().map(|i| &self.street_props[i])
+    }
+
+    /// How far a body is kept from the middle of the blocking street prop on tile `t`.
+    pub fn street_prop_radius(&self, t: IVec2) -> f32 {
+        self.street_prop(t).and_then(|p| self.prop_kinds.get(p.kind as usize)).map_or(STREET_PROP_RADIUS, |k| k.radius())
+    }
+
     /// Room id at a world position (0 = outdoors).
     pub fn room_at(&self, p: Vec2) -> u16 {
         self.tile(p.floor().as_ivec2()).room
@@ -508,7 +542,7 @@ impl TileMap {
         }
     }
 
-    /// Push a circle out of blocking edges, trees, furniture and the map border.
+    /// Push a circle out of blocking edges, trees, furniture, street props and the map border.
     pub fn resolve_circle(&self, mut p: Vec2, radius: f32) -> Vec2 {
         for _ in 0..2 {
             let t = p.floor().as_ivec2();
@@ -526,6 +560,9 @@ impl TileMap {
                         }
                         Feature::Furniture => {
                             p = push_out_of_box(p, radius, n.as_vec2() + Vec2::splat(0.05), n.as_vec2() + Vec2::splat(0.95));
+                        }
+                        Feature::StreetProp => {
+                            p = push_out_of_circle(p, radius, n.as_vec2() + Vec2::splat(0.5), self.street_prop_radius(n));
                         }
                         _ => {}
                     }

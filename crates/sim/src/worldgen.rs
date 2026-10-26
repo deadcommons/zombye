@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::map::{Edge, Feature, Floor, Side, TileMap, TurningCircle, CHUNK_SIZE};
 use crate::population::Zone;
 use crate::rng::Rng;
+use crate::street_props::{self, Fronts, HouseFront, ShopFront, StreetPropsDef};
 use crate::template::{BuildingKind, BuildingTemplate, Placement};
 
 /// Asphalt width of a street, and the sidewalk on each side.
@@ -366,7 +367,14 @@ fn offset_from(other: &[i32], ours: &mut [i32]) {
     }
 }
 
+/// The town with no street props (see [`generate_with`]).
 pub fn generate(config: &GenConfig, templates: &[BuildingTemplate]) -> Generated {
+    generate_with(config, templates, &StreetPropsDef::default())
+}
+
+/// The town, with the street props `props` asks for (`crate::street_props`), placed last from their
+/// own random streams, so the rest of the town is the same with or without them.
+pub fn generate_with(config: &GenConfig, templates: &[BuildingTemplate], props: &StreetPropsDef) -> Generated {
     let mut rng = Rng::new(config.seed ^ 0x70_77_4e_00);
     let blocks = config.blocks.max(IVec2::ONE);
     let fits_row = |t: &BuildingTemplate| t.size().x <= ROW_SHOP_MAX.x && t.size().y <= ROW_SHOP_MAX.y;
@@ -479,6 +487,7 @@ pub fn generate(config: &GenConfig, templates: &[BuildingTemplate]) -> Generated
         town_min,
         town_max,
         last_fallback: None,
+        fronts: Fronts::default(),
     };
     town.add_street(Street {
         r: Rect::new(IVec2::new(town_min.x, main_y), IVec2::new(total.x, MAIN_CORRIDOR)),
@@ -571,7 +580,7 @@ pub fn generate(config: &GenConfig, templates: &[BuildingTemplate]) -> Generated
         }
     }
     town.roads_out(size, main_y);
-    let TownBuilder { mut map, mut rng, homes, plan, .. } = town;
+    let TownBuilder { mut map, mut rng, homes, plan, fronts, .. } = town;
 
     plant_forest(&mut map, &mut rng, town_min, town_max, config.seed, &wild);
 
@@ -585,6 +594,7 @@ pub fn generate(config: &GenConfig, templates: &[BuildingTemplate]) -> Generated
         let tiles = bedroom_tiles(&map, b);
         (b, tiles[rng.below(tiles.len() as u32) as usize].as_vec2() + Vec2::splat(0.5))
     };
+    street_props::place(&mut map, props, config.seed, town_min, town_max, &fronts);
     Generated { map, town_min, town_max, core, player_spawn, spawn_building, plan }
 }
 
@@ -607,6 +617,8 @@ struct TownBuilder<'a> {
     town_max: IVec2,
     /// What the last landmark lot nothing civic fitted became (so the next is something else).
     last_fallback: Option<u8>,
+    /// Houses' garden paths and shops' fronts, for the street props.
+    fronts: Fronts,
 }
 
 impl TownBuilder<'_> {
@@ -1167,7 +1179,9 @@ impl TownBuilder<'_> {
             let mirror = self.rng.f32() < 0.5;
             let siding = SHOP_SIDING[self.rng.below(SHOP_SIDING.len() as u32) as usize];
             let roof = self.rng.below(5) as u8;
-            self.place(t, Placement { origin: IVec2::new(x, y), quarter_turns: turns, mirror }, siding, roof, 0.15);
+            let placed = self.place(t, Placement { origin: IVec2::new(x, y), quarter_turns: turns, mirror }, siding, roof, 0.15);
+            let b = &self.map.buildings[placed.building];
+            self.fronts.shops.push(ShopFront { min: b.min, max: b.min + b.size, front });
             last = Some(t.id.as_str());
             x += s.x + 1 + self.rng.below(3) as i32;
         }
@@ -1227,6 +1241,7 @@ impl TownBuilder<'_> {
                 let placed = self.place(t, Placement { origin: r.min, quarter_turns: lot.turns(), mirror }, siding, roof, 0.25);
                 // Garden path from each street-side door to the sidewalk.
                 let map = &mut self.map;
+                let mut path_end = None;
                 for (door, side, _) in placed.exterior_doors {
                     if side != lot.front {
                         continue;
@@ -1239,6 +1254,12 @@ impl TownBuilder<'_> {
                         set_floor(map, p, Floor::Path);
                         p += side.offset();
                     }
+                    if path_end.is_none() && p != door + side.offset() {
+                        path_end = Some(p - side.offset());
+                    }
+                }
+                if let Some(path_end) = path_end {
+                    self.fronts.houses.push(HouseFront { path_end, front: lot.front });
                 }
                 return Some(placed.building);
             }

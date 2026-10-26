@@ -75,17 +75,39 @@ impl FurnitureModels {
         if long(size) != 0.0 && long(turned(turn)) == -long(size) {
             turn += 1;
         }
-        // Positive turns about +y take the model's front (+z) toward +x (east).
-        let rot = Quat::from_rotation_y(turn as f32 * std::f32::consts::FRAC_PI_2);
         let fp = turned(turn);
         let scale = Vec3::new(size.x / fp.x, 1.0, size.y / fp.y);
         let origin = Vec3::new(min.x + size.x * 0.5, base_y, min.y + size.y * 0.5);
-        for (p, n, c) in &m.tris {
+        m.emit(mb, origin, turn, scale);
+        true
+    }
+
+    /// Adds the model for `kind` at its own size (never stretched to a placement: small street props
+    /// stand in a tile without filling it), the middle of its footprint at `centre`, turned to
+    /// `facing`. False when there's no model for it.
+    pub fn add_at(&self, mb: &mut MeshBuilder, kind: &str, centre: Vec2, facing: Side, base_y: f32) -> bool {
+        let Some(m) = self.0.get(kind) else { return false };
+        let turn = match facing {
+            Side::S => 0,
+            Side::E => 1,
+            Side::N => 2,
+            Side::W => 3,
+        };
+        m.emit(mb, Vec3::new(centre.x, base_y, centre.y), turn, Vec3::ONE);
+        true
+    }
+}
+
+impl FurnitureModel {
+    /// Every triangle, scaled, turned `turn` quarters and moved to `origin`.
+    fn emit(&self, mb: &mut MeshBuilder, origin: Vec3, turn: i32, scale: Vec3) {
+        // Positive turns about +y take the model's front (+z) toward +x (east).
+        let rot = Quat::from_rotation_y(turn as f32 * std::f32::consts::FRAC_PI_2);
+        for (p, n, c) in &self.tris {
             let p = p.map(|p| origin + rot * p * scale);
             let n = n.map(|n| ((rot * n) / scale).normalize_or_zero());
             mb.triangle_with_normals(p, n, *c);
         }
-        true
     }
 }
 
