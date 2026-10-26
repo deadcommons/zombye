@@ -6,6 +6,8 @@ BuildingTemplate(
     name: "Ranch house with garage",
     kind: House,
     roof: GableX,
+    // A small porch at the front door, beside the garage (drawn only: see `PorchDef`).
+    porch: Some(Front(from: 5, to: 8, depth: 2)),
     rooms: {
         'u': (name: "Laundry", room_type: "laundry", floor: Concrete),
         'G': (name: "Garage", room_type: "garage", floor: Concrete),

@@ -7,6 +7,8 @@ BuildingTemplate(
     name: "Narrow townhouse",
     kind: House,
     roof: GableY,
+    // A narrow porch at the front door (drawn only: see `PorchDef`).
+    porch: Some(Front(from: 3, to: 6, depth: 2)),
     rooms: {
         'K': (name: "Kitchen", room_type: "kitchen", floor: TileFloor),
         'D': (name: "Dining room", room_type: "dining", floor: Wood),

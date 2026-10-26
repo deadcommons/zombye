@@ -6,6 +6,8 @@ BuildingTemplate(
     name: "Small bungalow",
     kind: House,
     roof: GableX,
+    // A porch across the front, round the front door (drawn only: see `PorchDef`).
+    porch: Some(Front(from: 0, to: 4, depth: 2)),
     rooms: {
         'B': (name: "Bedroom", room_type: "bedroom", floor: Carpet),
         'b': (name: "Bathroom", room_type: "bathroom", floor: TileFloor),

@@ -7,6 +7,8 @@ BuildingTemplate(
     name: "L-shaped house with patio",
     kind: House,
     roof: GableX,
+    // The patio: posts along it and a railing across its arches (drawn only: see `PorchDef`).
+    porch: Some(Room('P')),
     rooms: {
         'M': (name: "Main bedroom", room_type: "bedroom", floor: Carpet),
         'b': (name: "Bathroom", room_type: "bathroom", floor: TileFloor),

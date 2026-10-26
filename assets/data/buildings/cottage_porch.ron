@@ -7,6 +7,8 @@ BuildingTemplate(
     name: "Cottage with porch",
     kind: House,
     roof: GableX,
+    // The porch room: posts along it and a railing across its arches (drawn only: see `PorchDef`).
+    porch: Some(Room('P')),
     rooms: {
         'K': (name: "Kitchen", room_type: "kitchen", floor: TileFloor),
         'L': (name: "Living room", room_type: "living", floor: Wood),

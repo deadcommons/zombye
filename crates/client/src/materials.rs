@@ -71,6 +71,8 @@ pub struct WorldParams {
     pub inside_rect: Vec4,
     /// x = how many entries of `trees` are in use.
     pub tree_count: Vec4,
+    /// x = how dark it is, 0 by day to 1 at night: lit windows glow by it (#59).
+    pub lights: Vec4,
     /// Sight for the per-pixel fog of war (`FogState::sight`).
     pub sight: [Vec4; 3],
     /// Trees whose foliage is fading: (trunk foot x, z, fade 0..1 (1 = foliage gone), 0).
@@ -86,10 +88,16 @@ impl Default for WorldParams {
             fog_tint: Vec4::ZERO,
             inside_rect: Vec4::ZERO,
             tree_count: Vec4::ZERO,
+            lights: Vec4::ZERO,
             sight: [Vec4::ZERO; 3],
             trees: [Vec4::ZERO; MAX_FADING_TREES],
         }
     }
+}
+
+fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// Must match the array size in world.wesl.
@@ -308,6 +316,7 @@ pub fn update_params(
         fog_tint: Vec4::new(0.55, 0.6, 0.75, 0.72 + 0.14 * (1.0 - daylight.0)),
         inside_rect: inside_rect(&map.0, p.translation.xz()),
         tree_count: Vec4::new(n as f32, 0.0, 0.0, 0.0),
+        lights: Vec4::new(1.0 - smoothstep(0.05, 0.4, daylight.0), 0.0, 0.0, 0.0),
         sight: fog.sight,
         trees,
     };

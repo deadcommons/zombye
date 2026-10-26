@@ -7,6 +7,7 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use zombye_sim::map::{Floor, Side};
 
+pub mod building_kit;
 pub mod curves;
 pub mod land_palette;
 pub mod landscape;
@@ -31,6 +32,9 @@ pub enum CutKind {
     Structure = 5,
     /// A tree's trunk and branches: dimmed and thinned (not removed) while its foliage fades.
     Wood = 6,
+    /// Window glass of a room with a light on (`building_kit::room_lit`): like `Structure`, and it
+    /// glows warm amber at night (world.wesl).
+    Lit = 7,
 }
 
 /// Cutaway data shared by all vertices of one piece: its kind, an anchor point on the ground
@@ -110,6 +114,24 @@ impl MeshBuilder {
             self.push_vertex(c, normal, color);
         }
         self.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+
+    /// A quad wound to face `normal`, whichever order its corners come in. The building material
+    /// is double-sided and lights a face seen from behind with its normal flipped, so a face
+    /// wound against its normal would look unlit.
+    pub fn quad_facing(&mut self, mut corners: [Vec3; 4], normal: Vec3, color: LinearRgba) {
+        if (corners[1] - corners[0]).cross(corners[2] - corners[0]).dot(normal) < 0.0 {
+            corners.reverse();
+        }
+        self.quad(corners, normal, color);
+    }
+
+    /// A triangle wound to face `normal` (see [`MeshBuilder::quad_facing`]).
+    pub fn triangle_facing(&mut self, mut corners: [Vec3; 3], normal: Vec3, color: LinearRgba) {
+        if (corners[1] - corners[0]).cross(corners[2] - corners[0]).dot(normal) < 0.0 {
+            corners.reverse();
+        }
+        self.triangle(corners, color);
     }
 
     /// A triangle with its own vertex normals (imported models).

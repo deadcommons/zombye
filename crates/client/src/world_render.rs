@@ -17,15 +17,16 @@ use crate::Options;
 use crate::camera::IsoCamera;
 use crate::furniture_models::FurnitureModels;
 use crate::materials::{self, WorldMaterials};
-use crate::meshgen::{self, CutKind, CutTag, MeshBuilder, add_furniture, floor_color, landscape, rgb, shade};
+use crate::meshgen::{self, CutKind, CutTag, MeshBuilder, add_furniture, building_kit, floor_color, landscape, rgb, shade};
 use crate::player::Player;
 use crate::server_link::{ClientMap, EdgeChangesThisFrame, EdgeDamageMap, EdgeDamageThisFrame};
 
 /// Storey height and wall thickness, in metres.
 pub const STOREY: f32 = 3.0;
-const WALL_T: f32 = 0.08;
+/// Half a wall's thickness.
+pub(crate) const WALL_T: f32 = 0.08;
 /// Height a cut-away wall drops to; must match `STUB_HEIGHT` in world.wesl.
-const STUB_HEIGHT: f32 = 0.4;
+pub(crate) const STUB_HEIGHT: f32 = 0.4;
 /// Chunks within this many chunks of the player are loaded.
 const LOAD_RADIUS: i32 = 6;
 /// Chunks (and, separately, buildings) built per frame while streaming: a chunk of landscape
@@ -53,6 +54,7 @@ struct Streamer {
 struct SharedMeshes {
     door: Handle<Mesh>,
     pane: Handle<Mesh>,
+    pane_lit: Handle<Mesh>,
     shards: Handle<Mesh>,
     /// Damage overlays per stage (see [`crack_stage`]), in the leaf's and the pane's own frames.
     door_cracks: [Handle<Mesh>; CRACK_STAGES],
@@ -104,6 +106,18 @@ struct WindowPane {
     base: f32,
     open: bool,
     broken: bool,
+    /// In a room with a light on (`building_kit::room_lit`).
+    lit: bool,
+}
+
+impl WindowPane {
+    fn mesh(&self, shared: &SharedMeshes) -> Handle<Mesh> {
+        match (self.broken, self.lit) {
+            (true, _) => shared.shards.clone(),
+            (false, true) => shared.pane_lit.clone(),
+            (false, false) => shared.pane.clone(),
+        }
+    }
 }
 
 /// How far an open sash slides up.
@@ -136,10 +150,15 @@ fn setup_shared(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, option
     // Window glass along +x from the edge's start, filling the frame between sill and header.
     // Structure, like door leaves: dimmed but readable in unseen rooms, cut away with its wall.
     let glass = LinearRgba::new(0.55, 0.68, 0.78, 0.32);
-    let mut mb = MeshBuilder::default();
-    mb.set_tag(CutTag { kind: CutKind::Structure, ..default() });
-    mb.add_box(Vec3::new(0.05, WINDOW_SILL, -0.012), Vec3::new(0.95, WINDOW_HEAD, 0.012), meshgen::same(glass));
-    let pane = meshes.add(mb.build());
+    let pane_mesh = |kind: CutKind| {
+        let mut mb = MeshBuilder::default();
+        mb.set_tag(CutTag { kind, ..default() });
+        mb.add_box(Vec3::new(0.05, WINDOW_SILL, -0.012), Vec3::new(0.95, WINDOW_HEAD, 0.012), meshgen::same(glass));
+        mb.build()
+    };
+    let pane = meshes.add(pane_mesh(CutKind::Structure));
+    // The same in a room with a light on: it glows at night (world.wesl).
+    let pane_lit = meshes.add(pane_mesh(CutKind::Lit));
     // What's left of a smashed pane: jagged teeth around the frame.
     let mut mb = MeshBuilder::default();
     mb.set_tag(CutTag { kind: CutKind::Structure, ..default() });
@@ -166,7 +185,7 @@ fn setup_shared(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, option
         furniture.extend(FurnitureModels::load(std::path::Path::new(dir)));
     }
     info!("{} furniture models", furniture.len());
-    commands.insert_resource(SharedMeshes { door, pane, shards, door_cracks, pane_cracks, furniture });
+    commands.insert_resource(SharedMeshes { door, pane, pane_lit, shards, door_cracks, pane_cracks, furniture });
 }
 
 /// Grey-box damage for a door leaf (dark cracks, and pale splintered wood when it's nearly gone)
@@ -249,8 +268,8 @@ fn crack_mesh(door: bool, stage: usize) -> Mesh {
 }
 
 /// Bottom and top of a window opening above its storey's floor.
-const WINDOW_SILL: f32 = 0.9;
-const WINDOW_HEAD: f32 = 2.1;
+pub(crate) const WINDOW_SILL: f32 = 0.9;
+pub(crate) const WINDOW_HEAD: f32 = 2.1;
 
 #[allow(clippy::too_many_arguments)]
 fn stream(
@@ -331,9 +350,10 @@ fn spawn_chunk(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &WorldM
     out
 }
 
-/// Colour of one side of a wall: the room's paint inside, the building's siding outside.
+/// Colour of one side of a wall: the room's paint inside, the building's siding outside (and on a
+/// porch).
 fn wall_side_color(map: &TileMap, room: u16, siding: LinearRgba) -> LinearRgba {
-    if room == 0 { siding } else { meshgen::interior_color(&map.rooms[room as usize].room_type) }
+    if building_kit::outside(map, room) { siding } else { meshgen::interior_color(&map.rooms[room as usize].room_type) }
 }
 
 /// Wall pieces for one edge on one level. `rooms` = (north/west side, south/east side).
@@ -359,14 +379,10 @@ fn add_wall(mb: &mut MeshBuilder, map: &TileMap, owner: IVec2, which: OwnedEdge,
     };
     match kind {
         Edge::Wall => piece(mb, 0.0, STOREY),
+        // Frames and muntins are the building kit's (`building_kit::Kit::dress_wall`).
         Edge::Window | Edge::WindowOpen | Edge::WindowBroken => {
             piece(mb, 0.0, WINDOW_SILL);
             piece(mb, WINDOW_HEAD, STOREY);
-            // Frame and a centre mullion.
-            let mid = (a + b) * 0.5;
-            let frame = rgb(0.85, 0.84, 0.80);
-            let (lo, hi) = (mid - Vec2::splat(0.03), mid + Vec2::splat(0.03));
-            mb.add_box(Vec3::new(lo.x, base + WINDOW_SILL, lo.y), Vec3::new(hi.x, base + WINDOW_HEAD, hi.y), meshgen::same(frame));
         }
         Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken => piece(mb, 2.1, STOREY),
         Edge::Arch => piece(mb, 2.4, STOREY),
@@ -375,7 +391,8 @@ fn add_wall(mb: &mut MeshBuilder, map: &TileMap, owner: IVec2, which: OwnedEdge,
     mb.set_tag(CutTag::default());
 }
 
-fn add_roof(mb: &mut MeshBuilder, b: &Building, siding: LinearRgba) {
+/// The roof's slopes (or slab); the gable walls, trim and the rest are the building kit's.
+fn add_roof(mb: &mut MeshBuilder, b: &Building) {
     let color = meshgen::roof_color(b.roof_color);
     let eave = STOREY * b.levels as f32;
     let o = 0.4;
@@ -390,18 +407,12 @@ fn add_roof(mb: &mut MeshBuilder, b: &Building, siding: LinearRgba) {
             let ridge = eave + (zm - z0 + o) * pitch;
             mb.quad([Vec3::new(x0 - o, eave, z0 - o), Vec3::new(x0 - o, ridge, zm), Vec3::new(x1 + o, ridge, zm), Vec3::new(x1 + o, eave, z0 - o)], Vec3::new(0.0, 1.0, -pitch).normalize(), color);
             mb.quad([Vec3::new(x1 + o, eave, z1 + o), Vec3::new(x1 + o, ridge, zm), Vec3::new(x0 - o, ridge, zm), Vec3::new(x0 - o, eave, z1 + o)], Vec3::new(0.0, 1.0, pitch).normalize(), shade(color, 0.85));
-            let gable = eave + (zm - z0) * pitch;
-            mb.triangle([Vec3::new(x0, eave, z0), Vec3::new(x0, eave, z1), Vec3::new(x0, gable, zm)], siding);
-            mb.triangle([Vec3::new(x1, eave, z1), Vec3::new(x1, eave, z0), Vec3::new(x1, gable, zm)], siding);
         }
         RoofStyle::GableY => {
             let xm = (x0 + x1) * 0.5;
             let ridge = eave + (xm - x0 + o) * pitch;
             mb.quad([Vec3::new(x0 - o, eave, z1 + o), Vec3::new(xm, ridge, z1 + o), Vec3::new(xm, ridge, z0 - o), Vec3::new(x0 - o, eave, z0 - o)], Vec3::new(-pitch, 1.0, 0.0).normalize(), color);
             mb.quad([Vec3::new(x1 + o, eave, z0 - o), Vec3::new(xm, ridge, z0 - o), Vec3::new(xm, ridge, z1 + o), Vec3::new(x1 + o, eave, z1 + o)], Vec3::new(pitch, 1.0, 0.0).normalize(), shade(color, 0.85));
-            let gable = eave + (xm - x0) * pitch;
-            mb.triangle([Vec3::new(x1, eave, z0), Vec3::new(x0, eave, z0), Vec3::new(xm, gable, z0)], siding);
-            mb.triangle([Vec3::new(x0, eave, z1), Vec3::new(x1, eave, z1), Vec3::new(xm, gable, z1)], siding);
         }
         RoofStyle::Flat => {
             mb.add_box(Vec3::new(x0 - 0.1, eave, z0 - 0.1), Vec3::new(x1 + 0.1, eave + 0.2, z1 + 0.1), meshgen::same(color));
@@ -418,12 +429,15 @@ pub struct BuildingMeshes {
 }
 
 pub fn build_building(map: &TileMap, index: usize, b: &Building, furniture: &FurnitureModels) -> BuildingMeshes {
-    let siding = meshgen::siding_color(b.siding);
+    let kit = building_kit::Kit::new(map, index, b);
+    let siding = kit.wall;
     let mut lower = MeshBuilder::default();
     let mut upper = MeshBuilder::default();
     let mut roof = MeshBuilder::default();
-    for (owner, which, kind, rooms) in ground_edges(map, index, b) {
+    let ground = ground_edges(map, index, b);
+    for &(owner, which, kind, rooms) in &ground {
         add_wall(&mut lower, map, owner, which, kind, 0.0, rooms, siding);
+        kit.dress_wall(&mut lower, owner, which, kind, 0.0, rooms);
     }
     for f in b.furniture.iter() {
         let target = if f.level == 0 { &mut lower } else { &mut upper };
@@ -442,8 +456,10 @@ pub fn build_building(map: &TileMap, index: usize, b: &Building, furniture: &Fur
     for (level, e) in &b.upper_edges {
         let base = STOREY * *level as f32;
         add_wall(&mut upper, map, e.tile, e.edge, e.kind, base, e.rooms, siding);
+        kit.dress_wall(&mut upper, e.tile, e.edge, e.kind, base, e.rooms);
     }
-    add_roof(&mut roof, b, siding);
+    add_roof(&mut roof, b);
+    kit.finish(&ground, &mut lower, &mut upper, &mut roof);
     BuildingMeshes { lower, upper, roof }
 }
 
@@ -483,9 +499,10 @@ fn spawn_building(
 ) -> BuildingRender {
     let mut render = BuildingRender::default();
     // Door leaves and window panes, one entity each.
-    for (owner, which, kind, _) in ground_edges(map, index, b) {
+    let lit = |rooms: (u16, u16)| building_kit::room_lit(map, rooms.0) || building_kit::room_lit(map, rooms.1);
+    for (owner, which, kind, rooms) in ground_edges(map, index, b) {
         let hp = damage.0.get(&(owner, which)).copied().unwrap_or(1.0);
-        if let Some(e) = spawn_edge_piece(commands, shared, mats, owner, which, 0.0, kind, hp) {
+        if let Some(e) = spawn_edge_piece(commands, shared, mats, owner, which, 0.0, kind, hp, lit(rooms)) {
             edges.insert((owner, which), e);
             render.edge_keys.push((owner, which));
             render.lower.push(e);
@@ -493,7 +510,7 @@ fn spawn_building(
     }
     for (level, e) in &b.upper_edges {
         let base = STOREY * *level as f32;
-        if let Some(d) = spawn_edge_piece(commands, shared, mats, e.tile, e.edge, base, e.kind, 1.0) {
+        if let Some(d) = spawn_edge_piece(commands, shared, mats, e.tile, e.edge, base, e.kind, 1.0, lit(e.rooms)) {
             render.upper.push(d);
         }
     }
@@ -517,9 +534,9 @@ fn door_rotations(which: OwnedEdge) -> (Quat, Quat) {
 }
 
 /// The door leaf or window pane for an edge, in the state the map has it now (`None` for edges
-/// with neither), with cracks for `hp` (fraction of its hit points left).
+/// with neither), with cracks for `hp` (fraction of its hit points left); a window `lit` glows at night.
 #[allow(clippy::too_many_arguments)]
-fn spawn_edge_piece(commands: &mut Commands, shared: &SharedMeshes, mats: &WorldMaterials, owner: IVec2, which: OwnedEdge, base: f32, kind: Edge, hp: f32) -> Option<Entity> {
+fn spawn_edge_piece(commands: &mut Commands, shared: &SharedMeshes, mats: &WorldMaterials, owner: IVec2, which: OwnedEdge, base: f32, kind: Edge, hp: f32, lit: bool) -> Option<Entity> {
     let (closed, open_rot) = door_rotations(which);
     let start = owner.as_vec2();
     let mid = start + if which == OwnedEdge::North { Vec2::new(0.5, 0.0) } else { Vec2::new(0.0, 0.5) };
@@ -537,8 +554,8 @@ fn spawn_edge_piece(commands: &mut Commands, shared: &SharedMeshes, mats: &World
             let (open, broken) = (kind == Edge::WindowOpen, kind == Edge::WindowBroken);
             let lift = if open { SASH_LIFT } else { 0.0 };
             let tf = Transform { translation: Vec3::new(start.x, base + lift, start.y), rotation: closed, scale: Vec3::ONE };
-            let mesh = if broken { shared.shards.clone() } else { shared.pane.clone() };
-            let e = commands.spawn((Mesh3d(mesh), MeshMaterial3d(mats.glass.clone()), tf, WindowPane { base, open, broken }, piece)).id();
+            let pane = WindowPane { base, open, broken, lit };
+            let e = commands.spawn((Mesh3d(pane.mesh(shared)), MeshMaterial3d(mats.glass.clone()), tf, pane, piece)).id();
             add_cracks(commands, shared, mats, e, false, if broken { 1.0 } else { hp });
             Some(e)
         }
@@ -603,7 +620,7 @@ fn apply_edge_changes(
             let broken = c.kind == Edge::WindowBroken;
             if broken != pane.broken {
                 pane.broken = broken;
-                mesh.0 = if broken { shared.shards.clone() } else { shared.pane.clone() };
+                mesh.0 = pane.mesh(&shared);
             }
         }
     }
@@ -700,18 +717,33 @@ mod tests {
         let furniture = FurnitureModels::load(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/models/furniture"));
         let mut times = Vec::new();
         let mut tris = 0;
+        let mut by_template: std::collections::BTreeMap<String, (f64, usize)> = Default::default();
         for _ in 0..3 {
             for (i, b) in map.buildings.iter().enumerate() {
                 let start = std::time::Instant::now();
                 let m = build_building(&map, i, b, &furniture);
-                times.push(start.elapsed().as_secs_f64() * 1000.0);
+                let ms = start.elapsed().as_secs_f64() * 1000.0;
+                times.push(ms);
+                let e = by_template.entry(b.template.clone()).or_default();
+                (e.0, e.1) = (e.0 + ms, e.1 + 1);
                 tris += m.lower.tri_count() + m.upper.tri_count() + m.roof.tri_count();
             }
+        }
+        for (t, (ms, n)) in &by_template {
+            eprintln!("  {t}: {:.3} ms", ms / *n as f64);
         }
         times.sort_by(f64::total_cmp);
         let n = times.len();
         let mean = times.iter().sum::<f64>() / n as f64;
         eprintln!("building build: {} buildings x 3, mean {mean:.3} ms, median {:.3} ms, max {:.3} ms; {} triangles a building", n / 3, times[n / 2], times[n - 1], tris / n);
+        // Where to find one of each, for pictures (`--center X,Y`).
+        let mut seen = std::collections::BTreeMap::new();
+        for b in &map.buildings {
+            seen.entry(b.template.clone()).or_insert((b.min + b.size / 2, b.look.map(|l| l.front)));
+        }
+        for (t, (at, front)) in seen {
+            eprintln!("  {t}: centre {},{} front {front:?}", at.x, at.y);
+        }
     }
 
     /// Cracks appear once a door or window is properly battered and get worse in stages, each

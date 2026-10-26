@@ -7,7 +7,8 @@ BuildingTemplate(
     id: "shop_general_hardware",
     name: "General store and hardware",
     kind: Shop,
-    roof: GableY,
+    // Flat, behind a parapet, like every shop and office on the main street.
+    roof: Flat,
     rooms: {
         'W': (name: "Stockroom", room_type: "hardware", floor: Concrete),
         'b': (name: "Restroom", room_type: "bathroom", floor: TileFloor),
