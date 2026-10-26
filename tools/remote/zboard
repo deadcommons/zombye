@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""zboard: a web dashboard for the agents zwork runs on the build box. See docs/remote-dev.md.
+"""zboard: the owner's screen onto the agents zwork runs on the build box. See docs/remote-dev.md.
 
-A card per issue being worked: its state, model, requests made so far, commits, the PR, the agent's
-latest messages and every review picture it has rendered, newest first, as they appear. From the page
-you start an issue, send an agent feedback, stop it, or approve: mark the PR ready, squash-merge it
-(which closes the issue), set the board to Done and remove the worktree.
+One big screen in the middle: the selected issue's review pictures, newest first, as they're rendered,
+or, with Play, the game itself (any issue's build, or main's) running on the play box and streamed by
+Amazon DCV, played with keyboard and mouse. Beside it, the issues being worked, each with only its
+state, time and short to-do list. Under it: feedback to the agent, Stop, and Approve (PR ready,
+squash-merged, which closes the issue; board Done; worktree removed). Start any open issue, grouped by
+milestone, with a model.
 
-    zboard [PORT]     serves on 127.0.0.1 only (default 8765); reach it over SSH:
-                      ssh -fN -L 8765:localhost:8765 zombye-build, then http://localhost:8765
+    zboard [PORT]     serves on 127.0.0.1 only (default 8765); reach it over the SSH tunnel:
+                      ssh -fN zombye-board, then http://localhost:8765 (the stream is :8080)
 
-Plain Python 3, standard library only. It reads what zwork leaves in ~/wt and runs zwork and gh.
+Plain Python 3, standard library only. It reads what zwork leaves in ~/wt and runs zwork, zgpu and gh.
 """
 import json
 import os
@@ -28,15 +30,17 @@ REPO = "deadcommons/zombye"
 PROJECT_ID = "PVT_kwDOFK2jds4BoamE"
 STATUS_FIELD = "PVTSSF_lADOFK2jds4BoamEzhm60wc"
 STATUS_DONE = "98236657"
+PLAY_HOST = os.environ.get("ZOMBYE_PLAY_HOST", "zombye-gpu")
 MODELS = ["github-copilot/claude-sonnet-5.5", "github-copilot/claude-opus-5.5", "github-copilot/claude-haiku-5.5",
           "github-copilot/gpt-6.1-sol", "github-copilot/gemini-4-argon"]
 
 # Slow lookups (gh) are refreshed in the background so the page stays quick.
 cache = {"prs": {}, "issues": [], "lock": threading.Lock()}
+play = {"target": None, "state": "idle", "message": "", "since": 0, "lock": threading.Lock()}
 
 
-def run(cmd, timeout=120):
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+def run(cmd, timeout=600, env=None):
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
     return r.returncode, (r.stdout + r.stderr).strip()
 
 
@@ -44,7 +48,7 @@ def refresher():
     while True:
         try:
             _, out = run(["gh", "pr", "list", "-R", REPO, "--state", "open", "--limit", "100",
-                          "--json", "number,headRefName,isDraft,url,mergeable"])
+                          "--json", "number,headRefName,isDraft,url"])
             prs = {p["headRefName"]: p for p in json.loads(out or "[]")}
             _, out = run(["gh", "issue", "list", "-R", REPO, "--state", "open", "--limit", "200",
                           "--json", "number,title,milestone"])
@@ -68,9 +72,9 @@ def read(p, default=""):
         return default
 
 
-def agent_log(n, limit=40):
-    """The agent's events, readable, and how many model requests it has made."""
-    lines, requests, tokens = [], 0, 0
+def agent_log(n, limit=60):
+    """The agent's events, readable; its latest to-do list; requests made; first and last event times."""
+    lines, todos, requests, first, last = [], [], 0, None, None
     try:
         with open(STATE / str(n) / "log.jsonl") as f:
             for raw in f:
@@ -78,41 +82,52 @@ def agent_log(n, limit=40):
                     e = json.loads(raw)
                 except ValueError:
                     continue
+                ts = e.get("timestamp")
+                if ts:
+                    first, last = first or ts, ts
                 part = e.get("part") or {}
                 if e.get("type") == "text" and part.get("text"):
                     lines.append({"kind": "text", "text": part["text"]})
                 elif e.get("type") == "tool_use":
                     st = part.get("state") or {}
+                    if part.get("tool") == "todowrite" and isinstance((st.get("input") or {}).get("todos"), list):
+                        todos = [{"text": t.get("content", ""), "status": t.get("status", "pending")}
+                                 for t in st["input"]["todos"]]
                     title = st.get("title") or json.dumps(st.get("input", ""))[:160]
                     lines.append({"kind": "tool", "text": f"{part.get('tool', '?')}: {title}"[:300]})
                 elif e.get("type") == "step_finish":
                     requests += 1
-                    tokens += (part.get("tokens") or {}).get("output", 0)
                 elif e.get("type") == "error":
                     lines.append({"kind": "error", "text": json.dumps(e.get("error", e))[:400]})
     except OSError:
         pass
-    return lines[-limit:], requests, tokens
+    return lines[-limit:], todos, requests, first, last
 
 
 def issue_state(d):
     n = d.name
     s = STATE / n
-    if running(n):
-        st = "running"
-    elif (s / "exit").exists():
-        st = "finished" if read(s / "exit") == "0" else f"failed ({read(s / 'exit')})"
-    else:
-        st = "stopped"
-    _, ahead = run(["git", "-C", str(d), "rev-list", "--count", "origin/main..HEAD"], 10)
-    shots = sorted((d / "review").glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
-    log, requests, tokens = agent_log(n)
+    log, todos, requests, first, last = agent_log(n)
     with cache["lock"]:
         pr = cache["prs"].get(f"issue-{n}")
+    if running(n):
+        st, end = "working", time.time() * 1000
+    elif (s / "exit").exists() and read(s / "exit") != "0":
+        st, end = "failed", last
+    elif (s / "exit").exists():
+        st, end = ("ready for review" if pr else "finished"), last
+    else:
+        st, end = "stopped", last
+    shots = sorted((d / "review").glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+    # The one line the sidebar shows: the step under way, else the agent's latest words
+    now = next((t["text"] for t in todos if t["status"] == "in_progress"), "")
+    if not now:
+        texts = [l["text"] for l in log if l["kind"] == "text"]
+        now = texts[-1].strip().split("\n")[0][:160] if texts else ""
     return {
         "n": int(n), "title": read(s / "title"), "state": st, "model": read(s / "model").split("/")[-1],
-        "ahead": ahead if ahead.isdigit() else "?", "requests": requests, "tokens": tokens,
-        "pr": pr, "log": log,
+        "requests": requests, "minutes": int(((end or 0) - (first or end or 0)) / 60000),
+        "pr": pr, "log": log, "todos": todos, "now": now,
         "shots": [{"name": p.name, "v": int(p.stat().st_mtime)} for p in shots],
     }
 
@@ -122,7 +137,9 @@ def state():
     worked = {i["n"] for i in issues}
     with cache["lock"]:
         startable = [i for i in cache["issues"] if i["number"] not in worked]
-    return {"issues": issues, "startable": startable, "models": MODELS, "time": time.strftime("%H:%M:%S")}
+    with play["lock"]:
+        p = {k: play[k] for k in ("target", "state", "message", "since")}
+    return {"issues": issues, "startable": startable, "models": MODELS, "play": p, "time": time.strftime("%H:%M:%S")}
 
 
 def approve(n):
@@ -147,6 +164,30 @@ def approve(n):
     run(["zwork", "rm", str(n)])
     run(["git", "-C", str(HOME / "zombye"), "pull", "-q"])
     return 0, f"merged PR #{num}; #{n} closed and Done"
+
+
+def start_play(target):
+    """Build target's client (an issue number or main) and start it on the play box, in the background."""
+    with play["lock"]:
+        if play["state"] == "building":
+            return 1, f"already building {play['target']}"
+        play.update(target=target, state="building", message="building…", since=time.time())
+
+    def work():
+        env = dict(os.environ, ZOMBYE_PLAY_HOST=PLAY_HOST)
+        code, out = run(["zwork", "play", target], timeout=1200, env=env)
+        with play["lock"]:
+            play.update(state="running" if code == 0 else "failed", message=out.splitlines()[-1] if out else "",
+                        since=time.time())
+    threading.Thread(target=work, daemon=True).start()
+    return 0, f"building {target}…"
+
+
+def stop_play():
+    code, out = run(["zgpu", "--stop"], env=dict(os.environ, ZOMBYE_GPU_HOST=PLAY_HOST))
+    with play["lock"]:
+        play.update(target=None, state="idle", message="", since=time.time())
+    return code, out
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -178,92 +219,121 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or "{}")
-            n = str(int(body.get("n", 0)))
-        except (ValueError, TypeError):
+        except ValueError:
             return self.send(400, '{"error":"bad request"}')
         action = self.path
-        if action == "/api/start":
-            model = body.get("model") if body.get("model") in MODELS else MODELS[0]
-            code, out = run(["zwork", "start", n, model])
-        elif action == "/api/say":
-            msg = str(body.get("message", "")).strip()
-            code, out = (1, "say something first") if not msg else run(["zwork", "say", n, msg])
-        elif action == "/api/stop":
-            code, out = run(["zwork", "stop", n])
-        elif action == "/api/approve":
-            code, out = approve(int(n))
+        if action == "/api/play":
+            t = str(body.get("target", ""))
+            code, out = (start_play(t) if t == "main" or t.isdigit() else (1, "nothing to play"))
+        elif action == "/api/play/stop":
+            code, out = stop_play()
         else:
-            return self.send(404, '{"error":"not found"}')
+            try:
+                n = str(int(body.get("n", 0)))
+            except (ValueError, TypeError):
+                return self.send(400, '{"error":"bad request"}')
+            if action == "/api/start":
+                model = body.get("model") if body.get("model") in MODELS else MODELS[0]
+                code, out = run(["zwork", "start", n, model])
+            elif action == "/api/say":
+                msg = str(body.get("message", "")).strip()
+                code, out = (1, "say something first") if not msg else run(["zwork", "say", n, msg])
+            elif action == "/api/stop":
+                code, out = run(["zwork", "stop", n])
+            elif action == "/api/approve":
+                code, out = approve(int(n))
+            else:
+                return self.send(404, '{"error":"not found"}')
         self.send(200 if code == 0 else 409, json.dumps({"ok": code == 0, "message": out[-600:]}))
 
 
-PAGE = """<!doctype html>
+PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Zombye agents</title>
 <style>
-:root{--bg:#121214;--card:#1c1c20;--line:#2c2c33;--text:#e6e3dc;--dim:#9a968d;--accent:#d9a441;--ok:#7fb069;--bad:#d4634a;--run:#5fa8d3}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,system-ui,sans-serif}
-header{position:sticky;top:0;z-index:2;background:var(--bg);border-bottom:1px solid var(--line);padding:10px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-h1{font-size:16px;margin:0 12px 0 0;letter-spacing:.02em}select,input,textarea,button{font:inherit;color:var(--text);background:#26262b;border:1px solid var(--line);border-radius:6px;padding:5px 8px}
-button{cursor:pointer}button.primary{background:var(--accent);color:#1a1405;border-color:var(--accent);font-weight:600}button:disabled{opacity:.45;cursor:default}
-#clock{margin-left:auto;color:var(--dim);font-size:12px}#toast{color:var(--accent);font-size:13px}
-main{padding:16px;display:grid;gap:16px;grid-template-columns:repeat(auto-fill,minmax(560px,1fr))}
-@media(max-width:620px){main{grid-template-columns:1fr;padding:12px}}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:10px;min-width:0}
-.top{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}.num{color:var(--accent);font-weight:700}.title{font-weight:600}
-.meta{color:var(--dim);font-size:12px;display:flex;gap:12px;flex-wrap:wrap}.meta a{color:var(--run)}
-.pill{font-size:11px;padding:1px 8px;border-radius:99px;border:1px solid}.running{color:var(--run)}.finished{color:var(--ok)}.failed,.stopped{color:var(--bad)}
-.shots{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px}.shots img{height:150px;border-radius:6px;border:1px solid var(--line);cursor:zoom-in}
-.shots figure{margin:0}.shots figcaption{font-size:11px;color:var(--dim);max-width:270px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.noshots{color:var(--dim);font-size:12px}
-.log{background:#141417;border:1px solid var(--line);border-radius:6px;padding:8px;max-height:260px;overflow:auto;font:12px/1.4 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word}
-.log .tool{color:var(--dim)}.log .error{color:var(--bad)}.log .text{color:var(--text);margin:4px 0}
+:root{--bg:#0f0f11;--panel:#18181b;--line:#2a2a30;--text:#e6e3dc;--dim:#8f8b82;--accent:#d9a441;--ok:#7fb069;--bad:#d4634a;--run:#5fa8d3}
+*{box-sizing:border-box}html,body{height:100%}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,system-ui,sans-serif;display:flex;flex-direction:column}
+select,textarea,button{font:inherit;color:var(--text);background:#232328;border:1px solid var(--line);border-radius:6px;padding:5px 9px}
+button{cursor:pointer;white-space:nowrap}button.primary{background:var(--accent);color:#1a1405;border-color:var(--accent);font-weight:600}button:disabled{opacity:.4;cursor:default}
+header{display:flex;gap:8px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+header h1{font-size:15px;margin:0 10px 0 0}#issue{max-width:420px}#toast{color:var(--accent);font-size:13px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#clock{color:var(--dim);font-size:12px}
+.wrap{flex:1;display:flex;min-height:0}
+aside{width:300px;flex:none;border-right:1px solid var(--line);overflow:auto}
+.row{padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer}.row:hover{background:#16161a}.row.sel{background:var(--panel);box-shadow:inset 3px 0 var(--accent)}
+.rtitle{display:flex;gap:7px;align-items:baseline}.rtitle b{color:var(--accent)}.rtitle span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;flex:none;align-self:center}.working{background:var(--run);animation:pulse 1.6s infinite}.ready{background:var(--accent)}.finished{background:var(--ok)}.failed,.stopped{background:var(--bad)}
+@keyframes pulse{50%{opacity:.35}}
+.rmeta{color:var(--dim);font-size:12px;margin-top:2px}.rnow{color:var(--dim);font-size:12px;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.todos{margin:6px 0 0;padding:0;list-style:none;font-size:12.5px}.todos li{padding:1px 0 1px 18px;position:relative;color:var(--dim)}
+.todos li:before{content:'○';position:absolute;left:2px}.todos li.in_progress{color:var(--text)}.todos li.in_progress:before{content:'◐';color:var(--run)}
+.todos li.completed{text-decoration:line-through;opacity:.7}.todos li.completed:before{content:'●';color:var(--ok);text-decoration:none}
+main{flex:1;min-width:0;display:flex;flex-direction:column;padding:12px 14px;gap:10px;overflow:auto}
+.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.tab{background:none;border-color:transparent;color:var(--dim)}.tab.on{color:var(--text);border-color:var(--line);background:var(--panel)}
+#playmsg{color:var(--dim);font-size:12px}
+.screen{position:relative;width:100%;aspect-ratio:16/9;max-height:calc(100vh - 230px);background:#000;border:1px solid var(--line);border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center}
+.screen img{max-width:100%;max-height:100%;display:block}.screen iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+.screen .empty{color:var(--dim)}.cap{position:absolute;left:10px;bottom:8px;font-size:12px;color:#ddd;background:#000a;padding:2px 8px;border-radius:4px}
+.strip{display:flex;gap:6px;overflow-x:auto;min-height:0}.strip img{height:64px;border-radius:4px;border:2px solid transparent;cursor:pointer;opacity:.75}.strip img.on{border-color:var(--accent);opacity:1}
 .act{display:flex;gap:8px;align-items:flex-start}.act textarea{flex:1;min-height:38px;resize:vertical}
-#big{position:fixed;inset:0;background:#000d;display:none;align-items:center;justify-content:center;z-index:5;cursor:zoom-out}#big img{max-width:96vw;max-height:92vh}
-#big div{position:absolute;bottom:12px;color:var(--dim)}
+details summary{color:var(--dim);cursor:pointer;font-size:12px}.log{margin-top:6px;background:#121215;border:1px solid var(--line);border-radius:6px;padding:8px;max-height:280px;overflow:auto;font:12px/1.4 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word}
+.log .tool{color:var(--dim)}.log .error{color:var(--bad)}
+@media(max-width:760px){.wrap{flex-direction:column}aside{width:auto;max-height:35vh;border-right:0;border-bottom:1px solid var(--line)}}
 </style></head><body>
-<header><h1>Zombye agents</h1>
-<select id="issue"></select><select id="model"></select><button class="primary" onclick="start()">Start</button>
+<header><h1>Zombye</h1><select id="issue"></select><select id="model"></select><button class="primary" onclick="start()">Start</button>
 <span id="toast"></span><span id="clock"></span></header>
-<main id="cards"></main>
-<div id="big" onclick="this.style.display='none'"><img><div></div></div>
+<div class="wrap"><aside id="list"></aside>
+<main>
+ <div class="bar"><button class="tab on" id="tabPics" onclick="mode('pics')">Pictures</button><button class="tab" id="tabPlay" onclick="mode('play')">Play</button>
+  <span style="flex:1"></span><span id="playmsg"></span>
+  <button id="playSel" onclick="playIt(sel)">Play this build</button><button onclick="playIt('main')">Play main</button><button onclick="post('/api/play/stop',{})">Close game</button></div>
+ <div class="screen" id="screen"><span class="empty">Pick an issue on the left</span></div>
+ <div class="strip" id="strip"></div>
+ <div class="act"><textarea id="say" placeholder="Feedback for this agent…"></textarea><button onclick="say()">Send</button><button onclick="stop()">Stop</button><button class="primary" id="approve" onclick="approve()">Approve</button></div>
+ <details><summary>Details</summary><div class="log" id="log"></div></details>
+</main></div>
 <script>
-const cards=document.getElementById('cards');let seen={};
+let S=null,sel=null,pic=null,view='pics';const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-function toast(t){const e=document.getElementById('toast');e.textContent=t;clearTimeout(e._t);e._t=setTimeout(()=>e.textContent='',8000)}
-async function post(path,body){toast('…');const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const j=await r.json();toast(j.message||'');refresh();return j.ok}
-function start(){const n=document.getElementById('issue').value;if(n)post('/api/start',{n,model:document.getElementById('model').value})}
-function say(n){const t=document.getElementById('say'+n);post('/api/say',{n,message:t.value}).then(ok=>{if(ok)t.value=''})}
-function stop(n){if(confirm('Stop the agent on #'+n+'?'))post('/api/stop',{n})}
-function approve(n){if(confirm('Approve #'+n+': squash-merge its PR (closing the issue), set it Done and remove the worktree?'))post('/api/approve',{n})}
-function big(src,cap){const b=document.getElementById('big');b.querySelector('img').src=src;b.querySelector('div').textContent=cap;b.style.display='flex'}
-function card(i){let el=document.getElementById('c'+i.n);
- if(!el){el=document.createElement('section');el.className='card';el.id='c'+i.n;
-  el.innerHTML=`<div class="top"></div><div class="meta"></div><div class="shots"></div><div class="log"></div>
-  <div class="act"><textarea id="say${i.n}" placeholder="Feedback for this agent…"></textarea>
-  <button onclick="say(${i.n})">Send</button><button onclick="stop(${i.n})">Stop</button><button class="primary" onclick="approve(${i.n})">Approve</button></div>`;
-  cards.appendChild(el)}
- const cls=i.state.split(' ')[0];
- el.querySelector('.top').innerHTML=`<span class="num">#${i.n}</span><span class="title">${esc(i.title)}</span><span class="pill ${cls}">${esc(i.state)}</span>`;
- el.querySelector('.meta').innerHTML=`<span>${esc(i.model)}</span><span>${i.requests} requests</span><span>${i.ahead} commits</span>`+
-  (i.pr?`<a href="${i.pr.url}" target="_blank">PR #${i.pr.number}${i.pr.isDraft?' (draft)':''}</a>`:'<span>no PR yet</span>');
- const key=i.shots.map(s=>s.name+s.v).join();
- if(el._shots!==key){el._shots=key;el.querySelector('.shots').innerHTML=i.shots.length?i.shots.map(s=>{const src=`/shot/${i.n}/${encodeURIComponent(s.name)}?v=${s.v}`;
-  return `<figure><img src="${src}" onclick="big('${src}','#${i.n} ${esc(s.name)}')"><figcaption>${esc(s.name)}</figcaption></figure>`}).join(''):'<span class="noshots">No pictures yet</span>'}
- const log=el.querySelector('.log');const atEnd=log.scrollTop+log.clientHeight>=log.scrollHeight-20;
- log.innerHTML=i.log.map(l=>`<div class="${l.kind}">${l.kind==='tool'?'→ ':''}${esc(l.text)}</div>`).join('')||'<span class="tool">Starting…</span>';
- if(atEnd)log.scrollTop=log.scrollHeight;
- el.querySelector('.act .primary').disabled=!i.pr;}
-async function refresh(){try{const s=await (await fetch('/api/state')).json();
- const ids=new Set(s.issues.map(i=>'c'+i.n));[...cards.children].forEach(c=>{if(!ids.has(c.id))c.remove()});s.issues.forEach(card);
- const sel=document.getElementById('issue'),cur=sel.value,groups={};
- s.startable.forEach(i=>(groups[i.milestone||'No milestone']??=[]).push(i));
- const names=Object.keys(groups).sort((a,b)=>(a==='No milestone')-(b==='No milestone')||a.localeCompare(b,undefined,{numeric:true}));
- sel.innerHTML='<option value="">Start an issue…</option>'+names.map(m=>`<optgroup label="${esc(m)}">`+groups[m].map(i=>`<option value="${i.number}">#${i.number} ${esc(i.title)}</option>`).join('')+'</optgroup>').join('');sel.value=cur;
- const ms=document.getElementById('model');if(!ms.options.length)ms.innerHTML=s.models.map(m=>`<option value="${m}">${m.split('/')[1]}</option>`).join('');
- document.getElementById('clock').textContent='updated '+s.time;
- if(!s.issues.length)cards.innerHTML='<p style="color:var(--dim)">No issues being worked. Start one above.</p>';
- }catch(e){document.getElementById('clock').textContent='box unreachable'}}
+function toast(t){$('toast').textContent=t;clearTimeout($('toast')._t);$('toast')._t=setTimeout(()=>$('toast').textContent='',10000)}
+async function post(path,body){toast('…');try{const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const j=await r.json();toast(j.message||'');refresh();return j.ok}catch(e){toast('box unreachable')}}
+function start(){const n=$('issue').value;if(n)post('/api/start',{n,model:$('model').value}).then(ok=>{if(ok){sel=+n;pic=null}})}
+function say(){if(sel==null)return;post('/api/say',{n:sel,message:$('say').value}).then(ok=>{if(ok)$('say').value=''})}
+function stop(){if(sel!=null&&confirm('Stop the agent on #'+sel+'?'))post('/api/stop',{n:sel})}
+function approve(){if(sel!=null&&confirm('Approve #'+sel+': squash-merge its PR (closing the issue), set it Done and remove the worktree?'))post('/api/approve',{n:sel})}
+function playIt(t){if(t==null)return;post('/api/play',{target:String(t)});mode('play')}
+function mode(m){view=m;$('tabPics').classList.toggle('on',m==='pics');$('tabPlay').classList.toggle('on',m==='play');draw()}
+function cur(){return S&&S.issues.find(i=>i.n===sel)}
+function cls(st){return st==='ready for review'?'ready':st.split(' ')[0]}
+function drawList(){$('list').innerHTML=S.issues.length?S.issues.map(i=>`<div class="row${i.n===sel?' sel':''}" onclick="pick(${i.n})">
+ <div class="rtitle"><span class="dot ${cls(i.state)}"></span><b>#${i.n}</b><span>${esc(i.title)}</span></div>
+ <div class="rmeta">${esc(i.state)} · ${i.minutes||"<1"} min · ${i.shots.length} pictures</div>
+ ${i.n===sel&&i.todos.length?'<ul class="todos">'+i.todos.map(t=>`<li class="${t.status}">${esc(t.text)}</li>`).join('')+'</ul>':(i.now?`<div class="rnow">${esc(i.now)}</div>`:'')}</div>`).join('')
+ :'<div class="row" style="cursor:default;color:var(--dim)">No issues being worked. Start one above.</div>'}
+function pick(n){sel=n;pic=null;$('say').value='';mode('pics')}
+function draw(){const i=cur(),scr=$('screen');
+ // The stream stays connected while pictures are shown: hidden, not removed
+ let pv=$('pv'),fr=$('fr');if(!pv){scr.innerHTML='<div id="pv" style="display:contents"></div>';pv=$('pv')}
+ if(view==='play'&&!fr){fr=document.createElement('iframe');fr.id='fr';fr.allow='clipboard-read; clipboard-write; fullscreen';fr.src='http://localhost:8080/?zb#console';scr.appendChild(fr)}
+ if(fr)fr.style.display=view==='play'?'block':'none';pv.style.display=view==='play'?'none':'contents';
+ if(view!=='play'){const shots=i?i.shots:[];if(!shots.find(s=>s.name===pic))pic=shots.length?shots[0].name:null;
+  const s=shots.find(s=>s.name===pic),src=s&&`/shot/${i.n}/${encodeURIComponent(s.name)}?v=${s.v}`;
+  const want=!i?'none':!s?'empty'+i.n:src;
+  if(pv.dataset.k!==want){pv.dataset.k=want;
+   pv.innerHTML=!i?'<span class="empty">Pick an issue on the left</span>':!s?`<span class="empty">#${i.n} has no pictures yet</span>`:`<img src="${src}"><span class="cap">#${i.n} · ${esc(s.name)}</span>`}}
+ const shots=i?i.shots:[];const key=(i?i.n:'')+shots.map(s=>s.name+s.v).join()+pic+view;
+ if($('strip')._k!==key){$('strip')._k=key;$('strip').innerHTML=shots.map(s=>`<img class="${s.name===pic&&view==='pics'?'on':''}" title="${esc(s.name)}" src="/shot/${i.n}/${encodeURIComponent(s.name)}?v=${s.v}" onclick="pic='${esc(s.name)}';mode('pics')">`).join('')}
+ const log=$('log'),atEnd=log.scrollTop+log.clientHeight>=log.scrollHeight-20;
+ log.innerHTML=i?i.log.map(l=>`<div class="${l.kind}">${l.kind==='tool'?'→ ':''}${esc(l.text)}</div>`).join(''):'';if(atEnd)log.scrollTop=log.scrollHeight;
+ $('approve').disabled=!(i&&i.pr);$('playSel').disabled=!i;$('playSel').textContent=i?`Play #${i.n}'s build`:'Play this build';
+ const p=S.play;$('playmsg').textContent=p.state==='idle'?'':`${p.target==='main'?'main':'#'+p.target}: ${p.state}${p.state==='failed'?' · '+p.message:''}`}
+async function refresh(){try{S=await (await fetch('/api/state')).json();
+ if(sel==null&&S.issues.length)sel=S.issues[0].n;if(sel!=null&&!cur())sel=S.issues.length?S.issues[0].n:null;
+ drawList();draw();
+ const g={},sl=$('issue'),v=sl.value;S.startable.forEach(i=>(g[i.milestone||'No milestone']??=[]).push(i));
+ const names=Object.keys(g).sort((a,b)=>(a==='No milestone')-(b==='No milestone')||a.localeCompare(b,undefined,{numeric:true}));
+ sl.innerHTML='<option value="">Start an issue…</option>'+names.map(m=>`<optgroup label="${esc(m)}">`+g[m].map(i=>`<option value="${i.number}">#${i.number} ${esc(i.title)}</option>`).join('')+'</optgroup>').join('');sl.value=v;
+ if(!$('model').options.length)$('model').innerHTML=S.models.map(m=>`<option value="${m}">${m.split('/')[1]}</option>`).join('');
+ $('clock').textContent='updated '+S.time}catch(e){$('clock').textContent='box unreachable'}}
 refresh();setInterval(refresh,4000);
 </script></body></html>"""
 

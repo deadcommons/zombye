@@ -3,6 +3,9 @@
 #
 #   zgpu --render-to shot.png --load saves/autosave.zsave --zoom 30
 #   ZOMBYE_CLIENT=zgpu zombye-server --mcp     (the MCP screenshot tool renders on the GPU box)
+#   zgpu --play [ARGS]       the game in a window on the GPU box's screen (shared by DCV, see dcv.sh),
+#                            replacing whatever game was there; returns once it's started
+#   zgpu --stop              closes the game on that screen
 #
 # The client finds its assets by the absolute path of the checkout it was built in, so everything
 # is mirrored to the same absolute paths on the GPU box: the binary, that checkout's assets/, and
@@ -13,6 +16,12 @@
 # we're in (else ~/zombye).
 set -euo pipefail
 GPU=${ZOMBYE_GPU_HOST:-zombye-gpu}
+
+play=0
+case ${1:-} in
+  --play) play=1; shift ;;
+  --stop) exec ssh "$GPU" 'tmux kill-session -t zplay 2>/dev/null; echo "zgpu: game closed"' ;;
+esac
 
 BIN=${ZOMBYE_GPU_BIN:-}
 if [ -z "$BIN" ]; then
@@ -51,6 +60,23 @@ rsync -a "$BIN" "$GPU:$(printf %q "$BIN")"
 
 cmd="cd $(printf %q "$PWD") && $(printf %q "$BIN")"
 for a in "${args[@]}"; do cmd+=" $(printf %q "$a")"; done
+
+if [ $play = 1 ]; then
+  # On the desktop gdm logs the user in to (:0), in tmux so it outlives this command
+  game="cd $(printf %q "$PWD") && DISPLAY=:0 XAUTHORITY=/run/user/\$(id -u)/gdm/Xauthority ${cmd#*&& } > /tmp/zplay.log 2>&1"
+  ssh "$GPU" "tmux kill-session -t zplay 2>/dev/null; tmux new-session -d -s zplay $(printf %q "$game")"
+  # Fullscreen once its window is up (the desktop is only there to hold it)
+  if ssh "$GPU" 'export DISPLAY=:0 XAUTHORITY=/run/user/$(id -u)/gdm/Xauthority
+      for i in $(seq 40); do
+        tmux has-session -t zplay 2>/dev/null || exit 1
+        if wmctrl -l | grep -q " Zombye$"; then wmctrl -F -r Zombye -b add,fullscreen; wmctrl -F -a Zombye; exit 0; fi
+        sleep 0.5
+      done; exit 1'; then
+    echo "zgpu: game started on the GPU box's screen"; exit 0
+  fi
+  echo "zgpu: the game stopped straight away:" >&2; ssh "$GPU" 'tail -15 /tmp/zplay.log' >&2; exit 1
+fi
+
 set +e
 ssh "$GPU" "$cmd"
 code=$?

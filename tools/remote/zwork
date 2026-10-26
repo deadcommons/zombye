@@ -7,6 +7,8 @@
 #   zwork log N [LINES]     what the agent has said and done
 #   zwork say N MESSAGE     carry on the same agent session with a follow-up (review feedback)
 #   zwork shots N           the review pictures it rendered (~/wt/N/review/*.png)
+#   zwork play N [ARGS]     build issue N's client (or main's: N = main) and start it on the GPU box's
+#                           screen, to play over DCV (ARGS go to the game, e.g. --siege)
 #   zwork stop N            stop the agent
 #   zwork rm N              stop it and remove the worktree and local branch (after the PR is merged)
 #
@@ -26,6 +28,8 @@ brief() {
 You are working on GitHub issue #$n of $GH_REPO, alone, in the git worktree $dir (branch issue-$n),
 on the remote build box. Other agents work on other issues in other worktrees at the same time.
 Read the repo's AGENTS.md and CLAUDE.md first, and docs/remote-dev.md for how this machine works.
+Keep a short to-do list with your todo tool (4 to 7 steps, in plain words) and tick it off as you go:
+it's all the owner sees of your progress.
 
 1. Read the issue: gh issue view $n -R $GH_REPO --comments. Set its board Status to In Progress
    (CLAUDE.md says how).
@@ -102,6 +106,16 @@ case $cmd in
     ;;
   shots)
     n=${1:?zwork shots N}; ls -1 "$WT/$n"/review/*.png 2>/dev/null || echo "(no pictures yet)"
+    ;;
+  play)
+    n=${1:?zwork play N|main [ARGS]}; shift
+    if [ "$n" = main ]; then dir=$REPO; git -C "$dir" pull -q; else dir=$WT/$n; fi
+    [ -d "$dir" ] || { echo "zwork: no worktree for #$n" >&2; exit 1; }
+    cd "$dir"
+    echo "zwork: building $( [ "$n" = main ] && echo main || echo "#$n")'s client"
+    cargo build -q --profile play -p zombye-client
+    # The play box ($ZOMBYE_PLAY_HOST: one near the owner, for less lag), else the GPU box
+    ZOMBYE_GPU_HOST=${ZOMBYE_PLAY_HOST:-zombye-gpu} ZOMBYE_GPU_BIN=$dir/target/play/zombye zgpu --play --mute "$@"
     ;;
   stop)
     n=${1:?zwork stop N}; tmux kill-session -t "zw-$n" 2>/dev/null && echo "stopped #$n" || echo "#$n wasn't running"

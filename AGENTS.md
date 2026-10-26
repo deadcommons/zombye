@@ -20,7 +20,7 @@ Work is tracked on GitHub, not in the repo: the
 | `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/items/recipes.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`, `data/street_props.ron`, `data/palette.ron`: every colour, for Blender assets and the generated world), models (`models/furniture/*.glb`, street props `models/street/*.glb`; the survivor's body `models/characters/survivor_01.glb` and its wearables `models/wearables/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), sound (`audio/sfx/*.wav`, `audio/ambience/*.wav`, listed in `data/sounds.ron`), later textures. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
 | `tools/blender/` | Python to build assets: run inside Blender, mesh builder, palette, renders, validation, GLB export (`zasset.py`, `palette.py`: reads `assets/data/palette.ron`, `build.py`), character clean-up, validation and skinned export (`zchar.py`), VAT bake for the crowd, outfit variants with palette swatches (`zvat.py`, `build.py -- --crowd`); plain Python, art-repo work folders and promotion (`artrepo.py`). | MIT OR Apache-2.0 |
 | `tools/audio/` | `synth.py`: the placeholder sounds, synthesised from noise, tones and filters (plain Python, deterministic). | MIT OR Apache-2.0 |
-| `tools/remote/` | The remote machines (see Remote machines): `setup.sh` (a build or GPU box), `zgpu` (the client on the GPU box, as if local), `zwork` (an agent per issue, each in its own worktree), `zboard` (their dashboard: pictures, progress, feedback, approve). | MIT OR Apache-2.0 |
+| `tools/remote/` | The remote machines (see Remote machines): `setup.sh` (a build or GPU box), `zgpu` (the client on the GPU box, as if local), `zwork` (an agent per issue, each in its own worktree), `zboard` (the owner's dashboard: a screen of review pictures or the game streamed, the issues' progress, feedback, approve), `dcv.sh` (a GPU machine's desktop shared by Amazon DCV, for remote play). | MIT OR Apache-2.0 |
 | `docs/` | Plan and design docs. | — |
 
 ## Rules
@@ -70,8 +70,9 @@ and one agent per issue (`~/wt/N`, branch `issue-N`, started with `zwork start N
 commits with `Refs #N` and opens a draft PR. `zombye-gpu` only renders: `zgpu` runs the client there as if
 it ran locally, so `--render-to` and the MCP `screenshot` tool work from the build box. Review pictures go
 to `review/` in the worktree and come back to the Mac for the owner to approve; agents never merge, push
-to main or force-push. Playtesting, and asset work with Blender, Meshy or ElevenLabs (their keys are only
-on the Mac), stay on the Mac. If you are on `zombye-build`, you have no GPU and no display: render with `zgpu`.
+to main or force-push. Any issue's build can be played remotely, streamed into the owner's dashboard
+(zboard) from a GPU desktop by Amazon DCV. Asset work with Blender, Meshy or ElevenLabs (their keys are only
+on the Mac) stays on the Mac. If you are on `zombye-build`, you have no GPU and no display: render with `zgpu`.
 
 ## Commands
 
