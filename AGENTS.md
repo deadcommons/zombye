@@ -82,7 +82,7 @@ cargo test --release --workspace
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --skills --health --hover-tag N --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V`
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY --pick N,N --skills --health --hover-tag N --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V`
 (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost).
@@ -676,7 +676,13 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   it's shut (the same note again only keeps it up, and isn't printed again). One click is one request: row observers
   only record presses, `send_clicks` sends at most one per button per frame and none for a stack already on its way
   (`InFlight`, until the snapshot shows the answer, a refusal, or 3 s); a floor item being taken leaves the Floor
-  column at once. The Floor column and E use the snapshot's floor, not a distance guess. Left mouse doesn't swing while it's open. Ground items are drawn as boxes of their size and colour,
+  column at once. The Floor column and E use the snapshot's floor, not a distance guess. Left mouse doesn't swing while it's open.
+  **Finding and moving several** (#94): a search box over the columns (`/` or a click to type; Enter or Esc stops; while
+  typing every other key is held back, `inventory_ui::TextEntry`, which key handlers in `PreUpdate` run after) and
+  category chips (Food, Drink, Medical, Weapons, Clothing, Tools, Bags, Other) narrow every column but your hand and
+  bag slots; each column's title says where a click sends things; Ctrl-click picks rows (a picked row always shows),
+  and a bar under the columns sends every picked stack to the bags, the open container or the floor at once.
+  `--find TEXT`, `--filter CATEGORY` and `--pick N,N` (carried stacks) start it that way, for pictures. Ground items are drawn as boxes of their size and colour,
   weapons as bars. Under the columns, the Make list (see Crafting).
 
 ## Crafting (`sim::crafting`, `assets/data/items/recipes.ron`; #12)

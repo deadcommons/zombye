@@ -110,6 +110,11 @@ pub struct Options {
     /// `--health`).
     pub skills: bool,
     pub health: bool,
+    /// Start the inventory panel searching for this, showing one category, with these carried
+    /// stacks picked (`--find TEXT`, `--filter CATEGORY`, `--pick N,N`: for pictures of it).
+    pub find: Option<String>,
+    pub filter: Option<String>,
+    pub pick: Vec<u32>,
     /// Offscreen, draw the HUD and panels too (`--hud`; without it the picture is the world alone).
     pub hud: bool,
     /// Show the tooltip of the `N`th status tag (from 0), as if the pointer were over it
@@ -211,6 +216,9 @@ impl Options {
             skills: flag("--skills"),
             health: flag("--health"),
             hud: flag("--hud"),
+            find: value("--find"),
+            filter: value("--filter"),
+            pick: value("--pick").map_or(Vec::new(), |v| v.split(',').filter_map(|k| k.trim().parse().ok()).collect()),
             hover_tag: value("--hover-tag").and_then(|v| v.parse().ok()),
             god: flag("--god"),
             ignored: flag("--ignored"),

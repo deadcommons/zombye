@@ -52,7 +52,7 @@ impl Plugin for DeathPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_screen)
             // Before Update (as F9 is), so renderers see a new run's edge changes in the same frame.
-            .add_systems(PreUpdate, death_keys.after(InputSystems).run_if(crate::live))
+            .add_systems(PreUpdate, death_keys.after(InputSystems).after(crate::inventory_ui::TextEntry).run_if(crate::live))
             .add_systems(Update, update_screen);
     }
 }

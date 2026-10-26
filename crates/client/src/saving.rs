@@ -37,7 +37,7 @@ impl Plugin for SavingPlugin {
         app.init_resource::<Notice>()
             .add_systems(Startup, spawn_notice)
             // Before Update, so renderers see this frame's edge changes from a quickload.
-            .add_systems(PreUpdate, quick_save_load.after(InputSystems))
+            .add_systems(PreUpdate, quick_save_load.after(InputSystems).after(crate::inventory_ui::TextEntry))
             .add_systems(Update, show_notice);
         add_autosave(app);
     }
