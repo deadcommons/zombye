@@ -77,9 +77,11 @@ stay four.
 ### The generated world
 
 Walls, roofs, floors, ground and trees are made by the client's code (`meshgen.rs`, `world_render.rs`;
-the outdoors in `meshgen/landscape.rs` and `meshgen/trees.rs`) and follow the same rules. Building
-colours are still tuned by eye in code; the outdoors' are one named table, `meshgen/land_palette.rs`.
-Both move into the shared palette with the building kit work (see Follow-ups).
+the outdoors in `meshgen/landscape.rs` and `meshgen/trees.rs`, the buildings' details in
+`meshgen/building_kit.rs`) and follow the same rules. Their colours are still tuned by eye in code, in
+named tables: the outdoors' in `meshgen/land_palette.rs`, the building kit's at the top of
+`building_kit.rs` (siding and roof colours still in `meshgen.rs`). They move into the shared palette
+with #60.
 
 | Surface | Look |
 |---|---|
