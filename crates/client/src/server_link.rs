@@ -172,6 +172,16 @@ impl Plugin for ServerLinkPlugin {
         // The fight demo wants room to swing: open ground near the house you wake up in.
         let demo_at = if options.fight_demo && options.at.is_none() { open_ground_near(&server.world.map, server.world.player_spawn).map(|p| p.to_array()) } else { None };
         let siege_at = if options.siege { siege_spot(&server.world.map, server.world.spawn_building) } else { None };
+        if options.siege {
+            match siege_at {
+                Some((at, tile, out)) => {
+                    let side = Side::ALL.into_iter().find(|s| s.offset() == out).unwrap_or(Side::S);
+                    let what = if server.world.map.edge(tile, side).is_door() { "door" } else { "window" };
+                    println!("--siege: {:.0} m out from the {what} of {tile} ({side:?} wall)", at.distance(tile.as_vec2() + Vec2::splat(0.5)));
+                }
+                None => println!("--siege: the house you wake up in has no shut door or window with {SIEGE_MIN_DISTANCE} m of open ground in front; starting inside instead"),
+            }
+        }
         let player_id = server.join(options.at.or(siege_at.map(|s| s.0.to_array())).or(demo_at));
         if options.fight_demo {
             // A bat in hand and a small group just ahead (the player faces +x), called over by a noise.
@@ -321,27 +331,47 @@ fn tick_server(
 }
 
 /// `--siege`: where you start (outside the house you woke up in, a few metres out from one of its
-/// shut doors), the door's tile inside, and the way out through it. Doors in the south and east
-/// walls come first: those face the default camera.
+/// shut doors, else one of its intact windows), the door's tile inside, and the way out through it.
+/// The way out must be outdoors and walkable in a straight line, at least `SIEGE_MIN_DISTANCE`
+/// tiles; of those, the one with the most room up to `SIEGE_DISTANCE`, the south and east walls
+/// first (those face the default camera).
 fn siege_spot(map: &TileMap, house: usize) -> Option<(Vec2, IVec2, IVec2)> {
     let b = &map.buildings[house];
     let ours = |t: IVec2| map.tile(t).room != 0 && map.rooms[map.tile(t).room as usize].building as usize == house;
-    for side in [Side::S, Side::E, Side::N, Side::W] {
+    // How many tiles straight out from `t` through `side` are open outdoor ground.
+    let run = |t: IVec2, side: Side| {
         let out = side.offset();
-        for y in b.min.y..b.min.y + b.size.y {
-            for x in b.min.x..b.min.x + b.size.x {
-                let t = IVec2::new(x, y);
-                let clear = (1..=SIEGE_DISTANCE + 1).all(|k| {
-                    let c = t + out * k;
-                    map.tile(c).room == 0 && !map.tile_blocked(c) && (k == 1 || Side::ALL.iter().all(|&s| map.edge(c, s) == Edge::None))
-                });
-                if ours(t) && map.edge(t, side) == Edge::DoorClosed && clear {
-                    return Some(((t + out * SIEGE_DISTANCE).as_vec2() + Vec2::splat(0.5), t, out));
+        (1..=SIEGE_DISTANCE)
+            .take_while(|&k| {
+                let c = t + out * k;
+                map.in_bounds(c) && map.tile(c).room == 0 && !map.tile_blocked(c) && (k == 1 || map.can_step(c - out, side))
+            })
+            .count() as i32
+    };
+    let mut best: Option<(i32, IVec2, Side)> = None;
+    for wanted in [Edge::DoorClosed, Edge::Window] {
+        for side in [Side::S, Side::E, Side::N, Side::W] {
+            for y in b.min.y..b.min.y + b.size.y {
+                for x in b.min.x..b.min.x + b.size.x {
+                    let t = IVec2::new(x, y);
+                    if !ours(t) || map.edge(t, side) != wanted {
+                        continue;
+                    }
+                    let n = run(t, side);
+                    if n >= SIEGE_MIN_DISTANCE && best.is_none_or(|(m, ..)| n > m) {
+                        best = Some((n, t, side));
+                    }
                 }
             }
         }
+        // Any door that leaves room to stand back beats every window.
+        if best.is_some() {
+            break;
+        }
     }
-    None
+    let (n, t, side) = best?;
+    let out = side.offset();
+    Some(((t + out * n).as_vec2() + Vec2::splat(0.5), t, out))
 }
 
 /// `--siege`, after joining: a bat in hand, and a few zombies between you and the door drawn to a
@@ -355,8 +385,10 @@ fn siege(server: &mut LocalServer, player_id: u32, door_tile: IVec2, out: IVec2)
     server.send(Intent::MakeNoise { pos: (door_tile.as_vec2() + Vec2::splat(0.5)).to_array(), radius: 30.0, lasting: false });
 }
 
-/// `--siege`: how far out from the door you start (tiles), and how many zombies batter it.
+/// `--siege`: how far out from the door you start (tiles; at least `SIEGE_MIN_DISTANCE` where
+/// nothing has that much room), and how many zombies batter it.
 const SIEGE_DISTANCE: i32 = 10;
+const SIEGE_MIN_DISTANCE: i32 = 4;
 const SIEGE_ZOMBIES: u32 = 5;
 
 /// The centre of the nearest outdoor tile (searching outward from `from`) with a clear square of
@@ -379,4 +411,50 @@ fn open_ground_near(map: &TileMap, from: Vec2) -> Option<Vec2> {
         }
     }
     None
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #79: the shipped town gives a siege on the default seed and the next few, from a shut door
+    /// or window of the spawn house with open ground in front.
+    #[test]
+    fn siege_has_a_door_to_batter_on_the_shipped_town() {
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/data");
+        for seed in 1..=4u64 {
+            let mut config = content::load_config(&data, seed).unwrap();
+            config.zombies = Some(0);
+            let world = zombye_sim::World::new(config);
+            let map = &world.map;
+            let (at, tile, out) = siege_spot(map, world.spawn_building).unwrap_or_else(|| panic!("seed {seed}: no siege spot"));
+            let side = Side::ALL.into_iter().find(|s| s.offset() == out).unwrap();
+            assert!(map.edge(tile, side).is_breakable(), "seed {seed}: {tile} {side:?} is {:?}", map.edge(tile, side));
+            let stand = at.floor().as_ivec2();
+            assert!(map.tile(stand).room == 0 && !map.tile_blocked(stand), "seed {seed}: standing at {stand}");
+            assert!(at.distance(tile.as_vec2() + Vec2::splat(0.5)) >= SIEGE_MIN_DISTANCE as f32, "seed {seed}");
+        }
+    }
+
+    /// The siege itself: the zombies set down between you and the door batter it (or the window
+    /// beside it).
+    #[test]
+    fn siege_zombies_batter_the_door() {
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/data");
+        let mut config = content::load_config(&data, 1).unwrap();
+        config.zombies = Some(0);
+        let mut server = LocalServer::new(config);
+        let (at, tile, out) = siege_spot(&server.world.map, server.world.spawn_building).unwrap();
+        let id = server.join(Some(at.to_array()));
+        siege(&mut server, id, tile, out);
+        let mut thumps = 0;
+        for _ in 0..200 {
+            server.tick();
+            thumps += server.world.thump_events.iter().filter(|t| (t.edge.tile - tile).abs().max_element() <= 3).count();
+        }
+        let p = server.world.player(id).unwrap();
+        assert_eq!(p.weapon.map(|w| server.world.config.weapons[w as usize].id.as_str()), Some("baseball_bat"), "a bat in hand");
+        assert!(thumps >= 3, "only {thumps} thumps by the door in 10 s");
+    }
 }

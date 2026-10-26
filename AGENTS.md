@@ -92,9 +92,11 @@ For verifying combat without a keyboard: `--fight-demo` starts you on open groun
 closes in, swings in reach, alternates shoves and swings when two or more crowd it, stomps a downed zombie at its
 feet, and gets up again 4 s after dying. It only sets the normal movement input and sends the normal intents.
 `--siege` starts you outside the house you'd wake up in, 10 m out from one of its shut doors (south or east walls
-first, so it faces the camera), with a bat and five zombies between you and the door drawn to a noise just inside
+first, so it faces the camera; with no door that has 10 m of open ground straight out, the one with the most, at least
+4 m, else a window), with a bat and five zombies between you and the door drawn to a noise just inside
 it: they batter it (or the window beside it) with their backs to you, and the door or window shows cracks as it
-gives (add `--zombies 0` to keep the rest of the town out of it). `--sneak` starts you sneaking (as if C was
+gives (add `--zombies 0` to keep the rest of the town out of it). Stdout says where (`--siege: 10 m out from the door
+of [382, 297] (S wall)`), or that the house has nowhere to stage it and you start inside. `--sneak` starts you sneaking (as if C was
 pressed). The game window takes keyboard focus, so typing elsewhere while it runs can move or toggle the player.
 `--inventory` starts with the inventory panel open (for screenshots of it). `--god` and `--ignored` start with the dev
 toggles on (as if F1 / F2 were pressed; see Dev toggles).
