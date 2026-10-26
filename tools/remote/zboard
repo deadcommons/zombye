@@ -256,7 +256,10 @@ function card(i){let el=document.getElementById('c'+i.n);
  el.querySelector('.act .primary').disabled=!i.pr;}
 async function refresh(){try{const s=await (await fetch('/api/state')).json();
  const ids=new Set(s.issues.map(i=>'c'+i.n));[...cards.children].forEach(c=>{if(!ids.has(c.id))c.remove()});s.issues.forEach(card);
- const sel=document.getElementById('issue'),cur=sel.value;sel.innerHTML='<option value="">Start an issue…</option>'+s.startable.map(i=>`<option value="${i.number}">#${i.number} ${esc(i.title)}${i.milestone?' · '+esc(i.milestone):''}</option>`).join('');sel.value=cur;
+ const sel=document.getElementById('issue'),cur=sel.value,groups={};
+ s.startable.forEach(i=>(groups[i.milestone||'No milestone']??=[]).push(i));
+ const names=Object.keys(groups).sort((a,b)=>(a==='No milestone')-(b==='No milestone')||a.localeCompare(b,undefined,{numeric:true}));
+ sel.innerHTML='<option value="">Start an issue…</option>'+names.map(m=>`<optgroup label="${esc(m)}">`+groups[m].map(i=>`<option value="${i.number}">#${i.number} ${esc(i.title)}</option>`).join('')+'</optgroup>').join('');sel.value=cur;
  const ms=document.getElementById('model');if(!ms.options.length)ms.innerHTML=s.models.map(m=>`<option value="${m}">${m.split('/')[1]}</option>`).join('');
  document.getElementById('clock').textContent='updated '+s.time;
  if(!s.issues.length)cards.innerHTML='<p style="color:var(--dim)">No issues being worked. Start one above.</p>';
