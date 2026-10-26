@@ -81,6 +81,9 @@ pub enum Intent {
     /// Lie down and sleep (`sleep: true`; on a bed or sofa within reach, else the floor), or get up
     /// (`false`). Any other action while asleep also gets the player up, and does nothing else.
     Sleep { player: u32, sleep: bool },
+    /// Cancel the item job under way (`all: false`) or the whole queue (`all: true`): moves, searches,
+    /// eating, treatments and crafts. Nothing is lost: a job only takes effect when it finishes.
+    CancelJobs { player: u32, all: bool },
     /// Single-player / debug: a dead player gets up at the spawn point.
     Respawn { player: u32 },
     /// Dev toggles for testing (`None` leaves one as it is): `god` takes no damage and can't die,
@@ -506,6 +509,7 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
                 world.wake_player(*player);
             }
         }
+        Intent::CancelJobs { player, all } => world.player_cancel_jobs(*player, *all),
         Intent::Respawn { player } => {
             world.respawn_player(*player);
         }
@@ -1292,6 +1296,30 @@ mod tests {
             server.tick();
         }
         assert_eq!(server.world.player(id).unwrap().inventory.carried.iter().filter(|s| s.item == rag).map(|s| s.count).sum::<u16>(), 3);
+    }
+
+    /// `CancelJobs` drops the job under way, or the whole queue (#98).
+    #[test]
+    fn cancel_jobs_drops_the_job_or_the_queue() {
+        let mut server = server();
+        let recipes = zombye_sim::crafting::parse_recipes_for(include_str!("../../../assets/data/items/recipes.ron"), &server.world.config.items).unwrap();
+        server.world.config.recipes = recipes;
+        let id = server.join(None);
+        server.world.give_item(id, "t_shirt", 3);
+        let recipe = server.world.recipe_index("rip_t_shirt").unwrap();
+        for _ in 0..3 {
+            server.send(Intent::Craft { player: id, recipe });
+        }
+        server.tick();
+        assert_eq!(server.world.player(id).unwrap().jobs.len(), 3);
+        server.send(Intent::CancelJobs { player: id, all: false });
+        let snap = server.tick().for_player(id);
+        assert_eq!(server.world.player(id).unwrap().jobs.len(), 2);
+        assert!(snap.private.iter().any(|v| v.player == id && v.jobs.len() == 2), "the client is told");
+        server.send(Intent::CancelJobs { player: id, all: true });
+        server.tick();
+        assert!(server.world.player(id).unwrap().jobs.is_empty());
+        assert_eq!(server.world.player(id).unwrap().inventory.carried.iter().filter(|s| s.item == server.world.item_index("t_shirt").unwrap()).map(|s| s.count).sum::<u16>(), 3, "nothing used up");
     }
 
     #[test]

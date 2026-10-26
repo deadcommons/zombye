@@ -689,6 +689,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   only record presses, `send_clicks` sends at most one per button per frame and none for a stack already on its way
   (`InFlight`, until the snapshot shows the answer, a refusal, or 3 s); a floor item being taken leaves the Floor
   column at once. The Floor column and E use the snapshot's floor, not a distance guess. Left mouse doesn't swing while it's open.
+  **Current action** (#98, `action_ui.rs`): while a job is under way a bar at the bottom centre names it ("Wash rags in clean water"), shows progress and seconds left, the number queued, and X or a click cancels it, Shift+X the whole queue (`Intent::CancelJobs { player, all }`, `World::player_cancel_jobs`).
   **Finding and moving several** (#94): a search box over the columns (`/` or a click to type; Enter or Esc stops; while
   typing every other key is held back, `inventory_ui::TextEntry`, which key handlers in `PreUpdate` run after) and
   category chips (Food, Drink, Medical, Weapons, Clothing, Tools, Bags, Other) narrow every column but your hand and

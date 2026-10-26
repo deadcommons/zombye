@@ -797,6 +797,17 @@ impl World {
         }
     }
 
+    /// Player `id` cancels the job under way, or with `all` the whole queue.
+    pub fn player_cancel_jobs(&mut self, id: u32, all: bool) {
+        let Some(pi) = self.players.iter().position(|p| p.id == id) else { return };
+        if all {
+            self.cancel_jobs(pi);
+        } else if !self.players[pi].jobs.is_empty() {
+            self.players[pi].jobs.remove(0);
+            self.private_dirty.insert(id);
+        }
+    }
+
     /// Drop player `pi`'s queue (it swung, shoved or stomped, or died).
     pub(crate) fn cancel_jobs(&mut self, pi: usize) {
         if !self.players[pi].jobs.is_empty() {
