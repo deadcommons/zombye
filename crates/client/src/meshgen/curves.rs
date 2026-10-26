@@ -131,17 +131,6 @@ impl Poly {
         out
     }
 
-    /// The part inside the convex `other`.
-    pub fn intersect(&self, other: &Poly) -> Poly {
-        let sign = other.signed_area().signum();
-        let p = other.points();
-        let mut out = *self;
-        for i in 0..p.len() {
-            out = out.clip(p[i], (p[(i + 1) % p.len()] - p[i]).perp() * sign);
-        }
-        out
-    }
-
     pub fn clip_rect(&self, min: Vec2, max: Vec2) -> Poly {
         self.clip(min, Vec2::X).clip(min, Vec2::Y).clip(max, Vec2::NEG_X).clip(max, Vec2::NEG_Y)
     }

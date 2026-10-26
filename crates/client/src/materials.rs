@@ -105,18 +105,35 @@ pub const MAX_FADING_TREES: usize = 32;
 /// Seconds for a tree's foliage to fade out or come back.
 const FADE_SECS: f32 = 0.25;
 
-/// Does a tree's crown hide (part of) the player, seen from the camera? The crown and the player
-/// are compared where they land in the view plane: a crown nearer the camera than the player whose
-/// outline overlaps the player's.
-pub fn crown_hides(t: &crate::meshgen::trees::TreeSpec, player: Vec3, camera_dir: Vec3) -> bool {
-    let d = t.crown - player;
-    let along = d.dot(camera_dir);
-    if along <= 0.0 {
+/// Does a tree's crown hide (part of) the player, seen from the camera? Compared where they land
+/// in the view plane: the crown as an ellipse (its radius across, its height foreshortened plus its
+/// radius seen from above), the player as the box from feet to head. Only crowns nearer the camera
+/// whose outline actually covers the body fade, not every tree in a column behind it.
+pub fn crown_hides(t: &crate::meshgen::trees::TreeSpec, chest: Vec3, camera_dir: Vec3) -> bool {
+    let d = t.crown - chest;
+    if d.dot(camera_dir) <= 0.0 {
         return false;
     }
-    let perp = (d - along * camera_dir).length();
-    perp < t.crown_r.max(t.crown_h * 0.9) * 0.9 + 0.6
+    let right = Vec3::Y.cross(camera_dir).normalize_or(Vec3::X);
+    let up = camera_dir.cross(right);
+    let (cos_e, sin_e) = (up.y, camera_dir.y);
+    // The crown's outline in the view plane, a little inside its outermost facets.
+    let a = t.crown_r * CROWN_COVER;
+    let b = ((t.crown_h * cos_e).powi(2) + (t.crown_r * sin_e).powi(2)).sqrt() * CROWN_COVER;
+    // The body from the chest: across, and from the feet to the top of the head.
+    let (dx, dy) = (d.dot(right), d.dot(up));
+    let (feet, head) = (-chest.y * cos_e, (BODY_TOP - chest.y) * cos_e);
+    // The point of the body nearest the crown's middle, inside the ellipse?
+    let px = dx.clamp(-BODY_HALF_W, BODY_HALF_W) - dx;
+    let py = dy.clamp(feet, head) - dy;
+    (px / a).powi(2) + (py / b).powi(2) < 1.0
 }
+
+/// How much of a crown's radius and height counts as covering (its outline is ragged).
+const CROWN_COVER: f32 = 0.95;
+/// The player's body for the fade: half its width, and the top of its head.
+const BODY_HALF_W: f32 = 0.3;
+const BODY_TOP: f32 = 1.85;
 
 /// How far behind a wall (on the ground, away from the camera) it can hide things: a 3 m wall seen
 /// from 30° up covers about 5.2 m of floor behind it. Same as `WALL_REACH` in world.wesl.
@@ -330,6 +347,25 @@ pub fn update_params(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #81: a crown in front of the player fades; one beside the line of sight, or behind the
+    /// player, doesn't, however tall.
+    #[test]
+    fn only_crowns_covering_the_player_fade() {
+        use crate::meshgen::trees::tree_at;
+        use zombye_sim::map::Feature;
+        let yaw = std::f32::consts::FRAC_PI_4;
+        let elev = 30f32.to_radians();
+        let cam = Vec3::new(yaw.sin() * elev.cos(), elev.sin(), yaw.cos() * elev.cos());
+        // A pine (tall) two tiles toward the camera from the player hides it...
+        let pine = (0..200).find_map(|i| tree_at(i, 0, Feature::PineTree)).unwrap();
+        let chest = pine.base + Vec3::new(-1.5, 1.1, -1.5);
+        assert!(crown_hides(&pine, chest, cam));
+        // ...but not from 3 m to the side of the line of sight, nor from in front of it.
+        let right = Vec3::Y.cross(cam).normalize();
+        assert!(!crown_hides(&pine, chest + right * 3.0, cam));
+        assert!(!crown_hides(&pine, pine.base + Vec3::new(1.5, 1.1, 1.5), cam));
+    }
 
     /// Inside, only walls that hide part of your room drop: its near walls and walls just in front
     /// of it; its far walls and walls behind it stand, and so do walls well in front (#84).

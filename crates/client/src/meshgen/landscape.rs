@@ -1,8 +1,10 @@
 //! The outdoors of one 16 m chunk, read from the tile map alone (no extra sim data): the ground
-//! (lawns in broad patches, rough verges and unkempt edges, dirt, a darker forest floor), roads
+//! (lawns in broad patches, rough verges and unkempt edges, dirt, a darker forest floor, blended
+//! softly where they meet: colours are worked out at tile corners), roads
 //! with paint at real scale (centre lines, parking bays, crossings and stop lines, worked out from
 //! the road's shape and the sim's `RoadLine` tiles), kerbs, gutters, wheel tracks and repair
-//! patches, sidewalk slab joints, driveways from garage doors, flower beds and shrubs in front of
+//! patches, sidewalk slab joints (laid out from the kerb), driveways (from garage doors, bent when
+//! a garage faces the side, and beside some houses without one), flower beds and shrubs in front of
 //! houses, fences and hedges, trees, bushes, and forest litter (ferns, rocks, stumps, logs).
 //!
 //! Everything is merged into the chunk's two meshes, both single-sided: `ground` (casts no
@@ -32,6 +34,12 @@ const Y_OVERLAY: f32 = 0.004;
 const KERB_WIDTH: f32 = 0.16;
 const KERB_HEIGHT: f32 = 0.06;
 const GUTTER_WIDTH: f32 = 0.28;
+/// The chance of an oil stain on each tile down the middle of a parking bay (a bay is 5 deep).
+const OIL_STAIN_CHANCE: f32 = 0.08;
+/// Main-street junctions closer than this (metres between them) get no zebra crossings in the gap.
+const SHORT_GAP: i32 = 9;
+/// The darker joint along the back of a kerb's top.
+const KERB_JOINT: f32 = 0.05;
 
 /// Widest asphalt that still counts as one street, and how far road runs are followed.
 const MAX_STREET: i32 = 14;
@@ -77,7 +85,12 @@ struct Driveway {
     cut_max: Vec2,
     /// Driveways run along x (else z).
     along_x: bool,
+    /// The building it serves.
+    building: usize,
 }
+
+/// The share of houses without a garage that get a driveway beside the house (where there's room).
+const SIDE_DRIVE_SHARE: f32 = 0.45;
 
 /// What a planting strip in front of a house holds.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -146,6 +159,10 @@ impl<'a> Land<'a> {
         land.find_houses();
         // Driveways flare where they meet the sidewalk: round the lawn's corner either side.
         for d in land.driveways.clone() {
+            // (A bent driveway's leg doesn't reach the street.)
+            if d.cut_min.is_nan() {
+                continue;
+            }
             let (street_end, toward) = if d.along_x {
                 if d.cut_min.x >= d.max.x - 1e-3 { (d.max.x, 1.0) } else { (d.min.x, -1.0) }
             } else if d.cut_min.y >= d.max.y - 1e-3 {
@@ -361,6 +378,23 @@ impl<'a> Land<'a> {
                 }
                 if let Some(d) = self.driveway(&opening, side) {
                     drives.push(d);
+                } else if let Some(front) = b.look.map(|l| l.front).filter(|&f| f != side && f != side.opposite()) {
+                    drives.extend(self.bent_driveway(&opening, side, front).into_iter().flatten());
+                }
+            }
+            // Some houses without a garage park beside the house: a strip from the street up past
+            // its front, on whichever side has room.
+            if drives.iter().all(|d| d.building != bi)
+                && b.template.starts_with("house")
+                && hash01(b.min.x, b.min.y, 56) < SIDE_DRIVE_SHARE
+                && let Some(front) = b.look.map(|l| l.front)
+            {
+                let first_left = hash01(b.min.x, b.min.y, 57) < 0.5;
+                for left in [first_left, !first_left] {
+                    if let Some(d) = self.side_driveway(bi, front, left) {
+                        drives.push(d);
+                        break;
+                    }
                 }
             }
             // A bed or a row of shrubs along the front of some houses: the side whose door has a
@@ -418,6 +452,19 @@ impl<'a> Land<'a> {
     /// A driveway in front of a run of garage openings on `side`, out to the sidewalk (or the
     /// road), if the way is clear.
     fn driveway(&self, opening: &[IVec2], side: Side) -> Option<Driveway> {
+        let d = self.driveway_strip(opening, side)?;
+        let building = self.tile(opening[0]).room;
+        Some(Driveway { building: self.map.rooms.get(building as usize).map_or(usize::MAX, |r| r.building as usize), ..d })
+    }
+
+    /// The tiles of a driveway are clear: nothing standing on them but a bush (which gives way).
+    fn drive_clear(&self, t: IVec2) -> bool {
+        matches!(self.tile(t).feature, Feature::None | Feature::Bush)
+    }
+
+    /// A driveway strip out from the row of tiles `opening` (which it doesn't cover) through `side`
+    /// to the sidewalk or road.
+    fn driveway_strip(&self, opening: &[IVec2], side: Side) -> Option<Driveway> {
         let first = *opening.first()?;
         let last = *opening.last()?;
         let out = side.offset();
@@ -439,11 +486,12 @@ impl<'a> Land<'a> {
         if len < 1 {
             return None;
         }
-        // Every tile it covers must be clear.
+        // Every tile it covers must be clear, and the sidewalk where the kerb drops.
         let (a, b) = (first.min(last), first.max(last));
-        for j in 1..=len {
+        for j in 1..=len + 2 {
             for p in [a, b, mid] {
-                if self.tile(p + out * j).feature != Feature::None {
+                let q = p + out * j;
+                if !self.drive_clear(q) || (j <= len && self.has_fence(q)) {
                     return None;
                 }
             }
@@ -471,7 +519,92 @@ impl<'a> Land<'a> {
         };
         let (min, max) = rect(w, s);
         let (cut_min, cut_max) = rect(s, sw_end);
-        Some(Driveway { min, max, cut_min, cut_max, along_x })
+        Some(Driveway { min, max, cut_min, cut_max, along_x, building: usize::MAX })
+    }
+
+    /// A garage door that faces neither the street nor away from it: a short leg out of it, then
+    /// a turn toward the street (`front`).
+    fn bent_driveway(&self, opening: &[IVec2], side: Side, front: Side) -> Option<[Driveway; 2]> {
+        let out = side.offset();
+        let to_street = front.offset();
+        let along_x = out.x != 0;
+        // The leg: out of the door far enough for a car to turn (as wide as the door).
+        let width = opening.len() as i32;
+        let leg = width.max(3) + 1;
+        for p in opening {
+            for j in 1..=leg {
+                let q = *p + out * j;
+                if !self.outdoors(q) || !self.drive_clear(q) || self.has_fence(q) || !matches!(self.tile(q).floor, Floor::Grass | Floor::Path | Floor::Dirt | Floor::Concrete) {
+                    return None;
+                }
+            }
+        }
+        // The rest runs toward the street from the leg's far end, three tiles wide, starting from
+        // the door's back corner (so the turn is covered).
+        let back = *opening.iter().min_by_key(|p| p.dot(to_street))?;
+        let row: Vec<IVec2> = (leg - 2..=leg).map(|j| back + out * j - to_street).collect();
+        let main = self.driveway_strip(&row, front)?;
+        let building = self.map.rooms[self.tile(opening[0]).room as usize].building as usize;
+        let (a, b) = (opening.iter().copied().reduce(IVec2::min)?, opening.iter().copied().reduce(IVec2::max)?);
+        let w = if matches!(side, Side::S | Side::E) { a.as_vec2() + Vec2::ONE } else { a.as_vec2() };
+        let end = |v: f32| v + leg as f32 * if matches!(side, Side::S | Side::E) { 1.0 } else { -1.0 };
+        let (min, max) = if along_x {
+            let (x0, x1) = (w.x.min(end(w.x)), w.x.max(end(w.x)));
+            (Vec2::new(x0, a.y as f32 - 0.3), Vec2::new(x1, b.y as f32 + 1.3))
+        } else {
+            let (y0, y1) = (w.y.min(end(w.y)), w.y.max(end(w.y)));
+            (Vec2::new(a.x as f32 - 0.3, y0), Vec2::new(b.x as f32 + 1.3, y1))
+        };
+        // The leg drops no kerb: its "cut" is an empty box where nothing is.
+        let none = Vec2::splat(f32::NAN);
+        Some([Driveway { min, max, cut_min: none, cut_max: none, along_x, building }, Driveway { building, ..main }])
+    }
+
+    /// A driveway beside house `bi` (on its left or right as seen from the street), from the
+    /// street up past its front wall, where the side yard has room: three tiles wide, one tile
+    /// clear of the house.
+    fn side_driveway(&self, bi: usize, front: Side, left: bool) -> Option<Driveway> {
+        let b = &self.map.buildings[bi];
+        let (lo, hi) = (b.min, b.min + b.size - IVec2::ONE);
+        let out = front.offset();
+        // Across: the axis along the front wall; which end is "left" doesn't matter, only that the
+        // two choices differ.
+        let across = IVec2::new(out.y.abs(), out.x.abs());
+        let first = if left { lo.dot(across) - 4 } else { hi.dot(across) + 2 };
+        let cols: Vec<i32> = (first..first + 3).collect();
+        // The front wall's row (the bounding box's, toward the street).
+        let front_row = if out.x + out.y > 0 { hi.dot(out.abs()) } else { lo.dot(out.abs()) };
+        let at = |col: i32, row: i32| across * col + out.abs() * row;
+        // How far back beside the house it reaches: up to 5 tiles, at least 2.
+        let sign = out.x + out.y;
+        let mut depth = 0;
+        while depth < 5 {
+            let row = front_row - sign * depth;
+            let free = cols.iter().all(|&c| {
+                let q = at(c, row);
+                self.outdoors(q) && self.drive_clear(q) && !self.has_fence(q) && matches!(self.tile(q).floor, Floor::Grass | Floor::Dirt)
+            });
+            if !free {
+                break;
+            }
+            depth += 1;
+        }
+        if depth < 2 {
+            return None;
+        }
+        // Nor in the way of the house's own door or garden path.
+        let row: Vec<IVec2> = cols.iter().map(|&c| at(c, front_row - sign * depth)).collect();
+        let d = self.driveway_strip(&row, front)?;
+        let crosses_path = (1..=depth + 8).any(|j| cols.iter().any(|&c| self.floor(at(c, front_row - sign * depth) + out * j) == Floor::Path));
+        if crosses_path {
+            return None;
+        }
+        Some(Driveway { building: bi, ..d })
+    }
+
+    fn on_driveway(&self, t: IVec2) -> bool {
+        let c = t.as_vec2() + Vec2::splat(0.5);
+        self.driveways.iter().any(|d| inside(c, d.min, d.max))
     }
 
     fn kerb_cut(&self, t: IVec2) -> bool {
@@ -740,6 +873,7 @@ pub struct ChunkMeshes {
 /// Build the ground and props of chunk `c`.
 pub fn build_chunk(map: &TileMap, c: IVec2) -> ChunkMeshes {
     let land = Land::new(map, c);
+    let looks = SoftLooks::new(&land);
     let mut ground = MeshBuilder::with_capacity(1500);
     let mut props = MeshBuilder::with_capacity(1500);
     let mut paint = Paint::new();
@@ -773,12 +907,12 @@ pub fn build_chunk(map: &TileMap, c: IVec2) -> ChunkMeshes {
                 _ if surface == Surface::Road => road_tile(&mut paint, &mut ground, &land, t),
                 Floor::Sidewalk => sidewalk_tile(&mut paint, &mut ground, &land, t),
                 Floor::Concrete => {
-                    slab_joints(&mut paint, t, true, true, 0.0, 0.0);
+                    let (_, _, z0, x0) = slab_grid(&land, t, |p| land.is_sidewalk(p) || (land.outdoors(p) && land.floor(p) == Floor::Concrete));
+                    slab_joints(&mut paint, t, true, true, z0, x0);
                     paint.draw(&mut ground, pal::SIDEWALK.lin());
                 }
                 Floor::Path => path_tile(&mut paint, &mut ground, &land, t),
-                Floor::Dirt => soft_tile(&mut paint, &mut ground, &mut props, &land, t, true),
-                _ => soft_tile(&mut paint, &mut ground, &mut props, &land, t, false),
+                _ => soft_tile(&mut paint, &mut ground, &mut props, &land, &looks, t),
             }
             if curved {
                 for piece in pieces.pieces.iter().filter(|p| !p.own) {
@@ -793,6 +927,8 @@ pub fn build_chunk(map: &TileMap, c: IVec2) -> ChunkMeshes {
                         add_tree(&mut props, &spec, simple);
                     }
                 }
+                // A bush gives way to a driveway (bushes are only drawn: the sim walks through them).
+                Feature::Bush if land.on_driveway(t) => {}
                 Feature::Bush => {
                     let centre = Vec3::new(x as f32 + 0.3 + 0.4 * hash01(x, y, 3), 0.0, y as f32 + 0.3 + 0.4 * hash01(x, y, 4));
                     add_bush(&mut props, x, y, centre, 0.85 + 0.4 * hash01(x, y, 5));
@@ -829,9 +965,10 @@ fn flat_tile(mb: &mut MeshBuilder, t: IVec2, colour: LinearRgba) {
     decal(mb, t.as_vec2(), t.as_vec2() + Vec2::ONE, 0.0, colour);
 }
 
-/// A ground tile as two triangles, each coloured by `colour(centroid)`: patches of colour then
-/// follow the triangles' diagonals rather than square tile steps. The diagonal flips by hash. Cut
-/// to `clip` when a curve crosses the tile.
+/// A ground tile as two triangles, coloured at each corner by `colour(corner)` and blended
+/// between, so patches of colour have soft, rounded edges rather than following the triangles'
+/// diagonals or the tiles' steps (neighbouring tiles agree at the corners they share). The diagonal
+/// flips by hash. Cut to `clip` when a curve crosses the tile.
 fn split_tile(mb: &mut MeshBuilder, t: IVec2, colour: impl Fn(Vec2) -> LinearRgba, clip: Option<&[Poly]>) {
     let (x0, z0) = (t.x as f32, t.y as f32);
     let p = |dx: f32, dz: f32| Vec3::new(x0 + dx, 0.0, z0 + dz);
@@ -840,18 +977,27 @@ fn split_tile(mb: &mut MeshBuilder, t: IVec2, colour: impl Fn(Vec2) -> LinearRgb
     } else {
         [[p(0.0, 0.0), p(0.0, 1.0), p(1.0, 0.0)], [p(0.0, 1.0), p(1.0, 1.0), p(1.0, 0.0)]]
     };
-    for tri in tris {
-        let c = (tri[0] + tri[1] + tri[2]) / 3.0;
-        match clip {
-            None => tri_up(mb, tri, colour(c.xz())),
-            Some(clip) => {
-                let whole = Poly::new(&tri.map(|p| p.xz()));
-                for piece in clip {
-                    flat_poly(mb, &whole.intersect(piece), 0.0, colour(c.xz()));
+    match clip {
+        None => {
+            for tri in tris {
+                tri_up_shaded(mb, tri, tri.map(|q| colour(q.xz())));
+            }
+        }
+        Some(clip) => {
+            for piece in clip {
+                let pts = piece.points();
+                for i in 1..pts.len().saturating_sub(1) {
+                    let tri = [pts[0], pts[i], pts[i + 1]];
+                    tri_up_shaded(mb, tri.map(|q| Vec3::new(q.x, 0.0, q.y)), tri.map(&colour));
                 }
             }
         }
     }
+}
+
+/// A triangle wound to face up, a colour at each corner.
+fn tri_up_shaded(mb: &mut MeshBuilder, [a, b, c]: [Vec3; 3], [ca, cb, cc]: [LinearRgba; 3]) {
+    if (b - a).cross(c - a).y >= 0.0 { mb.triangle_shaded([a, b, c], [ca, cb, cc]) } else { mb.triangle_shaded([a, c, b], [ca, cc, cb]) }
 }
 
 fn road_tile(paint: &mut Paint, mb: &mut MeshBuilder, land: &Land, t: IVec2) {
@@ -862,7 +1008,7 @@ fn road_tile(paint: &mut Paint, mb: &mut MeshBuilder, land: &Land, t: IVec2) {
     let bay = [IVec2::X, IVec2::Y].into_iter().find(|&d| land.is_bay(t - d) && land.is_bay(t + d * 2));
     if let Some(d) = bay
         && !land.is_bay(t)
-        && hash01(t.x, t.y, 36) < 0.2
+        && hash01(t.x, t.y, 36) < OIL_STAIN_CHANCE
     {
         let mid = Vec2::splat(0.5) + d.as_vec2() * 0.5;
         let at = t.as_vec2() + mid + (Vec2::new(hash01(t.x, t.y, 37), hash01(t.x, t.y, 38)) - 0.5) * 0.4;
@@ -924,6 +1070,11 @@ fn road_paint(paint: &mut Paint, mb: &mut MeshBuilder, land: &Land, t: IVec2) {
     if st.paint == Line::Solid {
         let mut crossing = false;
         for (dir, k) in ahead.into_iter().flatten() {
+            // Between two offset T-junctions a few metres apart, the crossings either side of the
+            // gap would sit back to back and read as one wide one: leave them both out.
+            if land.junction_ahead(t, &st, -dir, true, SHORT_GAP).is_some_and(|k2| k + k2 - 1 < SHORT_GAP) {
+                continue;
+            }
             crossing = true;
             // The junction's edge, and the crossing's band in the 2.6 m before it.
             let edge = if dir > 0 { along as f32 + k as f32 } else { along as f32 + 1.0 - k as f32 };
@@ -995,17 +1146,8 @@ fn bay_line(paint: &mut Paint, land: &Land, t: IVec2) {
 }
 
 fn sidewalk_tile(paint: &mut Paint, mb: &mut MeshBuilder, land: &Land, t: IVec2) {
-    // Which way the sidewalk runs: joints across it every 1.5 m, and along it on wide ones.
-    let paved = |p: IVec2| land.is_sidewalk(p);
-    let (w, e, n, s) = (land.run(t, IVec2::NEG_X, paved), land.run(t, IVec2::X, paved), land.run(t, IVec2::NEG_Y, paved), land.run(t, IVec2::Y, paved));
-    let (wx, wy) = (w + e + 1, n + s + 1);
-    if wy <= 4 && wx > wy {
-        slab_joints(paint, t, true, wy >= 3, (t.y - n) as f32, 0.0);
-    } else if wx <= 4 && wy > wx {
-        slab_joints(paint, t, wx >= 3, true, 0.0, (t.x - w) as f32);
-    } else {
-        slab_joints(paint, t, true, true, 0.0, 0.0);
-    }
+    let (across_x, across_z, z0, x0) = slab_grid(land, t, |p| land.is_sidewalk(p));
+    slab_joints(paint, t, across_x, across_z, z0, x0);
     // Kerbs: a low lip along every edge with road (where a curve doesn't take over), dropped in
     // front of driveways.
     if !land.kerb_cut(t) {
@@ -1020,37 +1162,32 @@ fn sidewalk_tile(paint: &mut Paint, mb: &mut MeshBuilder, land: &Land, t: IVec2)
 }
 
 /// A kerb on a sidewalk tile's edge facing `side`, from `s0` to `s1` of the way along it (+x or
-/// +z): its top and its face toward the road.
+/// +z): its top, the dark joint behind it (so the kerb line still reads from the default zoom),
+/// and its face toward the road.
 fn kerb(mb: &mut MeshBuilder, tv: Vec2, side: Side, s0: f32, s1: f32) {
-    let (w, h) = (KERB_WIDTH, KERB_HEIGHT);
-    let top = pal::KERB_TOP.lin();
-    let face = pal::KERB_FACE.lin();
-    let p = |x: f32, y: f32, z: f32| Vec3::new(tv.x + x, y, tv.y + z);
-    match side {
-        Side::N => {
-            mb.quad([p(s0, h, 0.0), p(s0, h, w), p(s1, h, w), p(s1, h, 0.0)], Vec3::Y, top);
-            mb.quad([p(s0, 0.0, 0.0), p(s0, h, 0.0), p(s1, h, 0.0), p(s1, 0.0, 0.0)], Vec3::NEG_Z, face);
-        }
-        Side::S => {
-            mb.quad([p(s0, h, 1.0 - w), p(s0, h, 1.0), p(s1, h, 1.0), p(s1, h, 1.0 - w)], Vec3::Y, top);
-            mb.quad([p(s1, 0.0, 1.0), p(s1, h, 1.0), p(s0, h, 1.0), p(s0, 0.0, 1.0)], Vec3::Z, face);
-        }
-        Side::W => {
-            mb.quad([p(0.0, h, s0), p(0.0, h, s1), p(w, h, s1), p(w, h, s0)], Vec3::Y, top);
-            mb.quad([p(0.0, 0.0, s1), p(0.0, h, s1), p(0.0, h, s0), p(0.0, 0.0, s0)], Vec3::NEG_X, face);
-        }
-        Side::E => {
-            mb.quad([p(1.0 - w, h, s0), p(1.0 - w, h, s1), p(1.0, h, s1), p(1.0, h, s0)], Vec3::Y, top);
-            mb.quad([p(1.0, 0.0, s0), p(1.0, h, s0), p(1.0, h, s1), p(1.0, 0.0, s1)], Vec3::X, face);
-        }
-    }
+    let (w, h, j) = (KERB_WIDTH, KERB_HEIGHT, KERB_JOINT);
+    let (top, joint, face) = (pal::KERB_TOP.lin(), pal::KERB_JOINT.lin(), pal::KERB_FACE.lin());
+    // A point `a` of the way along the edge, `d` in from it toward the sidewalk, at height `y`.
+    let p = |a: f32, d: f32, y: f32| {
+        let (x, z) = match side {
+            Side::N => (a, d),
+            Side::S => (a, 1.0 - d),
+            Side::W => (d, a),
+            Side::E => (1.0 - d, a),
+        };
+        Vec3::new(tv.x + x, y, tv.y + z)
+    };
+    let strip = |mb: &mut MeshBuilder, d0: f32, d1: f32, colour: LinearRgba| mb.quad_facing([p(s0, h, d0), p(s0, h, d1), p(s1, h, d1), p(s1, h, d0)], Vec3::Y, colour);
+    strip(mb, 0.0, w - j, top);
+    strip(mb, w - j, w, joint);
+    mb.quad_facing([p(s0, 0.0, 0.0), p(s0, h, 0.0), p(s1, h, 0.0), p(s1, 0.0, 0.0)], Vec3::new(side.offset().x as f32, 0.0, side.offset().y as f32), face);
 }
 
 /// A kerb along a curve, with grit in the gutter in front of it: the stretches whose middles are
 /// in this chunk, dropped in front of driveways.
 fn curved_kerb(mb: &mut MeshBuilder, k: &Kerb, driveways: &[Driveway], ours: impl Fn(Vec2) -> bool) {
-    let (top, face, grit) = (pal::KERB_TOP.lin(), pal::KERB_FACE.lin(), pal::GUTTER.lin());
-    let (w, h, g) = (KERB_WIDTH, KERB_HEIGHT, GUTTER_WIDTH);
+    let (top, joint, face, grit) = (pal::KERB_TOP.lin(), pal::KERB_JOINT.lin(), pal::KERB_FACE.lin(), pal::GUTTER.lin());
+    let (w, h, g, j) = (KERB_WIDTH, KERB_HEIGHT, GUTTER_WIDTH, KERB_JOINT);
     let v = |p: Vec2, y: f32| Vec3::new(p.x, y, p.y);
     let dropped = |p: Vec2| driveways.iter().any(|d| inside(p, d.cut_min - Vec2::splat(0.1), d.cut_max + Vec2::splat(0.1)));
     for i in 0..k.points.len().saturating_sub(1) {
@@ -1059,8 +1196,10 @@ fn curved_kerb(mb: &mut MeshBuilder, k: &Kerb, driveways: &[Driveway], ours: imp
         if !ours(mid) || dropped(mid) {
             continue;
         }
-        tri_up(mb, [v(p0, h), v(p1, h), v(p1 + n1 * w, h)], top);
-        tri_up(mb, [v(p0, h), v(p1 + n1 * w, h), v(p0 + n0 * w, h)], top);
+        tri_up(mb, [v(p0, h), v(p1, h), v(p1 + n1 * (w - j), h)], top);
+        tri_up(mb, [v(p0, h), v(p1 + n1 * (w - j), h), v(p0 + n0 * (w - j), h)], top);
+        tri_up(mb, [v(p0 + n0 * (w - j), h), v(p1 + n1 * (w - j), h), v(p1 + n1 * w, h)], joint);
+        tri_up(mb, [v(p0 + n0 * (w - j), h), v(p1 + n1 * w, h), v(p0 + n0 * w, h)], joint);
         let behind = v(mid + (n0 + n1) * 0.5, h * 0.5);
         tri_out(mb, [v(p0, 0.0), v(p1, 0.0), v(p1, h)], behind, face);
         tri_out(mb, [v(p0, 0.0), v(p1, h), v(p0, h)], behind, face);
@@ -1112,6 +1251,35 @@ fn ring_joints(mb: &mut MeshBuilder, ring: &ArcSpan, outer: f32, ours: impl Fn(V
 
 /// Slab joints on a paved tile, 5 cm wide: lines of constant x every 1.5 m from `x0` (when
 /// `across_x`) and of constant z every 1.5 m from `z0` (when `across_z`).
+/// How a paved tile's slab joints are laid out: whether they cross x and z, and where the grid
+/// starts on each axis (`z0`, `x0`). Joints run across a sidewalk every 1.5 m, and along it too on
+/// wide ones. Across the paving, the grid starts at the kerb where it meets a road (the nearer one
+/// if both sides do), so the slabs along the street are whole and any cut ones are at the back;
+/// along a narrow strip it keeps to the world's grid, so it runs on unbroken.
+fn slab_grid(land: &Land, t: IVec2, paved: impl Fn(IVec2) -> bool) -> (bool, bool, f32, f32) {
+    let (w, e, n, s) = (land.run(t, IVec2::NEG_X, &paved), land.run(t, IVec2::X, &paved), land.run(t, IVec2::NEG_Y, &paved), land.run(t, IVec2::Y, &paved));
+    let (wx, wy) = (w + e + 1, n + s + 1);
+    // The street edge along axis `d` (+x or +z), from runs `lo` back and `hi` on.
+    let kerb = |lo: i32, hi: i32, d: IVec2| {
+        let at = t.dot(d);
+        let road = |run: i32, sign: i32| run < RUN_CAP && land.is_road(t + d * sign * (run + 1));
+        match (road(lo, -1), road(hi, 1)) {
+            (true, true) if lo <= hi => Some((at - lo) as f32),
+            (true, true) | (false, true) => Some((at + hi + 1) as f32),
+            (true, false) => Some((at - lo) as f32),
+            (false, false) => None,
+        }
+    };
+    let (z_kerb, x_kerb) = (kerb(n, s, IVec2::Y), kerb(w, e, IVec2::X));
+    if wy <= 4 && wx > wy {
+        (true, wy >= 3, z_kerb.unwrap_or((t.y - n) as f32), 0.0)
+    } else if wx <= 4 && wy > wx {
+        (wx >= 3, true, 0.0, x_kerb.unwrap_or((t.x - w) as f32))
+    } else {
+        (true, true, z_kerb.unwrap_or(0.0), x_kerb.unwrap_or(0.0))
+    }
+}
+
 fn slab_joints(paint: &mut Paint, t: IVec2, across_x: bool, across_z: bool, z0: f32, x0: f32) {
     let colour = pal::SIDEWALK_JOINT.lin();
     let tv = t.as_vec2();
@@ -1154,6 +1322,7 @@ fn path_tile(paint: &mut Paint, mb: &mut MeshBuilder, land: &Land, t: IVec2) {
 
 /// How a tile of grass or dirt looks: how unkempt it is, and whether it's forest floor or a
 /// verge.
+#[derive(Clone, Copy)]
 struct SoftLook {
     dirt: bool,
     forest: bool,
@@ -1208,16 +1377,84 @@ impl SoftLook {
     }
 }
 
+/// The look of every grass and dirt tile of a chunk and the ring round it, so the colour at a
+/// corner can be the average of the tiles that share it: where dirt meets grass, or the forest
+/// floor a lawn, the change is a soft blend rather than a step along the tile edges.
+struct SoftLooks {
+    min: IVec2,
+    looks: Vec<Option<SoftLook>>,
+    /// The blended colour at each corner of the chunk's tiles (`CHUNK_SIZE + 1` a side, from the
+    /// chunk's first corner).
+    corners: Vec<Option<LinearRgba>>,
+}
+
+impl SoftLooks {
+    const W: i32 = CHUNK_SIZE + 2;
+
+    fn new(land: &Land) -> Self {
+        let min = land.min - IVec2::ONE;
+        let mut looks = Vec::with_capacity((Self::W * Self::W) as usize);
+        for y in 0..Self::W {
+            for x in 0..Self::W {
+                let t = min + IVec2::new(x, y);
+                let tile = land.tile(t);
+                let soft = tile.room == 0
+                    && !tile.floor.is_road()
+                    && !matches!(tile.floor, Floor::Sidewalk | Floor::Concrete | Floor::Path)
+                    && land.drawn(t).is_none_or(|s| s == Surface::Soft);
+                looks.push(soft.then(|| SoftLook::new(land, t, tile.floor == Floor::Dirt)));
+            }
+        }
+        let mut out = SoftLooks { min, looks, corners: Vec::new() };
+        let n = CHUNK_SIZE + 1;
+        out.corners = (0..n * n).map(|i| out.blend(land.min + IVec2::new(i % n, i / n))).collect();
+        out
+    }
+
+    fn blend(&self, ci: IVec2) -> Option<LinearRgba> {
+        let c = ci.as_vec2();
+        let (mut sum, mut n) = (Vec4::ZERO, 0.0);
+        for d in [IVec2::new(-1, -1), IVec2::new(0, -1), IVec2::new(-1, 0), IVec2::ZERO] {
+            if let Some(look) = self.get(ci + d) {
+                sum += look.colour(c).to_vec4();
+                n += 1.0;
+            }
+        }
+        (n > 0.0).then(|| LinearRgba::from_vec4(sum / n))
+    }
+
+    fn get(&self, t: IVec2) -> Option<SoftLook> {
+        let d = t - self.min;
+        if d.min_element() < 0 || d.max_element() >= Self::W {
+            return None;
+        }
+        self.looks[(d.y * Self::W + d.x) as usize]
+    }
+
+    /// The blended colour at a tile corner (whole metres), or `None` for any other point.
+    fn corner(&self, c: Vec2) -> Option<LinearRgba> {
+        if c.fract() != Vec2::ZERO {
+            return None;
+        }
+        let d = c.as_ivec2() - self.min - IVec2::ONE;
+        let n = CHUNK_SIZE + 1;
+        if d.min_element() < 0 || d.max_element() >= n {
+            return None;
+        }
+        self.corners[(d.y * n + d.x) as usize]
+    }
+}
+
 /// Grass or dirt: lawn patches, rough verges, long grass at the edges, the forest floor and its
 /// litter.
-fn soft_tile(paint: &mut Paint, mb: &mut MeshBuilder, props: &mut MeshBuilder, land: &Land, t: IVec2, dirt: bool) {
+fn soft_tile(paint: &mut Paint, mb: &mut MeshBuilder, props: &mut MeshBuilder, land: &Land, looks: &SoftLooks, t: IVec2) {
     let (x, y) = (t.x, t.y);
     let tile = land.tile(t);
-    let look = SoftLook::new(land, t, dirt);
-    let (forest, trees, rough) = (look.forest, look.trees, look.rough);
+    let look = looks.get(t).unwrap_or_else(|| SoftLook::new(land, t, tile.floor == Floor::Dirt));
+    let (dirt, forest, trees, rough) = (look.dirt, look.forest, look.trees, look.rough);
     let tv = t.as_vec2();
     if paint.rects.is_empty() {
-        split_tile(mb, t, |c| look.colour(c), paint.clipped.then_some(&paint.clip[..]));
+        split_tile(mb, t, |c| looks.corner(c).unwrap_or_else(|| look.colour(c)), paint.clipped.then_some(&paint.clip[..]));
     } else {
         // Under a driveway or a bed: one colour for the ground left showing.
         paint.draw(mb, look.colour(tv + Vec2::splat(0.5)));
@@ -1546,6 +1783,91 @@ mod tests {
         assert!(solid > 1000 && dashed > 5000 && bays > 20);
     }
 
+    /// The shipped town with its street props, as the game makes it.
+    fn shipped_town() -> TileMap {
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/data");
+        let mut config = zombye_net::content::load_config(&data, 1).expect("content");
+        config.zombies = Some(0);
+        zombye_sim::World::new(config).map
+    }
+
+    fn drives_of(map: &TileMap, bi: usize) -> Vec<Driveway> {
+        let b = &map.buildings[bi];
+        let c = (b.min + b.size / 2).div_euclid(IVec2::splat(CHUNK_SIZE));
+        Land::new(map, c).driveways.into_iter().filter(|d| d.building == bi).collect()
+    }
+
+    /// #81: every garage gets a driveway (a yard bush gives way to it), some houses without one
+    /// park beside the house, and no driveway runs over anything that stands or into a building.
+    #[test]
+    fn garages_and_some_houses_get_driveways() {
+        let map = shipped_town();
+        let (mut garages, mut beside, mut houses) = (0, 0, 0);
+        for (bi, b) in map.buildings.iter().enumerate() {
+            if !b.template.starts_with("house") {
+                continue;
+            }
+            houses += 1;
+            let drives = drives_of(&map, bi);
+            let garage = b.template.contains("garage");
+            if garage {
+                garages += 1;
+                assert!(!drives.is_empty(), "{} at {} has no driveway", b.template, b.min);
+            } else if !drives.is_empty() {
+                beside += 1;
+            }
+            for d in &drives {
+                for y in d.min.y.ceil() as i32..d.max.y.floor() as i32 {
+                    for x in d.min.x.ceil() as i32..d.max.x.floor() as i32 {
+                        let t = map.tile(IVec2::new(x, y));
+                        assert_eq!(t.room, 0, "driveway of {} over a room at [{x}, {y}]", b.min);
+                        assert!(matches!(t.feature, Feature::None | Feature::Bush), "driveway of {} over {:?} at [{x}, {y}]", b.min, t.feature);
+                    }
+                }
+            }
+        }
+        eprintln!("{houses} houses: {garages} with a garage, {beside} more with a driveway beside the house");
+        assert!(garages > 0);
+        assert!(beside * 6 >= houses - garages, "only {beside} side driveways");
+    }
+
+    /// A garage whose door faces the side gets a bent driveway: a leg out of the door, then a
+    /// stretch to the street.
+    #[test]
+    fn a_garage_facing_the_side_gets_a_bent_driveway() {
+        let mut map = shipped_town();
+        let bi = map.buildings.iter().position(|b| b.template.contains("garage")).unwrap();
+        let b = map.buildings[bi].clone();
+        let front = b.look.unwrap().front;
+        let garage = |map: &TileMap, p: IVec2| {
+            let r = map.tile(p).room;
+            r != 0 && map.rooms[r as usize].building as usize == bi && map.rooms[r as usize].room_type == "garage"
+        };
+        let tiles: Vec<IVec2> = (b.min.y..b.min.y + b.size.y).flat_map(|y| (b.min.x..b.min.x + b.size.x).map(move |x| IVec2::new(x, y))).filter(|&p| garage(&map, p)).collect();
+        // Wall up the door to the street, and open the garage's side wall instead.
+        for &p in &tiles {
+            if map.tile(p + front.offset()).room == 0 && map.edge(p, front) != Edge::Wall {
+                map.set_edge(p, front, Edge::Wall);
+            }
+        }
+        let side = [Side::N, Side::E, Side::S, Side::W]
+            .into_iter()
+            .filter(|&s| s != front && s != front.opposite())
+            .max_by_key(|&s| tiles.iter().filter(|&&p| map.tile(p + s.offset()).room == 0).count())
+            .unwrap();
+        let mut door: Vec<IVec2> = tiles.iter().copied().filter(|&p| map.tile(p + side.offset()).room == 0).collect();
+        door.sort_by_key(|p| p.dot(front.offset()));
+        door.truncate(3);
+        assert!(door.len() >= 2, "the garage has no side wall to open");
+        for &p in &door {
+            map.set_edge(p, side, Edge::Arch);
+        }
+        let drives = drives_of(&map, bi);
+        assert_eq!(drives.len(), 2, "{drives:?}");
+        assert!(drives.iter().any(|d| d.cut_min.is_nan()), "a leg that drops no kerb");
+        assert!(drives.iter().any(|d| !d.cut_min.is_nan()), "a stretch to the street");
+    }
+
     #[test]
     fn chunks_build_the_same_every_time() {
         let map = town();
@@ -1619,3 +1941,4 @@ mod tests {
         );
     }
 }
+

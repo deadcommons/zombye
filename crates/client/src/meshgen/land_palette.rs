@@ -32,6 +32,9 @@ pub const SIDEWALK: Swatch = Swatch(0.60, 0.59, 0.55);
 pub const SIDEWALK_JOINT: Swatch = Swatch(0.45, 0.44, 0.41);
 pub const KERB_TOP: Swatch = Swatch(0.68, 0.67, 0.63);
 pub const KERB_FACE: Swatch = Swatch(0.50, 0.49, 0.46);
+/// The joint along the back of a kerb, where it meets the slabs: the line that shows where the
+/// kerb runs from the default zoom.
+pub const KERB_JOINT: Swatch = Swatch(0.38, 0.37, 0.35);
 pub const DRIVEWAY: Swatch = Swatch(0.51, 0.50, 0.46);
 pub const PATH: Swatch = Swatch(0.55, 0.51, 0.45);
 
@@ -64,8 +67,8 @@ pub const DEADWOOD: Swatch = Swatch(0.36, 0.28, 0.20);
 pub const CUT_WOOD: Swatch = Swatch(0.62, 0.50, 0.34);
 
 // Trees.
-pub const BARK: Swatch = Swatch(0.40, 0.31, 0.23);
-pub const BARK_DARK: Swatch = Swatch(0.33, 0.25, 0.19);
+pub const BARK: Swatch = Swatch(0.46, 0.37, 0.28);
+pub const BARK_DARK: Swatch = Swatch(0.39, 0.31, 0.24);
 pub const BIRCH_BARK: Swatch = Swatch(0.80, 0.78, 0.72);
 pub const BIRCH_MARK: Swatch = Swatch(0.23, 0.22, 0.21);
 /// Broadleaf crowns: a deep green, a mid green, an olive and a dusty one; two or three per tree.

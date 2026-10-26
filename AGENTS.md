@@ -763,7 +763,9 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   put the whole view in the coarsest one), 4096 map: about 3 cm a texel at the default zoom.
 - **Night:** moonlight and ambient low enough that only edges and silhouettes read; the fog of war's unseen areas go
   nearly black (`fog_tint`); you see 10 m with no light (`fog::NIGHT_SIGHT`). A faint glow round the player lights its
-  own feet.
+  own feet. The palest things on the ground (road paint, kerb tops) keep a little of their colour as if catching the
+  moon (`PAINT_NIGHT` in world.wesl), so the street's shapes still read. Unseen areas keep some of the difference in
+  lightness between what things are made of (`UNSEEN_CONTRAST`), so a driveway doesn't vanish into its lawn.
 - **Held lights:** an item with `light` in either hand (`daynight::held_light`, from our `PrivateView`): a flashlight is a
   shadow-casting `SpotLight` cone along the facing (`BEAM_OUTER`, aimed 4.5 m ahead), seeing out to its `radius_m` + 2
   along the beam at night; a candle (`needs_fire`) a small warm shadow-casting pool. Only the local player's (others'

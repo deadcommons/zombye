@@ -144,6 +144,16 @@ impl MeshBuilder {
         self.indices.extend_from_slice(&[base, base + 1, base + 2]);
     }
 
+    /// A triangle with a colour at each corner, blended across it.
+    pub fn triangle_shaded(&mut self, corners: [Vec3; 3], colors: [LinearRgba; 3]) {
+        let normal = (corners[1] - corners[0]).cross(corners[2] - corners[0]).normalize_or_zero();
+        let base = self.positions.len() as u32;
+        for (c, col) in corners.into_iter().zip(colors) {
+            self.push_vertex(c, normal, col);
+        }
+        self.indices.extend_from_slice(&[base, base + 1, base + 2]);
+    }
+
     /// Smallest and largest corner of everything added so far.
     #[cfg(test)]
     pub fn bounds(&self) -> (Vec3, Vec3) {

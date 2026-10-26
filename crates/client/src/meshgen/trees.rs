@@ -80,8 +80,8 @@ pub fn tree_at(x: i32, y: i32, feature: Feature) -> Option<TreeSpec> {
         }
         TreeKind::Birch => {
             // The top clump's top (see `birch`).
-            let fork = (2.0 + 0.4 * h(6)) * s;
-            (fork, fork + 2.9 * s, fork + 1.2 * s, 0.9 * s, 1.5 * s)
+            let fork = (1.6 + 0.4 * h(6)) * s;
+            (fork, fork + 2.8 * s, fork + 1.1 * s, 1.05 * s, 1.6 * s)
         }
         TreeKind::Pine => {
             let top = (6.0 + 1.6 * h(6)) * s;
@@ -117,7 +117,7 @@ fn broadleaf(mb: &mut MeshBuilder, t: &TreeSpec, simple: bool, wood: CutTag, lea
     let main = (t.h(10) * 4.0) as usize % 4;
     let second = (main + 1 + (t.h(11) * 2.0) as usize) % 4;
     let greens = [pal::LEAF[main].lin(), pal::LEAF[second].lin()];
-    let branches = if simple { 1 } else if t.h(12) < 0.3 { 2 } else { 3 };
+    let branches = if simple { 1 } else if t.h(12) < 0.5 { 2 } else { 3 };
     let az0 = t.h(13) * TAU;
     let mut clumps: Vec<(Vec3, f32)> = Vec::with_capacity(4);
     for i in 0..branches {
@@ -127,17 +127,17 @@ fn broadleaf(mb: &mut MeshBuilder, t: &TreeSpec, simple: bool, wood: CutTag, lea
         let dir = Vec3::new(az.cos() * elev.cos(), elev.sin(), az.sin() * elev.cos());
         let end = fork + dir * len;
         spike(mb, t, fork - dir * 0.1 * s, end, 0.075 * s, 4, pal::BARK_DARK.lin());
-        clumps.push((end + Vec3::Y * 0.2 * s, (0.85 + 0.3 * t.h(50 + i)) * s));
+        clumps.push((end + Vec3::Y * 0.25 * s, (1.05 + 0.25 * t.h(50 + i)) * s));
     }
     // The leader, carrying the top of the crown.
     let top = fork + Vec3::new((t.h(14) - 0.5) * 0.3, 1.3, (t.h(15) - 0.5) * 0.3) * s;
     spike(mb, t, fork, top, 0.08 * s, 4, pal::BARK.lin());
-    clumps.push((top + Vec3::Y * 0.25 * s, (1.0 + 0.25 * t.h(16)) * s));
+    clumps.push((top + Vec3::Y * 0.15 * s, (1.15 + 0.2 * t.h(16)) * s));
     mb.set_tag(leaves);
+    // One canopy: every clump is lit as part of the crown round `heart`, and lighter towards its top.
+    let heart = Canopy { centre: t.crown, bottom: t.crown.y - t.crown_h, top: t.crown.y + t.crown_h };
     for (i, (c, r)) in clumps.iter().enumerate() {
-        let top_one = i + 1 == clumps.len();
-        let colour = if top_one { shade(greens[0], 1.06) } else { greens[i % 2] };
-        clump(mb, t, *c, Vec3::new(*r, r * 0.74, *r), colour, i as u32);
+        clump(mb, t, *c, Vec3::new(*r, r * 0.8, *r), greens[i % 2], i as u32, Some(heart));
     }
 }
 
@@ -147,9 +147,9 @@ fn birch(mb: &mut MeshBuilder, t: &TreeSpec, simple: bool, wood: CutTag, leaves:
     let at = |y: f32| t.base + Vec3::Y * y;
     let r = 0.085 * s;
     let clumps = if simple { 3 } else { 4 };
-    let step = 0.6 * s;
+    let step = 0.55 * s;
     // The trunk ends in the top clump.
-    let top = t.fork + 0.25 * s + (clumps - 1) as f32 * step;
+    let top = t.fork + 0.2 * s + (clumps - 1) as f32 * step;
     mb.set_tag(wood);
     frustum(mb, t, at(0.0), at(1.5 * s), r, r * 0.92, 4, pale);
     frustum(mb, t, at(1.5 * s), at(1.66 * s), r * 0.92, r * 0.9, 4, mark);
@@ -158,19 +158,20 @@ fn birch(mb: &mut MeshBuilder, t: &TreeSpec, simple: bool, wood: CutTag, leaves:
     let az0 = t.h(13) * TAU;
     let mut centres = Vec::new();
     for i in 0..clumps {
-        let y = t.fork + 0.25 * s + i as f32 * step;
+        let y = t.fork + 0.2 * s + i as f32 * step;
         let az = az0 + i as f32 * 2.3;
-        let out = Vec3::new(az.cos(), 0.0, az.sin()) * (0.3 - 0.06 * i as f32) * s;
+        let out = Vec3::new(az.cos(), 0.0, az.sin()) * (0.34 - 0.07 * i as f32) * s;
         if i < 2 && !simple {
             spike(mb, t, at(y - 0.5 * s), at(y) + out * 1.6, 0.04 * s, 3, mark);
         }
-        centres.push((at(y) + out, (0.62 + 0.12 * t.h(50 + i) - 0.06 * i as f32) * s));
+        centres.push((at(y) + out, (0.82 + 0.12 * t.h(50 + i) - 0.08 * i as f32) * s));
     }
     mb.set_tag(leaves);
     let pick = (t.h(10) * 2.0) as usize % 2;
+    let heart = Canopy { centre: t.crown, bottom: t.crown.y - t.crown_h, top: t.crown.y + t.crown_h };
     for (i, (c, r)) in centres.iter().enumerate() {
         let colour = pal::BIRCH_LEAF[(pick + i) % 2].lin();
-        clump(mb, t, *c, Vec3::new(r * 0.85, r * 1.3, r * 0.85), colour, i as u32);
+        clump(mb, t, *c, Vec3::new(r * 0.9, r * 1.2, r * 0.9), colour, i as u32, Some(heart));
     }
 }
 
@@ -226,8 +227,8 @@ fn frustum(mb: &mut MeshBuilder, t: &TreeSpec, a: Vec3, b: Vec3, ra: f32, rb: f3
     let mid = (a + b) * 0.5;
     for i in 0..sides {
         let (a0, a1, b0, b1) = (ring(a, ra, i), ring(a, ra, i + 1), ring(b, rb, i), ring(b, rb, i + 1));
-        tri_out(mb, t, [a0, b0, b1], mid, colour);
-        tri_out(mb, t, [a0, b1, a1], mid, colour);
+        tri_wood(mb, t, [a0, b0, b1], mid, colour);
+        tri_wood(mb, t, [a0, b1, a1], mid, colour);
     }
 }
 
@@ -240,12 +241,26 @@ fn spike(mb: &mut MeshBuilder, t: &TreeSpec, a: Vec3, b: Vec3, r: f32, sides: u3
     };
     let mid = a.lerp(b, 0.3);
     for i in 0..sides {
-        tri_out(mb, t, [ring(i), b, ring(i + 1)], mid, colour);
+        tri_wood(mb, t, [ring(i), b, ring(i + 1)], mid, colour);
     }
 }
 
-/// A lumpy faceted clump of foliage (a jittered icosahedron), a little lighter on top.
-fn clump(mb: &mut MeshBuilder, t: &TreeSpec, centre: Vec3, scale: Vec3, colour: LinearRgba, k: u32) {
+/// A crown seen as one mass: its clumps take their normals from its centre (so the light falls across
+/// the whole canopy softly rather than glinting off each facet) and lighten towards its top.
+#[derive(Clone, Copy)]
+struct Canopy {
+    centre: Vec3,
+    bottom: f32,
+    top: f32,
+}
+
+/// How much of a canopy facet's normal is its own (the rest points out from the crown's centre).
+const FACET_NORMAL: f32 = 0.35;
+
+/// A lumpy faceted clump of foliage (a jittered icosahedron), a little lighter on top; part of a
+/// `canopy`, else lit facet by facet (bushes).
+#[allow(clippy::too_many_arguments)]
+fn clump(mb: &mut MeshBuilder, t: &TreeSpec, centre: Vec3, scale: Vec3, colour: LinearRgba, k: u32, canopy: Option<Canopy>) {
     let g = (1.0 + 5.0_f32.sqrt()) / 2.0;
     let v = [
         Vec3::new(-1.0, g, 0.0), Vec3::new(1.0, g, 0.0), Vec3::new(-1.0, -g, 0.0), Vec3::new(1.0, -g, 0.0),
@@ -259,17 +274,48 @@ fn clump(mb: &mut MeshBuilder, t: &TreeSpec, centre: Vec3, scale: Vec3, colour: 
     let len = v[0].length();
     // A random turn about the vertical, so clumps don't all show the same facets.
     let rot = Quat::from_rotation_y(t.h(80 + k) * TAU);
+    // Canopy clumps are rounder (less jitter) and flatter underneath.
+    let (jitter, spread) = if canopy.is_some() { (0.92, 0.14) } else { (0.84, 0.3) };
     let mut pts = [Vec3::ZERO; 12];
     for (i, p) in v.iter().enumerate() {
-        let j = 0.84 + 0.3 * t.h(90 + k * 12 + i as u32);
-        pts[i] = centre + rot * (*p / len) * scale * j;
+        let j = jitter + spread * t.h(90 + k * 12 + i as u32);
+        let mut q = rot * (*p / len) * scale * j;
+        if canopy.is_some() && q.y < 0.0 {
+            q.y *= 0.7;
+        }
+        pts[i] = centre + q;
     }
     for (i, f) in F.iter().enumerate() {
         let tri = [pts[f[0]], pts[f[1]], pts[f[2]]];
-        let up = ((tri[0] + tri[1] + tri[2]) / 3.0 - centre).y / scale.y;
-        let k = 0.9 + 0.12 * up + 0.08 * t.h(400 + k * 20 + i as u32);
-        tri_out(mb, t, tri, centre, shade(colour, k));
+        let mid = (tri[0] + tri[1] + tri[2]) / 3.0;
+        match canopy {
+            None => {
+                let up = (mid - centre).y / scale.y;
+                let k = 0.9 + 0.12 * up + 0.08 * t.h(400 + k * 20 + i as u32);
+                tri_out(mb, t, tri, centre, shade(colour, k));
+            }
+            Some(c) => {
+                let up = ((mid.y - c.bottom) / (c.top - c.bottom)).clamp(0.0, 1.0);
+                let k = 0.9 + 0.22 * up + 0.04 * t.h(400 + k * 20 + i as u32);
+                tri_soft(mb, t, tri, centre, c.centre, shade(colour, k));
+            }
+        }
     }
+}
+
+/// A canopy triangle (leaned), wound to face away from `inside`, its vertex normals mostly pointing
+/// out from `heart`.
+fn tri_soft(mb: &mut MeshBuilder, t: &TreeSpec, [a, b, c]: [Vec3; 3], inside: Vec3, heart: Vec3, colour: LinearRgba) {
+    let (a, b, c, inside, heart) = (t.p(a), t.p(b), t.p(c), t.p(inside), t.p(heart));
+    let mut n = (b - a).cross(c - a);
+    let mut tri = [a, b, c];
+    if n.dot((a + b + c) / 3.0 - inside) < 0.0 {
+        tri = [a, c, b];
+        n = -n;
+    }
+    let face = n.normalize_or(Vec3::Y);
+    let normals = tri.map(|p| (face * FACET_NORMAL + (p - heart).normalize_or(Vec3::Y) * (1.0 - FACET_NORMAL)).normalize_or(face));
+    mb.triangle_with_normals(tri, normals, colour);
 }
 
 /// A triangle (leaned), wound to face away from `inside`.
@@ -281,6 +327,23 @@ fn tri_out(mb: &mut MeshBuilder, t: &TreeSpec, [a, b, c]: [Vec3; 3], inside: Vec
     } else {
         mb.triangle([a, c, b], colour);
     }
+}
+
+/// How far wood's normals are tipped up towards the sky, so a trunk's shaded side catches some of
+/// the sky's light instead of going near-black.
+const WOOD_SKY: f32 = 0.6;
+
+/// A trunk or branch triangle: as [`tri_out`], with its normal tipped up by `WOOD_SKY`.
+fn tri_wood(mb: &mut MeshBuilder, t: &TreeSpec, [a, b, c]: [Vec3; 3], inside: Vec3, colour: LinearRgba) {
+    let (a, b, c, inside) = (t.p(a), t.p(b), t.p(c), t.p(inside));
+    let mut n = (b - a).cross(c - a);
+    let mut tri = [a, b, c];
+    if n.dot((a + b + c) / 3.0 - inside) < 0.0 {
+        tri = [a, c, b];
+        n = -n;
+    }
+    let up = (n.normalize_or(Vec3::Y) + Vec3::Y * WOOD_SKY).normalize();
+    mb.triangle_with_normals(tri, [up; 3], colour);
 }
 
 fn basis(axis: Vec3) -> (Vec3, Vec3) {
@@ -312,7 +375,7 @@ pub fn add_bush(mb: &mut MeshBuilder, x: i32, y: i32, centre: Vec3, size: f32) {
         let a = t.h(12 + i) * TAU;
         let off = Vec3::new(a.cos(), 0.0, a.sin()) * 0.28 * size * (i > 0) as u32 as f32;
         let r = (0.5 - 0.08 * i as f32) * size;
-        clump(mb, &t, centre + off + Vec3::Y * r * 0.62, Vec3::new(r, r * 0.72, r), shade(colour, 1.0 + 0.05 * i as f32), i);
+        clump(mb, &t, centre + off + Vec3::Y * r * 0.62, Vec3::new(r, r * 0.72, r), shade(colour, 1.0 + 0.05 * i as f32), i, None);
     }
 }
 

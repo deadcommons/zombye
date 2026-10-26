@@ -45,6 +45,13 @@ fn bayer4(p: vec2<u32>) -> f32 {
 const STUB_HEIGHT: f32 = 0.4;
 // How bright a lit window is at night (HDR, before the tone map).
 const LIT_GLOW: f32 = 1.8;
+// At night the palest things on the ground (road paint, kerb tops) keep this much of their colour
+// as if catching the moon, so the street's shapes still read outside the player's light (#81).
+const PAINT_NIGHT: f32 = 0.05;
+// In unseen areas, surfaces keep (albedo / UNSEEN_MID)^UNSEEN_CONTRAST of their difference in
+// lightness.
+const UNSEEN_MID: f32 = 0.18;
+const UNSEEN_CONTRAST: f32 = 0.6;
 // Above the ground-floor walls: roofs and upper storeys, which open a hole round the player
 // instead of dropping (the whole of them goes only while you're inside that building, on the CPU).
 const UPPER_Y: f32 = 3.05;
@@ -265,6 +272,10 @@ fn fragment(
     }
     let grey = dot(out.color.rgb, vec3(0.299, 0.587, 0.114));
     var unseen = mix(vec3(grey), out.color.rgb, 0.25) * world_params.fog_tint.rgb * (1.0 - world_params.fog_tint.w);
+    // Greying flattens pale and dark surfaces toward one tone (a driveway vanishes into its lawn):
+    // keep some of the difference in what they're made of (#81).
+    let albedo_lum = dot(pbr_input.material.base_color.rgb, vec3(0.299, 0.587, 0.114));
+    unseen *= clamp(pow(albedo_lum / UNSEEN_MID, UNSEEN_CONTRAST), 0.6, 1.5);
     // Rooms you can't see into are near-black, as if unlit, so their contents stay hidden. Walls,
     // windows and doors stay readable (just dimmed like everything else unseen), so you can still
     // tell a building's layout and where its ways in are.
@@ -282,6 +293,12 @@ fn fragment(
         out.color = vec4(mix(out.color.rgb, glow, 0.85 * night), max(out.color.a, night));
     }
     out.color = vec4(out.color.rgb * (1.0 - 0.55 * wood_fade), out.color.a);
+    if (wp.y < 0.1 && n.y > 0.9) {
+        let albedo = pbr_input.material.base_color.rgb;
+        let pale = smoothstep(0.3, 0.5, dot(albedo, vec3(0.299, 0.587, 0.114)));
+        let moon = albedo * pale * world_params.lights.x * PAINT_NIGHT * mix(0.4, 1.0, seen);
+        out.color = vec4(out.color.rgb + moon, out.color.a);
+    }
 
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
 }
