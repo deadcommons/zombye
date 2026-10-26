@@ -1,0 +1,132 @@
+#!/bin/bash
+# zwork: one agent per GitHub issue, each in its own git worktree, running in tmux on the build box.
+# See docs/remote-dev.md.
+#
+#   zwork start N [MODEL]   worktree ~/wt/N on branch issue-N (from origin/main), an OpenCode agent on it
+#   zwork ls                every issue being worked: running or finished, commits, pictures, last words
+#   zwork log N [LINES]     what the agent has said and done
+#   zwork say N MESSAGE     carry on the same agent session with a follow-up (review feedback)
+#   zwork shots N           the review pictures it rendered (~/wt/N/review/*.png)
+#   zwork stop N            stop the agent
+#   zwork rm N              stop it and remove the worktree and local branch (after the PR is merged)
+#
+# MODEL is a provider/model id (`opencode models github-copilot`); default $ZWORK_MODEL, else
+# github-copilot/claude-sonnet-5.5.
+set -euo pipefail
+REPO=${ZWORK_REPO:-$HOME/zombye}
+WT=${ZWORK_DIR:-$HOME/wt}
+GH_REPO=deadcommons/zombye
+MODEL_DEFAULT=${ZWORK_MODEL:-github-copilot/claude-sonnet-5.5}
+
+state() { echo "$WT/.zwork/$1"; }
+
+brief() {
+  local n=$1 dir=$2
+  cat <<EOF
+You are working on GitHub issue #$n of $GH_REPO, alone, in the git worktree $dir (branch issue-$n),
+on the remote build box. Other agents work on other issues in other worktrees at the same time.
+Read the repo's AGENTS.md and CLAUDE.md first, and docs/remote-dev.md for how this machine works.
+
+1. Read the issue: gh issue view $n -R $GH_REPO --comments. Set its board Status to In Progress
+   (CLAUDE.md says how).
+2. Do what the issue asks, and no more. Follow-up work you find becomes a new issue on the board.
+3. Test what you touched: cargo test (--release) for those crates, and cargo clippy without new warnings.
+   Builds share a compiler cache, so the first one is the slow one.
+4. If anything visible changed, build the client (cargo build --profile play -p zombye-client) and render
+   review pictures with zgpu --render-to review/<name>.png (offscreen, on the GPU box), choosing --at,
+   --zoom, --time, --angle, --hud, panels or a save so the change is in view. Look at each picture
+   yourself and fix what's wrong before finishing. review/ is not committed.
+5. Commit with "Refs #$n" in the message (the owner approves before the issue closes), push the
+   branch, and open a draft PR whose body says "Closes #$n", what changed, the tests run, and the
+   review pictures by name.
+6. Never merge, never push to main, never force-push, never touch another worktree.
+7. End with a short report: what changed, test results, the pictures, anything left undone.
+EOF
+}
+
+run_agent() { # N MODEL MESSAGE [SESSION]
+  local n=$1 model=$2 msg=$3 session=${4:-} s; s=$(state "$n")
+  mkdir -p "$s"
+  printf '%s' "$msg" > "$s/message"
+  cat > "$s/run.sh" <<EOF
+#!/bin/bash
+[ -f ~/.zombye-env ] && . ~/.zombye-env
+cd "$WT/$n"
+opencode run --auto --format json -m "$model" ${session:+-s "$session"} --title "issue $n" "\$(cat "$s/message")" >> "$s/log.jsonl" 2>> "$s/stderr.log"
+echo \$? > "$s/exit"
+EOF
+  chmod +x "$s/run.sh"
+  rm -f "$s/exit"
+  echo "$model" > "$s/model"
+  tmux new-session -d -s "zw-$n" "$s/run.sh"
+}
+
+running() { tmux has-session -t "zw-$1" 2>/dev/null; }
+
+session_of() { grep -m1 -o '"sessionID":"[^"]*"' "$(state "$1")/log.jsonl" 2>/dev/null | cut -d'"' -f4; }
+
+render_log() { # JSON events -> readable lines
+  jq -r 'if .type == "text" then .part.text
+         elif .type == "tool_use" then "→ \(.part.tool) \(.part.state.title // (.part.state.input | tostring | .[0:120]))"
+         elif .type == "error" then "ERROR \(.error // . | tostring | .[0:300])"
+         else empty end' 2>/dev/null
+}
+
+cmd=${1:-ls}; shift || true
+case $cmd in
+  start)
+    n=${1:?zwork start N [MODEL]}; model=${2:-$MODEL_DEFAULT}
+    running "$n" && { echo "zwork: issue $n already has an agent running (zwork log $n)" >&2; exit 1; }
+    gh issue view "$n" -R $GH_REPO --json state -q .state | grep -qx OPEN || { echo "zwork: #$n is not an open issue" >&2; exit 1; }
+    mkdir -p "$WT"
+    if [ ! -d "$WT/$n" ]; then
+      git -C "$REPO" fetch -q origin
+      git -C "$REPO" worktree add -q -b "issue-$n" "$WT/$n" origin/main
+    fi
+    grep -qx 'review/' "$REPO/.git/info/exclude" 2>/dev/null || echo 'review/' >> "$REPO/.git/info/exclude"
+    gh issue view "$n" -R $GH_REPO --json title -q .title > "$(mkdir -p "$(state "$n")" && state "$n")/title"
+    run_agent "$n" "$model" "$(brief "$n" "$WT/$n")"
+    echo "zwork: #$n started in $WT/$n with $model (zwork log $n)"
+    ;;
+  say)
+    n=${1:?zwork say N MESSAGE}; shift; msg=${*:?zwork say N MESSAGE}
+    running "$n" && { echo "zwork: #$n is still running; wait for it or zwork stop $n" >&2; exit 1; }
+    ses=$(session_of "$n"); [ -n "$ses" ] || { echo "zwork: no session for #$n yet" >&2; exit 1; }
+    run_agent "$n" "$(cat "$(state "$n")/model")" "$msg" "$ses"
+    echo "zwork: #$n continuing session $ses"
+    ;;
+  log)
+    n=${1:?zwork log N [LINES]}
+    render_log < "$(state "$n")/log.jsonl" | tail -n "${2:-40}"
+    [ -s "$(state "$n")/stderr.log" ] && { echo "--- stderr"; tail -5 "$(state "$n")/stderr.log"; } || true
+    ;;
+  shots)
+    n=${1:?zwork shots N}; ls -1 "$WT/$n"/review/*.png 2>/dev/null || echo "(no pictures yet)"
+    ;;
+  stop)
+    n=${1:?zwork stop N}; tmux kill-session -t "zw-$n" 2>/dev/null && echo "stopped #$n" || echo "#$n wasn't running"
+    ;;
+  rm)
+    n=${1:?zwork rm N}
+    tmux kill-session -t "zw-$n" 2>/dev/null || true
+    git -C "$REPO" worktree remove --force "$WT/$n" 2>/dev/null || true
+    git -C "$REPO" branch -D "issue-$n" 2>/dev/null || true
+    rm -rf "$(state "$n")"
+    echo "removed #$n"
+    ;;
+  ls)
+    printf '%-6s %-9s %-8s %-5s %-18s %s\n' ISSUE STATE COMMITS PICS MODEL TITLE
+    for d in "$WT"/[0-9]*; do
+      [ -d "$d" ] || continue
+      n=$(basename "$d"); s=$(state "$n")
+      if running "$n"; then st=running
+      elif [ -f "$s/exit" ]; then [ "$(cat "$s/exit")" = 0 ] && st=finished || st="failed:$(cat "$s/exit")"
+      else st=stopped; fi
+      ahead=$(git -C "$d" rev-list --count origin/main..HEAD 2>/dev/null || echo ?)
+      pics=$(ls "$d"/review/*.png 2>/dev/null | wc -l)
+      model=$(sed 's#.*/##' "$s/model" 2>/dev/null || echo -)
+      printf '#%-5s %-9s %-8s %-5s %-18s %s\n' "$n" "$st" "$ahead" "$pics" "$model" "$(cat "$s/title" 2>/dev/null)"
+    done
+    ;;
+  *) sed -n '2,15p' "$0"; exit 1 ;;
+esac

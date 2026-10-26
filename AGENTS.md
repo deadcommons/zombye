@@ -20,6 +20,7 @@ Work is tracked on GitHub, not in the repo: the
 | `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/items/recipes.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`, `data/street_props.ron`, `data/palette.ron`: every colour, for Blender assets and the generated world), models (`models/furniture/*.glb`, street props `models/street/*.glb`; the survivor's body `models/characters/survivor_01.glb` and its wearables `models/wearables/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), sound (`audio/sfx/*.wav`, `audio/ambience/*.wav`, listed in `data/sounds.ron`), later textures. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
 | `tools/blender/` | Python to build assets: run inside Blender, mesh builder, palette, renders, validation, GLB export (`zasset.py`, `palette.py`: reads `assets/data/palette.ron`, `build.py`), character clean-up, validation and skinned export (`zchar.py`), VAT bake for the crowd, outfit variants with palette swatches (`zvat.py`, `build.py -- --crowd`); plain Python, art-repo work folders and promotion (`artrepo.py`). | MIT OR Apache-2.0 |
 | `tools/audio/` | `synth.py`: the placeholder sounds, synthesised from noise, tones and filters (plain Python, deterministic). | MIT OR Apache-2.0 |
+| `tools/remote/` | The remote machines (see Remote machines): `setup.sh` (a build or GPU box), `zgpu` (the client on the GPU box, as if local), `zwork` (an agent per issue, each in its own worktree). | MIT OR Apache-2.0 |
 | `docs/` | Plan and design docs. | — |
 
 ## Rules
@@ -60,6 +61,17 @@ rules first).
 or Meshy (from an approved reference through four review gates the owner approves with screenshots) and
 the sizes they all share: storey 3.0 m, walls 0.16 m, doors 1 × 2.1 m, window sill 0.9 m and head 2.1 m,
 and the rest. Change a building number in the code, change it there too.
+
+## Remote machines
+
+Development can run on two remote Linux machines, driven from Claude on the owner's Mac:
+**[docs/remote-dev.md](docs/remote-dev.md)**. `zombye-build` (many cores, no GPU) holds one git worktree
+and one agent per issue (`~/wt/N`, branch `issue-N`, started with `zwork start N`): it builds, tests,
+commits with `Refs #N` and opens a draft PR. `zombye-gpu` only renders: `zgpu` runs the client there as if
+it ran locally, so `--render-to` and the MCP `screenshot` tool work from the build box. Review pictures go
+to `review/` in the worktree and come back to the Mac for the owner to approve; agents never merge, push
+to main or force-push. Playtesting, and asset work with Blender, Meshy or ElevenLabs (their keys are only
+on the Mac), stay on the Mac. If you are on `zombye-build`, you have no GPU and no display: render with `zgpu`.
 
 ## Commands
 

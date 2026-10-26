@@ -1,0 +1,67 @@
+#!/bin/bash
+# zgpu: run the zombye client on the GPU box, as if it ran here.
+#
+#   zgpu --render-to shot.png --load saves/autosave.zsave --zoom 30
+#   ZOMBYE_CLIENT=zgpu zombye-server --mcp     (the MCP screenshot tool renders on the GPU box)
+#
+# The client finds its assets by the absolute path of the checkout it was built in, so everything
+# is mirrored to the same absolute paths on the GPU box: the binary, that checkout's assets/, and
+# every file or folder named in the arguments (saves, --data). The --render-to / --screenshot
+# output is copied back here. Exit code, stdout and stderr are the client's.
+#
+# Which binary: $ZOMBYE_GPU_BIN, else the newest target/{release,play}/zombye of the git checkout
+# we're in (else ~/zombye).
+set -euo pipefail
+GPU=${ZOMBYE_GPU_HOST:-zombye-gpu}
+
+BIN=${ZOMBYE_GPU_BIN:-}
+if [ -z "$BIN" ]; then
+  root=$(git rev-parse --show-toplevel 2>/dev/null || echo "$HOME/zombye")
+  BIN=$(ls -t "$root"/target/release/zombye "$root"/target/play/zombye 2>/dev/null | head -1 || true)
+  [ -n "$BIN" ] || { echo "zgpu: no target/release/zombye or target/play/zombye in $root; build the client first" >&2; exit 1; }
+fi
+BIN=$(realpath "$BIN")
+# target/<profile>/zombye -> the checkout, whose assets/ the binary reads
+ASSETS=$(realpath "$(dirname "$BIN")/../../assets")
+
+# Files and folders named in the arguments go across at the same absolute path; outputs come back.
+args=() sync=("$ASSETS/") outs=()
+want_out=0
+for a in "$@"; do
+  if [ $want_out = 1 ]; then
+    a=$(realpath -m "$a"); outs+=("$a"); want_out=0
+  elif [ "$a" = --render-to ] || [ "$a" = --screenshot ]; then
+    want_out=1
+  elif [ -d "$a" ]; then
+    a=$(realpath "$a"); sync+=("$a/")
+  elif [ -f "$a" ]; then
+    a=$(realpath "$a"); sync+=("$a")
+  fi
+  args+=("$a")
+done
+
+# One connection for all of it (ControlMaster in ~/.ssh/config)
+for p in "${sync[@]}"; do
+  ssh "$GPU" mkdir -p "$(printf %q "$(dirname "${p%/}")")"
+  rsync -a --exclude source/ "$p" "$GPU:$(printf %q "${p%/}")$([ "${p: -1}" = / ] && echo /)"
+done
+ssh "$GPU" mkdir -p "$(printf %q "$(dirname "$BIN")")" "$(printf %q "$PWD")"
+for o in "${outs[@]}"; do ssh "$GPU" mkdir -p "$(printf %q "$(dirname "$o")")"; done
+rsync -a "$BIN" "$GPU:$(printf %q "$BIN")"
+
+cmd="cd $(printf %q "$PWD") && $(printf %q "$BIN")"
+for a in "${args[@]}"; do cmd+=" $(printf %q "$a")"; done
+set +e
+ssh "$GPU" "$cmd"
+code=$?
+set -e
+
+for o in "${outs[@]}"; do
+  base=${o%.png}
+  mkdir -p "$(dirname "$o")"
+  # several --screenshot-after times write PATH-1.png, PATH-2.png, ...
+  rsync -a "$GPU:$(printf %q "$o")" "$o" 2>/dev/null || true
+  rsync -a "$GPU:$(printf %q "$base")-[0-9]*.png" "$(dirname "$o")/" 2>/dev/null || true
+  ssh "$GPU" "rm -f $(printf %q "$o") $(printf %q "$base")-[0-9]*.png" 2>/dev/null || true
+done
+exit $code
