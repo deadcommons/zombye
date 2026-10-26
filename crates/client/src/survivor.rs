@@ -315,6 +315,9 @@ pub struct SurvivorAnim {
     last_tick: u64,
     pub(crate) hurt_at: f32,
     pub(crate) dead_since: Option<f32>,
+    /// Lying asleep rather than dead (#93), and when it woke (it gets up over `GET_UP_SECS`).
+    pub(crate) sleeping: bool,
+    pub(crate) woke_at: Option<f32>,
 }
 
 impl SurvivorAnim {
@@ -336,6 +339,8 @@ impl SurvivorAnim {
             last_tick: u64::MAX,
             hurt_at: -100.0,
             dead_since: None,
+            sleeping: false,
+            woke_at: None,
         }
     }
 }
@@ -428,15 +433,33 @@ fn animate_survivors(
         if events.0.iter().any(|e| e.kind == CombatEventKind::PlayerHurt && e.player == a.player) {
             a.hurt_at = now;
         }
-        // Asleep, a survivor lies on its back too (#11), and gets straight up when it wakes.
-        match (view.dead || view.asleep, a.dead_since) {
-            // Seen dead (or asleep) from the start: already lying there.
-            (true, None) => a.dead_since = Some(if fresh { now - 10.0 } else { now }),
-            (false, Some(_)) => {
+        // Asleep, a survivor lies still on its back (#93): its own short lie-down and get-up.
+        if view.dead {
+            if a.sleeping || a.woke_at.is_some() {
                 a.dead_since = None;
+            }
+            a.sleeping = false;
+            a.woke_at = None;
+            if a.dead_since.is_none() {
+                a.dead_since = Some(if fresh { now - 10.0 } else { now });
+            }
+        } else if view.asleep {
+            a.woke_at = None;
+            if a.dead_since.is_none() || !a.sleeping {
+                a.dead_since = Some(if fresh { now - 10.0 } else { now });
+            }
+            a.sleeping = true;
+        } else if a.dead_since.is_some() {
+            if a.sleeping && a.woke_at.is_none() {
+                a.woke_at = Some(now);
                 a.action = None;
             }
-            _ => {}
+            if !a.sleeping || a.woke_at.is_some_and(|w| now - w > SLEEP_GET_UP_SECS) {
+                a.dead_since = None;
+                a.sleeping = false;
+                a.woke_at = None;
+                a.action = None;
+            }
         }
 
         if let Some(pose) = options.pose.as_deref() {
@@ -504,6 +527,8 @@ fn hold_pose(a: &mut SurvivorAnim, pose: &str, step: f32, now: f32) {
         (a.run_w, a.sneak_w, a.move_w, a.cycle) = (run, sneak, moving, u);
         a.action = None;
         a.dead_since = None;
+        a.sleeping = false;
+        a.woke_at = None;
     };
     let act = |a: &mut SurvivorAnim, kind: ActionKind| {
         locomotion(a, 0.0, 0.0, 0.0);
@@ -524,6 +549,11 @@ fn hold_pose(a: &mut SurvivorAnim, pose: &str, step: f32, now: f32) {
         "dead" => {
             locomotion(a, 0.0, 0.0, 0.0);
             a.dead_since = Some(now - 10.0);
+        }
+        "sleep" => {
+            locomotion(a, 0.0, 0.0, 0.0);
+            a.dead_since = Some(now - 10.0);
+            a.sleeping = true;
         }
         _ => locomotion(a, 0.0, 0.0, 0.0),
     }
@@ -611,11 +641,52 @@ fn compose(a: &SurvivorAnim, now: f32, style: Style, armed: bool) -> SPose {
     ground(&mut pose);
     // Running has a moment in the air each step.
     pose.offset.y += a.run_w * a.move_w * 0.05 * (a.cycle * TAU * 2.0).sin().max(0.0);
-    if let Some(since) = a.dead_since {
-        let e = now - since;
-        pose = pose.blend(&dead(e), smooth(0.0, 0.12, e));
+    if let Some((lie, w)) = lying(a, now) {
+        pose = pose.blend(&lie, w);
     }
     pose
+}
+
+/// How long a sleeper takes to get up after waking.
+pub(crate) const SLEEP_GET_UP_SECS: f32 = 0.8;
+/// How long a sleeper takes to lie down.
+const SLEEP_LIE_SECS: f32 = 1.2;
+
+/// The pose a dead or sleeping survivor is in and how much of it to blend over its normal one.
+pub(crate) fn lying(a: &SurvivorAnim, now: f32) -> Option<(SPose, f32)> {
+    let since = a.dead_since?;
+    let e = now - since;
+    if !a.sleeping {
+        return Some((dead(e), smooth(0.0, 0.12, e)));
+    }
+    let w = match a.woke_at {
+        Some(wk) => 1.0 - smooth(0.0, SLEEP_GET_UP_SECS, now - wk),
+        None => smooth(0.0, 0.3, e),
+    };
+    Some((sleeping(e), w))
+}
+
+/// Lying still on the back, arms down by the sides, breathing slowly; lies down over a moment.
+pub(crate) fn sleeping(e: f32) -> SPose {
+    let k = smooth(0.0, SLEEP_LIE_SECS, e);
+    let mut end = SPose::default();
+    end.rot[HEAD] = rx(-0.05);
+    end.rot[UARM_L] = rz(0.12);
+    end.rot[UARM_R] = rz(-0.12);
+    end.rot[FARM_L] = rx(-0.1);
+    end.rot[FARM_R] = rx(-0.1);
+    end.rot[THIGH_L] = rz(0.06);
+    end.rot[THIGH_R] = rz(-0.06);
+    let mut p = idle(0.0, false).blend(&end, k);
+    let theta = -FRAC_PI_2 * k;
+    p.rot[PELVIS] = rx(theta);
+    let hip = rx(theta) * Vec3::new(0.0, HIP, 0.0);
+    p.offset = hip + Vec3::Y * (0.12 * k - HIP);
+    // A slow breath: the chest rises a little.
+    let b = (e * 1.3).sin() * k;
+    p.rot[TORSO] *= rx(-0.03 * b);
+    p.offset.y += 0.006 * b;
+    p
 }
 
 /// Push the pose down (or up) so the lowest point of either boot is on the ground.

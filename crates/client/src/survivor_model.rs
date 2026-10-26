@@ -637,9 +637,8 @@ impl SurvivorModel {
         let root = 0;
         // Running has a moment in the air each step.
         pose.t[root].y += a.run_w * a.move_w * 0.05 * (a.cycle * TAU * 2.0).sin().max(0.0);
-        if let Some(since) = a.dead_since {
-            let e = now - since;
-            pose = pose.blend(&self.retarget.apply(body, &survivor::dead(e)), smooth(0.0, 0.12, e));
+        if let Some((lie, w)) = survivor::lying(a, now) {
+            pose = pose.blend(&self.retarget.apply(body, &lie), w);
         }
         pose
     }
