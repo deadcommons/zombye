@@ -4,11 +4,13 @@
 //! churches and big offices) with a commercial strip either side of it (medium blocks of shops and
 //! offices on narrow lots along the main street, houses behind, sometimes an alley between). The
 //! blocks across the main street don't line up with these, so most side streets meet it at a
-//! T-junction. Long streets run from the ends of the strip out to the forest, and the residential
-//! districts round the core are split again and again by side streets into smaller blocks of varied
-//! sizes and shapes (T-junctions, offset crossings, streets that stop at the forest, now and then a
-//! long block), some with a cul-de-sac: a dead end with a turning circle and houses round it. Lots
-//! that back onto the forest are bigger and sparser. One street leaves north and one south.
+//! T-junction. The core blocks of each side come in runs of different depths, each with its own back
+//! street, so the back streets step; streets run out to the forest between runs and from the ends of
+//! the row. The residential districts round the core are split again and again by side streets into
+//! smaller blocks of varied sizes and shapes (T-junctions, now and then a crossing, streets that stop
+//! at the forest, now and then a long block, dog-legs, L-turns and crescents), some with a cul-de-sac:
+//! a dead end with a turning circle and houses round it. Lots that back onto the forest are bigger and
+//! sparser. One street leaves north and one south.
 //!
 //! Templates are chosen by [`BuildingKind`] and footprint: houses on house lots, shops and offices on
 //! the strip, civic buildings (and shops or offices too big for the strip) on landmark lots. A
@@ -63,7 +65,7 @@ const TWO_ROWS: i32 = 44;
 const ONE_ROW: i32 = 30;
 /// A cul-de-sac block: this wide along the street it leaves from (at least, at most) and this deep.
 const CUL_WIDTH: (i32, i32) = (56, 92);
-const CUL_DEPTH: (i32, i32) = (58, 120);
+const CUL_DEPTH: (i32, i32) = (52, 120);
 /// The lot at the end of a cul-de-sac, beyond the turning circle.
 const CUL_END_LOT: i32 = 24;
 
@@ -152,6 +154,8 @@ pub struct Plan {
     pub landmarks: Vec<(IVec2, IVec2)>,
     /// Streets that stop at the forest (the roads out of town aren't counted).
     pub dead_ends: usize,
+    /// Bent streets: dog-legs, L-turns and crescents.
+    pub bends: usize,
 }
 
 pub struct Generated {
@@ -275,6 +279,100 @@ impl Region {
     fn street(&self, s: Side) -> Option<i32> {
         self.streets[si(s)]
     }
+
+    /// Side `s` is the backs of other lots: no street and not the edge of town.
+    fn ends_blind(&self, s: Side) -> bool {
+        self.street(s).is_none() && !self.edge[si(s)]
+    }
+}
+
+/// The chance that a region split by a street gets a bent one (where one fits).
+const BENT_CHANCE: f32 = 0.6;
+/// The shallowest piece a bent split leaves: one row of lots.
+const ROW_MIN: i32 = 24;
+
+/// The shapes of bent street [`TownBuilder::bent_split`] draws.
+#[derive(Clone, Copy, Debug)]
+enum Bend {
+    Jog,
+    L,
+    Crescent,
+}
+
+/// A side of a region in a [`Frame`]: the ends across its long side (S0 at s = 0, S1) and its long
+/// sides (T0 at t = 0, T1).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum FSide {
+    S0,
+    S1,
+    T0,
+    T1,
+}
+
+/// What a piece of a bent split has on one side: what the region had there, a new street, or the
+/// backs of the lots of another piece.
+#[derive(Clone, Copy, Debug)]
+enum PieceSide {
+    Keep,
+    Street,
+    Back,
+}
+use PieceSide::{Back, Keep};
+
+/// A region seen along its longer side: `s` runs along it (`0..long`), `t` across (`0..short`),
+/// either flipped, so one bent street is drawn every way round.
+#[derive(Clone, Copy, Debug)]
+struct Frame {
+    r: Rect,
+    long_x: bool,
+    flip_s: bool,
+    flip_t: bool,
+}
+
+impl Frame {
+    /// (long, short).
+    fn len(&self) -> (i32, i32) {
+        if self.long_x { (self.r.size.x, self.r.size.y) } else { (self.r.size.y, self.r.size.x) }
+    }
+
+    /// The tiles `s0..s1` along, `t0..t1` across (either may reach outside the region).
+    fn rect(&self, s0: i32, s1: i32, t0: i32, t1: i32) -> Rect {
+        let (ll, ls) = self.len();
+        let (s0, s1) = if self.flip_s { (ll - s1, ll - s0) } else { (s0, s1) };
+        let (t0, t1) = if self.flip_t { (ls - t1, ls - t0) } else { (t0, t1) };
+        if self.long_x {
+            Rect::new(self.r.min + IVec2::new(s0, t0), IVec2::new(s1 - s0, t1 - t0))
+        } else {
+            Rect::new(self.r.min + IVec2::new(t0, s0), IVec2::new(t1 - t0, s1 - s0))
+        }
+    }
+
+    fn side(&self, f: FSide) -> Side {
+        match (f, self.long_x) {
+            (FSide::S0, true) => if self.flip_s { Side::E } else { Side::W },
+            (FSide::S1, true) => if self.flip_s { Side::W } else { Side::E },
+            (FSide::T0, true) => if self.flip_t { Side::S } else { Side::N },
+            (FSide::T1, true) => if self.flip_t { Side::N } else { Side::S },
+            (FSide::S0, false) => if self.flip_s { Side::S } else { Side::N },
+            (FSide::S1, false) => if self.flip_s { Side::N } else { Side::S },
+            (FSide::T0, false) => if self.flip_t { Side::E } else { Side::W },
+            (FSide::T1, false) => if self.flip_t { Side::W } else { Side::E },
+        }
+    }
+
+    /// The region for `(s0, s1, t0, t1)` with what's on each of its sides.
+    fn piece(&self, reg: &Region, (s0, s1, t0, t1): (i32, i32, i32, i32), sides: [(FSide, PieceSide); 4]) -> Region {
+        let mut out = Region { r: self.rect(s0, s1, t0, t1), streets: [None; 4], edge: [false; 4] };
+        for (f, what) in sides {
+            let side = si(self.side(f));
+            (out.streets[side], out.edge[side]) = match what {
+                Keep => (reg.streets[side], reg.edge[side]),
+                PieceSide::Street => (Some(SIDEWALK), false),
+                Back => (None, false),
+            };
+        }
+        out
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -354,9 +452,10 @@ fn core_row(west: &[i32], civic: &[(i32, CoreUse)], east: &[i32]) -> CoreRow {
 }
 
 /// Make the commercial blocks of one side of the main street clearly line up with the other side's
-/// or clearly not (no jogs of a few metres where two side streets nearly meet across it).
-fn offset_from(other: &[i32], ours: &mut [i32]) {
-    let (mut a, mut b) = (0, 0);
+/// or clearly not (no jogs of a few metres where two side streets nearly meet across it), the two
+/// rows starting `start_other` and `start_ours` from the civic district's west edge.
+fn offset_from(other: &[i32], ours: &mut [i32], start_other: i32, start_ours: i32) {
+    let (mut a, mut b) = (start_other, start_ours);
     for (o, w) in other.iter().zip(ours.iter_mut()) {
         a += o;
         b += *w;
@@ -365,6 +464,50 @@ fn offset_from(other: &[i32], ours: &mut [i32]) {
         *w += fix;
         b += fix;
     }
+}
+
+/// A run of core blocks along one side of the main street (`first..=last` of the row's blocks) with
+/// one depth and one back street; the cross streets between runs carry on to the forest.
+#[derive(Clone, Copy, Debug)]
+struct CoreRun {
+    first: usize,
+    last: usize,
+    depth: i32,
+}
+
+/// The chance that a cross street between two core blocks carries on to the forest, ending a run.
+const THROUGH_CHANCE: f32 = 0.4;
+/// Back streets either side of a street to the forest step by at least this.
+const MIN_STEP: i32 = 12;
+
+/// Split a row of core blocks into runs and give each a depth: blocks of the civic district deep
+/// enough for its landmark lots, neighbouring runs clearly different depths (else one run). No run
+/// ends at a cross street in line with one of `avoid` (civic-relative).
+fn core_runs(rng: &mut Rng, row: &CoreRow, avoid: &[i32]) -> Vec<CoreRun> {
+    let n = row.0.len();
+    let mut runs: Vec<CoreRun> = Vec::new();
+    let mut first = 0;
+    for i in 0..n {
+        // (Never in line with a street out to the forest across the main street: no long
+        // straight streets from forest to forest.)
+        if i + 1 < n && (rng.f32() >= THROUGH_CHANCE || avoid.iter().any(|&x| (x - row.1[i]).abs() <= 2)) {
+            continue;
+        }
+        let civic = row.0[first..=i].iter().any(|b| !matches!(b.2, CoreUse::Commercial));
+        let (lo, hi) = if civic { (48, 62) } else { (44, 62) };
+        let options: Vec<i32> = (lo..=hi).filter(|&d| runs.last().is_none_or(|p| (d - p.depth).abs() >= MIN_STEP)).collect();
+        if options.is_empty() {
+            // No depth steps cleanly from the last run's: carry it on instead.
+            let prev = runs.last_mut().unwrap();
+            prev.last = i;
+            prev.depth = prev.depth.max(lo);
+        } else {
+            let depth = options[rng.below(options.len() as u32) as usize];
+            runs.push(CoreRun { first, last: i, depth });
+        }
+        first = i + 1;
+    }
+    runs
 }
 
 /// The town with no street props (see [`generate_with`]).
@@ -383,29 +526,58 @@ pub fn generate_with(config: &GenConfig, templates: &[BuildingTemplate], props: 
     let landmarks: Vec<&BuildingTemplate> = templates.iter().filter(|t| matches!(t.kind, BuildingKind::Civic) || (is_commercial(t) && !fits_row(t))).collect();
     let offices: Vec<&BuildingTemplate> = templates.iter().filter(|t| matches!(t.kind, BuildingKind::Office)).collect();
 
-    // The core, west to east along the main street: commercial blocks, the civic district (north of
-    // the street a landmark block beside the square, south of it one wide block of two landmark
-    // lots), commercial blocks.
+    // The core, west to east along the main street: commercial blocks, the civic district,
+    // commercial blocks, with the civic district anywhere along the row. North of the main street
+    // the civic district is the square with a landmark lot beside it (now and then one each side,
+    // or none); south of it one wide block of two landmark lots, or a single lot.
     let k = config.commercial_blocks.clamp(0, 16);
-    let k_west = k / 2 + if k % 2 == 1 { rng.below(2) as i32 } else { 0 };
+    let k_west = rng.below(k as u32 + 1) as i32;
     let k_east = k - k_west;
-    let landmark_w = 42 + rng.below(5) as i32;
+    let landmark_w = |rng: &mut Rng| 42 + rng.below(5) as i32;
     let square_w = 40 + rng.below(7) as i32;
     let square_east = rng.f32() < 0.5;
-    let civic_w = landmark_w + CORRIDOR + square_w;
-    let north_civic = if square_east {
-        [(landmark_w, CoreUse::Landmark(Side::E)), (square_w, CoreUse::Square)]
+    let roll = rng.f32();
+    let north_civic: Vec<(i32, CoreUse)> = if roll < 0.2 {
+        vec![(landmark_w(&mut rng), CoreUse::Landmark(Side::E)), (square_w, CoreUse::Square), (landmark_w(&mut rng), CoreUse::Landmark(Side::W))]
+    } else if roll < 0.85 {
+        let l = landmark_w(&mut rng);
+        if square_east { vec![(l, CoreUse::Landmark(Side::E)), (square_w, CoreUse::Square)] } else { vec![(square_w, CoreUse::Square), (l, CoreUse::Landmark(Side::W))] }
     } else {
-        [(square_w, CoreUse::Square), (landmark_w, CoreUse::Landmark(Side::W))]
+        vec![(square_w, CoreUse::Square)]
     };
-    let south_civic = [(civic_w, CoreUse::LandmarkPair)];
+    let north_w = north_civic.iter().map(|c| c.0).sum::<i32>() + CORRIDOR * (north_civic.len() as i32 - 1);
+    let pair = rng.f32() < 0.65;
+    let (min_w, max_w) = if pair { (86, 98) } else { (46, 54) };
+    let mut south_w = min_w + rng.below((max_w - min_w + 1) as u32) as i32;
+    // The south side's civic district starts in line with the north side's, or clearly along
+    // from it; its east end too.
+    let south_shift = if rng.f32() < 0.3 { 0 } else { (14 + rng.below(9) as i32) * if rng.f32() < 0.5 { -1 } else { 1 } };
+    let east_d = south_shift + south_w - north_w;
+    if east_d != 0 && east_d.abs() < 14 {
+        let target = north_w - south_shift;
+        south_w = [target, target - 14, target + 14].into_iter().find(|w| (min_w..=max_w + 14).contains(w)).unwrap_or(south_w);
+    }
+    let south_civic = [(south_w, if pair { CoreUse::LandmarkPair } else { CoreUse::Landmark(Side::N) })];
     let mut widths = |n: i32| -> Vec<i32> { (0..n).map(|_| 50 + rng.below(21) as i32).collect() };
     let (n_west, n_east) = (widths(k_west), widths(k_east));
     let (mut s_west, mut s_east) = (widths(k_west), widths(k_east));
-    offset_from(&n_west, &mut s_west);
-    offset_from(&n_east, &mut s_east);
+    offset_from(&n_west, &mut s_west, 0, -south_shift);
+    offset_from(&n_east, &mut s_east, north_w, south_shift + south_w);
     let north = core_row(&n_west, &north_civic, &n_east);
-    let south = core_row(&s_west, &south_civic, &s_east);
+    let mut south = core_row(&s_west, &south_civic, &s_east);
+    for b in &mut south.0 {
+        b.0 += south_shift;
+    }
+    for x in &mut south.1 {
+        *x += south_shift;
+    }
+    (south.2, south.3) = (south.2 + south_shift, south.3 + south_shift);
+    let north_runs = core_runs(&mut rng, &north, &[]);
+    let mut out_north: Vec<i32> = north_runs[..north_runs.len() - 1].iter().map(|r| north.1[r.last]).collect();
+    out_north.extend([north.2, north.3]);
+    let south_runs = core_runs(&mut rng, &south, &out_north);
+    let deepest = |runs: &[CoreRun]| runs.iter().map(|r| r.depth).max().unwrap_or(48);
+    let (depth_n, depth_s) = (deepest(&north_runs), deepest(&south_runs));
 
     // The town round it: at least a strip of houses beyond each end of the core, wider as the
     // nominal size allows, the core off centre by a little.
@@ -414,8 +586,6 @@ pub fn generate_with(config: &GenConfig, templates: &[BuildingTemplate], props: 
     let width = (hi - lo).max(blocks.x * 74 + rng.below(21) as i32);
     let extra = width - (hi - lo);
     let west_extra = extra * (35 + rng.below(31) as i32) / 100;
-    let depth_n = 48 + rng.below(7) as i32;
-    let depth_s = 48 + rng.below(7) as i32;
     let half = |rng: &mut Rng, depth: i32| (blocks.y * 33 - 6 + rng.below(26) as i32).max(depth + CORRIDOR + ONE_ROW + 4);
     let (half_n, half_s) = (half(&mut rng, depth_n), half(&mut rng, depth_s));
     let total = IVec2::new(width, half_n + MAIN_CORRIDOR + half_s);
@@ -430,30 +600,64 @@ pub fn generate_with(config: &GenConfig, templates: &[BuildingTemplate], props: 
     let civic_x = town_min.x - (lo - west_extra);
     let main_y = town_min.y + half_n;
 
-    // The residential parts of each side of the main street: beyond each end of its row of core
-    // blocks (from the main street to the forest) and behind it (from the back street to the
-    // forest). Each stops short of the edge of town by its own few metres, the woods coming up to
-    // it, so the edge is ragged.
-    let mut halves = Vec::new();
+    let mut town = TownBuilder {
+        map,
+        rng,
+        houses,
+        shops,
+        landmarks,
+        offices,
+        homes: Vec::new(),
+        streets: Vec::new(),
+        plan: Plan::default(),
+        town_min,
+        town_max,
+        last_fallback: None,
+        fronts: Fronts::default(),
+        elbows: Vec::new(),
+    };
+    town.add_street(Street {
+        r: Rect::new(IVec2::new(town_min.x, main_y), IVec2::new(total.x, MAIN_CORRIDOR)),
+        horizontal: true,
+        road: MAIN_ROAD,
+        sidewalk: MAIN_SIDEWALK,
+        line: Line::Solid,
+        open: [false; 2],
+    });
+
+    // Each side of the main street: its row of core blocks, run by run, each run with its own depth
+    // and a back street behind it; streets from the main street out to the forest at the ends of
+    // the row and between runs; and the residential parts of the side: beyond each end of the row
+    // (from the main street to the forest) and behind each run (from its back street to the
+    // forest). Each part stops short of the edge of town by its own few metres, the woods coming up
+    // to it, so the edge is ragged.
+    let mut core = [(IVec2::ZERO, IVec2::ZERO); 2];
+    let mut core_blocks = Vec::new();
+    let mut regions = Vec::new();
     let mut wild = Vec::new();
-    for (i, (row, depth)) in [(&north, depth_n), (&south, depth_s)].into_iter().enumerate() {
+    for (i, (row, runs)) in [(&north, &north_runs), (&south, &south_runs)].into_iter().enumerate() {
         let is_north = i == 0;
-        let (row_y, back_y) = if is_north { (main_y - depth, main_y - depth - CORRIDOR) } else { (main_y + MAIN_CORRIDOR, main_y + MAIN_CORRIDOR + depth) };
         let (half_y0, half_y1) = if is_north { (town_min.y, main_y) } else { (main_y + MAIN_CORRIDOR, town_max.y) };
+        let h = half_y1 - half_y0;
         let (west_end, east_end) = (civic_x + row.2, civic_x + row.3);
         let main_side = if is_north { Side::S } else { Side::N };
-        let (by0, by1) = if is_north { (half_y0, back_y) } else { (back_y + CORRIDOR, half_y1) };
-        let h = half_y1 - half_y0;
-        let parts = [
-            (Rect::new(IVec2::new(town_min.x, half_y0), IVec2::new(west_end - town_min.x, h)), vec![(main_side, MAIN_SIDEWALK), (Side::E, SIDEWALK)], TWO_ROWS + SIDE_CORRIDOR + ONE_ROW),
-            (Rect::new(IVec2::new(west_end + CORRIDOR, by0), IVec2::new(east_end - west_end - CORRIDOR, by1 - by0)), vec![(main_side, SIDEWALK), (Side::E, SIDEWALK), (Side::W, SIDEWALK)], ONE_ROW + 4),
-            (Rect::new(IVec2::new(east_end + CORRIDOR, half_y0), IVec2::new(town_max.x - east_end - CORRIDOR, h)), vec![(main_side, MAIN_SIDEWALK), (Side::W, SIDEWALK)], TWO_ROWS + SIDE_CORRIDOR + ONE_ROW),
-        ];
-        let mut regions = Vec::new();
-        let mut trims = [0; 3];
-        for (k, (mut r, streets, keep)) in parts.into_iter().enumerate() {
-            let trim = (rng.below(17) as i32).min((r.size.y - keep).max(0));
-            trims[k] = trim;
+        // Where a run of depth `d` starts (its main-street side) and its back street.
+        let row_y = |d: i32| if is_north { main_y - d } else { main_y + MAIN_CORRIDOR };
+        let back_y = |d: i32| if is_north { main_y - d - CORRIDOR } else { main_y + MAIN_CORRIDOR + d };
+        let mut through = vec![west_end];
+        through.extend(runs[..runs.len() - 1].iter().map(|r| civic_x + row.1[r.last]));
+        through.push(east_end);
+        let mut parts = vec![(Rect::new(IVec2::new(town_min.x, half_y0), IVec2::new(west_end - town_min.x, h)), vec![(main_side, MAIN_SIDEWALK), (Side::E, SIDEWALK)], TWO_ROWS + SIDE_CORRIDOR + ONE_ROW)];
+        for (k, r) in runs.iter().enumerate() {
+            let (x0, x1) = (through[k] + CORRIDOR, through[k + 1]);
+            let (by0, by1) = if is_north { (half_y0, back_y(r.depth)) } else { (back_y(r.depth) + CORRIDOR, half_y1) };
+            parts.push((Rect::new(IVec2::new(x0, by0), IVec2::new(x1 - x0, by1 - by0)), vec![(main_side, SIDEWALK), (Side::E, SIDEWALK), (Side::W, SIDEWALK)], ONE_ROW + 4));
+        }
+        parts.push((Rect::new(IVec2::new(east_end + CORRIDOR, half_y0), IVec2::new(town_max.x - east_end - CORRIDOR, h)), vec![(main_side, MAIN_SIDEWALK), (Side::W, SIDEWALK)], TWO_ROWS + SIDE_CORRIDOR + ONE_ROW));
+        let mut trims = Vec::new();
+        for (mut r, streets, keep) in parts {
+            let trim = (town.rng.below(17) as i32).min((r.size.y - keep).max(0));
+            trims.push(trim);
             r.size.y -= trim;
             if is_north {
                 r.min.y += trim;
@@ -471,70 +675,41 @@ pub fn generate_with(config: &GenConfig, templates: &[BuildingTemplate], props: 
             }
             regions.push(reg);
         }
-        halves.push((is_north, row, depth, row_y, back_y, half_y0, half_y1, west_end, east_end, regions, trims));
-    }
-
-    let mut town = TownBuilder {
-        map,
-        rng,
-        houses,
-        shops,
-        landmarks,
-        offices,
-        homes: Vec::new(),
-        streets: Vec::new(),
-        plan: Plan::default(),
-        town_min,
-        town_max,
-        last_fallback: None,
-        fronts: Fronts::default(),
-    };
-    town.add_street(Street {
-        r: Rect::new(IVec2::new(town_min.x, main_y), IVec2::new(total.x, MAIN_CORRIDOR)),
-        horizontal: true,
-        road: MAIN_ROAD,
-        sidewalk: MAIN_SIDEWALK,
-        line: Line::Solid,
-        open: [false; 2],
-    });
-
-    // Each side of the main street: its row of core blocks with a back street behind them, and the
-    // long streets at the ends of the row out to where the blocks either side of them end.
-    let mut core = [(IVec2::ZERO, IVec2::ZERO); 2];
-    let mut core_blocks = Vec::new();
-    let mut regions = Vec::new();
-    for (i, (is_north, row, depth, row_y, back_y, half_y0, half_y1, west_end, east_end, parts, trims)) in halves.into_iter().enumerate() {
-        for (x, trim) in [(west_end, trims[0].min(trims[1])), (east_end, trims[1].min(trims[2]))] {
+        for (k, &x) in through.iter().enumerate() {
+            let trim = trims[k].min(trims[k + 1]);
             let r = if is_north {
-                Rect::new(IVec2::new(x, half_y0 + trim), IVec2::new(CORRIDOR, half_y1 - half_y0 - trim + MAIN_SIDEWALK))
+                Rect::new(IVec2::new(x, half_y0 + trim), IVec2::new(CORRIDOR, h - trim + MAIN_SIDEWALK))
             } else {
-                Rect::new(IVec2::new(x, half_y0 - MAIN_SIDEWALK), IVec2::new(CORRIDOR, half_y1 - half_y0 - trim + MAIN_SIDEWALK))
+                Rect::new(IVec2::new(x, half_y0 - MAIN_SIDEWALK), IVec2::new(CORRIDOR, h - trim + MAIN_SIDEWALK))
             };
             town.add_street(Street { r, horizontal: false, road: ROAD, sidewalk: SIDEWALK, line: Line::Dashed, open: [is_north, !is_north] });
         }
-        town.add_street(Street {
-            r: Rect::new(IVec2::new(west_end + CORRIDOR - SIDEWALK, back_y), IVec2::new(east_end - west_end - CORRIDOR + 2 * SIDEWALK, CORRIDOR)),
-            horizontal: true,
-            road: ROAD,
-            sidewalk: SIDEWALK,
-            line: Line::Dashed,
-            open: [false; 2],
-        });
-        // Cross streets between the core blocks, from the main street to the back street.
-        for &cx in &row.1 {
-            let r = if is_north {
-                Rect::new(IVec2::new(civic_x + cx, back_y + CORRIDOR - SIDEWALK), IVec2::new(CORRIDOR, depth + SIDEWALK + MAIN_SIDEWALK))
-            } else {
-                Rect::new(IVec2::new(civic_x + cx, row_y - MAIN_SIDEWALK), IVec2::new(CORRIDOR, depth + SIDEWALK + MAIN_SIDEWALK))
-            };
-            town.add_street(Street { r, horizontal: false, road: ROAD, sidewalk: SIDEWALK, line: Line::Dashed, open: [false; 2] });
+        for (k, run) in runs.iter().enumerate() {
+            let (x0, x1, d) = (through[k], through[k + 1], run.depth);
+            town.add_street(Street {
+                r: Rect::new(IVec2::new(x0 + CORRIDOR - SIDEWALK, back_y(d)), IVec2::new(x1 - x0 - CORRIDOR + 2 * SIDEWALK, CORRIDOR)),
+                horizontal: true,
+                road: ROAD,
+                sidewalk: SIDEWALK,
+                line: Line::Dashed,
+                open: [false; 2],
+            });
+            // Cross streets between its blocks, from the main street to its back street.
+            for &cx in &row.1[run.first..run.last] {
+                let r = if is_north {
+                    Rect::new(IVec2::new(civic_x + cx, back_y(d) + CORRIDOR - SIDEWALK), IVec2::new(CORRIDOR, d + SIDEWALK + MAIN_SIDEWALK))
+                } else {
+                    Rect::new(IVec2::new(civic_x + cx, row_y(d) - MAIN_SIDEWALK), IVec2::new(CORRIDOR, d + SIDEWALK + MAIN_SIDEWALK))
+                };
+                town.add_street(Street { r, horizontal: false, road: ROAD, sidewalk: SIDEWALK, line: Line::Dashed, open: [false; 2] });
+            }
+            for &(x, w, u) in &row.0[run.first..=run.last] {
+                core_blocks.push((Rect::new(IVec2::new(civic_x + x, row_y(d)), IVec2::new(w, d)), u, is_north));
+            }
         }
-        for &(x, w, u) in &row.0 {
-            core_blocks.push((Rect::new(IVec2::new(civic_x + x, row_y), IVec2::new(w, depth)), u, is_north));
-        }
-        let (cy0, cy1) = if is_north { (row_y, main_y + MAIN_CORRIDOR) } else { (main_y, back_y) };
+        let d = deepest(runs);
+        let (cy0, cy1) = if is_north { (main_y - d, main_y + MAIN_CORRIDOR) } else { (main_y, main_y + MAIN_CORRIDOR + d) };
         core[i] = (IVec2::new(west_end + CORRIDOR, cy0), IVec2::new(east_end, cy1));
-        regions.extend(parts);
     }
 
     // Split the residential parts into blocks with side streets.
@@ -567,6 +742,9 @@ pub fn generate_with(config: &GenConfig, templates: &[BuildingTemplate], props: 
         paint_street(&mut town.map, &s);
     }
     paint_lines(&mut town.map, &town.streets);
+    for &(r, outer) in &town.elbows {
+        paint_elbow(&mut town.map, r, outer);
+    }
     for (r, u, is_north) in core_blocks {
         town.core_block(r, u, is_north);
     }
@@ -619,6 +797,9 @@ struct TownBuilder<'a> {
     last_fallback: Option<u8>,
     /// Houses' garden paths and shops' fronts, for the street props.
     fronts: Fronts,
+    /// The turns of bent streets: their corner squares and the two sides on the outside of each
+    /// (see [`paint_elbow`]).
+    elbows: Vec<(Rect, [Side; 2])>,
 }
 
 impl TownBuilder<'_> {
@@ -635,10 +816,7 @@ impl TownBuilder<'_> {
                 continue;
             }
             match self.split(&reg) {
-                Some((a, b)) => {
-                    stack.push(b);
-                    stack.push(a);
-                }
+                Some(pieces) => stack.extend(pieces.into_iter().rev()),
                 None => leaves.push(reg),
             }
         }
@@ -646,14 +824,24 @@ impl TownBuilder<'_> {
 
     /// Split a region with a street across its longer side, if it's too big for a block (or now and
     /// then if it's merely big: some blocks stay long). Each half keeps room for its rows of lots.
-    fn split(&mut self, reg: &Region) -> Option<(Region, Region)> {
+    fn split(&mut self, reg: &Region) -> Option<Vec<Region>> {
         let (w, h) = (reg.r.size.x, reg.r.size.y);
         let (long, short) = (w.max(h), w.min(h));
-        if !(long > 104 || short > 78 || (long > 80 && self.rng.f32() < 0.5)) {
+        if !(long > 104 || short > 72 || (long > 80 && self.rng.f32() < 0.5)) {
             return None;
+        }
+        if self.rng.f32() < BENT_CHANCE
+            && let Some(pieces) = self.bent_split(reg)
+        {
+            return Some(pieces);
         }
         let vertical = w >= h; // a north–south street, splitting it west and east
         let (lo, hi) = if vertical { (Side::W, Side::E) } else { (Side::N, Side::S) };
+        let (end_a, end_b) = if vertical { (Side::N, Side::S) } else { (Side::W, Side::E) };
+        // A street never stops against the backs of other lots: only at a street or the forest.
+        if reg.ends_blind(end_a) || reg.ends_blind(end_b) {
+            return None;
+        }
         let need = |s: Side| if reg.street(s).is_some() { TWO_ROWS } else { ONE_ROW };
         let (min_lo, max_at) = (need(lo), if vertical { w } else { h } - SIDE_CORRIDOR - need(hi));
         if max_at < min_lo {
@@ -676,10 +864,128 @@ impl TownBuilder<'_> {
         a.edge[si(hi)] = false;
         b.streets[si(lo)] = Some(SIDEWALK);
         b.edge[si(lo)] = false;
-        let (end_a, end_b) = if vertical { (Side::N, Side::S) } else { (Side::W, Side::E) };
         let open = [reg.street(end_a).is_none(), reg.street(end_b).is_none()];
         self.add_street(Street { r: street, horizontal: !vertical, road: SIDE_ROAD, sidewalk: SIDEWALK, line: Line::Dashed, open });
-        Some((a, b))
+        Some(vec![a, b])
+    }
+
+    /// Split a long region with a bent street instead of a straight one, where it fits: a dog-leg
+    /// (across it with a jog part way), an L (in from one end, turning to a long side), or a
+    /// crescent (in from a long side and back out to it round a block). The pieces left are
+    /// rectangles; where two meet with no street between them, neither has lots facing that way
+    /// (it's the backs of other lots), and no street is ever split off against such a side.
+    fn bent_split(&mut self, reg: &Region) -> Option<Vec<Region>> {
+        let mut forms = [Bend::Jog, Bend::L, Bend::Crescent];
+        for i in (1..forms.len()).rev() {
+            forms.swap(i, self.rng.below(i as u32 + 1) as usize);
+        }
+        let first_flip = self.rng.below(4);
+        for form in forms {
+            for k in 0..4 {
+                let f = (first_flip + k) % 4;
+                let frame = Frame { r: reg.r, long_x: reg.r.size.x >= reg.r.size.y, flip_s: f & 1 == 1, flip_t: f & 2 == 2 };
+                if let Some(pieces) = self.bend(reg, frame, form) {
+                    return Some(pieces);
+                }
+            }
+        }
+        None
+    }
+
+    /// One bent street through `reg`, seen in `frame` (see [`Frame`]): its pieces, or `None` if the
+    /// region doesn't fit this form this way round.
+    fn bend(&mut self, reg: &Region, fr: Frame, form: Bend) -> Option<Vec<Region>> {
+        use FSide::*;
+        let (ll, ls) = fr.len();
+        let c = SIDE_CORRIDOR;
+        let street = |f: FSide| reg.street(fr.side(f));
+        let blind = |f: FSide| reg.ends_blind(fr.side(f));
+        let pick = |rng: &mut Rng, lo: i32, hi: i32| (hi >= lo).then(|| lo + rng.below((hi - lo + 1) as u32) as i32);
+        let mut pieces = Vec::new();
+        let mut streets = Vec::new();
+        // Each turn's corner square, and the two sides of it on the outside of the turn.
+        let mut elbows: Vec<(Rect, [FSide; 2])> = Vec::new();
+        match form {
+            Bend::Jog => {
+                // Across the region from T0 to T1, shifted along it by 14-30 m half way: streets
+                // along both, which the pieces either side of the jog face.
+                if blind(T0) || blind(T1) || !(60..=100).contains(&ls) {
+                    return None;
+                }
+                let m = pick(&mut self.rng, ROW_MIN, ls - c - ROW_MIN)?;
+                let a1 = pick(&mut self.rng, 36, ll - c - 36 - 14)?;
+                let a2 = pick(&mut self.rng, a1 + 14, (a1 + 30).min(ll - c - 36))?;
+                streets.push((fr.rect(a1, a1 + c, -street(T0).unwrap_or(0), m + c), false));
+                streets.push((fr.rect(a1, a2 + c, m, m + c), true));
+                streets.push((fr.rect(a2, a2 + c, m, ls + street(T1).unwrap_or(0)), false));
+                elbows.push((fr.rect(a1, a1 + c, m, m + c), [T1, S0]));
+                elbows.push((fr.rect(a2, a2 + c, m, m + c), [S1, T0]));
+                pieces.push(fr.piece(reg, (0, a1, 0, m + c), [(S0, Keep), (S1, PieceSide::Street), (T0, Keep), (T1, Back)]));
+                pieces.push(fr.piece(reg, (a1 + c, ll, 0, m), [(S0, PieceSide::Street), (S1, Keep), (T0, Keep), (T1, Back)]));
+                pieces.push(fr.piece(reg, (0, a2, m + c, ls), [(S0, Keep), (S1, PieceSide::Street), (T0, Back), (T1, Keep)]));
+                pieces.push(fr.piece(reg, (a2 + c, ll, m, ls), [(S0, PieceSide::Street), (S1, Keep), (T0, Back), (T1, Keep)]));
+            }
+            Bend::L => {
+                // In from the street at S0 along the region, then turning to T0 (a street, or the
+                // forest, where it stops).
+                if street(S0).is_none() || blind(T0) || !(60..=100).contains(&ls) || ll < 110 {
+                    return None;
+                }
+                let m = pick(&mut self.rng, ROW_MIN, ls - c - ROW_MIN)?;
+                let a = pick(&mut self.rng, 40, (ll - c - 40).min(70))?;
+                streets.push((fr.rect(-street(S0).unwrap_or(0), a + c, m, m + c), true));
+                streets.push((fr.rect(a, a + c, -street(T0).unwrap_or(0), m + c), false));
+                elbows.push((fr.rect(a, a + c, m, m + c), [S1, T1]));
+                pieces.push(fr.piece(reg, (0, a, 0, m), [(S0, Keep), (S1, PieceSide::Street), (T0, Keep), (T1, PieceSide::Street)]));
+                pieces.push(fr.piece(reg, (0, a + c, m + c, ls), [(S0, Keep), (S1, Back), (T0, PieceSide::Street), (T1, Keep)]));
+                pieces.push(fr.piece(reg, (a + c, ll, 0, ls), [(S0, Back), (S1, Keep), (T0, Keep), (T1, Keep)]));
+            }
+            Bend::Crescent => {
+                // In from the street at T0, round a block and back out to it.
+                if street(T0).is_none() || !(60..=96).contains(&ls) || ll < 140 {
+                    return None;
+                }
+                let m = pick(&mut self.rng, ROW_MIN, (ls - c - ROW_MIN).min(50))?;
+                let a1 = pick(&mut self.rng, 34, ll - 2 * c - 44 - 34)?;
+                let a2 = pick(&mut self.rng, a1 + c + 44, (a1 + c + 64).min(ll - c - 34))?;
+                let ext = street(T0).unwrap_or(0);
+                streets.push((fr.rect(a1, a1 + c, -ext, m + c), false));
+                streets.push((fr.rect(a1, a2 + c, m, m + c), true));
+                streets.push((fr.rect(a2, a2 + c, -ext, m + c), false));
+                elbows.push((fr.rect(a1, a1 + c, m, m + c), [T1, S0]));
+                elbows.push((fr.rect(a2, a2 + c, m, m + c), [T1, S1]));
+                pieces.push(fr.piece(reg, (a1 + c, a2, 0, m), [(S0, PieceSide::Street), (S1, PieceSide::Street), (T0, Keep), (T1, PieceSide::Street)]));
+                pieces.push(fr.piece(reg, (0, a1, 0, ls), [(S0, Keep), (S1, Back), (T0, Keep), (T1, Keep)]));
+                pieces.push(fr.piece(reg, (a1, a2 + c, m + c, ls), [(S0, Back), (S1, Back), (T0, PieceSide::Street), (T1, Keep)]));
+                pieces.push(fr.piece(reg, (a2 + c, ll, 0, ls), [(S0, Back), (S1, Keep), (T0, Keep), (T1, Keep)]));
+            }
+        }
+        // Every piece big enough for lots, with a street along it to face (a short piece can make
+        // do with one across an end).
+        let faces = |p: &Region| {
+            let long_x = p.r.size.x >= p.r.size.y;
+            let along = if long_x { [Side::N, Side::S] } else { [Side::W, Side::E] };
+            p.r.size.max_element() <= 60 || along.iter().any(|&s| p.street(s).is_some())
+        };
+        if pieces.iter().any(|p| p.r.size.min_element() < ROW_MIN || !faces(p) || Side::ALL.iter().all(|&s| p.street(s).is_none())) {
+            return None;
+        }
+        // The legs are side streets; a leg that ends at the forest (only at T0 or T1) stops there.
+        for (r, along_s) in streets {
+            // A leg is open at an end that reaches the edge of the region where the forest is.
+            let (lo, hi) = if along_s == fr.long_x { (Side::W, Side::E) } else { (Side::N, Side::S) };
+            let reaches = |side: Side| match side {
+                Side::N => r.min.y <= reg.r.min.y,
+                Side::S => r.max().y >= reg.r.max().y,
+                Side::W => r.min.x <= reg.r.min.x,
+                Side::E => r.max().x >= reg.r.max().x,
+            };
+            let open = [lo, hi].map(|side| reaches(side) && reg.street(side).is_none() && reg.edge[si(side)]);
+            self.add_street(Street { r, horizontal: along_s == fr.long_x, road: SIDE_ROAD, sidewalk: SIDEWALK, line: Line::Dashed, open });
+        }
+        self.elbows.extend(elbows.into_iter().map(|(r, outer)| (r, outer.map(|f| fr.side(f)))));
+        self.plan.bends += 1;
+        Some(pieces)
     }
 
     /// Where to put a splitting street (offset from the region's low side), towards the middle:
@@ -700,10 +1006,12 @@ impl TownBuilder<'_> {
                     continue;
                 }
                 let d = start + at - s_at;
-                if d != 0 && d.abs() < 7 && (min_at..=max_at).contains(&(at - d)) {
+                // Now and then straight on across the street (a crossing), else clearly offset
+                // (a T): most junctions are Ts.
+                if d != 0 && d.abs() < 7 && (min_at..=max_at).contains(&(at - d)) && self.rng.f32() < 0.35 {
                     at -= d;
                     break;
-                } else if d != 0 && d.abs() < 16 {
+                } else if d.abs() < 16 {
                     ok = false;
                     break;
                 }
@@ -1058,7 +1366,8 @@ impl TownBuilder<'_> {
             a += w;
         }
         let park_lot = if park && !lots.is_empty() { Some(1.min(lots.len() - 1)) } else { None };
-        let house_chance = if outer { 0.8 } else { 0.9 };
+        // Inner blocks are nearly all built on; rows by the forest have more gaps.
+        let (house_chance, vacant_chance) = if outer { (0.8, 0.1) } else { (0.95, 0.02) };
         for (i, lot) in lots.into_iter().enumerate() {
             if park_lot == Some(i) {
                 self.park(lot);
@@ -1069,7 +1378,7 @@ impl TownBuilder<'_> {
                 if let Some(b) = self.place_house(lot, outer) {
                     self.homes.push(b);
                 }
-            } else if roll < house_chance + (1.0 - house_chance) * 0.5 {
+            } else if roll < house_chance + vacant_chance {
                 self.vacant_lot(lot.r);
             }
             self.yard(lot, outer);
@@ -1447,6 +1756,24 @@ fn paint_lines(map: &mut TileMap, streets: &[Street]) {
     }
 }
 
+/// The corner square where a bent street turns: the asphalt turns the corner and the sidewalk
+/// runs on round the outside of it (`outer`), instead of both legs' asphalt reaching out to its
+/// edges; its inside corner is sidewalk.
+fn paint_elbow(map: &mut TileMap, r: Rect, outer: [Side; 2]) {
+    for t in r.tiles() {
+        // How far in from each outer side.
+        let d = outer.map(|s| match s {
+            Side::N => t.y - r.min.y,
+            Side::S => r.max().y - 1 - t.y,
+            Side::W => t.x - r.min.x,
+            Side::E => r.max().x - 1 - t.x,
+        });
+        let road = SIDEWALK..SIDEWALK + SIDE_ROAD;
+        let floor = if road.contains(&d[0]) && d[1] >= SIDEWALK || road.contains(&d[1]) && d[0] >= SIDEWALK { Floor::Asphalt } else { Floor::Sidewalk };
+        set_floor(map, t, floor);
+    }
+}
+
 fn paint_road_only(map: &mut TileMap, r: Rect, horizontal: bool, road: i32) {
     for t in r.tiles() {
         let across = if horizontal { t.y - r.min.y } else { t.x - r.min.x };
@@ -1776,33 +2103,46 @@ pub(crate) mod tests {
         }
     }
 
-    /// Junctions between street corridors: (T-junctions, crossings). A side street that ends
-    /// against another is a T; one that carries on past it both ways is a crossing.
-    fn junctions(plan: &Plan) -> (usize, usize) {
-        let (mut tees, mut crossings) = (0, 0);
-        for (i, &(alo, ahi)) in plan.streets.iter().enumerate() {
-            for &(blo, bhi) in &plan.streets[i + 1..] {
-                let overlap = alo.cmplt(bhi).all() && blo.cmplt(ahi).all();
-                if !overlap {
+    /// Junctions between street corridors: (T-junctions, crossings, corners). A street that ends
+    /// against another is a T; two that meet it in line from opposite sides, or one that carries
+    /// on through it, make a crossing; two that both end where they meet are a corner (an L).
+    fn junctions(plan: &Plan) -> (usize, usize, usize) {
+        let streets = &plan.streets;
+        let horizontal = |(lo, hi): (IVec2, IVec2)| hi.x - lo.x > hi.y - lo.y;
+        let (mut crossings, mut corners) = (0, 0);
+        // T-junctions: (the street met, which side of it, where along it).
+        let mut tees: Vec<(usize, bool, i32)> = Vec::new();
+        for i in 0..streets.len() {
+            for j in i + 1..streets.len() {
+                let (a, b) = (streets[i], streets[j]);
+                if horizontal(a) == horizontal(b) || !(a.0.cmplt(b.1).all() && b.0.cmplt(a.1).all()) {
                     continue;
                 }
-                // Which runs which way: the longer extent.
-                let a_h = ahi.x - alo.x > ahi.y - alo.y;
-                let b_h = bhi.x - blo.x > bhi.y - blo.y;
-                if a_h == b_h {
-                    continue;
-                }
-                let (h, v) = if a_h { ((alo, ahi), (blo, bhi)) } else { ((blo, bhi), (alo, ahi)) };
-                let through_v = v.0.y < h.0.y && v.1.y > h.1.y;
-                let through_h = h.0.x < v.0.x && h.1.x > v.1.x;
-                if through_v && through_h {
-                    crossings += 1;
-                } else {
-                    tees += 1;
+                let ((h, hi), (v, vi)) = if horizontal(a) { ((a, i), (b, j)) } else { ((b, j), (a, i)) };
+                let v_through = v.0.y < h.0.y && v.1.y > h.1.y;
+                let h_through = h.0.x < v.0.x && h.1.x > v.1.x;
+                match (h_through, v_through) {
+                    (true, true) => crossings += 1,
+                    (true, false) => tees.push((hi, v.0.y < h.0.y, v.0.x)),
+                    (false, true) => tees.push((vi, h.0.x < v.0.x, h.0.y)),
+                    (false, false) => corners += 1,
                 }
             }
         }
-        (tees, crossings)
+        // Two T-junctions in line from opposite sides of one street are a crossing.
+        let mut used = vec![false; tees.len()];
+        for k in 0..tees.len() {
+            if used[k] {
+                continue;
+            }
+            let (s, side, at) = tees[k];
+            if let Some(m) = (k + 1..tees.len()).find(|&m| !used[m] && tees[m].0 == s && tees[m].1 != side && (tees[m].2 - at).abs() <= 2) {
+                used[k] = true;
+                used[m] = true;
+                crossings += 1;
+            }
+        }
+        (used.iter().filter(|u| !**u).count(), crossings, corners)
     }
 
     /// The town has every district, blocks of different sizes in each, mostly T-junctions, streets
@@ -1812,18 +2152,31 @@ pub(crate) mod tests {
     fn districts_and_street_shapes() {
         let all = crate::template::tests::shipped_templates();
         let mut alleys = 0;
+        let (mut bends, mut steps) = (0, 0);
+        let (mut landmarks, mut squares) = (std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
+        // Whether the core blocks on one side of the main street are of more than one depth.
+        let stepped = |g: &Generated| {
+            let main_y = g.plan.streets[0].0.y;
+            [true, false].iter().any(|&north| {
+                let depths: std::collections::BTreeSet<i32> = g.plan.blocks.iter().filter(|b| matches!(b.district, District::Civic | District::Commercial) && (b.max.y <= main_y) == north).map(|b| (b.max - b.min).y).collect();
+                depths.len() > 1
+            })
+        };
         for seed in 1..=8 {
             let g = generate(&GenConfig { seed, ..Default::default() }, &all);
             let plan = &g.plan;
             let count = |d: District| plan.blocks.iter().filter(|b| b.district == d).count();
             let (civic, commercial, residential, outer) = (count(District::Civic), count(District::Commercial), count(District::Residential), count(District::Outer));
-            assert!(civic >= 3 && commercial >= 4 && residential >= 3 && outer >= 3, "seed {seed}: districts {civic} {commercial} {residential} {outer}");
+            assert!(civic >= 2 && commercial >= 4 && residential >= 3 && outer >= 3, "seed {seed}: districts {civic} {commercial} {residential} {outer}");
             // Block sizes vary: residential blocks come in many sizes, and the civic district's are
             // bigger than a typical house block is deep.
             let sizes: std::collections::BTreeSet<(i32, i32)> = plan.blocks.iter().filter(|b| b.fill == BlockUse::Rows).map(|b| ((b.max - b.min).x, (b.max - b.min).y)).collect();
             assert!(sizes.len() >= 6, "seed {seed}: only {} block sizes", sizes.len());
-            let (tees, crossings) = junctions(plan);
-            assert!(tees >= 10 && tees > 2 * crossings, "seed {seed}: {tees} T-junctions, {crossings} crossings");
+            let (tees, crossings, corners) = junctions(plan);
+            assert!(tees >= 10 && tees > crossings && crossings >= 1, "seed {seed}: {tees} T-junctions, {crossings} crossings");
+            (bends, steps) = (bends + plan.bends, steps + stepped(&g) as usize);
+            landmarks.insert(plan.landmarks.len());
+            squares.insert((plan.square.unwrap().0.x + plan.square.unwrap().1.x) / 2 - (g.town_min.x + g.town_max.x) / 2);
             assert!(plan.dead_ends >= 3, "seed {seed}: {} streets stop at the forest", plan.dead_ends);
             // A cul-de-sac with houses round its turning circle.
             assert!(!plan.cul_de_sacs.is_empty(), "seed {seed}: no cul-de-sac");
@@ -1835,7 +2188,7 @@ pub(crate) mod tests {
             // The square, and landmark lots that can take 40 × 40 m.
             let (sq_lo, sq_hi) = plan.square.expect("a town square");
             assert!((sq_hi - sq_lo).min_element() >= 40, "seed {seed}: square {}", sq_hi - sq_lo);
-            assert!(plan.landmarks.len() >= 3, "seed {seed}: {} landmark lots", plan.landmarks.len());
+            assert!((1..=4).contains(&plan.landmarks.len()), "seed {seed}: {} landmark lots", plan.landmarks.len());
             assert!(plan.landmarks.iter().any(|(lo, hi)| (*hi - *lo).min_element() >= 42), "seed {seed}: no landmark lot of 40 m");
             alleys += plan.alleys;
             // The core is the civic and commercial blocks.
@@ -1843,16 +2196,23 @@ pub(crate) mod tests {
                 assert!(g.core.iter().any(|&(lo, hi)| b.min.cmpge(lo).all() && b.max.cmple(hi).all()), "seed {seed}: {:?} block outside the core", b.district);
             }
             eprintln!(
-                "seed {seed}: town {}, {} buildings; blocks civic {civic}, commercial {commercial}, residential {residential}, outer {outer}; {} sizes; {tees} T, {crossings} +; {} dead ends; {} cul-de-sacs; {} alleys",
+                "seed {seed}: town {}, {} buildings; blocks civic {civic}, commercial {commercial}, residential {residential}, outer {outer}; {} sizes; {tees} T, {crossings} +, {corners} L; {} bends; {} landmark lots; {} dead ends; {} cul-de-sacs; {} alleys",
                 g.town_max - g.town_min,
                 g.map.buildings.len(),
                 sizes.len(),
+                plan.bends,
+                plan.landmarks.len(),
                 plan.dead_ends,
                 plan.cul_de_sacs.len(),
                 plan.alleys
             );
         }
         assert!(alleys >= 2, "only {alleys} alleys in eight towns");
+        // #80: bent streets, back streets that step, landmark lots and the square varying.
+        assert!(bends >= 8, "only {bends} bent streets in eight towns");
+        assert!(steps >= 3, "back streets step in only {steps} of eight towns");
+        assert!(landmarks.len() >= 2, "always {landmarks:?} landmark lots");
+        assert!(squares.iter().max().unwrap() - squares.iter().min().unwrap() >= 60, "the square always near {squares:?}");
     }
 
     /// Every building has an outside door you can walk to from the main street, round fences and

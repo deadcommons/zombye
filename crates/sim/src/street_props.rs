@@ -311,8 +311,8 @@ impl Placer<'_> {
     }
 }
 
-/// Mark where driveways run (from each garage opening straight out to the road, a tile either side
-/// for the flare) as kept clear.
+/// Mark where driveways run (from each garage opening straight out to the first sidewalk and across
+/// it, as the client draws them, a tile either side for the flare) as kept clear.
 fn keep_driveways_clear(p: &mut Placer) {
     let map = p.map;
     for (bi, b) in map.buildings.iter().enumerate() {
@@ -329,11 +329,12 @@ fn keep_driveways_clear(p: &mut Placer) {
                         continue;
                     }
                     let a = along(s);
-                    let mut q = t + s.offset();
+                    let (mut q, mut on_walk) = (t + s.offset(), false);
                     for _ in 0..40 {
-                        if !map.in_bounds(q) || map.tile(q).room != 0 || p.is_road(q) {
+                        if !map.in_bounds(q) || map.tile(q).room != 0 || p.is_road(q) || (on_walk && !p.is_walk(q)) {
                             break;
                         }
+                        on_walk |= p.is_walk(q);
                         for k in -1..=1 {
                             if let Some(i) = p.index(q + a * k) {
                                 p.clear[i] = true;

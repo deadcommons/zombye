@@ -780,6 +780,8 @@ impl World {
                     .collect();
                 map.prop_kinds = kinds;
                 w.map = map;
+                // Containers are the stored map's furniture, not the generated one's.
+                w.sites = crate::containers::find_sites(&w.map, &w.config.containers);
                 w.map_custom = true;
                 w.map_base_hash = map_save.base_hash;
                 w.walk = WalkGrid::new(&w.map);
@@ -1039,17 +1041,26 @@ pub(crate) mod tests {
         panic!("the search never finished: {:?}", w.item_notes);
     }
 
+    /// Shut doors of the spawn house, then of the houses nearest it, until there are at least two.
     fn door_edges(w: &World) -> Vec<EdgeRef> {
-        let b = &w.map.buildings[w.spawn_building];
+        let mut order: Vec<usize> = (0..w.map.buildings.len()).collect();
+        let centre = |b: &crate::map::Building| (b.min.as_vec2() + b.size.as_vec2() * 0.5).distance(w.player_spawn);
+        order.sort_by(|&a, &b| (a != w.spawn_building).cmp(&(b != w.spawn_building)).then(centre(&w.map.buildings[a]).total_cmp(&centre(&w.map.buildings[b]))));
         let mut out = Vec::new();
-        for y in b.min.y - 1..b.min.y + b.size.y + 1 {
-            for x in b.min.x - 1..b.min.x + b.size.x + 1 {
-                for side in [Side::N, Side::W] {
-                    let e = EdgeRef::of(IVec2::new(x, y), side);
-                    if w.map.owned_edge(e.tile, e.edge) == Edge::DoorClosed {
-                        out.push(e);
+        for bi in order {
+            let b = &w.map.buildings[bi];
+            for y in b.min.y - 1..b.min.y + b.size.y + 1 {
+                for x in b.min.x - 1..b.min.x + b.size.x + 1 {
+                    for side in [Side::N, Side::W] {
+                        let e = EdgeRef::of(IVec2::new(x, y), side);
+                        if w.map.owned_edge(e.tile, e.edge) == Edge::DoorClosed && !out.contains(&e) {
+                            out.push(e);
+                        }
                     }
                 }
+            }
+            if out.len() >= 2 {
+                break;
             }
         }
         out

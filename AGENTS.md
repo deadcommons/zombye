@@ -201,21 +201,32 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   small one-storey office, a two-storey office block) and two shops (`kind: Shop`: a corner pharmacy,
   a general store and hardware). Houses are at most 13 × 15 tiles to fit a lot. `kind: Civic` (none
   shipped yet) is for landmarks: town hall, courthouse, church, school, up to about 40 × 40 m (see worldgen).
-- `sim::worldgen` (#18, #77, PLAN §4.1a) lays the town out **by district** (`GenConfig::blocks` is its nominal size
+- `sim::worldgen` (#18, #77, #80, PLAN §4.1a) lays the town out **by district** (`GenConfig::blocks` is its nominal size
   in blocks of about 74 × 66 m, default 5 × 4: about 370–420 × 275–320 m, grown to fit its core). A **main street**
   runs east–west across it (9 m of asphalt, 3 m sidewalks, a solid centre line) and on out of town both ways. Its
-  middle is the **core**: the **civic district** (north of the street a landmark block beside the **town square**, a
-  green with a paved middle, paths and a ring of trees; south of it one wide block of two **landmark lots**, about
-  42–52 × 48–54 m), with **commercial blocks** either side (`commercial_blocks` on each side of the street, default
-  2, split between the two ends; serde default, so older settings load; 50–70 m wide): **shops and offices** facing
+  middle is the **core**: the **civic district** (north of the street the **town square**, a green with a paved
+  middle, paths and a ring of trees, usually with a landmark block beside it, now and then one each side or none;
+  south of it one wide block of two **landmark lots** or a single one, about 42–52 × 48–62 m: 1–4 landmark lots in
+  all; the south side's civic district starts in line with the north side's or 14–22 m along), with **commercial
+  blocks** either side (`commercial_blocks` on each side of the street, default 2, split at random between the two
+  ends, so the civic district and its square sit anywhere along the row; serde default, so older settings load;
+  50–70 m wide): **shops and offices** facing
   the main street (`kind: Shop` / `Office`, shops twice as likely), packed 1–3 m apart on shallow lots paved up to
   their fronts, now and then a parking lot, half the time an **alley** (4 m of asphalt) behind them, and a row of
   houses behind facing the back street. The blocks south of the street are sized so their side streets either line
-  up with the north side's or are clearly offset, so most meet the main street at a T. A back street runs behind
-  each side's row of core blocks, and a long street at each end of the row runs out to the forest. The
+  up with the north side's or are clearly offset, so most meet the main street at a T. Each side's row of core blocks
+  falls into 1–3 **runs** (`CoreRun`), each 44–62 m deep (the civic district's at least 48) with a back street
+  behind it; between runs, and at each end of the row, a street runs on from the main street out to the forest
+  (never in line with one across the main street), and neighbouring runs differ in depth by at least 12 m, so the
+  back streets step and stop instead of running the length of the core. The
   **residential districts** (beyond the ends of the core, and behind it) are split again and again by narrower side
-  streets (6 m of asphalt) into blocks of varied sizes (`TownBuilder::split`: T-junctions, crossings that carry
-  straight on or are clearly offset, now and then a long block), filled with rows of house lots facing whichever
+  streets (6 m of asphalt) into blocks of varied sizes (`TownBuilder::split`: mostly T-junctions, now and then a
+  crossing that carries straight on, now and then a long block; a street never ends against the backs of lots), and
+  over half the time where one fits, by a **bent street** (`bent_split`, `Plan::bends`): a dog-leg across a strip,
+  jogging 14–30 m half way; an L in from one end that turns to a long side (or stops at the forest); or a crescent in
+  from a long side and back out to it round a block. The pieces left are rectangles; where two meet with no street
+  between, no lots face that way. Each turn's corner square is painted so the asphalt turns and the sidewalk runs
+  round the outside (`paint_elbow`). Blocks are filled with rows of house lots facing whichever
   streets run round them (houses turned to face north, south, east or west; corner lots on the side streets) or, in
   up to three blocks (at least one), a **cul-de-sac**: a dead end with a turning circle (asphalt within 8.5 m) and
   houses round it (the generator leaves each one on the map as a `map::TurningCircle`, for drawing it round; not
@@ -223,7 +234,8 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   them, so streets run on into the trees and stop at the forest (some with a dirt track); lots backing onto the
   forest are **outer** lots, wider, set further back and wilder. The street out north and the one out south are the
   dead ends nearest the middle of town, with a dog-leg in the forest. House lots take any `kind: House` template
-  that fits (5–6 m back, a garden path to the street): mostly houses, some bare yards and overgrown vacant lots, one
+  that fits (5–6 m back, a garden path to the street): in inner blocks nearly all houses (95%), by the forest
+  more bare yards and overgrown vacant lots; blocks are split when over 72 m deep, so back yards stay shallow; one
   pocket park per town, back fences and yard trees. **Landmark lots** take the biggest `kind: Civic` template that
   fits (a town hall, courthouse, church, school; or a shop or office too big for the strip, over 24 × 16), with a
   paved forecourt and parking beside it; with none (none ship yet), each becomes the biggest office that fits with
@@ -233,9 +245,10 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   town core (`World::town_core`, from the generator, not saved: two rectangles, the core blocks north of the main
   street with the street, and those south of it) is the civic and commercial blocks. `Generated::plan`
   (`worldgen::Plan`) lists the blocks with their district (`Civic`, `Commercial`, `Residential`, `Outer`) and use, the
-  streets, the square, landmark lots, cul-de-sacs, alleys and dead ends (tests, tools; not kept by the world). The
-  default town holds about 95–120 buildings (seed 1: 82 houses, 7 shops, 6 offices) on a 480 m map, generated in
-  about 50–60 ms (world included). Lot details use coordinates relative to their lot, so a bigger map gives the same
+  streets, the square, landmark lots, cul-de-sacs, alleys, dead ends and bent streets (tests, tools; not kept by
+  the world). The default town holds about 90–130 buildings on a 480 m map, generated in about 50–60 ms (world
+  included). Changing the generator changes every map: saves made before #80 load only with `--load-anyway` /
+  `load {force: true}`. Lot details use coordinates relative to their lot, so a bigger map gives the same
   town. `print_town` (an ignored test; `ZOMBYE_SEED`, and `ZOMBYE_PPM=PATH` for a one-pixel-a-tile picture) prints it.
 - **Curves (#82, `meshgen/curves.rs`):** the tiles stay square (walking, sight and the sim go by them), but what's
   drawn follows real curves, faceted, never stepped. Turning circles are true circles (48 facets) of asphalt, kerb and
@@ -266,7 +279,8 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   (as `WorldConfig::new`). Placed last by `worldgen::generate_with` (`generate` places none), each rule from its own
   seeded stream, so the rest of the town is the same with or without them and the same seed gives the same props. A
   prop stands in the middle of its tile, turned a quarter at a time to face the street; never on a road, path or
-  driveway (straight out from a garage door to the road, a tile either side, as the client draws them), beside a
+  driveway (straight out from a garage door to the first sidewalk and across it, a tile either side, as the client
+  draws them), beside a
   door, or next to another prop (each keeps the eight tiles round it free); kerb props only on a straight kerb (5 m
   of it each way: clear of the 4 m kerb curves at junctions), away from turning circles, alley mouths and parking-lot
   entries, and not in front of a garden path. Shipped: all three block; seed 1 has 48 mailboxes (most of the houses

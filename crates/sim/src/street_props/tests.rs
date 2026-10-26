@@ -98,7 +98,8 @@ fn props_stand_where_they_belong() {
         let g = town(seed);
         let m = &g.map;
         let mut counts = std::collections::BTreeMap::new();
-        // Driveways: straight out from every garage opening to the road, a tile either side.
+        // Driveways: straight out from every garage opening to a sidewalk and across it, a tile
+        // either side.
         let mut drive = std::collections::BTreeSet::new();
         for (bi, b) in m.buildings.iter().enumerate() {
             for t in (b.min.y..b.min.y + b.size.y).flat_map(|y| (b.min.x..b.min.x + b.size.x).map(move |x| IVec2::new(x, y))) {
@@ -109,10 +110,17 @@ fn props_stand_where_they_belong() {
                 for s in Side::ALL {
                     let e = m.edge(t, s);
                     if m.tile(t + s.offset()).room == 0 && (e.is_door() || e == Edge::Arch) {
-                        let mut q = t + s.offset();
-                        while m.in_bounds(q) && !m.tile(q).floor.is_road() && m.tile(q).room == 0 {
+                        // Out to the first sidewalk and across it, as the client draws them.
+                        let (mut q, mut on_walk) = (t + s.offset(), false);
+                        for _ in 0..40 {
+                            let tile = m.tile(q);
+                            if !m.in_bounds(q) || tile.floor.is_road() || tile.room != 0 || (on_walk && tile.floor != Floor::Sidewalk) {
+                                break;
+                            }
+                            on_walk |= tile.floor == Floor::Sidewalk;
                             for k in -1..=1 {
-                                { let d = q + along(s) * k; drive.insert((d.x, d.y)); }
+                                let d = q + along(s) * k;
+                                drive.insert((d.x, d.y));
                             }
                             q += s.offset();
                         }
@@ -254,4 +262,5 @@ fn town_generation_time() {
         std::hint::black_box(w);
     }
 }
+
 
