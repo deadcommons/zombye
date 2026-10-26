@@ -488,7 +488,9 @@ fn header(c: &mut ChildSpawnerCommands, view: Option<&PrivateView>, busy: (f32, 
         b.spawn((Node { width: Val::Percent(share * 100.0), height: Val::Percent(100.0), ..default() }, BackgroundColor(color)));
     });
     if busy.1 > 0 {
-        c.spawn((Text::new(format!("busy: {:.1} s ({} queued)", busy.0, busy.1)), font(13.0), TextColor(OK)));
+        // `busy.1` counts the job under way too.
+        let more = if busy.1 > 1 { format!(" ({} more queued)", busy.1 - 1) } else { String::new() };
+        c.spawn((Text::new(format!("busy: {:.1} s{more}", busy.0)), font(13.0), TextColor(OK)));
     }
 }
 

@@ -58,6 +58,30 @@ const SKIP_STEP_H: f32 = 0.1;
 const FOOD_AGE_SALT: u64 = 0xF00D_A6E0;
 /// A bed or sofa this close (to the nearest edge of its footprint, m), in your room, is slept on.
 pub const SLEEP_REACH: f32 = 1.0;
+
+/// What someone lying down at `pos` sleeps on: the nearest kind of bed, then sofa, on the ground
+/// floor of the room `pos` is in, within [`SLEEP_REACH`] of its footprint (`None`: the floor).
+/// The client draws a sleeper lying on it.
+pub fn sleep_furniture(map: &crate::map::TileMap, pos: Vec2) -> Option<(&crate::map::PlacedFurniture, SleepSpot)> {
+    let room = map.room_at(pos);
+    if room == 0 {
+        return None;
+    }
+    let mut best: Option<(&crate::map::PlacedFurniture, SleepSpot)> = None;
+    for f in map.buildings.iter().flat_map(|b| &b.furniture).filter(|f| f.level == 0) {
+        let spot = match f.kind.as_str() {
+            "bed" => SleepSpot::Bed,
+            "sofa" => SleepSpot::Sofa,
+            _ => continue,
+        };
+        let lo = f.min.as_vec2();
+        let hi = lo + f.size.as_vec2();
+        if pos.clamp(lo, hi).distance(pos) <= SLEEP_REACH && map.room_at((lo + hi) * 0.5) == room && best.is_none_or(|b| (spot as u8) < (b.1 as u8)) {
+            best = Some((f, spot));
+        }
+    }
+    best
+}
 /// Most the time scale may be (a saved setting past it is clamped).
 pub const MAX_TIME_SCALE: f32 = 100.0;
 
@@ -695,24 +719,7 @@ impl World {
     /// What player `pi` would sleep on where it stands: a bed, else a sofa, within
     /// [`SLEEP_REACH`] in its room, else the floor.
     pub fn sleep_spot(&self, pos: Vec2) -> SleepSpot {
-        let room = self.map.room_at(pos);
-        if room == 0 {
-            return SleepSpot::Floor;
-        }
-        let mut best = SleepSpot::Floor;
-        for f in self.map.buildings.iter().flat_map(|b| &b.furniture).filter(|f| f.level == 0) {
-            let spot = match f.kind.as_str() {
-                "bed" => SleepSpot::Bed,
-                "sofa" => SleepSpot::Sofa,
-                _ => continue,
-            };
-            let lo = f.min.as_vec2();
-            let hi = lo + f.size.as_vec2();
-            if pos.clamp(lo, hi).distance(pos) <= SLEEP_REACH && self.map.room_at((lo + hi) * 0.5) == room && (spot as u8) < (best as u8) {
-                best = spot;
-            }
-        }
-        best
+        sleep_furniture(&self.map, pos).map_or(SleepSpot::Floor, |(_, spot)| spot)
     }
 
     fn needs_note(&mut self, player: u32, ok: bool, text: String) {

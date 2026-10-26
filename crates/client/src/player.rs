@@ -102,7 +102,8 @@ impl Plugin for PlayerPlugin {
             .add_systems(Update, (toggle_sneak, face_cursor, actions))
             .add_systems(FixedUpdate, (predict.in_set(PlayerInputSet).before(ServerTick).run_if(crate::live), reconcile.after(ServerTick)))
             // After the fixed ticks of this frame, before anything in Update reads the player's transform.
-            .add_systems(RunFixedMainLoop, (place_player, sync_other_players).in_set(RunFixedMainLoopSystems::AfterFixedMainLoop));
+            .add_systems(RunFixedMainLoop, (place_player, sync_other_players).in_set(RunFixedMainLoopSystems::AfterFixedMainLoop))
+            .add_systems(PostUpdate, lie_on_bed.before(bevy::transform::TransformSystems::Propagate));
     }
 }
 
@@ -116,7 +117,10 @@ fn spawn_player(
     mut bindposes: ResMut<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    let state = link.curr.players.iter().find(|p| p.id == join.player_id).map(|v| v.state()).unwrap_or_else(|| PlayerState::new(join.player_spawn));
+    let view = link.curr.players.iter().find(|p| p.id == join.player_id);
+    let state = view.map(|v| v.state()).unwrap_or_else(|| PlayerState::new(join.player_spawn));
+    // From the first snapshot too (`reconcile` only takes them from later ones; offscreen there are none).
+    let (hp, dead, weapon, action, dev) = view.map_or((100.0, false, None, None, DevFlags::default()), |v| (v.hp, v.dead, v.weapon, v.action, v.dev));
     commands.insert_resource(LocalPlayer {
         id: join.player_id,
         seq: 0,
@@ -127,11 +131,11 @@ fn spawn_player(
         aim: state.facing,
         aiming: false,
         last_snapshot_tick: link.curr.tick,
-        hp: 100.0,
-        dead: false,
-        weapon: None,
-        action: None,
-        dev: DevFlags::default(),
+        hp,
+        dead,
+        weapon,
+        action,
+        dev,
     });
 
     let assets = SurvivorAssets::new(&mut meshes, &mut materials, &mut bindposes);
@@ -236,6 +240,42 @@ fn place_player(fixed: Res<Time<Fixed>>, me: Res<LocalPlayer>, mut players: Quer
     let p = me.prev.pos.lerp(me.curr.pos, fixed.overstep_fraction());
     tf.translation.x = p.x;
     tf.translation.z = p.y;
+}
+
+/// How high a sleeper lies on a bed or a sofa, and how far from the middle of it its feet are (its
+/// body lies back from them, see the fall onto the back in `survivor.rs`).
+const BED_TOP: f32 = 0.56;
+const SOFA_TOP: f32 = 0.45;
+const BED_FEET: f32 = 0.85;
+
+/// Players drawn: ours and the others.
+type Bodies<'w, 's> = Query<'w, 's, (&'static mut Transform, Option<&'static OtherPlayer>), Or<(With<Player>, With<OtherPlayer>)>>;
+
+/// A sleeper on a bed or sofa (#58) is drawn lying on it, feet to its front, rather than on the
+/// floor where it stands beside it: the sim keeps its place, this only moves the body drawn.
+fn lie_on_bed(
+    link: Res<ServerLink>,
+    map: Res<ClientMap>,
+    me: Res<LocalPlayer>,
+    mut players: Bodies,
+) {
+    for (mut tf, other) in &mut players {
+        let id = other.map_or(me.id, |o| o.0);
+        let on = link.curr.players.iter().find(|p| p.id == id).filter(|v| v.asleep && !v.dead).and_then(|v| zombye_sim::needs::sleep_furniture(&map.0, Vec2::from(v.pos)));
+        let Some((f, spot)) = on else {
+            // Up again: back on the floor (`place_player` only sets our x and z).
+            if tf.translation.y != 0.0 {
+                tf.translation.y = 0.0;
+            }
+            continue;
+        };
+        let centre = f.min.as_vec2() + f.size.as_vec2() * 0.5;
+        let front = f.facing.offset().as_vec2();
+        let feet = centre + front * BED_FEET;
+        let top = if spot == zombye_sim::needs::SleepSpot::Bed { BED_TOP } else { SOFA_TOP };
+        tf.translation = Vec3::new(feet.x, top, feet.y);
+        tf.rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - front.y.atan2(front.x));
+    }
 }
 
 /// Mirror other players from snapshots, interpolated between the last two.

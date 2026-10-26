@@ -93,6 +93,10 @@ fn spawn_camera(mut commands: Commands, join: Res<JoinInfo>, options: Res<Option
     if let Some(target) = offscreen {
         // The only camera: it is also the origin for point-light shadow detail.
         camera.insert((RenderTarget::Image(target.0.clone().into()), ShadowLodOrigin));
+        // `--hud`: the UI is drawn on it too (Bevy only finds a window's camera by itself).
+        if options.hud {
+            camera.insert(IsDefaultUiCamera);
+        }
     }
 }
 

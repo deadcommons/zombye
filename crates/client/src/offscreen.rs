@@ -5,8 +5,8 @@
 //! ([`OffscreenTarget`], `--size WxH`). Everything else is the normal client: the world streams in
 //! around the player, fog of war, cutaways, day/night lighting and the characters all come from the
 //! player this client is (`--player`, on a `--load`ed save), exactly as in the windowed game. The
-//! UI isn't drawn (Bevy only puts it on a camera that renders to a window), so the picture has no
-//! HUD.
+//! UI isn't drawn (Bevy only puts it on a camera that renders to a window) unless `--hud` makes this
+//! camera the UI's too (`camera.rs`), for pictures of the HUD and its panels.
 //!
 //! The local server never ticks and the player isn't predicted (see [`crate::live`]), so the
 //! picture shows the loaded state itself. Visual time runs at a fixed 1/30 s a frame for

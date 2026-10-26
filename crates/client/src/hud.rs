@@ -144,8 +144,11 @@ fn update_vitals(
         set(&mut t, weapon.to_string());
     }
     let s = &me.curr;
+    let asleep = link.curr.players.iter().any(|p| p.id == me.id && p.asleep);
     let stance = if me.dead {
         "dead"
+    } else if asleep {
+        "asleep"
     } else {
         match s.stance {
             Stance::Walk => "walking",

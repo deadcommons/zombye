@@ -9,8 +9,8 @@
 //! are offered at the foot. Right-clicking a dressing, antiseptic or sewing kit in the inventory
 //! opens the panel to **use it on** a wound: the wounds it fits are marked; right-click cancels.
 //! While the panel is open, left mouse doesn't swing. The tags line (bottom left, in the vitals
-//! panel) says BLEEDING, INJURED ARM / LEG, FESTERING, FEVERISH / TURNING, FOOD POISONING, and for
-//! a few seconds where the last strike landed. All of it comes from our private view in the latest
+//! panel) says INJURED ARM / LEG and DROWSY (PAINKILLERS), and for a few seconds where the last
+//! strike landed; bleeding, sickness and the rest are status tags (`needs_ui.rs`). All of it comes from our private view in the latest
 //! snapshot: the client never works it out itself.
 
 use bevy::prelude::*;
@@ -77,7 +77,8 @@ pub struct HealthUiPlugin;
 
 impl Plugin for HealthUiPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<HealthPanel>()
+        let open = app.world().get_resource::<crate::Options>().is_some_and(|o| o.health);
+        app.insert_resource(HealthPanel { open, ..default() })
             .init_resource::<LastHit>()
             .init_resource::<Shown>()
             .init_resource::<Clicks>()
@@ -125,34 +126,19 @@ fn last_hit(time: Res<Time>, me: Res<LocalPlayer>, events: Res<CombatEventsThisF
     }
 }
 
-/// The HUD's tags for our health.
+/// The HUD's tags for our health that the status tags (`needs_ui.rs`) don't show: an injured leg
+/// or arm, drowsy from a double dose of painkillers. (Bleeding, the fever, festering and food
+/// poisoning are status tags, #57.)
 fn tag_line(h: &HealthView) -> String {
     let mut tags = Vec::new();
-    let bleeding = h.wounds.iter().filter(|w| w.bleed_per_h > 0.0).count();
-    match bleeding {
-        0 => {}
-        1 => tags.push("BLEEDING".to_string()),
-        n => tags.push(format!("BLEEDING x{n}")),
-    }
-    match h.infection {
-        Some(InfectionStage::Feverish) => tags.push("FEVERISH".into()),
-        Some(InfectionStage::Turning) => tags.push("TURNING".into()),
-        _ => {}
-    }
-    if h.food_poisoning {
-        tags.push("FOOD POISONING".into());
-    }
-    if h.wounds.iter().any(|w| w.festering) {
-        tags.push("FESTERING".into());
-    }
     if h.aid.drowsy {
-        tags.push("DROWSY".into());
+        tags.push("DROWSY (PAINKILLERS)");
     }
     if h.tags.limping {
-        tags.push("INJURED LEG".into());
+        tags.push("INJURED LEG");
     }
     if h.tags.injured_arm {
-        tags.push("INJURED ARM".into());
+        tags.push("INJURED ARM");
     }
     tags.join("  ")
 }
@@ -163,11 +149,10 @@ fn tags(time: Res<Time>, link: Res<ServerLink>, me: Res<LocalPlayer>, last: Res<
     if !me.dead && !last.text.is_empty() && time.elapsed_secs() - last.at < HIT_SECS {
         line = if line.is_empty() { format!("hit: {}", last.text) } else { format!("{line}   hit: {}", last.text) };
     }
+    let want = if line.contains("hit:") { BLOOD } else { TEXT };
     if t.0 != line {
         t.0 = line;
     }
-    let sick = link.own(me.id).is_some_and(|v| v.health.infection.is_some() || v.health.food_poisoning);
-    let want = if link.own(me.id).is_some_and(|v| v.health.tags.bleeding) { BLOOD } else if sick { SICK } else { TEXT };
     if color.0 != want {
         color.0 = want;
     }

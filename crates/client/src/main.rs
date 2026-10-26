@@ -16,7 +16,8 @@
 //! `--screenshot PATH` (saved after `--screenshot-after SECS[,SECS...]`, default 5) `--exit-after SECS` `--zoom METRES`
 //! `--autoplay` (the player fights by itself) `--fight-demo` (a bat and a few zombies close by)
 //! `--siege` (outside your house with a bat, zombies battering its door) `--sneak` (start sneaking)
-//! `--inventory` (start with the inventory panel open) `--god` / `--ignored` (start with F1 / F2 on)
+//! `--inventory` / `--skills` / `--health` (start with that panel open) `--god` / `--ignored` (start with F1 / F2 on)
+//! `--hud` (offscreen, draw the HUD and panels too) `--hover-tag N` (show the Nth status tag's tooltip)
 //! `--map-chunks N` (a square map N × N chunks of 16 m; default 30) `--saves DIR` (where saves go;
 //! default `saves`) `--load NAME|PATH` (start from a save; `--load-anyway` loads one whose game data
 //! changed in a way it can't simply take, dropping what no longer fits). F5 quicksaves, F9
@@ -105,6 +106,15 @@ pub struct Options {
     pub sneak: bool,
     /// Start with the inventory panel open (as if Tab had been pressed; `--inventory`).
     pub inventory: bool,
+    /// Start with the skills or the health panel open (as if K or H had been pressed; `--skills`,
+    /// `--health`).
+    pub skills: bool,
+    pub health: bool,
+    /// Offscreen, draw the HUD and panels too (`--hud`; without it the picture is the world alone).
+    pub hud: bool,
+    /// Show the tooltip of the `N`th status tag (from 0), as if the pointer were over it
+    /// (`--hover-tag N`: offscreen there is no pointer).
+    pub hover_tag: Option<usize>,
     /// Start with the dev toggles on, as if F1 / F2 had been pressed (`--god`, `--ignored`).
     pub god: bool,
     pub ignored: bool,
@@ -198,6 +208,10 @@ impl Options {
             siege: flag("--siege"),
             sneak: flag("--sneak"),
             inventory: flag("--inventory"),
+            skills: flag("--skills"),
+            health: flag("--health"),
+            hud: flag("--hud"),
+            hover_tag: value("--hover-tag").and_then(|v| v.parse().ok()),
             god: flag("--god"),
             ignored: flag("--ignored"),
             map_chunks: value("--map-chunks").and_then(|v| v.parse().ok()).filter(|n: &i32| (1..=256).contains(n)),

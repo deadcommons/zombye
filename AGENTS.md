@@ -82,7 +82,7 @@ cargo test --release --workspace
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --inventory --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V`
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --skills --health --hover-tag N --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V`
 (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost).
@@ -98,7 +98,7 @@ it: they batter it (or the window beside it) with their backs to you, and the do
 gives (add `--zombies 0` to keep the rest of the town out of it). Stdout says where (`--siege: 10 m out from the door
 of [382, 297] (S wall)`), or that the house has nowhere to stage it and you start inside. `--sneak` starts you sneaking (as if C was
 pressed). The game window takes keyboard focus, so typing elsewhere while it runs can move or toggle the player.
-`--inventory` starts with the inventory panel open (for screenshots of it). `--god` and `--ignored` start with the dev
+`--inventory`, `--skills` and `--health` start with that panel open (for screenshots of it). `--god` and `--ignored` start with the dev
 toggles on (as if F1 / F2 were pressed; see Dev toggles).
 `--at` starts the player somewhere other than the bedroom and `--time` sets the start hour, which is handy for screenshots.
 `--angle N` starts the camera at one of the four fixed angles (0 = the default, each step a quarter turn), `--player ID`
@@ -109,8 +109,11 @@ window, no winit (on macOS that would make it a foreground app and take keyboard
 camera draws into an image (`--size WxH`, default 1280x720, at most 3840x2160) that is read back. Usually with `--load`:
 the local server doesn't tick and the player isn't predicted (`crate::live` run condition), so it shows the saved state
 exactly, from `--player`'s point of view (fog of war, cutaways, night lamp), with `--zoom`, `--angle` and optionally
-`--center X,Y` (the camera, and chunk streaming, centred there; fog is still the player's). No HUD (the UI only draws on
-a window's camera), no autosave. It waits for the frame to be stable rather than a fixed time: visual time runs at a fixed
+`--center X,Y` (the camera, and chunk streaming, centred there; fog is still the player's). No HUD unless `--hud`
+(which makes the offscreen camera the UI's too: the HUD and any panel, with `--inventory`, `--skills` or `--health` to
+open one, and `--hover-tag N` to show the Nth status tag's tooltip, there being no pointer), no autosave. For reviewing
+the HUD's screens, `crates/net/tests/review_saves.rs` (ignored; `ZOMBYE_REVIEW_DIR=DIR`) writes saves in the states
+they show: status tags, things to make with a craft under way, skill XP, tired, asleep. It waits for the frame to be stable rather than a fixed time: visual time runs at a fixed
 1/30 s a frame for 30 frames (eased poses settle), then stops; once the render world has had no pipelines waiting for a
 few frames it reads the image back, and two readbacks in a row that match (all but 1 byte in 10,000) are written. It
 prints `rendered PATH: WxH, N frames, N readbacks, MS ms` (plus a warning if it never settled; 40 s limit) and exits 0,
@@ -490,8 +493,9 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   the dressing state); click a wound for what it needs and the treatments you can do with what you carry (with times and
   uses left), click one to do it; pills at the foot. Right-click a dressing, antiseptic or sewing kit in the inventory to
   use it on a wound (the panel opens with the wounds it fits marked; right-click cancels); right-click a pill to take it.
-  Left mouse doesn't swing while the panel is open. A tags line in the vitals panel (BLEEDING xN, FEVERISH / TURNING,
-  FOOD POISONING, FESTERING, DROWSY, INJURED LEG / ARM, and for 3 s where the last strike landed).
+  Left mouse doesn't swing while the panel is open. A tags line in the vitals panel for what the status tags don't say
+  (INJURED LEG / ARM, DROWSY (PAINKILLERS), and for 3 s where the last strike landed); bleeding, the fever, festering and
+  food poisoning are status tags (see Needs).
 - **MCP:** `health {player}` (as the player's own view, plus wound ids (`#n`), dressings, effects, painkillers and
   antibiotics, what each wound needs next and what it can treat with what it carries), `treat {player, action, wound |
   part, item}` (action follows from the item if left out; the wound from `part`, else the most urgent it fits; steps
@@ -544,7 +548,8 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   living player sleeps (`World::time_scale`), game time runs `sleep_time_scale` (30) x as fast: each tick adds 29 extra
   ticks' hours to the clock offset and steps health and needs by 30 ticks' worth; zombies keep real time. Single-player
   that's whenever you sleep; on a server, only once everyone is asleep (a lone sleeper rests in real time). Snapshots carry
-  `time_scale` and `game_minute`; `PlayerView::asleep` (the survivor lies on its back).
+  `time_scale` and `game_minute`; `PlayerView::asleep` (the survivor lies on its back, drawn on the bed or sofa it
+  sleeps on: `needs::sleep_furniture`, the server's rule too; the HUD's stance says "asleep").
 - **Status tags** (`needs::status_tags`, from a `StatusInput` the client builds with `PrivateView::status_tags`, so the HUD
   and `World::status_tags` agree): Hunger, Thirst, Tiredness, Endurance (Short of breath / Winded), Load (Burdened / Heavy
   / Overloaded), Pain (Sore / Hurting / Agony), Bleeding (xN), Sick (Queasy food poisoning / Sick festering / Feverish /

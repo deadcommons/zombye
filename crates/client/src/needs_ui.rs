@@ -71,7 +71,17 @@ fn spawn(mut commands: Commands) {
         });
 }
 
-fn rebuild(mut commands: Commands, link: Res<ServerLink>, join: Res<JoinInfo>, me: Res<LocalPlayer>, mut shown: ResMut<Shown>, mut hovered: ResMut<Hovered>, row: Query<Entity, With<TagsRow>>) {
+#[allow(clippy::too_many_arguments)]
+fn rebuild(
+    mut commands: Commands,
+    link: Res<ServerLink>,
+    join: Res<JoinInfo>,
+    me: Res<LocalPlayer>,
+    options: Res<crate::Options>,
+    mut shown: ResMut<Shown>,
+    mut hovered: ResMut<Hovered>,
+    row: Query<Entity, With<TagsRow>>,
+) {
     let Ok(row) = row.single() else { return };
     let tags = match link.own(me.id) {
         Some(v) if !me.dead => v.status_tags(&join.needs, me.curr.endurance, me.curr.winded, join.combat.tired_below, link.curr.time_scale),
@@ -81,7 +91,8 @@ fn rebuild(mut commands: Commands, link: Res<ServerLink>, join: Res<JoinInfo>, m
         return;
     }
     commands.entity(row).despawn_children();
-    hovered.0 = None;
+    // `--hover-tag N`: as if the pointer were over that tag.
+    hovered.0 = options.hover_tag.and_then(|n| tags.get(n)).map(|t| t.tip.clone());
     commands.entity(row).with_children(|r| {
         for t in &tags {
             let tip = t.tip.clone();
