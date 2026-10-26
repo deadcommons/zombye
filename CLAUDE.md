@@ -22,7 +22,7 @@ All development work goes through the
 
 When the remote machines are up (`ssh zombye-build true` works), the Mac drives and they do the work:
 **[docs/remote-dev.md](docs/remote-dev.md)**. Start issues as agents in their own worktrees
-(`ssh zombye-build zwork start N [MODEL]`), as many at once as don't touch the same code; follow them with
+(`ssh zombye-build zwork start N [MODEL]`, or zboard), as many at once as don't touch the same code; the owner follows them on zboard (`ssh -fN zombye-board`, http://localhost:8765); follow them yourself with
 `zwork ls` and `zwork log N`; bring each one's `review/*.png` back to `saves/` here and show them to the
 owner; send feedback with `zwork say N "..."`. Builds, tests and renders run there, not here. Playtesting
 and asset work (Blender, Meshy, ElevenLabs) stay here.

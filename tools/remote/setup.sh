@@ -39,6 +39,22 @@ if [ "$role" = build ]; then
   mkdir -p ~/.local/bin ~/.config/opencode ~/.claude ~/wt
   install -m 755 "$here/zgpu" ~/.local/bin/zgpu
   install -m 755 "$here/zwork" ~/.local/bin/zwork
+  install -m 755 "$here/zboard" ~/.local/bin/zboard
+  # zboard, the agents' dashboard, as a user service (on 127.0.0.1:8765; reached over an SSH tunnel)
+  mkdir -p ~/.config/systemd/user
+  cat > ~/.config/systemd/user/zboard.service <<'EOF'
+[Unit]
+Description=zboard: the zwork agents' dashboard
+[Service]
+ExecStart=/bin/bash -c '. ~/.zombye-env; exec python3 ~/.local/bin/zboard 8765'
+Restart=always
+[Install]
+WantedBy=default.target
+EOF
+  sudo loginctl enable-linger "$USER"
+  systemctl --user daemon-reload
+  systemctl --user enable --now zboard.service
+  systemctl --user restart zboard.service
   # sccache: worktrees share compiled dependencies instead of each building Bevy from scratch
   command -v sccache >/dev/null || sudo apt-get install -yq sccache || cargo install sccache --locked
   # One environment for every shell, `ssh zombye-build 'cargo ...'` included: Ubuntu's .bashrc returns

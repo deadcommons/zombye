@@ -17,24 +17,36 @@ The names are SSH aliases: in the Mac's `~/.ssh/config` for both, and in the bui
 two credentials, both signed in by the owner: `gh` (to push branches, open PRs and keep the board) and
 OpenCode's GitHub Copilot login (the model the agents run on). They hold no other API keys.
 
+## The dashboard: zboard
+
+The owner follows the agents on a web page, **zboard**, served by the build box on its own `127.0.0.1:8765`
+(a user service) and reached from the Mac over an SSH tunnel: `ssh -fN zombye-board` (an alias with
+`LocalForward 8765 localhost:8765`), then **http://localhost:8765**, in a browser or the Claude app's
+browser pane. A card per issue being worked: state, model, requests made so far (each one counts against
+Copilot), commits, the PR, the agent's latest messages, and its review pictures, newest first, as they're
+rendered (click one to see it full size). From the page: **Start** an issue with a model, **Send**
+feedback to an agent (`zwork say`), **Stop** one, and **Approve**: mark the PR ready, squash-merge it
+(which closes the issue), set the board to Done, remove the worktree and pull `~/zombye`. It's plain
+Python (`tools/remote/zboard`) over what `zwork` leaves in `~/wt`; everything it does is a `zwork` or `gh`
+command that works without it too.
+
 ## How an issue goes
 
-1. **Start.** From the Mac: `ssh zombye-build zwork start 97`. That makes the worktree `~/wt/97` on a
+1. **Start.** From zboard, or from the Mac: `ssh zombye-build zwork start 97`. That makes the worktree `~/wt/97` on a
    new branch `issue-97` from `origin/main` and starts an OpenCode agent on it in tmux, with a brief
    (`zwork`'s `brief`): read the issue, set it In Progress, do only what it asks, test, render review
    pictures, commit with `Refs #97`, push, open a **draft PR** that says `Closes #97`, report.
 2. **Watch.** `zwork ls` lists every issue being worked (running, finished or failed, commits, pictures,
    model); `zwork log 97` shows what its agent has said and done.
-3. **Review.** The agent leaves its pictures in `~/wt/97/review/` (not committed). Bring them to the Mac
-   and look: `scp 'zombye-build:wt/97/review/*.png' saves/review-97/` (`saves/` is git-ignored).
+3. **Review.** The agent leaves its pictures in `~/wt/97/review/` (not committed); zboard shows them as
+   they appear. Without it: `scp 'zombye-build:wt/97/review/*.png' saves/review-97/` (git-ignored).
 4. **Feedback.** `zwork say 97 "the panel overlaps the hotbar at 1280x720; move it up"` carries on the
    same agent session with that message: it changes, re-renders, pushes again.
 5. **Playtest** (when pictures aren't enough): on the Mac, `git fetch && git switch issue-97` and
    `cargo run -p zombye-client --profile play` (the Linux build doesn't run on the Mac, and nothing
    streams a window back).
-6. **Land.** The owner approves; the PR is merged (squash or merge, from the Mac or GitHub), which closes
-   the issue; set its board Status to Done. Then `zwork rm 97` removes the worktree and branch, and the
-   Mac's checkout `git pull`s.
+6. **Land.** The owner approves (zboard's Approve, or by hand: merge the PR, which closes the issue, set
+   its board Status to Done, `zwork rm 97`), and the Mac's checkout `git pull`s.
 
 Agents never merge, push to main or force-push: the brief says so, and OpenCode on the box denies those
 commands outright (`~/.config/opencode/opencode.json`), since it runs with `--auto` and nobody is there to
@@ -94,7 +106,7 @@ such as the Deep Learning Base AMI). SSH only from the owner's address, and betw
 1. On each: copy `tools/remote/` over and run `setup.sh build` or `setup.sh gpu`, optionally with a time
    to shut itself down (`setup.sh build "2026-10-31 20:00:00 UTC"`). It installs the build dependencies,
    Rust with mold, the repo in `~/zombye`, and on the build box OpenCode, Claude Code, `sccache`, `zgpu`,
-   `zwork`, the OpenCode guardrails and a note for agents.
+   `zwork`, `zboard` (as a user service), the OpenCode guardrails and a note for agents.
 2. Give the build box a key into the GPU box and a `zombye-gpu` alias in its `~/.ssh/config`.
 3. The owner signs in on the build box: `gh auth login` (plus `gh auth refresh -s project` for the
    board) and `opencode auth login` (GitHub Copilot).
