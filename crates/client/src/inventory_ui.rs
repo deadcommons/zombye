@@ -243,6 +243,7 @@ impl Plugin for InventoryUiPlugin {
             .init_resource::<Clicks>()
             .init_resource::<Outbox>()
             .init_resource::<InFlight>()
+            .init_resource::<MakeUi>()
             .add_systems(Startup, spawn)
             .add_systems(PreUpdate, type_search.in_set(TextEntry).after(bevy::input::InputSystems))
             .add_systems(Update, (toggle, keep_note, track_flight, prune_picked, send_clicks, send_picked, flush, rebuild).chain());
@@ -510,6 +511,8 @@ fn rebuild(
     flight: Res<InFlight>,
     find: Res<Find>,
     picked: Res<Picked>,
+    mut make_ui: ResMut<MakeUi>,
+    options: Option<Res<crate::Options>>,
     mut shown: ResMut<Shown>,
     mut root: Query<(Entity, &mut Visibility), With<PanelRoot>>,
 ) {
@@ -521,6 +524,9 @@ fn rebuild(
     if !panel.open {
         return;
     }
+    if !make_ui.loaded {
+        make_ui.load(options.as_ref().map_or(std::path::Path::new("saves"), |o| o.saves.as_path()), me.id);
+    }
     let (view, mut floor) = panel_view(&link, me.id);
     // What's being taken off the floor is gone from it as far as we're concerned.
     floor.retain(|(id, s)| flight.asked_for(Place::Ground, *id, s.item) < s.count as u32);
@@ -528,7 +534,7 @@ fn rebuild(
     let note_fresh = time.elapsed_secs() - last.at < NOTE_SECS * 2.0;
     // (The game hour too: food goes off as time passes.)
     let now = link.curr.game_minute;
-    let signature = format!("{view:?}|{floor:?}|{:.1}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}", busy.0, busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.0);
+    let signature = format!("{view:?}|{floor:?}|{:.1}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}", busy.0, busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.0, make_ui.open, make_ui.favs);
     if shown.0 == signature {
         return;
     }
@@ -620,9 +626,9 @@ fn rebuild(
             picked_bar(c, picked.0.len(), open.zip(open_name.clone()));
         }
         if let Some(v) = &view {
-            make(c, &join, v, busy.0, &flight);
+            make(c, &join, v, busy.0, &flight, &make_ui);
         }
-        c.spawn((Text::new("Click: move (a recipe: make it)   Shift-click: just one   Ctrl-click: pick several"), font(12.0), TextColor(DIM)));
+        c.spawn((Text::new("Click: move (a recipe: make it; right-click pins it)   Shift-click: just one   Ctrl-click: pick several"), font(12.0), TextColor(DIM)));
         c.spawn((Text::new("Right-click: equip / wear / eat / use on a wound   /: search   Tab: close"), font(12.0), TextColor(DIM)));
         if note_fresh && !last.text.is_empty() {
             c.spawn((Text::new(last.text.clone()), font(14.0), TextColor(if last.ok { OK } else { NO })));
@@ -630,15 +636,115 @@ fn rebuild(
     });
 }
 
-/// The Make list (#12): each recipe, clickable when we have what it takes, else what's missing;
-/// the one under way with its seconds left (`busy`), queued ones counted.
-fn make(c: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f32, flight: &InFlight) {
+/// The Make list's own state (#96): which families are open and which recipes are pinned.
+/// Pinned recipes are saved per player in the saves folder (`make-favourites-P.txt`, one recipe id a line).
+#[derive(Resource, Default, Debug)]
+struct MakeUi {
+    /// Families (by their first output's item id) opened to their variants.
+    open: Vec<String>,
+    /// Pinned recipe ids.
+    favs: Vec<String>,
+    path: Option<std::path::PathBuf>,
+    loaded: bool,
+}
+
+impl MakeUi {
+    fn toggle_open(&mut self, key: &str) {
+        match self.open.iter().position(|k| k == key) {
+            Some(i) => {
+                self.open.remove(i);
+            }
+            None => self.open.push(key.to_string()),
+        }
+    }
+
+    fn toggle_fav(&mut self, id: &str) {
+        match self.favs.iter().position(|k| k == id) {
+            Some(i) => {
+                self.favs.remove(i);
+            }
+            None => self.favs.push(id.to_string()),
+        }
+        if let Some(p) = &self.path {
+            let mut lines: Vec<String> = self.favs.clone();
+            lines.extend(self.open.iter().filter(|k| *k == "*").map(|k| format!("open:{k}")));
+            let _ = std::fs::write(p, lines.join("\n"));
+        }
+    }
+
+    fn load(&mut self, saves: &std::path::Path, player: u32) {
+        let p = saves.join(format!("make-favourites-{player}.txt"));
+        if let Ok(t) = std::fs::read_to_string(&p) {
+            // A line `open:KEY` opens a family from the start (`open:*`: all), for pictures.
+            for l in t.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                match l.strip_prefix("open:") {
+                    Some(k) => self.open.push(k.to_string()),
+                    None => self.favs.push(l.to_string()),
+                }
+            }
+        }
+        self.path = Some(p);
+        self.loaded = true;
+    }
+}
+
+/// What a click on a Make row does.
+#[derive(Clone)]
+enum MakeAct {
+    Craft(u16),
+    Family(String),
+    None,
+}
+
+/// A row of the Make list: left click makes the recipe or opens the family; right click pins or
+/// unpins the recipe.
+fn make_row(c: &mut ChildSpawnerCommands, label: String, right: String, act: MakeAct, fav: Option<String>, color: Color) {
+    let hover = !matches!(act, MakeAct::None);
+    c.spawn((
+        Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, column_gap: px(10), padding: UiRect::axes(px(6), px(2)), ..default() },
+        BackgroundColor(ROW),
+    ))
+    .with_children(|r| {
+        r.spawn((Text::new(label), font(14.0), TextColor(color), Pickable::IGNORE));
+        r.spawn((Text::new(right), font(12.0), TextColor(DIM), Pickable::IGNORE));
+    })
+    .observe(move |ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>| {
+        if hover && let Ok(mut bg) = q.get_mut(ev.entity) {
+            bg.0 = ROW_HOVER;
+        }
+    })
+    .observe(|ev: On<PointerOut>, mut q: Query<&mut BackgroundColor>| {
+        if let Ok(mut bg) = q.get_mut(ev.entity) {
+            bg.0 = ROW;
+        }
+    })
+    .observe(move |ev: On<PointerPress>, mut clicks: ResMut<Clicks>, mut ui: ResMut<MakeUi>| match (ev.button, &act) {
+        (PointerButton::Primary, MakeAct::Craft(k)) => {
+            clicks.0.push(RowClick { action: RowAction { stack: ItemStack::one(0), left: None, right: None, use_on: None, craft: Some(*k) }, button: ev.button, one: false })
+        }
+        (PointerButton::Primary, MakeAct::Family(key)) => ui.toggle_open(key),
+        (PointerButton::Secondary, _) => {
+            if let Some(id) = &fav {
+                ui.toggle_fav(id);
+            }
+        }
+        _ => {}
+    });
+}
+
+/// The Make list (#12, #96): recipes you can make first, families of variants (rags from a
+/// T-shirt, a jumper, ...) folded into one row that opens, pinned ones on top (right-click to pin),
+/// and what the rest are missing in plain words, dimmed. The one under way shows its seconds left
+/// (`busy`), queued ones counted.
+fn make(c: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f32, flight: &InFlight, ui: &MakeUi) {
     if join.recipes.is_empty() {
         return;
     }
     let items = &join.items;
-    c.spawn((Text::new("Make"), font(15.0), TextColor(TEXT)));
-    for (k, r) in join.recipes.iter().enumerate() {
+    let mult = join.skills.craft_time_mult(v.skill_level(zombye_sim::Skill::Handiwork));
+    // One recipe's row. `lead` is "* " for a pinned one.
+    let recipe_row = |c: &mut ChildSpawnerCommands, k: usize, indent: &str, lead: &str| {
+        let r = &join.recipes[k];
         let k = k as u16;
         let craft = JobKind::Craft { recipe: k };
         let queued = v.jobs.iter().filter(|j| **j == craft).count();
@@ -650,11 +756,52 @@ fn make(c: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f3
             (false, n) => format!("  ({n} queued)"),
         };
         let makes = r.outputs.iter().map(|o| crafting::amount(items, &o.item, o.count)).collect::<Vec<_>>().join(" + ");
+        let fav = Some(r.id.clone());
         match crafting::check(r, &v.inventory, items) {
-            Ok(()) => row(c, format!("{}{state}", r.name), format!("{makes}, {:.0} s", r.secs * join.skills.craft_time_mult(v.skill_level(zombye_sim::Skill::Handiwork))), RowAction { stack: ItemStack::one(0), left: None, right: None, use_on: None, craft: Some(k) }, false),
+            Ok(()) => make_row(c, format!("{indent}{lead}{}{state}", r.name), format!("{makes}, {:.0} s", r.secs * mult), MakeAct::Craft(k), fav, TEXT),
             // Under way with what it takes set aside already.
-            Err(_) if queued > 0 => dim(c, format!("{}{state}", r.name)),
-            Err(why) => dim(c, format!("{}: {why}", r.name)),
+            Err(_) if queued > 0 => make_row(c, format!("{indent}{lead}{}{state}", r.name), String::new(), MakeAct::None, fav, DIM),
+            Err(why) => make_row(c, format!("{indent}{lead}{}", r.name), why, MakeAct::None, fav, DIM),
+        }
+    };
+    let can = |k: usize| crafting::check(&join.recipes[k], &v.inventory, items).is_ok() || v.jobs.contains(&JobKind::Craft { recipe: k as u16 });
+    let pinned = |k: usize| ui.favs.contains(&join.recipes[k].id);
+    c.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(8), align_items: AlignItems::Baseline, ..default() }).with_children(|t| {
+        t.spawn((Text::new("Make"), font(15.0), TextColor(TEXT)));
+        t.spawn((Text::new("click a group to open it; right-click a recipe to pin it (*)"), font(12.0), TextColor(DIM)));
+    });
+    // Pinned first, makeable ones leading.
+    let mut favs: Vec<usize> = (0..join.recipes.len()).filter(|&k| pinned(k)).collect();
+    favs.sort_by_key(|&k| !can(k));
+    for k in favs {
+        recipe_row(c, k, "", "* ");
+    }
+    // The rest in families by what they make first.
+    let mut families: Vec<(String, Vec<usize>)> = Vec::new();
+    for (k, r) in join.recipes.iter().enumerate().filter(|(k, _)| !pinned(*k)) {
+        let key = r.outputs.first().map_or(r.id.clone(), |o| o.item.clone());
+        match families.iter_mut().find(|(f, _)| *f == key) {
+            Some((_, v)) => v.push(k),
+            None => families.push((key, vec![k])),
+        }
+    }
+    // Families with something to make come first (stable, so the file's order otherwise).
+    families.sort_by_key(|(_, ks)| !ks.iter().any(|&k| can(k)));
+    for (key, mut ks) in families {
+        if ks.len() == 1 {
+            recipe_row(c, ks[0], "", "");
+            continue;
+        }
+        let ready = ks.iter().filter(|&&k| can(k)).count();
+        let open = ui.open.contains(&key) || ui.open.iter().any(|k| k == "*");
+        let name = items.iter().find(|d| d.id == key).map_or(key.clone(), |d| format!("{}s", d.name));
+        let summary = if ready == 0 { format!("{} ways, none yet", ks.len()) } else { format!("{ready} of {} ways ready", ks.len()) };
+        make_row(c, format!("{} {name}", if open { "v" } else { ">" }), summary, MakeAct::Family(key.clone()), None, if ready > 0 { TEXT } else { DIM });
+        if open {
+            ks.sort_by_key(|&k| !can(k));
+            for k in ks {
+                recipe_row(c, k, "    ", "");
+            }
         }
     }
 }
