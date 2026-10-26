@@ -6,6 +6,8 @@ BuildingTemplate(
     name: "Two-storey family house",
     kind: House,
     roof: GableX,
+    // A porch along the front under the upstairs windows (drawn only: see `PorchDef`).
+    porch: Some(Front(from: 1, to: 7, depth: 2)),
     rooms: {
         'K': (name: "Kitchen", room_type: "kitchen", floor: TileFloor),
         'D': (name: "Dining room", room_type: "dining", floor: Wood),

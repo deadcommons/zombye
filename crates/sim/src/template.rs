@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::map::{Building, Edge, Feature, Floor, OwnedEdge, PlacedFurniture, Room, RoofStyle, Side, TileMap, UpperEdge};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildingKind {
     House,
     Office,
@@ -79,6 +79,46 @@ pub struct BuildingTemplate {
     pub rooms: BTreeMap<char, RoomDef>,
     /// Level 0 first. All levels share the same footprint size.
     pub levels: Vec<LevelDef>,
+    /// A porch for the client to draw (#59). Optional; render only.
+    #[serde(default)]
+    pub porch: Option<PorchDef>,
+}
+
+/// A porch: square posts, a pale railing with a gap at the way in, steps. **Render only**: posts and
+/// railing never block walking (nothing on the map changes), so a template that wants a railing you
+/// can't walk through needs walls or fences of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum PorchDef {
+    /// A room of the layout that is the porch (`'P'`), open to the outside through arches and under
+    /// the house's roof, like the cottage's: posts along its open sides and a railing across its
+    /// arches but the way in.
+    Room(char),
+    /// A porch built onto the front wall, outside the footprint, on tiles `from..=to` of the bottom
+    /// row, standing `depth` tiles out (1 or 2, so it stays inside a house lot's front yard): a
+    /// raised deck with steps, posts, a railing and a roof of its own.
+    Front { from: i32, to: i32, depth: i32 },
+}
+
+/// How the client dresses a placed building (#59): set from its template by [`BuildingTemplate::place`].
+/// Render only: not saved and never in a hash (a map stored whole has none, and is drawn plain).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BuildingLook {
+    pub kind: BuildingKind,
+    /// The street-facing front (the template's south side).
+    pub front: Side,
+    pub porch: Option<Porch>,
+}
+
+/// A porch as placed, in world tiles.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Porch {
+    /// Its deck: tiles `min..min + size`.
+    pub min: IVec2,
+    pub size: IVec2,
+    /// The side it opens to, away from the house.
+    pub facing: Side,
+    /// The porch room ([`PorchDef::Room`]), or 0 for a porch built onto the front wall.
+    pub room: u16,
 }
 
 /// How a template is placed: footprint min corner, clockwise quarter turns, mirror along x.
@@ -175,6 +215,29 @@ impl BuildingTemplate {
                             return Err(format!("{id}: level {li} furniture '{}' at {:?} overlaps '{other}' at ({}, {})", f.kind, f.at, f.at.0 + dx, f.at.1 + dy));
                         }
                     }
+                }
+            }
+        }
+        match self.porch {
+            None => {}
+            Some(PorchDef::Room(c)) => {
+                if !self.levels[0].layout.iter().any(|r| r.contains(c)) {
+                    return Err(format!("{id}: porch room '{c}' is not on the ground floor"));
+                }
+                let open = self.levels[0].arches.iter().any(|o| self.cell(0, IVec2::new(o.0, o.1)) == c && self.cell(0, IVec2::new(o.0, o.1) + o.2.offset()) == '.');
+                if !open {
+                    return Err(format!("{id}: porch room '{c}' has no arch to the outside"));
+                }
+            }
+            Some(PorchDef::Front { from, to, depth }) => {
+                if from < 0 || to >= size.x || from > to {
+                    return Err(format!("{id}: porch from {from} to {to} is not along the front (0 to {})", size.x - 1));
+                }
+                if !(1..=2).contains(&depth) {
+                    return Err(format!("{id}: porch depth {depth} must be 1 or 2 tiles"));
+                }
+                if let Some(x) = (from..=to).find(|x| self.cell(0, IVec2::new(*x, size.y - 1)) == '.') {
+                    return Err(format!("{id}: porch runs past the front wall at x {x}"));
                 }
             }
         }
@@ -300,6 +363,35 @@ impl BuildingTemplate {
             (r, _) => r,
         };
         let min = xf(IVec2::ZERO).min(xf(size - IVec2::ONE));
+        let front = xs(Side::S);
+        let porch = match self.porch {
+            None => None,
+            Some(PorchDef::Front { from, to, depth }) => {
+                let (a, b) = (xf(IVec2::new(from, size.y)), xf(IVec2::new(to, size.y + depth - 1)));
+                Some(Porch { min: a.min(b), size: (a - b).abs() + IVec2::ONE, facing: front, room: 0 })
+            }
+            Some(PorchDef::Room(c)) => {
+                // The box round its tiles, facing the side most of its arches open to.
+                let room = placed.rooms.get(&c).copied().unwrap_or(0);
+                let (mut lo, mut hi) = (IVec2::MAX, IVec2::MIN);
+                let mut open = [0; 4];
+                for y in 0..size.y {
+                    for x in 0..size.x {
+                        if self.cell(0, IVec2::new(x, y)) != c {
+                            continue;
+                        }
+                        let w = xf(IVec2::new(x, y));
+                        (lo, hi) = (lo.min(w), hi.max(w));
+                        for (i, s) in Side::ALL.into_iter().enumerate() {
+                            open[i] += (map.edge(w, s) == Edge::Arch && map.tile(w + s.offset()).room == 0) as u32;
+                        }
+                    }
+                }
+                let i_front = Side::ALL.iter().position(|s| *s == front).unwrap_or(0);
+                let best = (0..4).fold(i_front, |best, i| if open[i] > open[best] { i } else { best });
+                (room != 0).then(|| Porch { min: lo, size: hi - lo + IVec2::ONE, facing: Side::ALL[best], room })
+            }
+        };
         map.buildings.push(Building {
             template: self.id.clone(),
             min,
@@ -311,6 +403,7 @@ impl BuildingTemplate {
             roof,
             siding,
             roof_color,
+            look: Some(BuildingLook { kind: self.kind, front, porch }),
         });
         placed
     }
@@ -576,6 +669,70 @@ pub(crate) mod tests {
                 assert_eq!(b.furniture.len(), t.levels.iter().map(|l| l.furniture.len()).sum::<usize>());
             }
         }
+    }
+
+    /// A porch built onto the front lands outside the footprint against the front wall, facing the
+    /// street, whichever way the house is turned; a porch room's box is its tiles, facing the side
+    /// its arches open to. Every placed building says what it is and where its front is.
+    #[test]
+    fn porches_turn_with_their_house() {
+        let all = shipped_templates();
+        assert!(all.iter().any(|t| matches!(t.porch, Some(PorchDef::Front { .. }))) && all.iter().any(|t| matches!(t.porch, Some(PorchDef::Room(_)))));
+        for t in all {
+            for (turns, mirror, street) in [(0, false, Side::S), (2, true, Side::N), (1, false, Side::W), (3, true, Side::E)] {
+                let mut map = TileMap::new(4, 4);
+                let placed = t.place(&mut map, Placement { origin: IVec2::new(20, 20), quarter_turns: turns, mirror }, 0, 0);
+                let look = map.buildings[placed.building].look.expect("a look");
+                assert_eq!((look.kind, look.front), (t.kind, street), "{} turned {turns}", t.id);
+                let Some(porch) = look.porch else {
+                    assert!(t.porch.is_none(), "{}: lost its porch", t.id);
+                    continue;
+                };
+                let tiles = (0..porch.size.y).flat_map(|y| (0..porch.size.x).map(move |x| porch.min + IVec2::new(x, y)));
+                match t.porch {
+                    Some(PorchDef::Front { from, to, depth }) => {
+                        assert_eq!(porch.facing, street);
+                        assert_eq!(porch.size.x * porch.size.y, (to - from + 1) * depth, "{} turned {turns}", t.id);
+                        for p in tiles {
+                            assert_eq!(map.tile(p).room, 0, "{} turned {turns}: porch on the house at {p}", t.id);
+                        }
+                        // Its first row is against the front wall, all along.
+                        let first = (0..porch.size.x * porch.size.y)
+                            .map(|i| porch.min + IVec2::new(i % porch.size.x, i / porch.size.x))
+                            .filter(|p| map.tile(*p - street.offset()).room != 0)
+                            .count() as i32;
+                        assert_eq!(first, to - from + 1, "{} turned {turns}: porch not against the front", t.id);
+                    }
+                    Some(PorchDef::Room(c)) => {
+                        let room = placed.rooms[&c];
+                        assert_eq!(porch.room, room);
+                        assert!(tiles.clone().any(|p| map.tile(p).room == room));
+                        let open = tiles.filter(|p| map.tile(*p).room == room).any(|p| map.edge(p, porch.facing) == Edge::Arch && map.tile(p + porch.facing.offset()).room == 0);
+                        assert!(open, "{} turned {turns}: porch faces {:?}, which has no arch out", t.id, porch.facing);
+                    }
+                    None => panic!("{}: a porch from nowhere", t.id),
+                }
+            }
+        }
+    }
+
+    /// Porch mistakes are explained: too deep, past the front wall, a room that isn't there or
+    /// has no way out.
+    #[test]
+    fn porch_checks_explain_mistakes() {
+        let with = |text: &str, porch: PorchDef| {
+            let mut t = BuildingTemplate::from_ron(text).unwrap();
+            t.porch = Some(porch);
+            t.validate()
+        };
+        assert!(with(BUNGALOW, PorchDef::Front { from: 0, to: 4, depth: 2 }).is_ok());
+        assert!(with(BUNGALOW, PorchDef::Front { from: 0, to: 4, depth: 3 }).unwrap_err().contains("depth"));
+        assert!(with(BUNGALOW, PorchDef::Front { from: 4, to: 2, depth: 1 }).unwrap_err().contains("along the front"));
+        assert!(with(BUNGALOW, PorchDef::Front { from: 5, to: 12, depth: 1 }).unwrap_err().contains("along the front"));
+        assert!(with(BUNGALOW, PorchDef::Room('Q')).unwrap_err().contains("not on the ground floor"));
+        assert!(with(BUNGALOW, PorchDef::Room('L')).unwrap_err().contains("no arch"));
+        // A template without the field still loads.
+        assert_eq!(BuildingTemplate::from_ron(FAMILY.replace("porch:", "// porch:").as_str()).unwrap().porch, None);
     }
 
     #[test]

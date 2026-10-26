@@ -155,7 +155,7 @@ From `crates/client/src/world_render.rs` and `crates/sim/src/map.rs`. Change the
 | Window opening | one tile edge, sill 0.9 m, head 2.1 m above the floor; centre mullion |
 | Climbing through a window | within 0.35 m of the window line |
 | Fence | posts 1.05 m tall, 0.1 m square; rails at 0.35–0.45 m and 0.8–0.9 m |
-| Roof | eaves at the top of the last storey, 0.4 m overhang, pitch 1 in 2 (about 27°); flat roofs a 0.2 m slab |
+| Roof | eaves at the top of the last storey, 0.4 m overhang, pitch 1 in 2 (about 27°); flat roofs a 0.2 m slab behind a 0.55 m parapet with coping |
 | Tree trunk (blocks walking) | 0.3 m radius |
 
 ### Furniture and props

@@ -280,6 +280,9 @@ pub struct Building {
     /// Seeded look: index into the client's siding and roof palettes.
     pub siding: u8,
     pub roof_color: u8,
+    /// What the client dresses it with (#59), from its template. Derived: not saved, in no hash.
+    #[serde(skip)]
+    pub look: Option<crate::template::BuildingLook>,
 }
 
 /// Names one edge by the tile that owns it.

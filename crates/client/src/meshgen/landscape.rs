@@ -410,6 +410,7 @@ impl<'a> Land<'a> {
         }
         // Beds don't go where a driveway runs.
         beds.retain(|b: &BedTile| !drives.iter().any(|d: &Driveway| inside(b.tile.as_vec2() + Vec2::splat(0.5), d.min, d.max)));
+        beds.retain(|b: &BedTile| !super::building_kit::porch_covers(map, b.tile));
         self.driveways = drives;
         self.beds = beds;
     }

@@ -26,6 +26,7 @@ struct WorldParams {
     fog_tint: vec4<f32>,
     inside_rect: vec4<f32>,
     tree_count: vec4<f32>,
+    lights: vec4<f32>,
     sight: array<vec4<f32>, 3>,
     trees: array<vec4<f32>, 32>,
 };
@@ -42,6 +43,8 @@ fn bayer4(p: vec2<u32>) -> f32 {
 }
 
 const STUB_HEIGHT: f32 = 0.4;
+// How bright a lit window is at night (HDR, before the tone map).
+const LIT_GLOW: f32 = 1.8;
 // Above the ground-floor walls: roofs and upper storeys, which open a hole round the player
 // instead of dropping (the whole of them goes only while you're inside that building, on the CPU).
 const UPPER_Y: f32 = 3.05;
@@ -213,7 +216,8 @@ fn fragment(
         }
     }
     // Roofs and upper storeys (not trees) between the camera and the player: a soft hole round them.
-    if (wp.y > UPPER_Y && cut_kind != 3u && cut_kind != 6u) {
+    // Roofs open it however low they are (porch roofs, awnings: building_kit.rs).
+    if ((wp.y > UPPER_Y || cut_kind == 2u) && cut_kind != 3u && cut_kind != 6u) {
         let hole = hole_at(wp, in.position.xy);
         if (hole > 0.0 && hole > bayer4(vec2<u32>(in.position.xy))) {
             discard;
@@ -265,11 +269,18 @@ fn fragment(
     // windows and doors stay readable (just dimmed like everything else unseen), so you can still
     // tell a building's layout and where its ways in are.
     var hide_contents = smoothstep(0.3, 0.7, indoors);
-    if (piece_kind == 1u || piece_kind == 4u || piece_kind == 5u) {
+    if (piece_kind == 1u || piece_kind == 4u || piece_kind == 5u || piece_kind == 7u) {
         hide_contents *= 0.25;
     }
     unseen = mix(unseen, out.color.rgb * vec3(0.03, 0.03, 0.04), hide_contents);
     out.color = vec4(mix(unseen, out.color.rgb, seen), out.color.a);
+    // A window with a light on behind it glows warm at night, seen or not (#59): a light source,
+    // so bright enough to bloom a little, and the glass goes nearly opaque.
+    if (piece_kind == 7u) {
+        let night = world_params.lights.x;
+        let glow = vec3(1.0, 0.36, 0.07) * LIT_GLOW * night * mix(0.7, 1.0, seen);
+        out.color = vec4(mix(out.color.rgb, glow, 0.85 * night), max(out.color.a, night));
+    }
     out.color = vec4(out.color.rgb * (1.0 - 0.55 * wood_fade), out.color.a);
 
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
