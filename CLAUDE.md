@@ -1,5 +1,20 @@
 @AGENTS.md
 
+## The other Dead Commons repos
+
+This repo is public. The rest of the [deadcommons](https://github.com/deadcommons) org is private: name
+those repos here, but never copy their files, contents or plans into this repo, its issues or its PRs.
+
+| Repo | What's in it | On the Mac |
+|---|---|---|
+| [zombye-art](https://github.com/deadcommons/zombye-art) | Art in progress: Blender scenes, generator output, textures, renders, review rounds. An asset comes here only when it's promoted ([docs/asset-pipeline.md](docs/asset-pipeline.md)). | `~/games/zombye-art` (Git LFS; `$ZOMBYE_ART`) |
+| [studio](https://github.com/deadcommons/studio) | The business side: brand sources, names, legal, research, marketing, finance, and setting up a Mac for the work (`dev-setup/`). | `~/games/studio` |
+| [hosting](https://github.com/deadcommons/hosting) | The commercial hosting service built on this repo's open-source server. | not cloned |
+
+Work goes in the repo it belongs to: art in zombye-art, brand and business in studio, the hosted service in
+hosting, the game here. Read another repo when the work needs it (the asset tools find zombye-art through
+`$ZOMBYE_ART`); change it only when the task is about it.
+
 ## Working from the GitHub project
 
 All development work goes through the
