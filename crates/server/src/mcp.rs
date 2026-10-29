@@ -2474,7 +2474,7 @@ fn inventory_text(world: &World, id: u32) -> Result<String, String> {
     {
         let def = world.container_def(site);
         let stacks = world.container_contents(cid).unwrap_or(&[]);
-        let used: f32 = stacks.iter().map(|s| world.item_def(s.item).volume_l * s.count as f32).sum();
+        let used = zombye_sim::inventory::stacks_volume(&world.config.items, stacks);
         out.push_str(&format!("open: #{cid} {} ({used:.1} of {:.0} L): {}\n", def.name, def.room_l, if stacks.is_empty() { "empty".to_string() } else { stacks_text(world, stacks) }));
     }
     let floor = world.floor_of(id);
@@ -2529,6 +2529,32 @@ mod tests {
             world.step();
         }
         world
+    }
+
+    /// Nothing to add up comes out as 0.0, not -0.0 (Rust's float `sum` of nothing is -0.0, #90).
+    #[test]
+    fn empty_totals_print_as_zero_not_minus_zero() {
+        let mut world = small_world();
+        let health = call_tool(&mut world, "health", &json!({})).unwrap();
+        assert!(health.contains("losing 0.0 HP per game hour"), "{health}");
+        let stats = call_tool(&mut world, "stats", &json!({})).unwrap();
+        assert!(!stats.contains("-0.0"), "{stats}");
+        // An opened container with nothing left in it: stand by one in the spawn house and search it.
+        let spawn = world.player_spawn;
+        let site = world.containers().iter().filter(|s| s.building as usize == world.spawn_building).min_by(|a, b| a.distance(spawn).total_cmp(&b.distance(spawn))).unwrap().clone();
+        let at = (-1..=site.size.y)
+            .flat_map(|dy| (-1..=site.size.x).map(move |dx| site.min + glam::IVec2::new(dx, dy)))
+            .filter(|&t| !world.map.tile_blocked(t) && world.map.tile(t).room == site.room)
+            .map(|t| t.as_vec2() + glam::Vec2::splat(0.5))
+            .min_by(|a, b| site.distance(*a).total_cmp(&site.distance(*b)))
+            .unwrap();
+        world.players[0].state.pos = at;
+        call_tool(&mut world, "search", &json!({"container": site.id})).unwrap();
+        while world.container_contents(world.player(1).unwrap().open.unwrap()).is_some_and(|s| !s.is_empty()) {
+            call_tool(&mut world, "move_item", &json!({"from": "container", "to": "ground"})).unwrap();
+        }
+        let inventory = call_tool(&mut world, "inventory", &json!({})).unwrap();
+        assert!(inventory.contains("(0.0 of") && !inventory.contains("-0.0"), "{inventory}");
     }
 
     /// A folder of its own for one test, removed when dropped (pass or fail).

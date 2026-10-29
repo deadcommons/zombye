@@ -375,12 +375,13 @@ impl Health {
 
     /// HP per game hour lost to bleeding and festering (not the infection).
     pub fn losing_per_h(&self, t: &HealthTuning) -> f32 {
-        self.wounds.iter().map(|w| w.bleed_per_h(t) + if w.festering { t.fester_hp_per_h } else { 0.0 }).sum()
+        // A fold from 0.0, not `sum`: the float sum of nothing is -0.0, which prints as "-0.0" (#90).
+        self.wounds.iter().fold(0.0, |hp, w| hp + (w.bleed_per_h(t) + if w.festering { t.fester_hp_per_h } else { 0.0 }))
     }
 
     /// Pain now: the wounds' and treatments' less what painkillers take away (#10).
     pub fn pain(&self, t: &HealthTuning) -> f32 {
-        let wounds: f32 = self.wounds.iter().map(|w| w.pain(t)).sum();
+        let wounds = self.wounds.iter().fold(0.0, |pain, w| pain + w.pain(t));
         (wounds + self.aid.sting_pain() - self.aid.relief(&t.first_aid)).max(0.0)
     }
 

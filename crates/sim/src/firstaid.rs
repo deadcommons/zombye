@@ -290,7 +290,7 @@ impl Aid {
     }
 
     pub fn sting_pain(&self) -> f32 {
-        self.stings.iter().map(|s| s.pain).sum()
+        self.stings.iter().fold(0.0, |pain, s| pain + s.pain)
     }
 
     /// Two painkiller doses (or more) working at once.

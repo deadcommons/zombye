@@ -154,7 +154,7 @@ impl Inventory {
 
     /// Room for carried items (litres): pockets plus the bags in the slots.
     pub fn room(&self, items: &[ItemDef], pockets: f32) -> f32 {
-        let bags: f32 = Slot::ALL.iter().filter_map(|&s| self.slot(s)).filter_map(|s| items.get(s.item as usize)?.bag.as_ref().map(|b| b.capacity_l)).sum();
+        let bags = Slot::ALL.iter().filter_map(|&s| self.slot(s)).filter_map(|s| items.get(s.item as usize)?.bag.as_ref().map(|b| b.capacity_l)).fold(0.0, |l, c| l + c);
         pockets + bags
     }
 
@@ -165,7 +165,7 @@ impl Inventory {
 
     /// Speed lost to awkward bags (the sum of their `slow`).
     fn bag_slow(&self, items: &[ItemDef]) -> f32 {
-        Slot::ALL.iter().filter_map(|&s| self.slot(s)).filter_map(|s| items.get(s.item as usize)?.bag.as_ref().map(|b| b.slow)).sum()
+        Slot::ALL.iter().filter_map(|&s| self.slot(s)).filter_map(|s| items.get(s.item as usize)?.bag.as_ref().map(|b| b.slow)).fold(0.0, |a, b| a + b)
     }
 }
 

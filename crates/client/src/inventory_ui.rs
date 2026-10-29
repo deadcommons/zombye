@@ -594,7 +594,7 @@ fn rebuild(
             });
             // The open container.
             if let Some(cv) = view.as_ref().and_then(|v| v.open.as_ref()) {
-                let used: f32 = cv.stacks.iter().map(|s| items.get(s.item as usize).map_or(0.0, |d| d.volume_l * s.count as f32)).sum();
+                let used = zombye_sim::inventory::stacks_volume(items, &cv.stacks);
                 column(cols, &format!("{} ({used:.1} of {:.0} L)", cv.name, cv.room_l), "click: to bags", |col| {
                     if cv.stacks.is_empty() {
                         dim(col, "empty".into());
