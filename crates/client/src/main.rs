@@ -116,6 +116,11 @@ pub struct Options {
     pub find: Option<String>,
     pub filter: Option<String>,
     pub pick: Vec<u32>,
+    /// For recordings: Ctrl-click carried row A then Shift-click row B, once SECS have gone by
+    /// (`--pick-range A,B[@SECS]`, default at once), and press the bar's "to floor" after
+    /// `--drop-picked-after SECS`.
+    pub pick_range: Option<(u32, u32, f32)>,
+    pub drop_picked_after: Option<f32>,
     /// Offscreen, draw the HUD and panels too (`--hud`; without it the picture is the world alone).
     pub hud: bool,
     /// Show the tooltip of the `N`th status tag (from 0), as if the pointer were over it
@@ -186,6 +191,14 @@ fn parse_point(text: &str) -> Option<[f32; 2]> {
     p.iter().all(|v: &f32| v.is_finite()).then_some(p)
 }
 
+/// `"1,4@2.5"` → (1, 4, 2.5); `"1,4"` → (1, 4, 0).
+fn parse_pick_range(text: &str) -> Option<(u32, u32, f32)> {
+    let (rows, after) = text.split_once('@').unwrap_or((text, "0"));
+    let (a, b) = rows.split_once(',')?;
+    let after: f32 = after.trim().parse().ok().filter(|s: &f32| s.is_finite() && *s >= 0.0)?;
+    Some((a.trim().parse().ok()?, b.trim().parse().ok()?, after))
+}
+
 impl Options {
     fn from_args() -> Self {
         Self::parse(&std::env::args().skip(1).collect::<Vec<_>>())
@@ -220,6 +233,8 @@ impl Options {
             find: value("--find"),
             filter: value("--filter"),
             pick: value("--pick").map_or(Vec::new(), |v| v.split(',').filter_map(|k| k.trim().parse().ok()).collect()),
+            pick_range: value("--pick-range").and_then(|v| parse_pick_range(&v)),
+            drop_picked_after: value("--drop-picked-after").and_then(|v| v.parse().ok()),
             hover_tag: value("--hover-tag").and_then(|v| v.parse().ok()),
             god: flag("--god"),
             ignored: flag("--ignored"),

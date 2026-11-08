@@ -6,7 +6,8 @@
 //!
 //! Each save has one player in a bedroom of the spawn house: `tags` with most status tags showing,
 //! `make` with things to make, one craft under way and one queued, `skills` with XP in several skills,
-//! `tired` tired but awake (the narrower view), `asleep` asleep on the bed at night.
+//! `tired` tired but awake (the narrower view), `asleep` asleep on the bed at night, `bags` a hiking pack
+//! full of different things (for picking several and ranges: `--pick-range 1,5`).
 
 use std::path::PathBuf;
 
@@ -74,6 +75,15 @@ fn review_saves() {
     }
     step(&mut w, 2);
     save(&w, "skills");
+
+    // A pack full of different things, one stack each.
+    let (mut w, id) = world();
+    assert!(w.hold_item(id, Slot::Back, "hiking_pack"));
+    for (item, n) in [("tinned_beans", 3), ("water_bottle", 2), ("rag", 4), ("crackers", 1), ("t_shirt", 1), ("tinned_soup", 2), ("duct_tape", 1), ("candle", 2), ("matches", 1), ("plasters", 1)] {
+        w.give_item(id, item, n);
+    }
+    step(&mut w, 2);
+    save(&w, "bags");
 
     // Tired but awake, then asleep on the bed at night.
     let (mut w, id) = world();

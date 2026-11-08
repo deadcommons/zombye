@@ -95,7 +95,7 @@ cargo test --release --workspace
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY --pick N,N --skills --health --hover-tag N --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V`
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --skills --health --hover-tag N --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V`
 (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost).
@@ -684,7 +684,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   up or search here" (`inventory::NOTHING_HERE`).
 - **Client:** the inventory panel (`inventory_ui.rs`, Tab or I): your slots, worn and carried stacks with weights, load
   against the limit with the burden stage, the open container and the floor side by side. Click a row to move it
-  (yours into the open container, or the floor; theirs into your bags; slots off), Shift-click for one, right-click a
+  (yours into the open container, or the floor; theirs into your bags; slots off), Alt-click (Option on a Mac) for one, right-click a
   carried stack to equip, wear or eat it. The latest note shows at its foot, and under the HUD for a few seconds when
   it's shut (the same note again only keeps it up, and isn't printed again). One click is one request: row observers
   only record presses, `send_clicks` sends at most one per button per frame and none for a stack already on its way
@@ -694,9 +694,12 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   **Finding and moving several** (#94): a search box over the columns (`/` or a click to type; Enter or Esc stops; while
   typing every other key is held back, `inventory_ui::TextEntry`, which key handlers in `PreUpdate` run after) and
   category chips (Food, Drink, Medical, Weapons, Clothing, Tools, Bags, Other) narrow every column but your hand and
-  bag slots; each column's title says where a click sends things; Ctrl-click picks rows (a picked row always shows),
+  bag slots; each column's title says where a click sends things; Ctrl-click picks rows (a picked row always shows), Shift-click every row from the last one picked to it in that column
+  (only the rows on show, so a range under a search skips what it hides),
   and a bar under the columns sends every picked stack to the bags, the open container or the floor at once.
-  `--find TEXT`, `--filter CATEGORY` and `--pick N,N` (carried stacks) start it that way, for pictures. Ground items are drawn as boxes of their size and colour,
+  `--find TEXT`, `--filter CATEGORY` and `--pick N,N` (carried stacks) start it that way, for pictures;
+  `--pick-range A,B[@SECS]` Ctrl-clicks carried row A and Shift-clicks row B (after SECS), and `--drop-picked-after SECS`
+  presses the bar's "to floor", for recordings. Ground items are drawn as boxes of their size and colour,
   weapons as bars. Under the columns, the Make list (see Crafting).
 
 ## Crafting (`sim::crafting`, `assets/data/items/recipes.ron`; #12)
