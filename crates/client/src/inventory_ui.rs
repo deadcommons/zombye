@@ -4,7 +4,7 @@
 //! from a container or the floor into your pockets and bags, off a slot into your bags.
 //! Right-click one of your carried stacks to equip, wear, eat or drink it, take a pill, or use a
 //! dressing, antiseptic or sewing kit on a wound (it opens the health panel to pick the wound,
-//! #10). Shift-click moves just one of a stack. Everything goes to the server as intents; the panel only shows what the latest
+//! #10). Alt-click (Option-click on a Mac) moves just one of a stack. Everything goes to the server as intents; the panel only shows what the latest
 //! snapshot said. Moving takes a moment (the server queues it): the header shows how busy you are.
 //! The last answer to a request (done, or why not) shows at the foot of the panel, and for a few
 //! seconds under the HUD when the panel is shut (the same answer again just stays up longer).
@@ -20,9 +20,12 @@
 //!
 //! **Finding and moving several** (#94): a search box (`/` or a click to type, Enter or Esc to
 //! stop; while typing, the game's keys are held back) and category chips narrow every column; each
-//! column's title says where a click sends things; Ctrl-click picks rows, and the bar under the
-//! columns moves every picked stack to your bags, the open container or the floor at once.
-//! `--find TEXT`, `--filter CATEGORY` and `--pick N,N` set them from the start (for pictures).
+//! column's title says where a click sends things; Ctrl-click picks rows, Shift-click picks every
+//! row from the last one picked to it in that column (only rows on show: the search and chips
+//! narrow a range too), and the bar under the columns moves every picked stack to your bags, the
+//! open container or the floor at once. `--find TEXT`, `--filter CATEGORY` and `--pick N,N` set
+//! them from the start (for pictures); `--pick-range A,B[@SECS]` Ctrl-clicks carried row A and
+//! Shift-clicks row B, and `--drop-picked-after SECS` presses the bar's "to floor" (for recordings).
 //!
 //! **Make** (#12): under the columns, every recipe; the ones you have the inputs and tools for
 //! (by the server's own rule, `crafting::check`, over our private view) can be clicked to make
@@ -79,7 +82,7 @@ const FLIGHT_SECS: f32 = 3.0;
 struct RowClick {
     action: RowAction,
     button: PointerButton,
-    /// Shift was down: just one of the stack.
+    /// Alt (Option on a Mac) was down: just one of the stack.
     one: bool,
 }
 
@@ -150,10 +153,72 @@ impl Find {
     }
 }
 
-/// Stacks picked with Ctrl-click: where each is, its index there and its item (to tell it's still
-/// the same stack after things move).
+/// A row of the panel: where its stack is, its index there and its item (to tell it's still the
+/// same stack after things move).
+type Key = (Place, u32, u16);
+
+/// Which column a row is in: ranges (Shift-click) stay within one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Column {
+    You,
+    Container,
+    Floor,
+}
+
+impl Column {
+    fn of(place: Place) -> Column {
+        match place {
+            Place::Slot(_) | Place::Worn | Place::Carried => Column::You,
+            Place::Container(_) => Column::Container,
+            Place::Ground => Column::Floor,
+        }
+    }
+}
+
+/// Stacks picked with Ctrl-click and Shift-click, and the row a Shift-click's range starts from
+/// (the last row Ctrl- or Shift-clicked with nothing to range from).
 #[derive(Resource, Default, Debug, Clone, PartialEq)]
-struct Picked(Vec<(Place, u32, u16)>);
+struct Picked {
+    keys: Vec<Key>,
+    anchor: Option<Key>,
+}
+
+impl Picked {
+    /// Ctrl-click: pick the row, or unpick it if it was; ranges start from it next.
+    fn toggle(&mut self, key: Key) {
+        match self.keys.iter().position(|k| *k == key) {
+            Some(i) => {
+                self.keys.remove(i);
+            }
+            None => self.keys.push(key),
+        }
+        self.anchor = Some(key);
+    }
+
+    /// Shift-click: pick every row from the anchor to this one as `listed` shows them (the rows
+    /// drawn, in order: what the search and chips leave), added to what is picked already. With
+    /// no anchor in the same column on screen, just this row, which becomes the anchor.
+    fn extend_to(&mut self, key: Key, listed: &[Key]) {
+        let col = Column::of(key.0);
+        let rows: Vec<Key> = listed.iter().copied().filter(|k| Column::of(k.0) == col).collect();
+        let range = match (self.anchor.and_then(|a| rows.iter().position(|k| *k == a)), rows.iter().position(|k| *k == key)) {
+            (Some(a), Some(b)) => &rows[a.min(b)..=a.max(b)],
+            _ => {
+                self.anchor = Some(key);
+                std::slice::from_ref(&key)
+            }
+        };
+        for k in range {
+            if !self.keys.contains(k) {
+                self.keys.push(*k);
+            }
+        }
+    }
+}
+
+/// The item rows the panel drew last, in order (for Shift-click's ranges).
+#[derive(Resource, Default, Debug)]
+struct Listed(Vec<Key>);
 
 /// Where the bar under the columns was asked to send every picked stack this frame.
 #[derive(Resource, Default)]
@@ -233,11 +298,12 @@ impl Plugin for InventoryUiPlugin {
         let options = app.world().get_resource::<crate::Options>().cloned();
         let open = options.as_ref().is_some_and(|o| o.inventory);
         let find = Find { query: options.as_ref().and_then(|o| o.find.clone()).unwrap_or_default(), typing: false, group: options.as_ref().and_then(|o| o.filter.as_deref()).and_then(Group::parse) };
-        let picked = Picked(options.as_ref().map_or(Vec::new(), |o| o.pick.iter().map(|&k| (Place::Carried, k, u16::MAX)).collect()));
+        let picked = Picked { keys: options.as_ref().map_or(Vec::new(), |o| o.pick.iter().map(|&k| (Place::Carried, k, u16::MAX)).collect()), anchor: None };
         app.insert_resource(InventoryPanel { open })
             .insert_resource(find)
             .insert_resource(picked)
             .init_resource::<SendPicked>()
+            .init_resource::<Listed>()
             .init_resource::<LastNote>()
             .init_resource::<Shown>()
             .init_resource::<Clicks>()
@@ -246,7 +312,7 @@ impl Plugin for InventoryUiPlugin {
             .init_resource::<MakeUi>()
             .add_systems(Startup, spawn)
             .add_systems(PreUpdate, type_search.in_set(TextEntry).after(bevy::input::InputSystems))
-            .add_systems(Update, (toggle, keep_note, track_flight, prune_picked, send_clicks, send_picked, flush, rebuild).chain());
+            .add_systems(Update, (toggle, keep_note, track_flight, prune_picked, script_picks, send_clicks, send_picked, flush, rebuild).chain());
     }
 }
 
@@ -362,7 +428,7 @@ fn stack_kg(items: &[ItemDef], s: &ItemStack) -> f32 {
     items.get(s.item as usize).map_or(0.0, |d| d.weight_kg * s.count as f32)
 }
 
-/// What a click on a row sends: left (whole stack, or one with Shift) and right (always about
+/// What a click on a row sends: left (whole stack, or one with Alt) and right (always about
 /// one of a carried stack). `stack` is what the row shows.
 #[derive(Clone, Debug)]
 struct RowAction {
@@ -400,7 +466,7 @@ fn move_intent(player: u32, from: Place, index: u32, to: Place, count: u16) -> O
 /// Forget picked stacks that have moved or gone; picks from `--pick` (item not yet known) take the
 /// item they find.
 fn prune_picked(link: Res<ServerLink>, me: Res<LocalPlayer>, mut picked: ResMut<Picked>) {
-    if picked.0.is_empty() {
+    if picked.keys.is_empty() {
         return;
     }
     let (Some(v), floor) = panel_view(&link, me.id) else { return };
@@ -414,9 +480,36 @@ fn prune_picked(link: Res<ServerLink>, me: Res<LocalPlayer>, mut picked: ResMut<
             Place::Ground => floor.iter().find(|(g, _)| *g == index).map(|(_, s)| s.item),
         }
     };
-    let kept: Vec<(Place, u32, u16)> = picked.0.iter().filter_map(|&(p, i, item)| at(p, i).filter(|now| item == u16::MAX || item == *now).map(|now| (p, i, now))).collect();
-    if kept != picked.0 {
-        picked.0 = kept;
+    let kept: Vec<(Place, u32, u16)> = picked.keys.iter().filter_map(|&(p, i, item)| at(p, i).filter(|now| item == u16::MAX || item == *now).map(|now| (p, i, now))).collect();
+    if kept != picked.keys {
+        picked.keys = kept;
+    }
+}
+
+/// `--pick-range A,B[@SECS]` and `--drop-picked-after SECS`, for recordings: once SECS have gone
+/// by and the panel shows carried rows A and B, Ctrl-click A and Shift-click B (as a player
+/// would); later, press the bar's "to floor". Each happens once.
+fn script_picks(time: Res<Time>, options: Option<Res<crate::Options>>, listed: Res<Listed>, mut picked: ResMut<Picked>, mut send: ResMut<SendPicked>, mut done: Local<(bool, bool)>) {
+    let Some(o) = options else { return };
+    let now = time.elapsed_secs();
+    if let Some((a, b, after)) = o.pick_range
+        && !done.0
+        && now >= after
+    {
+        let carried = |i: u32| listed.0.iter().copied().find(|k| k.0 == Place::Carried && k.1 == i);
+        if let (Some(a), Some(b)) = (carried(a), carried(b)) {
+            picked.toggle(a);
+            picked.extend_to(b, &listed.0);
+            done.0 = true;
+        }
+    }
+    if let Some(after) = o.drop_picked_after
+        && !done.1
+        && now >= after
+        && !picked.keys.is_empty()
+    {
+        send.0 = Some(Place::Ground);
+        done.1 = true;
     }
 }
 
@@ -427,7 +520,8 @@ fn send_picked(time: Res<Time>, me: Res<LocalPlayer>, link: Res<ServerLink>, mut
     let Some(v) = view else { return };
     let now = time.elapsed_secs();
     // From the back of each list first, so the indices of the ones still to go don't shift.
-    let mut list = std::mem::take(&mut picked.0);
+    let mut list = std::mem::take(&mut picked.keys);
+    picked.anchor = None;
     list.sort_by_key(|&(_, i, _)| std::cmp::Reverse(i));
     for (from, index, item) in list {
         let stack = match from {
@@ -511,6 +605,7 @@ fn rebuild(
     flight: Res<InFlight>,
     find: Res<Find>,
     picked: Res<Picked>,
+    mut listed: ResMut<Listed>,
     mut make_ui: ResMut<MakeUi>,
     options: Option<Res<crate::Options>>,
     mut shown: ResMut<Shown>,
@@ -534,7 +629,7 @@ fn rebuild(
     let note_fresh = time.elapsed_secs() - last.at < NOTE_SECS * 2.0;
     // (The game hour too: food goes off as time passes.)
     let now = link.curr.game_minute;
-    let signature = format!("{view:?}|{floor:?}|{:.1}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}", busy.0, busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.0, make_ui.open, make_ui.favs);
+    let signature = format!("{view:?}|{floor:?}|{:.1}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}", busy.0, busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.keys, make_ui.open, make_ui.favs);
     if shown.0 == signature {
         return;
     }
@@ -543,10 +638,11 @@ fn rebuild(
     let items = &join.items;
     let open = view.as_ref().and_then(|v| v.open.as_ref().map(|c| c.id));
     let open_name = view.as_ref().and_then(|v| v.open.as_ref().map(|c| c.name.to_lowercase()));
-    let is_picked = |from: Place, index: u32, s: &ItemStack| picked.0.contains(&(from, index, s.item));
+    let is_picked = |from: Place, index: u32, s: &ItemStack| picked.keys.contains(&(from, index, s.item));
     let shows = |s: &ItemStack| find.shows(items, s);
-    // A picked stack always shows, so what the bar will move is in view.
-    let shown_at = |from: Place, index: u32, s: &ItemStack| shows(s) || is_picked(from, index, s);
+    let shown_at = |from: Place, index: u32, s: &ItemStack| on_show(&find, items, &picked, from, index, s);
+    // The item rows drawn, in order, for Shift-click's ranges.
+    let mut rows: Vec<Key> = Vec::new();
     commands.entity(root).with_children(|c| {
         header(c, view.as_ref(), busy);
         toolbar(c, &find);
@@ -558,12 +654,12 @@ fn rebuild(
                 let inv = &v.inventory;
                 for (label, slot) in [("Hand", Slot::Hand), ("Other hand", Slot::OffHand), ("Back", Slot::Back), ("Shoulder", Slot::Shoulder)] {
                     match inv.slot(slot) {
-                        Some(s) => row(col, format!("{label}: {}{}", name_of(items, now, &s), moving(&flight, Place::Slot(slot), 0, &s)), format!("{:.1} kg", stack_kg(items, &s)), RowAction { stack: s, left: Some((Place::Slot(slot), 0, Place::Carried)), right: None, use_on: None, craft: None }, is_picked(Place::Slot(slot), 0, &s)),
+                        Some(s) => item_row(&mut rows, col, format!("{label}: {}{}", name_of(items, now, &s), moving(&flight, Place::Slot(slot), 0, &s)), format!("{:.1} kg", stack_kg(items, &s)), RowAction { stack: s, left: Some((Place::Slot(slot), 0, Place::Carried)), right: None, use_on: None, craft: None }, is_picked(Place::Slot(slot), 0, &s)),
                         None => dim(col, format!("{label}: -")),
                     }
                 }
                 for (k, s) in inv.worn.iter().enumerate().filter(|(k, s)| shown_at(Place::Worn, *k as u32, s)) {
-                    row(col, format!("Worn: {}{}", name_of(items, now, s), moving(&flight, Place::Worn, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Worn, k as u32, Place::Carried)), right: None, use_on: None, craft: None }, is_picked(Place::Worn, k as u32, s));
+                    item_row(&mut rows, col, format!("Worn: {}{}", name_of(items, now, s), moving(&flight, Place::Worn, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Worn, k as u32, Place::Carried)), right: None, use_on: None, craft: None }, is_picked(Place::Worn, k as u32, s));
                 }
                 dim(col, format!("Carried ({:.1} of {:.0} L):", v.carry.used_l, v.carry.room_l));
                 if inv.carried.is_empty() {
@@ -589,7 +685,7 @@ fn rebuild(
                         (Some(m), Some(o)) => format!(" ({} of {} left)", m.uses.saturating_sub(o.used), m.uses),
                         _ => String::new(),
                     };
-                    row(col, format!("  {}{left}{}", name_of(items, now, s), moving(&flight, Place::Carried, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Carried, k as u32, to)), right, use_on, craft: None }, is_picked(Place::Carried, k as u32, s));
+                    item_row(&mut rows, col, format!("  {}{left}{}", name_of(items, now, s), moving(&flight, Place::Carried, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Carried, k as u32, to)), right, use_on, craft: None }, is_picked(Place::Carried, k as u32, s));
                 }
             });
             // The open container.
@@ -602,7 +698,7 @@ fn rebuild(
                         dim(col, "nothing that matches".into());
                     }
                     for (k, s) in cv.stacks.iter().enumerate().filter(|(k, s)| shown_at(Place::Container(cv.id), *k as u32, s)) {
-                        row(col, format!("{}{}", name_of(items, now, s), moving(&flight, Place::Container(cv.id), k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Container(cv.id), k as u32, Place::Carried)), right: None, use_on: None, craft: None }, is_picked(Place::Container(cv.id), k as u32, s));
+                        item_row(&mut rows, col, format!("{}{}", name_of(items, now, s), moving(&flight, Place::Container(cv.id), k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Container(cv.id), k as u32, Place::Carried)), right: None, use_on: None, craft: None }, is_picked(Place::Container(cv.id), k as u32, s));
                     }
                 });
             }
@@ -614,7 +710,7 @@ fn rebuild(
                     dim(col, "nothing that matches".into());
                 }
                 for (id, s) in floor.iter().filter(|(id, s)| shown_at(Place::Ground, *id, s)) {
-                    row(col, format!("{}{}", name_of(items, now, s), moving(&flight, Place::Ground, *id, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Ground, *id, Place::Carried)), right: None, use_on: None, craft: None }, is_picked(Place::Ground, *id, s));
+                    item_row(&mut rows, col, format!("{}{}", name_of(items, now, s), moving(&flight, Place::Ground, *id, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Ground, *id, Place::Carried)), right: None, use_on: None, craft: None }, is_picked(Place::Ground, *id, s));
                 }
                 if open.is_none() {
                     dim(col, "E: search the cupboard,".into());
@@ -622,18 +718,19 @@ fn rebuild(
                 }
             });
         });
-        if !picked.0.is_empty() {
-            picked_bar(c, picked.0.len(), open.zip(open_name.clone()));
+        if !picked.keys.is_empty() {
+            picked_bar(c, picked.keys.len(), open.zip(open_name.clone()));
         }
         if let Some(v) = &view {
             make(c, &join, v, busy.0, &flight, &make_ui);
         }
-        c.spawn((Text::new("Click: move (a recipe: make it; right-click pins it)   Shift-click: just one   Ctrl-click: pick several"), font(12.0), TextColor(DIM)));
-        c.spawn((Text::new("Right-click: equip / wear / eat / use on a wound   /: search   Tab: close"), font(12.0), TextColor(DIM)));
+        c.spawn((Text::new("Click: move (a recipe: make it; right-click pins it)   Ctrl-click: pick   Shift-click: pick a range"), font(12.0), TextColor(DIM)));
+        c.spawn((Text::new("Right-click: equip / wear / eat / use on a wound   Alt-click: just one   /: search   Tab: close"), font(12.0), TextColor(DIM)));
         if note_fresh && !last.text.is_empty() {
             c.spawn((Text::new(last.text.clone()), font(14.0), TextColor(if last.ok { OK } else { NO })));
         }
     });
+    listed.0 = rows;
 }
 
 /// The Make list's own state (#96): which families are open and which recipes are pinned.
@@ -893,8 +990,22 @@ fn picked_bar(c: &mut ChildSpawnerCommands, n: usize, open: Option<(u32, String)
             chip(bar, format!("to {name}"), false).observe(move |_: On<PointerPress>, mut send: ResMut<SendPicked>| send.0 = Some(Place::Container(id)));
         }
         chip(bar, "to floor".into(), false).observe(|_: On<PointerPress>, mut send: ResMut<SendPicked>| send.0 = Some(Place::Ground));
-        chip(bar, "clear".into(), false).observe(|_: On<PointerPress>, mut picked: ResMut<Picked>| picked.0.clear());
+        chip(bar, "clear".into(), false).observe(|_: On<PointerPress>, mut picked: ResMut<Picked>| *picked = Picked::default());
     });
+}
+
+/// Whether the stack at `from`/`index` gets a row: it fits the search and chips, or it is picked
+/// (a picked stack always shows, so what the bar will move is in view).
+fn on_show(find: &Find, items: &[ItemDef], picked: &Picked, from: Place, index: u32, s: &ItemStack) -> bool {
+    find.shows(items, s) || picked.keys.contains(&(from, index, s.item))
+}
+
+/// [`row`] for a stack, noted in `rows` (the order Shift-click ranges over).
+fn item_row(rows: &mut Vec<Key>, col: &mut ChildSpawnerCommands, label: String, kg: String, action: RowAction, picked: bool) {
+    if let Some((from, index, _)) = action.left {
+        rows.push((from, index, action.stack.item));
+    }
+    row(col, label, kg, action, picked);
 }
 
 fn dim(col: &mut ChildSpawnerCommands, text: String) {
@@ -903,7 +1014,7 @@ fn dim(col: &mut ChildSpawnerCommands, text: String) {
 
 /// A clickable row: `label` on the left, `kg` on the right, highlighted if `picked`. A press is
 /// only recorded here ([`Clicks`]); [`send_clicks`] decides what it sends. Ctrl-click picks it
-/// (or unpicks it) instead.
+/// (or unpicks it) instead, and Shift-click picks every row from the last one picked to it.
 fn row(col: &mut ChildSpawnerCommands, label: String, kg: String, action: RowAction, picked: bool) {
     let rest = if picked { ROW_PICKED } else { ROW };
     col.spawn((
@@ -924,21 +1035,21 @@ fn row(col: &mut ChildSpawnerCommands, label: String, kg: String, action: RowAct
             bg.0 = rest;
         }
     })
-    .observe(move |ev: On<PointerPress>, keys: Res<ButtonInput<KeyCode>>, mut clicks: ResMut<Clicks>, mut picked: Option<ResMut<Picked>>| {
-        if keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight])
+    .observe(move |ev: On<PointerPress>, keys: Res<ButtonInput<KeyCode>>, mut clicks: ResMut<Clicks>, mut picked: Option<ResMut<Picked>>, listed: Option<Res<Listed>>| {
+        let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+        let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
+        if (shift || ctrl)
             && ev.button == PointerButton::Primary
             && let (Some((from, index, _)), Some(picked)) = (action.left, picked.as_mut())
         {
             let key = (from, index, action.stack.item);
-            match picked.0.iter().position(|k| *k == key) {
-                Some(i) => {
-                    picked.0.remove(i);
-                }
-                None => picked.0.push(key),
+            match (shift, &listed) {
+                (true, Some(listed)) => picked.extend_to(key, &listed.0),
+                _ => picked.toggle(key),
             }
             return;
         }
-        let one = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+        let one = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
         clicks.0.push(RowClick { action: action.clone(), button: ev.button, one });
     });
 }
@@ -958,7 +1069,7 @@ mod tests {
         RowClick { action: RowAction { stack, left, right: None, use_on: None, craft: None }, button, one }
     }
 
-    /// A stack asked for is asked for once; one at a time (Shift) as many times as there are;
+    /// A stack asked for is asked for once; one at a time (Alt) as many times as there are;
     /// once the view changes (the answer came), it can be asked for again.
     #[test]
     fn a_stack_on_its_way_is_not_asked_for_again() {
@@ -972,7 +1083,7 @@ mod tests {
         // The snapshot changed: answered. (`update` first takes the content as it is.)
         f.update("after".into(), false, 0.4);
         assert!(click_intent(&c, 1, &mut f, 0.5).is_some());
-        // Shift-clicks on three: three requests, then none.
+        // Alt-clicks on three: three requests, then none.
         let mut f = InFlight::default();
         let one = click(take, beans(3), PointerButton::Primary, true);
         let sent = (0..5).filter(|k| click_intent(&one, 1, &mut f, *k as f32 * 0.01).is_some()).count();
@@ -989,6 +1100,85 @@ mod tests {
         let off = click(Some((Place::Slot(Slot::Hand), 0, Place::Carried)), beans(1), PointerButton::Primary, false);
         assert!(matches!(click_intent(&off, 1, &mut f, 0.0), Some(Intent::Unequip { .. })));
         assert!(click_intent(&off, 1, &mut f, 0.0).is_none());
+    }
+
+    /// Carried rows 0..n of beans (item 3), as the You column lists them.
+    fn carried(n: u32) -> Vec<Key> {
+        (0..n).map(|i| (Place::Carried, i, 3)).collect()
+    }
+
+    /// Shift-click picks every row from the anchor (the last row Ctrl-clicked) to this one,
+    /// forward or backward; with no anchor, just the row (which becomes the anchor).
+    #[test]
+    fn shift_click_picks_a_range_forward_and_backward() {
+        let rows = carried(6);
+        let mut p = Picked::default();
+        p.toggle(rows[1]);
+        p.extend_to(rows[4], &rows);
+        assert_eq!(p.keys, rows[1..=4].to_vec(), "forward");
+        let mut p = Picked::default();
+        p.toggle(rows[4]);
+        p.extend_to(rows[1], &rows);
+        let mut got = p.keys.clone();
+        got.sort_by_key(|k| k.1);
+        assert_eq!(got, rows[1..=4].to_vec(), "backward");
+        // No anchor: just the one row, and it anchors the next range.
+        let mut p = Picked::default();
+        p.extend_to(rows[2], &rows);
+        assert_eq!(p.keys, vec![rows[2]]);
+        p.extend_to(rows[0], &rows);
+        assert_eq!(p.keys.len(), 3);
+        // A range doesn't reach into another column: an anchor on the floor starts afresh.
+        let mut listed = rows.clone();
+        listed.push((Place::Ground, 40, 3));
+        let mut p = Picked::default();
+        p.toggle((Place::Ground, 40, 3));
+        p.extend_to(rows[3], &listed);
+        assert_eq!(p.keys, vec![(Place::Ground, 40, 3), rows[3]]);
+    }
+
+    /// Ctrl adds single rows and Shift adds a range to them; neither drops what was picked.
+    #[test]
+    fn ctrl_and_shift_add_up() {
+        let rows = carried(8);
+        let mut p = Picked::default();
+        p.toggle(rows[0]);
+        p.toggle(rows[6]);
+        // Shift from the last Ctrl-click (6) to 3: 3..=6, with 0 still picked.
+        p.extend_to(rows[3], &rows);
+        let mut got = p.keys.clone();
+        got.sort_by_key(|k| k.1);
+        assert_eq!(got, vec![rows[0], rows[3], rows[4], rows[5], rows[6]]);
+        // Ctrl-click one in the range off again; another Shift-click doesn't pick it twice.
+        p.toggle(rows[4]);
+        assert!(!p.keys.contains(&rows[4]));
+        p.extend_to(rows[7], &rows);
+        let mut got = p.keys.clone();
+        got.sort_by_key(|k| k.1);
+        assert_eq!(got, vec![rows[0], rows[3], rows[4], rows[5], rows[6], rows[7]], "from 4 (the last Ctrl-click) to 7");
+        // Shift-click again extends from the same anchor: nothing new, nothing doubled.
+        p.extend_to(rows[5], &rows);
+        assert_eq!(p.keys.len(), 6);
+    }
+
+    /// A range across an active search picks only the rows on show: the ones the filter hides
+    /// between the two ends stay unpicked.
+    #[test]
+    fn a_range_under_a_search_picks_only_the_rows_shown() {
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/data");
+        let config = zombye_net::content::load_config(&data, 1).unwrap();
+        let items = &config.items;
+        let stack = |id: &str| ItemStack::one(items.iter().position(|d| d.id == id).unwrap() as u16);
+        let carried = [stack("tinned_beans"), stack("rag"), stack("tinned_beans"), stack("kitchen_knife"), stack("tinned_beans"), stack("rag")];
+        let find = Find { query: "bean".into(), typing: false, group: None };
+        let mut p = Picked::default();
+        // What the panel lists under the search, by the same rule `rebuild` draws rows by.
+        let listed = |p: &Picked| -> Vec<Key> { carried.iter().enumerate().filter(|(k, s)| on_show(&find, items, p, Place::Carried, *k as u32, s)).map(|(k, s)| (Place::Carried, k as u32, s.item)).collect() };
+        let rows = listed(&p);
+        assert_eq!(rows.iter().map(|k| k.1).collect::<Vec<_>>(), vec![0, 2, 4]);
+        p.toggle(rows[0]);
+        p.extend_to(rows[2], &rows);
+        assert_eq!(p.keys.iter().map(|k| k.1).collect::<Vec<_>>(), vec![0, 2, 4], "the rag and the knife between are hidden, so not picked");
     }
 
     /// The search and the chips narrow by name (any case) and by category (#94).
@@ -1076,8 +1266,8 @@ mod tests {
     /// panel row in it. One press of the button on the row is one recorded press and one intent,
     /// however many frames go by and even if the panel is rebuilt under the cursor meanwhile; a
     /// second press on the same row while its stack is on its way sends nothing more.
-    #[test]
-    fn one_click_on_a_row_is_one_intent() {
+    /// A headless app with Bevy's input, a window, UI layout and picking, for clicking rows.
+    fn ui_app() -> App {
         let mut app = App::new();
         app.add_plugins((
             MinimalPlugins,
@@ -1095,6 +1285,76 @@ mod tests {
             bevy::ui::UiPlugin,
             bevy::picking::DefaultPickingPlugins,
         ));
+        app
+    }
+
+    /// Clicks on rows through Bevy's input and picking, with modifiers held: Ctrl picks a row,
+    /// Shift picks the range to it, Alt asks for just one of the stack (and picks nothing).
+    #[test]
+    fn modifier_clicks_pick_rows_and_alt_takes_one() {
+        let mut app = ui_app();
+        app.init_resource::<Clicks>().init_resource::<Picked>().init_resource::<Listed>();
+        app.world_mut().spawn(Camera2d);
+        let keys: Vec<Key> = carried(4);
+        app.world_mut().resource_mut::<Listed>().0 = keys.clone();
+        {
+            let world = app.world_mut();
+            let mut commands = world.commands();
+            commands.spawn(Node { position_type: PositionType::Absolute, top: px(0), left: px(0), width: px(300), flex_direction: FlexDirection::Column, ..default() }).with_children(|col| {
+                for k in &keys {
+                    row(col, format!("Beans {}", k.1), "0.4 kg".into(), RowAction { stack: beans(2), left: Some((k.0, k.1, Place::Ground)), right: None, use_on: None, craft: None }, false);
+                }
+            });
+            world.flush();
+        }
+        for _ in 0..3 {
+            app.update();
+        }
+        let window = app.world_mut().query_filtered::<Entity, With<PrimaryWindow>>().single(app.world()).unwrap();
+        // Rows are about 21 px tall (14 px text plus padding); find each one's centre from layout.
+        let centres: Vec<Vec2> = {
+            let mut q = app.world_mut().query::<(&ComputedNode, &UiGlobalTransform, &BackgroundColor)>();
+            let mut v: Vec<Vec2> = q.iter(app.world()).filter(|(_, _, bg)| bg.0 == ROW).map(|(_, t, _)| t.translation).collect();
+            v.sort_by(|a, b| a.y.total_cmp(&b.y));
+            v
+        };
+        assert_eq!(centres.len(), 4);
+        let click = |app: &mut App, at: Vec2, modifier: Option<KeyCode>| {
+            if let Some(m) = modifier {
+                app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(m);
+            }
+            let moved = CursorMoved { window, position: at, delta: None };
+            app.world_mut().write_message(moved.clone());
+            app.world_mut().write_message(WindowEvent::CursorMoved(moved));
+            app.update();
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                let e = MouseButtonInput { button: MouseButton::Left, state, window };
+                app.world_mut().write_message(e);
+                app.world_mut().write_message(WindowEvent::MouseButtonInput(e));
+                app.update();
+            }
+            if let Some(m) = modifier {
+                app.world_mut().resource_mut::<ButtonInput<KeyCode>>().release(m);
+            }
+            app.update();
+        };
+        click(&mut app, centres[3], Some(KeyCode::ControlLeft));
+        assert_eq!(app.world().resource::<Picked>().keys, vec![keys[3]]);
+        click(&mut app, centres[1], Some(KeyCode::ShiftLeft));
+        let mut got = app.world().resource::<Picked>().keys.clone();
+        got.sort_by_key(|k| k.1);
+        assert_eq!(got, keys[1..=3].to_vec(), "Shift-click picks 1 to 3");
+        assert!(app.world().resource::<Clicks>().0.is_empty(), "picking sends nothing");
+        click(&mut app, centres[0], Some(KeyCode::AltLeft));
+        let clicks = &app.world().resource::<Clicks>().0;
+        assert_eq!(clicks.len(), 1);
+        assert!(clicks[0].one, "Alt-click: just one");
+        assert_eq!(app.world().resource::<Picked>().keys.len(), 3, "Alt-click picks nothing");
+    }
+
+    #[test]
+    fn one_click_on_a_row_is_one_intent() {
+        let mut app = ui_app();
         app.init_resource::<Clicks>().init_resource::<InFlight>().init_resource::<Outbox>().init_resource::<ButtonInput<KeyCode>>();
         // `send_clicks` as the plugin runs it, for player 7, without the server behind it.
         let player = 7u32;
