@@ -14,6 +14,7 @@
 //!
 //! Options: `--zombies N` `--seed S` `--time HOUR` `--at X,Y` `--rotate` `--novsync`
 //! `--screenshot PATH` (saved after `--screenshot-after SECS[,SECS...]`, default 5) `--exit-after SECS` `--zoom METRES`
+//! `--pvp` (player against player on) `--duel` (PvP on, and another survivor with a crowbar comes at you)
 //! `--autoplay` (the player fights by itself) `--fight-demo` (a bat and a few zombies close by)
 //! `--siege` (outside your house with a bat, zombies battering its door) `--sneak` (start sneaking)
 //! `--inventory` / `--skills` / `--health` (start with that panel open) `--god` / `--ignored` (start with F1 / F2 on)
@@ -47,6 +48,7 @@
 
 mod audio;
 mod autoplay;
+mod duel;
 mod camera;
 mod character;
 mod daynight;
@@ -108,6 +110,12 @@ pub struct Options {
     /// Verification: start outside your house with a bat and a few zombies battering its door
     /// (`--siege`).
     pub siege: bool,
+    /// Player against player on in the world this client starts (`--pvp`; docs/PLAN.md §4.8).
+    /// Single-player has nobody else, so it matters for testing, `--duel` and later servers.
+    pub pvp: bool,
+    /// Verification: PvP on, you on open ground with a hammer and another survivor a few metres
+    /// off with a crowbar, who comes at you by itself (`--duel`; `duel.rs`).
+    pub duel: bool,
     /// Start sneaking (as if C had been pressed; `--sneak`).
     pub sneak: bool,
     /// Start with the inventory panel open (as if Tab had been pressed; `--inventory`).
@@ -261,6 +269,8 @@ impl Options {
             autoplay: flag("--autoplay"),
             fight_demo: flag("--fight-demo"),
             siege: flag("--siege"),
+            pvp: flag("--pvp") || flag("--duel"),
+            duel: flag("--duel"),
             sneak: flag("--sneak"),
             inventory: flag("--inventory"),
             skills: flag("--skills"),
@@ -399,7 +409,7 @@ fn main() {
             (hud::HudPlugin, inventory_ui::InventoryUiPlugin, health_ui::HealthUiPlugin, death::DeathPlugin, needs_ui::NeedsUiPlugin, action_ui::ActionUiPlugin, skills_ui::SkillsUiPlugin),
             fx::FxPlugin,
             survivor::SurvivorPlugin,
-            autoplay::AutoplayPlugin,
+            (autoplay::AutoplayPlugin, duel::DuelPlugin),
             (saving::SavingPlugin, ui_scale::UiScalePlugin),
         ));
     // An offscreen render has no audio device (Bevy's audio is off there).

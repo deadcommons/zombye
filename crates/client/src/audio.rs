@@ -734,7 +734,21 @@ fn world_events(
             CombatEventKind::Stomp => queue.at(Cue::Stomp, e.pos, 1.0),
             CombatEventKind::Shove if shoved.insert(e.player) => queue.at(Cue::Shove, e.pos, 1.0),
             CombatEventKind::Shove => {}
+            // Another player's blow (PvP): the weapon's hit, or a boot, and the cry.
+            CombatEventKind::PlayerHurt if e.by != 0 => {
+                let by_stomp = snap.players.iter().any(|p| p.id == e.by && p.action == Some(ActionKind::Stomp));
+                let blow = match category(e.by) {
+                    _ if by_stomp => Cue::Stomp,
+                    WeaponCategory::Unarmed => Cue::Punch,
+                    WeaponCategory::ShortBlade | WeaponCategory::Axe => Cue::HitBlade,
+                    WeaponCategory::ShortBlunt | WeaponCategory::LongBlunt => Cue::HitBlunt,
+                };
+                queue.at(blow, e.pos, crit);
+                queue.at(Cue::PlayerHurt, e.pos, 1.0);
+            }
             CombatEventKind::PlayerHurt => queue.at(Cue::PlayerHurt, e.pos, 1.0),
+            CombatEventKind::PlayerShoved if shoved.insert(e.by) => queue.at(Cue::Shove, e.pos, 1.0),
+            CombatEventKind::PlayerShoved => {}
         }
     }
     if snap.tick != track.last_tick {

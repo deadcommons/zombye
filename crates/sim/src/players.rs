@@ -158,6 +158,11 @@ pub struct Player {
     pub ready_in: f32,
     /// An action asked for just before the last one finished; starts as soon as it can.
     pub queued: Option<ActionKind>,
+    /// Reeling or on the ground after another player's blow (PvP, `crate::combat`): no moving, no
+    /// actions until it runs out. Saved in a section of its own (`crate::save`), not here, so the
+    /// player's layout (and the format) stays as it was.
+    #[serde(skip)]
+    pub knock: Option<Knock>,
     /// Developer toggles. Not saved: a loaded world has them off.
     #[serde(skip)]
     pub dev: DevFlags,
@@ -165,6 +170,15 @@ pub struct Player {
     /// not here, so the player's layout (and the format) stays as it was.
     #[serde(skip)]
     pub run: RunStats,
+}
+
+/// A player staggered or knocked down by another player's swing or shove (see `combat`).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Knock {
+    /// On the ground (a stomp can hit it; swings and shoves pass over), else reeling on its feet.
+    pub down: bool,
+    /// Seconds until it is over.
+    pub timer: f32,
 }
 
 /// Developer toggles for testing without dying (`World::set_dev`; `net::Intent::Dev`, F1 / F2 in
@@ -197,6 +211,7 @@ impl Player {
             action: None,
             ready_in: 0.0,
             queued: None,
+            knock: None,
             dev: DevFlags::default(),
             run: RunStats::default(),
         }

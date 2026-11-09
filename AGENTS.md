@@ -99,7 +99,7 @@ cargo test --release --workspace
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab worn|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --hover-tag N --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT --connect HOST[:PORT] --name NAME --password P`
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab worn|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --hover-tag N --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT --connect HOST[:PORT] --name NAME --password P`
 (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost). `--size WxH` makes the window exactly that many pixels, at scale factor 1, so a
@@ -109,6 +109,11 @@ For verifying combat without a keyboard: `--fight-demo` starts you on open groun
 `--autoplay` makes the local player fight by itself (`autoplay.rs`): it faces the nearest standing zombie and
 closes in, swings in reach, alternates shoves and swings when two or more crowd it, stomps a downed zombie at its
 feet, and gets up again 4 s after dying. It only sets the normal movement input and sends the normal intents.
+`--pvp` turns player against player on for the world the client starts (see Combat). `--duel` is for watching it:
+PvP on, you on open ground near the house with a claw hammer, and another survivor 5 m east with a crowbar who comes at you
+by itself (`duel.rs`: a player like any other, driven only by the intents a client sends: it closes in, swings, shoves
+every third blow, stamps on you when you're down); with `--autoplay` you fight back (autoplay takes other players as
+targets when PvP is on). Add `--zombies 0` to keep the town out of it.
 `--siege` starts you outside the house you'd wake up in, 10 m out from one of its shut doors (south or east walls
 first, so it faces the camera; with no door that has 10 m of open ground straight out, the one with the most, at least
 4 m, else a window), with a bat and five zombies between you and the door drawn to a noise just inside
@@ -458,6 +463,28 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
 - **Player health:** `hp` (100). Each `ZombieAttack` lands with `zombie_hit_chance`, plus
   `zombie_crowd_bonus` per extra zombie attacking that player, and leaves a wound on a body part (see Health and
   wounds; `landed`/`damage`/`part`/`wound` on the event). At 0 the player is dead: no movement or actions, zombies lose them.
+- **Player against player** (#65, PLAN §4.8; `CombatTuning::pvp`, off by default: single-player and co-op; the client's
+  `--pvp`, the server's `--pvp on|off`, MCP `pvp {on}`; saved with the settings; `--host` turns it on unless `--pvp off`,
+  see Multiplayer): with it on, other
+  living players are targets of swings, shoves and stomps **in the same list as zombies** (`combat::land`: same reach,
+  arc and clear walking line, nearest first up to `max_targets`, the same falloff); off, players are never targets.
+  A swing or stomp that lands (`World::strike_player`) rolls the same crit and damage as against a zombie, times
+  `pvp_damage_mult` (0.4: about eight blows of a bat, four of an axe), and leaves a **wound** on a body part (the zombie strikes' `front` / `behind` tables): blades and
+  axes gash, blunt weapons bruise or gash (`pvp_blunt_gash` 0.3, always on a crit), fists and boots bruise; worn clothing
+  may stop a cut to a bruise (`World::protection` × the wound's `protection`), which takes `pvp_stopped_damage` (0.5) of
+  it. No infection (only zombies carry it). HP goes through `hurt_player_by` (god mode: the blow lands, nothing is
+  lost), a blow wakes a sleeper and drops queued treatments and crafts. Then knockback (the victim is moved at once, up
+  to 1 m, stopped by walls, never into a window opening), a knockdown roll, else a stagger roll, with the same chances
+  and behind / staggered multipliers as for zombies. **`Player::knock`** (`players::Knock { down, timer }`): staggered
+  `player_stagger_secs` (0.5-0.8 s) or on the ground `player_down_secs` (1.4-2 s, time for two stomps); either way no moving (`MoveMods` speed 0,
+  set and cleared in `step_player_actions`, after movement, so prediction stays exact: only the tick of the push itself
+  is corrected by the snapshot), no actions, its action and item jobs dropped. Swings and shoves pass over a player on the
+  ground; a stomp hits only those (a bruise) and leaves them down. Each hit is a `PlayerHitEvent` in
+  `World::player_hit_events` (per tick) and a combat event for feedback: `PlayerHurt` with `by` (the attacker; 0 for a
+  zombie's strike) or `PlayerShoved`. A kill is `DeathCause::Survivor { by, weapon, stomp, part, wound }`
+  (`describe_with(weapons)`: "Killed by a survivor with a crowbar: a gash to the head", "Beaten to death by a survivor",
+  "Stamped to death by a survivor") and counts in the killer's `RunStats::player_kills`, apart from zombie `kills`.
+  `PlayerView::knock` carries the state; `knock` is in `state_hash` only while set (worlds without PvP hash as before).
 - Every number not in the weapon file is in `CombatTuning` (`WorldConfig::combat`, serde defaults). Ours.
 
 ## Health and wounds (`sim::health`; #9)
@@ -546,8 +573,10 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   (`combat::strike` kills, `World::step` movement, `step_item_jobs` / `player_pick_up`, `add_wound`, `hurt_player_by`).
   A respawn or a new world starts a fresh record. Not in `state_hash` (nothing reads it back) and `#[serde(skip)]` in
   `Player`, saved in its own `RUNS` section instead (see Saves).
+- `RunStats::player_kills` counts other players killed (PvP), apart from `kills`; `DeathCause::Survivor` names the
+  killer's weapon through `describe_with(weapons)` / `RunStats::cause_of_death_with` (the client and MCP use those).
 - `DeathCause`: `Zombie { part, wound }`, `BledOut { part, wound }` (the wound bleeding most), `Festering`,
-  `Infection { wound }` (the fever or the turn; "Bitten and turned"), `Glass { part }`, `Wound` (debug), `Other`, `Survivor { by, part, wound }` (another player's swing, PvP; see Multiplayer).
+  `Infection { wound }` (the fever or the turn; "Bitten and turned"), `Glass { part }`, `Wound` (debug), `Other`, `Survivor { by, weapon, stomp, part, wound }` (another player's swing or stomp, PvP; see Multiplayer).
   `World::hurt_player_by(pi, damage, cause)` records it; plain `hurt_player` says `Other`; `step_health`'s drain picks
   the biggest drain (`run::health_cause`: the turn always wins). **#11 adds** `Starved` / `Dehydrated`: a variant, its words
   in `DeathCause::describe`, and `hurt_player_by` where it hurts; the client and MCP only show `describe`'s text.
@@ -1186,7 +1215,9 @@ stack's `born`/`used`, 7 crafting: craft jobs and the recipes in the content fin
   player's run stats and cause of death, #13; optional, so it didn't bump the format: a format 4 save without it loads
   with empty records), `FARC` (the far clock's lead in ticks, #57; optional, written only when not 0, checked by
   `save_check::check_far_clock`), `LOOK` (what bodies that rise wore, #63: `health::RiseLooks`, item ids by player and zombie id;
-  optional too, checked by `save_check::check_looks`), `END`.
+  optional too, checked by `save_check::check_looks`), `END`. PvP (#65) didn't bump the format either: the run stats
+  gained `player_kills`, so they are written as `RUN2` (a `RUNS` section from before still loads, with none), and
+  players reeling or down are an optional `KNOC` section (ids and `Knock`s, only when there are any; checked on load).
   Per-region zombie sections are there so a later streaming save (#3, #22) can rewrite only what changed. Errors are
   `LoadError` values, never panics: `NotASave`, `Version` (older or newer), `Truncated`, `Corrupt` (bad checksum,
   undecodable or inconsistent data), `ContentChanged`, `MapChanged`, `Invalid` (below). No SQLite: a world is one file
@@ -1235,12 +1266,11 @@ snapshots over the network: `zombye-server --host` serves a world and `zombye --
   dead player up as a new survivor at a new start, in the same world. F5, F9 and the autosave do nothing on a server
   (the yellow line says the world is the server's).
 - **Rules:** `--pvp on|off` (default on, docs/PLAN.md §4.8; `CombatTuning::pvp`, saved with the world's settings, off
-  in single-player): on, a swing hits the other players in its reach and arc after the zombies, with the targets it
-  has left (`combat::strike_players`): the weapon's damage times `pvp_damage_mult` (0.6) through
-  `World::hurt_player_by`, a wound on a body part (a gash from a blade or an axe, a bruise from anything blunt or when
-  clothing stops it; never infected), a `PlayerHurt` combat event, and a death recorded as
-  `DeathCause::Survivor { by, part, wound }` ("Killed by another survivor: a gash to the torso"). Shoves and stomps
-  don't touch players yet, and the rest of player-vs-player combat is #65. `--spawn spread|together`: where new
+  in single-player): on, swings, shoves and stomps hit other players as they hit zombies, in one target list (#65, see
+  Player against player under Combat: the weapon's damage times `pvp_damage_mult` (0.4) through
+  `World::hurt_player_by`, a wound on a body part, stagger and knockdown, a `PlayerHurt` or `PlayerShoved` combat
+  event, and a death recorded as `DeathCause::Survivor { by, weapon, stomp, part, wound }`: "Killed by a survivor with
+  a crowbar: a gash to the torso"). `--spawn spread|together`: where new
   survivors start (`Host::spawn_point`), by default spread round the edge of the town with PvP on (each a golden angle
   on from the last) and together outside the house a single player wakes up in with it off. `--max-players N`
   (default 32, at most 64), `--name`, `--password`.
@@ -1280,7 +1310,7 @@ snapshots over the network: `zombye-server --host` serves a world and `zombye --
 `zombye-server --mcp` speaks MCP over stdio. `.mcp.json` registers it as `zombye` for
 Claude Code and other MCP clients. Build it first with `cargo build -p zombye-server --release` (and
 `-p zombye-client` too, for `screenshot`).
-It takes the common options too (`--zombies N --seed S --map-chunks N`), e.g. a 1 km map with 20,000 zombies, and
+It takes the common options too (`--zombies N --seed S --map-chunks N`, and `--pvp on`: player against player on in a new world), e.g. a 1 km map with 20,000 zombies, and
 `--save PATH` (load-or-create, autosave, save on exit) with `--autosave-mins N` and `--saves DIR`, and for `screenshot`
 `--client PATH` and `--screenshot-timeout SECS`. Time is paused
 between calls, so an autosave only happens after a call that changed something.
@@ -1298,7 +1328,8 @@ zombie attacks, thumps and anything broken), `move_player` (player, compass `dir
 `ticks`, `run`/`sneak`, `facing`: holds that input while the world steps, then stops), `interact`
 (opens/closes the door or window player 1, or `player`, faces; `toggle_door` is an old alias),
 `smash_window`, `attack` / `shove` / `stomp` (player, optional `facing` or `target` zombie id to turn
-first; steps until the action has landed and the player can act again, and reports what it hit),
+first, or `target_player` a player id; steps until the action has landed and the player can act again, and reports what it hit: zombies under `HITS`, other players (PvP) under `PLAYER HITS: P1 hit P2 for 18: a gash on the left arm, staggered (82 HP left)`),
+`pvp {on}` (player against player on or off for this world; no argument says which; `--pvp on` starts with it on; `stats` has `pvp`, each player's `knocked` (`staggered` / `down`) and `run.player_kills`, and `observe` says who is staggered or knocked down),
 `pick_up` (the instant grab, as E), `dev {player, god, ignored}` (the dev toggles; a field left out stays as it is;
 `stats` gives each player's `god`/`ignored` and `observe` tags them `[GOD]` / `[IGNORED]`), `weapons` (the weapon table and combat numbers), `items {category}` (the item table
 and the carry numbers), `skills {player}` (see Skills), `inventory {player}` (slots, worn and carried stacks with indices, load and burden, the open

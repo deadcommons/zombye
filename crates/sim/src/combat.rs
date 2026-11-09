@@ -9,6 +9,12 @@
 //! knock down more easily. Below `tired_below` endurance, actions get slower and weaker. Every
 //! action makes a noise.
 //!
+//! **Player against player** (`CombatTuning::pvp`, off in single-player): with it on, other players
+//! are targets in the same list as zombies, by the same reach, arc and clear line. A swing or stomp
+//! leaves a wound on a body part and takes HP (`World::strike_player`); a blow may stagger a
+//! player or knock it down ([`crate::players::Knock`]: no moving or acting until it is over; only
+//! a stomp hits one on the ground). Off, players are never targets.
+//!
 //! Zombie strikes ([`crate::ai::ZombieAttack`]) land with `zombie_hit_chance`, more likely the more
 //! zombies are on the same player, and leave a wound on a body part ([`crate::health`]: where it
 //! lands, what it leaves and what it takes at once). A player at 0 HP is dead: input is ignored,
@@ -21,9 +27,9 @@ use serde::{Deserialize, Serialize};
 use crate::TICK_DT;
 use crate::ai::{self, ZOMBIE_RADIUS};
 use crate::health::{Part, WoundKind};
-use crate::items::{GroundItem, WeaponDef};
+use crate::items::{GroundItem, WeaponCategory, WeaponDef};
 use crate::run::DeathCause;
-use crate::players::{Action, ActionKind, DevFlags, PLAYER_RADIUS, Player, PlayerInput, RUN_MIN_ENDURANCE};
+use crate::players::{Action, ActionKind, DevFlags, Knock, PLAYER_RADIUS, Player, PlayerInput, RUN_MIN_ENDURANCE};
 use crate::senses::{Sound, SoundSource};
 use crate::skills::Skill;
 use crate::vision::clear_path;
@@ -102,11 +108,20 @@ pub struct CombatTuning {
     pub zombie_hit_max: f32,
 
     // Players and each other (PLAN §4.8).
-    /// Swings hit other players as they hit zombies. Off in single-player and co-op; a multiplayer
-    /// server turns it on unless started with `--pvp off`.
+    /// Swings, shoves and stomps hit other players as they hit zombies. Off in single-player and
+    /// co-op (players are never targets); a multiplayer server turns it on unless started with
+    /// `--pvp off`.
     pub pvp: bool,
-    /// A swing's damage to a player is its damage to a zombie times this.
+    /// A swing's or stomp's damage to a player is its damage to a zombie times this (the player
+    /// also gets the wound).
     pub pvp_damage_mult: f32,
+    /// Chance a blunt weapon's blow splits the skin (a gash, not a bruise); a crit always does.
+    pub pvp_blunt_gash: f32,
+    /// A cut that clothing stops is a bruise, and takes this much of its damage.
+    pub pvp_stopped_damage: f32,
+    /// How long a player reels from a blow, and how long one stays on the ground.
+    pub player_stagger_secs: (f32, f32),
+    pub player_down_secs: (f32, f32),
 }
 
 impl Default for CombatTuning {
@@ -151,8 +166,15 @@ impl Default for CombatTuning {
             zombie_hit_chance: 0.5,
             zombie_crowd_bonus: 0.12,
             zombie_hit_max: 0.9,
+
+            // A bat takes about eight blows to kill, an axe four: long enough to run or give up.
             pvp: false,
-            pvp_damage_mult: 0.6,
+            pvp_damage_mult: 0.4,
+            pvp_blunt_gash: 0.3,
+            pvp_stopped_damage: 0.5,
+            player_stagger_secs: (0.5, 0.8),
+            // Short next to a zombie's 4-6 s: time for two stomps, not five.
+            player_down_secs: (1.4, 2.0),
         }
     }
 }
@@ -190,6 +212,24 @@ pub struct HitEvent {
     pub effect: HitEffect,
 }
 
+/// A player's action struck another player this tick (PvP).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlayerHitEvent {
+    /// Who struck, and who was hit.
+    pub player: u32,
+    pub victim: u32,
+    pub kind: ActionKind,
+    pub weapon: u16,
+    /// What it would take off (a god loses nothing).
+    pub damage: f32,
+    pub crit: bool,
+    pub behind: bool,
+    /// Where it landed and the wound it left (none for a shove).
+    pub part: Option<Part>,
+    pub wound: Option<WoundKind>,
+    pub effect: HitEffect,
+}
+
 /// What a [`CombatEvent`] was, for hit feedback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CombatEventKind {
@@ -197,12 +237,14 @@ pub enum CombatEventKind {
     ZombieHit,
     /// A swing or stomp killed a zombie.
     ZombieKilled,
-    /// A zombie's strike landed on a player.
+    /// A zombie's strike landed on a player, or (`by` set) another player's swing or stomp.
     PlayerHurt,
     /// A shove pushed a zombie back (no damage).
     Shove,
     /// A stomp hurt a downed zombie without killing it.
     Stomp,
+    /// A player's shove pushed another player back (no damage): `player` the one shoved, `by` who did it.
+    PlayerShoved,
 }
 
 /// Something worth showing: blood, a flash, a flinch. Collected every tick into
@@ -223,7 +265,12 @@ pub struct CombatEvent {
     /// `PlayerHurt`: the body part hit and the wound it left.
     pub part: Option<Part>,
     pub wound: Option<WoundKind>,
+    /// `PlayerHurt`, `PlayerShoved`: the player who did it (PvP); 0 when it wasn't a player.
+    pub by: u32,
 }
+
+/// Bit set on a candidate's index in `World::scratch_hits` when it is a player, not a zombie.
+const PLAYER_TARGET: usize = 1 << (usize::BITS - 1);
 
 /// Combat events kept for replication if nobody drains them (headless servers, tests).
 pub const MAX_COMBAT_EVENTS: usize = 1024;
@@ -291,7 +338,7 @@ impl World {
     fn request_action(&mut self, id: u32, kind: ActionKind) -> bool {
         let buffer = self.config.combat.action_buffer_secs;
         let Some(pi) = self.players.iter().position(|p| p.id == id) else { return false };
-        if self.players[pi].dead || self.players[pi].needs.asleep() {
+        if self.players[pi].dead || self.players[pi].needs.asleep() || self.players[pi].knock.is_some() {
             return false;
         }
         // Fighting drops whatever you were doing with your things.
@@ -381,6 +428,18 @@ impl World {
     pub(crate) fn step_player_actions(&mut self) {
         let mut due = std::mem::take(&mut self.scratch_actions);
         due.clear();
+        // Players reeling or down from another's blow (PvP) recover. This runs after movement, so
+        // the modifiers a snapshot carries are the ones the next tick moves with.
+        for pi in 0..self.players.len() {
+            let p = &mut self.players[pi];
+            if let Some(k) = &mut p.knock {
+                k.timer -= TICK_DT;
+                if k.timer <= 0.0 || p.dead {
+                    p.knock = None;
+                    self.refresh_carry(pi);
+                }
+            }
+        }
         for pi in 0..self.players.len() {
             let p = &mut self.players[pi];
             if p.dead {
@@ -398,6 +457,7 @@ impl World {
             }
             if p.action.is_none()
                 && p.ready_in <= 0.0
+                && p.knock.is_none()
                 && let Some(kind) = p.queued.take()
             {
                 self.begin_action(pi, kind);
@@ -493,6 +553,29 @@ impl World {
             }
             found.push((d, j));
         });
+        // With PvP on, other players are targets in the same list, by the same rule: swings and
+        // shoves pass over one on the ground, stomps only hit those.
+        if self.config.combat.pvp {
+            let reach = s.range + if stomp { 0.0 } else { PLAYER_RADIUS };
+            for (k, o) in self.players.iter().enumerate() {
+                if k == pi || o.dead || o.knock.is_some_and(|k| k.down) != stomp {
+                    continue;
+                }
+                let to = o.state.pos - origin;
+                let d = to.length();
+                if d > reach {
+                    continue;
+                }
+                if d > 1e-4 {
+                    let cos = forward.dot(to / d);
+                    let half_width = if stomp { 0.0 } else { (PLAYER_RADIUS / d).min(1.0).asin() };
+                    if cos.clamp(-1.0, 1.0).acos() > s.half_arc + half_width {
+                        continue;
+                    }
+                }
+                found.push((d, PLAYER_TARGET | k));
+            }
+        }
         found.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
 
         let mut hits = 0;
@@ -500,11 +583,16 @@ impl World {
             if hits >= s.max_targets {
                 break;
             }
-            if !clear_path(&self.map, origin, self.zombies.pos[j]) {
+            let victim = (j & PLAYER_TARGET != 0).then_some(j & !PLAYER_TARGET);
+            let at = victim.map_or_else(|| self.zombies.pos[j], |k| self.players[k].state.pos);
+            if !clear_path(&self.map, origin, at) {
                 continue;
             }
             let falloff = self.config.combat.multi_hit_falloff.powi(hits as i32);
-            let effect = self.strike(player, a, &s, origin, forward, j, falloff);
+            let effect = match victim {
+                Some(k) => self.strike_player(pi, a, &s, origin, forward, k, falloff),
+                None => self.strike(player, a, &s, origin, forward, j, falloff),
+            };
             hits += 1;
             // Practice (#46): a hit with a weapon or fist, a kill instead, a zombie shoved, a stomp that kills.
             let sk = &self.config.skills;
@@ -517,10 +605,6 @@ impl World {
             self.award_xp(pi, skill, xp);
         }
         self.scratch_hits = found;
-        // Other survivors in the way of a swing (PvP), with the targets it has left.
-        if self.config.combat.pvp && a.kind == ActionKind::Swing {
-            hits += self.strike_players(pi, a, &s, hits);
-        }
         self.action_events.push(ActionEvent { player, kind: a.kind, weapon: a.weapon, hits });
         if s.noise > 0.0 && self.heard.len() < crate::world::MAX_SOUNDS {
             // Heard this tick, like footsteps.
@@ -606,78 +690,142 @@ impl World {
             (_, ActionKind::Shove) => CombatEventKind::Shove,
             (_, ActionKind::Stomp) => CombatEventKind::Stomp,
         };
-        self.push_combat_event(CombatEvent { kind, pos: zpos, dir, zombie: zid, player, damage, crit, part: None, wound: None });
+        self.push_combat_event(CombatEvent { kind, pos: zpos, dir, zombie: zid, player, damage, crit, part: None, wound: None, by: 0 });
         effect
     }
 
-    /// PvP (PLAN §4.8; the full player-vs-player combat is #65): player `pi`'s swing hits the
-    /// living players in its reach and arc with a clear walking line, nearest first, up to the
-    /// targets the swing has left after `hits` zombies. Each takes the weapon's damage times
-    /// `pvp_damage_mult` and a wound on a body part: a gash from a blade or an axe, a bruise from
-    /// anything blunt or when clothing stops it. Returns how many it hit.
-    fn strike_players(&mut self, pi: usize, a: Action, s: &Strike, hits: u32) -> u32 {
-        let origin = self.players[pi].state.pos;
-        let forward = Vec2::from_angle(self.players[pi].state.facing);
+    /// PvP: player `pi`'s action hits player `vi` from `origin`. A swing or stomp leaves a wound on
+    /// a body part (a blade gashes, a blunt weapon bruises or now and then gashes, fists and boots
+    /// bruise; clothing may stop a cut to a bruise) and takes HP through `hurt_player_by`, so god
+    /// mode holds. Then, as for a zombie: knockback, a knockdown roll, else a stagger roll.
+    /// Returns what it did.
+    #[allow(clippy::too_many_arguments)]
+    fn strike_player(&mut self, pi: usize, a: Action, s: &Strike, origin: Vec2, forward: Vec2, vi: usize, falloff: f32) -> HitEffect {
+        let c = self.config.combat.clone();
         let attacker = self.players[pi].id;
-        let reach = s.range + PLAYER_RADIUS;
-        let mut found: Vec<(f32, usize)> = Vec::new();
-        for (j, p) in self.players.iter().enumerate() {
-            if j == pi || p.dead {
-                continue;
-            }
-            let to = p.state.pos - origin;
-            let d = to.length();
-            if d > reach {
-                continue;
-            }
-            if d > 1e-4 {
-                let half_width = (PLAYER_RADIUS / d).min(1.0).asin();
-                if forward.dot(to / d).clamp(-1.0, 1.0).acos() > s.half_arc + half_width {
-                    continue;
+        let v = &self.players[vi];
+        let (victim, vpos, god) = (v.id, v.state.pos, v.dev.god);
+        let was = v.knock;
+        let dir = (vpos - origin).normalize_or(forward);
+        let behind = Vec2::from_angle(v.state.facing).dot(dir) > c.behind_dot;
+        let crit_chance = s.crit_chance + if behind && s.crit_chance > 0.0 { c.behind_crit_bonus } else { 0.0 };
+        let crit = self.combat_rng.f32() < crit_chance;
+        let mut damage = if s.damage.1 > 0.0 { self.combat_rng.range(s.damage.0, s.damage.1) * a.power * falloff * c.pvp_damage_mult } else { 0.0 };
+        if crit {
+            damage *= s.crit_multiplier;
+        }
+        let stomp = a.kind == ActionKind::Stomp;
+        let mut hurt = None;
+        let mut died = false;
+        if s.damage.1 > 0.0 {
+            // Where it lands (a blow at the back finds more head and torso) and what it leaves.
+            let t = &self.config.health;
+            let part = if behind && !stomp { &t.behind } else { &t.front }.pick(self.combat_rng.f32(), false);
+            let mut kind = match self.config.weapons[a.weapon as usize].category {
+                _ if stomp => WoundKind::Bruise,
+                WeaponCategory::Unarmed => WoundKind::Bruise,
+                WeaponCategory::ShortBlade | WeaponCategory::Axe => WoundKind::Gash,
+                WeaponCategory::ShortBlunt | WeaponCategory::LongBlunt => {
+                    if self.combat_rng.f32() < c.pvp_blunt_gash || crit {
+                        WoundKind::Gash
+                    } else {
+                        WoundKind::Bruise
+                    }
+                }
+            };
+            if kind != WoundKind::Bruise {
+                let stop = self.protection(&self.players[vi], part.region()) * self.config.health.wound(kind).protection;
+                if self.combat_rng.f32() < stop {
+                    kind = WoundKind::Bruise;
+                    damage *= c.pvp_stopped_damage;
                 }
             }
-            found.push((d, j));
+            hurt = Some((part, kind));
+            self.push_combat_event(CombatEvent { kind: CombatEventKind::PlayerHurt, pos: vpos, dir, zombie: 0, player: victim, damage, crit, part: Some(part), wound: Some(kind), by: attacker });
+            if !god {
+                self.add_wound(vi, part, kind, false, None);
+            }
+            self.interrupt_treatment(vi);
+            died = self.hurt_player_by(vi, damage, DeathCause::Survivor { by: attacker, weapon: a.weapon, stomp, part, wound: kind });
+        } else {
+            self.push_combat_event(CombatEvent { kind: CombatEventKind::PlayerShoved, pos: vpos, dir, zombie: 0, player: victim, damage: 0.0, crit: false, part: None, wound: None, by: attacker });
         }
-        found.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-        let mut done = 0;
-        for (_, j) in found {
-            if hits + done >= s.max_targets {
+        let effect = if died {
+            self.count_player_kill(attacker);
+            HitEffect::Killed
+        } else {
+            // A blow wakes a sleeper.
+            self.wake(vi, crate::needs::WakeReason::Hit);
+            if was.is_some_and(|k| k.down) {
+                // Stomped but not dead: stays down.
+                HitEffect::Hit
+            } else {
+                if s.knockback > 0.0 {
+                    self.push_player(vi, dir, (s.knockback * a.power).min(1.0));
+                }
+                let mut knockdown = s.knockdown_chance * a.power;
+                if behind {
+                    knockdown *= c.behind_knockdown_mult;
+                }
+                if was.is_some() {
+                    knockdown *= c.staggered_knockdown_mult;
+                }
+                let rng = &mut self.combat_rng;
+                let knock = if rng.f32() < knockdown {
+                    Some(Knock { down: true, timer: rng.range(c.player_down_secs.0, c.player_down_secs.1) })
+                } else if rng.f32() < s.stagger_chance {
+                    // Hit again while reeling: whichever lasts longer.
+                    Some(Knock { down: false, timer: rng.range(c.player_stagger_secs.0, c.player_stagger_secs.1).max(was.map_or(0.0, |k| k.timer)) })
+                } else {
+                    None
+                };
+                match knock {
+                    Some(k) => {
+                        // Whatever it was doing is over, and it stands (or lies) still: this is
+                        // after movement, so the snapshot carries what the next tick moves with.
+                        let p = &mut self.players[vi];
+                        p.knock = Some(k);
+                        p.action = None;
+                        p.queued = None;
+                        self.cancel_jobs(vi);
+                        self.refresh_carry(vi);
+                        if k.down { HitEffect::KnockedDown } else { HitEffect::Staggered }
+                    }
+                    None => HitEffect::Hit,
+                }
+            }
+        };
+        self.player_hit_events.push(PlayerHitEvent {
+            player: attacker,
+            victim,
+            kind: a.kind,
+            weapon: a.weapon,
+            damage,
+            crit,
+            behind,
+            part: hurt.map(|h| h.0),
+            wound: hurt.map(|h| h.1),
+            effect,
+        });
+        effect
+    }
+
+    /// Knock player `pi` back `metres` along `dir`, in steps short enough that a wall stops it;
+    /// never into a window opening (that is a climb).
+    fn push_player(&mut self, pi: usize, dir: Vec2, metres: f32) {
+        const STEP: f32 = 0.1;
+        let mut p = self.players[pi].state.pos;
+        let in_window = self.map.in_window_opening(p);
+        let mut left = metres;
+        while left > 1e-4 {
+            let next = self.map.resolve_circle(p + dir * left.min(STEP), PLAYER_RADIUS);
+            if !in_window && self.map.in_window_opening(next) {
                 break;
             }
-            let pos = self.players[j].state.pos;
-            if !clear_path(&self.map, origin, pos) {
-                continue;
-            }
-            let falloff = self.config.combat.multi_hit_falloff.powi((hits + done) as i32);
-            let crit = self.combat_rng.f32() < s.crit_chance;
-            let mut damage = self.combat_rng.range(s.damage.0, s.damage.1) * a.power * falloff * self.config.combat.pvp_damage_mult;
-            if crit {
-                damage *= s.crit_multiplier;
-            }
-            let dir = (pos - origin).normalize_or(forward);
-            let behind = Vec2::from_angle(self.players[j].state.facing).dot(dir) > self.config.health.behind_dot;
-            let t = &self.config.health;
-            let part = if behind { &t.behind } else { &t.front }.pick(self.combat_rng.f32(), false);
-            let sharp = matches!(self.config.weapons[a.weapon as usize].category, crate::items::WeaponCategory::ShortBlade | crate::items::WeaponCategory::Axe);
-            let mut wound = if sharp { WoundKind::Gash } else { WoundKind::Bruise };
-            let stop = self.protection(&self.players[j], part.region()) * self.config.health.wound(wound).protection;
-            if wound != WoundKind::Bruise && self.combat_rng.f32() < stop {
-                wound = WoundKind::Bruise;
-            }
-            let (victim, god) = (self.players[j].id, self.players[j].dev.god);
-            // `zombie: 0`: no zombie's doing; `player` is the one hurt, as for a zombie's strike.
-            self.push_combat_event(CombatEvent { kind: CombatEventKind::PlayerHurt, pos, dir, zombie: 0, player: victim, damage, crit, part: Some(part), wound: Some(wound) });
-            if !god {
-                self.add_wound(j, part, wound, false, Some(false));
-            }
-            self.wake_player(victim);
-            self.interrupt_treatment(j);
-            self.hurt_player_by(j, damage, DeathCause::Survivor { by: attacker, part, wound });
-            let skill = self.config.weapons[a.weapon as usize].skill();
-            self.award_xp(pi, skill, self.config.skills.hit_xp);
-            done += 1;
+            p = next;
+            left -= STEP;
         }
-        done
+        self.players[pi].state.pos = p;
     }
 
     pub(crate) fn push_combat_event(&mut self, e: CombatEvent) {
@@ -758,6 +906,7 @@ impl World {
         p.dead = true;
         p.action = None;
         p.queued = None;
+        p.knock = None;
         p.input.move_dir = Vec2::ZERO;
         // An infected body rises later.
         self.health_on_death(pi);
@@ -771,6 +920,9 @@ impl World {
 pub fn knockback_speed(metres: f32) -> f32 {
     (metres / (3.0 * TICK_DT)).min(MAX_KNOCKBACK_SPEED)
 }
+
+#[cfg(test)]
+mod pvp_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1266,12 +1418,17 @@ mod tests {
             w.player_attack(a);
             w.step();
             landed += w.action_events.iter().filter(|e| e.player == a).count() as u32;
+            // A blow knocks it back (#65): back in front of the next swing, and rested.
+            let pi = w.players.iter().position(|p| p.id == b).unwrap();
+            w.players[pi].state.pos = Vec2::new(101.3, 100.5);
+            w.players[0].state.endurance = 1.0;
         }
         (w, a, b)
     }
 
     /// PvP (PLAN §4.8): with `pvp` on a swing wounds another player in its arc and can kill, and
     /// the death names a survivor; off (single-player, co-op), players can't hurt each other.
+    /// (The whole of it, shoves, stomps and knockdowns included, is in `pvp_tests`.)
     #[test]
     fn swings_hit_other_players_only_with_pvp_on() {
         let (w, _, b) = duel(false, "baseball_bat", 3);
@@ -1283,10 +1440,10 @@ mod tests {
         let p = w.player(b).unwrap();
         assert!(p.hp < 100.0 && !p.dead, "one swing of a bat hurts: hp {}", p.hp);
         assert_eq!(p.health.wounds.len(), 1);
-        assert_eq!(p.health.wounds[0].kind, WoundKind::Bruise, "a bat bruises");
+        assert!(matches!(p.health.wounds[0].kind, WoundKind::Bruise | WoundKind::Gash), "a bat bruises, or splits the skin");
         assert_eq!(w.player(a).unwrap().hp, 100.0, "the one swinging isn't hit");
         let e = w.combat_events.iter().find(|e| e.kind == CombatEventKind::PlayerHurt).expect("a hurt event for the client");
-        assert_eq!((e.player, e.zombie), (b, 0));
+        assert_eq!((e.player, e.zombie, e.by), (b, 0, a));
 
         let (w, a, b) = duel(true, "kitchen_knife", 99);
         let p = w.player(b).unwrap();

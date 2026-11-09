@@ -52,7 +52,9 @@
 //! flow cache...), then one `ZOMB` per 64 m region holding zombies (the tiers' region grid), so a
 //! later streaming save (#3, #22) can rewrite only the regions that changed, then `RUNS` (each
 //! player's run stats and cause of death, `crate::run`; optional, so format 4 saves from before
-//! #13 still load, with empty records), then `LOOK` (what bodies that rise wore, #63; optional too),
+//! #13 still load, with empty records; written as `RUN2` since PvP added the players killed, and
+//! `RUNS` is still read), then `KNOC` (players reeling or down from another player's blow; only when
+//! there are any), then `LOOK` (what bodies that rise wore, #63; optional too),
 //! then `FARC` (how far the far clock is ahead of the tick, #57; optional, only written when it is).
 //! Payloads are
 //! [postcard](https://docs.rs/postcard), and zombies are stored column by column. A file with
@@ -106,6 +108,32 @@ const ZOMB: [u8; 4] = *b"ZOMB";
 /// Players' run stats (#13), after the zombies. Optional: a save without it (format 4 from before
 /// #13) loads with empty records, so adding it didn't change the format version.
 const RUNS: [u8; 4] = *b"RUNS";
+/// Run stats as written since PvP (with the players killed); `RUNS` is still read.
+const RUN2: [u8; 4] = *b"RUN2";
+/// Players reeling or down from another player's blow (PvP; optional, only when there are any).
+const KNOC: [u8; 4] = *b"KNOC";
+
+/// [`crate::run::RunStats`] as the `RUNS` section held it, before players killed were counted.
+#[derive(Deserialize)]
+struct RunsV1 {
+    secs: f64,
+    hours: f64,
+    kills: u32,
+    distance_m: f64,
+    items_taken: u32,
+    searched: u32,
+    wounds: u32,
+    hp_lost: f32,
+    death: Option<crate::run::Death>,
+}
+
+impl From<RunsV1> for crate::run::RunStats {
+    fn from(r: RunsV1) -> Self {
+        let RunsV1 { secs, hours, kills, distance_m, items_taken, searched, wounds, hp_lost, death } = r;
+        Self { secs, hours, kills, distance_m, items_taken, searched, wounds, hp_lost, death, player_kills: 0 }
+    }
+}
+
 /// What bodies that rise wore (#63; optional, like `RUNS`).
 const LOOK: [u8; 4] = *b"LOOK";
 /// How far the far clock has run ahead of the tick (#57; optional, like `RUNS`: a save without it
@@ -579,6 +607,7 @@ impl World {
             break_events: _,
             action_events: _,
             hit_events: _,
+            player_hit_events: _,
             removed_corpses: _,
             item_notes: _,
             used_items: _,
@@ -676,7 +705,12 @@ impl World {
             w.section(ZOMB, &encode(&ZombieBlock::gather(zombies, r as u32, indices)));
         }
         let runs: Vec<(u32, crate::run::RunStats)> = players.iter().map(|p| (p.id, p.run.clone())).collect();
-        w.section(RUNS, &encode(&runs));
+        w.section(RUN2, &encode(&runs));
+        // Players reeling or down from another's blow (PvP); none, no section.
+        let knocks: Vec<(u32, crate::players::Knock)> = players.iter().filter_map(|p| p.knock.map(|k| (p.id, k))).collect();
+        if !knocks.is_empty() {
+            w.section(KNOC, &encode(&knocks));
+        }
         w.section(LOOK, &encode(rise_looks));
         if *far_ticks != 0 {
             w.section(FARC, &encode(far_ticks));
@@ -846,6 +880,7 @@ impl World {
         let mut z = Zombies::default();
         let mut runs: Option<Vec<(u32, crate::run::RunStats)>> = None;
         let mut looks: Option<crate::health::RiseLooks> = None;
+        let mut knocks: Option<Vec<(u32, crate::players::Knock)>> = None;
         let mut far: Option<u64> = None;
         loop {
             let (tag, payload) = r.next()?;
@@ -853,7 +888,17 @@ impl World {
                 break;
             }
             if tag == RUNS && runs.is_none() {
-                runs = Some(decode(RUNS, payload)?);
+                // As written before PvP: no count of players killed.
+                let old: Vec<(u32, RunsV1)> = decode(RUNS, payload)?;
+                runs = Some(old.into_iter().map(|(id, r)| (id, r.into())).collect());
+                continue;
+            }
+            if tag == RUN2 && runs.is_none() {
+                runs = Some(decode(RUN2, payload)?);
+                continue;
+            }
+            if tag == KNOC && knocks.is_none() {
+                knocks = Some(decode(KNOC, payload)?);
                 continue;
             }
             if tag == LOOK && looks.is_none() {
@@ -864,7 +909,7 @@ impl World {
                 far = Some(decode(FARC, payload)?);
                 continue;
             }
-            if tag != ZOMB || runs.is_some() || looks.is_some() || far.is_some() {
+            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || far.is_some() {
                 return Err(corrupt(format!("unexpected {} section", tag_name(tag))));
             }
             let block: ZombieBlock = decode(ZOMB, payload)?;
@@ -877,10 +922,21 @@ impl World {
         if z.len() != ws.zombies as usize {
             return Err(corrupt(format!("{} zombies stored, {} expected", z.len(), ws.zombies)));
         }
-        for (id, run) in runs.unwrap_or_default() {
+        for (id, mut run) in runs.unwrap_or_default() {
             let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("run stats for player {id}, who isn't in the save")))?;
             run.check(p.dead).map_err(|why| save_check::invalid(format!("player {id}: {why}")))?;
+            // The weapon another player killed with, in the content's list now (gone: unnamed).
+            if let (Some(map), Some(crate::run::Death { cause: crate::run::DeathCause::Survivor { weapon, .. }, .. })) = (&plan.weapon_map, &mut run.death) {
+                *weapon = map.get(*weapon as usize).copied().flatten().unwrap_or(u16::MAX);
+            }
             p.run = run;
+        }
+        for (id, knock) in knocks.unwrap_or_default() {
+            let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("player {id} is knocked back, but isn't in the save")))?;
+            if p.dead || p.knock.is_some() || !knock.timer.is_finite() || !(0.0..=60.0).contains(&knock.timer) {
+                return Err(save_check::invalid(format!("player {id}: knocked back for {} s (dead: {})", knock.timer, p.dead)));
+            }
+            p.knock = Some(knock);
         }
         let mut order: Vec<usize> = (0..z.len()).collect();
         order.sort_by_key(|&i| z.id[i]);
@@ -1254,14 +1310,14 @@ pub(crate) mod tests {
         assert_eq!(loaded.state_hash(), w.state_hash());
 
         // The same save with every section but RUNS, as format 4 wrote it before #13.
-        let rewrite = |runs: Option<&[u8]>| {
+        let rewrite = |runs: Option<([u8; 4], &[u8])>| {
             let mut r = Reader::new(&bytes).unwrap();
             let mut out = Writer::new();
             loop {
                 let (tag, payload) = r.next().unwrap();
-                if tag == RUNS {
-                    if let Some(p) = runs {
-                        out.section(RUNS, p);
+                if tag == RUN2 {
+                    if let Some((tag, p)) = runs {
+                        out.section(tag, p);
                     }
                     continue;
                 }
@@ -1278,7 +1334,14 @@ pub(crate) mod tests {
         assert_eq!(old.state_hash(), w.state_hash());
 
         // A living player with a cause of death, a player who isn't there, a negative distance.
-        let forged = |runs: Vec<(u32, crate::run::RunStats)>| World::load(&rewrite(Some(&encode(&runs))), &content()).map(|_| ());
+        // A `RUNS` section as written before PvP (no count of players killed) still loads.
+        type Old = (f64, f64, u32, f64, u32, u32, u32, f32, Option<crate::run::Death>);
+        let as_old = |r: &crate::run::RunStats| -> Old { (r.secs, r.hours, r.kills, r.distance_m, r.items_taken, r.searched, r.wounds, r.hp_lost, r.death) };
+        let legacy: Vec<(u32, Old)> = vec![(a, as_old(&ra)), (b, as_old(&rb))];
+        let old = World::load(&rewrite(Some((RUNS, &encode(&legacy)))), &content()).unwrap();
+        assert_eq!((&old.player(a).unwrap().run, &old.player(b).unwrap().run), (&ra, &rb));
+
+        let forged = |runs: Vec<(u32, crate::run::RunStats)>| World::load(&rewrite(Some((RUN2, &encode(&runs)))), &content()).map(|_| ());
         assert!(matches!(forged(vec![(a, rb.clone())]), Err(LoadError::Invalid(_))));
         assert!(matches!(forged(vec![(99, ra.clone())]), Err(LoadError::Invalid(_))));
         let bad = crate::run::RunStats { distance_m: -1.0, ..ra.clone() };

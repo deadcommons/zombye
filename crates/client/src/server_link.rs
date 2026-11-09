@@ -194,6 +194,8 @@ impl Plugin for ServerLinkPlugin {
         if let Some(hour) = options.start_hour {
             config.start_hour = hour;
         }
+        // Player against player (a new world; a loaded one keeps its own setting).
+        config.combat.pvp = options.pvp;
         // `--load`: the saved world, with its own seed, map and players (the world options and
         // the demo setups don't apply).
         let loaded = options.load.as_ref().map(|name| {
@@ -233,7 +235,7 @@ impl Plugin for ServerLinkPlugin {
             return join_local(app, server, player_id);
         }
         // The fight demo wants room to swing: open ground near the house you wake up in.
-        let demo_at = if options.fight_demo && options.at.is_none() { open_ground_near(&server.world.map, server.world.player_spawn).map(|p| p.to_array()) } else { None };
+        let demo_at = if (options.fight_demo || options.duel) && options.at.is_none() { open_ground_near(&server.world.map, server.world.player_spawn).map(|p| p.to_array()) } else { None };
         let siege_at = if options.siege { siege_spot(&server.world.map, server.world.spawn_building) } else { None };
         if options.siege {
             match siege_at {
@@ -256,6 +258,24 @@ impl Plugin for ServerLinkPlugin {
         }
         if let Some((_, door, out)) = siege_at {
             siege(&mut server, player_id, door, out);
+        }
+        if options.duel {
+            // A hammer for you (unless the fight demo gave you its bat), and another survivor with a crowbar a
+            // few metres ahead, who joins like any player and is driven through intents (`duel.rs`).
+            let me = server.world.player(player_id).map(|p| p.state.pos).unwrap_or(server.world.player_spawn);
+            if !options.fight_demo {
+                // A hammer, not the fight demo's bat: the bat's reach and stagger would end it
+                // before the other got a blow in.
+                server.send(Intent::SpawnItem { item: "claw_hammer".into(), count: 1, pos: me.to_array() });
+                server.send(Intent::PickUp { player: player_id });
+            }
+            let foe = server.join(Some((me + Vec2::X * crate::duel::START_DISTANCE).to_array()));
+            let at = server.world.player(foe).map_or(me, |p| p.state.pos);
+            server.tick();
+            server.send(Intent::SpawnItem { item: "crowbar".into(), count: 1, pos: at.to_array() });
+            server.send(Intent::PickUp { player: foe });
+            println!("--duel: PvP on; player {foe} with a crowbar {:.0} m east of you", at.distance(me));
+            app.insert_resource(crate::duel::Duel { foe, seq: 0 });
         }
         join_local(app, server, player_id);
     }

@@ -1075,7 +1075,7 @@ fn sync_zombies(
     // The shader's clock (`globals.time`).
     let t = time.elapsed_secs_wrapped();
     for ev in &events.0 {
-        if ev.kind == CombatEventKind::PlayerHurt {
+        if matches!(ev.kind, CombatEventKind::PlayerHurt | CombatEventKind::PlayerShoved) {
             continue;
         }
         if let Some(t) = entities.0.get_mut(&ev.zombie) {

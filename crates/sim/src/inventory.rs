@@ -433,7 +433,9 @@ impl World {
         let fitness = p.skills.level(crate::skills::Skill::Fitness, &self.config.skills);
         let load = self.config.skills.move_mods(fitness, self.config.carry.mods(c.weight_kg / c.limit_kg.max(0.1), slow));
         let mut mods = self.needs_mods(pi, self.health_mods(pi, load));
-        if still && !p.dead {
+        // Reeling or down from another player's blow (PvP) doesn't move either; knocks start and
+        // end in `step_player_actions`, after movement too.
+        if (still || p.knock.is_some()) && !p.dead {
             mods = MoveMods { speed: 0.0, run_speed: 0.0, can_run: false, can_climb: false, ..mods };
         }
         let weapon = p.inventory.hand.and_then(|s| self.item_weapon(s.item));

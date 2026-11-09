@@ -117,7 +117,8 @@ fn values(run: &RunStats) -> [String; 8] {
     [
         run.survived(),
         run.played(),
-        run.kills.to_string(),
+        // Other players killed (PvP) are counted apart, and only shown when there are any.
+        if run.player_kills == 0 { run.kills.to_string() } else { format!("{} (and {})", run.kills, plural(run.player_kills, "survivor", "survivors")) },
         run.distance(),
         plural(run.items_taken, "thing", "things"),
         run.searched.to_string(),
@@ -136,6 +137,7 @@ fn when(day: u32, hour: f32) -> String {
 fn update_screen(
     me: Res<LocalPlayer>,
     link: Res<ServerLink>,
+    join: Res<crate::server_link::JoinInfo>,
     mut screen: Query<&mut Visibility, With<DeathScreen>>,
     mut texts: ParamSet<(Query<&mut Text, With<CauseText>>, Query<&mut Text, With<EpilogueText>>, Query<&mut Text, With<WhenText>>, Query<(&mut Text, &StatValue)>)>,
 ) {
@@ -156,7 +158,7 @@ fn update_screen(
     let run = link.curr.run_of(me.id).cloned().unwrap_or_default();
     let death = run.death;
     if let Ok(mut t) = texts.p0().single_mut() {
-        set(&mut t, death.map_or_else(|| "Cause unknown".to_string(), |d| d.describe()));
+        set(&mut t, death.map_or_else(|| "Cause unknown".to_string(), |d| d.describe_with(&join.weapons)));
     }
     if let Ok(mut t) = texts.p1().single_mut() {
         set(&mut t, death.and_then(|d| d.epilogue()).unwrap_or("").to_string());

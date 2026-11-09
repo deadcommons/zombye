@@ -265,6 +265,9 @@ fn update_vitals(
         "dead"
     } else if asleep {
         "asleep"
+    } else if let Some(k) = link.curr.players.iter().find(|p| p.id == me.id).and_then(|p| p.knock) {
+        // Another player's blow (PvP): no moving or acting until it passes.
+        if k.down { "knocked down" } else { "staggered" }
     } else {
         match s.stance {
             Stance::Walk => "walking",
@@ -281,7 +284,8 @@ fn update_vitals(
     }
     // This life so far, as the server counts it.
     if let (Ok(mut t), Some(run)) = (texts.p3().single_mut(), link.curr.run_of(me.id)) {
-        set(&mut t, format!("kills {}   alive {}   walked {}", run.kills, run.played(), run.distance()));
+        let survivors = if run.player_kills > 0 { format!(" (+{} survivors)", run.player_kills) } else { String::new() };
+        set(&mut t, format!("kills {}{survivors}   alive {}   walked {}", run.kills, run.played(), run.distance()));
     }
     if let Ok(mut t) = texts.p4().single_mut() {
         set(&mut t, dev_tags(me.dev));

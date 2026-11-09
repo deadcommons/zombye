@@ -207,7 +207,7 @@ fn spawn_fx(
             CombatEventKind::ZombieKilled => (16, 1.2, 2, 1.5),
             CombatEventKind::Stomp => (9, 0.25, 1, 1.2),
             CombatEventKind::PlayerHurt => (6, 1.25, 1, 0.8),
-            CombatEventKind::Shove => (0, 0.0, 0, 0.0),
+            CombatEventKind::Shove | CombatEventKind::PlayerShoved => (0, 0.0, 0, 0.0),
         };
         if e.kind == CombatEventKind::PlayerHurt && me.as_ref().is_some_and(|m| m.id == e.player) {
             shake.trauma = (shake.trauma + 0.45).min(1.0);

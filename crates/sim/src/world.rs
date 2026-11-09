@@ -135,6 +135,12 @@ impl WorldConfig {
 
     /// A square map `chunks` × `chunks` chunks (16 m each) instead of the default; the town stays
     /// the same size in the middle, with more forest round it.
+    /// Player against player on or off ([`CombatTuning::pvp`]).
+    pub fn with_pvp(mut self, pvp: bool) -> Self {
+        self.combat.pvp = pvp;
+        self
+    }
+
     pub fn with_map_chunks(mut self, chunks: i32) -> Self {
         self.generation.chunks = IVec2::splat(chunks.max(1));
         self
@@ -256,6 +262,8 @@ pub struct World {
     /// Player swings, shoves and stomps that landed this tick, and what each hit.
     pub action_events: Vec<ActionEvent>,
     pub hit_events: Vec<HitEvent>,
+    /// Player actions that struck another player this tick (PvP).
+    pub player_hit_events: Vec<crate::combat::PlayerHitEvent>,
     /// Hits, kills, shoves, stomps and wounds since the last snapshot, for clients' hit feedback
     /// (blood, flashes, screen shake). Drained by whoever replicates the world, like
     /// `edge_changes`; at most [`crate::combat::MAX_COMBAT_EVENTS`] are kept if nobody does. Not simulation
@@ -401,6 +409,7 @@ impl World {
             unarmed,
             action_events: Vec::new(),
             hit_events: Vec::new(),
+            player_hit_events: Vec::new(),
             combat_events: Vec::new(),
             scratch_actions: Vec::new(),
             scratch_hits: Vec::new(),
@@ -874,6 +883,7 @@ impl World {
         self.removed_corpses.clear();
         self.action_events.clear();
         self.hit_events.clear();
+        self.player_hit_events.clear();
         self.used_items.clear();
         self.woke.clear();
         // Sounds made since the last tick are heard now; groans made during this one, next tick.
@@ -1217,6 +1227,11 @@ impl World {
             mix(p.state.endurance.to_bits());
             // Dev toggles add bits only when on, so a world without them hashes as it always did.
             mix(p.state.stance as u32 | (p.state.winded as u32) << 8 | (p.dead as u32) << 9 | (p.dev.god as u32) << 10 | (p.dev.ignored as u32) << 11);
+            // Reeling or down (PvP): mixed in only then, for the same reason.
+            if let Some(k) = p.knock {
+                mix(0x4B4E_0000 | k.down as u32);
+                mix(k.timer.to_bits());
+            }
             mix(p.hp.to_bits());
             Self::hash_health(&p.health, &mut mix);
             Self::hash_needs(&p.needs, &mut mix);

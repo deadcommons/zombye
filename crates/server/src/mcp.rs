@@ -248,32 +248,39 @@ fn tool_list() -> Value {
             "description": "A player swings its weapon (bare hands: a punch) the way it faces, then the world steps until the \
                 swing has landed and the player can act again. Hits zombies within the weapon's reach and arc, nearest first up to its target count, with a clear \
                 line (not through glass or fences); damage, knockback and a chance to stagger or knock down. Downed zombies are \
-                below the swing: stomp them. Costs endurance; makes noise. Give facing (radians) or target (a zombie id) to turn first.",
+                below the swing: stomp them. Costs endurance; makes noise. Give facing (radians), target (a zombie id) or \
+                target_player (a player id) to turn first. With PvP on (the pvp tool, or --pvp on) other players are hit by the \
+                same rules, in the same list: a wound on a body part, HP, a chance to stagger or floor them; the reply's PLAYER HITS says so.",
             "inputSchema": {"type": "object", "properties": {
                 "player": {"type": "integer", "default": 1},
                 "facing": {"type": "number", "description": "Turn to this angle first (0 = east, pi/2 = south)"},
-                "target": {"type": "integer", "description": "Turn to face this zombie first"}
+                "target": {"type": "integer", "description": "Turn to face this zombie first"},
+                "target_player": {"type": "integer", "description": "Turn to face this player first"}
             }}
         },
         {
             "name": "shove",
             "description": "A player shoves the zombies in front (short reach, wide arc, up to 3): no damage, pushes them back and \
                 always staggers them, with a chance to knock down (better against a staggered zombie or from behind). Cheap, \
-                quick, quiet. Steps until it lands and the player can act again. facing / target as for attack.",
+                quick, quiet. Steps until it lands and the player can act again. facing / target / target_player as for attack. \
+                With PvP on it pushes other players back and staggers them too (no moving or acting for a moment), or floors them.",
             "inputSchema": {"type": "object", "properties": {
                 "player": {"type": "integer", "default": 1},
                 "facing": {"type": "number"},
-                "target": {"type": "integer"}
+                "target": {"type": "integer"},
+                "target_player": {"type": "integer"}
             }}
         },
         {
             "name": "stomp",
             "description": "A player stamps on a downed zombie at its feet in front (within about 1 m): solid damage. A miss if \
-                none is down there when it lands. Steps until it lands and the player can act again. facing / target as for attack.",
+                none is down there when it lands. Steps until it lands and the player can act again. facing / target / target_player \
+                as for attack. With PvP on, a player knocked down is stamped on the same way (a bruise).",
             "inputSchema": {"type": "object", "properties": {
                 "player": {"type": "integer", "default": 1},
                 "facing": {"type": "number"},
-                "target": {"type": "integer"}
+                "target": {"type": "integer"},
+                "target_player": {"type": "integer"}
             }}
         },
         {
@@ -489,6 +496,13 @@ fn tool_list() -> Value {
                 facing east. Replies with its id: give it as `player` to the other tools. For testing what several \
                 players look like together (screenshot) and how the world copes with them.",
             "inputSchema": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}}}
+        },
+        {
+            "name": "pvp",
+            "description": "Player against player on or off for this world (docs/PLAN.md 4.8; off by default, on with --pvp on; saved \
+                with the world's settings). On, swings, shoves and stomps hit other players as they hit zombies. With no argument: \
+                says which it is.",
+            "inputSchema": {"type": "object", "properties": {"on": {"type": "boolean"}}}
         },
         {
             "name": "dev",
@@ -818,13 +832,17 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 return Err(format!("player {id} is dead (respawn to play on)"));
             }
             let (pos, seq, sneak, weapon) = (p.state.pos, p.last_input_seq, p.input.sneak, p.weapon);
-            let facing = match args.get("target").and_then(Value::as_u64) {
-                Some(t) => {
+            let facing = match (args.get("target").and_then(Value::as_u64), args.get("target_player").and_then(Value::as_u64)) {
+                (Some(t), _) => {
                     let i = world.zombies.index_of(t as u32).ok_or_else(|| format!("no zombie {t}"))?;
                     let to = world.zombies.pos[i] - pos;
                     Some(to.y.atan2(to.x))
                 }
-                None => num("facing").map(|f| f as f32),
+                (None, Some(t)) => {
+                    let to = world.player(t as u32).ok_or_else(|| format!("no player {t}"))?.state.pos - pos;
+                    Some(to.y.atan2(to.x))
+                }
+                (None, None) => num("facing").map(|f| f as f32),
             };
             // Only an aiming player fights: aim (and turn, if asked).
             let facing = facing.unwrap_or(world.player(id).map_or(0.0, |p| p.state.facing));
@@ -1073,6 +1091,13 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             let p = world.player(id).expect("just added");
             Ok(format!("player {id} joined at ({:.1}, {:.1}) in {}", p.state.pos.x, p.state.pos.y, place(world, p.state.pos)))
         }
+        "pvp" => {
+            if let Some(on) = args.get("on").and_then(Value::as_bool) {
+                world.config.combat.pvp = on;
+            }
+            let pvp = world.config.combat.pvp;
+            Ok(format!("pvp {}: players {} hurt each other", on_off(pvp), if pvp { "can" } else { "can't" }))
+        }
         "dev" => {
             let id = player_id();
             world.player(id).ok_or_else(|| format!("no player {id}"))?;
@@ -1124,7 +1149,7 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             let died: String = alive
                 .iter()
                 .filter_map(|id| world.player(*id).filter(|p| p.dead))
-                .map(|p| format!("; P{} DIED: {}", p.id, p.run.cause_of_death().unwrap_or_else(|| "cause unknown".into())))
+                .map(|p| format!("; P{} DIED: {}", p.id, p.run.cause_of_death_with(&world.config.weapons).unwrap_or_else(|| "cause unknown".into())))
                 .collect();
             Ok(format!("it is now {}{died}", clock(world.time_of_day())))
         }
@@ -1183,8 +1208,9 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 "pain": p.health.pain(&world.config.health),
                 "sick": p.health.sick(),
                 "infection": p.health.visible_infection().map_or("unknown".to_string(), |s| format!("{s:?}")),
-                "run": run_json(&p.run),
-                "cause_of_death": p.run.cause_of_death(),
+                "run": run_json(&p.run, &world.config.weapons),
+                "cause_of_death": p.run.cause_of_death_with(&world.config.weapons),
+                "knocked": p.knock.map(|k| if k.down { "down" } else { "staggered" }),
                 "hunger": p.needs.hunger,
                 "thirst": p.needs.thirst,
                 "tiredness": p.needs.tiredness,
@@ -1243,6 +1269,8 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 "dead": state_count(world, ZombieState::Dead),
             },
             "last_tick_hits": world.hit_events.len(),
+            "last_tick_player_hits": world.player_hit_events.len(),
+            "pvp": world.config.combat.pvp,
             "last_tick_thumps": world.stats.thumps,
             "damaged_edges": world.damaged_edges().count(),
             "chasing": world.stats.chasing,
@@ -1281,6 +1309,9 @@ struct Events {
     hits: u32,
     hit_lines: Vec<String>,
     kills: u32,
+    /// Player hits on other players (PvP), the first few spelled out.
+    player_hits: u32,
+    player_hit_lines: Vec<String>,
     deaths: Vec<u32>,
     /// Skill level-ups (#46), taken from the world as they happen.
     level_ups: Vec<zombye_sim::LevelUp>,
@@ -1351,6 +1382,43 @@ impl Events {
                 ));
             }
         }
+        for h in &world.player_hit_events {
+            self.player_hits += 1;
+            if self.player_hit_lines.len() < 12 {
+                let how = match h.kind {
+                    ActionKind::Swing => "hit",
+                    ActionKind::Shove => "shoved",
+                    ActionKind::Stomp => "stomped",
+                };
+                let wound = match (h.part, h.wound) {
+                    (Some(part), Some(kind)) => format!(" for {:.0}: a {} on the {}", h.damage, kind.name(), part.name()),
+                    _ => String::new(),
+                };
+                let effect = match h.effect {
+                    HitEffect::Hit => "",
+                    HitEffect::Staggered => ", staggered",
+                    HitEffect::KnockedDown => ", KNOCKED DOWN",
+                    HitEffect::Killed => ", KILLED",
+                };
+                let v = world.player(h.victim);
+                self.player_hit_lines.push(format!(
+                    "P{} {how} P{}{wound}{}{effect} ({:.0} HP left{})",
+                    h.player,
+                    h.victim,
+                    match (h.crit, h.behind) {
+                        (true, true) => " (crit, from behind)",
+                        (true, false) => " (crit)",
+                        (false, true) => " (from behind)",
+                        _ => "",
+                    },
+                    v.map_or(0.0, |p| p.hp),
+                    if v.is_some_and(|p| p.dev.god) { ", god" } else { "" },
+                ));
+            }
+            if h.effect == HitEffect::Killed && !self.deaths.contains(&h.victim) {
+                self.deaths.push(h.victim);
+            }
+        }
         self.thumps += world.stats.thumps;
         for c in &world.break_events {
             self.broken.push(format!("{} at ({}, {}) {:?}", noun(c.kind), c.tile.x, c.tile.y, c.edge));
@@ -1365,6 +1433,11 @@ impl Events {
         }
         if self.kills > 0 {
             out.push_str(&format!("; {} zombie(s) killed", self.kills));
+        }
+        if self.player_hits > 0 {
+            let n = self.player_hits as usize;
+            let more = if n > self.player_hit_lines.len() { format!(" and {} more", n - self.player_hit_lines.len()) } else { String::new() };
+            out.push_str(&format!("; PLAYER HITS: {}{more}", self.player_hit_lines.join(", ")));
         }
         if self.thumps > 0 {
             out.push_str(&format!("; {} thumps on doors/windows", self.thumps));
@@ -1389,7 +1462,7 @@ impl Events {
             out.push_str(&format!("; LEVEL UP: {}", ups.join(", ")));
         }
         for p in &self.deaths {
-            let cause = world.player(*p).and_then(|p| p.run.cause_of_death()).map_or(String::new(), |c| format!(": {c}"));
+            let cause = world.player(*p).and_then(|p| p.run.cause_of_death_with(&world.config.weapons)).map_or(String::new(), |c| format!(": {c}"));
             out.push_str(&format!("; P{p} DIED{cause}"));
         }
         out
@@ -1397,13 +1470,14 @@ impl Events {
 }
 
 /// A player's run stats (#13) for `stats`.
-fn run_json(r: &zombye_sim::RunStats) -> Value {
+fn run_json(r: &zombye_sim::RunStats, weapons: &[zombye_sim::WeaponDef]) -> Value {
     json!({
         "survived": r.survived(),
         "game_hours": r.hours,
         "played": r.played(),
         "seconds": r.secs,
         "kills": r.kills,
+        "player_kills": r.player_kills,
         "distance_m": r.distance_m,
         "items_taken": r.items_taken,
         "containers_searched": r.searched,
@@ -1411,7 +1485,7 @@ fn run_json(r: &zombye_sim::RunStats) -> Value {
         "hp_lost": r.hp_lost,
         "death": r.death.map(|d| json!({
             "cause": d.cause.id(),
-            "text": d.describe(),
+            "text": d.describe_with(weapons),
             "rises": d.rises,
             "tick": d.tick,
             "day": d.day,
@@ -1858,6 +1932,10 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
             if s.winded { " (winded)" } else { "" },
             if map.in_window_opening(s.pos) { ", climbing through a window" } else { "" },
             match p.action {
+                _ if p.knock.is_some() => {
+                    let k = p.knock.expect("checked");
+                    format!(", {} by a blow ({:.2} s)", if k.down { "KNOCKED DOWN" } else { "staggered" }, k.timer)
+                }
                 Some(a) => format!(", mid-{:?} ({:.2} s to land)", a.kind, a.timer).to_lowercase(),
                 None if p.ready_in > 0.0 => format!(", recovering {:.2} s", p.ready_in),
                 None => String::new(),
@@ -2753,6 +2831,77 @@ mod tests {
         assert_eq!(stats["players"][0]["bleeding"], 1);
         assert_eq!(stats["players"][0]["infection"], "unknown");
         assert_eq!(stats["players"][0]["wounds"][0], "gash on the left leg");
+    }
+
+    /// PvP through the tools: off, a swing at another player hits nothing; `pvp {on: true}` and the
+    /// same swing wounds it, `attack`'s reply says how, `observe` and `stats` show a knocked player,
+    /// and a death names the survivor's weapon.
+    #[test]
+    fn pvp_tools_report_player_hits() {
+        let mut world = small_world();
+        let dir = scratch("pvp");
+        let mut persist = session(&world, &dir.0);
+        let at = world.player(1).unwrap().state.pos;
+        let (text, err) = call(&mut world, &mut persist, "add_player", json!({"x": at.x + 0.8, "y": at.y}));
+        assert!(!err && text.contains("player 2 joined"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "pvp", json!({}));
+        assert!(!err && text.contains("pvp off"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "attack", json!({"target_player": 2}));
+        assert!(!err && text.contains("nothing hit") && !text.contains("PLAYER HITS"), "{text}");
+        assert_eq!(world.player(2).unwrap().hp, 100.0);
+
+        let (text, err) = call(&mut world, &mut persist, "pvp", json!({"on": true}));
+        assert!(!err && text.contains("pvp on"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "attack", json!({"target_player": 2}));
+        assert!(!err && text.contains("1 hit") && text.contains("PLAYER HITS: P1 hit P2 for ") && text.contains("a bruise on the "), "{text}");
+        assert!(world.player(2).unwrap().hp < 100.0);
+        let (text, err) = call(&mut world, &mut persist, "attack", json!({"target_player": 99}));
+        assert!(err && text.contains("no player 99"), "{text}");
+
+        // Shove until it goes down (seeded: a quarter of shoves or so), then observe and stats say so.
+        let mut down = false;
+        for _ in 0..40 {
+            let back = world.player(1).unwrap().state.pos + Vec2::new(0.8, 0.0);
+            let pi = world.players.iter().position(|p| p.id == 2).unwrap();
+            world.players[pi].state.pos = back;
+            let (text, err) = call(&mut world, &mut persist, "shove", json!({"target_player": 2}));
+            assert!(!err && text.contains("P1 shoved P2") && (text.contains(", staggered") || text.contains(", KNOCKED DOWN")), "{text}");
+            if text.contains("KNOCKED DOWN") && world.player(2).unwrap().knock.is_some() {
+                down = true;
+                break;
+            }
+        }
+        assert!(down, "40 shoves never floored player 2");
+        let (text, _) = call(&mut world, &mut persist, "observe", json!({}));
+        assert!(text.contains("KNOCKED DOWN by a blow"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "stats", json!({}));
+        let stats: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(stats["pvp"], true);
+        assert_eq!(stats["players"][1]["knocked"], "down");
+
+        // Beaten to death with a crowbar: the reply, stats and the killer's run say so.
+        assert!(world.hold_item(1, zombye_sim::Slot::Hand, "crowbar"));
+        let mut died = String::new();
+        for _ in 0..40 {
+            let back = world.player(1).unwrap().state.pos + Vec2::new(0.8, 0.0);
+            let pi = world.players.iter().position(|p| p.id == 2).unwrap();
+            world.players[pi].state.pos = back;
+            world.players[pi].knock = None;
+            world.players[0].state.endurance = 1.0;
+            let (text, err) = call(&mut world, &mut persist, "attack", json!({"target_player": 2}));
+            assert!(!err, "{text}");
+            if text.contains("P2 DIED") {
+                died = text;
+                break;
+            }
+        }
+        assert!(died.contains("KILLED") && died.contains("P2 DIED: Killed by a survivor with a crowbar: "), "{died}");
+        let (text, _) = call(&mut world, &mut persist, "stats", json!({}));
+        let stats: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(stats["players"][0]["run"]["player_kills"], 1);
+        assert_eq!(stats["players"][0]["run"]["kills"], 0);
+        assert_eq!(stats["players"][1]["run"]["death"]["cause"], "survivor");
+        assert!(stats["players"][1]["cause_of_death"].as_str().unwrap().starts_with("Killed by a survivor with a crowbar"), "{}", stats["players"][1]);
     }
 
     /// `stats` carries each player's run (#13); dying says how, in `skip_time`'s and `step_ticks`'

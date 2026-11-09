@@ -430,9 +430,12 @@ fn animate_survivors(
         if a.action.is_some_and(|c| c.end.is_some_and(|e| now > e)) {
             a.action = None;
         }
-        if events.0.iter().any(|e| e.kind == CombatEventKind::PlayerHurt && e.player == a.player) {
+        if events.0.iter().any(|e| matches!(e.kind, CombatEventKind::PlayerHurt | CombatEventKind::PlayerShoved) && e.player == a.player) {
             a.hurt_at = now;
         }
+        // Knocked down by another player's blow (PvP): it falls as the dead do and lies there, and
+        // gets up over the last moment of it (as a sleeper does on waking).
+        let floored = view.knock.filter(|k| k.down);
         // Asleep, a survivor lies still on its back (#93): its own short lie-down and get-up.
         if view.dead {
             if a.sleeping || a.woke_at.is_some() {
@@ -449,7 +452,18 @@ fn animate_survivors(
                 a.dead_since = Some(if fresh { now - 10.0 } else { now });
             }
             a.sleeping = true;
+        } else if floored.is_some_and(|k| k.timer > SLEEP_GET_UP_SECS) && a.woke_at.is_none() {
+            if a.dead_since.is_none() || a.sleeping {
+                a.dead_since = Some(if fresh { now - 10.0 } else { now });
+            }
+            a.sleeping = false;
+            a.action = None;
         } else if a.dead_since.is_some() {
+            if floored.is_some() && !a.sleeping {
+                // Nearly over: up it gets.
+                a.sleeping = true;
+                a.woke_at = Some(now);
+            }
             if a.sleeping && a.woke_at.is_none() {
                 a.woke_at = Some(now);
                 a.action = None;

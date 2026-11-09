@@ -132,6 +132,9 @@ fn main() {
     };
     // Without --zombies, as many as the population file's densities give for the map.
     config.zombies = value("--zombies").map(|n| n as u32);
+    // Player against player (docs/PLAN.md §4.8) for a new world: `--pvp on` (a loaded save keeps
+    // its own setting; `--host` decides for itself, on unless `--pvp off`).
+    config.combat.pvp = text("--pvp").as_deref() == Some("on");
     if let Some(chunks) = value("--map-chunks") {
         config = config.with_map_chunks(chunks.clamp(1, 256) as i32);
     }
@@ -193,7 +196,7 @@ fn main() {
             "usage: zombye-server (--mcp | --bench [--ticks N] [--players N] [--horde N] [--save-bench] \
              | --host [ADDR[:PORT]] [--name NAME] [--max-players N] [--pvp on|off] [--spawn spread|together] [--password P] [--allow-dev] \
              | --bots N --connect HOST[:PORT] [--secs S] [--name PREFIX] [--password P] [--bots-hostile]) \
-             [--zombies N] [--seed S] [--map-chunks N] [--data DIR] \
+             [--zombies N] [--seed S] [--map-chunks N] [--pvp on] [--data DIR] \
              [--save PATH] [--load-anyway] [--autosave-mins N] [--saves DIR] [--client PATH] [--screenshot-timeout SECS]"
         );
         std::process::exit(2);

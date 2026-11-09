@@ -909,7 +909,7 @@ impl World {
         let p = &self.players[pi];
         let (pos, id, god) = (p.state.pos, p.id, p.dev.god);
         let dir = (pos - from).normalize_or(Vec2::X);
-        self.push_combat_event(CombatEvent { kind: CombatEventKind::PlayerHurt, pos, dir, zombie, player: id, damage, crit: false, part: Some(part), wound: Some(kind) });
+        self.push_combat_event(CombatEvent { kind: CombatEventKind::PlayerHurt, pos, dir, zombie, player: id, damage, crit: false, part: Some(part), wound: Some(kind), by: 0 });
         if !god {
             self.add_wound(pi, part, kind, zombie != 0, None);
         }
@@ -930,7 +930,7 @@ impl World {
         let damage = self.combat_rng.range(lo, hi);
         self.add_wound(pi, part, kind, zombie, infect)?;
         let pos = self.players[pi].state.pos;
-        self.push_combat_event(CombatEvent { kind: CombatEventKind::PlayerHurt, pos, dir: Vec2::X, zombie: 0, player: id, damage, crit: false, part: Some(part), wound: Some(kind) });
+        self.push_combat_event(CombatEvent { kind: CombatEventKind::PlayerHurt, pos, dir: Vec2::X, zombie: 0, player: id, damage, crit: false, part: Some(part), wound: Some(kind), by: 0 });
         self.hurt_player_by(pi, damage, DeathCause::Wound { part, wound: kind });
         Some(damage)
     }

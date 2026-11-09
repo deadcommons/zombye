@@ -160,6 +160,9 @@ pub struct PlayerView {
     pub asleep: bool,
     /// Aiming (the right mouse held): facing its aim, at the ready.
     pub aiming: bool,
+    /// Reeling (`down` false) or on the ground after another player's blow (PvP), with the seconds
+    /// left: it doesn't move or act until then (`mods` say so too, so prediction stays exact).
+    pub knock: Option<zombye_sim::Knock>,
 }
 
 /// What a container holds, for whoever has it open.
@@ -388,6 +391,7 @@ impl Snapshot {
                 health: if p.dead { HealthTags::default() } else { p.health.tags(&world.config.health) },
                 asleep: p.needs.asleep(),
                 aiming: p.input.aim && !p.dead,
+                knock: p.knock,
             })
             .collect();
         let private = world.take_private_dirty().into_iter().filter_map(|id| PrivateView::of(world, id)).collect();
@@ -638,7 +642,8 @@ impl LocalServer {
 mod tests {
     use super::*;
     use zombye_sim::players::step_movement;
-    use zombye_sim::{BuildingTemplate, TICK_DT};
+    use glam::Vec2;
+    use zombye_sim::{BuildingTemplate, CombatEventKind, TICK_DT};
 
     fn server() -> LocalServer {
         let templates = [include_str!("../../../assets/data/buildings/bungalow.ron")].iter().map(|t| BuildingTemplate::from_ron(t).unwrap()).collect();
@@ -1274,6 +1279,73 @@ mod tests {
         }
         assert_eq!(mods_seen.len(), 3, "{mods_seen:?}");
         assert!(mods_seen[1].speed == 1.0 && mods_seen[2].run_drain < mods_seen[1].run_drain && mods_seen[2].regen > mods_seen[1].regen, "{mods_seen:?}");
+    }
+
+    /// PvP through intents and snapshots: one player hounds another with shoves and a bat. The
+    /// victim's client predicts its own movement exactly on every tick but the ones a blow pushed
+    /// it (the snapshot corrects those, and says why with a hit event): reeling and lying down
+    /// reach it as movement modifiers, switched after movement like every other. With `pvp` off
+    /// the same intents touch nobody.
+    #[test]
+    fn prediction_holds_through_pvp_blows() {
+        for pvp in [true, false] {
+            let mut server = server();
+            server.world.config.combat.pvp = pvp;
+            server.world.config.zombies = Some(0);
+            server.world = World::new(server.world.config.clone());
+            let id = server.join(None);
+            let foe = server.join(None);
+            assert!(server.world.hold_item(foe, zombye_sim::Slot::Hand, "baseball_bat"));
+            server.world.set_dev(id, Some(true), None);
+            let snap = server.tick();
+            let mut predicted = snap.players.iter().find(|p| p.id == id).unwrap().state();
+            let (mut blows, mut reeled, mut floored, mut frozen) = (0, 0, 0, 0);
+            for seq in 1..=1200u32 {
+                let a = seq as f32 * 0.03;
+                let (move_dir, facing) = ([a.cos() * 0.5, a.sin() * 0.5], a);
+                server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run: false, sneak: false, aim: false });
+                // The other closes in and hits: a shove, then swings.
+                let (me, them) = (server.world.player(id).unwrap().state.pos, server.world.player(foe).unwrap().state.pos);
+                let to = me - them;
+                let chase = if to.length() > 0.7 { to.normalize() } else { Vec2::ZERO };
+                server.send(Intent::PlayerInput { player: foe, seq, move_dir: chase.into(), facing: to.to_angle(), run: true, sneak: false, aim: true });
+                if to.length() < 1.0 {
+                    server.send(if seq % 60 < 20 { Intent::Shove { player: foe } } else { Intent::Attack { player: foe } });
+                }
+                step_movement(&server.world.map, &mut predicted, &PlayerInput { move_dir: move_dir.into(), facing, run: false, sneak: false, aim: false }, TICK_DT);
+                let snap = server.tick();
+                let view = *snap.players.iter().find(|p| p.id == id).unwrap();
+                let hit = snap.hits.iter().any(|h| h.player == id && h.by == foe && matches!(h.kind, CombatEventKind::PlayerHurt | CombatEventKind::PlayerShoved));
+                if hit {
+                    blows += 1;
+                    // Knocked back: where it stands now is the server's to say.
+                    predicted = view.state();
+                } else {
+                    assert_eq!(zombye_sim::PlayerState { mods: predicted.mods, ..view.state() }, predicted, "diverged at seq {seq} (pvp {pvp})");
+                }
+                predicted.mods = view.mods;
+                match view.knock {
+                    Some(k) => {
+                        assert_eq!(view.mods.speed, 0.0, "seq {seq}");
+                        frozen += 1;
+                        if k.down { floored += 1 } else { reeled += 1 }
+                    }
+                    None => assert!(view.mods.speed > 0.0, "seq {seq}"),
+                }
+                // Each client gets the hit (the feedback is for everyone who can see it).
+                if hit {
+                    assert!(snap.clone().for_player(foe).hits.iter().any(|h| h.by == foe));
+                }
+            }
+            let v = server.world.player(id).unwrap();
+            if pvp {
+                assert!(blows > 10 && reeled > 0 && floored > 0 && frozen > 20, "{blows} blows, {reeled} ticks reeling, {floored} down");
+                assert_eq!(v.hp, 100.0, "a god takes the blows, not the damage");
+            } else {
+                assert_eq!((blows, frozen), (0, 0));
+                assert!(v.health.wounds.is_empty());
+            }
+        }
     }
 
     /// Crafting through intents (#12): asked for by a sleeper it only gets it up; asked again it

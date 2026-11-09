@@ -38,7 +38,7 @@ pub mod worldgen;
 pub mod zombies;
 
 pub use ai::{ZombieAttack, ZombieThump, ZombieTuning};
-pub use combat::{ActionEvent, CombatEvent, CombatEventKind, CombatTuning, HitEffect, HitEvent};
+pub use combat::{ActionEvent, CombatEvent, CombatEventKind, CombatTuning, HitEffect, HitEvent, PlayerHitEvent};
 pub use containers::{ContainerData, ContainerDef, ContainerSite};
 pub use crafting::{RecipeDef, RecipeItem, Tool};
 pub use firstaid::{Aid, AidView, CourseView, FirstAidTuning, Treatment};
@@ -49,7 +49,7 @@ pub use loot::{LootData, LootTable};
 pub use flow::FlowField;
 pub use map::TileMap;
 pub use needs::{Freshness, Needs, NeedsTuning, NeedsView, SleepSpot, StatusInput, StatusTag, TagKind, WakeReason};
-pub use players::{Action, ActionKind, DevFlags, MoveMods, Player, PlayerInput, PlayerState, Stance};
+pub use players::{Action, ActionKind, DevFlags, Knock, MoveMods, Player, PlayerInput, PlayerState, Stance};
 pub use population::{Attractor, PopulationDef, Zone};
 pub use template::BuildingTemplate;
 pub use run::{Death, DeathCause, RunStats};

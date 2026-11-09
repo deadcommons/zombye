@@ -31,8 +31,9 @@ use zombye_sim::{CarryTuning, CombatEvent, CombatTuning, GroundItem, HealthTunin
 
 use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, RunView, Snapshot, ZombieView};
 
-/// Bumped whenever a message changes shape; a server refuses any other.
-pub const PROTOCOL: u32 = 1;
+/// Bumped whenever a message changes shape; a server refuses any other. (2: player-vs-player
+/// combat, #65: `PlayerView::knock`, `CombatEvent::by`, players killed in the run stats.)
+pub const PROTOCOL: u32 = 2;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.

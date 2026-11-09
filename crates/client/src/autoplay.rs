@@ -91,6 +91,29 @@ fn autoplay(
             }
         }
     }
+    // With PvP on, other survivors are targets too: standing ones to swing at, downed ones to stamp on.
+    // (A server we joined says so in its rules; our own world, in its combat settings.)
+    if link.net.as_ref().map_or(join.combat.pvp, |n| n.pvp) {
+        for p in link.curr.players.iter().filter(|p| p.id != me.id && !p.dead) {
+            let to = Vec2::from(p.pos) - pos;
+            let d = to.length();
+            if d > SIGHT {
+                continue;
+            }
+            if p.knock.is_some_and(|k| k.down) {
+                if downed.is_none_or(|(best, _)| d < best) {
+                    downed = Some((d, to));
+                }
+            } else {
+                if d <= c.shove_range + ZOMBIE_RADIUS + 0.15 {
+                    crowding += 1;
+                }
+                if nearest.is_none_or(|(best, _)| d < best) {
+                    nearest = Some((d, to));
+                }
+            }
+        }
+    }
     // Only ask when the server will take it (an action under way or still recovering).
     let busy = link.curr.players.iter().find(|p| p.id == me.id).is_none_or(|v| v.action.is_some() || v.ready_in > 0.0);
     // A downed zombie at our feet, and nothing standing right on top of us: finish it.
