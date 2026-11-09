@@ -2,9 +2,13 @@
 //! carry limit, beside the container you have open (search one with E) and the floor within reach.
 //! Click a row to move it: from you into the open container (or onto the floor if none is open),
 //! from a container or the floor into your pockets and bags, off a slot into your bags.
-//! Right-click one of your carried stacks to equip, wear, eat or drink it, take a pill, or use a
-//! dressing, antiseptic or sewing kit on a wound (it opens the health panel to pick the wound,
-//! #10). Alt-click (Option-click on a Mac) moves just one of a stack. Everything goes to the server as intents; the panel only shows what the latest
+//! Right-click any row for a small flat menu of what can be done with it (#95; [`menu_entries`]):
+//! equip, wear, eat or drink, take a pill, use a dressing, antiseptic or sewing kit on a wound (it
+//! opens the health panel to pick the wound, #10), put it in the open container, drop it, take it,
+//! or split the stack (one, or half). The likeliest first; 1-9 pick by number, Esc or a click
+//! elsewhere closes it. The same menu opens on a ground item in the world: right-click it with the
+//! panel open, or tap the right mouse on it (a quick tap, not held to aim). Alt-click (Option-click on a Mac) moves just one of a stack. Everything goes to
+//! the server as intents; the panel only shows what the latest
 //! snapshot said. Moving takes a moment (the server queues it): the header shows how busy you are.
 //! The last answer to a request (done, or why not) shows at the foot of the panel, and for a few
 //! seconds under the HUD when the panel is shut (the same answer again just stays up longer).
@@ -350,9 +354,10 @@ impl Plugin for InventoryUiPlugin {
             .init_resource::<Outbox>()
             .init_resource::<InFlight>()
             .init_resource::<MakeUi>()
+            .init_resource::<ItemMenu>()
             .add_systems(Startup, spawn)
-            .add_systems(PreUpdate, type_search.in_set(TextEntry).after(bevy::input::InputSystems))
-            .add_systems(Update, (toggle, keep_note, track_flight, prune_picked, script_picks, send_clicks, send_picked, flush, rebuild).chain());
+            .add_systems(PreUpdate, (type_search, menu_keys).chain().in_set(TextEntry).after(bevy::input::InputSystems))
+            .add_systems(Update, (toggle, keep_note, track_flight, prune_picked, script_picks, menu_from_options, send_clicks, world_menu, script_menu, menu_act, send_picked, flush, rebuild, draw_menu).chain());
     }
 }
 
@@ -474,10 +479,11 @@ fn stack_kg(items: &[ItemDef], s: &ItemStack) -> f32 {
 #[derive(Clone, Debug)]
 struct RowAction {
     stack: ItemStack,
+    /// The menu's title (the item's name).
+    title: String,
     left: Option<(Place, u32, Place)>,
-    right: Option<Intent>,
-    /// Right-click: use this item on a wound (the health panel picks which).
-    use_on: Option<u16>,
+    /// Right-click: the menu of what can be done with it (#95), the likeliest first.
+    menu: Vec<MenuEntry>,
     /// Left click: make this recipe (a row of the Make list; `stack` and `left` are unused).
     craft: Option<u16>,
 }
@@ -591,26 +597,27 @@ fn click_intent(click: &RowClick, player: u32, flight: &mut InFlight, now: f32) 
             }
             move_intent(player, from, index, to, if click.one { 1 } else { 0 })
         }
-        PointerButton::Secondary => {
-            let intent = a.right.clone()?;
-            let index = match intent {
-                Intent::Use { index, .. } | Intent::Wear { index, .. } | Intent::Equip { index, .. } => index,
-                _ => return Some(intent),
-            };
-            flight.ask(Place::Carried, index, a.stack, true, now).then_some(intent)
-        }
         _ => None,
     }
 }
 
 /// This frame's presses on rows, as intents: at most one per button (one physical click is one
 /// press, however many times picking reports it), none for what is already on its way.
-fn send_clicks(time: Res<Time>, me: Res<LocalPlayer>, mut clicks: ResMut<Clicks>, mut flight: ResMut<InFlight>, mut out: ResMut<Outbox>, mut health: ResMut<crate::health_ui::HealthPanel>) {
-    // "Use on…": the health panel opens to pick the wound.
-    if let Some(item) = clicks.0.iter().find(|c| c.button == PointerButton::Secondary).and_then(|c| c.action.use_on) {
-        (health.open, health.use_item, health.selected) = (true, Some(item), None);
-    }
+fn send_clicks(time: Res<Time>, me: Res<LocalPlayer>, windows: Query<&Window, With<bevy::window::PrimaryWindow>>, mut clicks: ResMut<Clicks>, mut flight: ResMut<InFlight>, mut out: ResMut<Outbox>, mut menu: ResMut<ItemMenu>) {
+    menu_clicks(&mut clicks, &mut menu, windows.single().ok().and_then(|w| w.cursor_position()));
     drain_clicks(me.id, time.elapsed_secs(), &mut clicks, &mut flight, &mut out);
+}
+
+/// What this frame's presses on rows mean for the menu: a right-click opens that row's, at `at`.
+/// With a menu up, a left click anywhere else only closes it ([`menu_act`]): it is dropped here,
+/// so it doesn't also move the row that happens to be under the pointer.
+fn menu_clicks(clicks: &mut Clicks, menu: &mut ItemMenu, at: Option<Vec2>) {
+    if menu.open.is_some() {
+        clicks.0.retain(|c| c.button != PointerButton::Primary);
+    }
+    if let Some(c) = clicks.0.iter().find(|c| c.button == PointerButton::Secondary && !c.action.menu.is_empty()) {
+        menu.show(c.action.title.clone(), c.action.stack, c.action.menu.clone(), at);
+    }
 }
 
 fn drain_clicks(player: u32, now: f32, clicks: &mut Clicks, flight: &mut InFlight, out: &mut Outbox) {
@@ -680,6 +687,14 @@ fn rebuild(
     let shown_at = |from: Place, index: u32, s: &ItemStack| on_show(&find, items, &picked, from, index, s);
     // The item rows drawn, in order, for Shift-click's ranges.
     let mut rows: Vec<Key> = Vec::new();
+    let menu_open = open.zip(open_name.clone());
+    let act = |from: Place, index: u32, s: &ItemStack, to: Place| RowAction {
+        stack: *s,
+        title: name_of(items, now, s),
+        left: Some((from, index, to)),
+        menu: menu_entries(me.id, items, from, index, s, menu_open.as_ref().map(|(id, n)| (*id, n.as_str()))),
+        craft: None,
+    };
     commands.entity(root).with_children(|c| {
         header(c, view.as_ref(), busy);
         toolbar(c, &find);
@@ -695,12 +710,12 @@ fn rebuild(
                 let inv = &v.inventory;
                 for (label, slot) in [("Hand", Slot::Hand), ("Other hand", Slot::OffHand), ("Back", Slot::Back), ("Shoulder", Slot::Shoulder)] {
                     match inv.slot(slot) {
-                        Some(s) => item_row(&mut rows, col, format!("{label}: {}{}", name_of(items, now, &s), moving(&flight, Place::Slot(slot), 0, &s)), format!("{:.1} kg", stack_kg(items, &s)), RowAction { stack: s, left: Some((Place::Slot(slot), 0, Place::Carried)), right: None, use_on: None, craft: None }, is_picked(Place::Slot(slot), 0, &s)),
+                        Some(s) => item_row(&mut rows, col,format!("{label}: {}{}", name_of(items, now, &s), moving(&flight, Place::Slot(slot), 0, &s)), format!("{:.1} kg", stack_kg(items, &s)), act(Place::Slot(slot), 0, &s, Place::Carried), is_picked(Place::Slot(slot), 0, &s)),
                         None => dim(col, format!("{label}: -")),
                     }
                 }
                 for (k, s) in inv.worn.iter().enumerate().filter(|(k, s)| shown_at(Place::Worn, *k as u32, s)) {
-                    item_row(&mut rows, col, format!("Worn: {}{}", name_of(items, now, s), moving(&flight, Place::Worn, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Worn, k as u32, Place::Carried)), right: None, use_on: None, craft: None }, is_picked(Place::Worn, k as u32, s));
+                    item_row(&mut rows, col,format!("Worn: {}{}", name_of(items, now, s), moving(&flight, Place::Worn, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), act(Place::Worn, k as u32, s, Place::Carried), is_picked(Place::Worn, k as u32, s));
                 }
                 dim(col, format!("Carried ({:.1} of {:.0} L):", v.carry.used_l, v.carry.room_l));
                 if inv.carried.is_empty() {
@@ -711,22 +726,12 @@ fn rebuild(
                 for (k, s) in inv.carried.iter().enumerate().filter(|(k, s)| shown_at(Place::Carried, *k as u32, s)) {
                     let def = items.get(s.item as usize);
                     let to = open.map_or(Place::Ground, Place::Container);
-                    let treats = def.and_then(Treatment::of_item);
-                    let right = def.and_then(|d| match (d.category, treats) {
-                        // A pill: take it. A dressing, antiseptic or sewing kit: use it on a wound.
-                        (_, Some(t)) if !t.on_wound() => Some(Intent::Treat { player: me.id, wound: None, action: t, item: Some(s.item) }),
-                        (_, Some(_)) => None,
-                        (ItemCategory::Food | ItemCategory::Drink, _) => Some(Intent::Use { player: me.id, from: Place::Carried, index: k as u32 }),
-                        (ItemCategory::Clothing, _) => Some(Intent::Wear { player: me.id, index: k as u32 }),
-                        _ => Some(Intent::Equip { player: me.id, index: k as u32 }),
-                    });
-                    let use_on = treats.filter(|t| t.on_wound()).map(|_| s.item);
                     // Uses left in the opened one (a box of plasters, a roll of gauze).
                     let left = match (def.and_then(|d| d.medical.as_ref()), v.health.aid.opened.iter().find(|o| o.item == s.item)) {
                         (Some(m), Some(o)) => format!(" ({} of {} left)", m.uses.saturating_sub(o.used), m.uses),
                         _ => String::new(),
                     };
-                    item_row(&mut rows, col, format!("  {}{left}{}", name_of(items, now, s), moving(&flight, Place::Carried, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Carried, k as u32, to)), right, use_on, craft: None }, is_picked(Place::Carried, k as u32, s));
+                    item_row(&mut rows, col,format!("  {}{left}{}", name_of(items, now, s), moving(&flight, Place::Carried, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), act(Place::Carried, k as u32, s, to), is_picked(Place::Carried, k as u32, s));
                 }
             });
             // The open container.
@@ -739,7 +744,7 @@ fn rebuild(
                         dim(col, "nothing that matches".into());
                     }
                     for (k, s) in cv.stacks.iter().enumerate().filter(|(k, s)| shown_at(Place::Container(cv.id), *k as u32, s)) {
-                        item_row(&mut rows, col, format!("{}{}", name_of(items, now, s), moving(&flight, Place::Container(cv.id), k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Container(cv.id), k as u32, Place::Carried)), right: None, use_on: None, craft: None }, is_picked(Place::Container(cv.id), k as u32, s));
+                        item_row(&mut rows, col,format!("{}{}", name_of(items, now, s), moving(&flight, Place::Container(cv.id), k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), act(Place::Container(cv.id), k as u32, s, Place::Carried), is_picked(Place::Container(cv.id), k as u32, s));
                     }
                 });
             }
@@ -751,7 +756,7 @@ fn rebuild(
                     dim(col, "nothing that matches".into());
                 }
                 for (id, s) in floor.iter().filter(|(id, s)| shown_at(Place::Ground, *id, s)) {
-                    item_row(&mut rows, col, format!("{}{}", name_of(items, now, s), moving(&flight, Place::Ground, *id, s)), format!("{:.1} kg", stack_kg(items, s)), RowAction { stack: *s, left: Some((Place::Ground, *id, Place::Carried)), right: None, use_on: None, craft: None }, is_picked(Place::Ground, *id, s));
+                    item_row(&mut rows, col,format!("{}{}", name_of(items, now, s), moving(&flight, Place::Ground, *id, s)), format!("{:.1} kg", stack_kg(items, s)), act(Place::Ground, *id, s, Place::Carried), is_picked(Place::Ground, *id, s));
                 }
                 if open.is_none() {
                     dim(col, "E: search the cupboard,".into());
@@ -763,7 +768,7 @@ fn rebuild(
             make(c, &join, v, busy.0, &flight, &make_ui);
         }
         c.spawn((Text::new("Click: move it where its column's arrow says (a recipe: make it)   Alt-click: just one   /: search   Tab: close"), font(12.0), TextColor(DIM)));
-        c.spawn((Text::new("Right-click: equip / wear / eat / use on a wound (a recipe: pin it)"), font(12.0), TextColor(DIM)));
+        c.spawn((Text::new("Right-click: what you can do with it (1-9 picks, Esc closes; a recipe: pin it)"), font(12.0), TextColor(DIM)));
         if note_fresh && !last.text.is_empty() {
             c.spawn((Text::new(last.text.clone()), font(14.0), TextColor(if last.ok { OK } else { NO })));
         }
@@ -855,7 +860,7 @@ fn make_row(c: &mut ChildSpawnerCommands, label: String, right: String, act: Mak
     })
     .observe(move |ev: On<PointerPress>, mut clicks: ResMut<Clicks>, mut ui: ResMut<MakeUi>| match (ev.button, &act) {
         (PointerButton::Primary, MakeAct::Craft(k)) => {
-            clicks.0.push(RowClick { action: RowAction { stack: ItemStack::one(0), left: None, right: None, use_on: None, craft: Some(*k) }, button: ev.button, one: false })
+            clicks.0.push(RowClick { action: RowAction { stack: ItemStack::one(0), title: String::new(), left: None, menu: Vec::new(), craft: Some(*k) }, button: ev.button, one: false })
         }
         (PointerButton::Primary, MakeAct::Family(key)) => ui.toggle_open(key),
         (PointerButton::Secondary, _) => {
@@ -1101,6 +1106,344 @@ fn row(col: &mut ChildSpawnerCommands, label: String, kg: String, action: RowAct
     });
 }
 
+// ---- The right-click menu (#95) ----
+
+/// What a menu entry does.
+#[derive(Clone, Debug)]
+enum MenuDo {
+    /// Send this intent about the stack at `from`/`index` (`whole`: all of it, else part).
+    Send { intent: Intent, from: Place, index: u32, whole: bool },
+    /// Open the health panel to pick the wound to use this item on.
+    UseOn(u16),
+}
+
+/// One line of the menu.
+#[derive(Clone, Debug)]
+struct MenuEntry {
+    label: String,
+    act: MenuDo,
+}
+
+/// Everything that can be done with the stack `s` at `from`/`index`, the likeliest first: one
+/// level, no sub-menus. `open` is the container the player has open (id, name).
+fn menu_entries(player: u32, items: &[ItemDef], from: Place, index: u32, s: &ItemStack, open: Option<(u32, &str)>) -> Vec<MenuEntry> {
+    let Some(def) = items.get(s.item as usize) else { return Vec::new() };
+    let mut out = Vec::new();
+    let mk = |label: String, intent: Option<Intent>, whole: bool| intent.map(|intent| MenuEntry { label, act: MenuDo::Send { intent, from, index, whole } });
+    let n = s.count;
+    // Half of 2 or 3 is one, which "one" already offers.
+    let half = n / 2;
+    let halves = half > 1;
+    let into = |to: Place, count: u16| move_intent(player, from, index, to, count);
+    match from {
+        Place::Carried => {
+            match (Treatment::of_item(def), def.category) {
+                (Some(t), _) if !t.on_wound() => out.extend(mk(format!("Take {}", def.name.to_lowercase()), Some(Intent::Treat { player, wound: None, action: t, item: Some(s.item) }), false)),
+                (Some(_), _) => out.push(MenuEntry { label: "Use on a wound...".into(), act: MenuDo::UseOn(s.item) }),
+                (None, ItemCategory::Food) => out.extend(mk("Eat".into(), Some(Intent::Use { player, from, index }), false)),
+                (None, ItemCategory::Drink) => out.extend(mk("Drink".into(), Some(Intent::Use { player, from, index }), false)),
+                (None, ItemCategory::Clothing) => out.extend(mk("Wear".into(), Some(Intent::Wear { player, index }), false)),
+                (None, ItemCategory::Bag) => out.extend(mk("Put it on".into(), Some(Intent::Equip { player, index }), false)),
+                (None, _) => out.extend(mk("Hold in hand".into(), Some(Intent::Equip { player, index }), false)),
+            }
+            if let Some((id, name)) = open {
+                out.extend(mk(format!("Put in {name}"), into(Place::Container(id), 0), true));
+            }
+            out.extend(mk("Drop".into(), into(Place::Ground, 0), true));
+            if n > 1 {
+                if let Some((id, name)) = open {
+                    out.extend(mk(format!("Put one in {name}"), into(Place::Container(id), 1), false));
+                    if halves {
+                        out.extend(mk(format!("Put half in {name} ({half})"), into(Place::Container(id), half), false));
+                    }
+                }
+                out.extend(mk("Drop one".into(), into(Place::Ground, 1), false));
+                if halves {
+                    out.extend(mk(format!("Drop half ({half})"), into(Place::Ground, half), false));
+                }
+            }
+        }
+        Place::Slot(_) | Place::Worn => {
+            out.extend(mk(if from == Place::Worn { "Take off".into() } else { "Put in bags".into() }, into(Place::Carried, 0), true));
+            if let Some((id, name)) = open {
+                out.extend(mk(format!("Put in {name}"), into(Place::Container(id), 0), true));
+            }
+            out.extend(mk("Drop".into(), into(Place::Ground, 0), true));
+        }
+        Place::Container(_) | Place::Ground => {
+            let take = if from == Place::Ground { "Pick up" } else { "Take" };
+            if def.weapon.is_some() {
+                out.extend(mk("Take in hand".into(), into(Place::Slot(Slot::Hand), 0), true));
+            }
+            out.extend(mk(take.into(), into(Place::Carried, 0), true));
+            if from == Place::Ground
+                && let Some((id, name)) = open
+            {
+                out.extend(mk(format!("Put in {name}"), into(Place::Container(id), 0), true));
+            }
+            if n > 1 {
+                out.extend(mk(format!("{take} one"), into(Place::Carried, 1), false));
+                if halves {
+                    out.extend(mk(format!("{take} half ({half})"), into(Place::Carried, half), false));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The menu on screen, if any.
+#[derive(Resource, Default)]
+pub struct ItemMenu {
+    open: Option<MenuState>,
+    /// The entry picked (a click or a number key), done by [`menu_act`].
+    chosen: Option<usize>,
+    /// Opened this frame (the press that opened it doesn't close it).
+    fresh: bool,
+    version: u32,
+}
+
+struct MenuState {
+    title: String,
+    stack: ItemStack,
+    entries: Vec<MenuEntry>,
+    /// Where (the pointer when it opened); `None`: beside the panel.
+    at: Option<Vec2>,
+}
+
+impl ItemMenu {
+    fn show(&mut self, title: String, stack: ItemStack, entries: Vec<MenuEntry>, at: Option<Vec2>) {
+        self.open = Some(MenuState { title, stack, entries, at });
+        self.chosen = None;
+        self.fresh = true;
+        self.version += 1;
+    }
+
+    fn close(&mut self) {
+        if self.open.take().is_some() {
+            self.version += 1;
+        }
+        self.chosen = None;
+    }
+}
+
+#[derive(Component)]
+struct MenuRoot;
+
+const DIGITS: [KeyCode; 9] = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9];
+
+/// 1-9 pick an entry, Esc closes; those keys go no further while a menu is up.
+fn menu_keys(mut keys: ResMut<ButtonInput<KeyCode>>, mut menu: ResMut<ItemMenu>) {
+    let Some(m) = &menu.open else { return };
+    let n = m.entries.len();
+    if let Some(k) = DIGITS.iter().position(|d| keys.just_pressed(*d)).filter(|&k| k < n) {
+        menu.chosen = Some(k);
+    } else if keys.just_pressed(KeyCode::Escape) {
+        menu.close();
+    }
+    for d in DIGITS.iter().chain([&KeyCode::Escape]) {
+        keys.reset(*d);
+    }
+}
+
+/// Open the menu for the stack at `from`/`index`, at `at`.
+fn open_menu(menu: &mut ItemMenu, link: &ServerLink, join: &JoinInfo, me: u32, from: Place, index: u32, at: Option<Vec2>) -> bool {
+    let (Some(v), floor) = panel_view(link, me) else { return false };
+    let Some(s) = stack_at(&v, &floor, from, index) else { return false };
+    let open = v.open.as_ref().map(|c| (c.id, c.name.to_lowercase()));
+    let entries = menu_entries(me, &join.items, from, index, &s, open.as_ref().map(|(id, n)| (*id, n.as_str())));
+    if entries.is_empty() {
+        return false;
+    }
+    menu.show(name_of(&join.items, link.curr.game_minute, &s), s, entries, at);
+    true
+}
+
+/// The menu on a ground item in the world: right-click it with the panel open, or tap the right
+/// mouse on it with the panel shut (held, it aims). Only items within reach (our floor).
+#[allow(clippy::too_many_arguments)]
+fn world_menu(
+    time: Res<Time>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    cams: Query<(&Camera, &GlobalTransform), With<crate::camera::IsoCamera>>,
+    hover: Res<bevy::picking::hover::HoverMap>,
+    nodes: Query<(), With<Node>>,
+    panel: Res<InventoryPanel>,
+    link: Res<ServerLink>,
+    join: Res<JoinInfo>,
+    me: Res<LocalPlayer>,
+    mut menu: ResMut<ItemMenu>,
+    mut tap: Local<Option<(f32, Vec2)>>,
+) {
+    let (Ok(window), Ok((camera, cam_tf))) = (windows.single(), cams.single()) else { return };
+    let Some(cursor) = window.cursor_position() else { return };
+    let now = time.elapsed_secs();
+    let mut want = false;
+    if mouse.just_pressed(MouseButton::Right) {
+        let over_ui = hover.values().any(|m| m.keys().any(|e| nodes.contains(*e)));
+        if over_ui || menu.fresh || me.dead {
+            *tap = None;
+            return;
+        }
+        if panel.open {
+            want = true;
+        } else {
+            *tap = Some((now, cursor));
+        }
+    }
+    if mouse.just_released(MouseButton::Right)
+        && let Some((t, p)) = tap.take()
+    {
+        want = now - t < 0.25 && p.distance(cursor) < 8.0;
+    }
+    if !want {
+        return;
+    }
+    let Ok(ray) = camera.viewport_to_world(cam_tf, cursor) else { return };
+    if ray.direction.y.abs() < 1e-4 {
+        return;
+    }
+    let hit = ray.origin + *ray.direction * (-ray.origin.y / ray.direction.y);
+    let ground = Vec2::new(hit.x, hit.z);
+    let reach = link.curr.floor_of(me.id);
+    let nearest = link.curr.items.iter().filter(|it| reach.contains(&it.id)).map(|it| (it.id, it.pos.distance(ground))).filter(|(_, d)| *d < 0.8).min_by(|a, b| a.1.total_cmp(&b.1));
+    if let Some((id, _)) = nearest {
+        open_menu(&mut menu, &link, &join, me.id, Place::Ground, id, Some(cursor));
+    }
+}
+
+/// `--menu SPEC` (for pictures): the menu open from the start on `carried:N`, `worn:N`, `hand`,
+/// `container:N` or `ground[:N]` (the Nth item on our floor), beside the panel.
+fn menu_from_options(options: Option<Res<crate::Options>>, link: Res<ServerLink>, join: Res<JoinInfo>, me: Res<LocalPlayer>, mut menu: ResMut<ItemMenu>, mut done: Local<bool>) {
+    if *done {
+        return;
+    }
+    let Some(spec) = options.as_ref().and_then(|o| o.menu.clone()) else {
+        *done = true;
+        return;
+    };
+    let (kind, n) = spec.split_once(':').map_or((spec.as_str(), 0), |(k, n)| (k, n.parse().unwrap_or(0)));
+    let (Some(v), floor) = panel_view(&link, me.id) else { return };
+    let (from, index) = match kind {
+        "carried" => (Place::Carried, n),
+        "worn" => (Place::Worn, n),
+        "hand" => (Place::Slot(Slot::Hand), 0),
+        "container" => match &v.open {
+            Some(c) => (Place::Container(c.id), n),
+            None => return,
+        },
+        "ground" => match floor.get(n as usize) {
+            Some((id, _)) => (Place::Ground, *id),
+            None => return,
+        },
+        _ => {
+            *done = true;
+            return;
+        }
+    };
+    if open_menu(&mut menu, &link, &join, me.id, from, index, None) {
+        *done = true;
+    }
+}
+
+/// `--menu-pick N[@SECS]` (for recordings): press the open menu's number key N after SECS.
+fn script_menu(time: Res<Time>, options: Option<Res<crate::Options>>, mut menu: ResMut<ItemMenu>, mut done: Local<bool>) {
+    let Some((n, after)) = options.as_ref().and_then(|o| o.menu_pick) else { return };
+    if !*done && time.elapsed_secs() >= after && menu.open.as_ref().is_some_and(|m| n <= m.entries.len()) {
+        menu.chosen = Some(n - 1);
+        *done = true;
+    }
+}
+
+/// Do the entry picked, or close the menu on a press anywhere else, and when the panel opens or
+/// shuts under it.
+#[allow(clippy::too_many_arguments)]
+fn menu_act(time: Res<Time>, mouse: Res<ButtonInput<MouseButton>>, me: Res<LocalPlayer>, panel: Res<InventoryPanel>, mut panel_was: Local<bool>, mut menu: ResMut<ItemMenu>, mut flight: ResMut<InFlight>, mut out: ResMut<Outbox>, mut health: ResMut<crate::health_ui::HealthPanel>) {
+    if *panel_was != panel.open {
+        *panel_was = panel.open;
+        if !menu.fresh {
+            menu.close();
+        }
+    }
+    if let Some(k) = menu.chosen.take() {
+        let picked = menu.open.as_ref().and_then(|m| m.entries.get(k).cloned().map(|e| (e, m.stack)));
+        menu.close();
+        let Some((entry, stack)) = picked else { return };
+        match entry.act {
+            MenuDo::UseOn(item) => (health.open, health.use_item, health.selected) = (true, Some(item), None),
+            MenuDo::Send { intent, from, index, whole } => {
+                if flight.ask(from, index, stack, !whole, time.elapsed_secs()) {
+                    out.0.push(intent);
+                }
+            }
+        }
+    } else if menu.open.is_some() && !menu.fresh && (mouse.just_pressed(MouseButton::Left) || mouse.just_pressed(MouseButton::Right)) {
+        menu.close();
+    }
+    if me.dead {
+        menu.close();
+    }
+    menu.fresh = false;
+}
+
+/// About how big a menu of `entries` lines is drawn (UI pixels), for keeping it on screen.
+fn menu_size(entries: usize) -> Vec2 {
+    Vec2::new(280.0, 34.0 + 25.0 * entries as f32)
+}
+
+/// Draw the menu when it changes: its title, then the entries numbered, the first highlighted.
+fn draw_menu(mut commands: Commands, menu: Res<ItemMenu>, ui: Res<UiScale>, windows: Query<&Window, With<bevy::window::PrimaryWindow>>, mut drawn: Local<u32>, roots: Query<Entity, With<MenuRoot>>) {
+    if *drawn == menu.version {
+        return;
+    }
+    *drawn = menu.version;
+    for e in &roots {
+        commands.entity(e).despawn();
+    }
+    let Some(m) = &menu.open else { return };
+    // The pointer in UI pixels (the UI scale, #109, scales every `px`), kept on screen.
+    let at = m.at.map(|at| {
+        let at = at / ui.0.max(0.1) + Vec2::splat(4.0);
+        match windows.single() {
+            Ok(w) => at.min((Vec2::new(w.width(), w.height()) / ui.0.max(0.1) - menu_size(m.entries.len())).max(Vec2::ZERO)),
+            Err(_) => at,
+        }
+    });
+    let node = match at {
+        Some(at) => Node { position_type: PositionType::Absolute, left: px(at.x), top: px(at.y), flex_direction: FlexDirection::Column, row_gap: px(1), padding: UiRect::all(px(4)), min_width: px(170), ..default() },
+        None => Node { position_type: PositionType::Absolute, right: px(PANEL_W + 30.0), top: px(140), flex_direction: FlexDirection::Column, row_gap: px(1), padding: UiRect::all(px(4)), min_width: px(170), ..default() },
+    };
+    commands
+        .spawn((MenuRoot, node, GlobalZIndex(20), BackgroundColor(Color::srgba(0.05, 0.05, 0.06, 0.96)), BorderColor::all(Color::srgb(0.45, 0.4, 0.25))))
+        .with_children(|c| {
+            c.spawn((Text::new(m.title.clone()), font(13.0), TextColor(DIM), Node { padding: UiRect::axes(px(6), px(2)), ..default() }));
+            for (k, e) in m.entries.iter().enumerate() {
+                let rest = if k == 0 { ROW_PICKED } else { ROW };
+                c.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(10), padding: UiRect::axes(px(6), px(3)), ..default() }, BackgroundColor(rest)))
+                    .with_children(|r| {
+                        r.spawn((Text::new(format!("{}", k + 1)), font(13.0), TextColor(OK), Pickable::IGNORE));
+                        r.spawn((Text::new(e.label.clone()), font(14.0), TextColor(TEXT), Pickable::IGNORE));
+                    })
+                    .observe(|ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>| {
+                        if let Ok(mut bg) = q.get_mut(ev.entity) {
+                            bg.0 = ROW_HOVER;
+                        }
+                    })
+                    .observe(move |ev: On<PointerOut>, mut q: Query<&mut BackgroundColor>| {
+                        if let Ok(mut bg) = q.get_mut(ev.entity) {
+                            bg.0 = rest;
+                        }
+                    })
+                    .observe(move |ev: On<PointerPress>, mut menu: ResMut<ItemMenu>| {
+                        if ev.button == PointerButton::Primary {
+                            menu.chosen = Some(k);
+                        }
+                    });
+            }
+        });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1113,7 +1456,7 @@ mod tests {
     }
 
     fn click(left: Option<(Place, u32, Place)>, stack: ItemStack, button: PointerButton, one: bool) -> RowClick {
-        RowClick { action: RowAction { stack, left, right: None, use_on: None, craft: None }, button, one }
+        RowClick { action: RowAction { stack, title: String::new(), left, menu: Vec::new(), craft: None }, button, one }
     }
 
     /// A stack asked for is asked for once; one at a time (Alt) as many times as there are;
@@ -1342,16 +1685,75 @@ mod tests {
         assert!(move_intent(1, Place::Carried, 0, Place::Carried, 0).is_none());
     }
 
+    /// Every action on an item is one entry of one flat menu, the likeliest first (#95).
+    #[test]
+    fn the_menu_lists_every_action_likeliest_first() {
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/data");
+        let config = zombye_net::content::load_config(&data, 1).unwrap();
+        let items = &config.items;
+        let stack = |id: &str, n: u16| ItemStack::new(items.iter().position(|d| d.id == id).unwrap() as u16, n);
+        let labels = |from: Place, s: ItemStack, open: Option<(u32, &str)>| menu_entries(1, items, from, 2, &s, open).into_iter().map(|e| e.label).collect::<Vec<_>>();
+        assert_eq!(labels(Place::Carried, stack("tinned_beans", 3), Some((7, "fridge"))), ["Eat", "Put in fridge", "Drop", "Put one in fridge", "Drop one"], "half of three is one: not offered twice");
+        assert_eq!(labels(Place::Carried, stack("tinned_beans", 4), Some((7, "fridge"))), ["Eat", "Put in fridge", "Drop", "Put one in fridge", "Put half in fridge (2)", "Drop one", "Drop half (2)"]);
+        assert_eq!(labels(Place::Ground, stack("tinned_beans", 2), Some((7, "fridge"))), ["Pick up", "Put in fridge", "Pick up one"]);
+        assert!(menu_entries(1, items, Place::Carried, 0, &stack("tinned_beans", 60), Some((7, "fridge"))).len() <= DIGITS.len(), "every entry has a number key");
+        assert_eq!(labels(Place::Carried, stack("kitchen_knife", 1), None), ["Hold in hand", "Drop"]);
+        assert_eq!(labels(Place::Carried, stack("rag", 1), None)[0], "Use on a wound...");
+        assert_eq!(labels(Place::Worn, stack("rag", 1), None), ["Take off", "Drop"]);
+        assert_eq!(labels(Place::Ground, stack("kitchen_knife", 1), None), ["Take in hand", "Pick up"]);
+        assert_eq!(labels(Place::Container(7), stack("tinned_beans", 4), None), ["Take", "Take one", "Take half (2)"]);
+        // The intents are the ones a drag or a click would send.
+        let e = menu_entries(1, items, Place::Carried, 2, &stack("tinned_beans", 4), None);
+        assert!(matches!(e[0].act, MenuDo::Send { intent: Intent::Use { index: 2, .. }, whole: false, .. }));
+        assert!(matches!(e[2].act, MenuDo::Send { intent: Intent::Drop { index: 2, count: 1, .. }, whole: false, .. }));
+        assert!(matches!(e[3].act, MenuDo::Send { intent: Intent::Drop { index: 2, count: 2, .. }, .. }));
+        let e = menu_entries(1, items, Place::Ground, 9, &stack("kitchen_knife", 1), None);
+        assert!(matches!(e[0].act, MenuDo::Send { intent: Intent::MoveItem { from: Place::Ground, index: 9, to: Place::Slot(Slot::Hand), .. }, .. }));
+    }
+
+    /// A right-click on a row opens its menu; with a menu up, a left click on a row behind it
+    /// moves nothing (it only closes the menu), and a right-click on another row opens that one's.
+    #[test]
+    fn a_click_behind_an_open_menu_moves_nothing() {
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/data");
+        let items = zombye_net::content::load_config(&data, 1).unwrap().items;
+        let beans = ItemStack::new(items.iter().position(|d| d.id == "tinned_beans").unwrap() as u16, 4);
+        let on_row = |index: u32, button| RowClick {
+            action: RowAction { stack: beans, title: format!("row {index}"), left: Some((Place::Carried, index, Place::Ground)), menu: menu_entries(1, &items, Place::Carried, index, &beans, None), craft: None },
+            button,
+            one: false,
+        };
+        let (mut clicks, mut menu, mut flight, mut out) = (Clicks::default(), ItemMenu::default(), InFlight::default(), Outbox::default());
+        clicks.0.push(on_row(0, PointerButton::Secondary));
+        menu_clicks(&mut clicks, &mut menu, Some(Vec2::new(10.0, 10.0)));
+        drain_clicks(1, 0.0, &mut clicks, &mut flight, &mut out);
+        assert_eq!(menu.open.as_ref().map(|m| m.title.as_str()), Some("row 0"));
+        assert!(out.0.is_empty(), "opening a menu sends nothing");
+        clicks.0.push(on_row(1, PointerButton::Primary));
+        menu_clicks(&mut clicks, &mut menu, None);
+        drain_clicks(1, 0.1, &mut clicks, &mut flight, &mut out);
+        assert!(out.0.is_empty(), "the left click behind the menu moved nothing");
+        clicks.0.push(on_row(2, PointerButton::Secondary));
+        menu_clicks(&mut clicks, &mut menu, None);
+        assert_eq!(menu.open.as_ref().map(|m| m.title.as_str()), Some("row 2"));
+        // Shut, a left click moves the row as ever.
+        menu.close();
+        clicks.0.push(on_row(1, PointerButton::Primary));
+        menu_clicks(&mut clicks, &mut menu, None);
+        drain_clicks(1, 0.2, &mut clicks, &mut flight, &mut out);
+        assert_eq!(out.0.len(), 1);
+    }
+
     /// A click on a recipe asks for it once until the answer comes (#12).
     #[test]
     fn a_recipe_is_asked_for_once() {
         let mut f = InFlight::default();
-        let c = RowClick { action: RowAction { stack: ItemStack::one(0), left: None, right: None, use_on: None, craft: Some(2) }, button: PointerButton::Primary, one: false };
+        let c = RowClick { action: RowAction { stack: ItemStack::one(0), title: String::new(), left: None, menu: Vec::new(), craft: Some(2) }, button: PointerButton::Primary, one: false };
         assert!(matches!(click_intent(&c, 1, &mut f, 0.0), Some(Intent::Craft { player: 1, recipe: 2 })));
         assert!(click_intent(&c, 1, &mut f, 0.1).is_none(), "on its way");
         f.update("queued".into(), false, 0.2);
         assert!(click_intent(&c, 1, &mut f, 0.3).is_some(), "answered: another can be asked for");
-        assert!(click_intent(&RowClick { button: PointerButton::Secondary, ..c }, 1, &mut f, 0.4).is_none(), "right-click does nothing");
+        assert!(click_intent(&RowClick { button: PointerButton::Secondary, ..c }, 1, &mut f, 0.4).is_none(), "right-click sends nothing itself");
     }
 
     /// The real input path, headless: Bevy's mouse input, UI layout and picking on a window with a
@@ -1394,7 +1796,7 @@ mod tests {
             let mut commands = world.commands();
             commands.spawn(Node { position_type: PositionType::Absolute, top: px(0), left: px(0), width: px(300), flex_direction: FlexDirection::Column, ..default() }).with_children(|col| {
                 for k in &keys {
-                    row(col, format!("Beans {}", k.1), "0.4 kg".into(), RowAction { stack: beans(2), left: Some((k.0, k.1, Place::Ground)), right: None, use_on: None, craft: None }, false);
+                    row(col, format!("Beans {}", k.1), "0.4 kg".into(), RowAction { stack: beans(2), left: Some((k.0, k.1, Place::Ground)), title: String::new(), menu: Vec::new(), craft: None }, false);
                 }
             });
             world.flush();
@@ -1462,7 +1864,7 @@ mod tests {
         let spawn_panel = |world: &mut World| {
             let mut commands = world.commands();
             commands.spawn(Node { position_type: PositionType::Absolute, top: px(0), left: px(0), flex_direction: FlexDirection::Column, ..default() }).with_children(|col| {
-                row(col, "Alarm clock".into(), "0.4 kg".into(), RowAction { stack: beans(1), left: Some((Place::Container(4), 0, Place::Carried)), right: None, use_on: None, craft: None }, false);
+                row(col, "Alarm clock".into(), "0.4 kg".into(), RowAction { stack: beans(1), title: String::new(), left: Some((Place::Container(4), 0, Place::Carried)), menu: Vec::new(), craft: None }, false);
             });
             world.flush();
         };

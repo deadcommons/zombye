@@ -125,6 +125,11 @@ pub struct Options {
     /// `--drop-picked-after SECS`.
     pub pick_range: Option<(u32, u32, f32)>,
     pub drop_picked_after: Option<f32>,
+    /// Start with an item's right-click menu open (`--menu carried:N|worn:N|hand|container:N|ground[:N]`, #95).
+    pub menu: Option<String>,
+    /// For recordings: pick the open menu's Nth entry (from 1, as its number key) once SECS have
+    /// gone by (`--menu-pick N[@SECS]`, default at once).
+    pub menu_pick: Option<(usize, f32)>,
     /// Offscreen, draw the HUD and panels too (`--hud`; without it the picture is the world alone).
     pub hud: bool,
     /// Show the tooltip of the `N`th status tag (from 0), as if the pointer were over it
@@ -209,6 +214,13 @@ fn parse_pick_range(text: &str) -> Option<(u32, u32, f32)> {
     Some((a.trim().parse().ok()?, b.trim().parse().ok()?, after))
 }
 
+/// `"2@3.5"` → (2, 3.5); `"2"` → (2, 0). Entries count from 1.
+fn parse_menu_pick(text: &str) -> Option<(usize, f32)> {
+    let (n, after) = text.split_once('@').unwrap_or((text, "0"));
+    let after: f32 = after.trim().parse().ok().filter(|s: &f32| s.is_finite() && *s >= 0.0)?;
+    Some((n.trim().parse().ok().filter(|n| (1..=9).contains(n))?, after))
+}
+
 impl Options {
     fn from_args() -> Self {
         Self::parse(&std::env::args().skip(1).collect::<Vec<_>>())
@@ -245,6 +257,8 @@ impl Options {
             pick: value("--pick").map_or(Vec::new(), |v| v.split(',').filter_map(|k| k.trim().parse().ok()).collect()),
             pick_range: value("--pick-range").and_then(|v| parse_pick_range(&v)),
             drop_picked_after: value("--drop-picked-after").and_then(|v| v.parse().ok()),
+            menu: value("--menu"),
+            menu_pick: value("--menu-pick").and_then(|v| parse_menu_pick(&v)),
             hover_tag: value("--hover-tag").and_then(|v| v.parse().ok()),
             god: flag("--god"),
             ignored: flag("--ignored"),

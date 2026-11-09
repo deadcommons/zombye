@@ -8,7 +8,8 @@
 //! `make` with things to make, one craft under way and one queued, `skills` with XP in several skills,
 //! `tired` tired but awake (the narrower view), `asleep` asleep on the bed at night, `bags` a hiking pack
 //! full of different things (for picking several and ranges: `--pick-range 1,5`), `panel` that pack with
-//! a container of the house open and things on the floor (the inventory panel's three columns).
+//! a container of the house open and things on the floor (the inventory panel's three columns), `menu` with
+//! things on you and on the floor for the right-click menu.
 
 use std::path::PathBuf;
 
@@ -119,4 +120,20 @@ fn review_saves() {
     w.player_sleep(id).unwrap();
     step(&mut w, 40);
     save(&w, "asleep");
+
+    // The right-click menu (#95): food, a dressing and a bag on you, a knife and beans on the
+    // floor, a container searched open if one is in reach.
+    let (mut w, id) = world();
+    assert!(w.hold_item(id, Slot::Back, "school_backpack"));
+    w.give_item(id, "tinned_beans", 4);
+    w.give_item(id, "rag", 3);
+    w.give_item(id, "t_shirt", 1);
+    let at = w.players[0].state.pos;
+    w.spawn_item("kitchen_knife", 1, at + glam::Vec2::new(0.4, 0.0));
+    w.spawn_item("tinned_beans", 3, at + glam::Vec2::new(-0.4, 0.2));
+    if w.player_search(id, None).is_ok() {
+        step(&mut w, 200);
+    }
+    step(&mut w, 2);
+    save(&w, "menu");
 }

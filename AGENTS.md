@@ -95,7 +95,7 @@ cargo test --release --workspace
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --skills --health --hover-tag N --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT`
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --hover-tag N --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT`
 (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost). `--size WxH` makes the window exactly that many pixels, at scale factor 1, so a
@@ -701,8 +701,14 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   up or search here" (`inventory::NOTHING_HERE`).
 - **Client:** the inventory panel (`inventory_ui.rs`, Tab or I): your slots, worn and carried stacks with weights, load
   against the limit with the burden stage, the open container and the floor side by side. Click a row to move it
-  (yours into the open container, or the floor; theirs into your bags; slots off), Alt-click (Option on a Mac) for one, right-click a
-  carried stack to equip, wear or eat it. The latest note shows at its foot, and under the HUD for a few seconds when
+  (yours into the open container, or the floor; theirs into your bags; slots off), Alt-click (Option on a Mac) for one, right-click any
+  row for its menu (#95, `inventory_ui::menu_entries`): one flat list of what can be done with it, the likeliest first (eat or
+  drink, wear, equip, take a pill, use on a wound, put in the open container, drop, take, take in hand, split: one, or half of four or more),
+  1-9 to pick, Esc or a click elsewhere to close; the same menu on a ground item in reach in the world (right-click it with
+  the panel open, or a quick right tap with it shut; held, right mouse aims). `--menu carried:N|worn:N|hand|container:N|ground[:N]`
+  starts with one open, for pictures, and `--menu-pick N[@SECS]` presses its number key N (after SECS), for recordings. A
+  left click behind an open menu only closes it (it moves nothing), opening or shutting the panel closes it, and it opens
+  at the pointer in UI pixels (the UI scale), kept on screen. The latest note shows at its foot, and under the HUD for a few seconds when
   it's shut (the same note again only keeps it up, and isn't printed again). One click is one request: row observers
   only record presses, `send_clicks` sends at most one per button per frame and none for a stack already on its way
   (`InFlight`, until the snapshot shows the answer, a refusal, or 3 s); a floor item being taken leaves the Floor
