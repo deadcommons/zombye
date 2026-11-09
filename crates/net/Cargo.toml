@@ -10,3 +10,5 @@ repository.workspace = true
 zombye-sim.workspace = true
 serde.workspace = true
 glam.workspace = true
+# The wire encoding of multiplayer messages, as for save files (already in the tree through sim).
+postcard.workspace = true

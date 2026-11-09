@@ -186,6 +186,13 @@ pub struct Options {
     /// UI scale in percent for this session, not saved (`--ui-scale PCT`, 75..150; without it the
     /// client settings file's, else 100). See `ui_scale.rs`.
     pub ui_scale: Option<u32>,
+    /// Play on a multiplayer server instead of an in-process world (`--connect HOST[:PORT]`, #21),
+    /// under this name (`--name`; the server makes one up without) and with its join password
+    /// (`--password`). The world options, `--load` and the demo setups don't apply: the world is
+    /// the server's.
+    pub connect: Option<String>,
+    pub name: String,
+    pub password: String,
 }
 
 /// Default and largest `--size` for `--render-to`.
@@ -282,6 +289,9 @@ impl Options {
             mute: flag("--mute"),
             volume: value("--volume").and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite()).map_or(1.0, |v| v.clamp(0.0, 2.0)),
             ui_scale: value("--ui-scale").and_then(|v| ui_scale::parse_pct(&v)),
+            connect: value("--connect"),
+            name: value("--name").unwrap_or_default(),
+            password: value("--password").unwrap_or_default(),
         }
     }
 

@@ -8,6 +8,16 @@
 //!   with players they start on the road west of town (in the forest on a big map), run in
 //!   circles and make a 60 m noise every 10 s, `--horde N` spawns N more zombies round the first,
 //!   and the report breaks the tick down by tier.
+//! - `zombye-server --host [ADDR[:PORT]]` — the multiplayer server (#21, `multiplayer.rs`,
+//!   `zombye_net::host`): game clients join with `zombye --connect HOST[:PORT]`. Listens on every
+//!   interface, TCP port 7777, unless told otherwise. `--max-players N` (default 32, at most 64),
+//!   `--pvp on|off` (default on: players can hurt each other; off is co-op), `--spawn
+//!   spread|together` (default: spread round the town with PvP, together by the first house
+//!   without), `--name NAME`, `--password P`, `--allow-dev` (take dev toggles and debug intents
+//!   from clients). With `--save PATH` the world is loaded or made, autosaved and saved on
+//!   shutdown as below, with whose survivor is whose in `PATH.players`.
+//! - `zombye-server --bots N --connect HOST[:PORT] [--secs S] [--bots-hostile]` — N headless bot
+//!   clients, each on its own connection, that wander and fight; prints what each costs.
 //!
 //! Common options: `--zombies N` (default: as many as `population.ron` gives for the map, about 2,600
 //! on the default map), `--seed S` (default 1), `--map-chunks N` (a square
@@ -31,6 +41,7 @@
 #![recursion_limit = "256"]
 
 mod mcp;
+mod multiplayer;
 mod screenshot;
 
 use std::path::{Path, PathBuf};
@@ -147,12 +158,42 @@ fn main() {
         let timeout = text("--screenshot-timeout").and_then(|v| v.parse::<f64>().ok()).filter(|s| *s > 0.0 && s.is_finite()).map_or(screenshot::DEFAULT_TIMEOUT, Duration::from_secs_f64);
         let renderer = screenshot::Renderer::new(text("--client").map(PathBuf::from), data.clone(), timeout);
         mcp::serve(world, &mut persist, &renderer);
+    } else if flag("--bots") {
+        let Some(addr) = text("--connect") else {
+            eprintln!("--bots N needs --connect HOST[:PORT]");
+            std::process::exit(2);
+        };
+        multiplayer::bots(multiplayer::BotArgs {
+            addr,
+            count: value("--bots").unwrap_or(1).clamp(1, zombye_net::wire::MAX_PLAYERS as u64) as usize,
+            secs: text("--secs").and_then(|v| v.parse::<f32>().ok()).filter(|s| *s > 0.0),
+            name: text("--name").unwrap_or_else(|| "bot".into()),
+            password: text("--password").unwrap_or_default(),
+            hostile: flag("--bots-hostile"),
+        });
+    } else if flag("--host") {
+        let host_args = match multiplayer::HostArgs::parse(&args) {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(2);
+            }
+        };
+        let new_world = !persist.path.as_ref().is_some_and(|p| p.exists());
+        let world = match &persist.path {
+            Some(path) => load_or_create(path, config, load_options, |_| {}),
+            None => World::new(config),
+        };
+        multiplayer::host(world, new_world, host_args, &mut persist);
     } else if flag("--bench") {
         let ticks = value("--ticks").unwrap_or(1000);
         bench(config, &mut persist, load_options, ticks, value("--players").unwrap_or(0) as u32, value("--horde").unwrap_or(0) as u32, flag("--save-bench"));
     } else {
         eprintln!(
-            "usage: zombye-server (--mcp | --bench [--ticks N] [--players N] [--horde N] [--save-bench]) [--zombies N] [--seed S] [--map-chunks N] [--data DIR] \
+            "usage: zombye-server (--mcp | --bench [--ticks N] [--players N] [--horde N] [--save-bench] \
+             | --host [ADDR[:PORT]] [--name NAME] [--max-players N] [--pvp on|off] [--spawn spread|together] [--password P] [--allow-dev] \
+             | --bots N --connect HOST[:PORT] [--secs S] [--name PREFIX] [--password P] [--bots-hostile]) \
+             [--zombies N] [--seed S] [--map-chunks N] [--data DIR] \
              [--save PATH] [--load-anyway] [--autosave-mins N] [--saves DIR] [--client PATH] [--screenshot-timeout SECS]"
         );
         std::process::exit(2);

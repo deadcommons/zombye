@@ -14,8 +14,8 @@ Work is tracked on GitHub, not in the repo: the
 | Path | What | Licence |
 |---|---|---|
 | `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), skills that improve with practice (`skills.rs` + `SkillTuning`), street props placed by the town generator from data (`street_props.rs`), run stats and the cause of death (`run.rs`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
-| `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
-| `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint; `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
+| `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), multiplayer over the network (see Multiplayer: the messages, framing and per-client delta snapshots in `wire.rs`, the server's connections in `host.rs`, a client's in `remote.rs`), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
+| `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint; the multiplayer server (`--host`) and bot clients (`--bots N --connect ADDR`; `multiplayer.rs`, see Multiplayer); `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
 | `crates/client` | `zombye` Bevy client: camera, chunk streaming, building meshes (`world_render.rs`; their details, trim, siding lines, porches, chimneys, shopfronts and lit windows, from `meshgen/building_kit.rs`, see Buildings dressed under The world), the outdoors per chunk from the tile map alone (`meshgen/landscape.rs`: lawns, verges, forest floor and litter, road paint at real scale, kerbs, slab joints, driveways, front beds, fences and hedges; `meshgen/curves.rs`: what's drawn round over the tiles, see Curves under The world; `meshgen/trees.rs`: faceted broadleaves, birches, pines, spruces; colours from `assets/data/palette.ron` through `meshgen/palette.rs`), fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd, or a character baked offline read from a `.zvat` (`zvat.rs`); `survivor.rs` skinned, CPU-posed players; `character.rs` reads a modular character's body and wearable GLBs and `survivor_model.rs` draws players as it, dressed in what they wear), hit feedback (`fx.rs`), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), street props merged into each chunk's props mesh from the same models (`meshgen/street_props.rs`, see Street props under The world), HUD, the death screen and run summary (`death.rs`), the skills panel and level-up line (`skills_ui.rs`), sound (`audio.rs`, see Sound), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
 | `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/items/recipes.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`, `data/street_props.ron`, `data/palette.ron`: every colour, for Blender assets and the generated world), models (`models/furniture/*.glb`, street props `models/street/*.glb`; the survivor's body `models/characters/survivor_01.glb` and its wearables `models/wearables/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), sound (`audio/sfx/*.wav`, `audio/ambience/*.wav`, listed in `data/sounds.ron`), later textures. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
 | `tools/blender/` | Python to build assets: run inside Blender, mesh builder, palette, renders, validation, GLB export (`zasset.py`, `palette.py`: reads `assets/data/palette.ron`, `build.py`), character clean-up, validation and skinned export (`zchar.py`), VAT bake for the crowd, outfit variants with palette swatches (`zvat.py`, `build.py -- --crowd`); plain Python, art-repo work folders and promotion (`artrepo.py`). | MIT OR Apache-2.0 |
@@ -83,6 +83,10 @@ cargo run -p zombye-server --release -- --bench --zombies 5000
 cargo run -p zombye-server --release -- --bench --ticks 400 --map-chunks 64 --zombies 21500 --players 1 --horde 1000
 # ...and time saving and loading that world (size, ms, and that the hash matches after load and 100 more ticks)
 cargo run -p zombye-server --release -- --bench --ticks 200 --map-chunks 64 --zombies 21500 --players 1 --horde 1000 --save-bench
+# Multiplayer (see Multiplayer): a server on TCP port 7777, a game client on it, and 31 bots to fill it
+cargo run -p zombye-server --release -- --host --save saves/server.zsave      # add --pvp off for co-op
+cargo run -p zombye-client --release -- --connect HOST --name NAME
+cargo run -p zombye-server --release -- --bots 31 --connect HOST
 cargo run -p zombye-client --release -- --zombies 1000          # the game window
 cargo run -p zombye-client --profile play -- --zombies 1000     # the same, rebuilding in seconds after a change (for playtesting)
 cargo run -p zombye-client --release -- --zombies 2000 --novsync --screenshot shot.png --exit-after 8
@@ -95,7 +99,7 @@ cargo test --release --workspace
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --hover-tag N --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT`
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --hover-tag N --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT --connect HOST[:PORT] --name NAME --password P`
 (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost). `--size WxH` makes the window exactly that many pixels, at scale factor 1, so a
@@ -391,7 +395,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   them off; the client's F9 sends them again), kept on respawn, in `state_hash` only as bits that are 0 when off (so
   worlds without them hash as before). `PlayerView::dev` carries them. Single-player (`LocalServer::new`/`from_world`)
   takes `Intent::Dev`; a server others join (`LocalServer::hosted(world, allow_dev)`) drops it (counted in `refused_dev`)
-  unless `allow_dev`, which the hosted multiplayer server (M6; there is none yet) sets from its `--allow-dev`. The MCP
+  unless `allow_dev`, and the multiplayer server (`zombye-server --host`, see Multiplayer) drops it and the debug intents unless started with `--allow-dev`. The MCP
   server, a dev tool, always allows it.
 - `LocalServer::join` adds your player and returns its id. Snapshots carry `players` with
   `last_input_seq` (plus `hp`, `dead`, `weapon`, `action`, and `action_left` / `ready_in`: seconds until the
@@ -543,7 +547,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   A respawn or a new world starts a fresh record. Not in `state_hash` (nothing reads it back) and `#[serde(skip)]` in
   `Player`, saved in its own `RUNS` section instead (see Saves).
 - `DeathCause`: `Zombie { part, wound }`, `BledOut { part, wound }` (the wound bleeding most), `Festering`,
-  `Infection { wound }` (the fever or the turn; "Bitten and turned"), `Glass { part }`, `Wound` (debug), `Other`.
+  `Infection { wound }` (the fever or the turn; "Bitten and turned"), `Glass { part }`, `Wound` (debug), `Other`, `Survivor { by, part, wound }` (another player's swing, PvP; see Multiplayer).
   `World::hurt_player_by(pi, damage, cause)` records it; plain `hurt_player` says `Other`; `step_health`'s drain picks
   the biggest drain (`run::health_cause`: the turn always wins). **#11 adds** `Starved` / `Dehydrated`: a variant, its words
   in `DeathCause::describe`, and `hurt_player_by` where it hurts; the client and MCP only show `describe`'s text.
@@ -1188,6 +1192,77 @@ stack's `born`/`used`, 7 crafting: craft jobs and the recipes in the content fin
 - **Size and speed** (M-series Mac, release, `--save-bench`): the default map with ~2,950 zombies is about 267 KB, saved
   in ~1-4 ms, loaded in ~50 ms; the 1 km map with 22,500 zombies (21,500 + a 1,000 horde on a player) is 2.0 MB
   (~87 bytes a zombie), saved in ~14 ms and loaded in ~200 ms, nearly all of that regenerating the map.
+
+## Multiplayer (`net::wire`, `net::host`, `net::remote`; #21)
+
+Single-player still runs the world in the client's own process (`LocalServer`). Multiplayer is the same intents and
+snapshots over the network: `zombye-server --host` serves a world and `zombye --connect HOST[:PORT]` plays on it.
+
+- **Transport:** one TCP connection per client (`TCP_NODELAY`), frames of a `u32` length and postcard bytes
+  (`wire::encode_frame` / `read_frame`; a client's frame is at most 4 KB, a server's 8 MB). TCP needs only the standard
+  library and its ordered, reliable delivery lets every snapshot be a delta with no acknowledgements; the cost is
+  head-of-line blocking on a lossy link. The messages (`wire::ClientMsg`: `Hello`, `Intent`, `Ping`, `Bye`;
+  `ServerMsg`: `Welcome`, `Refused`, `Snapshot`, `Pong`, `Bye`) don't care what carries them, so UDP or QUIC can go
+  behind `host::Host` and `remote::Remote` later. `wire::PROTOCOL` is bumped whenever a message changes shape; a
+  server refuses any other. Nothing is encrypted and the join password goes in the clear.
+- **Joining:** `Hello { protocol, name, password }`, answered by `Welcome` (the player id, the name, the server's
+  `Rules`: name, `pvp`, `max_players`, `allow_dev`; the tunings a client predicts and labels with) or `Refused` with the
+  reason (another protocol, wrong password, full, the name already playing). **The map isn't sent:** the client builds
+  it from the server's `GenConfig` with its own game data (`remote::build_map`, as loading a save does), checks its
+  content fingerprint (`save::ContentPrint`: templates and street props, weapons, items, recipes) and the map hash
+  (`World::map_base_hash`) against the server's, and applies the doors and windows changed since
+  (`World::map_edits_now`) and every cracked one. Other game data, or another version's generator: refused, saying what
+  differs.
+- **Who is who:** a name (at most 24 letters; none given: `survivor-N`). A name whose survivor is in the world with
+  nobody playing it takes that survivor up again; a client that leaves (or is dropped) leaves its survivor standing
+  where it was (the logout timer is #68). With `--save PATH` the names are kept in `PATH.players` (`id<TAB>name` a
+  line), so survivors are their players' again after a restart. Names aren't accounts: anyone who knows a name that
+  isn't playing can take its survivor (accounts are with #69).
+- **Clients only act as themselves:** every intent's `player` is overwritten with the sender's (`Intent::player_mut`);
+  `Intent::dev_only` ones (the dev toggles, `SpawnItem`, `SetGoal`, `SpawnZombies`, `SkipTime`, `MakeNoise`) are
+  dropped unless `--allow-dev` (`HostStats::refused_dev`). `Respawn` (R on the death screen: "a new survivor") gets a
+  dead player up as a new survivor at a new start, in the same world. F5, F9 and the autosave do nothing on a server
+  (the yellow line says the world is the server's).
+- **Rules:** `--pvp on|off` (default on, docs/PLAN.md §4.8; `CombatTuning::pvp`, saved with the world's settings, off
+  in single-player): on, a swing hits the other players in its reach and arc after the zombies, with the targets it
+  has left (`combat::strike_players`): the weapon's damage times `pvp_damage_mult` (0.6) through
+  `World::hurt_player_by`, a wound on a body part (a gash from a blade or an axe, a bruise from anything blunt or when
+  clothing stops it; never infected), a `PlayerHurt` combat event, and a death recorded as
+  `DeathCause::Survivor { by, part, wound }` ("Killed by another survivor: a gash to the torso"). Shoves and stomps
+  don't touch players yet, and the rest of player-vs-player combat is #65. `--spawn spread|together`: where new
+  survivors start (`Host::spawn_point`), by default spread round the edge of the town with PvP on (each a golden angle
+  on from the last) and together outside the house a single player wakes up in with it off. `--max-players N`
+  (default 32, at most 64), `--name`, `--password`.
+- **Input, one a tick** (`Host::apply_queue`): a client's intents wait in its queue in the order sent, and a tick
+  applies them up to and including one `PlayerInput`, so each input moves the player for exactly one tick, as the
+  client predicted, however the network bunched them; with none waiting the last one holds; more than 10 waiting (a
+  stall) skips to the newest 2. Prediction and reconciliation are single-player's (`player.rs`): the snapshot's
+  `last_input_seq` says which inputs to replay. `a_remote_client_joins_and_predicts_exactly` holds the client's
+  prediction to the server's state tick for tick over a real socket.
+- **Snapshots per client** (`Host::send_snapshots`): one `Snapshot::capture` a tick, cut down for each client by
+  `Snapshot::for_client(player, radius)`: its own private parts, and the zombies, players, ground items and hits within
+  `TierTuning::interest_radius` (80 m) of its survivor; map changes all go. Then a **delta** against the last one sent
+  to that client (`wire::DeltaEncoder`, rebuilt by the client's `DeltaDecoder`): players whole (few, and ours must be
+  exact), zombies new or changed packed to about 11 bytes (`ZombiePacked`: 1/64 m, 1/256 turn, 1/48 m/s), zombies that
+  only moved as about 4 bytes (`ZombieMove`: an id gap and a step), ids gone, ground items new, changed and gone, and
+  the floor, outfits and run only when they change (the run about once a second). The visibility rules (only players
+  you could see or hear) are #66 and budgets per client #22.
+- **The client** (`server_link.rs`): `ServerLink` holds a `LocalServer` or a `RemoteLink`. A remote one sends the
+  tick's intents in one write, and takes up the snapshots that have arrived one a client tick from a short queue (one
+  left waiting as a cushion against jitter, two a tick when more have piled up), so rendering interpolates between
+  snapshots a tick apart as in single-player; with none it stands still. The stats line says `online: NAME on SERVER
+  (pvp on) | N other survivors in view | ping N ms` (the ping includes the wait for the server's next tick), or
+  `DISCONNECTED` and why. `--render-to` with `--connect` draws the first snapshot.
+- **Threads** (`host.rs`): each connection has a thread reading frames into one channel and a thread writing them from
+  a queue of 100 (5 s of snapshots); a client whose queue fills, that floods (400 intents waiting) or that says nothing
+  for 20 s (clients ping every second) is dropped. The tick itself never waits on a socket.
+- **Bots** (`zombye-server --bots N --connect HOST[:PORT] [--secs S] [--bots-hostile]`): N headless clients, each its
+  own connection, that wander, turn when stuck, pick up what lies at their feet, fight zombies that come close (and
+  players, hostile) and start again when dead; every 5 s it prints what each costs.
+- **Cost** (loopback on a 32-core VM; `thirty_two_clients_share_a_world_within_budget`, and the same with `--host` and
+  `--bots 32`): 32 clients spread through the default town, about 2,900 zombies of which 1,800-2,300 are active and
+  about 250 in each client's view: a tick 3-5 ms (budget 50), about 22-26 KB/s down per client (the busiest 30) against
+  a budget of 32 KB/s, and 0.5 KB/s up. Not yet measured between machines over the internet.
 
 ## Connecting an agent to the game (MCP)
 

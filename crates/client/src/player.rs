@@ -123,7 +123,9 @@ fn spawn_player(
     let (hp, dead, weapon, action, dev) = view.map_or((100.0, false, None, None, DevFlags::default()), |v| (v.hp, v.dead, v.weapon, v.action, v.dev));
     commands.insert_resource(LocalPlayer {
         id: join.player_id,
-        seq: 0,
+        // Above anything the server has taken from this player (a survivor taken up again on a
+        // multiplayer server, or from a save): it ignores input numbered at or below that.
+        seq: view.map_or(0, |v| v.last_input_seq),
         pending: VecDeque::new(),
         prev: state,
         curr: state,

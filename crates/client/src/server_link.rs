@@ -1,6 +1,8 @@
 //! Connection to the authoritative server. In single-player that's an in-process
 //! [`LocalServer`] ticked at the sim rate in `FixedUpdate`; rendering interpolates between the last
-//! two snapshots. A network transport will slot in behind the same resource later (M6).
+//! two snapshots. With `--connect HOST[:PORT]` it is a multiplayer server over the network
+//! instead (#21, [`zombye_net::remote::Remote`]) behind the same resource: intents go out once a
+//! tick, and the snapshots that have arrived are taken up one a tick (see [`RemoteLink`]).
 //!
 //! On "join" the client gets its player id, a copy of the map ([`ClientMap`]) and the weapon
 //! definitions, and from then on only the map edits carried in snapshots, exactly as a remote
@@ -9,15 +11,70 @@
 use bevy::prelude::*;
 use std::collections::HashMap;
 
+use std::collections::VecDeque;
+use std::time::Duration;
+
+use zombye_net::remote::{Remote, build_map};
 use zombye_net::{EdgeDamage, Intent, LocalServer, PrivateView, Snapshot, content, save_file};
 use zombye_sim::map::{Edge, EdgeChange, OwnedEdge, Side, TileMap};
 use zombye_sim::{CombatEvent, CombatTuning, ItemDef, ItemNote, LevelUp, TICK_RATE, WeaponDef};
 
 use crate::Options;
 
+/// Where the world is: in this process (single-player), or on a server.
+enum Backend {
+    Local(LocalServer),
+    Remote(Box<RemoteLink>),
+}
+
+/// A multiplayer server's end of the link. Snapshots arrive when the network brings them (none
+/// this tick, two the next), so they wait in a short queue and each client tick takes up one:
+/// rendering then interpolates between snapshots a tick apart, as in single-player. One is left
+/// waiting as a cushion against jitter; a longer queue (we fell behind) is taken up faster.
+struct RemoteLink {
+    remote: Remote,
+    waiting: VecDeque<Snapshot>,
+}
+
+impl RemoteLink {
+    /// Send what was queued this tick and return the snapshots to take up now, oldest first.
+    fn advance(&mut self) -> Vec<Snapshot> {
+        self.remote.flush();
+        self.waiting.extend(self.remote.poll());
+        let take = take_now(self.waiting.len());
+        self.waiting.drain(..take).collect()
+    }
+}
+
+/// How many of `waiting` snapshots a client tick takes up.
+fn take_now(waiting: usize) -> usize {
+    match waiting {
+        0 => 0,
+        1 | 2 => 1,
+        3..=6 => 2,
+        n => n - 1,
+    }
+}
+
+/// What the HUD says about a multiplayer server we're on.
+#[derive(Clone, Debug, Default)]
+pub struct NetInfo {
+    pub addr: String,
+    /// The server's name and whether players can hurt each other there.
+    pub server: String,
+    pub pvp: bool,
+    /// The name we go by.
+    pub name: String,
+    pub ping_ms: Option<f32>,
+    /// Why the connection ended, once it has.
+    pub closed: Option<String>,
+}
+
 #[derive(Resource)]
 pub struct ServerLink {
-    server: LocalServer,
+    server: Backend,
+    /// The multiplayer server we're on (`--connect`); `None` in single-player.
+    pub net: Option<NetInfo>,
     pub prev: Snapshot,
     pub curr: Snapshot,
     /// Last tick's sim time and chasing count, and zombies per simulation tier (active, near,
@@ -46,7 +103,10 @@ impl ServerLink {
     }
 
     pub fn send(&mut self, intent: Intent) {
-        self.server.send(intent);
+        match &mut self.server {
+            Backend::Local(s) => s.send(intent),
+            Backend::Remote(r) => r.remote.send(intent),
+        }
     }
 }
 
@@ -123,6 +183,9 @@ impl Plugin for ServerLinkPlugin {
     fn build(&self, app: &mut App) {
         let options = app.world().resource::<Options>().clone();
         let mut config = content::load_config(&options.data, options.seed).unwrap_or_else(|e| panic!("failed to load content: {e}"));
+        if let Some(addr) = &options.connect {
+            return join_remote(app, addr, &options, &config);
+        }
         // Without --zombies, as many as the population file's densities give for this map.
         config.zombies = options.zombies;
         if let Some(chunks) = options.map_chunks {
@@ -167,7 +230,7 @@ impl Plugin for ServerLinkPlugin {
                 (None, Some(p)) => p.id,
                 (None, None) => server.join(options.at),
             };
-            return finish_join(app, server, player_id);
+            return join_local(app, server, player_id);
         }
         // The fight demo wants room to swing: open ground near the house you wake up in.
         let demo_at = if options.fight_demo && options.at.is_none() { open_ground_near(&server.world.map, server.world.player_spawn).map(|p| p.to_array()) } else { None };
@@ -194,13 +257,64 @@ impl Plugin for ServerLinkPlugin {
         if let Some((_, door, out)) = siege_at {
             siege(&mut server, player_id, door, out);
         }
-        finish_join(app, server, player_id);
+        join_local(app, server, player_id);
     }
 }
 
-/// What a client gets on joining (its map copy, the weapons, every damaged edge, a first
-/// snapshot), and the systems that tick the server.
-fn finish_join(app: &mut App, mut server: LocalServer, player_id: u32) {
+/// What the client keeps from the config of the world it joined.
+fn join_info(config: &zombye_sim::WorldConfig, player_id: u32, player_spawn: Vec2) -> JoinInfo {
+    JoinInfo {
+        player_id,
+        player_spawn,
+        weapons: config.weapons.clone(),
+        items: config.items.clone(),
+        recipes: config.recipes.clone(),
+        combat: config.combat.clone(),
+        infection: config.infection.clone(),
+        first_aid: config.health.first_aid.clone(),
+        needs: config.needs,
+        skills: config.skills.clone(),
+        carry: config.carry.clone(),
+    }
+}
+
+/// `--connect`: join a multiplayer server (#21). The same things arrive another way: our player
+/// and the rules in the server's welcome, the map built here from the server's seed with our own
+/// game data (and checked against the server's), the doors and windows changed since and every
+/// cracked one, and a first snapshot. Anything wrong (no server, refused, other game data) is said
+/// on stderr and the game doesn't start.
+fn join_remote(app: &mut App, addr: &str, options: &Options, content: &zombye_sim::WorldConfig) {
+    let fail = |e: String| -> ! {
+        eprintln!("can't join {addr}: {e}");
+        std::process::exit(1);
+    };
+    let mut remote = Remote::connect(addr, &options.name, &options.password, Duration::from_secs(10)).unwrap_or_else(|e| fail(e));
+    let joined = build_map(&remote.welcome, content).unwrap_or_else(|e| fail(e));
+    let first = remote.wait_snapshot(Duration::from_secs(10)).unwrap_or_else(|e| fail(e));
+    let w = &remote.welcome;
+    let player_id = w.player;
+    println!(
+        "joined {} at {addr} as {} (player {player_id}): pvp {}, up to {} players, tick {}",
+        w.rules.name,
+        w.name,
+        if w.rules.pvp { "on" } else { "off (co-op)" },
+        w.rules.max_players,
+        first.tick
+    );
+    let damage = EdgeDamageMap(w.edge_damage.iter().map(|d| ((d.tile, d.edge), d.hp)).collect());
+    let spawn = first.players.iter().find(|p| p.id == player_id).map(|p| Vec2::from(p.pos)).unwrap_or(joined.player_spawn);
+    let join = join_info(&joined.config, player_id, spawn);
+    let net = NetInfo { addr: addr.to_string(), server: w.rules.name.clone(), pvp: w.rules.pvp, name: w.name.clone(), ping_ms: None, closed: None };
+    if options.god || options.ignored {
+        remote.send(Intent::Dev { player: player_id, god: options.god.then_some(true), ignored: options.ignored.then_some(true) });
+    }
+    let link = RemoteLink { remote, waiting: VecDeque::new() };
+    finish_join(app, Backend::Remote(Box::new(link)), Some(net), first, ClientMap(joined.map), damage, join);
+}
+
+/// Single-player: what a client gets on joining (its map copy, the weapons, every damaged edge, a
+/// first snapshot), from the world in this process.
+fn join_local(app: &mut App, mut server: LocalServer, player_id: u32) {
     // `--god` / `--ignored`: as if F1 / F2 were pressed at once.
     let options = app.world().resource::<Options>();
     if options.god || options.ignored {
@@ -210,21 +324,14 @@ fn finish_join(app: &mut App, mut server: LocalServer, player_id: u32) {
     let map = ClientMap(server.world.map.clone());
     let damage = EdgeDamageMap(EdgeDamage::all(&server.world).into_iter().map(|d| ((d.tile, d.edge), d.hp)).collect());
     let spawn = first.players.iter().find(|p| p.id == player_id).map(|p| Vec2::from(p.pos)).unwrap_or(server.world.player_spawn);
-    let join = JoinInfo {
-        player_id,
-        player_spawn: spawn,
-        weapons: server.world.config.weapons.clone(),
-        items: server.world.config.items.clone(),
-        recipes: server.world.config.recipes.clone(),
-        combat: server.world.config.combat.clone(),
-        infection: server.world.config.infection.clone(),
-        first_aid: server.world.config.health.first_aid.clone(),
-        needs: server.world.config.needs,
-        skills: server.world.config.skills.clone(),
-        carry: server.world.config.carry.clone(),
-    };
+    let join = join_info(&server.world.config, player_id, spawn);
+    finish_join(app, Backend::Local(server), None, first, map, damage, join);
+}
+
+/// The resources a joined client has, and the systems that tick the server (or take up what it sent).
+fn finish_join(app: &mut App, server: Backend, net: Option<NetInfo>, first: Snapshot, map: ClientMap, damage: EdgeDamageMap, join: JoinInfo) {
     let private = first.private.clone();
-    app.insert_resource(ServerLink { server, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3], private })
+    app.insert_resource(ServerLink { server, net, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3], private })
         .insert_resource(map)
         .insert_resource(join)
         .insert_resource(damage)
@@ -253,20 +360,26 @@ impl ServerLink {
         let id = server.join(None);
         let first = server.tick();
         let private = first.private.clone();
-        (Self { server, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3], private }, id)
+        (Self { server: Backend::Local(server), net: None, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3], private }, id)
     }
 
-    /// The world being served (to save it).
-    pub fn world(&self) -> &zombye_sim::World {
-        &self.server.world
+    /// The world being served, when it is in this process (to save it, or start it again); `None`
+    /// on a multiplayer server, whose world is the server's.
+    pub fn world(&self) -> Option<&zombye_sim::World> {
+        match &self.server {
+            Backend::Local(s) => Some(&s.world),
+            Backend::Remote(_) => None,
+        }
     }
 
     /// Serve `world` (a loaded save) from now on: drops queued intents and starts the snapshots
-    /// afresh from it. Returns the first snapshot.
+    /// afresh from it. Returns the first snapshot. Single-player only: on a multiplayer server
+    /// nothing changes.
     pub fn replace_world(&mut self, world: zombye_sim::World) -> &Snapshot {
-        self.server.replace_world(world);
-        let first = Snapshot::capture(&mut self.server.world);
-        let s = self.server.world.stats;
+        let Backend::Local(server) = &mut self.server else { return &self.curr };
+        server.replace_world(world);
+        let first = Snapshot::capture(&mut server.world);
+        let s = server.world.stats;
         (self.sim_ms, self.chasing, self.tiers) = (0.0, 0, [s.active, s.near, s.virtual_]);
         self.private = first.private.clone();
         self.prev = first.clone();
@@ -304,15 +417,54 @@ fn tick_server(
     mut ups: ResMut<LevelUpsThisFrame>,
     join: Res<JoinInfo>,
 ) {
-    // A remote server sends us only our own private view and notes; do as it will.
-    let snapshot = link.server.tick().for_player(join.player_id);
+    let link = &mut *link;
+    let snapshots = match &mut link.server {
+        Backend::Local(server) => {
+            // A remote server sends us only our own private view and notes; do as it does.
+            let snapshot = server.tick().for_player(join.player_id);
+            let s = server.world.stats;
+            (link.sim_ms, link.chasing, link.tiers) = (s.tick_ms, s.chasing, [s.active, s.near, s.virtual_]);
+            vec![snapshot]
+        }
+        Backend::Remote(remote) => {
+            let snapshots = remote.advance();
+            if let Some(net) = &mut link.net {
+                net.ping_ms = remote.remote.ping_ms;
+                if net.closed.is_none() && remote.remote.closed.is_some() {
+                    net.closed = remote.remote.closed.clone();
+                    eprintln!("disconnected from {}: {}", net.addr, net.closed.as_deref().unwrap_or_default());
+                }
+            }
+            // Nothing new this tick: stand still rather than run the last step again.
+            if snapshots.is_empty() && link.prev.tick != link.curr.tick {
+                link.prev = link.curr.clone();
+            }
+            snapshots
+        }
+    };
+    for snapshot in snapshots {
+        take_up(link, snapshot, &mut map, &mut changes, &mut transitions, &mut damage_map, &mut damage, &mut hits, &mut notes, &mut ups);
+    }
+}
+
+/// Take up one snapshot: keep what it brought (our private view, notes, level-ups, map changes,
+/// cracks, hits) and make it the current one.
+#[allow(clippy::too_many_arguments)]
+fn take_up(
+    link: &mut ServerLink,
+    snapshot: Snapshot,
+    map: &mut ClientMap,
+    changes: &mut EdgeChangesThisFrame,
+    transitions: &mut EdgeTransitionsThisFrame,
+    damage_map: &mut EdgeDamageMap,
+    damage: &mut EdgeDamageThisFrame,
+    hits: &mut CombatEventsThisFrame,
+    notes: &mut ItemNotesThisFrame,
+    ups: &mut LevelUpsThisFrame,
+) {
     link.keep_private(&snapshot.private);
     notes.0.extend(snapshot.item_notes.iter().cloned());
     ups.0.extend_from_slice(&snapshot.level_ups);
-    link.sim_ms = link.server.world.stats.tick_ms;
-    link.chasing = link.server.world.stats.chasing;
-    let s = link.server.world.stats;
-    link.tiers = [s.active, s.near, s.virtual_];
     for c in &snapshot.edge_changes {
         transitions.0.push((*c, map.0.owned_edge(c.tile, c.edge)));
         map.0.set_owned_edge(c.tile, c.edge, c.kind);
@@ -417,6 +569,20 @@ fn open_ground_near(map: &TileMap, from: Vec2) -> Option<Vec2> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// On a multiplayer server one snapshot is taken up a tick, one left waiting as a cushion, and
+    /// a pile is worked off faster without ever skipping what a snapshot brought.
+    #[test]
+    fn waiting_snapshots_are_taken_up_one_a_tick() {
+        assert_eq!([0, 1, 2, 3, 6, 7, 30].map(take_now), [0, 1, 1, 2, 2, 6, 29]);
+        // Arriving one a tick, the queue settles; arriving in bursts of three, it never grows.
+        let mut waiting = 0;
+        for tick in 0..60 {
+            waiting += if tick % 3 == 0 { 3 } else { 0 };
+            waiting -= take_now(waiting);
+            assert!(waiting <= 3, "{waiting} waiting at tick {tick}");
+        }
+    }
 
     /// #79: the shipped town gives a siege on the default seed and the next few, from a shut door
     /// or window of the spawn house with open ground in front.

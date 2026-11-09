@@ -359,8 +359,24 @@ fn update_hud(
     let fast = if link.curr.time_scale > 1.0 { format!(" x{:.0}", link.curr.time_scale) } else { String::new() };
     // Sounds started since the last line (audio.rs), so a run shows what was heard.
     let heard = sounds.as_deref_mut().map_or(String::new(), |c| format!(" | {}", c.take_line()));
+    // In single-player, what the world's tick cost; on a multiplayer server (#21), who and where
+    // we are, the others in view and the ping (or that the connection is gone).
+    let sim = match &link.net {
+        None => format!("sim tick {:.3} ms", link.sim_ms),
+        Some(net) => match &net.closed {
+            Some(why) => format!("DISCONNECTED from {} ({why})", net.addr),
+            None => format!(
+                "online: {} on {} (pvp {}) | {} other survivors in view | ping {}",
+                net.name,
+                net.server,
+                if net.pvp { "on" } else { "off" },
+                link.curr.players.len().saturating_sub(1),
+                net.ping_ms.map_or("?".to_string(), |p| format!("{p:.0} ms"))
+            ),
+        },
+    };
     let line = format!(
-        "{:02}:{:02}{fast} | {place} | {:?} | hp {:.0}{}{dev}{tags} | endurance {:.0}%{winded} | fps {:.0} | frame {:.2} ms (worst {:.2}) | zombies {} (chasing {}; tiers {}/{}/{}) | sim tick {:.3} ms{heard}",
+        "{:02}:{:02}{fast} | {place} | {:?} | hp {:.0}{}{dev}{tags} | endurance {:.0}%{winded} | fps {:.0} | frame {:.2} ms (worst {:.2}) | zombies {} (chasing {}; tiers {}/{}/{}) | {sim}{heard}",
         hour.floor() as u32,
         ((hour - hour.floor()) * 60.0) as u32,
         s.stance,
@@ -375,7 +391,6 @@ fn update_hud(
         link.tiers[0],
         link.tiers[1],
         link.tiers[2],
-        link.sim_ms,
     );
     println!("{line}");
     if let Ok(mut t) = text.single_mut() {

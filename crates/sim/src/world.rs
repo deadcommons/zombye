@@ -530,6 +530,24 @@ impl World {
         spawned
     }
 
+    /// A hash of the map as generated, before any door or window changed (what saves check). A
+    /// network client that builds the same map from the same seed and content gets the same hash.
+    pub fn map_base_hash(&self) -> u64 {
+        self.map_base_hash
+    }
+
+    /// Every door and window that isn't as the generator left it, as it is now: what a joining
+    /// network client applies to the map it generated itself.
+    pub fn map_edits_now(&self) -> Vec<crate::map::EdgeChange> {
+        self.map_edits
+            .iter()
+            .map(|&key| {
+                let e = edge_of_key(key);
+                crate::map::EdgeChange { tile: e.tile, edge: e.edge, kind: self.map.owned_edge(e.tile, e.edge) }
+            })
+            .collect()
+    }
+
     /// Add a player at `pos` (pushed out of walls and furniture). Returns its id.
     pub fn add_player(&mut self, pos: Vec2) -> u32 {
         let id = self.next_player_id;
@@ -752,8 +770,9 @@ impl World {
     }
 
     /// Set an edge and keep everything that depends on the map in step: replication, the walk
-    /// grid, the flow fields that cover it.
-    fn set_edge(&mut self, edge: EdgeRef, kind: Edge) {
+    /// grid, the flow fields that cover it. (Public for tools and tests; play goes through
+    /// `player_interact` and the zombies' battering.)
+    pub fn set_edge(&mut self, edge: EdgeRef, kind: Edge) {
         self.map.set_owned_edge(edge.tile, edge.edge, kind);
         self.map_edits.insert(edge.key());
         self.edge_changes.push(EdgeChange { tile: edge.tile, edge: edge.edge, kind });

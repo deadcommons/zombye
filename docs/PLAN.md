@@ -73,8 +73,11 @@ All code and assets are our own; see the clean-room rules in [CONTRIBUTING.md](.
 | Custom engine | Most control, most time. Bevy already gives us 80% of a custom engine with a clean ECS. |
 
 ### Supporting stack
-- **Networking:** `lightyear` or `bevy_replicon` + `renet` over UDP/QUIC (decided in the M6 spike;
-  the sim is written against our own message types so the transport is swappable).
+- **Networking:** our own messages (`Intent`, `Snapshot`) over one TCP connection per client, with
+  per-client delta snapshots (#21; AGENTS.md, Multiplayer): no networking library, nothing beyond the
+  standard library. The messages don't care what carries them, so the transport stays swappable:
+  UDP or QUIC (`renet`, `quinn`) is the next step if lossy links make TCP's head-of-line blocking
+  hurt.
 - **Physics:** no general rigid-body physics for zombies. Custom spatial-hash collision on the tile
   grid (cheap, deterministic, server-friendly). `avian3d` only for loose props/ragdoll later.
 - **Pathfinding:** tile-grid flow fields for crowds plus hierarchical A* for individuals (§4.3).

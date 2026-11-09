@@ -83,6 +83,9 @@ pub enum DeathCause {
     Wound { part: Part, wound: WoundKind },
     /// Anything that didn't say (`World::hurt_player`).
     Other,
+    /// Another player's swing (PvP; added last, so saves from before it read as they did): the
+    /// killer's player id and the wound the blow left.
+    Survivor { by: u32, part: Part, wound: WoundKind },
 }
 
 /// "a gash", "an ..." for a wound kind; a clothing-stopped blow is "a blow".
@@ -113,6 +116,7 @@ impl DeathCause {
             Self::Glass { part } => format!("Cut down by broken glass: a cut to the {}", part.name()),
             Self::Wound { part, wound } => format!("Died of {} to the {}", a_wound(wound), part.name()),
             Self::Other => "Died".to_string(),
+            Self::Survivor { part, wound, .. } => format!("Killed by another survivor: {} to the {}", a_wound(wound), part.name()),
         }
     }
 
@@ -126,6 +130,7 @@ impl DeathCause {
             Self::Glass { .. } => "glass",
             Self::Wound { .. } => "wound",
             Self::Other => "other",
+            Self::Survivor { .. } => "survivor",
         }
     }
 }

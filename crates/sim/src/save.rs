@@ -426,7 +426,7 @@ fn checksum(tag: [u8; 4], payload: &[u8]) -> u64 {
 }
 
 /// A hash of every tile (floor, edges, feature, room) and the room and building counts.
-pub(crate) fn map_hash(map: &TileMap) -> u64 {
+pub fn map_hash(map: &TileMap) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mut mix = |v: u64| h = (h ^ v).wrapping_mul(0x0100_0000_01b3).rotate_left(29);
     mix(map.chunks_x as u64);

@@ -65,7 +65,9 @@ fn rule(c: &mut ChildSpawnerCommands) {
     c.spawn((Node { width: Val::Percent(100.0), height: px(1), margin: UiRect::vertical(px(6)), ..default() }, BackgroundColor(RULE)));
 }
 
-fn spawn_screen(mut commands: Commands) {
+fn spawn_screen(mut commands: Commands, link: Option<Res<crate::server_link::ServerLink>>) {
+    // On a multiplayer server R is a new survivor in the same world, which goes on (#21).
+    let again = if link.is_some_and(|l| l.net.is_some()) { "R  a new survivor (the world goes on)" } else { "R  new run (same town, from the start)" };
     commands
         .spawn((
             DeathScreen,
@@ -102,7 +104,7 @@ fn spawn_screen(mut commands: Commands) {
                     }
                     rule(c);
                     c.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, column_gap: px(40), ..default() }).with_children(|row| {
-                        row.spawn((Text::new("R  new run (same town, from the start)"), font(16.0), TextColor(TEXT)));
+                        row.spawn((Text::new(again), font(16.0), TextColor(TEXT)));
                         row.spawn((Text::new("Q / Esc  quit"), font(16.0), TextColor(TEXT)));
                     });
                 });
@@ -192,7 +194,13 @@ fn death_keys(
     if !(keys.just_pressed(KeyCode::KeyR) || due) {
         return;
     }
-    let (world, id) = LocalServer::new_run(&swap.link.world().config);
+    let Some(config) = swap.link.world().map(|w| w.config.clone()) else {
+        // On a multiplayer server (#21) the world goes on: a new survivor in it.
+        let me = swap.player();
+        swap.link.send(zombye_net::Intent::Respawn { player: me });
+        return notice.say(now, "A new survivor".to_string());
+    };
+    let (world, id) = LocalServer::new_run(&config);
     if !swap.fits(&world) {
         // A map edited by hand (tests, editors) can't be generated again.
         return notice.say(now, "Can't start a new run here: this map wasn't generated from its seed".to_string());

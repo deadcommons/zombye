@@ -100,6 +100,13 @@ pub struct CombatTuning {
     pub zombie_hit_chance: f32,
     pub zombie_crowd_bonus: f32,
     pub zombie_hit_max: f32,
+
+    // Players and each other (PLAN §4.8).
+    /// Swings hit other players as they hit zombies. Off in single-player and co-op; a multiplayer
+    /// server turns it on unless started with `--pvp off`.
+    pub pvp: bool,
+    /// A swing's damage to a player is its damage to a zombie times this.
+    pub pvp_damage_mult: f32,
 }
 
 impl Default for CombatTuning {
@@ -144,6 +151,8 @@ impl Default for CombatTuning {
             zombie_hit_chance: 0.5,
             zombie_crowd_bonus: 0.12,
             zombie_hit_max: 0.9,
+            pvp: false,
+            pvp_damage_mult: 0.6,
         }
     }
 }
@@ -508,6 +517,10 @@ impl World {
             self.award_xp(pi, skill, xp);
         }
         self.scratch_hits = found;
+        // Other survivors in the way of a swing (PvP), with the targets it has left.
+        if self.config.combat.pvp && a.kind == ActionKind::Swing {
+            hits += self.strike_players(pi, a, &s, hits);
+        }
         self.action_events.push(ActionEvent { player, kind: a.kind, weapon: a.weapon, hits });
         if s.noise > 0.0 && self.heard.len() < crate::world::MAX_SOUNDS {
             // Heard this tick, like footsteps.
@@ -595,6 +608,76 @@ impl World {
         };
         self.push_combat_event(CombatEvent { kind, pos: zpos, dir, zombie: zid, player, damage, crit, part: None, wound: None });
         effect
+    }
+
+    /// PvP (PLAN §4.8; the full player-vs-player combat is #65): player `pi`'s swing hits the
+    /// living players in its reach and arc with a clear walking line, nearest first, up to the
+    /// targets the swing has left after `hits` zombies. Each takes the weapon's damage times
+    /// `pvp_damage_mult` and a wound on a body part: a gash from a blade or an axe, a bruise from
+    /// anything blunt or when clothing stops it. Returns how many it hit.
+    fn strike_players(&mut self, pi: usize, a: Action, s: &Strike, hits: u32) -> u32 {
+        let origin = self.players[pi].state.pos;
+        let forward = Vec2::from_angle(self.players[pi].state.facing);
+        let attacker = self.players[pi].id;
+        let reach = s.range + PLAYER_RADIUS;
+        let mut found: Vec<(f32, usize)> = Vec::new();
+        for (j, p) in self.players.iter().enumerate() {
+            if j == pi || p.dead {
+                continue;
+            }
+            let to = p.state.pos - origin;
+            let d = to.length();
+            if d > reach {
+                continue;
+            }
+            if d > 1e-4 {
+                let half_width = (PLAYER_RADIUS / d).min(1.0).asin();
+                if forward.dot(to / d).clamp(-1.0, 1.0).acos() > s.half_arc + half_width {
+                    continue;
+                }
+            }
+            found.push((d, j));
+        }
+        found.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        let mut done = 0;
+        for (_, j) in found {
+            if hits + done >= s.max_targets {
+                break;
+            }
+            let pos = self.players[j].state.pos;
+            if !clear_path(&self.map, origin, pos) {
+                continue;
+            }
+            let falloff = self.config.combat.multi_hit_falloff.powi((hits + done) as i32);
+            let crit = self.combat_rng.f32() < s.crit_chance;
+            let mut damage = self.combat_rng.range(s.damage.0, s.damage.1) * a.power * falloff * self.config.combat.pvp_damage_mult;
+            if crit {
+                damage *= s.crit_multiplier;
+            }
+            let dir = (pos - origin).normalize_or(forward);
+            let behind = Vec2::from_angle(self.players[j].state.facing).dot(dir) > self.config.health.behind_dot;
+            let t = &self.config.health;
+            let part = if behind { &t.behind } else { &t.front }.pick(self.combat_rng.f32(), false);
+            let sharp = matches!(self.config.weapons[a.weapon as usize].category, crate::items::WeaponCategory::ShortBlade | crate::items::WeaponCategory::Axe);
+            let mut wound = if sharp { WoundKind::Gash } else { WoundKind::Bruise };
+            let stop = self.protection(&self.players[j], part.region()) * self.config.health.wound(wound).protection;
+            if wound != WoundKind::Bruise && self.combat_rng.f32() < stop {
+                wound = WoundKind::Bruise;
+            }
+            let (victim, god) = (self.players[j].id, self.players[j].dev.god);
+            // `zombie: 0`: no zombie's doing; `player` is the one hurt, as for a zombie's strike.
+            self.push_combat_event(CombatEvent { kind: CombatEventKind::PlayerHurt, pos, dir, zombie: 0, player: victim, damage, crit, part: Some(part), wound: Some(wound) });
+            if !god {
+                self.add_wound(j, part, wound, false, Some(false));
+            }
+            self.wake_player(victim);
+            self.interrupt_treatment(j);
+            self.hurt_player_by(j, damage, DeathCause::Survivor { by: attacker, part, wound });
+            let skill = self.config.weapons[a.weapon as usize].skill();
+            self.award_xp(pi, skill, self.config.skills.hit_xp);
+            done += 1;
+        }
+        done
     }
 
     pub(crate) fn push_combat_event(&mut self, e: CombatEvent) {
@@ -1165,6 +1248,68 @@ mod tests {
         let knife_item = w.item_index("kitchen_knife").unwrap();
         let left = w.items().iter().find(|it| it.stack.item == knife_item).unwrap();
         assert_eq!(left.pos, Vec2::new(104.8, 100.5));
+    }
+
+    /// Two players 0.8 m apart, the first swinging a weapon at the second until `swings` have
+    /// landed (or the second is dead). Returns the world and both ids.
+    fn duel(pvp: bool, weapon: &str, swings: u32) -> (World, u32, u32) {
+        let (mut w, a) = arena(5);
+        w.config.combat.pvp = pvp;
+        let b = w.add_player(Vec2::new(101.3, 100.5));
+        equip(&mut w, a, weapon);
+        w.set_player_input(a, 1, PlayerInput { facing: 0.0, aim: true, ..Default::default() });
+        let mut landed = 0;
+        for _ in 0..20 * 60 {
+            if landed >= swings || w.player(b).unwrap().dead {
+                break;
+            }
+            w.player_attack(a);
+            w.step();
+            landed += w.action_events.iter().filter(|e| e.player == a).count() as u32;
+        }
+        (w, a, b)
+    }
+
+    /// PvP (PLAN §4.8): with `pvp` on a swing wounds another player in its arc and can kill, and
+    /// the death names a survivor; off (single-player, co-op), players can't hurt each other.
+    #[test]
+    fn swings_hit_other_players_only_with_pvp_on() {
+        let (w, _, b) = duel(false, "baseball_bat", 3);
+        let p = w.player(b).unwrap();
+        assert_eq!((p.hp, p.health.wounds.len()), (100.0, 0), "co-op: untouched");
+        assert!(w.combat_events.iter().all(|e| e.kind != CombatEventKind::PlayerHurt));
+
+        let (w, a, b) = duel(true, "baseball_bat", 1);
+        let p = w.player(b).unwrap();
+        assert!(p.hp < 100.0 && !p.dead, "one swing of a bat hurts: hp {}", p.hp);
+        assert_eq!(p.health.wounds.len(), 1);
+        assert_eq!(p.health.wounds[0].kind, WoundKind::Bruise, "a bat bruises");
+        assert_eq!(w.player(a).unwrap().hp, 100.0, "the one swinging isn't hit");
+        let e = w.combat_events.iter().find(|e| e.kind == CombatEventKind::PlayerHurt).expect("a hurt event for the client");
+        assert_eq!((e.player, e.zombie), (b, 0));
+
+        let (w, a, b) = duel(true, "kitchen_knife", 99);
+        let p = w.player(b).unwrap();
+        assert!(p.dead, "enough swings kill");
+        assert!(p.health.wounds.is_empty() || p.health.wounds.iter().all(|x| x.kind == WoundKind::Gash || x.kind == WoundKind::Bruise));
+        let death = p.run.death.expect("a cause of death");
+        assert!(matches!(death.cause, DeathCause::Survivor { by, .. } if by == a), "{:?}", death.cause);
+        assert!(death.cause.describe(false).starts_with("Killed by another survivor"));
+
+        // A player behind the one swinging, or beyond a wall of reach, isn't hit; god mode holds.
+        let (mut w, a) = arena(6);
+        w.config.combat.pvp = true;
+        let behind = w.add_player(Vec2::new(99.5, 100.5));
+        let god = w.add_player(Vec2::new(101.5, 100.5));
+        w.set_dev(god, Some(true), None);
+        w.set_player_input(a, 1, PlayerInput { facing: 0.0, aim: true, ..Default::default() });
+        for _ in 0..60 {
+            w.player_attack(a);
+            w.step();
+        }
+        assert_eq!(w.player(behind).unwrap().hp, 100.0);
+        assert_eq!(w.player(god).unwrap().hp, 100.0);
+        assert!(w.player(god).unwrap().health.wounds.is_empty());
     }
 
     #[test]

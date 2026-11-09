@@ -1,12 +1,16 @@
 //! Messages between clients (human or agent) and the authoritative server.
 //!
 //! Clients never touch the simulation directly: they send [`Intent`]s and receive [`Snapshot`]s.
-//! Single-player uses the same types through an in-process [`LocalServer`], so multiplayer is a
-//! transport change, not a rewrite.
+//! Single-player uses the same types through an in-process [`LocalServer`]; multiplayer sends them
+//! over the network ([`wire`]), a [`host::Host`] serving and each client holding a
+//! [`remote::Remote`].
 
 pub mod content;
+pub mod host;
+pub mod remote;
 pub mod save_file;
 pub mod shutdown;
+pub mod wire;
 
 use serde::{Deserialize, Serialize};
 use zombye_sim::map::{EdgeChange, OwnedEdge};
@@ -17,8 +21,9 @@ use zombye_sim::{
 
 /// Something a client wants to happen. The server validates and applies it.
 ///
-/// `player` fields name the client's own player (from [`LocalServer::join`]). A network transport
-/// will check the sender owns that player (M6).
+/// `player` fields name the client's own player (from [`LocalServer::join`], or a multiplayer
+/// server's welcome). A multiplayer server overwrites them with the sender's player
+/// ([`host::Host`]), so a client can only act as itself.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Intent {
     /// Movement input, sent every tick. The server keeps the newest (by `seq`, starting at 1) and

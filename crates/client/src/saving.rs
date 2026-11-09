@@ -101,8 +101,12 @@ impl Notice {
     }
 }
 
+/// On a multiplayer server (`--connect`) there is nothing of ours to save or load.
+const ON_A_SERVER: &str = "this world is the server's, which saves it itself";
+
 fn save_to(link: &ServerLink, options: &Options, name: &str) -> Result<save_file::Saved, String> {
-    save_file::save(link.world(), &save_file::path_for(&options.saves, name)?)
+    let world = link.world().ok_or(ON_A_SERVER)?;
+    save_file::save(world, &save_file::path_for(&options.saves, name)?)
 }
 
 /// What taking up another world touches: the server link, our map copy and edge damage, our
@@ -120,6 +124,11 @@ pub(crate) struct WorldSwap<'w> {
 }
 
 impl WorldSwap<'_> {
+    /// The player we play.
+    pub fn player(&self) -> u32 {
+        self.me.id
+    }
+
     /// Our player is dead (the death screen is up).
     pub fn dead(&self) -> bool {
         self.me.dead
@@ -184,11 +193,14 @@ fn quick_save_load(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, options: Re
     if !load {
         return;
     }
-    let loaded = save_file::path_for(&options.saves, QUICKSAVE).and_then(|path| {
+    let Some(content) = swap.link.world().map(|w| w.config.clone()) else {
+        return notice.say(now, format!("Load failed: {ON_A_SERVER}"));
+    };
+    let loaded =save_file::path_for(&options.saves, QUICKSAVE).and_then(|path| {
         if !path.exists() {
             return Err(format!("no quicksave yet ({}): press F5 first", path.display()));
         }
-        save_file::load(&path, &swap.link.world().config, options.load_options()).map_err(|e| e.hint("starting with --load-anyway"))
+        save_file::load(&path, &content, options.load_options()).map_err(|e| e.hint("starting with --load-anyway"))
     });
     let (loaded, ms) = match loaded {
         Ok(l) => l,
@@ -216,7 +228,7 @@ fn autosave_on_exit(mut exit: MessageReader<AppExit>, link: Res<ServerLink>, opt
         return;
     }
     *done = true;
-    if !options.offscreen() {
+    if !options.offscreen() && link.world().is_some() {
         match save_to(&link, &options, AUTOSAVE) {
             Ok(saved) => println!("Autosaved: {saved}"),
             Err(e) => eprintln!("Autosave failed: {e}"),

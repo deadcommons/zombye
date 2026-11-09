@@ -1,0 +1,531 @@
+//! The multiplayer server (#21): a world, a TCP listener and the clients connected to it.
+//!
+//! [`Host::tick`] is one server tick: take new connections and what clients sent, apply each
+//! client's intents as its own player, step the world, and send every client its snapshot (cut
+//! down to its surroundings, as a delta; see [`crate::wire`]). The caller runs it at the tick rate
+//! ([`Host::run`], or by hand in tests). Each connection has a thread reading frames into one
+//! channel and a thread writing frames out of a bounded queue, so a slow or stuck client never
+//! holds the tick up: a client whose queue fills is dropped.
+//!
+//! **Input, one a tick.** Over a network a client's per-tick inputs arrive in bursts (none this
+//! tick, two the next). Each connection's intents wait in a queue, and a tick applies them in
+//! order up to and including one movement input, so every input moves the player for exactly one
+//! tick, as the client predicted; with none waiting the last one holds, and a queue that grows
+//! (a client running fast, or a burst after a stall) is caught up by skipping to the newest few.
+//!
+//! **Who is who.** A client says its name. A name whose survivor is in the world with nobody
+//! playing it takes that survivor up again (its body stays where it was left, standing; the
+//! logout timer is #68); otherwise it gets a new one. Clients only act as their own player: every
+//! intent's `player` is overwritten with the sender's, and the dev and debug intents are dropped
+//! unless the server allows them.
+
+use std::collections::{BTreeMap, VecDeque};
+use std::io::{self, Write};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
+use std::time::{Duration, Instant};
+
+use glam::{IVec2, Vec2};
+use zombye_sim::save::ContentPrint;
+use zombye_sim::{PlayerInput, TICK_DT, World};
+
+use crate::wire::{self, ClientMsg, DeltaEncoder, Hello, Rules, ServerMsg, Tunings, Welcome};
+use crate::{EdgeDamage, Intent, Snapshot, apply_intent};
+
+/// Where new survivors start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Spawn {
+    /// Spread round the edge of the town (open PvP, docs/PLAN.md §4.8).
+    Spread,
+    /// Together, outside the house a single player wakes up in (co-op).
+    Together,
+}
+
+#[derive(Clone, Debug)]
+pub struct HostOptions {
+    /// The server's name, told to clients.
+    pub name: String,
+    /// Clients connected at once (at most [`wire::MAX_PLAYERS`]).
+    pub max_players: usize,
+    /// Take dev toggles and debug intents from clients.
+    pub allow_dev: bool,
+    /// Clients must give this to join; empty: none.
+    pub password: String,
+    /// `None`: spread with PvP on, together with it off.
+    pub spawn: Option<Spawn>,
+}
+
+impl Default for HostOptions {
+    fn default() -> Self {
+        Self { name: "Zombye server".into(), max_players: wire::DEFAULT_PLAYERS, allow_dev: false, password: String::new(), spawn: None }
+    }
+}
+
+/// Frames waiting to be written to one client before it is dropped as too slow (5 s of snapshots).
+const OUT_QUEUE: usize = 100;
+/// Intents waiting from one client before it is dropped as flooding.
+const MAX_QUEUE: usize = 400;
+/// Movement inputs kept waiting per client: more are skipped down to `KEEP_INPUTS`.
+/// (A client drawing few frames a second sends a frame's worth of inputs at once: 10 is half a
+/// second.)
+const MAX_INPUTS: usize = 10;
+const KEEP_INPUTS: usize = 2;
+/// A client that sends nothing for this long is gone (clients ping every second).
+const IDLE: Duration = Duration::from_secs(20);
+const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Connections that haven't said hello yet, beyond the players allowed.
+const MAX_PENDING: usize = 16;
+
+enum Event {
+    Hello(u64, Hello, TcpStream),
+    Msg(u64, ClientMsg, usize),
+    Closed(u64),
+}
+
+struct Conn {
+    id: u64,
+    player: u32,
+    name: String,
+    addr: String,
+    out: SyncSender<Vec<u8>>,
+    queue: VecDeque<Intent>,
+    encoder: DeltaEncoder,
+    bytes_out: u64,
+    bytes_in: u64,
+    /// Intents received so far.
+    intents: u64,
+    /// Set when it is to be dropped, with the reason.
+    closing: Option<String>,
+}
+
+/// One connected client, for reports.
+#[derive(Clone, Debug)]
+pub struct ClientInfo {
+    pub player: u32,
+    pub name: String,
+    pub addr: String,
+    pub bytes_out: u64,
+    pub bytes_in: u64,
+}
+
+/// Totals since the server started.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HostStats {
+    pub ticks: u64,
+    /// The last tick, all of it (intents, the world, snapshots), and the world's step alone.
+    pub tick_ms: f32,
+    pub sim_ms: f32,
+    pub worst_tick_ms: f32,
+    pub bytes_out: u64,
+    pub bytes_in: u64,
+    pub joined: u64,
+    pub left: u64,
+    pub refused: u64,
+    /// Dev and debug intents dropped.
+    pub refused_dev: u64,
+}
+
+pub struct Host {
+    pub world: World,
+    pub options: HostOptions,
+    listener: TcpListener,
+    events: Receiver<Event>,
+    events_tx: Sender<Event>,
+    conns: Vec<Conn>,
+    next_conn: u64,
+    /// Sockets open: connected clients and those still saying hello.
+    open: Arc<AtomicUsize>,
+    /// Every name that has played here and its player.
+    names: BTreeMap<String, u32>,
+    pub stats: HostStats,
+    /// What happened (joins, leaves, refusals) since the caller last emptied it, to log.
+    pub log: Vec<String>,
+}
+
+impl Host {
+    /// Serve `world` on `addr` (e.g. `0.0.0.0:7777`; port 0 picks a free one, see
+    /// [`Host::local_addr`]).
+    pub fn bind(world: World, addr: impl ToSocketAddrs, mut options: HostOptions) -> io::Result<Self> {
+        let listener = TcpListener::bind(addr)?;
+        listener.set_nonblocking(true)?;
+        options.max_players = options.max_players.clamp(1, wire::MAX_PLAYERS);
+        let (events_tx, events) = mpsc::channel();
+        Ok(Self { world, options, listener, events, events_tx, conns: Vec::new(), next_conn: 1, open: Arc::new(AtomicUsize::new(0)), names: BTreeMap::new(), stats: HostStats::default(), log: Vec::new() })
+    }
+
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.listener.local_addr()
+    }
+
+    pub fn rules(&self) -> Rules {
+        Rules { name: self.options.name.clone(), pvp: self.world.config.combat.pvp, max_players: self.options.max_players as u32, allow_dev: self.options.allow_dev }
+    }
+
+    /// The clients connected now.
+    pub fn clients(&self) -> Vec<ClientInfo> {
+        self.conns.iter().map(|c| ClientInfo { player: c.player, name: c.name.clone(), addr: c.addr.clone(), bytes_out: c.bytes_out, bytes_in: c.bytes_in }).collect()
+    }
+
+    /// Every name that has played here, with its player (to keep beside a save, so survivors are
+    /// their players' again after a restart).
+    pub fn names(&self) -> &BTreeMap<String, u32> {
+        &self.names
+    }
+
+    /// Names from an earlier session of this world; those whose player the world no longer has are
+    /// left out.
+    pub fn set_names(&mut self, names: impl IntoIterator<Item = (String, u32)>) {
+        self.names = names.into_iter().filter(|(_, id)| self.world.player(*id).is_some()).collect();
+    }
+
+    /// Intents received so far from the client playing `player` (tests: has what it sent arrived?).
+    pub fn received(&self, player: u32) -> u64 {
+        self.conns.iter().find(|c| c.player == player).map_or(0, |c| c.intents)
+    }
+
+    /// Intents waiting from the client playing `player` (tests).
+    pub fn queued(&self, player: u32) -> usize {
+        self.conns.iter().find(|c| c.player == player).map_or(0, |c| c.queue.len())
+    }
+
+    /// Take new connections and what clients sent, without stepping the world (a tick does this
+    /// first; a paused server, or a test, can do it alone).
+    pub fn pump(&mut self) {
+        self.accept();
+        self.take_events();
+    }
+
+    /// One server tick. See the module docs.
+    pub fn tick(&mut self) {
+        let start = Instant::now();
+        self.pump();
+        for k in 0..self.conns.len() {
+            self.apply_queue(k);
+        }
+        self.world.step();
+        self.stats.sim_ms = self.world.stats.tick_ms;
+        self.send_snapshots();
+        self.drop_closed();
+        self.stats.ticks += 1;
+        self.stats.tick_ms = start.elapsed().as_secs_f32() * 1000.0;
+        self.stats.worst_tick_ms = self.stats.worst_tick_ms.max(self.stats.tick_ms);
+    }
+
+    /// Tick at the sim's rate until `each` (called after every tick) says stop. A tick that
+    /// overruns isn't made up for: the next starts a full interval after it.
+    pub fn run(&mut self, mut each: impl FnMut(&mut Host) -> bool) {
+        let step = Duration::from_secs_f32(TICK_DT);
+        let mut next = Instant::now() + step;
+        loop {
+            self.tick();
+            if !each(self) {
+                break;
+            }
+            let now = Instant::now();
+            if next > now {
+                std::thread::sleep(next - now);
+                next += step;
+            } else {
+                next = now + step;
+            }
+        }
+    }
+
+    /// Tell every client the server is closing, and why, and drop them.
+    pub fn close(&mut self, why: &str) {
+        for c in &mut self.conns {
+            c.closing = Some(why.to_string());
+        }
+        self.drop_closed();
+    }
+
+    fn accept(&mut self) {
+        loop {
+            let (stream, _) = match self.listener.accept() {
+                Ok(s) => s,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(_) => break,
+            };
+            if self.open.load(Ordering::Relaxed) >= self.options.max_players + MAX_PENDING {
+                continue;
+            }
+            let id = self.next_conn;
+            self.next_conn += 1;
+            let (tx, open) = (self.events_tx.clone(), self.open.clone());
+            open.fetch_add(1, Ordering::Relaxed);
+            let spawned = std::thread::Builder::new().name(format!("net-read-{id}")).spawn(move || {
+                read_loop(id, stream, &tx);
+                open.fetch_sub(1, Ordering::Relaxed);
+                let _ = tx.send(Event::Closed(id));
+            });
+            if spawned.is_err() {
+                self.open.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    fn take_events(&mut self) {
+        while let Ok(event) = self.events.try_recv() {
+            match event {
+                Event::Hello(id, hello, stream) => self.hello(id, hello, stream),
+                Event::Msg(id, msg, bytes) => {
+                    let Some(c) = self.conns.iter_mut().find(|c| c.id == id) else { continue };
+                    c.bytes_in += bytes as u64;
+                    self.stats.bytes_in += bytes as u64;
+                    match msg {
+                        ClientMsg::Intent(intent) => {
+                            c.queue.push_back(intent);
+                            c.intents += 1;
+                            if c.queue.len() > MAX_QUEUE {
+                                c.closing = Some("sending too much".into());
+                            }
+                        }
+                        ClientMsg::Ping(n) => send(c, &mut self.stats, &ServerMsg::Pong(n)),
+                        ClientMsg::Bye => c.closing = Some(String::new()),
+                        ClientMsg::Hello(_) => c.closing = Some("hello twice".into()),
+                    }
+                }
+                Event::Closed(id) => {
+                    if let Some(c) = self.conns.iter_mut().find(|c| c.id == id) {
+                        c.closing.get_or_insert(String::new());
+                    }
+                }
+            }
+        }
+    }
+
+    /// A new connection said hello: let it in as a player, or say why not.
+    fn hello(&mut self, id: u64, hello: Hello, mut stream: TcpStream) {
+        let refuse = |stream: &mut TcpStream, why: String| {
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+            let _ = wire::write_frame(stream, &ServerMsg::Refused(why));
+            let _ = stream.shutdown(Shutdown::Both);
+        };
+        let name = match self.check(&hello) {
+            Ok(name) => name,
+            Err(why) => {
+                self.stats.refused += 1;
+                self.log.push(format!("refused {}: {why}", hello.name));
+                return refuse(&mut stream, why);
+            }
+        };
+        let addr = stream.peer_addr().map_or_else(|_| "?".into(), |a| a.to_string());
+        // Its survivor from before, or a new one.
+        let back = self.names.get(&name).copied().filter(|&p| self.world.player(p).is_some());
+        let player = back.unwrap_or_else(|| {
+            let at = self.spawn_point(self.world.players.len() as u32);
+            self.world.add_player(at)
+        });
+        self.names.insert(name.clone(), player);
+        let c = &self.world.config;
+        let welcome = Welcome {
+            protocol: wire::PROTOCOL,
+            player,
+            name: name.clone(),
+            rules: self.rules(),
+            generation: c.generation.clone(),
+            content: ContentPrint::of(c),
+            map_hash: self.world.map_base_hash(),
+            map_edits: self.world.map_edits_now(),
+            edge_damage: EdgeDamage::all(&self.world),
+            tunings: Tunings { combat: c.combat.clone(), health: c.health.clone(), infection: c.infection.clone(), needs: c.needs, skills: c.skills.clone(), carry: c.carry.clone() },
+        };
+        let (out, frames) = mpsc::sync_channel::<Vec<u8>>(OUT_QUEUE);
+        let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
+        let spawned = std::thread::Builder::new().name(format!("net-write-{id}")).spawn(move || {
+            while let Ok(frame) = frames.recv() {
+                if stream.write_all(&frame).is_err() {
+                    break;
+                }
+            }
+            let _ = stream.shutdown(Shutdown::Both);
+        });
+        if spawned.is_err() {
+            return;
+        }
+        let mut conn = Conn { id, player, name: name.clone(), addr: addr.clone(), out, queue: VecDeque::new(), encoder: DeltaEncoder::default(), bytes_out: 0, bytes_in: 0, intents: 0, closing: None };
+        send(&mut conn, &mut self.stats, &ServerMsg::Welcome(Box::new(welcome)));
+        self.conns.push(conn);
+        // Its private view goes with its first snapshot.
+        self.world.mark_all_private_dirty();
+        self.stats.joined += 1;
+        self.log.push(format!("{name} joined from {addr} as player {player}{} ({} online)", if back.is_some() { " (back)" } else { "" }, self.conns.len()));
+    }
+
+    /// May this hello come in? Its name (made up if it gave none), or why not.
+    fn check(&self, hello: &Hello) -> Result<String, String> {
+        if hello.protocol != wire::PROTOCOL {
+            return Err(format!("this server speaks protocol {}, your game {}: both need the same version of the game", wire::PROTOCOL, hello.protocol));
+        }
+        if !self.options.password.is_empty() && hello.password != self.options.password {
+            return Err("wrong password".into());
+        }
+        if self.conns.len() >= self.options.max_players {
+            return Err(format!("the server is full ({} players)", self.options.max_players));
+        }
+        let name = hello.name.trim();
+        if name.chars().count() > 24 || name.chars().any(|c| c.is_control()) {
+            return Err("names are at most 24 letters".into());
+        }
+        if name.is_empty() {
+            return Ok((1..).map(|n| format!("survivor-{n}")).find(|n| !self.names.contains_key(n)).expect("a free name"));
+        }
+        if self.conns.iter().any(|c| c.name == name) {
+            return Err(format!("{name} is already playing here"));
+        }
+        Ok(name.to_string())
+    }
+
+    /// Where the `k`th survivor of this world starts, or a respawned one gets up.
+    pub fn spawn_point(&self, k: u32) -> Vec2 {
+        let w = &self.world;
+        let spawn = self.options.spawn.unwrap_or(if w.config.combat.pvp { Spawn::Spread } else { Spawn::Together });
+        // The golden angle: each next one well away from those before.
+        let angle = k as f32 * 2.399_963;
+        let aim = match spawn {
+            Spawn::Together => open_ground_near(w, w.player_spawn, 6) + Vec2::from_angle(angle) * (1.5 + 0.9 * (k as f32).sqrt()),
+            Spawn::Spread => {
+                let (min, max) = (w.town_min.as_vec2(), w.town_max.as_vec2());
+                (min + max) * 0.5 + Vec2::from_angle(angle) * ((max - min) * 0.5 + Vec2::splat(6.0))
+            }
+        };
+        let size = Vec2::new(w.map.width() as f32, w.map.height() as f32);
+        open_ground_near(w, aim.clamp(Vec2::splat(2.0), size - Vec2::splat(2.0)), 0)
+    }
+
+    /// This tick's share of a client's queue: everything up to and including one movement input.
+    fn apply_queue(&mut self, k: usize) {
+        let player = self.conns[k].player;
+        let is_input = |i: &Intent| matches!(i, Intent::PlayerInput { .. });
+        // Too far behind: skip to the newest few inputs (what lies between still happens).
+        let inputs = self.conns[k].queue.iter().filter(|i| is_input(i)).count();
+        let mut skip = if inputs > MAX_INPUTS { inputs - KEEP_INPUTS } else { 0 };
+        let mut moved = false;
+        while let Some(next) = self.conns[k].queue.front() {
+            if is_input(next) && moved && skip == 0 {
+                break;
+            }
+            let mut intent = self.conns[k].queue.pop_front().expect("peeked");
+            if is_input(&intent) {
+                if skip > 0 {
+                    skip -= 1;
+                } else {
+                    moved = true;
+                }
+            }
+            if intent.dev_only() && !self.options.allow_dev {
+                self.stats.refused_dev += 1;
+                continue;
+            }
+            if let Some(p) = intent.player_mut() {
+                *p = player;
+            }
+            let respawn = matches!(intent, Intent::Respawn { .. }) && self.world.player(player).is_some_and(|p| p.dead);
+            apply_intent(&mut self.world, &intent);
+            if respawn {
+                // A new survivor starts where new ones do, not in the single-player bedroom.
+                let at = self.world.map.resolve_circle(self.spawn_point(player.wrapping_mul(7) + self.stats.ticks as u32), zombye_sim::players::PLAYER_RADIUS);
+                if let Some(p) = self.world.players.iter_mut().find(|p| p.id == player && !p.dead) {
+                    p.state.pos = at;
+                }
+            }
+        }
+    }
+
+    fn send_snapshots(&mut self) {
+        if self.conns.is_empty() {
+            // Nobody to tell: let the world's queues for clients go (they'd only grow).
+            self.world.edge_changes.clear();
+            self.world.combat_events.clear();
+            self.world.item_notes.clear();
+            return;
+        }
+        let full = Snapshot::capture(&mut self.world);
+        let radius = self.world.config.tiers.interest_radius;
+        for c in &mut self.conns {
+            let delta = c.encoder.encode(full.for_client(c.player, radius));
+            send(c, &mut self.stats, &ServerMsg::Snapshot(Box::new(delta)));
+        }
+    }
+
+    fn drop_closed(&mut self) {
+        let mut k = 0;
+        while k < self.conns.len() {
+            if self.conns[k].closing.is_none() {
+                k += 1;
+                continue;
+            }
+            let mut c = self.conns.swap_remove(k);
+            let why = c.closing.take().unwrap_or_default();
+            if !why.is_empty() {
+                let _ = c.out.try_send(wire::encode_frame(&ServerMsg::Bye(why.clone())));
+            }
+            // Its survivor stays, standing still.
+            if let Some(seq) = self.world.player(c.player).map(|p| p.last_input_seq) {
+                self.world.set_player_input(c.player, seq.wrapping_add(1), PlayerInput::default());
+            }
+            self.stats.left += 1;
+            self.log.push(format!("{} left{} ({} online)", c.name, if why.is_empty() { String::new() } else { format!(": {why}") }, self.conns.len()));
+        }
+    }
+}
+
+/// Queue a frame for a client; one whose queue is full (or whose writer is gone) is dropped.
+fn send(c: &mut Conn, stats: &mut HostStats, msg: &ServerMsg) {
+    let frame = wire::encode_frame(msg);
+    let n = frame.len() as u64;
+    match c.out.try_send(frame) {
+        Ok(()) => {
+            c.bytes_out += n;
+            stats.bytes_out += n;
+        }
+        Err(TrySendError::Full(_)) => c.closing = Some("connection too slow".into()),
+        Err(TrySendError::Disconnected(_)) => {
+            c.closing.get_or_insert(String::new());
+        }
+    }
+}
+
+/// A connection's reading thread: the hello first (promptly), then messages until it ends.
+fn read_loop(id: u64, mut stream: TcpStream, tx: &Sender<Event>) {
+    let _ = stream.set_nonblocking(false);
+    let _ = stream.set_nodelay(true);
+    let _ = stream.set_read_timeout(Some(HELLO_TIMEOUT));
+    let Ok((ClientMsg::Hello(hello), _)) = wire::read_frame::<ClientMsg>(&mut stream, wire::MAX_CLIENT_FRAME) else {
+        let _ = stream.shutdown(Shutdown::Both);
+        return;
+    };
+    let Ok(writer) = stream.try_clone() else { return };
+    let _ = stream.set_read_timeout(Some(IDLE));
+    if tx.send(Event::Hello(id, hello, writer)).is_err() {
+        return;
+    }
+    while let Ok((msg, bytes)) = wire::read_frame::<ClientMsg>(&mut stream, wire::MAX_CLIENT_FRAME) {
+        if tx.send(Event::Msg(id, msg, bytes)).is_err() {
+            break;
+        }
+    }
+    let _ = stream.shutdown(Shutdown::Both);
+}
+
+/// The centre of the nearest outdoor tile to `p` that can be stood on with `clear` free tiles
+/// round it (searching outward), else `p`.
+fn open_ground_near(world: &World, p: Vec2, clear: i32) -> Vec2 {
+    let map = &world.map;
+    let open = |t: IVec2| map.in_bounds(t) && map.tile(t).room == 0 && !map.tile_blocked(t);
+    let c = p.floor().as_ivec2();
+    for r in 0..80i32 {
+        for dy in -r..=r {
+            for dx in -r..=r {
+                let t = c + IVec2::new(dx, dy);
+                if dx.abs().max(dy.abs()) == r && (-clear..=clear).all(|y| (-clear..=clear).all(|x| open(t + IVec2::new(x, y)))) {
+                    return t.as_vec2() + Vec2::splat(0.5);
+                }
+            }
+        }
+    }
+    p
+}
