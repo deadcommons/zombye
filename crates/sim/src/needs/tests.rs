@@ -310,6 +310,34 @@ fn sleep_rests_and_speeds_time_up() {
     assert_eq!(w.time_scale(), 1.0);
 }
 
+/// After dark (#19) you can lie down however rested you are and you sleep on, rested or not,
+/// until sunrise; `sleep_through_night: false` is the old rule.
+#[test]
+fn a_night_can_be_slept_through() {
+    let (mut w, id) = by_a_bed(6);
+    // 9:00 at the start: to 22:00.
+    w.skip_time(13.0);
+    w.set_needs(id, Some(0.0), Some(0.0), Some(0.1));
+    w.config.needs.sleep_through_night = false;
+    assert!(w.player_sleep(id).unwrap_err().contains("not tired enough"));
+    w.config.needs.sleep_through_night = true;
+    w.player_sleep(id).unwrap();
+    let mut woke = None;
+    for _ in 0..ticks_per_hour(&w) / 30 * 10 {
+        w.step();
+        if let Some(&(_, r)) = w.woke.first() {
+            woke = Some((r, w.time_of_day()));
+            break;
+        }
+    }
+    let (reason, hour) = woke.expect("wakes at sunrise");
+    assert_eq!(reason, WakeReason::Rested);
+    assert!((6.0..6.2).contains(&hour), "woke at {hour}");
+    assert_eq!(me(&w, id).needs.tiredness, 0.0);
+    // By day the old rule stands: not tired, no sleep.
+    assert!(w.player_sleep(id).unwrap_err().contains("not tired enough"));
+}
+
 /// What wakes a sleeper: a noise, a zombie's strike (god mode too), agony; the floor leaves you sore.
 #[test]
 fn sleepers_wake_on_noise_strikes_and_pain() {

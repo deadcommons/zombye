@@ -318,6 +318,9 @@ pub struct NeedsTuning {
     pub floor_sore_h: f32,
     /// Game time runs this many times as fast while every living player is asleep (1: never).
     pub sleep_time_scale: f32,
+    /// After dark you can lie down however rested you are, and being rested doesn't wake you
+    /// until sunrise (#19): a night can be slept through, unless something else wakes you.
+    pub sleep_through_night: bool,
 }
 
 impl Default for NeedsTuning {
@@ -367,6 +370,7 @@ impl Default for NeedsTuning {
             floor_sore_pain: 0.1,
             floor_sore_h: 2.0,
             sleep_time_scale: 30.0,
+            sleep_through_night: true,
         }
     }
 }
@@ -752,7 +756,7 @@ impl World {
             Some("dead".to_string())
         } else if p.needs.asleep() {
             return Ok("already asleep".into());
-        } else if p.needs.tiredness < t.min_tiredness_to_sleep {
+        } else if p.needs.tiredness < t.min_tiredness_to_sleep && !(t.sleep_through_night && crate::senses::is_night(self.time_of_day())) {
             Some(format!("not tired enough to sleep (tiredness {:.0}%, sleep from {:.0}%)", p.needs.tiredness * 100.0, t.min_tiredness_to_sleep * 100.0))
         } else if self.pain_stops_sleep(pi) {
             Some("in too much pain to sleep (painkillers would let you)".into())
@@ -883,6 +887,8 @@ impl World {
             // A painkiller dose still working: agony doesn't wake you (#57).
             let dosed = !self.players[pi].health.aid.painkillers.is_empty();
             let thirst_mult = self.players[pi].health.thirst_mult(&self.config.health);
+            // Rested, but it's still dark: sleep on until sunrise.
+            let sleeps_on = t.sleep_through_night && crate::senses::is_night(self.time_of_day());
             let p = &mut self.players[pi];
             let (before, view_before) = (signature(&p.needs, &t), view_key(&p.needs));
             let running = p.state.stance == Stance::Run;
@@ -910,7 +916,7 @@ impl World {
             }
             let (sleep, tiredness, starving, parched) = (n.sleep, n.tiredness, n.hunger_level(&t) == Level::Severe, n.thirst_level(&t) == Level::Severe);
             let wake = match sleep {
-                Some(_) if tiredness < t.rested_below => Some(WakeReason::Rested),
+                Some(_) if tiredness < t.rested_below && !sleeps_on => Some(WakeReason::Rested),
                 Some(s) if s.hours >= t.hunger_wakes_after_h && starving => Some(WakeReason::Hunger),
                 Some(s) if s.hours >= t.hunger_wakes_after_h && parched => Some(WakeReason::Thirst),
                 Some(_) if t.pain_level(pain) >= 3 && !dosed => Some(WakeReason::Pain),

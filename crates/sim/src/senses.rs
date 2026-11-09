@@ -58,8 +58,13 @@ pub struct Target {
     pub sight_mult: f32,
 }
 
-const SUNRISE: f32 = 6.0;
-const SUNSET: f32 = 20.0;
+pub const SUNRISE: f32 = 6.0;
+pub const SUNSET: f32 = 20.0;
+
+/// Is it dark at this hour of day (before sunrise or from sunset on)?
+pub fn is_night(hour: f32) -> bool {
+    !(SUNRISE..SUNSET).contains(&hour.rem_euclid(24.0))
+}
 
 /// 0 at night, 1 in full daylight, smooth through dawn and dusk (the same curve the client lights with).
 pub fn daylight(hour: f32) -> f32 {

@@ -1210,6 +1210,7 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 "infection": p.health.visible_infection().map_or("unknown".to_string(), |s| format!("{s:?}")),
                 "run": run_json(&p.run, &world.config.weapons),
                 "cause_of_death": p.run.cause_of_death_with(&world.config.weapons),
+                "first_night": p.first_night.as_ref().map(|f| first_night_json(f, &p.run)),
                 "knocked": p.knock.map(|k| if k.down { "down" } else { "staggered" }),
                 "hunger": p.needs.hunger,
                 "thirst": p.needs.thirst,
@@ -1467,6 +1468,30 @@ impl Events {
         }
         out
     }
+}
+
+/// A player's first day and night (#19) for `stats`: the phase, when dark falls and ends, the
+/// objectives with what's done, and at dawn the outcome.
+fn first_night_json(f: &zombye_sim::FirstNight, run: &zombye_sim::RunStats) -> Value {
+    use zombye_sim::firstnight::clock;
+    json!({
+        "phase": format!("{:?}", f.phase()).to_lowercase(),
+        "dark_at": clock(f.dusk),
+        "dawn_at": clock(f.dawn),
+        "hours_to_dark": f.hours_to_dusk(),
+        "hours_to_dawn": f.hours_to_dawn(),
+        "objectives": zombye_sim::Objective::ALL.iter().map(|&o| json!({"what": f.label(o, run), "done": f.done(o, run)})).collect::<Vec<_>>(),
+        "outcome": f.outcome.map(|o| json!({
+            "text": format!("{} {}", o.headline(), o.verdict()),
+            "shelter": format!("{:?}", o.shelter).to_lowercase(),
+            "slept_hours": o.slept_h,
+            "kills": o.kills,
+            "wounds": o.wounds,
+            "hp_lost": o.hp_lost,
+            "hp": o.hp,
+            "objectives_done": o.objectives,
+        })),
+    })
 }
 
 /// A player's run stats (#13) for `stats`.
@@ -2918,6 +2943,11 @@ mod tests {
         let run = &stats["players"][0]["run"];
         assert!(run["seconds"].as_f64().unwrap() >= 1.0 && run["death"].is_null(), "{run}");
         assert!(stats["players"][0]["cause_of_death"].is_null());
+        // The first night (#19): by day, five objectives, none done, no outcome yet.
+        let night = &stats["players"][0]["first_night"];
+        assert_eq!((night["phase"].as_str(), night["dark_at"].as_str(), night["dawn_at"].as_str()), (Some("day"), Some("20:00"), Some("06:00")), "{night}");
+        assert_eq!(night["objectives"].as_array().map(|o| o.len()), Some(5));
+        assert!(night["objectives"][4]["done"] == false && night["outcome"].is_null(), "{night}");
         world.config.infection.mode = zombye_sim::InfectionMode::Off;
         for part in ["torso", "left_leg", "right_arm"] {
             let (text, err) = call(&mut world, &mut persist, "wound", json!({"part": part, "kind": "gash", "infected": false}));

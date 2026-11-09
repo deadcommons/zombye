@@ -133,6 +133,19 @@ fn when(day: u32, hour: f32) -> String {
     format!("Day {day}, {:02}:{:02}", mins / 60, mins % 60)
 }
 
+/// For a life that ended before its first dawn (#19): how far it got.
+fn first_night_line(f: &zombye_sim::FirstNight, run: &RunStats) -> Option<String> {
+    use zombye_sim::firstnight::{clock, span};
+    if f.outcome.is_some() {
+        return None;
+    }
+    let short = match f.phase() {
+        zombye_sim::Phase::Night => format!("{} short of the first dawn ({})", span(f.hours_to_dawn()), clock(f.dawn)),
+        _ => "Before the first night had even fallen".to_string(),
+    };
+    Some(format!("{short}. Objectives done: {} of {}.", f.done_count(run), zombye_sim::Objective::ALL.len()))
+}
+
 #[allow(clippy::type_complexity)]
 fn update_screen(
     me: Res<LocalPlayer>,
@@ -164,7 +177,8 @@ fn update_screen(
         set(&mut t, death.and_then(|d| d.epilogue()).unwrap_or("").to_string());
     }
     if let Ok(mut t) = texts.p2().single_mut() {
-        set(&mut t, death.map_or_else(String::new, |d| when(d.day, d.hour)));
+        let night = link.curr.first_night_of(me.id).and_then(|f| first_night_line(f, &run)).map_or_else(String::new, |l| format!("\n{l}"));
+        set(&mut t, death.map_or_else(String::new, |d| when(d.day, d.hour)) + &night);
     }
     let values = values(&run);
     for (mut t, k) in texts.p3().iter_mut() {
@@ -193,9 +207,14 @@ fn death_keys(
     }
     let due = !*automated && options.new_run_after.is_some_and(|t| now >= t);
     *automated |= due;
-    if !(keys.just_pressed(KeyCode::KeyR) || due) {
-        return;
+    if keys.just_pressed(KeyCode::KeyR) || due {
+        start_new_run(&mut swap, &mut notice, now);
     }
+}
+
+/// A new run: a fresh world like the one being played (same seed, map and settings), taken up
+/// like a quickload. From the death screen and the first morning's (`firstnight_ui.rs`).
+pub(crate) fn start_new_run(swap: &mut WorldSwap, notice: &mut Notice, now: f32) {
     let Some(config) = swap.link.world().map(|w| w.config.clone()) else {
         // On a multiplayer server (#21) the world goes on: a new survivor in it.
         let me = swap.player();

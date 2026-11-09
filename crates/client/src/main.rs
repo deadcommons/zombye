@@ -17,6 +17,7 @@
 //! `--pvp` (player against player on) `--duel` (PvP on, and another survivor with a crowbar comes at you)
 //! `--autoplay` (the player fights by itself) `--fight-demo` (a bat and a few zombies close by)
 //! `--siege` (outside your house with a bat, zombies battering its door) `--sneak` (start sneaking)
+//! `--morning` (start with the first morning's screen up) `--skip-hours H` (skip game time before the first frame)
 //! `--inventory` / `--skills` / `--health` (start with that panel open) `--god` / `--ignored` (start with F1 / F2 on)
 //! `--tab worn|floor` / `--sort name|type|weight` / `--expand` (the inventory panel's tabs, order and opened stacks)
 //! `--hud` (offscreen, draw the HUD and panels too) `--hover-tag N` (show the Nth status tag's tooltip)
@@ -56,6 +57,7 @@ mod dev_time;
 mod death;
 mod fog;
 mod furniture_models;
+mod firstnight_ui;
 mod fx;
 mod health_ui;
 mod hud;
@@ -124,6 +126,11 @@ pub struct Options {
     /// `--health`).
     pub skills: bool,
     pub health: bool,
+    /// Start with the first morning's screen up, if the world has that outcome (`--morning`), and
+    /// skip this many game hours before the first frame (`--skip-hours H`, a new world only): for
+    /// pictures of the first night's screens (#19).
+    pub morning: bool,
+    pub skip_hours: Option<f32>,
     /// Start the inventory panel searching for this, showing one category, with these carried
     /// stacks picked (`--find TEXT`, `--filter CATEGORY[,CATEGORY]`, `--pick N,N`: for pictures of it).
     pub find: Option<String>,
@@ -275,6 +282,8 @@ impl Options {
             inventory: flag("--inventory"),
             skills: flag("--skills"),
             health: flag("--health"),
+            morning: flag("--morning"),
+            skip_hours: value("--skip-hours").and_then(|v| v.parse::<f32>().ok()).filter(|h| h.is_finite() && (0.0..=240.0).contains(h)),
             hud: flag("--hud"),
             find: value("--find"),
             filter: value("--filter"),
@@ -410,7 +419,7 @@ fn main() {
             fx::FxPlugin,
             survivor::SurvivorPlugin,
             (autoplay::AutoplayPlugin, duel::DuelPlugin),
-            (saving::SavingPlugin, ui_scale::UiScalePlugin),
+            (saving::SavingPlugin, ui_scale::UiScalePlugin, firstnight_ui::FirstNightUiPlugin),
         ));
     // An offscreen render has no audio device (Bevy's audio is off there).
     if !offscreen {

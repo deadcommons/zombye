@@ -27,13 +27,14 @@ use serde::{Deserialize, Serialize};
 use zombye_sim::map::EdgeChange;
 use zombye_sim::save::ContentPrint;
 use zombye_sim::worldgen::GenConfig;
-use zombye_sim::{CarryTuning, CombatEvent, CombatTuning, GroundItem, HealthTuning, InfectionTuning, ItemNote, LevelUp, NeedsTuning, RunStats, SkillTuning, ZombieAnim};
+use zombye_sim::{CarryTuning, CombatEvent, CombatTuning, GroundItem, HealthTuning, InfectionTuning, ItemNote, LevelUp, NeedsTuning, SkillTuning, ZombieAnim};
 
 use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, RunView, Snapshot, ZombieView};
 
 /// Bumped whenever a message changes shape; a server refuses any other. (2: player-vs-player
-/// combat, #65: `PlayerView::knock`, `CombatEvent::by`, players killed in the run stats.)
-pub const PROTOCOL: u32 = 2;
+/// combat, #65: `PlayerView::knock`, `CombatEvent::by`, players killed in the run stats. 3: the
+/// first night, #19: `RunView::first_night`, together with 2's changes.)
+pub const PROTOCOL: u32 = 3;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -196,7 +197,8 @@ pub struct SnapshotDelta {
     pub level_ups: Vec<LevelUp>,
     /// Sent when they change (the run about once a second while only its clocks move).
     pub floor: Option<Vec<u32>>,
-    pub run: Option<RunStats>,
+    /// The run with the first night's record (#19).
+    pub run: Option<RunView>,
     pub outfits: Option<Vec<OutfitView>>,
     pub risen: Option<Vec<OutfitView>>,
 }
@@ -245,7 +247,7 @@ pub struct DeltaEncoder {
     zombies: Vec<ZombiePacked>,
     items: Vec<GroundItem>,
     floor: Vec<u32>,
-    run: Option<RunStats>,
+    run: Option<RunView>,
     outfits: Vec<OutfitView>,
     risen: Vec<OutfitView>,
 }
@@ -332,8 +334,13 @@ impl DeltaEncoder {
             self.floor = floor.clone();
             floor
         });
-        let run = view.runs.into_iter().next().map(|r| r.run);
-        let counts = |r: &RunStats| (r.kills, r.items_taken, r.searched, r.wounds, r.death.is_some());
+        let run = view.runs.into_iter().next();
+        // What should show at once: the counts, a death, and the first night's objectives and outcome.
+        let counts = |v: &RunView| {
+            let (r, f) = (&v.run, v.first_night.as_ref());
+            let night = f.map(|f| (f.armed, f.food, f.drink, f.sheltered, f.outcome.is_some(), f.began.to_bits()));
+            (r.kills, r.items_taken, r.searched, r.wounds, r.death.is_some(), night)
+        };
         let run_due = match (&self.run, &run) {
             (Some(a), Some(b)) => counts(a) != counts(b) || (a != b && view.tick % RUN_EVERY == 0),
             (None, None) => false,
@@ -415,7 +422,7 @@ impl DeltaDecoder {
             s.floor = vec![FloorView { player, items }];
         }
         if let Some(run) = delta.run {
-            s.runs = vec![RunView { player, run }];
+            s.runs = vec![RunView { player, ..run }];
         }
         if let Some(outfits) = delta.outfits {
             s.outfits = outfits;

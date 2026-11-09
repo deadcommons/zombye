@@ -170,6 +170,10 @@ pub struct Player {
     /// not here, so the player's layout (and the format) stays as it was.
     #[serde(skip)]
     pub run: RunStats,
+    /// This life's first day and night: objectives and the outcome at dawn (`crate::firstnight`).
+    /// Saved in its own optional section, like `run`; `None` in a save from before it.
+    #[serde(skip)]
+    pub first_night: Option<crate::firstnight::FirstNight>,
 }
 
 /// A player staggered or knocked down by another player's swing or shove (see `combat`).
@@ -214,6 +218,7 @@ impl Player {
             knock: None,
             dev: DevFlags::default(),
             run: RunStats::default(),
+            first_night: None,
         }
     }
 }

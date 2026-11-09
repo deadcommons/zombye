@@ -420,6 +420,7 @@ impl World {
         let p = &mut self.players[pi];
         *p = Player { last_input_seq: p.last_input_seq, input: PlayerInput::default(), dev: p.dev, skills, ..Player::new(id, spawn, hp) };
         self.refresh_carry(pi);
+        self.begin_first_night(pi);
         true
     }
 

@@ -566,6 +566,7 @@ impl World {
         self.players.push(Player { skills, ..Player::new(id, pos, self.config.combat.player_hp) });
         // Its movement from the start (Fitness, #46).
         self.refresh_carry(self.players.len() - 1);
+        self.begin_first_night(self.players.len() - 1);
         id
     }
 
@@ -687,6 +688,7 @@ impl World {
         self.clock_offset_hours += hours;
         self.skip_health(hours);
         self.skip_needs(hours);
+        self.step_first_night(hours);
     }
 
     /// Full hit points of an edge of this kind (0 for anything that can't be battered).
@@ -1044,6 +1046,7 @@ impl World {
         self.clock_offset_hours += hours - real;
         self.step_health(hours, TICK_DT);
         self.step_needs(hours, true);
+        self.step_first_night(hours);
         // Fitness or Strength went up: the snapshot carries the new movement.
         self.refresh_skill_mods();
         // Last: indices into the zombie columns (the spatial hash) aren't needed after this.

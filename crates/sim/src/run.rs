@@ -267,7 +267,7 @@ impl World {
     }
 
     /// Hours on the world clock since the start of day 1 (midnight before the start hour).
-    fn clock_hours(&self) -> f64 {
+    pub fn clock_hours(&self) -> f64 {
         self.config.start_hour as f64 + self.tick as f64 * TICK_DT as f64 / self.config.day_length_secs as f64 * 24.0 + self.clock_offset_hours as f64
     }
 

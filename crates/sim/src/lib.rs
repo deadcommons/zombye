@@ -12,6 +12,7 @@ pub mod combat;
 pub mod containers;
 pub mod crafting;
 pub mod firstaid;
+pub mod firstnight;
 pub mod flow;
 pub mod health;
 pub mod inventory;
@@ -42,6 +43,7 @@ pub use combat::{ActionEvent, CombatEvent, CombatEventKind, CombatTuning, HitEff
 pub use containers::{ContainerData, ContainerDef, ContainerSite};
 pub use crafting::{RecipeDef, RecipeItem, Tool};
 pub use firstaid::{Aid, AidView, CourseView, FirstAidTuning, Treatment};
+pub use firstnight::{FirstNight, Objective, Phase, Shelter};
 pub use health::{Dressing, Health, HealthTags, HealthTuning, HealthView, InfectionMode, InfectionStage, InfectionTuning, Part, Wound, WoundKind, WoundView};
 pub use inventory::{Burden, Carry, CarryTuning, Inventory, ItemJob, ItemNote, JobKind, Place, Slot};
 pub use items::{BodyPart, GroundItem, ItemCategory, ItemDef, ItemStack, Layer, WearSlot, WeaponCategory, WeaponDef};

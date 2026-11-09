@@ -177,6 +177,10 @@ pub struct EdgeDamageThisFrame(pub Vec<EdgeDamage>);
 const DEMO_DISTANCE: f32 = 7.0;
 const DEMO_ZOMBIES: u32 = 6;
 
+/// The hour a new single-player world starts at without `--time` (the sim's own default, 9:00,
+/// stays for the server and tests).
+pub const WAKE_HOUR: f32 = 14.0;
+
 pub struct ServerLinkPlugin;
 
 impl Plugin for ServerLinkPlugin {
@@ -191,9 +195,9 @@ impl Plugin for ServerLinkPlugin {
         if let Some(chunks) = options.map_chunks {
             config = config.with_map_chunks(chunks);
         }
-        if let Some(hour) = options.start_hour {
-            config.start_hour = hour;
-        }
+        // You wake in the early afternoon (#19): six game hours of daylight to search the house
+        // before the first night.
+        config.start_hour = options.start_hour.unwrap_or(WAKE_HOUR);
         // Player against player (a new world; a loaded one keeps its own setting).
         config.combat.pvp = options.pvp;
         // `--load`: the saved world, with its own seed, map and players (the world options and
@@ -258,6 +262,10 @@ impl Plugin for ServerLinkPlugin {
         }
         if let Some((_, door, out)) = siege_at {
             siege(&mut server, player_id, door, out);
+        }
+        // `--skip-hours`: for pictures of a later hour of this life (the first morning, say).
+        if let Some(hours) = options.skip_hours {
+            server.world.skip_time(hours);
         }
         if options.duel {
             // A hammer for you (unless the fight demo gave you its bat), and another survivor with a crowbar a

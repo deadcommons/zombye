@@ -136,6 +136,9 @@ impl From<RunsV1> for crate::run::RunStats {
 
 /// What bodies that rise wore (#63; optional, like `RUNS`).
 const LOOK: [u8; 4] = *b"LOOK";
+/// Each player's first-night record (#19, `crate::firstnight`; optional, like `RUNS`: a save
+/// without it has none, and players with no record aren't listed).
+const NITE: [u8; 4] = *b"NITE";
 /// How far the far clock has run ahead of the tick (#57; optional, like `RUNS`: a save without it
 /// has it at 0, and it is only written when it isn't).
 const FARC: [u8; 4] = *b"FARC";
@@ -712,6 +715,10 @@ impl World {
             w.section(KNOC, &encode(&knocks));
         }
         w.section(LOOK, &encode(rise_looks));
+        let nights: Vec<(u32, crate::firstnight::FirstNight)> = players.iter().filter_map(|p| Some((p.id, p.first_night.clone()?))).collect();
+        if !nights.is_empty() {
+            w.section(NITE, &encode(&nights));
+        }
         if *far_ticks != 0 {
             w.section(FARC, &encode(far_ticks));
         }
@@ -882,6 +889,7 @@ impl World {
         let mut looks: Option<crate::health::RiseLooks> = None;
         let mut knocks: Option<Vec<(u32, crate::players::Knock)>> = None;
         let mut far: Option<u64> = None;
+        let mut nights: Option<Vec<(u32, crate::firstnight::FirstNight)>> = None;
         loop {
             let (tag, payload) = r.next()?;
             if tag == END {
@@ -909,7 +917,11 @@ impl World {
                 far = Some(decode(FARC, payload)?);
                 continue;
             }
-            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || far.is_some() {
+            if tag == NITE && nights.is_none() {
+                nights = Some(decode(NITE, payload)?);
+                continue;
+            }
+            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || far.is_some() || nights.is_some() {
                 return Err(corrupt(format!("unexpected {} section", tag_name(tag))));
             }
             let block: ZombieBlock = decode(ZOMB, payload)?;
@@ -930,6 +942,11 @@ impl World {
                 *weapon = map.get(*weapon as usize).copied().flatten().unwrap_or(u16::MAX);
             }
             p.run = run;
+        }
+        for (id, night) in nights.unwrap_or_default() {
+            let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("a first night for player {id}, who isn't in the save")))?;
+            night.check().map_err(|why| save_check::invalid(format!("player {id}: {why}")))?;
+            p.first_night = Some(night);
         }
         for (id, knock) in knocks.unwrap_or_default() {
             let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("player {id} is knocked back, but isn't in the save")))?;
@@ -988,7 +1005,7 @@ pub(crate) mod tests {
         parse_weapons(include_str!("../../../assets/data/items/weapons.ron")).unwrap()
     }
 
-    fn content() -> WorldConfig {
+    pub(crate) fn content() -> WorldConfig {
         let items = crate::items::parse_items(include_str!("../../../assets/data/items/items.ron"), &weapons()).unwrap();
         let containers = crate::containers::parse_containers(include_str!("../../../assets/data/containers.ron")).unwrap();
         WorldConfig::new(5, 0, templates()).with_weapons(weapons()).with_items(items).with_containers(containers).with_loot(crate::loot::tests::shipped())

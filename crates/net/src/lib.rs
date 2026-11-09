@@ -343,6 +343,9 @@ impl OutfitView {
 pub struct RunView {
     pub player: u32,
     pub run: RunStats,
+    /// This life's first day and night (#19, `sim::firstnight`): objectives, when night falls and
+    /// ends, and the outcome at dawn. `None` for a save from before it.
+    pub first_night: Option<zombye_sim::FirstNight>,
 }
 
 /// The ground items one player can reach (ids into [`Snapshot::items`]), nearest first.
@@ -409,7 +412,7 @@ impl Snapshot {
             private,
             item_notes: std::mem::take(&mut world.item_notes),
             floor: world.players.iter().map(|p| FloorView { player: p.id, items: world.floor_ids(p.id) }).collect(),
-            runs: world.players.iter().map(|p| RunView { player: p.id, run: p.run.clone() }).collect(),
+            runs: world.players.iter().map(|p| RunView { player: p.id, run: p.run.clone(), first_night: p.first_night.clone() }).collect(),
             level_ups: world.take_level_ups(),
             outfits: world.players.iter().map(OutfitView::of).collect(),
             risen,
@@ -429,6 +432,11 @@ impl Snapshot {
     /// `player`'s run stats, if it is in this snapshot.
     pub fn run_of(&self, player: u32) -> Option<&RunStats> {
         self.runs.iter().find(|r| r.player == player).map(|r| &r.run)
+    }
+
+    /// `player`'s first-night record, if it has one and is in this snapshot.
+    pub fn first_night_of(&self, player: u32) -> Option<&zombye_sim::FirstNight> {
+        self.runs.iter().find(|r| r.player == player).and_then(|r| r.first_night.as_ref())
     }
 
     /// The ground items `player` can reach, nearest first (empty if it isn't in this snapshot).
