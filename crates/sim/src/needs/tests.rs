@@ -365,6 +365,48 @@ fn sleepers_wake_on_noise_strikes_and_pain() {
     assert!(w.player_sleep(id).unwrap_err().contains("pain"));
 }
 
+/// Painkillers working let you sleep through agony (#57): you can lie down, the pain doesn't wake
+/// you, and when the dose wears off with the pain still there, it does.
+#[test]
+fn painkillers_let_you_sleep_through_agony() {
+    let (mut w, id) = arena(7);
+    w.config.needs = NeedsTuning { hunger_per_h: 0.0, thirst_per_h: 0.0, ..w.config.needs };
+    w.set_dev(id, Some(true), None);
+    w.set_needs(id, None, None, Some(0.95));
+    for part in [Part::Head, Part::Head, Part::Torso, Part::LeftLeg, Part::RightLeg] {
+        w.inflict_wound(id, part, WoundKind::Bite, Some(false));
+    }
+    let t = w.config.needs;
+    assert!(w.pain_stops_sleep(0) && w.player_sleep(id).unwrap_err().contains("painkillers"));
+    let tip = |w: &World| w.status_tags(id).into_iter().find(|t| t.kind == TagKind::Pain).unwrap().tip;
+    assert!(tip(&w).contains("can't sleep without painkillers"), "{}", tip(&w));
+    // A dose: still in agony (0.4 off a lot of pain), but sleep comes.
+    w.give_item(id, "painkillers", 1);
+    w.player_treat(id, None, crate::firstaid::Treatment::Painkiller, None).unwrap();
+    for _ in 0..60 {
+        w.step();
+    }
+    assert!(!me(&w, id).health.aid.painkillers.is_empty(), "the dose is working");
+    assert_eq!(t.pain_level(w.pain_of(0)), 3, "still agony: {}", w.pain_of(0));
+    assert!(tip(&w).contains("painkillers let you sleep"), "{}", tip(&w));
+    w.player_sleep(id).unwrap();
+    let before = w.game_hours();
+    let mut woke = None;
+    for _ in 0..20 * 600 {
+        w.step();
+        if let Some(&(_, r)) = w.woke.first() {
+            woke = Some(r);
+            break;
+        }
+    }
+    // Four game hours of relief, then the pain wakes us.
+    let slept = w.game_hours() - before;
+    assert_eq!(woke, Some(WakeReason::Pain), "slept {slept} h");
+    let dose = w.config.health.first_aid.painkiller_h as f64;
+    assert!((dose - 0.3..=dose + 0.1).contains(&slept), "slept {slept} h of a {dose} h dose");
+    assert!(me(&w, id).health.aid.painkillers.is_empty() && w.pain_stops_sleep(0));
+}
+
 /// Needs, sleep and food ages are saved: a loaded world steps exactly like the original, asleep
 /// and sped up; impossible values are refused.
 #[test]
@@ -450,6 +492,7 @@ fn tuning_checks_and_status_tags() {
     let s = StatusInput {
         needs: NeedsView { hunger: 0.9, thirst: 0.4, tiredness: 0.65, asleep: None, sore: 0.0 },
         pain: 0.5,
+        painkillers: false,
         bleeding: 2,
         food_poisoned: true,
         festering: false,

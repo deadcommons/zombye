@@ -386,7 +386,8 @@ fn tool_list() -> Value {
                 within 1 m in its room, else the floor (slow, and you wake up sore). Steps the world until it wakes, and says why \
                 (rested below 5% tiredness, hit, a noise within 20 m that reaches it, a zombie seeing it, agony, an hour starving or \
                 parched; or max_hours of game time), how long it slept and its needs and HP before and after. While every player \
-                sleeps, game time runs 30x as fast (clock, needs, wounds; zombies keep real time), so a night is a minute or two \
+                sleeps, game time runs 30x as fast (clock, needs, wounds, and the far horde beyond 150 m: its wandering, migration and respawn; zombies nearer keep \
+                real time), and agony only stops sleep with no painkiller working, so a night is a minute or two \
                 of simulation.",
             "inputSchema": {"type": "object", "properties": {
                 "player": {"type": "integer", "default": 1}, "max_hours": {"type": "number", "default": 12, "maximum": 24}
@@ -1192,6 +1193,8 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 "skills": zombye_sim::Skill::ALL.iter().map(|&s| (s.id().to_string(), json!(p.skills.level(s, &world.config.skills)))).collect::<serde_json::Map<_, _>>(),
             })).collect::<Vec<_>>(),
             "time_scale": world.time_scale(),
+            // The far tier's clock (#57): ahead of `tick` by what it ran on while everyone slept.
+            "far_tick": world.far_tick(),
             "items_on_floor": world.items().len(),
             "containers": world.containers().len(),
             "containers_opened": world.opened_containers().count(),
@@ -1221,8 +1224,8 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                     "id": a.id,
                     "pos": a.pos.to_array(),
                     "reach_m": a.reach,
-                    "felt_m": a.felt_radius(world.tick, world.config.population.migration.spread_speed),
-                    "strength": a.strength(world.tick),
+                    "felt_m": a.felt_radius(world.far_tick(), world.config.population.migration.spread_speed),
+                    "strength": a.strength(world.far_tick()),
                 })).collect::<Vec<_>>(),
                 "migration": world.config.population.migration.enabled,
                 "respawn": world.config.population.respawn.enabled,
@@ -1545,9 +1548,9 @@ fn regions(world: &World) -> String {
             a.pos.x,
             a.pos.y,
             a.reach,
-            a.felt_radius(world.tick, m.spread_speed),
-            a.strength(world.tick),
-            (a.life_secs - a.age_secs(world.tick)).max(0.0),
+            a.felt_radius(world.far_tick(), m.spread_speed),
+            a.strength(world.far_tick()),
+            (a.life_secs - a.age_secs(world.far_tick())).max(0.0),
         ));
     }
     let mut diff: Vec<(f32, usize)> = (0..actual.len()).map(|k| (actual[k] as f32 - pop.target[k], k)).collect();

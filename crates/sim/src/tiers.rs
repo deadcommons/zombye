@@ -74,6 +74,11 @@ pub struct TierTuning {
     /// zombies, and active ones whose target is beyond their flow field. Off: straight lines with
     /// the old detours (for comparison).
     pub long_paths: bool,
+    /// While every living player sleeps and game time runs `NeedsTuning::sleep_time_scale` times as
+    /// fast, the far clock (`World::far_tick`) runs that fast too: virtual zombies wander and
+    /// migrate, attractors spread and fade, and respawn counts by game time (#57). Active and near
+    /// zombies always keep real time. Off: everything keeps real time, as before.
+    pub far_follows_sleep: bool,
 }
 
 impl Default for TierTuning {
@@ -89,6 +94,7 @@ impl Default for TierTuning {
             virtual_hearing_min: 30.0,
             interest_radius: 80.0,
             long_paths: true,
+            far_follows_sleep: true,
         }
     }
 }
@@ -499,7 +505,8 @@ pub(crate) fn virtual_hearing(z: &mut Zombies, regions: &RegionIndex, map: &Tile
 }
 
 /// The virtual tier's update: each region whose turn it is (`(region + tick) %
-/// virtual_interval_ticks == 0`) moves all its zombies in one go over the whole interval. Returns
+/// virtual_interval_ticks == 0`, by the far clock, `clock`: [`crate::world::World::far_tick`], which
+/// runs ahead of `tick` while everyone sleeps) moves all its zombies in one go over the whole interval. Returns
 /// how many were updated. Randomness is a hash of (seed, tick, id), so it doesn't depend on
 /// iteration order or touch the world's RNG. With `nav`, zombies heading somewhere follow their
 /// plans ([`Nav::trace`]).
@@ -514,23 +521,24 @@ pub(crate) fn step_virtual(
     tiers: &TierTuning,
     pop: &Population,
     migration: &MigrationDef,
+    clock: u64,
     tick: u64,
     seed: u64,
 ) -> u32 {
     let every = tiers.virtual_interval_ticks.max(1) as u64;
     let mut updated = 0;
     for r in 0..regions.regions() {
-        if !(r as u64 + tick).is_multiple_of(every) || regions.count(r) == 0 {
+        if !(r as u64 + clock).is_multiple_of(every) || regions.count(r) == 0 {
             continue;
         }
         // Migration: the region feels the strongest attractor's pull, and some of its wanderers
         // set off toward it (as investigators, so they keep going on any tier).
         if !pop.attractors.is_empty() {
-            let pull = pop.pull_on(regions, r, migration, tick);
-            population::migrate_region(z, regions.members(r), pull, migration, t, tick, seed);
+            let pull = pop.pull_on(regions, r, migration, clock);
+            population::migrate_region(z, regions.members(r), pull, migration, t, clock, seed);
         }
         for &i in regions.members(r) {
-            step_one_virtual(z, i as usize, map, walk, nav.as_deref_mut(), t, every as f32 * TICK_DT, tick, seed);
+            step_one_virtual(z, i as usize, map, walk, nav.as_deref_mut(), t, every as f32 * TICK_DT, clock, tick, seed);
             updated += 1;
         }
     }
@@ -538,8 +546,8 @@ pub(crate) fn step_virtual(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn step_one_virtual(z: &mut Zombies, i: usize, map: &TileMap, walk: &WalkGrid, nav: Option<&mut Nav>, t: &ZombieTuning, dt: f32, tick: u64, seed: u64) {
-    let roll = |k: u64| hash01(seed ^ 0x5649_5254, tick, z.id[i] as u64, k);
+fn step_one_virtual(z: &mut Zombies, i: usize, map: &TileMap, walk: &WalkGrid, nav: Option<&mut Nav>, t: &ZombieTuning, dt: f32, clock: u64, tick: u64, seed: u64) {
+    let roll = |k: u64| hash01(seed ^ 0x5649_5254, clock, z.id[i] as u64, k);
     let p = z.pos[i];
     // Where along a path it walks: its own spot in each tile, so a horde doesn't pile onto one point.
     let jitter = |k: u64| (hash01(seed ^ 0x4A49_5454, 0, z.id[i] as u64, k) - 0.5) * 0.6;

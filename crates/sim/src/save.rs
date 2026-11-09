@@ -52,7 +52,8 @@
 //! flow cache...), then one `ZOMB` per 64 m region holding zombies (the tiers' region grid), so a
 //! later streaming save (#3, #22) can rewrite only the regions that changed, then `RUNS` (each
 //! player's run stats and cause of death, `crate::run`; optional, so format 4 saves from before
-//! #13 still load, with empty records), then `LOOK` (what bodies that rise wore, #63; optional too).
+//! #13 still load, with empty records), then `LOOK` (what bodies that rise wore, #63; optional too),
+//! then `FARC` (how far the far clock is ahead of the tick, #57; optional, only written when it is).
 //! Payloads are
 //! [postcard](https://docs.rs/postcard), and zombies are stored column by column. A file with
 //! another format version fails with [`LoadError::Version`] (format 3 added items, inventories and
@@ -107,6 +108,9 @@ const ZOMB: [u8; 4] = *b"ZOMB";
 const RUNS: [u8; 4] = *b"RUNS";
 /// What bodies that rise wore (#63; optional, like `RUNS`).
 const LOOK: [u8; 4] = *b"LOOK";
+/// How far the far clock has run ahead of the tick (#57; optional, like `RUNS`: a save without it
+/// has it at 0, and it is only written when it isn't).
+const FARC: [u8; 4] = *b"FARC";
 const END: [u8; 4] = *b"END\0";
 /// Bytes before the first section: magic and version.
 const HEADER: usize = 12;
@@ -536,6 +540,7 @@ impl World {
             players,
             tick,
             clock_offset_hours,
+            far_ticks,
             items,
             next_item_id,
             opened,
@@ -673,6 +678,9 @@ impl World {
         let runs: Vec<(u32, crate::run::RunStats)> = players.iter().map(|p| (p.id, p.run.clone())).collect();
         w.section(RUNS, &encode(&runs));
         w.section(LOOK, &encode(rise_looks));
+        if *far_ticks != 0 {
+            w.section(FARC, &encode(far_ticks));
+        }
         w.section(END, &[]);
         w.0
     }
@@ -838,6 +846,7 @@ impl World {
         let mut z = Zombies::default();
         let mut runs: Option<Vec<(u32, crate::run::RunStats)>> = None;
         let mut looks: Option<crate::health::RiseLooks> = None;
+        let mut far: Option<u64> = None;
         loop {
             let (tag, payload) = r.next()?;
             if tag == END {
@@ -851,7 +860,11 @@ impl World {
                 looks = Some(decode(LOOK, payload)?);
                 continue;
             }
-            if tag != ZOMB || runs.is_some() || looks.is_some() {
+            if tag == FARC && far.is_none() {
+                far = Some(decode(FARC, payload)?);
+                continue;
+            }
+            if tag != ZOMB || runs.is_some() || looks.is_some() || far.is_some() {
                 return Err(corrupt(format!("unexpected {} section", tag_name(tag))));
             }
             let block: ZombieBlock = decode(ZOMB, payload)?;
@@ -873,6 +886,8 @@ impl World {
         order.sort_by_key(|&i| z.id[i]);
         w.zombies = reorder(z, &order);
         w.rise_looks = looks.unwrap_or_default();
+        w.far_ticks = far.unwrap_or(0);
+        save_check::check_far_clock(&w)?;
         save_check::check_looks(&w)?;
         if new_map {
             save_check::fit_to_new_map(&mut w, &mut notes);

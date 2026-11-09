@@ -213,6 +213,7 @@ impl PrivateView {
         let input = StatusInput {
             needs: self.needs,
             pain: h.pain,
+            painkillers: h.aid.painkillers_h.is_some(),
             bleeding: h.wounds.iter().filter(|w| w.bleed_per_h > 0.0).count(),
             food_poisoned: h.food_poisoning,
             festering: h.wounds.iter().any(|w| w.festering),

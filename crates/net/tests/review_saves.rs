@@ -8,14 +8,15 @@
 //! `make` with things to make, one craft under way and one queued, `skills` with XP in several skills,
 //! `tired` tired but awake (the narrower view), `asleep` asleep on the bed at night, `bags` a hiking pack
 //! full of different things (for picking several and ranges: `--pick-range 1,5`), `panel` that pack with
-//! a container of the house open and things on the floor (the inventory panel's three columns), `menu` with
-//! things on you and on the floor for the right-click menu.
+//! a container of the house open and things on the floor (the inventory panel's three columns), `agony`
+//! in too much pain to sleep and `agony_asleep` asleep all the same with a painkiller dose working (#57),
+//! `menu` with things on you and on the floor for the right-click menu.
 
 use std::path::PathBuf;
 
 use zombye_net::{content, save_file};
 use zombye_sim::skills::Skill;
-use zombye_sim::{Part, Slot, World, WoundKind};
+use zombye_sim::{Dressing, Part, Slot, Treatment, World, WoundKind};
 
 fn world() -> (World, u32) {
     let mut config = content::load_config(&content::default_data_dir(), 1).unwrap();
@@ -120,6 +121,31 @@ fn review_saves() {
     w.player_sleep(id).unwrap();
     step(&mut w, 40);
     save(&w, "asleep");
+
+    // Agony and painkillers (#57): badly bitten (dressed, so it isn't bleeding out) and tired at
+    // night, too much pain to sleep; then a dose taken and asleep on the bed all the same.
+    let (mut w, id) = world();
+    w.skip_time(14.0);
+    w.set_needs(id, Some(0.2), Some(0.2), Some(0.85));
+    for part in [Part::Head, Part::Head, Part::Torso, Part::LeftLeg, Part::RightLeg] {
+        w.inflict_wound(id, part, WoundKind::Bite, Some(false));
+    }
+    for wound in &mut w.players[0].health.wounds {
+        wound.bleeding = false;
+        wound.dressing = Dressing::Clean;
+    }
+    w.players[0].hp = 60.0;
+    w.give_item(id, "painkillers", 1);
+    step(&mut w, 2);
+    assert!(w.player_sleep(id).unwrap_err().contains("painkillers"));
+    save(&w, "agony");
+    w.player_treat(id, None, Treatment::Painkiller, None).unwrap();
+    step(&mut w, 60);
+    assert!(w.status_tags(id).iter().any(|t| t.label == "Agony"), "still agony with a dose working");
+    w.player_sleep(id).unwrap();
+    step(&mut w, 40);
+    assert!(w.player(id).unwrap().needs.asleep());
+    save(&w, "agony_asleep");
 
     // The right-click menu (#95): food, a dressing and a bag on you, a knife and beans on the
     // floor, a container searched open if one is in reach.

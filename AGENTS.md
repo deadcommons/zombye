@@ -570,13 +570,20 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   `HealthTuning::poison_stale` 10%), then Mouldy (x0.4, `poison_rotten` 70%), through `World::poison_player` (combat RNG).
   Food found in furniture (`World::age_found_food` on first search) was made 0-60% of its `spoils_hours` before the world
   began (seeded per container and stack). No per-tick aging; fridges don't slow it yet (no power).
-- **Sleep** (`World::player_sleep`, `Intent::Sleep`, B, MCP `sleep`): needs tiredness 0.3+ and no agony; on a bed (else a
+- **Sleep** (`World::player_sleep`, `Intent::Sleep`, B, MCP `sleep`): needs tiredness 0.3+ and no agony, unless a painkiller dose is
+  working (#57, `World::pain_stops_sleep`: you sleep through it, and wake in pain when the last dose wears off if it's
+  still agony; the Pain tag's tip says which); on a bed (else a
   sofa) within 1 m of its footprint in your room, else the floor (wakes you sore: +0.1 pain for 2 h). Asleep: `MoveMods`
   speed 0, HP back at `regen_asleep_per_h` (5/h). Wakes (`World::woke`, per tick, `WakeReason`) when tiredness < 0.05, a
   zombie's strike lands (god too), a sound reaches you within 20 m (`heard`, not your own), an active zombie sees you, in
   agony, after an hour starving or parched, or on getting up (B, WASD, or any action or item intent). **Time:** while every
   living player sleeps (`World::time_scale`), game time runs `sleep_time_scale` (30) x as fast: each tick adds 29 extra
-  ticks' hours to the clock offset and steps health and needs by 30 ticks' worth; zombies keep real time. Single-player
+  ticks' hours to the clock offset and steps health and needs by 30 ticks' worth. **Zombies while you sleep (#57):** active and
+  near zombies (within 150 m: the ones that can reach you) keep real time, so a strike, a noise or being seen still wakes
+  you with time to act; the far horde follows game time: the far clock (`World::far_tick`, `tick` plus the saved
+  `far_ticks`) takes 30 steps a tick, and the virtual tier's turns, wandering and migration, the attractors' spread and
+  fading, and respawn's timers all go by it (see Simulation tiers). So after a night's sleep a horde drawn by an alarm
+  across town has arrived, and far regions have refilled. Single-player
   that's whenever you sleep; on a server, only once everyone is asleep (a lone sleeper rests in real time). Snapshots carry
   `time_scale` and `game_minute`; `PlayerView::asleep` (the survivor lies on its back, drawn on the bed or sofa it
   sleeps on: `needs::sleep_furniture`, the server's rule too; the HUD's stance says "asleep").
@@ -1027,7 +1034,15 @@ wanderers off toward them (`tiers::step_virtual`, see Population below). Numbers
   walk to from where it is (`tiers::settle`: its own tile if free, else a breadth-first search over walkable steps),
   so it never lands in a wall, tree, furniture or a sealed building it wasn't in. Demoted, a lunge or strike
   becomes a chase from memory. Either way it forgets what it saw and keeps its state, target and timers. Corpses
-  age on every tier. Crowd separation is capped per tick (`MAX_CROWD_PUSH`), so a pile of promoted zombies spreads
+  age on every tier.
+- **The far clock (#57):** the virtual tier, the attractors and respawn count in `World::far_tick()`, not `tick`. It is
+  `tick` until every living player is asleep; then it takes `sleep_time_scale` (30, rounded) steps a tick, each a full
+  virtual step (`tiers::step_virtual(.., clock, tick, ..)`: the regions whose turn it is, rolls hashed on the clock),
+  attractor expiry and respawn check, so the far horde lives through the night you sleep through. Active and near
+  zombies keep real time. `TierTuning::far_follows_sleep` (default on) turns it off. `World::far_ticks` (how far ahead it
+  is) is saved in the optional `FARC` section (only when not 0) and in `state_hash` only when not 0, so worlds nobody
+  slept in save and hash as before. Cost asleep on a 1 km map with 21,500 zombies and a lasting noise in town: about
+  3.8 ms a tick, 8 worst (6,300 virtual zombies moved a tick; `sleeping_through_the_far_clock_stays_in_the_tick_budget`). Crowd separation is capped per tick (`MAX_CROWD_PUSH`), so a pile of promoted zombies spreads
   out instead of being flung through a wall.
 - **Snapshots** list only active zombies within `interest_radius` (80 m) of a player (every active zombie when
   there are no players); the client despawns the rest. Full interest management is #22.
@@ -1154,7 +1169,8 @@ stack's `born`/`used`, 7 crafting: craft jobs and the recipes in the content fin
   players, content fingerprint), `CONF` (settings, RON), `MAPD` (edits or the full map), `WRLD` (everything else but
   zombies), one `ZOMB` per 64 m region (the tiers' region grid; zombies column by column, ids as gaps), `RUNS` (each
   player's run stats and cause of death, #13; optional, so it didn't bump the format: a format 4 save without it loads
-  with empty records), `LOOK` (what bodies that rise wore, #63: `health::RiseLooks`, item ids by player and zombie id;
+  with empty records), `FARC` (the far clock's lead in ticks, #57; optional, written only when not 0, checked by
+  `save_check::check_far_clock`), `LOOK` (what bodies that rise wore, #63: `health::RiseLooks`, item ids by player and zombie id;
   optional too, checked by `save_check::check_looks`), `END`.
   Per-region zombie sections are there so a later streaming save (#3, #22) can rewrite only what changed. Errors are
   `LoadError` values, never panics: `NotASave`, `Version` (older or newer), `Truncated`, `Corrupt` (bad checksum,

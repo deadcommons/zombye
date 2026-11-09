@@ -536,6 +536,23 @@ pub(crate) fn check_looks(w: &World) -> Result<(), LoadError> {
     Ok(())
 }
 
+/// The far clock (#57) runs ahead by at most the top time scale less one a tick, and nothing the
+/// population remembers is later than it.
+pub(crate) fn check_far_clock(w: &World) -> Result<(), LoadError> {
+    let most = w.tick.saturating_mul(crate::needs::MAX_TIME_SCALE as u64);
+    if w.far_ticks > most {
+        return Err(invalid(format!("far clock {} ticks ahead at tick {} (at most {most})", w.far_ticks, w.tick)));
+    }
+    let now = w.far_tick();
+    if let Some(a) = w.population.attractors.iter().find(|a| a.born > now) {
+        return Err(invalid(format!("attractor {}: made at far tick {}, now {now}", a.id, a.born)));
+    }
+    if let Some(r) = w.population.last_seen.iter().position(|&s| s != crate::population::NEVER && s > now) {
+        return Err(invalid(format!("region {r}: last seen at far tick {}, now {now}", w.population.last_seen[r])));
+    }
+    Ok(())
+}
+
 pub(crate) fn invalid(why: impl Into<String>) -> LoadError {
     LoadError::Invalid(why.into())
 }
@@ -1322,6 +1339,8 @@ mod tests {
             ("attractor id past the last", "attractor id", |w| w.population.attractors[0].id = 99),
             ("population target NaN", "target", |w| w.population.target[0] = f32::NAN),
             ("clock NaN", "clock offset", |w| w.clock_offset_hours = f32::NAN),
+            ("far clock too far ahead", "far clock", |w| w.far_ticks = w.tick * 1000 + 1),
+            ("attractor from the future", "made at far tick", |w| w.population.attractors[0].born = w.tick + 50),
             ("an edit that turns a wall into a door", "turns a Wall into a DoorOpen", |w| {
                 let wall = first_edge(w, |e| e == Edge::Wall);
                 w.map.set_owned_edge(wall.tile, wall.edge, Edge::DoorOpen);

@@ -244,6 +244,9 @@ pub struct World {
     pub edge_changes: Vec<EdgeChange>,
     /// Hours added by time skips.
     pub(crate) clock_offset_hours: f32,
+    /// Ticks the far clock ([`World::far_tick`]) has run ahead of `tick`: while everyone sleeps the
+    /// virtual tier, attractors and respawn follow game time (#57). Saved (the `FARC` section).
+    pub(crate) far_ticks: u64,
     /// Zombie strikes this tick (cleared at the start of each tick).
     pub attack_events: Vec<ZombieAttack>,
     /// Zombie thumps on doors and windows this tick, in the order they were applied.
@@ -418,6 +421,7 @@ impl World {
             stats: TickStats::default(),
             edge_changes: Vec::new(),
             clock_offset_hours: 0.0,
+            far_ticks: 0,
             attack_events: Vec::new(),
             thump_events: Vec::new(),
             break_events: Vec::new(),
@@ -618,7 +622,7 @@ impl World {
         let m = &self.config.population.migration;
         if lasting && m.enabled && pos.is_finite() && radius > 0.0 {
             let indoors = self.map.room_at(pos) != 0;
-            self.population.attract(pos, radius, indoors, m.lasting_secs, m, self.tick);
+            self.population.attract(pos, radius, indoors, m.lasting_secs, m, self.tick + self.far_ticks);
         }
     }
 
@@ -899,7 +903,7 @@ impl World {
         // Which regions players are near (respawn keeps away from those for a while).
         if !self.players.is_empty() {
             let seen = self.config.population.respawn.seen_distance;
-            self.population.update_seen(&self.regions, self.players.iter().map(|p| p.state.pos), seen, self.tick);
+            self.population.update_seen(&self.regions, self.players.iter().map(|p| p.state.pos), seen, self.tick + self.far_ticks);
         }
 
         // Tiers: who gets how much of the simulation this tick, by distance to the players.
@@ -987,12 +991,20 @@ impl World {
         if self.goal.is_none() {
             tiers::virtual_hearing(&mut self.zombies, &self.regions, &self.map, &self.heard, t, tt);
             // Loud sounds leave attractors that draw the far horde in over the next minutes.
-            self.population.hear(&self.heard, &self.map, migration, self.tick);
+            self.population.hear(&self.heard, &self.map, migration, self.tick + self.far_ticks);
         }
-        self.population.expire(self.tick);
+        // The far clock: one step a tick, or `sleep_time_scale` of them while everyone sleeps, so
+        // the far horde's wandering and migration, attractors and respawn keep up with the night
+        // going by (#57). Active and near zombies, which can reach a sleeper, keep real time.
+        let far_steps = self.far_steps();
+        let far_from = self.tick + self.far_ticks;
         let seed = self.config.generation.seed;
-        let nav = long_paths.then_some(&mut self.nav);
-        let virtual_updated = tiers::step_virtual(&mut self.zombies, &self.regions, &self.map, &self.walk, nav, t, tt, &self.population, migration, self.tick, seed);
+        let mut virtual_updated = 0;
+        for far in far_from..far_from + far_steps {
+            self.population.expire(far);
+            let nav = long_paths.then_some(&mut self.nav);
+            virtual_updated += tiers::step_virtual(&mut self.zombies, &self.regions, &self.map, &self.walk, nav, t, tt, &self.population, migration, far, self.tick, seed);
+        }
         let virtual_ms = virtual_start.elapsed().as_secs_f32() * 1000.0;
         self.apply_thumps();
         self.apply_zombie_attacks();
@@ -1007,7 +1019,8 @@ impl World {
         self.refresh_skill_mods();
         // Last: indices into the zombie columns (the spatial hash) aren't needed after this.
         self.remove_old_corpses();
-        let respawned = self.respawn();
+        let respawned = (far_from..far_from + far_steps).map(|far| self.respawn(far)).sum();
+        self.far_ticks += far_steps - 1;
 
         self.tick += 1;
         let tier_counts = self.tier_counts();
@@ -1060,14 +1073,15 @@ impl World {
     /// `unseen_secs` that has fewer than `top_up_below` of its target gets topped up, on open
     /// ground picked by density, never near where the player woke up or in that house. New
     /// zombies start on the virtual tier. Returns how many were added.
-    fn respawn(&mut self) -> u32 {
-        let r = self.config.population.respawn.clone();
+    fn respawn(&mut self, tick: u64) -> u32 {
+        let r = &self.config.population.respawn;
         let every = ((r.interval_secs / TICK_DT).round() as u64).max(1);
-        if !r.enabled || self.players.is_empty() || self.tick == 0 || !self.tick.is_multiple_of(every) {
+        if !r.enabled || self.players.is_empty() || tick == 0 || !tick.is_multiple_of(every) {
             return 0;
         }
+        let r = r.clone();
         self.population.count_into(&self.zombies, &self.regions);
-        let (town, max, seed, tick) = (self.town(), self.config.population.max_density(), self.config.seed(), self.tick);
+        let (town, max, seed) = (self.town(), self.config.population.max_density(), self.config.seed());
         let (unseen, far2) = ((r.unseen_secs / TICK_DT) as u64, r.min_distance * r.min_distance);
         let mut budget = r.max_per_check;
         let mut added = 0;
@@ -1105,6 +1119,18 @@ impl World {
         }
         self.population.respawned += added;
         added
+    }
+
+    /// The far clock, in ticks: what the virtual tier, the attractors and respawn go by. `tick`,
+    /// plus the ticks it ran ahead while every living player slept (game time then runs
+    /// `sleep_time_scale` times as fast, and the far horde with it: `TierTuning::far_follows_sleep`).
+    pub fn far_tick(&self) -> u64 {
+        self.tick + self.far_ticks
+    }
+
+    /// Steps of the far clock this tick: the whole time scale while everyone sleeps, else 1.
+    fn far_steps(&self) -> u64 {
+        if self.config.tiers.far_follows_sleep { (self.time_scale().round() as u64).max(1) } else { 1 }
     }
 
     /// The population state: per-region targets, zones and sightings, and the live attractors.
@@ -1216,6 +1242,11 @@ impl World {
             mix(hp.to_bits());
         }
         self.population.hash_into(&mut mix);
+        // Only once the far clock has run ahead, so worlds nobody slept in hash as before.
+        if self.far_ticks != 0 {
+            mix(self.far_ticks as u32 ^ 0xFA2C_0000);
+            mix((self.far_ticks >> 32) as u32);
+        }
         h
     }
 }
@@ -2799,6 +2830,96 @@ mod tests {
         off.migration.enabled = false;
         let (arrived, _) = migration_run(off, noise, from, 120.0, false, false, 20, |_| {});
         assert_eq!(*arrived.last().unwrap(), 0, "without migration: {arrived:?}");
+    }
+
+    /// While everyone sleeps and game time runs 30x (#57), the far clock runs with it: in 40 s of
+    /// real time (8 game hours) a horde 410 m from a loud noise has walked to it and the attractor
+    /// has faded, where awake (or with `far_follows_sleep` off) nobody has got anywhere. The same
+    /// run twice gives the same world, and a save made mid-sleep carries on exactly.
+    #[test]
+    fn the_far_horde_follows_game_time_while_everyone_sleeps() {
+        let (noise, from) = (Vec2::new(320.5, 600.5), Vec2::new(600.5, 300.5));
+        let run = |asleep: bool, follow: bool, save_at: Option<u32>| {
+            let mut w = big_arena(40, PopulationDef::default());
+            w.config.tiers.far_follows_sleep = follow;
+            // The emptied map has no buildings (a save checks it).
+            w.spawn_building = 0;
+            let id = w.add_player(Vec2::new(20.5, 20.5));
+            let n = w.spawn_zombies(300, from, 30.0);
+            w.step();
+            w.step();
+            w.make_noise(noise, 120.0, false);
+            if asleep {
+                w.set_needs(id, None, None, Some(0.95));
+                w.player_sleep(id).unwrap();
+            }
+            for k in 0..40 * 20 {
+                if save_at == Some(k) {
+                    let hash = w.state_hash();
+                    w = World::load(&w.save(), &w.config).unwrap();
+                    assert_eq!(w.state_hash(), hash, "the loaded world is the saved one");
+                }
+                w.step();
+            }
+            assert_eq!(w.players[0].needs.asleep(), asleep);
+            assert_eq!(w.tier_counts(), [0, 0, n], "the test should stay on the virtual tier");
+            w
+        };
+        let near = |w: &World| w.zombies.pos.iter().filter(|p| p.distance(noise) < 60.0).count();
+        let slept = run(true, true, None);
+        assert_eq!(slept.far_tick(), slept.tick + 29 * 40 * 20, "30 far steps a tick asleep");
+        assert!(near(&slept) >= 300 * 6 / 10, "only {} of 300 came while we slept", near(&slept));
+        assert!(slept.population().attractors.is_empty(), "20 far minutes on, the attractor has faded");
+        for (name, w) in [("awake", run(false, true, None)), ("asleep, real time", run(true, false, None))] {
+            assert_eq!(w.far_tick(), w.tick, "{name}");
+            assert!(w.zombies.pos.iter().all(|p| p.distance(noise) > 200.0), "{name}: 40 s is too soon to get anywhere");
+            assert_eq!(w.population().attractors.len(), 1, "{name}");
+        }
+        assert_eq!(run(true, true, None).state_hash(), slept.state_hash(), "deterministic");
+        assert_eq!(run(true, true, Some(333)).state_hash(), slept.state_hash(), "saved and loaded mid-sleep");
+    }
+
+    /// What the far clock costs at 30x (#57): asleep in the forest of a 1 km map with 21,500
+    /// zombies and a lasting noise in town drawing the far horde, a tick (30 virtual steps: about
+    /// a third of the far horde moved, many along plans) stays well inside the 50 ms budget.
+    #[test]
+    fn sleeping_through_the_far_clock_stays_in_the_tick_budget() {
+        let mut w = World::new(WorldConfig::new(1, 21_500, templates()).with_map_chunks(64));
+        let main_y = (w.town_min.y + w.town_max.y) as f32 / 2.0;
+        let camp = open_tile_near(&w, Vec2::new(w.town_min.x as f32 * 0.5, main_y));
+        let id = w.add_player(camp);
+        w.set_dev(id, Some(true), Some(true));
+        w.step();
+        let town = (w.town_min + w.town_max).as_vec2() / 2.0;
+        w.make_noise(town, 120.0, true);
+        w.set_needs(id, None, None, Some(0.95));
+        w.player_sleep(id).unwrap();
+        let ticks = if cfg!(debug_assertions) { 20 } else { 400 };
+        let (mut total, mut worst, mut moved, mut virtual_ms) = (0.0f32, 0.0f32, 0u32, 0.0f32);
+        for _ in 0..ticks {
+            let s = Instant::now();
+            w.step();
+            let ms = s.elapsed().as_secs_f32() * 1000.0;
+            (total, worst) = (total + ms, worst.max(ms));
+            moved += w.stats.virtual_updated;
+            virtual_ms += w.stats.virtual_ms;
+        }
+        assert!(w.players[0].needs.asleep(), "{:?}", w.woke);
+        assert_eq!(w.far_tick(), w.tick + 29 * ticks as u64);
+        let n = ticks as f32;
+        eprintln!(
+            "asleep at 30x, 1 km, {} zombies ({:?} by tier): {:.2} ms/tick mean, {:.2} worst; virtual {:.2} ms/tick, {:.0} moved a tick",
+            w.zombies.len(),
+            w.tier_counts(),
+            total / n,
+            worst,
+            virtual_ms / n,
+            moved as f32 / n
+        );
+        assert!(moved as f32 / n > 3000.0, "the far horde moves 30x as often: {} a tick", moved as f32 / n);
+        if !cfg!(debug_assertions) {
+            assert!(total / n < 25.0, "{:.2} ms/tick asleep", total / n);
+        }
     }
 
     /// A really loud noise inside a shut room still pulls the far horde in (muffled: from less far

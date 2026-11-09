@@ -31,8 +31,9 @@
 //! when hit, when a sound reaches you (within `wake_noise_m`), when a zombie sees you, in agony, or
 //! after an hour asleep starving or parched; or when you get up (`World::wake_player`, or any action
 //! through `net::apply_intent`). While every living player is asleep, game time runs
-//! `sleep_time_scale` (30) times as fast: the clock, needs, wounds and illness (not the zombies, who
-//! keep to real time). Single-player that's whenever you sleep; with others, only once everyone is.
+//! `sleep_time_scale` (30) times as fast: the clock, needs, wounds and illness, and the far
+//! horde's clock (`World::far_tick`: the virtual tier, attractors, respawn; #57). Active and near
+//! zombies keep to real time. Agony stops sleep only while no painkiller dose is working. Single-player that's whenever you sleep; with others, only once everyone is.
 //!
 //! **Status tags** ([`status_tags`]): the eight groups of the design (hunger, thirst, tiredness,
 //! endurance, load, pain, bleeding, sick) plus "Asleep", each with a level and a tooltip, from the
@@ -483,6 +484,8 @@ pub struct StatusInput {
     pub needs: NeedsView,
     /// The wounds' pain (`HealthView::pain`); soreness is added from `needs`.
     pub pain: f32,
+    /// A painkiller dose is working (`AidView::painkillers_h`): agony doesn't stop sleep.
+    pub painkillers: bool,
     pub bleeding: usize,
     pub food_poisoned: bool,
     pub festering: bool,
@@ -539,7 +542,10 @@ pub fn status_tags(t: &NeedsTuning, s: &StatusInput) -> Vec<StatusTag> {
         0 => {}
         1 => tag(TagKind::Pain, "Sore", 1, format!("Sore: swings {} weaker.", pct(t.pain_swing_power.0))),
         2 => tag(TagKind::Pain, "Hurting", 2, format!("Hurting: swings {} weaker.", pct(t.pain_swing_power.1))),
-        _ => tag(TagKind::Pain, "Agony", 3, format!("Agony: swings {} weaker; you can't sleep.", pct(t.pain_swing_power.2))),
+        _ if s.painkillers => {
+            tag(TagKind::Pain, "Agony", 3, format!("Agony: swings {} weaker; the painkillers let you sleep until they wear off.", pct(t.pain_swing_power.2)))
+        }
+        _ => tag(TagKind::Pain, "Agony", 3, format!("Agony: swings {} weaker; you can't sleep without painkillers.", pct(t.pain_swing_power.2))),
     }
     match s.bleeding {
         0 => {}
@@ -694,6 +700,12 @@ impl World {
         m
     }
 
+    /// Agony keeps player `pi` awake: unless a painkiller dose is working, which lets you sleep
+    /// through it until it wears off (#57), however much pain is left.
+    pub fn pain_stops_sleep(&self, pi: usize) -> bool {
+        self.config.needs.pain_level(self.pain_of(pi)) >= 3 && self.players[pi].health.aid.painkillers.is_empty()
+    }
+
     /// Player `pi`'s pain: its wounds' and soreness.
     pub fn pain_of(&self, pi: usize) -> f32 {
         let p = &self.players[pi];
@@ -742,8 +754,8 @@ impl World {
             return Ok("already asleep".into());
         } else if p.needs.tiredness < t.min_tiredness_to_sleep {
             Some(format!("not tired enough to sleep (tiredness {:.0}%, sleep from {:.0}%)", p.needs.tiredness * 100.0, t.min_tiredness_to_sleep * 100.0))
-        } else if t.pain_level(self.pain_of(pi)) >= 3 {
-            Some("in too much pain to sleep".into())
+        } else if self.pain_stops_sleep(pi) {
+            Some("in too much pain to sleep (painkillers would let you)".into())
         } else if p.action.is_some() {
             Some("busy fighting".into())
         } else {
@@ -821,6 +833,7 @@ impl World {
         let input = StatusInput {
             needs: p.needs.view(&self.config.needs),
             pain: p.health.pain(h),
+            painkillers: !p.health.aid.painkillers.is_empty(),
             bleeding: p.health.bleeding(h),
             food_poisoned: p.health.food_poisoned(),
             festering: p.health.wounds.iter().any(|w| w.festering),
@@ -867,6 +880,8 @@ impl World {
                 continue;
             }
             let pain = self.pain_of(pi);
+            // A painkiller dose still working: agony doesn't wake you (#57).
+            let dosed = !self.players[pi].health.aid.painkillers.is_empty();
             let thirst_mult = self.players[pi].health.thirst_mult(&self.config.health);
             let p = &mut self.players[pi];
             let (before, view_before) = (signature(&p.needs, &t), view_key(&p.needs));
@@ -898,7 +913,7 @@ impl World {
                 Some(_) if tiredness < t.rested_below => Some(WakeReason::Rested),
                 Some(s) if s.hours >= t.hunger_wakes_after_h && starving => Some(WakeReason::Hunger),
                 Some(s) if s.hours >= t.hunger_wakes_after_h && parched => Some(WakeReason::Thirst),
-                Some(_) if t.pain_level(pain) >= 3 => Some(WakeReason::Pain),
+                Some(_) if t.pain_level(pain) >= 3 && !dosed => Some(WakeReason::Pain),
                 Some(_) if live => self.disturbed(pi),
                 _ => None,
             };
