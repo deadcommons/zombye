@@ -95,10 +95,11 @@ cargo test --release --workspace
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --skills --health --hover-tag N --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V`
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --skills --health --hover-tag N --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT`
 (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
-a little before `--exit-after` or it's lost).
+a little before `--exit-after` or it's lost). `--size WxH` makes the window exactly that many pixels, at scale factor 1, so a
+`--screenshot` is WxH on a high-DPI screen too; without it the window is 1600x900 at the screen's scale.
 For verifying combat without a keyboard: `--fight-demo` starts you on open ground near the house you'd wake up in
 (unless `--at` says otherwise) with a baseball bat in hand and six zombies 7 m east, called over by a noise;
 `--autoplay` makes the local player fight by itself (`autoplay.rs`): it faces the nearest standing zombie and
@@ -158,7 +159,7 @@ In game: WASD move (he faces the way he walks), Shift run, C sneak (toggle), rig
 cursor and strafes or backs off at 2.2 m/s, no running, in a guard stance), and only while aiming left mouse attack
 (swing your weapon, or punch) and Space shove (or stomp, when a downed zombie lies right in front of you), E pick up the item you
 face (with nothing on the floor within reach: search the container you face), Tab or I the inventory panel, K the skills panel, F open/close the door or window you face, G smash the window you face, dead: R a new run and Q or Esc quit,
-B sleep (B again or WASD to get up), T skip an hour, Z spawn zombies, wheel zoom, F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), F3 the light preview (a time-of-day slider, see Light and mood), M mute. Walk into an open or broken window to climb
+B sleep (B again or WASD to get up), T skip an hour, Z spawn zombies, wheel zoom (over the inventory, health or skills panel it scrolls that panel instead), F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), F3 the light preview (a time-of-day slider, see Light and mood), M mute, Ctrl (or Cmd) + `=` / `-` the UI scale (see UI scale), Ctrl+0 back to 100%. Walk into an open or broken window to climb
 through it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
 not Bevy's handler; a second Ctrl-C quits unsaved) autosaves; `--render-to` never does.
 
@@ -173,6 +174,22 @@ death screen; a save from before #13 has none, so they start empty and the cause
 and blood splats and particles are cleared (`fx::ClearFx`): they belong to the timeline left behind. A quicksave of another map (seed or size) is refused with a message: start with `--load` for that.
 `--quicksave-after SECS` / `--quickload-after SECS` press F5 / F9 by themselves, for verification. A yellow line
 under the HUD says what was saved or loaded (or why not), and stdout gets the same line.
+
+**UI scale (#109, `ui_scale.rs`):** one setting, 75% to 150%, that every panel follows (the HUD, status tags, inventory,
+skills, health, the current action, the death screen, the light preview and the yellow line), through Bevy's `UiScale`.
+Ctrl (or Cmd) + `=` / `-` (numpad `+` / `-` too) steps it by 5%, Ctrl+0 puts it back to 100%, and the yellow line says
+the new value. The panels are laid out for a screen of at least 1280 x 720 UI pixels, so above 100% the scale used stops
+where the window has no more room (`ui_scale::fitted_pct`): 150% is all of it on 1920 x 1080, 125% on 1600 x 900, 100%
+on 1280 x 720, and the yellow line says so ("UI scale 150% (125% fits this window)"); the setting itself is kept as
+chosen and resizing the window follows it. The panels hung from the top (inventory, health, skills: `hud::TopPanel`) sit
+under the stats text and stop above the vitals and the current action, however the text wraps (`hud::fit_top_panels`),
+and scroll with the mouse wheel when their content is taller than that (`hud::scroll_panels`; where two overlap, the one
+drawn on top; the wheel doesn't zoom the camera then). The yellow line sits under the stats text, drawn over the panels
+on a dark backing. **Client settings file:** `settings.ron` in the saves folder (`--saves DIR`, default `saves/`), RON
+(`ui_scale::ClientSettings`, every field defaulted, so later settings such as panel positions join it), written when the
+scale changes in game; a missing or damaged file means 100% (a damaged one with a warning on stderr). `--ui-scale PCT`
+starts at that scale for the session without saving it (for screenshots and tests). An offscreen render (`--render-to`)
+never reads or writes the file: its pictures depend on the flags alone (`--hud --ui-scale PCT`).
 
 HUD: top left, the stats line and the keys. Bottom left, the weapon you hold and your stance, a health bar
 (pulses below 30), an endurance bar (orange below `tired_below`, when swings weaken; grey-blue and a WINDED tag

@@ -53,6 +53,7 @@ fn font(size: f32) -> TextFont {
 fn spawn(mut commands: Commands) {
     commands.spawn((
         PanelRoot,
+        crate::hud::TopPanel,
         Visibility::Hidden,
         Node {
             position_type: PositionType::Absolute,
@@ -63,7 +64,7 @@ fn spawn(mut commands: Commands) {
             padding: UiRect::all(px(10)),
             max_width: px(2.0 * CARD_W + 30.0),
             max_height: Val::Percent(85.0),
-            overflow: Overflow::clip_y(),
+            overflow: Overflow::scroll_y(),
             ..default()
         },
         BackgroundColor(Color::srgba(0.02, 0.02, 0.03, 0.9)),

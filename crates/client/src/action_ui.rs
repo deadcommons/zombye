@@ -49,6 +49,7 @@ fn spawn(mut commands: Commands) {
     commands
         .spawn((
             Panel,
+            crate::hud::BottomHud,
             Node {
                 position_type: PositionType::Absolute,
                 bottom: px(70),

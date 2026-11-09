@@ -45,7 +45,7 @@ pub struct HudPlugin;
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_hud).add_systems(Update, (update_hud, update_vitals, automation).chain());
+        app.add_systems(Startup, spawn_hud).add_systems(Update, (update_hud, update_vitals, automation, fit_top_panels, scroll_panels).chain());
     }
 }
 
@@ -79,16 +79,37 @@ fn bar(c: &mut ChildSpawnerCommands, label: &str, color: Color, marker: impl Com
     });
 }
 
-fn spawn_hud(mut commands: Commands) {
-    commands.spawn((
-        HudText,
-        Text::new(""),
-        font(14.0),
-        TextColor(Color::srgb(0.9, 0.9, 0.85)),
-        Node { position_type: PositionType::Absolute, top: px(10), left: px(12), ..default() },
-    ));
+/// The top-left column: the stats and keys text, then the yellow message line (`saving.rs`) under
+/// it, wherever the text ends (it wraps on a narrow window, or with a bigger UI scale).
+#[derive(Component)]
+pub struct TopLeft;
+
+/// A panel hung from the top of the screen (inventory, health, skills): [`fit_top_panels`] keeps it
+/// under the stats text and above every [`BottomHud`] piece, at any UI scale.
+#[derive(Component)]
+pub struct TopPanel;
+
+/// A piece of the HUD standing on the bottom of the screen (the vitals, the current action): the
+/// top panels stop above the highest one.
+#[derive(Component)]
+pub struct BottomHud;
+
+/// Room left between the top panels and what's above and below them (UI pixels).
+const PANEL_GAP: f32 = 8.0;
+
+pub fn spawn_hud(mut commands: Commands) {
     commands
         .spawn((
+            TopLeft,
+            Node { position_type: PositionType::Absolute, top: px(10), left: px(12), right: px(12), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() },
+            Pickable::IGNORE,
+        ))
+        .with_children(|c| {
+            c.spawn((HudText, Text::new(""), font(14.0), TextColor(Color::srgb(0.9, 0.9, 0.85))));
+        });
+    commands
+        .spawn((
+            BottomHud,
             Node {
                 position_type: PositionType::Absolute,
                 bottom: px(16),
@@ -116,6 +137,101 @@ fn spawn_hud(mut commands: Commands) {
             c.spawn((crate::health_ui::HealthTagsText, Text::new(""), font(13.0), TextColor(TEXT)));
             c.spawn((TallyText, Text::new(""), font(13.0), TextColor(DIM)));
         });
+}
+
+/// UI pixels the panel moves for one line of the mouse wheel.
+const WHEEL_LINE_PX: f32 = 40.0;
+
+/// The shown top panels, for finding the one under the pointer.
+pub type PanelHits<'w, 's> = Query<'w, 's, (Entity, &'static ComputedNode, &'static bevy::ui::ComputedStackIndex, &'static UiGlobalTransform, &'static InheritedVisibility), With<TopPanel>>;
+
+/// The shown top panel under the pointer, if any: the mouse wheel scrolls it rather than zooming
+/// (`camera.rs` asks the same). Where two overlap (inventory and skills on a narrow screen), the
+/// one drawn on top.
+pub fn panel_under_cursor(window: Option<&Window>, panels: &PanelHits) -> Option<Entity> {
+    let cursor = window?.physical_cursor_position()?;
+    topmost_under_cursor(panels.iter().filter(|(_, node, _, at, _)| node.contains_point(**at, cursor)).map(|(e, _, stack, _, vis)| (e, stack.0, vis.get())))
+}
+
+/// Of the panels under the pointer (entity, stack index, shown), the shown one drawn on top: the
+/// highest stack index, as Bevy draws and picks, not the query's order.
+pub fn topmost_under_cursor(hits: impl IntoIterator<Item = (Entity, u32, bool)>) -> Option<Entity> {
+    hits.into_iter().filter(|&(_, _, shown)| shown).max_by_key(|&(_, stack, _)| stack).map(|(e, ..)| e)
+}
+
+/// A panel's scroll offset after `wheel_px` of wheel (up positive: back toward the top), within
+/// `0..=max` (how far its content reaches past it).
+pub fn scrolled(pos: f32, wheel_px: f32, max: f32) -> f32 {
+    (pos - wheel_px).clamp(0.0, max.max(0.0))
+}
+
+/// The mouse wheel over a top panel scrolls it, so whatever its content holds can be reached when
+/// it's taller than the room the panel has (a big inventory, the Make list opened, treatments).
+fn scroll_panels(mut wheel: MessageReader<bevy::input::mouse::MouseWheel>, window: Query<&Window, With<bevy::window::PrimaryWindow>>, hits: PanelHits, mut scroll: Query<&mut ScrollPosition, With<TopPanel>>) {
+    use bevy::input::mouse::MouseScrollUnit;
+    let px = wheel
+        .read()
+        .map(|ev| match ev.unit {
+            MouseScrollUnit::Line => ev.y * WHEEL_LINE_PX,
+            MouseScrollUnit::Pixel => ev.y,
+        })
+        .fold(0.0, |a, b| a + b);
+    if px == 0.0 {
+        return;
+    }
+    let Some(panel) = panel_under_cursor(window.single().ok(), &hits) else { return };
+    let (Ok((_, node, ..)), Ok(mut pos)) = (hits.get(panel), scroll.get_mut(panel)) else { return };
+    // Physical pixels to UI pixels, as `ScrollPosition` is.
+    let max = (node.content_size.y - node.size.y) * node.inverse_scale_factor();
+    let y = scrolled(pos.y, px, max);
+    if pos.y != y {
+        pos.y = y;
+    }
+}
+
+/// Where a top panel goes, in UI pixels, from the height of the stats text, how high the
+/// bottom HUD reaches (from the bottom of the screen) and the screen's height: its top just under
+/// the column (never above the 70 it was laid out with) and its height down to just above the
+/// bottom HUD.
+pub fn top_panel_span(top_left_h: f32, bottom_reach: f32, view_h: f32) -> (f32, f32) {
+    let top = (10.0 + top_left_h + PANEL_GAP).max(70.0);
+    let bottom = bottom_reach + PANEL_GAP;
+    (top, (view_h - top - bottom).max(80.0))
+}
+
+/// Keeps the top panels clear of the stats text above them, and of the vitals
+/// and current action below, as text wraps and the UI scale changes (last frame's layout: a frame
+/// late at most).
+#[allow(clippy::type_complexity)]
+fn fit_top_panels(
+    options: Res<Options>,
+    ui: Res<UiScale>,
+    window: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    stats: Query<&ComputedNode, With<HudText>>,
+    bottom: Query<(&Node, &ComputedNode), (With<BottomHud>, Without<TopPanel>)>,
+    mut panels: Query<&mut Node, With<TopPanel>>,
+) {
+    // The stats text only: the yellow line under it comes and goes, and is drawn over the panels
+    // (`saving.rs`) rather than pushing them down and back every few seconds.
+    let Ok(column) = stats.single() else { return };
+    let Some(view) = crate::ui_scale::view(&options, &window) else { return };
+    // Computed sizes are in physical pixels; times the inverse scale factor, in UI pixels.
+    let ui_h = |n: &ComputedNode| n.size().y * n.inverse_scale_factor();
+    let reach = bottom
+        .iter()
+        .map(|(node, c)| {
+            let above = if let Val::Px(b) = node.bottom { b } else { 0.0 };
+            above + ui_h(c)
+        })
+        .fold(0.0, f32::max);
+    let (top, height) = top_panel_span(ui_h(column), reach, view.y / ui.0.max(0.01));
+    let (top, height) = (px(top.round()), px(height.round()));
+    for mut node in &mut panels {
+        if node.top != top || node.max_height != height {
+            node.top = top;
+            node.max_height = height;
+        }
+    }
 }
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
@@ -301,5 +417,46 @@ fn numbered(path: &str, n: usize) -> String {
     match (p.file_stem(), p.extension()) {
         (Some(stem), Some(ext)) => p.with_file_name(format!("{}-{n}.{}", stem.to_string_lossy(), ext.to_string_lossy())).to_string_lossy().into_owned(),
         _ => format!("{path}-{n}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn top_panels_sit_between_the_top_left_text_and_the_vitals() {
+        // A short column keeps the panels where they were laid out, down to above the vitals.
+        assert_eq!(top_panel_span(20.0, 136.0, 720.0), (70.0, 720.0 - 70.0 - (136.0 + PANEL_GAP)));
+        // Wrapped text and the yellow line push them down, and shorter.
+        let (top, h) = top_panel_span(100.0, 136.0, 720.0);
+        assert_eq!(top, 10.0 + 100.0 + PANEL_GAP);
+        assert_eq!(top + h, 720.0 - 136.0 - PANEL_GAP);
+        // Never squeezed to nothing.
+        assert_eq!(top_panel_span(400.0, 300.0, 480.0).1, 80.0);
+    }
+
+    #[test]
+    fn the_wheel_scrolls_a_panel_within_its_content() {
+        // Wheel down (negative) moves further into the content, up moves back; never past either end.
+        assert_eq!(scrolled(0.0, -40.0, 100.0), 40.0);
+        assert_eq!(scrolled(80.0, -40.0, 100.0), 100.0);
+        assert_eq!(scrolled(40.0, 40.0, 100.0), 0.0);
+        assert_eq!(scrolled(10.0, 40.0, 100.0), 0.0);
+        // Content that fits: nothing to scroll.
+        assert_eq!(scrolled(0.0, -40.0, -20.0), 0.0);
+    }
+
+    #[test]
+    fn the_wheel_picks_the_panel_drawn_on_top() {
+        let (inventory, skills, health) = (Entity::from_raw_u32(1).unwrap(), Entity::from_raw_u32(2).unwrap(), Entity::from_raw_u32(3).unwrap());
+        // Inventory and skills overlap under the pointer: whichever is drawn on top (the higher stack
+        // index) wins, whatever order the query gives them in.
+        assert_eq!(topmost_under_cursor([(inventory, 7, true), (skills, 12, true)]), Some(skills));
+        assert_eq!(topmost_under_cursor([(skills, 12, true), (inventory, 7, true)]), Some(skills));
+        assert_eq!(topmost_under_cursor([(inventory, 20, true), (skills, 12, true)]), Some(inventory));
+        // Hits that are hidden don't count; no hit, no panel.
+        assert_eq!(topmost_under_cursor([(inventory, 7, true), (health, 30, false)]), Some(inventory));
+        assert_eq!(topmost_under_cursor([]), None);
     }
 }

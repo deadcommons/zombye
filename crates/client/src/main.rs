@@ -40,6 +40,9 @@
 //!
 //! Sound (`audio.rs`): `--mute` starts with it off, `--volume V` sets the master volume (0..2,
 //! default 1), M mutes and unmutes.
+//!
+//! UI scale (`ui_scale.rs`): Ctrl (or Cmd) with `=` / `-` steps every panel's size by 5% (75-150%),
+//! Ctrl+0 back to 100%, kept in `settings.ron` in the saves folder; `--ui-scale PCT` for one session.
 
 mod audio;
 mod autoplay;
@@ -67,6 +70,7 @@ mod server_link;
 mod skills_ui;
 mod survivor;
 mod survivor_model;
+mod ui_scale;
 mod world_render;
 mod zombie_render;
 mod zvat;
@@ -155,6 +159,9 @@ pub struct Options {
     pub render_to: Option<PathBuf>,
     /// Size of that image (`--size WxH`, default 1280x720).
     pub size: UVec2,
+    /// `--size` given: in a window, the window is that many pixels exactly (scale factor 1, so a
+    /// `--screenshot` is WxH on a high-DPI screen too); without it, 1600x900 at the screen's scale.
+    pub size_given: bool,
     /// Centre the offscreen camera here instead of on the player (`--center X,Y`). Fog of war and
     /// cutaways are still the player's.
     pub center: Option<[f32; 2]>,
@@ -171,6 +178,9 @@ pub struct Options {
     pub mute: bool,
     /// Master volume (`--volume V`, 0..2, default 1).
     pub volume: f32,
+    /// UI scale in percent for this session, not saved (`--ui-scale PCT`, 75..150; without it the
+    /// client settings file's, else 100). See `ui_scale.rs`.
+    pub ui_scale: Option<u32>,
 }
 
 /// Default and largest `--size` for `--render-to`.
@@ -250,12 +260,14 @@ impl Options {
             data: value("--data").map(Into::into).unwrap_or_else(zombye_net::content::default_data_dir),
             render_to: value("--render-to").map(Into::into),
             size: value("--size").and_then(|v| parse_size(&v)).unwrap_or(DEFAULT_RENDER_SIZE),
+            size_given: value("--size").and_then(|v| parse_size(&v)).is_some(),
             center: value("--center").and_then(|v| parse_point(&v)),
             crowd_vat: value("--crowd-vat"),
             survivor: value("--survivor"),
             pose: value("--pose"),
             mute: flag("--mute"),
             volume: value("--volume").and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite()).map_or(1.0, |v| v.clamp(0.0, 2.0)),
+            ui_scale: value("--ui-scale").and_then(|v| ui_scale::parse_pct(&v)),
         }
     }
 
@@ -320,7 +332,11 @@ fn main() {
             .set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "Zombye".into(),
-                    resolution: (1600, 900).into(),
+                    resolution: if options.size_given {
+                        bevy::window::WindowResolution::new(options.size.x, options.size.y).with_scale_factor_override(1.0)
+                    } else {
+                        (1600, 900).into()
+                    },
                     present_mode: if options.novsync { PresentMode::AutoNoVsync } else { PresentMode::AutoVsync },
                     ..default()
                 }),
@@ -350,7 +366,7 @@ fn main() {
             fx::FxPlugin,
             survivor::SurvivorPlugin,
             autoplay::AutoplayPlugin,
-            saving::SavingPlugin,
+            (saving::SavingPlugin, ui_scale::UiScalePlugin),
         ));
     // An offscreen render has no audio device (Bevy's audio is off there).
     if !offscreen {
@@ -380,6 +396,11 @@ mod tests {
         let o = Options::parse(&args("--zombies 10"));
         assert!(!o.offscreen());
         assert_eq!((o.size, o.angle, o.player, o.center), (DEFAULT_RENDER_SIZE, 0, None, None));
+        assert!(!o.size_given && Options::parse(&args("--size 1920x1080")).size_given);
+        assert!(!Options::parse(&args("--size big")).size_given);
+        assert_eq!(Options::parse(&args("--ui-scale 125")).ui_scale, Some(125));
+        assert_eq!(Options::parse(&args("--ui-scale 300")).ui_scale, Some(150));
+        assert_eq!((o.ui_scale, Options::parse(&args("--ui-scale x")).ui_scale), (None, None));
         assert_eq!(Options::parse(&args("--angle 5")).angle, 1);
         assert_eq!(Options::parse(&args("--angle -1")).angle, 3);
     }

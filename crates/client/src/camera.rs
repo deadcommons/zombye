@@ -106,8 +106,14 @@ fn rotate_and_zoom(
     options: Res<Options>,
     time: Res<Time>,
     mut cams: Query<(&mut IsoCamera, &mut Projection)>,
+    window: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    panels: crate::hud::PanelHits,
 ) {
     let Ok((mut cam, mut projection)) = cams.single_mut() else { return };
+    // Over a panel the wheel scrolls it (`hud.rs`), not the zoom.
+    if crate::hud::panel_under_cursor(window.single().ok(), &panels).is_some() {
+        wheel.clear();
+    }
     if options.rotate {
         // Comma / period (E is pick up).
         if keys.just_pressed(KeyCode::Comma) {

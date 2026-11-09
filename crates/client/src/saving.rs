@@ -35,7 +35,7 @@ pub struct SavingPlugin;
 impl Plugin for SavingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Notice>()
-            .add_systems(Startup, spawn_notice)
+            .add_systems(Startup, spawn_notice.after(crate::hud::spawn_hud))
             // Before Update, so renderers see this frame's edge changes from a quickload.
             .add_systems(PreUpdate, quick_save_load.after(InputSystems).after(crate::inventory_ui::TextEntry))
             .add_systems(Update, show_notice);
@@ -60,14 +60,30 @@ pub(crate) struct Notice {
 #[derive(Component)]
 struct NoticeText;
 
-fn spawn_notice(mut commands: Commands) {
-    commands.spawn((
+/// In the HUD's top-left column, under the stats text (so it never runs over it, however that
+/// wraps; the panels below make room for the text, not for this line, which comes and goes), drawn
+/// above everything on a dark backing so it reads over a panel too; at the top left on its own if
+/// there's no HUD.
+fn spawn_notice(mut commands: Commands, column: Query<Entity, With<crate::hud::TopLeft>>) {
+    let text = (
         NoticeText,
         Text::new(""),
         TextFont { font_size: bevy::text::FontSize::Px(18.0), ..default() },
         TextColor(Color::srgb(0.95, 0.85, 0.45)),
-        Node { position_type: PositionType::Absolute, top: px(60), left: px(12), ..default() },
-    ));
+        BackgroundColor(Color::srgba(0.02, 0.02, 0.03, 0.8)),
+        GlobalZIndex(10),
+        Pickable::IGNORE,
+    );
+    match column.single() {
+        Ok(column) => {
+            commands.entity(column).with_children(|c| {
+                c.spawn(text);
+            });
+        }
+        Err(_) => {
+            commands.spawn((text, Node { position_type: PositionType::Absolute, top: px(60), left: px(12), ..default() }));
+        }
+    }
 }
 
 fn show_notice(time: Res<Time>, notice: Res<Notice>, mut text: Query<&mut Text, With<NoticeText>>) {
