@@ -99,7 +99,7 @@ cargo test --release --workspace
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --hover-tag N --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT --connect HOST[:PORT] --name NAME --password P`
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab worn|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --hover-tag N --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT --connect HOST[:PORT] --name NAME --password P`
 (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost). `--size WxH` makes the window exactly that many pixels, at scale factor 1, so a
@@ -710,9 +710,18 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   ground item ids (`Snapshot::floor`, `FloorView`; a client gets its own). A request for what is already queued
   (a repeated click) queues nothing and refuses nothing; E with no container and an empty floor says "nothing to pick
   up or search here" (`inventory::NOTHING_HERE`).
-- **Client:** the inventory panel (`inventory_ui.rs`, Tab or I): your slots, worn and carried stacks with weights, load
-  against the limit with the burden stage, the open container and the floor side by side. Click a row to move it
-  (yours into the open container, or the floor; theirs into your bags; slots off), Alt-click (Option on a Mac) for one, right-click any
+- **Client:** the inventory panel (`inventory_ui.rs`, Tab or I; laid out in Linear DCM-56): two panes side by side, one
+  title each. Left, what you carry; right, the open container, or the floor in reach. Slim tabs down each pane's outer
+  edge pick what it shows: Carried or Worn (what you hold and wear, slot by slot) on the left, the open container or
+  Floor (each with its count) on the right; a newly opened container comes to the front (`PanelUi`). Under each title a
+  thin bar and one line: your load against the limit (coloured, with the burden stage) and litres used, the container's
+  litres and weight, the floor's weight. Every row is one line of the same cells, so the columns line up: a swatch of the
+  item's colour, name (then dimmed: stale, goes left, moving), type, count, kg. The headers Name, Type and kg sort both
+  panes (`Sort`: a press, again the other way round, a third time as things lie). Several stacks of one item collapse into
+  one row with their count and weight together (`arrange`): a click moves them all (`click_intents`, from the back so
+  indices don't shift), the `+` at its start opens it to its stacks. `>>` and `<<` between the panes move everything a
+  pane shows across (`MoveAll`; never what you hold or wear). Two text sizes in all (`ROW_FONT`, `HEAD_FONT`). Click a row to move it
+  (yours into what the right pane shows: the container, or the floor; theirs into your bags; slots off), Alt-click (Option on a Mac) for one, right-click any
   row for its menu (#95, `inventory_ui::menu_entries`): one flat list of what can be done with it, the likeliest first (eat or
   drink, wear, equip, take a pill, use on a wound, put in the open container, drop, take, take in hand, split: one, or half of four or more),
   1-9 to pick, Esc or a click elsewhere to close; the same menu on a ground item in reach in the world (right-click it with
@@ -725,21 +734,23 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   (`InFlight`, until the snapshot shows the answer, a refusal, or 3 s); a floor item being taken leaves the Floor
   column at once. The Floor column and E use the snapshot's floor, not a distance guess. Left mouse doesn't swing while it's open.
   **Current action** (#98, `action_ui.rs`): while a job is under way a bar at the bottom centre names it ("Wash rags in clean water"), shows progress and seconds left, the number queued, and X or a click cancels it, Shift+X the whole queue (`Intent::CancelJobs { player, all }`, `World::player_cancel_jobs`).
-  **Finding and moving several** (#94): a search box over the columns (`/` or a click to type; Enter or Esc stops; while
+  **Finding and moving several** (#94): a search box (`/` or a click to type; Enter or Esc stops; while
   typing every other key is held back, `inventory_ui::TextEntry`, which key handlers in `PreUpdate` run after) and
   category chips (Food, Drink, Medical, Weapons, Clothing, Tools, Materials, Bags, Other; each a toggle, so several can
-  be on, and All turns them off) narrow every column but your hand and
-  bag slots; each column's title says where a click sends things ("-> wardrobe", "-> bags") and has a "pick all" for
-  the stacks it shows (of yours, only what you carry, never what you hold or wear; pressed again, it unpicks them); Ctrl-click picks rows (a picked row always shows), Shift-click every row from the last one picked to it in that column
+  be on, and All turns them off) narrow both panes but your hand and
+  bag slots. They are out of sight until wanted: the small "Find" control at the top right, or `/`, brings them out, they
+  stay while a search or chip is set (`Find::in_use`), and "Find" again puts them away, cleared. Each pane's title has a "pick all" for
+  the stacks it shows (of yours, only what you carry, never what you hold or wear; pressed again, it unpicks them); Ctrl-click picks rows (a picked row always shows; a collapsed row: all its stacks), Shift-click every row from the last one picked to it in that pane
   (only the rows on show, so a range under a search skips what it hides),
-  and the move-to row over the columns (always there, so picking doesn't shift the rows, and in view however long the
-  lists are) says how many are picked and their weight and sends every picked stack to the bags, the open container or
-  the floor at once. Every row is one line: names never wrap, and one too long for its column is cut off at the weight.
-  `--find TEXT`, `--filter CATEGORY[,CATEGORY...]` and `--pick N,N` (carried stacks) start it that way, for pictures;
+  and the top row (always that high, so picking doesn't shift the rows, and in view however long the
+  lists are) then says how many are picked and their weight and sends every picked stack to the bags, the open container or
+  the floor at once. Names never wrap, and one too long for its cell is cut off at the next.
+  `--find TEXT`, `--filter CATEGORY[,CATEGORY...]` and `--pick N,N` (carried stacks) start it that way, for pictures, as do
+  `--tab worn|floor` (or both, with a comma), `--sort name|type|weight` and `--expand` (collapsed rows opened);
   `--pick-range A,B[@SECS]` Ctrl-clicks carried row A and Shift-clicks row B (after SECS), and `--drop-picked-after SECS`
-  presses the move-to row's "floor", for recordings (`review_saves.rs` writes `panel.zsave`: a full pack, a container
-  open and things on the floor). Ground items are drawn as boxes of their size and colour,
-  weapons as bars. Under the columns, the Make list (see Crafting).
+  presses the move-to row's "floor", for recordings (`review_saves.rs` writes `panel.zsave`: a pack, a container
+  open and things on the floor, and `panel_full.zsave`: the pack full, with several stacks of one item, things held and more on the floor). Ground items are drawn as boxes of their size and colour,
+  weapons as bars. Under the panes, the Make list (see Crafting), one line ("3 you can make now") until a click opens it.
 
 ## Crafting (`sim::crafting`, `assets/data/items/recipes.ron`; #12)
 
@@ -769,7 +780,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   (`ContentPrint::recipes` / `recipe_ids`): any change loads with a note, queued crafts matched up by id
   (`save_check::remap_recipes`), and those of a recipe that's gone called off (nothing was used up yet). A craft's
   recipe index out of range is `LoadError::Invalid`.
-- **Client:** the inventory panel's Make list (`inventory_ui.rs`): every recipe; the ones you can make (by
+- **Client:** the inventory panel's Make list (`inventory_ui.rs`; shut to one line until clicked): every recipe; the ones you can make (by
   `crafting::check` over your private view) are rows to click (one request until the answer, like moves), with what
   they make and their time; the one under way shows its seconds left, queued ones how many; the rest say what's
   missing. No key of its own.

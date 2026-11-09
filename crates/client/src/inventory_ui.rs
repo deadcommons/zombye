@@ -1,7 +1,20 @@
-//! The inventory panel (Tab or I): what you carry, hold and wear with your load against the
-//! carry limit, beside the container you have open (search one with E) and the floor within reach.
-//! Click a row to move it: from you into the open container (or onto the floor if none is open),
-//! from a container or the floor into your pockets and bags, off a slot into your bags.
+//! The inventory panel (Tab or I): two panes side by side. Left, what you carry, with your load
+//! against the carry limit; right, the container you have open (search one with E) or the floor
+//! within reach. Slim tabs down each pane's outer edge pick what it shows: "Carried" or "Worn"
+//! (what you hold and wear, slot by slot) on the left, the open container or "Floor" on the right
+//! (a newly opened container comes to the front). Click a row to move it across: from you into
+//! what the right pane shows (the container, or the floor), from a container or the floor into
+//! your pockets and bags, off a slot into your bags. The `>>` and `<<` buttons between the panes
+//! move everything a pane shows.
+//!
+//! **Rows** (Linear DCM-56) are one line with the same cells in every pane, so they line up: a
+//! swatch of the item's colour, its name (and dimmed what there is to say: stale, goes left,
+//! moving), its type, how many and their weight. The column headers sort both panes by name, type
+//! or weight ([`Sort`]: a press, again for the other way round, a third time back to the order
+//! things lie in). Several stacks of one item (things that don't stack, or more than a stack
+//! holds) collapse into one row with their count and weight together ([`arrange`]); a click
+//! moves them all, and the fold mark at its start opens it to its stacks, each a row of its own.
+//! The panel has two text sizes: one for rows and everything small, one for titles.
 //! Right-click any row for a small flat menu of what can be done with it (#95; [`menu_entries`]):
 //! equip, wear, eat or drink, take a pill, use a dressing, antiseptic or sewing kit on a wound (it
 //! opens the health panel to pick the wound, #10), put it in the open container, drop it, take it,
@@ -9,7 +22,8 @@
 //! elsewhere closes it. The same menu opens on a ground item in the world: right-click it with the
 //! panel open, or tap the right mouse on it (a quick tap, not held to aim). Alt-click (Option-click on a Mac) moves just one of a stack. Everything goes to
 //! the server as intents; the panel only shows what the latest
-//! snapshot said. Moving takes a moment (the server queues it): the header shows how busy you are.
+//! snapshot said. Moving takes a moment (the server queues it): the current action's bar
+//! (`action_ui.rs`) shows how busy you are.
 //! The last answer to a request (done, or why not) shows at the foot of the panel, and for a few
 //! seconds under the HUD when the panel is shut (the same answer again just stays up longer).
 //!
@@ -22,19 +36,23 @@
 //! **The floor** is the server's: the ground items the snapshot says this player can reach
 //! (`Snapshot::floor`, by the same rule the server checks moves with), not a guess from distance.
 //!
-//! **Finding and moving several** (#94): a search box (`/` or a click to type, Enter or Esc to
-//! stop; while typing, the game's keys are held back) and category chips narrow every column (the
-//! chips are toggles: several can be on, "All" turns them off); each column's title says where a
-//! click sends things ("-> wardrobe") and has a "pick all" for the stacks it shows; Ctrl-click
-//! picks rows, Shift-click picks every row from the last one picked to it in that column (only
-//! rows on show: the search and chips narrow a range too), and the move-to row over the columns
-//! sends every picked stack to your bags, the open container or the floor at once. Every row is
-//! one line: a name too long for its column is cut off, never wrapped. `--find TEXT`,
-//! `--filter CATEGORY[,CATEGORY]` and `--pick N,N` set them from the start (for pictures);
+//! **Finding and moving several** (#94): a search box and category chips narrow both panes (the
+//! chips are toggles: several can be on, "All" turns them off). They are out of sight until
+//! wanted: the "Find" control at the top right (or `/`) brings them out, and they stay while a
+//! search or a chip is set ([`Find::in_use`]); "Find" again puts them away, cleared. `/` or a
+//! click on the box types (Enter or Esc to stop; while typing, the game's keys are held back).
+//! Each pane's title has a "pick all" for the stacks it shows; Ctrl-click picks rows (a collapsed
+//! row: all its stacks), Shift-click picks every row from the last one picked to it in that pane
+//! (only rows on show: the search and chips narrow a range too), and with something picked the
+//! top row says how many and sends every picked stack to your bags, the open container or the
+//! floor at once. A name too long for its cell is cut off, never wrapped. `--find TEXT`,
+//! `--filter CATEGORY[,CATEGORY]` and `--pick N,N` set them from the start (for pictures), as do
+//! `--tab worn|floor`, `--sort name|type|weight` and `--expand` (collapsed rows opened);
 //! `--pick-range A,B[@SECS]` Ctrl-clicks carried row A and Shift-clicks row B, and
 //! `--drop-picked-after SECS` presses the move-to row's "floor" (for recordings).
 //!
-//! **Make** (#12): under the columns, every recipe; the ones you have the inputs and tools for
+//! **Make** (#12): under the panes, one line saying how many things you can make now; a click
+//! opens the list. Every recipe; the ones you have the inputs and tools for
 //! (by the server's own rule, `crafting::check`, over our private view) can be clicked to make
 //! them, the rest say what's missing. The one under way shows the seconds it has left (our queue is
 //! in the private view), and queued ones how many.
@@ -71,16 +89,35 @@ struct Shown(String);
 
 const TEXT: Color = Color::srgb(0.93, 0.9, 0.82);
 const DIM: Color = Color::srgb(0.65, 0.63, 0.58);
-const ROW: Color = Color::srgba(0.12, 0.12, 0.14, 0.85);
-const ROW_HOVER: Color = Color::srgba(0.28, 0.26, 0.2, 0.95);
+const ROW: Color = Color::srgba(1.0, 1.0, 1.0, 0.025);
+const ROW_HOVER: Color = Color::srgba(0.3, 0.28, 0.2, 0.9);
 const ROW_PICKED: Color = Color::srgba(0.36, 0.3, 0.12, 0.95);
-const CHIP: Color = Color::srgba(0.16, 0.16, 0.18, 0.9);
+const CHIP: Color = Color::srgba(0.18, 0.18, 0.2, 0.9);
 const CHIP_ON: Color = Color::srgba(0.55, 0.45, 0.15, 0.95);
+/// A pane's backing, a tab that isn't the one shown, and a hairline.
+const PANE: Color = Color::srgba(0.1, 0.1, 0.115, 0.92);
+const TAB: Color = Color::srgba(0.05, 0.05, 0.06, 0.9);
+const LINE: Color = Color::srgba(1.0, 1.0, 1.0, 0.1);
 const OK: Color = Color::srgb(0.95, 0.85, 0.35);
 const NO: Color = Color::srgb(0.95, 0.5, 0.35);
 const NOTE_SECS: f32 = 4.0;
-/// The panel's widest.
-const PANEL_W: f32 = 880.0;
+/// The panel's two text sizes: rows (and everything small), and headers.
+const ROW_FONT: f32 = 14.0;
+const HEAD_FONT: f32 = 17.0;
+/// A pane's width, a tab's, and a row's cells: the fold mark, the swatch, type, count and weight
+/// (the name takes the rest).
+const PANE_W: f32 = 400.0;
+const TAB_W: f32 = 26.0;
+const W_LEAD: f32 = 12.0;
+const W_SWATCH: f32 = 10.0;
+const W_KIND: f32 = 78.0;
+const W_QTY: f32 = 28.0;
+const W_KG: f32 = 40.0;
+const CELL_GAP: f32 = 6.0;
+/// The panel's widest: two panes with their tabs, the move-all buttons between, the padding.
+/// (918: on a 1280 screen it stops short of the health panel on the left, which opens beside it
+/// to use something on a wound.)
+const PANEL_W: f32 = 2.0 * (PANE_W + TAB_W) + 42.0 + 24.0;
 /// A request with no answer after this long is forgotten (and its row can be clicked again).
 const FLIGHT_SECS: f32 = 3.0;
 
@@ -160,12 +197,25 @@ pub struct Find {
     pub typing: bool,
     /// The chips that are on (each a toggle; none: every kind).
     groups: Vec<Group>,
+    /// The search box and chips asked for with the "Find" control, though nothing is set yet.
+    open: bool,
 }
 
 impl Find {
     fn shows(&self, items: &[ItemDef], s: &ItemStack) -> bool {
         let Some(def) = items.get(s.item as usize) else { return true };
         (self.groups.is_empty() || self.groups.contains(&Group::of(def.category))) && (self.query.is_empty() || def.name.to_lowercase().contains(&self.query.to_lowercase()))
+    }
+
+    /// Whether the search box and chips are on show: only while they're in use (typing, a search
+    /// or a chip set) or asked for.
+    fn in_use(&self) -> bool {
+        self.open || self.typing || !self.query.is_empty() || !self.groups.is_empty()
+    }
+
+    /// The "Find" control pressed: show the search box and chips; in use, put them away, cleared.
+    fn press(&mut self) {
+        *self = Find { open: !self.in_use(), ..default() };
     }
 
     /// A chip pressed: on if it was off, off if it was on (the others stay as they are).
@@ -221,6 +271,33 @@ impl Picked {
         self.anchor = Some(key);
     }
 
+    /// Ctrl-click on a row of several stacks (one item, collapsed): all picked, or if they all
+    /// were, all unpicked; ranges start from its first.
+    fn toggle_all(&mut self, keys: &[Key]) {
+        match keys {
+            [] => {}
+            [key] => self.toggle(*key),
+            _ if keys.iter().all(|k| self.keys.contains(k)) => {
+                self.keys.retain(|k| !keys.contains(k));
+                self.anchor = Some(keys[0]);
+            }
+            _ => {
+                let new: Vec<Key> = keys.iter().filter(|k| !self.keys.contains(k)).copied().collect();
+                self.keys.extend(new);
+                self.anchor = Some(keys[0]);
+            }
+        }
+    }
+
+    /// Shift-click on a row of `keys` (several for a collapsed row): the range to its first and
+    /// to its last, so the whole row is in it from either side.
+    fn extend_to_row(&mut self, keys: &[Key], listed: &[Key]) {
+        if let (Some(first), Some(last)) = (keys.first(), keys.last()) {
+            self.extend_to(*first, listed);
+            self.extend_to(*last, listed);
+        }
+    }
+
     /// Shift-click: pick every row from the anchor to this one as `listed` shows them (the rows
     /// drawn, in order: what the search and chips leave), added to what is picked already. With
     /// no anchor in the same column on screen, just this row, which becomes the anchor.
@@ -260,6 +337,151 @@ impl Picked {
     }
 }
 
+/// What the column headers sort the rows by.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SortKey {
+    /// As they lie in the pack, the container or on the floor.
+    #[default]
+    None,
+    Name,
+    Kind,
+    Weight,
+}
+
+impl SortKey {
+    /// `--sort name|type|weight` (also `category`, `kg`).
+    fn parse(s: &str) -> Option<SortKey> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "name" => Some(SortKey::Name),
+            "type" | "category" | "kind" => Some(SortKey::Kind),
+            "weight" | "kg" => Some(SortKey::Weight),
+            _ => None,
+        }
+    }
+}
+
+/// The order of the rows in both panes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Sort {
+    key: SortKey,
+    /// Z to A, or lightest first (a weight sort starts heaviest first).
+    flipped: bool,
+}
+
+impl Sort {
+    /// A column header pressed: sort by it; again, the other way round; a third time, back to
+    /// the order things lie in.
+    fn press(&mut self, key: SortKey) {
+        *self = match (self.key == key, self.flipped) {
+            (false, _) => Sort { key, flipped: false },
+            (true, false) => Sort { key, flipped: true },
+            (true, true) => Sort::default(),
+        };
+    }
+
+    /// The mark after a header: which way its column is sorted, if it is.
+    fn mark(&self, key: SortKey) -> &'static str {
+        match (self.key == key, self.flipped != (key == SortKey::Weight)) {
+            (false, _) => "",
+            (true, false) => " ^",
+            (true, true) => " v",
+        }
+    }
+}
+
+/// One stack where it lies: a row of a pane, or one of the stacks a collapsed row stands for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Line {
+    from: Place,
+    index: u32,
+    stack: ItemStack,
+}
+
+impl Line {
+    fn key(&self) -> Key {
+        (self.from, self.index, self.stack.item)
+    }
+}
+
+/// A pane's rows from its stacks: stacks of the same item collapse into one row (in the place of
+/// the first), then the rows are put in `sort`'s order (stable: equal rows stay as they lay).
+fn arrange(items: &[ItemDef], lines: impl IntoIterator<Item = Line>, sort: Sort) -> Vec<Vec<Line>> {
+    let mut rows: Vec<Vec<Line>> = Vec::new();
+    for l in lines {
+        match rows.iter_mut().find(|r| r[0].stack.item == l.stack.item) {
+            Some(r) => r.push(l),
+            None => rows.push(vec![l]),
+        }
+    }
+    let def = |r: &Vec<Line>| items.get(r[0].stack.item as usize);
+    let name = |r: &Vec<Line>| def(r).map_or(String::new(), |d| d.name.to_lowercase());
+    let kind = |r: &Vec<Line>| def(r).map_or(usize::MAX, |d| Group::ALL.iter().position(|g| *g == Group::of(d.category)).unwrap_or(usize::MAX));
+    let kg = |r: &Vec<Line>| r.iter().map(|l| stack_kg(items, &l.stack)).sum::<f32>();
+    match sort.key {
+        SortKey::None => return rows,
+        SortKey::Name => rows.sort_by_key(|r| name(r)),
+        SortKey::Kind => rows.sort_by_key(|r| (kind(r), name(r))),
+        // Heaviest first.
+        SortKey::Weight => rows.sort_by(|a, b| kg(b).total_cmp(&kg(a))),
+    }
+    if sort.flipped {
+        rows.reverse();
+    }
+    rows
+}
+
+/// How the panes are set: which tab each shows, the order of the rows, and which collapsed rows
+/// are opened.
+#[derive(Resource, Default, Debug, Clone, PartialEq)]
+struct PanelUi {
+    /// The left pane shows what you hold and wear (else what you carry).
+    worn: bool,
+    /// The right pane shows the floor though a container is open.
+    floor: bool,
+    /// The container open when we last looked (`None`: not looked yet).
+    seen_open: Option<Option<u32>>,
+    sort: Sort,
+    /// Rows of several stacks start opened (`--expand`, for pictures); `folds` then lists the shut ones.
+    unfold_all: bool,
+    /// The rows (column, item) whose fold mark was pressed.
+    folds: Vec<(Column, u16)>,
+}
+
+impl PanelUi {
+    /// Whether the row of several stacks of `item` in `col` is opened to its stacks.
+    fn unfolded(&self, col: Column, item: u16) -> bool {
+        self.unfold_all != self.folds.contains(&(col, item))
+    }
+
+    fn toggle_fold(&mut self, key: (Column, u16)) {
+        match self.folds.iter().position(|k| *k == key) {
+            Some(i) => {
+                self.folds.remove(i);
+            }
+            None => self.folds.push(key),
+        }
+    }
+
+    /// What the right pane shows, and so where a click on what you carry sends it: the open
+    /// container, or the floor (no container open, or its Floor tab picked).
+    fn right(&self, open: Option<u32>) -> Place {
+        match open {
+            Some(id) if !self.floor => Place::Container(id),
+            _ => Place::Ground,
+        }
+    }
+
+    /// The container open now: a newly opened one comes to the front of the right pane.
+    fn saw(&mut self, open: Option<u32>) {
+        if self.seen_open != Some(open) {
+            if self.seen_open.is_some() && open.is_some() {
+                self.floor = false;
+            }
+            self.seen_open = Some(open);
+        }
+    }
+}
+
 /// The item rows the panel drew last, in order (for Shift-click's ranges).
 #[derive(Resource, Default, Debug)]
 struct Listed(Vec<Key>);
@@ -267,6 +489,11 @@ struct Listed(Vec<Key>);
 /// Where the move-to row over the columns was asked to send every picked stack this frame.
 #[derive(Resource, Default)]
 struct SendPicked(Option<Place>);
+
+/// A move-all button between the panes pressed this frame: every stack that column shows goes
+/// across to the other pane.
+#[derive(Resource, Default)]
+struct MoveAll(Option<Column>);
 
 /// Item intents from the panel for the server, sent on by [`flush`].
 #[derive(Resource, Default)]
@@ -341,11 +568,21 @@ impl Plugin for InventoryUiPlugin {
     fn build(&self, app: &mut App) {
         let options = app.world().get_resource::<crate::Options>().cloned();
         let open = options.as_ref().is_some_and(|o| o.inventory);
-        let find = Find { query: options.as_ref().and_then(|o| o.find.clone()).unwrap_or_default(), typing: false, groups: options.as_ref().and_then(|o| o.filter.as_deref()).map_or(Vec::new(), Group::parse_list) };
+        let find = Find { query: options.as_ref().and_then(|o| o.find.clone()).unwrap_or_default(), typing: false, groups: options.as_ref().and_then(|o| o.filter.as_deref()).map_or(Vec::new(), Group::parse_list), open: false };
+        let tabs = options.as_ref().and_then(|o| o.tab.clone()).unwrap_or_default().to_ascii_lowercase();
+        let ui = PanelUi {
+            worn: tabs.split(',').any(|t| t.trim() == "worn"),
+            floor: tabs.split(',').any(|t| t.trim() == "floor"),
+            sort: Sort { key: options.as_ref().and_then(|o| o.sort.as_deref()).and_then(SortKey::parse).unwrap_or_default(), flipped: false },
+            unfold_all: options.as_ref().is_some_and(|o| o.expand),
+            ..default()
+        };
         let picked = Picked { keys: options.as_ref().map_or(Vec::new(), |o| o.pick.iter().map(|&k| (Place::Carried, k, u16::MAX)).collect()), anchor: None };
         app.insert_resource(InventoryPanel { open })
             .insert_resource(find)
             .insert_resource(picked)
+            .insert_resource(ui)
+            .init_resource::<MoveAll>()
             .init_resource::<SendPicked>()
             .init_resource::<Listed>()
             .init_resource::<LastNote>()
@@ -357,7 +594,7 @@ impl Plugin for InventoryUiPlugin {
             .init_resource::<ItemMenu>()
             .add_systems(Startup, spawn)
             .add_systems(PreUpdate, (type_search, menu_keys).chain().in_set(TextEntry).after(bevy::input::InputSystems))
-            .add_systems(Update, (toggle, keep_note, track_flight, prune_picked, script_picks, menu_from_options, send_clicks, world_menu, script_menu, menu_act, send_picked, flush, rebuild, draw_menu).chain());
+            .add_systems(Update, (toggle, keep_note, track_flight, follow_open, prune_picked, script_picks, menu_from_options, send_clicks, world_menu, script_menu, menu_act, send_picked, flush, rebuild, draw_menu).chain());
     }
 }
 
@@ -375,14 +612,14 @@ fn spawn(mut commands: Commands) {
             top: px(70),
             right: px(16),
             flex_direction: FlexDirection::Column,
-            row_gap: px(6),
-            padding: UiRect::all(px(10)),
+            row_gap: px(8),
+            padding: UiRect::all(px(12)),
             max_width: px(PANEL_W),
             max_height: Val::Percent(85.0),
             overflow: Overflow::scroll_y(),
             ..default()
         },
-        BackgroundColor(Color::srgba(0.02, 0.02, 0.03, 0.8)),
+        BackgroundColor(Color::srgba(0.02, 0.02, 0.03, 0.86)),
     ));
     commands.spawn((
         NoteLine,
@@ -408,6 +645,7 @@ fn type_search(mut typed: MessageReader<bevy::input::keyboard::KeyboardInput>, m
     if !find.typing {
         if keys.just_pressed(KeyCode::Slash) {
             find.typing = true;
+            find.open = true;
             keys.reset_all();
         }
         typed.clear();
@@ -420,7 +658,11 @@ fn type_search(mut typed: MessageReader<bevy::input::keyboard::KeyboardInput>, m
             Key::Backspace => {
                 find.query.pop();
             }
-            Key::Enter | Key::Escape => find.typing = false,
+            Key::Enter | Key::Escape => {
+                find.typing = false;
+                // Nothing set: the box goes away again.
+                find.open = !find.query.is_empty() || !find.groups.is_empty();
+            }
             _ => {}
         }
     }
@@ -457,6 +699,17 @@ fn keep_note(time: Res<Time>, notes: Res<ItemNotesThisFrame>, panel: Res<Invento
 fn name_of(items: &[ItemDef], now: i32, s: &ItemStack) -> String {
     let Some(def) = items.get(s.item as usize) else { return "?".into() };
     let mut out = if s.count > 1 { format!("{} x{}", def.name, s.count) } else { def.name.clone() };
+    let notes = state_of(items, now, s);
+    if !notes.is_empty() {
+        out.push_str(&format!(" ({notes})"));
+    }
+    out
+}
+
+/// "stale, 2/3 left": what a row says after the name about food and drink (how fresh at game
+/// minute `now`, the goes left of the top one); empty for the rest.
+fn state_of(items: &[ItemDef], now: i32, s: &ItemStack) -> String {
+    let Some(def) = items.get(s.item as usize) else { return String::new() };
     let mut notes = Vec::new();
     if let Some(f) = zombye_sim::needs::freshness(def, s, now).filter(|f| *f != zombye_sim::Freshness::Fresh) {
         notes.push(f.name().to_string());
@@ -464,10 +717,7 @@ fn name_of(items: &[ItemDef], now: i32, s: &ItemStack) -> String {
     if let Some(c) = def.consumable().filter(|_| s.used > 0) {
         notes.push(format!("{}/{} left", c.uses - s.used, c.uses));
     }
-    if !notes.is_empty() {
-        out.push_str(&format!(" ({})", notes.join(", ")));
-    }
-    out
+    notes.join(", ")
 }
 
 fn stack_kg(items: &[ItemDef], s: &ItemStack) -> f32 {
@@ -482,10 +732,19 @@ struct RowAction {
     /// The menu's title (the item's name).
     title: String,
     left: Option<(Place, u32, Place)>,
+    /// A collapsed row: the other stacks of the same item it stands for (a click moves them too).
+    more: Vec<Line>,
     /// Right-click: the menu of what can be done with it (#95), the likeliest first.
     menu: Vec<MenuEntry>,
     /// Left click: make this recipe (a row of the Make list; `stack` and `left` are unused).
     craft: Option<u16>,
+}
+
+impl RowAction {
+    /// The stacks the row stands for (one, or several of one item), for picking.
+    fn keys(&self) -> Vec<Key> {
+        self.left.iter().map(|&(from, index, _)| (from, index, self.stack.item)).chain(self.more.iter().map(Line::key)).collect()
+    }
 }
 
 /// What the panel shows and the requests are checked against: our private view and our floor
@@ -510,6 +769,14 @@ fn stack_at(v: &PrivateView, floor: &[(u32, ItemStack)], place: Place, index: u3
 fn track_flight(time: Res<Time>, link: Res<ServerLink>, me: Res<LocalPlayer>, notes: Res<ItemNotesThisFrame>, mut flight: ResMut<InFlight>) {
     let (view, floor) = panel_view(&link, me.id);
     flight.update(format!("{view:?}|{floor:?}"), notes.0.iter().any(|n| !n.ok), time.elapsed_secs());
+}
+
+/// A container newly opened comes to the front of the right pane.
+fn follow_open(link: Res<ServerLink>, me: Res<LocalPlayer>, mut ui: ResMut<PanelUi>) {
+    let open = link.own(me.id).and_then(|v| v.open.as_ref().map(|c| c.id));
+    if ui.seen_open != Some(open) {
+        ui.saw(open);
+    }
 }
 
 /// The intent that moves `count` (0: all) of the stack at `from`/`index` to `to`, if it goes anywhere.
@@ -564,16 +831,30 @@ fn script_picks(time: Res<Time>, options: Option<Res<crate::Options>>, listed: R
 }
 
 /// The bar's "→ bags / → container / → floor": every picked stack there, then nothing picked.
-fn send_picked(time: Res<Time>, me: Res<LocalPlayer>, link: Res<ServerLink>, mut send: ResMut<SendPicked>, mut picked: ResMut<Picked>, mut flight: ResMut<InFlight>, mut out: ResMut<Outbox>) {
-    let Some(to) = send.0.take() else { return };
+/// And the move-all buttons between the panes: every stack that pane shows (what the search and
+/// chips leave; of yours, what you carry, never what you hold or wear) across to the other.
+#[allow(clippy::too_many_arguments)]
+fn send_picked(time: Res<Time>, me: Res<LocalPlayer>, link: Res<ServerLink>, ui: Res<PanelUi>, listed: Res<Listed>, mut send: ResMut<SendPicked>, mut all: ResMut<MoveAll>, mut picked: ResMut<Picked>, mut flight: ResMut<InFlight>, mut out: ResMut<Outbox>) {
+    let (to, across) = (send.0.take(), all.0.take());
+    if to.is_none() && across.is_none() {
+        return;
+    }
     let (view, floor) = panel_view(&link, me.id);
     let Some(v) = view else { return };
     let now = time.elapsed_secs();
+    let mut moves: Vec<(Key, Place)> = Vec::new();
+    if let Some(to) = to {
+        moves.extend(std::mem::take(&mut picked.keys).into_iter().map(|k| (k, to)));
+        picked.anchor = None;
+    }
+    if let Some(col) = across {
+        let to = if col == Column::You { ui.right(v.open.as_ref().map(|c| c.id)) } else { Place::Carried };
+        let rest: Vec<Key> = all_of(col, &listed.0).into_iter().filter(|k| !moves.iter().any(|(m, _)| m == k)).collect();
+        moves.extend(rest.into_iter().map(|k| (k, to)));
+    }
     // From the back of each list first, so the indices of the ones still to go don't shift.
-    let mut list = std::mem::take(&mut picked.keys);
-    picked.anchor = None;
-    list.sort_by_key(|&(_, i, _)| std::cmp::Reverse(i));
-    for (from, index, item) in list {
+    moves.sort_by_key(|&((_, i, _), _)| std::cmp::Reverse(i));
+    for ((from, index, item), to) in moves {
         let Some(stack) = stack_at(&v, &floor, from, index).filter(|s| s.item == item) else { continue };
         if let Some(intent) = move_intent(me.id, from, index, to, 0)
             && flight.ask(from, index, stack, false, now)
@@ -581,6 +862,24 @@ fn send_picked(time: Res<Time>, me: Res<LocalPlayer>, link: Res<ServerLink>, mut
             out.0.push(intent);
         }
     }
+}
+
+/// What a move-all button moves: the stacks `listed` shows in `col`, but never what you hold or wear.
+fn all_of(col: Column, listed: &[Key]) -> Vec<Key> {
+    listed.iter().copied().filter(|k| Column::of(k.0) == col && !matches!(k.0, Place::Slot(_) | Place::Worn)).collect()
+}
+
+/// The intents a click sends: [`click_intent`]'s one, or for a left click on a collapsed row one
+/// for each of its stacks, from the back first so the indices of the ones still to go don't shift.
+fn click_intents(click: &RowClick, player: u32, flight: &mut InFlight, now: f32) -> Vec<Intent> {
+    let a = &click.action;
+    let Some((from, index, to)) = a.left.filter(|_| click.button == PointerButton::Primary && !click.one && a.craft.is_none() && !a.more.is_empty()) else {
+        return click_intent(click, player, flight, now).into_iter().collect();
+    };
+    let mut lines = vec![Line { from, index, stack: a.stack }];
+    lines.extend(a.more.iter().copied());
+    lines.sort_by_key(|l| std::cmp::Reverse(l.index));
+    lines.into_iter().filter(|l| flight.ask(l.from, l.index, l.stack, false, now)).filter_map(|l| move_intent(player, l.from, l.index, to, 0)).collect()
 }
 
 /// The intent a click sends, if any (`None`: nothing for that button, or already on its way).
@@ -627,7 +926,7 @@ fn drain_clicks(player: u32, now: f32, clicks: &mut Clicks, flight: &mut InFligh
             continue;
         }
         buttons.push(click.button);
-        out.0.extend(click_intent(&click, player, flight, now));
+        out.0.extend(click_intents(&click, player, flight, now));
     }
 }
 
@@ -649,6 +948,7 @@ fn rebuild(
     flight: Res<InFlight>,
     find: Res<Find>,
     picked: Res<Picked>,
+    ui: Res<PanelUi>,
     mut listed: ResMut<Listed>,
     mut make_ui: ResMut<MakeUi>,
     options: Option<Res<crate::Options>>,
@@ -673,107 +973,217 @@ fn rebuild(
     let note_fresh = time.elapsed_secs() - last.at < NOTE_SECS * 2.0;
     // (The game hour too: food goes off as time passes.)
     let now = link.curr.game_minute;
-    let signature = format!("{view:?}|{floor:?}|{:.1}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}", busy.0, busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.keys, make_ui.open, make_ui.favs);
+    // (The seconds a job has left only show in the Make list, so only count when it's open.)
+    let secs = if make_ui.shown { busy.0 } else { 0.0 };
+    let signature = format!("{view:?}|{floor:?}|{secs:.1}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{}|{:?}", busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.keys, make_ui.open, make_ui.favs, make_ui.shown, *ui);
     if shown.0 == signature {
         return;
     }
     shown.0 = signature;
     commands.entity(root).despawn_children();
     let items = &join.items;
-    let open = view.as_ref().and_then(|v| v.open.as_ref().map(|c| c.id));
-    let open_name = view.as_ref().and_then(|v| v.open.as_ref().map(|c| c.name.to_lowercase()));
-    let is_picked = |from: Place, index: u32, s: &ItemStack| picked.keys.contains(&(from, index, s.item));
-    let shows = |s: &ItemStack| find.shows(items, s);
-    let shown_at = |from: Place, index: u32, s: &ItemStack| on_show(&find, items, &picked, from, index, s);
-    // The item rows drawn, in order, for Shift-click's ranges.
+    let open = view.as_ref().and_then(|v| v.open.as_ref().map(|c| (c.id, c.name.to_lowercase())));
+    // What the right pane shows, and so where a click on what you carry sends it.
+    let right = ui.right(open.as_ref().map(|(id, _)| *id));
+    let ctx = Ctx { items, now, me: me.id, flight: &flight, find: &find, picked: &picked, ui: &ui, view: view.as_ref(), open: open.as_ref().map(|(id, n)| (*id, n.as_str())) };
+    // The item rows drawn, in order, for Shift-click's ranges and the move-all buttons.
     let mut rows: Vec<Key> = Vec::new();
-    let menu_open = open.zip(open_name.clone());
-    let act = |from: Place, index: u32, s: &ItemStack, to: Place| RowAction {
-        stack: *s,
-        title: name_of(items, now, s),
-        left: Some((from, index, to)),
-        menu: menu_entries(me.id, items, from, index, s, menu_open.as_ref().map(|(id, n)| (*id, n.as_str()))),
-        craft: None,
-    };
     commands.entity(root).with_children(|c| {
-        header(c, view.as_ref(), busy);
-        toolbar(c, &find);
-        // The move-to row: above the columns, so it is in view however long they are, and always
-        // there, so picking a first row doesn't shift the rows under the pointer.
+        // The top row: the move-to bar for picked stacks (always this high, so picking a first row
+        // doesn't shift the rows under the pointer) and the one control that brings out the search.
         let kg: f32 = view.as_ref().map_or(0.0, |v| picked.keys.iter().filter_map(|&(p, i, _)| stack_at(v, &floor, p, i)).map(|s| stack_kg(items, &s)).sum());
-        picked_bar(c, picked.keys.len(), kg, open.zip(open_name.clone()));
-        c.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(12), align_items: AlignItems::FlexStart, ..default() }).with_children(|cols| {
-            // You.
-            let mine_to = format!("-> {}", open_name.as_deref().unwrap_or("floor"));
-            column(cols, Column::You, "You", &mine_to, |col| {
+        top_bar(c, &find, picked.keys.len(), kg, open.clone());
+        if find.in_use() {
+            toolbar(c, &find);
+        }
+        c.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::FlexStart, ..default() }).with_children(|panes| {
+            // Left: what you carry, or (its other tab) what you hold and wear.
+            panes.spawn(tab_strip()).with_children(|t| {
+                tab(t, "Carried", !ui.worn).observe(|_: On<PointerPress>, mut ui: ResMut<PanelUi>| ui.worn = false);
+                tab(t, "Worn", ui.worn).observe(|_: On<PointerPress>, mut ui: ResMut<PanelUi>| ui.worn = true);
+            });
+            let load = view.as_ref().map(|v| {
+                let k = &v.carry;
+                let (tag, color) = match k.burden {
+                    Burden::None => ("", TEXT),
+                    Burden::Burdened => ("  BURDENED", OK),
+                    Burden::Heavy => ("  HEAVY", NO),
+                    Burden::Overloaded => ("  OVERLOADED", Color::srgb(1.0, 0.3, 0.25)),
+                };
+                Gauge { share: Some(k.weight_kg / k.limit_kg.max(0.1)), color, left: format!("{:.1} / {:.1} kg{tag}", k.weight_kg, k.limit_kg), right: format!("{:.1} / {:.0} L", k.used_l, k.room_l) }
+            });
+            pane(panes, if ui.worn { "Worn and held" } else { "Carried" }, (!ui.worn).then_some(Column::You), load.unwrap_or_default(), ui.sort, |col| {
                 let Some(v) = &view else { return };
                 let inv = &v.inventory;
-                for (label, slot) in [("Hand", Slot::Hand), ("Other hand", Slot::OffHand), ("Back", Slot::Back), ("Shoulder", Slot::Shoulder)] {
-                    match inv.slot(slot) {
-                        Some(s) => item_row(&mut rows, col,format!("{label}: {}{}", name_of(items, now, &s), moving(&flight, Place::Slot(slot), 0, &s)), format!("{:.1} kg", stack_kg(items, &s)), act(Place::Slot(slot), 0, &s, Place::Carried), is_picked(Place::Slot(slot), 0, &s)),
-                        None => dim(col, format!("{label}: -")),
+                if ui.worn {
+                    for (label, slot) in [("Hand", Slot::Hand), ("Off hand", Slot::OffHand), ("Back", Slot::Back), ("Shoulder", Slot::Shoulder)] {
+                        match inv.slot(slot) {
+                            Some(stack) => ctx.slot_row(&mut rows, col, Line { from: Place::Slot(slot), index: 0, stack }, label),
+                            None => empty_row(col, label),
+                        }
                     }
+                    for (k, s) in inv.worn.iter().enumerate().filter(|(k, s)| ctx.shows(Place::Worn, *k as u32, s)) {
+                        ctx.slot_row(&mut rows, col, Line { from: Place::Worn, index: k as u32, stack: *s }, "Worn");
+                    }
+                    return;
                 }
-                for (k, s) in inv.worn.iter().enumerate().filter(|(k, s)| shown_at(Place::Worn, *k as u32, s)) {
-                    item_row(&mut rows, col,format!("Worn: {}{}", name_of(items, now, s), moving(&flight, Place::Worn, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), act(Place::Worn, k as u32, s, Place::Carried), is_picked(Place::Worn, k as u32, s));
-                }
-                dim(col, format!("Carried ({:.1} of {:.0} L):", v.carry.used_l, v.carry.room_l));
                 if inv.carried.is_empty() {
-                    dim(col, "  nothing".into());
-                } else if !inv.carried.iter().any(shows) {
-                    dim(col, "  nothing that matches".into());
+                    dim(col, "Nothing".into());
+                } else if !inv.carried.iter().any(|s| find.shows(items, s)) {
+                    dim(col, "Nothing that matches".into());
                 }
-                for (k, s) in inv.carried.iter().enumerate().filter(|(k, s)| shown_at(Place::Carried, *k as u32, s)) {
-                    let def = items.get(s.item as usize);
-                    let to = open.map_or(Place::Ground, Place::Container);
-                    // Uses left in the opened one (a box of plasters, a roll of gauze).
-                    let left = match (def.and_then(|d| d.medical.as_ref()), v.health.aid.opened.iter().find(|o| o.item == s.item)) {
-                        (Some(m), Some(o)) => format!(" ({} of {} left)", m.uses.saturating_sub(o.used), m.uses),
-                        _ => String::new(),
-                    };
-                    item_row(&mut rows, col,format!("  {}{left}{}", name_of(items, now, s), moving(&flight, Place::Carried, k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), act(Place::Carried, k as u32, s, to), is_picked(Place::Carried, k as u32, s));
-                }
+                ctx.rows(&mut rows, col, inv.carried.iter().enumerate().map(|(k, s)| Line { from: Place::Carried, index: k as u32, stack: *s }), right);
             });
-            // The open container.
-            if let Some(cv) = view.as_ref().and_then(|v| v.open.as_ref()) {
-                let used = zombye_sim::inventory::stacks_volume(items, &cv.stacks);
-                column(cols, Column::Container, &format!("{} ({used:.1} of {:.0} L)", cv.name, cv.room_l), "-> bags", |col| {
-                    if cv.stacks.is_empty() {
-                        dim(col, "empty".into());
-                    } else if !cv.stacks.iter().any(shows) {
-                        dim(col, "nothing that matches".into());
-                    }
-                    for (k, s) in cv.stacks.iter().enumerate().filter(|(k, s)| shown_at(Place::Container(cv.id), *k as u32, s)) {
-                        item_row(&mut rows, col,format!("{}{}", name_of(items, now, s), moving(&flight, Place::Container(cv.id), k as u32, s)), format!("{:.1} kg", stack_kg(items, s)), act(Place::Container(cv.id), k as u32, s, Place::Carried), is_picked(Place::Container(cv.id), k as u32, s));
-                    }
-                });
+            // Between the panes: everything one shows, across to the other.
+            panes.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(6), width: px(34), margin: UiRect::axes(px(4), px(0)), padding: UiRect::top(px(94)), flex_shrink: 0.0, ..default() }).with_children(|mid| {
+                let across = if matches!(right, Place::Ground) { Column::Floor } else { Column::Container };
+                chip(mid, ">>".into(), false).observe(|_: On<PointerPress>, mut all: ResMut<MoveAll>| all.0 = Some(Column::You));
+                chip(mid, "<<".into(), false).observe(move |_: On<PointerPress>, mut all: ResMut<MoveAll>| all.0 = Some(across));
+            });
+            // Right: the open container, or (its other tab, and with none open) the floor in reach.
+            let floor_kg: f32 = floor.iter().map(|(_, s)| stack_kg(items, s)).sum();
+            match view.as_ref().and_then(|v| v.open.as_ref()).filter(|_| matches!(right, Place::Container(_))) {
+                Some(cv) => {
+                    let used = zombye_sim::inventory::stacks_volume(items, &cv.stacks);
+                    let kg: f32 = cv.stacks.iter().map(|s| stack_kg(items, s)).sum();
+                    let gauge = Gauge { share: Some(used / cv.room_l.max(0.1)), color: TEXT, left: format!("{used:.1} / {:.0} L", cv.room_l), right: format!("{kg:.1} kg") };
+                    pane(panes, &cv.name, Some(Column::Container), gauge, ui.sort, |col| {
+                        if cv.stacks.is_empty() {
+                            dim(col, "Empty".into());
+                        } else if !cv.stacks.iter().any(|s| find.shows(items, s)) {
+                            dim(col, "Nothing that matches".into());
+                        }
+                        ctx.rows(&mut rows, col, cv.stacks.iter().enumerate().map(|(k, s)| Line { from: Place::Container(cv.id), index: k as u32, stack: *s }), Place::Carried);
+                    });
+                }
+                None => {
+                    let gauge = Gauge { share: None, color: TEXT, left: "Within reach".into(), right: format!("{floor_kg:.1} kg") };
+                    pane(panes, "Floor", Some(Column::Floor), gauge, ui.sort, |col| {
+                        if floor.is_empty() {
+                            dim(col, "Nothing within reach".into());
+                        } else if !floor.iter().any(|(_, s)| find.shows(items, s)) {
+                            dim(col, "Nothing that matches".into());
+                        }
+                        ctx.rows(&mut rows, col, floor.iter().map(|(id, s)| Line { from: Place::Ground, index: *id, stack: *s }), Place::Carried);
+                        if open.is_none() {
+                            dim(col, "E: search the cupboard, drawer or fridge you face".into());
+                        }
+                    });
+                }
             }
-            // The floor.
-            column(cols, Column::Floor, "Floor", "-> bags", |col| {
-                if floor.is_empty() {
-                    dim(col, "nothing within reach".into());
-                } else if !floor.iter().any(|(_, s)| shows(s)) {
-                    dim(col, "nothing that matches".into());
+            panes.spawn(tab_strip()).with_children(|t| {
+                if let Some(cv) = view.as_ref().and_then(|v| v.open.as_ref()) {
+                    tab(t, &format!("{} {}", cv.name, cv.stacks.len()), matches!(right, Place::Container(_))).observe(|_: On<PointerPress>, mut ui: ResMut<PanelUi>| ui.floor = false);
                 }
-                for (id, s) in floor.iter().filter(|(id, s)| shown_at(Place::Ground, *id, s)) {
-                    item_row(&mut rows, col,format!("{}{}", name_of(items, now, s), moving(&flight, Place::Ground, *id, s)), format!("{:.1} kg", stack_kg(items, s)), act(Place::Ground, *id, s, Place::Carried), is_picked(Place::Ground, *id, s));
-                }
-                if open.is_none() {
-                    dim(col, "E: search the cupboard,".into());
-                    dim(col, "drawer or fridge you face".into());
-                }
+                tab(t, &format!("Floor {}", floor.len()), matches!(right, Place::Ground)).observe(|_: On<PointerPress>, mut ui: ResMut<PanelUi>| ui.floor = true);
             });
         });
         if let Some(v) = &view {
             make(c, &join, v, busy.0, &flight, &make_ui);
         }
-        c.spawn((Text::new("Click: move it where its column's arrow says (a recipe: make it)   Alt-click: just one   /: search   Tab: close"), font(12.0), TextColor(DIM)));
-        c.spawn((Text::new("Right-click: what you can do with it (1-9 picks, Esc closes; a recipe: pin it)"), font(12.0), TextColor(DIM)));
+        c.spawn((Text::new("Click: move across   Alt-click: just one   Ctrl / Shift-click: pick   Right-click: menu   Tab: close"), font(ROW_FONT), TextColor(DIM)));
         if note_fresh && !last.text.is_empty() {
-            c.spawn((Text::new(last.text.clone()), font(14.0), TextColor(if last.ok { OK } else { NO })));
+            c.spawn((Text::new(last.text.clone()), font(ROW_FONT), TextColor(if last.ok { OK } else { NO })));
         }
     });
     listed.0 = rows;
+}
+
+/// What drawing a pane's rows needs to know.
+struct Ctx<'a> {
+    items: &'a [ItemDef],
+    /// The game minute (food goes off).
+    now: i32,
+    me: u32,
+    flight: &'a InFlight,
+    find: &'a Find,
+    picked: &'a Picked,
+    ui: &'a PanelUi,
+    view: Option<&'a PrivateView>,
+    /// The open container (id, name), for the menus.
+    open: Option<(u32, &'a str)>,
+}
+
+impl Ctx<'_> {
+    fn shows(&self, from: Place, index: u32, s: &ItemStack) -> bool {
+        on_show(self.find, self.items, self.picked, from, index, s)
+    }
+
+    /// What a click on the row of `l` (and `more`, the other stacks it stands for) does.
+    fn act(&self, l: &Line, to: Place, more: Vec<Line>) -> RowAction {
+        RowAction { stack: l.stack, title: name_of(self.items, self.now, &l.stack), left: Some((l.from, l.index, to)), more, menu: menu_entries(self.me, self.items, l.from, l.index, &l.stack, self.open), craft: None }
+    }
+
+    /// What follows the name, dimmed: how fresh, goes left, uses left in the opened one (a box of
+    /// plasters, a roll of gauze), and that it is on its way.
+    fn note(&self, l: &Line) -> String {
+        let mut notes = Vec::new();
+        let state = state_of(self.items, self.now, &l.stack);
+        if !state.is_empty() {
+            notes.push(state);
+        }
+        let medical = self.items.get(l.stack.item as usize).and_then(|d| d.medical.as_ref());
+        let opened = self.view.and_then(|v| v.health.aid.opened.iter().find(|o| o.item == l.stack.item));
+        if let (Place::Carried, Some(m), Some(o)) = (l.from, medical, opened) {
+            notes.push(format!("{} of {} left", m.uses.saturating_sub(o.used), m.uses));
+        }
+        if self.flight.asked_for(l.from, l.index, l.stack.item) > 0 {
+            notes.push("moving".into());
+        }
+        notes.join(", ")
+    }
+
+    /// The cells of the row of one stack; `kind` instead of its category (the slot it is in).
+    fn cells(&self, l: &Line, lead: Lead, kind: Option<&str>) -> Cells {
+        let def = self.items.get(l.stack.item as usize);
+        Cells {
+            lead,
+            swatch: def.map(|d| Color::srgb(d.color.0, d.color.1, d.color.2)),
+            name: def.map_or("?".into(), |d| d.name.clone()),
+            note: self.note(l),
+            kind: kind.map_or_else(|| def.map_or("", |d| Group::of(d.category).name()).to_string(), str::to_string),
+            qty: if l.stack.count > 1 { l.stack.count.to_string() } else { String::new() },
+            kg: format!("{:.1}", stack_kg(self.items, &l.stack)),
+            faint: false,
+        }
+    }
+
+    /// The row of something held or worn: its slot where the others say their type; a click
+    /// takes it off into the bags.
+    fn slot_row(&self, listed: &mut Vec<Key>, col: &mut ChildSpawnerCommands, l: Line, slot: &str) {
+        listed.push(l.key());
+        row(col, self.cells(&l, Lead::Nothing, Some(slot)), self.act(&l, Place::Carried, Vec::new()), self.picked.keys.contains(&l.key()));
+    }
+
+    /// A pane's rows from its stacks (`lines`: the ones the search and chips leave get a row), a
+    /// click sending them to `to`. Several stacks of one item are one row with their count and
+    /// weight together and a fold mark: pressed, the stacks show under it, each a row of its own.
+    /// `listed` gets every stack drawn, in order.
+    fn rows(&self, listed: &mut Vec<Key>, col: &mut ChildSpawnerCommands, lines: impl Iterator<Item = Line>, to: Place) {
+        let is_picked = |l: &Line| self.picked.keys.contains(&l.key());
+        for stacks in arrange(self.items, lines.filter(|l| self.shows(l.from, l.index, &l.stack)), self.ui.sort) {
+            let first = stacks[0];
+            if stacks.len() == 1 {
+                listed.push(first.key());
+                row(col, self.cells(&first, Lead::Nothing, None), self.act(&first, to, Vec::new()), is_picked(&first));
+                continue;
+            }
+            let fold = (Column::of(first.from), first.stack.item);
+            // (With only some of its stacks picked it shows them, so what is picked is in view.)
+            let open = self.ui.unfolded(fold.0, fold.1) || (stacks.iter().any(is_picked) && !stacks.iter().all(is_picked));
+            let mut cells = self.cells(&first, Lead::Fold { open, key: fold }, None);
+            cells.qty = stacks.iter().map(|l| l.stack.count as u32).sum::<u32>().to_string();
+            cells.kg = format!("{:.1}", stacks.iter().map(|l| stack_kg(self.items, &l.stack)).sum::<f32>());
+            cells.note = if stacks.iter().any(|l| self.flight.asked_for(l.from, l.index, l.stack.item) > 0) { "moving".into() } else { String::new() };
+            row(col, cells, self.act(&first, to, stacks[1..].to_vec()), stacks.iter().all(is_picked));
+            for l in &stacks {
+                listed.push(l.key());
+                if open {
+                    row(col, self.cells(l, Lead::Child, None), self.act(l, to, Vec::new()), is_picked(l));
+                }
+            }
+        }
+    }
 }
 
 /// The Make list's own state (#96): which families are open and which recipes are pinned.
@@ -784,6 +1194,8 @@ struct MakeUi {
     open: Vec<String>,
     /// Pinned recipe ids.
     favs: Vec<String>,
+    /// The list is opened (it starts as one line saying how many you can make).
+    shown: bool,
     path: Option<std::path::PathBuf>,
     loaded: bool,
 }
@@ -815,10 +1227,13 @@ impl MakeUi {
     fn load(&mut self, saves: &std::path::Path, player: u32) {
         let p = saves.join(format!("make-favourites-{player}.txt"));
         if let Ok(t) = std::fs::read_to_string(&p) {
-            // A line `open:KEY` opens a family from the start (`open:*`: all), for pictures.
+            // A line `open:KEY` opens the list and a family from the start (`open:*`: all), for pictures.
             for l in t.lines().map(str::trim).filter(|l| !l.is_empty()) {
                 match l.strip_prefix("open:") {
-                    Some(k) => self.open.push(k.to_string()),
+                    Some(k) => {
+                        self.open.push(k.to_string());
+                        self.shown = true;
+                    }
                     None => self.favs.push(l.to_string()),
                 }
             }
@@ -841,12 +1256,12 @@ enum MakeAct {
 fn make_row(c: &mut ChildSpawnerCommands, label: String, right: String, act: MakeAct, fav: Option<String>, color: Color) {
     let hover = !matches!(act, MakeAct::None);
     c.spawn((
-        Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, column_gap: px(10), padding: UiRect::axes(px(6), px(2)), ..default() },
+        Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, column_gap: px(10), padding: UiRect::axes(px(6), px(3)), ..default() },
         BackgroundColor(ROW),
     ))
     .with_children(|r| {
-        r.spawn((Text::new(label), font(14.0), TextColor(color), Pickable::IGNORE));
-        r.spawn((Text::new(right), font(12.0), TextColor(DIM), Pickable::IGNORE));
+        r.spawn((Text::new(label), font(ROW_FONT), TextColor(color), Pickable::IGNORE));
+        r.spawn((Text::new(right), font(ROW_FONT), TextColor(DIM), Pickable::IGNORE));
     })
     .observe(move |ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>| {
         if hover && let Ok(mut bg) = q.get_mut(ev.entity) {
@@ -860,7 +1275,7 @@ fn make_row(c: &mut ChildSpawnerCommands, label: String, right: String, act: Mak
     })
     .observe(move |ev: On<PointerPress>, mut clicks: ResMut<Clicks>, mut ui: ResMut<MakeUi>| match (ev.button, &act) {
         (PointerButton::Primary, MakeAct::Craft(k)) => {
-            clicks.0.push(RowClick { action: RowAction { stack: ItemStack::one(0), title: String::new(), left: None, menu: Vec::new(), craft: Some(*k) }, button: ev.button, one: false })
+            clicks.0.push(RowClick { action: RowAction { stack: ItemStack::one(0), title: String::new(), left: None, more: Vec::new(), menu: Vec::new(), craft: Some(*k) }, button: ev.button, one: false })
         }
         (PointerButton::Primary, MakeAct::Family(key)) => ui.toggle_open(key),
         (PointerButton::Secondary, _) => {
@@ -906,10 +1321,29 @@ fn make(c: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f3
     };
     let can = |k: usize| crafting::check(&join.recipes[k], &v.inventory, items).is_ok() || v.jobs.contains(&JobKind::Craft { recipe: k as u16 });
     let pinned = |k: usize| ui.favs.contains(&join.recipes[k].id);
-    c.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(8), align_items: AlignItems::Baseline, ..default() }).with_children(|t| {
-        t.spawn((Text::new("Make"), font(15.0), TextColor(TEXT)));
-        t.spawn((Text::new("click a group to open it; right-click a recipe to pin it (*)"), font(12.0), TextColor(DIM)));
-    });
+    // One line until it's asked for: its title, a fold mark, and how many you can make now.
+    let ready = (0..join.recipes.len()).filter(|&k| can(k)).count();
+    let summary = match (ui.shown, ready) {
+        (true, _) => "click a group to open it; right-click a recipe to pin it (*)".to_string(),
+        (false, 0) => "nothing you can make yet".to_string(),
+        (false, n) => format!("{n} you can make now"),
+    };
+    c.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(8), align_items: AlignItems::Center, margin: UiRect::top(px(4)), ..default() })
+        .with_children(|t| {
+            t.spawn((Node { width: px(W_LEAD + 6.0), justify_content: JustifyContent::Center, ..default() }, BackgroundColor(CHIP), Pickable::IGNORE)).with_children(|f| {
+                f.spawn((Text::new(if ui.shown { "-" } else { "+" }), font(ROW_FONT), TextColor(TEXT), Pickable::IGNORE));
+            });
+            t.spawn((Text::new("Make"), font(HEAD_FONT), TextColor(TEXT), Pickable::IGNORE));
+            t.spawn((Text::new(summary), font(ROW_FONT), TextColor(DIM), Pickable::IGNORE));
+        })
+        .observe(|ev: On<PointerPress>, mut ui: ResMut<MakeUi>| {
+            if ev.button == PointerButton::Primary {
+                ui.shown = !ui.shown;
+            }
+        });
+    if !ui.shown {
+        return;
+    }
     // Pinned first, makeable ones leading.
     let mut favs: Vec<usize> = (0..join.recipes.len()).filter(|&k| pinned(k)).collect();
     favs.sort_by_key(|&k| !can(k));
@@ -946,73 +1380,120 @@ fn make(c: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f3
     }
 }
 
-/// " (moving)" after a row some of which is on its way.
-fn moving(flight: &InFlight, from: Place, index: u32, s: &ItemStack) -> &'static str {
-    if flight.asked_for(from, index, s.item) > 0 { "  (moving)" } else { "" }
+/// What a pane says under its title about how full it is: a bar (`share` of it filled; none for
+/// the floor, which has no limit), and a figure at each end of the line under it.
+#[derive(Default)]
+struct Gauge {
+    share: Option<f32>,
+    color: Color,
+    left: String,
+    right: String,
 }
 
-fn header(c: &mut ChildSpawnerCommands, view: Option<&PrivateView>, busy: (f32, u8)) {
-    let Some(v) = view else {
-        c.spawn((Text::new("Inventory"), font(18.0), TextColor(TEXT)));
-        return;
-    };
-    let k = &v.carry;
-    let (tag, color) = match k.burden {
-        Burden::None => ("", TEXT),
-        Burden::Burdened => ("  BURDENED: slower, tires faster", OK),
-        Burden::Heavy => ("  HEAVY: slow, can't run", NO),
-        Burden::Overloaded => ("  OVERLOADED: crawling, can't run or climb", Color::srgb(1.0, 0.3, 0.25)),
-    };
-    c.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(8), align_items: AlignItems::Baseline, ..default() }).with_children(|r| {
-        r.spawn((Text::new(format!("{:.1} / {:.0} kg", k.weight_kg, k.limit_kg)), font(18.0), TextColor(color)));
-        r.spawn((Text::new(format!("(nothing more past {:.0} kg){tag}", v.max_kg)), font(13.0), TextColor(if tag.is_empty() { DIM } else { color })));
-    });
-    // A weight bar: the limit is at the 1/2 mark of the hard cap.
-    // (Not shrinking: a panel taller than its room scrolls, and would squeeze the bar to nothing.)
-    c.spawn((Node { width: px(300), height: px(8), flex_shrink: 0.0, ..default() }, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)))).with_children(|b| {
-        let share = (k.weight_kg / v.max_kg.max(0.1)).clamp(0.0, 1.0);
-        b.spawn((Node { width: Val::Percent(share * 100.0), height: Val::Percent(100.0), ..default() }, BackgroundColor(color)));
-    });
-    if busy.1 > 0 {
-        // `busy.1` counts the job under way too.
-        let more = if busy.1 > 1 { format!(" ({} more queued)", busy.1 - 1) } else { String::new() };
-        c.spawn((Text::new(format!("busy: {:.1} s{more}", busy.0)), font(13.0), TextColor(OK)));
-    }
-}
-
-/// A column: its title, where a click on one of its rows sends it, and its rows.
-fn column(cols: &mut ChildSpawnerCommands, which: Column, title: &str, sends: &str, body: impl FnOnce(&mut ChildSpawnerCommands)) {
-    cols.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(3), min_width: px(200), ..default() }).with_children(|col| {
-        col.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(8), align_items: AlignItems::Center, ..default() }).with_children(|t| {
-            t.spawn((Text::new(title.to_string()), font(15.0), TextColor(TEXT), TextLayout::no_wrap()));
-            t.spawn((Text::new(sends.to_string()), font(12.0), TextColor(OK), TextLayout::no_wrap()));
-            // Every stack this column shows, picked in one click (again: unpicked).
-            chip(t, "pick all".into(), false).observe(move |_: On<PointerPress>, listed: Res<Listed>, mut picked: ResMut<Picked>| picked.pick_all(which, &listed.0));
+/// A pane: one title (with "pick all" for the stacks it shows, if `pick`), how full it is, the
+/// column headers (a press sorts both panes by that column) and its rows.
+fn pane(panes: &mut ChildSpawnerCommands, title: &str, pick: Option<Column>, gauge: Gauge, sort: Sort, body: impl FnOnce(&mut ChildSpawnerCommands)) {
+    panes.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(1), width: px(PANE_W), min_height: px(230), padding: UiRect::all(px(8)), flex_shrink: 0.0, ..default() }, BackgroundColor(PANE))).with_children(|col| {
+        col.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::Center, margin: UiRect::bottom(px(6)), ..default() }).with_children(|t| {
+            t.spawn((Text::new(title.to_string()), font(HEAD_FONT), TextColor(TEXT), TextLayout::no_wrap()));
+            if let Some(which) = pick {
+                // Every stack this pane shows, picked in one click (again: unpicked).
+                t.spawn((Text::new("pick all"), font(ROW_FONT), TextColor(DIM), TextLayout::no_wrap())).observe(move |_: On<PointerPress>, listed: Res<Listed>, mut picked: ResMut<Picked>| picked.pick_all(which, &listed.0));
+            }
         });
+        // (Not shrinking: a panel taller than its room scrolls, and would squeeze the bar to nothing.)
+        col.spawn((Node { height: px(4), flex_shrink: 0.0, ..default() }, BackgroundColor(if gauge.share.is_some() { Color::srgba(0.0, 0.0, 0.0, 0.6) } else { Color::NONE }))).with_children(|b| {
+            let share = gauge.share.unwrap_or(0.0).clamp(0.0, 1.0);
+            b.spawn((Node { width: Val::Percent(share * 100.0), height: Val::Percent(100.0), ..default() }, BackgroundColor(gauge.color)));
+        });
+        col.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, margin: UiRect::axes(px(0), px(4)), ..default() }).with_children(|g| {
+            g.spawn((Text::new(gauge.left), font(ROW_FONT), TextColor(gauge.color), TextLayout::no_wrap()));
+            g.spawn((Text::new(gauge.right), font(ROW_FONT), TextColor(DIM), TextLayout::no_wrap()));
+        });
+        // The column headers, over the rows' cells.
+        col.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(CELL_GAP), padding: UiRect::axes(px(6), px(3)), ..default() }).with_children(|h| {
+            h.spawn(Node { width: px(W_LEAD + CELL_GAP + W_SWATCH), flex_shrink: 0.0, ..default() });
+            head(h, "Name", Some(SortKey::Name), sort, Node { flex_grow: 1.0, flex_basis: px(0), ..default() });
+            head(h, "Type", Some(SortKey::Kind), sort, Node { width: px(W_KIND), flex_shrink: 0.0, ..default() });
+            head(h, "Qty", None, sort, Node { width: px(W_QTY), flex_shrink: 0.0, justify_content: JustifyContent::FlexEnd, ..default() });
+            head(h, "kg", Some(SortKey::Weight), sort, Node { width: px(W_KG), flex_shrink: 0.0, justify_content: JustifyContent::FlexEnd, ..default() });
+        });
+        col.spawn((Node { height: px(1), flex_shrink: 0.0, margin: UiRect::bottom(px(3)), ..default() }, BackgroundColor(LINE)));
         body(col);
     });
 }
 
-/// A small clickable label (a chip, a button); the caller observes its presses.
-fn chip<'a>(parent: &'a mut ChildSpawnerCommands, text: String, on: bool) -> EntityCommands<'a> {
-    let mut e = parent.spawn((Node { padding: UiRect::axes(px(6), px(2)), ..default() }, BackgroundColor(if on { CHIP_ON } else { CHIP })));
-    e.with_children(|b| {
-        b.spawn((Text::new(text), font(12.0), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
+/// A column header; pressed, both panes sort by `key` (again: the other way; a third time: unsorted).
+fn head(h: &mut ChildSpawnerCommands, label: &str, key: Option<SortKey>, sort: Sort, node: Node) {
+    let (mark, on) = key.map_or(("", false), |k| (sort.mark(k), sort.key == k));
+    let mut e = h.spawn(node);
+    e.with_children(|c| {
+        c.spawn((Text::new(format!("{label}{mark}")), font(ROW_FONT), TextColor(if on { TEXT } else { DIM }), TextLayout::no_wrap(), Pickable::IGNORE));
+    });
+    if let Some(key) = key {
+        e.observe(move |_: On<PointerPress>, mut ui: ResMut<PanelUi>| ui.sort.press(key));
+    }
+}
+
+/// The strip down a pane's outer edge that its tabs hang in.
+fn tab_strip() -> Node {
+    Node { flex_direction: FlexDirection::Column, row_gap: px(4), width: px(TAB_W), flex_shrink: 0.0, ..default() }
+}
+
+/// A slim tab on a pane's edge, its label turned to read down it; `on`: the one the pane shows.
+/// The caller observes its presses.
+fn tab<'a>(strip: &'a mut ChildSpawnerCommands, label: &str, on: bool) -> EntityCommands<'a> {
+    // (The label doesn't take part in the tab's height once turned, so the tab is sized for it.)
+    let height = label.chars().count() as f32 * ROW_FONT * 0.62 + 24.0;
+    let mut e = strip.spawn((Node { width: px(TAB_W), height: px(height), justify_content: JustifyContent::Center, align_items: AlignItems::Center, flex_shrink: 0.0, ..default() }, BackgroundColor(if on { PANE } else { TAB })));
+    e.with_children(|t| {
+        t.spawn((Text::new(label.to_string()), font(ROW_FONT), TextColor(if on { TEXT } else { DIM }), TextLayout::no_wrap(), Node { flex_shrink: 0.0, ..default() }, UiTransform::from_rotation(Rot2::degrees(90.0)), Pickable::IGNORE));
     });
     e
 }
 
-/// The search box and the category chips.
+/// A small clickable label (a chip, a button); the caller observes its presses.
+fn chip<'a>(parent: &'a mut ChildSpawnerCommands, text: String, on: bool) -> EntityCommands<'a> {
+    let mut e = parent.spawn((Node { padding: UiRect::axes(px(7), px(3)), justify_content: JustifyContent::Center, ..default() }, BackgroundColor(if on { CHIP_ON } else { CHIP })));
+    e.with_children(|b| {
+        b.spawn((Text::new(text), font(ROW_FONT), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
+    });
+    e
+}
+
+/// The top row. Left: the panel's name, or with stacks picked what to do with them (send them all
+/// to the bags, the open container or the floor). Right: the one small control that brings out the
+/// search box and the chips (or puts them away, cleared).
+fn top_bar(c: &mut ChildSpawnerCommands, find: &Find, n: usize, kg: f32, open: Option<(u32, String)>) {
+    c.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::Center, min_height: px(26), flex_shrink: 0.0, ..default() }).with_children(|bar| {
+        bar.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(6), align_items: AlignItems::Center, ..default() }).with_children(|l| {
+            if n == 0 {
+                l.spawn((Text::new("Inventory"), font(HEAD_FONT), TextColor(TEXT), TextLayout::no_wrap()));
+                return;
+            }
+            l.spawn((Text::new(format!("{n} picked ({kg:.1} kg), move to:")), font(ROW_FONT), TextColor(OK), TextLayout::no_wrap()));
+            chip(l, "bags".into(), false).observe(|_: On<PointerPress>, mut send: ResMut<SendPicked>| send.0 = Some(Place::Carried));
+            if let Some((id, name)) = open {
+                chip(l, name, false).observe(move |_: On<PointerPress>, mut send: ResMut<SendPicked>| send.0 = Some(Place::Container(id)));
+            }
+            chip(l, "floor".into(), false).observe(|_: On<PointerPress>, mut send: ResMut<SendPicked>| send.0 = Some(Place::Ground));
+            chip(l, "clear".into(), false).observe(|_: On<PointerPress>, mut picked: ResMut<Picked>| *picked = Picked::default());
+        });
+        chip(bar, if find.in_use() { "Find  x".into() } else { "Find  /".into() }, find.in_use()).observe(|_: On<PointerPress>, mut find: ResMut<Find>| find.press());
+    });
+}
+
+/// The search box and the category chips: on show only while in use ([`Find::in_use`]).
 fn toolbar(c: &mut ChildSpawnerCommands, find: &Find) {
-    c.spawn(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: px(4), row_gap: px(4), align_items: AlignItems::Center, max_width: px(PANEL_W - 20.0), ..default() }).with_children(|bar| {
+    c.spawn(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: px(4), row_gap: px(4), align_items: AlignItems::Center, max_width: px(PANEL_W - 24.0), ..default() }).with_children(|bar| {
         let text = match (find.query.is_empty(), find.typing) {
             (true, false) => "Search ( / )".to_string(),
             (_, true) => format!("Search: {}_", find.query),
             (false, false) => format!("Search: {}", find.query),
         };
-        bar.spawn((Node { min_width: px(160), padding: UiRect::axes(px(6), px(2)), ..default() }, BackgroundColor(if find.typing { CHIP_ON } else { CHIP })))
+        bar.spawn((Node { min_width: px(170), padding: UiRect::axes(px(7), px(3)), ..default() }, BackgroundColor(if find.typing { CHIP_ON } else { CHIP })))
             .with_children(|b| {
-                b.spawn((Text::new(text), font(12.0), TextColor(if find.query.is_empty() && !find.typing { DIM } else { TEXT }), Pickable::IGNORE));
+                b.spawn((Text::new(text), font(ROW_FONT), TextColor(if find.query.is_empty() && !find.typing { DIM } else { TEXT }), Pickable::IGNORE));
             })
             .observe(|_: On<PointerPress>, mut find: ResMut<Find>| find.typing = true);
         if !find.query.is_empty() {
@@ -1025,58 +1506,113 @@ fn toolbar(c: &mut ChildSpawnerCommands, find: &Find) {
     });
 }
 
-/// What to do with the picked stacks: send them all to the bags, the open container or the floor.
-fn picked_bar(c: &mut ChildSpawnerCommands, n: usize, kg: f32, open: Option<(u32, String)>) {
-    c.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(4), align_items: AlignItems::Center, min_height: px(20), flex_shrink: 0.0, ..default() }).with_children(|bar| {
-        if n == 0 {
-            bar.spawn((Text::new("Ctrl-click: pick a row   Shift-click: pick a range   then move them all from here"), font(12.0), TextColor(DIM), TextLayout::no_wrap()));
-            return;
-        }
-        bar.spawn((Text::new(format!("{n} picked ({kg:.1} kg), move to:")), font(13.0), TextColor(OK), TextLayout::no_wrap()));
-        chip(bar, "bags".into(), false).observe(|_: On<PointerPress>, mut send: ResMut<SendPicked>| send.0 = Some(Place::Carried));
-        if let Some((id, name)) = open {
-            chip(bar, name, false).observe(move |_: On<PointerPress>, mut send: ResMut<SendPicked>| send.0 = Some(Place::Container(id)));
-        }
-        chip(bar, "floor".into(), false).observe(|_: On<PointerPress>, mut send: ResMut<SendPicked>| send.0 = Some(Place::Ground));
-        chip(bar, "clear".into(), false).observe(|_: On<PointerPress>, mut picked: ResMut<Picked>| *picked = Picked::default());
-    });
-}
-
 /// Whether the stack at `from`/`index` gets a row: it fits the search and chips, or it is picked
 /// (a picked stack always shows, so what the bar will move is in view).
 fn on_show(find: &Find, items: &[ItemDef], picked: &Picked, from: Place, index: u32, s: &ItemStack) -> bool {
     find.shows(items, s) || picked.keys.contains(&(from, index, s.item))
 }
 
-/// [`row`] for a stack, noted in `rows` (the order Shift-click ranges over).
-fn item_row(rows: &mut Vec<Key>, col: &mut ChildSpawnerCommands, label: String, kg: String, action: RowAction, picked: bool) {
-    if let Some((from, index, _)) = action.left {
-        rows.push((from, index, action.stack.item));
-    }
-    row(col, label, kg, action, picked);
-}
-
+/// A line of plain dimmed text in a pane (nothing here, nothing that matches).
 fn dim(col: &mut ChildSpawnerCommands, text: String) {
-    col.spawn((Text::new(text), font(13.0), TextColor(DIM)));
+    col.spawn((Text::new(text), font(ROW_FONT), TextColor(DIM), Node { margin: UiRect::axes(px(6), px(3)), ..default() }));
 }
 
-/// A clickable row: `label` on the left, `kg` on the right, highlighted if `picked`. A press is
-/// only recorded here ([`Clicks`]); [`send_clicks`] decides what it sends. Ctrl-click picks it
-/// (or unpicks it) instead, and Shift-click picks every row from the last one picked to it.
-fn row(col: &mut ChildSpawnerCommands, label: String, kg: String, action: RowAction, picked: bool) {
-    let rest = if picked { ROW_PICKED } else { ROW };
-    col.spawn((
-        Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, column_gap: px(10), padding: UiRect::axes(px(6), px(2)), ..default() },
-        BackgroundColor(rest),
-    ))
-    .with_children(|r| {
-        // One line whatever the name: it never wraps, and a name too long for the column is cut
-        // off at the weight instead of pushing it out.
-        r.spawn((Node { min_width: px(0), flex_shrink: 1.0, overflow: Overflow::clip_x(), ..default() }, Pickable::IGNORE)).with_children(|l| {
-            l.spawn((Text::new(label), font(14.0), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
+/// What stands at the start of a row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Lead {
+    Nothing,
+    /// The fold mark of a row of several stacks (`open`: they show under it); `key` is the row.
+    Fold { open: bool, key: (Column, u16) },
+    /// One of the stacks under an opened row: set in, with no swatch of its own.
+    Child,
+}
+
+/// What a row says, cell by cell: every row of every pane has the same cells, so they line up.
+#[derive(Clone, Debug)]
+struct Cells {
+    lead: Lead,
+    /// The item's own colour, as a small mark before its name.
+    swatch: Option<Color>,
+    name: String,
+    /// After the name, dimmed (stale, 2/3 left, moving).
+    note: String,
+    /// The item's kind; for what you hold and wear, the slot.
+    kind: String,
+    /// How many, when more than one.
+    qty: String,
+    kg: String,
+    /// An empty slot: all of it dimmed.
+    faint: bool,
+}
+
+impl Cells {
+    /// A row that only says `name` and `kg` (tests).
+    #[cfg(test)]
+    fn plain(name: &str, kg: &str) -> Cells {
+        Cells { lead: Lead::Nothing, swatch: None, name: name.into(), note: String::new(), kind: String::new(), qty: String::new(), kg: kg.into(), faint: false }
+    }
+}
+
+/// A fixed-width cell of a row, its text at the start or (numbers) at the end.
+fn cell(r: &mut ChildSpawnerCommands, width: f32, text: String, color: Color, end: bool) {
+    r.spawn((Node { width: px(width), flex_shrink: 0.0, justify_content: if end { JustifyContent::FlexEnd } else { JustifyContent::FlexStart }, overflow: Overflow::clip_x(), ..default() }, Pickable::IGNORE)).with_children(|c| {
+        c.spawn((Text::new(text), font(ROW_FONT), TextColor(color), TextLayout::no_wrap(), Pickable::IGNORE));
+    });
+}
+
+/// A row's cells on a backing of `bg`: fold mark, swatch, name (and note), kind, count, weight.
+fn cells_row<'a>(col: &'a mut ChildSpawnerCommands, cells: Cells, bg: Color) -> EntityCommands<'a> {
+    let text = if cells.faint { DIM } else { TEXT };
+    let mut e = col.spawn((Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(CELL_GAP), padding: UiRect::axes(px(6), px(3)), flex_shrink: 0.0, ..default() }, BackgroundColor(bg)));
+    e.with_children(|r| {
+        match cells.lead {
+            // The fold mark takes its own presses: they open and shut the row, and go no further
+            // (the row under it would move its stacks).
+            Lead::Fold { open, key } => {
+                r.spawn((Node { width: px(W_LEAD), flex_shrink: 0.0, justify_content: JustifyContent::Center, ..default() }, BackgroundColor(CHIP)))
+                    .with_children(|f| {
+                        f.spawn((Text::new(if open { "-" } else { "+" }), font(ROW_FONT), TextColor(TEXT), Pickable::IGNORE));
+                    })
+                    .observe(move |mut ev: On<PointerPress>, mut ui: Option<ResMut<PanelUi>>| {
+                        ev.propagate(false);
+                        if let (PointerButton::Primary, Some(ui)) = (ev.button, ui.as_mut()) {
+                            ui.toggle_fold(key);
+                        }
+                    });
+            }
+            _ => {
+                r.spawn((Node { width: px(W_LEAD), flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
+            }
+        }
+        let swatch = cells.swatch.filter(|_| cells.lead != Lead::Child).unwrap_or(Color::NONE);
+        r.spawn((Node { width: px(W_SWATCH), height: px(W_SWATCH), flex_shrink: 0.0, border_radius: BorderRadius::all(px(2)), ..default() }, BackgroundColor(swatch), Pickable::IGNORE));
+        // One line whatever the name: it never wraps, and a name too long for its cell is cut
+        // off at the next cell instead of pushing it out.
+        r.spawn((Node { min_width: px(0), flex_grow: 1.0, flex_shrink: 1.0, flex_basis: px(0), column_gap: px(8), overflow: Overflow::clip_x(), ..default() }, Pickable::IGNORE)).with_children(|l| {
+            l.spawn((Text::new(cells.name), font(ROW_FONT), TextColor(text), TextLayout::no_wrap(), Node { flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
+            if !cells.note.is_empty() {
+                l.spawn((Text::new(cells.note), font(ROW_FONT), TextColor(DIM), TextLayout::no_wrap(), Node { flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
+            }
         });
-        r.spawn((Text::new(kg), font(12.0), TextColor(DIM), TextLayout::no_wrap(), Node { flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
-    })
+        cell(r, W_KIND, cells.kind, DIM, false);
+        cell(r, W_QTY, cells.qty, text, true);
+        cell(r, W_KG, cells.kg, DIM, true);
+    });
+    e
+}
+
+/// A slot with nothing in it, in the pane of what you hold and wear.
+fn empty_row(col: &mut ChildSpawnerCommands, slot: &str) {
+    cells_row(col, Cells { lead: Lead::Nothing, swatch: None, name: "-".into(), note: String::new(), kind: slot.into(), qty: String::new(), kg: String::new(), faint: true }, Color::NONE);
+}
+
+/// A clickable row of `cells`, highlighted if `picked`. A press is only recorded here
+/// ([`Clicks`]); [`send_clicks`] decides what it sends. Ctrl-click picks it (or unpicks it)
+/// instead, and Shift-click picks every row from the last one picked to it; a row standing for
+/// several stacks picks them all.
+fn row(col: &mut ChildSpawnerCommands, cells: Cells, action: RowAction, picked: bool) {
+    let rest = if picked { ROW_PICKED } else { ROW };
+    cells_row(col, cells, rest)
     .observe(|ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>| {
         if let Ok(mut bg) = q.get_mut(ev.entity) {
             bg.0 = ROW_HOVER;
@@ -1090,14 +1626,15 @@ fn row(col: &mut ChildSpawnerCommands, label: String, kg: String, action: RowAct
     .observe(move |ev: On<PointerPress>, keys: Res<ButtonInput<KeyCode>>, mut clicks: ResMut<Clicks>, mut picked: Option<ResMut<Picked>>, listed: Option<Res<Listed>>| {
         let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
         let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
+        let keys_of = action.keys();
         if (shift || ctrl)
             && ev.button == PointerButton::Primary
-            && let (Some((from, index, _)), Some(picked)) = (action.left, picked.as_mut())
+            && !keys_of.is_empty()
+            && let Some(picked) = picked.as_mut()
         {
-            let key = (from, index, action.stack.item);
             match (shift, &listed) {
-                (true, Some(listed)) => picked.extend_to(key, &listed.0),
-                _ => picked.toggle(key),
+                (true, Some(listed)) => picked.extend_to_row(&keys_of, &listed.0),
+                _ => picked.toggle_all(&keys_of),
             }
             return;
         }
@@ -1456,7 +1993,166 @@ mod tests {
     }
 
     fn click(left: Option<(Place, u32, Place)>, stack: ItemStack, button: PointerButton, one: bool) -> RowClick {
-        RowClick { action: RowAction { stack, title: String::new(), left, menu: Vec::new(), craft: None }, button, one }
+        RowClick { action: RowAction { stack, title: String::new(), left, more: Vec::new(), menu: Vec::new(), craft: None }, button, one }
+    }
+
+    fn shipped_items() -> Vec<ItemDef> {
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/data");
+        zombye_net::content::load_config(&data, 1).unwrap().items
+    }
+
+    /// Stacks of one item collapse into one row where the first lay; the headers sort the rows by
+    /// name, by type (then name) and by weight (the whole row's, heaviest first), either way round.
+    #[test]
+    fn stacks_collapse_and_rows_sort() {
+        let items = shipped_items();
+        let stack = |id: &str, n: u16| ItemStack::new(items.iter().position(|d| d.id == id).unwrap() as u16, n);
+        let carried = [stack("t_shirt", 1), stack("tinned_beans", 6), stack("rope", 1), stack("t_shirt", 1), stack("water_bottle", 2), stack("tinned_beans", 4), stack("t_shirt", 1)];
+        let lines = || carried.iter().enumerate().map(|(k, s)| Line { from: Place::Carried, index: k as u32, stack: *s });
+        let ids = |rows: &[Vec<Line>]| rows.iter().map(|r| items[r[0].stack.item as usize].id.as_str()).collect::<Vec<_>>();
+        let rows = arrange(&items, lines(), Sort::default());
+        assert_eq!(ids(&rows), ["t_shirt", "tinned_beans", "rope", "water_bottle"], "as they lie, each item once");
+        assert_eq!(rows[0].iter().map(|l| l.index).collect::<Vec<_>>(), [0, 3, 6], "the row stands for every stack of it");
+        assert_eq!(rows[1].iter().map(|l| l.stack.count).sum::<u16>(), 10);
+        let mut sort = Sort::default();
+        sort.press(SortKey::Name);
+        assert_eq!(ids(&arrange(&items, lines(), sort)), ["water_bottle", "rope", "t_shirt", "tinned_beans"], "Bottle of water, Rope, T-shirt, Tin of beans");
+        sort.press(SortKey::Name);
+        assert_eq!(ids(&arrange(&items, lines(), sort)), ["tinned_beans", "t_shirt", "rope", "water_bottle"]);
+        sort.press(SortKey::Name);
+        assert_eq!(sort, Sort::default(), "a third press: as they lie again");
+        sort.press(SortKey::Kind);
+        assert_eq!(ids(&arrange(&items, lines(), sort)), ["tinned_beans", "water_bottle", "t_shirt", "rope"], "food, drink, clothing, materials: the chips' order");
+        sort.press(SortKey::Weight);
+        assert_eq!((sort.mark(SortKey::Weight), sort.mark(SortKey::Name)), (" v", ""));
+        assert_eq!(ids(&arrange(&items, lines(), sort)), ["tinned_beans", "water_bottle", "rope", "t_shirt"], "ten tins outweigh the rest");
+        sort.press(SortKey::Weight);
+        assert_eq!(ids(&arrange(&items, lines(), sort))[0], "t_shirt");
+        assert_eq!((SortKey::parse("Type"), SortKey::parse("kg"), SortKey::parse("x")), (Some(SortKey::Kind), Some(SortKey::Weight), None));
+    }
+
+    /// A click on a collapsed row moves every stack it stands for, from the back first (so the
+    /// indices still to go don't shift), each asked for once; Alt-click takes one of the first.
+    #[test]
+    fn a_collapsed_row_moves_all_its_stacks() {
+        let shirts = |more: Vec<Line>, one: bool| RowClick { action: RowAction { stack: beans(1), title: String::new(), left: Some((Place::Carried, 0, Place::Container(4))), more, menu: Vec::new(), craft: None }, button: PointerButton::Primary, one };
+        let more = vec![Line { from: Place::Carried, index: 3, stack: beans(1) }, Line { from: Place::Carried, index: 6, stack: beans(2) }];
+        let mut f = InFlight::default();
+        let sent = click_intents(&shirts(more.clone(), false), 1, &mut f, 0.0);
+        let indices: Vec<u32> = sent.iter().map(|i| match i {
+            Intent::MoveItem { from: Place::Carried, index, to: Place::Container(4), count: 0, .. } => *index,
+            other => panic!("{other:?}"),
+        }).collect();
+        assert_eq!(indices, [6, 3, 0]);
+        assert!(click_intents(&shirts(more.clone(), false), 1, &mut f, 0.1).is_empty(), "all on their way");
+        let mut f = InFlight::default();
+        let sent = click_intents(&shirts(more.clone(), true), 1, &mut f, 0.0);
+        assert!(matches!(sent[..], [Intent::MoveItem { index: 0, count: 1, .. }]), "{sent:?}");
+        // Its keys are every stack's: Ctrl-click picks them all (again: unpicks them), and a
+        // Shift-click's range takes the whole row in from either side.
+        let keys = shirts(more, false).action.keys();
+        assert_eq!(keys, vec![(Place::Carried, 0, 3), (Place::Carried, 3, 3), (Place::Carried, 6, 3)]);
+        let mut p = Picked::default();
+        p.toggle_all(&keys);
+        assert_eq!(p.keys, keys);
+        p.toggle_all(&keys);
+        assert!(p.keys.is_empty());
+        // Listed as drawn: a row of 1, the collapsed row (0, 3, 6), a row of 2.
+        let listed: Vec<Key> = [1, 0, 3, 6, 2].into_iter().map(|i| (Place::Carried, i, 3)).collect();
+        let mut p = Picked::default();
+        p.toggle(listed[0]);
+        p.extend_to_row(&keys, &listed);
+        assert_eq!(p.keys, listed[..4].to_vec(), "from above: down to its last stack");
+        let mut p = Picked::default();
+        p.toggle(listed[4]);
+        p.extend_to_row(&keys, &listed);
+        assert_eq!(p.keys.len(), 4, "from below: up to its first");
+        assert!(!p.keys.contains(&listed[0]));
+    }
+
+    /// The panes' state: the right pane shows the open container unless its Floor tab is picked
+    /// (a click on what you carry goes where it shows), a newly opened container comes to the
+    /// front, the move-all buttons take what a pane lists but never what you hold or wear, and
+    /// the Find control shows the search and chips only while they're wanted.
+    #[test]
+    fn tabs_move_all_and_the_find_control() {
+        let mut ui = PanelUi::default();
+        assert_eq!((ui.right(None), ui.right(Some(7))), (Place::Ground, Place::Container(7)));
+        ui.saw(Some(7));
+        ui.floor = true;
+        assert_eq!(ui.right(Some(7)), Place::Ground);
+        ui.saw(Some(7));
+        assert!(ui.floor, "the same container: the tab stays");
+        ui.saw(Some(9));
+        assert_eq!(ui.right(Some(9)), Place::Container(9), "another one opened: to the front");
+        // `--tab floor` holds for the container open at the start.
+        let mut ui = PanelUi { floor: true, ..default() };
+        ui.saw(Some(7));
+        assert!(ui.floor);
+        // Fold marks: shut by default, opened by a press; with `--expand` the other way round.
+        assert!(!ui.unfolded(Column::You, 3));
+        ui.toggle_fold((Column::You, 3));
+        assert!(ui.unfolded(Column::You, 3) && !ui.unfolded(Column::Floor, 3));
+        ui.unfold_all = true;
+        assert!(!ui.unfolded(Column::You, 3) && ui.unfolded(Column::Floor, 3));
+        let mut listed: Vec<Key> = vec![(Place::Slot(Slot::Back), 0, 9), (Place::Worn, 0, 8)];
+        listed.extend(carried(3));
+        listed.push((Place::Ground, 40, 3));
+        assert_eq!(all_of(Column::You, &listed), carried(3));
+        assert_eq!(all_of(Column::Floor, &listed), vec![(Place::Ground, 40, 3)]);
+        assert!(all_of(Column::Container, &listed).is_empty());
+        let mut f = Find::default();
+        assert!(!f.in_use());
+        f.press();
+        assert!(f.in_use());
+        f.toggle(Group::Food);
+        f.query = "bean".into();
+        f.press();
+        assert_eq!(f, Find::default(), "put away, cleared");
+        f.groups = vec![Group::Food];
+        assert!(f.in_use(), "a chip set from the start (--filter) shows them");
+    }
+
+    /// The fold mark of a collapsed row, through Bevy's input and picking: a press on it opens
+    /// the row and goes no further (nothing is moved); a press beside it on the row is the row's.
+    #[test]
+    fn the_fold_mark_opens_a_row_without_moving_it() {
+        let mut app = ui_app();
+        app.init_resource::<Clicks>().init_resource::<PanelUi>().init_resource::<ButtonInput<KeyCode>>();
+        app.world_mut().spawn(Camera2d);
+        {
+            let world = app.world_mut();
+            let mut commands = world.commands();
+            commands.spawn(Node { position_type: PositionType::Absolute, top: px(0), left: px(0), width: px(300), flex_direction: FlexDirection::Column, ..default() }).with_children(|col| {
+                let cells = Cells { lead: Lead::Fold { open: false, key: (Column::You, 3) }, ..Cells::plain("T-shirt", "0.5") };
+                row(col, cells, RowAction { stack: beans(1), title: String::new(), left: Some((Place::Carried, 0, Place::Ground)), more: vec![Line { from: Place::Carried, index: 2, stack: beans(1) }], menu: Vec::new(), craft: None }, false);
+            });
+            world.flush();
+        }
+        for _ in 0..3 {
+            app.update();
+        }
+        let window = app.world_mut().query_filtered::<Entity, With<PrimaryWindow>>().single(app.world()).unwrap();
+        let click = |app: &mut App, at: Vec2| {
+            let moved = CursorMoved { window, position: at, delta: None };
+            app.world_mut().write_message(moved.clone());
+            app.world_mut().write_message(WindowEvent::CursorMoved(moved));
+            app.update();
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                let e = MouseButtonInput { button: MouseButton::Left, state, window };
+                app.world_mut().write_message(e);
+                app.world_mut().write_message(WindowEvent::MouseButtonInput(e));
+                app.update();
+            }
+            app.update();
+        };
+        // The mark is the row's first cell: 6 px of padding, then W_LEAD wide.
+        click(&mut app, Vec2::new(6.0 + W_LEAD / 2.0, 10.0));
+        assert_eq!(app.world().resource::<PanelUi>().folds, vec![(Column::You, 3)], "opened");
+        assert!(app.world().resource::<Clicks>().0.is_empty(), "and nothing moved");
+        click(&mut app, Vec2::new(120.0, 10.0));
+        assert_eq!(app.world().resource::<Clicks>().0.len(), 1, "beside it, the row's own press");
+        assert_eq!(app.world().resource::<PanelUi>().folds.len(), 1);
     }
 
     /// A stack asked for is asked for once; one at a time (Alt) as many times as there are;
@@ -1560,7 +2256,7 @@ mod tests {
         let items = &config.items;
         let stack = |id: &str| ItemStack::one(items.iter().position(|d| d.id == id).unwrap() as u16);
         let carried = [stack("tinned_beans"), stack("rag"), stack("tinned_beans"), stack("kitchen_knife"), stack("tinned_beans"), stack("rag")];
-        let find = Find { query: "bean".into(), typing: false, groups: Vec::new() };
+        let find = Find { query: "bean".into(), ..default() };
         let mut p = Picked::default();
         // What the panel lists under the search, by the same rule `rebuild` draws rows by.
         let listed = |p: &Picked| -> Vec<Key> { carried.iter().enumerate().filter(|(k, s)| on_show(&find, items, p, Place::Carried, *k as u32, s)).map(|(k, s)| (Place::Carried, k as u32, s.item)).collect() };
@@ -1719,7 +2415,7 @@ mod tests {
         let items = zombye_net::content::load_config(&data, 1).unwrap().items;
         let beans = ItemStack::new(items.iter().position(|d| d.id == "tinned_beans").unwrap() as u16, 4);
         let on_row = |index: u32, button| RowClick {
-            action: RowAction { stack: beans, title: format!("row {index}"), left: Some((Place::Carried, index, Place::Ground)), menu: menu_entries(1, &items, Place::Carried, index, &beans, None), craft: None },
+            action: RowAction { stack: beans, title: format!("row {index}"), left: Some((Place::Carried, index, Place::Ground)), more: Vec::new(), menu: menu_entries(1, &items, Place::Carried, index, &beans, None), craft: None },
             button,
             one: false,
         };
@@ -1748,7 +2444,7 @@ mod tests {
     #[test]
     fn a_recipe_is_asked_for_once() {
         let mut f = InFlight::default();
-        let c = RowClick { action: RowAction { stack: ItemStack::one(0), title: String::new(), left: None, menu: Vec::new(), craft: Some(2) }, button: PointerButton::Primary, one: false };
+        let c = RowClick { action: RowAction { stack: ItemStack::one(0), title: String::new(), left: None, more: Vec::new(), menu: Vec::new(), craft: Some(2) }, button: PointerButton::Primary, one: false };
         assert!(matches!(click_intent(&c, 1, &mut f, 0.0), Some(Intent::Craft { player: 1, recipe: 2 })));
         assert!(click_intent(&c, 1, &mut f, 0.1).is_none(), "on its way");
         f.update("queued".into(), false, 0.2);
@@ -1796,7 +2492,7 @@ mod tests {
             let mut commands = world.commands();
             commands.spawn(Node { position_type: PositionType::Absolute, top: px(0), left: px(0), width: px(300), flex_direction: FlexDirection::Column, ..default() }).with_children(|col| {
                 for k in &keys {
-                    row(col, format!("Beans {}", k.1), "0.4 kg".into(), RowAction { stack: beans(2), left: Some((k.0, k.1, Place::Ground)), title: String::new(), menu: Vec::new(), craft: None }, false);
+                    row(col, Cells::plain(&format!("Beans {}", k.1), "0.4"), RowAction { stack: beans(2), left: Some((k.0, k.1, Place::Ground)), more: Vec::new(), title: String::new(), menu: Vec::new(), craft: None }, false);
                 }
             });
             world.flush();
@@ -1805,7 +2501,7 @@ mod tests {
             app.update();
         }
         let window = app.world_mut().query_filtered::<Entity, With<PrimaryWindow>>().single(app.world()).unwrap();
-        // Rows are about 21 px tall (14 px text plus padding); find each one's centre from layout.
+        // Rows are about 23 px tall (14 px text plus padding); find each one's centre from layout.
         let centres: Vec<Vec2> = {
             let mut q = app.world_mut().query::<(&ComputedNode, &UiGlobalTransform, &BackgroundColor)>();
             let mut v: Vec<Vec2> = q.iter(app.world()).filter(|(_, _, bg)| bg.0 == ROW).map(|(_, t, _)| t.translation).collect();
@@ -1864,7 +2560,7 @@ mod tests {
         let spawn_panel = |world: &mut World| {
             let mut commands = world.commands();
             commands.spawn(Node { position_type: PositionType::Absolute, top: px(0), left: px(0), flex_direction: FlexDirection::Column, ..default() }).with_children(|col| {
-                row(col, "Alarm clock".into(), "0.4 kg".into(), RowAction { stack: beans(1), title: String::new(), left: Some((Place::Container(4), 0, Place::Carried)), menu: Vec::new(), craft: None }, false);
+                row(col, Cells::plain("Alarm clock", "0.4"), RowAction { stack: beans(1), title: String::new(), left: Some((Place::Container(4), 0, Place::Carried)), more: Vec::new(), menu: Vec::new(), craft: None }, false);
             });
             world.flush();
         };

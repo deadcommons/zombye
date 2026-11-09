@@ -17,6 +17,7 @@
 //! `--autoplay` (the player fights by itself) `--fight-demo` (a bat and a few zombies close by)
 //! `--siege` (outside your house with a bat, zombies battering its door) `--sneak` (start sneaking)
 //! `--inventory` / `--skills` / `--health` (start with that panel open) `--god` / `--ignored` (start with F1 / F2 on)
+//! `--tab worn|floor` / `--sort name|type|weight` / `--expand` (the inventory panel's tabs, order and opened stacks)
 //! `--hud` (offscreen, draw the HUD and panels too) `--hover-tag N` (show the Nth status tag's tooltip)
 //! `--map-chunks N` (a square map N × N chunks of 16 m; default 30) `--saves DIR` (where saves go;
 //! default `saves`) `--load NAME|PATH` (start from a save; `--load-anyway` loads one whose game data
@@ -120,6 +121,12 @@ pub struct Options {
     pub find: Option<String>,
     pub filter: Option<String>,
     pub pick: Vec<u32>,
+    /// Start the inventory panel on other tabs (`--tab worn`, `--tab floor`, or both with a comma),
+    /// sorted by a column (`--sort name|type|weight`), with rows of several stacks opened
+    /// (`--expand`): for pictures of it.
+    pub tab: Option<String>,
+    pub sort: Option<String>,
+    pub expand: bool,
     /// For recordings: Ctrl-click carried row A then Shift-click row B, once SECS have gone by
     /// (`--pick-range A,B[@SECS]`, default at once), and press the move-to row's "floor" after
     /// `--drop-picked-after SECS`.
@@ -262,6 +269,9 @@ impl Options {
             find: value("--find"),
             filter: value("--filter"),
             pick: value("--pick").map_or(Vec::new(), |v| v.split(',').filter_map(|k| k.trim().parse().ok()).collect()),
+            tab: value("--tab"),
+            sort: value("--sort"),
+            expand: flag("--expand"),
             pick_range: value("--pick-range").and_then(|v| parse_pick_range(&v)),
             drop_picked_after: value("--drop-picked-after").and_then(|v| v.parse().ok()),
             menu: value("--menu"),

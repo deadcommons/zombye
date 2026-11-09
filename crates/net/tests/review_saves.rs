@@ -112,6 +112,20 @@ fn review_saves() {
     step(&mut w, 2);
     save(&w, "panel");
 
+    // The same with the pack full (#DCM-56): more kinds of thing, several stacks of one item (T-shirts
+    // and jeans don't stack, the tins overflow a stack: rows that collapse), something in the hand
+    // and on the shoulder, and more on the floor.
+    assert!(w.hold_item(id, Slot::Hand, "crowbar"));
+    assert!(w.hold_item(id, Slot::Shoulder, "tote_bag"));
+    for (item, n) in [("t_shirt", 2), ("jeans", 2), ("tinned_beans", 7), ("peanut_butter", 1), ("antiseptic", 1), ("claw_hammer", 1), ("scissors", 1), ("flashlight", 1), ("nails", 2), ("clean_rag", 3)] {
+        assert!(w.give_item(id, item, n), "{item}");
+    }
+    for (item, n) in [("t_shirt", 2), ("water_bottle", 1), ("hoodie", 1)] {
+        w.spawn_item(item, n, at).unwrap();
+    }
+    step(&mut w, 2);
+    save(&w, "panel_full");
+
     // Tired but awake, then asleep on the bed at night.
     let (mut w, id) = world();
     w.skip_time(14.0);
