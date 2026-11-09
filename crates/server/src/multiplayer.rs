@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use glam::Vec2;
-use zombye_net::host::{Host, HostOptions, Spawn};
+use zombye_net::host::{BUDGET_RANGE, DEFAULT_BUDGET, Host, HostOptions, Spawn};
 use zombye_net::remote::Remote;
 use zombye_net::{Intent, Snapshot, shutdown, wire};
 use zombye_sim::{TICK_DT, World, ZombieAnim};
@@ -47,7 +47,12 @@ impl HostArgs {
             Some("together") => Some(Spawn::Together),
             Some(v) => return Err(format!("--spawn is spread or together, not {v}")),
         };
-        let options = HostOptions { name: text("--name").unwrap_or_else(|| "Zombye server".into()), max_players, allow_dev: flag("--allow-dev"), password: text("--password").unwrap_or_default(), spawn };
+        let (least, most) = (BUDGET_RANGE.0 / 1000, BUDGET_RANGE.1 / 1000);
+        let budget = match text("--budget") {
+            None => DEFAULT_BUDGET,
+            Some(v) => v.parse::<u32>().ok().filter(|kb| (least..=most).contains(kb)).ok_or(format!("--budget is {least} to {most} (KB a second per client), not {v}"))? * 1000,
+        };
+        let options = HostOptions { name: text("--name").unwrap_or_else(|| "Zombye server".into()), max_players, allow_dev: flag("--allow-dev"), password: text("--password").unwrap_or_default(), spawn, budget };
         Ok(Self { addr, options, pvp: on_off("--pvp")? })
     }
 }
@@ -90,10 +95,11 @@ pub fn host(mut world: World, new_world: bool, args: HostArgs, persist: &mut Per
     }
     let rules = host.rules();
     println!(
-        "{}: listening on {} ({} players at most, pvp {}{}{}); {} zombies on a {}x{} m map, seed {}",
+        "{}: listening on {} ({} players at most, {} KB/s down each, pvp {}{}{}); {} zombies on a {}x{} m map, seed {}",
         rules.name,
         host.local_addr().map_or(args.addr.clone(), |a| a.to_string()),
         rules.max_players,
+        host.options.budget / 1000,
         if rules.pvp { "on" } else { "off: co-op" },
         if rules.allow_dev { ", dev intents allowed" } else { "" },
         if host.options.password.is_empty() { "" } else { ", password set" },
@@ -130,13 +136,17 @@ struct Report {
     since: Instant,
     ticks: u64,
     bytes_out: u64,
+    held: u64,
+    /// Each client's bytes out when the count began, by player.
+    clients: Vec<(u32, u64)>,
     ms: f32,
     worst: f32,
 }
 
 impl Report {
     fn new(host: &Host) -> Self {
-        Self { since: Instant::now(), ticks: host.stats.ticks, bytes_out: host.stats.bytes_out, ms: 0.0, worst: 0.0 }
+        let clients = host.clients().iter().map(|c| (c.player, c.bytes_out)).collect();
+        Self { since: Instant::now(), ticks: host.stats.ticks, bytes_out: host.stats.bytes_out, held: host.stats.held, clients, ms: 0.0, worst: 0.0 }
     }
 
     fn tick(&mut self, host: &Host) {
@@ -150,8 +160,12 @@ impl Report {
         let online = host.clients().len();
         if online > 0 {
             let s = host.world.stats;
+            let clients = host.clients();
+            // The busiest client (one that joined since the count began: all it was sent), and
+            // the fullest view.
+            let busiest = clients.iter().map(|c| c.bytes_out.saturating_sub(self.clients.iter().find(|(p, _)| *p == c.player).map_or(0, |(_, b)| *b))).max().unwrap_or(0);
             println!(
-                "tick {}: {online} online | {:.1} ticks/s, {:.2} ms a tick (worst {:.2}, budget {:.0}) | zombies {} active, {} near, {} virtual | {:.1} KB/s down per client",
+                "tick {}: {online} online | {:.1} ticks/s, {:.2} ms a tick (worst {:.2}, budget {:.0}) | zombies {} active, {} near, {} virtual | {:.1} KB/s down per client (busiest {:.1}, budget {}) | up to {} zombies in a view, {:.0} updates a tick held back",
                 host.world.tick,
                 ticks as f32 / secs,
                 self.ms / ticks as f32,
@@ -161,6 +175,10 @@ impl Report {
                 s.near,
                 s.virtual_,
                 (host.stats.bytes_out - self.bytes_out) as f32 / secs / online as f32 / 1000.0,
+                busiest as f32 / secs / 1000.0,
+                host.options.budget / 1000,
+                clients.iter().map(|c| c.zombies).max().unwrap_or(0),
+                (host.stats.held - self.held) as f32 / ticks as f32,
             );
         }
         *self = Self::new(host);
@@ -344,7 +362,8 @@ mod tests {
         assert_eq!(parse("--host 127.0.0.1:9000 --pvp on").unwrap().addr, "127.0.0.1:9000");
         assert_eq!(parse("--host 10.0.0.5").unwrap().addr, "10.0.0.5:7777");
         assert_eq!(parse("--host --pvp on").unwrap().pvp, Some(true));
-        for bad in ["--host --pvp maybe", "--host --max-players 65", "--host --max-players 0", "--host --spawn nowhere"] {
+        assert_eq!((parse("--host").unwrap().options.budget, parse("--host --budget 64").unwrap().options.budget), (32_000, 64_000));
+        for bad in ["--host --pvp maybe", "--host --max-players 65", "--host --max-players 0", "--host --spawn nowhere", "--host --budget 2", "--host --budget lots"] {
             assert!(parse(bad).is_err(), "{bad}");
         }
     }

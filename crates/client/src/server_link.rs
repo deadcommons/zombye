@@ -34,6 +34,8 @@ enum Backend {
 struct RemoteLink {
     remote: Remote,
     waiting: VecDeque<Snapshot>,
+    /// When the bytes received were last counted, and the count then (for the HUD's rate).
+    counted: (std::time::Instant, u64),
 }
 
 impl RemoteLink {
@@ -66,6 +68,8 @@ pub struct NetInfo {
     /// The name we go by.
     pub name: String,
     pub ping_ms: Option<f32>,
+    /// Kilobytes a second coming down from the server, over the last second or so (#22).
+    pub down_kbps: Option<f32>,
     /// Why the connection ended, once it has.
     pub closed: Option<String>,
 }
@@ -332,11 +336,12 @@ fn join_remote(app: &mut App, addr: &str, options: &Options, content: &zombye_si
     let damage = EdgeDamageMap(w.edge_damage.iter().map(|d| ((d.tile, d.edge), d.hp)).collect());
     let spawn = first.players.iter().find(|p| p.id == player_id).map(|p| Vec2::from(p.pos)).unwrap_or(joined.player_spawn);
     let join = join_info(&joined.config, player_id, spawn);
-    let net = NetInfo { addr: addr.to_string(), server: w.rules.name.clone(), pvp: w.rules.pvp, name: w.name.clone(), ping_ms: None, closed: None };
+    let net = NetInfo { addr: addr.to_string(), server: w.rules.name.clone(), pvp: w.rules.pvp, name: w.name.clone(), ping_ms: None, down_kbps: None, closed: None };
     if options.god || options.ignored {
         remote.send(Intent::Dev { player: player_id, god: options.god.then_some(true), ignored: options.ignored.then_some(true) });
     }
-    let link = RemoteLink { remote, waiting: VecDeque::new() };
+    let counted = (std::time::Instant::now(), remote.bytes_in());
+    let link = RemoteLink { remote, waiting: VecDeque::new(), counted };
     finish_join(app, Backend::Remote(Box::new(link)), Some(net), first, ClientMap(joined.map), damage, join);
 }
 
@@ -458,6 +463,12 @@ fn tick_server(
             let snapshots = remote.advance();
             if let Some(net) = &mut link.net {
                 net.ping_ms = remote.remote.ping_ms;
+                let (since, bytes) = remote.counted;
+                if since.elapsed().as_secs_f32() >= 1.0 {
+                    let now = remote.remote.bytes_in();
+                    net.down_kbps = Some((now - bytes) as f32 / since.elapsed().as_secs_f32() / 1000.0);
+                    remote.counted = (std::time::Instant::now(), now);
+                }
                 if net.closed.is_none() && remote.remote.closed.is_some() {
                     net.closed = remote.remote.closed.clone();
                     eprintln!("disconnected from {}: {}", net.addr, net.closed.as_deref().unwrap_or_default());

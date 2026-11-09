@@ -359,7 +359,8 @@ impl Snapshot {
     /// Capture the active zombies within `TierTuning::interest_radius` of a player (in id order;
     /// zombies that leave it, are demoted to a far tier, or are corpses the server cleared away
     /// are simply no longer listed, and clients despawn them) and take pending map edits and edge
-    /// damage. Proper per-client interest management comes with #22.
+    /// damage. A multiplayer server then cuts this down for each client (#22: `wire`,
+    /// [`Snapshot::for_client`]).
     pub fn capture(world: &mut World) -> Self {
         let z = &world.zombies;
         let zombies: Vec<ZombieView> = (0..z.len())

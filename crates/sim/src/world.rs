@@ -850,6 +850,24 @@ impl World {
         self.thump_events = thumps;
     }
 
+    /// Take `damage` hit points off a shut door or intact window, as a thump does but silently
+    /// (tests and tools). Returns whether it could be damaged; at 0 it breaks.
+    pub fn damage_edge(&mut self, edge: EdgeRef, damage: f32) -> bool {
+        let kind = self.map.owned_edge(edge.tile, edge.edge);
+        if !self.map.in_bounds(edge.tile) || !kind.is_breakable() || !damage.is_finite() {
+            return false;
+        }
+        let max = self.max_hp(kind);
+        let hp = self.edge_hp.entry(edge.key()).or_insert(max);
+        *hp -= damage.max(0.0);
+        let gone = *hp <= 0.0;
+        self.edge_hp_dirty.insert(edge.key());
+        if gone {
+            self.break_edge(edge, SoundSource::World);
+        }
+        true
+    }
+
     /// Clear away corpses that have lain longer than `corpse_secs`, and the oldest beyond
     /// `max_corpses`. Their ids go to `removed_corpses`; snapshots simply stop listing them.
     fn remove_old_corpses(&mut self) {

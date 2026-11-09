@@ -119,12 +119,14 @@ fn a_remote_client_joins_and_predicts_exactly() {
         assert_eq!(snap.tick, host.world.tick);
     }
     assert!(predicted.pos.distance(Vec2::from(view.pos)) > 1.0, "it walked");
-    // What the client sees of the zombies is the server's, to the wire's precision.
+    // What the client sees of the zombies is the server's: to the wire's precision close by, and
+    // within 1/400 of its distance further off (#22).
     let snap = tick(&mut host, &mut [&mut client]).pop().unwrap();
     assert!(!snap.zombies.is_empty(), "zombies in view");
     for z in &snap.zombies {
         let i = host.world.zombies.index_of(z.id).expect("a zombie the server has");
-        assert!(host.world.zombies.pos[i].distance(Vec2::from(z.pos)) < 0.02, "zombie {} drawn where it is", z.id);
+        let dist = host.world.zombies.pos[i].distance(host.world.player(me).unwrap().state.pos);
+        assert!(host.world.zombies.pos[i].distance(Vec2::from(z.pos)) < 0.04 + dist / 280.0, "zombie {} ({dist:.0} m away) drawn where it is", z.id);
         assert!(host.world.zombies.pos[i].distance(host.world.player(me).unwrap().state.pos) <= host.world.config.tiers.interest_radius + 0.1, "only what is near us");
     }
 }
@@ -307,10 +309,83 @@ fn thirty_two_clients_share_a_world_within_budget() {
         up / 1000.0
     );
     assert!(sum / (TICKS as f32) < 50.0, "the mean tick is over budget");
-    assert!(down < BUDGET, "{down:.0} bytes a second down per client");
-    assert!(worst_client < BUDGET * 2.0, "{worst_client:.0} bytes a second down to the busiest client");
+    // Well inside it since #22 (about 5 KB/s): zombies are carried on between corrections.
+    assert!(down < BUDGET / 2.0, "{down:.0} bytes a second down per client");
+    assert!(worst_client < BUDGET, "{worst_client:.0} bytes a second down to the busiest client");
+    assert_eq!(host.stats.held, 0, "and nothing had to wait for it");
     assert!(up < 2_000.0, "{up:.0} bytes a second up per client");
     for p in &host.world.players {
         assert_eq!(p.last_input_seq, TICKS, "every client's every input was applied");
     }
+}
+
+/// The worst case for a client's budget (#22): all 32 survivors in one place (co-op) with a horde
+/// of 1,500 round them, everyone in everyone's view. Each client's snapshots stay within its
+/// budget (far zombies wait their turn), nobody is dropped, and every client still has the whole
+/// horde, the zombies close to it where the server has them.
+#[test]
+fn thirty_two_clients_in_one_horde_keep_to_their_budget() {
+    const CLIENTS: usize = 32;
+    const TICKS: u32 = 240;
+    let mut config = config(0);
+    config.combat.pvp = false;
+    // Under the default budget (which this horde fits, at about 25 KB/s), so it is more than fits.
+    let options = HostOptions { spawn: Some(Spawn::Together), budget: 20_000, ..Default::default() };
+    let budget = options.budget as f64;
+    let mut host = Host::bind(World::new(config), "127.0.0.1:0", options).unwrap();
+    let mut clients: Vec<Remote> = (0..CLIENTS).map(|k| join(&mut host, &format!("bot-{k}"))).collect();
+    let centre = host.world.players.iter().map(|p| p.state.pos).sum::<Vec2>() / CLIENTS as f32;
+    let ids: Vec<u32> = host.world.players.iter().map(|p| p.id).collect();
+    for id in ids {
+        host.world.set_dev(id, Some(true), None);
+    }
+    assert!(host.world.spawn_zombies(1500, centre, 60.0) > 1400);
+    let mut seq = 0;
+    let mut step = |host: &mut Host, clients: &mut Vec<Remote>| {
+        seq += 1;
+        for (k, c) in clients.iter_mut().enumerate() {
+            let dir = Vec2::from_angle(seq as f32 * 0.04 + k as f32);
+            c.send(Intent::PlayerInput { player: 0, seq, move_dir: dir.to_array(), facing: dir.to_angle(), run: false, sneak: false, aim: false });
+        }
+        let mut refs: Vec<&mut Remote> = clients.iter_mut().collect();
+        tick(host, &mut refs)
+    };
+    // Past the first rush (everything is new to everyone), then measure.
+    for _ in 0..60 {
+        step(&mut host, &mut clients);
+    }
+    let before: Vec<u64> = host.clients().iter().map(|c| c.bytes_out).collect();
+    let held0 = host.stats.held;
+    let (mut worst_tick, mut near_off, mut fewest) = (0.0f32, 0.0f32, usize::MAX);
+    for _ in 0..TICKS {
+        let snaps = step(&mut host, &mut clients);
+        worst_tick = worst_tick.max(host.stats.tick_ms);
+        let z = &host.world.zombies;
+        for (c, s) in clients.iter().zip(&snaps) {
+            fewest = fewest.min(s.zombies.len());
+            let me = host.world.player(c.player()).unwrap().state.pos;
+            for v in s.zombies.iter().filter(|v| me.distance(v.pos.into()) < 6.0) {
+                let k = z.id.binary_search(&v.id).expect("a zombie the server has");
+                near_off = near_off.max(z.pos[k].distance(v.pos.into()));
+            }
+        }
+    }
+    let secs = TICKS as f64 * TICK_DT as f64;
+    let rates: Vec<f64> = host.clients().iter().zip(&before).map(|(c, b)| (c.bytes_out - b) as f64 / secs).collect();
+    let (mean, worst) = (rates.iter().sum::<f64>() / CLIENTS as f64, rates.iter().cloned().fold(0.0, f64::max));
+    println!(
+        "{CLIENTS} clients in one horde of {}: per client {:.1} KB/s down (worst {:.1}, budget {:.0}), {} zombie updates held back a tick per client, at least {fewest} zombies in a view; within 6 m off by at most {:.1} cm; worst tick {worst_tick:.1} ms",
+        host.world.zombies.len(),
+        mean / 1000.0,
+        worst / 1000.0,
+        budget / 1000.0,
+        (host.stats.held - held0) / TICKS as u64 / CLIENTS as u64,
+        near_off * 100.0,
+    );
+    assert_eq!(host.clients().len(), CLIENTS, "nobody was dropped");
+    assert!(worst <= budget * 1.05, "{worst:.0} bytes a second down to the busiest client (budget {budget:.0})");
+    assert!(host.stats.held > held0, "the budget was what held it there");
+    assert!(fewest > 1200, "every client has the horde ({fewest} zombies in the emptiest view)");
+    assert!(near_off < 0.15, "zombies in reach are where the server has them ({near_off} m)");
+    assert!(worst_tick < 50.0, "a tick took {worst_tick:.1} ms");
 }

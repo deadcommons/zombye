@@ -370,12 +370,13 @@ fn update_hud(
         Some(net) => match &net.closed {
             Some(why) => format!("DISCONNECTED from {} ({why})", net.addr),
             None => format!(
-                "online: {} on {} (pvp {}) | {} other survivors in view | ping {}",
+                "online: {} on {} (pvp {}) | {} other survivors in view | ping {} | down {}",
                 net.name,
                 net.server,
                 if net.pvp { "on" } else { "off" },
                 link.curr.players.len().saturating_sub(1),
-                net.ping_ms.map_or("?".to_string(), |p| format!("{p:.0} ms"))
+                net.ping_ms.map_or("?".to_string(), |p| format!("{p:.0} ms")),
+                net.down_kbps.map_or("?".to_string(), |k| format!("{k:.1} KB/s"))
             ),
         },
     };

@@ -2,7 +2,8 @@
 //!
 //! [`Host::tick`] is one server tick: take new connections and what clients sent, apply each
 //! client's intents as its own player, step the world, and send every client its snapshot (cut
-//! down to its surroundings, as a delta; see [`crate::wire`]). The caller runs it at the tick rate
+//! down to its area of interest, as a delta, within its byte budget; #22, see [`crate::wire`]).
+//! The caller runs it at the tick rate
 //! ([`Host::run`], or by hand in tests). Each connection has a thread reading frames into one
 //! channel and a thread writing frames out of a bounded queue, so a slow or stuck client never
 //! holds the tick up: a client whose queue fills is dropped.
@@ -31,7 +32,7 @@ use glam::{IVec2, Vec2};
 use zombye_sim::save::ContentPrint;
 use zombye_sim::{PlayerInput, TICK_DT, World};
 
-use crate::wire::{self, ClientMsg, DeltaEncoder, Hello, Rules, ServerMsg, Tunings, Welcome};
+use crate::wire::{self, ClientMsg, DeltaEncoder, Hello, Limits, MapInterest, Rules, ServerMsg, Tunings, Welcome};
 use crate::{EdgeDamage, Intent, Snapshot, apply_intent};
 
 /// Where new survivors start.
@@ -55,11 +56,24 @@ pub struct HostOptions {
     pub password: String,
     /// `None`: spread with PvP on, together with it off.
     pub spawn: Option<Spawn>,
+    /// Bytes a second down to each client (#22): what its snapshots are kept within, zombies
+    /// further off getting coarser when a crowd wouldn't fit (see [`wire::Limits`]).
+    pub budget: u32,
 }
+
+/// The default budget per client: a quarter of a megabit.
+pub const DEFAULT_BUDGET: u32 = 32_000;
+/// The least and most a server may be set to.
+pub const BUDGET_RANGE: (u32, u32) = (8_000, 1_000_000);
+/// A zombie the client hasn't got is taken up this far inside the edge of its view, so one
+/// walking along the edge doesn't come and go (metres).
+const ADMIT_INSIDE: f32 = 6.0;
+/// About what a snapshot takes before any zombies (its header, our own player, a few others).
+const FRAME_BYTES: f32 = 150.0;
 
 impl Default for HostOptions {
     fn default() -> Self {
-        Self { name: "Zombye server".into(), max_players: wire::DEFAULT_PLAYERS, allow_dev: false, password: String::new(), spawn: None }
+        Self { name: "Zombye server".into(), max_players: wire::DEFAULT_PLAYERS, allow_dev: false, password: String::new(), spawn: None, budget: DEFAULT_BUDGET }
     }
 }
 
@@ -93,6 +107,13 @@ struct Conn {
     out: SyncSender<Vec<u8>>,
     queue: VecDeque<Intent>,
     encoder: DeltaEncoder,
+    /// The doors and windows it is behind on (out of its interest when they changed).
+    map: MapInterest,
+    /// Bytes it may be sent now: filled at the budget's rate up to a second's worth, spent by
+    /// every frame (below zero when what must go was more).
+    tokens: f32,
+    /// Zombie updates held back for the budget, in all.
+    held: u64,
     bytes_out: u64,
     bytes_in: u64,
     /// Intents received so far.
@@ -109,6 +130,11 @@ pub struct ClientInfo {
     pub addr: String,
     pub bytes_out: u64,
     pub bytes_in: u64,
+    /// Zombies it has now, and zombie updates held back for its budget so far (#22).
+    pub zombies: u32,
+    pub held: u64,
+    /// Doors and windows changed outside its interest that it hasn't been told of.
+    pub map_owed: usize,
 }
 
 /// Totals since the server started.
@@ -126,6 +152,8 @@ pub struct HostStats {
     pub refused: u64,
     /// Dev and debug intents dropped.
     pub refused_dev: u64,
+    /// Zombie updates held back for clients' budgets (#22).
+    pub held: u64,
 }
 
 pub struct Host {
@@ -166,7 +194,10 @@ impl Host {
 
     /// The clients connected now.
     pub fn clients(&self) -> Vec<ClientInfo> {
-        self.conns.iter().map(|c| ClientInfo { player: c.player, name: c.name.clone(), addr: c.addr.clone(), bytes_out: c.bytes_out, bytes_in: c.bytes_in }).collect()
+        self.conns
+            .iter()
+            .map(|c| ClientInfo { player: c.player, name: c.name.clone(), addr: c.addr.clone(), bytes_out: c.bytes_out, bytes_in: c.bytes_in, zombies: c.encoder.stats.known, held: c.held, map_owed: c.map.owed() })
+            .collect()
     }
 
     /// Every name that has played here, with its player (to keep beside a save, so survivors are
@@ -346,7 +377,8 @@ impl Host {
         if spawned.is_err() {
             return;
         }
-        let mut conn = Conn { id, player, name: name.clone(), addr: addr.clone(), out, queue: VecDeque::new(), encoder: DeltaEncoder::default(), bytes_out: 0, bytes_in: 0, intents: 0, closing: None };
+        let tokens = self.options.budget as f32;
+        let mut conn = Conn { id, player, name: name.clone(), addr: addr.clone(), out, queue: VecDeque::new(), encoder: DeltaEncoder::default(), map: MapInterest::default(), tokens, held: 0, bytes_out: 0, bytes_in: 0, intents: 0, closing: None };
         send(&mut conn, &mut self.stats, &ServerMsg::Welcome(Box::new(welcome)));
         self.conns.push(conn);
         // Its private view goes with its first snapshot.
@@ -445,9 +477,25 @@ impl Host {
         }
         let full = Snapshot::capture(&mut self.world);
         let radius = self.world.config.tiers.interest_radius;
+        let budget = self.options.budget.clamp(BUDGET_RANGE.0, BUDGET_RANGE.1) as f32;
+        let a_tick = budget * TICK_DT;
         for c in &mut self.conns {
-            let delta = c.encoder.encode(full.for_client(c.player, radius));
+            // Its area of interest: what is within the radius of its survivor, and of the map
+            // the chunks that are (with what it missed in those that have just come in).
+            let mut view = full.for_client(c.player, radius);
+            let me = self.world.player(c.player).map(|p| p.state.pos);
+            c.map.cut(&mut view, me, radius, &self.world);
+            // Its budget: zombies get what is left of it this tick, and never less than a
+            // quarter of a tick's share, so the ones close by are always told.
+            c.tokens = (c.tokens + a_tick).min(budget);
+            let zombie_bytes = (c.tokens - FRAME_BYTES).max(a_tick * 0.25) as usize;
+            let delta = c.encoder.encode(view, c.player, Limits { admit: radius - ADMIT_INSIDE, zombie_bytes });
+            let held = c.encoder.stats.held as u64;
+            c.held += held;
+            self.stats.held += held;
+            let before = c.bytes_out;
             send(c, &mut self.stats, &ServerMsg::Snapshot(Box::new(delta)));
+            c.tokens = (c.tokens - (c.bytes_out - before) as f32).max(-budget);
         }
     }
 

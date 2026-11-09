@@ -1122,7 +1122,7 @@ wanderers off toward them (`tiers::step_virtual`, see Population below). Numbers
   3.8 ms a tick, 8 worst (6,300 virtual zombies moved a tick; `sleeping_through_the_far_clock_stays_in_the_tick_budget`). Crowd separation is capped per tick (`MAX_CROWD_PUSH`), so a pile of promoted zombies spreads
   out instead of being flung through a wall.
 - **Snapshots** list only active zombies within `interest_radius` (80 m) of a player (every active zombie when
-  there are no players); the client despawns the rest. Full interest management is #22.
+  there are no players); the client despawns the rest. A multiplayer server cuts them down again for each client (#22, see Multiplayer).
 - `TickStats` has the tier counts, promotions/demotions and per-tier timings (`tier_ms` for the tier pass plus
   index rebuilds, `active_ms`, `near_ms`, `virtual_ms`); the spatial hash only spans the area its zombies cover.
 - Perf (M-series Mac, release): 1 km map, ~1,300 active + ~20,200 virtual (+ ~950 near), a horde of ~900 chasing a
@@ -1306,21 +1306,42 @@ snapshots over the network: `zombye-server --host` serves a world and `zombye --
   a crowbar: a gash to the torso"). `--spawn spread|together`: where new
   survivors start (`Host::spawn_point`), by default spread round the edge of the town with PvP on (each a golden angle
   on from the last) and together outside the house a single player wakes up in with it off. `--max-players N`
-  (default 32, at most 64), `--name`, `--password`.
+  (default 32, at most 64), `--name`, `--password`, `--budget KB` (below).
 - **Input, one a tick** (`Host::apply_queue`): a client's intents wait in its queue in the order sent, and a tick
   applies them up to and including one `PlayerInput`, so each input moves the player for exactly one tick, as the
   client predicted, however the network bunched them; with none waiting the last one holds; more than 10 waiting (a
   stall) skips to the newest 2. Prediction and reconciliation are single-player's (`player.rs`): the snapshot's
   `last_input_seq` says which inputs to replay. `a_remote_client_joins_and_predicts_exactly` holds the client's
   prediction to the server's state tick for tick over a real socket.
-- **Snapshots per client** (`Host::send_snapshots`): one `Snapshot::capture` a tick, cut down for each client by
-  `Snapshot::for_client(player, radius)`: its own private parts, and the zombies, players, ground items and hits within
-  `TierTuning::interest_radius` (80 m) of its survivor; map changes all go. Then a **delta** against the last one sent
-  to that client (`wire::DeltaEncoder`, rebuilt by the client's `DeltaDecoder`): players whole (few, and ours must be
-  exact), zombies new or changed packed to about 11 bytes (`ZombiePacked`: 1/64 m, 1/256 turn, 1/48 m/s), zombies that
-  only moved as about 4 bytes (`ZombieMove`: an id gap and a step), ids gone, ground items new, changed and gone, and
-  the floor, outfits and run only when they change (the run about once a second). The visibility rules (only players
-  you could see or hear) are #66 and budgets per client #22.
+- **Snapshots per client: interest, deltas, a budget** (#22, `Host::send_snapshots`): one `Snapshot::capture` a tick,
+  cut down for each client by `Snapshot::for_client(player, radius)`: its own private parts, and the zombies, players,
+  ground items and hits within `TierTuning::interest_radius` (80 m) of its survivor. Then a **delta** against what
+  that client has (`wire::DeltaEncoder`, rebuilt by the client's `DeltaDecoder`): ground items new, changed and gone,
+  and the floor, outfits and run only when they change (the run about once a second).
+  - **Zombies are carried on between updates** (dead reckoning, `wire::Tracked`): both ends keep each zombie the client
+    has at a position and a speed in fixed point and move it on every tick (integers only, so the same on every
+    machine); the server compares that with the truth and sends a correction (`ZombieMove`, about 4 bytes: an id gap,
+    how far off, the facing; half of what it says about the speed is taken up) only once the zombie is further off
+    than its distance from the client's survivor allows: 1/400 of the distance (2.5 cm at 10 m, 20 cm at 80 m), never
+    under 3/4 of a 1/64 m step, and likewise 4° to 40° of facing. A new zombie, or one whose animation changed, goes
+    whole (`ZombiePacked`, about 11 bytes, standing). So a crowd costs what its changes of pace and direction cost.
+    New ones are taken up 6 m inside the edge of the view and kept to the edge, so one walking along it doesn't come
+    and go.
+  - **A budget per client** (`HostOptions::budget`, `--budget KB`, default 32 KB/s, 8 to 1000): a bucket filled at
+    that rate, up to a second's worth, and spent by every frame. Zombie updates get what is left of it each tick (never
+    under a quarter of a tick's share): the due ones go most pressing first (how many times over its allowance a
+    zombie is; a new or changed one counts as half a metre off) and the rest wait (`EncodeStats::held`), carried on
+    meanwhile. So a horde bigger than the budget gets coarser with distance instead of the connection falling behind.
+  - **Other players** go packed (`PlayerPacked`, about 14 bytes: position, facing, stance, action and its timing, HP
+    rounded up, weapon, the health tags, reeling or knocked down) and only when they change; a client's own player goes whole every tick
+    (prediction needs it exact). A client doesn't get others' endurance, load, input numbers or dev toggles. The
+    visibility rules (only players you could see or hear) are #66.
+  - **Map changes by chunk** (`wire::MapInterest`): a door or window opening, shutting, breaking or cracking goes to
+    the clients whose survivor is within the interest radius of its 16 m chunk. For the others the edge is noted, and
+    when its chunk comes into their interest they get it as it is by then, once (the client's map copy is right
+    wherever it can walk or see). A joining client still gets every change so far in `Welcome`.
+  - The server's report line (every 10 s) gives KB/s per client, the busiest, the fullest view and the updates held
+    back a tick; the client's stats line `down N KB/s`.
 - **The client** (`server_link.rs`): `ServerLink` holds a `LocalServer` or a `RemoteLink`. A remote one sends the
   tick's intents in one write, and takes up the snapshots that have arrived one a client tick from a short queue (one
   left waiting as a cushion against jitter, two a tick when more have piled up), so rendering interpolates between
@@ -1333,10 +1354,14 @@ snapshots over the network: `zombye-server --host` serves a world and `zombye --
 - **Bots** (`zombye-server --bots N --connect HOST[:PORT] [--secs S] [--bots-hostile]`): N headless clients, each its
   own connection, that wander, turn when stuck, pick up what lies at their feet, fight zombies that come close (and
   players, hostile) and start again when dead; every 5 s it prints what each costs.
-- **Cost** (loopback on a 32-core VM; `thirty_two_clients_share_a_world_within_budget`, and the same with `--host` and
-  `--bots 32`): 32 clients spread through the default town, about 2,900 zombies of which 1,800-2,300 are active and
-  about 250 in each client's view: a tick 3-5 ms (budget 50), about 22-26 KB/s down per client (the busiest 30) against
-  a budget of 32 KB/s, and 0.5 KB/s up. Not yet measured between machines over the internet.
+- **Cost** (loopback on a 32-core VM; `thirty_two_clients_share_a_world_within_budget`): 32 clients spread through
+  the default town, about 2,900 zombies of which 1,800-2,300 are active and up to 380 in a client's view: a tick 4-6 ms
+  (budget 50), about 5 KB/s down per client (the busiest 6.5; 22-26 before #22) against a budget of 32 KB/s, nothing
+  held back, and 0.5 KB/s up. The worst case, all 32 in one place with a horde of 1,500 in everyone's view
+  (`thirty_two_clients_in_one_horde_keep_to_their_budget`): about 25 KB/s each with nothing held back; with the budget
+  set to 20 KB/s, exactly that, every client still with the whole horde and the zombies within 6 m at most 10 cm off.
+  One client with 1,500 zombies in view on 10 KB/s of zombie updates: within 8 m at most 5 cm off, beyond at most
+  0.3 m (`a_horde_over_budget_gets_coarser_with_distance`). Not yet measured between machines over the internet.
 
 ## Connecting an agent to the game (MCP)
 
