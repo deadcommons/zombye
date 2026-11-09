@@ -1,13 +1,14 @@
 //! Saves in the states the M4 screens show (#58), for reviewing them in offscreen pictures
 //! (`zombye --render-to shot.png --hud --load PATH`). Ignored: run it by hand with the folder to
-//! write them to:
+//! write them to (without one: `target/review`):
 //!
 //! `ZOMBYE_REVIEW_DIR=/tmp/review cargo test -p zombye-net --release --test review_saves -- --ignored`
 //!
 //! Each save has one player in a bedroom of the spawn house: `tags` with most status tags showing,
 //! `make` with things to make, one craft under way and one queued, `skills` with XP in several skills,
 //! `tired` tired but awake (the narrower view), `asleep` asleep on the bed at night, `bags` a hiking pack
-//! full of different things (for picking several and ranges: `--pick-range 1,5`).
+//! full of different things (for picking several and ranges: `--pick-range 1,5`), `panel` that pack with
+//! a container of the house open and things on the floor (the inventory panel's three columns).
 
 use std::path::PathBuf;
 
@@ -24,7 +25,7 @@ fn world() -> (World, u32) {
 }
 
 fn save(w: &World, name: &str) {
-    let dir = PathBuf::from(std::env::var("ZOMBYE_REVIEW_DIR").expect("set ZOMBYE_REVIEW_DIR"));
+    let dir = std::env::var("ZOMBYE_REVIEW_DIR").map_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/review"), PathBuf::from);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("{name}.zsave"));
     save_file::save(w, &path).unwrap();
@@ -84,6 +85,30 @@ fn review_saves() {
     }
     step(&mut w, 2);
     save(&w, "bags");
+
+    // The whole inventory panel (#94): the pack of things, a container of the spawn house open
+    // beside it and things on the floor at the player's feet.
+    let site = w.containers().iter().find(|s| s.building as usize == w.spawn_building).cloned().expect("a container in the spawn house");
+    let around = (-1..=site.size.x).flat_map(|x| (-1..=site.size.y).map(move |y| (site.min + glam::IVec2::new(x, y)).as_vec2() + 0.5));
+    let stood = around.into_iter().any(|pos| {
+        w.players[0].state.pos = pos;
+        !w.map.tile_blocked(pos.floor().as_ivec2()) && w.containers_in_reach(id).contains(&site.id)
+    });
+    assert!(stood, "nowhere to stand by container {}", site.id);
+    w.player_search(id, Some(site.id)).unwrap();
+    for _ in 0..400 {
+        if w.player(id).unwrap().jobs.is_empty() {
+            break;
+        }
+        w.step();
+    }
+    let at = w.players[0].state.pos;
+    w.give_item(id, "rope", 1);
+    for (item, n) in [("rag", 2), ("kitchen_knife", 1), ("tinned_beans", 2), ("nails", 1)] {
+        w.spawn_item(item, n, at).unwrap();
+    }
+    step(&mut w, 2);
+    save(&w, "panel");
 
     // Tired but awake, then asleep on the bed at night.
     let (mut w, id) = world();

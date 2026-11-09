@@ -116,12 +116,12 @@ pub struct Options {
     pub skills: bool,
     pub health: bool,
     /// Start the inventory panel searching for this, showing one category, with these carried
-    /// stacks picked (`--find TEXT`, `--filter CATEGORY`, `--pick N,N`: for pictures of it).
+    /// stacks picked (`--find TEXT`, `--filter CATEGORY[,CATEGORY]`, `--pick N,N`: for pictures of it).
     pub find: Option<String>,
     pub filter: Option<String>,
     pub pick: Vec<u32>,
     /// For recordings: Ctrl-click carried row A then Shift-click row B, once SECS have gone by
-    /// (`--pick-range A,B[@SECS]`, default at once), and press the bar's "to floor" after
+    /// (`--pick-range A,B[@SECS]`, default at once), and press the move-to row's "floor" after
     /// `--drop-picked-after SECS`.
     pub pick_range: Option<(u32, u32, f32)>,
     pub drop_picked_after: Option<f32>,

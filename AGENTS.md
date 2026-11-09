@@ -95,7 +95,7 @@ cargo test --release --workspace
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --skills --health --hover-tag N --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT`
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --skills --health --hover-tag N --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT`
 (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost). `--size WxH` makes the window exactly that many pixels, at scale factor 1, so a
@@ -710,13 +710,18 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   **Current action** (#98, `action_ui.rs`): while a job is under way a bar at the bottom centre names it ("Wash rags in clean water"), shows progress and seconds left, the number queued, and X or a click cancels it, Shift+X the whole queue (`Intent::CancelJobs { player, all }`, `World::player_cancel_jobs`).
   **Finding and moving several** (#94): a search box over the columns (`/` or a click to type; Enter or Esc stops; while
   typing every other key is held back, `inventory_ui::TextEntry`, which key handlers in `PreUpdate` run after) and
-  category chips (Food, Drink, Medical, Weapons, Clothing, Tools, Bags, Other) narrow every column but your hand and
-  bag slots; each column's title says where a click sends things; Ctrl-click picks rows (a picked row always shows), Shift-click every row from the last one picked to it in that column
+  category chips (Food, Drink, Medical, Weapons, Clothing, Tools, Materials, Bags, Other; each a toggle, so several can
+  be on, and All turns them off) narrow every column but your hand and
+  bag slots; each column's title says where a click sends things ("-> wardrobe", "-> bags") and has a "pick all" for
+  the stacks it shows (of yours, only what you carry, never what you hold or wear; pressed again, it unpicks them); Ctrl-click picks rows (a picked row always shows), Shift-click every row from the last one picked to it in that column
   (only the rows on show, so a range under a search skips what it hides),
-  and a bar under the columns sends every picked stack to the bags, the open container or the floor at once.
-  `--find TEXT`, `--filter CATEGORY` and `--pick N,N` (carried stacks) start it that way, for pictures;
+  and the move-to row over the columns (always there, so picking doesn't shift the rows, and in view however long the
+  lists are) says how many are picked and their weight and sends every picked stack to the bags, the open container or
+  the floor at once. Every row is one line: names never wrap, and one too long for its column is cut off at the weight.
+  `--find TEXT`, `--filter CATEGORY[,CATEGORY...]` and `--pick N,N` (carried stacks) start it that way, for pictures;
   `--pick-range A,B[@SECS]` Ctrl-clicks carried row A and Shift-clicks row B (after SECS), and `--drop-picked-after SECS`
-  presses the bar's "to floor", for recordings. Ground items are drawn as boxes of their size and colour,
+  presses the move-to row's "floor", for recordings (`review_saves.rs` writes `panel.zsave`: a full pack, a container
+  open and things on the floor). Ground items are drawn as boxes of their size and colour,
   weapons as bars. Under the columns, the Make list (see Crafting).
 
 ## Crafting (`sim::crafting`, `assets/data/items/recipes.ron`; #12)

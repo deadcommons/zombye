@@ -19,13 +19,16 @@
 //! (`Snapshot::floor`, by the same rule the server checks moves with), not a guess from distance.
 //!
 //! **Finding and moving several** (#94): a search box (`/` or a click to type, Enter or Esc to
-//! stop; while typing, the game's keys are held back) and category chips narrow every column; each
-//! column's title says where a click sends things; Ctrl-click picks rows, Shift-click picks every
-//! row from the last one picked to it in that column (only rows on show: the search and chips
-//! narrow a range too), and the bar under the columns moves every picked stack to your bags, the
-//! open container or the floor at once. `--find TEXT`, `--filter CATEGORY` and `--pick N,N` set
-//! them from the start (for pictures); `--pick-range A,B[@SECS]` Ctrl-clicks carried row A and
-//! Shift-clicks row B, and `--drop-picked-after SECS` presses the bar's "to floor" (for recordings).
+//! stop; while typing, the game's keys are held back) and category chips narrow every column (the
+//! chips are toggles: several can be on, "All" turns them off); each column's title says where a
+//! click sends things ("-> wardrobe") and has a "pick all" for the stacks it shows; Ctrl-click
+//! picks rows, Shift-click picks every row from the last one picked to it in that column (only
+//! rows on show: the search and chips narrow a range too), and the move-to row over the columns
+//! sends every picked stack to your bags, the open container or the floor at once. Every row is
+//! one line: a name too long for its column is cut off, never wrapped. `--find TEXT`,
+//! `--filter CATEGORY[,CATEGORY]` and `--pick N,N` set them from the start (for pictures);
+//! `--pick-range A,B[@SECS]` Ctrl-clicks carried row A and Shift-clicks row B, and
+//! `--drop-picked-after SECS` presses the move-to row's "floor" (for recordings).
 //!
 //! **Make** (#12): under the columns, every recipe; the ones you have the inputs and tools for
 //! (by the server's own rule, `crafting::check`, over our private view) can be clicked to make
@@ -99,12 +102,13 @@ enum Group {
     Weapons,
     Clothing,
     Tools,
+    Materials,
     Bags,
     Other,
 }
 
 impl Group {
-    const ALL: [Group; 8] = [Group::Food, Group::Drink, Group::Medical, Group::Weapons, Group::Clothing, Group::Tools, Group::Bags, Group::Other];
+    const ALL: [Group; 9] = [Group::Food, Group::Drink, Group::Medical, Group::Weapons, Group::Clothing, Group::Tools, Group::Materials, Group::Bags, Group::Other];
 
     fn of(c: ItemCategory) -> Group {
         match c {
@@ -114,8 +118,9 @@ impl Group {
             ItemCategory::Weapon => Group::Weapons,
             ItemCategory::Clothing => Group::Clothing,
             ItemCategory::Tool | ItemCategory::Light => Group::Tools,
+            ItemCategory::Material => Group::Materials,
             ItemCategory::Bag => Group::Bags,
-            ItemCategory::Material | ItemCategory::Junk => Group::Other,
+            ItemCategory::Junk => Group::Other,
         }
     }
 
@@ -127,29 +132,46 @@ impl Group {
             Group::Weapons => "Weapons",
             Group::Clothing => "Clothing",
             Group::Tools => "Tools",
+            Group::Materials => "Materials",
             Group::Bags => "Bags",
             Group::Other => "Other",
         }
     }
 
     fn parse(s: &str) -> Option<Group> {
-        Group::ALL.into_iter().find(|g| g.name().eq_ignore_ascii_case(s))
+        Group::ALL.into_iter().find(|g| g.name().eq_ignore_ascii_case(s.trim()))
+    }
+
+    /// `--filter food,drink`: the chips named, in the chips' order; names that aren't one are left out.
+    fn parse_list(s: &str) -> Vec<Group> {
+        Group::ALL.into_iter().filter(|g| s.split(',').any(|t| Group::parse(t) == Some(*g))).collect()
     }
 }
 
-/// What the columns show: names containing `query` (any case), of `group` if one is picked.
+/// What the columns show: names containing `query` (any case), of one of `groups` if any chip is on.
 #[derive(Resource, Default, Debug, Clone, PartialEq)]
 pub struct Find {
     query: String,
     /// Typing into the search box (the game's keys are held back meanwhile).
     pub typing: bool,
-    group: Option<Group>,
+    /// The chips that are on (each a toggle; none: every kind).
+    groups: Vec<Group>,
 }
 
 impl Find {
     fn shows(&self, items: &[ItemDef], s: &ItemStack) -> bool {
         let Some(def) = items.get(s.item as usize) else { return true };
-        self.group.is_none_or(|g| Group::of(def.category) == g) && (self.query.is_empty() || def.name.to_lowercase().contains(&self.query.to_lowercase()))
+        (self.groups.is_empty() || self.groups.contains(&Group::of(def.category))) && (self.query.is_empty() || def.name.to_lowercase().contains(&self.query.to_lowercase()))
+    }
+
+    /// A chip pressed: on if it was off, off if it was on (the others stay as they are).
+    fn toggle(&mut self, g: Group) {
+        match self.groups.iter().position(|x| *x == g) {
+            Some(i) => {
+                self.groups.remove(i);
+            }
+            None => self.groups.push(g),
+        }
     }
 }
 
@@ -214,13 +236,31 @@ impl Picked {
             }
         }
     }
+
+    /// A column's "pick all": every stack `listed` shows in `col` (what the search and chips
+    /// leave) added to what is picked; if they all were already, they're unpicked instead. What
+    /// you hold and wear is never part of it (pick all, then "to floor", would undress you): of
+    /// yours, only what you carry.
+    fn pick_all(&mut self, col: Column, listed: &[Key]) {
+        let rows: Vec<Key> = listed.iter().copied().filter(|k| Column::of(k.0) == col && !matches!(k.0, Place::Slot(_) | Place::Worn)).collect();
+        if rows.iter().all(|k| self.keys.contains(k)) {
+            self.keys.retain(|k| !rows.contains(k));
+        } else {
+            for k in rows {
+                if !self.keys.contains(&k) {
+                    self.keys.push(k);
+                }
+            }
+        }
+        self.anchor = None;
+    }
 }
 
 /// The item rows the panel drew last, in order (for Shift-click's ranges).
 #[derive(Resource, Default, Debug)]
 struct Listed(Vec<Key>);
 
-/// Where the bar under the columns was asked to send every picked stack this frame.
+/// Where the move-to row over the columns was asked to send every picked stack this frame.
 #[derive(Resource, Default)]
 struct SendPicked(Option<Place>);
 
@@ -297,7 +337,7 @@ impl Plugin for InventoryUiPlugin {
     fn build(&self, app: &mut App) {
         let options = app.world().get_resource::<crate::Options>().cloned();
         let open = options.as_ref().is_some_and(|o| o.inventory);
-        let find = Find { query: options.as_ref().and_then(|o| o.find.clone()).unwrap_or_default(), typing: false, group: options.as_ref().and_then(|o| o.filter.as_deref()).and_then(Group::parse) };
+        let find = Find { query: options.as_ref().and_then(|o| o.find.clone()).unwrap_or_default(), typing: false, groups: options.as_ref().and_then(|o| o.filter.as_deref()).map_or(Vec::new(), Group::parse_list) };
         let picked = Picked { keys: options.as_ref().map_or(Vec::new(), |o| o.pick.iter().map(|&k| (Place::Carried, k, u16::MAX)).collect()), anchor: None };
         app.insert_resource(InventoryPanel { open })
             .insert_resource(find)
@@ -449,6 +489,18 @@ fn panel_view(link: &ServerLink, me: u32) -> (Option<PrivateView>, Vec<(u32, Ite
     (link.own(me).cloned(), floor)
 }
 
+/// The stack at `place`/`index` in that view (a ground item's id is its index), if there is one.
+fn stack_at(v: &PrivateView, floor: &[(u32, ItemStack)], place: Place, index: u32) -> Option<ItemStack> {
+    let i = index as usize;
+    match place {
+        Place::Carried => v.inventory.carried.get(i).copied(),
+        Place::Worn => v.inventory.worn.get(i).copied(),
+        Place::Slot(slot) => v.inventory.slot(slot),
+        Place::Container(id) => v.open.as_ref().filter(|c| c.id == id).and_then(|c| c.stacks.get(i)).copied(),
+        Place::Ground => floor.iter().find(|(g, _)| *g == index).map(|(_, s)| *s),
+    }
+}
+
 fn track_flight(time: Res<Time>, link: Res<ServerLink>, me: Res<LocalPlayer>, notes: Res<ItemNotesThisFrame>, mut flight: ResMut<InFlight>) {
     let (view, floor) = panel_view(&link, me.id);
     flight.update(format!("{view:?}|{floor:?}"), notes.0.iter().any(|n| !n.ok), time.elapsed_secs());
@@ -471,16 +523,7 @@ fn prune_picked(link: Res<ServerLink>, me: Res<LocalPlayer>, mut picked: ResMut<
         return;
     }
     let (Some(v), floor) = panel_view(&link, me.id) else { return };
-    let at = |place: Place, index: u32| -> Option<u16> {
-        let i = index as usize;
-        match place {
-            Place::Carried => v.inventory.carried.get(i).map(|s| s.item),
-            Place::Worn => v.inventory.worn.get(i).map(|s| s.item),
-            Place::Slot(slot) => v.inventory.slot(slot).map(|s| s.item),
-            Place::Container(id) => v.open.as_ref().filter(|c| c.id == id).and_then(|c| c.stacks.get(i)).map(|s| s.item),
-            Place::Ground => floor.iter().find(|(g, _)| *g == index).map(|(_, s)| s.item),
-        }
-    };
+    let at = |place: Place, index: u32| stack_at(&v, &floor, place, index).map(|s| s.item);
     let kept: Vec<(Place, u32, u16)> = picked.keys.iter().filter_map(|&(p, i, item)| at(p, i).filter(|now| item == u16::MAX || item == *now).map(|now| (p, i, now))).collect();
     if kept != picked.keys {
         picked.keys = kept;
@@ -489,7 +532,7 @@ fn prune_picked(link: Res<ServerLink>, me: Res<LocalPlayer>, mut picked: ResMut<
 
 /// `--pick-range A,B[@SECS]` and `--drop-picked-after SECS`, for recordings: once SECS have gone
 /// by and the panel shows carried rows A and B, Ctrl-click A and Shift-click B (as a player
-/// would); later, press the bar's "to floor". Each happens once.
+/// would); later, press the move-to row's "floor". Each happens once.
 fn script_picks(time: Res<Time>, options: Option<Res<crate::Options>>, listed: Res<Listed>, mut picked: ResMut<Picked>, mut send: ResMut<SendPicked>, mut done: Local<(bool, bool)>) {
     let Some(o) = options else { return };
     let now = time.elapsed_secs();
@@ -525,14 +568,7 @@ fn send_picked(time: Res<Time>, me: Res<LocalPlayer>, link: Res<ServerLink>, mut
     picked.anchor = None;
     list.sort_by_key(|&(_, i, _)| std::cmp::Reverse(i));
     for (from, index, item) in list {
-        let stack = match from {
-            Place::Carried => v.inventory.carried.get(index as usize).copied(),
-            Place::Worn => v.inventory.worn.get(index as usize).copied(),
-            Place::Slot(slot) => v.inventory.slot(slot),
-            Place::Container(_) => v.open.as_ref().and_then(|c| c.stacks.get(index as usize).copied()),
-            Place::Ground => floor.iter().find(|(g, _)| *g == index).map(|(_, s)| *s),
-        };
-        let Some(stack) = stack.filter(|s| s.item == item) else { continue };
+        let Some(stack) = stack_at(&v, &floor, from, index).filter(|s| s.item == item) else { continue };
         if let Some(intent) = move_intent(me.id, from, index, to, 0)
             && flight.ask(from, index, stack, false, now)
         {
@@ -647,10 +683,14 @@ fn rebuild(
     commands.entity(root).with_children(|c| {
         header(c, view.as_ref(), busy);
         toolbar(c, &find);
+        // The move-to row: above the columns, so it is in view however long they are, and always
+        // there, so picking a first row doesn't shift the rows under the pointer.
+        let kg: f32 = view.as_ref().map_or(0.0, |v| picked.keys.iter().filter_map(|&(p, i, _)| stack_at(v, &floor, p, i)).map(|s| stack_kg(items, &s)).sum());
+        picked_bar(c, picked.keys.len(), kg, open.zip(open_name.clone()));
         c.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(12), align_items: AlignItems::FlexStart, ..default() }).with_children(|cols| {
             // You.
-            let mine_to = format!("click: to {}", open_name.as_deref().unwrap_or("floor"));
-            column(cols, "You", &mine_to, |col| {
+            let mine_to = format!("-> {}", open_name.as_deref().unwrap_or("floor"));
+            column(cols, Column::You, "You", &mine_to, |col| {
                 let Some(v) = &view else { return };
                 let inv = &v.inventory;
                 for (label, slot) in [("Hand", Slot::Hand), ("Other hand", Slot::OffHand), ("Back", Slot::Back), ("Shoulder", Slot::Shoulder)] {
@@ -692,7 +732,7 @@ fn rebuild(
             // The open container.
             if let Some(cv) = view.as_ref().and_then(|v| v.open.as_ref()) {
                 let used = zombye_sim::inventory::stacks_volume(items, &cv.stacks);
-                column(cols, &format!("{} ({used:.1} of {:.0} L)", cv.name, cv.room_l), "click: to bags", |col| {
+                column(cols, Column::Container, &format!("{} ({used:.1} of {:.0} L)", cv.name, cv.room_l), "-> bags", |col| {
                     if cv.stacks.is_empty() {
                         dim(col, "empty".into());
                     } else if !cv.stacks.iter().any(shows) {
@@ -704,7 +744,7 @@ fn rebuild(
                 });
             }
             // The floor.
-            column(cols, "Floor", "click: to bags", |col| {
+            column(cols, Column::Floor, "Floor", "-> bags", |col| {
                 if floor.is_empty() {
                     dim(col, "nothing within reach".into());
                 } else if !floor.iter().any(|(_, s)| shows(s)) {
@@ -719,14 +759,11 @@ fn rebuild(
                 }
             });
         });
-        if !picked.keys.is_empty() {
-            picked_bar(c, picked.keys.len(), open.zip(open_name.clone()));
-        }
         if let Some(v) = &view {
             make(c, &join, v, busy.0, &flight, &make_ui);
         }
-        c.spawn((Text::new("Click: move (a recipe: make it; right-click pins it)   Ctrl-click: pick   Shift-click: pick a range"), font(12.0), TextColor(DIM)));
-        c.spawn((Text::new("Right-click: equip / wear / eat / use on a wound   Alt-click: just one   /: search   Tab: close"), font(12.0), TextColor(DIM)));
+        c.spawn((Text::new("Click: move it where its column's arrow says (a recipe: make it)   Alt-click: just one   /: search   Tab: close"), font(12.0), TextColor(DIM)));
+        c.spawn((Text::new("Right-click: equip / wear / eat / use on a wound (a recipe: pin it)"), font(12.0), TextColor(DIM)));
         if note_fresh && !last.text.is_empty() {
             c.spawn((Text::new(last.text.clone()), font(14.0), TextColor(if last.ok { OK } else { NO })));
         }
@@ -926,7 +963,8 @@ fn header(c: &mut ChildSpawnerCommands, view: Option<&PrivateView>, busy: (f32, 
         r.spawn((Text::new(format!("(nothing more past {:.0} kg){tag}", v.max_kg)), font(13.0), TextColor(if tag.is_empty() { DIM } else { color })));
     });
     // A weight bar: the limit is at the 1/2 mark of the hard cap.
-    c.spawn((Node { width: px(300), height: px(8), ..default() }, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)))).with_children(|b| {
+    // (Not shrinking: a panel taller than its room scrolls, and would squeeze the bar to nothing.)
+    c.spawn((Node { width: px(300), height: px(8), flex_shrink: 0.0, ..default() }, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)))).with_children(|b| {
         let share = (k.weight_kg / v.max_kg.max(0.1)).clamp(0.0, 1.0);
         b.spawn((Node { width: Val::Percent(share * 100.0), height: Val::Percent(100.0), ..default() }, BackgroundColor(color)));
     });
@@ -938,11 +976,13 @@ fn header(c: &mut ChildSpawnerCommands, view: Option<&PrivateView>, busy: (f32, 
 }
 
 /// A column: its title, where a click on one of its rows sends it, and its rows.
-fn column(cols: &mut ChildSpawnerCommands, title: &str, sends: &str, body: impl FnOnce(&mut ChildSpawnerCommands)) {
+fn column(cols: &mut ChildSpawnerCommands, which: Column, title: &str, sends: &str, body: impl FnOnce(&mut ChildSpawnerCommands)) {
     cols.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(3), min_width: px(200), ..default() }).with_children(|col| {
-        col.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(8), align_items: AlignItems::Baseline, ..default() }).with_children(|t| {
-            t.spawn((Text::new(title.to_string()), font(15.0), TextColor(TEXT)));
-            t.spawn((Text::new(sends.to_string()), font(12.0), TextColor(DIM)));
+        col.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(8), align_items: AlignItems::Center, ..default() }).with_children(|t| {
+            t.spawn((Text::new(title.to_string()), font(15.0), TextColor(TEXT), TextLayout::no_wrap()));
+            t.spawn((Text::new(sends.to_string()), font(12.0), TextColor(OK), TextLayout::no_wrap()));
+            // Every stack this column shows, picked in one click (again: unpicked).
+            chip(t, "pick all".into(), false).observe(move |_: On<PointerPress>, listed: Res<Listed>, mut picked: ResMut<Picked>| picked.pick_all(which, &listed.0));
         });
         body(col);
     });
@@ -952,7 +992,7 @@ fn column(cols: &mut ChildSpawnerCommands, title: &str, sends: &str, body: impl 
 fn chip<'a>(parent: &'a mut ChildSpawnerCommands, text: String, on: bool) -> EntityCommands<'a> {
     let mut e = parent.spawn((Node { padding: UiRect::axes(px(6), px(2)), ..default() }, BackgroundColor(if on { CHIP_ON } else { CHIP })));
     e.with_children(|b| {
-        b.spawn((Text::new(text), font(12.0), TextColor(TEXT), Pickable::IGNORE));
+        b.spawn((Text::new(text), font(12.0), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
     });
     e
 }
@@ -973,24 +1013,26 @@ fn toolbar(c: &mut ChildSpawnerCommands, find: &Find) {
         if !find.query.is_empty() {
             chip(bar, "x".into(), false).observe(|_: On<PointerPress>, mut find: ResMut<Find>| find.query.clear());
         }
-        chip(bar, "All".into(), find.group.is_none()).observe(|_: On<PointerPress>, mut find: ResMut<Find>| find.group = None);
+        chip(bar, "All".into(), find.groups.is_empty()).observe(|_: On<PointerPress>, mut find: ResMut<Find>| find.groups.clear());
         for g in Group::ALL {
-            chip(bar, g.name().into(), find.group == Some(g)).observe(move |_: On<PointerPress>, mut find: ResMut<Find>| {
-                find.group = if find.group == Some(g) { None } else { Some(g) };
-            });
+            chip(bar, g.name().into(), find.groups.contains(&g)).observe(move |_: On<PointerPress>, mut find: ResMut<Find>| find.toggle(g));
         }
     });
 }
 
 /// What to do with the picked stacks: send them all to the bags, the open container or the floor.
-fn picked_bar(c: &mut ChildSpawnerCommands, n: usize, open: Option<(u32, String)>) {
-    c.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(4), align_items: AlignItems::Center, ..default() }).with_children(|bar| {
-        bar.spawn((Text::new(format!("{n} picked:")), font(13.0), TextColor(OK)));
-        chip(bar, "to bags".into(), false).observe(|_: On<PointerPress>, mut send: ResMut<SendPicked>| send.0 = Some(Place::Carried));
-        if let Some((id, name)) = open {
-            chip(bar, format!("to {name}"), false).observe(move |_: On<PointerPress>, mut send: ResMut<SendPicked>| send.0 = Some(Place::Container(id)));
+fn picked_bar(c: &mut ChildSpawnerCommands, n: usize, kg: f32, open: Option<(u32, String)>) {
+    c.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(4), align_items: AlignItems::Center, min_height: px(20), flex_shrink: 0.0, ..default() }).with_children(|bar| {
+        if n == 0 {
+            bar.spawn((Text::new("Ctrl-click: pick a row   Shift-click: pick a range   then move them all from here"), font(12.0), TextColor(DIM), TextLayout::no_wrap()));
+            return;
         }
-        chip(bar, "to floor".into(), false).observe(|_: On<PointerPress>, mut send: ResMut<SendPicked>| send.0 = Some(Place::Ground));
+        bar.spawn((Text::new(format!("{n} picked ({kg:.1} kg), move to:")), font(13.0), TextColor(OK), TextLayout::no_wrap()));
+        chip(bar, "bags".into(), false).observe(|_: On<PointerPress>, mut send: ResMut<SendPicked>| send.0 = Some(Place::Carried));
+        if let Some((id, name)) = open {
+            chip(bar, name, false).observe(move |_: On<PointerPress>, mut send: ResMut<SendPicked>| send.0 = Some(Place::Container(id)));
+        }
+        chip(bar, "floor".into(), false).observe(|_: On<PointerPress>, mut send: ResMut<SendPicked>| send.0 = Some(Place::Ground));
         chip(bar, "clear".into(), false).observe(|_: On<PointerPress>, mut picked: ResMut<Picked>| *picked = Picked::default());
     });
 }
@@ -1023,8 +1065,12 @@ fn row(col: &mut ChildSpawnerCommands, label: String, kg: String, action: RowAct
         BackgroundColor(rest),
     ))
     .with_children(|r| {
-        r.spawn((Text::new(label), font(14.0), TextColor(TEXT), Pickable::IGNORE));
-        r.spawn((Text::new(kg), font(12.0), TextColor(DIM), Pickable::IGNORE));
+        // One line whatever the name: it never wraps, and a name too long for the column is cut
+        // off at the weight instead of pushing it out.
+        r.spawn((Node { min_width: px(0), flex_shrink: 1.0, overflow: Overflow::clip_x(), ..default() }, Pickable::IGNORE)).with_children(|l| {
+            l.spawn((Text::new(label), font(14.0), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
+        });
+        r.spawn((Text::new(kg), font(12.0), TextColor(DIM), TextLayout::no_wrap(), Node { flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
     })
     .observe(|ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>| {
         if let Ok(mut bg) = q.get_mut(ev.entity) {
@@ -1171,7 +1217,7 @@ mod tests {
         let items = &config.items;
         let stack = |id: &str| ItemStack::one(items.iter().position(|d| d.id == id).unwrap() as u16);
         let carried = [stack("tinned_beans"), stack("rag"), stack("tinned_beans"), stack("kitchen_knife"), stack("tinned_beans"), stack("rag")];
-        let find = Find { query: "bean".into(), typing: false, group: None };
+        let find = Find { query: "bean".into(), typing: false, groups: Vec::new() };
         let mut p = Picked::default();
         // What the panel lists under the search, by the same rule `rebuild` draws rows by.
         let listed = |p: &Picked| -> Vec<Key> { carried.iter().enumerate().filter(|(k, s)| on_show(&find, items, p, Place::Carried, *k as u32, s)).map(|(k, s)| (Place::Carried, k as u32, s.item)).collect() };
@@ -1195,10 +1241,55 @@ mod tests {
         f.query = "BEAN".into();
         assert!(f.shows(items, &beans) && !f.shows(items, &rag));
         f.query.clear();
-        f.group = Group::parse("weapons");
+        f.groups = Group::parse_list("weapons");
         assert!(f.shows(items, &knife) && !f.shows(items, &beans));
-        f.group = Some(Group::Food);
+        f.groups = vec![Group::Food];
         assert!(f.shows(items, &beans) && !f.shows(items, &knife));
+        // Chips are toggles: a second one adds its kind, pressing one again takes it off.
+        f.toggle(Group::Weapons);
+        assert!(f.shows(items, &beans) && f.shows(items, &knife) && !f.shows(items, &rag));
+        f.toggle(Group::Food);
+        assert!(!f.shows(items, &beans) && f.shows(items, &knife));
+        // With a search too, both must hold.
+        f.toggle(Group::Food);
+        f.query = "knife".into();
+        assert!(!f.shows(items, &beans) && f.shows(items, &knife));
+        // Materials are a chip of their own (#94); junk is Other.
+        let rope = stack("rope");
+        assert_eq!(Group::of(items[rope.item as usize].category), Group::Materials);
+        assert_eq!(Group::of(ItemCategory::Junk), Group::Other);
+        // `--filter` takes several, any case, and ignores what isn't a chip.
+        assert_eq!(Group::parse_list("drink, FOOD,nonsense"), vec![Group::Food, Group::Drink]);
+        // Every category has a chip, and every chip a category.
+        for g in Group::ALL {
+            assert_eq!(Group::parse(g.name()), Some(g));
+        }
+    }
+
+    /// A column's "pick all" picks what the column shows (under a search, only that), never what
+    /// you hold or wear, and never another column's rows; pressed again, it unpicks them.
+    #[test]
+    fn pick_all_picks_a_columns_rows_on_show() {
+        let mut listed: Vec<Key> = vec![(Place::Slot(Slot::Back), 0, 9), (Place::Worn, 0, 8)];
+        listed.extend(carried(3));
+        listed.extend([(Place::Container(4), 0, 3), (Place::Ground, 40, 3), (Place::Ground, 41, 5)]);
+        let mut p = Picked::default();
+        p.pick_all(Column::You, &listed);
+        assert_eq!(p.keys, carried(3), "the pack and what's worn stay out of it");
+        p.pick_all(Column::Floor, &listed);
+        assert_eq!(p.keys.len(), 5);
+        assert!(!p.keys.contains(&(Place::Container(4), 0, 3)));
+        // Some picked already: the rest join them. All picked: unpicked, the other column's stay.
+        let mut p = Picked::default();
+        p.toggle(carried(3)[1]);
+        p.pick_all(Column::You, &listed);
+        assert_eq!(p.keys.len(), 3);
+        p.pick_all(Column::Floor, &listed);
+        p.pick_all(Column::You, &listed);
+        assert_eq!(p.keys, vec![(Place::Ground, 40, 3), (Place::Ground, 41, 5)]);
+        // A column with nothing to pick changes nothing.
+        p.pick_all(Column::Container, &[]);
+        assert_eq!(p.keys.len(), 2);
     }
 
     /// Typing into the search box, headless through Bevy's input: `/` starts it, letters go into
