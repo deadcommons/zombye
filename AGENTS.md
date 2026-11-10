@@ -1525,7 +1525,7 @@ stands still may count as changed.** Each of these cost milliseconds a frame bef
   within `crowd_reach` (1.6 m) of the edge whose path leads through it (from its tile or the next two along
   the path) and that stands behind someone battering it from within reach pushes in and thumps too, each
   thump doing `crowd_thump_frac` (0.3) of one (`ZombieThump::damage`). A thumper's interest (`timer`, capped
-  at `thump_interest_secs`, 20 s, when it starts) runs down unless it sees a player or hears any player's
+  at `thump_interest_secs`, 12 s, when it starts) runs down unless it sees a player or hears any player's
   noise (which tops it up again); when it runs out it gives up (below). Once the way is open (broken, or a
   player opened it) it goes back to chasing or investigating. Zombies never open doors.
 - **Giving up:** a chaser or investigator pushed back by walls (not by the crowd) that hasn't got
