@@ -1,4 +1,5 @@
 //! Minimal MCP (Model Context Protocol) server over stdio: newline-delimited JSON-RPC 2.0.
+//! `mcp_http.rs` carries the same messages over HTTP ([`handle`] answers both).
 //!
 //! Every tool goes through the same [`Intent`] path a game client uses, so an agent can't do
 //! anything a client couldn't (admin tools will be gated separately).
@@ -49,11 +50,34 @@ const CACHE_TTL_MS: u64 = 3_600_000;
 pub struct Options {
     /// Offer the debug tools ([`Kind::Debug`]); `--no-debug-tools` leaves them out.
     pub debug_tools: bool,
+    /// Offer `save` and `saves`, which write and list files in the saves folder. A server others can
+    /// reach (`--mcp-http`, #87) leaves them out together with the debug tools.
+    pub save_tools: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { debug_tools: true }
+        Options { debug_tools: true, save_tools: true }
+    }
+}
+
+impl Options {
+    /// A server others play on: no debug tools, nothing of the saves folder.
+    pub const PLAY_ONLY: Options = Options { debug_tools: false, save_tools: false };
+
+    /// Whether the tool `name`, of `kind`, is listed and can be called.
+    fn offers(&self, name: &str, kind: Kind) -> bool {
+        match kind {
+            Kind::Debug => self.debug_tools,
+            Kind::Saves => self.save_tools,
+            Kind::Look | Kind::Play => self.save_tools || name != "saves",
+        }
+    }
+
+    /// Whether the tool called `name` is on offer (false for a name that is no tool).
+    #[cfg(test)]
+    pub fn offers_tool(&self, name: &str) -> bool {
+        tool_kind(name).is_some_and(|kind| self.offers(name, kind))
     }
 }
 
@@ -215,8 +239,12 @@ fn instructions(opts: Options) -> String {
          Fight (pick_up a weapon; attack, shove, stomp) or get away; you have 100 HP.\n\
          - To last: search containers for food, drink and bandages, use what you find, treat wounds (health says how), sleep.\n\
          - {debug}\n\
-         - save keeps the whole world{}; saves lists them.",
-        if opts.debug_tools { " and load puts one back" } else { "" }
+         - {}",
+        match (opts.save_tools, opts.debug_tools) {
+            (true, true) => "save keeps the whole world and load puts one back; saves lists them.",
+            (true, false) => "save keeps the whole world; saves lists them.",
+            (false, _) => "The server keeps the world saved by itself.",
+        }
     )
 }
 
@@ -228,8 +256,9 @@ fn server_info() -> Value {
 /// by side: the handshake revisions (`initialize`, up to 2025-11-25) and the stateless 2026-07-28 one,
 /// where a request names its protocol version in `params._meta` and `server/discover` describes the
 /// server. A request that names 2026-07-28 gets that revision's result fields (`resultType`, the server's
-/// identity in `_meta`, cache hints on lists); any other gets the older shape.
-fn handle(world: &mut World, persist: &mut Persist, renderer: &Renderer, opts: Options, msg: &Value) -> Option<Value> {
+/// identity in `_meta`, cache hints on lists); any other gets the older shape. Whatever carried the
+/// message: stdio here, HTTP in `mcp_http.rs`.
+pub fn handle(world: &mut World, persist: &mut Persist, renderer: &Renderer, opts: Options, msg: &Value) -> Option<Value> {
     let id = msg.get("id").cloned();
     let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
     // Notifications (no id) get no response.
@@ -283,7 +312,7 @@ fn handle(world: &mut World, persist: &mut Persist, renderer: &Renderer, opts: O
             let Some(kind) = tool_kind(name) else {
                 return fail(INVALID_PARAMS, format!("Unknown tool: {name}"), None);
             };
-            if !opts.debug_tools && kind == Kind::Debug {
+            if !opts.offers(name, kind) {
                 return fail(INVALID_PARAMS, format!("Unknown tool: {name} (this server runs without the debug tools: --no-debug-tools)"), None);
             }
             let result = match name {
@@ -374,7 +403,7 @@ fn tool_list(opts: Options) -> Value {
         let name = def["name"].as_str().unwrap_or("").to_string();
         let Some(&(_, title, kind)) = TOOLS.iter().find(|t| t.0 == name) else { continue };
         let debug = kind == Kind::Debug;
-        if debug && !opts.debug_tools {
+        if !opts.offers(&name, kind) {
             continue;
         }
         let title = if debug { format!("Debug: {title}") } else { title.to_string() };
@@ -3329,7 +3358,7 @@ mod tests {
         let dir = scratch("no-debug");
         let mut world = small_world();
         let mut persist = session(&world, &dir.0);
-        let opts = Options { debug_tools: false };
+        let opts = Options { debug_tools: false, ..Options::default() };
         let list = tool_list(opts);
         let names: Vec<&str> = list.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
         let debug: Vec<&str> = TOOLS.iter().filter(|t| t.2 == Kind::Debug).map(|t| t.0).collect();

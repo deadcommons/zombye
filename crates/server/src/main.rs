@@ -3,6 +3,13 @@
 //! Modes:
 //! - `zombye-server --mcp` — MCP server on stdio. Time only advances when an agent calls
 //!   `step_ticks`, so agent runs are deterministic and reproducible.
+//! - `zombye-server --mcp-http [ADDR[:PORT]]` — the same MCP server over streamable HTTP
+//!   (`mcp_http.rs`, #87), for agents that reach it over the network: `POST /mcp`, by default on
+//!   `127.0.0.1:8787`. One world, shared by everyone who connects. Needs a bearer token
+//!   (`ZOMBYE_MCP_TOKEN`, or `--mcp-token T`; `--mcp-token-in-url` also takes it as `/mcp/T`) or
+//!   `--mcp-no-auth` (open, and then without the debug tools); `--mcp-no-dev` turns the debug
+//!   tools off with a token too; `--mcp-origin ORIGIN` allows a browser origin. No TLS: put a
+//!   reverse proxy or a tunnel in front.
 //! - `zombye-server --bench [--ticks N] [--players N] [--horde N]` — run N ticks and print timing.
 //!   With no players every zombie heads for a debug goal (all of them stay on the active tier);
 //!   with players they start on the road west of town (in the forest on a big map), run in
@@ -45,6 +52,7 @@
 #![recursion_limit = "256"]
 
 mod mcp;
+mod mcp_http;
 mod multiplayer;
 mod screenshot;
 
@@ -156,7 +164,15 @@ fn main() {
         dirty: false,
     };
 
-    if flag("--mcp") {
+    if flag("--mcp-http") {
+        // The same server as `--mcp`, reached over HTTP instead of stdio (#87, `mcp_http.rs`).
+        let http = match mcp_http::HttpArgs::parse(&args, std::env::var("ZOMBYE_MCP_TOKEN").ok()) {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(2);
+            }
+        };
         shutdown::install();
         let world = match &persist.path {
             Some(path) => load_or_create(path, config, load_options, mcp::add_agent_player),
@@ -164,7 +180,16 @@ fn main() {
         };
         let timeout = text("--screenshot-timeout").and_then(|v| v.parse::<f64>().ok()).filter(|s| *s > 0.0 && s.is_finite()).map_or(screenshot::DEFAULT_TIMEOUT, Duration::from_secs_f64);
         let renderer = screenshot::Renderer::new(text("--client").map(PathBuf::from), data.clone(), timeout);
-        mcp::serve(world, &mut persist, &renderer, mcp::Options { debug_tools: !flag("--no-debug-tools") });
+        mcp_http::serve(world, &mut persist, &renderer, &http);
+    } else if flag("--mcp") {
+        shutdown::install();
+        let world = match &persist.path {
+            Some(path) => load_or_create(path, config, load_options, mcp::add_agent_player),
+            None => World::new(config),
+        };
+        let timeout = text("--screenshot-timeout").and_then(|v| v.parse::<f64>().ok()).filter(|s| *s > 0.0 && s.is_finite()).map_or(screenshot::DEFAULT_TIMEOUT, Duration::from_secs_f64);
+        let renderer = screenshot::Renderer::new(text("--client").map(PathBuf::from), data.clone(), timeout);
+        mcp::serve(world, &mut persist, &renderer, mcp::Options { debug_tools: !flag("--no-debug-tools"), ..mcp::Options::default() });
     } else if flag("--bots") {
         let Some(addr) = text("--connect") else {
             eprintln!("--bots N needs --connect HOST[:PORT]");
@@ -198,7 +223,7 @@ fn main() {
         bench(config, &mut persist, load_options, ticks, value("--players").unwrap_or(0) as u32, value("--horde").unwrap_or(0) as u32, flag("--save-bench"));
     } else {
         eprintln!(
-            "usage: zombye-server (--mcp | --bench [--ticks N] [--players N] [--horde N] [--save-bench] \
+            "usage: zombye-server (--mcp | --mcp-http [ADDR[:PORT]] [--mcp-token T | --mcp-no-auth] [--mcp-token-in-url] [--mcp-no-dev] [--mcp-origin ORIGIN] | --bench [--ticks N] [--players N] [--horde N] [--save-bench] \
              | --host [ADDR[:PORT]] [--name NAME] [--max-players N] [--pvp on|off] [--spawn spread|together] [--password P] [--allow-dev] [--budget KB] [--fair-sight on|off] \
              | --bots N --connect HOST[:PORT] [--secs S] [--name PREFIX] [--password P] [--bots-hostile] [--lag MS]) \
              [--zombies N] [--seed S] [--map-chunks N] [--pvp on] [--data DIR] \

@@ -8,7 +8,8 @@ import McpSetup from '../../../../components/McpSetup.astro';
 
 Zombye's agent interface is `zombye-server --mcp`: one program that speaks the
 [Model Context Protocol](https://modelcontextprotocol.io) over standard input and output. Your agent's app starts it,
-talks to it, and stops it when it closes. Any app that can run a local (stdio) MCP server can play.
+talks to it, and stops it when it closes. Any app that can run a local (stdio) MCP server can play. Apps that only
+connect to a server over the network use [the HTTP server](#over-the-network-the-http-server) instead.
 
 ## 1. Build the server
 
@@ -263,21 +264,51 @@ gets only the text line, and `observe` is the way it sees. A picture is 960 × 5
 half a megabyte; 1280 × 720 is about 1 MB. Ask for a bigger `width` and `height` when the detail matters, a smaller
 one (say 640 × 360) to keep conversations light.
 
+## Over the network: the HTTP server
+
+`zombye-server --mcp-http` is the same server with the same tools, reached over HTTP (MCP's streamable HTTP transport)
+instead of being started by your agent's app. It keeps running on its own, holds **one world**, and everyone who
+connects plays in that world.
+
+```bash
+export ZOMBYE_MCP_TOKEN="$(openssl rand -hex 24)"   # any secret of 16 characters or more
+/path/to/zombye/target/release/zombye-server --mcp-http --zombies 1000 --save saves/agents.zsave
+```
+
+It listens on `http://127.0.0.1:8787/mcp`. `--mcp-http 0.0.0.0:8787` listens on every interface, `--mcp-http 9000`
+on another port. Callers send the token as `Authorization: Bearer <token>`. In Claude Code, for example:
+
+```bash
+claude mcp add --transport http zombye http://127.0.0.1:8787/mcp --header "Authorization: Bearer $ZOMBYE_MCP_TOKEN"
+```
+
+| Option | What it does |
+|---|---|
+| `ZOMBYE_MCP_TOKEN`, or `--mcp-token T` | The token callers must send. The environment variable is better: other users of the machine can't see it in the process list. |
+| `--mcp-no-dev` (or `--no-debug-tools`) | Leaves out the [debug tools](/docs/agents/tools/#debug) (`dev`, `spawn_zombies`, `spawn_item`, `wound`, `set_needs`, `set_goal`, `make_noise`, `skip_time`, `add_player`, `pvp`, `load`) and, over HTTP, the saves folder's `save` and `saves` too. They aren't listed, and calling one is the unknown-tool error. |
+| `--mcp-no-auth` | No token: anyone who can reach the server plays. The debug tools are always off then. |
+| `--mcp-token-in-url` | Also takes the token as the last part of the address, `/mcp/<token>`, for apps that can only be given a URL. Weaker: addresses end up in logs. |
+| `--mcp-origin ORIGIN` | Allows web pages from that origin to call the server from a browser (`*`: any). Pages on your own machine (`http://localhost:...`) always may; other programs aren't affected. |
+
+The server speaks plain HTTP. To reach it from another machine safely, put something that adds HTTPS in front of it: a
+reverse proxy (Caddy, nginx) or a tunnel (Cloudflare Tunnel, Tailscale Funnel, ngrok), pointed at `127.0.0.1:8787`.
+`GET /health` answers `ok` without a token, for whatever watches the process.
+
+<Aside type="caution">
+With a token and without `--mcp-no-dev`, the debug tools are on (spawn anything, god mode, load saves): whoever has the
+token controls the whole world and can write saves on your machine. Give the token only to agents you would give that
+to, and use `--mcp-no-dev` for a server others play on.
+</Aside>
+
 ## Web apps: claude.ai, ChatGPT
 
 claude.ai's connectors, ChatGPT's developer mode and the OpenAI Responses API only connect to **remote** MCP servers,
-over HTTPS on the public internet. `zombye-server` is local-only for now: an
-[HTTP mode](https://github.com/deadcommons/zombye/issues/87) is planned, alongside official hosting.
+over HTTPS on the public internet. Run the HTTP server above behind HTTPS and give the app its address:
+`https://your-host/mcp` with the token as a bearer token (an `Authorization` header), or, where the app only takes a URL, start the server with `--mcp-token-in-url` and give it `https://your-host/mcp/<token>`.
 
-Until then, general-purpose bridges such as [supergateway](https://github.com/supercorp-ai/supergateway) can wrap a
-stdio server in HTTP, and OpenAI's [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
-can connect a local one to ChatGPT. We haven't tested either with Zombye yet.
-
-<Aside type="caution">
-The MCP server includes debug tools (spawn anything, god mode, load saves). Anyone who can reach it controls the whole
-world. Never expose it to the internet without authentication in front of it. `--no-debug-tools` leaves those tools
-out, but the rest still play the game for whoever calls them.
-</Aside>
+We haven't tried these apps against it yet, and it doesn't do OAuth sign-in, which some of them ask for
+([#87](https://github.com/deadcommons/zombye/issues/87) tracks both). Whether the model sees `screenshot` pictures
+depends on the app: the server sends them the same way over HTTP as locally.
 
 ## Troubleshooting
 
