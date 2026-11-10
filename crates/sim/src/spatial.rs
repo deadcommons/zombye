@@ -59,30 +59,35 @@ impl SpatialHash {
         self.origin = lo;
         self.cols = hi.x - lo.x + 1;
         self.rows = hi.y - lo.y + 1;
+        // One slot more than the cells need: counts go in two along, so that after the running
+        // sum `starts[c + 1]` is where cell `c` begins, and filling the cells moves it on to
+        // where `c` ends, which is where `c + 1` begins. No second copy of the table to fill
+        // from: on a 1 km map with zombies all over it the table is a million cells (#70).
         self.starts.clear();
-        self.starts.resize((self.cols * self.rows + 1) as usize, 0);
+        self.starts.resize((self.cols * self.rows + 2) as usize, 0);
+        let mut cells = std::mem::take(&mut self.fill);
+        cells.clear();
         for (i, p) in positions.iter().enumerate() {
             if keep(i) {
                 let c = self.cell_of(*p);
-                self.starts[c + 1] += 1;
+                self.starts[c + 2] += 1;
+                cells.push(c as u32);
             }
         }
         for i in 1..self.starts.len() {
             self.starts[i] += self.starts[i - 1];
         }
         self.items.resize(kept, 0);
-        // Reuse `fill` across rebuilds instead of cloning `starts` each time.
-        let mut fill = std::mem::take(&mut self.fill);
-        fill.clear();
-        fill.extend_from_slice(&self.starts);
-        for (i, p) in positions.iter().enumerate() {
+        let mut k = 0;
+        for i in 0..positions.len() {
             if keep(i) {
-                let c = self.cell_of(*p);
-                self.items[fill[c] as usize] = i as u32;
-                fill[c] += 1;
+                let at = &mut self.starts[cells[k] as usize + 1];
+                self.items[*at as usize] = i as u32;
+                *at += 1;
+                k += 1;
             }
         }
-        self.fill = fill;
+        self.fill = cells;
     }
 
     /// Number of items indexed.
@@ -97,12 +102,16 @@ impl SpatialHash {
     /// Calls `f(index)` for every item in the 3×3 cells around `p`.
     pub fn for_each_near(&self, p: Vec2, mut f: impl FnMut(usize)) {
         let c = self.cell_xy(p) - self.origin;
+        let (x0, x1) = ((c.x - 1).max(0), (c.x + 1).min(self.cols - 1));
+        if x0 > x1 {
+            return;
+        }
         for y in (c.y - 1).max(0)..=(c.y + 1).min(self.rows - 1) {
-            for x in (c.x - 1).max(0)..=(c.x + 1).min(self.cols - 1) {
-                let c = (y * self.cols + x) as usize;
-                for &i in &self.items[self.starts[c] as usize..self.starts[c + 1] as usize] {
-                    f(i as usize);
-                }
+            // A row of cells is contiguous in `items`: one slice for its three cells.
+            let row = (y * self.cols) as usize;
+            let (a, b) = (self.starts[row + x0 as usize] as usize, self.starts[row + x1 as usize + 1] as usize);
+            for &i in &self.items[a..b] {
+                f(i as usize);
             }
         }
     }
@@ -160,6 +169,32 @@ mod tests {
         assert_eq!(found, (0..400).filter(|i| i % 50 == 0).collect::<Vec<_>>());
         h.rebuild_where(&pts, |_| false);
         h.for_each_near(Vec2::new(1.0, 1.0), |_| panic!("empty"));
+    }
+
+    /// `for_each_near` gives the 3 x 3 cells round a point, row by row, each cell's items in
+    /// index order, wherever the point is (inside the window, on its edge, outside it), and
+    /// rebuilding again and again with other sets keeps giving that.
+    #[test]
+    fn near_is_the_nine_cells_in_order() {
+        let pts: Vec<Vec2> = (0..900).map(|i| Vec2::new(((i * 37) % 101) as f32 * 0.31 + 3.0, ((i * 53) % 89) as f32 * 0.27 + 7.0)).collect();
+        let mut h = SpatialHash::new(0.0, 0.0, 1.0);
+        for round in 0..4usize {
+            let keep = |i: usize| round == 0 || i % (round + 1) != 0;
+            h.rebuild_where(&pts, keep);
+            assert_eq!(h.len(), (0..pts.len()).filter(|i| keep(*i)).count());
+            for q in [Vec2::new(10.2, 12.9), Vec2::new(3.0, 7.0), Vec2::new(2.1, 6.5), Vec2::new(34.9, 30.9), Vec2::new(36.5, 20.0), Vec2::new(20.0, 5.2), Vec2::new(-4.0, 100.0)] {
+                let mut got = Vec::new();
+                h.for_each_near(q, |i| got.push(i));
+                let c = q.floor().as_ivec2();
+                let mut want = Vec::new();
+                for y in c.y - 1..=c.y + 1 {
+                    for x in c.x - 1..=c.x + 1 {
+                        want.extend((0..pts.len()).filter(|&i| keep(i) && pts[i].floor().as_ivec2() == IVec2::new(x, y)));
+                    }
+                }
+                assert_eq!(got, want, "round {round}, near {q}");
+            }
+        }
     }
 }
 

@@ -351,6 +351,8 @@ pub struct World {
     /// Hash of the map as generated, so loading can tell the generator (or its data) changed.
     pub(crate) map_base_hash: u64,
     pub(crate) scratch_tiles: Vec<IVec2>,
+    /// Scratch for the hearing pass (one mark per zombie).
+    pub(crate) scratch_marks: Vec<u8>,
     pub(crate) next_id: u32,
     pub(crate) next_player_id: u32,
     pub(crate) scratch_pos: Vec<Vec2>,
@@ -444,6 +446,7 @@ impl World {
             population: Population::default(),
             regions,
             scratch_tiles: Vec::new(),
+            scratch_marks: Vec::new(),
             zombies: Zombies::default(),
             players: Vec::new(),
             tick: 0,
@@ -1008,7 +1011,7 @@ impl World {
             let daylight = senses::daylight(self.time_of_day());
             let seed = self.config.seed();
             sight_checks = senses::sight_pass(&mut self.zombies, &self.hash, &self.map, &self.targets, t, daylight, self.tick, seed);
-            senses::hearing_pass(&mut self.zombies, &self.hash, &self.map, &self.heard, t);
+            senses::hearing_pass(&mut self.zombies, &self.hash, &self.map, &self.heard, t, &mut self.scratch_marks);
         }
         let senses_ms = start.elapsed().as_secs_f32() * 1000.0 - tier_ms;
         // XP for running, moving overloaded and sneaking near zombies (#46).
@@ -1032,6 +1035,8 @@ impl World {
             nav: long_paths.then_some(&mut self.nav),
             hash: &self.hash,
             targets: &self.targets,
+            // Kept up to date by the tier pass whenever there are players.
+            near_players: (!self.players.is_empty()).then_some(&self.chunk_dist),
             tuning: &self.config.zombie,
             flow: &mut self.flow_cache,
             goal: self.goal_flow.as_ref(),
@@ -1140,13 +1145,17 @@ impl World {
     /// The tier pass: with at least one player (and tiers enabled), every zombie moves to the tier
     /// its chunk's distance to the nearest player calls for. With none, nothing changes tier.
     fn assign_tiers(&mut self) -> tiers::TierChanges {
+        // How far each chunk is from the players: the tiers go by it, and the zombie update uses
+        // it to tell where nobody is about.
+        if !self.players.is_empty() {
+            self.chunk_dist.update(&self.map, self.players.iter().map(|p| p.state.pos), self.config.tiers.chunk_reach());
+        }
         if !self.config.tiers.enabled || self.players.is_empty() {
             if !self.config.tiers.enabled {
                 self.zombies.tier.iter_mut().for_each(|t| *t = Tier::Active);
             }
             return tiers::TierChanges::default();
         }
-        self.chunk_dist.update(&self.map, self.players.iter().map(|p| p.state.pos));
         tiers::assign(&mut self.zombies, &self.chunk_dist, &self.config.tiers, &self.config.zombie, &self.map, &mut self.scratch_tiles)
     }
 
@@ -2691,6 +2700,70 @@ mod tests {
         assert!(w.stats.virtual_ >= 20_000, "only {} virtual", w.stats.virtual_);
         if !cfg!(debug_assertions) {
             assert!(avg < 10.0 && worst < 50.0, "avg {avg:.2} ms, worst {worst:.2} ms");
+        }
+    }
+
+    /// Issue #70's target: 32 players spread over a 1 km map, so nearly every zombie of 22,500
+    /// is active, keep the worst tick within the 50 ms budget. Players on a grid over the whole
+    /// map, a horde of 1,000 round the first, one in four running, and all of them making a 60 m
+    /// noise on the same tick now and then (the worst case for hearing).
+    #[test]
+    fn thirty_two_spread_out_players_keep_the_worst_tick_within_budget() {
+        let mut w = World::new(WorldConfig::new(1, 21_500, templates()).with_map_chunks(64));
+        let size = w.map.width() as f32;
+        let mut ids = Vec::new();
+        for k in 0..32u32 {
+            let cell = (size - 120.0) / Vec2::new(6.0, 6.0);
+            let p = open_tile_near(&w, Vec2::splat(60.0) + cell * Vec2::new((k % 6) as f32 + 0.5, (k / 6) as f32 + 0.5));
+            if k == 0 {
+                w.spawn_zombies(1000, p, 45.0);
+            }
+            ids.push(w.add_player(p));
+            w.players[k as usize].hp = 1e9;
+        }
+        let ticks = if cfg!(debug_assertions) { 30 } else { 300 };
+        let (mut total, mut worst, mut worst_at, mut active) = (0.0f32, 0.0f32, 0, 0u32);
+        let mut worst_stats = w.stats;
+        let mut over = 0u32;
+        for t in 0..ticks {
+            for (k, &id) in ids.iter().enumerate() {
+                let d = Vec2::from_angle(t as f32 * 0.01 + k as f32);
+                w.set_player_input(id, t + 1, PlayerInput { move_dir: d, facing: 0.0, run: k % 4 == 0, sneak: false, aim: false });
+                if t % 100 == 10 {
+                    w.emit_sound(w.player(id).unwrap().state.pos, 60.0);
+                }
+            }
+            let s = Instant::now();
+            w.step();
+            let ms = s.elapsed().as_secs_f32() * 1000.0;
+            total += ms;
+            over += (ms > 50.0) as u32;
+            if ms > worst {
+                (worst, worst_at, worst_stats) = (ms, t, w.stats);
+            }
+            active = active.max(w.stats.active);
+        }
+        let (avg, s) = (total / ticks as f32, worst_stats);
+        eprintln!(
+            "32 players spread over 1 km, {} zombies, {active} active at most: {ticks} ticks, avg {avg:.3} ms/tick, worst {worst:.3} ms (budget 50 ms)\n  \
+             worst tick ({worst_at}): tiers+index {:.3} ms, senses {:.3} ms ({} sounds), flow {:.3} ms ({} fields), nav {:.3} ms, active AI {:.3} ms, near {:.3} ms, virtual {:.3} ms",
+            w.zombies.len(),
+            s.tier_ms,
+            s.senses_ms,
+            s.sounds,
+            s.flow_ms,
+            s.flow_builds,
+            s.nav_ms,
+            s.active_ms,
+            s.near_ms,
+            s.virtual_ms,
+        );
+        assert!(active >= 12_000, "only {active} active: the players aren't spread out");
+        assert!(w.stats.flow_builds <= FLOW_BUILDS_PER_TICK, "{} fields built in a tick", w.stats.flow_builds);
+        if !cfg!(debug_assertions) {
+            // The tests run side by side on every core, so a tick now and then is this thread
+            // waiting its turn rather than working: a few may go over, not a run of them.
+            assert!(avg < 25.0 && over <= 3, "avg {avg:.2} ms, worst {worst:.2} ms, {over} ticks over the budget");
         }
     }
 

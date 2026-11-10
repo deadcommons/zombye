@@ -2,6 +2,8 @@
 //! bot clients that join one, for filling a server and measuring it.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use glam::Vec2;
@@ -243,6 +245,124 @@ pub struct BotArgs {
     pub hostile: bool,
     /// `--lag MS`: they play as if that many milliseconds of ping away (#23).
     pub lag_ms: u32,
+    /// Set from outside to make them leave (the bench); `None`: only a shutdown signal does.
+    pub stop: Option<Arc<AtomicBool>>,
+}
+
+/// `--bench --bots N`: the server bench over the real transport (#70). `world` is served on a
+/// loopback TCP port; `players` survivors are placed as the bench places them (`spread`: on a grid
+/// over the whole map; `horde` more zombies round the first) and unkillable, and as many bots
+/// join, each on its own connection, and play them from another thread. The server ticks at the
+/// real rate; once every bot is on, `ticks` ticks are measured: the whole tick (intents, the world,
+/// every client's snapshot), the active zombies and the bytes each client was sent.
+pub fn bench(mut world: World, players: u32, horde: u32, spread: bool, ticks: u64, lag_ms: u32) {
+    world.config.combat.pvp = true;
+    let zombies = world.zombies.len();
+    let ids = crate::place_bench_players(&mut world, players, horde, spread);
+    for &id in &ids {
+        world.set_dev(id, Some(true), None);
+    }
+    let options = HostOptions { name: "bench".into(), max_players: players as usize, ..HostOptions::default() };
+    let mut host = Host::bind(world, "127.0.0.1:0", options).expect("a free loopback port");
+    // Each bot takes up the survivor placed for it.
+    host.set_names(ids.iter().enumerate().map(|(k, &id)| (format!("bot-{}", k + 1), id)));
+    let addr = host.local_addr().expect("bound").to_string();
+    let stop = Arc::new(AtomicBool::new(false));
+    let args = BotArgs { addr: addr.clone(), count: players as usize, secs: None, name: "bot".into(), password: String::new(), hostile: false, lag_ms, stop: Some(stop.clone()) };
+    let playing = std::thread::Builder::new().name("bots".into()).spawn(move || bots(args)).expect("a thread for the bots");
+    println!(
+        "bench over TCP on {addr}: {}x{} m map, {zombies} zombies + horde {horde}, {players} bots {}, {ticks} ticks at {:.0} a second",
+        host.world.map.width(),
+        host.world.map.height(),
+        if spread { "spread over the map" } else { "in a row" },
+        1.0 / TICK_DT,
+    );
+    // Until everyone is on: ticks that aren't counted (reported apart: joining is its own load).
+    let (mut joining, mut joining_worst) = (0u64, 0.0f32);
+    let deadline = Instant::now() + Duration::from_secs(120);
+    host.run(|h| {
+        joining += 1;
+        joining_worst = joining_worst.max(h.stats.tick_ms);
+        h.log.clear();
+        h.clients().len() < players as usize && Instant::now() < deadline && !playing.is_finished()
+    });
+    if host.clients().len() < players as usize {
+        eprintln!("only {} of {players} bots joined", host.clients().len());
+        std::process::exit(1);
+    }
+    let before: Vec<(u32, u64, u64)> = host.clients().iter().map(|c| (c.player, c.bytes_out, c.bytes_in)).collect();
+    let held0 = host.stats.held;
+    let start = Instant::now();
+    let (mut n, mut sum, mut sim, mut worst, mut worst_sim) = (0u64, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    let (mut worst_at, mut worst_stats) = (0u64, host.world.stats);
+    let (mut active, mut most_active, mut over, mut views) = (0u64, 0u32, [0u32; 2], 0u32);
+    host.run(|h| {
+        let (ms, s) = (h.stats.tick_ms, h.world.stats);
+        n += 1;
+        sum += ms;
+        sim += h.stats.sim_ms;
+        worst_sim = worst_sim.max(h.stats.sim_ms);
+        if ms > worst {
+            (worst, worst_at, worst_stats) = (ms, n, s);
+        }
+        active += s.active as u64;
+        most_active = most_active.max(s.active);
+        over[0] += (ms > TICK_DT * 500.0) as u32;
+        over[1] += (ms > TICK_DT * 1000.0) as u32;
+        if n % 20 == 0 {
+            views = views.max(h.clients().iter().map(|c| c.zombies).max().unwrap_or(0));
+        }
+        h.log.clear();
+        n < ticks
+    });
+    let secs = start.elapsed().as_secs_f32();
+    let clients = host.clients();
+    let sent = |c: &zombye_net::host::ClientInfo| before.iter().find(|b| b.0 == c.player).map_or((0, 0), |b| (c.bytes_out - b.1, c.bytes_in - b.2));
+    let online = clients.len().max(1) as f32;
+    let down: u64 = clients.iter().map(|c| sent(c).0).sum();
+    let up: u64 = clients.iter().map(|c| sent(c).1).sum();
+    let busiest = clients.iter().map(|c| sent(c).0).max().unwrap_or(0);
+    let (s, w, t) = (host.world.stats, worst_stats, n.max(1) as f32);
+    println!(
+        "{} clients, {n} ticks in {secs:.1} s ({:.1} a second): avg {:.3} ms/tick, worst {worst:.3} ms, budget {:.0} ms ({} ticks over half of it, {} over it); the world alone avg {:.3} ms, worst {worst_sim:.3} ms\n\
+         zombies: {:.0} active on average (most {most_active}); now {} active, {} near, {} virtual ({} hunting)\n\
+         per client: {:.1} KB/s down (busiest {:.1}, budget {}), {:.2} KB/s up; up to {views} zombies in a view, {:.1} updates a tick held back\n\
+         worst tick ({worst_at}): tiers+index {:.3} ms ({} promoted, {} demoted), senses {:.3} ms, flow {:.3} ms ({} fields), nav {:.3} ms ({} plans), active AI {:.3} ms ({} active), near {:.3} ms, virtual {:.3} ms, the world {:.3} ms\n\
+         joining: {joining} ticks, worst {joining_worst:.3} ms",
+        clients.len(),
+        n as f32 / secs,
+        sum / t,
+        TICK_DT * 1000.0,
+        over[0],
+        over[1],
+        sim / t,
+        active as f32 / t,
+        s.active,
+        s.near,
+        s.virtual_,
+        s.chasing,
+        down as f32 / secs / online / 1000.0,
+        busiest as f32 / secs / 1000.0,
+        host.options.budget / 1000,
+        up as f32 / secs / online / 1000.0,
+        (host.stats.held - held0) as f32 / t,
+        w.tier_ms,
+        w.promoted,
+        w.demoted,
+        w.senses_ms,
+        w.flow_ms,
+        w.flow_builds,
+        w.nav_ms,
+        w.nav_plans,
+        w.active_ms,
+        w.active,
+        w.near_ms,
+        w.virtual_ms,
+        w.tick_ms,
+    );
+    stop.store(true, Ordering::Relaxed);
+    host.close("the bench is over");
+    let _ = playing.join();
 }
 
 struct Bot {
@@ -292,7 +412,8 @@ pub fn bots(args: BotArgs) {
     let mut next = start + step;
     let mut tick = 0u32;
     let (mut in0, mut out0, mut t0) = (bots.iter().map(|b| b.remote.bytes_in()).sum::<u64>(), bots.iter().map(|b| b.remote.bytes_out).sum::<u64>(), start);
-    while !shutdown::requested() && args.secs.is_none_or(|s| start.elapsed().as_secs_f32() < s) {
+    let stopped = || args.stop.as_ref().is_some_and(|s| s.load(Ordering::Relaxed));
+    while !shutdown::requested() && !stopped() && args.secs.is_none_or(|s| start.elapsed().as_secs_f32() < s) {
         tick += 1;
         for (k, bot) in bots.iter_mut().enumerate() {
             play(bot, k as u32, tick, args.hostile && rules.pvp);
@@ -305,6 +426,9 @@ pub fn bots(args: BotArgs) {
             None => true,
         });
         if bots.is_empty() {
+            if stopped() {
+                break;
+            }
             eprintln!("every bot lost its connection");
             std::process::exit(1);
         }

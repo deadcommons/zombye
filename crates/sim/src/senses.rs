@@ -228,22 +228,78 @@ pub(crate) fn sight_pass(z: &mut Zombies, hash: &SpatialHash, map: &TileMap, tar
 /// Every zombie in the spatial hash (active and near) in earshot of each sound reacts: one that isn't hunting goes to investigate the
 /// sound's position; one hunting a player it can't see updates where it thinks they are if the
 /// sound came from them. Sounds through walls only carry `wall_muffle` of their radius.
-pub(crate) fn hearing_pass(z: &mut Zombies, hash: &SpatialHash, map: &TileMap, sounds: &[Sound], t: &ZombieTuning) {
-    for s in sounds {
-        if s.radius <= 0.0 {
-            continue;
+///
+/// The sounds are heard in order, and what a zombie does about one it may undo for the next. Most
+/// listeners are idle (wandering or investigating, not bored), and for those each sound heard
+/// replaces all the last one did, so only the last one they hear counts: they are done first,
+/// going through the sounds backward and stopping at the first each hears, which is one ray
+/// instead of one per sound in earshot when many loud noises fall on one tick (#70). The rest
+/// (hunting, battering, bored) then hear every sound in order as before. The outcome is exactly
+/// that of every zombie hearing every sound in order. `marks` is scratch, kept between calls.
+pub(crate) fn hearing_pass(z: &mut Zombies, hash: &SpatialHash, map: &TileMap, sounds: &[Sound], t: &ZombieTuning, marks: &mut Vec<u8>) {
+    /// Not met yet this pass; idle, nothing heard yet; idle, done; one of the rest.
+    const NEW: u8 = 0;
+    const IDLE: u8 = 1;
+    const DONE: u8 = 2;
+    const REST: u8 = 3;
+    let heard = |z: &Zombies, i: usize, s: &Sound| {
+        let d = z.pos[i].distance(s.pos);
+        // Only pay for the ray when the sound would be out of earshot muffled.
+        (d <= s.radius && s.source != SoundSource::Zombie(z.id[i]) && would_react(z, i, s) && (d <= s.radius * t.wall_muffle || line_of_sight(map, z.pos[i], s.pos))).then_some(d)
+    };
+    if sounds.iter().filter(|s| s.radius > 0.0).count() < 2 {
+        // One sound: nothing to save.
+        for s in sounds.iter().filter(|s| s.radius > 0.0) {
+            hash.for_each_within(s.pos, s.radius, |i| {
+                if let Some(d) = heard(z, i, s) {
+                    react(z, i, s, d, t);
+                }
+            });
         }
+        return;
+    }
+    marks.clear();
+    marks.resize(z.len(), NEW);
+    let mut rest = false;
+    for s in sounds.iter().rev().filter(|s| s.radius > 0.0) {
         hash.for_each_within(s.pos, s.radius, |i| {
-            let d = z.pos[i].distance(s.pos);
-            if d > s.radius || s.source == SoundSource::Zombie(z.id[i]) {
-                return;
+            if marks[i] == NEW {
+                let idle = matches!(z.state[i], ZombieState::Wander | ZombieState::Investigate) && z.bored[i] <= 0.0;
+                marks[i] = if idle { IDLE } else { REST };
+                rest |= !idle;
             }
-            // Only pay for the ray when the sound would be out of earshot muffled.
-            if d > s.radius * t.wall_muffle && !line_of_sight(map, z.pos[i], s.pos) {
-                return;
+            if marks[i] == IDLE
+                && let Some(d) = heard(z, i, s)
+            {
+                react(z, i, s, d, t);
+                marks[i] = DONE;
             }
-            react(z, i, s, d, t);
         });
+    }
+    if !rest {
+        return;
+    }
+    for s in sounds.iter().filter(|s| s.radius > 0.0) {
+        hash.for_each_within(s.pos, s.radius, |i| {
+            if marks[i] == REST
+                && let Some(d) = heard(z, i, s)
+            {
+                react(z, i, s, d, t);
+            }
+        });
+    }
+}
+
+/// Would [`react`] change anything about zombie `i` if it heard `s`? Asked before the ray to the
+/// sound is cast: a loud noise reaches thousands of zombies, and most of a horde already hunting
+/// someone has no use for it (#70). Must say yes whenever `react` would do anything.
+pub(crate) fn would_react(z: &Zombies, i: usize, s: &Sound) -> bool {
+    let by_player = matches!(s.source, SoundSource::Player(_));
+    match z.state[i] {
+        ZombieState::Chase | ZombieState::Lunge | ZombieState::Attack => z.sees[i] == 0 && s.source == SoundSource::Player(z.target_player[i]),
+        ZombieState::Thump => by_player,
+        ZombieState::Wander | ZombieState::Investigate => by_player || z.bored[i] <= 0.0,
+        ZombieState::Staggered | ZombieState::Down | ZombieState::Dead => false,
     }
 }
 
@@ -294,6 +350,90 @@ mod tests {
         assert_eq!(daylight(13.0), 1.0);
         let dawn = daylight(6.5);
         assert!(dawn > 0.0 && dawn < 1.0, "{dawn}");
+    }
+
+    /// The hearing pass (#70) against the plain rule it stands for: every zombie hears every
+    /// sound in earshot in order, each reaction on top of the last. A crowd in every state
+    /// among walls, many overlapping sounds of every source: the columns come out the same.
+    #[test]
+    fn the_hearing_pass_is_every_zombie_hearing_every_sound_in_order() {
+        use crate::map::{Edge, Side};
+        use crate::rng::Rng;
+        use glam::IVec2;
+        let mut map = TileMap::new(6, 6);
+        for k in 0..96 {
+            if k % 9 != 4 {
+                map.set_edge(IVec2::new(30, k), Side::W, Edge::Wall);
+                map.set_edge(IVec2::new(k, 50), Side::N, Edge::Wall);
+                map.set_edge(IVec2::new(k, 70), Side::N, if k % 2 == 0 { Edge::DoorClosed } else { Edge::Window });
+            }
+        }
+        let t = ZombieTuning::default();
+        for round in 0..6u64 {
+            let mut rng = Rng::new(0x70 + round);
+            let mut z = Zombies::default();
+            let states = [
+                ZombieState::Wander,
+                ZombieState::Wander,
+                ZombieState::Investigate,
+                ZombieState::Chase,
+                ZombieState::Lunge,
+                ZombieState::Attack,
+                ZombieState::Thump,
+                ZombieState::Staggered,
+                ZombieState::Down,
+                ZombieState::Dead,
+            ];
+            for id in 1..=3000u32 {
+                z.push(id, Vec2::new(rng.range(1.0, 95.0), rng.range(1.0, 95.0)), 0.0, rng.range(0.6, 1.6), 10.0);
+                let i = z.len() - 1;
+                z.state[i] = states[rng.below(states.len() as u32) as usize];
+                z.target_player[i] = if z.state[i].is_hunting() || rng.f32() < 0.3 { 1 + rng.below(3) } else { 0 };
+                z.sees[i] = if rng.f32() < 0.4 { 3 } else { 0 };
+                z.bored[i] = if rng.f32() < 0.35 { rng.range(0.1, 20.0) } else { 0.0 };
+                z.timer[i] = rng.range(0.0, 12.0);
+            }
+            let mut hash = SpatialHash::new(96.0, 96.0, 1.0);
+            let states = &z.state;
+            hash.rebuild_where(&z.pos, |i| states[i] != ZombieState::Dead);
+            // None, one, and many sounds; some silent ones among them.
+            let count = [0, 1, 2, 12, 60, 200][round as usize];
+            let sounds: Vec<Sound> = (0..count)
+                .map(|k| {
+                    let pos = Vec2::new(rng.range(1.0, 95.0), rng.range(1.0, 95.0));
+                    let source = match rng.below(4) {
+                        0 => SoundSource::Player(1 + rng.below(3)),
+                        1 | 2 => SoundSource::Zombie(1 + rng.below(3000)),
+                        _ => SoundSource::World,
+                    };
+                    let radius = if k % 17 == 5 { 0.0 } else { rng.range(3.0, 45.0) };
+                    let mut s = Sound::new(pos, radius, source);
+                    s.lure = pos + Vec2::new(rng.range(-2.0, 2.0), rng.range(-2.0, 2.0));
+                    s
+                })
+                .collect();
+            let mut plain = z.clone();
+            for s in sounds.iter().filter(|s| s.radius > 0.0) {
+                for i in 0..plain.len() {
+                    let d = plain.pos[i].distance(s.pos);
+                    if plain.state[i] == ZombieState::Dead || d > s.radius || s.source == SoundSource::Zombie(plain.id[i]) {
+                        continue;
+                    }
+                    if d > s.radius * t.wall_muffle && !line_of_sight(&map, plain.pos[i], s.pos) {
+                        continue;
+                    }
+                    react(&mut plain, i, s, d, &t);
+                }
+            }
+            hearing_pass(&mut z, &hash, &map, &sounds, &t, &mut Vec::new());
+            let changed = (0..z.len()).filter(|&i| z.state[i] == ZombieState::Investigate && z.target_pos[i] != z.pos[i]).count();
+            assert!(count < 12 || changed > 500, "round {round}: the sounds reach the crowd ({changed} investigating)");
+            assert_eq!(z.state, plain.state, "round {round}");
+            assert_eq!(z.target_pos, plain.target_pos, "round {round}");
+            assert_eq!(z.target_player, plain.target_player, "round {round}");
+            assert_eq!(z.timer, plain.timer, "round {round}");
+            assert_eq!(z.bored, plain.bored, "round {round}");
+        }
     }
 
     #[test]

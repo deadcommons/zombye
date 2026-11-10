@@ -644,6 +644,7 @@ impl World {
             // Derived from the players and each tick's sounds (#66); nothing reads it back.
             awareness: _,
             scratch_tiles: _,
+            scratch_marks: _,
             scratch_pos: _,
             scratch_actions: _,
             scratch_hits: _,
@@ -1053,7 +1054,7 @@ impl World {
         w.hash.rebuild_where(&w.zombies.pos, |i| states[i] != ZombieState::Dead && tier[i] != Tier::Virtual);
         w.regions.rebuild_where(&w.zombies.pos, |i| states[i] != ZombieState::Dead && tier[i] == Tier::Virtual);
         if !w.players.is_empty() {
-            w.chunk_dist.update(&w.map, w.players.iter().map(|p| p.state.pos));
+            w.chunk_dist.update(&w.map, w.players.iter().map(|p| p.state.pos), w.config.tiers.chunk_reach());
         }
         // No tick has run since: only the tier counts are known.
         [w.stats.active, w.stats.near, w.stats.virtual_] = w.tier_counts();

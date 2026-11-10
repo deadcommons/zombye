@@ -14,7 +14,13 @@
 //!   With no players every zombie heads for a debug goal (all of them stay on the active tier);
 //!   with players they start on the road west of town (in the forest on a big map), run in
 //!   circles and make a 60 m noise every 10 s, `--horde N` spawns N more zombies round the first,
-//!   and the report breaks the tick down by tier.
+//!   and the report breaks the tick down by tier, and says what the worst tick was made of.
+//!   `--spread` is a realistic server instead (#70): the players on a grid over the whole map, one
+//!   in four running and making a noise now and then, the rest walking.
+//!   `--bench --bots N` is that bench over the real transport: a server on a loopback TCP port and
+//!   N headless bots, each its own connection (the players' places as above, the bots playing
+//!   them), ticking at the real rate; it reports the whole tick (intents, world, snapshots), the
+//!   active zombies and what each client was sent.
 //! - `zombye-server --host [ADDR[:PORT]]` — the multiplayer server (#21, `multiplayer.rs`,
 //!   `zombye_net::host`): game clients join with `zombye --connect HOST[:PORT]`. Listens on every
 //!   interface, TCP port 7777, unless told otherwise. `--max-players N` (default 32, at most 64),
@@ -199,6 +205,10 @@ fn main() {
         let timeout = text("--screenshot-timeout").and_then(|v| v.parse::<f64>().ok()).filter(|s| *s > 0.0 && s.is_finite()).map_or(screenshot::DEFAULT_TIMEOUT, Duration::from_secs_f64);
         let renderer = screenshot::Renderer::new(text("--client").map(PathBuf::from), data.clone(), timeout);
         mcp::serve(world, &mut persist, &renderer, mcp::Options { debug_tools: !flag("--no-debug-tools"), ..mcp::Options::default() });
+    } else if flag("--bench") && flag("--bots") {
+        // The bench over the network: a real server on a loopback port, each bot its own TCP connection.
+        let bots = value("--bots").unwrap_or(1).clamp(1, zombye_net::wire::MAX_PLAYERS as u64) as u32;
+        multiplayer::bench(World::new(config), bots, value("--horde").unwrap_or(0) as u32, flag("--spread"), value("--ticks").unwrap_or(400), value("--lag").unwrap_or(0).min(2000) as u32);
     } else if flag("--bots") {
         let Some(addr) = text("--connect") else {
             eprintln!("--bots N needs --connect HOST[:PORT]");
@@ -212,6 +222,7 @@ fn main() {
             password: text("--password").unwrap_or_default(),
             hostile: flag("--bots-hostile"),
             lag_ms: value("--lag").unwrap_or(0).min(2000) as u32,
+            stop: None,
         });
     } else if flag("--host") {
         // The flags, and what new survivors start with (the data folder's `start_kit.ron`, #68).
@@ -234,7 +245,7 @@ fn main() {
         multiplayer::host(world, new_world, host_args, &mut persist);
     } else if flag("--bench") {
         let ticks = value("--ticks").unwrap_or(1000);
-        bench(config, &mut persist, load_options, ticks, value("--players").unwrap_or(0) as u32, value("--horde").unwrap_or(0) as u32, flag("--save-bench"));
+        bench(config, &mut persist, load_options, ticks, value("--players").unwrap_or(0) as u32, value("--horde").unwrap_or(0) as u32, flag("--spread"), flag("--save-bench"));
     } else {
         eprintln!(
             "usage: zombye-server (--mcp | --mcp-http [ADDR[:PORT]] [--mcp-token T | --mcp-no-auth] [--mcp-token-in-url] [--mcp-no-dev] [--mcp-origin ORIGIN] | --bench [--ticks N] [--players N] [--horde N] [--save-bench] \
@@ -248,7 +259,7 @@ fn main() {
     }
 }
 
-fn bench(config: WorldConfig, persist: &mut Persist, load_options: LoadOptions, ticks: u64, players: u32, horde: u32, save_bench: bool) {
+fn bench(config: WorldConfig, persist: &mut Persist, load_options: LoadOptions, ticks: u64, players: u32, horde: u32, spread: bool, save_bench: bool) {
     let zombies = config.zombies.map_or("natural".to_string(), |n| n.to_string());
     let start = Instant::now();
     let loaded = persist.path.as_ref().is_some_and(|p| p.exists());
@@ -264,33 +275,37 @@ fn bench(config: WorldConfig, persist: &mut Persist, load_options: LoadOptions, 
     } else if players == 0 {
         world.set_goal(Some(world.player_spawn));
     } else {
-        let road_y = (world.town_min.y + world.town_max.y) as f32 / 2.0;
-        for k in 0..players {
-            let p = open_ground_near(&world, Vec2::new(world.town_min.x as f32 * 0.5 + k as f32 * 40.0, road_y));
-            if k == 0 && horde > 0 {
-                world.spawn_zombies(horde, p, 45.0);
-            }
-            let id = world.add_player(p);
+        ids = place_bench_players(&mut world, players, horde, spread);
+        for p in &mut world.players {
             // Unkillable, so the run measures a horde on someone rather than a corpse.
-            world.players.last_mut().expect("just added").hp = 1e9;
-            ids.push(id);
+            p.hp = 1e9;
         }
     }
     let start = Instant::now();
     let mut worst: f32 = 0.0;
+    let (mut worst_at, mut worst_stats) = (0u64, TickStats::default());
+    let mut over = [0u32; 2];
     let mut sum = TickStats::default();
     for t in 0..ticks {
         for (k, &id) in ids.iter().enumerate() {
             let dir = Vec2::from_angle(t as f32 * 0.01 + k as f32);
             let seq = world.player(id).map_or(1, |p| p.last_input_seq + 1);
-            world.set_player_input(id, seq, PlayerInput { move_dir: dir, facing: 0.0, run: true, sneak: false, aim: false });
-            if t % 200 == 0 {
+            // Spread out: a realistic server. One in four runs, and now and then one of them makes
+            // a loud noise (staggered); the rest walk.
+            let run = !spread || k % 4 == 0;
+            world.set_player_input(id, seq, PlayerInput { move_dir: dir, facing: 0.0, run, sneak: false, aim: false });
+            let noisy = if spread { k % 4 == 0 && (t + k as u64 * 25) % 400 == 0 } else { t % 200 == 0 };
+            if noisy {
                 world.emit_sound(world.player(id).expect("joined").state.pos, 60.0);
             }
         }
         world.step();
         let s = world.stats;
-        worst = worst.max(s.tick_ms);
+        if s.tick_ms > worst {
+            (worst, worst_at, worst_stats) = (s.tick_ms, t, s);
+        }
+        over[0] += (s.tick_ms > TICK_DT * 500.0) as u32;
+        over[1] += (s.tick_ms > TICK_DT * 1000.0) as u32;
         sum.senses_ms += s.senses_ms;
         sum.flow_ms += s.flow_ms;
         sum.tier_ms += s.tier_ms;
@@ -337,6 +352,12 @@ fn bench(config: WorldConfig, persist: &mut Persist, load_options: LoadOptions, 
         world.population().attractors.len(),
         world.population().respawned,
     );
+    let w = worst_stats;
+    println!(
+        "worst tick ({worst_at}): tiers+index {:.3} ms ({} promoted, {} demoted), senses {:.3} ms, flow {:.3} ms ({} fields), nav {:.3} ms ({} plans), active AI {:.3} ms ({} active), near {:.3} ms, virtual {:.3} ms; \
+         {} ticks over half the budget, {} over it",
+        w.tier_ms, w.promoted, w.demoted, w.senses_ms, w.flow_ms, w.flow_builds, w.nav_ms, w.nav_plans, w.active_ms, w.active, w.near_ms, w.virtual_ms, over[0], over[1],
+    );
     if save_bench {
         let start = Instant::now();
         let bytes = world.save();
@@ -380,6 +401,33 @@ fn bench(config: WorldConfig, persist: &mut Persist, load_options: LoadOptions, 
     if persist.path.is_some() {
         persist.save_now(&world, "bench done");
     }
+}
+
+/// The bench's players: in a row 40 m apart on the road west of town, or with `spread` on a grid
+/// over the whole map, with `horde` more zombies round the first. Returns their ids.
+pub fn place_bench_players(world: &mut World, players: u32, horde: u32, spread: bool) -> Vec<u32> {
+    let road_y = (world.town_min.y + world.town_max.y) as f32 / 2.0;
+    let mut ids = Vec::new();
+    for k in 0..players {
+        let at = if spread { spread_point(world, k, players) } else { Vec2::new(world.town_min.x as f32 * 0.5 + k as f32 * 40.0, road_y) };
+        let p = open_ground_near(world, at);
+        if k == 0 && horde > 0 {
+            world.spawn_zombies(horde, p, 45.0);
+        }
+        ids.push(world.add_player(p));
+    }
+    ids
+}
+
+/// Where the `k`th of `n` bench players starts with `--spread`: a grid over the whole map, 60 m
+/// in from its edges, so they are in the town, on its edge and out in the forest.
+fn spread_point(world: &World, k: u32, n: u32) -> Vec2 {
+    let cols = (n as f32).sqrt().ceil().max(1.0) as u32;
+    let rows = n.div_ceil(cols).max(1);
+    let (w, h) = (world.map.width() as f32, world.map.height() as f32);
+    let margin = 60.0f32.min(w * 0.25).min(h * 0.25);
+    let cell = Vec2::new((w - 2.0 * margin) / cols as f32, (h - 2.0 * margin) / rows as f32);
+    Vec2::splat(margin) + cell * Vec2::new((k % cols) as f32 + 0.5, (k / cols) as f32 + 0.5)
 }
 
 /// The nearest open outdoor tile to `p`.

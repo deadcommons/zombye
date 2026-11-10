@@ -83,6 +83,9 @@ cargo run -p zombye-server --release -- --bench --zombies 5000
 cargo run -p zombye-server --release -- --bench --ticks 400 --map-chunks 64 --zombies 21500 --players 1 --horde 1000
 # ...and time saving and loading that world (size, ms, and that the hash matches after load and 100 more ticks)
 cargo run -p zombye-server --release -- --bench --ticks 200 --map-chunks 64 --zombies 21500 --players 1 --horde 1000 --save-bench
+# Issue #70's target: 32 players spread over the 1 km map (nearly every zombie active), and the same over real TCP with bots
+cargo run -p zombye-server --release -- --bench --ticks 600 --map-chunks 64 --zombies 21500 --players 32 --horde 1000 --spread
+cargo run -p zombye-server --release -- --bench --bots 32 --spread --ticks 400 --map-chunks 64 --zombies 21500 --horde 1000
 # Multiplayer (see Multiplayer): a server on TCP port 7777, a game client on it, and 31 bots to fill it
 cargo run -p zombye-server --release -- --host --save saves/server.zsave      # add --pvp off for co-op
 # ...with the operator's MCP admin endpoint on http://127.0.0.1:8788/mcp (see Administering a server)
@@ -155,7 +158,15 @@ sets the total and keeps the file's proportions.
 Server bench (`zombye-server --bench`): `--ticks N`, `--zombies N`, `--seed S`, `--map-chunks N`; with no `--players`
 every zombie heads for a debug goal (all stay active); `--players N` puts players on the road west of town (in the
 forest on a big map) running in circles with a 60 m noise every 10 s, `--horde N` spawns N more zombies round the
-first, and the report adds tier counts, per-tier ms/tick and a population line (total target, attractors, respawned);
+first, and the report adds tier counts, per-tier ms/tick, a population line (total target, attractors, respawned) and
+what the worst tick was made of (each part's ms, promotions, fields and plans built, and how many ticks went over half
+the budget and over it); `--spread` (#70) is a realistic server instead: the players on a grid over the whole map, one in
+four running and making a noise now and then, the rest walking. **`--bench --bots N`** is the bench over the real
+transport (`multiplayer::bench`): a server on a loopback TCP port, the players placed the same way (`--spread`,
+`--horde`) and unkillable, N headless bots each on its own connection playing them from another thread, ticking at the
+real rate; once all are on it measures `--ticks` ticks and reports the whole tick (intents, world, snapshots) and the
+world alone, avg and worst, the active zombies, KB/s down and up per client (and the busiest), the fullest view, and the
+worst tick's parts;
 `--save-bench` adds a line timing a save and a load of the world at the end. Saves (server, both modes): `--save PATH`
 loads that save if it exists (the world options are then ignored; content must fit, see Saves; `--load-anyway` loads it
 when it doesn't) or makes a new world
@@ -1201,7 +1212,10 @@ and mood, and docs/art-direction.md). All of it is client only: nothing here is 
   position, not to the player.
 - **Paths:** `flow::FlowCache` keeps up to 40 local flow fields keyed by `FlowKey::Player(id)` or a
   noise point snapped to a 6 m grid, builds at most 3 per tick (missing ones queue; the zombie walks
-  straight meanwhile) and evicts the least recently used field that isn't in use. Fields search a
+  straight meanwhile) and evicts the least recently used field that isn't in use. With many players (#70): of the
+  hunted players who moved, the one whose field is oldest is rebuilt first, so each gets its turn when there are more
+  than the budget covers; one build a tick is kept back for missing fields while any wait; and players' fields beyond
+  the first come on top of the 40 (a full server still has room for noises). One or two players: as before. Fields search a
   precomputed `WalkGrid`; after editing `world.map` directly (tests, editors) call
   `World::map_changed()`. A zombie with a clear straight line to its target (`vision::clear_path`,
   rechecked every 8 ticks) skips the field.
@@ -1252,6 +1266,24 @@ wanderers off toward them (`tiers::step_virtual`, see Population below). Numbers
   index rebuilds, `active_ms`, `near_ms`, `virtual_ms`); the spatial hash only spans the area its zombies cover.
 - Perf (M-series Mac, release): 1 km map, ~1,300 active + ~20,200 virtual (+ ~950 near), a horde of ~900 chasing a
   player: about 1.1 ms/tick average, ~3 ms worst (`tiers_hold_a_thousand_active_and_twenty_thousand_virtual`).
+- **Many spread-out players (#70):** with 32 players over a 1 km map nearly every zombie is active (about 20,000 of
+  22,500), so the active tier's cost per zombie is the tick. What keeps it down, all giving exactly the results of the
+  plain way (the same `state_hash`): **open ground** (`flow::WalkGrid::open`, a bit per tile kept with the grid: the
+  tile and the eight round it hold nothing that blocks and no edge that blocks or is climbed through), where a zombie's
+  body can't be pushed back or be in a window, so the active and near updates skip `resolve_circle` and
+  `in_window_opening` there (`WalkGrid::resolve_body`; a hand-edited map needs `World::map_changed()` for this too);
+  zombies only ask the players' bodies where one is about (`Ctx::near_players`, the chunk distances); **chunk distances**
+  are stamped per player over the chunks within `TierTuning::chunk_reach` (exact wherever a tier is decided, "far"
+  beyond), not players times every chunk; the spatial hash's rebuild makes one pass less over its table (a million
+  cells on a 1 km map) and `for_each_near` reads three row slices; **hearing** (`senses::hearing_pass`) casts no ray for
+  a zombie the sound would change nothing about (`would_react`), and idle listeners hear the sounds backward and stop at
+  the first, since only the last one they hear counts (one ray instead of one per noise when many fall on a tick).
+  Measured on a shared 32-core VM (release; the world is one thread): the 32-player bench (`--bench --players 32
+  --spread`, ~17,900 active) about 6.8 ms/tick, worst 11 (9.1 and 13.6 before); over TCP with 32 bots (`--bench --bots
+  32 --spread`, 600 ticks, ~20,350 active, up to 2,800 zombies in a view) the whole tick 7.6-7.7 ms, worst 10 (8.7-11.6
+  and 11-22 before), of which the world 6 ms, 6.2 KB/s down per client (the one in the horde 25) and 0.7 up; a 2 km map
+  with 44,000 zombies and 32 players 7.4 ms, worst 13 (the first tick, when everything far is demoted).
+  `thirty_two_spread_out_players_keep_the_worst_tick_within_budget` holds it.
 
 ## Navigation (`sim::nav`)
 

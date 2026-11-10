@@ -99,6 +99,14 @@ impl Default for TierTuning {
     }
 }
 
+impl TierTuning {
+    /// How far from a player chunk distances need to be exact: past the last range anything is
+    /// decided at (see [`ChunkDistances::update`]).
+    pub fn chunk_reach(&self) -> f32 {
+        self.active_range.max(self.near_range).max(0.0) + self.hysteresis.max(0.0) + 4.0
+    }
+}
+
 /// The tier a zombie on tier `cur` should be on when its chunk is `d` metres from the nearest
 /// player. Promotion happens at the range; demotion only `hysteresis` beyond it.
 pub fn next_tier(cur: Tier, d: f32, t: &TierTuning) -> Tier {
@@ -121,17 +129,33 @@ pub struct ChunkDistances {
 }
 
 impl ChunkDistances {
-    pub fn update(&mut self, map: &TileMap, players: impl Iterator<Item = Vec2> + Clone) {
+    /// Exact for every chunk within `reach` metres of a player; a chunk further than that from
+    /// all of them gets some distance over `reach` (infinity, mostly). Each player only touches
+    /// the chunks round it, so the cost goes by the players, not by players times the map (#70).
+    pub fn update(&mut self, map: &TileMap, players: impl Iterator<Item = Vec2>, reach: f32) {
         (self.chunks_x, self.chunks_y) = (map.chunks_x, map.chunks_y);
         self.dist.clear();
+        self.dist.resize((self.chunks_x * self.chunks_y).max(0) as usize, f32::INFINITY);
         let size = CHUNK_SIZE as f32;
-        for cy in 0..self.chunks_y {
-            for cx in 0..self.chunks_x {
-                let lo = Vec2::new(cx as f32, cy as f32) * size;
-                let hi = lo + Vec2::splat(size);
-                let d2 = players.clone().map(|p| p.clamp(lo, hi).distance_squared(p)).fold(f32::INFINITY, f32::min);
-                self.dist.push(d2.sqrt());
+        let last = IVec2::new(self.chunks_x - 1, self.chunks_y - 1);
+        // Squared distances first, the least per chunk; roots after.
+        for p in players {
+            if !p.is_finite() {
+                continue;
             }
+            let lo = ((p - Vec2::splat(reach)) / size).floor().as_ivec2().max(IVec2::ZERO);
+            let hi = ((p + Vec2::splat(reach)) / size).floor().as_ivec2().min(last);
+            for cy in lo.y..=hi.y {
+                for cx in lo.x..=hi.x {
+                    let corner = Vec2::new(cx as f32, cy as f32) * size;
+                    let d2 = p.clamp(corner, corner + Vec2::splat(size)).distance_squared(p);
+                    let d = &mut self.dist[(cy * self.chunks_x + cx) as usize];
+                    *d = d.min(d2);
+                }
+            }
+        }
+        for d in &mut self.dist {
+            *d = d.sqrt();
         }
     }
 
@@ -438,8 +462,8 @@ pub(crate) fn step_near(z: &mut Zombies, next_pos: &mut [Vec2], cx: &mut NearCtx
         let step = total / steps;
         let mut q = p;
         for _ in 0..steps as u32 {
-            let s = if cx.map.in_window_opening(q) { step.clamp_length_max(t.climb_speed * dt / steps) } else { step };
-            q = cx.map.resolve_circle(q + s, ZOMBIE_RADIUS);
+            let s = if cx.walk.in_window_opening(cx.map, q) { step.clamp_length_max(t.climb_speed * dt / steps) } else { step };
+            q = cx.walk.resolve_body(cx.map, q + s);
         }
         next_pos[i] = q;
         z.vel[i] = desired;
@@ -666,6 +690,42 @@ mod tests {
             assert_eq!(next_tier(Near, d, &t), Near);
         }
         assert!(t.hysteresis > CHUNK_SIZE as f32, "a chunk border crossing could flip tiers");
+    }
+
+    /// Chunk distances (#70) are each player's own neighbourhood stamped in: exact wherever a
+    /// tier is decided (within the reach), and only "far" beyond it.
+    #[test]
+    fn chunk_distances_are_exact_within_reach_of_a_player() {
+        let map = TileMap::new(40, 24);
+        let t = TierTuning::default();
+        let reach = t.chunk_reach();
+        assert!(reach > t.near_range + t.hysteresis);
+        let players = [Vec2::new(3.0, 5.0), Vec2::new(300.5, 200.25), Vec2::new(310.0, 190.0), Vec2::new(639.0, 383.0), Vec2::new(f32::NAN, 1.0)];
+        let mut d = ChunkDistances::default();
+        d.update(&map, players.iter().copied(), reach);
+        let size = CHUNK_SIZE as f32;
+        let (mut near, mut far) = (0, 0);
+        for cy in 0..map.chunks_y {
+            for cx in 0..map.chunks_x {
+                let lo = Vec2::new(cx as f32, cy as f32) * size;
+                let truth = players.iter().filter(|p| p.is_finite()).map(|p| p.clamp(lo, lo + Vec2::splat(size)).distance(*p)).fold(f32::INFINITY, f32::min);
+                let got = d.of(lo + Vec2::splat(1.0));
+                if truth <= reach - 0.01 {
+                    assert_eq!(got, truth, "chunk {cx},{cy}");
+                    near += 1;
+                } else {
+                    assert!(got > reach - 0.01, "chunk {cx},{cy}: {got} for {truth}");
+                    far += 1;
+                }
+                for tier in [Tier::Active, Tier::Near, Tier::Virtual] {
+                    assert_eq!(next_tier(tier, got, &t), next_tier(tier, truth, &t), "chunk {cx},{cy}");
+                }
+            }
+        }
+        assert!(near > 200 && far > 100, "{near} near, {far} far");
+        // Nobody: everything is far.
+        d.update(&map, std::iter::empty(), reach);
+        assert_eq!(d.of(Vec2::new(100.0, 100.0)), f32::INFINITY);
     }
 
     #[test]

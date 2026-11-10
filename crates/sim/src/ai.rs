@@ -28,6 +28,7 @@ use crate::players::PLAYER_RADIUS;
 use crate::rng::Rng;
 use crate::senses::{Sound, SoundSource, Target};
 use crate::spatial::SpatialHash;
+use crate::tiers::ChunkDistances;
 use crate::vision::{clear_path, line_of_sight};
 use crate::zombies::{GET_UP_SECS, Tier, ZombieAnim, ZombieState, Zombies};
 
@@ -278,6 +279,9 @@ pub(crate) struct Ctx<'a> {
     pub nav: Option<&'a mut Nav>,
     pub hash: &'a SpatialHash,
     pub targets: &'a [Target],
+    /// How far each chunk is from the nearest player (dead ones too), when the world keeps that
+    /// up to date: zombies in chunks with nobody about skip the players' bodies.
+    pub near_players: Option<&'a ChunkDistances>,
     pub tuning: &'a ZombieTuning,
     pub flow: &'a mut FlowCache,
     /// The debug goal's field, when `set_goal` is active (senses are off then).
@@ -306,7 +310,7 @@ pub(crate) fn step_zombies(z: &mut Zombies, next_pos: &mut [Vec2], cx: &mut Ctx)
             // A corpse only slides to a stop if it was knocked back as it died.
             next_pos[i] = if z.vel[i].length_squared() > 1e-4 {
                 z.vel[i] *= 0.75;
-                cx.map.resolve_circle(p + z.vel[i] * TICK_DT, ZOMBIE_RADIUS)
+                cx.walk.resolve_body(cx.map, p + z.vel[i] * TICK_DT)
             } else {
                 p
             };
@@ -422,19 +426,23 @@ pub(crate) fn step_zombies(z: &mut Zombies, next_pos: &mut [Vec2], cx: &mut Ctx)
         });
         // Zombies don't walk through players either (only the zombie gives way, so player
         // movement stays exactly predictable on the client).
+        // (Only where a player is about: with many players, asking each one for every zombie
+        // was a good part of the tick, #70.)
         let body = ZOMBIE_RADIUS + PLAYER_RADIUS;
-        for target in cx.targets {
-            let d = p - target.pos;
-            let d2 = d.length_squared();
-            if !down && d2 < body * body && d2 > 1e-8 {
-                let len = d2.sqrt();
-                push += d / len * (body - len) * 2.0;
+        if !down && cx.near_players.is_none_or(|near| near.of(p) <= body + 1.0) {
+            for target in cx.targets {
+                let d = p - target.pos;
+                let d2 = d.length_squared();
+                if d2 < body * body && d2 > 1e-8 {
+                    let len = d2.sqrt();
+                    push += d / len * (body - len) * 2.0;
+                }
             }
         }
 
         // Capped so a knockback can't carry it through a wall in one step.
         let mut vel = z.vel[i].lerp(desired, 0.25).clamp_length_max(MAX_KNOCKBACK_SPEED);
-        if cx.map.in_window_opening(p) {
+        if cx.walk.in_window_opening(cx.map, p) {
             // Clambering through a window frame.
             vel = vel.clamp_length_max(t.climb_speed);
         }
@@ -442,7 +450,7 @@ pub(crate) fn step_zombies(z: &mut Zombies, next_pos: &mut [Vec2], cx: &mut Ctx)
         // that queued up against a wall and were just promoted) spreads out over a few ticks
         // instead of flinging one through the wall.
         let new_p = p + vel * TICK_DT + (push * 0.5).clamp_length_max(MAX_CROWD_PUSH);
-        let resolved = cx.map.resolve_circle(new_p, ZOMBIE_RADIUS);
+        let resolved = cx.walk.resolve_body(cx.map, new_p);
         next_pos[i] = resolved;
         z.vel[i] = vel;
         // Giving up: pushing against a wall (not just stuck in a crowd) without getting anywhere.
