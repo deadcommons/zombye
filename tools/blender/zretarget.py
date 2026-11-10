@@ -17,6 +17,12 @@ or replaced.
 writes only the skeleton's nodes and the clips named, no mesh or texture: a file for the game's
 private clips folder (`release_anim.rs`), for clips from libraries whose licence keeps their files
 out of the public repo. BODY.glb is the game's own body (its idle is the reference for the grip).
+
+    retarget.py [--clips] --map MAP.json BODY.glb OUT.glb NAME=... ...
+
+reads another library's skeleton from MAP.json instead of the Universal Animation Library's:
+`{"bones": {OURS: [THEIRS, THEIR_CHILD, OUR_CHILD], ...}, "reference": CLIP or null (the file's rest
+pose, under the clip's own root), "knuckles": [LITTLE_FINGER, FOREFINGER] of the right hand}`, with the same bones of ours as `MAP`.
 """
 import json
 import struct
@@ -227,18 +233,28 @@ class Glb:
 
 
 class Retarget:
-    def __init__(self, body, lib, ref_clip="A_TPose"):
-        self.body, self.lib = body, lib
-        _, lt, lr = lib.clip(ref_clip)
-        self.lref_p, self.lref_r = lib.globals(lt[0], lr[0])
+    def __init__(self, body, lib, ref_clip="A_TPose", bones=MAP, knuckles=("pinky_01_r", "index_01_r"), root_clip=None):
+        self.body, self.lib, self.map, self.knuckles = body, lib, bones, knuckles
+        if ref_clip is None:
+            lt, lr = lib.rest()
+            # What stands above the hips (a rig's root, turned to another up axis at rest) is as the clip has it.
+            _, ct, cr = lib.clip(root_clip)
+            n = lib.by_name[bones["Hips"][0]]
+            while n in lib.parent:
+                n = lib.parent[n]
+                lt[n], lr[n] = ct[0][n], cr[0][n]
+            self.lref_p, self.lref_r = lib.globals(lt, lr)
+        else:
+            _, lt, lr = lib.clip(ref_clip)
+            self.lref_p, self.lref_r = lib.globals(lt[0], lr[0])
         bt, br = body.rest()
         self.rest_t, self.rest_r = bt, br
         self.brest_p, self.brest_r = body.globals(bt, br)
         b, l = body.by_name, lib.by_name
         # The library must face the way the survivor does (+Z, his left at +X).
-        assert self.lref_p[l["upperarm_l"]][0] > 0 and self.brest_p[b["LeftArm"]][0] > 0, "the two don't face the same way"
+        assert self.lref_p[l[bones["LeftArm"][0]]][0] > 0 and self.brest_p[b["LeftArm"]][0] > 0, "the two don't face the same way"
         self.align = {}
-        for ours, (theirs, their_child, our_child) in MAP.items():
+        for ours, (theirs, their_child, our_child) in bones.items():
             if their_child:
                 want = self.lref_p[l[their_child]] - self.lref_p[l[theirs]]
                 have = self.brest_p[b[our_child]] - self.brest_p[b[ours]]
@@ -246,7 +262,7 @@ class Retarget:
         for ours, src in INHERIT.items():
             self.align[ours] = self.align[src]
         self.align["Hips"] = np.array([0, 0, 0, 1.0])
-        self.scale = self.brest_p[b["Hips"]][1] / self.lref_p[l["pelvis"]][1]
+        self.scale = self.brest_p[b["Hips"]][1] / self.lref_p[l[bones["Hips"][0]]][1]
         self.grip = self.grip_fix()
 
     def grip_fix(self):
@@ -262,9 +278,10 @@ class Retarget:
         yaw = np.arctan2(np.sin(np.arctan2(fwd[:, 0], fwd[:, 2])).sum(), np.cos(np.arctan2(fwd[:, 0], fwd[:, 2])).sum())
         turn = np.array([0, np.sin(-yaw / 2), 0, np.cos(-yaw / 2)])
         ref = qmul(turn, body.globals(t[0], r[0])[1][b["RightHand"]])
-        knuckles = self.lref_p[l["index_01_r"]] - self.lref_p[l["pinky_01_r"]]
-        want = qrot(qinv(self.lref_r[l["hand_r"]]), knuckles / np.linalg.norm(knuckles))
-        plain = qmul(qinv(self.lref_r[l["hand_r"]]), qmul(self.align["RightHand"], self.brest_r[b["RightHand"]]))
+        hand = l[self.map["RightHand"][0]]
+        knuckles = self.lref_p[l[self.knuckles[1]]] - self.lref_p[l[self.knuckles[0]]]
+        want = qrot(qinv(self.lref_r[hand]), knuckles / np.linalg.norm(knuckles))
+        plain = qmul(qinv(self.lref_r[hand]), qmul(self.align["RightHand"], self.brest_r[b["RightHand"]]))
         have = qrot(qmul(plain, qinv(ref)), np.array([0, 0, 1.0]))
         fix = qarc(have, want)
         print(f"grip: the hand turned {np.degrees(2 * np.arccos(min(1, abs(fix[3])))):.0f} deg to lay the weapon along the library's grip")
@@ -283,8 +300,8 @@ class Retarget:
         for i in body.order:
             name_i = body.nodes[i].get("name")
             pg = g[:, body.parent[i]] if i in body.parent else np.tile([0, 0, 0, 1.0], (n, 1))
-            if name_i in MAP:
-                k = lib.by_name[MAP[name_i][0]]
+            if name_i in self.map:
+                k = lib.by_name[self.map[name_i][0]]
                 turn = qmul(lg[:, k], qinv(self.lref_r[k]))
                 if name_i == "RightHand":
                     turn = qmul(lg[:, k], qmul(self.grip, qinv(self.lref_r[k])))
@@ -292,7 +309,7 @@ class Retarget:
                 r[:, i] = qnorm(qmul(qinv(pg), g[:, i]))
             else:
                 g[:, i] = qmul(pg, r[:, i])
-        hips, pelvis = body.by_name["Hips"], lib.by_name["pelvis"]
+        hips, pelvis = body.by_name["Hips"], lib.by_name[self.map["Hips"][0]]
         # The hips go where the library's pelvis goes, at the survivor's size, kept in place over the ground.
         move = (lp[:, pelvis] - self.lref_p[pelvis]) * self.scale
         t[:, hips] = self.rest_t[hips] + move
@@ -310,6 +327,11 @@ def main():
     clips_only = bool(args) and args[0] == "--clips"
     if clips_only:
         args = args[1:]
+    setup = {}
+    if args and args[0] == "--map":
+        m = json.load(open(args[1]))
+        setup = {"ref_clip": m.get("reference"), "bones": {k: tuple(v) for k, v in m["bones"].items()}, "knuckles": tuple(m["knuckles"])}
+        args = args[2:]
     body_path, out = args[0], args[1]
     body = Glb(body_path)
     target = body.skeleton_only() if clips_only else body
@@ -322,7 +344,7 @@ def main():
         if "@" in clips:
             clips, hit = clips.split("@")
         lib = libs.setdefault(lib_path, Glb(lib_path))
-        rt = Retarget(body, lib)
+        rt = Retarget(body, lib, root_clip=clips.split("+")[0].split("#")[0], **setup)
         parts = []
         for c in clips.split("+"):
             frame = None
