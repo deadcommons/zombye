@@ -144,7 +144,7 @@ impl GroupDef {
 
 impl Default for GroupDef {
     fn default() -> Self {
-        Self { size: (3, 10), forest_size: (1, 4), radius: 5.0, loners: 0.15 }
+        Self { size: (2, 6), forest_size: (1, 3), radius: 8.0, loners: 0.35 }
     }
 }
 

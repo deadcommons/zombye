@@ -208,8 +208,8 @@ impl Default for ZombieTuning {
             alert_groan_secs: 0.8,
             wall_muffle: 0.4,
 
-            herd_chance: 0.6,
-            herd_radius: 12.0,
+            herd_chance: 0.3,
+            herd_radius: 10.0,
             herd_keep: 2.5,
 
             memory_secs: 15.0,

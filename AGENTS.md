@@ -1661,10 +1661,10 @@ All numbers are ours.
   street itself, `World::town_core`: one rectangle north of the street, one south; `core_fraction`, default 1, of each
   one's length along the street round its middle), `Street` (roads, parking lots, sidewalks) and `Yard`; outside town `ForestRoad`, `ForestEdge` (within `forest_edge_width` of
   town) and `DeepForest`. `density` is zombies per km² of open (unblocked) ground per zone; `scale` multiplies it.
-  `World::populate` places them **in groups** (`groups`: 3-10 in town, 1-4 in the forest, 15% loners): each group's
-  first by rejection sampling on tile density, the rest within `radius` (5 m) of it, in the same building or outdoors and
+  `World::populate` places them **in groups** (`groups`: 2-6 in town, 1-3 in the forest, 35% loners): each group's
+  first by rejection sampling on tile density, the rest within `radius` (8 m) of it, in the same building or outdoors and
   in sight of it (none within 14 m of the player's start or in that house); active wanderers drift back toward the
-  zombies within `herd_radius` (12 m) round them (`ZombieTuning::herd_*`, `ai::wander`), so groups keep together, `WorldConfig::zombies` (`Option`) either sets the total (proportions kept) or, `None`, takes the
+  zombies within `herd_radius` (10 m) round them, now and then (`herd_chance` 0.3) (`ZombieTuning::herd_*`, `ai::wander`), so groups keep loosely together and stragglers drift off, `WorldConfig::zombies` (`Option`) either sets the total (proportions kept) or, `None`, takes the
   natural number. Speeds: `fast_share` of them at `fast_speed`, the rest at `slow_speed`.
 - **Per region** (the virtual tier's 64 m `RegionIndex`) `World::population()` keeps the `target` count (density ×
   area, scaled to the total), the `zone` with the most open ground, and `last_seen` (the tick a player was last

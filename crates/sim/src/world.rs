@@ -2730,6 +2730,10 @@ mod tests {
             }
         }
         w.map_changed();
+        // A zombie that started in a doorway shut above is pushed clear of the door.
+        for i in 0..w.zombies.len() {
+            w.zombies.pos[i] = w.map.resolve_circle(w.zombies.pos[i], ZOMBIE_RADIUS);
+        }
         let size = Vec2::new(w.map.width() as f32, w.map.height() as f32);
         let stops: Vec<Vec2> = [Vec2::new(0.5, 0.5), Vec2::new(0.15, 0.2), Vec2::new(0.85, 0.5), Vec2::new(0.5, 0.85), Vec2::new(0.2, 0.8)].iter().map(|f| open_tile_near(&w, *f * size)).collect();
         w.add_player(stops[0]);
@@ -3025,23 +3029,27 @@ mod tests {
     }
 
     /// Zombies start in groups (`population.ron`'s `groups`), not spread out evenly: far more of
-    /// them have company within a few metres than with groups of one, at the same total.
+    /// them have company within a few metres than with groups of one, at the same total. Yet
+    /// stragglers stay: at least half as many stand alone (nobody within 6 m) as when spread out.
     #[test]
     fn zombies_start_in_groups() {
         let def = parse_population(include_str!("../../../assets/data/population.ron")).unwrap();
-        let company = |def: PopulationDef| {
+        let layout = |def: PopulationDef| {
             let mut config = WorldConfig::new(1, 0, templates()).with_population(def);
             config.zombies = Some(2500);
             let w = World::new(config);
             assert_eq!(w.zombies.len(), 2500);
             let pos = &w.zombies.pos;
-            let with = pos.iter().filter(|p| pos.iter().filter(|q| q.distance(**p) < 4.0).count() >= 4).count();
-            with as f32 / pos.len() as f32
+            let near = |p: &Vec2, r: f32| pos.iter().filter(|q| q.distance(*p) < r).count() - 1;
+            let with = pos.iter().filter(|p| near(p, 4.0) >= 3).count() as f32 / pos.len() as f32;
+            let alone = pos.iter().filter(|p| near(p, 6.0) == 0).count() as f32 / pos.len() as f32;
+            (with, alone)
         };
-        let grouped = company(def.clone());
-        let spread = company(PopulationDef { groups: GroupDef { size: (1, 1), forest_size: (1, 1), loners: 0.0, ..def.groups.clone() }, ..def });
-        eprintln!("with three or more others within 4 m: grouped {grouped:.2}, spread {spread:.2}");
-        assert!(grouped > 0.5 && grouped > spread * 3.0, "grouped {grouped:.2}, spread {spread:.2}");
+        let (grouped, alone) = layout(def.clone());
+        let (spread, alone_spread) = layout(PopulationDef { groups: GroupDef { size: (1, 1), forest_size: (1, 1), loners: 0.0, ..def.groups.clone() }, ..def });
+        eprintln!("with three or more others within 4 m: grouped {grouped:.2}, spread {spread:.2}; alone within 6 m: {alone:.2} (spread {alone_spread:.2})");
+        assert!(grouped > spread * 1.8, "grouped {grouped:.2}, spread {spread:.2}");
+        assert!(alone > alone_spread * 0.5, "only {alone:.2} stragglers (spread {alone_spread:.2})");
     }
 
     /// An empty grass field `chunks` chunks a side, at noon, with no zombies.
