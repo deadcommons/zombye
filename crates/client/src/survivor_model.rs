@@ -96,6 +96,23 @@ struct Gait {
 }
 
 /// `a` - `b` wrapped into (-π, π].
+/// The action clips a body can carry (#62): each made in place, starting and ending near the idle's
+/// first pose, the blow landing 45% of the way through ([`survivor`]'s `U_HIT`).
+const ACTION_CLIPS: [&str; 6] = ["punch", "swing_one", "swing_two", "shot", "shove", "stomp"];
+
+/// Which of [`ACTION_CLIPS`] plays an action, by how the held weapon is swung.
+fn action_clip(kind: zombye_sim::ActionKind, style: Style) -> usize {
+    use zombye_sim::ActionKind::*;
+    match (kind, style) {
+        (Swing, Style::Punch) => 0,
+        (Swing, Style::OneHand) => 1,
+        (Swing, Style::TwoHand) => 2,
+        (Swing, Style::Gun) => 3,
+        (Shove, _) => 4,
+        (Stomp, _) => 5,
+    }
+}
+
 fn angle_diff(a: f32, b: f32) -> f32 {
     let d = (a - b).rem_euclid(TAU);
     if d > std::f32::consts::PI { d - TAU } else { d }
@@ -202,6 +219,9 @@ pub struct SurvivorModel {
     retarget: Retarget,
     /// The idle clip, and each stance's locomotion clips (walk, run, sneak) by direction.
     idle: Option<usize>,
+    /// The body's own action clips, by [`ACTION_CLIPS`]: each one it has is played across that action
+    /// instead of the grey-box's poses.
+    actions: [Option<usize>; ACTION_CLIPS.len()],
     gaits: [Vec<Gait>; 3],
     /// The bones the hips' turn is taken back out of (the spine's first, under the hips).
     spine_base: Vec<usize>,
@@ -447,6 +467,7 @@ impl SurvivorModel {
             load_wearables(&dir.join("wearables"), &body, &mut wardrobe);
         }
         let idle = body.clips.iter().position(|c| c.name.eq_ignore_ascii_case("idle"));
+        let actions = ACTION_CLIPS.map(|name| body.clips.iter().position(|c| c.name.eq_ignore_ascii_case(name)));
         let gaits = gaits(&mut body);
         let reference = idle.map_or_else(|| body.rig.rest(), |i| body.clips[i].frames[0].clone());
         let retarget = Retarget::new(&body, reference);
@@ -497,6 +518,7 @@ impl SurvivorModel {
         let bindposes = bindposes.add(SkinnedMeshInverseBindposes::from(inverse_bind));
         let model = Self {
             idle,
+            actions,
             gaits,
             spine_base,
             upper,
@@ -650,7 +672,15 @@ impl SurvivorModel {
             // Tied hands, or hands at work on another survivor (#73): both arms.
             pose.blend_bones(&self.retarget.apply(body, &b), w, Some(self.arms.as_slice()));
         }
-        if let Some((act, whole, w)) = survivor::action_now(a, now, style, armed) {
+        let clip = survivor::action_clock(a, now)
+            .and_then(|(kind, u, w)| self.actions[action_clip(kind, style)].map(|i| (body.clips[i].sample(u.clamp(0.0, 0.999)), w, kind)));
+        if let Some((clip, w, kind)) = clip {
+            // The body's own clip (made with the blow at `U_HIT`): the whole body standing (a stomp
+            // always), the upper body over the legs' gait when moving.
+            let legs = if kind == zombye_sim::ActionKind::Stomp { 1.0 } else { 1.0 - a.move_w };
+            pose.blend_bones(&clip, w * legs, Some(&self.all));
+            pose.blend_bones(&clip, w, Some(&self.upper));
+        } else if let Some((act, whole, w)) = survivor::action_now(a, now, style, armed) {
             pose.blend_bones(&self.retarget.apply(body, &act), w, Some(if whole { &self.all } else { &self.upper }));
         }
         // The flinch, on top: each grey-box turn about the axes it has in the reference pose.

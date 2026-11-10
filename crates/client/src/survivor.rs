@@ -684,6 +684,14 @@ pub(crate) fn locomotion(a: &SurvivorAnim, armed: bool) -> SPose {
 
 /// The action under way: its pose, how much of the body it takes (the stomp all of it, the rest the
 /// upper body) and its weight now.
+/// The action under way: its kind, how far through it is (0 to 1, the blow at [`U_HIT`]) and how much
+/// it shows (eased in and out).
+pub(crate) fn action_clock(a: &SurvivorAnim, now: f32) -> Option<(ActionKind, f32, f32)> {
+    let c = a.action?;
+    let u = c.u(now);
+    Some((c.kind, u, smooth(0.0, 0.06, u) * (1.0 - smooth(0.88, 1.0, u))))
+}
+
 pub(crate) fn action_now(a: &SurvivorAnim, now: f32, style: Style, armed: bool) -> Option<(SPose, bool, f32)> {
     let c = a.action?;
     let u = c.u(now);

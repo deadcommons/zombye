@@ -1460,7 +1460,10 @@ stands still may count as changed.** Each of these cost milliseconds a frame bef
   measured from its planted feet (which way it travels, its phase and stride) after its legs are swung wider to reach `CADENCE` (about 2.9 steps a second at the game's brisk 3 and 5.5 m/s, feet planted; the walk is `walk_alt`), the idle's 40° turn taken out. **Directions** (`STANCE_CLIPS`): by the way he moves off his aim, walking and sneaking blend the clips either side (forward, left, right, back), running (forward and the back diagonals) plays the nearer one with the hips turned the rest of the way and the chest kept on the aim (`--pose run@90:0` holds that); the grey-box's
   poses carried over onto the skeleton for the rest (`Retarget`: each grey-box bone's turn from its rest put on the
   matching bones in the idle's first frame; the spine shares the torso's turn, the neck half the head's): the arm
-  holding a weapon at the ready, swing / shove / stomp (timed as before), the flinch (additive) and the fall onto the
+  holding a weapon at the ready, swing / shove / stomp (timed as before; but a body clip named `punch`, `swing_one`,
+  `swing_two`, `shot`, `shove` or `stomp` plays instead of the grey-box poses for that action, by the held weapon's style:
+  made in place, the blow at 45%, from and back to the idle's first pose; the whole body standing, the upper body over the
+  gait when moving, a stomp always whole; `survivor_model::ACTION_CLIPS`), the flinch (additive) and the fall onto the
   back when dead or asleep; then grounded on the lowest foot vertex. `step_movement` and prediction are untouched.
   **Dressing:** `Snapshot::outfits` (`net::OutfitView`: worn items, the back and shoulder bags, what's in each hand,
   by item index; every player, every snapshot) says what's drawn, for us and for others, changing the moment it does: the body with the
