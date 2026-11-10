@@ -1,0 +1,127 @@
+// Character spec (zombye tools/blender/zchar.py and zgarment.py read it; zombye .claude/skills/meshy-assets/SKILL.md).
+// DRAFT for Gate 1 (2026-11-10). A zombie BASE BODY of its own (owner, 2026-11-10: many zombie body types, both
+// genders, each dressed from the shared wardrobe; characters and animations through the Meshy API, everything
+// else in Blender over the Blender MCP). Plain minimal base layer only (sleeveless vest/top, shorts, barefoot);
+// clothes and accessories are survivor-01's wearables refitted to this body with zgarment (same 24 Meshy bone
+// names as survivor-01, so they bind by bone name), and the crowd's outfit variants are baked per `crowd` below.
+// size: the rest pose's bounding box in metres, x (arm span) × y (front to back) × z (height); the height must
+// match within 2 cm, width and depth are upper limits. stooped_height: standing in the idle with the stoop on.
+AssetSpec(
+    id: "zombie_03",
+    category: Character,
+    name: "Zombie, shambler (3)",
+    footprint: (1, 1),
+    size: (1.90, 0.36, 1.76),  // width and depth from the Gate 2 model (T-pose span 1.883, depth 0.345)
+    stooped_height: 1.63,  // measured: the idle with the stoop (an old man, more bent than the others)
+    // The body's triangle budget, as survivor-01 and zombie-02; the crowd draws the LOD below.
+    tris: 1800,
+    shading: 30.0,
+    // Meshy image-to-3D at 2K, toned to the palette; the crowd's copy is shrunk to 1024 px beside the .zvat.
+    texture: Some("2048 px base colour, toned to the palette; 1024 px for the crowd VAT"),
+    // The approved reference (Gate 1), for the Gate 3 sheet.
+    reference: "refs/reference-r1.png",
+    // The raw GLB in raw/ the clean-up script starts from: Meshy rigged + library clips (one meshy_animate).
+    // The text-to-motion clips (walk, lunge, crawl) come in their own GLBs and are merged onto the same armature.
+    source: "animations.glb",
+    // Clip names as the client's crowd slots (zombie_render.rs clip_name). lunge and crawl are NEW: the client
+    // has no slot for them yet (a game change, zombye issue to file), so they are baked as extra clips.
+    // walk = text-to-motion "shamble_walk"; lunge = "lunge_grab"; crawl = "crawl" (meta.yml has the prompts).
+    animations: ["idle", "walk", "attack", "thump", "stagger", "stagger_2", "fall", "down", "get_up", "die_back", "die_front", "die_down", "groan", "lunge", "crawl", "climb", "vault"],
+    stoop: (
+        Spine02: (8.0, 0.0, 0.0),
+        Spine01: (9.0, 0.0, 0.0),
+        Spine: (8.0, 0.0, 0.0),
+        neck: (14.0, 0.0, 0.0),
+        Head: (-6.0, 0.0, 8.0),
+        LeftShoulder: (0.0, 6.0, -14.0),
+        RightShoulder: (0.0, -4.0, 10.0),
+    ),
+    regions: (
+        Head: ["Head", "neck", "head_end", "headfront"],
+        Torso: ["Hips", "Spine02", "Spine01", "Spine", "LeftShoulder", "RightShoulder"],
+        Arms: ["LeftArm", "LeftForeArm", "RightArm", "RightForeArm"],
+        Hands: ["LeftHand", "RightHand"],
+        Legs: ["LeftUpLeg", "LeftLeg", "RightUpLeg", "RightLeg"],
+        Feet: ["LeftFoot", "LeftToeBase", "RightFoot", "RightToeBase"],
+    ),
+    // Sockets measured on this body (../wardrobe_fit.py measure_sockets: survivor-01's carried across).
+    sockets: (
+        eyes: (bone: "Head", offset: (0.0, -0.153, 0.128), rotation: (0.0, 0.0, 0.0)),
+        head_top: (bone: "Head", offset: (0.0, -0.004, 0.279), rotation: (0.0, 0.0, 0.0)),
+        neck: (bone: "neck", offset: (0.0, -0.018, -0.01), rotation: (0.0, 0.0, 0.0)),
+        hand_r: (bone: "RightHand", offset: (-0.082, -0.005, -0.021), rotation: (0.0, 0.0, 0.0)),
+        hand_l: (bone: "LeftHand", offset: (0.076, -0.027, 0.021), rotation: (0.0, 0.0, 0.0)),
+        back: (bone: "Spine", offset: (0.0, 0.103, -0.062), rotation: (0.0, 0.0, 0.0)),
+    ),
+    // survivor-01's wardrobe, refitted to this body (../wardrobe_fit.py): the same ids, kinds, layers and budgets.
+    wearables: [
+        (id: "hoodie", item: Some("hoodie"), kind: Skinned, socket: None, layer: Some(Mid),
+         occupies: [Torso, Arms], hides: [Torso, Arms], tris: 800),
+        (id: "glasses", item: Some("glasses"), kind: Rigid, socket: Some("eyes"), layer: None,
+         occupies: [face], hides: [], tris: 100),
+        // Batch 1 of the wardrobe (#63): the everyday basics.
+        (id: "t_shirt", item: Some("t_shirt"), kind: Skinned, socket: None, layer: Some(Base),
+         occupies: [Torso], hides: [Torso], tris: 600),
+        (id: "jeans", item: Some("jeans"), kind: Skinned, socket: None, layer: Some(Base),
+         occupies: [Legs], hides: [Legs], tris: 700),
+        (id: "trainers", item: Some("trainers"), kind: Skinned, socket: None, layer: Some(Outer),
+         occupies: [Feet], hides: [Feet], tris: 400),
+        // Batch 2 (#63): warmer and tougher things.
+        (id: "jumper", item: Some("jumper"), kind: Skinned, socket: None, layer: Some(Mid),
+         occupies: [Torso, Arms], hides: [Torso, Arms], tris: 700),
+        (id: "leather_jacket", item: Some("leather_jacket"), kind: Skinned, socket: None, layer: Some(Outer),
+         occupies: [Torso, Arms], hides: [Torso, Arms], tris: 800),
+        (id: "work_boots", item: Some("work_boots"), kind: Skinned, socket: None, layer: Some(Outer),
+         occupies: [Feet, Legs], hides: [Feet], tris: 500),
+        (id: "work_gloves", item: Some("work_gloves"), kind: Skinned, socket: None, layer: Some(Base),
+         occupies: [Hands], hides: [Hands], tris: 500),
+        // Accessories (#63): hats on the head top (rigid), a scarf round the neck (skinned).
+        (id: "baseball_cap", item: Some("baseball_cap"), kind: Rigid, socket: Some("head_top"), layer: Some(Outer),
+         occupies: [head_top], hides: [], tris: 300),
+        (id: "beanie", item: Some("beanie"), kind: Rigid, socket: Some("head_top"), layer: Some(Outer),
+         occupies: [head_top], hides: [], tris: 300),
+        (id: "woolly_hat", item: Some("woolly_hat"), kind: Rigid, socket: Some("head_top"), layer: Some(Outer),
+         occupies: [head_top], hides: [], tris: 400),
+        (id: "scarf", item: Some("scarf"), kind: Skinned, socket: None, layer: Some(Outer),
+         occupies: [neck], hides: [], tris: 400),
+        // Bags (#91): packs on the back and a tote on the left shoulder (the bag on its bone, the straps
+        // skinned), and bags carried in the hand (rigid on hand_r; the game mirrors them to the left hand).
+        (id: "school_backpack", item: Some("school_backpack"), kind: Skinned, socket: None, layer: None,
+         occupies: [back], hides: [], tris: 400),
+        (id: "hiking_pack", item: Some("hiking_pack"), kind: Skinned, socket: None, layer: None,
+         occupies: [back], hides: [], tris: 500),
+        (id: "tote_bag", item: Some("tote_bag"), kind: Skinned, socket: None, layer: None,
+         occupies: [shoulder], hides: [], tris: 300),
+        (id: "plastic_bag", item: Some("plastic_bag"), kind: Rigid, socket: Some("hand_r"), layer: None,
+         occupies: [hand_r], hides: [], tris: 200),
+        (id: "duffel_bag", item: Some("duffel_bag"), kind: Rigid, socket: Some("hand_r"), layer: None,
+         occupies: [hand_r], hides: [], tris: 300),
+        // Masks (#92): over the nose and mouth (rigid on the head), a balaclava over the whole head
+        // and neck with an opening for the eyes.
+        (id: "dust_mask", item: Some("dust_mask"), kind: Rigid, socket: Some("eyes"), layer: Some(Mid),
+         occupies: [face], hides: [], tris: 200),
+        (id: "bandana", item: Some("bandana"), kind: Rigid, socket: Some("eyes"), layer: Some(Mid),
+         occupies: [face], hides: [], tris: 200),
+        (id: "balaclava", item: Some("balaclava"), kind: Rigid, socket: Some("head_top"), layer: Some(Mid),
+         occupies: [face, head_top], hides: [], tris: 500),
+    ],
+
+    // Crowd LOD (at default zoom a zombie is ~50 px tall; the crowd's cost is vertices).
+    lod: (tris: 600, weights: (Head: 0.95, Hands: 0.98, Feet: 0.98)),
+    crowd: (
+        mesh: "zombie_03_lod1",
+        clips: [("idle", "cycle"), ("walk", "cycle"), ("attack", "cycle"), ("thump", "cycle"), ("down", "cycle"), ("crawl", "cycle"), ("stagger", "once"), ("stagger_2", "once"), ("fall", "once"), ("get_up", "once"), ("die_back", "once"), ("die_front", "once"), ("die_down", "once"), ("groan", "once"), ("lunge", "once"), ("climb", "once"), ("vault", "once")],
+        // Outfit variants (body + refitted wearables). The base first; the dressed ones are added as the wardrobe
+        // is refitted to this body (Gate 3), e.g. ("zombie_03_hoodie_jeans", wear: ["hoodie", "jeans", "trainers"]).
+        // Five per body (fifteen in all), each zombie also tinted by the client per outfit.
+        variants: [
+            (id: "zombie_03", wear: []),
+            (id: "zombie_03_jumper_jeans_work_boots_woolly_hat", wear: ["jumper", "jeans", "work_boots", "woolly_hat"]),
+            (id: "zombie_03_t_shirt_jeans_trainers", wear: ["t_shirt", "jeans", "trainers"]),
+            (id: "zombie_03_leather_jacket_jeans_work_boots", wear: ["leather_jacket", "jeans", "work_boots"]),
+            (id: "zombie_03_hoodie_jeans_trainers_baseball_cap", wear: ["hoodie", "jeans", "trainers", "baseball_cap"]),
+        ],
+    ),
+    style: "Base body: a gaunt, thin old man, turned (the slow shambler). Long thin arms, sloping shoulders, knobbly joints, wispy grey hair; a plain off-white sleeveless vest and dark grey shorts only, barefoot: clothes come from the shared wardrobe. Mottled grey-green skin around #8A9A7C, sunken eyes, slack mouth; big muted stains; no wounds.",
+    description: "A zombie base body (shambler): Meshy body, rig and clips; Blender clean-up, regions, sockets, stoop, LOD, the shared wardrobe refitted, and crowd VATs per outfit variant.",
+)
