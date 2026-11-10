@@ -21,6 +21,30 @@ import zgarment as g
 # than the free walk); the free walk is kept as walk_alt for comparison.
 ACTIONS = {"Idle": "idle", "Casual_Walk_inplace": "walk", "Cautious_Crouch_Walk_Forward_inplace": "sneak"}
 EXTRA_CLIPS = [("running.glb", "run"), ("walking.glb", "walk_alt")]
+# The shove (2026-11-10, owner: "fix shove animation. looks wrong"): Meshy's "Step Forward and Push" (library 259,
+# task 01a1c5bb-4f32-7520-aab1-32b4760520a6) instead of the grey-box poses: in place, the push landing at SHOVE_HIT
+# of the clip (the game's blow lands at 0.45 of the action), eased from and back to the idle's first pose.
+SHOVE_GLB, SHOVE_FRAMES, SHOVE_HIT, SHOVE_EASE = "shove.glb", 22, 0.45, (3, 6)
+# The weapon moves (2026-11-10, owner: "make all our weapon animations good"), the same way: Meshy's library
+# clips (raw/weapons.glb, task 01a1c5c3-e387-77fc-b11b-f58060cd284e) and two text-to-motion clips of our own
+# (raw/motion-shot.glb, motion-stomp.glb; tasks 01a1c5c4-50e7-71bd-9e56-49e6a54c8767, 01a1c5c4-5297-74df-9046-1e863cb8975f).
+# name: (source action, the moving end whose fastest moment is the contact, frames at 24 fps)
+STRIKES = {
+    "punch": ("Right_Jab_from_Guard", ("RightHand",), 15),
+    "swing_one": ("Right_Hand_Sword_Slash", ("RightHand",), 22),
+    "swing_two": ("Charged_Axe_Chop", ("RightHand", "LeftHand"), 24),
+    "shot": ("shot_src", ("RightHand", "LeftHand"), 15),
+    "stomp": ("stomp_src", ("RightFoot",), 20),
+    # The second round (owner: "ok weapons plan"; raw/weapons2.glb, task 01a1c5e4-8290-7551-8561-6a2fcf3511d7).
+    "swing_one_b": ("Charged_Slash", ("RightHand",), 22),
+    "swing_two_b": ("Heavy_Hammer_Swing", ("RightHand", "LeftHand"), 24),
+    "stab": ("Thrust_Slash", ("RightHand",), 15),
+    "ground_two": ("Charged_Ground_Slam", ("RightHand", "LeftHand"), 24),
+}
+LOW_CONTACT = ("swing_two", "ground_two")                 # chops land at the bottom of the swing
+TURN_TO_FRONT = ("swing_two", "swing_two_b", "swing_one_b", "stab", "ground_two")
+TWO_HANDED = ("swing_two", "swing_two_b", "ground_two")
+CLIMB_CLIPS = ["climb", "vault"]  # motion-climb.glb, motion-vault.glb: text-to-motion 01a1c558-393a-71bc-8986-6222bdaa02cb, 01a1c558-3bca-722c-be3c-24f2d632b987
 # Directional clips (the owner: "he needs strafe animations"): Meshy's library on the same rig (one file)
 # and a walk left from text-to-motion; walk right is walk left mirrored.
 DIRECTIONAL = ("directional.glb", {
@@ -127,7 +151,9 @@ def build(c):
         "meshy_tasks": "image 01a16ce1-c617-761c-b4f2-2a283e4646f1, model 01a16ce2-f3ae-74b0-ac00-467749581ab6, "
                        "rig 01a16ce5-1792-7245-b97e-9ca41b7aa2dd, animation 01a16ce5-b344-7075-9734-5fd40440002e, "
                        "directional animation 01a174b0-b8b3-7104-8408-77c8982ab53a, "
-                       "text-to-motion 01a174b0-8d1f-7552-bdf8-8f82ecac98c4 (on the rig 01a174b0-d41a-73a5-8ec4-46a7c55e0e7c)",
+                       "text-to-motion 01a174b0-8d1f-7552-bdf8-8f82ecac98c4 (on the rig 01a174b0-d41a-73a5-8ec4-46a7c55e0e7c), "
+                       "climb and vault 01a1c558-393a-71bc-8986-6222bdaa02cb, 01a1c558-3bca-722c-be3c-24f2d632b987 "
+                       "(on the rig 01a1c558-c572-75e5-a06c-a014ffccef20, 01a1c558-c7fb-74ea-995d-0df6d30bc0a1)",
         "author": "Dead Commons",
     }
     spec = c.spec
@@ -144,6 +170,26 @@ def build(c):
     bpy.data.actions.remove(bpy.data.actions["run_back_right"])
     g.mirror_clip(bpy.data.actions["run_back_left"], "run_back_right")
     directional += ["walk_left", "walk_right"]
+    # Climbing in through a window and over a fence (2026-11-10, text-to-motion on this rig): one-shots.
+    for name in CLIMB_CLIPS:
+        g.merge_clip(arm, c.paths["raw"] / f"motion-{name}.glb", name)
+        actions[name] = name
+    g.merge_clip(arm, c.paths["raw"] / SHOVE_GLB, "shove_src")
+    before_w = set(bpy.data.actions)
+    _imp = set(bpy.data.objects)
+    bpy.ops.import_scene.gltf(filepath=str(c.paths["raw"] / "weapons.glb"))
+    bpy.ops.import_scene.gltf(filepath=str(c.paths["raw"] / "weapons2.glb"))
+    for a_ in [x for x in bpy.data.actions if x not in before_w]:
+        parts_ = a_.name.split("|")
+        a_.name = parts_[1] if len(parts_) >= 3 else parts_[-1]
+        for slot in a_.slots:
+            slot.name_display = arm.name
+        a_.use_fake_user = True
+    for o_ in [o for o in bpy.data.objects if o not in _imp]:
+        bpy.data.objects.remove(o_)
+    g._purge_orphans()
+    g.merge_clip(arm, c.paths["raw"] / "motion-shot.glb", "shot_src")
+    g.merge_clip(arm, c.paths["raw"] / "motion-stomp.glb", "stomp_src")
     for name in directional:
         actions[name] = name
     c.to_asset_collection(arm, mesh)
@@ -163,6 +209,13 @@ def build(c):
         metres, speed = g.strip_root_motion(arm, bpy.data.actions[name])
         c.note(f"{name} (from {file}): travels {metres * 100:.1f} cm over the clip"
                + (" (already in place)" if metres < 0.01 else f", taken out ({speed:.2f} m/s)"))
+    # The climbs: the travel across the floor out (the game moves the body through the opening); the rise and
+    # drop over the sill or rail stay. One-shots.
+    for name in CLIMB_CLIPS:
+        a = bpy.data.actions[name]
+        metres, speed = g.strip_root_motion(arm, a)
+        a.use_cyclic = False
+        c.note(f"{name} (text-to-motion, raw/motion-{name}.glb): {metres * 100:.0f} cm of travel across the floor taken out; one-shot")
     # The directional clips: in place, one cycle each.
     # Meshy's library clips are one cycle each; the text-to-motion walk holds a few (cut to one).
     for name in directional:
@@ -190,6 +243,19 @@ def build(c):
         g.set_cyclic(a)
         c.note(f"{ACTIONS.get(meshy, meshy)}: the whole clip is one cycle ({a.frame_range[1] - a.frame_range[0]:.1f} frames, "
                f"closes within {g.pose_error(arm, a, *a.frame_range) * 100:.2f} cm)")
+
+    make_shove(c, arm)
+    actions["shove"] = "shove"
+    for name_, (src_, ends_, frames_) in STRIKES.items():
+        make_strike(c, arm, src_, name_, ends_, frames_)
+        actions[name_] = name_
+    for name_ in TWO_HANDED:
+        two_hand_grip(c, arm, bpy.data.actions[name_])
+    make_ground_one(c, arm)
+    tuck_left_arm(c, arm, bpy.data.actions["stab"])
+    actions["ground_one"] = "ground_one"
+    make_shot(c, arm)
+    make_stomp(c, arm)
 
     merged = c.weld_seams(mesh)
     c.note(f"welded {merged} vertices split at UV seams")
@@ -1378,3 +1444,375 @@ def make_balaclava(c, body, arm):
         if f.normal.dot(f.calc_center_median() - centre) < 0:
             f.normal_flip()
     return _bag_object(c, "balaclava", bm, BALACLAVA_COLOURS, body, arm, socket="head_top")
+
+
+def make_shove(c, arm):
+    """The shove clip from Meshy's push (see SHOVE_GLB): the frames where it moves, the push (the hands
+    furthest forward of the hips) put at SHOVE_HIT of SHOVE_FRAMES, the travel taken out, eased from and
+    back to the idle's first pose. The source action goes."""
+    import importlib.util
+    spec_ = importlib.util.spec_from_file_location("zombie02_helpers", c.paths["folder"].parent / "zombie-02" / "zombie-02.py")
+    z2 = importlib.util.module_from_spec(spec_)
+    spec_.loader.exec_module(z2)
+    src = bpy.data.actions["shove_src"]
+    z2._bind(arm, src)
+    pb = arm.pose.bones
+    f0, f1 = (int(round(v)) for v in src.frame_range)
+    reach, prev, moving = [], None, []
+    for f in range(f0, f1 + 1):
+        bpy.context.scene.frame_set(f)
+        heads = [b.head.copy() for b in pb]
+        hips = pb["Hips"].head
+        reach.append(-((pb["LeftHand"].head.y + pb["RightHand"].head.y) / 2 - hips.y))  # forward is -y
+        if prev is not None and sum((x - y).length for x, y in zip(heads, prev)) / len(heads) > 0.004:
+            moving.append(f)
+        prev = heads
+    arm.animation_data.action = None
+    i_hit = max(range(len(reach)), key=lambda i: reach[i])
+    hit = f0 + i_hit
+    # The push itself: back from the hit while the hands were still coming forward (the reach rising),
+    # on from it while they draw back; Meshy's step up to the wall before that stays out.
+    i0 = i_hit
+    while i0 > 0 and reach[i0 - 1] < reach[i0] - 1e-4:
+        i0 -= 1
+    i1 = i_hit
+    while i1 < len(reach) - 1 and reach[i1 + 1] < reach[i1] + 1e-4 and reach[i1] > reach[i0] + 0.25 * (reach[i_hit] - reach[i0]):
+        i1 += 1
+    s0, s1 = f0 + max(0, i0 - 2), f0 + min(len(reach) - 1, i1 + 2)
+    n = SHOVE_FRAMES - 1
+    h = int(round(SHOVE_HIT * n))
+    times = [s0 + (hit - s0) * k / h for k in range(h)] + [hit + (s1 - hit) * k / (n - h) for k in range(n - h + 1)]
+    shove = z2.remake(src, times, "shove")
+    d = z2.read(shove)
+    z2.centre(arm, d)
+    moved = z2.pin_travel(arm, d, threshold=0.0)
+    idle0 = z2.pose_at(z2.read(bpy.data.actions["Idle"]), 0)
+    z2.blend(d, idle0, SHOVE_EASE[0])
+    z2.blend(d, idle0, SHOVE_EASE[1], at_start=False)
+    z2.write(shove, d)
+    shove.use_cyclic = False
+    bpy.data.actions.remove(src)
+    c.note(f"shove = Meshy's Step Forward and Push frames {s0}-{s1}, the push (frame {hit}) at {SHOVE_HIT:.0%} of "
+           f"{SHOVE_FRAMES} frames ({(SHOVE_FRAMES - 1) / 24:.2f} s), {moved:.2f} m of travel taken out, eased from and back to the idle")
+
+
+def make_strike(c, arm, src_name, name, ends, frames, pre=30, post=30):
+    """A weapon move from a Meshy clip, as the shove: the contact (the moving end's fastest frame) at
+    SHOVE_HIT of `frames`, up to `pre` source frames before it and `post` after (within where the clip
+    moves), the travel taken out, eased from and back to the idle's first pose. The source goes."""
+    import importlib.util
+    spec_ = importlib.util.spec_from_file_location("zombie02_helpers", c.paths["folder"].parent / "zombie-02" / "zombie-02.py")
+    z2 = importlib.util.module_from_spec(spec_)
+    spec_.loader.exec_module(z2)
+    src = bpy.data.actions[src_name]
+    z2._bind(arm, src)
+    pb = arm.pose.bones
+    f0, f1 = (int(round(v)) for v in src.frame_range)
+    pos, prev, moving = [], None, []
+    for f in range(f0, f1 + 1):
+        bpy.context.scene.frame_set(f)
+        heads = [b.head.copy() for b in pb]
+        hips = pb["Hips"].head.copy()
+        pos.append([pb[e].head - hips for e in ends])
+        if prev is not None and sum((x - y).length for x, y in zip(heads, prev)) / len(heads) > 0.003:
+            moving.append(f)
+        prev = heads
+    arm.animation_data.action = None
+    speed = [0.0] + [sum((a - b).length for a, b in zip(pos[i], pos[i - 1])) for i in range(1, len(pos))]
+    lo = (moving[0] - f0) if moving else 0
+    hi = (moving[-1] - f0) if moving else len(pos) - 1
+    i_hit = max(range(lo, hi + 1), key=lambda i: speed[i])
+    if name in LOW_CONTACT:  # a chop lands at the bottom: the hands' lowest point after the windup's highest
+        top = max(range(lo, hi + 1), key=lambda i: pos[i][0].z)
+        i_hit = min(range(top, hi + 1), key=lambda i: pos[i][0].z)
+    i0, i1 = max(lo, i_hit - pre), min(hi, i_hit + post)
+    s0, hit, s1 = f0 + i0, f0 + i_hit, f0 + i1
+    n = frames - 1
+    h = max(1, int(round(SHOVE_HIT * n)))
+    times = [s0 + (hit - s0) * k / h for k in range(h)] + [hit + (s1 - hit) * k / (n - h) for k in range(n - h + 1)]
+    clip = z2.remake(src, times, name)
+    d = z2.read(clip)
+    z2.centre(arm, d)
+    moved = z2.pin_travel(arm, d, threshold=0.0)
+    turn = 0.0
+    if name in TURN_TO_FRONT:  # the blow lands in front of him, not off to a side: the clip turned about the vertical
+        v = pos[i_hit][0]
+        turn = math.degrees(math.atan2(-1.0, 0.0) - math.atan2(v.y, v.x))
+        turn = (turn + 180.0) % 360.0 - 180.0
+        z2.yaw(arm, d, turn)
+    idle0 = z2.pose_at(z2.read(bpy.data.actions["Idle"]), 0)
+    z2.blend(d, idle0, SHOVE_EASE[0])
+    z2.blend(d, idle0, SHOVE_EASE[1], at_start=False)
+    z2.write(clip, d)
+    clip.use_cyclic = False
+    bpy.data.actions.remove(src)
+    c.note(f"{name} = {src_name} frames {s0}-{s1}, the contact (frame {hit}, {'/'.join(ends)} {'lowest after the windup' if name in LOW_CONTACT else 'fastest'}) at {SHOVE_HIT:.0%} of "
+           f"{frames} frames ({(frames - 1) / 24:.2f} s), {moved:.2f} m of travel taken out"
+           + (f", turned {turn:+.0f}° so the blow lands in front" if turn else "") + ", eased from and back to the idle")
+
+
+def two_hand_grip(c, arm, action, gap=0.09):
+    """Both hands on the weapon (owner: "axe chop looks odd": Meshy's chop swings it in the right hand
+    with the left arm hanging): every frame the left hand is put `gap` inboard of the right hand (toward
+    the chest) by an IK chain of two bones, baked into the clip's left-arm keys."""
+    import mathutils
+    # The importer leaves the bones metres long (heads and directions right): IK pulls a bone's tail to the
+    # target, so the left arm's two bones get their real lengths first (to the next bone's head); no vertex moves.
+    zchar._select([arm], arm)
+    bpy.ops.object.mode_set(mode="EDIT")
+    eb = arm.data.edit_bones
+    eb["LeftArm"].length = (eb["LeftForeArm"].head - eb["LeftArm"].head).length
+    eb["LeftForeArm"].length = (eb["LeftHand"].head - eb["LeftForeArm"].head).length
+    bpy.ops.object.mode_set(mode="OBJECT")
+    tgt = bpy.data.objects.new("grip_target", None)
+    bpy.context.scene.collection.objects.link(tgt)
+    pb = arm.pose.bones
+    con = pb["LeftForeArm"].constraints.new("IK")
+    con.target, con.chain_count = tgt, 2
+    con.enabled = False
+    g._bind_action(arm, action)
+    f0, f1 = (int(round(v)) for v in action.frame_range)
+    targets = {}
+    for f in range(f0, f1 + 1):
+        bpy.context.scene.frame_set(f)
+        rh = pb["RightHand"].head
+        handle = (pb["RightHand"].tail - rh).normalized().cross(pb["RightHand"].x_axis).normalized()
+        if handle.z > 0:
+            handle = -handle
+        targets[f] = arm.matrix_world @ (rh + handle * gap)  # the left hand below the right, on the handle
+    con.enabled = True
+    for f, t in targets.items():
+        tgt.location = t
+        tgt.keyframe_insert("location", frame=f)
+    # The IKs result read frame by frame and keyed as the left arms own rotations (parent first).
+    chain = ("LeftArm", "LeftForeArm", "LeftHand")
+    solved = {}
+    for f in range(f0, f1 + 1):
+        bpy.context.scene.frame_set(f)
+        bpy.context.view_layer.update()
+        solved[f] = {b: pb[b].matrix.copy() for b in chain}
+    pb["LeftForeArm"].constraints.remove(con)
+    for f in range(f0, f1 + 1):
+        bpy.context.scene.frame_set(f)
+        for b in chain:
+            pb[b].matrix = solved[f][b]
+            bpy.context.view_layer.update()
+            pb[b].keyframe_insert("rotation_quaternion", frame=f)
+    arm.animation_data.action = None
+    if tgt.animation_data and tgt.animation_data.action:
+        bpy.data.actions.remove(tgt.animation_data.action)
+    bpy.data.objects.remove(tgt)
+    c.note(f"{action.name}: both hands on the weapon (left hand {gap * 100:.0f} cm below the right on the handle, IK keyed over frames {f0}-{f1})")
+
+
+# ---------------------------------------------------------------- hand-keyed weapon moves (owner chose "Fix in Blender (free)")
+
+def _real_lengths(arm, chains):
+    """The chains' bones to their real lengths (to the next bone's head; the importer leaves them metres long),
+    so IK reaches with the right lengths. Heads, directions and roll stay: no vertex moves."""
+    zchar._select([arm], arm)
+    bpy.ops.object.mode_set(mode="EDIT")
+    eb = arm.data.edit_bones
+    for a, b in chains:
+        eb[a].length = (eb[b].head - eb[a].head).length
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+
+def _ik_key(arm, action, chains, frames):
+    """Keys `chains` [(end bone, chain length, {frame: target}, {frame: pole} or None, bones to key)] by IK,
+    frame by frame (the solved pose read back and keyed as the bones' own rotations, parent first)."""
+    pb = arm.pose.bones
+    made = []
+    for end, count, targets, poles, keyed in chains:
+        t = bpy.data.objects.new(f"ik_{end}", None)
+        bpy.context.scene.collection.objects.link(t)
+        con = pb[end].constraints.new("IK")
+        con.target, con.chain_count = t, count
+        pole = None
+        if poles:
+            pole = bpy.data.objects.new(f"pole_{end}", None)
+            bpy.context.scene.collection.objects.link(pole)
+            con.pole_target, con.pole_angle = pole, math.radians(-90)
+        made.append((end, con, t, pole, targets, poles, keyed))
+    g._bind_action(arm, action)
+    solved = {}
+    for f in frames:
+        for end, con, t, pole, targets, poles, keyed in made:
+            t.location = arm.matrix_world @ targets[f]
+            if pole:
+                pole.location = arm.matrix_world @ poles[f]
+        bpy.context.scene.frame_set(f)
+        bpy.context.view_layer.update()
+        solved[f] = {b: pb[b].matrix.copy() for _, _, _, _, _, _, keyed in made for b in keyed}
+    for end, con, t, pole, *_ in made:
+        pb[end].constraints.remove(con)
+        bpy.data.objects.remove(t)
+        if pole:
+            bpy.data.objects.remove(pole)
+    for f in frames:
+        bpy.context.scene.frame_set(f)
+        for _, _, _, _, _, _, keyed in made:
+            for b in keyed:
+                pb[b].matrix = solved[f][b]
+                bpy.context.view_layer.update()
+                pb[b].keyframe_insert("rotation_quaternion", frame=f)
+    arm.animation_data.action = None
+
+
+def _path(keys, n):
+    """Per frame 0..n-1: the point along `keys` [(frame, Vector)], smoothstepped between keys."""
+    from mathutils import Vector
+    out = {}
+    for f in range(n):
+        for (fa, a), (fb, b) in zip(keys, keys[1:]):
+            if fa <= f <= fb:
+                u = 0.0 if fb == fa else (f - fa) / (fb - fa)
+                u = u * u * (3 - 2 * u)
+                out[f] = a.lerp(b, u)
+                break
+    return out
+
+
+def _idle_clip(c, arm, name, n):
+    """`n` frames of the idle's first pose (whole-frame keys): the base the hand-keyed moves are built on."""
+    import importlib.util
+    spec_ = importlib.util.spec_from_file_location("zombie02_helpers", c.paths["folder"].parent / "zombie-02" / "zombie-02.py")
+    z2 = importlib.util.module_from_spec(spec_)
+    spec_.loader.exec_module(z2)
+    if name in bpy.data.actions:
+        bpy.data.actions.remove(bpy.data.actions[name])
+    clip = z2.remake(bpy.data.actions["Idle"], [bpy.data.actions["Idle"].frame_range[0]] * n, name)
+    clip.use_cyclic = False
+    return clip, z2
+
+
+SHOT_FRAMES, STOMP_FRAMES = 15, 20
+
+
+def make_shot(c, arm):
+    """Both arms out level along the aim, a two-handed pistol grip in front of the chest; at SHOVE_HIT the
+    muzzle kicks the hands up (about 18° at the shoulder) and they settle back level. The torso stays still."""
+    from mathutils import Vector
+    n = SHOT_FRAMES
+    clip, z2 = _idle_clip(c, arm, "shot", n)
+    _real_lengths(arm, [("RightArm", "RightForeArm"), ("RightForeArm", "RightHand"), ("LeftArm", "LeftForeArm"), ("LeftForeArm", "LeftHand")])
+    g._bind_action(arm, clip)
+    bpy.context.scene.frame_set(0)
+    pb = arm.pose.bones
+    r0, l0 = pb["RightHand"].head.copy(), pb["LeftHand"].head.copy()
+    sh = (pb["RightArm"].head + pb["LeftArm"].head) / 2
+    upper = (pb["RightForeArm"].head - pb["RightArm"].head).length
+    fore = (pb["RightHand"].head - pb["RightForeArm"].head).length
+    reach = (upper + fore) * 0.9  # arms nearly straight, a little give at the elbows
+    grip = Vector((0.0, sh.y - reach, sh.z - 0.04))
+    h = int(round(SHOVE_HIT * (n - 1)))
+    kick = grip + Vector((0.0, 0.04, reach * math.tan(math.radians(18))))
+    rk = [(0, r0), (3, grip + Vector((-0.03, 0, 0))), (h, grip + Vector((-0.03, 0, 0))), (h + 1, kick + Vector((-0.03, 0, 0))),
+          (h + 4, grip + Vector((-0.03, 0, 0))), (n - 4, grip + Vector((-0.03, 0, 0))), (n - 1, r0)]
+    lk = [(0, l0), (3, grip + Vector((0.03, 0.02, -0.04))), (h, grip + Vector((0.03, 0.02, -0.04))), (h + 1, kick + Vector((0.03, 0.02, -0.04))),
+          (h + 4, grip + Vector((0.03, 0.02, -0.04))), (n - 4, grip + Vector((0.03, 0.02, -0.04))), (n - 1, l0)]
+    rp = {f: Vector((-0.6, 0.3, sh.z - 0.4)) for f in range(n)}
+    lp = {f: Vector((0.6, 0.3, sh.z - 0.4)) for f in range(n)}
+    _ik_key(arm, clip, [("RightForeArm", 2, _path(rk, n), rp, ("RightArm", "RightForeArm")),
+                        ("LeftForeArm", 2, _path(lk, n), lp, ("LeftArm", "LeftForeArm"))], range(n))
+    c.note(f"shot = hand-keyed (IK): both hands out to a pistol grip {reach:.2f} m in front of the shoulders, the shot at frame {h} "
+           f"({SHOVE_HIT:.0%} of {n}), the hands kicked up 18° and settling back level, from and back to the idle's first pose")
+
+
+def make_stomp(c, arm):
+    """The right knee up high in front (thigh near level), the foot driven straight down onto the ground about
+    0.4 m in front at SHOVE_HIT, the torso and head leaning over to look down, then back to the idle."""
+    from mathutils import Vector
+    n = STOMP_FRAMES
+    clip, z2 = _idle_clip(c, arm, "stomp", n)
+    _real_lengths(arm, [("RightUpLeg", "RightLeg"), ("RightLeg", "RightFoot")])
+    g._bind_action(arm, clip)
+    bpy.context.scene.frame_set(0)
+    pb = arm.pose.bones
+    a0 = pb["RightFoot"].head.copy()
+    hip = pb["RightUpLeg"].head.copy()
+    thigh = (pb["RightLeg"].head - pb["RightUpLeg"].head).length
+    h = int(round(SHOVE_HIT * (n - 1)))
+    up = Vector((a0.x, hip.y - thigh * 0.9, hip.z - thigh * 0.35))
+    down = Vector((a0.x, a0.y - 0.4, a0.z))
+    keys = [(0, a0), (h - 4, up), (h - 2, up + Vector((0, -0.08, -0.05))), (h, down), (h + 3, down), (n - 4, a0 + Vector((0, -0.1, 0.08))), (n - 1, a0)]
+    pole = {f: Vector((a0.x, -1.2, hip.z)) for f in range(n)}
+    _ik_key(arm, clip, [("RightLeg", 2, _path(keys, n), pole, ("RightUpLeg", "RightLeg"))], range(n))
+    lean = {"Spine": (10.0, 0.0, 0.0), "Spine01": (10.0, 0.0, 0.0), "Spine02": (8.0, 0.0, 0.0), "neck": (14.0, 0.0, 0.0), "Head": (10.0, 0.0, 0.0),
+            "LeftShoulder": (0.0, 0.0, -10.0), "RightShoulder": (0.0, 0.0, 10.0)}
+    g.apply_pose_layer(arm, clip, lean, weight=lambda t: math.sin(math.pi * min(max(t / (n - 1), 0.0), 1.0)))
+    c.note(f"stomp = hand-keyed (IK): the right knee up (thigh near level), the foot down 0.40 m in front at frame {h} "
+           f"({SHOVE_HIT:.0%} of {n}), leaning over to look down, from and back to the idle's first pose")
+
+
+GROUND_ONE_FRAMES = 22
+
+
+def make_ground_one(c, arm):
+    """A knife or short club on a zombie lying in front: down into a crouch (the hips 0.38 m lower, both feet
+    kept planted), the right hand raised by the shoulder and driven down to the ground about 0.5 m in front at
+    SHOVE_HIT, the torso leaning over it, then back up to the idle."""
+    from mathutils import Vector
+    n = GROUND_ONE_FRAMES
+    clip, z2 = _idle_clip(c, arm, "ground_one", n)
+    _real_lengths(arm, [("RightArm", "RightForeArm"), ("RightForeArm", "RightHand"),
+                        ("RightUpLeg", "RightLeg"), ("RightLeg", "RightFoot"), ("LeftUpLeg", "LeftLeg"), ("LeftLeg", "LeftFoot")])
+    h = int(round(SHOVE_HIT * (n - 1)))
+    import numpy as np
+    d = z2.read(clip)
+    w, rest = z2.hips_world(arm, d)
+    t = np.arange(n, dtype=float)
+    down = np.where(t <= h, z2.smooth(t / max(h - 2, 1)), 1.0 - z2.smooth((t - (h + 4)) / max(n - 1 - (h + 4), 1)))
+    w[:, 2] -= 0.38 * down
+    z2.set_hips_world(d, w, rest)
+    z2.write(clip, d)
+    g._bind_action(arm, clip)
+    bpy.context.scene.frame_set(0)
+    pb = arm.pose.bones
+    rf, lf = pb["RightFoot"].head.copy(), pb["LeftFoot"].head.copy()
+    r0 = pb["RightHand"].head.copy()
+    sh = pb["RightArm"].head.copy()
+    feet_r = {f: rf for f in range(n)}
+    feet_l = {f: lf for f in range(n)}
+    knee_r = {f: Vector((rf.x, -1.0, 0.5)) for f in range(n)}
+    knee_l = {f: Vector((lf.x, -1.0, 0.5)) for f in range(n)}
+    raised = Vector((sh.x - 0.05, sh.y - 0.10, sh.z - 0.38 + 0.25))
+    ground = Vector((-0.08, -0.50, 0.10))
+    keys = [(0, r0), (h - 4, raised), (h - 2, raised + Vector((0, -0.05, 0.05))), (h, ground), (h + 3, ground + Vector((0, 0, 0.04))),
+            (n - 1, r0)]
+    elbow = {f: Vector((-0.7, 0.3, 0.6)) for f in range(n)}
+    _ik_key(arm, clip, [("RightLeg", 2, feet_r, knee_r, ("RightUpLeg", "RightLeg")),
+                        ("LeftLeg", 2, feet_l, knee_l, ("LeftUpLeg", "LeftLeg")),
+                        ("RightForeArm", 2, _path(keys, n), elbow, ("RightArm", "RightForeArm"))], range(n))
+    lean = {"Spine": (14.0, 0.0, 0.0), "Spine01": (12.0, 0.0, 0.0), "Spine02": (8.0, 0.0, 0.0), "neck": (12.0, 0.0, 0.0), "Head": (10.0, 0.0, 0.0)}
+    g.apply_pose_layer(arm, clip, lean, weight=lambda tt: float(np.interp(tt, t, down)))
+    c.note(f"ground_one = hand-keyed (IK): a crouch (hips 0.38 m down, feet planted), the right hand from the shoulder down to "
+           f"the ground 0.5 m in front at frame {h} ({SHOVE_HIT:.0%} of {n}), leaning over, back to the idle's first pose")
+
+
+def tuck_left_arm(c, arm, action, ease=3):
+    """The free arm kept in (owner: yes to taming the stab's free arm): through the thrust the left hand is
+    held near the chest, a little left of centre and in front of it, instead of flung out wide. It eases in
+    over the first `ease` frames and back out over the last, so the start, the end and the right arm's
+    thrust are untouched."""
+    from mathutils import Vector
+    _real_lengths(arm, [("LeftArm", "LeftForeArm"), ("LeftForeArm", "LeftHand")])
+    g._bind_action(arm, action)
+    pb = arm.pose.bones
+    f0, f1 = (int(round(v)) for v in action.frame_range)
+    n = f1 - f0 + 1
+    held, chest = {}, {}
+    for f in range(f0, f1 + 1):
+        bpy.context.scene.frame_set(f)
+        held[f] = pb["LeftHand"].head.copy()
+        sp = pb["Spine02"].head
+        chest[f] = Vector((sp.x + 0.14, sp.y - 0.16, sp.z - 0.08))
+    targets = {}
+    for f in range(f0, f1 + 1):
+        k = f - f0
+        w = min(1.0, k / ease, (n - 1 - k) / ease)
+        w = w * w * (3 - 2 * w)
+        targets[f] = held[f].lerp(chest[f], w)
+    elbow = {f: Vector((0.6, 0.25, 1.0)) for f in range(f0, f1 + 1)}
+    _ik_key(arm, action, [("LeftForeArm", 2, targets, elbow, ("LeftArm", "LeftForeArm"))], range(f0, f1 + 1))
+    c.note(f"stab: the left hand kept in by the chest through the thrust (IK, eased in and out over {ease} frames)")
