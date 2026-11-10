@@ -2,7 +2,8 @@
 //! against the carry limit; right, the container you have open (search one with E) or the floor
 //! within reach. Slim tabs down each pane's outer edge pick what it shows: "Carried" or "Worn"
 //! (what you hold and wear, slot by slot) on the left, the open container or "Floor" on the right
-//! (a newly opened container comes to the front). Click a row to move it across: from you into
+//! (a newly opened container comes to the front; the Worn tab can show the body view instead of
+//! its list, [`body`], Linear DCM-43). Click a row to move it across: from you into
 //! what the right pane shows (the container, or the floor), from a container or the floor into
 //! your pockets and bags, off a slot into your bags. The `>>` and `<<` buttons between the panes
 //! move everything a pane shows.
@@ -63,6 +64,8 @@ use zombye_sim::{Burden, ItemCategory, ItemDef, ItemStack, JobKind, Place, Slot,
 
 use crate::player::LocalPlayer;
 use crate::server_link::{ItemNotesThisFrame, JoinInfo, ServerLink};
+
+mod body;
 
 /// Is the panel open?
 #[derive(Resource, Default)]
@@ -436,6 +439,8 @@ fn arrange(items: &[ItemDef], lines: impl IntoIterator<Item = Line>, sort: Sort)
 struct PanelUi {
     /// The left pane shows what you hold and wear (else what you carry).
     worn: bool,
+    /// ...and shows it on the outline of a person (`body.rs`, DCM-43) instead of as a list.
+    body: bool,
     /// The right pane shows the floor though a container is open.
     floor: bool,
     /// The container open when we last looked (`None`: not looked yet).
@@ -568,11 +573,14 @@ impl Plugin for InventoryUiPlugin {
     fn build(&self, app: &mut App) {
         let options = app.world().get_resource::<crate::Options>().cloned();
         // Open as it was left last session (`panels.rs`), or by `--inventory`.
-        let open = options.as_ref().is_some_and(|o| o.inventory) || crate::ui_scale::SettingsStore::ensure(app).panels.inventory.open;
+        let settings = crate::ui_scale::SettingsStore::ensure(app);
+        let open = options.as_ref().is_some_and(|o| o.inventory) || settings.panels.inventory.open;
         let find = Find { query: options.as_ref().and_then(|o| o.find.clone()).unwrap_or_default(), typing: false, groups: options.as_ref().and_then(|o| o.filter.as_deref()).map_or(Vec::new(), Group::parse_list), open: false };
         let tabs = options.as_ref().and_then(|o| o.tab.clone()).unwrap_or_default().to_ascii_lowercase();
         let ui = PanelUi {
-            worn: tabs.split(',').any(|t| t.trim() == "worn"),
+            // (`--tab body`: the Worn tab as the body view; else as it was left last session.)
+            worn: tabs.split(',').any(|t| matches!(t.trim(), "worn" | "body")),
+            body: tabs.split(',').any(|t| t.trim() == "body") || settings.inventory_body,
             floor: tabs.split(',').any(|t| t.trim() == "floor"),
             sort: Sort { key: options.as_ref().and_then(|o| o.sort.as_deref()).and_then(SortKey::parse).unwrap_or_default(), flipped: false },
             unfold_all: options.as_ref().is_some_and(|o| o.expand),
@@ -596,7 +604,17 @@ impl Plugin for InventoryUiPlugin {
             .init_resource::<HoveredItem>()
             .add_systems(Startup, spawn.after(crate::hud::spawn_hud))
             .add_systems(PreUpdate, (type_search, menu_keys).chain().in_set(TextEntry).after(bevy::input::InputSystems))
-            .add_systems(Update, (toggle, keep_note, track_flight, follow_open, prune_picked, script_picks, menu_from_options, send_clicks, world_menu, script_menu, menu_act, send_picked, flush, rebuild, draw_menu).chain());
+            .add_systems(Update, (toggle, keep_note, track_flight, follow_open, prune_picked, script_picks, menu_from_options, send_clicks, world_menu, script_menu, menu_act, send_picked, flush, remember_view, rebuild, draw_menu).chain());
+    }
+}
+
+/// The Worn tab's view (list or body) is kept between sessions, written when it changes.
+fn remember_view(ui: Res<PanelUi>, mut store: ResMut<crate::ui_scale::SettingsStore>) {
+    if ui.is_changed()
+        && store.settings.inventory_body != ui.body
+        && let Err(e) = store.change(|s| s.inventory_body = ui.body)
+    {
+        eprintln!("{e}");
     }
 }
 
@@ -1020,9 +1038,13 @@ fn rebuild(
                 };
                 Gauge { share: Some(k.weight_kg / k.limit_kg.max(0.1)), color, left: format!("{:.1} / {:.1} kg{tag}", k.weight_kg, k.limit_kg), right: format!("{:.1} / {:.0} L", k.used_l, k.room_l) }
             });
-            pane(panes, if ui.worn { "Worn and held" } else { "Carried" }, (!ui.worn).then_some(Column::You), load.unwrap_or_default(), ui.sort, |col| {
+            pane(panes, if ui.worn { "Worn and held" } else { "Carried" }, if ui.worn { PaneTop::View { body: ui.body } } else { PaneTop::PickAll(Column::You) }, load.unwrap_or_default(), ui.sort, |col| {
                 let Some(v) = &view else { return };
                 let inv = &v.inventory;
+                if ui.worn && ui.body {
+                    body::draw(&ctx, &mut rows, col, inv);
+                    return;
+                }
                 if ui.worn {
                     for (label, slot) in [("Hand", Slot::Hand), ("Off hand", Slot::OffHand), ("Back", Slot::Back), ("Shoulder", Slot::Shoulder)] {
                         match inv.slot(slot) {
@@ -1055,7 +1077,7 @@ fn rebuild(
                     let used = zombye_sim::inventory::stacks_volume(items, &cv.stacks);
                     let kg: f32 = cv.stacks.iter().map(|s| stack_kg(items, s)).sum();
                     let gauge = Gauge { share: Some(used / cv.room_l.max(0.1)), color: TEXT, left: format!("{used:.1} / {:.0} L", cv.room_l), right: format!("{kg:.1} kg") };
-                    pane(panes, &cv.name, Some(Column::Container), gauge, ui.sort, |col| {
+                    pane(panes, &cv.name, PaneTop::PickAll(Column::Container), gauge, ui.sort, |col| {
                         if cv.stacks.is_empty() {
                             dim(col, "Empty".into());
                         } else if !cv.stacks.iter().any(|s| find.shows(items, s)) {
@@ -1066,7 +1088,7 @@ fn rebuild(
                 }
                 None => {
                     let gauge = Gauge { share: None, color: TEXT, left: "Within reach".into(), right: format!("{floor_kg:.1} kg") };
-                    pane(panes, "Floor", Some(Column::Floor), gauge, ui.sort, |col| {
+                    pane(panes, "Floor", PaneTop::PickAll(Column::Floor), gauge, ui.sort, |col| {
                         if floor.is_empty() {
                             dim(col, "Nothing within reach".into());
                         } else if !floor.iter().any(|(_, s)| find.shows(items, s)) {
@@ -1398,15 +1420,33 @@ struct Gauge {
     right: String,
 }
 
-/// A pane: one title (with "pick all" for the stacks it shows, if `pick`), how full it is, the
-/// column headers (a press sorts both panes by that column) and its rows.
-fn pane(panes: &mut ChildSpawnerCommands, title: &str, pick: Option<Column>, gauge: Gauge, sort: Sort, body: impl FnOnce(&mut ChildSpawnerCommands)) {
+/// What stands at the end of a pane's title.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PaneTop {
+    /// "pick all" for the stacks the pane shows.
+    PickAll(Column),
+    /// The pane of what you hold and wear: "List" and "Body", the two ways it shows them
+    /// (`body`: on the outline of a person, `body.rs`).
+    View { body: bool },
+}
+
+/// A pane: one title (with what `top` says at its end), how full it is, the column headers (a
+/// press sorts both panes by that column; none over the body view) and its rows.
+fn pane(panes: &mut ChildSpawnerCommands, title: &str, top: PaneTop, gauge: Gauge, sort: Sort, body: impl FnOnce(&mut ChildSpawnerCommands)) {
     panes.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(1), width: px(PANE_W), min_height: px(230), padding: UiRect::all(px(8)), flex_shrink: 0.0, ..default() }, BackgroundColor(PANE))).with_children(|col| {
         col.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::Center, margin: UiRect::bottom(px(6)), ..default() }).with_children(|t| {
             t.spawn((Text::new(title.to_string()), font(HEAD_FONT), TextColor(TEXT), TextLayout::no_wrap()));
-            if let Some(which) = pick {
+            match top {
                 // Every stack this pane shows, picked in one click (again: unpicked).
-                t.spawn((Text::new("pick all"), font(ROW_FONT), TextColor(DIM), TextLayout::no_wrap())).observe(move |_: On<PointerPress>, listed: Res<Listed>, mut picked: ResMut<Picked>| picked.pick_all(which, &listed.0));
+                PaneTop::PickAll(which) => {
+                    t.spawn((Text::new("pick all"), font(ROW_FONT), TextColor(DIM), TextLayout::no_wrap())).observe(move |_: On<PointerPress>, listed: Res<Listed>, mut picked: ResMut<Picked>| picked.pick_all(which, &listed.0));
+                }
+                PaneTop::View { body } => {
+                    t.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(2), ..default() }).with_children(|v| {
+                        chip(v, "List".into(), !body).observe(|_: On<PointerPress>, mut ui: ResMut<PanelUi>| ui.body = false);
+                        chip(v, "Body".into(), body).observe(|_: On<PointerPress>, mut ui: ResMut<PanelUi>| ui.body = true);
+                    });
+                }
             }
         });
         // (Not shrinking: a panel taller than its room scrolls, and would squeeze the bar to nothing.)
@@ -1418,6 +1458,10 @@ fn pane(panes: &mut ChildSpawnerCommands, title: &str, pick: Option<Column>, gau
             g.spawn((Text::new(gauge.left), font(ROW_FONT), TextColor(gauge.color), TextLayout::no_wrap()));
             g.spawn((Text::new(gauge.right), font(ROW_FONT), TextColor(DIM), TextLayout::no_wrap()));
         });
+        if top == (PaneTop::View { body: true }) {
+            body(col);
+            return;
+        }
         // The column headers, over the rows' cells.
         col.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(CELL_GAP), padding: UiRect::axes(px(6), px(3)), ..default() }).with_children(|h| {
             h.spawn(Node { width: px(W_LEAD + CELL_GAP + W_SWATCH), flex_shrink: 0.0, ..default() });
@@ -1620,10 +1664,16 @@ fn empty_row(col: &mut ChildSpawnerCommands, slot: &str) {
 /// several stacks picks them all.
 fn row(col: &mut ChildSpawnerCommands, cells: Cells, action: RowAction, picked: bool) {
     let rest = if picked { ROW_PICKED } else { ROW };
+    let mut e = cells_row(col, cells, rest);
+    clickable(&mut e, action, rest);
+}
+
+/// What makes a row (or a tile of the body view) of `action` one to press: the hover colour (back
+/// to `rest` after), the item under the pointer for the hotbar, and its presses.
+fn clickable(e: &mut EntityCommands, action: RowAction, rest: Color) {
     // The item under the pointer, for the hotbar's keys (not a recipe's row).
     let item = action.left.filter(|_| action.craft.is_none()).map(|_| action.stack.item);
-    cells_row(col, cells, rest)
-    .observe(move |ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>, mut hovered: Option<ResMut<HoveredItem>>| {
+    e.observe(move |ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>, mut hovered: Option<ResMut<HoveredItem>>| {
         if let Ok(mut bg) = q.get_mut(ev.entity) {
             bg.0 = ROW_HOVER;
         }
@@ -2500,7 +2550,7 @@ mod tests {
     /// however many frames go by and even if the panel is rebuilt under the cursor meanwhile; a
     /// second press on the same row while its stack is on its way sends nothing more.
     /// A headless app with Bevy's input, a window, UI layout and picking, for clicking rows.
-    fn ui_app() -> App {
+    pub(super) fn ui_app() -> App {
         let mut app = App::new();
         app.add_plugins((
             MinimalPlugins,

@@ -91,6 +91,8 @@ pub struct ClientSettings {
     pub hotbar: Vec<Option<String>>,
     /// Vegetation density and the post effects (`graphics.rs`, Linear DCM-59).
     pub graphics: crate::graphics::Graphics,
+    /// The inventory panel's Worn tab shows the body view, not the list (`inventory_ui/body.rs`, DCM-43).
+    pub inventory_body: bool,
 }
 
 impl Default for ClientSettings {
@@ -100,6 +102,7 @@ impl Default for ClientSettings {
             panels: PanelsMemory::default(),
             hotbar: Vec::new(),
             graphics: crate::graphics::Graphics::default(),
+            inventory_body: false,
         }
     }
 }

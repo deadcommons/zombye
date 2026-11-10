@@ -19,7 +19,7 @@
 //! `--siege` (outside your house with a bat, zombies battering its door) `--sneak` (start sneaking)
 //! `--morning` (start with the first morning's screen up) `--skip-hours H` (skip game time before the first frame)
 //! `--inventory` / `--skills` / `--health` (start with that panel open) `--god` / `--ignored` (start with F1 / F2 on)
-//! `--tab worn|floor` / `--sort name|type|weight` / `--expand` (the inventory panel's tabs, order and opened stacks)
+//! `--tab worn|body|floor` / `--sort name|type|weight` / `--expand` (the inventory panel's tabs, order and opened stacks)
 //! `--hud` (offscreen, draw the HUD and panels too) `--hover-tag N` (show the Nth status tag's tooltip)
 //! `--map-chunks N` (a square map N × N chunks of 16 m; default 30) `--saves DIR` (where saves go;
 //! default `saves`) `--load NAME|PATH` (start from a save; `--load-anyway` loads one whose game data
@@ -168,7 +168,8 @@ pub struct Options {
     pub find: Option<String>,
     pub filter: Option<String>,
     pub pick: Vec<u32>,
-    /// Start the inventory panel on other tabs (`--tab worn`, `--tab floor`, or both with a comma),
+    /// Start the inventory panel on other tabs (`--tab worn`, `--tab floor`, or both with a comma;
+    /// `--tab body`: the Worn tab as the body view, DCM-43),
     /// sorted by a column (`--sort name|type|weight`), with rows of several stacks opened
     /// (`--expand`): for pictures of it.
     pub tab: Option<String>,

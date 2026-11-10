@@ -10,7 +10,9 @@
 //! full of different things (for picking several and ranges: `--pick-range 1,5`), `panel` that pack with
 //! a container of the house open and things on the floor (the inventory panel's three columns), `agony`
 //! in too much pain to sleep and `agony_asleep` asleep all the same with a painkiller dose working (#57),
-//! `menu` with things on you and on the floor for the right-click menu.
+//! `menu` with things on you and on the floor for the right-click menu, `body` with something in every
+//! slot and on every body part, `body_some` half dressed and `body_bare` with nothing (the inventory
+//! panel's body view, `--inventory --tab body`).
 
 use std::path::PathBuf;
 
@@ -353,6 +355,38 @@ fn review_saves() {
     }
     step(&mut w, 2);
     save(&w, "menu");
+
+    // The body view (DCM-43): `body` with something in every slot and on every part (three layers
+    // on the torso), `body_some` half dressed with only a bat in hand, `body_bare` with nothing.
+    let (mut w, id) = world();
+    step(&mut w, 2);
+    save(&w, "body_bare");
+    let dress = |w: &mut World, clothes: &[&str]| {
+        for item in clothes {
+            assert!(w.give_item(id, item, 1), "{item}");
+            let index = w.player(id).unwrap().inventory.carried.len() as u32 - 1;
+            w.player_wear(id, index).unwrap_or_else(|e| panic!("{item}: {e}"));
+            step(w, 30);
+            assert!(w.player(id).unwrap().jobs.is_empty(), "{item} not on");
+        }
+    };
+    dress(&mut w, &["t_shirt", "jeans", "trainers"]);
+    assert!(w.hold_item(id, Slot::Hand, "baseball_bat"));
+    w.give_item(id, "tinned_beans", 1);
+    step(&mut w, 2);
+    save(&w, "body_some");
+    let (mut w, id) = world();
+    assert!(w.hold_item(id, Slot::Back, "hiking_pack"));
+    dress(&mut w, &["t_shirt", "hoodie", "leather_jacket", "jeans", "work_boots", "work_gloves", "glasses", "bandana", "baseball_cap", "scarf"]);
+    assert!(w.hold_item(id, Slot::Hand, "crowbar"));
+    assert!(w.hold_item(id, Slot::OffHand, "flashlight"));
+    assert!(w.hold_item(id, Slot::Shoulder, "tote_bag"));
+    for (item, n) in [("tinned_beans", 3), ("water_bottle", 2), ("rag", 4), ("plasters", 1)] {
+        w.give_item(id, item, n);
+    }
+    step(&mut w, 2);
+    assert_eq!(w.player(id).unwrap().inventory.worn.len(), 10);
+    save(&w, "body");
 }
 
 /// A hold-up from the wrong end (#73): `tied`, on the street by the spawn house with our hands in

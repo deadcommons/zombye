@@ -117,7 +117,7 @@ cargo run -p zombye-server --release -- --mcp --mod mods/alarm_clock
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --mod DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab worn|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --skip-hours H --hover-tag N --debug-stats --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT --connect HOST[:PORT] --name NAME --password P --agent --server-info HOST[:PORT] --hotbar ID[,ID...] --hotbar-press K@SECS[,K@SECS...] --panel-at PANEL:X,Y[;PANEL:X,Y] --drag-panel PANEL:DX,DY[@SECS] --lag MS --say TEXT[@SECS] --shout TEXT[@SECS] --whisper TEXT[@SECS] --gesture NAME[@SECS] --talk-demo --talk-wall --holdup-demo --holdup-auto --graphics low|high --vegetation off|low|high|N --no-post LIST --frame-bench N` (the last four: see Look and feel; the two before them: see Hold-ups and groups; the six before those: see Talking and gestures) (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --mod DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab worn|body|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --skip-hours H --hover-tag N --debug-stats --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT --connect HOST[:PORT] --name NAME --password P --agent --server-info HOST[:PORT] --hotbar ID[,ID...] --hotbar-press K@SECS[,K@SECS...] --panel-at PANEL:X,Y[;PANEL:X,Y] --drag-panel PANEL:DX,DY[@SECS] --lag MS --say TEXT[@SECS] --shout TEXT[@SECS] --whisper TEXT[@SECS] --gesture NAME[@SECS] --talk-demo --talk-wall --holdup-demo --holdup-auto --graphics low|high --vegetation off|low|high|N --no-post LIST --frame-bench N` (the last four: see Look and feel; the two before them: see Hold-ups and groups; the six before those: see Talking and gestures) (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost). `--size WxH` makes the window exactly that many pixels, at scale factor 1, so a
 `--screenshot` is WxH on a high-DPI screen too; without it the window is 1600x900 at the screen's scale.
@@ -926,11 +926,24 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   lists are) then says how many are picked and their weight and sends every picked stack to the bags, the open container or
   the floor at once. Names never wrap, and one too long for its cell is cut off at the next.
   `--find TEXT`, `--filter CATEGORY[,CATEGORY...]` and `--pick N,N` (carried stacks) start it that way, for pictures, as do
-  `--tab worn|floor` (or both, with a comma), `--sort name|type|weight` and `--expand` (collapsed rows opened);
+  `--tab worn|body|floor` (several with a comma; `body`: the Worn tab as the body view), `--sort name|type|weight` and `--expand` (collapsed rows opened);
   `--pick-range A,B[@SECS]` Ctrl-clicks carried row A and Shift-clicks row B (after SECS), and `--drop-picked-after SECS`
   presses the move-to row's "floor", for recordings (`review_saves.rs` writes `panel.zsave`: a pack, a container
   open and things on the floor, and `panel_full.zsave`: the pack full, with several stacks of one item, things held and more on the floor). Ground items are drawn as boxes of their size and colour,
   weapons as bars. Under the panes, the Make list (see Crafting), one line ("3 you can make now") until a click opens it.
+  **The body view** (Linear DCM-43, `inventory_ui/body.rs`): the Worn tab's title has "List" (the default) and "Body";
+  Body shows what you hold and wear on a simple outline of a person instead of as rows. A column of places either side
+  of the figure (`body::Spot`: head, face, neck, torso, hands, legs, feet, and arms when something is listed there; the
+  hand, off hand, back and shoulder slots), each listing what is at it, outermost first, or a dash. A worn item is
+  listed once (`Spot::of`: the accessory place it takes, else the main part it covers: a hoodie the torso, boots the
+  feet), and the figure's parts take the colour of what covers them (`body::tint`: a part's own garment before one that
+  only reaches it, then the outermost; a hood up until a hat is on), with a bag behind the shoulders or at the hip and
+  a bar in a hand that holds something. Each item is a tile with the list rows' own presses (`inventory_ui::clickable`,
+  the same `RowAction`): click to take it off into the bags, Alt-, Ctrl- and Shift-click, the right-click menu and the
+  hotbar's keys as on a row. The search and chips don't narrow it. Which view is kept in `settings.ron`
+  (`ClientSettings::inventory_body`); `--tab body` starts with it (pictures: `review_saves.rs` writes `body`,
+  `body_some` and `body_bare`). A survivor with three layers on is taller than a 1280 x 720 screen leaves room for
+  while the objectives are up: the panel then scrolls, as its lists do.
 
 ## Crafting (`sim::crafting`, `assets/data/items/recipes.ron`; #12)
 
