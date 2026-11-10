@@ -252,6 +252,7 @@ def build(c):
     for name_ in TWO_HANDED:
         two_hand_grip(c, arm, bpy.data.actions[name_])
     make_ground_one(c, arm)
+    tuck_left_arm(c, arm, bpy.data.actions["stab"])
     actions["ground_one"] = "ground_one"
     make_shot(c, arm)
     make_stomp(c, arm)
@@ -1787,3 +1788,31 @@ def make_ground_one(c, arm):
     g.apply_pose_layer(arm, clip, lean, weight=lambda tt: float(np.interp(tt, t, down)))
     c.note(f"ground_one = hand-keyed (IK): a crouch (hips 0.38 m down, feet planted), the right hand from the shoulder down to "
            f"the ground 0.5 m in front at frame {h} ({SHOVE_HIT:.0%} of {n}), leaning over, back to the idle's first pose")
+
+
+def tuck_left_arm(c, arm, action, ease=3):
+    """The free arm kept in (owner: yes to taming the stab's free arm): through the thrust the left hand is
+    held near the chest, a little left of centre and in front of it, instead of flung out wide. It eases in
+    over the first `ease` frames and back out over the last, so the start, the end and the right arm's
+    thrust are untouched."""
+    from mathutils import Vector
+    _real_lengths(arm, [("LeftArm", "LeftForeArm"), ("LeftForeArm", "LeftHand")])
+    g._bind_action(arm, action)
+    pb = arm.pose.bones
+    f0, f1 = (int(round(v)) for v in action.frame_range)
+    n = f1 - f0 + 1
+    held, chest = {}, {}
+    for f in range(f0, f1 + 1):
+        bpy.context.scene.frame_set(f)
+        held[f] = pb["LeftHand"].head.copy()
+        sp = pb["Spine02"].head
+        chest[f] = Vector((sp.x + 0.14, sp.y - 0.16, sp.z - 0.08))
+    targets = {}
+    for f in range(f0, f1 + 1):
+        k = f - f0
+        w = min(1.0, k / ease, (n - 1 - k) / ease)
+        w = w * w * (3 - 2 * w)
+        targets[f] = held[f].lerp(chest[f], w)
+    elbow = {f: Vector((0.6, 0.25, 1.0)) for f in range(f0, f1 + 1)}
+    _ik_key(arm, action, [("LeftForeArm", 2, targets, elbow, ("LeftArm", "LeftForeArm"))], range(f0, f1 + 1))
+    c.note(f"stab: the left hand kept in by the chest through the thrust (IK, eased in and out over {ease} frames)")
