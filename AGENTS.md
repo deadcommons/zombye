@@ -1525,7 +1525,7 @@ stands still may count as changed.** Each of these cost milliseconds a frame bef
   within `crowd_reach` (1.6 m) of the edge whose path leads through it (from its tile or the next two along
   the path) and that stands behind someone battering it from within reach pushes in and thumps too, each
   thump doing `crowd_thump_frac` (0.3) of one (`ZombieThump::damage`). A thumper's interest (`timer`, capped
-  at `thump_interest_secs`, 20 s, when it starts) runs down unless it sees a player or hears any player's
+  at `thump_interest_secs`, 12 s, when it starts) runs down unless it sees a player or hears any player's
   noise (which tops it up again); when it runs out it gives up (below). Once the way is open (broken, or a
   player opened it) it goes back to chasing or investigating. Zombies never open doors.
 - **Giving up:** a chaser or investigator pushed back by walls (not by the crowd) that hasn't got
@@ -1538,9 +1538,17 @@ stands still may count as changed.** Each of these cost milliseconds a frame bef
   through glass) to lunge or strike.
 - **Sight** (`senses::sight_pass`): full range in a forward cone, less at the sides, ~2 m behind;
   scaled by daylight (`senses::daylight`, the client's sky curve), the player's stance (sneak much
-  harder, run easier) and whether they move; needs `vision::line_of_sight` (windows don't block it).
-  A seeded per-check chance (`rng::hash01`) makes the edge of sight unreliable. Each zombie looks
+  harder, run easier) and whether they move; needs line of sight (`vision::sight_through`): windows don't
+  block it, but through one (shut, open or broken) the range is `window_sight_mult` (0.35) of it, so a
+  survivor indoors is only made out close to the glass. A seeded per-check chance (`rng::hash01`) makes the
+  edge of sight unreliable (`notice_chance` 0.15 a check beyond `sure_sight_frac`, 0.25 of the range; day
+  sight 22 m). **A glimpse before a chase:** a wandering zombie that notices someone beyond the sure range
+  doesn't chase at once: it investigates the spot (no groan), and chases if it notices them again. Each zombie looks
   every `sight_interval_ticks`, and only zombies near a player are tested (`SpatialHash::for_each_within`).
+- **Alertness:** some zombies are sharper than others. Each one's sight range, chance to notice and the distance it
+  hears a sound from (active and near tiers) are multiplied by its alertness (`ZombieTuning::alertness_of`, from a
+  hash of the seed and its id: not saved, the same every time), between `alertness` (0.7, 1.6) skewed by
+  `alertness_skew` (2: about half a little dull, one in five sharp, about 1 on average).
 - **Hearing** (`senses::hearing_pass`): `World::emit_sound(pos, radius)` queues a sound heard on the
   next tick. Moving players make footstep noise every tick by stance, doors and windows make noise, hunting
   zombies groan now and then (which pulls their neighbours in, so hordes snowball). Through walls
@@ -1657,8 +1665,10 @@ All numbers are ours.
   street itself, `World::town_core`: one rectangle north of the street, one south; `core_fraction`, default 1, of each
   one's length along the street round its middle), `Street` (roads, parking lots, sidewalks) and `Yard`; outside town `ForestRoad`, `ForestEdge` (within `forest_edge_width` of
   town) and `DeepForest`. `density` is zombies per km² of open (unblocked) ground per zone; `scale` multiplies it.
-  `World::populate` places them by rejection sampling on tile density (none within 14 m of the player's start or in
-  that house), `WorldConfig::zombies` (`Option`) either sets the total (proportions kept) or, `None`, takes the
+  `World::populate` places them **in groups** (`groups`: 2-6 in town, 1-3 in the forest, 35% loners): each group's
+  first by rejection sampling on tile density, the rest within `radius` (8 m) of it, in the same building or outdoors and
+  in sight of it (none within 14 m of the player's start or in that house); active wanderers drift back toward the
+  zombies within `herd_radius` (10 m) round them, now and then (`herd_chance` 0.3) (`ZombieTuning::herd_*`, `ai::wander`), so groups keep loosely together and stragglers drift off, `WorldConfig::zombies` (`Option`) either sets the total (proportions kept) or, `None`, takes the
   natural number. Speeds: `fast_share` of them at `fast_speed`, the rest at `slow_speed`.
 - **Per region** (the virtual tier's 64 m `RegionIndex`) `World::population()` keeps the `target` count (density ×
   area, scaled to the total), the `zone` with the most open ground, and `last_seen` (the tick a player was last
