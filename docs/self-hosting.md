@@ -84,6 +84,9 @@ the file's folder. It is read once, at start.
 | `fair_sight` | by `pvp` | Clients learn of other players only while their survivor sees or hears them. On with PvP. |
 | `logout_secs`, `logout_safe_secs` | `30`, `5` | How long a survivor lies in the world after its player leaves; the same when left somewhere safe. |
 | `spawn_protection_secs` | `10` | A new survivor can't be hurt by players for this long (PvP). |
+| `start_kit` | the data's `start_kit.ron` | What a new survivor starts with: `[(item: "water_bottle"), (item: "rag", count: 2)]`, item ids from `items.ron`, at most 12 entries of 1 to 20. `[]`: nothing. |
+| `camera` | `Isometric` | The camera everyone plays with: `Isometric` or `FirstPerson`. No game client has first person yet, so only headless clients can join a first-person server. |
+| `agents` | `Marked` | Programs (bots, AI agents: clients that say they are one): `Marked` lets them in and shows players which survivors they are, `Allowed` lets them in unmarked, `Refused` keeps them out. |
 | `budget_kb` | `32` | KB a second down to each client at most (8 to 1000). |
 | `allow_dev` | `false` | Take god mode and the debug intents from clients. For testing. |
 | `save` | `"world.zsave"` | The world's file: loaded if there, else made. `None`: never saved. |
@@ -95,6 +98,12 @@ the file's folder. It is read once, at start.
 
 The same settings are flags (`zombye-server --host --max-players 8 ...`; the list is at the top of
 `crates/server/src/main.rs`), and a flag on the command line wins over the file.
+
+**What players are told.** The rules (players, PvP, the camera, agents, what they're shown of other
+players, logging out, how new survivors start and with what, the map and its zombies) go to every
+client as it joins, which shows them in a panel (F6 brings it back). Anyone can also ask before
+joining, with no password: `zombye --server-info HOST[:PORT]` prints them, and the server prints
+the same lines when it starts.
 
 ## Administering it with an agent
 

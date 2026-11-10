@@ -31,6 +31,10 @@ pub struct ServerConfig {
     pub logout_secs: Option<f32>,
     pub logout_safe_secs: Option<f32>,
     pub spawn_protection_secs: Option<f32>,
+    /// What new survivors start with (#69). Left out: the data folder's `start_kit.ron`.
+    pub start_kit: Option<Vec<KitItem>>,
+    pub camera: Option<CameraRule>,
+    pub agents: Option<AgentsRule>,
     pub budget_kb: Option<u32>,
     pub allow_dev: bool,
     /// `None` only when the file says `save: None`: a world that is never saved.
@@ -57,6 +61,9 @@ impl Default for ServerConfig {
             logout_secs: None,
             logout_safe_secs: None,
             spawn_protection_secs: None,
+            start_kit: None,
+            camera: None,
+            agents: None,
             budget_kb: None,
             allow_dev: false,
             save: Some(PathBuf::from(DEFAULT_SAVE)),
@@ -75,6 +82,34 @@ impl Default for ServerConfig {
 pub enum SpawnRule {
     Spread,
     Together,
+}
+
+/// The camera rule (#69, `wire::Camera`).
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+pub enum CameraRule {
+    Isometric,
+    FirstPerson,
+}
+
+/// The agents rule (#69, `wire::Agents`): programs refused, let in unmarked, or let in and marked.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+pub enum AgentsRule {
+    Refused,
+    Allowed,
+    Marked,
+}
+
+/// One entry of `start_kit`, as in the data folder's `start_kit.ron`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KitItem {
+    pub item: String,
+    #[serde(default = "one")]
+    pub count: u16,
+}
+
+fn one() -> u16 {
+    1
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -120,6 +155,16 @@ impl ServerConfig {
         put("--logout-secs", self.logout_secs.map(|s| s.to_string()));
         put("--logout-safe-secs", self.logout_safe_secs.map(|s| s.to_string()));
         put("--spawn-protection", self.spawn_protection_secs.map(|s| s.to_string()));
+        put("--start-kit", self.start_kit.as_ref().map(|kit| if kit.is_empty() { "none".to_string() } else { kit.iter().map(|k| format!("{}:{}", k.item, k.count)).collect::<Vec<_>>().join(",") }));
+        put("--camera", self.camera.map(|c| match c {
+            CameraRule::Isometric => "isometric".to_string(),
+            CameraRule::FirstPerson => "first-person".to_string(),
+        }));
+        put("--agents", self.agents.map(|a| match a {
+            AgentsRule::Refused => "off".to_string(),
+            AgentsRule::Allowed => "on".to_string(),
+            AgentsRule::Marked => "marked".to_string(),
+        }));
         put("--budget", self.budget_kb.map(|kb| kb.to_string()));
         put("--save", self.save.as_ref().filter(|p| !p.as_os_str().is_empty()).map(path));
         put("--autosave-mins", self.autosave_mins.map(|m| m.to_string()));
@@ -227,7 +272,7 @@ mod tests {
         }
         // Every field is in it, set or as a commented example.
         for field in [
-            "name", "listen", "max_players", "password", "pvp", "spawn", "fair_sight", "logout_secs", "logout_safe_secs", "spawn_protection_secs", "budget_kb", "allow_dev", "save",
+            "name", "listen", "max_players", "password", "pvp", "spawn", "fair_sight", "logout_secs", "logout_safe_secs", "spawn_protection_secs", "start_kit", "camera", "agents", "budget_kb", "allow_dev", "save",
             "autosave_mins", "seed", "map_chunks", "zombies", "load_anyway", "data", "admin", "token", "origins",
         ] {
             assert!(TEMPLATE.contains(&format!("{field}:")), "{field} is explained in the template");
@@ -237,6 +282,46 @@ mod tests {
         let all = ServerConfig::parse(&all).unwrap_or_else(|e| panic!("{e} in:\n{all}"));
         assert_eq!((all.pvp, all.spawn, all.fair_sight, all.zombies), (Some(true), Some(SpawnRule::Spread), Some(true), Some(3000)));
         assert_eq!(all.admin.unwrap().token.as_deref(), Some("a-long-secret-token"));
+        assert_eq!((all.camera, all.agents), (Some(CameraRule::Isometric), Some(AgentsRule::Marked)));
+        assert_eq!(all.start_kit, Some(vec![KitItem { item: "water_bottle".into(), count: 1 }, KitItem { item: "rag".into(), count: 2 }]));
+        // The template leaves the start kit to the game data, and its example is one the shipped items take.
+        assert!(!args.iter().any(|a| a == "--start-kit") && from_file.start_kit.is_none());
+        let items = zombye_net::content::load_config(&zombye_net::content::default_data_dir(), 1).expect("the shipped content").items;
+        let example = merge(&[], ServerConfig { start_kit: all.start_kit.clone(), ..ServerConfig::default() }.flags(Path::new("."), false));
+        let kit = HostArgs::parse(&example, None).unwrap().kit(Vec::new(), &items).expect("the example kit is of shipped items");
+        assert_eq!(kit, [("water_bottle".to_string(), 1), ("rag".to_string(), 2)]);
+    }
+
+    /// The rules of #69 (the camera, agents, the start kit) are read from the file, and a kit of
+    /// things the game data hasn't got is refused by name.
+    #[test]
+    fn the_rules_are_read_from_the_file() {
+        use zombye_net::wire::{Agents, Camera};
+        let items = zombye_net::content::load_config(&zombye_net::content::default_data_dir(), 1).expect("the shipped content").items;
+        let from_data = vec![("matches".to_string(), 1)];
+        let parse = |text: &str| HostArgs::parse(&merge(&[], ServerConfig::parse(text).unwrap().flags(Path::new("."), false)), None);
+        let plain = parse("()").unwrap();
+        assert_eq!((plain.options.camera, plain.options.agents), (Camera::Isometric, Agents::Marked), "the defaults");
+        assert_eq!(plain.kit(from_data.clone(), &items).unwrap(), from_data, "no kit in the file: the game data's");
+        let set = parse(r#"(camera: FirstPerson, agents: Refused, start_kit: [(item: "crowbar"), (item: "rag", count: 3)])"#).unwrap();
+        assert_eq!((set.options.camera, set.options.agents), (Camera::FirstPerson, Agents::Refused));
+        assert_eq!(set.kit(from_data.clone(), &items).unwrap(), [("crowbar".to_string(), 1), ("rag".to_string(), 3)]);
+        assert_eq!(parse("(agents: Allowed)").unwrap().options.agents, Agents::Allowed);
+        // An empty list is nothing at all, not the game data's.
+        assert!(parse("(start_kit: [])").unwrap().kit(from_data.clone(), &items).unwrap().is_empty());
+        // Mistakes: in the file, by the parser; in the kit, against the items.
+        assert!(ServerConfig::parse("(camera: TopDown)").is_err() && ServerConfig::parse("(agents: Maybe)").is_err());
+        assert!(ServerConfig::parse(r#"(start_kit: [(thing: "rag")])"#).unwrap_err().contains("thing"));
+        let unknown = parse(r#"(start_kit: [(item: "lightsaber")])"#).unwrap().kit(from_data.clone(), &items).unwrap_err();
+        assert!(unknown.contains("--start-kit") && unknown.contains("lightsaber: no such item"), "{unknown}");
+        assert!(parse(r#"(start_kit: [(item: "rag", count: 50)])"#).unwrap().kit(from_data, &items).unwrap_err().contains("1 to 20"));
+        // The flags say the same, and win over the file.
+        let cli = strings(&["--agents", "on", "--camera", "first-person", "--start-kit", "none"]);
+        let both = HostArgs::parse(&merge(&cli, ServerConfig::parse("(agents: Refused, camera: Isometric, start_kit: [(item: \"rag\")])").unwrap().flags(Path::new("."), false)), None).unwrap();
+        assert_eq!((both.options.agents, both.options.camera, both.start_kit), (Agents::Allowed, Camera::FirstPerson, Some(Vec::new())));
+        assert!(HostArgs::parse(&strings(&["--host", "--camera", "top-down"]), None).is_err_and(|e| e.contains("isometric or first-person")));
+        assert!(HostArgs::parse(&strings(&["--host", "--agents", "some"]), None).is_err_and(|e| e.contains("off, on or marked")));
+        assert!(HostArgs::parse(&strings(&["--host", "--start-kit", "rag:lots"]), None).is_err_and(|e| e.contains("rag:2")));
     }
 
     #[test]

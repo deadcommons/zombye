@@ -59,21 +59,27 @@ fn one() -> u16 {
 /// little, not a loadout). Errors name the entry.
 pub fn parse_start_kit(text: &str, items: &[ItemDef]) -> Result<StartKit, String> {
     let file: KitFile = ron::from_str(text).map_err(|e| e.to_string())?;
-    if file.items.len() > 12 {
-        return Err(format!("{} entries: a start kit has at most 12", file.items.len()));
+    check_start_kit(file.items.into_iter().map(|e| (e.item, e.count)).collect(), items)
+}
+
+/// A start kit from anywhere else (a server's config, #69) held to the file's rules: every id an
+/// item, counts 1 to 20, nothing listed twice, at most 12 entries. Errors name the entry.
+pub fn check_start_kit(entries: StartKit, items: &[ItemDef]) -> Result<StartKit, String> {
+    if entries.len() > 12 {
+        return Err(format!("{} entries: a start kit has at most 12", entries.len()));
     }
     let mut kit = StartKit::new();
-    for e in file.items {
-        if !items.iter().any(|i| i.id == e.item) {
-            return Err(format!("{}: no such item", e.item));
+    for (item, count) in entries {
+        if !items.iter().any(|i| i.id == item) {
+            return Err(format!("{item}: no such item"));
         }
-        if !(1..=20).contains(&e.count) {
-            return Err(format!("{}: count {} (1 to 20)", e.item, e.count));
+        if !(1..=20).contains(&count) {
+            return Err(format!("{item}: count {count} (1 to 20)"));
         }
-        if kit.iter().any(|(id, _)| *id == e.item) {
-            return Err(format!("{}: listed twice", e.item));
+        if kit.iter().any(|(id, _)| *id == item) {
+            return Err(format!("{item}: listed twice"));
         }
-        kit.push((e.item, e.count));
+        kit.push((item, count));
     }
     Ok(kit)
 }

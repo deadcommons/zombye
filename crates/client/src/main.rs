@@ -93,6 +93,7 @@ mod offscreen;
 mod panels;
 mod player;
 mod rig;
+mod rules_ui;
 mod saving;
 mod server_link;
 mod skills_ui;
@@ -255,6 +256,12 @@ pub struct Options {
     pub connect: Option<String>,
     pub name: String,
     pub password: String,
+    /// `--agent`: with `--connect`, tell the server a program plays this client (#69; `--autoplay`
+    /// says so by itself). A server's rules may refuse agents, or mark them to other players.
+    pub agent: bool,
+    /// `--server-info HOST[:PORT]`: ask that server for its rules without joining, print them and
+    /// exit (#69). No window, no game data needed.
+    pub server_info: Option<String>,
     /// Graphics for this session, over the settings file's (`graphics.rs`): a whole preset
     /// (`--graphics low|high`), the vegetation's density (`--vegetation off|low|high|N`), and
     /// effects to switch off (`--no-post grain,tilt,vignette,bloom,ao,ground|all`).
@@ -415,6 +422,8 @@ impl Options {
             connect: value("--connect"),
             name: value("--name").unwrap_or_default(),
             password: value("--password").unwrap_or_default(),
+            agent: flag("--agent"),
+            server_info: value("--server-info"),
             graphics: value("--graphics"),
             vegetation: value("--vegetation"),
             no_post: value("--no-post"),
@@ -453,6 +462,21 @@ fn exit_on_signal(mut exit: MessageWriter<AppExit>, mut sent: Local<bool>) {
 
 fn main() {
     let options = Options::from_args();
+    // `--server-info HOST`: what that server is and its rules, without joining it (#69).
+    if let Some(addr) = &options.server_info {
+        match zombye_net::remote::query(addr, Duration::from_secs(10)) {
+            Ok(info) => {
+                for line in zombye_net::remote::describe(&info, addr) {
+                    println!("{line}");
+                }
+                return;
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
     // The world's colours, from the data folder's palette.ron (#60), before anything is drawn.
     if let Err(e) = meshgen::palette::load(&options.data) {
         eprintln!("can't use the palette: {e}");
@@ -516,7 +540,7 @@ fn main() {
             zombie_render::ZombieRenderPlugin,
             items_render::ItemsRenderPlugin,
             (hud::HudPlugin, inventory_ui::InventoryUiPlugin, health_ui::HealthUiPlugin, death::DeathPlugin, needs_ui::NeedsUiPlugin, action_ui::ActionUiPlugin, skills_ui::SkillsUiPlugin, debug_stats::DebugStatsPlugin),
-            (fx::FxPlugin, heard::HeardPlugin, chat::ChatPlugin, film::FilmPlugin, vegetation::VegetationPlugin),
+            (fx::FxPlugin, heard::HeardPlugin, chat::ChatPlugin, film::FilmPlugin, vegetation::VegetationPlugin, rules_ui::RulesUiPlugin),
             survivor::SurvivorPlugin,
             (autoplay::AutoplayPlugin, duel::DuelPlugin),
             (saving::SavingPlugin, ui_scale::UiScalePlugin, panels::PanelsPlugin, hotbar::HotbarPlugin, firstnight_ui::FirstNightUiPlugin),

@@ -229,6 +229,19 @@ pub struct SurvivorModel {
     ring: Handle<Mesh>,
     ring_me: Handle<StandardMaterial>,
     ring_other: Handle<StandardMaterial>,
+    /// Another player's ring on a server that marks agents, when a program plays it (#69).
+    ring_agent: Handle<StandardMaterial>,
+}
+
+/// The ring of a survivor a program plays, on a server whose rules mark agents (#69): violet,
+/// where a person's is teal.
+pub const RING_AGENT: Color = Color::srgb(0.66, 0.42, 0.9);
+
+/// A survivor's marker ring: whose, and whether it is drawn as an agent's now.
+#[derive(Component)]
+pub(crate) struct Ring {
+    player: u32,
+    agent: bool,
 }
 
 /// The body file to use (see the module docs), or `None` for the grey-box.
@@ -470,7 +483,7 @@ impl SurvivorModel {
         let body_material = materials.add(StandardMaterial { base_color_texture: texture, perceptual_roughness: 0.85, ..default() });
         let outfit_material = materials.add(StandardMaterial { perceptual_roughness: 0.85, cull_mode: None, double_sided: true, ..default() });
         let mut ring_material = |c: Color| materials.add(StandardMaterial { base_color: c.with_alpha(0.75), unlit: true, alpha_mode: AlphaMode::Blend, depth_bias: 50.0, ..default() });
-        let (ring_me, ring_other) = (ring_material(JACKET_ME), ring_material(JACKET_OTHER));
+        let (ring_me, ring_other, ring_agent) = (ring_material(JACKET_ME), ring_material(JACKET_OTHER), ring_material(RING_AGENT));
         // The hang joints: at each hand's grip in the rest pose, after the rig's bones.
         let hang = [("hand_r", "RightHand"), ("hand_l", "LeftHand")].map(|(socket, bone)| match body.socket_frame(socket) {
             Some((b, frame)) => (b, frame.transform_point3(Vec3::ZERO)),
@@ -505,6 +518,7 @@ impl SurvivorModel {
             ring: meshes.add(ring_mesh()),
             ring_me,
             ring_other,
+            ring_agent,
             wardrobe,
             body,
         };
@@ -846,7 +860,11 @@ pub fn attach(commands: &mut Commands, model: &SurvivorModel, root: Entity, play
     let outfit = commands.spawn((MeshMaterial3d(model.outfit_material.clone()), skin, NoFrustumCulling, Transform::default(), Visibility::Hidden, ChildOf(root))).id();
     commands.spawn((HeldWeapon { player }, model.weapon_frame, Visibility::Hidden, ChildOf(joints[model.hand_r])));
     let ring = if local { model.ring_me.clone() } else { model.ring_other.clone() };
-    commands.spawn((Mesh3d(model.ring.clone()), MeshMaterial3d(ring), Transform::from_xyz(0.0, 0.02, 0.0), NotShadowCaster, ChildOf(root)));
+    let mut ring = commands.spawn((Mesh3d(model.ring.clone()), MeshMaterial3d(ring), Transform::from_xyz(0.0, 0.02, 0.0), NotShadowCaster, ChildOf(root)));
+    if !local {
+        // Ours stays ours; another's turns violet if the server says a program plays it (`mark_agents`).
+        ring.insert(Ring { player, agent: false });
+    }
     commands.entity(root).insert(Dress { player, body, outfit, worn: None });
     joints
 }
@@ -866,10 +884,23 @@ pub(crate) fn dim_rings(daylight: Option<Res<crate::daynight::Daylight>>, model:
         return;
     }
     *last = Some(k);
-    for (handle, colour) in [(&model.ring_me, JACKET_ME), (&model.ring_other, JACKET_OTHER)] {
+    for (handle, colour) in [(&model.ring_me, JACKET_ME), (&model.ring_other, JACKET_OTHER), (&model.ring_agent, RING_AGENT)] {
         if let Some(mut m) = materials.get_mut(handle) {
             let c = colour.to_linear();
             m.base_color = Color::LinearRgba(LinearRgba::new(c.red * k, c.green * k, c.blue * k, 0.75));
+        }
+    }
+}
+
+/// Marked agents (#69): the ring of another player the server says a program plays is violet, a
+/// person's teal. A handful of rings, and a material swapped only when the word changes.
+pub(crate) fn mark_agents(link: Res<ServerLink>, model: Option<Res<SurvivorModel>>, mut rings: Query<(&mut Ring, &mut MeshMaterial3d<StandardMaterial>)>) {
+    let Some(model) = model else { return };
+    for (mut ring, mut material) in &mut rings {
+        let agent = link.curr.players.iter().find(|p| p.id == ring.player).is_some_and(|p| p.agent);
+        if agent != ring.agent {
+            ring.agent = agent;
+            material.0 = if agent { model.ring_agent.clone() } else { model.ring_other.clone() };
         }
     }
 }

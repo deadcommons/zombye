@@ -34,7 +34,10 @@
 //!   survivor lies in the world, asleep, after its player leaves), `--logout-safe-secs S` (default
 //!   5: the same when it was left somewhere safe), `--spawn-protection S` (default 10: seconds a
 //!   new survivor can't be hurt by other players; #68). New survivors start with the data folder's
-//!   `start_kit.ron`. With `--save PATH` the world is loaded or made, autosaved and saved on
+//!   `start_kit.ron`, or with `--start-kit ITEM[:N],ITEM[:N]...` (`none`: nothing). `--camera
+//!   isometric|first-person` and `--agents off|on|marked` are the camera and agents rules (#69:
+//!   told to every client that joins, and to anyone who asks with `zombye --server-info HOST`;
+//!   clients that say they are programs are refused, let in, or let in and marked). With `--save PATH` the world is loaded or made, autosaved and saved on
 //!   shutdown as below, with whose survivor is whose in `PATH.players`.
 //!   `--admin-mcp [ADDR[:PORT]]` (#26, `admin.rs`) adds the operator's MCP endpoint to the running
 //!   server, by default on `127.0.0.1:8788`: list, kick and ban players, save, change settings, set
@@ -327,7 +330,8 @@ fn main() {
     } else if flag("--host") {
         // The flags, and what new survivors start with (the data folder's `start_kit.ron`, #68).
         let parsed = multiplayer::HostArgs::parse(&args, admin_token).and_then(|mut a| {
-            a.options.kit = content::load_start_kit(&data, &config.items)?;
+            // (`--start-kit`, or `start_kit` in the config file, says it instead: #69.)
+            a.options.kit = a.kit(content::load_start_kit(&data, &config.items)?, &config.items)?;
             Ok(a)
         });
         let host_args = match parsed {

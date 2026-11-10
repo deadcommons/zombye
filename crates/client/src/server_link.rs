@@ -67,6 +67,8 @@ pub struct NetInfo {
     pub pvp: bool,
     /// The server takes the dev tools (`--allow-dev`): the debug stats window opens there too.
     pub allow_dev: bool,
+    /// Every rule the server told us on joining (#69), for the rules panel (`rules_ui.rs`).
+    pub rules: zombye_net::wire::Rules,
     /// The name we go by.
     pub name: String,
     pub ping_ms: Option<f32>,
@@ -379,7 +381,13 @@ fn join_remote(app: &mut App, addr: &str, options: &Options, content: &zombye_si
         eprintln!("can't join {addr}: {e}");
         std::process::exit(1);
     };
-    let mut remote = Remote::connect(addr, &options.name, &options.password, Duration::from_secs(10)).unwrap_or_else(|e| fail(e));
+    // A client that plays by itself says so (`--agent`, and `--autoplay`, which is one): the
+    // server's rules may refuse agents, or mark them to the other players (#69).
+    let mut remote = Remote::connect_as(addr, &options.name, &options.password, options.agent || options.autoplay, Duration::from_secs(10)).unwrap_or_else(|e| fail(e));
+    // The camera is a server rule (docs/PLAN.md §5), and this client has only the isometric one.
+    if remote.welcome.rules.camera != zombye_net::wire::Camera::Isometric {
+        fail(format!("{} is first person only, and this version of the game has no first-person camera yet", remote.welcome.rules.name));
+    }
     if options.lag_ms > 0 {
         // `--lag MS`: a made-up slow line, for trying lag compensation on one machine (#23).
         remote.set_lag(Duration::from_millis(options.lag_ms as u64));
@@ -400,10 +408,15 @@ fn join_remote(app: &mut App, addr: &str, options: &Options, content: &zombye_si
         if w.rules.pvp && w.rules.spawn_protection_secs > 0.0 { format!(", new survivors are protected from players for {:.0} s", w.rules.spawn_protection_secs) } else { String::new() },
         first.tick
     );
+    // Every rule, as the rules panel shows them (#69).
+    println!("the rules of {}:", w.rules.name);
+    for (label, text) in w.rules.lines() {
+        println!("  {label}: {text}");
+    }
     let damage = EdgeDamageMap(w.edge_damage.iter().map(|d| ((d.tile, d.edge), d.hp)).collect());
     let spawn = first.players.iter().find(|p| p.id == player_id).map(|p| Vec2::from(p.pos)).unwrap_or(joined.player_spawn);
     let join = join_info(&joined.config, player_id, spawn);
-    let net = NetInfo { addr: addr.to_string(), server: w.rules.name.clone(), pvp: w.rules.pvp, allow_dev: w.rules.allow_dev, name: w.name.clone(), ping_ms: None, down_kbps: None, closed: None };
+    let net = NetInfo { addr: addr.to_string(), server: w.rules.name.clone(), pvp: w.rules.pvp, allow_dev: w.rules.allow_dev, rules: w.rules.clone(), name: w.name.clone(), ping_ms: None, down_kbps: None, closed: None };
     if options.god || options.ignored {
         remote.send(Intent::Dev { player: player_id, god: options.god.then_some(true), ignored: options.ignored.then_some(true) });
     }

@@ -212,6 +212,8 @@ fn tool_list() -> Value {
                 "fair_sight": {"description": "Tell a client of other players only while its survivor sees or hears them: true, false, or \"auto\" (on with pvp)"},
                 "allow_dev": {"type": "boolean", "description": "Take god mode and debug intents from players' clients"},
                 "spawn": {"type": "string", "enum": ["spread", "together", "auto"], "description": "Where new survivors start (auto: spread with pvp, together without)"},
+                "agents": {"type": "string", "enum": ["off", "on", "marked"], "description": "Clients that say they are programs (bots, AI agents): refused, let in, or let in and shown as agents to players who see them. Holds at the door: agents already on stay"},
+                "camera": {"type": "string", "enum": ["isometric", "first-person"], "description": "The camera players play with, told to clients as they join (no game client has first person yet: one without it doesn't join)"},
                 "budget_kb": {"type": "integer", "description": "KB a second down to each client, 8 to 1000"},
                 "autosave_mins": {"type": "number", "description": "Minutes between autosaves; 0 turns them off"},
                 "zombie_respawn": {"type": "boolean", "description": "Regions far from every player refill with zombies over time"}}}}),
@@ -531,7 +533,7 @@ impl Admin {
             "map": [w.map.width(), w.map.height()],
             "seed": w.config.generation.seed,
             "network": {"kb_out": s.bytes_out / 1000, "kb_in": s.bytes_in / 1000, "joined": s.joined, "left": s.left, "refused": s.refused, "refused_dev_intents": s.refused_dev, "updates_held_back": s.held},
-            "rules": {"pvp": w.config.combat.pvp, "fair_sight": host.fair_sight(), "allow_dev": host.options.allow_dev, "password_set": !host.options.password.is_empty()},
+            "rules": {"pvp": w.config.combat.pvp, "fair_sight": host.fair_sight(), "allow_dev": host.options.allow_dev, "password_set": !host.options.password.is_empty(), "agents": host.options.agents.word(), "camera": host.options.camera.word(), "agents_online": host.clients().iter().filter(|c| host.is_agent(c.player)).count()},
             "save": {
                 "path": persist.path.as_ref().map(|p| p.display().to_string()),
                 "autosave_mins": persist.autosave.map_or(0.0, |d| d.as_secs_f64() / 60.0),
@@ -603,6 +605,8 @@ fn settings(host: &Host, persist: &Persist) -> Value {
         "fair_sight_setting": o.fair_sight.map_or(json!("auto"), |b| json!(b)),
         "allow_dev": o.allow_dev,
         "spawn": o.spawn.map_or("auto", spawn),
+        "agents": o.agents.word(),
+        "camera": o.camera.word(),
         "budget_kb": o.budget / 1000,
         "autosave_mins": persist.autosave.map_or(0.0, |d| d.as_secs_f64() / 60.0),
         "zombie_respawn": host.world.config.population.respawn.enabled,
@@ -611,7 +615,7 @@ fn settings(host: &Host, persist: &Persist) -> Value {
 
 /// Check every setting asked for, then apply them all (or none). What changed, in words.
 fn change_settings(host: &mut Host, persist: &mut Persist, args: &Value) -> Result<Vec<String>, String> {
-    const KEYS: [&str; 10] = ["name", "max_players", "password", "pvp", "fair_sight", "allow_dev", "spawn", "budget_kb", "autosave_mins", "zombie_respawn"];
+    const KEYS: [&str; 12] = ["name", "max_players", "password", "pvp", "fair_sight", "allow_dev", "spawn", "agents", "camera", "budget_kb", "autosave_mins", "zombie_respawn"];
     let Some(asked) = args.as_object() else { return Ok(Vec::new()) };
     if let Some(unknown) = asked.keys().find(|k| !KEYS.contains(&k.as_str()) && k.as_str() != "_meta") {
         return Err(format!("no setting called {unknown:?}: the settings are {}", KEYS.join(", ")));
@@ -679,6 +683,21 @@ fn change_settings(host: &mut Host, persist: &mut Persist, args: &Value) -> Resu
         if s != o.spawn {
             changed.push(format!("spawn {}", v.as_str().unwrap_or("")));
             o.spawn = s;
+        }
+    }
+    // The agents and camera rules (#69). Changing them turns nobody out: they hold at the door.
+    if let Some(v) = args.get("agents") {
+        let a = v.as_str().and_then(wire::Agents::parse).ok_or(format!("agents is \"off\", \"on\" or \"marked\", not {v}"))?;
+        if a != o.agents {
+            changed.push(format!("agents {}", a.word()));
+            o.agents = a;
+        }
+    }
+    if let Some(v) = args.get("camera") {
+        let c = v.as_str().and_then(wire::Camera::parse).ok_or(format!("camera is \"isometric\" or \"first-person\", not {v}"))?;
+        if c != o.camera {
+            changed.push(format!("camera {}", c.word()));
+            o.camera = c;
         }
     }
     if let Some(v) = args.get("budget_kb") {
@@ -918,14 +937,15 @@ mod tests {
         let (mut host, mut persist, mut admin) = server(&dir.0);
         let shown: Value = serde_json::from_str(&ok(&mut host, &mut persist, &mut admin, "settings", json!({}))).unwrap();
         assert_eq!(shown["changed"], json!([]));
-        assert_eq!(shown["settings"], json!({"name": "Zombye server", "max_players": 32, "password_set": false, "pvp": false, "fair_sight": false, "fair_sight_setting": "auto", "allow_dev": false, "spawn": "auto", "budget_kb": 32, "autosave_mins": 5.0, "zombie_respawn": false}));
+        assert_eq!(shown["settings"], json!({"name": "Zombye server", "max_players": 32, "password_set": false, "pvp": false, "fair_sight": false, "fair_sight_setting": "auto", "allow_dev": false, "spawn": "auto", "agents": "marked", "camera": "isometric", "budget_kb": 32, "autosave_mins": 5.0, "zombie_respawn": false}));
         assert!(!persist.dirty);
 
-        let said = ok(&mut host, &mut persist, &mut admin, "settings", json!({"name": "Dead Commons", "max_players": 1, "password": "brains-brains", "pvp": true, "spawn": "together", "budget_kb": 64, "autosave_mins": 0.5, "zombie_respawn": true, "allow_dev": false}));
+        let said = ok(&mut host, &mut persist, &mut admin, "settings", json!({"name": "Dead Commons", "max_players": 1, "password": "brains-brains", "pvp": true, "spawn": "together", "agents": "off", "camera": "isometric", "budget_kb": 64, "autosave_mins": 0.5, "zombie_respawn": true, "allow_dev": false}));
         let after: Value = serde_json::from_str(&said).unwrap();
-        assert_eq!(after["changed"].as_array().unwrap().len(), 8, "allow_dev didn't change: {said}");
+        assert_eq!(after["changed"].as_array().unwrap().len(), 9, "allow_dev and the camera didn't change: {said}");
         assert!(!said.contains("brains-brains"), "the password is never shown back");
-        assert_eq!(after["settings"], json!({"name": "Dead Commons", "max_players": 1, "password_set": true, "pvp": true, "fair_sight": true, "fair_sight_setting": "auto", "allow_dev": false, "spawn": "together", "budget_kb": 64, "autosave_mins": 0.5, "zombie_respawn": true}));
+        assert_eq!(after["settings"], json!({"name": "Dead Commons", "max_players": 1, "password_set": true, "pvp": true, "fair_sight": true, "fair_sight_setting": "auto", "allow_dev": false, "spawn": "together", "agents": "off", "camera": "isometric", "budget_kb": 64, "autosave_mins": 0.5, "zombie_respawn": true}));
+        assert_eq!((host.rules().agents, host.rules().camera), (wire::Agents::Refused, wire::Camera::Isometric));
         assert!(persist.dirty && host.world.config.combat.pvp && host.rules().pvp && host.rules().fair_sight && host.world.config.population.respawn.enabled);
         assert_eq!((host.options.budget, persist.autosave, host.options.spawn), (64_000, Some(Duration::from_secs(30)), Some(Spawn::Together)));
         let log = ok(&mut host, &mut persist, &mut admin, "logs", json!({}));

@@ -31,6 +31,16 @@
     logout_safe_secs: 5,
     // Seconds a new survivor can't be hurt by other players (PvP only; 0 for none).
     spawn_protection_secs: 10,
+    // What a new survivor starts with: item ids from the game data's items.ron, at most 12
+    // entries, 1 to 20 of each ([] for nothing). Left out: the game data's start_kit.ron.
+    // start_kit: [(item: "water_bottle"), (item: "rag", count: 2)],
+    // The camera everyone plays with: Isometric, or FirstPerson (first person only: no game
+    // client has that camera yet, so only headless clients can join such a server).
+    camera: Isometric,
+    // Programs (bots, AI agents: clients that say they are one) may join and other players see
+    // which survivors they are: Marked. They may join and nobody is told: Allowed. Not at all:
+    // Refused.
+    agents: Marked,
     // Kilobytes a second sent down to each client at most, 8 to 1000.
     budget_kb: 32,
     // Take the dev toggles (god mode and the like) and debug intents from clients. For testing.

@@ -226,7 +226,10 @@ pub fn compass(from: Vec2, to: Vec2) -> &'static str {
 
 /// A heard line as the log writes it: `You say: ...`, `A survivor shouts: ...`,
 /// `A muffled voice to the east says: ...`.
-pub fn log_text(s: &Said, me: u32, my_pos: Vec2) -> String {
+///
+/// `agent`: the speaker is one we were told a program plays (#69, a server that marks agents):
+/// `An agent says: ...`.
+pub fn log_text(s: &Said, me: u32, my_pos: Vec2, agent: bool) -> String {
     let verb = s.volume.verb();
     if s.speaker == me {
         return format!("You {}: {}", &verb[..verb.len() - 1], s.text);
@@ -234,7 +237,8 @@ pub fn log_text(s: &Said, me: u32, my_pos: Vec2) -> String {
     let muffled = if s.muffled { "muffled " } else { "" };
     if s.speaker != 0 {
         let through = if s.muffled { ", muffled" } else { "" };
-        format!("A survivor {verb}{through}: {}", s.text)
+        let who = if agent { "An agent" } else { "A survivor" };
+        format!("{who} {verb}{through}: {}", s.text)
     } else {
         format!("A {muffled}voice {} {verb}: {}", compass(my_pos, s.pos), s.text)
     }
@@ -254,7 +258,8 @@ fn hear(mut commands: Commands, time: Res<Time>, link: Res<ServerLink>, me: Res<
     let my_pos = link.curr.players.iter().find(|p| p.id == me.id).map_or(Vec2::ZERO, |p| p.pos.into());
     let mut alive: Vec<(Entity, u32, f32)> = bubbles.iter().map(|(e, b)| (e, b.speaker, b.until)).collect();
     for s in link.speech.iter().filter(|s| s.listener == me.id) {
-        let line = log_text(s, me.id, my_pos);
+        let agent = s.speaker != 0 && link.curr.players.iter().any(|p| p.id == s.speaker && p.agent);
+        let line = log_text(s, me.id, my_pos, agent);
         println!("chat: {line}");
         let color = match (s.speaker == me.id, s.muffled, s.volume) {
             (true, ..) => OWN,
@@ -455,14 +460,17 @@ mod tests {
     #[test]
     fn the_log_says_who_or_from_where() {
         let me = Vec2::new(10.0, 10.0);
-        assert_eq!(log_text(&said(1, Volume::Talk, false, me), 1, me), "You say: hello");
-        assert_eq!(log_text(&said(1, Volume::Shout, false, me), 1, me), "You shout: hello");
-        assert_eq!(log_text(&said(1, Volume::Whisper, false, me), 1, me), "You whisper: hello");
-        assert_eq!(log_text(&said(2, Volume::Talk, false, me + Vec2::X), 1, me), "A survivor says: hello");
-        assert_eq!(log_text(&said(2, Volume::Shout, true, me + Vec2::X), 1, me), "A survivor shouts, muffled: hello");
+        assert_eq!(log_text(&said(1, Volume::Talk, false, me), 1, me, false), "You say: hello");
+        assert_eq!(log_text(&said(1, Volume::Shout, false, me), 1, me, false), "You shout: hello");
+        assert_eq!(log_text(&said(1, Volume::Whisper, false, me), 1, me, false), "You whisper: hello");
+        assert_eq!(log_text(&said(2, Volume::Talk, false, me + Vec2::X), 1, me, false), "A survivor says: hello");
+        assert_eq!(log_text(&said(2, Volume::Shout, true, me + Vec2::X), 1, me, false), "A survivor shouts, muffled: hello");
+        // On a server that marks agents (#69), a program's survivor says so.
+        assert_eq!(log_text(&said(2, Volume::Talk, false, me + Vec2::X), 1, me, true), "An agent says: hello");
+        assert_eq!(log_text(&said(1, Volume::Talk, false, me), 1, me, true), "You say: hello");
         // Not told who: a voice, and which way.
-        assert_eq!(log_text(&said(0, Volume::Talk, true, me + Vec2::new(4.0, 0.0)), 1, me), "A muffled voice to the east says: hello");
-        assert_eq!(log_text(&said(0, Volume::Shout, false, me + Vec2::new(-20.0, -20.0)), 1, me), "A voice to the north-west shouts: hello");
+        assert_eq!(log_text(&said(0, Volume::Talk, true, me + Vec2::new(4.0, 0.0)), 1, me, false), "A muffled voice to the east says: hello");
+        assert_eq!(log_text(&said(0, Volume::Shout, false, me + Vec2::new(-20.0, -20.0)), 1, me, false), "A voice to the north-west shouts: hello");
     }
 
     #[test]

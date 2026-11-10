@@ -117,7 +117,7 @@ cargo run -p zombye-server --release -- --mcp --mod mods/alarm_clock
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --mod DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab worn|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --skip-hours H --hover-tag N --debug-stats --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT --connect HOST[:PORT] --name NAME --password P --hotbar ID[,ID...] --hotbar-press K@SECS[,K@SECS...] --panel-at PANEL:X,Y[;PANEL:X,Y] --drag-panel PANEL:DX,DY[@SECS] --lag MS --say TEXT[@SECS] --shout TEXT[@SECS] --whisper TEXT[@SECS] --gesture NAME[@SECS] --talk-demo --talk-wall --graphics low|high --vegetation off|low|high|N --no-post LIST --frame-bench N` (the last four: see Look and feel; the six before them: see Talking and gestures) (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --mod DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab worn|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --skip-hours H --hover-tag N --debug-stats --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT --connect HOST[:PORT] --name NAME --password P --agent --server-info HOST[:PORT] --hotbar ID[,ID...] --hotbar-press K@SECS[,K@SECS...] --panel-at PANEL:X,Y[;PANEL:X,Y] --drag-panel PANEL:DX,DY[@SECS] --lag MS --say TEXT[@SECS] --shout TEXT[@SECS] --whisper TEXT[@SECS] --gesture NAME[@SECS] --talk-demo --talk-wall --graphics low|high --vegetation off|low|high|N --no-post LIST --frame-bench N` (the last four: see Look and feel; the six before them: see Talking and gestures) (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost). `--size WxH` makes the window exactly that many pixels, at scale factor 1, so a
 `--screenshot` is WxH on a high-DPI screen too; without it the window is 1600x900 at the screen's scale.
@@ -193,7 +193,7 @@ In game: WASD move (he faces the way he walks), Shift run, C sneak (toggle), rig
 cursor and strafes or backs off at 2.2 m/s, no running, in a guard stance), and only while aiming left mouse attack
 (swing your weapon, or punch) and Space shove (or stomp, when a downed zombie lies right in front of you), E pick up the item you
 face (with nothing on the floor within reach: search the container you face), 1-9 the hotbar (swap to or use what's on that slot, see Hotbar), Tab or I the inventory panel, H the health panel, K the skills panel (drag any of the three by its title; they remember where they were and whether they were open), F open/close the door or window you face, G smash the window you face, dead: R a new run and Q or Esc quit,
-B sleep (B again or WASD to get up), Enter the chat line (Tab there: whisper, talk or shout; Enter says it, Esc drops it), V wave, U hands up (again lowers them), P point (see Talking and gestures), T skip an hour, Z spawn zombies, wheel zoom (over the inventory, health or skills panel it scrolls that panel instead), F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), F3 the light preview (a time-of-day slider, see Light and mood), F4 the debug stats window (see Needs), M mute, O hide or show the objectives and hints (see The first night), Ctrl (or Cmd) + `=` / `-` the UI scale (see UI scale), Ctrl+0 back to 100%. Walk into an open or broken window to climb
+B sleep (B again or WASD to get up), Enter the chat line (Tab there: whisper, talk or shout; Enter says it, Esc drops it), V wave, U hands up (again lowers them), P point (see Talking and gestures), T skip an hour, Z spawn zombies, wheel zoom (over the inventory, health or skills panel it scrolls that panel instead), F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), F3 the light preview (a time-of-day slider, see Light and mood), F4 the debug stats window (see Needs), F6 the server's rules (on a multiplayer server, see Multiplayer), M mute, O hide or show the objectives and hints (see The first night), Ctrl (or Cmd) + `=` / `-` the UI scale (see UI scale), Ctrl+0 back to 100%. Walk into an open or broken window to climb
 through it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
 not Bevy's handler; a second Ctrl-C quits unsaved) autosaves; `--render-to` never does.
 
@@ -1515,6 +1515,31 @@ snapshots over the network: `zombye-server --host` serves a world and `zombye --
   player wakes up in with it off. `--max-players N` (default 32, at most 64), `--name`, `--password`, `--budget KB`,
   `--logout-secs S`, `--logout-safe-secs S`, `--spawn-protection S` (below), `--fair-sight on|off` (other players only
   when your survivor sees or hears them, #66, below; on with PvP unless said otherwise).
+- **The rules a server sends, and the rest of them (#69; `wire::Rules`, `Host::rules`):** every client that joins gets
+  the server's rules in `Welcome::rules`: name, `max_players`, `pvp`, `fair_sight`, `allow_dev`, the logout times and
+  spawn protection, and since #69 `camera`, `agents`, `spread_spawns`, `start_kit` (item names and counts), `map_m`
+  and `zombies` (living, now). `Rules::lines()` says them in words, a label and a sentence each: the one text for the
+  server's start-up lines, the client's stdout on joining, its rules panel and `--server-info`. **`--camera
+  isometric|first-person`** (`wire::Camera`, docs/PLAN.md §5; default isometric): a rule clients keep, since a camera
+  is the client's. No client has first person yet (#71), so the game client refuses to join a first-person server
+  (and says why) and the server says so when it starts; headless clients still join. **`--agents off|on|marked`**
+  (`wire::Agents`: `Refused`, `Allowed`, `Marked`; default marked): a client says in its hello whether a program plays
+  it (`Hello::agent`; `Remote::connect_as`; the bots always, the game client with `--agent` or `--autoplay`). Off, such
+  a hello is refused ("this server's rules don't allow agents"). Marked, the host sets `PlayerView::agent` on the
+  survivors programs play (`Host::is_agent`; a bit of `PlayerPacked::bits`), so whoever sees one sees what it is, and
+  only then (fair sight still decides who is seen); on, nobody is told. It is the client's own word: a server can't
+  tell a program that doesn't say so. Nothing of it is in the sim, a save or single-player. **`--start-kit
+  ITEM[:N],...|none`** is the start kit from the command line or the config (`start_kit: [(item: "rag", count: 2)]`)
+  instead of the data folder's `start_kit.ron`, held to the same checks (`logout::check_start_kit`). **Asking without
+  joining:** `ClientMsg::Query` in place of a hello is answered with `ServerMsg::Info` (`wire::ServerInfo`: protocol,
+  game version, the rules, players on, whether a password is needed) and the connection is closed: no password, no
+  survivor, not counted as a join (`HostStats::queries`); `remote::query(addr, timeout)`, and **`zombye --server-info
+  HOST[:PORT]`** prints it and exits (no window). It is what the server browser (M7) will ask. **Client**
+  (`rules_ui.rs`): on a server a panel at the top right lists the rules for the first 20 s after joining, and F6 hides
+  or shows it any time; a marked agent's ring is violet where a person's is teal (`survivor_model::mark_agents`), the
+  chat log says "An agent says: ...", and the stats line counts them ("3 other survivors in view (2 agents)"). The
+  admin `settings` tool shows and changes `agents` and `camera` (they hold at the door: nobody already on is turned
+  out). Tests: `net/tests/rules.rs`, `config.rs`'s `the_rules_are_read_from_the_file`.
 - **New survivors (#68; `Host::new_spawn`, `outfit_new`):** spread, the places are 64 points round the town's bounds,
   6 m out, each a golden angle on from the last and moved to the nearest open ground outdoors (`Host::spawn_point(k)`);
   a new survivor (a first join, or R after dying) gets the first, counting on from the last one used, with no living
@@ -1619,8 +1644,8 @@ snapshots over the network: `zombye-server --host` serves a world and `zombye --
   a queue of 100 (5 s of snapshots); a client whose queue fills, that floods (400 intents waiting) or that says nothing
   for 20 s (clients ping every second) is dropped. The tick itself never waits on a socket.
 - **Melee is lag-compensated** (#23, see Combat): clients say which snapshot they show, blows land where the attacker
-  saw the target (at most 0.35 s back), trades of blows go by what each side saw. `wire::PROTOCOL` 8 (7: #68's spawn
-  protection and logout times; 8: chat and gestures, #67).
+  saw the target (at most 0.35 s back), trades of blows go by what each side saw. `wire::PROTOCOL` 9 (7: #68's spawn
+  protection and logout times; 8: chat and gestures, #67; 9: the rules of #69, agents, the query).
 - **Bots** (`zombye-server --bots N --connect HOST[:PORT] [--secs S] [--bots-hostile] [--lag MS]`): N headless clients, each its
   own connection, that wander, turn when stuck, pick up what lies at their feet, fight zombies that come close (and
   players, hostile) and start again when dead; every 5 s it prints what each costs.
@@ -1641,7 +1666,8 @@ the admin endpoint in a container). Change a setting or the image, change it the
 - **`zombye-server --config FILE`** is `--host` with its settings from one RON file (`config::ServerConfig`,
   unknown fields refused, every field optional, options written bare: `pvp: true`): `name`, `listen`, `max_players`,
   `password`, `pvp`, `spawn` (`Spread` / `Together`), `fair_sight`, `logout_secs`, `logout_safe_secs`,
-  `spawn_protection_secs`, `budget_kb`, `allow_dev`, `save` (default `world.zsave`; `None`: never saved),
+  `spawn_protection_secs`, `start_kit`, `camera` (`Isometric` / `FirstPerson`), `agents` (`Refused` / `Allowed` /
+  `Marked`), `budget_kb`, `allow_dev`, `save` (default `world.zsave`; `None`: never saved),
   `autosave_mins`, `seed`, `map_chunks`, `zombies`, `load_anyway`, `data`, `admin: (listen, token, origins)`.
   **The file is turned into the flags it stands for** (`ServerConfig::flags`) and those go behind the command line
   (`config::merge`), so every value is parsed and checked where the flags are (`HostArgs::parse`, `main`), **a flag on

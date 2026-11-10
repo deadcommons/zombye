@@ -26,7 +26,7 @@
 //! intent's `player` is overwritten with the sender's, and the dev and debug intents are dropped
 //! unless the server allows them.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{self, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
@@ -38,7 +38,7 @@ use glam::{IVec2, Vec2};
 use zombye_sim::save::ContentPrint;
 use zombye_sim::{TICK_DT, World};
 
-use crate::wire::{self, ClientMsg, DeltaEncoder, Hello, Limits, MapInterest, Rules, ServerMsg, Tunings, Welcome};
+use crate::wire::{self, Agents, Camera, ClientMsg, DeltaEncoder, Hello, Limits, MapInterest, Rules, ServerInfo, ServerMsg, Tunings, Welcome};
 use crate::{EdgeDamage, Intent, Snapshot, apply_intent};
 
 /// Where new survivors start.
@@ -78,6 +78,11 @@ pub struct HostOptions {
     /// Fair information (#66, [`crate::visibility`]): tell a client of another player only while
     /// its survivor sees them, or as a sound when it hears them. `None`: on with PvP, off in co-op.
     pub fair_sight: Option<bool>,
+    /// The camera this server's players play with (#69). A rule clients keep: one that hasn't the
+    /// camera doesn't join.
+    pub camera: Camera,
+    /// Whether clients that say they are programs may join, and whether others are told (#69).
+    pub agents: Agents,
 }
 
 /// The default budget per client: a quarter of a megabit.
@@ -104,6 +109,8 @@ impl Default for HostOptions {
             kit: Vec::new(),
             budget: DEFAULT_BUDGET,
             fair_sight: None,
+            camera: Camera::default(),
+            agents: Agents::default(),
         }
     }
 }
@@ -140,6 +147,8 @@ const MAX_PENDING: usize = 16;
 
 enum Event {
     Hello(u64, Hello, TcpStream),
+    /// "What server are you?" from someone not joining (#69).
+    Query(TcpStream),
     Msg(u64, ClientMsg, usize),
     Closed(u64),
 }
@@ -216,6 +225,8 @@ pub struct HostStats {
     pub refused_dev: u64,
     /// Zombie updates held back for clients' budgets (#22).
     pub held: u64,
+    /// Times someone asked what server this is without joining (#69).
+    pub queries: u64,
 }
 
 pub struct Host {
@@ -230,6 +241,9 @@ pub struct Host {
     open: Arc<AtomicUsize>,
     /// Every name that has played here and its player.
     names: BTreeMap<String, u32>,
+    /// The players whose client said it is a program when it last joined (#69). With the agents
+    /// rule at `Marked`, their views say so to whoever sees them.
+    agents: BTreeSet<u32>,
     bans: Vec<Ban>,
     /// The next place round the town to try for a new survivor (`new_spawn`).
     next_spawn: u32,
@@ -248,7 +262,7 @@ impl Host {
         let (events_tx, events) = mpsc::channel();
         // Carry on round the town from where a loaded world's survivors left off.
         let next_spawn = (world.players.len() + world.parked().len()) as u32;
-        Ok(Self { world, options, listener, events, events_tx, conns: Vec::new(), next_conn: 1, open: Arc::new(AtomicUsize::new(0)), names: BTreeMap::new(), bans: Vec::new(), next_spawn, stats: HostStats::default(), log: Vec::new() })
+        Ok(Self { world, options, listener, events, events_tx, conns: Vec::new(), next_conn: 1, open: Arc::new(AtomicUsize::new(0)), names: BTreeMap::new(), agents: BTreeSet::new(), bans: Vec::new(), next_spawn, stats: HostStats::default(), log: Vec::new() })
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -256,7 +270,7 @@ impl Host {
     }
 
     pub fn rules(&self) -> Rules {
-        let o = &self.options;
+        let (o, w) = (&self.options, &self.world);
         Rules {
             name: o.name.clone(),
             pvp: self.world.config.combat.pvp,
@@ -266,7 +280,24 @@ impl Host {
             logout_safe_secs: o.logout_safe_secs,
             spawn_protection_secs: o.spawn_protection_secs,
             fair_sight: self.fair_sight(),
+            camera: o.camera,
+            agents: o.agents,
+            spread_spawns: self.spawn_mode() == Spawn::Spread,
+            // By name, as a player reads it (an id the data no longer has: the id).
+            start_kit: o.kit.iter().map(|(id, n)| (w.config.items.iter().find(|i| i.id == *id).map_or_else(|| id.clone(), |i| i.name.clone()), *n)).collect(),
+            map_m: [w.map.width() as u32, w.map.height() as u32],
+            zombies: (0..w.zombies.len()).filter(|&i| w.zombies.state[i] != zombye_sim::ZombieState::Dead).count() as u32,
         }
+    }
+
+    /// What this server says of itself to someone who asks without joining (#69).
+    pub fn info(&self) -> ServerInfo {
+        ServerInfo { protocol: wire::PROTOCOL, version: env!("CARGO_PKG_VERSION").to_string(), rules: self.rules(), online: self.conns.len() as u32, password: !self.options.password.is_empty() }
+    }
+
+    /// Is `player` played by a program, by its client's own word (#69)?
+    pub fn is_agent(&self, player: u32) -> bool {
+        self.agents.contains(&player)
     }
 
     /// Are clients told of other players only through their survivor's senses (#66)?
@@ -438,6 +469,15 @@ impl Host {
         while let Ok(event) = self.events.try_recv() {
             match event {
                 Event::Hello(id, hello, stream) => self.hello(id, hello, stream),
+                Event::Query(mut stream) => {
+                    // Whatever protocol asks: the answer says ours, and the asker sees whether
+                    // it could join. Written here (a few hundred bytes into an empty socket
+                    // buffer; a short timeout in case) and the connection is done.
+                    self.stats.queries += 1;
+                    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+                    let _ = wire::write_frame(&mut stream, &ServerMsg::Info(Box::new(self.info())));
+                    let _ = stream.shutdown(Shutdown::Both);
+                }
                 Event::Msg(id, msg, bytes) => {
                     let Some(c) = self.conns.iter_mut().find(|c| c.id == id) else { continue };
                     c.bytes_in += bytes as u64;
@@ -453,6 +493,7 @@ impl Host {
                         ClientMsg::Ping(n) => send(c, &mut self.stats, &ServerMsg::Pong(n)),
                         ClientMsg::Bye => c.closing = Some(String::new()),
                         ClientMsg::Hello(_) => c.closing = Some("hello twice".into()),
+                        ClientMsg::Query(_) => send(c, &mut self.stats, &ServerMsg::Bye("a query comes instead of a hello".into())),
                     }
                 }
                 Event::Closed(id) => {
@@ -493,6 +534,12 @@ impl Host {
             id
         });
         self.names.insert(name.clone(), player);
+        // Who plays it now: a program or a person, by this hello (#69).
+        if hello.agent {
+            self.agents.insert(player);
+        } else {
+            self.agents.remove(&player);
+        }
         let c = &self.world.config;
         let welcome = Welcome {
             protocol: wire::PROTOCOL,
@@ -526,7 +573,7 @@ impl Host {
         // Its private view goes with its first snapshot.
         self.world.mark_all_private_dirty();
         self.stats.joined += 1;
-        self.log.push(format!("{name} joined from {addr} as player {player}{} ({} online)", if back.is_some() { " (back)" } else { "" }, self.conns.len()));
+        self.log.push(format!("{name}{} joined from {addr} as player {player}{} ({} online)", if hello.agent { " (an agent)" } else { "" }, if back.is_some() { " (back)" } else { "" }, self.conns.len()));
     }
 
     /// May this hello come in? Its name (made up if it gave none), or why not.
@@ -536,6 +583,9 @@ impl Host {
         }
         if !self.options.password.is_empty() && hello.password != self.options.password {
             return Err("wrong password".into());
+        }
+        if hello.agent && self.options.agents == Agents::Refused {
+            return Err("this server's rules don't allow agents: its survivors are played by people".into());
         }
         if self.conns.len() >= self.options.max_players {
             return Err(format!("the server is full ({} players)", self.options.max_players));
@@ -680,7 +730,13 @@ impl Host {
             self.world.speech.clear();
             return;
         }
-        let full = Snapshot::capture(&mut self.world);
+        let mut full = Snapshot::capture(&mut self.world);
+        // Marked agents (#69): whoever sees one sees that it is one (its own client too).
+        if self.options.agents == Agents::Marked && !self.agents.is_empty() {
+            for p in &mut full.players {
+                p.agent = self.agents.contains(&p.id);
+            }
+        }
         let radius = self.world.config.tiers.interest_radius;
         let budget = self.options.budget.clamp(BUDGET_RANGE.0, BUDGET_RANGE.1) as f32;
         let a_tick = budget * TICK_DT;
@@ -755,9 +811,17 @@ fn read_loop(id: u64, mut stream: TcpStream, tx: &Sender<Event>) {
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_nodelay(true);
     let _ = stream.set_read_timeout(Some(HELLO_TIMEOUT));
-    let Ok((ClientMsg::Hello(hello), _)) = wire::read_frame::<ClientMsg>(&mut stream, wire::MAX_CLIENT_FRAME) else {
-        let _ = stream.shutdown(Shutdown::Both);
-        return;
+    let hello = match wire::read_frame::<ClientMsg>(&mut stream, wire::MAX_CLIENT_FRAME) {
+        Ok((ClientMsg::Hello(hello), _)) => hello,
+        // Not joining, only asking (#69): the host answers and closes it.
+        Ok((ClientMsg::Query(_), _)) => {
+            let _ = tx.send(Event::Query(stream));
+            return;
+        }
+        _ => {
+            let _ = stream.shutdown(Shutdown::Both);
+            return;
+        }
     };
     let Ok(writer) = stream.try_clone() else { return };
     let _ = stream.set_read_timeout(Some(IDLE));

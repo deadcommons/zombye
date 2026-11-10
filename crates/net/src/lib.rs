@@ -179,6 +179,9 @@ pub struct PlayerView {
     pub protected: bool,
     /// The gesture it is making (#67): wave, hands up, point.
     pub gesture: Option<Gesture>,
+    /// Played by a program, on a server whose rules mark agents (#69, `wire::Agents::Marked`).
+    /// Set by the multiplayer server from what each client said of itself; never in single-player.
+    pub agent: bool,
 }
 
 /// What a container holds, for whoever has it open.
@@ -429,6 +432,7 @@ impl Snapshot {
                 knock: p.knock,
                 protected: p.protected > 0.0,
                 gesture: p.gesture.map(|g| g.kind),
+                agent: false,
             })
             .collect();
         let private = world.take_private_dirty().into_iter().filter_map(|id| PrivateView::of(world, id)).collect();

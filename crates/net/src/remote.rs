@@ -12,13 +12,66 @@ use std::time::{Duration, Instant};
 use zombye_sim::save::ContentPrint;
 use zombye_sim::{TileMap, World, WorldConfig};
 
-use crate::wire::{self, ClientMsg, DeltaDecoder, Hello, ServerMsg, Welcome};
+use crate::wire::{self, ClientMsg, DeltaDecoder, Hello, ServerInfo, ServerMsg, Welcome};
 use crate::{Intent, Snapshot};
 
 /// How often a client pings (which also tells the server it is still there).
 const PING_EVERY: Duration = Duration::from_secs(1);
 /// A server that sends nothing for this long is taken for gone.
 const SILENCE: Duration = Duration::from_secs(10);
+
+/// Open a connection to `addr` (`host:port`, or `host` for the default port), with `timeout` to
+/// connect and to read each answer. The stream, and the address with its port (for messages).
+fn dial(addr: &str, timeout: Duration) -> Result<(TcpStream, String), String> {
+    let with_port = if addr.rsplit_once(':').is_some_and(|(_, p)| p.parse::<u16>().is_ok()) { addr.to_string() } else { format!("{addr}:{}", wire::DEFAULT_PORT) };
+    let addrs: Vec<_> = with_port.to_socket_addrs().map_err(|e| format!("can't find {with_port}: {e}"))?.collect();
+    let mut last = format!("can't find {with_port}");
+    let mut stream = None;
+    for a in addrs {
+        match TcpStream::connect_timeout(&a, timeout) {
+            Ok(s) => {
+                stream = Some(s);
+                break;
+            }
+            Err(e) => last = format!("can't connect to {a}: {e}"),
+        }
+    }
+    let stream = stream.ok_or(last)?;
+    let io = |e: std::io::Error| format!("lost the connection to {with_port}: {e}");
+    stream.set_nodelay(true).map_err(io)?;
+    stream.set_read_timeout(Some(timeout)).map_err(io)?;
+    stream.set_write_timeout(Some(Duration::from_secs(5))).map_err(io)?;
+    Ok((stream, with_port))
+}
+
+/// Ask the server at `addr` what it is, without joining (#69): its rules, how many are on, whether
+/// it wants a password, and its protocol (ours must be the same to join). No password needed. What
+/// a server browser shows before you join, and `zombye --server-info HOST`.
+pub fn query(addr: &str, timeout: Duration) -> Result<ServerInfo, String> {
+    let (mut stream, with_port) = dial(addr, timeout)?;
+    let io = |e: std::io::Error| format!("lost the connection to {with_port}: {e}");
+    wire::write_frame(&mut stream, &ClientMsg::Query(wire::PROTOCOL)).map_err(io)?;
+    let answer = wire::read_frame::<ServerMsg>(&mut stream, wire::MAX_SERVER_FRAME);
+    let _ = stream.shutdown(Shutdown::Both);
+    match answer {
+        Ok((ServerMsg::Info(info), _)) => Ok(*info),
+        Ok((ServerMsg::Refused(why) | ServerMsg::Bye(why), _)) => Err(format!("{with_port} refused: {why}")),
+        // A server from before queries shuts the connection on one; another program says anything.
+        _ => Err(format!("{with_port} didn't answer: not a Zombye server, or one of an older version (this game speaks protocol {})", wire::PROTOCOL)),
+    }
+}
+
+/// A server's answer in words: what `--server-info` prints, a line each.
+pub fn describe(info: &ServerInfo, addr: &str) -> Vec<String> {
+    let mut lines = vec![format!("{} at {addr}: {} of {} players on{}", info.rules.name, info.online, info.rules.max_players, if info.password { ", needs a password" } else { "" })];
+    lines.push(if info.protocol == wire::PROTOCOL {
+        format!("  Version: {} (protocol {}): this game can join", info.version, info.protocol)
+    } else {
+        format!("  Version: {} (protocol {}): this game speaks protocol {} and can't join, both need the same version", info.version, info.protocol, wire::PROTOCOL)
+    });
+    lines.extend(info.rules.lines().into_iter().map(|(label, text)| format!("  {label}: {text}")));
+    lines
+}
 
 pub struct Remote {
     pub welcome: Welcome,
@@ -52,25 +105,15 @@ impl Remote {
     /// Connect to `addr` (`host:port`, or `host` for the default port) and join as `name`. Waits
     /// up to `timeout` for the connection and for the server's answer.
     pub fn connect(addr: &str, name: &str, password: &str, timeout: Duration) -> Result<Self, String> {
-        let with_port = if addr.rsplit_once(':').is_some_and(|(_, p)| p.parse::<u16>().is_ok()) { addr.to_string() } else { format!("{addr}:{}", wire::DEFAULT_PORT) };
-        let addrs: Vec<_> = with_port.to_socket_addrs().map_err(|e| format!("can't find {with_port}: {e}"))?.collect();
-        let mut last = format!("can't find {with_port}");
-        let mut stream = None;
-        for a in addrs {
-            match TcpStream::connect_timeout(&a, timeout) {
-                Ok(s) => {
-                    stream = Some(s);
-                    break;
-                }
-                Err(e) => last = format!("can't connect to {a}: {e}"),
-            }
-        }
-        let mut stream = stream.ok_or(last)?;
+        Self::connect_as(addr, name, password, false, timeout)
+    }
+
+    /// [`Remote::connect`], saying whether a program plays this connection (`agent`: the bots, an
+    /// AI agent's client; #69). A server's rules may refuse agents, or mark them to other players.
+    pub fn connect_as(addr: &str, name: &str, password: &str, agent: bool, timeout: Duration) -> Result<Self, String> {
+        let (mut stream, with_port) = dial(addr, timeout)?;
         let io = |e: std::io::Error| format!("lost the connection to {with_port}: {e}");
-        stream.set_nodelay(true).map_err(io)?;
-        stream.set_read_timeout(Some(timeout)).map_err(io)?;
-        stream.set_write_timeout(Some(Duration::from_secs(5))).map_err(io)?;
-        let hello = ClientMsg::Hello(Hello { protocol: wire::PROTOCOL, name: name.to_string(), password: password.to_string() });
+        let hello = ClientMsg::Hello(Hello { protocol: wire::PROTOCOL, name: name.to_string(), password: password.to_string(), agent });
         let bytes_out = wire::write_frame(&mut stream, &hello).map_err(io)? as u64;
         let (answer, n) = wire::read_frame::<ServerMsg>(&mut stream, wire::MAX_SERVER_FRAME).map_err(io)?;
         let welcome = match answer {
@@ -206,7 +249,7 @@ impl Remote {
                 Ok(Ok(ServerMsg::Pong(sent))) => self.ping_ms = Some((self.started.elapsed().as_millis() as u32).wrapping_sub(sent) as f32),
                 Ok(Ok(ServerMsg::Bye(why))) => self.closed = Some(format!("the server closed the connection: {why}")),
                 Ok(Ok(ServerMsg::Refused(why))) => self.closed = Some(format!("refused: {why}")),
-                Ok(Ok(ServerMsg::Welcome(_))) => {}
+                Ok(Ok(ServerMsg::Welcome(_) | ServerMsg::Info(_))) => {}
                 Ok(Err(e)) => {
                     self.closed.get_or_insert(format!("lost the connection: {e}"));
                 }

@@ -10,6 +10,7 @@ use glam::Vec2;
 use zombye_net::host::{BUDGET_RANGE, DEFAULT_BUDGET, Host, HostOptions, Spawn};
 use zombye_net::remote::Remote;
 use zombye_net::{Intent, Snapshot, shutdown, wire};
+use zombye_sim::logout::StartKit;
 use zombye_sim::{TICK_DT, World, ZombieAnim};
 
 use crate::Persist;
@@ -23,6 +24,9 @@ pub struct HostArgs {
     pub options: HostOptions,
     /// `--pvp on|off`: `None` leaves a loaded world's rule as it is (a new world: on).
     pub pvp: Option<bool>,
+    /// `--start-kit LIST`: what new survivors start with, instead of the data folder's
+    /// `start_kit.ron` (#69). `None`: the data folder's.
+    pub start_kit: Option<StartKit>,
     /// `--admin-mcp`: the operator's MCP endpoint (#26, `admin.rs`), if asked for.
     pub admin: Option<HttpArgs>,
 }
@@ -78,9 +82,47 @@ impl HostArgs {
             kit: Vec::new(),
             budget,
             fair_sight: on_off("--fair-sight")?,
+            camera: match text("--camera") {
+                None => wire::Camera::default(),
+                Some(v) => wire::Camera::parse(&v).ok_or(format!("--camera is isometric or first-person, not {v}"))?,
+            },
+            agents: match text("--agents") {
+                None => wire::Agents::default(),
+                Some(v) => wire::Agents::parse(&v).ok_or(format!("--agents is off, on or marked, not {v}"))?,
+            },
         };
-        Ok(Self { addr, options, pvp: on_off("--pvp")?, admin: crate::admin::parse(args, admin_token)? })
+        let start_kit = text("--start-kit").map(|v| parse_kit(&v)).transpose()?;
+        Ok(Self { addr, options, pvp: on_off("--pvp")?, start_kit, admin: crate::admin::parse(args, admin_token)? })
     }
+
+    /// What new survivors start with: `--start-kit` if given, else the data folder's
+    /// `start_kit.ron` (`from_data`), checked against the items either way.
+    pub fn kit(&self, from_data: StartKit, items: &[zombye_sim::ItemDef]) -> Result<StartKit, String> {
+        match &self.start_kit {
+            None => Ok(from_data),
+            Some(kit) => zombye_sim::logout::check_start_kit(kit.clone(), items).map_err(|e| format!("--start-kit: {e}")),
+        }
+    }
+}
+
+/// `--start-kit ITEM[:N],ITEM[:N]...` (`none`: nothing): item ids and how many of each. The ids
+/// are checked against the game data later (`HostArgs::kit`).
+fn parse_kit(text: &str) -> Result<StartKit, String> {
+    if text.trim().eq_ignore_ascii_case("none") {
+        return Ok(StartKit::new());
+    }
+    text.split(',')
+        .map(|part| {
+            let (item, count) = match part.trim().split_once(':') {
+                Some((item, n)) => (item.trim(), n.trim().parse::<u16>().map_err(|_| format!("--start-kit: {part}: the count is a number, as in rag:2"))?),
+                None => (part.trim(), 1),
+            };
+            if item.is_empty() {
+                return Err(format!("--start-kit is item ids with counts, as in water_bottle,rag:2 (or none), not {text}"));
+            }
+            Ok((item.to_string(), count))
+        })
+        .collect()
 }
 
 /// The file beside a save that says whose each survivor is: a line per name, `id<TAB>name`.
@@ -144,6 +186,13 @@ pub fn host(mut world: World, new_world: bool, args: HostArgs, persist: &mut Per
         host.world.map.height(),
         host.world.config.generation.seed,
     );
+    // The rules as players are told them (#69), a line each.
+    for (label, text) in rules.lines() {
+        println!("  {label}: {text}");
+    }
+    if rules.camera == wire::Camera::FirstPerson {
+        println!("  note: no game client has the first-person camera yet (#71), so the game's own client won't join this server; headless clients (bots, agents) still can");
+    }
     // The operator's side (#26, `admin.rs`): the log, and the admin MCP endpoint if asked for.
     let mut admin = Admin::default();
     if let Some(http) = &args.admin {
@@ -392,7 +441,8 @@ pub fn bots(args: BotArgs) {
     let mut bots: Vec<Bot> = Vec::new();
     for k in 0..args.count {
         let name = format!("{}-{}", args.name, k + 1);
-        match Remote::connect(&args.addr, &name, &args.password, Duration::from_secs(10)).and_then(|mut r| r.wait_snapshot(Duration::from_secs(10)).map(|s| (r, s))) {
+        // Bots say what they are (#69): a server's rules may refuse agents, or mark them.
+        match Remote::connect_as(&args.addr, &name, &args.password, true, Duration::from_secs(10)).and_then(|mut r| r.wait_snapshot(Duration::from_secs(10)).map(|s| (r, s))) {
             Ok((mut remote, last)) => {
                 remote.set_lag(Duration::from_millis(args.lag_ms as u64));
                 let seq = last.players.iter().find(|p| p.id == remote.player()).map_or(0, |p| p.last_input_seq);

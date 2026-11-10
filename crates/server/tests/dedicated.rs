@@ -94,6 +94,11 @@ fn a_config_file_is_the_whole_server() {
             max_players: 2,
             password: "sesame",
             pvp: false,
+            logout_secs: 12,
+            logout_safe_secs: 2,
+            start_kit: [(item: "rag", count: 3)],
+            camera: Isometric,
+            agents: Refused,
             save: "worlds/town.zsave",
             seed: 7,
             map_chunks: 8,
@@ -115,6 +120,17 @@ fn a_config_file_is_the_whole_server() {
     assert!(refused.to_lowercase().contains("password"), "{refused}");
     let mut ada = Remote::connect(&server.addr, "ada", "sesame", Duration::from_secs(20)).expect("ada joins");
     assert_eq!((ada.welcome.rules.name.as_str(), ada.welcome.rules.pvp, ada.welcome.rules.max_players), ("Dead Commons test", false, 2));
+    // Every rule in the file is what a joining client is told (#69), and what anyone who asks
+    // without joining (or a password) is told; the agents rule holds at the door.
+    let r = ada.welcome.rules.clone();
+    assert_eq!((r.logout_secs, r.logout_safe_secs, r.camera, r.agents), (12.0, 2.0, zombye_net::wire::Camera::Isometric, zombye_net::wire::Agents::Refused));
+    assert_eq!((r.start_kit.clone(), r.zombies, r.spread_spawns), (vec![("Rag".to_string(), 3)], 30, false));
+    // (8 chunks is too small for the town: the map is grown to fit it.)
+    assert!(r.map_m[0] >= 128 && r.map_m[1] >= 128, "{:?}", r.map_m);
+    let asked = zombye_net::remote::query(&server.addr, Duration::from_secs(20)).expect("the server says what it is");
+    assert_eq!((asked.rules, asked.online, asked.password), (r, 1, true));
+    let agent = Remote::connect_as(&server.addr, "bot-1", "sesame", true, Duration::from_secs(20)).err().expect("an agent is refused");
+    assert!(agent.contains("don't allow agents"), "{agent}");
     let first = ada.wait_snapshot(Duration::from_secs(20)).expect("her first snapshot");
     let later = ada.wait_tick(first.tick + 10, Duration::from_secs(20)).expect("the world ticks on");
     assert!(later.players.iter().any(|p| p.id == ada.player()), "her survivor is in the world");

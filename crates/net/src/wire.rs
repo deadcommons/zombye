@@ -45,8 +45,10 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// `SnapshotDelta::heard`, `Rules::fair_sight`. 6: lag-compensated melee, #23: `Intent::Seen`,
 /// `CombatTuning::lag_comp_max_secs` in the tunings. 7: #68: `PlayerView::protected`, the logout
 /// and spawn protection times in `Rules`. 8: proximity chat and gestures, #67: `Intent::Say`,
-/// `Intent::Gesture`, `PlayerView::gesture`, `SnapshotDelta::speech`.)
-pub const PROTOCOL: u32 = 8;
+/// `Intent::Gesture`, `PlayerView::gesture`, `SnapshotDelta::speech`. 9: the server's rules, #69:
+/// `Hello::agent`, the camera, agents, spawns, start kit and world in `Rules`, `PlayerView::agent`,
+/// `ClientMsg::Query` and `ServerMsg::Info`.)
+pub const PROTOCOL: u32 = 9;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -69,6 +71,10 @@ pub enum ClientMsg {
     Ping(u32),
     /// Leaving.
     Bye,
+    /// Instead of a hello (#69): "what server are you?", with the asker's protocol. Answered with
+    /// [`ServerMsg::Info`] and the connection is closed: nobody joins, no password is needed. What
+    /// a server browser asks, and `zombye --server-info HOST`.
+    Query(u32),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -79,6 +85,10 @@ pub struct Hello {
     pub name: String,
     /// The server's join password, if it has one.
     pub password: String,
+    /// Played by a program, not a person (#69): the bots, an AI agent's client. A server's
+    /// [`Rules::agents`] says whether it may join and whether others are told. It is the client's
+    /// own word: an honest agent says so, and a server can't tell one that doesn't.
+    pub agent: bool,
 }
 
 /// Server to client.
@@ -91,10 +101,88 @@ pub enum ServerMsg {
     Pong(u32),
     /// The server is closing this connection, and why.
     Bye(String),
+    /// The answer to [`ClientMsg::Query`].
+    Info(Box<ServerInfo>),
 }
 
-/// A server's rules (docs/PLAN.md §4.8; the rest, and the server browser, are #69).
+/// What a server says of itself to anyone who asks, before joining (#69: the server browser's row).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ServerInfo {
+    /// The server's protocol (a client of another can't join) and game version.
+    pub protocol: u32,
+    pub version: String,
+    pub rules: Rules,
+    /// Players on now.
+    pub online: u32,
+    /// Joining needs a password.
+    pub password: bool,
+}
+
+/// The camera a server's players play with (docs/PLAN.md §5). The isometric camera sees over
+/// walls and round corners and a first-person one doesn't, so a server has one or the other.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Camera {
+    #[default]
+    Isometric,
+    /// First person only. No client has that camera yet (#71): one without it doesn't join.
+    FirstPerson,
+}
+
+impl Camera {
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.to_ascii_lowercase().replace(['-', '_', ' '], "").as_str() {
+            "isometric" | "iso" => Some(Self::Isometric),
+            "firstperson" | "first" | "fp" => Some(Self::FirstPerson),
+            _ => None,
+        }
+    }
+
+    /// As the `--camera` flag and the admin tools write it.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Isometric => "isometric",
+            Self::FirstPerson => "first-person",
+        }
+    }
+}
+
+/// Whether programs (bots, AI agents: clients whose hello says `agent`) may play on a server, and
+/// whether the others are told which survivors they are (docs/PLAN.md §4.8).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Agents {
+    /// They are refused at the door.
+    Refused,
+    /// They join like anyone, and nobody is told.
+    Allowed,
+    /// They join, and whoever sees one sees that it is one ([`PlayerView::agent`]).
+    #[default]
+    Marked,
+}
+
+impl Agents {
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.to_ascii_lowercase().as_str() {
+            "off" | "no" | "false" | "refused" => Some(Self::Refused),
+            "on" | "yes" | "true" | "allowed" | "unmarked" => Some(Self::Allowed),
+            "marked" => Some(Self::Marked),
+            _ => None,
+        }
+    }
+
+    /// As the `--agents` flag and the admin tools write it.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Refused => "off",
+            Self::Allowed => "on",
+            Self::Marked => "marked",
+        }
+    }
+}
+
+/// A server's rules (docs/PLAN.md §4.8, #69): what makes one server different from another. From
+/// its config, told to every client that joins ([`Welcome::rules`]) and to anyone who asks before
+/// joining ([`ServerInfo`]). [`Rules::lines`] says them in words.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Rules {
     /// The server's name.
     pub name: String,
@@ -112,6 +200,72 @@ pub struct Rules {
     /// Fair information (#66): a client is told of another player only while its survivor sees
     /// them (or hears them, as a sound). Off: everyone within the interest radius.
     pub fair_sight: bool,
+    /// The camera everyone plays with.
+    pub camera: Camera,
+    /// Whether programs may play here, and whether they are marked.
+    pub agents: Agents,
+    /// New survivors start spread round the edge of the town (else together, by one house).
+    pub spread_spawns: bool,
+    /// What a new survivor starts with: item names and counts.
+    pub start_kit: Vec<(String, u16)>,
+    /// The map's width and height in metres, and the zombies the world holds now.
+    pub map_m: [u32; 2],
+    pub zombies: u32,
+}
+
+impl Rules {
+    /// The rules in words, a label and a sentence each, in the order a player wants them: what the
+    /// client shows on joining, what `--server-info` prints and what the server says when it starts.
+    pub fn lines(&self) -> Vec<(&'static str, String)> {
+        let secs = |s: f32| if s.fract() == 0.0 { format!("{s:.0} s") } else { format!("{s:.1} s") };
+        let mut lines = vec![
+            ("Players", format!("up to {}", self.max_players)),
+            ("PvP", if self.pvp { "on: other survivors can hurt you".to_string() } else { "off: co-op, survivors can't hurt each other".to_string() }),
+            (
+                "Camera",
+                match self.camera {
+                    Camera::Isometric => "isometric".to_string(),
+                    Camera::FirstPerson => "first person only".to_string(),
+                },
+            ),
+            (
+                "Agents",
+                match self.agents {
+                    Agents::Refused => "not allowed: every survivor is played by a person".to_string(),
+                    Agents::Allowed => "allowed, and not marked: a survivor may be played by a program".to_string(),
+                    Agents::Marked => "allowed, and marked as agents".to_string(),
+                },
+            ),
+            ("Other players", if self.fair_sight { "shown only while your survivor sees or hears them".to_string() } else { "always shown when near".to_string() }),
+            (
+                "Logging out",
+                if self.logout_secs <= 0.0 {
+                    "your survivor leaves the world at once".to_string()
+                } else if self.logout_safe_secs < self.logout_secs {
+                    format!("your survivor stays in the world for {} ({} somewhere safe)", secs(self.logout_secs), secs(self.logout_safe_secs))
+                } else {
+                    format!("your survivor stays in the world for {}", secs(self.logout_secs))
+                },
+            ),
+            (
+                "New survivors",
+                format!(
+                    "start {}{}",
+                    if self.spread_spawns { "apart, round the edge of the town" } else { "together, by one house" },
+                    if self.pvp && self.spawn_protection_secs > 0.0 { format!("; other players can't hurt them for {}", secs(self.spawn_protection_secs)) } else { String::new() }
+                ),
+            ),
+            (
+                "Start kit",
+                if self.start_kit.is_empty() { "nothing".to_string() } else { self.start_kit.iter().map(|(name, n)| if *n == 1 { name.clone() } else { format!("{n} x {name}") }).collect::<Vec<_>>().join(", ") },
+            ),
+            ("World", format!("{} x {} m, {} zombies", self.map_m[0], self.map_m[1], self.zombies)),
+        ];
+        if self.allow_dev {
+            lines.push(("Dev tools", "on: god mode and the debug tools are taken from players".to_string()));
+        }
+        lines
+    }
 }
 
 /// The numbers a client needs to predict and to label things as the server does.
@@ -259,8 +413,9 @@ pub struct PlayerPacked {
     pub x: u32,
     pub y: u32,
     pub facing: u8,
-    /// Bits 0-1 the stance, then dead, asleep, aiming, bleeding, limping, sick, injured arm, and
-    /// in bits 9-10 its gesture (#67: 0 none, 1 wave, 2 hands up, 3 point).
+    /// Bits 0-1 the stance, then dead, asleep, aiming, bleeding, limping, sick, injured arm,
+    /// in bits 9-10 its gesture (#67: 0 none, 1 wave, 2 hands up, 3 point), and in bit 11 that it
+    /// is a marked agent (#69).
     pub bits: u16,
     /// Hit points, rounded up.
     pub hp: u8,
@@ -291,7 +446,7 @@ impl PlayerPacked {
             x: (p.pos[0].max(0.0) * POS_STEPS).round() as u32,
             y: (p.pos[1].max(0.0) * POS_STEPS).round() as u32,
             facing: ((turn * 256.0).round() as u32 & 255) as u8,
-            bits: p.stance as u16 | bit(p.dead, 2) | bit(p.asleep, 3) | bit(p.aiming, 4) | bit(h.bleeding, 5) | bit(h.limping, 6) | bit(h.sick, 7) | bit(h.injured_arm, 8) | gesture << 9,
+            bits: p.stance as u16 | bit(p.dead, 2) | bit(p.asleep, 3) | bit(p.aiming, 4) | bit(h.bleeding, 5) | bit(h.limping, 6) | bit(h.sick, 7) | bit(h.injured_arm, 8) | gesture << 9 | bit(p.agent, 11),
             hp: p.hp.clamp(0.0, 255.0).ceil() as u8,
             weapon: p.weapon,
             action: p.action,
@@ -339,6 +494,7 @@ impl PlayerPacked {
                 3 => Some(Gesture::Point),
                 _ => None,
             },
+            agent: bit(11),
         }
     }
 }

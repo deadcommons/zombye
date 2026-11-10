@@ -317,11 +317,16 @@ fn update_hud(
         Some(net) => match &net.closed {
             Some(why) => format!("DISCONNECTED from {} ({why})", net.addr),
             None => format!(
-                "online: {} on {} (pvp {}) | {} other survivors in view | ping {} | view {:.0} ms behind | down {}",
+                "online: {} on {} (pvp {}) | {} other survivors in view{} | ping {} | view {:.0} ms behind | down {}",
                 net.name,
                 net.server,
                 if net.pvp { "on" } else { "off" },
                 link.curr.players.len().saturating_sub(1),
+                // On a server that marks agents (#69): how many of them a program plays.
+                match link.curr.players.iter().filter(|p| p.id != me.id && p.agent).count() {
+                    0 => String::new(),
+                    n => format!(" ({n} agent{})", if n == 1 { "" } else { "s" }),
+                },
                 net.ping_ms.map_or("?".to_string(), |p| format!("{p:.0} ms")),
                 // How old the picture of everything else is by our survivor's clock: what the
                 // server rewinds our blows' targets by (#23).
@@ -351,10 +356,12 @@ fn update_hud(
     if let Ok(mut t) = text.single_mut() {
         let rotate = if options.rotate { ", . rotate | " } else { "" };
         t.0 = format!(
-            "{line}\nWASD move | Shift run | C sneak{} | RMB (hold) aim | aiming: LMB attack, Space shove/stomp | E pick up / search | 1-9 hotbar | Tab inventory | H health | K skills | B sleep | Enter talk | V wave | U hands up | P point | F door/window | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load | F1 god{} | F2 ignored{} | F3 light preview | F4 debug stats | M mute | O objectives",
+            "{line}\nWASD move | Shift run | C sneak{} | RMB (hold) aim | aiming: LMB attack, Space shove/stomp | E pick up / search | 1-9 hotbar | Tab inventory | H health | K skills | B sleep | Enter talk | V wave | U hands up | P point | F door/window | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load | F1 god{} | F2 ignored{} | F3 light preview | F4 debug stats{} | M mute | O objectives",
             if me.sneak { " (on)" } else { "" },
             if me.dev.god { " (on)" } else { "" },
-            if me.dev.ignored { " (on)" } else { "" }
+            if me.dev.ignored { " (on)" } else { "" },
+            // The server's rules panel (#69): only on a server.
+            if link.net.is_some() { " | F6 server rules" } else { "" }
         );
     }
     *stats = FrameStats::default();
