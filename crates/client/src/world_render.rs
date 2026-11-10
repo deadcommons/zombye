@@ -829,8 +829,6 @@ fn upper_look(gone: f32) -> (Visibility, u32) {
     (Visibility::Inherited, (eased * 255.0).round() as u32)
 }
 
-/// Height of the door leaf mesh (see `setup_shared`).
-const LEAF_HEIGHT: f32 = 2.05;
 /// How tall the lip of a window on a cut-away wall stands over the stub (see `setup_shared`).
 const LIP_HEIGHT: f32 = 0.24;
 
@@ -846,10 +844,10 @@ struct PieceLook {
     lip: bool,
 }
 
-/// **Neither a door nor a window is ever hidden by the cutaway.** A door leaf drops to the stub's
-/// height like the wall it is in, so a shut door in a cut-away wall still fills its doorway
-/// (hidden, the doorway looked open while the door was shut: the playtest's "he doesn't fit
-/// through the door"). A window sinks with its wall for the first half of the way, then is a low
+/// **A door's leaf goes down with its wall and is gone once the wall is cut**: a leaf squashed to
+/// the stub's height read as a low gate, so a cut door is shown by its outline at full size
+/// instead (`opening_hints::cut_door`, which is what says a doorway holds a door: the
+/// playtest's "he doesn't fit through the door"). A window is never hidden: it sinks with its wall for the first half of the way, then is a low
 /// framed lip of glass that grows out of the stub, so you still see where the windows are. Only
 /// a battered-down door has no leaf.
 fn piece_look(shown: bool, cut: f32, door: bool) -> PieceLook {
@@ -857,7 +855,7 @@ fn piece_look(shown: bool, cut: f32, door: bool) -> PieceLook {
         return PieceLook { shown: false, height: 1.0, lift: 0.0, lip: false };
     }
     if door {
-        PieceLook { shown: true, height: 1.0 + (STUB_HEIGHT / LEAF_HEIGHT - 1.0) * cut, lift: 0.0, lip: false }
+        PieceLook { shown: cut < 0.995, height: (1.0 - cut).max(0.02), lift: 0.0, lip: false }
     } else if cut < 0.5 {
         PieceLook { shown: true, height: 1.0 - cut, lift: 0.0, lip: false }
     } else {
@@ -923,22 +921,21 @@ mod tests {
         zombye_sim::worldgen::generate(&zombye_sim::worldgen::GenConfig::default(), &templates).map
     }
 
-    /// The playtest's "he doesn't fit through the door": a shut door in a wall cut away round the
-    /// player's room was hidden with its wall, so the doorway looked open. A door leaf is always
-    /// drawn, cut to the stub's height with its wall; a pane still goes with its wall, and a
-    /// battered-down door's leaf is gone.
+    /// A door's leaf sinks with its wall and is gone once the wall is cut (no stubby leaf: the
+    /// door's outline stands in for it, `opening_hints::cut_door`); a pane still goes with its
+    /// wall, and a battered-down door's leaf is gone.
     #[test]
-    fn a_door_in_a_cut_wall_still_fills_its_doorway() {
+    fn a_door_in_a_cut_wall_has_no_stub_of_a_leaf() {
         let door = piece_look(true, 1.0, true);
-        assert!(door.shown, "a shut door on a cut-away wall is drawn");
-        assert!((door.height * LEAF_HEIGHT - STUB_HEIGHT).abs() < 1e-5 && door.lift == 0.0, "as tall as the wall's stub");
+        assert!(!door.shown && door.lift == 0.0, "no leaf on a cut-away wall");
+        assert!(piece_look(true, 0.9, true).shown, "still there on the way down");
         let whole = PieceLook { shown: true, height: 1.0, lift: 0.0, lip: false };
         assert_eq!(piece_look(true, 0.0, true), whole, "whole in a standing wall");
         assert_eq!(piece_look(true, 0.0, false), whole);
         assert!(!piece_look(false, 1.0, true).shown && !piece_look(false, 0.0, true).shown, "a broken door has no leaf");
         // Half way down it is half way between.
-        let half = piece_look(true, 0.5, true).height * LEAF_HEIGHT;
-        assert!(half > STUB_HEIGHT + 0.5 && half < LEAF_HEIGHT - 0.5, "{half}");
+        let half = piece_look(true, 0.5, true).height;
+        assert!(half > 0.25 && half < 0.75, "{half}");
     }
 
     /// The cutaway never hides a window: on a cut wall it is a low framed lip standing on the stub,
