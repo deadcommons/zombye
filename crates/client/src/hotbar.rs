@@ -36,7 +36,8 @@ pub const SLOTS: usize = 9;
 /// (Wide enough for a ten-letter name on one line, "Flashlight"; nine of them still leave the
 /// vitals their corner on a 1280 wide screen.)
 const SLOT_W: f32 = 92.0;
-const SLOT_H: f32 = 54.0;
+/// (High enough for the key's line and a name on two lines.)
+const SLOT_H: f32 = 62.0;
 const GAP: f32 = 4.0;
 const PAD: f32 = 8.0;
 const RIGHT: f32 = 16.0;
@@ -366,7 +367,7 @@ fn rebuild(mut commands: Commands, bar: Res<Hotbar>, link: Res<ServerLink>, join
             .with_children(|s| {
                 // The key, the item's colour, how many.
                 s.spawn((Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(5), ..default() }, Pickable::IGNORE)).with_children(|top| {
-                    top.spawn((Text::new(format!("{}", k + 1)), font(theme::BODY), TextColor(if have { GOLD } else { DIM }), Pickable::IGNORE));
+                    top.spawn((Text::new(format!("{}", k + 1)), theme::head(theme::BODY + 1.0), TextColor(if have { GOLD } else { DIM }), Pickable::IGNORE));
                     if let Some(c) = v.color.filter(|_| have) {
                         top.spawn((Node { width: px(10), height: px(10), border_radius: BorderRadius::all(px(2)), ..default() }, BackgroundColor(Color::srgb(c.0, c.1, c.2)), Pickable::IGNORE));
                     }
@@ -491,8 +492,18 @@ mod tests {
     fn the_bar_fits_beside_the_vitals_at_1280() {
         let width = SLOTS as f32 * SLOT_W + (SLOTS as f32 - 1.0) * GAP + 2.0 * PAD;
         assert!(crate::ui_scale::FIT_VIEW.x - RIGHT - width >= 16.0 + 330.0 + 8.0, "{width}");
-        // The default font is about 0.62 of its size wide a letter.
-        assert!(SLOT_W - 10.0 >= 10.0 * theme::SMALL * 0.62);
+        // Measured in the face the names are set in: the names that went on one line in the
+        // monospace still do, and no word of a longer one is wider than a slot (a name wraps at
+        // its spaces, and a slot is two lines of it high).
+        for name in ["Flashlight", "Baseball bat", "Crowbar", "Fire axe"] {
+            let w = theme::width(theme::Face::Text, name, theme::SMALL);
+            assert!(w <= SLOT_W - 10.0, "{name}: {w}");
+        }
+        for word in "Kitchen knife Hunting rifle Painkillers Antiseptic Screwdriver".split(' ') {
+            let w = theme::width(theme::Face::Text, word, theme::SMALL);
+            assert!(w <= SLOT_W - 10.0, "{word}: {w}");
+        }
+        assert!(SLOT_H - 8.0 >= 1.2 * (theme::BODY + 1.0) + 2.0 * 1.2 * theme::SMALL);
     }
 
     #[test]

@@ -286,7 +286,7 @@ fn hear(mut commands: Commands, time: Res<Time>, link: Res<ServerLink>, me: Res<
         let (size, shade) = match s.volume {
             Volume::Shout => (19.0, SHOUT),
             Volume::Talk => (15.0, TEXT),
-            Volume::Whisper => (13.0, DIM),
+            Volume::Whisper => (crate::theme::SMALL, DIM),
         };
         let until = now + bubble_secs(&s.text);
         let e = commands

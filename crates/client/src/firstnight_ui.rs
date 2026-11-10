@@ -109,7 +109,7 @@ fn spawn(mut commands: Commands) {
             Pickable::IGNORE,
         ))
         .with_children(|c| {
-            c.spawn((HintText, Text::new(""), font(16.0), TextColor(GOLD), TextLayout::justify(Justify::Center), Pickable::IGNORE));
+            c.spawn((HintText, Text::new(""), theme::strong(16.0), TextColor(GOLD), TextLayout::justify(Justify::Center), Pickable::IGNORE));
         });
     commands
         .spawn((
@@ -291,7 +291,7 @@ fn update_panel(
     commands.entity(body).despawn_children();
     commands.entity(body).with_children(|c| {
         c.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, ..default() }).with_children(|row| {
-            row.spawn((Text::new(now.title.clone()), font(theme::BODY), TextColor(TEXT)));
+            row.spawn((Text::new(now.title.clone()), theme::head(17.0), TextColor(TEXT)));
             row.spawn((Text::new("O hides"), font(theme::SMALL), TextColor(DIM)));
         });
         c.spawn((Text::new(now.when.clone()), font(theme::SMALL), TextColor(if f.phase() == Phase::Day { DIM } else { GOLD })));
@@ -400,15 +400,15 @@ fn update_morning(
     let centred = || Node { align_self: AlignSelf::Center, ..default() };
     commands.entity(body).despawn_children();
     commands.entity(body).with_children(|c| {
-        c.spawn((Text::new("DAWN"), font(56.0), TextColor(GOLD), centred()));
-        c.spawn((Text::new("You lived through the first night."), font(24.0), TextColor(TEXT), centred()));
+        c.spawn((Text::new("DAWN"), theme::head(64.0), TextColor(GOLD), centred()));
+        c.spawn((Text::new("You lived through the first night."), theme::strong(22.0), TextColor(TEXT), centred()));
         c.spawn((Text::new(o.headline()), font(16.0), TextColor(DIM), centred()));
         c.spawn((Text::new(o.verdict()), font(16.0), TextColor(DIM), centred()));
         rule(c);
         for (label, value) in morning_rows(f, run) {
             c.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, column_gap: px(40), ..default() }).with_children(|row| {
                 row.spawn((Text::new(label), font(18.0), TextColor(DIM)));
-                row.spawn((Text::new(value), font(18.0), TextColor(TEXT)));
+                row.spawn((Text::new(value), theme::strong(18.0), TextColor(TEXT)));
             });
         }
         rule(c);

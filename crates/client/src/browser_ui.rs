@@ -591,7 +591,7 @@ fn cell(row: &mut ChildSpawnerCommands, text: String, width: Option<f32>, colour
 fn button<'a>(parent: &'a mut ChildSpawnerCommands, label: &str, act: Act) -> EntityCommands<'a> {
     let mut e = parent.spawn((Node { padding: UiRect::axes(px(12), px(4)), flex_shrink: 0.0, ..default() }, theme::button(false)));
     e.with_children(|b| {
-        b.spawn((Text::new(label.to_string()), font(BODY), TextColor(INK), TextLayout::no_wrap(), Pickable::IGNORE));
+        b.spawn((Text::new(label.to_string()), theme::strong(BODY), TextColor(INK), TextLayout::no_wrap(), Pickable::IGNORE));
     });
     e.observe(move |_: On<PointerPress>, mut ui: ResMut<BrowserUi>| ui.acts.push(act.clone()));
     e
@@ -653,7 +653,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<BrowserUi>, mods: Res<LoadedMods>
         ));
         // Title, and what the list holds.
         c.spawn((Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::Center, ..default() }, Pickable::IGNORE)).with_children(|t| {
-            t.spawn((Text::new("SERVERS"), font(TITLE), TextColor(TEXT), Pickable::IGNORE));
+            t.spawn((Text::new("SERVERS"), theme::head(TITLE), TextColor(TEXT), Pickable::IGNORE));
             t.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(10), align_items: AlignItems::Center, ..default() }, Pickable::IGNORE)).with_children(|r| {
                 r.spawn((Text::new(summary), font(BODY), TextColor(DIM), Pickable::IGNORE));
                 button(r, "Refresh (R)", Act::Refresh);
@@ -680,7 +680,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<BrowserUi>, mods: Res<LoadedMods>
                 match (line, cells) {
                     (Line::Head(title, n), _) => {
                         list.spawn((Node { height: px(LINE_H), align_items: AlignItems::End, padding: UiRect::horizontal(px(8)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|h| {
-                            h.spawn((Text::new(format!("{title}  ({n})")), font(BODY), TextColor(GOLD), Pickable::IGNORE));
+                            h.spawn((Text::new(format!("{title}  ({n})").to_uppercase()), theme::head(BODY + 1.0), TextColor(GOLD), Pickable::IGNORE));
                         });
                     }
                     (Line::Server(addr), Some(v)) => {

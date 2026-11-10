@@ -178,6 +178,8 @@ pub struct Options {
     /// skip this many game hours before the first frame (`--skip-hours H`, a new world only): for
     /// pictures of the first night's screens (#19).
     pub morning: bool,
+    /// Start with the graphics panel (F8) open (`--graphics-panel`): for pictures.
+    pub graphics_panel: bool,
     pub skip_hours: Option<f32>,
     /// Start the inventory panel searching for this, showing one category, with these carried
     /// stacks picked (`--find TEXT`, `--filter CATEGORY[,CATEGORY]`, `--pick N,N`: for pictures of it).
@@ -459,6 +461,7 @@ impl Options {
             skills: flag("--skills"),
             health: flag("--health"),
             morning: flag("--morning"),
+            graphics_panel: flag("--graphics-panel"),
             skip_hours: value("--skip-hours").and_then(|v| v.parse::<f32>().ok()).filter(|h| h.is_finite() && (0.0..=240.0).contains(h)),
             hud: flag("--hud"),
             find: value("--find"),

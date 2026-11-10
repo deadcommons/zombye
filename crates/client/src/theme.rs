@@ -5,8 +5,12 @@
 //!
 //! **Text:** no text smaller than [`SMALL`], body text at [`BODY`], titles at [`TITLE`] (centred,
 //! in capitals: [`title`]); two text colours, [`TEXT`] and the quieter [`DIM`], dark [`INK`] on the
-//! light buttons, [`GOLD`] for what matters now. Every size goes through [`font`], so a typeface
-//! of our own is one change there.
+//! light buttons, [`GOLD`] for what matters now. **Typefaces:** Barlow for text and the HUD
+//! ([`font`]; [`strong`], its Medium, for what should stand out), Barlow Condensed SemiBold for
+//! titles, tabs and headers ([`head`]), and Bevy's built-in monospace only for the developer's
+//! read-outs ([`mono`]). Every text on a panel takes its `TextFont` from one of those four;
+//! figures are tabular. Nothing is as wide as it is long any more: a layout that must know a
+//! text's width asks [`width`].
 //!
 //! **Paint:** the textures are made here in code when the client starts ([`ThemePlugin`]; nothing
 //! is loaded from a file, nothing is drawn after anyone else's art): dark charcoal sheets with
@@ -27,16 +31,20 @@ use bevy::asset::{RenderAssetUsages, uuid_handle};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::ui::VisualBox;
+use bevy::text::{FontFeatureTag, FontSize, FontSource, FontWeight};
 use bevy::ui::widget::NodeImageMode;
+use std::sync::LazyLock;
 
 // --- Text -------------------------------------------------------------------------------------
 
 /// The smallest text on any panel: hints, details, tags (UI pixels at 100% scale).
-pub const SMALL: f32 = 13.0;
+/// (A pixel up on what the monospace had, each of them: Barlow's letters are narrower and a
+/// little lower, so it takes a size more to read as well, and still takes less room across.)
+pub const SMALL: f32 = 14.0;
 /// Ordinary lines and rows.
-pub const BODY: f32 = 14.0;
+pub const BODY: f32 = 15.0;
 /// A panel's title.
-pub const TITLE: f32 = 20.0;
+pub const TITLE: f32 = 22.0;
 
 pub const TEXT: Color = Color::srgb(0.95, 0.94, 0.9);
 /// Quieter text: labels, hints, what's secondary. Still readable on every backing.
@@ -48,8 +56,119 @@ pub const GOLD: Color = Color::srgb(0.97, 0.84, 0.36);
 /// Something wrong: a refusal, blood.
 pub const BAD: Color = Color::srgb(0.95, 0.4, 0.3);
 
+// The typefaces (SIL OFL 1.1, assets/fonts/barlow/OFL.txt): Barlow for text, Barlow Condensed
+// for titles and headers. Compiled in, like the textures: no file to find at run time, so an
+// offscreen render, a test and a game started from another folder all have them.
+const BARLOW: Handle<Font> = uuid_handle!("6f1f8a52-51c1-4c0e-9a57-2f6f3a1d0c71");
+const BARLOW_MEDIUM: Handle<Font> = uuid_handle!("6f1f8a52-51c1-4c0e-9a57-2f6f3a1d0c72");
+const CONDENSED: Handle<Font> = uuid_handle!("6f1f8a52-51c1-4c0e-9a57-2f6f3a1d0c73");
+const BARLOW_TTF: &[u8] = include_bytes!("../../../assets/fonts/barlow/Barlow-Regular.ttf");
+const BARLOW_MEDIUM_TTF: &[u8] = include_bytes!("../../../assets/fonts/barlow/Barlow-Medium.ttf");
+const CONDENSED_TTF: &[u8] = include_bytes!("../../../assets/fonts/barlow/BarlowCondensed-SemiBold.ttf");
+
+/// The faces the UI is set in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Face {
+    /// Barlow Regular: body text and the HUD ([`font`]).
+    Text,
+    /// Barlow Medium: text that should stand out ([`strong`]).
+    Strong,
+    /// Barlow Condensed SemiBold: titles, tabs, headers ([`head`]).
+    Head,
+}
+
+impl Face {
+    fn ttf(self) -> &'static [u8] {
+        match self {
+            Face::Text => BARLOW_TTF,
+            Face::Strong => BARLOW_MEDIUM_TTF,
+            Face::Head => CONDENSED_TTF,
+        }
+    }
+
+    pub fn font(self, size: f32) -> TextFont {
+        let (handle, weight) = match self {
+            Face::Text => (BARLOW, FontWeight::NORMAL),
+            Face::Strong => (BARLOW_MEDIUM, FontWeight::MEDIUM),
+            Face::Head => (CONDENSED, FontWeight::SEMIBOLD),
+        };
+        // Tabular figures: every digit as wide as the next, so counts, weights and clocks line up
+        // down a column and don't shuffle sideways as they change.
+        TextFont { font: FontSource::Handle(handle), font_size: FontSize::Px(size), weight, font_features: [FontFeatureTag::TABULAR_FIGURES].into(), ..default() }
+    }
+
+    /// The advance of each printable ASCII character (space to `~`), in ems.
+    fn advances(self) -> &'static [f32; 95] {
+        static TABLES: LazyLock<[[f32; 95]; 3]> = LazyLock::new(|| [Face::Text, Face::Strong, Face::Head].map(|f| advances(f.ttf()).unwrap_or([0.6; 95])));
+        &TABLES[self as usize]
+    }
+}
+
+/// Body text and the HUD: Barlow.
 pub fn font(size: f32) -> TextFont {
-    TextFont { font_size: bevy::text::FontSize::Px(size), ..default() }
+    Face::Text.font(size)
+}
+
+/// Text that should stand out from the lines round it: Barlow Medium.
+pub fn strong(size: f32) -> TextFont {
+    Face::Strong.font(size)
+}
+
+/// Titles, tabs and section headers: Barlow Condensed SemiBold. Made for capitals.
+pub fn head(size: f32) -> TextFont {
+    Face::Head.font(size)
+}
+
+/// Bevy's built-in monospace, for the developer's read-outs (the stats line, the debug stats
+/// window, the light preview): columns of numbers that are lined up with spaces.
+pub fn mono(size: f32) -> TextFont {
+    TextFont { font_size: FontSize::Px(size), ..default() }
+}
+
+/// How wide `text` is at `size` in `face`, in UI pixels, from the face's own advance widths: for
+/// the few places that must know a width before the layout does (a tab turned on its side, a
+/// slot that must hold a word). Digits count at the widest digit (they are set tabular); kerning
+/// isn't counted, and a character outside ASCII counts as a wide letter.
+pub fn width(face: Face, text: &str, size: f32) -> f32 {
+    let table = face.advances();
+    let digit = table[(b'0' - 32) as usize..=(b'9' - 32) as usize].iter().cloned().fold(0.0, f32::max);
+    let em: f32 = text.chars().map(|c| if c.is_ascii_digit() { digit } else if (' '..='~').contains(&c) { table[c as usize - 32] } else { 0.7 }).sum();
+    em * size
+}
+
+/// The advances of printable ASCII in a TrueType file, in ems: its `cmap` (the format 4 table
+/// every font has for the basic plane) to find each glyph, `hmtx` for its advance, `head` for
+/// the units to an em.
+fn advances(ttf: &[u8]) -> Option<[f32; 95]> {
+    let u16_at = |o: usize| ttf.get(o..o + 2).map(|b| u16::from_be_bytes([b[0], b[1]]) as usize);
+    let u32_at = |o: usize| ttf.get(o..o + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize);
+    let table = |tag: &[u8; 4]| (0..u16_at(4)?).map(|i| 12 + 16 * i).find(|&r| ttf.get(r..r + 4) == Some(&tag[..])).and_then(|r| u32_at(r + 8));
+    let em = u16_at(table(b"head")? + 18)? as f32;
+    let metrics = u16_at(table(b"hhea")? + 34)?;
+    let (hmtx, cmap) = (table(b"hmtx")?, table(b"cmap")?);
+    let sub = (0..u16_at(cmap + 2)?).filter_map(|i| u32_at(cmap + 8 + 8 * i)).map(|o| cmap + o).find(|&s| u16_at(s) == Some(4))?;
+    let segs = u16_at(sub + 6)? / 2;
+    let (ends, starts, deltas, offsets) = (sub + 14, sub + 16 + 2 * segs, sub + 16 + 4 * segs, sub + 16 + 6 * segs);
+    let glyph = |c: usize| -> Option<usize> {
+        let s = (0..segs).find(|&s| u16_at(ends + 2 * s).is_some_and(|e| e >= c))?;
+        let start = u16_at(starts + 2 * s)?;
+        if start > c {
+            return Some(0);
+        }
+        let (delta, off) = (u16_at(deltas + 2 * s)?, u16_at(offsets + 2 * s)?);
+        if off == 0 {
+            return Some((c + delta) & 0xFFFF);
+        }
+        let g = u16_at(offsets + 2 * s + off + 2 * (c - start))?;
+        Some(if g == 0 { 0 } else { (g + delta) & 0xFFFF })
+    };
+    let mut out = [0.0; 95];
+    for (k, w) in out.iter_mut().enumerate() {
+        // (Glyphs past the last full metric share its advance.)
+        let g = glyph(32 + k)?.min(metrics.checked_sub(1)?);
+        *w = u16_at(hmtx + 4 * g)? as f32 / em;
+    }
+    (em > 0.0).then_some(out)
 }
 
 // --- Flat tints (rows, hairlines: things there are hundreds of stay plain quads) ---------------
@@ -289,6 +408,11 @@ pub struct ThemePlugin;
 
 impl Plugin for ThemePlugin {
     fn build(&self, app: &mut App) {
+        if let Some(mut fonts) = app.world_mut().get_resource_mut::<Assets<Font>>() {
+            for (handle, face) in [(BARLOW, Face::Text), (BARLOW_MEDIUM, Face::Strong), (CONDENSED, Face::Head)] {
+                let _ = fonts.insert(handle.id(), Font::from_bytes(face.ttf().to_vec()));
+            }
+        }
         let Some(mut images) = app.world_mut().get_resource_mut::<Assets<Image>>() else { return };
         for (handle, canvas) in [(SHEET, paint(&SHEET_PAINT)), (STRIP, paint(&STRIP_PAINT)), (BUTTON, paint(&BUTTON_PAINT)), (SLOT, slot_pixels()), (BAR, bar_pixels()), (DAB, dab_pixels())] {
             let _ = images.insert(handle.id(), canvas.image());
@@ -376,7 +500,7 @@ pub fn spawn_rule(c: &mut ChildSpawnerCommands) {
 /// A panel's title: centred, in capitals, over a short brushed stroke.
 pub fn title(c: &mut ChildSpawnerCommands, text: &str) {
     c.spawn((Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Center, align_self: AlignSelf::Stretch, row_gap: px(5), margin: UiRect::bottom(px(6)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|t| {
-        t.spawn((Text::new(text.to_uppercase()), font(TITLE), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
+        t.spawn((Text::new(text.to_uppercase()), head(TITLE), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
         t.spawn((Node { width: px(96), height: px(3), ..default() }, rule(), Pickable::IGNORE));
     });
 }
@@ -385,7 +509,7 @@ pub fn title(c: &mut ChildSpawnerCommands, text: &str) {
 pub fn keycap(c: &mut ChildSpawnerCommands, key: &str, does: &str) {
     c.spawn((Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(10), ..default() }, Pickable::IGNORE)).with_children(|row| {
         row.spawn((Node { padding: UiRect::axes(px(10), px(4)), justify_content: JustifyContent::Center, min_width: px(34), ..default() }, button(false), Pickable::IGNORE)).with_children(|k| {
-            k.spawn((Text::new(key.to_string()), font(BODY), TextColor(INK), TextLayout::no_wrap(), Pickable::IGNORE));
+            k.spawn((Text::new(key.to_string()), strong(BODY), TextColor(INK), TextLayout::no_wrap(), Pickable::IGNORE));
         });
         row.spawn((Text::new(does.to_string()), font(BODY), TextColor(TEXT), Pickable::IGNORE));
     });
@@ -467,7 +591,47 @@ mod tests {
 
     #[test]
     fn no_text_size_is_below_the_smallest() {
-        assert!(SMALL >= 13.0 && BODY >= SMALL && TITLE > BODY);
+        assert!(SMALL >= 14.0 && BODY >= SMALL && TITLE > BODY);
+    }
+
+    /// The faces' own tables are read: letters differ in width (nothing is monospace any more),
+    /// the condensed face is the narrowest and all of them narrower than the built-in monospace's
+    /// 0.62 em a letter, which the old layouts were sized by.
+    #[test]
+    fn widths_come_from_the_faces() {
+        for face in [Face::Text, Face::Strong, Face::Head] {
+            let table = advances(face.ttf()).unwrap_or_else(|| panic!("{face:?}: no advances"));
+            assert!(table.iter().all(|w| (0.1..1.2).contains(w)), "{face:?}: {table:?}");
+            assert!(width(face, "i", 10.0) < width(face, "m", 10.0) * 0.5, "{face:?}");
+            assert_eq!(width(face, "", 14.0), 0.0);
+            assert_eq!(width(face, "ab", 20.0), 2.0 * width(face, "ab", 10.0));
+            // Figures are set tabular: every digit counts the same.
+            assert_eq!(width(face, "111", 14.0), width(face, "808", 14.0));
+        }
+        let sample = "Baseball bat, 2 x tin of beans";
+        let mono = sample.chars().count() as f32 * 14.0 * 0.62;
+        let (text, strong, head) = (width(Face::Text, sample, 14.0), width(Face::Strong, sample, 14.0), width(Face::Head, sample, 14.0));
+        assert!(head < text && text <= strong && strong < mono * 0.9, "{head} {text} {strong} {mono}");
+    }
+
+    /// Each face is what its file name says, and every font file has its licence beside it and a
+    /// row in ATTRIBUTION.md.
+    #[test]
+    fn the_fonts_are_attributed() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let attribution = std::fs::read_to_string(repo.join("ATTRIBUTION.md")).unwrap();
+        let dir = repo.join("assets/fonts/barlow");
+        assert!(std::fs::read_to_string(dir.join("OFL.txt")).unwrap().contains("SIL OPEN FONT LICENSE Version 1.1"));
+        let mut fonts = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let name = entry.unwrap().file_name().into_string().unwrap();
+            if name.ends_with(".ttf") {
+                fonts += 1;
+                assert!(attribution.contains(&format!("`assets/fonts/barlow/{name}`")), "{name} has no ATTRIBUTION.md row");
+            }
+        }
+        // Only the weights the UI uses are in the repo.
+        assert_eq!(fonts, 3);
     }
 
     #[test]

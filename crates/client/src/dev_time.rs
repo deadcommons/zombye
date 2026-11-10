@@ -64,7 +64,7 @@ fn spawn_panel(mut commands: Commands) {
             Visibility::Hidden,
         ))
         .with_children(|c| {
-            c.spawn((Label, Text::new(""), crate::theme::font(crate::theme::BODY), TextColor(Color::srgb(0.35, 0.9, 1.0))));
+            c.spawn((Label, Text::new(""), crate::theme::mono(14.0), TextColor(Color::srgb(0.35, 0.9, 1.0))));
             c.spawn((Track, Node { width: px(BAR_W), height: px(16), ..default() }, BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.12)), RelativeCursorPosition::default()))
                 .with_children(|t| {
                     // Dawn, noon and dusk marks.

@@ -101,7 +101,7 @@ fn rebuild(mut commands: Commands, panel: Res<SkillsPanel>, link: Res<ServerLink
         // The title, with the hint beside it rather than on a line of its own at the foot: at the
         // readable text size (#97) all nine skills then still fit a 1280 x 720 screen.
         c.spawn((Node { justify_content: JustifyContent::Center, align_items: AlignItems::Center, min_height: px(22), ..default() }, Pickable::IGNORE)).with_children(|t| {
-            t.spawn((Text::new("SKILLS"), font(theme::TITLE), TextColor(TEXT)));
+            t.spawn((Text::new("SKILLS"), theme::head(theme::TITLE), TextColor(TEXT)));
             t.spawn((Text::new("Practice raises them; nothing is lost."), font(theme::SMALL), TextColor(DIM), Node { position_type: PositionType::Absolute, left: px(0), ..default() }));
             t.spawn((Text::new("K: close"), font(theme::SMALL), TextColor(DIM), Node { position_type: PositionType::Absolute, right: px(0), ..default() }));
         });
@@ -111,7 +111,7 @@ fn rebuild(mut commands: Commands, panel: Res<SkillsPanel>, link: Res<ServerLink
                 let s = v.skill;
                 grid.spawn((Node { width: px(CARD_W), flex_direction: FlexDirection::Column, margin: UiRect::top(px(6)), ..default() }, Pickable::IGNORE)).with_children(|card| {
                     card.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(8), align_items: AlignItems::Center, ..default() }, Pickable::IGNORE)).with_children(|r| {
-                        r.spawn((Text::new(format!("{} {}", s.name(), v.level)), font(15.0), TextColor(if v.level > 0 { GOLD } else { TEXT }), Node { width: px(120), ..default() }));
+                        r.spawn((Text::new(format!("{} {}", s.name(), v.level)), theme::strong(15.0), TextColor(if v.level > 0 { GOLD } else { TEXT }), Node { width: px(120), ..default() }));
                         // Filled as far as the label says: all the XP so far against the next level's.
                         let fill = v.next_at.map_or(1.0, |n| (v.xp / n.max(1.0)).clamp(0.0, 1.0));
                         r.spawn((Node { width: px(BAR_W), height: px(8), ..default() }, theme::bar_track())).with_children(|b| {
