@@ -38,18 +38,14 @@ pub const SLOTS: usize = 9;
 const SLOT_W: f32 = 92.0;
 const SLOT_H: f32 = 54.0;
 const GAP: f32 = 4.0;
-const PAD: f32 = 6.0;
+const PAD: f32 = 8.0;
 const RIGHT: f32 = 16.0;
 const BOTTOM: f32 = 16.0;
 /// How far up from the bottom of the screen the bar reaches (UI pixels), for the current action's
 /// bar, which sits just above it (`action_ui.rs`).
 pub const REACH: f32 = BOTTOM + SLOT_H + 2.0 * PAD;
 
-const SLOT_BG: Color = Color::srgba(0.12, 0.12, 0.14, 0.9);
-const SLOT_EMPTY: Color = Color::srgba(0.12, 0.12, 0.14, 0.45);
-const SLOT_HOVER: Color = Color::srgba(0.3, 0.28, 0.2, 0.95);
-const EDGE: Color = Color::srgba(1.0, 1.0, 1.0, 0.12);
-const GOLD: Color = Color::srgb(0.95, 0.85, 0.35);
+const GOLD: Color = theme::GOLD;
 
 const DIGITS: [KeyCode; SLOTS] = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9];
 
@@ -244,7 +240,7 @@ fn spawn(mut commands: Commands) {
         BarRoot,
         crate::hud::BottomHud,
         Node { position_type: PositionType::Absolute, bottom: px(BOTTOM), right: px(RIGHT), flex_direction: FlexDirection::Row, column_gap: px(GAP), padding: UiRect::all(px(PAD)), ..default() },
-        BackgroundColor(theme::HUD_BG),
+        theme::strip(),
     ));
 }
 
@@ -360,11 +356,12 @@ fn rebuild(mut commands: Commands, bar: Res<Hotbar>, link: Res<ServerLink>, join
     commands.entity(root).with_children(|c| {
         for (k, v) in views.iter().enumerate() {
             let have = v.count > 0;
-            let rest = if have { SLOT_BG } else { SLOT_EMPTY };
+            // A hatched slot with a worn rim (`theme::slot`); the one in your hand has a gold edge.
+            let rest = if have { theme::SLOT_REST } else { theme::SLOT_EMPTY };
             c.spawn((
-                Node { width: px(SLOT_W), height: px(SLOT_H), flex_direction: FlexDirection::Column, padding: UiRect::axes(px(4), px(2)), border: UiRect::all(px(1)), overflow: Overflow::clip(), ..default() },
-                BackgroundColor(rest),
-                BorderColor::all(if v.held { GOLD } else { EDGE }),
+                Node { width: px(SLOT_W), height: px(SLOT_H), flex_direction: FlexDirection::Column, padding: UiRect::axes(px(4), px(3)), border: UiRect::all(px(1)), overflow: Overflow::clip(), ..default() },
+                theme::slot(rest),
+                BorderColor::all(if v.held { GOLD } else { Color::NONE }),
             ))
             .with_children(|s| {
                 // The key, the item's colour, how many.
@@ -382,14 +379,14 @@ fn rebuild(mut commands: Commands, bar: Res<Hotbar>, link: Res<ServerLink>, join
                     s.spawn((Text::new(v.name.clone()), font(theme::SMALL), TextColor(if have { TEXT } else { DIM }), Pickable::IGNORE));
                 }
             })
-            .observe(|ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>| {
+            .observe(|ev: On<PointerOver>, mut q: Query<&mut ImageNode>| {
                 if let Ok(mut bg) = q.get_mut(ev.entity) {
-                    bg.0 = SLOT_HOVER;
+                    bg.color = theme::SLOT_HOVER;
                 }
             })
-            .observe(move |ev: On<PointerOut>, mut q: Query<&mut BackgroundColor>| {
+            .observe(move |ev: On<PointerOut>, mut q: Query<&mut ImageNode>| {
                 if let Ok(mut bg) = q.get_mut(ev.entity) {
-                    bg.0 = rest;
+                    bg.color = rest;
                 }
             })
             .observe(move |ev: On<PointerPress>, mut clicks: ResMut<SlotClicks>| match ev.button {

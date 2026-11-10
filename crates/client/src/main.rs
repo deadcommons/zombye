@@ -564,7 +564,7 @@ fn main() {
         app.add_plugins((ScheduleRunnerPlugin::run_loop(Duration::ZERO), offscreen::OffscreenPlugin));
     }
     app.add_plugins((
-            server_link::ServerLinkPlugin,
+            (theme::ThemePlugin, server_link::ServerLinkPlugin),
             fog::FogPlugin,
             materials::WorldMaterialPlugin,
             world_render::WorldRenderPlugin,

@@ -146,7 +146,7 @@ const FIGURE_H: f32 = 268.0 * SCALE;
 const COLUMN_W: f32 = 141.0;
 const GAP: f32 = 4.0;
 /// A place's backing, an item's tile on it, the figure's bare fill and its outline.
-const SPOT: Color = Color::srgba(0.0, 0.0, 0.0, 0.28);
+const SPOT: Color = crate::theme::INSET;
 const TILE: Color = Color::srgba(1.0, 1.0, 1.0, 0.07);
 const BARE: Color = Color::srgb(0.19, 0.19, 0.21);
 const OUTLINE: Color = Color::srgb(0.66, 0.64, 0.57);

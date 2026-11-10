@@ -30,6 +30,7 @@ use crate::camera::IsoCamera;
 use crate::player::{LocalPlayer, PlayerInputSet};
 use crate::server_link::{JoinInfo, ServerLink};
 use crate::survivor::SurvivorAnim;
+use crate::theme::{self, BODY, DIM, ROW, SMALL, TEXT, font};
 
 /// `--holdup-demo`: how far east of us the other survivor stands.
 pub const DEMO_DISTANCE: f32 = 1.2;
@@ -38,15 +39,15 @@ const NEAR: f32 = 1.9;
 /// A marker within this of the point clicked is taken away instead of another put down (metres).
 const MARKER_PICK: f32 = 1.5;
 
-const TEXT: Color = Color::srgb(0.95, 0.93, 0.88);
-const DIM: Color = Color::srgb(0.7, 0.68, 0.62);
-const BG: Color = Color::srgba(0.03, 0.03, 0.04, 0.82);
+// The skin is `theme.rs`'s (Linear DCM-61): the bar a strip with a brushed bar, the search panel a
+// sheet with flat rows, the lines of text that carry their own backing (roster, names) `HUD_BG`.
+const BG: Color = theme::HUD_BG;
 const FILL: Color = Color::srgb(0.8, 0.45, 0.25);
 const GROUP: Color = Color::srgb(0.45, 0.85, 0.8);
-const ROW: Color = Color::srgba(1.0, 1.0, 1.0, 0.05);
-const ROW_OVER: Color = Color::srgba(1.0, 1.0, 1.0, 0.16);
+const ROW_OVER: Color = theme::ROW_HOVER;
 const BAR_WIDTH: f32 = 380.0;
-const PANEL_WIDTH: f32 = 300.0;
+/// (As wide inside the sheet's ragged edge as before it had one.)
+const PANEL_WIDTH: f32 = 284.0 + 2.0 * theme::SHEET_PAD.0;
 
 #[derive(Component)]
 struct Bar;
@@ -87,10 +88,6 @@ impl Plugin for HoldupPlugin {
     }
 }
 
-fn font(size: f32) -> TextFont {
-    TextFont { font_size: bevy::text::FontSize::Px(size), ..default() }
-}
-
 fn spawn(mut commands: Commands) {
     // Over the current-action bar (`action_ui.rs`, at 70 px) and the first night's hint line.
     commands
@@ -105,31 +102,40 @@ fn spawn(mut commands: Commands) {
                 width: px(BAR_WIDTH),
                 flex_direction: FlexDirection::Column,
                 row_gap: px(3),
-                padding: UiRect::all(px(7)),
+                padding: UiRect::axes(px(theme::STRIP_PAD.0 + 2.0), px(theme::STRIP_PAD.1)),
                 ..default()
             },
-            BackgroundColor(BG),
+            theme::strip(),
             Visibility::Hidden,
             Pickable::IGNORE,
         ))
         .with_children(|c| {
-            c.spawn((BarTitle, Text::new(""), font(14.0), TextColor(TEXT), Pickable::IGNORE));
-            c.spawn((Node { width: percent(100), height: px(8), ..default() }, BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.15)), Pickable::IGNORE)).with_children(|b| {
-                b.spawn((BarFill, Node { width: percent(0), height: percent(100), ..default() }, BackgroundColor(FILL), Pickable::IGNORE));
+            c.spawn((BarTitle, Text::new(""), font(BODY), TextColor(TEXT), Pickable::IGNORE));
+            c.spawn((Node { width: percent(100), height: px(10), ..default() }, theme::bar_track(), Pickable::IGNORE)).with_children(|b| {
+                b.spawn((BarFill, Node { width: percent(0), height: percent(100), ..default() }, theme::bar_fill(FILL), Pickable::IGNORE));
             });
-            c.spawn((BarHint, Text::new(""), font(12.0), TextColor(DIM), Pickable::IGNORE));
+            c.spawn((BarHint, Text::new(""), font(SMALL), TextColor(DIM), Pickable::IGNORE));
         });
     commands.spawn((
         FriskPanel,
-        Node { position_type: PositionType::Absolute, right: px(18), top: px(180), width: px(PANEL_WIDTH), flex_direction: FlexDirection::Column, row_gap: px(2), padding: UiRect::all(px(8)), ..default() },
-        BackgroundColor(BG),
+        Node {
+            position_type: PositionType::Absolute,
+            right: px(18),
+            top: px(180),
+            width: px(PANEL_WIDTH),
+            flex_direction: FlexDirection::Column,
+            row_gap: px(2),
+            padding: UiRect::axes(px(theme::SHEET_PAD.0), px(theme::SHEET_PAD.1)),
+            ..default()
+        },
+        theme::sheet(),
         GlobalZIndex(3),
         Visibility::Hidden,
     ));
     commands.spawn((
         Roster,
         Text::new(""),
-        font(13.0),
+        font(SMALL),
         TextColor(GROUP),
         Node { position_type: PositionType::Absolute, right: px(18), top: px(118), max_width: px(PANEL_WIDTH), padding: UiRect::axes(px(6), px(3)), ..default() },
         BackgroundColor(Color::NONE),
@@ -296,15 +302,15 @@ fn show_frisk(mut commands: Commands, link: Res<ServerLink>, join: Res<JoinInfo>
     let id = me.id;
     let rows = frisk_rows(&v, |i| join.items.get(i as usize).map_or("item".to_string(), |d| d.name.clone()));
     commands.entity(root).with_children(|c| {
-        c.spawn((Text::new("Searching a tied survivor"), font(16.0), TextColor(TEXT), Pickable::IGNORE));
-        c.spawn((Text::new("Click: take it  |  Alt-click: one  |  L: stop"), font(12.0), TextColor(DIM), Pickable::IGNORE));
+        theme::title(c, "Searching a survivor");
+        c.spawn((Text::new("Click: take | Alt: one | L: stop"), font(SMALL), TextColor(DIM), Node { align_self: AlignSelf::Center, margin: UiRect::bottom(px(6)), ..default() }, Pickable::IGNORE));
         if rows.is_empty() {
-            c.spawn((Text::new("Nothing on them."), font(14.0), TextColor(DIM), Pickable::IGNORE));
+            c.spawn((Text::new("Nothing on them."), font(BODY), TextColor(DIM), Pickable::IGNORE));
         }
         for (from, index, stack, text) in rows {
             c.spawn((Node { padding: UiRect::axes(px(6), px(3)), ..default() }, BackgroundColor(ROW)))
                 .with_children(|r| {
-                    r.spawn((Text::new(text), font(14.0), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
+                    r.spawn((Text::new(text), font(BODY), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
                 })
                 .observe(|ev: On<PointerOver>, mut bg: Query<&mut BackgroundColor>| {
                     if let Ok(mut b) = bg.get_mut(ev.entity) {
@@ -421,8 +427,8 @@ fn place_tags(
         commands.spawn((
             tag,
             Text::new(""),
-            font(if marker { 13.0 } else { 14.0 }),
-            TextColor(if marker { Color::srgb(0.05, 0.08, 0.08) } else { GROUP }),
+            font(if marker { SMALL } else { BODY }),
+            TextColor(if marker { theme::INK } else { GROUP }),
             TextLayout::no_wrap(),
             Node { position_type: PositionType::Absolute, left: px(-2000), top: px(-2000), padding: UiRect::axes(px(5), px(1)), ..default() },
             BackgroundColor(if marker { GROUP } else { BG }),

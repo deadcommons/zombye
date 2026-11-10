@@ -15,11 +15,8 @@ use crate::player::LocalPlayer;
 use crate::saving::Notice;
 use crate::server_link::{JoinInfo, LevelUpsThisFrame, ServerLink};
 
-const TEXT: Color = Color::srgb(0.93, 0.9, 0.82);
-const DIM: Color = crate::theme::DIM;
-const GOLD: Color = Color::srgb(0.95, 0.85, 0.35);
-const BAR_BG: Color = Color::srgba(0.2, 0.2, 0.22, 0.9);
-const BAR: Color = Color::srgb(0.85, 0.7, 0.25);
+use crate::theme::{self, DIM, GOLD, TEXT, font};
+
 const BAR_W: f32 = 120.0;
 /// The width of one skill's card (two to a row).
 const CARD_W: f32 = 420.0;
@@ -47,10 +44,6 @@ impl Plugin for SkillsUiPlugin {
     }
 }
 
-fn font(size: f32) -> TextFont {
-    TextFont { font_size: bevy::text::FontSize::Px(size), ..default() }
-}
-
 fn spawn(mut commands: Commands) {
     commands.spawn((
         PanelRoot,
@@ -63,13 +56,14 @@ fn spawn(mut commands: Commands) {
             left: px(340),
             flex_direction: FlexDirection::Column,
             row_gap: px(2),
-            padding: UiRect::all(px(10)),
-            max_width: px(2.0 * CARD_W + 30.0),
+            // (A little less above and below than a sheet usually has: all nine skills fit 1280 x 720.)
+            padding: UiRect::axes(px(theme::SHEET_PAD.0), px(theme::SHEET_PAD.1 - 6.0)),
+            max_width: px(2.0 * CARD_W + 10.0 + 2.0 * theme::SHEET_PAD.0),
             max_height: Val::Percent(85.0),
             overflow: Overflow::scroll_y(),
             ..default()
         },
-        BackgroundColor(crate::theme::PANEL_BG),
+        theme::sheet(),
         Pickable::IGNORE,
     ));
 }
@@ -106,9 +100,10 @@ fn rebuild(mut commands: Commands, panel: Res<SkillsPanel>, link: Res<ServerLink
     commands.entity(root).with_children(|c| {
         // The title, with the hint beside it rather than on a line of its own at the foot: at the
         // readable text size (#97) all nine skills then still fit a 1280 x 720 screen.
-        c.spawn((Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Baseline, column_gap: px(16), ..default() }, Pickable::IGNORE)).with_children(|t| {
-            t.spawn((Text::new("Skills"), font(crate::theme::TITLE), TextColor(TEXT)));
-            t.spawn((Text::new("Skills only grow with practice; nothing is lost.   K: close"), font(crate::theme::SMALL), TextColor(DIM)));
+        c.spawn((Node { justify_content: JustifyContent::Center, align_items: AlignItems::Center, min_height: px(22), ..default() }, Pickable::IGNORE)).with_children(|t| {
+            t.spawn((Text::new("SKILLS"), font(theme::TITLE), TextColor(TEXT)));
+            t.spawn((Text::new("Practice raises them; nothing is lost."), font(theme::SMALL), TextColor(DIM), Node { position_type: PositionType::Absolute, left: px(0), ..default() }));
+            t.spawn((Text::new("K: close"), font(theme::SMALL), TextColor(DIM), Node { position_type: PositionType::Absolute, right: px(0), ..default() }));
         });
         // Two columns of cards, so all nine fit on the screen.
         c.spawn((Node { width: px(2.0 * CARD_W + 10.0), flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: px(10), ..default() }, Pickable::IGNORE)).with_children(|grid| {
@@ -119,8 +114,8 @@ fn rebuild(mut commands: Commands, panel: Res<SkillsPanel>, link: Res<ServerLink
                         r.spawn((Text::new(format!("{} {}", s.name(), v.level)), font(15.0), TextColor(if v.level > 0 { GOLD } else { TEXT }), Node { width: px(120), ..default() }));
                         // Filled as far as the label says: all the XP so far against the next level's.
                         let fill = v.next_at.map_or(1.0, |n| (v.xp / n.max(1.0)).clamp(0.0, 1.0));
-                        r.spawn((Node { width: px(BAR_W), height: px(8), ..default() }, BackgroundColor(BAR_BG))).with_children(|b| {
-                            b.spawn((Node { width: px(BAR_W * fill), height: Val::Percent(100.0), ..default() }, BackgroundColor(BAR)));
+                        r.spawn((Node { width: px(BAR_W), height: px(8), ..default() }, theme::bar_track())).with_children(|b| {
+                            b.spawn((Node { width: px(BAR_W * fill), height: Val::Percent(100.0), ..default() }, theme::bar_fill(GOLD)));
                         });
                         let xp = match v.next_at {
                             Some(n) => format!("{:.0} / {n:.0} XP", v.xp),

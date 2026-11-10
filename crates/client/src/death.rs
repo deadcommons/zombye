@@ -26,10 +26,9 @@ use crate::player::LocalPlayer;
 use crate::saving::{Notice, WorldSwap};
 use crate::server_link::ServerLink;
 
-const TEXT: Color = Color::srgb(0.93, 0.9, 0.82);
-const DIM: Color = Color::srgb(0.62, 0.6, 0.55);
-const RED: Color = Color::srgb(0.85, 0.12, 0.08);
-const RULE: Color = Color::srgba(0.93, 0.9, 0.82, 0.18);
+use crate::theme::{self, DIM, TEXT, font};
+
+const RED: Color = Color::srgb(0.9, 0.16, 0.1);
 
 /// The rows of the summary, top to bottom.
 const ROWS: [&str; 8] = ["Survived (game time)", "Time played", "Zombies killed", "Distance walked", "Things looted", "Containers searched", "Wounds taken", "HP lost"];
@@ -57,17 +56,10 @@ impl Plugin for DeathPlugin {
     }
 }
 
-fn font(size: f32) -> TextFont {
-    TextFont { font_size: bevy::text::FontSize::Px(size), ..default() }
-}
-
-fn rule(c: &mut ChildSpawnerCommands) {
-    c.spawn((Node { width: Val::Percent(100.0), height: px(1), margin: UiRect::vertical(px(6)), ..default() }, BackgroundColor(RULE)));
-}
-
 fn spawn_screen(mut commands: Commands, link: Option<Res<crate::server_link::ServerLink>>) {
+    let rule = theme::spawn_rule;
     // On a multiplayer server R is a new survivor in the same world, which goes on (#21).
-    let again = if link.is_some_and(|l| l.net.is_some()) { "R  a new survivor (the world goes on)" } else { "R  new run (same town, from the start)" };
+    let again = if link.is_some_and(|l| l.net.is_some()) { "a new survivor (the world goes on)" } else { "new run (same town, from the start)" };
     commands
         .spawn((
             DeathScreen,
@@ -87,8 +79,8 @@ fn spawn_screen(mut commands: Commands, link: Option<Res<crate::server_link::Ser
         .with_children(|screen| {
             screen
                 .spawn((
-                    Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Stretch, padding: UiRect::axes(px(36), px(26)), row_gap: px(4), min_width: px(520), ..default() },
-                    BackgroundColor(Color::srgba(0.03, 0.03, 0.035, 0.88)),
+                    Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Stretch, padding: UiRect::axes(px(44), px(30)), row_gap: px(6), min_width: px(560), ..default() },
+                    theme::sheet(),
                 ))
                 .with_children(|c| {
                     c.spawn((Text::new("YOU DIED"), font(56.0), TextColor(RED), Node { align_self: AlignSelf::Center, ..default() }));
@@ -103,9 +95,9 @@ fn spawn_screen(mut commands: Commands, link: Option<Res<crate::server_link::Ser
                         });
                     }
                     rule(c);
-                    c.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, column_gap: px(40), ..default() }).with_children(|row| {
-                        row.spawn((Text::new(again), font(16.0), TextColor(TEXT)));
-                        row.spawn((Text::new("Q / Esc  quit"), font(16.0), TextColor(TEXT)));
+                    c.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, column_gap: px(40), margin: UiRect::top(px(4)), ..default() }).with_children(|row| {
+                        theme::keycap(row, "R", again);
+                        theme::keycap(row, "Q / Esc", "quit");
                     });
                 });
         });

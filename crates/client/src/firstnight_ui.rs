@@ -28,13 +28,11 @@ use crate::player::LocalPlayer;
 use crate::saving::{Notice, WorldSwap};
 use crate::server_link::{ClientMap, JoinInfo, ServerLink};
 
-const TEXT: Color = Color::srgb(0.93, 0.9, 0.82);
-const DIM: Color = Color::srgb(0.62, 0.6, 0.55);
-const GOLD: Color = Color::srgb(0.95, 0.8, 0.4);
-const DONE: Color = Color::srgb(0.45, 0.75, 0.4);
-const TODO: Color = Color::srgba(1.0, 1.0, 1.0, 0.16);
-const BG: Color = Color::srgba(0.02, 0.02, 0.03, 0.6);
-const RULE: Color = Color::srgba(0.93, 0.9, 0.82, 0.18);
+use crate::theme::{self, DIM, GOLD, TEXT, font};
+
+/// The mark before an objective: done, and still to do.
+const DONE: Color = theme::GOLD;
+const TODO: Color = Color::srgba(1.0, 1.0, 1.0, 0.2);
 /// Narrow enough to clear the vitals and the objectives panel on a 1280 px screen.
 const HINT_WIDTH: f32 = 540.0;
 /// A zombie this close (metres) is the hint's business.
@@ -88,17 +86,13 @@ impl Plugin for FirstNightUiPlugin {
     }
 }
 
-fn font(size: f32) -> TextFont {
-    TextFont { font_size: bevy::text::FontSize::Px(size), ..default() }
-}
-
 fn spawn(mut commands: Commands) {
     commands
         .spawn((
             ObjectivesPanel,
             // Just above the hotbar, which has the bottom edge here (#97).
-            Node { position_type: PositionType::Absolute, bottom: px(crate::hotbar::REACH + 8.0), right: px(16), width: px(330), flex_direction: FlexDirection::Column, row_gap: px(4), padding: UiRect::all(px(10)), ..default() },
-            BackgroundColor(BG),
+            Node { position_type: PositionType::Absolute, bottom: px(crate::hotbar::REACH + 8.0), right: px(16), width: px(340), flex_direction: FlexDirection::Column, row_gap: px(4), padding: UiRect::axes(px(theme::STRIP_PAD.0 + 2.0), px(theme::STRIP_PAD.1 + 2.0)), ..default() },
+            theme::strip(),
             Visibility::Hidden,
             Pickable::IGNORE,
         ))
@@ -109,8 +103,8 @@ fn spawn(mut commands: Commands) {
         .spawn((
             HintBox,
             // (Clear of the current action's bar, which moved up above the hotbar, #97.)
-            Node { position_type: PositionType::Absolute, bottom: px(crate::hotbar::REACH + 84.0), left: percent(50), margin: UiRect::left(px(-HINT_WIDTH / 2.0)), width: px(HINT_WIDTH), justify_content: JustifyContent::Center, padding: UiRect::axes(px(12), px(7)), ..default() },
-            BackgroundColor(Color::srgba(0.02, 0.02, 0.03, 0.72)),
+            Node { position_type: PositionType::Absolute, bottom: px(crate::hotbar::REACH + 84.0), left: percent(50), margin: UiRect::left(px(-HINT_WIDTH / 2.0)), width: px(HINT_WIDTH), justify_content: JustifyContent::Center, padding: UiRect::axes(px(theme::STRIP_PAD.0 + 4.0), px(theme::STRIP_PAD.1)), ..default() },
+            theme::strip(),
             Visibility::Hidden,
             Pickable::IGNORE,
         ))
@@ -128,8 +122,8 @@ fn spawn(mut commands: Commands) {
         .with_children(|screen| {
             screen.spawn((
                 MorningBody,
-                Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Stretch, padding: UiRect::axes(px(36), px(26)), row_gap: px(4), min_width: px(540), ..default() },
-                BackgroundColor(Color::srgba(0.03, 0.03, 0.035, 0.9)),
+                Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Stretch, padding: UiRect::axes(px(44), px(30)), row_gap: px(6), min_width: px(560), ..default() },
+                theme::sheet(),
             ));
         });
 }
@@ -297,14 +291,16 @@ fn update_panel(
     commands.entity(body).despawn_children();
     commands.entity(body).with_children(|c| {
         c.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, ..default() }).with_children(|row| {
-            row.spawn((Text::new(now.title.clone()), font(14.0), TextColor(GOLD)));
-            row.spawn((Text::new("O hides"), font(crate::theme::SMALL), TextColor(DIM)));
+            row.spawn((Text::new(now.title.clone()), font(theme::BODY), TextColor(TEXT)));
+            row.spawn((Text::new("O hides"), font(theme::SMALL), TextColor(DIM)));
         });
-        c.spawn((Text::new(now.when.clone()), font(13.0), TextColor(if f.phase() == Phase::Day { DIM } else { GOLD })));
+        c.spawn((Text::new(now.when.clone()), font(theme::SMALL), TextColor(if f.phase() == Phase::Day { DIM } else { GOLD })));
+        c.spawn((Node { width: Val::Percent(100.0), height: px(2), margin: UiRect::vertical(px(2)), ..default() }, theme::rule()));
         for (done, label) in &now.rows {
             c.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(8), ..default() }).with_children(|row| {
-                row.spawn((Node { width: px(10), height: px(10), flex_shrink: 0.0, ..default() }, BackgroundColor(if *done { DONE } else { TODO })));
-                row.spawn((Text::new(label.clone()), font(13.0), TextColor(if *done { DIM } else { TEXT })));
+                // A dab of paint: gold once done.
+                row.spawn((Node { width: px(12), height: px(12), flex_shrink: 0.0, ..default() }, theme::dab(if *done { DONE } else { TODO })));
+                row.spawn((Text::new(label.clone()), font(theme::SMALL), TextColor(if *done { DIM } else { TEXT })));
             });
         }
     });
@@ -400,9 +396,7 @@ fn update_morning(
         return;
     }
     *built = Some(o.tick);
-    let rule = |c: &mut ChildSpawnerCommands| {
-        c.spawn((Node { width: Val::Percent(100.0), height: px(1), margin: UiRect::vertical(px(6)), ..default() }, BackgroundColor(RULE)));
-    };
+    let rule = theme::spawn_rule;
     let centred = || Node { align_self: AlignSelf::Center, ..default() };
     commands.entity(body).despawn_children();
     commands.entity(body).with_children(|c| {
@@ -419,9 +413,9 @@ fn update_morning(
         }
         rule(c);
         c.spawn((Text::new("The town is still out there, and so are they. How long can you last?"), font(15.0), TextColor(DIM), centred()));
-        c.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, column_gap: px(40), margin: UiRect::top(px(6)), ..default() }).with_children(|row| {
-            row.spawn((Text::new("Enter  carry on"), font(16.0), TextColor(TEXT)));
-            row.spawn((Text::new("R  new run (same town, from the start)"), font(16.0), TextColor(TEXT)));
+        c.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, column_gap: px(40), margin: UiRect::top(px(10)), ..default() }).with_children(|row| {
+            theme::keycap(row, "Enter", "carry on");
+            theme::keycap(row, "R", "new run (same town, from the start)");
         });
     });
 }

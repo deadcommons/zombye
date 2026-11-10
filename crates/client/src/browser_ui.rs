@@ -31,21 +31,19 @@ use zombye_net::browser::{self, Browser, ListState, Row, Status};
 
 use crate::Options;
 use crate::server_link::ServerLink;
-use crate::theme::{BODY, DIM, PANEL_BG, SMALL, TEXT, TITLE, font};
+use crate::theme::{self, BODY, DIM, GOLD, INK, ROW_HOVER, ROW_PICKED, SMALL, TEXT, TITLE, font};
 use crate::ui_scale::SettingsStore;
 
-const WIDTH: f32 = 960.0;
+/// (As wide inside the sheet's ragged edge as before it had one.)
+const WIDTH: f32 = 932.0 + 2.0 * theme::SHEET_PAD.0;
 /// Lines of the list on show at once (servers and the two section headings).
 const VISIBLE: usize = 8;
 const LINE_H: f32 = 24.0;
-const GOLD: Color = Color::srgb(0.95, 0.8, 0.4);
+// The skin is `theme.rs`'s (Linear DCM-61): a sheet, light worn buttons, flat rows.
 const GOOD: Color = Color::srgb(0.6, 0.85, 0.55);
 const WARN: Color = Color::srgb(0.95, 0.62, 0.35);
-const ROW_BG: Color = Color::srgba(1.0, 1.0, 1.0, 0.04);
-const ROW_HOVER: Color = Color::srgba(1.0, 1.0, 1.0, 0.1);
-const ROW_PICKED: Color = Color::srgba(0.95, 0.8, 0.4, 0.22);
+const ROW_BG: Color = theme::ROW;
 const FIELD_BG: Color = Color::srgba(1.0, 1.0, 1.0, 0.08);
-const BUTTON: Color = Color::srgb(0.25, 0.3, 0.2);
 const MAX_NAME: usize = 24;
 const MAX_FIELD: usize = 80;
 /// The columns' widths, in UI pixels: name, players, ping, mode, locked, mods (the note takes the rest).
@@ -303,13 +301,10 @@ fn spawn(mut commands: Commands) {
             width: px(WIDTH),
             flex_direction: FlexDirection::Column,
             row_gap: px(4),
-            padding: UiRect::all(px(14)),
-            border: UiRect::all(px(1)),
+            padding: UiRect::axes(px(theme::SHEET_PAD.0), px(theme::SHEET_PAD.1)),
             ..default()
         },
-        // Opaque: it is a screen of its own, and the HUD under it would read through.
-        BackgroundColor(PANEL_BG.with_alpha(1.0)),
-        BorderColor::all(GOLD.with_alpha(0.35)),
+        theme::sheet(),
         GlobalZIndex(30),
         Visibility::Hidden,
     ));
@@ -590,9 +585,9 @@ fn cell(row: &mut ChildSpawnerCommands, text: String, width: Option<f32>, colour
 }
 
 fn button<'a>(parent: &'a mut ChildSpawnerCommands, label: &str, act: Act) -> EntityCommands<'a> {
-    let mut e = parent.spawn((Node { padding: UiRect::axes(px(12), px(4)), flex_shrink: 0.0, ..default() }, BackgroundColor(BUTTON)));
+    let mut e = parent.spawn((Node { padding: UiRect::axes(px(12), px(4)), flex_shrink: 0.0, ..default() }, theme::button(false)));
     e.with_children(|b| {
-        b.spawn((Text::new(label.to_string()), font(BODY), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
+        b.spawn((Text::new(label.to_string()), font(BODY), TextColor(INK), TextLayout::no_wrap(), Pickable::IGNORE));
     });
     e.observe(move |_: On<PointerPress>, mut ui: ResMut<BrowserUi>| ui.acts.push(act.clone()));
     e
@@ -645,9 +640,16 @@ fn draw(mut commands: Commands, mut ui: ResMut<BrowserUi>, mods: Res<LoadedMods>
 
     commands.entity(root).despawn_children();
     commands.entity(root).with_children(|c| {
+        // Opaque inside the sheet's ragged edge: it is a screen of its own, and the HUD under it
+        // would read through.
+        c.spawn((
+            Node { position_type: PositionType::Absolute, left: px(theme::SHEET_PAD.0 - 4.0), right: px(theme::SHEET_PAD.0 - 4.0), top: px(theme::SHEET_PAD.1 - 4.0), bottom: px(theme::SHEET_PAD.1 - 4.0), ..default() },
+            BackgroundColor(theme::PANEL_BG.with_alpha(1.0)),
+            Pickable::IGNORE,
+        ));
         // Title, and what the list holds.
         c.spawn((Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::Center, ..default() }, Pickable::IGNORE)).with_children(|t| {
-            t.spawn((Text::new("Servers"), font(TITLE), TextColor(GOLD), Pickable::IGNORE));
+            t.spawn((Text::new("SERVERS"), font(TITLE), TextColor(TEXT), Pickable::IGNORE));
             t.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(10), align_items: AlignItems::Center, ..default() }, Pickable::IGNORE)).with_children(|r| {
                 r.spawn((Text::new(summary), font(BODY), TextColor(DIM), Pickable::IGNORE));
                 button(r, "Refresh (R)", Act::Refresh);
@@ -714,7 +716,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<BrowserUi>, mods: Res<LoadedMods>
         if more.1 > 0 {
             c.spawn((Text::new(format!("{} more below (wheel, or Down)", more.1)), font(SMALL), TextColor(DIM), Pickable::IGNORE));
         }
-        c.spawn((Node { width: percent(100), height: px(1), margin: UiRect::vertical(px(4)), ..default() }, BackgroundColor(DIM.with_alpha(0.4)), Pickable::IGNORE));
+        c.spawn((Node { width: percent(100), height: px(3), flex_shrink: 0.0, margin: UiRect::vertical(px(3)), ..default() }, theme::rule(), Pickable::IGNORE));
         // The picked server: can it be joined, and its rules.
         c.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(1), min_height: px(238), ..default() }, Pickable::IGNORE)).with_children(|d| match picked {
             None => {
@@ -733,7 +735,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<BrowserUi>, mods: Res<LoadedMods>
                 }
             }
         });
-        c.spawn((Node { width: percent(100), height: px(1), margin: UiRect::vertical(px(4)), ..default() }, BackgroundColor(DIM.with_alpha(0.4)), Pickable::IGNORE));
+        c.spawn((Node { width: percent(100), height: px(3), flex_shrink: 0.0, margin: UiRect::vertical(px(3)), ..default() }, theme::rule(), Pickable::IGNORE));
         // Who you join as, and a server of your own.
         c.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(14), align_items: AlignItems::Center, ..default() }, Pickable::IGNORE)).with_children(|f| {
             field(f, "Name", name, focus == Some(Field::Name), 150.0, Field::Name);

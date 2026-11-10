@@ -11,10 +11,10 @@ use zombye_sim::{ItemCategory, JobKind};
 use crate::player::LocalPlayer;
 use crate::server_link::{JoinInfo, ServerLink};
 
-const TEXT: Color = Color::srgb(0.95, 0.93, 0.88);
-const BG: Color = crate::theme::HUD_BG;
-const FILL: Color = Color::srgb(0.85, 0.7, 0.25);
-const WIDTH: f32 = 380.0;
+use crate::theme::{self, TEXT, font};
+
+const FILL: Color = theme::GOLD;
+const WIDTH: f32 = 420.0;
 
 #[derive(Component)]
 struct Panel;
@@ -41,10 +41,6 @@ impl Plugin for ActionUiPlugin {
     }
 }
 
-fn font(size: f32) -> TextFont {
-    TextFont { font_size: bevy::text::FontSize::Px(size), ..default() }
-}
-
 fn spawn(mut commands: Commands) {
     commands
         .spawn((
@@ -58,18 +54,18 @@ fn spawn(mut commands: Commands) {
                 margin: UiRect::left(px(-WIDTH / 2.0)),
                 width: px(WIDTH),
                 flex_direction: FlexDirection::Column,
-                row_gap: px(3),
-                padding: UiRect::all(px(7)),
+                row_gap: px(4),
+                padding: UiRect::axes(px(theme::STRIP_PAD.0 + 2.0), px(theme::STRIP_PAD.1)),
                 ..default()
             },
-            BackgroundColor(BG),
+            theme::strip(),
             Visibility::Hidden,
         ))
         .with_children(|c| {
-            c.spawn((Title, Text::new(""), font(14.0), TextColor(TEXT), Pickable::IGNORE));
-            c.spawn((Node { width: percent(100), height: px(8), ..default() }, BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.15)), Pickable::IGNORE))
+            c.spawn((Title, Text::new(""), font(theme::BODY), TextColor(TEXT), Pickable::IGNORE));
+            c.spawn((Node { width: percent(100), height: px(10), ..default() }, theme::bar_track(), Pickable::IGNORE))
                 .with_children(|b| {
-                    b.spawn((Fill, Node { width: percent(0), height: percent(100), ..default() }, BackgroundColor(FILL), Pickable::IGNORE));
+                    b.spawn((Fill, Node { width: percent(0), height: percent(100), ..default() }, theme::bar_fill(FILL), Pickable::IGNORE));
                 });
             c.spawn((Hint, Text::new(""), font(crate::theme::SMALL), TextColor(crate::theme::DIM), Pickable::IGNORE));
         })

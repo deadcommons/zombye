@@ -1,9 +1,10 @@
 //! The status icons (Linear DCM-57): instead of stat bars, a row of icons over the weapon panel
 //! (in the HUD's bottom-left column, `hud::BottomLeft`: the hotbar has the bottom edge beside it,
 //! #97), one for each status that has passed a level (hurt, bleeding, pain, sick, queasy,
-//! hungry, thirsty, tired, out of breath, loaded down, asleep), coloured and bordered by how bad it
-//! is (1 to 4, with as many pips; a good state such as "Well fed" dimmer). An icon pulses when it
-//! appears or worsens; hover one for a line on what it means.
+//! hungry, thirsty, tired, out of breath, loaded down, asleep): a simple glyph on a dark dab of
+//! paint (Linear DCM-61, `theme::dab`), white, then yellow, and red only at the worst (1 to 4, with
+//! as many pips; a good state such as "Well fed" fainter). An icon pulses when it appears or
+//! worsens; hover one for a line on what it means.
 //!
 //! Which icons there are, their levels, labels and tips are data (`assets/data/status.ron`, read
 //! from the `--data` folder: `sim::status`); they are worked out from our private view, our HP and
@@ -19,11 +20,12 @@ use zombye_sim::{StatusData, StatusTag, TagKind};
 use crate::player::LocalPlayer;
 use crate::server_link::{JoinInfo, ServerLink};
 
-const TEXT: Color = Color::srgb(0.95, 0.93, 0.88);
-const TIP_BG: Color = crate::theme::PANEL_BG;
+const TEXT: Color = crate::theme::TEXT;
 /// An icon's tile and the room between two (UI pixels), and how many stand in a row before the
 /// next row starts over it.
-const TILE: f32 = 38.0;
+const TILE: f32 = 40.0;
+/// The glyph's side on its dab.
+const GLYPH: f32 = 24.0;
 const GAP: f32 = 4.0;
 const PER_ROW: usize = 8;
 /// How long an icon pulses after it appears or worsens.
@@ -52,6 +54,9 @@ impl StatusIcons {
 struct Root;
 #[derive(Component)]
 struct TipText;
+/// The painted strip the hovered icon's line stands on.
+#[derive(Component)]
+struct TipBox;
 /// An icon's tile, its picture and its severity pips (the `n`th of four).
 #[derive(Component)]
 struct Tile(TagKind);
@@ -88,27 +93,27 @@ impl Plugin for NeedsUiPlugin {
     }
 }
 
-fn font(size: f32) -> TextFont {
-    TextFont { font_size: bevy::text::FontSize::Px(size), ..default() }
-}
+use crate::theme::font;
 
-/// An icon's colours by kind and severity: the picture and border, and the tile behind it. Good
-/// states are dim green, sleep blue, the rest pale yellow, amber, orange and red on a red tile.
+/// An icon's colours by kind and severity: the glyph, and the dab of paint behind it
+/// (`theme::dab`, so it reads over any ground). Simple white or yellow glyphs (Linear DCM-61):
+/// a good state is a faint white, the first level white, then pale yellow and a strong yellow;
+/// only the worst is red, on a dark red dab. Sleep is a pale blue whatever the level.
 pub fn look(kind: TagKind, severity: u8) -> (Color, Color) {
-    let tile = Color::srgba(0.03, 0.03, 0.04, 0.72);
+    let dab = Color::srgba(0.07, 0.07, 0.08, 0.82);
     match (kind, severity) {
-        (TagKind::Asleep, _) => (Color::srgb(0.5, 0.65, 0.98), Color::srgba(0.04, 0.06, 0.16, 0.8)),
-        (_, 0) => (Color::srgba(0.5, 0.68, 0.5, 0.75), Color::srgba(0.03, 0.05, 0.03, 0.5)),
-        (_, 1) => (Color::srgb(0.88, 0.83, 0.5), tile),
-        (_, 2) => (Color::srgb(0.96, 0.64, 0.2), tile),
-        (_, 3) => (Color::srgb(0.97, 0.4, 0.14), Color::srgba(0.14, 0.04, 0.02, 0.8)),
-        _ => (Color::srgb(1.0, 0.86, 0.8), Color::srgba(0.62, 0.05, 0.04, 0.92)),
+        (TagKind::Asleep, _) => (Color::srgb(0.74, 0.84, 1.0), dab),
+        (_, 0) => (Color::srgba(0.95, 0.94, 0.9, 0.5), Color::srgba(0.07, 0.07, 0.08, 0.5)),
+        (_, 1) => (Color::srgb(0.96, 0.95, 0.92), dab),
+        (_, 2) => (Color::srgb(0.98, 0.9, 0.55), dab),
+        (_, 3) => (Color::srgb(1.0, 0.8, 0.16), dab),
+        _ => (Color::srgb(1.0, 0.45, 0.3), Color::srgba(0.36, 0.03, 0.02, 0.92)),
     }
 }
 
-/// The border's colour: the picture's, but red at the worst (where the picture goes pale on red).
+/// The colour of the ring an icon pulses with: its glyph's.
 fn border(kind: TagKind, severity: u8) -> Color {
-    if severity >= 4 && kind != TagKind::Asleep { Color::srgb(1.0, 0.25, 0.2) } else { look(kind, severity).0 }
+    look(kind, severity).0
 }
 
 /// The kinds that appeared or got worse between two lists of icons: the ones that pulse.
@@ -249,16 +254,16 @@ fn spawn(mut commands: Commands, icons: Res<StatusIcons>, mut images: ResMut<Ass
         .spawn((Root, Node { flex_direction: FlexDirection::Column, align_items: AlignItems::FlexStart, ..default() }, Pickable::IGNORE))
         .with_children(|c| {
             c.spawn((
-                TipText,
-                Text::new(""),
-                font(crate::theme::SMALL),
-                TextColor(TEXT),
-                Node { position_type: PositionType::Absolute, bottom: percent(100), left: px(0), margin: UiRect::bottom(px(4)), width: px(340), padding: UiRect::all(px(6)), ..default() },
-                BackgroundColor(TIP_BG),
+                TipBox,
+                Node { position_type: PositionType::Absolute, bottom: percent(100), left: px(0), margin: UiRect::bottom(px(4)), width: px(360), padding: UiRect::axes(px(crate::theme::STRIP_PAD.0), px(crate::theme::STRIP_PAD.1)), ..default() },
+                crate::theme::strip(),
                 GlobalZIndex(5),
                 Visibility::Hidden,
                 Pickable::IGNORE,
-            ));
+            ))
+            .with_children(|tip| {
+                tip.spawn((TipText, Text::new(""), font(crate::theme::SMALL), TextColor(TEXT), Pickable::IGNORE));
+            });
             c.spawn((
                 Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::WrapReverse, row_gap: px(GAP), column_gap: px(GAP), max_width: px(row_width(PER_ROW)), ..default() },
                 Pickable::IGNORE,
@@ -272,18 +277,16 @@ fn spawn(mut commands: Commands, icons: Res<StatusIcons>, mut images: ResMut<Ass
                             display: Display::None,
                             width: px(TILE),
                             height: px(TILE),
-                            border: UiRect::all(px(2)),
-                            border_radius: BorderRadius::all(px(6)),
+                            border_radius: BorderRadius::all(px(TILE / 2.0)),
                             justify_content: JustifyContent::Center,
                             align_items: AlignItems::Center,
                             ..default()
                         },
-                        BackgroundColor(Color::NONE),
-                        BorderColor::all(Color::NONE),
+                        crate::theme::dab(Color::NONE),
                         Outline { width: px(2), offset: px(0), color: Color::NONE },
                     ))
                     .with_children(|tile| {
-                        tile.spawn((Glyph(kind), ImageNode { image: images.add(glyph_image(kind)), ..default() }, Node { width: px(24), height: px(24), margin: UiRect::bottom(px(4)), ..default() }, Pickable::IGNORE));
+                        tile.spawn((Glyph(kind), ImageNode { image: images.add(glyph_image(kind)), ..default() }, Node { width: px(GLYPH), height: px(GLYPH), margin: UiRect::bottom(px(4)), ..default() }, Pickable::IGNORE));
                         tile.spawn((Node { position_type: PositionType::Absolute, bottom: px(2), left: px(0), right: px(0), justify_content: JustifyContent::Center, column_gap: px(2), ..default() }, Pickable::IGNORE)).with_children(|pips| {
                             for n in 1..=zombye_sim::status::MAX_SEVERITY {
                                 pips.spawn((Pip(kind, n), Node { width: px(5), height: px(3), ..default() }, BackgroundColor(Color::NONE), Pickable::IGNORE));
@@ -327,8 +330,8 @@ fn update(
     options: Res<crate::Options>,
     mut shown: ResMut<Shown>,
     mut hovered: ResMut<Hovered>,
-    mut tiles: Query<(&Tile, &mut Node, &mut BackgroundColor, &mut BorderColor), (Without<Glyph>, Without<Pip>)>,
-    mut glyphs: Query<(&Glyph, &mut ImageNode)>,
+    mut tiles: Query<(&Tile, &mut Node, &mut ImageNode), (Without<Glyph>, Without<Pip>)>,
+    mut glyphs: Query<(&Glyph, &mut ImageNode), Without<Tile>>,
     mut pips: Query<(&Pip, &mut BackgroundColor), Without<Tile>>,
 ) {
     let tags = icons.tags(&link, &join, &me);
@@ -348,20 +351,14 @@ fn update(
         hovered.0 = tags.get(n).map(|t| t.kind);
     }
     let severity = |kind: TagKind| tags.iter().find(|t| t.kind == kind).map(|t| t.severity);
-    for (tile, mut node, mut bg, mut edge) in &mut tiles {
+    for (tile, mut node, mut dab) in &mut tiles {
         let s = severity(tile.0);
         let display = if s.is_some() { Display::Flex } else { Display::None };
         if node.display != display {
             node.display = display;
         }
         if let Some(s) = s {
-            // The worst level has a thicker border as well as its colours.
-            let width = UiRect::all(px(if s >= 4 { 3 } else { 2 }));
-            if node.border != width {
-                node.border = width;
-            }
-            bg.0 = look(tile.0, s).1;
-            *edge = BorderColor::all(border(tile.0, s));
+            dab.color = look(tile.0, s).1;
         }
     }
     for (glyph, mut image) in &mut glyphs {
@@ -396,8 +393,8 @@ fn pulse(time: Res<Time>, mut shown: ResMut<Shown>, mut tiles: Query<(&Tile, &mu
     }
 }
 
-fn tooltip(hovered: Res<Hovered>, shown: Res<Shown>, mut tip: Query<(&mut Text, &mut Visibility), With<TipText>>) {
-    let Ok((mut text, mut vis)) = tip.single_mut() else { return };
+fn tooltip(hovered: Res<Hovered>, shown: Res<Shown>, mut tip: Query<&mut Text, With<TipText>>, mut tip_box: Query<&mut Visibility, With<TipBox>>) {
+    let (Ok(mut text), Ok(mut vis)) = (tip.single_mut(), tip_box.single_mut()) else { return };
     let line = hovered.0.and_then(|kind| shown.tags.as_ref()?.iter().find(|t| t.kind == kind)).map(|t| t.tip.clone());
     let v = if line.is_some() { Visibility::Inherited } else { Visibility::Hidden };
     let want = line.unwrap_or_default();
@@ -455,9 +452,16 @@ mod tests {
                 assert!(looks[i + 1..].iter().all(|b| a.0 != b.0), "{kind:?} severity {i}");
             }
         }
-        // The worst stands out by its tile too, and sleep is its own colour whatever the level.
+        // The worst stands out by its dab too, and sleep is its own colour whatever the level.
         assert_ne!(look(TagKind::Thirst, 4).1, look(TagKind::Thirst, 3).1);
         assert_eq!(look(TagKind::Asleep, 1), look(TagKind::Asleep, 3));
+        // White or yellow glyphs (DCM-61): no blue in any level short of the worst outweighs the
+        // red, and the first level is near white.
+        for s in 1..=3 {
+            let c = look(TagKind::Hunger, s).0.to_srgba();
+            assert!(c.red >= 0.95 && c.green >= 0.78 && c.blue <= c.green, "severity {s}: {c:?}");
+        }
+        assert!(look(TagKind::Hunger, 1).0.to_srgba().blue > 0.9);
     }
 
     #[test]

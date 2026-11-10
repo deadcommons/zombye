@@ -88,7 +88,7 @@ fn staged(level: u8) -> (World, u32) {
 /// Saves for reviewing the status icons (Linear DCM-57): `icons_0` nothing wrong (no icons),
 /// `icons_1` to `icons_4` every status at that severity, `icons_cleared` the worst again after
 /// eating, drinking and resting (those icons gone, the wounds' still there), `icons_good` fed
-/// and rested (the dimmer good states).
+/// and rested (the dimmer good states), and `dead` a survivor who bled out (the death screen).
 #[test]
 #[ignore]
 fn status_icon_saves() {
@@ -118,6 +118,12 @@ fn status_icon_saves() {
     step(&mut w, 2);
     assert_eq!(labels(&w, id), "Well fed 0, Rested 0");
     save(&w, "icons_good");
+    // `dead`: the badly hurt one, bled out a few hours on (the death screen, Linear DCM-61).
+    let (mut w, _) = staged(3);
+    w.skip_time(6.0);
+    assert!(w.players[0].dead, "hp {}", w.players[0].hp);
+    println!("dead: {:?}", w.players[0].run.death.as_ref().map(|d| &d.cause));
+    save(&w, "dead");
 }
 
 /// The middle of the asphalt tile nearest to `from` with open asphalt `clear` tiles east of it.

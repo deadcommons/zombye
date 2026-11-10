@@ -63,14 +63,11 @@ enum PanelClick {
 #[derive(Resource, Default)]
 struct Clicks(Vec<PanelClick>);
 
-const TEXT: Color = Color::srgb(0.93, 0.9, 0.82);
-const DIM: Color = crate::theme::DIM;
-const BLOOD: Color = Color::srgb(0.95, 0.35, 0.3);
+use crate::theme::{self, DIM, ROW, ROW_HOVER, ROW_PICKED, TEXT, font};
+
+const BLOOD: Color = theme::BAD;
 const SICK: Color = Color::srgb(0.75, 0.85, 0.35);
-const OK: Color = Color::srgb(0.95, 0.85, 0.35);
-const ROW: Color = Color::srgba(0.12, 0.12, 0.14, 0.85);
-const ROW_PICKED: Color = Color::srgba(0.22, 0.2, 0.12, 0.95);
-const ROW_HOVER: Color = Color::srgba(0.28, 0.26, 0.2, 0.95);
+const OK: Color = theme::GOLD;
 const HIT_SECS: f32 = 3.0;
 
 pub struct HealthUiPlugin;
@@ -88,10 +85,6 @@ impl Plugin for HealthUiPlugin {
     }
 }
 
-fn font(size: f32) -> TextFont {
-    TextFont { font_size: bevy::text::FontSize::Px(size), ..default() }
-}
-
 fn spawn(mut commands: Commands) {
     commands.spawn((
         PanelRoot,
@@ -104,13 +97,13 @@ fn spawn(mut commands: Commands) {
             left: px(16),
             flex_direction: FlexDirection::Column,
             row_gap: px(3),
-            padding: UiRect::all(px(10)),
+            padding: UiRect::axes(px(theme::SHEET_PAD.0), px(theme::SHEET_PAD.1)),
             min_width: px(300),
             max_height: Val::Percent(85.0),
             overflow: Overflow::scroll_y(),
             ..default()
         },
-        BackgroundColor(crate::theme::PANEL_BG),
+        theme::sheet(),
     ));
 }
 
@@ -274,7 +267,12 @@ fn rebuild(
         let line = |c: &mut ChildSpawnerCommands, s: String, size: f32, color: Color| {
             c.spawn((Text::new(s), font(size), TextColor(color)));
         };
-        line(c, "Health".into(), crate::theme::TITLE, TEXT);
+        theme::title(c, "Health");
+        // Health as the HUD shows it: one brushed bar, with the figure under it.
+        let share = (me.hp / join.combat.player_hp.max(1.0)).clamp(0.0, 1.0);
+        c.spawn((Node { height: px(10), flex_shrink: 0.0, margin: UiRect::bottom(px(2)), ..default() }, theme::bar_track(), Pickable::IGNORE)).with_children(|b| {
+            b.spawn((Node { width: Val::Percent(share * 100.0), height: Val::Percent(100.0), ..default() }, theme::bar_fill(crate::hud::hp_colour(share)), Pickable::IGNORE));
+        });
         line(c, format!("HP {:.0} of {:.0}{}", me.hp.max(0.0), join.combat.player_hp, if me.dead { " (dead)" } else { "" }), 14.0, TEXT);
         if health.losing_per_h > 0.0 {
             line(c, format!("losing {:.1} HP per game hour", health.losing_per_h), 14.0, BLOOD);
@@ -328,10 +326,10 @@ fn rebuild(
                 if !picked || use_def.is_some() {
                     continue;
                 }
-                line(c, format!("    needs {}", firstaid::needs(w)), 12.0, DIM);
+                line(c, format!("    needs {}", firstaid::needs(w)), theme::SMALL, DIM);
                 let options = firstaid::options(Some(w), &view.inventory, items);
                 if options.is_empty() {
-                    line(c, "    nothing you carry treats it".into(), 12.0, DIM);
+                    line(c, "    nothing you carry treats it".into(), theme::SMALL, DIM);
                 }
                 for (t, item) in options {
                     let label = option_label(t, item, Some(w), view, items, &join);

@@ -14,12 +14,12 @@ use zombye_net::wire::Rules;
 
 use crate::saving::Notice;
 use crate::server_link::ServerLink;
-use crate::theme::{BODY, DIM, PANEL_BG, SMALL, TEXT, TITLE, font};
+use crate::theme::{self, BODY, DIM, SMALL, TEXT, font};
 
 /// How long the panel stays up after joining unless F6 says otherwise (seconds).
 pub const SHOW_SECS: f32 = 20.0;
-const WIDTH: f32 = 400.0;
-const GOLD: Color = Color::srgb(0.95, 0.8, 0.4);
+/// (As wide inside the sheet's ragged edge as before it had one.)
+const WIDTH: f32 = 376.0 + 2.0 * theme::SHEET_PAD.0;
 
 pub struct RulesUiPlugin;
 
@@ -50,15 +50,16 @@ fn spawn(mut commands: Commands, link: Res<ServerLink>) {
     commands
         .spawn((
             RulesPanel,
-            Node { position_type: PositionType::Absolute, top: px(16), right: px(16), width: px(WIDTH), flex_direction: FlexDirection::Column, row_gap: px(5), padding: UiRect::all(px(12)), ..default() },
-            BackgroundColor(PANEL_BG),
+            Node { position_type: PositionType::Absolute, top: px(16), right: px(16), width: px(WIDTH), flex_direction: FlexDirection::Column, row_gap: px(5), padding: UiRect::axes(px(theme::SHEET_PAD.0), px(theme::SHEET_PAD.1)), ..default() },
+            theme::sheet(),
             GlobalZIndex(8),
             Pickable::IGNORE,
         ))
         .with_children(|c| {
-            c.spawn((Text::new(title), font(TITLE), TextColor(GOLD), Pickable::IGNORE));
-            c.spawn((Text::new(sub), font(SMALL), TextColor(DIM), Pickable::IGNORE));
-            c.spawn((Node { width: Val::Percent(100.0), height: px(1), margin: UiRect::vertical(px(3)), ..default() }, BackgroundColor(DIM.with_alpha(0.4)), Pickable::IGNORE));
+            // The skin's title (Linear DCM-61): centred capitals over a brushed stroke.
+            theme::title(c, &title);
+            c.spawn((Text::new(sub), font(SMALL), TextColor(DIM), Node { align_self: AlignSelf::Center, ..default() }, Pickable::IGNORE));
+            theme::spawn_rule(c);
             for (label, text) in lines {
                 c.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(10), ..default() }, Pickable::IGNORE)).with_children(|row| {
                     row.spawn((Text::new(label), font(BODY), TextColor(DIM), Node { width: px(112), flex_shrink: 0.0, ..default() }, Pickable::IGNORE));

@@ -1,6 +1,7 @@
-//! On-screen stats; the weapon held, stance, the health tags (injured leg..., from `health_ui.rs`)
-//! and this life's kills and time alive (the server's run stats, `sim::run`) (bottom left; no stat
-//! bars: the status icons of `needs_ui.rs` stand beside it); plus the automation hooks agents and CI use: periodic
+//! On-screen stats; the weapon held, stance, health as one brushed bar (Linear DCM-61), the health
+//! tags (injured leg..., from `health_ui.rs`) and this life's kills and time alive (the server's run
+//! stats, `sim::run`) (bottom left; no other stat bars: the status icons of `needs_ui.rs` stand
+//! over it); plus the automation hooks agents and CI use: periodic
 //! stdout stats, `--screenshot` and `--exit-after`. The death screen is `death.rs`.
 
 use bevy::prelude::*;
@@ -11,6 +12,7 @@ use zombye_sim::Stance;
 use crate::Options;
 use crate::player::LocalPlayer;
 use crate::server_link::{ClientMap, JoinInfo, ServerLink};
+use crate::theme::{self, font};
 
 #[derive(Component)]
 pub struct HudText;
@@ -44,18 +46,32 @@ impl Plugin for HudPlugin {
     }
 }
 
-const TEXT: Color = Color::srgb(0.93, 0.9, 0.82);
-const DIM: Color = crate::theme::DIM;
+const TEXT: Color = theme::TEXT;
+const DIM: Color = theme::DIM;
 const DEV_COLOR: Color = Color::srgb(0.35, 0.9, 1.0);
+/// The health bar's length and height (UI pixels).
+const HP_BAR: (f32, f32) = (200.0, 10.0);
+
+/// The filled part of the health bar.
+#[derive(Component)]
+struct HpFill;
+
+/// The health bar's colour with `share` (0..1) of the HP left: pale, yellow under half, red under
+/// a quarter.
+pub fn hp_colour(share: f32) -> Color {
+    if share < 0.25 {
+        theme::BAD
+    } else if share < 0.5 {
+        theme::GOLD
+    } else {
+        theme::TEXT
+    }
+}
 
 /// "GOD IGNORED", "GOD", "IGNORED" or "" for the dev toggles on.
 /// And "PROTECTED" while our spawn protection lasts (#68: other players can't hurt us yet).
 fn dev_tags(dev: zombye_sim::DevFlags, protected: bool) -> String {
     [(dev.god, "GOD"), (dev.ignored, "IGNORED"), (protected, "PROTECTED")].iter().filter(|(on, _)| *on).map(|(_, t)| *t).collect::<Vec<_>>().join(" ")
-}
-
-fn font(size: f32) -> TextFont {
-    TextFont { font_size: bevy::text::FontSize::Px(size), ..default() }
 }
 
 /// The top-left column: the stats and keys text, then the yellow message line (`saving.rs`) under
@@ -90,7 +106,7 @@ pub fn spawn_hud(mut commands: Commands) {
         ))
         .with_children(|c| {
             // On a dark backing of its own, so it reads over sunlit ground too (#97).
-            c.spawn((HudText, Text::new(""), font(14.0), TextColor(Color::srgb(0.9, 0.9, 0.85)), BackgroundColor(Color::srgba(0.02, 0.02, 0.03, 0.7))));
+            c.spawn((HudText, Text::new(""), font(theme::BODY), TextColor(TEXT), BackgroundColor(theme::HUD_BG.with_alpha(0.7))));
         });
     // The bottom-left column: the status tags (`needs_ui.rs` puts them first) over the vitals.
     let column = commands
@@ -102,18 +118,22 @@ pub fn spawn_hud(mut commands: Commands) {
         ))
         .id();
     commands
-        .spawn((VitalsPanel, Node { flex_direction: FlexDirection::Column, row_gap: px(6), padding: UiRect::all(px(10)), ..default() }, BackgroundColor(crate::theme::HUD_BG), ChildOf(column)))
+        .spawn((VitalsPanel, Node { flex_direction: FlexDirection::Column, row_gap: px(6), padding: UiRect::axes(px(theme::STRIP_PAD.0 + 2.0), px(theme::STRIP_PAD.1 + 2.0)), ..default() }, theme::strip(), ChildOf(column)))
         .with_children(|c| {
             c.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Baseline, column_gap: px(10), ..default() }).with_children(|row| {
-                row.spawn((WeaponText, Text::new(""), font(20.0), TextColor(TEXT)));
-                row.spawn((StanceText, Text::new(""), font(14.0), TextColor(DIM)));
-                row.spawn((DevText, Text::new(""), font(14.0), TextColor(DEV_COLOR)));
+                row.spawn((WeaponText, Text::new(""), font(theme::TITLE), TextColor(TEXT)));
+                row.spawn((StanceText, Text::new(""), font(theme::BODY), TextColor(DIM)));
+                row.spawn((DevText, Text::new(""), font(theme::BODY), TextColor(DEV_COLOR)));
             });
-            // No health or endurance bars (Linear DCM-57): the status icons over this panel say
-            // when something is wrong (`needs_ui.rs`), the debug stats window the numbers (F4).
+            // Health as one rough brushed bar (Linear DCM-61, from the owner's reference; DCM-57
+            // took the stat bars out: this is the one that came back). What else is wrong is still
+            // the status icons over this panel (`needs_ui.rs`), the numbers the debug window (F4).
+            c.spawn((Node { width: px(HP_BAR.0), height: px(HP_BAR.1), ..default() }, theme::bar_track())).with_children(|b| {
+                b.spawn((HpFill, Node { width: percent(100), height: percent(100), ..default() }, theme::bar_fill(hp_colour(1.0))));
+            });
             // Injured leg, drowsy from painkillers, where the last strike landed (`health_ui.rs`).
-            c.spawn((crate::health_ui::HealthTagsText, Text::new(""), font(13.0), TextColor(TEXT)));
-            c.spawn((TallyText, Text::new(""), font(13.0), TextColor(DIM)));
+            c.spawn((crate::health_ui::HealthTagsText, Text::new(""), font(theme::SMALL), TextColor(TEXT)));
+            c.spawn((TallyText, Text::new(""), font(theme::SMALL), TextColor(DIM)));
         });
 }
 
@@ -234,7 +254,18 @@ fn update_vitals(
     join: Res<JoinInfo>,
     link: Res<ServerLink>,
     mut texts: ParamSet<(Query<&mut Text, With<WeaponText>>, Query<&mut Text, With<StanceText>>, Query<&mut Text, With<TallyText>>, Query<&mut Text, With<DevText>>)>,
+    mut hp: Query<(&mut Node, &mut ImageNode), With<HpFill>>,
 ) {
+    if let Ok((mut node, mut image)) = hp.single_mut() {
+        let share = (me.hp / join.combat.player_hp.max(1.0)).clamp(0.0, 1.0);
+        let (width, colour) = (percent((share * 100.0).round()), hp_colour(share));
+        if node.width != width {
+            node.width = width;
+        }
+        if image.color != colour {
+            image.color = colour;
+        }
+    }
     let set = |t: &mut Text, s: String| {
         if t.0 != s {
             t.0 = s;
@@ -411,6 +442,14 @@ mod tests {
         assert_eq!(top + h, 720.0 - 136.0 - PANEL_GAP);
         // Never squeezed to nothing.
         assert_eq!(top_panel_span(400.0, 300.0, 480.0).1, 80.0);
+    }
+
+    #[test]
+    fn the_health_bar_turns_yellow_then_red() {
+        assert_eq!(hp_colour(1.0), theme::TEXT);
+        assert_eq!(hp_colour(0.5), theme::TEXT);
+        assert_eq!(hp_colour(0.49), theme::GOLD);
+        assert_eq!(hp_colour(0.2), theme::BAD);
     }
 
     #[test]

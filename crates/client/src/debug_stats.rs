@@ -265,9 +265,7 @@ impl Plugin for DebugStatsPlugin {
     }
 }
 
-fn font(size: f32) -> TextFont {
-    TextFont { font_size: bevy::text::FontSize::Px(size), ..default() }
-}
+use crate::theme::font;
 
 fn spawn(mut commands: Commands) {
     commands
@@ -287,7 +285,8 @@ fn spawn(mut commands: Commands) {
                 border: UiRect::all(px(1)),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.01, 0.03, 0.04, 0.96)),
+            // A dev window: the theme's flat charcoal, with a hard edge of its own.
+            BackgroundColor(crate::theme::PANEL_BG.with_alpha(0.96)),
             BorderColor::all(HEAD.with_alpha(0.5)),
             GlobalZIndex(15),
             Pickable::IGNORE,

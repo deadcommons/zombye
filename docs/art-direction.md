@@ -242,11 +242,26 @@ The world's generated parts and its props both carry the story. Targets for a de
 
 ## UI
 
-- **Panels:** near-black (#141414 at 80–88% opacity), square corners, thin bone-white rules at low
-  opacity.
-- **Text:** bone white for content, a dimmer warm grey for secondary text; one plain sans-serif.
-- **Colour meanings:** red for health, blood and danger; amber for endurance and warnings; zombie
-  green for sickness; cool blue for sleep; gold for level-ups and good outcomes. No other hues.
+- **One rough painted skin** (Linear DCM-61; `crates/client/src/theme.rs`, which every panel uses):
+  as if laid on with a wide dry brush. The textures are made in code at start-up; none is a file,
+  and none is drawn after another game's art.
+- **Panels:** dark charcoal sheets (about #16161A at 96% opacity: slightly see-through), their sides
+  ragged where the strokes end and thin out, top and bottom a rough line; brushed bone-white rules
+  at low opacity. The small pieces of the HUD, tooltips and menus are strips of the same paint.
+- **Titles** centred, in capitals; generous padding (nothing stands on a sheet's ragged edge).
+- **Buttons:** plain, light (warm grey, dark ink on it), with a worn edge; the chosen one gold. A
+  key to press is shown as a small button of the same kind.
+- **Slots** (the hotbar): lighter charcoal with a fine scored hatch and a pale worn rim; the one in
+  your hand has a gold edge.
+- **Bars** (health, a pane's load, a skill's XP, the current action): one stroke of a dry brush
+  over a paler one.
+- **Status icons:** simple glyphs on a dark dab of paint, bottom left: white at the first level,
+  then pale and strong yellow; only the worst level is red.
+- **Text:** bone white for content, a dimmer warm grey for secondary text; one plain sans-serif
+  (still Bevy's built-in monospace: a typeface of our own choosing is one change in `theme::font`).
+- **Colour meanings:** red for blood, danger and health nearly gone; yellow for warnings; zombie
+  green for sickness; cool blue for sleep; gold for level-ups, what's picked and good outcomes. No
+  other hues.
 - **Plain words** over icons until icons exist; icons later follow these same shapes and colours.
 
 ## Building assets in Blender over MCP

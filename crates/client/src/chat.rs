@@ -45,11 +45,11 @@ const MAX_BUBBLES: usize = 8;
 const BUBBLE_HEIGHT: f32 = 2.15;
 const BUBBLE_WIDTH: f32 = 300.0;
 
-const TEXT: Color = Color::srgb(0.93, 0.9, 0.82);
+const TEXT: Color = crate::theme::TEXT;
 const OWN: Color = Color::srgb(0.95, 0.8, 0.45);
 const SHOUT: Color = Color::srgb(1.0, 0.86, 0.5);
 const DIM: Color = Color::srgb(0.66, 0.66, 0.68);
-const BACK: Color = Color::srgba(0.02, 0.02, 0.03, 0.78);
+const BACK: Color = crate::theme::HUD_BG;
 
 /// The chat line being typed.
 #[derive(Resource, Default)]
@@ -107,9 +107,7 @@ impl Plugin for ChatPlugin {
     }
 }
 
-fn font(size: f32) -> TextFont {
-    TextFont { font_size: bevy::text::FontSize::Px(size), ..default() }
-}
+use crate::theme::font;
 
 fn spawn(mut commands: Commands) {
     // Bottom left, above the vitals and the item note: the log, then the line being typed.

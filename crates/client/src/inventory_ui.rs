@@ -90,19 +90,17 @@ struct NoteLine;
 #[derive(Resource, Default, PartialEq)]
 struct Shown(String);
 
-const TEXT: Color = Color::srgb(0.93, 0.9, 0.82);
-const DIM: Color = crate::theme::DIM;
-const ROW: Color = Color::srgba(1.0, 1.0, 1.0, 0.025);
-const ROW_HOVER: Color = Color::srgba(0.3, 0.28, 0.2, 0.9);
-const ROW_PICKED: Color = Color::srgba(0.36, 0.3, 0.12, 0.95);
-const CHIP: Color = Color::srgba(0.18, 0.18, 0.2, 0.9);
-const CHIP_ON: Color = Color::srgba(0.55, 0.45, 0.15, 0.95);
-/// A pane's backing, a tab that isn't the one shown, and a hairline.
-const PANE: Color = Color::srgba(0.1, 0.1, 0.115, 0.92);
-const TAB: Color = Color::srgba(0.05, 0.05, 0.06, 0.9);
-const LINE: Color = Color::srgba(1.0, 1.0, 1.0, 0.1);
-const OK: Color = Color::srgb(0.95, 0.85, 0.35);
-const NO: Color = Color::srgb(0.95, 0.5, 0.35);
+use crate::theme::{self, DIM, INK, ROW, ROW_HOVER, ROW_PICKED, TEXT, font};
+
+/// The fold mark's small backing, and the search box's (typing: lit).
+const CHIP: Color = Color::srgba(1.0, 1.0, 1.0, 0.1);
+const CHIP_ON: Color = theme::ROW_PICKED;
+/// A pane's backing (set into the panel's sheet), a tab that isn't the one shown, and a hairline.
+const PANE: Color = theme::INSET;
+const TAB: Color = Color::srgba(1.0, 1.0, 1.0, 0.05);
+const LINE: Color = theme::LINE;
+const OK: Color = theme::GOLD;
+const NO: Color = theme::BAD;
 const NOTE_SECS: f32 = 4.0;
 /// The panel's two text sizes: rows (and everything small), and headers.
 const ROW_FONT: f32 = 14.0;
@@ -120,7 +118,7 @@ const CELL_GAP: f32 = 6.0;
 /// The panel's widest: two panes with their tabs, the move-all buttons between, the padding.
 /// (918: on a 1280 screen it stops short of the health panel on the left, which opens beside it
 /// to use something on a wound.)
-const PANEL_W: f32 = 2.0 * (PANE_W + TAB_W) + 42.0 + 24.0;
+const PANEL_W: f32 = 2.0 * (PANE_W + TAB_W) + 42.0 + 2.0 * theme::SHEET_PAD.0;
 /// A request with no answer after this long is forgotten (and its row can be clicked again).
 const FLIGHT_SECS: f32 = 3.0;
 
@@ -618,10 +616,6 @@ fn remember_view(ui: Res<PanelUi>, mut store: ResMut<crate::ui_scale::SettingsSt
     }
 }
 
-fn font(size: f32) -> TextFont {
-    TextFont { font_size: bevy::text::FontSize::Px(size), ..default() }
-}
-
 fn spawn(mut commands: Commands, column: Query<Entity, With<crate::hud::BottomLeft>>) {
     commands.spawn((
         PanelRoot,
@@ -634,13 +628,13 @@ fn spawn(mut commands: Commands, column: Query<Entity, With<crate::hud::BottomLe
             right: px(16),
             flex_direction: FlexDirection::Column,
             row_gap: px(8),
-            padding: UiRect::all(px(12)),
+            padding: UiRect::axes(px(theme::SHEET_PAD.0), px(theme::SHEET_PAD.1)),
             max_width: px(PANEL_W),
             max_height: Val::Percent(85.0),
             overflow: Overflow::scroll_y(),
             ..default()
         },
-        BackgroundColor(crate::theme::PANEL_BG),
+        theme::sheet(),
     ));
     // The latest note while the panel is shut: just above the HUD's bottom-left column (the tags
     // and the vitals), however tall that is, on a backing so it reads over the world (#97).
@@ -1360,8 +1354,8 @@ fn make(c: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f3
     };
     c.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(8), align_items: AlignItems::Center, margin: UiRect::top(px(4)), ..default() })
         .with_children(|t| {
-            t.spawn((Node { width: px(W_LEAD + 6.0), justify_content: JustifyContent::Center, ..default() }, BackgroundColor(CHIP), Pickable::IGNORE)).with_children(|f| {
-                f.spawn((Text::new(if ui.shown { "-" } else { "+" }), font(ROW_FONT), TextColor(TEXT), Pickable::IGNORE));
+            t.spawn((Node { width: px(W_LEAD + 10.0), justify_content: JustifyContent::Center, ..default() }, theme::button(false), Pickable::IGNORE)).with_children(|f| {
+                f.spawn((Text::new(if ui.shown { "-" } else { "+" }), font(ROW_FONT), TextColor(INK), Pickable::IGNORE));
             });
             t.spawn((Text::new("Make"), font(HEAD_FONT), TextColor(TEXT), Pickable::IGNORE));
             t.spawn((Text::new(summary), font(ROW_FONT), TextColor(DIM), Pickable::IGNORE));
@@ -1434,26 +1428,33 @@ enum PaneTop {
 /// press sorts both panes by that column; none over the body view) and its rows.
 fn pane(panes: &mut ChildSpawnerCommands, title: &str, top: PaneTop, gauge: Gauge, sort: Sort, body: impl FnOnce(&mut ChildSpawnerCommands)) {
     panes.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(1), width: px(PANE_W), min_height: px(230), padding: UiRect::all(px(8)), flex_shrink: 0.0, ..default() }, BackgroundColor(PANE))).with_children(|col| {
-        col.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::Center, margin: UiRect::bottom(px(6)), ..default() }).with_children(|t| {
+        // The pane's title, centred; "pick all" at its right end, out of the layout.
+        col.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::Center, align_items: AlignItems::Center, margin: UiRect::bottom(px(6)), ..default() }).with_children(|t| {
             t.spawn((Text::new(title.to_string()), font(HEAD_FONT), TextColor(TEXT), TextLayout::no_wrap()));
             match top {
                 // Every stack this pane shows, picked in one click (again: unpicked).
                 PaneTop::PickAll(which) => {
-                    t.spawn((Text::new("pick all"), font(ROW_FONT), TextColor(DIM), TextLayout::no_wrap())).observe(move |_: On<PointerPress>, listed: Res<Listed>, mut picked: ResMut<Picked>| picked.pick_all(which, &listed.0));
+                    t.spawn((Text::new("pick all"), font(ROW_FONT), TextColor(DIM), TextLayout::no_wrap(), Node { position_type: PositionType::Absolute, right: px(0), ..default() }))
+                        .observe(move |_: On<PointerPress>, listed: Res<Listed>, mut picked: ResMut<Picked>| picked.pick_all(which, &listed.0));
                 }
+                // The two ways the pane of what you hold and wear shows them, at the title's right
+                // end, out of the layout (the title stays centred).
                 PaneTop::View { body } => {
-                    t.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(2), ..default() }).with_children(|v| {
+                    t.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(2), position_type: PositionType::Absolute, right: px(0), ..default() }).with_children(|v| {
                         chip(v, "List".into(), !body).observe(|_: On<PointerPress>, mut ui: ResMut<PanelUi>| ui.body = false);
                         chip(v, "Body".into(), body).observe(|_: On<PointerPress>, mut ui: ResMut<PanelUi>| ui.body = true);
                     });
                 }
             }
         });
+        // How full it is, as a brushed bar (none for the floor, which has no limit).
         // (Not shrinking: a panel taller than its room scrolls, and would squeeze the bar to nothing.)
-        col.spawn((Node { height: px(4), flex_shrink: 0.0, ..default() }, BackgroundColor(if gauge.share.is_some() { Color::srgba(0.0, 0.0, 0.0, 0.6) } else { Color::NONE }))).with_children(|b| {
-            let share = gauge.share.unwrap_or(0.0).clamp(0.0, 1.0);
-            b.spawn((Node { width: Val::Percent(share * 100.0), height: Val::Percent(100.0), ..default() }, BackgroundColor(gauge.color)));
-        });
+        let mut bar = col.spawn(Node { height: px(8), flex_shrink: 0.0, ..default() });
+        if let Some(share) = gauge.share {
+            bar.insert(theme::bar_track()).with_children(|b| {
+                b.spawn((Node { width: Val::Percent(share.clamp(0.0, 1.0) * 100.0), height: Val::Percent(100.0), ..default() }, theme::bar_fill(gauge.color)));
+            });
+        }
         col.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, margin: UiRect::axes(px(0), px(4)), ..default() }).with_children(|g| {
             g.spawn((Text::new(gauge.left), font(ROW_FONT), TextColor(gauge.color), TextLayout::no_wrap()));
             g.spawn((Text::new(gauge.right), font(ROW_FONT), TextColor(DIM), TextLayout::no_wrap()));
@@ -1506,9 +1507,10 @@ fn tab<'a>(strip: &'a mut ChildSpawnerCommands, label: &str, on: bool) -> Entity
 
 /// A small clickable label (a chip, a button); the caller observes its presses.
 fn chip<'a>(parent: &'a mut ChildSpawnerCommands, text: String, on: bool) -> EntityCommands<'a> {
-    let mut e = parent.spawn((Node { padding: UiRect::axes(px(7), px(3)), justify_content: JustifyContent::Center, ..default() }, BackgroundColor(if on { CHIP_ON } else { CHIP })));
+    // A plain light button with a worn edge (`theme::button`); the one that's on is gold.
+    let mut e = parent.spawn((Node { padding: UiRect::axes(px(7), px(3)), justify_content: JustifyContent::Center, ..default() }, theme::button(on)));
     e.with_children(|b| {
-        b.spawn((Text::new(text), font(ROW_FONT), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
+        b.spawn((Text::new(text), font(ROW_FONT), TextColor(INK), TextLayout::no_wrap(), Pickable::IGNORE));
     });
     e
 }
@@ -1517,10 +1519,16 @@ fn chip<'a>(parent: &'a mut ChildSpawnerCommands, text: String, on: bool) -> Ent
 /// to the bags, the open container or the floor). Right: the one small control that brings out the
 /// search box and the chips (or puts them away, cleared).
 fn top_bar(c: &mut ChildSpawnerCommands, find: &Find, n: usize, kg: f32, open: Option<(u32, String)>) {
-    c.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::Center, min_height: px(26), flex_shrink: 0.0, ..default() }).with_children(|bar| {
+    c.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::Center, min_height: px(30), flex_shrink: 0.0, ..default() }).with_children(|bar| {
+        // The panel's name, centred over both panes (out of the layout: the controls either side
+        // come and go without moving it). With stacks picked, the move-to row has the line.
+        if n == 0 {
+            bar.spawn((Node { position_type: PositionType::Absolute, left: px(0), right: px(0), top: px(0), bottom: px(0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, Pickable::IGNORE)).with_children(|t| {
+                t.spawn((Text::new("INVENTORY"), font(theme::TITLE), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
+            });
+        }
         bar.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(6), align_items: AlignItems::Center, ..default() }).with_children(|l| {
             if n == 0 {
-                l.spawn((Text::new("Inventory"), font(HEAD_FONT), TextColor(TEXT), TextLayout::no_wrap()));
                 return;
             }
             l.spawn((Text::new(format!("{n} picked ({kg:.1} kg), move to:")), font(ROW_FONT), TextColor(OK), TextLayout::no_wrap()));
@@ -1537,7 +1545,7 @@ fn top_bar(c: &mut ChildSpawnerCommands, find: &Find, n: usize, kg: f32, open: O
 
 /// The search box and the category chips: on show only while in use ([`Find::in_use`]).
 fn toolbar(c: &mut ChildSpawnerCommands, find: &Find) {
-    c.spawn(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: px(4), row_gap: px(4), align_items: AlignItems::Center, max_width: px(PANEL_W - 24.0), ..default() }).with_children(|bar| {
+    c.spawn(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: px(4), row_gap: px(4), align_items: AlignItems::Center, max_width: px(PANEL_W - 2.0 * theme::SHEET_PAD.0), ..default() }).with_children(|bar| {
         let text = match (find.query.is_empty(), find.typing) {
             (true, false) => "Search ( / )".to_string(),
             (_, true) => format!("Search: {}_", find.query),
@@ -2013,7 +2021,7 @@ fn menu_act(time: Res<Time>, mouse: Res<ButtonInput<MouseButton>>, me: Res<Local
 
 /// About how big a menu of `entries` lines is drawn (UI pixels), for keeping it on screen.
 fn menu_size(entries: usize) -> Vec2 {
-    Vec2::new(280.0, 34.0 + 25.0 * entries as f32)
+    Vec2::new(280.0 + 2.0 * theme::STRIP_PAD.0, 34.0 + 2.0 * theme::STRIP_PAD.1 + 25.0 * entries as f32)
 }
 
 /// Draw the menu when it changes: its title, then the entries numbered, the first highlighted.
@@ -2034,14 +2042,17 @@ fn draw_menu(mut commands: Commands, menu: Res<ItemMenu>, ui: Res<UiScale>, wind
             Err(_) => at,
         }
     });
+    // On a painted strip of its own, like every small piece of the HUD (`theme::strip`).
+    let pad = UiRect::axes(px(theme::STRIP_PAD.0), px(theme::STRIP_PAD.1));
     let node = match at {
-        Some(at) => Node { position_type: PositionType::Absolute, left: px(at.x), top: px(at.y), flex_direction: FlexDirection::Column, row_gap: px(1), padding: UiRect::all(px(4)), min_width: px(170), ..default() },
-        None => Node { position_type: PositionType::Absolute, right: px(PANEL_W + 30.0), top: px(140), flex_direction: FlexDirection::Column, row_gap: px(1), padding: UiRect::all(px(4)), min_width: px(170), ..default() },
+        Some(at) => Node { position_type: PositionType::Absolute, left: px(at.x), top: px(at.y), flex_direction: FlexDirection::Column, row_gap: px(1), padding: pad, min_width: px(190), ..default() },
+        None => Node { position_type: PositionType::Absolute, right: px(PANEL_W + 30.0), top: px(140), flex_direction: FlexDirection::Column, row_gap: px(1), padding: pad, min_width: px(190), ..default() },
     };
     commands
-        .spawn((MenuRoot, node, GlobalZIndex(20), BackgroundColor(Color::srgba(0.05, 0.05, 0.06, 0.96)), BorderColor::all(Color::srgb(0.45, 0.4, 0.25))))
+        .spawn((MenuRoot, node, GlobalZIndex(20), theme::strip()))
         .with_children(|c| {
-            c.spawn((Text::new(m.title.clone()), font(13.0), TextColor(DIM), Node { padding: UiRect::axes(px(6), px(2)), ..default() }));
+            c.spawn((Text::new(m.title.clone()), font(theme::SMALL), TextColor(DIM), Node { align_self: AlignSelf::Center, padding: UiRect::axes(px(6), px(2)), ..default() }));
+            c.spawn((Node { height: px(2), margin: UiRect::bottom(px(3)), ..default() }, theme::rule(), Pickable::IGNORE));
             for (k, e) in m.entries.iter().enumerate() {
                 let rest = if k == 0 { ROW_PICKED } else { ROW };
                 c.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(10), padding: UiRect::axes(px(6), px(3)), ..default() }, BackgroundColor(rest)))
