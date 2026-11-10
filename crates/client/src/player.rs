@@ -74,9 +74,82 @@ pub struct LocalPlayer {
     pub action: Option<ActionKind>,
     /// Dev toggles the server has on for us (god mode, ignored by zombies).
     pub dev: DevFlags,
+    /// On a multiplayer server: our latest swing, shove or stomp, begun on the click rather than
+    /// when the server's word of it comes back (`LocalPlayer::act`; `survivor.rs` plays it).
+    pub swing: Option<OwnSwing>,
+}
+
+/// An action of our own begun on the click, on a multiplayer server (#23). Our survivor is
+/// predicted, so its blow lands on screen where the server will have it land; the server tests the
+/// targets where our picture had them then (lag compensation), so what we see hit is what is hit.
+#[derive(Clone, Copy, Debug)]
+pub struct OwnSwing {
+    pub kind: ActionKind,
+    /// The input that follows it: a snapshot that has applied this one knows of the action.
+    pub seq: u32,
+    /// When it began (`Time::elapsed_secs`), and our estimate of its windup and whole length.
+    pub at: f32,
+    pub windup: f32,
+    pub total: f32,
 }
 
 impl LocalPlayer {
+    /// How far behind our own survivor the picture of everything else is, in seconds: the inputs
+    /// we have sent that `view` (our player in the snapshot shown) hasn't applied yet. 0 in
+    /// single-player, where the world is in step with us.
+    pub fn view_lag(&self, link: &ServerLink, view: &zombye_net::PlayerView) -> f32 {
+        if link.net.is_none() {
+            return 0.0;
+        }
+        self.seq.saturating_sub(view.last_input_seq).min(40) as f32 * TICK_DT
+    }
+
+    /// Swing, shove or stomp: ask the server, and on a multiplayer server begin it here and now
+    /// (when it looks as if the server will take it) instead of a round trip later.
+    pub fn act(&mut self, link: &mut ServerLink, join: &JoinInfo, kind: ActionKind, now: f32) {
+        link.send(match kind {
+            ActionKind::Swing => Intent::Attack { player: self.id },
+            ActionKind::Shove => Intent::Shove { player: self.id },
+            ActionKind::Stomp => Intent::Stomp { player: self.id },
+        });
+        if link.net.is_none() || self.dead || !self.aiming || self.acting(link, now) {
+            return;
+        }
+        let Some(view) = link.curr.players.iter().find(|p| p.id == self.id) else { return };
+        if view.asleep || view.knock.is_some() {
+            return;
+        }
+        let c = &join.combat;
+        let (windup, total) = match kind {
+            ActionKind::Swing => {
+                let unarmed = join.weapons.iter().position(|w| w.category == zombye_sim::WeaponCategory::Unarmed).unwrap_or(0);
+                let w = &join.weapons[self.weapon.map_or(unarmed, |w| w as usize).min(join.weapons.len().saturating_sub(1))];
+                (w.windup_seconds, w.swing_seconds)
+            }
+            ActionKind::Shove => (c.shove_windup, c.shove_seconds),
+            ActionKind::Stomp => (c.stomp_windup, c.stomp_seconds),
+        };
+        // Tired arms are slower (the server's rule; wounds and skill it adds are corrected when
+        // its word comes back).
+        let slow = c.fatigue(self.curr.endurance).1;
+        self.swing = Some(OwnSwing { kind, seq: self.seq + 1, at: now, windup: windup * slow, total: total * slow });
+    }
+
+    /// Whether an action of ours is under way or we are still recovering from one, as far as we
+    /// can tell: our own latest (multiplayer), or what the snapshot says once it knows of that one.
+    pub fn acting(&self, link: &ServerLink, now: f32) -> bool {
+        let view = link.curr.players.iter().find(|p| p.id == self.id);
+        let own = self.swing.filter(|_| link.net.is_some());
+        if own.is_some_and(|s| now < s.at + s.total) {
+            return true;
+        }
+        // A snapshot from before our latest click says nothing new.
+        if own.is_some_and(|s| view.is_some_and(|v| v.last_input_seq < s.seq)) {
+            return false;
+        }
+        view.is_none_or(|v| v.action.is_some() || v.ready_in - self.view_lag(link, v) > 0.0)
+    }
+
     /// Start again from a loaded world's view of our player: forget unconfirmed inputs (they were
     /// for the old world) and keep numbering inputs above anything the save has seen.
     pub fn resume(&mut self, view: &zombye_net::PlayerView, tick: u64) {
@@ -86,6 +159,7 @@ impl LocalPlayer {
         (self.prev, self.curr) = (view.state(), view.state());
         self.aim = view.facing;
         self.last_snapshot_tick = tick;
+        self.swing = None;
         (self.hp, self.dead, self.weapon, self.action, self.dev) = (view.hp, view.dead, view.weapon, view.action, view.dev);
     }
 }
@@ -138,6 +212,7 @@ fn spawn_player(
         weapon,
         action,
         dev,
+        swing: None,
     });
 
     let assets = SurvivorAssets::new(&mut meshes, &mut materials, &mut bindposes);
@@ -199,6 +274,12 @@ fn predict(
     }
     me.seq += 1;
     let seq = me.seq;
+    if link.net.is_some() {
+        // On a server: say which snapshot we are showing as this input goes, so our blows land
+        // where we see their targets (lag compensation, #23).
+        let tick = link.curr.tick;
+        link.send(Intent::Seen { player: me.id, tick });
+    }
     link.send(Intent::PlayerInput { player: me.id, seq, move_dir: input.move_dir.to_array(), facing: input.facing, run, sneak: input.sneak, aim: input.aim });
 
     if me.pending.len() >= MAX_PENDING {
@@ -369,11 +450,13 @@ fn actions(
     panel: Res<crate::inventory_ui::InventoryPanel>,
     health: Res<crate::health_ui::HealthPanel>,
     preview: Res<crate::dev_time::LightPreview>,
-    me: Res<LocalPlayer>,
+    time: Res<Time>,
+    mut me: ResMut<LocalPlayer>,
     join: Res<JoinInfo>,
     players: Query<(&Transform, &Player)>,
     mut link: ResMut<ServerLink>,
 ) {
+    let now = time.elapsed_secs();
     // Dev toggles: flip what the server last said.
     if keys.just_pressed(KeyCode::F1) {
         link.send(Intent::Dev { player: me.id, god: Some(!me.dev.god), ignored: None });
@@ -394,7 +477,7 @@ fn actions(
     }
     // Fighting is for aiming (right mouse held); the server refuses it otherwise.
     if me.aiming && mouse.just_pressed(MouseButton::Left) && !panel.open && !health.open && !preview.hovered {
-        link.send(Intent::Attack { player: me.id });
+        me.act(&mut link, &join, ActionKind::Swing, now);
     }
     if me.aiming && keys.just_pressed(KeyCode::Space) {
         // Stomp if a downed zombie lies right in front, else shove (the server decides what it hits).
@@ -405,7 +488,7 @@ fn actions(
             let to = Vec2::from(z.pos) - me.curr.pos;
             matches!(z.anim, ZombieAnim::Down | ZombieAnim::GetUp) && to.length() <= c.stomp_range && forward.dot(to.normalize_or_zero()) >= half_arc
         });
-        link.send(if downed { Intent::Stomp { player: me.id } } else { Intent::Shove { player: me.id } });
+        me.act(&mut link, &join, if downed { ActionKind::Stomp } else { ActionKind::Shove }, now);
     }
     if keys.just_pressed(KeyCode::KeyE) {
         // Something on our floor (the snapshot's, by the server's reach rule): pick it up.

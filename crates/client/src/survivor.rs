@@ -313,6 +313,12 @@ pub struct SurvivorAnim {
     pub(crate) idle: f32,
     pub(crate) action: Option<ActionClock>,
     last_tick: u64,
+    /// Our own survivor on a multiplayer server (#23): the action begun on the click that
+    /// `action` is playing (the input it went with, `player::OwnSwing::seq`) until the snapshots
+    /// have caught up with it, whether one has confirmed it, and the last one taken up.
+    own: Option<u32>,
+    own_confirmed: bool,
+    own_taken: u32,
     pub(crate) hurt_at: f32,
     pub(crate) dead_since: Option<f32>,
     /// Lying asleep rather than dead (#93), and when it woke (it gets up over `GET_UP_SECS`).
@@ -337,6 +343,9 @@ impl SurvivorAnim {
             idle: 0.0,
             action: None,
             last_tick: u64::MAX,
+            own: None,
+            own_confirmed: false,
+            own_taken: 0,
             hurt_at: -100.0,
             dead_since: None,
             sleeping: false,
@@ -409,23 +418,57 @@ fn animate_survivors(
         a.cycle = (a.cycle + a.speed * dt / cycle_m).fract();
         a.idle = (a.idle + dt * 0.3).fract();
 
+        // On a multiplayer server our own action begins on the click (#23, `LocalPlayer::act`):
+        // our survivor is predicted, so the blow lands on screen when and where the server lands
+        // it, and the server tests the targets where this picture has them (lag compensation).
+        // Everything the snapshot says of our own timing is `lag` old by our survivor's clock.
+        let lag = local.map_or(0.0, |m| m.view_lag(&link, view));
+        if let Some(s) = local.and_then(|m| m.swing).filter(|s| link.net.is_some() && s.seq != a.own_taken) {
+            a.own_taken = s.seq;
+            a.own = Some(s.seq);
+            a.own_confirmed = false;
+            a.action = Some(ActionClock { kind: s.kind, start: s.at, land: s.at + s.windup, end: Some(s.at + s.total) });
+        }
         // The action under way, timed from snapshots.
         if link.curr.tick != a.last_tick {
             a.last_tick = link.curr.tick;
-            match view.action {
-                Some(kind) => match &mut a.action {
-                    Some(c) if c.kind == kind && c.end.is_none() => c.land = now + view.action_left,
-                    _ => a.action = Some(ActionClock { kind, start: now - TICK_DT, land: now + view.action_left, end: None }),
-                },
-                None => {
-                    if let Some(c) = &mut a.action
-                        && c.end.is_none()
-                    {
-                        c.land = c.land.min(now);
-                        c.end = Some(now + view.ready_in.max(0.15));
+            match a.own {
+                // A snapshot from before the click says nothing about this action.
+                Some(seq) if view.last_input_seq < seq => {}
+                Some(_) => match (view.action, &mut a.action) {
+                    // The server has it under way: its timing, moved to our survivor's clock.
+                    (Some(kind), Some(c)) if c.kind == kind => {
+                        a.own_confirmed = true;
+                        c.land = now + view.action_left - lag;
+                        c.end = Some((now + view.ready_in - lag).max(c.land + 0.1));
                     }
-                }
+                    _ => {
+                        // Landed there, or never taken (we were hit first, or too soon after the
+                        // last one): from here the snapshots say what we do.
+                        if !a.own_confirmed && view.action.is_none() && view.ready_in <= 0.0 {
+                            a.action = None;
+                        }
+                        a.own = None;
+                    }
+                },
+                None => match view.action {
+                    Some(kind) => match &mut a.action {
+                        Some(c) if c.kind == kind && c.end.is_none() => c.land = now + view.action_left - lag,
+                        _ => a.action = Some(ActionClock { kind, start: now - TICK_DT, land: now + view.action_left - lag, end: None }),
+                    },
+                    None => {
+                        if let Some(c) = &mut a.action
+                            && c.end.is_none()
+                        {
+                            c.land = c.land.min(now);
+                            c.end = Some(now + (view.ready_in - lag).max(0.15));
+                        }
+                    }
+                },
             }
+        }
+        if a.action.is_none() {
+            a.own = None;
         }
         if a.action.is_some_and(|c| c.end.is_some_and(|e| now > e)) {
             a.action = None;

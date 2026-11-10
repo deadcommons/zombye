@@ -328,6 +328,11 @@ fn join_remote(app: &mut App, addr: &str, options: &Options, content: &zombye_si
         std::process::exit(1);
     };
     let mut remote = Remote::connect(addr, &options.name, &options.password, Duration::from_secs(10)).unwrap_or_else(|e| fail(e));
+    if options.lag_ms > 0 {
+        // `--lag MS`: a made-up slow line, for trying lag compensation on one machine (#23).
+        remote.set_lag(Duration::from_millis(options.lag_ms as u64));
+        println!("--lag: playing as if {} ms of ping away", options.lag_ms);
+    }
     let joined = build_map(&remote.welcome, content).unwrap_or_else(|e| fail(e));
     let first = remote.wait_snapshot(Duration::from_secs(10)).unwrap_or_else(|e| fail(e));
     let w = &remote.welcome;

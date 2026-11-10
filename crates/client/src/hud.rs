@@ -370,12 +370,15 @@ fn update_hud(
         Some(net) => match &net.closed {
             Some(why) => format!("DISCONNECTED from {} ({why})", net.addr),
             None => format!(
-                "online: {} on {} (pvp {}) | {} other survivors in view | ping {} | down {}",
+                "online: {} on {} (pvp {}) | {} other survivors in view | ping {} | view {:.0} ms behind | down {}",
                 net.name,
                 net.server,
                 if net.pvp { "on" } else { "off" },
                 link.curr.players.len().saturating_sub(1),
                 net.ping_ms.map_or("?".to_string(), |p| format!("{p:.0} ms")),
+                // How old the picture of everything else is by our survivor's clock: what the
+                // server rewinds our blows' targets by (#23).
+                link.curr.players.iter().find(|p| p.id == me.id).map_or(0.0, |v| me.view_lag(&link, v)) * 1000.0,
                 net.down_kbps.map_or("?".to_string(), |k| format!("{k:.1} KB/s"))
             ),
         },

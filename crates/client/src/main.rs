@@ -217,6 +217,9 @@ pub struct Options {
     pub connect: Option<String>,
     pub name: String,
     pub password: String,
+    /// `--lag MS`: with `--connect`, play as if the server were that many milliseconds of ping
+    /// away (half each way), to try out lag compensation on one machine (#23).
+    pub lag_ms: u32,
 }
 
 /// Default and largest `--size` for `--render-to`.
@@ -323,6 +326,7 @@ impl Options {
             connect: value("--connect"),
             name: value("--name").unwrap_or_default(),
             password: value("--password").unwrap_or_default(),
+            lag_ms: value("--lag").and_then(|v| v.parse::<u32>().ok()).map_or(0, |v| v.min(2000)),
         }
     }
 

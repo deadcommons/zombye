@@ -351,6 +351,12 @@ pub struct World {
     pub(crate) scratch_pos: Vec<Vec2>,
     pub(crate) scratch_actions: Vec<(usize, Action)>,
     pub(crate) scratch_hits: Vec<(f32, usize)>,
+    /// Where zombies and players stood over the last few ticks, for lag-compensated melee (#23,
+    /// [`crate::lagcomp`]). Empty until a player's client reports what it sees; not saved.
+    pub(crate) lag_history: crate::lagcomp::History,
+    /// Blows that still land though their player was just floored or killed by another's (a trade
+    /// of blows, `combat`): filled and emptied within `step_player_actions`.
+    pub(crate) scratch_trades: Vec<crate::combat::Trade>,
 }
 
 /// Bare hands are added to weapons that have none (as the world does on creation).
@@ -420,6 +426,8 @@ impl World {
             combat_events: Vec::new(),
             scratch_actions: Vec::new(),
             scratch_hits: Vec::new(),
+            lag_history: Default::default(),
+            scratch_trades: Vec::new(),
             town_min: generated.town_min,
             town_max: generated.town_max,
             town_core: generated.core,
@@ -1083,6 +1091,8 @@ impl World {
         self.step_awareness();
 
         self.tick += 1;
+        // Where everybody stands now, for blows of lagging clients landing in the next few ticks (#23).
+        self.record_lag_frame();
         let tier_counts = self.tier_counts();
         self.stats = TickStats {
             tick_ms: start.elapsed().as_secs_f32() * 1000.0,

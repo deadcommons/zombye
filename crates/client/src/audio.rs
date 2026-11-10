@@ -768,7 +768,9 @@ fn world_events(
             if p.action == Some(ActionKind::Swing) && fresh {
                 let heavy = matches!(category(p.id), WeaponCategory::LongBlunt | WeaponCategory::Axe);
                 let cue = if heavy { Cue::SwingHeavy } else { Cue::SwingLight };
-                queue.at_later(cue, Vec2::from(p.pos), 1.0, (p.action_left - 0.12).max(0.0));
+                // Our own swing on a multiplayer server began on the click, a view lag ago (#23).
+                let lag = if p.id == local.id { local.view_lag(&link, p) } else { 0.0 };
+                queue.at_later(cue, Vec2::from(p.pos), 1.0, (p.action_left - 0.12 - lag).max(0.0));
             }
         }
         track.actions.retain(|id, _| snap.players.iter().any(|p| p.id == *id));

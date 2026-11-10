@@ -10,7 +10,7 @@
 use bevy::prelude::*;
 use zombye_net::Intent;
 use zombye_sim::ai::ZOMBIE_RADIUS;
-use zombye_sim::{TICK_DT, ZombieAnim};
+use zombye_sim::{ActionKind, TICK_DT, ZombieAnim};
 
 use crate::Options;
 use crate::player::{LocalPlayer, PlayerInputSet};
@@ -46,9 +46,11 @@ fn autoplay(
     mut link: ResMut<ServerLink>,
     mut me: ResMut<LocalPlayer>,
     mut auto: ResMut<AutoInput>,
+    time: Res<Time<Virtual>>,
     mut dead_for: Local<f32>,
     mut shoved_last: Local<bool>,
 ) {
+    let now = time.elapsed_secs();
     auto.move_dir = Vec2::ZERO;
     auto.run = false;
     if me.dead {
@@ -115,7 +117,8 @@ fn autoplay(
         }
     }
     // Only ask when the server will take it (an action under way or still recovering).
-    let busy = link.curr.players.iter().find(|p| p.id == me.id).is_none_or(|v| v.action.is_some() || v.ready_in > 0.0);
+    // On a multiplayer server the snapshot is behind us: go by our own latest action too.
+    let busy = me.acting(&link, now);
     // A downed zombie at our feet, and nothing standing right on top of us: finish it.
     if let Some((d, to)) = downed
         && d <= c.stomp_range * 0.9
@@ -123,7 +126,7 @@ fn autoplay(
     {
         me.aim = to.y.atan2(to.x);
         if !busy {
-            link.send(Intent::Stomp { player: me.id });
+            me.act(&mut link, &join, ActionKind::Stomp, now);
         }
         return;
     }
@@ -132,12 +135,12 @@ fn autoplay(
     if crowding >= 2 && !*shoved_last {
         // Crowded: shove them back, then swing into the gap (alternating).
         if !busy {
-            link.send(Intent::Shove { player: me.id });
+            me.act(&mut link, &join, ActionKind::Shove, now);
             *shoved_last = true;
         }
     } else if d <= reach * 0.95 {
         if !busy {
-            link.send(Intent::Attack { player: me.id });
+            me.act(&mut link, &join, ActionKind::Swing, now);
             *shoved_last = false;
         }
     } else {

@@ -166,7 +166,7 @@ impl Report {
             // the fullest view.
             let busiest = clients.iter().map(|c| c.bytes_out.saturating_sub(self.clients.iter().find(|(p, _)| *p == c.player).map_or(0, |(_, b)| *b))).max().unwrap_or(0);
             println!(
-                "tick {}: {online} online | {:.1} ticks/s, {:.2} ms a tick (worst {:.2}, budget {:.0}) | zombies {} active, {} near, {} virtual | {:.1} KB/s down per client (busiest {:.1}, budget {}) | up to {} zombies in a view, {:.0} updates a tick held back",
+                "tick {}: {online} online | {:.1} ticks/s, {:.2} ms a tick (worst {:.2}, budget {:.0}) | zombies {} active, {} near, {} virtual | {:.1} KB/s down per client (busiest {:.1}, budget {}) | up to {} zombies in a view, {:.0} updates a tick held back | blows rewound up to {:.0} ms (the most a client's view is behind; cap {:.0})",
                 host.world.tick,
                 ticks as f32 / secs,
                 self.ms / ticks as f32,
@@ -180,6 +180,8 @@ impl Report {
                 host.options.budget / 1000,
                 clients.iter().map(|c| c.zombies).max().unwrap_or(0),
                 (host.stats.held - self.held) as f32 / ticks as f32,
+                clients.iter().map(|c| host.world.view_lag_secs(c.player)).fold(0.0, f32::max) * 1000.0,
+                host.world.config.combat.lag_comp_max_secs * 1000.0,
             );
         }
         *self = Self::new(host);
@@ -196,6 +198,8 @@ pub struct BotArgs {
     pub password: String,
     /// `--bots-hostile`: they go for other players as they go for zombies (on a PvP server).
     pub hostile: bool,
+    /// `--lag MS`: they play as if that many milliseconds of ping away (#23).
+    pub lag_ms: u32,
 }
 
 struct Bot {
@@ -226,7 +230,8 @@ pub fn bots(args: BotArgs) {
     for k in 0..args.count {
         let name = format!("{}-{}", args.name, k + 1);
         match Remote::connect(&args.addr, &name, &args.password, Duration::from_secs(10)).and_then(|mut r| r.wait_snapshot(Duration::from_secs(10)).map(|s| (r, s))) {
-            Ok((remote, last)) => {
+            Ok((mut remote, last)) => {
+                remote.set_lag(Duration::from_millis(args.lag_ms as u64));
                 let seq = last.players.iter().find(|p| p.id == remote.player()).map_or(0, |p| p.last_input_seq);
                 bots.push(Bot { remote, last, seq, heading: noise(k as u32, 7) * std::f32::consts::TAU, was: Vec2::ZERO, snapshots: 1 });
             }
@@ -336,6 +341,8 @@ fn play(bot: &mut Bot, k: u32, tick: u32, hostile: bool) {
         bot.remote.send(Intent::PickUp { player: me });
     }
     bot.seq += 1;
+    // What it decided on, so its blows land where it saw their targets (lag compensation, #23).
+    bot.remote.send(Intent::Seen { player: me, tick: bot.last.tick });
     bot.remote.send(Intent::PlayerInput { player: me, seq: bot.seq, move_dir: move_dir.to_array(), facing, run: false, sneak: false, aim });
     bot.remote.flush();
 }

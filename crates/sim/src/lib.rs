@@ -17,6 +17,7 @@ pub mod firstnight;
 pub mod flow;
 pub mod health;
 pub mod inventory;
+pub mod lagcomp;
 pub mod items;
 pub mod loot;
 pub mod map;

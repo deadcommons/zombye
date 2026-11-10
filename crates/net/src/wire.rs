@@ -42,8 +42,9 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// combat, #65: `PlayerView::knock`, `CombatEvent::by`, players killed in the run stats. 3: the
 /// first night, #19: `RunView::first_night`, together with 2's changes. 4: interest management,
 /// #22: zombies carried on between updates, other players packed. 5: fair information, #66:
-/// `SnapshotDelta::heard`, `Rules::fair_sight`.)
-pub const PROTOCOL: u32 = 5;
+/// `SnapshotDelta::heard`, `Rules::fair_sight`. 6: lag-compensated melee, #23: `Intent::Seen`,
+/// `CombatTuning::lag_comp_max_secs` in the tunings.)
+pub const PROTOCOL: u32 = 6;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -864,6 +865,7 @@ impl Intent {
             | Intent::Craft { player, .. }
             | Intent::Sleep { player, .. }
             | Intent::CancelJobs { player, .. }
+            | Intent::Seen { player, .. }
             | Intent::Respawn { player }
             | Intent::Dev { player, .. } => Some(player),
             Intent::SpawnItem { .. } | Intent::SetGoal { .. } | Intent::SpawnZombies { .. } | Intent::SkipTime { .. } | Intent::MakeNoise { .. } => None,

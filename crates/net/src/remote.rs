@@ -27,7 +27,13 @@ pub struct Remote {
     out: Vec<u8>,
     /// From the reading thread (behind a mutex only so a `Remote` can be shared, as a Bevy
     /// resource must be; it is only ever taken through `&mut self`).
-    incoming: Mutex<Receiver<Result<ServerMsg, String>>>,
+    incoming: Mutex<Receiver<(Instant, Result<ServerMsg, String>)>>,
+    /// A made-up slow line, for trying out how the game plays over one ([`Remote::set_lag`]):
+    /// how long each way takes, what has arrived but isn't "here" yet, and the thread that sends
+    /// what we write when its time has come.
+    lag_each_way: Duration,
+    held: std::collections::VecDeque<(Instant, Result<ServerMsg, String>)>,
+    late_out: Option<mpsc::Sender<(Instant, Vec<u8>)>>,
     decoder: DeltaDecoder,
     received: Arc<AtomicU64>,
     /// Bytes sent so far.
@@ -84,13 +90,13 @@ impl Remote {
                     match wire::read_frame::<ServerMsg>(&mut reader, wire::MAX_SERVER_FRAME) {
                         Ok((msg, n)) => {
                             count.fetch_add(n as u64, Ordering::Relaxed);
-                            if tx.send(Ok(msg)).is_err() {
+                            if tx.send((Instant::now(), Ok(msg))).is_err() {
                                 break;
                             }
                         }
                         Err(e) => {
                             let silent = matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut);
-                            let _ = tx.send(Err(if silent { "the server stopped answering".to_string() } else { e.to_string() }));
+                            let _ = tx.send((Instant::now(), Err(if silent { "the server stopped answering".to_string() } else { e.to_string() })));
                             break;
                         }
                     }
@@ -99,12 +105,35 @@ impl Remote {
             .map_err(io)?;
         let now = Instant::now();
         // The first ping at once, so the HUD has one soon.
-        Ok(Self { welcome, stream, out: Vec::new(), incoming: Mutex::new(incoming), decoder: DeltaDecoder::default(), received, bytes_out, intents_sent: 0, closed: None, ping_ms: None, started: now, last_ping: now - PING_EVERY })
+        Ok(Self { welcome, stream, out: Vec::new(), incoming: Mutex::new(incoming), lag_each_way: Duration::ZERO, held: Default::default(), late_out: None, decoder: DeltaDecoder::default(), received, bytes_out, intents_sent: 0, closed: None, ping_ms: None, started: now, last_ping: now - PING_EVERY })
     }
 
     /// The player this connection plays.
     pub fn player(&self) -> u32 {
         self.welcome.player
+    }
+
+    /// Play as if over a slow line (the client's `--lag MS`, tests): everything sent leaves half of
+    /// `round_trip` late and everything received is held back the other half, so the ping reads
+    /// `round_trip` more. For trying out lag compensation (#23) on one machine; 0 turns it off.
+    pub fn set_lag(&mut self, round_trip: Duration) {
+        self.lag_each_way = round_trip / 2;
+        if self.lag_each_way.is_zero() {
+            self.late_out = None;
+        } else if self.late_out.is_none()
+            && let Ok(mut stream) = self.stream.try_clone()
+        {
+            let (tx, rx) = mpsc::channel::<(Instant, Vec<u8>)>();
+            let spawned = std::thread::Builder::new().name("net-client-lag".into()).spawn(move || {
+                while let Ok((due, bytes)) = rx.recv() {
+                    std::thread::sleep(due.saturating_duration_since(Instant::now()));
+                    if stream.write_all(&bytes).is_err() {
+                        break;
+                    }
+                }
+            });
+            self.late_out = spawned.is_ok().then_some(tx);
+        }
     }
 
     /// Bytes received so far.
@@ -131,6 +160,14 @@ impl Remote {
         if self.out.is_empty() {
             return;
         }
+        if let Some(late) = &self.late_out {
+            // The slow line: the lag thread writes it when its time has come.
+            self.bytes_out += self.out.len() as u64;
+            if late.send((Instant::now() + self.lag_each_way, std::mem::take(&mut self.out))).is_err() {
+                self.closed.get_or_insert("lost the connection".into());
+            }
+            return;
+        }
         match self.stream.write_all(&self.out) {
             Ok(()) => self.bytes_out += self.out.len() as u64,
             Err(e) => self.closed = Some(format!("lost the connection: {e}")),
@@ -142,7 +179,28 @@ impl Remote {
     pub fn poll(&mut self) -> Vec<Snapshot> {
         let mut snapshots = Vec::new();
         loop {
-            let next = self.incoming.get_mut().unwrap_or_else(|e| e.into_inner()).try_recv();
+            // On a made-up slow line, what has arrived waits its time in `held`.
+            let next = if self.lag_each_way.is_zero() && self.held.is_empty() {
+                self.incoming.get_mut().unwrap_or_else(|e| e.into_inner()).try_recv().map(|(_, m)| m)
+            } else {
+                let incoming = self.incoming.get_mut().unwrap_or_else(|e| e.into_inner());
+                let mut gone = false;
+                loop {
+                    match incoming.try_recv() {
+                        Ok(m) => self.held.push_back(m),
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            gone = true;
+                            break;
+                        }
+                    }
+                }
+                match self.held.front() {
+                    Some((at, _)) if at.elapsed() >= self.lag_each_way => Ok(self.held.pop_front().expect("peeked").1),
+                    None if gone => Err(TryRecvError::Disconnected),
+                    _ => Err(TryRecvError::Empty),
+                }
+            };
             match next {
                 Ok(Ok(ServerMsg::Snapshot(delta))) => snapshots.push(self.decoder.apply(*delta, self.welcome.player)),
                 Ok(Ok(ServerMsg::Pong(sent))) => self.ping_ms = Some((self.started.elapsed().as_millis() as u32).wrapping_sub(sent) as f32),

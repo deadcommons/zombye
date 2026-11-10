@@ -19,8 +19,9 @@
 //!   of another player only while its survivor sees them, and of one it only hears as a sound;
 //!   default on with PvP, off in co-op). With `--save PATH` the world is loaded or made, autosaved and saved on
 //!   shutdown as below, with whose survivor is whose in `PATH.players`.
-//! - `zombye-server --bots N --connect HOST[:PORT] [--secs S] [--bots-hostile]` — N headless bot
-//!   clients, each on its own connection, that wander and fight; prints what each costs.
+//! - `zombye-server --bots N --connect HOST[:PORT] [--secs S] [--bots-hostile] [--lag MS]` — N headless bot
+//!   clients, each on its own connection, that wander and fight; prints what each costs. `--lag MS`
+//!   makes them play as if that many milliseconds of ping away (lag compensation, #23).
 //!
 //! Common options: `--zombies N` (default: as many as `population.ron` gives for the map, about 2,600
 //! on the default map), `--seed S` (default 1), `--map-chunks N` (a square
@@ -176,6 +177,7 @@ fn main() {
             name: text("--name").unwrap_or_else(|| "bot".into()),
             password: text("--password").unwrap_or_default(),
             hostile: flag("--bots-hostile"),
+            lag_ms: value("--lag").unwrap_or(0).min(2000) as u32,
         });
     } else if flag("--host") {
         let host_args = match multiplayer::HostArgs::parse(&args) {
@@ -198,7 +200,7 @@ fn main() {
         eprintln!(
             "usage: zombye-server (--mcp | --bench [--ticks N] [--players N] [--horde N] [--save-bench] \
              | --host [ADDR[:PORT]] [--name NAME] [--max-players N] [--pvp on|off] [--spawn spread|together] [--password P] [--allow-dev] [--budget KB] [--fair-sight on|off] \
-             | --bots N --connect HOST[:PORT] [--secs S] [--name PREFIX] [--password P] [--bots-hostile]) \
+             | --bots N --connect HOST[:PORT] [--secs S] [--name PREFIX] [--password P] [--bots-hostile] [--lag MS]) \
              [--zombies N] [--seed S] [--map-chunks N] [--pvp on] [--data DIR] \
              [--save PATH] [--load-anyway] [--autosave-mins N] [--saves DIR] [--client PATH] [--screenshot-timeout SECS] [--no-debug-tools]"
         );

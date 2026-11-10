@@ -174,6 +174,11 @@ pub struct Player {
     /// Saved in its own optional section, like `run`; `None` in a save from before it.
     #[serde(skip)]
     pub first_night: Option<crate::firstnight::FirstNight>,
+    /// The tick of the snapshot this player's client was showing when it sent its latest input
+    /// (`World::player_saw`; lag compensation, `crate::lagcomp`). 0: never said (a local player),
+    /// so nothing is rewound for it. Not saved: a client says again every tick.
+    #[serde(skip)]
+    pub seen_tick: u64,
 }
 
 /// A player staggered or knocked down by another player's swing or shove (see `combat`).
@@ -219,6 +224,7 @@ impl Player {
             dev: DevFlags::default(),
             run: RunStats::default(),
             first_night: None,
+            seen_tick: 0,
         }
     }
 }

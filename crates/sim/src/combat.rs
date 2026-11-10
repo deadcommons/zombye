@@ -122,6 +122,26 @@ pub struct CombatTuning {
     /// How long a player reels from a blow, and how long one stays on the ground.
     pub player_stagger_secs: (f32, f32),
     pub player_down_secs: (f32, f32),
+
+    // Lag compensation (#23, `crate::lagcomp`).
+    /// A blow of a player whose client reports what it shows (one over the network) is tested
+    /// against its targets where they stood at most this long ago; 0 turns it off. It is also the
+    /// most by which a blow about to land survives its player being floored (a trade of blows).
+    /// 0.35 s covers a 150 ms ping with the client's own tick and snapshot cushion on top.
+    pub lag_comp_max_secs: f32,
+}
+
+/// A blow that lands though its player was just staggered, floored or killed by another player's:
+/// on its own client it had already landed (see `World::strike_player`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Trade {
+    pi: usize,
+    action: Action,
+    /// Where it stood and faced before the other's blow moved it.
+    origin: Vec2,
+    facing: f32,
+    /// Ticks until it would have landed.
+    ahead: u64,
 }
 
 impl Default for CombatTuning {
@@ -175,6 +195,8 @@ impl Default for CombatTuning {
             player_stagger_secs: (0.5, 0.8),
             // Short next to a zombie's 4-6 s: time for two stomps, not five.
             player_down_secs: (1.4, 2.0),
+
+            lag_comp_max_secs: 0.35,
         }
     }
 }
@@ -418,7 +440,7 @@ impl World {
         // A new survivor: its skills start over (#46).
         let skills = crate::skills::Skills::start(&self.config.skills);
         let p = &mut self.players[pi];
-        *p = Player { last_input_seq: p.last_input_seq, input: PlayerInput::default(), dev: p.dev, skills, ..Player::new(id, spawn, hp) };
+        *p = Player { last_input_seq: p.last_input_seq, input: PlayerInput::default(), dev: p.dev, skills, seen_tick: p.seen_tick, ..Player::new(id, spawn, hp) };
         self.refresh_carry(pi);
         self.begin_first_night(pi);
         true
@@ -465,13 +487,31 @@ impl World {
             }
         }
         for &(pi, a) in &due {
-            self.land(pi, a);
+            let p = &self.players[pi].state;
+            self.land(pi, a, p.pos, p.facing, 0);
         }
         self.scratch_actions = due;
+        // Trades of blows (see `strike_player`): blows that had landed on their own client before
+        // the one that floored their player showed there. One may floor someone else in turn.
+        let mut k = 0;
+        while k < self.scratch_trades.len() {
+            let t = self.scratch_trades[k];
+            self.land(t.pi, t.action, t.origin, t.facing, t.ahead);
+            k += 1;
+        }
+        self.scratch_trades.clear();
     }
 
-    /// An action lands: find its targets and hit them.
-    fn land(&mut self, pi: usize, a: Action) {
+    /// An action lands, swung from `origin` facing `facing`: find its targets and hit them.
+    ///
+    /// **Lag compensation (#23):** for a player whose client reports what it shows, the targets
+    /// are tested (reach, arc, the clear line, which is nearest, the way the blow goes) where they
+    /// stood in the snapshot it was showing as it sent the input this tick applied, `ahead` ticks
+    /// on, at most `lag_comp_max_secs` back (`World::rewind_tick`). Its own place is the server's:
+    /// its client predicts that. Who can be hit goes by now (a zombie dead or down since isn't
+    /// swung at; the map is as it is, so a door shut since stops the blow), and what the blow
+    /// does happens to the target where it is now.
+    fn land(&mut self, pi: usize, a: Action, origin: Vec2, facing: f32, ahead: u64) {
         let c = &self.config.combat;
         // Skills (#46): Strength knocks back farther and shoves down more often, so does Brawl;
         // the weapon's skill (Brawl for stomps) hits harder.
@@ -524,22 +564,27 @@ impl World {
             },
         };
         let player = self.players[pi].id;
-        let origin = self.players[pi].state.pos;
-        let forward = Vec2::from_angle(self.players[pi].state.facing);
+        let forward = Vec2::from_angle(facing);
         let stomp = a.kind == ActionKind::Stomp;
+
+        // Where the attacker's client showed everybody (none: where they are).
+        let history = std::mem::take(&mut self.lag_history);
+        let frame = self.rewind_tick(pi, ahead).and_then(|t| history.frame(t));
+        // They may have moved this far since.
+        let moved = frame.map_or(0.0, |f| self.tick.saturating_sub(f.tick) as f32 * TICK_DT * crate::lagcomp::MAX_BODY_SPEED);
 
         // Candidates in reach and arc, nearest first (ties by index, so the order is stable).
         let mut found = std::mem::take(&mut self.scratch_hits);
         found.clear();
         let z = &self.zombies;
         let reach = s.range + if stomp { 0.0 } else { ZOMBIE_RADIUS };
-        self.hash.for_each_within(origin, reach, |j| {
+        self.hash.for_each_within(origin, reach + moved, |j| {
             // Swings and shoves pass over downed zombies; stomps only hit them.
             let state = z.state[j];
             if state == ZombieState::Dead || (state == ZombieState::Down) != stomp {
                 return;
             }
-            let to = z.pos[j] - origin;
+            let to = frame.and_then(|f| f.zombie(z.id[j])).unwrap_or(z.pos[j]) - origin;
             let d = to.length();
             if d > reach {
                 return;
@@ -562,7 +607,7 @@ impl World {
                 if k == pi || o.dead || o.knock.is_some_and(|k| k.down) != stomp {
                     continue;
                 }
-                let to = o.state.pos - origin;
+                let to = frame.and_then(|f| f.player(o.id)).unwrap_or(o.state.pos) - origin;
                 let d = to.length();
                 if d > reach {
                     continue;
@@ -585,14 +630,17 @@ impl World {
                 break;
             }
             let victim = (j & PLAYER_TARGET != 0).then_some(j & !PLAYER_TARGET);
-            let at = victim.map_or_else(|| self.zombies.pos[j], |k| self.players[k].state.pos);
+            let at = match victim {
+                Some(k) => frame.and_then(|f| f.player(self.players[k].id)).unwrap_or(self.players[k].state.pos),
+                None => frame.and_then(|f| f.zombie(self.zombies.id[j])).unwrap_or(self.zombies.pos[j]),
+            };
             if !clear_path(&self.map, origin, at) {
                 continue;
             }
             let falloff = self.config.combat.multi_hit_falloff.powi(hits as i32);
             let effect = match victim {
-                Some(k) => self.strike_player(pi, a, &s, origin, forward, k, falloff),
-                None => self.strike(player, a, &s, origin, forward, j, falloff),
+                Some(k) => self.strike_player(pi, a, &s, origin, forward, k, at, falloff),
+                None => self.strike(player, a, &s, origin, forward, j, at, falloff),
             };
             hits += 1;
             // Practice (#46): a hit with a weapon or fist, a kill instead, a zombie shoved, a stomp that kills.
@@ -606,6 +654,7 @@ impl World {
             self.award_xp(pi, skill, xp);
         }
         self.scratch_hits = found;
+        self.lag_history = history;
         self.action_events.push(ActionEvent { player, kind: a.kind, weapon: a.weapon, hits });
         if s.noise > 0.0 && self.heard.len() < crate::world::MAX_SOUNDS {
             // Heard this tick, like footsteps.
@@ -613,14 +662,15 @@ impl World {
         }
     }
 
-    /// Hit zombie `j` from `origin`. Returns what it did.
+    /// Hit zombie `j` from `origin`, the zombie taken to stand at `at` (where the attacker saw it).
+    /// Returns what it did.
     #[allow(clippy::too_many_arguments)]
-    fn strike(&mut self, player: u32, a: Action, s: &Strike, origin: Vec2, forward: Vec2, j: usize, falloff: f32) -> HitEffect {
+    fn strike(&mut self, player: u32, a: Action, s: &Strike, origin: Vec2, forward: Vec2, j: usize, at: Vec2, falloff: f32) -> HitEffect {
         let c = &self.config.combat;
         let zt = &self.config.zombie;
         let rng = &mut self.combat_rng;
         let z = &mut self.zombies;
-        let to = z.pos[j] - origin;
+        let to = at - origin;
         let dir = to.normalize_or(forward);
         let behind = Vec2::from_angle(z.facing[j]).dot(dir) > c.behind_dot;
         let crit_chance = s.crit_chance + if behind && s.crit_chance > 0.0 { c.behind_crit_bonus } else { 0.0 };
@@ -699,15 +749,22 @@ impl World {
     /// a body part (a blade gashes, a blunt weapon bruises or now and then gashes, fists and boots
     /// bruise; clothing may stop a cut to a bruise) and takes HP through `hurt_player_by`, so god
     /// mode holds. Then, as for a zombie: knockback, a knockdown roll, else a stagger roll.
-    /// Returns what it did.
+    /// Returns what it did. `at` is where the attacker saw the victim (lag compensation).
+    ///
+    /// **A trade of blows (#23):** a blow that staggers, floors or kills a player calls off the
+    /// swing that player had under way, unless that swing was about to land within the player's
+    /// own view lag (`World::view_lag_ticks`, so at most `lag_comp_max_secs`): on its own screen it
+    /// had landed before this blow showed there, so it lands too, now, from where the player stood.
+    /// Both sides get the same rule and the same cap; a local player (no lag) keeps none.
     #[allow(clippy::too_many_arguments)]
-    fn strike_player(&mut self, pi: usize, a: Action, s: &Strike, origin: Vec2, forward: Vec2, vi: usize, falloff: f32) -> HitEffect {
+    fn strike_player(&mut self, pi: usize, a: Action, s: &Strike, origin: Vec2, forward: Vec2, vi: usize, at: Vec2, falloff: f32) -> HitEffect {
         let c = self.config.combat.clone();
         let attacker = self.players[pi].id;
         let v = &self.players[vi];
         let (victim, vpos, god) = (v.id, v.state.pos, v.dev.god);
+        let (pending, vfacing) = (v.action, v.state.facing);
         let was = v.knock;
-        let dir = (vpos - origin).normalize_or(forward);
+        let dir = (at - origin).normalize_or(forward);
         let behind = Vec2::from_angle(v.state.facing).dot(dir) > c.behind_dot;
         let crit_chance = s.crit_chance + if behind && s.crit_chance > 0.0 { c.behind_crit_bonus } else { 0.0 };
         let crit = self.combat_rng.f32() < crit_chance;
@@ -796,6 +853,12 @@ impl World {
                 }
             }
         };
+        if matches!(effect, HitEffect::Killed | HitEffect::Staggered | HitEffect::KnockedDown)
+            && let Some(b) = pending
+            && b.timer <= self.view_lag_ticks(vi) as f32 * TICK_DT + 1e-4
+        {
+            self.scratch_trades.push(Trade { pi: vi, action: b, origin: vpos, facing: vfacing, ahead: (b.timer / TICK_DT).ceil() as u64 });
+        }
         self.player_hit_events.push(PlayerHitEvent {
             player: attacker,
             victim,
@@ -924,6 +987,9 @@ pub fn knockback_speed(metres: f32) -> f32 {
 
 #[cfg(test)]
 mod pvp_tests;
+
+#[cfg(test)]
+mod lag_tests;
 
 #[cfg(test)]
 mod tests {

@@ -37,7 +37,7 @@ fn town(seed: u64) -> (World, u32, u32) {
 
 /// An empty field at noon: player `a` at (60.5, 60.5) facing east, player `b` 0.85 m east of it
 /// facing west (face to face, in reach of every weapon and of a shove).
-fn duel(seed: u64, pvp: bool) -> (World, u32, u32) {
+pub(super) fn duel(seed: u64, pvp: bool) -> (World, u32, u32) {
     let mut w = World::new(config(seed, pvp));
     w.map = TileMap::new(w.map.width() / crate::map::CHUNK_SIZE, w.map.height() / crate::map::CHUNK_SIZE);
     w.map_changed();
@@ -49,7 +49,7 @@ fn duel(seed: u64, pvp: bool) -> (World, u32, u32) {
     (w, a, b)
 }
 
-fn pi_of(w: &World, id: u32) -> usize {
+pub(super) fn pi_of(w: &World, id: u32) -> usize {
     w.players.iter().position(|p| p.id == id).unwrap()
 }
 
@@ -64,7 +64,7 @@ fn place(w: &mut World, id: u32, pos: Vec2) {
     w.players[pi].state.pos = pos;
 }
 
-fn equip(w: &mut World, id: u32, weapon: &str) -> u16 {
+pub(super) fn equip(w: &mut World, id: u32, weapon: &str) -> u16 {
     assert!(w.hold_item(id, crate::inventory::Slot::Hand, weapon), "{weapon}");
     w.weapon_index(weapon).unwrap()
 }

@@ -627,6 +627,10 @@ impl World {
             scratch_pos: _,
             scratch_actions: _,
             scratch_hits: _,
+            // Lag compensation (#23): a few ticks of positions, kept only while remote clients
+            // report what they see, and they report again every tick.
+            lag_history: _,
+            scratch_trades: _,
         } = self;
         let mut w = Writer::new();
         let alive = zombies.state.iter().filter(|s| **s != ZombieState::Dead).count() as u32;

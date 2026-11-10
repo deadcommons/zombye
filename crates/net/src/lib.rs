@@ -112,6 +112,11 @@ pub enum Intent {
         #[serde(default)]
         lasting: bool,
     },
+    /// A client over the network, every tick before its `PlayerInput`: the tick of the snapshot
+    /// it is showing. Its swings, shoves and stomps then land where it saw their targets (lag
+    /// compensation, #23: `zombye_sim::lagcomp`), at most `CombatTuning::lag_comp_max_secs` back.
+    /// A client in the server's own process doesn't send it: nothing is rewound for it.
+    Seen { player: u32, tick: u64 },
 }
 
 /// What one zombie looks like to a client. Server-only state (AI memory, paths) is not included.
@@ -536,6 +541,7 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
             }
         }
         Intent::CancelJobs { player, all } => world.player_cancel_jobs(*player, *all),
+        Intent::Seen { player, tick } => world.player_saw(*player, *tick),
         Intent::Respawn { player } => {
             world.respawn_player(*player);
         }
