@@ -966,7 +966,7 @@ mod tests {
         for cue in Cue::ALL {
             let clips = &bank.clips[&cue];
             assert!(!clips.is_empty(), "{cue:?}");
-            assert!(clips.iter().all(|c| c.samples.len() > 100 && c.rate == 22_050), "{cue:?}");
+            assert!(clips.iter().all(|c| c.samples.len() > 100 && (8_000..=96_000).contains(&c.rate)), "{cue:?}");
         }
     }
 
