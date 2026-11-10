@@ -81,6 +81,12 @@ pub struct ZombieTuning {
     /// Range multiplier when it looks through a window (shut, open or broken): a survivor
     /// indoors is hard to make out from the street.
     pub window_sight_mult: f32,
+    /// Some zombies are sharper than others: each one's sight range, notice chance and hearing
+    /// are multiplied by its alertness, from a hash of its id, between these two. Skewed by
+    /// `alertness_skew` (1 even, higher: most near the low end, a few sharp ones), so the
+    /// defaults average about 1.
+    pub alertness: (f32, f32),
+    pub alertness_skew: f32,
 
     // Hearing.
     /// Footstep noise radius per tick while moving, by stance.
@@ -180,6 +186,21 @@ pub struct ZombieTuning {
     pub corpse_secs: f32,
 }
 
+impl ZombieTuning {
+    /// How alert zombie `id` is (see `alertness`): a multiplier on its sight and hearing, the
+    /// same every time for that zombie in that world.
+    pub fn alertness_of(&self, seed: u64, id: u32) -> f32 {
+        let (lo, hi) = self.alertness;
+        let u = crate::rng::hash01(seed, id as u64, 0xA1E7, 0);
+        lo + (hi - lo) * u.powf(self.alertness_skew.max(0.01))
+    }
+
+    /// The most alert any zombie can be (for how far to look round a target or a sound).
+    pub fn max_alertness(&self) -> f32 {
+        self.alertness.0.max(self.alertness.1).max(0.0)
+    }
+}
+
 impl Default for ZombieTuning {
     fn default() -> Self {
         Self {
@@ -197,6 +218,8 @@ impl Default for ZombieTuning {
             sight_interval_ticks: 4,
             chase_sight_mult: 1.25,
             window_sight_mult: 0.35,
+            alertness: (0.7, 1.6),
+            alertness_skew: 2.0,
 
             sneak_noise: 1.2,
             walk_noise: 4.0,

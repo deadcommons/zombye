@@ -1545,6 +1545,10 @@ stands still may count as changed.** Each of these cost milliseconds a frame bef
   sight 22 m). **A glimpse before a chase:** a wandering zombie that notices someone beyond the sure range
   doesn't chase at once: it investigates the spot (no groan), and chases if it notices them again. Each zombie looks
   every `sight_interval_ticks`, and only zombies near a player are tested (`SpatialHash::for_each_within`).
+- **Alertness:** some zombies are sharper than others. Each one's sight range, chance to notice and the distance it
+  hears a sound from (active and near tiers) are multiplied by its alertness (`ZombieTuning::alertness_of`, from a
+  hash of the seed and its id: not saved, the same every time), between `alertness` (0.7, 1.6) skewed by
+  `alertness_skew` (2: about half a little dull, one in five sharp, about 1 on average).
 - **Hearing** (`senses::hearing_pass`): `World::emit_sound(pos, radius)` queues a sound heard on the
   next tick. Moving players make footstep noise every tick by stance, doors and windows make noise, hunting
   zombies groan now and then (which pulls their neighbours in, so hordes snowball). Through walls

@@ -1743,8 +1743,8 @@ mod tests {
         };
         // Sight: 6 m ahead, facing the player, who stands still in daylight (no noise).
         let ahead: fn(&mut World, u32) -> usize = |w, _| zombie(w, Vec2::new(106.5, 100.5), PI);
-        // Hearing: 10 m off with its back to the player, who runs about.
-        let behind: fn(&mut World, u32) -> usize = |w, _| zombie(w, Vec2::new(110.5, 100.5), 0.0);
+        // Hearing: 7 m off with its back to the player, who runs about (in earshot of the dullest).
+        let behind: fn(&mut World, u32) -> usize = |w, _| zombie(w, Vec2::new(107.5, 100.5), 0.0);
         assert!(watch(false, ahead, false) && !watch(true, ahead, false), "sight");
         assert!(watch(false, behind, true) && !watch(true, behind, true), "hearing");
         // Being hit: shoved, it turns on the player when it recovers, finds nobody and goes to look.

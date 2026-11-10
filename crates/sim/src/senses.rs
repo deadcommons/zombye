@@ -161,7 +161,7 @@ pub(crate) fn sight_pass(z: &mut Zombies, hash: &SpatialHash, map: &TileMap, tar
     for target in targets.iter().filter(|t| !t.ignored) {
         // The farthest this player could be seen from: dead ahead by a zombie already after them.
         let best = Target { moving: true, ..*target };
-        let reach = sight_range(t, cone, daylight, &best, 0.0, Vec2::X).max(t.rear_range) * t.chase_sight_mult.max(1.0);
+        let reach = sight_range(t, cone, daylight, &best, 0.0, Vec2::X).max(t.rear_range) * t.chase_sight_mult.max(1.0) * t.max_alertness().max(1.0);
         hash.for_each_within(target.pos, reach, |i| {
             // Staggered, down or dead (killed this tick, so still in the hash): not looking. Only
             // active zombies look at all.
@@ -177,7 +177,8 @@ pub(crate) fn sight_pass(z: &mut Zombies, hash: &SpatialHash, map: &TileMap, tar
             let thumping = z.state[i] == ZombieState::Thump;
             let after_this = z.state[i].is_after(z.target_player[i]) && z.target_player[i] == target.id;
             let dir = if d > 1e-4 { to / d } else { Vec2::from_angle(z.facing[i]) };
-            let mut range = sight_range(t, cone, daylight, target, z.facing[i], dir);
+            let alert = t.alertness_of(seed, z.id[i]);
+            let mut range = sight_range(t, cone, daylight, target, z.facing[i], dir) * alert;
             if after_this {
                 // Once it has you, it keeps you in view a little farther and without luck.
                 range *= t.chase_sight_mult;
@@ -186,7 +187,7 @@ pub(crate) fn sight_pass(z: &mut Zombies, hash: &SpatialHash, map: &TileMap, tar
                 return;
             }
             let roll = hash01(seed, tick, z.id[i] as u64, target.id as u64);
-            if !after_this && roll >= notice_chance(t, d / range) {
+            if !after_this && roll >= (notice_chance(t, d / range) * alert).min(1.0) {
                 return;
             }
             // Having just given up on something, it only notices someone close up.
@@ -199,7 +200,7 @@ pub(crate) fn sight_pass(z: &mut Zombies, hash: &SpatialHash, map: &TileMap, tar
             if through_window {
                 // Through a window pane or frame it only makes out someone close by.
                 range *= t.window_sight_mult;
-                if d > range || (!after_this && roll >= notice_chance(t, d / range)) {
+                if d > range || (!after_this && roll >= (notice_chance(t, d / range) * alert).min(1.0)) {
                     return;
                 }
             }
@@ -250,21 +251,28 @@ pub(crate) fn sight_pass(z: &mut Zombies, hash: &SpatialHash, map: &TileMap, tar
 /// instead of one per sound in earshot when many loud noises fall on one tick (#70). The rest
 /// (hunting, battering, bored) then hear every sound in order as before. The outcome is exactly
 /// that of every zombie hearing every sound in order. `marks` is scratch, kept between calls.
-pub(crate) fn hearing_pass(z: &mut Zombies, hash: &SpatialHash, map: &TileMap, sounds: &[Sound], t: &ZombieTuning, marks: &mut Vec<u8>) {
+/// Each zombie hears a sound out to its radius times the zombie's alertness.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn hearing_pass(z: &mut Zombies, hash: &SpatialHash, map: &TileMap, sounds: &[Sound], t: &ZombieTuning, seed: u64, marks: &mut Vec<u8>) {
     /// Not met yet this pass; idle, nothing heard yet; idle, done; one of the rest.
     const NEW: u8 = 0;
     const IDLE: u8 = 1;
     const DONE: u8 = 2;
     const REST: u8 = 3;
+    let reach_mult = t.max_alertness();
     let heard = |z: &Zombies, i: usize, s: &Sound| {
         let d = z.pos[i].distance(s.pos);
+        if d > s.radius * reach_mult || s.source == SoundSource::Zombie(z.id[i]) || !would_react(z, i, s) {
+            return None;
+        }
+        let radius = s.radius * t.alertness_of(seed, z.id[i]);
         // Only pay for the ray when the sound would be out of earshot muffled.
-        (d <= s.radius && s.source != SoundSource::Zombie(z.id[i]) && would_react(z, i, s) && (d <= s.radius * t.wall_muffle || line_of_sight(map, z.pos[i], s.pos))).then_some(d)
+        (d <= radius && (d <= radius * t.wall_muffle || line_of_sight(map, z.pos[i], s.pos))).then_some(d)
     };
     if sounds.iter().filter(|s| s.radius > 0.0).count() < 2 {
         // One sound: nothing to save.
         for s in sounds.iter().filter(|s| s.radius > 0.0) {
-            hash.for_each_within(s.pos, s.radius, |i| {
+            hash.for_each_within(s.pos, s.radius * reach_mult, |i| {
                 if let Some(d) = heard(z, i, s) {
                     react(z, i, s, d, t);
                 }
@@ -276,7 +284,7 @@ pub(crate) fn hearing_pass(z: &mut Zombies, hash: &SpatialHash, map: &TileMap, s
     marks.resize(z.len(), NEW);
     let mut rest = false;
     for s in sounds.iter().rev().filter(|s| s.radius > 0.0) {
-        hash.for_each_within(s.pos, s.radius, |i| {
+        hash.for_each_within(s.pos, s.radius * reach_mult, |i| {
             if marks[i] == NEW {
                 let idle = matches!(z.state[i], ZombieState::Wander | ZombieState::Investigate) && z.bored[i] <= 0.0;
                 marks[i] = if idle { IDLE } else { REST };
@@ -294,7 +302,7 @@ pub(crate) fn hearing_pass(z: &mut Zombies, hash: &SpatialHash, map: &TileMap, s
         return;
     }
     for s in sounds.iter().filter(|s| s.radius > 0.0) {
-        hash.for_each_within(s.pos, s.radius, |i| {
+        hash.for_each_within(s.pos, s.radius * reach_mult, |i| {
             if marks[i] == REST
                 && let Some(d) = heard(z, i, s)
             {
@@ -440,16 +448,17 @@ mod tests {
             for s in sounds.iter().filter(|s| s.radius > 0.0) {
                 for i in 0..plain.len() {
                     let d = plain.pos[i].distance(s.pos);
-                    if plain.state[i] == ZombieState::Dead || d > s.radius || s.source == SoundSource::Zombie(plain.id[i]) {
+                    let radius = s.radius * t.alertness_of(7, plain.id[i]);
+                    if plain.state[i] == ZombieState::Dead || d > radius || s.source == SoundSource::Zombie(plain.id[i]) {
                         continue;
                     }
-                    if d > s.radius * t.wall_muffle && !line_of_sight(&map, plain.pos[i], s.pos) {
+                    if d > radius * t.wall_muffle && !line_of_sight(&map, plain.pos[i], s.pos) {
                         continue;
                     }
                     react(&mut plain, i, s, d, &t);
                 }
             }
-            hearing_pass(&mut z, &hash, &map, &sounds, &t, &mut Vec::new());
+            hearing_pass(&mut z, &hash, &map, &sounds, &t, 7, &mut Vec::new());
             let changed = (0..z.len()).filter(|&i| z.state[i] == ZombieState::Investigate && z.target_pos[i] != z.pos[i]).count();
             assert!(count < 12 || changed > 500, "round {round}: the sounds reach the crowd ({changed} investigating)");
             assert_eq!(z.state, plain.state, "round {round}");

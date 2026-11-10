@@ -1080,7 +1080,7 @@ impl World {
             let daylight = senses::daylight(self.time_of_day());
             let seed = self.config.seed();
             sight_checks = senses::sight_pass(&mut self.zombies, &self.hash, &self.map, &self.targets, t, daylight, self.tick, seed);
-            senses::hearing_pass(&mut self.zombies, &self.hash, &self.map, &self.heard, t, &mut self.scratch_marks);
+            senses::hearing_pass(&mut self.zombies, &self.hash, &self.map, &self.heard, t, seed, &mut self.scratch_marks);
         }
         let senses_ms = start.elapsed().as_secs_f32() * 1000.0 - tier_ms;
         // XP for running, moving overloaded and sneaking near zombies (#46).
@@ -1705,10 +1705,12 @@ mod tests {
     /// An empty grass field at noon with no zombies, for hand-placed sense tests. Its zombies have
     /// the sharper senses of before the calmer defaults (sight 30 m, a sure 40% of it, noticing at
     /// 0.45 a check, footsteps and groans as loud, 25 s memory, 20 s battering
-    /// interest), so these tests are about what follows noticing; `calm_arena` has the defaults.
+    /// interest, every zombie as alert as the next), so these tests are about what follows
+    /// noticing; `calm_arena` has the defaults.
     fn arena() -> World {
         let mut w = calm_arena();
         let t = &mut w.config.zombie;
+        t.alertness = (1.0, 1.0);
         (t.sight_day, t.peripheral_mult, t.still_sight_mult, t.sure_sight_frac, t.notice_chance) = (30.0, 0.45, 0.7, 0.4, 0.45);
         (t.walk_noise, t.run_noise, t.groan_noise) = (6.0, 14.0, 9.0);
         (t.memory_secs, t.thump_interest_secs) = (25.0, 20.0);
@@ -1741,6 +1743,45 @@ mod tests {
 
     /// With the default senses a wanderer that catches sight of a player some way off goes to
     /// look first (no chase, no groan), and only chases once it notices them again.
+    /// Some zombies are more alert than others: alertness is spread over its range, most of them
+    /// a little dull and a few sharp, about 1 on average, the same for a zombie every time. A
+    /// sharp one hears a sound a dull one doesn't.
+    #[test]
+    fn some_zombies_are_more_alert_than_others() {
+        let t = ZombieTuning::default();
+        let a: Vec<f32> = (1..=4000).map(|id| t.alertness_of(5, id)).collect();
+        let mean = a.iter().sum::<f32>() / a.len() as f32;
+        let sharp = a.iter().filter(|x| **x > 1.3).count() as f32 / a.len() as f32;
+        let dull = a.iter().filter(|x| **x < 0.9).count() as f32 / a.len() as f32;
+        eprintln!("alertness mean {mean:.2}, sharp (> 1.3) {sharp:.2}, dull (< 0.9) {dull:.2}");
+        assert!((mean - 1.0).abs() < 0.05, "mean {mean}");
+        assert!(a.iter().all(|x| (t.alertness.0..=t.alertness.1).contains(x)));
+        assert!(sharp > 0.1 && sharp < 0.35 && dull > 0.35, "sharp {sharp}, dull {dull}");
+        assert_eq!(t.alertness_of(5, 17), t.alertness_of(5, 17));
+        // Hearing: one sound, two zombies the same distance off, one sharp and one dull.
+        let mut w = calm_arena();
+        let seed = w.config.seed();
+        let (lo_id, hi_id) = {
+            let ids: Vec<u32> = (w.next_id..w.next_id + 400).collect();
+            let lo = *ids.iter().min_by(|x, y| t.alertness_of(seed, **x).total_cmp(&t.alertness_of(seed, **y))).unwrap();
+            let hi = *ids.iter().max_by(|x, y| t.alertness_of(seed, **x).total_cmp(&t.alertness_of(seed, **y))).unwrap();
+            (lo, hi)
+        };
+        let place = |w: &mut World, id: u32, pos: Vec2| {
+            w.next_id = id;
+            add_zombie(w, pos, 0.0)
+        };
+        let (a, b) = if lo_id < hi_id { (lo_id, hi_id) } else { (hi_id, lo_id) };
+        let first = place(&mut w, a, Vec2::new(110.0, 100.5));
+        let second = place(&mut w, b, Vec2::new(90.0, 100.5));
+        let (dull_i, sharp_i) = if a == lo_id { (first, second) } else { (second, first) };
+        w.emit_sound(Vec2::new(100.0, 100.5), 10.0 / 0.8);
+        w.step();
+        w.step();
+        assert_eq!(w.zombies.state[dull_i], ZombieState::Wander, "the dull one heard it");
+        assert_eq!(w.zombies.state[sharp_i], ZombieState::Investigate, "the sharp one didn't");
+    }
+
     #[test]
     fn a_wanderer_glimpses_before_it_chases() {
         let mut w = calm_arena();
