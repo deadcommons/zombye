@@ -217,10 +217,17 @@ enum Clip {
     Stagger2 = 11,
     /// A roar on the spot. Baked and ready, not played yet: the sim's groans aren't in the snapshots.
     Groan = 12,
+    /// The last couple of metres at a player, arms out ([`ZombieAnim::Lunge`]).
+    Lunge = 13,
+    /// Climbing in through an open or broken window ([`ZombieAnim::Climb`] at a window).
+    Climb = 14,
+    /// Clambering over a fence ([`ZombieAnim::Climb`] at a fence).
+    Vault = 15,
 }
 
-/// How many clip slots there are (the shader's table has room for 16: 4 tag bits).
-const SLOTS: usize = 13;
+/// How many clip slots there are (the shader's table has room for 16: 4 tag bits, all used). A
+/// crowd character's `crawl` clip waits for a crawling zombie in the sim, and a slot.
+const SLOTS: usize = 16;
 
 /// Hip height at rest (the pelvis pivot).
 const HIP: f32 = 0.9;
@@ -399,6 +406,34 @@ fn pose(clip: Clip, t: f32) -> ZPose {
             peak.offset = Vec3::new(0.05, -0.04, -0.06);
             p = reach().blend(&peak, k);
         }
+        Clip::Lunge => {
+            // Thrown forward at the player, both arms out to grab.
+            let k = smooth(0.0, 0.4, t);
+            let mut peak = reach();
+            peak.rot[TORSO] = rx(0.55);
+            peak.rot[HEAD] = rx(-0.1);
+            peak.rot[ARM_L] = rx(-1.6) * rz(-0.2);
+            peak.rot[ARM_R] = rx(-1.6) * rz(0.2);
+            peak.rot[LEG_L] = rx(-0.45);
+            peak.rot[LEG_R] = rx(0.35);
+            peak.offset = Vec3::new(0.0, -0.08, 0.1);
+            p = reach().blend(&peak, k);
+        }
+        Clip::Climb | Clip::Vault => {
+            // One leg up and over the sill or rail, hands on it, and down the other side.
+            let high = if clip == Clip::Climb { 1.0 } else { 0.7 };
+            let k = (t * PI).sin().max(0.0);
+            let lead = smooth(0.0, 0.5, t);
+            let mut peak = ZPose::default();
+            peak.rot[TORSO] = rx(0.5 * high);
+            peak.rot[HEAD] = rx(0.1);
+            peak.rot[ARM_L] = rx(-0.9) * rz(-0.1);
+            peak.rot[ARM_R] = rx(-0.9) * rz(0.1);
+            peak.rot[LEG_L] = rx(-1.3 * high * (1.0 - lead) - 0.2);
+            peak.rot[LEG_R] = rx(-1.1 * high * lead);
+            peak.offset = Vec3::new(0.0, 0.25 * high * k, 0.0);
+            p = reach().blend(&peak, k.max(0.2));
+        }
         Clip::Groan => {
             // Head thrown back, chest out, arms spread: a roar, then back to reaching.
             let k = (t * PI).sin().max(0.0).powf(0.7);
@@ -433,7 +468,17 @@ const CLIPS: [(Clip, u32, f32, f32, f32); SLOTS] = [
     (Clip::DieDown, 8, 0.0, 0.0, 0.4),
     (Clip::Stagger2, 14, 0.0, 0.0, 0.6),
     (Clip::Groan, 24, 0.0, 0.0, 2.0),
+    (Clip::Lunge, 12, 0.0, 0.0, LUNGE_SECS),
+    (Clip::Climb, 24, 0.0, 0.0, CLIMB_SECS),
+    (Clip::Vault, 24, 0.0, 0.0, VAULT_SECS),
 ];
+
+/// The sim's lunge lasts at most `ZombieTuning::lunge_secs` (0.45 s) before the strike.
+const LUNGE_SECS: f32 = 0.45;
+/// Crossing a window's or fence's climb zone (`CLIMB_ZONE` either side) at the zombies'
+/// `climb_speed` (0.35 m/s) takes about 2 s; a fence is lower and the clip a little quicker.
+const CLIMB_SECS: f32 = 2.0;
+const VAULT_SECS: f32 = 1.6;
 
 const STAGGER_SECS: f32 = 0.8;
 const FALL_SECS: f32 = 0.5;
@@ -454,6 +499,9 @@ fn baked_max_secs(clip: Clip) -> f32 {
         Clip::DieFront => 1.5,
         Clip::DieDown => 1.7,
         Clip::Groan => 3.0,
+        Clip::Lunge => 0.6,
+        Clip::Climb => CLIMB_SECS,
+        Clip::Vault => VAULT_SECS,
         _ => f32::MAX,
     }
 }
@@ -586,6 +634,9 @@ fn clip_name(clip: Clip) -> &'static str {
         Clip::DieDown => "diedown",
         Clip::Stagger2 => "stagger2",
         Clip::Groan => "groan",
+        Clip::Lunge => "lunge",
+        Clip::Climb => "climb",
+        Clip::Vault => "vault",
     }
 }
 
@@ -976,6 +1027,8 @@ struct Tracked {
     /// Which reel a stagger plays (picked per stagger), and how many it has had.
     stagger: Clip,
     staggers: u32,
+    /// Which climb a climb plays: a window's, or the vault over a fence (picked from the map).
+    climb: Clip,
     flash_until: f32,
     /// Direction and time of the last blow, for the kickback and which way it falls.
     blow: Vec2,
@@ -1021,6 +1074,7 @@ impl Tracked {
             seen,
             death: Clip::DieBack,
             stagger: Clip::Stagger,
+            climb: Clip::Climb,
             staggers: 0,
             flash_until: 0.0,
             ghost: None,
@@ -1047,6 +1101,8 @@ impl Tracked {
             ZombieAnim::Down => (Clip::Down, Some(((e - fall) * tm.clips[Clip::Down as usize].z).fract())),
             ZombieAnim::GetUp => once(Clip::GetUp),
             ZombieAnim::Dead => once(self.death),
+            ZombieAnim::Lunge => once(Clip::Lunge),
+            ZombieAnim::Climb => once(self.climb),
         }
     }
 
@@ -1164,6 +1220,7 @@ fn sync_zombies(
         let visibility = if fog.visibility(pos) > 0.35 { Visibility::Inherited } else { Visibility::Hidden };
         // Sim angle 0 = +x, counter-clockwise toward +y (= Bevy +z). The mesh faces +Z.
         let rotation = || Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - facing);
+        let climb = if z.anim == ZombieAnim::Climb && map.0.window_opening(Vec2::from(z.pos)) == Some(zombye_sim::map::Edge::Fence) { Clip::Vault } else { Clip::Climb };
 
         let Some(tr) = entities.0.get_mut(&z.id) else {
             let rotation = rotation();
@@ -1182,6 +1239,7 @@ fn sync_zombies(
                 .unwrap_or_else(|| variant_of(z.id, n));
             let v = &assets.variants[variant];
             let mut tr = Tracked::new(z.id, variant, z.anim, since, z.speed, tick);
+            tr.climb = climb;
             let (clip, play) = tr.play(now, t, &v.timing);
             let tag = pack_tag(z.id, clip, play, z.speed, false);
             let transform = Transform { translation: Vec3::new(pos.x, 0.0, pos.y), rotation, scale: Vec3::ONE };
@@ -1202,6 +1260,9 @@ fn sync_zombies(
         tr.seen = tick;
         tr.speed = speed_steps(z.speed);
         if z.anim != tr.anim {
+            if z.anim == ZombieAnim::Climb {
+                tr.climb = climb;
+            }
             tr.set_anim(z.anim, z.facing, now, t, timing);
         }
         // One that was out of sight and still is has nothing to draw: its entity is left as it is

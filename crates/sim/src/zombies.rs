@@ -23,6 +23,10 @@ pub enum ZombieAnim {
     GetUp = 6,
     /// Battering a door or window.
     Thump = 7,
+    /// Lunging the last couple of metres at a player (`ZombieState::Lunge`).
+    Lunge = 8,
+    /// Climbing through an open or broken window, or over a fence (in its `CLIMB_ZONE`).
+    Climb = 9,
 }
 
 /// A knocked-down zombie spends the last this-many seconds on the ground getting up
