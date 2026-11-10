@@ -335,6 +335,8 @@ pub struct SurvivorModel {
     right_arm: Vec<usize>,
     /// The bones a gesture takes (#67): the left arm, and both arms.
     left_arm: Vec<usize>,
+    /// Each arm's upper arm, forearm and hand, right then left (the aiming stance sets them).
+    arm_bones: Option<[[usize; 3]; 2]>,
     arms: Vec<usize>,
     flinching: Vec<(usize, usize)>,
     all: Vec<usize>,
@@ -542,6 +544,19 @@ fn gaits(body: &mut Body) -> [Vec<Gait>; 3] {
     })
 }
 
+/// Turns `bone` (the least way) so that it points at its child `child` along `dir` in model space.
+fn aim_bone(rig: &Rig, pose: &mut RigPose, bone: usize, child: usize, dir: Vec3) {
+    let g = rig.globals(pose);
+    let now = (g[child].w_axis.truncate() - g[bone].w_axis.truncate()).normalize_or_zero();
+    let dir = dir.normalize_or_zero();
+    if now == Vec3::ZERO || dir == Vec3::ZERO {
+        return;
+    }
+    let rot = |m: &Mat4| m.to_scale_rotation_translation().1;
+    let parent = rig.bones[bone].parent.map_or(Quat::IDENTITY, |p| rot(&g[p]));
+    pose.r[bone] = (parent.inverse() * Quat::from_rotation_arc(now, dir) * rot(&g[bone])).normalize();
+}
+
 /// `clip`'s upper body as it stands over `pose`'s hips: the spine's first bones (`spine_base`) turned
 /// so the chest keeps the heading and lean it has in the clip, whatever the hips under it do. Over the
 /// clip's own hips it changes nothing.
@@ -613,6 +628,10 @@ impl SurvivorModel {
         let right_arm = retarget.bones_of(&[UARM_R, FARM_R, HAND_R]);
         let left_arm = retarget.bones_of(&survivor::LEFT_ARM);
         let arms = retarget.bones_of(&survivor::ARMS);
+        let arm_bones = (|| Some(["Right", "Left"].map(|side| ["Arm", "ForeArm", "Hand"].map(|part| rig.find(&format!("{side}{part}"))))))().and_then(|a: [[Option<usize>; 3]; 2]| {
+            let [r, l] = a;
+            Some([[r[0]?, r[1]?, r[2]?], [l[0]?, l[1]?, l[2]?]])
+        });
         let flinching = (0..rig.len()).filter_map(|b| if let Src::Grey(g) = retarget.src[b] { UPPER.contains(&g).then_some((b, g)) } else { None }).collect();
         let feet_region = REGIONS.iter().position(|r| *r == BodyPart::Feet).unwrap() as u8;
         let feet = (0..body.mesh.vertices()).filter(|&v| body.regions[v] == feet_region).collect();
@@ -655,6 +674,7 @@ impl SurvivorModel {
             upper,
             right_arm,
             left_arm,
+            arm_bones,
             arms,
             flinching,
             all: (0..rig.len()).collect(),
@@ -780,6 +800,62 @@ impl SurvivorModel {
             .map(|((bone, grip), turn)| Transform::from_translation((globals[bone] * rig.inverse_bind[bone]).transform_point3(grip)).with_rotation(Quat::from_rotation_z(turn)))
     }
 
+    /// The aiming stance (the right mouse held): the grey-box guard's lean, and the arms set by where
+    /// they point on the skeleton itself (model space: +Z the aim, +X his left), low enough that a
+    /// blow starts from it: fists in front of the chest; a one-handed weapon cocked at the hip with
+    /// the free hand out to fend; a two-handed one held across the body in both hands, the left
+    /// hand put on the grip above the right. (Carried over from the grey-box, the arms went wherever
+    /// the idle's own arms sent them: both hands up by the head.)
+    fn guard(&self, style: Style, armed: bool) -> RigPose {
+        let body = &self.body;
+        let rig = &body.rig;
+        let mut p = self.retarget.apply(body, &survivor::guard(style, armed));
+        let Some([r, l]) = self.arm_bones else { return p };
+        if armed && style == Style::Gun {
+            return p;
+        }
+        let v = Vec3::new;
+        // Right upper arm, right forearm, the weapon, left upper arm, left forearm.
+        let hang = v(0.3, -0.85, 0.2);
+        let [ru, rf, weapon, lu, lf] = match (style, armed) {
+            (Style::TwoHand, true) => [v(-0.3, -0.9, -0.1), v(0.4, 0.5, 0.7), v(-0.3, 0.85, -0.35), hang, Vec3::Z],
+            (Style::OneHand, true) => [v(-0.3, -0.9, -0.05), v(0.2, 0.55, 0.75), v(0.1, 0.75, 0.6), hang, v(-0.2, 0.65, 0.7)],
+            _ => [v(-0.3, -0.9, 0.05), v(0.25, 0.65, 0.65), Vec3::ZERO, hang, v(-0.2, 0.65, 0.7)],
+        };
+        aim_bone(rig, &mut p, r[0], r[1], ru);
+        aim_bone(rig, &mut p, r[1], r[2], rf);
+        let rot = |m: &Mat4| m.to_scale_rotation_translation().1;
+        if armed && weapon != Vec3::ZERO {
+            // The weapon lies along the hand's +Z as the grey-box holds it.
+            let g = rig.globals(&p);
+            let hand = Quat::from_rotation_arc(Vec3::Z, weapon.normalize()) * self.retarget.ref_global[r[2]];
+            p.r[r[2]] = (rot(&g[r[1]]).inverse() * hand).normalize();
+        } else {
+            p.r[r[2]] = self.retarget.reference.r[r[2]];
+        }
+        if armed && style == Style::TwoHand {
+            // The left hand on the grip, above the right: the arm's two bones bent to reach it, elbow down and out.
+            let g = rig.globals(&p);
+            let at = |b: usize| g[b].w_axis.truncate();
+            let grip = (g[self.hang[0].0] * rig.inverse_bind[self.hang[0].0]).transform_point3(self.hang[0].1) + weapon.normalize() * 0.13;
+            let (s, l1, l2) = (at(l[0]), at(l[1]).distance(at(l[0])), at(l[2]).distance(at(l[1])));
+            let to = grip - s;
+            let d = to.length().clamp((l1 - l2).abs() + 0.01, l1 + l2 - 0.005);
+            let n = to.normalize_or_zero();
+            let along = (l1 * l1 - l2 * l2 + d * d) / (2.0 * d);
+            let out = (l1 * l1 - along * along).max(0.0).sqrt();
+            let pole = v(0.5, -1.0, -0.2);
+            let side = (pole - n * pole.dot(n)).normalize_or_zero();
+            let elbow = s + n * along + side * out;
+            aim_bone(rig, &mut p, l[0], l[1], elbow - s);
+            aim_bone(rig, &mut p, l[1], l[2], s + n * d - elbow);
+        } else {
+            aim_bone(rig, &mut p, l[0], l[1], lu);
+            aim_bone(rig, &mut p, l[1], l[2], lf);
+        }
+        p
+    }
+
     pub fn compose(&self, a: &SurvivorAnim, now: f32, category: WeaponCategory, armed: bool) -> RigPose {
         let style = survivor::style(category);
         let body = &self.body;
@@ -794,7 +870,7 @@ impl SurvivorModel {
         }
         if a.aim_w > 0.0 {
             // Aiming: the guard over the upper body.
-            pose.blend_bones(&self.retarget.apply(body, &survivor::guard(style, armed)), a.aim_w, Some(&self.upper));
+            pose.blend_bones(&self.guard(style, armed), a.aim_w, Some(&self.upper));
         }
         if let Some((g, both, w)) = survivor::gesture_now(a) {
             // A gesture (#67): the grey-box's arms carried over, the free arm or both.
