@@ -267,7 +267,7 @@ impl Plugin for ServerLinkPlugin {
             return join_local(app, server, player_id);
         }
         // The fight demo wants room to swing: open ground near the house you wake up in.
-        let demo_at = if (options.fight_demo || options.duel || (options.talk_demo && !options.talk_wall)) && options.at.is_none() { open_ground_near(&server.world.map, server.world.player_spawn).map(|p| p.to_array()) } else { None };
+        let demo_at = if (options.fight_demo || options.duel || options.holdup_demo || (options.talk_demo && !options.talk_wall)) && options.at.is_none() { open_ground_near(&server.world.map, server.world.player_spawn).map(|p| p.to_array()) } else { None };
         let siege_at = if options.siege { siege_spot(&server.world.map, server.world.spawn_building) } else { None };
         if options.siege {
             match siege_at {
@@ -327,6 +327,21 @@ impl Plugin for ServerLinkPlugin {
                 _ => println!("--talk-demo: player {other} {:.0} m east of you", at.distance(me)),
             }
             app.insert_resource(crate::chat::TalkDemo::new(other));
+        }
+        if options.holdup_demo {
+            // Another survivor right in front of us with a few things on it, who puts its hands up
+            // (`holdup.rs`); cable ties to tie them with and scissors to cut them off again for us.
+            let me = server.world.player(player_id).map(|p| p.state.pos).unwrap_or(server.world.player_spawn);
+            let other = server.join(Some((me + Vec2::X * crate::holdup::DEMO_DISTANCE).to_array()));
+            let w = &mut server.world;
+            w.give_item(player_id, "cable_tie", 3);
+            w.give_item(player_id, "scissors", 1);
+            w.give_item(other, "tinned_beans", 2);
+            w.give_item(other, "painkillers", 1);
+            w.hold_item(other, zombye_sim::Slot::Hand, "kitchen_knife");
+            let at = w.player(other).map_or(me, |p| p.state.pos);
+            println!("--holdup-demo: PvP on; player {other} {:.1} m east of you, hands up. Y ties, L searches, Y again frees", at.distance(me));
+            app.insert_resource(crate::holdup::HoldupDemo::new(other, options.holdup_auto));
         }
         join_local(app, server, player_id);
     }

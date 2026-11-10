@@ -110,6 +110,10 @@ pub struct WorldConfig {
     pub player_sight: crate::awareness::PlayerSightTuning,
     /// How far voices carry and the noise they make (#67, [`crate::speech`]). Not saved either.
     pub speech: crate::speech::SpeechTuning,
+    /// Tying hands, freeing and searching a tied survivor (#73, [`crate::bonds`]). Not saved.
+    pub bonds: crate::bonds::BondTuning,
+    /// Group sizes, invitations and markers (#73, [`crate::groups`]). Not saved.
+    pub groups: crate::groups::GroupTuning,
     /// The loaded mods' scripts (#25, [`crate::script`]): every world made from this config gets a
     /// host of its own from it. None: no scripts, and nothing of them in the world.
     pub scripts: Option<std::sync::Arc<dyn crate::script::ScriptEngine>>,
@@ -140,6 +144,8 @@ impl WorldConfig {
             street_props: StreetPropsDef::default(),
             player_sight: Default::default(),
             speech: Default::default(),
+            bonds: Default::default(),
+            groups: Default::default(),
             scripts: None,
         }
     }
@@ -304,6 +310,11 @@ pub struct World {
     /// [`crate::speech`]; replication, not simulation state; at most
     /// [`crate::speech::MAX_SPEECH`] kept).
     pub speech: Vec<crate::speech::Said>,
+    /// Groups, their markers and the invitations out (#73, [`crate::groups`]). Saved.
+    pub(crate) groups: crate::groups::Groups,
+    /// What players are called, by id (a server's join names; [`World::set_player_name`]). Not
+    /// saved: whoever runs the world says again.
+    pub(crate) names: BTreeMap<u32, String>,
     /// Players whose Fitness or Strength went up this tick: their movement modifiers are refreshed
     /// at its end (`World::refresh_skill_mods`).
     pub(crate) skill_mods_due: Vec<u32>,
@@ -443,6 +454,8 @@ impl World {
             woke: Vec::new(),
             level_ups: Vec::new(),
             speech: Vec::new(),
+            groups: Default::default(),
+            names: BTreeMap::new(),
             skill_mods_due: Vec::new(),
             private_dirty: BTreeSet::new(),
             rise_looks: RiseLooks::default(),
@@ -795,7 +808,8 @@ impl World {
     /// Player `id` smashes the window it faces (shut or open), if one is within reach. Loud.
     /// Returns the broken edge, or `None` if there is no such window or player.
     pub fn player_smash_window(&mut self, id: u32) -> Option<EdgeRef> {
-        let s = self.player(id)?.state;
+        // Not with tied hands (#73).
+        let s = self.player(id).filter(|p| p.restraint.is_none())?.state;
         let aim = s.pos + Vec2::from_angle(s.facing) * INTERACT_AIM_AHEAD;
         let edge = self.edge_in_reach(s.pos, aim, |e| matches!(e, Edge::Window | Edge::WindowOpen))?;
         self.break_edge(edge, SoundSource::Player(id));
@@ -1019,6 +1033,9 @@ impl World {
         self.step_player_actions();
         // A wave runs out; a swing or a blow ends any gesture (#67).
         self.step_gestures();
+        // Tied hands worked loose, tying, freeing and searching other survivors (#73).
+        self.step_bonds();
+        self.step_groups();
         // Ignored players (dev) aren't heard: their footsteps, swings, doors and searches are
         // dropped here, before anything listens (senses, the far tiers, migration).
         if self.players.iter().any(|p| p.dev.ignored) {
@@ -1337,6 +1354,12 @@ impl World {
                 mix(0x5052_4F54);
                 mix(p.protected.to_bits());
             }
+            // Tied hands (#73): likewise.
+            if let Some(r) = p.restraint {
+                mix(0x424F_0000 | r.item as u32);
+                mix(r.by ^ (r.struggling as u32) << 31);
+                mix(r.struggled.to_bits());
+            }
             mix(p.hp.to_bits());
             Self::hash_health(&p.health, &mut mix);
             Self::hash_needs(&p.needs, &mut mix);
@@ -1393,6 +1416,21 @@ impl World {
             mix(p.state.pos.x.to_bits());
             mix(p.state.pos.y.to_bits());
             mix(p.hp.to_bits());
+        }
+        // Groups (#73): only when there are any.
+        for g in &self.groups.list {
+            mix(0x4752_5053 ^ g.id);
+            g.members.iter().for_each(|&m| mix(m));
+            for m in &g.markers {
+                mix(m.id);
+                mix(m.pos.x.to_bits());
+                mix(m.pos.y.to_bits());
+            }
+        }
+        for i in &self.groups.invites {
+            mix(0x494E_5600 ^ i.from);
+            mix(i.to);
+            mix(i.until as u32);
         }
         // What mod scripts keep (#25): only once there is any.
         self.script.hash_into(&mut mix);

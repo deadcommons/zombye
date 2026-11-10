@@ -274,7 +274,8 @@ impl World {
         let secs = self.config.speech.gesture_secs;
         let Some(p) = self.players.iter_mut().find(|p| p.id == id) else { return false };
         let Some(kind) = gesture else { return p.gesture.take().is_some() };
-        if p.dead || p.needs.asleep() || p.away.is_some() || p.knock.is_some() || p.action.is_some() {
+        // Nor with tied hands (#73).
+        if p.dead || p.needs.asleep() || p.away.is_some() || p.knock.is_some() || p.action.is_some() || p.restraint.is_some() {
             return false;
         }
         p.gesture = match (kind, p.gesture) {

@@ -358,6 +358,9 @@ impl Host {
     /// left out.
     pub fn set_names(&mut self, names: impl IntoIterator<Item = (String, u32)>) {
         self.names = names.into_iter().filter(|(_, id)| self.world.survivor(*id).is_some()).collect();
+        for (name, &id) in &self.names {
+            self.world.set_player_name(id, name);
+        }
     }
 
     /// The name playing (or that last played) `player`.
@@ -534,6 +537,8 @@ impl Host {
             id
         });
         self.names.insert(name.clone(), player);
+        // What its group is told it is called (#73).
+        self.world.set_player_name(player, &name);
         // Who plays it now: a program or a person, by this hello (#69).
         if hello.agent {
             self.agents.insert(player);

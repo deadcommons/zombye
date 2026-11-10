@@ -222,7 +222,7 @@ pub fn hint(c: &HintInput) -> Option<String> {
 
 /// Is the first-night UI for this session at all, and is there a record to show?
 fn record<'a>(options: &Options, link: &'a ServerLink, me: &LocalPlayer) -> Option<(&'a FirstNight, &'a RunStats)> {
-    if options.fight_demo || options.siege {
+    if options.fight_demo || options.siege || options.holdup_demo {
         return None;
     }
     Some((link.curr.first_night_of(me.id)?, link.curr.run_of(me.id)?))

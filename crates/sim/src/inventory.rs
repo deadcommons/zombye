@@ -438,11 +438,23 @@ impl World {
         if (still || p.knock.is_some()) && !p.dead {
             mods = MoveMods { speed: 0.0, run_speed: 0.0, can_run: false, can_climb: false, ..mods };
         }
+        // Tied hands (#73): a slow walk, no running, no climbing. Tied and freed in `step_bonds`,
+        // after movement too.
+        if p.restraint.is_some() {
+            mods = MoveMods { speed: mods.speed * self.config.bonds.speed, can_run: false, can_climb: false, ..mods };
+        }
         let weapon = p.inventory.hand.and_then(|s| self.item_weapon(s.item));
         let p = &mut self.players[pi];
         p.state.mods = mods;
         p.weapon = weapon;
-        self.private_dirty.insert(p.id);
+        let id = p.id;
+        self.private_dirty.insert(id);
+        // Whoever is going through its things sees them change.
+        for o in &self.players {
+            if o.frisking == Some(id) {
+                self.private_dirty.insert(o.id);
+            }
+        }
     }
 
     /// Every player's derived carry state (after loading).
@@ -563,6 +575,9 @@ impl World {
         let p = &mut self.players[pi];
         let refuse = if p.dead {
             Some("dead".to_string())
+        } else if p.restraint.is_some() {
+            // Nothing with its things while its hands are tied (#73).
+            Some("your hands are tied".to_string())
         } else if p.jobs.len() >= max {
             Some(format!("busy: {max} things queued already"))
         } else {
@@ -1204,7 +1219,7 @@ impl World {
     pub fn player_pick_up(&mut self, id: u32) -> Option<u32> {
         let pi = self.players.iter().position(|p| p.id == id)?;
         let p = &self.players[pi];
-        if p.dead || p.action.is_some() {
+        if p.dead || p.action.is_some() || p.restraint.is_some() {
             return None;
         }
         let aim = p.state.pos + Vec2::from_angle(p.state.facing) * 0.5;

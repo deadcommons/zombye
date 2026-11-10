@@ -360,11 +360,12 @@ impl World {
     fn request_action(&mut self, id: u32, kind: ActionKind) -> bool {
         let buffer = self.config.combat.action_buffer_secs;
         let Some(pi) = self.players.iter().position(|p| p.id == id) else { return false };
-        if self.players[pi].dead || self.players[pi].needs.asleep() || self.players[pi].knock.is_some() || self.players[pi].away.is_some() {
+        if self.players[pi].dead || self.players[pi].needs.asleep() || self.players[pi].knock.is_some() || self.players[pi].away.is_some() || self.players[pi].restraint.is_some() {
             return false;
         }
-        // Fighting drops whatever you were doing with your things.
+        // Fighting drops whatever you were doing with your things, and with anyone else's (#73).
         self.cancel_jobs(pi);
+        self.players[pi].hands = None;
         let p = &mut self.players[pi];
         if p.action.is_none() && p.ready_in <= 0.0 {
             self.begin_action(pi, kind);

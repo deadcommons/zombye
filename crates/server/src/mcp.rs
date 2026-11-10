@@ -98,7 +98,7 @@ enum Kind {
 
 /// Every tool: name, title (shown to people by clients), kind. `tool_list` adds these to the
 /// definitions, and a test checks each tool has a row.
-const TOOLS: [(&str, &str, Kind); 51] = [
+const TOOLS: [(&str, &str, Kind); 58] = [
     ("observe", "Look around (ASCII map)", Kind::Look),
     ("screenshot", "Screenshot (rendered picture)", Kind::Look),
     ("stats", "World and player stats", Kind::Look),
@@ -118,6 +118,12 @@ const TOOLS: [(&str, &str, Kind); 51] = [
     ("heard", "What a player heard said", Kind::Look),
     ("say", "Say something to whoever is near", Kind::Play),
     ("gesture", "Wave, put your hands up or point", Kind::Play),
+    ("restrain", "Tie another survivor's hands", Kind::Play),
+    ("free", "Free a survivor's tied hands", Kind::Play),
+    ("search_player", "Search a tied survivor", Kind::Play),
+    ("take_from", "Take something from a searched survivor", Kind::Play),
+    ("struggle", "Struggle out of tied hands", Kind::Play),
+    ("group", "Your group: invite, accept, leave, markers", Kind::Play),
     ("step_ticks", "Let time pass", Kind::Play),
     ("move_player", "Move", Kind::Play),
     ("interact", "Open or close a door or window", Kind::Play),
@@ -148,6 +154,7 @@ const TOOLS: [(&str, &str, Kind); 51] = [
     ("add_player", "Add a player", Kind::Debug),
     ("pvp", "Player against player on or off", Kind::Debug),
     ("dev", "God mode and ignored by zombies", Kind::Debug),
+    ("restrain_now", "Tie a player's hands at once", Kind::Debug),
     ("skip_time", "Skip time", Kind::Debug),
     ("load", "Load a save (replaces the world)", Kind::Debug),
 ];
@@ -905,6 +912,93 @@ fn tool_defs() -> Value {
             }}
         },
         {
+            "name": "restrain",
+            "description": "A player ties another survivor's hands (a hold-up) with a restraint it carries or holds: a cable tie or \
+                rope (an item tagged restrains). Who can be tied: a survivor within 1.6 m with its hands up (gesture hands_up), or, \
+                with PvP on, one knocked down or asleep; with PvP off only hands held up will do. It takes 3 s and is called off if \
+                they lower their hands, get up or step away. Steps the world until done and says whether they were tied. Tied, a \
+                survivor walks slowly and can't run, climb, fight, gesture or use its things; it can struggle out (struggle), be \
+                searched (search_player) and be freed (free). A cable tie is used up and has to be cut off, rope is untied and can \
+                be used again. observe and stats show who is tied.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "target": {"type": "integer", "description": "The player to tie (default: the survivor this one faces within reach)"}
+            }}
+        },
+        {
+            "name": "free",
+            "description": "A player frees another survivor's tied hands (within 1.6 m; 2.5 s). Rope is untied and falls at their \
+                feet. A cable tie has to be cut off: the player needs something tagged cuts (scissors, a kitchen knife) in its \
+                pockets or hands, and the tie is gone after. Steps the world until done and says whether they are free.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "target": {"type": "integer", "description": "The tied player (default: the survivor this one faces within reach)"}
+            }}
+        },
+        {
+            "name": "search_player",
+            "description": "A player searches a survivor whose hands are tied (see restrain; within 1.6 m, 2 s), then lists what \
+                they have as the searcher sees it: what they hold (hand, off_hand, back, shoulder), wear (worn[N]) and carry \
+                (carried[N]), with item ids and names. The search stays open while they stay tied and within 2.2 m: take_from takes \
+                a stack. Already searching them, it just lists. Steps the world until the search is open.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "target": {"type": "integer", "description": "The tied player (default: the survivor this one faces within reach)"}
+            }}
+        },
+        {
+            "name": "take_from",
+            "description": "A player takes a stack from the tied survivor it is searching (search_player first): into its pockets \
+                and bags, or to the floor at its feet when there is no room. 0.6 s for something carried, 1.5 s for something worn \
+                or held; a bag only comes off once what is in it would fit without it. Steps the world until done and says what \
+                was taken.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "from": {"type": "string", "enum": ["carried", "worn", "hand", "off_hand", "back", "shoulder"], "default": "carried"},
+                "index": {"type": "integer", "default": 0, "description": "Which stack of carried or worn, as search_player lists them"},
+                "count": {"type": "integer", "default": 0, "description": "How many of the stack; 0 = all"}
+            }}
+        },
+        {
+            "name": "struggle",
+            "description": "A player whose hands are tied works at getting out: standing still for 60 s of struggling in all for \
+                rope, 90 s for a cable tie (what it struggled before counts), making a little noise (4 m, every 2 s) zombies can \
+                hear. Steps the world until it is free, dead, or max_secs have passed, then stops struggling and says whether it \
+                got out and how far along it is. An error if the player isn't tied.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "max_secs": {"type": "number", "default": 120, "description": "Give up after this many seconds (at most 600)"}
+            }}
+        },
+        {
+            "name": "group",
+            "description": "A player's optional group: members are told each other's names and share map markers, nothing else. \
+                Groups never switch damage off: with PvP on, blows land on members as on anyone. action: show (default: the \
+                members with names and ids, the markers, invitations waiting), invite (target: a survivor within 12 m and in \
+                sight; default the nearest; the invitation stands 60 s), accept (target: who invited; default the newest \
+                invitation), leave (one member left alone is no group), mark (a shared marker at x, y; at most 8, the oldest \
+                goes), unmark (marker: its id, or x, y: the nearest within 3 m). Replies with what happened and the group as it \
+                is now. Time doesn't move.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "action": {"type": "string", "enum": ["show", "invite", "accept", "leave", "mark", "unmark"], "default": "show"},
+                "target": {"type": "integer", "description": "invite: the player to invite; accept: the player who invited"},
+                "x": {"type": "number"}, "y": {"type": "number"},
+                "marker": {"type": "integer", "description": "unmark: the marker's id"}
+            }}
+        },
+        {
+            "name": "restrain_now",
+            "description": "Debug: tie a player's hands at once with an item (default cable_tie; rope is the other one shipped), as \
+                if player `by` (default 0: nobody) had, whatever it was doing and with nobody near. For testing struggle, free and \
+                search_player.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "item": {"type": "string", "default": "cable_tie"},
+                "by": {"type": "integer", "default": 0}
+            }}
+        },
+        {
             "name": "add_player",
             "description": "Another player joins (as a second client would), standing at (x, y) (default: beside player 1), \
                 facing east. Replies with its id: give it as `player` to the other tools. For testing what several \
@@ -1301,6 +1395,59 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 (Some(g), _) => Err(format!("P{id} can't make a gesture ({}) now: dead, asleep, knocked about or in the middle of a swing", g.name())),
                 (None, _) => Ok(format!("P{id} makes no gesture")),
             }
+        }
+        "restrain" | "free" | "search_player" => hands_tool(world, player_id(), name, args.get("target").and_then(Value::as_u64).map(|t| t as u32)),
+        "take_from" => {
+            let id = player_id();
+            let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            let t = p.frisking.ok_or_else(|| format!("P{id} isn't searching anyone: search_player first (their hands have to be tied)"))?;
+            let place = args.get("from").and_then(Value::as_str).unwrap_or("carried");
+            let from = match place {
+                "carried" => Place::Carried,
+                "worn" => Place::Worn,
+                "hand" => Place::Slot(Slot::Hand),
+                "off_hand" => Place::Slot(Slot::OffHand),
+                "back" => Place::Slot(Slot::Back),
+                "shoulder" => Place::Slot(Slot::Shoulder),
+                other => return Err(format!("unknown place {other:?}: carried, worn, hand, off_hand, back or shoulder")),
+            };
+            let index = args.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let count = args.get("count").and_then(Value::as_u64).unwrap_or(0).min(u16::MAX as u64) as u16;
+            let inv = &world.player(t).ok_or_else(|| format!("P{t} is gone"))?.inventory;
+            let stack = match from {
+                Place::Carried => inv.carried.get(index as usize).copied(),
+                Place::Worn => inv.worn.get(index as usize).copied(),
+                Place::Slot(s) => inv.slot(s),
+                _ => None,
+            };
+            let item = stack.ok_or_else(|| format!("P{t} has nothing at {place} {index} (see search_player)"))?.item;
+            let (notes, ticks) = run_hands(world, id, |w| w.player_take_from(id, from, index, item, count)).map_err(|why| format!("P{id} can't take it: {why}"))?;
+            let has = |who: u32| world.player(who).map_or(0, |p| p.inventory.stacks().filter(|s| s.item == item).map(|s| s.count as u32).sum::<u32>());
+            let def = world.item_def(item);
+            let text = format!("P{id}: {} ({ticks} ticks, {:.1} s); P{id} now has {} x {} ({}), P{t} {}", if notes.is_empty() { "called off" } else { notes.as_str() }, ticks as f32 * TICK_DT, has(id), def.id, def.name, has(t));
+            if notes.is_empty() || notes.contains("refused: ") { Err(text) } else { Ok(text) }
+        }
+        "struggle" => struggle_tool(world, player_id(), num("max_secs").unwrap_or(120.0).clamp(0.05, 600.0) as f32),
+        "group" => group_tool(world, player_id(), args),
+        "restrain_now" => {
+            let id = player_id();
+            let item = args.get("item").and_then(Value::as_str).unwrap_or("cable_tie");
+            let by = args.get("by").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let index = world.item_index(item).ok_or_else(|| format!("unknown item {item:?} (see items)"))?;
+            if !world.item_def(index).has_tag(zombye_sim::bonds::TAG_RESTRAINS) {
+                return Err(format!("{item} doesn't tie hands: an item tagged {} (cable_tie, rope)", zombye_sim::bonds::TAG_RESTRAINS));
+            }
+            if !world.restrain_now(id, item, by) {
+                return Err(format!("no living player {id}"));
+            }
+            let p = world.player(id).expect("just tied");
+            Ok(format!(
+                "P{id}'s hands are tied ({}){}: {:.0} s of struggling gets it out{}",
+                world.item_def(index).name.to_lowercase(),
+                if by == 0 { String::new() } else { format!(", as if by P{by}") },
+                world.escape_secs(p).unwrap_or(0.0),
+                if world.restraint_is_cut(index) { ", or someone cutting it off" } else { ", or someone untying it" }
+            ))
         }
         // `toggle_door` is the old name of `interact`.
         "interact" | "toggle_door" => {
@@ -1719,6 +1866,11 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 "first_night": p.first_night.as_ref().map(|f| first_night_json(f, &p.run)),
                 "knocked": p.knock.map(|k| if k.down { "down" } else { "staggered" }),
                 "gesture": p.gesture.map(|g| g.kind.name()),
+                "restrained": p.restraint.map(|r| world.item_def(r.item).id.clone()),
+                "struggling": p.restraint.is_some_and(|r| r.struggling),
+                "hands": p.hands.map(|h| hands_name(h.kind.act())),
+                "searching": p.frisking,
+                "group": world.groups().of(p.id).map(|g| g.members.clone()),
                 "hunger": p.needs.hunger,
                 "thirst": p.needs.thirst,
                 "tiredness": p.needs.tiredness,
@@ -2478,7 +2630,7 @@ fn observe(world: &World, centre: Vec2, radius: i32, viewer: Option<u32>) -> Str
             world.wielded(p.weapon).name.to_lowercase(),
             s.endurance,
             if s.winded { " (winded)" } else { "" },
-            format!("{}{}", if map.in_window_opening(s.pos) { ", climbing through a window" } else { "" }, p.gesture.map_or(String::new(), |g| format!(", {}", g.kind.doing().to_uppercase()))),
+            format!("{}{}", if map.in_window_opening(s.pos) { ", climbing through a window" } else { "" }, p.gesture.map_or(String::new(), |g| format!(", {}", g.kind.doing().to_uppercase())) + &p.restraint.map_or(String::new(), |r| format!(", HANDS TIED{}", if r.struggling { ", STRUGGLING" } else { "" }))),
             match p.action {
                 _ if p.knock.is_some() => {
                     let k = p.knock.expect("checked");
@@ -2715,6 +2867,212 @@ fn take_notes(world: &mut World, id: u32) -> String {
     let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut world.item_notes).into_iter().partition(|n| n.player == id);
     world.item_notes = rest;
     mine.iter().map(|n| if n.ok { n.text.clone() } else { format!("refused: {}", n.text) }).collect::<Vec<_>>().join("; ")
+}
+
+/// Longest a hold-up tool waits for a player's hands job to end (ticks): the longest job is 3 s.
+const MAX_HANDS_TICKS: u64 = 20 * 5;
+
+/// "tie", "free", "frisk", "take": what a player's hands are doing to another, for `stats`.
+fn hands_name(act: zombye_sim::HandsAct) -> &'static str {
+    match act {
+        zombye_sim::HandsAct::Tie => "tie",
+        zombye_sim::HandsAct::Free => "free",
+        zombye_sim::HandsAct::Frisk => "frisk",
+        zombye_sim::HandsAct::Take => "take",
+    }
+}
+
+/// Start something player `id` does to another survivor with its hands (`start`: tie, free, search,
+/// take) and step the world until that job is over. Returns the player's notes and the ticks it
+/// took; `Err` is why it didn't start.
+fn run_hands(world: &mut World, id: u32, start: impl FnOnce(&mut World) -> Result<(), String>) -> Result<(String, u64), String> {
+    let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+    if p.dead {
+        return Err(format!("player {id} is dead (respawn to play on)"));
+    }
+    take_notes(world, id);
+    let started = start(world);
+    if let Err(why) = started {
+        // The refusal is a note too: the same words.
+        take_notes(world, id);
+        return Err(why);
+    }
+    let begin = world.tick;
+    let mut notes = Vec::new();
+    while world.player(id).is_some_and(|p| p.hands.is_some()) && world.tick - begin < MAX_HANDS_TICKS {
+        world.step();
+        let n = take_notes(world, id);
+        if !n.is_empty() {
+            notes.push(n);
+        }
+    }
+    world.edge_changes.clear();
+    world.combat_events.clear();
+    Ok((notes.join("; "), world.tick - begin))
+}
+
+/// `restrain`, `free` and `search_player`: player `id` does it to `target` (none: the survivor it
+/// faces within reach), the world stepping until it is done or called off.
+fn hands_tool(world: &mut World, id: u32, name: &str, target: Option<u32>) -> Result<String, String> {
+    let target = target.or_else(|| world.faced_player(id));
+    let verb = match name {
+        "restrain" => "tie the hands of",
+        "free" => "free",
+        _ => "search",
+    };
+    let who = target.map_or("anyone".to_string(), |t| format!("P{t}"));
+    // A search that is open already: just what it shows.
+    if let (Some(t), "search_player") = (target, name)
+        && world.player(id).is_some_and(|p| p.frisking == Some(t))
+    {
+        return Ok(frisk_text(world, id, t));
+    }
+    let (notes, ticks) = run_hands(world, id, |w| match name {
+        "restrain" => w.player_restrain(id, target),
+        "free" => w.player_free(id, target),
+        _ => w.player_frisk(id, target),
+    })
+    .map_err(|why| format!("P{id} can't {verb} {who}: {why}"))?;
+    let took = format!("({ticks} ticks, {:.1} s)", ticks as f32 * TICK_DT);
+    let called_off = |what: &str| format!("P{id} didn't {what} {who}: {} {took}", if notes.is_empty() { "called off" } else { notes.as_str() });
+    let (Some(t), Some(them)) = (target, target.and_then(|t| world.player(t))) else { return Err(called_off(verb)) };
+    match name {
+        "restrain" => match them.restraint {
+            Some(r) if !notes.contains("refused: ") => {
+                let cut = world.restraint_is_cut(r.item);
+                Ok(format!("P{id} tied P{t}'s hands ({}) {took}; {}", world.item_def(r.item).name.to_lowercase(), if cut { "it has to be cut off (free, with something that cuts)" } else { "it can be untied (free)" }))
+            }
+            _ => Err(called_off(verb)),
+        },
+        "free" => match them.restraint {
+            None if !notes.contains("refused: ") => Ok(format!("P{id} freed P{t}'s hands {took}: {notes}")),
+            _ => Err(called_off(verb)),
+        },
+        _ if world.player(id).is_some_and(|p| p.frisking == Some(t)) => Ok(format!("P{id} searched P{t} {took}\n{}", frisk_text(world, id, t))),
+        _ => Err(called_off(verb)),
+    }
+}
+
+/// What player `id` sees of the things of `t`, whom it is searching: slots, then worn and carried
+/// stacks by index, as `take_from` names them.
+fn frisk_text(world: &World, id: u32, t: u32) -> String {
+    let Some(them) = world.player(t) else { return format!("no player {t}") };
+    let inv = &them.inventory;
+    let line = |s: &ItemStack| {
+        let d = world.item_def(s.item);
+        format!("{} x {} ({})", s.count, d.id, d.name)
+    };
+    let tied = them.restraint.map_or(String::new(), |r| format!(", hands tied ({})", world.item_def(r.item).name.to_lowercase()));
+    let mut out = format!("P{id} is searching P{t}{tied}; take_from {{from, index, count}} takes a stack:\n");
+    for (name, slot) in [("hand", Slot::Hand), ("off_hand", Slot::OffHand), ("back", Slot::Back), ("shoulder", Slot::Shoulder)] {
+        out.push_str(&format!("{name}: {}\n", inv.slot(slot).map_or("-".to_string(), |s| line(&s))));
+    }
+    for (name, list) in [("worn", &inv.worn), ("carried", &inv.carried)] {
+        if list.is_empty() {
+            out.push_str(&format!("{name}: nothing\n"));
+        }
+        for (k, s) in list.iter().enumerate() {
+            out.push_str(&format!("{name}[{k}] {}\n", line(s)));
+        }
+    }
+    out
+}
+
+/// The `struggle` tool: tied player `id` works at getting out for up to `max_secs`.
+fn struggle_tool(world: &mut World, id: u32, max_secs: f32) -> Result<String, String> {
+    let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+    if p.dead {
+        return Err(format!("player {id} is dead (respawn to play on)"));
+    }
+    let Some(r) = p.restraint else { return Err(format!("P{id}'s hands aren't tied: nothing to struggle out of")) };
+    let name = world.item_def(r.item).name.to_lowercase();
+    let need = world.escape_secs(p).unwrap_or(0.0);
+    take_notes(world, id);
+    world.player_struggle(id, true);
+    let begin = world.tick;
+    let max_ticks = ((max_secs / TICK_DT).ceil() as u64).max(1);
+    let mut events = Events::default();
+    let mut notes = Vec::new();
+    while world.tick - begin < max_ticks {
+        world.step();
+        events.add(world);
+        let n = take_notes(world, id);
+        if !n.is_empty() {
+            notes.push(n);
+        }
+        if !world.player(id).is_some_and(|p| !p.dead && p.restraint.is_some()) {
+            break;
+        }
+    }
+    world.player_struggle(id, false);
+    world.edge_changes.clear();
+    world.combat_events.clear();
+    let secs = (world.tick - begin) as f32 * TICK_DT;
+    let tail = format!("; now tick {}{}", world.tick, events.summary(world));
+    let p = world.player(id).ok_or_else(|| format!("player {id} is gone"))?;
+    if p.dead {
+        return Err(format!("P{id} died with its hands tied after {secs:.1} s{tail}"));
+    }
+    Ok(match p.restraint {
+        None => format!("P{id} got out of the {name} after {secs:.1} s: {}{tail}", notes.join("; ")),
+        Some(r) => format!("P{id} is still tied ({name}) after {secs:.1} s: struggled {:.0} of {need:.0} s (it only counts standing still, awake and on its feet){tail}", r.struggled),
+    })
+}
+
+/// The `group` tool: what player `id` does with its group, then the group as it is.
+fn group_tool(world: &mut World, id: u32, args: &Value) -> Result<String, String> {
+    world.player(id).ok_or_else(|| format!("no player {id}"))?;
+    let num = |k: &str| args.get(k).and_then(Value::as_f64);
+    let target = args.get("target").and_then(Value::as_u64).map(|t| t as u32);
+    let pos = match (num("x"), num("y")) {
+        (Some(x), Some(y)) => Some(Vec2::new(x as f32, y as f32)),
+        _ => None,
+    };
+    let action = args.get("action").and_then(Value::as_str).unwrap_or("show");
+    take_notes(world, id);
+    let did = match action {
+        "show" => Ok(String::new()),
+        "invite" => world.group_invite(id, target).map(|()| {
+            let to = target.or_else(|| world.groups().invites.iter().filter(|i| i.from == id).max_by_key(|i| i.until).map(|i| i.to));
+            format!("P{id} invited {} into its group: it has {:.0} s to accept", to.map_or("them".to_string(), |t| format!("P{t} ({})", world.player_name(t))), world.config.groups.invite_secs)
+        }),
+        "accept" => world.group_accept(id, target).map(|()| format!("P{id} joined the group")),
+        "leave" => world.group_leave(id).map(|()| format!("P{id} left its group")),
+        "mark" => {
+            let pos = pos.ok_or("x and y are required")?;
+            world.group_mark(id, pos).map(|m| format!("P{id} put marker #{m} at ({:.1}, {:.1})", pos.x, pos.y))
+        }
+        "unmark" => {
+            let marker = args.get("marker").and_then(Value::as_u64).map(|m| m as u32);
+            if marker.is_none() && pos.is_none() {
+                return Err("marker (its id), or x and y (the nearest marker within 3 m), is required".into());
+            }
+            if world.group_unmark(id, marker, pos.unwrap_or_default()) { Ok(format!("P{id} took a marker away")) } else { Err("its group has no such marker".to_string()) }
+        }
+        other => return Err(format!("unknown action {other:?}: show, invite, accept, leave, mark or unmark")),
+    };
+    take_notes(world, id);
+    let group = group_text(world, id);
+    match did {
+        Ok(what) if what.is_empty() => Ok(group),
+        Ok(what) => Ok(format!("{what}\n{group}")),
+        Err(why) => Err(format!("P{id} can't {action}: {why}\n{group}")),
+    }
+}
+
+/// Player `id`'s group as it is told of it: members, markers, invitations waiting.
+fn group_text(world: &World, id: u32) -> String {
+    let Some(view) = world.group_view(id) else { return format!("P{id} is in no group and has no invitations") };
+    let names = |list: &[zombye_sim::MemberView]| list.iter().map(|m| format!("P{} ({})", m.id, m.name)).collect::<Vec<_>>().join(", ");
+    let mut out = if view.members.is_empty() { format!("P{id} is in no group") } else { format!("P{id}'s group: {}", names(&view.members)) };
+    if !view.members.is_empty() {
+        let markers: Vec<String> = view.markers.iter().map(|m| format!("#{} at ({:.1}, {:.1}) by P{}", m.id, m.pos.x, m.pos.y, m.by)).collect();
+        out.push_str(&format!("\nmarkers: {}", if markers.is_empty() { "none".to_string() } else { markers.join(", ") }));
+    }
+    if !view.invites.is_empty() {
+        out.push_str(&format!("\ninvited by: {} (group accept)", names(&view.invites)));
+    }
+    out
 }
 
 /// Send an item intent for player `id` and step the world until its queue is empty; then say what
@@ -3374,7 +3732,7 @@ mod tests {
             assert_eq!(t["annotations"]["readOnlyHint"], true, "{name}");
             assert_eq!(t.get("_meta"), None, "{name}");
         }
-        for name in ["spawn_zombies", "spawn_item", "dev", "wound", "set_needs", "skip_time", "set_goal", "load", "make_noise", "add_player", "pvp"] {
+        for name in ["spawn_zombies", "spawn_item", "dev", "wound", "set_needs", "skip_time", "set_goal", "load", "make_noise", "add_player", "pvp", "restrain_now"] {
             let t = tool(&list, name);
             assert!(t["title"].as_str().unwrap().starts_with("Debug: "), "{name}: {}", t["title"]);
             assert!(t["description"].as_str().unwrap().starts_with("Debug tool, for setting up tests"), "{name}");
@@ -3588,7 +3946,7 @@ mod tests {
         let list = tool_list(opts);
         let names: Vec<&str> = list.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
         let debug: Vec<&str> = TOOLS.iter().filter(|t| t.2 == Kind::Debug).map(|t| t.0).collect();
-        assert_eq!(debug.len(), 11);
+        assert_eq!(debug.len(), 12);
         assert_eq!(names.len(), TOOLS.len() - debug.len());
         for name in &debug {
             assert!(!names.contains(name), "{name} is listed");
@@ -3769,6 +4127,118 @@ mod tests {
         assert!(err && text.contains("unknown gesture"), "{text}");
         let (text, err) = call(&mut world, &mut persist, "gesture", json!({"gesture": "none"}));
         assert!(!err && text.contains("makes no gesture"), "{text}");
+    }
+
+    /// Hold-ups and groups through the tools (#73): `restrain` ties a survivor with its hands up,
+    /// `search_player` lists its things and `take_from` takes them, `free` cuts a cable tie off only
+    /// with something that cuts, `struggle` gets a tied player out in time, and `group` invites,
+    /// accepts, marks and leaves. `stats` and `observe` show who is tied.
+    #[test]
+    fn agents_hold_up_search_and_group() {
+        let mut world = small_world();
+        let dir = scratch("holdup");
+        let mut persist = session(&world, &dir.0);
+        let at = world.player(1).unwrap().state.pos;
+        // Player 1 faces east: player 2 a metre in front of it. Zombies stay out of it.
+        let (_, err) = call(&mut world, &mut persist, "add_player", json!({"x": at.x + 1.0, "y": at.y}));
+        assert!(!err);
+        for player in [1, 2] {
+            call(&mut world, &mut persist, "dev", json!({"player": player, "god": true, "ignored": true}));
+        }
+        call(&mut world, &mut persist, "step_ticks", json!({"n": 5}));
+        assert!(world.give_item(1, "cable_tie", 2) && world.give_item(2, "tinned_beans", 2));
+        let stats = |world: &mut World, persist: &mut Persist| -> Value { serde_json::from_str(&call(world, persist, "stats", json!({})).0).unwrap() };
+
+        // Nobody is tied against their will in co-op: hands up first.
+        let (text, err) = call(&mut world, &mut persist, "restrain", json!({}));
+        assert!(err && text.contains("P1 can't tie the hands of P2") && text.contains("hands up"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "search_player", json!({"target": 2}));
+        assert!(err && text.contains("hands are tied"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "take_from", json!({}));
+        assert!(err && text.contains("isn't searching anyone"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "struggle", json!({"player": 2}));
+        assert!(err && text.contains("aren't tied"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "gesture", json!({"player": 2, "gesture": "hands_up"}));
+        assert!(!err, "{text}");
+        let tick = world.tick;
+        let (text, err) = call(&mut world, &mut persist, "restrain", json!({}));
+        assert!(!err && text.contains("P1 tied P2's hands (cable tie)"), "{text}");
+        assert!((60..=61).contains(&(world.tick - tick)), "tying takes 3 s: {} ticks", world.tick - tick);
+        let s = stats(&mut world, &mut persist);
+        assert_eq!(s["players"][1]["restrained"], "cable_tie");
+        assert_eq!(s["players"][1]["struggling"], false);
+        assert_eq!(s["players"][0]["restrained"], Value::Null);
+        assert_eq!(s["players"][0]["hands"], Value::Null);
+        assert_eq!(s["players"][0]["searching"], Value::Null);
+        assert_eq!(s["players"][0]["group"], Value::Null);
+        let (text, _) = call(&mut world, &mut persist, "observe", json!({}));
+        assert!(text.contains("HANDS TIED") && !text.contains("STRUGGLING"), "{text}");
+
+        // Searching the tied survivor, and taking what it has.
+        let (text, err) = call(&mut world, &mut persist, "search_player", json!({}));
+        assert!(!err && text.contains("P1 searched P2") && text.contains("carried[0] 2 x tinned_beans (Tin of beans)") && text.contains("hand: -"), "{text}");
+        assert_eq!(stats(&mut world, &mut persist)["players"][0]["searching"], 2);
+        let tick = world.tick;
+        let (again, err) = call(&mut world, &mut persist, "search_player", json!({"target": 2}));
+        assert!(!err && again.contains("carried[0] 2 x tinned_beans") && world.tick == tick, "an open search is only listed: {again}");
+        let (text, err) = call(&mut world, &mut persist, "take_from", json!({"from": "worn", "index": 9}));
+        assert!(err && text.contains("has nothing at worn 9"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "take_from", json!({"count": 1}));
+        assert!(!err && text.contains("Took their tin of beans") && text.contains("P1 now has 1 x tinned_beans (Tin of beans), P2 1"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "take_from", json!({"from": "carried", "index": 0}));
+        assert!(!err && text.contains("Took their") && text.contains("P1 now has 2 x tinned_beans"), "{text}");
+        assert!(world.player(2).unwrap().inventory.carried.is_empty());
+
+        // A cable tie has to be cut off.
+        let (text, err) = call(&mut world, &mut persist, "free", json!({}));
+        assert!(err && text.contains("P1 can't free P2") && text.contains("cuts"), "{text}");
+        assert!(world.give_item(1, "scissors", 1));
+        let (text, err) = call(&mut world, &mut persist, "free", json!({"target": 2}));
+        assert!(!err && text.contains("P1 freed P2's hands"), "{text}");
+        assert_eq!(stats(&mut world, &mut persist)["players"][1]["restrained"], Value::Null);
+        call(&mut world, &mut persist, "step_ticks", json!({"n": 1}));
+        assert_eq!(stats(&mut world, &mut persist)["players"][0]["searching"], Value::Null, "the search shuts once the tie is cut");
+
+        // Tied at once (debug), it struggles out: 90 s for a cable tie, what it did before counting.
+        let (text, err) = call(&mut world, &mut persist, "restrain_now", json!({"player": 2, "item": "tinned_beans"}));
+        assert!(err && text.contains("doesn't tie hands"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "restrain_now", json!({"player": 2, "by": 1}));
+        assert!(!err && text.contains("P2's hands are tied (cable tie), as if by P1: 90 s"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "struggle", json!({"player": 2, "max_secs": 5}));
+        assert!(!err && text.contains("P2 is still tied (cable tie) after 5.0 s: struggled 5 of 90 s"), "{text}");
+        assert_eq!(stats(&mut world, &mut persist)["players"][1]["struggling"], false, "it stops when the tool returns");
+        let (text, err) = call(&mut world, &mut persist, "struggle", json!({"player": 2, "max_secs": 200}));
+        assert!(!err && text.contains("P2 got out of the cable tie after 85") && text.contains("your hands are free"), "{text}");
+        assert!(world.player(2).unwrap().restraint.is_none());
+
+        // A group: invited, accepted, a marker shared, left.
+        let (text, err) = call(&mut world, &mut persist, "group", json!({}));
+        assert!(!err && text.contains("P1 is in no group"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "group", json!({"action": "mark", "x": at.x, "y": at.y}));
+        assert!(err && text.contains("aren't in one"), "{text}");
+        let tick = world.tick;
+        let (text, err) = call(&mut world, &mut persist, "group", json!({"action": "invite"}));
+        assert!(!err && text.contains("P1 invited P2 (Survivor 2)"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "group", json!({"player": 2}));
+        assert!(!err && text.contains("invited by: P1 (Survivor 1)"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "group", json!({"player": 2, "action": "accept"}));
+        assert!(!err && text.contains("P2 joined the group") && text.contains("P2's group: P1 (Survivor 1), P2 (Survivor 2)") && text.contains("markers: none"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "group", json!({"action": "mark", "x": at.x + 3.0, "y": at.y}));
+        assert!(!err && text.contains("put marker #1 at"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "group", json!({"player": 2, "action": "show"}));
+        assert!(!err && text.contains("#1 at") && text.contains("by P1"), "{text}");
+        assert_eq!(stats(&mut world, &mut persist)["players"][1]["group"], json!([1, 2]));
+        let (text, err) = call(&mut world, &mut persist, "group", json!({"player": 2, "action": "unmark", "x": at.x + 4.0, "y": at.y}));
+        assert!(!err && text.contains("took a marker away") && text.contains("markers: none"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "group", json!({"action": "unmark", "marker": 1}));
+        assert!(err && text.contains("no such marker"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "group", json!({"action": "dance"}));
+        assert!(err && text.contains("unknown action"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "group", json!({"action": "leave"}));
+        assert!(!err && text.contains("P1 left its group") && text.contains("P1 is in no group"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "group", json!({"player": 2}));
+        assert!(text.contains("P2 is in no group"), "one member alone is no group: {text}");
+        assert_eq!(world.tick, tick, "the group tool doesn't step time");
     }
 
     /// PvP through the tools: off, a swing at another player hits nothing; `pvp {on: true}` and the

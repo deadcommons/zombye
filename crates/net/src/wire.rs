@@ -33,7 +33,7 @@ use zombye_sim::map::{CHUNK_SIZE, EdgeChange, EdgeRef};
 use zombye_sim::save::ContentPrint;
 use zombye_sim::worldgen::GenConfig;
 use zombye_sim::{
-    ActionKind, CarryTuning, CombatEvent, CombatTuning, DevFlags, Gesture, GroundItem, Said, HealthTags, HealthTuning, InfectionTuning, ItemNote, Knock, LevelUp, MoveMods, NeedsTuning, SkillTuning, Stance, World, ZombieAnim,
+    ActionKind, CarryTuning, CombatEvent, CombatTuning, DevFlags, Gesture, GroundItem, HandsAct, Said, HealthTags, HealthTuning, InfectionTuning, ItemNote, Knock, LevelUp, MoveMods, NeedsTuning, SkillTuning, Stance, World, ZombieAnim,
 };
 
 use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, RunView, Snapshot, ZombieView};
@@ -47,8 +47,10 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// and spawn protection times in `Rules`. 8: proximity chat and gestures, #67: `Intent::Say`,
 /// `Intent::Gesture`, `PlayerView::gesture`, `SnapshotDelta::speech`. 9: the server's rules, #69:
 /// `Hello::agent`, the camera, agents, spawns, start kit and world in `Rules`, `PlayerView::agent`,
-/// `ClientMsg::Query` and `ServerMsg::Info`.)
-pub const PROTOCOL: u32 = 9;
+/// `ClientMsg::Query` and `ServerMsg::Info`. 10: hold-ups and groups, #73: the `Restrain`, `Free`,
+/// `Frisk`, `TakeFrom`, `StopHands`, `Struggle` and `Group` intents, tied hands in `PlayerView`
+/// (`PlayerPacked::bits` is a `u32` for them), `PrivateView::frisk`, `SnapshotDelta::group`.)
+pub const PROTOCOL: u32 = 10;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -413,10 +415,11 @@ pub struct PlayerPacked {
     pub x: u32,
     pub y: u32,
     pub facing: u8,
-    /// Bits 0-1 the stance, then dead, asleep, aiming, bleeding, limping, sick, injured arm,
-    /// in bits 9-10 its gesture (#67: 0 none, 1 wave, 2 hands up, 3 point), and in bit 11 that it
-    /// is a marked agent (#69).
-    pub bits: u16,
+    /// Bits 0-1 the stance, then dead, asleep, aiming, bleeding, limping, sick, injured arm, and
+    /// in bits 9-10 its gesture (#67: 0 none, 1 wave, 2 hands up, 3 point); #73: bit 11 its hands
+    /// are tied, 12 struggling, 13-15 what its hands do to another (0 nothing, 1 tying, 2 freeing,
+    /// 3 searching, 4 taking); in bit 16 that it is a marked agent (#69).
+    pub bits: u32,
     /// Hit points, rounded up.
     pub hp: u8,
     pub weapon: Option<u16>,
@@ -432,21 +435,28 @@ pub struct PlayerPacked {
 impl PlayerPacked {
     pub fn pack(p: &PlayerView) -> Self {
         let turn = p.facing.rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU;
-        let bit = |on: bool, n: u16| (on as u16) << n;
+        let bit = |on: bool, n: u32| (on as u32) << n;
         let h = p.health;
         let centi = |secs: f32| (secs.max(0.0) * 100.0).round().min(255.0) as u8;
-        let gesture: u16 = match p.gesture {
+        let gesture: u32 = match p.gesture {
             None => 0,
             Some(Gesture::Wave) => 1,
             Some(Gesture::HandsUp) => 2,
             Some(Gesture::Point) => 3,
+        };
+        let hands: u32 = match p.hands {
+            None => 0,
+            Some(HandsAct::Tie) => 1,
+            Some(HandsAct::Free) => 2,
+            Some(HandsAct::Frisk) => 3,
+            Some(HandsAct::Take) => 4,
         };
         Self {
             id: p.id,
             x: (p.pos[0].max(0.0) * POS_STEPS).round() as u32,
             y: (p.pos[1].max(0.0) * POS_STEPS).round() as u32,
             facing: ((turn * 256.0).round() as u32 & 255) as u8,
-            bits: p.stance as u16 | bit(p.dead, 2) | bit(p.asleep, 3) | bit(p.aiming, 4) | bit(h.bleeding, 5) | bit(h.limping, 6) | bit(h.sick, 7) | bit(h.injured_arm, 8) | gesture << 9 | bit(p.agent, 11),
+            bits: p.stance as u32 | bit(p.dead, 2) | bit(p.asleep, 3) | bit(p.aiming, 4) | bit(h.bleeding, 5) | bit(h.limping, 6) | bit(h.sick, 7) | bit(h.injured_arm, 8) | gesture << 9 | bit(p.restrained, 11) | bit(p.struggling, 12) | hands << 13 | bit(p.agent, 16),
             hp: p.hp.clamp(0.0, 255.0).ceil() as u8,
             weapon: p.weapon,
             action: p.action,
@@ -458,7 +468,7 @@ impl PlayerPacked {
 
     /// The view a client draws it from; what wasn't sent is as a rested, unburdened survivor's.
     pub fn unpack(&self) -> PlayerView {
-        let bit = |n: u16| self.bits >> n & 1 == 1;
+        let bit = |n: u32| self.bits >> n & 1 == 1;
         PlayerView {
             id: self.id,
             pos: [self.x as f32 / POS_STEPS, self.y as f32 / POS_STEPS],
@@ -494,7 +504,19 @@ impl PlayerPacked {
                 3 => Some(Gesture::Point),
                 _ => None,
             },
-            agent: bit(11),
+            agent: bit(16),
+            restrained: bit(11),
+            struggling: bit(12),
+            struggle: 0.0,
+            hands: match self.bits >> 13 & 7 {
+                1 => Some(HandsAct::Tie),
+                2 => Some(HandsAct::Free),
+                3 => Some(HandsAct::Frisk),
+                4 => Some(HandsAct::Take),
+                _ => None,
+            },
+            hands_left: 0.0,
+            hands_total: 0.0,
         }
     }
 }
@@ -537,6 +559,8 @@ pub struct SnapshotDelta {
     pub run: Option<RunView>,
     pub outfits: Option<Vec<OutfitView>>,
     pub risen: Option<Vec<OutfitView>>,
+    /// The client's group and invitations (#73), when they change; `Some(None)`: none any more.
+    pub group: Option<Option<zombye_sim::GroupView>>,
 }
 
 impl Snapshot {
@@ -571,6 +595,7 @@ impl Snapshot {
             level_ups: self.level_ups.iter().filter(|l| l.player == player).copied().collect(),
             heard: self.heard.iter().filter(|h| h.listener == player).copied().collect(),
             speech: self.speech.iter().filter(|s| s.listener == player).cloned().collect(),
+            groups: self.groups.iter().filter(|g| g.player == player).cloned().collect(),
         }
     }
 }
@@ -719,6 +744,7 @@ pub struct DeltaEncoder {
     run: Option<RunView>,
     outfits: Vec<OutfitView>,
     risen: Vec<OutfitView>,
+    group: Option<zombye_sim::GroupView>,
 }
 
 /// The entries of `next` that are new or differ from `last`'s (both sorted by `key`), and the keys
@@ -903,7 +929,13 @@ impl DeltaEncoder {
             self.risen = view.risen.clone();
             view.risen
         });
+        let group = view.groups.into_iter().next();
+        let group = (group != self.group).then(|| {
+            self.group = group.clone();
+            group
+        });
         SnapshotDelta {
+            group,
             tick: view.tick,
             time_of_day: view.time_of_day,
             time_scale: view.time_scale,
@@ -992,6 +1024,9 @@ impl DeltaDecoder {
         if let Some(risen) = delta.risen {
             s.risen = risen;
         }
+        if let Some(group) = delta.group {
+            s.groups = group.into_iter().collect();
+        }
         s.clone()
     }
 }
@@ -1054,6 +1089,13 @@ impl Intent {
             | Intent::Respawn { player }
             | Intent::Say { player, .. }
             | Intent::Gesture { player, .. }
+            | Intent::Restrain { player, .. }
+            | Intent::Free { player, .. }
+            | Intent::Frisk { player, .. }
+            | Intent::TakeFrom { player, .. }
+            | Intent::StopHands { player }
+            | Intent::Struggle { player, .. }
+            | Intent::Group { player, .. }
             | Intent::Dev { player, .. } => Some(player),
             Intent::SpawnItem { .. } | Intent::SetGoal { .. } | Intent::SpawnZombies { .. } | Intent::SkipTime { .. } | Intent::MakeNoise { .. } => None,
         }

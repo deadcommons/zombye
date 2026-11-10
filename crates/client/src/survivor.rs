@@ -328,6 +328,11 @@ pub struct SurvivorAnim {
     pub(crate) gesture: Option<Gesture>,
     pub(crate) gesture_w: f32,
     pub(crate) gesture_t: f32,
+    /// Hands tied behind the back (#73), and hands at work on another survivor (tying, freeing,
+    /// searching): each eased in and out. `struggling`: working at the ties now.
+    pub(crate) tied_w: f32,
+    pub(crate) reach_w: f32,
+    pub(crate) struggling: bool,
 }
 
 impl SurvivorAnim {
@@ -357,6 +362,9 @@ impl SurvivorAnim {
             gesture: None,
             gesture_w: 0.0,
             gesture_t: 0.0,
+            tied_w: 0.0,
+            reach_w: 0.0,
+            struggling: false,
         }
     }
 }
@@ -425,6 +433,11 @@ fn animate_survivors(
         }
         a.gesture_w += (gesturing.is_some() as u8 as f32 - a.gesture_w) * k(9.0);
         a.gesture_t += dt;
+        // Tied hands, and hands at work on another survivor (#73).
+        let up = !view.dead && !view.asleep;
+        a.tied_w += ((view.restrained && up) as u8 as f32 - a.tied_w) * k(9.0);
+        a.reach_w += ((view.hands.is_some() && up) as u8 as f32 - a.reach_w) * k(9.0);
+        a.struggling = view.struggling && up;
         let cycle_m = match (&a.look, &model) {
             (Look::Model(_), Some(m)) => m.cycle_metres(a),
             _ => {
@@ -600,6 +613,7 @@ fn hold_pose(a: &mut SurvivorAnim, pose: &str, step: f32, now: f32) {
     let locomotion = |a: &mut SurvivorAnim, run: f32, sneak: f32, moving: f32| {
         (a.run_w, a.sneak_w, a.move_w, a.cycle) = (run, sneak, moving, u);
         a.gesture_w = 0.0;
+        (a.tied_w, a.reach_w, a.struggling) = (0.0, 0.0, false);
         a.action = None;
         a.dead_since = None;
         a.sleeping = false;
@@ -634,6 +648,15 @@ fn hold_pose(a: &mut SurvivorAnim, pose: &str, step: f32, now: f32) {
         "wave" | "handsup" | "hands_up" | "point" => {
             locomotion(a, 0.0, 0.0, 0.0);
             (a.gesture, a.gesture_w, a.gesture_t) = (Gesture::parse(name), 1.0, u);
+        }
+        // Hands tied behind the back, and hands at work on another survivor (#73).
+        "tied" => {
+            locomotion(a, 0.0, 0.0, 0.0);
+            a.tied_w = 1.0;
+        }
+        "tying" => {
+            locomotion(a, 0.0, 0.0, 0.0);
+            (a.reach_w, a.gesture_t) = (1.0, u);
         }
         _ => locomotion(a, 0.0, 0.0, 0.0),
     }
@@ -729,6 +752,32 @@ pub(crate) fn gesture_now(a: &SurvivorAnim) -> Option<(SPose, bool, f32)> {
     Some((p, g == Gesture::HandsUp, a.gesture_w))
 }
 
+/// Hands tied behind the back, or at work on another survivor (#73): the pose of both arms and
+/// its weight now. Tied wins: a tied survivor does nothing else with its hands.
+pub(crate) fn bonds_now(a: &SurvivorAnim) -> Option<(SPose, f32)> {
+    let mut p = SPose::default();
+    if a.tied_w > 0.01 {
+        // Both arms drawn back and in, wrists crossed at the small of the back; struggling, the
+        // shoulders work from side to side.
+        let s = if a.struggling { (a.gesture_t * TAU * 2.2).sin() * 0.12 } else { 0.0 };
+        p.rot[UARM_L] = rz(-0.22 + s) * rx(0.62);
+        p.rot[FARM_L] = rz(-0.75) * rx(0.25);
+        p.rot[UARM_R] = rz(0.22 + s) * rx(0.62);
+        p.rot[FARM_R] = rz(0.75) * rx(0.25);
+        return Some((p, a.tied_w));
+    }
+    if a.reach_w > 0.01 {
+        // Both hands out in front at waist height, working.
+        let s = (a.gesture_t * TAU * 1.8).sin() * 0.1;
+        p.rot[UARM_L] = rz(-0.1) * rx(-0.95 + s);
+        p.rot[FARM_L] = rx(-0.55 - s);
+        p.rot[UARM_R] = rz(0.1) * rx(-0.95 - s);
+        p.rot[FARM_R] = rx(-0.55 + s);
+        return Some((p, a.reach_w));
+    }
+    None
+}
+
 /// How far into the hurt flinch it is now (0 = none).
 pub(crate) fn flinch_weight(a: &SurvivorAnim, now: f32) -> f32 {
     let e = now - a.hurt_at;
@@ -744,6 +793,9 @@ fn compose(a: &SurvivorAnim, now: f32, style: Style, armed: bool) -> SPose {
     pose.blend_bones(&guard(style, armed), a.aim_w, &UPPER, false);
     if let Some((g, both, w)) = gesture_now(a) {
         pose.blend_bones(&g, w, if both { &ARMS[..] } else { &LEFT_ARM[..] }, false);
+    }
+    if let Some((b, w)) = bonds_now(a) {
+        pose.blend_bones(&b, w, &ARMS[..], false);
     }
     if let Some((act, whole, w)) = action_now(a, now, style, armed) {
         pose.blend_bones(&act, w, if whole { &ALL } else { &UPPER }, false);

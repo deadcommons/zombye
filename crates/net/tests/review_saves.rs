@@ -354,3 +354,33 @@ fn review_saves() {
     step(&mut w, 2);
     save(&w, "menu");
 }
+
+/// A hold-up from the wrong end (#73): `tied`, on the street by the spawn house with our hands in
+/// a cable tie, a third of the way out of it, the survivor who tied them standing over us with a
+/// kitchen knife, and the two of us in a group with a marker up the street (so the bar, the
+/// roster, the name tag and the marker's label all show; `--player 2` is the captor's view).
+#[test]
+#[ignore]
+fn holdup_saves() {
+    let mut config = content::load_config(&content::default_data_dir(), 1).unwrap();
+    config.zombies = Some(0);
+    config.combat.pvp = true;
+    config.start_hour = 15.0;
+    config.needs = zombye_sim::NeedsTuning::off();
+    let mut w = World::new(config);
+    let at = street_near(&w, w.player_spawn, 8);
+    let me = w.add_player(at);
+    let captor = w.add_player(at + glam::Vec2::new(1.3, 0.0));
+    w.set_player_input(captor, 1, zombye_sim::PlayerInput { facing: std::f32::consts::PI, ..Default::default() });
+    w.hold_item(captor, Slot::Hand, "kitchen_knife");
+    w.set_player_name(me, "ada");
+    w.set_player_name(captor, "bob");
+    step(&mut w, 5);
+    w.group_invite(me, Some(captor)).unwrap();
+    w.group_accept(captor, None).unwrap();
+    w.group_mark(captor, at + glam::Vec2::new(7.0, -1.0)).unwrap();
+    assert!(w.restrain_now(me, "cable_tie", captor));
+    w.player_struggle(me, true);
+    step(&mut w, 30 * 20);
+    save(&w, "tied");
+}

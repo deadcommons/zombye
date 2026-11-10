@@ -9,12 +9,14 @@
 
 pub mod ai;
 pub mod awareness;
+pub mod bonds;
 pub mod combat;
 pub mod containers;
 pub mod crafting;
 pub mod firstaid;
 pub mod firstnight;
 pub mod flow;
+pub mod groups;
 pub mod health;
 pub mod inventory;
 pub mod lagcomp;
@@ -47,6 +49,8 @@ pub mod zombies;
 
 pub use ai::{ZombieAttack, ZombieThump, ZombieTuning};
 pub use awareness::{Awareness, Heard, PlayerSightTuning};
+pub use bonds::{BondTuning, HandsAct, HandsJob, HandsKind, Restraint};
+pub use groups::{Group, GroupTuning, GroupView, Groups, Marker, MemberView};
 pub use combat::{ActionEvent, CombatEvent, CombatEventKind, CombatTuning, HitEffect, HitEvent, PlayerHitEvent};
 pub use containers::{ContainerData, ContainerDef, ContainerSite};
 pub use crafting::{RecipeDef, RecipeItem, Tool};

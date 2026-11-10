@@ -918,7 +918,7 @@ mod tests {
     }
 
     /// What a server others play on leaves out: the debug tools (`mcp::Kind::Debug`) and the saves folder.
-    const DEV_TOOLS: [&str; 13] = ["make_noise", "set_goal", "spawn_zombies", "set_needs", "spawn_item", "wound", "add_player", "pvp", "dev", "skip_time", "save", "load", "saves"];
+    const DEV_TOOLS: [&str; 14] = ["make_noise", "set_goal", "spawn_zombies", "set_needs", "spawn_item", "wound", "add_player", "pvp", "dev", "restrain_now", "skip_time", "save", "load", "saves"];
 
     /// Every tool is either left out of a public server or not: a new tool has to be put on one side here.
     #[test]
@@ -939,8 +939,8 @@ mod tests {
         assert_eq!(
             play,
             [
-                "attack", "buildings", "containers_near", "craft", "drop", "edge", "equip", "gesture", "health", "heard", "interact", "inventory", "items", "loot", "move_item", "move_player", "observe",
-                "pick_up", "recipes", "regions", "respawn", "say", "screenshot", "search", "shove", "skills", "sleep", "smash_window", "stats", "step_ticks", "stomp", "take", "treat", "unequip",
+                "attack", "buildings", "containers_near", "craft", "drop", "edge", "equip", "free", "gesture", "group", "health", "heard", "interact", "inventory", "items", "loot", "move_item", "move_player", "observe",
+                "pick_up", "recipes", "regions", "respawn", "restrain", "say", "screenshot", "search", "search_player", "shove", "skills", "sleep", "smash_window", "stats", "step_ticks", "stomp", "struggle", "take", "take_from", "treat", "unequip",
                 "use", "weapons", "wear", "zombie",
             ],
             "a new tool: list it here if players may use it on a public server; a debug tool (Kind::Debug in mcp::TOOLS) in DEV_TOOLS"

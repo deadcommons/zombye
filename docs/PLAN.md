@@ -302,8 +302,10 @@ them, fight them, rob them or team up with them. Nothing in the game decides who
   over strangers, no other players on the map). Agents connect through the same rules, so an AI
   survivor is a fair player, not a cheat.
 - **Alliances come from play.** Proximity text and voice chat (heard near the speaker, quieter through
-  walls) and a few gestures. You recognise people by their clothes. Later: restraints for hold-ups and an
-  optional group (shared map markers, seeing your group's names); groups never switch damage off.
+  walls) and a few gestures. You recognise people by their clothes. Hold-ups: someone with their hands up
+  (or knocked down) can be tied with cable ties or rope, searched and robbed, and freed again; tied, they
+  can still walk, talk and struggle out. An optional group shares markers and its members' names; groups
+  never switch damage off.
 - **Spawns and logging out.** New survivors start spread round the edge of the town with little, not
   in one bedroom. A survivor who logs out stays in the world for a short while (so leaving can't end a
   fight), and a fresh spawn gets a few seconds of protection.

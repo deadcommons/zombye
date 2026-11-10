@@ -16,7 +16,7 @@ pub mod wire;
 use serde::{Deserialize, Serialize};
 use zombye_sim::map::{EdgeChange, OwnedEdge};
 use zombye_sim::{
-    ActionKind, Burden, Carry, CombatEvent, DevFlags, Gesture, GroundItem, Said, Volume, HealthTags, HealthView, Inventory, ItemNote, ItemStack, JobKind, LevelUp, MoveMods, NeedsTuning, NeedsView, Place, PlayerInput, RunStats, Skill, SkillView, Stance,
+    ActionKind, Burden, Carry, CombatEvent, DevFlags, Gesture, GroundItem, HandsAct, Said, Volume, HealthTags, HealthView, Inventory, ItemNote, ItemStack, JobKind, LevelUp, MoveMods, NeedsTuning, NeedsView, Place, PlayerInput, RunStats, Skill, SkillView, Stance,
     StatusData, StatusInput, StatusTag, Treatment, World, WorldConfig, ZombieAnim,
 };
 
@@ -123,6 +123,36 @@ pub enum Intent {
     Say { player: u32, text: String, volume: Volume },
     /// Make a gesture (wave, hands up, point), or with `None` stop making one (#67).
     Gesture { player: u32, gesture: Option<Gesture> },
+    /// Hold-ups (#73, `zombye_sim::bonds`): start tying the hands of `target` (`None`: the
+    /// survivor faced within reach), who has them up or is on the ground, with a restraint carried.
+    Restrain { player: u32, target: Option<u32> },
+    /// Start freeing a tied survivor's hands (a cable tie needs something that cuts).
+    Free { player: u32, target: Option<u32> },
+    /// Start searching a tied survivor: its things are then shown like an open container's.
+    Frisk { player: u32, target: Option<u32> },
+    /// Take `count` (0: all) of the stack at `from`/`index` (carried, worn or a slot), which is of
+    /// `item`, from the survivor being searched.
+    TakeFrom { player: u32, from: Place, index: u32, item: u16, count: u16 },
+    /// Stop tying, freeing, searching or taking, and shut the search.
+    StopHands { player: u32 },
+    /// Tied: work at getting out (`on`), or stop. It only counts while standing still.
+    Struggle { player: u32, on: bool },
+    /// Groups (#73, `zombye_sim::groups`): invite, accept, leave, put down or take away a marker.
+    Group { player: u32, op: GroupOp },
+}
+
+/// What a player asks of its group ([`Intent::Group`]).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum GroupOp {
+    /// Invite `target` (`None`: the nearest survivor in sight) into our group.
+    Invite { target: Option<u32> },
+    /// Accept the invitation from `from` (`None`: the newest).
+    Accept { from: Option<u32> },
+    Leave,
+    /// Put a shared marker at `pos`.
+    Mark { pos: [f32; 2] },
+    /// Take the marker `marker` away (`None`: the one nearest `near`, within 3 m).
+    Unmark { marker: Option<u32>, near: [f32; 2] },
 }
 
 /// What one zombie looks like to a client. Server-only state (AI memory, paths) is not included.
@@ -182,6 +212,23 @@ pub struct PlayerView {
     /// Played by a program, on a server whose rules mark agents (#69, `wire::Agents::Marked`).
     /// Set by the multiplayer server from what each client said of itself; never in single-player.
     pub agent: bool,
+    /// Its hands are tied (#73); `struggling`: working at getting out now; `struggle`: how far
+    /// along it is, 0 to 1 (only told to its own client).
+    pub restrained: bool,
+    pub struggling: bool,
+    pub struggle: f32,
+    /// What its hands are doing to another survivor (tying, freeing, searching, taking), and for
+    /// its own client the seconds left and the whole time.
+    pub hands: Option<HandsAct>,
+    pub hands_left: f32,
+    pub hands_total: f32,
+}
+
+/// A searched survivor's things (#73), for whoever is searching it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FriskView {
+    pub target: u32,
+    pub inventory: Inventory,
 }
 
 /// What a container holds, for whoever has it open.
@@ -214,6 +261,10 @@ pub struct PrivateView {
     /// Its item jobs, the one under way first (`PlayerView::busy` has its seconds left): what the
     /// inventory panel shows as being made (#12).
     pub jobs: Vec<JobKind>,
+    /// The tied survivor it is searching, and everything that one has (#73).
+    pub frisk: Option<FriskView>,
+    /// What its own hands are tied with (an item index), if they are.
+    pub restraint: Option<u16>,
 }
 
 impl PrivateView {
@@ -229,7 +280,9 @@ impl PrivateView {
         let needs = world.needs_view(id).unwrap_or_default();
         let skills = world.skills_view(id).unwrap_or_default();
         let jobs = p.jobs.iter().map(|j| j.kind).collect();
-        Some(Self { player: id, inventory: p.inventory.clone(), carry, max_kg: carry.limit_kg * world.config.carry.max_load, open, health, needs, skills, jobs })
+        let frisk = p.frisking.and_then(|t| Some(FriskView { target: t, inventory: world.player(t)?.inventory.clone() }));
+        let restraint = p.restraint.map(|r| r.item);
+        Some(Self { player: id, inventory: p.inventory.clone(), carry, max_kg: carry.limit_kg * world.config.carry.max_load, open, health, needs, skills, jobs, frisk, restraint })
     }
 
     /// What our status icons are worked out from: this view, plus the share of full HP lost, the
@@ -339,6 +392,9 @@ pub struct Snapshot {
     /// speaker's id only if its survivor sees them (else 0: a voice from a place).
     #[serde(default)]
     pub speech: Vec<Said>,
+    /// Groups (#73): for each player with a group or an invitation, its members' names, shared
+    /// markers and who invited it. Every snapshot; a client gets only its own.
+    pub groups: Vec<zombye_sim::GroupView>,
 }
 
 /// What a body has on, for drawing it (#63): the clothing and accessories it wears in the order put
@@ -433,6 +489,12 @@ impl Snapshot {
                 protected: p.protected > 0.0,
                 gesture: p.gesture.map(|g| g.kind),
                 agent: false,
+                restrained: p.restraint.is_some(),
+                struggling: p.restraint.is_some_and(|r| r.struggling),
+                struggle: p.restraint.map_or(0.0, |r| (r.struggled / world.escape_secs(p).unwrap_or(1.0).max(0.1)).clamp(0.0, 1.0)),
+                hands: p.hands.map(|h| h.kind.act()),
+                hands_left: p.hands.map_or(0.0, |h| h.left.max(0.0)),
+                hands_total: p.hands.map_or(0.0, |h| h.total),
             })
             .collect();
         let private = world.take_private_dirty().into_iter().filter_map(|id| PrivateView::of(world, id)).collect();
@@ -456,7 +518,13 @@ impl Snapshot {
             risen,
             heard: world.awareness().all_heard_now().copied().collect(),
             speech: world.take_speech(),
+            groups: if world.groups().is_empty() { Vec::new() } else { world.players.iter().filter_map(|p| world.group_view(p.id)).collect() },
         }
+    }
+
+    /// `player`'s group and the invitations to it (#73), if it has either.
+    pub fn group_of(&self, player: u32) -> Option<&zombye_sim::GroupView> {
+        self.groups.iter().find(|g| g.player == player)
     }
 
     /// This snapshot as client `player` should get it: only its own private view and notes.
@@ -468,6 +536,7 @@ impl Snapshot {
         self.level_ups.retain(|l| l.player == player);
         self.heard.retain(|h| h.listener == player);
         self.speech.retain(|s| s.listener == player);
+        self.groups.retain(|g| g.player == player);
         self
     }
 
@@ -577,6 +646,37 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
         Intent::Gesture { player, gesture } => {
             world.player_gesture(*player, *gesture);
         }
+        // Refusals are noted for the player's client, as for the item intents.
+        Intent::Restrain { player, target } => {
+            let _ = world.player_restrain(*player, *target);
+        }
+        Intent::Free { player, target } => {
+            let _ = world.player_free(*player, *target);
+        }
+        Intent::Frisk { player, target } => {
+            let _ = world.player_frisk(*player, *target);
+        }
+        Intent::TakeFrom { player, from, index, item, count } => {
+            let _ = world.player_take_from(*player, *from, *index, *item, *count);
+        }
+        Intent::StopHands { player } => {
+            world.player_stop_hands(*player);
+        }
+        Intent::Struggle { player, on } => {
+            world.player_struggle(*player, *on);
+        }
+        Intent::Group { player, op } => {
+            let _ = match *op {
+                GroupOp::Invite { target } => world.group_invite(*player, target),
+                GroupOp::Accept { from } => world.group_accept(*player, from),
+                GroupOp::Leave => world.group_leave(*player),
+                GroupOp::Mark { pos } => world.group_mark(*player, pos.into()).map(|_| ()),
+                GroupOp::Unmark { marker, near } => {
+                    world.group_unmark(*player, marker, near.into());
+                    Ok(())
+                }
+            };
+        }
         Intent::Respawn { player } => {
             world.respawn_player(*player);
         }
@@ -620,7 +720,11 @@ impl Intent {
             | Intent::Use { player, .. }
             | Intent::Search { player, .. }
             | Intent::Treat { player, .. }
-            | Intent::Craft { player, .. } => Some(player),
+            | Intent::Craft { player, .. }
+            | Intent::Restrain { player, .. }
+            | Intent::Free { player, .. }
+            | Intent::Frisk { player, .. }
+            | Intent::TakeFrom { player, .. } => Some(player),
             _ => None,
         }
     }

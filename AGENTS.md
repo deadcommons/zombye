@@ -13,12 +13,12 @@ Work is tracked on GitHub, not in the repo: the
 
 | Path | What | Licence |
 |---|---|---|
-| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `awareness.rs`: which players see and heard which, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), lag compensation for it (`lagcomp.rs`: a few ticks of positions, so a remote client's blow lands where it saw the target), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), the status icons a client shows of all that, their levels from data (`status.rs`), skills that improve with practice (`skills.rs` + `SkillTuning`), street props placed by the town generator from data (`street_props.rs`), run stats and the cause of death (`run.rs`), the first night's objectives and outcome (`firstnight.rs`), logging out, spawn protection and the start kit on a server (`logout.rs`), the benchmark's scenarios and score (`scenario.rs`, see The agent survival benchmark), proximity chat and gestures (`speech.rs`: who hears a line, the noise it makes, see Talking and gestures), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`), the hook mod scripts run through (`script.rs`: events, the checked `script_*` functions, what scripts keep; see Mods and scripts). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
+| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `awareness.rs`: which players see and heard which, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), lag compensation for it (`lagcomp.rs`: a few ticks of positions, so a remote client's blow lands where it saw the target), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), the status icons a client shows of all that, their levels from data (`status.rs`), skills that improve with practice (`skills.rs` + `SkillTuning`), street props placed by the town generator from data (`street_props.rs`), run stats and the cause of death (`run.rs`), the first night's objectives and outcome (`firstnight.rs`), logging out, spawn protection and the start kit on a server (`logout.rs`), the benchmark's scenarios and score (`scenario.rs`, see The agent survival benchmark), proximity chat and gestures (`speech.rs`: who hears a line, the noise it makes, see Talking and gestures), tying hands, freeing and searching a tied survivor (`bonds.rs`) and optional groups with names and shared markers (`groups.rs`; both: see Hold-ups and groups), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`), the hook mod scripts run through (`script.rs`: events, the checked `script_*` functions, what scripts keep; see Mods and scripts). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), multiplayer over the network (see Multiplayer: the messages, framing and per-client delta snapshots in `wire.rs`, a client's view cut to what its survivor sees and hears of other players in `visibility.rs`, the server's connections in `host.rs`, a client's in `remote.rs`), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
 | `crates/mods` | Mods (see Mods and scripts): reads a mod's folder (`mod.ron`, `items.ron`, `recipes.ron`, `loot.ron`, `*.luau`), merges its data into a `WorldConfig` (`lib.rs`: `Mod`, `apply`, `load_into`) and runs its Luau scripts sandboxed, one VM a mod, as the world's script host (`luau.rs`, on `mlua`; Luau is built from source, so a C++ compiler is needed). The one crate with Luau in it. | MIT OR Apache-2.0 |
 | `mods/` | Sample mods: `alarm_clock` (an item behaviour by script; the worked example of [docs/modding.md](docs/modding.md)). | MIT OR Apache-2.0 |
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint (`--mcp` on stdio, `mcp.rs`; `--mcp-http` over streamable HTTP for remote agents, `mcp_http.rs`, see Connecting an agent); the multiplayer server (`--host`) and bot clients (`--bots N --connect ADDR`; `multiplayer.rs`, see Multiplayer); the operator's MCP admin endpoint on a hosting server (`--host --admin-mcp`, `admin.rs`, see Administering a server); the dedicated server from one config file (`--config FILE`, `config.rs`, and the `Dockerfile` at the root that runs it, see The dedicated server under Multiplayer); `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`); the agent survival benchmark (`--benchmark`, `benchmark.rs`, see The agent survival benchmark). | MIT OR Apache-2.0 |
-| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building meshes (`world_render.rs`; their details, trim, siding lines, porches, chimneys, shopfronts and lit windows, from `meshgen/building_kit.rs`, see Buildings dressed under The world), the outdoors per chunk from the tile map alone (`meshgen/landscape.rs`: lawns, verges, forest floor and litter, road paint at real scale, kerbs, slab joints, driveways, front beds, fences and hedges; `meshgen/curves.rs`: what's drawn round over the tiles, see Curves under The world; `meshgen/trees.rs`: faceted broadleaves, birches, pines, spruces; colours from `assets/data/palette.ron` through `meshgen/palette.rs`), fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd, or a character baked offline read from a `.zvat` (`zvat.rs`); `survivor.rs` skinned, CPU-posed players; `character.rs` reads a modular character's body and wearable GLBs and `survivor_model.rs` draws players as it, dressed in what they wear), hit feedback (`fx.rs`), lights in the dark (`lights.rs`, see Light and mood), instanced grass, flowers and litter (`vegetation.rs`), the film pass (`film.rs`) and the graphics settings (`graphics.rs`; all three: see Look and feel), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), street props merged into each chunk's props mesh from the same models (`meshgen/street_props.rs`, see Street props under The world), HUD (`hud.rs`; the hotbar on keys 1-9, `hotbar.rs`; panels dragged by their titles and remembered, `panels.rs`; text sizes, colours and backings, `theme.rs`), the death screen and run summary (`death.rs`), the first night's objectives, hints and morning screen (`firstnight_ui.rs`), the skills panel and level-up line (`skills_ui.rs`), the chat line, speech bubbles and gesture keys (`chat.rs`, see Talking and gestures), sound (`audio.rs`, see Sound), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
+| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building meshes (`world_render.rs`; their details, trim, siding lines, porches, chimneys, shopfronts and lit windows, from `meshgen/building_kit.rs`, see Buildings dressed under The world), the outdoors per chunk from the tile map alone (`meshgen/landscape.rs`: lawns, verges, forest floor and litter, road paint at real scale, kerbs, slab joints, driveways, front beds, fences and hedges; `meshgen/curves.rs`: what's drawn round over the tiles, see Curves under The world; `meshgen/trees.rs`: faceted broadleaves, birches, pines, spruces; colours from `assets/data/palette.ron` through `meshgen/palette.rs`), fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd, or a character baked offline read from a `.zvat` (`zvat.rs`); `survivor.rs` skinned, CPU-posed players; `character.rs` reads a modular character's body and wearable GLBs and `survivor_model.rs` draws players as it, dressed in what they wear), hit feedback (`fx.rs`), lights in the dark (`lights.rs`, see Light and mood), instanced grass, flowers and litter (`vegetation.rs`), the film pass (`film.rs`) and the graphics settings (`graphics.rs`; all three: see Look and feel), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), street props merged into each chunk's props mesh from the same models (`meshgen/street_props.rs`, see Street props under The world), HUD (`hud.rs`; the hotbar on keys 1-9, `hotbar.rs`; panels dragged by their titles and remembered, `panels.rs`; text sizes, colours and backings, `theme.rs`), the death screen and run summary (`death.rs`), the first night's objectives, hints and morning screen (`firstnight_ui.rs`), the skills panel and level-up line (`skills_ui.rs`), the chat line, speech bubbles and gesture keys (`chat.rs`, see Talking and gestures), tying, searching and group keys, the search panel, name tags and markers (`holdup.rs`, see Hold-ups and groups), sound (`audio.rs`, see Sound), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
 | `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/items/recipes.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`, `data/street_props.ron`, `data/scenarios.ron`: the benchmark's scenarios, `data/status.ron`: the status icons' levels, labels and tips, `data/palette.ron`: every colour, for Blender assets and the generated world), models (`models/furniture/*.glb`, street props `models/street/*.glb`; the survivor's body `models/characters/survivor_01.glb` and its wearables `models/wearables/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), sound (`audio/sfx/*.wav`, `audio/ambience/*.wav`, listed in `data/sounds.ron`), later textures. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
 | `tools/blender/` | Python to build assets: run inside Blender, mesh builder, palette, renders, validation, GLB export (`zasset.py`, `palette.py`: reads `assets/data/palette.ron`, `build.py`), character clean-up, validation and skinned export (`zchar.py`), VAT bake for the crowd, outfit variants with palette swatches (`zvat.py`, `build.py -- --crowd`); plain Python, art-repo work folders and promotion (`artrepo.py`). | MIT OR Apache-2.0 |
 | `tools/audio/` | `synth.py`: the placeholder sounds, synthesised from noise, tones and filters (plain Python, deterministic). | MIT OR Apache-2.0 |
@@ -117,7 +117,7 @@ cargo run -p zombye-server --release -- --mcp --mod mods/alarm_clock
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --mod DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab worn|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --skip-hours H --hover-tag N --debug-stats --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT --connect HOST[:PORT] --name NAME --password P --agent --server-info HOST[:PORT] --hotbar ID[,ID...] --hotbar-press K@SECS[,K@SECS...] --panel-at PANEL:X,Y[;PANEL:X,Y] --drag-panel PANEL:DX,DY[@SECS] --lag MS --say TEXT[@SECS] --shout TEXT[@SECS] --whisper TEXT[@SECS] --gesture NAME[@SECS] --talk-demo --talk-wall --graphics low|high --vegetation off|low|high|N --no-post LIST --frame-bench N` (the last four: see Look and feel; the six before them: see Talking and gestures) (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --mod DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab worn|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --skip-hours H --hover-tag N --debug-stats --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT --connect HOST[:PORT] --name NAME --password P --agent --server-info HOST[:PORT] --hotbar ID[,ID...] --hotbar-press K@SECS[,K@SECS...] --panel-at PANEL:X,Y[;PANEL:X,Y] --drag-panel PANEL:DX,DY[@SECS] --lag MS --say TEXT[@SECS] --shout TEXT[@SECS] --whisper TEXT[@SECS] --gesture NAME[@SECS] --talk-demo --talk-wall --holdup-demo --holdup-auto --graphics low|high --vegetation off|low|high|N --no-post LIST --frame-bench N` (the last four: see Look and feel; the two before them: see Hold-ups and groups; the six before those: see Talking and gestures) (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost). `--size WxH` makes the window exactly that many pixels, at scale factor 1, so a
 `--screenshot` is WxH on a high-DPI screen too; without it the window is 1600x900 at the screen's scale.
@@ -193,7 +193,7 @@ In game: WASD move (he faces the way he walks), Shift run, C sneak (toggle), rig
 cursor and strafes or backs off at 2.2 m/s, no running, in a guard stance), and only while aiming left mouse attack
 (swing your weapon, or punch) and Space shove (or stomp, when a downed zombie lies right in front of you), E pick up the item you
 face (with nothing on the floor within reach: search the container you face), 1-9 the hotbar (swap to or use what's on that slot, see Hotbar), Tab or I the inventory panel, H the health panel, K the skills panel (drag any of the three by its title; they remember where they were and whether they were open), F open/close the door or window you face, G smash the window you face, dead: R a new run and Q or Esc quit,
-B sleep (B again or WASD to get up), Enter the chat line (Tab there: whisper, talk or shout; Enter says it, Esc drops it), V wave, U hands up (again lowers them), P point (see Talking and gestures), T skip an hour, Z spawn zombies, wheel zoom (over the inventory, health or skills panel it scrolls that panel instead), F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), F3 the light preview (a time-of-day slider, see Light and mood), F4 the debug stats window (see Needs), F6 the server's rules (on a multiplayer server, see Multiplayer), M mute, O hide or show the objectives and hints (see The first night), Ctrl (or Cmd) + `=` / `-` the UI scale (see UI scale), Ctrl+0 back to 100%. Walk into an open or broken window to climb
+B sleep (B again or WASD to get up), Enter the chat line (Tab there: whisper, talk or shout; Enter says it, Esc drops it), V wave, U hands up (again lowers them), P point (see Talking and gestures), Y tie the hands of the survivor you face or free tied ones, L search a tied survivor, J (held) struggle out of ties, N invite into your group or accept (Shift+N leaves), middle mouse a group marker (see Hold-ups and groups), T skip an hour, Z spawn zombies, wheel zoom (over the inventory, health or skills panel it scrolls that panel instead), F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), F3 the light preview (a time-of-day slider, see Light and mood), F4 the debug stats window (see Needs), F6 the server's rules (on a multiplayer server, see Multiplayer), M mute, O hide or show the objectives and hints (see The first night), Ctrl (or Cmd) + `=` / `-` the UI scale (see UI scale), Ctrl+0 back to 100%. Walk into an open or broken window to climb
 through it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
 not Bevy's handler; a second Ctrl-C quits unsaved) autosaves; `--render-to` never does.
 
@@ -449,6 +449,8 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   `Sleep { player, sleep }` (lie down or get up, see Needs; an action or item intent from a sleeper only gets it up),
   `Seen { player, tick }` (a remote client, every tick: the snapshot it is showing, see Lag-compensated melee under Combat),
   `Say { player, text, volume }` and `Gesture { player, gesture }` (see Talking and gestures),
+  `Restrain`, `Free`, `Frisk` (each `{ player, target }`), `TakeFrom`, `StopHands`, `Struggle { player, on }` and
+  `Group { player, op }` (see Hold-ups and groups),
   `Respawn { player }` (single-player/debug: a dead player gets up at the spawn point), `Dev { player, god, ignored }`
   (dev toggles, below), and the debug/admin `SetGoal`, `SpawnZombies`, `SpawnItem { item, count, pos }`, `SkipTime`, `MakeNoise`.
 - **Dev toggles** (`players::DevFlags { god, ignored }` on the player, `World::set_dev`; `Intent::Dev` with `Option<bool>`s,
@@ -1457,7 +1459,8 @@ stack's `born`/`used`, 7 crafting: craft jobs and the recipes in the content fin
   optional too, checked by `save_check::check_looks`), `END`. PvP (#65) didn't bump the format either: the run stats
   gained `player_kills`, so they are written as `RUN2` (a `RUNS` section from before still loads, with none), and
   players reeling or down are an optional `KNOC` section (ids and `Knock`s, only when there are any; checked on load).
-  Logged-out survivors and spawn protection (#68) are an optional `AWAY` section the same way (see Multiplayer).
+  Logged-out survivors and spawn protection (#68) are an optional `AWAY` section the same way (see Multiplayer),
+  and tied hands (`BOND`) and groups (`GRPS`, #73) two more (see Hold-ups and groups).
   Per-region zombie sections are there so a later streaming save (#3, #22) can rewrite only what changed. Errors are
   `LoadError` values, never panics: `NotASave`, `Version` (older or newer), `Truncated`, `Corrupt` (bad checksum,
   undecodable or inconsistent data), `ContentChanged`, `MapChanged`, `Invalid` (below). No SQLite: a world is one file
@@ -1644,8 +1647,9 @@ snapshots over the network: `zombye-server --host` serves a world and `zombye --
   a queue of 100 (5 s of snapshots); a client whose queue fills, that floods (400 intents waiting) or that says nothing
   for 20 s (clients ping every second) is dropped. The tick itself never waits on a socket.
 - **Melee is lag-compensated** (#23, see Combat): clients say which snapshot they show, blows land where the attacker
-  saw the target (at most 0.35 s back), trades of blows go by what each side saw. `wire::PROTOCOL` 9 (7: #68's spawn
-  protection and logout times; 8: chat and gestures, #67; 9: the rules of #69, agents, the query).
+  saw the target (at most 0.35 s back), trades of blows go by what each side saw. `wire::PROTOCOL` 10 (7: #68's spawn
+  protection and logout times; 8: chat and gestures, #67; 9: the rules of #69, agents, the query; 10: hold-ups and
+  groups, #73).
 - **Bots** (`zombye-server --bots N --connect HOST[:PORT] [--secs S] [--bots-hostile] [--lag MS]`): N headless clients, each its
   own connection, that wander, turn when stuck, pick up what lies at their feet, fight zombies that come close (and
   players, hostile) and start again when dead; every 5 s it prints what each costs.
@@ -1873,6 +1877,75 @@ through the same rule of who hears what.
 - Tests: `sim::speech::tests`, `net/tests/chat.rs` (over sockets, three clients: across a room, through a wall, out
   of range; the half-second limit; gestures), `chat.rs`'s own, `mcp::tests::agents_talk_and_gesture`.
 
+## Hold-ups and groups (`sim::bonds`, `sim::groups`, `holdup.rs`; #73)
+
+Ways to make and test trust between players (docs/PLAN.md §4.8). Hands up (the gesture, see Talking and gestures)
+is the surrender; this is what can follow it.
+
+- **Restraints are items:** anything tagged `restrains` in `items.ron` ties hands: `rope` (untied again, and falls at
+  the feet of whoever it comes off) and `cable_tie` (also `ties_once`: used up, cut off with something tagged `cuts`,
+  scissors or a kitchen knife, or snapped by struggling). Cable ties are loot in laundries, garages and hardware shops.
+- **Tying** (`Intent::Restrain { player, target }`, `World::player_restrain`; `target: None` is the survivor faced
+  within `reach_m` 1.6 m with nothing that stops a hand between, `World::faced_player`): the other must have their
+  **hands up**, or, with PvP on, be **knocked down** or lie **asleep** (a logged-out survivor too); never one under
+  spawn protection. With PvP off only raised hands will do, so nobody is tied against their will in co-op. It takes
+  `tie_secs` (3) and is called off if they lower their hands, get up or get further than `keep_m` (2.2), or if the
+  one tying swings, is knocked about or falls asleep; one restraint is used when it is done.
+- **Tied** (`Player::restraint`: the item, who tied it, seconds struggled): walks at `speed` 0.6 of normal, no
+  running, no climbing (`MoveMods`, set in `step_bonds` after movement like a knock, so prediction stays exact); no
+  swings, shoves or stomps, no gestures, no smashing windows, nothing with its things (`queue_job` and `PickUp`
+  refuse: "your hands are tied"). It can still talk, and push a door open or shut. Zombies treat it as anyone.
+  Dying frees the hands.
+- **Getting out:** struggling (`Intent::Struggle { player, on }`): while it is on and the survivor stands still (no
+  movement input), awake and on its feet, seconds add up to `escape_secs` (60, rope) or `escape_tie_secs` (90, a cable
+  tie), with a `struggle_noise` (4 m) every 2 s that zombies hear. Or someone frees it (`Intent::Free`, `free_secs`
+  2.5; a cable tie needs a `cuts` item on the one freeing, which is kept).
+- **Searching a tied survivor** (`Intent::Frisk`, `frisk_secs` 2): its whole inventory is then shown to the searcher
+  (`Player::frisking`, `PrivateView::frisk`: what it holds, wears and carries; sent again whenever it changes) until
+  the two are more than `keep_m` apart, the hands come free, or `Intent::StopHands`. `Intent::TakeFrom { player, from,
+  index, item, count }` takes a stack (`take_secs` 0.6 from pockets and bags, `take_worn_secs` 1.5 for something held
+  or worn; by index if that is still `item`, else the first stack of it there) into the searcher's pockets and bags,
+  or to the floor at its feet when it doesn't fit or would be too heavy; a bag only comes off once what's left fits
+  without it. Both are told (`item_notes`: "Took their 2 x tin of beans" / "A survivor took your ...").
+- **One job at a time** (`Player::hands`, `bonds::HandsJob`: tie, free, frisk, take): checked when asked and again
+  every tick until due (`hands_check`), like the item jobs; starting one drops the item queue, a swing drops it.
+  `PlayerView` carries `restrained`, `struggling`, `struggle` (0 to 1, own client only), `hands` (`HandsAct`; others
+  see it in three bits of `PlayerPacked::bits`, 11-15 with tied and struggling) and its seconds left and total (own).
+- **Groups** (`World::groups`, `groups::Groups`): `Intent::Group { player, op }` with `GroupOp::Invite { target }`
+  (`None`: the nearest survivor in sight within `invite_m` 12 m; the group is made when the other accepts; an
+  invitation stands `invite_secs` 60), `Accept { from }`, `Leave` (a group of one is no group), `Mark { pos }` and
+  `Unmark { marker, near }` (shared markers, at most `max_markers` 8, oldest going first). At most `max_members` 8.
+  Members are told each other's **names** (`World::set_player_name`: a server's join names, set by `Host`; none:
+  "Survivor N") and the markers in `Snapshot::groups` (`GroupView`; a client only its own; `SnapshotDelta::group`
+  when it changes). A member is still only sent while seen (fair information): the name is a label, not a position.
+  **Nothing in combat reads a group: damage between members stays on.** Membership is the player's and outlasts a
+  death.
+- **Saves and determinism:** tied hands are an optional `BOND` section (the item by id, so changed items need no
+  remapping; an item that is gone frees the hands with a note) and groups, markers and invitations an optional `GRPS`
+  section (checked on load: known players, nobody in two groups, markers on the map); both are in `state_hash` only
+  while there are any, so other worlds save and hash as before. A hands job under way and an open search are not
+  saved (a load calls them off, as it lowers raised hands). Tunings: `BondTuning` (`WorldConfig::bonds`) and
+  `GroupTuning` (`WorldConfig::groups`), ours, not saved (like `speech`).
+- **Client** (`holdup.rs`): Y ties the survivor nearest you if free, frees it if tied; L searches (again: stops); X
+  stops what your hands are at; J held struggles; N invites or accepts, Shift+N leaves; the middle mouse button puts a
+  marker where you point or takes away the one pointed at. A bar over the current-action bar while your hands are at
+  work, and while they are tied (how far out you are); the search panel on the right (click a row to take it,
+  Alt-click one of a stack); the group's roster top right; a name under each group member in view; each marker a label
+  where it is, with its distance, kept on screen. `survivor.rs` poses tied hands behind the back and working hands in
+  front (`bonds_now`; `--pose tied`, `--pose tying`). `--holdup-demo`: PvP on, another survivor 1.2 m in front of you
+  with a knife, tins and painkillers who keeps its hands up until it has been tied and freed, and accepts invitations;
+  you get cable ties and scissors. `--holdup-auto` plays your side too (`holdup::SCRIPT`, 25 s: tie, search, take, it
+  struggles, free, group, marker), for clips.
+- **MCP:** `restrain {player, target}`, `free {player, target}` and `search_player {player, target}` (each steps until
+  the job is over and says how it went; the search lists what the other holds, wears and carries with indices),
+  `take_from {player, from, index, count}` (from the one being searched), `struggle {player, max_secs}` (steps until
+  out, dead or out of time), `group {player, action: show | invite | accept | leave | mark | unmark, target, x, y,
+  marker}` (time doesn't move; replies with the members' names, markers and invitations) and the debug `restrain_now
+  {player, item, by}`. `stats` has each player's `restrained` (the item), `struggling`, `hands`, `searching` and
+  `group`; `observe` tags `HANDS TIED` and `STRUGGLING`.
+- Tests: `mcp::tests::agents_hold_up_search_and_group`, `sim::bonds::tests`, `sim::groups::tests`, `net/tests/holdup.rs` (over sockets: the hold-up from hands up to
+  cut loose; a group's names and markers, and that a third player is told none of it), `holdup.rs`'s own.
+
 ## Connecting an agent to the game (MCP)
 
 `zombye-server --mcp` speaks MCP over stdio. `.mcp.json` registers it as `zombye` for
@@ -1916,10 +1989,10 @@ with a line of sight; `all: true` shows everyone (the default with PvP off). The
 `items`, `loot`, `recipes`, `containers_near`, `saves`, `heard`; clients skip the approval prompt for them, and a test calls each
 and checks the state hash, the tick and the session's dirty flag don't move), `Play` tools act as a player or step time,
 `save` writes a file, and `Debug` tools (`make_noise`, `set_goal`, `spawn_zombies`, `spawn_item`, `set_needs`, `wound`,
-`add_player`, `pvp`, `dev`, `skip_time`, `load`) get a title starting `Debug:`, a description starting "Debug tool, for setting
+`add_player`, `pvp`, `dev`, `skip_time`, `load`, `restrain_now`) get a title starting `Debug:`, a description starting "Debug tool, for setting
 up tests" and `_meta: {"zombye/debug": true}`. Only `save` and `load` are `destructiveHint: true`; every tool is
 `openWorldHint: false`. **A new tool needs a row in `TOOLS`** (a test fails without one). `--no-debug-tools` leaves the
-debug tools out: not listed (40 tools instead of 51), and calling one is the unknown-tool error. `stats` has an
+debug tools out: not listed (46 tools instead of 58), and calling one is the unknown-tool error. `stats` has an
 `outputSchema` and returns its JSON as `structuredContent` beside the text (`output_schema`). The server's `instructions`
 (`mcp::instructions`, under 2,200 bytes: every client puts them in the model's context) say you are player 1, time only
 moves when a tool steps it, look with `observe` first, and the debug tools are for testing; detail belongs in the tools'
@@ -1960,7 +2033,8 @@ off_hand, back, shoulder, worn, container, ground), `drop {player, from, index, 
 until the player's queue is empty, then reports what happened and the inventory; `use` also says beforehand what it will
 do, and the needs before and after), `recipes` (every crafting recipe: inputs, tools, outputs, seconds; read-only) and
 `craft {player, recipe}` (see Crafting), `sleep {player, max_hours}` and `set_needs {player, hunger, thirst, tiredness}` (see
-Needs), `say`, `heard` and `gesture` (see Talking and gestures),
+Needs), `say`, `heard` and `gesture` (see Talking and gestures), `restrain`, `free`, `search_player`, `take_from`,
+`struggle`, `group` and the debug `restrain_now` (see Hold-ups and groups),
 `respawn`, `add_player {x, y}` (another player joins there, default beside player 1; for screenshots of several
 players and testing with them), `spawn_item {item, count,
 x, y}` (debug; any item id, `weapon` still accepted), `make_noise {x, y, radius, lasting}`

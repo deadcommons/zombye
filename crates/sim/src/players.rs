@@ -192,6 +192,17 @@ pub struct Player {
     /// not in the state hash.
     #[serde(skip)]
     pub gesture: Option<crate::speech::Gesturing>,
+    /// Its hands are tied (#73, `crate::bonds`). Saved in a section of its own, like `knock`, and
+    /// in the state hash only while set.
+    #[serde(skip)]
+    pub restraint: Option<crate::bonds::Restraint>,
+    /// What its hands are doing to another survivor: tying, freeing, searching, taking. Not
+    /// saved (a load calls it off, as it lowers raised hands).
+    #[serde(skip)]
+    pub hands: Option<crate::bonds::HandsJob>,
+    /// The tied survivor whose things it is going through (a player id). Not saved.
+    #[serde(skip)]
+    pub frisking: Option<u32>,
 }
 
 /// A player staggered or knocked down by another player's swing or shove (see `combat`).
@@ -241,6 +252,9 @@ impl Player {
             first_night: None,
             seen_tick: 0,
             gesture: None,
+            restraint: None,
+            hands: None,
+            frisking: None,
         }
     }
 }

@@ -49,6 +49,12 @@
 //! `--shout`, `--whisper` and `--gesture NAME[@SECS]` do it by themselves; `--talk-demo` puts another
 //! survivor a few metres off who talks and gestures, `--talk-wall` outside the wall of your room.
 //!
+//! Hold-ups and groups (`holdup.rs`, #73): Y ties the hands of the survivor you face (hands up, or
+//! on the ground) or frees tied ones, L searches a tied survivor, hold J to struggle out of ties,
+//! N invites into your group or accepts (Shift+N leaves), the middle mouse button puts down or
+//! takes away a shared marker. `--holdup-demo` puts a survivor with its hands up in front of you
+//! (PvP on; you get cable ties), `--holdup-auto` plays your side too.
+//!
 //! Graphics (`graphics.rs`, Linear DCM-59): `--graphics low|high` picks a preset, `--vegetation
 //! off|low|high|N` the density of the instanced grass, flowers and litter (`vegetation.rs`), and
 //! `--no-post grain,tilt,vignette,bloom,ao,ground|all` switches effects off one by one; kept in
@@ -64,6 +70,7 @@
 mod audio;
 mod autoplay;
 mod duel;
+mod holdup;
 mod camera;
 mod character;
 mod chat;
@@ -284,6 +291,11 @@ pub struct Options {
     /// talks through it (`--talk-wall`).
     pub talk_demo: bool,
     pub talk_wall: bool,
+    /// Verification of hold-ups (#73, `holdup.rs`): PvP on, another survivor right in front of
+    /// you with its hands up and a few things on it, and cable ties and scissors for you
+    /// (`--holdup-demo`); with `--holdup-auto` your side plays itself too.
+    pub holdup_demo: bool,
+    pub holdup_auto: bool,
 }
 
 /// `"Hello there@2.5"` → ("Hello there", 2.5); `"Hello"` → ("Hello", 0). The time is what follows
@@ -355,6 +367,8 @@ impl Options {
             gestures,
             talk_demo: flag("--talk-demo") || flag("--talk-wall"),
             talk_wall: flag("--talk-wall"),
+            holdup_demo: flag("--holdup-demo") || flag("--holdup-auto"),
+            holdup_auto: flag("--holdup-auto"),
             zombies: value("--zombies").and_then(|v| v.parse().ok()),
             seed: value("--seed").and_then(|v| v.parse().ok()).unwrap_or(1),
             start_hour: value("--time").and_then(|v| v.parse().ok()),
@@ -371,7 +385,7 @@ impl Options {
             autoplay: flag("--autoplay"),
             fight_demo: flag("--fight-demo"),
             siege: flag("--siege"),
-            pvp: flag("--pvp") || flag("--duel"),
+            pvp: flag("--pvp") || flag("--duel") || flag("--holdup-demo") || flag("--holdup-auto"),
             duel: flag("--duel"),
             sneak: flag("--sneak"),
             inventory: flag("--inventory"),
@@ -542,7 +556,7 @@ fn main() {
             (hud::HudPlugin, inventory_ui::InventoryUiPlugin, health_ui::HealthUiPlugin, death::DeathPlugin, needs_ui::NeedsUiPlugin, action_ui::ActionUiPlugin, skills_ui::SkillsUiPlugin, debug_stats::DebugStatsPlugin),
             (fx::FxPlugin, heard::HeardPlugin, chat::ChatPlugin, film::FilmPlugin, vegetation::VegetationPlugin, rules_ui::RulesUiPlugin),
             survivor::SurvivorPlugin,
-            (autoplay::AutoplayPlugin, duel::DuelPlugin),
+            (autoplay::AutoplayPlugin, duel::DuelPlugin, holdup::HoldupPlugin),
             (saving::SavingPlugin, ui_scale::UiScalePlugin, panels::PanelsPlugin, hotbar::HotbarPlugin, firstnight_ui::FirstNightUiPlugin),
         ));
     // An offscreen render has no audio device (Bevy's audio is off there).

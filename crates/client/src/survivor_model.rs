@@ -646,6 +646,10 @@ impl SurvivorModel {
             // A gesture (#67): the grey-box's arms carried over, the free arm or both.
             pose.blend_bones(&self.retarget.apply(body, &g), w, Some(if both { self.arms.as_slice() } else { self.left_arm.as_slice() }));
         }
+        if let Some((b, w)) = survivor::bonds_now(a) {
+            // Tied hands, or hands at work on another survivor (#73): both arms.
+            pose.blend_bones(&self.retarget.apply(body, &b), w, Some(self.arms.as_slice()));
+        }
         if let Some((act, whole, w)) = survivor::action_now(a, now, style, armed) {
             pose.blend_bones(&self.retarget.apply(body, &act), w, Some(if whole { &self.all } else { &self.upper }));
         }

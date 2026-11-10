@@ -153,6 +153,15 @@ struct AwaySave {
     protected: Vec<(u32, f32)>,
 }
 
+/// Tied hands (#73, `crate::bonds`; optional, only when there are any): the player, the item it
+/// is tied with by id (so a changed item list needs no remapping), who tied it, the seconds
+/// struggled and whether it is struggling.
+const BOND: [u8; 4] = *b"BOND";
+type BondSave = Vec<(u32, String, u32, f32, bool)>;
+/// Groups, their markers and the invitations out (#73, `crate::groups`; optional, only when there
+/// are any).
+const GRPS: [u8; 4] = *b"GRPS";
+
 /// What bodies that rise wore (#63; optional, like `RUNS`).
 const LOOK: [u8; 4] = *b"LOOK";
 /// Each player's first-night record (#19, `crate::firstnight`; optional, like `RUNS`: a save
@@ -641,6 +650,9 @@ impl World {
             woke: _,
             level_ups: _,
             speech: _,
+            groups,
+            // Said again by whoever runs the world (a server's join names).
+            names: _,
             skill_mods_due: _,
             private_dirty: _,
             rise_looks,
@@ -768,6 +780,15 @@ impl World {
         }
         if away != AwaySave::default() {
             w.section(AWAY, &encode(&away));
+        }
+        // Tied hands and groups (#73); none, no section.
+        let bonds: BondSave =
+            players.iter().filter_map(|p| p.restraint.map(|r| (p.id, config.items.get(r.item as usize).map(|d| d.id.clone()).unwrap_or_default(), r.by, r.struggled, r.struggling))).collect();
+        if !bonds.is_empty() {
+            w.section(BOND, &encode(&bonds));
+        }
+        if !groups.is_empty() {
+            w.section(GRPS, &encode(groups));
         }
         w.section(LOOK, &encode(rise_looks));
         let nights: Vec<(u32, crate::firstnight::FirstNight)> = players.iter().filter_map(|p| Some((p.id, p.first_night.clone()?))).collect();
@@ -952,6 +973,8 @@ impl World {
         let mut script: Option<crate::script::ScriptState> = None;
         let mut away: Option<AwaySave> = None;
         let mut nights: Option<Vec<(u32, crate::firstnight::FirstNight)>> = None;
+        let mut bonds: Option<BondSave> = None;
+        let mut groups: Option<crate::groups::Groups> = None;
         loop {
             let (tag, payload) = r.next()?;
             if tag == END {
@@ -987,11 +1010,19 @@ impl World {
                 nights = Some(decode(NITE, payload)?);
                 continue;
             }
+            if tag == BOND && bonds.is_none() {
+                bonds = Some(decode(BOND, payload)?);
+                continue;
+            }
+            if tag == GRPS && groups.is_none() {
+                groups = Some(decode(GRPS, payload)?);
+                continue;
+            }
             if tag == MODS && script.is_none() {
                 script = Some(decode(MODS, payload)?);
                 continue;
             }
-            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || far.is_some() || nights.is_some() || away.is_some() || script.is_some() {
+            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || far.is_some() || nights.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() {
                 return Err(corrupt(format!("unexpected {} section", tag_name(tag))));
             }
             let block: ZombieBlock = decode(ZOMB, payload)?;
@@ -1024,6 +1055,23 @@ impl World {
                 return Err(save_check::invalid(format!("player {id}: knocked back for {} s (dead: {})", knock.timer, p.dead)));
             }
             p.knock = Some(knock);
+        }
+        // Tied hands (#73). An item that is gone from the content: the hands are free.
+        for (id, item, by, struggled, struggling) in bonds.unwrap_or_default() {
+            let found = w.config.items.iter().position(|d| d.id == item);
+            let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("player {id} is tied up, but isn't in the save")))?;
+            if p.dead || p.restraint.is_some() || !struggled.is_finite() || !(0.0..=36_000.0).contains(&struggled) {
+                return Err(save_check::invalid(format!("player {id}: tied up, struggled {struggled} s (dead: {})", p.dead)));
+            }
+            match found {
+                Some(item) => p.restraint = Some(crate::bonds::Restraint { item: item as u16, by, struggled, struggling }),
+                None => notes.push(format!("player {id} was tied with {item:?}, which is gone: its hands are free")),
+            }
+        }
+        if let Some(g) = groups {
+            let (players, map) = (&w.players, &w.map);
+            g.check(|id| players.iter().any(|p| p.id == id), |pos| map.in_bounds(pos.floor().as_ivec2()), &w.config.groups).map_err(save_check::invalid)?;
+            w.groups = g;
         }
         let mut order: Vec<usize> = (0..z.len()).collect();
         order.sort_by_key(|&i| z.id[i]);
