@@ -485,7 +485,7 @@ pub struct AudioSettings {
 }
 
 impl AudioSettings {
-    fn master(&self) -> f32 {
+    pub fn master(&self) -> f32 {
         if self.muted { 0.0 } else { self.volume }
     }
 }
