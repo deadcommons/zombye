@@ -25,6 +25,17 @@ EXTRA_CLIPS = [("running.glb", "run"), ("walking.glb", "walk_alt")]
 # task 01a1c5bb-4f32-7520-aab1-32b4760520a6) instead of the grey-box poses: in place, the push landing at SHOVE_HIT
 # of the clip (the game's blow lands at 0.45 of the action), eased from and back to the idle's first pose.
 SHOVE_GLB, SHOVE_FRAMES, SHOVE_HIT, SHOVE_EASE = "shove.glb", 22, 0.45, (3, 6)
+# The weapon moves (2026-11-10, owner: "make all our weapon animations good"), the same way: Meshy's library
+# clips (raw/weapons.glb, task 01a1c5c3-e387-77fc-b11b-f58060cd284e) and two text-to-motion clips of our own
+# (raw/motion-shot.glb, motion-stomp.glb; tasks 01a1c5c4-50e7-71bd-9e56-49e6a54c8767, 01a1c5c4-5297-74df-9046-1e863cb8975f).
+# name: (source action, the moving end whose fastest moment is the contact, frames at 24 fps)
+STRIKES = {
+    "punch": ("Right_Jab_from_Guard", ("RightHand",), 15),
+    "swing_one": ("Right_Hand_Sword_Slash", ("RightHand",), 22),
+    "swing_two": ("Charged_Axe_Chop", ("RightHand", "LeftHand"), 24),
+    "shot": ("shot_src", ("RightHand", "LeftHand"), 15),
+    "stomp": ("stomp_src", ("RightFoot",), 20),
+}
 CLIMB_CLIPS = ["climb", "vault"]  # motion-climb.glb, motion-vault.glb: text-to-motion 01a1c558-393a-71bc-8986-6222bdaa02cb, 01a1c558-3bca-722c-be3c-24f2d632b987
 # Directional clips (the owner: "he needs strafe animations"): Meshy's library on the same rig (one file)
 # and a walk left from text-to-motion; walk right is walk left mirrored.
@@ -156,6 +167,20 @@ def build(c):
         g.merge_clip(arm, c.paths["raw"] / f"motion-{name}.glb", name)
         actions[name] = name
     g.merge_clip(arm, c.paths["raw"] / SHOVE_GLB, "shove_src")
+    before_w = set(bpy.data.actions)
+    _imp = set(bpy.data.objects)
+    bpy.ops.import_scene.gltf(filepath=str(c.paths["raw"] / "weapons.glb"))
+    for a_ in [x for x in bpy.data.actions if x not in before_w]:
+        parts_ = a_.name.split("|")
+        a_.name = parts_[1] if len(parts_) >= 3 else parts_[-1]
+        for slot in a_.slots:
+            slot.name_display = arm.name
+        a_.use_fake_user = True
+    for o_ in [o for o in bpy.data.objects if o not in _imp]:
+        bpy.data.objects.remove(o_)
+    g._purge_orphans()
+    g.merge_clip(arm, c.paths["raw"] / "motion-shot.glb", "shot_src")
+    g.merge_clip(arm, c.paths["raw"] / "motion-stomp.glb", "stomp_src")
     for name in directional:
         actions[name] = name
     c.to_asset_collection(arm, mesh)
@@ -212,6 +237,9 @@ def build(c):
 
     make_shove(c, arm)
     actions["shove"] = "shove"
+    for name_, (src_, ends_, frames_) in STRIKES.items():
+        make_strike(c, arm, src_, name_, ends_, frames_)
+        actions[name_] = name_
 
     merged = c.weld_seams(mesh)
     c.note(f"welded {merged} vertices split at UV seams")
@@ -1450,3 +1478,48 @@ def make_shove(c, arm):
     bpy.data.actions.remove(src)
     c.note(f"shove = Meshy's Step Forward and Push frames {s0}-{s1}, the push (frame {hit}) at {SHOVE_HIT:.0%} of "
            f"{SHOVE_FRAMES} frames ({(SHOVE_FRAMES - 1) / 24:.2f} s), {moved:.2f} m of travel taken out, eased from and back to the idle")
+
+
+def make_strike(c, arm, src_name, name, ends, frames, pre=30, post=30):
+    """A weapon move from a Meshy clip, as the shove: the contact (the moving end's fastest frame) at
+    SHOVE_HIT of `frames`, up to `pre` source frames before it and `post` after (within where the clip
+    moves), the travel taken out, eased from and back to the idle's first pose. The source goes."""
+    import importlib.util
+    spec_ = importlib.util.spec_from_file_location("zombie02_helpers", c.paths["folder"].parent / "zombie-02" / "zombie-02.py")
+    z2 = importlib.util.module_from_spec(spec_)
+    spec_.loader.exec_module(z2)
+    src = bpy.data.actions[src_name]
+    z2._bind(arm, src)
+    pb = arm.pose.bones
+    f0, f1 = (int(round(v)) for v in src.frame_range)
+    pos, prev, moving = [], None, []
+    for f in range(f0, f1 + 1):
+        bpy.context.scene.frame_set(f)
+        heads = [b.head.copy() for b in pb]
+        hips = pb["Hips"].head.copy()
+        pos.append([pb[e].head - hips for e in ends])
+        if prev is not None and sum((x - y).length for x, y in zip(heads, prev)) / len(heads) > 0.003:
+            moving.append(f)
+        prev = heads
+    arm.animation_data.action = None
+    speed = [0.0] + [sum((a - b).length for a, b in zip(pos[i], pos[i - 1])) for i in range(1, len(pos))]
+    lo = (moving[0] - f0) if moving else 0
+    hi = (moving[-1] - f0) if moving else len(pos) - 1
+    i_hit = max(range(lo, hi + 1), key=lambda i: speed[i])
+    i0, i1 = max(lo, i_hit - pre), min(hi, i_hit + post)
+    s0, hit, s1 = f0 + i0, f0 + i_hit, f0 + i1
+    n = frames - 1
+    h = max(1, int(round(SHOVE_HIT * n)))
+    times = [s0 + (hit - s0) * k / h for k in range(h)] + [hit + (s1 - hit) * k / (n - h) for k in range(n - h + 1)]
+    clip = z2.remake(src, times, name)
+    d = z2.read(clip)
+    z2.centre(arm, d)
+    moved = z2.pin_travel(arm, d, threshold=0.0)
+    idle0 = z2.pose_at(z2.read(bpy.data.actions["Idle"]), 0)
+    z2.blend(d, idle0, SHOVE_EASE[0])
+    z2.blend(d, idle0, SHOVE_EASE[1], at_start=False)
+    z2.write(clip, d)
+    clip.use_cyclic = False
+    bpy.data.actions.remove(src)
+    c.note(f"{name} = {src_name} frames {s0}-{s1}, the contact (frame {hit}, {'/'.join(ends)} fastest) at {SHOVE_HIT:.0%} of "
+           f"{frames} frames ({(frames - 1) / 24:.2f} s), {moved:.2f} m of travel taken out, eased from and back to the idle")
