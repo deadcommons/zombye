@@ -163,7 +163,21 @@ war in `fog.rs` and `world.wesl`). Numbers live there; this is what they're for.
   the eye to the player and makes the edges of the world feel far away. Bloom only on real light
   sources (a flashlight, a candle, a lit window), never on sunlit surfaces.
 - **Day:** a low, warm sun for most of the day (never overhead), long hard shadows, little fill light,
-  so a building's shadow side is clearly darker. A faint haze. Late afternoon is the look to aim for.
+  so a building's shadow side is clearly darker. A faint haze. Late afternoon is the look to aim for,
+  and since Linear DCM-59 the whole day leans that way: the sun is golden even at its highest (about
+  47° up at noon, 32° by mid-afternoon) and deep amber toward dawn and dusk, the fill is a weak violet
+  so shadows stay strong and cool against it, and the grade is warm with soft contrast and blacks a
+  little lifted and faded (`daynight::grade_at`). What you can't see is no longer a grey hole by day:
+  it keeps over half its colour, dimmed and warmed (`materials::unseen_tint`, `unseen_colour`), so the
+  town reads as one sunlit place and your own view is the brightest part of it.
+- **Film (DCM-59, `film.rs`, `film.wesl`):** one pass after the tone map: a little tilt-shift (the top
+  and bottom of the screen go soft, at most 2.6 px of a 1080-high picture, the middle band stays
+  sharp; the town reads as a small model) and fine grain (new 24 times a second, strongest in the
+  mid-tones, none in black, about half strength at night). Keep both slight: they should be felt, not
+  noticed.
+- **Contact shadows (DCM-59):** a soft dark strip, 0.6 m wide, where every ground-floor wall meets the
+  ground or a floor (`world_render::contact_shadows`), and every blade of grass is darker at its root.
+  Together they stand in for ambient occlusion without a screen-space pass.
 - **Dusk:** deep amber turning to grey-blue; shadows stretch across the street; the town goes quiet.
 - **Night:** dark. Cool, very low moonlight outdoors is enough to read the edges of roads, roofs and a
   silhouette close by, no more. Unlit interiors are darker than outdoors. What you see is what your
@@ -179,8 +193,11 @@ war in `fog.rs` and `world.wesl`). Numbers live there; this is what they're for.
   black. Every asset must still read as a silhouette dimmed, and buildings' outlines and ways in stay
   readable (Gate 4: check it dimmed and at night by flashlight).
 - **Frame cost** is reported for every lighting change (offscreen 1920 × 1080 with 2,000 zombies at
-  26 m and 60 m, `ZOMBYE_FRAME_BENCH`). Screen-space effects that need a depth prepass (ambient
-  occlusion, contact shadows) wait until the cutaway works with one.
+  26 m and 60 m, `--frame-bench N` or `ZOMBYE_FRAME_BENCH`). Screen-space effects that need a depth
+  prepass (screen-space ambient occlusion) wait until the cutaway and the window glass work with one.
+- **Every effect is a setting** (`graphics.rs`): grain, tilt-shift, vignette, bloom, contact shadows
+  and the ground's per-pixel detail each switch off by themselves (`--no-post`), and the low preset
+  (`--graphics low`) turns them all off and thins the vegetation. A new effect joins that list.
 - Review renders in Blender use the Standard view transform (asset-pipeline.md), so the palette is
   what you see there; in game the grade warms and darkens it, which is why Gate 4 is in game.
 
@@ -193,6 +210,22 @@ The world's generated parts and its props both carry the story. Targets for a de
   and grass in cracks and along kerbs; drifts of leaf litter in corners and gutters; loose paper,
   cans, bottles; a few dark stains. Lawns gone long and patchy, vacant lots and verges in tall grass
   with a few wildflowers (muted red, white, yellow) (#81).
+- **Grass, flowers and litter, instanced (Linear DCM-59, `vegetation.rs`):** over the mesher's ground
+  goes a layer of small shared meshes, one patch a tile, placed from the map alone
+  (`landscape::scatter`), so the same town always grows the same grass. **Where:** long grass (to
+  half a metre) where nobody mows: along walls, fences and hedges, verges, vacant lots, the forest's
+  edge; shorter grass on lawns; thin, dry grass on dirt, under trees, beside paths and driveways and
+  over the lawn's bare patches; none on a doorstep (the ground within about 3 m of an outside door is
+  worn to earth), a driveway, a flower bed or under a porch. Wildflowers come in drifts a few metres
+  across, red in some parts of town and white in others, thick in long grass and stray on lawns.
+  Pavements get a weed in a crack now and then, a few loose sheets of paper and small stones; roads
+  less, gutters more. **Colour:** each blade runs from a dark root to a light tip, and each patch is
+  its own mix of `grass_blade` (fresh) and `grass_blade_dry` (straw), dry in broad drifts: the fields
+  should read golden, not green. **Motion:** it sways in gusts that roll across it and bends away
+  from the survivor's feet. **Not yet:** zombies don't part it, and it casts no shadows.
+- **The ground itself** is broken up per pixel (`world.wesl` `ground_detail`): broad lighter and darker
+  drifts, flat triangular facets a metre or so across (the reference's faceted earth, never smooth
+  noise), and dry yellow patches on grass and dirt. Subtle on asphalt and concrete.
 - **Things left behind:** two or three per street frame: a car left with a door open or rusting on
   flat tyres, a bike on its side, bins tipped over, a pram, suitcases, boxes, pallets, tyres, barrels;
   near the core, barricades: sandbags, boards, a police cordon (#61).
@@ -202,7 +235,10 @@ The world's generated parts and its props both carry the story. Targets for a de
 - **Inside:** clutter on floors and counters (papers, boxes, a fallen chair), drawers left open after
   a search, a few stains (#19, with the loot work).
 - **Density never costs the crowd:** clutter is merged into chunk meshes or instanced, with a budget
-  per chunk, and measured like any other rendering change.
+  per chunk, and measured like any other rendering change. The instanced layer is drawn only round
+  the camera (`vegetation::veg_radius`: just past the corners of the view, at most 60 m, shrinking to
+  nothing over the last sixth so nothing pops), has a density setting (`--vegetation off|low|high|N`,
+  `graphics.vegetation` in `settings.ron`) and its meshes stay under 100 triangles a patch.
 
 ## UI
 
@@ -284,3 +320,7 @@ The look asks for things the game doesn't do yet; each is its own issue on the b
 the light and grade (#83), decay and tall grass on the ground (#81), things left behind in the streets
 (#61), the building kit's details (trim, porches, chimneys, siding lines, shopfronts and awnings,
 boarded windows, #59) and the generated world's colours moved into the shared palette (#60).
+The look and feel pass (Linear DCM-59: the golden day, the film pass, contact shadows, instanced
+grass, flowers and litter, worn ground by doors) left for later: softer sun shadows (percentage-closer
+soft shadows are behind an experimental Bevy feature), zombies parting the grass, vegetation
+shadows, leaf litter and cans and bottles as litter kinds, and Blender-built clutter props.

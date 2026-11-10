@@ -96,6 +96,9 @@
         "verge": ("#73704a", 0.9, 0.0),                  // rough grass by roads with no sidewalk
         "tuft": ("#828752", 0.9, 0.0),
         "tuft_dry": ("#998f5e", 0.9, 0.0),
+        "grass_blade": ("#7f8a4c", 0.9, 0.0),            // instanced grass (vegetation.rs): a blade's tip, fresh
+        "grass_blade_dry": ("#b59c5e", 0.9, 0.0),        // and gone to straw; each patch is a mix of the two
+        "worn_ground": ("#7a6648", 0.9, 0.0),            // trodden earth by doors and in bare patches of lawn
         "dirt": ("#695740", 0.9, 0.0),
         "soil": ("#4a3b2e", 0.9, 0.0),                   // flower beds
         "flower_red": ("#9e4540", 0.9, 0.0),

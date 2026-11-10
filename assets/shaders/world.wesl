@@ -199,6 +199,40 @@ fn fog_at(xz: vec2<f32>) -> f32 {
     return los * range * cone;
 }
 
+fn hash21(p: vec2<f32>) -> f32 {
+    var q = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+    q += dot(q, q.yzx + 33.33);
+    return fract((q.x + q.y) * q.z);
+}
+
+// Smooth value noise, 0..1.
+fn vnoise(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), u.x), mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+
+// One flat tone (0..1) per triangle of a grid of `size`-metre triangles, turned so its lines
+// never run along the tiles.
+fn facet(p: vec2<f32>, size: f32, salt: f32) -> f32 {
+    let q = vec2(p.x * 0.8829 - p.y * 0.4695, p.x * 0.4695 + p.y * 0.8829) / size;
+    let f = fract(q);
+    return hash21(floor(q) + vec2(salt, select(0.0, 0.37, f.x + f.y > 1.0)));
+}
+
+// The ground's colour at a point, broken up (DCM-59): broad drifts of lighter and darker, flat
+// facets a metre or so across over them, a finer set inside those, and on grass and dirt (not
+// asphalt or concrete, which have no green over blue) patches gone dry and yellow.
+fn ground_detail(p: vec2<f32>, c: vec3<f32>) -> vec3<f32> {
+    let broad = vnoise(p * 0.09 + vec2(3.7, 9.2));
+    let mid = vnoise(p * 0.31 + vec2(41.0, 17.0));
+    let tone = (broad - 0.5) * 0.16 + (mid - 0.5) * 0.10 + (facet(p, 1.7, 0.0) - 0.5) * 0.11 + (facet(p, 0.55, 5.0) - 0.5) * 0.06;
+    let soft = clamp((c.g - c.b) * 14.0, 0.0, 1.0);
+    let dry = smoothstep(0.52, 0.78, broad * 0.55 + mid * 0.45) * soft;
+    return c * (1.0 + tone * (0.6 + 0.4 * soft)) * mix(vec3(1.0), vec3(1.16, 1.03, 0.78), dry * 0.55);
+}
+
 @fragment
 fn fragment(
     in: VertexOutput,
@@ -250,6 +284,16 @@ fn fragment(
         pbr_input.material.base_color
     );
 
+@if(GROUND) {
+    // Ground detail (DCM-59): the flat colours of the outdoors broken up, in the same faceted
+    // style as everything else. Not indoors (floors keep their colour).
+    if (wp.y < 0.05 && in.world_normal.y > 0.9) {
+        let outdoors = 1.0 - smoothstep(0.3, 0.7, fog_sample(wp.xz).y);
+        let c = pbr_input.material.base_color.rgb;
+        pbr_input.material.base_color = vec4(mix(c, ground_detail(wp.xz, c), outdoors), pbr_input.material.base_color.a);
+    }
+}
+
     var out: FragmentOutput;
 @if(PREPASS_PIPELINE) {
     out = deferred_output(in, pbr_input);
@@ -294,7 +338,9 @@ fn fragment(
             seen = max(seen, lit * los_at(at));
         }
     }
-    var unseen = mix(vec3(grey), out.color.rgb, 0.25) * world_params.fog_tint.rgb * (1.0 - world_params.fog_tint.w);
+    // By day what's unseen keeps most of its colour, dimmed and warm; at night a quarter (DCM-59,
+    // materials.rs `unseen_colour`).
+    var unseen = mix(vec3(grey), out.color.rgb, world_params.lights.y) * world_params.fog_tint.rgb * (1.0 - world_params.fog_tint.w);
     // Greying flattens pale and dark surfaces toward one tone (a driveway vanishes into its lawn):
     // keep some of the difference in what they're made of (#81).
     unseen *= clamp(pow(albedo_lum / UNSEEN_MID, UNSEEN_CONTRAST), 0.6, 1.5);

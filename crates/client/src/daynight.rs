@@ -84,12 +84,14 @@ pub fn sky_at(hour: f32) -> (Vec3, Color, f32, f32) {
     let elevation = (day * PI).sin();
     let daylight = smoothstep(0.0, 0.25, elevation) * if (SUNRISE..SUNSET).contains(&hour) { 1.0 } else { 0.0 };
     if daylight > 0.02 {
-        // Sun crosses from east (+x) to west (-x), tilted south, at most about 35° up.
+        // Sun crosses from east (+x) to west (-x), tilted south and kept low (about 47° up at noon,
+        // 32° by mid-afternoon), so shadows are long all day. Its light is golden even at its
+        // highest and deep amber toward dawn and dusk (DCM-59).
         let azimuth = PI * (1.0 - day);
-        let dir = -Vec3::new(azimuth.cos(), 0.22 + 0.55 * elevation, 0.55).normalize();
-        let warm = 1.0 - smoothstep(0.1, 0.7, elevation);
-        let color = Color::srgb(1.0, 0.88 - 0.24 * warm, 0.7 - 0.38 * warm);
-        (dir, color, 15_000.0 * daylight, daylight)
+        let dir = -Vec3::new(azimuth.cos(), 0.2 + 0.4 * elevation, 0.55).normalize();
+        let warm = 1.0 - smoothstep(0.1, 0.8, elevation);
+        let color = Color::srgb(1.0, 0.88 - 0.24 * warm, 0.7 - 0.36 * warm);
+        (dir, color, 16_000.0 * daylight, daylight)
     } else {
         (Vec3::new(0.35, -1.0, 0.25).normalize(), Color::srgb(0.55, 0.65, 1.0), 320.0, 0.0)
     }
@@ -137,9 +139,11 @@ fn update_lights(
     }
     // Little fill light, so a shadow side is clearly darker by day and the night is dark.
     let night = Color::srgb(0.3, 0.38, 0.62).to_linear();
-    let noon = Color::srgb(0.66, 0.7, 0.82).to_linear();
+    // By day the fill is a soft, faintly violet grey, a little weaker than it was: shadows stay
+    // strong, and a touch cool against the golden sun without going blue.
+    let noon = Color::srgb(0.74, 0.7, 0.73).to_linear();
     ambient.color = Color::from(night.mix(&noon, day));
-    ambient.brightness = 12.0 + 110.0 * day;
+    ambient.brightness = 12.0 + 96.0 * day;
     clear.0 = Color::srgb(0.005 + 0.04 * day, 0.006 + 0.04 * day, 0.012 + 0.05 * day);
     // Just enough at night to see your own feet; a light in hand does the rest.
     if let Ok(mut l) = glow.single_mut() {
@@ -211,30 +215,66 @@ fn held_light_system(
     }
 }
 
+/// The grade for this much daylight (0 night .. 1 day): by day a warm, filmic late afternoon
+/// (amber white balance, soft contrast, blacks a little lifted and faded, DCM-59), warmest and
+/// richest through dawn and dusk; at night cold, drained and closed in, as it was (#83).
+pub fn grade_at(day: f32) -> ColorGrading {
+    let lerp = |night: f32, noon: f32| night + (noon - night) * day;
+    let dusk = 4.0 * day * (1.0 - day);
+    ColorGrading {
+        global: ColorGradingGlobal {
+            exposure: lerp(0.35, 0.2),
+            temperature: lerp(-0.03, 0.04) + 0.06 * dusk,
+            tint: lerp(0.0, -0.01),
+            post_saturation: lerp(0.72, 0.92) + 0.1 * dusk,
+            ..default()
+        },
+        shadows: ColorGradingSection { saturation: lerp(0.6, 0.8), contrast: lerp(1.0, 0.94), lift: lerp(0.0, 0.012), ..default() },
+        midtones: ColorGradingSection { saturation: lerp(0.8, 0.95), contrast: lerp(1.04, 1.03), ..default() },
+        highlights: ColorGradingSection { saturation: lerp(1.0, 0.9), gain: lerp(1.0, 1.04), ..default() },
+    }
+}
+
 /// The grade and vignette: warm and a little faded by day, cold and closed in at night.
-fn grade_camera(daylight: Res<Daylight>, mut cams: Query<(&mut ColorGrading, &mut Vignette), With<IsoCamera>>) {
+fn grade_camera(daylight: Res<Daylight>, graphics: Res<crate::graphics::Graphics>, mut cams: Query<(&mut ColorGrading, &mut Vignette), With<IsoCamera>>) {
     let Ok((mut grading, mut vignette)) = cams.single_mut() else { return };
     let day = daylight.0;
     let lerp = |night: f32, noon: f32| night + (noon - night) * day;
-    // Warmest and richest through dawn and dusk, not in between.
-    let dusk = 4.0 * day * (1.0 - day);
-    *grading = ColorGrading {
-        global: ColorGradingGlobal {
-            exposure: lerp(0.35, 0.15),
-            temperature: lerp(-0.03, 0.03) + 0.08 * dusk,
-            tint: lerp(0.0, -0.01),
-            post_saturation: lerp(0.72, 0.95) + 0.1 * dusk,
-            ..default()
-        },
-        shadows: ColorGradingSection { saturation: lerp(0.6, 0.85), contrast: 1.0, ..default() },
-        midtones: ColorGradingSection { saturation: lerp(0.8, 0.95), contrast: lerp(1.04, 1.1), ..default() },
-        highlights: ColorGradingSection { saturation: 1.0, gain: lerp(1.0, 1.05), ..default() },
-    };
-    vignette.intensity = lerp(0.6, 0.42);
+    *grading = grade_at(day);
+    vignette.intensity = if graphics.vignette { lerp(0.6, 0.46) } else { 0.0 };
     vignette.radius = lerp(0.62, 0.8);
 }
 
 fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// DCM-59: by day the sun is low and golden and the grade warm and soft; the night's light and
+    /// grade are what they were (#83).
+    #[test]
+    fn the_day_is_golden_and_the_night_as_dark_as_it_was() {
+        for hour in [7.5, 10.0, 12.0, 13.0, 14.0, 16.0, 18.5] {
+            let (dir, color, lux, day) = sky_at(hour);
+            let up = (-dir.y).asin().to_degrees();
+            assert!(up > 8.0 && up < 50.0, "the sun is {up} degrees up at {hour}");
+            let c = color.to_srgba();
+            assert!(c.red > c.green && c.green > c.blue + 0.15, "sunlight at {hour}: {c:?}");
+            assert!(day > 0.0 && lux > 0.0);
+        }
+        // Lower and redder late in the day than at noon.
+        assert!(sky_at(18.0).0.y > sky_at(13.0).0.y && sky_at(18.0).1.to_srgba().blue < sky_at(13.0).1.to_srgba().blue);
+        let (_, moon, lux, day) = sky_at(23.0);
+        assert_eq!((moon.to_srgba(), lux, day), (Srgba::rgb(0.55, 0.65, 1.0), 320.0, 0.0));
+
+        let (night, noon, dusk) = (grade_at(0.0), grade_at(1.0), grade_at(0.5));
+        assert_eq!((night.global.exposure, night.global.temperature, night.global.tint, night.global.post_saturation), (0.35, -0.03, 0.0, 0.72));
+        assert_eq!((night.shadows.saturation, night.shadows.contrast, night.shadows.lift, night.midtones.saturation, night.midtones.contrast, night.highlights.gain), (0.6, 1.0, 0.0, 0.8, 1.04, 1.0));
+        assert!(noon.global.temperature > 0.0 && dusk.global.temperature > noon.global.temperature);
+        assert!(noon.midtones.contrast <= night.midtones.contrast && noon.shadows.lift > 0.0, "soft contrast and lifted blacks by day");
+    }
 }

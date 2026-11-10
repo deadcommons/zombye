@@ -16,7 +16,7 @@ Work is tracked on GitHub, not in the repo: the
 | `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `awareness.rs`: which players see and heard which, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), lag compensation for it (`lagcomp.rs`: a few ticks of positions, so a remote client's blow lands where it saw the target), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), skills that improve with practice (`skills.rs` + `SkillTuning`), street props placed by the town generator from data (`street_props.rs`), run stats and the cause of death (`run.rs`), the first night's objectives and outcome (`firstnight.rs`), logging out, spawn protection and the start kit on a server (`logout.rs`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), multiplayer over the network (see Multiplayer: the messages, framing and per-client delta snapshots in `wire.rs`, a client's view cut to what its survivor sees and hears of other players in `visibility.rs`, the server's connections in `host.rs`, a client's in `remote.rs`), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint (`--mcp` on stdio, `mcp.rs`; `--mcp-http` over streamable HTTP for remote agents, `mcp_http.rs`, see Connecting an agent); the multiplayer server (`--host`) and bot clients (`--bots N --connect ADDR`; `multiplayer.rs`, see Multiplayer); `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
-| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building meshes (`world_render.rs`; their details, trim, siding lines, porches, chimneys, shopfronts and lit windows, from `meshgen/building_kit.rs`, see Buildings dressed under The world), the outdoors per chunk from the tile map alone (`meshgen/landscape.rs`: lawns, verges, forest floor and litter, road paint at real scale, kerbs, slab joints, driveways, front beds, fences and hedges; `meshgen/curves.rs`: what's drawn round over the tiles, see Curves under The world; `meshgen/trees.rs`: faceted broadleaves, birches, pines, spruces; colours from `assets/data/palette.ron` through `meshgen/palette.rs`), fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd, or a character baked offline read from a `.zvat` (`zvat.rs`); `survivor.rs` skinned, CPU-posed players; `character.rs` reads a modular character's body and wearable GLBs and `survivor_model.rs` draws players as it, dressed in what they wear), hit feedback (`fx.rs`), lights in the dark (`lights.rs`, see Light and mood), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), street props merged into each chunk's props mesh from the same models (`meshgen/street_props.rs`, see Street props under The world), HUD, the death screen and run summary (`death.rs`), the first night's objectives, hints and morning screen (`firstnight_ui.rs`), the skills panel and level-up line (`skills_ui.rs`), sound (`audio.rs`, see Sound), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
+| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building meshes (`world_render.rs`; their details, trim, siding lines, porches, chimneys, shopfronts and lit windows, from `meshgen/building_kit.rs`, see Buildings dressed under The world), the outdoors per chunk from the tile map alone (`meshgen/landscape.rs`: lawns, verges, forest floor and litter, road paint at real scale, kerbs, slab joints, driveways, front beds, fences and hedges; `meshgen/curves.rs`: what's drawn round over the tiles, see Curves under The world; `meshgen/trees.rs`: faceted broadleaves, birches, pines, spruces; colours from `assets/data/palette.ron` through `meshgen/palette.rs`), fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd, or a character baked offline read from a `.zvat` (`zvat.rs`); `survivor.rs` skinned, CPU-posed players; `character.rs` reads a modular character's body and wearable GLBs and `survivor_model.rs` draws players as it, dressed in what they wear), hit feedback (`fx.rs`), lights in the dark (`lights.rs`, see Light and mood), instanced grass, flowers and litter (`vegetation.rs`), the film pass (`film.rs`) and the graphics settings (`graphics.rs`; all three: see Look and feel), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), street props merged into each chunk's props mesh from the same models (`meshgen/street_props.rs`, see Street props under The world), HUD, the death screen and run summary (`death.rs`), the first night's objectives, hints and morning screen (`firstnight_ui.rs`), the skills panel and level-up line (`skills_ui.rs`), sound (`audio.rs`, see Sound), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
 | `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/items/recipes.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`, `data/street_props.ron`, `data/palette.ron`: every colour, for Blender assets and the generated world), models (`models/furniture/*.glb`, street props `models/street/*.glb`; the survivor's body `models/characters/survivor_01.glb` and its wearables `models/wearables/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), sound (`audio/sfx/*.wav`, `audio/ambience/*.wav`, listed in `data/sounds.ron`), later textures. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
 | `tools/blender/` | Python to build assets: run inside Blender, mesh builder, palette, renders, validation, GLB export (`zasset.py`, `palette.py`: reads `assets/data/palette.ron`, `build.py`), character clean-up, validation and skinned export (`zchar.py`), VAT bake for the crowd, outfit variants with palette swatches (`zvat.py`, `build.py -- --crowd`); plain Python, art-repo work folders and promotion (`artrepo.py`). | MIT OR Apache-2.0 |
 | `tools/audio/` | `synth.py`: the placeholder sounds, synthesised from noise, tones and filters (plain Python, deterministic). | MIT OR Apache-2.0 |
@@ -99,7 +99,7 @@ cargo test --release --workspace
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab worn|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --skip-hours H --hover-tag N --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT --connect HOST[:PORT] --name NAME --password P --lag MS`(`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab worn|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --skip-hours H --hover-tag N --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT --connect HOST[:PORT] --name NAME --password P --lag MS --graphics low|high --vegetation off|low|high|N --no-post LIST --frame-bench N` (the last four: see Look and feel) (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost). `--size WxH` makes the window exactly that many pixels, at scale factor 1, so a
 `--screenshot` is WxH on a high-DPI screen too; without it the window is 1600x900 at the screen's scale.
@@ -141,7 +141,7 @@ few frames it reads the image back, and two readbacks in a row that match (all b
 prints `rendered PATH: WxH, N frames, N readbacks, MS ms` (plus a warning if it never settled; 40 s limit) and exits 0,
 or exits 1 with the reason on stderr. Prefer it to `--screenshot` for checking visuals: the windowed client pops up and
 steals focus. `ZOMBYE_FRAME_BENCH=N` then renders N more frames of the same picture, waiting for the GPU each frame, and
-prints `frame cost: M ms mean, W ms worst` (how frame costs in this file are measured: 1920x1080, 2,000 zombies, 120 frames). Not rendered: client-only effects that aren't in the save (blood splats, hit flashes).
+prints `frame cost: M ms mean, W ms worst` (how frame costs in this file are measured: 1920x1080, 2,000 zombies, 120 frames); `--frame-bench N` is the same as a flag. Not rendered: client-only effects that aren't in the save (blood splats, hit flashes).
 `--pose NAME[@DEG][+aim][:U]` (`@DEG` moving that many degrees off the aim, `+aim` aiming) holds every survivor in one pose, each the next step through it (players in a row make a strip), for reviewing animation in offscreen pictures where nothing moves:
 `walk`, `run`, `sneak` at `U` (0..1) of the locomotion cycle, `swing`, `shove`, `stomp` at `U` of the action (the blow
 lands at 0.45), `idle`, `dead`.
@@ -985,6 +985,64 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
 - **Cost** (M-series Mac, 1920 × 1080 offscreen, 2,000 zombies, under the same background load): within about 1 ms of
   before (day 9.1 against 7.9 ms, dusk 8.0 against 8.3, 60 m 9.4 against 9.8); a lit flashlight adds about 0.8 ms (its
   shadow map).
+
+## Look and feel (`graphics.rs`, `vegetation.rs`, `film.rs`; Linear DCM-59)
+
+The day is a warm, filmic late afternoon and the ground is grown over; the night is as dark as it was (see Light
+and mood, and docs/art-direction.md). All of it is client only: nothing here is in the sim, a save or a snapshot.
+
+- **Graphics settings** (`graphics::Graphics`, a resource): `vegetation` (density, 0 to 2, default 1) and a switch
+  each for `grain`, `tilt_shift`, `vignette`, `bloom`, `contact_shadows` and `ground_detail`. From `graphics` in the
+  client settings file (`settings.ron`, see UI scale; never read offscreen), then `--graphics low|high` (a whole
+  preset: low is vegetation 0.35 and every switch off), `--vegetation off|low|high|N` and `--no-post LIST`
+  (`grain`, `tilt`, `vignette`, `bloom`, `ao`, `ground`, or `all`). Read once at start. **A new effect gets a switch
+  there and goes off in `Graphics::low`.**
+- **The day's light** (`daynight::sky_at`, `grade_at`): the sun is golden all day and lower than it was (about 47° up
+  at noon, 32° by mid-afternoon), the fill a weak violet, the grade warm with soft contrast and lifted blacks; the
+  night's light and grade are unchanged (a test holds them). **Unseen ground by day** keeps three quarters of its
+  colour, dimmed and warmed, instead of going grey (`materials::unseen_tint`, `unseen_colour`, in `WorldParams::fog_tint`
+  and `lights.y`); at night it is as black as before.
+- **The film pass** (`film.rs`, `assets/shaders/film.wesl`): one fullscreen pass after the tone map (Bevy's
+  `FullscreenMaterial`): tilt-shift (the top and bottom of the screen soften, up to 2.6 px at 1080p, 13 taps) and grain
+  (24 a second, by visual time, so it stands still in an offscreen render; about half strength at night). With both
+  off the camera has no `Film` and the pass isn't run.
+- **Ground detail** (`world.wesl` `ground_detail`, only in the ground material, `WorldKey::ground` / `GROUND`):
+  outdoors, the ground's colour is broken up per pixel: broad drifts, flat triangular facets 1.7 m and 0.55 m across,
+  and dry patches on grass and dirt. **Worn ground:** the mesher blends lawn toward `worn_ground` within 2.8 m of an
+  outside door (`Land::wear`, from the doors in the chunk's cached tiles, whatever state they're in) and in a few bare
+  patches a yard (`bare_patch`).
+- **Contact shadows** (`world_render::contact_shadows`): a strip of black fading to clear, 0.6 m wide, on the ground
+  and floors along both faces of every ground-floor wall and window: one small blended, unlit mesh a building (16 to
+  about 1,000 triangles), spawned and despawned with it. They stand in for ambient occlusion: the screen-space kind
+  needs MSAA off, and the window glass is alpha to coverage.
+- **Instanced vegetation and litter** (`vegetation.rs`, `assets/shaders/vegetation.wesl`): eight kinds
+  (`VegKind`: long grass, lawn grass, thin grass, a weed, red and white flowers, loose paper, small stones), four
+  mesh variants each, built in code (12 to 91 triangles; blades are single triangles, dark at the root). **Where**
+  is `landscape::scatter`, run per outdoor tile by `build_chunk` (`ChunkMeshes::veg`, a `VegSpot` list: position,
+  kind, variant, turn, scale, dryness, rank), from tile hashes and noise alone, so a chunk always grows the same:
+  long grass where nobody mows (by walls, fences, verges, overgrown lots), shorter on lawns, thin on dirt, under
+  trees, beside paths and over bare patches, none on doorsteps, driveways, beds, curved kerbs or under a porch;
+  flowers in drifts; weeds, paper and stones on pavements and in gutters. A patch against a wall keeps to its tile
+  and quarter turns (it would poke into the room); in the open it is jittered and turned freely. **Drawing** is the
+  crowd's path: each spot is an entity (a child of its chunk's ground entity, which holds the list as `ChunkVeg`)
+  with a shared mesh, the one `VegMaterial` and a `MeshTag` (bits 0-7 dryness, 8-15 brightness), so Bevy batches each
+  mesh's instances into one draw; no shadows cast. `VegMaterial` is the world material's fragment shader (same
+  bindings 100-103: lighting, shadows, fog of war, night) behind its own vertex shader, which colours a blade by the
+  tag (a mix of the palette's `grass_blade` and `grass_blade_dry`), sways it (gusts by world position and the clock),
+  bends it away from the player's feet, gives it the ground's normal, and shrinks it to nothing over the last 16% of
+  the drawn radius. **Culling:** a chunk's spots exist only while it is within `veg_radius(zoom)` of the camera's
+  focus (1.34 x zoom + 3 m, 24 to 60 m: past the view's corners up to a zoom of about 42 m), spawned two chunks a
+  frame as you walk (all at once for the first view and offscreen), removed 8 m further out. **Density:** a spot
+  is spawned when its rank is under the setting: every tile's first patch ranks 0 to 1, a second between them 1 to
+  2; `--vegetation off` spawns nothing.
+- **Cost** (measured only on the GPU-less build VM, software rendering under other load, so these are upper bounds
+  of the CPU-side work and say little about a GPU: best of three, 1920 x 1080 offscreen, 2,000 zombies, a yard by
+  day): the default town averages 161 instances and 5,900 triangles of vegetation a chunk, about 5,000 instances and
+  180,000 triangles round the camera at the default zoom, in at most 32 batches. A frame at 26 m: 148 ms with
+  everything off, 176 ms with vegetation alone, 165 ms with the post effects, ground detail and contact shadows
+  alone, 193 ms with it all, 237 ms at density 2; at 60 m 233 ms off and 363 ms on. Chunk building, scatter
+  included: 0.53 ms mean on that VM. **Not yet measured on a GPU** (`--frame-bench 120` on the Mac, with and
+  without `--graphics low --vegetation off`).
 
 ## Characters on screen (`crates/client`)
 

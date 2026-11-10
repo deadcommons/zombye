@@ -59,7 +59,7 @@ impl Plugin for IsoCameraPlugin {
     }
 }
 
-fn spawn_camera(mut commands: Commands, join: Res<JoinInfo>, options: Res<Options>, offscreen: Option<Res<OffscreenTarget>>) {
+fn spawn_camera(mut commands: Commands, join: Res<JoinInfo>, options: Res<Options>, graphics: Res<crate::graphics::Graphics>, offscreen: Option<Res<OffscreenTarget>>) {
     // `--center` only applies offscreen (a live camera follows the player).
     let at = options.center.filter(|_| offscreen.is_some()).map_or(join.player_spawn, Vec2::from);
     let focus = Vec3::new(at.x, 0.0, at.y);
@@ -83,13 +83,11 @@ fn spawn_camera(mut commands: Commands, join: Res<JoinInfo>, options: Res<Option
     // The mood (#83): HDR so light sources can glow, a filmic tone map, and the grade and
     // vignette that `daynight.rs` sets from the time of day. Bloom picks up only what's brighter
     // than sunlit ground: a flashlight's hot spot, a candle, a lit window.
-    camera.insert((
-        Hdr,
-        Tonemapping::TonyMcMapface,
-        Bloom { intensity: 0.18, prefilter: BloomPrefilter { threshold: 1.1, threshold_softness: 0.4 }, ..Bloom::NATURAL },
-        ColorGrading::default(),
-        Vignette { intensity: 0.45, radius: 0.8, smoothness: 2.2, ..default() },
-    ));
+    camera.insert((Hdr, Tonemapping::TonyMcMapface, ColorGrading::default(), Vignette { intensity: 0.45, radius: 0.8, smoothness: 2.2, ..default() }));
+    // Each post effect is a graphics setting (`graphics.rs`): the film pass is added by `film.rs`.
+    if graphics.bloom {
+        camera.insert(Bloom { intensity: 0.18, prefilter: BloomPrefilter { threshold: 1.1, threshold_softness: 0.4 }, ..Bloom::NATURAL });
+    }
     if let Some(target) = offscreen {
         // The only camera: it is also the origin for point-light shadow detail.
         camera.insert((RenderTarget::Image(target.0.clone().into()), ShadowLodOrigin));

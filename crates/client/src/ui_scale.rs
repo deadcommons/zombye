@@ -67,12 +67,15 @@ pub fn parse_pct(text: &str) -> Option<u32> {
 pub struct ClientSettings {
     /// UI scale in percent ([`MIN_PCT`]..=[`MAX_PCT`]).
     pub ui_scale: u32,
+    /// Vegetation density and the post effects (`graphics.rs`, Linear DCM-59).
+    pub graphics: crate::graphics::Graphics,
 }
 
 impl Default for ClientSettings {
     fn default() -> Self {
         Self {
             ui_scale: DEFAULT_PCT,
+            graphics: crate::graphics::Graphics::default(),
         }
     }
 }
@@ -348,11 +351,11 @@ mod tests {
     fn settings_save_and_load() {
         let d = dir("roundtrip");
         let path = ClientSettings::path(&d);
-        let s = ClientSettings { ui_scale: 130 };
+        let s = ClientSettings { ui_scale: 130, ..Default::default() };
         s.save(&path).unwrap();
         assert_eq!(ClientSettings::load(&path), (s, None));
         // Saved again over the old one.
-        ClientSettings { ui_scale: 85 }.save(&path).unwrap();
+        ClientSettings { ui_scale: 85, ..Default::default() }.save(&path).unwrap();
         assert_eq!(ClientSettings::load(&path).0.ui_scale, 85);
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -394,7 +397,7 @@ mod tests {
     #[test]
     fn the_flag_wins_and_offscreen_never_reads_the_file() {
         let d = dir("flag");
-        ClientSettings { ui_scale: 120 }
+        ClientSettings { ui_scale: 120, ..Default::default() }
             .save(&ClientSettings::path(&d))
             .unwrap();
         let opts = |extra: &str| {

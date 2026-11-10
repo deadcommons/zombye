@@ -24,6 +24,7 @@ use super::curves::{ArcSpan, Curves, Kerb, PieceBuf, Poly, Surface};
 use super::palette::{self, pal};
 use super::trees::{self, add_bush, add_tree};
 use super::{CutTag, MeshBuilder, floor_color, hash01, shade};
+use crate::vegetation::{VARIANTS, VegKind, VegSpot};
 
 /// Oil stains lie this far above the ground (everything else flat is cut into the ground itself,
 /// see [`Paint`]), so they never flicker.
@@ -46,6 +47,8 @@ const MAX_STREET: i32 = 14;
 const RUN_CAP: i32 = 20;
 /// Tiles of map cached round a chunk.
 const MARGIN: i32 = 4;
+/// How far from a door the ground is worn, in metres (within [`MARGIN`], so chunks agree).
+const WEAR_REACH: f32 = 2.8;
 
 /// Centre-line paint: dashed (3 m dashes, 9 m gaps) on ordinary streets, double solid yellow on a
 /// street the sim paints solid (the main street).
@@ -119,6 +122,9 @@ struct Land<'a> {
     /// Prefix sums over the cached area of trees and of pines, for [`Land::trees_near`].
     tree_sums: Vec<(u16, u16)>,
     curves: Curves,
+    /// The middle of every outside door's threshold in the cached area: the ground is worn there
+    /// ([`Land::wear`]).
+    doors: Vec<Vec2>,
 }
 
 const SPAN: i32 = CHUNK_SIZE + 2 * MARGIN;
@@ -148,7 +154,21 @@ impl<'a> Land<'a> {
             }
         }
         let curves = Curves::find(map, c);
-        let mut land = Land { map, min, tiles, streets: Vec::new(), driveways: Vec::new(), beds: Vec::new(), tree_sums, curves };
+        let mut land = Land { map, min, tiles, streets: Vec::new(), driveways: Vec::new(), beds: Vec::new(), tree_sums, curves, doors: Vec::new() };
+        // Doors between a room and the outdoors, whatever state they're in (the ground is built
+        // once; a door opening or breaking later mustn't change it).
+        let door = |e: Edge| matches!(e, Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken);
+        for y in 1..SPAN {
+            for x in 1..SPAN {
+                let t = min - IVec2::splat(MARGIN) + IVec2::new(x, y);
+                let tile = land.tile(t);
+                for (edge, other, mid) in [(tile.north, t - IVec2::Y, Vec2::new(0.5, 0.0)), (tile.west, t - IVec2::X, Vec2::new(0.0, 0.5))] {
+                    if door(edge) && (tile.room == 0) != (land.tile(other).room == 0) {
+                        land.doors.push(t.as_vec2() + mid);
+                    }
+                }
+            }
+        }
         let mut streets = Vec::with_capacity((SPAN * SPAN) as usize);
         for y in 0..SPAN {
             for x in 0..SPAN {
@@ -674,6 +694,20 @@ impl<'a> Land<'a> {
         }
     }
 
+    /// How worn the ground is at `p` by people going in and out (DCM-59): 1 on a doorstep, fading
+    /// to nothing under three metres from the door.
+    fn wear(&self, p: Vec2) -> f32 {
+        let nearest = self.doors.iter().map(|d| d.distance_squared(p)).fold(f32::MAX, f32::min).sqrt();
+        let t = ((WEAR_REACH - nearest) / (WEAR_REACH - 0.7)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    }
+
+    /// The ground's colour at `p` with the wear by doors worked in.
+    fn worn(&self, p: Vec2, colour: LinearRgba) -> LinearRgba {
+        let w = self.wear(p);
+        if w <= 0.0 { colour } else { colour.mix(&shade(pal().worn_ground, 0.95 + 0.1 * noise(p, 1.3, 72)), 0.85 * w) }
+    }
+
     fn has_fence(&self, t: IVec2) -> bool {
         let tile = self.tile(t);
         tile.north == Edge::Fence || tile.west == Edge::Fence || self.tile(t + IVec2::X).west == Edge::Fence || self.tile(t + IVec2::Y).north == Edge::Fence
@@ -868,6 +902,113 @@ impl Paint {
 pub struct ChunkMeshes {
     pub ground: MeshBuilder,
     pub props: MeshBuilder,
+    /// Where the instanced grass, flowers and litter go (`crate::vegetation`).
+    pub veg: Vec<VegSpot>,
+}
+
+/// The instanced vegetation and litter of outdoor tile `t` (DCM-59), from the map alone, so a
+/// chunk always grows the same. Grass covers every soft tile: long where nobody mows (along walls
+/// and fences, verges, vacant lots, the forest's edge), shorter on lawns, thin and dry on dirt,
+/// under trees, beside paths and driveways and over the lawn's bare patches, and none on a
+/// doorstep's worn ground, a driveway, a flower bed or under a porch. Wildflowers come in drifts,
+/// red in some places and white in others. Pavements get a weed in a crack now and then, loose
+/// paper and small stones; roads a little of both, more along the gutter.
+///
+/// Each tile's first patch has a rank under 1 and a second, between the first ones, a rank from
+/// 1 to 2: the density setting draws the spots ranked below it.
+fn scatter(out: &mut Vec<VegSpot>, land: &Land, looks: &SoftLooks, paint: &Paint, t: IVec2, surface: Surface, curved: bool) {
+    use std::f32::consts::FRAC_PI_2;
+    let (x, y) = (t.x, t.y);
+    let tile = land.tile(t);
+    let h = |salt: u32| hash01(x, y, salt);
+    let centre = t.as_vec2() + Vec2::splat(0.5);
+    let mut put = |kind: VegKind, salt: u32, pos: Vec2, scale: f32, dry: f32, rank: f32, free: bool| {
+        let turn = if free { h(salt + 1) * TAU } else { (h(salt + 1) * 4.0).floor() * FRAC_PI_2 };
+        out.push(VegSpot { pos, kind, variant: (h(salt + 2) * VARIANTS as f32) as u8, turn, scale, dry, rank });
+    };
+    let anywhere = |salt: u32, margin: f32| t.as_vec2() + Vec2::new(margin + (1.0 - 2.0 * margin) * h(salt), margin + (1.0 - 2.0 * margin) * h(salt + 7));
+    let hard = |p: IVec2| {
+        let q = land.tile(p);
+        q.room == 0 && (land.drawn(p) == Some(Surface::Road) || matches!(q.floor, Floor::Sidewalk | Floor::Concrete | Floor::Path) || q.floor.is_road())
+    };
+    let by_wall = Side::ALL.iter().any(|s| !land.outdoors(t + s.offset()));
+    let soft = surface != Surface::Road && !tile.floor.is_road() && !matches!(tile.floor, Floor::Sidewalk | Floor::Concrete | Floor::Path);
+    if !soft {
+        // Litter and weeds on the hard ground.
+        if tile.feature != Feature::None {
+            return;
+        }
+        let road = surface == Surface::Road || tile.floor.is_road();
+        let gutter = road && Side::ALL.iter().any(|s| land.is_sidewalk(t + s.offset()));
+        let (weed, paper, stones) = match tile.floor {
+            _ if gutter => (0.03, 0.035, 0.05),
+            _ if road => (0.0, 0.007, 0.012),
+            Floor::Path => (0.14, 0.01, 0.06),
+            _ => (0.07, 0.024, 0.025),
+        };
+        if h(600) < weed && !curved {
+            put(VegKind::Weed, 601, anywhere(604, 0.1), 0.8 + 0.5 * h(611), 0.3 + 0.6 * h(612), h(613), true);
+        }
+        if h(620) < paper {
+            put(VegKind::Paper, 621, anywhere(624, 0.2), 0.9 + 0.3 * h(631), 0.0, h(633), true);
+        }
+        if h(640) < stones {
+            put(VegKind::Pebbles, 641, anywhere(644, 0.2), 0.8 + 0.6 * h(651), 0.0, h(653), true);
+        }
+        return;
+    }
+    let Some(look) = looks.get(t) else { return };
+    if curved || !paint.rects.is_empty() || tile.feature == Feature::Bush || land.on_driveway(t) {
+        return;
+    }
+    let wear = land.wear(centre);
+    if wear > 0.5 || (wear > 0.0 || by_wall) && super::building_kit::porch_covers(land.map, t) {
+        if wear > 0.5 && h(660) < 0.12 {
+            put(VegKind::Pebbles, 661, anywhere(664, 0.25), 0.8 + 0.4 * h(671), 0.0, h(673), true);
+        }
+        return;
+    }
+    let by_hard = Side::ALL.iter().any(|s| hard(t + s.offset()) || land.on_driveway(t + s.offset()));
+    let bare = bare_patch(centre);
+    // Dry in broad drifts, with every patch a little different.
+    let drift = noise(centre, 14.0, 91) * 0.75 + 0.35 * h(680);
+    let (kind, keep, dry) = if look.dirt {
+        (VegKind::GrassThin, 0.45, 0.6 + 0.4 * drift)
+    } else if look.forest {
+        (VegKind::GrassThin, 0.6, 0.15 + 0.45 * drift)
+    } else if wear > 0.12 || bare > 0.35 || look.trees > 0 || tile.feature != Feature::None {
+        (VegKind::GrassThin, 0.85, 0.35 + 0.5 * drift)
+    } else if look.rough > 0.6 && !(by_hard && !look.verge) {
+        (VegKind::GrassLong, 1.0, 0.25 + 0.7 * drift)
+    } else {
+        (VegKind::Grass, 1.0, 0.45 * drift * drift)
+    };
+    // Against a wall a patch keeps to its tile (it would poke through into the room); in the open
+    // it sits and turns freely, so the tiles don't show.
+    let free = !by_wall;
+    let jitter = if free && !by_hard { 0.16 } else { 0.0 };
+    let at = centre + Vec2::new(h(681) - 0.5, h(682) - 0.5) * 2.0 * jitter;
+    let scale = if free { 0.95 + 0.3 * h(683) } else { 0.92 };
+    if h(684) < keep {
+        put(kind, 685, at, scale, dry.clamp(0.0, 1.0), h(688), free);
+        // A second patch between the first ones, for the denser settings.
+        if free && !by_hard {
+            put(kind, 690, centre + Vec2::new(h(693) - 0.5, h(694) - 0.5) * 0.7, scale, (dry + 0.1).clamp(0.0, 1.0), 1.0 + h(695), true);
+        }
+    }
+    // Wildflowers: drifts a few metres across in what isn't mown, a stray few on lawns.
+    if kind != VegKind::GrassThin || look.forest {
+        let drift = noise(centre, 7.0, 93);
+        let wild = if kind == VegKind::GrassLong { 1.0 } else if look.forest { 0.3 } else { 0.22 };
+        if h(700) < (drift - 0.62) * 3.2 * wild {
+            let red = noise(centre, 23.0, 94) + 0.2 * (h(701) - 0.5) > 0.5;
+            put(if red { VegKind::FlowersRed } else { VegKind::FlowersWhite }, 702, anywhere(705, if free { 0.2 } else { 0.5 }), 0.9 + 0.3 * h(712), 0.2, h(713), free);
+        }
+    }
+    // Something blown against the house.
+    if by_wall && h(720) < 0.035 {
+        put(VegKind::Paper, 721, anywhere(724, 0.3), 1.0, 0.0, h(733), true);
+    }
 }
 
 /// Build the ground and props of chunk `c`.
@@ -878,6 +1019,7 @@ pub fn build_chunk(map: &TileMap, c: IVec2) -> ChunkMeshes {
     let mut props = MeshBuilder::with_capacity(1500);
     let mut paint = Paint::new();
     let mut pieces = PieceBuf::default();
+    let mut veg = Vec::with_capacity(320);
     for y in land.min.y..land.min.y + CHUNK_SIZE {
         for x in land.min.x..land.min.x + CHUNK_SIZE {
             let t = IVec2::new(x, y);
@@ -919,6 +1061,7 @@ pub fn build_chunk(map: &TileMap, c: IVec2) -> ChunkMeshes {
                     flat_poly(&mut ground, &piece.poly, 0.0, land.foreign_colour(t, &piece.poly, piece.surface));
                 }
             }
+            scatter(&mut veg, &land, &looks, &paint, t, surface, curved);
             match tile.feature {
                 Feature::Tree | Feature::PineTree => {
                     if let Some(spec) = trees::tree_at(x, y, tile.feature) {
@@ -958,7 +1101,7 @@ pub fn build_chunk(map: &TileMap, c: IVec2) -> ChunkMeshes {
     for (ring, outer) in &land.curves.rings {
         ring_joints(&mut ground, ring, *outer, ours);
     }
-    ChunkMeshes { ground, props }
+    ChunkMeshes { ground, props, veg }
 }
 
 fn flat_tile(mb: &mut MeshBuilder, t: IVec2, colour: LinearRgba) {
@@ -1371,10 +1514,19 @@ impl SoftLook {
                 pal().long_grass
             } else {
                 let n = noise(c, 7.0, 47) * 0.85 + noise(c, 2.5, 48) * 0.15;
-                pal().lawn[if n < 0.4 { 1 } else if n < 0.62 { 0 } else { 2 }]
+                let lawn = pal().lawn[if n < 0.4 { 1 } else if n < 0.62 { 0 } else { 2 }];
+                // Bare patches where the lawn has given up (DCM-59).
+                let bare = bare_patch(c);
+                if bare > 0.0 { lawn.mix(&pal().worn_ground, 0.7 * bare) } else { lawn }
             }
         }
     }
+}
+
+/// How bare the lawn is at `c` (0 grass .. 1 earth): a few patches a couple of metres across in
+/// every yard. The instanced grass thins out over them (`scatter`).
+fn bare_patch(c: Vec2) -> f32 {
+    ((noise(c, 5.5, 71) * 0.8 + noise(c, 1.6, 73) * 0.2 - 0.7) * 6.0).clamp(0.0, 1.0)
 }
 
 /// The look of every grass and dirt tile of a chunk and the ring round it, so the colour at a
@@ -1407,7 +1559,12 @@ impl SoftLooks {
         }
         let mut out = SoftLooks { min, looks, corners: Vec::new() };
         let n = CHUNK_SIZE + 1;
-        out.corners = (0..n * n).map(|i| out.blend(land.min + IVec2::new(i % n, i / n))).collect();
+        out.corners = (0..n * n)
+            .map(|i| {
+                let ci = land.min + IVec2::new(i % n, i / n);
+                out.blend(ci).map(|c| land.worn(ci.as_vec2(), c))
+            })
+            .collect();
         out
     }
 
@@ -1454,10 +1611,10 @@ fn soft_tile(paint: &mut Paint, mb: &mut MeshBuilder, props: &mut MeshBuilder, l
     let (dirt, forest, trees, rough) = (look.dirt, look.forest, look.trees, look.rough);
     let tv = t.as_vec2();
     if paint.rects.is_empty() {
-        split_tile(mb, t, |c| looks.corner(c).unwrap_or_else(|| look.colour(c)), paint.clipped.then_some(&paint.clip[..]));
+        split_tile(mb, t, |c| looks.corner(c).unwrap_or_else(|| land.worn(c, look.colour(c))), paint.clipped.then_some(&paint.clip[..]));
     } else {
         // Under a driveway or a bed: one colour for the ground left showing.
-        paint.draw(mb, look.colour(tv + Vec2::splat(0.5)));
+        paint.draw(mb, land.worn(tv + Vec2::splat(0.5), look.colour(tv + Vec2::splat(0.5))));
     }
     // Tufts of long grass: many at the edges, a few weeds anywhere.
     let count = if rough < 0.55 { 0 } else { (rough * 2.2 + hash01(x, y, 50) - 0.9).floor() as i32 };
@@ -1877,6 +2034,54 @@ mod tests {
         assert_eq!(a.ground.tri_count(), b.ground.tri_count());
         assert_eq!(a.props.tri_count(), b.props.tri_count());
         assert!(a.ground.tri_count() >= 512);
+        assert_eq!(a.veg, b.veg);
+    }
+
+    /// DCM-59: the instanced vegetation is the same every time, stays outdoors and in its chunk,
+    /// grass grows only on soft ground and never on a doorstep, and the pavement gets only weeds
+    /// and litter. The town has every kind, and spots for both density ranges.
+    #[test]
+    fn vegetation_grows_where_it_should() {
+        let map = town();
+        let mut kinds = [0usize; crate::vegetation::KINDS];
+        let (mut chunks, mut total, mut extra, mut most) = (0, 0, 0, 0);
+        for cy in 0..map.chunks_y {
+            for cx in 0..map.chunks_x {
+                let c = IVec2::new(cx, cy);
+                let veg = build_chunk(&map, c).veg;
+                let land = Land::new(&map, c);
+                chunks += 1;
+                total += veg.len();
+                most = most.max(veg.len());
+                for s in &veg {
+                    let t = s.pos.floor().as_ivec2();
+                    assert_eq!(t.div_euclid(IVec2::splat(CHUNK_SIZE)), c, "{s:?} is outside chunk {c}");
+                    let tile = map.tile(t);
+                    assert_eq!(tile.room, 0, "{s:?} is indoors");
+                    assert!((0.0..2.0).contains(&s.rank) && (0.5..1.5).contains(&s.scale) && (0.0..=1.0).contains(&s.dry), "{s:?}");
+                    assert!((s.variant as usize) < VARIANTS, "{s:?}");
+                    let hard = land.drawn(t) == Some(Surface::Road) || tile.floor.is_road() || matches!(tile.floor, Floor::Sidewalk | Floor::Concrete | Floor::Path);
+                    let litter = matches!(s.kind, VegKind::Weed | VegKind::Paper | VegKind::Pebbles);
+                    assert!(!hard || litter, "{s:?} grows on {:?}", tile.floor);
+                    if !litter {
+                        assert!(land.wear(t.as_vec2() + Vec2::splat(0.5)) <= 0.5, "{s:?} grows on a doorstep");
+                        assert!(!land.on_driveway(t), "{s:?} grows on a driveway");
+                    }
+                    kinds[s.kind as usize] += 1;
+                    extra += (s.rank >= 1.0) as usize;
+                }
+            }
+        }
+        assert!(kinds.iter().all(|&n| n > 20), "every kind somewhere in town: {kinds:?}");
+        assert!(extra > total / 5 && extra < total / 2, "{extra} of {total} are for the denser settings");
+        // Under a patch a tile and a half at the default density, and no chunk a runaway.
+        assert!(total / chunks > 150 && total / chunks <= 2 * (CHUNK_SIZE * CHUNK_SIZE) as usize && most <= 600, "{total} spots in {chunks} chunks, at most {most} in one");
+        // Doors wear the ground: the town has some, and wear is whole at the threshold and gone 3 m out.
+        let b = &map.buildings[0];
+        let land = Land::new(&map, (b.min + b.size / 2).div_euclid(IVec2::splat(CHUNK_SIZE)));
+        let door = *land.doors.first().expect("a house has an outside door");
+        assert!(land.wear(door) > 0.99 && land.wear(door + Vec2::new(3.0, 0.0)).min(land.wear(door + Vec2::new(0.0, 3.0))) == 0.0);
+        assert_ne!(land.worn(door, pal().lawn[0]), pal().lawn[0]);
     }
 
     /// Every tile a curve crosses is cut into pieces that cover it once, and the default town has
@@ -1915,7 +2120,7 @@ mod tests {
     fn chunk_build_time() {
         let map = town();
         let mut times = Vec::new();
-        let (mut ground, mut props) = (0, 0);
+        let (mut ground, mut props, mut spots, mut veg_tris) = (0, 0, 0, 0);
         for _ in 0..3 {
             for cy in 0..map.chunks_y {
                 for cx in 0..map.chunks_x {
@@ -1924,6 +2129,8 @@ mod tests {
                     times.push(start.elapsed().as_secs_f64() * 1000.0);
                     ground += m.ground.tri_count();
                     props += m.props.tri_count();
+                    spots += m.veg.iter().filter(|s| s.rank < 1.0).count();
+                    veg_tris += m.veg.iter().filter(|s| s.rank < 1.0).map(|s| crate::vegetation::patch_triangles(s.kind, s.variant)).sum::<usize>();
                 }
             }
         }
@@ -1931,13 +2138,15 @@ mod tests {
         let n = times.len();
         let mean = times.iter().sum::<f64>() / n as f64;
         eprintln!(
-            "chunk build: {} chunks x 3, mean {mean:.3} ms, median {:.3} ms, slowest 1% {:.3} ms, max {:.3} ms; triangles a chunk: ground {}, props {}",
+            "chunk build: {} chunks x 3, mean {mean:.3} ms, median {:.3} ms, slowest 1% {:.3} ms, max {:.3} ms; triangles a chunk: ground {}, props {}; vegetation at the default density: {} instances a chunk, {} triangles",
             n / 3,
             times[n / 2],
             times[n * 99 / 100],
             times[n - 1],
             ground / n,
-            props / n
+            props / n,
+            spots / n,
+            veg_tris / n
         );
     }
 }

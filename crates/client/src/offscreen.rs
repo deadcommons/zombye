@@ -17,7 +17,7 @@
 //! (all but a few bytes, see [`settled`]) are written as the PNG (or the last one, with a warning, if it never settles), then the
 //! app exits.
 //!
-//! `ZOMBYE_FRAME_BENCH=N` times the frame cost: after the PNG it renders N more frames of the same
+//! `--frame-bench N` (or `ZOMBYE_FRAME_BENCH=N`) times the frame cost: after the PNG it renders N more frames of the same
 //! picture, waiting for the GPU to finish each one, and prints their mean and worst in ms.
 
 use std::path::{Path, PathBuf};
@@ -99,7 +99,7 @@ impl Plugin for OffscreenPlugin {
         let handle = app.world_mut().resource_mut::<Assets<Image>>().add(image);
         let pending = PendingPipelines::default();
         let sync = SyncGpu::default();
-        let bench = std::env::var("ZOMBYE_FRAME_BENCH").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let bench = options.frame_bench.or_else(|| std::env::var("ZOMBYE_FRAME_BENCH").ok().and_then(|v| v.parse().ok())).unwrap_or(0);
         let now = Instant::now();
         app.insert_resource(OffscreenTarget(handle))
             .insert_resource(pending.clone())

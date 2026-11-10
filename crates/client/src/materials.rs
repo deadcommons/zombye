@@ -42,18 +42,21 @@ pub struct WorldExt {
     pub rays: Handle<Image>,
     /// Built with the cutaway (walls, roofs, fading foliage)? Fixed when the material is made.
     pub cutaway: bool,
+    /// Built with the ground detail (patchy colour worked out per pixel, DCM-59)? Only the ground.
+    pub ground: bool,
 }
 
-/// The pipeline key of a [`WorldExt`]: whether its shader has the cutaway.
+/// The pipeline key of a [`WorldExt`]: whether its shader has the cutaway and the ground detail.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Hash, PartialEq, Eq)]
 pub struct WorldKey {
     pub cutaway: bool,
+    pub ground: bool,
 }
 
 impl From<&WorldExt> for WorldKey {
     fn from(ext: &WorldExt) -> Self {
-        WorldKey { cutaway: ext.cutaway }
+        WorldKey { cutaway: ext.cutaway, ground: ext.ground }
     }
 }
 
@@ -71,7 +74,8 @@ pub struct WorldParams {
     pub inside_rect: Vec4,
     /// x = how many entries of `trees` are in use.
     pub tree_count: Vec4,
-    /// x = how dark it is, 0 by day to 1 at night: lit windows glow by it (#59).
+    /// x = how dark it is, 0 by day to 1 at night: lit windows glow by it (#59). y = how much of
+    /// its colour an unseen surface keeps ([`unseen_colour`]).
     pub lights: Vec4,
     /// Sight for the per-pixel fog of war (`FogState::sight`).
     pub sight: [Vec4; 3],
@@ -98,6 +102,19 @@ impl Default for WorldParams {
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+/// What you can't see (rgb its tint, w how dark it gets): nearly black and cold at night (#83), and
+/// by day a dimmer, warm, faded version of itself rather than a grey hole (DCM-59), so the town
+/// reads as one sunlit place with your own view the brightest part of it.
+pub fn unseen_tint(daylight: f32) -> Vec4 {
+    Vec4::new(0.55, 0.6, 0.75, 0.86).lerp(Vec4::new(0.9, 0.83, 0.74, 0.56), daylight)
+}
+
+/// How much of its colour an unseen surface keeps (the rest goes grey): a quarter at night, three
+/// quarters by day (at dusk the unseen street is still amber, just dimmer).
+pub fn unseen_colour(daylight: f32) -> f32 {
+    0.25 + 0.5 * daylight
 }
 
 /// Must match the array size in world.wesl.
@@ -207,10 +224,13 @@ impl MaterialExtension for WorldExt {
         _layout: &MeshVertexBufferLayoutRef,
         key: MaterialExtensionKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
-        if key.bind_group_data.cutaway
-            && let Some(fragment) = descriptor.fragment.as_mut()
-        {
-            fragment.shader_defs.push("CUTAWAY".into());
+        if let Some(fragment) = descriptor.fragment.as_mut() {
+            if key.bind_group_data.cutaway {
+                fragment.shader_defs.push("CUTAWAY".into());
+            }
+            if key.bind_group_data.ground {
+                fragment.shader_defs.push("GROUND".into());
+            }
         }
         Ok(())
     }
@@ -245,10 +265,10 @@ impl Plugin for WorldMaterialPlugin {
     }
 }
 
-fn create_materials(mut commands: Commands, fog: Res<FogState>, mut materials: ResMut<Assets<WorldMaterial>>) {
+fn create_materials(mut commands: Commands, fog: Res<FogState>, graphics: Res<crate::graphics::Graphics>, mut materials: ResMut<Assets<WorldMaterial>>) {
     let mut all = Vec::new();
-    let mut make = |base: StandardMaterial, cutaway: bool| {
-        let h = materials.add(ExtendedMaterial { base, extension: WorldExt { params: WorldParams::default(), fog: fog.image.clone(), rays: fog.rays.clone(), cutaway } });
+    let mut make_with = |base: StandardMaterial, cutaway: bool, ground: bool| {
+        let h = materials.add(ExtendedMaterial { base, extension: WorldExt { params: WorldParams::default(), fog: fog.image.clone(), rays: fog.rays.clone(), cutaway, ground } });
         all.push(h.clone());
         h
     };
@@ -259,7 +279,8 @@ fn create_materials(mut commands: Commands, fog: Res<FogState>, mut materials: R
         cull_mode: if double_sided { None } else { Some(bevy::render::render_resource::Face::Back) },
         ..default()
     };
-    let ground = make(vertex_colored(0.95, false), false);
+    let ground = make_with(vertex_colored(0.95, false), false, graphics.ground_detail);
+    let mut make = |base: StandardMaterial, cutaway: bool| make_with(base, cutaway, false);
     let building = make(vertex_colored(0.85, true), true);
     let props = make(vertex_colored(0.85, false), false);
     let props_cut = make(vertex_colored(0.85, false), true);
@@ -329,11 +350,10 @@ pub fn update_params(
         player: chest.extend(0.0),
         camera_dir: camera_dir.extend(0.0),
         fog_rect: Vec4::new(fog.origin.x, fog.origin.y, fog.size_m, 0.0),
-        // What you can't see goes dim and grey by day and nearly black at night (#83).
-        fog_tint: Vec4::new(0.55, 0.6, 0.75, 0.72 + 0.14 * (1.0 - daylight.0)),
+        fog_tint: unseen_tint(daylight.0),
         inside_rect: inside_rect(&map.0, p.translation.xz()),
         tree_count: Vec4::new(n as f32, 0.0, 0.0, 0.0),
-        lights: Vec4::new(1.0 - smoothstep(0.05, 0.4, daylight.0), 0.0, 0.0, 0.0),
+        lights: Vec4::new(1.0 - smoothstep(0.05, 0.4, daylight.0), unseen_colour(daylight.0), 0.0, 0.0),
         sight: fog.sight,
         trees,
     };
@@ -347,6 +367,17 @@ pub fn update_params(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DCM-59: by day what's unseen is a dimmer, warmer version of itself; at night it is as dark,
+    /// cold and grey as it was (#83).
+    #[test]
+    fn unseen_ground_is_warm_by_day_and_black_at_night() {
+        assert_eq!(unseen_tint(0.0), Vec4::new(0.55, 0.6, 0.75, 0.86));
+        assert_eq!(unseen_colour(0.0), 0.25);
+        let day = unseen_tint(1.0);
+        assert!(day.x > day.z && day.w < 0.7 && day.w > 0.4, "{day}");
+        assert!(unseen_colour(1.0) > 0.4 && unseen_colour(1.0) < 0.8);
+    }
 
     /// #81: a crown in front of the player fades; one beside the line of sight, or behind the
     /// player, doesn't, however tall.

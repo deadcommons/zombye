@@ -44,6 +44,11 @@
 //! Sound (`audio.rs`): `--mute` starts with it off, `--volume V` sets the master volume (0..2,
 //! default 1), M mutes and unmutes.
 //!
+//! Graphics (`graphics.rs`, Linear DCM-59): `--graphics low|high` picks a preset, `--vegetation
+//! off|low|high|N` the density of the instanced grass, flowers and litter (`vegetation.rs`), and
+//! `--no-post grain,tilt,vignette,bloom,ao,ground|all` switches effects off one by one; kept in
+//! `settings.ron` as `graphics`. `--frame-bench N` (offscreen) prints the cost of N frames.
+//!
 //! UI scale (`ui_scale.rs`): Ctrl (or Cmd) with `=` / `-` steps every panel's size by 5% (75-150%),
 //! Ctrl+0 back to 100%, kept in `settings.ron` in the saves folder; `--ui-scale PCT` for one session.
 
@@ -57,8 +62,11 @@ mod dev_time;
 mod death;
 mod fog;
 mod furniture_models;
+mod film;
 mod firstnight_ui;
 mod fx;
+mod graphics;
+mod vegetation;
 mod heard;
 mod health_ui;
 mod hud;
@@ -217,6 +225,15 @@ pub struct Options {
     pub connect: Option<String>,
     pub name: String,
     pub password: String,
+    /// Graphics for this session, over the settings file's (`graphics.rs`): a whole preset
+    /// (`--graphics low|high`), the vegetation's density (`--vegetation off|low|high|N`), and
+    /// effects to switch off (`--no-post grain,tilt,vignette,bloom,ao,ground|all`).
+    pub graphics: Option<String>,
+    pub vegetation: Option<String>,
+    pub no_post: Option<String>,
+    /// Offscreen, after the PNG: render this many more frames of the same picture and print their
+    /// cost (`--frame-bench N`, else `ZOMBYE_FRAME_BENCH`; see `offscreen.rs`).
+    pub frame_bench: Option<u32>,
     /// `--lag MS`: with `--connect`, play as if the server were that many milliseconds of ping
     /// away (half each way), to try out lag compensation on one machine (#23).
     pub lag_ms: u32,
@@ -326,6 +343,10 @@ impl Options {
             connect: value("--connect"),
             name: value("--name").unwrap_or_default(),
             password: value("--password").unwrap_or_default(),
+            graphics: value("--graphics"),
+            vegetation: value("--vegetation"),
+            no_post: value("--no-post"),
+            frame_bench: value("--frame-bench").and_then(|v| v.parse().ok()),
             lag_ms: value("--lag").and_then(|v| v.parse::<u32>().ok()).map_or(0, |v| v.min(2000)),
         }
     }
@@ -405,8 +426,9 @@ fn main() {
             .disable::<bevy::app::TerminalCtrlCHandlerPlugin>()
     };
     let offscreen = options.offscreen();
+    let graphics = graphics::Graphics::from_options(&options);
     let mut app = App::new();
-    app.insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06))).add_plugins(plugins).insert_resource(options).add_systems(First, exit_on_signal);
+    app.insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06))).add_plugins(plugins).insert_resource(options).insert_resource(graphics).add_systems(First, exit_on_signal);
     if offscreen {
         app.add_plugins((ScheduleRunnerPlugin::run_loop(Duration::ZERO), offscreen::OffscreenPlugin));
     }
@@ -422,7 +444,7 @@ fn main() {
             zombie_render::ZombieRenderPlugin,
             items_render::ItemsRenderPlugin,
             (hud::HudPlugin, inventory_ui::InventoryUiPlugin, health_ui::HealthUiPlugin, death::DeathPlugin, needs_ui::NeedsUiPlugin, action_ui::ActionUiPlugin, skills_ui::SkillsUiPlugin),
-            (fx::FxPlugin, heard::HeardPlugin),
+            (fx::FxPlugin, heard::HeardPlugin, film::FilmPlugin, vegetation::VegetationPlugin),
             survivor::SurvivorPlugin,
             (autoplay::AutoplayPlugin, duel::DuelPlugin),
             (saving::SavingPlugin, ui_scale::UiScalePlugin, firstnight_ui::FirstNightUiPlugin),

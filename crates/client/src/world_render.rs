@@ -62,6 +62,8 @@ struct SharedMeshes {
     pane_cracks: [Handle<Mesh>; CRACK_STAGES],
     /// Blender-built furniture, drawn instead of the grey-box shapes where there is a model.
     furniture: FurnitureModels,
+    /// The blended black of contact shadows ([`contact_shadows`]); `None` with the setting off.
+    contact: Option<Handle<StandardMaterial>>,
 }
 
 /// The crack overlay drawn on a door leaf or window pane (a child entity, so it swings and slides
@@ -139,7 +141,7 @@ impl Plugin for WorldRenderPlugin {
     }
 }
 
-fn setup_shared(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, options: Res<Options>) {
+fn setup_shared(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, options: Res<Options>, graphics: Res<crate::graphics::Graphics>) {
     // Door leaf with its hinge at the origin, lying along +x.
     let mut mb = MeshBuilder::default();
     mb.set_tag(CutTag { kind: CutKind::Structure, ..default() });
@@ -188,7 +190,10 @@ fn setup_shared(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, option
         furniture.extend(FurnitureModels::load(std::path::Path::new(dir)));
     }
     info!("{} furniture models", furniture.len());
-    commands.insert_resource(SharedMeshes { door, pane, pane_lit, shards, door_cracks, pane_cracks, furniture });
+    let contact = graphics.contact_shadows.then(|| {
+        materials.add(StandardMaterial { base_color: Color::WHITE, unlit: true, alpha_mode: AlphaMode::Blend, cull_mode: None, double_sided: true, ..default() })
+    });
+    commands.insert_resource(SharedMeshes { door, pane, pane_lit, shards, door_cracks, pane_cracks, furniture, contact });
 }
 
 /// Grey-box damage for a door leaf (dark cracks, and pale splintered wood when it's nearly gone)
@@ -343,11 +348,13 @@ fn stream(
 }
 
 fn spawn_chunk(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &WorldMaterials, map: &TileMap, c: IVec2, models: &FurnitureModels) -> Vec<Entity> {
-    let landscape::ChunkMeshes { ground, mut props } = landscape::build_chunk(map, c);
+    let landscape::ChunkMeshes { ground, mut props, veg } = landscape::build_chunk(map, c);
     meshgen::street_props::add(&mut props, map, c, models);
     // The ground is flat but for ankle-high clutter (kerbs, tufts, ferns, rocks): it receives
-    // shadows and casts none, which keeps it out of every shadow cascade.
-    let mut out = vec![commands.spawn((Mesh3d(meshes.add(ground.build())), MeshMaterial3d(mats.ground.clone()), Transform::IDENTITY, NotShadowCaster)).id()];
+    // shadows and casts none, which keeps it out of every shadow cascade. It also holds the chunk's
+    // vegetation spots, whose instances `vegetation.rs` spawns as its children when it's near.
+    let chunk_veg = crate::vegetation::ChunkVeg { chunk: c, spots: veg };
+    let mut out = vec![commands.spawn((Mesh3d(meshes.add(ground.build())), MeshMaterial3d(mats.ground.clone()), Transform::IDENTITY, NotShadowCaster, chunk_veg)).id()];
     if !props.is_empty() {
         out.push(commands.spawn((Mesh3d(meshes.add(props.build())), MeshMaterial3d(mats.props.clone()), Transform::IDENTITY, ChunkProps(c))).id());
     }
@@ -467,6 +474,39 @@ pub fn build_building(map: &TileMap, index: usize, b: &Building, furniture: &Fur
     BuildingMeshes { lower, upper, roof }
 }
 
+/// How far a contact shadow reaches from a wall's face, how dark it is against the wall, and how
+/// far above the floor it lies.
+const CONTACT_REACH: f32 = 0.6;
+const CONTACT_DARK: f32 = 0.46;
+const CONTACT_Y: f32 = 0.011;
+
+/// Ground-contact shadows for a building (DCM-59): a soft dark strip on the ground and on the
+/// floors along both faces of every ground-floor wall and window, black fading to clear, blended
+/// over whatever is there. It stands in for ambient occlusion (the screen-space kind needs MSAA
+/// off, which the window glass can't do without) at the cost of one small blended mesh a building.
+pub fn contact_shadows(map: &TileMap, index: usize, b: &Building) -> MeshBuilder {
+    let mut mb = MeshBuilder::default();
+    let dark = LinearRgba::new(0.0, 0.0, 0.0, CONTACT_DARK);
+    let clear = LinearRgba::new(0.0, 0.0, 0.0, 0.0);
+    for (owner, which, kind, _) in ground_edges(map, index, b) {
+        if !(kind == Edge::Wall || kind.is_window()) {
+            continue;
+        }
+        // The edge runs from `a` along `along`; `out` points to one side of it.
+        let a = owner.as_vec2();
+        let (along, out) = if which == OwnedEdge::North { (Vec2::X, Vec2::Y) } else { (Vec2::Y, Vec2::X) };
+        for side in [1.0, -1.0] {
+            let near = out * side * WALL_T;
+            let far = out * side * (WALL_T + CONTACT_REACH);
+            let p = |q: Vec2| Vec3::new(q.x, CONTACT_Y, q.y);
+            let (n0, n1, f0, f1) = (p(a + near), p(a + along + near), p(a + far), p(a + along + far));
+            mb.triangle_shaded([n0, n1, f1], [dark, dark, clear]);
+            mb.triangle_shaded([n0, f1, f0], [dark, clear, clear]);
+        }
+    }
+    mb
+}
+
 /// The ground-floor edges of building `index` with something on them (walls, doors, windows,
 /// arches): every edge in and just around its footprint touching one of its rooms, with the rooms
 /// either side (north/west, south/east).
@@ -530,6 +570,12 @@ fn spawn_building(
         }
         let e = commands.spawn((Mesh3d(meshes.add(mb.build())), MeshMaterial3d(mats.building.clone()), Transform::IDENTITY)).id();
         if group == 0 { render.lower.push(e) } else { render.upper.push(e) }
+    }
+    if let Some(material) = &shared.contact {
+        let mb = contact_shadows(map, index, b);
+        if !mb.is_empty() {
+            render.lower.push(commands.spawn((Mesh3d(meshes.add(mb.build())), MeshMaterial3d(material.clone()), Transform::IDENTITY, NotShadowCaster)).id());
+        }
     }
     render
 }
@@ -715,6 +761,25 @@ mod tests {
         let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/data");
         let templates = zombye_net::content::load_building_templates(&data).expect("templates");
         zombye_sim::worldgen::generate(&zombye_sim::worldgen::GenConfig::default(), &templates).map
+    }
+
+    /// DCM-59: every building gets contact shadows, lying just over the ground along its walls
+    /// (within their reach of the footprint) and costing a few hundred triangles at most.
+    #[test]
+    fn buildings_get_contact_shadows() {
+        let map = town();
+        let mut most = 0;
+        for (i, b) in map.buildings.iter().enumerate() {
+            let mb = contact_shadows(&map, i, b);
+            assert!(mb.tri_count() >= 16, "building {i} ({}) has {} triangles of contact shadow", b.template, mb.tri_count());
+            most = most.max(mb.tri_count());
+            let (lo, hi) = mb.bounds();
+            let reach = WALL_T + CONTACT_REACH + 1e-3;
+            assert!(lo.y == CONTACT_Y && hi.y == CONTACT_Y);
+            assert!(lo.x >= b.min.x as f32 - reach && lo.z >= b.min.y as f32 - reach, "building {i}: {lo}");
+            assert!(hi.x <= (b.min.x + b.size.x) as f32 + reach && hi.z <= (b.min.y + b.size.y) as f32 + reach, "building {i}: {hi}");
+        }
+        assert!(most <= 1500, "{most} triangles of contact shadow on one building");
     }
 
     /// Building meshes (walls, trim, furniture, upper storeys, roof), over every building of the
