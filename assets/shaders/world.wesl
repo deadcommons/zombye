@@ -31,7 +31,7 @@ struct WorldParams {
     trees: array<vec4<f32>, 32>,
 };
 
-@group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> world_params: WorldParams;
+@group(constants::MATERIAL_BIND_GROUP) @binding(100) var<storage, read> world_params: WorldParams;
 @group(constants::MATERIAL_BIND_GROUP) @binding(101) var fog_tex: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(102) var fog_sampler: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(103) var rays_tex: texture_2d<f32>;

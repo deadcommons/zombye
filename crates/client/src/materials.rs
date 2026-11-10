@@ -16,7 +16,9 @@
 use bevy::mesh::MeshVertexBufferLayoutRef;
 use bevy::pbr::{ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline};
 use bevy::prelude::*;
-use bevy::render::render_resource::{AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError};
+use bevy::asset::RenderAssetUsages;
+use bevy::render::render_resource::{AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError};
+use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 
 use crate::camera::IsoCamera;
@@ -32,8 +34,11 @@ const SHADER: &str = "shaders/world.wesl";
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
 #[bind_group_data(WorldKey)]
 pub struct WorldExt {
-    #[uniform(100)]
-    pub params: WorldParams,
+    /// The shared [`WorldParams`], in a buffer of their own ([`ParamBuffer`]): they change every
+    /// frame, and changing a material asset makes Bevy extract, specialise and queue again every
+    /// mesh drawn with it, while a buffer's new contents are only uploaded.
+    #[storage(100, read_only)]
+    pub params: Handle<ShaderBuffer>,
     #[texture(101)]
     #[sampler(102)]
     pub fog: Handle<Image>,
@@ -60,7 +65,7 @@ impl From<&WorldExt> for WorldKey {
     }
 }
 
-#[derive(ShaderType, Reflect, Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WorldParams {
     /// xyz = player chest position, w = cutaway radius in metres (0 = off).
     pub player: Vec4,
@@ -96,6 +101,35 @@ impl Default for WorldParams {
             sight: [Vec4::ZERO; 3],
             trees: [Vec4::ZERO; MAX_FADING_TREES],
         }
+    }
+}
+
+impl WorldParams {
+    /// The struct as world.wesl declares it: every field a `vec4<f32>` (or an array of them), in order.
+    fn floats(&self) -> Vec<f32> {
+        let head = [self.player, self.camera_dir, self.fog_rect, self.fog_tint, self.inside_rect, self.tree_count, self.lights];
+        head.iter().chain(&self.sight).chain(&self.trees).flat_map(|v| v.to_array()).collect()
+    }
+}
+
+/// The buffer every world material (and the vegetation's) reads its [`WorldParams`] from.
+#[derive(Resource, Clone)]
+pub struct ParamBuffer(pub Handle<ShaderBuffer>);
+
+/// A buffer for shader parameters that change every frame, holding `floats`.
+pub fn param_buffer(buffers: &mut Assets<ShaderBuffer>, floats: Vec<f32>) -> Handle<ShaderBuffer> {
+    buffers.add(ShaderBuffer::new(floats, RenderAssetUsages::default()))
+}
+
+/// Put `floats` in a parameter buffer, if they aren't what it holds (the same size as it was made
+/// with, so the GPU buffer is written to, not replaced, and no bind group changes).
+pub fn write_params(buffers: &mut Assets<ShaderBuffer>, handle: &Handle<ShaderBuffer>, floats: &[f32]) {
+    if buffers.get(handle).is_some_and(|b| b.cast_slice::<f32>() == Some(floats)) {
+        return;
+    }
+    if let Some(mut buffer) = buffers.get_mut(handle) {
+        buffer.clear();
+        buffer.extend_from_slice(floats);
     }
 }
 
@@ -236,10 +270,9 @@ impl MaterialExtension for WorldExt {
     }
 }
 
-/// Every world material, so their shared parameters can be refreshed together.
+/// The world materials. Their shared parameters are in a buffer of their own ([`ParamBuffer`]).
 #[derive(Resource, Default)]
 pub struct WorldMaterials {
-    pub all: Vec<Handle<WorldMaterial>>,
     /// Terrain and floors (vertex coloured).
     pub ground: Handle<WorldMaterial>,
     /// Buildings and furniture (vertex coloured, double-sided).
@@ -258,20 +291,18 @@ pub struct WorldMaterialPlugin;
 
 impl Plugin for WorldMaterialPlugin {
     fn build(&self, app: &mut App) {
+        let floats = WorldParams::default().floats();
+        let buffer = param_buffer(&mut app.world_mut().resource_mut::<Assets<ShaderBuffer>>(), floats);
         app.add_plugins(MaterialPlugin::<WorldMaterial>::default())
+            .insert_resource(ParamBuffer(buffer))
             .init_resource::<TreeFades>()
             .add_systems(Startup, create_materials)
             .add_systems(PostUpdate, update_params);
     }
 }
 
-fn create_materials(mut commands: Commands, fog: Res<FogState>, graphics: Res<crate::graphics::Graphics>, mut materials: ResMut<Assets<WorldMaterial>>) {
-    let mut all = Vec::new();
-    let mut make_with = |base: StandardMaterial, cutaway: bool, ground: bool| {
-        let h = materials.add(ExtendedMaterial { base, extension: WorldExt { params: WorldParams::default(), fog: fog.image.clone(), rays: fog.rays.clone(), cutaway, ground } });
-        all.push(h.clone());
-        h
-    };
+fn create_materials(mut commands: Commands, fog: Res<FogState>, params: Res<ParamBuffer>, graphics: Res<crate::graphics::Graphics>, mut materials: ResMut<Assets<WorldMaterial>>) {
+    let mut make_with = |base: StandardMaterial, cutaway: bool, ground: bool| materials.add(ExtendedMaterial { base, extension: WorldExt { params: params.0.clone(), fog: fog.image.clone(), rays: fog.rays.clone(), cutaway, ground } });
     let vertex_colored = |roughness: f32, double_sided: bool| StandardMaterial {
         base_color: Color::WHITE,
         perceptual_roughness: roughness,
@@ -288,7 +319,7 @@ fn create_materials(mut commands: Commands, fog: Res<FogState>, graphics: Res<cr
     // nothing to sort), each pixel covering as many MSAA samples as its alpha asks, so panes seen
     // through other panes, zombies behind glass and the cutaway all just work.
     let glass = make(StandardMaterial { alpha_mode: AlphaMode::AlphaToCoverage, reflectance: 0.6, ..vertex_colored(0.15, true) }, true);
-    commands.insert_resource(WorldMaterials { all, ground, building, props, props_cut, glass });
+    commands.insert_resource(WorldMaterials { ground, building, props, props_cut, glass });
 }
 
 /// Each fading tree's foliage, by tile: (tile, trunk foot, 0 shown .. 1 gone).
@@ -301,13 +332,13 @@ pub fn update_params(
     map: Res<ClientMap>,
     time: Res<Time>,
     daylight: Res<crate::daynight::Daylight>,
-    world_materials: Option<Res<WorldMaterials>>,
-    mut materials: ResMut<Assets<WorldMaterial>>,
+    buffer: Res<ParamBuffer>,
+    mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut fades: ResMut<TreeFades>,
     player: Query<&Transform, With<Player>>,
     cams: Query<&IsoCamera>,
 ) {
-    let (Some(wm), Ok(p), Ok(cam)) = (world_materials, player.single(), cams.single()) else { return };
+    let (Ok(p), Ok(cam)) = (player.single(), cams.single()) else { return };
     let chest = p.translation.with_y(1.1);
     let camera_dir = cam.offset_dir();
     // Trees in front of the player fade their foliage out; the rest fade back in.
@@ -357,11 +388,7 @@ pub fn update_params(
         sight: fog.sight,
         trees,
     };
-    for h in &wm.all {
-        if let Some(mut m) = materials.get_mut(h) {
-            m.extension.params = params.clone();
-        }
-    }
+    write_params(&mut buffers, &buffer.0, &params.floats());
 }
 
 #[cfg(test)]

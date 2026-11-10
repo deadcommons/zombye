@@ -155,7 +155,8 @@ fn update_screen(
     if !me.dead {
         return;
     }
-    let set = |t: &mut Text, s: String| {
+    // The `Mut` itself, so an unchanged text doesn't count as changed (see `hud::update_vitals`).
+    let set = |t: &mut Mut<Text>, s: String| {
         if t.0 != s {
             t.0 = s;
         }

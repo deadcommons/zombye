@@ -83,6 +83,8 @@ struct Job {
     previous: Option<Image>,
     /// Frames to time after the PNG (`ZOMBYE_FRAME_BENCH`), and the frame times so far.
     bench: u32,
+    /// `--bench-live`: time runs on while benchmarking (the sim ticks, the player walks).
+    live: bool,
     times: Vec<f32>,
     last: Instant,
 }
@@ -99,14 +101,15 @@ impl Plugin for OffscreenPlugin {
         let handle = app.world_mut().resource_mut::<Assets<Image>>().add(image);
         let pending = PendingPipelines::default();
         let sync = SyncGpu::default();
-        let bench = options.frame_bench.or_else(|| std::env::var("ZOMBYE_FRAME_BENCH").ok().and_then(|v| v.parse().ok())).unwrap_or(0);
+        let live = options.bench_live.is_some();
+        let bench = options.bench_live.or(options.frame_bench).or_else(|| std::env::var("ZOMBYE_FRAME_BENCH").ok().and_then(|v| v.parse().ok())).unwrap_or(0);
         let now = Instant::now();
         app.insert_resource(OffscreenTarget(handle))
             .insert_resource(pending.clone())
             .insert_resource(sync.clone())
             .init_resource::<Readback>()
             .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(FRAME_SECS)))
-            .insert_resource(Job { path, started: now, frame: 0, phase: Phase::Warm, settled: 0, captures: 0, previous: None, bench, times: Vec::new(), last: now })
+            .insert_resource(Job { path, started: now, frame: 0, phase: Phase::Warm, settled: 0, captures: 0, previous: None, bench, live, times: Vec::new(), last: now })
             .add_systems(Last, drive);
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app.insert_resource(pending).insert_resource(sync).add_systems(Render, (count_pending, wait_for_gpu).in_set(RenderSystems::Cleanup));
@@ -151,7 +154,8 @@ fn drive(
             let mut sorted = t.to_vec();
             sorted.sort_by(f32::total_cmp);
             let median = sorted[sorted.len() / 2];
-            println!("frame cost: {mean:.2} ms mean, {worst:.2} ms worst over {} frames (median {median:.2}, best {:.2})", t.len(), sorted[0]);
+            let p99 = sorted[(sorted.len() * 99 / 100).min(sorted.len() - 1)];
+            println!("frame cost: {mean:.2} ms mean, {worst:.2} ms worst over {} frames (median {median:.2}, best {:.2}, p99 {p99:.2})", t.len(), sorted[0]);
             // What was drawn: mesh instances the camera saw, and how many distinct meshes they
             // use (instances of one mesh and material are one draw, so this is about the draws).
             let mut ids = std::collections::HashSet::new();
@@ -163,6 +167,8 @@ fn drive(
                 }
             }
             println!("drawn: {instances} mesh instances, {} distinct meshes", ids.len());
+            #[cfg(feature = "profile")]
+            crate::profile::report(t.len() as u32);
             exit.write(AppExit::Success);
         }
         return;
@@ -216,6 +222,11 @@ fn drive(
                         sync.0.store(true, Ordering::Relaxed);
                         job.last = Instant::now();
                         job.phase = Phase::Bench;
+                        if job.live {
+                            time.unpause();
+                            #[cfg(feature = "profile")]
+                            crate::profile::reset();
+                        }
                     } else {
                         exit.write(if ok { AppExit::Success } else { AppExit::error() });
                     }
@@ -274,4 +285,48 @@ fn write_png(image: Image, path: &Path) -> Result<(), String> {
     }
     let rgb = image.try_into_dynamic().map_err(|e| format!("can't read the frame back: {e}"))?.to_rgb8();
     rgb.save(path).map_err(|e| format!("couldn't write {}: {e}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::image::{CompressedImageFormats, Image, ImageSampler, ImageType};
+
+    /// Compare two pictures of the same size pixel by pixel (ignored: a tool for checking that a
+    /// change to rendering left the picture alone): `target/cmp/NAME-a.png` against `NAME-b.png`
+    /// for every pair there. Prints how many pixels differ, where, and by how much at most.
+    #[test]
+    #[ignore]
+    fn compare_pictures() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/cmp");
+        let load = |p: &std::path::Path| {
+            let bytes = std::fs::read(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+            Image::from_buffer(&bytes, ImageType::Extension("png"), CompressedImageFormats::NONE, true, ImageSampler::Default, RenderAssetUsages::default()).expect("a png")
+        };
+        let mut names: Vec<_> = std::fs::read_dir(&dir).expect("target/cmp").flatten().map(|e| e.path()).filter(|p| p.to_string_lossy().ends_with("-a.png")).collect();
+        names.sort();
+        for a_path in names {
+            let b_path = std::path::PathBuf::from(a_path.to_string_lossy().replace("-a.png", "-b.png"));
+            let (a, b) = (load(&a_path), load(&b_path));
+            let (w, bpp) = (a.width() as usize, a.data.as_ref().unwrap().len() / (a.width() * a.height()) as usize);
+            let (da, db) = (a.data.as_ref().unwrap(), b.data.as_ref().unwrap());
+            assert_eq!(da.len(), db.len());
+            let (mut n, mut worst, mut lo, mut hi) = (0usize, 0u8, (usize::MAX, usize::MAX), (0usize, 0usize));
+            for (i, (pa, pb)) in da.chunks(bpp).zip(db.chunks(bpp)).enumerate() {
+                let d = pa.iter().zip(pb).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+                if d > 0 {
+                    n += 1;
+                    worst = worst.max(d);
+                    let (x, y) = (i % w, i / w);
+                    lo = (lo.0.min(x), lo.1.min(y));
+                    hi = (hi.0.max(x), hi.1.max(y));
+                }
+            }
+            let name = a_path.file_name().unwrap().to_string_lossy().into_owned();
+            match n {
+                0 => println!("{name}: the same, all {} pixels", da.len() / bpp),
+                _ => println!("{name}: {n} of {} pixels differ, by at most {worst} of 255, within {lo:?}..{hi:?}", da.len() / bpp),
+            }
+        }
+    }
 }

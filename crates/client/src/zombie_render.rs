@@ -16,7 +16,8 @@
 //! file's clips go into [`CLIPS`]' slots by name; the slots it has no clip for get stand-ins made from what
 //! it has ([`Source`], [`sources`]), so every anim plays something sensible and nothing T-poses.
 
-use std::collections::HashMap;
+// Bevy's map: its hasher costs a fraction of the standard one's, and every zombie is looked up every frame.
+use bevy::platform::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use std::path::{Path, PathBuf};
 
@@ -944,6 +945,8 @@ struct Tracked {
     /// Direction and time of the last blow, for the kickback and which way it falls.
     blow: Vec2,
     blow_at: f32,
+    /// Its entity is hidden (out of our sight), so nothing of it needs keeping up.
+    hidden: bool,
 }
 
 /// How long a hit zombie flashes, and how far and for how long it's knocked back on screen.
@@ -968,6 +971,7 @@ impl Tracked {
             flash_until: 0.0,
             blow: Vec2::ZERO,
             blow_at: -100.0,
+            hidden: false,
         }
     }
 
@@ -1095,9 +1099,10 @@ fn sync_zombies(
         let facing = lerp_angle(prev.facing, z.facing, alpha);
         let visibility = if fog.visibility(pos) > 0.35 { Visibility::Inherited } else { Visibility::Hidden };
         // Sim angle 0 = +x, counter-clockwise toward +y (= Bevy +z). The mesh faces +Z.
-        let rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - facing);
+        let rotation = || Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - facing);
 
         let Some(tr) = entities.0.get_mut(&z.id) else {
+            let rotation = rotation();
             // First sight. A corpse is already lying still.
             let since = if z.anim == ZombieAnim::Dead { -100.0 } else { now };
             // A player who turned wears what it wore, as near as the variants allow.
@@ -1125,6 +1130,7 @@ fn sync_zombies(
                     visibility,
                 ))
                 .id();
+            tr.hidden = visibility == Visibility::Hidden;
             entities.0.insert(z.id, tr);
             continue;
         };
@@ -1134,6 +1140,14 @@ fn sync_zombies(
         if z.anim != tr.anim {
             tr.set_anim(z.anim, z.facing, now, t, timing);
         }
+        // One that was out of sight and still is has nothing to draw: its entity is left as it is
+        // (in a town most of a crowd is behind something).
+        let hidden = visibility == Visibility::Hidden;
+        if hidden && tr.hidden {
+            continue;
+        }
+        tr.hidden = hidden;
+        let rotation = rotation();
         let kick = now - tr.blow_at;
         if kick < KICK_SECS {
             let k = 1.0 - kick / KICK_SECS;
@@ -1142,7 +1156,13 @@ fn sync_zombies(
         let (clip, play) = tr.play(now, t, timing);
         let tag = pack_tag(z.id, clip, play, z.speed, now < tr.flash_until);
         if let Ok((mut tf, mut mt, mut vis)) = query.get_mut(tr.entity) {
-            *tf = Transform { translation: Vec3::new(pos.x, 0.0, pos.y), rotation, scale: Vec3::ONE };
+            // Only a zombie that is drawn and has moved gets a new Transform: a changed one is
+            // propagated, extracted and uploaded again, zombie by zombie, and in a crowd most
+            // stand still or are out of sight (one that comes into sight is placed that frame).
+            let placed = Transform { translation: Vec3::new(pos.x, 0.0, pos.y), rotation, scale: Vec3::ONE };
+            if !hidden && *tf != placed {
+                *tf = placed;
+            }
             if mt.value != tag {
                 mt.value = tag;
             }

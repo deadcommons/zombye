@@ -87,6 +87,9 @@ mod fps_log;
 mod graphics;
 mod graphics_ui;
 mod render_scale;
+mod bench_live;
+#[cfg(feature = "profile")]
+mod profile;
 mod vegetation;
 mod heard;
 mod health_ui;
@@ -296,6 +299,11 @@ pub struct Options {
     pub shadow_map: Option<u32>,
     /// The 3D world's share of the window's resolution on a HiDPI screen (0.5..1).
     pub render_scale: Option<f32>,
+    /// `--bench-live N` (offscreen): time N frames with the world running and the player walking a
+    /// fixed loop (`bench_live.rs`), so the sim and the client's systems count, not only the GPU.
+    pub bench_live: Option<u32>,
+    /// `--crowd N`: N zombies round the player at the start, called over by a noise (stress tests).
+    pub crowd: Option<u32>,
     /// Offscreen, after the PNG: render this many more frames of the same picture and print their
     /// cost (`--frame-bench N`, else `ZOMBYE_FRAME_BENCH`; see `offscreen.rs`).
     pub frame_bench: Option<u32>,
@@ -476,6 +484,8 @@ impl Options {
             msaa: value("--msaa").and_then(|v| v.parse().ok()),
             shadow_map: value("--shadow-map").and_then(|v| v.parse().ok()),
             render_scale: value("--render-scale").and_then(|v| v.parse().ok()),
+            bench_live: value("--bench-live").and_then(|v| v.parse().ok()),
+            crowd: value("--crowd").and_then(|v| v.parse().ok()),
             frame_bench: value("--frame-bench").and_then(|v| v.parse().ok()),
             lag_ms: value("--lag").and_then(|v| v.parse::<u32>().ok()).map_or(0, |v| v.min(2000)),
             gun: value("--gun"),
@@ -495,8 +505,18 @@ impl Options {
 
 /// Run condition: the game is live (not a frozen offscreen render). The local server doesn't tick
 /// and the player isn't predicted in an offscreen render, so it shows the loaded state exactly.
+/// The log plugin; with the `profile` feature it also times every system (`profile.rs`).
+fn log_plugin() -> bevy::log::LogPlugin {
+    #[cfg(feature = "profile")]
+    return bevy::log::LogPlugin { custom_layer: profile::layer, ..default() };
+    #[cfg(not(feature = "profile"))]
+    bevy::log::LogPlugin::default()
+}
+
 pub fn live(options: Res<Options>) -> bool {
-    !options.offscreen()
+    // `--bench-live` is offscreen but runs the game as it plays (input, prediction, UI), so its
+    // timings count all of it.
+    !options.offscreen() || options.bench_live.is_some()
 }
 
 /// Ctrl-C, SIGTERM or SIGHUP in the terminal (`zombye_net::shutdown`): quit as if the window was
@@ -549,6 +569,7 @@ fn main() {
         DefaultPlugins
             .set(WindowPlugin { primary_window: None, exit_condition: ExitCondition::DontExit, ..default() })
             .set(assets)
+            .set(log_plugin())
             .disable::<bevy::winit::WinitPlugin>()
             .disable::<bevy::audio::AudioPlugin>()
             .disable::<bevy::gilrs::GilrsPlugin>()
@@ -599,7 +620,7 @@ fn main() {
     if !offscreen {
         app.add_plugins(audio::GameAudioPlugin);
     }
-    app.add_plugins(fps_log::FpsLogPlugin);
+    app.add_plugins((fps_log::FpsLogPlugin, bench_live::BenchLivePlugin));
     let failed = app.run().is_error();
     // A join asked for in the server browser (#27): the game has shut down (and autosaved); start
     // it again on that server.

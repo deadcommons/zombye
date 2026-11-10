@@ -698,7 +698,9 @@ fn tick_server(
 fn take_up(
     link: &mut ServerLink,
     snapshot: Snapshot,
-    map: &mut ClientMap,
+    // As the resource, so it only counts as changed when an edge really is (the fog of war casts
+    // its rays again when the map changes).
+    map: &mut ResMut<ClientMap>,
     changes: &mut EdgeChangesThisFrame,
     transitions: &mut EdgeTransitionsThisFrame,
     damage_map: &mut EdgeDamageMap,

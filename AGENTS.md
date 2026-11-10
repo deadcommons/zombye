@@ -1183,8 +1183,11 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   (about 0.8 ms each on an M-series Mac, as ours); not measurable on the GPU-less build machine.
 - **Fog of war per pixel:** the sight rays go to the GPU (`FogState::rays`, 1,024 × 1 `R32Float`, with the range and cone in
   `FogState::sight`) and `world.wesl`'s `fog_at` works out what's seen per pixel by the same rule as the mask, so
-  line-of-sight edges are smooth, not the mask's half-metre steps. The mask still says what's indoors and which zombies
-  to draw.
+  line-of-sight edges are smooth, not the mask's half-metre steps. The mask texture now only says what's indoors (its
+  green; refilled when its origin moves on by a texel, every half metre walked). Which zombies, items and players to
+  draw is `FogState::visibility(point)`: the value the mask's texel there used to hold, worked out when asked (a test
+  holds it to the old raster). The rays are cast again only when the eye, their reach or the map changed, and uploaded
+  only when they differ: standing still, `update_fog` does nothing.
 - **The crowd is in the scene's light** (#85): `zombie_vat.wesl` shades zombies with Bevy's PBR lighting (flat normals
   from screen derivatives, the hit flash as emissive), so the sun, moon, ambient, held lights and shadows reach them,
   and its prepass entry points run the same VAT animation (crossfades included) into the shadow maps, so they cast
@@ -1278,6 +1281,39 @@ and mood, and docs/art-direction.md). All of it is client only: nothing here is 
   alone, 193 ms with it all, 237 ms at density 2; at 60 m 233 ms off and 363 ms on. Chunk building, scatter
   included: 0.53 ms mean on that VM. **Not yet measured on a GPU** (`--frame-bench 120` on the Mac, with and
   without `--graphics low --vegetation off`).
+
+## Keeping a frame cheap on the CPU (`crates/client`)
+
+Bevy keeps what it prepared for a mesh until something about it changes, so the client's rule is: **nothing that
+stands still may count as changed.** Each of these cost milliseconds a frame before it was found.
+
+- **Shader parameters that change every frame go in a buffer, never in a material asset.** A changed material asset
+  makes Bevy extract, specialise and queue again every mesh drawn with it. The world materials (and the vegetation's)
+  hold a handle to `materials::ParamBuffer`, a `ShaderBuffer` asset read as `var<storage, read>`
+  (`materials::param_buffer`, `write_params`, which writes only when the values differ; the same size every time, so
+  the GPU buffer is written in place). `VegExt` has a second one for its clock and wind. A new per-frame parameter is
+  a field of `WorldParams` (keep `floats()` and the struct in `world.wesl` in step).
+- **Write a `Transform`, `Visibility`, `MeshTag`, `Text` or `Node` only when its value changes** (`if *x != new`).
+  A `Mut<T>` passed on as `&mut T` counts as changed even if nothing is assigned: pass the `Mut` itself. Things that
+  ease toward a rest pose (door leaves, panes) are put there when close and then left alone. `sync_zombies` places
+  only zombies that are in sight and moved, and skips those that stay out of sight.
+- **Resources too:** `tick_server` hands the client's map on as the `ResMut`, so `ClientMap` is changed only when an
+  edge is.
+- **Measuring:** `--bench-live N` (offscreen, the world running, the player walking a 24 m square; add `--crowd N`
+  for N zombies round the player, on a server one started with `--allow-dev`) prints the frame times and, every 150
+  frames, the frame's churn: how many meshes moved, changed or came into view, and how many UI texts and nodes
+  changed. Built with `--features zombye-client/profile` it also prints CPU ms a frame by part, the main world's
+  update and the top 40 spans (`ZOMBYE_PROFILE_TOP=N`). On the GPU-less build VM only these CPU-side numbers mean
+  anything. **A change to rendering is checked with pictures:** render the same scene before and after into
+  `target/cmp/NAME-a.png` and `NAME-b.png` and run `cargo test --release -p zombye-client compare_pictures -- --ignored
+  --nocapture` (pixels that differ, by how much, where).
+- Measured on that VM (CPU-side spans, `--bench-live 200 --crowd 2000`, 1280 x 720; before and after these rules):
+  the main world's update 7.4 to 5.1 ms, mesh extraction 2.0 to 0.1 ms, `update_fog` 2.2 to 0.05 ms, and material
+  specialising, queueing and bind groups (2.3 ms together) to nothing; as a client of a server with 5,300 zombies in
+  the snapshot, 8.0 to 5.4 ms and 3.8 to 0.9 ms. The single-threaded sim: 1.0 ms a tick for 5,000 active zombies, 2.5
+  ms with a horde of 5,000 after a player (`--bench`). **Not yet:** the sim's tick runs inside the frame it falls in;
+  every zombie and every patch of vegetation is still an entity (about 8,000 mesh entities in a yard), which Bevy's
+  per-entity systems walk each frame.
 
 ## Characters on screen (`crates/client`)
 

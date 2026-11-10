@@ -27,7 +27,8 @@ use bevy::light::NotShadowCaster;
 use bevy::mesh::{Indices, MeshTag, MeshVertexBufferLayoutRef, PrimitiveTopology};
 use bevy::pbr::{ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline};
 use bevy::prelude::*;
-use bevy::render::render_resource::{AsBindGroup, Face, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError};
+use bevy::render::render_resource::{AsBindGroup, Face, RenderPipelineDescriptor, SpecializedMeshPipelineError};
+use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 use zombye_sim::map::CHUNK_SIZE;
 
@@ -35,7 +36,7 @@ use crate::Options;
 use crate::camera::IsoCamera;
 use crate::fog::FogState;
 use crate::graphics::Graphics;
-use crate::materials::{WorldMaterial, WorldMaterials, WorldParams};
+use crate::materials::{ParamBuffer, param_buffer, write_params};
 use crate::meshgen::palette::pal;
 use crate::player::Player;
 
@@ -114,19 +115,22 @@ pub type VegMaterial = ExtendedMaterial<StandardMaterial, VegExt>;
 /// vegetation's own parameters for `vegetation.wesl`.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
 pub struct VegExt {
-    #[uniform(100)]
-    pub params: WorldParams,
+    /// The world materials' own buffer (`materials::ParamBuffer`).
+    #[storage(100, read_only)]
+    pub params: Handle<ShaderBuffer>,
     #[texture(101)]
     #[sampler(102)]
     pub fog: Handle<Image>,
     #[texture(103, sample_type = "float", filterable = false)]
     pub rays: Handle<Image>,
-    #[uniform(104)]
-    pub veg: VegParams,
+    /// [`VegParams`], in a buffer for the reason the world's are: the clock in them changes every
+    /// frame, and a changed material would have every patch of grass extracted and queued again.
+    #[storage(104, read_only)]
+    pub veg: Handle<ShaderBuffer>,
 }
 
-/// Must match `VegParams` in vegetation.wesl.
-#[derive(ShaderType, Reflect, Debug, Clone, Default)]
+/// Must match `VegParams` in vegetation.wesl: four `vec4<f32>`.
+#[derive(Debug, Clone, Default)]
 pub struct VegParams {
     /// x, y = the camera's focus on the ground (world x, z), z = the drawn radius, w = seconds.
     pub focus: Vec4,
@@ -156,10 +160,18 @@ impl MaterialExtension for VegExt {
     }
 }
 
+impl VegParams {
+    fn floats(&self) -> Vec<f32> {
+        [self.focus, self.player, self.green, self.dry].iter().flat_map(|v| v.to_array()).collect()
+    }
+}
+
 #[derive(Resource)]
 struct VegAssets {
     meshes: [[Handle<Mesh>; VARIANTS]; KINDS],
     material: Handle<VegMaterial>,
+    /// The buffer holding the material's [`VegParams`].
+    params: Handle<ShaderBuffer>,
 }
 
 pub struct VegetationPlugin;
@@ -173,15 +185,16 @@ impl Plugin for VegetationPlugin {
     }
 }
 
-fn setup(mut commands: Commands, fog: Res<FogState>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<VegMaterial>>) {
+fn setup(mut commands: Commands, fog: Res<FogState>, world: Res<ParamBuffer>, mut buffers: ResMut<Assets<ShaderBuffer>>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<VegMaterial>>) {
     let handles = VegKind::ALL.map(|kind| std::array::from_fn(|v| meshes.add(patch_mesh(kind, v as u32))));
+    let params = param_buffer(&mut buffers, VegParams::default().floats());
     let material = materials.add(ExtendedMaterial {
         // Blades are seen from both sides, lit the same on each (the shader gives them the ground's
         // normal), so no culling and no flipping of normals for back faces.
         base: StandardMaterial { base_color: Color::WHITE, perceptual_roughness: 0.95, reflectance: 0.2, cull_mode: None::<Face>, ..default() },
-        extension: VegExt { params: WorldParams::default(), fog: fog.image.clone(), rays: fog.rays.clone(), veg: VegParams::default() },
+        extension: VegExt { params: world.0.clone(), fog: fog.image.clone(), rays: fog.rays.clone(), veg: params.clone() },
     });
-    commands.insert_resource(VegAssets { meshes: handles, material });
+    commands.insert_resource(VegAssets { meshes: handles, material, params });
 }
 
 /// The tint and variety a spot's instance carries to the shader: bits 0-7 dryness, 8-15 brightness.
@@ -255,29 +268,19 @@ fn stream_veg(
     }
 }
 
-/// The vegetation material follows the world's (fog of war, night) and gets its own clock, wind,
-/// focus and the player's feet.
-fn update_params(
-    assets: Option<Res<VegAssets>>,
-    world: Option<Res<WorldMaterials>>,
-    world_materials: Res<Assets<WorldMaterial>>,
-    mut materials: ResMut<Assets<VegMaterial>>,
-    time: Res<Time>,
-    cams: Query<&IsoCamera>,
-    player: Query<&Transform, With<Player>>,
-) {
-    let (Some(assets), Some(world), Ok(cam)) = (assets, world, cams.single()) else { return };
-    let Some(params) = world_materials.get(&world.ground).map(|m| m.extension.params.clone()) else { return };
-    let Some(mut m) = materials.get_mut(&assets.material) else { return };
+/// The vegetation material reads the world's parameters (fog of war, night) from the world's own
+/// buffer, and gets its own clock, wind, focus and the player's feet in another.
+fn update_params(assets: Option<Res<VegAssets>>, mut buffers: ResMut<Assets<ShaderBuffer>>, time: Res<Time>, cams: Query<&IsoCamera>, player: Query<&Transform, With<Player>>) {
+    let (Some(assets), Ok(cam)) = (assets, cams.single()) else { return };
     let feet = player.single().map_or(Vec2::splat(-1e6), |p| p.translation.xz());
     let p = pal();
-    m.extension.params = params;
-    m.extension.veg = VegParams {
+    let veg = VegParams {
         focus: Vec4::new(cam.focus.x, cam.focus.z, veg_radius(cam.zoom), time.elapsed_secs_wrapped()),
         player: Vec4::new(feet.x, feet.y, WIND, 0.0),
         green: p.grass_blade.to_vec4(),
         dry: p.grass_blade_dry.to_vec4(),
     };
+    write_params(&mut buffers, &assets.params, &veg.floats());
 }
 
 /// A tiny xorshift for building the meshes (always the same meshes).

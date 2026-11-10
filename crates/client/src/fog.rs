@@ -34,27 +34,91 @@ const NIGHT_SIGHT: f32 = 10.0;
 
 #[derive(Resource)]
 pub struct FogState {
+    /// The mask texture: green = indoors. Its red (how visible) is no longer filled in: the shader
+    /// works that out per pixel from the rays, and [`FogState::visibility`] per point asked for.
     pub image: Handle<Image>,
     /// World x/z of the mask's min corner.
     pub origin: Vec2,
     pub size_m: f32,
-    /// Two bytes per texel: visibility, indoors.
-    values: Vec<u8>,
     /// Each ray's reach in metres, one `R32Float` texel per ray (`RAYS` × 1).
     pub rays: Handle<Image>,
     /// For the shader: (eye x, eye z, sight range, beam reach), (facing x, z, cone cos lo, hi),
     /// (beam cos, behind, close radius, 1 = in use).
     pub sight: [Vec4; 3],
+    /// What [`FogState::visibility`] works from; `None` until the first update.
+    view: Option<View>,
+    /// What the rays were last cast with (eye, reach), and the origin the mask texture was last
+    /// filled for: neither is done again until it changes (or the map does).
+    cast: Option<(Vec2, f32)>,
+    filled: Option<Vec2>,
+}
+
+/// The player's sight as of the last update: everything a mask texel's visibility follows from.
+struct View {
+    rays: Vec<f32>,
+    eye: Vec2,
+    facing: Vec2,
+    max: f32,
+    beam: f32,
+    beam_cos: f32,
+    cone: (f32, f32),
+    lit_dark: f32,
+    lights: Vec<crate::lights::SeenLight>,
+}
+
+impl View {
+    /// How visible the mask texel (`tx`, `ty`) is, 0..=255: sight along the rays, fading with range
+    /// and behind the player, and whatever a light in the dark shows of it.
+    fn texel(&self, origin: Vec2, tx: u32, ty: u32) -> u8 {
+        let q = origin + (Vec2::new(tx as f32, ty as f32) + 0.5) * TEXEL_M;
+        let d = q - self.eye;
+        let dist = d.length();
+        // Along the beam the sight range is the beam's reach.
+        let in_beam = if self.beam > self.max && dist > 0.1 { smoothstep(self.beam_cos - 0.04, self.beam_cos + 0.04, self.facing.dot(d / dist)) } else { 0.0 };
+        let max = lerp(self.max, self.beam, in_beam);
+        let v = if dist > max + 1.5 {
+            0.0
+        } else {
+            // Angle → fractional ray index; take the nearer of the two rays so light doesn't leak past corners.
+            let los = line_of_sight(&self.rays, d);
+            let range = 1.0 - smoothstep(max * 0.5, max, dist);
+            let cone = if dist < CLOSE_RADIUS {
+                1.0
+            } else {
+                let c = self.facing.dot(d / dist.max(1e-4));
+                BEHIND + (1.0 - BEHIND) * smoothstep(self.cone.0, self.cone.1, c)
+            };
+            los * range * cone
+        };
+        let mut value = (v.clamp(0.0, 1.0) * 255.0) as u8;
+        // What's lit is seen (#83): the ground a window's pool or another survivor's light falls on
+        // shows in the dark however far off, given a line of sight to it, so whoever stands in it is drawn.
+        let t = IVec2::new(tx as i32, ty as i32);
+        for light in &self.lights {
+            let lo = ((light.pos - light.radius - origin) / TEXEL_M).floor().as_ivec2().max(IVec2::ZERO);
+            let hi = ((light.pos + light.radius - origin) / TEXEL_M).ceil().as_ivec2().min(IVec2::splat(TEXELS as i32 - 1));
+            if t.cmplt(lo).any() || t.cmpgt(hi).any() {
+                continue;
+            }
+            let lit = light.lit(q) * self.lit_dark;
+            if lit > 0.0 {
+                value = value.max((lit * line_of_sight(&self.rays, q - self.eye) * 255.0) as u8);
+            }
+        }
+        value
+    }
 }
 
 impl FogState {
-    /// How visible a ground point is right now (0 = unseen, 1 = in plain sight).
+    /// How visible a ground point is right now (0 = unseen, 1 = in plain sight): the value of the
+    /// half-metre mask texel it is in, worked out when asked. A few thousand zombies, items and
+    /// players ask each frame; filling all 65,536 texels for them cost over a millisecond.
     pub fn visibility(&self, p: Vec2) -> f32 {
         let t = ((p - self.origin) / TEXEL_M).floor().as_ivec2();
         if t.x < 0 || t.y < 0 || t.x >= TEXELS as i32 || t.y >= TEXELS as i32 {
             return 0.0;
         }
-        self.values[((t.y as u32 * TEXELS + t.x as u32) * 2) as usize] as f32 / 255.0
+        self.view.as_ref().map_or(0.0, |v| v.texel(self.origin, t.x as u32, t.y as u32) as f32 / 255.0)
     }
 }
 
@@ -84,9 +148,11 @@ impl Plugin for FogPlugin {
             image: handle,
             origin: Vec2::ZERO,
             size_m: TEXELS as f32 * TEXEL_M,
-            values: vec![0; (TEXELS * TEXELS * 2) as usize],
             rays,
             sight: [Vec4::ZERO; 3],
+            view: None,
+            cast: None,
+            filled: None,
         })
             .add_systems(Update, update_fog);
     }
@@ -129,73 +195,70 @@ pub fn update_fog(
     // In the dark the rays go on past what we see by ourselves, as far as a lit place shows (below).
     let lit_dark = crate::lights::darkness(daylight.0);
     let far = if lit_dark > 0.0 { crate::lights::FAR_LIGHT } else { 0.0 };
-    let rays = vision::visibility_rays(&map.0, eye, reach_max.max(far), RAYS);
     let facing = Vec2::from_angle(player.facing);
+    let fog = &mut *fog;
+    let map_changed = map.is_changed();
 
-    // Snap the mask to the texel grid so it doesn't shimmer as you move.
+    // The rays: cast again only when the eye, their reach or the map changed (standing still costs
+    // nothing), and sent to the GPU only when they came out different.
+    let cast = (eye, reach_max.max(far));
+    let mut view = fog.view.take();
+    if fog.cast != Some(cast) || map_changed || view.is_none() {
+        fog.cast = Some(cast);
+        let rays = cast_rays(&map.0, cast.0, cast.1);
+        if view.as_ref().is_none_or(|v| v.rays != rays) {
+            if let Some(mut image) = images.get_mut(&fog.rays)
+                && let Some(data) = image.data.as_mut()
+            {
+                for (out, r) in data.chunks_exact_mut(4).zip(&rays) {
+                    out.copy_from_slice(&r.to_le_bytes());
+                }
+            }
+        }
+        match view.as_mut() {
+            Some(v) => v.rays = rays,
+            None => view = Some(View { rays, eye, facing, max, beam, beam_cos, cone: (cone_lo, cone_hi), lit_dark, lights: Vec::new() }),
+        }
+    }
+    if let Some(v) = view.as_mut() {
+        (v.eye, v.facing, v.max, v.beam, v.beam_cos, v.cone, v.lit_dark) = (eye, facing, max, beam, beam_cos, (cone_lo, cone_hi), lit_dark);
+        v.lights.clear();
+        v.lights.extend_from_slice(&lights.0);
+    }
+    fog.view = view;
+
+    // Snap the mask to the texel grid so it doesn't shimmer as you move. The texture only says
+    // what's indoors now, which changes when the mask moves on by a texel (every half metre walked).
     let half = fog.size_m * 0.5;
     let origin = ((eye - Vec2::splat(half)) / TEXEL_M).floor() * TEXEL_M;
     fog.origin = origin;
-    for ty in 0..TEXELS {
-        for tx in 0..TEXELS {
-            let q = origin + (Vec2::new(tx as f32, ty as f32) + 0.5) * TEXEL_M;
-            let d = q - eye;
-            let dist = d.length();
-            // Along the beam the sight range is the beam's reach.
-            let in_beam = if beam > max && dist > 0.1 { smoothstep(beam_cos - 0.04, beam_cos + 0.04, facing.dot(d / dist)) } else { 0.0 };
-            let max = lerp(max, beam, in_beam);
-            let v = if dist > max + 1.5 {
-                0.0
-            } else {
-                // Angle → fractional ray index; take the nearer of the two rays so light doesn't leak past corners.
-                let los = line_of_sight(&rays, d);
-                let range = 1.0 - smoothstep(max * 0.5, max, dist);
-                let cone = if dist < CLOSE_RADIUS {
-                    1.0
-                } else {
-                    let c = facing.dot(d / dist.max(1e-4));
-                    BEHIND + (1.0 - BEHIND) * smoothstep(cone_lo, cone_hi, c)
-                };
-                los * range * cone
-            };
-            let i = ((ty * TEXELS + tx) * 2) as usize;
-            fog.values[i] = (v.clamp(0.0, 1.0) * 255.0) as u8;
-            fog.values[i + 1] = if map.0.tile(q.floor().as_ivec2()).room != 0 { 255 } else { 0 };
-        }
-    }
-    // What's lit is seen (#83): the ground a window's pool or another survivor's light falls on
-    // shows in the dark however far off, given a line of sight to it, so whoever stands in it is drawn.
-    for light in &lights.0 {
-        let lo = ((light.pos - light.radius - origin) / TEXEL_M).floor().as_ivec2().max(IVec2::ZERO);
-        let hi = ((light.pos + light.radius - origin) / TEXEL_M).ceil().as_ivec2().min(IVec2::splat(TEXELS as i32 - 1));
-        for ty in lo.y..=hi.y {
-            for tx in lo.x..=hi.x {
+    if (fog.filled != Some(origin) || map_changed)
+        && let Some(mut image) = images.get_mut(&fog.image)
+        && let Some(data) = image.data.as_mut()
+    {
+        fog.filled = Some(origin);
+        for ty in 0..TEXELS {
+            for tx in 0..TEXELS {
                 let q = origin + (Vec2::new(tx as f32, ty as f32) + 0.5) * TEXEL_M;
-                let lit = light.lit(q) * lit_dark;
-                if lit <= 0.0 {
-                    continue;
-                }
-                let v = (lit * line_of_sight(&rays, q - eye) * 255.0) as u8;
-                let i = ((ty as u32 * TEXELS + tx as u32) * 2) as usize;
-                fog.values[i] = fog.values[i].max(v);
+                data[((ty * TEXELS + tx) * 2 + 1) as usize] = if map.0.tile(q.floor().as_ivec2()).room != 0 { 255 } else { 0 };
             }
         }
     }
     fog.sight = [Vec4::new(eye.x, eye.y, max, beam), Vec4::new(facing.x, facing.y, cone_lo, cone_hi), Vec4::new(beam_cos, BEHIND, CLOSE_RADIUS, 1.0)];
-    let handle = fog.image.clone();
-    if let Some(mut image) = images.get_mut(&handle) {
-        if let Some(data) = image.data.as_mut() {
-            data.copy_from_slice(&fog.values);
+}
+
+/// The sight rays (`vision::visibility_rays`, the same values), cast in runs on the task pool: a
+/// thousand rays of up to 70 m are most of what's left of the fog's cost while walking.
+fn cast_rays(map: &zombye_sim::map::TileMap, eye: Vec2, reach: f32) -> Vec<f32> {
+    const RUN: usize = RAYS / 8;
+    let Some(pool) = bevy::tasks::ComputeTaskPool::try_get() else { return vision::visibility_rays(map, eye, reach, RAYS) };
+    let mut runs = pool.scope(|s| {
+        for k in 0..RAYS / RUN {
+            s.spawn(async move { (k, (k * RUN..(k + 1) * RUN).map(|i| vision::cast_ray(map, eye, Vec2::from_angle(i as f32 / RAYS as f32 * std::f32::consts::TAU), reach)).collect::<Vec<f32>>()) });
         }
-    }
-    let handle = fog.rays.clone();
-    if let Some(mut image) = images.get_mut(&handle) {
-        if let Some(data) = image.data.as_mut() {
-            for (out, r) in data.chunks_exact_mut(4).zip(&rays) {
-                out.copy_from_slice(&r.to_le_bytes());
-            }
-        }
-    }
+    });
+    runs.sort_by_key(|r| r.0);
+    runs.into_iter().flat_map(|r| r.1).collect()
 }
 
 /// Is the point `d` from the eye in line of sight (1) or behind something (0), going by the rays
@@ -223,6 +286,83 @@ fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The mask as it was filled before (every texel's sight, then each light's box over it).
+    fn old_mask(v: &View, origin: Vec2) -> Vec<u8> {
+        let mut values = vec![0u8; (TEXELS * TEXELS) as usize];
+        for ty in 0..TEXELS {
+            for tx in 0..TEXELS {
+                let q = origin + (Vec2::new(tx as f32, ty as f32) + 0.5) * TEXEL_M;
+                let d = q - v.eye;
+                let dist = d.length();
+                let in_beam = if v.beam > v.max && dist > 0.1 { smoothstep(v.beam_cos - 0.04, v.beam_cos + 0.04, v.facing.dot(d / dist)) } else { 0.0 };
+                let max = lerp(v.max, v.beam, in_beam);
+                let s = if dist > max + 1.5 {
+                    0.0
+                } else {
+                    let los = line_of_sight(&v.rays, d);
+                    let range = 1.0 - smoothstep(max * 0.5, max, dist);
+                    let cone = if dist < CLOSE_RADIUS { 1.0 } else { BEHIND + (1.0 - BEHIND) * smoothstep(v.cone.0, v.cone.1, v.facing.dot(d / dist.max(1e-4))) };
+                    los * range * cone
+                };
+                values[(ty * TEXELS + tx) as usize] = (s.clamp(0.0, 1.0) * 255.0) as u8;
+            }
+        }
+        for light in &v.lights {
+            let lo = ((light.pos - light.radius - origin) / TEXEL_M).floor().as_ivec2().max(IVec2::ZERO);
+            let hi = ((light.pos + light.radius - origin) / TEXEL_M).ceil().as_ivec2().min(IVec2::splat(TEXELS as i32 - 1));
+            for ty in lo.y..=hi.y {
+                for tx in lo.x..=hi.x {
+                    let q = origin + (Vec2::new(tx as f32, ty as f32) + 0.5) * TEXEL_M;
+                    let lit = light.lit(q) * v.lit_dark;
+                    if lit <= 0.0 {
+                        continue;
+                    }
+                    let i = (ty as u32 * TEXELS + tx as u32) as usize;
+                    values[i] = values[i].max((lit * line_of_sight(&v.rays, q - v.eye) * 255.0) as u8);
+                }
+            }
+        }
+        values
+    }
+
+    /// Asking for a point's visibility gives exactly what the filled mask held for its texel: by
+    /// day, and at night with a flashlight's beam and lights in the dark (one half off the mask).
+    #[test]
+    fn a_point_asked_for_is_the_old_masks_texel() {
+        use crate::lights::SeenLight;
+        let eye = Vec2::new(203.37, 181.62);
+        let origin = ((eye - Vec2::splat(64.0)) / TEXEL_M).floor() * TEXEL_M;
+        // Rays of uneven reach, as among houses.
+        let rays = |reach: f32| (0..RAYS).map(|i| (4.0 + 53.0 * crate::meshgen::hash01(i as i32 / 7, 3, 77)).min(reach)).collect::<Vec<f32>>();
+        let cone = ((-0.6f32).acos().cos(), (-0.25f32).acos().cos());
+        let day = View { rays: rays(70.0), eye, facing: Vec2::from_angle(0.7), max: 70.0, beam: 0.0, beam_cos: 0.8, cone, lit_dark: 0.0, lights: Vec::new() };
+        let lights = vec![
+            SeenLight { pos: eye + Vec2::new(30.0, -12.0), radius: 5.0, dir: Vec2::ZERO, cos: -1.0 },
+            SeenLight { pos: eye + Vec2::new(-20.0, 25.0), radius: 14.0, dir: Vec2::X, cos: 0.84 },
+            SeenLight { pos: origin + Vec2::new(-1.0, 40.0), radius: 6.0, dir: Vec2::ZERO, cos: -1.0 },
+        ];
+        let night = View { rays: rays(45.0), eye, facing: Vec2::from_angle(-2.1), max: 10.0, beam: 20.0, beam_cos: 0.85, cone, lit_dark: 1.0, lights };
+        for (name, view) in [("day", day), ("night", night)] {
+            let old = old_mask(&view, origin);
+            assert!(old.iter().filter(|v| **v > 0).count() > 500 && old.iter().any(|v| *v == 0), "{name}: a mask with seen and unseen parts");
+            if name == "night" {
+                let far = |i: usize| (origin + (Vec2::new((i as u32 % TEXELS) as f32, (i as u32 / TEXELS) as f32) + 0.5) * TEXEL_M).distance(eye) > 23.0;
+                assert!(old.iter().enumerate().any(|(i, v)| *v > 0 && far(i)), "a light past the night's sight and the beam shows");
+            }
+            let fog = FogState { image: Handle::default(), origin, size_m: 128.0, rays: Handle::default(), sight: [Vec4::ZERO; 3], view: Some(view), cast: None, filled: None };
+            for ty in 0..TEXELS {
+                for tx in 0..TEXELS {
+                    // Anywhere in the texel, its corners included.
+                    for at in [Vec2::new(0.25, 0.25), Vec2::new(0.0, 0.0), Vec2::new(0.49, 0.49)] {
+                        let p = origin + Vec2::new(tx as f32, ty as f32) * TEXEL_M + at;
+                        assert_eq!(fog.visibility(p), old[(ty * TEXELS + tx) as usize] as f32 / 255.0, "{name}: texel {tx}, {ty}");
+                    }
+                }
+            }
+            assert_eq!(fog.visibility(origin - Vec2::splat(0.1)), 0.0, "off the mask");
+        }
+    }
 
     #[test]
     fn line_of_sight_stops_at_the_nearer_ray() {

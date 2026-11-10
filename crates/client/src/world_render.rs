@@ -686,7 +686,13 @@ fn animate_panes(time: Res<Time>, mut panes: Query<(&WindowPane, &mut Transform)
     for (pane, mut tf) in &mut panes {
         // Shards stay in the frame; a whole pane slides up when open.
         let target = pane.base + if pane.open && !pane.broken { SASH_LIFT } else { 0.0 };
-        tf.translation.y += (target - tf.translation.y) * t;
+        // A pane at rest isn't written to: a changed Transform has the engine extract its mesh
+        // again, and there are hundreds of panes. Within half a millimetre it is put there.
+        let left = target - tf.translation.y;
+        if left == 0.0 {
+            continue;
+        }
+        tf.translation.y = if left.abs() < 0.0005 { target } else { tf.translation.y + left * t };
     }
 }
 
@@ -694,7 +700,11 @@ fn animate_doors(time: Res<Time>, mut leaves: Query<(&DoorLeaf, &mut Transform)>
     let t = 1.0 - (-12.0 * time.delta_secs()).exp();
     for (leaf, mut tf) in &mut leaves {
         let target = if leaf.open { leaf.open_rot } else { leaf.closed };
-        tf.rotation = tf.rotation.slerp(target, t);
+        // As for the panes: a door at rest is left alone, one within 0.03° of it is put there.
+        if tf.rotation == target {
+            continue;
+        }
+        tf.rotation = if tf.rotation.angle_between(target) < 0.0005 { target } else { tf.rotation.slerp(target, t) };
     }
 }
 

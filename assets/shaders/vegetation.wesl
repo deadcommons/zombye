@@ -21,7 +21,7 @@ struct VegParams {
     dry: vec4<f32>,
 };
 
-@group(constants::MATERIAL_BIND_GROUP) @binding(104) var<uniform> veg: VegParams;
+@group(constants::MATERIAL_BIND_GROUP) @binding(104) var<storage, read> veg: VegParams;
 
 @vertex
 fn vertex(vertex_in: Vertex) -> VertexOutput {

@@ -289,14 +289,16 @@ fn update_vitals(
             image.color = colour;
         }
     }
-    let set = |t: &mut Text, s: String| {
+    // Takes the `Mut` itself: handed over as `&mut Text` it would count as changed every frame,
+    // and a changed text is measured and the HUD laid out again.
+    let set = |mut t: Mut<Text>, s: String| {
         if t.0 != s {
             t.0 = s;
         }
     };
     let weapon = me.weapon.and_then(|w| join.weapons.get(w as usize)).map_or("Bare hands", |w| w.name.as_str());
-    if let Ok(mut t) = texts.p0().single_mut() {
-        set(&mut t, format!("{weapon}{}", gun_line(&join, link.own(me.id).map(|v| &v.inventory))));
+    if let Ok(t) = texts.p0().single_mut() {
+        set(t,format!("{weapon}{}", gun_line(&join, link.own(me.id).map(|v| &v.inventory))));
     }
     let s = &me.curr;
     let asleep = link.curr.players.iter().any(|p| p.id == me.id && p.asleep);
@@ -314,16 +316,16 @@ fn update_vitals(
             Stance::Sneak => "sneaking",
         }
     };
-    if let Ok(mut t) = texts.p1().single_mut() {
-        set(&mut t, stance.to_string());
+    if let Ok(t) = texts.p1().single_mut() {
+        set(t,stance.to_string());
     }
     // This life so far, as the server counts it.
-    if let (Ok(mut t), Some(run)) = (texts.p2().single_mut(), link.curr.run_of(me.id)) {
+    if let (Ok(t), Some(run)) = (texts.p2().single_mut(), link.curr.run_of(me.id)) {
         let survivors = if run.player_kills > 0 { format!(" (+{} survivors)", run.player_kills) } else { String::new() };
-        set(&mut t, format!("kills {}{survivors}   alive {}   walked {}", run.kills, run.played(), run.distance()));
+        set(t,format!("kills {}{survivors}   alive {}   walked {}", run.kills, run.played(), run.distance()));
     }
-    if let Ok(mut t) = texts.p3().single_mut() {
-        set(&mut t, dev_tags(me.dev, link.curr.players.iter().any(|p| p.id == me.id && p.protected)));
+    if let Ok(t) = texts.p3().single_mut() {
+        set(t,dev_tags(me.dev, link.curr.players.iter().any(|p| p.id == me.id && p.protected)));
     }
 }
 
