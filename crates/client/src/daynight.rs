@@ -98,6 +98,23 @@ pub fn sky_at(hour: f32) -> (Vec3, Color, f32, f32) {
     }
 }
 
+/// How far the sun (or moon) moves across the sky before the light's direction follows: 0.3°,
+/// about every 3.5 s of a default day.
+const SUN_STEP: f32 = 0.005;
+
+/// The direction the light is drawn from: the one `held` until the sky's has moved [`SUN_STEP`]
+/// from it. The clock moves the sun a little every server tick, and each new direction turns the
+/// shadow map's texel grid about the world's origin, hundreds of metres from the player: about a
+/// texel a tick, so every shadow edge was resampled 20 times a second and its stair-steps (long
+/// teeth under a low sun) flickered like interlaced video. Held still between steps, the edges
+/// stand still; a step moves a 3 m shadow's tip 1.5 cm, half a texel.
+fn sun_step(held: Option<Vec3>, dir: Vec3) -> Vec3 {
+    match held {
+        Some(h) if h.angle_between(dir) < SUN_STEP => h,
+        _ => dir,
+    }
+}
+
 /// One shadow cascade fitted round what the camera sees at this zoom. The camera is orthographic
 /// and [`crate::camera::DISTANCE`] back, so the default cascades (made for a perspective camera,
 /// the first ending 10 m out) put the whole view in the last and coarsest one: blocky shadows.
@@ -130,13 +147,20 @@ fn update_lights(
     mut ambient: ResMut<GlobalAmbientLight>,
     mut clear: ResMut<ClearColor>,
     mut glow: Query<&mut PointLight, With<PlayerGlow>>,
+    mut held: Local<Option<Vec3>>,
 ) {
     let (dir, color, lux, day) = sky_at(preview.hour_or(link.curr.time_of_day));
     daylight.0 = day;
     if let Ok((mut light, mut tf)) = sun.single_mut() {
         light.illuminance = lux;
         light.color = color;
-        *tf = Transform::default().looking_to(dir, Vec3::Y);
+        // Only when the direction steps: the transform stays unchanged in between, so the shadow
+        // map is drawn on the same texel grid frame after frame.
+        let dir = sun_step(*held, dir);
+        if *held != Some(dir) {
+            *held = Some(dir);
+            *tf = Transform::default().looking_to(dir, Vec3::Y);
+        }
     }
     // Little fill light, so a shadow side is clearly darker by day and the night is dark.
     let night = Color::srgb(0.3, 0.38, 0.62).to_linear();
@@ -254,6 +278,25 @@ fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The light's direction stands still while the clock ticks and follows the sky in small
+    /// steps, never far behind it; the jump from sun to moon is taken at once.
+    #[test]
+    fn the_sun_moves_in_steps() {
+        let mut held = None;
+        let (mut steps, ticks) = (0, 20 * 60);
+        for tick in 0..ticks {
+            // A minute at 20 ticks a second, from 9:00, a game hour being 150 s.
+            let dir = sky_at(9.0 + tick as f32 / 20.0 / 150.0).0;
+            let next = sun_step(held, dir);
+            steps += (held != Some(next)) as usize;
+            assert!(next.angle_between(dir) < SUN_STEP);
+            held = Some(next);
+        }
+        assert!((5..40).contains(&steps), "{steps} steps in a minute of {ticks} ticks");
+        let moon = sky_at(23.0).0;
+        assert_eq!(sun_step(held, moon), moon);
+    }
 
     /// DCM-59: by day the sun is low and golden and the grade warm and soft; the night's light and
     /// grade are what they were (#83).

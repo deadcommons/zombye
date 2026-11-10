@@ -1191,6 +1191,8 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
 - **Sun:** never more than about 35° up, so shadows stay long; little ambient fill. One shadow cascade fitted round what
   the camera sees at the current zoom (`sun_cascade`; the camera is orthographic and 120 m back, so the default cascades
   put the whole view in the coarsest one), 4096 map: about 3 cm a texel at the default zoom.
+  The light's direction follows the clock in steps of 0.3° (`sun_step`, about every 3.5 s), not every tick: each new
+  direction turns the shadow map's texel grid, so a sun that crept every tick made every shadow edge flicker.
 - **Night:** moonlight and ambient low enough that only edges and silhouettes read; the fog of war's unseen areas go
   nearly black (`fog_tint`); you see 10 m with no light (`fog::NIGHT_SIGHT`). A faint glow round the player lights its
   own feet. The palest things on the ground (road paint, kerb tops) keep a little of their colour as if catching the
