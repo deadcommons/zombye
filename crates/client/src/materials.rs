@@ -1,11 +1,11 @@
 //! The world material: `StandardMaterial` plus two tricks done in the fragment shader:
 //! - **fog of war**: anything outside the player's line of sight is darkened and desaturated;
-//! - **cutaway**: walls that would hide the player drop to knee-high stubs as whole pieces, and the
-//!   foliage of trees in front of the player fades out over a quarter of a second, leaving their
-//!   trunk and branches dimmed and thinned, so your character is never hidden. Inside a building,
-//!   only the walls that hide part of your room drop: its far walls and the rest of the building's
-//!   walls stand (#84). Roofs and upper storeys are hidden whole on the CPU when they cover you
-//!   (`world_render::hide_upper_floors`).
+//! - **cutaway**: walls drop to knee-high stubs as whole pieces, by the amounts `cutaway.rs`
+//!   decides per building and per wall edge and hands over in a small texture (no hole round the
+//!   player anywhere); the foliage of trees in front of the player fades out over a quarter of a
+//!   second, leaving their trunk and branches dimmed and thinned; and building details standing
+//!   over the player (a porch roof, an awning, a post) are thinned out whole, in a stipple. The
+//!   roof and upper storeys of the building you're inside fade out (`world_render::hide_upper_floors`).
 //!
 //! Every world mesh uses one of a handful of [`WorldMaterial`]s, and their shared parameters are
 //! refreshed once per frame. Only materials that need it are built with the cutaway (`CUTAWAY` in
@@ -25,7 +25,6 @@ use crate::camera::IsoCamera;
 use crate::fog::FogState;
 use crate::player::Player;
 use crate::server_link::ClientMap;
-use zombye_sim::map::TileMap;
 
 pub type WorldMaterial = ExtendedMaterial<StandardMaterial, WorldExt>;
 
@@ -45,6 +44,9 @@ pub struct WorldExt {
     /// The sight rays' reach, one texel each (`fog.rs`).
     #[texture(103, sample_type = "float", filterable = false)]
     pub rays: Handle<Image>,
+    /// How far each wall edge near the player is cut, one texel a tile (`cutaway.rs`).
+    #[texture(105, sample_type = "float", filterable = false)]
+    pub cut: Handle<Image>,
     /// Built with the cutaway (walls, roofs, fading foliage)? Fixed when the material is made.
     pub cutaway: bool,
     /// Built with the ground detail (patchy colour worked out per pixel, DCM-59)? Only the ground.
@@ -75,8 +77,6 @@ pub struct WorldParams {
     pub fog_rect: Vec4,
     /// rgb = tint for unseen areas, w = how dark unseen areas get (0..1).
     pub fog_tint: Vec4,
-    /// Bounds of the ground-floor room the player is in: (min x, min z, max x, max z). min > max = outdoors.
-    pub inside_rect: Vec4,
     /// x = how many entries of `trees` are in use.
     pub tree_count: Vec4,
     /// x = how dark it is, 0 by day to 1 at night: lit windows glow by it (#59). y = how much of
@@ -95,7 +95,6 @@ impl Default for WorldParams {
             camera_dir: Vec4::ZERO,
             fog_rect: Vec4::ZERO,
             fog_tint: Vec4::ZERO,
-            inside_rect: Vec4::ZERO,
             tree_count: Vec4::ZERO,
             lights: Vec4::ZERO,
             sight: [Vec4::ZERO; 3],
@@ -107,7 +106,7 @@ impl Default for WorldParams {
 impl WorldParams {
     /// The struct as world.wesl declares it: every field a `vec4<f32>` (or an array of them), in order.
     fn floats(&self) -> Vec<f32> {
-        let head = [self.player, self.camera_dir, self.fog_rect, self.fog_tint, self.inside_rect, self.tree_count, self.lights];
+        let head = [self.player, self.camera_dir, self.fog_rect, self.fog_tint, self.tree_count, self.lights];
         head.iter().chain(&self.sight).chain(&self.trees).flat_map(|v| v.to_array()).collect()
     }
 }
@@ -186,67 +185,6 @@ const CROWN_COVER: f32 = 0.95;
 const BODY_HALF_W: f32 = 0.3;
 const BODY_TOP: f32 = 1.85;
 
-/// How far behind a wall (on the ground, away from the camera) it can hide things: a 3 m wall seen
-/// from 30° up covers about 5.2 m of floor behind it. Same as `WALL_REACH` in world.wesl.
-const WALL_REACH: f32 = 5.5;
-
-/// Does the ground segment from `p` to `p - c * WALL_REACH` pass through the rectangle?
-fn behind_hits(p: Vec2, c: Vec2, lo: Vec2, hi: Vec2) -> bool {
-    let d = -c * WALL_REACH;
-    let (mut t0, mut t1) = (0.0f32, 1.0f32);
-    for i in 0..2 {
-        if d[i].abs() < 1e-5 {
-            if p[i] < lo[i] || p[i] > hi[i] {
-                return false;
-            }
-        } else {
-            let (a, b) = ((lo[i] - p[i]) / d[i], (hi[i] - p[i]) / d[i]);
-            t0 = t0.max(a.min(b));
-            t1 = t1.min(a.max(b));
-        }
-    }
-    t0 <= t1
-}
-
-/// Half a side of the square the player stands in, for the outdoor wall rule (`BODY_HALF` in world.wesl).
-const BODY_HALF: f32 = 0.3;
-
-/// The shader's wall rule (`wall_cut` in world.wesl), for things drawn as separate entities (door
-/// leaves, window panes). A piece is cut only if the floor behind it on screen runs into the
-/// player's room (`room`, its bounds, indoors) or the square the player stands in (outdoors).
-pub fn wall_is_cut(mid: Vec2, player: Vec2, camera_dir: Vec3, room: Vec4) -> bool {
-    let c = camera_dir.xz().normalize_or_zero();
-    let (lo, hi) = if room.x <= room.z {
-        (Vec2::new(room.x, room.y) + 0.03, Vec2::new(room.z, room.w) - 0.03)
-    } else {
-        (player - BODY_HALF, player + BODY_HALF)
-    };
-    let half = if (mid.x.fract() - 0.5).abs() < 0.25 { Vec2::new(0.45, 0.0) } else { Vec2::new(0.0, 0.45) };
-    [mid, mid - half, mid + half].into_iter().any(|p| behind_hits(p, c, lo, hi))
-}
-
-/// Bounds (min x, min z, max x, max z) of the ground-floor room containing `p`; min > max outdoors.
-/// An L-shaped room gives the box round it.
-pub fn inside_rect(map: &TileMap, p: Vec2) -> Vec4 {
-    let room = map.room_at(p);
-    let Some(i) = map.building_at(p) else { return Vec4::new(1.0, 1.0, 0.0, 0.0) };
-    let b = &map.buildings[i];
-    let (mut lo, mut hi) = (IVec2::MAX, IVec2::MIN);
-    for y in b.min.y..b.min.y + b.size.y {
-        for x in b.min.x..b.min.x + b.size.x {
-            let t = IVec2::new(x, y);
-            if map.tile(t).room == room {
-                lo = lo.min(t);
-                hi = hi.max(t + 1);
-            }
-        }
-    }
-    if lo.x > hi.x {
-        return Vec4::new(1.0, 1.0, 0.0, 0.0);
-    }
-    Vec4::new(lo.x as f32, lo.y as f32, hi.x as f32, hi.y as f32)
-}
-
 impl MaterialExtension for WorldExt {
     fn fragment_shader() -> ShaderRef {
         SHADER.into()
@@ -301,8 +239,9 @@ impl Plugin for WorldMaterialPlugin {
     }
 }
 
-fn create_materials(mut commands: Commands, fog: Res<FogState>, params: Res<ParamBuffer>, graphics: Res<crate::graphics::Graphics>, mut materials: ResMut<Assets<WorldMaterial>>) {
-    let mut make_with = |base: StandardMaterial, cutaway: bool, ground: bool| materials.add(ExtendedMaterial { base, extension: WorldExt { params: params.0.clone(), fog: fog.image.clone(), rays: fog.rays.clone(), cutaway, ground } });
+fn create_materials(mut commands: Commands, fog: Res<FogState>, cut: Res<crate::cutaway::Cutaway>, params: Res<ParamBuffer>, graphics: Res<crate::graphics::Graphics>, mut materials: ResMut<Assets<WorldMaterial>>) {
+    let mut make_with =
+        |base: StandardMaterial, cutaway: bool, ground: bool| materials.add(ExtendedMaterial { base, extension: WorldExt { params: params.0.clone(), fog: fog.image.clone(), rays: fog.rays.clone(), cut: cut.image.clone(), cutaway, ground } });
     let vertex_colored = |roughness: f32, double_sided: bool| StandardMaterial {
         base_color: Color::WHITE,
         perceptual_roughness: roughness,
@@ -382,7 +321,6 @@ pub fn update_params(
         camera_dir: camera_dir.extend(0.0),
         fog_rect: Vec4::new(fog.origin.x, fog.origin.y, fog.size_m, 0.0),
         fog_tint: unseen_tint(daylight.0),
-        inside_rect: inside_rect(&map.0, p.translation.xz()),
         tree_count: Vec4::new(n as f32, 0.0, 0.0, 0.0),
         lights: Vec4::new(1.0 - smoothstep(0.05, 0.4, daylight.0), unseen_colour(daylight.0), 0.0, 0.0),
         sight: fog.sight,
@@ -425,58 +363,4 @@ mod tests {
         assert!(!crown_hides(&pine, pine.base + Vec3::new(1.5, 1.1, 1.5), cam));
     }
 
-    /// Inside, only walls that hide part of your room drop: its near walls and walls just in front
-    /// of it; its far walls and walls behind it stand, and so do walls well in front (#84).
-    #[test]
-    fn indoors_only_walls_hiding_your_room_drop() {
-        // The default camera: yaw 45°, so it looks from +x, +z (south-east) down at 30°.
-        let yaw = std::f32::consts::FRAC_PI_4;
-        let elev = 30f32.to_radians();
-        let cam = Vec3::new(yaw.sin() * elev.cos(), elev.sin(), yaw.cos() * elev.cos());
-        let room = Vec4::new(10.0, 10.0, 14.0, 13.0);
-        let player = Vec2::new(11.5, 11.5);
-        let cut = |x: f32, z: f32| wall_is_cut(Vec2::new(x, z), player, cam, room);
-        // Far walls: north (z = 10) and west (x = 10), every piece, the ones at the near ends too.
-        for x in [10.5, 11.5, 12.5, 13.5] {
-            assert!(!cut(x, 10.0), "north wall piece at x {x}");
-        }
-        for z in [10.5, 11.5, 12.5] {
-            assert!(!cut(10.0, z), "west wall piece at z {z}");
-        }
-        // Near walls: south (z = 13) and east (x = 14).
-        for x in [10.5, 11.5, 12.5, 13.5] {
-            assert!(cut(x, 13.0), "south wall piece at x {x}");
-        }
-        for z in [10.5, 11.5, 12.5] {
-            assert!(cut(14.0, z), "east wall piece at z {z}");
-        }
-        // A wall just in front of the room, one behind it, and one well in front.
-        assert!(cut(12.5, 15.0));
-        assert!(!cut(12.5, 7.0));
-        assert!(!cut(20.5, 20.0));
-        // Beside the room, not in front of it on screen.
-        assert!(!cut(5.0, 11.5));
-    }
-
-    /// Outdoors, a wall drops only when it covers the player: the facade you walk along stands,
-    /// the one between you and the camera goes.
-    #[test]
-    fn outdoors_only_walls_covering_you_drop() {
-        let yaw = std::f32::consts::FRAC_PI_4;
-        let elev = 30f32.to_radians();
-        let cam = Vec3::new(yaw.sin() * elev.cos(), elev.sin(), yaw.cos() * elev.cos());
-        let outdoors = Vec4::new(1.0, 1.0, 0.0, 0.0);
-        // Walking along a facade at x = 20 on its camera side (the camera looks from +x, +z), half a
-        // metre off it: the wall is behind you, so none of it drops, the pieces level with you too.
-        let player = Vec2::new(20.5, 30.5);
-        let cut = |x: f32, z: f32| wall_is_cut(Vec2::new(x, z), player, cam, outdoors);
-        for z in [28.5, 29.5, 30.5, 31.5, 32.5] {
-            assert!(!cut(20.0, z), "facade piece at z {z} beside the player");
-        }
-        // A wall a metre or two between the player and the camera (south-east).
-        assert!(cut(21.5, 32.0));
-        // One behind the player, and one off to the side.
-        assert!(!cut(18.5, 28.0));
-        assert!(!cut(24.5, 27.0));
-    }
 }

@@ -99,6 +99,8 @@ pub struct ClientSettings {
     pub servers: Vec<String>,
     /// The inventory panel's Worn tab shows the body view, not the list (`inventory_ui/body.rs`, DCM-43).
     pub inventory_body: bool,
+    /// Zombies you see show through what covers them from the camera (`silhouette.rs`; Shift+F10).
+    pub zombie_silhouettes: bool,
 }
 
 impl Default for ClientSettings {
@@ -112,6 +114,7 @@ impl Default for ClientSettings {
             server_list: None,
             servers: Vec::new(),
             inventory_body: false,
+            zombie_silhouettes: false,
         }
     }
 }

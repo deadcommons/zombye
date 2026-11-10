@@ -229,15 +229,21 @@ pub fn attach(commands: &mut Commands, assets: &SurvivorAssets, model: Option<&S
     }
     // The grip sits in the fist; the bar points along the hand's +Z (forward when the arm hangs).
     commands.spawn((HeldWeapon { player }, Transform::from_xyz(0.0, -0.07, 0.0), Visibility::Hidden, ChildOf(joints[HAND_R])));
-    commands.spawn((
-        Mesh3d(if local { assets.me.clone() } else { assets.other.clone() }),
-        MeshMaterial3d(assets.material.clone()),
-        SkinnedMesh { inverse_bindposes: assets.bindposes.clone(), joints: joints.to_vec() },
-        // Posed far from the rest pose (lying down), so don't cull by the rest-pose bounds.
-        NoFrustumCulling,
-        Transform::default(),
-        ChildOf(root),
-    ));
+    let body = commands
+        .spawn((
+            Mesh3d(if local { assets.me.clone() } else { assets.other.clone() }),
+            MeshMaterial3d(assets.material.clone()),
+            SkinnedMesh { inverse_bindposes: assets.bindposes.clone(), joints: joints.to_vec() },
+            // Posed far from the rest pose (lying down), so don't cull by the rest-pose bounds.
+            NoFrustumCulling,
+            Transform::default(),
+            ChildOf(root),
+        ))
+        .id();
+    if local {
+        // Ours shows through whatever still covers it (`silhouette.rs`).
+        commands.entity(body).insert(crate::silhouette::Silhouetted);
+    }
     commands.entity(root).insert(SurvivorAnim::new(player, Look::Grey(joints), GREY_STRIDES));
 }
 

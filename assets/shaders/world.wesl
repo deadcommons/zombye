@@ -5,7 +5,7 @@
 import bevy_pbr::render::{
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::alpha_discard,
-    view_transformations::{position_world_to_ndc, ndc_to_frag_coord},
+    mesh_functions,
 };
 
 @if(PREPASS_PIPELINE)
@@ -24,7 +24,6 @@ struct WorldParams {
     camera_dir: vec4<f32>,
     fog_rect: vec4<f32>,
     fog_tint: vec4<f32>,
-    inside_rect: vec4<f32>,
     tree_count: vec4<f32>,
     lights: vec4<f32>,
     sight: array<vec4<f32>, 3>,
@@ -35,6 +34,8 @@ struct WorldParams {
 @group(constants::MATERIAL_BIND_GROUP) @binding(101) var fog_tex: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(102) var fog_sampler: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(103) var rays_tex: texture_2d<f32>;
+@if(CUTAWAY)
+@group(constants::MATERIAL_BIND_GROUP) @binding(105) var cut_tex: texture_2d<f32>;
 
 // 4×4 ordered dither threshold in [0, 1).
 fn bayer4(p: vec2<u32>) -> f32 {
@@ -56,83 +57,63 @@ const UNSEEN_CONTRAST: f32 = 0.6;
 // outside what the player sees unaided, in full from LIT_HI. Full moonlight is about 0.1.
 const LIT_LO: f32 = 0.16;
 const LIT_HI: f32 = 0.4;
-// Above the ground-floor walls: roofs and upper storeys, which open a hole round the player
-// instead of dropping (the whole of them goes only while you're inside that building, on the CPU).
+// Above the ground-floor walls: upper storeys and roofs, which never drop (the whole of them
+// fades out while you're inside that building: `world_render::hide_upper_floors`).
 const UPPER_Y: f32 = 3.05;
-// The hole round the player on screen, in metres: half its width, and how far it reaches below
-// and above the chest (feet to a little over the head).
-const HOLE_HALF_W: f32 = 1.0;
-const HOLE_DOWN: f32 = 1.3;
-const HOLE_UP: f32 = 1.1;
-
-// 0 outside the see-through hole round the player, 1 in the middle of it, for a fragment at `wp`
-// (pixel `frag`): only things nearer the camera than the player open up.
-fn hole_at(wp: vec3<f32>, frag: vec2<f32>) -> f32 {
-    let chest = world_params.player.xyz;
-    if (dot(wp - chest, world_params.camera_dir.xyz) < 0.5) {
-        return 0.0;
-    }
-    let centre = ndc_to_frag_coord(position_world_to_ndc(chest).xy);
-    let up = ndc_to_frag_coord(position_world_to_ndc(chest + vec3(0.0, 1.0, 0.0)).xy);
-    let metre = max(length(up - centre), 1e-3);
-    // In metres on screen from the chest, y up.
-    let o = vec2(frag.x - centre.x, centre.y - frag.y) / metre;
-    let reach = select(HOLE_DOWN, HOLE_UP, o.y > 0.0);
-    let d = length(vec2(o.x / HOLE_HALF_W, o.y / reach));
-    return 1.0 - smoothstep(0.75, 1.0, d);
-}
 
 fn ground_camera_dir() -> vec2<f32> {
     let c = world_params.camera_dir.xz;
     return c / max(length(c), 1e-4);
 }
 
-// How far behind a wall (away from the camera, on the ground) it can hide things: a 3 m wall seen
-// from 30° up covers about 5.2 m of floor behind it.
-const WALL_REACH: f32 = 5.5;
+// The cut texture (crates/client/src/cutaway.rs): one texel a tile, addressed by the tile's
+// coordinates modulo its size; red = how far the tile's north edge is cut, green = its west edge.
+const CUT_TEXELS: i32 = 128;
+// Only walls this near the player (metres, along x and z) are ever cut: beyond it the texture's
+// wrap would show.
+const CUT_NEAR: f32 = 56.0;
 
-// Does the ground segment from `p` to `p - c * WALL_REACH` pass through the rectangle (min, max)?
-fn behind_hits(p: vec2<f32>, c: vec2<f32>, lo: vec2<f32>, hi: vec2<f32>) -> bool {
-    let d = -c * WALL_REACH;
-    var t0 = 0.0;
-    var t1 = 1.0;
-    for (var i = 0; i < 2; i++) {
-        if (abs(d[i]) < 1e-5) {
-            if (p[i] < lo[i] || p[i] > hi[i]) {
-                return false;
-            }
-        } else {
-            let a = (lo[i] - p[i]) / d[i];
-            let b = (hi[i] - p[i]) / d[i];
-            t0 = max(t0, min(a, b));
-            t1 = min(t1, max(a, b));
-        }
+// How far the wall piece with this midpoint (pieces are 1 m long, along x or z) is cut down to a
+// stub: 0 standing, 1 a stub, eased. Decided on the CPU per building and per edge, never by a
+// radius round the player. `Cutaway::amount` is the same.
+@if(CUTAWAY)
+fn wall_cut(mid: vec2<f32>) -> f32 {
+    if (any(abs(mid - world_params.player.xz) > vec2(CUT_NEAR))) {
+        return 0.0;
     }
-    return t0 <= t1;
+    // A north edge (along x) has its midpoint half-way along a tile in x and on a tile line in z.
+    let north = abs(fract(mid.x) - 0.5) < 0.25;
+    var tile = vec2<i32>(i32(round(mid.x)), i32(floor(mid.y)));
+    if (north) {
+        tile = vec2<i32>(i32(floor(mid.x)), i32(round(mid.y)));
+    }
+    let v = textureLoad(cut_tex, vec2<i32>(tile.x & (CUT_TEXELS - 1), tile.y & (CUT_TEXELS - 1)), 0);
+    let a = select(v.g, v.r, north);
+    return a * a * (3.0 - 2.0 * a);
 }
 
-// The square the player stands in, for the outdoor wall rule: half a side in metres.
+// The player's body for the fades: half its width.
 const BODY_HALF: f32 = 0.3;
+// The height the tallest fading detail reaches, the width of the rule's soft edge, and how much
+// of a detail is left out at most.
+const FADE_TOP: f32 = 2.8;
+const FADE_SOFT: f32 = 0.5;
+const FADE_MOST: f32 = 0.72;
 
-// Is the wall piece with this midpoint (pieces are 1 m long, along x or z) cut down to a stub?
-// Only if it hides something that matters: the floor behind it on screen runs into the player's
-// room (indoors) or the square the player stands in (outdoors). So the room's far walls, the rest
-// of the building, and walls beside you stand. Must match `materials::wall_is_cut`.
-fn wall_cut(mid: vec2<f32>) -> bool {
+// How much a building detail (a porch roof, an awning, a canopy, a post: its middle on the ground
+// `anchor`, its half-width `radius`) is thinned out because it stands between the camera and the
+// player: the whole of it, by where it stands, not by where on screen a pixel is. The same rule
+// as `cutaway::object_fade`.
+fn object_fade(anchor: vec2<f32>, radius: f32) -> f32 {
     let c = ground_camera_dir();
-    let r = world_params.inside_rect;
-    var lo = world_params.player.xz - vec2(BODY_HALF);
-    var hi = world_params.player.xz + vec2(BODY_HALF);
-    if (r.x <= r.z) {
-        lo = r.xy + vec2(0.03);
-        hi = r.zw - vec2(0.03);
-    }
-    // A piece along x has its midpoint half-way along a tile.
-    var half = vec2(0.0, 0.45);
-    if (abs(fract(mid.x) - 0.5) < 0.25) {
-        half = vec2(0.45, 0.0);
-    }
-    return behind_hits(mid, c, lo, hi) || behind_hits(mid - half, c, lo, hi) || behind_hits(mid + half, c, lo, hi);
+    let tan_e = world_params.camera_dir.y / max(length(world_params.camera_dir.xz), 1e-4);
+    let d = anchor - world_params.player.xz;
+    let along = dot(d, c);
+    let across = abs(d.x * c.y - d.y * c.x);
+    let reach = FADE_TOP / max(tan_e, 1e-3) + radius;
+    let side = 1.0 - smoothstep(radius + BODY_HALF, radius + BODY_HALF + FADE_SOFT, across);
+    let near = smoothstep(-radius - FADE_SOFT, -radius, along) * (1.0 - smoothstep(reach, reach + FADE_SOFT, along));
+    return side * near;
 }
 
 // How far the foliage of the tree whose trunk foot is `anchor` has faded (0 shown, 1 gone).
@@ -240,18 +221,29 @@ fn fragment(
 ) -> FragmentOutput {
     let wp = in.world_position.xyz;
 
-    // Cutaway (see crates/client/src/materials.rs, `wall_is_cut`): every vertex of a
-    // piece carries the same anchor in UV0 and its kind in UV1, so a whole wall drops to a stub at
-    // once, with a crisp, grid-aligned top edge.
+    // Cutaway (see crates/client/src/cutaway.rs): every vertex of a piece carries the same anchor
+    // in UV0 and its kind in UV1, so a whole wall drops to a stub as one piece, with a crisp,
+    // grid-aligned top edge.
     var wood_fade = 0.0;
 @if(CUTAWAY && VERTEX_UVS_A && VERTEX_UVS_B) {
     let cut_kind = u32(in.uv_b.x + 0.5);
     if (cut_kind == 1u) {
-        if (wp.y > STUB_HEIGHT && wp.y < UPPER_Y && wall_cut(in.uv)) {
-            discard;
+        // The wall sinks to its stub: everything above its top (a straight line) is left out.
+        if (wp.y < UPPER_Y) {
+            let cut = wall_cut(in.uv);
+            if (cut > 0.0 && wp.y > mix(UPPER_Y, STUB_HEIGHT, cut)) {
+                discard;
+            }
         }
     } else if (cut_kind == 4u) {
-        if (!wall_cut(in.uv)) {
+        // The stub's flat top, once the wall is down.
+        if (wp.y > UPPER_Y || wall_cut(in.uv) < 0.97) {
+            discard;
+        }
+    } else if (cut_kind == 8u) {
+        // A detail standing over the player: thinned out whole, in a stipple.
+        let thin = object_fade(in.uv, in.uv_b.y) * FADE_MOST;
+        if (thin > 0.0 && thin > bayer4(vec2<u32>(in.position.xy))) {
             discard;
         }
     } else if (cut_kind == 3u) {
@@ -267,14 +259,14 @@ fn fragment(
             discard;
         }
     }
-    // Roofs and upper storeys (not trees) between the camera and the player: a soft hole round them.
-    // Roofs open it however low they are (porch roofs, awnings: building_kit.rs).
-    if ((wp.y > UPPER_Y || cut_kind == 2u) && cut_kind != 3u && cut_kind != 6u) {
-        let hole = hole_at(wp, in.position.xy);
-        if (hole > 0.0 && hole > bayer4(vec2<u32>(in.position.xy))) {
-            discard;
-        }
+@if(!PREPASS_PIPELINE) {
+    // The roof and upper storeys of the building the player is inside fade out as a whole (and
+    // back in), by the amount in their mesh's tag (`world_render::hide_upper_floors`).
+    let gone = f32(mesh_functions::get_tag(in.instance_index) & 255u) / 255.0;
+    if (gone > 0.0 && gone > bayer4(vec2<u32>(in.position.xy) + vec2<u32>(2u, 1u))) {
+        discard;
     }
+}
 }
 
     var pbr_input = pbr_input_from_standard_material(in, is_front);
@@ -315,7 +307,7 @@ fn fragment(
     let mask = fog_sample(at);
     var seen = fog_at(at);
     var indoors = mask.y;
-    if (piece_kind == 2u) {
+    if (piece_kind == 2u || piece_kind == 8u) {
         indoors = 0.0;
     }
     // Roofs and the outside of upper storeys read as "seen" when the wall below them is, rather
@@ -348,7 +340,7 @@ fn fragment(
     // windows and doors stay readable (just dimmed like everything else unseen), so you can still
     // tell a building's layout and where its ways in are.
     var hide_contents = smoothstep(0.3, 0.7, indoors);
-    if (piece_kind == 1u || piece_kind == 4u || piece_kind == 5u || piece_kind == 7u) {
+    if (piece_kind == 1u || piece_kind == 4u || piece_kind == 5u || piece_kind == 7u || piece_kind == 8u) {
         hide_contents *= 0.25;
     }
     unseen = mix(unseen, out.color.rgb * vec3(0.03, 0.03, 0.04), hide_contents);

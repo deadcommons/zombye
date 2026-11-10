@@ -23,7 +23,7 @@ pub enum CutKind {
     Never = 0,
     /// A wall piece: drops to a stub as a whole when it's on the camera side of the player.
     Wall = 1,
-    /// A roof: hidden whole with its building's upper storeys when it covers the player
+    /// A roof: faded out whole with its building's upper storeys while the player is inside
     /// (`world_render::hide_upper_floors`); the shader only counts it as outdoors for the fog.
     Roof = 2,
     /// A tree's foliage: fades out when it hides the player.
@@ -38,6 +38,11 @@ pub enum CutKind {
     /// Window glass of a room with a light on (`building_kit::room_lit`): like `Structure`, and it
     /// glows warm amber at night (world.wesl).
     Lit = 7,
+    /// A building detail that can stand over the player from outside (a porch roof, an awning, a
+    /// door canopy, a porch post): thinned out whole, in a stipple, while it stands between the
+    /// camera and the player (`cutaway::object_fade`; its anchor is its middle on the ground, its
+    /// radius its half-width). Outdoors for the fog, like a roof.
+    Fade = 8,
 }
 
 /// Cutaway data shared by all vertices of one piece: its kind, an anchor point on the ground

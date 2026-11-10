@@ -56,6 +56,7 @@ impl Plugin for ZombieRenderPlugin {
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+#[bind_group_data(ZombieKey)]
 pub struct ZombieMaterial {
     #[texture(0, sample_type = "float", filterable = false)]
     pub vat: Handle<Image>,
@@ -65,6 +66,27 @@ pub struct ZombieMaterial {
     #[texture(2)]
     #[sampler(3)]
     pub base_color: Handle<Image>,
+    /// The silhouette version (`silhouette.rs`): the same animated body in one flat tint, drawn
+    /// only where something covers it. Its tint is `settings.clips[SILHOUETTE_TINT]`, and
+    /// `clips[SILHOUETTE_DEPTH].x` how far its depth is moved toward the camera.
+    pub silhouette: bool,
+}
+
+/// Two of the clip table's unused rows carry the silhouette's look (13 of 16 are clips).
+const SILHOUETTE_TINT: usize = 15;
+const SILHOUETTE_DEPTH: usize = 14;
+
+/// The pipeline key of a [`ZombieMaterial`]: the lit crowd, or its silhouette.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, Hash, PartialEq, Eq)]
+pub struct ZombieKey {
+    silhouette: bool,
+}
+
+impl From<&ZombieMaterial> for ZombieKey {
+    fn from(m: &ZombieMaterial) -> Self {
+        ZombieKey { silhouette: m.silhouette }
+    }
 }
 
 #[derive(ShaderType, Debug, Clone)]
@@ -93,15 +115,26 @@ impl Material for ZombieMaterial {
         SHADER.into()
     }
 
+    fn alpha_mode(&self) -> AlphaMode {
+        if self.silhouette { AlphaMode::Blend } else { AlphaMode::Opaque }
+    }
+
     fn specialize(
         _pipeline: &MaterialPipeline,
         descriptor: &mut RenderPipelineDescriptor,
         layout: &MeshVertexBufferLayoutRef,
-        _key: MaterialPipelineKey<Self>,
+        key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         let vertex_layout =
             layout.0.get_layout(&[Mesh::ATTRIBUTE_POSITION.at_shader_location(0), ATTRIBUTE_VAT.at_shader_location(1), Mesh::ATTRIBUTE_UV_0.at_shader_location(2)])?;
         descriptor.vertex.buffers = vec![vertex_layout];
+        // A silhouette is only ever in the main pass (blended, and it casts no shadow).
+        if key.bind_group_data.silhouette && descriptor.fragment.as_ref().is_some_and(|f| !f.shader_defs.contains(&"PREPASS_PIPELINE".into())) {
+            if let Some(fragment) = descriptor.fragment.as_mut() {
+                fragment.shader_defs.push("SILHOUETTE".into());
+            }
+            crate::silhouette::behind_only(descriptor);
+        }
         Ok(())
     }
 }
@@ -756,6 +789,8 @@ fn load_baked(path: &Path) -> Result<(Baked, Option<Image>, String), String> {
 struct Variant {
     mesh: Handle<Mesh>,
     material: Handle<ZombieMaterial>,
+    /// Its silhouette (`silhouette.rs`).
+    ghost: Handle<ZombieMaterial>,
     timing: Timing,
     /// What it wears, from its file name past the plainest variant's (`zombie_02_hoodie` beside
     /// `zombie_02`: "hoodie"): wearable model names joined by `_`.
@@ -834,12 +869,12 @@ fn setup_zombie_assets(
         .into_iter()
         .zip(wears)
         .map(|((baked, texture, _), wears)| {
-            let material = materials.add(ZombieMaterial {
-                vat: images.add(baked.image()),
-                settings: VatSettings { clips: baked.clips },
-                base_color: images.add(texture),
-            });
-            Variant { mesh: meshes.add(baked.mesh), material, timing: Timing { clips: baked.clips, play: baked.play }, wears }
+            let lit = ZombieMaterial { vat: images.add(baked.image()), settings: VatSettings { clips: baked.clips }, base_color: images.add(texture), silhouette: false };
+            let mut ghost = ZombieMaterial { silhouette: true, ..lit.clone() };
+            ghost.settings.clips[SILHOUETTE_TINT] = crate::silhouette::ZOMBIE_TINT;
+            ghost.settings.clips[SILHOUETTE_DEPTH] = Vec4::new(crate::silhouette::SELF_CLEAR, 0.0, 0.0, 0.0);
+            let (material, ghost) = (materials.add(lit), materials.add(ghost));
+            Variant { mesh: meshes.add(baked.mesh), material, ghost, timing: Timing { clips: baked.clips, play: baked.play }, wears }
         })
         .collect();
     commands.insert_resource(ZombieAssets { variants });
@@ -945,8 +980,27 @@ struct Tracked {
     /// Direction and time of the last blow, for the kickback and which way it falls.
     blow: Vec2,
     blow_at: f32,
+    /// Its silhouette twin, once it has needed one, and whether something covers it from the
+    /// camera (looked at every few frames).
+    ghost: Option<Entity>,
+    covered: bool,
     /// Its entity is hidden (out of our sight), so nothing of it needs keeping up.
     hidden: bool,
+}
+
+/// A zombie's cover is looked at again every this many frames (each on its own frame, by id).
+const COVER_EVERY: u32 = 8;
+
+/// Is a zombie standing at `pos` covered from the camera by a building's bulk or by a wall still
+/// standing (not cut away)? The player's own building's roof and upper storeys are hidden, so
+/// they don't count.
+fn covered(map: &zombye_sim::map::TileMap, cutaway: &crate::cutaway::Cutaway, pos: Vec2, camera_dir: Vec3) -> bool {
+    if crate::cutaway::bulk_hides(map, pos, camera_dir, cutaway.inside) {
+        return true;
+    }
+    let mut wall = false;
+    crate::cutaway::body_edges(map, pos, camera_dir, |key| wall |= cutaway.amount(key) < 0.5);
+    wall
 }
 
 /// How long a hit zombie flashes, and how far and for how long it's knocked back on screen.
@@ -969,6 +1023,8 @@ impl Tracked {
             stagger: Clip::Stagger,
             staggers: 0,
             flash_until: 0.0,
+            ghost: None,
+            covered: false,
             blow: Vec2::ZERO,
             blow_at: -100.0,
             hidden: false,
@@ -1073,8 +1129,16 @@ fn sync_zombies(
     assets: Option<Res<ZombieAssets>>,
     entities: Option<ResMut<ZombieEntities>>,
     mut query: Query<(&mut Transform, &mut MeshTag, &mut Visibility)>,
+    silhouettes: Res<crate::silhouette::ZombieSilhouettes>,
+    cutaway: Res<crate::cutaway::Cutaway>,
+    map: Res<crate::server_link::ClientMap>,
+    cams: Query<&crate::camera::IsoCamera>,
+    mut frame: Local<u32>,
 ) {
     let (Some(assets), Some(mut entities)) = (assets, entities) else { return };
+    *frame = frame.wrapping_add(1);
+    // Silhouettes (off by default): only of zombies drawn at all, which is the ones the survivor sees.
+    let ghosts = cams.single().ok().filter(|_| silhouettes.0).map(|cam| cam.offset_dir());
     let now = time.elapsed_secs();
     // The shader's clock (`globals.time`).
     let t = time.elapsed_secs_wrapped();
@@ -1155,13 +1219,13 @@ fn sync_zombies(
         }
         let (clip, play) = tr.play(now, t, timing);
         let tag = pack_tag(z.id, clip, play, z.speed, now < tr.flash_until);
+        let transform = Transform { translation: Vec3::new(pos.x, 0.0, pos.y), rotation, scale: Vec3::ONE };
         if let Ok((mut tf, mut mt, mut vis)) = query.get_mut(tr.entity) {
             // Only a zombie that is drawn and has moved gets a new Transform: a changed one is
             // propagated, extracted and uploaded again, zombie by zombie, and in a crowd most
             // stand still or are out of sight (one that comes into sight is placed that frame).
-            let placed = Transform { translation: Vec3::new(pos.x, 0.0, pos.y), rotation, scale: Vec3::ONE };
-            if !hidden && *tf != placed {
-                *tf = placed;
+            if !hidden && *tf != transform {
+                *tf = transform;
             }
             if mt.value != tag {
                 mt.value = tag;
@@ -1170,12 +1234,48 @@ fn sync_zombies(
                 *vis = visibility;
             }
         }
+        // Its silhouette: the same body once more, where something covers it from the camera.
+        let shown = match ghosts {
+            Some(camera_dir) if visibility == Visibility::Inherited && z.anim != ZombieAnim::Dead => {
+                if z.id.wrapping_add(*frame) % COVER_EVERY == 0 {
+                    tr.covered = covered(&map.0, &cutaway, pos, camera_dir);
+                }
+                tr.covered
+            }
+            _ => false,
+        };
+        match tr.ghost {
+            Some(ghost) => {
+                if let Ok((mut tf, mut mt, mut vis)) = query.get_mut(ghost) {
+                    let want = if shown { Visibility::Inherited } else { Visibility::Hidden };
+                    if *vis != want {
+                        *vis = want;
+                    }
+                    if shown {
+                        if *tf != transform {
+                            *tf = transform;
+                        }
+                        if mt.value != tag {
+                            mt.value = tag;
+                        }
+                    }
+                }
+            }
+            None if shown => {
+                let v = &assets.variants[tr.variant.min(n - 1)];
+                tr.ghost = Some(commands.spawn((Mesh3d(v.mesh.clone()), MeshMaterial3d(v.ghost.clone()), MeshTag::new(tag), transform, bevy::light::NotShadowCaster)).id());
+            }
+            None => {}
+        }
     }
     // Corpses the server cleared away (ids are never reused, so only removals shrink the list).
     if entities.0.len() > link.curr.zombies.len() {
         for id in stale(&entities.0, tick) {
             if let Some(t) = entities.0.remove(&id) {
                 commands.entity(t.entity).despawn();
+                if let Some(ghost) = t.ghost {
+                    commands.entity(ghost).despawn();
+                }
             }
         }
     }

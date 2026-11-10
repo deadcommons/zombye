@@ -19,6 +19,10 @@ use crate::server_link::JoinInfo;
 
 const ELEVATION: f32 = 30.0_f32 * std::f32::consts::PI / 180.0;
 pub const DISTANCE: f32 = 120.0;
+/// The near and far planes. The camera is orthographic, so depth is linear between them: one
+/// metre is `1 / (FAR - NEAR)` of the depth buffer (`silhouette.rs` goes by it).
+pub const NEAR: f32 = 0.1;
+pub const FAR: f32 = 400.0;
 const MIN_ZOOM: f32 = 8.0;
 const MAX_ZOOM: f32 = 90.0;
 
@@ -71,8 +75,8 @@ fn spawn_camera(mut commands: Commands, join: Res<JoinInfo>, options: Res<Option
         Camera3d::default(),
         Projection::from(OrthographicProjection {
             scaling_mode: ScalingMode::FixedVertical { viewport_height: cam.zoom },
-            near: 0.1,
-            far: 400.0,
+            near: NEAR,
+            far: FAR,
             ..OrthographicProjection::default_3d()
         }),
         transform,

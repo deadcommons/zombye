@@ -417,7 +417,7 @@ fn update_hud(
             if me.dev.god { " (on)" } else { "" },
             if me.dev.ignored { " (on)" } else { "" },
             // The server's rules panel (#69): only on a server.
-            if link.net.is_some() { " | F6 server rules | F7 servers" } else { " | F7 servers" }
+            if link.net.is_some() { " | F6 server rules | F7 servers | F10 walls up/cut" } else { " | F7 servers | F10 walls up/cut" }
         );
     }
     *stats = FrameStats::default();

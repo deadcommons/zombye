@@ -25,6 +25,8 @@ pub struct AutoInput {
     pub active: bool,
     pub move_dir: Vec2,
     pub run: bool,
+    /// It aims (and faces its aim) too: `--autoplay`. A `--walk` only walks, facing the way it goes.
+    pub aim: bool,
 }
 
 /// Ignore zombies farther than this.
@@ -37,10 +39,43 @@ pub struct AutoplayPlugin;
 impl Plugin for AutoplayPlugin {
     fn build(&self, app: &mut App) {
         let active = app.world().resource::<Options>().autoplay;
-        app.insert_resource(AutoInput { active, ..default() });
+        let walking = !active && !app.world().resource::<Options>().walk.is_empty();
+        app.insert_resource(AutoInput { active: active || walking, aim: active, ..default() });
         if active {
             app.add_systems(FixedUpdate, autoplay.before(PlayerInputSet));
+        } else if walking {
+            app.add_systems(FixedUpdate, walk.before(PlayerInputSet));
         }
+    }
+}
+
+/// `--walk X,Y;X,Y;...`: the local player walks from point to point by itself and then stands,
+/// opening a shut door its next step leads through (as F does), for recordings of things seen
+/// while moving (the cutaways as you leave a house and go round it). Only the normal movement
+/// input and `Intent::Interact`. Lay the points so each door is crossed square on.
+fn walk(options: Res<Options>, mut link: ResMut<ServerLink>, me: Res<LocalPlayer>, mut auto: ResMut<AutoInput>, map: Res<ClientMap>, mut next: Local<usize>, mut door_wait: Local<f32>) {
+    auto.move_dir = Vec2::ZERO;
+    auto.run = false;
+    *door_wait = (*door_wait - TICK_DT).max(0.0);
+    let pos = me.curr.pos;
+    while options.walk.get(*next).is_some_and(|p| p.distance(pos) < 0.25) {
+        *next += 1;
+    }
+    let Some(to) = options.walk.get(*next) else { return };
+    let dir = (*to - pos).normalize_or_zero();
+    auto.move_dir = dir;
+    // A shut door between this tile and the one the next step is in: open it.
+    let (a, b) = (pos.floor().as_ivec2(), (pos + dir * 0.9).floor().as_ivec2());
+    let side = match (b - a).to_array() {
+        [1, 0] => Some(zombye_sim::map::Side::E),
+        [-1, 0] => Some(zombye_sim::map::Side::W),
+        [0, 1] => Some(zombye_sim::map::Side::S),
+        [0, -1] => Some(zombye_sim::map::Side::N),
+        _ => None,
+    };
+    if *door_wait == 0.0 && side.is_some_and(|s| map.0.edge(a, s) == zombye_sim::map::Edge::DoorClosed) {
+        link.send(Intent::Interact { player: me.id });
+        *door_wait = 0.8;
     }
 }
 

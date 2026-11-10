@@ -869,6 +869,11 @@ pub fn attach(commands: &mut Commands, model: &SurvivorModel, root: Entity, play
         // Ours stays ours; another's turns violet if the server says a program plays it (`mark_agents`).
         ring.insert(Ring { player, agent: false });
     }
+    if local {
+        // Ours shows through whatever still covers it (`silhouette.rs`).
+        commands.entity(body).insert(crate::silhouette::Silhouetted);
+        commands.entity(outfit).insert(crate::silhouette::Silhouetted);
+    }
     commands.entity(root).insert(Dress { player, body, outfit, worn: None });
     joints
 }

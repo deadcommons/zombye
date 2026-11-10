@@ -75,6 +75,7 @@ mod holdup;
 mod camera;
 mod character;
 mod chat;
+mod cutaway;
 mod daynight;
 mod dev_time;
 mod death;
@@ -110,6 +111,7 @@ mod rig;
 mod rules_ui;
 mod saving;
 mod server_link;
+mod silhouette;
 mod skills_ui;
 mod survivor;
 mod survivor_model;
@@ -246,6 +248,14 @@ pub struct Options {
     /// Hold every survivor in one pose (each a step further), for reviewing animation in offscreen pictures (`--pose
     /// walk:0.3`, see `survivor.rs`).
     pub pose: Option<String>,
+    /// Recordings: the local player walks from point to point by itself (`--walk X,Y;X,Y;...`,
+    /// `autoplay.rs`).
+    pub walk: Vec<Vec2>,
+    /// Start with the cutaways off (`--walls-up`; F10 toggles them, `cutaway.rs`).
+    pub walls_up: bool,
+    /// Show the silhouettes of zombies you see that something covers (`--zombie-silhouettes`;
+    /// Shift+F10 toggles it and saves it, `silhouette.rs`). `None`: as the settings file says.
+    pub zombie_silhouettes: Option<bool>,
     /// Start with the sound off (`--mute`; M toggles it).
     pub mute: bool,
     /// Master volume (`--volume V`, 0..2, default 1).
@@ -458,6 +468,9 @@ impl Options {
             crowd_vat: value("--crowd-vat"),
             survivor: value("--survivor"),
             pose: value("--pose"),
+            walk: value("--walk").map(|v| v.split(';').filter_map(parse_point).map(Vec2::from).collect()).unwrap_or_default(),
+            walls_up: flag("--walls-up"),
+            zombie_silhouettes: flag("--zombie-silhouettes").then_some(true),
             mute: flag("--mute"),
             volume: value("--volume").and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite()).map_or(1.0, |v| v.clamp(0.0, 2.0)),
             ui_scale: value("--ui-scale").and_then(|v| ui_scale::parse_pct(&v)),
@@ -601,7 +614,7 @@ fn main() {
     }
     app.add_plugins((
             (theme::ThemePlugin, server_link::ServerLinkPlugin),
-            fog::FogPlugin,
+            (fog::FogPlugin, cutaway::CutawayPlugin, silhouette::SilhouettePlugin),
             materials::WorldMaterialPlugin,
             world_render::WorldRenderPlugin,
             (daynight::DayNightPlugin, lights::LightsPlugin),

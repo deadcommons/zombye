@@ -423,7 +423,7 @@ fn face_cursor(
     mut players: Query<(&mut Player, &mut Transform)>,
     mut me: ResMut<LocalPlayer>,
 ) {
-    me.aiming = auto.active || (mouse.pressed(MouseButton::Right) && !panel.open && !health.open);
+    me.aiming = (auto.active && auto.aim) || (mouse.pressed(MouseButton::Right) && !panel.open && !health.open);
     if me.dead {
         return;
     }
