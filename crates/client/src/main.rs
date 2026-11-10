@@ -56,6 +56,10 @@
 //!
 //! UI scale (`ui_scale.rs`): Ctrl (or Cmd) with `=` / `-` steps every panel's size by 5% (75-150%),
 //! Ctrl+0 back to 100%, kept in `settings.ron` in the saves folder; `--ui-scale PCT` for one session.
+//!
+//! Hotbar (`hotbar.rs`): keys 1-9 swap to (or use) what's on that slot; `--hotbar ID,ID,...` sets the
+//! slots for one session. The inventory, health and skills panels are dragged by their titles and
+//! remembered with their open state in the same settings file (`panels.rs`).
 
 mod audio;
 mod autoplay;
@@ -75,6 +79,7 @@ mod graphics;
 mod vegetation;
 mod heard;
 mod health_ui;
+mod hotbar;
 mod hud;
 mod inventory_ui;
 mod items_render;
@@ -85,6 +90,7 @@ mod action_ui;
 mod debug_stats;
 mod needs_ui;
 mod offscreen;
+mod panels;
 mod player;
 mod rig;
 mod saving;
@@ -92,6 +98,7 @@ mod server_link;
 mod skills_ui;
 mod survivor;
 mod survivor_model;
+mod theme;
 mod ui_scale;
 mod world_render;
 mod zombie_render;
@@ -227,6 +234,17 @@ pub struct Options {
     /// UI scale in percent for this session, not saved (`--ui-scale PCT`, 75..150; without it the
     /// client settings file's, else 100). See `ui_scale.rs`.
     pub ui_scale: Option<u32>,
+    /// The hotbar's slots for this session, by item id (`--hotbar baseball_bat,-,flashlight`; `-` an
+    /// empty slot), instead of the settings file's: for pictures. See `hotbar.rs`.
+    pub hotbar: Option<String>,
+    /// For recordings: press the hotbar's key K once SECS have gone by (`--hotbar-press K@SECS[,K@SECS...]`).
+    pub hotbar_press: Vec<(usize, f32)>,
+    /// Start with panels where they'd been dragged to, in UI pixels
+    /// (`--panel-at inventory:X,Y[;health:X,Y][;skills:X,Y]`): for pictures. See `panels.rs`.
+    pub panel_at: Option<String>,
+    /// For recordings: drag a panel by its title, DX,DY UI pixels, once SECS have gone by
+    /// (`--drag-panel inventory|health|skills:DX,DY[@SECS]`).
+    pub drag_panel: Option<String>,
     /// Play on a multiplayer server instead of an in-process world (`--connect HOST[:PORT]`, #21),
     /// under this name (`--name`; the server makes one up without) and with its join password
     /// (`--password`). The world options, `--load` and the demo setups don't apply: the world is
@@ -386,6 +404,10 @@ impl Options {
             mute: flag("--mute"),
             volume: value("--volume").and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite()).map_or(1.0, |v| v.clamp(0.0, 2.0)),
             ui_scale: value("--ui-scale").and_then(|v| ui_scale::parse_pct(&v)),
+            hotbar: value("--hotbar"),
+            hotbar_press: value("--hotbar-press").map_or(Vec::new(), |v| v.split(',').filter_map(parse_menu_pick).collect()),
+            panel_at: value("--panel-at"),
+            drag_panel: value("--drag-panel"),
             connect: value("--connect"),
             name: value("--name").unwrap_or_default(),
             password: value("--password").unwrap_or_default(),
@@ -493,7 +515,7 @@ fn main() {
             (fx::FxPlugin, heard::HeardPlugin, chat::ChatPlugin, film::FilmPlugin, vegetation::VegetationPlugin),
             survivor::SurvivorPlugin,
             (autoplay::AutoplayPlugin, duel::DuelPlugin),
-            (saving::SavingPlugin, ui_scale::UiScalePlugin, firstnight_ui::FirstNightUiPlugin),
+            (saving::SavingPlugin, ui_scale::UiScalePlugin, panels::PanelsPlugin, hotbar::HotbarPlugin, firstnight_ui::FirstNightUiPlugin),
         ));
     // An offscreen render has no audio device (Bevy's audio is off there).
     if !offscreen {
@@ -528,6 +550,8 @@ mod tests {
         assert_eq!(Options::parse(&args("--ui-scale 125")).ui_scale, Some(125));
         assert_eq!(Options::parse(&args("--ui-scale 300")).ui_scale, Some(150));
         assert_eq!((o.ui_scale, Options::parse(&args("--ui-scale x")).ui_scale), (None, None));
+        let o = Options::parse(&args("--hotbar bat,-,flashlight --hotbar-press 2@3.5,1@6,x,12 --panel-at skills:40,300"));
+        assert_eq!((o.hotbar.as_deref(), o.hotbar_press, o.panel_at.as_deref()), (Some("bat,-,flashlight"), vec![(2, 3.5), (1, 6.0)], Some("skills:40,300")));
         assert_eq!(Options::parse(&args("--angle 5")).angle, 1);
         assert_eq!(Options::parse(&args("--angle -1")).angle, 3);
     }

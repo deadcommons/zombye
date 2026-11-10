@@ -16,7 +16,7 @@ use crate::saving::Notice;
 use crate::server_link::{JoinInfo, LevelUpsThisFrame, ServerLink};
 
 const TEXT: Color = Color::srgb(0.93, 0.9, 0.82);
-const DIM: Color = Color::srgb(0.65, 0.63, 0.58);
+const DIM: Color = crate::theme::DIM;
 const GOLD: Color = Color::srgb(0.95, 0.85, 0.35);
 const BAR_BG: Color = Color::srgba(0.2, 0.2, 0.22, 0.9);
 const BAR: Color = Color::srgb(0.85, 0.7, 0.25);
@@ -41,7 +41,8 @@ pub struct SkillsUiPlugin;
 
 impl Plugin for SkillsUiPlugin {
     fn build(&self, app: &mut App) {
-        let open = app.world().get_resource::<crate::Options>().is_some_and(|o| o.skills);
+        // Open as it was left last session (`panels.rs`), or by `--skills`.
+        let open = app.world().get_resource::<crate::Options>().is_some_and(|o| o.skills) || crate::ui_scale::SettingsStore::ensure(app).panels.skills.open;
         app.insert_resource(SkillsPanel { open }).init_resource::<Shown>().add_systems(Startup, spawn).add_systems(Update, (toggle, announce, rebuild).chain());
     }
 }
@@ -54,6 +55,7 @@ fn spawn(mut commands: Commands) {
     commands.spawn((
         PanelRoot,
         crate::hud::TopPanel,
+        crate::panels::PanelId::Skills,
         Visibility::Hidden,
         Node {
             position_type: PositionType::Absolute,
@@ -67,7 +69,7 @@ fn spawn(mut commands: Commands) {
             overflow: Overflow::scroll_y(),
             ..default()
         },
-        BackgroundColor(Color::srgba(0.02, 0.02, 0.03, 0.9)),
+        BackgroundColor(crate::theme::PANEL_BG),
         Pickable::IGNORE,
     ));
 }
@@ -102,7 +104,12 @@ fn rebuild(mut commands: Commands, panel: Res<SkillsPanel>, link: Res<ServerLink
     commands.entity(root).despawn_children();
     let (t, carry, aid) = (&join.skills, &join.carry, &join.first_aid);
     commands.entity(root).with_children(|c| {
-        c.spawn((Text::new("Skills"), font(18.0), TextColor(TEXT)));
+        // The title, with the hint beside it rather than on a line of its own at the foot: at the
+        // readable text size (#97) all nine skills then still fit a 1280 x 720 screen.
+        c.spawn((Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Baseline, column_gap: px(16), ..default() }, Pickable::IGNORE)).with_children(|t| {
+            t.spawn((Text::new("Skills"), font(crate::theme::TITLE), TextColor(TEXT)));
+            t.spawn((Text::new("Skills only grow with practice; nothing is lost.   K: close"), font(crate::theme::SMALL), TextColor(DIM)));
+        });
         // Two columns of cards, so all nine fit on the screen.
         c.spawn((Node { width: px(2.0 * CARD_W + 10.0), flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: px(10), ..default() }, Pickable::IGNORE)).with_children(|grid| {
             for v in &skills {
@@ -119,11 +126,11 @@ fn rebuild(mut commands: Commands, panel: Res<SkillsPanel>, link: Res<ServerLink
                             Some(n) => format!("{:.0} / {n:.0} XP", v.xp),
                             None => format!("{:.0} XP, top level", v.xp),
                         };
-                        r.spawn((Text::new(xp), font(12.0), TextColor(DIM)));
+                        r.spawn((Text::new(xp), font(crate::theme::SMALL), TextColor(DIM)));
                     });
                     // Detail lines indented as a block, so wrapped lines keep the indent.
                     let line = |card: &mut ChildSpawnerCommands, text: String, color: Color| {
-                        card.spawn((Text::new(text), font(12.0), TextColor(color), Node { margin: UiRect::left(px(12)), ..default() }));
+                        card.spawn((Text::new(text), font(crate::theme::SMALL), TextColor(color), Node { margin: UiRect::left(px(12)), ..default() }));
                     };
                     if v.level > 0 {
                         line(card, format!("now: {}", t.gives(s, v.level, carry, aid)), TEXT);
@@ -135,7 +142,6 @@ fn rebuild(mut commands: Commands, panel: Res<SkillsPanel>, link: Res<ServerLink
                 });
             }
         });
-        c.spawn((Text::new("Skills only grow with practice; nothing is lost.   K: close"), font(12.0), TextColor(DIM), Node { margin: UiRect::top(px(6)), ..default() }));
     });
     shown.0 = Some(skills);
 }

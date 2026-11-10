@@ -12,7 +12,7 @@ use crate::player::LocalPlayer;
 use crate::server_link::{JoinInfo, ServerLink};
 
 const TEXT: Color = Color::srgb(0.95, 0.93, 0.88);
-const BG: Color = Color::srgba(0.03, 0.03, 0.04, 0.8);
+const BG: Color = crate::theme::HUD_BG;
 const FILL: Color = Color::srgb(0.85, 0.7, 0.25);
 const WIDTH: f32 = 380.0;
 
@@ -52,7 +52,8 @@ fn spawn(mut commands: Commands) {
             crate::hud::BottomHud,
             Node {
                 position_type: PositionType::Absolute,
-                bottom: px(70),
+                // Just above the hotbar (#97).
+                bottom: px(crate::hotbar::REACH + 8.0),
                 left: percent(50),
                 margin: UiRect::left(px(-WIDTH / 2.0)),
                 width: px(WIDTH),
@@ -70,7 +71,7 @@ fn spawn(mut commands: Commands) {
                 .with_children(|b| {
                     b.spawn((Fill, Node { width: percent(0), height: percent(100), ..default() }, BackgroundColor(FILL), Pickable::IGNORE));
                 });
-            c.spawn((Hint, Text::new(""), font(12.0), TextColor(Color::srgb(0.7, 0.68, 0.62)), Pickable::IGNORE));
+            c.spawn((Hint, Text::new(""), font(crate::theme::SMALL), TextColor(crate::theme::DIM), Pickable::IGNORE));
         })
         .observe(|_: On<PointerPress>, me: Res<LocalPlayer>, keys: Res<ButtonInput<KeyCode>>, mut link: ResMut<ServerLink>| {
             let all = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);

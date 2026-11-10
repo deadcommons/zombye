@@ -13,7 +13,7 @@ use crate::player::LocalPlayer;
 use crate::server_link::{ClientMap, JoinInfo, ServerLink};
 
 #[derive(Component)]
-struct HudText;
+pub struct HudText;
 
 // Vitals panel, bottom left.
 #[derive(Component)]
@@ -45,7 +45,7 @@ impl Plugin for HudPlugin {
 }
 
 const TEXT: Color = Color::srgb(0.93, 0.9, 0.82);
-const DIM: Color = Color::srgb(0.7, 0.68, 0.62);
+const DIM: Color = crate::theme::DIM;
 const DEV_COLOR: Color = Color::srgb(0.35, 0.9, 1.0);
 
 /// "GOD IGNORED", "GOD", "IGNORED" or "" for the dev toggles on.
@@ -73,6 +73,11 @@ pub struct TopPanel;
 #[derive(Component)]
 pub struct BottomHud;
 
+/// The column standing in the bottom-left corner: the status tags, then the vitals under them.
+/// The hotbar has the rest of the bottom edge (#97).
+#[derive(Component)]
+pub struct BottomLeft;
+
 /// Room left between the top panels and what's above and below them (UI pixels).
 const PANEL_GAP: f32 = 8.0;
 
@@ -84,30 +89,27 @@ pub fn spawn_hud(mut commands: Commands) {
             Pickable::IGNORE,
         ))
         .with_children(|c| {
-            c.spawn((HudText, Text::new(""), font(14.0), TextColor(Color::srgb(0.9, 0.9, 0.85))));
+            // On a dark backing of its own, so it reads over sunlit ground too (#97).
+            c.spawn((HudText, Text::new(""), font(14.0), TextColor(Color::srgb(0.9, 0.9, 0.85)), BackgroundColor(Color::srgba(0.02, 0.02, 0.03, 0.7))));
         });
-    commands
+    // The bottom-left column: the status tags (`needs_ui.rs` puts them first) over the vitals.
+    let column = commands
         .spawn((
+            BottomLeft,
             BottomHud,
-            VitalsPanel,
-            Node {
-                position_type: PositionType::Absolute,
-                bottom: px(16),
-                left: px(16),
-                flex_direction: FlexDirection::Column,
-                row_gap: px(6),
-                padding: UiRect::all(px(10)),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.02, 0.02, 0.03, 0.55)),
+            Node { position_type: PositionType::Absolute, bottom: px(16), left: px(16), flex_direction: FlexDirection::Column, align_items: AlignItems::FlexStart, row_gap: px(6), ..default() },
+            Pickable::IGNORE,
         ))
+        .id();
+    commands
+        .spawn((VitalsPanel, Node { flex_direction: FlexDirection::Column, row_gap: px(6), padding: UiRect::all(px(10)), ..default() }, BackgroundColor(crate::theme::HUD_BG), ChildOf(column)))
         .with_children(|c| {
             c.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Baseline, column_gap: px(10), ..default() }).with_children(|row| {
                 row.spawn((WeaponText, Text::new(""), font(20.0), TextColor(TEXT)));
                 row.spawn((StanceText, Text::new(""), font(14.0), TextColor(DIM)));
                 row.spawn((DevText, Text::new(""), font(14.0), TextColor(DEV_COLOR)));
             });
-            // No health or endurance bars (Linear DCM-57): the status icons beside this panel say
+            // No health or endurance bars (Linear DCM-57): the status icons over this panel say
             // when something is wrong (`needs_ui.rs`), the debug stats window the numbers (F4).
             // Injured leg, drowsy from painkillers, where the last strike landed (`health_ui.rs`).
             c.spawn((crate::health_ui::HealthTagsText, Text::new(""), font(13.0), TextColor(TEXT)));
@@ -179,13 +181,14 @@ pub fn top_panel_span(top_left_h: f32, bottom_reach: f32, view_h: f32) -> (f32, 
 /// and current action below, as text wraps and the UI scale changes (last frame's layout: a frame
 /// late at most).
 #[allow(clippy::type_complexity)]
-fn fit_top_panels(
+pub fn fit_top_panels(
     options: Res<Options>,
     ui: Res<UiScale>,
     window: Query<&Window, With<bevy::window::PrimaryWindow>>,
     stats: Query<&ComputedNode, With<HudText>>,
     bottom: Query<(&Node, &ComputedNode), (With<BottomHud>, Without<TopPanel>)>,
-    mut panels: Query<&mut Node, With<TopPanel>>,
+    places: Option<Res<crate::panels::PanelPlaces>>,
+    mut panels: Query<(&mut Node, &ComputedNode, Option<&crate::panels::PanelId>), With<TopPanel>>,
 ) {
     // The stats text only: the yellow line under it comes and goes, and is drawn over the panels
     // (`saving.rs`) rather than pushing them down and back every few seconds.
@@ -200,12 +203,27 @@ fn fit_top_panels(
             above + ui_h(c)
         })
         .fold(0.0, f32::max);
-    let (top, height) = top_panel_span(ui_h(column), reach, view.y / ui.0.max(0.01));
-    let (top, height) = (px(top.round()), px(height.round()));
-    for mut node in &mut panels {
-        if node.top != top || node.max_height != height {
+    let view = view / ui.0.max(0.01);
+    let (top, height) = top_panel_span(ui_h(column), reach, view.y);
+    for (mut node, computed, id) in &mut panels {
+        // A panel dragged somewhere (`panels.rs`) goes there, kept on the screen and above the
+        // bottom HUD; the others hang where they're laid out.
+        let at = id.and_then(|id| places.as_ref().and_then(|p| p.of(*id))).map(|at| crate::panels::placed(at, computed.size() * computed.inverse_scale_factor(), view, reach + PANEL_GAP));
+        let (left, right) = match (at, id) {
+            (Some(at), _) => (px(at.x), Val::Auto),
+            (None, Some(id)) => id.home(),
+            (None, None) => (node.left, node.right),
+        };
+        let (top, height) = match at {
+            Some(at) => (at.y, (view.y - at.y - reach - PANEL_GAP).max(80.0)),
+            None => (top, height),
+        };
+        let (top, height) = (px(top.round()), px(height.round()));
+        if node.top != top || node.max_height != height || node.left != left || node.right != right {
             node.top = top;
             node.max_height = height;
+            node.left = left;
+            node.right = right;
         }
     }
 }
@@ -333,7 +351,7 @@ fn update_hud(
     if let Ok(mut t) = text.single_mut() {
         let rotate = if options.rotate { ", . rotate | " } else { "" };
         t.0 = format!(
-            "{line}\nWASD move | Shift run | C sneak{} | RMB (hold) aim | aiming: LMB attack, Space shove/stomp | E pick up / search | Tab inventory | H health | K skills | B sleep | Enter talk | V wave | U hands up | P point | F door/window | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load | F1 god{} | F2 ignored{} | F3 light preview | F4 debug stats | M mute | O objectives",
+            "{line}\nWASD move | Shift run | C sneak{} | RMB (hold) aim | aiming: LMB attack, Space shove/stomp | E pick up / search | 1-9 hotbar | Tab inventory | H health | K skills | B sleep | Enter talk | V wave | U hands up | P point | F door/window | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load | F1 god{} | F2 ignored{} | F3 light preview | F4 debug stats | M mute | O objectives",
             if me.sneak { " (on)" } else { "" },
             if me.dev.god { " (on)" } else { "" },
             if me.dev.ignored { " (on)" } else { "" }

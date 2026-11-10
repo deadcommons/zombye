@@ -61,12 +61,34 @@ pub fn parse_pct(text: &str) -> Option<u32> {
     v.is_finite().then(|| clamp_pct(v.round() as i64))
 }
 
+/// What's remembered of one panel (#97): whether it was open, and where its top-left corner was
+/// dragged to, in UI pixels (`None`: where it's laid out by default).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct PanelMemory {
+    pub open: bool,
+    pub at: Option<(f32, f32)>,
+}
+
+/// The panels that are remembered (`panels.rs`).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct PanelsMemory {
+    pub inventory: PanelMemory,
+    pub health: PanelMemory,
+    pub skills: PanelMemory,
+}
+
 /// What the client keeps between sessions (`settings.ron` in the saves folder).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct ClientSettings {
     /// UI scale in percent ([`MIN_PCT`]..=[`MAX_PCT`]).
     pub ui_scale: u32,
+    /// Each panel's open state and place (#97).
+    pub panels: PanelsMemory,
+    /// The hotbar's slots, keys 1-9: the item id each holds (`hotbar.rs`, #97).
+    pub hotbar: Vec<Option<String>>,
     /// Vegetation density and the post effects (`graphics.rs`, Linear DCM-59).
     pub graphics: crate::graphics::Graphics,
 }
@@ -75,8 +97,76 @@ impl Default for ClientSettings {
     fn default() -> Self {
         Self {
             ui_scale: DEFAULT_PCT,
+            panels: PanelsMemory::default(),
+            hotbar: Vec::new(),
             graphics: crate::graphics::Graphics::default(),
         }
+    }
+}
+
+/// The client settings as they are now, and the file they're written to when they change.
+/// Every part of the client that keeps something between sessions goes through it, so one's
+/// change never loses another's.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct SettingsStore {
+    pub settings: ClientSettings,
+    /// `None` offscreen: nothing is read or written.
+    file: Option<PathBuf>,
+}
+
+impl SettingsStore {
+    /// Read the settings file in the saves folder (not offscreen: the defaults, never written).
+    pub fn from_options(options: &Options) -> (Self, Option<String>) {
+        if options.offscreen() {
+            return (Self::default(), None);
+        }
+        let path = ClientSettings::path(&options.saves);
+        let (settings, warning) = ClientSettings::load(&path);
+        (
+            Self {
+                settings,
+                file: Some(path),
+            },
+            warning,
+        )
+    }
+
+    /// The app's store, read from the file the first time anything asks (with a warning on stderr
+    /// for a damaged one).
+    pub fn ensure(app: &mut App) -> ClientSettings {
+        if let Some(store) = app.world().get_resource::<Self>() {
+            return store.settings.clone();
+        }
+        let (store, warning) = match app.world().get_resource::<Options>() {
+            Some(options) => Self::from_options(options),
+            None => (Self::default(), None),
+        };
+        if let Some(w) = warning {
+            eprintln!("{w}");
+        }
+        let settings = store.settings.clone();
+        app.insert_resource(store);
+        settings
+    }
+
+    /// Change the settings, and write the file if that changed anything.
+    pub fn change(&mut self, f: impl FnOnce(&mut ClientSettings)) -> Result<(), String> {
+        let mut next = self.settings.clone();
+        f(&mut next);
+        if next == self.settings {
+            return Ok(());
+        }
+        self.settings = next;
+        match &self.file {
+            Some(file) => self.settings.save(file),
+            None => Ok(()),
+        }
+    }
+
+    /// Whether changes are written to a file (not offscreen).
+    #[cfg(test)]
+    pub fn saved(&self) -> bool {
+        self.file.is_some()
     }
 }
 
@@ -105,6 +195,16 @@ impl ClientSettings {
         match ron::from_str::<Self>(&text) {
             Ok(mut s) => {
                 s.ui_scale = clamp_pct(s.ui_scale as i64);
+                // A place that isn't a point on any screen is no place.
+                let ok = |at: (f32, f32)| at.0.is_finite() && at.1.is_finite();
+                for p in [
+                    &mut s.panels.inventory,
+                    &mut s.panels.health,
+                    &mut s.panels.skills,
+                ] {
+                    p.at = p.at.filter(|&at| ok(at));
+                }
+                s.hotbar.truncate(crate::hotbar::SLOTS);
                 (s, None)
             }
             Err(e) => (
@@ -126,35 +226,18 @@ impl ClientSettings {
     }
 }
 
-/// The UI scale in use, in percent, and whether it's saved when it changes.
+/// The UI scale in use, in percent.
 #[derive(Resource, Clone, Debug)]
 pub struct UiScalePct {
     pub pct: u32,
-    /// Where to save the settings when the scale changes in game (`None` offscreen).
-    file: Option<PathBuf>,
-    /// The rest of the settings, kept as read so saving doesn't lose them.
-    settings: ClientSettings,
 }
 
 impl UiScalePct {
     /// The scale to start with: `--ui-scale`, else the settings file's (not read offscreen), else 100%.
-    pub fn from_options(options: &Options) -> (Self, Option<String>) {
-        let (settings, warning, file) = if options.offscreen() {
-            (ClientSettings::default(), None, None)
-        } else {
-            let path = ClientSettings::path(&options.saves);
-            let (s, w) = ClientSettings::load(&path);
-            (s, w, Some(path))
-        };
-        let pct = options.ui_scale.unwrap_or(settings.ui_scale);
-        (
-            Self {
-                pct,
-                file,
-                settings,
-            },
-            warning,
-        )
+    pub fn from_options(options: &Options, settings: &ClientSettings) -> Self {
+        Self {
+            pct: options.ui_scale.unwrap_or(settings.ui_scale),
+        }
     }
 }
 
@@ -204,10 +287,8 @@ pub struct UiScalePlugin;
 impl Plugin for UiScalePlugin {
     fn build(&self, app: &mut App) {
         let options = app.world().resource::<Options>().clone();
-        let (scale, warning) = UiScalePct::from_options(&options);
-        if let Some(w) = warning {
-            eprintln!("{w}");
-        }
+        let settings = SettingsStore::ensure(app);
+        let scale = UiScalePct::from_options(&options, &settings);
         app.insert_resource(UiScale(scale.pct as f32 / 100.0))
             .insert_resource(scale)
             // After the search box, which holds keys back while you type.
@@ -248,6 +329,7 @@ fn keys(
     options: Res<Options>,
     window: Query<&Window, With<PrimaryWindow>>,
     mut scale: ResMut<UiScalePct>,
+    mut store: ResMut<SettingsStore>,
     notice: Option<ResMut<Notice>>,
 ) {
     let Some(ask) = asked(&keys) else { return };
@@ -258,10 +340,7 @@ fn keys(
     let mut line = describe(pct, fitted_pct(pct, view(&options, &window)));
     if pct != scale.pct {
         scale.pct = pct;
-        scale.settings.ui_scale = pct;
-        if let Some(file) = &scale.file
-            && let Err(e) = scale.settings.save(file)
-        {
+        if let Err(e) = store.change(|s| s.ui_scale = pct) {
             line = format!("{line} (not saved: {e})");
         }
     }
@@ -351,12 +430,32 @@ mod tests {
     fn settings_save_and_load() {
         let d = dir("roundtrip");
         let path = ClientSettings::path(&d);
-        let s = ClientSettings { ui_scale: 130, ..Default::default() };
+        let s = ClientSettings {
+            ui_scale: 130,
+            panels: PanelsMemory {
+                inventory: PanelMemory {
+                    open: true,
+                    at: Some((300.0, 120.5)),
+                },
+                skills: PanelMemory {
+                    open: false,
+                    at: Some((0.0, 80.0)),
+                },
+                ..default()
+            },
+            hotbar: vec![Some("baseball_bat".into()), None, Some("flashlight".into())],
+            ..default()
+        };
         s.save(&path).unwrap();
         assert_eq!(ClientSettings::load(&path), (s, None));
         // Saved again over the old one.
-        ClientSettings { ui_scale: 85, ..Default::default() }.save(&path).unwrap();
-        assert_eq!(ClientSettings::load(&path).0.ui_scale, 85);
+        ClientSettings {
+            ui_scale: 85,
+            ..default()
+        }
+        .save(&path)
+        .unwrap();
+        assert_eq!(ClientSettings::load(&path).0, ClientSettings { ui_scale: 85, ..default() });
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -384,8 +483,16 @@ mod tests {
         // Out of range is clamped, unknown and missing fields are fine (later settings, older files).
         std::fs::write(&path, "(ui_scale: 400)").unwrap();
         assert_eq!(ClientSettings::load(&path).0.ui_scale, MAX_PCT);
-        std::fs::write(&path, "(panels: [], ui_scale: 90)").unwrap();
+        std::fs::write(&path, "(later_setting: [], ui_scale: 90)").unwrap();
         assert_eq!(ClientSettings::load(&path).0.ui_scale, 90);
+        // A file from before the panels and the hotbar were kept: they start as laid out, and empty.
+        let (old, warning) = ClientSettings::load(&path);
+        assert_eq!((old.panels, old.hotbar.len(), warning), (PanelsMemory::default(), 0, None));
+        // A place that is no point on a screen is dropped; a hotbar longer than the keys is cut.
+        std::fs::write(&path, "(panels: (health: (open: true, at: Some((inf, 4.0)))), hotbar: [None, None, None, None, None, None, None, None, None, Some(\"axe\")])").unwrap();
+        let s = ClientSettings::load(&path).0;
+        assert_eq!(s.panels.health, PanelMemory { open: true, at: None });
+        assert_eq!(s.hotbar.len(), crate::hotbar::SLOTS);
         std::fs::write(&path, "()").unwrap();
         assert_eq!(
             ClientSettings::load(&path),
@@ -397,9 +504,12 @@ mod tests {
     #[test]
     fn the_flag_wins_and_offscreen_never_reads_the_file() {
         let d = dir("flag");
-        ClientSettings { ui_scale: 120, ..Default::default() }
-            .save(&ClientSettings::path(&d))
-            .unwrap();
+        ClientSettings {
+            ui_scale: 120,
+            ..default()
+        }
+        .save(&ClientSettings::path(&d))
+        .unwrap();
         let opts = |extra: &str| {
             Options::parse(
                 &format!("--saves {} {extra}", d.display())
@@ -408,20 +518,26 @@ mod tests {
                     .collect::<Vec<_>>(),
             )
         };
-        assert_eq!(UiScalePct::from_options(&opts("")).0.pct, 120);
-        assert_eq!(UiScalePct::from_options(&opts("--ui-scale 80")).0.pct, 80);
-        assert_eq!(
-            UiScalePct::from_options(&opts("--ui-scale 20")).0.pct,
-            MIN_PCT
-        );
-        let off = UiScalePct::from_options(&opts("--render-to /tmp/x.png")).0;
-        assert_eq!((off.pct, off.file), (100, None));
-        assert_eq!(
-            UiScalePct::from_options(&opts("--render-to /tmp/x.png --ui-scale 150"))
-                .0
-                .pct,
-            150
-        );
+        let pct = |extra: &str| {
+            let o = opts(extra);
+            let store = SettingsStore::from_options(&o).0;
+            (UiScalePct::from_options(&o, &store.settings).pct, store.saved())
+        };
+        assert_eq!(pct(""), (120, true));
+        assert_eq!(pct("--ui-scale 80"), (80, true));
+        assert_eq!(pct("--ui-scale 20"), (MIN_PCT, true));
+        assert_eq!(pct("--render-to /tmp/x.png"), (100, false));
+        assert_eq!(pct("--render-to /tmp/x.png --ui-scale 150"), (150, false));
+        // Offscreen nothing is written either, whatever changes.
+        let mut off = SettingsStore::from_options(&opts("--render-to /tmp/x.png")).0;
+        off.change(|s| s.ui_scale = 90).unwrap();
+        assert_eq!(ClientSettings::load(&ClientSettings::path(&d)).0.ui_scale, 120);
+        // One part's change keeps the others'.
+        let mut store = SettingsStore::from_options(&opts("")).0;
+        store.change(|s| s.panels.skills.open = true).unwrap();
+        store.change(|s| s.hotbar = vec![Some("axe".into())]).unwrap();
+        let read = ClientSettings::load(&ClientSettings::path(&d)).0;
+        assert_eq!((read.ui_scale, read.panels.skills.open, read.hotbar.len()), (120, true, 1));
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -1,5 +1,6 @@
-//! The status icons (Linear DCM-57): instead of stat bars, a small column of icons right of the
-//! weapon panel, one for each status that has passed a level (hurt, bleeding, pain, sick, queasy,
+//! The status icons (Linear DCM-57): instead of stat bars, a row of icons over the weapon panel
+//! (in the HUD's bottom-left column, `hud::BottomLeft`: the hotbar has the bottom edge beside it,
+//! #97), one for each status that has passed a level (hurt, bleeding, pain, sick, queasy,
 //! hungry, thirsty, tired, out of breath, loaded down, asleep), coloured and bordered by how bad it
 //! is (1 to 4, with as many pips; a good state such as "Well fed" dimmer). An icon pulses when it
 //! appears or worsens; hover one for a line on what it means.
@@ -19,12 +20,12 @@ use crate::player::LocalPlayer;
 use crate::server_link::{JoinInfo, ServerLink};
 
 const TEXT: Color = Color::srgb(0.95, 0.93, 0.88);
-const TIP_BG: Color = Color::srgba(0.02, 0.02, 0.03, 0.85);
-/// An icon's tile and the room between two (UI pixels), and how many stand in a column before the
-/// next column starts.
+const TIP_BG: Color = crate::theme::PANEL_BG;
+/// An icon's tile and the room between two (UI pixels), and how many stand in a row before the
+/// next row starts over it.
 const TILE: f32 = 38.0;
 const GAP: f32 = 4.0;
-const PER_COLUMN: f32 = 3.0;
+const PER_ROW: usize = 8;
 /// How long an icon pulses after it appears or worsens.
 const PULSE_SECS: f32 = 1.2;
 /// The side of a glyph's image, in pixels.
@@ -83,7 +84,7 @@ impl Plugin for NeedsUiPlugin {
             }
             None => StatusData::builtin().clone(),
         };
-        app.insert_resource(StatusIcons(data)).init_resource::<Shown>().init_resource::<Hovered>().add_systems(Startup, spawn).add_systems(Update, (update, place, pulse, tooltip).chain());
+        app.insert_resource(StatusIcons(data)).init_resource::<Shown>().init_resource::<Hovered>().add_systems(Startup, spawn.after(crate::hud::spawn_hud)).add_systems(Update, (update, pulse, tooltip).chain());
     }
 }
 
@@ -241,16 +242,25 @@ fn glyph_image(kind: TagKind) -> Image {
 
 /// Every icon the data lists, hidden until its status applies: they stay the same entities, so a
 /// pulse and the pointer's hover carry on while the levels change.
-fn spawn(mut commands: Commands, icons: Res<StatusIcons>, mut images: ResMut<Assets<Image>>) {
-    commands
-        .spawn((
-            Root,
-            Node { position_type: PositionType::Absolute, bottom: px(16), left: px(300), flex_direction: FlexDirection::Column, align_items: AlignItems::FlexStart, ..default() },
-            Pickable::IGNORE,
-        ))
+fn spawn(mut commands: Commands, icons: Res<StatusIcons>, mut images: ResMut<Assets<Image>>, column: Query<Entity, With<crate::hud::BottomLeft>>) {
+    // A row over the weapon panel (more than `PER_ROW`: another row over the first), with the
+    // hovered icon's line hung just above it, out of the layout, so showing it moves nothing.
+    let root = commands
+        .spawn((Root, Node { flex_direction: FlexDirection::Column, align_items: AlignItems::FlexStart, ..default() }, Pickable::IGNORE))
         .with_children(|c| {
             c.spawn((
-                Node { flex_direction: FlexDirection::Column, flex_wrap: FlexWrap::Wrap, row_gap: px(GAP), column_gap: px(GAP), max_height: px(PER_COLUMN * TILE + (PER_COLUMN - 1.0) * GAP), ..default() },
+                TipText,
+                Text::new(""),
+                font(crate::theme::SMALL),
+                TextColor(TEXT),
+                Node { position_type: PositionType::Absolute, bottom: percent(100), left: px(0), margin: UiRect::bottom(px(4)), width: px(340), padding: UiRect::all(px(6)), ..default() },
+                BackgroundColor(TIP_BG),
+                GlobalZIndex(5),
+                Visibility::Hidden,
+                Pickable::IGNORE,
+            ));
+            c.spawn((
+                Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::WrapReverse, row_gap: px(GAP), column_gap: px(GAP), max_width: px(row_width(PER_ROW)), ..default() },
                 Pickable::IGNORE,
             ))
             .with_children(|col| {
@@ -288,40 +298,23 @@ fn spawn(mut commands: Commands, icons: Res<StatusIcons>, mut images: ResMut<Ass
                     });
                 }
             });
-        });
-    // The hovered icon's line, beside the icons along the bottom: under the current action's bar
-    // and the hint line, which stand higher.
-    commands.spawn((
-        TipText,
-        Text::new(""),
-        font(13.0),
-        TextColor(TEXT),
-        Node { position_type: PositionType::Absolute, bottom: px(16), left: px(350), max_width: px(520), padding: UiRect::all(px(6)), ..default() },
-        BackgroundColor(TIP_BG),
-        Visibility::Hidden,
-        Pickable::IGNORE,
-    ));
+        })
+        .id();
+    match column.single() {
+        // Over the weapon panel, in the HUD's bottom-left column.
+        Ok(column) => {
+            commands.entity(column).insert_children(0, &[root]);
+        }
+        // No HUD (tests): in the corner by itself.
+        Err(_) => {
+            commands.entity(root).insert(Node { position_type: PositionType::Absolute, bottom: px(16), left: px(16), flex_direction: FlexDirection::Column, align_items: AlignItems::FlexStart, ..default() });
+        }
+    }
 }
 
-/// How wide `icons` icons stand (UI pixels): columns of [`PER_COLUMN`].
-pub fn columns_width(icons: usize) -> f32 {
-    let columns = (icons as f32 / PER_COLUMN).ceil();
-    columns * TILE + (columns - 1.0).max(0.0) * GAP
-}
-
-/// The icons stand just right of the weapon panel, however wide its text makes it, and the
-/// hovered one's line right of them.
-#[allow(clippy::type_complexity)]
-fn place(shown: Res<Shown>, vitals: Query<&ComputedNode, With<crate::hud::VitalsPanel>>, mut root: Query<&mut Node, (With<Root>, Without<TipText>)>, mut tip: Query<&mut Node, With<TipText>>) {
-    let (Ok(panel), Ok(mut node), Ok(mut tip)) = (vitals.single(), root.single_mut(), tip.single_mut()) else { return };
-    let left = (16.0 + panel.size().x * panel.inverse_scale_factor() + 10.0).round();
-    if node.left != px(left) {
-        node.left = px(left);
-    }
-    let beside = px(left + columns_width(shown.tags.as_ref().map_or(0, Vec::len)) + 8.0);
-    if tip.left != beside {
-        tip.left = beside;
-    }
+/// How wide `icons` icons in a row stand (UI pixels).
+pub fn row_width(icons: usize) -> f32 {
+    icons as f32 * TILE + (icons as f32 - 1.0).max(0.0) * GAP
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -446,11 +439,12 @@ mod tests {
     }
 
     #[test]
-    fn icons_stand_three_to_a_column() {
-        assert_eq!(columns_width(0), 0.0);
-        assert_eq!((columns_width(1), columns_width(3)), (TILE, TILE));
-        assert_eq!(columns_width(4), 2.0 * TILE + GAP);
-        assert_eq!(columns_width(10), 4.0 * TILE + 3.0 * GAP);
+    fn a_row_of_icons_stays_clear_of_the_hotbar() {
+        assert_eq!(row_width(0), 0.0);
+        assert_eq!(row_width(1), TILE);
+        assert_eq!(row_width(4), 4.0 * TILE + 3.0 * GAP);
+        // The hotbar starts 392 UI pixels in on a 1280 wide screen (#97).
+        assert!(16.0 + row_width(PER_ROW) < 392.0);
     }
 
     #[test]

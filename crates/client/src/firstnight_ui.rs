@@ -96,7 +96,8 @@ fn spawn(mut commands: Commands) {
     commands
         .spawn((
             ObjectivesPanel,
-            Node { position_type: PositionType::Absolute, bottom: px(16), right: px(16), width: px(330), flex_direction: FlexDirection::Column, row_gap: px(4), padding: UiRect::all(px(10)), ..default() },
+            // Just above the hotbar, which has the bottom edge here (#97).
+            Node { position_type: PositionType::Absolute, bottom: px(crate::hotbar::REACH + 8.0), right: px(16), width: px(330), flex_direction: FlexDirection::Column, row_gap: px(4), padding: UiRect::all(px(10)), ..default() },
             BackgroundColor(BG),
             Visibility::Hidden,
             Pickable::IGNORE,
@@ -107,7 +108,8 @@ fn spawn(mut commands: Commands) {
     commands
         .spawn((
             HintBox,
-            Node { position_type: PositionType::Absolute, bottom: px(150), left: percent(50), margin: UiRect::left(px(-HINT_WIDTH / 2.0)), width: px(HINT_WIDTH), justify_content: JustifyContent::Center, padding: UiRect::axes(px(12), px(7)), ..default() },
+            // (Clear of the current action's bar, which moved up above the hotbar, #97.)
+            Node { position_type: PositionType::Absolute, bottom: px(crate::hotbar::REACH + 84.0), left: percent(50), margin: UiRect::left(px(-HINT_WIDTH / 2.0)), width: px(HINT_WIDTH), justify_content: JustifyContent::Center, padding: UiRect::axes(px(12), px(7)), ..default() },
             BackgroundColor(Color::srgba(0.02, 0.02, 0.03, 0.72)),
             Visibility::Hidden,
             Pickable::IGNORE,
@@ -296,7 +298,7 @@ fn update_panel(
     commands.entity(body).with_children(|c| {
         c.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, ..default() }).with_children(|row| {
             row.spawn((Text::new(now.title.clone()), font(14.0), TextColor(GOLD)));
-            row.spawn((Text::new("O hides"), font(11.0), TextColor(DIM)));
+            row.spawn((Text::new("O hides"), font(crate::theme::SMALL), TextColor(DIM)));
         });
         c.spawn((Text::new(now.when.clone()), font(13.0), TextColor(if f.phase() == Phase::Day { DIM } else { GOLD })));
         for (done, label) in &now.rows {

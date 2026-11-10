@@ -88,7 +88,7 @@ struct NoteLine;
 struct Shown(String);
 
 const TEXT: Color = Color::srgb(0.93, 0.9, 0.82);
-const DIM: Color = Color::srgb(0.65, 0.63, 0.58);
+const DIM: Color = crate::theme::DIM;
 const ROW: Color = Color::srgba(1.0, 1.0, 1.0, 0.025);
 const ROW_HOVER: Color = Color::srgba(0.3, 0.28, 0.2, 0.9);
 const ROW_PICKED: Color = Color::srgba(0.36, 0.3, 0.12, 0.95);
@@ -567,7 +567,8 @@ pub struct InventoryUiPlugin;
 impl Plugin for InventoryUiPlugin {
     fn build(&self, app: &mut App) {
         let options = app.world().get_resource::<crate::Options>().cloned();
-        let open = options.as_ref().is_some_and(|o| o.inventory);
+        // Open as it was left last session (`panels.rs`), or by `--inventory`.
+        let open = options.as_ref().is_some_and(|o| o.inventory) || crate::ui_scale::SettingsStore::ensure(app).panels.inventory.open;
         let find = Find { query: options.as_ref().and_then(|o| o.find.clone()).unwrap_or_default(), typing: false, groups: options.as_ref().and_then(|o| o.filter.as_deref()).map_or(Vec::new(), Group::parse_list), open: false };
         let tabs = options.as_ref().and_then(|o| o.tab.clone()).unwrap_or_default().to_ascii_lowercase();
         let ui = PanelUi {
@@ -592,7 +593,8 @@ impl Plugin for InventoryUiPlugin {
             .init_resource::<InFlight>()
             .init_resource::<MakeUi>()
             .init_resource::<ItemMenu>()
-            .add_systems(Startup, spawn)
+            .init_resource::<HoveredItem>()
+            .add_systems(Startup, spawn.after(crate::hud::spawn_hud))
             .add_systems(PreUpdate, (type_search, menu_keys).chain().in_set(TextEntry).after(bevy::input::InputSystems))
             .add_systems(Update, (toggle, keep_note, track_flight, follow_open, prune_picked, script_picks, menu_from_options, send_clicks, world_menu, script_menu, menu_act, send_picked, flush, rebuild, draw_menu).chain());
     }
@@ -602,10 +604,11 @@ fn font(size: f32) -> TextFont {
     TextFont { font_size: bevy::text::FontSize::Px(size), ..default() }
 }
 
-fn spawn(mut commands: Commands) {
+fn spawn(mut commands: Commands, column: Query<Entity, With<crate::hud::BottomLeft>>) {
     commands.spawn((
         PanelRoot,
         crate::hud::TopPanel,
+        crate::panels::PanelId::Inventory,
         Visibility::Hidden,
         Node {
             position_type: PositionType::Absolute,
@@ -619,15 +622,19 @@ fn spawn(mut commands: Commands) {
             overflow: Overflow::scroll_y(),
             ..default()
         },
-        BackgroundColor(Color::srgba(0.02, 0.02, 0.03, 0.86)),
+        BackgroundColor(crate::theme::PANEL_BG),
     ));
-    commands.spawn((
-        NoteLine,
-        Text::new(""),
-        font(15.0),
-        TextColor(OK),
-        Node { position_type: PositionType::Absolute, bottom: px(150), left: px(18), ..default() },
-    ));
+    // The latest note while the panel is shut: just above the HUD's bottom-left column (the tags
+    // and the vitals), however tall that is, on a backing so it reads over the world (#97).
+    let note = (NoteLine, Text::new(""), font(15.0), TextColor(OK), TextLayout::no_wrap(), BackgroundColor(Color::NONE), Pickable::IGNORE);
+    match column.single() {
+        Ok(column) => {
+            commands.spawn((note, Node { position_type: PositionType::Absolute, bottom: percent(100), left: px(0), margin: UiRect::bottom(px(6)), ..default() }, ChildOf(column)));
+        }
+        Err(_) => {
+            commands.spawn((note, Node { position_type: PositionType::Absolute, bottom: px(150), left: px(18), ..default() }));
+        }
+    }
 }
 
 /// Typing into the search box: before anything else reads the keys (order other `PreUpdate` key
@@ -675,7 +682,7 @@ fn toggle(keys: Res<ButtonInput<KeyCode>>, mut panel: ResMut<InventoryPanel>) {
     }
 }
 
-fn keep_note(time: Res<Time>, notes: Res<ItemNotesThisFrame>, panel: Res<InventoryPanel>, mut last: ResMut<LastNote>, mut line: Query<(&mut Text, &mut TextColor), With<NoteLine>>) {
+fn keep_note(time: Res<Time>, notes: Res<ItemNotesThisFrame>, panel: Res<InventoryPanel>, mut last: ResMut<LastNote>, mut line: Query<(&mut Text, &mut TextColor, &mut BackgroundColor), With<NoteLine>>) {
     let now = time.elapsed_secs();
     for n in &notes.0 {
         // The same answer again (E pressed over and over where there's nothing): keep it up, once.
@@ -685,11 +692,12 @@ fn keep_note(time: Res<Time>, notes: Res<ItemNotesThisFrame>, panel: Res<Invento
             println!("item: {}{}", if n.ok { "" } else { "refused: " }, n.text);
         }
     }
-    let Ok((mut t, mut c)) = line.single_mut() else { return };
+    let Ok((mut t, mut c, mut bg)) = line.single_mut() else { return };
     let show = !panel.open && !last.text.is_empty() && time.elapsed_secs() - last.at < NOTE_SECS;
     let want = if show { last.text.clone() } else { String::new() };
     if t.0 != want {
         t.0 = want;
+        bg.0 = if show { crate::theme::HUD_BG } else { Color::NONE };
     }
     c.0 = if last.ok { OK } else { NO };
 }
@@ -1612,15 +1620,23 @@ fn empty_row(col: &mut ChildSpawnerCommands, slot: &str) {
 /// several stacks picks them all.
 fn row(col: &mut ChildSpawnerCommands, cells: Cells, action: RowAction, picked: bool) {
     let rest = if picked { ROW_PICKED } else { ROW };
+    // The item under the pointer, for the hotbar's keys (not a recipe's row).
+    let item = action.left.filter(|_| action.craft.is_none()).map(|_| action.stack.item);
     cells_row(col, cells, rest)
-    .observe(|ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>| {
+    .observe(move |ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>, mut hovered: Option<ResMut<HoveredItem>>| {
         if let Ok(mut bg) = q.get_mut(ev.entity) {
             bg.0 = ROW_HOVER;
         }
+        if let Some(h) = hovered.as_mut() {
+            h.0 = item.map(|i| (ev.entity, i));
+        }
     })
-    .observe(move |ev: On<PointerOut>, mut q: Query<&mut BackgroundColor>| {
+    .observe(move |ev: On<PointerOut>, mut q: Query<&mut BackgroundColor>, mut hovered: Option<ResMut<HoveredItem>>| {
         if let Ok(mut bg) = q.get_mut(ev.entity) {
             bg.0 = rest;
+        }
+        if let Some(h) = hovered.as_mut().filter(|h| h.0.is_some_and(|(e, _)| e == ev.entity)) {
+            h.0 = None;
         }
     })
     .observe(move |ev: On<PointerPress>, keys: Res<ButtonInput<KeyCode>>, mut clicks: ResMut<Clicks>, mut picked: Option<ResMut<Picked>>, listed: Option<Res<Listed>>| {
@@ -1761,6 +1777,25 @@ impl ItemMenu {
             self.version += 1;
         }
         self.chosen = None;
+    }
+}
+
+impl ItemMenu {
+    /// A menu is on screen (its number keys are its own).
+    pub fn is_up(&self) -> bool {
+        self.open.is_some()
+    }
+}
+
+/// The item of the inventory row the pointer is over (and the row), for the hotbar: a number key
+/// over a row puts that item on that slot (`hotbar.rs`).
+#[derive(Resource, Default)]
+pub struct HoveredItem(pub Option<(Entity, u16)>);
+
+impl HoveredItem {
+    /// The item hovered, while its row is still there (rows are rebuilt when the panel changes).
+    pub fn item(&self, rows: &Query<(), With<Node>>) -> Option<u16> {
+        self.0.filter(|(e, _)| rows.contains(*e)).map(|(_, i)| i)
     }
 }
 

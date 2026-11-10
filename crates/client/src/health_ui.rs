@@ -64,7 +64,7 @@ enum PanelClick {
 struct Clicks(Vec<PanelClick>);
 
 const TEXT: Color = Color::srgb(0.93, 0.9, 0.82);
-const DIM: Color = Color::srgb(0.65, 0.63, 0.58);
+const DIM: Color = crate::theme::DIM;
 const BLOOD: Color = Color::srgb(0.95, 0.35, 0.3);
 const SICK: Color = Color::srgb(0.75, 0.85, 0.35);
 const OK: Color = Color::srgb(0.95, 0.85, 0.35);
@@ -77,7 +77,8 @@ pub struct HealthUiPlugin;
 
 impl Plugin for HealthUiPlugin {
     fn build(&self, app: &mut App) {
-        let open = app.world().get_resource::<crate::Options>().is_some_and(|o| o.health);
+        // Open as it was left last session (`panels.rs`), or by `--health`.
+        let open = app.world().get_resource::<crate::Options>().is_some_and(|o| o.health) || crate::ui_scale::SettingsStore::ensure(app).panels.health.open;
         app.insert_resource(HealthPanel { open, ..default() })
             .init_resource::<LastHit>()
             .init_resource::<Shown>()
@@ -95,6 +96,7 @@ fn spawn(mut commands: Commands) {
     commands.spawn((
         PanelRoot,
         crate::hud::TopPanel,
+        crate::panels::PanelId::Health,
         Visibility::Hidden,
         Node {
             position_type: PositionType::Absolute,
@@ -108,7 +110,7 @@ fn spawn(mut commands: Commands) {
             overflow: Overflow::scroll_y(),
             ..default()
         },
-        BackgroundColor(Color::srgba(0.02, 0.02, 0.03, 0.8)),
+        BackgroundColor(crate::theme::PANEL_BG),
     ));
 }
 
@@ -272,7 +274,7 @@ fn rebuild(
         let line = |c: &mut ChildSpawnerCommands, s: String, size: f32, color: Color| {
             c.spawn((Text::new(s), font(size), TextColor(color)));
         };
-        line(c, "Health".into(), 18.0, TEXT);
+        line(c, "Health".into(), crate::theme::TITLE, TEXT);
         line(c, format!("HP {:.0} of {:.0}{}", me.hp.max(0.0), join.combat.player_hp, if me.dead { " (dead)" } else { "" }), 14.0, TEXT);
         if health.losing_per_h > 0.0 {
             line(c, format!("losing {:.1} HP per game hour", health.losing_per_h), 14.0, BLOOD);
@@ -345,7 +347,7 @@ fn rebuild(
                 row(c, format!("  {label}"), OK, ROW, PanelClick::Send(Intent::Treat { player: me.id, wound: None, action: t, item }));
             }
         }
-        line(c, "Click a wound to treat it   H: close".into(), 12.0, DIM);
+        line(c, "Click a wound to treat it   H: close".into(), crate::theme::SMALL, DIM);
     });
 }
 
@@ -353,7 +355,7 @@ fn rebuild(
 fn row(c: &mut ChildSpawnerCommands, label: String, color: Color, bg: Color, click: PanelClick) {
     c.spawn((Node { padding: UiRect::axes(px(6), px(2)), ..default() }, BackgroundColor(bg)))
         .with_children(|r| {
-            r.spawn((Text::new(label), font(13.0), TextColor(color), Pickable::IGNORE));
+            r.spawn((Text::new(label), font(crate::theme::BODY), TextColor(color), Pickable::IGNORE));
         })
         .observe(|ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>| {
             if let Ok(mut b) = q.get_mut(ev.entity) {
