@@ -45,6 +45,7 @@ use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use zombye_net::OutfitView;
+use zombye_sim::items::WeaponCategory;
 use zombye_sim::{BodyPart, ItemDef, WearSlot};
 
 use crate::character::{Body, REGIONS, RigPose, SkinMesh, Wearable, parse_body, parse_wearable};
@@ -97,20 +98,44 @@ struct Gait {
 
 /// `a` - `b` wrapped into (-π, π].
 /// The action clips a body can carry (#62): each made in place, starting and ending near the idle's
-/// first pose, the blow landing 45% of the way through ([`survivor`]'s `U_HIT`).
-const ACTION_CLIPS: [&str; 6] = ["punch", "swing_one", "swing_two", "shot", "shove", "stomp"];
+/// first pose, the blow landing 45% of the way through ([`survivor`]'s `U_HIT`). After the first six,
+/// second swings played in turn at random with the first (`swing_one_b`, `swing_two_b`), a knife's
+/// thrust (`stab`) and the blow down at a zombie on the ground with a weapon in hand, one-handed
+/// (`ground_one`) and two-handed (`ground_two`); bare hands stomp. A body without one plays the
+/// clip it stands in for ([`action_clips`]).
+const ACTION_CLIPS: [&str; 11] = [
+    "punch", "swing_one", "swing_two", "shot", "shove", "stomp", "swing_one_b", "swing_two_b", "stab", "ground_one", "ground_two",
+];
 
-/// Which of [`ACTION_CLIPS`] plays an action, by how the held weapon is swung.
-fn action_clip(kind: zombye_sim::ActionKind, style: Style) -> usize {
+/// The clips of [`ACTION_CLIPS`] that may play an action, by how the held weapon is swung, best
+/// first: the first one the body has plays. `n` is the how-manyth action ([`survivor::ActionClock`]),
+/// and picks between a swing's two variants.
+fn action_clips(kind: zombye_sim::ActionKind, category: WeaponCategory, n: u32) -> &'static [usize] {
     use zombye_sim::ActionKind::*;
-    match (kind, style) {
-        (Swing, Style::Punch) => 0,
-        (Swing, Style::OneHand) => 1,
-        (Swing, Style::TwoHand) => 2,
-        (Swing, Style::Gun) => 3,
-        (Shove, _) => 4,
-        (Stomp, _) => 5,
+    let other = variant(n);
+    match (kind, survivor::style(category)) {
+        (Swing, Style::Punch) => &[0],
+        (Swing, Style::OneHand) if category == WeaponCategory::ShortBlade => &[8, 1],
+        (Swing, Style::OneHand) if other => &[6, 1],
+        (Swing, Style::OneHand) => &[1],
+        (Swing, Style::TwoHand) if other => &[7, 2],
+        (Swing, Style::TwoHand) => &[2],
+        (Swing, Style::Gun) => &[3],
+        (Shove, _) => &[4],
+        (Stomp, Style::OneHand) => &[9, 5],
+        (Stomp, Style::TwoHand) => &[10, 5],
+        (Stomp, _) => &[5],
     }
+}
+
+/// Whether the `n`th action plays a swing's second variant: a hash of `n`, so it doesn't simply
+/// alternate.
+fn variant(n: u32) -> bool {
+    let mut h = n.wrapping_mul(0x9E37_79B9);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x85EB_CA6B);
+    h ^= h >> 13;
+    h & 1 == 1
 }
 
 fn angle_diff(a: f32, b: f32) -> f32 {
@@ -649,7 +674,8 @@ impl SurvivorModel {
             .map(|((bone, grip), turn)| Transform::from_translation((globals[bone] * rig.inverse_bind[bone]).transform_point3(grip)).with_rotation(Quat::from_rotation_z(turn)))
     }
 
-    pub fn compose(&self, a: &SurvivorAnim, now: f32, style: Style, armed: bool) -> RigPose {
+    pub fn compose(&self, a: &SurvivorAnim, now: f32, category: WeaponCategory, armed: bool) -> RigPose {
+        let style = survivor::style(category);
         let body = &self.body;
         let [walk, run, sneak] = std::array::from_fn(|k| self.moving(k, a));
         let idle_u = self.idle.map_or(0.0, |i| now / body.clips[i].secs + a.player as f32 * 0.37);
@@ -673,7 +699,10 @@ impl SurvivorModel {
             pose.blend_bones(&self.retarget.apply(body, &b), w, Some(self.arms.as_slice()));
         }
         let clip = survivor::action_clock(a, now)
-            .and_then(|(kind, u, w)| self.actions[action_clip(kind, style)].map(|i| (body.clips[i].sample(u.clamp(0.0, 0.999)), w, kind)));
+            .and_then(|(kind, n, u, w)| {
+                let i = action_clips(kind, category, n).iter().find_map(|&c| self.actions[c])?;
+                Some((body.clips[i].sample(u.clamp(0.0, 0.999)), w, kind))
+            });
         if let Some((clip, w, kind)) = clip {
             // The body's own clip (made with the blow at `U_HIT`): the whole body standing (a stomp
             // always), the upper body over the legs' gait when moving.
@@ -981,6 +1010,20 @@ pub(crate) fn dress_survivors(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moves_follow_the_weapon_and_vary() {
+        use zombye_sim::ActionKind::*;
+        let name = |k, c, n| action_clips(k, c, n).iter().map(|&i| ACTION_CLIPS[i]).collect::<Vec<_>>();
+        assert_eq!(name(Swing, WeaponCategory::ShortBlade, 1), ["stab", "swing_one"]);
+        assert_eq!(name(Stomp, WeaponCategory::Unarmed, 1), ["stomp"]);
+        assert_eq!(name(Stomp, WeaponCategory::ShortBlunt, 1), ["ground_one", "stomp"]);
+        assert_eq!(name(Stomp, WeaponCategory::Axe, 1), ["ground_two", "stomp"]);
+        // Both two-handed swings turn up, not in a strict alternation.
+        let b: Vec<bool> = (0..40).map(|n| name(Swing, WeaponCategory::LongBlunt, n)[0] == "swing_two_b").collect();
+        assert!(b.iter().filter(|x| **x).count() > 10 && b.iter().filter(|x| !**x).count() > 10);
+        assert!(b.windows(2).any(|w| w[0] == w[1]));
+    }
 
     /// The promoted survivor and its wearables' folder (or a work-in-progress export: `ZOMBYE_SURVIVOR`).
     fn shipped_body() -> (Body, PathBuf) {

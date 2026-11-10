@@ -270,6 +270,9 @@ pub(crate) fn style(category: WeaponCategory) -> Style {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ActionClock {
     pub(crate) kind: ActionKind,
+    /// The how-manyth action this survivor began on this client: picks which of a move's variants
+    /// plays (only how it looks, so clients needn't agree).
+    pub(crate) n: u32,
     start: f32,
     land: f32,
     /// Set once the server says it landed.
@@ -321,6 +324,8 @@ pub struct SurvivorAnim {
     pub(crate) cycle: f32,
     pub(crate) idle: f32,
     pub(crate) action: Option<ActionClock>,
+    /// Actions begun so far ([`ActionClock::n`]).
+    begun: u32,
     last_tick: u64,
     /// Our own survivor on a multiplayer server (#23): the action begun on the click that
     /// `action` is playing (the input it went with, `player::OwnSwing::seq`) until the snapshots
@@ -360,6 +365,7 @@ impl SurvivorAnim {
             cycle: 0.0,
             idle: 0.0,
             action: None,
+            begun: 0,
             last_tick: u64::MAX,
             own: None,
             own_confirmed: false,
@@ -466,7 +472,8 @@ fn animate_survivors(
             a.own_taken = s.seq;
             a.own = Some(s.seq);
             a.own_confirmed = false;
-            a.action = Some(ActionClock { kind: s.kind, start: s.at, land: s.at + s.windup, end: Some(s.at + s.total) });
+            a.begun += 1;
+            a.action = Some(ActionClock { kind: s.kind, n: a.begun, start: s.at, land: s.at + s.windup, end: Some(s.at + s.total) });
         }
         // The action under way, timed from snapshots.
         if link.curr.tick != a.last_tick {
@@ -493,7 +500,10 @@ fn animate_survivors(
                 None => match view.action {
                     Some(kind) => match &mut a.action {
                         Some(c) if c.kind == kind && c.end.is_none() => c.land = now + view.action_left - lag,
-                        _ => a.action = Some(ActionClock { kind, start: now - TICK_DT, land: now + view.action_left - lag, end: None }),
+                        _ => {
+                            a.begun += 1;
+                            a.action = Some(ActionClock { kind, n: a.begun, start: now - TICK_DT, land: now + view.action_left - lag, end: None });
+                        }
                     },
                     None => {
                         if let Some(c) = &mut a.action
@@ -582,7 +592,7 @@ fn animate_survivors(
             }
             Look::Model(js) => {
                 let Some(model) = &model else { continue };
-                let pose = model.compose(a, now, style(category), armed);
+                let pose = model.compose(a, now, category, armed);
                 for (b, e) in js.iter().take(pose.t.len()).enumerate() {
                     if let Ok(mut jt) = joints.get_mut(*e) {
                         jt.translation = pose.t[b];
@@ -632,9 +642,9 @@ fn hold_pose(a: &mut SurvivorAnim, pose: &str, step: f32, now: f32) {
         locomotion(a, 0.0, 0.0, 0.0);
         // Started, landing and recovering so that the clip is at `u` now.
         a.action = Some(if u <= U_HIT {
-            ActionClock { kind, start: now - u, land: now + (U_HIT - u), end: None }
+            ActionClock { kind, n: a.begun, start: now - u, land: now + (U_HIT - u), end: None }
         } else {
-            ActionClock { kind, start: now - 1.0, land: now - (u - U_HIT), end: Some(now + (1.0 - u)) }
+            ActionClock { kind, n: a.begun, start: now - 1.0, land: now - (u - U_HIT), end: Some(now + (1.0 - u)) }
         });
     };
     match name {
@@ -686,10 +696,10 @@ pub(crate) fn locomotion(a: &SurvivorAnim, armed: bool) -> SPose {
 /// upper body) and its weight now.
 /// The action under way: its kind, how far through it is (0 to 1, the blow at [`U_HIT`]) and how much
 /// it shows (eased in and out).
-pub(crate) fn action_clock(a: &SurvivorAnim, now: f32) -> Option<(ActionKind, f32, f32)> {
+pub(crate) fn action_clock(a: &SurvivorAnim, now: f32) -> Option<(ActionKind, u32, f32, f32)> {
     let c = a.action?;
     let u = c.u(now);
-    Some((c.kind, u, smooth(0.0, 0.06, u) * (1.0 - smooth(0.88, 1.0, u))))
+    Some((c.kind, c.n, u, smooth(0.0, 0.06, u) * (1.0 - smooth(0.88, 1.0, u))))
 }
 
 pub(crate) fn action_now(a: &SurvivorAnim, now: f32, style: Style, armed: bool) -> Option<(SPose, bool, f32)> {
@@ -1233,7 +1243,7 @@ mod tests {
 
     #[test]
     fn action_clock_spans_windup_and_recovery() {
-        let c = ActionClock { kind: ActionKind::Swing, start: 1.0, land: 1.5, end: Some(2.0) };
+        let c = ActionClock { kind: ActionKind::Swing, n: 0, start: 1.0, land: 1.5, end: Some(2.0) };
         assert_eq!(c.u(1.0), 0.0);
         assert!((c.u(1.5) - U_HIT).abs() < 1e-6);
         assert_eq!(c.u(3.0), 1.0);

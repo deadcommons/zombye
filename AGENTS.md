@@ -1463,7 +1463,7 @@ stands still may count as changed.** Each of these cost milliseconds a frame bef
   holding a weapon at the ready, swing / shove / stomp (timed as before; but a body clip named `punch`, `swing_one`,
   `swing_two`, `shot`, `shove` or `stomp` plays instead of the grey-box poses for that action, by the held weapon's style:
   made in place, the blow at 45%, from and back to the idle's first pose; the whole body standing, the upper body over the
-  gait when moving, a stomp always whole; `survivor_model::ACTION_CLIPS`), the flinch (additive) and the fall onto the
+  gait when moving, a stomp always whole; `survivor_model::ACTION_CLIPS`; besides those, `swing_one_b` / `swing_two_b` are second swings picked at random per swing, `stab` is a blade's swing, and `ground_one` / `ground_two` play over a stomp with a one- or two-handed weapon in hand: only the look, the stomp's damage stays the boot's; `action_clips` says which stand in when a body lacks one), the flinch (additive) and the fall onto the
   back when dead or asleep; then grounded on the lowest foot vertex. `step_movement` and prediction are untouched.
   **Dressing:** `Snapshot::outfits` (`net::OutfitView`: worn items, the back and shoulder bags, what's in each hand,
   by item index; every player, every snapshot) says what's drawn, for us and for others, changing the moment it does: the body with the
