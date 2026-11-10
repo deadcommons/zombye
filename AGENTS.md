@@ -1151,6 +1151,13 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   record) replace them file for file in #78, made with the **[elevenlabs-sounds skill](.claude/skills/elevenlabs-sounds/SKILL.md)**
   and `tools/audio/zsound.py` (`check` lists every cue's files, their loudness and which are still placeholders). Files are 16-bit PCM WAV (mono or stereo, 8-96 kHz; we decode them ourselves,
   `audio::parse_wav`). Every file has an ATTRIBUTION.md row and is used by a cue (a test checks both).
+- **Release audio** (`release_audio.rs`; #154): ElevenLabs' terms forbid publishing its output as separate files, so
+  ElevenLabs sounds (and any music under such terms) are never in this repo: `zsound.py promote` puts them in the art
+  repo's `release-audio/` (`audio/<folder>/*.wav`, its own ATTRIBUTION.md, optionally `data/sounds.ron` and
+  `data/music.ron`), and release builds carry that folder. The client reads `$ZOMBYE_RELEASE_AUDIO`, else
+  `release-audio` beside its binary: each audio file there replaces the same-named one under `assets/audio/`, and its
+  `sounds.ron` / `music.ron` replace the game's (not a `--data` folder's own). Without it the game plays this repo's files.
+  Sounds we record ourselves are public as before.
 - **What plays when** (client only, from the snapshots; nothing in the sim): footsteps from each player's movement, one per
   stride by stance (sneak quiet), hard or soft by the floor, none while climbing or asleep; active zombies within 12 m
   walking shuffle (a drag every 1.2 m); groans per zombie every 3-7 s attacking or battering, 7-15 s walking, 12-30 s idle (staggered, so a crowd

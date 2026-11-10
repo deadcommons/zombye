@@ -20,6 +20,11 @@ No third-party asset packs (Synty, marketplace packs and similar), even if you o
 In the table, our own art and audio use the licence `CC BY-NC-SA 4.0`.
 Until an asset exists, the game uses grey-box shapes.
 
+**Release audio (#154):** Zombye's release builds also carry some sounds that are not in this
+repository and not under its licence, because their generator's terms (ElevenLabs Sound Effects and
+Music) don't allow publishing the output as separate files. They are listed in the private art repo's
+`release-audio/ATTRIBUTION.md`. Built from this repository alone, the game plays the files listed here.
+
 **AI-generated assets:** fill in the *Generator* column with the tool and plan, for example
 `Meshy (Pro)`. Generate on a paid plan where the free plan's output carries an attribution
 licence (Meshy's free plan output is CC BY 4.0; paid plans give full ownership). Prompts and

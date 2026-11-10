@@ -16,6 +16,12 @@ allow the raw files in a public repo).
 
 ## Rules first
 
+- **ElevenLabs output never goes in the public repo** (#154). Its Sound Effects and Music terms forbid
+  publishing it "as isolated audio files" or as a library without their written OK, and this repo hands
+  out every file under CC BY-NC-SA. `zsound.py promote` sends any spec whose generator is ElevenLabs to the
+  art repo's `release-audio/` instead (release builds carry it; the client's `release_audio.rs`). The public
+  repo keeps the synth placeholders and sounds we record ourselves. `release_only: false` in a spec only
+  once ElevenLabs has agreed in writing. Voice Changer output counts as ElevenLabs output too.
 - **Credits are money.** Before the first paid call of a session, say what you'll generate, how many
   takes, and the expected credits, and **wait for the owner's typed OK**. Check the balance with the
   MCP's `check_subscription` (free) before and after each batch and keep a running total in the work
@@ -45,7 +51,7 @@ allow the raw files in a public repo).
 | 4. Slice | `zsound.py split raw/take_N.mp3` lists the separate sounds it finds as `files` lines (`--db -35` hears quieter ones, `--gap 80` splits closer ones). Pick the best, name them as the files they replace (`footstep_hard_1` ...). | 0 |
 | 5. Clean | `zsound.py clean <cue-name>`: export/*.wav, with each file's length, peak, loudness and how much was trimmed. Tune `clean` in the spec (high-pass, trim, fades, `max_secs`, per-file `gain_db` to even variants out) and run it again. | 0 |
 | 6. Review | `zsound.py audition <cue-name>` writes `renders/audition.wav` (every file in order, loops twice). Send it to the owner (attach it, or play it on the Mac) with the placeholder for comparison. Then try it in game: copy `export/` over the files in a scratch `--data` copy, or promote to a branch and run `cargo run -p zombye-client --profile play`. **Gate: the owner approves in words**; set `status: ready` in `meta.yml`. | 0 |
-| 7. Promote | `zsound.py promote <cue-name>` copies the files to `assets/audio/<folder>/`, writes their ATTRIBUTION.md rows (tool, plan, prompt), notes files `sounds.ron` doesn't list yet. Adjust the cue's `volume`, `pitch`, `voices` in `sounds.ron` by ear if needed. `zsound.py check` must say `ok`, `cargo test -p zombye-client --release audio` must pass. Commit (`Refs #78`), then `zsound.py record <commit> <cue-name>`. | 0 |
+| 7. Promote | `zsound.py promote <cue-name>` copies ElevenLabs files to the art repo's `release-audio/audio/<folder>/` with rows in its ATTRIBUTION.md (commit them there), and our own recordings to `assets/audio/<folder>/` with ATTRIBUTION.md rows here; it notes files `sounds.ron` doesn't list yet (for release-only ones, `release-audio/data/sounds.ron`). Adjust the cue's `volume`, `pitch`, `voices` in `sounds.ron` by ear if needed. `zsound.py check` must say `ok`, `cargo test -p zombye-client --release audio` must pass. Commit (`Refs #78`), then `zsound.py record <commit> <cue-name>`. | 0 |
 
 When the last placeholder of a kind goes, drop its maker from `synth.py` (its `add(...)` line), so
 running it again doesn't overwrite a real sound.
