@@ -262,7 +262,9 @@ The world's generated parts and its props both carry the story. Targets for a de
 - **Status icons:** simple glyphs on a dark dab of paint, bottom left: white at the first level,
   then pale and strong yellow; only the worst level is red.
 - **Text:** bone white for content, a dimmer warm grey for secondary text; one plain sans-serif
-  (still Bevy's built-in monospace: a typeface of our own choosing is one change in `theme::font`).
+  family: Barlow for text and the HUD, Barlow Condensed SemiBold in capitals for titles, tabs and
+  headers (SIL OFL 1.1, `assets/fonts/barlow/`; `theme::font`, `strong`, `head`). Monospace only on
+  the developer's read-outs (the stats line, the debug stats window, the light preview).
 - **Colour meanings:** red for blood, danger and health nearly gone; yellow for warnings; zombie
   green for sickness; cool blue for sleep; gold for level-ups, what's picked and good outcomes. No
   other hues.

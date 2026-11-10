@@ -172,7 +172,7 @@ fn column(ctx: &Ctx, listed: &mut Vec<Key>, b: &mut ChildSpawnerCommands, inv: &
             c.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(1), padding: UiRect::axes(px(3), px(2)), flex_shrink: 0.0, ..default() }, BackgroundColor(SPOT))).with_children(|s| {
                 // A place with nothing at it is one line: its name, and a dash at the end.
                 s.spawn((Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, padding: UiRect::axes(px(1), px(0)), ..default() }, Pickable::IGNORE)).with_children(|t| {
-                    t.spawn((Text::new(spot.label()), font(ROW_FONT), TextColor(DIM), TextLayout::no_wrap(), Pickable::IGNORE));
+                    t.spawn((Text::new(spot.label().to_uppercase()), crate::theme::head(ROW_FONT), TextColor(DIM), TextLayout::no_wrap(), Pickable::IGNORE));
                     if here.is_empty() {
                         t.spawn((Text::new("-"), font(ROW_FONT), TextColor(DIM), Pickable::IGNORE));
                     }

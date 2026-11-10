@@ -103,8 +103,11 @@ const OK: Color = theme::GOLD;
 const NO: Color = theme::BAD;
 const NOTE_SECS: f32 = 4.0;
 /// The panel's two text sizes: rows (and everything small), and headers.
-const ROW_FONT: f32 = 14.0;
-const HEAD_FONT: f32 = 17.0;
+const ROW_FONT: f32 = theme::BODY;
+const HEAD_FONT: f32 = 18.0;
+/// The tabs' labels and the column headers: the heading face, a size up from the rows (it is
+/// condensed, so it reads smaller than the text face at the same size).
+const TAB_FONT: f32 = 16.0;
 /// A pane's width, a tab's, and a row's cells: the fold mark, the swatch, type, count and weight
 /// (the name takes the rest).
 const PANE_W: f32 = 400.0;
@@ -638,7 +641,7 @@ fn spawn(mut commands: Commands, column: Query<Entity, With<crate::hud::BottomLe
     ));
     // The latest note while the panel is shut: just above the HUD's bottom-left column (the tags
     // and the vitals), however tall that is, on a backing so it reads over the world (#97).
-    let note = (NoteLine, Text::new(""), font(15.0), TextColor(OK), TextLayout::no_wrap(), BackgroundColor(Color::NONE), Pickable::IGNORE);
+    let note = (NoteLine, Text::new(""), theme::strong(15.0), TextColor(OK), TextLayout::no_wrap(), BackgroundColor(Color::NONE), Pickable::IGNORE);
     match column.single() {
         Ok(column) => {
             commands.spawn((note, Node { position_type: PositionType::Absolute, bottom: percent(100), left: px(0), margin: UiRect::bottom(px(6)), ..default() }, ChildOf(column)));
@@ -1362,7 +1365,7 @@ fn make(c: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f3
             t.spawn((Node { width: px(W_LEAD + 10.0), justify_content: JustifyContent::Center, ..default() }, theme::button(false), Pickable::IGNORE)).with_children(|f| {
                 f.spawn((Text::new(if ui.shown { "-" } else { "+" }), font(ROW_FONT), TextColor(INK), Pickable::IGNORE));
             });
-            t.spawn((Text::new("Make"), font(HEAD_FONT), TextColor(TEXT), Pickable::IGNORE));
+            t.spawn((Text::new("MAKE"), theme::head(HEAD_FONT), TextColor(TEXT), Pickable::IGNORE));
             t.spawn((Text::new(summary), font(ROW_FONT), TextColor(DIM), Pickable::IGNORE));
         })
         .observe(|ev: On<PointerPress>, mut ui: ResMut<MakeUi>| {
@@ -1435,7 +1438,7 @@ fn pane(panes: &mut ChildSpawnerCommands, title: &str, top: PaneTop, gauge: Gaug
     panes.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(1), width: px(PANE_W), min_height: px(230), padding: UiRect::all(px(8)), flex_shrink: 0.0, ..default() }, BackgroundColor(PANE))).with_children(|col| {
         // The pane's title, centred; "pick all" at its right end, out of the layout.
         col.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::Center, align_items: AlignItems::Center, margin: UiRect::bottom(px(6)), ..default() }).with_children(|t| {
-            t.spawn((Text::new(title.to_string()), font(HEAD_FONT), TextColor(TEXT), TextLayout::no_wrap()));
+            t.spawn((Text::new(title.to_uppercase()), theme::head(HEAD_FONT), TextColor(TEXT), TextLayout::no_wrap()));
             match top {
                 // Every stack this pane shows, picked in one click (again: unpicked).
                 PaneTop::PickAll(which) => {
@@ -1486,7 +1489,7 @@ fn head(h: &mut ChildSpawnerCommands, label: &str, key: Option<SortKey>, sort: S
     let (mark, on) = key.map_or(("", false), |k| (sort.mark(k), sort.key == k));
     let mut e = h.spawn(node);
     e.with_children(|c| {
-        c.spawn((Text::new(format!("{label}{mark}")), font(ROW_FONT), TextColor(if on { TEXT } else { DIM }), TextLayout::no_wrap(), Pickable::IGNORE));
+        c.spawn((Text::new(format!("{label}{mark}")), theme::head(TAB_FONT), TextColor(if on { TEXT } else { DIM }), TextLayout::no_wrap(), Pickable::IGNORE));
     });
     if let Some(key) = key {
         e.observe(move |_: On<PointerPress>, mut ui: ResMut<PanelUi>| ui.sort.press(key));
@@ -1498,14 +1501,20 @@ fn tab_strip() -> Node {
     Node { flex_direction: FlexDirection::Column, row_gap: px(4), width: px(TAB_W), flex_shrink: 0.0, ..default() }
 }
 
+/// How tall a tab is for its label (in capitals, in the heading face, measured from the face's own
+/// widths) with 12 UI pixels of room at each end.
+fn tab_height(label: &str) -> f32 {
+    (theme::width(theme::Face::Head, &label.to_uppercase(), TAB_FONT) + 24.0).ceil()
+}
+
 /// A slim tab on a pane's edge, its label turned to read down it; `on`: the one the pane shows.
 /// The caller observes its presses.
 fn tab<'a>(strip: &'a mut ChildSpawnerCommands, label: &str, on: bool) -> EntityCommands<'a> {
     // (The label doesn't take part in the tab's height once turned, so the tab is sized for it.)
-    let height = label.chars().count() as f32 * ROW_FONT * 0.62 + 24.0;
+    let height = tab_height(label);
     let mut e = strip.spawn((Node { width: px(TAB_W), height: px(height), justify_content: JustifyContent::Center, align_items: AlignItems::Center, flex_shrink: 0.0, ..default() }, BackgroundColor(if on { PANE } else { TAB })));
     e.with_children(|t| {
-        t.spawn((Text::new(label.to_string()), font(ROW_FONT), TextColor(if on { TEXT } else { DIM }), TextLayout::no_wrap(), Node { flex_shrink: 0.0, ..default() }, UiTransform::from_rotation(Rot2::degrees(90.0)), Pickable::IGNORE));
+        t.spawn((Text::new(label.to_uppercase()), theme::head(TAB_FONT), TextColor(if on { TEXT } else { DIM }), TextLayout::no_wrap(), Node { flex_shrink: 0.0, ..default() }, UiTransform::from_rotation(Rot2::degrees(90.0)), Pickable::IGNORE));
     });
     e
 }
@@ -1515,7 +1524,7 @@ fn chip<'a>(parent: &'a mut ChildSpawnerCommands, text: String, on: bool) -> Ent
     // A plain light button with a worn edge (`theme::button`); the one that's on is gold.
     let mut e = parent.spawn((Node { padding: UiRect::axes(px(7), px(3)), justify_content: JustifyContent::Center, ..default() }, theme::button(on)));
     e.with_children(|b| {
-        b.spawn((Text::new(text), font(ROW_FONT), TextColor(INK), TextLayout::no_wrap(), Pickable::IGNORE));
+        b.spawn((Text::new(text), theme::strong(ROW_FONT), TextColor(INK), TextLayout::no_wrap(), Pickable::IGNORE));
     });
     e
 }
@@ -1529,7 +1538,7 @@ fn top_bar(c: &mut ChildSpawnerCommands, find: &Find, n: usize, kg: f32, open: O
         // come and go without moving it). With stacks picked, the move-to row has the line.
         if n == 0 {
             bar.spawn((Node { position_type: PositionType::Absolute, left: px(0), right: px(0), top: px(0), bottom: px(0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, Pickable::IGNORE)).with_children(|t| {
-                t.spawn((Text::new("INVENTORY"), font(theme::TITLE), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
+                t.spawn((Text::new("INVENTORY"), theme::head(theme::TITLE), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
             });
         }
         bar.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(6), align_items: AlignItems::Center, ..default() }).with_children(|l| {
@@ -2058,14 +2067,14 @@ fn draw_menu(mut commands: Commands, menu: Res<ItemMenu>, ui: Res<UiScale>, wind
     commands
         .spawn((MenuRoot, node, GlobalZIndex(20), theme::strip()))
         .with_children(|c| {
-            c.spawn((Text::new(m.title.clone()), font(theme::SMALL), TextColor(DIM), Node { align_self: AlignSelf::Center, padding: UiRect::axes(px(6), px(2)), ..default() }));
+            c.spawn((Text::new(m.title.to_uppercase()), theme::head(theme::BODY), TextColor(DIM), Node { align_self: AlignSelf::Center, padding: UiRect::axes(px(6), px(2)), ..default() }));
             c.spawn((Node { height: px(2), margin: UiRect::bottom(px(3)), ..default() }, theme::rule(), Pickable::IGNORE));
             for (k, e) in m.entries.iter().enumerate() {
                 let rest = if k == 0 { ROW_PICKED } else { ROW };
                 c.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(10), padding: UiRect::axes(px(6), px(3)), ..default() }, BackgroundColor(rest)))
                     .with_children(|r| {
-                        r.spawn((Text::new(format!("{}", k + 1)), font(13.0), TextColor(OK), Pickable::IGNORE));
-                        r.spawn((Text::new(e.label.clone()), font(14.0), TextColor(TEXT), Pickable::IGNORE));
+                        r.spawn((Text::new(format!("{}", k + 1)), theme::strong(theme::SMALL), TextColor(OK), Pickable::IGNORE));
+                        r.spawn((Text::new(e.label.clone()), font(theme::BODY), TextColor(TEXT), Pickable::IGNORE));
                     })
                     .observe(|ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>| {
                         if let Ok(mut bg) = q.get_mut(ev.entity) {
@@ -2586,6 +2595,8 @@ mod tests {
             bevy::ui::UiPlugin,
             bevy::picking::DefaultPickingPlugins,
         ));
+        // The skin's typefaces: without them a row's text has no size, and so no height to press.
+        app.add_plugins(theme::ThemePlugin);
         app
     }
 

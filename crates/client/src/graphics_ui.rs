@@ -93,7 +93,8 @@ struct AutoMeasure {
 #[derive(Component)]
 struct GraphicsPanel;
 
-fn spawn(mut commands: Commands) {
+fn spawn(mut commands: Commands, options: Res<Options>, mut ui: ResMut<GraphicsUi>) {
+    ui.open |= options.graphics_panel;
     commands.spawn((
         GraphicsPanel,
         Node { position_type: PositionType::Absolute, top: px(16), left: Val::Percent(50.0), margin: UiRect::left(px(-WIDTH / 2.0)), width: px(WIDTH), flex_direction: FlexDirection::Column, row_gap: px(8), padding: UiRect::axes(px(theme::SHEET_PAD.0), px(theme::SHEET_PAD.1)), display: Display::None, ..default() },
@@ -189,13 +190,13 @@ fn show(mut commands: Commands, mut ui: ResMut<GraphicsUi>, graphics: Res<Graphi
     let current = graphics.preset;
     let from_flags = options.graphics.is_some() || options.vegetation.is_some() || options.no_post.is_some();
     commands.entity(entity).with_children(|p| {
-        p.spawn((Text::new("Graphics"), font(TITLE), TextColor(TEXT), Pickable::IGNORE));
+        p.spawn((Text::new("GRAPHICS"), theme::head(TITLE), TextColor(TEXT), Pickable::IGNORE));
         p.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(6), flex_wrap: FlexWrap::Wrap, ..default() }, Pickable::IGNORE)).with_children(|row| {
             for choice in Preset::CHOICES {
                 let on = choice == current;
                 row.spawn((Node { padding: UiRect::axes(px(12), px(4)), ..default() }, theme::button(on)))
                     .with_children(|b| {
-                        b.spawn((Text::new(choice.name()), font(BODY), TextColor(INK), Pickable::IGNORE));
+                        b.spawn((Text::new(choice.name()), theme::strong(BODY), TextColor(INK), Pickable::IGNORE));
                     })
                     .observe(move |_: On<PointerPress>, mut ui: ResMut<GraphicsUi>| ui.picked = Some(choice));
             }

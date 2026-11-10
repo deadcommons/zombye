@@ -9,6 +9,9 @@ Not covered by this licence (MIT OR Apache-2.0, like the code):
 - assets/data/ (building templates, items, population and other game data)
 - assets/shaders/ (shader source code)
 
+Not covered either, and not ours: assets/fonts/barlow/ (the Barlow typefaces, Copyright 2017 The
+Barlow Project Authors, SIL Open Font License 1.1: assets/fonts/barlow/OFL.txt).
+
 An asset whose row in ATTRIBUTION.md names a different licence (for example CC0, or a third-party
 CC BY asset) is under that licence instead.
 

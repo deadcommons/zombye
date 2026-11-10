@@ -106,7 +106,9 @@ pub fn spawn_hud(mut commands: Commands) {
         ))
         .with_children(|c| {
             // On a dark backing of its own, so it reads over sunlit ground too (#97).
-            c.spawn((HudText, Text::new(""), font(theme::BODY), TextColor(TEXT), BackgroundColor(theme::HUD_BG.with_alpha(0.7))));
+            // (The stats line and the keys: a developer's read-out, its numbers changing every
+            // second, so it stays monospace and nothing in it shifts.)
+            c.spawn((HudText, Text::new(""), theme::mono(14.0), TextColor(TEXT), BackgroundColor(theme::HUD_BG.with_alpha(0.7))));
         });
     // The bottom-left column: the status tags (`needs_ui.rs` puts them first) over the vitals.
     let column = commands
@@ -121,9 +123,9 @@ pub fn spawn_hud(mut commands: Commands) {
         .spawn((VitalsPanel, Node { flex_direction: FlexDirection::Column, row_gap: px(6), padding: UiRect::axes(px(theme::STRIP_PAD.0 + 2.0), px(theme::STRIP_PAD.1 + 2.0)), ..default() }, theme::strip(), ChildOf(column)))
         .with_children(|c| {
             c.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Baseline, column_gap: px(10), ..default() }).with_children(|row| {
-                row.spawn((WeaponText, Text::new(""), font(theme::TITLE), TextColor(TEXT)));
+                row.spawn((WeaponText, Text::new(""), theme::head(theme::TITLE), TextColor(TEXT)));
                 row.spawn((StanceText, Text::new(""), font(theme::BODY), TextColor(DIM)));
-                row.spawn((DevText, Text::new(""), font(theme::BODY), TextColor(DEV_COLOR)));
+                row.spawn((DevText, Text::new(""), theme::strong(theme::BODY), TextColor(DEV_COLOR)));
             });
             // Health as one rough brushed bar (Linear DCM-61, from the owner's reference; DCM-57
             // took the stat bars out: this is the one that came back). What else is wrong is still
