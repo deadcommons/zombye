@@ -159,6 +159,9 @@ pub struct Options {
     pub autoplay: bool,
     /// Verification: start on open ground with a bat and a few zombies close by (`--fight-demo`).
     pub fight_demo: bool,
+    /// `--weapons-demo`: the fight demo played by itself, unhurt, with a new weapon in hand every few
+    /// seconds and zombies kept coming, to watch every weapon's stance and blows (`autoplay.rs`).
+    pub weapons_demo: bool,
     /// Verification: start outside your house with a bat and a few zombies battering its door
     /// (`--siege`).
     pub siege: bool,
@@ -453,8 +456,9 @@ impl Options {
                 .unwrap_or_else(|| vec![5.0]),
             zoom: value("--zoom").and_then(|v| v.parse().ok()),
             exit_after: value("--exit-after").and_then(|v| v.parse().ok()),
-            autoplay: flag("--autoplay"),
-            fight_demo: flag("--fight-demo"),
+            autoplay: flag("--autoplay") || flag("--weapons-demo"),
+            fight_demo: flag("--fight-demo") || flag("--weapons-demo"),
+            weapons_demo: flag("--weapons-demo"),
             siege: flag("--siege"),
             pvp: flag("--pvp") || flag("--duel") || flag("--holdup-demo") || flag("--holdup-auto"),
             duel: flag("--duel"),
