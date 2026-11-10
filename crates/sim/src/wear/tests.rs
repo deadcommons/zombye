@@ -190,7 +190,9 @@ fn found_weapons_have_seen_some_use() {
 fn a_blow_too_close_is_cramped() {
     let mean = |east: f32| {
         let mut c = config(13);
-        c.weapons.iter_mut().find(|w| w.id == "baseball_bat").unwrap().wear_chance = 1e-9;
+        let bat = c.weapons.iter_mut().find(|w| w.id == "baseball_bat").unwrap();
+        // (Wide enough that the zombie shuffling about during the windup stays inside it.)
+        (bat.wear_chance, bat.close_range) = (1e-9, 0.6);
         let (mut w, id) = field(c, "baseball_bat");
         let z = dummy(&mut w, east);
         let before = w.zombies.hp[z];
@@ -200,8 +202,8 @@ fn a_blow_too_close_is_cramped() {
         (before - w.zombies.hp[z]) / 40.0
     };
     let c = config(13);
-    // The bat's close_range is to the body's edge: 0.65 m off its middle is inside it, 1.2 m isn't.
-    let (close, far) = (mean(0.65), mean(1.2));
+    // close_range is to the body's edge: 0.65 m off its middle is inside 0.6 m, 1.3 m isn't.
+    let (close, far) = (mean(0.65), mean(1.3));
     assert!((close / far - c.combat.cramped_damage).abs() < 0.08, "close {close}, far {far}");
 }
 
