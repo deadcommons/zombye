@@ -107,9 +107,11 @@ const ACTION_CLIPS: [&str; 11] = [
     "punch", "swing_one", "swing_two", "shot", "shove", "stomp", "swing_one_b", "swing_two_b", "stab", "ground_one", "ground_two",
 ];
 
-/// Which of the body's guard clips aiming holds: bare hands, a one-handed weapon, a two-handed one.
+/// Which of the body's guard clips aiming holds: bare hands, a one-handed weapon, a two-handed one,
+/// a gun.
 fn guard_slot(style: Style, armed: bool) -> usize {
     match style {
+        Style::Gun if armed => 3,
         Style::TwoHand if armed => 2,
         Style::Punch => 0,
         _ if !armed => 0,
@@ -335,8 +337,9 @@ pub struct SurvivorModel {
     /// instead of the grey-box's poses.
     actions: [Option<usize>; ACTION_CLIPS.len()],
     /// The ready stance held while aiming, a loop: bare hands (`guard_fists`), a one-handed weapon
-    /// (`guard_one`) and a two-handed one (`guard_two`, else the one-handed).
-    guards: [Option<usize>; 3],
+    /// (`guard_one`), a two-handed one (`guard_two`, else the one-handed) and a gun held out level
+    /// (`guard_gun`; without it the grey-box's).
+    guards: [Option<usize>; 4],
     gaits: [Vec<Gait>; 3],
     /// The bones the hips' turn is taken back out of (the spine's first, under the hips).
     spine_base: Vec<usize>,
@@ -616,7 +619,7 @@ impl SurvivorModel {
         let idle = body.clips.iter().position(|c| c.name.eq_ignore_ascii_case("idle"));
         let actions = ACTION_CLIPS.map(|name| body.clips.iter().position(|c| c.name.eq_ignore_ascii_case(name)));
         let guard = |name: &str| body.clips.iter().position(|c| c.name.eq_ignore_ascii_case(name));
-        let guards = [guard("guard_fists"), guard("guard_one"), guard("guard_two").or_else(|| guard("guard_one"))];
+        let guards = [guard("guard_fists"), guard("guard_one"), guard("guard_two").or_else(|| guard("guard_one")), guard("guard_gun")];
         let gaits = gaits(&mut body);
         let reference = idle.map_or_else(|| body.rig.rest(), |i| body.clips[i].frames[0].clone());
         let retarget = Retarget::new(&body, reference);
@@ -817,13 +820,13 @@ impl SurvivorModel {
             match self.guards[guard_slot(style, armed)] {
                 // Aiming: the body's own ready stance for what he holds, the whole body standing and
                 // the upper body over the gait when moving (the swings start from it and come back to it).
-                Some(i) if !(armed && style == Style::Gun) => {
+                Some(i) => {
                     let mut guard = body.clips[i].sample((now / body.clips[i].secs + a.player as f32 * 0.37).fract());
                     pose.blend_bones(&guard, a.aim_w * (1.0 - a.move_w), Some(&self.all));
                     over_hips(&mut guard, &pose, &self.spine_base);
                     pose.blend_bones(&guard, a.aim_w, Some(&self.upper));
                 }
-                // A body without one (and a gun): the grey-box's guard over the upper body.
+                // A body without one: the grey-box's guard over the upper body.
                 _ => pose.blend_bones(&self.retarget.apply(body, &survivor::guard(style, armed)), a.aim_w, Some(&self.upper)),
             }
         }
