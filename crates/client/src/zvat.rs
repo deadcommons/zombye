@@ -2,12 +2,12 @@
 //! its docstring for the layout and `.claude/skills/meshy-assets/SKILL.md` for the pipeline), and the
 //! base-colour texture that goes with one. [`crate::zombie_render`] turns them into its VAT.
 //!
-//! File (little-endian), version 1:
+//! File (little-endian), version 2 (version 1, still read, had f32 positions):
 //! `b"ZVAT"`, u32 version, u32 vertices V, u32 indices I, u32 clips C;
 //! C × clip: 16-byte name (UTF-8, zero padded), u32 frames, f32 seconds per play, f32 stride (metres
 //! per loop at walking speed, 0 = fixed rate), u32 one-shot (0/1);
 //! V × 2 f32 UV (glTF convention: v down); I × u32 triangle indices;
-//! per clip, per frame, V × 3 f32 positions (game model space: metres, Y up, facing +Z, feet at 0).
+//! per clip, per frame, V × 3 f16 positions (the precision the RGBA16F VAT holds anyway; game model space: metres, Y up, facing +Z, feet at 0).
 //! There are no normals: the crowd shader shades flat from screen-space derivatives.
 //!
 //! The texture is looked for, in order: `ZOMBYE_CROWD_TEXTURE`, then beside the `.zvat` (same stem)
@@ -22,7 +22,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 const MAGIC: &[u8; 4] = b"ZVAT";
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 /// Sanity limits, so a broken file is refused rather than eating memory.
 const MAX_VERTICES: u32 = 1 << 20;
 const MAX_CLIPS: u32 = 64;
@@ -80,9 +80,10 @@ impl Zvat {
             return Err("not a .zvat file (no ZVAT magic)".into());
         }
         let version = r.u32()?;
-        if version != VERSION {
-            return Err(format!("version {version}, this build reads {VERSION}"));
+        if !(1..=VERSION).contains(&version) {
+            return Err(format!("version {version}, this build reads 1 to {VERSION}"));
         }
+        let pos_bytes: u64 = if version == 1 { 4 } else { 2 };
         let (v, i, c) = (r.u32()?, r.u32()?, r.u32()?);
         if v == 0 || v > MAX_VERTICES {
             return Err(format!("{v} vertices (1 to {MAX_VERTICES})"));
@@ -117,7 +118,7 @@ impl Zvat {
             clips.push(ZvatClip { name, frames, secs, stride, one_shot: one_shot == 1 });
         }
         let rows: u64 = clips.iter().map(|c| c.frames as u64).sum();
-        let expect = r.at as u64 + v as u64 * 8 + i as u64 * 4 + rows * v as u64 * 12;
+        let expect = r.at as u64 + v as u64 * 8 + i as u64 * 4 + rows * v as u64 * 3 * pos_bytes;
         if bytes.len() as u64 != expect {
             return Err(format!("{} bytes, the header says {expect}", bytes.len()));
         }
@@ -139,7 +140,7 @@ impl Zvat {
         }
         let mut positions = Vec::with_capacity((rows * v as u64) as usize);
         for _ in 0..rows * v as u64 {
-            let p = Vec3::new(r.f32()?, r.f32()?, r.f32()?);
+            let p = if version == 1 { Vec3::new(r.f32()?, r.f32()?, r.f32()?) } else { Vec3::new(r.f16()?, r.f16()?, r.f16()?) };
             if !(p.is_finite() && p.abs().max_element() < MAX_COORD) {
                 return Err(format!("a position out of range: {p}"));
             }
@@ -169,7 +170,7 @@ impl Zvat {
             uv.iter().for_each(|x| out.extend_from_slice(&x.to_le_bytes()));
         }
         self.indices.iter().for_each(|k| out.extend_from_slice(&k.to_le_bytes()));
-        self.positions.iter().for_each(|p| p.to_array().iter().for_each(|x| out.extend_from_slice(&x.to_le_bytes())));
+        self.positions.iter().for_each(|p| p.to_array().iter().for_each(|&x| out.extend_from_slice(&half::f16::from_f32(x).to_le_bytes())));
         out
     }
 }
@@ -192,6 +193,10 @@ impl<'a> Reader<'a> {
 
     fn f32(&mut self) -> Result<f32, String> {
         Ok(f32::from_le_bytes(self.take(4)?.try_into().unwrap()))
+    }
+
+    fn f16(&mut self) -> Result<f32, String> {
+        Ok(half::f16::from_le_bytes(self.take(2)?.try_into().unwrap()).to_f32())
     }
 }
 
@@ -324,12 +329,25 @@ pub(crate) mod tests {
     fn a_zvat_reads_back_what_was_written() {
         let z = tiny();
         let bytes = z.to_bytes();
-        assert_eq!(bytes.len(), 20 + 2 * 32 + 3 * 8 + 3 * 4 + 5 * 3 * 12);
+        assert_eq!(bytes.len(), 20 + 2 * 32 + 3 * 8 + 3 * 4 + 5 * 3 * 6);
         let back = Zvat::parse(&bytes).unwrap();
-        assert_eq!(back, z);
+        assert_eq!((&back.uvs, &back.indices, &back.clips), (&z.uvs, &z.indices, &z.clips));
+        // Positions are f16: within half a millimetre at a person's size.
+        assert!(back.positions.iter().zip(&z.positions).all(|(a, b)| (*a - *b).abs().max_element() < 5e-4));
         assert_eq!(back.clip("Idle"), Some(1));
-        assert_eq!(back.frame(1, 1)[2], Vec3::new(0.0, 1.7, 0.1 + 0.04));
+        assert!((back.frame(1, 1)[2] - Vec3::new(0.0, 1.7, 0.1 + 0.04)).length() < 5e-4);
         assert_eq!(clip_key("Die_Back"), "dieback");
+    }
+
+    #[test]
+    fn version_1_files_with_f32_positions_still_load() {
+        let z = tiny();
+        let v2 = z.to_bytes();
+        let head = v2.len() - z.positions.len() * 6;
+        let mut v1 = v2[..head].to_vec();
+        v1[4] = 1;
+        z.positions.iter().for_each(|p| p.to_array().iter().for_each(|x| v1.extend_from_slice(&x.to_le_bytes())));
+        assert_eq!(Zvat::parse(&v1).unwrap(), z, "exact: f32 as written");
     }
 
     #[test]
@@ -337,9 +355,9 @@ pub(crate) mod tests {
         let good = tiny().to_bytes();
         assert!(Zvat::parse(&good[..good.len() - 1]).is_err(), "truncated");
         assert!(Zvat::parse(b"ZVAX").is_err());
-        let mut v2 = good.clone();
-        v2[4] = 2;
-        assert!(Zvat::parse(&v2).unwrap_err().contains("version"));
+        let mut v3 = good.clone();
+        v3[4] = 3;
+        assert!(Zvat::parse(&v3).unwrap_err().contains("version"));
         let mut z = tiny();
         z.indices[1] = 9;
         assert!(Zvat::parse(&z.to_bytes()).unwrap_err().contains("out of range"));
