@@ -112,6 +112,31 @@ struct DoorLeaf {
     closed: Quat,
     open_rot: Quat,
     open: bool,
+    /// Its edge and storey height, for where its hinge is as it swings ([`door_leaf_place`]).
+    key: (IVec2, OwnedEdge),
+    base: f32,
+}
+
+/// How far along its edge an open door's leaf stands from the edge's first corner. A leaf
+/// turned a quarter turn about that corner lies on the line of the wall that meets its own
+/// there, and a 5 cm leaf inside a 16 cm wall can't be seen: the door looked gone when opened.
+/// So the hinge moves along the edge as the leaf swings, and the open leaf lies flat against
+/// that wall's face (half the wall, half the leaf, and 5 mm of air).
+pub const OPEN_LEAF_CLEAR: f32 = 0.11;
+
+/// Where a door's leaf (and the outline of one in a cut wall) stands when it is `swing` of the
+/// way open (0 shut, 1 open), turned `rotation`: at its edge's first corner, moved along the
+/// edge by the swing.
+pub fn door_leaf_place(key: (IVec2, OwnedEdge), base: f32, rotation: Quat, swing: f32) -> Transform {
+    let along = if key.1 == OwnedEdge::North { Vec3::X } else { Vec3::Z };
+    let hinge = Vec3::new(key.0.x as f32, base, key.0.y as f32) + along * (OPEN_LEAF_CLEAR * swing.clamp(0.0, 1.0));
+    Transform { translation: hinge, rotation, scale: Vec3::ONE }
+}
+
+/// A door's leaf at rest: shut, or open.
+pub fn door_leaf_at_rest(key: (IVec2, OwnedEdge), base: f32, open: bool) -> Transform {
+    let (closed, open_rot) = door_rotations(key.1);
+    door_leaf_place(key, base, if open { open_rot } else { closed }, if open { 1.0 } else { 0.0 })
 }
 
 /// A sash window's glass: slides up when open, swaps to shards when broken.
@@ -651,9 +676,8 @@ fn spawn_edge_piece(commands: &mut Commands, shared: &SharedMeshes, mats: &World
     match kind {
         Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken => {
             let open = kind == Edge::DoorOpen;
-            let rotation = if open { open_rot } else { closed };
-            let tf = Transform { translation: Vec3::new(start.x, base, start.y), rotation, scale: Vec3::ONE };
-            let e = commands.spawn((Mesh3d(shared.door.clone()), MeshMaterial3d(mats.building.clone()), tf, DoorLeaf { closed, open_rot, open }, piece)).id();
+            let tf = door_leaf_at_rest((owner, which), base, open);
+            let e = commands.spawn((Mesh3d(shared.door.clone()), MeshMaterial3d(mats.building.clone()), tf, DoorLeaf { closed, open_rot, open, key: (owner, which), base }, piece)).id();
             add_cracks(commands, shared, mats, e, true, hp);
             Some(e)
         }
@@ -763,7 +787,11 @@ fn animate_doors(time: Res<Time>, mut leaves: Query<(&DoorLeaf, &mut Transform)>
         if tf.rotation == target {
             continue;
         }
-        tf.rotation = if tf.rotation.angle_between(target) < 0.0005 { target } else { tf.rotation.slerp(target, t) };
+        let rotation = if tf.rotation.angle_between(target) < 0.0005 { target } else { tf.rotation.slerp(target, t) };
+        // The hinge moves with the swing, so the open leaf stands clear of the wall beside it.
+        let place = door_leaf_place(leaf.key, leaf.base, rotation, rotation.angle_between(leaf.closed) / FRAC_PI_2);
+        tf.rotation = place.rotation;
+        tf.translation = place.translation;
     }
 }
 
@@ -919,6 +947,31 @@ mod tests {
         let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/data");
         let templates = zombye_net::content::load_building_templates(&data).expect("templates");
         zombye_sim::worldgen::generate(&zombye_sim::worldgen::GenConfig::default(), &templates).map
+    }
+
+    /// An open door's leaf lies flat against the face of the wall that meets its own at the
+    /// hinge, never inside it (where it couldn't be seen); a shut one is in its doorway.
+    #[test]
+    fn an_open_door_stands_clear_of_the_wall_beside_it() {
+        for which in [OwnedEdge::North, OwnedEdge::West] {
+            let key = (IVec2::new(7, 9), which);
+            let shut = door_leaf_at_rest(key, 0.0, false);
+            assert_eq!(shut.translation, Vec3::new(7.0, 0.0, 9.0), "{which:?}");
+            let open = door_leaf_at_rest(key, 0.0, true);
+            // The leaf's middle line runs from its hinge along its own +x.
+            let (a, b) = (open.transform_point(Vec3::new(0.04, 1.0, 0.0)), open.transform_point(Vec3::new(0.96, 1.0, 0.0)));
+            // How far the leaf is from the line of the wall beside it (the other edge of its tile).
+            let off = |p: Vec3| if which == OwnedEdge::North { p.x - 7.0 } else { p.z - 9.0 };
+            for p in [a, b] {
+                assert!((off(p) - OPEN_LEAF_CLEAR).abs() < 1e-4, "{which:?}: {p:?}");
+                assert!(off(p) - 0.025 > 0.08, "outside a 16 cm wall's face");
+            }
+            // It swings into its own tile.
+            let into = if which == OwnedEdge::North { b.z - 9.0 } else { b.x - 7.0 };
+            assert!(into > 0.9, "{which:?}: {b:?}");
+            let half = door_leaf_place(key, 0.0, Quat::IDENTITY, 0.5).translation;
+            assert!((off(half) - OPEN_LEAF_CLEAR / 2.0).abs() < 1e-4);
+        }
     }
 
     /// A door's leaf sinks with its wall and is gone once the wall is cut (no stubby leaf: the
