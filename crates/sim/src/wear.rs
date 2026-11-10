@@ -12,8 +12,6 @@ use crate::world::World;
 
 const WEAR_SALT: u64 = 0x3EA2_0B1D_77C4_19A5;
 const FOUND_SALT: u64 = 0x51FE_A3C0_0D2B_6E11;
-/// A weapon found in furniture has had at most this share of its life.
-const FOUND_WORN_MOST: f32 = 0.7;
 
 /// The knocks `item` takes before it breaks; 0: it isn't a weapon that wears.
 pub fn durability(items: &[ItemDef], weapons: &[WeaponDef], item: u16) -> u8 {
@@ -117,7 +115,7 @@ impl World {
                 continue;
             }
             let share = hash01(seed, c as u64, k as u64, s.item as u64);
-            s.used = ((share * share * FOUND_WORN_MOST * of as f32) as u8).min(of - 1);
+            s.used = ((share * share * self.config.combat.found_wear_max.clamp(0.0, 1.0) * of as f32) as u8).min(of - 1);
         }
     }
 }

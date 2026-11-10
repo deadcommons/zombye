@@ -628,7 +628,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   rounds for a gun and goes had for food: **no save format change**, and saves from before load with every weapon
   sound). So a weapon keeps its wear on the floor, in a cupboard and in other hands. `ranged::max_used` holds a save
   to one under the `durability`. One made now is sound (debug spawns, kits, the floor weapons); one found in furniture
-  has had a seeded 0-70% of its life, more often little (`World::wear_found`, by seed, container and stack).
+  has had a seeded 0-70% of its life (`CombatTuning::found_wear_max`), more often little (`World::wear_found`, by seed, container and stack).
 - **The roll** is `hash01` of the seed, tick, player and item (`World::wear_weapon`, called from `combat::land`), not
   a draw from the combat RNG: fights roll exactly as they did before.
 - **Cramped blows:** a weapon's `close_range` (bat and fire axe 0.38 m, golf club and plank 0.4; to the target's

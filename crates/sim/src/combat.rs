@@ -145,6 +145,8 @@ pub struct CombatTuning {
     pub battered_damage: f32,
     /// Each level of the weapon's skill makes a knock this much less likely.
     pub wear_skill_less: f32,
+    /// A weapon found in furniture has had at most this share of its life (0: every one is sound).
+    pub found_wear_max: f32,
 }
 
 /// A blow that lands though its player was just staggered, floored or killed by another player's:
@@ -222,6 +224,7 @@ impl Default for CombatTuning {
             battered_below: 0.25,
             battered_damage: 0.85,
             wear_skill_less: 0.08,
+            found_wear_max: 0.7,
         }
     }
 }
