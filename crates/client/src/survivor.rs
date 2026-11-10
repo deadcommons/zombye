@@ -701,10 +701,7 @@ pub(crate) fn locomotion(a: &SurvivorAnim, armed: bool) -> SPose {
 pub(crate) fn action_clock(a: &SurvivorAnim, now: f32) -> Option<(ActionKind, u32, f32, f32)> {
     let c = a.action?;
     let u = c.u(now);
-    // Aiming, the clip (made from and back to the idle, arms down) is taken up and let go more slowly:
-    // the stance goes straight into the windup, and the follow-through straight back to the stance.
-    let (taken, let_go) = (0.06 + 0.1 * a.aim_w, 0.88 - 0.2 * a.aim_w);
-    Some((c.kind, c.n, u, smooth(0.0, taken, u) * (1.0 - smooth(let_go, 1.0, u))))
+    Some((c.kind, c.n, u, smooth(0.0, 0.06, u) * (1.0 - smooth(0.88, 1.0, u))))
 }
 
 pub(crate) fn action_now(a: &SurvivorAnim, now: f32, style: Style, armed: bool) -> Option<(SPose, bool, f32)> {
