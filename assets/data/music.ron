@@ -1,6 +1,7 @@
 // What the client plays as music (#78; `crates/client/src/music.rs`). Files are relative to
-// assets/audio/ (OGG Vorbis or WAV); a mood with no files is silent, so the game is quiet until
-// the tracks exist. Each mood picks one of its files at random, not the same one twice running.
+// assets/audio/, OGG Vorbis only (Bevy has no WAV decoder here); a mood with no files is
+// silent, so the game is quiet until the tracks exist. Each mood picks one of its files at
+// random, not the same one twice running.
 //
 //   volume     the mood's level, 0..2 (the top-level `volume` is all the music's, under the master)
 //   gap        Day and Night: seconds of silence after a track before the next, picked in (min, max)
