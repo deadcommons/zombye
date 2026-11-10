@@ -9,10 +9,11 @@
 //! (or stomp a downed zombie in front), E pick up the item you face (or search the container you
 //! face), Tab or I the inventory panel, F open/close the door or window you
 //! face, G smash the window you face, T skip an hour, mouse wheel
-//! zoom, Z spawn 250 zombies, F1 god mode, F2 ignored by zombies (dev toggles), `,` / `.` rotate between the four fixed angles (only with `--rotate`,
-//! the "Camera rotation" setting).
+//! zoom, Z spawn 250 zombies, F1 god mode, F2 ignored by zombies (dev toggles), `,` / `.` turn the camera a quarter between the four fixed angles
+//! (an eased 0.3 s turn; `--turn N@SECS,...` turns by itself; `--rotate`, which this used to need, is accepted and ignored),
+//! Ctrl+F10 the outlines of doors and windows a building hides (`--opening-hints on|off`).
 //!
-//! Options: `--zombies N` `--seed S` `--time HOUR` `--at X,Y` `--rotate` `--novsync`
+//! Options: `--zombies N` `--seed S` `--time HOUR` `--at X,Y` `--novsync`
 //! `--screenshot PATH` (saved after `--screenshot-after SECS[,SECS...]`, default 5) `--exit-after SECS` `--zoom METRES`
 //! `--pvp` (player against player on) `--duel` (PvP on, and another survivor with a crowbar comes at you)
 //! `--autoplay` (the player fights by itself) `--fight-demo` (a bat and a few zombies close by)
@@ -105,6 +106,7 @@ mod action_ui;
 mod debug_stats;
 mod needs_ui;
 mod offscreen;
+mod opening_hints;
 mod panels;
 mod player;
 mod rig;
@@ -137,7 +139,10 @@ pub struct Options {
     pub start_hour: Option<f32>,
     /// Debug: start the player here instead of the bedroom (`--at X,Y`).
     pub at: Option<[f32; 2]>,
-    pub rotate: bool,
+    /// For recordings: turn the camera N quarter turns (1: as `.`, -1: as `,`) once SECS have gone
+    /// by (`--turn N@SECS[,N@SECS...]`), in time order. `--rotate` (rotation used to need it) is
+    /// still accepted and does nothing.
+    pub turns: Vec<(i32, f32)>,
     pub novsync: bool,
     pub screenshot: Option<String>,
     /// When to take it (seconds); several times (`--screenshot-after 3,4.5,6`) number the files
@@ -220,8 +225,9 @@ pub struct Options {
     /// Verification: once dead and this many seconds in, start a new run as if R was pressed on
     /// the death screen (`--new-run-after`).
     pub new_run_after: Option<f32>,
-    /// The camera's starting angle, one of the four fixed ones (`--angle 0..3`).
-    pub angle: i32,
+    /// The camera's starting angle, one of the four fixed ones (`--angle 0..3`; a fraction, e.g.
+    /// 0.5, is that far through the turn to the next: a picture of a turn under way).
+    pub angle: f32,
     /// Play as this player of a loaded save (`--player ID`; default its first player).
     pub player: Option<u32>,
     /// Game data folder (`--data`, default the repo's `assets/data`): templates, weapons, population.
@@ -256,6 +262,10 @@ pub struct Options {
     /// Show the silhouettes of zombies you see that something covers (`--zombie-silhouettes`;
     /// Shift+F10 toggles it and saves it, `silhouette.rs`). `None`: as the settings file says.
     pub zombie_silhouettes: Option<bool>,
+    /// Outlines of the doors and windows a building hides from the camera (`--opening-hints
+    /// on|off`; Ctrl+F10 toggles it and saves it, `opening_hints.rs`). `None`: as the settings
+    /// file says (offscreen: on).
+    pub opening_hints: Option<bool>,
     /// Start with the sound off (`--mute`; M toggles it).
     pub mute: bool,
     /// Master volume (`--volume V`, 0..2, default 1).
@@ -378,6 +388,13 @@ fn parse_pick_range(text: &str) -> Option<(u32, u32, f32)> {
     Some((a.trim().parse().ok()?, b.trim().parse().ok()?, after))
 }
 
+/// `"1@3.5"` → (1, 3.5); `"-1"` → (-1, 0): quarter turns of the camera, at most a full turn at once.
+fn parse_turn(text: &str) -> Option<(i32, f32)> {
+    let (n, after) = text.split_once('@').unwrap_or((text, "0"));
+    let after: f32 = after.trim().parse().ok().filter(|s: &f32| s.is_finite() && *s >= 0.0)?;
+    Some((n.trim().parse().ok().filter(|n| (-4..=4).contains(n) && *n != 0)?, after))
+}
+
 /// `"2@3.5"` → (2, 3.5); `"2"` → (2, 0). Entries count from 1.
 fn parse_menu_pick(text: &str) -> Option<(usize, f32)> {
     let (n, after) = text.split_once('@').unwrap_or((text, "0"));
@@ -415,7 +432,11 @@ impl Options {
             seed: value("--seed").and_then(|v| v.parse().ok()).unwrap_or(1),
             start_hour: value("--time").and_then(|v| v.parse().ok()),
             at: value("--at").and_then(|v| parse_point(&v)),
-            rotate: flag("--rotate"),
+            turns: {
+                let mut turns: Vec<(i32, f32)> = value("--turn").map_or(Vec::new(), |v| v.split(',').filter_map(parse_turn).collect());
+                turns.sort_by(|a, b| a.1.total_cmp(&b.1));
+                turns
+            },
             novsync: flag("--novsync"),
             screenshot: value("--screenshot"),
             screenshot_after: value("--screenshot-after")
@@ -457,7 +478,7 @@ impl Options {
             quicksave_after: value("--quicksave-after").and_then(|v| v.parse().ok()),
             quickload_after: value("--quickload-after").and_then(|v| v.parse().ok()),
             new_run_after: value("--new-run-after").and_then(|v| v.parse().ok()),
-            angle: value("--angle").and_then(|v| v.parse::<i32>().ok()).unwrap_or(0).rem_euclid(4),
+            angle: value("--angle").and_then(|v| v.parse::<f32>().ok()).filter(|a| a.is_finite()).unwrap_or(0.0).rem_euclid(4.0),
             player: value("--player").and_then(|v| v.parse().ok()),
             data: value("--data").map(Into::into).unwrap_or_else(zombye_net::content::default_data_dir),
             mods: values("--mod").into_iter().map(Into::into).collect(),
@@ -471,6 +492,11 @@ impl Options {
             walk: value("--walk").map(|v| v.split(';').filter_map(parse_point).map(Vec2::from).collect()).unwrap_or_default(),
             walls_up: flag("--walls-up"),
             zombie_silhouettes: flag("--zombie-silhouettes").then_some(true),
+            opening_hints: value("--opening-hints").and_then(|v| match v.as_str() {
+                "on" => Some(true),
+                "off" => Some(false),
+                _ => None,
+            }),
             mute: flag("--mute"),
             volume: value("--volume").and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite()).map_or(1.0, |v| v.clamp(0.0, 2.0)),
             ui_scale: value("--ui-scale").and_then(|v| ui_scale::parse_pct(&v)),
@@ -614,7 +640,7 @@ fn main() {
     }
     app.add_plugins((
             (theme::ThemePlugin, server_link::ServerLinkPlugin),
-            (fog::FogPlugin, cutaway::CutawayPlugin, silhouette::SilhouettePlugin),
+            (fog::FogPlugin, cutaway::CutawayPlugin, silhouette::SilhouettePlugin, opening_hints::OpeningHintsPlugin),
             materials::WorldMaterialPlugin,
             world_render::WorldRenderPlugin,
             (daynight::DayNightPlugin, lights::LightsPlugin),
@@ -692,11 +718,11 @@ mod tests {
         assert!(o.offscreen());
         assert_eq!(o.render_to.as_deref(), Some(std::path::Path::new("/tmp/x.png")));
         assert_eq!(o.load.as_deref(), Some("/tmp/w.zsave"));
-        assert_eq!((o.size, o.zoom, o.angle, o.player, o.center), (UVec2::new(640, 360), Some(30.0), 2, Some(3), Some([10.5, -2.0])));
+        assert_eq!((o.size, o.zoom, o.angle, o.player, o.center), (UVec2::new(640, 360), Some(30.0), 2.0, Some(3), Some([10.5, -2.0])));
 
         let o = Options::parse(&args("--zombies 10"));
         assert!(!o.offscreen());
-        assert_eq!((o.size, o.angle, o.player, o.center), (DEFAULT_RENDER_SIZE, 0, None, None));
+        assert_eq!((o.size, o.angle, o.player, o.center), (DEFAULT_RENDER_SIZE, 0.0, None, None));
         assert!(!o.size_given && Options::parse(&args("--size 1920x1080")).size_given);
         assert!(!Options::parse(&args("--size big")).size_given);
         assert_eq!(Options::parse(&args("--ui-scale 125")).ui_scale, Some(125));
@@ -704,8 +730,14 @@ mod tests {
         assert_eq!((o.ui_scale, Options::parse(&args("--ui-scale x")).ui_scale), (None, None));
         let o = Options::parse(&args("--hotbar bat,-,flashlight --hotbar-press 2@3.5,1@6,x,12 --panel-at skills:40,300"));
         assert_eq!((o.hotbar.as_deref(), o.hotbar_press, o.panel_at.as_deref()), (Some("bat,-,flashlight"), vec![(2, 3.5), (1, 6.0)], Some("skills:40,300")));
-        assert_eq!(Options::parse(&args("--angle 5")).angle, 1);
-        assert_eq!(Options::parse(&args("--angle -1")).angle, 3);
+        assert_eq!(Options::parse(&args("--angle 5")).angle, 1.0);
+        assert_eq!(Options::parse(&args("--angle -1")).angle, 3.0);
+        // A fraction is a turn under way; `--rotate` (rotation is always on now) is taken and ignored.
+        assert_eq!(Options::parse(&args("--angle 0.5 --rotate")).angle, 0.5);
+        assert_eq!(Options::parse(&args("--angle nan")).angle, 0.0);
+        assert_eq!(Options::parse(&args("--turn 1@6,-1@2.5,0@1,9,x")).turns, vec![(-1, 2.5), (1, 6.0)]);
+        let hints = |a: &str| Options::parse(&args(a)).opening_hints;
+        assert_eq!((hints("--opening-hints off"), hints("--opening-hints on"), hints("--zombies 1")), (Some(false), Some(true), None));
     }
 
     #[test]

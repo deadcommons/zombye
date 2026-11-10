@@ -145,7 +145,7 @@ fn tint(daylight: f32, shown: f32) -> Vec4 {
 
 /// Shift+F10: zombie silhouettes on or off, kept in the settings file.
 fn toggle_zombies(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut on: ResMut<ZombieSilhouettes>, store: Option<ResMut<crate::ui_scale::SettingsStore>>, notice: Option<ResMut<crate::saving::Notice>>) {
-    if !keys.just_pressed(KeyCode::F10) || !keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
+    if !keys.just_pressed(KeyCode::F10) || !keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) || keys.any_pressed(crate::cutaway::CTRL_KEYS) {
         return;
     }
     on.0 = !on.0;

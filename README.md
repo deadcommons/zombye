@@ -32,8 +32,8 @@ cargo run --release --bin zombye
 ```
 
 The M0 spike is a test town and a 1,000+ zombie horde that chases you. WASD to move, Shift to run,
-mouse wheel to zoom, Z to spawn 250 more zombies. Options: `--zombies N`, `--seed S`, `--rotate`
-(four-angle camera on Q/E), `--novsync`, `--screenshot PATH`, `--exit-after SECS`. The client prints
+mouse wheel to zoom, Z to spawn 250 more zombies. `,` and `.` to turn the camera between its
+four angles. Options: `--zombies N`, `--seed S`, `--novsync`, `--screenshot PATH`, `--exit-after SECS`. The client prints
 fps and sim timing once a second.
 
 The headless server (benchmark mode, or MCP over stdio for agents):

@@ -337,7 +337,6 @@ fn update_hud(
     me: Res<LocalPlayer>,
     join: Res<JoinInfo>,
     icons: Res<crate::needs_ui::StatusIcons>,
-    options: Res<Options>,
     mut sounds: Option<ResMut<crate::audio::SoundCount>>,
     mut stats: Local<FrameStats>,
     mut text: Query<&mut Text, With<HudText>>,
@@ -410,14 +409,14 @@ fn update_hud(
     );
     println!("{line}");
     if let Ok(mut t) = text.single_mut() {
-        let rotate = if options.rotate { ", . rotate | " } else { "" };
+        let rotate = ", . turn camera | ";
         t.0 = format!(
             "{line}\nWASD move | Shift run | C sneak{} | RMB (hold) aim | aiming: LMB attack or shoot, Space shove/stomp | R reload | E pick up / search | 1-9 hotbar | Tab inventory | H health | K skills | B sleep | Enter talk | V wave | U hands up | P point | Y tie/free | L search them | J (hold) struggle | N group | F door/window | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load | F1 god{} | F2 ignored{} | F3 light preview | F4 debug stats{} | M mute | O objectives",
             if me.sneak { " (on)" } else { "" },
             if me.dev.god { " (on)" } else { "" },
             if me.dev.ignored { " (on)" } else { "" },
             // The server's rules panel (#69): only on a server.
-            if link.net.is_some() { " | F6 server rules | F7 servers | F10 walls up/cut" } else { " | F7 servers | F10 walls up/cut" }
+            if link.net.is_some() { " | F6 server rules | F7 servers | F10 walls up/cut | Ctrl+F10 opening hints" } else { " | F7 servers | F10 walls up/cut | Ctrl+F10 opening hints" }
         );
     }
     *stats = FrameStats::default();
