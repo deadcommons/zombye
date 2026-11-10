@@ -44,10 +44,10 @@ pub struct HeldLight {
 
 /// Half-angle of a flashlight's cone (radians) and of its bright middle.
 pub const BEAM_OUTER: f32 = 0.5;
-const BEAM_INNER: f32 = 0.3;
+pub const BEAM_INNER: f32 = 0.3;
 /// Where the beam leaves the body, and how far ahead its middle meets the ground.
-const BEAM_HEIGHT: f32 = 1.25;
-const BEAM_AIM_M: f32 = 4.5;
+pub const BEAM_HEIGHT: f32 = 1.25;
+pub const BEAM_AIM_M: f32 = 4.5;
 
 pub struct DayNightPlugin;
 
@@ -156,11 +156,16 @@ fn attach_player_glow(mut commands: Commands, players: Query<Entity, Added<Playe
 }
 
 /// The light player `id` holds in either hand, if any (`light` on its item definition). Only the
-/// local player's inventory reaches this client, so others' lights aren't drawn yet.
+/// local player's inventory reaches this client; others' lights go by their outfits (`lights.rs`).
 pub fn held_light(join: &JoinInfo, link: &ServerLink, id: u32) -> Option<HeldLight> {
     let inv = &link.own(id)?.inventory;
-    [inv.hand, inv.off_hand].into_iter().flatten().find_map(|s| {
-        let def = join.items.get(s.item as usize)?;
+    held_light_in(join, [inv.hand.map(|s| s.item), inv.off_hand.map(|s| s.item)])
+}
+
+/// The light among the items (by index) in someone's two hands, if any.
+pub fn held_light_in(join: &JoinInfo, hands: [Option<u16>; 2]) -> Option<HeldLight> {
+    hands.into_iter().flatten().find_map(|item| {
+        let def = join.items.get(item as usize)?;
         let l = def.light.as_ref()?;
         Some(HeldLight { radius_m: l.radius_m, flame: def.tags.iter().any(|t| t == "needs_fire") })
     })
@@ -171,6 +176,7 @@ fn held_light_system(
     link: Res<ServerLink>,
     me: Res<LocalPlayer>,
     daylight: Res<Daylight>,
+    time: Res<Time>,
     player: Query<(&Transform, &Player), (Without<HeldBeam>, Without<HeldFlame>)>,
     mut beam: Query<(&mut SpotLight, &mut Transform, &mut Visibility), (With<HeldBeam>, Without<HeldFlame>)>,
     mut flame: Query<(&mut PointLight, &mut Transform, &mut Visibility), (With<HeldFlame>, Without<HeldBeam>)>,
@@ -194,7 +200,7 @@ fn held_light_system(
         Some(l) => {
             *point_tf = Transform::from_translation(tf.translation + Vec3::Y * 1.1 + forward * 0.3);
             point.range = l.radius_m + 1.0;
-            point.intensity = 40_000.0 * dark;
+            point.intensity = 40_000.0 * dark * crate::lights::flicker(time.elapsed_secs(), me.id as f32);
             *point_vis = Visibility::Visible;
             *spot_vis = Visibility::Hidden;
         }

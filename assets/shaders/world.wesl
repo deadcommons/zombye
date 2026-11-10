@@ -52,6 +52,10 @@ const PAINT_NIGHT: f32 = 0.05;
 // lightness.
 const UNSEEN_MID: f32 = 0.18;
 const UNSEEN_CONTRAST: f32 = 0.6;
+// At night a surface lit more brightly than LIT_LO (its colour over its albedo) starts to show
+// outside what the player sees unaided, in full from LIT_HI. Full moonlight is about 0.1.
+const LIT_LO: f32 = 0.16;
+const LIT_HI: f32 = 0.4;
 // Above the ground-floor walls: roofs and upper storeys, which open a hole round the player
 // instead of dropping (the whole of them goes only while you're inside that building, on the CPU).
 const UPPER_Y: f32 = 3.05;
@@ -153,6 +157,19 @@ fn fog_sample(xz: vec2<f32>) -> vec2<f32> {
     return textureSampleLevel(fog_tex, fog_sampler, uv, 0.0).rg;
 }
 
+// Is a ground point in line of sight (1) or behind something (0), by the sight rays alone: no
+// range, no view cone. `line_of_sight` in fog.rs is the same.
+fn los_at(xz: vec2<f32>) -> f32 {
+    let d = xz - world_params.sight[0].xy;
+    let n = textureDimensions(rays_tex).x;
+    let a = fract(atan2(d.y, d.x) / 6.2831853) * f32(n);
+    let i0 = u32(floor(a)) % n;
+    let i1 = (i0 + 1u) % n;
+    // The nearer of the two rays either side, so light doesn't leak past corners.
+    let reach = min(textureLoad(rays_tex, vec2<u32>(i0, 0u), 0).r, textureLoad(rays_tex, vec2<u32>(i1, 0u), 0).r);
+    return 1.0 - smoothstep(reach + 0.3, reach + 1.1, length(d));
+}
+
 // How visible a ground point is, worked out here per pixel from the sight rays (crates/client/src/
 // fog.rs: the same rule as its mask, so edges are smooth lines instead of the mask's half-metre steps).
 fn fog_at(xz: vec2<f32>) -> f32 {
@@ -173,13 +190,7 @@ fn fog_at(xz: vec2<f32>) -> f32 {
     if (dist > range_m + 1.5) {
         return 0.0;
     }
-    let n = textureDimensions(rays_tex).x;
-    let a = fract(atan2(d.y, d.x) / 6.2831853) * f32(n);
-    let i0 = u32(floor(a)) % n;
-    let i1 = (i0 + 1u) % n;
-    // The nearer of the two rays either side, so light doesn't leak past corners.
-    let reach = min(textureLoad(rays_tex, vec2<u32>(i0, 0u), 0).r, textureLoad(rays_tex, vec2<u32>(i1, 0u), 0).r);
-    let los = 1.0 - smoothstep(reach + 0.3, reach + 1.1, dist);
+    let los = los_at(xz);
     let range = 1.0 - smoothstep(range_m * 0.5, range_m, dist);
     var cone = 1.0;
     if (dist >= s2.z) {
@@ -271,10 +282,21 @@ fn fragment(
         seen = max(fog_at(wp.xz + dir * 1.5), fog_at(wp.xz + dir * 3.0));
     }
     let grey = dot(out.color.rgb, vec3(0.299, 0.587, 0.114));
+    let albedo_lum = dot(pbr_input.material.base_color.rgb, vec3(0.299, 0.587, 0.114));
+    // What's lit is seen (#83): in the dark you see only a few metres by yourself, but a surface a
+    // light falls on (a window's pool, someone's flashlight) shows however far off, given a line of
+    // sight to it. How brightly it is lit is its colour over what it's made of; moonlight and the
+    // ambient stay well under LIT_LO.
+    let dark = world_params.lights.x;
+    if (dark > 0.0 && world_params.sight[2].w > 0.5 && seen < 1.0) {
+        let lit = smoothstep(LIT_LO, LIT_HI, grey / max(albedo_lum, 0.06)) * dark;
+        if (lit > 0.0) {
+            seen = max(seen, lit * los_at(at));
+        }
+    }
     var unseen = mix(vec3(grey), out.color.rgb, 0.25) * world_params.fog_tint.rgb * (1.0 - world_params.fog_tint.w);
     // Greying flattens pale and dark surfaces toward one tone (a driveway vanishes into its lawn):
     // keep some of the difference in what they're made of (#81).
-    let albedo_lum = dot(pbr_input.material.base_color.rgb, vec3(0.299, 0.587, 0.114));
     unseen *= clamp(pow(albedo_lum / UNSEEN_MID, UNSEEN_CONTRAST), 0.6, 1.5);
     // Rooms you can't see into are near-black, as if unlit, so their contents stay hidden. Walls,
     // windows and doors stay readable (just dimmed like everything else unseen), so you can still

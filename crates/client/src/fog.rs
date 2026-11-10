@@ -92,8 +92,9 @@ impl Plugin for FogPlugin {
     }
 }
 
-fn update_fog(
+pub fn update_fog(
     map: Res<ClientMap>,
+    lights: Res<crate::lights::NightLights>,
     daylight: Res<Daylight>,
     link: Res<crate::server_link::ServerLink>,
     join: Res<crate::server_link::JoinInfo>,
@@ -125,14 +126,16 @@ fn update_fog(
     let (cone_lo, cone_hi) = (cone_lo.cos(), cone_hi.cos());
     let reach_max = max.max(beam);
     let beam_cos = (crate::daynight::BEAM_OUTER * 1.15).cos();
-    let rays = vision::visibility_rays(&map.0, eye, reach_max, RAYS);
+    // In the dark the rays go on past what we see by ourselves, as far as a lit place shows (below).
+    let lit_dark = crate::lights::darkness(daylight.0);
+    let far = if lit_dark > 0.0 { crate::lights::FAR_LIGHT } else { 0.0 };
+    let rays = vision::visibility_rays(&map.0, eye, reach_max.max(far), RAYS);
     let facing = Vec2::from_angle(player.facing);
 
     // Snap the mask to the texel grid so it doesn't shimmer as you move.
     let half = fog.size_m * 0.5;
     let origin = ((eye - Vec2::splat(half)) / TEXEL_M).floor() * TEXEL_M;
     fog.origin = origin;
-    let tau = std::f32::consts::TAU;
     for ty in 0..TEXELS {
         for tx in 0..TEXELS {
             let q = origin + (Vec2::new(tx as f32, ty as f32) + 0.5) * TEXEL_M;
@@ -145,11 +148,7 @@ fn update_fog(
                 0.0
             } else {
                 // Angle → fractional ray index; take the nearer of the two rays so light doesn't leak past corners.
-                let a = d.y.atan2(d.x).rem_euclid(tau) / tau * RAYS as f32;
-                let i0 = a.floor() as usize % RAYS;
-                let i1 = (i0 + 1) % RAYS;
-                let reach = rays[i0].min(rays[i1]);
-                let los = 1.0 - smoothstep(reach + 0.3, reach + 1.1, dist);
+                let los = line_of_sight(&rays, d);
                 let range = 1.0 - smoothstep(max * 0.5, max, dist);
                 let cone = if dist < CLOSE_RADIUS {
                     1.0
@@ -162,6 +161,24 @@ fn update_fog(
             let i = ((ty * TEXELS + tx) * 2) as usize;
             fog.values[i] = (v.clamp(0.0, 1.0) * 255.0) as u8;
             fog.values[i + 1] = if map.0.tile(q.floor().as_ivec2()).room != 0 { 255 } else { 0 };
+        }
+    }
+    // What's lit is seen (#83): the ground a window's pool or another survivor's light falls on
+    // shows in the dark however far off, given a line of sight to it, so whoever stands in it is drawn.
+    for light in &lights.0 {
+        let lo = ((light.pos - light.radius - origin) / TEXEL_M).floor().as_ivec2().max(IVec2::ZERO);
+        let hi = ((light.pos + light.radius - origin) / TEXEL_M).ceil().as_ivec2().min(IVec2::splat(TEXELS as i32 - 1));
+        for ty in lo.y..=hi.y {
+            for tx in lo.x..=hi.x {
+                let q = origin + (Vec2::new(tx as f32, ty as f32) + 0.5) * TEXEL_M;
+                let lit = light.lit(q) * lit_dark;
+                if lit <= 0.0 {
+                    continue;
+                }
+                let v = (lit * line_of_sight(&rays, q - eye) * 255.0) as u8;
+                let i = ((ty as u32 * TEXELS + tx as u32) * 2) as usize;
+                fog.values[i] = fog.values[i].max(v);
+            }
         }
     }
     fog.sight = [Vec4::new(eye.x, eye.y, max, beam), Vec4::new(facing.x, facing.y, cone_lo, cone_hi), Vec4::new(beam_cos, BEHIND, CLOSE_RADIUS, 1.0)];
@@ -181,6 +198,19 @@ fn update_fog(
     }
 }
 
+/// Is the point `d` from the eye in line of sight (1) or behind something (0), going by the rays
+/// cast round the eye (soft over the last metre)? The nearer of the two rays either side, so
+/// sight doesn't leak past corners. `los_at` in world.wesl is the same.
+fn line_of_sight(rays: &[f32], d: Vec2) -> f32 {
+    let tau = std::f32::consts::TAU;
+    let n = rays.len();
+    let a = d.y.atan2(d.x).rem_euclid(tau) / tau * n as f32;
+    let i0 = a.floor() as usize % n;
+    let i1 = (i0 + 1) % n;
+    let reach = rays[i0].min(rays[i1]);
+    1.0 - smoothstep(reach + 0.3, reach + 1.1, d.length())
+}
+
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
@@ -188,4 +218,25 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn line_of_sight_stops_at_the_nearer_ray() {
+        // Open all round to 45 m, but for a wall 6 m off to the east (the rays round +x).
+        let mut rays = vec![45.0f32; RAYS];
+        for i in (0..12).chain(RAYS - 12..RAYS) {
+            rays[i] = 6.0;
+        }
+        assert_eq!(line_of_sight(&rays, Vec2::new(5.0, 0.0)), 1.0, "this side of the wall");
+        assert_eq!(line_of_sight(&rays, Vec2::new(8.0, 0.0)), 0.0, "behind it");
+        assert_eq!(line_of_sight(&rays, Vec2::new(0.0, 30.0)), 1.0, "a lit place far off to the north");
+        assert_eq!(line_of_sight(&rays, Vec2::new(0.0, 47.0)), 0.0, "past where the rays go");
+        // At the wall's end the nearer ray wins, so sight doesn't leak round the corner.
+        let edge = Vec2::from_angle(12.0 / RAYS as f32 * std::f32::consts::TAU - 1e-4) * 20.0;
+        assert_eq!(line_of_sight(&rays, edge), 0.0);
+    }
 }

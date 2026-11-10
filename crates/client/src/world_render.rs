@@ -511,6 +511,11 @@ fn spawn_building(
             render.edge_keys.push((owner, which));
             render.lower.push(e);
         }
+        // A ground-floor window with a light on behind it throws a warm pool at night (`lights.rs`).
+        if kind.is_window() && lit(rooms) {
+            let mid = owner.as_vec2() + if which == OwnedEdge::North { Vec2::new(0.5, 0.0) } else { Vec2::new(0.0, 0.5) };
+            render.lower.push(crate::lights::spawn_window_light(commands, mid));
+        }
     }
     for (level, e) in &b.upper_edges {
         let base = STOREY * *level as f32;

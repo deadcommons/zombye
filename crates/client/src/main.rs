@@ -63,6 +63,7 @@ mod health_ui;
 mod hud;
 mod inventory_ui;
 mod items_render;
+mod lights;
 mod materials;
 mod meshgen;
 mod action_ui;
@@ -409,7 +410,7 @@ fn main() {
             fog::FogPlugin,
             materials::WorldMaterialPlugin,
             world_render::WorldRenderPlugin,
-            daynight::DayNightPlugin,
+            (daynight::DayNightPlugin, lights::LightsPlugin),
             dev_time::DevTimePlugin,
             player::PlayerPlugin,
             camera::IsoCameraPlugin,

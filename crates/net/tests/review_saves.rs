@@ -40,6 +40,105 @@ fn step(w: &mut World, ticks: u32) {
     }
 }
 
+/// The middle of the asphalt tile nearest to `from` with open asphalt `clear` tiles east of it.
+fn street_near(w: &World, from: glam::Vec2, clear: i32) -> glam::Vec2 {
+    use zombye_sim::map::Floor;
+    let here = from.floor().as_ivec2();
+    let road = |t: glam::IVec2| w.map.in_bounds(t) && w.map.tile(t).floor == Floor::Asphalt && !w.map.tile_blocked(t);
+    let mut best: Option<(i32, glam::IVec2)> = None;
+    for y in -60..=60 {
+        for x in -60..=60 {
+            let t = here + glam::IVec2::new(x, y);
+            let d = x * x + y * y;
+            if best.is_none_or(|b| d < b.0) && (0..=clear).all(|i| road(t + glam::IVec2::new(i, 0))) {
+                best = Some((d, t));
+            }
+        }
+    }
+    best.expect("a street near the spawn house").1.as_vec2() + 0.5
+}
+
+/// Saves for judging the light (#83, docs/art-direction.md "Light and mood"), all at night:
+/// `night_dark` on the street by the spawn house with nothing in hand and a few zombies up the
+/// street; `night_flashlight` the same with a flashlight, and a second survivor with one across
+/// the way (`night_flashlight --player 2` is its view); `night_candle` in the bedroom with a
+/// candle; `night_window` out in the yard, back from a lit window with zombies in its pool (the
+/// window faces the camera with `--angle 2`). Dev toggles aren't saved: add `--god --ignored`
+/// to a windowed run.
+#[test]
+#[ignore]
+fn mood_saves() {
+    let night = |w: &mut World| {
+        let now = w.time_of_day();
+        w.skip_time((23.0 - now).rem_euclid(24.0));
+    };
+    let street = |light: bool| {
+        let (mut w, id) = world();
+        let at = street_near(&w, w.player_spawn, 14);
+        w.players[0].state.pos = at;
+        w.players[0].state.facing = 0.0;
+        w.set_dev(id, Some(true), Some(true));
+        w.spawn_zombies(5, at + glam::Vec2::new(7.5, 0.0), 2.5);
+        if light {
+            assert!(w.hold_item(id, Slot::Hand, "flashlight"));
+            // Another survivor further up the street, its beam coming back toward us.
+            let other = w.add_player(at + glam::Vec2::new(13.0, 1.5));
+            let pi = w.players.iter().position(|p| p.id == other).unwrap();
+            w.players[pi].state.facing = 2.6;
+            w.set_dev(other, Some(true), Some(true));
+            assert!(w.hold_item(other, Slot::Hand, "flashlight"));
+        }
+        night(&mut w);
+        step(&mut w, 2);
+        w
+    };
+    save(&street(false), "night_dark");
+    save(&street(true), "night_flashlight");
+
+    let (mut w, id) = world();
+    assert!(w.hold_item(id, Slot::Hand, "candle"));
+    night(&mut w);
+    step(&mut w, 2);
+    save(&w, "night_candle");
+
+    // Out in the yard, well back from a window of the bedroom we woke in (its light is on), with
+    // nothing in hand: the zombies standing in the window's pool are all there is to see.
+    let (mut w, id) = world();
+    let room = w.map.room_at(w.player_spawn);
+    let b = &w.map.buildings[w.spawn_building];
+    let mut best: Option<(i32, glam::IVec2, glam::IVec2)> = None;
+    for y in b.min.y..b.min.y + b.size.y {
+        for x in b.min.x..b.min.x + b.size.x {
+            let t = glam::IVec2::new(x, y);
+            if w.map.tile(t).room != room {
+                continue;
+            }
+            for side in zombye_sim::map::Side::ALL {
+                let out = side.offset();
+                if !w.map.edge(t, side).is_window() || w.map.tile(t + out).room != 0 {
+                    continue;
+                }
+                let clear = (1..=14).take_while(|i| !w.map.tile_blocked(t + out * *i) && w.map.tile(t + out * *i).room == 0).count() as i32;
+                if best.is_none_or(|b| clear > b.0) {
+                    best = Some((clear, t, out));
+                }
+            }
+        }
+    }
+    let (clear, tile, out) = best.expect("a window of the spawn bedroom onto the yard");
+    assert!(clear >= 6, "only {clear} m of open ground outside the bedroom window");
+    let window = tile.as_vec2() + 0.5 + out.as_vec2() * 0.5;
+    let back = (clear.min(12) as f32) - 0.5;
+    w.players[0].state.pos = window + out.as_vec2() * back;
+    w.players[0].state.facing = (-out.as_vec2()).to_angle();
+    w.set_dev(id, Some(true), Some(true));
+    w.spawn_zombies(3, window + out.as_vec2() * 1.6, 1.2);
+    night(&mut w);
+    step(&mut w, 2);
+    println!("night_window: the player {back} m out from the window at {window}");
+    save(&w, "night_window");
+}
+
 #[test]
 #[ignore]
 fn review_saves() {

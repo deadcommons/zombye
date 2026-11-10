@@ -169,7 +169,9 @@ war in `fog.rs` and `world.wesl`). Numbers live there; this is what they're for.
   silhouette close by, no more. Unlit interiors are darker than outdoors. What you see is what your
   light reaches: a **flashlight** is a narrow, hard-edged cone along your facing that casts shadows
   (furniture and zombies throw long ones away from you); a **candle** is a small warm pool. Without a
-  light you see a few metres. Zombies' senses are the sim's own (`ZombieTuning`); a light that draws
+  light you see a few metres, **but what is lit is seen**: the warm pool under a lit window, another
+  survivor's beam across the street and whatever stands in them show from far off, with the dark
+  between you and them. A light is company and a warning both. Zombies' senses are the sim's own (`ZombieTuning`); a light that draws
   them is a sim change of its own.
 - **Inside by day:** windows are the light; the far side of a room is dimmer; a room with no window
   is dark.
