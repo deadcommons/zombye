@@ -1,0 +1,22 @@
+// What the client plays as music (#78; `crates/client/src/music.rs`). Files are relative to
+// assets/audio/ (OGG Vorbis or WAV); a mood with no files is silent, so the game is quiet until
+// the tracks exist. Each mood picks one of its files at random, not the same one twice running.
+//
+//   volume     the mood's level, 0..2 (the top-level `volume` is all the music's, under the master)
+//   gap        Day and Night: seconds of silence after a track before the next, picked in (min, max)
+//   fade_in    seconds to come in
+//   fade_out   seconds to go when the mood changes
+//
+// When: Death once when you die; Danger (looped) while zombies are on you (one attacking within
+// 6 m, or three coming within 12 m, and 8 s after); Dawn once as the night turns to day; else
+// Night or Day by the daylight. The town is meant to feel empty: most of the time nothing plays.
+(
+    volume: 0.7,
+    moods: {
+        Day: (files: [], volume: 0.7, gap: (60.0, 180.0), fade_in: 6.0, fade_out: 6.0),
+        Night: (files: [], volume: 0.8, gap: (45.0, 150.0), fade_in: 6.0, fade_out: 6.0),
+        Danger: (files: [], volume: 0.9, fade_in: 1.5, fade_out: 5.0),
+        Dawn: (files: [], volume: 0.8, fade_in: 4.0, fade_out: 4.0),
+        Death: (files: [], volume: 1.0, fade_in: 0.2, fade_out: 3.0),
+    },
+)

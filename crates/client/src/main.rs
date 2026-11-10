@@ -43,7 +43,8 @@
 //! (or the `*_body.glb` in a folder) with its wearables; see `survivor_model.rs`.
 //!
 //! Sound (`audio.rs`): `--mute` starts with it off, `--volume V` sets the master volume (0..2,
-//! default 1), M mutes and unmutes.
+//! default 1), M mutes and unmutes. Music (`music.rs`): `--music V` its volume under the master
+//! (0..2, default 1; 0: none).
 //!
 //! Talking (`chat.rs`, #67): Enter opens the chat line (Tab there picks whisper, talk or shout, Enter
 //! says it, Esc drops it); V waves, U puts your hands up (again lowers them), P points. `--say TEXT[@SECS]`,
@@ -69,6 +70,7 @@
 //! remembered with their open state in the same settings file (`panels.rs`).
 
 mod audio;
+mod music;
 mod autoplay;
 mod browser_ui;
 mod duel;
@@ -272,6 +274,8 @@ pub struct Options {
     pub mute: bool,
     /// Master volume (`--volume V`, 0..2, default 1).
     pub volume: f32,
+    /// Music volume under the master (`--music V`, 0..2, default 1; 0: no music). See `music.rs`.
+    pub music: f32,
     /// UI scale in percent for this session, not saved (`--ui-scale PCT`, 75..150; without it the
     /// client settings file's, else 100). See `ui_scale.rs`.
     pub ui_scale: Option<u32>,
@@ -502,6 +506,7 @@ impl Options {
             }),
             mute: flag("--mute"),
             volume: value("--volume").and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite()).map_or(1.0, |v| v.clamp(0.0, 2.0)),
+            music: value("--music").and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite()).map_or(1.0, |v| v.clamp(0.0, 2.0)),
             ui_scale: value("--ui-scale").and_then(|v| ui_scale::parse_pct(&v)),
             hotbar: value("--hotbar"),
             hotbar_press: value("--hotbar-press").map_or(Vec::new(), |v| v.split(',').filter_map(parse_menu_pick).collect()),
@@ -660,7 +665,7 @@ fn main() {
         ));
     // An offscreen render has no audio device (Bevy's audio is off there).
     if !offscreen {
-        app.add_plugins(audio::GameAudioPlugin);
+        app.add_plugins((audio::GameAudioPlugin, music::MusicPlugin));
     }
     app.add_plugins((fps_log::FpsLogPlugin, bench_live::BenchLivePlugin));
     let failed = app.run().is_error();
