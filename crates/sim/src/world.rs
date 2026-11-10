@@ -1445,7 +1445,7 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::Side;
+    use crate::map::{Feature, Side};
     use crate::template::BuildingTemplate;
     use crate::zombies::{ZombieAnim, ZombieState};
 
@@ -2284,16 +2284,17 @@ mod tests {
         assert_eq!(w.zombies.state[z], ZombieState::Wander);
     }
 
-    /// A player in a fenced pen (fences can't be battered down) can be seen but not reached: a
-    /// zombie gives up at once instead of pushing at the fence.
+    /// A player in a ring of trees (nothing to batter, nothing to climb) can be seen but not
+    /// reached: a zombie gives up at once instead of pushing at the trees.
     #[test]
     fn a_chaser_gives_up_on_a_player_it_cannot_reach() {
         let mut w = arena();
-        for k in 0..3 {
-            w.map.set_edge(IVec2::new(110 + k, 99), Side::N, Edge::Fence);
-            w.map.set_edge(IVec2::new(110 + k, 101), Side::S, Edge::Fence);
-            w.map.set_edge(IVec2::new(110, 99 + k), Side::W, Edge::Fence);
-            w.map.set_edge(IVec2::new(112, 99 + k), Side::E, Edge::Fence);
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                if (dx, dy) != (0, 0) {
+                    w.map.tile_mut(IVec2::new(111 + dx, 100 + dy)).unwrap().feature = Feature::Tree;
+                }
+            }
         }
         w.map_changed();
         let z = add_zombie(&mut w, Vec2::new(101.5, 100.5), 0.0);
@@ -2306,7 +2307,30 @@ mod tests {
         }
         assert!(chased, "never saw the player");
         assert!(gave_up, "kept after a player it can't reach");
-        assert!(w.zombies.pos[z].x < 108.0, "pressed up to the fence: {}", w.zombies.pos[z]);
+        assert!(w.zombies.pos[z].x < 109.0, "pressed up to the trees: {}", w.zombies.pos[z]);
+    }
+
+    /// Fences are climbed, slowly, as open windows are: a zombie chases a player into a fenced pen
+    /// over the fence and gets to it.
+    #[test]
+    fn a_chaser_climbs_a_fence_to_get_at_a_player() {
+        let mut w = arena();
+        for k in 0..3 {
+            w.map.set_edge(IVec2::new(110 + k, 99), Side::N, Edge::Fence);
+            w.map.set_edge(IVec2::new(110 + k, 101), Side::S, Edge::Fence);
+            w.map.set_edge(IVec2::new(110, 99 + k), Side::W, Edge::Fence);
+            w.map.set_edge(IVec2::new(112, 99 + k), Side::E, Edge::Fence);
+        }
+        w.map_changed();
+        assert!(w.map.in_window_opening(Vec2::new(110.1, 100.5)), "a fence is a climb");
+        let z = add_zombie(&mut w, Vec2::new(101.5, 100.5), 0.0);
+        w.add_player(Vec2::new(111.5, 100.5));
+        let mut inside = false;
+        for _ in 0..20 * 20 {
+            w.step();
+            inside |= w.zombies.pos[z].x > 110.4;
+        }
+        assert!(inside, "never climbed into the pen: {}", w.zombies.pos[z]);
     }
 
     /// Corpses are cleared away: beyond `max_corpses` the oldest go first, and any that have lain

@@ -304,7 +304,8 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
 - Edge states (`map::Edge`): `Wall`, `Window` (shut glass: blocks movement, not sight), `WindowOpen`
   and `WindowBroken` (passable, but crossing is a slow climb: `TileMap::in_window_opening`, within
   `CLIMB_ZONE` of the window line), `DoorClosed` (blocks both), `DoorOpen`, `DoorBroken` (a permanent
-  opening; doesn't block sight), `Arch`, `Fence` (blocks movement, not sight). Helpers: `is_door`
+  opening; doesn't block sight), `Arch`, `Fence` (waist high: doesn't block sight, and like an open window
+  crossing it is a slow climb, for players and zombies; blows and hands reach over it). Helpers: `is_door`
   (openable), `is_window`, `is_breakable` (shut door or intact window), `is_climbable`, `broken()`.
 - Shut doors and intact windows have **hit points** on the server (`World::edge_hp(EdgeRef)`), stored
   sparsely in a sorted map (only damaged edges; part of the state hash). Full HP and every other
@@ -518,7 +519,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
 - **Actions** (`players::ActionKind`: `Swing`, `Shove`, `Stomp`): start when the intent arrives (or are
   queued if it comes within `action_buffer_secs` of the last one ending), cost endurance at once, and
   land after a windup. At impact the server finds zombies in reach and arc of the player's facing with
-  a clear walking line (glass and fences block), nearest first up to `max_targets`, each extra target
+  a clear walking line (glass blocks; a fence doesn't), nearest first up to `max_targets`, each extra target
   taking `multi_hit_falloff` less. Damage, knockback (a velocity, capped at `MAX_KNOCKBACK_SPEED` so it
   can't push through walls), then seeded rolls (`World::combat_rng`): knockdown, else stagger. From
   behind (the zombie faces away) crits are more likely and knockdowns easier; knockdowns are easier
@@ -1000,7 +1001,7 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   table (see Loot; a hash of seed and id, never the world RNG, so the same in any order). Opened containers are stored sparsely (`World::opened`, saved, in
   `state_hash`); a searched container stays open (and usable) to that player (`Player::open`) until it is `CONTAINER_KEEP_OPEN`
   (2.2 m) away or leaves the room. The floor has unlimited room; ground items within `PICKUP_REACH` with no wall,
-  shut window or door or fence between (furniture doesn't block a hand: `vision::clear_reach`) are the player's floor
+  shut window or door between (a hand reaches over a fence; furniture doesn't block it either: `vision::clear_reach`) are the player's floor
   (`World::floor_of`, the one rule for moves, `PickUp` and the panel); every snapshot carries each player's floor as
   ground item ids (`Snapshot::floor`, `FloorView`; a client gets its own). A request for what is already queued
   (a repeated click) queues nothing and refuses nothing; E with no container and an empty floor says "nothing to pick

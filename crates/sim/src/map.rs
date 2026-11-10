@@ -60,7 +60,7 @@ pub enum Edge {
     DoorOpen,
     /// An open doorway with no door.
     Arch,
-    /// Waist-high fence: blocks movement, not sight.
+    /// Waist-high fence: doesn't block sight; crossing it is a slow climb, as through an open window.
     Fence,
     /// A window slid open: climb through.
     WindowOpen,
@@ -72,7 +72,7 @@ pub enum Edge {
 
 impl Edge {
     pub fn blocks_movement(self) -> bool {
-        matches!(self, Edge::Wall | Edge::Window | Edge::DoorClosed | Edge::Fence)
+        matches!(self, Edge::Wall | Edge::Window | Edge::DoorClosed)
     }
 
     /// Walls and closed doors. Glass doesn't, and neither does a doorway whose door is gone.
@@ -95,9 +95,9 @@ impl Edge {
         matches!(self, Edge::DoorClosed | Edge::Window)
     }
 
-    /// An open or broken window: passable, but crossing it is a slow climb.
+    /// An open or broken window, or a fence: passable, but crossing it is a slow climb.
     pub fn is_climbable(self) -> bool {
-        matches!(self, Edge::WindowOpen | Edge::WindowBroken)
+        matches!(self, Edge::WindowOpen | Edge::WindowBroken | Edge::Fence)
     }
 
     /// What this edge becomes once battered or smashed in.

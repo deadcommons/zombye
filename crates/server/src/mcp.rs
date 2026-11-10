@@ -1298,7 +1298,7 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 p.pos.y,
                 p.pos.distance(start.pos),
                 p.stance,
-                if world.map.in_window_opening(p.pos) { " (climbing through a window)" } else { "" },
+                if world.map.in_window_opening(p.pos) { " (climbing through a window or over a fence)" } else { "" },
                 p.endurance,
                 compass(p.facing),
                 place(world, p.pos),
@@ -2675,7 +2675,7 @@ fn observe(world: &World, centre: Vec2, radius: i32, viewer: Option<u32>) -> Str
             world.wielded(p.weapon).name.to_lowercase(),
             s.endurance,
             if s.winded { " (winded)" } else { "" },
-            format!("{}{}", if map.in_window_opening(s.pos) { ", climbing through a window" } else { "" }, p.gesture.map_or(String::new(), |g| format!(", {}", g.kind.doing().to_uppercase())) + &p.restraint.map_or(String::new(), |r| format!(", HANDS TIED{}", if r.struggling { ", STRUGGLING" } else { "" }))),
+            format!("{}{}", if map.in_window_opening(s.pos) { ", climbing through a window or over a fence" } else { "" }, p.gesture.map_or(String::new(), |g| format!(", {}", g.kind.doing().to_uppercase())) + &p.restraint.map_or(String::new(), |r| format!(", HANDS TIED{}", if r.struggling { ", STRUGGLING" } else { "" }))),
             match p.action {
                 _ if p.knock.is_some() => {
                     let k = p.knock.expect("checked");
