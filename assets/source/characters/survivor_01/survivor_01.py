@@ -21,6 +21,10 @@ import zgarment as g
 # than the free walk); the free walk is kept as walk_alt for comparison.
 ACTIONS = {"Idle": "idle", "Casual_Walk_inplace": "walk", "Cautious_Crouch_Walk_Forward_inplace": "sneak"}
 EXTRA_CLIPS = [("running.glb", "run"), ("walking.glb", "walk_alt")]
+# The shove (2026-11-10, owner: "fix shove animation. looks wrong"): Meshy's "Step Forward and Push" (library 259,
+# task 01a1c5bb-4f32-7520-aab1-32b4760520a6) instead of the grey-box poses: in place, the push landing at SHOVE_HIT
+# of the clip (the game's blow lands at 0.45 of the action), eased from and back to the idle's first pose.
+SHOVE_GLB, SHOVE_FRAMES, SHOVE_HIT, SHOVE_EASE = "shove.glb", 22, 0.45, (3, 6)
 CLIMB_CLIPS = ["climb", "vault"]  # motion-climb.glb, motion-vault.glb: text-to-motion 01a1c558-393a-71bc-8986-6222bdaa02cb, 01a1c558-3bca-722c-be3c-24f2d632b987
 # Directional clips (the owner: "he needs strafe animations"): Meshy's library on the same rig (one file)
 # and a walk left from text-to-motion; walk right is walk left mirrored.
@@ -151,6 +155,7 @@ def build(c):
     for name in CLIMB_CLIPS:
         g.merge_clip(arm, c.paths["raw"] / f"motion-{name}.glb", name)
         actions[name] = name
+    g.merge_clip(arm, c.paths["raw"] / SHOVE_GLB, "shove_src")
     for name in directional:
         actions[name] = name
     c.to_asset_collection(arm, mesh)
@@ -204,6 +209,9 @@ def build(c):
         g.set_cyclic(a)
         c.note(f"{ACTIONS.get(meshy, meshy)}: the whole clip is one cycle ({a.frame_range[1] - a.frame_range[0]:.1f} frames, "
                f"closes within {g.pose_error(arm, a, *a.frame_range) * 100:.2f} cm)")
+
+    make_shove(c, arm)
+    actions["shove"] = "shove"
 
     merged = c.weld_seams(mesh)
     c.note(f"welded {merged} vertices split at UV seams")
@@ -1392,3 +1400,53 @@ def make_balaclava(c, body, arm):
         if f.normal.dot(f.calc_center_median() - centre) < 0:
             f.normal_flip()
     return _bag_object(c, "balaclava", bm, BALACLAVA_COLOURS, body, arm, socket="head_top")
+
+
+def make_shove(c, arm):
+    """The shove clip from Meshy's push (see SHOVE_GLB): the frames where it moves, the push (the hands
+    furthest forward of the hips) put at SHOVE_HIT of SHOVE_FRAMES, the travel taken out, eased from and
+    back to the idle's first pose. The source action goes."""
+    import importlib.util
+    spec_ = importlib.util.spec_from_file_location("zombie02_helpers", c.paths["folder"].parent / "zombie-02" / "zombie-02.py")
+    z2 = importlib.util.module_from_spec(spec_)
+    spec_.loader.exec_module(z2)
+    src = bpy.data.actions["shove_src"]
+    z2._bind(arm, src)
+    pb = arm.pose.bones
+    f0, f1 = (int(round(v)) for v in src.frame_range)
+    reach, prev, moving = [], None, []
+    for f in range(f0, f1 + 1):
+        bpy.context.scene.frame_set(f)
+        heads = [b.head.copy() for b in pb]
+        hips = pb["Hips"].head
+        reach.append(-((pb["LeftHand"].head.y + pb["RightHand"].head.y) / 2 - hips.y))  # forward is -y
+        if prev is not None and sum((x - y).length for x, y in zip(heads, prev)) / len(heads) > 0.004:
+            moving.append(f)
+        prev = heads
+    arm.animation_data.action = None
+    i_hit = max(range(len(reach)), key=lambda i: reach[i])
+    hit = f0 + i_hit
+    # The push itself: back from the hit while the hands were still coming forward (the reach rising),
+    # on from it while they draw back; Meshy's step up to the wall before that stays out.
+    i0 = i_hit
+    while i0 > 0 and reach[i0 - 1] < reach[i0] - 1e-4:
+        i0 -= 1
+    i1 = i_hit
+    while i1 < len(reach) - 1 and reach[i1 + 1] < reach[i1] + 1e-4 and reach[i1] > reach[i0] + 0.25 * (reach[i_hit] - reach[i0]):
+        i1 += 1
+    s0, s1 = f0 + max(0, i0 - 2), f0 + min(len(reach) - 1, i1 + 2)
+    n = SHOVE_FRAMES - 1
+    h = int(round(SHOVE_HIT * n))
+    times = [s0 + (hit - s0) * k / h for k in range(h)] + [hit + (s1 - hit) * k / (n - h) for k in range(n - h + 1)]
+    shove = z2.remake(src, times, "shove")
+    d = z2.read(shove)
+    z2.centre(arm, d)
+    moved = z2.pin_travel(arm, d, threshold=0.0)
+    idle0 = z2.pose_at(z2.read(bpy.data.actions["Idle"]), 0)
+    z2.blend(d, idle0, SHOVE_EASE[0])
+    z2.blend(d, idle0, SHOVE_EASE[1], at_start=False)
+    z2.write(shove, d)
+    shove.use_cyclic = False
+    bpy.data.actions.remove(src)
+    c.note(f"shove = Meshy's Step Forward and Push frames {s0}-{s1}, the push (frame {hit}) at {SHOVE_HIT:.0%} of "
+           f"{SHOVE_FRAMES} frames ({(SHOVE_FRAMES - 1) / 24:.2f} s), {moved:.2f} m of travel taken out, eased from and back to the idle")

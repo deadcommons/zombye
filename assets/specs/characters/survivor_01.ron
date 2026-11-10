@@ -25,7 +25,7 @@ AssetSpec(
     // run_back_left/right (Meshy library + text-to-motion; walk_right is walk_left mirrored).
     animations: ["idle", "walk", "run", "sneak", "walk_alt", "walk_back", "walk_left", "walk_right",
                  "sneak_back", "sneak_left", "sneak_right", "run_back_left", "run_back_right",
-                 "climb", "vault"]  // 2026-11-10: in through a window, over a fence (one-shots, text-to-motion),
+                 "climb", "vault", "shove"]  // 2026-11-10: in through a window, over a fence (one-shots, text-to-motion),
     // Body regions, as the game's items::BodyPart: each body vertex belongs to the region of its
     // heaviest bone (vertex groups region_<Region>, and the `_region` vertex attribute in the GLB: the
     // index in Head, Torso, Arms, Hands, Legs, Feet). The hips' and thighs' vertices then go by the
