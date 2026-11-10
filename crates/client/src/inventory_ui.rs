@@ -799,12 +799,30 @@ fn track_flight(time: Res<Time>, link: Res<ServerLink>, me: Res<LocalPlayer>, no
     flight.update(format!("{view:?}|{floor:?}"), notes.0.iter().any(|n| !n.ok), time.elapsed_secs());
 }
 
-/// A container newly opened comes to the front of the right pane.
-fn follow_open(link: Res<ServerLink>, me: Res<LocalPlayer>, mut ui: ResMut<PanelUi>) {
-    let open = link.own(me.id).and_then(|v| v.open.as_ref().map(|c| c.id));
+/// A container newly opened comes to the front of the right pane, and a search that has just
+/// finished opens the panel if it was shut, so what was found is on show ([`search_done`]).
+fn follow_open(link: Res<ServerLink>, me: Res<LocalPlayer>, mut ui: ResMut<PanelUi>, mut panel: ResMut<InventoryPanel>, mut searching: Local<Option<u32>>) {
+    let view = link.own(me.id);
+    let open = view.and_then(|v| v.open.as_ref().map(|c| c.id));
     if ui.seen_open != Some(open) {
         ui.saw(open);
     }
+    let now = view.and_then(|v| match v.jobs.first() {
+        Some(JobKind::Search { container }) => Some(*container),
+        _ => None,
+    });
+    if search_done(*searching, now, open) && !panel.open {
+        panel.open = true;
+    }
+    *searching = now;
+}
+
+/// Has the search of a container just finished with it open? `was` and `now`: the container our
+/// job under way was searching when we last looked, and is now; `open`: the one open to us. A
+/// search called off, or one that ended out of reach, leaves that container shut, so it opens
+/// nothing; neither does a save loaded with a container open (nothing was being searched).
+fn search_done(was: Option<u32>, now: Option<u32>, open: Option<u32>) -> bool {
+    was.is_some() && was != now && was == open
 }
 
 /// The intent that moves `count` (0: all) of the stack at `from`/`index` to `to`, if it goes anywhere.
@@ -2117,6 +2135,20 @@ mod tests {
 
     /// Stacks of one item collapse into one row where the first lay; the headers sort the rows by
     /// name, by type (then name) and by weight (the whole row's, heaviest first), either way round.
+    #[test]
+    fn a_finished_search_opens_the_panel() {
+        // Searching container 7, then done with it open.
+        assert!(search_done(Some(7), None, Some(7)));
+        // Still searching; nothing searched (a save loaded with one open); called off, nothing open;
+        // called off with another container open.
+        assert!(!search_done(Some(7), Some(7), None));
+        assert!(!search_done(None, None, Some(7)));
+        assert!(!search_done(Some(7), None, None));
+        assert!(!search_done(Some(7), None, Some(3)));
+        // One search done and the next under way.
+        assert!(search_done(Some(7), Some(8), Some(7)));
+    }
+
     #[test]
     fn stacks_collapse_and_rows_sort() {
         let items = shipped_items();
