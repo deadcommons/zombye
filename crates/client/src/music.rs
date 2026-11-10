@@ -114,15 +114,16 @@ struct Music {
 }
 
 impl Music {
-    fn load(data_dir: &Path, audio_dir: &Path, sources: &mut Assets<AudioSource>, level: f32) -> Result<Self, String> {
-        let path = data_dir.join("music.ron");
-        let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    /// Load the moods from `path` and their files from `audio_dir`, or from the release audio
+    /// folder `overlay` where it has them (#154).
+    fn load(path: &Path, audio_dir: &Path, overlay: Option<&Path>, sources: &mut Assets<AudioSource>, level: f32) -> Result<Self, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let data = parse_music(&text)?;
         let mut tracks = BTreeMap::new();
         for (mood, def) in &data.moods {
             let mut list = Vec::new();
             for file in &def.files {
-                match std::fs::read(audio_dir.join(file)) {
+                match crate::release_audio::read(overlay, audio_dir, file) {
                     Ok(bytes) => list.push(sources.add(AudioSource { bytes: Arc::from(bytes) })),
                     Err(e) => eprintln!("music: {mood:?}: {file}: {e} (left out)"),
                 }
@@ -188,9 +189,12 @@ fn load_music(mut commands: Commands, options: Res<Options>, mut sources: ResMut
     if options.music <= 0.0 {
         return;
     }
-    let data = if options.data.join("music.ron").exists() { options.data.clone() } else { zombye_net::content::default_data_dir() };
+    let own = options.data.join("music.ron").exists();
+    let data = if own { options.data.clone() } else { zombye_net::content::default_data_dir() };
     let audio = data.join("..").join("audio");
-    match Music::load(&data, &audio, &mut sources, options.music) {
+    let overlay = crate::release_audio::root();
+    let path = crate::release_audio::data_file(overlay, &data, !own, "music.ron");
+    match Music::load(&path, &audio, overlay, &mut sources, options.music) {
         Ok(m) => {
             let n: usize = m.tracks.values().map(Vec::len).sum();
             if n > 0 {

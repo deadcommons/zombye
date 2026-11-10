@@ -235,16 +235,22 @@ pub struct SoundBank {
 }
 
 impl SoundBank {
+    #[cfg(test)]
     /// Load `sounds.ron` from `data` and its files from `audio`.
     pub fn load(data: &Path, audio: &Path) -> Result<Self, String> {
-        let path = data.join("sounds.ron");
+        Self::load_from(&data.join("sounds.ron"), audio, None)
+    }
+
+    /// Load the cues from `path` and their files from `audio`, or from the release audio folder
+    /// `overlay` where it has them (#154, `release_audio`).
+    pub fn load_from(path: &Path, audio: &Path, overlay: Option<&Path>) -> Result<Self, String> {
         let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let defs = parse_sounds(&text)?.sounds;
         let mut clips = BTreeMap::new();
         for (cue, def) in &defs {
             let mut list = Vec::new();
             for file in &def.files {
-                let bytes = std::fs::read(audio.join(file)).map_err(|e| format!("{cue:?}: {file}: {e}"))?;
+                let bytes = crate::release_audio::read(overlay, audio, file).map_err(|e| format!("{cue:?}: {file}: {e}"))?;
                 list.push(parse_wav(&bytes).map_err(|e| format!("{cue:?}: {file}: {e}"))?);
             }
             clips.insert(*cue, list);
@@ -258,11 +264,13 @@ impl SoundBank {
 }
 
 /// Where `sounds.ron` and the audio files are: the `--data` folder if it has its own, else the
-/// game's. Files are found next to the data folder, in `audio/`.
+/// game's (or the release audio folder's, #154). Files are found next to the data folder, in
+/// `audio/`, unless the release audio folder has them.
 fn bank_dirs(options: &Options) -> (PathBuf, PathBuf) {
-    let data = if options.data.join("sounds.ron").exists() { options.data.clone() } else { zombye_net::content::default_data_dir() };
+    let own = options.data.join("sounds.ron").exists();
+    let data = if own { options.data.clone() } else { zombye_net::content::default_data_dir() };
     let audio = data.join("..").join("audio");
-    (data, audio)
+    (crate::release_audio::data_file(crate::release_audio::root(), &data, !own, "sounds.ron"), audio)
 }
 
 /// One sound being played: our own source, so we choose the panning, pitch and muffling.
@@ -586,7 +594,7 @@ impl Plugin for GameAudioPlugin {
 fn load_bank(mut commands: Commands, options: Res<Options>) {
     let (data, audio) = bank_dirs(&options);
     commands.insert_resource(AudioSettings { volume: options.volume, muted: options.mute });
-    match SoundBank::load(&data, &audio) {
+    match SoundBank::load_from(&data, &audio, crate::release_audio::root()) {
         Ok(bank) => commands.insert_resource(bank),
         Err(e) => eprintln!("sound off: {e}"),
     }

@@ -15,6 +15,7 @@ One work folder per sound set, in the private art repo (`$ZOMBYE_ART`, default ~
     python3 tools/audio/zsound.py clean footstep-hard              # spec + raw/ -> export/*.wav, a report
     python3 tools/audio/zsound.py audition footstep-hard           # export/ -> renders/audition.wav
     python3 tools/audio/zsound.py promote footstep-hard            # export/ -> assets/audio/, ATTRIBUTION.md rows
+                                                                   # (ElevenLabs output: -> the art repo's release-audio/)
     python3 tools/audio/zsound.py record <commit> footstep-hard    # after committing it in this repo
     python3 tools/audio/zsound.py check                            # every cue's files: there, 16-bit, attributed
 
@@ -33,7 +34,15 @@ The spec (RON; fields left out take the defaults in DEFAULT_CLEAN):
             (name: "footstep_hard_2", take: "raw/take_1.mp3", start: 1.10, end: 1.52, gain_db: -1.5),
         ],
         clean: (highpass_hz: 60.0, peak_db: -1.0),
+        release_only: true,                  // default: true for ElevenLabs output (see Release audio)
     )
+
+Release audio (#154): ElevenLabs' terms forbid publishing its output "as isolated audio files", so a
+spec whose generator is ElevenLabs (or that says `release_only: true`) is promoted into the art repo's
+`release-audio/` (audio/<folder>/*.wav, its own ATTRIBUTION.md, data/sounds.ron for cues that gain
+files), which release builds carry beside the game's binary (the client's `release_audio.rs`), never
+into this public repo. `release_only: false` overrides it only once the generator's owner has said in
+writing that public files are fine. Sounds we record ourselves go into assets/audio/ as before.
 
 Clean-up, in order: decode (mono unless `stereo: true`), resample to `rate`, the slice, a high-pass,
 trim silence at both ends below `trim_db` of the peak (keeping `pad_ms`), cut to `max_secs`, `gain_db`,
@@ -405,9 +414,54 @@ def attribution_row(spec, f):
     take = next((t for t in spec.get("takes", []) if t.get("file") == f["take"]), {})
     prompt = take.get("prompt", "").replace("|", "/")
     rel = f"assets/audio/{spec['folder']}/{f['name']}.wav"
-    return (f"| `{rel}` ({spec['what']}) | Dead Commons | {spec['generator']}, prompt \"{prompt}\"; "
-            f"trimmed, filtered and normalised by `tools/audio/zsound.py` | CC BY-NC-SA 4.0 | "
-            f"AI-generated (paid plan: we own the output), edited by us |")
+    recorded = "record" in spec["generator"].lower()
+    source = f"{spec['generator']}" + (f" ({prompt})" if recorded and prompt else f", prompt \"{prompt}\"" if prompt else "")
+    notes = "recorded by us" if recorded else "AI-generated (paid plan: we own the output), edited by us"
+    return (f"| `{rel}` ({spec['what']}) | Dead Commons | {source}; "
+            f"trimmed, filtered and normalised by `tools/audio/zsound.py` | CC BY-NC-SA 4.0 | {notes} |")
+
+
+def release_only(spec):
+    """Whether this set may only ship in release builds, not as public files (#154)."""
+    flag = spec.get("release_only")
+    return "elevenlabs" in spec["generator"].lower() if flag is None else bool(flag)
+
+
+RELEASE_HEADER = """# Release audio
+
+Sounds and music that Zombye's release builds carry but that are not published in the public repo
+and are not under its CC licence (their generator's terms forbid handing them out as separate
+files). Copied beside the game's binary as `release-audio/` (see the client's `release_audio.rs`).
+
+| File | Author | Source | Licence | Notes |
+|---|---|---|---|---|
+"""
+
+
+def promote_release(d, spec, release):
+    """Copy a release-only set into the art repo's release-audio/ with its own attribution rows."""
+    rows_file = release / "ATTRIBUTION.md"
+    (release / "audio" / spec["folder"]).mkdir(parents=True, exist_ok=True)
+    if not rows_file.exists():
+        rows_file.write_text(RELEASE_HEADER)
+    lines = rows_file.read_text().rstrip("\n").split("\n")
+    sounds_file = release / "data" / "sounds.ron"
+    sounds = read_ron((sounds_file if sounds_file.exists() else SOUNDS).read_text())["sounds"]
+    listed = set(sounds.get(spec["cue"], {}).get("files", []))
+    for f in spec["files"]:
+        rel = f"{spec['folder']}/{f['name']}.wav"
+        shutil.copyfile(d / "export" / f"{f['name']}.wav", release / "audio" / rel)
+        row = attribution_row(spec, f).replace(" | CC BY-NC-SA 4.0 | ", " | release builds only, not CC | ")
+        hit = [i for i, l in enumerate(lines) if l.startswith(f"| `assets/audio/{rel}`")]
+        if hit:
+            lines[hit[0]] = row
+        else:
+            lines.append(row)
+        if rel not in listed:
+            where = sounds_file if sounds_file.exists() else f"{sounds_file} (copy assets/data/sounds.ron there first)"
+            print(f"  note: {rel} isn't in {spec['cue']}'s files yet: add it in {where}")
+        print(f"  release-audio/audio/{rel}")
+    rows_file.write_text("\n".join(lines) + "\n")
 
 
 def cmd_promote(name):
@@ -418,6 +472,16 @@ def cmd_promote(name):
         raise SystemExit(f"{d.name} is `{meta.get('status')}`: the owner approves the audition first (status: ready)")
     if "PLAN" in spec["generator"]:
         raise SystemExit(f"{d.name}: say which paid plan made it in `generator`")
+    if release_only(spec):
+        root = art_root()
+        if root is None:
+            raise SystemExit(f"{d.name} is release-only (#154): it goes into the art repo's release-audio/, "
+                             "and there's no art repo here ($ZOMBYE_ART)")
+        promote_release(d, spec, root / "release-audio")
+        meta["status"] = "promoted"
+        write_meta(d, meta)
+        print(f"promoted {spec['cue']} to the art repo's release-audio/ (not this repo): commit it there")
+        return
     sounds = read_ron(SOUNDS.read_text())["sounds"]
     listed = set(sounds.get(spec["cue"], {}).get("files", []))
     lines = ATTRIBUTION.read_text().split("\n")
