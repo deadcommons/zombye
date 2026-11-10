@@ -602,6 +602,11 @@ impl SurvivorModel {
                 return None;
             }
         };
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            for line in crate::release_anim::load_into(crate::release_anim::root(), stem, &body.rig, &mut body.clips) {
+                println!("{line}");
+            }
+        }
         face_forward(&mut body);
         let mut wardrobe = HashMap::new();
         load_wearables(&options.data.join("../models/wearables"), &body, &mut wardrobe);

@@ -11,6 +11,12 @@ or replaced.
 `+` plays clips one after another. `@HIT` (0..1 of the first clip) warps time so that moment falls at
 45% of the result, where the game lands a blow; `@auto` takes the moment the right hand moves fastest.
 `NAME=...:Clip#F` takes the single frame F as a held pose (two frames).
+
+    retarget.py --clips BODY.glb OUT.glb NAME=... ...
+
+writes only the skeleton's nodes and the clips named, no mesh or texture: a file for the game's
+private clips folder (`release_anim.rs`), for clips from libraries whose licence keeps their files
+out of the public repo. BODY.glb is the game's own body (its idle is the reference for the grip).
 """
 import json
 import struct
@@ -196,6 +202,18 @@ class Glb:
                 return
         anims.append(anim)
 
+    def skeleton_only(self):
+        """A copy with the nodes (names, rest, children) and nothing else: no mesh, skin, texture or clip."""
+        out = Glb.__new__(Glb)
+        keep = ("name", "translation", "rotation", "scale", "children")
+        out.json = {"asset": {"version": "2.0"}, "scene": 0,
+                    "scenes": [{"nodes": [i for i in range(len(self.nodes)) if i not in self.parent]}],
+                    "nodes": [{k: nd[k] for k in keep if k in nd} for nd in self.nodes],
+                    "buffers": [{"byteLength": 0}], "bufferViews": [], "accessors": [], "animations": []}
+        out.bin = bytearray()
+        out.nodes, out.parent, out.by_name, out.order = out.json["nodes"], self.parent, self.by_name, self.order
+        return out
+
     def write(self, path):
         self.json["buffers"][0]["byteLength"] = len(self.bin)
         js = json.dumps(self.json, separators=(",", ":")).encode()
@@ -288,11 +306,16 @@ def resample(times, t, r, at):
 
 
 def main():
-    body_path, out = sys.argv[1], sys.argv[2]
+    args = sys.argv[1:]
+    clips_only = bool(args) and args[0] == "--clips"
+    if clips_only:
+        args = args[1:]
+    body_path, out = args[0], args[1]
     body = Glb(body_path)
+    target = body.skeleton_only() if clips_only else body
     joints = body.json["skins"][0]["joints"]
     libs = {}
-    for spec in sys.argv[3:]:
+    for spec in args[2:]:
         name, rest = spec.split("=", 1)
         lib_path, clips = rest.rsplit(":", 1)
         hit = None
@@ -333,9 +356,9 @@ def main():
             t, r = resample(times, t, r, src)
             times = u * secs
             print(f"{name}: the blow at {at_hit:.2f} s of {secs:.2f} s, moved to {U_HIT:.0%}")
-        body.set_clip(name, joints, times, t, r)
+        target.set_clip(name, joints, times, t, r)
         print(f"{name}: {clips} -> {len(times)} frames, {times[-1]:.2f} s")
-    body.write(out)
+    target.write(out)
 
 
 if __name__ == "__main__":
