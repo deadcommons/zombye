@@ -732,7 +732,7 @@ fn build_baked(z: &Zvat) -> Result<Baked, String> {
                     first
                 });
                 let own = matches!(src[slot], Source::File(_));
-                let w = if one_shot { -1.0 } else if own { c.stride } else { 0.0 };
+                let w = if one_shot { -1.0 } else if own { walk_stride(clip, &c.name, c.stride) } else { 0.0 };
                 let rate = if w != 0.0 { 0.0 } else { 1.0 / c.secs };
                 if one_shot {
                     play[slot] = if clip == Clip::GetUp { GET_UP_SECS } else { c.secs.min(baked_max_secs(clip)) };
@@ -936,6 +936,21 @@ fn setup_zombie_assets(
 /// the first four clips, so the clip faded from fits in 2 tag bits.
 fn is_loop(clip: Clip) -> bool {
     (clip as u8) < 4
+}
+
+/// The shortest stride (metres a cycle, two steps) a baked walk is taken at its word for, and the
+/// one used instead of a shorter one or none. A walk measured with no planted foot (a shuffle) comes
+/// out at 0 or a few centimetres: played by speed / stride it would glide or race.
+const MIN_STRIDE: f32 = 0.4;
+const FALLBACK_STRIDE: f32 = 1.0;
+
+/// The stride a baked looping clip plays at: its own, unless it is the walk and that isn't one.
+fn walk_stride(clip: Clip, name: &str, stride: f32) -> f32 {
+    if clip != Clip::Walk || stride >= MIN_STRIDE {
+        return stride;
+    }
+    eprintln!("crowd: the baked walk '{name}' has a stride of {stride:.2} m; playing it at {FALLBACK_STRIDE} m");
+    FALLBACK_STRIDE
 }
 
 /// How long a switch from one clip to another crossfades.
@@ -1597,6 +1612,15 @@ mod tests {
     /// The same points to within half-float precision (a `.zvat` keeps positions as f16, #155).
     fn near(a: &[Vec3], b: &[Vec3]) -> bool {
         a.len() == b.len() && a.iter().zip(b).all(|(p, q)| (*p - *q).abs().max_element() <= 2e-3 * q.abs().max_element().max(1.0))
+    }
+
+    /// A walk baked with no stride (feet that drag) still steps with the ground.
+    #[test]
+    fn a_walk_without_a_stride_gets_one() {
+        assert_eq!(walk_stride(Clip::Walk, "walk", 0.0), FALLBACK_STRIDE);
+        assert_eq!(walk_stride(Clip::Walk, "walk", 0.13), FALLBACK_STRIDE);
+        assert_eq!(walk_stride(Clip::Walk, "walk", 1.2), 1.2);
+        assert_eq!(walk_stride(Clip::Idle, "idle", 0.0), 0.0);
     }
 
     /// Every slot gets frames: the file's walk and idle as they are, stand-ins for the rest.
