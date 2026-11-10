@@ -101,6 +101,9 @@ pub struct ClientSettings {
     pub inventory_body: bool,
     /// Zombies you see show through what covers them from the camera (`silhouette.rs`; Shift+F10).
     pub zombie_silhouettes: bool,
+    /// Doors and windows a building hides from the camera are outlined through it
+    /// (`opening_hints.rs`; Ctrl+F10).
+    pub opening_hints: bool,
 }
 
 impl Default for ClientSettings {
@@ -115,6 +118,7 @@ impl Default for ClientSettings {
             servers: Vec::new(),
             inventory_body: false,
             zombie_silhouettes: false,
+            opening_hints: true,
         }
     }
 }

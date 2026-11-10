@@ -377,9 +377,13 @@ impl Plugin for CutawayPlugin {
 #[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CutawaySystems;
 
-/// F10: walls up, or cut again. Shift+F10 is the zombies' silhouettes (`silhouette.rs`).
+/// Ctrl, or Cmd on a Mac.
+pub const CTRL_KEYS: [KeyCode; 4] = [KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::SuperLeft, KeyCode::SuperRight];
+
+/// F10: walls up, or cut again. Shift+F10 is the zombies' silhouettes (`silhouette.rs`), Ctrl+F10
+/// the opening hints (`opening_hints.rs`).
 fn toggle(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut cutaway: ResMut<Cutaway>, notice: Option<ResMut<crate::saving::Notice>>) {
-    if !keys.just_pressed(KeyCode::F10) || keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
+    if !keys.just_pressed(KeyCode::F10) || keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) || keys.any_pressed(CTRL_KEYS) {
         return;
     }
     let up = !cutaway.walls_up;
@@ -403,12 +407,12 @@ fn decide(map: Res<ClientMap>, time: Res<Time>, mut cutaway: ResMut<Cutaway>, mu
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use zombye_sim::map::{Building, Room, Side};
 
     /// The camera at one of its four angles: 0 looks from the south-east (+x, +z), 30° up.
-    fn camera(angle: i32) -> Vec3 {
+    pub(crate) fn camera(angle: i32) -> Vec3 {
         let yaw = std::f32::consts::FRAC_PI_4 + std::f32::consts::FRAC_PI_2 * angle as f32;
         let elev = 30f32.to_radians();
         Vec3::new(yaw.sin() * elev.cos(), elev.sin(), yaw.cos() * elev.cos())
@@ -457,7 +461,7 @@ mod tests {
 
     /// Two houses: A at (10, 10), 8 x 6, a west room (4 x 6) and an east room (4 x 6); B at
     /// (30, 10), 6 x 6, one room, two storeys.
-    fn town() -> TileMap {
+    pub(crate) fn town() -> TileMap {
         let mut map = TileMap::new(4, 4);
         if map.rooms.is_empty() {
             map.rooms.push(Room { building: 0, name: "outdoors".into(), room_type: "outdoors".into(), floor: Default::default() });
