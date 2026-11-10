@@ -416,14 +416,17 @@ fn face_cursor(
     auto: Res<AutoInput>,
     mouse: Res<ButtonInput<MouseButton>>,
     panel: Res<crate::inventory_ui::InventoryPanel>,
-    health: Res<crate::health_ui::HealthPanel>,
+    hits: crate::hud::PanelHits,
     time: Res<Time>,
     join: Res<JoinInfo>,
     link: Res<ServerLink>,
     mut players: Query<(&mut Player, &mut Transform)>,
     mut me: ResMut<LocalPlayer>,
 ) {
-    me.aiming = (auto.active && auto.aim) || (mouse.pressed(MouseButton::Right) && !panel.open && !health.open);
+    // The health and skills sheets aren't modal (and come back open from the settings file): aim
+    // with them up, just not with the pointer on one. The inventory's right button is its menus'.
+    let over_panel = crate::hud::panel_under_cursor(windows.single().ok(), &hits).is_some();
+    me.aiming = (auto.active && auto.aim) || (mouse.pressed(MouseButton::Right) && !panel.open && !over_panel);
     if me.dead {
         return;
     }
@@ -518,7 +521,6 @@ fn actions(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     panel: Res<crate::inventory_ui::InventoryPanel>,
-    health: Res<crate::health_ui::HealthPanel>,
     preview: Res<crate::dev_time::LightPreview>,
     morning: Option<Res<crate::firstnight_ui::FirstNightUi>>,
     time: Res<Time>,
@@ -547,7 +549,7 @@ fn actions(
         link.send(Intent::Sleep { player: me.id, sleep: !asleep });
     }
     // Fighting is for aiming (right mouse held); the server refuses it otherwise.
-    if me.aiming && mouse.just_pressed(MouseButton::Left) && !panel.open && !health.open && !preview.hovered {
+    if me.aiming && mouse.just_pressed(MouseButton::Left) && !panel.open && !preview.hovered {
         me.act(&mut link, &join, ActionKind::Swing, now);
     }
     if me.aiming && keys.just_pressed(KeyCode::Space) {

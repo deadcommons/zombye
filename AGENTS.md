@@ -803,7 +803,7 @@ and tell the whole town where you are.
   the dressing state); click a wound for what it needs and the treatments you can do with what you carry (with times and
   uses left), click one to do it; pills at the foot. Right-click a dressing, antiseptic or sewing kit in the inventory to
   use it on a wound (the panel opens with the wounds it fits marked; right-click cancels); right-click a pill to take it.
-  Left mouse doesn't swing while the panel is open. A tags line in the vitals panel for what the status tags don't say
+  You can aim and swing with the panel open, just not with the pointer on it (or on any panel). A tags line in the vitals panel for what the status tags don't say
   (INJURED LEG / ARM, DROWSY (PAINKILLERS), and for 3 s where the last strike landed); bleeding, the fever, festering and
   food poisoning are status tags (see Needs).
 - **MCP:** `health {player}` (as the player's own view, plus wound ids (`#n`), dressings, effects, painkillers and
