@@ -544,6 +544,57 @@ fn gaits(body: &mut Body) -> [Vec<Gait>; 3] {
     })
 }
 
+/// The aiming stance (see `SurvivorModel::guard`), from the body alone.
+fn guard_pose(body: &Body, retarget: &Retarget, arm_bones: Option<[[usize; 3]; 2]>, grip: (usize, Vec3), style: Style, armed: bool) -> RigPose {
+        let rig = &body.rig;
+        let mut p = retarget.apply(body, &survivor::guard(style, armed));
+        let Some([r, l]) = arm_bones else { return p };
+        if armed && style == Style::Gun {
+            return p;
+        }
+        let v = Vec3::new;
+        // Right upper arm, right forearm, the weapon, left upper arm, left forearm.
+        let hang = v(0.3, -0.85, 0.2);
+        let [ru, rf, weapon, lu, lf] = match (style, armed) {
+            (Style::TwoHand, true) => [v(-0.1, -0.8, 0.45), v(0.5, 0.4, 0.7), v(-0.3, 0.85, -0.35), hang, Vec3::Z],
+            (Style::OneHand, true) => [v(-0.3, -0.9, -0.05), v(0.2, 0.55, 0.75), v(0.1, 0.75, 0.6), hang, v(-0.2, 0.65, 0.7)],
+            _ => [v(-0.3, -0.9, 0.05), v(0.25, 0.65, 0.65), Vec3::ZERO, hang, v(-0.2, 0.65, 0.7)],
+        };
+        aim_bone(rig, &mut p, r[0], r[1], ru);
+        aim_bone(rig, &mut p, r[1], r[2], rf);
+        let rot = |m: &Mat4| m.to_scale_rotation_translation().1;
+        if armed && weapon != Vec3::ZERO {
+            // The weapon lies along the hand's +Z as the grey-box holds it.
+            let g = rig.globals(&p);
+            let hand = Quat::from_rotation_arc(Vec3::Z, weapon.normalize()) * retarget.ref_global[r[2]];
+            p.r[r[2]] = (rot(&g[r[1]]).inverse() * hand).normalize();
+        } else {
+            p.r[r[2]] = retarget.reference.r[r[2]];
+        }
+        if armed && style == Style::TwoHand {
+            // The left hand on the grip, above the right: the arm's two bones bent to reach it, elbow forward and out.
+            let g = rig.globals(&p);
+            let at = |b: usize| g[b].w_axis.truncate();
+            let grip = (g[grip.0] * rig.inverse_bind[grip.0]).transform_point3(grip.1) + weapon.normalize() * 0.13;
+            let (s, l1, l2) = (at(l[0]), at(l[1]).distance(at(l[0])), at(l[2]).distance(at(l[1])));
+            let to = grip - s;
+            let d = to.length().clamp((l1 - l2).abs() + 0.01, l1 + l2 - 0.005);
+            let n = to.normalize_or_zero();
+            let along = (l1 * l1 - l2 * l2 + d * d) / (2.0 * d);
+            let out = (l1 * l1 - along * along).max(0.0).sqrt();
+            // The elbow forward of the chest and out to his left: under the line of the shoulders it sank into the body.
+            let pole = v(0.7, -0.8, 0.3);
+            let side = (pole - n * pole.dot(n)).normalize_or_zero();
+            let elbow = s + n * along + side * out;
+            aim_bone(rig, &mut p, l[0], l[1], elbow - s);
+            aim_bone(rig, &mut p, l[1], l[2], s + n * d - elbow);
+        } else {
+            aim_bone(rig, &mut p, l[0], l[1], lu);
+            aim_bone(rig, &mut p, l[1], l[2], lf);
+        }
+        p
+    }
+
 /// Turns `bone` (the least way) so that it points at its child `child` along `dir` in model space.
 fn aim_bone(rig: &Rig, pose: &mut RigPose, bone: usize, child: usize, dir: Vec3) {
     let g = rig.globals(pose);
@@ -807,53 +858,7 @@ impl SurvivorModel {
     /// hand put on the grip above the right. (Carried over from the grey-box, the arms went wherever
     /// the idle's own arms sent them: both hands up by the head.)
     fn guard(&self, style: Style, armed: bool) -> RigPose {
-        let body = &self.body;
-        let rig = &body.rig;
-        let mut p = self.retarget.apply(body, &survivor::guard(style, armed));
-        let Some([r, l]) = self.arm_bones else { return p };
-        if armed && style == Style::Gun {
-            return p;
-        }
-        let v = Vec3::new;
-        // Right upper arm, right forearm, the weapon, left upper arm, left forearm.
-        let hang = v(0.3, -0.85, 0.2);
-        let [ru, rf, weapon, lu, lf] = match (style, armed) {
-            (Style::TwoHand, true) => [v(-0.3, -0.9, -0.1), v(0.4, 0.5, 0.7), v(-0.3, 0.85, -0.35), hang, Vec3::Z],
-            (Style::OneHand, true) => [v(-0.3, -0.9, -0.05), v(0.2, 0.55, 0.75), v(0.1, 0.75, 0.6), hang, v(-0.2, 0.65, 0.7)],
-            _ => [v(-0.3, -0.9, 0.05), v(0.25, 0.65, 0.65), Vec3::ZERO, hang, v(-0.2, 0.65, 0.7)],
-        };
-        aim_bone(rig, &mut p, r[0], r[1], ru);
-        aim_bone(rig, &mut p, r[1], r[2], rf);
-        let rot = |m: &Mat4| m.to_scale_rotation_translation().1;
-        if armed && weapon != Vec3::ZERO {
-            // The weapon lies along the hand's +Z as the grey-box holds it.
-            let g = rig.globals(&p);
-            let hand = Quat::from_rotation_arc(Vec3::Z, weapon.normalize()) * self.retarget.ref_global[r[2]];
-            p.r[r[2]] = (rot(&g[r[1]]).inverse() * hand).normalize();
-        } else {
-            p.r[r[2]] = self.retarget.reference.r[r[2]];
-        }
-        if armed && style == Style::TwoHand {
-            // The left hand on the grip, above the right: the arm's two bones bent to reach it, elbow down and out.
-            let g = rig.globals(&p);
-            let at = |b: usize| g[b].w_axis.truncate();
-            let grip = (g[self.hang[0].0] * rig.inverse_bind[self.hang[0].0]).transform_point3(self.hang[0].1) + weapon.normalize() * 0.13;
-            let (s, l1, l2) = (at(l[0]), at(l[1]).distance(at(l[0])), at(l[2]).distance(at(l[1])));
-            let to = grip - s;
-            let d = to.length().clamp((l1 - l2).abs() + 0.01, l1 + l2 - 0.005);
-            let n = to.normalize_or_zero();
-            let along = (l1 * l1 - l2 * l2 + d * d) / (2.0 * d);
-            let out = (l1 * l1 - along * along).max(0.0).sqrt();
-            let pole = v(0.5, -1.0, -0.2);
-            let side = (pole - n * pole.dot(n)).normalize_or_zero();
-            let elbow = s + n * along + side * out;
-            aim_bone(rig, &mut p, l[0], l[1], elbow - s);
-            aim_bone(rig, &mut p, l[1], l[2], s + n * d - elbow);
-        } else {
-            aim_bone(rig, &mut p, l[0], l[1], lu);
-            aim_bone(rig, &mut p, l[1], l[2], lf);
-        }
-        p
+        guard_pose(&self.body, &self.retarget, self.arm_bones, self.hang[0], style, armed)
     }
 
     pub fn compose(&self, a: &SurvivorAnim, now: f32, category: WeaponCategory, armed: bool) -> RigPose {
@@ -1227,6 +1232,35 @@ mod tests {
         let mut body = parse_body(&std::fs::read(&path).unwrap()).unwrap();
         face_forward(&mut body);
         (body, models.join("wearables"))
+    }
+
+    /// Aiming, both arms stay in front of the body (the owner: "his arm disappears": the left elbow had sunk
+    /// into the chest), and with a two-handed weapon the left hand is on the grip.
+    #[test]
+    fn the_aiming_stance_keeps_both_arms_out_of_the_body() {
+        let (body, _) = shipped_body();
+        let rig = &body.rig;
+        let idle = body.clip("idle").unwrap().frames[0].clone();
+        let retarget = Retarget::new(&body, idle);
+        let arms = [["RightArm", "RightForeArm", "RightHand"], ["LeftArm", "LeftForeArm", "LeftHand"]].map(|a| a.map(|n| rig.find(n).unwrap()));
+        let [r, l] = arms;
+        for (style, armed) in [(Style::TwoHand, true), (Style::OneHand, true), (Style::OneHand, false)] {
+            let pose = guard_pose(&body, &retarget, Some(arms), (r[2], rig.inverse_bind[r[2]].inverse().w_axis.truncate()), style, armed);
+            let g = rig.globals(&pose);
+            let at = |b: usize| g[b].w_axis.truncate();
+            for (side, a) in [("right", r), ("left", l)] {
+                let (s, e, h) = (at(a[0]), at(a[1]), at(a[2]));
+                println!("{style:?} armed {armed}: {side} shoulder {s:.2}, elbow {e:.2}, hand {h:.2}");
+                assert!(e.is_finite() && h.is_finite());
+                // The elbow no further in than its shoulder, or else well in front of the chest.
+                let out = if side == "left" { e.x - s.x } else { s.x - e.x };
+                assert!(out > -0.03 || e.z > s.z + 0.12, "{style:?}: the {side} elbow is inside the body ({e:.2}, shoulder {s:.2})");
+                assert!(h.z > s.z + 0.08, "{style:?}: the {side} hand isn't in front of the body ({h:.2})");
+            }
+            if style == Style::TwoHand {
+                assert!(at(l[2]).distance(at(r[2])) < 0.2, "the left hand is {:.2} m from the grip", at(l[2]).distance(at(r[2])));
+            }
+        }
     }
 
     /// Through every blow the body's own clips play, his eyes are on the aim: straight ahead, or as
