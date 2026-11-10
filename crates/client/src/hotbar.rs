@@ -437,11 +437,16 @@ mod tests {
         same(press(1, &inv, &items, torch), Press::Send(Intent::Equip { player: 1, index: 2 }));
         inv.hand = Some(inv.carried.remove(1));
         same(press(1, &inv, &items, torch), Press::Send(Intent::MoveItem { player: 1, from: Place::Carried, index: 1, to: Place::Slot(Slot::OffHand), count: 1 }));
-        // What's in the hand already stays there; the bat's key swaps to it (it needs both hands).
+        // What's in the hand already stays there; the bat's key swaps to it.
         same(press(1, &inv, &items, knife), Press::Nothing("the kitchen knife is in your hand already".into()));
         same(press(1, &inv, &items, bat), Press::Send(Intent::Equip { player: 1, index: 2 }));
         inv.hand = Some(inv.carried.remove(2));
-        assert!(items[bat as usize].two_handed, "the bat is two-handed in the shipped data");
+        // The bat can be swung with one hand, so the light goes beside it; the fire axe takes both,
+        // so the light's key swaps to it.
+        assert!(items[bat as usize].two_handed && !items[bat as usize].both_hands(), "the bat is two-handed, but one hand will do, in the shipped data");
+        same(press(1, &inv, &items, torch), Press::Send(Intent::MoveItem { player: 1, from: Place::Carried, index: 1, to: Place::Slot(Slot::OffHand), count: 1 }));
+        inv.hand = Some(stack(&items, "fire_axe", 1));
+        assert!(items[idx(&items, "fire_axe") as usize].both_hands(), "the fire axe takes both hands in the shipped data");
         same(press(1, &inv, &items, torch), Press::Send(Intent::Equip { player: 1, index: 1 }));
         // A drink held is drunk from the hand.
         inv.hand = Some(stack(&items, "water_bottle", 1));
