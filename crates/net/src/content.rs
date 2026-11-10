@@ -138,6 +138,22 @@ pub fn load_start_kit(data_dir: &Path, items: &[ItemDef]) -> Result<zombye_sim::
     zombye_sim::logout::parse_start_kit(&text, items).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// The benchmark scenarios in `<data>/scenarios.ron` (#29), validated, the items they name checked
+/// against `items` (and the plain items weapons without one get). A data folder without the file
+/// has none.
+pub fn load_scenarios(data_dir: &Path, items: &[ItemDef], weapons: &[WeaponDef]) -> Result<Vec<zombye_sim::scenario::ScenarioDef>, String> {
+    let path = data_dir.join("scenarios.ron");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let defs = zombye_sim::scenario::parse_scenarios(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut all = items.to_vec();
+    zombye_sim::items::complete_items(&mut all, weapons);
+    zombye_sim::scenario::check_scenarios(&defs, &all).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(defs)
+}
+
 /// Everything a world is made from in `<data>`: building templates, weapons, items, containers,
 /// loot tables, recipes, the population file and the street props, as a config for `seed` (the zombie count as the
 /// population file gives).
@@ -216,6 +232,24 @@ mod tests {
         for (err, want) in errs {
             assert!(err.contains("street_props.ron") && err.contains(want), "{err} should mention {want}");
         }
+    }
+
+    /// The shipped scenarios load (#29), each starts its world, and a mistake names the file and
+    /// the scenario; with no file there are none.
+    #[test]
+    fn scenarios_load_and_name_their_mistakes() {
+        let c = load_config(&default_data_dir(), 1).unwrap();
+        let defs = load_scenarios(&default_data_dir(), &c.items, &c.weapons).unwrap();
+        for id in ["first_night", "scavenger", "last_stand", "siege"] {
+            assert!(defs.iter().any(|d| d.id == id), "no {id}");
+        }
+        assert!(load_scenarios(Path::new("/nonexistent-zombye-data"), &c.items, &c.weapons).unwrap().is_empty());
+        let dir = std::env::temp_dir().join(format!("zombye-scenarios-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("scenarios.ron"), "[(id: \"x\", name: \"X\", brief: \"Live.\", seed: 1, hours: 1.0, hold: Some(\"unobtainium\"))]").unwrap();
+        let err = load_scenarios(&dir, &c.items, &c.weapons).unwrap_err();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(err.contains("scenarios.ron") && err.contains("\"x\"") && err.contains("unobtainium"), "{err}");
     }
 
     #[test]

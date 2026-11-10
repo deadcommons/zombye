@@ -108,7 +108,7 @@ impl Log {
 }
 
 /// `2026-11-10 17:04:09Z` from seconds since 1970 (the civil-from-days rule; no time crate here).
-fn stamp(unix: u64) -> String {
+pub(crate) fn stamp(unix: u64) -> String {
     let (days, secs) = ((unix / 86_400) as i64, unix % 86_400);
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
@@ -744,7 +744,7 @@ mod tests {
         let mut config = content::load_config(&content::default_data_dir(), 7).unwrap().with_map_chunks(8);
         config.zombies = Some(30);
         let host = Host::bind(World::new(config), "127.0.0.1:0", HostOptions::default()).unwrap();
-        let persist = Persist { path: Some(dir.join("server.zsave")), dir: dir.to_path_buf(), content: host.world.config.clone(), autosave: Some(Duration::from_secs(300)), last_save: Instant::now(), dirty: false };
+        let persist = Persist { path: Some(dir.join("server.zsave")), dir: dir.to_path_buf(), content: host.world.config.clone(), autosave: Some(Duration::from_secs(300)), last_save: Instant::now(), dirty: false, benchmark: None };
         let mut admin = Admin::default();
         admin.log.quiet = true;
         (host, persist, admin)

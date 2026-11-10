@@ -1,0 +1,66 @@
+// The agent survival benchmark's scenarios (#29, docs/benchmark.md): fixed starts to compare
+// agents (or people) on. `zombye-server --benchmark list` prints them; `--benchmark ID --mcp`
+// plays one over MCP; `--benchmark ID --baseline NAME` plays one with a built-in script.
+//
+// Each: `id`, `name`, `brief` (what the player is told), `seed`, `map_chunks` (default 30: 480 m),
+// `zombies` (default None: as many as population.ron gives the map), `start_hour` (default 14),
+// `start` (Bedroom, the default; Town: open ground in the middle of town; At(x, y)), `hold` (an
+// item in the hand), `kit` (items in the pockets), `hordes` (zombies put near the start: `count`
+// within `radius` of the point `distance` metres toward `bearing`, 0 north, 90 east), `noise` (a
+// noise at the start: `radius`, `lasting`), `hours` (how long the run lasts, in game hours: one is
+// 150 s of simulation), and `points`: the score is
+//   survive x (hours survived / hours) + house x buildings searched + kill x zombies killed
+// (defaults 1000, 20, 5). A run ends when the survivor dies or the hours are up.
+//
+// Changing a scenario changes its fingerprint: results from before no longer compare. Add a new
+// one under a new id instead.
+[
+    (
+        id: "first_night",
+        name: "The first night",
+        brief: "You wake up in a bedroom at 14:00 with nothing. Search the house for a weapon, food, drink and bandages, decide whether to stay or go, and be alive at 06:00. Surviving is most of the score; every building you search and every zombie you kill adds a little.",
+        seed: 1,
+        hours: 16.0,
+    ),
+    (
+        id: "scavenger",
+        name: "Scavenger",
+        brief: "A quiet morning in a thinly haunted town. You have three game hours: search as many buildings as you can (a building counts once you have searched a container in it) and stay alive. Kills count for nothing here.",
+        seed: 7,
+        zombies: Some(700),
+        start_hour: 9.0,
+        kit: [(item: "water_bottle")],
+        hours: 3.0,
+        points: (survive: 400, house: 50, kill: 0),
+    ),
+    (
+        id: "last_stand",
+        name: "Last stand",
+        brief: "Midday, in the open in the middle of town, a baseball bat in your hands, and a noise has just told every zombie nearby where you are. Sixty are closing in from three sides. Last one game hour: fight, run or hide. Kills count double.",
+        seed: 3,
+        start_hour: 12.0,
+        start: Town,
+        hold: Some("baseball_bat"),
+        kit: [(item: "rag", count: 2)],
+        hordes: [
+            (count: 20, distance: 28.0, bearing: 90.0, radius: 7.0),
+            (count: 20, distance: 32.0, bearing: 225.0, radius: 7.0),
+            (count: 20, distance: 36.0, bearing: 315.0, radius: 7.0),
+        ],
+        noise: Some((radius: 60.0, lasting: true)),
+        hours: 1.0,
+        points: (survive: 1000, house: 0, kill: 10),
+    ),
+    (
+        id: "siege",
+        name: "Siege",
+        brief: "21:00, dark. You are in the bedroom with a claw hammer and a flashlight, and something outside made a noise that will not stop: the neighbourhood is coming to the house. Hold out, or get out, for two game hours.",
+        seed: 5,
+        start_hour: 21.0,
+        hold: Some("claw_hammer"),
+        kit: [(item: "flashlight"), (item: "gauze", count: 2), (item: "water_bottle")],
+        hordes: [(count: 25, distance: 30.0, bearing: 180.0, radius: 8.0)],
+        noise: Some((radius: 90.0, lasting: true)),
+        hours: 2.0,
+    ),
+]

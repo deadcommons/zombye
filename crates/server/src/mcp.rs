@@ -20,7 +20,7 @@ use zombye_sim::vision::line_of_sight;
 use zombye_sim::{ActionKind, Dressing, HitEffect, InfectionStage, ItemStack, LoadOptions, Part, Place, Slot, TICK_DT, Tier, Treatment, World, WoundKind, ZombieState, crafting, firstaid};
 
 use crate::screenshot::{self, Renderer};
-use crate::Persist;
+use crate::{Persist, benchmark};
 
 const MAX_STEP: u64 = 20 * 60 * 60; // one hour of game time per call
 const MAX_MOVE_TICKS: u64 = 20 * 60 * 5; // five minutes of walking per move_player call
@@ -215,6 +215,9 @@ pub fn serve(mut world: World, persist: &mut Persist, renderer: &Renderer, opts:
     if persist.dirty {
         persist.save_now(&world, why);
     }
+    if let Some(run) = persist.benchmark.as_mut() {
+        run.close(&world);
+    }
     shutdown::finished();
 }
 
@@ -264,7 +267,16 @@ fn server_info() -> Value {
 /// identity in `_meta`, cache hints on lists); any other gets the older shape. Whatever carried the
 /// message: stdio here, HTTP in `mcp_http.rs`.
 pub fn handle(world: &mut World, persist: &mut Persist, renderer: &Renderer, opts: Options, msg: &Value) -> Option<Value> {
+    // A benchmark run (#29, `benchmark.rs`) is played with a player's tools only, plus its own.
+    let bench = persist.benchmark.as_ref().map(benchmark::Run::instructions);
+    let opts = if bench.is_some() { Options::PLAY_ONLY } else { opts };
     let mut call = |name: &str, args: &Value| {
+        if name == "benchmark"
+            && let Some(run) = persist.benchmark.as_mut()
+        {
+            let _ = run.before(name, false);
+            return Ok(Called { result: Ok(text_content(run.report(world))), structured: false });
+        }
         // An unknown tool is a protocol error, not a tool result.
         let Some(kind) = tool_kind(name) else {
             return Err(format!("Unknown tool: {name}"));
@@ -272,18 +284,42 @@ pub fn handle(world: &mut World, persist: &mut Persist, renderer: &Renderer, opt
         if !opts.offers(name, kind) {
             return Err(format!("Unknown tool: {name} (this server runs without the debug tools: --no-debug-tools)"));
         }
-        let result = match name {
+        // In a benchmark run, time stops for good when the run is over.
+        if let Some(run) = persist.benchmark.as_mut()
+            && let Err(over) = run.before(name, kind == Kind::Play)
+        {
+            return Ok(Called { result: Err(over), structured: false });
+        }
+        let mut result = match name {
             "screenshot" => screenshot_tool(world, renderer, args),
             "save" | "load" | "saves" => save_tool(world, persist, name, args).map(text_content),
             _ => call_tool(world, name, args).map(text_content),
         };
+        if kind == Kind::Play
+            && let Some(run) = persist.benchmark.as_mut()
+        {
+            result = run.after(world, result);
+        }
         // save and load say themselves whether the session's file is behind.
         if matches!(kind, Kind::Play | Kind::Debug) && name != "load" {
             persist.dirty = true;
         }
         Ok(Called { result, structured: output_schema(name).is_some() })
     };
-    answer(msg, &Service { info: server_info(), instructions: &|| instructions(opts), tools: &|| tool_list(opts) }, &mut call)
+    let instructions = || match &bench {
+        Some(run) => format!("{}\n- {run}", instructions(opts)),
+        None => instructions(opts),
+    };
+    let tools = || {
+        let mut list = tool_list(opts);
+        if bench.is_some()
+            && let Some(list) = list.as_array_mut()
+        {
+            list.insert(0, benchmark::tool_def());
+        }
+        list
+    };
+    answer(msg, &Service { info: server_info(), instructions: &instructions, tools: &tools }, &mut call)
 }
 
 /// What an MCP server says of itself: the game's ([`handle`]) and a hosting server's admin
@@ -1096,7 +1132,9 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             let start = Instant::now();
             let mut attacks = Events::default();
             for _ in 0..n {
-                world.step();
+                if !benchmark::step(world) {
+                    break;
+                }
                 attacks.add(world);
             }
             world.edge_changes.clear();
@@ -1137,7 +1175,9 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             for _ in 0..ticks {
                 let intent = input(world, dir);
                 apply_intent(world, &intent);
-                world.step();
+                if !benchmark::step(world) {
+                    break;
+                }
                 attacks.add(world);
             }
             // Stop, so later step_ticks calls don't keep walking.
@@ -1325,7 +1365,9 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             let mut events = Events::default();
             let (mut ticks, mut landed_at, mut hits) = (0, None, 0);
             loop {
-                world.step();
+                if !benchmark::step(world) {
+                    break;
+                }
                 events.add(world);
                 ticks += 1;
                 if let Some(a) = world.action_events.iter().find(|a| a.player == id) {
@@ -2696,7 +2738,9 @@ fn run_job(world: &mut World, id: u32, intent: Intent, tail: fn(&World, u32) -> 
     let start = world.tick;
     let mut notes = Vec::new();
     while !world.player(id).expect("exists").jobs.is_empty() && world.tick - start < MAX_JOB_TICKS {
-        world.step();
+        if !benchmark::step(world) {
+            break;
+        }
         let n = take_notes(world, id);
         if !n.is_empty() {
             notes.push(n);
@@ -3005,7 +3049,9 @@ fn sleep_tool(world: &mut World, id: u32, max_hours: f32) -> Result<String, Stri
     let mut events = Events::default();
     let mut why = None;
     while world.game_hours() - from < max_hours as f64 && world.tick - start < MAX_STEP {
-        world.step();
+        if !benchmark::step(world) {
+            break;
+        }
         events.add(world);
         if let Some(&(_, r)) = world.woke.iter().find(|(p, _)| *p == id) {
             why = Some(r);
@@ -3221,6 +3267,7 @@ mod tests {
             autosave: None,
             last_save: std::time::Instant::now(),
             dirty: false,
+            benchmark: None,
         };
         let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "screenshot", "arguments": {"width": 640, "height": 360, "angle": 1}}});
         let response = handle(&mut world, &mut persist, &r, Options::default(), &msg).unwrap();
@@ -3270,7 +3317,7 @@ mod tests {
 
     /// A session with no `--save` file, saving into `dir`.
     fn session(world: &World, dir: &Path) -> Persist {
-        Persist { path: None, dir: dir.to_path_buf(), content: world.config.clone(), autosave: None, last_save: std::time::Instant::now(), dirty: false }
+        Persist { path: None, dir: dir.to_path_buf(), content: world.config.clone(), autosave: None, last_save: std::time::Instant::now(), dirty: false, benchmark: None }
     }
 
     /// One `tools/call` through the JSON-RPC handler: the text and whether it's a tool error.

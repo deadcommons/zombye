@@ -201,6 +201,9 @@ pub fn serve(mut world: World, persist: &mut Persist, renderer: &Renderer, args:
     if persist.dirty {
         persist.save_now(&world, why);
     }
+    if let Some(run) = persist.benchmark.as_mut() {
+        run.close(&world);
+    }
     shutdown::finished();
 }
 
@@ -826,7 +829,7 @@ mod tests {
         config.zombies = Some(30);
         let mut world = World::new(config);
         mcp::add_agent_player(&mut world);
-        let persist = Persist { path: None, dir: std::env::temp_dir(), content: world.config.clone(), autosave: None, last_save: Instant::now(), dirty: false };
+        let persist = Persist { path: None, dir: std::env::temp_dir(), content: world.config.clone(), autosave: None, last_save: Instant::now(), dirty: false, benchmark: None };
         (world, persist, Renderer::new(None, data, Duration::from_secs(5)))
     }
 

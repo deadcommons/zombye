@@ -43,6 +43,13 @@
 //! - `zombye-server --bots N --connect HOST[:PORT] [--secs S] [--bots-hostile] [--lag MS]` — N headless bot
 //!   clients, each on its own connection, that wander and fight; prints what each costs. `--lag MS`
 //!   makes them play as if that many milliseconds of ping away (lag compensation, #23).
+//! - `zombye-server --benchmark list | table | ID | all` — the agent survival benchmark (#29,
+//!   `benchmark.rs`, docs/benchmark.md): fixed scenarios from the data folder's `scenarios.ron`.
+//!   `list` prints them; with `--mcp` or `--mcp-http`, `--benchmark ID` serves that scenario's
+//!   world to an agent (a player's tools only, one life, time stops when the run is over) and
+//!   writes its result as JSON into `--results DIR` (default `saves/benchmark`) under `--agent
+//!   NAME`; `--benchmark ID|all --baseline idle|brawler|runner` plays it with a built-in script instead;
+//!   `table` ranks the results in the folder.
 //!
 //! Common options: `--zombies N` (default: as many as `population.ron` gives for the map, about 2,600
 //! on the default map), `--seed S` (default 1), `--map-chunks N` (a square
@@ -66,6 +73,7 @@
 #![recursion_limit = "256"]
 
 mod admin;
+mod benchmark;
 mod mcp;
 mod mcp_http;
 mod multiplayer;
@@ -91,6 +99,8 @@ pub struct Persist {
     pub last_save: Instant,
     /// The world changed since it was last saved or loaded.
     pub dirty: bool,
+    /// The benchmark scenario this MCP session plays (`--benchmark ID`, #29), if it plays one.
+    pub benchmark: Option<benchmark::Run>,
 }
 
 impl Persist {
@@ -177,8 +187,54 @@ fn main() {
             .map(|m| Duration::from_secs_f64(m * 60.0)),
         last_save: Instant::now(),
         dirty: false,
+        benchmark: None,
     };
 
+    // The benchmark (#29, `benchmark.rs`): `list`, `table`, or a scenario to play, by a baseline
+    // here or over MCP below (on the scenario's world instead of the one the options describe).
+    let mut scenario_world = None;
+    if let Some(what) = text("--benchmark") {
+        let results = text("--results").map_or_else(|| PathBuf::from(benchmark::DEFAULT_DIR), PathBuf::from);
+        let fail = |e: String| -> ! {
+            eprintln!("{e}");
+            std::process::exit(2);
+        };
+        let defs = content::load_scenarios(&data, &config.items, &config.weapons).unwrap_or_else(|e| fail(e));
+        let mcp = flag("--mcp") || flag("--mcp-http");
+        if what == "list" {
+            print!("{}", benchmark::list(&defs));
+            return;
+        }
+        if what == "table" {
+            print!("{}", benchmark::table(&results).unwrap_or_else(|e| fail(e)));
+            return;
+        }
+        let chosen: Vec<_> = defs.iter().filter(|d| d.id == what || (what == "all" && !mcp)).collect();
+        if chosen.is_empty() {
+            fail(format!("no scenario {what:?} (there are: {}; or list, table{})", defs.iter().map(|d| d.id.as_str()).collect::<Vec<_>>().join(", "), if mcp { "" } else { ", all" }));
+        }
+        if mcp {
+            if persist.path.is_some() {
+                fail("--benchmark starts its scenario's own world: it can't be used with --save".to_string());
+            }
+            let (world, player) = chosen[0].start(&config);
+            eprintln!("benchmark: scenario {} ({}), results to {}", chosen[0].id, chosen[0].name, results.display());
+            persist.benchmark = Some(benchmark::Run::new(chosen[0].clone(), &world, player, text("--agent").unwrap_or_else(|| "unnamed".into()), results));
+            persist.autosave = None;
+            scenario_world = Some(world);
+        } else {
+            let Some(name) = text("--baseline") else {
+                fail(format!("--benchmark {what} needs --mcp or --mcp-http (an agent plays it) or --baseline {} (a built-in script does)", benchmark::BASELINES.join("|")));
+            };
+            for def in chosen {
+                let start = Instant::now();
+                let result = benchmark::baseline(def, &config, &name).unwrap_or_else(|e| fail(e));
+                let wrote = benchmark::write_result(&results, &result).map_or_else(|e| format!("not written: {e}"), |p| p.display().to_string());
+                println!("{}\n  {:.1} s, {} ticks, hash {}; {wrote}", benchmark::line(&result), start.elapsed().as_secs_f32(), result["ticks"], result["state_hash"].as_str().unwrap_or(""));
+            }
+            return;
+        }
+    }
     if flag("--mcp-http") {
         // The same server as `--mcp`, reached over HTTP instead of stdio (#87, `mcp_http.rs`).
         let http = match mcp_http::HttpArgs::parse(&args, std::env::var("ZOMBYE_MCP_TOKEN").ok()) {
@@ -191,7 +247,7 @@ fn main() {
         shutdown::install();
         let world = match &persist.path {
             Some(path) => load_or_create(path, config, load_options, mcp::add_agent_player),
-            None => World::new(config),
+            None => scenario_world.take().unwrap_or_else(|| World::new(config)),
         };
         let timeout = text("--screenshot-timeout").and_then(|v| v.parse::<f64>().ok()).filter(|s| *s > 0.0 && s.is_finite()).map_or(screenshot::DEFAULT_TIMEOUT, Duration::from_secs_f64);
         let renderer = screenshot::Renderer::new(text("--client").map(PathBuf::from), data.clone(), timeout);
@@ -200,7 +256,7 @@ fn main() {
         shutdown::install();
         let world = match &persist.path {
             Some(path) => load_or_create(path, config, load_options, mcp::add_agent_player),
-            None => World::new(config),
+            None => scenario_world.take().unwrap_or_else(|| World::new(config)),
         };
         let timeout = text("--screenshot-timeout").and_then(|v| v.parse::<f64>().ok()).filter(|s| *s > 0.0 && s.is_finite()).map_or(screenshot::DEFAULT_TIMEOUT, Duration::from_secs_f64);
         let renderer = screenshot::Renderer::new(text("--client").map(PathBuf::from), data.clone(), timeout);
@@ -251,7 +307,8 @@ fn main() {
             "usage: zombye-server (--mcp | --mcp-http [ADDR[:PORT]] [--mcp-token T | --mcp-no-auth] [--mcp-token-in-url] [--mcp-no-dev] [--mcp-origin ORIGIN] | --bench [--ticks N] [--players N] [--horde N] [--save-bench] \
              | --host [ADDR[:PORT]] [--name NAME] [--max-players N] [--pvp on|off] [--spawn spread|together] [--password P] [--allow-dev] [--budget KB] [--fair-sight on|off] \
              [--logout-secs S] [--logout-safe-secs S] [--spawn-protection S] [--admin-mcp [ADDR[:PORT]] [--admin-token T] [--admin-origin ORIGIN]] \
-             | --bots N --connect HOST[:PORT] [--secs S] [--name PREFIX] [--password P] [--bots-hostile] [--lag MS]) \
+             | --bots N --connect HOST[:PORT] [--secs S] [--name PREFIX] [--password P] [--bots-hostile] [--lag MS] \
+             | --benchmark list|table|ID|all [--baseline idle|brawler|runner] [--agent NAME] [--results DIR] (ID with --mcp or --mcp-http: an agent plays it)) \
              [--zombies N] [--seed S] [--map-chunks N] [--pvp on] [--data DIR] \
              [--save PATH] [--load-anyway] [--autosave-mins N] [--saves DIR] [--client PATH] [--screenshot-timeout SECS] [--no-debug-tools]"
         );

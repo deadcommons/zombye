@@ -49,6 +49,14 @@ cargo run --release --bin zombye-server -- --mcp
 Agents can connect through [.mcp.json](.mcp.json) (build the server first). See [AGENTS.md](AGENTS.md)
 for the tools and repo rules.
 
+To compare agents, the **survival benchmark** plays fixed scenarios over MCP and writes each run's
+score to a file ([docs/benchmark.md](docs/benchmark.md)):
+
+```bash
+cargo run --release --bin zombye-server -- --benchmark list
+cargo run --release --bin zombye-server -- --mcp --benchmark first_night --agent my-agent
+```
+
 ## Contributing
 
 Contributions from people and their agents are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md)
