@@ -15,7 +15,7 @@ Work is tracked on GitHub, not in the repo: the
 |---|---|---|
 | `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `awareness.rs`: which players see and heard which, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), lag compensation for it (`lagcomp.rs`: a few ticks of positions, so a remote client's blow lands where it saw the target), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), skills that improve with practice (`skills.rs` + `SkillTuning`), street props placed by the town generator from data (`street_props.rs`), run stats and the cause of death (`run.rs`), the first night's objectives and outcome (`firstnight.rs`), logging out, spawn protection and the start kit on a server (`logout.rs`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), multiplayer over the network (see Multiplayer: the messages, framing and per-client delta snapshots in `wire.rs`, a client's view cut to what its survivor sees and hears of other players in `visibility.rs`, the server's connections in `host.rs`, a client's in `remote.rs`), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
-| `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint (`--mcp` on stdio, `mcp.rs`; `--mcp-http` over streamable HTTP for remote agents, `mcp_http.rs`, see Connecting an agent); the multiplayer server (`--host`) and bot clients (`--bots N --connect ADDR`; `multiplayer.rs`, see Multiplayer); `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
+| `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint (`--mcp` on stdio, `mcp.rs`; `--mcp-http` over streamable HTTP for remote agents, `mcp_http.rs`, see Connecting an agent); the multiplayer server (`--host`) and bot clients (`--bots N --connect ADDR`; `multiplayer.rs`, see Multiplayer); the operator's MCP admin endpoint on a hosting server (`--host --admin-mcp`, `admin.rs`, see Administering a server); `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
 | `crates/client` | `zombye` Bevy client: camera, chunk streaming, building meshes (`world_render.rs`; their details, trim, siding lines, porches, chimneys, shopfronts and lit windows, from `meshgen/building_kit.rs`, see Buildings dressed under The world), the outdoors per chunk from the tile map alone (`meshgen/landscape.rs`: lawns, verges, forest floor and litter, road paint at real scale, kerbs, slab joints, driveways, front beds, fences and hedges; `meshgen/curves.rs`: what's drawn round over the tiles, see Curves under The world; `meshgen/trees.rs`: faceted broadleaves, birches, pines, spruces; colours from `assets/data/palette.ron` through `meshgen/palette.rs`), fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd, or a character baked offline read from a `.zvat` (`zvat.rs`); `survivor.rs` skinned, CPU-posed players; `character.rs` reads a modular character's body and wearable GLBs and `survivor_model.rs` draws players as it, dressed in what they wear), hit feedback (`fx.rs`), lights in the dark (`lights.rs`, see Light and mood), instanced grass, flowers and litter (`vegetation.rs`), the film pass (`film.rs`) and the graphics settings (`graphics.rs`; all three: see Look and feel), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), street props merged into each chunk's props mesh from the same models (`meshgen/street_props.rs`, see Street props under The world), HUD, the death screen and run summary (`death.rs`), the first night's objectives, hints and morning screen (`firstnight_ui.rs`), the skills panel and level-up line (`skills_ui.rs`), sound (`audio.rs`, see Sound), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
 | `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/items/recipes.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`, `data/street_props.ron`, `data/palette.ron`: every colour, for Blender assets and the generated world), models (`models/furniture/*.glb`, street props `models/street/*.glb`; the survivor's body `models/characters/survivor_01.glb` and its wearables `models/wearables/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), sound (`audio/sfx/*.wav`, `audio/ambience/*.wav`, listed in `data/sounds.ron`), later textures. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
 | `tools/blender/` | Python to build assets: run inside Blender, mesh builder, palette, renders, validation, GLB export (`zasset.py`, `palette.py`: reads `assets/data/palette.ron`, `build.py`), character clean-up, validation and skinned export (`zchar.py`), VAT bake for the crowd, outfit variants with palette swatches (`zvat.py`, `build.py -- --crowd`); plain Python, art-repo work folders and promotion (`artrepo.py`). | MIT OR Apache-2.0 |
@@ -85,6 +85,8 @@ cargo run -p zombye-server --release -- --bench --ticks 400 --map-chunks 64 --zo
 cargo run -p zombye-server --release -- --bench --ticks 200 --map-chunks 64 --zombies 21500 --players 1 --horde 1000 --save-bench
 # Multiplayer (see Multiplayer): a server on TCP port 7777, a game client on it, and 31 bots to fill it
 cargo run -p zombye-server --release -- --host --save saves/server.zsave      # add --pvp off for co-op
+# ...with the operator's MCP admin endpoint on http://127.0.0.1:8788/mcp (see Administering a server)
+ZOMBYE_ADMIN_TOKEN=a-long-secret-token cargo run -p zombye-server --release -- --host --save saves/server.zsave --admin-mcp
 cargo run -p zombye-client --release -- --connect HOST --name NAME
 cargo run -p zombye-server --release -- --bots 31 --connect HOST
 cargo run -p zombye-client --release -- --zombies 1000          # the game window
@@ -1520,6 +1522,57 @@ snapshots over the network: `zombye-server --host` serves a world and `zombye --
   set to 20 KB/s, exactly that, every client still with the whole horde and the zombies within 6 m at most 10 cm off.
   One client with 1,500 zombies in view on 10 KB/s of zombie updates: within 8 m at most 5 cm off, beyond at most
   0.3 m (`a_horde_over_budget_gets_coarser_with_distance`). Not yet measured between machines over the internet.
+
+## Administering a server (MCP admin, `crates/server/src/admin.rs`; #26)
+
+`zombye-server --host ... --admin-mcp [ADDR[:PORT]]` adds an MCP endpoint for whoever runs the server, so their agent
+can administer the world people are playing in. It is **not** the game's MCP server (below: that one plays a world of its
+own, time paused between calls) and shares no tools with it but a few read-only ones.
+
+- **Access:** the same streamable HTTP transport as `--mcp-http` (`mcp_http::listen`: `POST /mcp`, `GET /health`, the
+  same limits), by default on `127.0.0.1:8788`, and **always** behind a bearer token: `ZOMBYE_ADMIN_TOKEN`, else
+  `--admin-token T` (at least 16 characters, never printed). With no token the server refuses to start; there is no
+  open mode and `--mcp-no-auth` doesn't apply. `--admin-origin ORIGIN` allows a browser origin. No TLS: a reverse
+  proxy or a tunnel in front. Game clients can't reach any of it: it is another port, and nothing in `wire` carries it.
+- **Between ticks:** connections pass JSON-RPC messages to the server's main thread, which answers at most 4 after
+  each tick (stopping for the next tick once they have taken 10 ms: `Admin::tick`, called from `multiplayer::host`),
+  with `mcp::answer`, the protocol half of the game's MCP server (`mcp::Service`: its own name, instructions and
+  tool list). The world ticks on at 20 Hz whatever the agent does; a call sees and changes it between two ticks, as a
+  client's intents do.
+- **Tools** (`admin::TOOLS`; titles, `readOnlyHint` / `destructiveHint` annotations; a test calls every one):
+  `status` (JSON, also `structuredContent`: uptime, tick, clock, tick ms against the budget, online, survivors,
+  zombies by tier, bytes, joins / leaves / refusals, the rules, the save and when it was written, bans, the newest
+  log line), `players` (JSON: `online` with id, name, address, seconds on, position and room, HP, dead, kills, KB/s,
+  zombies in view, view lag; `offline` survivors; `bans`), `kick {player | name, reason, ban}` (`Host::kick`: the
+  client gets "kicked: REASON" and is dropped, its survivor left as when anyone leaves (the logout rules); `ban: true` also refuses the name, and the address
+  unless it is loopback, until `unban {name}`: `Host::ban`, checked before anything else in `Host::hello`; bans last
+  until the server restarts), `save {name}` (no name: the `--save` file, as the autosave; a name: that file in the
+  saves folder; `PATH.players` beside it either way) and `saves`, `settings {...}` (no arguments: shows them as JSON;
+  with: `name`, `max_players`, `password` ("" removes it; never shown back or logged), `pvp`, `fair_sight`
+  (true / false / "auto"), `allow_dev`, `spawn` (spread / together / auto), `budget_kb`, `autosave_mins`,
+  `zombie_respawn`; all checked first, then all applied, at once; `pvp` is the world's and is saved with it, the rest
+  are the server's and come from the command line (`zombie_respawn`: from `population.ron`) again after a restart; clients already on
+  keep the name and PvP label they joined with), the events `spawn_zombies {count ≤ 500, radius}`, `horde {count ≤
+  300, distance 20-150 m, from: compass}` (a clump that far off, and a lasting noise at the target that brings it and
+  whatever else hears), `make_noise {radius, lasting}`, `spawn_item {item, count}` (each at `x`, `y` or at a `player` /
+  `name`), `skip_time {hours | to_hour}` (at most 24 h; health and needs move on with it) and `teleport {player | name,
+  x, y | to_player | to_name}`, `logs {limit, after, contains}`, and the game's read-only `observe` (everyone shown:
+  the operator isn't a survivor), `stats`, `inventory`, `health`, `regions`, `zombie`, `items` on the hosted world
+  (`mcp::look_defs`, `mcp::world_tool`; they take `name` for a player here too). Not offered: anything that plays or
+  steps time, `load` (clients couldn't follow the world being swapped under them), `screenshot` (a render would hold
+  the tick up).
+- **The log** (`admin::Log`): every line the server prints (joins, leaves with the reason, refusals, deaths with their
+  cause under the player's name, autosaves, the load report every 10 s) and every admin call that changed something
+  (`admin: kicked bob (player 2): griefing`) is kept, numbered from 1 with its UTC time and tick, the newest 2,000;
+  `logs {after: N}` reads on from line N. A hosting server keeps it with or without the endpoint.
+- **Determinism:** admin calls are inputs like intents, applied between ticks through the world's own functions
+  (`spawn_zombies`, `make_noise`, `spawn_item`, `skip_time`; a teleport sets the player's position, which the next
+  snapshot corrects the client's prediction with). Single-player and the sim are untouched.
+- Tests: `admin.rs`'s own (a real `Host` with clients on sockets: every tool, the read-only ones leaving the state
+  hash alone, kick / ban / unban, settings holding at the door, saves, events, the log) and
+  `crates/server/tests/admin_mcp.rs` (the binary as a process: 401 without the token, no start without one, a client
+  joined, the world administered and the client kicked over HTTP); `net/tests/multiplayer.rs`
+  `an_operator_kicks_and_bans`.
 
 ## Connecting an agent to the game (MCP)
 

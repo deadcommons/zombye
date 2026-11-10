@@ -2,7 +2,9 @@
 //! `mcp_http.rs` carries the same messages over HTTP ([`handle`] answers both).
 //!
 //! Every tool goes through the same [`Intent`] path a game client uses, so an agent can't do
-//! anything a client couldn't (admin tools will be gated separately).
+//! anything a client couldn't. The tools for running a multiplayer server (kick, settings, events,
+//! the log) are another endpoint, on the hosting server and behind its own token: `admin.rs` (#26),
+//! which speaks the same protocol through [`answer`].
 
 use std::io::{BufRead, Write};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -259,6 +261,49 @@ fn server_info() -> Value {
 /// identity in `_meta`, cache hints on lists); any other gets the older shape. Whatever carried the
 /// message: stdio here, HTTP in `mcp_http.rs`.
 pub fn handle(world: &mut World, persist: &mut Persist, renderer: &Renderer, opts: Options, msg: &Value) -> Option<Value> {
+    let mut call = |name: &str, args: &Value| {
+        // An unknown tool is a protocol error, not a tool result.
+        let Some(kind) = tool_kind(name) else {
+            return Err(format!("Unknown tool: {name}"));
+        };
+        if !opts.offers(name, kind) {
+            return Err(format!("Unknown tool: {name} (this server runs without the debug tools: --no-debug-tools)"));
+        }
+        let result = match name {
+            "screenshot" => screenshot_tool(world, renderer, args),
+            "save" | "load" | "saves" => save_tool(world, persist, name, args).map(text_content),
+            _ => call_tool(world, name, args).map(text_content),
+        };
+        // save and load say themselves whether the session's file is behind.
+        if matches!(kind, Kind::Play | Kind::Debug) && name != "load" {
+            persist.dirty = true;
+        }
+        Ok(Called { result, structured: output_schema(name).is_some() })
+    };
+    answer(msg, &Service { info: server_info(), instructions: &|| instructions(opts), tools: &|| tool_list(opts) }, &mut call)
+}
+
+/// What an MCP server says of itself: the game's ([`handle`]) and a hosting server's admin
+/// endpoint (`admin.rs`, #26) speak the same protocol with different tools.
+pub struct Service<'a> {
+    /// `serverInfo`.
+    pub info: Value,
+    pub instructions: &'a dyn Fn() -> String,
+    /// The `tools/list` definitions.
+    pub tools: &'a dyn Fn() -> Value,
+}
+
+/// What came of a `tools/call`.
+pub struct Called {
+    /// The content, or a tool error's text.
+    pub result: Result<Value, String>,
+    /// The tool has an output schema: its text is JSON, returned as `structuredContent` too.
+    pub structured: bool,
+}
+
+/// The protocol itself, whatever the tools: one JSON-RPC message in, its response out. `call` runs
+/// a tool by name; `Err` is the message for one that isn't on offer.
+pub fn answer(msg: &Value, service: &Service, call: &mut dyn FnMut(&str, &Value) -> Result<Called, String>) -> Option<Value> {
     let id = msg.get("id").cloned();
     let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
     // Notifications (no id) get no response.
@@ -285,20 +330,20 @@ pub fn handle(world: &mut World, persist: &mut Persist, renderer: &Renderer, opt
             json!({
                 "protocolVersion": LEGACY_VERSIONS.iter().find(|v| **v == asked).unwrap_or(&LEGACY_VERSIONS[0]),
                 "capabilities": {"tools": {}},
-                "serverInfo": server_info(),
-                "instructions": instructions(opts),
+                "serverInfo": service.info,
+                "instructions": (service.instructions)(),
             })
         }
         "server/discover" => json!({
             "supportedVersions": supported(),
             "capabilities": {"tools": {}},
-            "instructions": instructions(opts),
+            "instructions": (service.instructions)(),
             "ttlMs": CACHE_TTL_MS,
             "cacheScope": "public",
         }),
         "ping" => json!({}),
         "tools/list" => {
-            let mut list = json!({"tools": tool_list(opts)});
+            let mut list = json!({"tools": (service.tools)()});
             if modern {
                 list["ttlMs"] = json!(CACHE_TTL_MS);
                 list["cacheScope"] = json!("public");
@@ -308,26 +353,14 @@ pub fn handle(world: &mut World, persist: &mut Persist, renderer: &Renderer, opt
         "tools/call" => {
             let name = msg["params"]["name"].as_str().unwrap_or("");
             let args = msg["params"].get("arguments").cloned().unwrap_or(json!({}));
-            // An unknown tool is a protocol error, not a tool result.
-            let Some(kind) = tool_kind(name) else {
-                return fail(INVALID_PARAMS, format!("Unknown tool: {name}"), None);
+            let called = match call(name, &args) {
+                Ok(called) => called,
+                Err(unknown) => return fail(INVALID_PARAMS, unknown, None),
             };
-            if !opts.offers(name, kind) {
-                return fail(INVALID_PARAMS, format!("Unknown tool: {name} (this server runs without the debug tools: --no-debug-tools)"), None);
-            }
-            let result = match name {
-                "screenshot" => screenshot_tool(world, renderer, &args),
-                "save" | "load" | "saves" => save_tool(world, persist, name, &args).map(text_content),
-                _ => call_tool(world, name, &args).map(text_content),
-            };
-            // save and load say themselves whether the session's file is behind.
-            if matches!(kind, Kind::Play | Kind::Debug) && name != "load" {
-                persist.dirty = true;
-            }
-            match result {
+            match called.result {
                 Ok(content) => {
                     // Tools with an output schema: the same JSON as the text, as a value.
-                    let structured = output_schema(name).and_then(|_| serde_json::from_str::<Value>(content[0]["text"].as_str()?).ok());
+                    let structured = called.structured.then(|| serde_json::from_str::<Value>(content[0]["text"].as_str()?).ok()).flatten();
                     let mut result = json!({"content": content});
                     if let Some(value) = structured {
                         result["structuredContent"] = value;
@@ -341,13 +374,35 @@ pub fn handle(world: &mut World, persist: &mut Persist, renderer: &Renderer, opt
     };
     if modern {
         result["resultType"] = json!("complete");
-        result["_meta"] = json!({META_SERVER: server_info()});
+        result["_meta"] = json!({META_SERVER: service.info});
     }
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
 }
 
-fn text_content(text: String) -> Value {
+pub fn text_content(text: String) -> Value {
     json!([{"type": "text", "text": text}])
+}
+
+/// For a hosting server's admin endpoint (`admin.rs`, #26): the definitions of the tools named,
+/// which only read the world, as [`tool_list`] gives them.
+pub fn look_defs(names: &[&str]) -> Vec<Value> {
+    let Value::Array(defs) = tool_list(Options::PLAY_ONLY) else { unreachable!("tool_list is a list") };
+    defs.into_iter().filter(|d| d["name"].as_str().is_some_and(|n| names.contains(&n) && tool_kind(n) == Some(Kind::Look))).collect()
+}
+
+/// For the admin endpoint: one of the world tools here, run on the world a server hosts. The caller
+/// says which it offers.
+pub fn world_tool(world: &mut World, name: &str, args: &Value) -> Result<String, String> {
+    call_tool(world, name, args)
+}
+
+/// For the admin endpoint: `save` and `saves` (never `load`: clients couldn't follow the world
+/// being swapped under them).
+pub fn saves_tool(world: &mut World, persist: &mut Persist, name: &str, args: &Value) -> Result<String, String> {
+    if !matches!(name, "save" | "saves") {
+        return Err(format!("{name} isn't offered here"));
+    }
+    save_tool(world, persist, name, args)
 }
 
 /// The output schema of the tools whose text is JSON (they also return it as `structuredContent`).
@@ -2094,12 +2149,12 @@ fn compass(angle: f32) -> &'static str {
     COMPASS[i].0
 }
 
-fn place(world: &World, p: Vec2) -> String {
+pub fn place(world: &World, p: Vec2) -> String {
     let room = world.map.room_at(p);
     if room == 0 { "outdoors".to_string() } else { world.map.rooms[room as usize].name.clone() }
 }
 
-fn clock(hours: f32) -> String {
+pub fn clock(hours: f32) -> String {
     let h = hours.floor() as u32;
     let m = ((hours - h as f32) * 60.0).floor() as u32;
     format!("{h:02}:{m:02}")

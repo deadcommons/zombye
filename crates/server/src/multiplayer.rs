@@ -11,6 +11,8 @@ use zombye_net::{Intent, Snapshot, shutdown, wire};
 use zombye_sim::{TICK_DT, World, ZombieAnim};
 
 use crate::Persist;
+use crate::admin::{Admin, Log};
+use crate::mcp_http::HttpArgs;
 
 /// What the command line says about hosting.
 pub struct HostArgs {
@@ -19,10 +21,13 @@ pub struct HostArgs {
     pub options: HostOptions,
     /// `--pvp on|off`: `None` leaves a loaded world's rule as it is (a new world: on).
     pub pvp: Option<bool>,
+    /// `--admin-mcp`: the operator's MCP endpoint (#26, `admin.rs`), if asked for.
+    pub admin: Option<HttpArgs>,
 }
 
 impl HostArgs {
-    pub fn parse(args: &[String]) -> Result<Self, String> {
+    /// From the command line and `ZOMBYE_ADMIN_TOKEN` (`admin_token`).
+    pub fn parse(args: &[String], admin_token: Option<String>) -> Result<Self, String> {
         let text = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).filter(|v| !v.starts_with("--")).cloned();
         let flag = |name: &str| args.iter().any(|a| a == name);
         let on_off = |name: &str| match text(name).as_deref() {
@@ -72,7 +77,7 @@ impl HostArgs {
             budget,
             fair_sight: on_off("--fair-sight")?,
         };
-        Ok(Self { addr, options, pvp: on_off("--pvp")? })
+        Ok(Self { addr, options, pvp: on_off("--pvp")?, admin: crate::admin::parse(args, admin_token)? })
     }
 }
 
@@ -88,7 +93,7 @@ fn read_names(save: &Path) -> Vec<(String, u32)> {
     text.lines().filter_map(|l| l.split_once('\t')).filter_map(|(id, name)| Some((name.to_string(), id.parse().ok()?))).collect()
 }
 
-fn write_names(save: &Path, host: &Host) {
+pub fn write_names(save: &Path, host: &Host) {
     let text: String = host.names().iter().map(|(name, id)| format!("{id}\t{name}\n")).collect();
     if let Err(e) = std::fs::write(names_path(save), text) {
         eprintln!("can't write {}: {e}", names_path(save).display());
@@ -137,20 +142,30 @@ pub fn host(mut world: World, new_world: bool, args: HostArgs, persist: &mut Per
         host.world.map.height(),
         host.world.config.generation.seed,
     );
+    // The operator's side (#26, `admin.rs`): the log, and the admin MCP endpoint if asked for.
+    let mut admin = Admin::default();
+    if let Some(http) = &args.admin {
+        match admin.listen(http) {
+            Ok(addr) => println!("admin MCP on http://{addr}/mcp (bearer token). No TLS here: put a reverse proxy or a tunnel in front for HTTPS."),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
     let mut report = Report::new(&host);
     host.run(|h| {
-        for line in h.log.drain(..) {
-            println!("{line}");
-            persist.dirty = true;
-        }
+        // What the host logged, deaths, and the admin calls waiting, between two ticks.
+        persist.dirty |= admin.tick(h, persist);
         persist.dirty |= !h.clients().is_empty();
         if persist.autosave_due() {
             persist.save_now(&h.world, "autosave");
             if let Some(save) = &persist.path {
                 write_names(save, h);
+                admin.log.add(h.world.tick as u64, format!("autosaved to {}", save.display()));
             }
         }
-        report.tick(h);
+        report.tick(h, &mut admin.log);
         !shutdown::requested()
     });
     host.close("the server is shutting down");
@@ -178,7 +193,7 @@ impl Report {
         Self { since: Instant::now(), ticks: host.stats.ticks, bytes_out: host.stats.bytes_out, held: host.stats.held, clients, ms: 0.0, worst: 0.0 }
     }
 
-    fn tick(&mut self, host: &Host) {
+    fn tick(&mut self, host: &Host, log: &mut Log) {
         self.ms += host.stats.tick_ms;
         self.worst = self.worst.max(host.stats.tick_ms);
         let secs = self.since.elapsed().as_secs_f32();
@@ -193,7 +208,7 @@ impl Report {
             // The busiest client (one that joined since the count began: all it was sent), and
             // the fullest view.
             let busiest = clients.iter().map(|c| c.bytes_out.saturating_sub(self.clients.iter().find(|(p, _)| *p == c.player).map_or(0, |(_, b)| *b))).max().unwrap_or(0);
-            println!(
+            log.add(host.world.tick as u64, format!(
                 "tick {}: {online} online | {:.1} ticks/s, {:.2} ms a tick (worst {:.2}, budget {:.0}) | zombies {} active, {} near, {} virtual | {:.1} KB/s down per client (busiest {:.1}, budget {}) | up to {} zombies in a view, {:.0} updates a tick held back | blows rewound up to {:.0} ms (the most a client's view is behind; cap {:.0})",
                 host.world.tick,
                 ticks as f32 / secs,
@@ -210,7 +225,7 @@ impl Report {
                 (host.stats.held - self.held) as f32 / ticks as f32,
                 clients.iter().map(|c| host.world.view_lag_secs(c.player)).fold(0.0, f32::max) * 1000.0,
                 host.world.config.combat.lag_comp_max_secs * 1000.0,
-            );
+            ));
         }
         *self = Self::new(host);
     }
@@ -380,7 +395,7 @@ mod tests {
     use super::*;
 
     fn parse(line: &str) -> Result<HostArgs, String> {
-        HostArgs::parse(&line.split_whitespace().map(String::from).collect::<Vec<_>>())
+        HostArgs::parse(&line.split_whitespace().map(String::from).collect::<Vec<_>>(), None)
     }
 
     #[test]

@@ -30,6 +30,10 @@
 //!   new survivor can't be hurt by other players; #68). New survivors start with the data folder's
 //!   `start_kit.ron`. With `--save PATH` the world is loaded or made, autosaved and saved on
 //!   shutdown as below, with whose survivor is whose in `PATH.players`.
+//!   `--admin-mcp [ADDR[:PORT]]` (#26, `admin.rs`) adds the operator's MCP endpoint to the running
+//!   server, by default on `127.0.0.1:8788`: list, kick and ban players, save, change settings, set
+//!   off events, read the log. It always needs a bearer token (`ZOMBYE_ADMIN_TOKEN`, or
+//!   `--admin-token T`); `--admin-origin ORIGIN` allows a browser origin.
 //! - `zombye-server --bots N --connect HOST[:PORT] [--secs S] [--bots-hostile] [--lag MS]` — N headless bot
 //!   clients, each on its own connection, that wander and fight; prints what each costs. `--lag MS`
 //!   makes them play as if that many milliseconds of ping away (lag compensation, #23).
@@ -55,6 +59,7 @@
 // The MCP tool list is one big `json!`.
 #![recursion_limit = "256"]
 
+mod admin;
 mod mcp;
 mod mcp_http;
 mod multiplayer;
@@ -210,7 +215,7 @@ fn main() {
         });
     } else if flag("--host") {
         // The flags, and what new survivors start with (the data folder's `start_kit.ron`, #68).
-        let parsed = multiplayer::HostArgs::parse(&args).and_then(|mut a| {
+        let parsed = multiplayer::HostArgs::parse(&args, std::env::var("ZOMBYE_ADMIN_TOKEN").ok()).and_then(|mut a| {
             a.options.kit = content::load_start_kit(&data, &config.items)?;
             Ok(a)
         });
@@ -234,7 +239,7 @@ fn main() {
         eprintln!(
             "usage: zombye-server (--mcp | --mcp-http [ADDR[:PORT]] [--mcp-token T | --mcp-no-auth] [--mcp-token-in-url] [--mcp-no-dev] [--mcp-origin ORIGIN] | --bench [--ticks N] [--players N] [--horde N] [--save-bench] \
              | --host [ADDR[:PORT]] [--name NAME] [--max-players N] [--pvp on|off] [--spawn spread|together] [--password P] [--allow-dev] [--budget KB] [--fair-sight on|off] \
-             [--logout-secs S] [--logout-safe-secs S] [--spawn-protection S] \
+             [--logout-secs S] [--logout-safe-secs S] [--spawn-protection S] [--admin-mcp [ADDR[:PORT]] [--admin-token T] [--admin-origin ORIGIN]] \
              | --bots N --connect HOST[:PORT] [--secs S] [--name PREFIX] [--password P] [--bots-hostile] [--lag MS]) \
              [--zombies N] [--seed S] [--map-chunks N] [--pvp on] [--data DIR] \
              [--save PATH] [--load-anyway] [--autosave-mins N] [--saves DIR] [--client PATH] [--screenshot-timeout SECS] [--no-debug-tools]"

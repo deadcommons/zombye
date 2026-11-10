@@ -597,3 +597,42 @@ fn thirty_two_clients_in_one_horde_keep_to_their_budget() {
     assert!(near_off < 0.15, "zombies in reach are where the server has them ({near_off} m)");
     assert!(worst_tick < 50.0, "a tick took {worst_tick:.1} ms");
 }
+
+/// An operator's kick (#26): the client is told why and dropped, its survivor stays and is its
+/// player's again when it comes back; a ban keeps the name out until it is lifted.
+#[test]
+fn an_operator_kicks_and_bans() {
+    let mut host = host(0, false, HostOptions::default());
+    let mut ada = join(&mut host, "ada");
+    let mut bob = join(&mut host, "bob");
+    let (ada_id, bob_id) = (ada.player(), bob.player());
+    tick(&mut host, &mut [&mut ada, &mut bob]);
+    assert!(host.clients().iter().all(|c| c.secs >= 0.0));
+
+    assert_eq!(host.kick(99, "nobody", false), None, "nobody plays player 99");
+    assert_eq!(host.kick(bob_id, "blocking the door", false).as_deref(), Some("bob"));
+    host.tick();
+    assert_eq!(host.clients().len(), 1);
+    let start = Instant::now();
+    while bob.closed.is_none() && start.elapsed() < Duration::from_secs(10) {
+        bob.poll();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(bob.closed.as_deref().is_some_and(|why| why.contains("kicked: blocking the door")), "{:?}", bob.closed);
+    assert!(host.world.player(bob_id).is_some(), "his survivor stays");
+    assert!(host.log.iter().any(|l| l.contains("bob left: kicked: blocking the door")), "{:?}", host.log);
+    // Only kicked: he can come straight back, as the same survivor.
+    let mut bob = join(&mut host, "bob");
+    assert_eq!(bob.player(), bob_id);
+    tick(&mut host, &mut [&mut ada, &mut bob]);
+
+    // Banned: refused under that name (however it is written) until the ban is lifted.
+    assert_eq!(host.kick(bob_id, "", true).as_deref(), Some("bob"));
+    host.tick();
+    assert_eq!((host.bans().len(), host.bans()[0].name.as_str(), host.bans()[0].ip), (1, "bob", None), "a loopback address is never banned");
+    assert!(join_as(&mut host, "Bob", "").unwrap_err().contains("banned from this server"));
+    assert!(join_as(&mut host, "cy", "").is_ok(), "others still get in");
+    assert_eq!(host.unban("BOB"), 1);
+    assert_eq!(join(&mut host, "bob").player(), bob_id);
+    assert_eq!(ada.player(), ada_id);
+}

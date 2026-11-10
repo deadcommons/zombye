@@ -28,7 +28,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, Write};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
@@ -162,6 +162,19 @@ struct Conn {
     intents: u64,
     /// Set when it is to be dropped, with the reason.
     closing: Option<String>,
+    joined: Instant,
+}
+
+/// Someone an operator has shut out (#26): a hello with this name, or from this address, is
+/// refused. Kept by the host while it runs; the caller keeps them across restarts if it wants to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ban {
+    /// The name banned (compared without regard to case).
+    pub name: String,
+    /// The address banned with it; never this machine's own (loopback), which would shut out
+    /// everyone playing from the server's computer.
+    pub ip: Option<IpAddr>,
+    pub why: String,
 }
 
 /// One connected client, for reports.
@@ -177,6 +190,8 @@ pub struct ClientInfo {
     pub held: u64,
     /// Doors and windows changed outside its interest that it hasn't been told of.
     pub map_owed: usize,
+    /// Seconds since it joined.
+    pub secs: f32,
 }
 
 /// Totals since the server started.
@@ -210,6 +225,7 @@ pub struct Host {
     open: Arc<AtomicUsize>,
     /// Every name that has played here and its player.
     names: BTreeMap<String, u32>,
+    bans: Vec<Ban>,
     /// The next place round the town to try for a new survivor (`new_spawn`).
     next_spawn: u32,
     pub stats: HostStats,
@@ -227,7 +243,7 @@ impl Host {
         let (events_tx, events) = mpsc::channel();
         // Carry on round the town from where a loaded world's survivors left off.
         let next_spawn = (world.players.len() + world.parked().len()) as u32;
-        Ok(Self { world, options, listener, events, events_tx, conns: Vec::new(), next_conn: 1, open: Arc::new(AtomicUsize::new(0)), names: BTreeMap::new(), next_spawn, stats: HostStats::default(), log: Vec::new() })
+        Ok(Self { world, options, listener, events, events_tx, conns: Vec::new(), next_conn: 1, open: Arc::new(AtomicUsize::new(0)), names: BTreeMap::new(), bans: Vec::new(), next_spawn, stats: HostStats::default(), log: Vec::new() })
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -257,8 +273,43 @@ impl Host {
     pub fn clients(&self) -> Vec<ClientInfo> {
         self.conns
             .iter()
-            .map(|c| ClientInfo { player: c.player, name: c.name.clone(), addr: c.addr.clone(), bytes_out: c.bytes_out, bytes_in: c.bytes_in, zombies: c.encoder.stats.known, held: c.held, map_owed: c.map.owed() })
+            .map(|c| ClientInfo { player: c.player, name: c.name.clone(), addr: c.addr.clone(), bytes_out: c.bytes_out, bytes_in: c.bytes_in, zombies: c.encoder.stats.known, held: c.held, map_owed: c.map.owed(), secs: c.joined.elapsed().as_secs_f32() })
             .collect()
+    }
+
+    /// Drop the client playing `player` (#26), telling it why ("kicked: ..."); its survivor stays
+    /// in the world like any that left. With `ban`, its name and address (unless that is this
+    /// machine's own) are refused from now on. The name kicked, or `None` if nobody is playing
+    /// that player now.
+    pub fn kick(&mut self, player: u32, why: &str, ban: bool) -> Option<String> {
+        let why = why.trim();
+        let c = self.conns.iter_mut().find(|c| c.player == player && c.closing.is_none())?;
+        let word = if ban { "banned" } else { "kicked" };
+        c.closing = Some(if why.is_empty() { format!("{word} by the server's operator") } else { format!("{word}: {why}") });
+        let name = c.name.clone();
+        if ban {
+            let ip = c.addr.parse::<SocketAddr>().ok().map(|a| a.ip()).filter(|ip| !ip.is_loopback());
+            self.ban(Ban { name: name.clone(), ip, why: why.to_string() });
+        }
+        Some(name)
+    }
+
+    /// Shut a name (and an address) out. One ban per name: a second replaces the first.
+    pub fn ban(&mut self, ban: Ban) {
+        self.bans.retain(|b| !b.name.eq_ignore_ascii_case(&ban.name));
+        self.bans.push(ban);
+    }
+
+    /// Lift the ban on a name, or the bans on an address. How many were lifted.
+    pub fn unban(&mut self, who: &str) -> usize {
+        let before = self.bans.len();
+        let ip = who.parse::<IpAddr>().ok();
+        self.bans.retain(|b| !(b.name.eq_ignore_ascii_case(who) || (ip.is_some() && b.ip == ip)));
+        before - self.bans.len()
+    }
+
+    pub fn bans(&self) -> &[Ban] {
+        &self.bans
     }
 
     /// Every name that has played here, with its player (to keep beside a save, so survivors are
@@ -415,7 +466,9 @@ impl Host {
             let _ = wire::write_frame(stream, &ServerMsg::Refused(why));
             let _ = stream.shutdown(Shutdown::Both);
         };
-        let name = match self.check(&hello) {
+        let ip = stream.peer_addr().ok().map(|a| a.ip());
+        let banned = |name: &str| self.bans.iter().find(|b| b.name.eq_ignore_ascii_case(name.trim()) || (b.ip.is_some() && b.ip == ip)).map(|b| if b.why.is_empty() { "you are banned from this server".to_string() } else { format!("you are banned from this server: {}", b.why) });
+        let name = match banned(&hello.name).map_or_else(|| self.check(&hello), Err) {
             Ok(name) => name,
             Err(why) => {
                 self.stats.refused += 1;
@@ -462,7 +515,7 @@ impl Host {
             return;
         }
         let tokens = self.options.budget as f32;
-        let mut conn = Conn { id, player, name: name.clone(), addr: addr.clone(), out, queue: VecDeque::new(), encoder: DeltaEncoder::default(), map: MapInterest::default(), tokens, held: 0, bytes_out: 0, bytes_in: 0, intents: 0, closing: None };
+        let mut conn = Conn { id, player, name: name.clone(), addr: addr.clone(), out, queue: VecDeque::new(), encoder: DeltaEncoder::default(), map: MapInterest::default(), tokens, held: 0, bytes_out: 0, bytes_in: 0, intents: 0, closing: None, joined: Instant::now() };
         send(&mut conn, &mut self.stats, &ServerMsg::Welcome(Box::new(welcome)));
         self.conns.push(conn);
         // Its private view goes with its first snapshot.
