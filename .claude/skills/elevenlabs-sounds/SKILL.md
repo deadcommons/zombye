@@ -69,11 +69,18 @@ Loops (`loop: true` in `clean`) want a steady sound with no events near the ends
 
 ## Costs (check them: they change)
 
-ElevenLabs bills sound effects in credits per generation, more for a set duration than an automatic one,
-and plans differ in credits a month. **Read the cost of the first take off `check_subscription` (before
-and after)** and use that for the rest of the estimate; write it here when you know it. A cue of four
-variants from one or two takes is the usual case; the core set (footsteps, swings, hits, body fall,
-stomp, shove, doors, windows, glass, thumps, gunshot, reload, rummage, pickup) is about 20 cues.
+ElevenLabs bills sound effects in credits per generation and plans differ in credits a month. **Read the
+balance with `check_subscription` before and after**, but its `character_count` lags behind the calls (it
+read 0 for the first few takes), so cap a batch by its number of takes, not by the counter alone.
+Measured (2026-11-10, Starter plan, 90,000 credits a month, no overage): **about 40 credits a 4-5 s take**
+(9 takes of group 1 came to about 370). A cue of four variants from one or two takes is the usual case; the
+core set (footsteps, swings, hits, body fall, stomp, shove, doors, windows, glass, thumps, gunshot, reload,
+rummage, pickup) is about 20 cues.
+
+On Starter the MCP's output is MP3 (`mp3_44100_128`; 44.1 kHz PCM needs Pro), so clean-up needs ffmpeg,
+and the MCP's `text_to_sound_effects` has no prompt-influence setting (the API's default, 0.3): record it
+as such in `takes`. A prompt asking for separate sounds with silence between usually gets them; a
+continuous sound (a shuffle) comes back as one, to be cut at its quieter points or prompted again.
 
 ## The files
 

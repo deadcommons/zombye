@@ -36,9 +36,10 @@ The spec (RON; fields left out take the defaults in DEFAULT_CLEAN):
     )
 
 Clean-up, in order: decode (mono unless `stereo: true`), resample to `rate`, the slice, a high-pass,
-trim silence at both ends below `trim_db` of the peak (keeping `pad_ms`), cut to `max_secs`, `gain_db`,
-normalise the peak to `peak_db` (as synth.py does: loudness between sounds is set in sounds.ron, not in
-the files), fade in and out, or for a loop (`loop: true`) cross-fade the tail into the head; written as
+trim silence at both ends below `trim_db` of the peak (keeping `pad_ms`), cut to `max_secs`, normalise
+the peak to `peak_db` (as synth.py does: loudness between sounds is set in sounds.ron, not in the
+files), then the file's `gain_db` (negative, to bring a loud variant down to its siblings; `clean`
+prints each file's RMS to compare), fade in and out, or for a loop (`loop: true`) cross-fade the tail into the head; written as
 16-bit PCM WAV with a little dither.
 """
 
@@ -301,13 +302,14 @@ def process(take_path, f, clean):
         trimmed = (ta, tb)
     if clean["max_secs"]:
         chans = [c[: int(clean["max_secs"] * rate)] for c in chans]
-    g = 10 ** ((f.get("gain_db") or 0.0) / 20)
-    chans = [[x * g for x in c] for c in chans]
     if clean["normalise"]:
         p = peak(chans)
         if p > 0:
             g = 10 ** (clean["peak_db"] / 20) / p
             chans = [[x * g for x in c] for c in chans]
+    # After normalising, so it evens variants out (a quieter one keeps its -N dB below the peak).
+    g = 10 ** ((f.get("gain_db") or 0.0) / 20)
+    chans = [[x * g for x in c] for c in chans]
     if clean["loop"]:
         chans = seamless(chans, rate, clean["loop_xfade_ms"])
     else:
