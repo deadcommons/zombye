@@ -83,15 +83,15 @@ fn spawn_screen(mut commands: Commands, link: Option<Res<crate::server_link::Ser
                     theme::sheet(),
                 ))
                 .with_children(|c| {
-                    c.spawn((Text::new("YOU DIED"), font(56.0), TextColor(RED), Node { align_self: AlignSelf::Center, ..default() }));
-                    c.spawn((CauseText, Text::new(""), font(24.0), TextColor(TEXT), Node { align_self: AlignSelf::Center, margin: UiRect::top(px(4)), ..default() }));
+                    c.spawn((Text::new("YOU DIED"), theme::head(64.0), TextColor(RED), Node { align_self: AlignSelf::Center, ..default() }));
+                    c.spawn((CauseText, Text::new(""), theme::strong(22.0), TextColor(TEXT), Node { align_self: AlignSelf::Center, margin: UiRect::top(px(4)), ..default() }));
                     c.spawn((EpilogueText, Text::new(""), font(15.0), TextColor(DIM), Node { align_self: AlignSelf::Center, ..default() }));
                     c.spawn((WhenText, Text::new(""), font(15.0), TextColor(DIM), Node { align_self: AlignSelf::Center, ..default() }));
                     rule(c);
                     for (k, label) in ROWS.iter().enumerate() {
                         c.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, column_gap: px(40), ..default() }).with_children(|row| {
                             row.spawn((Text::new(*label), font(18.0), TextColor(DIM)));
-                            row.spawn((StatValue(k), Text::new(""), font(18.0), TextColor(TEXT)));
+                            row.spawn((StatValue(k), Text::new(""), theme::strong(18.0), TextColor(TEXT)));
                         });
                     }
                     rule(c);

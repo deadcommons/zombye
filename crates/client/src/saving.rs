@@ -68,7 +68,7 @@ fn spawn_notice(mut commands: Commands, column: Query<Entity, With<crate::hud::T
     let text = (
         NoticeText,
         Text::new(""),
-        crate::theme::font(18.0),
+        crate::theme::strong(17.0),
         TextColor(Color::srgb(0.95, 0.85, 0.45)),
         BackgroundColor(crate::theme::HUD_BG),
         GlobalZIndex(10),

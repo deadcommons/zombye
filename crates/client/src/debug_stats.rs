@@ -265,7 +265,8 @@ impl Plugin for DebugStatsPlugin {
     }
 }
 
-use crate::theme::font;
+// (A table of numbers lined up with spaces: it stays in the built-in monospace.)
+use crate::theme::mono as font;
 
 fn spawn(mut commands: Commands) {
     commands
