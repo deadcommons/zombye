@@ -414,11 +414,11 @@ pub(crate) fn step_near(z: &mut Zombies, next_pos: &mut [Vec2], cx: &mut NearCtx
         } else if let Some(goal) = cx.goal {
             desired = match goal.distance(p) {
                 Some(d) if d <= GOAL_RANGE => goal.direction(p) * z.speed[i],
-                _ => ai::wander(z, i, cx.rng, t, dt),
+                _ => ai::wander(z, i, cx.rng, t, dt, None),
             };
         } else {
             match z.state[i] {
-                ZombieState::Wander => desired = ai::wander(z, i, cx.rng, t, dt),
+                ZombieState::Wander => desired = ai::wander(z, i, cx.rng, t, dt, None),
                 ZombieState::Investigate | ZombieState::Chase | ZombieState::Lunge | ZombieState::Attack => {
                     // Without sight a chaser only has the spot it remembers (hearing its player
                     // moves that spot), so both go to a point and look about there.

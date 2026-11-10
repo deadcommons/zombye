@@ -39,6 +39,17 @@
     fast_share: 0.1,
     fast_speed: (2.0, 3.0),
     slow_speed: (0.6, 1.1),
+    // They stand about in groups, not spread out evenly: each group's first is placed by density,
+    // the rest within `radius` metres of it (in the same building, or outdoors, and in sight of it).
+    // Group sizes are uniform in the range, in town and in the forest; `loners` of the groups are
+    // a single zombie. Wandering zombies drift back toward the ones round them, so groups keep
+    // together (ZombieTuning's herd_* numbers).
+    groups: (
+        size: (3, 10),
+        forest_size: (1, 4),
+        radius: 5.0,
+        loners: 0.15,
+    ),
 
     // Topping up emptied regions (64 m squares) far from everyone. Off by default. Every
     // interval_secs, a region at least min_distance from every player, that nobody has been within

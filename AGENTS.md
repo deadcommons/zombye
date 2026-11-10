@@ -1538,8 +1538,12 @@ stands still may count as changed.** Each of these cost milliseconds a frame bef
   through glass) to lunge or strike.
 - **Sight** (`senses::sight_pass`): full range in a forward cone, less at the sides, ~2 m behind;
   scaled by daylight (`senses::daylight`, the client's sky curve), the player's stance (sneak much
-  harder, run easier) and whether they move; needs `vision::line_of_sight` (windows don't block it).
-  A seeded per-check chance (`rng::hash01`) makes the edge of sight unreliable. Each zombie looks
+  harder, run easier) and whether they move; needs line of sight (`vision::sight_through`): windows don't
+  block it, but through one (shut, open or broken) the range is `window_sight_mult` (0.35) of it, so a
+  survivor indoors is only made out close to the glass. A seeded per-check chance (`rng::hash01`) makes the
+  edge of sight unreliable (`notice_chance` 0.15 a check beyond `sure_sight_frac`, 0.25 of the range; day
+  sight 22 m). **A glimpse before a chase:** a wandering zombie that notices someone beyond the sure range
+  doesn't chase at once: it investigates the spot (no groan), and chases if it notices them again. Each zombie looks
   every `sight_interval_ticks`, and only zombies near a player are tested (`SpatialHash::for_each_within`).
 - **Hearing** (`senses::hearing_pass`): `World::emit_sound(pos, radius)` queues a sound heard on the
   next tick. Moving players make footstep noise every tick by stance, doors and windows make noise, hunting
@@ -1657,8 +1661,10 @@ All numbers are ours.
   street itself, `World::town_core`: one rectangle north of the street, one south; `core_fraction`, default 1, of each
   one's length along the street round its middle), `Street` (roads, parking lots, sidewalks) and `Yard`; outside town `ForestRoad`, `ForestEdge` (within `forest_edge_width` of
   town) and `DeepForest`. `density` is zombies per km² of open (unblocked) ground per zone; `scale` multiplies it.
-  `World::populate` places them by rejection sampling on tile density (none within 14 m of the player's start or in
-  that house), `WorldConfig::zombies` (`Option`) either sets the total (proportions kept) or, `None`, takes the
+  `World::populate` places them **in groups** (`groups`: 3-10 in town, 1-4 in the forest, 15% loners): each group's
+  first by rejection sampling on tile density, the rest within `radius` (5 m) of it, in the same building or outdoors and
+  in sight of it (none within 14 m of the player's start or in that house); active wanderers drift back toward the
+  zombies within `herd_radius` (12 m) round them (`ZombieTuning::herd_*`, `ai::wander`), so groups keep together, `WorldConfig::zombies` (`Option`) either sets the total (proportions kept) or, `None`, takes the
   natural number. Speeds: `fast_share` of them at `fast_speed`, the rest at `slow_speed`.
 - **Per region** (the virtual tier's 64 m `RegionIndex`) `World::population()` keeps the `target` count (density ×
   area, scaled to the total), the `zone` with the most open ground, and `last_seen` (the tick a player was last

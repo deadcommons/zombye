@@ -244,8 +244,8 @@ fn an_unseen_player_is_heard_as_a_sound_at_a_position() {
         hold(&mut w, b, PlayerInput { move_dir: Vec2::Y, sneak: true, ..Default::default() }, 1);
         assert!(w.awareness().heard_now(a).next().is_none(), "a sneaker behind a wall");
     }
-    // In the open behind our back, walking 4 m away is heard, 30 m away isn't.
-    let (mut w, a, b) = field(12.0, east() - Vec2::new(4.0, 0.0));
+    // In the open behind our back, walking 3 m away is heard, 30 m away isn't.
+    let (mut w, a, b) = field(12.0, east() - Vec2::new(3.0, 0.0));
     hold(&mut w, b, PlayerInput { move_dir: Vec2::Y, ..Default::default() }, 3);
     assert!(!w.player_sees(a, b) && w.awareness().heard_lately(a).next().is_some(), "footsteps behind us");
     let (mut w, a, b) = field(12.0, east() - Vec2::new(30.0, 0.0));

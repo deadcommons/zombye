@@ -14,7 +14,7 @@ use crate::map::TileMap;
 use crate::players::Stance;
 use crate::rng::hash01;
 use crate::spatial::SpatialHash;
-use crate::vision::line_of_sight;
+use crate::vision::{line_of_sight, sight_through};
 use crate::zombies::{Tier, ZombieState, Zombies};
 
 /// Who or what made a sound.
@@ -185,21 +185,35 @@ pub(crate) fn sight_pass(z: &mut Zombies, hash: &SpatialHash, map: &TileMap, tar
             if d > range {
                 return;
             }
-            if !after_this && hash01(seed, tick, z.id[i] as u64, target.id as u64) >= notice_chance(t, d / range) {
+            let roll = hash01(seed, tick, z.id[i] as u64, target.id as u64);
+            if !after_this && roll >= notice_chance(t, d / range) {
                 return;
             }
             // Having just given up on something, it only notices someone close up.
             if !after_this && z.bored[i] > 0.0 && d > range * t.sure_sight_frac {
                 return;
             }
-            if !line_of_sight(map, z.pos[i], target.pos) {
+            let Some(through_window) = sight_through(map, z.pos[i], target.pos) else {
                 return;
+            };
+            if through_window {
+                // Through a window pane or frame it only makes out someone close by.
+                range *= t.window_sight_mult;
+                if d > range || (!after_this && roll >= notice_chance(t, d / range)) {
+                    return;
+                }
             }
             if z.state[i].is_after(z.target_player[i]) && !after_this && z.sees[i] > 0 {
                 let current = targets.iter().find(|p| p.id == z.target_player[i]);
                 if current.is_some_and(|c| c.pos.distance(z.pos[i]) <= d) {
                     return;
                 }
+            }
+            if z.state[i] == ZombieState::Wander && d > range * t.sure_sight_frac {
+                // A wanderer that catches sight of someone some way off only glimpses them: it
+                // turns and shuffles over for a look, and gives chase if it notices them again.
+                glimpse(z, i, target.pos, d, t);
+                return;
             }
             if thumping {
                 // Battering its way in: now it's after this player (the field decides whether
@@ -288,6 +302,16 @@ pub(crate) fn hearing_pass(z: &mut Zombies, hash: &SpatialHash, map: &TileMap, s
             }
         });
     }
+}
+
+/// Zombie `i`, wandering, glimpsed someone at `pos`, `d` metres off: it goes to look, as if it had
+/// heard something there (no groan, so the neighbours aren't drawn in).
+fn glimpse(z: &mut Zombies, i: usize, pos: Vec2, d: f32, t: &ZombieTuning) {
+    z.state[i] = ZombieState::Investigate;
+    z.target_player[i] = 0;
+    z.target_pos[i] = pos;
+    let travel = d / (z.speed[i] * t.investigate_speed_mult).max(0.1);
+    z.timer[i] = t.investigate_secs + (travel * 1.5).min(t.max_travel_secs);
 }
 
 /// Would [`react`] change anything about zombie `i` if it heard `s`? Asked before the ray to the

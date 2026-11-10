@@ -69,6 +69,25 @@ pub fn visibility_rays(map: &TileMap, origin: Vec2, max: f32, n: usize) -> Vec<f
         .collect()
 }
 
+/// Line of sight from `a` to `b`, and whether it looks through a window (shut, open or broken) on
+/// the way: `None` blocked, `Some(true)` through a window. Zombies see less through one.
+pub fn sight_through(map: &TileMap, a: Vec2, b: Vec2) -> Option<bool> {
+    let d = b - a;
+    let len = d.length();
+    if len < 1e-4 {
+        return Some(false);
+    }
+    let window = std::cell::Cell::new(false);
+    let reached = cast(map, a, d / len, len, |map, tile, side| {
+        let e = map.edge(tile, side);
+        if e.is_window() {
+            window.set(true);
+        }
+        e.blocks_sight()
+    }) >= len - 1e-3;
+    reached.then(|| window.get())
+}
+
 pub fn line_of_sight(map: &TileMap, a: Vec2, b: Vec2) -> bool {
     let d = b - a;
     let len = d.length();

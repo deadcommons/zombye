@@ -32,6 +32,7 @@ use crate::nav::Nav;
 use crate::needs::{NeedsTuning, WakeReason};
 use crate::players::{self, PLAYER_RADIUS, Player, PlayerInput, Stance};
 use crate::population::{NEVER, Population, PopulationDef, Zone};
+use crate::vision::line_of_sight;
 use crate::street_props::StreetPropsDef;
 use crate::rng::{Rng, hash01};
 use crate::senses::{self, Sound, SoundSource, Target};
@@ -553,7 +554,11 @@ impl World {
         while spawned < n && attempts < n as u64 * 2000 {
             attempts += 1;
             let t = IVec2::new(self.rng.below(w) as i32, self.rng.below(h) as i32);
-            let weight = self.config.population.tile_density(&self.map, &town, t) / max;
+            // Bigger groups start in fewer places, so each zone still gets its density's share.
+            let forest = matches!(self.config.population.zone_at(&self.map, &town, t), Zone::ForestRoad | Zone::ForestEdge | Zone::DeepForest);
+            let g = &self.config.population.groups;
+            let spread = g.mean(true).min(g.mean(false)) / g.mean(forest);
+            let weight = self.config.population.tile_density(&self.map, &town, t) / max * spread;
             if self.rng.f32() >= weight {
                 continue;
             }
@@ -563,6 +568,24 @@ impl World {
             }
             self.push_zombie(p);
             spawned += 1;
+            // The rest of its group round it : same building (or outdoors), in sight of it.
+            let g = self.config.population.groups.clone();
+            let (lo, hi) = if forest { g.forest_size } else { g.size };
+            let size = if self.rng.f32() < g.loners { 1 } else { lo + self.rng.below(hi - lo + 1) };
+            let building = self.map.building_at(p);
+            let mut tries = 0;
+            let mut members = 1;
+            while members < size && spawned < n && tries < size * 8 {
+                tries += 1;
+                let q = p + Vec2::from_angle(self.rng.range(0.0, TAU)) * g.radius * self.rng.f32().sqrt();
+                let qt = q.floor().as_ivec2();
+                if !self.map.in_bounds(qt) || self.map.tile_blocked(qt) || !self.spawnable(qt) || self.map.building_at(q) != building || !line_of_sight(&self.map, p, q) {
+                    continue;
+                }
+                self.push_zombie(q);
+                spawned += 1;
+                members += 1;
+            }
         }
     }
 
@@ -1679,8 +1702,21 @@ mod tests {
         assert!(near(&w, b) > before_b + 10, "player 2: {before_b} -> {}", near(&w, b));
     }
 
-    /// An empty grass field at noon with no zombies, for hand-placed sense tests.
+    /// An empty grass field at noon with no zombies, for hand-placed sense tests. Its zombies have
+    /// the sharper senses of before the calmer defaults (sight 30 m, a sure 40% of it, noticing at
+    /// 0.45 a check, footsteps and groans as loud, 25 s memory, 20 s battering
+    /// interest), so these tests are about what follows noticing; `calm_arena` has the defaults.
     fn arena() -> World {
+        let mut w = calm_arena();
+        let t = &mut w.config.zombie;
+        (t.sight_day, t.peripheral_mult, t.still_sight_mult, t.sure_sight_frac, t.notice_chance) = (30.0, 0.45, 0.7, 0.4, 0.45);
+        (t.walk_noise, t.run_noise, t.groan_noise) = (6.0, 14.0, 9.0);
+        (t.memory_secs, t.thump_interest_secs) = (25.0, 20.0);
+        w
+    }
+
+    /// The arena with the default (calmer) zombie senses.
+    fn calm_arena() -> World {
         let mut config = WorldConfig::new(11, 0, templates());
         config.start_hour = 12.0;
         let mut w = World::new(config);
@@ -1701,6 +1737,50 @@ mod tests {
             w.map.set_edge(IVec2::new(x, y), crate::map::Side::W, Edge::Wall);
         }
         w.map_changed();
+    }
+
+    /// With the default senses a wanderer that catches sight of a player some way off goes to
+    /// look first (no chase, no groan), and only chases once it notices them again.
+    #[test]
+    fn a_wanderer_glimpses_before_it_chases() {
+        let mut w = calm_arena();
+        let z = add_zombie(&mut w, Vec2::new(90.5, 100.5), 0.0);
+        let id = w.add_player(Vec2::new(100.5, 100.5));
+        let mut first = None;
+        for t in 0..20 * 60u32 {
+            w.set_player_input(id, t + 1, PlayerInput { move_dir: if (t / 20) % 2 == 0 { Vec2::Y } else { -Vec2::Y }, facing: 0.0, run: false, sneak: false, aim: false });
+            w.step();
+            if first.is_none() && w.zombies.state[z] != ZombieState::Wander {
+                first = Some((t, w.zombies.state[z]));
+            }
+            if w.zombies.state[z].is_hunting() {
+                break;
+            }
+        }
+        let (t, state) = first.expect("never noticed a player walking 10 m in front of it");
+        assert_eq!(state, ZombieState::Investigate, "chased at the first glimpse");
+        assert!(t > 2, "noticed at once: tick {t}");
+        assert!(w.zombies.state[z].is_hunting(), "never gave chase: {:?}", w.zombies.state[z]);
+        assert_eq!(w.zombies.target_player[z], id);
+    }
+
+    /// A player standing 6 m inside a window is safe from a zombie looking in; at 1.5 m it isn't.
+    #[test]
+    fn through_a_window_a_zombie_only_sees_close() {
+        for (gap, seen) in [(6.0, false), (1.5, true)] {
+            let mut w = calm_arena();
+            for y in 80..120 {
+                let edge = if y == 100 { Edge::Window } else { Edge::Wall };
+                w.map.set_edge(IVec2::new(100, y), crate::map::Side::W, edge);
+            }
+            w.map_changed();
+            let z = add_zombie(&mut w, Vec2::new(99.4, 100.5), 0.0);
+            w.add_player(Vec2::new(100.0 + gap, 100.5));
+            for _ in 0..20 * 20 {
+                w.step();
+            }
+            assert_eq!(w.zombies.state[z] != ZombieState::Wander, seen, "player {gap} m in: {:?}", w.zombies.state[z]);
+        }
     }
 
     #[test]
@@ -2872,7 +2952,7 @@ mod tests {
 
     // --- Population: density from data, respawn, migration toward noise (crate::population) ---
 
-    use crate::population::{PopulationDef, Zone, parse_population};
+    use crate::population::{GroupDef, PopulationDef, Zone, parse_population};
 
     /// Living zombies per open tile in each zone, and the open tiles per zone.
     fn zone_densities(w: &World) -> ([f64; 7], [u32; 7]) {
@@ -2942,6 +3022,26 @@ mod tests {
         config.zombies = None;
         let n = World::new(config).zombies.len();
         assert!((2200..3200).contains(&n), "default map: {n} zombies");
+    }
+
+    /// Zombies start in groups (`population.ron`'s `groups`), not spread out evenly: far more of
+    /// them have company within a few metres than with groups of one, at the same total.
+    #[test]
+    fn zombies_start_in_groups() {
+        let def = parse_population(include_str!("../../../assets/data/population.ron")).unwrap();
+        let company = |def: PopulationDef| {
+            let mut config = WorldConfig::new(1, 0, templates()).with_population(def);
+            config.zombies = Some(2500);
+            let w = World::new(config);
+            assert_eq!(w.zombies.len(), 2500);
+            let pos = &w.zombies.pos;
+            let with = pos.iter().filter(|p| pos.iter().filter(|q| q.distance(**p) < 4.0).count() >= 4).count();
+            with as f32 / pos.len() as f32
+        };
+        let grouped = company(def.clone());
+        let spread = company(PopulationDef { groups: GroupDef { size: (1, 1), forest_size: (1, 1), loners: 0.0, ..def.groups.clone() }, ..def });
+        eprintln!("with three or more others within 4 m: grouped {grouped:.2}, spread {spread:.2}");
+        assert!(grouped > 0.5 && grouped > spread * 3.0, "grouped {grouped:.2}, spread {spread:.2}");
     }
 
     /// An empty grass field `chunks` chunks a side, at noon, with no zombies.
