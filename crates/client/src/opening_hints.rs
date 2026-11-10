@@ -21,6 +21,12 @@
 //! walk over the tiles within [`RANGE`]); a frame in which nothing fades writes nothing. Nothing
 //! is allocated per frame: the lists keep their room and the entities are kept for the next hint.
 //!
+//! **Doors in cut-away walls** get the same outline, the other way round: a door whose wall has
+//! dropped to its stub (`cutaway.rs`) is a low slab on the floor, so its outline is drawn at the
+//! door's full size over it, in the same tints (shut blue, open or broken green), by the wall's
+//! own eased amount, and only where nothing stands in front of it ([`cut_door`], `draw_cut_doors`).
+//! Always on: it is how a cut door is drawn, not a hint through anything.
+//!
 //! Ctrl+F10 switches the hints off and on, kept in the settings file (`opening_hints`; on by
 //! default); `--opening-hints on|off` for a session.
 
@@ -55,6 +61,8 @@ const CLEAR: f32 = CLEAR_M / (crate::camera::FAR - crate::camera::NEAR);
 const DOOR: Vec4 = Vec4::new(0.16, 0.66, 1.0, 0.9);
 const WINDOW: Vec4 = Vec4::new(0.86, 0.70, 1.0, 0.62);
 const OPEN: Vec4 = Vec4::new(0.42, 1.0, 0.45, 0.85);
+/// A cut-away door's outline: this share of a hint's alpha (it is in plain view, in your room).
+pub const CUT_DOOR: f32 = 0.8;
 /// A barred opening's share of its tint's alpha.
 const BARRED: f32 = 0.45;
 /// The tints' brightness at night (a shape, not a lamp).
@@ -158,6 +166,16 @@ pub fn find(map: &TileMap, player: Vec2, camera_dir: Vec3, inside: Option<usize>
     }
 }
 
+/// The outline of the door on this edge while its wall is cut `amount` (0 standing, 1 a stub):
+/// what it is drawn as and its mesh tag. Doors only (a window keeps its lip of glass on the
+/// stub), shut, open or battered down.
+pub fn cut_door(map: &TileMap, key: EdgeKey, amount: f32) -> Option<(Hint, u32)> {
+    let tile = map.tile(key.0);
+    let (kind, state) = classify(if key.1 == OwnedEdge::North { tile.north } else { tile.west })?;
+    let hint = Hint { key, kind, state };
+    (kind == Kind::Door && amount > 0.0).then(|| (hint, tint_bits(hint) | (amount.clamp(0.0, 1.0) * CUT_DOOR * 255.0).round() as u32))
+}
+
 /// A hint on its way in or out.
 struct Slot {
     hint: Hint,
@@ -174,12 +192,31 @@ struct Slot {
 pub fn tag_of(hint: Hint, shown: f32) -> u32 {
     let s = shown.clamp(0.0, 1.0);
     let alpha = (s * s * (3.0 - 2.0 * s) * 255.0).round() as u32;
+    alpha | tint_bits(hint)
+}
+
+/// A hint's tint and barred bits of its mesh tag.
+fn tint_bits(hint: Hint) -> u32 {
     let tint = match (hint.state, hint.kind) {
         (State::Open, _) => 2,
         (_, Kind::Door) => 0,
         (_, Kind::Window) => 1,
     };
-    alpha | tint << 8 | if hint.state == State::Barred { 1 << 10 } else { 0 }
+    tint << 8 | if hint.state == State::Barred { 1 << 10 } else { 0 }
+}
+
+/// The outlines of doors in cut-away walls: an entity a door, kept (hidden) once its wall is up.
+#[derive(Resource, Default)]
+struct CutDoors {
+    shown: Vec<CutDoor>,
+    spare: Vec<Entity>,
+}
+
+struct CutDoor {
+    key: EdgeKey,
+    entity: Entity,
+    tag: u32,
+    seen: bool,
 }
 
 /// The hints' state: which are on their way in or out, and the setting.
@@ -245,9 +282,26 @@ impl OpeningHints {
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+#[bind_group_data(HintKey)]
 pub struct HintMaterial {
     #[uniform(0)]
     pub look: HintLook,
+    /// Drawn only where something stands in front of it (a hint through a building), or only
+    /// where nothing does (a cut-away door's outline).
+    pub behind: bool,
+}
+
+/// The pipeline key of a [`HintMaterial`].
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, Hash, PartialEq, Eq)]
+pub struct HintKey {
+    behind: bool,
+}
+
+impl From<&HintMaterial> for HintKey {
+    fn from(m: &HintMaterial) -> Self {
+        HintKey { behind: m.behind }
+    }
 }
 
 /// Must match `HintLook` in opening_hint.wesl.
@@ -290,10 +344,12 @@ impl Material for HintMaterial {
         _pipeline: &MaterialPipeline,
         descriptor: &mut RenderPipelineDescriptor,
         _layout: &MeshVertexBufferLayoutRef,
-        _key: MaterialPipelineKey<Self>,
+        key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         // As the silhouettes: only where something nearer is drawn. Seen from either side.
-        crate::silhouette::behind_only(descriptor);
+        if key.bind_group_data.behind {
+            crate::silhouette::behind_only(descriptor);
+        }
         descriptor.primitive.cull_mode = None;
         Ok(())
     }
@@ -304,6 +360,8 @@ struct HintAssets {
     door: Handle<Mesh>,
     window: Handle<Mesh>,
     material: Handle<HintMaterial>,
+    /// The same look, drawn where nothing is in front: doors in cut-away walls.
+    in_view: Handle<HintMaterial>,
     look: HintLook,
 }
 
@@ -359,8 +417,9 @@ impl Plugin for OpeningHintsPlugin {
         };
         app.add_plugins(MaterialPlugin::<HintMaterial>::default())
             .insert_resource(OpeningHints::new(on))
+            .init_resource::<CutDoors>()
             .add_systems(Startup, setup)
-            .add_systems(Update, (toggle, draw.after(CutawaySystems)));
+            .add_systems(Update, (toggle, (draw, draw_cut_doors).chain().after(CutawaySystems)));
     }
 }
 
@@ -370,7 +429,8 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials
         // A door leaf is 0.92 x 2.05 m; a window runs from the sill (0.9 m) to the head (2.1 m).
         door: meshes.add(outline(Vec2::new(0.04, 0.0), Vec2::new(0.96, 2.08), 0.07, false, false)),
         window: meshes.add(outline(Vec2::new(0.08, 0.9), Vec2::new(0.92, 2.1), 0.06, true, true)),
-        material: materials.add(HintMaterial { look: look.clone() }),
+        material: materials.add(HintMaterial { look: look.clone(), behind: true }),
+        in_view: materials.add(HintMaterial { look: look.clone(), behind: false }),
         look,
     });
 }
@@ -411,8 +471,10 @@ fn draw(
     let look = look_at(daylight.map_or(1.0, |d| d.0));
     if look != assets.look {
         assets.look = look.clone();
-        if let Some(mut m) = materials.get_mut(&assets.material) {
-            m.look = look;
+        for handle in [&assets.material, &assets.in_view] {
+            if let Some(mut m) = materials.get_mut(handle) {
+                m.look = look.clone();
+            }
         }
     }
     // Only a frame in which something is decided anew or fades goes on (and counts as a change).
@@ -463,6 +525,60 @@ fn draw(
         }
         s.tag = tag;
         true
+    });
+}
+
+/// Keep an outline on every door whose wall is cut, by the wall's amount. A frame in which no
+/// wall moves and no door changes writes nothing; nothing is allocated once the lists have room.
+fn draw_cut_doors(
+    mut commands: Commands,
+    map: Res<ClientMap>,
+    cutaway: Res<Cutaway>,
+    assets: Option<Res<HintAssets>>,
+    mut doors: ResMut<CutDoors>,
+    mut drawn: Query<(&mut Transform, &mut MeshTag, &mut Visibility), Without<Player>>,
+) {
+    let Some(assets) = assets else { return };
+    let CutDoors { shown, spare } = doors.bypass_change_detection();
+    for d in shown.iter_mut() {
+        d.seen = false;
+    }
+    for (key, amount) in cutaway.cut_edges() {
+        let Some((_, tag)) = cut_door(&map.0, key, amount) else { continue };
+        match shown.iter_mut().find(|d| d.key == key) {
+            Some(d) => {
+                d.seen = true;
+                if d.tag != tag {
+                    d.tag = tag;
+                    if let Ok((_, mut t, _)) = drawn.get_mut(d.entity) {
+                        *t = MeshTag::new(tag);
+                    }
+                }
+            }
+            None => {
+                let entity = match spare.pop() {
+                    Some(e) => {
+                        if let Ok((mut tf, mut t, mut visibility)) = drawn.get_mut(e) {
+                            *tf = place(key);
+                            *t = MeshTag::new(tag);
+                            *visibility = Visibility::Inherited;
+                        }
+                        e
+                    }
+                    None => commands.spawn((Mesh3d(assets.door.clone()), MeshMaterial3d(assets.in_view.clone()), place(key), MeshTag::new(tag), NotShadowCaster, Visibility::Inherited)).id(),
+                };
+                shown.push(CutDoor { key, entity, tag, seen: true });
+            }
+        }
+    }
+    shown.retain(|d| {
+        if !d.seen {
+            if let Ok((_, _, mut visibility)) = drawn.get_mut(d.entity) {
+                *visibility = Visibility::Hidden;
+            }
+            spare.push(d.entity);
+        }
+        d.seen
     });
 }
 
@@ -587,6 +703,29 @@ mod tests {
         assert_eq!(tag_of(hint(Kind::Door, State::Barred), 1.0), 255 | 1 << 10);
         assert_eq!(tag_of(hint(Kind::Window, State::Barred), 1.0), 255 | 1 << 8 | 1 << 10);
         assert!(BARRED < 0.6 && DOOR != WINDOW && OPEN != DOOR && OPEN != WINDOW);
+    }
+
+    /// A door in a cut-away wall is outlined by how far its wall is cut, blue shut and green open
+    /// or battered down; a window, a wall and a standing wall's door are not.
+    #[test]
+    fn a_door_in_a_cut_wall_is_outlined() {
+        let mut map = openings();
+        let (door, window, wall) = ((IVec2::new(13, 16), N), (IVec2::new(15, 10), N), (IVec2::new(11, 10), N));
+        assert_eq!(cut_door(&map, door, 0.0), None, "its wall stands");
+        assert_eq!(cut_door(&map, window, 1.0), None);
+        assert_eq!(cut_door(&map, wall, 1.0), None);
+        let (hint, tag) = cut_door(&map, door, 1.0).unwrap();
+        assert_eq!((hint.kind, hint.state, tag >> 8), (Kind::Door, State::Shut, 0));
+        assert_eq!(tag & 255, (CUT_DOOR * 255.0).round() as u32);
+        let half = cut_door(&map, door, 0.5).unwrap().1 & 255;
+        assert!(half > 0 && half < tag & 255, "{half}");
+        for edge in [Edge::DoorOpen, Edge::DoorBroken] {
+            map.set_edge(door.0, Side::N, edge);
+            let (hint, tag) = cut_door(&map, door, 1.0).unwrap();
+            assert_eq!((hint.state, tag >> 8), (State::Open, 2), "{edge:?}");
+        }
+        // The inner door between the rooms too: any door, not only outside ones.
+        assert!(cut_door(&map, (IVec2::new(14, 12), W), 1.0).is_some());
     }
 
     /// The building the player is inside gets no hints (it is cut open); the house across the

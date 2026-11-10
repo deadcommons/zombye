@@ -284,6 +284,11 @@ impl Cutaway {
         a * a * (3.0 - 2.0 * a)
     }
 
+    /// Every edge that is cut at all now, with how far (as [`Cutaway::amount`]).
+    pub fn cut_edges(&self) -> impl Iterator<Item = (EdgeKey, f32)> + '_ {
+        self.moving.iter().filter(|m| m.amount > 0.0).map(|m| (m.key, self.amount(m.key)))
+    }
+
     /// Take the edges wanted now (`room` and `body`) into the moving list.
     fn retarget(&mut self) {
         for m in &mut self.moving {

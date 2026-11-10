@@ -1247,7 +1247,10 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   is allocated per frame. **Nothing inside is hidden:** furniture, containers, items and characters never are; a door
   leaf drops to the stub's height with its wall (a shut door in a cut wall doesn't look like an open doorway) and a
   window becomes a low framed lip of glass standing on the stub (`world_render::piece_look`, by `Cutaway::amount`,
-  the same eased amount the shader draws the wall by). Cut walls still cast shadows. **Details standing over the
+  the same eased amount the shader draws the wall by). **A cut door is outlined:** over the low leaf, the door's
+  outline at its full size in the opening hints' tints (shut blue, open or battered down green), fading in with the
+  wall's cut and drawn only where nothing stands in front of it (`opening_hints::cut_door`, `draw_cut_doors`: the
+  hints' mesh and shader, a second material with the depth test the usual way round; always on). Cut walls still cast shadows. **Details standing over the
   player from outside** (a porch roof, built a metre at a time; a shop's awning, a metre at a time; a door canopy; a
   porch post: `CutKind::Fade`, anchor its middle on the ground, radius its half-width) are thinned out whole, in a
   screen-space stipple (72% at most), while they stand in the strip between the body and the camera
