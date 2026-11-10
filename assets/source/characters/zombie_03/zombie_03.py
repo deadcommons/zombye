@@ -20,6 +20,7 @@ PARAMS = {
     "idle_calm": (81, 102), "idle_frames": 63,          # Meshy Idle's calm stretch, there and back (as survivor-01)
     "lunge_max_frames": 48, "lunge_ease_in": 6, "lunge_ease_out": 14,
     "crawl_legs": 1.0,                                  # how far the legs ease toward straight (trailing)
+    "walk_step": 1.9,                                   # the walk's leg swing scaled up: stride about 0.9 m a loop
     "no_stoop": ("lunge",),                             # hunched already in the text-to-motion clip (the walk takes the stoop)
     "tone": {"saturation": 0.92, "contrast": 0.94, "lift": 0.04, "tint": (0.94, 1.04, 0.92)},  # Gate 3: greener, lighter for the night
 }

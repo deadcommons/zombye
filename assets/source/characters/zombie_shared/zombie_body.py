@@ -158,6 +158,26 @@ def cycle_frames(arm, action, min_lag=16, bones=("LeftFoot", "RightFoot", "LeftH
     return lag, errs[lag]
 
 
+def swing(data, bones, k):
+    """Each bone's rotation away from its mean over the clip scaled by `k` (a longer step): per frame the
+    rotation from the mean pose, as axis and angle, with the angle times k."""
+    from mathutils import Quaternion
+    for b in bones:
+        q = z2.quat(data, b)
+        m = q.mean(axis=0)
+        m /= np.linalg.norm(m)
+        mq = Quaternion(m)
+        out = []
+        for row in q:
+            r = Quaternion(row)
+            if r.dot(mq) < 0:
+                r.negate()
+            delta = mq.inverted() @ r
+            axis, angle = delta.to_axis_angle()
+            out.append(list(mq @ Quaternion(axis, angle * k)))
+        z2.set_quat(data, b, np.array(out))
+
+
 def one_cycle_remake(arm, action, name, ease=4, min_lag=16):
     """`action` cut to one cycle (`cycle_frames`), keyed every frame, the last `ease` frames eased into the first."""
     frames, err = cycle_frames(arm, action, min_lag=min_lag)
@@ -210,6 +230,11 @@ def make_clips(c, arm, body, P):
     walk = cut("injured_walk", z2.WALK[1], z2.WALK[2], "walk")
     d = z2.read(walk)
     z2.centre(arm, d)
+    k = P.get("walk_step", 1.0)
+    if k != 1.0:
+        swing(d, ("LeftUpLeg", "RightUpLeg", "LeftLeg", "RightLeg"), k)
+        notes.append(f"walk: the legs' swing scaled x{k:.2f} about its mean pose (a longer step, so the crowd's speed / stride "
+                     "doesn't race the loop)")
     z2.ease_loop(d, 4)
     z2.write(walk, d)
     out["walk"] = walk
