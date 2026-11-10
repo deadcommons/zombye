@@ -442,8 +442,9 @@ pub(crate) fn step_zombies(z: &mut Zombies, next_pos: &mut [Vec2], cx: &mut Ctx)
 
         // Capped so a knockback can't carry it through a wall in one step.
         let mut vel = z.vel[i].lerp(desired, 0.25).clamp_length_max(MAX_KNOCKBACK_SPEED);
-        if cx.walk.in_window_opening(cx.map, p) {
-            // Clambering through a window frame.
+        let climbing = cx.walk.in_window_opening(cx.map, p);
+        if climbing {
+            // Clambering through a window frame or over a fence.
             vel = vel.clamp_length_max(t.climb_speed);
         }
         // The crowd's shove is capped too: a pile of zombies on one spot (say, near-tier ones
@@ -469,6 +470,10 @@ pub(crate) fn step_zombies(z: &mut Zombies, next_pos: &mut [Vec2], cx: &mut Ctx)
             if z.timer[i] <= GET_UP_SECS { ZombieAnim::GetUp } else { ZombieAnim::Down }
         } else if attacking {
             if state == ZombieState::Thump { ZombieAnim::Thump } else { ZombieAnim::Attack }
+        } else if climbing && desired.length_squared() > 0.0025 {
+            ZombieAnim::Climb
+        } else if state == ZombieState::Lunge {
+            ZombieAnim::Lunge
         } else if desired.length_squared() > 0.0025 {
             ZombieAnim::Walk
         } else {

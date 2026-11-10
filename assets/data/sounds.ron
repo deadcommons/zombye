@@ -24,7 +24,7 @@
         Stomp: (files: ["sfx/stomp_1.wav", "sfx/stomp_2.wav"], volume: 0.85, pitch: (0.9, 1.1), reach: 30.0, voices: 3),
         Shove: (files: ["sfx/shove_1.wav", "sfx/shove_2.wav"], volume: 0.6, pitch: (0.9, 1.1), reach: 20.0, voices: 3),
         PlayerHurt: (files: ["sfx/player_hurt_1.wav", "sfx/player_hurt_2.wav", "sfx/player_hurt_3.wav"], volume: 0.9, pitch: (0.95, 1.08), reach: 35.0, voices: 3),
-        Groan: (files: ["sfx/groan_1.wav", "sfx/groan_2.wav", "sfx/groan_3.wav", "sfx/groan_4.wav", "sfx/groan_5.wav", "sfx/groan_6.wav"], volume: 0.42, pitch: (0.85, 1.15), reach: 40.0, muffle: 0.45, voices: 3),
+        Groan: (files: ["sfx/groan_1.wav", "sfx/groan_2.wav", "sfx/groan_3.wav", "sfx/groan_4.wav", "sfx/groan_5.wav", "sfx/groan_6.wav", "sfx/groan_7.wav", "sfx/groan_8.wav", "sfx/groan_9.wav", "sfx/groan_10.wav", "sfx/groan_11.wav", "sfx/groan_12.wav", "sfx/groan_13.wav", "sfx/groan_14.wav", "sfx/groan_15.wav", "sfx/groan_16.wav", "sfx/groan_17.wav", "sfx/groan_18.wav", "sfx/groan_19.wav", "sfx/groan_20.wav", "sfx/groan_21.wav"], volume: 0.42, pitch: (0.85, 1.15), reach: 40.0, muffle: 0.45, voices: 3),
         DoorOpen: (files: ["sfx/door_open_1.wav", "sfx/door_open_2.wav"], volume: 0.6, pitch: (0.92, 1.08), reach: 30.0, voices: 3),
         DoorClose: (files: ["sfx/door_close_1.wav", "sfx/door_close_2.wav"], volume: 0.7, pitch: (0.92, 1.08), reach: 35.0, voices: 3),
         WindowOpen: (files: ["sfx/window_open.wav"], volume: 0.5, pitch: (0.92, 1.08), reach: 25.0, voices: 2),

@@ -117,7 +117,7 @@ cargo run -p zombye-server --release -- --mcp --mod mods/alarm_clock
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --angle 0..3 --turn N@SECS[,N@SECS...] --opening-hints on|off --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --mod DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab worn|body|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --graphics-panel --skip-hours H --hover-tag N --debug-stats --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT --connect HOST[:PORT] --name NAME --password P --agent --server-info HOST[:PORT] --server-list FILE|URL --browser --browser-join N[@SECS] --hotbar ID[,ID...] --hotbar-press K@SECS[,K@SECS...] --panel-at PANEL:X,Y[;PANEL:X,Y] --drag-panel PANEL:DX,DY[@SECS] --lag MS --say TEXT[@SECS] --shout TEXT[@SECS] --whisper TEXT[@SECS] --gesture NAME[@SECS] --talk-demo --talk-wall --holdup-demo --holdup-auto --graphics low|medium|high|ultra|auto --vegetation off|low|high|N --no-post LIST --msaa N --shadow-map N --render-scale F --frame-bench N --gun ID --walls-up --zombie-silhouettes --walk X,Y;X,Y;...` (the last walks the local player from point to point by itself, opening shut doors its way leads through, for recordings; the two before it: see Cutaways under Light and mood; the one before those: see Guns; the seven before it: see Look and feel; the two before them: see Hold-ups and groups; the six before those: see Talking and gestures) (the camera always turns with `,` and `.`, see Turning the camera under Light and mood: `--turn` does it by itself for recordings, `--opening-hints`: see Opening hints there, and `--rotate`, which turning used to need, is still accepted and does nothing; `--zoom` is the metres of world visible vertically, 8–90, default 26;
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --angle 0..3 --turn N@SECS[,N@SECS...] --opening-hints on|off --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --mod DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab worn|body|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --graphics-panel --skip-hours H --hover-tag N --debug-stats --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --music V --ui-scale PCT --connect HOST[:PORT] --name NAME --password P --agent --server-info HOST[:PORT] --server-list FILE|URL --browser --browser-join N[@SECS] --hotbar ID[,ID...] --hotbar-press K@SECS[,K@SECS...] --panel-at PANEL:X,Y[;PANEL:X,Y] --drag-panel PANEL:DX,DY[@SECS] --lag MS --say TEXT[@SECS] --shout TEXT[@SECS] --whisper TEXT[@SECS] --gesture NAME[@SECS] --talk-demo --talk-wall --holdup-demo --holdup-auto --graphics low|medium|high|ultra|auto --vegetation off|low|high|N --no-post LIST --msaa N --shadow-map N --render-scale F --frame-bench N --gun ID --walls-up --zombie-silhouettes --walk X,Y;X,Y;...` (the last walks the local player from point to point by itself, opening shut doors its way leads through, for recordings; the two before it: see Cutaways under Light and mood; the one before those: see Guns; the seven before it: see Look and feel; the two before them: see Hold-ups and groups; the six before those: see Talking and gestures) (the camera always turns with `,` and `.`, see Turning the camera under Light and mood: `--turn` does it by itself for recordings, `--opening-hints`: see Opening hints there, and `--rotate`, which turning used to need, is still accepted and does nothing; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost). `--size WxH` makes the window exactly that many pixels, at scale factor 1, so a
 `--screenshot` is WxH on a high-DPI screen too; without it the window is 1600x900 at the screen's scale.
@@ -558,7 +558,9 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   oldest beyond `max_corpses` (300), keeping the columns in id order (`Zombies::remove_where`; ids are never
   reused; `World::removed_corpses` lists them). Snapshots just stop listing them and the client despawns them.
   `ZombieAnim`: `Idle`, `Walk`,
-  `Attack`, `Stagger`, `Down`, `Dead`, `GetUp`, `Thump` (battering a door or window).
+  `Attack`, `Stagger`, `Down`, `Dead`, `GetUp`, `Thump` (battering a door or window), `Lunge` (the last couple of
+  metres at a player) and `Climb` (moving through an open or broken window's or a fence's climb zone; the client
+  plays a climb or a vault by which edge it is). The last two came with `wire::PROTOCOL` 14.
 - **Player health:** `hp` (100). Each `ZombieAttack` lands with `zombie_hit_chance`, plus
   `zombie_crowd_bonus` per extra zombie attacking that player, and leaves a wound on a body part (see Health and
   wounds; `landed`/`damage`/`part`/`wound` on the event). At 0 the player is dead: no movement or actions, zombies lose them.
@@ -1151,6 +1153,13 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   record) replace them file for file in #78, made with the **[elevenlabs-sounds skill](.claude/skills/elevenlabs-sounds/SKILL.md)**
   and `tools/audio/zsound.py` (`check` lists every cue's files, their loudness and which are still placeholders). Files are 16-bit PCM WAV (mono or stereo, 8-96 kHz; we decode them ourselves,
   `audio::parse_wav`). Every file has an ATTRIBUTION.md row and is used by a cue (a test checks both).
+- **Release audio** (`release_audio.rs`; #154): ElevenLabs' terms forbid publishing its output as separate files, so
+  ElevenLabs sounds (and any music under such terms) are never in this repo: `zsound.py promote` puts them in the art
+  repo's `release-audio/` (`audio/<folder>/*.wav`, its own ATTRIBUTION.md, optionally `data/sounds.ron` and
+  `data/music.ron`), and release builds carry that folder. The client reads `$ZOMBYE_RELEASE_AUDIO`, else
+  `release-audio` beside its binary: each audio file there replaces the same-named one under `assets/audio/`, and its
+  `sounds.ron` / `music.ron` replace the game's (not a `--data` folder's own). Without it the game plays this repo's files.
+  Sounds we record ourselves are public as before.
 - **What plays when** (client only, from the snapshots; nothing in the sim): footsteps from each player's movement, one per
   stride by stance (sneak quiet), hard or soft by the floor, none while climbing or asleep; active zombies within 12 m
   walking shuffle (a drag every 1.2 m); groans per zombie every 3-7 s attacking or battering, 7-15 s walking, 12-30 s idle (staggered, so a crowd
@@ -1164,6 +1173,15 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   source (`audio::Voice`) does the panning, pitch, low-pass and looping (rodio's spatial sink pans the wrong way close up).
   Asleep, everything is quieter. `--mute` / `--volume V` (0-2) / M; the stats line says `sounds N (...)` each second.
   Offscreen renders have no audio.
+
+- **Music** (`music.rs`, `assets/data/music.ron`; #78): sparse on purpose, since the town is meant to feel empty.
+  Each `music::Mood` has its files (OGG Vorbis or WAV under `assets/audio/`, through Bevy's own player:
+  no panning or muffling), volume, `gap` (seconds of silence after a Day or Night track) and fades. **When:**
+  `Death` once when you die; `Danger`, looped, while zombies are on you (`music::in_danger`: one attacking
+  within 6 m or three coming within 12 m, held 8 s); `Dawn` once as the night turns to day; else `Night` or
+  `Day` by the daylight, a track then a silence. A change of mood crossfades. A mood with no files is silent
+  (none ship yet: the tracks come from Suno, by hand). `--music V` (0..2, default 1, 0 none) under the master
+  volume and M; asleep, quieter. A test checks the file and that every track exists and has its ATTRIBUTION.md row.
 
 ## Light and mood (`daynight.rs`, `camera.rs`, `fog.rs`; #83)
 
@@ -1397,10 +1415,11 @@ stands still may count as changed.** Each of these cost milliseconds a frame bef
 - Both are grey-box boxes on a small skeleton (`rig.rs`: bones as parent + rest pivot, a pose is a rotation
   per bone plus a root offset; positive X swings a hanging limb backward, positive Z toward the model's left).
 - **Zombies** (`zombie_render.rs`, `zombie_vat.wesl`): poses baked into a vertex animation texture, one instanced
-  batch per outfit variant. The VAT has more clips than `ZombieAnim` (13 slots, `Clip`): Idle, Walk (rate from
+  batch per outfit variant. The VAT has more clips than `ZombieAnim` (16 slots, `Clip`, the most the tag's 4 bits hold): Idle, Walk (rate from
   speed / stride), Attack, Thump (loops, clips 0-3), Stagger and Stagger2 (a stagger plays one or the other, picked
   per stagger from the zombie id and its count of staggers, so every client agrees), Fall then a Down loop, GetUp,
-  three deaths (backward, forward when hit from behind, and limp when killed on the ground) and Groan (baked, not
+  three deaths (backward, forward when hit from behind, and limp when killed on the ground) Lunge, Climb (through a window) and Vault (over a fence; the client picks which from its map copy,
+  `TileMap::window_opening`), and Groan (baked, not
   played: the sim's groans aren't in the snapshots, and a hunting zombie is moving, which an on-the-spot roar
   can't show). The client picks the clip and, for one-shots, its position (from when the anim changed), so
   one-shots start at frame 0 and stop on their last frame. **Every clip change crossfades over 0.2 s**
@@ -1420,14 +1439,15 @@ stands still may count as changed.** Each of these cost milliseconds a frame bef
   `.zvat`, a folder (every `.zvat` in it, by name) or several separated by `,` (or `:`); `none` forces the
   grey-box, and a file that won't load is a warning and left out (none left: the grey-box). **Several files are
   outfit variants:** each its own mesh, VAT, texture and material (one draw batch each), and each zombie wears one
-  by a hash of its id (`variant_of`). `zvat.rs` reads the file `tools/blender/zvat.py` writes (validated: sizes,
-  indices, finite positions, unique clip names) and its texture: `ZOMBYE_CROWD_TEXTURE` (for every variant), else
+  by a hash of its id (`variant_of`). `zvat.rs` reads the file `tools/blender/zvat.py` writes (version 2: half-float positions, the precision
+  the VAT holds anyway; version 1's f32 still read; the crowd is baked at 15 frames a second, played by seconds;
+  validated: sizes, indices, finite positions, unique clip names) and its texture: `ZOMBYE_CROWD_TEXTURE` (for every variant), else
   `<stem>.png`/`.jpg`/`_base_color.png`/`.jpg` beside it, else the base-colour image in the `<stem>.glb` beside it;
   mip-mapped on load (linear-light averages), at most 1024 px. File clips fill the slots by name (`idle`, `walk`,
-  `attack`, `thump`, `stagger`, `stagger2`, `fall`, `down`, `getup`, `dieback`, `diefront`, `diedown`, `groan`;
+  `attack`, `thump`, `stagger`, `stagger2`, `fall`, `down`, `getup`, `dieback`, `diefront`, `diedown`, `groan`, `lunge`, `climb`, `vault`; a file's `crawl` has no slot until the sim has a crawler;
   case, `_` and `-` ignored); loops keep their own rate (the walk its stride, the down loop its length). One-shots
   play over their own length sped up to a cap (`baked_max_secs`: stagger 1.0 s, stagger2 0.9, fall 1.3, deaths
-  2.0 / 1.5 / 1.7, groan 3.0; the sim's stagger lasts 0.6-0.9 s and the crossfade covers the cut) and the get-up
+  2.0 / 1.5 / 1.7, groan 3.0, lunge 0.6, climb 2.0, vault 1.6; the sim's stagger lasts 0.6-0.9 s and the crossfade covers the cut) and the get-up
   over exactly `GET_UP_SECS`. Slots the file lacks get stand-ins (`Source`): idle and walk stand in for each other;
   attack and thump are the idle (else the walk) leaned forward 0.3 / 0.12 rad; the one-shots and the Down loop move
   the idle's first frame as one piece by the grey-box clip's root motion (toppling about the feet, getting up,
@@ -1457,7 +1477,10 @@ stands still may count as changed.** Each of these cost milliseconds a frame bef
   measured from its planted feet (which way it travels, its phase and stride) after its legs are swung wider to reach `CADENCE` (about 2.9 steps a second at the game's brisk 3 and 5.5 m/s, feet planted; the walk is `walk_alt`), the idle's 40° turn taken out. **Directions** (`STANCE_CLIPS`): by the way he moves off his aim, walking and sneaking blend the clips either side (forward, left, right, back), running (forward and the back diagonals) plays the nearer one with the hips turned the rest of the way and the chest kept on the aim (`--pose run@90:0` holds that); the grey-box's
   poses carried over onto the skeleton for the rest (`Retarget`: each grey-box bone's turn from its rest put on the
   matching bones in the idle's first frame; the spine shares the torso's turn, the neck half the head's): the arm
-  holding a weapon at the ready, swing / shove / stomp (timed as before), the flinch (additive) and the fall onto the
+  holding a weapon at the ready, swing / shove / stomp (timed as before; but a body clip named `punch`, `swing_one`,
+  `swing_two`, `shot`, `shove` or `stomp` plays instead of the grey-box poses for that action, by the held weapon's style:
+  made in place, the blow at 45%, from and back to the idle's first pose; the whole body standing, the upper body over the
+  gait when moving, a stomp always whole; `survivor_model::ACTION_CLIPS`; besides those, `swing_one_b` / `swing_two_b` are second swings picked at random per swing, `stab` is a blade's swing, and `ground_one` / `ground_two` play over a stomp with a one- or two-handed weapon in hand: only the look, the stomp's damage stays the boot's; `action_clips` says which stand in when a body lacks one), the flinch (additive) and the fall onto the
   back when dead or asleep; then grounded on the lowest foot vertex. `step_movement` and prediction are untouched.
   **Dressing:** `Snapshot::outfits` (`net::OutfitView`: worn items, the back and shoulder bags, what's in each hand,
   by item index; every player, every snapshot) says what's drawn, for us and for others, changing the moment it does: the body with the
