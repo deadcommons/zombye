@@ -44,6 +44,11 @@
 //! Sound (`audio.rs`): `--mute` starts with it off, `--volume V` sets the master volume (0..2,
 //! default 1), M mutes and unmutes.
 //!
+//! Talking (`chat.rs`, #67): Enter opens the chat line (Tab there picks whisper, talk or shout, Enter
+//! says it, Esc drops it); V waves, U puts your hands up (again lowers them), P points. `--say TEXT[@SECS]`,
+//! `--shout`, `--whisper` and `--gesture NAME[@SECS]` do it by themselves; `--talk-demo` puts another
+//! survivor a few metres off who talks and gestures, `--talk-wall` outside the wall of your room.
+//!
 //! Graphics (`graphics.rs`, Linear DCM-59): `--graphics low|high` picks a preset, `--vegetation
 //! off|low|high|N` the density of the instanced grass, flowers and litter (`vegetation.rs`), and
 //! `--no-post grain,tilt,vignette,bloom,ao,ground|all` switches effects off one by one; kept in
@@ -57,6 +62,7 @@ mod autoplay;
 mod duel;
 mod camera;
 mod character;
+mod chat;
 mod daynight;
 mod dev_time;
 mod death;
@@ -240,6 +246,28 @@ pub struct Options {
     /// `--lag MS`: with `--connect`, play as if the server were that many milliseconds of ping
     /// away (half each way), to try out lag compensation on one machine (#23).
     pub lag_ms: u32,
+    /// For recordings and pictures of the chat (#67): lines our survivor says by itself
+    /// (`--say TEXT[@SECS]`, `--shout TEXT[@SECS]`, `--whisper TEXT[@SECS]`, each as often as
+    /// wanted) and gestures it makes (`--gesture wave|hands_up|point[@SECS]`).
+    pub say: Vec<(zombye_sim::Volume, String, f32)>,
+    pub gestures: Vec<(zombye_sim::Gesture, f32)>,
+    /// Verification: another survivor a few metres off who talks and gestures by itself
+    /// (`--talk-demo`; `chat.rs`), or stands outside the wall of the room you wake up in and
+    /// talks through it (`--talk-wall`).
+    pub talk_demo: bool,
+    pub talk_wall: bool,
+}
+
+/// `"Hello there@2.5"` → ("Hello there", 2.5); `"Hello"` → ("Hello", 0). The time is what follows
+/// the last `@`, if that is a number.
+fn parse_timed(text: &str) -> (String, f32) {
+    match text.rsplit_once('@') {
+        Some((t, secs)) => match secs.trim().parse::<f32>() {
+            Ok(s) if s.is_finite() && s >= 0.0 => (t.to_string(), s),
+            _ => (text.to_string(), 0.0),
+        },
+        None => (text.to_string(), 0.0),
+    }
 }
 
 /// Default and largest `--size` for `--render-to`.
@@ -284,7 +312,21 @@ impl Options {
     pub fn parse(args: &[String]) -> Self {
         let value = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
         let flag = |name: &str| args.iter().any(|a| a == name);
+        // Every value given for a flag that may be repeated.
+        let values = |name: &str| args.windows(2).filter(|w| w[0] == name).map(|w| w[1].clone()).collect::<Vec<_>>();
+        let mut say = Vec::new();
+        for volume in zombye_sim::Volume::ALL {
+            let name = if volume == zombye_sim::Volume::Talk { "--say".to_string() } else { format!("--{}", volume.name()) };
+            say.extend(values(&name).iter().map(|v| parse_timed(v)).map(|(text, at)| (volume, text, at)));
+        }
+        say.sort_by(|a, b| a.2.total_cmp(&b.2));
+        let mut gestures: Vec<_> = values("--gesture").iter().map(|v| parse_timed(v)).filter_map(|(g, at)| Some((zombye_sim::Gesture::parse(&g)?, at))).collect();
+        gestures.sort_by(|a, b| a.1.total_cmp(&b.1));
         Self {
+            say,
+            gestures,
+            talk_demo: flag("--talk-demo") || flag("--talk-wall"),
+            talk_wall: flag("--talk-wall"),
             zombies: value("--zombies").and_then(|v| v.parse().ok()),
             seed: value("--seed").and_then(|v| v.parse().ok()).unwrap_or(1),
             start_hour: value("--time").and_then(|v| v.parse().ok()),
@@ -448,7 +490,7 @@ fn main() {
             zombie_render::ZombieRenderPlugin,
             items_render::ItemsRenderPlugin,
             (hud::HudPlugin, inventory_ui::InventoryUiPlugin, health_ui::HealthUiPlugin, death::DeathPlugin, needs_ui::NeedsUiPlugin, action_ui::ActionUiPlugin, skills_ui::SkillsUiPlugin, debug_stats::DebugStatsPlugin),
-            (fx::FxPlugin, heard::HeardPlugin, film::FilmPlugin, vegetation::VegetationPlugin),
+            (fx::FxPlugin, heard::HeardPlugin, chat::ChatPlugin, film::FilmPlugin, vegetation::VegetationPlugin),
             survivor::SurvivorPlugin,
             (autoplay::AutoplayPlugin, duel::DuelPlugin),
             (saving::SavingPlugin, ui_scale::UiScalePlugin, firstnight_ui::FirstNightUiPlugin),
@@ -501,5 +543,17 @@ mod tests {
         assert_eq!(parse_point("1,2"), Some([1.0, 2.0]));
         assert_eq!(parse_point("1;2"), None);
         assert_eq!(parse_point("nan,2"), None);
+    }
+
+    #[test]
+    fn chat_options_parse() {
+        use zombye_sim::{Gesture, Volume};
+        let line = ["--say", "Hello there@2.5", "--shout", "RUN!@6", "--say", "mail me a@b", "--gesture", "hands_up@4", "--gesture", "wave", "--gesture", "dance", "--talk-wall"];
+        let o = Options::parse(&line.map(String::from));
+        assert_eq!(o.say, [(Volume::Talk, "mail me a@b".to_string(), 0.0), (Volume::Talk, "Hello there".to_string(), 2.5), (Volume::Shout, "RUN!".to_string(), 6.0)]);
+        assert_eq!(o.gestures, [(Gesture::Wave, 0.0), (Gesture::HandsUp, 4.0)]);
+        assert!(o.talk_demo && o.talk_wall);
+        let o = Options::parse(&args("--talk-demo"));
+        assert!(o.talk_demo && !o.talk_wall && o.say.is_empty() && o.gestures.is_empty());
     }
 }

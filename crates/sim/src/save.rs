@@ -635,6 +635,7 @@ impl World {
             used_items: _,
             woke: _,
             level_ups: _,
+            speech: _,
             skill_mods_due: _,
             private_dirty: _,
             rise_looks,

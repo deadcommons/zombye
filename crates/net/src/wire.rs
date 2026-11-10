@@ -33,7 +33,7 @@ use zombye_sim::map::{CHUNK_SIZE, EdgeChange, EdgeRef};
 use zombye_sim::save::ContentPrint;
 use zombye_sim::worldgen::GenConfig;
 use zombye_sim::{
-    ActionKind, CarryTuning, CombatEvent, CombatTuning, DevFlags, GroundItem, HealthTags, HealthTuning, InfectionTuning, ItemNote, Knock, LevelUp, MoveMods, NeedsTuning, SkillTuning, Stance, World, ZombieAnim,
+    ActionKind, CarryTuning, CombatEvent, CombatTuning, DevFlags, Gesture, GroundItem, Said, HealthTags, HealthTuning, InfectionTuning, ItemNote, Knock, LevelUp, MoveMods, NeedsTuning, SkillTuning, Stance, World, ZombieAnim,
 };
 
 use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, RunView, Snapshot, ZombieView};
@@ -44,8 +44,9 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// #22: zombies carried on between updates, other players packed. 5: fair information, #66:
 /// `SnapshotDelta::heard`, `Rules::fair_sight`. 6: lag-compensated melee, #23: `Intent::Seen`,
 /// `CombatTuning::lag_comp_max_secs` in the tunings. 7: #68: `PlayerView::protected`, the logout
-/// and spawn protection times in `Rules`.)
-pub const PROTOCOL: u32 = 7;
+/// and spawn protection times in `Rules`. 8: proximity chat and gestures, #67: `Intent::Say`,
+/// `Intent::Gesture`, `PlayerView::gesture`, `SnapshotDelta::speech`.)
+pub const PROTOCOL: u32 = 8;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -258,7 +259,8 @@ pub struct PlayerPacked {
     pub x: u32,
     pub y: u32,
     pub facing: u8,
-    /// Bits 0-1 the stance, then dead, asleep, aiming, bleeding, limping, sick, injured arm.
+    /// Bits 0-1 the stance, then dead, asleep, aiming, bleeding, limping, sick, injured arm, and
+    /// in bits 9-10 its gesture (#67: 0 none, 1 wave, 2 hands up, 3 point).
     pub bits: u16,
     /// Hit points, rounded up.
     pub hp: u8,
@@ -278,12 +280,18 @@ impl PlayerPacked {
         let bit = |on: bool, n: u16| (on as u16) << n;
         let h = p.health;
         let centi = |secs: f32| (secs.max(0.0) * 100.0).round().min(255.0) as u8;
+        let gesture: u16 = match p.gesture {
+            None => 0,
+            Some(Gesture::Wave) => 1,
+            Some(Gesture::HandsUp) => 2,
+            Some(Gesture::Point) => 3,
+        };
         Self {
             id: p.id,
             x: (p.pos[0].max(0.0) * POS_STEPS).round() as u32,
             y: (p.pos[1].max(0.0) * POS_STEPS).round() as u32,
             facing: ((turn * 256.0).round() as u32 & 255) as u8,
-            bits: p.stance as u16 | bit(p.dead, 2) | bit(p.asleep, 3) | bit(p.aiming, 4) | bit(h.bleeding, 5) | bit(h.limping, 6) | bit(h.sick, 7) | bit(h.injured_arm, 8),
+            bits: p.stance as u16 | bit(p.dead, 2) | bit(p.asleep, 3) | bit(p.aiming, 4) | bit(h.bleeding, 5) | bit(h.limping, 6) | bit(h.sick, 7) | bit(h.injured_arm, 8) | gesture << 9,
             hp: p.hp.clamp(0.0, 255.0).ceil() as u8,
             weapon: p.weapon,
             action: p.action,
@@ -325,6 +333,12 @@ impl PlayerPacked {
             // Not sent of others (#68): you can't see that a stranger is protected, only our own
             // player's view (which goes whole) says so.
             protected: false,
+            gesture: match self.bits >> 9 & 3 {
+                1 => Some(Gesture::Wave),
+                2 => Some(Gesture::HandsUp),
+                3 => Some(Gesture::Point),
+                _ => None,
+            },
         }
     }
 }
@@ -359,6 +373,8 @@ pub struct SnapshotDelta {
     pub level_ups: Vec<LevelUp>,
     /// Players heard and not seen (#66): where, and how loud (the radius, metres).
     pub heard: Vec<(glam::Vec2, f32)>,
+    /// What this client's survivor heard said (#67), its own lines included.
+    pub speech: Vec<Said>,
     /// Sent when they change (the run about once a second while only its clocks move).
     pub floor: Option<Vec<u32>>,
     /// The run with the first night's record (#19).
@@ -398,6 +414,7 @@ impl Snapshot {
             runs: self.runs.iter().filter(|r| r.player == player).cloned().collect(),
             level_ups: self.level_ups.iter().filter(|l| l.player == player).copied().collect(),
             heard: self.heard.iter().filter(|h| h.listener == player).copied().collect(),
+            speech: self.speech.iter().filter(|s| s.listener == player).cloned().collect(),
         }
     }
 }
@@ -750,6 +767,7 @@ impl DeltaEncoder {
             item_notes: view.item_notes,
             level_ups: view.level_ups,
             heard: view.heard.iter().map(|h| (h.pos, h.radius)).collect(),
+            speech: view.speech,
             floor,
             run,
             outfits,
@@ -805,6 +823,7 @@ impl DeltaDecoder {
         s.item_notes = delta.item_notes;
         s.level_ups = delta.level_ups;
         s.heard = delta.heard.iter().map(|&(pos, radius)| zombye_sim::Heard { listener: player, pos, radius, at: delta.tick }).collect();
+        s.speech = delta.speech;
         if let Some(items) = delta.floor {
             s.floor = vec![FloorView { player, items }];
         }
@@ -877,6 +896,8 @@ impl Intent {
             | Intent::CancelJobs { player, .. }
             | Intent::Seen { player, .. }
             | Intent::Respawn { player }
+            | Intent::Say { player, .. }
+            | Intent::Gesture { player, .. }
             | Intent::Dev { player, .. } => Some(player),
             Intent::SpawnItem { .. } | Intent::SetGoal { .. } | Intent::SpawnZombies { .. } | Intent::SkipTime { .. } | Intent::MakeNoise { .. } => None,
         }
@@ -937,7 +958,7 @@ mod tests {
 
             let own = |s: &Snapshot| s.players.iter().find(|p| p.id == a).copied().unwrap();
             let others = |s: &Snapshot| s.players.iter().filter(|p| p.id != a).map(PlayerPacked::pack).collect::<Vec<_>>();
-            let exact = |s: &Snapshot| postcard::to_allocvec(&(s.tick, s.time_of_day, s.game_minute, own(s), others(s), &s.items_sorted(), &s.floor, &s.outfits, &s.risen, &s.private, &s.item_notes, &s.hits, &s.level_ups)).unwrap();
+            let exact = |s: &Snapshot| postcard::to_allocvec(&(s.tick, s.time_of_day, s.game_minute, own(s), others(s), &s.items_sorted(), &s.floor, &s.outfits, &s.risen, &s.private, &s.item_notes, &s.hits, &s.level_ups, &s.speech)).unwrap();
             assert_eq!(exact(&got), exact(&view), "tick {t}");
             assert!(others(&got).len() == 1 && got.players.iter().all(|p| p.id == a || p.last_input_seq == 0), "nothing of another player's that can't be seen");
             assert_eq!(got.zombies.len(), view.zombies.len(), "tick {t}");

@@ -188,6 +188,10 @@ pub struct Player {
     /// so nothing is rewound for it. Not saved: a client says again every tick.
     #[serde(skip)]
     pub seen_tick: u64,
+    /// The gesture it is making (#67, `crate::speech`): a pose others see, nothing more. Not saved,
+    /// not in the state hash.
+    #[serde(skip)]
+    pub gesture: Option<crate::speech::Gesturing>,
 }
 
 /// A player staggered or knocked down by another player's swing or shove (see `combat`).
@@ -236,6 +240,7 @@ impl Player {
             run: RunStats::default(),
             first_night: None,
             seen_tick: 0,
+            gesture: None,
         }
     }
 }

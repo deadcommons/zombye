@@ -333,7 +333,7 @@ fn update_hud(
     if let Ok(mut t) = text.single_mut() {
         let rotate = if options.rotate { ", . rotate | " } else { "" };
         t.0 = format!(
-            "{line}\nWASD move | Shift run | C sneak{} | RMB (hold) aim | aiming: LMB attack, Space shove/stomp | E pick up / search | Tab inventory | H health | K skills | B sleep | F door/window | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load | F1 god{} | F2 ignored{} | F3 light preview | F4 debug stats | M mute | O objectives",
+            "{line}\nWASD move | Shift run | C sneak{} | RMB (hold) aim | aiming: LMB attack, Space shove/stomp | E pick up / search | Tab inventory | H health | K skills | B sleep | Enter talk | V wave | U hands up | P point | F door/window | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load | F1 god{} | F2 ignored{} | F3 light preview | F4 debug stats | M mute | O objectives",
             if me.sneak { " (on)" } else { "" },
             if me.dev.god { " (on)" } else { "" },
             if me.dev.ignored { " (on)" } else { "" }

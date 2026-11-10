@@ -33,6 +33,7 @@ pub mod save_check;
 pub mod senses;
 pub mod skills;
 pub mod spatial;
+pub mod speech;
 pub mod status;
 pub mod street_props;
 pub mod template;
@@ -65,6 +66,7 @@ pub use save::{LoadError, LoadOptions, Loaded, SaveInfo};
 pub use world::{World, WorldConfig};
 pub use senses::{Sound, SoundSource};
 pub use skills::{LevelUp, Skill, SkillTuning, SkillView, Skills};
+pub use speech::{Gesture, Gesturing, Said, SpeechTuning, Volume};
 pub use tiers::TierTuning;
 pub use zombies::{Tier, ZombieAnim, ZombieState, Zombies};
 

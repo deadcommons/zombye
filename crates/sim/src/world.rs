@@ -108,6 +108,8 @@ pub struct WorldConfig {
     /// How survivors see and hear each other (#66, [`crate::awareness`]): what a server tells
     /// each client of the other players. A server's rule, not the world's: not saved.
     pub player_sight: crate::awareness::PlayerSightTuning,
+    /// How far voices carry and the noise they make (#67, [`crate::speech`]). Not saved either.
+    pub speech: crate::speech::SpeechTuning,
 }
 
 impl WorldConfig {
@@ -134,6 +136,7 @@ impl WorldConfig {
             population: PopulationDef::default(),
             street_props: StreetPropsDef::default(),
             player_sight: Default::default(),
+            speech: Default::default(),
         }
     }
 
@@ -293,6 +296,10 @@ pub struct World {
     /// Skill level-ups since the last snapshot took them (replication, not simulation state; at
     /// most [`crate::skills::MAX_LEVEL_UPS`] kept).
     pub level_ups: Vec<LevelUp>,
+    /// What survivors said since the last snapshot took it, once per listener (#67,
+    /// [`crate::speech`]; replication, not simulation state; at most
+    /// [`crate::speech::MAX_SPEECH`] kept).
+    pub speech: Vec<crate::speech::Said>,
     /// Players whose Fitness or Strength went up this tick: their movement modifiers are refreshed
     /// at its end (`World::refresh_skill_mods`).
     pub(crate) skill_mods_due: Vec<u32>,
@@ -423,6 +430,7 @@ impl World {
             used_items: Vec::new(),
             woke: Vec::new(),
             level_ups: Vec::new(),
+            speech: Vec::new(),
             skill_mods_due: Vec::new(),
             private_dirty: BTreeSet::new(),
             rise_looks: RiseLooks::default(),
@@ -993,6 +1001,8 @@ impl World {
         self.regions.rebuild_where(&self.zombies.pos, |i| states[i] != ZombieState::Dead && tier[i] == Tier::Virtual);
         let tier_ms = tier_start.elapsed().as_secs_f32() * 1000.0;
         self.step_player_actions();
+        // A wave runs out; a swing or a blow ends any gesture (#67).
+        self.step_gestures();
         // Ignored players (dev) aren't heard: their footsteps, swings, doors and searches are
         // dropped here, before anything listens (senses, the far tiers, migration).
         if self.players.iter().any(|p| p.dev.ignored) {

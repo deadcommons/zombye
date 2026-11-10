@@ -94,6 +94,9 @@ pub struct ServerLink {
     /// Players we heard without seeing them, from the snapshots taken up this frame (#66): each a
     /// sound at a position, for a mark on the ground and a footstep there.
     pub heard: Vec<zombye_sim::Heard>,
+    /// What our survivor heard said, from the snapshots taken up this frame (#67; our own lines
+    /// too), for `chat.rs`.
+    pub speech: Vec<zombye_sim::Said>,
     /// Single-player with PvP on: every player in the world, seen by ours or not, for the scenario
     /// bot that plays another survivor from this process (`duel.rs`: its own client would always
     /// have itself). Empty otherwise.
@@ -252,7 +255,7 @@ impl Plugin for ServerLinkPlugin {
             return join_local(app, server, player_id);
         }
         // The fight demo wants room to swing: open ground near the house you wake up in.
-        let demo_at = if (options.fight_demo || options.duel) && options.at.is_none() { open_ground_near(&server.world.map, server.world.player_spawn).map(|p| p.to_array()) } else { None };
+        let demo_at = if (options.fight_demo || options.duel || (options.talk_demo && !options.talk_wall)) && options.at.is_none() { open_ground_near(&server.world.map, server.world.player_spawn).map(|p| p.to_array()) } else { None };
         let siege_at = if options.siege { siege_spot(&server.world.map, server.world.spawn_building) } else { None };
         if options.siege {
             match siege_at {
@@ -298,8 +301,45 @@ impl Plugin for ServerLinkPlugin {
             println!("--duel: PvP on; player {foe} with a crowbar {:.0} m east of you", at.distance(me));
             app.insert_resource(crate::duel::Duel { foe, seq: 0 });
         }
+        if options.talk_demo {
+            // Another survivor who talks and gestures by itself (`chat.rs`): a few metres ahead on
+            // open ground, or outside the wall of the room we wake up in, to talk through it.
+            let me = server.world.player(player_id).map(|p| p.state.pos).unwrap_or(server.world.player_spawn);
+            let reach = server.world.config.speech.talk_m * server.world.config.zombie.wall_muffle;
+            let behind = if options.talk_wall { behind_a_wall(&server.world.map, me, reach - 0.4) } else { None };
+            let other = server.join(Some(behind.unwrap_or(me + Vec2::X * crate::chat::TALK_DISTANCE).to_array()));
+            let at = server.world.player(other).map_or(me, |p| p.state.pos);
+            match (options.talk_wall, behind) {
+                (true, Some(_)) => println!("--talk-wall: player {other} outside the wall, {:.1} m from you", at.distance(me)),
+                (true, None) => println!("--talk-wall: no place outside a wall within {reach:.1} m of you; player {other} is {:.0} m east instead", at.distance(me)),
+                _ => println!("--talk-demo: player {other} {:.0} m east of you", at.distance(me)),
+            }
+            app.insert_resource(crate::chat::TalkDemo::new(other));
+        }
         join_local(app, server, player_id);
     }
+}
+
+/// `--talk-wall`: the nearest open tile outdoors within `reach` metres of `from` with no line of
+/// sight to it (a wall between, and no window in the way).
+fn behind_a_wall(map: &TileMap, from: Vec2, reach: f32) -> Option<Vec2> {
+    let r = reach.ceil() as i32;
+    let centre = from.floor().as_ivec2();
+    let mut best: Option<(f32, Vec2)> = None;
+    for dy in -r..=r {
+        for dx in -r..=r {
+            let t = centre + IVec2::new(dx, dy);
+            let p = t.as_vec2() + Vec2::splat(0.5);
+            let d = p.distance(from);
+            if d > reach || !map.in_bounds(t) || map.tile(t).room != 0 || map.tile_blocked(t) || zombye_sim::vision::line_of_sight(map, from, p) {
+                continue;
+            }
+            if best.is_none_or(|(b, _)| d < b) {
+                best = Some((d, p));
+            }
+        }
+    }
+    best.map(|(_, p)| p)
 }
 
 /// What the client keeps from the config of the world it joined.
@@ -383,7 +423,7 @@ fn join_local(app: &mut App, mut server: LocalServer, player_id: u32) {
 /// The resources a joined client has, and the systems that tick the server (or take up what it sent).
 fn finish_join(app: &mut App, server: Backend, net: Option<NetInfo>, first: Snapshot, map: ClientMap, damage: EdgeDamageMap, join: JoinInfo) {
     let private = first.private.clone();
-    app.insert_resource(ServerLink { server, net, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3], private, heard: Vec::new(), everyone: Vec::new() })
+    app.insert_resource(ServerLink { server, net, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3], private, heard: Vec::new(), speech: Vec::new(), everyone: Vec::new() })
         .insert_resource(map)
         .insert_resource(join)
         .insert_resource(damage)
@@ -412,7 +452,22 @@ impl ServerLink {
         let id = server.join(None);
         let first = server.tick();
         let private = first.private.clone();
-        (Self { server: Backend::Local(server), net: None, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3], private, heard: Vec::new(), everyone: Vec::new() }, id)
+        (Self { server: Backend::Local(server), net: None, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3], private, heard: Vec::new(), speech: Vec::new(), everyone: Vec::new() }, id)
+    }
+
+    /// Tests: another player joins the world in this process at `at`.
+    #[cfg(test)]
+    pub fn join_for_test(&mut self, at: [f32; 2]) -> u32 {
+        let Backend::Local(server) = &mut self.server else { panic!("a local world") };
+        server.join(Some(at))
+    }
+
+    /// Tests: one tick of the world in this process; the snapshot `player`'s client gets.
+    #[cfg(test)]
+    pub fn tick_for_test(&mut self, player: u32) -> Snapshot {
+        let Backend::Local(server) = &mut self.server else { panic!("a local world") };
+        let full = server.tick();
+        full.for_local(player, &server.world)
     }
 
     /// The world being served, when it is in this process (to save it, or start it again); `None`
@@ -451,6 +506,9 @@ fn clear_frame_changes(
 ) {
     if !link.heard.is_empty() {
         link.heard.clear();
+    }
+    if !link.speech.is_empty() {
+        link.speech.clear();
     }
     ups.0.clear();
     changes.0.clear();
@@ -545,6 +603,7 @@ fn take_up(
     }
     hits.0.extend_from_slice(&snapshot.hits);
     link.heard.extend_from_slice(&snapshot.heard);
+    link.speech.extend(snapshot.speech.iter().cloned());
     link.prev = std::mem::replace(&mut link.curr, snapshot);
 }
 

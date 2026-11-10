@@ -98,7 +98,7 @@ enum Kind {
 
 /// Every tool: name, title (shown to people by clients), kind. `tool_list` adds these to the
 /// definitions, and a test checks each tool has a row.
-const TOOLS: [(&str, &str, Kind); 48] = [
+const TOOLS: [(&str, &str, Kind); 51] = [
     ("observe", "Look around (ASCII map)", Kind::Look),
     ("screenshot", "Screenshot (rendered picture)", Kind::Look),
     ("stats", "World and player stats", Kind::Look),
@@ -115,6 +115,9 @@ const TOOLS: [(&str, &str, Kind); 48] = [
     ("recipes", "Crafting recipes", Kind::Look),
     ("containers_near", "Containers nearby", Kind::Look),
     ("saves", "List saves", Kind::Look),
+    ("heard", "What a player heard said", Kind::Look),
+    ("say", "Say something to whoever is near", Kind::Play),
+    ("gesture", "Wave, put your hands up or point", Kind::Play),
     ("step_ticks", "Let time pass", Kind::Play),
     ("move_player", "Move", Kind::Play),
     ("interact", "Open or close a door or window", Kind::Play),
@@ -831,6 +834,41 @@ fn tool_defs() -> Value {
             "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}}}
         },
         {
+            "name": "say",
+            "description": "A player says a line of text to whoever is near (proximity chat): heard by every other living, waking \
+                survivor within the volume's reach of it (whisper 3 m, talk 12 m, shout 40 m), only 0.4 of that through a wall or shut \
+                door, and then muffled. Each listener gets the words and where the voice came from, and who spoke only if it sees \
+                the speaker (read them with heard). Speaking is a noise: zombies within 1.5 m (whisper), 7 m (talk) or 30 m (shout) \
+                hear it on the next tick and come to look, and a shout draws the far horde over the following minutes. At most one \
+                line a tick; 120 characters. Time doesn't move: step_ticks afterwards.",
+            "inputSchema": {"type": "object", "required": ["text"], "properties": {
+                "player": {"type": "integer", "default": 1},
+                "text": {"type": "string"},
+                "volume": {"type": "string", "enum": ["whisper", "talk", "shout"], "default": "talk"}
+            }}
+        },
+        {
+            "name": "heard",
+            "description": "What a player heard said lately (proximity chat), oldest first: how long ago, how loud (whispered, \
+                said, shouted), whether muffled by a wall, which way and how far off the voice was, the words, and the speaker's \
+                player id when known (with PvP on only if the player saw the speaker as they spoke; else \"a voice\"). Its own \
+                lines are listed as \"you\". The server keeps the last few hundred lines. Read-only.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "secs": {"type": "number", "description": "Only lines from the last this many seconds (default: all kept)"}
+            }}
+        },
+        {
+            "name": "gesture",
+            "description": "A player makes a gesture others can see: wave (hello, over here), hands_up (no threat; held until \
+                lowered: hands_up again, or none), point (the way it faces; turn with move_player's facing first), or none to \
+                stop. A wave and a point last 2.5 s. Starting a swing, shove or stomp ends any gesture. observe and stats show it.",
+            "inputSchema": {"type": "object", "required": ["gesture"], "properties": {
+                "player": {"type": "integer", "default": 1},
+                "gesture": {"type": "string", "enum": ["wave", "hands_up", "point", "none"]}
+            }}
+        },
+        {
             "name": "add_player",
             "description": "Another player joins (as a second client would), standing at (x, y) (default: beside player 1), \
                 facing east. Replies with its id: give it as `player` to the other tools. For testing what several \
@@ -1141,6 +1179,88 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             let before = world.zombies.len();
             apply_intent(world, &Intent::SpawnZombies { count, center: pos, radius: num("radius").unwrap_or(10.0) as f32 });
             Ok(format!("spawned {} zombies; total {}", world.zombies.len() - before, world.zombies.len()))
+        }
+        "say" => {
+            let id = player_id();
+            let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            let text = args.get("text").and_then(Value::as_str).ok_or("text is required")?;
+            let volume = match args.get("volume").and_then(Value::as_str) {
+                Some(v) => zombye_sim::Volume::parse(v).ok_or_else(|| format!("unknown volume {v:?}: whisper, talk or shout"))?,
+                None => zombye_sim::Volume::Talk,
+            };
+            let why_not = if p.dead {
+                "it is dead"
+            } else if p.needs.asleep() {
+                "it is asleep"
+            } else if zombye_sim::speech::clean_text(text, world.config.speech.max_chars).is_none() {
+                "there is nothing to say"
+            } else {
+                "it already spoke this tick (step_ticks first)"
+            };
+            let before = world.speech.len();
+            let heard = world.player_say(id, text, volume).ok_or_else(|| format!("player {id} said nothing: {why_not}"))?;
+            let t = &world.config.speech;
+            let said = world.speech[before.min(world.speech.len())..].iter().find(|s| s.listener == id).map_or(text, |s| s.text.as_str());
+            // With PvP on, who is in earshot is for the speaker to find out, not to be told.
+            let who = if world.config.combat.pvp {
+                String::new()
+            } else {
+                let ids: Vec<String> = world.speech.iter().rev().take_while(|s| s.speaker == id && s.tick == world.tick).filter(|s| s.listener != id).map(|s| format!("P{}{}", s.listener, if s.muffled { " (muffled)" } else { "" })).collect();
+                if ids.is_empty() { "; nobody heard it".to_string() } else { format!("; heard by {heard}: {}", ids.join(", ")) }
+            };
+            Ok(format!(
+                "P{id} {} {said:?} (survivors hear it {} m off, {:.1} m through a wall; zombies within {} m hear it on the next tick){who}",
+                volume.verb(),
+                t.reach(volume),
+                t.reach(volume) * world.config.zombie.wall_muffle,
+                t.noise(volume)
+            ))
+        }
+        "heard" => {
+            let id = player_id();
+            let me = world.player(id).ok_or_else(|| format!("no player {id}"))?.state.pos;
+            let secs = num("secs").filter(|s| *s > 0.0);
+            let since = secs.map_or(0, |s| world.tick.saturating_sub((s * zombye_sim::TICK_RATE as f64) as u64));
+            let fair = world.config.combat.pvp;
+            let lines: Vec<String> = world
+                .speech
+                .iter()
+                .filter(|s| s.listener == id && s.tick >= since)
+                .map(|s| {
+                    let ago = (world.tick - s.tick.min(world.tick)) as f32 * TICK_DT;
+                    let how = match s.volume {
+                        zombye_sim::Volume::Whisper => "whispered",
+                        zombye_sim::Volume::Talk => "said",
+                        zombye_sim::Volume::Shout => "shouted",
+                    };
+                    if s.speaker == id {
+                        return format!("{ago:.1} s ago, you {how}: {:?}", s.text);
+                    }
+                    let who = if s.seen || !fair { format!("P{}", s.speaker) } else { "a voice".to_string() };
+                    let d = s.pos - me;
+                    let from = if d.length() < 0.5 { "right here".to_string() } else { format!("{:.0} m {}", d.length(), compass(d.y.atan2(d.x))) };
+                    format!("{ago:.1} s ago, {who} {how}{} from ({:.1}, {:.1}), {from}: {:?}", if s.muffled { " (muffled, through a wall)" } else { "" }, s.pos.x, s.pos.y, s.text)
+                })
+                .collect();
+            let span = secs.map_or(String::new(), |s| format!(" in the last {s:.0} s"));
+            Ok(if lines.is_empty() { format!("P{id} heard nothing said{span}") } else { format!("P{id} heard{span} (oldest first; places are where the voice was, from where P{id} stands now):\n{}", lines.join("\n")) })
+        }
+        "gesture" => {
+            let id = player_id();
+            world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            let name = args.get("gesture").and_then(Value::as_str).ok_or("gesture is required: wave, hands_up, point or none")?;
+            let gesture = match name {
+                "none" | "stop" => None,
+                g => Some(zombye_sim::Gesture::parse(g).ok_or_else(|| format!("unknown gesture {g:?}: wave, hands_up, point or none"))?),
+            };
+            apply_intent(world, &Intent::Gesture { player: id, gesture });
+            let p = world.player(id).expect("checked");
+            match (gesture, p.gesture) {
+                (Some(g), Some(now)) if now.kind == g => Ok(format!("P{id} is {}{}", g.doing(), if now.left.is_finite() { format!(" for {:.1} s", now.left) } else { " until it lowers them (hands_up again, or none)".to_string() })),
+                (Some(zombye_sim::Gesture::HandsUp), None) => Ok(format!("P{id} lowered its hands")),
+                (Some(g), _) => Err(format!("P{id} can't make a gesture ({}) now: dead, asleep, knocked about or in the middle of a swing", g.name())),
+                (None, _) => Ok(format!("P{id} makes no gesture")),
+            }
         }
         // `toggle_door` is the old name of `interact`.
         "interact" | "toggle_door" => {
@@ -1556,6 +1676,7 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 "cause_of_death": p.run.cause_of_death_with(&world.config.weapons),
                 "first_night": p.first_night.as_ref().map(|f| first_night_json(f, &p.run)),
                 "knocked": p.knock.map(|k| if k.down { "down" } else { "staggered" }),
+                "gesture": p.gesture.map(|g| g.kind.name()),
                 "hunger": p.needs.hunger,
                 "thirst": p.needs.thirst,
                 "tiredness": p.needs.tiredness,
@@ -2315,7 +2436,7 @@ fn observe(world: &World, centre: Vec2, radius: i32, viewer: Option<u32>) -> Str
             world.wielded(p.weapon).name.to_lowercase(),
             s.endurance,
             if s.winded { " (winded)" } else { "" },
-            if map.in_window_opening(s.pos) { ", climbing through a window" } else { "" },
+            format!("{}{}", if map.in_window_opening(s.pos) { ", climbing through a window" } else { "" }, p.gesture.map_or(String::new(), |g| format!(", {}", g.kind.doing().to_uppercase()))),
             match p.action {
                 _ if p.knock.is_some() => {
                     let k = p.knock.expect("checked");
@@ -3201,7 +3322,7 @@ mod tests {
                 assert!(t["annotations"]["destructiveHint"].is_boolean(), "{name}");
             }
         }
-        for name in ["observe", "stats", "zombie", "edge", "buildings", "regions", "inventory", "health", "skills", "weapons", "items", "loot", "recipes", "containers_near", "saves", "screenshot"] {
+        for name in ["observe", "stats", "zombie", "edge", "buildings", "regions", "inventory", "health", "skills", "weapons", "items", "loot", "recipes", "containers_near", "saves", "heard", "screenshot"] {
             let t = tool(&list, name);
             assert_eq!(t["annotations"]["readOnlyHint"], true, "{name}");
             assert_eq!(t.get("_meta"), None, "{name}");
@@ -3257,7 +3378,7 @@ mod tests {
             assert!(!persist.dirty, "{name} made the world need saving");
             called += 1;
         }
-        assert_eq!(called, 15);
+        assert_eq!(called, 16);
         // A tool that isn't read-only does make it need saving.
         let (_, err) = call(&mut world, &mut persist, "search", json!({"container": container}));
         assert!(!err && persist.dirty);
@@ -3536,6 +3657,71 @@ mod tests {
         // Player 3's own view has neither of the others (40 m off, walls between).
         let (text, _) = call(&mut world, &mut persist, "observe", json!({"player": 3}));
         assert!(text.contains("P3 at") && !text.contains("P1 at") && !text.contains("P2 at"), "{text}");
+    }
+
+    /// Proximity chat through the tools (#67): `say` reaches those in earshot, `heard` lists it for
+    /// each (and nothing for one out of range), with PvP on an unseen speaker is only a voice, and
+    /// `gesture` shows in `observe` and `stats`.
+    #[test]
+    fn agents_talk_and_gesture() {
+        let mut world = small_world();
+        let dir = scratch("chat");
+        let mut persist = session(&world, &dir.0);
+        let at = world.player(1).unwrap().state.pos;
+        // Player 1 faces east: player 2 a metre in front of it, 3 far off, 4 five metres behind it.
+        for dx in [1.0, -40.0, -5.0] {
+            let (_, err) = call(&mut world, &mut persist, "add_player", json!({"x": at.x + dx, "y": at.y}));
+            assert!(!err);
+        }
+        call(&mut world, &mut persist, "step_ticks", json!({"n": 5}));
+        let (text, err) = call(&mut world, &mut persist, "heard", json!({}));
+        assert!(!err && text.contains("heard nothing said"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "say", json!({"text": "  Anyone\nthere? "}));
+        assert!(!err && text.contains("P1 says \"Anyone there?\"") && text.contains("P2") && !text.contains("P3"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "say", json!({"text": "again"}));
+        assert!(err && text.contains("already spoke this tick"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "say", json!({"text": "  "}));
+        assert!(err && text.contains("nothing to say"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "say", json!({"text": "la", "volume": "sing"}));
+        assert!(err && text.contains("unknown volume"), "{text}");
+        call(&mut world, &mut persist, "step_ticks", json!({"n": 20}));
+        let (text, err) = call(&mut world, &mut persist, "heard", json!({"player": 2}));
+        assert!(!err && text.contains("1.0 s ago, P1 said from") && text.contains("\"Anyone there?\"") && text.contains("1 m w:"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "heard", json!({"player": 1}));
+        assert!(text.contains("you said: \"Anyone there?\""), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "heard", json!({"player": 3}));
+        assert!(text.contains("P3 heard nothing said"), "40 m off: {text}");
+        let (text, _) = call(&mut world, &mut persist, "heard", json!({"player": 2, "secs": 0.5}));
+        assert!(text.contains("heard nothing said in the last"), "{text}");
+
+        // With PvP on, a shout from behind player 1's back is a voice, not a player.
+        call(&mut world, &mut persist, "pvp", json!({"on": true}));
+        call(&mut world, &mut persist, "step_ticks", json!({"n": 30}));
+        let (text, err) = call(&mut world, &mut persist, "say", json!({"player": 4, "text": "Drop it!", "volume": "shout"}));
+        assert!(!err && text.contains("P4 shouts \"Drop it!\"") && !text.contains("heard by"), "who is in earshot isn't told with PvP on: {text}");
+        let (text, _) = call(&mut world, &mut persist, "heard", json!({"player": 1}));
+        assert!(text.contains("a voice shouted") && text.contains("\"Drop it!\"") && !text.contains("P4"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "heard", json!({"player": 4}));
+        assert!(text.contains("you shouted: \"Drop it!\""), "{text}");
+
+        // Gestures.
+        let (text, err) = call(&mut world, &mut persist, "gesture", json!({"player": 2, "gesture": "hands_up"}));
+        assert!(!err && text.contains("P2 is hands up until"), "{text}");
+        call(&mut world, &mut persist, "step_ticks", json!({"n": 100}));
+        let (text, _) = call(&mut world, &mut persist, "observe", json!({}));
+        assert!(text.contains("HANDS UP"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "stats", json!({}));
+        let stats: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(stats["players"][1]["gesture"], "hands_up");
+        assert_eq!(stats["players"][0]["gesture"], Value::Null);
+        let (text, err) = call(&mut world, &mut persist, "gesture", json!({"player": 2, "gesture": "hands_up"}));
+        assert!(!err && text.contains("lowered its hands"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "gesture", json!({"gesture": "wave"}));
+        assert!(!err && text.contains("P1 is waving for 2.5 s"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "gesture", json!({"gesture": "dance"}));
+        assert!(err && text.contains("unknown gesture"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "gesture", json!({"gesture": "none"}));
+        assert!(!err && text.contains("makes no gesture"), "{text}");
     }
 
     /// PvP through the tools: off, a swing at another player hits nothing; `pvp {on: true}` and the

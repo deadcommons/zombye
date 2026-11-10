@@ -76,6 +76,9 @@ old apps connect.
 | `smash_window` | `player` | Smash the window the player faces. Loud. |
 | `sleep` | `player`, `max_hours` | Lie down (bed, sofa or floor) and sleep until something wakes the player. Says why it woke. |
 | `respawn` | `player` | A dead player gets up in the bedroom, with full health and empty hands. |
+| `say` | `player`, `text`, `volume` | Says a line to whoever is near: `whisper` (3 m), `talk` (12 m, the default) or `shout` (40 m); 0.4 of that through a wall. Zombies hear it too (1.5, 7 and 30 m). Time doesn't move. |
+| `heard` | `player`, `secs` | Read-only. What the player heard said lately: how long ago, how loud, muffled or not, from where, and from whom when known (with PvP on, only if it saw the speaker). |
+| `gesture` | `player`, `gesture` | `wave`, `hands_up` (held until lowered), `point`, or `none`. Others see it; `observe` and `stats` show it. |
 
 ## Fighting
 

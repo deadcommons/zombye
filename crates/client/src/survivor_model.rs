@@ -209,6 +209,9 @@ pub struct SurvivorModel {
     /// a weapon, the bones the flinch turns, all of them.
     upper: Vec<usize>,
     right_arm: Vec<usize>,
+    /// The bones a gesture takes (#67): the left arm, and both arms.
+    left_arm: Vec<usize>,
+    arms: Vec<usize>,
     flinching: Vec<(usize, usize)>,
     all: Vec<usize>,
     /// Body vertices on the feet (for standing them on the ground).
@@ -444,6 +447,8 @@ impl SurvivorModel {
             (0..rig.len()).filter(|&b| up[b]).collect()
         };
         let right_arm = retarget.bones_of(&[UARM_R, FARM_R, HAND_R]);
+        let left_arm = retarget.bones_of(&survivor::LEFT_ARM);
+        let arms = retarget.bones_of(&survivor::ARMS);
         let flinching = (0..rig.len()).filter_map(|b| if let Src::Grey(g) = retarget.src[b] { UPPER.contains(&g).then_some((b, g)) } else { None }).collect();
         let feet_region = REGIONS.iter().position(|r| *r == BodyPart::Feet).unwrap() as u8;
         let feet = (0..body.mesh.vertices()).filter(|&v| body.regions[v] == feet_region).collect();
@@ -483,6 +488,8 @@ impl SurvivorModel {
             spine_base,
             upper,
             right_arm,
+            left_arm,
+            arms,
             flinching,
             all: (0..rig.len()).collect(),
             feet,
@@ -620,6 +627,10 @@ impl SurvivorModel {
         if a.aim_w > 0.0 {
             // Aiming: the guard over the upper body.
             pose.blend_bones(&self.retarget.apply(body, &survivor::guard(style, armed)), a.aim_w, Some(&self.upper));
+        }
+        if let Some((g, both, w)) = survivor::gesture_now(a) {
+            // A gesture (#67): the grey-box's arms carried over, the free arm or both.
+            pose.blend_bones(&self.retarget.apply(body, &g), w, Some(if both { self.arms.as_slice() } else { self.left_arm.as_slice() }));
         }
         if let Some((act, whole, w)) = survivor::action_now(a, now, style, armed) {
             pose.blend_bones(&self.retarget.apply(body, &act), w, Some(if whole { &self.all } else { &self.upper }));

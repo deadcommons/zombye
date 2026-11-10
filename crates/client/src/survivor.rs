@@ -28,7 +28,7 @@ use bevy::camera::visibility::NoFrustumCulling;
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
-use zombye_sim::{ActionKind, CombatEventKind, Stance, TICK_DT, WeaponCategory};
+use zombye_sim::{ActionKind, CombatEventKind, Gesture, Stance, TICK_DT, WeaponCategory};
 
 use crate::items_render::WeaponLooks;
 use crate::player::LocalPlayer;
@@ -324,6 +324,10 @@ pub struct SurvivorAnim {
     /// Lying asleep rather than dead (#93), and when it woke (it gets up over `GET_UP_SECS`).
     pub(crate) sleeping: bool,
     pub(crate) woke_at: Option<f32>,
+    /// The gesture it makes or last made (#67), eased in and out, and its own clock (seconds).
+    pub(crate) gesture: Option<Gesture>,
+    pub(crate) gesture_w: f32,
+    pub(crate) gesture_t: f32,
 }
 
 impl SurvivorAnim {
@@ -350,6 +354,9 @@ impl SurvivorAnim {
             dead_since: None,
             sleeping: false,
             woke_at: None,
+            gesture: None,
+            gesture_w: 0.0,
+            gesture_t: 0.0,
         }
     }
 }
@@ -408,6 +415,16 @@ fn animate_survivors(
         a.move_w += (smooth(0.15, 0.8, a.speed) - a.move_w) * k(10.0);
         let aiming = local.map_or(view.aiming, |m| m.aiming) && !view.dead && !view.asleep;
         a.aim_w += (aiming as u8 as f32 - a.aim_w) * k(12.0);
+        // A gesture (#67): eased in while the server says so, and out after.
+        let gesturing = view.gesture.filter(|_| !view.dead && !view.asleep);
+        if let Some(g) = gesturing {
+            if a.gesture != Some(g) || a.gesture_w < 0.05 {
+                a.gesture_t = 0.0;
+            }
+            a.gesture = Some(g);
+        }
+        a.gesture_w += (gesturing.is_some() as u8 as f32 - a.gesture_w) * k(9.0);
+        a.gesture_t += dt;
         let cycle_m = match (&a.look, &model) {
             (Look::Model(_), Some(m)) => m.cycle_metres(a),
             _ => {
@@ -582,6 +599,7 @@ fn hold_pose(a: &mut SurvivorAnim, pose: &str, step: f32, now: f32) {
     let u = (u + step).fract();
     let locomotion = |a: &mut SurvivorAnim, run: f32, sneak: f32, moving: f32| {
         (a.run_w, a.sneak_w, a.move_w, a.cycle) = (run, sneak, moving, u);
+        a.gesture_w = 0.0;
         a.action = None;
         a.dead_since = None;
         a.sleeping = false;
@@ -611,6 +629,11 @@ fn hold_pose(a: &mut SurvivorAnim, pose: &str, step: f32, now: f32) {
             locomotion(a, 0.0, 0.0, 0.0);
             a.dead_since = Some(now - 10.0);
             a.sleeping = true;
+        }
+        // The gestures (#67), `U` of a second into them (the wave swings once a second).
+        "wave" | "handsup" | "hands_up" | "point" => {
+            locomotion(a, 0.0, 0.0, 0.0);
+            (a.gesture, a.gesture_w, a.gesture_t) = (Gesture::parse(name), 1.0, u);
         }
         _ => locomotion(a, 0.0, 0.0, 0.0),
     }
@@ -671,6 +694,41 @@ pub(crate) fn guard(style: Style, armed: bool) -> SPose {
     p
 }
 
+/// The bones a gesture takes: the free (left) arm for a wave or a point, both arms for hands up.
+pub(crate) const LEFT_ARM: [usize; 2] = [UARM_L, FARM_L];
+pub(crate) const ARMS: [usize; 5] = [UARM_L, FARM_L, UARM_R, FARM_R, HAND_R];
+
+/// The gesture under way (#67): its pose, whether it takes both arms (else the left), and its
+/// weight now. The left hand is the free one (the right holds the weapon), so that one waves and
+/// points; hands up raises both, whatever is in them.
+pub(crate) fn gesture_now(a: &SurvivorAnim) -> Option<(SPose, bool, f32)> {
+    let g = a.gesture.filter(|_| a.gesture_w > 0.01)?;
+    let mut p = SPose::default();
+    match g {
+        Gesture::Wave => {
+            // The arm up beside the head, the forearm swinging from side to side.
+            let s = (a.gesture_t * TAU * 1.6).sin();
+            p.rot[UARM_L] = rz(0.75) * rx(-2.55);
+            p.rot[FARM_L] = rz(0.2 + 0.5 * s) * rx(-0.35);
+        }
+        Gesture::HandsUp => {
+            // Both arms up and a little out, open, elbows soft.
+            p.rot[UARM_L] = rz(0.85) * rx(-2.5);
+            p.rot[FARM_L] = rx(-0.5);
+            p.rot[UARM_R] = rz(-0.85) * rx(-2.5);
+            p.rot[FARM_R] = rx(-0.5);
+            p.rot[HAND_R] = rx(-0.1);
+        }
+        Gesture::Point => {
+            // The arm straight out the way it faces, jabbed once as it comes up.
+            let jab = 0.12 * (1.0 - smooth(0.0, 0.5, a.gesture_t));
+            p.rot[UARM_L] = rz(-0.05) * rx(-1.5 + jab);
+            p.rot[FARM_L] = rx(-0.06);
+        }
+    }
+    Some((p, g == Gesture::HandsUp, a.gesture_w))
+}
+
 /// How far into the hurt flinch it is now (0 = none).
 pub(crate) fn flinch_weight(a: &SurvivorAnim, now: f32) -> f32 {
     let e = now - a.hurt_at;
@@ -684,6 +742,9 @@ pub(crate) fn flinch_weight(a: &SurvivorAnim, now: f32) -> f32 {
 fn compose(a: &SurvivorAnim, now: f32, style: Style, armed: bool) -> SPose {
     let mut pose = locomotion(a, armed);
     pose.blend_bones(&guard(style, armed), a.aim_w, &UPPER, false);
+    if let Some((g, both, w)) = gesture_now(a) {
+        pose.blend_bones(&g, w, if both { &ARMS[..] } else { &LEFT_ARM[..] }, false);
+    }
     if let Some((act, whole, w)) = action_now(a, now, style, armed) {
         pose.blend_bones(&act, w, if whole { &ALL } else { &UPPER }, false);
     }

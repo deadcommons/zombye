@@ -39,6 +39,13 @@ impl Snapshot {
         let floor = self.floor.iter().find(|f| f.player == player).map(|f| f.items.clone()).unwrap_or_default();
         self.items.retain(|i| floor.contains(&i.id) || me.is_some_and(|m| line_of_sight(&world.map, m, i.pos)));
         self.heard.retain(|h| h.listener == player);
+        // What was said (#67): only what our survivor heard, and from whom only if it sees them.
+        self.speech.retain(|s| s.listener == player);
+        for s in &mut self.speech {
+            if !s.seen {
+                s.speaker = 0;
+            }
+        }
         self
     }
 

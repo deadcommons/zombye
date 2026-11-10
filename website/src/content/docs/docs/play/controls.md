@@ -38,6 +38,10 @@ run until you get some back.
 | **H** | The health panel: your wounds, and the treatments you can do with what you carry |
 | **K** | The skills panel |
 | **B** | Lie down to sleep (B again, or a movement key, to get up) |
+| **Enter** | The chat line: type, **Tab** picks whisper, talk or shout, **Enter** says it, **Esc** drops it. Survivors near you hear it (talk carries 12 m, a shout 40 m, a whisper 3 m; much less through a wall, and muffled). So do zombies. |
+| **V** | Wave |
+| **U** | Hands up (U again lowers them) |
+| **P** | Point the way you face |
 
 ## The game
 

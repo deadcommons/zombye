@@ -16,7 +16,7 @@ pub mod wire;
 use serde::{Deserialize, Serialize};
 use zombye_sim::map::{EdgeChange, OwnedEdge};
 use zombye_sim::{
-    ActionKind, Burden, Carry, CombatEvent, DevFlags, GroundItem, HealthTags, HealthView, Inventory, ItemNote, ItemStack, JobKind, LevelUp, MoveMods, NeedsTuning, NeedsView, Place, PlayerInput, RunStats, Skill, SkillView, Stance,
+    ActionKind, Burden, Carry, CombatEvent, DevFlags, Gesture, GroundItem, Said, Volume, HealthTags, HealthView, Inventory, ItemNote, ItemStack, JobKind, LevelUp, MoveMods, NeedsTuning, NeedsView, Place, PlayerInput, RunStats, Skill, SkillView, Stance,
     StatusData, StatusInput, StatusTag, Treatment, World, WorldConfig, ZombieAnim,
 };
 
@@ -117,6 +117,12 @@ pub enum Intent {
     /// compensation, #23: `zombye_sim::lagcomp`), at most `CombatTuning::lag_comp_max_secs` back.
     /// A client in the server's own process doesn't send it: nothing is rewound for it.
     Seen { player: u32, tick: u64 },
+    /// Say `text` at `volume` (#67, `zombye_sim::speech`): heard by the survivors within that
+    /// volume's reach, less through walls, and a noise zombies hear. One line a tick; a
+    /// multiplayer server takes one every half second from a client.
+    Say { player: u32, text: String, volume: Volume },
+    /// Make a gesture (wave, hands up, point), or with `None` stop making one (#67).
+    Gesture { player: u32, gesture: Option<Gesture> },
 }
 
 /// What one zombie looks like to a client. Server-only state (AI memory, paths) is not included.
@@ -171,6 +177,8 @@ pub struct PlayerView {
     pub knock: Option<zombye_sim::Knock>,
     /// Spawn protection (#68): other players' blows pass it by until it runs out or it attacks.
     pub protected: bool,
+    /// The gesture it is making (#67): wave, hands up, point.
+    pub gesture: Option<Gesture>,
 }
 
 /// What a container holds, for whoever has it open.
@@ -323,6 +331,11 @@ pub struct Snapshot {
     /// position, as loud as its radius, not the player. A client gets only its own.
     #[serde(default)]
     pub heard: Vec<zombye_sim::Heard>,
+    /// What survivors said since the previous snapshot (#67), once per listener; a client gets
+    /// only what its own survivor heard (its own lines too), and with fair information on, the
+    /// speaker's id only if its survivor sees them (else 0: a voice from a place).
+    #[serde(default)]
+    pub speech: Vec<Said>,
 }
 
 /// What a body has on, for drawing it (#63): the clothing and accessories it wears in the order put
@@ -415,6 +428,7 @@ impl Snapshot {
                 aiming: p.input.aim && !p.dead,
                 knock: p.knock,
                 protected: p.protected > 0.0,
+                gesture: p.gesture.map(|g| g.kind),
             })
             .collect();
         let private = world.take_private_dirty().into_iter().filter_map(|id| PrivateView::of(world, id)).collect();
@@ -437,6 +451,7 @@ impl Snapshot {
             outfits: world.players.iter().map(OutfitView::of).collect(),
             risen,
             heard: world.awareness().all_heard_now().copied().collect(),
+            speech: world.take_speech(),
         }
     }
 
@@ -448,6 +463,7 @@ impl Snapshot {
         self.runs.retain(|r| r.player == player);
         self.level_ups.retain(|l| l.player == player);
         self.heard.retain(|h| h.listener == player);
+        self.speech.retain(|s| s.listener == player);
         self
     }
 
@@ -551,6 +567,12 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
         }
         Intent::CancelJobs { player, all } => world.player_cancel_jobs(*player, *all),
         Intent::Seen { player, tick } => world.player_saw(*player, *tick),
+        Intent::Say { player, text, volume } => {
+            let _ = world.player_say(*player, text, *volume);
+        }
+        Intent::Gesture { player, gesture } => {
+            world.player_gesture(*player, *gesture);
+        }
         Intent::Respawn { player } => {
             world.respawn_player(*player);
         }

@@ -128,6 +128,9 @@ const MAX_QUEUE: usize = 400;
 /// second.)
 const MAX_INPUTS: usize = 10;
 const KEEP_INPUTS: usize = 2;
+/// A client's lines of chat are taken at most this often (ticks: half a second); the rest are
+/// dropped, so nobody floods the others' screens or rings a dinner bell twenty times a second.
+const SAY_EVERY: u64 = 10;
 /// A client that sends nothing for this long is gone (clients ping every second).
 const IDLE: Duration = Duration::from_secs(20);
 const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
@@ -154,6 +157,8 @@ struct Conn {
     /// Bytes it may be sent now: filled at the budget's rate up to a second's worth, spent by
     /// every frame (below zero when what must go was more).
     tokens: f32,
+    /// The world's tick when it last said something (#67): one line every `SAY_EVERY` ticks.
+    said_at: Option<u64>,
     /// Zombie updates held back for the budget, in all.
     held: u64,
     bytes_out: u64,
@@ -515,7 +520,7 @@ impl Host {
             return;
         }
         let tokens = self.options.budget as f32;
-        let mut conn = Conn { id, player, name: name.clone(), addr: addr.clone(), out, queue: VecDeque::new(), encoder: DeltaEncoder::default(), map: MapInterest::default(), tokens, held: 0, bytes_out: 0, bytes_in: 0, intents: 0, closing: None, joined: Instant::now() };
+        let mut conn = Conn { id, player, name: name.clone(), addr: addr.clone(), out, queue: VecDeque::new(), encoder: DeltaEncoder::default(), map: MapInterest::default(), tokens, said_at: None, held: 0, bytes_out: 0, bytes_in: 0, intents: 0, closing: None, joined: Instant::now() };
         send(&mut conn, &mut self.stats, &ServerMsg::Welcome(Box::new(welcome)));
         self.conns.push(conn);
         // Its private view goes with its first snapshot.
@@ -641,6 +646,13 @@ impl Host {
             if let Some(p) = intent.player_mut() {
                 *p = player;
             }
+            if matches!(intent, Intent::Say { .. }) {
+                let now = self.world.tick;
+                if self.conns[k].said_at.is_some_and(|at| now < at + SAY_EVERY) {
+                    continue;
+                }
+                self.conns[k].said_at = Some(now);
+            }
             let respawn = matches!(intent, Intent::Respawn { .. }) && self.world.player(player).is_some_and(|p| p.dead);
             apply_intent(&mut self.world, &intent);
             if respawn {
@@ -665,6 +677,7 @@ impl Host {
             self.world.edge_changes.clear();
             self.world.combat_events.clear();
             self.world.item_notes.clear();
+            self.world.speech.clear();
             return;
         }
         let full = Snapshot::capture(&mut self.world);
