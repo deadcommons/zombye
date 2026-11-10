@@ -35,7 +35,15 @@ STRIKES = {
     "swing_two": ("Charged_Axe_Chop", ("RightHand", "LeftHand"), 24),
     "shot": ("shot_src", ("RightHand", "LeftHand"), 15),
     "stomp": ("stomp_src", ("RightFoot",), 20),
+    # The second round (owner: "ok weapons plan"; raw/weapons2.glb, task 01a1c5e4-8290-7551-8561-6a2fcf3511d7).
+    "swing_one_b": ("Charged_Slash", ("RightHand",), 22),
+    "swing_two_b": ("Heavy_Hammer_Swing", ("RightHand", "LeftHand"), 24),
+    "stab": ("Thrust_Slash", ("RightHand",), 15),
+    "ground_two": ("Charged_Ground_Slam", ("RightHand", "LeftHand"), 24),
 }
+LOW_CONTACT = ("swing_two", "ground_two")                 # chops land at the bottom of the swing
+TURN_TO_FRONT = ("swing_two", "swing_two_b", "swing_one_b", "stab", "ground_two")
+TWO_HANDED = ("swing_two", "swing_two_b", "ground_two")
 CLIMB_CLIPS = ["climb", "vault"]  # motion-climb.glb, motion-vault.glb: text-to-motion 01a1c558-393a-71bc-8986-6222bdaa02cb, 01a1c558-3bca-722c-be3c-24f2d632b987
 # Directional clips (the owner: "he needs strafe animations"): Meshy's library on the same rig (one file)
 # and a walk left from text-to-motion; walk right is walk left mirrored.
@@ -170,6 +178,7 @@ def build(c):
     before_w = set(bpy.data.actions)
     _imp = set(bpy.data.objects)
     bpy.ops.import_scene.gltf(filepath=str(c.paths["raw"] / "weapons.glb"))
+    bpy.ops.import_scene.gltf(filepath=str(c.paths["raw"] / "weapons2.glb"))
     for a_ in [x for x in bpy.data.actions if x not in before_w]:
         parts_ = a_.name.split("|")
         a_.name = parts_[1] if len(parts_) >= 3 else parts_[-1]
@@ -240,7 +249,10 @@ def build(c):
     for name_, (src_, ends_, frames_) in STRIKES.items():
         make_strike(c, arm, src_, name_, ends_, frames_)
         actions[name_] = name_
-    two_hand_grip(c, arm, bpy.data.actions["swing_two"])
+    for name_ in TWO_HANDED:
+        two_hand_grip(c, arm, bpy.data.actions[name_])
+    make_ground_one(c, arm)
+    actions["ground_one"] = "ground_one"
     make_shot(c, arm)
     make_stomp(c, arm)
 
@@ -1509,7 +1521,7 @@ def make_strike(c, arm, src_name, name, ends, frames, pre=30, post=30):
     lo = (moving[0] - f0) if moving else 0
     hi = (moving[-1] - f0) if moving else len(pos) - 1
     i_hit = max(range(lo, hi + 1), key=lambda i: speed[i])
-    if name == "swing_two":  # a chop lands at the bottom: the hands' lowest point after the windup's highest
+    if name in LOW_CONTACT:  # a chop lands at the bottom: the hands' lowest point after the windup's highest
         top = max(range(lo, hi + 1), key=lambda i: pos[i][0].z)
         i_hit = min(range(top, hi + 1), key=lambda i: pos[i][0].z)
     i0, i1 = max(lo, i_hit - pre), min(hi, i_hit + post)
@@ -1522,7 +1534,7 @@ def make_strike(c, arm, src_name, name, ends, frames, pre=30, post=30):
     z2.centre(arm, d)
     moved = z2.pin_travel(arm, d, threshold=0.0)
     turn = 0.0
-    if name == "swing_two":  # the chop comes down in front of him, not off to his right: the clip turned about the vertical
+    if name in TURN_TO_FRONT:  # the blow lands in front of him, not off to a side: the clip turned about the vertical
         v = pos[i_hit][0]
         turn = math.degrees(math.atan2(-1.0, 0.0) - math.atan2(v.y, v.x))
         turn = (turn + 180.0) % 360.0 - 180.0
@@ -1533,7 +1545,7 @@ def make_strike(c, arm, src_name, name, ends, frames, pre=30, post=30):
     z2.write(clip, d)
     clip.use_cyclic = False
     bpy.data.actions.remove(src)
-    c.note(f"{name} = {src_name} frames {s0}-{s1}, the contact (frame {hit}, {'/'.join(ends)} {'lowest after the windup' if name == 'swing_two' else 'fastest'}) at {SHOVE_HIT:.0%} of "
+    c.note(f"{name} = {src_name} frames {s0}-{s1}, the contact (frame {hit}, {'/'.join(ends)} {'lowest after the windup' if name in LOW_CONTACT else 'fastest'}) at {SHOVE_HIT:.0%} of "
            f"{frames} frames ({(frames - 1) / 24:.2f} s), {moved:.2f} m of travel taken out"
            + (f", turned {turn:+.0f}° so the blow lands in front" if turn else "") + ", eased from and back to the idle")
 
@@ -1589,7 +1601,7 @@ def two_hand_grip(c, arm, action, gap=0.09):
     if tgt.animation_data and tgt.animation_data.action:
         bpy.data.actions.remove(tgt.animation_data.action)
     bpy.data.objects.remove(tgt)
-    c.note(f"swing_two: both hands on the weapon (left hand {gap * 100:.0f} cm below the right on the handle, IK keyed over frames {f0}-{f1})")
+    c.note(f"{action.name}: both hands on the weapon (left hand {gap * 100:.0f} cm below the right on the handle, IK keyed over frames {f0}-{f1})")
 
 
 # ---------------------------------------------------------------- hand-keyed weapon moves (owner chose "Fix in Blender (free)")
@@ -1730,3 +1742,48 @@ def make_stomp(c, arm):
     g.apply_pose_layer(arm, clip, lean, weight=lambda t: math.sin(math.pi * min(max(t / (n - 1), 0.0), 1.0)))
     c.note(f"stomp = hand-keyed (IK): the right knee up (thigh near level), the foot down 0.40 m in front at frame {h} "
            f"({SHOVE_HIT:.0%} of {n}), leaning over to look down, from and back to the idle's first pose")
+
+
+GROUND_ONE_FRAMES = 22
+
+
+def make_ground_one(c, arm):
+    """A knife or short club on a zombie lying in front: down into a crouch (the hips 0.38 m lower, both feet
+    kept planted), the right hand raised by the shoulder and driven down to the ground about 0.5 m in front at
+    SHOVE_HIT, the torso leaning over it, then back up to the idle."""
+    from mathutils import Vector
+    n = GROUND_ONE_FRAMES
+    clip, z2 = _idle_clip(c, arm, "ground_one", n)
+    _real_lengths(arm, [("RightArm", "RightForeArm"), ("RightForeArm", "RightHand"),
+                        ("RightUpLeg", "RightLeg"), ("RightLeg", "RightFoot"), ("LeftUpLeg", "LeftLeg"), ("LeftLeg", "LeftFoot")])
+    h = int(round(SHOVE_HIT * (n - 1)))
+    import numpy as np
+    d = z2.read(clip)
+    w, rest = z2.hips_world(arm, d)
+    t = np.arange(n, dtype=float)
+    down = np.where(t <= h, z2.smooth(t / max(h - 2, 1)), 1.0 - z2.smooth((t - (h + 4)) / max(n - 1 - (h + 4), 1)))
+    w[:, 2] -= 0.38 * down
+    z2.set_hips_world(d, w, rest)
+    z2.write(clip, d)
+    g._bind_action(arm, clip)
+    bpy.context.scene.frame_set(0)
+    pb = arm.pose.bones
+    rf, lf = pb["RightFoot"].head.copy(), pb["LeftFoot"].head.copy()
+    r0 = pb["RightHand"].head.copy()
+    sh = pb["RightArm"].head.copy()
+    feet_r = {f: rf for f in range(n)}
+    feet_l = {f: lf for f in range(n)}
+    knee_r = {f: Vector((rf.x, -1.0, 0.5)) for f in range(n)}
+    knee_l = {f: Vector((lf.x, -1.0, 0.5)) for f in range(n)}
+    raised = Vector((sh.x - 0.05, sh.y - 0.10, sh.z - 0.38 + 0.25))
+    ground = Vector((-0.08, -0.50, 0.10))
+    keys = [(0, r0), (h - 4, raised), (h - 2, raised + Vector((0, -0.05, 0.05))), (h, ground), (h + 3, ground + Vector((0, 0, 0.04))),
+            (n - 1, r0)]
+    elbow = {f: Vector((-0.7, 0.3, 0.6)) for f in range(n)}
+    _ik_key(arm, clip, [("RightLeg", 2, feet_r, knee_r, ("RightUpLeg", "RightLeg")),
+                        ("LeftLeg", 2, feet_l, knee_l, ("LeftUpLeg", "LeftLeg")),
+                        ("RightForeArm", 2, _path(keys, n), elbow, ("RightArm", "RightForeArm"))], range(n))
+    lean = {"Spine": (14.0, 0.0, 0.0), "Spine01": (12.0, 0.0, 0.0), "Spine02": (8.0, 0.0, 0.0), "neck": (12.0, 0.0, 0.0), "Head": (10.0, 0.0, 0.0)}
+    g.apply_pose_layer(arm, clip, lean, weight=lambda tt: float(np.interp(tt, t, down)))
+    c.note(f"ground_one = hand-keyed (IK): a crouch (hips 0.38 m down, feet planted), the right hand from the shoulder down to "
+           f"the ground 0.5 m in front at frame {h} ({SHOVE_HIT:.0%} of {n}), leaning over, back to the idle's first pose")
