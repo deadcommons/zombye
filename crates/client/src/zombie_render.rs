@@ -1594,6 +1594,11 @@ mod tests {
         row.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(lo, hi), p| (lo.min(*p), hi.max(*p)))
     }
 
+    /// The same points to within half-float precision (a `.zvat` keeps positions as f16, #155).
+    fn near(a: &[Vec3], b: &[Vec3]) -> bool {
+        a.len() == b.len() && a.iter().zip(b).all(|(p, q)| (*p - *q).abs().max_element() <= 2e-3 * q.abs().max_element().max(1.0))
+    }
+
     /// Every slot gets frames: the file's walk and idle as they are, stand-ins for the rest.
     #[test]
     fn a_baked_character_fills_every_clip() {
@@ -1607,10 +1612,10 @@ mod tests {
         assert_eq!(b.image().height(), b.rows);
         let walk = b.clips[Clip::Walk as usize];
         assert_eq!((walk.y, walk.z, walk.w), (6.0, 0.0, 1.0), "the file's walk, played at speed / stride");
-        assert_eq!(b.row(walk.x as u32 + 2)[..z.vertices()], *z.frame(0, 2));
+        assert!(near(&b.row(walk.x as u32 + 2)[..z.vertices()], z.frame(0, 2)));
         let idle = b.clips[Clip::Idle as usize];
         assert_eq!((idle.y, idle.z, idle.w), (4.0, 1.0 / 3.0, 0.0), "the idle at its own rate");
-        assert_eq!(b.row(idle.x as u32)[..z.vertices()], *z.frame(1, 0));
+        assert!(near(&b.row(idle.x as u32)[..z.vertices()], z.frame(1, 0)));
         for (clip, _, _, _, secs) in CLIPS {
             let c = b.clips[clip as usize];
             assert!(c.y >= 1.0 && c.x + c.y <= b.rows as f32, "{clip:?}: {c}");
