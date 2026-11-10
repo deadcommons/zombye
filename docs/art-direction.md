@@ -196,8 +196,12 @@ war in `fog.rs` and `world.wesl`). Numbers live there; this is what they're for.
   26 m and 60 m, `--frame-bench N` or `ZOMBYE_FRAME_BENCH`). Screen-space effects that need a depth
   prepass (screen-space ambient occlusion) wait until the cutaway and the window glass work with one.
 - **Every effect is a setting** (`graphics.rs`): grain, tilt-shift, vignette, bloom, contact shadows
-  and the ground's per-pixel detail each switch off by themselves (`--no-post`), and the low preset
-  (`--graphics low`) turns them all off and thins the vegetation. A new effect joins that list.
+  and the ground's per-pixel detail each switch off by themselves (`--no-post`). They are gathered
+  into presets (`--graphics low|medium|high|ultra|auto`, F8 in game): **High is the look this
+  document describes** and the default; Medium and Low trade the subtler parts (tilt-shift first,
+  then grain, ground detail, contact shadows, thinner grass, smaller shadow map) for frame rate;
+  Ultra adds denser grass and a finer shadow map. A new effect joins that list and gets a place in
+  each preset. Every change to the look reports its frame cost on a real GPU next to the pictures.
 - Review renders in Blender use the Standard view transform (asset-pipeline.md), so the palette is
   what you see there; in game the grade warms and darkens it, which is why Gate 4 is in game.
 

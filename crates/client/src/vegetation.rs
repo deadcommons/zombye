@@ -205,9 +205,25 @@ fn stream_veg(
     assets: Option<Res<VegAssets>>,
     cams: Query<&IsoCamera>,
     chunks: Query<(Entity, &ChunkVeg, Option<&VegShown>)>,
+    mut drawn_at: Local<Option<f32>>,
 ) {
     let (Some(assets), Ok(cam)) = (assets, cams.single()) else { return };
     let density = graphics.vegetation;
+    // A new density (the graphics preset changed): take every chunk's spots down; they come back
+    // at the new density a few chunks a frame.
+    if drawn_at.is_some_and(|d| d != density) {
+        for (entity, _, shown) in &chunks {
+            if let Some(VegShown(spawned)) = shown {
+                for &e in spawned {
+                    commands.entity(e).despawn();
+                }
+                commands.entity(entity).remove::<VegShown>();
+            }
+        }
+        *drawn_at = Some(density);
+        return;
+    }
+    *drawn_at = Some(density);
     let focus = cam.focus.xz();
     let radius = veg_radius(cam.zoom);
     // Everything at once for a picture and for the first view; then a few chunks a frame.

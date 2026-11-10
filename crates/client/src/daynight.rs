@@ -54,6 +54,7 @@ pub struct DayNightPlugin;
 impl Plugin for DayNightPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Daylight>()
+            // The graphics preset sets its size (`graphics_ui::apply`); High's until then.
             .insert_resource(DirectionalLightShadowMap { size: 4096 })
             .add_systems(Startup, spawn_lights)
             .add_systems(Update, (update_lights, attach_player_glow, fit_sun_cascade, (held_light_system, grade_camera).after(update_lights)));

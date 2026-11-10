@@ -443,7 +443,7 @@ fn face_cursor(
     }
     let (Ok(window), Ok((camera, cam_tf))) = (windows.single(), cams.single()) else { return };
     let Some(cursor) = window.cursor_position() else { return };
-    let Ok(ray) = camera.viewport_to_world(cam_tf, cursor) else { return };
+    let Ok(ray) = camera.viewport_to_world(cam_tf, crate::render_scale::to_view(camera, window, cursor)) else { return };
     if ray.direction.y.abs() < 1e-4 {
         return;
     }

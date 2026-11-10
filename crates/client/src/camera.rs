@@ -76,8 +76,9 @@ fn spawn_camera(mut commands: Commands, join: Res<JoinInfo>, options: Res<Option
             ..OrthographicProjection::default_3d()
         }),
         transform,
-        // Window glass is drawn with alpha to coverage, which needs multisampling.
-        Msaa::Sample4,
+        // Window glass is drawn with alpha to coverage, which needs multisampling (graphics
+        // preset: 4 from Medium up).
+        crate::graphics_ui::msaa(graphics.msaa),
         cam,
     ));
     // The mood (#83): HDR so light sources can glow, a filmic tone map, and the grade and
@@ -86,7 +87,7 @@ fn spawn_camera(mut commands: Commands, join: Res<JoinInfo>, options: Res<Option
     camera.insert((Hdr, Tonemapping::TonyMcMapface, ColorGrading::default(), Vignette { intensity: 0.45, radius: 0.8, smoothness: 2.2, ..default() }));
     // Each post effect is a graphics setting (`graphics.rs`): the film pass is added by `film.rs`.
     if graphics.bloom {
-        camera.insert(Bloom { intensity: 0.18, prefilter: BloomPrefilter { threshold: 1.1, threshold_softness: 0.4 }, ..Bloom::NATURAL });
+        camera.insert(bloom());
     }
     if let Some(target) = offscreen {
         // The only camera: it is also the origin for point-light shadow detail.
@@ -96,6 +97,11 @@ fn spawn_camera(mut commands: Commands, join: Res<JoinInfo>, options: Res<Option
             camera.insert(IsDefaultUiCamera);
         }
     }
+}
+
+/// The camera's bloom (a graphics setting): only what's brighter than sunlit ground glows.
+pub fn bloom() -> Bloom {
+    Bloom { intensity: 0.18, prefilter: BloomPrefilter { threshold: 1.1, threshold_softness: 0.4 }, ..Bloom::NATURAL }
 }
 
 fn rotate_and_zoom(

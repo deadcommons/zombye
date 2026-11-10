@@ -146,7 +146,7 @@ fn spawn(mut commands: Commands) {
 /// The point on the ground under the mouse cursor.
 fn cursor_ground(windows: &Query<&Window, With<PrimaryWindow>>, cams: &Query<(&Camera, &GlobalTransform), With<IsoCamera>>) -> Option<Vec2> {
     let (window, (camera, cam_tf)) = (windows.single().ok()?, cams.single().ok()?);
-    let ray = camera.viewport_to_world(cam_tf, window.cursor_position()?).ok()?;
+    let ray = camera.viewport_to_world(cam_tf, crate::render_scale::to_view(camera, window, window.cursor_position()?)).ok()?;
     if ray.direction.y.abs() < 1e-4 {
         return None;
     }
@@ -366,6 +366,7 @@ fn place_tags(
     link: Res<ServerLink>,
     me: Res<LocalPlayer>,
     cameras: Query<(&Camera, &GlobalTransform), With<IsoCamera>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
     survivors: Query<(&SurvivorAnim, &GlobalTransform)>,
     mut tags: Query<(Entity, &Tag, &mut Node, &mut Text, &ComputedNode)>,
 ) {
@@ -375,7 +376,9 @@ fn place_tags(
     }
     let Ok((camera, cam_tf)) = cameras.single() else { return };
     let scale = ui.0.max(0.01);
-    let view = camera.logical_viewport_size().unwrap_or(Vec2::new(1280.0, 720.0)) / scale;
+    // The world camera may draw at a render scale below the window's (render_scale.rs).
+    let window = windows.single().ok();
+    let view = window.map_or_else(|| camera.logical_viewport_size().unwrap_or(Vec2::new(1280.0, 720.0)), |w| Vec2::new(w.width(), w.height())) / scale;
     let my_pos: Vec2 = link.curr.players.iter().find(|p| p.id == me.id).map_or(Vec2::ZERO, |p| p.pos.into());
     // Where each label wanted now stands, and what it says.
     let want = |tag: Tag| -> Option<(Vec3, String)> {
@@ -408,7 +411,7 @@ fn place_tags(
         if size.x <= 0.0 {
             continue;
         }
-        let at = at / scale;
+        let at = window.map_or(at, |w| crate::render_scale::from_view(camera, w, at)) / scale;
         // A name just under the feet; a marker's label standing on its point. Kept on screen.
         let top = if matches!(tag, Tag::Member(_)) { at.y + 8.0 } else { at.y - size.y };
         let left = px((at.x - size.x * 0.5).clamp(4.0, (view.x - size.x - 4.0).max(4.0)).round());

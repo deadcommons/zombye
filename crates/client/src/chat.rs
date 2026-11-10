@@ -346,6 +346,7 @@ fn place_bubbles(
     time: Res<Time>,
     ui: Res<UiScale>,
     cameras: Query<(&Camera, &GlobalTransform), With<IsoCamera>>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     survivors: Query<(&SurvivorAnim, &GlobalTransform)>,
     mut bubbles: Query<(Entity, &Bubble, &mut Node, &ComputedNode)>,
 ) {
@@ -355,7 +356,10 @@ fn place_bubbles(
     let now = time.elapsed_secs();
     let Ok((camera, cam_tf)) = cameras.single() else { return };
     let scale = ui.0.max(0.01);
-    let view = camera.logical_viewport_size().unwrap_or(Vec2::new(1280.0, 720.0)) / scale;
+    // The world camera may draw at a render scale below the window's (render_scale.rs): places on
+    // its viewport are turned into the window's before they become UI positions.
+    let window = windows.single().ok();
+    let view = window.map_or_else(|| camera.logical_viewport_size().unwrap_or(Vec2::new(1280.0, 720.0)), |w| Vec2::new(w.width(), w.height())) / scale;
     for (e, b, mut node, computed) in &mut bubbles {
         if now >= b.until {
             commands.entity(e).despawn();
@@ -369,7 +373,7 @@ fn place_bubbles(
             continue;
         }
         // Centred over the head, kept on screen (a voice off screen sits at the edge, on its side).
-        let at = at / scale;
+        let at = window.map_or(at, |w| crate::render_scale::from_view(camera, w, at)) / scale;
         let left = (at.x - size.x * 0.5).clamp(4.0, (view.x - size.x - 4.0).max(4.0));
         let top = (at.y - size.y).clamp(4.0, (view.y - size.y - 4.0).max(4.0));
         let (left, top) = (px(left.round()), px(top.round()));

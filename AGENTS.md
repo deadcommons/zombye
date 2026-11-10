@@ -117,7 +117,7 @@ cargo run -p zombye-server --release -- --mcp --mod mods/alarm_clock
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --mod DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab worn|body|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --skip-hours H --hover-tag N --debug-stats --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT --connect HOST[:PORT] --name NAME --password P --agent --server-info HOST[:PORT] --server-list FILE|URL --browser --browser-join N[@SECS] --hotbar ID[,ID...] --hotbar-press K@SECS[,K@SECS...] --panel-at PANEL:X,Y[;PANEL:X,Y] --drag-panel PANEL:DX,DY[@SECS] --lag MS --say TEXT[@SECS] --shout TEXT[@SECS] --whisper TEXT[@SECS] --gesture NAME[@SECS] --talk-demo --talk-wall --holdup-demo --holdup-auto --graphics low|high --vegetation off|low|high|N --no-post LIST --frame-bench N --gun ID` (the last: see Guns; the four before it: see Look and feel; the two before them: see Hold-ups and groups; the six before those: see Talking and gestures) (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --mod DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab worn|body|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --skip-hours H --hover-tag N --debug-stats --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT --connect HOST[:PORT] --name NAME --password P --agent --server-info HOST[:PORT] --server-list FILE|URL --browser --browser-join N[@SECS] --hotbar ID[,ID...] --hotbar-press K@SECS[,K@SECS...] --panel-at PANEL:X,Y[;PANEL:X,Y] --drag-panel PANEL:DX,DY[@SECS] --lag MS --say TEXT[@SECS] --shout TEXT[@SECS] --whisper TEXT[@SECS] --gesture NAME[@SECS] --talk-demo --talk-wall --holdup-demo --holdup-auto --graphics low|medium|high|ultra|auto --vegetation off|low|high|N --no-post LIST --msaa N --shadow-map N --render-scale F --frame-bench N --gun ID` (the last: see Guns; the seven before it: see Look and feel; the two before them: see Hold-ups and groups; the six before those: see Talking and gestures) (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost). `--size WxH` makes the window exactly that many pixels, at scale factor 1, so a
 `--screenshot` is WxH on a high-DPI screen too; without it the window is 1600x900 at the screen's scale.
@@ -1211,12 +1211,25 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
 The day is a warm, filmic late afternoon and the ground is grown over; the night is as dark as it was (see Light
 and mood, and docs/art-direction.md). All of it is client only: nothing here is in the sim, a save or a snapshot.
 
-- **Graphics settings** (`graphics::Graphics`, a resource): `vegetation` (density, 0 to 2, default 1) and a switch
-  each for `grain`, `tilt_shift`, `vignette`, `bloom`, `contact_shadows` and `ground_detail`. From `graphics` in the
-  client settings file (`settings.ron`, see UI scale; never read offscreen), then `--graphics low|high` (a whole
-  preset: low is vegetation 0.35 and every switch off), `--vegetation off|low|high|N` and `--no-post LIST`
-  (`grain`, `tilt`, `vignette`, `bloom`, `ao`, `ground`, or `all`). Read once at start. **A new effect gets a switch
-  there and goes off in `Graphics::low`.**
+- **Graphics settings** (`graphics::Graphics`, a resource): a `preset` (Low, Medium, High, Ultra, Auto, or Custom
+  when flags changed one), `vegetation` (density, 0 to 2), a switch each for `grain`, `tilt_shift`, `vignette`,
+  `bloom`, `contact_shadows` and `ground_detail`, the sun's `shadow_map` (texels a side), `msaa` (1, 2 or 4) and
+  `render_scale` (the 3D's share of the window's pixels on a HiDPI screen; `render_scale.rs` draws the world into an
+  image of that size, sharpens it lightly (CAS) and shows it behind the UI, which stays at full resolution; on a
+  scale-factor-1 screen the scale is raised a third of the way back to 1; anything projecting a cursor into the
+  world or the world onto the screen goes through `render_scale::to_view` / `from_view`).
+  **High is the look the game is made to and the default** (3D at 0.75 on Retina); Medium drops tilt-shift, thins
+  the grass to 0.6 and halves the shadow map; Low is grass 0.35, every switch off, a 2048 map, 2x MSAA and 0.6
+  scale; Ultra is grass 1.5, an 8192 map and full-resolution 3D. **Auto** plays at High, measures 5 s of frames after the first 3, and keeps High up to 14.5 ms a frame,
+  Medium up to 22 ms, else Low, then saves that (`graphics_ui.rs`); a game started with no settings file starts on
+  Auto. From `graphics` in the client settings file (`settings.ron`, see UI scale; never read offscreen), then
+  `--graphics low|medium|high|ultra|auto`, `--vegetation off|low|high|N`, `--no-post LIST` (`grain`, `tilt`,
+  `vignette`, `bloom`, `ao`, `ground`, or `all`), `--msaa 1|2|4`, `--shadow-map N` and `--render-scale F`. **F8** opens a panel to pick
+  a preset in game (saved); vegetation, the film pass, vignette, bloom, the shadow map and MSAA change at once,
+  contact shadows and ground detail on the next start. **Measuring:** `--frame-bench N` (offscreen) prints mean,
+  median, best and worst frame times and the mesh instances drawn; `ZOMBYE_FPS_LOG=1` makes a windowed game print
+  its frame rate every second and a mean/median/p99 summary on exit (`fps_log.rs`). **A new effect gets a switch there, a place in each preset,
+  and goes off in `Graphics::low`.**
 - **The day's light** (`daynight::sky_at`, `grade_at`): the sun is golden all day and lower than it was (about 47° up
   at noon, 32° by mid-afternoon), the fill a weak violet, the grade warm with soft contrast and lifted blacks; the
   night's light and grade are unchanged (a test holds them). **Unseen ground by day** keeps three quarters of its

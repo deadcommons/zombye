@@ -55,7 +55,7 @@
 //! takes away a shared marker. `--holdup-demo` puts a survivor with its hands up in front of you
 //! (PvP on; you get cable ties), `--holdup-auto` plays your side too.
 //!
-//! Graphics (`graphics.rs`, Linear DCM-59): `--graphics low|high` picks a preset, `--vegetation
+//! Graphics (`graphics.rs`, Linear DCM-59): `--graphics low|medium|high|ultra|auto` picks a preset (F8 in game), `--vegetation
 //! off|low|high|N` the density of the instanced grass, flowers and litter (`vegetation.rs`), and
 //! `--no-post grain,tilt,vignette,bloom,ao,ground|all` switches effects off one by one; kept in
 //! `settings.ron` as `graphics`. `--frame-bench N` (offscreen) prints the cost of N frames.
@@ -83,7 +83,10 @@ mod furniture_models;
 mod film;
 mod firstnight_ui;
 mod fx;
+mod fps_log;
 mod graphics;
+mod graphics_ui;
+mod render_scale;
 mod vegetation;
 mod heard;
 mod health_ui;
@@ -283,11 +286,16 @@ pub struct Options {
     /// the join left) with the browser open and the reason on it.
     pub from_browser: Option<String>,
     /// Graphics for this session, over the settings file's (`graphics.rs`): a whole preset
-    /// (`--graphics low|high`), the vegetation's density (`--vegetation off|low|high|N`), and
+    /// (`--graphics low|medium|high|ultra|auto`), the vegetation's density (`--vegetation off|low|high|N`), and
     /// effects to switch off (`--no-post grain,tilt,vignette,bloom,ao,ground|all`).
     pub graphics: Option<String>,
     pub vegetation: Option<String>,
     pub no_post: Option<String>,
+    /// Multisampling (1, 2 or 4) and the sun's shadow map size, over the preset's.
+    pub msaa: Option<u32>,
+    pub shadow_map: Option<u32>,
+    /// The 3D world's share of the window's resolution on a HiDPI screen (0.5..1).
+    pub render_scale: Option<f32>,
     /// Offscreen, after the PNG: render this many more frames of the same picture and print their
     /// cost (`--frame-bench N`, else `ZOMBYE_FRAME_BENCH`; see `offscreen.rs`).
     pub frame_bench: Option<u32>,
@@ -465,6 +473,9 @@ impl Options {
             graphics: value("--graphics"),
             vegetation: value("--vegetation"),
             no_post: value("--no-post"),
+            msaa: value("--msaa").and_then(|v| v.parse().ok()),
+            shadow_map: value("--shadow-map").and_then(|v| v.parse().ok()),
+            render_scale: value("--render-scale").and_then(|v| v.parse().ok()),
             frame_bench: value("--frame-bench").and_then(|v| v.parse().ok()),
             lag_ms: value("--lag").and_then(|v| v.parse::<u32>().ok()).map_or(0, |v| v.min(2000)),
             gun: value("--gun"),
@@ -579,7 +590,7 @@ fn main() {
             zombie_render::ZombieRenderPlugin,
             items_render::ItemsRenderPlugin,
             (hud::HudPlugin, inventory_ui::InventoryUiPlugin, health_ui::HealthUiPlugin, death::DeathPlugin, needs_ui::NeedsUiPlugin, action_ui::ActionUiPlugin, skills_ui::SkillsUiPlugin, debug_stats::DebugStatsPlugin),
-            (fx::FxPlugin, heard::HeardPlugin, chat::ChatPlugin, film::FilmPlugin, vegetation::VegetationPlugin, rules_ui::RulesUiPlugin, browser_ui::BrowserUiPlugin),
+            (fx::FxPlugin, heard::HeardPlugin, chat::ChatPlugin, film::FilmPlugin, graphics_ui::GraphicsUiPlugin, render_scale::RenderScalePlugin, vegetation::VegetationPlugin, rules_ui::RulesUiPlugin, browser_ui::BrowserUiPlugin),
             survivor::SurvivorPlugin,
             (autoplay::AutoplayPlugin, duel::DuelPlugin, holdup::HoldupPlugin),
             (saving::SavingPlugin, ui_scale::UiScalePlugin, panels::PanelsPlugin, hotbar::HotbarPlugin, firstnight_ui::FirstNightUiPlugin),
@@ -588,6 +599,7 @@ fn main() {
     if !offscreen {
         app.add_plugins(audio::GameAudioPlugin);
     }
+    app.add_plugins(fps_log::FpsLogPlugin);
     let failed = app.run().is_error();
     // A join asked for in the server browser (#27): the game has shut down (and autosaved); start
     // it again on that server.

@@ -135,6 +135,7 @@ fn drive(
     options: Res<Options>,
     mut time: ResMut<Time<Virtual>>,
     mut exit: MessageWriter<AppExit>,
+    drawn: Query<(&ViewVisibility, &Mesh3d)>,
 ) {
     job.frame += 1;
     if job.phase == Phase::Bench {
@@ -147,7 +148,21 @@ fn drive(
             let t = &job.times[2..];
             let mean = t.iter().sum::<f32>() / t.len() as f32;
             let worst = t.iter().copied().fold(0.0, f32::max);
-            println!("frame cost: {mean:.2} ms mean, {worst:.2} ms worst over {} frames", t.len());
+            let mut sorted = t.to_vec();
+            sorted.sort_by(f32::total_cmp);
+            let median = sorted[sorted.len() / 2];
+            println!("frame cost: {mean:.2} ms mean, {worst:.2} ms worst over {} frames (median {median:.2}, best {:.2})", t.len(), sorted[0]);
+            // What was drawn: mesh instances the camera saw, and how many distinct meshes they
+            // use (instances of one mesh and material are one draw, so this is about the draws).
+            let mut ids = std::collections::HashSet::new();
+            let mut instances = 0;
+            for (seen, mesh) in &drawn {
+                if seen.get() {
+                    instances += 1;
+                    ids.insert(mesh.0.id());
+                }
+            }
+            println!("drawn: {instances} mesh instances, {} distinct meshes", ids.len());
             exit.write(AppExit::Success);
         }
         return;
