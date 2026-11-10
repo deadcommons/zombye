@@ -1019,7 +1019,7 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   ground item ids (`Snapshot::floor`, `FloorView`; a client gets its own). A request for what is already queued
   (a repeated click) queues nothing and refuses nothing; E with no container and an empty floor says "nothing to pick
   up or search here" (`inventory::NOTHING_HERE`).
-- **Client:** the inventory panel (`inventory_ui.rs`, Tab or I; laid out in Linear DCM-56): two panes side by side, one
+- **Client:** the inventory panel (`inventory_ui.rs`, Tab or I, and it opens by itself when a container search finishes: `search_done`; laid out in Linear DCM-56): two panes side by side, one
   title each. Left, what you carry; right, the open container, or the floor in reach. Slim tabs down each pane's outer
   edge pick what it shows: Carried or Worn (what you hold and wear, slot by slot) on the left, the open container or
   Floor (each with its count) on the right; a newly opened container comes to the front (`PanelUi`). Under each title a
