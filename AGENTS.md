@@ -296,7 +296,8 @@ and this life's kills, time played and distance (the server's run stats). **No o
 status icons (`needs_ui.rs`, see Status icons under Needs; the two share `hud::BottomLeft`, a column in the corner),
 which appear only when something passes a level; the raw
 numbers are in the debug stats window (F4, see there). Bottom right, the hotbar (above). Dead: the death
-screen (`death.rs`, #13): the cause of death in plain words, the game day and hour, and the run summary (game time
+screen (`death.rs`, #13): a headline of our own, a different line each death (`death::LINES`, or `RISES` when the body
+will rise; picked by a hash of the death, so a quickload shows the same one, and never the last death's line), the cause of death in plain words, the game day and hour, and the run summary (game time
 survived, time played, zombies killed, distance walked, things looted, containers searched, wounds taken, HP lost), all
 from our run in the snapshot, so it is right after a quickload or `--load` too. **R starts a new run:** a fresh world
 with the same seed, map size and settings as the one being played (the same town from the start: the client's map copy
