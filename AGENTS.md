@@ -1439,8 +1439,9 @@ stands still may count as changed.** Each of these cost milliseconds a frame bef
   `.zvat`, a folder (every `.zvat` in it, by name) or several separated by `,` (or `:`); `none` forces the
   grey-box, and a file that won't load is a warning and left out (none left: the grey-box). **Several files are
   outfit variants:** each its own mesh, VAT, texture and material (one draw batch each), and each zombie wears one
-  by a hash of its id (`variant_of`). `zvat.rs` reads the file `tools/blender/zvat.py` writes (validated: sizes,
-  indices, finite positions, unique clip names) and its texture: `ZOMBYE_CROWD_TEXTURE` (for every variant), else
+  by a hash of its id (`variant_of`). `zvat.rs` reads the file `tools/blender/zvat.py` writes (version 2: half-float positions, the precision
+  the VAT holds anyway; version 1's f32 still read; the crowd is baked at 15 frames a second, played by seconds;
+  validated: sizes, indices, finite positions, unique clip names) and its texture: `ZOMBYE_CROWD_TEXTURE` (for every variant), else
   `<stem>.png`/`.jpg`/`_base_color.png`/`.jpg` beside it, else the base-colour image in the `<stem>.glb` beside it;
   mip-mapped on load (linear-light averages), at most 1024 px. File clips fill the slots by name (`idle`, `walk`,
   `attack`, `thump`, `stagger`, `stagger2`, `fall`, `down`, `getup`, `dieback`, `diefront`, `diedown`, `groan`, `lunge`, `climb`, `vault`; a file's `crawl` has no slot until the sim has a crawler;
