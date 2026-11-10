@@ -38,7 +38,11 @@ finally:
 
 FPS = 24
 MOTIONS = {"shamble_walk": "motion-shamble_walk.glb", "lunge_grab": "motion-lunge_grab.glb", "crawl": "motion-crawl.glb",
-           "climb_motion": "motion-climb.glb", "vault_motion": "motion-vault.glb"}
+           "climb_motion": "motion-climb.glb", "vault_motion": "motion-vault.glb",
+           # The crowd's walk (2026-11-10, owner chose "A"): Meshy's Injured Walk (in place), clear planted steps,
+           # so the client can play it at the zombie's speed / stride. The dragging shamble had no stride to measure
+           # (0 or 0.135 m): zombies glided or the loop raced.
+           "injured_walk": "walk-injured.glb"}
 # Climbing in through a window and over a fence: the body really goes up and down, so only the travel across the
 # floor comes out (the game moves the zombie through the opening); not grounded, no stoop.
 CLIMBS = {"climb": "climb_motion", "vault": "vault_motion"}
@@ -202,11 +206,15 @@ def make_clips(c, arm, body, P):
     idle0 = z2.pose_at(d, 0)
     notes.append(f"idle = Meshy's Idle frames {a}-{b} there and back, eased: {P['idle_frames']} frames")
 
-    # Walk: our text-to-motion shamble, one cycle, in place.
-    walk, n, err, moved = one_cycle_remake(arm, A["shamble_walk"], "walk", ease=8, min_lag=P.get("walk_min_frames", 24))
+    # Walk: Meshy's Injured Walk, one cycle (zombie-02's cut), in place, its last frames eased into the first.
+    walk = cut("injured_walk", z2.WALK[1], z2.WALK[2], "walk")
+    d = z2.read(walk)
+    z2.centre(arm, d)
+    z2.ease_loop(d, 4)
+    z2.write(walk, d)
     out["walk"] = walk
-    notes.append(f"walk = text-to-motion shamble_walk, one cycle of {n} frames ({n / FPS:.2f} s, closes within {err * 100:.1f} cm), "
-                 f"{moved:.2f} m of travel taken out, last 8 frames eased into the first")
+    notes.append(f"walk = Meshy's Injured Walk (in place), frames {z2.WALK[1]}-{z2.WALK[2]}: one cycle with planted steps, "
+                 "last 4 frames eased into the first")
 
     attack = cut(*z2.ATTACK, "attack")
     d = z2.read(attack)
