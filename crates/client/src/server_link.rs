@@ -203,6 +203,16 @@ impl Plugin for ServerLinkPlugin {
     fn build(&self, app: &mut App) {
         let options = app.world().resource::<Options>().clone();
         let mut config = content::load_config(&options.data, options.seed).unwrap_or_else(|e| panic!("failed to load content: {e}"));
+        // Mods (#25): their items, recipes and loot join the game's; their scripts run in the
+        // world this process makes (on a server they run there, and only the data matters here).
+        match zombye_mods::load_into(&mut config, &options.mods) {
+            Ok(mods) if !mods.is_empty() => println!("{}", zombye_mods::describe(&mods)),
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("failed to load mods: {e}");
+                std::process::exit(1);
+            }
+        }
         if let Some(addr) = &options.connect {
             return join_remote(app, addr, &options, &config);
         }

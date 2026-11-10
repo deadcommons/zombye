@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/sim", "crates/net", "crates/server", "crates/client"]
+members = ["crates/sim", "crates/net", "crates/mods", "crates/server", "crates/client"]
 
 [workspace.package]
 version = "0.0.1"
@@ -10,6 +10,7 @@ repository = "https://github.com/deadcommons/zombye"
 [workspace.dependencies]
 zombye-sim = { path = "crates/sim" }
 zombye-net = { path = "crates/net" }
+zombye-mods = { path = "crates/mods" }
 bevy = { version = "0.20", features = ["jpeg"] }
 glam = { version = "0.33.2", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }

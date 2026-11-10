@@ -110,6 +110,9 @@ pub struct WorldConfig {
     pub player_sight: crate::awareness::PlayerSightTuning,
     /// How far voices carry and the noise they make (#67, [`crate::speech`]). Not saved either.
     pub speech: crate::speech::SpeechTuning,
+    /// The loaded mods' scripts (#25, [`crate::script`]): every world made from this config gets a
+    /// host of its own from it. None: no scripts, and nothing of them in the world.
+    pub scripts: Option<std::sync::Arc<dyn crate::script::ScriptEngine>>,
 }
 
 impl WorldConfig {
@@ -137,6 +140,7 @@ impl WorldConfig {
             street_props: StreetPropsDef::default(),
             player_sight: Default::default(),
             speech: Default::default(),
+            scripts: None,
         }
     }
 
@@ -371,6 +375,14 @@ pub struct World {
     /// Blows that still land though their player was just floored or killed by another's (a trade
     /// of blows, `combat`): filled and emptied within `step_player_actions`.
     pub(crate) scratch_trades: Vec<crate::combat::Trade>,
+    /// The mods' scripts running this world (#25, [`crate::script`]), from `config.scripts`: run at
+    /// the end of every tick. None: no scripts.
+    pub(crate) scripts: Option<Box<dyn crate::script::ScriptHost>>,
+    /// What scripts keep in the world: their store, random stream and events not yet handed to
+    /// them. Saved (the `MODS` section) and in the state hash, both only once there is any.
+    pub(crate) script: crate::script::ScriptState,
+    /// The latest script errors, for whoever asks (not saved, not simulation state).
+    pub(crate) script_errors: Vec<String>,
 }
 
 /// Bare hands are added to weapons that have none (as the world does on creation).
@@ -486,6 +498,9 @@ impl World {
             map_edits: BTreeSet::new(),
             map_custom: false,
             map_base_hash: 0,
+            scripts: config.scripts.as_ref().map(|engine| engine.start()),
+            script: Default::default(),
+            script_errors: Vec::new(),
             config,
         };
         world.map_base_hash = crate::save::map_hash(&world.map);
@@ -601,6 +616,7 @@ impl World {
         // Its movement from the start (Fitness, #46).
         self.refresh_carry(self.players.len() - 1);
         self.begin_first_night(self.players.len() - 1);
+        self.script_event(crate::script::ScriptEvent::Spawned { player: id });
         id
     }
 
@@ -1115,6 +1131,15 @@ impl World {
         self.far_ticks += far_steps - 1;
         // Which players see and heard which, for what each client is told (#66).
         self.step_awareness();
+        // Mod scripts (#25): their hooks for what this tick did, then their tick hooks. What they
+        // change shows in the next snapshot; a noise they make is heard next tick.
+        if self.scripts.is_some() {
+            for k in 0..self.hit_events.len() {
+                let h = self.hit_events[k];
+                self.script_event(crate::script::ScriptEvent::Hit { player: h.player, zombie: h.zombie, damage: h.damage, killed: h.effect == crate::combat::HitEffect::Killed });
+            }
+            self.run_scripts();
+        }
 
         self.tick += 1;
         // Where everybody stands now, for blows of lagging clients landing in the next few ticks (#23).
@@ -1369,6 +1394,8 @@ impl World {
             mix(p.state.pos.y.to_bits());
             mix(p.hp.to_bits());
         }
+        // What mod scripts keep (#25): only once there is any.
+        self.script.hash_into(&mut mix);
         h
     }
 }

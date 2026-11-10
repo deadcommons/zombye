@@ -16,8 +16,8 @@ Rust so that anyone (and any AI agent) can read it, mod it and host it.
   what we change.
 - **Real 3D**, viewed from a fixed isometric camera, with an optional 4-angle snap.
 - **Fast:** thousands of zombies simulated, hundreds on screen, and a headless deterministic sim.
-- **Moddable by default:** every gameplay value lives in a data file, and servers push mods to
-  players.
+- **Moddable by default:** every gameplay value lives in a data file, behaviour is added with
+  sandboxed Luau scripts ([docs/modding.md](docs/modding.md)), and servers push mods to players.
 - **Agent-first:** the server has a built-in MCP endpoint, so AI agents can play, test, administer
   and build mods.
 - **Host it anywhere:** self-hosting is free and documented. Official one-click hosting by

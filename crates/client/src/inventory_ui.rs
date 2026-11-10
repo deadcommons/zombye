@@ -1695,6 +1695,8 @@ fn menu_entries(player: u32, items: &[ItemDef], from: Place, index: u32, s: &Ite
                 (Some(_), _) => out.push(MenuEntry { label: "Use on a wound...".into(), act: MenuDo::UseOn(s.item) }),
                 (None, ItemCategory::Food) => out.extend(mk("Eat".into(), Some(Intent::Use { player, from, index }), false)),
                 (None, ItemCategory::Drink) => out.extend(mk("Drink".into(), Some(Intent::Use { player, from, index }), false)),
+                // Something a mod's script gives a use to (#25).
+                (None, _) if def.usable() => out.extend(mk("Use".into(), Some(Intent::Use { player, from, index }), false)),
                 (None, ItemCategory::Clothing) => out.extend(mk("Wear".into(), Some(Intent::Wear { player, index }), false)),
                 (None, ItemCategory::Bag) => out.extend(mk("Put it on".into(), Some(Intent::Equip { player, index }), false)),
                 (None, _) => out.extend(mk("Hold in hand".into(), Some(Intent::Equip { player, index }), false)),
@@ -2429,6 +2431,12 @@ mod tests {
         assert_eq!(labels(Place::Ground, stack("tinned_beans", 2), Some((7, "fridge"))), ["Pick up", "Put in fridge", "Pick up one"]);
         assert!(menu_entries(1, items, Place::Carried, 0, &stack("tinned_beans", 60), Some((7, "fridge"))).len() <= DIGITS.len(), "every entry has a number key");
         assert_eq!(labels(Place::Carried, stack("kitchen_knife", 1), None), ["Hold in hand", "Drop"]);
+        // A thing a mod gives a use to (#25): "Use", not "Hold in hand". Without the mod, as before.
+        assert_eq!(labels(Place::Carried, stack("alarm_clock", 1), None), ["Hold in hand", "Drop"]);
+        let mut modded = config.clone();
+        zombye_mods::load_into(&mut modded, &[data.join("../../mods/alarm_clock")]).unwrap();
+        let clock = ItemStack::new(modded.items.iter().position(|d| d.id == "alarm_clock").unwrap() as u16, 1);
+        assert_eq!(menu_entries(1, &modded.items, Place::Carried, 0, &clock, None).into_iter().map(|e| e.label).collect::<Vec<_>>(), ["Use", "Drop"]);
         assert_eq!(labels(Place::Carried, stack("rag", 1), None)[0], "Use on a wound...");
         assert_eq!(labels(Place::Worn, stack("rag", 1), None), ["Take off", "Drop"]);
         assert_eq!(labels(Place::Ground, stack("kitchen_knife", 1), None), ["Take in hand", "Pick up"]);

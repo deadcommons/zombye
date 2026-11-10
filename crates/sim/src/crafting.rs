@@ -381,6 +381,8 @@ impl World {
             made.push(if x.count > 1 { format!("{} x {name}", x.count) } else { name });
         }
         self.on_crafted(pi);
+        let id = self.players[pi].id;
+        self.script_event(crate::script::ScriptEvent::Crafted { player: id, recipe });
         self.refresh_carry(pi);
         let floor = if dropped.is_empty() { String::new() } else { format!(" ({} at your feet: no room)", dropped.join(" and ")) };
         Ok(format!("made {} from {used}{floor}", made.join(" and ")))

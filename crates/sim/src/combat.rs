@@ -445,6 +445,7 @@ impl World {
         *p = Player { last_input_seq: p.last_input_seq, input: PlayerInput::default(), dev: p.dev, skills, seen_tick: p.seen_tick, ..Player::new(id, spawn, hp) };
         self.refresh_carry(pi);
         self.begin_first_night(pi);
+        self.script_event(crate::script::ScriptEvent::Spawned { player: id });
         true
     }
 
@@ -975,6 +976,8 @@ impl World {
         p.queued = None;
         p.knock = None;
         p.input.move_dir = Vec2::ZERO;
+        let id = p.id;
+        self.script_event(crate::script::ScriptEvent::Died { player: id });
         // An infected body rises later.
         self.health_on_death(pi);
         // Everything it had falls where it lay.

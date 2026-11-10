@@ -396,6 +396,10 @@ pub struct ItemDef {
     pub color: (f32, f32, f32),
 }
 
+/// Tags that let a player use an item that is neither food nor drink ([`ItemDef::usable`]).
+pub const TAG_USABLE: &str = "usable";
+pub const TAG_REUSABLE: &str = "reusable";
+
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
@@ -427,6 +431,12 @@ impl ItemDef {
 
     pub fn has_tag(&self, tag: &str) -> bool {
         self.tags.iter().any(|t| t == tag)
+    }
+
+    /// Something a player can use that is neither food nor drink (#25): what using it does is a
+    /// mod script's `on_use` to say. [`TAG_USABLE`] ones are used up, [`TAG_REUSABLE`] ones kept.
+    pub fn usable(&self) -> bool {
+        self.has_tag(TAG_USABLE) || self.has_tag(TAG_REUSABLE)
     }
 
     /// Something to eat or drink.

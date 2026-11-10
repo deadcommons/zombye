@@ -686,7 +686,7 @@ impl World {
         }
         let Some(stack) = self.stack_at(pi, from, index) else { return self.refuse(id, format!("nothing at {from:?} {index}")) };
         let def = self.item_def(stack.item);
-        if def.consumable().is_none() {
+        if def.consumable().is_none() && !def.usable() {
             let name = def.name.clone();
             return self.refuse(id, format!("can't use the {} (yet)", lower(&name)));
         }
@@ -850,8 +850,13 @@ impl World {
         let name = lower(&self.item_def(item).name);
         self.can_consume(pi, item)?;
         let uses = self.item_def(item).consumable().map_or(1, |c| c.uses.max(1));
+        // A thing a mod's script gives a use to (#25) and that isn't used up by it.
+        let kept = self.item_def(item).consumable().is_none() && self.item_def(item).has_tag(crate::items::TAG_REUSABLE);
         // One go: the top one of the stack, used up after its last go.
         let go = |s: &mut ItemStack| {
+            if kept {
+                return;
+            }
             s.used += 1;
             if s.used >= uses {
                 s.used = 0;
@@ -884,6 +889,12 @@ impl World {
         p.inventory = inv;
         let id = p.id;
         self.used_items.push((id, item));
+        self.script_event(crate::script::ScriptEvent::Used { player: id, item });
+        if self.item_def(item).consumable().is_none() {
+            // What it does is its mod's script's to say (`on_use`, at the end of this tick).
+            self.refresh_carry(pi);
+            return Ok(format!("used the {name}"));
+        }
         let effect = self.consume(pi, had);
         self.refresh_carry(pi);
         let verb = if self.item_def(item).category == ItemCategory::Drink { "drank" } else { "ate" };

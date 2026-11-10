@@ -208,6 +208,9 @@ pub struct Options {
     pub player: Option<u32>,
     /// Game data folder (`--data`, default the repo's `assets/data`): templates, weapons, population.
     pub data: PathBuf,
+    /// Mod folders (`--mod DIR`, as often as wanted, in order; #25, docs/modding.md): their data
+    /// joins the game's and, in single-player, their scripts run in the world.
+    pub mods: Vec<PathBuf>,
     /// Render one frame offscreen to this PNG and exit, with no window (`--render-to`).
     pub render_to: Option<PathBuf>,
     /// Size of that image (`--size WxH`, default 1280x720).
@@ -394,6 +397,7 @@ impl Options {
             angle: value("--angle").and_then(|v| v.parse::<i32>().ok()).unwrap_or(0).rem_euclid(4),
             player: value("--player").and_then(|v| v.parse().ok()),
             data: value("--data").map(Into::into).unwrap_or_else(zombye_net::content::default_data_dir),
+            mods: values("--mod").into_iter().map(Into::into).collect(),
             render_to: value("--render-to").map(Into::into),
             size: value("--size").and_then(|v| parse_size(&v)).unwrap_or(DEFAULT_RENDER_SIZE),
             size_given: value("--size").and_then(|v| parse_size(&v)).is_some(),

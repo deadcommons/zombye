@@ -1,0 +1,20 @@
+[package]
+name = "zombye-mods"
+description = "Zombye mods: data packs and sandboxed, deterministic Luau scripts run by the simulation."
+license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+zombye-sim.workspace = true
+glam.workspace = true
+serde.workspace = true
+ron.workspace = true
+# Luau (MIT), built from source by the crate: the scripting language of mods (docs/PLAN.md §2).
+# `send`: a world, and so its script host, moves between threads.
+mlua = { version = "0.12", default-features = false, features = ["luau", "send"] }
+
+[dev-dependencies]
+# The game's own data, for tests of mods on top of it.
+zombye-net.workspace = true

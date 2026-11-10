@@ -196,6 +196,17 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // Mods (#25, docs/modding.md): `--mod DIR`, as often as wanted, in order. Their data joins the
+    // game's and their Luau scripts run in every world made from this config.
+    let mod_dirs: Vec<PathBuf> = args.windows(2).filter(|w| w[0] == "--mod").map(|w| PathBuf::from(&w[1])).collect();
+    match zombye_mods::load_into(&mut config, &mod_dirs) {
+        Ok(mods) if !mods.is_empty() => eprintln!("{}", zombye_mods::describe(&mods)),
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("failed to load mods: {e}");
+            std::process::exit(1);
+        }
+    }
     // Without --zombies, as many as the population file's densities give for the map.
     config.zombies = value("--zombies").map(|n| n as u32);
     // Player against player (docs/PLAN.md §4.8) for a new world: `--pvp on` (a loaded save keeps
@@ -228,6 +239,10 @@ fn main() {
             eprintln!("{e}");
             std::process::exit(2);
         };
+        if !mod_dirs.is_empty() {
+            // Results are compared across runs of the same game: a mod's scripts would change it.
+            fail("--benchmark plays the game as shipped: it can't be used with --mod".to_string());
+        }
         let defs = content::load_scenarios(&data, &config.items, &config.weapons).unwrap_or_else(|e| fail(e));
         let mcp = flag("--mcp") || flag("--mcp-http");
         if what == "list" {
@@ -279,7 +294,7 @@ fn main() {
             None => scenario_world.take().unwrap_or_else(|| World::new(config)),
         };
         let timeout = text("--screenshot-timeout").and_then(|v| v.parse::<f64>().ok()).filter(|s| *s > 0.0 && s.is_finite()).map_or(screenshot::DEFAULT_TIMEOUT, Duration::from_secs_f64);
-        let renderer = screenshot::Renderer::new(text("--client").map(PathBuf::from), data.clone(), timeout);
+        let renderer = screenshot::Renderer::new(text("--client").map(PathBuf::from), data.clone(), timeout).with_mods(&mod_dirs);
         mcp_http::serve(world, &mut persist, &renderer, &http);
     } else if flag("--mcp") {
         shutdown::install();
@@ -288,7 +303,7 @@ fn main() {
             None => scenario_world.take().unwrap_or_else(|| World::new(config)),
         };
         let timeout = text("--screenshot-timeout").and_then(|v| v.parse::<f64>().ok()).filter(|s| *s > 0.0 && s.is_finite()).map_or(screenshot::DEFAULT_TIMEOUT, Duration::from_secs_f64);
-        let renderer = screenshot::Renderer::new(text("--client").map(PathBuf::from), data.clone(), timeout);
+        let renderer = screenshot::Renderer::new(text("--client").map(PathBuf::from), data.clone(), timeout).with_mods(&mod_dirs);
         mcp::serve(world, &mut persist, &renderer, mcp::Options { debug_tools: !flag("--no-debug-tools"), ..mcp::Options::default() });
     } else if flag("--bench") && flag("--bots") {
         // The bench over the network: a real server on a loopback port, each bot its own TCP connection.

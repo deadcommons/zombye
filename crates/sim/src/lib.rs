@@ -31,6 +31,7 @@ pub mod run;
 pub mod save;
 pub mod save_check;
 pub mod scenario;
+pub mod script;
 pub mod senses;
 pub mod skills;
 pub mod spatial;

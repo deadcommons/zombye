@@ -59,7 +59,8 @@
 //! there is any of it. Survivors out of the world are stored with the players in `WRLD`, so every
 //! check and content change reaches them, and set aside again on load), then `LOOK` (what bodies
 //! that rise wore, #63; optional too),
-//! then `FARC` (how far the far clock is ahead of the tick, #57; optional, only written when it is).
+//! then `FARC` (how far the far clock is ahead of the tick, #57; optional, only written when it is),
+//! then `MODS` (what mod scripts keep, #25, `crate::script`; optional, only for a world with mods).
 //! Payloads are
 //! [postcard](https://docs.rs/postcard), and zombies are stored column by column. A file with
 //! another format version fails with [`LoadError::Version`] (format 3 added items, inventories and
@@ -160,6 +161,10 @@ const NITE: [u8; 4] = *b"NITE";
 /// How far the far clock has run ahead of the tick (#57; optional, like `RUNS`: a save without it
 /// has it at 0, and it is only written when it isn't).
 const FARC: [u8; 4] = *b"FARC";
+/// What mod scripts keep in the world (#25, `crate::script::ScriptState`: their store, random
+/// stream, events not yet handed to them, and which mods they were; optional, like `RUNS`: only
+/// written for a world with mods or with something of theirs in it).
+const MODS: [u8; 4] = *b"MODS";
 const END: [u8; 4] = *b"END\0";
 /// Bytes before the first section: magic and version.
 const HEADER: usize = 12;
@@ -653,6 +658,10 @@ impl World {
             // report what they see, and they report again every tick.
             lag_history: _,
             scratch_trades: _,
+            // The script host is made again from the content's scripts; what scripts keep is saved.
+            scripts: _,
+            script,
+            script_errors: _,
         } = self;
         // Survivors out of the world are saved among the players (in id order); `AWAY` says which.
         let away = AwaySave {
@@ -767,6 +776,11 @@ impl World {
         }
         if *far_ticks != 0 {
             w.section(FARC, &encode(far_ticks));
+        }
+        // Mod scripts (#25): what they keep, and whose they are. A world without mods has none.
+        let mods = config.scripts.as_ref().map(|e| e.mods()).unwrap_or_default();
+        if !script.is_empty() || !mods.is_empty() {
+            w.section(MODS, &encode(&crate::script::ScriptState { mods, ..script.clone() }));
         }
         w.section(END, &[]);
         w.0
@@ -935,6 +949,7 @@ impl World {
         let mut looks: Option<crate::health::RiseLooks> = None;
         let mut knocks: Option<Vec<(u32, crate::players::Knock)>> = None;
         let mut far: Option<u64> = None;
+        let mut script: Option<crate::script::ScriptState> = None;
         let mut away: Option<AwaySave> = None;
         let mut nights: Option<Vec<(u32, crate::firstnight::FirstNight)>> = None;
         loop {
@@ -972,7 +987,11 @@ impl World {
                 nights = Some(decode(NITE, payload)?);
                 continue;
             }
-            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || far.is_some() || nights.is_some() || away.is_some() {
+            if tag == MODS && script.is_none() {
+                script = Some(decode(MODS, payload)?);
+                continue;
+            }
+            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || far.is_some() || nights.is_some() || away.is_some() || script.is_some() {
                 return Err(corrupt(format!("unexpected {} section", tag_name(tag))));
             }
             let block: ZombieBlock = decode(ZOMB, payload)?;
@@ -1011,6 +1030,31 @@ impl World {
         w.zombies = reorder(z, &order);
         w.rise_looks = looks.unwrap_or_default();
         w.far_ticks = far.unwrap_or(0);
+        if let Some(mut state) = script {
+            state.check(w.config.items.len(), w.config.recipes.len()).map_err(|why| save_check::invalid(format!("script state: {why}")))?;
+            // Whose scripts ran the world then, against whose run it now.
+            let now = w.script_mods();
+            for (id, hash) in &state.mods {
+                match now.iter().find(|(n, _)| n == id) {
+                    None => notes.push(format!("mod {id} isn't loaded: its scripts won't run (what it stored is kept)")),
+                    Some((_, h)) if h != hash => notes.push(format!("mod {id}'s scripts changed: the new ones carry on from what the old ones stored")),
+                    Some(_) => {}
+                }
+            }
+            for (id, _) in now.iter().filter(|(n, _)| !state.mods.iter().any(|(s, _)| s == n)) {
+                notes.push(format!("mod {id} is new to this save: its scripts start now"));
+            }
+            state.mods.clear();
+            if w.scripts.is_none() {
+                // Nothing would ever take them.
+                state.pending.clear();
+            }
+            w.script = state;
+        } else {
+            for (id, _) in w.script_mods() {
+                notes.push(format!("mod {id} is new to this save: its scripts start now"));
+            }
+        }
         save_check::check_far_clock(&w)?;
         save_check::check_looks(&w)?;
         if new_map {
