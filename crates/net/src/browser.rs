@@ -33,6 +33,7 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 
 use crate::remote;
+use crate::modpack::Hash;
 use crate::wire::{self, Camera, ModInfo, ServerInfo};
 
 /// The most servers a list may name, and the most of a list that is read.
@@ -526,7 +527,7 @@ fn clean_info(mut info: ServerInfo) -> ServerInfo {
     info.version = one_line(&info.version, 24);
     info.mods.truncate(64);
     for m in &mut info.mods {
-        *m = ModInfo { id: one_line(&m.id, 48), name: one_line(&m.name, NAME_CHARS), version: one_line(&m.version, 24) };
+        *m = ModInfo { id: one_line(&m.id, 48), name: one_line(&m.name, NAME_CHARS), version: one_line(&m.version, 24), hash: m.hash, size: m.size };
     }
     info.rules.start_kit.truncate(12);
     for (item, _) in &mut info.rules.start_kit {
@@ -547,10 +548,19 @@ pub fn mods_text(mods: &[ModInfo]) -> String {
     names.join(", ")
 }
 
-/// Could this game join that server now? `mods` are the ids of the mods this game has loaded
-/// (`--mod`), `agent` whether a program plays it. `Err` says why not, in words for the player. A
-/// wrong password, a name in use and other game data are only found out by joining.
-pub fn can_join(info: &ServerInfo, mods: &[String], agent: bool) -> Result<(), String> {
+/// A server's mods and what joining it would download (#24): "Alarm clock 1.0, Winter (1 to
+/// download, 3.2 KB)". `have`: the hashes of the mods this game has, loaded or downloaded before.
+pub fn mods_note(mods: &[ModInfo], have: &[Hash]) -> String {
+    let (n, bytes) = crate::modpack::to_download(mods, have);
+    if n == 0 { mods_text(mods) } else { format!("{} ({n} to download, {})", mods_text(mods), crate::modpack::kb(bytes)) }
+}
+
+/// Could this game join that server now? `have` are the hashes of the mods this game has (its
+/// `--mod` folders and what it downloaded before; the server's other mods are downloaded on
+/// joining, #24, and ours it doesn't run are left out there), `agent` whether a program plays it.
+/// `Err` says why not, in words for the player. A wrong password, a name in use and other game
+/// data are only found out by joining.
+pub fn can_join(info: &ServerInfo, have: &[Hash], agent: bool) -> Result<(), String> {
     if info.protocol != wire::PROTOCOL {
         return Err(format!("it runs version {} (protocol {}), this game speaks protocol {}: both need the same version", info.version, info.protocol, wire::PROTOCOL));
     }
@@ -560,13 +570,10 @@ pub fn can_join(info: &ServerInfo, mods: &[String], agent: bool) -> Result<(), S
     if agent && info.rules.agents == wire::Agents::Refused {
         return Err("its rules don't allow agents".into());
     }
-    let missing: Vec<&str> = info.mods.iter().map(|m| m.id.as_str()).filter(|id| !mods.iter().any(|m| m == id)).collect();
-    if !missing.is_empty() {
-        return Err(format!("it runs the mod{} {}: start the game with the same --mod folder{}", if missing.len() == 1 { "" } else { "s" }, missing.join(", "), if missing.len() == 1 { "" } else { "s" }));
-    }
-    let extra: Vec<&str> = mods.iter().map(String::as_str).filter(|id| !info.mods.iter().any(|m| m.id == *id)).collect();
-    if !extra.is_empty() {
-        return Err(format!("this game has the mod{} {} loaded and the server doesn't: start the game without", if extra.len() == 1 { "" } else { "s" }, extra.join(", ")));
+    // A server only hands out mods up to a size: a bigger one has to be here already.
+    let too_big: Vec<&str> = info.mods.iter().filter(|m| m.size as usize > crate::modpack::MAX_PACK_BYTES && !have.contains(&m.hash)).map(|m| m.id.as_str()).collect();
+    if !too_big.is_empty() {
+        return Err(format!("it runs the mod{} {}, too big to download: get {} and start the game with --mod", if too_big.len() == 1 { "" } else { "s" }, too_big.join(", "), if too_big.len() == 1 { "it" } else { "them" }));
     }
     if info.online >= info.rules.max_players {
         return Err(format!("it is full ({} of {})", info.online, info.rules.max_players));
@@ -640,19 +647,25 @@ mod tests {
         let no_agents = ServerInfo { rules: wire::Rules { agents: wire::Agents::Refused, ..info(0).rules }, ..info(0) };
         assert_eq!(can_join(&no_agents, &[], false), Ok(()));
         assert!(can_join(&no_agents, &[], true).unwrap_err().contains("agents"));
-        let modded = ServerInfo { mods: vec![ModInfo { id: "alarm_clock".into(), name: "Alarm clock".into(), version: "1.0".into() }], ..info(0) };
-        assert!(can_join(&modded, &[], false).unwrap_err().contains("runs the mod alarm_clock"));
-        assert_eq!(can_join(&modded, &["alarm_clock".to_string()], false), Ok(()));
-        assert!(can_join(&info(0), &["winter".to_string()], false).unwrap_err().contains("winter"));
+        // A server's mods are downloaded on joining (#24), and ours it doesn't run are left out.
+        let modded = ServerInfo { mods: vec![ModInfo { id: "alarm_clock".into(), name: "Alarm clock".into(), version: "1.0".into(), hash: [7; 32], size: 2048 }], ..info(0) };
+        assert_eq!(can_join(&modded, &[], false), Ok(()));
+        assert_eq!(can_join(&info(0), &[[9; 32]], false), Ok(()));
         assert_eq!(mods_text(&modded.mods), "Alarm clock 1.0");
+        assert_eq!(mods_note(&modded.mods, &[]), "Alarm clock 1.0 (1 to download, 2.0 KB)");
+        assert_eq!(mods_note(&modded.mods, &[[7; 32]]), "Alarm clock 1.0");
         assert_eq!(mods_text(&[]), "none");
+        // But one too big to be handed out has to be here already.
+        let huge = ServerInfo { mods: vec![ModInfo { size: 64 << 20, ..modded.mods[0].clone() }], ..info(0) };
+        assert!(can_join(&huge, &[], false).unwrap_err().contains("too big to download"));
+        assert_eq!(can_join(&huge, &[[7; 32]], false), Ok(()));
     }
 
     #[test]
     fn what_a_server_says_is_made_one_line() {
         let mut i = info(1);
         i.rules.name = format!("Evil\nserver{}", "!".repeat(200));
-        i.mods = (0..100).map(|k| ModInfo { id: format!("m{k}"), name: "a\tb".into(), version: String::new() }).collect();
+        i.mods = (0..100).map(|k| ModInfo { id: format!("m{k}"), name: "a\tb".into(), version: String::new(), ..Default::default() }).collect();
         let c = clean_info(i);
         assert!(!c.rules.name.contains('\n') && c.rules.name.chars().count() == NAME_CHARS);
         assert_eq!((c.mods.len(), c.mods[0].name.as_str()), (64, "a b"));

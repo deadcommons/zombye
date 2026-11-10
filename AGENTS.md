@@ -14,8 +14,8 @@ Work is tracked on GitHub, not in the repo: the
 | Path | What | Licence |
 |---|---|---|
 | `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `awareness.rs`: which players see and heard which, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), lag compensation for it (`lagcomp.rs`: a few ticks of positions, so a remote client's blow lands where it saw the target), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), the status icons a client shows of all that, their levels from data (`status.rs`), skills that improve with practice (`skills.rs` + `SkillTuning`), street props placed by the town generator from data (`street_props.rs`), run stats and the cause of death (`run.rs`), the first night's objectives and outcome (`firstnight.rs`), logging out, spawn protection and the start kit on a server (`logout.rs`), the benchmark's scenarios and score (`scenario.rs`, see The agent survival benchmark), proximity chat and gestures (`speech.rs`: who hears a line, the noise it makes, see Talking and gestures), tying hands, freeing and searching a tied survivor (`bonds.rs`) and optional groups with names and shared markers (`groups.rs`; both: see Hold-ups and groups), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`), the hook mod scripts run through (`script.rs`: events, the checked `script_*` functions, what scripts keep; see Mods and scripts). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
-| `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), multiplayer over the network (see Multiplayer: the messages, framing and per-client delta snapshots in `wire.rs`, a client's view cut to what its survivor sees and hears of other players in `visibility.rs`, the server's connections in `host.rs`, a client's in `remote.rs`; the server browser's list and probes in `browser.rs`, see The server browser), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
-| `crates/mods` | Mods (see Mods and scripts): reads a mod's folder (`mod.ron`, `items.ron`, `recipes.ron`, `loot.ron`, `*.luau`), merges its data into a `WorldConfig` (`lib.rs`: `Mod`, `apply`, `load_into`) and runs its Luau scripts sandboxed, one VM a mod, as the world's script host (`luau.rs`, on `mlua`; Luau is built from source, so a C++ compiler is needed). The one crate with Luau in it. | MIT OR Apache-2.0 |
+| `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), multiplayer over the network (see Multiplayer: the messages, framing and per-client delta snapshots in `wire.rs`, a client's view cut to what its survivor sees and hears of other players in `visibility.rs`, the server's connections in `host.rs`, a client's in `remote.rs`; the server browser's list and probes in `browser.rs`, see The server browser; a mod's data as a server hands it to joining clients, its hash and the client's cache in `modpack.rs`, see Mods downloaded on joining), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
+| `crates/mods` | Mods (see Mods and scripts): reads a mod's folder (`mod.ron`, `items.ron`, `recipes.ron`, `loot.ron`, `buildings/*.ron`, `*.luau`), merges its data into a `WorldConfig` (`lib.rs`: `Mod`, `apply`, `load_into`; `Mod::pack` / `from_pack` / `apply_packs`: the data a server hands to joining clients, #24) and runs its Luau scripts sandboxed, one VM a mod, as the world's script host (`luau.rs`, on `mlua`; Luau is built from source, so a C++ compiler is needed). The one crate with Luau in it. | MIT OR Apache-2.0 |
 | `mods/` | Sample mods: `alarm_clock` (an item behaviour by script; the worked example of [docs/modding.md](docs/modding.md)). | MIT OR Apache-2.0 |
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint (`--mcp` on stdio, `mcp.rs`; `--mcp-http` over streamable HTTP for remote agents, `mcp_http.rs`, see Connecting an agent); the multiplayer server (`--host`) and bot clients (`--bots N --connect ADDR`; `multiplayer.rs`, see Multiplayer); the operator's MCP admin endpoint on a hosting server (`--host --admin-mcp`, `admin.rs`, see Administering a server); the dedicated server from one config file (`--config FILE`, `config.rs`, and the `Dockerfile` at the root that runs it, see The dedicated server under Multiplayer); `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`); the agent survival benchmark (`--benchmark`, `benchmark.rs`, see The agent survival benchmark). | MIT OR Apache-2.0 |
 | `crates/client` | `zombye` Bevy client: camera, chunk streaming, building meshes (`world_render.rs`; their details, trim, siding lines, porches, chimneys, shopfronts and lit windows, from `meshgen/building_kit.rs`, see Buildings dressed under The world), the outdoors per chunk from the tile map alone (`meshgen/landscape.rs`: lawns, verges, forest floor and litter, road paint at real scale, kerbs, slab joints, driveways, front beds, fences and hedges; `meshgen/curves.rs`: what's drawn round over the tiles, see Curves under The world; `meshgen/trees.rs`: faceted broadleaves, birches, pines, spruces; colours from `assets/data/palette.ron` through `meshgen/palette.rs`), fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd, or a character baked offline read from a `.zvat` (`zvat.rs`); `survivor.rs` skinned, CPU-posed players; `character.rs` reads a modular character's body and wearable GLBs and `survivor_model.rs` draws players as it, dressed in what they wear), hit feedback (`fx.rs`), lights in the dark (`lights.rs`, see Light and mood), instanced grass, flowers and litter (`vegetation.rs`), the film pass (`film.rs`) and the graphics settings (`graphics.rs`; all three: see Look and feel), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), street props merged into each chunk's props mesh from the same models (`meshgen/street_props.rs`, see Street props under The world), HUD (`hud.rs`; the hotbar on keys 1-9, `hotbar.rs`; panels dragged by their titles and remembered, `panels.rs`; the UI's one skin, `theme.rs`: text sizes and colours, and the painted sheets, buttons, slots and bars every panel uses, see The skin), the death screen and run summary (`death.rs`), the first night's objectives, hints and morning screen (`firstnight_ui.rs`), the skills panel and level-up line (`skills_ui.rs`), the chat line, speech bubbles and gesture keys (`chat.rs`, see Talking and gestures), tying, searching and group keys, the search panel, name tags and markers (`holdup.rs`, see Hold-ups and groups), the server browser (`browser_ui.rs`, F7, see The server browser), sound (`audio.rs`, see Sound), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
@@ -109,7 +109,7 @@ cargo test --release --workspace
 cargo run -p zombye-server --release -- --benchmark list
 cargo run -p zombye-server --release -- --benchmark all --baseline runner
 cargo run -p zombye-server --release -- --mcp --benchmark first_night --agent NAME
-# Mods (see Mods and scripts): the sample mod in the game, on a server (clients need it too), in an agent's world
+# Mods (see Mods and scripts): the sample mod in the game, on a server (clients download its data on joining), in an agent's world
 cargo run -p zombye-client --release -- --mod mods/alarm_clock
 cargo run -p zombye-server --release -- --host --mod mods/alarm_clock
 cargo run -p zombye-server --release -- --mcp --mod mods/alarm_clock
@@ -1684,7 +1684,8 @@ snapshots over the network: `zombye-server --host` serves a world and `zombye --
   a queue of 100 (5 s of snapshots); a client whose queue fills, that floods (400 intents waiting) or that says nothing
   for 20 s (clients ping every second) is dropped. The tick itself never waits on a socket.
 - **Melee is lag-compensated** (#23, see Combat): clients say which snapshot they show, blows land where the attacker
-  saw the target (at most 0.35 s back), trades of blows go by what each side saw. `wire::PROTOCOL` 11 (7: #68's spawn
+  saw the target (at most 0.35 s back), trades of blows go by what each side saw. `wire::PROTOCOL` 12 (12: mods
+  downloaded on joining, #24; 7: #68's spawn
   protection and logout times; 8: chat and gestures, #67; 9: the rules of #69, agents, the query; 10: hold-ups and
   groups, #73; 11: the mods in a query's answer, #27).
 - **Bots** (`zombye-server --bots N --connect HOST[:PORT] [--secs S] [--bots-hostile] [--lag MS]`): N headless clients, each its
@@ -1752,13 +1753,16 @@ password and its mods, and joins the one you pick. **There is no hosted service:
   and `Browser::poll` takes them up (the client polls once a frame, and redraws the panel only when something
   changed). **Ping** is how long the TCP connection took to open: one trip there and back, without the name lookup
   or the server's wait for its next tick. **Mods:** a server started with `--mod` tells them in its answer
-  (`wire::ServerInfo::mods`, `ModInfo { id, name, version }`, from `HostOptions::mods`, which `zombye-server` fills
+  (`wire::ServerInfo::mods`, `ModInfo { id, name, version, hash, size }`, from `HostOptions::mods`, which `zombye-server` fills
   from the mods it loaded; `--server-info` prints them too). What a server says is someone else's text: it is made
   one line and cut before it is shown (`clean_info`). Rows: featured in the list's order, then the rest, those
   that answered first, quickest first, those that didn't last.
-- **Can this game join?** (`browser::can_join(info, our mod ids, agent)`, before anything is left): the same
-  protocol, the isometric camera, agents allowed if a program plays us, **the same mods** (the ids of our `--mod`
-  folders, `browser_ui::LoadedMods`; mods aren't downloaded yet), and room. A server that fails is shown in orange
+- **Can this game join?** (`browser::can_join(info, the hashes of the mods we have, agent)`, before anything is
+  left): the same protocol, the isometric camera, agents allowed if a program plays us, and room. **A server's mods
+  needn't be here** (#24): they are downloaded on joining, and the details say how much ("Mods: Wind-up alarm clocks
+  1.0 (1 to download, 0.8 KB)", `browser::mods_note` against `browser_ui::LoadedMods`: the hashes of our `--mod`
+  folders and of the download cache); only a mod too big for a server to hand out blocks a row, unless we have it. A
+  server that fails is shown in orange
   with the reason in its details. A wrong password, a name in use and other game data are only found by joining.
 - **Your own servers:** type `host[:port]` in the Address field and Enter adds it (kept in `settings.ron`,
   `ClientSettings::servers`; Delete takes one off; the list's can't be taken off). The Name field is the name you
@@ -1778,7 +1782,7 @@ password and its mods, and joins the one you pick. **There is no hosted service:
   Delete takes off a server you added. On a server it works the same (hopping to another).
 - **For pictures and recordings:** `--browser` starts with it open, `--browser-join N[@SECS]` picks and joins the
   Nth row by itself once the servers have answered (a row that can't be joined shows why and stays).
-- **Not yet:** https lists, mods downloaded on join, joining without the restart, a list service of anyone's, LAN
+- **Not yet:** https lists, joining without the restart, a list service of anyone's, LAN
   discovery, favourites and history beyond the servers you add, sorting and filtering in the panel.
 - Tests: `net::browser::tests`, `net/tests/browser.rs` (real hosts on loopback: a list file, a list over HTTP and what
   goes wrong with one, players, ping and mods, an offline server, servers added by hand, joining the row picked),
@@ -1873,11 +1877,43 @@ Mods add data and behaviour: **[docs/modding.md](docs/modding.md)** is the modde
 reference (keep it current: a new API function or hook gets a row there). `--mod DIR` (client and server, as often
 as wanted, in order) loads a mod's folder; `mods/alarm_clock` is the sample.
 
-- **Data:** a mod's `items.ron` (an id the game has replaces that item), `recipes.ron` and `loot.ron` (entries
-  added to tables the game has: `zombye_mods::LootAdd`) are merged into the `WorldConfig` by `zombye_mods::apply`
+- **Data:** a mod's `items.ron` (an id the game has replaces that item), `recipes.ron`, `loot.ron` (entries
+  added to tables the game has: `zombye_mods::LootAdd`) and `buildings/*.ron` (#24: building templates, read in file
+  name order; an id the game has replaces that template, any other is one more for the town generator, so the town
+  changes) are merged into the `WorldConfig` by `zombye_mods::apply`
   and checked as the game's own are; errors name the mod and file, and stop the game at start-up. Mod data is content
-  like any other: it is in the save's fingerprint, and a multiplayer client needs the same mods as its server (its
-  items are checked on joining; mods aren't downloaded yet).
+  like any other: it is in the save's fingerprint, and a multiplayer client plays with its server's mod data, which
+  it downloads on joining (next point).
+- **Mods downloaded on joining (#24; `net::modpack`, `Mod::pack`):** joining a modded server needs no installing.
+  A **pack** (`modpack::ModPack`: id, name, version, description and the data files as text: `items.ron`,
+  `recipes.ron`, `loot.ron`, `buildings/NAME.ron`, nothing else: `modpack::data_file`) is a mod's data **without its
+  scripts**, which run on the server alone: a client never receives or runs code from a server. A pack is named by
+  `ModPack::hash`, SHA-256 over its fields and files with their lengths (our own implementation in `modpack.rs`,
+  held to the standard's test vectors: no dependency for one hash). **Server:** `zombye-server --host --mod DIR`
+  packs each mod (`HostOptions::with_mods`), says id, name, version, hash and size in its answer to a query
+  (`ModInfo`) and prints the hashes at start-up; a pack over `MAX_PACK_BYTES` (2 MB) is listed but not handed out.
+  `ClientMsg::Fetch { protocol, password, mods: hashes }` comes instead of a hello, like a query: the host checks
+  it between ticks as it would a hello (protocol, the join password, a ban by address) and a thread of its own
+  (counted with the open connections) writes one `ServerMsg::Mod` frame a pack, encoded once at start-up, so a slow
+  download never holds the tick; or one `Refused` with the reason (`HostStats::mods_sent`, `mod_bytes`; the log says
+  `sent 1 mod (0.8 KB) to ADDR`). **Client** (`server_link::server_content`, before `join_remote`): asks the server
+  what it runs (`remote::query`), then `modpack::gather` takes each mod, in the server's order, from our own `--mod`
+  folders when one packs to the same hash, else from the cache (`modpack::Cache`: `mods/<id>-<hash>.zmod` in the
+  saves folder, one file a pack, taken only if its contents hash to its name; a pack's file names never touch the
+  disk), else downloads the missing ones over one connection (`remote::fetch_mods`): each must be a proper pack
+  (`ModPack::check`) with the id and **the hash asked for**, or the join stops with the reason and nothing is kept.
+  Then `zombye_mods::apply_packs` puts them into the game's own data (no scripts: `config.scripts` stays `None`)
+  and the join goes on as before, the content fingerprint and map hash still checked against the server's. **Our own
+  mods the server doesn't run are left out** while we play there (stdout says so); a join from the browser that fails falls
+  back to our own world with our own mods. Stdout says each mod's source (`mod alarm_clock 1.0 (downloaded, 0.8 KB; sha256
+  ...)`, `downloaded before`, `your own copy`), and the rules panel gets a Mods line ("Wind-up alarm clocks 1.0
+  (downloaded)"). The bots (`--bots`) build no map and need no mods. Tests: `net::modpack::tests`,
+  `net/tests/mod_download.rs` (a real host: downloaded, cached, own copy, password, a server that sends something
+  else than it named, a script or a path smuggled in), `crates/mods/tests/mods.rs` (a pack gives a client exactly the
+  server's content fingerprint and town), `crates/server/tests/dedicated.rs`
+  `a_game_without_the_mods_downloads_them_and_joins` (the binary). **Not yet:** mod assets (models, sounds), a
+  server switch to turn handing out off, resuming a broken download, mods bigger than 2 MB, downloaded mods in
+  single-player.
 - **Items with a use:** an item tagged `usable` (used up) or `reusable` (kept) can be used like food
   (`ItemDef::usable`, `player_use` / `do_use`; the inventory menu offers "Use"); what that does is a script's.
 - **The hook:** `sim` has no Luau in it. `WorldConfig::scripts` is an optional `Arc<dyn script::ScriptEngine>`;
@@ -1908,7 +1944,7 @@ as wanted, in order) loads a mod's folder; `mods/alarm_clock` is the sample.
   the 50 ms budget, most of it lending the world to the VM for the call. A mod with no `on_tick` costs nothing on a
   tick with no events for it. `--benchmark` refuses `--mod` (results compare runs of the game as shipped).
 - **Not yet:** mods in the dedicated server's config file and Docker image (`--mod` on its command line works),
-  download on join, client-side UI scripts, MCP tools for mods.
+  client-side UI scripts, MCP tools for mods.
 
 ## Talking and gestures (`sim::speech`, `chat.rs`; #67)
 

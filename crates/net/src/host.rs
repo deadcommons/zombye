@@ -38,6 +38,7 @@ use glam::{IVec2, Vec2};
 use zombye_sim::save::ContentPrint;
 use zombye_sim::{TICK_DT, World};
 
+use crate::modpack::{Hash, ModPack};
 use crate::wire::{self, Agents, Camera, ClientMsg, DeltaEncoder, Hello, Limits, MapInterest, Rules, ServerInfo, ServerMsg, Tunings, Welcome};
 use crate::{EdgeDamage, Intent, Snapshot, apply_intent};
 
@@ -86,6 +87,22 @@ pub struct HostOptions {
     /// The mods this server's world was made with (`--mod`), told to whoever asks what server
     /// this is (#27: the server browser shows them, and a client needs the same ones).
     pub mods: Vec<wire::ModInfo>,
+    /// The data of those mods, handed to clients that haven't got it (#24, [`crate::modpack`]):
+    /// set both with [`HostOptions::with_mods`]. A mod listed in `mods` with no pack here must be
+    /// installed by hand on each client. Read once, when the host starts.
+    pub packs: Vec<ModPack>,
+}
+
+impl HostOptions {
+    /// Run with these mods: told to whoever asks, and handed to clients that join without them
+    /// (those small enough: `ModPack::check`; the rest are told only, and the names of those
+    /// are returned for the server to say so).
+    pub fn with_mods(&mut self, packs: Vec<ModPack>) -> Vec<String> {
+        self.mods = packs.iter().map(ModPack::info).collect();
+        let (offered, kept_back): (Vec<ModPack>, Vec<ModPack>) = packs.into_iter().partition(|p| p.check().is_ok());
+        self.packs = offered;
+        kept_back.into_iter().map(|p| p.id).collect()
+    }
 }
 
 /// The default budget per client: a quarter of a megabit.
@@ -115,6 +132,7 @@ impl Default for HostOptions {
             camera: Camera::default(),
             agents: Agents::default(),
             mods: Vec::new(),
+            packs: Vec::new(),
         }
     }
 }
@@ -153,6 +171,8 @@ enum Event {
     Hello(u64, Hello, TcpStream),
     /// "What server are you?" from someone not joining (#69).
     Query(TcpStream),
+    /// "Send me these mods" from someone about to join (#24).
+    Fetch(TcpStream, wire::Fetch),
     Msg(u64, ClientMsg, usize),
     Closed(u64),
 }
@@ -231,6 +251,9 @@ pub struct HostStats {
     pub held: u64,
     /// Times someone asked what server this is without joining (#69).
     pub queries: u64,
+    /// Mods handed to clients that hadn't got them (#24), and their bytes.
+    pub mods_sent: u64,
+    pub mod_bytes: u64,
 }
 
 pub struct Host {
@@ -249,6 +272,9 @@ pub struct Host {
     /// rule at `Marked`, their views say so to whoever sees them.
     agents: BTreeSet<u32>,
     bans: Vec<Ban>,
+    /// The mods handed out (#24): each pack's hash, id and its frame as it goes on the wire,
+    /// encoded once.
+    offer: Vec<(Hash, String, Arc<Vec<u8>>)>,
     /// The next place round the town to try for a new survivor (`new_spawn`).
     next_spawn: u32,
     pub stats: HostStats,
@@ -266,7 +292,8 @@ impl Host {
         let (events_tx, events) = mpsc::channel();
         // Carry on round the town from where a loaded world's survivors left off.
         let next_spawn = (world.players.len() + world.parked().len()) as u32;
-        Ok(Self { world, options, listener, events, events_tx, conns: Vec::new(), next_conn: 1, open: Arc::new(AtomicUsize::new(0)), names: BTreeMap::new(), agents: BTreeSet::new(), bans: Vec::new(), next_spawn, stats: HostStats::default(), log: Vec::new() })
+        let offer = options.packs.iter().filter(|p| p.check().is_ok()).map(|p| (p.hash(), p.id.clone(), Arc::new(wire::encode_frame(&ServerMsg::Mod(Box::new(p.clone())))))).collect();
+        Ok(Self { world, options, listener, events, events_tx, conns: Vec::new(), next_conn: 1, open: Arc::new(AtomicUsize::new(0)), names: BTreeMap::new(), agents: BTreeSet::new(), bans: Vec::new(), offer, next_spawn, stats: HostStats::default(), log: Vec::new() })
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -485,6 +512,7 @@ impl Host {
                     let _ = wire::write_frame(&mut stream, &ServerMsg::Info(Box::new(self.info())));
                     let _ = stream.shutdown(Shutdown::Both);
                 }
+                Event::Fetch(stream, fetch) => self.fetch(stream, fetch),
                 Event::Msg(id, msg, bytes) => {
                     let Some(c) = self.conns.iter_mut().find(|c| c.id == id) else { continue };
                     c.bytes_in += bytes as u64;
@@ -500,7 +528,7 @@ impl Host {
                         ClientMsg::Ping(n) => send(c, &mut self.stats, &ServerMsg::Pong(n)),
                         ClientMsg::Bye => c.closing = Some(String::new()),
                         ClientMsg::Hello(_) => c.closing = Some("hello twice".into()),
-                        ClientMsg::Query(_) => send(c, &mut self.stats, &ServerMsg::Bye("a query comes instead of a hello".into())),
+                        ClientMsg::Query(_) | ClientMsg::Fetch(_) => send(c, &mut self.stats, &ServerMsg::Bye("a query comes instead of a hello".into())),
                     }
                 }
                 Event::Closed(id) => {
@@ -583,6 +611,67 @@ impl Host {
         self.world.mark_all_private_dirty();
         self.stats.joined += 1;
         self.log.push(format!("{name}{} joined from {addr} as player {player}{} ({} online)", if hello.agent { " (an agent)" } else { "" }, if back.is_some() { " (back)" } else { "" }, self.conns.len()));
+    }
+
+    /// Someone about to join asks for mods of ours it hasn't got (#24). Who may join may have
+    /// them: the same protocol, the password, not banned by address. The packs (encoded when the
+    /// host started) are written by a thread of their own, counted with the open connections, so
+    /// a slow line never holds the tick up; a refusal is a few bytes written here.
+    fn fetch(&mut self, mut stream: TcpStream, fetch: wire::Fetch) {
+        let ip = stream.peer_addr().ok().map(|a| a.ip()).filter(|ip| !ip.is_loopback());
+        let frames: Result<Vec<Arc<Vec<u8>>>, String> = if fetch.protocol != wire::PROTOCOL {
+            Err(format!("this server speaks protocol {}, your game {}: both need the same version of the game", wire::PROTOCOL, fetch.protocol))
+        } else if !self.options.password.is_empty() && fetch.password != self.options.password {
+            Err("wrong password".into())
+        } else if ip.is_some() && self.bans.iter().any(|b| b.ip == ip) {
+            Err("you are banned from this server".into())
+        } else if fetch.mods.len() > crate::modpack::MAX_MODS {
+            Err("too many mods asked for at once".into())
+        } else {
+            fetch
+                .mods
+                .iter()
+                .map(|hash| match self.offer.iter().find(|(h, ..)| h == hash) {
+                    Some((_, _, frame)) => Ok(frame.clone()),
+                    None => Err(match self.options.mods.iter().find(|m| m.hash == *hash) {
+                        Some(m) => format!("this server doesn't hand out its mod {} (too big): install it yourself and start the game with --mod", m.id),
+                        None => format!("this server has no mod with the hash {} (it may have restarted with other mods: try again)", crate::modpack::short(hash)),
+                    }),
+                })
+                .collect()
+        };
+        match frames {
+            Err(why) => {
+                self.stats.refused += 1;
+                let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+                let _ = wire::write_frame(&mut stream, &ServerMsg::Refused(why));
+                let _ = stream.shutdown(Shutdown::Both);
+            }
+            Ok(frames) => {
+                let bytes: usize = frames.iter().map(|f| f.len()).sum();
+                self.stats.mods_sent += frames.len() as u64;
+                self.stats.mod_bytes += bytes as u64;
+                self.stats.bytes_out += bytes as u64;
+                let from = stream.peer_addr().map_or_else(|_| "someone".to_string(), |a| a.to_string());
+                self.log.push(format!("sent {} mod{} ({}) to {from}", frames.len(), if frames.len() == 1 { "" } else { "s" }, crate::modpack::kb(bytes)));
+                let open = self.open.clone();
+                open.fetch_add(1, Ordering::Relaxed);
+                let counted = open.clone();
+                let spawned = std::thread::Builder::new().name("net-mods".into()).spawn(move || {
+                    let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
+                    for frame in frames {
+                        if stream.write_all(&frame).is_err() {
+                            break;
+                        }
+                    }
+                    let _ = stream.shutdown(Shutdown::Both);
+                    counted.fetch_sub(1, Ordering::Relaxed);
+                });
+                if spawned.is_err() {
+                    open.fetch_sub(1, Ordering::Relaxed);
+                }
+            }
+        }
     }
 
     /// May this hello come in? Its name (made up if it gave none), or why not.
@@ -825,6 +914,11 @@ fn read_loop(id: u64, mut stream: TcpStream, tx: &Sender<Event>) {
         // Not joining, only asking (#69): the host answers and closes it.
         Ok((ClientMsg::Query(_), _)) => {
             let _ = tx.send(Event::Query(stream));
+            return;
+        }
+        // Not joining yet, fetching our mods first (#24): the host answers and closes it.
+        Ok((ClientMsg::Fetch(fetch), _)) => {
+            let _ = tx.send(Event::Fetch(stream, fetch));
             return;
         }
         _ => {

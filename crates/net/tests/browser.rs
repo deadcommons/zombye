@@ -56,7 +56,7 @@ fn dead_addr() -> String {
 #[test]
 fn a_list_file_becomes_rows_with_players_ping_and_mods() {
     let official = host(HostOptions { name: "Official co-op".into(), max_players: 16, ..Default::default() });
-    let modded = host(HostOptions { name: "Modded".into(), password: "secret".into(), mods: vec![ModInfo { id: "alarm_clock".into(), name: "Alarm clock".into(), version: "1.0".into() }], ..Default::default() });
+    let modded = host(HostOptions { name: "Modded".into(), password: "secret".into(), mods: vec![ModInfo { id: "alarm_clock".into(), name: "Alarm clock".into(), version: "1.0".into(), ..Default::default() }], ..Default::default() });
     let (a, b, dead) = (official.local_addr().unwrap().to_string(), modded.local_addr().unwrap().to_string(), dead_addr());
     let dir = temp_dir("file");
     let file = dir.join("servers.ron");
@@ -87,8 +87,8 @@ fn a_list_file_becomes_rows_with_players_ping_and_mods() {
     let info = browser.row(&b).unwrap().info().unwrap();
     assert!(info.password);
     assert_eq!(browser::mods_text(&info.mods), "Alarm clock 1.0");
-    assert!(browser::can_join(info, &[], false).unwrap_err().contains("alarm_clock"));
-    assert_eq!(browser::can_join(info, &["alarm_clock".to_string()], false), Ok(()));
+    // A mod we haven't got is no reason not to join: it is downloaded on the way in (#24).
+    assert_eq!(browser::can_join(info, &[], false), Ok(()));
 
     let Status::Offline(why) = &browser.row(&dead).unwrap().status else { panic!("nothing listens there") };
     assert!(why.contains("can't connect"), "{why}");

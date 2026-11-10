@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use zombye_sim::save::ContentPrint;
 use zombye_sim::{TileMap, World, WorldConfig};
 
+use crate::modpack::ModPack;
 use crate::wire::{self, ClientMsg, DeltaDecoder, Hello, ServerInfo, ServerMsg, Welcome};
 use crate::{Intent, Snapshot};
 
@@ -93,6 +94,35 @@ fn ask(mut stream: TcpStream, with_port: &str) -> Result<ServerInfo, String> {
     }
 }
 
+/// Download mods a server runs (#24): `want` are entries of its [`ServerInfo::mods`]. One
+/// connection, no joining; the packs come back in the order asked, and each is taken only if it
+/// is a proper pack with the id and the **hash asked for**, so what a game plays with is what the
+/// server named and nothing else. `timeout` is for connecting and for each read.
+pub fn fetch_mods(addr: &str, password: &str, want: &[wire::ModInfo], timeout: Duration) -> Result<Vec<ModPack>, String> {
+    if want.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (mut stream, with_port) = dial(addr, timeout)?;
+    let io = |e: std::io::Error| format!("lost the connection to {with_port} while downloading its mods: {e}");
+    let ask = ClientMsg::Fetch(wire::Fetch { protocol: wire::PROTOCOL, password: password.to_string(), mods: want.iter().map(|m| m.hash).collect() });
+    wire::write_frame(&mut stream, &ask).map_err(io)?;
+    let mut packs = Vec::with_capacity(want.len());
+    for m in want {
+        let pack = match wire::read_frame::<ServerMsg>(&mut stream, wire::MAX_SERVER_FRAME).map_err(io)?.0 {
+            ServerMsg::Mod(pack) => *pack,
+            ServerMsg::Refused(why) | ServerMsg::Bye(why) => return Err(format!("{with_port} refused to send its mods: {why}")),
+            _ => return Err(format!("{with_port} sent something else than its mod {}", m.id)),
+        };
+        pack.check().map_err(|why| format!("{with_port} sent a mod this game won't take: {why}"))?;
+        if pack.id != m.id || pack.hash() != m.hash {
+            return Err(format!("{with_port} sent a mod that isn't the {} it named (sha256 {}, not {}): not taken", m.id, crate::modpack::short(&pack.hash()), crate::modpack::short(&m.hash)));
+        }
+        packs.push(pack);
+    }
+    let _ = stream.shutdown(Shutdown::Both);
+    Ok(packs)
+}
+
 /// A server's answer in words: what `--server-info` prints, a line each.
 pub fn describe(info: &ServerInfo, addr: &str) -> Vec<String> {
     let mut lines = vec![format!("{} at {addr}: {} of {} players on{}", info.rules.name, info.online, info.rules.max_players, if info.password { ", needs a password" } else { "" })];
@@ -103,7 +133,8 @@ pub fn describe(info: &ServerInfo, addr: &str) -> Vec<String> {
     });
     lines.extend(info.rules.lines().into_iter().map(|(label, text)| format!("  {label}: {text}")));
     if !info.mods.is_empty() {
-        lines.push(format!("  Mods: {} (a client needs the same ones)", crate::browser::mods_text(&info.mods)));
+        lines.push(format!("  Mods: {} (downloaded on joining, {} in all)", crate::browser::mods_text(&info.mods), crate::modpack::kb(info.mods.iter().map(|m| m.size as usize).sum())));
+        lines.extend(info.mods.iter().map(|m| format!("    {}: sha256 {}", m.id, crate::modpack::hex(&m.hash))));
     }
     lines
 }
@@ -284,7 +315,7 @@ impl Remote {
                 Ok(Ok(ServerMsg::Pong(sent))) => self.ping_ms = Some((self.started.elapsed().as_millis() as u32).wrapping_sub(sent) as f32),
                 Ok(Ok(ServerMsg::Bye(why))) => self.closed = Some(format!("the server closed the connection: {why}")),
                 Ok(Ok(ServerMsg::Refused(why))) => self.closed = Some(format!("refused: {why}")),
-                Ok(Ok(ServerMsg::Welcome(_) | ServerMsg::Info(_))) => {}
+                Ok(Ok(ServerMsg::Welcome(_) | ServerMsg::Info(_) | ServerMsg::Mod(_))) => {}
                 Ok(Err(e)) => {
                     self.closed.get_or_insert(format!("lost the connection: {e}"));
                 }

@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::time::Duration;
 
+use zombye_net::modpack::{self, ModPack};
 use zombye_net::remote::{Remote, build_map};
 use zombye_net::{EdgeDamage, Intent, LocalServer, PrivateView, Snapshot, content, save_file};
 use zombye_sim::map::{Edge, EdgeChange, OwnedEdge, Side, TileMap};
@@ -69,6 +70,8 @@ pub struct NetInfo {
     pub allow_dev: bool,
     /// Every rule the server told us on joining (#69), for the rules panel (`rules_ui.rs`).
     pub rules: zombye_net::wire::Rules,
+    /// The server's mods and how we came by each (#24), for the rules panel; empty: none.
+    pub mods: String,
     /// The name we go by.
     pub name: String,
     pub ping_ms: Option<f32>,
@@ -207,21 +210,27 @@ impl Plugin for ServerLinkPlugin {
         let mut config = content::load_config(&options.data, options.seed).unwrap_or_else(|e| panic!("failed to load content: {e}"));
         // Mods (#25): their items, recipes and loot join the game's; their scripts run in the
         // world this process makes (on a server they run there, and only the data matters here).
-        match zombye_mods::load_into(&mut config, &options.mods) {
+        let base = options.connect.is_some().then(|| config.clone());
+        let own: Vec<ModPack> = match zombye_mods::load_into(&mut config, &options.mods) {
             Ok(mods) => {
                 if !mods.is_empty() {
                     println!("{}", zombye_mods::describe(&mods));
                 }
-                // The server browser checks a server's mods against these (#27).
-                app.insert_resource(crate::browser_ui::LoadedMods(mods.iter().map(|m| m.manifest.id.clone()).collect()));
+                mods.iter().map(zombye_mods::Mod::pack).collect()
             }
             Err(e) => {
                 eprintln!("failed to load mods: {e}");
                 std::process::exit(1);
             }
-        }
-        if let Some(addr) = options.connect.clone() {
-            match join_remote(app, &addr, &options, &config) {
+        };
+        // What the server browser counts a server's mods against (#27, #24): the ones we have,
+        // loaded or downloaded before; the rest are downloaded on joining.
+        let cache = modpack::Cache::in_saves(&options.saves);
+        app.insert_resource(crate::browser_ui::LoadedMods(own.iter().map(ModPack::hash).chain(cache.listed()).collect()));
+        if let (Some(addr), Some(base)) = (options.connect.clone(), base) {
+            // The server's mods, not ours (#24): what we haven't got of them is downloaded first.
+            let joined = server_content(&addr, &options, &base, &own, &cache).and_then(|(content, mods)| join_remote(app, &addr, &options, &content, mods));
+            match joined {
                 Ok(()) => return,
                 // Asked for in the server browser (#27): the game doesn't stop. Back to our own
                 // world (the autosave the join left, if we came from one), with the browser open
@@ -408,13 +417,41 @@ fn join_info(config: &zombye_sim::WorldConfig, player_id: u32, player_spawn: Vec
     }
 }
 
+/// The game data to join `addr` with (#24): the game's own (`base`) with **the server's mods**,
+/// in the server's order. The server is asked what it runs; each mod's data comes from our own
+/// `--mod` folders (`own`) when one holds exactly that data (by hash), else from the cache of
+/// earlier downloads, else it is downloaded now, checked against the hash the server named, and
+/// kept. Mods of ours the server doesn't run are left out while we play there. Only data arrives:
+/// a mod's scripts run on the server, never here. Also a line for the rules panel.
+fn server_content(addr: &str, options: &Options, base: &zombye_sim::WorldConfig, own: &[ModPack], cache: &modpack::Cache) -> Result<(zombye_sim::WorldConfig, String), String> {
+    let timeout = Duration::from_secs(10);
+    let info = zombye_net::remote::query(addr, timeout)?;
+    let got = modpack::gather(addr, &options.password, &info.mods, own, Some(cache), timeout)?;
+    for line in got.lines() {
+        println!("{line}");
+    }
+    let mut content = base.clone();
+    let packs: Vec<ModPack> = got.packs.iter().map(|(p, _)| p.clone()).collect();
+    zombye_mods::apply_packs(&mut content, &packs).map_err(|e| format!("the server's mods don't fit this game's data: {e}"))?;
+    let names: Vec<String> = got
+        .packs
+        .iter()
+        .map(|(p, from)| {
+            let name = if p.name.is_empty() { &p.id } else { &p.name };
+            let v = if p.version.is_empty() { String::new() } else { format!(" {}", p.version) };
+            format!("{name}{v}{}", if *from == modpack::Source::Downloaded { " (downloaded)" } else { "" })
+        })
+        .collect();
+    Ok((content, names.join(", ")))
+}
+
 /// `--connect`: join a multiplayer server (#21). The same things arrive another way: our player
 /// and the rules in the server's welcome, the map built here from the server's seed with our own
 /// game data (and checked against the server's), the doors and windows changed since and every
 /// cracked one, and a first snapshot. Anything wrong (no server, refused, other game data) is the
 /// error: the caller says it on stderr and the game doesn't start (or, joined from the server
 /// browser, starts in its own world instead).
-fn join_remote(app: &mut App, addr: &str, options: &Options, content: &zombye_sim::WorldConfig) -> Result<(), String> {
+fn join_remote(app: &mut App, addr: &str, options: &Options, content: &zombye_sim::WorldConfig, mods: String) -> Result<(), String> {
     // A client that plays by itself says so (`--agent`, and `--autoplay`, which is one): the
     // server's rules may refuse agents, or mark them to the other players (#69).
     let mut remote = Remote::connect_as(addr, &options.name, &options.password, options.agent || options.autoplay, Duration::from_secs(10))?;
@@ -450,7 +487,7 @@ fn join_remote(app: &mut App, addr: &str, options: &Options, content: &zombye_si
     let damage = EdgeDamageMap(w.edge_damage.iter().map(|d| ((d.tile, d.edge), d.hp)).collect());
     let spawn = first.players.iter().find(|p| p.id == player_id).map(|p| Vec2::from(p.pos)).unwrap_or(joined.player_spawn);
     let join = join_info(&joined.config, player_id, spawn);
-    let net = NetInfo { addr: addr.to_string(), server: w.rules.name.clone(), pvp: w.rules.pvp, allow_dev: w.rules.allow_dev, rules: w.rules.clone(), name: w.name.clone(), ping_ms: None, down_kbps: None, closed: None };
+    let net = NetInfo { addr: addr.to_string(), server: w.rules.name.clone(), pvp: w.rules.pvp, allow_dev: w.rules.allow_dev, rules: w.rules.clone(), mods, name: w.name.clone(), ping_ms: None, down_kbps: None, closed: None };
     if options.god || options.ignored {
         remote.send(Intent::Dev { player: player_id, god: options.god.then_some(true), ignored: options.ignored.then_some(true) });
     }

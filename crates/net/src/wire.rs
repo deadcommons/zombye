@@ -50,8 +50,9 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// `ClientMsg::Query` and `ServerMsg::Info`. 10: hold-ups and groups, #73: the `Restrain`, `Free`,
 /// `Frisk`, `TakeFrom`, `StopHands`, `Struggle` and `Group` intents, tied hands in `PlayerView`
 /// (`PlayerPacked::bits` is a `u32` for them), `PrivateView::frisk`, `SnapshotDelta::group`.
-/// 11: the server browser, #27: `ServerInfo::mods`.)
-pub const PROTOCOL: u32 = 11;
+/// 11: the server browser, #27: `ServerInfo::mods`. 12: mods downloaded on joining, #24: a hash
+/// and a size in `ModInfo`, `ClientMsg::Fetch` and `ServerMsg::Mod`.)
+pub const PROTOCOL: u32 = 12;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -78,6 +79,20 @@ pub enum ClientMsg {
     /// [`ServerMsg::Info`] and the connection is closed: nobody joins, no password is needed. What
     /// a server browser asks, and `zombye --server-info HOST`.
     Query(u32),
+    /// Instead of a hello (#24): "send me these mods of yours". Answered with a
+    /// [`ServerMsg::Mod`] for each, in the order asked, or one [`ServerMsg::Refused`], and the
+    /// connection is closed: nobody joins.
+    Fetch(Fetch),
+}
+
+/// A request for mods a server runs, by the hashes its [`ServerInfo::mods`] named (#24).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Fetch {
+    pub protocol: u32,
+    /// The server's join password, if it has one: its mods go to those who may join.
+    pub password: String,
+    /// At most [`crate::modpack::MAX_MODS`].
+    pub mods: Vec<crate::modpack::Hash>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -106,6 +121,8 @@ pub enum ServerMsg {
     Bye(String),
     /// The answer to [`ClientMsg::Query`].
     Info(Box<ServerInfo>),
+    /// One of the mods a [`ClientMsg::Fetch`] asked for: its data, never its scripts (#24).
+    Mod(Box<crate::modpack::ModPack>),
 }
 
 /// What a server says of itself to anyone who asks, before joining (#69: the server browser's row).
@@ -119,8 +136,8 @@ pub struct ServerInfo {
     pub online: u32,
     /// Joining needs a password.
     pub password: bool,
-    /// The mods the server runs, in order (#27). A client needs the same ones to join (their data
-    /// is checked on joining; mods aren't downloaded yet).
+    /// The mods the server runs, in order (#27). A client plays with the same data: what it
+    /// hasn't got by these hashes it downloads before joining (#24, [`crate::modpack`]).
     pub mods: Vec<ModInfo>,
 }
 
@@ -131,6 +148,11 @@ pub struct ModInfo {
     pub name: String,
     /// May be empty.
     pub version: String,
+    /// What names its data (#24): the SHA-256 of its pack ([`crate::modpack::ModPack::hash`]).
+    /// A client downloads the pack with this hash, and takes nothing that doesn't hash to it.
+    pub hash: crate::modpack::Hash,
+    /// The pack's size in bytes, for saying what a join will download.
+    pub size: u32,
 }
 
 /// The camera a server's players play with (docs/PLAN.md §5). The isometric camera sees over

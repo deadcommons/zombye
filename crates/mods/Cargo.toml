@@ -8,13 +8,12 @@ repository.workspace = true
 
 [dependencies]
 zombye-sim.workspace = true
+# A mod's data as a server hands it to joining clients (#24: `zombye_net::modpack`); in tests, the
+# game's own data too.
+zombye-net.workspace = true
 glam.workspace = true
 serde.workspace = true
 ron.workspace = true
 # Luau (MIT), built from source by the crate: the scripting language of mods (docs/PLAN.md §2).
 # `send`: a world, and so its script host, moves between threads.
 mlua = { version = "0.12", default-features = false, features = ["luau", "send"] }
-
-[dev-dependencies]
-# The game's own data, for tests of mods on top of it.
-zombye-net.workspace = true

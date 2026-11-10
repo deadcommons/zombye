@@ -13,6 +13,8 @@
 //! Password and Address fields (Enter in Address adds that server; Esc leaves a field). While it
 //! is open the game's other keys and the mouse's buttons are held back, as with the chat line.
 //!
+//! A server's mods needn't be here: the game downloads their data on joining and checks it by
+//! hash (#24, `server_link::server_content`); the details say how much there is to download.
 //! **Joining** is checked first against what the server said (version, camera, agents, mods,
 //! room), so a server this game can't join says why in the panel and nothing is left. Then the
 //! game starts again on that server: your single-player world is autosaved as on quitting, and
@@ -73,9 +75,10 @@ impl Plugin for BrowserUiPlugin {
     }
 }
 
-/// The ids of the mods this game was started with (`--mod`): a server must run the same ones.
+/// The hashes of the mods this game has (#24): those it was started with (`--mod`) and those it
+/// downloaded before. A server's other mods are downloaded on joining; the details say how much.
 #[derive(Resource, Default, Clone)]
-pub struct LoadedMods(pub Vec<String>);
+pub struct LoadedMods(pub Vec<zombye_net::modpack::Hash>);
 
 /// Put in before the plugins are built when a join asked for in the browser failed: the game is
 /// back in its own world, and the browser opens with the reason.
@@ -246,7 +249,7 @@ fn ping_text(ms: u32) -> String {
     if ms == 0 { "<1 ms".into() } else { format!("{ms} ms") }
 }
 
-fn cells(row: &Row, mods: &[String], agent: bool) -> Cells {
+fn cells(row: &Row, mods: &[zombye_net::modpack::Hash], agent: bool) -> Cells {
     let name = format!("{}{}", row.name(), if row.mine { "  (added by you)" } else { "" });
     match &row.status {
         Status::Asking => Cells { name, players: String::new(), ping: "...".into(), mode: String::new(), locked: String::new(), mods: String::new(), note: row.entry.note.clone(), state: RowState::Asking },
@@ -269,7 +272,7 @@ fn cells(row: &Row, mods: &[String], agent: bool) -> Cells {
 
 /// The details of the picked server: a heading, a line on whether it can be joined (and its
 /// colour), and its rules.
-fn details(row: &Row, mods: &[String], agent: bool) -> (String, String, Color, Vec<(&'static str, String)>) {
+fn details(row: &Row, mods: &[zombye_net::modpack::Hash], agent: bool) -> (String, String, Color, Vec<(&'static str, String)>) {
     match &row.status {
         Status::Asking => (row.name().to_string(), format!("{}: asking...", row.addr), DIM, Vec::new()),
         Status::Offline(why) => (row.name().to_string(), format!("No answer: {why}"), WARN, Vec::new()),
@@ -281,7 +284,8 @@ fn details(row: &Row, mods: &[String], agent: bool) -> (String, String, Color, V
                 Err(why) => (format!("Can't join: {why}"), WARN),
             };
             let mut rules = info.rules.lines();
-            rules.push(("Mods", browser::mods_text(&info.mods)));
+            // With what joining would download of them (#24).
+            rules.push(("Mods", browser::mods_note(&info.mods, mods)));
             if !row.entry.note.is_empty() {
                 rules.push(("Note", row.entry.note.clone()));
             }
@@ -795,16 +799,22 @@ mod tests {
     fn a_row_says_players_ping_mode_and_mods() {
         let c = cells(&row(online(info()), false), &[], false);
         assert_eq!((c.name.as_str(), c.players.as_str(), c.ping.as_str(), c.mode.as_str(), c.mods.as_str(), c.note.as_str(), c.state), ("Dead Commons", "7 / 32", "42 ms", "PvP", "none", "EU", RowState::Joinable));
-        // Locked, co-op, modded with a mod we haven't loaded: shown, and marked as not joinable.
-        let modded = ServerInfo { password: true, mods: vec![ModInfo { id: "alarm_clock".into(), name: "Alarm clock".into(), version: "1.0".into() }], rules: Rules { pvp: false, ..info().rules }, ..info() };
+        // Locked, co-op, modded with a mod we haven't got: shown, and joinable (#24: its mods
+        // are downloaded on joining, and the details say how much that is).
+        let modded = ServerInfo { password: true, mods: vec![ModInfo { id: "alarm_clock".into(), name: "Alarm clock".into(), version: "1.0".into(), hash: [3; 32], size: 1536 }], rules: Rules { pvp: false, ..info().rules }, ..info() };
         let c = cells(&row(online(modded.clone()), true), &[], false);
-        assert_eq!((c.name.as_str(), c.mode.as_str(), c.locked.as_str(), c.mods.as_str(), c.state), ("Dead Commons  (added by you)", "Co-op", "password", "Alarm clock 1.0", RowState::Blocked));
+        assert_eq!((c.name.as_str(), c.mode.as_str(), c.locked.as_str(), c.mods.as_str(), c.state), ("Dead Commons  (added by you)", "Co-op", "password", "Alarm clock 1.0", RowState::Joinable));
         assert_eq!((ping_text(0), ping_text(87)), ("<1 ms".to_string(), "87 ms".to_string()));
-        assert_eq!(cells(&row(online(modded.clone()), false), &["alarm_clock".to_string()], false).state, RowState::Joinable);
-        let (_, line, colour, rules) = details(&row(online(modded), false), &["alarm_clock".to_string()], false);
+        let (_, _, _, rules) = details(&row(online(modded.clone()), false), &[], false);
+        assert!(rules.iter().any(|(l, t)| *l == "Mods" && t == "Alarm clock 1.0 (1 to download, 1.5 KB)"), "{rules:?}");
+        let (_, line, colour, rules) = details(&row(online(modded.clone()), false), &[[3; 32]], false);
         assert!(line.contains("password") && colour == GOLD);
         assert_eq!(rules.last().unwrap(), &("Note", "EU".to_string()));
         assert!(rules.iter().any(|(l, t)| *l == "Mods" && t == "Alarm clock 1.0") && rules.iter().any(|(l, _)| *l == "PvP"));
+        // A mod too big for a server to hand out blocks the row unless we have it.
+        let huge = ServerInfo { mods: vec![ModInfo { size: 64 << 20, ..modded.mods[0].clone() }], ..modded };
+        assert_eq!(cells(&row(online(huge.clone()), false), &[], false).state, RowState::Blocked);
+        assert_eq!(cells(&row(online(huge), false), &[[3; 32]], false).state, RowState::Joinable);
         // Not answered yet, and not answering: the list's name, and no numbers made up.
         let c = cells(&row(Status::Asking, false), &[], false);
         assert_eq!((c.name.as_str(), c.players.as_str(), c.ping.as_str(), c.state), ("Listed name", "", "...", RowState::Asking));

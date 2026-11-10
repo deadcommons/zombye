@@ -92,6 +92,7 @@ impl HostArgs {
             },
             // The mods loaded with `--mod`, filled in by `main` (it reads them).
             mods: Vec::new(),
+            packs: Vec::new(),
         };
         let start_kit = text("--start-kit").map(|v| parse_kit(&v)).transpose()?;
         Ok(Self { addr, options, pvp: on_off("--pvp")?, start_kit, admin: crate::admin::parse(args, admin_token)? })

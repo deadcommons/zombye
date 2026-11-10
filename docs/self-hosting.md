@@ -145,8 +145,16 @@ your address into the browser's Address field, which keeps it.
 
 Each server in the list is asked what it is without joining: its name, players on, PvP or co-op,
 whether it wants a password, its mods (`--mod`) and the rest of its rules. So the port must be
-reachable, and what the browser shows is what your server says. A client needs the same mods as
-the server (it is told which, and they aren't downloaded yet).
+reachable, and what the browser shows is what your server says.
+
+**Mods are handed to your players.** A server started with `--mod DIR` tells each mod's name and
+the SHA-256 of its data, and a game that joins without it downloads that data from your server
+first (over the game port, checked against the hash, kept for next time): items, recipes, loot and
+building templates, never the scripts, which run on your server alone
+([modding.md](modding.md#joining-a-modded-server)). With a join password, only those who give it
+get the mods. A mod with more than 2 MB of data isn't handed out (the server says so when it
+starts): its players need it by hand. The server's log says each download (`sent 1 mod (0.4 KB)
+to ...`).
 
 ## What to know
 

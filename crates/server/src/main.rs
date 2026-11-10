@@ -202,13 +202,14 @@ fn main() {
     // Mods (#25, docs/modding.md): `--mod DIR`, as often as wanted, in order. Their data joins the
     // game's and their Luau scripts run in every world made from this config.
     let mod_dirs: Vec<PathBuf> = args.windows(2).filter(|w| w[0] == "--mod").map(|w| PathBuf::from(&w[1])).collect();
-    // What a hosting server tells whoever asks what it runs (#27: the server browser's mods).
-    let mods_told: Vec<zombye_net::wire::ModInfo> = match zombye_mods::load_into(&mut config, &mod_dirs) {
+    // What a hosting server tells whoever asks what it runs (#27: the server browser's mods), and
+    // hands to the clients that join without them (#24): each mod's data, named by its hash.
+    let mod_packs: Vec<zombye_net::modpack::ModPack> = match zombye_mods::load_into(&mut config, &mod_dirs) {
         Ok(mods) => {
             if !mods.is_empty() {
                 eprintln!("{}", zombye_mods::describe(&mods));
             }
-            mods.iter().map(|m| zombye_net::wire::ModInfo { id: m.manifest.id.clone(), name: m.manifest.name.clone(), version: m.manifest.version.clone() }).collect()
+            mods.iter().map(zombye_mods::Mod::pack).collect()
         }
         Err(e) => {
             eprintln!("failed to load mods: {e}");
@@ -337,7 +338,12 @@ fn main() {
         let parsed = multiplayer::HostArgs::parse(&args, admin_token).and_then(|mut a| {
             // (`--start-kit`, or `start_kit` in the config file, says it instead: #69.)
             a.options.kit = a.kit(content::load_start_kit(&data, &config.items)?, &config.items)?;
-            a.options.mods = mods_told;
+            for p in &mod_packs {
+                eprintln!("mod {}: {} of data for joining clients to download, sha256 {}", p.id, zombye_net::modpack::kb(p.size()), zombye_net::modpack::hex(&p.hash()));
+            }
+            for id in a.options.with_mods(mod_packs) {
+                eprintln!("mod {id} is too big to hand out (over {}): clients need it installed and --mod", zombye_net::modpack::kb(zombye_net::modpack::MAX_PACK_BYTES));
+            }
             Ok(a)
         });
         let host_args = match parsed {

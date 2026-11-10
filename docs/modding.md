@@ -1,6 +1,6 @@
 # Modding Zombye
 
-A mod is a folder of data and scripts. The data (items, recipes, loot) joins the game's own; the
+A mod is a folder of data and scripts. The data (items, recipes, loot, building templates) joins the game's own; the
 scripts are [Luau](https://luau.org) and give things behaviour. Scripts run inside the simulation,
 on the server (in single-player, that is the game itself), in a sandbox: they can't read files, the
 clock or the network, and they can't make the game stop repeating itself (same seed and inputs,
@@ -9,14 +9,14 @@ same world), which replays, saves, multiplayer and the benchmark all rely on.
 ```bash
 # The sample mod: alarm clocks you can wind up and set down as a lure
 cargo run -p zombye-client --release -- --mod mods/alarm_clock
-cargo run -p zombye-server --release -- --host --mod mods/alarm_clock      # and every client: --mod mods/alarm_clock
+cargo run -p zombye-server --release -- --host --mod mods/alarm_clock      # clients download its data on joining
 cargo run -p zombye-server --release -- --mcp --mod mods/alarm_clock       # an agent's world with the mod
 ```
 
 `--mod DIR` can be given several times; mods load in that order. A mod that doesn't load (a
 mistake in its data, a script that doesn't compile) stops the game at start-up with the mod, the
-file and the reason. A server and its clients need the same mods: a client whose items differ is
-refused on joining (mods aren't downloaded yet).
+file and the reason. A server and its clients play with the same mod data, and a client gets it
+by itself: see [Joining a modded server](#joining-a-modded-server).
 
 ## A mod's folder
 
@@ -26,6 +26,7 @@ mods/alarm_clock/
   items.ron          items it adds or replaces                 (optional)
   recipes.ron        recipes it adds                           (optional)
   loot.ron           entries it adds to the game's loot tables (optional)
+  buildings/*.ron    building templates it adds or replaces    (optional)
   alarm_clock.luau   a script
 ```
 
@@ -66,6 +67,33 @@ already has is an error.
 `room` and `container` are a table's key in `assets/data/loot.ron`; `entries` are as there
 (`item`, `weight`, `count: (min, max)`, `rare`). Adding to a table changes what its containers
 hold everywhere, in containers nobody has opened yet.
+
+**`buildings/*.ron`** are building templates in the format of `assets/data/buildings/*.ron` (file
+names of letters, digits, `_` and `-`; read in name order). A template whose `id` the game already
+has **replaces** it; any other is one more building the town generator may place. Either way the
+town is another town: a save made without the mod no longer fits it.
+
+## Joining a modded server
+
+Nothing to install: a game that joins a server downloads the **data** of the server's mods first
+(`items.ron`, `recipes.ron`, `loot.ron`, `buildings/*.ron`, and the mod's name and version).
+
+- **By hash.** The server names each mod by the SHA-256 of that data (`zombye --server-info HOST`
+  prints them, and the server prints them when it starts). The game takes a download only if it
+  hashes to what the server named, so a damaged or swapped download is refused, not played.
+- **Never scripts.** A mod's `.luau` files stay on the server, where they run. A client never
+  receives or runs code from a server, and a download holding anything but those data files is
+  refused whole.
+- **Once.** Downloads are kept in `mods/` in the saves folder (`saves/mods/<id>-<hash>.zmod`) and
+  used again while the server's mod is the same; a changed mod has another hash and is fetched
+  again. Delete the folder to clear them.
+- **Your own copy counts.** Started with `--mod DIR` for a mod whose data is exactly the server's,
+  the game uses it and downloads nothing. Mods of yours the server doesn't run are left out while
+  you play there (the game says so), and are back in your own world.
+- A server with a join password hands its mods only to those who give it. A mod with more than
+  2 MB of data isn't handed out: its players need it by hand, with `--mod`.
+- Downloaded mods are only for playing on that server; to play a mod in your own world, get its
+  folder and use `--mod`.
 
 ## Scripts
 
@@ -235,6 +263,10 @@ A save made with mods holds what their scripts stored. Loading it:
   and hashes and saves as before.
 - `crates/mods`: reads mod folders (`Mod::load`), merges their data into a `WorldConfig`
   (`apply`), and runs the scripts (`luau.rs`: `mlua` with Luau built from source; one VM a mod).
+- Download on join: `Mod::pack` is a mod's data as it goes over the network
+  (`zombye_net::modpack::ModPack`, its hash, the client's cache, `gather`), `Mod::from_pack` /
+  `apply_packs` what a client makes of it. A new kind of data file needs a name in
+  `modpack::data_file`, and a line each in `Mod::pack`, `Mod::from_pack` and `apply`.
 - To add an API function: a checked `script_*` function on `World`, a method in
   `luau::register_game`, a row here, and a line in `crates/mods/tests/mods.rs`.
 - To add a hook: a `ScriptEvent`, pushed where the thing happens (`World::script_event`), a name in

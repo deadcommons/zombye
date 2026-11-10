@@ -533,3 +533,86 @@ fn a_mod_folder_is_read_and_checked() {
     assert!(Mod::load(&dir).is_err(), "unknown fields are refused");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A building template of a mod's own: the game's bungalow under another id.
+fn hut() -> String {
+    let text = std::fs::read_to_string(content::default_data_dir().join("buildings/bungalow.ron")).unwrap();
+    assert!(text.contains("\"house_bungalow\""));
+    text.replace("\"house_bungalow\"", "\"mod_hut\"")
+}
+
+/// Mods bring building templates too (#24): the town is generated from them as from the game's.
+#[test]
+fn a_mod_brings_building_templates() {
+    let mut config = base(21);
+    let before = (config.templates.len(), zombye_sim::save::ContentPrint::of(&config).templates);
+    apply(&mut config, &[Mod::new("huts").with_building("hut.ron", &hut())]).unwrap();
+    assert_eq!(config.templates.len(), before.0 + 1);
+    assert_ne!(zombye_sim::save::ContentPrint::of(&config).templates, before.1, "another town");
+    // The same mod, the same town.
+    let mut again = base(21);
+    apply(&mut again, &[Mod::new("huts").with_building("hut.ron", &hut())]).unwrap();
+    assert_eq!(World::new(again).map_base_hash(), World::new(config).map_base_hash());
+    // A template id the game has is replaced, not doubled.
+    let mut replaced = base(21);
+    let bungalow = hut().replace("\"mod_hut\"", "\"house_bungalow\"").replace("Small bungalow", "Hut");
+    apply(&mut replaced, &[Mod::new("huts").with_building("hut.ron", &bungalow)]).unwrap();
+    assert_eq!(replaced.templates.len(), before.0);
+    assert!(replaced.templates.iter().any(|t| t.id == "house_bungalow" && t.name == "Hut"));
+    // A mistake names the mod and the file.
+    let e = apply(&mut base(21), &[Mod::new("huts").with_building("hut.ron", "(id: 3)")]).unwrap_err();
+    assert!(e.starts_with("mod huts: buildings/hut.ron"), "{e}");
+
+    // From a folder: every buildings/*.ron, by name.
+    let dir = std::env::temp_dir().join(format!("zombye-mod-buildings-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("buildings")).unwrap();
+    std::fs::write(dir.join("mod.ron"), "(id: \"huts\", name: \"Huts\")").unwrap();
+    std::fs::write(dir.join("buildings/b_hut.ron"), hut()).unwrap();
+    std::fs::write(dir.join("buildings/a_hut.ron"), hut().replace("mod_hut", "mod_hut_a")).unwrap();
+    std::fs::write(dir.join("buildings/notes.txt"), "not a template").unwrap();
+    let m = Mod::load(&dir).unwrap();
+    assert_eq!(m.buildings.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["a_hut.ron", "b_hut.ron"]);
+    std::fs::write(dir.join("buildings/bad name.ron"), hut()).unwrap();
+    assert!(Mod::load(&dir).unwrap_err().contains("file name"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// What a server hands to joining clients (#24): a mod's data and never its scripts, and a client
+/// that puts the pack into its game has exactly the server's game data.
+#[test]
+fn a_pack_is_a_mods_data_without_its_scripts() {
+    let whistle = r#"[(id: "whistle", name: "Whistle", category: Junk, weight_kg: 0.02, volume_l: 0.02, tags: ["reusable"])]"#;
+    let recipe = r#"[(id: "carve_whistle", name: "Carve a whistle", secs: 5.0, inputs: [(item: "magazine", count: 1)], outputs: [(item: "whistle", count: 1)])]"#;
+    let loot = r#"[(room: "bedroom", container: "any", entries: [(item: "whistle", weight: 50)])]"#;
+    let script = "function on_use(game, player, item) game:set('secret', 1) end";
+    let m = Mod::new("whistles").with_items(whistle).with_recipes(recipe).with_loot(loot).with_building("hut.ron", &hut()).with_script("whistle.luau", script);
+    let pack = m.pack();
+    assert_eq!(pack.check(), Ok(()));
+    assert_eq!(pack.files.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["items.ron", "recipes.ron", "loot.ron", "buildings/hut.ron"]);
+    assert!(!format!("{pack:?}").contains("secret"), "no script goes out");
+    // The hash names the data: another script is the same pack, another item isn't.
+    assert_eq!(m.clone().with_script("more.luau", "x = 1").pack().hash(), pack.hash());
+    assert_ne!(m.clone().with_items("[]").pack().hash(), pack.hash());
+
+    // The server's side: the mod itself. The client's: the pack.
+    let (mut server, mut client) = (base(5), base(5));
+    apply(&mut server, &[m.clone()]).unwrap();
+    let got = zombye_mods::apply_packs(&mut client, &[pack.clone()]).unwrap();
+    assert!(server.scripts.is_some() && client.scripts.is_none(), "scripts run on the server alone");
+    assert!(got[0].scripts.is_empty() && got[0].manifest.scripts.is_empty());
+    assert_eq!(got[0].pack(), pack, "a pack read and packed again is the same pack");
+    assert_eq!(zombye_sim::save::ContentPrint::of(&client), zombye_sim::save::ContentPrint::of(&server));
+    assert_eq!(World::new(client).map_base_hash(), World::new(server).map_base_hash());
+
+    // The sample mod, from its folder.
+    let sample = Mod::load(&sample_dir()).unwrap().pack();
+    assert_eq!((sample.id.as_str(), sample.files.len(), sample.files[0].0.as_str()), ("alarm_clock", 1, "items.ron"));
+    // A pack with something else in it is no mod, and one whose data is wrong says where.
+    let mut bad = pack.clone();
+    bad.files.push(("whistle.luau".into(), script.into()));
+    assert!(Mod::from_pack(&bad).unwrap_err().contains("not a data file"));
+    let mut wrong = pack;
+    wrong.files[0].1 = "[(id: \"Bad Id\")]".into();
+    assert!(zombye_mods::apply_packs(&mut base(5), &[wrong]).unwrap_err().starts_with("mod whistles: items.ron"));
+}

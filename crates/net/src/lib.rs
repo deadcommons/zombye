@@ -8,6 +8,7 @@
 pub mod browser;
 pub mod content;
 pub mod host;
+pub mod modpack;
 pub mod remote;
 pub mod save_file;
 pub mod shutdown;

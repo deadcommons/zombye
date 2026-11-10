@@ -190,10 +190,66 @@ fn a_modded_server_is_a_row_in_the_browser() {
     let info = featured[0].info().unwrap_or_else(|| panic!("{:?}", featured[0].status));
     assert_eq!((featured[0].name(), info.online, info.rules.max_players, info.password), ("Clockwork", 0, 32, false));
     assert_eq!(info.mods.iter().map(|m| (m.id.as_str(), m.version.as_str())).collect::<Vec<_>>(), [("alarm_clock", "1.0")]);
-    assert!(browser::can_join(info, &[], false).unwrap_err().contains("alarm_clock"));
-    assert_eq!(browser::can_join(info, &["alarm_clock".to_string()], false), Ok(()));
+    // A game without the mod can join all the same (#24): the row says what it would download.
+    let pack = zombye_mods::Mod::load(&sample).unwrap().pack();
+    assert_eq!((info.mods[0].hash, info.mods[0].size as usize), (pack.hash(), pack.size()));
+    assert_eq!(browser::can_join(info, &[], false), Ok(()));
+    assert!(browser::mods_note(&info.mods, &[]).contains("1 to download"));
+    assert_eq!(browser::mods_note(&info.mods, &[pack.hash()]), "Wind-up alarm clocks 1.0");
     // `--server-info` says the mods too.
     assert!(zombye_net::remote::describe(info, &server.addr).iter().any(|l| l.contains("Mods: Wind-up alarm clocks 1.0")));
+}
+
+/// Joining a modded server just works (#24): a game with none of the server's mods asks what it
+/// runs, downloads their data (an item, a building template that changes the town), checks it by
+/// hash, and then has the server's game data and builds the server's town. Its script stays on
+/// the server.
+#[test]
+fn a_game_without_the_mods_downloads_them_and_joins() {
+    use zombye_net::modpack::{self, Cache, Source};
+    use zombye_net::{content, remote};
+    let dir = Scratch::new("download");
+    let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/data");
+    // A mod with everything in it: an item, loot, a building, a script.
+    let folder = dir.0.join("mods/huts");
+    std::fs::create_dir_all(folder.join("buildings")).unwrap();
+    std::fs::write(folder.join("mod.ron"), r#"(id: "huts", name: "Huts and whistles", version: "0.3", scripts: ["huts.luau"])"#).unwrap();
+    std::fs::write(folder.join("items.ron"), r#"[(id: "whistle", name: "Whistle", category: Junk, weight_kg: 0.02, volume_l: 0.02, tags: ["reusable"])]"#).unwrap();
+    std::fs::write(folder.join("loot.ron"), r#"[(room: "bedroom", container: "any", entries: [(item: "whistle", weight: 50)])]"#).unwrap();
+    std::fs::write(folder.join("huts.luau"), "function on_use(game, player, item) if item == 'whistle' then game:set('blown', true) end end").unwrap();
+    let hut = std::fs::read_to_string(data.join("buildings/bungalow.ron")).unwrap().replace("\"house_bungalow\"", "\"mod_hut\"");
+    std::fs::write(folder.join("buildings/hut.ron"), hut).unwrap();
+    let server = start(&dir.0, &["--host", "127.0.0.1:0", "--name", "Huts", "--mod", folder.to_str().unwrap(), "--seed", "4", "--map-chunks", "8", "--zombies", "30", "--password", "sesame"]);
+    let wait = Duration::from_secs(20);
+
+    // The game as installed: no mods. Joining with its own data alone is refused, as it was.
+    let base = content::load_config(&data, 1).unwrap();
+    let plain = Remote::connect(&server.addr, "ann", "sesame", wait).unwrap();
+    let e = remote::build_map(&plain.welcome, &base).err().expect("other game data");
+    assert!(e.contains("building templates") && e.contains("items"), "{e}");
+    drop(plain);
+
+    // What the game does on joining: ask, download what's missing, check, keep, apply.
+    let info = remote::query(&server.addr, wait).unwrap();
+    assert_eq!(info.mods.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["huts"]);
+    let cache = Cache::in_saves(&dir.0.join("saves"));
+    let got = modpack::gather(&server.addr, "sesame", &info.mods, &[], Some(&cache), wait).unwrap();
+    assert_eq!((got.packs.len(), got.packs[0].1), (1, Source::Downloaded));
+    let pack = &got.packs[0].0;
+    assert_eq!(pack.hash(), info.mods[0].hash);
+    assert_eq!(pack.files.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["items.ron", "loot.ron", "buildings/hut.ron"], "data, and no script");
+    let mut modded = base.clone();
+    zombye_mods::apply_packs(&mut modded, &[pack.clone()]).unwrap();
+    assert!(modded.scripts.is_none());
+    let mut on = Remote::connect(&server.addr, "ann", "sesame", wait).unwrap();
+    let joined = remote::build_map(&on.welcome, &modded).expect("the server's data, the server's town");
+    assert!(joined.config.items.iter().any(|i| i.id == "whistle"));
+    assert!(on.wait_snapshot(wait).is_ok());
+    // The next time nothing is downloaded.
+    let again = modpack::gather(&server.addr, "sesame", &info.mods, &[], Some(&cache), wait).unwrap();
+    assert_eq!(again.packs[0].1, Source::Cached);
+    // Without the password, no mods.
+    assert!(modpack::gather(&server.addr, "", &info.mods, &[], None, wait).unwrap_err().contains("wrong password"));
 }
 
 /// A config with a mistake in it stops the server before it makes a world, naming the file and

@@ -6,8 +6,13 @@
 //!   items.ron      more items (the format of assets/data/items/items.ron)       optional
 //!   recipes.ron    more recipes (assets/data/items/recipes.ron's)               optional
 //!   loot.ron       entries added to loot tables the game has                    optional
+//!   buildings/     building templates (assets/data/buildings/*.ron's format)    optional
 //!   *.luau         the scripts `mod.ron` lists, run by the simulation           optional
 //! ```
+//!
+//! A server hands the **data** of its mods to the clients that join it (#24): [`Mod::pack`] is
+//! what goes over the network (everything but the scripts, which run on the server alone) and
+//! [`Mod::from_pack`] what a client makes of it.
 //!
 //! [`load_mods`] reads the folders and [`apply`] puts them into a [`WorldConfig`]: the data is
 //! merged and checked as the game's own is, and the scripts become the config's
@@ -21,7 +26,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::Deserialize;
+use zombye_net::modpack::ModPack;
 use zombye_sim::WorldConfig;
+use zombye_sim::template::BuildingTemplate;
 use zombye_sim::crafting::{RecipeDef, check_recipes, parse_recipes};
 use zombye_sim::items::{ItemDef, complete_items, validate_items};
 use zombye_sim::loot::LootEntry;
@@ -61,18 +68,61 @@ pub struct Mod {
     pub items: Option<String>,
     pub recipes: Option<String>,
     pub loot: Option<String>,
+    /// Building templates (#24): each file in `buildings/` by its name (`shed.ron`) and text,
+    /// sorted by name.
+    pub buildings: Vec<(String, String)>,
     /// Script file names and sources, in the manifest's order.
     pub scripts: Vec<(String, String)>,
 }
 
-fn valid_id(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 48 && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-}
+use zombye_net::modpack::valid_id;
+
+/// The folder of a mod's building templates, and of their names in a pack.
+const BUILDINGS: &str = "buildings";
 
 impl Mod {
     /// A mod with nothing in it yet (tests, and mods made in memory).
     pub fn new(id: &str) -> Self {
-        Self { manifest: Manifest { id: id.to_string(), name: id.to_string(), version: String::new(), description: String::new(), scripts: Vec::new() }, items: None, recipes: None, loot: None, scripts: Vec::new() }
+        Self { manifest: Manifest { id: id.to_string(), name: id.to_string(), version: String::new(), description: String::new(), scripts: Vec::new() }, items: None, recipes: None, loot: None, buildings: Vec::new(), scripts: Vec::new() }
+    }
+
+    /// With a building template, as a file `name` (`shed.ron`) in the mod's `buildings/`.
+    pub fn with_building(mut self, name: &str, ron: &str) -> Self {
+        self.buildings.push((name.to_string(), ron.to_string()));
+        self.buildings.sort();
+        self
+    }
+
+    /// The mod's data as a server hands it to clients (#24): its name and its data files,
+    /// **without its scripts** (they run on the server; a client never gets or runs them). The
+    /// pack's hash names exactly this.
+    pub fn pack(&self) -> ModPack {
+        let m = &self.manifest;
+        let mut files: Vec<(String, String)> = [("items.ron", &self.items), ("recipes.ron", &self.recipes), ("loot.ron", &self.loot)].into_iter().filter_map(|(name, text)| text.clone().map(|t| (name.to_string(), t))).collect();
+        files.extend(self.buildings.iter().map(|(name, text)| (format!("{BUILDINGS}/{name}"), text.clone())));
+        ModPack { id: m.id.clone(), name: m.name.clone(), version: m.version.clone(), description: m.description.clone(), files }
+    }
+
+    /// The mod a pack holds: its data, and no scripts. The pack is checked first
+    /// ([`ModPack::check`]: a proper id, data files only); what the files say is checked by
+    /// [`apply`], as a local mod's is.
+    pub fn from_pack(pack: &ModPack) -> Result<Self, String> {
+        pack.check()?;
+        let mut m = Self::new(&pack.id);
+        (m.manifest.name, m.manifest.version, m.manifest.description) = (pack.name.clone(), pack.version.clone(), pack.description.clone());
+        for (name, text) in &pack.files {
+            match name.as_str() {
+                "items.ron" => m.items = Some(text.clone()),
+                "recipes.ron" => m.recipes = Some(text.clone()),
+                "loot.ron" => m.loot = Some(text.clone()),
+                other => match other.strip_prefix(BUILDINGS).and_then(|n| n.strip_prefix('/')) {
+                    Some(file) => m.buildings.push((file.to_string(), text.clone())),
+                    None => return Err(format!("mod {}: {name:?} is not a data file a mod may bring", pack.id)),
+                },
+            }
+        }
+        m.buildings.sort();
+        Ok(m)
     }
 
     pub fn with_items(mut self, ron: &str) -> Self {
@@ -115,7 +165,26 @@ impl Mod {
             }
             scripts.push((name.clone(), read(name)?));
         }
-        Ok(Self { manifest, items: optional("items.ron")?, recipes: optional("recipes.ron")?, loot: optional("loot.ron")?, scripts })
+        // Building templates: every `buildings/*.ron`, by name, so the order (and so the town
+        // generated from them) is the same on every machine.
+        let mut buildings = Vec::new();
+        let folder = dir.join(BUILDINGS);
+        if folder.is_dir() {
+            let mut names: Vec<String> = std::fs::read_dir(&folder)
+                .map_err(|e| format!("{}: {e}", folder.display()))?
+                .filter_map(|e| e.ok().and_then(|e| e.file_name().into_string().ok()))
+                .filter(|n| n.ends_with(".ron"))
+                .collect();
+            names.sort();
+            for name in names {
+                if !zombye_net::modpack::data_file(&format!("{BUILDINGS}/{name}")) {
+                    return Err(format!("{}: a building's file name must be letters, digits, _ and - before .ron", folder.join(&name).display()));
+                }
+                let text = read(&format!("{BUILDINGS}/{name}"))?;
+                buildings.push((name, text));
+            }
+        }
+        Ok(Self { manifest, items: optional("items.ron")?, recipes: optional("recipes.ron")?, loot: optional("loot.ron")?, buildings, scripts })
     }
 }
 
@@ -174,6 +243,15 @@ pub fn apply(config: &mut WorldConfig, mods: &[Mod]) -> Result<(), String> {
             config.loot.validate().map_err(|why| what("loot.ron", why))?;
             config.loot.check(&all, &config.containers).map_err(|why| what("loot.ron", why))?;
         }
+        for (name, text) in &m.buildings {
+            // A template id the game (or an earlier mod) has: this one takes its place; any other
+            // is one more building the town generator may place. Either way the town changes.
+            let template = BuildingTemplate::from_ron(text).map_err(|why| what(&format!("{BUILDINGS}/{name}"), why))?;
+            match config.templates.iter_mut().find(|t| t.id == template.id) {
+                Some(old) => *old = template,
+                None => config.templates.push(template),
+            }
+        }
         if !m.scripts.is_empty() {
             scripts.push(ModScripts { id: id.clone(), sources: m.scripts.clone() });
         }
@@ -187,6 +265,14 @@ pub fn apply(config: &mut WorldConfig, mods: &[Mod]) -> Result<(), String> {
 /// [`load_mods`] then [`apply`]: what `--mod DIR` does. Returns the mods, for saying what loaded.
 pub fn load_into(config: &mut WorldConfig, dirs: &[PathBuf]) -> Result<Vec<Mod>, String> {
     let mods = load_mods(dirs)?;
+    apply(config, &mods)?;
+    Ok(mods)
+}
+
+/// Put the mods a server handed over (or named, and we had) into `config`, in the server's order:
+/// what a client joining a modded server plays with (#24). Data only: `config` gets no scripts.
+pub fn apply_packs(config: &mut WorldConfig, packs: &[ModPack]) -> Result<Vec<Mod>, String> {
+    let mods = packs.iter().map(Mod::from_pack).collect::<Result<Vec<_>, _>>()?;
     apply(config, &mods)?;
     Ok(mods)
 }

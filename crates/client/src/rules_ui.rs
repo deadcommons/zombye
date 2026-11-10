@@ -46,7 +46,11 @@ pub fn rows(server: &str, addr: &str, rules: &Rules) -> (String, String, Vec<(&'
 
 fn spawn(mut commands: Commands, link: Res<ServerLink>) {
     let Some(net) = &link.net else { return };
-    let (title, sub, lines) = rows(&net.server, &net.addr, &net.rules);
+    let (title, sub, mut lines) = rows(&net.server, &net.addr, &net.rules);
+    // The mods we play with there, and which of them were downloaded on joining (#24).
+    if !net.mods.is_empty() {
+        lines.push(("Mods", net.mods.clone()));
+    }
     commands
         .spawn((
             RulesPanel,
