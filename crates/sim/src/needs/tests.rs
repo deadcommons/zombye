@@ -110,7 +110,8 @@ fn needs_rise_over_a_game_day_and_with_skip_time() {
     assert_eq!((n.hunger_level(&t), n.thirst_level(&t), n.tiredness_level(&t)), (Level::Strong, Level::Severe, Level::Severe), "{n:?}");
     let tags = b.status_tags(id);
     let labels: Vec<&str> = tags.iter().map(|t| t.label.as_str()).collect();
-    assert!(labels.contains(&"Hungry") && labels.contains(&"Parched") && labels.contains(&"Exhausted"), "{labels:?}");
+    // Hungry by the settings' level; the icons have one more level before starving (`status.ron`).
+    assert!(labels.contains(&"Famished") && labels.contains(&"Parched") && labels.contains(&"Exhausted"), "{labels:?}");
     // Starving after about 21 hours.
     b.skip_time(1.0);
     assert_eq!(me(&b, id).needs.hunger_level(&t), Level::Strong);
@@ -519,21 +520,22 @@ fn tuning_checks_and_status_tags() {
     let t = NeedsTuning::default();
     let s = StatusInput {
         needs: NeedsView { hunger: 0.9, thirst: 0.4, tiredness: 0.65, asleep: None, sore: 0.0 },
+        hp_lost: 0.0,
         pain: 0.5,
         painkillers: false,
-        bleeding: 2,
+        bleeding: 20.0,
         food_poisoned: true,
         festering: false,
         infection: None,
         endurance: 0.3,
         winded: false,
-        tired_below: 0.5,
-        burden: Burden::Heavy,
+        load: 1.4,
         time_scale: 1.0,
     };
-    let tags = status_tags(&t, &s);
-    assert_eq!(tags_line(&tags), "Starving, Dry, Tired, Short of breath, Heavy, Hurting, Bleeding x2, Queasy");
-    assert_eq!(tags.iter().map(|t| t.kind).collect::<Vec<_>>(), [TagKind::Hunger, TagKind::Thirst, TagKind::Tiredness, TagKind::Endurance, TagKind::Load, TagKind::Pain, TagKind::Bleeding, TagKind::Sick]);
-    assert_eq!(tags[0].severity, 3);
-    assert!(tags[0].tip.contains("2 HP"));
+    // The icons (`status.rs`), in the shipped file's order: what hurts first.
+    let tags = status_tags(crate::StatusData::builtin(), &t, &s);
+    assert_eq!(tags_line(&tags), "Bleeding badly, Hurting, Queasy, Starving, Dry, Tired, Short of breath, Heavy");
+    assert_eq!(tags.iter().map(|t| t.kind).collect::<Vec<_>>(), [TagKind::Bleeding, TagKind::Pain, TagKind::Queasy, TagKind::Hunger, TagKind::Thirst, TagKind::Tiredness, TagKind::Endurance, TagKind::Load]);
+    assert_eq!(tags[3].severity, 4);
+    assert!(tags[3].tip.starts_with("Starving: losing health"));
 }

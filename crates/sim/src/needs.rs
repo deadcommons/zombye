@@ -35,9 +35,10 @@
 //! horde's clock (`World::far_tick`: the virtual tier, attractors, respawn; #57). Active and near
 //! zombies keep to real time. Agony stops sleep only while no painkiller dose is working. Single-player that's whenever you sleep; with others, only once everyone is.
 //!
-//! **Status tags** ([`status_tags`]): the eight groups of the design (hunger, thirst, tiredness,
-//! endurance, load, pain, bleeding, sick) plus "Asleep", each with a level and a tooltip, from the
-//! needs and what the player's own client already knows, so the HUD and the MCP tools say the same.
+//! **Status icons** (`status.rs`, [`status_tags`]): health, hunger, thirst, tiredness, endurance,
+//! load, pain, bleeding, sick, queasy and asleep, each with up to four levels and a one-line tip,
+//! from the needs and what the player's own client already knows, so the HUD and the MCP tools say
+//! the same. Their levels are data (`assets/data/status.ron`).
 //!
 //! Every number is ours. Needs, sleep and soreness are saved with the player and in `state_hash`.
 
@@ -45,8 +46,7 @@ use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
 use crate::TICK_DT;
-use crate::health::InfectionStage;
-use crate::inventory::{Burden, ItemNote, MAX_ITEM_NOTES};
+use crate::inventory::{ItemNote, MAX_ITEM_NOTES};
 use crate::items::{ItemDef, ItemStack};
 use crate::players::{MoveMods, Stance};
 use crate::rng::hash01;
@@ -459,122 +459,9 @@ impl NeedsTuning {
     }
 }
 
-/// What kind of status a tag is about.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum TagKind {
-    Hunger,
-    Thirst,
-    Tiredness,
-    Endurance,
-    Load,
-    Pain,
-    Bleeding,
-    Sick,
-    Asleep,
-}
-
-/// One status tag: a short label, how bad (1 mild to 3 severe) and what it does.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct StatusTag {
-    pub kind: TagKind,
-    pub label: String,
-    pub severity: u8,
-    pub tip: String,
-}
-
-/// What the status tags are worked out from: all of it is in the player's own client's views.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct StatusInput {
-    pub needs: NeedsView,
-    /// The wounds' pain (`HealthView::pain`); soreness is added from `needs`.
-    pub pain: f32,
-    /// A painkiller dose is working (`AidView::painkillers_h`): agony doesn't stop sleep.
-    pub painkillers: bool,
-    pub bleeding: usize,
-    pub food_poisoned: bool,
-    pub festering: bool,
-    pub infection: Option<InfectionStage>,
-    pub endurance: f32,
-    pub winded: bool,
-    /// `CombatTuning::tired_below`.
-    pub tired_below: f32,
-    pub burden: Burden,
-    /// The game time scale now (`World::time_scale`).
-    pub time_scale: f32,
-}
-
-fn pct(m: f32) -> String {
-    format!("{:.0}%", ((1.0 - m) * 100.0).abs())
-}
-
-/// The status tags that apply, in the HUD's order.
-pub fn status_tags(t: &NeedsTuning, s: &StatusInput) -> Vec<StatusTag> {
-    let mut out = Vec::new();
-    let mut tag = |kind, label: &str, severity: u8, tip: String| out.push(StatusTag { kind, label: label.to_string(), severity, tip });
-    let n = &s.needs;
-    match t.level(n.hunger) {
-        Level::Fine => {}
-        Level::Mild => tag(TagKind::Hunger, "Peckish", 1, "Peckish: getting hungry. Nothing yet.".into()),
-        Level::Strong => tag(TagKind::Hunger, "Hungry", 2, format!("Hungry: health doesn't come back; endurance recovers {} slower. Eat something.", pct(t.hungry_regen))),
-        Level::Severe => tag(TagKind::Hunger, "Starving", 3, format!("Starving: losing {:.0} HP a game hour; swings {} weaker. Eat now.", t.starving_hp_per_h, pct(t.starving_swing_power))),
-    }
-    match t.level(n.thirst) {
-        Level::Fine => {}
-        Level::Mild => tag(TagKind::Thirst, "Dry", 1, "Dry: getting thirsty. Nothing yet.".into()),
-        Level::Strong => tag(TagKind::Thirst, "Thirsty", 2, format!("Thirsty: endurance recovers {} slower. Drink something.", pct(t.thirsty_regen))),
-        Level::Severe => tag(TagKind::Thirst, "Parched", 3, format!("Parched: losing {:.0} HP a game hour; no running. Drink now.", t.parched_hp_per_h)),
-    }
-    match t.level(n.tiredness) {
-        Level::Fine => {}
-        Level::Mild => tag(TagKind::Tiredness, "Drowsy", 1, "Drowsy: you could sleep. Nothing yet.".into()),
-        Level::Strong => tag(TagKind::Tiredness, "Tired", 2, format!("Tired: swings {} slower; you see a narrower cone. Sleep (B).", pct(t.tired_swing_time))),
-        Level::Severe => tag(TagKind::Tiredness, "Exhausted", 3, format!("Exhausted: swings {} slower; walking {} slower. Sleep (B).", pct(t.exhausted_swing_time), pct(t.exhausted_walk))),
-    }
-    if s.winded {
-        tag(TagKind::Endurance, "Winded", 3, "Winded: out of breath, no running until you get it back.".into());
-    } else if s.endurance < s.tired_below {
-        tag(TagKind::Endurance, "Short of breath", 1, "Short of breath: swings are weaker and slower until your endurance recovers.".into());
-    }
-    match s.burden {
-        Burden::None => {}
-        Burden::Burdened => tag(TagKind::Load, "Burdened", 1, "Burdened: a little over your limit: slower, running tires you faster.".into()),
-        Burden::Heavy => tag(TagKind::Load, "Heavy", 2, "Heavy: well over your limit: slower still, no running, actions cost more.".into()),
-        Burden::Overloaded => tag(TagKind::Load, "Overloaded", 3, "Overloaded: far over your limit: very slow, no running or climbing.".into()),
-    }
-    let pain = s.pain + n.sore;
-    match t.pain_level(pain) {
-        0 => {}
-        1 => tag(TagKind::Pain, "Sore", 1, format!("Sore: swings {} weaker.", pct(t.pain_swing_power.0))),
-        2 => tag(TagKind::Pain, "Hurting", 2, format!("Hurting: swings {} weaker.", pct(t.pain_swing_power.1))),
-        _ if s.painkillers => {
-            tag(TagKind::Pain, "Agony", 3, format!("Agony: swings {} weaker; the painkillers let you sleep until they wear off.", pct(t.pain_swing_power.2)))
-        }
-        _ => tag(TagKind::Pain, "Agony", 3, format!("Agony: swings {} weaker; you can't sleep without painkillers.", pct(t.pain_swing_power.2))),
-    }
-    match s.bleeding {
-        0 => {}
-        1 => tag(TagKind::Bleeding, "Bleeding", 3, "Bleeding: losing HP until it's dressed (H for your wounds).".into()),
-        k => tag(TagKind::Bleeding, &format!("Bleeding x{k}"), 3, format!("Bleeding from {k} wounds: losing HP fast until they're dressed (H for your wounds).")),
-    }
-    match s.infection {
-        Some(InfectionStage::Turning) => tag(TagKind::Sick, "Turning", 3, "Turning: losing HP fast; your night sight is going.".into()),
-        Some(InfectionStage::Feverish) => tag(TagKind::Sick, "Feverish", 3, "Feverish: losing HP, no healing, slow to get your breath back.".into()),
-        _ if s.festering => tag(TagKind::Sick, "Sick", 2, "Sick: a wound is festering: it hurts, heals slowly and costs HP.".into()),
-        _ if s.food_poisoned => tag(TagKind::Sick, "Queasy", 2, "Queasy: food poisoning: you can't keep food down, you get thirsty fast.".into()),
-        _ => {}
-    }
-    if let Some(spot) = n.asleep {
-        let label = if s.time_scale > 1.0 { format!("Asleep x{:.0}", s.time_scale) } else { "Asleep".to_string() };
-        let fast = if s.time_scale > 1.0 { format!(" Time runs {:.0}x as fast.", s.time_scale) } else { String::new() };
-        tag(TagKind::Asleep, &label, 1, format!("Asleep on the {}: resting, healing faster.{fast} Move or press B to get up.", spot.name()));
-    }
-    out
-}
-
-/// The status tags as one line ("Hungry, Tired, Bleeding").
-pub fn tags_line(tags: &[StatusTag]) -> String {
-    tags.iter().map(|t| t.label.as_str()).collect::<Vec<_>>().join(", ")
-}
+// The status icons (what the HUD shows of all this) are in `status.rs`, their levels in
+// `assets/data/status.ron`.
+pub use crate::status::{status_tags, tags_line, StatusInput, StatusTag, TagKind};
 
 impl World {
     /// Game hours since tick 0 (time skips and sped-up sleep included). Never wraps.
@@ -825,31 +712,6 @@ impl World {
     /// Player `id`'s needs as its own client sees them.
     pub fn needs_view(&self, id: u32) -> Option<NeedsView> {
         self.player(id).map(|p| p.needs.view(&self.config.needs))
-    }
-
-    /// Player `id`'s status tags (the HUD's, and the MCP tools').
-    pub fn status_tags(&self, id: u32) -> Vec<StatusTag> {
-        let Some(pi) = self.players.iter().position(|p| p.id == id) else { return Vec::new() };
-        let p = &self.players[pi];
-        if p.dead {
-            return Vec::new();
-        }
-        let h = &self.config.health;
-        let input = StatusInput {
-            needs: p.needs.view(&self.config.needs),
-            pain: p.health.pain(h),
-            painkillers: !p.health.aid.painkillers.is_empty(),
-            bleeding: p.health.bleeding(h),
-            food_poisoned: p.health.food_poisoned(),
-            festering: p.health.wounds.iter().any(|w| w.festering),
-            infection: p.health.visible_infection(),
-            endurance: p.state.endurance,
-            winded: p.state.winded,
-            tired_below: self.config.combat.tired_below,
-            burden: self.carry(p).burden,
-            time_scale: self.time_scale(),
-        };
-        status_tags(&self.config.needs, &input)
     }
 
     /// Did something wake sleeper `pi` this tick: a strike landing, a sound reaching it, a zombie

@@ -40,6 +40,84 @@ fn step(w: &mut World, ticks: u32) {
     }
 }
 
+/// A survivor with every status at about `level` (0: nothing wrong; 4: the worst of each).
+fn staged(level: u8) -> (World, u32) {
+    let (mut w, id) = world();
+    let need = [0.2, 0.4, 0.65, 0.78, 0.92][level as usize];
+    w.set_needs(id, Some(need), Some(need), Some(need));
+    if level == 0 {
+        step(&mut w, 2);
+        return (w, id);
+    }
+    // Wounds: a scratch; a gash; both; a gash and a bite, feverish and queasy.
+    let wounds: &[(Part, WoundKind)] = match level {
+        1 => &[(Part::RightArm, WoundKind::Scratch)],
+        2 => &[(Part::LeftLeg, WoundKind::Gash)],
+        3 => &[(Part::LeftLeg, WoundKind::Gash), (Part::RightArm, WoundKind::Scratch)],
+        _ => &[(Part::LeftLeg, WoundKind::Gash), (Part::Torso, WoundKind::Bite), (Part::Head, WoundKind::Gash)],
+    };
+    for &(part, kind) in wounds {
+        w.inflict_wound(id, part, kind, Some(false));
+    }
+    // A load over each burden stage, in crowbars.
+    assert!(w.hold_item(id, Slot::Back, "hiking_pack"));
+    let over = [0.0, 1.05, 1.35, 1.65, 1.96][level as usize];
+    for _ in 0..60 {
+        let c = w.carry(&w.players[0]);
+        if c.weight_kg / c.limit_kg > over {
+            break;
+        }
+        w.give_item(id, "crowbar", 1);
+    }
+    let p = &mut w.players[0];
+    p.hp = [100.0, 86.0, 60.0, 35.0, 14.0][level as usize];
+    if level >= 3 {
+        p.state.endurance = 0.3;
+    }
+    if level == 4 {
+        (p.state.endurance, p.state.winded) = (0.02, true);
+        p.health.food_poisoning_h = 6.0;
+        p.health.infection = Some(zombye_sim::health::Infection { stage: zombye_sim::health::InfectionStage::Feverish, left_h: 10.0, feverish_h: 14.0, wound: 1 });
+    }
+    step(&mut w, 2);
+    (w, id)
+}
+
+/// Saves for reviewing the status icons (Linear DCM-57): `icons_0` nothing wrong (no icons),
+/// `icons_1` to `icons_4` every status at that severity, `icons_cleared` the worst again after
+/// eating, drinking and resting (those icons gone, the wounds' still there), `icons_good` fed
+/// and rested (the dimmer good states).
+#[test]
+#[ignore]
+fn status_icon_saves() {
+    let labels = |w: &World, id: u32| w.status_tags(id).iter().map(|t| format!("{} {}", t.label, t.severity)).collect::<Vec<_>>().join(", ");
+    for level in 0..=4u8 {
+        let (w, id) = staged(level);
+        println!("icons_{level}: {}", labels(&w, id));
+        let tags = w.status_tags(id);
+        match level {
+            0 => assert!(tags.is_empty(), "{tags:?}"),
+            _ => {
+                for kind in [zombye_sim::TagKind::Health, zombye_sim::TagKind::Hunger, zombye_sim::TagKind::Thirst, zombye_sim::TagKind::Tiredness, zombye_sim::TagKind::Load, zombye_sim::TagKind::Bleeding] {
+                    assert_eq!(tags.iter().find(|t| t.kind == kind).map(|t| t.severity), Some(level), "{kind:?} at level {level}: {}", labels(&w, id));
+                }
+            }
+        }
+        save(&w, &format!("icons_{level}"));
+    }
+    let (mut w, id) = staged(4);
+    w.set_needs(id, Some(0.2), Some(0.2), Some(0.2));
+    step(&mut w, 2);
+    println!("icons_cleared: {}", labels(&w, id));
+    assert!(w.status_tags(id).iter().all(|t| !matches!(t.kind, zombye_sim::TagKind::Hunger | zombye_sim::TagKind::Thirst | zombye_sim::TagKind::Tiredness)));
+    save(&w, "icons_cleared");
+    let (mut w, id) = staged(0);
+    w.set_needs(id, Some(0.0), None, Some(0.0));
+    step(&mut w, 2);
+    assert_eq!(labels(&w, id), "Well fed 0, Rested 0");
+    save(&w, "icons_good");
+}
+
 /// The middle of the asphalt tile nearest to `from` with open asphalt `clear` tiles east of it.
 fn street_near(w: &World, from: glam::Vec2, clear: i32) -> glam::Vec2 {
     use zombye_sim::map::Floor;

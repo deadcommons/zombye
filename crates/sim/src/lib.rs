@@ -33,6 +33,7 @@ pub mod save_check;
 pub mod senses;
 pub mod skills;
 pub mod spatial;
+pub mod status;
 pub mod street_props;
 pub mod template;
 pub mod tiers;
@@ -54,7 +55,8 @@ pub use items::{BodyPart, GroundItem, ItemCategory, ItemDef, ItemStack, Layer, W
 pub use loot::{LootData, LootTable};
 pub use flow::FlowField;
 pub use map::TileMap;
-pub use needs::{Freshness, Needs, NeedsTuning, NeedsView, SleepSpot, StatusInput, StatusTag, TagKind, WakeReason};
+pub use needs::{Freshness, Needs, NeedsTuning, NeedsView, SleepSpot, WakeReason};
+pub use status::{StatusData, StatusInput, StatusTag, TagKind};
 pub use players::{Action, ActionKind, DevFlags, Knock, MoveMods, Player, PlayerInput, PlayerState, Stance};
 pub use population::{Attractor, PopulationDef, Zone};
 pub use template::BuildingTemplate;

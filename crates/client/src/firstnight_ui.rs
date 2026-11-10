@@ -315,6 +315,7 @@ fn update_hint(
     link: Res<ServerLink>,
     map: Res<ClientMap>,
     join: Res<JoinInfo>,
+    icons: Res<crate::needs_ui::StatusIcons>,
     me: Res<LocalPlayer>,
     ui: Res<FirstNightUi>,
     mut hint_box: Query<&mut Visibility, With<HintBox>>,
@@ -323,7 +324,7 @@ fn update_hint(
     let (Ok(mut vis), Ok(mut text)) = (hint_box.single_mut(), text.single_mut()) else { return };
     let line = record(&options, &link, &me).filter(|_| !ui.hidden && !ui.over && !ui.morning && !me.dead).and_then(|(f, run)| {
         let own = link.own(me.id);
-        let tags = own.map(|v| v.status_tags(&join.needs, me.curr.endurance, me.curr.winded, join.combat.tired_below, link.curr.time_scale)).unwrap_or_default();
+        let tags = icons.tags(&link, &join, &me);
         let tag = |kind: TagKind, from: u8| tags.iter().any(|t| t.kind == kind && t.severity >= from);
         let threat = link.curr.zombies.iter().any(|z| !matches!(z.anim, ZombieAnim::Dead | ZombieAnim::Down) && Vec2::from(z.pos).distance(me.curr.pos) <= THREAT_M);
         hint(&HintInput {

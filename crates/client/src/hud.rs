@@ -1,6 +1,6 @@
-//! On-screen stats; health and endurance bars, the weapon held, stance, a winded warning and the
-//! health tags (bleeding, injured leg..., from `health_ui.rs`) and this life's kills and time alive (the
-//! server's run stats, `sim::run`) (bottom left); plus the automation hooks agents and CI use: periodic
+//! On-screen stats; the weapon held, stance, the health tags (injured leg..., from `health_ui.rs`)
+//! and this life's kills and time alive (the server's run stats, `sim::run`) (bottom left; no stat
+//! bars: the status icons of `needs_ui.rs` stand beside it); plus the automation hooks agents and CI use: periodic
 //! stdout stats, `--screenshot` and `--exit-after`. The death screen is `death.rs`.
 
 use bevy::prelude::*;
@@ -21,15 +21,10 @@ struct WeaponText;
 #[derive(Component)]
 struct StanceText;
 #[derive(Component)]
-struct HpFill;
-#[derive(Component)]
-struct HpNumber;
-#[derive(Component)]
-struct EnduranceFill;
-#[derive(Component)]
-struct WindedText;
-#[derive(Component)]
 struct TallyText;
+/// The weapon panel, bottom left: the status icons (`needs_ui.rs`) stand right of it.
+#[derive(Component)]
+pub struct VitalsPanel;
 /// "GOD" / "IGNORED" while the dev toggles are on.
 #[derive(Component)]
 struct DevText;
@@ -49,14 +44,8 @@ impl Plugin for HudPlugin {
     }
 }
 
-const BAR_W: f32 = 220.0;
-const BAR_H: f32 = 12.0;
 const TEXT: Color = Color::srgb(0.93, 0.9, 0.82);
 const DIM: Color = Color::srgb(0.7, 0.68, 0.62);
-const HP_COLOR: Color = Color::srgb(0.78, 0.12, 0.1);
-const END_COLOR: Color = Color::srgb(0.85, 0.75, 0.25);
-const END_TIRED: Color = Color::srgb(0.9, 0.45, 0.15);
-const END_WINDED: Color = Color::srgb(0.45, 0.5, 0.6);
 const DEV_COLOR: Color = Color::srgb(0.35, 0.9, 1.0);
 
 /// "GOD IGNORED", "GOD", "IGNORED" or "" for the dev toggles on.
@@ -67,17 +56,6 @@ fn dev_tags(dev: zombye_sim::DevFlags, protected: bool) -> String {
 
 fn font(size: f32) -> TextFont {
     TextFont { font_size: bevy::text::FontSize::Px(size), ..default() }
-}
-
-/// A labelled bar: returns the row; the fill gets `marker`.
-fn bar(c: &mut ChildSpawnerCommands, label: &str, color: Color, marker: impl Component, extra: impl FnOnce(&mut ChildSpawnerCommands)) {
-    c.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(8), ..default() }).with_children(|row| {
-        row.spawn((Text::new(label), font(13.0), TextColor(DIM), Node { width: px(30), ..default() }));
-        row.spawn((Node { width: px(BAR_W), height: px(BAR_H), ..default() }, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)))).with_children(|b| {
-            b.spawn((marker, Node { width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() }, BackgroundColor(color)));
-        });
-        extra(row);
-    });
 }
 
 /// The top-left column: the stats and keys text, then the yellow message line (`saving.rs`) under
@@ -111,6 +89,7 @@ pub fn spawn_hud(mut commands: Commands) {
     commands
         .spawn((
             BottomHud,
+            VitalsPanel,
             Node {
                 position_type: PositionType::Absolute,
                 bottom: px(16),
@@ -128,13 +107,9 @@ pub fn spawn_hud(mut commands: Commands) {
                 row.spawn((StanceText, Text::new(""), font(14.0), TextColor(DIM)));
                 row.spawn((DevText, Text::new(""), font(14.0), TextColor(DEV_COLOR)));
             });
-            bar(c, "HP", HP_COLOR, HpFill, |row| {
-                row.spawn((HpNumber, Text::new(""), font(14.0), TextColor(TEXT)));
-            });
-            bar(c, "END", END_COLOR, EnduranceFill, |row| {
-                row.spawn((WindedText, Text::new("WINDED"), font(13.0), TextColor(Color::srgb(0.95, 0.55, 0.3)), Visibility::Hidden));
-            });
-            // Bleeding, injured leg, feverish... (`health_ui.rs` fills it in).
+            // No health or endurance bars (Linear DCM-57): the status icons beside this panel say
+            // when something is wrong (`needs_ui.rs`), the debug stats window the numbers (F4).
+            // Injured leg, drowsy from painkillers, where the last strike landed (`health_ui.rs`).
             c.spawn((crate::health_ui::HealthTagsText, Text::new(""), font(13.0), TextColor(TEXT)));
             c.spawn((TallyText, Text::new(""), font(13.0), TextColor(DIM)));
         });
@@ -235,21 +210,12 @@ fn fit_top_panels(
     }
 }
 
-#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 fn update_vitals(
-    time: Res<Time>,
     me: Res<LocalPlayer>,
     join: Res<JoinInfo>,
     link: Res<ServerLink>,
-    mut texts: ParamSet<(
-        Query<&mut Text, With<WeaponText>>,
-        Query<&mut Text, With<StanceText>>,
-        Query<&mut Text, With<HpNumber>>,
-        Query<&mut Text, With<TallyText>>,
-        Query<&mut Text, With<DevText>>,
-    )>,
-    mut fills: ParamSet<(Query<(&mut Node, &mut BackgroundColor), With<HpFill>>, Query<(&mut Node, &mut BackgroundColor), With<EnduranceFill>>)>,
-    mut winded: Query<&mut Visibility, With<WindedText>>,
+    mut texts: ParamSet<(Query<&mut Text, With<WeaponText>>, Query<&mut Text, With<StanceText>>, Query<&mut Text, With<TallyText>>, Query<&mut Text, With<DevText>>)>,
 ) {
     let set = |t: &mut Text, s: String| {
         if t.0 != s {
@@ -279,50 +245,13 @@ fn update_vitals(
     if let Ok(mut t) = texts.p1().single_mut() {
         set(&mut t, stance.to_string());
     }
-    let hp = me.hp.max(0.0);
-    if let Ok(mut t) = texts.p2().single_mut() {
-        set(&mut t, format!("{hp:.0}"));
-    }
     // This life so far, as the server counts it.
-    if let (Ok(mut t), Some(run)) = (texts.p3().single_mut(), link.curr.run_of(me.id)) {
+    if let (Ok(mut t), Some(run)) = (texts.p2().single_mut(), link.curr.run_of(me.id)) {
         let survivors = if run.player_kills > 0 { format!(" (+{} survivors)", run.player_kills) } else { String::new() };
         set(&mut t, format!("kills {}{survivors}   alive {}   walked {}", run.kills, run.played(), run.distance()));
     }
-    if let Ok(mut t) = texts.p4().single_mut() {
+    if let Ok(mut t) = texts.p3().single_mut() {
         set(&mut t, dev_tags(me.dev, link.curr.players.iter().any(|p| p.id == me.id && p.protected)));
-    }
-    if let Ok((mut node, mut bg)) = fills.p0().single_mut() {
-        let w = Val::Percent((hp / join.combat.player_hp.max(1.0) * 100.0).clamp(0.0, 100.0));
-        if node.width != w {
-            node.width = w;
-        }
-        // Pulses when low.
-        let low = hp < 30.0 && !me.dead;
-        let k = if low { 0.75 + 0.25 * (time.elapsed_secs() * 6.0).sin() } else { 1.0 };
-        bg.0 = HP_COLOR.with_luminance(HP_COLOR.luminance() * k);
-    }
-    if let Ok((mut node, mut bg)) = fills.p1().single_mut() {
-        let w = Val::Percent((s.endurance * 100.0).clamp(0.0, 100.0));
-        if node.width != w {
-            node.width = w;
-        }
-        let c = if s.winded {
-            END_WINDED
-        } else if s.endurance < join.combat.tired_below {
-            END_TIRED
-        } else {
-            END_COLOR
-        };
-        if bg.0 != c {
-            bg.0 = c;
-        }
-    }
-    let vis = |on: bool| if on { Visibility::Inherited } else { Visibility::Hidden };
-    if let Ok(mut v) = winded.single_mut() {
-        let want = vis(s.winded && !me.dead);
-        if *v != want {
-            *v = want;
-        }
     }
 }
 
@@ -333,6 +262,7 @@ fn update_hud(
     map: Res<ClientMap>,
     me: Res<LocalPlayer>,
     join: Res<JoinInfo>,
+    icons: Res<crate::needs_ui::StatusIcons>,
     options: Res<Options>,
     mut sounds: Option<ResMut<crate::audio::SoundCount>>,
     mut stats: Local<FrameStats>,
@@ -355,12 +285,10 @@ fn update_hud(
         t if t.is_empty() => t,
         t => format!(" | {t}"),
     };
-    // The status tags (#11), and time running fast while asleep.
-    let tags = match link.own(me.id) {
-        Some(v) if !me.dead => v.status_tags(&join.needs, s.endurance, s.winded, join.combat.tired_below, link.curr.time_scale),
-        _ => Vec::new(),
-    };
-    let tags = if tags.is_empty() { String::new() } else { format!(" | {}", zombye_sim::needs::tags_line(&tags)) };
+    // The status icons' labels (#11, DCM-57), and time running fast while asleep.
+    let tags = icons.tags(&link, &join, &me);
+    let tags = zombye_sim::needs::tags_line(&tags);
+    let tags = if tags.is_empty() { String::new() } else { format!(" | {tags}") };
     let fast = if link.curr.time_scale > 1.0 { format!(" x{:.0}", link.curr.time_scale) } else { String::new() };
     // Sounds started since the last line (audio.rs), so a run shows what was heard.
     let heard = sounds.as_deref_mut().map_or(String::new(), |c| format!(" | {}", c.take_line()));
@@ -405,7 +333,7 @@ fn update_hud(
     if let Ok(mut t) = text.single_mut() {
         let rotate = if options.rotate { ", . rotate | " } else { "" };
         t.0 = format!(
-            "{line}\nWASD move | Shift run | C sneak{} | RMB (hold) aim | aiming: LMB attack, Space shove/stomp | E pick up / search | Tab inventory | H health | K skills | B sleep | F door/window | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load | F1 god{} | F2 ignored{} | F3 light preview | M mute | O objectives",
+            "{line}\nWASD move | Shift run | C sneak{} | RMB (hold) aim | aiming: LMB attack, Space shove/stomp | E pick up / search | Tab inventory | H health | K skills | B sleep | F door/window | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load | F1 god{} | F2 ignored{} | F3 light preview | F4 debug stats | M mute | O objectives",
             if me.sneak { " (on)" } else { "" },
             if me.dev.god { " (on)" } else { "" },
             if me.dev.ignored { " (on)" } else { "" }

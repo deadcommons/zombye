@@ -765,9 +765,11 @@ fn tool_defs() -> Value {
                 bleeds and how fast, how far healed and hours to go, dressing, festering, and what it needs next; pain, HP lost per \
                 game hour, food poisoning, the zombie infection once it shows (Feverish, then Turning; before that it is hidden and \
                 this says 'unknown'), and what the wounds do (swing power and time, walk and run speed, running, endurance recovery). \
-                Then the needs: hunger, thirst and tiredness (0-100%, with their level), asleep or not, and the status tags \
-                (Peckish/Hungry/Starving, Dry/Thirsty/Parched, Drowsy/Tired/Exhausted, Short of breath/Winded, Burdened/Heavy/\
-                Overloaded, Sore/Hurting/Agony, Bleeding xN, Queasy/Sick/Feverish/Turning, Asleep) with what each does. \
+                Then the needs: hunger, thirst and tiredness (0-100%, with their level), asleep or not, and the status icons the HUD shows \
+                (Hurt/Wounded/Badly wounded/Near death, Bleeding a little/Bleeding/Bleeding badly/Bleeding out, Sore/Hurting/\
+                In real pain/Agony, Sick/Feverish/Turning, Queasy, Peckish/Hungry/Famished/Starving, Dry/Thirsty/Very thirsty/\
+                Parched, Drowsy/Tired/Worn out/Exhausted, Short of breath/Winded, Burdened/Heavy/Overloaded/Crushed, Asleep; \
+                Well fed and Rested are good states) with their severity (1-4, 0 good) and what each means. \
                 A game hour is 150 s of game time by default.",
             "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}}}
         },
@@ -2811,7 +2813,8 @@ fn health_text(world: &World, id: u32) -> Result<String, String> {
     ));
     out.push_str(&format!("\nneeds: {}", needs_line(world, id)));
     for t in world.status_tags(id) {
-        out.push_str(&format!("\n  {}: {}", t.label, t.tip));
+        // The tip is the icon's whole line ("Thirsty: ...").
+        out.push_str(&format!("\n  {} (severity {})", t.tip, t.severity));
     }
     Ok(out)
 }

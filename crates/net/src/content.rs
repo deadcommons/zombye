@@ -9,6 +9,7 @@ use zombye_sim::crafting::{RecipeDef, parse_recipes_for};
 use zombye_sim::items::{ItemDef, WeaponDef, parse_items, parse_weapons};
 use zombye_sim::loot::LootData;
 use zombye_sim::population::{PopulationDef, parse_population};
+use zombye_sim::status::{StatusData, parse_status};
 use zombye_sim::street_props::{StreetPropsDef, parse_street_props};
 
 /// The repo's `assets/data` folder (used when running from a checkout).
@@ -55,6 +56,18 @@ pub fn load_street_props(data_dir: &Path) -> Result<StreetPropsDef, String> {
     }
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     parse_street_props(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The status icons in `<data>/status.ron` (Linear DCM-57: which there are, their levels, labels
+/// and tips), validated. A data folder without the file gets the shipped ones. Only what a client
+/// shows: the world never reads it.
+pub fn load_status(data_dir: &Path) -> Result<StatusData, String> {
+    let path = data_dir.join("status.ron");
+    if !path.exists() {
+        return Ok(StatusData::builtin().clone());
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    parse_status(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// The melee weapons in `<data>/items/weapons.ron`, validated.
@@ -163,6 +176,19 @@ mod tests {
 
     /// The street props load (#61), a mistake names the file and the kind or rule, and with no file
     /// there are none.
+    #[test]
+    fn status_icons_load_from_the_data_folder() {
+        // The shipped file is the built-in one; a folder without it gets that too.
+        assert_eq!(&load_status(&default_data_dir()).unwrap(), StatusData::builtin());
+        assert_eq!(&load_status(Path::new("/nonexistent-zombye-data")).unwrap(), StatusData::builtin());
+        let dir = std::env::temp_dir().join(format!("zombye-status-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("status.ron"), r#"(icons: [(kind: Thirst, levels: [(at: 0.5, label: "Dry"), (at: 0.4, label: "Drier")])])"#).unwrap();
+        let err = load_status(&dir).unwrap_err();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(err.contains("status.ron") && err.contains("Thirst") && err.contains("higher than the last"), "{err}");
+    }
+
     #[test]
     fn street_props_load_and_name_their_mistakes() {
         let def = load_street_props(&default_data_dir()).unwrap();

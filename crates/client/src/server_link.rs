@@ -65,6 +65,8 @@ pub struct NetInfo {
     /// The server's name and whether players can hurt each other there.
     pub server: String,
     pub pvp: bool,
+    /// The server takes the dev tools (`--allow-dev`): the debug stats window opens there too.
+    pub allow_dev: bool,
     /// The name we go by.
     pub name: String,
     pub ping_ms: Option<f32>,
@@ -351,7 +353,7 @@ fn join_remote(app: &mut App, addr: &str, options: &Options, content: &zombye_si
     let damage = EdgeDamageMap(w.edge_damage.iter().map(|d| ((d.tile, d.edge), d.hp)).collect());
     let spawn = first.players.iter().find(|p| p.id == player_id).map(|p| Vec2::from(p.pos)).unwrap_or(joined.player_spawn);
     let join = join_info(&joined.config, player_id, spawn);
-    let net = NetInfo { addr: addr.to_string(), server: w.rules.name.clone(), pvp: w.rules.pvp, name: w.name.clone(), ping_ms: None, down_kbps: None, closed: None };
+    let net = NetInfo { addr: addr.to_string(), server: w.rules.name.clone(), pvp: w.rules.pvp, allow_dev: w.rules.allow_dev, name: w.name.clone(), ping_ms: None, down_kbps: None, closed: None };
     if options.god || options.ignored {
         remote.send(Intent::Dev { player: player_id, god: options.god.then_some(true), ignored: options.ignored.then_some(true) });
     }

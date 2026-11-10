@@ -76,6 +76,7 @@ mod lights;
 mod materials;
 mod meshgen;
 mod action_ui;
+mod debug_stats;
 mod needs_ui;
 mod offscreen;
 mod player;
@@ -167,6 +168,8 @@ pub struct Options {
     /// Show the tooltip of the `N`th status tag (from 0), as if the pointer were over it
     /// (`--hover-tag N`: offscreen there is no pointer).
     pub hover_tag: Option<usize>,
+    /// Start with the debug stats window open, as if F4 had been pressed (`--debug-stats`).
+    pub debug_stats: bool,
     /// Start with the dev toggles on, as if F1 / F2 had been pressed (`--god`, `--ignored`).
     pub god: bool,
     pub ignored: bool,
@@ -318,6 +321,7 @@ impl Options {
             menu: value("--menu"),
             menu_pick: value("--menu-pick").and_then(|v| parse_menu_pick(&v)),
             hover_tag: value("--hover-tag").and_then(|v| v.parse().ok()),
+            debug_stats: flag("--debug-stats"),
             god: flag("--god"),
             ignored: flag("--ignored"),
             map_chunks: value("--map-chunks").and_then(|v| v.parse().ok()).filter(|n: &i32| (1..=256).contains(n)),
@@ -443,7 +447,7 @@ fn main() {
             camera::IsoCameraPlugin,
             zombie_render::ZombieRenderPlugin,
             items_render::ItemsRenderPlugin,
-            (hud::HudPlugin, inventory_ui::InventoryUiPlugin, health_ui::HealthUiPlugin, death::DeathPlugin, needs_ui::NeedsUiPlugin, action_ui::ActionUiPlugin, skills_ui::SkillsUiPlugin),
+            (hud::HudPlugin, inventory_ui::InventoryUiPlugin, health_ui::HealthUiPlugin, death::DeathPlugin, needs_ui::NeedsUiPlugin, action_ui::ActionUiPlugin, skills_ui::SkillsUiPlugin, debug_stats::DebugStatsPlugin),
             (fx::FxPlugin, heard::HeardPlugin, film::FilmPlugin, vegetation::VegetationPlugin),
             survivor::SurvivorPlugin,
             (autoplay::AutoplayPlugin, duel::DuelPlugin),

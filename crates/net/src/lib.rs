@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use zombye_sim::map::{EdgeChange, OwnedEdge};
 use zombye_sim::{
     ActionKind, Burden, Carry, CombatEvent, DevFlags, GroundItem, HealthTags, HealthView, Inventory, ItemNote, ItemStack, JobKind, LevelUp, MoveMods, NeedsTuning, NeedsView, Place, PlayerInput, RunStats, Skill, SkillView, Stance,
-    StatusInput, StatusTag, Treatment, World, WorldConfig, ZombieAnim,
+    StatusData, StatusInput, StatusTag, Treatment, World, WorldConfig, ZombieAnim,
 };
 
 /// Something a client wants to happen. The server validates and applies it.
@@ -221,26 +221,31 @@ impl PrivateView {
         Some(Self { player: id, inventory: p.inventory.clone(), carry, max_kg: carry.limit_kg * world.config.carry.max_load, open, health, needs, skills, jobs })
     }
 
-    /// Our status tags (hunger, thirst, tiredness, endurance, load, pain, bleeding, sick, asleep),
-    /// from this view, the predicted endurance and the snapshot's time scale: what the server's
-    /// `World::status_tags` says, worked out on the client.
-    pub fn status_tags(&self, needs: &NeedsTuning, endurance: f32, winded: bool, tired_below: f32, time_scale: f32) -> Vec<StatusTag> {
+    /// What our status icons are worked out from: this view, plus the share of full HP lost, the
+    /// predicted endurance and the snapshot's time scale.
+    pub fn status_input(&self, hp_lost: f32, endurance: f32, winded: bool, time_scale: f32) -> StatusInput {
         let h = &self.health;
-        let input = StatusInput {
+        StatusInput {
             needs: self.needs,
+            hp_lost,
             pain: h.pain,
             painkillers: h.aid.painkillers_h.is_some(),
-            bleeding: h.wounds.iter().filter(|w| w.bleed_per_h > 0.0).count(),
+            bleeding: h.wounds.iter().fold(0.0, |hp, w| hp + w.bleed_per_h),
             food_poisoned: h.food_poisoning,
             festering: h.wounds.iter().any(|w| w.festering),
             infection: h.infection,
             endurance,
             winded,
-            tired_below,
-            burden: self.carry.burden,
+            load: self.carry.weight_kg / self.carry.limit_kg.max(0.01),
             time_scale,
-        };
-        zombye_sim::needs::status_tags(needs, &input)
+        }
+    }
+
+    /// Our status icons (health, hunger, thirst, tiredness, endurance, load, pain, bleeding, sick,
+    /// queasy, asleep) by `data` (`status.ron`): what the server's `World::status_tags` says,
+    /// worked out on the client.
+    pub fn status_tags(&self, data: &StatusData, needs: &NeedsTuning, hp_lost: f32, endurance: f32, winded: bool, time_scale: f32) -> Vec<StatusTag> {
+        zombye_sim::status::status_tags(data, needs, &self.status_input(hp_lost, endurance, winded, time_scale))
     }
 
     /// Our level in `skill` (#46).
@@ -1221,7 +1226,7 @@ mod tests {
                 let mine = snap.clone().for_player(id);
                 let own = mine.private.iter().find(|v| v.player == id).expect("our needs changed");
                 assert!(own.needs.asleep.is_some() && own.needs.tiredness == 0.5, "{:?}", own.needs);
-                let tags = own.status_tags(&server.world.config.needs, view.endurance, view.winded, server.world.config.combat.tired_below, snap.time_scale);
+                let tags = own.status_tags(zombye_sim::StatusData::builtin(), &server.world.config.needs, 1.0 - view.hp / server.world.config.combat.player_hp, view.endurance, view.winded, snap.time_scale);
                 assert_eq!(tags.iter().map(|t| t.label.clone()).collect::<Vec<_>>(), server.world.status_tags(id).iter().map(|t| t.label.clone()).collect::<Vec<_>>());
             }
         }
