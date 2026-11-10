@@ -23,7 +23,7 @@ const SILENCE: Duration = Duration::from_secs(10);
 /// Open a connection to `addr` (`host:port`, or `host` for the default port), with `timeout` to
 /// connect and to read each answer. The stream, and the address with its port (for messages).
 fn dial(addr: &str, timeout: Duration) -> Result<(TcpStream, String), String> {
-    let with_port = if addr.rsplit_once(':').is_some_and(|(_, p)| p.parse::<u16>().is_ok()) { addr.to_string() } else { format!("{addr}:{}", wire::DEFAULT_PORT) };
+    let with_port = with_port(addr);
     let addrs: Vec<_> = with_port.to_socket_addrs().map_err(|e| format!("can't find {with_port}: {e}"))?.collect();
     let mut last = format!("can't find {with_port}");
     let mut stream = None;
@@ -48,7 +48,39 @@ fn dial(addr: &str, timeout: Duration) -> Result<(TcpStream, String), String> {
 /// it wants a password, and its protocol (ours must be the same to join). No password needed. What
 /// a server browser shows before you join, and `zombye --server-info HOST`.
 pub fn query(addr: &str, timeout: Duration) -> Result<ServerInfo, String> {
-    let (mut stream, with_port) = dial(addr, timeout)?;
+    probe(addr, timeout).map(|(info, _)| info)
+}
+
+/// [`query`], and the ping (#27, the server browser): how long the connection took to open, which
+/// is one trip there and back (finding the address isn't counted, nor the server's answer, which
+/// waits for its next tick).
+pub fn probe(addr: &str, timeout: Duration) -> Result<(ServerInfo, Duration), String> {
+    let with_port = with_port(addr);
+    let addrs: Vec<_> = with_port.to_socket_addrs().map_err(|e| format!("can't find {with_port}: {e}"))?.collect();
+    let mut last = format!("can't find {with_port}");
+    for a in addrs {
+        let asked = Instant::now();
+        match TcpStream::connect_timeout(&a, timeout) {
+            Ok(stream) => {
+                let ping = asked.elapsed();
+                let io = |e: std::io::Error| format!("lost the connection to {with_port}: {e}");
+                stream.set_nodelay(true).map_err(io)?;
+                stream.set_read_timeout(Some(timeout)).map_err(io)?;
+                stream.set_write_timeout(Some(Duration::from_secs(5))).map_err(io)?;
+                return ask(stream, &with_port).map(|info| (info, ping));
+            }
+            Err(e) => last = format!("can't connect to {a}: {e}"),
+        }
+    }
+    Err(last)
+}
+
+/// `addr` with the default port when it names none.
+pub fn with_port(addr: &str) -> String {
+    if addr.rsplit_once(':').is_some_and(|(_, p)| p.parse::<u16>().is_ok()) { addr.to_string() } else { format!("{addr}:{}", wire::DEFAULT_PORT) }
+}
+
+fn ask(mut stream: TcpStream, with_port: &str) -> Result<ServerInfo, String> {
     let io = |e: std::io::Error| format!("lost the connection to {with_port}: {e}");
     wire::write_frame(&mut stream, &ClientMsg::Query(wire::PROTOCOL)).map_err(io)?;
     let answer = wire::read_frame::<ServerMsg>(&mut stream, wire::MAX_SERVER_FRAME);
@@ -70,6 +102,9 @@ pub fn describe(info: &ServerInfo, addr: &str) -> Vec<String> {
         format!("  Version: {} (protocol {}): this game speaks protocol {} and can't join, both need the same version", info.version, info.protocol, wire::PROTOCOL)
     });
     lines.extend(info.rules.lines().into_iter().map(|(label, text)| format!("  {label}: {text}")));
+    if !info.mods.is_empty() {
+        lines.push(format!("  Mods: {} (a client needs the same ones)", crate::browser::mods_text(&info.mods)));
+    }
     lines
 }
 

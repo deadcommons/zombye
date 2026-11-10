@@ -173,6 +173,29 @@ fn an_empty_folder_becomes_a_server() {
     ada.wait_snapshot(Duration::from_secs(20)).expect("her first snapshot");
 }
 
+/// The server browser's row (#27): a server started with a mod says so to whoever asks what it
+/// is, with its players and a ping, and a game without that mod is told it can't join.
+#[test]
+fn a_modded_server_is_a_row_in_the_browser() {
+    use zombye_net::browser::{self, Browser, ListState};
+    let dir = Scratch::new("browser");
+    let sample = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods/alarm_clock");
+    let server = start(&dir.0, &["--host", "127.0.0.1:0", "--name", "Clockwork", "--mod", sample.to_str().unwrap(), "--map-chunks", "8", "--zombies", "30"]);
+    let list = dir.0.join("servers.ron");
+    std::fs::write(&list, format!("(servers: [(address: \"{}\", featured: true, note: \"a test\")])", server.addr)).unwrap();
+    let mut b = Browser::open(list.to_str().unwrap(), &[]);
+    assert!(b.wait(Duration::from_secs(30)));
+    assert_eq!(b.list, ListState::Ready);
+    let featured = b.featured();
+    let info = featured[0].info().unwrap_or_else(|| panic!("{:?}", featured[0].status));
+    assert_eq!((featured[0].name(), info.online, info.rules.max_players, info.password), ("Clockwork", 0, 32, false));
+    assert_eq!(info.mods.iter().map(|m| (m.id.as_str(), m.version.as_str())).collect::<Vec<_>>(), [("alarm_clock", "1.0")]);
+    assert!(browser::can_join(info, &[], false).unwrap_err().contains("alarm_clock"));
+    assert_eq!(browser::can_join(info, &["alarm_clock".to_string()], false), Ok(()));
+    // `--server-info` says the mods too.
+    assert!(zombye_net::remote::describe(info, &server.addr).iter().any(|l| l.contains("Mods: Wind-up alarm clocks 1.0")));
+}
+
 /// A config with a mistake in it stops the server before it makes a world, naming the file and
 /// the mistake.
 #[test]

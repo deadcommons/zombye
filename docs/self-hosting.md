@@ -121,6 +121,33 @@ docker run -d --name zombye -p 7777:7777 -p 127.0.0.1:8788:8788 \
 The agent connects to `http://127.0.0.1:8788/mcp` with `Authorization: Bearer TOKEN`. To reach it
 from elsewhere put an HTTPS reverse proxy or a tunnel in front; never publish the port as it is.
 
+## Getting found: the server browser
+
+Players press F7 in the game for the server browser. It shows the servers a **list** names, and
+there is no central list: nobody runs one for the game, and the game asks no service of ours. A
+list is a small text file that anyone can keep and hand round, as a file or behind a plain
+`http://` address (https can't be read yet):
+
+```ron
+(
+    servers: [
+        (address: "play.example.org", name: "Example co-op", featured: true, note: "EU, restarts at 04:00"),
+        (address: "203.0.113.7:7778"),
+    ],
+)
+```
+
+`address` is `host[:port]` (7777 without); `name` shows until your server answers with its own;
+`note` is one line of yours; `featured: true` puts the server in the section at the top. Players
+use a list with `zombye --server-list FILE|http://HOST/PATH`, or `server_list: Some("...")` in
+their `settings.ron`, or by replacing `servers.ron` in the game's data folder; they can also type
+your address into the browser's Address field, which keeps it.
+
+Each server in the list is asked what it is without joining: its name, players on, PvP or co-op,
+whether it wants a password, its mods (`--mod`) and the rest of its rules. So the port must be
+reachable, and what the browser shows is what your server says. A client needs the same mods as
+the server (it is told which, and they aren't downloaded yet).
+
 ## What to know
 
 - **Nothing is encrypted**, the join password included. Names are not accounts: anyone who knows

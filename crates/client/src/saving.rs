@@ -26,7 +26,7 @@ use crate::player::LocalPlayer;
 use crate::server_link::{ClientMap, EdgeChangesThisFrame, EdgeDamageMap, EdgeDamageThisFrame, JoinInfo, ServerLink};
 
 const QUICKSAVE: &str = "quicksave";
-const AUTOSAVE: &str = "autosave";
+pub(crate) const AUTOSAVE: &str = "autosave";
 /// Seconds a "Saved" / "Loaded" line stays up.
 const NOTICE_SECS: f32 = 4.0;
 

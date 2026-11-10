@@ -83,6 +83,9 @@ pub struct HostOptions {
     pub camera: Camera,
     /// Whether clients that say they are programs may join, and whether others are told (#69).
     pub agents: Agents,
+    /// The mods this server's world was made with (`--mod`), told to whoever asks what server
+    /// this is (#27: the server browser shows them, and a client needs the same ones).
+    pub mods: Vec<wire::ModInfo>,
 }
 
 /// The default budget per client: a quarter of a megabit.
@@ -111,6 +114,7 @@ impl Default for HostOptions {
             fair_sight: None,
             camera: Camera::default(),
             agents: Agents::default(),
+            mods: Vec::new(),
         }
     }
 }
@@ -292,7 +296,7 @@ impl Host {
 
     /// What this server says of itself to someone who asks without joining (#69).
     pub fn info(&self) -> ServerInfo {
-        ServerInfo { protocol: wire::PROTOCOL, version: env!("CARGO_PKG_VERSION").to_string(), rules: self.rules(), online: self.conns.len() as u32, password: !self.options.password.is_empty() }
+        ServerInfo { protocol: wire::PROTOCOL, version: env!("CARGO_PKG_VERSION").to_string(), rules: self.rules(), online: self.conns.len() as u32, password: !self.options.password.is_empty(), mods: self.options.mods.clone() }
     }
 
     /// Is `player` played by a program, by its client's own word (#69)?

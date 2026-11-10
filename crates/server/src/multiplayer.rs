@@ -90,6 +90,8 @@ impl HostArgs {
                 None => wire::Agents::default(),
                 Some(v) => wire::Agents::parse(&v).ok_or(format!("--agents is off, on or marked, not {v}"))?,
             },
+            // The mods loaded with `--mod`, filled in by `main` (it reads them).
+            mods: Vec::new(),
         };
         let start_kit = text("--start-kit").map(|v| parse_kit(&v)).transpose()?;
         Ok(Self { addr, options, pvp: on_off("--pvp")?, start_kit, admin: crate::admin::parse(args, admin_token)? })

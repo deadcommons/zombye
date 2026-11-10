@@ -133,7 +133,7 @@ fn next_volume(v: Volume) -> Volume {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn chat_keys(
+pub(crate) fn chat_keys(
     mut typed: MessageReader<KeyboardInput>,
     mut keys: ResMut<ButtonInput<KeyCode>>,
     mut entry: ResMut<ChatEntry>,

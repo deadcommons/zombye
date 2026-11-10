@@ -5,6 +5,7 @@
 //! over the network ([`wire`]), a [`host::Host`] serving and each client holding a
 //! [`remote::Remote`].
 
+pub mod browser;
 pub mod content;
 pub mod host;
 pub mod remote;

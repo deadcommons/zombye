@@ -1,0 +1,847 @@
+//! The server browser (#27, docs/PLAN.md §3a): F7 lists the servers a list names, featured ones
+//! first, each with its players, ping, PvP or co-op and mods, and joins the one you pick.
+//!
+//! **Where the servers come from:** a list anyone can keep (`zombye_net::browser`, RON): the file
+//! or `http://` address given with `--server-list`, else `server_list` in the client's
+//! `settings.ron`, else the data folder's `servers.ron` (shipped empty: there is no hosted
+//! service, and the game asks none of ours). Servers you type in yourself (the Address field) are
+//! kept in `settings.ron` and asked like the rest. Every server is asked what it is with the
+//! query that doesn't join (#69), on threads of its own; the panel shows answers as they come.
+//!
+//! **Keys:** F7 or Esc shuts it; Up / Down pick a server (or click one); Enter (or Join) joins it;
+//! R asks them all again; Delete takes a server you added off the list; Tab goes round the Name,
+//! Password and Address fields (Enter in Address adds that server; Esc leaves a field). While it
+//! is open the game's other keys and the mouse's buttons are held back, as with the chat line.
+//!
+//! **Joining** is checked first against what the server said (version, camera, agents, mods,
+//! room), so a server this game can't join says why in the panel and nothing is left. Then the
+//! game starts again on that server: your single-player world is autosaved as on quitting, and
+//! the same program is run with `--connect` (the map and its meshes are built once per world at
+//! start-up, so a server's world is another start). If the server then refuses (a wrong password,
+//! the name in use, other game data), the game comes back to your autosaved world with the
+//! browser open and the reason on it.
+
+use std::sync::Mutex;
+
+use bevy::input::InputSystems;
+use bevy::input::keyboard::{Key, KeyboardInput};
+use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
+use bevy::prelude::*;
+use zombye_net::browser::{self, Browser, ListState, Row, Status};
+
+use crate::Options;
+use crate::server_link::ServerLink;
+use crate::theme::{BODY, DIM, PANEL_BG, SMALL, TEXT, TITLE, font};
+use crate::ui_scale::SettingsStore;
+
+const WIDTH: f32 = 960.0;
+/// Lines of the list on show at once (servers and the two section headings).
+const VISIBLE: usize = 8;
+const LINE_H: f32 = 24.0;
+const GOLD: Color = Color::srgb(0.95, 0.8, 0.4);
+const GOOD: Color = Color::srgb(0.6, 0.85, 0.55);
+const WARN: Color = Color::srgb(0.95, 0.62, 0.35);
+const ROW_BG: Color = Color::srgba(1.0, 1.0, 1.0, 0.04);
+const ROW_HOVER: Color = Color::srgba(1.0, 1.0, 1.0, 0.1);
+const ROW_PICKED: Color = Color::srgba(0.95, 0.8, 0.4, 0.22);
+const FIELD_BG: Color = Color::srgba(1.0, 1.0, 1.0, 0.08);
+const BUTTON: Color = Color::srgb(0.25, 0.3, 0.2);
+const MAX_NAME: usize = 24;
+const MAX_FIELD: usize = 80;
+/// The columns' widths, in UI pixels: name, players, ping, mode, locked, mods (the note takes the rest).
+const COLS: [f32; 6] = [250.0, 70.0, 62.0, 56.0, 76.0, 180.0];
+
+pub struct BrowserUiPlugin;
+
+impl Plugin for BrowserUiPlugin {
+    fn build(&self, app: &mut App) {
+        let options = app.world().resource::<Options>().clone();
+        SettingsStore::ensure(app);
+        let start = app.world_mut().remove_resource::<BrowserStart>();
+        let mut ui = BrowserUi { name: options.name.clone(), password: options.password.clone(), ..default() };
+        if let Some(start) = start {
+            ui.note = start.note;
+            ui.selected = Some(zombye_net::remote::with_port(&start.addr));
+            ui.warn = true;
+            ui.want_open = true;
+        }
+        ui.want_open |= options.browser;
+        app.insert_resource(ui)
+            .init_resource::<LoadedMods>()
+            .add_systems(Startup, spawn)
+            // Before the chat line and every other key handler: while the browser is open the keys are its own.
+            .add_systems(PreUpdate, keys.after(InputSystems).before(crate::chat::chat_keys).before(crate::inventory_ui::TextEntry).run_if(resource_exists::<SettingsStore>))
+            .add_systems(Update, (script, act, poll, draw).chain().run_if(resource_exists::<SettingsStore>));
+    }
+}
+
+/// The ids of the mods this game was started with (`--mod`): a server must run the same ones.
+#[derive(Resource, Default, Clone)]
+pub struct LoadedMods(pub Vec<String>);
+
+/// Put in before the plugins are built when a join asked for in the browser failed: the game is
+/// back in its own world, and the browser opens with the reason.
+#[derive(Resource)]
+pub struct BrowserStart {
+    pub note: String,
+    /// The server that refused, to have it picked again.
+    pub addr: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Field {
+    Name,
+    Password,
+    Address,
+}
+
+/// What a click asked for; done in `act`.
+#[derive(Clone, Debug, PartialEq)]
+enum Act {
+    Pick(String),
+    Join,
+    Refresh,
+    Close,
+    /// Take the picked server off our own servers.
+    Remove,
+    Focus(Field),
+}
+
+#[derive(Resource, Default)]
+pub struct BrowserUi {
+    pub open: bool,
+    /// Open at the first frame (`--browser`, or back from a join that failed).
+    want_open: bool,
+    browser: Option<Browser>,
+    /// The picked server's address.
+    selected: Option<String>,
+    /// The first line of the list on show.
+    top: usize,
+    field: Option<Field>,
+    name: String,
+    password: String,
+    address: String,
+    /// The line at the foot: what happened, or why not.
+    note: String,
+    warn: bool,
+    acts: Vec<Act>,
+    dirty: bool,
+    /// `--browser-join` done.
+    scripted: bool,
+}
+
+#[derive(Component)]
+struct Root;
+
+/// What starting again on a server needs: the arguments, and the password (through the
+/// environment, not the command line, where other programs could read it).
+pub struct Relaunch {
+    pub args: Vec<String>,
+    pub password: String,
+}
+
+static RELAUNCH: Mutex<Option<Relaunch>> = Mutex::new(None);
+
+/// The join asked for in the browser, once the game has shut down (`main` runs it).
+pub fn take_relaunch() -> Option<Relaunch> {
+    RELAUNCH.lock().ok().and_then(|mut r| r.take())
+}
+
+/// The arguments to start again with on `addr`: this run's, without what chose its world or was
+/// for this run only, and with the server, the name and where to come back to if it refuses
+/// (`single`: our own autosaved world).
+pub fn relaunch_args(args: &[String], addr: &str, name: &str, single: bool) -> Vec<String> {
+    const WITH_VALUE: [&str; 9] = ["--connect", "--name", "--password", "--load", "--from-browser", "--browser-join", "--server-info", "--skip-hours", "--at"];
+    const ALONE: [&str; 9] = ["--browser", "--load-anyway", "--fight-demo", "--siege", "--duel", "--talk-demo", "--talk-wall", "--morning", "--pvp"];
+    let mut out = Vec::new();
+    let mut k = 0;
+    while k < args.len() {
+        let a = args[k].as_str();
+        if WITH_VALUE.contains(&a) {
+            k += 2;
+            continue;
+        }
+        if !ALONE.contains(&a) {
+            out.push(args[k].clone());
+        }
+        k += 1;
+    }
+    out.extend(["--connect".to_string(), addr.to_string()]);
+    if !name.trim().is_empty() {
+        out.extend(["--name".to_string(), name.trim().to_string()]);
+    }
+    out.extend(["--from-browser".to_string(), if single { "single" } else { "server" }.to_string()]);
+    out
+}
+
+/// Where the list comes from: `--server-list`, else the settings file's, else the data folder's
+/// `servers.ron` if it is there (none: only the servers added by hand).
+pub fn list_source(options: &Options, settings: Option<&str>) -> String {
+    if let Some(s) = options.server_list.as_deref().or(settings).map(str::trim).filter(|s| !s.is_empty()) {
+        return s.to_string();
+    }
+    let shipped = options.data.join(browser::LIST_FILE);
+    if shipped.is_file() { shipped.to_string_lossy().into_owned() } else { String::new() }
+}
+
+/// A line of the list as shown.
+#[derive(Clone, Debug, PartialEq)]
+enum Line {
+    Head(&'static str, usize),
+    Server(String),
+}
+
+fn lines(b: &Browser) -> Vec<Line> {
+    let (featured, others) = (b.featured(), b.others());
+    let mut out = Vec::new();
+    if !featured.is_empty() {
+        out.push(Line::Head("Featured", featured.len()));
+        out.extend(featured.iter().map(|r| Line::Server(r.addr.clone())));
+    }
+    if !others.is_empty() {
+        out.push(Line::Head(if featured.is_empty() { "Servers" } else { "More servers" }, others.len()));
+        out.extend(others.iter().map(|r| Line::Server(r.addr.clone())));
+    }
+    out
+}
+
+/// The first line to show so that line `at` of `n` is among the `VISIBLE` on show, moving as
+/// little as possible from `top`.
+fn scrolled(top: usize, at: Option<usize>, n: usize) -> usize {
+    let most = n.saturating_sub(VISIBLE);
+    let mut top = top.min(most);
+    if let Some(at) = at {
+        // A server just under a heading shows its heading too.
+        if at.saturating_sub(1) < top {
+            top = at.saturating_sub(1);
+        } else if at >= top + VISIBLE {
+            top = at + 1 - VISIBLE;
+        }
+    }
+    top.min(most)
+}
+
+/// A row's cells: name, players, ping, mode, mods, the note; and the colour of its state.
+struct Cells {
+    name: String,
+    players: String,
+    ping: String,
+    mode: String,
+    /// "password" when joining needs one.
+    locked: String,
+    mods: String,
+    note: String,
+    /// Up and joinable; up but not joinable (the reason is in the details); not up.
+    state: RowState,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RowState {
+    Asking,
+    Joinable,
+    Blocked,
+    Offline,
+}
+
+/// A whole number of milliseconds; a server on this machine or the next answers in under one.
+fn ping_text(ms: u32) -> String {
+    if ms == 0 { "<1 ms".into() } else { format!("{ms} ms") }
+}
+
+fn cells(row: &Row, mods: &[String], agent: bool) -> Cells {
+    let name = format!("{}{}", row.name(), if row.mine { "  (added by you)" } else { "" });
+    match &row.status {
+        Status::Asking => Cells { name, players: String::new(), ping: "...".into(), mode: String::new(), locked: String::new(), mods: String::new(), note: row.entry.note.clone(), state: RowState::Asking },
+        Status::Offline(_) => Cells { name, players: String::new(), ping: "-".into(), mode: String::new(), locked: String::new(), mods: String::new(), note: "no answer".into(), state: RowState::Offline },
+        Status::Online { info, ping_ms } => {
+            let blocked = browser::can_join(info, mods, agent).is_err();
+            Cells {
+                name,
+                players: format!("{} / {}", info.online, info.rules.max_players),
+                ping: ping_text(*ping_ms),
+                mode: if info.rules.pvp { "PvP" } else { "Co-op" }.into(),
+                locked: if info.password { "password" } else { "" }.into(),
+                mods: browser::mods_text(&info.mods),
+                note: row.entry.note.clone(),
+                state: if blocked { RowState::Blocked } else { RowState::Joinable },
+            }
+        }
+    }
+}
+
+/// The details of the picked server: a heading, a line on whether it can be joined (and its
+/// colour), and its rules.
+fn details(row: &Row, mods: &[String], agent: bool) -> (String, String, Color, Vec<(&'static str, String)>) {
+    match &row.status {
+        Status::Asking => (row.name().to_string(), format!("{}: asking...", row.addr), DIM, Vec::new()),
+        Status::Offline(why) => (row.name().to_string(), format!("No answer: {why}"), WARN, Vec::new()),
+        Status::Online { info, ping_ms } => {
+            let head = format!("{}   {}   version {}   {}", row.name(), row.addr, info.version, ping_text(*ping_ms));
+            let (line, colour) = match browser::can_join(info, mods, agent) {
+                Ok(()) if info.password => ("Needs a password: type it below, then Enter joins".to_string(), GOLD),
+                Ok(()) => ("Enter joins".to_string(), GOOD),
+                Err(why) => (format!("Can't join: {why}"), WARN),
+            };
+            let mut rules = info.rules.lines();
+            rules.push(("Mods", browser::mods_text(&info.mods)));
+            if !row.entry.note.is_empty() {
+                rules.push(("Note", row.entry.note.clone()));
+            }
+            (head, line, colour, rules)
+        }
+    }
+}
+
+fn spawn(mut commands: Commands) {
+    commands.spawn((
+        Root,
+        Node {
+            position_type: PositionType::Absolute,
+            top: px(14),
+            left: percent(50),
+            margin: UiRect::left(px(-WIDTH / 2.0)),
+            width: px(WIDTH),
+            flex_direction: FlexDirection::Column,
+            row_gap: px(4),
+            padding: UiRect::all(px(14)),
+            border: UiRect::all(px(1)),
+            ..default()
+        },
+        // Opaque: it is a screen of its own, and the HUD under it would read through.
+        BackgroundColor(PANEL_BG.with_alpha(1.0)),
+        BorderColor::all(GOLD.with_alpha(0.35)),
+        GlobalZIndex(30),
+        Visibility::Hidden,
+    ));
+}
+
+impl BrowserUi {
+    fn say(&mut self, text: impl Into<String>, warn: bool) {
+        self.note = text.into();
+        self.warn = warn;
+        self.dirty = true;
+    }
+
+    fn open_now(&mut self, options: &Options, store: &SettingsStore) {
+        self.open = true;
+        self.dirty = true;
+        self.field = None;
+        if self.name.is_empty() {
+            self.name = store.settings.name.clone();
+        }
+        match &mut self.browser {
+            Some(b) => b.refresh(),
+            None => self.browser = Some(Browser::open(&list_source(options, store.settings.server_list.as_deref()), &store.settings.servers)),
+        }
+    }
+
+    fn text_of(&mut self, field: Field) -> (&mut String, usize) {
+        match field {
+            Field::Name => (&mut self.name, MAX_NAME),
+            Field::Password => (&mut self.password, MAX_FIELD),
+            Field::Address => (&mut self.address, MAX_FIELD),
+        }
+    }
+
+    /// Up or down the servers on show.
+    fn step(&mut self, by: i32) {
+        let Some(b) = &self.browser else { return };
+        let shown: Vec<String> = b.shown().iter().map(|r| r.addr.clone()).collect();
+        if shown.is_empty() {
+            return;
+        }
+        let at = self.selected.as_ref().and_then(|s| shown.iter().position(|a| a == s));
+        let next = match at {
+            Some(i) => (i as i32 + by).clamp(0, shown.len() as i32 - 1) as usize,
+            None => 0,
+        };
+        self.selected = Some(shown[next].clone());
+        self.dirty = true;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn keys(
+    mut typed: MessageReader<KeyboardInput>,
+    mut wheel: MessageReader<MouseWheel>,
+    mut keys: ResMut<ButtonInput<KeyCode>>,
+    mut mouse: ResMut<ButtonInput<MouseButton>>,
+    mut ui: ResMut<BrowserUi>,
+    options: Res<Options>,
+    store: Res<SettingsStore>,
+    chat: Option<Res<crate::chat::ChatEntry>>,
+    find: Option<Res<crate::inventory_ui::Find>>,
+) {
+    if std::mem::take(&mut ui.want_open) {
+        ui.open_now(&options, &store);
+    }
+    if !ui.open {
+        typed.clear();
+        wheel.clear();
+        // Not while a line is being typed elsewhere.
+        let typing = chat.is_some_and(|c| c.typing) || find.is_some_and(|f| f.typing);
+        if !typing && keys.just_pressed(KeyCode::F7) {
+            ui.open_now(&options, &store);
+            keys.reset_all();
+        }
+        return;
+    }
+    for w in wheel.read() {
+        let lines = if w.unit == MouseScrollUnit::Line { w.y } else { w.y / LINE_H };
+        let n = ui.browser.as_ref().map_or(0, |b| lines_len(b));
+        let top = (ui.top as f32 - lines.round()).clamp(0.0, n.saturating_sub(VISIBLE) as f32) as usize;
+        if top != ui.top {
+            ui.top = top;
+            ui.dirty = true;
+        }
+    }
+    for k in typed.read().filter(|k| k.state.is_pressed()) {
+        if let Some(field) = ui.field {
+            match &k.logical_key {
+                Key::Character(c) => {
+                    let (text, max) = ui.text_of(field);
+                    let room = max.saturating_sub(text.chars().count());
+                    text.extend(c.chars().filter(|c| !c.is_control() && (field != Field::Address || !c.is_whitespace())).take(room));
+                }
+                Key::Space if field != Field::Address => {
+                    let (text, max) = ui.text_of(field);
+                    if text.chars().count() < max {
+                        text.push(' ');
+                    }
+                }
+                Key::Backspace => {
+                    ui.text_of(field).0.pop();
+                }
+                Key::Tab => {
+                    ui.field = Some(match field {
+                        Field::Name => Field::Password,
+                        Field::Password => Field::Address,
+                        Field::Address => Field::Name,
+                    })
+                }
+                Key::Enter => match field {
+                    Field::Address => ui.acts.push(Act::Focus(Field::Address)),
+                    // Enter in the password is "join with this".
+                    Field::Password => {
+                        ui.field = None;
+                        ui.acts.push(Act::Join);
+                    }
+                    Field::Name => ui.field = None,
+                },
+                Key::Escape => ui.field = None,
+                _ => {}
+            }
+            ui.dirty = true;
+            continue;
+        }
+        match (&k.logical_key, k.key_code) {
+            (Key::Escape, _) | (_, KeyCode::F7) => ui.acts.push(Act::Close),
+            (Key::ArrowUp, _) => ui.step(-1),
+            (Key::ArrowDown, _) => ui.step(1),
+            (Key::Enter, _) => ui.acts.push(Act::Join),
+            (Key::Tab, _) => {
+                ui.field = Some(Field::Name);
+                ui.dirty = true;
+            }
+            (Key::Delete, _) => ui.acts.push(Act::Remove),
+            (_, KeyCode::KeyR) | (_, KeyCode::F5) => ui.acts.push(Act::Refresh),
+            _ => {}
+        }
+    }
+    keys.reset_all();
+    mouse.reset_all();
+}
+
+fn lines_len(b: &Browser) -> usize {
+    lines(b).len()
+}
+
+/// `--browser-join N[@SECS]`: join the Nth server on show (from 1) once SECS have gone by and it
+/// has answered. For recordings.
+fn script(time: Res<Time>, options: Res<Options>, mut ui: ResMut<BrowserUi>) {
+    let Some((n, after)) = options.browser_join else { return };
+    if ui.scripted || !ui.open || time.elapsed_secs() < after {
+        return;
+    }
+    let Some(b) = &ui.browser else { return };
+    if !b.settled() {
+        return;
+    }
+    let nth = b.shown().get(n.saturating_sub(1)).map(|r| r.addr.clone());
+    ui.scripted = true;
+    match nth {
+        Some(addr) => {
+            ui.acts.push(Act::Pick(addr));
+            ui.acts.push(Act::Join);
+        }
+        None => ui.say(format!("--browser-join {n}: the browser shows fewer servers"), true),
+    }
+}
+
+/// Do what the keys and clicks asked for.
+#[allow(clippy::too_many_arguments)]
+fn act(mut ui: ResMut<BrowserUi>, options: Res<Options>, mods: Res<LoadedMods>, link: Option<Res<ServerLink>>, mut store: ResMut<SettingsStore>, mut exit: MessageWriter<AppExit>) {
+    for a in std::mem::take(&mut ui.acts) {
+        ui.dirty = true;
+        match a {
+            Act::Pick(addr) => {
+                ui.selected = Some(addr);
+                ui.field = None;
+            }
+            Act::Close => {
+                ui.open = false;
+                ui.field = None;
+            }
+            Act::Refresh => {
+                if let Some(b) = &mut ui.browser {
+                    b.refresh();
+                }
+                ui.say("Asking every server again", false);
+            }
+            // A click on a field, or Enter in the address: add what was typed.
+            Act::Focus(Field::Address) if ui.field == Some(Field::Address) && !ui.address.trim().is_empty() => {
+                let typed = ui.address.trim().to_string();
+                let Some(b) = ui.browser.as_mut() else { continue };
+                match b.add(&typed) {
+                    Ok(addr) => {
+                        let mine = b.mine().to_vec();
+                        ui.selected = Some(addr.clone());
+                        ui.address.clear();
+                        ui.field = None;
+                        ui.say(format!("Added {addr}"), false);
+                        if let Err(e) = store.change(|s| s.servers = mine) {
+                            ui.say(format!("Added {addr}, but the settings file couldn't be written: {e}"), true);
+                        }
+                    }
+                    Err(e) => ui.say(e, true),
+                }
+            }
+            Act::Remove => {
+                let picked = ui.selected.clone();
+                let (Some(addr), Some(b)) = (picked, ui.browser.as_mut()) else { continue };
+                if b.remove(&addr) {
+                    let mine = b.mine().to_vec();
+                    ui.selected = None;
+                    ui.say(format!("Took {addr} off your servers"), false);
+                    if let Err(e) = store.change(|s| s.servers = mine) {
+                        ui.say(format!("The settings file couldn't be written: {e}"), true);
+                    }
+                } else {
+                    ui.say("That server is from the list: only ones you added can be taken off", true);
+                }
+            }
+            Act::Focus(f) => ui.field = Some(f),
+            Act::Join => join(&mut ui, &options, &mods, link.as_deref(), &mut store, &mut exit),
+        }
+    }
+}
+
+fn join(ui: &mut BrowserUi, options: &Options, mods: &LoadedMods, link: Option<&ServerLink>, store: &mut SettingsStore, exit: &mut MessageWriter<AppExit>) {
+    let Some(row) = ui.selected.as_ref().and_then(|s| ui.browser.as_ref()?.row(s)).cloned() else {
+        return ui.say("Pick a server first (click one, or Up / Down)", true);
+    };
+    let info = match &row.status {
+        Status::Online { info, .. } => info,
+        Status::Asking => return ui.say(format!("{} hasn't answered yet", row.name()), true),
+        Status::Offline(why) => return ui.say(format!("Can't join {}: {why}", row.name()), true),
+    };
+    if let Err(why) = browser::can_join(info, &mods.0, options.agent || options.autoplay) {
+        return ui.say(format!("Can't join {}: {why}", row.name()), true);
+    }
+    if info.password && ui.password.is_empty() {
+        ui.field = Some(Field::Password);
+        return ui.say(format!("{} needs a password: type it and press Enter", row.name()), true);
+    }
+    if options.offscreen() {
+        return ui.say("An offscreen render joins nothing", true);
+    }
+    let name = ui.name.trim().to_string();
+    if let Err(e) = store.change(|s| s.name = name.clone()) {
+        eprintln!("can't write the settings: {e}");
+    }
+    let single = link.is_some_and(|l| l.net.is_none());
+    let args = relaunch_args(&std::env::args().skip(1).collect::<Vec<_>>(), &row.addr, &name, single);
+    println!("server browser: joining {} at {}{}", row.name(), row.addr, if single { " (your world is autosaved)" } else { "" });
+    if let Ok(mut r) = RELAUNCH.lock() {
+        *r = Some(Relaunch { args, password: ui.password.clone() });
+    }
+    ui.say(format!("Joining {}...", row.name()), false);
+    exit.write(AppExit::Success);
+}
+
+fn poll(mut ui: ResMut<BrowserUi>) {
+    let open = ui.open;
+    if let Some(b) = &mut ui.browser
+        && b.poll()
+        && open
+    {
+        ui.dirty = true;
+    }
+}
+
+fn cell(row: &mut ChildSpawnerCommands, text: String, width: Option<f32>, colour: Color, size: f32) {
+    let node = match width {
+        Some(w) => Node { width: px(w), flex_shrink: 0.0, overflow: Overflow::clip(), ..default() },
+        None => Node { flex_grow: 1.0, flex_basis: px(0), min_width: px(0), overflow: Overflow::clip(), ..default() },
+    };
+    row.spawn((node, Pickable::IGNORE)).with_children(|c| {
+        c.spawn((Text::new(text), font(size), TextColor(colour), TextLayout::no_wrap(), Pickable::IGNORE));
+    });
+}
+
+fn button<'a>(parent: &'a mut ChildSpawnerCommands, label: &str, act: Act) -> EntityCommands<'a> {
+    let mut e = parent.spawn((Node { padding: UiRect::axes(px(12), px(4)), flex_shrink: 0.0, ..default() }, BackgroundColor(BUTTON)));
+    e.with_children(|b| {
+        b.spawn((Text::new(label.to_string()), font(BODY), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
+    });
+    e.observe(move |_: On<PointerPress>, mut ui: ResMut<BrowserUi>| ui.acts.push(act.clone()));
+    e
+}
+
+fn field(parent: &mut ChildSpawnerCommands, label: &str, text: String, focused: bool, width: f32, which: Field) {
+    parent.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(6), align_items: AlignItems::Center, ..default() }, Pickable::IGNORE)).with_children(|f| {
+        f.spawn((Text::new(label.to_string()), font(BODY), TextColor(DIM), Pickable::IGNORE));
+        f.spawn((Node { width: px(width), height: px(24.0), padding: UiRect::axes(px(6), px(3)), overflow: Overflow::clip(), border: UiRect::all(px(1)), ..default() }, BackgroundColor(FIELD_BG), BorderColor::all(if focused { GOLD } else { Color::NONE })))
+            .with_children(|b| {
+                b.spawn((Text::new(if focused { format!("{text}_") } else { text }), font(BODY), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
+            })
+            .observe(move |_: On<PointerPress>, mut ui: ResMut<BrowserUi>| ui.acts.push(Act::Focus(which)));
+    });
+}
+
+fn draw(mut commands: Commands, mut ui: ResMut<BrowserUi>, mods: Res<LoadedMods>, options: Res<Options>, mut root: Query<(Entity, &mut Visibility), With<Root>>) {
+    let Ok((root, mut vis)) = root.single_mut() else { return };
+    let want = if ui.open { Visibility::Inherited } else { Visibility::Hidden };
+    if *vis != want {
+        *vis = want;
+    }
+    if !ui.open || !std::mem::take(&mut ui.dirty) {
+        return;
+    }
+    let agent = options.agent || options.autoplay;
+    let Some(b) = &ui.browser else { return };
+    let all = lines(b);
+    // The picked server stays picked while it's listed, and on show; with none picked, the first.
+    let first = all.iter().find_map(|l| if let Line::Server(a) = l { Some(a.clone()) } else { None });
+    let selected = ui.selected.clone().filter(|s| b.row(s).is_some()).or(first);
+    let at = selected.as_ref().and_then(|s| all.iter().position(|l| *l == Line::Server(s.clone())));
+    let top = scrolled(ui.top, at, all.len());
+    let source = match (&b.list, b.source()) {
+        (_, "") => "No list set (--server-list FILE or http://..., or server_list in settings.ron): only servers you add".to_string(),
+        (ListState::Loading, s) => format!("Reading the list: {s}"),
+        (ListState::Ready, s) => format!("List: {s}"),
+        (ListState::Failed(e), _) => format!("Can't use the list: {e}"),
+    };
+    let source_colour = if matches!(b.list, ListState::Failed(_)) { WARN } else { DIM };
+    let summary = b.summary();
+    let picked = selected.as_ref().and_then(|s| b.row(s)).map(|r| details(r, &mods.0, agent));
+    let rows: Vec<(Line, Option<Cells>)> = all.iter().skip(top).take(VISIBLE).map(|l| (l.clone(), if let Line::Server(a) = l { b.row(a).map(|r| cells(r, &mods.0, agent)) } else { None })).collect();
+    let more = (top, all.len().saturating_sub(top + VISIBLE));
+    let empty = all.is_empty();
+    let loading = b.list == ListState::Loading;
+    let (focus, name, password, address, note, warn) = (ui.field, ui.name.clone(), "*".repeat(ui.password.chars().count()), ui.address.clone(), ui.note.clone(), ui.warn);
+    ui.top = top;
+    ui.selected = selected.clone();
+
+    commands.entity(root).despawn_children();
+    commands.entity(root).with_children(|c| {
+        // Title, and what the list holds.
+        c.spawn((Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::Center, ..default() }, Pickable::IGNORE)).with_children(|t| {
+            t.spawn((Text::new("Servers"), font(TITLE), TextColor(GOLD), Pickable::IGNORE));
+            t.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(10), align_items: AlignItems::Center, ..default() }, Pickable::IGNORE)).with_children(|r| {
+                r.spawn((Text::new(summary), font(BODY), TextColor(DIM), Pickable::IGNORE));
+                button(r, "Refresh (R)", Act::Refresh);
+                button(r, "Close (Esc)", Act::Close);
+            });
+        });
+        c.spawn((Node { overflow: Overflow::clip(), ..default() }, Pickable::IGNORE)).with_children(|s| {
+            s.spawn((Text::new(source), font(SMALL), TextColor(source_colour), TextLayout::no_wrap(), Pickable::IGNORE));
+        });
+        // The columns.
+        c.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(8), padding: UiRect::horizontal(px(8)), margin: UiRect::top(px(4)), ..default() }, Pickable::IGNORE)).with_children(|h| {
+            for (k, label) in ["Name", "Players", "Ping", "Mode", "Locked", "Mods"].into_iter().enumerate() {
+                cell(h, label.to_string(), Some(COLS[k]), DIM, SMALL);
+            }
+            cell(h, if more.0 > 0 { format!("Note   ({} more above)", more.0) } else { "Note".to_string() }, None, DIM, SMALL);
+        });
+        // The list: always the same height, so the rest doesn't jump as answers come.
+        c.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(2), height: px(VISIBLE as f32 * (LINE_H + 2.0)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|list| {
+            if empty {
+                let text = if loading { "Reading the list..." } else { "No servers. Type a server's address in the Address field below and press Enter to add it." };
+                list.spawn((Text::new(text), font(BODY), TextColor(DIM), Node { margin: UiRect::all(px(8)), ..default() }, Pickable::IGNORE));
+            }
+            for (line, cells) in rows {
+                match (line, cells) {
+                    (Line::Head(title, n), _) => {
+                        list.spawn((Node { height: px(LINE_H), align_items: AlignItems::End, padding: UiRect::horizontal(px(8)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|h| {
+                            h.spawn((Text::new(format!("{title}  ({n})")), font(BODY), TextColor(GOLD), Pickable::IGNORE));
+                        });
+                    }
+                    (Line::Server(addr), Some(v)) => {
+                        let is_picked = selected.as_deref() == Some(addr.as_str());
+                        let rest = if is_picked { ROW_PICKED } else { ROW_BG };
+                        let colour = match v.state {
+                            RowState::Joinable => TEXT,
+                            RowState::Blocked => WARN,
+                            RowState::Asking | RowState::Offline => DIM,
+                        };
+                        list.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(8), height: px(LINE_H), align_items: AlignItems::Center, padding: UiRect::horizontal(px(8)), flex_shrink: 0.0, ..default() }, BackgroundColor(rest)))
+                            .with_children(|r| {
+                                cell(r, v.name, Some(COLS[0]), colour, BODY);
+                                cell(r, v.players, Some(COLS[1]), colour, BODY);
+                                cell(r, v.ping, Some(COLS[2]), colour, BODY);
+                                cell(r, v.mode, Some(COLS[3]), colour, BODY);
+                                cell(r, v.locked, Some(COLS[4]), colour, BODY);
+                                cell(r, v.mods, Some(COLS[5]), colour, BODY);
+                                cell(r, v.note, None, DIM, BODY);
+                            })
+                            .observe(move |ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>| {
+                                if let Ok(mut bg) = q.get_mut(ev.entity) {
+                                    bg.0 = if is_picked { ROW_PICKED } else { ROW_HOVER };
+                                }
+                            })
+                            .observe(move |ev: On<PointerOut>, mut q: Query<&mut BackgroundColor>| {
+                                if let Ok(mut bg) = q.get_mut(ev.entity) {
+                                    bg.0 = rest;
+                                }
+                            })
+                            .observe(move |_: On<PointerPress>, mut ui: ResMut<BrowserUi>| ui.acts.push(Act::Pick(addr.clone())));
+                    }
+                    _ => {}
+                }
+            }
+        });
+        if more.1 > 0 {
+            c.spawn((Text::new(format!("{} more below (wheel, or Down)", more.1)), font(SMALL), TextColor(DIM), Pickable::IGNORE));
+        }
+        c.spawn((Node { width: percent(100), height: px(1), margin: UiRect::vertical(px(4)), ..default() }, BackgroundColor(DIM.with_alpha(0.4)), Pickable::IGNORE));
+        // The picked server: can it be joined, and its rules.
+        c.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(1), min_height: px(238), ..default() }, Pickable::IGNORE)).with_children(|d| match picked {
+            None => {
+                d.spawn((Text::new("Pick a server to see its rules: click one, or Up / Down."), font(BODY), TextColor(DIM), Pickable::IGNORE));
+            }
+            Some((head, line, colour, rules)) => {
+                d.spawn((Node { overflow: Overflow::clip(), ..default() }, Pickable::IGNORE)).with_children(|h| {
+                    h.spawn((Text::new(head), font(BODY), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
+                });
+                d.spawn((Text::new(line), font(BODY), TextColor(colour), Pickable::IGNORE));
+                for (label, text) in rules {
+                    d.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(10), ..default() }, Pickable::IGNORE)).with_children(|row| {
+                        row.spawn((Text::new(label), font(SMALL), TextColor(DIM), Node { width: px(112), flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
+                        row.spawn((Text::new(text), font(SMALL), TextColor(TEXT), Pickable::IGNORE));
+                    });
+                }
+            }
+        });
+        c.spawn((Node { width: percent(100), height: px(1), margin: UiRect::vertical(px(4)), ..default() }, BackgroundColor(DIM.with_alpha(0.4)), Pickable::IGNORE));
+        // Who you join as, and a server of your own.
+        c.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(14), align_items: AlignItems::Center, ..default() }, Pickable::IGNORE)).with_children(|f| {
+            field(f, "Name", name, focus == Some(Field::Name), 150.0, Field::Name);
+            field(f, "Password", password, focus == Some(Field::Password), 130.0, Field::Password);
+            field(f, "Address", address, focus == Some(Field::Address), 230.0, Field::Address);
+            f.spawn((Node { flex_grow: 1.0, ..default() }, Pickable::IGNORE));
+            button(f, "Join (Enter)", Act::Join);
+        });
+        let hint = match focus {
+            Some(Field::Address) => "Type host or host:port, Enter adds it to your servers  |  Tab next field  |  Esc done",
+            Some(Field::Password) => "Enter joins with this password  |  Tab next field  |  Esc done",
+            Some(Field::Name) => "The name you play under (none: the server makes one up)  |  Tab next field  |  Enter or Esc done",
+            None => "Up / Down pick  |  Enter join  |  R refresh  |  Tab fields  |  Delete takes off a server you added  |  F7 or Esc close",
+        };
+        c.spawn((Text::new(hint), font(SMALL), TextColor(DIM), Pickable::IGNORE));
+        if !note.is_empty() {
+            c.spawn((Text::new(note), font(BODY), TextColor(if warn { WARN } else { GOLD }), Pickable::IGNORE));
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zombye_net::browser::ListEntry;
+    use zombye_net::wire::{ModInfo, PROTOCOL, Rules, ServerInfo};
+
+    fn args(line: &str) -> Vec<String> {
+        line.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn starting_again_on_a_server_keeps_the_session_and_drops_the_world() {
+        let was = args("--novsync --saves my/saves --load autosave --fight-demo --zoom 12 --server-list lists/a.ron --browser --name old --password hunter2 --mod mods/alarm_clock --at 3,4");
+        let now = relaunch_args(&was, "play.example:7777", " ann ", true);
+        assert_eq!(now, args("--novsync --saves my/saves --zoom 12 --server-list lists/a.ron --mod mods/alarm_clock --connect play.example:7777 --name ann --from-browser single"));
+        // The password never goes on the command line.
+        assert!(!now.iter().any(|a| a.contains("hunter2") || a == "--password"));
+        // Hopping from one server to another: no name given, nothing to come back to.
+        let hop = relaunch_args(&args("--connect a.example --from-browser single --mute"), "b.example:7777", "", false);
+        assert_eq!(hop, args("--mute --connect b.example:7777 --from-browser server"));
+    }
+
+    fn row(status: Status, mine: bool) -> Row {
+        Row { entry: ListEntry { address: "play.example".into(), name: "Listed name".into(), featured: false, note: "EU".into() }, addr: "play.example:7777".into(), mine, status }
+    }
+
+    fn online(info: ServerInfo) -> Status {
+        Status::Online { info: Box::new(info), ping_ms: 42 }
+    }
+
+    fn info() -> ServerInfo {
+        ServerInfo { protocol: PROTOCOL, version: "0.0.1".into(), rules: Rules { name: "Dead Commons".into(), max_players: 32, pvp: true, ..Default::default() }, online: 7, password: false, mods: Vec::new() }
+    }
+
+    #[test]
+    fn a_row_says_players_ping_mode_and_mods() {
+        let c = cells(&row(online(info()), false), &[], false);
+        assert_eq!((c.name.as_str(), c.players.as_str(), c.ping.as_str(), c.mode.as_str(), c.mods.as_str(), c.note.as_str(), c.state), ("Dead Commons", "7 / 32", "42 ms", "PvP", "none", "EU", RowState::Joinable));
+        // Locked, co-op, modded with a mod we haven't loaded: shown, and marked as not joinable.
+        let modded = ServerInfo { password: true, mods: vec![ModInfo { id: "alarm_clock".into(), name: "Alarm clock".into(), version: "1.0".into() }], rules: Rules { pvp: false, ..info().rules }, ..info() };
+        let c = cells(&row(online(modded.clone()), true), &[], false);
+        assert_eq!((c.name.as_str(), c.mode.as_str(), c.locked.as_str(), c.mods.as_str(), c.state), ("Dead Commons  (added by you)", "Co-op", "password", "Alarm clock 1.0", RowState::Blocked));
+        assert_eq!((ping_text(0), ping_text(87)), ("<1 ms".to_string(), "87 ms".to_string()));
+        assert_eq!(cells(&row(online(modded.clone()), false), &["alarm_clock".to_string()], false).state, RowState::Joinable);
+        let (_, line, colour, rules) = details(&row(online(modded), false), &["alarm_clock".to_string()], false);
+        assert!(line.contains("password") && colour == GOLD);
+        assert_eq!(rules.last().unwrap(), &("Note", "EU".to_string()));
+        assert!(rules.iter().any(|(l, t)| *l == "Mods" && t == "Alarm clock 1.0") && rules.iter().any(|(l, _)| *l == "PvP"));
+        // Not answered yet, and not answering: the list's name, and no numbers made up.
+        let c = cells(&row(Status::Asking, false), &[], false);
+        assert_eq!((c.name.as_str(), c.players.as_str(), c.ping.as_str(), c.state), ("Listed name", "", "...", RowState::Asking));
+        let c = cells(&row(Status::Offline("can't connect".into()), false), &[], false);
+        assert_eq!((c.ping.as_str(), c.note.as_str(), c.state), ("-", "no answer", RowState::Offline));
+        let (_, line, _, rules) = details(&row(Status::Offline("can't connect to 1.2.3.4".into()), false), &[], false);
+        assert!(line.contains("can't connect to 1.2.3.4") && rules.is_empty());
+        // A full server.
+        let full = ServerInfo { online: 32, ..info() };
+        let (_, line, colour, _) = details(&row(online(full), false), &[], false);
+        assert!(line.starts_with("Can't join: it is full") && colour == WARN);
+    }
+
+    #[test]
+    fn the_list_scrolls_to_keep_the_picked_server_on_show() {
+        assert_eq!(scrolled(0, None, 5), 0);
+        assert_eq!(scrolled(3, None, 5), 0, "a short list doesn't scroll");
+        assert_eq!(scrolled(0, Some(VISIBLE), 30), 1);
+        assert_eq!(scrolled(0, Some(29), 30), 30 - VISIBLE);
+        assert_eq!(scrolled(20, Some(5), 30), 4, "the line above comes along (a heading)");
+        assert_eq!(scrolled(4, Some(6), 30), 4, "already on show: stays put");
+        assert_eq!(scrolled(99, None, 30), 30 - VISIBLE);
+    }
+
+    #[test]
+    fn the_list_comes_from_the_flag_then_the_settings_then_the_data_folder() {
+        let data = std::env::temp_dir().join(format!("zombye-browser-ui-{}", std::process::id()));
+        std::fs::create_dir_all(&data).unwrap();
+        let mut o = Options::parse(&args(&format!("--data {}", data.display())));
+        assert_eq!(list_source(&o, None), "", "no file in the data folder: no list");
+        std::fs::write(data.join(browser::LIST_FILE), "(servers: [])").unwrap();
+        assert_eq!(list_source(&o, None), data.join(browser::LIST_FILE).to_string_lossy());
+        assert_eq!(list_source(&o, Some("http://lists.example/z.ron")), "http://lists.example/z.ron");
+        assert_eq!(list_source(&o, Some("  ")), data.join(browser::LIST_FILE).to_string_lossy());
+        o.server_list = Some("mine.ron".into());
+        assert_eq!(list_source(&o, Some("http://lists.example/z.ron")), "mine.ron");
+        let _ = std::fs::remove_dir_all(data);
+        // The shipped list is a list (and empty: no hosted service).
+        let shipped = zombye_net::content::default_data_dir().join(browser::LIST_FILE);
+        assert_eq!(browser::parse_list(&std::fs::read_to_string(shipped).unwrap()).unwrap().servers.len(), 0);
+    }
+}

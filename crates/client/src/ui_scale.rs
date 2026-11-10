@@ -91,6 +91,12 @@ pub struct ClientSettings {
     pub hotbar: Vec<Option<String>>,
     /// Vegetation density and the post effects (`graphics.rs`, Linear DCM-59).
     pub graphics: crate::graphics::Graphics,
+    /// The server browser (`browser_ui.rs`, #27): the name you join servers under, the list of
+    /// servers it shows (a file or an `http://` address; `None`: the data folder's `servers.ron`)
+    /// and the servers you added by hand.
+    pub name: String,
+    pub server_list: Option<String>,
+    pub servers: Vec<String>,
     /// The inventory panel's Worn tab shows the body view, not the list (`inventory_ui/body.rs`, DCM-43).
     pub inventory_body: bool,
 }
@@ -102,6 +108,9 @@ impl Default for ClientSettings {
             panels: PanelsMemory::default(),
             hotbar: Vec::new(),
             graphics: crate::graphics::Graphics::default(),
+            name: String::new(),
+            server_list: None,
+            servers: Vec::new(),
             inventory_body: false,
         }
     }

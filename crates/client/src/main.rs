@@ -69,6 +69,7 @@
 
 mod audio;
 mod autoplay;
+mod browser_ui;
 mod duel;
 mod holdup;
 mod camera;
@@ -270,6 +271,17 @@ pub struct Options {
     /// `--server-info HOST[:PORT]`: ask that server for its rules without joining, print them and
     /// exit (#69). No window, no game data needed.
     pub server_info: Option<String>,
+    /// The server browser (#27, `browser_ui.rs`; F7): the list it shows, a file or an `http://`
+    /// address (`--server-list SRC`; else the settings file's, else the data folder's
+    /// `servers.ron`); `--browser` starts with it open; `--browser-join N[@SECS]` joins the Nth
+    /// server on show by itself (recordings).
+    pub server_list: Option<String>,
+    pub browser: bool,
+    pub browser_join: Option<(usize, f32)>,
+    /// `--from-browser single|server`: this run was started by a join in the browser. If the
+    /// server refuses, the game doesn't stop: it starts in its own world (`single`: the autosave
+    /// the join left) with the browser open and the reason on it.
+    pub from_browser: Option<String>,
     /// Graphics for this session, over the settings file's (`graphics.rs`): a whole preset
     /// (`--graphics low|high`), the vegetation's density (`--vegetation off|low|high|N`), and
     /// effects to switch off (`--no-post grain,tilt,vignette,bloom,ao,ground|all`).
@@ -436,9 +448,17 @@ impl Options {
             drag_panel: value("--drag-panel"),
             connect: value("--connect"),
             name: value("--name").unwrap_or_default(),
-            password: value("--password").unwrap_or_default(),
+            // (The browser's join hands the password over in the environment: a command line can be read by other programs.)
+            password: value("--password").or_else(|| std::env::var("ZOMBYE_PASSWORD").ok()).unwrap_or_default(),
             agent: flag("--agent"),
             server_info: value("--server-info"),
+            server_list: value("--server-list"),
+            browser: flag("--browser"),
+            browser_join: value("--browser-join").and_then(|v| {
+                let (n, after) = v.split_once('@').unwrap_or((&v, "0"));
+                Some((n.trim().parse().ok().filter(|n| *n >= 1)?, after.trim().parse().ok().filter(|s: &f32| s.is_finite() && *s >= 0.0)?))
+            }),
+            from_browser: value("--from-browser"),
             graphics: value("--graphics"),
             vegetation: value("--vegetation"),
             no_post: value("--no-post"),
@@ -555,7 +575,7 @@ fn main() {
             zombie_render::ZombieRenderPlugin,
             items_render::ItemsRenderPlugin,
             (hud::HudPlugin, inventory_ui::InventoryUiPlugin, health_ui::HealthUiPlugin, death::DeathPlugin, needs_ui::NeedsUiPlugin, action_ui::ActionUiPlugin, skills_ui::SkillsUiPlugin, debug_stats::DebugStatsPlugin),
-            (fx::FxPlugin, heard::HeardPlugin, chat::ChatPlugin, film::FilmPlugin, vegetation::VegetationPlugin, rules_ui::RulesUiPlugin),
+            (fx::FxPlugin, heard::HeardPlugin, chat::ChatPlugin, film::FilmPlugin, vegetation::VegetationPlugin, rules_ui::RulesUiPlugin, browser_ui::BrowserUiPlugin),
             survivor::SurvivorPlugin,
             (autoplay::AutoplayPlugin, duel::DuelPlugin, holdup::HoldupPlugin),
             (saving::SavingPlugin, ui_scale::UiScalePlugin, panels::PanelsPlugin, hotbar::HotbarPlugin, firstnight_ui::FirstNightUiPlugin),
@@ -564,8 +584,47 @@ fn main() {
     if !offscreen {
         app.add_plugins(audio::GameAudioPlugin);
     }
-    if app.run().is_error() {
+    let failed = app.run().is_error();
+    // A join asked for in the server browser (#27): the game has shut down (and autosaved); start
+    // it again on that server.
+    if let Some(next) = browser_ui::take_relaunch() {
+        relaunch(next);
+    }
+    if failed {
         std::process::exit(1);
+    }
+}
+
+/// Run this program again with `next`'s arguments, in this one's place.
+fn relaunch(next: browser_ui::Relaunch) -> ! {
+    let exe = std::env::current_exe().unwrap_or_else(|e| {
+        eprintln!("can't start the game again: {e}");
+        std::process::exit(1);
+    });
+    let mut command = std::process::Command::new(exe);
+    command.args(&next.args);
+    if next.password.is_empty() {
+        command.env_remove("ZOMBYE_PASSWORD");
+    } else {
+        command.env("ZOMBYE_PASSWORD", &next.password);
+    }
+    #[cfg(unix)]
+    {
+        // The same process, so whoever started the game (a terminal, a launcher) still has it.
+        use std::os::unix::process::CommandExt;
+        let e = command.exec();
+        eprintln!("can't start the game again: {e}");
+        std::process::exit(1);
+    }
+    #[cfg(not(unix))]
+    {
+        match command.status() {
+            Ok(status) => std::process::exit(status.code().unwrap_or(0)),
+            Err(e) => {
+                eprintln!("can't start the game again: {e}");
+                std::process::exit(1);
+            }
+        }
     }
 }
 

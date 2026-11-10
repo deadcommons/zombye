@@ -203,20 +203,42 @@ pub struct ServerLinkPlugin;
 
 impl Plugin for ServerLinkPlugin {
     fn build(&self, app: &mut App) {
-        let options = app.world().resource::<Options>().clone();
+        let mut options = app.world().resource::<Options>().clone();
         let mut config = content::load_config(&options.data, options.seed).unwrap_or_else(|e| panic!("failed to load content: {e}"));
         // Mods (#25): their items, recipes and loot join the game's; their scripts run in the
         // world this process makes (on a server they run there, and only the data matters here).
         match zombye_mods::load_into(&mut config, &options.mods) {
-            Ok(mods) if !mods.is_empty() => println!("{}", zombye_mods::describe(&mods)),
-            Ok(_) => {}
+            Ok(mods) => {
+                if !mods.is_empty() {
+                    println!("{}", zombye_mods::describe(&mods));
+                }
+                // The server browser checks a server's mods against these (#27).
+                app.insert_resource(crate::browser_ui::LoadedMods(mods.iter().map(|m| m.manifest.id.clone()).collect()));
+            }
             Err(e) => {
                 eprintln!("failed to load mods: {e}");
                 std::process::exit(1);
             }
         }
-        if let Some(addr) = &options.connect {
-            return join_remote(app, addr, &options, &config);
+        if let Some(addr) = options.connect.clone() {
+            match join_remote(app, &addr, &options, &config) {
+                Ok(()) => return,
+                // Asked for in the server browser (#27): the game doesn't stop. Back to our own
+                // world (the autosave the join left, if we came from one), with the browser open
+                // and the reason on it.
+                Err(e) if options.from_browser.is_some() => {
+                    eprintln!("can't join {addr}: {e}");
+                    let autosave = save_file::path_for(&options.saves, crate::saving::AUTOSAVE).ok().filter(|p| p.is_file());
+                    options.connect = None;
+                    options.load = autosave.filter(|_| options.from_browser.as_deref() == Some("single")).map(|p| p.to_string_lossy().into_owned());
+                    app.insert_resource(options.clone());
+                    app.insert_resource(crate::browser_ui::BrowserStart { note: format!("Can't join {addr}: {e}"), addr: addr.clone() });
+                }
+                Err(e) => {
+                    eprintln!("can't join {addr}: {e}");
+                    std::process::exit(1);
+                }
+            }
         }
         // Without --zombies, as many as the population file's densities give for this map.
         config.zombies = options.zombies;
@@ -389,27 +411,24 @@ fn join_info(config: &zombye_sim::WorldConfig, player_id: u32, player_spawn: Vec
 /// `--connect`: join a multiplayer server (#21). The same things arrive another way: our player
 /// and the rules in the server's welcome, the map built here from the server's seed with our own
 /// game data (and checked against the server's), the doors and windows changed since and every
-/// cracked one, and a first snapshot. Anything wrong (no server, refused, other game data) is said
-/// on stderr and the game doesn't start.
-fn join_remote(app: &mut App, addr: &str, options: &Options, content: &zombye_sim::WorldConfig) {
-    let fail = |e: String| -> ! {
-        eprintln!("can't join {addr}: {e}");
-        std::process::exit(1);
-    };
+/// cracked one, and a first snapshot. Anything wrong (no server, refused, other game data) is the
+/// error: the caller says it on stderr and the game doesn't start (or, joined from the server
+/// browser, starts in its own world instead).
+fn join_remote(app: &mut App, addr: &str, options: &Options, content: &zombye_sim::WorldConfig) -> Result<(), String> {
     // A client that plays by itself says so (`--agent`, and `--autoplay`, which is one): the
     // server's rules may refuse agents, or mark them to the other players (#69).
-    let mut remote = Remote::connect_as(addr, &options.name, &options.password, options.agent || options.autoplay, Duration::from_secs(10)).unwrap_or_else(|e| fail(e));
+    let mut remote = Remote::connect_as(addr, &options.name, &options.password, options.agent || options.autoplay, Duration::from_secs(10))?;
     // The camera is a server rule (docs/PLAN.md §5), and this client has only the isometric one.
     if remote.welcome.rules.camera != zombye_net::wire::Camera::Isometric {
-        fail(format!("{} is first person only, and this version of the game has no first-person camera yet", remote.welcome.rules.name));
+        return Err(format!("{} is first person only, and this version of the game has no first-person camera yet", remote.welcome.rules.name));
     }
     if options.lag_ms > 0 {
         // `--lag MS`: a made-up slow line, for trying lag compensation on one machine (#23).
         remote.set_lag(Duration::from_millis(options.lag_ms as u64));
         println!("--lag: playing as if {} ms of ping away", options.lag_ms);
     }
-    let joined = build_map(&remote.welcome, content).unwrap_or_else(|e| fail(e));
-    let first = remote.wait_snapshot(Duration::from_secs(10)).unwrap_or_else(|e| fail(e));
+    let joined = build_map(&remote.welcome, content)?;
+    let first = remote.wait_snapshot(Duration::from_secs(10))?;
     let w = &remote.welcome;
     let player_id = w.player;
     println!(
@@ -438,6 +457,7 @@ fn join_remote(app: &mut App, addr: &str, options: &Options, content: &zombye_si
     let counted = (std::time::Instant::now(), remote.bytes_in());
     let link = RemoteLink { remote, waiting: VecDeque::new(), counted };
     finish_join(app, Backend::Remote(Box::new(link)), Some(net), first, ClientMap(joined.map), damage, join);
+    Ok(())
 }
 
 /// Single-player: what a client gets on joining (its map copy, the weapons, every damaged edge, a

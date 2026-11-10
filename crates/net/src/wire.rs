@@ -49,8 +49,9 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// `Hello::agent`, the camera, agents, spawns, start kit and world in `Rules`, `PlayerView::agent`,
 /// `ClientMsg::Query` and `ServerMsg::Info`. 10: hold-ups and groups, #73: the `Restrain`, `Free`,
 /// `Frisk`, `TakeFrom`, `StopHands`, `Struggle` and `Group` intents, tied hands in `PlayerView`
-/// (`PlayerPacked::bits` is a `u32` for them), `PrivateView::frisk`, `SnapshotDelta::group`.)
-pub const PROTOCOL: u32 = 10;
+/// (`PlayerPacked::bits` is a `u32` for them), `PrivateView::frisk`, `SnapshotDelta::group`.
+/// 11: the server browser, #27: `ServerInfo::mods`.)
+pub const PROTOCOL: u32 = 11;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -118,6 +119,18 @@ pub struct ServerInfo {
     pub online: u32,
     /// Joining needs a password.
     pub password: bool,
+    /// The mods the server runs, in order (#27). A client needs the same ones to join (their data
+    /// is checked on joining; mods aren't downloaded yet).
+    pub mods: Vec<ModInfo>,
+}
+
+/// A mod a server runs, as its `mod.ron` names it (#27: the server browser's mods column).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModInfo {
+    pub id: String,
+    pub name: String,
+    /// May be empty.
+    pub version: String,
 }
 
 /// The camera a server's players play with (docs/PLAN.md §5). The isometric camera sees over

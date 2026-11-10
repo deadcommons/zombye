@@ -106,10 +106,11 @@ fn rotate_and_zoom(
     mut cams: Query<(&mut IsoCamera, &mut Projection)>,
     window: Query<&Window, With<bevy::window::PrimaryWindow>>,
     panels: crate::hud::PanelHits,
+    browser: Option<Res<crate::browser_ui::BrowserUi>>,
 ) {
     let Ok((mut cam, mut projection)) = cams.single_mut() else { return };
-    // Over a panel the wheel scrolls it (`hud.rs`), not the zoom.
-    if crate::hud::panel_under_cursor(window.single().ok(), &panels).is_some() {
+    // Over a panel the wheel scrolls it (`hud.rs`), not the zoom; so with the server browser open.
+    if crate::hud::panel_under_cursor(window.single().ok(), &panels).is_some() || browser.is_some_and(|b| b.open) {
         wheel.clear();
     }
     if options.rotate {

@@ -202,14 +202,19 @@ fn main() {
     // Mods (#25, docs/modding.md): `--mod DIR`, as often as wanted, in order. Their data joins the
     // game's and their Luau scripts run in every world made from this config.
     let mod_dirs: Vec<PathBuf> = args.windows(2).filter(|w| w[0] == "--mod").map(|w| PathBuf::from(&w[1])).collect();
-    match zombye_mods::load_into(&mut config, &mod_dirs) {
-        Ok(mods) if !mods.is_empty() => eprintln!("{}", zombye_mods::describe(&mods)),
-        Ok(_) => {}
+    // What a hosting server tells whoever asks what it runs (#27: the server browser's mods).
+    let mods_told: Vec<zombye_net::wire::ModInfo> = match zombye_mods::load_into(&mut config, &mod_dirs) {
+        Ok(mods) => {
+            if !mods.is_empty() {
+                eprintln!("{}", zombye_mods::describe(&mods));
+            }
+            mods.iter().map(|m| zombye_net::wire::ModInfo { id: m.manifest.id.clone(), name: m.manifest.name.clone(), version: m.manifest.version.clone() }).collect()
+        }
         Err(e) => {
             eprintln!("failed to load mods: {e}");
             std::process::exit(1);
         }
-    }
+    };
     // Without --zombies, as many as the population file's densities give for the map.
     config.zombies = value("--zombies").map(|n| n as u32);
     // Player against player (docs/PLAN.md §4.8) for a new world: `--pvp on` (a loaded save keeps
@@ -332,6 +337,7 @@ fn main() {
         let parsed = multiplayer::HostArgs::parse(&args, admin_token).and_then(|mut a| {
             // (`--start-kit`, or `start_kit` in the config file, says it instead: #69.)
             a.options.kit = a.kit(content::load_start_kit(&data, &config.items)?, &config.items)?;
+            a.options.mods = mods_told;
             Ok(a)
         });
         let host_args = match parsed {
