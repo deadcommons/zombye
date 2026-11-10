@@ -21,6 +21,7 @@ import zgarment as g
 # than the free walk); the free walk is kept as walk_alt for comparison.
 ACTIONS = {"Idle": "idle", "Casual_Walk_inplace": "walk", "Cautious_Crouch_Walk_Forward_inplace": "sneak"}
 EXTRA_CLIPS = [("running.glb", "run"), ("walking.glb", "walk_alt")]
+CLIMB_CLIPS = ["climb", "vault"]  # motion-climb.glb, motion-vault.glb: text-to-motion 01a1c558-393a-71bc-8986-6222bdaa02cb, 01a1c558-3bca-722c-be3c-24f2d632b987
 # Directional clips (the owner: "he needs strafe animations"): Meshy's library on the same rig (one file)
 # and a walk left from text-to-motion; walk right is walk left mirrored.
 DIRECTIONAL = ("directional.glb", {
@@ -127,7 +128,9 @@ def build(c):
         "meshy_tasks": "image 01a16ce1-c617-761c-b4f2-2a283e4646f1, model 01a16ce2-f3ae-74b0-ac00-467749581ab6, "
                        "rig 01a16ce5-1792-7245-b97e-9ca41b7aa2dd, animation 01a16ce5-b344-7075-9734-5fd40440002e, "
                        "directional animation 01a174b0-b8b3-7104-8408-77c8982ab53a, "
-                       "text-to-motion 01a174b0-8d1f-7552-bdf8-8f82ecac98c4 (on the rig 01a174b0-d41a-73a5-8ec4-46a7c55e0e7c)",
+                       "text-to-motion 01a174b0-8d1f-7552-bdf8-8f82ecac98c4 (on the rig 01a174b0-d41a-73a5-8ec4-46a7c55e0e7c), "
+                       "climb and vault 01a1c558-393a-71bc-8986-6222bdaa02cb, 01a1c558-3bca-722c-be3c-24f2d632b987 "
+                       "(on the rig 01a1c558-c572-75e5-a06c-a014ffccef20, 01a1c558-c7fb-74ea-995d-0df6d30bc0a1)",
         "author": "Dead Commons",
     }
     spec = c.spec
@@ -144,6 +147,10 @@ def build(c):
     bpy.data.actions.remove(bpy.data.actions["run_back_right"])
     g.mirror_clip(bpy.data.actions["run_back_left"], "run_back_right")
     directional += ["walk_left", "walk_right"]
+    # Climbing in through a window and over a fence (2026-11-10, text-to-motion on this rig): one-shots.
+    for name in CLIMB_CLIPS:
+        g.merge_clip(arm, c.paths["raw"] / f"motion-{name}.glb", name)
+        actions[name] = name
     for name in directional:
         actions[name] = name
     c.to_asset_collection(arm, mesh)
@@ -163,6 +170,13 @@ def build(c):
         metres, speed = g.strip_root_motion(arm, bpy.data.actions[name])
         c.note(f"{name} (from {file}): travels {metres * 100:.1f} cm over the clip"
                + (" (already in place)" if metres < 0.01 else f", taken out ({speed:.2f} m/s)"))
+    # The climbs: the travel across the floor out (the game moves the body through the opening); the rise and
+    # drop over the sill or rail stay. One-shots.
+    for name in CLIMB_CLIPS:
+        a = bpy.data.actions[name]
+        metres, speed = g.strip_root_motion(arm, a)
+        a.use_cyclic = False
+        c.note(f"{name} (text-to-motion, raw/motion-{name}.glb): {metres * 100:.0f} cm of travel across the floor taken out; one-shot")
     # The directional clips: in place, one cycle each.
     # Meshy's library clips are one cycle each; the text-to-motion walk holds a few (cut to one).
     for name in directional:
