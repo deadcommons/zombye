@@ -105,6 +105,9 @@ pub struct WorldConfig {
     /// Mailboxes, hydrants, bins: the kinds and where the town generator puts them
     /// (`assets/data/street_props.ron`, see [`crate::street_props`]). None by default.
     pub street_props: StreetPropsDef,
+    /// How survivors see and hear each other (#66, [`crate::awareness`]): what a server tells
+    /// each client of the other players. A server's rule, not the world's: not saved.
+    pub player_sight: crate::awareness::PlayerSightTuning,
 }
 
 impl WorldConfig {
@@ -130,6 +133,7 @@ impl WorldConfig {
             tiers: TierTuning::default(),
             population: PopulationDef::default(),
             street_props: StreetPropsDef::default(),
+            player_sight: Default::default(),
         }
     }
 
@@ -321,6 +325,9 @@ pub struct World {
     pub(crate) nav: Nav,
     /// Players as the senses see them this tick.
     pub(crate) targets: Vec<Target>,
+    /// Which players see and heard which (#66, [`crate::awareness`]). Derived every tick; not
+    /// saved, not in the state hash, read by nothing in the simulation.
+    pub(crate) awareness: crate::awareness::Awareness,
     pub(crate) rng: Rng,
     /// Combat rolls (hits, crits, staggers, zombie strikes), apart from the AI's stream.
     pub(crate) combat_rng: Rng,
@@ -446,6 +453,7 @@ impl World {
             nav,
             flow_cache: FlowCache::new(FLOW_CACHE_SIZE, FLOW_BUILDS_PER_TICK, PLAYER_FLOW_RANGE, POINT_FLOW_RANGE, FLOW_REBUILD_TICKS),
             targets: Vec::new(),
+            awareness: Default::default(),
             next_id: 1,
             next_player_id: 1,
             scratch_pos: Vec::new(),
@@ -1071,6 +1079,8 @@ impl World {
         self.remove_old_corpses();
         let respawned = (far_from..far_from + far_steps).map(|far| self.respawn(far)).sum();
         self.far_ticks += far_steps - 1;
+        // Which players see and heard which, for what each client is told (#66).
+        self.step_awareness();
 
         self.tick += 1;
         let tier_counts = self.tier_counts();

@@ -10,6 +10,7 @@ pub mod host;
 pub mod remote;
 pub mod save_file;
 pub mod shutdown;
+pub mod visibility;
 pub mod wire;
 
 use serde::{Deserialize, Serialize};
@@ -306,6 +307,10 @@ pub struct Snapshot {
     pub outfits: Vec<OutfitView>,
     /// What the zombies listed above that rose from players wore (#63), every snapshot.
     pub risen: Vec<OutfitView>,
+    /// Players heard in this tick by a survivor that doesn't see them (#66): a sound at a
+    /// position, as loud as its radius, not the player. A client gets only its own.
+    #[serde(default)]
+    pub heard: Vec<zombye_sim::Heard>,
 }
 
 /// What a body has on, for drawing it (#63): the clothing and accessories it wears in the order put
@@ -417,6 +422,7 @@ impl Snapshot {
             level_ups: world.take_level_ups(),
             outfits: world.players.iter().map(OutfitView::of).collect(),
             risen,
+            heard: world.awareness().all_heard_now().copied().collect(),
         }
     }
 
@@ -427,6 +433,7 @@ impl Snapshot {
         self.floor.retain(|f| f.player == player);
         self.runs.retain(|r| r.player == player);
         self.level_ups.retain(|l| l.player == player);
+        self.heard.retain(|h| h.listener == player);
         self
     }
 

@@ -21,7 +21,8 @@
 //! ([`DeltaEncoder`] / [`DeltaDecoder`]). Zombies, the bulk of it, are carried on between updates
 //! at both ends ([`Tracked`]) and corrected only when they are too far off for their distance,
 //! most pressing first within a byte budget ([`Limits`]); other players go packed and only when
-//! they change ([`PlayerPacked`]). The visibility rules (who you could see or hear) are #66.
+//! they change ([`PlayerPacked`]). With the server's fair-sight rule on, the view is first cut to
+//! what the client's survivor could see or hear (#66, [`crate::visibility`]).
 
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
@@ -40,8 +41,9 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// Bumped whenever a message changes shape; a server refuses any other. (2: player-vs-player
 /// combat, #65: `PlayerView::knock`, `CombatEvent::by`, players killed in the run stats. 3: the
 /// first night, #19: `RunView::first_night`, together with 2's changes. 4: interest management,
-/// #22: zombies carried on between updates, other players packed.)
-pub const PROTOCOL: u32 = 4;
+/// #22: zombies carried on between updates, other players packed. 5: fair information, #66:
+/// `SnapshotDelta::heard`, `Rules::fair_sight`.)
+pub const PROTOCOL: u32 = 5;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -98,6 +100,9 @@ pub struct Rules {
     pub max_players: u32,
     /// Dev toggles and debug intents are taken.
     pub allow_dev: bool,
+    /// Fair information (#66): a client is told of another player only while its survivor sees
+    /// them (or hears them, as a sound). Off: everyone within the interest radius.
+    pub fair_sight: bool,
 }
 
 /// The numbers a client needs to predict and to label things as the server does.
@@ -341,6 +346,8 @@ pub struct SnapshotDelta {
     pub private: Vec<PrivateView>,
     pub item_notes: Vec<ItemNote>,
     pub level_ups: Vec<LevelUp>,
+    /// Players heard and not seen (#66): where, and how loud (the radius, metres).
+    pub heard: Vec<(glam::Vec2, f32)>,
     /// Sent when they change (the run about once a second while only its clocks move).
     pub floor: Option<Vec<u32>>,
     /// The run with the first night's record (#19).
@@ -379,6 +386,7 @@ impl Snapshot {
             floor: self.floor.iter().filter(|f| f.player == player).cloned().collect(),
             runs: self.runs.iter().filter(|r| r.player == player).cloned().collect(),
             level_ups: self.level_ups.iter().filter(|l| l.player == player).copied().collect(),
+            heard: self.heard.iter().filter(|h| h.listener == player).copied().collect(),
         }
     }
 }
@@ -730,6 +738,7 @@ impl DeltaEncoder {
             private: view.private,
             item_notes: view.item_notes,
             level_ups: view.level_ups,
+            heard: view.heard.iter().map(|h| (h.pos, h.radius)).collect(),
             floor,
             run,
             outfits,
@@ -784,6 +793,7 @@ impl DeltaDecoder {
         s.private = delta.private;
         s.item_notes = delta.item_notes;
         s.level_ups = delta.level_ups;
+        s.heard = delta.heard.iter().map(|&(pos, radius)| zombye_sim::Heard { listener: player, pos, radius, at: delta.tick }).collect();
         if let Some(items) = delta.floor {
             s.floor = vec![FloorView { player, items }];
         }

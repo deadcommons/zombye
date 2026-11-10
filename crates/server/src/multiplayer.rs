@@ -52,7 +52,7 @@ impl HostArgs {
             None => DEFAULT_BUDGET,
             Some(v) => v.parse::<u32>().ok().filter(|kb| (least..=most).contains(kb)).ok_or(format!("--budget is {least} to {most} (KB a second per client), not {v}"))? * 1000,
         };
-        let options = HostOptions { name: text("--name").unwrap_or_else(|| "Zombye server".into()), max_players, allow_dev: flag("--allow-dev"), password: text("--password").unwrap_or_default(), spawn, budget };
+        let options = HostOptions { name: text("--name").unwrap_or_else(|| "Zombye server".into()), max_players, allow_dev: flag("--allow-dev"), password: text("--password").unwrap_or_default(), spawn, budget, fair_sight: on_off("--fair-sight")? };
         Ok(Self { addr, options, pvp: on_off("--pvp")? })
     }
 }
@@ -95,12 +95,13 @@ pub fn host(mut world: World, new_world: bool, args: HostArgs, persist: &mut Per
     }
     let rules = host.rules();
     println!(
-        "{}: listening on {} ({} players at most, {} KB/s down each, pvp {}{}{}); {} zombies on a {}x{} m map, seed {}",
+        "{}: listening on {} ({} players at most, {} KB/s down each, pvp {}, {}{}{}); {} zombies on a {}x{} m map, seed {}",
         rules.name,
         host.local_addr().map_or(args.addr.clone(), |a| a.to_string()),
         rules.max_players,
         host.options.budget / 1000,
         if rules.pvp { "on" } else { "off: co-op" },
+        if rules.fair_sight { "other players only when seen or heard" } else { "other players always shown" },
         if rules.allow_dev { ", dev intents allowed" } else { "" },
         if host.options.password.is_empty() { "" } else { ", password set" },
         host.world.zombies.len(),
@@ -363,7 +364,8 @@ mod tests {
         assert_eq!(parse("--host 10.0.0.5").unwrap().addr, "10.0.0.5:7777");
         assert_eq!(parse("--host --pvp on").unwrap().pvp, Some(true));
         assert_eq!((parse("--host").unwrap().options.budget, parse("--host --budget 64").unwrap().options.budget), (32_000, 64_000));
-        for bad in ["--host --pvp maybe", "--host --max-players 65", "--host --max-players 0", "--host --spawn nowhere", "--host --budget 2", "--host --budget lots"] {
+        assert_eq!((parse("--host").unwrap().options.fair_sight, parse("--host --fair-sight off").unwrap().options.fair_sight), (None, Some(false)));
+        for bad in ["--host --fair-sight dim", "--host --pvp maybe","--host --max-players 65", "--host --max-players 0", "--host --spawn nowhere", "--host --budget 2", "--host --budget lots"] {
             assert!(parse(bad).is_err(), "{bad}");
         }
     }

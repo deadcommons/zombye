@@ -89,25 +89,55 @@ impl Cone {
     }
 }
 
-fn stance_mult(t: &ZombieTuning, stance: Stance) -> f32 {
-    match stance {
-        Stance::Sneak => t.sneak_sight_mult,
-        Stance::Walk => 1.0,
-        Stance::Run => t.run_sight_mult,
+impl Cone {
+    /// From the half-angles in degrees: full range inside the first, less out to the second.
+    pub fn from_degrees(full: f32, peripheral: f32) -> Self {
+        Self { full: full.to_radians().cos(), peripheral: peripheral.to_radians().cos() }
     }
+}
+
+/// A pair of eyes: how far they see by day and by night, in which cone, and what the stance and
+/// stillness of whoever they look at do to that. Zombies' come from [`ZombieTuning`]; survivors'
+/// from [`crate::awareness::PlayerSightTuning`] (#66), so both see by one rule ([`eyes_range`]).
+#[derive(Clone, Copy, Debug)]
+pub struct Eyes {
+    pub day: f32,
+    pub night: f32,
+    pub cone: Cone,
+    pub peripheral_mult: f32,
+    pub rear_range: f32,
+    pub sneak_mult: f32,
+    pub run_mult: f32,
+    pub still_mult: f32,
+}
+
+impl Eyes {
+    pub fn of_zombie(t: &ZombieTuning, cone: Cone) -> Self {
+        Self { day: t.sight_day, night: t.sight_night, cone, peripheral_mult: t.peripheral_mult, rear_range: t.rear_range, sneak_mult: t.sneak_sight_mult, run_mult: t.run_sight_mult, still_mult: t.still_sight_mult }
+    }
+}
+
+/// How far away eyes facing `facing` can spot `target` lying in unit direction `dir` (before line
+/// of sight). Full range ahead, less at the sides, only `rear_range` behind.
+pub fn eyes_range(e: &Eyes, daylight: f32, target: &Target, facing: f32, dir: Vec2) -> f32 {
+    let stance = match target.stance {
+        Stance::Sneak => e.sneak_mult,
+        Stance::Walk => 1.0,
+        Stance::Run => e.run_mult,
+    } * target.sight_mult;
+    let ahead = Vec2::from_angle(facing).dot(dir);
+    if ahead < e.cone.peripheral {
+        return e.rear_range * stance;
+    }
+    let motion = if target.moving { 1.0 } else { e.still_mult };
+    let range = (e.night + (e.day - e.night) * daylight) * stance * motion;
+    if ahead >= e.cone.full { range } else { range * e.peripheral_mult }
 }
 
 /// How far away a zombie facing `facing` can spot `target` lying in unit direction `dir`
 /// (before line of sight). Full range ahead, less at the sides, only `rear_range` behind.
 pub fn sight_range(t: &ZombieTuning, cone: Cone, daylight: f32, target: &Target, facing: f32, dir: Vec2) -> f32 {
-    let stance = stance_mult(t, target.stance) * target.sight_mult;
-    let ahead = Vec2::from_angle(facing).dot(dir);
-    if ahead < cone.peripheral {
-        return t.rear_range * stance;
-    }
-    let motion = if target.moving { 1.0 } else { t.still_sight_mult };
-    let range = (t.sight_night + (t.sight_day - t.sight_night) * daylight) * stance * motion;
-    if ahead >= cone.full { range } else { range * t.peripheral_mult }
+    eyes_range(&Eyes::of_zombie(t, cone), daylight, target, facing, dir)
 }
 
 /// Chance per sight check of noticing someone at `frac` of the sight range: certain up close, then

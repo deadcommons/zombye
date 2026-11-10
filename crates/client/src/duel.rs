@@ -67,7 +67,10 @@ pub fn decide(me: &PlayerView, them: &PlayerView, weapon: &WeaponDef, c: &Combat
 }
 
 fn drive(join: Res<JoinInfo>, mut link: ResMut<ServerLink>, mut duel: ResMut<Duel>) {
-    let (Some(me), Some(them)) = (link.curr.players.iter().find(|p| p.id == duel.foe).copied(), link.curr.players.iter().find(|p| p.id == join.player_id).copied()) else { return };
+    // The bot's own view of the two of them: our snapshot lists it only while our survivor sees
+    // it (#66), so it goes by every player of the world in this process.
+    let players = if link.everyone.is_empty() { &link.curr.players } else { &link.everyone };
+    let (Some(me), Some(them)) = (players.iter().find(|p| p.id == duel.foe).copied(), players.iter().find(|p| p.id == join.player_id).copied()) else { return };
     if me.dead {
         return;
     }

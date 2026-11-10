@@ -621,6 +621,8 @@ impl World {
             rise_looks,
             // Scratch, refilled every tick.
             targets: _,
+            // Derived from the players and each tick's sounds (#66); nothing reads it back.
+            awareness: _,
             scratch_tiles: _,
             scratch_pos: _,
             scratch_actions: _,

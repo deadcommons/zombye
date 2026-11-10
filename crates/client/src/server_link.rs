@@ -89,6 +89,13 @@ pub struct ServerLink {
     /// The latest private view (inventory, load, open container) of each player we've heard about;
     /// snapshots only carry one when it changed.
     pub private: Vec<PrivateView>,
+    /// Players we heard without seeing them, from the snapshots taken up this frame (#66): each a
+    /// sound at a position, for a mark on the ground and a footstep there.
+    pub heard: Vec<zombye_sim::Heard>,
+    /// Single-player with PvP on: every player in the world, seen by ours or not, for the scenario
+    /// bot that plays another survivor from this process (`duel.rs`: its own client would always
+    /// have itself). Empty otherwise.
+    pub everyone: Vec<zombye_net::PlayerView>,
 }
 
 impl ServerLink {
@@ -354,6 +361,8 @@ fn join_local(app: &mut App, mut server: LocalServer, player_id: u32) {
         server.send(Intent::Dev { player: player_id, god: options.god.then_some(true), ignored: options.ignored.then_some(true) });
     }
     let first = Snapshot::capture(&mut server.world);
+    // Player against player: other survivors only as ours sees them, as on a server (#66).
+    let first = if server.world.config.combat.pvp { first.through_senses(player_id, &server.world) } else { first };
     let map = ClientMap(server.world.map.clone());
     let damage = EdgeDamageMap(EdgeDamage::all(&server.world).into_iter().map(|d| ((d.tile, d.edge), d.hp)).collect());
     let spawn = first.players.iter().find(|p| p.id == player_id).map(|p| Vec2::from(p.pos)).unwrap_or(server.world.player_spawn);
@@ -364,7 +373,7 @@ fn join_local(app: &mut App, mut server: LocalServer, player_id: u32) {
 /// The resources a joined client has, and the systems that tick the server (or take up what it sent).
 fn finish_join(app: &mut App, server: Backend, net: Option<NetInfo>, first: Snapshot, map: ClientMap, damage: EdgeDamageMap, join: JoinInfo) {
     let private = first.private.clone();
-    app.insert_resource(ServerLink { server, net, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3], private })
+    app.insert_resource(ServerLink { server, net, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3], private, heard: Vec::new(), everyone: Vec::new() })
         .insert_resource(map)
         .insert_resource(join)
         .insert_resource(damage)
@@ -393,7 +402,7 @@ impl ServerLink {
         let id = server.join(None);
         let first = server.tick();
         let private = first.private.clone();
-        (Self { server: Backend::Local(server), net: None, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3], private }, id)
+        (Self { server: Backend::Local(server), net: None, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3], private, heard: Vec::new(), everyone: Vec::new() }, id)
     }
 
     /// The world being served, when it is in this process (to save it, or start it again); `None`
@@ -428,7 +437,11 @@ fn clear_frame_changes(
     mut hits: ResMut<CombatEventsThisFrame>,
     mut notes: ResMut<ItemNotesThisFrame>,
     mut ups: ResMut<LevelUpsThisFrame>,
+    mut link: ResMut<ServerLink>,
 ) {
+    if !link.heard.is_empty() {
+        link.heard.clear();
+    }
     ups.0.clear();
     changes.0.clear();
     transitions.0.clear();
@@ -453,8 +466,11 @@ fn tick_server(
     let link = &mut *link;
     let snapshots = match &mut link.server {
         Backend::Local(server) => {
-            // A remote server sends us only our own private view and notes; do as it does.
-            let snapshot = server.tick().for_player(join.player_id);
+            // A remote server sends us only our own private view and notes, and with PvP on other
+            // players only as our survivor sees or hears them (#66); do as it does.
+            let full = server.tick();
+            link.everyone = if server.world.config.combat.pvp { full.players.clone() } else { Vec::new() };
+            let snapshot = full.for_local(join.player_id, &server.world);
             let s = server.world.stats;
             (link.sim_ms, link.chasing, link.tiers) = (s.tick_ms, s.chasing, [s.active, s.near, s.virtual_]);
             vec![snapshot]
@@ -518,6 +534,7 @@ fn take_up(
         damage.0.push(*d);
     }
     hits.0.extend_from_slice(&snapshot.hits);
+    link.heard.extend_from_slice(&snapshot.heard);
     link.prev = std::mem::replace(&mut link.curr, snapshot);
 }
 

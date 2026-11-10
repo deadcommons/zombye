@@ -13,8 +13,8 @@ Work is tracked on GitHub, not in the repo: the
 
 | Path | What | Licence |
 |---|---|---|
-| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), skills that improve with practice (`skills.rs` + `SkillTuning`), street props placed by the town generator from data (`street_props.rs`), run stats and the cause of death (`run.rs`), the first night's objectives and outcome (`firstnight.rs`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
-| `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), multiplayer over the network (see Multiplayer: the messages, framing and per-client delta snapshots in `wire.rs`, the server's connections in `host.rs`, a client's in `remote.rs`), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
+| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `awareness.rs`: which players see and heard which, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), skills that improve with practice (`skills.rs` + `SkillTuning`), street props placed by the town generator from data (`street_props.rs`), run stats and the cause of death (`run.rs`), the first night's objectives and outcome (`firstnight.rs`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
+| `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), multiplayer over the network (see Multiplayer: the messages, framing and per-client delta snapshots in `wire.rs`, a client's view cut to what its survivor sees and hears of other players in `visibility.rs`, the server's connections in `host.rs`, a client's in `remote.rs`), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint; the multiplayer server (`--host`) and bot clients (`--bots N --connect ADDR`; `multiplayer.rs`, see Multiplayer); `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
 | `crates/client` | `zombye` Bevy client: camera, chunk streaming, building meshes (`world_render.rs`; their details, trim, siding lines, porches, chimneys, shopfronts and lit windows, from `meshgen/building_kit.rs`, see Buildings dressed under The world), the outdoors per chunk from the tile map alone (`meshgen/landscape.rs`: lawns, verges, forest floor and litter, road paint at real scale, kerbs, slab joints, driveways, front beds, fences and hedges; `meshgen/curves.rs`: what's drawn round over the tiles, see Curves under The world; `meshgen/trees.rs`: faceted broadleaves, birches, pines, spruces; colours from `assets/data/palette.ron` through `meshgen/palette.rs`), fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd, or a character baked offline read from a `.zvat` (`zvat.rs`); `survivor.rs` skinned, CPU-posed players; `character.rs` reads a modular character's body and wearable GLBs and `survivor_model.rs` draws players as it, dressed in what they wear), hit feedback (`fx.rs`), lights in the dark (`lights.rs`, see Light and mood), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), street props merged into each chunk's props mesh from the same models (`meshgen/street_props.rs`, see Street props under The world), HUD, the death screen and run summary (`death.rs`), the first night's objectives, hints and morning screen (`firstnight_ui.rs`), the skills panel and level-up line (`skills_ui.rs`), sound (`audio.rs`, see Sound), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
 | `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/items/recipes.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`, `data/street_props.ron`, `data/palette.ron`: every colour, for Blender assets and the generated world), models (`models/furniture/*.glb`, street props `models/street/*.glb`; the survivor's body `models/characters/survivor_01.glb` and its wearables `models/wearables/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), sound (`audio/sfx/*.wav`, `audio/ambience/*.wav`, listed in `data/sounds.ron`), later textures. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
@@ -1317,7 +1317,8 @@ snapshots over the network: `zombye-server --host` serves a world and `zombye --
   a crowbar: a gash to the torso"). `--spawn spread|together`: where new
   survivors start (`Host::spawn_point`), by default spread round the edge of the town with PvP on (each a golden angle
   on from the last) and together outside the house a single player wakes up in with it off. `--max-players N`
-  (default 32, at most 64), `--name`, `--password`, `--budget KB` (below).
+  (default 32, at most 64), `--name`, `--password`, `--budget KB` (below), `--fair-sight on|off` (other players only when your survivor sees
+  or hears them, #66, below; on with PvP unless said otherwise).
 - **Input, one a tick** (`Host::apply_queue`): a client's intents wait in its queue in the order sent, and a tick
   applies them up to and including one `PlayerInput`, so each input moves the player for exactly one tick, as the
   client predicted, however the network bunched them; with none waiting the last one holds; more than 10 waiting (a
@@ -1346,7 +1347,38 @@ snapshots over the network: `zombye-server --host` serves a world and `zombye --
   - **Other players** go packed (`PlayerPacked`, about 14 bytes: position, facing, stance, action and its timing, HP
     rounded up, weapon, the health tags, reeling or knocked down) and only when they change; a client's own player goes whole every tick
     (prediction needs it exact). A client doesn't get others' endurance, load, input numbers or dev toggles. The
-    visibility rules (only players you could see or hear) are #66.
+    visibility rules (only players you could see or hear) are the next point.
+- **Fair information (#66, `sim::awareness`, `net::visibility`; docs/PLAN.md §4.8):** a client learns about another
+  player only through its own survivor's senses, so a modified client is no wallhack. The world keeps, for every pair
+  of players, whether one **sees** the other (`World::player_sees(viewer, target)`; `World::awareness()`), by the rule
+  zombies see players by (`senses::eyes_range`: view cone, daylight, the other's stance, whether it moves, its Stealth
+  `sight_mult`; then `vision::line_of_sight`, so windows don't block it and walls and shut doors do) with a survivor's
+  eyes: `PlayerSightTuning` (`WorldConfig::player_sight`, ours; not saved, a server's rule), which follows the client's
+  fog of war so that what your screen shows lit is where you'd see someone: 70 m by day, 10 m at night, full range
+  within 105° of the facing, half out to 125°, behind that only 2.5 m (never through a wall); sneaking x0.6, running
+  x1.2, standing still x0.85; someone holding a light is seen 35 m off at night, and whoever stands in your own
+  flashlight's beam (33° either side, its radius + 2 m) is seen; asleep you see nobody. Sight **lasts 1 s after it is
+  lost** (`grace_secs`), so nobody flickers at the edge. A player that isn't seen but makes a noise in earshot (the
+  zombies' hearing rule: the sound's radius, `wall_muffle` of it with no line of sight) is **heard**: a
+  `sim::Heard { listener, pos, radius }`, at most one every 0.4 s per player heard (a louder one at once), kept 4 s
+  (`Awareness::heard_lately`). Updated at the end of every tick with two or more players (`World::step_awareness`;
+  nothing with one), from the players and the tick's sounds; **derived**: not saved, not in `state_hash`, read by
+  nothing in the simulation (`awareness_leaves_the_simulation_alone`). `Snapshot::through_senses(player, world)` then
+  cuts a client's view: other players and their outfits only while seen; `Snapshot::heard` (its own; on the wire
+  `SnapshotDelta::heard`, position and radius) for those only heard; hits that name a player it doesn't see are left
+  out, whoever was hit; ground items only with a line of sight from its survivor (any direction) or in its reach, so
+  something dropped or taken behind a wall says nothing until you look. Zombies aren't cut (the client's fog hides
+  them), nor doors and windows (the map copy must be right wherever you can walk). **A server's rule:**
+  `--fair-sight on|off` (`HostOptions::fair_sight`, `Rules::fair_sight`), by default on with PvP and off in co-op.
+  Single-player with PvP on (`--pvp`, `--duel`, a save of such a world) does the same (`Snapshot::for_local`; the duel
+  bot goes by `ServerLink::everyone`), and a world that hasn't ticked yet (a loaded save, an offscreen picture) goes by
+  the rule alone (`World::sees_now`). **Client** (`heard.rs`): a heard player is a pale ring on the ground where the
+  sound came from, spreading and fading over 1.5 s, wider the louder, and a footstep sound there (`audio.rs`); the
+  client's fog already hid other players out of sight, so honest pictures don't change. `review_sight.rs` (ignored)
+  writes saves to look at it with: `sight_seen`, `sight_behind`, `sight_wall`, `sight_dark`, and `sight_walker` to
+  watch live (`--load`): someone walks up behind you, heard then seen. Tests: `sim::awareness::tests`,
+  `net/tests/visibility.rs` (over a socket: behind a wall, outside the cone, in the dark, in plain view). Cost: nothing
+  measurable (32 clients: the tick as before).
   - **Map changes by chunk** (`wire::MapInterest`): a door or window opening, shutting, breaking or cracking goes to
     the clients whose survivor is within the interest radius of its 16 m chunk. For the others the edge is noted, and
     when its chunk comes into their interest they get it as it is by then, once (the client's map copy is right
@@ -1383,6 +1415,11 @@ It takes the common options too (`--zombies N --seed S --map-chunks N`, and `--p
 `--save PATH` (load-or-create, autosave, save on exit) with `--autosave-mins N` and `--saves DIR`, and for `screenshot`
 `--client PATH` and `--screenshot-timeout SECS`. Time is paused
 between calls, so an autosave only happens after a call that changed something.
+
+With PvP on (`--pvp on`, `pvp {on: true}`) `observe` is fair (#66): it shows `player`'s view (default 1) by the rule a
+multiplayer server tells clients by: other players only while that survivor sees them or did a second ago, those it
+only hears as `h` on the map and a "heard, not seen" list (where, how far, how loud, how long ago), ground items only
+with a line of sight; `all: true` shows everyone (the default with PvP off). The other tools stay debug tools.
 
 **What clients are told about the tools (#88, `mcp.rs`):** the `TOOLS` table gives every tool a `title` and a kind, and
 `tool_list` turns the kind into MCP annotations on the definitions in `tool_defs`: `Look` tools are `readOnlyHint: true`

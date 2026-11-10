@@ -8,6 +8,7 @@
 //! map and maps to the renderer's `+z`.
 
 pub mod ai;
+pub mod awareness;
 pub mod combat;
 pub mod containers;
 pub mod crafting;
@@ -39,6 +40,7 @@ pub mod worldgen;
 pub mod zombies;
 
 pub use ai::{ZombieAttack, ZombieThump, ZombieTuning};
+pub use awareness::{Awareness, Heard, PlayerSightTuning};
 pub use combat::{ActionEvent, CombatEvent, CombatEventKind, CombatTuning, HitEffect, HitEvent, PlayerHitEvent};
 pub use containers::{ContainerData, ContainerDef, ContainerSite};
 pub use crafting::{RecipeDef, RecipeItem, Tool};

@@ -617,6 +617,11 @@ fn footsteps(local: Res<LocalPlayer>, link: Res<ServerLink>, map: Res<ClientMap>
             queue.at(cue, pos, loud * floor_loud);
         }
     }
+    // Someone we hear and don't see (#66): a step where the sound came from, as loud as it was.
+    for h in &link.heard {
+        let (cue, floor_loud) = footstep(floor_at(&map.0, h.pos));
+        queue.at(cue, h.pos, (h.radius / 6.0).clamp(0.4, 1.6) * floor_loud);
+    }
     // Zombies close by drag their feet.
     let ear = local.curr.pos;
     let mut seen = HashSet::new();

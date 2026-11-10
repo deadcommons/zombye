@@ -59,6 +59,9 @@ pub struct HostOptions {
     /// Bytes a second down to each client (#22): what its snapshots are kept within, zombies
     /// further off getting coarser when a crowd wouldn't fit (see [`wire::Limits`]).
     pub budget: u32,
+    /// Fair information (#66, [`crate::visibility`]): tell a client of another player only while
+    /// its survivor sees them, or as a sound when it hears them. `None`: on with PvP, off in co-op.
+    pub fair_sight: Option<bool>,
 }
 
 /// The default budget per client: a quarter of a megabit.
@@ -73,7 +76,7 @@ const FRAME_BYTES: f32 = 150.0;
 
 impl Default for HostOptions {
     fn default() -> Self {
-        Self { name: "Zombye server".into(), max_players: wire::DEFAULT_PLAYERS, allow_dev: false, password: String::new(), spawn: None, budget: DEFAULT_BUDGET }
+        Self { name: "Zombye server".into(), max_players: wire::DEFAULT_PLAYERS, allow_dev: false, password: String::new(), spawn: None, budget: DEFAULT_BUDGET, fair_sight: None }
     }
 }
 
@@ -189,7 +192,12 @@ impl Host {
     }
 
     pub fn rules(&self) -> Rules {
-        Rules { name: self.options.name.clone(), pvp: self.world.config.combat.pvp, max_players: self.options.max_players as u32, allow_dev: self.options.allow_dev }
+        Rules { name: self.options.name.clone(), pvp: self.world.config.combat.pvp, max_players: self.options.max_players as u32, allow_dev: self.options.allow_dev, fair_sight: self.fair_sight() }
+    }
+
+    /// Are clients told of other players only through their survivor's senses (#66)?
+    pub fn fair_sight(&self) -> bool {
+        self.options.fair_sight.unwrap_or(self.world.config.combat.pvp)
     }
 
     /// The clients connected now.
@@ -479,10 +487,17 @@ impl Host {
         let radius = self.world.config.tiers.interest_radius;
         let budget = self.options.budget.clamp(BUDGET_RANGE.0, BUDGET_RANGE.1) as f32;
         let a_tick = budget * TICK_DT;
+        let fair = self.fair_sight();
         for c in &mut self.conns {
             // Its area of interest: what is within the radius of its survivor, and of the map
             // the chunks that are (with what it missed in those that have just come in).
             let mut view = full.for_client(c.player, radius);
+            // Of the other players, only those its survivor sees; those it hears, as sounds (#66).
+            if fair {
+                view = view.through_senses(c.player, &self.world);
+            } else {
+                view.heard.clear();
+            }
             let me = self.world.player(c.player).map(|p| p.state.pos);
             c.map.cut(&mut view, me, radius, &self.world);
             // Its budget: zombies get what is left of it this tick, and never less than a

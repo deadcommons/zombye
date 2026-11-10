@@ -59,6 +59,7 @@ mod fog;
 mod furniture_models;
 mod firstnight_ui;
 mod fx;
+mod heard;
 mod health_ui;
 mod hud;
 mod inventory_ui;
@@ -417,7 +418,7 @@ fn main() {
             zombie_render::ZombieRenderPlugin,
             items_render::ItemsRenderPlugin,
             (hud::HudPlugin, inventory_ui::InventoryUiPlugin, health_ui::HealthUiPlugin, death::DeathPlugin, needs_ui::NeedsUiPlugin, action_ui::ActionUiPlugin, skills_ui::SkillsUiPlugin),
-            fx::FxPlugin,
+            (fx::FxPlugin, heard::HeardPlugin),
             survivor::SurvivorPlugin,
             (autoplay::AutoplayPlugin, duel::DuelPlugin),
             (saving::SavingPlugin, ui_scale::UiScalePlugin, firstnight_ui::FirstNightUiPlugin),

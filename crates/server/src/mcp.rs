@@ -409,7 +409,10 @@ fn tool_defs() -> Value {
                 shut doors D (d when damaged), open doors /, broken doors #, fences ~, \
                 floors: . grass  , road  : sidewalk/path  _ indoors; T tree, * bush, f furniture, ^ a street prop (mailbox, hydrant, bin), c a container not searched yet, \
                 o (on a tile) a searched container, w a weapon on the floor, i any other item on the floor, \
-                P player (X dead), G debug goal, @ spawn. \
+                P player (X dead), h a player heard but not seen, G debug goal, @ spawn. \
+                With PvP on it is `player`'s view (default 1), by the rule a multiplayer server tells clients by: other players only while that survivor \
+                sees them (view cone, daylight, their stance, a line of sight) or did a second ago, those it only hears as sounds at a position, \
+                and items on the floor only with a line of sight; `all: true` shows everyone and everything (the default with PvP off). \
                 Active zombies by state: Z wandering, I investigating a sound, C chasing a player, L lunging, A attacking, \
                 B battering a door or window, S staggered, v down on the ground, % corpse; zombies on the cheaper tiers \
                 far from players: n near (updated a few times a second), ? virtual (moved in bulk every few seconds). \
@@ -418,7 +421,9 @@ fn tool_defs() -> Value {
             "inputSchema": {"type": "object", "properties": {
                 "x": {"type": "number", "description": "Centre x in metres"},
                 "y": {"type": "number", "description": "Centre y in metres"},
-                "radius": {"type": "integer", "minimum": 2, "maximum": 30, "default": 10}
+                "radius": {"type": "integer", "minimum": 2, "maximum": 30, "default": 10},
+                "player": {"type": "integer", "default": 1, "description": "Whose senses (and the centre, unless x and y say)"},
+                "all": {"type": "boolean", "description": "Show every player and item, seen or not (default: only with PvP off)"}
             }}
         },
         {
@@ -954,9 +959,13 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
     let player_id = || args.get("player").and_then(Value::as_u64).unwrap_or(1) as u32;
     match name {
         "observe" => {
-            let centre = point().map(Vec2::from).or(world.players.first().map(|p| p.state.pos)).unwrap_or(world.player_spawn);
+            // With PvP on, an agent knows of other players what its survivor's senses tell it (#66).
+            let all = args.get("all").and_then(Value::as_bool).unwrap_or(!world.config.combat.pvp);
+            let viewer = (!all).then(player_id).filter(|id| world.player(*id).is_some());
+            let own = viewer.and_then(|id| world.player(id)).or(world.players.first()).map(|p| p.state.pos);
+            let centre = point().map(Vec2::from).or(own).unwrap_or(world.player_spawn);
             let radius = args.get("radius").and_then(Value::as_i64).unwrap_or(10).clamp(2, 30) as i32;
-            Ok(observe(world, centre, radius))
+            Ok(observe(world, centre, radius, viewer))
         }
         "step_ticks" => {
             let n = args.get("n").and_then(Value::as_u64).unwrap_or(20).clamp(1, MAX_STEP);
@@ -2069,8 +2078,14 @@ fn clock(hours: f32) -> String {
 
 /// Double-resolution ASCII map: tile (i, j) is at (2i+1, 2j+1), its north edge at (2i+1, 2j) and
 /// its west edge at (2i, 2j+1).
-fn observe(world: &World, centre: Vec2, radius: i32) -> String {
+/// `viewer`: the player whose senses decide which other players and ground items are shown
+/// (#66, the rule a multiplayer server cuts snapshots by); `None` shows everything.
+fn observe(world: &World, centre: Vec2, radius: i32, viewer: Option<u32>) -> String {
     let map = &world.map;
+    // Seen now or a moment ago (before the first tick, by the rule alone).
+    let shown = |id: u32| viewer.is_none_or(|v| world.player_sees(v, id) || world.sees_now(v, id));
+    let eye = viewer.and_then(|v| world.player(v)).map(|p| p.state.pos);
+    let item_shown = |pos: Vec2| eye.is_none_or(|e| zombye_sim::vision::line_of_sight(map, e, pos));
     let c = centre.floor().as_ivec2();
     let n = (radius * 2 + 1) as usize;
     let size = 2 * n + 1;
@@ -2120,7 +2135,7 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
             }
         }
     }
-    for it in world.items() {
+    for it in world.items().iter().filter(|it| item_shown(it.pos)) {
         if let Some((x, y)) = to_cell(it.pos) {
             grid[y][x] = if world.item_weapon(it.stack.item).is_some() { 'w' } else { 'i' };
         }
@@ -2154,7 +2169,14 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
     if let Some((x, y)) = world.goal().and_then(|g| to_cell(g.as_vec2() + Vec2::splat(0.5))) {
         grid[y][x] = 'G';
     }
-    for p in &world.players {
+    // Players heard and not seen: where the sound came from.
+    let heard: Vec<zombye_sim::Heard> = viewer.map(|v| world.awareness().heard_lately(v).copied().collect()).unwrap_or_default();
+    for h in &heard {
+        if let Some((x, y)) = to_cell(h.pos) {
+            grid[y][x] = 'h';
+        }
+    }
+    for p in world.players.iter().filter(|p| shown(p.id)) {
         if let Some((x, y)) = to_cell(p.state.pos) {
             grid[y][x] = if p.dead { 'X' } else { 'P' };
         }
@@ -2182,8 +2204,11 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
         out.extend(row);
         out.push('\n');
     }
-    out.push_str("players:\n");
-    for p in &world.players {
+    match viewer {
+        Some(v) => out.push_str(&format!("players (as P{v} sees them; others only in its sight, see `all`):\n")),
+        None => out.push_str("players:\n"),
+    }
+    for p in world.players.iter().filter(|p| shown(p.id)) {
         let s = &p.state;
         out.push_str(&format!(
             "  P{} at ({:.1}, {:.1}) in {}, facing {}, {:?}, {:.0} HP{}, {}, endurance {:.2}{}{}{}; {}{}\n",
@@ -2221,11 +2246,20 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
             }
         ));
     }
+    if !heard.is_empty() {
+        out.push_str("heard, not seen (someone's footsteps, blows, doors):\n");
+        let now = world.awareness().now();
+        for h in heard.iter().rev().take(6) {
+            let from = eye.unwrap_or(centre);
+            out.push_str(&format!("  a sound at ({:.1}, {:.1}), {:.1} m {}, carrying {:.0} m, {:.1} s ago\n", h.pos.x, h.pos.y, h.pos.distance(from), compass((h.pos - from).to_angle()), h.radius, (now - h.at) as f32 * TICK_DT));
+        }
+    }
     let lo_items = origin.as_vec2();
     let hi_items = lo_items + Vec2::splat(n as f32);
     let items: Vec<String> = world
         .items()
         .iter()
+        .filter(|it| item_shown(it.pos))
         .filter(|it| it.pos.x >= lo_items.x && it.pos.y >= lo_items.y && it.pos.x < hi_items.x && it.pos.y < hi_items.y)
         .map(|it| format!("  #{} {} at ({:.1}, {:.1}), {:.1} m away\n", it.id, stack_text(world, &it.stack), it.pos.x, it.pos.y, it.pos.distance(centre)))
         .collect();
@@ -3384,6 +3418,37 @@ mod tests {
         assert_eq!(stats["players"][0]["bleeding"], 1);
         assert_eq!(stats["players"][0]["infection"], "unknown");
         assert_eq!(stats["players"][0]["wounds"][0], "gash on the left leg");
+    }
+
+    /// With PvP on, `observe` is the player's own view (#66): another player behind its back or
+    /// behind a wall isn't listed or drawn, one in front of it is, and `all` shows everyone.
+    #[test]
+    fn observe_shows_other_players_only_when_seen() {
+        let mut world = small_world();
+        let dir = scratch("observe-senses");
+        let mut persist = session(&world, &dir.0);
+        let at = world.player(1).unwrap().state.pos;
+        // Player 1 faces east; player 2 stands 1 m east of it, player 3 well behind it.
+        let (_, err) = call(&mut world, &mut persist, "add_player", json!({"x": at.x + 1.0, "y": at.y}));
+        assert!(!err);
+        let (_, err) = call(&mut world, &mut persist, "add_player", json!({"x": at.x - 40.0, "y": at.y}));
+        assert!(!err);
+        // PvP off (co-op): everyone.
+        let (text, _) = call(&mut world, &mut persist, "observe", json!({"radius": 30}));
+        assert!(text.contains("P2 at") && text.contains("P3 at"), "{text}");
+        call(&mut world, &mut persist, "pvp", json!({"on": true}));
+        for text in [call(&mut world, &mut persist, "observe", json!({"radius": 30})).0, {
+            call(&mut world, &mut persist, "step_ticks", json!({"n": 5}));
+            call(&mut world, &mut persist, "observe", json!({"radius": 30})).0
+        }] {
+            assert!(text.contains("as P1 sees them") && text.contains("P1 at") && text.contains("P2 at"), "{text}");
+            assert!(!text.contains("P3 at"), "behind player 1: {text}");
+        }
+        let (text, _) = call(&mut world, &mut persist, "observe", json!({"radius": 30, "all": true}));
+        assert!(text.contains("P3 at"), "{text}");
+        // Player 3's own view has neither of the others (40 m off, walls between).
+        let (text, _) = call(&mut world, &mut persist, "observe", json!({"player": 3}));
+        assert!(text.contains("P3 at") && !text.contains("P1 at") && !text.contains("P2 at"), "{text}");
     }
 
     /// PvP through the tools: off, a swing at another player hits nothing; `pvp {on: true}` and the

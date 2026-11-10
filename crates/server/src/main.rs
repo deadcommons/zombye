@@ -15,7 +15,9 @@
 //!   spread|together` (default: spread round the town with PvP, together by the first house
 //!   without), `--name NAME`, `--password P`, `--allow-dev` (take dev toggles and debug intents
 //!   from clients), `--budget KB` (kilobytes a second down to each client, default 32, 8 to
-//!   1000: what its snapshots are kept within, #22). With `--save PATH` the world is loaded or made, autosaved and saved on
+//!   1000: what its snapshots are kept within, #22), `--fair-sight on|off` (#66: a client is told
+//!   of another player only while its survivor sees them, and of one it only hears as a sound;
+//!   default on with PvP, off in co-op). With `--save PATH` the world is loaded or made, autosaved and saved on
 //!   shutdown as below, with whose survivor is whose in `PATH.players`.
 //! - `zombye-server --bots N --connect HOST[:PORT] [--secs S] [--bots-hostile]` — N headless bot
 //!   clients, each on its own connection, that wander and fight; prints what each costs.
@@ -195,7 +197,7 @@ fn main() {
     } else {
         eprintln!(
             "usage: zombye-server (--mcp | --bench [--ticks N] [--players N] [--horde N] [--save-bench] \
-             | --host [ADDR[:PORT]] [--name NAME] [--max-players N] [--pvp on|off] [--spawn spread|together] [--password P] [--allow-dev] [--budget KB] \
+             | --host [ADDR[:PORT]] [--name NAME] [--max-players N] [--pvp on|off] [--spawn spread|together] [--password P] [--allow-dev] [--budget KB] [--fair-sight on|off] \
              | --bots N --connect HOST[:PORT] [--secs S] [--name PREFIX] [--password P] [--bots-hostile]) \
              [--zombies N] [--seed S] [--map-chunks N] [--pvp on] [--data DIR] \
              [--save PATH] [--load-anyway] [--autosave-mins N] [--saves DIR] [--client PATH] [--screenshot-timeout SECS] [--no-debug-tools]"
