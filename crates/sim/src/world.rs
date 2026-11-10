@@ -380,6 +380,8 @@ pub struct World {
     pub(crate) scratch_pos: Vec<Vec2>,
     pub(crate) scratch_actions: Vec<(usize, Action)>,
     pub(crate) scratch_hits: Vec<(f32, usize)>,
+    /// How tall each body on a shot's line stood (#72, `crate::ranged`), by its `scratch_hits` index.
+    pub(crate) scratch_tops: Vec<(usize, f32)>,
     /// Where zombies and players stood over the last few ticks, for lag-compensated melee (#23,
     /// [`crate::lagcomp`]). Empty until a player's client reports what it sees; not saved.
     pub(crate) lag_history: crate::lagcomp::History,
@@ -466,6 +468,7 @@ impl World {
             combat_events: Vec::new(),
             scratch_actions: Vec::new(),
             scratch_hits: Vec::new(),
+            scratch_tops: Vec::new(),
             lag_history: Default::default(),
             scratch_trades: Vec::new(),
             town_min: generated.town_min,
@@ -1381,6 +1384,7 @@ impl World {
                     crate::inventory::JobKind::Use { index, item, .. } => index ^ (item as u32) << 8 ^ 0x0E00_0000,
                     crate::inventory::JobKind::Treat { wound, treatment, item } => wound.unwrap_or(0xFFFF) ^ (treatment as u32) << 16 ^ item.map_or(0xFF, u32::from) << 20 ^ 0x7000_0000,
                     crate::inventory::JobKind::Craft { recipe } => recipe as u32 ^ 0xC4AF_0000,
+                    crate::inventory::JobKind::Reload { spare } => spare as u32 ^ 0x4E10_0000,
                 });
             }
         }

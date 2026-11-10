@@ -66,6 +66,11 @@ pub struct LocalPlayer {
     pub aim: f32,
     /// Aiming: the right mouse held (not over an open panel), or `--autoplay`.
     pub aiming: bool,
+    /// How far up or down of level a gun is aimed (#72, radians): at the body the cursor is on, at
+    /// the height it is on it (`gun_aim`), else level at chest height. Sent as `Intent::Aim`; the
+    /// last one sent is kept so a gun put away says "level" once.
+    pub pitch: f32,
+    sent_pitch: f32,
     last_snapshot_tick: u64,
     /// From the latest snapshot: health, dead, weapon held, action under way.
     pub hp: f32,
@@ -206,6 +211,8 @@ fn spawn_player(
         sneak: options.sneak,
         aim: state.facing,
         aiming: false,
+        pitch: 0.0,
+        sent_pitch: 0.0,
         last_snapshot_tick: link.curr.tick,
         hp,
         dead,
@@ -279,6 +286,12 @@ fn predict(
         // where we see their targets (lag compensation, #23).
         let tick = link.curr.tick;
         link.send(Intent::Seen { player: me.id, tick });
+    }
+    // Aiming a gun (#72): the pitch goes with the facing, before the input a trigger pull follows.
+    let pitch = if me.aiming { me.pitch } else { 0.0 };
+    if pitch != 0.0 || me.sent_pitch != 0.0 {
+        link.send(Intent::Aim { player: me.id, pitch });
+        me.sent_pitch = pitch;
     }
     link.send(Intent::PlayerInput { player: me.id, seq, move_dir: input.move_dir.to_array(), facing: input.facing, run, sneak: input.sneak, aim: input.aim });
 
@@ -405,6 +418,8 @@ fn face_cursor(
     panel: Res<crate::inventory_ui::InventoryPanel>,
     health: Res<crate::health_ui::HealthPanel>,
     time: Res<Time>,
+    join: Res<JoinInfo>,
+    link: Res<ServerLink>,
     mut players: Query<(&mut Player, &mut Transform)>,
     mut me: ResMut<LocalPlayer>,
 ) {
@@ -434,13 +449,68 @@ fn face_cursor(
     }
     let t = -ray.origin.y / ray.direction.y;
     let hit = ray.origin + *ray.direction * t;
-    let d = Vec2::new(hit.x - tf.translation.x, hit.z - tf.translation.z);
+    let from = Vec2::new(tf.translation.x, tf.translation.z);
+    let mut d = Vec2::new(hit.x, hit.z) - from;
+    // With a gun (#72) the aim is the body the cursor is on, at the height it is on it: the head
+    // when it's on the head. On nothing, level at chest height toward the ground under the cursor.
+    if me.weapon.and_then(|w| join.weapons.get(w as usize)).is_some_and(|w| w.ranged.is_some()) {
+        let zombies = link.curr.zombies.iter().filter(|z| z.anim != ZombieAnim::Dead).map(|z| (Vec2::from(z.pos), matches!(z.anim, ZombieAnim::Down | ZombieAnim::GetUp)));
+        let others = link.curr.players.iter().filter(|p| p.id != me.id && !p.dead).map(|p| (Vec2::from(p.pos), p.asleep || p.knock.is_some_and(|k| k.down)));
+        match gun_aim(from, ray.origin, *ray.direction, zombies.chain(others)) {
+            Some((to, pitch)) => (d, me.pitch) = (to, pitch),
+            None => me.pitch = level_pitch(d.length()),
+        }
+    } else {
+        me.pitch = 0.0;
+    }
     if d.length_squared() > 0.04 {
         player.facing = d.y.atan2(d.x);
         me.aim = player.facing;
         // The body's nose points along local +z.
         tf.rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - player.facing);
     }
+}
+
+/// How far the cursor's ray may pass from a body's middle and still be on it (a little more than
+/// the body, so a zombie is easy to pick).
+const AIM_PICK: f32 = 0.42;
+/// With the cursor on nothing a gun is held level at this height (the chest) at the cursor's distance.
+const CHEST: f32 = 1.15;
+
+/// The pitch that puts a shot [`CHEST`] high `dist` metres off.
+pub fn level_pitch(dist: f32) -> f32 {
+    ((CHEST - zombye_sim::ranged::MUZZLE_HEIGHT) / dist.max(2.0)).atan()
+}
+
+/// What a gun held at `from` is aimed at when the cursor's ray (`origin`, unit `dir`, in the
+/// world: y up) is on one of `bodies` (where each stands, and whether it lies down): the way to
+/// that body over the ground, and the pitch to the height on it the ray passes nearest (the head,
+/// with the cursor on its head). `None`: the cursor is on nobody.
+pub fn gun_aim(from: Vec2, origin: Vec3, dir: Vec3, bodies: impl Iterator<Item = (Vec2, bool)>) -> Option<(Vec2, f32)> {
+    use zombye_sim::ranged::{BODY_HEIGHT, DOWN_HEIGHT, MUZZLE_HEIGHT};
+    let denom = 1.0 - dir.y * dir.y;
+    if denom < 1e-6 {
+        return None;
+    }
+    let mut best: Option<(f32, Vec2, f32, f32)> = None;
+    for (pos, down) in bodies {
+        let top = if down { DOWN_HEIGHT } else { BODY_HEIGHT };
+        // The nearest points of the ray and the body's upright middle line.
+        let w = origin - Vec3::new(pos.x, 0.0, pos.y);
+        let (b, d, e) = (dir.y, dir.dot(w), w.y);
+        let s = ((e - b * d) / denom).clamp(0.0, top);
+        let on_body = Vec3::new(pos.x, s, pos.y);
+        let t = (on_body - origin).dot(dir);
+        let miss = (origin + dir * t).distance(on_body);
+        if miss <= AIM_PICK && best.is_none_or(|(m, ..)| miss < m) {
+            best = Some((miss, pos, s, top));
+        }
+    }
+    let (_, pos, s, top) = best?;
+    let to = pos - from;
+    // Not at the very top of the head or the soles of the feet.
+    let height = s.clamp(0.15, top - 0.12);
+    Some((to, ((height - MUZZLE_HEIGHT) / to.length().max(0.5)).atan()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -450,6 +520,7 @@ fn actions(
     panel: Res<crate::inventory_ui::InventoryPanel>,
     health: Res<crate::health_ui::HealthPanel>,
     preview: Res<crate::dev_time::LightPreview>,
+    morning: Option<Res<crate::firstnight_ui::FirstNightUi>>,
     time: Res<Time>,
     mut me: ResMut<LocalPlayer>,
     join: Res<JoinInfo>,
@@ -490,6 +561,12 @@ fn actions(
         });
         me.act(&mut link, &join, if downed { ActionKind::Stomp } else { ActionKind::Shove }, now);
     }
+    // R reloads the gun in hand (#72): the ordinary use of it. (Dead, R is the death screen's;
+    // on the morning screen, a new run.)
+    let gun = me.weapon.and_then(|w| join.weapons.get(w as usize)).is_some_and(|w| w.ranged.is_some());
+    if gun && keys.just_pressed(KeyCode::KeyR) && !morning.is_some_and(|m| m.morning) {
+        link.send(Intent::Use { player: me.id, from: zombye_sim::Place::Slot(zombye_sim::Slot::Hand), index: 0 });
+    }
     if keys.just_pressed(KeyCode::KeyE) {
         // Something on our floor (the snapshot's, by the server's reach rule): pick it up.
         // Otherwise search what we face; with nothing there either, the server says so once.
@@ -511,5 +588,42 @@ fn actions(
         let p = Vec2::new(tf.translation.x, tf.translation.z);
         let center = p + Vec2::from_angle(player.facing) * 30.0;
         link.send(Intent::SpawnZombies { count: 250, center: center.to_array(), radius: 8.0 });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zombye_sim::ranged::MUZZLE_HEIGHT;
+
+    /// With a gun the aim is the body the cursor is on, at the height it is on it (#72): on the
+    /// head it is a head shot, at the feet a low one, beside the body nobody.
+    #[test]
+    fn a_gun_aims_at_what_the_cursor_is_on() {
+        // The isometric camera looks down at the ground from far off, across the map's diagonal.
+        let dir = Vec3::new(0.61, -0.5, 0.61).normalize();
+        let zombie = Vec2::new(10.0, 0.0);
+        // The cursor's ray through the point `up` metres up a body standing at `at`, `beside` off it.
+        let ray = |at: Vec2, up: f32, beside: f32| Vec3::new(at.x, up, at.y) + Vec3::new(dir.z, 0.0, -dir.x).normalize() * beside - dir * 60.0;
+        // The height a shot with that pitch passes at the body.
+        let height = |aim: Option<(Vec2, f32)>| aim.map(|(to, pitch)| MUZZLE_HEIGHT + to.length() * pitch.tan());
+        let at = |up: f32, beside: f32, down: bool| gun_aim(Vec2::ZERO, ray(zombie, up, beside), dir, [(zombie, down)].into_iter());
+        let (to, _) = at(1.2, 0.0, false).expect("on the chest");
+        assert!(to.distance(zombie) < 1e-4, "it faces the body, not the ground behind it under the cursor: {to}");
+        assert!((height(at(1.2, 0.0, false)).unwrap() - 1.2).abs() < 0.02);
+        assert!((height(at(1.62, 0.1, false)).unwrap() - 1.62).abs() < 0.02, "the cursor on its head: the head");
+        assert!((height(at(0.0, 0.0, false)).unwrap() - 0.15).abs() < 0.02, "at its feet: low, not into the ground");
+        assert!(height(at(1.8, 0.0, false)).unwrap() <= 1.69, "the top of the head: still on the head");
+        assert_eq!(at(1.0, 0.8, false), None, "beside it: nobody");
+        // One lying down: low, wherever on it the cursor is.
+        assert!((0.14..=0.3).contains(&height(at(0.2, 0.2, true)).unwrap()));
+        assert_eq!(at(1.4, 0.0, true), None, "the air over a body on the ground");
+        // Two close together: the one the cursor is nearer.
+        let other = Vec2::new(10.3, 0.0);
+        let (to, _) = gun_aim(Vec2::ZERO, ray(other, 1.0, 0.0), dir, [(zombie, false), (other, false)].into_iter()).unwrap();
+        assert!(to.distance(other) < 1e-4);
+        // On nothing: level at chest height at the cursor's distance, never steeply down close in.
+        assert!((MUZZLE_HEIGHT + 12.0 * level_pitch(12.0).tan() - CHEST).abs() < 1e-3);
+        assert_eq!(level_pitch(0.1), level_pitch(2.0));
     }
 }

@@ -164,6 +164,17 @@
     (id: "crowbar", name: "Crowbar", category: Weapon, weight_kg: 1.5, volume_l: 1.2, tags: ["pries"], weapon: Some("crowbar"), color: (0.5, 0.15, 0.12)),
     (id: "fire_axe", name: "Fire axe", category: Weapon, weight_kg: 2.5, volume_l: 4.0, two_handed: true, tags: ["chops"], weapon: Some("fire_axe"), color: (0.75, 0.15, 0.1)),
 
+    // ---- Guns, their rounds and magazines (#72; numbers in weapons.ron's `ranged`) -----------------
+    // A gun or a magazine has its rounds in it (they don't stack); loose rounds do. Using the gun in
+    // your hand reloads it, using a magazine in your pocket fills it.
+    (id: "pistol", name: "Pistol", category: Weapon, weight_kg: 0.9, volume_l: 0.6, weapon: Some("pistol"), color: (0.16, 0.16, 0.18)),
+    (id: "pistol_magazine", name: "Pistol magazine", category: Tool, weight_kg: 0.25, volume_l: 0.15, tags: ["ammo", "magazine"], color: (0.2, 0.2, 0.22)),
+    (id: "pistol_rounds", name: "Pistol round", category: Material, weight_kg: 0.012, volume_l: 0.004, stack: 50, tags: ["ammo"], color: (0.72, 0.56, 0.25)),
+    (id: "hunting_rifle", name: "Hunting rifle", category: Weapon, weight_kg: 3.4, volume_l: 6.0, two_handed: true, weapon: Some("hunting_rifle"), color: (0.36, 0.24, 0.14)),
+    (id: "rifle_rounds", name: "Rifle round", category: Material, weight_kg: 0.025, volume_l: 0.01, stack: 20, tags: ["ammo"], color: (0.75, 0.6, 0.3)),
+    (id: "shotgun", name: "Shotgun", category: Weapon, weight_kg: 3.2, volume_l: 6.0, two_handed: true, weapon: Some("shotgun"), color: (0.2, 0.18, 0.16)),
+    (id: "shotgun_shells", name: "Shotgun shell", category: Material, weight_kg: 0.045, volume_l: 0.03, stack: 25, tags: ["ammo"], color: (0.7, 0.14, 0.12)),
+
     // ---- Junk: everyday clutter (light, mostly useless; some taken apart later) ---------------------
     (id: "mug", name: "Mug", category: Junk, weight_kg: 0.3, volume_l: 0.4, stack: 4, tags: ["junk"], color: (0.9, 0.9, 0.85)),
     (id: "magazine", name: "Magazine", category: Junk, weight_kg: 0.2, volume_l: 0.3, stack: 5, tags: ["junk", "fuel"], color: (0.8, 0.4, 0.5)),

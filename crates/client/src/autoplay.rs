@@ -5,16 +5,19 @@
 //!
 //! Each tick it picks the nearest zombie still standing, turns to it and closes in (running when far
 //! and rested). In reach it swings; crowded by two or more it alternates shoves and swings; a
-//! downed zombie at its feet gets stomped. Dead, it gets up again after a few seconds.
+//! downed zombie at its feet gets stomped. Dead, it gets up again after a few seconds. Holding a
+//! gun (#72) it stands off instead and shoots the nearest it has a clear line to, reloading when
+//! the gun is empty.
 
 use bevy::prelude::*;
 use zombye_net::Intent;
 use zombye_sim::ai::ZOMBIE_RADIUS;
-use zombye_sim::{ActionKind, TICK_DT, ZombieAnim};
+use zombye_sim::ranged::{MUZZLE_HEIGHT, flight};
+use zombye_sim::{ActionKind, JobKind, Place, Slot, TICK_DT, ZombieAnim};
 
 use crate::Options;
 use crate::player::{LocalPlayer, PlayerInputSet};
-use crate::server_link::{JoinInfo, ServerLink};
+use crate::server_link::{ClientMap, JoinInfo, ServerLink};
 
 /// Movement chosen by autoplay for this tick; the player's input system uses it when `active`.
 #[derive(Resource, Default)]
@@ -49,6 +52,8 @@ fn autoplay(
     time: Res<Time<Virtual>>,
     mut dead_for: Local<f32>,
     mut shoved_last: Local<bool>,
+    mut reload_wait: Local<f32>,
+    map: Res<ClientMap>,
 ) {
     let now = time.elapsed_secs();
     auto.move_dir = Vec2::ZERO;
@@ -119,6 +124,38 @@ fn autoplay(
     // Only ask when the server will take it (an action under way or still recovering).
     // On a multiplayer server the snapshot is behind us: go by our own latest action too.
     let busy = me.acting(&link, now);
+    // With a gun (#72): stand off and shoot the nearest with a clear line (a downed one when
+    // nobody stands), closing in on what is out of range or behind something; empty, reload,
+    // backing away from whatever is close.
+    *reload_wait = (*reload_wait - TICK_DT).max(0.0);
+    if let Some(r) = &weapon.ranged {
+        let Some((d, to, down)) = nearest.map(|(d, to)| (d, to, false)).or(downed.map(|(d, to)| (d, to, true))) else { return };
+        let dir = to / d.max(1e-3);
+        me.aim = to.y.atan2(to.x);
+        me.pitch = ((if down { 0.2 } else { 1.2 } - MUZZLE_HEIGHT) / d.max(0.5)).atan();
+        let own = link.own(me.id);
+        if own.and_then(|v| v.inventory.hand).is_none_or(|g| g.used == 0) {
+            let loading = own.is_some_and(|v| v.jobs.iter().any(|j| matches!(j, JobKind::Reload { .. })));
+            if !loading && *reload_wait <= 0.0 {
+                link.send(Intent::Use { player: me.id, from: Place::Slot(Slot::Hand), index: 0 });
+                *reload_wait = 1.0;
+            }
+            if d < 6.0 {
+                auto.move_dir = -dir;
+            }
+            return;
+        }
+        let clear = flight(&map.0, pos, dir, d, me.pitch.tan()).end >= d - 0.35;
+        if clear && d <= (r.range * 0.45).min(16.0) {
+            if !busy {
+                me.act(&mut link, &join, ActionKind::Swing, now);
+            }
+        } else {
+            auto.move_dir = dir;
+            auto.run = d > 22.0 && me.curr.endurance > 0.5 && !me.curr.winded;
+        }
+        return;
+    }
     // A downed zombie at our feet, and nothing standing right on top of us: finish it.
     if let Some((d, to)) = downed
         && d <= c.stomp_range * 0.9

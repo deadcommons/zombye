@@ -203,6 +203,12 @@ pub struct Player {
     /// The tied survivor whose things it is going through (a player id). Not saved.
     #[serde(skip)]
     pub frisking: Option<u32>,
+    /// How far up (+) or down (-) of level it aims, in radians (#72, `World::set_pitch`): with the
+    /// facing, the way a shot goes. The isometric client works it out from what the cursor is on;
+    /// a first-person one would send its camera's. Like the aim itself, the client's latest word:
+    /// not saved (level after a load, until the next), not in the state hash.
+    #[serde(skip)]
+    pub pitch: f32,
 }
 
 /// A player staggered or knocked down by another player's swing or shove (see `combat`).
@@ -255,6 +261,7 @@ impl Player {
             restraint: None,
             hands: None,
             frisking: None,
+            pitch: 0.0,
         }
     }
 }

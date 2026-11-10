@@ -736,6 +736,11 @@ fn state_of(items: &[ItemDef], now: i32, s: &ItemStack) -> String {
     }
     if let Some(c) = def.consumable().filter(|_| s.used > 0) {
         notes.push(format!("{}/{} left", c.uses - s.used, c.uses));
+    } else if s.used > 0 {
+        // A gun or a magazine (#72): what's in it.
+        notes.push(format!("{} in it", s.used));
+    } else if def.has_tag(zombye_sim::ranged::TAG_MAGAZINE) {
+        notes.push("empty".into());
     }
     notes.join(", ")
 }
@@ -1755,6 +1760,8 @@ fn menu_entries(player: u32, items: &[ItemDef], from: Place, index: u32, s: &Ite
                 (None, ItemCategory::Drink) => out.extend(mk("Drink".into(), Some(Intent::Use { player, from, index }), false)),
                 // Something a mod's script gives a use to (#25).
                 (None, _) if def.usable() => out.extend(mk("Use".into(), Some(Intent::Use { player, from, index }), false)),
+                // A gun's magazine (#72): using it pushes loose rounds into it.
+                (None, _) if def.has_tag(zombye_sim::ranged::TAG_MAGAZINE) => out.extend(mk("Fill with rounds".into(), Some(Intent::Use { player, from, index }), false)),
                 (None, ItemCategory::Clothing) => out.extend(mk("Wear".into(), Some(Intent::Wear { player, index }), false)),
                 (None, ItemCategory::Bag) => out.extend(mk("Put it on".into(), Some(Intent::Equip { player, index }), false)),
                 (None, _) => out.extend(mk("Hold in hand".into(), Some(Intent::Equip { player, index }), false)),

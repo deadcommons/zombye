@@ -247,6 +247,8 @@ pub(crate) enum Style {
     Punch,
     OneHand,
     TwoHand,
+    /// A gun (#72): held out level along the aim, and it kicks.
+    Gun,
 }
 
 pub(crate) fn style(category: WeaponCategory) -> Style {
@@ -254,6 +256,7 @@ pub(crate) fn style(category: WeaponCategory) -> Style {
         WeaponCategory::Unarmed => Style::Punch,
         WeaponCategory::ShortBlade | WeaponCategory::ShortBlunt => Style::OneHand,
         WeaponCategory::LongBlunt | WeaponCategory::Axe => Style::TwoHand,
+        WeaponCategory::Firearm => Style::Gun,
     }
 }
 
@@ -692,6 +695,16 @@ pub(crate) fn guard(style: Style, armed: bool) -> SPose {
     p.rot[TORSO] = rx(0.08);
     p.rot[HEAD] = rx(-0.22);
     match (style, armed) {
+        (Style::Gun, true) => {
+            // Both arms out along the aim, the gun level in front of the chest.
+            p.rot[TORSO] = rx(0.04);
+            p.rot[HEAD] = rx(-0.08);
+            p.rot[UARM_R] = rz(0.14) * rx(-1.42);
+            p.rot[FARM_R] = rx(-0.08);
+            p.rot[HAND_R] = rx(1.5);
+            p.rot[UARM_L] = rz(-0.3) * rx(-1.36);
+            p.rot[FARM_L] = rx(-0.22);
+        }
         (Style::TwoHand, true) => {
             p.rot[UARM_R] = rz(-0.25) * rx(-0.75);
             p.rot[FARM_R] = rx(-1.45);
@@ -1016,6 +1029,17 @@ fn action(kind: ActionKind, style: Style, armed: bool, u: f32, ready: &SPose) ->
             let follow = upper(ry(0.85) * rx(0.15), ry(-0.5), rz(0.1) * rx(-1.0), rx(-0.5), rz(0.5) * rx(-1.2), rx(-0.2), rx(1.2));
             keyed(&[(0.0, ready.clone()), (0.32, windup), (U_HIT, hit), (0.62, follow), (1.0, ready)], u)
         }
+        (ActionKind::Swing, Style::Gun) => {
+            // Levelled, the shot (at `U_HIT`), the muzzle kicking up and coming back down.
+            let level = guard(Style::Gun, true);
+            let mut kick = level.clone();
+            kick.rot[UARM_R] = rz(0.14) * rx(-1.62);
+            kick.rot[FARM_R] = rx(-0.3);
+            kick.rot[HAND_R] = rx(1.25);
+            kick.rot[UARM_L] = rz(-0.3) * rx(-1.5);
+            kick.rot[TORSO] = rx(-0.03);
+            keyed(&[(0.0, ready.clone()), (U_HIT * 0.6, level.clone()), (U_HIT, level), (0.56, kick), (1.0, ready)], u)
+        }
         (ActionKind::Shove, _) => {
             let hand = if armed { rx(0.3) } else { q };
             let gather = upper(rx(-0.05), q, rz(-0.1) * rx(-0.6), rx(-1.8), rz(0.1) * rx(-0.6), rx(-1.8), hand);
@@ -1150,6 +1174,21 @@ mod tests {
         let head = |p: &SPose| globals(&BONES, p)[HEAD].transform_point3(Vec3::ZERO).y;
         assert!(head(&low) < head(&stand) - 0.15, "{} vs {}", head(&low), head(&stand));
         assert!(head(&low) > 1.0);
+    }
+
+    /// A gun is held out level along the aim, and kicks up after the shot (#72).
+    #[test]
+    fn a_gun_is_levelled_and_kicks() {
+        let barrel = |p: &SPose| (globals(&BONES, p)[HAND_R].transform_vector3(Vec3::Z), globals(&BONES, p)[HAND_R].transform_point3(Vec3::ZERO));
+        let (dir, hand) = barrel(&guard(Style::Gun, true));
+        assert!(dir.z > 0.95 && dir.y.abs() < 0.2, "aiming, the barrel points {dir}");
+        assert!(hand.z > 0.4 && (1.2..1.6).contains(&hand.y), "held out at shoulder height: {hand}");
+        let ready = guard(Style::Gun, true);
+        let (shot, _) = barrel(&action(ActionKind::Swing, Style::Gun, true, U_HIT, &ready));
+        let (kick, _) = barrel(&action(ActionKind::Swing, Style::Gun, true, 0.56, &ready));
+        assert!(shot.z > 0.95, "level as the shot goes: {shot}");
+        assert!(kick.y > shot.y + 0.2 && kick.z > 0.5, "then the muzzle rises: {kick}");
+        assert_eq!(style(WeaponCategory::Firearm), Style::Gun);
     }
 
     /// The weapon points backward in the windup and forward when the blow lands.

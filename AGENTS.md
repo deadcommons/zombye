@@ -13,7 +13,7 @@ Work is tracked on GitHub, not in the repo: the
 
 | Path | What | Licence |
 |---|---|---|
-| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `awareness.rs`: which players see and heard which, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), lag compensation for it (`lagcomp.rs`: a few ticks of positions, so a remote client's blow lands where it saw the target), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), the status icons a client shows of all that, their levels from data (`status.rs`), skills that improve with practice (`skills.rs` + `SkillTuning`), street props placed by the town generator from data (`street_props.rs`), run stats and the cause of death (`run.rs`), the first night's objectives and outcome (`firstnight.rs`), logging out, spawn protection and the start kit on a server (`logout.rs`), the benchmark's scenarios and score (`scenario.rs`, see The agent survival benchmark), proximity chat and gestures (`speech.rs`: who hears a line, the noise it makes, see Talking and gestures), tying hands, freeing and searching a tied survivor (`bonds.rs`) and optional groups with names and shared markers (`groups.rs`; both: see Hold-ups and groups), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`), the hook mod scripts run through (`script.rs`: events, the checked `script_*` functions, what scripts keep; see Mods and scripts). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
+| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `awareness.rs`: which players see and heard which, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), lag compensation for it (`lagcomp.rs`: a few ticks of positions, so a remote client's blow lands where it saw the target), guns (`ranged.rs`: a shot's flight over the map and through bodies, rounds, magazines and reloading, see Guns), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), the status icons a client shows of all that, their levels from data (`status.rs`), skills that improve with practice (`skills.rs` + `SkillTuning`), street props placed by the town generator from data (`street_props.rs`), run stats and the cause of death (`run.rs`), the first night's objectives and outcome (`firstnight.rs`), logging out, spawn protection and the start kit on a server (`logout.rs`), the benchmark's scenarios and score (`scenario.rs`, see The agent survival benchmark), proximity chat and gestures (`speech.rs`: who hears a line, the noise it makes, see Talking and gestures), tying hands, freeing and searching a tied survivor (`bonds.rs`) and optional groups with names and shared markers (`groups.rs`; both: see Hold-ups and groups), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`), the hook mod scripts run through (`script.rs`: events, the checked `script_*` functions, what scripts keep; see Mods and scripts). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), multiplayer over the network (see Multiplayer: the messages, framing and per-client delta snapshots in `wire.rs`, a client's view cut to what its survivor sees and hears of other players in `visibility.rs`, the server's connections in `host.rs`, a client's in `remote.rs`; the server browser's list and probes in `browser.rs`, see The server browser; a mod's data as a server hands it to joining clients, its hash and the client's cache in `modpack.rs`, see Mods downloaded on joining), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
 | `crates/mods` | Mods (see Mods and scripts): reads a mod's folder (`mod.ron`, `items.ron`, `recipes.ron`, `loot.ron`, `buildings/*.ron`, `*.luau`), merges its data into a `WorldConfig` (`lib.rs`: `Mod`, `apply`, `load_into`; `Mod::pack` / `from_pack` / `apply_packs`: the data a server hands to joining clients, #24) and runs its Luau scripts sandboxed, one VM a mod, as the world's script host (`luau.rs`, on `mlua`; Luau is built from source, so a C++ compiler is needed). The one crate with Luau in it. | MIT OR Apache-2.0 |
 | `mods/` | Sample mods: `alarm_clock` (an item behaviour by script; the worked example of [docs/modding.md](docs/modding.md)). | MIT OR Apache-2.0 |
@@ -117,7 +117,7 @@ cargo run -p zombye-server --release -- --mcp --mod mods/alarm_clock
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --mod DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab worn|body|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --skip-hours H --hover-tag N --debug-stats --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT --connect HOST[:PORT] --name NAME --password P --agent --server-info HOST[:PORT] --server-list FILE|URL --browser --browser-join N[@SECS] --hotbar ID[,ID...] --hotbar-press K@SECS[,K@SECS...] --panel-at PANEL:X,Y[;PANEL:X,Y] --drag-panel PANEL:DX,DY[@SECS] --lag MS --say TEXT[@SECS] --shout TEXT[@SECS] --whisper TEXT[@SECS] --gesture NAME[@SECS] --talk-demo --talk-wall --holdup-demo --holdup-auto --graphics low|high --vegetation off|low|high|N --no-post LIST --frame-bench N` (the last four: see Look and feel; the two before them: see Hold-ups and groups; the six before those: see Talking and gestures) (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --rotate --angle 0..3 --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --mod DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab worn|body|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --skip-hours H --hover-tag N --debug-stats --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --ui-scale PCT --connect HOST[:PORT] --name NAME --password P --agent --server-info HOST[:PORT] --server-list FILE|URL --browser --browser-join N[@SECS] --hotbar ID[,ID...] --hotbar-press K@SECS[,K@SECS...] --panel-at PANEL:X,Y[;PANEL:X,Y] --drag-panel PANEL:DX,DY[@SECS] --lag MS --say TEXT[@SECS] --shout TEXT[@SECS] --whisper TEXT[@SECS] --gesture NAME[@SECS] --talk-demo --talk-wall --holdup-demo --holdup-auto --graphics low|high --vegetation off|low|high|N --no-post LIST --frame-bench N --gun ID` (the last: see Guns; the four before it: see Look and feel; the two before them: see Hold-ups and groups; the six before those: see Talking and gestures) (`--rotate` turns the camera with `,` and `.`; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost). `--size WxH` makes the window exactly that many pixels, at scale factor 1, so a
 `--screenshot` is WxH on a high-DPI screen too; without it the window is 1600x900 at the screen's scale.
@@ -191,7 +191,7 @@ The client prints one stats line per second to stdout (time, room, stance, hp, e
 sent to it, chasing, zombies per tier active/near/virtual, sim tick ms, and the sounds started that second: `sounds 9 (Groan 4, FootstepHard 3, ...)` or `sound off`).
 In game: WASD move (he faces the way he walks), Shift run, C sneak (toggle), right mouse held: aim (he faces the
 cursor and strafes or backs off at 2.2 m/s, no running, in a guard stance), and only while aiming left mouse attack
-(swing your weapon, or punch) and Space shove (or stomp, when a downed zombie lies right in front of you), E pick up the item you
+(swing your weapon, or punch; with a gun in hand: shoot at what the cursor is on, see Guns) and Space shove (or stomp, when a downed zombie lies right in front of you), R reload the gun you hold, E pick up the item you
 face (with nothing on the floor within reach: search the container you face), 1-9 the hotbar (swap to or use what's on that slot, see Hotbar), Tab or I the inventory panel, H the health panel, K the skills panel (drag any of the three by its title; they remember where they were and whether they were open), F open/close the door or window you face, G smash the window you face, dead: R a new run and Q or Esc quit,
 B sleep (B again or WASD to get up), Enter the chat line (Tab there: whisper, talk or shout; Enter says it, Esc drops it), V wave, U hands up (again lowers them), P point (see Talking and gestures), Y tie the hands of the survivor you face or free tied ones, L search a tied survivor, J (held) struggle out of ties, N invite into your group or accept (Shift+N leaves), middle mouse a group marker (see Hold-ups and groups), T skip an hour, Z spawn zombies, wheel zoom (over the inventory, health or skills panel it scrolls that panel instead), F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), F3 the light preview (a time-of-day slider, see Light and mood), F4 the debug stats window (see Needs), F6 the server's rules (on a multiplayer server, see Multiplayer), F7 the server browser (see The server browser), M mute, O hide or show the objectives and hints (see The first night), Ctrl (or Cmd) + `=` / `-` the UI scale (see UI scale), Ctrl+0 back to 100%. Walk into an open or broken window to climb
 through it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
@@ -473,7 +473,8 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   `Seen { player, tick }` (a remote client, every tick: the snapshot it is showing, see Lag-compensated melee under Combat),
   `Say { player, text, volume }` and `Gesture { player, gesture }` (see Talking and gestures),
   `Restrain`, `Free`, `Frisk` (each `{ player, target }`), `TakeFrom`, `StopHands`, `Struggle { player, on }` and
-  `Group { player, op }` (see Hold-ups and groups),
+  `Group { player, op }` (see Hold-ups and groups), `Aim { player, pitch }` (how far up or down of level the player
+  aims a gun, see Guns),
   `Respawn { player }` (single-player/debug: a dead player gets up at the spawn point), `Dev { player, god, ignored }`
   (dev toggles, below), and the debug/admin `SetGoal`, `SpawnZombies`, `SpawnItem { item, count, pos }`, `SkipTime`, `MakeNoise`.
 - **Dev toggles** (`players::DevFlags { god, ignored }` on the player, `World::set_dev`; `Intent::Dev` with `Option<bool>`s,
@@ -598,6 +599,96 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   rewinding. Tests: `sim::combat::lag_tests`, `net/tests/lagcomp.rs` (a real socket at 150 ms: the punch lands where
   the client saw the zombie; with the cap at 0 it misses).
 - Every number not in the weapon file is in `CombatTuning` (`WorldConfig::combat`, serde defaults). Ours.
+
+## Guns (`sim::ranged`; #72)
+
+Guns are for fights between players and a last resort against the dead (docs/PLAN.md §4.8): they kill at a distance
+and tell the whole town where you are.
+
+- **Guns are data:** a weapon in `weapons.ron` with `category: Firearm` and a `ranged` block (`ranged::RangedDef`,
+  unknown fields refused): `ammo` (the item a round is), `capacity`, `magazine` (the item its detachable magazine is,
+  if it has one), `reload_seconds` (a magazine change), `round_seconds` (one loose round pushed in), `range`,
+  `spread_degrees` and `move_spread_degrees` (how far off the aim a pellet may go, standing and extra on the move),
+  `pellets` and `far_damage` (the share of its damage left at the end of the range). Of the weapon's other numbers a
+  gun uses `damage` (a pellet's), `windup_seconds` (trigger to shot) and `swing_seconds` (shot to shot),
+  `max_targets` (bodies one bullet goes through), `crit_multiplier` (a hit to the head), `knockback`,
+  `stagger_chance`, `knockdown_chance`, `endurance_cost` and `noise_radius` (up to 300 m for a gun); `range`,
+  `arc_degrees` and `crit_chance` aren't read. Exactly the `Firearm` weapons have `ranged`; a gun names no `skill`
+  (shooting trains none yet, and none makes it better). `parse_weapons` checks the numbers, `validate_items` that a
+  gun's item has its rounds and magazine among the items (the magazine not stacking, tagged `magazine`). Shipped
+  (ours): `pistol` (12 in a `pistol_magazine`, 34-46 a shot, 45 m, noise 120 m), `hunting_rifle` (5 loose
+  `rifle_rounds`, 85-115, through two bodies, 110 m, a slow bolt, noise 180 m), `shotgun` (5 `shotgun_shells`, 8
+  pellets of 16-24, 28 m, little past 20, noise 160 m). Add a gun by adding a weapon, its item and its rounds.
+- **A shot is the attack:** `Intent::Attack` with a gun in hand pulls the trigger (`ActionKind::Swing`, so everything
+  that times, queues, interrupts and replicates a swing holds); when it lands `combat::land` hands over to
+  `World::fire`: one round off the gun, then each pellet flies from the shooter, 1.4 m up (`MUZZLE_HEIGHT`), along
+  its **facing and pitch** (`Player::pitch`, `World::set_pitch`, `Intent::Aim { player, pitch }`: radians up from
+  level, at most 1.3 either way; not saved, not in the hash, like `aim`), off by up to the spread either way sideways
+  and up or down (the combat RNG; wider moving, and when tired or hurt). **The sim has no camera in it:** a
+  first-person client would send its camera's pitch and nothing else changes.
+- **What stops it** (`ranged::flight`, a walk over the tiles the line crosses): walls and shut doors; a window lets
+  it through only between sill and head (0.9-2.1 m; a shut one's glass breaks, `World::break_edge`, with its noise),
+  a doorway under 2.1 m, a fence stops what flies under 1 m, a tree trunk (0.3 m round), the ground, the edge of the
+  map. Furniture and street props don't. **Bodies** are upright cylinders, 1.8 m tall standing and 0.4 m lying
+  (`ranged::through`): the nearest the line passes through is hit at the height it is hit at, 1.5 m or more up a
+  standing one being the head (`crit_multiplier`); a bullet goes on through `max_targets` of them
+  (`multi_hit_falloff` less each) and its glass beyond where it stopped stays whole. A level shot passes over a
+  zombie on the ground; one aimed over a head misses. A zombie is struck as by a blow (`World::strike`: damage,
+  knockback, the stagger and knockdown rolls, it is after the shooter); all a shotgun's pellets fly together (one
+  floored by the first is still standing for the rest). With PvP on other players are in the same list
+  (`strike_player`): the wound is on the part at that height (`ranged::part_at`), a gash clothing doesn't stop, the
+  damage times `CombatTuning::pvp_shot_mult` (0.7: three or four pistol shots to the body); spawn protection holds;
+  a kill is "Shot by a survivor with a pistol: hit in the head". With PvP off bullets pass through other players.
+- **Lag compensation (#23):** bodies are tested where the shooter's client showed them (`World::rewind_tick`, the same
+  frames and cap as a blow); the map is as it is now. `net/tests/guns.rs` holds it over a socket at 150 ms.
+- **Rounds and magazines are items.** How many rounds are in a gun or a magazine is on its stack
+  (`ItemStack::used`, which for those two counts rounds, not goes had: no save format change; `ranged::holds` says
+  what an item takes, `ranged::max_used` what the save checks hold it to). One made now is full
+  (`World::fresh_stack`: debug spawns, kits), one found in a container holds a seeded few (`World::load_found`, by
+  seed, container and stack, more often few than many). **Reloading** is the item job `JobKind::Reload { spare }`
+  (saved with the queue; the last variant, so older saves read as before): `World::player_reload` swaps in the
+  fullest magazine carried if it holds more than the gun's (`reload_seconds`; the one taken out keeps what was in
+  it), else pushes loose rounds in one at a time (`round_seconds` each, the next following by itself, one note at
+  the end) until the gun is full or they run out; `player_fill_magazine` fills a carried magazine the same way.
+  Like eating it doesn't stop you walking, and shooting or swinging drops it (what went in stays in). There is no
+  intent of its own: **`Intent::Use` on the gun in hand reloads it, on a carried magazine fills it**
+  (`World::use_reloads`), and the trigger pulled on an empty gun reloads instead of shooting
+  (`combat::request_action`; the refusal says what's missing).
+- **Noise:** a shot is a player's sound of the weapon's `noise_radius`, heard that tick like a swing: every zombie in
+  earshot comes (less through walls, as ever), sleepers within 20 m wake, other players who don't see the shooter
+  hear it (#66), and being far over the migration's `min_radius` it leaves an attractor that draws the far horde in
+  over the following minutes (`a_gunshot_wakes_the_street_and_draws_the_horde`).
+- **Loot:** guns, magazines and rounds are `rare` entries in `loot.ron` (wardrobes, desk drawers, coat cupboards,
+  sheds, garages, hardware shelves); none lies on a floor (`spawn_weight` 0). A town of four templates holds a
+  handful.
+- **Replication:** each pellet's flight is a combat event, `CombatEventKind::Shot` (`player` the shooter, `pos` where
+  it stopped, `dir` and `damage` the way and how far it flew over the ground), sent like the others (so with fair
+  information only when the shooter is seen; the bang is heard either way). The rounds in a client's own gun are in
+  its private view (the hand's stack).
+- **Client:** aiming (right mouse) with a gun in hand, the survivor holds it out level (`survivor::Style::Gun`,
+  with a kick after the shot) and the aim is **the body the cursor is on, at the height it is on it**
+  (`player::gun_aim`: the cursor's ray against each body's upright middle line, so the cursor on a head is a head
+  shot and on a body on the ground a low one; on nobody, level at chest height toward the ground under the cursor);
+  the pitch goes out as `Intent::Aim` each tick it isn't level. Left mouse shoots, R reloads (`Intent::Use` of the
+  hand). The weapon panel says `Pistol  9/12  +12  +24` (in the gun, each magazine carried, loose rounds); the
+  current-action bar says Reloading; the inventory says what is in a gun or magazine and offers "Fill with rounds"
+  on a magazine. Each `Shot` is a bright streak along its line and a flash at the muzzle for a few frames (`fx.rs`:
+  the blood's cube mesh in one emissive material, one instanced batch, at most 96 alive, nothing while nobody
+  shoots) and a little camera shake for our own; the bang is the `Gunshot` cue, a reload step the `Reload` cue
+  (**placeholders made of sounds there already are**, in `sounds.ron`; real ones with #78). `--autoplay` with a gun
+  stands off and shoots the nearest it has a clear line to (`ranged::flight` on the client's map), reloading when
+  empty. **`--gun ID`** starts a new world with that gun in hand, loaded, a spare magazine if it takes one and three
+  loads of loose rounds; with `--fight-demo` there is no bat and the zombies start 16 m off:
+  `--fight-demo --gun pistol --autoplay --zombies 0`.
+- **MCP:** `attack` with a gun fires a round: `pitch` (radians), or with `target` / `target_player` it aims at
+  `aim_height` on it (default 1.15 m, 0.2 for one on the ground); the reply says the rounds left; an empty gun is a
+  tool error saying to reload. `use {from: "hand"}` reloads (and says beforehand what is in the gun and carried),
+  `use` on a carried magazine fills it. `weapons` lists the guns in a table of their own; `inventory` shows the
+  rounds in every gun and magazine. No new tool.
+- **Not yet:** a skill for shooting, bows, suppressors, bullets through doors or furniture as cover, wounds of their
+  own for bullets (a gash for now), zombies drawn by the light of a muzzle flash, models for the guns (grey-box bars).
+- Tests: `sim::ranged::tests`, `net/tests/guns.rs`, `mcp::tests::agents_shoot_and_reload`, `player.rs`'s
+  `a_gun_aims_at_what_the_cursor_is_on`, `survivor.rs`'s `a_gun_is_levelled_and_kicks`.
 
 ## Health and wounds (`sim::health`; #9)
 
@@ -1684,10 +1775,10 @@ snapshots over the network: `zombye-server --host` serves a world and `zombye --
   a queue of 100 (5 s of snapshots); a client whose queue fills, that floods (400 intents waiting) or that says nothing
   for 20 s (clients ping every second) is dropped. The tick itself never waits on a socket.
 - **Melee is lag-compensated** (#23, see Combat): clients say which snapshot they show, blows land where the attacker
-  saw the target (at most 0.35 s back), trades of blows go by what each side saw. `wire::PROTOCOL` 12 (12: mods
+  saw the target (at most 0.35 s back), trades of blows go by what each side saw. `wire::PROTOCOL` 13 (12: mods
   downloaded on joining, #24; 7: #68's spawn
   protection and logout times; 8: chat and gestures, #67; 9: the rules of #69, agents, the query; 10: hold-ups and
-  groups, #73; 11: the mods in a query's answer, #27).
+  groups, #73; 11: the mods in a query's answer, #27; 13: guns, #72).
 - **Bots** (`zombye-server --bots N --connect HOST[:PORT] [--secs S] [--bots-hostile] [--lag MS]`): N headless clients, each its
   own connection, that wander, turn when stuck, pick up what lies at their feet, fight zombies that come close (and
   players, hostile) and start again when dead; every 5 s it prints what each costs.

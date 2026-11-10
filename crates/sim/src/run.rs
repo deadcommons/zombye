@@ -111,6 +111,11 @@ impl DeathCause {
     pub fn describe_with(&self, rises: bool, weapons: &[WeaponDef]) -> String {
         match *self {
             Self::Survivor { weapon, stomp: false, part, wound, .. } => match weapons.get(weapon as usize) {
+                Some(w) if w.ranged.is_some() => {
+                    let name = w.name.to_lowercase();
+                    let a = if name.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
+                    format!("Shot by a survivor with {a} {name}: hit in the {}", part.name())
+                }
                 Some(w) if w.category != WeaponCategory::Unarmed => {
                     let name = w.name.to_lowercase();
                     let a = if name.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };

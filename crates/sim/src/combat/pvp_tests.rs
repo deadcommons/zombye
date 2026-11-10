@@ -133,7 +133,8 @@ fn with_pvp_off_players_cannot_hurt_each_other() {
 /// body part, by how the weapon hits (blades gash, blunt ones bruise or gash, fists bruise).
 #[test]
 fn every_weapon_wounds_another_player() {
-    for def in weapons() {
+    // (Guns shoot: `ranged::tests::bullets_hit_other_players_only_with_pvp_on`.)
+    for def in weapons().into_iter().filter(|d| d.ranged.is_none()) {
         let (mut bruises, mut gashes, mut landed) = (0, 0, 0);
         for seed in 1..=30 {
             let (mut w, a, b) = duel(seed, true);
@@ -174,6 +175,7 @@ fn every_weapon_wounds_another_player() {
             // The victim wears nothing, so nothing stops a blade.
             WeaponCategory::ShortBlade | WeaponCategory::Axe => assert_eq!(bruises, 0, "{} always cuts bare skin", def.id),
             WeaponCategory::ShortBlunt | WeaponCategory::LongBlunt => assert!(bruises > 0 && gashes > 0, "{}: {bruises} bruises, {gashes} gashes", def.id),
+            WeaponCategory::Firearm => unreachable!("left out above"),
         }
     }
 }

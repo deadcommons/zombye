@@ -28,6 +28,7 @@ pub mod nav;
 pub mod needs;
 pub mod players;
 pub mod population;
+pub mod ranged;
 pub mod rng;
 pub mod run;
 pub mod save;

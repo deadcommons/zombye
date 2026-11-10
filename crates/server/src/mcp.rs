@@ -634,12 +634,19 @@ fn tool_defs() -> Value {
                 line (not through glass or fences); damage, knockback and a chance to stagger or knock down. Downed zombies are \
                 below the swing: stomp them. Costs endurance; makes noise. Give facing (radians), target (a zombie id) or \
                 target_player (a player id) to turn first. With PvP on (the pvp tool, or --pvp on) other players are hit by the \
-                same rules, in the same list: a wound on a body part, HP, a chance to stagger or floor them; the reply's PLAYER HITS says so.",
+                same rules, in the same list: a wound on a body part, HP, a chance to stagger or floor them; the reply's PLAYER HITS says so. \
+                Holding a gun (see weapons) it fires one round instead: along the facing and the pitch, through shut glass (which breaks), \
+                stopped by walls, shut doors, trees and the first body (the rifle's goes through two); a hit 1.5 m or more up a standing \
+                body is the head. Given a target it aims at aim_height on it (default the chest; 1.65 for the head, more spread than a \
+                still target allows at long range); otherwise give pitch. Very loud: every zombie within the gun's noise radius comes, and \
+                the far horde over the next minutes. An empty gun doesn't fire: reload it with use {from: \"hand\"}.",
             "inputSchema": {"type": "object", "properties": {
                 "player": {"type": "integer", "default": 1},
                 "facing": {"type": "number", "description": "Turn to this angle first (0 = east, pi/2 = south)"},
                 "target": {"type": "integer", "description": "Turn to face this zombie first"},
-                "target_player": {"type": "integer", "description": "Turn to face this player first"}
+                "target_player": {"type": "integer", "description": "Turn to face this player first"},
+                "pitch": {"type": "number", "description": "A gun: radians up (+) or down (-) of level (the muzzle is 1.4 m up); default level, or at the target"},
+                "aim_height": {"type": "number", "description": "A gun, with a target: metres up its body to aim at (default 1.15; 0.2 for one on the ground)"}
             }}
         },
         {
@@ -766,7 +773,9 @@ fn tool_defs() -> Value {
                 an item with several goes, like a loaf or a bottle, lasts that many). It lowers hunger and thirst by the item's amounts \
                 (see items; negative raises it). Stale food gives 70% and may poison you, mouldy 40% and usually does; food eaten with \
                 hunger under 10% does nothing for hunger; food poisoning means no eating. The reply says beforehand what it will do \
-                (freshness, waste), then what it did, with the needs before and after.",
+                (freshness, waste), then what it did, with the needs before and after. Using the gun in your hand (from: \"hand\") \
+                reloads it: the fullest magazine carried swapped in, else loose rounds pushed in one at a time until it is full; \
+                using a carried magazine fills it with loose rounds.",
             "inputSchema": {"type": "object", "properties": {
                 "player": {"type": "integer", "default": 1}, "from": {"type": "string", "default": "carried"}, "index": {"type": "integer", "default": 0}
             }}
@@ -1483,22 +1492,42 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 return Err(format!("player {id} is dead (respawn to play on)"));
             }
             let (pos, seq, sneak, weapon) = (p.state.pos, p.last_input_seq, p.input.sneak, p.weapon);
+            // (A target's distance and whether it lies down, for a gun's pitch.)
+            let mut target = None;
             let facing = match (args.get("target").and_then(Value::as_u64), args.get("target_player").and_then(Value::as_u64)) {
                 (Some(t), _) => {
                     let i = world.zombies.index_of(t as u32).ok_or_else(|| format!("no zombie {t}"))?;
                     let to = world.zombies.pos[i] - pos;
+                    target = Some((to.length(), world.zombies.state[i] == ZombieState::Down));
                     Some(to.y.atan2(to.x))
                 }
                 (None, Some(t)) => {
-                    let to = world.player(t as u32).ok_or_else(|| format!("no player {t}"))?.state.pos - pos;
+                    let o = world.player(t as u32).ok_or_else(|| format!("no player {t}"))?;
+                    let to = o.state.pos - pos;
+                    target = Some((to.length(), o.knock.is_some_and(|k| k.down) || o.needs.asleep()));
                     Some(to.y.atan2(to.x))
                 }
                 (None, None) => num("facing").map(|f| f as f32),
             };
             // Only an aiming player fights: aim (and turn, if asked).
             let facing = facing.unwrap_or(world.player(id).map_or(0.0, |p| p.state.facing));
+            // A gun (#72) is aimed up or down too: as asked, else at the target, else level.
+            let gun = name == "attack" && world.wielded(weapon).ranged.is_some();
+            if gun {
+                if world.loaded(id).is_some_and(|l| l.0 == 0) {
+                    return Err(format!("the {} is empty: reload it with use {{from: \"hand\"}} (see inventory for the rounds and magazines carried)", world.wielded(weapon).name.to_lowercase()));
+                }
+                let pitch = num("pitch").map(|p| p as f32).or_else(|| {
+                    target.map(|(dist, down)| {
+                        let height = num("aim_height").map_or(if down { 0.2 } else { 1.15 }, |h| h as f32);
+                        ((height - zombye_sim::ranged::MUZZLE_HEIGHT) / dist.max(0.5)).atan()
+                    })
+                });
+                apply_intent(world, &Intent::Aim { player: id, pitch: pitch.unwrap_or(0.0) });
+            }
             apply_intent(world, &Intent::PlayerInput { player: id, seq: seq + 1, move_dir: [0.0, 0.0], facing, run: false, sneak, aim: true });
             let (intent, verb) = match name {
+                "attack" if gun => (Intent::Attack { player: id }, format!("fired the {}", world.wielded(weapon).name.to_lowercase())),
                 "attack" => (Intent::Attack { player: id }, format!("swung the {}", world.wielded(weapon).name.to_lowercase())),
                 "shove" => (Intent::Shove { player: id }, "shoved".to_string()),
                 _ => (Intent::Stomp { player: id }, "stomped".to_string()),
@@ -1529,8 +1558,9 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             world.edge_changes.clear();
             world.combat_events.clear();
             let p = world.player(id).expect("player exists");
+            let rounds = if gun { world.loaded(id).map_or(String::new(), |(n, of)| format!(", {n} of {of} rounds left in it")) } else { String::new() };
             Ok(format!(
-                "player {id} {verb} facing {}: landed after {} ticks, {}; ready again after {ticks} ticks; {:.0} HP, endurance {:.2}{}; now tick {}{}; hash {:016x}",
+                "player {id} {verb} facing {}: landed after {} ticks, {}{rounds}; ready again after {ticks} ticks; {:.0} HP, endurance {:.2}{}; now tick {}{}; hash {:016x}",
                 compass(p.state.facing),
                 landed_at.map_or("never".to_string(), |t| t.to_string()),
                 if hits == 0 { "nothing hit".to_string() } else { format!("{hits} hit") },
@@ -1695,8 +1725,23 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
         "craft" => craft_tool(world, player_id(), args.get("recipe").and_then(Value::as_str)),
         "weapons" => {
             let mut out = String::from("id: name, category (skill) | damage | reach m | arc deg | windup/swing s | targets | knockback m | stagger/knockdown/crit (x mult) | endurance | noise m\n");
-            for w in &world.config.weapons {
+            for w in world.config.weapons.iter().filter(|w| w.ranged.is_none()) {
                 out.push_str(&format!("{}: {}, {:?} ({:?}) | {}\n", w.id, w.name, w.category, w.skill(), weapon_line(w)));
+            }
+            // Guns (#72) shoot: other numbers matter.
+            if world.config.weapons.iter().any(|w| w.ranged.is_some()) {
+                out.push_str("guns (attack fires one round; use {from: \"hand\"} reloads; no skill): id: name | damage a pellet x pellets (x head) | range m (damage left at the end) | spread deg standing +moving | shot to shot s | bodies a bullet goes through | stagger/knockdown | noise m | holds, of what | reload\n");
+            }
+            for (w, r) in world.config.weapons.iter().filter_map(|w| w.ranged.as_ref().map(|r| (w, r))) {
+                let reload = match &r.magazine {
+                    Some(m) => format!("a carried {m} swapped in {:.1} s, or a round every {:.1} s", r.reload_seconds, r.round_seconds),
+                    None => format!("a round every {:.1} s", r.round_seconds),
+                };
+                out.push_str(&format!(
+                    "{}: {} | {:.0}-{:.0} x{} (x{:.1}) | {:.0} m ({:.0}%) | {:.1} +{:.1} | {:.2} s | {} | {:.0}/{:.0}% | {:.0} m | {} {} | {reload}\n",
+                    w.id, w.name, w.damage.0, w.damage.1, r.pellets, w.crit_multiplier, r.range, r.far_damage * 100.0, r.spread_degrees, r.move_spread_degrees, w.swing_seconds, w.max_targets,
+                    w.stagger_chance * 100.0, w.knockdown_chance * 100.0, w.noise_radius, r.capacity, r.ammo
+                ));
             }
             let c = &world.config.combat;
             out.push_str(&format!(
@@ -2698,7 +2743,12 @@ fn observe(world: &World, centre: Vec2, radius: i32, viewer: Option<u32>) -> Str
 /// "Tin of beans x3" or "Baseball bat".
 fn stack_text(world: &World, s: &ItemStack) -> String {
     let name = &world.item_def(s.item).name;
-    if s.count > 1 { format!("{name} x{}", s.count) } else { name.clone() }
+    // A gun or a magazine says what's in it (#72).
+    match world.holds(s.item) {
+        Some(h) => format!("{name} ({} of {} rounds in it)", s.used, h.capacity),
+        None if s.count > 1 => format!("{name} x{}", s.count),
+        None => name.clone(),
+    }
 }
 
 fn stacks_text(world: &World, stacks: &[ItemStack]) -> String {
@@ -3376,6 +3426,12 @@ fn use_preview(world: &World, id: u32, from: Place, index: u32) -> String {
     };
     let Some(s) = s else { return String::new() };
     let def = world.item_def(s.item);
+    // A gun is reloaded, a magazine filled (#72).
+    if let Some(h) = world.holds(s.item) {
+        let ammo = world.item_def(h.ammo);
+        let loose: u32 = p.inventory.carried.iter().filter(|c| c.item == h.ammo).map(|c| c.count as u32).sum();
+        return format!("ahead: {} with {} of {} rounds in it; {loose} loose {} carried (a gun in hand is reloaded: a fuller magazine swapped in, else rounds pushed in one by one; a carried magazine is filled)\n", def.name, s.used, h.capacity, ammo.name.to_lowercase());
+    }
     let Some(c) = def.consumable() else { return String::new() };
     let t = &world.config.needs;
     let mut bits = vec![format!("{}: hunger {:+.0}%, thirst {:+.0}% a go, {} of {} goes left", def.name, -c.hunger * 100.0, -c.thirst * 100.0, c.uses.max(1) - s.used, c.uses.max(1))];
@@ -4062,6 +4118,48 @@ mod tests {
         // Player 3's own view has neither of the others (40 m off, walls between).
         let (text, _) = call(&mut world, &mut persist, "observe", json!({"player": 3}));
         assert!(text.contains("P3 at") && !text.contains("P1 at") && !text.contains("P2 at"), "{text}");
+    }
+
+    /// Guns through the tools (#72): `weapons` lists them, `attack` at a target fires a round and
+    /// says what is left in the gun, an empty one is refused with what to do, `use {from: hand}`
+    /// reloads it, and `inventory` shows the rounds in it.
+    #[test]
+    fn agents_shoot_and_reload() {
+        let mut world = small_world();
+        let dir = scratch("guns");
+        let mut persist = session(&world, &dir.0);
+        let (text, err) = call(&mut world, &mut persist, "weapons", json!({}));
+        assert!(!err && text.contains("pistol: Pistol | 34-46 x1 (x2.6) | 45 m") && text.contains("| 12 pistol_rounds |") && text.contains("shotgun: Shotgun | 16-24 x8"), "{text}");
+        assert!(!text.contains("pistol: Pistol, Firearm"), "guns aren't in the melee table: {text}");
+        let at = world.player(1).unwrap().state.pos;
+        let (_, err) = call(&mut world, &mut persist, "spawn_item", json!({"item": "pistol", "x": at.x, "y": at.y}));
+        assert!(!err);
+        let (text, err) = call(&mut world, &mut persist, "pick_up", json!({}));
+        assert!(!err && text.contains("in hand: pistol"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "inventory", json!({}));
+        assert!(text.contains("hand: Pistol (12 of 12 rounds in it)"), "a gun made now is loaded: {text}");
+        // A zombie a metre in front of it, in the same room.
+        let z = world.add_zombie(at + Vec2::new(1.0, 0.0), 0.0, 0.0);
+        let zid = world.zombies.id[z];
+        let hp = world.zombies.hp[z];
+        let (text, err) = call(&mut world, &mut persist, "attack", json!({"target": zid}));
+        assert!(!err && text.contains("fired the pistol") && text.contains("1 hit, 11 of 12 rounds left in it"), "{text}");
+        assert!(world.zombies.index_of(zid).is_none_or(|z| world.zombies.hp[z] < hp));
+        // The rest of the magazine into the wall, then the gun is empty and says so.
+        for _ in 0..11 {
+            let (text, err) = call(&mut world, &mut persist, "attack", json!({"facing": 4.0, "pitch": 0.3}));
+            assert!(!err, "{text}");
+        }
+        let (text, err) = call(&mut world, &mut persist, "attack", json!({"facing": 4.0}));
+        assert!(err && text.contains("the pistol is empty: reload it with use"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "use", json!({"from": "hand"}));
+        assert!(err && text.contains("no pistol round"), "{text}");
+        call(&mut world, &mut persist, "spawn_item", json!({"item": "pistol_rounds", "count": 5, "x": at.x, "y": at.y}));
+        let (_, err) = call(&mut world, &mut persist, "pick_up", json!({}));
+        assert!(!err);
+        let (text, err) = call(&mut world, &mut persist, "use", json!({"from": "hand"}));
+        assert!(!err && text.contains("ahead: Pistol with 0 of 12 rounds in it; 5 loose pistol round carried") && text.contains("loaded the pistol: 5 of 12"), "{text}");
+        assert!(text.contains("hand: Pistol (5 of 12 rounds in it)") && !text.contains("Pistol round"), "the rounds are in the gun now: {text}");
     }
 
     /// Proximity chat through the tools (#67): `say` reaches those in earshot, `heard` lists it for

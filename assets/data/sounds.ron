@@ -40,5 +40,9 @@
         Wind: (files: ["ambience/wind_loop.wav"], volume: 0.3, pitch: (1.0, 1.0), reach: 10.0, voices: 1),
         Room: (files: ["ambience/room_loop.wav"], volume: 0.12, pitch: (1.0, 1.0), reach: 10.0, voices: 1),
         Crickets: (files: ["ambience/crickets_loop.wav"], volume: 0.16, pitch: (1.0, 1.0), reach: 10.0, voices: 1),
+        // Guns (#72). No sound of their own yet: a door breaking and a stamp played fast stand in
+        // for the shot, a window shutting for the reload, until the real ones (#78).
+        Gunshot: (files: ["sfx/door_break_1.wav", "sfx/door_break_2.wav", "sfx/stomp_1.wav"], volume: 1.6, pitch: (1.7, 2.0), reach: 220.0, muffle: 0.6, voices: 4),
+        Reload: (files: ["sfx/window_close.wav", "sfx/pickup.wav"], volume: 0.45, pitch: (1.25, 1.45), reach: 12.0, voices: 2),
     },
 )

@@ -184,7 +184,7 @@ fn job_item(kind: &JobKind) -> Option<u16> {
     match *kind {
         JobKind::Move { item, .. } | JobKind::Use { item, .. } => Some(item),
         JobKind::Treat { item, .. } => item,
-        JobKind::Search { .. } | JobKind::Craft { .. } => None,
+        JobKind::Search { .. } | JobKind::Craft { .. } | JobKind::Reload { .. } => None,
     }
 }
 
@@ -253,7 +253,7 @@ pub(crate) fn remap_items(plan: &ContentPlan, ground: &mut Vec<GroundItem>, play
             match &mut j.kind {
                 JobKind::Move { item, .. } | JobKind::Use { item, .. } => *item = to(*item).expect("kept"),
                 JobKind::Treat { item: Some(item), .. } => *item = to(*item).expect("kept"),
-                JobKind::Treat { item: None, .. } | JobKind::Search { .. } | JobKind::Craft { .. } => {}
+                JobKind::Treat { item: None, .. } | JobKind::Search { .. } | JobKind::Craft { .. } | JobKind::Reload { .. } => {}
             }
         }
         // Uses gone from an opened item that's no longer in the content: nothing to count.
@@ -415,9 +415,10 @@ const OLDEST_FOOD_MIN: i32 = -10 * 365 * 24 * 60;
 /// A stack's age and goes had (#11): goes below the item's uses, made no later than now and not
 /// absurdly long before the world began. Run after the item index is known to be in range.
 fn check_stack_state(w: &World, s: &ItemStack, what: &dyn Fn() -> String) -> Result<(), LoadError> {
-    let uses = w.config.items[s.item as usize].consumable().map_or(1, |c| c.uses.max(1));
-    if s.used >= uses {
-        return Err(invalid(format!("{}: {} goes had of an item with {uses}", what(), s.used)));
+    // (For a gun or a magazine it counts the rounds in it, #72: at most what it takes.)
+    let most = crate::ranged::max_used(&w.config.items, &w.config.weapons, s.item);
+    if s.used > most {
+        return Err(invalid(format!("{}: {} goes had of an item with {}", what(), s.used, most as u32 + 1)));
     }
     if s.born > w.game_minute() + 1 || s.born < OLDEST_FOOD_MIN {
         return Err(invalid(format!("{}: made at game minute {}, now {}", what(), s.born, w.game_minute())));
@@ -428,11 +429,8 @@ fn check_stack_state(w: &World, s: &ItemStack, what: &dyn Fn() -> String) -> Res
 /// After items.ron changed (a compatible change): goes had of a stack's top item stay below the
 /// item's `uses` as it is now.
 pub(crate) fn fit_goes(w: &mut World) {
-    let items = &w.config.items;
-    let fit = |s: &mut ItemStack| {
-        let uses = items.get(s.item as usize).and_then(|d| d.consumable()).map_or(1, |c| c.uses.max(1));
-        s.used = s.used.min(uses - 1);
-    };
+    let (items, weapons) = (&w.config.items, &w.config.weapons);
+    let fit = |s: &mut ItemStack| s.used = s.used.min(crate::ranged::max_used(items, weapons, s.item));
     for p in &mut w.players {
         p.inventory.stacks_mut().for_each(&fit);
     }

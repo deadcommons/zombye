@@ -132,6 +132,10 @@
             (item: "work_boots", weight: 0.5),
             (item: "leather_jacket", weight: 0.5, rare: true),
             (item: "hiking_pack", weight: 0.2, rare: true),
+            // The gun at the back of the wardrobe (#72): rare, and rarely with much in it.
+            (item: "pistol", weight: 0.2, rare: true),
+            (item: "pistol_magazine", weight: 0.15, rare: true),
+            (item: "pistol_rounds", weight: 0.35, count: (4, 14), rare: true),
         ]),
         // The coat cupboard in a hall: outdoor gear.
         (room: "any", container: "coat_cupboard", empty: 0.15, rolls: (1, 3), entries: [
@@ -150,6 +154,8 @@
             (item: "balaclava", weight: 0.6),
             (item: "golf_club", weight: 0.5),
             (item: "baseball_bat", weight: 0.4),
+            (item: "shotgun", weight: 0.2, rare: true),
+            (item: "shotgun_shells", weight: 0.35, count: (2, 6), rare: true),
         ]),
         (room: "any", container: "desk_drawers", empty: 0.25, rolls: (1, 3), entries: [
             (item: "pen", weight: 4, count: (1, 3)),
@@ -157,6 +163,8 @@
             (item: "batteries", weight: 2),
             (item: "scissors", weight: 2),
             (item: "chocolate_bar", weight: 2),
+            (item: "pistol", weight: 0.12, rare: true),
+            (item: "pistol_rounds", weight: 0.25, count: (4, 14), rare: true),
             (item: "alarm_clock", weight: 1),
             (item: "painkillers", weight: 1),
             (item: "flashlight", weight: 1),
@@ -209,6 +217,10 @@
             (item: "cushion", weight: 1),
             (item: "glasses", weight: 0.8),
             (item: "bandana", weight: 0.6),
+            // The gun in the bedside drawer (#72): rare, and rarely with much in it.
+            (item: "pistol", weight: 0.25, rare: true),
+            (item: "pistol_magazine", weight: 0.2, rare: true),
+            (item: "pistol_rounds", weight: 0.4, count: (4, 14), rare: true),
         ]),
         (room: "living", container: "any", empty: 0.3, rolls: (1, 3), entries: [
             (item: "picture_frame", weight: 3),
@@ -271,6 +283,8 @@
             (item: "batteries", weight: 1),
             (item: "empty_bottle", weight: 1),
             (item: "fire_axe", weight: 0.5, rare: true),
+            (item: "shotgun", weight: 0.15, rare: true),
+            (item: "shotgun_shells", weight: 0.3, count: (2, 6), rare: true),
         ]),
         // Like a shed, with a lot more junk.
         (room: "garage", container: "any", empty: 0.15, rolls: (2, 5), entries: [
@@ -294,6 +308,8 @@
             (item: "golf_club", weight: 0.8),
             (item: "baseball_bat", weight: 0.5),
             (item: "fire_axe", weight: 0.3, rare: true),
+            (item: "hunting_rifle", weight: 0.2, rare: true),
+            (item: "rifle_rounds", weight: 0.4, count: (3, 8), rare: true),
         ]),
         (room: "office", container: "desk_drawers", empty: 0.2, rolls: (1, 3), entries: [
             (item: "pen", weight: 4, count: (1, 4)),
@@ -306,6 +322,8 @@
             (item: "school_backpack", weight: 0.6),
             (item: "flashlight", weight: 0.6),
             (item: "glasses", weight: 0.6),
+            (item: "pistol", weight: 0.15, rare: true),
+            (item: "pistol_rounds", weight: 0.3, count: (4, 14), rare: true),
         ]),
         (room: "office", container: "any", empty: 0.3, rolls: (1, 2), entries: [
             (item: "pen", weight: 3, count: (1, 3)),
@@ -369,6 +387,8 @@
             (item: "wooden_plank", weight: 1, count: (1, 2)),
             (item: "crowbar", weight: 0.8),
             (item: "fire_axe", weight: 0.3, rare: true),
+            (item: "rifle_rounds", weight: 0.3, count: (4, 10), rare: true),
+            (item: "shotgun_shells", weight: 0.3, count: (4, 10), rare: true),
         ]),
 
         // ---- Anywhere else: everyday clutter ----------------------------------------------------

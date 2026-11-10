@@ -294,6 +294,9 @@ pub struct Options {
     /// `--lag MS`: with `--connect`, play as if the server were that many milliseconds of ping
     /// away (half each way), to try out lag compensation on one machine (#23).
     pub lag_ms: u32,
+    /// Start a new world holding this gun, loaded, with ammunition for it (`--gun ID`, #72: an id
+    /// in weapons.ron, e.g. `pistol`); `--fight-demo` then gives no bat and puts its zombies 16 m off.
+    pub gun: Option<String>,
     /// For recordings and pictures of the chat (#67): lines our survivor says by itself
     /// (`--say TEXT[@SECS]`, `--shout TEXT[@SECS]`, `--whisper TEXT[@SECS]`, each as often as
     /// wanted) and gestures it makes (`--gesture wave|hands_up|point[@SECS]`).
@@ -464,6 +467,7 @@ impl Options {
             no_post: value("--no-post"),
             frame_bench: value("--frame-bench").and_then(|v| v.parse().ok()),
             lag_ms: value("--lag").and_then(|v| v.parse::<u32>().ok()).map_or(0, |v| v.min(2000)),
+            gun: value("--gun"),
         }
     }
 

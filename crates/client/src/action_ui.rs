@@ -91,6 +91,8 @@ fn describe(kind: JobKind, join: &JoinInfo) -> String {
             c.next().map_or(String::new(), |f| f.to_uppercase().collect::<String>() + c.as_str())
         }
         JobKind::Craft { recipe } => join.recipes.get(recipe as usize).map_or("Making".to_string(), |r| r.name.clone()),
+        JobKind::Reload { spare: false } => "Reloading".to_string(),
+        JobKind::Reload { spare: true } => "Filling a magazine".to_string(),
     }
 }
 

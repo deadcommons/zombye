@@ -248,6 +248,29 @@ pub fn fit_top_panels(
     }
 }
 
+/// What follows a gun's name in the weapon panel (#72): the rounds in it of those it takes, and
+/// what is carried to reload it with: "  9/12  +12 +24" is nine in the gun, a full magazine and 24
+/// loose rounds in the pockets; "  0/5  (empty)" with nothing to reload it with. Empty when
+/// what's held is no gun. (R reloads, as the keys line says.)
+pub(crate) fn gun_line(join: &JoinInfo, inventory: Option<&zombye_sim::Inventory>) -> String {
+    let Some(inv) = inventory else { return String::new() };
+    let Some(gun) = inv.hand else { return String::new() };
+    let holds = |item: u16| zombye_sim::ranged::holds(&join.items, &join.weapons, item);
+    let Some(h) = holds(gun.item).filter(|h| !h.magazine) else { return String::new() };
+    let mut line = format!("  {}/{}", gun.used, h.capacity);
+    for s in inv.carried.iter().filter(|s| holds(s.item).is_some_and(|m| m.magazine && m.ammo == h.ammo)) {
+        line += &format!("  +{}", s.used);
+    }
+    let loose: u32 = inv.carried.iter().filter(|s| s.item == h.ammo).map(|s| s.count as u32).sum();
+    if loose > 0 {
+        line += &format!("  +{loose}");
+    }
+    if gun.used == 0 && !line.contains('+') {
+        line += "  (empty)";
+    }
+    line
+}
+
 #[allow(clippy::type_complexity)]
 fn update_vitals(
     me: Res<LocalPlayer>,
@@ -273,7 +296,7 @@ fn update_vitals(
     };
     let weapon = me.weapon.and_then(|w| join.weapons.get(w as usize)).map_or("Bare hands", |w| w.name.as_str());
     if let Ok(mut t) = texts.p0().single_mut() {
-        set(&mut t, weapon.to_string());
+        set(&mut t, format!("{weapon}{}", gun_line(&join, link.own(me.id).map(|v| &v.inventory))));
     }
     let s = &me.curr;
     let asleep = link.curr.players.iter().any(|p| p.id == me.id && p.asleep);
@@ -387,7 +410,7 @@ fn update_hud(
     if let Ok(mut t) = text.single_mut() {
         let rotate = if options.rotate { ", . rotate | " } else { "" };
         t.0 = format!(
-            "{line}\nWASD move | Shift run | C sneak{} | RMB (hold) aim | aiming: LMB attack, Space shove/stomp | E pick up / search | 1-9 hotbar | Tab inventory | H health | K skills | B sleep | Enter talk | V wave | U hands up | P point | Y tie/free | L search them | J (hold) struggle | N group | F door/window | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load | F1 god{} | F2 ignored{} | F3 light preview | F4 debug stats{} | M mute | O objectives",
+            "{line}\nWASD move | Shift run | C sneak{} | RMB (hold) aim | aiming: LMB attack or shoot, Space shove/stomp | R reload | E pick up / search | 1-9 hotbar | Tab inventory | H health | K skills | B sleep | Enter talk | V wave | U hands up | P point | Y tie/free | L search them | J (hold) struggle | N group | F door/window | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load | F1 god{} | F2 ignored{} | F3 light preview | F4 debug stats{} | M mute | O objectives",
             if me.sneak { " (on)" } else { "" },
             if me.dev.god { " (on)" } else { "" },
             if me.dev.ignored { " (on)" } else { "" },

@@ -486,7 +486,9 @@ impl World {
     /// `count` of `item` made now: fresh if it spoils.
     pub(crate) fn fresh_stack(&self, item: u16, count: u16) -> ItemStack {
         let spoils = self.config.items.get(item as usize).and_then(|d| d.consumable()).is_some_and(|c| c.spoils_hours.is_some());
-        ItemStack { born: if spoils { self.game_minute() } else { 0 }, ..ItemStack::new(item, count) }
+        // A gun or a magazine made now comes full (#72); found ones are as they were left (`load_found`).
+        let rounds = crate::ranged::holds(&self.config.items, &self.config.weapons, item).map_or(0, |h| h.capacity);
+        ItemStack { born: if spoils { self.game_minute() } else { 0 }, used: rounds, ..ItemStack::new(item, count) }
     }
 
     /// How fresh a stack is now (`None`: it doesn't spoil).

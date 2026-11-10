@@ -141,6 +141,11 @@ pub enum Intent {
     Struggle { player: u32, on: bool },
     /// Groups (#73, `zombye_sim::groups`): invite, accept, leave, put down or take away a marker.
     Group { player: u32, op: GroupOp },
+    /// Guns (#72, `zombye_sim::ranged`): how far up (+) or down (-) of level the player aims, in
+    /// radians. With the facing of its `PlayerInput` that is the way its shots go; a client
+    /// holding a gun sends it each tick it aims. (Reloading has no intent of its own: it is `Use`
+    /// of the gun in hand, and filling a magazine `Use` of the magazine.)
+    Aim { player: u32, pitch: f32 },
 }
 
 /// What a player asks of its group ([`Intent::Group`]).
@@ -679,6 +684,7 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
                 }
             };
         }
+        Intent::Aim { player, pitch } => world.set_pitch(*player, *pitch),
         Intent::Respawn { player } => {
             world.respawn_player(*player);
         }

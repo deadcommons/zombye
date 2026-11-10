@@ -196,6 +196,8 @@ pub struct EdgeDamageThisFrame(pub Vec<EdgeDamage>);
 
 /// `--fight-demo`: zombies spawned this far ahead of the player, and how many.
 const DEMO_DISTANCE: f32 = 7.0;
+/// With `--gun` (#72): further off, so there is something to shoot at before they arrive.
+const GUN_DEMO_DISTANCE: f32 = 16.0;
 const DEMO_ZOMBIES: u32 = 6;
 
 /// The hour a new single-player world starts at without `--time` (the sim's own default, 9:00,
@@ -311,13 +313,38 @@ impl Plugin for ServerLinkPlugin {
             }
         }
         let player_id = server.join(options.at.or(siege_at.map(|s| s.0.to_array())).or(demo_at));
-        if options.fight_demo {
-            // A bat in hand and a small group just ahead (the player faces +x), called over by a noise.
+        // `--gun ID` (#72): that gun in hand, loaded, with a spare magazine if it takes one and
+        // three loads of loose rounds in the pockets.
+        let gun = options.gun.as_deref().and_then(|id| {
+            let found = server.world.config.weapons.iter().find(|w| w.id == id).and_then(|w| w.ranged.clone());
+            if found.is_none() {
+                eprintln!("--gun: no gun {id:?} in weapons.ron");
+            }
+            found.map(|r| (id.to_string(), r))
+        });
+        if let Some((id, r)) = &gun {
             let me = server.world.player(player_id).map(|p| p.state.pos).unwrap_or(server.world.player_spawn);
-            server.send(Intent::SpawnItem { item: "baseball_bat".into(), count: 1, pos: me.to_array() });
-            server.send(Intent::PickUp { player: player_id });
-            server.send(Intent::SpawnZombies { count: DEMO_ZOMBIES, center: (me + Vec2::X * DEMO_DISTANCE).to_array(), radius: 2.0 });
-            server.send(Intent::MakeNoise { pos: me.to_array(), radius: 12.0, lasting: false });
+            let mut give = |item: &str, count: u16| {
+                server.send(Intent::SpawnItem { item: item.into(), count, pos: me.to_array() });
+                server.send(Intent::PickUp { player: player_id });
+            };
+            give(id, 1);
+            if let Some(m) = &r.magazine {
+                give(m, 1);
+            }
+            give(&r.ammo, r.capacity as u16 * 3);
+        }
+        if options.fight_demo {
+            // A bat in hand and a small group just ahead (the player faces +x), called over by a
+            // noise. With a gun instead, they start further off.
+            let me = server.world.player(player_id).map(|p| p.state.pos).unwrap_or(server.world.player_spawn);
+            if gun.is_none() {
+                server.send(Intent::SpawnItem { item: "baseball_bat".into(), count: 1, pos: me.to_array() });
+                server.send(Intent::PickUp { player: player_id });
+            }
+            let distance = if gun.is_some() { GUN_DEMO_DISTANCE } else { DEMO_DISTANCE };
+            server.send(Intent::SpawnZombies { count: DEMO_ZOMBIES, center: (me + Vec2::X * distance).to_array(), radius: 2.0 });
+            server.send(Intent::MakeNoise { pos: me.to_array(), radius: distance + 5.0, lasting: false });
         }
         if let Some((_, door, out)) = siege_at {
             siege(&mut server, player_id, door, out);

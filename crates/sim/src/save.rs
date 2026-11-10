@@ -666,6 +666,7 @@ impl World {
             scratch_pos: _,
             scratch_actions: _,
             scratch_hits: _,
+            scratch_tops: _,
             // Lag compensation (#23): a few ticks of positions, kept only while remote clients
             // report what they see, and they report again every tick.
             lag_history: _,

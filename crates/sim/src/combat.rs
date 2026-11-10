@@ -115,6 +115,8 @@ pub struct CombatTuning {
     /// A swing's or stomp's damage to a player is its damage to a zombie times this (the player
     /// also gets the wound).
     pub pvp_damage_mult: f32,
+    /// A bullet's damage to a player is its damage to a zombie times this (#72).
+    pub pvp_shot_mult: f32,
     /// Chance a blunt weapon's blow splits the skin (a gash, not a bruise); a crit always does.
     pub pvp_blunt_gash: f32,
     /// A cut that clothing stops is a bruise, and takes this much of its damage.
@@ -190,6 +192,8 @@ impl Default for CombatTuning {
             // A bat takes about eight blows to kill, an axe four: long enough to run or give up.
             pvp: false,
             pvp_damage_mult: 0.4,
+            // A pistol takes three or four shots to the body, one or two to the head.
+            pvp_shot_mult: 0.7,
             pvp_blunt_gash: 0.3,
             pvp_stopped_damage: 0.5,
             player_stagger_secs: (0.5, 0.8),
@@ -267,6 +271,10 @@ pub enum CombatEventKind {
     Stomp,
     /// A player's shove pushed another player back (no damage): `player` the one shoved, `by` who did it.
     PlayerShoved,
+    /// A bullet or pellet flew (#72, `crate::ranged`), whether or not it hit anybody (what it hit
+    /// has its own event): `player` shot it, `pos` is where it stopped, `dir` the way it flew
+    /// over the ground and `damage` how far (metres), so the line starts at `pos - dir * damage`.
+    Shot,
 }
 
 /// Something worth showing: blood, a flash, a flinch. Collected every tick into
@@ -292,7 +300,7 @@ pub struct CombatEvent {
 }
 
 /// Bit set on a candidate's index in `World::scratch_hits` when it is a player, not a zombie.
-const PLAYER_TARGET: usize = 1 << (usize::BITS - 1);
+pub(crate) const PLAYER_TARGET: usize = 1 << (usize::BITS - 1);
 
 /// Combat events kept for replication if nobody drains them (headless servers, tests).
 pub const MAX_COMBAT_EVENTS: usize = 1024;
@@ -307,19 +315,23 @@ pub struct ActionEvent {
 }
 
 /// The parameters of one landing action, from the weapon or the shove/stomp tuning.
-struct Strike {
-    /// Reach to the zombie's body edge (centre for stomps).
-    range: f32,
+#[derive(Clone, Copy)]
+pub(crate) struct Strike {
+    /// Reach to the zombie's body edge (centre for stomps); a shot's range.
+    pub(crate) range: f32,
     /// Half the arc, in radians.
-    half_arc: f32,
-    max_targets: u32,
-    damage: (f32, f32),
-    crit_chance: f32,
-    crit_multiplier: f32,
-    knockback: f32,
-    stagger_chance: f32,
-    knockdown_chance: f32,
-    noise: f32,
+    pub(crate) half_arc: f32,
+    pub(crate) max_targets: u32,
+    pub(crate) damage: (f32, f32),
+    pub(crate) crit_chance: f32,
+    pub(crate) crit_multiplier: f32,
+    pub(crate) knockback: f32,
+    pub(crate) stagger_chance: f32,
+    pub(crate) knockdown_chance: f32,
+    pub(crate) noise: f32,
+    /// A bullet's hit (#72, `crate::ranged`), and how high up the body it struck: a player is
+    /// wounded on the part there, not one from the tables.
+    pub(crate) shot: Option<f32>,
 }
 
 impl World {
@@ -363,6 +375,12 @@ impl World {
         if self.players[pi].dead || self.players[pi].needs.asleep() || self.players[pi].knock.is_some() || self.players[pi].away.is_some() || self.players[pi].restraint.is_some() {
             return false;
         }
+        // The trigger pulled on an empty gun (#72): it is reloaded instead, if there is anything
+        // to reload it with (the refusal says what's missing), and a reload under way carries on.
+        if kind == ActionKind::Swing && self.gun_is_empty(pi) {
+            let _ = self.player_reload(id);
+            return false;
+        }
         // Fighting drops whatever you were doing with your things, and with anyone else's (#73).
         self.cancel_jobs(pi);
         self.players[pi].hands = None;
@@ -402,7 +420,8 @@ impl World {
         };
         // A practised hand swings cheaper and quicker (Bludgeon, Edged; #46), and swinging a heavy
         // weapon builds Strength.
-        let (skill_cost, skill_time) = if kind == ActionKind::Swing {
+        // (No skill makes shooting better yet, #72.)
+        let (skill_cost, skill_time) = if kind == ActionKind::Swing && self.config.weapons[weapon as usize].ranged.is_none() {
             let skill = self.config.weapons[weapon as usize].skill();
             let level = self.skill_level(pi, skill);
             let heavy = self.players[pi].inventory.hand.is_some_and(|s| self.item_def(s.item).weight_kg > self.config.skills.heavy_weapon_kg);
@@ -516,6 +535,10 @@ impl World {
     /// swung at; the map is as it is, so a door shut since stops the blow), and what the blow
     /// does happens to the target where it is now.
     fn land(&mut self, pi: usize, a: Action, origin: Vec2, facing: f32, ahead: u64) {
+        // A gun shoots (#72).
+        if a.kind == ActionKind::Swing && self.config.weapons[a.weapon as usize].ranged.is_some() {
+            return self.fire(pi, a, origin, facing, ahead);
+        }
         let c = &self.config.combat;
         // Skills (#46): Strength knocks back farther and shoves down more often, so does Brawl;
         // the weapon's skill (Brawl for stomps) hits harder.
@@ -537,6 +560,7 @@ impl World {
                     stagger_chance: w.stagger_chance,
                     knockdown_chance: w.knockdown_chance,
                     noise: w.noise_radius,
+                    shot: None,
                 }
             }
             ActionKind::Shove => Strike {
@@ -550,6 +574,7 @@ impl World {
                 stagger_chance: 1.0,
                 knockdown_chance: (c.shove_knockdown_chance + sk.shove_knockdown_bonus(level(Skill::Strength), level(Skill::Brawl))).min(1.0),
                 noise: c.shove_noise,
+                shot: None,
             },
             ActionKind::Stomp => Strike {
                 range: c.stomp_range,
@@ -565,6 +590,7 @@ impl World {
                 stagger_chance: 0.0,
                 knockdown_chance: 0.0,
                 noise: c.stomp_noise,
+                shot: None,
             },
         };
         let player = self.players[pi].id;
@@ -670,7 +696,7 @@ impl World {
     /// Hit zombie `j` from `origin`, the zombie taken to stand at `at` (where the attacker saw it).
     /// Returns what it did.
     #[allow(clippy::too_many_arguments)]
-    fn strike(&mut self, player: u32, a: Action, s: &Strike, origin: Vec2, forward: Vec2, j: usize, at: Vec2, falloff: f32) -> HitEffect {
+    pub(crate) fn strike(&mut self, player: u32, a: Action, s: &Strike, origin: Vec2, forward: Vec2, j: usize, at: Vec2, falloff: f32) -> HitEffect {
         let c = &self.config.combat;
         let zt = &self.config.zombie;
         let rng = &mut self.combat_rng;
@@ -762,7 +788,7 @@ impl World {
     /// had landed before this blow showed there, so it lands too, now, from where the player stood.
     /// Both sides get the same rule and the same cap; a local player (no lag) keeps none.
     #[allow(clippy::too_many_arguments)]
-    fn strike_player(&mut self, pi: usize, a: Action, s: &Strike, origin: Vec2, forward: Vec2, vi: usize, at: Vec2, falloff: f32) -> HitEffect {
+    pub(crate) fn strike_player(&mut self, pi: usize, a: Action, s: &Strike, origin: Vec2, forward: Vec2, vi: usize, at: Vec2, falloff: f32) -> HitEffect {
         let c = self.config.combat.clone();
         let attacker = self.players[pi].id;
         let v = &self.players[vi];
@@ -773,7 +799,8 @@ impl World {
         let behind = Vec2::from_angle(v.state.facing).dot(dir) > c.behind_dot;
         let crit_chance = s.crit_chance + if behind && s.crit_chance > 0.0 { c.behind_crit_bonus } else { 0.0 };
         let crit = self.combat_rng.f32() < crit_chance;
-        let mut damage = if s.damage.1 > 0.0 { self.combat_rng.range(s.damage.0, s.damage.1) * a.power * falloff * c.pvp_damage_mult } else { 0.0 };
+        let pvp_mult = if s.shot.is_some() { c.pvp_shot_mult } else { c.pvp_damage_mult };
+        let mut damage = if s.damage.1 > 0.0 { self.combat_rng.range(s.damage.0, s.damage.1) * a.power * falloff * pvp_mult } else { 0.0 };
         if crit {
             damage *= s.crit_multiplier;
         }
@@ -783,11 +810,16 @@ impl World {
         if s.damage.1 > 0.0 {
             // Where it lands (a blow at the back finds more head and torso) and what it leaves.
             let t = &self.config.health;
-            let part = if behind && !stomp { &t.behind } else { &t.front }.pick(self.combat_rng.f32(), false);
+            // A bullet wounds the part at the height it struck (#72).
+            let part = match s.shot {
+                Some(height) => self.shot_part(height),
+                None => if behind && !stomp { &t.behind } else { &t.front }.pick(self.combat_rng.f32(), false),
+            };
             let mut kind = match self.config.weapons[a.weapon as usize].category {
                 _ if stomp => WoundKind::Bruise,
                 WeaponCategory::Unarmed => WoundKind::Bruise,
-                WeaponCategory::ShortBlade | WeaponCategory::Axe => WoundKind::Gash,
+                // A bullet wound is a gash for now (it bleeds until dressed, and wants stitching).
+                WeaponCategory::ShortBlade | WeaponCategory::Axe | WeaponCategory::Firearm => WoundKind::Gash,
                 WeaponCategory::ShortBlunt | WeaponCategory::LongBlunt => {
                     if self.combat_rng.f32() < c.pvp_blunt_gash || crit {
                         WoundKind::Gash
@@ -796,7 +828,8 @@ impl World {
                     }
                 }
             };
-            if kind != WoundKind::Bruise {
+            // Clothing may stop a blade, never a bullet.
+            if kind != WoundKind::Bruise && s.shot.is_none() {
                 let stop = self.protection(&self.players[vi], part.region()) * self.config.health.wound(kind).protection;
                 if self.combat_rng.f32() < stop {
                     kind = WoundKind::Bruise;

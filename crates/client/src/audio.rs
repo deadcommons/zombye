@@ -66,10 +66,14 @@ pub enum Cue {
     Wind,
     Room,
     Crickets,
+    /// A gun going off, and one being loaded (#72). Placeholders made of sounds there already
+    /// are (a door breaking played fast, a window shutting): the real ones come with #78.
+    Gunshot,
+    Reload,
 }
 
 impl Cue {
-    pub const ALL: [Cue; 28] = [
+    pub const ALL: [Cue; 30] = [
         Cue::FootstepHard,
         Cue::FootstepSoft,
         Cue::Shuffle,
@@ -98,6 +102,8 @@ impl Cue {
         Cue::Wind,
         Cue::Room,
         Cue::Crickets,
+        Cue::Gunshot,
+        Cue::Reload,
     ];
 
     /// The ambience loops, played for as long as the game runs at a volume that follows where you are.
@@ -537,6 +543,10 @@ impl Dice {
     }
 }
 
+/// A sound of an unseen player at least this loud (m) is a gunshot (#72): nothing else a player
+/// does carries that far (a shout is 30 m, breaking a door about as much).
+const GUNSHOT_HEARD: f32 = 80.0;
+
 /// What the sound systems remember between frames.
 #[derive(Resource, Default)]
 struct Track {
@@ -550,6 +560,8 @@ struct Track {
     last_tick: u64,
     rummage_in: f32,
     bird_in: f32,
+    /// Seconds left of the reload step under way at the last look (#72), to hear the next begin.
+    loading: Option<f32>,
 }
 
 pub struct GameAudioPlugin;
@@ -618,7 +630,12 @@ fn footsteps(local: Res<LocalPlayer>, link: Res<ServerLink>, map: Res<ClientMap>
         }
     }
     // Someone we hear and don't see (#66): a step where the sound came from, as loud as it was.
+    // (Nothing but a gun is as loud as this, #72: its shot, not a step.)
     for h in &link.heard {
+        if h.radius >= GUNSHOT_HEARD {
+            queue.at(Cue::Gunshot, h.pos, 1.0);
+            continue;
+        }
         let (cue, floor_loud) = footstep(floor_at(&map.0, h.pos));
         queue.at(cue, h.pos, (h.radius / 6.0).clamp(0.4, 1.6) * floor_loud);
     }
@@ -721,11 +738,13 @@ fn world_events(
         }
     }
     let mut shoved = HashSet::new();
+    let mut shot = HashSet::new();
     for e in &hits.0 {
         let stomping = snap.players.iter().any(|p| p.id == e.player && p.action == Some(ActionKind::Stomp));
         let hit = match category(e.player) {
             WeaponCategory::Unarmed => Cue::Punch,
-            WeaponCategory::ShortBlade | WeaponCategory::Axe => Cue::HitBlade,
+            // (A bullet striking sounds like a blade for now.)
+            WeaponCategory::ShortBlade | WeaponCategory::Axe | WeaponCategory::Firearm => Cue::HitBlade,
             WeaponCategory::ShortBlunt | WeaponCategory::LongBlunt => Cue::HitBlunt,
         };
         let crit = if e.crit { 1.25 } else { 1.0 };
@@ -745,7 +764,7 @@ fn world_events(
                 let blow = match category(e.by) {
                     _ if by_stomp => Cue::Stomp,
                     WeaponCategory::Unarmed => Cue::Punch,
-                    WeaponCategory::ShortBlade | WeaponCategory::Axe => Cue::HitBlade,
+                    WeaponCategory::ShortBlade | WeaponCategory::Axe | WeaponCategory::Firearm => Cue::HitBlade,
                     WeaponCategory::ShortBlunt | WeaponCategory::LongBlunt => Cue::HitBlunt,
                 };
                 queue.at(blow, e.pos, crit);
@@ -754,6 +773,9 @@ fn world_events(
             CombatEventKind::PlayerHurt => queue.at(Cue::PlayerHurt, e.pos, 1.0),
             CombatEventKind::PlayerShoved if shoved.insert(e.by) => queue.at(Cue::Shove, e.pos, 1.0),
             CombatEventKind::PlayerShoved => {}
+            // A gun going off (#72): once a shot, however many pellets, at the muzzle.
+            CombatEventKind::Shot if shot.insert(e.player) => queue.at(Cue::Gunshot, e.pos - e.dir * e.damage, 1.0),
+            CombatEventKind::Shot => {}
         }
     }
     if snap.tick != track.last_tick {
@@ -765,7 +787,8 @@ fn world_events(
                 Some((was, left)) => was != p.action || p.action_left > left + 0.05,
                 None => true,
             };
-            if p.action == Some(ActionKind::Swing) && fresh {
+            // (A gun makes no whoosh: its shot is heard when it goes.)
+            if p.action == Some(ActionKind::Swing) && fresh && category(p.id) != WeaponCategory::Firearm {
                 let heavy = matches!(category(p.id), WeaponCategory::LongBlunt | WeaponCategory::Axe);
                 let cue = if heavy { Cue::SwingHeavy } else { Cue::SwingLight };
                 // Our own swing on a multiplayer server began on the click, a view lag ago (#23).
@@ -793,6 +816,14 @@ fn world_events(
     } else if !searching {
         track.rummage_in = 0.0;
     }
+    // Loading a gun or a magazine (#72): a click as each step starts (a magazine, or a round).
+    let loading = link.own(local.id).and_then(|v| v.jobs.first().copied()).filter(|j| matches!(j, JobKind::Reload { .. })).map(|_| me.map_or(0.0, |p| p.busy));
+    if let Some(left) = loading
+        && track.loading.is_none_or(|was| left > was + 0.05)
+    {
+        queue.at(Cue::Reload, local.curr.pos, 1.0);
+    }
+    track.loading = loading;
     if ups.0.iter().any(|u| u.player == local.id) {
         queue.around(Cue::LevelUp, 0.0, 1.0);
     }

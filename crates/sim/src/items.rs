@@ -21,16 +21,20 @@ pub enum WeaponCategory {
     ShortBlunt,
     LongBlunt,
     Axe,
+    /// A gun (#72): its `ranged` numbers say how it shoots ([`crate::ranged`]). Last, so the
+    /// categories before it keep their numbers in saves and on the wire.
+    Firearm,
 }
 
 impl WeaponCategory {
     /// The skill weapons of this category use unless the data says otherwise: Bludgeon for blunt
-    /// ones, Edged for knives and axes, Brawl for bare hands.
+    /// ones, Edged for knives and axes, Brawl for bare hands. Shooting trains no skill yet, and
+    /// none makes it better: a firearm's skill is never read (`World::fire`).
     pub fn skill(self) -> Skill {
         match self {
             Self::Unarmed => Skill::Brawl,
             Self::ShortBlade | Self::Axe => Skill::Edged,
-            Self::ShortBlunt | Self::LongBlunt => Skill::Bludgeon,
+            Self::ShortBlunt | Self::LongBlunt | Self::Firearm => Skill::Bludgeon,
         }
     }
 }
@@ -79,6 +83,11 @@ pub struct WeaponDef {
     pub length: f32,
     #[serde(default = "default_color")]
     pub color: (f32, f32, f32),
+    /// A gun's numbers (#72): what it is loaded with, how far and how true it shoots. With it the
+    /// weapon shoots instead of swinging (see [`crate::ranged::RangedDef`] for what the fields
+    /// above mean then). Exactly the `Firearm` weapons have it.
+    #[serde(default)]
+    pub ranged: Option<crate::ranged::RangedDef>,
 }
 
 fn default_length() -> f32 {
@@ -119,6 +128,7 @@ impl WeaponDef {
             found_in: Vec::new(),
             length: 0.0,
             color: (0.8, 0.65, 0.5),
+            ranged: None,
         }
     }
 
@@ -154,8 +164,16 @@ impl WeaponDef {
         if !(self.crit_multiplier >= 1.0 && self.crit_multiplier <= 10.0) {
             return Err(format!("{id}: crit_multiplier must be in 1..10, got {}", self.crit_multiplier));
         }
-        if !(0.0..=100.0).contains(&self.noise_radius) {
-            return Err(format!("{id}: noise_radius must be in 0..100 m, got {}", self.noise_radius));
+        // A gunshot carries much further than any blow.
+        let loudest = if self.category == WeaponCategory::Firearm { crate::ranged::MAX_SHOT_NOISE } else { 100.0 };
+        if !(0.0..=loudest).contains(&self.noise_radius) {
+            return Err(format!("{id}: noise_radius must be in 0..{loudest} m, got {}", self.noise_radius));
+        }
+        match (&self.ranged, self.category == WeaponCategory::Firearm) {
+            (Some(r), true) => r.validate(id)?,
+            (Some(_), false) => return Err(format!("{id}: `ranged` is only for Firearm weapons (this is {:?})", self.category)),
+            (None, true) => return Err(format!("{id}: a Firearm needs `ranged: Some((...))`")),
+            (None, false) => {}
         }
         if !(self.spawn_weight >= 0.0 && self.spawn_weight.is_finite()) {
             return Err(format!("{id}: spawn_weight must be >= 0"));
@@ -564,6 +582,10 @@ pub fn validate_items(defs: &[ItemDef], weapons: &[WeaponDef]) -> Result<(), Str
         if defs[..i].iter().any(|o| o.id == d.id) {
             return Err(format!("item id {:?} is used twice", d.id));
         }
+        // A gun's item needs what the gun is loaded with among the items too (#72).
+        if let Some(r) = d.weapon.as_ref().and_then(|w| weapons.iter().find(|x| &x.id == w)).and_then(|w| w.ranged.as_ref()) {
+            r.check_items(&d.id, defs)?;
+        }
     }
     Ok(())
 }
@@ -591,6 +613,9 @@ pub fn complete_items(items: &mut Vec<ItemDef>, weapons: &[WeaponDef]) -> Vec<Op
 /// doesn't spoil), which says how fresh it is ([`crate::needs::Freshness`]), and how many goes of
 /// the top one have been had (`used`, below its `uses`). Stacks only merge when all three agree
 /// ([`ItemStack::same_kind`]), so a stale loaf never hides among fresh ones.
+///
+/// For a gun or a gun's magazine (#72, [`crate::ranged`]) `used` is something else: the rounds in
+/// it, 0 to what it takes ([`crate::ranged::max_used`]). Neither stacks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemStack {
     pub item: u16,
@@ -698,9 +723,11 @@ mod tests {
         assert!(w.len() >= 9, "only {} weapons", w.len());
         assert_eq!(w.iter().filter(|d| d.category == WeaponCategory::Unarmed).count(), 1);
         assert!(w.iter().filter(|d| d.spawn_weight > 0.0).count() >= 8);
-        // Every weapon names its skill (#46), and it is the one its category hits with.
+        // Every weapon names its skill (#46), and it is the one its category hits with. A gun
+        // names none: shooting trains no skill yet (#72).
         for d in &w {
-            assert_eq!(d.skill, Some(d.category.skill()), "{} names {:?}", d.id, d.skill);
+            let want = if d.ranged.is_some() { None } else { Some(d.category.skill()) };
+            assert_eq!(d.skill, want, "{} names {:?}", d.id, d.skill);
         }
     }
 

@@ -334,6 +334,10 @@ pub enum JobKind {
     /// Crafting (#12): make recipe `recipe` (an index into `WorldConfig::recipes`) from what the
     /// player carries and holds (see [`crate::crafting`]).
     Craft { recipe: u16 },
+    /// Guns (#72, [`crate::ranged`]): reload the gun in hand (a magazine swapped in, or one round
+    /// pushed in, the next following by itself), or with `spare` push a round into a carried
+    /// magazine. Last, so saves from before it read as they did.
+    Reload { spare: bool },
 }
 
 /// A queued job and the seconds it has left (only the first counts down).
@@ -700,6 +704,10 @@ impl World {
             return self.refuse(id, "use what you carry or hold".into());
         }
         let Some(stack) = self.stack_at(pi, from, index) else { return self.refuse(id, format!("nothing at {from:?} {index}")) };
+        // Using a gun reloads it, a magazine fills it (#72).
+        if let Some(done) = self.use_reloads(id, from, stack.item) {
+            return done;
+        }
         let def = self.item_def(stack.item);
         if def.consumable().is_none() && !def.usable() {
             let name = def.name.clone();
@@ -792,6 +800,7 @@ impl World {
                 JobKind::Use { from, index, item } => self.do_use(pi, from, index, item),
                 JobKind::Treat { wound, treatment, item } => self.do_treat(pi, wound, treatment, item),
                 JobKind::Craft { recipe } => self.do_craft(pi, recipe),
+                JobKind::Reload { spare } => self.do_reload(pi, spare),
             };
             if result.is_ok() {
                 let p = &mut self.players[pi];
@@ -808,6 +817,8 @@ impl World {
                 }
             }
             match result {
+                // (A step with more to come, a round of several going in, has nothing to say.)
+                Ok(text) if text.is_empty() => {}
                 Ok(text) => self.note(id, true, text),
                 Err(why) => self.note(id, false, why),
             }
@@ -846,6 +857,8 @@ impl World {
             let mut contents = crate::loot::fill(self.config.seed(), c, &def, &room_type, &self.config.loot, &self.config.items);
             // Food found was made before the world began (#11), some of it a while before.
             self.age_found_food(c, &mut contents);
+            // Guns and magazines found hold what they were left with (#72).
+            self.load_found(c, &mut contents);
             self.opened.insert(c, contents);
         }
         let p = &self.players[pi];
@@ -1207,7 +1220,8 @@ impl World {
     pub fn hold_item(&mut self, id: u32, slot: Slot, item: &str) -> bool {
         let Some(i) = self.item_index(item) else { return false };
         let Some(pi) = self.players.iter().position(|p| p.id == id) else { return false };
-        *self.players[pi].inventory.slot_mut(slot) = Some(ItemStack::one(i));
+        // (A gun comes loaded, #72.)
+        *self.players[pi].inventory.slot_mut(slot) = Some(ItemStack { used: self.fresh_stack(i, 1).used, ..ItemStack::one(i) });
         self.refresh_carry(pi);
         true
     }
