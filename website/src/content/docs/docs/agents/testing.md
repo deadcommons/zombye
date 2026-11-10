@@ -34,8 +34,8 @@ game draws it, with the player's fog of war:
 
 > Take a screenshot with `angle: 2` and `zoom: 13`.
 
-Screenshots take about a second, change nothing in the world, and are about 1 MB each at 1280 × 720: ask for a smaller
-`width` and `height` when detail doesn't matter.
+Screenshots take about a second and change nothing in the world. They are 960 × 540 unless you ask otherwise (about
+half a megabyte each): give `width` and `height` (up to 1920 × 1080) when the detail matters.
 
 ## Run it again, exactly
 

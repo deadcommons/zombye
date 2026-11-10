@@ -246,6 +246,7 @@ The server takes the same world options as the game. Add them after `--mcp`:
 | `--saves DIR` | The folder for the `save` and `load` tools' named saves. |
 | `--data DIR` | Play on [modded](/docs/modding/) data instead of `assets/data`. |
 | `--client PATH` | Where the game binary is, for screenshots (default: next to the server). |
+| `--no-debug-tools` | Leave out the [debug tools](/docs/agents/tools/#debug) (spawning, god mode, skipping time, loading saves): the agent can only do what a player can. |
 
 ## 4. Say hello
 
@@ -258,8 +259,9 @@ It should describe a bedroom in a house, the rooms round it and what's in reach.
 
 `screenshot` returns a PNG as an MCP image, followed by a line of text. Apps that pass images on to the model let it
 see the game: Claude Code, Claude Desktop, Cursor, Gemini CLI and the agent SDKs do. In apps that don't, the model
-gets only the text line, and `observe` is the way it sees. A 1280 × 720 picture is about 1 MB; ask for a smaller
-`width` and `height` (say 800 × 450) to keep conversations light.
+gets only the text line, and `observe` is the way it sees. A picture is 960 × 540 unless you ask otherwise, about
+half a megabyte; 1280 × 720 is about 1 MB. Ask for a bigger `width` and `height` when the detail matters, a smaller
+one (say 640 × 360) to keep conversations light.
 
 ## Web apps: claude.ai, ChatGPT
 
@@ -273,7 +275,8 @@ can connect a local one to ChatGPT. We haven't tested either with Zombye yet.
 
 <Aside type="caution">
 The MCP server includes debug tools (spawn anything, god mode, load saves). Anyone who can reach it controls the whole
-world. Never expose it to the internet without authentication in front of it.
+world. Never expose it to the internet without authentication in front of it. `--no-debug-tools` leaves those tools
+out, but the rest still play the game for whoever calls them.
 </Aside>
 
 ## Troubleshooting

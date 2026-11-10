@@ -10,13 +10,37 @@ meantime: hits, strikes on players, thumps on doors, anything broken, deaths and
 Positions are in metres; one tile is one metre. Facing is in radians, or a compass `direction` where a tool takes one.
 There are 20 ticks to a second.
 
+## What the server tells your app
+
+Besides its name, description and arguments, every tool has a `title` (a short name for people) and `annotations`:
+
+- **Read-only tools** (`readOnlyHint: true`): everything under Looking, the tables (`weapons`, `items`, `loot`,
+  `recipes`), `inventory`, `containers_near`, `health`, `skills` and `saves`. They take no game time and change
+  nothing, so apps that ask before each call can let these through without asking.
+- **Debug tools**: their titles start with `Debug:`, their descriptions with "Debug tool, for setting up tests", and
+  they carry `_meta: {"zombye/debug": true}`. They are the tools under [Debug](#debug), and `load`.
+- Only `save` (it replaces a save of the same name) and `load` (it replaces the world) are marked destructive. No tool
+  reaches outside the game (`openWorldHint: false`).
+
+`stats` has an `outputSchema`, and returns its JSON as `structuredContent` as well as text.
+
+The server also sends a few lines of **instructions** when an app connects, which most apps pass on to the model: you
+are player 1, time only moves when a tool steps it, look with `observe` first, and the debug tools are for testing.
+
+Start the server with `--no-debug-tools` to leave the debug tools out: they aren't listed and can't be called. That
+makes an agent play by the rules, and brings the list down from 47 tools to 37 for apps that cap how many they take.
+
+The server speaks MCP's stateless revision (2026-07-28: no `initialize`, `server/discover` describes the server, each
+request names its version) and the older handshake revisions (2024-11-05 to 2025-11-25) side by side, so both new and
+old apps connect.
+
 ## Looking
 
 | Tool | Arguments | What it does |
 |---|---|---|
 | `observe` | `radius`, `x`, `y` | A text map around player 1 (or a point), then the players, items on the floor, damaged doors and windows, and the nearest zombies with their state. |
-| `screenshot` | `player`, `x`, `y`, `zoom`, `angle`, `width`, `height` | A rendered PNG as the game draws it, with the player's fog of war and the walls between the camera and the player cut away. No HUD. About a second; changes nothing. |
-| `stats` | | JSON: time, players (health, needs, wounds, skills, this run's numbers, cause of death), zombies by state and tier, population, tick timings, the state hash. |
+| `screenshot` | `player`, `x`, `y`, `zoom`, `angle`, `width`, `height` | A rendered PNG as the game draws it, with the player's fog of war and the walls between the camera and the player cut away. No HUD. 960 × 540 unless you give `width` and `height` (up to 1920 × 1080). About a second; changes nothing. |
+| `stats` | | JSON (as text and as structured content): time, players (health, needs, wounds, skills, this run's numbers, cause of death), zombies by state and tier, population, tick timings, the state hash. |
 | `zombie` | `id` | One zombie's tier, health, state, target, memory and timers, and what it can see of each player. |
 | `edge` | `x`, `y` | The four edges of a tile: wall, window, door, arch or fence, and hit points for doors and windows. |
 | `buildings` | | Every building: template, bounds, storeys, ground-floor rooms. Marks the one you wake up in. |
@@ -51,6 +75,7 @@ There are 20 ticks to a second.
 | `interact` | `player` | Open or shut the door or window the player faces, within 1.6 m. |
 | `smash_window` | `player` | Smash the window the player faces. Loud. |
 | `sleep` | `player`, `max_hours` | Lie down (bed, sofa or floor) and sleep until something wakes the player. Says why it woke. |
+| `respawn` | `player` | A dead player gets up in the bedroom, with full health and empty hands. |
 
 ## Fighting
 
@@ -99,7 +124,7 @@ There are 20 ticks to a second.
 
 ## Debug
 
-For testing and modding, not for fair play.
+For testing and modding, not for fair play. `--no-debug-tools` leaves them out.
 
 | Tool | Arguments | What it does |
 |---|---|---|
@@ -111,8 +136,8 @@ For testing and modding, not for fair play.
 | `skip_time` | `hours` | Move the clock on. |
 | `set_needs` | `player`, `hunger`, `thirst`, `tiredness` | Set needs, 0 fine to 1 worst. |
 | `wound` | `player`, `part`, `kind`, `infected` | Give the player a wound. |
-| `respawn` | `player` | A dead player gets up in the bedroom. |
 | `add_player` | `x`, `y` | Another player joins. |
+| `load` | `name`, `force` | See [Saves](#saves): it swaps the whole world, so it goes with the debug tools. |
 
 For scale when making noise: walking is 6 m, running 14, a door 10, a zombie groaning 9, a zombie thumping a door 15,
 breaking glass 22, breaking a door 26.

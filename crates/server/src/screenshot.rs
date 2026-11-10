@@ -25,8 +25,9 @@ use zombye_sim::save::EXTENSION;
 /// Environment variable naming the client binary (after `--client`).
 pub const CLIENT_ENV: &str = "ZOMBYE_CLIENT";
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
-/// Image size: default, smallest and largest (each side).
-pub const DEFAULT_SIZE: [u32; 2] = [1280, 720];
+/// Image size: default, smallest and largest (each side). The default is small on purpose: the PNG goes
+/// to the model as base64, and clients cap how big a tool result may be.
+pub const DEFAULT_SIZE: [u32; 2] = [960, 540];
 pub const MIN_SIDE: u32 = 64;
 pub const MAX_SIZE: [u32; 2] = [1920, 1080];
 /// Metres of world visible vertically: default and range (the game's zoom limits).

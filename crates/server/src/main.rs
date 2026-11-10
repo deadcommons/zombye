@@ -161,7 +161,7 @@ fn main() {
         };
         let timeout = text("--screenshot-timeout").and_then(|v| v.parse::<f64>().ok()).filter(|s| *s > 0.0 && s.is_finite()).map_or(screenshot::DEFAULT_TIMEOUT, Duration::from_secs_f64);
         let renderer = screenshot::Renderer::new(text("--client").map(PathBuf::from), data.clone(), timeout);
-        mcp::serve(world, &mut persist, &renderer);
+        mcp::serve(world, &mut persist, &renderer, mcp::Options { debug_tools: !flag("--no-debug-tools") });
     } else if flag("--bots") {
         let Some(addr) = text("--connect") else {
             eprintln!("--bots N needs --connect HOST[:PORT]");
@@ -198,7 +198,7 @@ fn main() {
              | --host [ADDR[:PORT]] [--name NAME] [--max-players N] [--pvp on|off] [--spawn spread|together] [--password P] [--allow-dev] [--budget KB] \
              | --bots N --connect HOST[:PORT] [--secs S] [--name PREFIX] [--password P] [--bots-hostile]) \
              [--zombies N] [--seed S] [--map-chunks N] [--pvp on] [--data DIR] \
-             [--save PATH] [--load-anyway] [--autosave-mins N] [--saves DIR] [--client PATH] [--screenshot-timeout SECS]"
+             [--save PATH] [--load-anyway] [--autosave-mins N] [--saves DIR] [--client PATH] [--screenshot-timeout SECS] [--no-debug-tools]"
         );
         std::process::exit(2);
     }

@@ -66,6 +66,7 @@ cargo run -p zombye-client --release -- [options]
 | `--saves DIR` | The folder for the `save` and `load` tools. |
 | `--client PATH` | The game binary the `screenshot` tool runs (default: `zombye` next to the server, or `$ZOMBYE_CLIENT`). |
 | `--screenshot-timeout SECS` | How long a screenshot may take (default 60). |
+| `--no-debug-tools` | With `--mcp`: leave out the [debug tools](/docs/agents/tools/#debug). They aren't listed and can't be called. |
 
 ### Benchmarks
 

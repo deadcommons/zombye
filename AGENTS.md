@@ -1373,6 +1373,27 @@ It takes the common options too (`--zombies N --seed S --map-chunks N`, and `--p
 `--client PATH` and `--screenshot-timeout SECS`. Time is paused
 between calls, so an autosave only happens after a call that changed something.
 
+**What clients are told about the tools (#88, `mcp.rs`):** the `TOOLS` table gives every tool a `title` and a kind, and
+`tool_list` turns the kind into MCP annotations on the definitions in `tool_defs`: `Look` tools are `readOnlyHint: true`
+(`observe`, `screenshot`, `stats`, `zombie`, `edge`, `buildings`, `regions`, `inventory`, `health`, `skills`, `weapons`,
+`items`, `loot`, `recipes`, `containers_near`, `saves`; clients skip the approval prompt for them, and a test calls each
+and checks the state hash, the tick and the session's dirty flag don't move), `Play` tools act as a player or step time,
+`save` writes a file, and `Debug` tools (`make_noise`, `set_goal`, `spawn_zombies`, `spawn_item`, `set_needs`, `wound`,
+`add_player`, `pvp`, `dev`, `skip_time`, `load`) get a title starting `Debug:`, a description starting "Debug tool, for setting
+up tests" and `_meta: {"zombye/debug": true}`. Only `save` and `load` are `destructiveHint: true`; every tool is
+`openWorldHint: false`. **A new tool needs a row in `TOOLS`** (a test fails without one). `--no-debug-tools` leaves the
+debug tools out: not listed (37 tools instead of 48), and calling one is the unknown-tool error. `stats` has an
+`outputSchema` and returns its JSON as `structuredContent` beside the text (`output_schema`). The server's `instructions`
+(`mcp::instructions`, under 2,200 bytes: every client puts them in the model's context) say you are player 1, time only
+moves when a tool steps it, look with `observe` first, and the debug tools are for testing; detail belongs in the tools'
+descriptions. **Protocol:** two eras side by side (`mcp::handle`). The handshake revisions: `initialize` answers with the
+client's version if it is one of 2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25, else the newest of them. The stateless
+2026-07-28 revision: `server/discover` returns the supported versions, capabilities, the server's identity and the
+instructions, and any request naming that version in `params._meta["io.modelcontextprotocol/protocolVersion"]` is
+answered with no handshake before it, with `resultType: "complete"`, the server's identity in `_meta` and cache hints
+(`ttlMs`, `cacheScope`) on `tools/list`; a version we don't speak is error -32022 with the list of those we do. An
+unknown tool is the JSON-RPC error -32602 (a tool's own failure is still a result with `isError`).
+
 The agent plays player 1, who wakes up in the bedroom. Tools: `screenshot` (below), `observe` (double-resolution ASCII map
 with walls `-` `|`, shut windows `=` `!`, open windows `o`, broken windows `x`, shut doors `D` (`d`
 when damaged), open doors `/`, broken doors `#`, fences `~`, furniture `f`, street props `^`, containers `c` (not searched yet) and `o` (searched; on a tile, not a wall line), players `P` and zombies by
@@ -1427,7 +1448,7 @@ outdoors, dead or not), the centre if given, tick, time of day and daylight, zoo
 Arguments: `player` (default 1: whose fog of war and cutaways, and the centre), `x` and `y` (centre there instead;
 fog is still the player's and only zombies within 80 m of a player are sent, so far from players you see terrain and
 buildings, darkened, and no zombies), `zoom` (metres visible top to bottom, 8-90, default 26), `angle` (0-3, the four
-fixed camera angles), `width` / `height` (default 1280x720, at most 1920x1080). How: the server saves the world to a
+fixed camera angles), `width` / `height` (default 960x540, at most 1920x1080). How: the server saves the world to a
 temporary file in the system temp folder, runs the game client on it offscreen (`zombye --render-to PNG --load SAVE
 --player ... --size ... --data ...`, see Offscreen above; no window opens), waits up to `--screenshot-timeout SECS`
 (default 60) and deletes both files. It only reads the world: no ticks, no RNG, the state hash is the same before and
@@ -1436,5 +1457,5 @@ else `zombye` next to `zombye-server`: build both (`cargo build --release -p zom
 client, a failed render (the client's last log lines are included) and a timeout are tool errors. It takes about
 0.4-0.7 s on an M-series Mac (default map or 1 km; the first call after a build can take 1.5-2 s). Use `observe` for exact
 positions and states and `screenshot` to check how things look: after changing rendering, meshes or building templates,
-or to see a fight, a siege or the fog at night. Each image is large (about 1 MB of base64 at 1280x720), so ask for a
-smaller `width`/`height` when the detail isn't needed.
+or to see a fight, a siege or the fog at night. Each image is large (about 1 MB of base64 at 1280x720, which is why
+the default is 960x540, #88), so ask for a bigger `width`/`height` only when the detail is needed.

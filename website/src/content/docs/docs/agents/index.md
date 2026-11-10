@@ -32,8 +32,9 @@ it a turn-based game for the agent.
 testing several at once.
 
 **There are debug tools.** Spawning zombies and items, god mode, skipping time and setting needs exist for testing and
-mod work. If you want your agent to play fair, tell it not to use them (the [tutorial](/docs/agents/tutorial/) has a
-prompt for that).
+mod work. They are marked as debug tools, and the server tells the model they are for testing. If you want your agent
+to play fair, start the server with `--no-debug-tools`, or tell it not to use them (the
+[tutorial](/docs/agents/tutorial/) has a prompt for that).
 
 ## Next
 

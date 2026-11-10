@@ -26,8 +26,110 @@ const MAX_MOVE_TICKS: u64 = 20 * 60 * 5; // five minutes of walking per move_pla
 const COMPASS: [(&str, [f32; 2]); 8] =
     [("e", [1.0, 0.0]), ("se", [1.0, 1.0]), ("s", [0.0, 1.0]), ("sw", [-1.0, 1.0]), ("w", [-1.0, 0.0]), ("nw", [-1.0, -1.0]), ("n", [0.0, -1.0]), ("ne", [1.0, -1.0])];
 
-/// Tools that only look: they don't make the world need saving.
-const READ_ONLY: [&str; 18] = ["observe", "zombie", "edge", "weapons", "items", "inventory", "health", "skills", "containers_near", "loot", "recipes", "buildings", "regions", "stats", "saves", "save", "load", "screenshot"];
+/// The modern, stateless protocol revision (no `initialize`: every request says its version in `_meta`,
+/// and `server/discover` describes the server).
+const MODERN_VERSION: &str = "2026-07-28";
+/// The handshake revisions (`initialize`) we answer, newest first.
+const LEGACY_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+/// `_meta` keys of the 2026-07-28 revision.
+const META_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
+const META_SERVER: &str = "io.modelcontextprotocol/serverInfo";
+/// `_meta` key on a tool that is for testing, not for playing.
+const META_DEBUG: &str = "zombye/debug";
+/// JSON-RPC error codes: invalid params (an unknown tool too), and the 2026-07-28 revision's
+/// `UnsupportedProtocolVersionError`.
+const INVALID_PARAMS: i64 = -32602;
+const UNSUPPORTED_VERSION: i64 = -32022;
+/// How long a client may keep `server/discover` and `tools/list` results: neither changes while the
+/// server runs.
+const CACHE_TTL_MS: u64 = 3_600_000;
+
+/// How this server was started.
+#[derive(Clone, Copy, Debug)]
+pub struct Options {
+    /// Offer the debug tools ([`Kind::Debug`]); `--no-debug-tools` leaves them out.
+    pub debug_tools: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options { debug_tools: true }
+    }
+}
+
+/// What a tool does to the world, which is what clients are told in its annotations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    /// Only reads: no time passes, nothing changes (`readOnlyHint`), the world doesn't need saving.
+    Look,
+    /// Plays the game as a player would, or steps time.
+    Play,
+    /// Writes a save file: `save`.
+    Saves,
+    /// For setting up tests: things no player could do (`load`, which swaps the whole world, too).
+    Debug,
+}
+
+/// Every tool: name, title (shown to people by clients), kind. `tool_list` adds these to the
+/// definitions, and a test checks each tool has a row.
+const TOOLS: [(&str, &str, Kind); 48] = [
+    ("observe", "Look around (ASCII map)", Kind::Look),
+    ("screenshot", "Screenshot (rendered picture)", Kind::Look),
+    ("stats", "World and player stats", Kind::Look),
+    ("zombie", "Inspect a zombie", Kind::Look),
+    ("edge", "Inspect a tile's walls, doors and windows", Kind::Look),
+    ("buildings", "List buildings", Kind::Look),
+    ("regions", "Zombie population by region", Kind::Look),
+    ("inventory", "Show inventory", Kind::Look),
+    ("health", "Show health and wounds", Kind::Look),
+    ("skills", "Show skills", Kind::Look),
+    ("weapons", "Weapon table", Kind::Look),
+    ("items", "Item table", Kind::Look),
+    ("loot", "Loot tables", Kind::Look),
+    ("recipes", "Crafting recipes", Kind::Look),
+    ("containers_near", "Containers nearby", Kind::Look),
+    ("saves", "List saves", Kind::Look),
+    ("step_ticks", "Let time pass", Kind::Play),
+    ("move_player", "Move", Kind::Play),
+    ("interact", "Open or close a door or window", Kind::Play),
+    ("smash_window", "Smash a window", Kind::Play),
+    ("attack", "Attack", Kind::Play),
+    ("shove", "Shove", Kind::Play),
+    ("stomp", "Stomp", Kind::Play),
+    ("pick_up", "Pick up", Kind::Play),
+    ("search", "Search a container", Kind::Play),
+    ("take", "Take an item", Kind::Play),
+    ("move_item", "Move an item", Kind::Play),
+    ("drop", "Drop an item", Kind::Play),
+    ("equip", "Equip an item", Kind::Play),
+    ("wear", "Wear an item", Kind::Play),
+    ("unequip", "Take off or put away an item", Kind::Play),
+    ("use", "Eat or drink", Kind::Play),
+    ("sleep", "Sleep", Kind::Play),
+    ("treat", "Treat a wound", Kind::Play),
+    ("craft", "Craft", Kind::Play),
+    ("respawn", "Get up again after dying", Kind::Play),
+    ("save", "Save the world", Kind::Saves),
+    ("make_noise", "Make a noise", Kind::Debug),
+    ("set_goal", "Send zombies to a point", Kind::Debug),
+    ("spawn_zombies", "Spawn zombies", Kind::Debug),
+    ("spawn_item", "Spawn an item", Kind::Debug),
+    ("set_needs", "Set hunger, thirst and tiredness", Kind::Debug),
+    ("wound", "Wound a player", Kind::Debug),
+    ("add_player", "Add a player", Kind::Debug),
+    ("pvp", "Player against player on or off", Kind::Debug),
+    ("dev", "God mode and ignored by zombies", Kind::Debug),
+    ("skip_time", "Skip time", Kind::Debug),
+    ("load", "Load a save (replaces the world)", Kind::Debug),
+];
+
+/// A tool's kind by the name it is called by: `toggle_door` is the old name of `interact`, still taken
+/// though no longer listed.
+fn tool_kind(name: &str) -> Option<Kind> {
+    let name = if name == "toggle_door" { "interact" } else { name };
+    TOOLS.iter().find(|t| t.0 == name).map(|t| t.2)
+}
+
 /// "on" / "off".
 fn on_off(b: bool) -> &'static str {
     if b { "on" } else { "off" }
@@ -44,7 +146,7 @@ pub fn add_agent_player(world: &mut World) {
     }
 }
 
-pub fn serve(mut world: World, persist: &mut Persist, renderer: &Renderer) {
+pub fn serve(mut world: World, persist: &mut Persist, renderer: &Renderer, opts: Options) {
     add_agent_player(&mut world);
     // Read stdin on its own thread, so the main loop can wake up for autosaves and Ctrl-C.
     let (tx, rx) = mpsc::channel::<Option<String>>();
@@ -66,7 +168,7 @@ pub fn serve(mut world: World, persist: &mut Persist, renderer: &Renderer) {
         };
         if let Some(line) = line.filter(|l| !l.trim().is_empty()) {
             let response = match serde_json::from_str::<Value>(&line) {
-                Ok(msg) => handle(&mut world, persist, renderer, &msg),
+                Ok(msg) => handle(&mut world, persist, renderer, opts, &msg),
                 Err(e) => Some(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": e.to_string()}})),
             };
             if let Some(response) = response {
@@ -87,71 +189,218 @@ pub fn serve(mut world: World, persist: &mut Persist, renderer: &Renderer) {
     shutdown::finished();
 }
 
-fn handle(world: &mut World, persist: &mut Persist, renderer: &Renderer, msg: &Value) -> Option<Value> {
+/// What `initialize` and `server/discover` tell the model about playing: short, since every client
+/// puts it in the model's context. The tools' own descriptions have the detail.
+fn instructions(opts: Options) -> String {
+    let debug: Vec<&str> = TOOLS.iter().filter(|t| t.2 == Kind::Debug).map(|t| t.0).collect();
+    let debug = if opts.debug_tools {
+        format!(
+            "Debug tools ({}; marked \"Debug\" in their titles and descriptions) do what no player can. They are for \
+             setting up tests: don't use them while playing unless asked to.",
+            debug.join(", ")
+        )
+    } else {
+        "This server runs without the debug tools: you can only do what a player can.".to_string()
+    };
+    format!(
+        "Zombye is a zombie survival game: a generated town in a forest on a tile map (1 tile = 1 m, x east, y south).\n\
+         - You are player 1 (P on the map), who wakes up in a bedroom. Tools take `player`, default 1.\n\
+         - Time is paused between calls and only moves when a tool steps it: step_ticks (20 ticks = 1 s), move_player, \
+         attack / shove / stomp, the item tools (search, take, use, treat, craft, ...) and sleep. Each says what happened meanwhile.\n\
+         - Look first: call observe (an ASCII map with players, zombies by what they're doing, doors, windows, items and \
+         containers) before acting and again after. The read-only tools (observe, stats, inventory, health, zombie, edge, ...) \
+         take no game time and change nothing. screenshot is a rendered picture, for checking how things look.\n\
+         - Zombies notice you by sight (a cone; shorter at night, when you sneak or stand still) and by sound (running, doors, \
+         breaking glass, fighting), then chase and attack; they can't open doors but batter them and windows down. \
+         Fight (pick_up a weapon; attack, shove, stomp) or get away; you have 100 HP.\n\
+         - To last: search containers for food, drink and bandages, use what you find, treat wounds (health says how), sleep.\n\
+         - {debug}\n\
+         - save keeps the whole world{}; saves lists them.",
+        if opts.debug_tools { " and load puts one back" } else { "" }
+    )
+}
+
+fn server_info() -> Value {
+    json!({"name": "zombye-server", "title": "Zombye", "version": env!("CARGO_PKG_VERSION")})
+}
+
+/// One JSON-RPC message in, its response out (none for a notification). Two eras of MCP are answered side
+/// by side: the handshake revisions (`initialize`, up to 2025-11-25) and the stateless 2026-07-28 one,
+/// where a request names its protocol version in `params._meta` and `server/discover` describes the
+/// server. A request that names 2026-07-28 gets that revision's result fields (`resultType`, the server's
+/// identity in `_meta`, cache hints on lists); any other gets the older shape.
+fn handle(world: &mut World, persist: &mut Persist, renderer: &Renderer, opts: Options, msg: &Value) -> Option<Value> {
     let id = msg.get("id").cloned();
     let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
     // Notifications (no id) get no response.
     let id = id?;
-    let result = match method {
-        "initialize" => Ok(json!({
-            "protocolVersion": msg["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"),
+    let fail = |code: i64, message: String, data: Option<Value>| {
+        let mut error = json!({"code": code, "message": message});
+        if let Some(data) = data {
+            error["data"] = data;
+        }
+        Some(json!({"jsonrpc": "2.0", "id": id, "error": error}))
+    };
+    let supported = || std::iter::once(MODERN_VERSION).chain(LEGACY_VERSIONS).collect::<Vec<_>>();
+    // The version a request names for itself. `initialize` negotiates its own, in its params.
+    let modern = match msg["params"]["_meta"].get(META_VERSION) {
+        None => method == "server/discover",
+        Some(v) if v == MODERN_VERSION => true,
+        Some(v) if v.as_str().is_some_and(|v| LEGACY_VERSIONS.contains(&v)) => false,
+        Some(v) => return fail(UNSUPPORTED_VERSION, "Unsupported protocol version".to_string(), Some(json!({"supported": supported(), "requested": v}))),
+    };
+    let mut result = match method {
+        "initialize" => {
+            // The client's version if we speak it, else our newest handshake revision.
+            let asked = msg["params"]["protocolVersion"].as_str().unwrap_or("");
+            json!({
+                "protocolVersion": LEGACY_VERSIONS.iter().find(|v| **v == asked).unwrap_or(&LEGACY_VERSIONS[0]),
+                "capabilities": {"tools": {}},
+                "serverInfo": server_info(),
+                "instructions": instructions(opts),
+            })
+        }
+        "server/discover" => json!({
+            "supportedVersions": supported(),
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "zombye-server", "version": env!("CARGO_PKG_VERSION")},
-            "instructions": "Zombye headless game server. The world is a tile map (1 tile = 1 m) with a \
-                generated town and forest. Time is paused between calls: use step_ticks to advance (20 ticks = 1 s). \
-                You control player 1 (P on the map), who wakes up in a bedroom: move_player walks, runs or sneaks it. \
-                Zombies notice players by sight (a view cone; shorter at night, against sneaking or standing still) and \
-                sound (footsteps: sneak quiet, run loud; doors; groans of other zombies), then investigate, chase, lunge \
-                and attack. Zombies can't open doors, but they batter shut doors and windows between them and what they're \
-                after until they break (windows go quickly, doors take a while; every thump is a noise that draws more). \
-                interact opens and closes the door or window you face; open or broken windows can be climbed through, slowly; \
-                smash_window breaks one loudly. Fight or flee: you have 100 HP and zombie strikes hurt (more of them on you, \
-                more land). Weapons (w on the map) lie in houses: pick_up equips the nearest one you face. attack swings it \
-                (or punches), shove pushes zombies back and staggers them, stomp finishes one that's down (v on the map). \
-                Each costs endurance; tired swings are slower and weaker; hits from behind crit. weapons lists their numbers. \
-                Use observe to see an ASCII map with walls, doors, windows, items and zombies \
-                (letters show what each is doing), zombie to inspect one, edge for a door's or window's state and hit points, \
-                and buildings to list houses. Zombies far from every player are simulated in less detail (tiers: active \
-                within about 60 m, near out to 150 m, virtual beyond; stats has the counts): only active ones fight, see and \
-                show their state on the map, but every zombie keeps heading where it was going. Loud noises also draw the \
-                far horde in slowly, over minutes (regions shows zombies per region, targets and the pull of loud events). \
-                craft makes things from what you carry (rags from clothes, clean rags to dress wounds with; recipes lists them). \
-                save and load keep and restore the whole world (saves lists them); with --save the server also autosaves. \
-                screenshot returns a rendered PNG of what a player sees (fog of war included), to check visuals; it takes a \
-                second or two and changes nothing."
-        })),
-        "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({"tools": tool_list()})),
+            "instructions": instructions(opts),
+            "ttlMs": CACHE_TTL_MS,
+            "cacheScope": "public",
+        }),
+        "ping" => json!({}),
+        "tools/list" => {
+            let mut list = json!({"tools": tool_list(opts)});
+            if modern {
+                list["ttlMs"] = json!(CACHE_TTL_MS);
+                list["cacheScope"] = json!("public");
+            }
+            list
+        }
         "tools/call" => {
             let name = msg["params"]["name"].as_str().unwrap_or("");
             let args = msg["params"].get("arguments").cloned().unwrap_or(json!({}));
-            if name == "screenshot" {
-                return Some(json!({"jsonrpc": "2.0", "id": id, "result": match screenshot_tool(world, renderer, &args) {
-                    Ok(content) => json!({"content": content}),
-                    Err(text) => json!({"content": [{"type": "text", "text": text}], "isError": true}),
-                }}));
+            // An unknown tool is a protocol error, not a tool result.
+            let Some(kind) = tool_kind(name) else {
+                return fail(INVALID_PARAMS, format!("Unknown tool: {name}"), None);
+            };
+            if !opts.debug_tools && kind == Kind::Debug {
+                return fail(INVALID_PARAMS, format!("Unknown tool: {name} (this server runs without the debug tools: --no-debug-tools)"), None);
             }
             let result = match name {
-                "save" | "load" | "saves" => save_tool(world, persist, name, &args),
-                _ => call_tool(world, name, &args),
+                "screenshot" => screenshot_tool(world, renderer, &args),
+                "save" | "load" | "saves" => save_tool(world, persist, name, &args).map(text_content),
+                _ => call_tool(world, name, &args).map(text_content),
             };
-            if !READ_ONLY.contains(&name) {
+            // save and load say themselves whether the session's file is behind.
+            if matches!(kind, Kind::Play | Kind::Debug) && name != "load" {
                 persist.dirty = true;
             }
-            Ok(match result {
-                Ok(text) => json!({"content": [{"type": "text", "text": text}]}),
-                Err(text) => json!({"content": [{"type": "text", "text": text}], "isError": true}),
-            })
+            match result {
+                Ok(content) => {
+                    // Tools with an output schema: the same JSON as the text, as a value.
+                    let structured = output_schema(name).and_then(|_| serde_json::from_str::<Value>(content[0]["text"].as_str()?).ok());
+                    let mut result = json!({"content": content});
+                    if let Some(value) = structured {
+                        result["structuredContent"] = value;
+                    }
+                    result
+                }
+                Err(text) => json!({"content": text_content(text), "isError": true}),
+            }
         }
-        _ => Err(json!({"code": -32601, "message": format!("unknown method {method}")})),
+        _ => return fail(-32601, format!("unknown method {method}"), None),
     };
-    Some(match result {
-        Ok(r) => json!({"jsonrpc": "2.0", "id": id, "result": r}),
-        Err(e) => json!({"jsonrpc": "2.0", "id": id, "error": e}),
+    if modern {
+        result["resultType"] = json!("complete");
+        result["_meta"] = json!({META_SERVER: server_info()});
+    }
+    Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+}
+
+fn text_content(text: String) -> Value {
+    json!([{"type": "text", "text": text}])
+}
+
+/// The output schema of the tools whose text is JSON (they also return it as `structuredContent`).
+fn output_schema(name: &str) -> Option<Value> {
+    let number = || json!({"type": "number"});
+    let integer = || json!({"type": "integer"});
+    (name == "stats").then(|| {
+        json!({
+            "type": "object",
+            "required": ["map", "seed", "tick", "time_of_day", "daylight", "time_scale", "players", "zombies", "zombie_tiers", "zombie_states", "population", "state_hash"],
+            "properties": {
+                "map": {"type": "array", "items": integer(), "description": "Width and height in tiles (metres)"},
+                "seed": integer(),
+                "tick": {"type": "integer", "description": "20 ticks = 1 s of game time"},
+                "time_of_day": {"type": "string", "description": "The game clock"},
+                "daylight": {"type": "number", "description": "0 night to 1 day"},
+                "time_scale": {"type": "number", "description": "Game hours run this much faster (30 while everyone sleeps)"},
+                "players": {"type": "array", "items": {
+                    "type": "object",
+                    "required": ["id", "pos", "hp", "dead", "weapon", "endurance", "hunger", "thirst", "tiredness", "tags", "run"],
+                    "properties": {
+                        "id": integer(),
+                        "pos": {"type": "array", "items": number(), "description": "x, y in metres"},
+                        "hp": number(),
+                        "dead": {"type": "boolean"},
+                        "weapon": {"type": "string", "description": "Weapon id (see weapons)"},
+                        "endurance": number(),
+                        "hunger": number(),
+                        "thirst": number(),
+                        "tiredness": number(),
+                        "tags": {"type": "array", "items": {"type": "string"}, "description": "Status tags, as the HUD shows them"},
+                        "run": {"type": "object", "description": "This life: time survived, kills, distance, and once dead the death"},
+                        "cause_of_death": {"type": ["string", "null"]}
+                    }
+                }},
+                "zombies": {"type": "integer", "description": "Zombies in the world, corpses included"},
+                "zombie_tiers": {"type": "object", "description": "Counts per simulation tier (active, near, virtual) and the ranges"},
+                "zombie_states": {"type": "object", "description": "Count per AI state", "additionalProperties": integer()},
+                "population": {"type": "object", "description": "Target against alive, attractors, migration and respawn"},
+                "state_hash": {"type": "string", "description": "Same seed and same calls give the same hash"}
+            }
+        })
     })
 }
 
-fn tool_list() -> Value {
+/// The tools on offer, in a fixed order (clients cache the list): each definition from [`tool_defs`] with
+/// its title and annotations from [`TOOLS`]. Nothing here reaches outside the game (`openWorldHint` false).
+/// Debug tools say so in their title, description and `_meta`.
+fn tool_list(opts: Options) -> Value {
+    let Value::Array(defs) = tool_defs() else { unreachable!("tool_defs is a list") };
+    let mut out = Vec::new();
+    for mut def in defs {
+        let name = def["name"].as_str().unwrap_or("").to_string();
+        let Some(&(_, title, kind)) = TOOLS.iter().find(|t| t.0 == name) else { continue };
+        let debug = kind == Kind::Debug;
+        if debug && !opts.debug_tools {
+            continue;
+        }
+        let title = if debug { format!("Debug: {title}") } else { title.to_string() };
+        def["annotations"] = match kind {
+            Kind::Look => json!({"title": title, "readOnlyHint": true, "openWorldHint": false}),
+            // Saving over a name replaces that save, loading replaces the world.
+            _ if name == "save" || name == "load" => json!({"title": title, "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false}),
+            _ => json!({"title": title, "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}),
+        };
+        def["title"] = json!(title);
+        if debug {
+            let text = def["description"].as_str().unwrap_or("");
+            let text = text.strip_prefix("Debug override: ").or(text.strip_prefix("Debug: ")).unwrap_or(text);
+            def["description"] = json!(format!("Debug tool, for setting up tests (no player could do this): {text}"));
+            def["_meta"] = json!({META_DEBUG: true});
+        }
+        if let Some(schema) = output_schema(&name) {
+            def["outputSchema"] = schema;
+        }
+        out.push(def);
+    }
+    Value::Array(out)
+}
+
+/// Each tool's name, description and input schema.
+fn tool_defs() -> Value {
     json!([
         {
             "name": "observe",
@@ -577,8 +826,8 @@ fn tool_list() -> Value {
                 "y": {"type": "number"},
                 "zoom": {"type": "number", "description": "Metres of world visible top to bottom, 8 to 90. Default 26 (the game's default)"},
                 "angle": {"type": "integer", "description": "Camera angle, one of the four fixed ones: 0 (default, looking north-west), 1, 2, 3 (each a quarter turn)"},
-                "width": {"type": "integer", "description": "Pixels, 64 to 1920. Default 1280"},
-                "height": {"type": "integer", "description": "Pixels, 64 to 1080. Default 720"}
+                "width": {"type": "integer", "description": "Pixels, 64 to 1920. Default 960"},
+                "height": {"type": "integer", "description": "Pixels, 64 to 1080. Default 540 (a 960x540 PNG is about half a megabyte of base64: ask for more only when the detail matters)"}
             }}
         },
         {
@@ -2732,7 +2981,7 @@ mod tests {
             dirty: false,
         };
         let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "screenshot", "arguments": {"width": 640, "height": 360, "angle": 1}}});
-        let response = handle(&mut world, &mut persist, &r, &msg).unwrap();
+        let response = handle(&mut world, &mut persist, &r, Options::default(), &msg).unwrap();
         let content = &response["result"]["content"];
         assert_eq!(response["result"].get("isError"), None, "{response}");
         assert_eq!(content[0]["type"], "image");
@@ -2786,10 +3035,289 @@ mod tests {
     fn call(world: &mut World, persist: &mut Persist, name: &str, args: Value) -> (String, bool) {
         let r = Renderer::new(None, content::default_data_dir(), Duration::from_secs(1));
         let msg = json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": name, "arguments": args}});
-        let response = handle(world, persist, &r, &msg).expect("a response");
+        let response = handle(world, persist, &r, Options::default(), &msg).expect("a response");
         assert_eq!(response["id"], 7);
         let result = &response["result"];
         (result["content"][0]["text"].as_str().expect("text content").to_string(), result.get("isError") == Some(&json!(true)))
+    }
+
+    /// One JSON-RPC request through the handler, with `meta` as its `params._meta` (the 2026-07-28 way of
+    /// saying which protocol version it speaks) when given.
+    fn rpc(world: &mut World, persist: &mut Persist, opts: Options, method: &str, mut params: Value, version: Option<&str>) -> Value {
+        let r = Renderer::new(None, content::default_data_dir(), Duration::from_secs(1));
+        if let Some(v) = version {
+            params["_meta"] = json!({META_VERSION: v, "io.modelcontextprotocol/clientInfo": {"name": "test", "version": "1"}, "io.modelcontextprotocol/clientCapabilities": {}});
+        }
+        let msg = json!({"jsonrpc": "2.0", "id": "r1", "method": method, "params": params});
+        let response = handle(world, persist, &r, opts, &msg).expect("a response");
+        assert_eq!(response["id"], "r1");
+        response
+    }
+
+    fn tool<'a>(list: &'a Value, name: &str) -> &'a Value {
+        list.as_array().unwrap().iter().find(|t| t["name"] == name).unwrap_or_else(|| panic!("no tool {name}"))
+    }
+
+    /// #88: every tool has a title and annotations; the tools that only look say so, and the debug
+    /// tools can be told apart.
+    #[test]
+    fn tools_have_titles_and_annotations() {
+        let list = tool_list(Options::default());
+        let tools = list.as_array().unwrap();
+        // Every definition has a row in TOOLS and every row a definition, once.
+        assert_eq!(tools.len(), TOOLS.len());
+        for (name, _, _) in TOOLS {
+            assert_eq!(tools.iter().filter(|t| t["name"] == name).count(), 1, "{name}");
+        }
+        for t in tools {
+            let name = t["name"].as_str().unwrap();
+            assert!(t["title"].as_str().is_some_and(|s| !s.is_empty()), "{name} has no title");
+            assert_eq!(t["annotations"]["title"], t["title"], "{name}");
+            assert!(t["annotations"]["readOnlyHint"].is_boolean(), "{name}");
+            assert_eq!(t["annotations"]["openWorldHint"], false, "{name}");
+            assert_eq!(t["inputSchema"]["type"], "object", "{name}");
+            if t["annotations"]["readOnlyHint"] == false {
+                assert!(t["annotations"]["destructiveHint"].is_boolean(), "{name}");
+            }
+        }
+        for name in ["observe", "stats", "zombie", "edge", "buildings", "regions", "inventory", "health", "skills", "weapons", "items", "loot", "recipes", "containers_near", "saves", "screenshot"] {
+            let t = tool(&list, name);
+            assert_eq!(t["annotations"]["readOnlyHint"], true, "{name}");
+            assert_eq!(t.get("_meta"), None, "{name}");
+        }
+        for name in ["spawn_zombies", "spawn_item", "dev", "wound", "set_needs", "skip_time", "set_goal", "load", "make_noise", "add_player", "pvp"] {
+            let t = tool(&list, name);
+            assert!(t["title"].as_str().unwrap().starts_with("Debug: "), "{name}: {}", t["title"]);
+            assert!(t["description"].as_str().unwrap().starts_with("Debug tool, for setting up tests"), "{name}");
+            assert_eq!(t["_meta"][META_DEBUG], true, "{name}");
+            assert_eq!(t["annotations"]["readOnlyHint"], false, "{name}");
+        }
+        for name in ["step_ticks", "move_player", "attack", "search", "use", "treat", "craft", "sleep", "save"] {
+            let t = tool(&list, name);
+            assert_eq!(t["annotations"]["readOnlyHint"], false, "{name}");
+            assert!(!t["title"].as_str().unwrap().starts_with("Debug"), "{name}");
+            assert_eq!(t.get("_meta"), None, "{name}");
+        }
+        // Only what replaces a save or the world is destructive.
+        let destructive: Vec<&str> = tools.iter().filter(|t| t["annotations"]["destructiveHint"] == true).map(|t| t["name"].as_str().unwrap()).collect();
+        assert_eq!(destructive, ["save", "load"]);
+        // The same list, in the same order, every time: clients cache it.
+        assert_eq!(list, tool_list(Options::default()));
+    }
+
+    /// A tool marked read-only really is: clients skip the approval prompt on that promise.
+    #[test]
+    fn read_only_tools_change_nothing() {
+        let dir = scratch("read-only");
+        let mut world = small_world();
+        let container = beside_a_container(&mut world);
+        let mut persist = session(&world, &dir.0);
+        let zombie = world.zombies.id[0];
+        let pos = world.players[0].state.pos;
+        let hash = world.state_hash();
+        let tick = world.tick;
+        let mut called = 0;
+        for (name, _, kind) in TOOLS {
+            // The screenshot's own test checks it (it needs a game client to run).
+            if kind != Kind::Look || name == "screenshot" {
+                continue;
+            }
+            let args = match name {
+                "zombie" => json!({"id": zombie}),
+                "edge" => json!({"x": pos.x as i32, "y": pos.y as i32}),
+                "containers_near" => json!({"radius": 6}),
+                "loot" => json!({"room": "kitchen", "container": "fridge", "n": 20}),
+                _ => json!({}),
+            };
+            let (text, err) = call(&mut world, &mut persist, name, args);
+            assert!(!err, "{name}: {text}");
+            assert_eq!(world.state_hash(), hash, "{name} changed the world");
+            assert_eq!(world.tick, tick, "{name} stepped time");
+            assert!(!persist.dirty, "{name} made the world need saving");
+            called += 1;
+        }
+        assert_eq!(called, 15);
+        // A tool that isn't read-only does make it need saving.
+        let (_, err) = call(&mut world, &mut persist, "search", json!({"container": container}));
+        assert!(!err && persist.dirty);
+    }
+
+    /// The handshake revisions: `initialize` answers with the client's version when we speak it, else
+    /// our newest, with the instructions; results keep the older shape.
+    #[test]
+    fn the_initialize_handshake_still_works() {
+        let dir = scratch("initialize");
+        let mut world = small_world();
+        let mut persist = session(&world, &dir.0);
+        let opts = Options::default();
+        for (asked, answered) in [("2025-06-18", "2025-06-18"), ("2024-11-05", "2024-11-05"), ("2025-11-25", "2025-11-25"), ("2031-01-01", "2025-11-25"), ("2026-07-28", "2025-11-25")] {
+            let r = rpc(&mut world, &mut persist, opts, "initialize", json!({"protocolVersion": asked, "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}), None);
+            let result = &r["result"];
+            assert_eq!(result["protocolVersion"], answered, "asked {asked}");
+            assert_eq!(result["serverInfo"]["name"], "zombye-server");
+            assert_eq!(result["capabilities"], json!({"tools": {}}));
+            assert!(result["instructions"].as_str().unwrap().contains("You are player 1"));
+            assert_eq!(result.get("resultType"), None);
+        }
+        // A notification gets no answer.
+        let r = Renderer::new(None, content::default_data_dir(), Duration::from_secs(1));
+        assert_eq!(handle(&mut world, &mut persist, &r, opts, &json!({"jsonrpc": "2.0", "method": "notifications/initialized"})), None);
+        let list = rpc(&mut world, &mut persist, opts, "tools/list", json!({}), None);
+        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), TOOLS.len());
+        assert_eq!(list["result"].get("resultType"), None);
+        assert_eq!(list["result"].get("ttlMs"), None);
+        assert_eq!(rpc(&mut world, &mut persist, opts, "ping", json!({}), None)["result"], json!({}));
+        let (text, err) = call(&mut world, &mut persist, "observe", json!({}));
+        assert!(!err && text.contains('P'), "{text}");
+        assert_eq!(rpc(&mut world, &mut persist, opts, "resources/list", json!({}), None)["error"]["code"], -32601);
+    }
+
+    /// The 2026-07-28 revision: no handshake. `server/discover` describes the server, and any request
+    /// that names the version in `_meta` is answered at once, in that revision's shape.
+    #[test]
+    fn stateless_requests_and_discovery() {
+        let dir = scratch("stateless");
+        let mut world = small_world();
+        let mut persist = session(&world, &dir.0);
+        let opts = Options::default();
+        // Discovery, as a client probing a server it knows nothing about would send it.
+        let r = rpc(&mut world, &mut persist, opts, "server/discover", json!({}), Some(MODERN_VERSION));
+        let d = &r["result"];
+        assert_eq!(d["resultType"], "complete");
+        assert_eq!(d["supportedVersions"], json!(["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]));
+        assert_eq!(d["capabilities"], json!({"tools": {}}));
+        assert_eq!(d["_meta"][META_SERVER]["name"], "zombye-server");
+        assert_eq!(d["_meta"][META_SERVER]["version"], env!("CARGO_PKG_VERSION"));
+        assert!(d["ttlMs"].as_u64().is_some_and(|ms| ms > 0));
+        assert_eq!(d["cacheScope"], "public");
+        let text = d["instructions"].as_str().unwrap();
+        for part in ["You are player 1", "only moves when a tool steps it", "Look first: call observe", "Debug tools (", "spawn_zombies", "for setting up tests"] {
+            assert!(text.contains(part), "instructions lack {part:?}:\n{text}");
+        }
+        assert!(text.len() < 2200, "the instructions go into every model's context: {} bytes", text.len());
+        // With no _meta at all it still answers (it can only be a modern client asking).
+        let bare = rpc(&mut world, &mut persist, opts, "server/discover", json!({}), None);
+        assert_eq!(bare["result"]["resultType"], "complete");
+
+        // A first request with no handshake before it.
+        let hash = world.state_hash();
+        let r = rpc(&mut world, &mut persist, opts, "tools/list", json!({}), Some(MODERN_VERSION));
+        let list = &r["result"];
+        assert_eq!(list["resultType"], "complete");
+        assert_eq!(list["tools"].as_array().unwrap().len(), TOOLS.len());
+        assert!(list["ttlMs"].as_u64().is_some());
+        assert_eq!(list["cacheScope"], "public");
+        assert_eq!(list["_meta"][META_SERVER]["name"], "zombye-server");
+        let r = rpc(&mut world, &mut persist, opts, "tools/call", json!({"name": "step_ticks", "arguments": {"n": 5}}), Some(MODERN_VERSION));
+        assert_eq!(r["result"]["resultType"], "complete");
+        assert_eq!(r["result"].get("isError"), None);
+        assert!(r["result"]["content"][0]["text"].as_str().unwrap().starts_with("advanced 5 ticks"), "{r}");
+        assert_ne!(world.state_hash(), hash);
+        // A tool's own failure is a result too.
+        let r = rpc(&mut world, &mut persist, opts, "tools/call", json!({"name": "zombie", "arguments": {"id": 999_999}}), Some(MODERN_VERSION));
+        assert_eq!(r["result"]["isError"], true, "{r}");
+        assert_eq!(r["result"]["resultType"], "complete");
+
+        // A version we don't speak: the modern error, with what we do speak; nothing runs.
+        let tick = world.tick;
+        for method in ["server/discover", "tools/call"] {
+            let r = rpc(&mut world, &mut persist, opts, method, json!({"name": "step_ticks", "arguments": {}}), Some("2027-01-01"));
+            assert_eq!(r.get("result"), None);
+            assert_eq!(r["error"]["code"], -32022, "{r}");
+            assert_eq!(r["error"]["data"]["requested"], "2027-01-01");
+            assert_eq!(r["error"]["data"]["supported"][0], "2026-07-28");
+        }
+        assert_eq!(world.tick, tick);
+        // An unknown tool is a protocol error (invalid params), not a tool result.
+        let r = rpc(&mut world, &mut persist, opts, "tools/call", json!({"name": "teleport", "arguments": {}}), Some(MODERN_VERSION));
+        assert_eq!(r["error"]["code"], -32602, "{r}");
+        assert_eq!(r["error"]["message"], "Unknown tool: teleport");
+        // interact's old name is still a tool (`call` wants a tool result, not a protocol error).
+        call(&mut world, &mut persist, "toggle_door", json!({}));
+    }
+
+    /// `stats` is JSON: it comes as `structuredContent` too, fitting the tool's output schema, with the
+    /// same JSON as text for clients that only read that.
+    #[test]
+    fn stats_is_structured() {
+        let dir = scratch("structured");
+        let mut world = small_world();
+        let mut persist = session(&world, &dir.0);
+        let list = tool_list(Options::default());
+        let schema = &tool(&list, "stats")["outputSchema"];
+        assert_eq!(schema["type"], "object");
+        let r = rpc(&mut world, &mut persist, Options::default(), "tools/call", json!({"name": "stats", "arguments": {}}), None);
+        let result = &r["result"];
+        let value = &result["structuredContent"];
+        assert_eq!(&serde_json::from_str::<Value>(result["content"][0]["text"].as_str().unwrap()).unwrap(), value);
+        // Each required key is there, with the type the schema gives it.
+        fn check(schema: &Value, value: &Value, at: &str) {
+            let fits = |ty: &str| match ty {
+                "object" => value.is_object(),
+                "array" => value.is_array(),
+                "string" => value.is_string(),
+                "integer" => value.is_i64() || value.is_u64(),
+                "number" => value.is_number(),
+                "boolean" => value.is_boolean(),
+                "null" => value.is_null(),
+                other => panic!("{at}: type {other}"),
+            };
+            match &schema["type"] {
+                Value::String(ty) => assert!(fits(ty), "{at} should be {ty}: {value}"),
+                Value::Array(types) => assert!(types.iter().any(|ty| fits(ty.as_str().unwrap())), "{at}: {value}"),
+                _ => {}
+            }
+            for key in schema["required"].as_array().into_iter().flatten() {
+                assert!(value.get(key.as_str().unwrap()).is_some(), "{at} lacks {key}");
+            }
+            for (key, sub) in schema["properties"].as_object().into_iter().flatten() {
+                if let Some(v) = value.get(key) {
+                    check(sub, v, &format!("{at}.{key}"));
+                }
+            }
+            if let Some(items) = schema.get("items") {
+                for (i, v) in value.as_array().into_iter().flatten().enumerate() {
+                    check(items, v, &format!("{at}[{i}]"));
+                }
+            }
+        }
+        check(schema, value, "stats");
+        assert_eq!(value["players"].as_array().unwrap().len(), 1);
+        // Tools that answer in prose have neither.
+        assert_eq!(tool(&list, "observe").get("outputSchema"), None);
+        let r = rpc(&mut world, &mut persist, Options::default(), "tools/call", json!({"name": "observe", "arguments": {}}), None);
+        assert_eq!(r["result"].get("structuredContent"), None);
+    }
+
+    /// `--no-debug-tools`: the debug tools aren't listed, can't be called, and the instructions say so.
+    #[test]
+    fn debug_tools_can_be_left_out() {
+        let dir = scratch("no-debug");
+        let mut world = small_world();
+        let mut persist = session(&world, &dir.0);
+        let opts = Options { debug_tools: false };
+        let list = tool_list(opts);
+        let names: Vec<&str> = list.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+        let debug: Vec<&str> = TOOLS.iter().filter(|t| t.2 == Kind::Debug).map(|t| t.0).collect();
+        assert_eq!(debug.len(), 11);
+        assert_eq!(names.len(), TOOLS.len() - debug.len());
+        for name in &debug {
+            assert!(!names.contains(name), "{name} is listed");
+            let hash = world.state_hash();
+            let r = rpc(&mut world, &mut persist, opts, "tools/call", json!({"name": name, "arguments": {"count": 5, "x": 60, "y": 60, "hours": 2, "god": true}}), None);
+            assert_eq!(r["error"]["code"], -32602, "{name}: {r}");
+            assert!(r["error"]["message"].as_str().unwrap().contains("without the debug tools"), "{r}");
+            assert_eq!(world.state_hash(), hash, "{name} ran");
+        }
+        assert!(!persist.dirty);
+        for name in ["observe", "step_ticks", "move_player", "attack", "save", "saves", "respawn"] {
+            assert!(names.contains(&name), "{name} is missing");
+        }
+        let r = rpc(&mut world, &mut persist, opts, "server/discover", json!({}), Some(MODERN_VERSION));
+        let text = r["result"]["instructions"].as_str().unwrap();
+        assert!(text.contains("runs without the debug tools") && !text.contains("spawn_zombies") && !text.contains("load"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "step_ticks", json!({"n": 3}));
+        assert!(!err, "{text}");
     }
 
     /// Put player 1 on a free tile beside the spawn house's nearest container. Returns its id.
