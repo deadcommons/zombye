@@ -210,6 +210,8 @@ struct CutDoors {
 
 struct CutDoor {
     key: EdgeKey,
+    /// Drawn swung open (the leaf itself is hidden in a cut wall, so the outline says which).
+    open: bool,
     entity: Entity,
     tag: u32,
     seen: bool,
@@ -402,6 +404,18 @@ fn place(key: EdgeKey) -> Transform {
     if key.1 == OwnedEdge::North { at } else { at.with_rotation(Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2)) }
 }
 
+/// A door standing open on this edge (its leaf swung in; a battered-down door has none).
+pub fn stands_open(map: &TileMap, key: EdgeKey) -> bool {
+    let tile = map.tile(key.0);
+    (if key.1 == OwnedEdge::North { tile.north } else { tile.west }) == Edge::DoorOpen
+}
+
+/// Where the outline of a door in a cut wall stands: in its doorway, or, standing open, where
+/// its leaf is (`world_render::door_leaf_at_rest`), so an open door reads as open.
+fn place_cut(key: EdgeKey, open: bool) -> Transform {
+    crate::world_render::door_leaf_at_rest(key, 0.0, open)
+}
+
 pub struct OpeningHintsPlugin;
 
 impl Plugin for OpeningHintsPlugin {
@@ -548,9 +562,16 @@ fn draw_cut_doors(
     }
     for (key, amount) in cutaway.cut_edges() {
         let Some((_, tag)) = cut_door(&map.0, key, amount) else { continue };
+        let open = stands_open(&map.0, key);
         match shown.iter_mut().find(|d| d.key == key) {
             Some(d) => {
                 d.seen = true;
+                if d.open != open {
+                    d.open = open;
+                    if let Ok((mut tf, _, _)) = drawn.get_mut(d.entity) {
+                        *tf = place_cut(key, open);
+                    }
+                }
                 if d.tag != tag {
                     d.tag = tag;
                     if let Ok((_, mut t, _)) = drawn.get_mut(d.entity) {
@@ -562,15 +583,15 @@ fn draw_cut_doors(
                 let entity = match spare.pop() {
                     Some(e) => {
                         if let Ok((mut tf, mut t, mut visibility)) = drawn.get_mut(e) {
-                            *tf = place(key);
+                            *tf = place_cut(key, open);
                             *t = MeshTag::new(tag);
                             *visibility = Visibility::Inherited;
                         }
                         e
                     }
-                    None => commands.spawn((Mesh3d(assets.door.clone()), MeshMaterial3d(assets.in_view.clone()), place(key), MeshTag::new(tag), NotShadowCaster, Visibility::Inherited)).id(),
+                    None => commands.spawn((Mesh3d(assets.door.clone()), MeshMaterial3d(assets.in_view.clone()), place_cut(key, open), MeshTag::new(tag), NotShadowCaster, Visibility::Inherited)).id(),
                 };
-                shown.push(CutDoor { key, entity, tag, seen: true });
+                shown.push(CutDoor { key, open, entity, tag, seen: true });
             }
         }
     }
@@ -723,10 +744,14 @@ mod tests {
         assert_eq!(tag & 255, (CUT_DOOR * 255.0).round() as u32);
         let half = cut_door(&map, door, 0.5).unwrap().1 & 255;
         assert!(half > 0 && half < tag & 255, "{half}");
+        assert!(!stands_open(&map, door));
         for edge in [Edge::DoorOpen, Edge::DoorBroken] {
             map.set_edge(door.0, Side::N, edge);
             let (hint, tag) = cut_door(&map, door, 1.0).unwrap();
             assert_eq!((hint.state, tag >> 8), (State::Open, 0), "{edge:?}");
+            // An open door's outline is drawn where its leaf is; a battered-down one has no leaf.
+            assert_eq!(stands_open(&map, door), edge == Edge::DoorOpen);
+            assert_eq!(place_cut(door, stands_open(&map, door)) == place(door), edge == Edge::DoorBroken);
         }
         // The inner door between the rooms too: any door, not only outside ones.
         assert!(cut_door(&map, (IVec2::new(14, 12), W), 1.0).is_some());

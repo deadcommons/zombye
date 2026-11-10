@@ -1247,10 +1247,10 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   as a straight line. The room's set is worked out again only when the room or the camera's angle changes, the
   body's every frame (a few dozen tiles), the texture is uploaded only on frames where an amount moved, and nothing
   is allocated per frame. **Nothing inside is hidden:** furniture, containers, items and characters never are; a door
-  leaf sinks away with its wall and isn't drawn in a cut one (no stubby leaf; its outline, next, says where it is) and a
+  leaf sinks away with its wall and isn't drawn in a cut one (no stubby leaf; its outline, next, says where it is; **an open door's leaf lies flat against the face of the wall beside its hinge**, 0.11 m along its edge, `world_render::OPEN_LEAF_CLEAR`, the hinge moving as it swings: turned about the corner itself it lay inside that wall and couldn't be seen) and a
   window becomes a low framed lip of glass standing on the stub (`world_render::piece_look`, by `Cutaway::amount`,
   the same eased amount the shader draws the wall by). **A cut door is outlined:** in place of the leaf, the door's
-  outline at its full size in the doors' blue (the same shut, open or battered down), fading in with the
+  outline at its full size in the doors' blue (the same shut, open or battered down; an open door's stands swung open where its leaf is, `world_render::door_leaf_at_rest`), fading in with the
   wall's cut and drawn only where nothing stands in front of it (`opening_hints::cut_door`, `draw_cut_doors`: the
   hints' mesh and shader, a second material with the depth test the usual way round; always on). Cut walls still cast shadows. **Details standing over the
   player from outside** (a porch roof, built a metre at a time; a shop's awning, a metre at a time; a door canopy; a
