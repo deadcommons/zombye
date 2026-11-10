@@ -8,6 +8,14 @@
 //   knives   fast, short, one target, crit-happy (go for the back)
 //   blunt    short ones stagger, long ones sweep a wide arc, hit several and knock down
 //   axes     slow, heavy, tiring; two hits or one good one
+// Wear (zombye_sim::wear): `durability` is the knocks a weapon takes before it breaks, `wear_chance`
+// the chance a swing that hits something adds one, so it lasts about durability / wear_chance such
+// swings (a plank 20, a golf club 36, a knife 50, a bat 80, a pan 100, an axe 140, a hammer 165, a
+// crowbar 400), longer in practised hands. With a quarter of its life left it is battered and
+// hits weaker. Left out: it never wears (bare hands, guns).
+// `close_range`: a target whose body is nearer than this (bodies touch 0.3 m apart; a lone zombie
+// striking you stands 0.4-0.6 m off, a crowd presses them closer) is too close for a full swing
+// of a long weapon and takes 0.6 of the damage: shove them back first.
 // Exactly one weapon must be Unarmed: what a player swings with empty hands (never placed).
 // `skill` is the skill it trains and that makes it better (#46), by how it hits: Bludgeon for blunt
 // weapons, Edged for knives and axes, Brawl for bare hands. Every weapon of a category names the
@@ -56,6 +64,8 @@
         spawn_weight: 3.0,
         found_in: ["kitchen", "dining"],
         length: 0.3,
+        durability: 6,
+        wear_chance: 0.12,
         color: (0.75, 0.78, 0.82),
     ),
     (
@@ -79,6 +89,8 @@
         spawn_weight: 2.5,
         found_in: ["laundry", "hall"],
         length: 0.33,
+        durability: 10,
+        wear_chance: 0.06,
         color: (0.35, 0.22, 0.12),
     ),
     (
@@ -103,6 +115,8 @@
         spawn_weight: 3.0,
         found_in: ["kitchen"],
         length: 0.45,
+        durability: 8,
+        wear_chance: 0.08,
         color: (0.12, 0.12, 0.13),
     ),
     (
@@ -126,6 +140,9 @@
         spawn_weight: 2.0,
         found_in: ["bedroom", "hall"],
         length: 0.85,
+        durability: 8,
+        wear_chance: 0.1,
+        close_range: 0.38,
         color: (0.72, 0.55, 0.32),
     ),
     (
@@ -149,6 +166,9 @@
         spawn_weight: 1.5,
         found_in: ["hall", "living"],
         length: 1.0,
+        durability: 5,
+        wear_chance: 0.14,
+        close_range: 0.4,
         color: (0.6, 0.62, 0.66),
     ),
     (
@@ -172,6 +192,9 @@
         spawn_weight: 3.0,
         found_in: ["laundry", "living"],
         length: 1.1,
+        durability: 4,
+        wear_chance: 0.2,
+        close_range: 0.4,
         color: (0.55, 0.42, 0.26),
     ),
     (
@@ -195,6 +218,8 @@
         spawn_weight: 1.5,
         found_in: ["laundry"],
         length: 0.7,
+        durability: 12,
+        wear_chance: 0.03,
         color: (0.55, 0.1, 0.08),
     ),
     (
@@ -218,6 +243,9 @@
         spawn_weight: 0.8,
         found_in: ["laundry"],
         length: 0.9,
+        durability: 10,
+        wear_chance: 0.07,
+        close_range: 0.38,
         color: (0.75, 0.12, 0.08),
     ),
 

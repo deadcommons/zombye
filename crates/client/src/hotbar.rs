@@ -117,8 +117,8 @@ pub fn press(player: u32, inv: &Inventory, items: &[ItemDef], item: u16) -> Pres
     if def.clothing.is_some() {
         return Press::Send(Intent::Wear { player, index });
     }
-    // A light beside a one-handed weapon rather than instead of it.
-    let hand_one = inv.hand.is_some_and(|h| items.get(h.item as usize).is_some_and(|d| !d.two_handed));
+    // A light beside a weapon one hand can manage rather than instead of it.
+    let hand_one = inv.hand.is_some_and(|h| items.get(h.item as usize).is_some_and(|d| !d.both_hands()));
     if def.light.is_some() && !def.two_handed && hand_one && inv.off_hand.is_none() {
         return Press::Send(Intent::MoveItem { player, from: Place::Carried, index, to: Place::Slot(Slot::OffHand), count: 1 });
     }

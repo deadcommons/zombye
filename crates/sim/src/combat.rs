@@ -131,6 +131,20 @@ pub struct CombatTuning {
     /// most by which a blow about to land survives its player being floored (a trade of blows).
     /// 0.35 s covers a 150 ms ping with the client's own tick and snapshot cushion on top.
     pub lag_comp_max_secs: f32,
+
+    // Weapons in the hand (wear: `crate::wear`).
+    /// A blow at a target nearer than the weapon's `close_range` does this much of its damage.
+    pub cramped_damage: f32,
+    /// A two-handed weapon swung in one hand (its item's `one_hand`, the other hand full) hits
+    /// this much as hard, and takes `one_hand_slow` times as long.
+    pub one_hand_power: f32,
+    pub one_hand_slow: f32,
+    /// With this share of its life or less left a weapon is battered, and does `battered_damage`
+    /// of its damage.
+    pub battered_below: f32,
+    pub battered_damage: f32,
+    /// Each level of the weapon's skill makes a knock this much less likely.
+    pub wear_skill_less: f32,
 }
 
 /// A blow that lands though its player was just staggered, floored or killed by another player's:
@@ -201,6 +215,13 @@ impl Default for CombatTuning {
             player_down_secs: (1.4, 2.0),
 
             lag_comp_max_secs: 0.35,
+
+            cramped_damage: 0.6,
+            one_hand_power: 0.75,
+            one_hand_slow: 1.2,
+            battered_below: 0.25,
+            battered_damage: 0.85,
+            wear_skill_less: 0.08,
         }
     }
 }
@@ -434,9 +455,13 @@ impl World {
         };
         let cost = cost * skill_cost;
         let c = &self.config.combat;
+        // A two-handed weapon swung in one hand, the other being full: weaker and slower.
+        let inv = &self.players[pi].inventory;
+        let one_handed = kind == ActionKind::Swing && inv.off_hand.is_some() && inv.hand.is_some_and(|s| self.item_def(s.item).two_handed);
+        let (grip_power, grip_time) = if one_handed { (c.one_hand_power, c.one_hand_slow) } else { (1.0, 1.0) };
         let p = &mut self.players[pi];
         let (power, slow) = c.fatigue(p.state.endurance);
-        let (power, slow) = (power * arm_power, slow * arm_time * skill_time);
+        let (power, slow) = (power * arm_power * grip_power, slow * arm_time * skill_time * grip_time);
         p.state.endurance = (p.state.endurance - cost).max(0.0);
         if p.state.endurance <= RUN_MIN_ENDURANCE {
             p.state.winded = true;
@@ -548,7 +573,8 @@ impl World {
         let s = match a.kind {
             ActionKind::Swing => {
                 let w = &self.config.weapons[a.weapon as usize];
-                let dm = sk.damage_mult(w.skill(), level(w.skill()));
+                // A battered weapon hits weaker (`crate::wear`).
+                let dm = sk.damage_mult(w.skill(), level(w.skill())) * self.wear_damage_mult(pi);
                 Strike {
                     range: w.range,
                     half_arc: (w.arc_degrees * 0.5).to_radians(),
@@ -655,8 +681,10 @@ impl World {
         }
         found.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
 
+        // Nearer than this to the target's body there's no room for a full swing.
+        let close = if a.kind == ActionKind::Swing { self.config.weapons[a.weapon as usize].close_range } else { 0.0 };
         let mut hits = 0;
-        for &(_, j) in &found {
+        for &(d, j) in &found {
             if hits >= s.max_targets {
                 break;
             }
@@ -668,7 +696,8 @@ impl World {
             if !clear_path(&self.map, origin, at) {
                 continue;
             }
-            let falloff = self.config.combat.multi_hit_falloff.powi(hits as i32);
+            let cramped = d - if victim.is_some() { PLAYER_RADIUS } else { ZOMBIE_RADIUS } < close;
+            let falloff = self.config.combat.multi_hit_falloff.powi(hits as i32) * if cramped { self.config.combat.cramped_damage } else { 1.0 };
             let effect = match victim {
                 Some(k) => self.strike_player(pi, a, &s, origin, forward, k, at, falloff),
                 None => self.strike(player, a, &s, origin, forward, j, at, falloff),
@@ -686,6 +715,7 @@ impl World {
         }
         self.scratch_hits = found;
         self.lag_history = history;
+        self.wear_weapon(pi, a, hits);
         self.action_events.push(ActionEvent { player, kind: a.kind, weapon: a.weapon, hits });
         if s.noise > 0.0 && self.heard.len() < crate::world::MAX_SOUNDS {
             // Heard this tick, like footsteps.
