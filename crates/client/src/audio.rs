@@ -270,7 +270,8 @@ fn bank_dirs(options: &Options) -> (PathBuf, PathBuf) {
     let own = options.data.join("sounds.ron").exists();
     let data = if own { options.data.clone() } else { zombye_net::content::default_data_dir() };
     let audio = data.join("..").join("audio");
-    (crate::release_audio::data_file(crate::release_audio::root(), &data, !own, "sounds.ron"), audio)
+    let game_data = data == zombye_net::content::default_data_dir();
+    (crate::release_audio::data_file(crate::release_audio::root(), &data, game_data, "sounds.ron"), audio)
 }
 
 /// One sound being played: our own source, so we choose the panning, pitch and muffling.

@@ -1175,7 +1175,7 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   Offscreen renders have no audio.
 
 - **Music** (`music.rs`, `assets/data/music.ron`; #78): sparse on purpose, since the town is meant to feel empty.
-  Each `music::Mood` has its files (OGG Vorbis or WAV under `assets/audio/`, through Bevy's own player:
+  Each `music::Mood` has its files (OGG Vorbis under `assets/audio/`, through Bevy's own player:
   no panning or muffling), volume, `gap` (seconds of silence after a Day or Night track) and fades. **When:**
   `Death` once when you die; `Danger`, looped, while zombies are on you (`music::in_danger`: one attacking
   within 6 m or three coming within 12 m, held 8 s); `Dawn` once as the night turns to day; else `Night` or

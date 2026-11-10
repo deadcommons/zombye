@@ -4,8 +4,9 @@
 //! when you die.
 //!
 //! - **What plays** is data: `assets/data/music.ron` gives each [`Mood`] its files (under
-//!   `assets/audio/`, OGG Vorbis or WAV), volume, the silence between tracks and the fades. A mood
-//!   with no files is silent, so the game runs the same before the tracks exist.
+//!   `assets/audio/`, OGG Vorbis only: this Bevy build has no WAV decoder, so a WAV would panic
+//!   when played), volume, the silence between tracks and the fades. A mood with no files is
+//!   silent, so the game runs the same before the tracks exist.
 //! - **When:** dead → `Death` (once); zombies on us (one attacking within 6 m, or three coming within
 //!   12 m; held 8 s after) → `Danger` (loops while it lasts); the night turning to day → `Dawn`
 //!   (once); else `Night` or `Day` by the daylight, a track then a silence of `gap` seconds.
@@ -94,8 +95,8 @@ pub fn parse_music(text: &str) -> Result<MusicData, String> {
         if !(d.gap.0 >= 0.0 && d.gap.1 >= d.gap.0 && d.gap.1 <= 3600.0) {
             return bad("gap must be (min, max) seconds, 0 <= min <= max <= 3600");
         }
-        if d.files.iter().any(|f| f.contains("..") || f.starts_with('/') || f.contains('\\') || !(f.ends_with(".ogg") || f.ends_with(".wav"))) {
-            return bad("files must be .ogg or .wav inside assets/audio");
+        if d.files.iter().any(|f| f.contains("..") || f.starts_with('/') || f.contains('\\') || !f.ends_with(".ogg")) {
+            return bad("files must be .ogg (OGG Vorbis) inside assets/audio");
         }
         if !(d.fade_in > 0.0 && d.fade_in <= 60.0 && d.fade_out > 0.0 && d.fade_out <= 60.0) {
             return bad("fades must be over 0 and at most 60 seconds");
@@ -193,7 +194,8 @@ fn load_music(mut commands: Commands, options: Res<Options>, mut sources: ResMut
     let data = if own { options.data.clone() } else { zombye_net::content::default_data_dir() };
     let audio = data.join("..").join("audio");
     let overlay = crate::release_audio::root();
-    let path = crate::release_audio::data_file(overlay, &data, !own, "music.ron");
+    let game_data = data == zombye_net::content::default_data_dir();
+    let path = crate::release_audio::data_file(overlay, &data, game_data, "music.ron");
     match Music::load(&path, &audio, overlay, &mut sources, options.music) {
         Ok(m) => {
             let n: usize = m.tracks.values().map(Vec::len).sum();
@@ -387,7 +389,8 @@ mod tests {
         assert!(parse_music(&good.replacen("gap: (60.0, 180.0)", "gap: (90.0, 30.0)", 1)).unwrap_err().contains("gap"));
         assert!(parse_music(&good.replacen("volume: 0.7", "volume: 0.7, loud: true", 1)).is_err());
         assert!(parse_music(&good.replacen("files: []", "files: [\"../secret.ogg\"]", 1)).unwrap_err().contains("inside assets/audio"));
-        assert!(parse_music(&good.replacen("files: []", "files: [\"music/a.mp3\"]", 1)).unwrap_err().contains(".ogg or .wav"));
+        assert!(parse_music(&good.replacen("files: []", "files: [\"music/a.mp3\"]", 1)).unwrap_err().contains("must be .ogg"));
+        assert!(parse_music(&good.replacen("files: []", "files: [\"music/a.wav\"]", 1)).unwrap_err().contains("must be .ogg"));
         assert!(parse_music(&good.replacen("files: []", "files: [\"music/night_1.ogg\"]", 1)).is_ok());
     }
 
