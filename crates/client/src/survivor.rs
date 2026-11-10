@@ -640,18 +640,20 @@ fn hold_pose(a: &mut SurvivorAnim, pose: &str, step: f32, now: f32) {
     };
     let act = |a: &mut SurvivorAnim, kind: ActionKind| {
         locomotion(a, 0.0, 0.0, 0.0);
+        // `swing_b`: the how-manyth action that plays a swing's second variant.
+        let n = if name == "swing_b" { (0..).find(|&n| crate::survivor_model::variant(n)).unwrap_or(0) } else { a.begun };
         // Started, landing and recovering so that the clip is at `u` now.
         a.action = Some(if u <= U_HIT {
-            ActionClock { kind, n: a.begun, start: now - u, land: now + (U_HIT - u), end: None }
+            ActionClock { kind, n, start: now - u, land: now + (U_HIT - u), end: None }
         } else {
-            ActionClock { kind, n: a.begun, start: now - 1.0, land: now - (u - U_HIT), end: Some(now + (1.0 - u)) }
+            ActionClock { kind, n, start: now - 1.0, land: now - (u - U_HIT), end: Some(now + (1.0 - u)) }
         });
     };
     match name {
         "walk" => locomotion(a, 0.0, 0.0, 1.0),
         "run" => locomotion(a, 1.0, 0.0, 1.0),
         "sneak" => locomotion(a, 0.0, 1.0, 1.0),
-        "swing" => act(a, ActionKind::Swing),
+        "swing" | "swing_b" => act(a, ActionKind::Swing),
         "shove" => act(a, ActionKind::Shove),
         "stomp" => act(a, ActionKind::Stomp),
         "dead" => {

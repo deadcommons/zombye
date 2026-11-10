@@ -48,7 +48,7 @@ use zombye_net::OutfitView;
 use zombye_sim::items::WeaponCategory;
 use zombye_sim::{BodyPart, ItemDef, WearSlot};
 
-use crate::character::{Body, REGIONS, RigPose, SkinMesh, Wearable, parse_body, parse_wearable};
+use crate::character::{Body, REGIONS, Rig, RigPose, SkinMesh, Wearable, parse_body, parse_wearable};
 use crate::rig::{globals, smooth};
 use crate::server_link::{JoinInfo, ServerLink};
 use crate::survivor::{
@@ -130,7 +130,7 @@ fn action_clips(kind: zombye_sim::ActionKind, category: WeaponCategory, n: u32) 
 
 /// Whether the `n`th action plays a swing's second variant: a hash of `n`, so it doesn't simply
 /// alternate.
-fn variant(n: u32) -> bool {
+pub(crate) fn variant(n: u32) -> bool {
     let mut h = n.wrapping_mul(0x9E37_79B9);
     h ^= h >> 15;
     h = h.wrapping_mul(0x85EB_CA6B);
@@ -141,6 +141,83 @@ fn variant(n: u32) -> bool {
 fn angle_diff(a: f32, b: f32) -> f32 {
     let d = (a - b).rem_euclid(TAU);
     if d > std::f32::consts::PI { d - TAU } else { d }
+}
+
+/// How far the head turns off the chest to keep its eyes on the aim (radians: about 70°), and how
+/// far down or up of level it looks through a blow at something standing.
+const NECK_TURN: f32 = 1.2;
+const LOOK_DOWN: f32 = 0.6;
+const LOOK_UP: f32 = 0.3;
+
+/// The head, and what says which way it and the chest face: for keeping the eyes on the aim. The
+/// library clips the action clips are made from turn the whole body to bring a blow round (a
+/// two-handed chop stands side-on to what it hits), and the head went with it: he swung with his
+/// head looking away (the owner).
+struct Gaze {
+    head: usize,
+    /// The head's parent, if it is the neck: it takes half of every turn.
+    neck: Option<usize>,
+    /// The way the face points, in the head bone's own axes (the rest pose faces +Z).
+    face: Vec3,
+    /// The upper arms (left, right): the chest faces square to the line between them.
+    shoulders: Option<(usize, usize)>,
+}
+
+impl Gaze {
+    fn new(rig: &Rig) -> Option<Self> {
+        let head = rig.find("Head")?;
+        let neck = rig.bones[head].parent.filter(|&p| rig.bones[p].name.eq_ignore_ascii_case("neck"));
+        let rest = rig.globals(&rig.rest());
+        let face = (rest[head].to_scale_rotation_translation().1.inverse() * Vec3::Z).normalize();
+        Some(Self { head, neck, face, shoulders: rig.find("LeftArm").zip(rig.find("RightArm")) })
+    }
+
+    /// Which way the face points in a pose's model-space bones: its heading (radians about the
+    /// vertical, 0 straight ahead, positive to his left) and how far up of level.
+    fn looks(&self, g: &[Mat4]) -> (f32, f32) {
+        let f = (g[self.head].to_scale_rotation_translation().1 * self.face).normalize();
+        (f.x.atan2(f.z), f.y.clamp(-1.0, 1.0).asin())
+    }
+
+    /// The chest's heading (as [`Self::looks`]); straight ahead for a body with no arms to go by.
+    fn chest(&self, g: &[Mat4]) -> f32 {
+        let Some((l, r)) = self.shoulders else { return 0.0 };
+        let fwd = (g[l].w_axis.truncate() - g[r].w_axis.truncate()).cross(Vec3::Y);
+        if fwd.length_squared() < 1e-8 { 0.0 } else { fwd.x.atan2(fwd.z) }
+    }
+
+    /// Turns the head by `q` (a model-space rotation), half of it through the neck.
+    fn turn(&self, rig: &Rig, pose: &mut RigPose, q: Quat) {
+        let g = rig.globals(pose);
+        let rot = |b: usize| g[b].to_scale_rotation_translation().1;
+        let above = |b: usize| rig.bones[b].parent.map_or(Quat::IDENTITY, rot);
+        let head = q * rot(self.head);
+        match self.neck {
+            Some(neck) => {
+                let turned = Quat::IDENTITY.slerp(q, 0.5) * rot(neck);
+                pose.r[neck] = (above(neck).inverse() * turned).normalize();
+                pose.r[self.head] = (turned.inverse() * head).normalize();
+            }
+            None => pose.r[self.head] = (above(self.head).inverse() * head).normalize(),
+        }
+    }
+
+    /// Eyes on the aim, by `w` (0 to 1): the head turned to look straight ahead, as far as the neck
+    /// goes off the chest ([`NECK_TURN`]); `level`, also no further down or up than a blow at
+    /// something standing looks ([`LOOK_DOWN`], [`LOOK_UP`]).
+    fn aim(&self, rig: &Rig, pose: &mut RigPose, w: f32, level: bool) {
+        if w <= 0.0 {
+            return;
+        }
+        let g = rig.globals(pose);
+        let (_, pitch) = self.looks(&g);
+        let chest = self.chest(&g);
+        let yaw = 0f32.clamp(chest - NECK_TURN, chest + NECK_TURN);
+        let pitch = if level { pitch.clamp(-LOOK_DOWN, LOOK_UP) } else { pitch };
+        let now = (g[self.head].to_scale_rotation_translation().1 * self.face).normalize();
+        let want = Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos());
+        self.turn(rig, pose, Quat::IDENTITY.slerp(Quat::from_rotation_arc(now, want), w.min(1.0)));
+    }
 }
 
 /// The body file, when `--survivor` / `ZOMBYE_SURVIVOR` don't name one.
@@ -250,6 +327,8 @@ pub struct SurvivorModel {
     gaits: [Vec<Gait>; 3],
     /// The bones the hips' turn is taken back out of (the spine's first, under the hips).
     spine_base: Vec<usize>,
+    /// The head, for keeping its eyes on the aim through a blow (a rig with a `Head` bone).
+    gaze: Option<Gaze>,
     /// Bones an action takes over (the upper body: everything from the spine up), the arm that holds
     /// a weapon, the bones the flinch turns, all of them.
     upper: Vec<usize>,
@@ -357,20 +436,35 @@ fn gait_of(body: &Body, clip: usize) -> Option<Gait> {
 
 /// Turn the idle so the body faces the way the survivor does: take out the root's mean heading over
 /// the clip (Meshy's idle stands turned 40° off its forward), keeping its sway within it. Not the
-/// moving clips: a diagonal one's hips are turned on purpose.
+/// moving clips: a diagonal one's hips are turned on purpose. Then the head's own mean heading:
+/// Meshy's idle stands with its hips turned and its head looking where it faces, so with the hips
+/// squared the head was left looking 50° to his left, standing and (the idle's first frame being the
+/// reference the grey-box's poses are carried onto) aiming too.
 fn face_forward(body: &mut Body) {
-    let Some(root) = (0..body.rig.len()).find(|&b| body.rig.bones[b].parent.is_none()) else { return };
+    let rig = &body.rig;
+    let Some(root) = (0..rig.len()).find(|&b| rig.bones[b].parent.is_none()) else { return };
+    let gaze = Gaze::new(rig);
+    let mean = |yaws: &mut dyn Iterator<Item = f32>| {
+        let (sin, cos) = yaws.fold((0.0, 0.0), |(s, c), yaw| (s + yaw.sin(), c + yaw.cos()));
+        f32::atan2(sin, cos)
+    };
     for clip in body.clips.iter_mut().filter(|c| c.name.eq_ignore_ascii_case("idle")) {
-        let (sin, cos) = clip.frames.iter().fold((0.0, 0.0), |(s, c), f| {
+        let hips = mean(&mut clip.frames.iter().map(|f| {
             let fwd = f.r[root] * Vec3::Z;
-            let yaw = fwd.x.atan2(fwd.z);
-            (s + yaw.sin(), c + yaw.cos())
-        });
-        let turn = Quat::from_rotation_y(-f32::atan2(sin, cos));
+            fwd.x.atan2(fwd.z)
+        }));
+        let turn = Quat::from_rotation_y(-hips);
         for f in &mut clip.frames {
             f.r[root] = turn * f.r[root];
             let t = turn * Vec3::new(f.t[root].x, 0.0, f.t[root].z);
             (f.t[root].x, f.t[root].z) = (t.x, t.z);
+        }
+        if let Some(gaze) = &gaze {
+            let head = mean(&mut clip.frames.iter().map(|f| gaze.looks(&rig.globals(f)).0));
+            let turn = Quat::from_rotation_y(-head);
+            for f in &mut clip.frames {
+                gaze.turn(rig, f, turn);
+            }
         }
     }
 }
@@ -448,6 +542,16 @@ fn gaits(body: &mut Body) -> [Vec<Gait>; 3] {
     })
 }
 
+/// `clip`'s upper body as it stands over `pose`'s hips: the spine's first bones (`spine_base`) turned
+/// so the chest keeps the heading and lean it has in the clip, whatever the hips under it do. Over the
+/// clip's own hips it changes nothing.
+fn over_hips(clip: &mut RigPose, pose: &RigPose, spine_base: &[usize]) {
+    let root = 0;
+    for &b in spine_base {
+        clip.r[b] = (pose.r[root].inverse() * clip.r[root] * clip.r[b]).normalize();
+    }
+}
+
 /// A flat ring round a survivor's feet.
 fn ring_mesh() -> Mesh {
     let (inner, outer, n) = (0.36, 0.44, 40);
@@ -497,6 +601,7 @@ impl SurvivorModel {
         let reference = idle.map_or_else(|| body.rig.rest(), |i| body.clips[i].frames[0].clone());
         let retarget = Retarget::new(&body, reference);
         let rig = &body.rig;
+        let gaze = Gaze::new(rig);
         let spine_base = (0..rig.len()).filter(|&b| rig.bones[b].parent.is_some_and(|p| rig.bones[p].parent.is_none()) && rig.bones[b].name.to_lowercase().starts_with("spine")).collect();
         let upper: Vec<usize> = {
             let mut up = vec![false; rig.len()];
@@ -546,6 +651,7 @@ impl SurvivorModel {
             actions,
             gaits,
             spine_base,
+            gaze,
             upper,
             right_arm,
             left_arm,
@@ -703,12 +809,19 @@ impl SurvivorModel {
                 let i = action_clips(kind, category, n).iter().find_map(|&c| self.actions[c])?;
                 Some((body.clips[i].sample(u.clamp(0.0, 0.999)), w, kind))
             });
-        if let Some((clip, w, kind)) = clip {
+        if let Some((mut clip, w, kind)) = clip {
             // The body's own clip (made with the blow at `U_HIT`): the whole body standing (a stomp
-            // always), the upper body over the legs' gait when moving.
-            let legs = if kind == zombye_sim::ActionKind::Stomp { 1.0 } else { 1.0 - a.move_w };
+            // always), the upper body over the legs' gait when moving, turned at the waist to face
+            // as it does in the clip (the blow lands on the aim whatever the legs do).
+            let stomp = kind == zombye_sim::ActionKind::Stomp;
+            let legs = if stomp { 1.0 } else { 1.0 - a.move_w };
             pose.blend_bones(&clip, w * legs, Some(&self.all));
+            over_hips(&mut clip, &pose, &self.spine_base);
             pose.blend_bones(&clip, w, Some(&self.upper));
+            // And his eyes on what he hits: a zombie on the aim, or one on the ground at his feet.
+            if let Some(gaze) = &self.gaze {
+                gaze.aim(&body.rig, &mut pose, w, !stomp);
+            }
         } else if let Some((act, whole, w)) = survivor::action_now(a, now, style, armed) {
             pose.blend_bones(&self.retarget.apply(body, &act), w, Some(if whole { &self.all } else { &self.upper }));
         }
@@ -1038,6 +1151,77 @@ mod tests {
         let mut body = parse_body(&std::fs::read(&path).unwrap()).unwrap();
         face_forward(&mut body);
         (body, models.join("wearables"))
+    }
+
+    /// Through every blow the body's own clips play, his eyes are on the aim: straight ahead, or as
+    /// far round as the neck goes while the body winds up, and at the blow itself on what it hits
+    /// (the owner: with a baseball bat "he swings to the side with his head looking away").
+    #[test]
+    fn eyes_stay_on_the_aim_through_a_blow() {
+        let (body, _) = shipped_body();
+        let rig = &body.rig;
+        let gaze = Gaze::new(rig).unwrap();
+        // Standing, he looks where he faces (the idle's sway aside).
+        for f in &body.clip("idle").unwrap().frames {
+            let (idle, _) = gaze.looks(&rig.globals(f));
+            assert!(idle.abs() < 0.2, "the idle looks {:.0}° off the facing", idle.to_degrees());
+        }
+        for name in ACTION_CLIPS {
+            let Some(clip) = body.clip(name) else { continue };
+            let level = !matches!(name, "stomp" | "ground_one" | "ground_two");
+            let mut worst = 0f32;
+            for k in 0..=40 {
+                let mut pose = clip.sample(k as f32 / 40.0 * 0.999);
+                worst = worst.max(gaze.looks(&rig.globals(&pose)).0.abs());
+                gaze.aim(rig, &mut pose, 1.0, level);
+                let g = rig.globals(&pose);
+                let ((yaw, pitch), chest) = (gaze.looks(&g), gaze.chest(&g));
+                let want = 0f32.clamp(chest - NECK_TURN, chest + NECK_TURN);
+                assert!(angle_diff(yaw, want).abs() < 0.03, "{name} at {k}/40: looks {:.0}°, chest {:.0}°", yaw.to_degrees(), chest.to_degrees());
+                assert!(!level || (-LOOK_DOWN - 0.03..LOOK_UP + 0.03).contains(&pitch), "{name} at {k}/40: looks {:.0}° up", pitch.to_degrees());
+            }
+            let mut hit = clip.sample(0.45);
+            let was = gaze.looks(&rig.globals(&hit)).0;
+            gaze.aim(rig, &mut hit, 1.0, level);
+            let now = gaze.looks(&rig.globals(&hit)).0;
+            println!("{name}: at the blow looked {:.0}° off the aim, now {:.0}°; furthest off in the clip was {:.0}°", was.to_degrees(), now.to_degrees(), worst.to_degrees());
+            let most = if name.starts_with("swing_two") { 0.03 } else { 0.35 };
+            assert!(now.abs() < most, "{name}: looks {:.0}° off the aim at the blow", now.to_degrees());
+        }
+    }
+
+    /// A two-handed swing on the move lands on the aim too: the upper body keeps the clip's heading
+    /// over the walk's hips, where the clip's own hips are turned well off it.
+    #[test]
+    fn a_swing_on_the_move_lands_on_the_aim() {
+        let (body, _) = shipped_body();
+        let rig = &body.rig;
+        let (Some(swing), Some(walk)) = (body.clip("swing_two"), body.clip("walk")) else { return };
+        let spine_base: Vec<usize> = (0..rig.len()).filter(|&b| rig.bones[b].parent == Some(0) && rig.bones[b].name.to_lowercase().starts_with("spine")).collect();
+        let mut up = vec![false; rig.len()];
+        for b in 0..rig.len() {
+            up[b] = rig.bones[b].name.to_lowercase().starts_with("spine") || rig.bones[b].parent.is_some_and(|p| up[p]);
+        }
+        let upper: Vec<usize> = (0..rig.len()).filter(|&b| up[b]).collect();
+        let hand = rig.find("RightHand").unwrap();
+        let off = |carried: bool| {
+            let mut pose = walk.sample(0.3);
+            let mut clip = swing.sample(0.45);
+            if carried {
+                over_hips(&mut clip, &pose, &spine_base);
+            }
+            pose.blend_bones(&clip, 1.0, Some(&upper));
+            let g = rig.globals(&pose);
+            let d = g[hand].w_axis.truncate() - g[0].w_axis.truncate();
+            d.x.atan2(d.z).to_degrees()
+        };
+        println!("swing_two over a walk: the hands {:.0}° off the aim, were {:.0}°", off(true), off(false));
+        assert!(off(true).abs() < 15.0, "the blow lands {:.0}° off the aim", off(true));
+        // Standing, on the clip's own hips, nothing changes.
+        let whole = swing.sample(0.45);
+        let mut same = whole.clone();
+        over_hips(&mut same, &whole, &spine_base);
+        assert!(spine_base.iter().all(|&b| same.r[b].angle_between(whole.r[b]) < 1e-3));
     }
 
     /// The shipped body: clips, sockets, regions; the retarget leaves the reference pose as it is for
