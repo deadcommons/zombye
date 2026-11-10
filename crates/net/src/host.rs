@@ -14,9 +14,15 @@
 //! tick, as the client predicted; with none waiting the last one holds, and a queue that grows
 //! (a client running fast, or a burst after a stall) is caught up by skipping to the newest few.
 //!
-//! **Who is who.** A client says its name. A name whose survivor is in the world with nobody
-//! playing it takes that survivor up again (its body stays where it was left, standing; the
-//! logout timer is #68); otherwise it gets a new one. Clients only act as their own player: every
+//! **Who is who.** A client says its name. A name whose survivor nobody is playing takes that
+//! survivor up again; otherwise it gets a new one, at a place round the edge of the town away
+//! from other players and zombies, with the start kit and some seconds of spawn protection.
+//!
+//! **Logging out (#68).** A client that leaves (or is dropped) leaves its survivor lying where it
+//! was, asleep and defenceless, for the server's logout time (shorter somewhere safe), so leaving
+//! can't end a fight; then it is out of the world, kept whole, until its player is back
+//! (`zombye_sim::logout`). Killed meanwhile, it is a dead player whose things lie where it fell.
+//! Clients only act as their own player: every
 //! intent's `player` is overwritten with the sender's, and the dev and debug intents are dropped
 //! unless the server allows them.
 
@@ -30,7 +36,7 @@ use std::time::{Duration, Instant};
 
 use glam::{IVec2, Vec2};
 use zombye_sim::save::ContentPrint;
-use zombye_sim::{PlayerInput, TICK_DT, World};
+use zombye_sim::{TICK_DT, World};
 
 use crate::wire::{self, ClientMsg, DeltaEncoder, Hello, Limits, MapInterest, Rules, ServerMsg, Tunings, Welcome};
 use crate::{EdgeDamage, Intent, Snapshot, apply_intent};
@@ -56,6 +62,16 @@ pub struct HostOptions {
     pub password: String,
     /// `None`: spread with PvP on, together with it off.
     pub spawn: Option<Spawn>,
+    /// Seconds a survivor stays in the world, asleep and defenceless, after its player leaves
+    /// (#68), so leaving can't end a fight; and the shorter time when it was left somewhere safe
+    /// (`World::logout_is_safe`). After that it is out of the world until its player is back.
+    pub logout_secs: f32,
+    pub logout_safe_secs: f32,
+    /// Seconds a new survivor can't be hurt by other players (ended early by attacking; 0: none).
+    /// Only matters with PvP on.
+    pub spawn_protection_secs: f32,
+    /// What a new survivor starts with (`content::load_start_kit`).
+    pub kit: zombye_sim::logout::StartKit,
     /// Bytes a second down to each client (#22): what its snapshots are kept within, zombies
     /// further off getting coarser when a crowd wouldn't fit (see [`wire::Limits`]).
     pub budget: u32,
@@ -76,9 +92,32 @@ const FRAME_BYTES: f32 = 150.0;
 
 impl Default for HostOptions {
     fn default() -> Self {
-        Self { name: "Zombye server".into(), max_players: wire::DEFAULT_PLAYERS, allow_dev: false, password: String::new(), spawn: None, budget: DEFAULT_BUDGET, fair_sight: None }
+        Self {
+            name: "Zombye server".into(),
+            max_players: wire::DEFAULT_PLAYERS,
+            allow_dev: false,
+            password: String::new(),
+            spawn: None,
+            logout_secs: DEFAULT_LOGOUT_SECS,
+            logout_safe_secs: DEFAULT_LOGOUT_SAFE_SECS,
+            spawn_protection_secs: DEFAULT_SPAWN_PROTECTION_SECS,
+            kit: Vec::new(),
+            budget: DEFAULT_BUDGET,
+            fair_sight: None,
+        }
     }
 }
+
+/// The server rules' defaults (#68; ours): a logged-out survivor lies in the world for 30 s, 5 s
+/// when left somewhere safe, and a new one has 10 s of protection from other players.
+pub const DEFAULT_LOGOUT_SECS: f32 = 30.0;
+pub const DEFAULT_LOGOUT_SAFE_SECS: f32 = 5.0;
+pub const DEFAULT_SPAWN_PROTECTION_SECS: f32 = 10.0;
+/// Spread spawns: places tried round the edge of the town, and how far a new survivor starts from
+/// every living player and zombie if anywhere allows it (metres).
+const SPAWN_PLACES: u32 = 64;
+const SPAWN_CLEAR_OF_PLAYERS: f32 = 40.0;
+const SPAWN_CLEAR_OF_ZOMBIES: f32 = 15.0;
 
 /// Frames waiting to be written to one client before it is dropped as too slow (5 s of snapshots).
 const OUT_QUEUE: usize = 100;
@@ -171,6 +210,8 @@ pub struct Host {
     open: Arc<AtomicUsize>,
     /// Every name that has played here and its player.
     names: BTreeMap<String, u32>,
+    /// The next place round the town to try for a new survivor (`new_spawn`).
+    next_spawn: u32,
     pub stats: HostStats,
     /// What happened (joins, leaves, refusals) since the caller last emptied it, to log.
     pub log: Vec<String>,
@@ -184,7 +225,9 @@ impl Host {
         listener.set_nonblocking(true)?;
         options.max_players = options.max_players.clamp(1, wire::MAX_PLAYERS);
         let (events_tx, events) = mpsc::channel();
-        Ok(Self { world, options, listener, events, events_tx, conns: Vec::new(), next_conn: 1, open: Arc::new(AtomicUsize::new(0)), names: BTreeMap::new(), stats: HostStats::default(), log: Vec::new() })
+        // Carry on round the town from where a loaded world's survivors left off.
+        let next_spawn = (world.players.len() + world.parked().len()) as u32;
+        Ok(Self { world, options, listener, events, events_tx, conns: Vec::new(), next_conn: 1, open: Arc::new(AtomicUsize::new(0)), names: BTreeMap::new(), next_spawn, stats: HostStats::default(), log: Vec::new() })
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -192,7 +235,17 @@ impl Host {
     }
 
     pub fn rules(&self) -> Rules {
-        Rules { name: self.options.name.clone(), pvp: self.world.config.combat.pvp, max_players: self.options.max_players as u32, allow_dev: self.options.allow_dev, fair_sight: self.fair_sight() }
+        let o = &self.options;
+        Rules {
+            name: o.name.clone(),
+            pvp: self.world.config.combat.pvp,
+            max_players: o.max_players as u32,
+            allow_dev: o.allow_dev,
+            logout_secs: o.logout_secs,
+            logout_safe_secs: o.logout_safe_secs,
+            spawn_protection_secs: o.spawn_protection_secs,
+            fair_sight: self.fair_sight(),
+        }
     }
 
     /// Are clients told of other players only through their survivor's senses (#66)?
@@ -217,7 +270,21 @@ impl Host {
     /// Names from an earlier session of this world; those whose player the world no longer has are
     /// left out.
     pub fn set_names(&mut self, names: impl IntoIterator<Item = (String, u32)>) {
-        self.names = names.into_iter().filter(|(_, id)| self.world.player(*id).is_some()).collect();
+        self.names = names.into_iter().filter(|(_, id)| self.world.survivor(*id).is_some()).collect();
+    }
+
+    /// The name playing (or that last played) `player`.
+    pub fn name_of(&self, player: u32) -> Option<&str> {
+        self.names.iter().find(|(_, id)| **id == player).map(|(name, _)| name.as_str())
+    }
+
+    /// Survivors standing in the world with nobody playing them (a save from a server that was
+    /// stopped with players on, or from before #68) are logged out: they lie down, and leave the
+    /// world after the logout time, as if their players had just left. Called when a server starts.
+    pub fn log_out_unplayed(&mut self) -> usize {
+        let ids: Vec<u32> = self.world.players.iter().filter(|p| !p.dead && p.away.is_none() && !self.conns.iter().any(|c| c.player == p.id)).map(|p| p.id).collect();
+        let (secs, safe) = (self.options.logout_secs, self.options.logout_safe_secs);
+        ids.iter().filter(|&&id| self.world.player_logout(id, secs, safe).is_some()).count()
     }
 
     /// Intents received so far from the client playing `player` (tests: has what it sent arrived?).
@@ -245,6 +312,11 @@ impl Host {
             self.apply_queue(k);
         }
         self.world.step();
+        for k in 0..self.world.left_world.len() {
+            let id = self.world.left_world[k];
+            let who = self.name_of(id).map_or_else(|| format!("player {id}"), str::to_string);
+            self.log.push(format!("{who}'s survivor left the world (kept for when they are back)"));
+        }
         self.stats.sim_ms = self.world.stats.tick_ms;
         self.send_snapshots();
         self.drop_closed();
@@ -353,10 +425,14 @@ impl Host {
         };
         let addr = stream.peer_addr().map_or_else(|_| "?".into(), |a| a.to_string());
         // Its survivor from before, or a new one.
-        let back = self.names.get(&name).copied().filter(|&p| self.world.player(p).is_some());
+        // Back (#68): one lying logged out gets up, one that had left the world is put back where
+        // it lay, a dead one is still theirs (they see how it ended, and start a new one from there).
+        let back = self.names.get(&name).copied().filter(|&p| self.world.player_return(p));
         let player = back.unwrap_or_else(|| {
-            let at = self.spawn_point(self.world.players.len() as u32);
-            self.world.add_player(at)
+            let at = self.new_spawn();
+            let id = self.world.add_player(at);
+            self.outfit_new(id);
+            id
         });
         self.names.insert(name.clone(), player);
         let c = &self.world.config;
@@ -419,10 +495,59 @@ impl Host {
         Ok(name.to_string())
     }
 
-    /// Where the `k`th survivor of this world starts, or a respawned one gets up.
+    /// A new survivor's start kit and spawn protection (#68).
+    fn outfit_new(&mut self, id: u32) {
+        self.world.give_kit(id, &self.options.kit);
+        if self.world.config.combat.pvp {
+            self.world.protect_player(id, self.options.spawn_protection_secs);
+        }
+    }
+
+    /// Where the next new survivor starts (#68). Spread: the first of the places round the edge of
+    /// the town, counting on from the last one used, with no living player within 40 m and no
+    /// living zombie within 15 m; if nowhere is that clear (more players than the edge of the town
+    /// has room for at 40 m), the place furthest from every player.
+    /// Together: the next place by the first house.
+    pub fn new_spawn(&mut self) -> Vec2 {
+        let first = self.next_spawn;
+        self.next_spawn = self.next_spawn.wrapping_add(1);
+        if self.spawn_mode() == Spawn::Together {
+            return self.spawn_point(first);
+        }
+        let w = &self.world;
+        let z = &w.zombies;
+        let from_players = |at: Vec2| w.players.iter().filter(|p| !p.dead).map(|p| p.state.pos.distance(at)).fold(f32::MAX, f32::min);
+        let zombie_near = |at: Vec2| (0..z.len()).any(|i| z.state[i] != zombye_sim::ZombieState::Dead && z.pos[i].distance(at) < SPAWN_CLEAR_OF_ZOMBIES);
+        let mut best = (f32::MIN, first);
+        for k in (0..SPAWN_PLACES).map(|j| first.wrapping_add(j)) {
+            let at = self.spawn_point(k);
+            let d = from_players(at);
+            let clear = !zombie_near(at);
+            if d >= SPAWN_CLEAR_OF_PLAYERS && clear {
+                best.1 = k;
+                break;
+            }
+            // Nowhere clear yet (a full server): the furthest from players, a place without
+            // zombies counting as 20 m further (never on top of somebody for the sake of it).
+            let score = d.min(1e6) + if clear && d >= SPAWN_CLEAR_OF_ZOMBIES { 20.0 } else { 0.0 };
+            if score > best.0 {
+                best = (score, k);
+            }
+        }
+        self.next_spawn = best.1.wrapping_add(1);
+        self.spawn_point(best.1)
+    }
+
+    fn spawn_mode(&self) -> Spawn {
+        self.options.spawn.unwrap_or(if self.world.config.combat.pvp { Spawn::Spread } else { Spawn::Together })
+    }
+
+    /// The `k`th place a survivor of this world may start: spread, round the edge of the town
+    /// (each a golden angle on from the last, on the nearest open ground outdoors); together,
+    /// outside the house a single player wakes up in.
     pub fn spawn_point(&self, k: u32) -> Vec2 {
         let w = &self.world;
-        let spawn = self.options.spawn.unwrap_or(if w.config.combat.pvp { Spawn::Spread } else { Spawn::Together });
+        let spawn = self.spawn_mode();
         // The golden angle: each next one well away from those before.
         let angle = k as f32 * 2.399_963;
         let aim = match spawn {
@@ -467,9 +592,15 @@ impl Host {
             apply_intent(&mut self.world, &intent);
             if respawn {
                 // A new survivor starts where new ones do, not in the single-player bedroom.
-                let at = self.world.map.resolve_circle(self.spawn_point(player.wrapping_mul(7) + self.stats.ticks as u32), zombye_sim::players::PLAYER_RADIUS);
+                // (The dead one, now alive at the bedroom, mustn't count as a player to keep clear of.)
                 if let Some(p) = self.world.players.iter_mut().find(|p| p.id == player && !p.dead) {
-                    p.state.pos = at;
+                    p.state.pos = Vec2::splat(-1e6);
+                    let at = self.new_spawn();
+                    let at = self.world.map.resolve_circle(at, zombye_sim::players::PLAYER_RADIUS);
+                    if let Some(p) = self.world.players.iter_mut().find(|p| p.id == player) {
+                        p.state.pos = at;
+                    }
+                    self.outfit_new(player);
                 }
             }
         }
@@ -526,12 +657,13 @@ impl Host {
             if !why.is_empty() {
                 let _ = c.out.try_send(wire::encode_frame(&ServerMsg::Bye(why.clone())));
             }
-            // Its survivor stays, standing still.
-            if let Some(seq) = self.world.player(c.player).map(|p| p.last_input_seq) {
-                self.world.set_player_input(c.player, seq.wrapping_add(1), PlayerInput::default());
-            }
+            // Its survivor stays for the logout time, lying asleep where it was left (#68).
+            let stays = match self.world.player_logout(c.player, self.options.logout_secs, self.options.logout_safe_secs) {
+                Some(secs) => format!("; its survivor stays in the world for {secs:.0} s"),
+                None => String::new(),
+            };
             self.stats.left += 1;
-            self.log.push(format!("{} left{} ({} online)", c.name, if why.is_empty() { String::new() } else { format!(": {why}") }, self.conns.len()));
+            self.log.push(format!("{} left{}{stays} ({} online)", c.name, if why.is_empty() { String::new() } else { format!(": {why}") }, self.conns.len()));
         }
     }
 }

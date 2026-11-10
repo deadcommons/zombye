@@ -1,0 +1,14 @@
+// What a new survivor on a multiplayer server starts with (#68): a little, in its pockets.
+// Single-player doesn't use it (you wake up in a bedroom with a house to search).
+// `item` is an id in items/items.ron; `count` defaults to 1 (1 to 20). At most 12 entries, and
+// keep it to what pockets hold (3 litres): the kit is put there without asking whether it fits.
+// A server reads this file from its data folder (`--data DIR`); without it, survivors start with
+// nothing.
+(
+    items: [
+        (item: "water_bottle"),
+        (item: "chocolate_bar"),
+        (item: "rag", count: 2),
+        (item: "matches"),
+    ],
+)

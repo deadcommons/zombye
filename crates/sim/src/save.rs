@@ -54,7 +54,11 @@
 //! player's run stats and cause of death, `crate::run`; optional, so format 4 saves from before
 //! #13 still load, with empty records; written as `RUN2` since PvP added the players killed, and
 //! `RUNS` is still read), then `KNOC` (players reeling or down from another player's blow; only when
-//! there are any), then `LOOK` (what bodies that rise wore, #63; optional too),
+//! there are any), then `AWAY` (#68: which survivors are out of the world, logged out and their
+//! time run out, the seconds left to those still lying in it, and spawn protection left; only when
+//! there is any of it. Survivors out of the world are stored with the players in `WRLD`, so every
+//! check and content change reaches them, and set aside again on load), then `LOOK` (what bodies
+//! that rise wore, #63; optional too),
 //! then `FARC` (how far the far clock is ahead of the tick, #57; optional, only written when it is).
 //! Payloads are
 //! [postcard](https://docs.rs/postcard), and zombies are stored column by column. A file with
@@ -132,6 +136,20 @@ impl From<RunsV1> for crate::run::RunStats {
         let RunsV1 { secs, hours, kills, distance_m, items_taken, searched, wounds, hp_lost, death } = r;
         Self { secs, hours, kills, distance_m, items_taken, searched, wounds, hp_lost, death, player_kills: 0 }
     }
+}
+
+/// Logged-out survivors and spawn protection (#68; optional, only when there is any).
+const AWAY: [u8; 4] = *b"AWAY";
+
+/// The `AWAY` section, by player id.
+#[derive(Default, PartialEq, Serialize, Deserialize)]
+struct AwaySave {
+    /// Out of the world (`World::parked`).
+    parked: Vec<u32>,
+    /// Lying logged out in the world, and the seconds left.
+    leaving: Vec<(u32, f32)>,
+    /// Spawn protection, and the seconds left.
+    protected: Vec<(u32, f32)>,
 }
 
 /// What bodies that rise wore (#63; optional, like `RUNS`).
@@ -612,6 +630,7 @@ impl World {
             hit_events: _,
             player_hit_events: _,
             removed_corpses: _,
+            left_world: _,
             item_notes: _,
             used_items: _,
             woke: _,
@@ -619,6 +638,7 @@ impl World {
             skill_mods_due: _,
             private_dirty: _,
             rise_looks,
+            parked,
             // Scratch, refilled every tick.
             targets: _,
             // Derived from the players and each tick's sounds (#66); nothing reads it back.
@@ -632,6 +652,21 @@ impl World {
             lag_history: _,
             scratch_trades: _,
         } = self;
+        // Survivors out of the world are saved among the players (in id order); `AWAY` says which.
+        let away = AwaySave {
+            parked: parked.iter().map(|p| p.id).collect(),
+            leaving: players.iter().filter_map(|p| p.away.map(|s| (p.id, s))).collect(),
+            protected: players.iter().filter(|p| p.protected > 0.0).map(|p| (p.id, p.protected)).collect(),
+        };
+        let all_players: Vec<Player>;
+        let players = if parked.is_empty() {
+            players
+        } else {
+            let mut all: Vec<Player> = players.iter().chain(parked).cloned().collect();
+            all.sort_by_key(|p| p.id);
+            all_players = all;
+            &all_players
+        };
         let mut w = Writer::new();
         let alive = zombies.state.iter().filter(|s| **s != ZombieState::Dead).count() as u32;
         let info = SaveInfo {
@@ -719,6 +754,9 @@ impl World {
         let knocks: Vec<(u32, crate::players::Knock)> = players.iter().filter_map(|p| p.knock.map(|k| (p.id, k))).collect();
         if !knocks.is_empty() {
             w.section(KNOC, &encode(&knocks));
+        }
+        if away != AwaySave::default() {
+            w.section(AWAY, &encode(&away));
         }
         w.section(LOOK, &encode(rise_looks));
         let nights: Vec<(u32, crate::firstnight::FirstNight)> = players.iter().filter_map(|p| Some((p.id, p.first_night.clone()?))).collect();
@@ -895,6 +933,7 @@ impl World {
         let mut looks: Option<crate::health::RiseLooks> = None;
         let mut knocks: Option<Vec<(u32, crate::players::Knock)>> = None;
         let mut far: Option<u64> = None;
+        let mut away: Option<AwaySave> = None;
         let mut nights: Option<Vec<(u32, crate::firstnight::FirstNight)>> = None;
         loop {
             let (tag, payload) = r.next()?;
@@ -915,6 +954,10 @@ impl World {
                 knocks = Some(decode(KNOC, payload)?);
                 continue;
             }
+            if tag == AWAY && away.is_none() {
+                away = Some(decode(AWAY, payload)?);
+                continue;
+            }
             if tag == LOOK && looks.is_none() {
                 looks = Some(decode(LOOK, payload)?);
                 continue;
@@ -927,7 +970,7 @@ impl World {
                 nights = Some(decode(NITE, payload)?);
                 continue;
             }
-            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || far.is_some() || nights.is_some() {
+            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || far.is_some() || nights.is_some() || away.is_some() {
                 return Err(corrupt(format!("unexpected {} section", tag_name(tag))));
             }
             let block: ZombieBlock = decode(ZOMB, payload)?;
@@ -978,6 +1021,32 @@ impl World {
         // What's in hand and what the load does to movement follow from the inventories.
         w.refresh_all_carry();
         save_check::validate(&w)?;
+        // Logged-out survivors and spawn protection (#68); those out of the world are set aside.
+        let away = away.unwrap_or_default();
+        let limit = crate::logout::MAX_LOGOUT_SECS;
+        for (what, list) in [("logged out", &away.leaving), ("protected", &away.protected)] {
+            for &(id, secs) in list {
+                let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("player {id} is {what}, but isn't in the save")))?;
+                if p.dead || !secs.is_finite() || !(0.0..=limit).contains(&secs) || away.parked.contains(&id) {
+                    return Err(save_check::invalid(format!("player {id}: {what} for {secs} s (dead: {})", p.dead)));
+                }
+                if what == "protected" {
+                    p.protected = secs;
+                } else {
+                    p.away = Some(secs);
+                }
+            }
+        }
+        for (k, &id) in away.parked.iter().enumerate() {
+            let pi = w.players.iter().position(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("player {id} is out of the world, but isn't in the save")))?;
+            let p = &w.players[pi];
+            if p.dead || away.parked[..k].contains(&id) || !p.jobs.is_empty() || p.action.is_some() || p.knock.is_some() {
+                return Err(save_check::invalid(format!("player {id}: out of the world, but dead, busy or listed twice")));
+            }
+            let p = w.players.remove(pi);
+            w.parked.push(p);
+        }
+        w.parked.sort_by_key(|p| p.id);
 
         // Derived state, as the end of a tick leaves it.
         let (states, tier) = (&w.zombies.state, &w.zombies.tier);

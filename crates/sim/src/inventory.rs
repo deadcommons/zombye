@@ -1165,8 +1165,8 @@ impl World {
         id
     }
 
-    /// Debug and tests: put `count` of an item straight into player `id`'s pockets (no room or
-    /// weight checks). Returns whether it did.
+    /// Debug, tests and a server's start kit (`World::give_kit`): put `count` of an item straight
+    /// into player `id`'s pockets (no room or weight checks). Returns whether it did.
     pub fn give_item(&mut self, id: u32, item: &str, count: u16) -> bool {
         let Some(i) = self.item_index(item) else { return false };
         let Some(pi) = self.players.iter().position(|p| p.id == id) else { return false };

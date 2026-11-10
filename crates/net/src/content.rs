@@ -114,6 +114,17 @@ pub fn load_recipes(data_dir: &Path, items: &[ItemDef], weapons: &[WeaponDef]) -
     parse_recipes_for(&text, &all).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// What a new survivor on a server starts with, from `<data>/start_kit.ron` (#68), checked against
+/// the items. A data folder without the file gives nothing.
+pub fn load_start_kit(data_dir: &Path, items: &[ItemDef]) -> Result<zombye_sim::logout::StartKit, String> {
+    let path = data_dir.join("start_kit.ron");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    zombye_sim::logout::parse_start_kit(&text, items).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// Everything a world is made from in `<data>`: building templates, weapons, items, containers,
 /// loot tables, recipes, the population file and the street props, as a config for `seed` (the zombie count as the
 /// population file gives).

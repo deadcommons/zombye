@@ -169,6 +169,8 @@ pub struct PlayerView {
     /// Reeling (`down` false) or on the ground after another player's blow (PvP), with the seconds
     /// left: it doesn't move or act until then (`mods` say so too, so prediction stays exact).
     pub knock: Option<zombye_sim::Knock>,
+    /// Spawn protection (#68): other players' blows pass it by until it runs out or it attacks.
+    pub protected: bool,
 }
 
 /// What a container holds, for whoever has it open.
@@ -403,9 +405,11 @@ impl Snapshot {
                 jobs: p.jobs.len().min(255) as u8,
                 dev: p.dev,
                 health: if p.dead { HealthTags::default() } else { p.health.tags(&world.config.health) },
-                asleep: p.needs.asleep(),
+                // A logged-out survivor (#68) lies asleep to everyone who sees it.
+                asleep: p.needs.asleep() || (p.away.is_some() && !p.dead),
                 aiming: p.input.aim && !p.dead,
                 knock: p.knock,
+                protected: p.protected > 0.0,
             })
             .collect();
         let private = world.take_private_dirty().into_iter().filter_map(|id| PrivateView::of(world, id)).collect();

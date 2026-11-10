@@ -163,6 +163,15 @@ pub struct Player {
     /// player's layout (and the format) stays as it was.
     #[serde(skip)]
     pub knock: Option<Knock>,
+    /// Logged out (#68, `crate::logout`): nobody plays it, and it lies where it was left, asleep and
+    /// defenceless, for this many more seconds before it leaves the world. Saved in a section of
+    /// its own, like `knock`.
+    #[serde(skip)]
+    pub away: Option<f32>,
+    /// Spawn protection (#68): seconds left in which other players' blows pass it by. Starting a
+    /// swing, shove or stomp ends it. Saved with `away`.
+    #[serde(skip)]
+    pub protected: f32,
     /// Developer toggles. Not saved: a loaded world has them off.
     #[serde(skip)]
     pub dev: DevFlags,
@@ -221,6 +230,8 @@ impl Player {
             ready_in: 0.0,
             queued: None,
             knock: None,
+            away: None,
+            protected: 0.0,
             dev: DevFlags::default(),
             run: RunStats::default(),
             first_night: None,

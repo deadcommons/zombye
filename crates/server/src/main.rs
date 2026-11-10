@@ -24,7 +24,11 @@
 //!   from clients), `--budget KB` (kilobytes a second down to each client, default 32, 8 to
 //!   1000: what its snapshots are kept within, #22), `--fair-sight on|off` (#66: a client is told
 //!   of another player only while its survivor sees them, and of one it only hears as a sound;
-//!   default on with PvP, off in co-op). With `--save PATH` the world is loaded or made, autosaved and saved on
+//!   default on with PvP, off in co-op), `--logout-secs S` (default 30: how long a
+//!   survivor lies in the world, asleep, after its player leaves), `--logout-safe-secs S` (default
+//!   5: the same when it was left somewhere safe), `--spawn-protection S` (default 10: seconds a
+//!   new survivor can't be hurt by other players; #68). New survivors start with the data folder's
+//!   `start_kit.ron`. With `--save PATH` the world is loaded or made, autosaved and saved on
 //!   shutdown as below, with whose survivor is whose in `PATH.players`.
 //! - `zombye-server --bots N --connect HOST[:PORT] [--secs S] [--bots-hostile] [--lag MS]` — N headless bot
 //!   clients, each on its own connection, that wander and fight; prints what each costs. `--lag MS`
@@ -205,7 +209,12 @@ fn main() {
             lag_ms: value("--lag").unwrap_or(0).min(2000) as u32,
         });
     } else if flag("--host") {
-        let host_args = match multiplayer::HostArgs::parse(&args) {
+        // The flags, and what new survivors start with (the data folder's `start_kit.ron`, #68).
+        let parsed = multiplayer::HostArgs::parse(&args).and_then(|mut a| {
+            a.options.kit = content::load_start_kit(&data, &config.items)?;
+            Ok(a)
+        });
+        let host_args = match parsed {
             Ok(a) => a,
             Err(e) => {
                 eprintln!("{e}");
@@ -225,6 +234,7 @@ fn main() {
         eprintln!(
             "usage: zombye-server (--mcp | --mcp-http [ADDR[:PORT]] [--mcp-token T | --mcp-no-auth] [--mcp-token-in-url] [--mcp-no-dev] [--mcp-origin ORIGIN] | --bench [--ticks N] [--players N] [--horde N] [--save-bench] \
              | --host [ADDR[:PORT]] [--name NAME] [--max-players N] [--pvp on|off] [--spawn spread|together] [--password P] [--allow-dev] [--budget KB] [--fair-sight on|off] \
+             [--logout-secs S] [--logout-safe-secs S] [--spawn-protection S] \
              | --bots N --connect HOST[:PORT] [--secs S] [--name PREFIX] [--password P] [--bots-hostile] [--lag MS]) \
              [--zombies N] [--seed S] [--map-chunks N] [--pvp on] [--data DIR] \
              [--save PATH] [--load-anyway] [--autosave-mins N] [--saves DIR] [--client PATH] [--screenshot-timeout SECS] [--no-debug-tools]"

@@ -51,7 +51,8 @@ fn until(host: &mut Host, what: &str, mut done: impl FnMut(&mut Host) -> bool) {
     }
 }
 
-/// One tick with everything each client queued delivered first; returns each client's snapshot.
+/// One tick with everything each client queued delivered first; returns each client's snapshot of
+/// that tick (never an earlier one still on its way: sockets deliver when they like).
 fn tick(host: &mut Host, clients: &mut [&mut Remote]) -> Vec<Snapshot> {
     for c in clients.iter_mut() {
         c.flush();
@@ -59,7 +60,8 @@ fn tick(host: &mut Host, clients: &mut [&mut Remote]) -> Vec<Snapshot> {
     let sent: Vec<(u32, u64)> = clients.iter().map(|c| (c.player(), c.intents_sent)).collect();
     until(host, "the clients' intents", |h| sent.iter().all(|&(p, n)| h.received(p) == n));
     host.tick();
-    clients.iter_mut().map(|c| c.wait_snapshot(Duration::from_secs(10)).expect("a snapshot")).collect()
+    let now = host.world.tick;
+    clients.iter_mut().map(|c| c.wait_tick(now, Duration::from_secs(10)).expect("a snapshot")).collect()
 }
 
 fn input(seq: u32, move_dir: Vec2, facing: f32, run: bool, aim: bool) -> (Intent, PlayerInput) {
@@ -225,7 +227,8 @@ fn clients_are_their_own_player_and_the_door_has_rules() {
 #[test]
 fn pvp_is_a_server_rule() {
     for pvp in [true, false] {
-        let mut host = host(0, pvp, HostOptions { spawn: Some(Spawn::Together), ..Default::default() });
+        // (No spawn protection: Bob is hit seconds after joining; see the spawn tests for it.)
+        let mut host = host(0, pvp, HostOptions { spawn: Some(Spawn::Together), spawn_protection_secs: 0.0, ..Default::default() });
         let mut ada = join(&mut host, "ada");
         let mut bob = join(&mut host, "bob");
         assert_eq!(ada.welcome.rules.pvp, pvp);
@@ -248,6 +251,211 @@ fn pvp_is_a_server_rule() {
             assert!(hurt == 0 && bob_hp == 100.0, "co-op: {hurt} hits, hp {bob_hp}");
         }
     }
+}
+
+fn kit() -> zombye_sim::logout::StartKit {
+    let dir = content::default_data_dir();
+    let weapons = content::load_weapons(&dir).unwrap();
+    content::load_start_kit(&dir, &content::load_items(&dir, &weapons).unwrap()).expect("the shipped start kit")
+}
+
+/// New survivors on a PvP server (#68): each at its own place round the edge of the town, well
+/// away from the others and from zombies, with the start kit in its pockets and spawn protection,
+/// which its client is told of.
+#[test]
+fn new_survivors_start_apart_with_a_kit_and_protection() {
+    let kit = kit();
+    assert!(!kit.is_empty());
+    let mut host = host(600, true, HostOptions { kit: kit.clone(), ..Default::default() });
+    let mut clients: Vec<Remote> = (0..8).map(|k| join(&mut host, &format!("s{k}"))).collect();
+    let w = &host.world;
+    let centre = (w.town_min + w.town_max).as_vec2() * 0.5;
+    let half = (w.town_max - w.town_min).as_vec2() * 0.5;
+    for (i, a) in w.players.iter().enumerate() {
+        for b in &w.players[i + 1..] {
+            let d = a.state.pos.distance(b.state.pos);
+            assert!(d >= 40.0, "players {} and {} start {d:.0} m apart", a.id, b.id);
+        }
+        let at = a.state.pos;
+        let nearest = (0..w.zombies.len()).map(|z| w.zombies.pos[z].distance(at)).fold(f32::MAX, f32::min);
+        assert!(nearest >= 15.0, "player {} starts {nearest:.0} m from a zombie", a.id);
+        // The edge of the town: outdoors, out by its bounds, not in the middle.
+        let off = ((at - centre) / half).abs();
+        assert!(w.map.tile(at.floor().as_ivec2()).room == 0 && off.max_element() > 0.6, "player {} starts at {at} ({off})", a.id);
+        for (item, count) in &kit {
+            let i = w.item_index(item).unwrap();
+            let has: u32 = a.inventory.carried.iter().filter(|s| s.item == i).map(|s| s.count as u32).sum();
+            assert_eq!(has, *count as u32, "player {}'s {item}", a.id);
+        }
+        assert_eq!(a.protected, host.options.spawn_protection_secs);
+    }
+    let mut refs: Vec<&mut Remote> = clients.iter_mut().collect();
+    let snaps = tick(&mut host, &mut refs);
+    for (snap, c) in snaps.iter().zip(&clients) {
+        assert!(snap.players.iter().find(|p| p.id == c.player()).unwrap().protected);
+        // Its first snapshot shows it what it carries.
+        let own = snap.private.iter().find(|v| v.player == c.player()).expect("its private view");
+        assert_eq!(own.inventory.carried.len(), kit.len());
+        assert_eq!(c.welcome.rules.spawn_protection_secs, 10.0);
+        assert_eq!((c.welcome.rules.logout_secs, c.welcome.rules.logout_safe_secs), (30.0, 5.0));
+    }
+    // A client that takes a while (building its map) has several snapshots waiting when it first
+    // looks: what only the first one said (its pockets) isn't lost with it.
+    let mut slow = join(&mut host, "slow");
+    for _ in 0..5 {
+        host.tick();
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    let first = slow.wait_tick(host.world.tick, Duration::from_secs(10)).unwrap();
+    assert_eq!(first.tick, host.world.tick, "the newest");
+    assert_eq!(first.private.iter().find(|v| v.player == slow.player()).expect("its private view").inventory.carried.len(), kit.len());
+    // Co-op has nobody to be protected from.
+    let mut coop = self::host(0, false, HostOptions::default());
+    let cy = join(&mut coop, "cy");
+    assert_eq!(coop.world.player(cy.player()).unwrap().protected, 0.0);
+}
+
+/// Logging out (#68): the survivor of a client that leaves lies in the world, asleep, for the
+/// logout time, then is out of it; rejoining takes it back where it lay. Killed while its player
+/// is away, its things can be taken, and its player comes back to a dead survivor and starts a new
+/// one.
+#[test]
+fn a_logged_out_survivor_stays_then_leaves_and_its_player_gets_it_back() {
+    // Fair sight (#66) off: this is about who is in the world, not about which way Ada looks.
+    let options = HostOptions { spawn: Some(Spawn::Together), spawn_protection_secs: 0.0, logout_secs: 3.0, logout_safe_secs: 1.0, kit: kit(), fair_sight: Some(false), ..Default::default() };
+    let mut host = host(0, true, options);
+    let mut ada = join(&mut host, "ada");
+    let bob = join(&mut host, "bob");
+    let bob_id = bob.player();
+    tick(&mut host, &mut [&mut ada]);
+    let bob_before = host.world.player(bob_id).unwrap().clone();
+
+    // Bob leaves with Ada right there: not safe, so the full 3 s. He lies asleep meanwhile.
+    drop(bob);
+    until(&mut host, "Bob to go", |h| {
+        h.tick();
+        h.clients().len() == 1
+    });
+    ada.poll();
+    let left = host.world.player(bob_id).unwrap().away.expect("logged out");
+    assert!(left > 2.0 && left <= 3.0, "{left}");
+    assert!(host.log.iter().any(|l| l.contains("bob left") && l.contains("stays in the world for 3 s")), "{:?}", host.log);
+    let snap = tick(&mut host, &mut [&mut ada]).remove(0);
+    let seen = snap.players.iter().find(|p| p.id == bob_id).expect("Ada still sees him");
+    assert!(seen.asleep && !seen.dead);
+    let mut gone = false;
+    for _ in 0..70 {
+        let snap = tick(&mut host, &mut [&mut ada]).remove(0);
+        gone = !snap.players.iter().any(|p| p.id == bob_id);
+        if gone {
+            break;
+        }
+    }
+    assert!(gone && host.world.player(bob_id).is_none(), "out of the world after the logout time");
+    assert_eq!(host.world.parked().len(), 1);
+    assert!(host.log.iter().any(|l| l.contains("bob's survivor left the world")), "{:?}", host.log);
+    // The world saves and loads with him out of it.
+    let reloaded = World::load(&host.world.save(), &host.world.config.clone()).unwrap();
+    assert_eq!(reloaded.state_hash(), host.world.state_hash());
+
+    // Back: the same survivor where he lay, with what he had.
+    let mut bob = join(&mut host, "bob");
+    assert_eq!(bob.player(), bob_id);
+    let back = host.world.player(bob_id).expect("in the world again");
+    assert_eq!((back.state.pos, &back.inventory, back.hp), (bob_before.state.pos, &bob_before.inventory, bob_before.hp));
+    assert!(host.world.parked().is_empty());
+    let snaps = tick(&mut host, &mut [&mut ada, &mut bob]);
+    assert!(snaps.iter().all(|s| s.players.iter().any(|p| p.id == bob_id && !p.asleep)));
+    assert!(snaps[1].private.iter().any(|v| v.player == bob_id), "his inventory comes with his first snapshot");
+
+    // He leaves again, and this time Ada kills him where he lies and takes his things.
+    host.options.logout_secs = 600.0;
+    drop(bob);
+    until(&mut host, "Bob to go again", |h| {
+        h.tick();
+        h.clients().len() == 1
+    });
+    ada.poll();
+    let at = host.world.player(bob_id).unwrap().state.pos;
+    for p in host.world.players.iter_mut() {
+        if p.id == bob_id {
+            p.hp = 1.0;
+        } else {
+            p.state.pos = at - Vec2::new(0.7, 0.0);
+        }
+    }
+    let count = |w: &World, id: u32| w.player(id).unwrap().inventory.carried.iter().map(|s| s.count as u32).sum::<u32>();
+    let had = count(&host.world, ada.player());
+    let mut seq = 0;
+    for _ in 0..200 {
+        if host.world.player(bob_id).unwrap().dead {
+            break;
+        }
+        seq += 1;
+        ada.send(input(seq, Vec2::ZERO, 0.0, false, true).0);
+        ada.send(Intent::Attack { player: 0 });
+        tick(&mut host, &mut [&mut ada]);
+    }
+    let body = host.world.player(bob_id).unwrap();
+    assert!(body.dead && body.inventory.carried.is_empty(), "killed, and what he carried dropped");
+    let dropped = host.world.items().iter().filter(|it| it.pos.distance(at) < 3.0).count();
+    assert!(dropped >= 1, "his things lie where he fell");
+    for _ in 0..40 {
+        seq += 1;
+        ada.send(input(seq, Vec2::ZERO, 0.0, false, false).0);
+        ada.send(Intent::PickUp { player: 0 });
+        tick(&mut host, &mut [&mut ada]);
+    }
+    assert!(count(&host.world, ada.player()) > had, "Ada looted the body");
+    assert!(matches!(host.world.player(bob_id).unwrap().run.death.as_ref().map(|d| &d.cause), Some(zombye_sim::DeathCause::Survivor { by, .. }) if *by == ada.player()));
+
+    // Bob comes back to a dead survivor (no time brings it back), and starts a new one.
+    let mut bob = join(&mut host, "bob");
+    assert_eq!(bob.player(), bob_id);
+    let snaps = tick(&mut host, &mut [&mut ada, &mut bob]);
+    assert!(snaps[1].players.iter().any(|p| p.id == bob_id && p.dead));
+    bob.send(Intent::Respawn { player: 0 });
+    tick(&mut host, &mut [&mut ada, &mut bob]);
+    let new = host.world.player(bob_id).unwrap();
+    assert!(!new.dead && new.hp == host.world.config.combat.player_hp && !new.inventory.carried.is_empty(), "a new survivor with a kit");
+}
+
+/// Somewhere safe (nobody and nothing about), a logged-out survivor is gone after the shorter
+/// time; and a server started on a world with survivors nobody plays logs them out.
+#[test]
+fn a_safe_logout_is_short_and_unplayed_survivors_are_logged_out() {
+    let mut host = host(0, true, HostOptions { logout_secs: 60.0, logout_safe_secs: 1.0, ..Default::default() });
+    let ada = join(&mut host, "ada");
+    let id = ada.player();
+    drop(ada);
+    until(&mut host, "Ada to go", |h| {
+        h.tick();
+        h.clients().is_empty()
+    });
+    assert!(host.log.iter().any(|l| l.contains("stays in the world for 1 s")), "{:?}", host.log);
+    for _ in 0..25 {
+        host.tick();
+    }
+    assert!(host.world.player(id).is_none() && host.world.parked().len() == 1);
+
+    // A world saved with a survivor standing in it, served again.
+    let mut config = config(0);
+    config.combat.pvp = true;
+    let mut world = World::new(config);
+    let at = world.player_spawn;
+    let left = world.add_player(at);
+    let mut host = Host::bind(world, "127.0.0.1:0", HostOptions { logout_secs: 2.0, logout_safe_secs: 2.0, ..Default::default() }).unwrap();
+    host.set_names([("ada".to_string(), left)]);
+    assert_eq!(host.log_out_unplayed(), 1);
+    assert_eq!(host.log_out_unplayed(), 0);
+    for _ in 0..45 {
+        host.tick();
+    }
+    assert!(host.world.player(left).is_none());
+    // Its player is back: the same survivor, not a new one.
+    let ada = join(&mut host, "ada");
+    assert_eq!(ada.player(), left);
+    assert_eq!(host.world.players.len(), 1);
 }
 
 /// The issue's size: 32 clients on one server, each walking about a town of some 3,000 zombies,

@@ -43,8 +43,9 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// first night, #19: `RunView::first_night`, together with 2's changes. 4: interest management,
 /// #22: zombies carried on between updates, other players packed. 5: fair information, #66:
 /// `SnapshotDelta::heard`, `Rules::fair_sight`. 6: lag-compensated melee, #23: `Intent::Seen`,
-/// `CombatTuning::lag_comp_max_secs` in the tunings.)
-pub const PROTOCOL: u32 = 6;
+/// `CombatTuning::lag_comp_max_secs` in the tunings. 7: #68: `PlayerView::protected`, the logout
+/// and spawn protection times in `Rules`.)
+pub const PROTOCOL: u32 = 7;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -101,6 +102,12 @@ pub struct Rules {
     pub max_players: u32,
     /// Dev toggles and debug intents are taken.
     pub allow_dev: bool,
+    /// Seconds a survivor stays in the world, asleep, after its player leaves (#68), and the
+    /// shorter time when it was left somewhere safe.
+    pub logout_secs: f32,
+    pub logout_safe_secs: f32,
+    /// Seconds a new survivor can't be hurt by other players (0: none).
+    pub spawn_protection_secs: f32,
     /// Fair information (#66): a client is told of another player only while its survivor sees
     /// them (or hears them, as a sound). Off: everyone within the interest radius.
     pub fair_sight: bool,
@@ -315,6 +322,9 @@ impl PlayerPacked {
             asleep: bit(3),
             aiming: bit(4),
             knock: self.knock.map(|(down, tenths)| Knock { down, timer: tenths as f32 / 10.0 }),
+            // Not sent of others (#68): you can't see that a stranger is protected, only our own
+            // player's view (which goes whole) says so.
+            protected: false,
         }
     }
 }

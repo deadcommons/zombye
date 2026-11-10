@@ -591,7 +591,8 @@ impl World {
     /// asleep (and there is one), else 1.
     pub fn time_scale(&self) -> f32 {
         let scale = self.config.needs.sleep_time_scale.clamp(1.0, MAX_TIME_SCALE);
-        let mut living = self.players.iter().filter(|p| !p.dead).peekable();
+        // Logged-out survivors lying in the world (#68) neither hold the night up nor speed it.
+        let mut living = self.players.iter().filter(|p| !p.dead && p.away.is_none()).peekable();
         if scale > 1.0 && living.peek().is_some() && living.all(|p| p.needs.asleep()) { scale } else { 1.0 }
     }
 

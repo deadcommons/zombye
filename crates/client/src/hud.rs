@@ -60,8 +60,9 @@ const END_WINDED: Color = Color::srgb(0.45, 0.5, 0.6);
 const DEV_COLOR: Color = Color::srgb(0.35, 0.9, 1.0);
 
 /// "GOD IGNORED", "GOD", "IGNORED" or "" for the dev toggles on.
-fn dev_tags(dev: zombye_sim::DevFlags) -> String {
-    [(dev.god, "GOD"), (dev.ignored, "IGNORED")].iter().filter(|(on, _)| *on).map(|(_, t)| *t).collect::<Vec<_>>().join(" ")
+/// And "PROTECTED" while our spawn protection lasts (#68: other players can't hurt us yet).
+fn dev_tags(dev: zombye_sim::DevFlags, protected: bool) -> String {
+    [(dev.god, "GOD"), (dev.ignored, "IGNORED"), (protected, "PROTECTED")].iter().filter(|(on, _)| *on).map(|(_, t)| *t).collect::<Vec<_>>().join(" ")
 }
 
 fn font(size: f32) -> TextFont {
@@ -288,7 +289,7 @@ fn update_vitals(
         set(&mut t, format!("kills {}{survivors}   alive {}   walked {}", run.kills, run.played(), run.distance()));
     }
     if let Ok(mut t) = texts.p4().single_mut() {
-        set(&mut t, dev_tags(me.dev));
+        set(&mut t, dev_tags(me.dev, link.curr.players.iter().any(|p| p.id == me.id && p.protected)));
     }
     if let Ok((mut node, mut bg)) = fills.p0().single_mut() {
         let w = Val::Percent((hp / join.combat.player_hp.max(1.0) * 100.0).clamp(0.0, 100.0));
@@ -350,7 +351,7 @@ fn update_hud(
     let place = if room == 0 { "Outdoors".to_string() } else { map.0.rooms[room as usize].name.clone() };
     let s = &me.curr;
     let winded = if s.winded { " (winded)" } else { "" };
-    let dev = match dev_tags(me.dev) {
+    let dev = match dev_tags(me.dev, link.curr.players.iter().any(|p| p.id == me.id && p.protected)) {
         t if t.is_empty() => t,
         t => format!(" | {t}"),
     };

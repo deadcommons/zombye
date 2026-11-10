@@ -310,6 +310,11 @@ pub struct World {
     pub(crate) edge_hp_dirty: BTreeSet<(i32, i32, u8)>,
     /// Corpses removed by the last tick, by id (cleared each tick).
     pub removed_corpses: Vec<u32>,
+    /// Survivors out of the world (#68, `crate::logout`): logged out and their time in the world
+    /// run out. Kept whole, in id order, until their players come back (`World::player_return`).
+    pub(crate) parked: Vec<Player>,
+    /// Players who left the world this tick (their logout time ran out), by id (cleared each tick).
+    pub left_world: Vec<u32>,
     /// Sounds made since the last tick; heard (and moved to `heard`) by the next one.
     pub(crate) sounds: Vec<Sound>,
     /// Sounds zombies listened to in the last tick.
@@ -452,6 +457,8 @@ impl World {
             edge_hp: BTreeMap::new(),
             edge_hp_dirty: BTreeSet::new(),
             removed_corpses: Vec::new(),
+            parked: Vec::new(),
+            left_world: Vec::new(),
             sounds: Vec::new(),
             heard: Vec::new(),
             goal: None,
@@ -607,7 +614,8 @@ impl World {
     /// Sequence numbers start at 1; stale or repeated ones are ignored. Returns whether it was taken.
     pub fn set_player_input(&mut self, id: u32, seq: u32, input: PlayerInput) -> bool {
         let Some(p) = self.players.iter_mut().find(|p| p.id == id) else { return false };
-        if seq <= p.last_input_seq {
+        // A logged-out survivor takes no input (#68).
+        if seq <= p.last_input_seq || p.away.is_some() {
             return false;
         }
         p.input = input.sanitized();
@@ -917,6 +925,7 @@ impl World {
         self.thump_events.clear();
         self.break_events.clear();
         self.removed_corpses.clear();
+        self.left_world.clear();
         self.action_events.clear();
         self.hit_events.clear();
         self.player_hit_events.clear();
@@ -1083,6 +1092,8 @@ impl World {
         self.step_first_night(hours);
         // Fitness or Strength went up: the snapshot carries the new movement.
         self.refresh_skill_mods();
+        // Spawn protection runs down; logged-out survivors whose time is up leave the world (#68).
+        self.step_logout();
         // Last: indices into the zombie columns (the spatial hash) aren't needed after this.
         self.remove_old_corpses();
         let respawned = (far_from..far_from + far_steps).map(|far| self.respawn(far)).sum();
@@ -1273,6 +1284,15 @@ impl World {
                 mix(0x4B4E_0000 | k.down as u32);
                 mix(k.timer.to_bits());
             }
+            // Logged out, or spawn protection (#68): likewise only while set.
+            if let Some(left) = p.away {
+                mix(0x4157_4159);
+                mix(left.to_bits());
+            }
+            if p.protected > 0.0 {
+                mix(0x5052_4F54);
+                mix(p.protected.to_bits());
+            }
             mix(p.hp.to_bits());
             Self::hash_health(&p.health, &mut mix);
             Self::hash_needs(&p.needs, &mut mix);
@@ -1321,6 +1341,14 @@ impl World {
         if self.far_ticks != 0 {
             mix(self.far_ticks as u32 ^ 0xFA2C_0000);
             mix((self.far_ticks >> 32) as u32);
+        }
+        // Survivors out of the world (#68): only when there are any.
+        for p in &self.parked {
+            mix(0x5041_524B);
+            mix(p.id);
+            mix(p.state.pos.x.to_bits());
+            mix(p.state.pos.y.to_bits());
+            mix(p.hp.to_bits());
         }
         h
     }

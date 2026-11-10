@@ -221,11 +221,48 @@ impl Remote {
     }
 
     /// Wait up to `timeout` for the next snapshot (the first comes with the server's next tick).
+    /// If several have arrived (a client that took a while to build its map), the newest, with
+    /// what the earlier ones said once only carried into it: private views (a new survivor's
+    /// pockets and health come with its first snapshot alone), map changes, cracks, hits, notes
+    /// and level-ups.
     pub fn wait_snapshot(&mut self, timeout: Duration) -> Result<Snapshot, String> {
+        self.wait_tick(0, timeout)
+    }
+
+    /// As [`Remote::wait_snapshot`], but waits for the snapshot of server tick `tick` (or a later
+    /// one): earlier ones still on their way are folded into it the same way, not returned.
+    pub fn wait_tick(&mut self, tick: u64, timeout: Duration) -> Result<Snapshot, String> {
         let until = Instant::now() + timeout;
+        let mut arrived: Vec<Snapshot> = Vec::new();
         loop {
             self.flush();
-            if let Some(s) = self.poll().into_iter().next_back() {
+            arrived.append(&mut self.poll());
+            if arrived.last().is_some_and(|s| s.tick >= tick) {
+                let mut s = arrived.pop().expect("checked");
+                // Oldest first, the newest's own last.
+                let mut once = Snapshot::default();
+                for mut part in std::mem::take(&mut arrived).into_iter().chain([Snapshot {
+                    private: std::mem::take(&mut s.private),
+                    edge_changes: std::mem::take(&mut s.edge_changes),
+                    edge_damage: std::mem::take(&mut s.edge_damage),
+                    hits: std::mem::take(&mut s.hits),
+                    item_notes: std::mem::take(&mut s.item_notes),
+                    level_ups: std::mem::take(&mut s.level_ups),
+                    ..Snapshot::default()
+                }]) {
+                    for v in part.private {
+                        match once.private.iter_mut().find(|o| o.player == v.player) {
+                            Some(o) => *o = v,
+                            None => once.private.push(v),
+                        }
+                    }
+                    once.edge_changes.append(&mut part.edge_changes);
+                    once.edge_damage.append(&mut part.edge_damage);
+                    once.hits.append(&mut part.hits);
+                    once.item_notes.append(&mut part.item_notes);
+                    once.level_ups.append(&mut part.level_ups);
+                }
+                (s.private, s.edge_changes, s.edge_damage, s.hits, s.item_notes, s.level_ups) = (once.private, once.edge_changes, once.edge_damage, once.hits, once.item_notes, once.level_ups);
                 return Ok(s);
             }
             if let Some(why) = &self.closed {

@@ -13,7 +13,7 @@ Work is tracked on GitHub, not in the repo: the
 
 | Path | What | Licence |
 |---|---|---|
-| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `awareness.rs`: which players see and heard which, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), lag compensation for it (`lagcomp.rs`: a few ticks of positions, so a remote client's blow lands where it saw the target), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), skills that improve with practice (`skills.rs` + `SkillTuning`), street props placed by the town generator from data (`street_props.rs`), run stats and the cause of death (`run.rs`), the first night's objectives and outcome (`firstnight.rs`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
+| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `awareness.rs`: which players see and heard which, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), lag compensation for it (`lagcomp.rs`: a few ticks of positions, so a remote client's blow lands where it saw the target), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), skills that improve with practice (`skills.rs` + `SkillTuning`), street props placed by the town generator from data (`street_props.rs`), run stats and the cause of death (`run.rs`), the first night's objectives and outcome (`firstnight.rs`), logging out, spawn protection and the start kit on a server (`logout.rs`), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), multiplayer over the network (see Multiplayer: the messages, framing and per-client delta snapshots in `wire.rs`, a client's view cut to what its survivor sees and hears of other players in `visibility.rs`, the server's connections in `host.rs`, a client's in `remote.rs`), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint (`--mcp` on stdio, `mcp.rs`; `--mcp-http` over streamable HTTP for remote agents, `mcp_http.rs`, see Connecting an agent); the multiplayer server (`--host`) and bot clients (`--bots N --connect ADDR`; `multiplayer.rs`, see Multiplayer); `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`). | MIT OR Apache-2.0 |
 | `crates/client` | `zombye` Bevy client: camera, chunk streaming, building meshes (`world_render.rs`; their details, trim, siding lines, porches, chimneys, shopfronts and lit windows, from `meshgen/building_kit.rs`, see Buildings dressed under The world), the outdoors per chunk from the tile map alone (`meshgen/landscape.rs`: lawns, verges, forest floor and litter, road paint at real scale, kerbs, slab joints, driveways, front beds, fences and hedges; `meshgen/curves.rs`: what's drawn round over the tiles, see Curves under The world; `meshgen/trees.rs`: faceted broadleaves, birches, pines, spruces; colours from `assets/data/palette.ron` through `meshgen/palette.rs`), fog of war, cutaways, day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd, or a character baked offline read from a `.zvat` (`zvat.rs`); `survivor.rs` skinned, CPU-posed players; `character.rs` reads a modular character's body and wearable GLBs and `survivor_model.rs` draws players as it, dressed in what they wear), hit feedback (`fx.rs`), lights in the dark (`lights.rs`, see Light and mood), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), street props merged into each chunk's props mesh from the same models (`meshgen/street_props.rs`, see Street props under The world), HUD, the death screen and run summary (`death.rs`), the first night's objectives, hints and morning screen (`firstnight_ui.rs`), the skills panel and level-up line (`skills_ui.rs`), sound (`audio.rs`, see Sound), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
@@ -1288,6 +1288,7 @@ stack's `born`/`used`, 7 crafting: craft jobs and the recipes in the content fin
   optional too, checked by `save_check::check_looks`), `END`. PvP (#65) didn't bump the format either: the run stats
   gained `player_kills`, so they are written as `RUN2` (a `RUNS` section from before still loads, with none), and
   players reeling or down are an optional `KNOC` section (ids and `Knock`s, only when there are any; checked on load).
+  Logged-out survivors and spawn protection (#68) are an optional `AWAY` section the same way (see Multiplayer).
   Per-region zombie sections are there so a later streaming save (#3, #22) can rewrite only what changed. Errors are
   `LoadError` values, never panics: `NotASave`, `Version` (older or newer), `Truncated`, `Corrupt` (bad checksum,
   undecodable or inconsistent data), `ContentChanged`, `MapChanged`, `Invalid` (below). No SQLite: a world is one file
@@ -1318,16 +1319,16 @@ snapshots over the network: `zombye-server --host` serves a world and `zombye --
   behind `host::Host` and `remote::Remote` later. `wire::PROTOCOL` is bumped whenever a message changes shape; a
   server refuses any other. Nothing is encrypted and the join password goes in the clear.
 - **Joining:** `Hello { protocol, name, password }`, answered by `Welcome` (the player id, the name, the server's
-  `Rules`: name, `pvp`, `max_players`, `allow_dev`; the tunings a client predicts and labels with) or `Refused` with the
+  `Rules`: name, `pvp`, `max_players`, `allow_dev`, the logout and spawn protection times; the tunings a client predicts and labels with) or `Refused` with the
   reason (another protocol, wrong password, full, the name already playing). **The map isn't sent:** the client builds
   it from the server's `GenConfig` with its own game data (`remote::build_map`, as loading a save does), checks its
   content fingerprint (`save::ContentPrint`: templates and street props, weapons, items, recipes) and the map hash
   (`World::map_base_hash`) against the server's, and applies the doors and windows changed since
   (`World::map_edits_now`) and every cracked one. Other game data, or another version's generator: refused, saying what
   differs.
-- **Who is who:** a name (at most 24 letters; none given: `survivor-N`). A name whose survivor is in the world with
-  nobody playing it takes that survivor up again; a client that leaves (or is dropped) leaves its survivor standing
-  where it was (the logout timer is #68). With `--save PATH` the names are kept in `PATH.players` (`id<TAB>name` a
+- **Who is who:** a name (at most 24 letters; none given: `survivor-N`). A name whose survivor nobody is playing takes
+  that survivor up again (in the world or out of it, see Logging out), dead or alive: back to a dead one, its player
+  sees how it ended and starts a new one with R. With `--save PATH` the names are kept in `PATH.players` (`id<TAB>name` a
   line), so survivors are their players' again after a restart. Names aren't accounts: anyone who knows a name that
   isn't playing can take its survivor (accounts are with #69).
 - **Clients only act as themselves:** every intent's `player` is overwritten with the sender's (`Intent::player_mut`);
@@ -1341,10 +1342,38 @@ snapshots over the network: `zombye-server --host` serves a world and `zombye --
   `World::hurt_player_by`, a wound on a body part, stagger and knockdown, a `PlayerHurt` or `PlayerShoved` combat
   event, and a death recorded as `DeathCause::Survivor { by, weapon, stomp, part, wound }`: "Killed by a survivor with
   a crowbar: a gash to the torso"). `--spawn spread|together`: where new
-  survivors start (`Host::spawn_point`), by default spread round the edge of the town with PvP on (each a golden angle
-  on from the last) and together outside the house a single player wakes up in with it off. `--max-players N`
-  (default 32, at most 64), `--name`, `--password`, `--budget KB` (below), `--fair-sight on|off` (other players only when your survivor sees
-  or hears them, #66, below; on with PvP unless said otherwise).
+  survivors start, by default spread round the edge of the town with PvP on and together outside the house a single
+  player wakes up in with it off. `--max-players N` (default 32, at most 64), `--name`, `--password`, `--budget KB`,
+  `--logout-secs S`, `--logout-safe-secs S`, `--spawn-protection S` (below), `--fair-sight on|off` (other players only
+  when your survivor sees or hears them, #66, below; on with PvP unless said otherwise).
+- **New survivors (#68; `Host::new_spawn`, `outfit_new`):** spread, the places are 64 points round the town's bounds,
+  6 m out, each a golden angle on from the last and moved to the nearest open ground outdoors (`Host::spawn_point(k)`);
+  a new survivor (a first join, or R after dying) gets the first, counting on from the last one used, with no living
+  player within 40 m and no living zombie within 15 m, else (more players than the edge has room for) the one furthest
+  from every player. It starts with the **start kit**, `assets/data/start_kit.ron` (`(items: [(item: "water_bottle"),
+  (item: "rag", count: 2), ...])`: item ids and counts, at most 12 entries, checked against `items.ron` by
+  `logout::parse_start_kit`, loaded by `net::content::load_start_kit` into `HostOptions::kit`; a data folder without
+  the file: nothing; shipped: a bottle of water, a chocolate bar, two rags, matches), put straight into its pockets
+  (`World::give_kit`), and with PvP on **spawn protection**: `--spawn-protection S` seconds (default 10, 0 none;
+  `World::protect_player`, `Player::protected`) in which other players' swings, shoves and stomps pass it by
+  (`combat::land` leaves it out of the targets; zombies are not held off), ended at once by starting a swing, shove or
+  stomp of its own (`begin_action`). `PlayerView::protected` says so, and the HUD shows a cyan PROTECTED tag.
+  **Single-player uses none of it**: you wake in the bedroom with empty pockets, as before.
+- **Logging out (#68; `sim::logout`):** a client that leaves or is dropped leaves its survivor in the world
+  (`World::player_logout`, `Player::away`): lying asleep where it was (`PlayerView::asleep`), taking no input,
+  defenceless, for `--logout-secs S` (default 30), so leaving can't end a fight: zombies see, hear and strike it,
+  players can hit, kill and loot it. Left somewhere safe (`World::logout_is_safe`: no living zombie within 25 m or
+  after it, no other playing survivor within 40 m, not reeling from a blow) it is `--logout-safe-secs S` (default 5).
+  When the time runs out it is taken out of the world whole (`World::parked`, in id order; `World::left_world` names
+  it that tick): zombies lose it, snapshots stop listing it. Its player back (`World::player_return`, from
+  `Host::hello`): one still lying there gets up, one out of the world is put back where it lay with everything it had.
+  Killed while lying there it is a dead player like any other (its things on the floor, the killer in its cause of
+  death). A lying survivor doesn't count for the everyone-asleep time scale. A server started on a world with
+  survivors nobody plays logs them out (`Host::log_out_unplayed`). **Saves:** survivors out of the world are stored
+  among the players in `WRLD` (so every check and content change reaches them) and an optional `AWAY` section says
+  which they are, the seconds left to those still lying in the world and spawn protection left (no format bump; in
+  `state_hash` only while there is any, so other worlds hash as before). A joining client's first look
+  (`Remote::wait_snapshot`) keeps what the snapshots it skips said once only (its private view: the kit in its pockets).
 - **Input, one a tick** (`Host::apply_queue`): a client's intents wait in its queue in the order sent, and a tick
   applies them up to and including one `PlayerInput`, so each input moves the player for exactly one tick, as the
   client predicted, however the network bunched them; with none waiting the last one holds; more than 10 waiting (a

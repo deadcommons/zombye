@@ -338,11 +338,14 @@ fn join_remote(app: &mut App, addr: &str, options: &Options, content: &zombye_si
     let w = &remote.welcome;
     let player_id = w.player;
     println!(
-        "joined {} at {addr} as {} (player {player_id}): pvp {}, up to {} players, tick {}",
+        "joined {} at {addr} as {} (player {player_id}): pvp {}, up to {} players, logging out leaves your survivor in the world for {:.0} s ({:.0} s somewhere safe){}, tick {}",
         w.rules.name,
         w.name,
         if w.rules.pvp { "on" } else { "off (co-op)" },
         w.rules.max_players,
+        w.rules.logout_secs,
+        w.rules.logout_safe_secs,
+        if w.rules.pvp && w.rules.spawn_protection_secs > 0.0 { format!(", new survivors are protected from players for {:.0} s", w.rules.spawn_protection_secs) } else { String::new() },
         first.tick
     );
     let damage = EdgeDamageMap(w.edge_damage.iter().map(|d| ((d.tile, d.edge), d.hp)).collect());

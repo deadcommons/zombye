@@ -52,7 +52,26 @@ impl HostArgs {
             None => DEFAULT_BUDGET,
             Some(v) => v.parse::<u32>().ok().filter(|kb| (least..=most).contains(kb)).ok_or(format!("--budget is {least} to {most} (KB a second per client), not {v}"))? * 1000,
         };
-        let options = HostOptions { name: text("--name").unwrap_or_else(|| "Zombye server".into()), max_players, allow_dev: flag("--allow-dev"), password: text("--password").unwrap_or_default(), spawn, budget, fair_sight: on_off("--fair-sight")? };
+        // Seconds, 0 to an hour (#68).
+        let secs = |name: &str, default: f32| match text(name) {
+            None => Ok(default),
+            Some(v) => v.parse::<f32>().ok().filter(|s| (0.0..=zombye_sim::logout::MAX_LOGOUT_SECS).contains(s)).ok_or(format!("{name} is seconds, 0 to 3600, not {v}")),
+        };
+        let defaults = HostOptions::default();
+        let logout_secs = secs("--logout-secs", defaults.logout_secs)?;
+        let options = HostOptions {
+            name: text("--name").unwrap_or_else(|| "Zombye server".into()),
+            max_players,
+            allow_dev: flag("--allow-dev"),
+            password: text("--password").unwrap_or_default(),
+            spawn,
+            logout_secs,
+            logout_safe_secs: secs("--logout-safe-secs", defaults.logout_safe_secs)?.min(logout_secs),
+            spawn_protection_secs: secs("--spawn-protection", defaults.spawn_protection_secs)?,
+            kit: Vec::new(),
+            budget,
+            fair_sight: on_off("--fair-sight")?,
+        };
         Ok(Self { addr, options, pvp: on_off("--pvp")? })
     }
 }
@@ -93,9 +112,14 @@ pub fn host(mut world: World, new_world: bool, args: HostArgs, persist: &mut Per
     if let Some(save) = &persist.path {
         host.set_names(read_names(save));
     }
+    // Survivors a loaded world has standing about with nobody playing them lie down and leave.
+    let unplayed = host.log_out_unplayed();
+    if unplayed > 0 {
+        println!("{unplayed} survivors with nobody playing them: logged out");
+    }
     let rules = host.rules();
     println!(
-        "{}: listening on {} ({} players at most, {} KB/s down each, pvp {}, {}{}{}); {} zombies on a {}x{} m map, seed {}",
+        "{}: listening on {} ({} players at most, {} KB/s down each, pvp {}, {}{}{}; logout {:.0} s, {:.0} s somewhere safe; spawn protection {:.0} s; start kit: {}); {} zombies on a {}x{} m map, seed {}",
         rules.name,
         host.local_addr().map_or(args.addr.clone(), |a| a.to_string()),
         rules.max_players,
@@ -104,6 +128,10 @@ pub fn host(mut world: World, new_world: bool, args: HostArgs, persist: &mut Per
         if rules.fair_sight { "other players only when seen or heard" } else { "other players always shown" },
         if rules.allow_dev { ", dev intents allowed" } else { "" },
         if host.options.password.is_empty() { "" } else { ", password set" },
+        rules.logout_secs,
+        rules.logout_safe_secs,
+        if rules.pvp { rules.spawn_protection_secs } else { 0.0 },
+        if host.options.kit.is_empty() { "none".to_string() } else { host.options.kit.iter().map(|(item, n)| format!("{n} {item}")).collect::<Vec<_>>().join(", ") },
         host.world.zombies.len(),
         host.world.map.width(),
         host.world.map.height(),
@@ -372,7 +400,13 @@ mod tests {
         assert_eq!(parse("--host --pvp on").unwrap().pvp, Some(true));
         assert_eq!((parse("--host").unwrap().options.budget, parse("--host --budget 64").unwrap().options.budget), (32_000, 64_000));
         assert_eq!((parse("--host").unwrap().options.fair_sight, parse("--host --fair-sight off").unwrap().options.fair_sight), (None, Some(false)));
-        for bad in ["--host --fair-sight dim", "--host --pvp maybe","--host --max-players 65", "--host --max-players 0", "--host --spawn nowhere", "--host --budget 2", "--host --budget lots"] {
+        // The logout and spawn protection times (#68).
+        let d = parse("--host").unwrap().options;
+        assert_eq!((d.logout_secs, d.logout_safe_secs, d.spawn_protection_secs), (30.0, 5.0, 10.0));
+        let o = parse("--host --logout-secs 120 --logout-safe-secs 0 --spawn-protection 3.5").unwrap().options;
+        assert_eq!((o.logout_secs, o.logout_safe_secs, o.spawn_protection_secs), (120.0, 0.0, 3.5));
+        assert_eq!(parse("--host --logout-secs 2").unwrap().options.logout_safe_secs, 2.0, "never longer than the unsafe time");
+        for bad in ["--host --fair-sight dim", "--host --pvp maybe", "--host --max-players 65", "--host --max-players 0", "--host --spawn nowhere", "--host --budget 2", "--host --budget lots", "--host --logout-secs soon", "--host --spawn-protection 99999"] {
             assert!(parse(bad).is_err(), "{bad}");
         }
     }

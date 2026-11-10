@@ -360,7 +360,7 @@ impl World {
     fn request_action(&mut self, id: u32, kind: ActionKind) -> bool {
         let buffer = self.config.combat.action_buffer_secs;
         let Some(pi) = self.players.iter().position(|p| p.id == id) else { return false };
-        if self.players[pi].dead || self.players[pi].needs.asleep() || self.players[pi].knock.is_some() {
+        if self.players[pi].dead || self.players[pi].needs.asleep() || self.players[pi].knock.is_some() || self.players[pi].away.is_some() {
             return false;
         }
         // Fighting drops whatever you were doing with your things.
@@ -421,6 +421,8 @@ impl World {
         if p.state.endurance <= RUN_MIN_ENDURANCE {
             p.state.winded = true;
         }
+        // Attacking ends spawn protection (#68).
+        p.protected = 0.0;
         p.action = Some(Action { kind, timer: windup * slow, power, weapon });
         p.ready_in = total * slow;
         p.queued = None;
@@ -604,7 +606,8 @@ impl World {
         if self.config.combat.pvp {
             let reach = s.range + if stomp { 0.0 } else { PLAYER_RADIUS };
             for (k, o) in self.players.iter().enumerate() {
-                if k == pi || o.dead || o.knock.is_some_and(|k| k.down) != stomp {
+                // A fresh survivor's spawn protection (#68): players' blows pass it by.
+                if k == pi || o.dead || o.protected > 0.0 || o.knock.is_some_and(|k| k.down) != stomp {
                     continue;
                 }
                 let to = frame.and_then(|f| f.player(o.id)).unwrap_or(o.state.pos) - origin;
