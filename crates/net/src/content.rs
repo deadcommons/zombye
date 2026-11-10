@@ -17,6 +17,25 @@ pub fn default_data_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/data")
 }
 
+/// The data folder of a server that may be running away from a checkout (an installed binary, a
+/// Docker image; #20): `$ZOMBYE_DATA` if set, else the checkout's folder if it is there, else
+/// `data` (or `assets/data`) beside the executable. With none of them, the checkout's, so the
+/// error names a path.
+pub fn installed_data_dir() -> PathBuf {
+    let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf));
+    data_dir_from(std::env::var_os("ZOMBYE_DATA").map(PathBuf::from), default_data_dir(), beside.as_deref())
+}
+
+fn data_dir_from(env: Option<PathBuf>, checkout: PathBuf, beside_exe: Option<&Path>) -> PathBuf {
+    if let Some(dir) = env.filter(|d| !d.as_os_str().is_empty()) {
+        return dir;
+    }
+    if checkout.is_dir() {
+        return checkout;
+    }
+    beside_exe.into_iter().flat_map(|dir| [dir.join("data"), dir.join("assets").join("data")]).find(|d| d.is_dir()).unwrap_or(checkout)
+}
+
 /// Every `*.ron` building template in `<data>/buildings`, sorted by file name so load order (and
 /// therefore generation) is stable.
 pub fn load_building_templates(data_dir: &Path) -> Result<Vec<BuildingTemplate>, String> {
@@ -181,6 +200,23 @@ pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Where an installed server finds its data (#20): the environment's first, the checkout's
+    /// while there is one, then beside the binary.
+    #[test]
+    fn an_installed_server_finds_its_data() {
+        let scratch = std::env::temp_dir().join(format!("zombye-data-dir-test-{}", std::process::id()));
+        let (bin, gone) = (scratch.join("bin"), scratch.join("no-checkout"));
+        std::fs::create_dir_all(bin.join("data")).unwrap();
+        assert_eq!(data_dir_from(Some("/opt/data".into()), default_data_dir(), Some(&bin)), PathBuf::from("/opt/data"));
+        assert_eq!(data_dir_from(Some("".into()), default_data_dir(), Some(&bin)), default_data_dir());
+        assert_eq!(data_dir_from(None, gone.clone(), Some(&bin)), bin.join("data"));
+        std::fs::remove_dir_all(bin.join("data")).unwrap();
+        std::fs::create_dir_all(bin.join("assets/data")).unwrap();
+        assert_eq!(data_dir_from(None, gone.clone(), Some(&bin)), bin.join("assets/data"));
+        std::fs::remove_dir_all(&scratch).unwrap();
+        assert_eq!(data_dir_from(None, gone.clone(), Some(&bin)), gone, "nothing anywhere: the path the error will name");
+    }
 
     #[test]
     fn population_loads_and_falls_back_to_defaults() {

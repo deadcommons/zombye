@@ -6571,6 +6571,7 @@ name = "zombye-server"
 version = "0.0.1"
 dependencies = [
  "glam",
+ "ron",
  "serde",
  "serde_json",
  "zombye-net",

@@ -1,0 +1,22 @@
+# The image is built from Cargo.toml, Cargo.lock, crates/, assets/data/ and the licence files
+# (see Dockerfile). Keep everything big or private out of the build context.
+.git
+.github
+.claude
+.t3-proof
+**/target
+target-*
+saves
+review
+website
+docs
+tools
+meshy_output
+assets/audio
+assets/models
+assets/shaders
+assets/source
+assets/specs
+**/.DS_Store
+**/*.zsave
+**/*.zsave.players

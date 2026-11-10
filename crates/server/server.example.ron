@@ -1,0 +1,64 @@
+// Zombye dedicated server: every setting in one file.
+//
+//     zombye-server --config server.ron
+//
+// Every line is optional: one left out has the value shown here. A flag on the command line wins
+// over this file (`--config server.ron --max-players 8`). Paths are relative to this file's folder.
+// The server reads it once, when it starts.
+(
+    // What players see when they join.
+    name: "Zombye server",
+    // Where game clients connect (TCP). In Docker leave this alone and publish the port instead.
+    listen: "0.0.0.0:7777",
+    // 1 to 64.
+    max_players: 32,
+    // "" for none. It goes over the network in the clear, like everything else: it keeps
+    // strangers out, it is not a secret.
+    password: "",
+
+    // Player against player: true (open PvP) or false (co-op). Left out: on for a new world,
+    // and a saved world keeps the rule it was saved with.
+    // pvp: true,
+    // Where new survivors start: Spread (round the edge of town) or Together (outside one house).
+    // Left out: Spread with PvP, Together without.
+    // spawn: Spread,
+    // Tell a client about other players only while its survivor sees or hears them.
+    // Left out: on with PvP, off without.
+    // fair_sight: true,
+    // Seconds a survivor lies in the world after its player leaves, and the same when it was
+    // left somewhere safe (0 to 3600).
+    logout_secs: 30,
+    logout_safe_secs: 5,
+    // Seconds a new survivor can't be hurt by other players (PvP only; 0 for none).
+    spawn_protection_secs: 10,
+    // Kilobytes a second sent down to each client at most, 8 to 1000.
+    budget_kb: 32,
+    // Take the dev toggles (god mode and the like) and debug intents from clients. For testing.
+    allow_dev: false,
+
+    // The world. `save` is loaded if it exists, else a new world is made from the three settings
+    // under it and saved there; then it is autosaved, and saved when the server stops (Ctrl-C,
+    // SIGTERM, `docker stop`). Who owns which survivor is kept beside it in `<save>.players`.
+    save: "world.zsave",
+    // Minutes between autosaves (fractions allowed; 0 for never).
+    autosave_mins: 5,
+    // A new world only (a saved world keeps its own):
+    seed: 1,
+    // The map is this many 16 m chunks each way: 30 is 480 m, 64 about 1 km.
+    map_chunks: 30,
+    // How many zombies. Left out: what the game data's population.ron gives for the map.
+    // zombies: 3000,
+
+    // Load a save whose game data changed in a way it can't simply take, dropping what no longer
+    // fits. Left off, such a save is refused and the server doesn't start.
+    load_anyway: false,
+    // The game data folder (items, buildings, loot...). Left out: $ZOMBYE_DATA, else the folder
+    // the server ships with. Clients must have the same data to join.
+    // data: "data",
+
+    // The operator's MCP admin endpoint (kick, ban, save, settings, events, the log), for your
+    // AI agent. Left out: none. It always needs a token of at least 16 characters: set
+    // ZOMBYE_ADMIN_TOKEN (which wins), or `token` here. No TLS: keep it on this machine, or put a
+    // reverse proxy or a tunnel in front.
+    // admin: (listen: "127.0.0.1:8788", token: "a-long-secret-token", origins: []),
+)

@@ -40,6 +40,12 @@
 //!   server, by default on `127.0.0.1:8788`: list, kick and ban players, save, change settings, set
 //!   off events, read the log. It always needs a bearer token (`ZOMBYE_ADMIN_TOKEN`, or
 //!   `--admin-token T`); `--admin-origin ORIGIN` allows a browser origin.
+//! - `zombye-server --config FILE` — the dedicated server (#20, `config.rs`, docs/self-hosting.md):
+//!   `--host` with its settings read from one RON file (written with the defaults, commented, if
+//!   it isn't there yet; `server.example.ron` beside this crate's manifest). The file stands for
+//!   the flags above, so a flag on the command line wins over it; its paths are relative to its
+//!   folder, and its world is saved in `world.zsave` there unless it says otherwise. This is what
+//!   the Docker image runs (`Dockerfile`: `--config /data/server.ron`).
 //! - `zombye-server --bots N --connect HOST[:PORT] [--secs S] [--bots-hostile] [--lag MS]` — N headless bot
 //!   clients, each on its own connection, that wander and fight; prints what each costs. `--lag MS`
 //!   makes them play as if that many milliseconds of ping away (lag compensation, #23).
@@ -54,7 +60,8 @@
 //! Common options: `--zombies N` (default: as many as `population.ron` gives for the map, about 2,600
 //! on the default map), `--seed S` (default 1), `--map-chunks N` (a square
 //! map N × N chunks of 16 m; default 30, so 480 m; 64 is about 1 km), `--data DIR` (content
-//! folder, default the repo's `assets/data`).
+//! folder; default `$ZOMBYE_DATA`, else the repo's `assets/data`, else a `data` folder beside the
+//! binary: `content::installed_data_dir`).
 //!
 //! Saves: `--save PATH` loads that save if it exists (the world options are then ignored) or
 //! makes a new world and saves it there; the server then autosaves to it every
@@ -74,6 +81,7 @@
 
 mod admin;
 mod benchmark;
+mod config;
 mod mcp;
 mod mcp_http;
 mod multiplayer;
@@ -154,12 +162,33 @@ fn load_or_create(path: &Path, config: WorldConfig, options: LoadOptions, prepar
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let admin_token = std::env::var("ZOMBYE_ADMIN_TOKEN").ok().filter(|t| !t.trim().is_empty());
+    // `--config FILE` (#20, `config.rs`): the dedicated server's settings from one file, as the
+    // flags they stand for, behind the command line's own.
+    if let Some(at) = args.iter().position(|a| a == "--config") {
+        let Some(path) = args.get(at + 1).filter(|p| !p.starts_with("--")).map(PathBuf::from) else {
+            eprintln!("--config needs a file: --config server.ron");
+            std::process::exit(2);
+        };
+        match config::load(&path, &args, admin_token.is_some()) {
+            Ok(loaded) => {
+                for note in &loaded.notes {
+                    eprintln!("{note}");
+                }
+                args = loaded.args;
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(2);
+            }
+        }
+    }
     let flag = |name: &str| args.iter().any(|a| a == name);
     let text = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
     let value = |name: &str| text(name).and_then(|v| v.parse::<u64>().ok());
 
-    let data = text("--data").map(PathBuf::from).unwrap_or_else(content::default_data_dir);
+    let data = text("--data").map(PathBuf::from).unwrap_or_else(content::installed_data_dir);
     let mut config = match content::load_config(&data, value("--seed").unwrap_or(1)) {
         Ok(c) => c,
         Err(e) => {
@@ -282,7 +311,7 @@ fn main() {
         });
     } else if flag("--host") {
         // The flags, and what new survivors start with (the data folder's `start_kit.ron`, #68).
-        let parsed = multiplayer::HostArgs::parse(&args, std::env::var("ZOMBYE_ADMIN_TOKEN").ok()).and_then(|mut a| {
+        let parsed = multiplayer::HostArgs::parse(&args, admin_token).and_then(|mut a| {
             a.options.kit = content::load_start_kit(&data, &config.items)?;
             Ok(a)
         });
@@ -304,7 +333,7 @@ fn main() {
         bench(config, &mut persist, load_options, ticks, value("--players").unwrap_or(0) as u32, value("--horde").unwrap_or(0) as u32, flag("--spread"), flag("--save-bench"));
     } else {
         eprintln!(
-            "usage: zombye-server (--mcp | --mcp-http [ADDR[:PORT]] [--mcp-token T | --mcp-no-auth] [--mcp-token-in-url] [--mcp-no-dev] [--mcp-origin ORIGIN] | --bench [--ticks N] [--players N] [--horde N] [--save-bench] \
+            "usage: zombye-server (--config FILE | --mcp | --mcp-http [ADDR[:PORT]] [--mcp-token T | --mcp-no-auth] [--mcp-token-in-url] [--mcp-no-dev] [--mcp-origin ORIGIN] | --bench [--ticks N] [--players N] [--horde N] [--save-bench] \
              | --host [ADDR[:PORT]] [--name NAME] [--max-players N] [--pvp on|off] [--spawn spread|together] [--password P] [--allow-dev] [--budget KB] [--fair-sight on|off] \
              [--logout-secs S] [--logout-safe-secs S] [--spawn-protection S] [--admin-mcp [ADDR[:PORT]] [--admin-token T] [--admin-origin ORIGIN]] \
              | --bots N --connect HOST[:PORT] [--secs S] [--name PREFIX] [--password P] [--bots-hostile] [--lag MS] \

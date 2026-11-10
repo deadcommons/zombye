@@ -57,6 +57,17 @@ cargo run --release --bin zombye-server -- --benchmark list
 cargo run --release --bin zombye-server -- --mcp --benchmark first_night --agent my-agent
 ```
 
+### Host a server
+
+Multiplayer runs on a dedicated server anyone can host, for free: one binary, one config file, or
+a Docker image you build from this repo. See [docs/self-hosting.md](docs/self-hosting.md).
+
+```bash
+docker build -t zombye-server .
+docker run -d -p 7777:7777 -v zombye-data:/data zombye-server
+cargo run --release --bin zombye -- --connect localhost        # join it
+```
+
 ## Contributing
 
 Contributions from people and their agents are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md)

@@ -16,3 +16,6 @@ zombye-net.workspace = true
 glam.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# The dedicated server's config file (`config.rs`), in the format of the game data (already in
+# the tree through sim).
+ron.workspace = true
