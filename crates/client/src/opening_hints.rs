@@ -3,8 +3,8 @@
 //! A door or window on an outside wall that faces away from the camera is behind its own building
 //! on screen, so a player walking round a house can't tell where its back door is without turning
 //! the camera. While the player is within [`RANGE`] of such an opening, its outline is drawn
-//! through the building: doors in one colour whatever their state, windows in another, open or broken windows (a way
-//! in) in a third, and ones that are barred (locked, barricaded, boarded: nothing in the map is yet)
+//! through the building: doors and windows in one blue (a shut window's outline has a cross, an open or
+//! broken one a single bar across), and ones that are barred (locked, barricaded, boarded: nothing in the map is yet)
 //! dimmer.
 //!
 //! **Fair information:** only the building's own openings, from the client's copy of the map,
@@ -57,10 +57,8 @@ const AWAY: f32 = 0.1;
 /// wall it is in, its own door leaf or pane and its frame don't count as covering it.
 const CLEAR_M: f32 = 0.5;
 const CLEAR: f32 = CLEAR_M / (crate::camera::FAR - crate::camera::NEAR);
-/// The tints (linear, straight alpha): a door (shut, open or broken), a shut window, an open or broken window.
+/// The one tint of every outline (linear, straight alpha): doors and windows, shut, open or broken.
 const DOOR: Vec4 = Vec4::new(0.16, 0.66, 1.0, 0.9);
-const WINDOW: Vec4 = Vec4::new(0.86, 0.70, 1.0, 0.62);
-const OPEN: Vec4 = Vec4::new(0.42, 1.0, 0.45, 0.85);
 /// A cut-away door's outline: this share of a hint's alpha (it is in plain view, in your room).
 pub const CUT_DOOR: f32 = 0.8;
 /// A barred opening's share of its tint's alpha.
@@ -187,7 +185,7 @@ struct Slot {
     entity: Option<Entity>,
 }
 
-/// The mesh tag of a hint: bits 0-7 how much of it shows, 8-9 its tint (door, window, open),
+/// The mesh tag of a hint: bits 0-7 how much of it shows, 8 an open or broken window (its mesh differs; every outline is one blue),
 /// bit 10 barred (`opening_hint.wesl`).
 pub fn tag_of(hint: Hint, shown: f32) -> u32 {
     let s = shown.clamp(0.0, 1.0);
@@ -197,13 +195,10 @@ pub fn tag_of(hint: Hint, shown: f32) -> u32 {
 
 /// A hint's tint and barred bits of its mesh tag.
 fn tint_bits(hint: Hint) -> u32 {
-    let tint = match (hint.state, hint.kind) {
-        // A door is the same blue shut, open or broken: its outline says where it is.
-        (_, Kind::Door) => 0,
-        (State::Open, Kind::Window) => 2,
-        (_, Kind::Window) => 1,
-    };
-    tint << 8 | if hint.state == State::Barred { 1 << 10 } else { 0 }
+    // Doors and windows are the same blue shut, open or broken. An open window's bit is for
+    // its mesh (the tag must change when a window opens, so the mesh is swapped).
+    let open = hint.kind == Kind::Window && hint.state == State::Open;
+    (open as u32) << 8 | if hint.state == State::Barred { 1 << 10 } else { 0 }
 }
 
 /// The outlines of doors in cut-away walls: an entity a door, kept (hidden) once its wall is up.
@@ -253,7 +248,7 @@ impl OpeningHints {
         if self.on {
             let slots = &mut self.slots;
             find(map, player, camera_dir, inside, |hint| match slots.iter_mut().find(|s| s.hint.key == hint.key) {
-                // A door opened or a window broke while hinted: its tint changes at once.
+                // A door opened or a window broke while hinted: its tag is written again at once.
                 Some(s) => (s.hint, s.wanted) = (hint, true),
                 None => slots.push(Slot { hint, wanted: true, shown: 0.0, tag: u32::MAX, entity: None }),
             });
@@ -308,9 +303,7 @@ impl From<&HintMaterial> for HintKey {
 /// Must match `HintLook` in opening_hint.wesl.
 #[derive(ShaderType, Debug, Clone, PartialEq)]
 pub struct HintLook {
-    pub door: Vec4,
-    pub window: Vec4,
-    pub open: Vec4,
+    pub tint: Vec4,
     /// x = how far toward the camera an outline's depth is moved (depth-buffer units), y = a
     /// barred opening's share of the alpha, z = brightness (dim at night).
     pub params: Vec4,
@@ -320,7 +313,7 @@ pub struct HintLook {
 /// dusk and dawn, not every frame.
 fn look_at(daylight: f32) -> HintLook {
     let d = (daylight.clamp(0.0, 1.0) * 16.0).round() / 16.0;
-    HintLook { door: DOOR, window: WINDOW, open: OPEN, params: Vec4::new(CLEAR, BARRED, NIGHT + (1.0 - NIGHT) * d, 0.0) }
+    HintLook { tint: DOOR, params: Vec4::new(CLEAR, BARRED, NIGHT + (1.0 - NIGHT) * d, 0.0) }
 }
 
 impl Material for HintMaterial {
@@ -360,6 +353,8 @@ impl Material for HintMaterial {
 struct HintAssets {
     door: Handle<Mesh>,
     window: Handle<Mesh>,
+    /// An open or broken window: one bar across in place of the cross.
+    window_open: Handle<Mesh>,
     material: Handle<HintMaterial>,
     /// The same look, drawn where nothing is in front: doors in cut-away walls.
     in_view: Handle<HintMaterial>,
@@ -368,7 +363,7 @@ struct HintAssets {
 
 /// An outline in the plane of a wall edge: x along the edge (0 to 1), y up, as bars only, with
 /// nothing between them (the vertex colour's alpha is each bar's share of the tint).
-fn outline(lo: Vec2, hi: Vec2, bar: f32, bottom: bool, cross: bool) -> Mesh {
+fn outline(lo: Vec2, hi: Vec2, bar: f32, bottom: bool, cross: Option<bool>) -> Mesh {
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut colors: Vec<[f32; 4]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
@@ -385,9 +380,12 @@ fn outline(lo: Vec2, hi: Vec2, bar: f32, bottom: bool, cross: bool) -> Mesh {
     if bottom {
         quad(Vec2::new(ilo.x, lo.y), Vec2::new(ihi.x, ilo.y), 1.0);
     }
-    if cross {
+    // `Some(true)`: a cross (a shut window's panes); `Some(false)`: only the bar across (an open one).
+    if let Some(upright) = cross {
         let (mid, half) = ((lo + hi) * 0.5, bar * 0.3);
-        quad(Vec2::new(mid.x - half, ilo.y), Vec2::new(mid.x + half, ihi.y), 0.7);
+        if upright {
+            quad(Vec2::new(mid.x - half, ilo.y), Vec2::new(mid.x + half, ihi.y), 0.7);
+        }
         quad(Vec2::new(ilo.x, mid.y - half), Vec2::new(ihi.x, mid.y + half), 0.7);
     }
     let n = positions.len();
@@ -427,8 +425,9 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials
     let look = look_at(1.0);
     commands.insert_resource(HintAssets {
         // A door leaf is 0.92 x 2.05 m; a window runs from the sill (0.9 m) to the head (2.1 m).
-        door: meshes.add(outline(Vec2::new(0.04, 0.0), Vec2::new(0.96, 2.08), 0.07, false, false)),
-        window: meshes.add(outline(Vec2::new(0.08, 0.9), Vec2::new(0.92, 2.1), 0.06, true, true)),
+        door: meshes.add(outline(Vec2::new(0.04, 0.0), Vec2::new(0.96, 2.08), 0.07, false, None)),
+        window: meshes.add(outline(Vec2::new(0.08, 0.9), Vec2::new(0.92, 2.1), 0.06, true, Some(true))),
+        window_open: meshes.add(outline(Vec2::new(0.08, 0.9), Vec2::new(0.92, 2.1), 0.06, true, Some(false))),
         material: materials.add(HintMaterial { look: look.clone(), behind: true }),
         in_view: materials.add(HintMaterial { look: look.clone(), behind: false }),
         look,
@@ -497,7 +496,11 @@ fn draw(
             return false;
         }
         let tag = tag_of(s.hint, s.shown);
-        let mesh = if s.hint.kind == Kind::Door { &assets.door } else { &assets.window };
+        let mesh = match (s.hint.kind, s.hint.state) {
+            (Kind::Door, _) => &assets.door,
+            (Kind::Window, State::Open) => &assets.window_open,
+            (Kind::Window, _) => &assets.window,
+        };
         match s.entity {
             Some(e) if tag != s.tag => {
                 if let Ok((_, mut m, mut t, _)) = drawn.get_mut(e) {
@@ -694,16 +697,16 @@ mod tests {
         assert_eq!(state(&map), Some((Kind::Door, State::Open)));
         map.set_edge(door.0, Side::N, Edge::Wall);
         assert_eq!(state(&map), None);
-        // The tag: tint 0 a door (open too), 1 a window, 2 an open window; bit 10 barred; the low byte how much shows.
+        // The tag: bit 8 an open window (for its mesh), bit 10 barred; the low byte how much shows.
         let hint = |kind, state| Hint { key: door, kind, state };
         assert_eq!(tag_of(hint(Kind::Door, State::Shut), 1.0), 255);
-        assert_eq!(tag_of(hint(Kind::Window, State::Shut), 1.0), 255 | 1 << 8);
-        assert_eq!(tag_of(hint(Kind::Window, State::Open), 1.0), 255 | 2 << 8);
+        assert_eq!(tag_of(hint(Kind::Window, State::Shut), 1.0), 255);
+        assert_eq!(tag_of(hint(Kind::Window, State::Open), 1.0), 255 | 1 << 8);
         assert_eq!(tag_of(hint(Kind::Door, State::Open), 0.0), 0);
         assert_eq!(tag_of(hint(Kind::Door, State::Open), 1.0), tag_of(hint(Kind::Door, State::Shut), 1.0));
         assert_eq!(tag_of(hint(Kind::Door, State::Barred), 1.0), 255 | 1 << 10);
-        assert_eq!(tag_of(hint(Kind::Window, State::Barred), 1.0), 255 | 1 << 8 | 1 << 10);
-        assert!(BARRED < 0.6 && DOOR != WINDOW && OPEN != DOOR && OPEN != WINDOW);
+        assert_eq!(tag_of(hint(Kind::Window, State::Barred), 1.0), 255 | 1 << 10);
+        assert!(BARRED < 0.6);
     }
 
     /// A door in a cut-away wall is outlined by how far its wall is cut, the same blue shut, open
@@ -772,7 +775,7 @@ mod tests {
         // Standing still: nothing is decided again and nothing moves.
         assert!(!hints.decide(&map, false, near + Vec2::new(0.1, 0.1), camera(0), None));
         assert!(!hints.ease(0.016));
-        // The door opens: decided again, its tint changes at once, it stays shown.
+        // The door opens: decided again at once, it stays shown.
         map.set_edge(door.0, Side::N, Edge::DoorOpen);
         assert!(hints.decide(&map, true, near, camera(0), None));
         let slot = hints.slots.iter().find(|s| s.hint.key == door).unwrap();
@@ -799,7 +802,7 @@ mod tests {
     /// The outline meshes are small, and the look dims at night without changing every frame.
     #[test]
     fn the_outlines_are_small_and_dim_at_night() {
-        for (mesh, quads) in [(outline(Vec2::ZERO, Vec2::new(1.0, 2.0), 0.07, false, false), 3), (outline(Vec2::ZERO, Vec2::ONE, 0.06, true, true), 6)] {
+        for (mesh, quads) in [(outline(Vec2::ZERO, Vec2::new(1.0, 2.0), 0.07, false, None), 3), (outline(Vec2::ZERO, Vec2::ONE, 0.06, true, Some(true)), 6), (outline(Vec2::ZERO, Vec2::ONE, 0.06, true, Some(false)), 5)] {
             assert_eq!(mesh.count_vertices(), quads * 4);
         }
         let (day, night) = (look_at(1.0), look_at(0.0));

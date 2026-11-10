@@ -11,10 +11,8 @@ import bevy_pbr::render::{
 };
 
 struct HintLook {
-    // The tints (linear, straight alpha): a shut door, a shut window, an open or broken one.
-    door: vec4<f32>,
-    window: vec4<f32>,
-    open: vec4<f32>,
+    // The one tint of every outline (linear, straight alpha).
+    tint: vec4<f32>,
     // x = how far toward the camera the outline's depth is moved (depth-buffer units), y = a
     // barred opening's share of the alpha, z = brightness (dim at night).
     params: vec4<f32>,
@@ -29,15 +27,9 @@ struct HintOutput {
 
 @fragment
 fn fragment(in: VertexOutput) -> HintOutput {
-    // Bits 0-7: how much shows. 8-9: the tint. 10: barred.
+    // Bits 0-7: how much shows. 8: an open window (its mesh, not its colour). 10: barred.
     let tag = mesh_functions::get_tag(in.instance_index);
-    let which = (tag >> 8u) & 3u;
-    var tint = look.door;
-    if (which == 1u) {
-        tint = look.window;
-    } else if (which == 2u) {
-        tint = look.open;
-    }
+    let tint = look.tint;
     var alpha = tint.a * f32(tag & 255u) / 255.0;
     if ((tag & 1024u) != 0u) {
         alpha *= look.params.y;

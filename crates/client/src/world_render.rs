@@ -829,8 +829,6 @@ fn upper_look(gone: f32) -> (Visibility, u32) {
     (Visibility::Inherited, (eased * 255.0).round() as u32)
 }
 
-/// Height of the door leaf mesh (see `setup_shared`).
-const LEAF_HEIGHT: f32 = 2.05;
 /// How tall the lip of a window on a cut-away wall stands over the stub (see `setup_shared`).
 const LIP_HEIGHT: f32 = 0.24;
 
@@ -936,8 +934,8 @@ mod tests {
         assert_eq!(piece_look(true, 0.0, false), whole);
         assert!(!piece_look(false, 1.0, true).shown && !piece_look(false, 0.0, true).shown, "a broken door has no leaf");
         // Half way down it is half way between.
-        let half = piece_look(true, 0.5, true).height * LEAF_HEIGHT;
-        assert!(half > 0.5 && half < LEAF_HEIGHT - 0.5, "{half}");
+        let half = piece_look(true, 0.5, true).height;
+        assert!(half > 0.25 && half < 0.75, "{half}");
     }
 
     /// The cutaway never hides a window: on a cut wall it is a low framed lip standing on the stub,

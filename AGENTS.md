@@ -1283,8 +1283,8 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   quarter turns by itself (recordings). `--rotate`, which turning used to need, is accepted and ignored.
 - **Opening hints** (`opening_hints.rs`, `opening_hint.wesl`): a door or window on an outside wall that faces away
   from the camera is behind its own building on screen. While the player is within 10 m of its middle
-  (`opening_hints::RANGE`) its outline is drawn through the building: a door blue (the same shut, open or broken), a shut window
-  pale violet (with a cross), an open or broken window green (a way in), each fading in and out over 0.2 s, dim at night.
+  (`opening_hints::RANGE`) its outline is drawn through the building: doors and windows in one blue, the same shut, open or
+  broken (a shut window's outline has a cross, an open or broken one a single bar across), each fading in and out over 0.2 s, dim at night.
   `State::Barred` (locked, barricaded, boarded) is drawn at 45% of the alpha, but **no edge in the map is any of
   those yet**: `opening_hints::classify` names every `Edge` kind, so a new one doesn't compile until it is given its
   hint. Which openings (`hint_for`, `find`): doors and windows only (never an arch or a fence), on an edge with a
@@ -1292,9 +1292,9 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   against the camera's ground direction, and not of the building the player is inside (that one is cut open).
   **Fair information:** only openings, from the client's map copy, which every client holds whole; nothing of
   zombies, players or loot. Drawn as the silhouettes are: one material with the depth test turned round
-  (`silhouette::behind_only`), the outline's depth moved 0.5 m toward the camera so its own wall doesn't count, two
-  small shared meshes (12 and 24 vertices: bars only, nothing filled in between) and an entity an opening whose `MeshTag` holds its tint and fade (bits 0-7
-  how much shows, 8-9 door / window / open window, 10 barred), so each mesh's instances are one batch in the transparent
+  (`silhouette::behind_only`), the outline's depth moved 0.5 m toward the camera so its own wall doesn't count, three
+  small shared meshes (12, 24 and 20 vertices: bars only, nothing filled in between) and an entity an opening whose `MeshTag` holds its fade (bits 0-7
+  how much shows, 8 an open window, 10 barred), so each mesh's instances are one batch in the transparent
   phase of the main pass: no pass of its own, nothing full-screen. Worked out again only when the player has moved
   half a metre, the camera turned, the map changed or the player went in or out of a building; a frame in which
   nothing fades writes nothing, and nothing is allocated per frame (entities of hints that went are kept for the
