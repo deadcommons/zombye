@@ -373,28 +373,22 @@ def creak(sec, rng, rate_lo, rate_hi):
     return mul([x + 0.6 * y for x, y in zip(a, b)], bell(sec, 0.35))
 
 
-def door_swing(sec, rng):
-    """A door leaf moving through the air on oiled hinges: a soft low whoosh, no creak."""
-    air = filt(white(sec, rng), "lp", rng.uniform(380, 480), 0.7)
-    return mul(air, bell(sec, 0.45))
-
-
 def door_open(rng):
-    # A modern house door: the handle and latch click, then a quiet swing (#78 feedback: no creaks).
-    s = silence(0.75)
+    # A modern house door (no creak): the handle pressed and the latch clicking free, a soft knock of
+    # the leaf leaving the frame, then the handle springing back up.
+    s = silence(0.5)
     place(s, latch(rng), 0.0, 0.8)
-    place(s, burst(0.03, rng, "bp", rng.uniform(900, 1200), 1.5, 0.001, 0.01), 0.05, 0.35)
-    place(s, door_swing(0.55, rng), 0.09, 0.35)
+    place(s, thud(0.12, rng.uniform(170, 200), 120, 0.03), 0.03, 0.35)
+    place(s, latch(rng), rng.uniform(0.28, 0.34), 0.45)
     return s
 
 
 def door_close(rng):
-    # A quiet swing, the leaf meeting the frame with a firm thud, the latch clicking home.
-    s = silence(0.7)
-    place(s, door_swing(0.3, rng), 0.0, 0.3)
-    place(s, thud(0.3, 95, 50, 0.08), 0.3, 1.0)
-    place(s, burst(0.2, rng, "lp", 700, 0.7, 0.001, 0.05), 0.3, 0.6)
-    place(s, latch(rng), 0.32, 0.6)
+    # The leaf meeting the frame with a firm thud and the latch clicking home.
+    s = silence(0.55)
+    place(s, thud(0.3, 95, 50, 0.08), 0.0, 1.0)
+    place(s, burst(0.2, rng, "lp", 700, 0.7, 0.001, 0.05), 0.0, 0.6)
+    place(s, latch(rng), 0.02, 0.6)
     return s
 
 
