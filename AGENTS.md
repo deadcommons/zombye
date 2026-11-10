@@ -1198,7 +1198,9 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   0.6 m square the player stands in outdoors. So a room's far walls, the rest of its building and the facade you walk
   along stand. Roofs and upper storeys never drop from outside: anything above 3.05 m nearer the camera than the player
   opens a soft, dithered oval round the player's body on screen (2 m wide, feet to just over the head; `hole_at`); a building's upper storeys and roof are hidden whole only while you're inside it. Door leaves and panes
-  follow the same wall rule on the CPU (`materials::wall_is_cut`). Cut walls still cast shadows.
+  follow the same wall rule on the CPU (`materials::wall_is_cut`, `world_render::piece_look`): a pane is hidden with
+  its cut wall, a door leaf drops to the stub's height and is never hidden, so a shut door in a cut wall doesn't look
+  like an open doorway. Cut walls still cast shadows.
 - **F3, the light preview** (`dev_time.rs`): a slider at the foot of the screen (drag, or hold `[` / `]`) for the hour the
   light is drawn at (sun, moon, ambient, grade, held light, crowd, sight range); the server's clock, zombies' senses and
   the HUD's time don't follow it. F3 again goes back to the server's hour.

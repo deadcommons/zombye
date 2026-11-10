@@ -716,26 +716,49 @@ fn hide_upper_floors(map: Res<ClientMap>, streamer: Res<Streamer>, player: Query
     }
 }
 
-/// Door leaves and window panes drop with their wall (same rule as the shader's wall cutaway).
+/// Height of the door leaf mesh (see `setup_shared`).
+const LEAF_HEIGHT: f32 = 2.05;
+
+/// How a door leaf or window pane is drawn: whether at all, and how tall (a share of its height).
+/// A pane goes with its cut wall (the stub is below the sill). **A door leaf never does:** it
+/// drops to the stub's height like the wall it is in, so a shut door in a cut-away wall still
+/// fills its doorway. Hidden, the doorway looked open while the door was shut, and the player
+/// walked into a gap that wouldn't let him through (the playtest's "he doesn't fit through the
+/// door").
+fn piece_look(shown: bool, cut: bool, door: bool) -> (bool, f32) {
+    match (shown, cut, door) {
+        (false, _, _) => (false, 1.0),
+        (true, false, _) => (true, 1.0),
+        (true, true, true) => (true, STUB_HEIGHT / LEAF_HEIGHT),
+        (true, true, false) => (false, 1.0),
+    }
+}
+
+/// Door leaves and window panes drop with their wall (same rule as the shader's wall cutaway):
+/// panes are hidden, door leaves cut down to the stub (`piece_look`).
 fn cut_edge_pieces(
     map: Res<ClientMap>,
     player: Query<&Transform, With<Player>>,
     cams: Query<&IsoCamera>,
-    mut pieces: Query<(&EdgePiece, &Transform, &mut Visibility), Without<Player>>,
+    mut pieces: Query<(&EdgePiece, Has<DoorLeaf>, &mut Transform, &mut Visibility), Without<Player>>,
 ) {
     let (Ok(p), Ok(cam)) = (player.single(), cams.single()) else { return };
     let pos = p.translation.xz();
     let inside = materials::inside_rect(&map.0, pos);
     let dir = cam.offset_dir();
-    for (piece, tf, mut vis) in &mut pieces {
+    for (piece, door, mut tf, mut vis) in &mut pieces {
         // Upper-floor pieces are handled by hiding the upper floor.
         if tf.translation.y > 1.0 {
             continue;
         }
         let cut = materials::wall_is_cut(piece.mid, pos, dir, inside);
-        let want = if piece.shown && !cut { Visibility::Inherited } else { Visibility::Hidden };
+        let (show, height) = piece_look(piece.shown, cut, door);
+        let want = if show { Visibility::Inherited } else { Visibility::Hidden };
         if *vis != want {
             *vis = want;
+        }
+        if tf.scale.y != height {
+            tf.scale.y = height;
         }
     }
 }
@@ -761,6 +784,21 @@ mod tests {
         let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/data");
         let templates = zombye_net::content::load_building_templates(&data).expect("templates");
         zombye_sim::worldgen::generate(&zombye_sim::worldgen::GenConfig::default(), &templates).map
+    }
+
+    /// The playtest's "he doesn't fit through the door": a shut door in a wall cut away round the
+    /// player's room was hidden with its wall, so the doorway looked open. A door leaf is always
+    /// drawn, cut to the stub's height with its wall; a pane still goes with its wall, and a
+    /// battered-down door's leaf is gone.
+    #[test]
+    fn a_door_in_a_cut_wall_still_fills_its_doorway() {
+        let (shown, height) = piece_look(true, true, true);
+        assert!(shown, "a shut door on a cut-away wall is drawn");
+        assert!((height * LEAF_HEIGHT - STUB_HEIGHT).abs() < 1e-5, "as tall as the wall's stub");
+        assert_eq!(piece_look(true, false, true), (true, 1.0), "whole in a standing wall");
+        assert_eq!(piece_look(true, false, false), (true, 1.0));
+        assert!(!piece_look(true, true, false).0, "glass goes with its cut wall");
+        assert!(!piece_look(false, true, true).0 && !piece_look(false, false, true).0, "a broken door has no leaf");
     }
 
     /// DCM-59: every building gets contact shadows, lying just over the ground along its walls
