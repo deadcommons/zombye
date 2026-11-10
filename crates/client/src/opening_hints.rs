@@ -3,8 +3,8 @@
 //! A door or window on an outside wall that faces away from the camera is behind its own building
 //! on screen, so a player walking round a house can't tell where its back door is without turning
 //! the camera. While the player is within [`RANGE`] of such an opening, its outline is drawn
-//! through the building: doors in one colour, windows in another, open or broken ones (a way in)
-//! in a third, and ones that are barred (locked, barricaded, boarded: nothing in the map is yet)
+//! through the building: doors in one colour whatever their state, windows in another, open or broken windows (a way
+//! in) in a third, and ones that are barred (locked, barricaded, boarded: nothing in the map is yet)
 //! dimmer.
 //!
 //! **Fair information:** only the building's own openings, from the client's copy of the map,
@@ -22,8 +22,8 @@
 //! is allocated per frame: the lists keep their room and the entities are kept for the next hint.
 //!
 //! **Doors in cut-away walls** get the same outline, the other way round: a door whose wall has
-//! dropped to its stub (`cutaway.rs`) is a low slab on the floor, so its outline is drawn at the
-//! door's full size over it, in the same tints (shut blue, open or broken green), by the wall's
+//! dropped to its stub (`cutaway.rs`) has no leaf drawn (it sinks away with the wall), so its outline is
+//! drawn at the door's full size in its place, in the doors' one blue (shut, open or broken alike), by the wall's
 //! own eased amount, and only where nothing stands in front of it ([`cut_door`], `draw_cut_doors`).
 //! Always on: it is how a cut door is drawn, not a hint through anything.
 //!
@@ -57,7 +57,7 @@ const AWAY: f32 = 0.1;
 /// wall it is in, its own door leaf or pane and its frame don't count as covering it.
 const CLEAR_M: f32 = 0.5;
 const CLEAR: f32 = CLEAR_M / (crate::camera::FAR - crate::camera::NEAR);
-/// The tints (linear, straight alpha): a shut door, a shut window, an open or broken one of either.
+/// The tints (linear, straight alpha): a door (shut, open or broken), a shut window, an open or broken window.
 const DOOR: Vec4 = Vec4::new(0.16, 0.66, 1.0, 0.9);
 const WINDOW: Vec4 = Vec4::new(0.86, 0.70, 1.0, 0.62);
 const OPEN: Vec4 = Vec4::new(0.42, 1.0, 0.45, 0.85);
@@ -198,8 +198,9 @@ pub fn tag_of(hint: Hint, shown: f32) -> u32 {
 /// A hint's tint and barred bits of its mesh tag.
 fn tint_bits(hint: Hint) -> u32 {
     let tint = match (hint.state, hint.kind) {
-        (State::Open, _) => 2,
+        // A door is the same blue shut, open or broken: its outline says where it is.
         (_, Kind::Door) => 0,
+        (State::Open, Kind::Window) => 2,
         (_, Kind::Window) => 1,
     };
     tint << 8 | if hint.state == State::Barred { 1 << 10 } else { 0 }
@@ -365,8 +366,8 @@ struct HintAssets {
     look: HintLook,
 }
 
-/// An outline in the plane of a wall edge: x along the edge (0 to 1), y up, as bars with a faint
-/// fill between them (the vertex colour's alpha is each part's share of the tint).
+/// An outline in the plane of a wall edge: x along the edge (0 to 1), y up, as bars only, with
+/// nothing between them (the vertex colour's alpha is each bar's share of the tint).
 fn outline(lo: Vec2, hi: Vec2, bar: f32, bottom: bool, cross: bool) -> Mesh {
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut colors: Vec<[f32; 4]> = Vec::new();
@@ -378,7 +379,6 @@ fn outline(lo: Vec2, hi: Vec2, bar: f32, bottom: bool, cross: bool) -> Mesh {
         indices.extend([n, n + 1, n + 2, n, n + 2, n + 3]);
     };
     let (ilo, ihi) = (Vec2::new(lo.x + bar, if bottom { lo.y + bar } else { lo.y }), hi - bar);
-    quad(ilo, ihi, 0.16);
     quad(lo, Vec2::new(ilo.x, hi.y), 1.0);
     quad(Vec2::new(ihi.x, lo.y), hi, 1.0);
     quad(Vec2::new(ilo.x, ihi.y), Vec2::new(ihi.x, hi.y), 1.0);
@@ -694,18 +694,19 @@ mod tests {
         assert_eq!(state(&map), Some((Kind::Door, State::Open)));
         map.set_edge(door.0, Side::N, Edge::Wall);
         assert_eq!(state(&map), None);
-        // The tag: tint 0 a door, 1 a window, 2 open; bit 10 barred; the low byte how much shows.
+        // The tag: tint 0 a door (open too), 1 a window, 2 an open window; bit 10 barred; the low byte how much shows.
         let hint = |kind, state| Hint { key: door, kind, state };
         assert_eq!(tag_of(hint(Kind::Door, State::Shut), 1.0), 255);
         assert_eq!(tag_of(hint(Kind::Window, State::Shut), 1.0), 255 | 1 << 8);
         assert_eq!(tag_of(hint(Kind::Window, State::Open), 1.0), 255 | 2 << 8);
-        assert_eq!(tag_of(hint(Kind::Door, State::Open), 0.0), 2 << 8);
+        assert_eq!(tag_of(hint(Kind::Door, State::Open), 0.0), 0);
+        assert_eq!(tag_of(hint(Kind::Door, State::Open), 1.0), tag_of(hint(Kind::Door, State::Shut), 1.0));
         assert_eq!(tag_of(hint(Kind::Door, State::Barred), 1.0), 255 | 1 << 10);
         assert_eq!(tag_of(hint(Kind::Window, State::Barred), 1.0), 255 | 1 << 8 | 1 << 10);
         assert!(BARRED < 0.6 && DOOR != WINDOW && OPEN != DOOR && OPEN != WINDOW);
     }
 
-    /// A door in a cut-away wall is outlined by how far its wall is cut, blue shut and green open
+    /// A door in a cut-away wall is outlined by how far its wall is cut, the same blue shut, open
     /// or battered down; a window, a wall and a standing wall's door are not.
     #[test]
     fn a_door_in_a_cut_wall_is_outlined() {
@@ -722,7 +723,7 @@ mod tests {
         for edge in [Edge::DoorOpen, Edge::DoorBroken] {
             map.set_edge(door.0, Side::N, edge);
             let (hint, tag) = cut_door(&map, door, 1.0).unwrap();
-            assert_eq!((hint.state, tag >> 8), (State::Open, 2), "{edge:?}");
+            assert_eq!((hint.state, tag >> 8), (State::Open, 0), "{edge:?}");
         }
         // The inner door between the rooms too: any door, not only outside ones.
         assert!(cut_door(&map, (IVec2::new(14, 12), W), 1.0).is_some());
@@ -798,7 +799,7 @@ mod tests {
     /// The outline meshes are small, and the look dims at night without changing every frame.
     #[test]
     fn the_outlines_are_small_and_dim_at_night() {
-        for (mesh, quads) in [(outline(Vec2::ZERO, Vec2::new(1.0, 2.0), 0.07, false, false), 4), (outline(Vec2::ZERO, Vec2::ONE, 0.06, true, true), 7)] {
+        for (mesh, quads) in [(outline(Vec2::ZERO, Vec2::new(1.0, 2.0), 0.07, false, false), 3), (outline(Vec2::ZERO, Vec2::ONE, 0.06, true, true), 6)] {
             assert_eq!(mesh.count_vertices(), quads * 4);
         }
         let (day, night) = (look_at(1.0), look_at(0.0));

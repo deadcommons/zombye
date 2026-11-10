@@ -1245,10 +1245,10 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   as a straight line. The room's set is worked out again only when the room or the camera's angle changes, the
   body's every frame (a few dozen tiles), the texture is uploaded only on frames where an amount moved, and nothing
   is allocated per frame. **Nothing inside is hidden:** furniture, containers, items and characters never are; a door
-  leaf drops to the stub's height with its wall (a shut door in a cut wall doesn't look like an open doorway) and a
+  leaf sinks away with its wall and isn't drawn in a cut one (no stubby leaf; its outline, next, says where it is) and a
   window becomes a low framed lip of glass standing on the stub (`world_render::piece_look`, by `Cutaway::amount`,
-  the same eased amount the shader draws the wall by). **A cut door is outlined:** over the low leaf, the door's
-  outline at its full size in the opening hints' tints (shut blue, open or battered down green), fading in with the
+  the same eased amount the shader draws the wall by). **A cut door is outlined:** in place of the leaf, the door's
+  outline at its full size in the doors' blue (the same shut, open or battered down), fading in with the
   wall's cut and drawn only where nothing stands in front of it (`opening_hints::cut_door`, `draw_cut_doors`: the
   hints' mesh and shader, a second material with the depth test the usual way round; always on). Cut walls still cast shadows. **Details standing over the
   player from outside** (a porch roof, built a metre at a time; a shop's awning, a metre at a time; a door canopy; a
@@ -1283,8 +1283,8 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   quarter turns by itself (recordings). `--rotate`, which turning used to need, is accepted and ignored.
 - **Opening hints** (`opening_hints.rs`, `opening_hint.wesl`): a door or window on an outside wall that faces away
   from the camera is behind its own building on screen. While the player is within 10 m of its middle
-  (`opening_hints::RANGE`) its outline is drawn through the building: a shut door blue, a shut window pale violet (with
-  a cross), an open or broken one of either green (a way in), each fading in and out over 0.2 s, dim at night.
+  (`opening_hints::RANGE`) its outline is drawn through the building: a door blue (the same shut, open or broken), a shut window
+  pale violet (with a cross), an open or broken window green (a way in), each fading in and out over 0.2 s, dim at night.
   `State::Barred` (locked, barricaded, boarded) is drawn at 45% of the alpha, but **no edge in the map is any of
   those yet**: `opening_hints::classify` names every `Edge` kind, so a new one doesn't compile until it is given its
   hint. Which openings (`hint_for`, `find`): doors and windows only (never an arch or a fence), on an edge with a
@@ -1293,8 +1293,8 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   **Fair information:** only openings, from the client's map copy, which every client holds whole; nothing of
   zombies, players or loot. Drawn as the silhouettes are: one material with the depth test turned round
   (`silhouette::behind_only`), the outline's depth moved 0.5 m toward the camera so its own wall doesn't count, two
-  small shared meshes (16 and 28 vertices) and an entity an opening whose `MeshTag` holds its tint and fade (bits 0-7
-  how much shows, 8-9 door / window / open, 10 barred), so each mesh's instances are one batch in the transparent
+  small shared meshes (12 and 24 vertices: bars only, nothing filled in between) and an entity an opening whose `MeshTag` holds its tint and fade (bits 0-7
+  how much shows, 8-9 door / window / open window, 10 barred), so each mesh's instances are one batch in the transparent
   phase of the main pass: no pass of its own, nothing full-screen. Worked out again only when the player has moved
   half a metre, the camera turned, the map changed or the player went in or out of a building; a frame in which
   nothing fades writes nothing, and nothing is allocated per frame (entities of hints that went are kept for the

@@ -43,7 +43,7 @@ fn fragment(in: VertexOutput) -> HintOutput {
         alpha *= look.params.y;
     }
 @if(VERTEX_COLORS) {
-    // The bars are whole, the fill between them faint.
+    // The bars are whole, a window's cross a little fainter.
     alpha *= in.color.a;
 }
     var out: HintOutput;
