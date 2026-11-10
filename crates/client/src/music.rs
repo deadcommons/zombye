@@ -193,7 +193,8 @@ fn load_music(mut commands: Commands, options: Res<Options>, mut sources: ResMut
     let data = if own { options.data.clone() } else { zombye_net::content::default_data_dir() };
     let audio = data.join("..").join("audio");
     let overlay = crate::release_audio::root();
-    let path = crate::release_audio::data_file(overlay, &data, !own, "music.ron");
+    let game_data = data == zombye_net::content::default_data_dir();
+    let path = crate::release_audio::data_file(overlay, &data, game_data, "music.ron");
     match Music::load(&path, &audio, overlay, &mut sources, options.music) {
         Ok(m) => {
             let n: usize = m.tracks.values().map(Vec::len).sum();
