@@ -605,6 +605,7 @@ impl Plugin for InventoryUiPlugin {
             .init_resource::<HoveredItem>()
             .add_systems(Startup, spawn.after(crate::hud::spawn_hud))
             .add_systems(PreUpdate, (type_search, menu_keys).chain().in_set(TextEntry).after(bevy::input::InputSystems))
+            .add_systems(PreUpdate, click_away.after(bevy::input::InputSystems).after(bevy::picking::PickingSystems::Hover))
             .add_systems(Update, (toggle, keep_note, track_flight, follow_open, prune_picked, script_picks, menu_from_options, send_clicks, world_menu, script_menu, menu_act, send_picked, flush, remember_view, rebuild, draw_menu).chain());
     }
 }
@@ -1982,6 +1983,38 @@ fn open_menu(menu: &mut ItemMenu, link: &ServerLink, join: &JoinInfo, me: u32, f
     true
 }
 
+/// Is the pointer on a panel, button or the like? A node over the whole window (an overlay)
+/// doesn't count.
+fn pointer_on_ui(window: &Window, hover: &bevy::picking::hover::HoverMap, nodes: &Query<&ComputedNode>) -> bool {
+    let whole = window.physical_size().as_vec2() * 0.95;
+    hover.values().any(|m| m.keys().any(|e| nodes.get(*e).is_ok_and(|n| !(n.size().x >= whole.x && n.size().y >= whole.y))))
+}
+
+/// A left click off every panel and button (on the world) while the inventory is open closes it,
+/// and is used up doing so: both mouse buttons are reset until they're pressed again, so the
+/// click doesn't swing, start aiming (right held), or reach anything else that reads the mouse.
+/// Not while an item menu is open (that click closes the menu, `menu_act`), or one just opened.
+/// A right click on the world still opens its menu (`world_menu`).
+fn click_away(
+    mut mouse: ResMut<ButtonInput<MouseButton>>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    hover: Option<Res<bevy::picking::hover::HoverMap>>,
+    nodes: Query<&ComputedNode>,
+    menu: Res<ItemMenu>,
+    mut panel: ResMut<InventoryPanel>,
+) {
+    if !panel.open || !mouse.just_pressed(MouseButton::Left) || menu.open.is_some() || menu.fresh {
+        return;
+    }
+    let (Ok(window), Some(hover)) = (windows.single(), hover) else { return };
+    if window.cursor_position().is_none() || pointer_on_ui(window, &hover, &nodes) {
+        return;
+    }
+    panel.open = false;
+    mouse.reset(MouseButton::Left);
+    mouse.reset(MouseButton::Right);
+}
+
 /// The menu on a ground item in the world: right-click it with the panel open, or tap the right
 /// mouse on it with the panel shut (held, it aims). Only items within reach (our floor). The same
 /// tap on a door, window, fence, blind or container opens its menu (`world_actions`).
@@ -2007,10 +2040,7 @@ fn world_menu(
     let now = time.elapsed_secs();
     let mut want = false;
     if mouse.just_pressed(MouseButton::Right) {
-        // On a panel, button or the like; a node over the whole window (an overlay) doesn't count.
-        let whole = window.physical_size().as_vec2() * 0.95;
-        let over_ui = hover.values().any(|m| m.keys().any(|e| nodes.get(*e).is_ok_and(|n| !(n.size().x >= whole.x && n.size().y >= whole.y))));
-        if over_ui || menu.fresh || me.dead {
+        if pointer_on_ui(window, &hover, &nodes) || menu.fresh || me.dead {
             *tap = None;
             return;
         }
@@ -2347,6 +2377,65 @@ mod tests {
         assert_eq!(f, Find::default(), "put away, cleared");
         f.groups = vec![Group::Food];
         assert!(f.in_use(), "a chip set from the start (--filter) shows them");
+    }
+
+    /// A left click on the world (off every panel) with the inventory open shuts it and is used
+    /// up: no button is down afterwards, so nothing behind it swings or aims. A click on the panel
+    /// leaves it open, and with an item menu up the click is the menu's.
+    #[test]
+    fn a_click_off_the_panel_shuts_it_and_goes_no_further() {
+        let mut app = ui_app();
+        app.insert_resource(InventoryPanel { open: true }).init_resource::<ItemMenu>();
+        app.add_systems(PreUpdate, click_away.after(bevy::input::InputSystems).after(bevy::picking::PickingSystems::Hover));
+        // Whatever reads the mouse after it (as the swing and aim do in `Update`).
+        #[derive(Resource, Default)]
+        struct Seen(u32);
+        app.init_resource::<Seen>().add_systems(Update, |mouse: Res<ButtonInput<MouseButton>>, mut seen: ResMut<Seen>| {
+            if mouse.just_pressed(MouseButton::Left) || mouse.pressed(MouseButton::Left) || mouse.pressed(MouseButton::Right) {
+                seen.0 += 1;
+            }
+        });
+        app.world_mut().spawn(Camera2d);
+        app.world_mut().spawn((Node { position_type: PositionType::Absolute, top: px(0), left: px(0), width: px(300), height: px(200), ..default() }, BackgroundColor(Color::BLACK)));
+        for _ in 0..3 {
+            app.update();
+        }
+        let window = app.world_mut().query_filtered::<Entity, With<PrimaryWindow>>().single(app.world()).unwrap();
+        let press = |app: &mut App, at: Vec2, buttons: &[MouseButton], state: ButtonState| {
+            let moved = CursorMoved { window, position: at, delta: None };
+            app.world_mut().write_message(moved.clone());
+            app.world_mut().write_message(WindowEvent::CursorMoved(moved));
+            app.update();
+            for &button in buttons {
+                let e = MouseButtonInput { button, state, window };
+                app.world_mut().write_message(e);
+                app.world_mut().write_message(WindowEvent::MouseButtonInput(e));
+            }
+            app.update();
+        };
+        let open = |app: &App| app.world().resource::<InventoryPanel>().open;
+        let seen = |app: &App| app.world().resource::<Seen>().0;
+        // On the panel: it stays open, and the click is the panel's.
+        press(&mut app, Vec2::new(100.0, 100.0), &[MouseButton::Left], ButtonState::Pressed);
+        assert!(open(&app), "a click on the panel keeps it open");
+        press(&mut app, Vec2::new(100.0, 100.0), &[MouseButton::Left], ButtonState::Released);
+        // An item menu up: the click off the panel only closes the menu (`menu_act`).
+        app.world_mut().resource_mut::<ItemMenu>().open = Some(MenuState { title: String::new(), stack: beans(1), entries: Vec::new(), at: None });
+        press(&mut app, Vec2::new(600.0, 400.0), &[MouseButton::Left], ButtonState::Pressed);
+        assert!(open(&app), "with a menu up the click is the menu's");
+        press(&mut app, Vec2::new(600.0, 400.0), &[MouseButton::Left], ButtonState::Released);
+        app.world_mut().resource_mut::<ItemMenu>().open = None;
+        // Off the panel, the right button held (as if to aim): shut, and nothing behind it saw a button.
+        app.world_mut().resource_mut::<Seen>().0 = 0;
+        press(&mut app, Vec2::new(600.0, 400.0), &[MouseButton::Right, MouseButton::Left], ButtonState::Pressed);
+        assert!(!open(&app), "a click on the world shuts the panel");
+        assert_eq!(seen(&app), 0, "and is used up: no swing, no aim");
+        app.update();
+        assert_eq!(seen(&app), 0, "the buttons stay up while held");
+        press(&mut app, Vec2::new(600.0, 400.0), &[MouseButton::Right, MouseButton::Left], ButtonState::Released);
+        // Shut, the next click is the game's again.
+        press(&mut app, Vec2::new(600.0, 400.0), &[MouseButton::Left], ButtonState::Pressed);
+        assert!(seen(&app) > 0, "a later click reaches the game");
     }
 
     /// The fold mark of a collapsed row, through Bevy's input and picking: a press on it opens
