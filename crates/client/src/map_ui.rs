@@ -718,7 +718,7 @@ mod tests {
 
     #[test]
     fn tiles_bake_to_what_the_shader_reads() {
-        let content = zombye_net::content::load_config(&zombye_net::content::default_data_dir()).unwrap();
+        let content = zombye_net::content::load_config(&zombye_net::content::default_data_dir(), 1).unwrap();
         let world = zombye_sim::World::new(content);
         let map = &world.map;
         let (w, h) = (map.width(), map.height());
