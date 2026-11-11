@@ -118,6 +118,12 @@ impl FurnitureModels {
         )
     }
 
+    /// The triangles of the model named `name` as they are: corners, colour, and whether the material
+    /// is foliage (`leaves...`). For the instanced ground cover, which builds its own meshes.
+    pub fn raw(&self, name: &str) -> Option<Vec<([Vec3; 3], LinearRgba, bool)>> {
+        Some(self.0.get(name)?.tris.iter().map(|(p, _, c, leaf)| (*p, *c, *leaf)).collect())
+    }
+
     /// The model drawn for `kind` at a place: the kind's own or one of its variants (`<kind>.2.glb`,
     /// `<kind>.3.glb`, ... beside it, numbered without a gap), the same one every time for the same `salt`.
     fn pick(&self, kind: &str, salt: u32) -> Option<&FurnitureModel> {

@@ -922,9 +922,14 @@ fn scatter(out: &mut Vec<VegSpot>, land: &Land, looks: &SoftLooks, paint: &Paint
     let tile = land.tile(t);
     let h = |salt: u32| hash01(x, y, salt);
     let centre = t.as_vec2() + Vec2::splat(0.5);
+    let veg = crate::vegetation::veg_look();
     let mut put = |kind: VegKind, salt: u32, pos: Vec2, scale: f32, dry: f32, rank: f32, free: bool| {
         let turn = if free { h(salt + 1) * TAU } else { (h(salt + 1) * 4.0).floor() * FRAC_PI_2 };
-        out.push(VegSpot { pos, kind, variant: (h(salt + 2) * VARIANTS as f32) as u8, turn, scale, dry, rank });
+        // Against a wall a patch keeps the size it was laid out at: bigger, it would poke through.
+        let grow = if !free { 1.0 } else if kind == VegKind::GrassLong { veg.scale * veg.long_scale } else { veg.scale };
+        let grass = matches!(kind, VegKind::GrassLong | VegKind::Grass | VegKind::GrassThin | VegKind::Weed);
+        let dry = if grass { (dry + veg.dry).clamp(0.0, 1.0) } else { dry };
+        out.push(VegSpot { pos, kind, variant: (h(salt + 2) * VARIANTS as f32) as u8, turn, scale: scale * grow, dry, rank });
     };
     let anywhere = |salt: u32, margin: f32| t.as_vec2() + Vec2::new(margin + (1.0 - 2.0 * margin) * h(salt), margin + (1.0 - 2.0 * margin) * h(salt + 7));
     let hard = |p: IVec2| {
@@ -978,7 +983,7 @@ fn scatter(out: &mut Vec<VegSpot>, land: &Land, looks: &SoftLooks, paint: &Paint
         (VegKind::GrassThin, 0.6, 0.15 + 0.45 * drift)
     } else if wear > 0.12 || bare > 0.35 || look.trees > 0 || tile.feature != Feature::None {
         (VegKind::GrassThin, 0.85, 0.35 + 0.5 * drift)
-    } else if look.rough > 0.6 && !(by_hard && !look.verge) {
+    } else if look.rough > veg.long_from && !(by_hard && !look.verge) {
         (VegKind::GrassLong, 1.0, 0.25 + 0.7 * drift)
     } else {
         (VegKind::Grass, 1.0, 0.45 * drift * drift)
@@ -1000,10 +1005,15 @@ fn scatter(out: &mut Vec<VegSpot>, land: &Land, looks: &SoftLooks, paint: &Paint
     if kind != VegKind::GrassThin || look.forest {
         let drift = noise(centre, 7.0, 93);
         let wild = if kind == VegKind::GrassLong { 1.0 } else if look.forest { 0.3 } else { 0.22 };
-        if h(700) < (drift - 0.62) * 3.2 * wild {
+        if h(700) < (drift - (1.0 - veg.flower_cover)) * 3.2 * wild * veg.flowers {
             let red = noise(centre, 23.0, 94) + 0.2 * (h(701) - 0.5) > 0.5;
             put(if red { VegKind::FlowersRed } else { VegKind::FlowersWhite }, 702, anywhere(705, if free { 0.2 } else { 0.5 }), 0.9 + 0.3 * h(712), 0.2, h(713), free);
         }
+    }
+    // Small stones where soft ground meets hard, and on bare dirt.
+    let stones = if look.dirt { veg.dirt_stones } else if by_hard { veg.verge_stones } else { 0.0 };
+    if h(740) < stones {
+        put(VegKind::Pebbles, 741, anywhere(744, 0.2), 0.8 + 0.5 * h(751), 0.0, h(753), true);
     }
     // Something blown against the house.
     if by_wall && h(720) < 0.035 {
