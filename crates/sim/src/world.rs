@@ -869,6 +869,21 @@ impl World {
         true
     }
 
+    /// Turn player `id` to `facing` (radians) at once, before an action aimed at something (a
+    /// right-click on a door, window or blind: `Intent::Toward`). Its input is turned too, so this
+    /// tick's movement doesn't turn it back; the client's next input carries the same facing.
+    /// Ignored for a dead, asleep, knocked, tied or climbing player, or a facing that isn't finite.
+    pub fn set_facing(&mut self, id: u32, facing: f32) -> bool {
+        let Some(p) = self.players.iter_mut().find(|p| p.id == id) else { return false };
+        if !facing.is_finite() || p.dead || p.needs.asleep() || p.knock.is_some() || p.away.is_some() || p.restraint.is_some() || p.state.climb.is_some() {
+            return false;
+        }
+        let facing = facing.rem_euclid(std::f32::consts::TAU);
+        p.state.facing = facing;
+        p.input.facing = facing;
+        true
+    }
+
     /// Player `id` opens or closes the door or window it faces, if one is within reach of where
     /// the server has it. Returns the new edge, or `None` (request ignored) if there is no such
     /// edge or player. Broken doors and windows can't be shut again.
@@ -1040,6 +1055,8 @@ impl World {
         removed.sort_unstable();
         let gone: Vec<bool> = z.id.iter().map(|id| removed.binary_search(id).is_ok()).collect();
         self.rise_looks.risen.retain(|id, _| removed.binary_search(id).is_err());
+        // What was left on a body goes with it; whoever had it open finds it gone.
+        self.opened.retain(|&c, _| crate::corpses::corpse_zombie(c).is_none_or(|z| removed.binary_search(&z).is_err()));
         self.zombies.remove_where(|i| gone[i]);
     }
 

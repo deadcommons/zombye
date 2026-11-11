@@ -91,4 +91,16 @@
         merge_radius: 24.0,
         max_attractors: 16,
     ),
+
+    // What zombies wear: each zombie one of these (by weight, from a hash of the seed and its id).
+    // Item ids from items.ron; what a dead one wears is on its body to take (searched with E). The
+    // client draws the baked crowd variant nearest to it (zombie_NN_<item ids>.zvat).
+    outfits: [
+        (wears: ["t_shirt", "jeans", "trainers"], weight: 3.0),
+        (wears: ["hoodie", "jeans", "trainers", "baseball_cap"], weight: 2.0),
+        (wears: ["leather_jacket", "jeans", "work_boots"], weight: 1.0),
+        (wears: ["jumper", "jeans", "work_boots", "woolly_hat"], weight: 1.5),
+        (wears: ["t_shirt", "jeans", "work_boots"], weight: 2.0),
+        (wears: ["jeans", "trainers"], weight: 1.0),
+    ],
 )

@@ -871,11 +871,48 @@ fn variant_of(id: u32, n: usize) -> usize {
     (id.wrapping_mul(0x85EB_CA6B).rotate_right(13) as usize) % n.max(1)
 }
 
-/// What each variant wears, from file stems: the part past the shortest stem that starts all of them
-/// (none: every stem is its own).
+/// What each variant wears, from file stems: the part past the shortest stem that starts all of them;
+/// with none, the part past a body's name and number (`zombie_03_hoodie_jeans` wears
+/// `hoodie_jeans`, `zombie_03` nothing); a stem with no number, nothing.
 fn variant_wears(stems: &[String]) -> Vec<String> {
     let base = stems.iter().min_by_key(|s| s.len()).filter(|b| stems.iter().all(|s| s.starts_with(b.as_str())));
-    stems.iter().map(|s| base.map_or(String::new(), |b| s[b.len()..].trim_matches('_').to_string())).collect()
+    let past_number = |s: &str| {
+        let tokens: Vec<&str> = s.split('_').collect();
+        tokens.iter().position(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit())).map_or(String::new(), |k| tokens[k + 1..].join("_"))
+    };
+    stems.iter().map(|s| base.map_or_else(|| past_number(s), |b| s[b.len()..].trim_matches('_').to_string())).collect()
+}
+
+/// [`variant_for`], with ties between variants that match as well (the same outfit on several
+/// bodies) broken by zombie `id`, so a crowd in one outfit isn't one body.
+fn variant_for_id(variants: &[&str], wore: &[&str], id: u32) -> Option<usize> {
+    let best = variant_for(variants, wore)?;
+    let same = |v: usize| {
+        let mut a: Vec<&str> = variants[v].split('_').collect();
+        let mut b: Vec<&str> = variants[best].split('_').collect();
+        a.sort_unstable();
+        b.sort_unstable();
+        a == b
+    };
+    let ties: Vec<usize> = (0..variants.len()).filter(|&v| same(v)).collect();
+    Some(ties[variant_of(id, ties.len())])
+}
+
+/// The variant zombie `id` is drawn as: the one nearest to what it wears (`look`, item indices; see
+/// `zombye_sim::corpses`), else by its id. `None` for `look`: it wears its outfit, worked out here.
+fn variant_of_zombie(assets: &ZombieAssets, join: &JoinInfo, id: u32, look: Option<&[u16]>) -> usize {
+    let n = assets.variants.len();
+    let default;
+    let look = match look {
+        Some(l) => l,
+        None if join.outfits.is_empty() => return variant_of(id, n),
+        None => {
+            default = zombye_sim::corpses::default_look(join.seed, id, &join.outfits, &join.items);
+            &default[..]
+        }
+    };
+    let wore: Vec<&str> = look.iter().filter_map(|&i| join.items.get(i as usize)).filter_map(|d| d.model.as_deref()).collect();
+    variant_for_id(&assets.variants.iter().map(|v| v.wears.as_str()).collect::<Vec<_>>(), &wore, id).unwrap_or_else(|| variant_of(id, n))
 }
 
 /// The variant nearest to what a player who rose wore (#63): the most of its wearables (model names)
@@ -1032,6 +1069,8 @@ struct Tracked {
     entity: Entity,
     /// Its outfit variant (index into [`ZombieAssets::variants`]).
     variant: usize,
+    /// What the server said it wears, when not its outfit (`Snapshot::looks`).
+    look: Option<Vec<u16>>,
     anim: ZombieAnim,
     /// When `anim` started (seconds, `Time` clock).
     since: f32,
@@ -1086,6 +1125,7 @@ impl Tracked {
             id,
             entity: Entity::PLACEHOLDER,
             variant,
+            look: None,
             anim,
             since,
             fade_from: None,
@@ -1231,6 +1271,9 @@ fn sync_zombies(
     let tick = link.curr.tick;
     let prev_list = &link.prev.zombies;
     let n = assets.variants.len();
+    // The looks the server sent: zombies that don't wear their outfit (in id order, as listed).
+    let looks = &link.curr.looks;
+    let look_of = |id: u32| looks.binary_search_by_key(&id, |o| o.id).ok().map(|k| &looks[k].worn[..]);
     for (i, z) in link.curr.zombies.iter().enumerate() {
         // Both lists are in id order; usually at the same index, unless corpses were cleared away.
         let prev = prev_list.get(i).filter(|p| p.id == z.id).or_else(|| prev_list.binary_search_by_key(&z.id, |p| p.id).ok().map(|k| &prev_list[k])).unwrap_or(z);
@@ -1245,19 +1288,13 @@ fn sync_zombies(
             let rotation = rotation();
             // First sight. A corpse is already lying still.
             let since = if z.anim == ZombieAnim::Dead { -100.0 } else { now };
-            // A player who turned wears what it wore, as near as the variants allow.
-            let variant = link
-                .curr
-                .risen
-                .iter()
-                .find(|r| r.id == z.id)
-                .and_then(|r| {
-                    let wore: Vec<&str> = r.worn.iter().filter_map(|&i| join.items.get(i as usize)).filter_map(|d| d.model.as_deref()).collect();
-                    variant_for(&assets.variants.iter().map(|v| v.wears.as_str()).collect::<Vec<_>>(), &wore)
-                })
-                .unwrap_or_else(|| variant_of(z.id, n));
+            // What it wears, as near as the variants allow: its outfit, what a player who turned
+            // wore, or what is left on a body that has been searched.
+            let look = look_of(z.id);
+            let variant = variant_of_zombie(&assets, &join, z.id, look);
             let v = &assets.variants[variant];
             let mut tr = Tracked::new(z.id, variant, z.anim, since, z.speed, tick);
+            tr.look = look.map(<[u16]>::to_vec);
             tr.climb = climb;
             let (clip, play) = tr.play(now, t, &v.timing);
             let tag = pack_tag(z.id, clip, play, z.speed, false);
@@ -1275,6 +1312,21 @@ fn sync_zombies(
             entities.0.insert(z.id, tr);
             continue;
         };
+        // What it wears changed (its body searched, something taken off it): draw the variant
+        // nearest to that now.
+        let look = look_of(z.id);
+        if look != tr.look.as_deref() {
+            tr.look = look.map(<[u16]>::to_vec);
+            let variant = variant_of_zombie(&assets, &join, z.id, look);
+            if variant != tr.variant {
+                tr.variant = variant;
+                let v = &assets.variants[variant];
+                commands.entity(tr.entity).insert((Mesh3d(v.mesh.clone()), MeshMaterial3d(v.material.clone())));
+                if let Some(ghost) = tr.ghost.take() {
+                    commands.entity(ghost).despawn();
+                }
+            }
+        }
         let timing = &assets.variants[tr.variant.min(n - 1)].timing;
         tr.seen = tick;
         tr.speed = speed_steps(z.speed);
@@ -1494,6 +1546,25 @@ mod tests {
         assert_eq!(variant_for(&v, &["work_boots"]), Some(0));
         assert_eq!(variant_for(&["hoodie"], &["jeans"]), None, "nothing near: by id");
         assert_eq!(variant_wears(&["a".into(), "b".into()]), ["", ""], "no common stem");
+    }
+
+    /// Several bodies, each in several outfits (the shipped crowd): what each wears is past its
+    /// body's number, and a zombie in an outfit two bodies have is one of them by its id.
+    #[test]
+    fn zombies_wear_the_variant_of_their_outfit() {
+        let stems: Vec<String> = ["zombie_03", "zombie_03_t_shirt_jeans_trainers", "zombie_04", "zombie_04_t_shirt_jeans_trainers", "zombie_04_hoodie_jeans_trainers"].iter().map(|s| s.to_string()).collect();
+        let wears = variant_wears(&stems);
+        assert_eq!(wears, ["", "t_shirt_jeans_trainers", "", "t_shirt_jeans_trainers", "hoodie_jeans_trainers"]);
+        let v: Vec<&str> = wears.iter().map(String::as_str).collect();
+        let outfit = ["t_shirt", "jeans", "trainers"];
+        let picks: std::collections::BTreeSet<usize> = (0..40).map(|id| variant_for_id(&v, &outfit, id).unwrap()).collect();
+        assert_eq!(picks, [1, 3].into(), "either body in that outfit, by id");
+        assert_eq!(variant_for_id(&v, &["hoodie", "jeans", "trainers"], 7), Some(4));
+        let bare: std::collections::BTreeSet<usize> = (0..40).map(|id| variant_for_id(&v, &[], id).unwrap()).collect();
+        assert_eq!(bare, [0, 2].into(), "a body with nothing left on it: a plain one");
+        // The Synty crowd's names: one shared stem.
+        let sk = variant_wears(&["zombie_sk".into(), "zombie_sk_jeans_trainers".into(), "zombie_sk_hoodie_jeans_trainers_baseball_cap".into()]);
+        assert_eq!(sk, ["", "jeans_trainers", "hoodie_jeans_trainers_baseball_cap"]);
     }
 
     #[test]
