@@ -1571,7 +1571,7 @@ stands still may count as changed.** Each of these cost milliseconds a frame bef
   `containers_in_reach` include bodies within `CONTAINER_REACH` of `BODY_RADIUS` round where they lie, same room;
   `ContainerSite::body`), it is filled the first time (`World::fill_corpse`): everything it wears, plus its pockets from
   `loot.ron`'s `(any, corpse)` table. From then on what it wears is the clothing left in it (`World::zombie_look`), so
-  taking a hoodie off the body takes it off the body you see. Nothing can be put on a body. A body cleared away
+  taking a hoodie off the body takes it off the body you see. Opening the inventory (Tab or I) beside a body, with no container open, searches it by itself (`corpses::body_in_reach`, the server's reach rule on the client's view), so its contents fill the right pane without E. Nothing can be put on a body. A body cleared away
   (`corpse_secs`, `max_corpses`) takes what was left on it. **Drawing:** a client works out each zombie's outfit itself
   (`JoinInfo::seed`, `outfits`); `Snapshot::looks` sends only the zombies that differ (risen players, searched bodies:
   `World::zombie_look_is_default`), and the crowd draws the variant nearest to the look (`zombie_render::variant_of_zombie`:

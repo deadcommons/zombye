@@ -105,6 +105,21 @@ pub fn corpse_zombie(c: u32) -> Option<u32> {
     (c & CORPSE_BIT != 0).then_some(c & !CORPSE_BIT)
 }
 
+/// The body nearest `pos` that a player standing there can search (within
+/// [`crate::inventory::CONTAINER_REACH`] of [`BODY_RADIUS`] round it, the same room), as its container
+/// id, from `bodies` (dead zombies' ids and where they lie). The server's reach rule, for a client to
+/// open the body at its feet when the inventory opens.
+pub fn body_in_reach(map: &crate::map::TileMap, pos: Vec2, bodies: impl IntoIterator<Item = (u32, Vec2)>) -> Option<u32> {
+    let room = |p: Vec2| if map.in_bounds(p.floor().as_ivec2()) { map.room_at(p) } else { 0 };
+    let here = room(pos);
+    let reach = crate::inventory::CONTAINER_REACH + BODY_RADIUS;
+    bodies
+        .into_iter()
+        .filter(|&(_, b)| b.distance_squared(pos) <= reach * reach && room(b) == here)
+        .min_by(|a, b| a.1.distance_squared(pos).total_cmp(&b.1.distance_squared(pos)).then(a.0.cmp(&b.0)))
+        .map(|(z, _)| corpse_container(z))
+}
+
 /// Which of `outfits` zombie `id` wears in a world of `seed`: by weight, from a hash of the two.
 pub fn outfit_index(seed: u64, id: u32, outfits: &[Outfit]) -> Option<usize> {
     let total: f32 = outfits.iter().map(|o| o.weight.max(0.0)).sum();

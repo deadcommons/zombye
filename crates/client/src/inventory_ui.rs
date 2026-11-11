@@ -691,10 +691,29 @@ fn type_search(mut typed: MessageReader<bevy::input::keyboard::KeyboardInput>, m
     keys.reset_all();
 }
 
-fn toggle(keys: Res<ButtonInput<KeyCode>>, mut panel: ResMut<InventoryPanel>) {
+fn toggle(keys: Res<ButtonInput<KeyCode>>, mut panel: ResMut<InventoryPanel>, link: Res<ServerLink>, me: Res<LocalPlayer>, map: Res<crate::server_link::ClientMap>, mut out: ResMut<Outbox>) {
     if keys.just_pressed(KeyCode::Tab) || keys.just_pressed(KeyCode::KeyI) {
         panel.open = !panel.open;
+        if panel.open
+            && let Some(intent) = open_body(&link, me.id, &map.0)
+        {
+            out.0.push(intent);
+        }
     }
+}
+
+/// Opening the inventory next to a dead zombie searches its body, so what it wears and carries is
+/// in the right-hand pane without pressing E: unless a container is open already or a search is
+/// under way. By the server's own reach rule ([`zombye_sim::corpses::body_in_reach`]).
+fn open_body(link: &ServerLink, me: u32, map: &zombye_sim::TileMap) -> Option<Intent> {
+    let view = link.own(me)?;
+    if view.open.is_some() || view.jobs.iter().any(|j| matches!(j, JobKind::Search { .. })) {
+        return None;
+    }
+    let p = link.curr.players.iter().find(|p| p.id == me && !p.dead)?;
+    let bodies = link.curr.zombies.iter().filter(|z| z.anim == zombye_sim::ZombieAnim::Dead).map(|z| (z.id, Vec2::from(z.pos)));
+    let c = zombye_sim::corpses::body_in_reach(map, Vec2::from(p.pos), bodies)?;
+    Some(Intent::Search { player: me, container: Some(c) })
 }
 
 fn keep_note(time: Res<Time>, notes: Res<ItemNotesThisFrame>, panel: Res<InventoryPanel>, mut last: ResMut<LastNote>, mut line: Query<(&mut Text, &mut TextColor, &mut BackgroundColor), With<NoteLine>>) {

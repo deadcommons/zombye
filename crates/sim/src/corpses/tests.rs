@@ -241,3 +241,21 @@ fn a_turned_players_clothes_are_on_its_body_not_the_floor() {
     settle(&mut w, looter);
     assert!(w.container_contents(corpse_container(zid)).unwrap().iter().any(|s| s.item == hoodie), "{:?}", w.item_notes);
 }
+
+#[test]
+fn the_body_in_reach_is_the_one_the_server_searches() {
+    let (mut w, id, zid) = field();
+    let bodies = |w: &World| (0..w.zombies.len()).filter(|&i| w.zombies.state[i] == ZombieState::Dead).map(|i| (w.zombies.id[i], w.zombies.pos[i])).collect::<Vec<_>>();
+    let me = w.player(id).unwrap().state.pos;
+    assert_eq!(super::body_in_reach(&w.map, me, bodies(&w)), Some(corpse_container(zid)));
+    assert_eq!(w.containers_in_reach(id), vec![corpse_container(zid)]);
+    // A nearer one wins; one too far is left out.
+    let near = w.add_zombie(me + Vec2::new(0.0, 0.6), 0.0, 1.0);
+    kill(&mut w, near);
+    let far = w.add_zombie(me + Vec2::new(-2.2, 0.0), 0.0, 1.0);
+    kill(&mut w, far);
+    assert_eq!(super::body_in_reach(&w.map, me, bodies(&w)), Some(corpse_container(w.zombies.id[near])));
+    assert_eq!(w.containers_in_reach(id).first(), Some(&corpse_container(w.zombies.id[near])));
+    assert!(!w.containers_in_reach(id).contains(&corpse_container(w.zombies.id[far])));
+    assert_eq!(super::body_in_reach(&w.map, me + Vec2::new(10.0, 0.0), bodies(&w)), None);
+}
