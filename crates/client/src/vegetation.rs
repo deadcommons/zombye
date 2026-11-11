@@ -548,6 +548,16 @@ fn patch_mesh(kind: VegKind, variant: u32) -> Mesh {
 mod tests {
     use super::*;
 
+    /// The shipped `vegetation.ron` is the built-in look; unknown fields and values out of range
+    /// are refused.
+    #[test]
+    fn the_shipped_vegetation_look_is_the_built_in_one() {
+        assert_eq!(VegLook::parse(SHIPPED_LOOK).unwrap(), VegLook::default());
+        assert_eq!(VegLook::parse("()").unwrap(), VegLook::default());
+        assert!(VegLook::parse("(trees: 1.0)").is_err());
+        assert!(VegLook::parse("(flowers: -1.0)").is_err());
+    }
+
     /// Meshes stay small (they are drawn thousands of times), sit on the ground within their
     /// patch, and are the same every time.
     #[test]

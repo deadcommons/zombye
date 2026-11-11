@@ -1,6 +1,6 @@
 // Where the instanced grass, flowers and stones grow and how dry they are
 // (crates/client/src/vegetation.rs, meshgen/landscape.rs). Only the look. Every field is optional;
-// one left out takes the value shown.
+// one left out takes the value shown here.
 (
     // Added to every patch's dryness (0 fresh green .. 1 straw).
     dry: 0.0,

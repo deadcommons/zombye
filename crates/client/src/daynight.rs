@@ -434,6 +434,16 @@ fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
 mod tests {
     use super::*;
 
+    /// The shipped `light.ron` is the built-in look, so a data folder without the file is lit the
+    /// same; a field this version doesn't know and a value out of range are refused.
+    #[test]
+    fn the_shipped_light_is_the_built_in_one() {
+        assert_eq!(LightLook::parse(SHIPPED).unwrap(), LightLook::default());
+        assert_eq!(LightLook::parse("()").unwrap(), LightLook::default());
+        assert!(LightLook::parse("(moon: 1.0)").is_err());
+        assert!(LightLook::parse("(fire: (range: -1.0))").is_err());
+    }
+
     /// The light's direction stands still while the clock ticks and follows the sky in small
     /// steps, never far behind it; the jump from sun to moon is taken at once.
     #[test]
