@@ -5,16 +5,16 @@
     // Added to every patch's dryness (0 fresh green .. 1 straw).
     dry: 0.0,
     // Ground at least this rough (0 mown .. 1 wild) grows long grass.
-    long_from: 0.5,
+    long_from: 0.6,
     // How big patches are drawn: all of them, and long grass on top of that.
     scale: 1.0,
     long_scale: 1.0,
     // Wildflowers: how many (1 = as many as the ground gives), and how much of the ground their
     // drifts cover (0 none .. 1 all).
-    flowers: 1.6,
-    flower_cover: 0.42,
+    flowers: 1.4,
+    flower_cover: 0.4,
     // The chance of small stones on a tile of soft ground beside a road, pavement or path, and on
     // a tile of bare dirt.
     verge_stones: 0.1,
-    dirt_stones: 0.15,
+    dirt_stones: 0.12,
 )
