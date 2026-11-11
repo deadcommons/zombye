@@ -416,5 +416,39 @@
             (item: "picture_frame", weight: 1),
             (item: "batteries", weight: 2, tier: Uncommon),
         ]),
+            // ---- A dead zombie's pockets: what someone had on them when they died (what it wore is
+        // added by the game, from population.ron's outfits). Mostly little things; now and then a
+        // tool, a bag or something to fight with, rarely a gun.
+        (room: "any", container: "corpse", empty: 0.45, rolls: (1, 2), entries: [
+            (item: "chocolate_bar", weight: 4),
+            (item: "crisps", weight: 2),
+            (item: "soda_can", weight: 2),
+            (item: "water_bottle", weight: 1),
+            (item: "apple", weight: 1),
+            (item: "lighter", weight: 3),
+            (item: "matches", weight: 2),
+            (item: "pen", weight: 3),
+            (item: "painkillers", weight: 4, tier: Uncommon),
+            (item: "plasters", weight: 2),
+            (item: "rag", weight: 1),
+            (item: "cable_tie", weight: 3, count: (1, 3), tier: Uncommon),
+            (item: "batteries", weight: 3, tier: Uncommon),
+            (item: "candle", weight: 3, tier: Uncommon),
+        ], groups: [
+            // What they were carrying or fighting with.
+            (name: "carried", chance: 0.12, rolls: (1, 1), entries: [
+                (item: "plastic_bag", weight: 3),
+                (item: "screwdriver", weight: 6, tier: Uncommon),
+                (item: "flashlight", weight: 6, tier: Uncommon),
+                (item: "scissors", weight: 4, tier: Uncommon),
+                (item: "duct_tape", weight: 4, tier: Uncommon),
+                (item: "tin_opener", weight: 4, tier: Uncommon),
+                (item: "tote_bag", weight: 3, tier: Uncommon),
+                (item: "kitchen_knife", weight: 4, tier: Uncommon),
+                (item: "claw_hammer", weight: 3, tier: Rare),
+                (item: "pistol_rounds", weight: 3, count: (1, 4), tier: Rare),
+                (item: "pistol", weight: 2, tier: VeryRare),
+            ]),
+        ]),
     ],
 )
