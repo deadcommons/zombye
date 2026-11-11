@@ -191,6 +191,47 @@ const SASH_LIFT: f32 = 0.6;
 #[derive(Component)]
 struct ChunkProps(IVec2);
 
+/// The two meshes of a chunk's props whose models have lighter stand-ins: the full one, and the far
+/// copy drawn when the camera is zoomed far out.
+#[derive(Component)]
+struct PropsDetail {
+    full: Handle<Mesh>,
+    far: Handle<Mesh>,
+}
+
+/// Props are drawn as their far copies from this zoom (metres of world visible top to bottom) out:
+/// a metre is then under 27 pixels of a 1080-pixel-high view, and a tree's every leaf and a car's
+/// door handles are smaller than a pixel or two.
+const FAR_ZOOM: f32 = 40.0;
+/// ...and in full again only below this, so zooming to and fro about the line doesn't flip them.
+const FULL_ZOOM: f32 = 37.0;
+
+/// Whether props are drawn as their far copies at this zoom, having been (`far`) or not before.
+fn far_detail(zoom: f32, far: bool) -> bool {
+    zoom >= if far { FULL_ZOOM } else { FAR_ZOOM } + far_zoom_shift()
+}
+
+/// For measuring: `ZOMBYE_FAR_ZOOM=N` moves the line to a zoom of N (90 or
+/// more: never the far copies; 8 or less: always), to compare frame costs and pictures of the two.
+fn far_zoom_shift() -> f32 {
+    static SHIFT: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *SHIFT.get_or_init(|| std::env::var("ZOMBYE_FAR_ZOOM").ok().and_then(|v| v.parse::<f32>().ok()).map_or(0.0, |z| z - FAR_ZOOM))
+}
+
+/// Zoomed far out, chunks draw the far copy of their props (`PropsDetail`): the same things with
+/// a fraction of the triangles, in the picture and in the shadow maps. The camera is orthographic,
+/// so everything in view is at the same scale and the zoom alone decides.
+fn swap_detail(cams: Query<&IsoCamera>, mut props: Query<(&PropsDetail, &mut Mesh3d)>, mut far: Local<bool>) {
+    let Ok(cam) = cams.single() else { return };
+    *far = far_detail(cam.zoom, *far);
+    for (detail, mut mesh) in &mut props {
+        let want = if *far { &detail.far } else { &detail.full };
+        if mesh.0 != *want {
+            mesh.0 = want.clone();
+        }
+    }
+}
+
 pub struct WorldRenderPlugin;
 
 impl Plugin for WorldRenderPlugin {
@@ -198,6 +239,7 @@ impl Plugin for WorldRenderPlugin {
         app.init_resource::<Streamer>()
             .add_systems(Startup, setup_shared)
             .add_systems(PostUpdate, fade_chunks.after(materials::update_params))
+            .add_systems(Update, swap_detail.after(stream))
             .add_systems(Update, (stream, apply_edge_changes, sync_blinds, apply_edge_damage, relight_panes, update_switches, animate_doors, animate_panes, hide_upper_floors, cut_edge_pieces, animate_blinds).chain().after(crate::cutaway::CutawaySystems).after(crate::lights::sync_lit_rooms));
     }
 }
@@ -493,7 +535,15 @@ fn spawn_chunk(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &WorldM
     let chunk_veg = crate::vegetation::ChunkVeg { chunk: c, spots: veg };
     let mut out = vec![commands.spawn((Mesh3d(meshes.add(ground.build())), MeshMaterial3d(mats.ground.clone()), Transform::IDENTITY, NotShadowCaster, chunk_veg)).id()];
     if !props.is_empty() {
-        out.push(commands.spawn((Mesh3d(meshes.add(props.build())), MeshMaterial3d(mats.props.clone()), Transform::IDENTITY, ChunkProps(c))).id());
+        // Heavy models (trees with hundreds of leaves, cars) have lighter stand-ins in a far copy
+        // of the mesh, drawn in its place when zoomed far out (`swap_detail`).
+        let far = props.take_far().map(|far| meshes.add(far.build()));
+        let full = meshes.add(props.build());
+        let mut e = commands.spawn((Mesh3d(full.clone()), MeshMaterial3d(mats.props.clone()), Transform::IDENTITY, ChunkProps(c)));
+        if let Some(far) = far {
+            e.insert(PropsDetail { full, far });
+        }
+        out.push(e.id());
     }
     out
 }

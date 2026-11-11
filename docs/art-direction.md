@@ -215,8 +215,8 @@ The world's generated parts and its props both carry the story. Targets for a de
   and grass in cracks and along kerbs; drifts of leaf litter in corners and gutters; loose paper,
   cans, bottles; a few dark stains. Lawns gone long and patchy, vacant lots and verges in tall grass
   with a few wildflowers (muted red, white, yellow) (#81).
-- **Grass, flowers and litter, instanced (Linear DCM-59, `vegetation.rs`):** over the mesher's ground
-  goes a layer of small shared meshes, one patch a tile, placed from the map alone
+- **Grass, flowers and litter (Linear DCM-59, `vegetation.rs`):** over the mesher's ground
+  goes a layer of small patches, one a tile (merged into one mesh a chunk), placed from the map alone
   (`landscape::scatter`), so the same town always grows the same grass. **Where:** long grass (to
   half a metre) where nobody mows: along walls, fences and hedges, verges, vacant lots, the forest's
   edge; shorter grass on lawns; thin, dry grass on dirt, under trees, beside paths and driveways and
@@ -239,11 +239,12 @@ The world's generated parts and its props both carry the story. Targets for a de
   porches with railings, faded signs (#59).
 - **Inside:** clutter on floors and counters (papers, boxes, a fallen chair), drawers left open after
   a search, a few stains (#19, with the loot work).
-- **Density never costs the crowd:** clutter is merged into chunk meshes or instanced, with a budget
-  per chunk, and measured like any other rendering change. The instanced layer is drawn only round
+- **Density never costs the crowd:** clutter is merged into chunk meshes, with a budget
+  per chunk, and measured like any other rendering change. The vegetation layer is drawn only round
   the camera (`vegetation::veg_radius`: just past the corners of the view, at most 60 m, shrinking to
   nothing over the last sixth so nothing pops), has a density setting (`--vegetation off|low|high|N`,
-  `graphics.vegetation` in `settings.ron`) and its meshes stay under 100 triangles a patch.
+  `graphics.vegetation` in `settings.ron`) and its patches stay under 100 triangles. Zoomed out past 40 m, heavy
+  tree and prop models are drawn as lighter stand-ins made from them when they are read.
 
 ## UI
 

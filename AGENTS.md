@@ -72,7 +72,7 @@ they replace; a street prop kind this repo has no model for is a grey-box withou
 same name; `ZOMBYE_EXTRA_MODELS` still goes over both. `trees/<kind>.glb` (`broadleaf`, `birch`, `pine`, `spruce`,
 `bush`: the foot at the origin, foliage the triangles of a material named `leaves`, so it fades over the player as
 generated foliage does) stands in for the generated tree or bush of that kind, scaled to its height
-(`meshgen/trees.rs`, `FurnitureModels::add_standing`). `veg/<kind>.glb` (`flowers_red`, `flowers_white`, `pebbles`, or any other `VegKind::file()` name; with variants) is a patch of ground cover drawn in place of the generated one of that kind (`vegetation::patch_mesh`: standing on the origin, at most 0.8 m out, few triangles since it is drawn thousands of times; triangles of a material named `leaves` are tinted as blades, the rest keep their own colours); the grass kinds are meant to stay generated. `fences/fence.glb` (a metre of garden fence along x, standing on the origin) and `fences/fence_post.glb` (a post)
+(`meshgen/trees.rs`, `FurnitureModels::add_standing`). `veg/<kind>.glb` (`flowers_red`, `flowers_white`, `pebbles`, or any other `VegKind::file()` name; with variants) is a patch of ground cover drawn in place of the generated one of that kind (`vegetation::patch_of`: standing on the origin, at most 0.8 m out, few triangles since it is drawn thousands of times; triangles of a material named `leaves` are tinted as blades, the rest keep their own colours); the grass kinds are meant to stay generated. `fences/fence.glb` (a metre of garden fence along x, standing on the origin) and `fences/fence_post.glb` (a post)
 stand in for the generated fence rails, one look (variant) a run, a post every other metre and at the run's end
 (`landscape::model_fence`; hedges and the sim's fence are unchanged). `items/<item id>.glb` is drawn for that item lying on the
 ground, at its own size, in place of its grey-box (`items_render.rs`). `held/<item id>.glb` is a weapon as the hand holds it, drawn in place of its
@@ -82,7 +82,7 @@ where it stands (`FurnitureModels::pick`), so a town's sofas and trees differ an
 Without the folder the game draws this repo's models and generated trees. A model's colours are its materials' base
 colours times its vertex colours (`COLOR_0`; textures aren't read), so one painted from a texture atlas is exported
 with the atlas's colours on its vertices. The same goes for alpha: a tree whose leaves are textured cards is exported with each
-card cut to the outline of its texture's opaque part, as plain triangles. `check_the_release_folder` (an ignored test in `release_models.rs`) reads
+card cut to the outline of its texture's opaque part, as plain triangles. **Far stand-ins:** a model of more than 200 triangles gets a lighter copy when it is read (`furniture_models::simplify`: a crown of many loose leaves has most of them dropped and the rest grown to cover as much, `thin`; anything else has edges collapsed by quadric error, `collapse`, rims held, at most 7 cm off, and is kept only if it covers about what the model did and is a fifth lighter). A chunk's props mesh is built twice in one go (`MeshBuilder::with_far`, `Detail`, `take_far`): the full one, and one with the stand-ins where there are any; `world_render::swap_detail` shows the far one once the zoom is over 40 m and the full one again under 37 m (the camera is orthographic, so size on screen goes by the zoom alone; at 40 m a metre is 27 pixels of a 1080p screen). `ZOMBYE_FAR_ZOOM=N` moves the line for measuring (95: never). `stand_in_report` (ignored; `ZOMBYE_MODELS_DIR=DIR`) prints each model's counts. `check_the_release_folder` (an ignored test in `release_models.rs`) reads
 a folder and checks every file.
 
 ## Remote machines
@@ -1643,7 +1643,7 @@ and mood, and docs/art-direction.md). All of it is client only: nothing here is 
   and floors along both faces of every ground-floor wall and window: one small blended, unlit mesh a building (16 to
   about 1,000 triangles), spawned and despawned with it. They stand in for ambient occlusion: the screen-space kind
   needs MSAA off, and the window glass is alpha to coverage.
-- **Instanced vegetation and litter** (`vegetation.rs`, `assets/shaders/vegetation.wesl`): eight kinds
+- **Vegetation and litter, a mesh a chunk** (`vegetation.rs`, `assets/shaders/vegetation.wesl`): eight kinds
   (`VegKind`: long grass, lawn grass, thin grass, a weed, red and white flowers, loose paper, small stones), four
   mesh variants each, built in code (12 to 91 triangles; blades are single triangles, dark at the root). **Where**
   is `landscape::scatter`, run per outdoor tile by `build_chunk` (`ChunkMeshes::veg`, a `VegSpot` list: position,
@@ -1651,22 +1651,29 @@ and mood, and docs/art-direction.md). All of it is client only: nothing here is 
   long grass where nobody mows (by walls, fences, verges, overgrown lots), shorter on lawns, thin on dirt, under
   trees, beside paths and over bare patches, none on doorsteps, driveways, beds, curved kerbs or under a porch;
   flowers in drifts; weeds, paper and stones on pavements and in gutters. A patch against a wall keeps to its tile
-  and quarter turns (it would poke into the room); in the open it is jittered and turned freely. **Drawing** is the
-  crowd's path: each spot is an entity (a child of its chunk's ground entity, which holds the list as `ChunkVeg`)
-  with a shared mesh, the one `VegMaterial` and a `MeshTag` (bits 0-7 dryness, 8-15 brightness), so Bevy batches each
-  mesh's instances into one draw; no shadows cast. `VegMaterial` is the world material's fragment shader (same
-  bindings 100-103: lighting, shadows, fog of war, night) behind its own vertex shader, which colours a blade by the
-  tag (a mix of the palette's `grass_blade` and `grass_blade_dry`), sways it (gusts by world position and the clock),
-  bends it away from the player's feet, gives it the ground's normal, and shrinks it to nothing over the last 16% of
-  the drawn radius. **Culling:** a chunk's spots exist only while it is within `veg_radius(zoom)` of the camera's
-  focus (1.34 x zoom + 3 m, 24 to 60 m: past the view's corners up to a zoom of about 42 m), spawned two chunks a
-  frame as you walk (all at once for the first view and offscreen), removed 8 m further out. **Density:** a spot
-  is spawned when its rank is under the setting: every tile's first patch ranks 0 to 1, a second between them 1 to
-  2; `--vegetation off` spawns nothing.
+  and quarter turns (it would poke into the room); in the open it is jittered and turned freely. **Drawing:** all of a
+  chunk's patches are one mesh, one entity (a child of the chunk's ground entity, which holds the spot list as
+  `ChunkVeg`) and one draw (`vegetation::chunk_mesh`: each spot's patch turned, scaled and put in place; it was an
+  entity a patch, about 7,000 in view zoomed out, which cost more to walk each frame than to draw). A vertex is 16
+  bytes: its position (three floats; `Mesh::compress_positions` drew nothing with this material) and a colour of
+  8 bits a channel, no normal (the shader gives every blade the ground's) and no indices. The colour's alpha says
+  what the rest is: 1, a blade: red its tone along the blade, green the spot's dryness, blue its brightness; 0, the
+  vertex's own colour (litter, stones, a release model's flowers); both times 0.8 (`COLOUR_PACK`, in the shader too)
+  to leave room for tones over 1. No shadows cast. `VegMaterial` is the world material's fragment shader (same
+  bindings 100-103: lighting, shadows, fog of war, night) behind its own vertex shader, which colours a blade (a mix
+  of the palette's `grass_blade` and `grass_blade_dry` by its dryness), sways it by its height (gusts by world
+  position and the clock), bends it away from the player's feet, and shrinks it toward the ground over the last 16%
+  of the drawn radius. **Culling:** a chunk's mesh exists only while the chunk is within `veg_radius(zoom)` of the
+  camera's focus (1.34 x zoom + 3 m, 24 to 60 m: past the view's corners up to a zoom of about 42 m), built two
+  chunks a frame as you walk (all at once for the first view and offscreen), dropped 8 m further out. **Density:** a
+  spot is in the mesh when its rank is under the setting: every tile's first patch ranks 0 to 1, a second between
+  them 1 to 2; changing the setting builds the meshes again; `--vegetation off` builds none. About 6,100 triangles
+  and 290 KB a chunk at the default density, so some 7 to 16 MB of vertices round the camera.
 - **Cost** (measured only on the GPU-less build VM, software rendering under other load, so these are upper bounds
   of the CPU-side work and say little about a GPU: best of three, 1920 x 1080 offscreen, 2,000 zombies, a yard by
-  day): the default town averages 161 instances and 5,900 triangles of vegetation a chunk, about 5,000 instances and
-  180,000 triangles round the camera at the default zoom, in at most 32 batches. A frame at 26 m: 148 ms with
+  day; from when every patch was an instance of a shared mesh, before the mesh a chunk): the default town averages
+  161 patches and 5,900 triangles of vegetation a chunk, about 5,000 patches and 180,000 triangles round the camera
+  at the default zoom. A frame at 26 m: 148 ms with
   everything off, 176 ms with vegetation alone, 165 ms with the post effects, ground detail and contact shadows
   alone, 193 ms with it all, 237 ms at density 2; at 60 m 233 ms off and 363 ms on. Chunk building, scatter
   included: 0.53 ms mean on that VM. **Not yet measured on a GPU** (`--frame-bench 120` on the Mac, with and
@@ -1702,8 +1709,8 @@ stands still may count as changed.** Each of these cost milliseconds a frame bef
   specialising, queueing and bind groups (2.3 ms together) to nothing; as a client of a server with 5,300 zombies in
   the snapshot, 8.0 to 5.4 ms and 3.8 to 0.9 ms. The single-threaded sim: 1.0 ms a tick for 5,000 active zombies, 2.5
   ms with a horde of 5,000 after a player (`--bench`). **Not yet:** the sim's tick runs inside the frame it falls in;
-  every zombie and every patch of vegetation is still an entity (about 8,000 mesh entities in a yard), which Bevy's
-  per-entity systems walk each frame.
+  every zombie is still an entity, which Bevy's per-entity systems walk each frame (vegetation is a mesh a chunk
+  now, see Look and feel).
 
 ## Characters on screen (`crates/client`)
 

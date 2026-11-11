@@ -1026,7 +1026,7 @@ pub fn build_chunk(map: &TileMap, c: IVec2) -> ChunkMeshes {
     let land = Land::new(map, c);
     let looks = SoftLooks::new(&land);
     let mut ground = MeshBuilder::with_capacity(1500);
-    let mut props = MeshBuilder::with_capacity(1500);
+    let mut props = MeshBuilder::with_capacity(1500).with_far();
     let mut paint = Paint::new();
     let mut pieces = PieceBuf::default();
     let mut veg = Vec::with_capacity(320);
