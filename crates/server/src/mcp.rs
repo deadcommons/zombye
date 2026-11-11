@@ -831,7 +831,7 @@ fn tool_defs() -> Value {
         {
             "name": "skills",
             "description": "A player's skills (#46): Fitness, Strength, Bludgeon, Edged, Brawl, Stealth, First Aid, Scavenging, \
-                Handiwork. For each: its level (0-5; levels at 100, 250, 500, 900 and 1500 XP in all), XP so far and to the next \
+                Handiwork. For each: its level (0-10 by default; the world's thresholds and any XP multipliers are in the reply), XP so far and to the next \
                 level, what its level gives now and what the next level gives, and how XP is earned (practice only: running, \
                 heavy swings and moving overloaded, hits and kills with blunt or edged weapons or fists, shoves, stomp kills, \
                 sneaking near zombies that aren't after you, treatments, first searches, crafting). Read-only.",
@@ -3284,7 +3284,11 @@ fn skills_text(world: &World, id: u32) -> Result<String, String> {
     let t = &world.config.skills;
     let (carry, aid) = (&world.config.carry, &world.config.health.first_aid);
     let levels: Vec<String> = t.levels.iter().map(|n| format!("{n:.0}")).collect();
-    let mut out = format!("player {id}{} skills (levels 1-5 at {} XP in all; practice only, nothing is lost):\n", if p.dead { " (dead)" } else { "" }, levels.join(", "));
+    let mut out = format!("player {id}{} skills (levels 1-{} at {} XP in all; practice only, nothing is lost):\n", if p.dead { " (dead)" } else { "" }, t.top(), levels.join(", "));
+    if (t.xp_scale - 1.0).abs() > 1e-4 || !t.xp_mult.is_empty() {
+        let each: Vec<String> = t.xp_mult.iter().map(|(s, m)| format!("{} x{m}", s.id())).collect();
+        out.push_str(&format!("XP multipliers: all x{}{}{}\n", t.xp_scale, if each.is_empty() { "" } else { ", " }, each.join(", ")));
+    }
     for v in p.skills.view(t) {
         let s = v.skill;
         let next = match v.next_at {
@@ -3293,7 +3297,7 @@ fn skills_text(world: &World, id: u32) -> Result<String, String> {
         };
         out.push_str(&format!("{}: {} {}, {:.0} XP ({next})\n", s.id(), s.name(), v.level, v.xp));
         out.push_str(&format!("  now: {}\n", t.gives(s, v.level, carry, aid)));
-        if v.level < zombye_sim::skills::MAX_LEVEL {
+        if v.level < t.top() {
             out.push_str(&format!("  level {}: {}\n", v.level + 1, t.gives(s, v.level + 1, carry, aid)));
         }
         out.push_str(&format!("  earned by: {}\n", t.earned_by(s)));
@@ -4546,23 +4550,23 @@ mod tests {
         let hash = world.state_hash();
         let (text, err) = call(&mut world, &mut persist, "skills", json!({}));
         assert!(!err && text.starts_with("player 1 skills"), "{text}");
-        assert!(text.contains("fitness: Fitness 1, 100 XP (level 2 at 250 XP, 150 to go)"), "{text}");
+        assert!(text.contains("fitness: Fitness 2, 225 XP (level 3 at 450 XP, 225 to go)"), "{text}");
         assert!(text.contains("  now: endurance drains 6% slower and recovers 6% faster"), "{text}");
-        assert!(text.contains("  level 2: carry limit 17.0 kg"), "{text}");
-        assert!(text.contains("edged: Edged 0, 0 XP") && text.contains("  now: nothing yet") && text.contains("knives and axes: damage +6%"), "{text}");
+        assert!(text.contains("  level 3: carry limit 16."), "{text}");
+        assert!(text.contains("edged: Edged 0, 0 XP") && text.contains("  now: nothing yet") && text.contains("knives and axes: damage +3%"), "{text}");
         assert!(text.contains("handiwork: Handiwork 0") && text.contains("earned by: each thing crafted (5 XP)"), "{text}");
         assert_eq!(world.state_hash(), hash);
         assert!(!persist.dirty, "read-only");
         assert!(call(&mut world, &mut persist, "skills", json!({"player": 9})).1);
-        world.award_xp(0, zombye_sim::Skill::FirstAid, 1600.0);
+        world.award_xp(0, zombye_sim::Skill::FirstAid, 6000.0);
         let (text, _) = call(&mut world, &mut persist, "skills", json!({}));
-        assert!(text.contains("first_aid: First Aid 5, 1500 XP (the top level)") && text.contains("stitching hurts half as much"), "{text}");
+        assert!(text.contains("first_aid: First Aid 10, 5400 XP (the top level)") && text.contains("stitching hurts half as much"), "{text}");
         let (text, _) = call(&mut world, &mut persist, "stats", json!({}));
         let stats: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(stats["players"][0]["skills"]["first_aid"], 5);
-        assert_eq!(stats["players"][0]["skills"]["strength"], 1);
+        assert_eq!(stats["players"][0]["skills"]["first_aid"], 10);
+        assert_eq!(stats["players"][0]["skills"]["strength"], 2);
         let (text, _) = call(&mut world, &mut persist, "step_ticks", json!({"n": 1}));
-        assert!(text.contains("LEVEL UP: P1 First Aid 5"), "{text}");
+        assert!(text.contains("LEVEL UP: P1 First Aid 10"), "{text}");
     }
 
     #[test]

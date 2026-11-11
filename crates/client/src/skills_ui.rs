@@ -1,6 +1,6 @@
 //! Skills (#46): the skills panel (K) and the level-up line.
 //!
-//! The panel lists every skill with its level (0-5), a bar of the way to the next level with the XP
+//! The panel lists every skill with its level (0-10), a bar of the way to the next level with the XP
 //! so far and the XP it needs, what its level gives now and what the next one would, and how XP is
 //! earned. It all comes from our private view (`PrivateView::skills`) and the skill numbers we got
 //! on joining, through the same `SkillTuning::gives` / `earned_by` text the MCP `skills` tool uses.
@@ -8,7 +8,6 @@
 //! (`saving::Notice`, which also prints it to stdout).
 
 use bevy::prelude::*;
-use zombye_sim::skills::MAX_LEVEL;
 use zombye_sim::SkillView;
 
 use crate::player::LocalPlayer;
@@ -130,7 +129,7 @@ fn rebuild(mut commands: Commands, panel: Res<SkillsPanel>, link: Res<ServerLink
                     if v.level > 0 {
                         line(card, format!("now: {}", t.gives(s, v.level, carry, aid)), TEXT);
                     }
-                    if v.level < MAX_LEVEL {
+                    if v.level < t.top() {
                         line(card, format!("level {}: {}", v.level + 1, t.gives(s, v.level + 1, carry, aid)), DIM);
                     }
                     line(card, format!("from {}", t.earned_by(s)), DIM);

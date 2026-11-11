@@ -32,7 +32,7 @@ pub const MAX_RECIPE_SECS: f32 = 600.0;
 pub const MAX_RECIPE_COUNT: u16 = 100;
 /// Each Handiwork level (#46) makes crafting this much faster (the default of
 /// `SkillTuning::craft_faster`)...
-pub const HANDIWORK_FASTER_PER_LEVEL: f32 = 0.1;
+pub const HANDIWORK_FASTER_PER_LEVEL: f32 = 0.05;
 /// ...down to this share of the recipe's time.
 pub const HANDIWORK_MIN_MULT: f32 = 0.5;
 
@@ -689,12 +689,12 @@ mod tests {
         assert_eq!(me(&w, id).health.wounds.iter().find(|x| x.id == gash).unwrap().dressing, Dressing::Clean);
     }
 
-    /// Handiwork (#46) makes crafting faster: 10% a level, down to half.
+    /// Handiwork (#46) makes crafting faster: 5% a level, down to half.
     #[test]
     fn handiwork_makes_it_faster() {
         assert_eq!(craft_secs(10.0, 0), 10.0);
-        assert!((craft_secs(10.0, 3) - 7.0).abs() < 1e-5);
-        assert_eq!(craft_secs(10.0, 9), 5.0);
+        assert!((craft_secs(10.0, 6) - 7.0).abs() < 1e-5);
+        assert!((craft_secs(10.0, 10) - 5.0).abs() < 1e-5);
     }
 
     /// Each craft is Handiwork XP (#46), and a higher Handiwork level crafts faster in the world.
@@ -708,12 +708,12 @@ mod tests {
         w.give_item(id, "t_shirt", 2);
         craft(&mut w, id, "rip_t_shirt");
         assert_eq!(me(&w, id).skills.xp(crate::skills::Skill::Handiwork), t.craft_xp);
-        // Handiwork 3: 30% faster, asked for and done.
-        w.players[0].skills.xp[crate::skills::Skill::Handiwork as usize] = t.xp_for(3);
+        // Handiwork 6: 30% faster, asked for and done.
+        w.players[0].skills.xp[crate::skills::Skill::Handiwork as usize] = t.xp_for(6);
         assert!((w.craft_secs(id, r).unwrap() - base * 0.7).abs() < 1e-4);
         let took = craft(&mut w, id, "rip_t_shirt");
         assert!((took - base * 0.7).abs() < 0.11, "took {took} s of {base}");
-        assert_eq!(me(&w, id).skills.xp(crate::skills::Skill::Handiwork), t.xp_for(3) + t.craft_xp);
+        assert_eq!(me(&w, id).skills.xp(crate::skills::Skill::Handiwork), t.xp_for(6) + t.craft_xp);
     }
 
     /// A craft under way is saved: a loaded world steps exactly like the original and finishes

@@ -83,32 +83,32 @@ fn run_east() -> PlayerInput {
     PlayerInput { move_dir: Vec2::X, facing: 0.0, run: true, sneak: false, aim: false }
 }
 
-/// Levels come from cumulative XP; a new survivor has Fitness and Strength 1; XP stops at the top.
+/// Levels come from cumulative XP; a new survivor has Fitness and Strength 2; XP stops at the top.
 #[test]
 fn levels_from_xp_and_a_new_survivor() {
     let t = SkillTuning::default();
     assert!(t.check().is_ok());
-    assert_eq!([0.0, 99.9, 100.0, 249.0, 250.0, 500.0, 899.0, 900.0, 1500.0, 9999.0].map(|x| t.level(x)), [0, 0, 1, 1, 2, 3, 3, 4, 5, 5]);
-    assert_eq!((t.xp_for(0), t.xp_for(3), t.xp_for(9)), (0.0, 500.0, 1500.0));
+    assert_eq!([0.0, 74.9, 75.0, 224.0, 225.0, 450.0, 749.0, 750.0, 5400.0, 99999.0].map(|x| t.level(x)), [0, 0, 1, 1, 2, 3, 3, 4, 10, 10]);
+    assert_eq!((t.xp_for(0), t.xp_for(3), t.xp_for(19), t.top()), (0.0, 450.0, 5400.0, 10));
     let s = Skills::start(&t);
     for k in Skill::ALL {
-        let want = if matches!(k, Skill::Fitness | Skill::Strength) { 1 } else { 0 };
+        let want = if matches!(k, Skill::Fitness | Skill::Strength) { 2 } else { 0 };
         assert_eq!(s.level(k, &t), want, "{k:?}");
         assert_eq!(Skill::from_id(k.id()), Some(k));
     }
     assert_eq!(Skill::FirstAid.name(), "First Aid");
     let v = s.view(&t);
     assert_eq!(v.len(), SKILL_COUNT);
-    assert_eq!((v[0].level, v[0].xp, v[0].next_at, v[0].progress), (1, 100.0, Some(250.0), 0.0));
+    assert_eq!((v[0].level, v[0].xp, v[0].next_at, v[0].progress), (2, 225.0, Some(450.0), 0.0));
     let (mut w, id) = arena(1);
     assert_eq!(me(&w, id).skills, s);
-    // Award past the top: it stops at 1,500, with one level-up per level crossed (here two at once: 0 -> 2).
+    // Award past the top: it stops at 5,400, with one level-up per level crossed (here two at once: 0 -> 2).
     assert_eq!(w.award_xp(0, Skill::Edged, 260.0), Some(2));
-    assert_eq!(w.award_xp(0, Skill::Edged, 5000.0), Some(5));
-    assert_eq!(xp(&w, id, Skill::Edged), 1500.0);
+    assert_eq!(w.award_xp(0, Skill::Edged, 9000.0), Some(10));
+    assert_eq!(xp(&w, id, Skill::Edged), 5400.0);
     assert_eq!(w.award_xp(0, Skill::Edged, 10.0), None);
     let ups = w.take_level_ups();
-    assert_eq!(ups, [LevelUp { player: id, skill: Skill::Edged, level: 2 }, LevelUp { player: id, skill: Skill::Edged, level: 5 }]);
+    assert_eq!(ups, [LevelUp { player: id, skill: Skill::Edged, level: 2 }, LevelUp { player: id, skill: Skill::Edged, level: 10 }]);
     assert_eq!(ups[0].text(), "Edged 2");
     assert!(w.take_level_ups().is_empty());
     assert_eq!(w.award_xp(0, Skill::Edged, f32::NAN), None);
@@ -126,20 +126,20 @@ fn levels_from_xp_and_a_new_survivor() {
 fn running_trains_fitness_and_fitness_changes_endurance() {
     let (mut w, id) = arena(2);
     let t = w.config.skills.clone();
-    assert_eq!(me(&w, id).state.mods, t.move_mods(1, MoveMods::default()), "Fitness 1 from the start");
+    assert_eq!(me(&w, id).state.mods, t.move_mods(2, MoveMods::default()), "Fitness 2 from the start");
     hold(&mut w, id, run_east(), 200);
-    assert!((xp(&w, id, Skill::Fitness) - 101.0).abs() < 0.01, "{}", xp(&w, id, Skill::Fitness));
+    assert!((xp(&w, id, Skill::Fitness) - 226.0).abs() < 0.01, "{}", xp(&w, id, Skill::Fitness));
     // Walking gives nothing.
     hold(&mut w, id, PlayerInput { run: false, ..run_east() }, 100);
-    assert!((xp(&w, id, Skill::Fitness) - 101.0).abs() < 0.01);
+    assert!((xp(&w, id, Skill::Fitness) - 226.0).abs() < 0.01);
     let mods = me(&w, id).state.mods;
-    let to = 250.0 - xp(&w, id, Skill::Fitness);
-    assert_eq!(w.award_xp(0, Skill::Fitness, to), Some(2));
+    let to = 450.0 - xp(&w, id, Skill::Fitness);
+    assert_eq!(w.award_xp(0, Skill::Fitness, to), Some(3));
     assert_eq!(me(&w, id).state.mods, mods, "not before the tick ends");
     w.step();
     let m = me(&w, id).state.mods;
-    assert!((m.run_drain - (1.0 - 2.0 * t.fitness_drain)).abs() < 1e-5 && (m.regen - (1.0 + 2.0 * t.fitness_regen)).abs() < 1e-5, "{m:?}");
-    // Five seconds' run drains 12% less than at level 0.
+    assert!((m.run_drain - (1.0 - 3.0 * t.fitness_drain)).abs() < 1e-5 && (m.regen - (1.0 + 3.0 * t.fitness_regen)).abs() < 1e-5, "{m:?}");
+    // Five seconds' run drains 9% less than at level 0.
     w.players[0].state.endurance = 1.0;
     hold(&mut w, id, PlayerInput { move_dir: -Vec2::X, ..run_east() }, 100);
     let drained = 1.0 - me(&w, id).state.endurance;
@@ -147,7 +147,7 @@ fn running_trains_fitness_and_fitness_changes_endurance() {
 }
 
 /// Strength: a swing of a weapon over 1.5 kg (not a lighter one), and moving over the carry limit
-/// (not standing still), each give XP; a level adds 1.5 kg to the limit, knockback and shove knockdowns.
+/// (not standing still), each give XP; a level adds 0.75 kg to the limit, knockback and shove knockdowns.
 #[test]
 fn strength_from_heavy_swings_and_loads() {
     let (mut w, id) = arena(3);
@@ -155,11 +155,11 @@ fn strength_from_heavy_swings_and_loads() {
     assert!(w.hold_item(id, Slot::Hand, "baseball_bat"));
     assert!(w.player_attack(id));
     until_ready(&mut w, id);
-    assert_eq!(xp(&w, id, Skill::Strength), 100.0, "a 1 kg bat isn't heavy");
+    assert_eq!(xp(&w, id, Skill::Strength), 225.0, "a 1 kg bat isn't heavy");
     assert!(w.hold_item(id, Slot::Hand, "fire_axe"));
     assert!(w.player_attack(id));
     until_ready(&mut w, id);
-    assert_eq!(xp(&w, id, Skill::Strength), 100.0 + t.heavy_swing_xp);
+    assert_eq!(xp(&w, id, Skill::Strength), 225.0 + t.heavy_swing_xp);
     // 18 kg of planks against a 15.5 kg limit.
     w.players[0].inventory = crate::inventory::Inventory::default();
     let plank = w.item_index("wooden_plank").unwrap();
@@ -174,13 +174,13 @@ fn strength_from_heavy_swings_and_loads() {
     hold(&mut w, id, PlayerInput { run: false, ..run_east() }, ticks);
     let minutes = ticks as f32 * TICK_DT * w.game_hours_per_sec() * 60.0;
     assert!((xp(&w, id, Skill::Strength) - before - minutes * t.overload_xp_per_min).abs() < 0.01, "{minutes} game minutes");
-    // Strength 2: a bigger limit, at the end of the tick.
-    let to = 250.0 - xp(&w, id, Skill::Strength);
-    assert_eq!(w.award_xp(0, Skill::Strength, to), Some(2));
+    // Strength 4: a bigger limit, at the end of the tick.
+    let to = 750.0 - xp(&w, id, Skill::Strength);
+    assert_eq!(w.award_xp(0, Skill::Strength, to), Some(4));
     w.step();
     assert_eq!(w.carry(me(&w, id)).limit_kg, 17.0);
     assert_eq!(w.carry(me(&w, id)).burden, Burden::Burdened, "18 kg of 17");
-    assert!((t.knockback_mult(2) - 1.1).abs() < 1e-6 && (t.shove_knockdown_bonus(2, 1) - 0.1).abs() < 1e-6);
+    assert!((t.knockback_mult(4) - 1.1).abs() < 1e-6 && (t.shove_knockdown_bonus(4, 2) - 0.1).abs() < 1e-6);
 }
 
 /// Hits train the weapon's skill (2 a hit, 5 a kill): blunt Bludgeon, knives and axes Edged, fists
@@ -263,7 +263,7 @@ fn weapon_levels_change_the_swing() {
     let m = 1.0 + 3.0 * t.weapon_damage;
     assert!(d0 >= bat.damage.0 - 1e-3 && d0 <= bat.damage.1 + 1e-3);
     assert!(d3 >= bat.damage.0 * m - 1e-3 && d3 <= bat.damage.1 * m + 1e-3 && d3 > d0, "{d0} -> {d3}");
-    assert!((t.damage_mult(Skill::Brawl, 2) - 1.2).abs() < 1e-6 && t.cost_mult(Skill::Brawl, 5) == 1.0 && t.time_mult(Skill::Stealth, 5) == 1.0);
+    assert!((t.damage_mult(Skill::Brawl, 2) - 1.1).abs() < 1e-6 && t.cost_mult(Skill::Brawl, 5) == 1.0 && t.time_mult(Skill::Stealth, 5) == 1.0);
 }
 
 /// Sneaking (and moving) near a zombie that isn't after you trains Stealth; Stealth quietens
@@ -297,7 +297,7 @@ fn sneaking_near_unaware_zombies_trains_stealth() {
     assert!((w.targets[0].sight_mult - w.config.skills.sight_mult(3)).abs() < 1e-6);
 }
 
-/// Each treatment is First Aid XP; levels make it faster, and from 3 stitching hurts half as much.
+/// Each treatment is First Aid XP; levels make it faster, and from 6 stitching hurts half as much.
 #[test]
 fn first_aid_trains_and_helps() {
     let stitch = |first_aid: f32| {
@@ -320,9 +320,9 @@ fn first_aid_trains_and_helps() {
     };
     let (secs0, pain0, gain) = stitch(0.0);
     assert_eq!(gain, SkillTuning::default().treat_xp);
-    let (secs3, pain3, _) = stitch(500.0);
+    let (secs3, pain3, _) = stitch(SkillTuning::default().xp_for(6));
     let aid = crate::firstaid::FirstAidTuning::default();
-    assert!((secs3 / secs0 - (1.0 - 3.0 * aid.skill_faster_per_level)).abs() < 1e-4, "{secs0} {secs3}");
+    assert!((secs3 / secs0 - (1.0 - 6.0 * aid.skill_faster_per_level)).abs() < 1e-4, "{secs0} {secs3}");
     assert!((pain3 - pain0 * 0.5).abs() < 1e-5 && pain0 > 0.0, "{pain0} {pain3}");
 }
 
@@ -384,7 +384,7 @@ fn handiwork_hooks_for_crafting() {
     assert_eq!(xp(&w, id, Skill::Handiwork), 100.0);
     assert_eq!(w.skill_level(0, Skill::Handiwork), 1);
     assert_eq!(w.take_level_ups(), [LevelUp { player: id, skill: Skill::Handiwork, level: 1 }]);
-    assert!((w.config.skills.craft_time_mult(2) - 0.8).abs() < 1e-6 && w.config.skills.craft_time_mult(5) == 0.5);
+    assert!((w.config.skills.craft_time_mult(2) - 0.9).abs() < 1e-6 && (w.config.skills.craft_time_mult(10) - 0.5).abs() < 1e-6);
     assert_eq!(w.skill_level(7, Skill::Handiwork), 0, "no such player");
     // The dead learn nothing; a respawn is a new survivor.
     w.players[0].hp = 1.0;
@@ -393,8 +393,8 @@ fn handiwork_hooks_for_crafting() {
     assert_eq!(w.award_xp(0, Skill::Handiwork, 10.0), None);
     assert!(w.respawn_player(id));
     assert_eq!(me(&w, id).skills, Skills::start(&w.config.skills));
-    assert!(SkillTuning::default().gives(Skill::Handiwork, 1, &w.config.carry, &w.config.health.first_aid).contains("10% faster"));
-    assert!(SkillTuning::default().gives(Skill::Strength, 2, &w.config.carry, &w.config.health.first_aid).contains("17.0 kg"));
+    assert!(SkillTuning::default().gives(Skill::Handiwork, 1, &w.config.carry, &w.config.health.first_aid).contains("5% faster"));
+    assert!(SkillTuning::default().gives(Skill::Strength, 4, &w.config.carry, &w.config.health.first_aid).contains("17.0 kg"));
 }
 
 /// Skills are saved: a loaded world steps exactly like the original while XP is earned, and
@@ -423,13 +423,13 @@ fn skills_save_and_load_in_lockstep() {
         }
         assert_eq!(loaded.state_hash(), w.state_hash(), "tick {t}");
     }
-    assert!(xp(&w, id, Skill::Fitness) > 100.25 && xp(&w, id, Skill::Stealth) > 187.75, "{:?}", me(&w, id).skills);
+    assert!(xp(&w, id, Skill::Fitness) > 225.25 && xp(&w, id, Skill::Stealth) > 187.75, "{:?}", me(&w, id).skills);
     assert_eq!(loaded.players, w.players);
     for (what, f) in [
         ("fitness XP is NaN", (|w: &mut World| w.players[0].skills.xp[0] = f32::NAN) as fn(&mut World)),
         ("edged XP is -1", |w| w.players[0].skills.xp[Skill::Edged as usize] = -1.0),
-        ("handiwork XP is 2000", |w| w.players[0].skills.xp[Skill::Handiwork as usize] = 2000.0),
-        ("skills: levels must rise", |w| w.config.skills.levels = [100.0, 50.0, 500.0, 900.0, 1500.0]),
+        ("handiwork XP is 6000", |w| w.players[0].skills.xp[Skill::Handiwork as usize] = 6000.0),
+        ("skills: levels must rise", |w| w.config.skills.levels = vec![100.0, 50.0, 500.0, 900.0, 1500.0]),
     ] {
         let mut bad = World::load(&w.save(), &w.config).unwrap();
         f(&mut bad);
@@ -464,4 +464,53 @@ fn skills_are_deterministic_and_hashed() {
     let h = w.state_hash();
     w.award_xp(0, Skill::Stealth, 0.5);
     assert_ne!(w.state_hash(), h);
+}
+
+#[test]
+fn settings_saved_with_five_levels_keep_them() {
+    // How a world saved before ten levels wrote its skill settings: the levels as a RON tuple.
+    let old = "(levels: (100.0, 250.0, 500.0, 900.0, 1500.0), start_fitness: 1, start_strength: 1, fitness_drain: 0.06)";
+    let t: SkillTuning = ron::from_str(old).expect("old settings load");
+    assert_eq!(t.top(), 5);
+    assert_eq!(t.levels, vec![100.0, 250.0, 500.0, 900.0, 1500.0]);
+    assert_eq!(t.level(1500.0), 5);
+    assert_eq!(t.max_xp(), 1500.0);
+    assert_eq!(t.fitness_drain, 0.06);
+    t.check().unwrap();
+    // And today's settings go round as they are.
+    let new = SkillTuning::default();
+    let back: SkillTuning = ron::from_str(&ron::to_string(&new).unwrap()).unwrap();
+    assert_eq!(back, new);
+}
+
+/// XP multipliers (sandbox settings): every skill by `xp_scale`, each by its own `xp_mult`; checked.
+#[test]
+fn xp_multipliers_scale_what_is_earned() {
+    let mut c = config(12);
+    c.skills.xp_scale = 2.0;
+    c.skills.xp_mult.insert(Skill::Edged, 0.25);
+    c.skills.xp_mult.insert(Skill::Stealth, 0.0);
+    let mut w = World::new(c);
+    let id = w.add_player(w.player_spawn);
+    w.award_xp(0, Skill::Bludgeon, 10.0);
+    w.award_xp(0, Skill::Edged, 10.0);
+    assert_eq!(w.award_xp(0, Skill::Stealth, 100.0), None, "x0 earns nothing");
+    assert_eq!((xp(&w, id, Skill::Bludgeon), xp(&w, id, Skill::Edged), xp(&w, id, Skill::Stealth)), (20.0, 5.0, 0.0));
+    // A new survivor's start is levels, not earned XP.
+    assert_eq!(xp(&w, id, Skill::Fitness), w.config.skills.xp_for(2));
+    let t = &w.config.skills;
+    assert!(t.earned_by(Skill::Bludgeon).ends_with("; XP x2"), "{}", t.earned_by(Skill::Bludgeon));
+    assert!(t.earned_by(Skill::Edged).ends_with("; XP x0.5"), "{}", t.earned_by(Skill::Edged));
+    assert!(!SkillTuning::default().earned_by(Skill::Edged).contains("XP x"));
+    t.check().unwrap();
+    let bad = SkillTuning { xp_scale: -1.0, ..Default::default() };
+    assert!(bad.check().unwrap_err().contains("xp_scale"));
+    let mut bad = SkillTuning::default();
+    bad.xp_mult.insert(Skill::Fitness, f32::INFINITY);
+    assert!(bad.check().unwrap_err().contains("xp_mult for fitness"));
+    let bad = SkillTuning { levels: vec![1.0; 11], ..Default::default() };
+    assert!(bad.check().unwrap_err().contains("11 levels"));
+    // Saved with the world, as RON.
+    let back = World::load(&w.save(), &w.config).unwrap();
+    assert_eq!(back.config.skills, w.config.skills);
 }

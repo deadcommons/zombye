@@ -171,7 +171,7 @@ fn ignoring_needs_hurts_and_slows() {
     let mods = me(&w, id).state.mods;
     let t = w.config.needs;
     assert!(!mods.can_run && (mods.speed - t.exhausted_walk).abs() < 1e-5, "{mods:?}");
-    let fit = w.config.skills.move_mods(1, MoveMods::default()).regen;
+    let fit = w.config.skills.move_mods(w.config.skills.start_fitness, MoveMods::default()).regen;
     assert!((mods.regen - t.hungry_regen * t.thirsty_regen * fit).abs() < 1e-5);
     let (power, time) = w.needs_swing(0);
     assert!((power - t.starving_swing_power).abs() < 1e-5 && (time - t.exhausted_swing_time).abs() < 1e-5);
@@ -193,7 +193,7 @@ fn ignoring_needs_hurts_and_slows() {
     w.set_needs(id, Some(0.0), None, None);
     w.skip_time(1.0);
     assert!(me(&w, id).hp > hp + 1.0);
-    assert_eq!(me(&w, id).state.mods, w.config.skills.move_mods(1, MoveMods::default()));
+    assert_eq!(me(&w, id).state.mods, w.config.skills.move_mods(w.config.skills.start_fitness, MoveMods::default()));
     // Starving to death, god mode off.
     w.set_needs(id, Some(1.0), Some(1.0), None);
     w.skip_time(40.0);
@@ -298,7 +298,7 @@ fn sleep_rests_and_speeds_time_up() {
     }
     assert_eq!(woke, Some((id, WakeReason::Rested)));
     assert!(me(&w, id).needs.tiredness < t.rested_below && w.time_scale() == 1.0);
-    assert_eq!(me(&w, id).state.mods, w.config.skills.move_mods(1, MoveMods::default()));
+    assert_eq!(me(&w, id).state.mods, w.config.skills.move_mods(w.config.skills.start_fitness, MoveMods::default()));
     // Two players: one asleep isn't enough.
     let other = w.add_player(w.player_spawn);
     w.set_needs(id, None, None, Some(0.8));

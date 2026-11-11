@@ -1381,7 +1381,7 @@ mod tests {
         assert_eq!(p.hp, 0.0);
         assert!(p.weapon.is_none());
         assert!(w.items().iter().any(|it| it.stack.item == bat && it.pos.distance(p.state.pos) < 0.01), "the bat should drop");
-        assert!(p.inventory.is_empty() && p.state.mods == w.config.skills.move_mods(1, crate::players::MoveMods::default()));
+        assert!(p.inventory.is_empty() && p.state.mods == w.config.skills.move_mods(w.config.skills.start_fitness, crate::players::MoveMods::default()));
         // Dead: input is ignored and the zombies lose interest.
         let at = p.state.pos;
         w.set_player_input(id, 1, PlayerInput { move_dir: Vec2::X, facing: 0.0, run: true, sneak: false, aim: false });
@@ -1424,7 +1424,7 @@ mod tests {
     #[test]
     fn shove_sometimes_knocks_down_a_lone_zombie() {
         let mut c = CombatTuning::default();
-        c.shove_knockdown_chance += crate::skills::SkillTuning::default().shove_knockdown_bonus(1, 0);
+        c.shove_knockdown_chance += crate::skills::SkillTuning::default().shove_knockdown_bonus(2, 0);
         let front = shove_knockdown_rate(PI);
         let behind = shove_knockdown_rate(0.0);
         eprintln!("shove knockdowns: {front:.2} from the front, {behind:.2} from behind (chance {}, ×{} behind)", c.shove_knockdown_chance, c.behind_knockdown_mult);

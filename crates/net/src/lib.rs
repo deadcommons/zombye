@@ -1396,7 +1396,7 @@ mod tests {
         let mut server = server();
         let id = server.join(None);
         let other = server.join(None);
-        // 16.5 kg: burdened at Strength 1 (a 15.5 kg limit), not at 2 (17 kg).
+        // 16.5 kg: burdened at Strength 2 (a 15.5 kg limit), not at 4 (17 kg).
         assert!(server.world.give_item(id, "wooden_plank", 7));
         assert!(server.world.hold_item(id, zombye_sim::Slot::Hand, "fire_axe"));
         let pi = server.world.players.iter().position(|p| p.id == id).unwrap();
@@ -1411,7 +1411,7 @@ mod tests {
             let aim = seq == 100;
             server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run, sneak: false, aim });
             if seq == 100 {
-                // A swing of a 2.5 kg axe: Strength 2 on the spot.
+                // A swing of a 2.5 kg axe: Strength 4 on the spot.
                 server.send(Intent::Attack { player: id });
             }
             step_movement(&server.world.map, &mut predicted, &PlayerInput { move_dir: move_dir.into(), facing, run, sneak: false, aim }, TICK_DT);
@@ -1422,9 +1422,9 @@ mod tests {
                 assert_eq!((view.state().pos, view.state().stance), (predicted.pos, predicted.stance), "diverged at seq {seq}");
                 predicted = view.state();
                 let mine = snap.clone().for_player(id);
-                assert_eq!(mine.level_ups, [LevelUp { player: id, skill: Skill::Strength, level: 2 }]);
+                assert_eq!(mine.level_ups, [LevelUp { player: id, skill: Skill::Strength, level: 4 }]);
                 assert!(snap.clone().for_player(other).level_ups.is_empty(), "only ours");
-                assert_eq!(mine.private.iter().find(|v| v.player == id).expect("our skills changed").skill_level(Skill::Strength), 2);
+                assert_eq!(mine.private.iter().find(|v| v.player == id).expect("our skills changed").skill_level(Skill::Strength), 4);
             } else {
                 assert_eq!(zombye_sim::PlayerState { mods: predicted.mods, ..view.state() }, predicted, "diverged at seq {seq}");
             }
@@ -1436,12 +1436,12 @@ mod tests {
             let w = &mut server.world;
             match seq {
                 99 => {
-                    let to = 249.5 - w.players[pi].skills.xp(Skill::Strength);
+                    let to = 749.5 - w.players[pi].skills.xp(Skill::Strength);
                     assert_eq!(w.award_xp(pi, Skill::Strength, to), None);
                 }
                 200 => {
-                    let to = 250.0 - w.players[pi].skills.xp(Skill::Fitness);
-                    assert_eq!(w.award_xp(pi, Skill::Fitness, to), Some(2));
+                    let to = 450.0 - w.players[pi].skills.xp(Skill::Fitness);
+                    assert_eq!(w.award_xp(pi, Skill::Fitness, to), Some(3));
                 }
                 _ => {}
             }

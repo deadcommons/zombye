@@ -536,7 +536,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   behind (the zombie faces away) crits are more likely and knockdowns easier; knockdowns are easier
   on a staggered zombie. Below `tired_below` endurance actions get weaker and slower; running out
   winds you. Each action makes a noise heard that tick. **Shove:** short reach, wide arc, up to 3, no
-  damage, always staggers, may knock down (`shove_knockdown_chance` 0.25, +0.03 for a new survivor's Strength 1:
+  damage, always staggers, may knock down (`shove_knockdown_chance` 0.25, +0.03 for a new survivor's Strength 2:
   a little over one shove in four floors a lone zombie facing you, 0.45 from behind). **Stomp:** hits a downed zombie at your feet in front.
   Swings and shoves pass over downed zombies. Results are in `World::action_events` and `hit_events`.
 - **Combat events (hit feedback):** every hit, kill, shove, stomp and wound is also pushed to
@@ -914,24 +914,31 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
 
 ## Skills (`sim::skills`; #46)
 
-- **Nine skills, levels 0-5, raised only by practice.** `Player::skills` (`Skills { xp: [f32; 9] }`, by `Skill as usize`)
-  holds XP; the level is worked out from it at the cumulative thresholds `SkillTuning::levels` (100, 250, 500, 900, 1,500;
-  XP stops at the top). A new survivor (`add_player`, a respawn, a new run) has Fitness and Strength at 1 (100 XP), the
-  rest 0 (`Skills::start`). Nothing is lost when a skill isn't used; no skill books. Every number is in `SkillTuning`
+- **Nine skills, levels 0-10, raised only by practice.** `Player::skills` (`Skills { xp: [f32; 9] }`, by `Skill as usize`)
+  holds XP; the level is worked out from it at the cumulative thresholds `SkillTuning::levels` (75, 225, 450, 750, 1,150,
+  1,650, 2,300, 3,100, 4,100, 5,400; XP stops at the top, `SkillTuning::top`: as many levels as listed, at most
+  `MAX_LEVEL` 10, so a world saved with the five levels before DCM-63 keeps its five and its numbers, read from the RON tuple
+  they were saved as). A new survivor (`add_player`, a respawn, a new run) has Fitness and Strength at 2 (225 XP), the
+  rest 0 (`Skills::start`). Each level gives half of what one of the old five did, so level 10 is the old level 5 and
+  the balance is as it was, with a longer climb. Nothing is lost when a skill isn't used; no skill books.
+  **XP multipliers** (DCM-63; sandbox settings): `World::award_xp` multiplies every XP by `SkillTuning::xp_scale` (1)
+  and its skill's `xp_mult` (a map by skill, unlisted 1; `xp_mult_of`), both checked on load (0 to 100); the skills
+  panel and MCP `skills` say when a multiplier isn't 1 (`earned_by` ends "; XP x2"). Backgrounds, Strengths and Flaws
+  and books (the skills expansion plan) multiply there too. Every number is in `SkillTuning`
   (`WorldConfig::skills`, serde defaults, saved with the settings; ours), except Strength's carry kg
   (`CarryTuning::strength_kg`) and First Aid's speed and stitching (`FirstAidTuning::skill_faster_per_level`,
   `skill_stitch_level`), which stay where those numbers are used.
 
 | Skill | XP from | Each level |
 |---|---|---|
-| Fitness | running: 0.1 a second | running drains endurance 6% slower, it recovers 6% faster (`MoveMods`) |
-| Strength | a swing of a weapon over 1.5 kg (by its item's weight): 1; moving over the carry limit, awake: 1 a game minute | carry limit +1.5 kg, shove knockdown chance +0.03, knockback of swings and shoves +5% |
-| Bludgeon / Edged | each zombie hit with a weapon of that skill: 2, a kill 5 instead | damage +6%, endurance cost -5%, windup and swing time -3% |
-| Brawl | each punch that lands 2 (a kill 5), each zombie shoved 2, a stomp that kills 5 | punch and stomp damage +10%, shove knockdown chance +0.04 |
-| Stealth | sneaking and moving within 15 m of a living zombie that isn't after you (not while ignored): 0.2 a second | sneaking footsteps 8% quieter; every sight range against you 6% shorter (`senses::Target::sight_mult`) |
-| First Aid | each treatment done: 10 | treatment 10% faster; from 3, stitching stings half as much |
-| Scavenging | each container searched for the first time: 2 | first searches 10% faster and 10% quieter |
-| Handiwork | each craft (#12): 5 | crafting 10% faster (`SkillTuning::craft_time_mult`) |
+| Fitness | running: 0.1 a second | running drains endurance 3% slower, it recovers 3% faster (`MoveMods`) |
+| Strength | a swing of a weapon over 1.5 kg (by its item's weight): 1; moving over the carry limit, awake: 1 a game minute | carry limit +0.75 kg, shove knockdown chance +0.015, knockback of swings and shoves +2.5% |
+| Bludgeon / Edged | each zombie hit with a weapon of that skill: 2, a kill 5 instead | damage +3%, endurance cost -2.5%, windup and swing time -1.5% |
+| Brawl | each punch that lands 2 (a kill 5), each zombie shoved 2, a stomp that kills 5 | punch and stomp damage +5%, shove knockdown chance +0.02 |
+| Stealth | sneaking and moving within 15 m of a living zombie that isn't after you (not while ignored): 0.2 a second | sneaking footsteps 4% quieter; every sight range against you 3% shorter (`senses::Target::sight_mult`) |
+| First Aid | each treatment done: 10 | treatment 5% faster; from 6, stitching stings half as much |
+| Scavenging | each container searched for the first time: 2 | first searches 5% faster and 5% quieter |
+| Handiwork | each craft (#12): 5 | crafting 5% faster (`SkillTuning::craft_time_mult`) |
 
 - **Weapon skills follow how a weapon hits:** each entry in `weapons.ron` names its `skill` (`Some(Bludgeon)`, `Some(Edged)`
   or `Some(Brawl)`; left out, `WeaponCategory::skill`: `ShortBlunt`/`LongBlunt` Bludgeon, `ShortBlade`/`Axe` Edged,
@@ -987,7 +994,7 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
 - **Inventory** (`Player::inventory`): `hand` (swings), `off_hand`, `back` and `shoulder` (bags), `worn` (clothing and
   accessories; two can't share a body part or an accessory place on one layer, `ClothingDef::clashes`), `carried` (pockets and bags). Two limits (`CarryTuning`, ours): *room*,
   pockets 3 L plus the bags in the slots (held and worn items take none); *weight*, everything in full (bags add room,
-  not lightness). Limit 14 kg (+1.5 kg per Strength level, #46: `CarryTuning::limit(strength)`; a new survivor's Strength 1 makes it 15.5 kg); over 100%
+  not lightness). Limit 14 kg (+0.75 kg per Strength level, #46: `CarryTuning::limit(strength)`; a new survivor's Strength 2 makes it 15.5 kg); over 100%
   Burdened (x0.9 speed, running drains x1.3), over 130% Heavy (x0.75, no running, actions cost x1.2), over 160%
   Overloaded (x0.5, no running or climbing); nothing more picked up past 200%. `World::carry(p)` says where a player is.
 - **Moving things takes time:** `MoveItem { player, from, index, to, count }` (`Place`: `Carried`, `Slot(Hand |
@@ -1089,7 +1096,7 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
 - **Crafting is an item job** (`JobKind::Craft { recipe }`, `World::player_craft`, `Intent::Craft { player, recipe }`
   with an index into the recipes the client got on joining): checked when asked and again when due by one pure rule
   over an inventory (`crafting::check` / `check_times`, which the inventory panel uses too), taking the recipe's `secs`
-  (`World::craft_secs`: Handiwork, #46, `SkillTuning::craft_time_mult`, 10% faster a level down to half; each craft done
+  (`World::craft_secs`: Handiwork, #46, `SkillTuning::craft_time_mult`, 5% faster a level down to half; each craft done
   gives 5 Handiwork XP in `World::on_crafted`, see Skills). Inputs and tools are what the player
   carries and holds (`firstaid::usable`), not what it wears (the refusal says to take it off); only whole items count
   as inputs (`crafting::whole`: the part-used top one of a stack doesn't). Like eating, it doesn't stop you walking; a
