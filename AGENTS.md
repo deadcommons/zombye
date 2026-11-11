@@ -13,7 +13,7 @@ Work is tracked on GitHub, not in the repo: the
 
 | Path | What | Licence |
 |---|---|---|
-| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `awareness.rs`: which players see and heard which, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), weapons wearing out and breaking (`wear.rs`, see Weapons in the hand), lag compensation for it (`lagcomp.rs`: a few ticks of positions, so a remote client's blow lands where it saw the target), guns (`ranged.rs`: a shot's flight over the map and through bodies, rounds, magazines and reloading, see Guns), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), the status icons a client shows of all that, their levels from data (`status.rs`), skills that improve with practice (`skills.rs` + `SkillTuning`), street props placed by the town generator from data (`street_props.rs`), run stats and the cause of death (`run.rs`), the first night's objectives and outcome (`firstnight.rs`), logging out, spawn protection and the start kit on a server (`logout.rs`), the benchmark's scenarios and score (`scenario.rs`, see The agent survival benchmark), proximity chat and gestures (`speech.rs`: who hears a line, the noise it makes, see Talking and gestures), tying hands, freeing and searching a tied survivor (`bonds.rs`) and optional groups with names and shared markers (`groups.rs`; both: see Hold-ups and groups), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`), the hook mod scripts run through (`script.rs`: events, the checked `script_*` functions, what scripts keep; see Mods and scripts). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
+| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `awareness.rs`: which players see and heard which, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), weapons wearing out and breaking (`wear.rs`, see Weapons in the hand), lag compensation for it (`lagcomp.rs`: a few ticks of positions, so a remote client's blow lands where it saw the target), guns (`ranged.rs`: a shot's flight over the map and through bodies, rounds, magazines and reloading, see Guns), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), the status icons a client shows of all that, their levels from data (`status.rs`), skills that improve with practice (`skills.rs` + `SkillTuning`), street props placed by the town generator from data (`street_props.rs`), run stats and the cause of death (`run.rs`), the first night's objectives and outcome (`firstnight.rs`), logging out, spawn protection and the start kit on a server (`logout.rs`), the benchmark's scenarios and score (`scenario.rs`, see The agent survival benchmark), proximity chat and gestures (`speech.rs`: who hears a line, the noise it makes, see Talking and gestures), roller blinds on windows and glazed doors (`blinds.rs`, see Blinds), tying hands, freeing and searching a tied survivor (`bonds.rs`) and optional groups with names and shared markers (`groups.rs`; both: see Hold-ups and groups), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`), the hook mod scripts run through (`script.rs`: events, the checked `script_*` functions, what scripts keep; see Mods and scripts). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), multiplayer over the network (see Multiplayer: the messages, framing and per-client delta snapshots in `wire.rs`, a client's view cut to what its survivor sees and hears of other players in `visibility.rs`, the server's connections in `host.rs`, a client's in `remote.rs`; the server browser's list and probes in `browser.rs`, see The server browser; a mod's data as a server hands it to joining clients, its hash and the client's cache in `modpack.rs`, see Mods downloaded on joining), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
 | `crates/mods` | Mods (see Mods and scripts): reads a mod's folder (`mod.ron`, `items.ron`, `recipes.ron`, `loot.ron`, `buildings/*.ron`, `*.luau`), merges its data into a `WorldConfig` (`lib.rs`: `Mod`, `apply`, `load_into`; `Mod::pack` / `from_pack` / `apply_packs`: the data a server hands to joining clients, #24) and runs its Luau scripts sandboxed, one VM a mod, as the world's script host (`luau.rs`, on `mlua`; Luau is built from source, so a C++ compiler is needed). The one crate with Luau in it. | MIT OR Apache-2.0 |
 | `mods/` | Sample mods: `alarm_clock` (an item behaviour by script; the worked example of [docs/modding.md](docs/modding.md)). | MIT OR Apache-2.0 |
@@ -193,7 +193,7 @@ sent to it, chasing, zombies per tier active/near/virtual, sim tick ms, and the 
 In game: WASD move (he faces the way he walks), Shift run, C sneak (toggle), right mouse held: aim (he faces the
 cursor and strafes or backs off at 2.2 m/s, no running, in a guard stance), and only while aiming left mouse attack
 (swing your weapon, or punch; with a gun in hand: shoot at what the cursor is on, see Guns) and Space shove (or stomp, when a downed zombie lies right in front of you), R reload the gun you hold, E climb the fence or open or broken window you face (see Climbing under Players), else pick up the item you
-face (with nothing on the floor within reach: search the container you face), 1-9 the hotbar (swap to or use what's on that slot, see Hotbar), Tab or I the inventory panel, H the health panel, K the skills panel (drag any of the three by its title; they remember where they were and whether they were open), F open/close the door or window you face, G smash the window you face, dead: R a new run and Q or Esc quit,
+face (with nothing on the floor within reach: search the container you face), 1-9 the hotbar (swap to or use what's on that slot, see Hotbar), Tab or I the inventory panel, H the health panel, K the skills panel (drag any of the three by its title; they remember where they were and whether they were open), F open/close the door or window you face, Shift+F roll the blind of the window or glass door you face up or down (or fit one you carry), Shift+Alt+F take it down (see Blinds), G smash the window you face, dead: R a new run and Q or Esc quit,
 B sleep (B again or WASD to get up), Enter the chat line (Tab there: whisper, talk or shout; Enter says it, Esc drops it), V wave, U hands up (again lowers them), P point (see Talking and gestures), Y tie the hands of the survivor you face or free tied ones, L search a tied survivor, J (held) struggle out of ties, N invite into your group or accept (Shift+N leaves), middle mouse a group marker (see Hold-ups and groups), T skip an hour, Z spawn zombies, wheel zoom (over the inventory, health or skills panel it scrolls that panel instead), F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), F3 the light preview (a time-of-day slider, see Light and mood), F4 the debug stats window (see Needs), F6 the server's rules (on a multiplayer server, see Multiplayer), F7 the server browser (see The server browser), `,` and `.` turn the camera a quarter turn left or right (see Turning the camera under Light and mood), F10 walls up / walls cut, Shift+F10 zombie silhouettes and Ctrl+F10 opening hints (see Cutaways and Opening hints under Light and mood), M mute, O hide or show the objectives and hints (see The first night), Ctrl (or Cmd) + `=` / `-` the UI scale (see UI scale), Ctrl+0 back to 100%. Walking into a fence or an open window stops you as a wall would: E climbs
 it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
 not Bevy's handler; a second Ctrl-C quits unsaved) autosaves; `--render-to` never does.
@@ -463,6 +463,47 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   (0.15 ms before; `building_build_time`, an ignored test, times every building of the default map and says where
   one of each template stands), about 9,800 triangles a building (6,000 before); a frame (1920 × 1080 offscreen,
   2,000 zombies, by day, default zoom) about 0.7 ms more: 9.3 against 8.2-8.7 ms mean.
+
+## Blinds (`sim::blinds`)
+
+Roller blinds on the inside of windows and of doors with glass in them: down, nobody outside sees in
+through that glass. Barricades come later.
+
+- **On the map** (`TileMap::blinds`, by `EdgeRef::key`: `true` down, `false` rolled up; `TileMap::glazed`: the
+  doors with glass in them). `TileMap::takes_blind(e)`: any window, or a glazed door. **Sight:** `TileMap::blocks_view`
+  is what `vision::cast_ray`, `line_of_sight` and `sight_through` use now: a shut glazed door is seen through like
+  a window (at `window_sight_mult`), and glass with its blind down blocks sight as a wall does, for zombies
+  (`senses`), other players (fair information) and the client's fog of war alike. A window's blind down blocks it
+  shut, open or broken (it hangs inside the opening); an open glazed door is open (its blind swings away with it).
+  **Hearing doesn't change:** a voice, a footstep and a thump go by `vision::sound_line`, the old edge-only rule.
+- **The town's own** (`blinds::place`, from `World::generate`, by a hash of the seed and the edge, so the same for
+  the same seed; not saved: a save stores the blinds themselves): every ground-floor window of a house has one with
+  chance `house_window` (0.45; shops 0.1, offices 0.6, civic 0.3), outside doors have glass (`glazed_front_door`
+  0.25, `glazed_back_door` 0.5, `glazed_shop_door` 0.85) and a glazed door a blind (`door_blind` 0.35), each blind
+  down with chance `down` (0.25). All in `BlindTuning` (`WorldConfig::blinds`, serde defaults, saved with the
+  settings and checked on load; `BlindTuning::none()` gives a town with neither).
+- **Using them** (`World::player_blind(id, BlindOp)`, `Intent::Blind { player, op }`): from the inside only
+  (`blinds::on_inside`: the indoor side; a blind can't be worked from the street), the window or glazed door faced,
+  by the doors' reach rule (`blinds::faced`, pure, as the client asks it). `Toggle` rolls it up or down at once
+  (a `noise` of 2.5 m); `Fit` takes one carried item with the tag `tag` ("blind"; shipped: `roller_blind`, loot in
+  bedrooms, laundries, sheds, garages and hardware shops) and fits it down in `fit_secs` (6); `TakeDown` puts it back
+  in the bags in `take_down_secs` (3); `Use` is the key's likely thing: roll it, or fit one if there is none. Fit
+  and take-down are the item job `JobKind::Blind { edge, fit }` (saved with the queue; the last variant), checked
+  again when due (still faced and in reach, still inside). A door battered down drops its blind on the floor
+  inside; a smashed window keeps its blind.
+- **Replication** (`wire::PROTOCOL` 20): `Snapshot::blind_changes` (`map::BlindChange`, from
+  `World::take_blind_changes`; to every client, not cut by interest), and a joining client gets every blind and
+  glazed door in `Welcome::blinds` / `Welcome::glazed`. **Saves:** an optional `BLND` section (every blind and
+  every glazed door), checked on load (glass only in doors, blinds only on edges that take one; on a map regenerated
+  anyway the misfits are dropped with a note); no format bump.
+- **Client** (`world_render.rs`): a glazed door's leaf has a dark glass panel (`door_glazed`); a blind is a cloth on
+  the inside face (palette `blind`, `blind_rail`), on a window its own entity below the head (hidden while its wall
+  is cut away), on a door a child of the leaf (swinging with it), easing down and up (`sync_blinds`,
+  `animate_blinds`). Shift+F sends `BlindOp::Use`, Shift+Alt+F `TakeDown`; a blind in the inventory has "Fit to the
+  window" in its right-click menu; the current-action bar says "Fitting a blind".
+- **MCP:** `blind {player, action: use | toggle | fit | take_down, facing}` (steps until a fit or take-down is
+  done); `edge` says which edges have glass and a blind, up or down.
+- Tests: `sim::blinds::tests`, `vision`'s `a_blind_down_hides_the_glass_and_a_glazed_door_shows_through`.
 
 ## Players, intents and prediction
 
@@ -2440,7 +2481,7 @@ and checks the state hash, the tick and the session's dirty flag don't move), `P
 `add_player`, `pvp`, `dev`, `skip_time`, `load`, `restrain_now`) get a title starting `Debug:`, a description starting "Debug tool, for setting
 up tests" and `_meta: {"zombye/debug": true}`. Only `save` and `load` are `destructiveHint: true`; every tool is
 `openWorldHint: false`. **A new tool needs a row in `TOOLS`** (a test fails without one). `--no-debug-tools` leaves the
-debug tools out: not listed (46 tools instead of 58), and calling one is the unknown-tool error. `stats` has an
+debug tools out: not listed (47 tools instead of 59), and calling one is the unknown-tool error. `stats` has an
 `outputSchema` and returns its JSON as `structuredContent` beside the text (`output_schema`). The server's `instructions`
 (`mcp::instructions`, under 2,200 bytes: every client puts them in the model's context) say you are player 1, time only
 moves when a tool steps it, look with `observe` first, and the debug tools are for testing; detail belongs in the tools'

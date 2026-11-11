@@ -24,6 +24,9 @@ use crate::senses::SoundSource;
 use crate::template::BuildingKind;
 use crate::world::{INTERACT_REACH, World};
 
+/// Blind changes kept for replication if nobody drains them.
+const MAX_BLIND_CHANGES: usize = 1024;
+
 /// Blinds' numbers: where the town has them from the start, and how long handling one takes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -223,6 +226,10 @@ impl World {
             return;
         }
         self.map.set_blind(edge, blind);
+        // Kept until a snapshot drains them; with nobody draining (an agent's world), the oldest go.
+        if self.blind_changes.len() >= MAX_BLIND_CHANGES {
+            self.blind_changes.remove(0);
+        }
         self.blind_changes.push(BlindChange { tile: edge.tile, edge: edge.edge, blind });
     }
 

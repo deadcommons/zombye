@@ -121,9 +121,12 @@ const KNOC: [u8; 4] = *b"KNOC";
 /// Climbs under way (E over a fence or through a window), by player id; only when there are any.
 const CLMB: [u8; 4] = *b"CLMB";
 /// Blinds on windows and glazed doors and whether each is down (`crate::blinds`), every one, by
-/// edge key. Optional: a save without it (from before blinds) keeps the ones its map was
+/// edge key, and the doors with glass in them ([`BlindSave`]). Optional: a save without it (from before blinds) keeps the ones its map was
 /// generated with, so adding it didn't change the format version.
 const BLND: [u8; 4] = *b"BLND";
+
+/// The `BLND` section: every blind (edge key, down) and every glazed door (edge key).
+type BlindSave = (Vec<((i32, i32, u8), bool)>, Vec<(i32, i32, u8)>);
 
 /// [`crate::run::RunStats`] as the `RUNS` section held it, before players killed were counted.
 #[derive(Deserialize)]
@@ -799,7 +802,9 @@ impl World {
         }
         // Every blind (the map's own `blinds` aren't stored with its tiles), even none: the save's
         // blinds replace those the map is generated with.
-        let blinds: Vec<((i32, i32, u8), bool)> = map.blinds.iter().map(|(k, v)| (*k, *v)).collect();
+        // The glazed doors too: a map stored whole (or regenerated anyway) needn't have them where
+        // the generated one does.
+        let blinds: BlindSave = (map.blinds.iter().map(|(k, v)| (*k, *v)).collect(), map.glazed.iter().copied().collect());
         w.section(BLND, &encode(&blinds));
         // Tied hands and groups (#73); none, no section.
         let bonds: BondSave =
@@ -1002,7 +1007,7 @@ impl World {
         let mut nights: Option<Vec<(u32, crate::firstnight::FirstNight)>> = None;
         let mut bonds: Option<BondSave> = None;
         let mut groups: Option<crate::groups::Groups> = None;
-        let mut blinds: Option<Vec<((i32, i32, u8), bool)>> = None;
+        let mut blinds: Option<BlindSave> = None;
         loop {
             let (tag, payload) = r.next()?;
             if tag == END {
@@ -1094,7 +1099,21 @@ impl World {
         }
         // Blinds: the save's replace the generated ones. One on an edge that takes none (a map
         // regenerated anyway) is dropped, else the save is refused.
-        if let Some(list) = blinds {
+        if let Some((list, glazed)) = blinds {
+            // Glass in doors first: the save's, on what are doors on this map.
+            let mut doors = std::collections::BTreeSet::new();
+            for key in glazed {
+                let e = crate::world::edge_of_key(key);
+                let door = |k: crate::map::Edge| k.is_door() || k == crate::map::Edge::DoorBroken;
+                if !w.map.in_bounds(e.tile) || key.2 > 1 || !door(w.map.owned_edge(e.tile, e.edge)) {
+                    if new_map {
+                        continue;
+                    }
+                    return Err(save_check::invalid(format!("glass in a door at {} {:?}, where there's no door", e.tile, e.edge)));
+                }
+                doors.insert(key);
+            }
+            w.map.glazed = doors;
             let mut kept = std::collections::BTreeMap::new();
             let mut dropped = 0;
             for (key, down) in list {
@@ -1104,7 +1123,7 @@ impl World {
                         dropped += 1;
                         continue;
                     }
-                    return Err(save_check::invalid(format!("a blind at {} {:?}, where there's no window or glass door", e.tile, e.edge)));
+                    return Err(save_check::invalid(format!("a blind at {} {:?}, where there's no window or glass door ({:?})", e.tile, e.edge, w.map.owned_edge(e.tile, e.edge))));
                 }
                 kept.insert(key, down);
             }
