@@ -30,4 +30,8 @@
     // A rag dresses a wound dirty (it may fester); washed in clean water it goes on clean, like gauze.
     (id: "wash_rags", name: "Wash rags in clean water", secs: 12.0,
         inputs: [(item: "rag", count: 3), (item: "water_bottle")], outputs: [(item: "clean_rag", count: 3), (item: "empty_bottle")]),
+
+    // ---- Building (build.ron uses these) --------------------------------------------------------
+    (id: "open_nails", name: "Open a box of nails", secs: 1.0,
+        inputs: [(item: "nails")], outputs: [(item: "nail", count: 50)]),
 ]

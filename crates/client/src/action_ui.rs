@@ -95,6 +95,8 @@ fn describe(kind: JobKind, join: &JoinInfo) -> String {
         JobKind::Reload { spare: true } => "Filling a magazine".to_string(),
         JobKind::Blind { fit: true, .. } => "Fitting a blind".to_string(),
         JobKind::Blind { fit: false, .. } => "Taking a blind down".to_string(),
+        JobKind::Build { add: true, build, .. } => join.builds.get(build as usize).map_or("Building".to_string(), |b| b.name.clone()),
+        JobKind::Build { add: false, .. } => "Prising a plank off".to_string(),
     }
 }
 

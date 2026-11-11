@@ -98,7 +98,7 @@ enum Kind {
 
 /// Every tool: name, title (shown to people by clients), kind. `tool_list` adds these to the
 /// definitions, and a test checks each tool has a row.
-const TOOLS: [(&str, &str, Kind); 62] = [
+const TOOLS: [(&str, &str, Kind); 65] = [
     ("observe", "Look around (ASCII map)", Kind::Look),
     ("screenshot", "Screenshot (rendered picture)", Kind::Look),
     ("stats", "World and player stats", Kind::Look),
@@ -130,6 +130,9 @@ const TOOLS: [(&str, &str, Kind); 62] = [
     ("smash_window", "Smash a window", Kind::Play),
     ("light", "Switch the light of the room you're in", Kind::Play),
     ("blind", "Fit, roll or take down a blind", Kind::Play),
+    ("builds", "The build menu's catalog", Kind::Look),
+    ("build", "Board up a window or door", Kind::Play),
+    ("unbuild", "Prise a plank off", Kind::Play),
     ("climb", "Climb a fence or an open window", Kind::Play),
     ("attack", "Attack", Kind::Play),
     ("shove", "Shove", Kind::Play),
@@ -646,6 +649,34 @@ fn tool_defs() -> Value {
                 "action": {"type": "string", "enum": ["use", "toggle", "fit", "take_down"], "default": "use"},
                 "facing": {"type": "number"}
             }}
+        },
+        {
+            "name": "builds",
+            "description": "The build menu (assets/data/build.ron): every build's id, name, what it goes on, what one piece \
+                uses up and the tools it needs (kept), seconds a piece, hit points a piece, how many pieces it stacks to, and \
+                how it comes down again. Barricades for now: planks nailed across a window or door. Read-only; build builds one.",
+            "inputSchema": {"type": "object", "properties": {}}
+        },
+        {
+            "name": "build",
+            "description": "A player builds one piece of a build (see builds; e.g. board_window, board_door) on the window or \
+                door it faces, within 1.6 m, from the side it stands on: one plank nailed across, using the build's materials \
+                (a plank and nails) with a hammer to hand. An open door is shut first. The edge is then boarded up: nobody \
+                walks, climbs or sees through it, and zombies batter it, a plank's hit points at a time, before what's \
+                underneath. Call again for more planks, up to the build's max. Give facing (radians) to turn first; the world \
+                steps until the piece is up, and the reply says the planks and hit points.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "build": {"type": "string"},
+                "facing": {"type": "number"}
+            }, "required": ["build"]}
+        },
+        {
+            "name": "unbuild",
+            "description": "A player prises one plank off the boarded-up window or door it faces, within 1.6 m, with a tool \
+                that pries (a crowbar or claw hammer): the plank comes back, the nails are lost. The last plank leaves the \
+                window or door as it was. Give facing (radians) to turn first; steps until it's done.",
+            "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}, "facing": {"type": "number"}}}
         },
         {
             "name": "smash_window",
@@ -1605,6 +1636,44 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             let notes = if notes.is_empty() { String::new() } else { format!(" ({notes})") };
             Ok(format!("player {id}: {state}{notes}; {ticks} ticks, tick {}", world.tick))
         }
+        "build" | "unbuild" => {
+            let id = player_id();
+            world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            if let Some(f) = num("facing")
+                && let Some(p) = world.players.iter_mut().find(|p| p.id == id)
+            {
+                p.state.facing = (f as f32).rem_euclid(std::f32::consts::TAU);
+            }
+            world.item_notes.clear();
+            if name == "build" {
+                let b = args.get("build").and_then(Value::as_str).ok_or("build needs `build`: an id from the builds tool")?;
+                world.player_build_id(id, b).map_err(|e| format!("player {id}: {e}"))?;
+            } else {
+                world.player_unbuild(id).map_err(|e| format!("player {id}: {e}"))?;
+            }
+            let busy = |w: &World| w.player(id).is_some_and(|p| p.jobs.iter().any(|j| matches!(j.kind, zombye_sim::inventory::JobKind::Build { .. })));
+            let mut ticks = 0;
+            while busy(world) && ticks < 20 * 30 {
+                if !benchmark::step(world) {
+                    break;
+                }
+                ticks += 1;
+            }
+            let notes = take_notes(world, id);
+            let state = match world.take_barricade_changes().last() {
+                Some(c) => {
+                    let e = EdgeRef::new(c.tile, c.edge);
+                    match c.barricade {
+                        Some(b) => format!("the {} at tile ({}, {}) {:?} edge has {} plank(s){}", noun(b.under), c.tile.x, c.tile.y, c.edge, b.planks, hp_text(world, e)),
+                        None => format!("the {} at tile ({}, {}) {:?} edge is no longer boarded up: {}", noun(world.map.owned_edge(c.tile, c.edge)), c.tile.x, c.tile.y, c.edge, edge_name(world.map.owned_edge(c.tile, c.edge))),
+                    }
+                }
+                None => "nothing changed".to_string(),
+            };
+            let notes = if notes.is_empty() { String::new() } else { format!(" ({notes})") };
+            Ok(format!("player {id}: {state}{notes}; {ticks} ticks, tick {}", world.tick))
+        }
+        "builds" => builds_text(world),
         "smash_window" => {
             let id = player_id();
             world.player(id).ok_or_else(|| format!("no player {id}"))?;
@@ -2464,6 +2533,8 @@ fn edge_name(kind: Edge) -> &'static str {
         Edge::DoorBroken => "door (broken)",
         Edge::Arch => "archway",
         Edge::Fence => "fence",
+        Edge::WindowBoarded => "window (boarded up)",
+        Edge::DoorBoarded => "door (boarded up)",
     }
 }
 
@@ -3371,6 +3442,25 @@ fn run_job(world: &mut World, id: u32, intent: Intent, tail: fn(&World, u32) -> 
 }
 
 /// The `recipes` tool: every recipe in brief.
+fn builds_text(world: &World) -> Result<String, String> {
+    let items = &world.config.items;
+    let mut out = format!("{} builds (materials are used up for each piece, tools kept; Handiwork makes them faster):\n", world.config.builds.len());
+    for d in &world.config.builds {
+        let off = zombye_sim::build::describe(&zombye_sim::BuildDef { inputs: d.remove.returns.clone(), tools: d.remove.tools.clone(), secs: d.remove.secs, ..d.clone() }, items);
+        out.push_str(&format!(
+            "{}: {} [{}] on a {}: {}; {:.0} HP a piece. Comes down a piece at a time: gives back {}\n",
+            d.id,
+            d.name,
+            d.category.label(),
+            d.on.label(),
+            zombye_sim::build::describe(d, items),
+            d.hp,
+            off
+        ));
+    }
+    Ok(out)
+}
+
 fn recipes_text(world: &World) -> Result<String, String> {
     let items = &world.config.items;
     let mut out = format!("{} recipes (inputs are used up, tools kept; Handiwork, when skills come, makes them faster):\n", world.config.recipes.len());
@@ -3778,6 +3868,7 @@ fn edge_char(e: Edge, horizontal: bool, damaged: bool) -> char {
         Edge::DoorOpen => '/',
         Edge::DoorBroken => '#',
         Edge::Fence => '~',
+        Edge::WindowBoarded | Edge::DoorBoarded => 'H',
     }
 }
 
@@ -3996,7 +4087,7 @@ mod tests {
                 assert!(t["annotations"]["destructiveHint"].is_boolean(), "{name}");
             }
         }
-        for name in ["observe", "stats", "zombie", "edge", "buildings", "regions", "inventory", "health", "skills", "weapons", "items", "loot", "recipes", "containers_near", "saves", "heard", "screenshot"] {
+        for name in ["observe", "stats", "zombie", "edge", "buildings", "regions", "inventory", "health", "skills", "weapons", "items", "loot", "recipes", "builds", "containers_near", "saves", "heard", "screenshot"] {
             let t = tool(&list, name);
             assert_eq!(t["annotations"]["readOnlyHint"], true, "{name}");
             assert_eq!(t.get("_meta"), None, "{name}");
@@ -4052,7 +4143,7 @@ mod tests {
             assert!(!persist.dirty, "{name} made the world need saving");
             called += 1;
         }
-        assert_eq!(called, 16);
+        assert_eq!(called, 17);
         // A tool that isn't read-only does make it need saving.
         let (_, err) = call(&mut world, &mut persist, "search", json!({"container": container}));
         assert!(!err && persist.dirty);
@@ -4373,6 +4464,51 @@ mod tests {
         let (text, err) = call(&mut world, &mut persist, "use", json!({"from": "hand"}));
         assert!(!err && text.contains("ahead: Pistol with 0 of 12 rounds in it; 5 loose pistol round carried") && text.contains("loaded the pistol: 5 of 12"), "{text}");
         assert!(text.contains("hand: Pistol (5 of 12 rounds in it)") && !text.contains("Pistol round"), "the rounds are in the gun now: {text}");
+    }
+
+    /// Barricades through the tools: `builds` lists the catalog, `build` boards up the window the
+    /// player faces a plank at a time, `edge` says so, and `unbuild` prises a plank off again.
+    #[test]
+    fn agents_board_up_a_window() {
+        let mut world = small_world();
+        let dir = scratch("builds");
+        let mut persist = session(&world, &dir.0);
+        let (text, err) = call(&mut world, &mut persist, "builds", json!({}));
+        assert!(!err && text.contains("board_window: Board up a window [Barricades] on a window") && text.contains("nail"), "{text}");
+        // A window of the player's room, and the player just inside it, facing it.
+        let at = world.player(1).unwrap().state.pos;
+        let room = world.map.tile(at.floor().as_ivec2()).room;
+        let mut found = None;
+        'look: for dy in -12..=12 {
+            for dx in -12..=12 {
+                let t = at.floor().as_ivec2() + IVec2::new(dx, dy);
+                for which in [OwnedEdge::North, OwnedEdge::West] {
+                    let e = EdgeRef::new(t, which);
+                    let other = if which == OwnedEdge::North { t - IVec2::Y } else { t - IVec2::X };
+                    if world.map.owned_edge(t, which) == Edge::Window && (world.map.tile(t).room == room) != (world.map.tile(other).room == room) {
+                        let inside = if world.map.tile(t).room == room { t } else { other };
+                        found = Some((e, inside));
+                        break 'look;
+                    }
+                }
+            }
+        }
+        let (e, inside) = found.expect("the room has a window");
+        let from = inside.as_vec2() + Vec2::splat(0.5);
+        let to = e.mid() - from;
+        world.players[0].state.pos = from;
+        world.players[0].state.facing = to.y.atan2(to.x);
+        let (text, err) = call(&mut world, &mut persist, "build", json!({"build": "board_window"}));
+        assert!(err && text.contains("nail"), "nothing to build with: {text}");
+        assert!(world.give_item(1, "wooden_plank", 2) && world.give_item(1, "nail", 8) && world.give_item(1, "claw_hammer", 1));
+        let (text, err) = call(&mut world, &mut persist, "build", json!({"build": "board_window"}));
+        assert!(!err && text.contains("has 1 plank(s), 25/25 HP"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "build", json!({"build": "board_window"}));
+        assert!(!err && text.contains("has 2 plank(s), 50/50 HP"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "edge", json!({"x": e.tile.x, "y": e.tile.y}));
+        assert!(text.contains("window (boarded up)"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "unbuild", json!({}));
+        assert!(!err && text.contains("has 1 plank(s)"), "{text}");
     }
 
     /// Proximity chat through the tools (#67): `say` reaches those in earshot, `heard` lists it for

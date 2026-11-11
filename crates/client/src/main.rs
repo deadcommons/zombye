@@ -123,6 +123,7 @@ mod rules_ui;
 mod saving;
 mod server_link;
 mod silhouette;
+mod build_ui;
 mod skills_ui;
 mod survivor;
 mod survivor_model;
@@ -187,6 +188,8 @@ pub struct Options {
     /// Start with the skills or the health panel open (as if K or H had been pressed; `--skills`,
     /// `--health`).
     pub skills: bool,
+    /// `--build-menu`: start with the build menu (Shift+B) open, for pictures of it.
+    pub build_menu: bool,
     pub health: bool,
     /// Start with the first morning's screen up, if the world has that outcome (`--morning`), and
     /// skip this many game hours before the first frame (`--skip-hours H`, a new world only): for
@@ -487,6 +490,7 @@ impl Options {
             sneak: flag("--sneak"),
             inventory: flag("--inventory"),
             skills: flag("--skills"),
+            build_menu: flag("--build-menu"),
             health: flag("--health"),
             morning: flag("--morning"),
             graphics_panel: flag("--graphics-panel"),
@@ -678,7 +682,7 @@ fn main() {
             camera::IsoCameraPlugin,
             zombie_render::ZombieRenderPlugin,
             items_render::ItemsRenderPlugin,
-            (hud::HudPlugin, inventory_ui::InventoryUiPlugin, health_ui::HealthUiPlugin, death::DeathPlugin, needs_ui::NeedsUiPlugin, action_ui::ActionUiPlugin, skills_ui::SkillsUiPlugin, debug_stats::DebugStatsPlugin),
+            (hud::HudPlugin, inventory_ui::InventoryUiPlugin, health_ui::HealthUiPlugin, death::DeathPlugin, needs_ui::NeedsUiPlugin, action_ui::ActionUiPlugin, skills_ui::SkillsUiPlugin, debug_stats::DebugStatsPlugin, build_ui::BuildUiPlugin),
             (fx::FxPlugin, heard::HeardPlugin, chat::ChatPlugin, film::FilmPlugin, graphics_ui::GraphicsUiPlugin, render_scale::RenderScalePlugin, vegetation::VegetationPlugin, rules_ui::RulesUiPlugin, browser_ui::BrowserUiPlugin),
             survivor::SurvivorPlugin,
             (autoplay::AutoplayPlugin, duel::DuelPlugin, holdup::HoldupPlugin, aim_marker::AimMarkerPlugin),

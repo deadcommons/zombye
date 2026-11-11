@@ -2085,7 +2085,7 @@ fn world_menu(
     };
     let thing = thing.filter(|(_, t)| nearest.is_none() || *t < ground_t - 0.3);
     if let Some((target, _)) = thing {
-        let (title, entries) = crate::world_actions::entries(target, &map.0, sites, &join.containers, &join.items, &join.blind_tag, me.id, me.curr.pos, link.own(me.id));
+        let (title, entries) = crate::world_actions::entries(target, &map.0, sites, &join.containers, &join.items, &join.builds, &join.blind_tag, me.id, me.curr.pos, link.own(me.id));
         if !entries.is_empty() {
             menu.show_world(title, entries, cursor);
         }

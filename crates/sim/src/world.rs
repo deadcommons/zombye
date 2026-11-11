@@ -92,6 +92,9 @@ pub struct WorldConfig {
     pub loot_seed: Option<u64>,
     /// What can be made from what (`assets/data/items/recipes.ron`, see [`crate::crafting`]).
     pub recipes: Vec<RecipeDef>,
+    /// What can be built, and on what (`assets/data/build.ron`, see [`crate::build`]): the build
+    /// menu. A data folder without the file has none.
+    pub builds: Vec<crate::build::BuildDef>,
     /// Carry limits, burden and how long handling items takes.
     pub carry: CarryTuning,
     /// Player health and every combat number that isn't a weapon's.
@@ -150,6 +153,7 @@ impl WorldConfig {
             loot: LootData::default(),
             loot_seed: None,
             recipes: Vec::new(),
+            builds: Vec::new(),
             carry: CarryTuning::default(),
             combat: CombatTuning::default(),
             health: HealthTuning::default(),
@@ -206,6 +210,11 @@ impl WorldConfig {
 
     pub fn with_recipes(mut self, recipes: Vec<RecipeDef>) -> Self {
         self.recipes = recipes;
+        self
+    }
+
+    pub fn with_builds(mut self, builds: Vec<crate::build::BuildDef>) -> Self {
+        self.builds = builds;
         self
     }
 
@@ -304,6 +313,8 @@ pub struct World {
     pub edge_changes: Vec<EdgeChange>,
     /// Blinds put up, taken down or rolled since the last snapshot ([`crate::blinds`]), for replication.
     pub(crate) blind_changes: Vec<crate::map::BlindChange>,
+    /// Barricades put up, changed or torn down since a snapshot last drained them ([`crate::build`]).
+    pub(crate) barricade_changes: Vec<crate::map::BarricadeChange>,
     /// Hours added by time skips.
     pub(crate) clock_offset_hours: f32,
     /// Ticks the far clock ([`World::far_tick`]) has run ahead of `tick`: while everyone sleeps the
@@ -543,6 +554,7 @@ impl World {
             stats: TickStats::default(),
             edge_changes: Vec::new(),
             blind_changes: Vec::new(),
+            barricade_changes: Vec::new(),
             clock_offset_hours: 0.0,
             far_ticks: 0,
             attack_events: Vec::new(),
@@ -837,17 +849,22 @@ impl World {
         self.step_power();
     }
 
-    /// Full hit points of an edge of this kind (0 for anything that can't be battered).
+    /// Full hit points of an edge of this kind (0 for anything that can't be battered). A boarded
+    /// edge's are the door's or window's under the planks (the planks have their own,
+    /// [`World::barricade_hp`]), so damage a door took before it was boarded up is kept.
     pub fn max_hp(&self, kind: Edge) -> f32 {
         match kind {
-            Edge::DoorClosed | Edge::DoorOpen => self.config.zombie.door_hp,
-            Edge::Window | Edge::WindowOpen => self.config.zombie.window_hp,
+            Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBoarded => self.config.zombie.door_hp,
+            Edge::Window | Edge::WindowOpen | Edge::WindowBoarded => self.config.zombie.window_hp,
             _ => 0.0,
         }
     }
 
     /// Hit points left and full hit points of a door or window that isn't broken, else `None`.
     pub fn edge_hp(&self, edge: EdgeRef) -> Option<(f32, f32)> {
+        if self.map.owned_edge(edge.tile, edge.edge).is_boarded() {
+            return self.barricade_hp(edge);
+        }
         let max = self.max_hp(self.map.owned_edge(edge.tile, edge.edge));
         (max > 0.0).then(|| (self.edge_hp.get(&edge.key()).copied().unwrap_or(max), max))
     }
@@ -992,6 +1009,12 @@ impl World {
 
     /// A door or window gives way for good: loud.
     pub(crate) fn break_edge(&mut self, edge: EdgeRef, source: SoundSource) {
+        if self.map.owned_edge(edge.tile, edge.edge).is_boarded() {
+            // The planks give first, all of them; what's underneath is left as it was.
+            let hp = self.map.barricade(edge).map_or(0.0, |b| b.hp);
+            self.damage_barricade(edge, hp + 1.0, source);
+            return;
+        }
         let kind = self.map.owned_edge(edge.tile, edge.edge);
         let broken = kind.broken();
         if broken == kind {
@@ -1027,6 +1050,13 @@ impl World {
                 // Broken (or opened) earlier this tick.
                 continue;
             }
+            if kind.is_boarded() {
+                // The planks take it ([`crate::build`]); the thump is heard and lures the same.
+                let far = th.edge.far_tile(th.from).as_vec2() + Vec2::splat(0.5);
+                self.emit_sound_luring(th.edge.mid(), self.config.zombie.thump_noise, SoundSource::Zombie(th.zombie), far);
+                self.damage_barricade(th.edge, th.damage, SoundSource::Zombie(th.zombie));
+                continue;
+            }
             let max = self.max_hp(kind);
             let hp = self.edge_hp.entry(th.edge.key()).or_insert(max);
             *hp -= th.damage;
@@ -1047,6 +1077,10 @@ impl World {
         let kind = self.map.owned_edge(edge.tile, edge.edge);
         if !self.map.in_bounds(edge.tile) || !kind.is_breakable() || !damage.is_finite() {
             return false;
+        }
+        if kind.is_boarded() {
+            self.damage_barricade(edge, damage, SoundSource::World);
+            return true;
         }
         let max = self.max_hp(kind);
         let hp = self.edge_hp.entry(edge.key()).or_insert(max);
@@ -1529,6 +1563,7 @@ impl World {
                     crate::inventory::JobKind::Craft { recipe } => recipe as u32 ^ 0xC4AF_0000,
                     crate::inventory::JobKind::Reload { spare } => spare as u32 ^ 0x4E10_0000,
                     crate::inventory::JobKind::Blind { edge, fit } => (edge.tile.x as u32) ^ (edge.tile.y as u32) << 12 ^ (edge.edge as u32) << 24 ^ (fit as u32) << 25 ^ 0xB100_0000,
+                    crate::inventory::JobKind::Build { edge, build, add } => (edge.tile.x as u32) ^ (edge.tile.y as u32) << 12 ^ (edge.edge as u32) << 24 ^ (add as u32) << 25 ^ (build as u32) << 26 ^ 0xBA00_0000,
                 });
             }
         }
@@ -1567,6 +1602,14 @@ impl World {
             mix(x as u32 ^ 0xB11D_0000);
             mix(y as u32);
             mix(w as u32 | (down as u32) << 8);
+        }
+        // Barricades (`crate::build`): only while there are any, so worlds without hash as before.
+        for (&(x, y, w), b) in &self.map.barricades {
+            mix(x as u32 ^ 0xBA22_0000);
+            mix(y as u32);
+            mix(w as u32 | (b.planks as u32) << 8 | (b.build as u32) << 16 | (b.owner_side as u32) << 31);
+            mix(b.hp.to_bits());
+            mix(b.under as u32);
         }
         self.population.hash_into(&mut mix);
         // Only once the far clock has run ahead, so worlds nobody slept in hash as before.

@@ -127,6 +127,14 @@ const CLMB: [u8; 4] = *b"CLMB";
 /// generated with, so adding it didn't change the format version.
 const BLND: [u8; 4] = *b"BLND";
 
+/// Boarded-up windows and doors (`crate::build`), every one ([`BarricadeSave`]). Optional, only
+/// when there are any: a save without it has none, so adding it didn't change the format version.
+const BARR: [u8; 4] = *b"BARR";
+
+/// The `BARR` section: each barricade by edge key, with its build by id (so a catalog changed
+/// since still finds it), planks, hit points, the edge underneath and the side it's nailed on.
+type BarricadeSave = Vec<((i32, i32, u8), String, u8, f32, crate::map::Edge, bool)>;
+
 /// The `BLND` section: every blind (edge key, down) and every glazed door (edge key).
 type BlindSave = (Vec<((i32, i32, u8), bool)>, Vec<(i32, i32, u8)>);
 
@@ -664,6 +672,7 @@ impl World {
             stats: _,
             edge_changes: _,
             blind_changes: _,
+            barricade_changes: _,
             edge_hp_dirty: _,
             combat_events: _,
             attack_events: _,
@@ -827,6 +836,11 @@ impl World {
         // the generated one does.
         let blinds: BlindSave = (map.blinds.iter().map(|(k, v)| (*k, *v)).collect(), map.glazed.iter().copied().collect());
         w.section(BLND, &encode(&blinds));
+        let barricades: BarricadeSave =
+            map.barricades.iter().map(|(&k, b)| (k, config.builds.get(b.build as usize).map(|d| d.id.clone()).unwrap_or_default(), b.planks, b.hp, b.under, b.owner_side)).collect();
+        if !barricades.is_empty() {
+            w.section(BARR, &encode(&barricades));
+        }
         // Tied hands and groups (#73); none, no section.
         let bonds: BondSave =
             players.iter().filter_map(|p| p.restraint.map(|r| (p.id, config.items.get(r.item as usize).map(|d| d.id.clone()).unwrap_or_default(), r.by, r.struggled, r.struggling))).collect();
@@ -1044,6 +1058,7 @@ impl World {
         let mut bonds: Option<BondSave> = None;
         let mut groups: Option<crate::groups::Groups> = None;
         let mut blinds: Option<BlindSave> = None;
+        let mut barricades: Option<BarricadeSave> = None;
         let mut shoved: Option<Vec<crate::combat::Shoved>> = None;
         let mut levels: Option<(Vec<(u32, u8)>, Vec<u32>)> = None;
         loop {
@@ -1101,6 +1116,10 @@ impl World {
                 blinds = Some(decode(BLND, payload)?);
                 continue;
             }
+            if tag == BARR && barricades.is_none() {
+                barricades = Some(decode(BARR, payload)?);
+                continue;
+            }
             if tag == LEVL && levels.is_none() {
                 levels = Some(decode(LEVL, payload)?);
                 continue;
@@ -1113,7 +1132,7 @@ impl World {
                 script = Some(decode(MODS, payload)?);
                 continue;
             }
-            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || power.is_some() || shoved.is_some() || blinds.is_some() || levels.is_some() {
+            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || power.is_some() || shoved.is_some() || blinds.is_some() || barricades.is_some() || levels.is_some() {
                 return Err(corrupt(format!("unexpected {} section", tag_name(tag))));
             }
             let block: ZombieBlock = decode(ZOMB, payload)?;
@@ -1154,7 +1173,7 @@ impl World {
             let mut doors = std::collections::BTreeSet::new();
             for key in glazed {
                 let e = crate::world::edge_of_key(key);
-                let door = |k: crate::map::Edge| k.is_door() || k == crate::map::Edge::DoorBroken;
+                let door = |k: crate::map::Edge| k.is_door() || k == crate::map::Edge::DoorBroken || k == crate::map::Edge::DoorBoarded;
                 if !w.map.in_bounds(e.tile) || key.2 > 1 || !door(w.map.owned_edge(e.tile, e.edge)) {
                     if new_map {
                         continue;
@@ -1182,6 +1201,10 @@ impl World {
             }
             w.map.blinds = kept;
         }
+        // Barricades (`crate::build`): each on a boarded edge of its kind, and every boarded edge
+        // with one. On a map regenerated anyway, or with a build gone from the catalog, the misfits
+        // go back to what they were underneath, with a note.
+        save_check::load_barricades(&mut w, barricades.unwrap_or_default(), new_map, &mut notes)?;
         // Who and what is upstairs (`crate::stairs`). On a map that no longer has a floor there
         // (loaded anyway onto a changed one), they are on the ground floor.
         let (levels, up_items) = levels.unwrap_or_default();

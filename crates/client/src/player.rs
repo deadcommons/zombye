@@ -579,7 +579,9 @@ fn actions(
     // else done asleep gets up on the server.
     let asleep = link.curr.players.iter().any(|p| p.id == me.id && p.asleep);
     let moving = keys.any_just_pressed([KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD]);
-    if keys.just_pressed(KeyCode::KeyB) || (asleep && moving) {
+    // (Shift+B is the build menu, `build_ui.rs`.)
+    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    if (keys.just_pressed(KeyCode::KeyB) && !shift) || (asleep && moving) {
         link.send(Intent::Sleep { player: me.id, sleep: !asleep });
     }
     // Fighting is for aiming (right mouse held); the server refuses it otherwise.

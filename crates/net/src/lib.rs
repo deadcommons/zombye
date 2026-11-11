@@ -170,6 +170,13 @@ pub enum Intent {
     /// come on its own, so its own checks (reach, what is faced) decide as ever. Refused unless
     /// `then` is an action by `player` (`Intent::action_by`), and never nested.
     Toward { player: u32, facing: f32, then: Box<Intent> },
+    /// Building (`zombye_sim::build`): put a piece of build `build` (an id in the build catalog,
+    /// `build.ron`: "board_window" nails a plank across the window faced) on what the player
+    /// faces. A job, checked again when it's due (`World::player_build`).
+    Build { player: u32, build: String },
+    /// Prise a piece off the build the player faces (a plank off a boarded window or door), with
+    /// the build's remove tools (`World::player_unbuild`).
+    Unbuild { player: u32 },
 }
 
 /// What a player asks of its group ([`Intent::Group`]).
@@ -403,6 +410,10 @@ pub struct Snapshot {
     /// Blinds put up, taken down or rolled up or down since the previous snapshot (each once, in
     /// order); clients apply them to their map copy, as `edge_changes`.
     pub blind_changes: Vec<zombye_sim::map::BlindChange>,
+    /// Barricades put up, changed or torn down since the previous snapshot (each in order);
+    /// clients apply them to their map copy, as `blind_changes` (`zombye_sim::build`).
+    #[serde(default)]
+    pub barricade_changes: Vec<zombye_sim::map::BarricadeChange>,
     /// Every item lying about (a short list for now; interest management later).
     pub items: Vec<GroundItem>,
     /// Which of `items` lie on the first upper floor, by id, in order (`World::item_level`); the
@@ -562,6 +573,7 @@ impl Snapshot {
             edge_changes: std::mem::take(&mut world.edge_changes),
             edge_damage: world.take_edge_damage().into_iter().map(|(e, hp)| EdgeDamage { tile: e.tile, edge: e.edge, hp }).collect(),
             blind_changes: world.take_blind_changes(),
+            barricade_changes: world.take_barricade_changes(),
             items: world.items().to_vec(),
             hits: std::mem::take(&mut world.combat_events),
             private,
@@ -657,6 +669,12 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
         }
         Intent::Blind { player, op } => {
             let _ = world.player_blind(*player, *op);
+        }
+        Intent::Build { player, build } => {
+            let _ = world.player_build_id(*player, build);
+        }
+        Intent::Unbuild { player } => {
+            let _ = world.player_unbuild(*player);
         }
         Intent::Interact { player } => {
             world.player_interact(*player);
@@ -788,6 +806,8 @@ impl Intent {
             | Intent::Toward { player, .. }
             | Intent::Climb { player }
             | Intent::Blind { player, .. }
+            | Intent::Build { player, .. }
+            | Intent::Unbuild { player }
             | Intent::SmashWindow { player }
             | Intent::Light { player, .. }
             | Intent::Attack { player }

@@ -263,7 +263,7 @@ pub fn craft_secs(secs: f32, level: u32) -> f32 {
 
 /// Take `n` whole `item` from what `inv` crafts with: carried stacks first (in order), then the
 /// hands. False (and `inv` part changed) if there aren't that many.
-fn take_whole(inv: &mut Inventory, item: u16, mut n: u16) -> bool {
+pub(crate) fn take_whole(inv: &mut Inventory, item: u16, mut n: u16) -> bool {
     let mut k = 0;
     while n > 0 && k < inv.carried.len() {
         let s = &mut inv.carried[k];
@@ -298,7 +298,7 @@ impl World {
     }
 
     /// Seconds a recipe of `secs` takes player `pi`, with its Handiwork (#46).
-    fn handiwork_secs(&self, pi: usize, secs: f32) -> f32 {
+    pub(crate) fn handiwork_secs(&self, pi: usize, secs: f32) -> f32 {
         secs * self.config.skills.craft_time_mult(self.skill_level(pi, crate::skills::Skill::Handiwork))
     }
 
@@ -481,8 +481,9 @@ mod tests {
         for id in ["rip_t_shirt", "cut_jeans", "rip_bed_sheet", "wash_rags"] {
             assert!(r.iter().any(|x| x.id == id), "{id}");
         }
-        // Every recipe makes something first aid can use, or what makes it.
-        assert!(r.iter().all(|x| x.outputs.iter().any(|o| o.item == "rag" || o.item == "clean_rag")));
+        // Every recipe that tears or cuts cloth makes something first aid can use.
+        assert!(r.iter().filter(|x| x.id.starts_with("rip_") || x.id.starts_with("cut_") || x.id.starts_with("tear_") || x.id == "wash_rags")
+            .all(|x| x.outputs.iter().any(|o| o.item == "rag" || o.item == "clean_rag")));
         assert_eq!(describe(&r[0], &items), "t-shirt -> rag x3 (3 s)");
         assert!(describe(r.iter().find(|x| x.id == "cut_jeans").unwrap(), &items).contains("with scissors or kitchen knife"));
     }
