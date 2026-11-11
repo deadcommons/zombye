@@ -675,8 +675,10 @@ fn tool_defs() -> Value {
         },
         {
             "name": "shove",
-            "description": "A player shoves the zombies in front (short reach, wide arc, up to 3): no damage, pushes them back and \
-                always staggers them, with a chance to knock down (better against a staggered zombie or from behind). Cheap, \
+            "description": "A player shoves the zombies in front (short reach, wide arc, up to 3): no damage, pushes them back about \
+                1.2 m (further with a weapon in hand) and always staggers them, with a chance to knock down that grows with \
+                each shove on the same zombie in the last few seconds (better still against a staggered zombie or from behind, \
+                and with Strength and Brawl). Cheap, \
                 quick, quiet. Steps until it lands and the player can act again. facing / target / target_player as for attack. \
                 With PvP on it pushes other players back and staggers them too (no moving or acting for a moment), or floors them.",
             "inputSchema": {"type": "object", "properties": {
@@ -688,7 +690,9 @@ fn tool_defs() -> Value {
         },
         {
             "name": "stomp",
-            "description": "A player stamps on a downed zombie at its feet in front (within about 1 m): solid damage. A miss if \
+            "description": "A player stamps on a downed zombie in front: anywhere along its body within about 1 m, solid damage \
+                (two or three finish one), or on its head (it lies on its back, the head about 1.45 m behind its feet; stand \
+                within 0.9 m of it) for four times that, which kills. It keeps the zombie down a while longer. A miss if \
                 none is down there when it lands. Steps until it lands and the player can act again. facing / target / target_player \
                 as for attack. With PvP on, a player knocked down is stamped on the same way (a bruise).",
             "inputSchema": {"type": "object", "properties": {
@@ -1887,12 +1891,13 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             }
             let c = &world.config.combat;
             out.push_str(&format!(
-                "shove: reach {:.2} m, arc {:.0} deg, up to {} zombies, knockback {:.2} m, always staggers, knockdown {:.0}% (x{} if staggered, x{} from behind), {:.1} s, endurance {:.3}\n\
-                 stomp: downed zombie within {:.1} m centre to centre, damage {:.0}-{:.0}, {:.1} s, endurance {:.3}\n\
+                "shove: reach {:.2} m (+{:.2} with a weapon in hand), arc {:.0} deg, up to {} zombies, knockback {:.2} m (x{:.2} with a weapon), always staggers, knockdown {:.0}% (+{:.0}% for each shove on it in the last {:.0} s, up to {}; x{} if staggered, x{} from behind), {:.1} s, endurance {:.3}\n\
+                 stomp: a downed zombie (lying on its back, head {:.2} m behind its feet) within {:.1} m of its body, damage {:.0}-{:.0}; on the head (within {:.1} m of it) x{:.0}; keeps it down {:.1} s more; {:.1} s, endurance {:.3}\n\
                  zombie hp {:.0}-{:.0}; from behind +{:.0}% crit chance; endurance below {:.0}% weakens (down to x{:.2} damage) and slows (up to x{:.1}) actions\n\
                  zombie strikes land {:.0}% (+{:.0}% per extra zombie on you, max {:.0}%) and leave a wound (see health) on your {:.0} HP: {}",
-                c.shove_range, c.shove_arc_degrees, c.shove_targets, c.shove_knockback, c.shove_knockdown_chance * 100.0, c.staggered_knockdown_mult, c.behind_knockdown_mult, c.shove_seconds, c.shove_endurance,
-                c.stomp_range, c.stomp_damage.0, c.stomp_damage.1, c.stomp_seconds, c.stomp_endurance,
+                c.shove_range, c.shove_weapon_range, c.shove_arc_degrees, c.shove_targets, c.shove_knockback, c.shove_weapon_knockback, c.shove_knockdown_chance * 100.0,
+                c.shove_repeat_knockdown * 100.0, c.shove_repeat_secs, c.shove_repeat_max, c.staggered_knockdown_mult, c.behind_knockdown_mult, c.shove_seconds, c.shove_endurance,
+                c.down_head_offset, c.stomp_range, c.stomp_damage.0, c.stomp_damage.1, c.stomp_head_reach, c.stomp_head_mult, c.stomp_pin_secs, c.stomp_seconds, c.stomp_endurance,
                 c.zombie_hp.0, c.zombie_hp.1, c.behind_crit_bonus * 100.0, c.tired_below * 100.0, c.tired_power, c.tired_slow,
                 c.zombie_hit_chance * 100.0, c.zombie_crowd_bonus * 100.0, c.zombie_hit_max * 100.0, c.player_hp,
                 WoundKind::ALL.map(|k| { let d = world.config.health.wound(k).damage; format!("{} {:.0}-{:.0}", k.name(), d.0, d.1) }).join(", ")

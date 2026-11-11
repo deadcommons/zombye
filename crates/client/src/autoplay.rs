@@ -5,7 +5,7 @@
 //!
 //! Each tick it picks the nearest zombie still standing, turns to it and closes in (running when far
 //! and rested). In reach it swings; crowded by two or more it alternates shoves and swings; a
-//! downed zombie at its feet gets stomped. Dead, it gets up again after a few seconds. Holding a
+//! downed zombie gets stomped on the head. Dead, it gets up again after a few seconds. Holding a
 //! gun (#72) it stands off instead and shoots the nearest it has a clear line to, reloading when
 //! the gun is empty.
 
@@ -189,6 +189,9 @@ fn autoplay(
         match z.anim {
             ZombieAnim::Dead => {}
             ZombieAnim::Down | ZombieAnim::GetUp => {
+                // Go for the head (it lies behind the feet): one stamp there finishes it.
+                let to = to - Vec2::from_angle(z.facing) * c.down_head_offset;
+                let d = to.length();
                 if downed.is_none_or(|(best, _)| d < best) {
                     downed = Some((d, to));
                 }
@@ -263,7 +266,7 @@ fn autoplay(
     }
     // A downed zombie at our feet, and nothing standing right on top of us: finish it.
     if let Some((d, to)) = downed
-        && d <= c.stomp_range * 0.9
+        && d <= c.stomp_head_reach.min(c.stomp_range) * 0.9
         && nearest.is_none_or(|(n, _)| n > reach * 0.8)
     {
         me.aim = to.y.atan2(to.x);
