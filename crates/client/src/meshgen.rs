@@ -12,6 +12,8 @@ use palette::{between, pal};
 pub mod building_kit;
 pub mod curves;
 pub mod landscape;
+#[cfg(test)]
+pub mod overlap;
 pub mod palette;
 pub mod street_props;
 pub mod trees;

@@ -16,6 +16,156 @@ use crate::server_link::{JoinInfo, ServerLink};
 const SUNRISE: f32 = 6.0;
 const SUNSET: f32 = 20.0;
 
+/// The sun: how bright (lux), how high it climbs (`low` + `climb` at noon, against a ground
+/// distance of 1, with `south` of tilt), and its colour at its highest and toward dawn and dusk.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SunLook {
+    pub lux: f32,
+    pub low: f32,
+    pub climb: f32,
+    pub south: f32,
+    pub colour_high: (f32, f32, f32),
+    pub colour_low: (f32, f32, f32),
+}
+
+/// The light that fills shadows (the ambient light): its colour and brightness.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FillLook {
+    pub colour: (f32, f32, f32),
+    pub brightness: f32,
+}
+
+/// A fire burning outdoors (a campfire's light at night): its colour (sRGB), brightness in lumens,
+/// how far its light reaches, how high above the ground it sits, and how far round it what stands
+/// in its light is seen in the dark.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FireLook {
+    pub colour: (f32, f32, f32),
+    pub lumens: f32,
+    pub range: f32,
+    pub height: f32,
+    pub seen: f32,
+}
+
+/// The camera's grade and vignette at one end of the day (night, or full daylight).
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GradeLook {
+    pub exposure: f32,
+    pub temperature: f32,
+    pub tint: f32,
+    pub saturation: f32,
+    /// Saturation, contrast and lift of the shadows; saturation and contrast of the midtones;
+    /// saturation and gain of the highlights.
+    pub shadows: (f32, f32, f32),
+    pub midtones: (f32, f32),
+    pub highlights: (f32, f32),
+    /// The vignette's intensity and radius.
+    pub vignette: (f32, f32),
+}
+
+/// How the light looks, from the data folder's `light.ron` (every field optional: one left out
+/// takes its default, no file at all the shipped one). Only the look: the sim's own daylight
+/// (what zombies see by) is `sim::senses::daylight`.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LightLook {
+    pub sun: SunLook,
+    pub fill_day: FillLook,
+    pub fill_night: FillLook,
+    pub grade_day: GradeLook,
+    pub grade_night: GradeLook,
+    /// Added to the temperature and the saturation at dawn and dusk.
+    pub dusk: (f32, f32),
+    pub fire: FireLook,
+}
+
+impl Default for SunLook {
+    fn default() -> Self {
+        SunLook { lux: 16_000.0, low: 0.2, climb: 0.4, south: 0.55, colour_high: (1.0, 0.88, 0.7), colour_low: (1.0, 0.64, 0.34) }
+    }
+}
+
+impl Default for LightLook {
+    fn default() -> Self {
+        LightLook {
+            sun: SunLook::default(),
+            fill_day: FillLook { colour: (0.74, 0.7, 0.73), brightness: 108.0 },
+            fill_night: FillLook { colour: (0.3, 0.38, 0.62), brightness: 12.0 },
+            grade_day: GradeLook { exposure: 0.2, temperature: 0.04, tint: -0.01, saturation: 0.92, shadows: (0.8, 0.94, 0.012), midtones: (0.95, 1.03), highlights: (0.9, 1.04), vignette: (0.46, 0.8) },
+            grade_night: GradeLook { exposure: 0.35, temperature: -0.03, tint: 0.0, saturation: 0.72, shadows: (0.6, 1.0, 0.0), midtones: (0.8, 1.04), highlights: (1.0, 1.0), vignette: (0.6, 0.62) },
+            dusk: (0.06, 0.1),
+            fire: FireLook { colour: (1.0, 0.55, 0.22), lumens: 600_000.0, range: 14.0, height: 0.7, seen: 7.0 },
+        }
+    }
+}
+
+const SHIPPED: &str = include_str!("../../../assets/data/light.ron");
+static LOOK: std::sync::OnceLock<LightLook> = std::sync::OnceLock::new();
+
+impl LightLook {
+    pub fn parse(text: &str) -> Result<LightLook, String> {
+        let look: LightLook = ron::from_str(text).map_err(|e| e.to_string())?;
+        let within = |name: &str, v: f32, lo: f32, hi: f32| if (lo..=hi).contains(&v) { Ok(()) } else { Err(format!("{name} must be from {lo} to {hi}, not {v}")) };
+        within("sun.lux", look.sun.lux, 0.0, 200_000.0)?;
+        within("sun.low", look.sun.low, 0.05, 2.0)?;
+        within("sun.climb", look.sun.climb, 0.0, 3.0)?;
+        within("sun.south", look.sun.south, -2.0, 2.0)?;
+        for (name, c) in [("sun.colour_high", look.sun.colour_high), ("sun.colour_low", look.sun.colour_low), ("fill_day.colour", look.fill_day.colour), ("fill_night.colour", look.fill_night.colour)] {
+            for v in [c.0, c.1, c.2] {
+                within(name, v, 0.0, 1.0)?;
+            }
+        }
+        within("fill_day.brightness", look.fill_day.brightness, 0.0, 2000.0)?;
+        within("fill_night.brightness", look.fill_night.brightness, 0.0, 2000.0)?;
+        for (name, g) in [("grade_day", look.grade_day), ("grade_night", look.grade_night)] {
+            within(&format!("{name}.exposure"), g.exposure, -4.0, 4.0)?;
+            within(&format!("{name}.temperature"), g.temperature, -1.0, 1.0)?;
+            within(&format!("{name}.tint"), g.tint, -1.0, 1.0)?;
+            for v in [g.saturation, g.shadows.0, g.shadows.1, g.midtones.0, g.midtones.1, g.highlights.0, g.highlights.1] {
+                within(&format!("{name}: saturation, contrast and gain"), v, 0.0, 3.0)?;
+            }
+            within(&format!("{name}.shadows lift"), g.shadows.2, -0.5, 0.5)?;
+            within(&format!("{name}.vignette intensity"), g.vignette.0, 0.0, 2.0)?;
+            within(&format!("{name}.vignette radius"), g.vignette.1, 0.0, 2.0)?;
+        }
+        for v in [look.fire.colour.0, look.fire.colour.1, look.fire.colour.2] {
+            within("fire.colour", v, 0.0, 1.0)?;
+        }
+        within("fire.lumens", look.fire.lumens, 0.0, 10_000_000.0)?;
+        within("fire.range", look.fire.range, 1.0, 40.0)?;
+        within("fire.height", look.fire.height, 0.1, 3.0)?;
+        within("fire.seen", look.fire.seen, 0.0, 40.0)?;
+        within("dusk temperature", look.dusk.0, -1.0, 1.0)?;
+        within("dusk saturation", look.dusk.1, -1.0, 1.0)?;
+        Ok(look)
+    }
+}
+
+/// Use `light.ron` from the data folder `dir` (the shipped one if it has none). Call before the
+/// first frame; later calls change nothing.
+pub fn load(dir: &std::path::Path) -> Result<(), String> {
+    let path = dir.join("light.ron");
+    let look = match std::fs::read_to_string(&path) {
+        Ok(text) => LightLook::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?,
+        Err(_) => shipped(),
+    };
+    let _ = LOOK.set(look);
+    Ok(())
+}
+
+fn shipped() -> LightLook {
+    LightLook::parse(SHIPPED).expect("the shipped light.ron is good (a test checks)")
+}
+
+/// The light's look: the data folder's once [`load`]ed, else the shipped one.
+pub fn look() -> &'static LightLook {
+    LOOK.get_or_init(shipped)
+}
+
 /// 0 at night, 1 in full daylight (smooth through dawn and dusk).
 #[derive(Resource, Default)]
 pub struct Daylight(pub f32);
@@ -89,10 +239,12 @@ pub fn sky_at(hour: f32) -> (Vec3, Color, f32, f32) {
         // 32° by mid-afternoon), so shadows are long all day. Its light is golden even at its
         // highest and deep amber toward dawn and dusk (DCM-59).
         let azimuth = PI * (1.0 - day);
-        let dir = -Vec3::new(azimuth.cos(), 0.2 + 0.4 * elevation, 0.55).normalize();
+        let sun = look().sun;
+        let dir = -Vec3::new(azimuth.cos(), sun.low + sun.climb * elevation, sun.south).normalize();
         let warm = 1.0 - smoothstep(0.1, 0.8, elevation);
-        let color = Color::srgb(1.0, 0.88 - 0.24 * warm, 0.7 - 0.36 * warm);
-        (dir, color, 16_000.0 * daylight, daylight)
+        let (hi, lo) = (Vec3::from(sun.colour_high), Vec3::from(sun.colour_low));
+        let c = hi.lerp(lo, warm);
+        (dir, Color::srgb(c.x, c.y, c.z), sun.lux * daylight, daylight)
     } else {
         (Vec3::new(0.35, -1.0, 0.25).normalize(), Color::srgb(0.55, 0.65, 1.0), 320.0, 0.0)
     }
@@ -163,12 +315,12 @@ fn update_lights(
         }
     }
     // Little fill light, so a shadow side is clearly darker by day and the night is dark.
-    let night = Color::srgb(0.3, 0.38, 0.62).to_linear();
-    // By day the fill is a soft, faintly violet grey, a little weaker than it was: shadows stay
-    // strong, and a touch cool against the golden sun without going blue.
-    let noon = Color::srgb(0.74, 0.7, 0.73).to_linear();
-    ambient.color = Color::from(night.mix(&noon, day));
-    ambient.brightness = 12.0 + 96.0 * day;
+    let look = look();
+    let fill = |f: FillLook| Color::srgb(f.colour.0, f.colour.1, f.colour.2).to_linear();
+    // By day the fill is soft and a touch cool against the golden sun without going blue
+    // (light.ron).
+    ambient.color = Color::from(fill(look.fill_night).mix(&fill(look.fill_day), day));
+    ambient.brightness = look.fill_night.brightness + (look.fill_day.brightness - look.fill_night.brightness) * day;
     clear.0 = Color::srgb(0.005 + 0.04 * day, 0.006 + 0.04 * day, 0.012 + 0.05 * day);
     // Just enough at night to see your own feet; a light in hand does the rest.
     if let Ok(mut l) = glow.single_mut() {
@@ -244,19 +396,21 @@ fn held_light_system(
 /// (amber white balance, soft contrast, blacks a little lifted and faded, DCM-59), warmest and
 /// richest through dawn and dusk; at night cold, drained and closed in, as it was (#83).
 pub fn grade_at(day: f32) -> ColorGrading {
+    let look = look();
+    let (n, d) = (look.grade_night, look.grade_day);
     let lerp = |night: f32, noon: f32| night + (noon - night) * day;
     let dusk = 4.0 * day * (1.0 - day);
     ColorGrading {
         global: ColorGradingGlobal {
-            exposure: lerp(0.35, 0.2),
-            temperature: lerp(-0.03, 0.04) + 0.06 * dusk,
-            tint: lerp(0.0, -0.01),
-            post_saturation: lerp(0.72, 0.92) + 0.1 * dusk,
+            exposure: lerp(n.exposure, d.exposure),
+            temperature: lerp(n.temperature, d.temperature) + look.dusk.0 * dusk,
+            tint: lerp(n.tint, d.tint),
+            post_saturation: lerp(n.saturation, d.saturation) + look.dusk.1 * dusk,
             ..default()
         },
-        shadows: ColorGradingSection { saturation: lerp(0.6, 0.8), contrast: lerp(1.0, 0.94), lift: lerp(0.0, 0.012), ..default() },
-        midtones: ColorGradingSection { saturation: lerp(0.8, 0.95), contrast: lerp(1.04, 1.03), ..default() },
-        highlights: ColorGradingSection { saturation: lerp(1.0, 0.9), gain: lerp(1.0, 1.04), ..default() },
+        shadows: ColorGradingSection { saturation: lerp(n.shadows.0, d.shadows.0), contrast: lerp(n.shadows.1, d.shadows.1), lift: lerp(n.shadows.2, d.shadows.2), ..default() },
+        midtones: ColorGradingSection { saturation: lerp(n.midtones.0, d.midtones.0), contrast: lerp(n.midtones.1, d.midtones.1), ..default() },
+        highlights: ColorGradingSection { saturation: lerp(n.highlights.0, d.highlights.0), gain: lerp(n.highlights.1, d.highlights.1), ..default() },
     }
 }
 
@@ -265,9 +419,10 @@ fn grade_camera(daylight: Res<Daylight>, graphics: Res<crate::graphics::Graphics
     let Ok((mut grading, mut vignette)) = cams.single_mut() else { return };
     let day = daylight.0;
     let lerp = |night: f32, noon: f32| night + (noon - night) * day;
+    let (n, d) = (look().grade_night.vignette, look().grade_day.vignette);
     *grading = grade_at(day);
-    vignette.intensity = if graphics.vignette { lerp(0.6, 0.46) } else { 0.0 };
-    vignette.radius = lerp(0.62, 0.8);
+    vignette.intensity = if graphics.vignette { lerp(n.0, d.0) } else { 0.0 };
+    vignette.radius = lerp(n.1, d.1);
 }
 
 fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
@@ -278,6 +433,16 @@ fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shipped `light.ron` is the built-in look, so a data folder without the file is lit the
+    /// same; a field this version doesn't know and a value out of range are refused.
+    #[test]
+    fn the_shipped_light_is_the_built_in_one() {
+        assert_eq!(LightLook::parse(SHIPPED).unwrap(), LightLook::default());
+        assert_eq!(LightLook::parse("()").unwrap(), LightLook::default());
+        assert!(LightLook::parse("(moon: 1.0)").is_err());
+        assert!(LightLook::parse("(fire: (range: -1.0))").is_err());
+    }
 
     /// The light's direction stands still while the clock ticks and follows the sky in small
     /// steps, never far behind it; the jump from sun to moon is taken at once.

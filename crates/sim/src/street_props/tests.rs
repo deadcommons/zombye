@@ -58,8 +58,8 @@ fn reachable(g: &Generated) -> Vec<bool> {
 #[test]
 fn the_shipped_file_parses_and_unknown_fields_are_refused() {
     let def = shipped();
-    assert_eq!(def.kinds.len(), 32);
-    assert!(def.kinds.iter().all(|k| k.blocks || k.id == "trash_bag" || k.id == "washing_line"));
+    assert_eq!(def.kinds.len(), 34);
+    assert!(def.kinds.iter().all(|k| k.blocks || k.id == "trash_bag" || k.id == "washing_line" || k.id == "rubbish_pile"));
     let car = def.kinds.iter().find(|k| k.id == "car").unwrap();
     assert!(car.big() && car.footprint(Side::S) == IVec2::new(2, 5) && car.footprint(Side::E) == IVec2::new(5, 2));
     let big = "(kinds: [(id: \"x\", size: (2.0, 4.0, 1.0), color: (0.0, 0.0, 0.0), tiles: (2, 5))], rules: [(kind: \"x\", place: PLACE, chance: 0.5)])";
@@ -165,7 +165,8 @@ fn props_stand_where_they_belong() {
             for q in (0..size.y).flat_map(|dy| (0..size.x).map(move |dx| min + IVec2::new(dx, dy))) {
                 let tile = m.tile(q);
                 assert_eq!(tile.room, 0, "seed {seed}: {id} at {q} indoors");
-                assert_eq!(tile.floor.is_road(), parked, "seed {seed}: {id} at {q} on {:?}", tile.floor);
+                // a rubbish pile lies in a yard or, dumped, at the roadside
+                assert!(tile.floor.is_road() == parked || id == "rubbish_pile", "seed {seed}: {id} at {q} on {:?}", tile.floor);
                 assert!(tile.floor != Floor::Path, "seed {seed}: {id} at {q} on a path");
                 assert!(!drive.contains(&(q.x, q.y)), "seed {seed}: {id} at {q} on a driveway");
                 for s in Side::ALL {
@@ -180,7 +181,7 @@ fn props_stand_where_they_belong() {
                     }
                 }
             }
-            if parked {
+            if parked || tile_is_road(m, p) {
                 // Along a kerb or in a lot, and the road beside it stays open: two tiles of it free
                 // on one long side at least.
                 let long = if size.x > size.y { IVec2::X } else { IVec2::Y };
@@ -386,3 +387,34 @@ fn town_generation_time() {
 }
 
 
+
+/// A town has a few rubbish piles (walked over: they block nothing) and a few campfires (walked
+/// round), each on ground outdoors.
+#[test]
+fn a_town_has_rubbish_piles_and_campfires() {
+    for seed in [1, 2, 3] {
+        let g = town(seed);
+        let m = &g.map;
+        let of = |id: &str| m.street_props.iter().filter(|p| kind_id(m, p) == id).collect::<Vec<_>>();
+        let (piles, fires) = (of("rubbish_pile"), of("campfire"));
+        assert!((1..=20).contains(&piles.len()), "seed {seed}: {} rubbish piles", piles.len());
+        assert!((1..=12).contains(&fires.len()), "seed {seed}: {} campfires", fires.len());
+        for p in &piles {
+            let (min, size) = m.street_prop_rect(p);
+            assert_eq!(size, IVec2::new(2, 2));
+            for d in [IVec2::ZERO, IVec2::X, IVec2::Y, IVec2::ONE] {
+                assert_eq!(m.tile(min + d).room, 0, "seed {seed}: a rubbish pile indoors at {}", min + d);
+                assert_ne!(m.tile(min + d).feature, Feature::StreetProp, "seed {seed}: a rubbish pile blocks {}", min + d);
+            }
+        }
+        for p in &fires {
+            assert_eq!(m.tile(p.tile).room, 0);
+            assert_eq!(m.tile(p.tile).feature, Feature::StreetProp, "seed {seed}: the campfire at {} doesn't block", p.tile);
+        }
+    }
+}
+
+/// Whether a prop lies on the road (parked vehicles, and rubbish dumped at the roadside).
+fn tile_is_road(m: &TileMap, p: &StreetProp) -> bool {
+    m.tile(p.tile).floor.is_road()
+}
