@@ -45,6 +45,10 @@ struct BuildingRender {
     /// (-1: not yet).
     gone: f32,
     drawn: f32,
+    /// Third person inside it: they are drawn but cast no shadow, so the rooms are lit as they
+    /// are from above. `lit` is what was asked for, `lit_done` what the entities have.
+    lit: bool,
+    lit_done: bool,
     /// Ground-floor doors and windows, keyed in `Streamer::edges`.
     edge_keys: Vec<(IVec2, OwnedEdge)>,
 }
@@ -950,19 +954,36 @@ const UPPER_FADE_SECS: f32 = 0.15;
 /// From outside every building keeps its roof and floors: nothing opens a hole in them, and a
 /// player they cover shows as a silhouette instead (`silhouette.rs`).
 fn hide_upper_floors(
+    mut commands: Commands,
     map: Res<ClientMap>,
     time: Res<Time>,
     mut streamer: ResMut<Streamer>,
     player: Query<&Transform, With<Player>>,
+    cams: Query<&crate::camera::IsoCamera>,
     mut upper: Query<(&mut Visibility, &mut MeshTag)>,
     mut started: Local<bool>,
 ) {
     let Ok(p) = player.single() else { return };
-    let inside = map.0.building_at(p.translation.xz());
+    // Third person: the camera is under the roof with the survivor, so it stays; it only stops
+    // casting its shadow into the rooms, which are lit as they are with it gone.
+    let shoulder = cams.single().is_ok_and(|c| c.shoulder());
+    let within = map.0.building_at(p.translation.xz());
+    let inside = if shoulder { None } else { within };
     // The first frame's state is taken at once (a picture of a save), like the walls'.
     let step = if *started { time.delta_secs() / UPPER_FADE_SECS } else { 1.0 };
     *started = true;
     for (i, render) in streamer.buildings.iter_mut() {
+        render.lit = shoulder && Some(*i) == within;
+        if render.lit != render.lit_done && render.upper.iter().all(|e| upper.contains(*e)) {
+            for e in &render.upper {
+                if render.lit {
+                    commands.entity(*e).insert(NotShadowCaster);
+                } else {
+                    commands.entity(*e).remove::<NotShadowCaster>();
+                }
+            }
+            render.lit_done = render.lit;
+        }
         let to = if Some(*i) == inside { 1.0 } else { 0.0 };
         if render.gone != to {
             render.gone = if to > render.gone { (render.gone + step).min(1.0) } else { (render.gone - step).max(0.0) };

@@ -261,6 +261,8 @@ pub struct Cutaway {
     pub image: Handle<Image>,
     /// "Walls up": nothing is cut (F10).
     pub walls_up: bool,
+    /// The third-person view holds every wall up too (`set_held`).
+    held: bool,
     /// Something still covers the player from the camera: a roof, an upper storey, or (walls up) a wall.
     pub occluded: bool,
     /// The building the player is inside (its roof and upper storeys are hidden).
@@ -285,6 +287,7 @@ impl Cutaway {
         Self {
             image,
             walls_up,
+            held: false,
             occluded: false,
             inside: None,
             moving: Vec::with_capacity(256),
@@ -319,7 +322,7 @@ impl Cutaway {
         for m in &mut self.moving {
             m.wanted = false;
         }
-        if self.walls_up {
+        if self.walls_up || self.held {
             return;
         }
         for i in 0..self.room.len() + self.body.len() {
@@ -383,6 +386,15 @@ impl Cutaway {
         self.ease(step)
     }
 
+    /// Hold every wall up while `held` (the third-person view: its camera stays inside the room),
+    /// whatever the walls-up switch says.
+    pub fn set_held(&mut self, held: bool) {
+        if self.held != held {
+            self.held = held;
+            self.retarget();
+        }
+    }
+
     /// Switch the cutaways off or on.
     pub fn set_walls_up(&mut self, up: bool) {
         if self.walls_up != up {
@@ -433,6 +445,8 @@ fn toggle(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut cutaway: ResMut<
 fn decide(map: Res<ClientMap>, time: Res<Time>, mut cutaway: ResMut<Cutaway>, mut images: ResMut<Assets<Image>>, player: Query<&Transform, With<Player>>, cams: Query<&IsoCamera>) {
     let (Ok(p), Ok(cam)) = (player.single(), cams.single()) else { return };
     let cutaway = cutaway.as_mut();
+    // Third person: the camera is in the room with the survivor, so nothing is cut.
+    cutaway.set_held(cam.shoulder());
     let changed = cutaway.update(&map.0, p.translation.xz(), cam.offset_dir(), time.delta_secs());
     if cam.shoulder() {
         // Third person: no silhouette (it goes by the fixed view's depth, and the camera is

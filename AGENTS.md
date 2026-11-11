@@ -1466,9 +1466,11 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   aims at what the dot is on, left mouse swings or shoots there, Space shoves or stomps, and a right tap opens the menu
   of the door, window, container or body under the dot. The pointer comes free while the inventory, a menu, the chat
   line or the server browser is up, once dead, with the window out of focus and **while Alt is held** (for the health
-  and skills panels, which stay up in play). The wheel moves the camera in and out (1.8-8 m); outdoors, walls, shut doors and
-  windows behind the survivor pull it in at once and it eases back out (`camera::clear_run`); inside a building it
-  passes through them and the cutaways drop what's in the way; furniture and props lower than 2.1 m stop it where it
+  and skills panels, which stay up in play). The wheel moves the camera in and out (1.8-8 m); walls, shut doors and
+  windows behind the survivor pull it in at once and it eases back out (`camera::clear_run`), indoors and out, and
+  under a roof it stays below the ceiling (2.7 m): **in this view no wall is cut and no roof or upper storey fades**
+  (`Cutaway::set_held`, `world_render::hide_upper_floors`), the camera stays in the room he is in, and the roof of
+  the building he is inside only stops casting its shadow, so the rooms are lit as they are from above; furniture and props lower than 2.1 m stop it where it
   flies under their top (`camera::run_over`), and nearer than 1 m to him the survivor isn't drawn (`too_close`). **The aim**
   (`IsoCamera::aim_ground`, which `player::face_cursor` and the aim marker both ask): the ground under the pointer's
   ray, never nearer than 5 m ahead of the survivor (looking down at his feet he still aims ahead) and 60 m off the way

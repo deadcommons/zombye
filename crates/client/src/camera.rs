@@ -65,6 +65,8 @@ const OVER: f32 = 2.1;
 /// Pushed in nearer than this the third-person camera hides the survivor: he would fill the view.
 const TOO_CLOSE: f32 = 1.0;
 const LOWEST: f32 = 0.35;
+/// Indoors the third-person camera stays this low: under the ceiling (a storey is 3 m).
+const CEILING: f32 = 2.7;
 /// What the third-person aim is on when the middle of the screen is on ground nearer than this
 /// beyond the survivor, or on none (the sky): a point this far, or [`AIM_FAR`], ahead.
 const AIM_NEAR: f32 = 5.0;
@@ -214,11 +216,9 @@ impl IsoCamera {
         let (mut side, mut reach) = (SHOULDER_SIDE, self.boom);
         if let Some(map) = map {
             // The shoulder itself mustn't be through a wall beside the survivor, nor the camera
-            // through one behind it.
-            // Outdoors a wall behind him stops the camera (it would be inside the house, under
-            // its roof). Indoors the rooms are too small for that: the camera goes through, and
-            // the walls between drop to stubs as they do for the fixed view (`cutaway.rs`).
-            let walls = |from: Vec2, dir: Vec2, max: f32| if map.building_at(feet).is_some() { max } else { clear_run(map, from, dir, max) };
+            // through one behind it, indoors or out: walls and roofs stay up in this view
+            // (`Cutaway::set_held`), so the camera stays in the room, or the street, he is in.
+            let walls = |from: Vec2, dir: Vec2, max: f32| clear_run(map, from, dir, max);
             let beside = walls(feet, right.xz(), SHOULDER_SIDE + WALL_GAP).min(run_over(map, feet, right.xz(), SHOULDER_SIDE + WALL_GAP, |_| SHOULDER_HEIGHT));
             side = (beside - WALL_GAP).clamp(0.0, SHOULDER_SIDE);
             let pivot = feet + right.xz() * side;
@@ -226,6 +226,11 @@ impl IsoCamera {
             let rise = self.pitch.tan();
             let back = walls(pivot, -forward.xz(), far).min(run_over(map, pivot, -forward.xz(), far, |d| SHOULDER_HEIGHT + rise * d));
             reach = ((back - WALL_GAP) / level).clamp(0.3, self.boom);
+            // Under a ceiling it stays under it.
+            let up = self.pitch.sin();
+            if up > 0.05 && (map.building_at(feet).is_some() || map.building_at(pivot - forward.xz() * reach * level).is_some()) {
+                reach = reach.min(((CEILING - SHOULDER_HEIGHT) / up).max(0.3));
+            }
         }
         // In at once (a wall never shows from behind), out again smoothly.
         self.boom_now = if reach < self.boom_now { reach } else { self.boom_now + (reach - self.boom_now) * (1.0 - (-6.0 * dt).exp()) };
