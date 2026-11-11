@@ -1,21 +1,29 @@
 //! Skills (#46): players get better at what they do, by doing it.
 //!
-//! Nine skills, each with XP that only practice raises and a level from 0 to [`MAX_LEVEL`] at
-//! cumulative XP thresholds ([`SkillTuning::levels`]: 100, 250, 500, 900, 1,500). Everyone starts at 0,
-//! except Fitness and Strength at 1 (100 XP). Nothing is lost when a skill isn't used; there are no
-//! skill books. A respawn is a new survivor and starts over.
+//! Nine skills, each with XP that only practice raises and a level from 0 to ten at cumulative XP
+//! thresholds ([`SkillTuning::levels`]: 75, 225, 450, 750, 1,150, 1,650, 2,300, 3,100, 4,100, 5,400; as
+//! many levels as the settings list, at most [`MAX_LEVEL`], so a world saved with the five levels
+//! before ten keeps them). Everyone starts at 0, except Fitness and Strength at 2 (225 XP). Nothing is
+//! lost when a skill isn't used; there are no skill books. A respawn is a new survivor and starts over.
+//!
+//! XP is multiplied as it is earned ([`World::award_xp`]): by [`SkillTuning::xp_scale`] for every
+//! skill and by the skill's own [`SkillTuning::xp_mult`] (both 1 by default), so a world can make some
+//! skills quick and others slow. Later Backgrounds, Strengths, Flaws and books multiply it there too.
 //!
 //! | Skill | Raised by (XP) | Each level gives |
 //! |---|---|---|
-//! | Fitness | running: 1 per 10 s | endurance drains 6% slower and recovers 6% faster |
-//! | Strength | swinging a weapon over 1.5 kg: 1 per swing; moving over your carry limit: 1 per game minute | +1.5 kg carry limit (`CarryTuning::strength_kg`); shove knockdown chance +3%; knockback +5% |
-//! | Bludgeon | hits with blunt weapons: 2 per hit, 5 per kill | damage +6%, endurance cost -5%, swing time -3% |
+//! | Fitness | running: 1 per 10 s | endurance drains 3% slower and recovers 3% faster |
+//! | Strength | swinging a weapon over 1.5 kg: 1 per swing; moving over your carry limit: 1 per game minute | +0.75 kg carry limit (`CarryTuning::strength_kg`); shove knockdown chance +1.5%; knockback +2.5% |
+//! | Bludgeon | hits with blunt weapons: 2 per hit, 5 per kill | damage +3%, endurance cost -2.5%, swing time -1.5% |
 //! | Edged | hits with knives and axes: 2 per hit, 5 per kill | as Bludgeon |
-//! | Brawl | punches 2 (a punch that kills 5), each zombie shoved 2, stomp kills 5 | punch and stomp damage +10%; shove knockdown chance +4% |
-//! | Stealth | sneaking (moving) within 15 m of a zombie that isn't after you: 1 per 5 s | sneaking footsteps 8% quieter; zombies see you from 6% less far |
-//! | First Aid | each treatment done (#10): 10 | treatment 10% faster (`FirstAidTuning::skill_faster_per_level`); from level 3 stitching hurts half as much |
-//! | Scavenging | each container searched for the first time: 2 | first searches 10% faster and 10% quieter |
-//! | Handiwork | each craft (#12): 5 | crafting 10% faster ([`SkillTuning::craft_time_mult`]) |
+//! | Brawl | punches 2 (a punch that kills 5), each zombie shoved 2, stomp kills 5 | punch and stomp damage +5%; shove knockdown chance +2% |
+//! | Stealth | sneaking (moving) within 15 m of a zombie that isn't after you: 1 per 5 s | sneaking footsteps 4% quieter; zombies see you from 3% less far |
+//! | First Aid | each treatment done (#10): 10 | treatment 5% faster (`FirstAidTuning::skill_faster_per_level`); from level 6 stitching hurts half as much |
+//! | Scavenging | each container searched for the first time: 2 | first searches 5% faster and 5% quieter |
+//! | Handiwork | each craft (#12): 5 | crafting 5% faster ([`SkillTuning::craft_time_mult`]) |
+//!
+//! Ten levels came in at half of what each of the five before gave, so level 10 is the old level 5
+//! and an even level the old one of half its number: the same balance, a longer climb.
 //!
 //! Weapon skills follow how a weapon hits, not each weapon: every weapon in `weapons.ron` names its
 //! skill (`skill: Some(Bludgeon)`), defaulting to its category's ([`crate::items::WeaponCategory::skill`]:
@@ -36,6 +44,8 @@
 //!
 //! Every number is ours ([`SkillTuning`], serde defaults, saved with the world's settings).
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::TICK_DT;
@@ -45,8 +55,8 @@ use crate::players::{MoveMods, Stance};
 use crate::world::World;
 use crate::zombies::ZombieState;
 
-/// The highest level.
-pub const MAX_LEVEL: u32 = 5;
+/// The most levels the settings may list (the top level is [`SkillTuning::top`]).
+pub const MAX_LEVEL: u32 = 10;
 /// How many skills there are.
 pub const SKILL_COUNT: usize = 9;
 /// Level-ups kept for replication if nobody drains them (headless servers, tests).
@@ -149,7 +159,7 @@ impl Skills {
             .into_iter()
             .map(|s| {
                 let (xp, level) = (self.xp(s), self.level(s, t));
-                let next_at = (level < MAX_LEVEL).then(|| t.xp_for(level + 1));
+                let next_at = (level < t.top()).then(|| t.xp_for(level + 1));
                 let progress = next_at.map_or(1.0, |n| {
                     let from = t.xp_for(level);
                     ((xp - from) / (n - from).max(1e-3)).clamp(0.0, 1.0)
@@ -194,11 +204,16 @@ impl LevelUp {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SkillTuning {
-    /// Cumulative XP to reach levels 1 to 5.
-    pub levels: [f32; MAX_LEVEL as usize],
+    /// Cumulative XP to reach each level from 1: as many levels as listed, 1 to [`MAX_LEVEL`].
+    #[serde(deserialize_with = "levels_from")]
+    pub levels: Vec<f32>,
     /// Levels a new survivor starts with.
     pub start_fitness: u32,
     pub start_strength: u32,
+    /// Every XP earned is multiplied by this (1: as the numbers below say).
+    pub xp_scale: f32,
+    /// And by its skill's multiplier here (a skill not listed: 1), e.g. `{Fitness: 0.5}`.
+    pub xp_mult: BTreeMap<Skill, f32>,
 
     // XP.
     /// Fitness per second running.
@@ -251,9 +266,11 @@ pub struct SkillTuning {
 impl Default for SkillTuning {
     fn default() -> Self {
         Self {
-            levels: [100.0, 250.0, 500.0, 900.0, 1500.0],
-            start_fitness: 1,
-            start_strength: 1,
+            levels: vec![75.0, 225.0, 450.0, 750.0, 1150.0, 1650.0, 2300.0, 3100.0, 4100.0, 5400.0],
+            start_fitness: 2,
+            start_strength: 2,
+            xp_scale: 1.0,
+            xp_mult: BTreeMap::new(),
 
             run_xp_per_sec: 0.1,
             heavy_swing_xp: 1.0,
@@ -269,22 +286,45 @@ impl Default for SkillTuning {
             search_xp: 2.0,
             craft_xp: 5.0,
 
-            fitness_drain: 0.06,
-            fitness_regen: 0.06,
-            strength_shove_knockdown: 0.03,
-            strength_knockback: 0.05,
-            weapon_damage: 0.06,
-            weapon_cost: 0.05,
-            weapon_time: 0.03,
-            brawl_damage: 0.1,
-            brawl_shove_knockdown: 0.04,
-            stealth_noise: 0.08,
-            stealth_sight: 0.06,
-            search_faster: 0.1,
-            search_quieter: 0.1,
+            fitness_drain: 0.03,
+            fitness_regen: 0.03,
+            strength_shove_knockdown: 0.015,
+            strength_knockback: 0.025,
+            weapon_damage: 0.03,
+            weapon_cost: 0.025,
+            weapon_time: 0.015,
+            brawl_damage: 0.05,
+            brawl_shove_knockdown: 0.02,
+            stealth_noise: 0.04,
+            stealth_sight: 0.03,
+            search_faster: 0.05,
+            search_quieter: 0.05,
             craft_faster: crate::crafting::HANDIWORK_FASTER_PER_LEVEL,
         }
     }
+}
+
+/// The levels as a list, or as the tuple a world saved before ten levels wrote them as (a fixed
+/// array of five in RON). Over the wire (postcard, not self-describing) just the list.
+fn levels_from<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<f32>, D::Error> {
+    struct Levels;
+    impl<'de> serde::de::Visitor<'de> for Levels {
+        type Value = Vec<f32>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a list of XP thresholds")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<f32>, A::Error> {
+            let mut out = Vec::new();
+            while let Some(n) = seq.next_element::<f32>()? {
+                if out.len() > MAX_LEVEL as usize {
+                    return Err(serde::de::Error::custom(format!("more than {MAX_LEVEL} levels")));
+                }
+                out.push(n);
+            }
+            Ok(out)
+        }
+    }
+    if d.is_human_readable() { d.deserialize_any(Levels) } else { d.deserialize_seq(Levels) }
 }
 
 /// `per` a level more, from 1.
@@ -297,19 +337,30 @@ fn down(per: f32, level: u32) -> f32 {
     (1.0 - per * level as f32).max(MIN_MULT)
 }
 
+/// A multiplier as short as it reads: 2, 0.5, 1.25.
+fn fmt_mult(m: f32) -> String {
+    let s = format!("{m:.2}");
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
 fn pct(m: f32) -> String {
     format!("{:.0}%", ((m - 1.0) * 100.0).abs())
 }
 
 impl SkillTuning {
+    /// The top level: as many as the settings list (10 by default; a world saved before ten has 5).
+    pub fn top(&self) -> u32 {
+        (self.levels.len() as u32).min(MAX_LEVEL)
+    }
+
     /// The level `xp` reaches.
     pub fn level(&self, xp: f32) -> u32 {
-        self.levels.iter().filter(|&&n| xp >= n).count() as u32
+        (self.levels.iter().filter(|&&n| xp >= n).count() as u32).min(self.top())
     }
 
     /// XP at the start of `level` (0 for level 0).
     pub fn xp_for(&self, level: u32) -> f32 {
-        match level.min(MAX_LEVEL) {
+        match level.min(self.top()) {
             0 => 0.0,
             l => self.levels[l as usize - 1],
         }
@@ -317,7 +368,12 @@ impl SkillTuning {
 
     /// XP stops here (the top level).
     pub fn max_xp(&self) -> f32 {
-        self.levels[MAX_LEVEL as usize - 1]
+        self.xp_for(self.top())
+    }
+
+    /// What XP earned in `skill` is multiplied by: [`Self::xp_scale`] times the skill's own.
+    pub fn xp_mult_of(&self, skill: Skill) -> f32 {
+        self.xp_scale * self.xp_mult.get(&skill).copied().unwrap_or(1.0)
     }
 
     /// A swing's damage at this level of the skill it uses (stomps: Brawl's).
@@ -415,6 +471,14 @@ impl SkillTuning {
 
     /// How XP in `skill` is earned.
     pub fn earned_by(&self, skill: Skill) -> String {
+        let how = self.earned_by_base(skill);
+        match self.xp_mult_of(skill) {
+            m if (m - 1.0).abs() < 1e-4 => how,
+            m => format!("{how}; XP x{}", fmt_mult(m)),
+        }
+    }
+
+    fn earned_by_base(&self, skill: Skill) -> String {
         match skill {
             Skill::Fitness => format!("running ({} XP a second)", self.run_xp_per_sec),
             Skill::Strength => format!(
@@ -433,6 +497,9 @@ impl SkillTuning {
 
     /// Settings a tick can't work with, by name (checked on load).
     pub fn check(&self) -> Result<(), String> {
+        if self.levels.is_empty() || self.levels.len() > MAX_LEVEL as usize {
+            return Err(format!("skills: {} levels listed (1 to {MAX_LEVEL})", self.levels.len()));
+        }
         let mut last = 0.0;
         for (k, &n) in self.levels.iter().enumerate() {
             if !(n.is_finite() && n > last && n <= 1e6) {
@@ -440,8 +507,14 @@ impl SkillTuning {
             }
             last = n;
         }
-        if self.start_fitness > MAX_LEVEL || self.start_strength > MAX_LEVEL {
-            return Err(format!("skills: start levels {} and {} must be 0 to {MAX_LEVEL}", self.start_fitness, self.start_strength));
+        if self.start_fitness > self.top() || self.start_strength > self.top() {
+            return Err(format!("skills: start levels {} and {} must be 0 to {}", self.start_fitness, self.start_strength, self.top()));
+        }
+        if !(self.xp_scale.is_finite() && (0.0..=100.0).contains(&self.xp_scale)) {
+            return Err(format!("skills.xp_scale is {} (0 to 100)", self.xp_scale));
+        }
+        if let Some((s, m)) = self.xp_mult.iter().find(|(_, m)| !(m.is_finite() && (0.0..=100.0).contains(*m))) {
+            return Err(format!("skills.xp_mult for {} is {m} (0 to 100)", s.id()));
         }
         let numbers = [
             ("run_xp_per_sec", self.run_xp_per_sec),
@@ -501,14 +574,15 @@ impl World {
         self.player(id).map(|p| p.skills.view(&self.config.skills))
     }
 
-    /// Player `pi` (an index into `players`) earns `xp` in `skill` (nothing if it's dead; XP stops
-    /// at the top level). For crafting (#12): `award_xp(pi, Skill::Handiwork, config.skills.craft_xp)`
+    /// Player `pi` (an index into `players`) earns `xp` in `skill`, times the skill's XP multiplier
+    /// ([`SkillTuning::xp_mult_of`]; nothing if it's dead; XP stops at the top level). For crafting (#12): `award_xp(pi, Skill::Handiwork, config.skills.craft_xp)`
     /// once per thing crafted. Returns the new level if it went up: that is a [`LevelUp`] for its
     /// client, and for Fitness and Strength its movement modifiers are refreshed at the end of the
     /// tick.
     pub fn award_xp(&mut self, pi: usize, skill: Skill, xp: f32) -> Option<u32> {
         let t = &self.config.skills;
         let p = self.players.get_mut(pi)?;
+        let xp = xp * t.xp_mult_of(skill);
         if p.dead || xp.is_nan() || xp <= 0.0 {
             return None;
         }

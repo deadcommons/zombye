@@ -12,8 +12,8 @@
 //!
 //! **Filling it:** weapons and lights go onto the first free slot by themselves when they first
 //! come into your hands or bags ([`Hotbar::auto_fill`]). With the inventory open, point at an item
-//! and press 1-9 to put it on that slot (the same key again takes it off; an item already on
-//! another slot swaps with it). Right-click a slot to empty it. While an item's right-click menu is
+//! and press Shift and 1-9 to put it on that slot (1-9 alone still does the slot's thing; the same
+//! key again takes it off; an item already on another slot swaps with it). Right-click a slot to empty it. While an item's right-click menu is
 //! up the number keys are the menu's, and while the search box has the keys they type.
 //!
 //! The slots are kept between sessions in the client settings file (`settings.ron`,
@@ -177,7 +177,8 @@ impl Hotbar {
     }
 
     /// Put the weapons and lights that have newly come into our hands or bags on the first free
-    /// slots (in the order hand, other hand, bags). Only what wasn't on us last frame: an item
+    /// slots (in the order hand, other hand, bags); on the first look, first empty the slots of
+    /// things we don't carry. Only what wasn't on us last frame: an item
     /// taken off the bar stays off while we keep carrying it.
     pub fn auto_fill(&mut self, inv: &Inventory, items: &[ItemDef]) -> bool {
         let mut on_us: Vec<u16> = Vec::new();
@@ -187,6 +188,18 @@ impl Hotbar {
             }
         }
         let mut changed = false;
+        // The first look of a session: slots kept from an earlier game (the settings file) for
+        // things this survivor doesn't carry are emptied, so the bar starts with what's on us.
+        // (`--hotbar`'s slots, set for a picture, stay as asked.)
+        if self.seen.is_none() && !self.session_only {
+            for slot in self.slots.iter_mut() {
+                let carried = slot.as_deref().is_some_and(|id| items.iter().position(|d| d.id == id).is_some_and(|i| on_us.contains(&(i as u16))));
+                if slot.is_some() && !carried {
+                    *slot = None;
+                    changed = true;
+                }
+            }
+        }
         for &item in on_us.iter().filter(|i| self.seen.as_ref().is_none_or(|seen| !seen.contains(i))) {
             let Some(def) = items.get(item as usize).filter(|d| auto_kind(d)) else { continue };
             if self.slot_of(&def.id).is_none()
@@ -310,8 +323,10 @@ fn keys(
             keep(&bar, &mut store);
         }
     }
-    // A number over an inventory row puts its item on that slot.
-    if let (Some(k), true, Some(item)) = (key, panel.open, hovered.item(&rows))
+    // Shift and a number over an inventory row puts its item on that slot. (Not a number alone:
+    // the panel is open a lot, after every search, and a number there must still equip.)
+    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    if let (Some(k), true, true, Some(item)) = (key, shift, panel.open, hovered.item(&rows))
         && let Some(def) = join.items.get(item as usize)
     {
         say(bar.assign(k, &def.id, &def.name));
@@ -404,6 +419,7 @@ fn rebuild(mut commands: Commands, bar: Res<Hotbar>, link: Res<ServerLink>, join
 mod tests {
     use super::*;
     use zombye_sim::ItemStack;
+    use crate::server_link::ServerLink;
 
     fn items() -> Vec<ItemDef> {
         zombye_net::content::load_config(&zombye_net::content::default_data_dir(), 1).expect("game data").items
@@ -488,7 +504,26 @@ mod tests {
         assert_eq!(bar.ids(), [Some("baseball_bat".to_string()), Some("flashlight".to_string()), Some("kitchen_knife".to_string())]);
         // A full bar takes no more.
         let mut full = Hotbar::from_ids(&(0..SLOTS).map(|k| Some(format!("thing_{k}"))).collect::<Vec<_>>());
+        full.seen = Some(Vec::new());
         assert!(!full.auto_fill(&inv, &items));
+    }
+
+    /// Slots kept from an earlier game for things this survivor doesn't carry are emptied on the
+    /// first look ("no golf club on you" with a golf club on the bar); `--hotbar`'s are kept.
+    #[test]
+    fn a_new_game_starts_with_only_what_you_carry_on_the_bar() {
+        let items = items();
+        let inv = Inventory { carried: vec![stack(&items, "water_bottle", 1), stack(&items, "kitchen_knife", 1)], ..Default::default() };
+        let mut bar = Hotbar::from_ids(&[Some("golf_club".into()), Some("water_bottle".into()), None, Some("kitchen_knife".into())]);
+        assert!(bar.auto_fill(&inv, &items));
+        assert_eq!(bar.ids(), [None, Some("water_bottle".to_string()), None, Some("kitchen_knife".to_string())]);
+        // Only the first look: one put on the bar later and not carried stays (dimmed).
+        bar.slots[0] = Some("golf_club".into());
+        assert!(!bar.auto_fill(&inv, &items));
+        assert_eq!(bar.slot_of("golf_club"), Some(0));
+        let mut picture = Hotbar { session_only: true, ..Hotbar::parse("golf_club") };
+        picture.auto_fill(&inv, &items);
+        assert_eq!(picture.slot_of("golf_club"), Some(0));
     }
 
     /// On the smallest screen the panels are laid out for, the bar leaves the vitals their corner
@@ -529,5 +564,63 @@ mod tests {
         assert_eq!(bar.slots.iter().flatten().filter(|s| *s == "same").count(), 1);
         assert_eq!(bar.slots[8].as_deref(), Some("i8"));
         assert_eq!(Hotbar::parse("").ids(), Vec::<Option<String>>::new());
+    }
+
+    /// The whole way round, as in the game: a weapon in the bags, its key pressed, and it ends up
+    /// in the hand on the server.
+    #[test]
+    fn a_number_key_puts_the_weapon_in_hand() {
+        let (mut link, id) = ServerLink::for_test();
+        let join = link.join_info_for_test(id);
+        let pos = Vec2::from(link.world().unwrap().player(id).unwrap().state.pos.to_array());
+        // A bat picked up (into the hand), then a knife (into the hand, the bat into the bags).
+        for item in ["baseball_bat", "kitchen_knife"] {
+            link.send(Intent::SpawnItem { item: item.into(), count: 1, pos: pos.to_array() });
+            link.send(Intent::PickUp { player: id });
+            link.step_for_test();
+        }
+        let bat = join.items.iter().position(|d| d.id == "baseball_bat").unwrap() as u16;
+        let inv = &link.own(id).expect("our private view").inventory;
+        assert!(inv.carried.iter().any(|s| s.item == bat), "the bat is in the bags: {inv:?}");
+        let mut app = App::new();
+        app.insert_resource(Time::<()>::default())
+            .init_resource::<ButtonInput<KeyCode>>()
+            .insert_resource(link)
+            .insert_resource(join)
+            .insert_resource(LocalPlayer::for_test(id, pos))
+            .init_resource::<crate::inventory_ui::InventoryPanel>()
+            .init_resource::<crate::inventory_ui::ItemMenu>()
+            .init_resource::<crate::inventory_ui::HoveredItem>()
+            .init_resource::<crate::health_ui::HealthPanel>()
+            .add_plugins(HotbarPlugin);
+        app.update();
+        let k = app.world().resource::<Hotbar>().slot_of("baseball_bat").expect("the bat took a slot by itself");
+        // The inventory open (it opens after every search) with the pointer on the bat's row.
+        let row = app.world_mut().spawn(Node::default()).id();
+        app.world_mut().resource_mut::<crate::inventory_ui::InventoryPanel>().open = true;
+        app.world_mut().resource_mut::<crate::inventory_ui::HoveredItem>().0 = Some((row, bat));
+        let press = |app: &mut App, keys: &[KeyCode]| {
+            for &key in keys {
+                app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(key);
+            }
+            app.update();
+            let mut input = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            input.release_all();
+            input.clear();
+        };
+        // Shift and another number puts it on that slot; it stays in the bags.
+        let other = (k + 4) % SLOTS;
+        press(&mut app, &[KeyCode::ShiftLeft, DIGITS[other]]);
+        assert_eq!(app.world().resource::<Hotbar>().slot_of("baseball_bat"), Some(other));
+        // Its number alone, over the row, takes it in hand.
+        press(&mut app, &[DIGITS[other]]);
+        assert_eq!(app.world().resource::<Hotbar>().slot_of("baseball_bat"), Some(other), "a number alone doesn't change the bar");
+        for _ in 0..20 {
+            app.world_mut().resource_mut::<ServerLink>().step_for_test();
+            app.update();
+        }
+        let link = app.world().resource::<ServerLink>();
+        let hand = link.own(id).and_then(|v| v.inventory.hand);
+        assert_eq!(hand.map(|s| s.item), Some(bat), "key {} put the bat in hand", other + 1);
     }
 }

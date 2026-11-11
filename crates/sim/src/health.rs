@@ -1485,7 +1485,7 @@ mod tests {
         assert!((me(&w, id).ready_in - bat.swing_seconds * e.swing_time).abs() < 1e-4);
         w.inflict_wound(id, Part::Torso, WoundKind::Bite, Some(false)).unwrap();
         // (On top of a new survivor's Fitness, #46.)
-        let fit = w.config.skills.move_mods(1, crate::players::MoveMods::default()).regen;
+        let fit = w.config.skills.move_mods(w.config.skills.start_fitness, crate::players::MoveMods::default()).regen;
         assert!((me(&w, id).state.mods.regen - 0.8 * fit).abs() < 1e-4);
     }
 
@@ -1719,7 +1719,7 @@ mod tests {
         assert!(w.poison_player(id, 1.0));
         let p = me(&w, id);
         assert!(!p.health.can_eat() && p.health.sick() && p.health.thirst_mult(&w.config.health) == 2.0);
-        let fit = w.config.skills.move_mods(1, crate::players::MoveMods::default()).regen;
+        let fit = w.config.skills.move_mods(w.config.skills.start_fitness, crate::players::MoveMods::default()).regen;
         assert!((p.state.mods.regen - 0.7 * fit).abs() < 1e-5);
         assert!(w.health_view(id).unwrap().food_poisoning);
         w.skip_time(14.5);

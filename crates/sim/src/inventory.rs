@@ -251,7 +251,7 @@ impl Default for CarryTuning {
     fn default() -> Self {
         Self {
             limit_kg: 14.0,
-            strength_kg: 1.5,
+            strength_kg: 0.75,
             pockets_l: 3.0,
             burdened_at: 1.0,
             heavy_at: 1.3,
