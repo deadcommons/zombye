@@ -64,6 +64,27 @@ or Meshy (from an approved reference through four review gates the owner approve
 the sizes they all share: storey 3.0 m, walls 0.16 m, doors 1 × 2.1 m, window sill 0.9 m and head 2.1 m,
 and the rest. Change a building number in the code, change it there too.
 
+**Release models** (`release_models.rs`): models from bought asset packs, whose licence allows them only embedded
+in a game, are never in this repo. They live in the art repo's `release-models/` and release builds carry that
+folder: the client reads `$ZOMBYE_RELEASE_MODELS`, else `release-models` beside its binary (stdout says what was
+read). `furniture/<kind>.glb` and `street/<model>.glb` (models as `furniture_models.rs` reads them, named as the one
+they replace; a street prop kind this repo has no model for is a grey-box without them) replace the game's of the
+same name; `ZOMBYE_EXTRA_MODELS` still goes over both. `trees/<kind>.glb` (`broadleaf`, `birch`, `pine`, `spruce`,
+`bush`: the foot at the origin, foliage the triangles of a material named `leaves`, so it fades over the player as
+generated foliage does) stands in for the generated tree or bush of that kind, scaled to its height
+(`meshgen/trees.rs`, `FurnitureModels::add_standing`). `fences/fence.glb` (a metre of garden fence along x, standing on the origin) and `fences/fence_post.glb` (a post)
+stand in for the generated fence rails, one look (variant) a run, a post every other metre and at the run's end
+(`landscape::model_fence`; hedges and the sim's fence are unchanged). `items/<item id>.glb` is drawn for that item lying on the
+ground, at its own size, in place of its grey-box (`items_render.rs`). `held/<item id>.glb` is a weapon as the hand holds it, drawn in place of its
+grey-box bar (`WeaponLooks::held`, `survivor::show_held_weapons`): made with the grip at the origin, pointing along +Z, its top +Y. **Variants:** `<name>.2.glb`, `<name>.3.glb`,
+... (numbered without a gap) beside any of them are other looks of the same thing, one picked per place by a hash of
+where it stands (`FurnitureModels::pick`), so a town's sofas and trees differ and stay the same between runs.
+Without the folder the game draws this repo's models and generated trees. A model's colours are its materials' base
+colours times its vertex colours (`COLOR_0`; textures aren't read), so one painted from a texture atlas is exported
+with the atlas's colours on its vertices. The same goes for alpha: a tree whose leaves are textured cards is exported with each
+card cut to the outline of its texture's opaque part, as plain triangles. `check_the_release_folder` (an ignored test in `release_models.rs`) reads
+a folder and checks every file.
+
 ## Remote machines
 
 Development can run on two remote Linux machines, driven from Claude on the owner's Mac:
@@ -405,8 +426,8 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   tile edges stop where a curve takes over (`Curves::kerb_span`), and curved kerbs, grit, ring joints and bend
   centre lines are drawn by the chunk each stretch's middle is in. Cost: chunk building about 0.24 ms (0.22 without
   curves; `chunk_build_time`, an ignored test, times every chunk of the default map), frames the same.
-- **Street props (#61, `sim::street_props`, `assets/data/street_props.ron`):** mailboxes, fire hydrants and bins
-  that the generator puts outside. The file lists the kinds (`id`; `model`, the model drawn (`assets/models/street/<model>.glb`, built in Blender: mailbox, fire_hydrant, trash_can), the id when
+- **Street props (#61, `sim::street_props`, `assets/data/street_props.ron`):** mailboxes, fire hydrants, bins,
+  street lamps and what stands in front of shops, which the generator puts outside. The file lists the kinds (`id`; `model`, the model drawn (`assets/models/street/<model>.glb`, built in Blender: mailbox, fire_hydrant, trash_can; the other kinds have none here and are grey-boxes unless the release models hold one), the id when
   left out; grey-box `size` and `color`; `blocks`, default true; `radius`, how far a body is kept from its middle,
   default half its larger side, at most 0.5) and the rules, applied in order: `GardenPath` (on the lawn beside the
   street end of a house's garden path, facing the street; `chance` per house), `HouseKerb` (at the kerb 2-3 m to one
@@ -421,7 +442,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   draws them), beside a
   door, or next to another prop (each keeps the eight tiles round it free); kerb props only on a straight kerb (5 m
   of it each way: clear of the 4 m kerb curves at junctions), away from turning circles, alley mouths and parking-lot
-  entries, and not in front of a garden path. Shipped: all three block; seed 1 has 48 mailboxes (most of the houses
+  entries, and not in front of a garden path. Shipped: twelve kinds (mailbox, hydrant, bin; a street lamp every 28-40 m of kerb and a power box now and then; in front of shops a bench, parking meter, planter, vending machine, phone box or post box; a trash bag at some houses' kerbs, the one kind that doesn't block); of the first three, seed 1 had 48 mailboxes (most of the houses
   whose front door has a path), 28 bins and 101 hydrants (both kerbs of every street). The map keeps them in
   `TileMap::street_props` (sorted by tile; `street_prop(t)`) with their kinds in `TileMap::prop_kinds`; a blocking
   one's tile is `Feature::StreetProp`, so the walk grid, flow fields, the nav graph, `clear_path` and every
@@ -433,6 +454,22 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   without one, merged into the chunk's props mesh (`meshgen/street_props.rs`, called from `spawn_chunk`): no draw
   call of its own. Cost: town generation the same (~6 ms, the props under 1 ms), chunk building +0.003 ms,
   frames the same.
+  **Bigger than a tile, and yards and parked vehicles:** a kind's `tiles: (across, deep)` (default one; at most
+  5 x 10) make it cover several tiles: its `StreetProp::tile` is the least corner, `PropKind::footprint(facing)` the
+  tiles turned with it (`TileMap::street_prop_rect`), it is drawn in the middle of them, and when it blocks every
+  tile it covers is a `Feature::StreetProp` that bodies are kept out of whole (`TileMap::street_prop_fills`, in
+  `resolve_circle`; `radius` isn't read). Four more rules place them (and one-tile kinds): `Yard` (open lawn beside
+  or behind a house, any way round, a tile of open lawn kept all round it; `chance` per house), `Roadside` (parked
+  on the road along a straight kerb in front of a house, no driveway beside it, two tiles of road left free;
+  `chance` per house), `ShopRoad` (the same in front of a shop or office on the main street) and `Parking` (in a
+  bay of a parking lot, nose in or out, kinds of at most 2 x 5; the generator hands the bays over as
+  `street_props::Bay`). A kind of more than one tile is refused in the four kerb and path rules. Shipped: yard
+  things (barbecue, deckchair, sun lounger, wheelbarrow, doghouse, rotary and straight washing lines, garden table,
+  swing set, trampoline, paddling pool, garden bed, shed) and vehicles (car, van, pickup, police car, ambulance,
+  wreck, school bus), all grey-boxes here unless the release models hold them; seed 1 has 26 cars, 17 sheds and
+  about 130 other yard things. **This changed every shipped map again:** saves from before load only with
+  `--load-anyway`. Tests: `street_props::tests` (`big_props_block_every_tile_they_cover`, where each kind stands,
+  that no way is closed).
 - **Buildings dressed (#59, `meshgen/building_kit.rs`):** `world_render::build_building` (pure: map in, a building's
   ground-floor, upper and roof meshes out) runs the building kit over every wall and the roof, merged into the same
   meshes (no draw calls of their own). Houses: a concrete foundation and a pale water-table board below the stub
@@ -1164,7 +1201,16 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   drink, wear, equip, take a pill, use on a wound, put in the open container, drop, take, take in hand, split: one, or half of four or more),
   1-9 to pick, Esc or a click elsewhere to close; the same menu on a ground item in reach in the world (right-click it with
   the panel open, or a quick right tap with it shut; held, right mouse aims). `--menu carried:N|worn:N|hand|container:N|ground[:N]`
-  starts with one open, for pictures, and `--menu-pick N[@SECS]` presses its number key N (after SECS), for recordings. A
+  starts with one open, for pictures, and `--menu-pick N[@SECS]` presses its number key N (after SECS), for recordings.
+  **Right-clicking things in the world** (`world_actions.rs`): the same quick right tap (or a right-click with the panel
+  open) on a door, window, fence, blind, container or body opens its menu: open or close, climb through or over, smash the
+  glass, raise, lower, fit or take down the blind (from inside), search or look inside; out of reach it says so and
+  offers nothing. `world_actions::pick` finds what the pointer's ray meets first (a door's or window's opening, or the
+  ground just by it when the wall is cut down; a container's furniture as a 1 m box, a body as a low box, `pick_body`; an item on the floor wins unless
+  something stands in front of it) and `entries` lists its actions as intents. Actions that go by what the player faces
+  are sent as `Intent::Toward { player, facing, then }`: the server turns the player to the thing (`World::set_facing`)
+  and applies `then`, an action of that same player, as if it came alone, so reach and the rest are its own checks
+  (`wire::PROTOCOL` 21). New things to right-click: a `Target` variant, its test in `pick`, its lines in `entries`. A
   left click behind an open menu only closes it (it moves nothing), opening or shutting the panel closes it, and it opens
   at the pointer in UI pixels (the UI scale), kept on screen. The latest note shows at its foot, and under the HUD for a few seconds when
   it's shut (the same note again only keeps it up, and isn't printed again). One click is one request: row observers
