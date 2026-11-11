@@ -626,8 +626,9 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
             let input = PlayerInput { move_dir: (*move_dir).into(), facing: *facing, run: *run, sneak: *sneak, aim: *aim };
             world.set_player_input(*player, *seq, input);
         }
-        // Only an aiming player fights.
-        Intent::Attack { player } | Intent::Shove { player } | Intent::Stomp { player } if !world.aiming(*player) => {}
+        // Only an aiming player swings or shoots; a shove or a stomp (Space) needs no aim: it
+        // goes the way the player faces.
+        Intent::Attack { player } if !world.aiming(*player) => {}
         Intent::Toward { player, facing, then } => {
             if then.action_by() == Some(*player) && !matches!(**then, Intent::Toward { .. }) {
                 world.set_facing(*player, *facing);

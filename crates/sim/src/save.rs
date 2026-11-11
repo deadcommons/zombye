@@ -61,6 +61,7 @@
 //! check and content change reaches them, and set aside again on load), then `LOOK` (what bodies
 //! that rise wore, #63; optional too),
 //! then `FARC` (how far the far clock is ahead of the tick, #57; optional, only written when it is),
+//! then `SHOV` (zombies shoved lately, whose shoves add up toward a knockdown; only when there are any),
 //! then `MODS` (what mod scripts keep, #25, `crate::script`; optional, only for a world with mods).
 //! Payloads are
 //! [postcard](https://docs.rs/postcard), and zombies are stored column by column. A file with
@@ -187,6 +188,9 @@ const MODS: [u8; 4] = *b"MODS";
 /// The power sources and light switches ([`crate::power`]); optional (a save without it gets a new
 /// world's: the grid as the settings say, the lights left on).
 const POWR: [u8; 4] = *b"POWR";
+/// Zombies shoved lately ([`crate::combat::Shoved`]), adding up toward a knockdown; only when
+/// there are any, so adding it didn't change the format version.
+const SHOV: [u8; 4] = *b"SHOV";
 const END: [u8; 4] = *b"END\0";
 /// Bytes before the first section: magic and version.
 const HEADER: usize = 12;
@@ -677,6 +681,7 @@ impl World {
             skill_mods_due: _,
             private_dirty: _,
             rise_looks,
+            shoved,
             parked,
             // Scratch, refilled every tick.
             targets: _,
@@ -835,6 +840,9 @@ impl World {
             w.section(FARC, &encode(far_ticks));
         }
         w.section(POWR, &encode(&power.to_save()));
+        if !shoved.is_empty() {
+            w.section(SHOV, &encode(shoved));
+        }
         // Mod scripts (#25): what they keep, and whose they are. A world without mods has none.
         let mods = config.scripts.as_ref().map(|e| e.mods()).unwrap_or_default();
         if !script.is_empty() || !mods.is_empty() {
@@ -1024,6 +1032,7 @@ impl World {
         let mut bonds: Option<BondSave> = None;
         let mut groups: Option<crate::groups::Groups> = None;
         let mut blinds: Option<BlindSave> = None;
+        let mut shoved: Option<Vec<crate::combat::Shoved>> = None;
         loop {
             let (tag, payload) = r.next()?;
             if tag == END {
@@ -1079,11 +1088,15 @@ impl World {
                 blinds = Some(decode(BLND, payload)?);
                 continue;
             }
+            if tag == SHOV && shoved.is_none() {
+                shoved = Some(decode(SHOV, payload)?);
+                continue;
+            }
             if tag == MODS && script.is_none() {
                 script = Some(decode(MODS, payload)?);
                 continue;
             }
-            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || power.is_some() || blinds.is_some() {
+            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || power.is_some() || shoved.is_some() || blinds.is_some() {
                 return Err(corrupt(format!("unexpected {} section", tag_name(tag))));
             }
             let block: ZombieBlock = decode(ZOMB, payload)?;
@@ -1182,6 +1195,11 @@ impl World {
         order.sort_by_key(|&i| z.id[i]);
         w.zombies = reorder(z, &order);
         w.rise_looks = looks.unwrap_or_default();
+        let shoved = shoved.unwrap_or_default();
+        if shoved.windows(2).any(|p| p[0].zombie >= p[1].zombie) || shoved.iter().any(|s| s.tick > w.tick || s.count == 0) {
+            return Err(save_check::invalid("shoved zombies out of order, shoved after the save, or shoved no times"));
+        }
+        w.shoved = shoved;
         w.far_ticks = far.unwrap_or(0);
         if let Some(p) = power {
             match crate::power::Power::from_save(p, &w.map) {

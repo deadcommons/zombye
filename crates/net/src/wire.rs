@@ -61,8 +61,9 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// `Snapshot::blind_changes`, `Welcome::blinds` and `Welcome::glazed`, `JobKind::Blind`.
 /// 21: right-click actions on things in the world: `Intent::Toward`.
 /// 22: player identity (DCM-66): `Hello::key`, `ServerMsg::Challenge` and `ClientMsg::Proof`.
-/// 23: electricity (19) merged with 20-22.)
-pub const PROTOCOL: u32 = 23;
+/// 23: shoves that add up and stomps to the head: the shove and stomp numbers in `CombatTuning`.
+/// 24: electricity (19) merged after 20-23.)
+pub const PROTOCOL: u32 = 24;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
