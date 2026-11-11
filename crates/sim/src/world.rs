@@ -1005,6 +1005,8 @@ impl World {
         removed.sort_unstable();
         let gone: Vec<bool> = z.id.iter().map(|id| removed.binary_search(id).is_ok()).collect();
         self.rise_looks.risen.retain(|id, _| removed.binary_search(id).is_err());
+        // What was left on a body goes with it; whoever had it open finds it gone.
+        self.opened.retain(|&c, _| crate::corpses::corpse_zombie(c).is_none_or(|z| removed.binary_search(&z).is_err()));
         self.zombies.remove_where(|i| gone[i]);
     }
 

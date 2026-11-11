@@ -12,6 +12,7 @@ pub mod awareness;
 pub mod bonds;
 pub mod combat;
 pub mod containers;
+pub mod corpses;
 pub mod crafting;
 pub mod firstaid;
 pub mod firstnight;

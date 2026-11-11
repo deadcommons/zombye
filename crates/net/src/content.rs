@@ -184,6 +184,8 @@ pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig
     let loot = load_loot(data_dir, &items, &weapons, &containers)?;
     let recipes = load_recipes(data_dir, &items, &weapons)?;
     let population = load_population(data_dir)?;
+    // What zombies wear must be clothing there is.
+    zombye_sim::corpses::check_outfits(&population.outfits, &items).map_err(|e| format!("{}: {e}", data_dir.join("population.ron").display()))?;
     let street_props = load_street_props(data_dir)?;
     let mut config = zombye_sim::WorldConfig::new(seed, 0, templates)
         .with_weapons(weapons)

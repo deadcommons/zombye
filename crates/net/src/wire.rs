@@ -600,7 +600,7 @@ pub struct SnapshotDelta {
     /// The run with the first night's record (#19).
     pub run: Option<RunView>,
     pub outfits: Option<Vec<OutfitView>>,
-    pub risen: Option<Vec<OutfitView>>,
+    pub looks: Option<Vec<OutfitView>>,
     /// The client's group and invitations (#73), when they change; `Some(None)`: none any more.
     pub group: Option<Option<zombye_sim::GroupView>>,
 }
@@ -623,7 +623,7 @@ impl Snapshot {
             time_scale: self.time_scale,
             game_minute: self.game_minute,
             outfits: self.outfits.iter().filter(|o| seen(o.id)).cloned().collect(),
-            risen: self.risen.iter().filter(|o| zombies.binary_search_by_key(&o.id, |z| z.id).is_ok()).cloned().collect(),
+            looks: self.looks.iter().filter(|o| zombies.binary_search_by_key(&o.id, |z| z.id).is_ok()).cloned().collect(),
             players,
             zombies,
             edge_changes: self.edge_changes.clone(),
@@ -785,7 +785,7 @@ pub struct DeltaEncoder {
     floor: Vec<u32>,
     run: Option<RunView>,
     outfits: Vec<OutfitView>,
-    risen: Vec<OutfitView>,
+    looks: Vec<OutfitView>,
     group: Option<zombye_sim::GroupView>,
 }
 
@@ -967,9 +967,9 @@ impl DeltaEncoder {
             self.outfits = view.outfits.clone();
             view.outfits
         });
-        let risen = (first || view.risen != self.risen).then(|| {
-            self.risen = view.risen.clone();
-            view.risen
+        let looks = (first || view.looks != self.looks).then(|| {
+            self.looks = view.looks.clone();
+            view.looks
         });
         let group = view.groups.into_iter().next();
         let group = (group != self.group).then(|| {
@@ -1001,7 +1001,7 @@ impl DeltaEncoder {
             floor,
             run,
             outfits,
-            risen,
+            looks,
         }
     }
 }
@@ -1063,8 +1063,8 @@ impl DeltaDecoder {
         if let Some(outfits) = delta.outfits {
             s.outfits = outfits;
         }
-        if let Some(risen) = delta.risen {
-            s.risen = risen;
+        if let Some(looks) = delta.looks {
+            s.looks = looks;
         }
         if let Some(group) = delta.group {
             s.groups = group.into_iter().collect();
@@ -1200,7 +1200,7 @@ mod tests {
 
             let own = |s: &Snapshot| s.players.iter().find(|p| p.id == a).copied().unwrap();
             let others = |s: &Snapshot| s.players.iter().filter(|p| p.id != a).map(PlayerPacked::pack).collect::<Vec<_>>();
-            let exact = |s: &Snapshot| postcard::to_allocvec(&(s.tick, s.time_of_day, s.game_minute, own(s), others(s), &s.items_sorted(), &s.floor, &s.outfits, &s.risen, &s.private, &s.item_notes, &s.hits, &s.level_ups, &s.speech)).unwrap();
+            let exact = |s: &Snapshot| postcard::to_allocvec(&(s.tick, s.time_of_day, s.game_minute, own(s), others(s), &s.items_sorted(), &s.floor, &s.outfits, &s.looks, &s.private, &s.item_notes, &s.hits, &s.level_ups, &s.speech)).unwrap();
             assert_eq!(exact(&got), exact(&view), "tick {t}");
             assert!(others(&got).len() == 1 && got.players.iter().all(|p| p.id == a || p.last_input_seq == 0), "nothing of another player's that can't be seen");
             assert_eq!(got.zombies.len(), view.zombies.len(), "tick {t}");

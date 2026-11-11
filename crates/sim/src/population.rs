@@ -247,6 +247,9 @@ pub struct PopulationDef {
     pub groups: GroupDef,
     pub respawn: RespawnDef,
     pub migration: MigrationDef,
+    /// What zombies wear (`crate::corpses`): each zombie one of these, picked by weight from a hash of
+    /// the seed and its id, and what a dead one's body gives when searched. Empty: they wear nothing.
+    pub outfits: Vec<crate::corpses::Outfit>,
 }
 
 impl Default for PopulationDef {
@@ -264,6 +267,7 @@ impl Default for PopulationDef {
             groups: GroupDef::default(),
             respawn: RespawnDef::default(),
             migration: MigrationDef::default(),
+            outfits: Vec::new(),
         }
     }
 }
@@ -316,6 +320,7 @@ impl PopulationDef {
         if !(1..=10_000).contains(&r.max_per_region) || !(1..=100_000).contains(&r.max_per_check) {
             return Err(format!("respawn.max_per_region must be 1..10000 and max_per_check 1..100000, got {} and {}", r.max_per_region, r.max_per_check));
         }
+        crate::corpses::validate_outfits(&self.outfits)?;
         let m = &self.migration;
         finite("migration.min_radius", m.min_radius, 0.0, 1e4)?;
         finite("migration.reach_mult", m.reach_mult, 0.0, 50.0)?;

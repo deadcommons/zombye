@@ -28,6 +28,20 @@
     // Multiplies the weight of entries marked `rare` (0: never found).
     rare_scale: 1.0,
     tables: [
+        // ---- A dead zombie's pockets (what it wore is added by the game, from population.ron) --
+        (room: "any", container: "corpse", empty: 0.55, rolls: (1, 2), entries: [
+            (item: "lighter", weight: 3),
+            (item: "matches", weight: 2),
+            (item: "pen", weight: 3),
+            (item: "chocolate_bar", weight: 2),
+            (item: "crisps", weight: 1),
+            (item: "painkillers", weight: 1),
+            (item: "plasters", weight: 1),
+            (item: "cable_tie", weight: 1),
+            (item: "batteries", weight: 1),
+            (item: "screwdriver", weight: 1),
+            (item: "pistol_rounds", weight: 1, count: (1, 4), rare: true),
+        ]),
         // ---- Kitchen -------------------------------------------------------------------------
         (room: "kitchen", container: "fridge", empty: 0.15, rolls: (1, 4), entries: [
             (item: "soda_can", weight: 3, count: (1, 4)),

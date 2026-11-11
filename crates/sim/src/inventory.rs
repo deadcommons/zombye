@@ -389,8 +389,12 @@ impl World {
         &self.sites
     }
 
-    pub fn container(&self, id: u32) -> Option<&ContainerSite> {
-        self.sites.binary_search_by_key(&id, |s| s.id).ok().map(|k| &self.sites[k])
+    /// Container `id`: a piece of furniture, or a dead zombie's body (`crate::corpses`).
+    pub fn container(&self, id: u32) -> Option<ContainerSite> {
+        if crate::corpses::corpse_zombie(id).is_some() {
+            return self.corpse_site(id);
+        }
+        self.sites.binary_search_by_key(&id, |s| s.id).ok().map(|k| self.sites[k].clone())
     }
 
     pub fn container_def(&self, site: &ContainerSite) -> &ContainerDef {
@@ -512,12 +516,13 @@ impl World {
         let (pos, ahead) = (p.state.pos, Vec2::from_angle(p.state.facing));
         let cone = FACING_DEGREES.to_radians().cos();
         let faced = |s: &ContainerSite| {
-            let lo = s.min.as_vec2();
-            let to = pos.clamp(lo, lo + s.size.as_vec2()) - pos;
+            let to = s.nearest(pos) - pos;
             to.length() < 0.05 || ahead.dot(to.normalize()) >= cone
         };
+        let bodies = self.corpses_near(pos, CONTAINER_REACH);
         self.sites
             .iter()
+            .chain(bodies.iter())
             .filter(|s| self.reaches(p, s))
             .min_by(|a, b| (!faced(a)).cmp(&!faced(b)).then(a.distance(pos).total_cmp(&b.distance(pos))).then(a.id.cmp(&b.id)))
             .map(|s| s.id)
@@ -526,7 +531,8 @@ impl World {
     /// The containers player `id` can reach, nearest first.
     pub fn containers_in_reach(&self, id: u32) -> Vec<u32> {
         let Some(p) = self.player(id) else { return Vec::new() };
-        let mut v: Vec<&ContainerSite> = self.sites.iter().filter(|s| self.reaches(p, s)).collect();
+        let bodies = self.corpses_near(p.state.pos, CONTAINER_REACH);
+        let mut v: Vec<&ContainerSite> = self.sites.iter().chain(bodies.iter()).filter(|s| self.reaches(p, s)).collect();
         v.sort_by(|a, b| a.distance(p.state.pos).total_cmp(&b.distance(p.state.pos)).then(a.id.cmp(&b.id)));
         v.into_iter().map(|s| s.id).collect()
     }
@@ -732,7 +738,7 @@ impl World {
             }
             return self.refuse(id, NOTHING_HERE.into());
         };
-        let Some(site) = self.container(c).cloned() else { return self.refuse(id, format!("no container {c}")) };
+        let Some(site) = self.container(c) else { return self.refuse(id, format!("no container {c}")) };
         let p = &self.players[pi];
         let name = lower(&self.container_def(&site).name);
         if p.jobs.iter().any(|j| j.kind == JobKind::Search { container: c }) {
@@ -773,7 +779,7 @@ impl World {
         {
             let p = &self.players[pi];
             if let Some(c) = p.open
-                && self.container(c).is_none_or(|s| !self.keeps_open(p, s))
+                && self.container(c).is_none_or(|s| !self.keeps_open(p, &s))
             {
                 let id = p.id;
                 self.players[pi].open = None;
@@ -845,7 +851,7 @@ impl World {
     }
 
     fn do_search(&mut self, pi: usize, c: u32) -> Result<String, String> {
-        let site = self.container(c).cloned().ok_or_else(|| format!("no container {c}"))?;
+        let site = self.container(c).ok_or_else(|| format!("no container {c}"))?;
         let def = self.container_def(&site).clone();
         let p = &self.players[pi];
         if !(self.reaches(p, &site) || self.keeps_open(p, &site)) {
@@ -853,8 +859,13 @@ impl World {
         }
         let first = !self.opened.contains_key(&c);
         if first {
-            let room_type = self.map.rooms.get(site.room as usize).map_or("", |r| r.room_type.as_str()).to_string();
-            let mut contents = crate::loot::fill(self.config.seed(), c, &def, &room_type, &self.config.loot, &self.config.items);
+            let mut contents = if let Some(z) = crate::corpses::corpse_zombie(c) {
+                // A body: what it wears, and what its pockets hold.
+                self.fill_corpse(c, z, &site)
+            } else {
+                let room_type = self.map.rooms.get(site.room as usize).map_or("", |r| r.room_type.as_str()).to_string();
+                crate::loot::fill(self.config.seed(), c, &def, &room_type, &self.config.loot, &self.config.items)
+            };
             // Food found was made before the world began (#11), some of it a while before.
             self.age_found_food(c, &mut contents);
             // Guns and magazines found hold what they were left with (#72).
@@ -972,7 +983,7 @@ impl World {
                 _ => return Err(format!("the {name} is gone")),
             },
             Place::Container(c) => {
-                if !self.container(c).is_some_and(|s| self.keeps_open(p, s)) {
+                if !self.container(c).is_some_and(|s| self.keeps_open(p, &s)) {
                     return Err("that container isn't open (or is out of reach)".into());
                 }
                 let mut list = self.opened.get(&c).cloned().unwrap_or_default();
@@ -1020,7 +1031,7 @@ impl World {
         let items = &self.config.items;
         let name = lower(&def.name);
         let p = &self.players[pi];
-        let open_ok = |c: u32| self.container(c).is_some_and(|s| self.keeps_open(p, s));
+        let open_ok = |c: u32| self.container(c).is_some_and(|s| self.keeps_open(p, &s));
         let mut dst_box: Option<(u32, Vec<ItemStack>)> = None;
         let mut to_ground: Vec<ItemStack> = Vec::new();
         // Whatever a slot or a layer had in the way goes into pockets and bags.
@@ -1057,14 +1068,17 @@ impl World {
                 if !open_ok(c) {
                     return Err("that container isn't open (or is out of reach)".into());
                 }
+                if crate::corpses::corpse_zombie(c).is_some() {
+                    return Err(format!("you can't put the {name} on a body"));
+                }
                 let site = self.container(c).expect("open");
-                let room = self.container_def(site).room_l;
+                let room = self.container_def(&site).room_l;
                 let mut list = match &src_box {
                     Some((sc, l)) if *sc == c => l.clone(),
                     _ => self.opened.get(&c).cloned().unwrap_or_default(),
                 };
                 if stacks_volume(items, &list) + def.volume_l * n as f32 > room + 1e-4 {
-                    return Err(format!("no room for the {name} in the {}", lower(&self.container_def(site).name)));
+                    return Err(format!("no room for the {name} in the {}", lower(&self.container_def(&site).name)));
                 }
                 merge_into(&mut list, moved, n, def.stack);
                 if src_box.as_ref().is_some_and(|(sc, _)| *sc == c) {
@@ -1141,7 +1155,7 @@ impl World {
                     format!("put on the {what}")
                 }
             }
-            Place::Container(c) => format!("put the {what} in the {}", lower(&self.container_def(self.container(c).expect("exists")).name)),
+            Place::Container(c) => format!("put the {what} in the {}", lower(&self.container_def(&self.container(c).expect("exists")).name)),
             Place::Ground => format!("dropped the {what}"),
         })
     }
@@ -1170,7 +1184,12 @@ impl World {
     pub(crate) fn drop_everything(&mut self, pi: usize) {
         let p = &mut self.players[pi];
         let (id, pos, facing) = (p.id, p.state.pos, p.state.facing);
+        // A body that will rise keeps on what it wears: it gets up in it, and its clothes are
+        // taken off it once it is put down (`crate::corpses`), not picked off the floor too.
+        let rises = p.health.rise_in.is_some();
+        let worn = if rises { std::mem::take(&mut p.inventory.worn) } else { Vec::new() };
         let all = p.inventory.take_all();
+        p.inventory.worn = worn;
         p.open = None;
         p.jobs.clear();
         let seed = self.config.seed();
@@ -1784,7 +1803,7 @@ mod tests {
         let (mut w, id) = field();
         let def = w.config.containers.lookup("fridge", "kitchen").unwrap();
         // A 2 x 1 fridge east of the player, its west edge at x = 62.
-        w.sites.push(ContainerSite { id: 7, def, building: 0, room: 0, min: IVec2::new(62, 60), size: IVec2::new(2, 1) });
+        w.sites.push(ContainerSite { id: 7, def, building: 0, room: 0, min: IVec2::new(62, 60), size: IVec2::new(2, 1), body: None });
         let at = |w: &mut World, x: f32| {
             w.players[0].state.pos = Vec2::new(x, 60.5);
             w.players[0].jobs.clear();
@@ -1825,9 +1844,9 @@ mod tests {
         let def = w.config.containers.lookup("counter", "kitchen").unwrap();
         // Player at (60.5, 60.5): one cupboard south-west (0.71 m to its corner), one east
         // (0.5 m), one further east behind it (1.5 m, in reach).
-        w.sites.push(ContainerSite { id: 1, def, building: 0, room: 0, min: IVec2::new(59, 61), size: IVec2::ONE });
-        w.sites.push(ContainerSite { id: 2, def, building: 0, room: 0, min: IVec2::new(61, 60), size: IVec2::ONE });
-        w.sites.push(ContainerSite { id: 3, def, building: 0, room: 0, min: IVec2::new(62, 59), size: IVec2::new(1, 3) });
+        w.sites.push(ContainerSite { id: 1, def, building: 0, room: 0, min: IVec2::new(59, 61), size: IVec2::ONE, body: None });
+        w.sites.push(ContainerSite { id: 2, def, building: 0, room: 0, min: IVec2::new(61, 60), size: IVec2::ONE, body: None });
+        w.sites.push(ContainerSite { id: 3, def, building: 0, room: 0, min: IVec2::new(62, 59), size: IVec2::new(1, 3), body: None });
         w.players[0].state.facing = 0.0; // east
         assert_eq!(w.container_in_reach(id), Some(2), "the nearest of those ahead");
         w.players[0].state.facing = std::f32::consts::PI; // west: nothing ahead within 60 degrees but #1 (south-west, 45)

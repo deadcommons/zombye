@@ -160,6 +160,11 @@ pub struct JoinInfo {
     pub carry: zombye_sim::CarryTuning,
     /// When E climbs a fence or window (sent only where the server takes one).
     pub climb: zombye_sim::ClimbTuning,
+    /// The world's seed and what zombies wear (`population.ron`'s outfits): with them a zombie's
+    /// outfit is worked out here as the server does (`zombye_sim::corpses::default_look`), for
+    /// drawing the crowd variant that matches it. Snapshots send only the looks that differ.
+    pub seed: u64,
+    pub outfits: Vec<zombye_sim::corpses::Outfit>,
 }
 
 /// The `FixedUpdate` system that ticks the server. Input is sent before it and reconciled after it.
@@ -444,6 +449,8 @@ fn join_info(config: &zombye_sim::WorldConfig, player_id: u32, player_spawn: Vec
         skills: config.skills.clone(),
         carry: config.carry.clone(),
         climb: config.climb.clone(),
+        seed: config.seed(),
+        outfits: config.population.outfits.clone(),
     }
 }
 
