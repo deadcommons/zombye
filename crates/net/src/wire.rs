@@ -59,8 +59,9 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// 18: broken weapons stay as items: `CombatTuning::broken_damage`. 20: blinds: `Intent::Blind`,
 /// `Snapshot::blind_changes`, `Welcome::blinds` and `Welcome::glazed`, `JobKind::Blind`.
 /// 21: right-click actions on things in the world: `Intent::Toward`.
-/// 22: shoves that add up and stomps to the head: the shove and stomp numbers in `CombatTuning`.)
-pub const PROTOCOL: u32 = 22;
+/// 22: player identity (DCM-66): `Hello::key`, `ServerMsg::Challenge` and `ClientMsg::Proof`.
+/// 23: shoves that add up and stomps to the head: the shove and stomp numbers in `CombatTuning`.)
+pub const PROTOCOL: u32 = 23;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -91,6 +92,9 @@ pub enum ClientMsg {
     /// [`ServerMsg::Mod`] for each, in the order asked, or one [`ServerMsg::Refused`], and the
     /// connection is closed: nobody joins.
     Fetch(Fetch),
+    /// The answer to [`ServerMsg::Challenge`] (DCM-66): the challenge and the name signed with
+    /// the key the hello named ([`crate::identity::Identity::sign`]).
+    Proof(Vec<u8>),
 }
 
 /// A request for mods a server runs, by the hashes its [`ServerInfo::mods`] named (#24).
@@ -115,6 +119,10 @@ pub struct Hello {
     /// [`Rules::agents`] says whether it may join and whether others are told. It is the client's
     /// own word: an honest agent says so, and a server can't tell one that doesn't.
     pub agent: bool,
+    /// Who this is, for the server (DCM-66): the player's public key, made once per install. Its
+    /// survivors and any ban go by it, not by `name`; the hello is answered with a
+    /// [`ServerMsg::Challenge`] the key must sign before anything else.
+    pub key: crate::identity::Key,
 }
 
 /// Server to client.
@@ -131,6 +139,9 @@ pub enum ServerMsg {
     Info(Box<ServerInfo>),
     /// One of the mods a [`ClientMsg::Fetch`] asked for: its data, never its scripts (#24).
     Mod(Box<crate::modpack::ModPack>),
+    /// The answer to a hello (DCM-66): sign this with the hello's key ([`ClientMsg::Proof`]),
+    /// then the hello is let in or refused.
+    Challenge(crate::identity::Nonce),
 }
 
 /// What a server says of itself to anyone who asks, before joining (#69: the server browser's row).

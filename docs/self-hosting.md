@@ -27,7 +27,7 @@ game data as the server: one that differs is refused with a message saying what 
 
 - **`/data`** (the `zombye-data` volume) is the server's folder: `server.ron` (the config, written
   with the defaults on the first start), `world.zsave` (the world) and `world.zsave.players` (whose
-  survivor is whose). Back up the two `world.zsave*` files together.
+  survivor is whose, by each player's key). Back up the two `world.zsave*` files together.
 - **Change a setting:** edit `server.ron` in the volume and `docker restart zombye`, or pass flags
   after the image name; a flag wins over the file:
   `docker run ... zombye-server --config /data/server.ron --max-players 8 --pvp off`.

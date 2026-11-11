@@ -505,7 +505,10 @@ fn server_content(addr: &str, options: &Options, base: &zombye_sim::WorldConfig,
 fn join_remote(app: &mut App, addr: &str, options: &Options, content: &zombye_sim::WorldConfig, mods: String) -> Result<(), String> {
     // A client that plays by itself says so (`--agent`, and `--autoplay`, which is one): the
     // server's rules may refuse agents, or mark them to the other players (#69).
-    let mut remote = Remote::connect_as(addr, &options.name, &options.password, options.agent || options.autoplay, Duration::from_secs(10))?;
+    // Who we are on servers (DCM-66): a key made once and kept in the saves folder beside
+    // settings.ron. Our survivors there are that key's, whatever name we join under.
+    let identity = zombye_net::identity::Identity::load_or_create(&options.saves.join(zombye_net::identity::FILE))?;
+    let mut remote = Remote::connect_with(addr, &options.name, &options.password, options.agent || options.autoplay, &identity, Duration::from_secs(10))?;
     // The camera is a server rule (docs/PLAN.md §5), and this client has only the isometric one.
     if remote.welcome.rules.camera != zombye_net::wire::Camera::Isometric {
         return Err(format!("{} is first person only, and this version of the game has no first-person camera yet", remote.welcome.rules.name));

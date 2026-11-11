@@ -2004,11 +2004,22 @@ snapshots over the network: `zombye-server --host` serves a world and `zombye --
   (`World::map_base_hash`) against the server's, and applies the doors and windows changed since
   (`World::map_edits_now`) and every cracked one. Other game data, or another version's generator: refused, saying what
   differs.
-- **Who is who:** a name (at most 24 letters; none given: `survivor-N`). A name whose survivor nobody is playing takes
-  that survivor up again (in the world or out of it, see Logging out), dead or alive: back to a dead one, its player
-  sees how it ended and starts a new one with R. With `--save PATH` the names are kept in `PATH.players` (`id<TAB>name` a
-  line), so survivors are their players' again after a restart. Names aren't accounts: anyone who knows a name that
-  isn't playing can take its survivor (accounts are with #69).
+- **Who is who** (DCM-66, `net::identity`): each game install makes an Ed25519 key pair the first time it joins a
+  server, kept in the saves folder beside `settings.ron` (`identity.key`, the secret seed in hex, readable by the user
+  alone; a damaged one is an error, never silently replaced). The hello names the public key (`Hello::key`); the
+  server answers with a fresh challenge (`ServerMsg::Challenge`) and lets the hello in only once the key has signed it
+  with the name (`ClientMsg::Proof`, checked in the connection's reading thread before the host sees the hello).
+  **Survivors belong to the key, not the name:** a key takes up the survivor it played before (in the world or out of
+  it, see Logging out; dead or alive: back to a dead one, its player sees how it ended and starts a new one with R),
+  whatever name it joins under now (the name is what others see, and is updated; the log says `was OLDNAME`).
+  Someone else typing your name gets a new survivor of their own; one copy of a key plays at a time. The name is at
+  most 24 letters (none given: `survivor-N`) and two online can't share it. With `--save PATH` whose each survivor
+  is goes in `PATH.players` (`id<TAB>name<TAB>key` a line, the key in hex); a line from before keys (`id<TAB>name`)
+  is taken by the first key that joins under that name. Bans go by the key too (`Ban::key`), so a new name doesn't
+  get round one. Bots and tests join with a key worked out from the name (`Identity::for_name`, `Remote::connect`);
+  the game client uses its own (`Remote::connect_with`). No accounts and no service of ours: any server checks the
+  signature itself, so self-hosting stays free (`wire::PROTOCOL` 22). Tests: `identity::tests`,
+  `net/tests/multiplayer.rs`'s `survivors_and_bans_belong_to_a_key_not_a_name` and `a_hello_without_its_proof_is_refused`.
 - **Clients only act as themselves:** every intent's `player` is overwritten with the sender's (`Intent::player_mut`);
   `Intent::dev_only` ones (the dev toggles, `SpawnItem`, `SetGoal`, `SpawnZombies`, `SkipTime`, `MakeNoise`) are
   dropped unless `--allow-dev` (`HostStats::refused_dev`). `Respawn` (R on the death screen: "a new survivor") gets a
@@ -2279,7 +2290,7 @@ own, time paused between calls) and shares no tools with it but a few read-only 
   zombies by tier, bytes, joins / leaves / refusals, the rules, the save and when it was written, bans, the newest
   log line), `players` (JSON: `online` with id, name, address, seconds on, position and room, HP, dead, kills, KB/s,
   zombies in view, view lag; `offline` survivors; `bans`), `kick {player | name, reason, ban}` (`Host::kick`: the
-  client gets "kicked: REASON" and is dropped, its survivor left as when anyone leaves (the logout rules); `ban: true` also refuses the name, and the address
+  client gets "kicked: REASON" and is dropped, its survivor left as when anyone leaves (the logout rules); `ban: true` also refuses the name and the player's key (DCM-66), and the address
   unless it is loopback, until `unban {name}`: `Host::ban`, checked before anything else in `Host::hello`; bans last
   until the server restarts), `save {name}` (no name: the `--save` file, as the autosave; a name: that file in the
   saves folder; `PATH.players` beside it either way) and `saves`, `settings {...}` (no arguments: shows them as JSON;
