@@ -167,6 +167,27 @@ pub fn body_edges(map: &TileMap, pos: Vec2, camera_dir: Vec3, mut found: impl Fn
     }
 }
 
+/// The open or broken window a body at `pos` is climbing through (within `CLIMB_ZONE` of it, as
+/// `TileMap::window_opening`), as the edge that owns it.
+pub fn crossed_window(map: &TileMap, pos: Vec2) -> Option<EdgeKey> {
+    use zombye_sim::map::CLIMB_ZONE;
+    let t = pos.floor().as_ivec2();
+    let f = pos - t.as_vec2();
+    [
+        (f.y, t, OwnedEdge::North),
+        (f.x, t, OwnedEdge::West),
+        (1.0 - f.y, t + IVec2::Y, OwnedEdge::North),
+        (1.0 - f.x, t + IVec2::X, OwnedEdge::West),
+    ]
+    .into_iter()
+    .find(|&(d, owner, which)| {
+        let tile = map.tile(owner);
+        let e = if which == OwnedEdge::North { tile.north } else { tile.west };
+        d < CLIMB_ZONE && e.is_window() && e.is_climbable()
+    })
+    .map(|(_, owner, which)| (owner, which))
+}
+
 /// Is a body at `pos` covered from the camera by the bulk of a building other than `inside` (whose
 /// roof and upper storeys are hidden): its roof or an upper storey? Walls alone don't count: the
 /// ones that cover the body drop. Walked along the line from the body toward the camera for as
@@ -252,6 +273,9 @@ pub struct Cutaway {
     /// The walls covering the body, this frame and last.
     body: Vec<EdgeKey>,
     body_was: Vec<EdgeKey>,
+    /// The window the player is climbing through: it stays whole whatever else would cut it, so the
+    /// frame he hauls himself over doesn't sink away under him.
+    keep: Option<EdgeKey>,
     /// Nothing decided yet: the first decision is taken at once, not eased (a picture of a save).
     fresh: bool,
 }
@@ -269,6 +293,7 @@ impl Cutaway {
             room_for: None,
             body: Vec::with_capacity(16),
             body_was: Vec::with_capacity(16),
+            keep: None,
             fresh: true,
         }
     }
@@ -299,6 +324,9 @@ impl Cutaway {
         }
         for i in 0..self.room.len() + self.body.len() {
             let key = if i < self.room.len() { self.room[i] } else { self.body[i - self.room.len()] };
+            if Some(key) == self.keep {
+                continue;
+            }
             match self.moving.iter_mut().find(|m| m.key == key) {
                 Some(m) => m.wanted = true,
                 None => self.moving.push(Moving { key, amount: 0.0, wanted: true }),
@@ -341,11 +369,15 @@ impl Cutaway {
         let body = &mut self.body;
         body_edges(map, pos, camera_dir, |key| body.push(key));
         changed |= self.body != self.body_was;
+        let keep = crossed_window(map, pos);
+        changed |= keep != self.keep;
+        self.keep = keep;
         if changed {
             self.retarget();
         }
         // Still covered: by a roof or an upper storey, or by a wall that would have dropped.
-        self.occluded = bulk_hides(map, pos, camera_dir, inside) || (self.walls_up && !self.body.is_empty());
+        let kept_covers = keep.is_some_and(|k| self.body.contains(&k));
+        self.occluded = bulk_hides(map, pos, camera_dir, inside) || (self.walls_up && !self.body.is_empty()) || kept_covers;
         let step = if self.fresh { 1.0 } else { dt / EASE_SECS };
         self.fresh = false;
         self.ease(step)
@@ -600,6 +632,24 @@ pub(crate) mod tests {
         // but 12 m away the line passes over A.
         assert!(bulk_hides(&map, Vec2::new(25.0, 5.0), camera(0), None));
         assert!(!bulk_hides(&map, Vec2::new(1.5, 1.5), camera(0), None));
+    }
+
+    /// The window the player is climbing through stays whole while the rest of its wall drops, on
+    /// either side of it, and stands with the rest once he is through.
+    #[test]
+    fn the_window_being_climbed_through_stays_whole() {
+        let mut map = town();
+        map.set_edge(IVec2::new(12, 16), Side::N, Edge::WindowOpen);
+        let window = (IVec2::new(12, 16), N);
+        assert_eq!(crossed_window(&map, Vec2::new(12.5, 16.2)), Some(window));
+        assert_eq!(crossed_window(&map, Vec2::new(12.5, 15.8)), Some(window));
+        assert_eq!(crossed_window(&map, Vec2::new(12.5, 15.5)), None);
+        let mut cut = Cutaway::new(Handle::default(), false);
+        cut.update(&map, Vec2::new(12.5, 15.8), camera(0), 0.016);
+        assert_eq!(cut.amount(window), 0.0);
+        assert_eq!(cut.amount((IVec2::new(13, 16), N)), 1.0);
+        cut.update(&map, Vec2::new(12.5, 15.0), camera(0), 1.0);
+        assert_eq!(cut.amount(window), 1.0);
     }
 
     /// The state: edges ease down over `EASE_SECS` and up again, the first decision is at once,
