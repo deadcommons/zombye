@@ -1193,6 +1193,16 @@ fn action(kind: ActionKind, style: Style, armed: bool, u: f32, ready: &SPose) ->
             kick.rot[TORSO] = rx(-0.03);
             keyed(&[(0.0, ready.clone()), (U_HIT * 0.6, level.clone()), (U_HIT, level), (0.56, kick), (1.0, ready)], u)
         }
+        (ActionKind::Shove, style) if armed && style != Style::Gun => {
+            // A melee weapon in hand: held across the chest in both hands like a bar (turned a
+            // quarter in the right hand so it lies level, pointing to his left, through the left
+            // hand) and driven straight out from the body.
+            let bar = rz(FRAC_PI_2);
+            let gather = upper(rx(-0.05), q, rz(-0.18) * rx(-0.55), rx(-1.75), rz(0.18) * rx(-0.55), rx(-1.75), bar);
+            let push = upper(rx(0.3), rx(-0.15), rz(-0.2) * rx(-1.4), rx(-0.15), rz(0.2) * rx(-1.4), rx(-0.15), bar);
+            let hold = upper(rx(0.22), rx(-0.1), rz(-0.18) * rx(-1.3), rx(-0.35), rz(0.18) * rx(-1.3), rx(-0.35), bar);
+            keyed(&[(0.0, ready.clone()), (0.25, gather), (U_HIT, push.clone()), (0.62, hold), (1.0, ready)], u)
+        }
         (ActionKind::Shove, _) => {
             let hand = if armed { rx(0.3) } else { q };
             let gather = upper(rx(-0.05), q, rz(-0.1) * rx(-0.6), rx(-1.8), rz(0.1) * rx(-0.6), rx(-1.8), hand);

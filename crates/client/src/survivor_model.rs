@@ -106,8 +106,9 @@ struct Gait {
 /// thrust (`stab`) and the blow down at a zombie on the ground with a weapon in hand, one-handed
 /// (`ground_one`) and two-handed (`ground_two`); bare hands stomp. A body without one plays the
 /// clip it stands in for ([`action_clips`]).
-const ACTION_CLIPS: [&str; 11] = [
+const ACTION_CLIPS: [&str; 12] = [
     "punch", "swing_one", "swing_two", "shot", "shove", "stomp", "swing_one_b", "swing_two_b", "stab", "ground_one", "ground_two",
+    "shove_armed",
 ];
 
 /// More clips a body can carry, each played instead of nothing or of a grey-box pose: `hurt` (a blow
@@ -150,6 +151,9 @@ fn action_clips(kind: zombye_sim::ActionKind, category: WeaponCategory, n: u32) 
         (Swing, Style::TwoHand) if other => &[7, 2],
         (Swing, Style::TwoHand) => &[2],
         (Swing, Style::Gun) => &[3],
+        // With a melee weapon in hand the shove is the weapon held across the body like a bar and
+        // driven out: the body's `shove_armed`, else the grey-box's pose (never the hands' `shove`).
+        (Shove, Style::OneHand | Style::TwoHand) => &[11],
         (Shove, _) => &[4],
         (Stomp, Style::OneHand) => &[9, 5],
         (Stomp, Style::TwoHand) => &[10, 5],
@@ -1253,6 +1257,9 @@ mod tests {
         assert_eq!(name(Stomp, WeaponCategory::Unarmed, 1), ["stomp"]);
         assert_eq!(name(Stomp, WeaponCategory::ShortBlunt, 1), ["ground_one", "stomp"]);
         assert_eq!(name(Stomp, WeaponCategory::Axe, 1), ["ground_two", "stomp"]);
+        assert_eq!(name(Shove, WeaponCategory::Unarmed, 1), ["shove"]);
+        assert_eq!(name(Shove, WeaponCategory::LongBlunt, 1), ["shove_armed"]);
+        assert_eq!(name(Shove, WeaponCategory::ShortBlade, 1), ["shove_armed"]);
         // Both two-handed swings turn up, not in a strict alternation.
         let b: Vec<bool> = (0..40).map(|n| name(Swing, WeaponCategory::LongBlunt, n)[0] == "swing_two_b").collect();
         assert!(b.iter().filter(|x| **x).count() > 10 && b.iter().filter(|x| !**x).count() > 10);
