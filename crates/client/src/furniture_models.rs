@@ -75,6 +75,29 @@ impl FurnitureModels {
         self.0.get(kind).map(|m| m.tris.len())
     }
 
+    /// For checking a folder of models: each one's name, triangles, how many of them are foliage,
+    /// its size (x, y up, z) and the mean of its colours.
+    #[cfg(test)]
+    pub fn report(&self) -> Vec<(String, usize, usize, Vec3, Vec3)> {
+        let mut out: Vec<_> = self
+            .0
+            .iter()
+            .map(|(k, m)| {
+                let (mut lo, mut hi, mut c) = (Vec3::MAX, Vec3::MIN, Vec3::ZERO);
+                for (p, _, col, _) in &m.tris {
+                    for p in p {
+                        lo = lo.min(*p);
+                        hi = hi.max(*p);
+                    }
+                    c += Vec3::new(col.red, col.green, col.blue);
+                }
+                (k.clone(), m.tris.len(), m.tris.iter().filter(|t| t.3).count(), hi - lo, c / m.tris.len().max(1) as f32)
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
     /// The model for `kind` as a mesh of its own (positions, normals, a colour a vertex), for things
     /// drawn as entities and not merged into a chunk: items on the floor.
     pub fn mesh(&self, kind: &str) -> Option<Mesh> {

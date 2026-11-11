@@ -89,6 +89,29 @@ pub fn load_into(overlay: Option<&Path>, models: &mut FurnitureModels) -> usize 
 mod tests {
     use super::*;
 
+    /// Checks a real release folder (`ZOMBYE_RELEASE_MODELS`): every file reads, trees have a trunk
+    /// and foliage and stand on the origin, items are item-sized. Prints each model.
+    #[test]
+    #[ignore]
+    fn check_the_release_folder() {
+        let dir = PathBuf::from(std::env::var_os("ZOMBYE_RELEASE_MODELS").expect("set ZOMBYE_RELEASE_MODELS"));
+        for sub in ["furniture", "street", "trees", "items"] {
+            let files = std::fs::read_dir(dir.join(sub)).map(|d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "glb")).count()).unwrap_or(0);
+            let models = FurnitureModels::load(&dir.join(sub));
+            assert_eq!(models.len(), files, "{sub}: a file didn't read");
+            for (name, tris, leaves, size, colour) in models.report() {
+                println!("{sub}/{name}: {tris} triangles ({leaves} foliage), {:.2} x {:.2} x {:.2} m, colour {:.2} {:.2} {:.2}", size.x, size.z, size.y, colour.x, colour.y, colour.z);
+                assert!(tris > 0 && size.is_finite(), "{sub}/{name}");
+                assert!(colour.min_element() >= 0.0 && colour.max_element() <= 1.01, "{sub}/{name}: colours");
+                match sub {
+                    "trees" => assert!(leaves > 0 && (leaves < tris || name.starts_with("bush")) && size.y > 0.5, "{sub}/{name}: trunk and foliage"),
+                    "items" => assert!(size.max_element() <= 1.2 && leaves == 0, "{sub}/{name}: item-sized"),
+                    _ => assert!(size.y <= 4.5 && leaves == 0, "{sub}/{name}"),
+                }
+            }
+        }
+    }
+
     #[test]
     fn the_release_folder_replaces_and_adds_models_by_name() {
         let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/models");

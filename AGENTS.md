@@ -64,14 +64,22 @@ or Meshy (from an approved reference through four review gates the owner approve
 the sizes they all share: storey 3.0 m, walls 0.16 m, doors 1 × 2.1 m, window sill 0.9 m and head 2.1 m,
 and the rest. Change a building number in the code, change it there too.
 
-**Release models** (`release_models.rs`): furniture and street prop models from bought asset packs, whose licence
-allows them only embedded in a game, are never in this repo. They live in the art repo's `release-models/`
-(`furniture/<kind>.glb`, `street/<model>.glb`: models as `furniture_models.rs` reads them, named as the one they
-replace), and release builds carry that folder: the client reads `$ZOMBYE_RELEASE_MODELS`, else `release-models`
-beside its binary, and each model there replaces the game's of the same name (stdout says how many were read);
-`ZOMBYE_EXTRA_MODELS` still goes over both. Without it the game draws this repo's models. A model's colours are its
-materials' base colours times its vertex colours (`COLOR_0`; textures aren't read), so one painted from a texture
-atlas is exported with the atlas's colours on its vertices.
+**Release models** (`release_models.rs`): models from bought asset packs, whose licence allows them only embedded
+in a game, are never in this repo. They live in the art repo's `release-models/` and release builds carry that
+folder: the client reads `$ZOMBYE_RELEASE_MODELS`, else `release-models` beside its binary (stdout says what was
+read). `furniture/<kind>.glb` and `street/<model>.glb` (models as `furniture_models.rs` reads them, named as the one
+they replace; a street prop kind this repo has no model for is a grey-box without them) replace the game's of the
+same name; `ZOMBYE_EXTRA_MODELS` still goes over both. `trees/<kind>.glb` (`broadleaf`, `birch`, `pine`, `spruce`,
+`bush`: the foot at the origin, foliage the triangles of a material named `leaves`, so it fades over the player as
+generated foliage does) stands in for the generated tree or bush of that kind, scaled to its height
+(`meshgen/trees.rs`, `FurnitureModels::add_standing`). `items/<item id>.glb` is drawn for that item lying on the
+ground, at its own size, in place of its grey-box (`items_render.rs`). **Variants:** `<name>.2.glb`, `<name>.3.glb`,
+... (numbered without a gap) beside any of them are other looks of the same thing, one picked per place by a hash of
+where it stands (`FurnitureModels::pick`), so a town's sofas and trees differ and stay the same between runs.
+Without the folder the game draws this repo's models and generated trees. A model's colours are its materials' base
+colours times its vertex colours (`COLOR_0`; textures aren't read), so one painted from a texture atlas is exported
+with the atlas's colours on its vertices. `check_the_release_folder` (an ignored test in `release_models.rs`) reads
+a folder and checks every file.
 
 ## Remote machines
 
@@ -414,8 +422,8 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   tile edges stop where a curve takes over (`Curves::kerb_span`), and curved kerbs, grit, ring joints and bend
   centre lines are drawn by the chunk each stretch's middle is in. Cost: chunk building about 0.24 ms (0.22 without
   curves; `chunk_build_time`, an ignored test, times every chunk of the default map), frames the same.
-- **Street props (#61, `sim::street_props`, `assets/data/street_props.ron`):** mailboxes, fire hydrants and bins
-  that the generator puts outside. The file lists the kinds (`id`; `model`, the model drawn (`assets/models/street/<model>.glb`, built in Blender: mailbox, fire_hydrant, trash_can), the id when
+- **Street props (#61, `sim::street_props`, `assets/data/street_props.ron`):** mailboxes, fire hydrants, bins,
+  street lamps and what stands in front of shops, which the generator puts outside. The file lists the kinds (`id`; `model`, the model drawn (`assets/models/street/<model>.glb`, built in Blender: mailbox, fire_hydrant, trash_can; the other kinds have none here and are grey-boxes unless the release models hold one), the id when
   left out; grey-box `size` and `color`; `blocks`, default true; `radius`, how far a body is kept from its middle,
   default half its larger side, at most 0.5) and the rules, applied in order: `GardenPath` (on the lawn beside the
   street end of a house's garden path, facing the street; `chance` per house), `HouseKerb` (at the kerb 2-3 m to one

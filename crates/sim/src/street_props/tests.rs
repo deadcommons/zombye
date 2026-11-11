@@ -44,8 +44,8 @@ fn reachable(g: &Generated) -> Vec<bool> {
 #[test]
 fn the_shipped_file_parses_and_unknown_fields_are_refused() {
     let def = shipped();
-    assert_eq!(def.kinds.len(), 3);
-    assert!(def.kinds.iter().all(|k| k.blocks));
+    assert_eq!(def.kinds.len(), 12);
+    assert!(def.kinds.iter().all(|k| k.blocks || k.id == "trash_bag"));
     assert!((def.kinds[0].radius() - 0.2).abs() < 1e-6 && (def.kinds[2].radius() - 0.33).abs() < 1e-6);
     assert!(parse_street_props("(kinds: [], extra: 1)").is_err());
     assert!(parse_street_props("(kinds: [(id: \"x\", size: (0.5, 0.5, 0.0), color: (0.0, 0.0, 0.0))])").unwrap_err().contains("size"));
@@ -84,7 +84,9 @@ fn placement_is_deterministic_and_only_adds_props() {
         assert!((w[0].tile.y, w[0].tile.x) < (w[1].tile.y, w[1].tile.x));
     }
     for p in &a.map.street_props {
-        assert_eq!(a.map.tile(p.tile).feature, Feature::StreetProp);
+        if a.map.prop_kinds[p.kind as usize].blocks {
+            assert_eq!(a.map.tile(p.tile).feature, Feature::StreetProp);
+        }
         assert_eq!(a.map.street_prop(p.tile), Some(p));
     }
 }
