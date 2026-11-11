@@ -12,8 +12,8 @@
 //!
 //! **Filling it:** weapons and lights go onto the first free slot by themselves when they first
 //! come into your hands or bags ([`Hotbar::auto_fill`]). With the inventory open, point at an item
-//! and press 1-9 to put it on that slot (the same key again takes it off; an item already on
-//! another slot swaps with it). Right-click a slot to empty it. While an item's right-click menu is
+//! and press Shift and 1-9 to put it on that slot (1-9 alone still does the slot's thing; the same
+//! key again takes it off; an item already on another slot swaps with it). Right-click a slot to empty it. While an item's right-click menu is
 //! up the number keys are the menu's, and while the search box has the keys they type.
 //!
 //! The slots are kept between sessions in the client settings file (`settings.ron`,
@@ -310,8 +310,10 @@ fn keys(
             keep(&bar, &mut store);
         }
     }
-    // A number over an inventory row puts its item on that slot.
-    if let (Some(k), true, Some(item)) = (key, panel.open, hovered.item(&rows))
+    // Shift and a number over an inventory row puts its item on that slot. (Not a number alone:
+    // the panel is open a lot, after every search, and a number there must still equip.)
+    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    if let (Some(k), true, true, Some(item)) = (key, shift, panel.open, hovered.item(&rows))
         && let Some(def) = join.items.get(item as usize)
     {
         say(bar.assign(k, &def.id, &def.name));
@@ -404,6 +406,7 @@ fn rebuild(mut commands: Commands, bar: Res<Hotbar>, link: Res<ServerLink>, join
 mod tests {
     use super::*;
     use zombye_sim::ItemStack;
+    use crate::server_link::ServerLink;
 
     fn items() -> Vec<ItemDef> {
         zombye_net::content::load_config(&zombye_net::content::default_data_dir(), 1).expect("game data").items
@@ -524,5 +527,63 @@ mod tests {
         assert_eq!(bar.slots.iter().flatten().filter(|s| *s == "same").count(), 1);
         assert_eq!(bar.slots[8].as_deref(), Some("i8"));
         assert_eq!(Hotbar::parse("").ids(), Vec::<Option<String>>::new());
+    }
+
+    /// The whole way round, as in the game: a weapon in the bags, its key pressed, and it ends up
+    /// in the hand on the server.
+    #[test]
+    fn a_number_key_puts_the_weapon_in_hand() {
+        let (mut link, id) = ServerLink::for_test();
+        let join = link.join_info_for_test(id);
+        let pos = Vec2::from(link.world().unwrap().player(id).unwrap().state.pos.to_array());
+        // A bat picked up (into the hand), then a knife (into the hand, the bat into the bags).
+        for item in ["baseball_bat", "kitchen_knife"] {
+            link.send(Intent::SpawnItem { item: item.into(), count: 1, pos: pos.to_array() });
+            link.send(Intent::PickUp { player: id });
+            link.step_for_test();
+        }
+        let bat = join.items.iter().position(|d| d.id == "baseball_bat").unwrap() as u16;
+        let inv = &link.own(id).expect("our private view").inventory;
+        assert!(inv.carried.iter().any(|s| s.item == bat), "the bat is in the bags: {inv:?}");
+        let mut app = App::new();
+        app.insert_resource(Time::<()>::default())
+            .init_resource::<ButtonInput<KeyCode>>()
+            .insert_resource(link)
+            .insert_resource(join)
+            .insert_resource(LocalPlayer::for_test(id, pos))
+            .init_resource::<crate::inventory_ui::InventoryPanel>()
+            .init_resource::<crate::inventory_ui::ItemMenu>()
+            .init_resource::<crate::inventory_ui::HoveredItem>()
+            .init_resource::<crate::health_ui::HealthPanel>()
+            .add_plugins(HotbarPlugin);
+        app.update();
+        let k = app.world().resource::<Hotbar>().slot_of("baseball_bat").expect("the bat took a slot by itself");
+        // The inventory open (it opens after every search) with the pointer on the bat's row.
+        let row = app.world_mut().spawn(Node::default()).id();
+        app.world_mut().resource_mut::<crate::inventory_ui::InventoryPanel>().open = true;
+        app.world_mut().resource_mut::<crate::inventory_ui::HoveredItem>().0 = Some((row, bat));
+        let press = |app: &mut App, keys: &[KeyCode]| {
+            for &key in keys {
+                app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(key);
+            }
+            app.update();
+            let mut input = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            input.release_all();
+            input.clear();
+        };
+        // Shift and another number puts it on that slot; it stays in the bags.
+        let other = (k + 4) % SLOTS;
+        press(&mut app, &[KeyCode::ShiftLeft, DIGITS[other]]);
+        assert_eq!(app.world().resource::<Hotbar>().slot_of("baseball_bat"), Some(other));
+        // Its number alone, over the row, takes it in hand.
+        press(&mut app, &[DIGITS[other]]);
+        assert_eq!(app.world().resource::<Hotbar>().slot_of("baseball_bat"), Some(other), "a number alone doesn't change the bar");
+        for _ in 0..20 {
+            app.world_mut().resource_mut::<ServerLink>().step_for_test();
+            app.update();
+        }
+        let link = app.world().resource::<ServerLink>();
+        let hand = link.own(id).and_then(|v| v.inventory.hand);
+        assert_eq!(hand.map(|s| s.item), Some(bat), "key {} put the bat in hand", other + 1);
     }
 }

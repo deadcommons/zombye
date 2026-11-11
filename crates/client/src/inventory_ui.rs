@@ -1881,8 +1881,8 @@ impl ItemMenu {
     }
 }
 
-/// The item of the inventory row the pointer is over (and the row), for the hotbar: a number key
-/// over a row puts that item on that slot (`hotbar.rs`).
+/// The item of the inventory row the pointer is over (and the row), for the hotbar: Shift and a
+/// number key over a row puts that item on that slot (`hotbar.rs`).
 #[derive(Resource, Default)]
 pub struct HoveredItem(pub Option<(Entity, u16)>);
 

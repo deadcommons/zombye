@@ -99,6 +99,13 @@ pub struct OwnSwing {
 }
 
 impl LocalPlayer {
+    /// Tests: player `id`, standing at `pos`, alive.
+    #[cfg(test)]
+    pub fn for_test(id: u32, pos: Vec2) -> Self {
+        let state = PlayerState::new(pos);
+        Self { id, seq: 0, pending: VecDeque::new(), prev: state, curr: state, sneak: false, aim: 0.0, aiming: false, pitch: 0.0, sent_pitch: 0.0, last_snapshot_tick: 0, hp: 100.0, dead: false, weapon: None, action: None, dev: DevFlags::default(), swing: None }
+    }
+
     /// How far behind our own survivor the picture of everything else is, in seconds: the inputs
     /// we have sent that `view` (our player in the snapshot shown) hasn't applied yet. 0 in
     /// single-player, where the world is in step with us.

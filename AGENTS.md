@@ -234,7 +234,7 @@ dressing or antiseptic opens the health panel to pick the wound. A slot shows it
 how many you have in your hands and bags; the one in your hand is outlined, one you don't carry dimmed (its key says
 "no flashlight on you"). Weapons and lights take the first free slot by themselves when they first come into your
 hands or bags (`Hotbar::auto_fill`; one taken off the bar stays off while you keep carrying it). With the inventory
-open, point at a row and press 1-9 to put that item on that slot (the same key again takes it off, an item already on
+open, point at a row and press Shift and 1-9 to put that item on that slot (1-9 alone still does the slot's thing, since the panel opens after every search; the same key again takes it off, an item already on
 another slot swaps with it; `inventory_ui::HoveredItem`); right-click a slot to empty it. While an item's right-click
 menu is up the number keys are the menu's, and Ctrl / Cmd with a number is never the hotbar's. The slots are kept in
 `settings.ron` (`ClientSettings::hotbar`). `--hotbar ID,ID,...` (`-` an empty slot) sets them for a session (pictures:

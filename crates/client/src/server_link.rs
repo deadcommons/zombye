@@ -577,6 +577,23 @@ impl ServerLink {
         (Self { server: Backend::Local(server), net: None, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3], private, heard: Vec::new(), speech: Vec::new(), everyone: Vec::new() }, id)
     }
 
+    /// Tests: what a client joining as `player` keeps of the world's config.
+    #[cfg(test)]
+    pub fn join_info_for_test(&self, player: u32) -> JoinInfo {
+        let Backend::Local(server) = &self.server else { panic!("a local world") };
+        join_info(&server.world.config, player, server.world.player_spawn)
+    }
+
+    /// Tests: one tick of the world in this process, taken up as `tick_server` does (snapshots,
+    /// private views).
+    #[cfg(test)]
+    pub fn step_for_test(&mut self) {
+        let Backend::Local(server) = &mut self.server else { panic!("a local world") };
+        let snap = server.tick();
+        self.keep_private(&snap.private);
+        self.prev = std::mem::replace(&mut self.curr, snap);
+    }
+
     /// Tests: another player joins the world in this process at `at`.
     #[cfg(test)]
     pub fn join_for_test(&mut self, at: [f32; 2]) -> u32 {
