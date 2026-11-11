@@ -12,6 +12,10 @@
 //! `ZOMBYE_EXTRA_MODELS` (folders separated by `:`) adds GLBs that aren't in the game yet, replacing
 //! any of the same kind: a work-in-progress asset's `export/` folder in the art repo, to check it in
 //! game before it's promoted. The MCP server passes its environment on to the `screenshot` client.
+//!
+//! A material's base colour is a triangle's colour, times the mean of its corners' vertex colours
+//! (`COLOR_0`) where the model has them. Textures aren't read. Release builds put models from the
+//! private art repo over these (`release_models.rs`).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -58,6 +62,11 @@ impl FurnitureModels {
 
     pub fn len(&self) -> usize {
         self.0.len()
+    }
+
+    /// How many triangles the model for `kind` has, if there is one.
+    pub fn triangles(&self, kind: &str) -> Option<usize> {
+        self.0.get(kind).map(|m| m.tris.len())
     }
 
     /// Adds the model for `kind` filling the tile rectangle (`min`, `size` in metres) and turned to
@@ -140,6 +149,9 @@ fn parse_glb(bytes: &[u8]) -> Result<FurnitureModel, String> {
                 Some(n) => n.map(|n| tf.transform_vector3(Vec3::from(n)).normalize_or_zero()).collect(),
                 None => return Err("a primitive without normals".into()),
             };
+            // Vertex colours, where a model has them (one painted from a texture atlas): a triangle
+            // takes the mean of its corners', times the material's colour.
+            let tint: Option<Vec<[f32; 4]>> = reader.read_colors(0).map(|c| c.into_rgba_f32().collect());
             let idx: Vec<u32> = match reader.read_indices() {
                 Some(i) => i.into_u32().collect(),
                 None => (0..pos.len() as u32).collect(),
@@ -149,6 +161,13 @@ fn parse_glb(bytes: &[u8]) -> Result<FurnitureModel, String> {
                 if a.max(b).max(c) >= pos.len() {
                     return Err("index out of range".into());
                 }
+                let color = match &tint {
+                    Some(t) if a.max(b).max(c) < t.len() => {
+                        let m = (Vec4::from(t[a]) + Vec4::from(t[b]) + Vec4::from(t[c])) / 3.0;
+                        LinearRgba::new(color.red * m.x, color.green * m.y, color.blue * m.z, 1.0)
+                    }
+                    _ => color,
+                };
                 tris.push(([pos[a], pos[b], pos[c]], [nrm[a], nrm[b], nrm[c]], color));
             }
         }
@@ -170,6 +189,48 @@ mod tests {
 
     fn models() -> FurnitureModels {
         FurnitureModels::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/models/furniture"))
+    }
+
+    /// One triangle with a colour on each corner, as a GLB.
+    fn painted_triangle(base: [f32; 4], corners: [[f32; 4]; 3]) -> Vec<u8> {
+        let mut bin: Vec<u8> = Vec::new();
+        let f = |bin: &mut Vec<u8>, v: &[f32]| v.iter().for_each(|x| bin.extend_from_slice(&x.to_le_bytes()));
+        f(&mut bin, &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        f(&mut bin, &[0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0]);
+        corners.iter().for_each(|c| f(&mut bin, c));
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0}}],
+            "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"NORMAL":1,"COLOR_0":2}},"material":0}}]}}],
+            "materials":[{{"pbrMetallicRoughness":{{"baseColorFactor":{base:?}}}}}],
+            "buffers":[{{"byteLength":120}}],
+            "bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":36}},{{"buffer":0,"byteOffset":36,"byteLength":36}},{{"buffer":0,"byteOffset":72,"byteLength":48}}],
+            "accessors":[{{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,0,1]}},
+            {{"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"}},{{"bufferView":2,"componentType":5126,"count":3,"type":"VEC4"}}]}}"#
+        );
+        let mut json = json.into_bytes();
+        while json.len() % 4 != 0 {
+            json.push(b' ');
+        }
+        let mut glb = Vec::new();
+        glb.extend_from_slice(b"glTF");
+        glb.extend_from_slice(&2u32.to_le_bytes());
+        glb.extend_from_slice(&((12 + 8 + json.len() + 8 + bin.len()) as u32).to_le_bytes());
+        glb.extend_from_slice(&(json.len() as u32).to_le_bytes());
+        glb.extend_from_slice(b"JSON");
+        glb.extend_from_slice(&json);
+        glb.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+        glb.extend_from_slice(b"BIN\0");
+        glb.extend_from_slice(&bin);
+        glb
+    }
+
+    #[test]
+    fn vertex_colours_tint_the_material() {
+        let glb = painted_triangle([1.0, 0.5, 1.0, 1.0], [[0.9, 0.2, 0.0, 1.0], [0.3, 0.2, 0.0, 1.0], [0.0, 0.2, 0.6, 1.0]]);
+        let m = parse_glb(&glb).unwrap();
+        assert_eq!(m.tris.len(), 1);
+        let c = m.tris[0].2;
+        assert!((c.red - 0.4).abs() < 1e-5 && (c.green - 0.1).abs() < 1e-5 && (c.blue - 0.2).abs() < 1e-5, "{c:?}");
     }
 
     #[test]

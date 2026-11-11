@@ -64,6 +64,15 @@ or Meshy (from an approved reference through four review gates the owner approve
 the sizes they all share: storey 3.0 m, walls 0.16 m, doors 1 × 2.1 m, window sill 0.9 m and head 2.1 m,
 and the rest. Change a building number in the code, change it there too.
 
+**Release models** (`release_models.rs`): furniture and street prop models from bought asset packs, whose licence
+allows them only embedded in a game, are never in this repo. They live in the art repo's `release-models/`
+(`furniture/<kind>.glb`, `street/<model>.glb`: models as `furniture_models.rs` reads them, named as the one they
+replace), and release builds carry that folder: the client reads `$ZOMBYE_RELEASE_MODELS`, else `release-models`
+beside its binary, and each model there replaces the game's of the same name (stdout says how many were read);
+`ZOMBYE_EXTRA_MODELS` still goes over both. Without it the game draws this repo's models. A model's colours are its
+materials' base colours times its vertex colours (`COLOR_0`; textures aren't read), so one painted from a texture
+atlas is exported with the atlas's colours on its vertices.
+
 ## Remote machines
 
 Development can run on two remote Linux machines, driven from Claude on the owner's Mac:

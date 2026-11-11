@@ -74,6 +74,7 @@ mod music;
 mod release_audio;
 mod release_anim;
 mod release_chars;
+mod release_models;
 mod autoplay;
 mod browser_ui;
 mod duel;
