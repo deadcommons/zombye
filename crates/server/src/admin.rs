@@ -259,12 +259,12 @@ fn who(host: &Host, args: &Value, id_key: &str, name_key: &str) -> Result<Option
         return host.world.player(id as u32).map(|p| Some(p.id)).ok_or_else(|| format!("no player {id} (see players)"));
     }
     let Some(name) = args.get(name_key).and_then(Value::as_str) else { return Ok(None) };
-    let found = host.names().iter().find(|(n, _)| n.eq_ignore_ascii_case(name.trim())).map(|(_, id)| *id).filter(|id| host.world.player(*id).is_some());
+    let found = host.player_named(name).filter(|id| host.world.player(*id).is_some());
     found.map(Some).ok_or_else(|| format!("nobody called {name:?} has played here (see players)"))
 }
 
 fn name_of(host: &Host, player: u32) -> String {
-    host.names().iter().find(|(_, id)| **id == player).map_or_else(|| format!("player {player}"), |(n, _)| format!("{n} (player {player})"))
+    host.name_of(player).map_or_else(|| format!("player {player}"), |n| format!("{n} (player {player})"))
 }
 
 /// The place an event is for: `x` and `y`, else where the player named stands.
@@ -380,12 +380,13 @@ impl Admin {
                     Some(name) => {
                         let what = format!("{} {name} (player {id}){because}", if ban { "banned" } else { "kicked" });
                         self.did(host, persist, what.clone());
-                        Ok(format!("{what}. Their survivor is left as when anyone leaves{}", if ban { "; their name is refused until unban" } else { "" }))
+                        Ok(format!("{what}. Their survivor is left as when anyone leaves{}", if ban { "; their name and player key are refused until unban" } else { "" }))
                     }
                     // Not connected: a ban still keeps the name out.
                     None if ban => {
-                        let name = host.names().iter().find(|(_, p)| **p == id).map(|(n, _)| n.clone()).ok_or(format!("player {id} has no name to ban"))?;
-                        host.ban(zombye_net::host::Ban { name: name.clone(), ip: None, why: reason });
+                        let owner = host.owners().get(&id).cloned().ok_or(format!("player {id} has no name to ban"))?;
+                        let name = owner.name.clone();
+                        host.ban(zombye_net::host::Ban { name: name.clone(), ip: None, key: owner.key, why: reason });
                         self.did(host, persist, format!("banned {name} (player {id}, not online){because}"));
                         Ok(format!("{name} isn't online; their name is banned until unban"))
                     }
@@ -580,16 +581,17 @@ fn players(host: &Host) -> Value {
         })
         .collect();
     let offline: Vec<Value> = host
-        .names()
+        .owners()
         .iter()
-        .filter(|(_, id)| !clients.iter().any(|c| c.player == **id))
-        .filter_map(|(name, id)| {
+        .filter(|(id, _)| !clients.iter().any(|c| c.player == **id))
+        .filter_map(|(id, o)| {
             let mut v = survivor(*id)?;
-            v["name"] = json!(name);
+            v["name"] = json!(o.name);
+            v["key"] = json!(o.key.map(|k| zombye_net::identity::short(&k)));
             Some(v)
         })
         .collect();
-    let bans: Vec<Value> = host.bans().iter().map(|b| json!({"name": b.name, "address": b.ip.map(|ip| ip.to_string()), "reason": b.why})).collect();
+    let bans: Vec<Value> = host.bans().iter().map(|b| json!({"name": b.name, "address": b.ip.map(|ip| ip.to_string()), "key": b.key.map(|k| zombye_net::identity::short(&k)), "reason": b.why})).collect();
     json!({"online": online, "offline": offline, "bans": bans, "max_players": host.options.max_players})
 }
 
@@ -909,7 +911,8 @@ mod tests {
         assert!(join(&mut host, "bob").unwrap_err().contains("banned from this server: griefing"));
         ticks(&mut host, &mut persist, &mut admin, 1);
         let list: Value = serde_json::from_str(&ok(&mut host, &mut persist, &mut admin, "players", json!({}))).unwrap();
-        assert_eq!(list["bans"], json!([{"name": "bob", "address": null, "reason": "griefing"}]));
+        let bob_key = zombye_net::identity::short(&zombye_net::identity::Identity::for_name("bob").key());
+        assert_eq!(list["bans"], json!([{"name": "bob", "address": null, "key": bob_key, "reason": "griefing"}]));
         assert!(err(&mut host, &mut persist, &mut admin, "unban", json!({"name": "ada"})).contains("no ban"));
         ok(&mut host, &mut persist, &mut admin, "unban", json!({"name": "bob"}));
         assert_eq!(join(&mut host, "bob").unwrap().player(), 2);
@@ -995,7 +998,8 @@ mod tests {
         let said = ok(&mut host, &mut persist, &mut admin, "save", json!({}));
         assert!(said.starts_with("saved tick 10 to "), "{said}");
         assert!(!persist.dirty, "the session's file is up to date");
-        assert_eq!(std::fs::read_to_string(dir.0.join("server.zsave.players")).unwrap(), "1\tada\n");
+        let ada_key = zombye_net::identity::hex(&zombye_net::identity::Identity::for_name("ada").key());
+        assert_eq!(std::fs::read_to_string(dir.0.join("server.zsave.players")).unwrap(), format!("1\tada\t{ada_key}\n"));
         let loaded = save_file::load(&dir.0.join("server.zsave"), &persist.content, Default::default()).unwrap().0.world;
         assert_eq!((loaded.state_hash(), loaded.players.len()), (host.world.state_hash(), 1));
 

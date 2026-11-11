@@ -64,6 +64,27 @@ or Meshy (from an approved reference through four review gates the owner approve
 the sizes they all share: storey 3.0 m, walls 0.16 m, doors 1 × 2.1 m, window sill 0.9 m and head 2.1 m,
 and the rest. Change a building number in the code, change it there too.
 
+**Release models** (`release_models.rs`): models from bought asset packs, whose licence allows them only embedded
+in a game, are never in this repo. They live in the art repo's `release-models/` and release builds carry that
+folder: the client reads `$ZOMBYE_RELEASE_MODELS`, else `release-models` beside its binary (stdout says what was
+read). `furniture/<kind>.glb` and `street/<model>.glb` (models as `furniture_models.rs` reads them, named as the one
+they replace; a street prop kind this repo has no model for is a grey-box without them) replace the game's of the
+same name; `ZOMBYE_EXTRA_MODELS` still goes over both. `trees/<kind>.glb` (`broadleaf`, `birch`, `pine`, `spruce`,
+`bush`: the foot at the origin, foliage the triangles of a material named `leaves`, so it fades over the player as
+generated foliage does) stands in for the generated tree or bush of that kind, scaled to its height
+(`meshgen/trees.rs`, `FurnitureModels::add_standing`). `fences/fence.glb` (a metre of garden fence along x, standing on the origin) and `fences/fence_post.glb` (a post)
+stand in for the generated fence rails, one look (variant) a run, a post every other metre and at the run's end
+(`landscape::model_fence`; hedges and the sim's fence are unchanged). `items/<item id>.glb` is drawn for that item lying on the
+ground, at its own size, in place of its grey-box (`items_render.rs`). `held/<item id>.glb` is a weapon as the hand holds it, drawn in place of its
+grey-box bar (`WeaponLooks::held`, `survivor::show_held_weapons`): made with the grip at the origin, pointing along +Z, its top +Y. **Variants:** `<name>.2.glb`, `<name>.3.glb`,
+... (numbered without a gap) beside any of them are other looks of the same thing, one picked per place by a hash of
+where it stands (`FurnitureModels::pick`), so a town's sofas and trees differ and stay the same between runs.
+Without the folder the game draws this repo's models and generated trees. A model's colours are its materials' base
+colours times its vertex colours (`COLOR_0`; textures aren't read), so one painted from a texture atlas is exported
+with the atlas's colours on its vertices. The same goes for alpha: a tree whose leaves are textured cards is exported with each
+card cut to the outline of its texture's opaque part, as plain triangles. `check_the_release_folder` (an ignored test in `release_models.rs`) reads
+a folder and checks every file.
+
 ## Remote machines
 
 Development can run on two remote Linux machines, driven from Claude on the owner's Mac:
@@ -405,8 +426,8 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   tile edges stop where a curve takes over (`Curves::kerb_span`), and curved kerbs, grit, ring joints and bend
   centre lines are drawn by the chunk each stretch's middle is in. Cost: chunk building about 0.24 ms (0.22 without
   curves; `chunk_build_time`, an ignored test, times every chunk of the default map), frames the same.
-- **Street props (#61, `sim::street_props`, `assets/data/street_props.ron`):** mailboxes, fire hydrants and bins
-  that the generator puts outside. The file lists the kinds (`id`; `model`, the model drawn (`assets/models/street/<model>.glb`, built in Blender: mailbox, fire_hydrant, trash_can), the id when
+- **Street props (#61, `sim::street_props`, `assets/data/street_props.ron`):** mailboxes, fire hydrants, bins,
+  street lamps and what stands in front of shops, which the generator puts outside. The file lists the kinds (`id`; `model`, the model drawn (`assets/models/street/<model>.glb`, built in Blender: mailbox, fire_hydrant, trash_can; the other kinds have none here and are grey-boxes unless the release models hold one), the id when
   left out; grey-box `size` and `color`; `blocks`, default true; `radius`, how far a body is kept from its middle,
   default half its larger side, at most 0.5) and the rules, applied in order: `GardenPath` (on the lawn beside the
   street end of a house's garden path, facing the street; `chance` per house), `HouseKerb` (at the kerb 2-3 m to one
@@ -421,7 +442,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   draws them), beside a
   door, or next to another prop (each keeps the eight tiles round it free); kerb props only on a straight kerb (5 m
   of it each way: clear of the 4 m kerb curves at junctions), away from turning circles, alley mouths and parking-lot
-  entries, and not in front of a garden path. Shipped: all three block; seed 1 has 48 mailboxes (most of the houses
+  entries, and not in front of a garden path. Shipped: twelve kinds (mailbox, hydrant, bin; a street lamp every 28-40 m of kerb and a power box now and then; in front of shops a bench, parking meter, planter, vending machine, phone box or post box; a trash bag at some houses' kerbs, the one kind that doesn't block); of the first three, seed 1 had 48 mailboxes (most of the houses
   whose front door has a path), 28 bins and 101 hydrants (both kerbs of every street). The map keeps them in
   `TileMap::street_props` (sorted by tile; `street_prop(t)`) with their kinds in `TileMap::prop_kinds`; a blocking
   one's tile is `Feature::StreetProp`, so the walk grid, flow fields, the nav graph, `clear_path` and every
@@ -433,6 +454,22 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   without one, merged into the chunk's props mesh (`meshgen/street_props.rs`, called from `spawn_chunk`): no draw
   call of its own. Cost: town generation the same (~6 ms, the props under 1 ms), chunk building +0.003 ms,
   frames the same.
+  **Bigger than a tile, and yards and parked vehicles:** a kind's `tiles: (across, deep)` (default one; at most
+  5 x 10) make it cover several tiles: its `StreetProp::tile` is the least corner, `PropKind::footprint(facing)` the
+  tiles turned with it (`TileMap::street_prop_rect`), it is drawn in the middle of them, and when it blocks every
+  tile it covers is a `Feature::StreetProp` that bodies are kept out of whole (`TileMap::street_prop_fills`, in
+  `resolve_circle`; `radius` isn't read). Four more rules place them (and one-tile kinds): `Yard` (open lawn beside
+  or behind a house, any way round, a tile of open lawn kept all round it; `chance` per house), `Roadside` (parked
+  on the road along a straight kerb in front of a house, no driveway beside it, two tiles of road left free;
+  `chance` per house), `ShopRoad` (the same in front of a shop or office on the main street) and `Parking` (in a
+  bay of a parking lot, nose in or out, kinds of at most 2 x 5; the generator hands the bays over as
+  `street_props::Bay`). A kind of more than one tile is refused in the four kerb and path rules. Shipped: yard
+  things (barbecue, deckchair, sun lounger, wheelbarrow, doghouse, rotary and straight washing lines, garden table,
+  swing set, trampoline, paddling pool, garden bed, shed) and vehicles (car, van, pickup, police car, ambulance,
+  wreck, school bus), all grey-boxes here unless the release models hold them; seed 1 has 26 cars, 17 sheds and
+  about 130 other yard things. **This changed every shipped map again:** saves from before load only with
+  `--load-anyway`. Tests: `street_props::tests` (`big_props_block_every_tile_they_cover`, where each kind stands,
+  that no way is closed).
 - **Buildings dressed (#59, `meshgen/building_kit.rs`):** `world_render::build_building` (pure: map in, a building's
   ground-floor, upper and roof meshes out) runs the building kit over every wall and the roof, merged into the same
   meshes (no draw calls of their own). Houses: a concrete foundation and a pale water-table board below the stub
@@ -1313,7 +1350,7 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   still block it), and by other survivors the same way (`awareness::Body::lit`). Switch it off to hide.
 - **Replication:** `Snapshot::lit_rooms` (the lit rooms, in order) and `grid_on`, every snapshot; over the network
   `SnapshotDelta::lights` only when they change. `Intent::Grid { on }` is a debug/admin intent (dev only on a server).
-  `wire::PROTOCOL` 22 (19 with blinds' 20 and right-click's 21).
+  `wire::PROTOCOL` 23 (19 merged after 20-22).
 - **Client** (`lights.rs`): `LitRooms` from the snapshot; window glass glows and window pools light only for lit rooms
   (`world_render::relight_panes` swaps a pane's glass when its rooms change); the nearest `MAX_ROOM_LIGHTS` (6) lit
   ground-floor rooms within 30 m get an unshadowed warm light under the ceiling at night, and what it lights shows
@@ -2001,11 +2038,22 @@ snapshots over the network: `zombye-server --host` serves a world and `zombye --
   (`World::map_base_hash`) against the server's, and applies the doors and windows changed since
   (`World::map_edits_now`) and every cracked one. Other game data, or another version's generator: refused, saying what
   differs.
-- **Who is who:** a name (at most 24 letters; none given: `survivor-N`). A name whose survivor nobody is playing takes
-  that survivor up again (in the world or out of it, see Logging out), dead or alive: back to a dead one, its player
-  sees how it ended and starts a new one with R. With `--save PATH` the names are kept in `PATH.players` (`id<TAB>name` a
-  line), so survivors are their players' again after a restart. Names aren't accounts: anyone who knows a name that
-  isn't playing can take its survivor (accounts are with #69).
+- **Who is who** (DCM-66, `net::identity`): each game install makes an Ed25519 key pair the first time it joins a
+  server, kept in the saves folder beside `settings.ron` (`identity.key`, the secret seed in hex, readable by the user
+  alone; a damaged one is an error, never silently replaced). The hello names the public key (`Hello::key`); the
+  server answers with a fresh challenge (`ServerMsg::Challenge`) and lets the hello in only once the key has signed it
+  with the name (`ClientMsg::Proof`, checked in the connection's reading thread before the host sees the hello).
+  **Survivors belong to the key, not the name:** a key takes up the survivor it played before (in the world or out of
+  it, see Logging out; dead or alive: back to a dead one, its player sees how it ended and starts a new one with R),
+  whatever name it joins under now (the name is what others see, and is updated; the log says `was OLDNAME`).
+  Someone else typing your name gets a new survivor of their own; one copy of a key plays at a time. The name is at
+  most 24 letters (none given: `survivor-N`) and two online can't share it. With `--save PATH` whose each survivor
+  is goes in `PATH.players` (`id<TAB>name<TAB>key` a line, the key in hex); a line from before keys (`id<TAB>name`)
+  is taken by the first key that joins under that name. Bans go by the key too (`Ban::key`), so a new name doesn't
+  get round one. Bots and tests join with a key worked out from the name (`Identity::for_name`, `Remote::connect`);
+  the game client uses its own (`Remote::connect_with`). No accounts and no service of ours: any server checks the
+  signature itself, so self-hosting stays free (`wire::PROTOCOL` 22). Tests: `identity::tests`,
+  `net/tests/multiplayer.rs`'s `survivors_and_bans_belong_to_a_key_not_a_name` and `a_hello_without_its_proof_is_refused`.
 - **Clients only act as themselves:** every intent's `player` is overwritten with the sender's (`Intent::player_mut`);
   `Intent::dev_only` ones (the dev toggles, `SpawnItem`, `SetGoal`, `SpawnZombies`, `SkipTime`, `MakeNoise`) are
   dropped unless `--allow-dev` (`HostStats::refused_dev`). `Respawn` (R on the death screen: "a new survivor") gets a
@@ -2276,7 +2324,7 @@ own, time paused between calls) and shares no tools with it but a few read-only 
   zombies by tier, bytes, joins / leaves / refusals, the rules, the save and when it was written, bans, the newest
   log line), `players` (JSON: `online` with id, name, address, seconds on, position and room, HP, dead, kills, KB/s,
   zombies in view, view lag; `offline` survivors; `bans`), `kick {player | name, reason, ban}` (`Host::kick`: the
-  client gets "kicked: REASON" and is dropped, its survivor left as when anyone leaves (the logout rules); `ban: true` also refuses the name, and the address
+  client gets "kicked: REASON" and is dropped, its survivor left as when anyone leaves (the logout rules); `ban: true` also refuses the name and the player's key (DCM-66), and the address
   unless it is loopback, until `unban {name}`: `Host::ban`, checked before anything else in `Host::hello`; bans last
   until the server restarts), `save {name}` (no name: the `--save` file, as the autosave; a name: that file in the
   saves folder; `PATH.players` beside it either way) and `saves`, `settings {...}` (no arguments: shows them as JSON;
