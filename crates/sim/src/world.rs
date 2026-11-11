@@ -1516,6 +1516,11 @@ impl World {
             for s in p.inventory.stacks() {
                 mix_stack(&mut mix, s);
             }
+            // Which pouch each carried stack is in (only stacks out of the pockets, so a world with
+            // no bags hashes as it did).
+            for (k, s) in p.inventory.carried.iter().enumerate().filter(|(_, s)| s.home != crate::items::Pouch::Pockets) {
+                mix(0xBA60_0000 | (s.home as u32) << 12 | k as u32 & 0xFFF);
+            }
             let inv = &p.inventory;
             mix(inv.worn.len() as u32 | (inv.carried.len() as u32) << 8 | (inv.hand.is_some() as u32) << 16 | (inv.off_hand.is_some() as u32) << 17 | (inv.back.is_some() as u32) << 18 | (inv.shoulder.is_some() as u32) << 19);
             mix(p.open.unwrap_or(u32::MAX));

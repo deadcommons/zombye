@@ -39,7 +39,7 @@ use crate::TICK_DT;
 use crate::combat::PICKUP_REACH;
 use crate::containers::{ContainerDef, ContainerSite};
 use crate::firstaid::{Treatment, treating};
-use crate::items::{BagCarry, GroundItem, ItemCategory, ItemDef, ItemStack, WearSlot};
+use crate::items::{BagCarry, GroundItem, ItemCategory, ItemDef, ItemStack, Pouch, WearSlot};
 use crate::players::{MoveMods, Player, Stance};
 use crate::senses::SoundSource;
 use crate::vision::clear_reach;
@@ -89,6 +89,32 @@ pub enum Place {
     Container(u32),
     /// On the floor within reach.
     Ground,
+    /// Into one pouch of what's carried (the pockets, or the bag in that place): somewhere to put
+    /// a stack, never somewhere to take one from (a carried stack is `Carried` and its index,
+    /// whichever pouch it is in). Last, so saves from before it read as they did.
+    Pouch(Pouch),
+}
+
+impl Pouch {
+    /// The slot a pouch's bag is carried in (`None` for the pockets).
+    pub fn slot(self) -> Option<Slot> {
+        match self {
+            Pouch::Pockets => None,
+            Pouch::Back => Some(Slot::Back),
+            Pouch::Shoulder => Some(Slot::Shoulder),
+            Pouch::Hand => Some(Slot::Hand),
+            Pouch::OffHand => Some(Slot::OffHand),
+        }
+    }
+
+    pub fn of_slot(s: Slot) -> Pouch {
+        match s {
+            Slot::Back => Pouch::Back,
+            Slot::Shoulder => Pouch::Shoulder,
+            Slot::Hand => Pouch::Hand,
+            Slot::OffHand => Pouch::OffHand,
+        }
+    }
 }
 
 /// Everything one player has.
@@ -165,6 +191,120 @@ impl Inventory {
         stacks_volume(items, &self.carried)
     }
 
+    /// The room pouch `p` gives (litres): the pockets', or that of the bag carried there (0 with
+    /// no bag there).
+    pub fn pouch_room(&self, items: &[ItemDef], pockets: f32, p: Pouch) -> f32 {
+        match p.slot() {
+            None => pockets,
+            Some(s) => self.slot(s).and_then(|st| items.get(st.item as usize)?.bag.as_ref().map(|b| b.capacity_l)).unwrap_or(0.0),
+        }
+    }
+
+    /// The room the stacks in pouch `p` take (litres).
+    pub fn pouch_used(&self, items: &[ItemDef], p: Pouch) -> f32 {
+        self.carried.iter().filter(|s| s.home == p).fold(0.0, |l, s| l + items.get(s.item as usize).map_or(0.0, |d| d.volume_l * s.count as f32))
+    }
+
+    /// The pouches there are (the pockets always, and each bag carried), in [`Pouch::ALL`]'s
+    /// order, with their room and what's used of it.
+    pub fn pouches(&self, items: &[ItemDef], pockets: f32) -> Vec<(Pouch, f32, f32)> {
+        Pouch::ALL.into_iter().filter(|&p| p == Pouch::Pockets || self.pouch_room(items, pockets, p) > 0.0).map(|p| (p, self.pouch_room(items, pockets, p), self.pouch_used(items, p))).collect()
+    }
+
+    /// Where `n` of `like` go when nobody says: with a stack of the same kind that has room for
+    /// them, else the first pouch (the back's bag first, pockets last) that takes them all, else
+    /// the first with any room (the rest is spread by [`Inventory::settle`]), else the pockets.
+    pub fn auto_home(&self, items: &[ItemDef], pockets: f32, like: &ItemStack, n: u16) -> Pouch {
+        let Some(def) = items.get(like.item as usize) else { return Pouch::Pockets };
+        let need = def.volume_l * n as f32;
+        let free = |p: Pouch| self.pouch_room(items, pockets, p) - self.pouch_used(items, p);
+        if let Some(s) = self.carried.iter().find(|s| s.same_kind(like) && s.count < def.stack.max(1) && free(s.home) + 1e-4 >= need) {
+            return s.home;
+        }
+        Pouch::ALL.into_iter().find(|&p| self.pouch_room(items, pockets, p) > 0.0 && free(p) + 1e-4 >= need).or_else(|| Pouch::ALL.into_iter().find(|&p| free(p) > 1e-4)).unwrap_or(Pouch::Pockets)
+    }
+
+    /// Put every carried stack in a pouch that exists and has room for it, moving as little as
+    /// can be: what a pouch holds over its room (its bag was put down, or things were added with
+    /// no say where) goes, latest stack first, into the other pouches with room, whole if one
+    /// takes it whole, else as many of it as fit. What fits nowhere stays where it is (the total
+    /// room is checked by the moves themselves), in the pockets if its bag is gone. Held and worn
+    /// stacks are in no pouch. Does nothing to an inventory already in order.
+    pub fn settle(&mut self, items: &[ItemDef], pockets: f32) {
+        for s in [&mut self.hand, &mut self.off_hand, &mut self.back, &mut self.shoulder].into_iter().flatten().chain(&mut self.worn) {
+            s.home = Pouch::Pockets;
+        }
+        let room = Pouch::ALL.map(|p| (p, self.pouch_room(items, pockets, p)));
+        let cap = |p: Pouch| room.iter().find(|r| r.0 == p).map_or(0.0, |r| r.1);
+        let mut used = [0.0f32; 5];
+        let vol = |s: &ItemStack| items.get(s.item as usize).map_or(0.0, |d| d.volume_l);
+        for s in &self.carried {
+            used[s.home as usize] += vol(s) * s.count as f32;
+        }
+        if Pouch::ALL.iter().all(|&p| used[p as usize] <= cap(p) + 1e-4) {
+            return;
+        }
+        let mut moves: Vec<(usize, Pouch, u16)> = Vec::new();
+        for i in (0..self.carried.len()).rev() {
+            let s = self.carried[i];
+            let (h, v) = (s.home, vol(&s));
+            let over = used[h as usize] - cap(h);
+            if over <= 1e-4 || v <= 0.0 {
+                continue;
+            }
+            let mut need = ((over / v - 1e-3).ceil().max(1.0) as u16).min(s.count);
+            let whole = v * s.count as f32;
+            // Whole into one pouch if one takes it, rather than split over two.
+            if let Some(d) = Pouch::ALL.into_iter().find(|&d| d != h && cap(d) - used[d as usize] + 1e-4 >= whole) {
+                moves.push((i, d, s.count));
+                used[h as usize] -= whole;
+                used[d as usize] += whole;
+                continue;
+            }
+            for d in Pouch::ALL {
+                if d == h || need == 0 {
+                    continue;
+                }
+                let fit = (((cap(d) - used[d as usize]) / v + 1e-3).floor().max(0.0) as u16).min(need);
+                if fit > 0 {
+                    moves.push((i, d, fit));
+                    used[h as usize] -= v * fit as f32;
+                    used[d as usize] += v * fit as f32;
+                    need -= fit;
+                }
+            }
+        }
+        for (i, d, n) in moves {
+            let s = self.carried[i];
+            let size = items.get(s.item as usize).map_or(1, |def| def.stack);
+            // A part-used top one stays behind unless all of the stack goes.
+            let moved = ItemStack { used: if n >= s.count { s.used } else { 0 }, home: d, ..s.with_count(n) };
+            self.carried[i].count -= n;
+            merge_home(&mut self.carried, moved, n, size);
+        }
+        self.carried.retain(|s| s.count > 0);
+        for s in &mut self.carried {
+            if s.home != Pouch::Pockets && cap(s.home) <= 0.0 {
+                s.home = Pouch::Pockets;
+            }
+        }
+    }
+
+    /// Each carried stack's pouch, in order (what a save and a snapshot keep beside the stacks).
+    pub fn homes(&self) -> Vec<u8> {
+        self.carried.iter().map(|s| s.home as u8).collect()
+    }
+
+    /// Put [`Inventory::homes`] back (a list of another length, or with a pouch there isn't, is
+    /// left out: every stack is then in the pockets until [`Inventory::settle`]).
+    pub fn set_homes(&mut self, homes: &[u8]) {
+        if homes.len() == self.carried.len() && homes.iter().all(|&h| Pouch::from_u8(h).is_some()) {
+            for (s, &h) in self.carried.iter_mut().zip(homes) {
+                s.home = Pouch::from_u8(h).unwrap_or_default();
+            }
+        }
+    }
+
     /// Speed lost to awkward bags (the sum of their `slow`).
     fn bag_slow(&self, items: &[ItemDef]) -> f32 {
         Slot::ALL.iter().filter_map(|&s| self.slot(s)).filter_map(|s| items.get(s.item as usize)?.bag.as_ref().map(|b| b.slow)).fold(0.0, |a, b| a + b)
@@ -180,10 +320,22 @@ pub fn stacks_volume(items: &[ItemDef], stacks: &[ItemStack]) -> f32 {
 }
 
 /// Add `count` of the kind of thing `like` is (its item, age and goes had; its own count doesn't
-/// matter) to a list of stacks: topping up stacks of the same kind first, then new stacks.
-pub fn merge_into(stacks: &mut Vec<ItemStack>, like: ItemStack, mut count: u16, stack_size: u16) {
+/// matter) to a list of stacks: topping up stacks of the same kind first, then new stacks. New
+/// stacks are in no pouch (the pockets): among carried things [`Inventory::settle`] finds them
+/// room, and a stack never takes its pouch along to a container or the floor.
+pub fn merge_into(stacks: &mut Vec<ItemStack>, like: ItemStack, count: u16, stack_size: u16) {
+    merge_where(stacks, ItemStack { home: Pouch::Pockets, ..like }, count, stack_size, false)
+}
+
+/// [`merge_into`] for carried stacks going into the pouch `like.home`: only stacks in that pouch
+/// are topped up, and new ones are in it.
+pub fn merge_home(stacks: &mut Vec<ItemStack>, like: ItemStack, count: u16, stack_size: u16) {
+    merge_where(stacks, like, count, stack_size, true)
+}
+
+fn merge_where(stacks: &mut Vec<ItemStack>, like: ItemStack, mut count: u16, stack_size: u16, same_home: bool) {
     let size = stack_size.max(1);
-    for s in stacks.iter_mut().filter(|s| s.same_kind(&like) && s.count < size) {
+    for s in stacks.iter_mut().filter(|s| s.same_kind(&like) && s.count < size && (!same_home || s.home == like.home)) {
         let add = count.min(size - s.count);
         s.count += add;
         count -= add;
@@ -440,6 +592,9 @@ impl World {
     /// ends only in [`World::step_item_jobs`], after movement, so the modifiers a snapshot carries
     /// are always the ones the next tick moves with and client prediction stays exact.
     fn refresh_carry_as(&mut self, pi: usize, still: bool) {
+        // Everything carried in a pouch with room for it (bags come and go, things are added).
+        let pockets = self.config.carry.pockets_l;
+        self.players[pi].inventory.settle(&self.config.items, pockets);
         let p = &self.players[pi];
         let c = self.carry(p);
         let slow = p.inventory.bag_slow(&self.config.items);
@@ -598,6 +753,7 @@ impl World {
             Place::Slot(s) => p.inventory.slot(s),
             Place::Container(c) => (p.open == Some(c)).then(|| self.opened.get(&c)?.get(index as usize).copied()).flatten(),
             Place::Ground => self.items.iter().find(|it| it.id == index && self.floor_reaches(p, it)).map(|it| it.stack),
+            Place::Pouch(_) => None,
         }
     }
 
@@ -648,6 +804,18 @@ impl World {
         if from == to && !matches!(from, Place::Ground) {
             return self.refuse(id, "it's already there".into());
         }
+        if matches!(from, Place::Pouch(_)) {
+            return self.refuse(id, "say which carried stack (a pouch is only somewhere to put things)".into());
+        }
+        if let Place::Pouch(p) = to {
+            let pl = &self.players[pi];
+            if pl.inventory.pouch_room(&self.config.items, self.config.carry.pockets_l, p) <= 0.0 {
+                return self.refuse(id, "you carry no bag there".into());
+            }
+            if from == Place::Carried && pl.inventory.carried.get(index as usize).is_some_and(|s| s.home == p) {
+                return self.refuse(id, "it's already there".into());
+            }
+        }
         let Some(stack) = self.stack_at(pi, from, index) else { return self.refuse(id, self.missing(pi, from, index)) };
         // Asked again for what is already on its way (a repeated click, a request crossing the
         // last snapshot): nothing more to do, and nothing to complain about.
@@ -680,7 +848,7 @@ impl World {
             Place::Container(c) if p.open != Some(c) => "that container isn't open (search it first)".into(),
             Place::Container(_) => "that's no longer in there".into(),
             Place::Slot(_) => "nothing there".into(),
-            Place::Carried | Place::Worn => "you don't have that any more".into(),
+            Place::Carried | Place::Worn | Place::Pouch(_) => "you don't have that any more".into(),
         }
     }
 
@@ -1037,7 +1205,10 @@ impl World {
                 ground_take = Some((k, n));
                 part(self.items[k].stack, n)
             }
+            Place::Pouch(_) => return Err("say which carried stack".into()),
         };
+        // Wherever it was, it is in no pouch on its way.
+        let moved = ItemStack { home: Pouch::Pockets, ..moved };
         self.finish_move(pi, inv, before, src_box, ground_take, def, moved, from, to, spill, pos, facing)
     }
 
@@ -1069,7 +1240,20 @@ impl World {
         let mut displaced: Vec<ItemStack> = Vec::new();
         let mut to = to;
         match to {
-            Place::Carried => merge_into(&mut inv.carried, moved, n, def.stack),
+            Place::Carried => {
+                let home = inv.auto_home(items, self.config.carry.pockets_l, &moved, n);
+                merge_home(&mut inv.carried, ItemStack { home, ..moved }, n, def.stack);
+            }
+            Place::Pouch(home) => {
+                let pockets = self.config.carry.pockets_l;
+                if inv.pouch_room(items, pockets, home) <= 0.0 {
+                    return Err("you carry no bag there".into());
+                }
+                merge_home(&mut inv.carried, ItemStack { home, ..moved }, n, def.stack);
+                if inv.pouch_used(items, home) > inv.pouch_room(items, pockets, home) + 1e-4 {
+                    return Err(format!("no room for the {name} in {}", self.pouch_name(&inv, home)));
+                }
+            }
             Place::Slot(s) => {
                 let ok = match s {
                     Slot::Hand | Slot::OffHand => true,
@@ -1174,6 +1358,7 @@ impl World {
         let what = if n > 1 { format!("{n} x {name}") } else { name };
         Ok(match to {
             Place::Carried => format!("took the {what}"),
+            Place::Pouch(home) => format!("put the {what} in {}", self.pouch_name(&self.players[pi].inventory, home)),
             Place::Slot(Slot::Hand) => format!("holding the {what}"),
             Place::Slot(Slot::OffHand) => format!("holding the {what} in the other hand"),
             Place::Slot(Slot::Back) => format!("put the {what} on your back"),
@@ -1190,6 +1375,14 @@ impl World {
             Place::Container(c) => format!("put the {what} in the {}", lower(&self.container_def(&self.container(c).expect("exists")).name)),
             Place::Ground => format!("dropped the {what}"),
         })
+    }
+
+    /// A pouch in words: "your pockets", "the hiking pack".
+    pub fn pouch_name(&self, inv: &Inventory, p: Pouch) -> String {
+        match p.slot().and_then(|s| inv.slot(s)) {
+            Some(bag) => format!("the {}", lower(&self.item_def(bag.item).name)),
+            None => "your pockets".into(),
+        }
     }
 
     /// Players with container `c` open hear about its new contents.

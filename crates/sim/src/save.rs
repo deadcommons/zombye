@@ -63,6 +63,7 @@
 //! then `FARC` (how far the far clock is ahead of the tick, #57; optional, only written when it is),
 //! then `SHOV` (zombies shoved lately, whose shoves add up toward a knockdown; only when there are any),
 //! then `LEVL` (who and what is upstairs, `crate::stairs`; only when anyone or anything is),
+//! then `BAGS` (which pocket or bag each carried stack is in; only when anything is in a bag),
 //! then `MODS` (what mod scripts keep, #25, `crate::script`; optional, only for a world with mods).
 //! Payloads are
 //! [postcard](https://docs.rs/postcard), and zombies are stored column by column. A file with
@@ -195,6 +196,10 @@ const SHOV: [u8; 4] = *b"SHOV";
 /// The players upstairs (id and floor) and the ground items lying there (`crate::stairs`); only
 /// when there are any, so adding it didn't change the format version.
 const LEVL: [u8; 4] = *b"LEVL";
+/// Which pouch (pockets, or which bag) each carried stack is in, per player; only players with
+/// anything in a bag, so adding it didn't change the format version. Without it (a save from
+/// before bags had their own room) everything is put away afresh on load.
+const BAGS: [u8; 4] = *b"BAGS";
 const END: [u8; 4] = *b"END\0";
 /// Bytes before the first section: magic and version.
 const HEADER: usize = 12;
@@ -853,6 +858,10 @@ impl World {
         if !levels.is_empty() || !up_items.is_empty() {
             w.section(LEVL, &encode(&(levels, up_items)));
         }
+        let bags: Vec<(u32, Vec<u8>)> = players.iter().filter(|p| p.inventory.carried.iter().any(|s| s.home != crate::items::Pouch::Pockets)).map(|p| (p.id, p.inventory.homes())).collect();
+        if !bags.is_empty() {
+            w.section(BAGS, &encode(&bags));
+        }
         // Mod scripts (#25): what they keep, and whose they are. A world without mods has none.
         let mods = config.scripts.as_ref().map(|e| e.mods()).unwrap_or_default();
         if !script.is_empty() || !mods.is_empty() {
@@ -1046,6 +1055,7 @@ impl World {
         let mut blinds: Option<BlindSave> = None;
         let mut shoved: Option<Vec<crate::combat::Shoved>> = None;
         let mut levels: Option<(Vec<(u32, u8)>, Vec<u32>)> = None;
+        let mut bags: Option<Vec<(u32, Vec<u8>)>> = None;
         loop {
             let (tag, payload) = r.next()?;
             if tag == END {
@@ -1101,6 +1111,10 @@ impl World {
                 blinds = Some(decode(BLND, payload)?);
                 continue;
             }
+            if tag == BAGS && bags.is_none() {
+                bags = Some(decode(BAGS, payload)?);
+                continue;
+            }
             if tag == LEVL && levels.is_none() {
                 levels = Some(decode(LEVL, payload)?);
                 continue;
@@ -1113,7 +1127,7 @@ impl World {
                 script = Some(decode(MODS, payload)?);
                 continue;
             }
-            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || power.is_some() || shoved.is_some() || blinds.is_some() || levels.is_some() {
+            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || power.is_some() || shoved.is_some() || blinds.is_some() || levels.is_some() || bags.is_some() {
                 return Err(corrupt(format!("unexpected {} section", tag_name(tag))));
             }
             let block: ZombieBlock = decode(ZOMB, payload)?;
@@ -1181,6 +1195,13 @@ impl World {
                 notes.push(format!("{dropped} blinds dropped: their windows or doors aren't on the new map"));
             }
             w.map.blinds = kept;
+        }
+        // Which pouch each carried stack is in (a list that doesn't fit its player's stacks, after
+        // a forced load dropped some, is left out: `settle` puts them away afresh).
+        for (id, homes) in bags.unwrap_or_default() {
+            if let Some(p) = w.players.iter_mut().find(|p| p.id == id) {
+                p.inventory.set_homes(&homes);
+            }
         }
         // Who and what is upstairs (`crate::stairs`). On a map that no longer has a floor there
         // (loaded anyway onto a changed one), they are on the ground floor.

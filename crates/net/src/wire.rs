@@ -64,8 +64,9 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// 23: shoves that add up and stomps to the head: the shove and stomp numbers in `CombatTuning`.
 /// 24: electricity (19) merged after 20-23.
 /// 25: stairs and the upper floor: `PlayerView::level` (bit 17 of `PlayerPacked::bits`),
-/// `SnapshotDelta::upstairs`, `Tunings::stairs`.)
-pub const PROTOCOL: u32 = 25;
+/// `SnapshotDelta::upstairs`, `Tunings::stairs`. 26: bags with their own room: `Place::Pouch`,
+/// `PrivateView::homes`.)
+pub const PROTOCOL: u32 = 26;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -1103,6 +1104,9 @@ impl DeltaDecoder {
         s.blind_changes = delta.blind_changes;
         s.hits = delta.hits;
         s.private = delta.private;
+        for v in &mut s.private {
+            v.restore_homes();
+        }
         s.item_notes = delta.item_notes;
         s.level_ups = delta.level_ups;
         s.heard = delta.heard.iter().map(|&(pos, radius)| zombye_sim::Heard { listener: player, pos, radius, at: delta.tick }).collect();

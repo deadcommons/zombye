@@ -248,29 +248,28 @@ The world's generated parts and its props both carry the story. Targets for a de
 
 ## UI
 
-- **One rough painted skin** (Linear DCM-61; `crates/client/src/theme.rs`, which every panel uses):
-  as if laid on with a wide dry brush. The textures are made in code at start-up; none is a file,
-  and none is drawn after another game's art.
-- **Panels:** dark charcoal sheets (about #16161A at 96% opacity: slightly see-through), their sides
-  ragged where the strokes end and thin out, top and bottom a rough line; brushed bone-white rules
-  at low opacity. The small pieces of the HUD, tooltips and menus are strips of the same paint.
-- **Titles** centred, in capitals; generous padding (nothing stands on a sheet's ragged edge).
-- **Buttons:** plain, light (warm grey, dark ink on it), with a worn edge; the chosen one gold. A
-  key to press is shown as a small button of the same kind.
-- **Slots** (the hotbar): lighter charcoal with a fine scored hatch and a pale worn rim; the one in
-  your hand has a gold edge.
-- **Bars** (health, a pane's load, a skill's XP, the current action): one stroke of a dry brush
-  over a paler one.
-- **Status icons:** simple glyphs on a dark dab of paint, bottom left: white at the first level,
-  then pale and strong yellow; only the worst level is red.
-- **Text:** bone white for content, a dimmer warm grey for secondary text; one plain sans-serif
-  family: Barlow for text and the HUD, Barlow Condensed SemiBold in capitals for titles, tabs and
-  headers (SIL OFL 1.1, `assets/fonts/barlow/`; `theme::font`, `strong`, `head`). Monospace only on
-  the developer's read-outs (the stats line, the debug stats window, the light preview).
-- **Colour meanings:** red for blood, danger and health nearly gone; yellow for warnings; zombie
-  green for sickness; cool blue for sleep; gold for level-ups, what's picked and good outcomes. No
-  other hues.
-- **Plain words** over icons until icons exist; icons later follow these same shapes and colours.
+The full guide is **[ui-design.md](ui-design.md)**: tokens, type, the frame every screen shares, the
+components, and a checklist for a new screen. In short:
+
+- **Quiet, flat, dark chrome that gets out of the way of the world.** A screen is a see-through dark
+  veil over the game with hairlines, small radii and solid fills: no textures, bevels, glows or
+  gradients. The world stays visible behind it.
+- **Paper for what the survivor holds.** The map is ink on worn paper (printed streets, the rest
+  inked in as it is seen, red pencil for your own marks); notes, recipe cards and pages later follow
+  it. Paper always sits inside the chrome's frame; chrome controls are never drawn on paper.
+- **One frame, many tabs.** Inventory, Make, Build, Health, Skills and Map are tabs of one frame: a
+  top bar with the title, a rail of tabs down the left, two or three columns, a footer of key hints.
+  Nothing scrolls sideways.
+- **One accent.** Zombie green #8DB06B means "this one" (the open tab, what is picked, the main
+  button). Amber is a warning, brand red is danger only, cool blue is sleep. No other hues, and a
+  word or a shape always stands beside a colour.
+- **Text:** bone white #F2E6C9 on near-black #141414, a dimmer warm grey for secondary text. Barlow
+  for text and values, Barlow Condensed SemiBold in capitals for titles, tabs and labels (SIL OFL
+  1.1, `assets/fonts/barlow/`). Nothing under 14 UI pixels. Monospace only on developer read-outs.
+- **Icons** are our own flat drawings in three tones of the item's colour, told apart by silhouette.
+- **Plain words**, every action with its key shown, and our copy never names another game.
+- This replaces the rough painted skin (Linear DCM-61). Panels move over one at a time, the
+  inventory first; one that hasn't moved yet keeps the old skin from `crates/client/src/theme.rs`.
 
 ## Building assets in Blender over MCP
 
