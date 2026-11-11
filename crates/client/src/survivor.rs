@@ -1194,10 +1194,11 @@ fn action(kind: ActionKind, style: Style, armed: bool, u: f32, ready: &SPose) ->
             keyed(&[(0.0, ready.clone()), (U_HIT * 0.6, level.clone()), (U_HIT, level), (0.56, kick), (1.0, ready)], u)
         }
         (ActionKind::Shove, style) if armed && style != Style::Gun => {
-            // A melee weapon in hand: held across the chest in both hands like a bar (turned a
-            // quarter in the right hand so it lies level, pointing to his left, through the left
-            // hand) and driven straight out from the body.
-            let bar = rz(FRAC_PI_2);
+            // A melee weapon in hand: held across the chest in both hands like a bar and driven
+            // straight out from the body. The bar points along the hand's +Z; a quarter turn about
+            // the hand's Y lays it level across to his left hand, whatever the arm's lift (the
+            // arm's lift is about X), and a little more takes out the arm's inward turn.
+            let bar = ry(FRAC_PI_2 + 0.18);
             let gather = upper(rx(-0.05), q, rz(-0.18) * rx(-0.55), rx(-1.75), rz(0.18) * rx(-0.55), rx(-1.75), bar);
             let push = upper(rx(0.3), rx(-0.15), rz(-0.2) * rx(-1.4), rx(-0.15), rz(0.2) * rx(-1.4), rx(-0.15), bar);
             let hold = upper(rx(0.22), rx(-0.1), rz(-0.18) * rx(-1.3), rx(-0.35), rz(0.18) * rx(-1.3), rx(-0.35), bar);
@@ -1352,6 +1353,24 @@ mod tests {
         assert!(shot.z > 0.95, "level as the shot goes: {shot}");
         assert!(kick.y > shot.y + 0.2 && kick.z > 0.5, "then the muzzle rises: {kick}");
         assert_eq!(style(WeaponCategory::Firearm), Style::Gun);
+    }
+
+    /// A shove with a weapon in hand holds it level across the body like a bar and drives it out.
+    #[test]
+    fn a_weapon_shove_pushes_with_it_across_the_body() {
+        for style in [Style::OneHand, Style::TwoHand] {
+            let at = |u: f32| {
+                let p = action(ActionKind::Shove, style, true, u, &idle(0.0, true));
+                let g = globals(&BONES, &p);
+                (g[HAND_R].transform_vector3(Vec3::Z), g[HAND_R].transform_point3(Vec3::ZERO))
+            };
+            let (gather_dir, gather) = at(0.25);
+            let (push_dir, push) = at(U_HIT);
+            for dir in [gather_dir, push_dir] {
+                assert!(dir.x > 0.9 && dir.y.abs() < 0.2, "{style:?}: the bar lies level to his left, not {dir}");
+            }
+            assert!(push.z > gather.z + 0.2, "{style:?}: driven out from {gather} to {push}");
+        }
     }
 
     /// The weapon points backward in the windup and forward when the blow lands.
