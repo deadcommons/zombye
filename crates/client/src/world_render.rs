@@ -269,13 +269,16 @@ fn setup_shared(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut ma
     let contact = graphics.contact_shadows.then(|| {
         materials.add(StandardMaterial { base_color: Color::WHITE, unlit: true, alpha_mode: AlphaMode::Blend, cull_mode: None, double_sided: true, ..default() })
     });
-    // A light switch: a pale plate with a toggle, down for off and up for on.
+    // A light switch: a pale plate on a dark rim, drawn about twice life size so it can be made out
+    // at the game's zoom, with
+    // a toggle: dark and down for off, warm and up for on.
     let switch = [false, true].map(|on| {
         let mut mb = MeshBuilder::default();
         mb.set_tag(CutTag { kind: CutKind::Structure, ..default() });
-        mb.add_box(Vec3::new(-0.045, -0.065, 0.0), Vec3::new(0.045, 0.065, 0.012), meshgen::same(p.trim_light));
-        let y = if on { 0.008 } else { -0.038 };
-        mb.add_box(Vec3::new(-0.013, y, 0.012), Vec3::new(0.013, y + 0.03, 0.03), meshgen::same(meshgen::shade(p.trim_light, 0.8)));
+        mb.add_box(Vec3::new(-0.15, -0.21, 0.0), Vec3::new(0.15, 0.21, 0.015), meshgen::same(meshgen::shade(p.trim_dark, 0.6)));
+        mb.add_box(Vec3::new(-0.115, -0.175, 0.015), Vec3::new(0.115, 0.175, 0.03), meshgen::same(p.trim_light));
+        let (y, c) = if on { (0.0, LinearRgba::new(1.6, 1.0, 0.3, 1.0)) } else { (-0.115, meshgen::shade(p.trim_dark, 0.6)) };
+        mb.add_box(Vec3::new(-0.05, y, 0.03), Vec3::new(0.05, y + 0.115, 0.075), meshgen::same(c));
         meshes.add(mb.build())
     });
     commands.insert_resource(SharedMeshes { switch, door, pane, pane_lit, shards, lips, door_cracks, pane_cracks, furniture, contact });
@@ -429,8 +432,12 @@ fn stream(
                 let on = lit.is_lit(room as u16);
                 let n = Vec3::new(spot.normal.x, 0.0, spot.normal.y);
                 let tf = Transform { translation: Vec3::new(spot.pos.x, zombye_sim::power::SWITCH_HEIGHT, spot.pos.y), rotation: Quat::from_rotation_arc(Vec3::Z, n), scale: Vec3::ONE };
+                // On a wall the cutaways drop, the switch lies on top of the stub instead, facing
+                // up with its toggle toward the room, so it can still be found and flicked.
+                let wall = Vec3::new(spot.pos.x, 0.0, spot.pos.y) - n * zombye_sim::power::SWITCH_INSET;
+                let flat = Transform { translation: wall + Vec3::Y * (STUB_HEIGHT + 0.005), rotation: { let a = n.cross(Vec3::Y); Quat::from_mat3(&Mat3::from_cols(a.cross(Vec3::Y), a, Vec3::Y)) }, scale: Vec3::ONE };
                 let (owner, which) = spot.side.owner(spot.tile);
-                let e = commands.spawn((Mesh3d(shared.switch[on as usize].clone()), MeshMaterial3d(mats.building.clone()), tf, LightSwitch { room: room as u16, key: (owner, which), on })).id();
+                let e = commands.spawn((Mesh3d(shared.switch[on as usize].clone()), MeshMaterial3d(mats.building.clone()), tf, LightSwitch { room: room as u16, key: (owner, which), on, standing: tf, flat })).id();
                 render.lower.push(e);
             }
             streamer.buildings.insert(i, render);
@@ -794,21 +801,24 @@ struct LightSwitch {
     key: (IVec2, OwnedEdge),
     /// Drawn up (on).
     on: bool,
+    /// On its wall, and lying on the stub while the wall is cut away.
+    standing: Transform,
+    flat: Transform,
 }
 
 /// Switches show up while their room is lit, down while dark; one on a wall that is cut away
-/// goes with it.
-fn update_switches(lit: Res<crate::lights::LitRooms>, cutaway: Res<crate::cutaway::Cutaway>, shared: Option<Res<SharedMeshes>>, mut switches: Query<(&mut LightSwitch, &mut Mesh3d, &mut Visibility)>) {
+/// lies on top of the stub.
+fn update_switches(lit: Res<crate::lights::LitRooms>, cutaway: Res<crate::cutaway::Cutaway>, shared: Option<Res<SharedMeshes>>, mut switches: Query<(&mut LightSwitch, &mut Mesh3d, &mut Transform)>) {
     let Some(shared) = shared else { return };
-    for (mut sw, mut mesh, mut vis) in &mut switches {
+    for (mut sw, mut mesh, mut tf) in &mut switches {
         let on = lit.is_lit(sw.room);
         if sw.on != on {
             sw.on = on;
             mesh.0 = shared.switch[on as usize].clone();
         }
-        let shown = if cutaway.amount(sw.key) < 0.5 { Visibility::Inherited } else { Visibility::Hidden };
-        if *vis != shown {
-            *vis = shown;
+        let want = if cutaway.amount(sw.key) < 0.5 { sw.standing } else { sw.flat };
+        if *tf != want {
+            *tf = want;
         }
     }
 }

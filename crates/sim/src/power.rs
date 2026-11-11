@@ -25,7 +25,7 @@ use std::collections::BTreeSet;
 use glam::{IVec2, Vec2};
 use serde::{Deserialize, Serialize};
 
-use crate::map::{Edge, Side, TileMap};
+use crate::map::{Edge, Feature, Side, TileMap};
 
 /// The grid as `power.ron` describes it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -156,52 +156,74 @@ pub const SWITCH_HEIGHT: f32 = 1.2;
 /// How far from a switch a hand reaches it (the server's rule; the client asks the same).
 pub const SWITCH_REACH: f32 = 1.3;
 /// How far a switch sits out from the line of its wall: half a wall (0.08) and a little.
-const SWITCH_INSET: f32 = 0.1;
+pub const SWITCH_INSET: f32 = 0.1;
 /// How far along the wall from the middle of its tile edge, toward the doorway beside it.
 const SWITCH_TOWARD_DOOR: f32 = 0.3;
 
 /// Every room's switch, by room (room 0, outdoors, has none). Only ground-floor rooms are on the
 /// tiles, so upper rooms have none either (nobody is up there yet).
 pub fn switch_spots(map: &TileMap) -> Vec<Option<SwitchSpot>> {
-    let mut doorway: Vec<Option<SwitchSpot>> = vec![None; map.rooms.len()];
-    let mut any_wall: Vec<Option<SwitchSpot>> = vec![None; map.rooms.len()];
+    // The best spot found for each room, with its score: lower is better.
+    let mut best: Vec<Option<(u32, SwitchSpot)>> = vec![None; map.rooms.len()];
     let spot = |t: IVec2, side: Side, along: Vec2| {
         let out = side.offset().as_vec2();
         let pos = t.as_vec2() + Vec2::splat(0.5) + out * (0.5 - SWITCH_INSET) + along;
         SwitchSpot { pos, normal: -out, tile: t, side }
     };
-    for b in &map.buildings {
-        for y in b.min.y..b.min.y + b.size.y {
-            for x in b.min.x..b.min.x + b.size.x {
-                let t = IVec2::new(x, y);
-                let r = map.tile(t).room;
-                if r == 0 || r as usize >= map.rooms.len() {
-                    continue;
-                }
-                for side in Side::ALL {
-                    let e = map.edge(t, side);
-                    if e == Edge::Wall && any_wall[r as usize].is_none() {
-                        any_wall[r as usize] = Some(spot(t, side, Vec2::ZERO));
+    // Furniture against the wall would hide the switch (a fridge, a wardrobe): keep clear of it.
+    let blocked = |t: IVec2| map.tile(t).feature == Feature::Furniture;
+    // The room's north and west walls face the camera from inside at its usual angle; its south
+    // and east walls are the ones the cutaways drop, where a switch can only lie on the stub.
+    let near_side = |side: Side| matches!(side, Side::S | Side::E);
+    // Each room's doorways (the tile inside), for how far a wall is from the nearest.
+    let mut doors: Vec<Vec<IVec2>> = vec![Vec::new(); map.rooms.len()];
+    let tiles = || map.buildings.iter().flat_map(|b| (b.min.y..b.min.y + b.size.y).flat_map(move |y| (b.min.x..b.min.x + b.size.x).map(move |x| IVec2::new(x, y))));
+    let room_of = |t: IVec2| {
+        let r = map.tile(t).room;
+        (r != 0 && (r as usize) < map.rooms.len()).then_some(r)
+    };
+    let way_in = |t: IVec2, side: Side, r: u16| matches!(map.edge(t, side), Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken | Edge::Arch) && map.tile(t + side.offset()).room != r;
+    for t in tiles() {
+        let Some(r) = room_of(t) else { continue };
+        if Side::ALL.into_iter().any(|side| way_in(t, side, r)) {
+            doors[r as usize].push(t);
+        }
+    }
+    let mut offer = |r: u16, score: u32, s: SwitchSpot| {
+        let slot = &mut best[r as usize];
+        if slot.map_or(true, |(b, _)| score < b) {
+            *slot = Some((score, s));
+        }
+    };
+    for t in tiles() {
+        let Some(r) = room_of(t) else { continue };
+        for side in Side::ALL {
+            if map.edge(t, side) == Edge::Wall {
+                // Any wall of the room: on the camera's side, as near a doorway as there is,
+                // before the wall beside a doorway that the cutaways drop.
+                let to_door = doors[r as usize].iter().map(|d| (*d - t).abs().element_sum() as u32).min().unwrap_or(20).min(20);
+                let score = if near_side(side) { 300 } else { 40 } + to_door + if blocked(t) { 1000 } else { 0 };
+                offer(r, score, spot(t, side, Vec2::ZERO));
+            }
+            if !way_in(t, side, r) {
+                continue;
+            }
+            // The wall beside the doorway, inside this room: a tile along the wall from the
+            // doorway's, nearest first, whose same side is a wall, toward the doorway.
+            let perp = IVec2::new(side.offset().y, side.offset().x);
+            for step in [perp, -perp] {
+                for k in 1..=4 {
+                    let n = t + step * k;
+                    if !map.in_bounds(n) || map.tile(n).room != r || map.edge(n, side) != Edge::Wall {
+                        break;
                     }
-                    let way_in = matches!(e, Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken | Edge::Arch) && map.tile(t + side.offset()).room != r;
-                    if !way_in || doorway[r as usize].is_some() {
-                        continue;
-                    }
-                    // The wall beside the doorway, inside this room: the tile next to the doorway's,
-                    // along the wall, whose same side is a wall.
-                    let perp = IVec2::new(side.offset().y, side.offset().x);
-                    for step in [perp, -perp] {
-                        let n = t + step;
-                        if map.in_bounds(n) && map.tile(n).room == r && map.edge(n, side) == Edge::Wall {
-                            doorway[r as usize] = Some(spot(n, side, -step.as_vec2() * SWITCH_TOWARD_DOOR));
-                            break;
-                        }
-                    }
+                    let score = k as u32 * 2 + if near_side(side) { 60 } else { 0 } + if blocked(n) { 1000 } else { 0 };
+                    offer(r, score, spot(n, side, -step.as_vec2() * SWITCH_TOWARD_DOOR));
                 }
             }
         }
     }
-    doorway.iter().zip(any_wall).enumerate().map(|(r, (d, w))| if r == 0 { None } else { d.or(w) }).collect()
+    best.into_iter().enumerate().map(|(r, b)| if r == 0 { None } else { b.map(|(_, s)| s) }).collect()
 }
 
 /// What is saved of the power (the `POWR` section).
@@ -512,7 +534,7 @@ mod tests {
         let w = world();
         let spots = w.power().spots();
         assert!(spots[0].is_none(), "outdoors has none");
-        let (mut rooms, mut by_door) = (0, 0);
+        let (mut rooms, mut by_door, mut behind, mut far) = (0, 0, 0, 0);
         for b in &w.map.buildings {
             for y in b.min.y..b.min.y + b.size.y {
                 for x in b.min.x..b.min.x + b.size.x {
@@ -527,15 +549,24 @@ mod tests {
                     assert_eq!(w.map.room_at(s.pos), r, "room {r}: inside its own room");
                     assert_eq!(w.map.room_at(s.pos + s.normal * 0.3), r, "room {r}: faces into it");
                     let perp = IVec2::new(s.side.offset().y, s.side.offset().x);
-                    if [perp, -perp].iter().any(|d| matches!(w.map.edge(t + *d, s.side), Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken | Edge::Arch)) {
+                    if [perp, -perp].iter().any(|d| (1..=4).any(|k| matches!(w.map.edge(t + *d * k, s.side), Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken | Edge::Arch))) {
                         by_door += 1;
+                    }
+                    if w.map.tile(t).feature == crate::map::Feature::Furniture {
+                        behind += 1;
+                    }
+                    if matches!(s.side, Side::N | Side::W) {
+                        far += 1;
                     }
                 }
             }
         }
         let with_tiles = (1..w.map.rooms.len()).filter(|&r| spots[r].is_some()).count();
         assert_eq!(rooms, with_tiles);
-        assert!(by_door * 10 >= rooms * 8, "{by_door} of {rooms} beside a doorway");
+        assert!(by_door * 10 >= rooms * 6, "{by_door} of {rooms} beside a doorway");
+        assert!(far * 10 >= rooms * 9, "{far} of {rooms} on a wall facing the camera");
+        assert!(behind * 20 <= rooms, "{behind} of {rooms} behind furniture");
+        eprintln!("{rooms} switches, {by_door} by a doorway, {behind} behind furniture, {far} on north or west walls");
         assert_eq!(switch_spots(&w.map), spots, "the same from the map alone");
     }
 
