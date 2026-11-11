@@ -121,15 +121,30 @@ pub struct ContainerSite {
     /// Footprint in tiles: `min..min+size`.
     pub min: IVec2,
     pub size: IVec2,
+    /// A dead zombie's body (`crate::corpses`): where it lies. Its reach is measured from round that
+    /// point, not from the tile `min`.
+    pub body: Option<Vec2>,
 }
 
 impl ContainerSite {
     pub fn centre(&self) -> Vec2 {
-        self.min.as_vec2() + self.size.as_vec2() * 0.5
+        self.body.unwrap_or_else(|| self.min.as_vec2() + self.size.as_vec2() * 0.5)
     }
 
-    /// Distance from `p` to the edge of the footprint (0 inside it).
+    /// The nearest point of it to `p` (a body: where it lies).
+    pub fn nearest(&self, p: Vec2) -> Vec2 {
+        match self.body {
+            Some(b) => b,
+            None => p.clamp(self.min.as_vec2(), self.min.as_vec2() + self.size.as_vec2()),
+        }
+    }
+
+    /// Distance from `p` to the edge of the footprint (0 inside it; a body: to
+    /// `crate::corpses::BODY_RADIUS` round where it lies).
     pub fn distance(&self, p: Vec2) -> f32 {
+        if let Some(b) = self.body {
+            return (b.distance(p) - crate::corpses::BODY_RADIUS).max(0.0);
+        }
         let lo = self.min.as_vec2();
         let hi = lo + self.size.as_vec2();
         p.clamp(lo, hi).distance(p)
@@ -151,7 +166,7 @@ pub fn find_sites(map: &TileMap, data: &ContainerData) -> Vec<ContainerSite> {
             let room = map.tile(f.min).room;
             let room_type = map.rooms.get(room as usize).map_or("", |r| r.room_type.as_str());
             if let Some(def) = data.lookup(&f.kind, room_type) {
-                out.push(ContainerSite { id: this, def, building: bi as u16, room, min: f.min, size: f.size });
+                out.push(ContainerSite { id: this, def, building: bi as u16, room, min: f.min, size: f.size, body: None });
             }
         }
     }

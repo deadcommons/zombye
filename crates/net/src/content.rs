@@ -192,6 +192,8 @@ pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig
     let loot = load_loot(data_dir, &items, &weapons, &containers)?;
     let recipes = load_recipes(data_dir, &items, &weapons)?;
     let population = load_population(data_dir)?;
+    // What zombies wear must be clothing there is.
+    zombye_sim::corpses::check_outfits(&population.outfits, &items).map_err(|e| format!("{}: {e}", data_dir.join("population.ron").display()))?;
     let street_props = load_street_props(data_dir)?;
     let power = load_power(data_dir)?;
     let mut config = zombye_sim::WorldConfig::new(seed, 0, templates)
@@ -205,6 +207,16 @@ pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig
         .with_power(power);
     config.zombies = None;
     Ok(config)
+}
+
+/// A seed for a new game's loot ([`zombye_sim::WorldConfig::loot_seed`]): different every
+/// call, from the process's random hasher keys and the clock. Kept under 2^48 so it reads back
+/// from the settings' RON exactly.
+pub fn fresh_loot_seed() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
+    h.finish() & ((1 << 48) - 1)
 }
 
 #[cfg(test)]

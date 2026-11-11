@@ -13,7 +13,7 @@ use std::f32::consts::FRAC_PI_2;
 use bevy::light::NotShadowCaster;
 use bevy::mesh::MeshTag;
 use bevy::prelude::*;
-use zombye_sim::map::{Building, CHUNK_SIZE, Edge, OwnedEdge, RoofStyle, TileMap};
+use zombye_sim::map::{Building, CHUNK_SIZE, Edge, EdgeRef, OwnedEdge, RoofStyle, TileMap};
 
 use crate::Options;
 use crate::camera::IsoCamera;
@@ -57,6 +57,9 @@ struct Streamer {
     edges: HashMap<(IVec2, OwnedEdge), Entity>,
     /// Where each room's light switch is (the sim's rule on our map copy), worked out once.
     switches: Option<Vec<Option<zombye_sim::power::SwitchSpot>>>,
+    /// The blind on a ground-floor edge that has one (`TileMap::blinds`): a child of a door's leaf,
+    /// or on its own inside a window.
+    blinds: HashMap<(IVec2, OwnedEdge), Entity>,
 }
 
 #[derive(Resource)]
@@ -64,6 +67,10 @@ struct SharedMeshes {
     door: Handle<Mesh>,
     /// A light switch on its wall, toggle down (off) and up (on): +z out of the wall, centred.
     switch: [Handle<Mesh>; 2],
+    /// A door with a glass panel in it (`TileMap::glazed`).
+    door_glazed: Handle<Mesh>,
+    /// A roller blind's cloth, 1 m wide and 1 m down from its roller (scaled to its opening).
+    blind: Handle<Mesh>,
     pane: Handle<Mesh>,
     pane_lit: Handle<Mesh>,
     shards: Handle<Mesh>,
@@ -188,18 +195,32 @@ impl Plugin for WorldRenderPlugin {
         app.init_resource::<Streamer>()
             .add_systems(Startup, setup_shared)
             .add_systems(PostUpdate, fade_chunks.after(materials::update_params))
-            .add_systems(Update, (stream, apply_edge_changes, apply_edge_damage, relight_panes, update_switches, animate_doors, animate_panes, hide_upper_floors, cut_edge_pieces).chain().after(crate::cutaway::CutawaySystems).after(crate::lights::sync_lit_rooms));
+            .add_systems(Update, (stream, apply_edge_changes, sync_blinds, apply_edge_damage, relight_panes, update_switches, animate_doors, animate_panes, hide_upper_floors, cut_edge_pieces, animate_blinds).chain().after(crate::cutaway::CutawaySystems).after(crate::lights::sync_lit_rooms));
     }
 }
 
 fn setup_shared(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, options: Res<Options>, graphics: Res<crate::graphics::Graphics>) {
-    // Door leaf with its hinge at the origin, lying along +x.
+    // Door leaf with its hinge at the origin, lying along +x; glazed, with a dark glass panel in
+    // its upper half framed in the leaf's wood.
+    let p = pal();
+    let door_mesh = |glazed: bool| {
+        let mut mb = MeshBuilder::default();
+        mb.set_tag(CutTag { kind: CutKind::Structure, ..default() });
+        mb.add_box(Vec3::new(0.04, 0.0, -0.025), Vec3::new(0.96, 2.05, 0.025), meshgen::same(p.door_leaf));
+        mb.add_box(Vec3::new(0.8, 1.0, -0.05), Vec3::new(0.86, 1.06, 0.05), meshgen::same(p.door_handle));
+        if glazed {
+            mb.add_box(Vec3::new(DOOR_GLASS.0, DOOR_GLASS.2, -0.028), Vec3::new(DOOR_GLASS.1, DOOR_GLASS.3, 0.028), meshgen::same(p.door_glass));
+        }
+        mb.build()
+    };
+    let door = meshes.add(door_mesh(false));
+    let door_glazed = meshes.add(door_mesh(true));
+    // A roller blind: cloth hanging from its roller at the origin, along +x, down to a rail.
     let mut mb = MeshBuilder::default();
     mb.set_tag(CutTag { kind: CutKind::Structure, ..default() });
-    let p = pal();
-    mb.add_box(Vec3::new(0.04, 0.0, -0.025), Vec3::new(0.96, 2.05, 0.025), meshgen::same(p.door_leaf));
-    mb.add_box(Vec3::new(0.8, 1.0, -0.05), Vec3::new(0.86, 1.06, 0.05), meshgen::same(p.door_handle));
-    let door = meshes.add(mb.build());
+    mb.add_box(Vec3::new(0.0, -1.0, -0.006), Vec3::new(1.0, 0.0, 0.006), meshgen::same(p.blind));
+    mb.add_box(Vec3::new(0.0, -1.0, -0.012), Vec3::new(1.0, -0.96, 0.012), meshgen::same(p.blind_rail));
+    let blind = meshes.add(mb.build());
 
     // Window glass along +x from the edge's start, filling the frame between sill and header.
     // Structure, like door leaves: dimmed but readable in unseen rooms, down to the stub with its wall.
@@ -281,7 +302,7 @@ fn setup_shared(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut ma
         mb.add_box(Vec3::new(-0.05, y, 0.03), Vec3::new(0.05, y + 0.115, 0.075), meshgen::same(c));
         meshes.add(mb.build())
     });
-    commands.insert_resource(SharedMeshes { switch, door, pane, pane_lit, shards, lips, door_cracks, pane_cracks, furniture, contact });
+    commands.insert_resource(SharedMeshes { switch, door, door_glazed, blind, pane, pane_lit, shards, lips, door_cracks, pane_cracks, furniture, contact });
 }
 
 /// Grey-box damage for a door leaf (dark cracks, and pale splintered wood when it's nearly gone)
@@ -448,6 +469,10 @@ fn stream(
             }
             for key in render.edge_keys {
                 streamer.edges.remove(&key);
+                // A door's blind went with its leaf; a window's is on its own.
+                if let Some(b) = streamer.blinds.remove(&key) {
+                    commands.entity(b).try_despawn();
+                }
             }
         }
     }
@@ -652,7 +677,8 @@ fn spawn_building(
     // Door leaves and window panes, one entity each.
     for (owner, which, kind, rooms) in ground_edges(map, index, b) {
         let hp = damage.0.get(&(owner, which)).copied().unwrap_or(1.0);
-        if let Some(e) = spawn_edge_piece(commands, shared, mats, owner, which, 0.0, kind, hp, rooms, lit_rooms) {
+        let glazed = map.glazed(EdgeRef::new(owner, which));
+        if let Some(e) = spawn_edge_piece(commands, shared, mats, owner, which, 0.0, kind, hp, rooms, lit_rooms, glazed) {
             edges.insert((owner, which), e);
             render.edge_keys.push((owner, which));
             render.lower.push(e);
@@ -665,7 +691,7 @@ fn spawn_building(
     }
     for (level, e) in &b.upper_edges {
         let base = STOREY * *level as f32;
-        if let Some(d) = spawn_edge_piece(commands, shared, mats, e.tile, e.edge, base, e.kind, 1.0, e.rooms, lit_rooms) {
+        if let Some(d) = spawn_edge_piece(commands, shared, mats, e.tile, e.edge, base, e.kind, 1.0, e.rooms, lit_rooms, false) {
             commands.entity(d).insert(MeshTag::new(0));
             render.upper.push(d);
         }
@@ -703,9 +729,9 @@ fn door_rotations(which: OwnedEdge) -> (Quat, Quat) {
 
 /// The door leaf or window pane for an edge, in the state the map has it now (`None` for edges
 /// with neither), with cracks for `hp` (fraction of its hit points left); a window between `rooms`
-/// glows at night while one of them is lit.
+/// glows at night while one of them is lit, a `glazed` door has glass in it.
 #[allow(clippy::too_many_arguments)]
-fn spawn_edge_piece(commands: &mut Commands, shared: &SharedMeshes, mats: &WorldMaterials, owner: IVec2, which: OwnedEdge, base: f32, kind: Edge, hp: f32, rooms: (u16, u16), lit_rooms: &crate::lights::LitRooms) -> Option<Entity> {
+fn spawn_edge_piece(commands: &mut Commands, shared: &SharedMeshes, mats: &WorldMaterials, owner: IVec2, which: OwnedEdge, base: f32, kind: Edge, hp: f32, rooms: (u16, u16), lit_rooms: &crate::lights::LitRooms, glazed: bool) -> Option<Entity> {
     let (closed, open_rot) = door_rotations(which);
     let start = owner.as_vec2();
     let piece = EdgePiece { key: (owner, which), ground: base == 0.0, shown: kind != Edge::DoorBroken };
@@ -713,7 +739,8 @@ fn spawn_edge_piece(commands: &mut Commands, shared: &SharedMeshes, mats: &World
         Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken => {
             let open = kind == Edge::DoorOpen;
             let tf = door_leaf_at_rest((owner, which), base, open);
-            let e = commands.spawn((Mesh3d(shared.door.clone()), MeshMaterial3d(mats.building.clone()), tf, DoorLeaf { closed, open_rot, open, key: (owner, which), base }, piece)).id();
+            let mesh = if glazed { shared.door_glazed.clone() } else { shared.door.clone() };
+            let e = commands.spawn((Mesh3d(mesh), MeshMaterial3d(mats.building.clone()), tf, DoorLeaf { closed, open_rot, open, key: (owner, which), base }, piece)).id();
             add_cracks(commands, shared, mats, e, true, hp);
             Some(e)
         }
@@ -727,6 +754,118 @@ fn spawn_edge_piece(commands: &mut Commands, shared: &SharedMeshes, mats: &World
             Some(e)
         }
         _ => None,
+    }
+}
+
+/// The glass panel in a glazed door's leaf, in the leaf's frame: x from, x to, y from, y to.
+const DOOR_GLASS: (f32, f32, f32, f32) = (0.22, 0.78, 1.05, 1.85);
+
+/// A roller blind on the inside of a ground-floor window or glazed door, rolled down to `full`
+/// metres or up to `up` (`TileMap::blinds`).
+#[derive(Component)]
+struct BlindPiece {
+    key: (IVec2, OwnedEdge),
+    down: bool,
+    /// How far it hangs now, eased toward `full` or `up`.
+    drop: f32,
+    full: f32,
+    up: f32,
+    /// On a door's leaf (it swings with it); a window's stands on its own and goes with its wall.
+    door: bool,
+}
+
+/// Which way is in from edge `e`, the side its blind hangs on: +1 or -1 along the axis across it
+/// (z for a north edge, x for a west one).
+fn inward(map: &TileMap, e: EdgeRef) -> f32 {
+    if zombye_sim::blinds::inside(map, e) == e.tile { 1.0 } else { -1.0 }
+}
+
+/// Where a blind on edge `e` hangs and how far: on a door, in its leaf's frame (`door`); on a
+/// window, in the world.
+fn blind_place(map: &TileMap, e: EdgeRef, door: bool) -> (Transform, f32, f32) {
+    let s = inward(map, e);
+    if door {
+        // The leaf's +z is the world's +z on a north edge and its -x on a west one.
+        let z = if e.edge == OwnedEdge::North { s } else { -s } * 0.034;
+        let (x0, x1, y0, y1) = DOOR_GLASS;
+        let tf = Transform { translation: Vec3::new(x0 - 0.04, y1 + 0.06, z), rotation: Quat::IDENTITY, scale: Vec3::new(x1 - x0 + 0.08, 1.0, 1.0) };
+        (tf, y1 - y0 + 0.1, 0.07)
+    } else {
+        let (closed, _) = door_rotations(e.edge);
+        let (along, across) = if e.edge == OwnedEdge::North { (Vec3::X, Vec3::Z) } else { (Vec3::Z, Vec3::X) };
+        let start = Vec3::new(e.tile.x as f32, WINDOW_HEAD - 0.02, e.tile.y as f32);
+        let tf = Transform { translation: start + along * 0.05 + across * s * (WALL_T + 0.03), rotation: closed, scale: Vec3::new(0.9, 1.0, 1.0) };
+        (tf, WINDOW_HEAD - WINDOW_SILL - 0.06, 0.12)
+    }
+}
+
+/// Blinds fitted, rolled or taken down on the client's map copy, for the ground-floor edges
+/// loaded now.
+fn sync_blinds(
+    mut commands: Commands,
+    map: Res<ClientMap>,
+    mats: Option<Res<WorldMaterials>>,
+    shared: Option<Res<SharedMeshes>>,
+    mut streamer: ResMut<Streamer>,
+    mut blinds: Query<&mut BlindPiece>,
+    leaves: Query<(), With<DoorLeaf>>,
+) {
+    let (Some(mats), Some(shared)) = (mats, shared) else { return };
+    if !map.is_changed() && !streamer.is_changed() {
+        return;
+    }
+    let map = &map.0;
+    let edges: Vec<((IVec2, OwnedEdge), Entity)> = streamer.edges.iter().map(|(k, e)| (*k, *e)).collect();
+    for (key, piece) in edges {
+        let e = EdgeRef::new(key.0, key.1);
+        match (map.blind(e), streamer.blinds.get(&key).copied()) {
+            (None, Some(b)) => {
+                commands.entity(b).try_despawn();
+                streamer.blinds.remove(&key);
+            }
+            (Some(down), Some(b)) => {
+                if let Ok(mut bp) = blinds.get_mut(b)
+                    && bp.down != down
+                {
+                    bp.down = down;
+                }
+            }
+            (Some(down), None) => {
+                let door = leaves.contains(piece);
+                let (tf, full, up) = blind_place(map, e, door);
+                let mut tf = tf;
+                let drop = if down { full } else { up };
+                tf.scale.y = drop;
+                let bp = BlindPiece { key, down, drop, full, up, door };
+                let mut b = commands.spawn((Mesh3d(shared.blind.clone()), MeshMaterial3d(mats.building.clone()), tf, bp));
+                if door {
+                    b.insert(ChildOf(piece));
+                }
+                let b = b.id();
+                streamer.blinds.insert(key, b);
+            }
+            (None, None) => {}
+        }
+    }
+}
+
+/// Blinds roll down and up; a window's goes with its wall when the wall is cut away (a door's
+/// follows its leaf).
+fn animate_blinds(time: Res<Time>, cutaway: Res<crate::cutaway::Cutaway>, mut blinds: Query<(&mut BlindPiece, &mut Transform, &mut Visibility)>) {
+    let t = 1.0 - (-6.0 * time.delta_secs()).exp();
+    for (mut bp, mut tf, mut vis) in &mut blinds {
+        let target = if bp.down { bp.full } else { bp.up };
+        let left = target - bp.drop;
+        if left != 0.0 {
+            bp.drop = if left.abs() < 0.001 { target } else { bp.drop + left * t };
+            tf.scale.y = bp.drop;
+        }
+        if !bp.door {
+            let want = if cutaway.amount(bp.key) > 0.02 { Visibility::Hidden } else { Visibility::Inherited };
+            if *vis != want {
+                *vis = want;
+            }
+        }
     }
 }
 

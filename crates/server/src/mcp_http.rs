@@ -939,7 +939,7 @@ mod tests {
         assert_eq!(
             play,
             [
-                "attack", "buildings", "climb", "containers_near", "craft", "drop", "edge", "equip", "free", "gesture", "group", "health", "heard", "interact", "inventory", "items", "light", "loot", "move_item", "move_player", "observe",
+                "attack", "blind", "buildings", "climb", "containers_near", "craft", "drop", "edge", "equip", "free", "gesture", "group", "health", "heard", "interact", "inventory", "items", "light", "loot", "move_item", "move_player", "observe",
                 "pick_up", "recipes", "regions", "respawn", "restrain", "say", "screenshot", "search", "search_player", "shove", "skills", "sleep", "smash_window", "stats", "step_ticks", "stomp", "struggle", "take", "take_from", "treat", "unequip",
                 "use", "weapons", "wear", "zombie",
             ],

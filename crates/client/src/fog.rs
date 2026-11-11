@@ -10,6 +10,10 @@
 //! can't actually see into. Zombies outside the mask aren't drawn at all. A view cone makes what's
 //! behind you dimmer, and darkness shortens how far you can see: at night only a few metres,
 //! except along a held flashlight's beam or round a candle (#83).
+//!
+//! Two rules, kept apart: **what is drawn** (zombies, players, items: [`FogState::visibility`], the
+//! constants below) and **how the ground looks** ([`FogLook`], from the data folder's `fog.ron`: a
+//! soft cone only a little brighter than what's behind you, and how dim what's out of sight is).
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::ImageSampler;
@@ -25,10 +29,97 @@ use crate::server_link::ClientMap;
 const TEXELS: u32 = 256;
 const TEXEL_M: f32 = 0.5;
 const RAYS: usize = 1024;
-/// Always see this far around you, even behind.
+/// Always see this far around you, even behind (what is drawn; the look is [`FogLook`]'s).
 const CLOSE_RADIUS: f32 = 2.5;
-/// Brightness multiplier for what's behind you.
+/// How visible what's behind you is (what is drawn: under the 0.35 a zombie needs to show).
 const BEHIND: f32 = 0.28;
+
+/// What is out of sight: its colour cast, how much darker it is (0..1) and how much of its colour
+/// it keeps (0 grey, 1 all).
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Unseen {
+    pub tint: (f32, f32, f32),
+    pub dark: f32,
+    pub colour: f32,
+}
+
+/// How the fog of war looks: `fog.ron` in the data folder (each field described there; one left
+/// out takes its default, no file at all the shipped one).
+#[derive(Resource, Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FogLook {
+    pub behind: f32,
+    pub cone_full: f32,
+    pub cone_behind: f32,
+    pub close_radius: f32,
+    pub close_fade: f32,
+    pub range_fade_from: f32,
+    pub unseen_day: Unseen,
+    pub unseen_night: Unseen,
+}
+
+const SHIPPED: &str = include_str!("../../../assets/data/fog.ron");
+
+impl Default for FogLook {
+    fn default() -> Self {
+        FogLook {
+            behind: 0.5,
+            cone_full: 60.0,
+            cone_behind: 125.0,
+            close_radius: 1.0,
+            close_fade: 4.0,
+            range_fade_from: 0.5,
+            unseen_day: Unseen { tint: (0.94, 0.9, 0.84), dark: 0.4, colour: 0.85 },
+            unseen_night: Unseen { tint: (0.55, 0.6, 0.75), dark: 0.86, colour: 0.25 },
+        }
+    }
+}
+
+impl FogLook {
+    pub fn parse(text: &str) -> Result<FogLook, String> {
+        let look: FogLook = ron::from_str(text).map_err(|e| e.to_string())?;
+        let unit = |name: &str, v: f32| if (0.0..=1.0).contains(&v) { Ok(()) } else { Err(format!("{name} must be from 0 to 1, not {v}")) };
+        unit("behind", look.behind)?;
+        unit("range_fade_from", look.range_fade_from)?;
+        for (name, u) in [("unseen_day", look.unseen_day), ("unseen_night", look.unseen_night)] {
+            unit(&format!("{name}.dark"), u.dark)?;
+            unit(&format!("{name}.colour"), u.colour)?;
+            for c in [u.tint.0, u.tint.1, u.tint.2] {
+                if !(0.0..=2.0).contains(&c) {
+                    return Err(format!("{name}.tint must be from 0 to 2, not {c}"));
+                }
+            }
+        }
+        if !(look.cone_full >= 0.0 && look.cone_full < look.cone_behind && look.cone_behind <= 180.0) {
+            return Err(format!("the cone must have 0 <= cone_full < cone_behind <= 180, not {} and {}", look.cone_full, look.cone_behind));
+        }
+        if !(look.close_radius >= 0.0 && look.close_radius <= 50.0 && look.close_fade >= 0.0 && look.close_fade <= 50.0) {
+            return Err(format!("close_radius and close_fade must be from 0 to 50, not {} and {}", look.close_radius, look.close_fade));
+        }
+        Ok(look)
+    }
+
+    /// `fog.ron` from the data folder `dir`, the shipped one if it has none.
+    pub fn load(dir: &std::path::Path) -> Result<FogLook, String> {
+        let path = dir.join("fog.ron");
+        match std::fs::read_to_string(&path) {
+            Ok(text) => FogLook::parse(&text).map_err(|e| format!("{}: {e}", path.display())),
+            Err(_) => Ok(FogLook::parse(SHIPPED).expect("the shipped fog.ron is good (a test checks)")),
+        }
+    }
+
+    /// What's out of sight at this daylight (0 night, 1 day): rgb its tint, w how dark it gets.
+    pub fn unseen_tint(&self, daylight: f32) -> Vec4 {
+        let v = |u: Unseen| Vec4::new(u.tint.0, u.tint.1, u.tint.2, u.dark);
+        v(self.unseen_night).lerp(v(self.unseen_day), daylight.clamp(0.0, 1.0))
+    }
+
+    /// How much of its colour an unseen surface keeps at this daylight (the rest goes grey).
+    pub fn unseen_colour(&self, daylight: f32) -> f32 {
+        lerp(self.unseen_night.colour, self.unseen_day.colour, daylight.clamp(0.0, 1.0))
+    }
+}
 /// How far you see at night with no light in hand (m).
 const NIGHT_SIGHT: f32 = 10.0;
 
@@ -42,9 +133,12 @@ pub struct FogState {
     pub size_m: f32,
     /// Each ray's reach in metres, one `R32Float` texel per ray (`RAYS` × 1).
     pub rays: Handle<Image>,
-    /// For the shader: (eye x, eye z, sight range, beam reach), (facing x, z, cone cos lo, hi),
-    /// (beam cos, behind, close radius, 1 = in use).
+    /// For the shader, the look ([`FogLook`]): (eye x, eye z, sight range, beam reach), (facing x,
+    /// z, cone cos lo, hi), (beam cos, behind, close radius, 1 = in use).
     pub sight: [Vec4; 3],
+    /// More of the look for the shader: (metres the cone eases in over past the close radius, the
+    /// share of the sight range the far fade starts at).
+    pub soft: Vec2,
     /// What [`FogState::visibility`] works from; `None` until the first update.
     view: Option<View>,
     /// What the rays were last cast with (eye, reach), and the origin the mask texture was last
@@ -150,10 +244,12 @@ impl Plugin for FogPlugin {
             size_m: TEXELS as f32 * TEXEL_M,
             rays,
             sight: [Vec4::ZERO; 3],
+            soft: Vec2::new(0.0, 0.5),
             view: None,
             cast: None,
             filled: None,
         })
+            .init_resource::<FogLook>()
             .add_systems(Update, update_fog);
     }
 }
@@ -162,6 +258,7 @@ pub fn update_fog(
     map: Res<ClientMap>,
     lights: Res<crate::lights::NightLights>,
     daylight: Res<Daylight>,
+    look: Res<FogLook>,
     link: Res<crate::server_link::ServerLink>,
     join: Res<crate::server_link::JoinInfo>,
     me: Res<crate::player::LocalPlayer>,
@@ -244,7 +341,10 @@ pub fn update_fog(
             }
         }
     }
-    fog.sight = [Vec4::new(eye.x, eye.y, max, beam), Vec4::new(facing.x, facing.y, cone_lo, cone_hi), Vec4::new(beam_cos, BEHIND, CLOSE_RADIUS, 1.0)];
+    // The look: its own, softer cone (tiredness narrows it as it does the real one).
+    let (look_lo, look_hi) = ((look.cone_behind.to_radians() * narrow).cos(), (look.cone_full.to_radians() * narrow).cos());
+    fog.sight = [Vec4::new(eye.x, eye.y, max, beam), Vec4::new(facing.x, facing.y, look_lo, look_hi), Vec4::new(beam_cos, look.behind, look.close_radius, 1.0)];
+    fog.soft = Vec2::new(look.close_fade, look.range_fade_from);
 }
 
 /// The sight rays (`vision::visibility_rays`, the same values), cast in runs on the task pool: a
@@ -350,7 +450,7 @@ mod tests {
                 let far = |i: usize| (origin + (Vec2::new((i as u32 % TEXELS) as f32, (i as u32 / TEXELS) as f32) + 0.5) * TEXEL_M).distance(eye) > 23.0;
                 assert!(old.iter().enumerate().any(|(i, v)| *v > 0 && far(i)), "a light past the night's sight and the beam shows");
             }
-            let fog = FogState { image: Handle::default(), origin, size_m: 128.0, rays: Handle::default(), sight: [Vec4::ZERO; 3], view: Some(view), cast: None, filled: None };
+            let fog = FogState { image: Handle::default(), origin, size_m: 128.0, rays: Handle::default(), sight: [Vec4::ZERO; 3], soft: Vec2::ZERO, view: Some(view), cast: None, filled: None };
             for ty in 0..TEXELS {
                 for tx in 0..TEXELS {
                     // Anywhere in the texel, its corners included.
@@ -362,6 +462,27 @@ mod tests {
             }
             assert_eq!(fog.visibility(origin - Vec2::splat(0.1)), 0.0, "off the mask");
         }
+    }
+
+    /// The shipped fog.ron is the defaults, mistakes are named, and the look is subtle: what's
+    /// behind you is nearly as bright as what's ahead, and by day what's out of sight is a
+    /// little dimmer, not a dark hole (at night it stays nearly black, #83).
+    #[test]
+    fn the_shipped_look_is_subtle() {
+        let look = FogLook::parse(SHIPPED).unwrap();
+        assert_eq!(look, FogLook::default());
+        // Behind you is dimmer enough to see the cone, never a hard wedge or a ring.
+        assert!((0.4..=0.7).contains(&look.behind) && look.close_fade >= 3.0);
+        assert!(look.cone_behind - look.cone_full >= 45.0);
+        let day = look.unseen_tint(1.0);
+        assert!(day.w <= 0.45 && day.x > day.z && look.unseen_colour(1.0) >= 0.8, "{day}");
+        assert_eq!(look.unseen_tint(0.0), Vec4::new(0.55, 0.6, 0.75, 0.86));
+        assert_eq!(look.unseen_colour(0.0), 0.25);
+        assert_eq!(FogLook::parse("(behind: 0.5)").unwrap().behind, 0.5);
+        assert!(FogLook::parse("(behind: 1.5)").unwrap_err().contains("behind"));
+        assert!(FogLook::parse("(cone_full: 170, cone_behind: 90)").unwrap_err().contains("cone"));
+        assert!(FogLook::parse("(unseen_day: (tint: (1, 1, 1), dark: 2, colour: 1))").unwrap_err().contains("unseen_day.dark"));
+        assert!(FogLook::parse("(bhind: 0.5)").is_err());
     }
 
     #[test]

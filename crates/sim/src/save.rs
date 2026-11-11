@@ -120,6 +120,13 @@ const RUN2: [u8; 4] = *b"RUN2";
 const KNOC: [u8; 4] = *b"KNOC";
 /// Climbs under way (E over a fence or through a window), by player id; only when there are any.
 const CLMB: [u8; 4] = *b"CLMB";
+/// Blinds on windows and glazed doors and whether each is down (`crate::blinds`), every one, by
+/// edge key, and the doors with glass in them ([`BlindSave`]). Optional: a save without it (from before blinds) keeps the ones its map was
+/// generated with, so adding it didn't change the format version.
+const BLND: [u8; 4] = *b"BLND";
+
+/// The `BLND` section: every blind (edge key, down) and every glazed door (edge key).
+type BlindSave = (Vec<((i32, i32, u8), bool)>, Vec<(i32, i32, u8)>);
 
 /// [`crate::run::RunStats`] as the `RUNS` section held it, before players killed were counted.
 #[derive(Deserialize)]
@@ -332,6 +339,11 @@ struct Settings {
     skills: SkillTuning,
     #[serde(default)]
     power: crate::power::PowerDef,
+    /// The seed loot rolls from (`WorldConfig::loot_seed`); none in older saves: the world seed.
+    #[serde(default)]
+    loot_seed: Option<u64>,
+    #[serde(default)]
+    blinds: crate::blinds::BlindTuning,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -643,6 +655,7 @@ impl World {
             // Replication queues and last tick's outputs: a (re)joining client gets everything.
             stats: _,
             edge_changes: _,
+            blind_changes: _,
             edge_hp_dirty: _,
             combat_events: _,
             attack_events: _,
@@ -728,6 +741,8 @@ impl World {
             needs: config.needs,
             skills: config.skills.clone(),
             power: config.power.clone(),
+            loot_seed: config.loot_seed,
+            blinds: config.blinds.clone(),
         };
         w.section(CONF, ron::to_string(&settings).expect("settings serialize").as_bytes());
         let layout = if *map_custom {
@@ -796,6 +811,12 @@ impl World {
         if away != AwaySave::default() {
             w.section(AWAY, &encode(&away));
         }
+        // Every blind (the map's own `blinds` aren't stored with its tiles), even none: the save's
+        // blinds replace those the map is generated with.
+        // The glazed doors too: a map stored whole (or regenerated anyway) needn't have them where
+        // the generated one does.
+        let blinds: BlindSave = (map.blinds.iter().map(|(k, v)| (*k, *v)).collect(), map.glazed.iter().copied().collect());
+        w.section(BLND, &encode(&blinds));
         // Tied hands and groups (#73); none, no section.
         let bonds: BondSave =
             players.iter().filter_map(|p| p.restraint.map(|r| (p.id, config.items.get(r.item as usize).map(|d| d.id.clone()).unwrap_or_default(), r.by, r.struggled, r.struggling))).collect();
@@ -857,6 +878,9 @@ impl World {
         config.skills = settings.skills;
         config.power = settings.power;
         config.power.validate().map_err(|why| save_check::invalid(format!("power settings: {why}")))?;
+        config.loot_seed = settings.loot_seed;
+        settings.blinds.check().map_err(save_check::invalid)?;
+        config.blinds = settings.blinds;
         save_check::check_settings(text, &config)?;
         let map_save: MapSave = decode(MAPD, r.expect(MAPD)?)?;
         let mut ws: WorldSave = decode(WRLD, r.expect(WRLD)?)?;
@@ -927,6 +951,10 @@ impl World {
                     })
                     .collect();
                 map.prop_kinds = kinds;
+                // Glazed doors and blinds aren't stored with the tiles: the generated map's (the
+                // `BLND` section, if any, replaces the blinds below).
+                map.glazed = std::mem::take(&mut w.map.glazed);
+                map.blinds = std::mem::take(&mut w.map.blinds);
                 w.map = map;
                 // Containers are the stored map's furniture, not the generated one's.
                 w.sites = crate::containers::find_sites(&w.map, &w.config.containers);
@@ -995,6 +1023,7 @@ impl World {
         let mut nights: Option<Vec<(u32, crate::firstnight::FirstNight)>> = None;
         let mut bonds: Option<BondSave> = None;
         let mut groups: Option<crate::groups::Groups> = None;
+        let mut blinds: Option<BlindSave> = None;
         loop {
             let (tag, payload) = r.next()?;
             if tag == END {
@@ -1046,11 +1075,15 @@ impl World {
                 power = Some(decode(POWR, payload)?);
                 continue;
             }
+            if tag == BLND && blinds.is_none() {
+                blinds = Some(decode(BLND, payload)?);
+                continue;
+            }
             if tag == MODS && script.is_none() {
                 script = Some(decode(MODS, payload)?);
                 continue;
             }
-            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || power.is_some() {
+            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || power.is_some() || blinds.is_some() {
                 return Err(corrupt(format!("unexpected {} section", tag_name(tag))));
             }
             let block: ZombieBlock = decode(ZOMB, payload)?;
@@ -1083,6 +1116,41 @@ impl World {
                 return Err(save_check::invalid(format!("player {id}: knocked back for {} s (dead: {})", knock.timer, p.dead)));
             }
             p.knock = Some(knock);
+        }
+        // Blinds: the save's replace the generated ones. One on an edge that takes none (a map
+        // regenerated anyway) is dropped, else the save is refused.
+        if let Some((list, glazed)) = blinds {
+            // Glass in doors first: the save's, on what are doors on this map.
+            let mut doors = std::collections::BTreeSet::new();
+            for key in glazed {
+                let e = crate::world::edge_of_key(key);
+                let door = |k: crate::map::Edge| k.is_door() || k == crate::map::Edge::DoorBroken;
+                if !w.map.in_bounds(e.tile) || key.2 > 1 || !door(w.map.owned_edge(e.tile, e.edge)) {
+                    if new_map {
+                        continue;
+                    }
+                    return Err(save_check::invalid(format!("glass in a door at {} {:?}, where there's no door", e.tile, e.edge)));
+                }
+                doors.insert(key);
+            }
+            w.map.glazed = doors;
+            let mut kept = std::collections::BTreeMap::new();
+            let mut dropped = 0;
+            for (key, down) in list {
+                let e = crate::world::edge_of_key(key);
+                if !w.map.in_bounds(e.tile) || key.2 > 1 || !w.map.takes_blind(e) {
+                    if new_map {
+                        dropped += 1;
+                        continue;
+                    }
+                    return Err(save_check::invalid(format!("a blind at {} {:?}, where there's no window or glass door ({:?})", e.tile, e.edge, w.map.owned_edge(e.tile, e.edge))));
+                }
+                kept.insert(key, down);
+            }
+            if dropped > 0 {
+                notes.push(format!("{dropped} blinds dropped: their windows or doors aren't on the new map"));
+            }
+            w.map.blinds = kept;
         }
         for (id, c) in climbs.unwrap_or_default() {
             let (map, give_up) = (&w.map, w.config.climb.give_up_secs);

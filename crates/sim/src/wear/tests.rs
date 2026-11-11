@@ -193,9 +193,11 @@ fn practised_hands_wear_a_weapon_slower() {
         }
         hand(&w, id).unwrap().used as f32
     };
-    let (new, old) = (knocks(0), knocks(5));
+    // Level 10 (40% less likely; level 5's 20% sat right on the bound, so which rolls the hashes
+    // gave decided it).
+    let (new, old) = (knocks(0), knocks(10));
     assert!((new / 120.0 - 0.5).abs() < 0.12, "{new} knocks in 120 hits at 0.5");
-    assert!(old < new * 0.8, "level 5: {old} against {new}");
+    assert!(old < new * 0.8, "level 10: {old} against {new}");
 }
 
 #[test]

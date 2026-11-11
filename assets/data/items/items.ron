@@ -92,6 +92,8 @@
     // Restraints (#73): `restrains` ties a survivor's hands; `ties_once` is used up, and has to be cut off.
     (id: "rope", name: "Rope", category: Material, weight_kg: 0.8, volume_l: 1.5, stack: 2, tags: ["restrains"], color: (0.7, 0.6, 0.4)),
     (id: "cable_tie", name: "Cable tie", category: Material, weight_kg: 0.01, volume_l: 0.01, stack: 10, tags: ["restrains", "ties_once"], color: (0.12, 0.12, 0.13)),
+    // A roller blind, rolled up: fitted from inside to a window or a glass door (Shift+F, or its menu), it hides the glass when down.
+    (id: "roller_blind", name: "Roller blind", category: Tool, weight_kg: 1.1, volume_l: 2.5, tags: ["blind"], color: (0.85, 0.81, 0.7)),
 
     // ---- Light ---------------------------------------------------------------------------------
     (id: "flashlight", name: "Flashlight", category: Light, weight_kg: 0.25, volume_l: 0.3, tags: ["light_source"],

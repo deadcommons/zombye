@@ -288,7 +288,7 @@ impl World {
                     continue;
                 }
                 let d = v.pos.distance(s.pos);
-                if d > s.radius || (d > s.radius * muffle && !line_of_sight(&self.map, v.pos, s.pos)) {
+                if d > s.radius || (d > s.radius * muffle && !crate::vision::sound_line(&self.map, v.pos, s.pos)) {
                     continue;
                 }
                 let last = a.told.get(&(v.id, by)).copied();

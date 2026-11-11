@@ -48,6 +48,9 @@ pub enum Intent {
     /// Climb the fence or open or broken window the player faces, if one is within reach
     /// (`World::player_climb`; E). Movement then takes it across by itself.
     Climb { player: u32 },
+    /// Roll up or down, fit or take down the blind of the window or glass door the player faces
+    /// from inside (`World::player_blind`; Shift+F, or a blind's menu).
+    Blind { player: u32, op: zombye_sim::BlindOp },
     /// Smash the window the player faces (shut or open), if it's within reach. Loud.
     SmashWindow { player: u32 },
     /// Flip the light switch of the room the player stands in (`on`: to that; `None`: the other
@@ -154,6 +157,12 @@ pub enum Intent {
     /// holding a gun sends it each tick it aims. (Reloading has no intent of its own: it is `Use`
     /// of the gun in hand, and filling a magazine `Use` of the magazine.)
     Aim { player: u32, pitch: f32 },
+    /// Turn to `facing` (radians) and then do `then`, an action of the same player (a right-click
+    /// on something in the world: open the door, roll the blind, climb the window under the
+    /// pointer). The server turns the player (`World::set_facing`) and applies `then` as if it had
+    /// come on its own, so its own checks (reach, what is faced) decide as ever. Refused unless
+    /// `then` is an action by `player` (`Intent::action_by`), and never nested.
+    Toward { player: u32, facing: f32, then: Box<Intent> },
 }
 
 /// What a player asks of its group ([`Intent::Group`]).
@@ -291,7 +300,7 @@ impl PrivateView {
         let p = world.player(id)?;
         let open = p.open.and_then(|c| {
             let site = world.container(c)?;
-            let def = world.container_def(site);
+            let def = world.container_def(&site);
             Some(ContainerView { id: c, kind: def.id.clone(), name: def.name.clone(), room_l: def.room_l, stacks: world.container_contents(c).unwrap_or(&[]).to_vec() })
         });
         let carry = world.carry(p);
@@ -380,6 +389,9 @@ pub struct Snapshot {
     pub edge_changes: Vec<EdgeChange>,
     /// Doors and windows whose hit points changed since the previous snapshot (each once).
     pub edge_damage: Vec<EdgeDamage>,
+    /// Blinds put up, taken down or rolled up or down since the previous snapshot (each once, in
+    /// order); clients apply them to their map copy, as `edge_changes`.
+    pub blind_changes: Vec<zombye_sim::map::BlindChange>,
     /// Every item lying about (a short list for now; interest management later).
     pub items: Vec<GroundItem>,
     /// Hits, kills, shoves, stomps and wounds since the previous snapshot, for hit feedback.
@@ -400,8 +412,11 @@ pub struct Snapshot {
     pub level_ups: Vec<LevelUp>,
     /// What every player has on (#63), every snapshot: the client draws it, for us and for others.
     pub outfits: Vec<OutfitView>,
-    /// What the zombies listed above that rose from players wore (#63), every snapshot.
-    pub risen: Vec<OutfitView>,
+    /// What the zombies listed above wear when it isn't their outfit (`World::zombie_look`): those
+    /// that rose from players (#63), in what they wore, and bodies that have been searched, in what is
+    /// left on them. Every snapshot. The rest wear what `zombye_sim::corpses::default_look` gives,
+    /// which a client works out for itself.
+    pub looks: Vec<OutfitView>,
     /// Players heard in this tick by a survivor that doesn't see them (#66): a sound at a
     /// position, as loud as its radius, not the player. A client gets only its own.
     #[serde(default)]
@@ -425,7 +440,7 @@ pub struct Snapshot {
 /// What a body has on, for drawing it (#63): the clothing and accessories it wears in the order put
 /// on, the bags on its back and shoulder, and what it holds in each hand (the client draws a bag
 /// there; #91), as item indices (into the item definitions the client got on joining). `id` is a
-/// player's in [`Snapshot::outfits`], a zombie's in [`Snapshot::risen`].
+/// player's in [`Snapshot::outfits`], a zombie's in [`Snapshot::looks`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OutfitView {
     pub id: u32,
@@ -481,10 +496,7 @@ impl Snapshot {
             .filter(|&i| world.in_interest(i))
             .map(|i| ZombieView { id: z.id[i], pos: z.pos[i].to_array(), facing: z.facing[i], speed: z.speed[i], anim: z.anim[i] })
             .collect();
-        let risen = zombies
-            .iter()
-            .filter_map(|v| world.risen_look(v.id).map(|look| OutfitView { id: v.id, worn: look.iter().filter_map(|i| world.item_index(i)).collect(), ..Default::default() }))
-            .collect();
+        let looks = zombies.iter().filter(|v| !world.zombie_look_is_default(v.id)).map(|v| OutfitView { id: v.id, worn: world.zombie_look(v.id), ..Default::default() }).collect();
         let players = world
             .players
             .iter()
@@ -533,6 +545,7 @@ impl Snapshot {
             zombies,
             edge_changes: std::mem::take(&mut world.edge_changes),
             edge_damage: world.take_edge_damage().into_iter().map(|(e, hp)| EdgeDamage { tile: e.tile, edge: e.edge, hp }).collect(),
+            blind_changes: world.take_blind_changes(),
             items: world.items().to_vec(),
             hits: std::mem::take(&mut world.combat_events),
             private,
@@ -541,7 +554,7 @@ impl Snapshot {
             runs: world.players.iter().map(|p| RunView { player: p.id, run: p.run.clone(), first_night: p.first_night.clone() }).collect(),
             level_ups: world.take_level_ups(),
             outfits: world.players.iter().map(OutfitView::of).collect(),
-            risen,
+            looks,
             heard: world.awareness().all_heard_now().copied().collect(),
             speech: world.take_speech(),
             groups: if world.groups().is_empty() { Vec::new() } else { world.players.iter().filter_map(|p| world.group_view(p.id)).collect() },
@@ -614,8 +627,17 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
         }
         // Only an aiming player fights.
         Intent::Attack { player } | Intent::Shove { player } | Intent::Stomp { player } if !world.aiming(*player) => {}
+        Intent::Toward { player, facing, then } => {
+            if then.action_by() == Some(*player) && !matches!(**then, Intent::Toward { .. }) {
+                world.set_facing(*player, *facing);
+                apply_intent(world, then);
+            }
+        }
         Intent::Climb { player } => {
             world.player_climb(*player);
+        }
+        Intent::Blind { player, op } => {
+            let _ = world.player_blind(*player, *op);
         }
         Intent::Interact { player } => {
             world.player_interact(*player);
@@ -744,7 +766,9 @@ impl Intent {
     pub fn action_by(&self) -> Option<u32> {
         match *self {
             Intent::Interact { player }
+            | Intent::Toward { player, .. }
             | Intent::Climb { player }
+            | Intent::Blind { player, .. }
             | Intent::SmashWindow { player }
             | Intent::Light { player, .. }
             | Intent::Attack { player }
@@ -808,7 +832,8 @@ impl LocalServer {
     /// under the map and meshes it already has) with one player in the bedroom. Returns the world
     /// and that player's id; [`LocalServer::replace_world`] serves it.
     pub fn new_run(config: &WorldConfig) -> (World, u32) {
-        let mut world = World::new(config.clone());
+        // The same town, but what's in it is rolled again: a new run finds different things.
+        let mut world = World::new(config.clone().with_loot_seed(content::fresh_loot_seed()));
         let id = world.add_player(world.player_spawn);
         (world, id)
     }
@@ -989,6 +1014,47 @@ mod tests {
         let view = PrivateView::of(&server.world, id).unwrap();
         assert_eq!(view.health.wounds[0].dressing, Dressing::Clean);
         assert_eq!(view.health.aid.opened.len(), 1, "two uses left in the roll");
+    }
+
+    /// A right-click on a door (`Intent::Toward`): the player turns to it and opens it, though it
+    /// faced the other way; one claiming to be another player, or wrapping a non-action, does nothing.
+    #[test]
+    fn toward_turns_the_player_and_opens_the_door_it_points_at() {
+        use zombye_sim::map::{Edge, Side};
+        let mut server = server();
+        let house = server.world.spawn_building;
+        let map = &server.world.map;
+        let b = &map.buildings[house];
+        let mut found = None;
+        for y in b.min.y..b.min.y + b.size.y {
+            for x in b.min.x..b.min.x + b.size.x {
+                let t = glam::IVec2::new(x, y);
+                for side in Side::ALL {
+                    if found.is_none() && map.edge(t, side) == Edge::DoorClosed && !map.tile_blocked(t) {
+                        found = Some((t, side));
+                    }
+                }
+            }
+        }
+        let (t, side) = found.expect("a shut door");
+        let from = t.as_vec2() + glam::Vec2::splat(0.5);
+        let to = side.offset().as_vec2();
+        let toward = to.y.atan2(to.x);
+        let away = toward + std::f32::consts::PI;
+        let id = server.join(Some(from.to_array()));
+        server.send(Intent::PlayerInput { player: id, seq: 1, move_dir: [0.0, 0.0], facing: away, run: false, sneak: false, aim: false });
+        server.tick();
+        let door = |s: &LocalServer| s.world.map.edge(t, side);
+        // Someone else's request, or a wrapped input, is refused.
+        server.send(Intent::Toward { player: id, facing: toward, then: Box::new(Intent::Interact { player: id + 1 }) });
+        server.send(Intent::Toward { player: id, facing: toward, then: Box::new(Intent::SkipTime { hours: 1.0 }) });
+        server.tick();
+        assert_eq!(door(&server), Edge::DoorClosed);
+        server.send(Intent::Toward { player: id, facing: toward, then: Box::new(Intent::Interact { player: id }) });
+        server.tick();
+        assert_eq!(door(&server), Edge::DoorOpen, "turned to it and opened it");
+        let f = server.world.player(id).unwrap().state.facing;
+        assert!((f - toward.rem_euclid(std::f32::consts::TAU)).abs() < 1e-4, "it stays facing the door: {f}");
     }
 
     /// Climbing through a window predicts exactly too: the client keeps its own copy of the map,

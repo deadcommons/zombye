@@ -60,7 +60,7 @@ const SPAWN_CLEAR_RADIUS: f32 = 14.0;
 /// How far a door or window can be from the player using it (to the middle of the edge).
 pub const INTERACT_REACH: f32 = 1.6;
 /// A player aims interactions this far ahead, so the door you face wins over one behind you.
-const INTERACT_AIM_AHEAD: f32 = 0.6;
+pub(crate) const INTERACT_AIM_AHEAD: f32 = 0.6;
 
 #[derive(Clone, Debug)]
 pub struct WorldConfig {
@@ -84,6 +84,12 @@ pub struct WorldConfig {
     pub containers: ContainerData,
     /// What containers hold, by room type and container kind (`assets/data/loot.ron`).
     pub loot: LootData,
+    /// The seed loot is rolled from: what containers and bodies hold, the weapons on the floor,
+    /// how worn, loaded and old what's found is. `None`: the world seed, so the same seed finds
+    /// the same things (tests, old saves). The game and the server pick a new one for every new
+    /// world and new run ([`WorldConfig::loot_seed`]), so the same town holds different things
+    /// each game. Saved with the settings.
+    pub loot_seed: Option<u64>,
     /// What can be made from what (`assets/data/items/recipes.ron`, see [`crate::crafting`]).
     pub recipes: Vec<RecipeDef>,
     /// Carry limits, burden and how long handling items takes.
@@ -119,6 +125,9 @@ pub struct WorldConfig {
     pub climb: crate::players::ClimbTuning,
     /// The grid and the lights (`assets/data/power.ron`, [`crate::power`]); saved with the settings.
     pub power: crate::power::PowerDef,
+    /// Blinds on windows and glazed doors: where the town has them and handling them
+    /// ([`crate::blinds`]). Saved with the settings.
+    pub blinds: crate::blinds::BlindTuning,
     /// The loaded mods' scripts (#25, [`crate::script`]): every world made from this config gets a
     /// host of its own from it. None: no scripts, and nothing of them in the world.
     pub scripts: Option<std::sync::Arc<dyn crate::script::ScriptEngine>>,
@@ -137,6 +146,7 @@ impl WorldConfig {
             items: Vec::new(),
             containers: ContainerData::default(),
             loot: LootData::default(),
+            loot_seed: None,
             recipes: Vec::new(),
             carry: CarryTuning::default(),
             combat: CombatTuning::default(),
@@ -153,6 +163,7 @@ impl WorldConfig {
             groups: Default::default(),
             climb: Default::default(),
             power: Default::default(),
+            blinds: Default::default(),
             scripts: None,
         }
     }
@@ -212,6 +223,17 @@ impl WorldConfig {
 
     pub fn seed(&self) -> u64 {
         self.generation.seed
+    }
+
+    /// The seed loot rolls from: `loot_seed` if set, else the world seed.
+    pub fn loot_seed(&self) -> u64 {
+        self.loot_seed.unwrap_or(self.generation.seed)
+    }
+
+    /// Loot rolled from `seed` instead of the world seed (see `loot_seed`).
+    pub fn with_loot_seed(mut self, seed: u64) -> Self {
+        self.loot_seed = Some(seed);
+        self
     }
 }
 
@@ -277,6 +299,8 @@ pub struct World {
     pub stats: TickStats,
     /// Map edits since the last snapshot (door toggles), for replication.
     pub edge_changes: Vec<EdgeChange>,
+    /// Blinds put up, taken down or rolled since the last snapshot ([`crate::blinds`]), for replication.
+    pub(crate) blind_changes: Vec<crate::map::BlindChange>,
     /// Hours added by time skips.
     pub(crate) clock_offset_hours: f32,
     /// Ticks the far clock ([`World::far_tick`]) has run ahead of `tick`: while everyone sleeps the
@@ -450,9 +474,10 @@ impl World {
         let item_weapons = (0..config.items.len()).map(|i| weapon_items.iter().position(|w| *w == Some(i as u16)).map(|w| w as u16)).collect();
         let unarmed = config.weapons.iter().position(|w| w.category == WeaponCategory::Unarmed).unwrap_or(0) as u16;
         let generated = worldgen::generate_with(&config.generation, &config.templates, &config.street_props);
-        let items = items::place_weapons(&generated.map, &config.weapons, &weapon_items, generated.spawn_building, config.generation.seed, 1);
+        let items = items::place_weapons(&generated.map, &config.weapons, &weapon_items, generated.spawn_building, config.loot_seed(), 1);
         let sites = containers::find_sites(&generated.map, &config.containers);
-        let map = generated.map;
+        let mut map = generated.map;
+        crate::blinds::place(&mut map, config.generation.seed, &config.blinds);
         let hash = SpatialHash::new(map.width() as f32, map.height() as f32, 1.0);
         let regions = RegionIndex::new(&map, config.tiers.region_size);
         let walk = WalkGrid::new(&map);
@@ -504,6 +529,7 @@ impl World {
             tick: 0,
             stats: TickStats::default(),
             edge_changes: Vec::new(),
+            blind_changes: Vec::new(),
             clock_offset_hours: 0.0,
             far_ticks: 0,
             attack_events: Vec::new(),
@@ -857,6 +883,21 @@ impl World {
         true
     }
 
+    /// Turn player `id` to `facing` (radians) at once, before an action aimed at something (a
+    /// right-click on a door, window or blind: `Intent::Toward`). Its input is turned too, so this
+    /// tick's movement doesn't turn it back; the client's next input carries the same facing.
+    /// Ignored for a dead, asleep, knocked, tied or climbing player, or a facing that isn't finite.
+    pub fn set_facing(&mut self, id: u32, facing: f32) -> bool {
+        let Some(p) = self.players.iter_mut().find(|p| p.id == id) else { return false };
+        if !facing.is_finite() || p.dead || p.needs.asleep() || p.knock.is_some() || p.away.is_some() || p.restraint.is_some() || p.state.climb.is_some() {
+            return false;
+        }
+        let facing = facing.rem_euclid(std::f32::consts::TAU);
+        p.state.facing = facing;
+        p.input.facing = facing;
+        true
+    }
+
     /// Player `id` opens or closes the door or window it faces, if one is within reach of where
     /// the server has it. Returns the new edge, or `None` (request ignored) if there is no such
     /// edge or player. Broken doors and windows can't be shut again.
@@ -946,6 +987,15 @@ impl World {
             self.edge_hp_dirty.insert(edge.key());
         }
         self.set_edge(edge, broken);
+        // A door battered off its hinges takes its blind down with it, onto the floor inside.
+        if broken == Edge::DoorBroken && self.map.blind(edge).is_some() {
+            self.set_blind(edge, None);
+            let inside = crate::blinds::inside(&self.map, edge).as_vec2() + Vec2::splat(0.5);
+            if let Some(i) = self.config.items.iter().position(|d| d.has_tag(&self.config.blinds.tag)) {
+                let stack = self.fresh_stack(i as u16, 1);
+                self.put_on_floor(stack, inside, 0.0);
+            }
+        }
         self.break_events.push(EdgeChange { tile: edge.tile, edge: edge.edge, kind: broken });
         let t = &self.config.zombie;
         let noise = if broken == Edge::DoorBroken { t.door_break_noise } else { t.glass_break_noise };
@@ -1019,6 +1069,8 @@ impl World {
         removed.sort_unstable();
         let gone: Vec<bool> = z.id.iter().map(|id| removed.binary_search(id).is_ok()).collect();
         self.rise_looks.risen.retain(|id, _| removed.binary_search(id).is_err());
+        // What was left on a body goes with it; whoever had it open finds it gone.
+        self.opened.retain(|&c, _| crate::corpses::corpse_zombie(c).is_none_or(|z| removed.binary_search(&z).is_err()));
         self.zombies.remove_where(|i| gone[i]);
     }
 
@@ -1455,6 +1507,7 @@ impl World {
                     crate::inventory::JobKind::Treat { wound, treatment, item } => wound.unwrap_or(0xFFFF) ^ (treatment as u32) << 16 ^ item.map_or(0xFF, u32::from) << 20 ^ 0x7000_0000,
                     crate::inventory::JobKind::Craft { recipe } => recipe as u32 ^ 0xC4AF_0000,
                     crate::inventory::JobKind::Reload { spare } => spare as u32 ^ 0x4E10_0000,
+                    crate::inventory::JobKind::Blind { edge, fit } => (edge.tile.x as u32) ^ (edge.tile.y as u32) << 12 ^ (edge.edge as u32) << 24 ^ (fit as u32) << 25 ^ 0xB100_0000,
                 });
             }
         }
@@ -1477,6 +1530,11 @@ impl World {
             mix(y as u32);
             mix(w as u32);
             mix(hp.to_bits());
+        }
+        for (&(x, y, w), &down) in &self.map.blinds {
+            mix(x as u32 ^ 0xB11D_0000);
+            mix(y as u32);
+            mix(w as u32 | (down as u32) << 8);
         }
         self.population.hash_into(&mut mix);
         // Only once the far clock has run ahead, so worlds nobody slept in hash as before.

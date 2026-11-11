@@ -93,6 +93,8 @@ fn describe(kind: JobKind, join: &JoinInfo) -> String {
         JobKind::Craft { recipe } => join.recipes.get(recipe as usize).map_or("Making".to_string(), |r| r.name.clone()),
         JobKind::Reload { spare: false } => "Reloading".to_string(),
         JobKind::Reload { spare: true } => "Filling a magazine".to_string(),
+        JobKind::Blind { fit: true, .. } => "Fitting a blind".to_string(),
+        JobKind::Blind { fit: false, .. } => "Taking a blind down".to_string(),
     }
 }
 

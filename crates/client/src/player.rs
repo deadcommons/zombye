@@ -600,8 +600,17 @@ fn actions(
         }
     }
     if keys.just_pressed(KeyCode::KeyF) {
-        // The server picks the door or window this player faces and checks it's within reach.
-        link.send(Intent::Interact { player: me.id });
+        let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+        let alt = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
+        if shift {
+            // Shift+F: roll the blind of the window or glass door we face up or down, or fit one
+            // we carry; Shift+Alt+F takes it down into the bags. The server says why not.
+            let op = if alt { zombye_sim::BlindOp::TakeDown } else { zombye_sim::BlindOp::Use };
+            link.send(Intent::Blind { player: me.id, op });
+        } else {
+            // The server picks the door or window this player faces and checks it's within reach.
+            link.send(Intent::Interact { player: me.id });
+        }
     }
     if keys.just_pressed(KeyCode::KeyG) {
         link.send(Intent::SmashWindow { player: me.id });

@@ -69,6 +69,7 @@
 //! slots for one session. The inventory, health and skills panels are dragged by their titles and
 //! remembered with their open state in the same settings file (`panels.rs`).
 
+mod aim_marker;
 mod audio;
 mod music;
 mod release_audio;
@@ -124,6 +125,7 @@ mod survivor;
 mod survivor_model;
 mod theme;
 mod ui_scale;
+mod world_actions;
 mod world_render;
 mod zombie_render;
 mod zvat;
@@ -141,6 +143,9 @@ pub struct Options {
     /// `--zombies N`; without it, as many as `assets/data/population.ron` gives for the map.
     pub zombies: Option<u32>,
     pub seed: u64,
+    /// `--loot-seed S`: what containers hold rolled from S (the same every game). Without it a
+    /// new world rolls its loot from a fresh seed each time (`content::fresh_loot_seed`).
+    pub loot_seed: Option<u64>,
     pub start_hour: Option<f32>,
     /// Debug: start the player here instead of the bedroom (`--at X,Y`).
     pub at: Option<[f32; 2]>,
@@ -267,6 +272,11 @@ pub struct Options {
     /// Recordings: the local player walks from point to point by itself (`--walk X,Y;X,Y;...`,
     /// `autoplay.rs`).
     pub walk: Vec<Vec2>,
+    /// Show the aim marker in an offscreen picture as if aiming with the cursor on the ground this
+    /// many metres east and south of the player (`--aim-at DX,DY`, `aim_marker.rs`).
+    pub aim_at: Option<[f32; 2]>,
+    /// The same, with the cursor on the nearest standing zombie (`--aim-at zombie`).
+    pub aim_at_zombie: bool,
     /// Start with the cutaways off (`--walls-up`; F10 toggles them, `cutaway.rs`).
     pub walls_up: bool,
     /// Show the silhouettes of zombies you see that something covers (`--zombie-silhouettes`;
@@ -442,6 +452,7 @@ impl Options {
             holdup_auto: flag("--holdup-auto"),
             zombies: value("--zombies").and_then(|v| v.parse().ok()),
             seed: value("--seed").and_then(|v| v.parse().ok()).unwrap_or(1),
+            loot_seed: value("--loot-seed").and_then(|v| v.parse().ok()),
             start_hour: value("--time").and_then(|v| v.parse().ok()),
             at: value("--at").and_then(|v| parse_point(&v)),
             turns: {
@@ -504,6 +515,8 @@ impl Options {
             survivor: value("--survivor"),
             pose: value("--pose"),
             walk: value("--walk").map(|v| v.split(';').filter_map(parse_point).map(Vec2::from).collect()).unwrap_or_default(),
+            aim_at: value("--aim-at").and_then(|v| parse_point(&v)),
+            aim_at_zombie: value("--aim-at").is_some_and(|v| v == "zombie"),
             walls_up: flag("--walls-up"),
             zombie_silhouettes: flag("--zombie-silhouettes").then_some(true),
             opening_hints: value("--opening-hints").and_then(|v| match v.as_str() {
@@ -606,6 +619,14 @@ fn main() {
         eprintln!("can't use the palette: {e}");
         std::process::exit(1);
     }
+    // How the fog of war looks, from the data folder's fog.ron.
+    let fog_look = match fog::FogLook::load(&options.data) {
+        Ok(look) => look,
+        Err(e) => {
+            eprintln!("can't use the fog's look: {e}");
+            std::process::exit(1);
+        }
+    };
     zombye_net::shutdown::install();
     // Wake the window's event loop when a signal comes in while it idles (unfocused), as Bevy's own
     // handler would; the loop then runs `exit_on_signal`.
@@ -649,7 +670,7 @@ fn main() {
     let offscreen = options.offscreen();
     let graphics = graphics::Graphics::from_options(&options);
     let mut app = App::new();
-    app.insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06))).add_plugins(plugins).insert_resource(options).insert_resource(graphics).add_systems(First, exit_on_signal);
+    app.insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06))).add_plugins(plugins).insert_resource(options).insert_resource(fog_look).insert_resource(graphics).add_systems(First, exit_on_signal);
     if offscreen {
         app.add_plugins((ScheduleRunnerPlugin::run_loop(Duration::ZERO), offscreen::OffscreenPlugin));
     }
@@ -667,7 +688,7 @@ fn main() {
             (hud::HudPlugin, inventory_ui::InventoryUiPlugin, health_ui::HealthUiPlugin, death::DeathPlugin, needs_ui::NeedsUiPlugin, action_ui::ActionUiPlugin, skills_ui::SkillsUiPlugin, debug_stats::DebugStatsPlugin),
             (fx::FxPlugin, heard::HeardPlugin, chat::ChatPlugin, film::FilmPlugin, graphics_ui::GraphicsUiPlugin, render_scale::RenderScalePlugin, vegetation::VegetationPlugin, rules_ui::RulesUiPlugin, browser_ui::BrowserUiPlugin),
             survivor::SurvivorPlugin,
-            (autoplay::AutoplayPlugin, duel::DuelPlugin, holdup::HoldupPlugin),
+            (autoplay::AutoplayPlugin, duel::DuelPlugin, holdup::HoldupPlugin, aim_marker::AimMarkerPlugin),
             (saving::SavingPlugin, ui_scale::UiScalePlugin, panels::PanelsPlugin, hotbar::HotbarPlugin, firstnight_ui::FirstNightUiPlugin),
         ));
     // An offscreen render has no audio device (Bevy's audio is off there).
