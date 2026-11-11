@@ -278,10 +278,6 @@ struct Retarget {
     /// How far round the reference pose's chest is turned from its hips' heading (radians about Y;
     /// the idle's hips are faced forward, its chest isn't quite), for [`Retarget::apply_square`].
     ref_chest: f32,
-    /// For [`Retarget::apply_square`]: the right upper arm's and forearm's reference rotations taken
-    /// from the left arm's, mirrored, by bone. A weapon idle holds the right arm bent at the elbow, and
-    /// a grey-box arm laid over that stays bent: the right hand kept to the chest (the owner).
-    mirrored: Vec<(usize, Quat)>,
 }
 
 impl Retarget {
@@ -296,7 +292,7 @@ impl Retarget {
         };
         let mut spine: Vec<usize> = (0..rig.len()).filter(|&b| rig.bones[b].name.to_lowercase().starts_with("spine")).collect();
         spine.sort_by_key(|&b| depth(b));
-        let src: Vec<Src> = (0..rig.len())
+        let src = (0..rig.len())
             .map(|b| {
                 if let Some(k) = spine.iter().position(|&s| s == b) {
                     return Src::Mix(PELVIS, TORSO, (k + 1) as f32 / spine.len() as f32);
@@ -323,26 +319,12 @@ impl Retarget {
         let ref_global = g.iter().map(|m| m.to_scale_rotation_translation().1).collect();
         let root_y = (0..rig.len()).find(|&b| rig.bones[b].parent.is_none()).map_or(HIP, |b| g[b].w_axis.y);
         let ref_chest = Gaze::new(rig).map_or(0.0, |gaze| gaze.chest(&g));
-        // Across the body's middle (x to -x): a rotation's y and z turn the other way.
-        let mirror = |q: Quat| Quat::from_xyzw(q.x, -q.y, -q.z, q.w);
-        let bind = |b: usize| rig.inverse_bind[b].inverse().to_scale_rotation_translation().1;
-        let mirrored = (0..rig.len())
-            .filter(|&b| matches!(src[b], Src::Grey(UARM_R | FARM_R)))
-            .filter_map(|b| {
-                let name = rig.bones[b].name.replace("Right", "Left").replace("right", "left");
-                let l = rig.find(&name)?;
-                // The left bone's turn from its bind pose, mirrored, on the right bone's bind pose (the
-                // two bones' own axes may not be mirror images of each other).
-                let r = mirror(ref_global[l] * bind(l).inverse()) * bind(b);
-                Some((b, r.normalize()))
-            })
-            .collect();
-        Self { src, reference, ref_global, hip_scale: (root_y / HIP).clamp(0.5, 2.0), ref_chest, mirrored }
+        Self { src, reference, ref_global, hip_scale: (root_y / HIP).clamp(0.5, 2.0), ref_chest }
     }
 
     /// The grey-box pose `grey` on the skeleton.
     fn apply(&self, body: &Body, grey: &SPose) -> RigPose {
-        self.apply_turned(body, grey, Quat::IDENTITY, false)
+        self.apply_turned(body, grey, Quat::IDENTITY)
     }
 
     /// The same with the chest square to the hips: the reference's spine, shoulders, neck and head
@@ -350,10 +332,10 @@ impl Retarget {
     /// arms alike (the weapon shove): over the reference's turned chest the right shoulder stood back,
     /// so the right hand stayed by the chest while the left reached out (the owner).
     fn apply_square(&self, body: &Body, grey: &SPose) -> RigPose {
-        self.apply_turned(body, grey, Quat::from_rotation_y(-self.ref_chest), true)
+        self.apply_turned(body, grey, Quat::from_rotation_y(-self.ref_chest))
     }
 
-    fn apply_turned(&self, body: &Body, grey: &SPose, chest: Quat, mirror: bool) -> RigPose {
+    fn apply_turned(&self, body: &Body, grey: &SPose, chest: Quat) -> RigPose {
         let gg = globals(&survivor::BONES, grey).map(|m| m.to_scale_rotation_translation().1);
         let rig = &body.rig;
         let mut pose = self.reference.clone();
@@ -362,7 +344,6 @@ impl Retarget {
             let parent = rig.bones[b].parent.map_or(Quat::IDENTITY, |p| global[p]);
             global[b] = match self.src[b] {
                 Src::Grey(i @ (TORSO | HEAD)) => gg[i] * chest * self.ref_global[b],
-                Src::Grey(i) if mirror && self.mirrored.iter().any(|m| m.0 == b) => gg[i] * self.mirrored.iter().find(|m| m.0 == b).unwrap().1,
                 Src::Grey(i) => gg[i] * self.ref_global[b],
                 Src::Mix(i, j, f) => gg[i].slerp(gg[j], f) * chest * self.ref_global[b],
                 Src::Follow => parent * self.reference.r[b],
@@ -1329,19 +1310,13 @@ mod tests {
     fn the_weapon_shove_reaches_out_with_both_hands() {
         let (body, _) = shipped_body();
         let idle = body.clips.iter().position(|c| c.name.eq_ignore_ascii_case("idle")).unwrap();
+        let retarget = Retarget::new(&body, body.clips[idle].frames[0].clone());
         let rig = &body.rig;
         let (l, r) = (rig.find("LeftHand").unwrap(), rig.find("RightHand").unwrap());
-        // As the shipped idle, and as a weapon idle with the right elbow bent.
-        let plain = body.clips[idle].frames[0].clone();
-        let mut bent = plain.clone();
-        let elbow = rig.find("RightForeArm").unwrap();
-        bent.r[elbow] = (bent.r[elbow] * Quat::from_rotation_x(-1.2)).normalize();
-        for (style, reference) in [(Style::OneHand, &plain), (Style::TwoHand, &plain), (Style::OneHand, &bent)] {
-            let retarget = Retarget::new(&body, reference.clone());
+        for style in [Style::OneHand, Style::TwoHand] {
             let grey = survivor::action(zombye_sim::ActionKind::Shove, style, true, survivor::U_HIT, &survivor::idle(0.0, true));
             let g = rig.globals(&retarget.apply_square(&body, &grey));
             let (lh, rh) = (g[l].w_axis.truncate(), g[r].w_axis.truncate());
-            eprintln!("DBG {style:?} left {lh} right {rh} plain-apply right {}", rig.globals(&retarget.apply(&body, &grey))[r].w_axis.truncate());
             assert!((lh.z - rh.z).abs() < 0.08 && (lh.y - rh.y).abs() < 0.08, "{style:?}: left hand at {lh}, right at {rh}");
             assert!(lh.z > 0.3 && rh.z > 0.3, "{style:?}: hands out in front: left {lh}, right {rh}");
         }
