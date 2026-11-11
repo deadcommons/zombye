@@ -2034,6 +2034,7 @@ fn world_menu(
     mut menu: ResMut<ItemMenu>,
     mut tap: Local<Option<(f32, Vec2)>>,
     mut sites: Local<Option<Vec<zombye_sim::containers::ContainerSite>>>,
+    mut switches: Local<Option<Vec<Option<zombye_sim::power::SwitchSpot>>>>,
 ) {
     let (Ok(window), Ok((camera, cam_tf))) = (windows.single(), cams.single()) else { return };
     let Some(cursor) = window.cursor_position() else { return };
@@ -2073,6 +2074,12 @@ fn world_menu(
     let bodies = link.curr.zombies.iter().filter(|z| z.anim == zombye_sim::ZombieAnim::Dead).map(|z| (z.id, Vec2::from(z.pos)));
     let body = crate::world_actions::pick_body(bodies, me.curr.pos, ray.origin, *ray.direction);
     let thing = match (thing, body) {
+        (Some(a), Some(b)) => Some(if b.1 < a.1 { b } else { a }),
+        (a, b) => a.or(b),
+    };
+    let switches = switches.get_or_insert_with(|| zombye_sim::power::switch_spots(&map.0));
+    let switch = crate::world_actions::pick_switch(switches, me.curr.pos, ray.origin, *ray.direction);
+    let thing = match (thing, switch) {
         (Some(a), Some(b)) => Some(if b.1 < a.1 { b } else { a }),
         (a, b) => a.or(b),
     };

@@ -70,10 +70,12 @@ pub enum Cue {
     /// are (a door breaking played fast, a window shutting): the real ones come with #78.
     Gunshot,
     Reload,
+    /// A light switch flicked.
+    LightSwitch,
 }
 
 impl Cue {
-    pub const ALL: [Cue; 30] = [
+    pub const ALL: [Cue; 31] = [
         Cue::FootstepHard,
         Cue::FootstepSoft,
         Cue::Shuffle,
@@ -104,6 +106,7 @@ impl Cue {
         Cue::Crickets,
         Cue::Gunshot,
         Cue::Reload,
+        Cue::LightSwitch,
     ];
 
     /// The ambience loops, played for as long as the game runs at a volume that follows where you are.
@@ -152,7 +155,20 @@ pub struct SoundData {
 
 /// Parse and check `sounds.ron`. Every cue must be there (a missing one would be a silent hole).
 pub fn parse_sounds(text: &str) -> Result<SoundData, String> {
-    let data: SoundData = ron::from_str(text).map_err(|e| format!("sounds.ron: {e}"))?;
+    parse_sounds_over(text, None)
+}
+
+/// [`parse_sounds`] for the release audio folder's `sounds.ron` (#154), which may be older than
+/// the game: a cue it has no entry for takes the game's own (`base`), so a new cue doesn't turn
+/// the sound off.
+pub fn parse_sounds_over(text: &str, base: Option<&str>) -> Result<SoundData, String> {
+    let mut data: SoundData = ron::from_str(text).map_err(|e| format!("sounds.ron: {e}"))?;
+    if let Some(base) = base {
+        let base: SoundData = ron::from_str(base).map_err(|e| format!("the game's sounds.ron: {e}"))?;
+        for (cue, def) in base.sounds {
+            data.sounds.entry(cue).or_insert(def);
+        }
+    }
     for cue in Cue::ALL {
         if !data.sounds.contains_key(&cue) {
             return Err(format!("sounds.ron: no entry for {cue:?}"));
@@ -245,7 +261,9 @@ impl SoundBank {
     /// `overlay` where it has them (#154, `release_audio`).
     pub fn load_from(path: &Path, audio: &Path, overlay: Option<&Path>) -> Result<Self, String> {
         let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let defs = parse_sounds(&text)?.sounds;
+        // The release folder's own cues: the game's fill in what it lacks.
+        let base = overlay.filter(|o| path.starts_with(o)).and_then(|_| std::fs::read_to_string(audio.join("../data/sounds.ron")).ok());
+        let defs = parse_sounds_over(&text, base.as_deref())?.sounds;
         let mut clips = BTreeMap::new();
         for (cue, def) in &defs {
             let mut list = Vec::new();
@@ -587,7 +605,7 @@ impl Plugin for GameAudioPlugin {
             .add_systems(Update, toggle_mute)
             .add_systems(
                 PostUpdate,
-                (listen, footsteps, zombie_voices, world_events, ambience, flush).chain().run_if(resource_exists::<SoundBank>).run_if(resource_exists::<LocalPlayer>),
+                (listen, footsteps, zombie_voices, world_events, switch_clicks, ambience, flush).chain().run_if(resource_exists::<SoundBank>).run_if(resource_exists::<LocalPlayer>),
             );
     }
 }
@@ -703,6 +721,36 @@ fn zombie_voices(time: Res<Time>, ear: Res<Listener>, link: Res<ServerLink>, ban
 }
 
 #[allow(clippy::too_many_arguments)]
+/// A light switch clicks where it is when a room's light goes on or off, and for our own flick
+/// that did nothing for want of power.
+fn switch_clicks(
+    map: Res<ClientMap>,
+    local: Res<LocalPlayer>,
+    lit: Res<crate::lights::LitRooms>,
+    notes: Res<crate::server_link::ItemNotesThisFrame>,
+    mut was: Local<Option<Vec<u16>>>,
+    mut spots: Local<Option<Vec<Option<zombye_sim::power::SwitchSpot>>>>,
+    mut queue: ResMut<Queue>,
+) {
+    let spots = spots.get_or_insert_with(|| zombye_sim::power::switch_spots(&map.0));
+    let at = |room: u16| spots.get(room as usize).copied().flatten().map(|s| s.pos);
+    if lit.is_changed() {
+        if let Some(before) = was.as_ref() {
+            // A room lit or dark now, where its switch moved (not the whole town at once: the grid).
+            let changed: Vec<u16> = lit.rooms.iter().filter(|r| !before.contains(r)).chain(before.iter().filter(|r| !lit.rooms.contains(r))).copied().collect();
+            if changed.len() <= 2 {
+                for pos in changed.into_iter().filter_map(at) {
+                    queue.at(Cue::LightSwitch, pos, 1.0);
+                }
+            }
+        }
+        *was = Some(lit.rooms.clone());
+    }
+    if notes.0.iter().any(|n| n.player == local.id && n.text.starts_with("click.")) {
+        queue.at(Cue::LightSwitch, at(map.0.room_at(local.curr.pos)).unwrap_or(local.curr.pos), 1.0);
+    }
+}
+
 fn world_events(
     time: Res<Time>,
     map: Res<ClientMap>,

@@ -57,16 +57,6 @@ pub fn outside(map: &TileMap, room: u16) -> bool {
     room == 0 || map.rooms[room as usize].room_type == "porch"
 }
 
-/// Is a light on in this room at night? About one room in five, by a hash of the room, never a
-/// hall, porch or garage.
-pub fn room_lit(map: &TileMap, room: u16) -> bool {
-    if room == 0 {
-        return false;
-    }
-    let r = &map.rooms[room as usize];
-    !matches!(r.room_type.as_str(), "hall" | "porch" | "garage" | "outdoors") && hash01(room as i32, r.building as i32, 71) < 0.22
-}
-
 /// Is this outdoor tile under a porch built onto a house (where no flower bed goes)?
 pub fn porch_covers(map: &TileMap, tile: IVec2) -> bool {
     map.buildings.iter().any(|b| {

@@ -66,6 +66,14 @@ pub fn load_population(data_dir: &Path) -> Result<PopulationDef, String> {
     parse_population(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// The grid and the lights in `<data>/power.ron` (`zombye_sim::power`); without the file, the
+/// defaults (the grid on, about one room in five lit).
+pub fn load_power(data_dir: &Path) -> Result<zombye_sim::PowerDef, String> {
+    let path = data_dir.join("power.ron");
+    let Ok(text) = std::fs::read_to_string(&path) else { return Ok(zombye_sim::PowerDef::default()) };
+    zombye_sim::power::parse_power(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// The street props in `<data>/street_props.ron` (#61: mailboxes, hydrants, bins and where the town
 /// generator puts them), validated. A data folder without the file has none.
 pub fn load_street_props(data_dir: &Path) -> Result<StreetPropsDef, String> {
@@ -174,7 +182,7 @@ pub fn load_scenarios(data_dir: &Path, items: &[ItemDef], weapons: &[WeaponDef])
 }
 
 /// Everything a world is made from in `<data>`: building templates, weapons, items, containers,
-/// loot tables, recipes, the population file and the street props, as a config for `seed` (the zombie count as the
+/// loot tables, recipes, the population file, the street props and the power, as a config for `seed` (the zombie count as the
 /// population file gives).
 pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig, String> {
     let templates = load_building_templates(data_dir)?;
@@ -187,6 +195,7 @@ pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig
     // What zombies wear must be clothing there is.
     zombye_sim::corpses::check_outfits(&population.outfits, &items).map_err(|e| format!("{}: {e}", data_dir.join("population.ron").display()))?;
     let street_props = load_street_props(data_dir)?;
+    let power = load_power(data_dir)?;
     let mut config = zombye_sim::WorldConfig::new(seed, 0, templates)
         .with_weapons(weapons)
         .with_items(items)
@@ -194,7 +203,8 @@ pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig
         .with_loot(loot)
         .with_recipes(recipes)
         .with_population(population)
-        .with_street_props(street_props);
+        .with_street_props(street_props)
+        .with_power(power);
     config.zombies = None;
     Ok(config)
 }

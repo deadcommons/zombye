@@ -41,6 +41,8 @@ pub enum Target {
     Container(usize),
     /// A dead zombie's body (its id, where it lies): searched like a container ([`pick_body`]).
     Body(u32, Vec2),
+    /// A room's light switch (the room, where the switch is: `power::switch_spots`).
+    Switch(u16, Vec2),
 }
 
 /// One line of a world menu: its label and what it sends (`None`: a line that only says
@@ -184,6 +186,22 @@ pub fn pick_body(bodies: impl IntoIterator<Item = (u32, Vec2)>, player: Vec2, or
         .min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
+/// The light switch (`spots`: `power::switch_spots`, by room) the pointer's ray meets first, as
+/// its plate on the wall and a little round it, with the ray parameter there.
+pub fn pick_switch(spots: &[Option<zombye_sim::power::SwitchSpot>], player: Vec2, origin: Vec3, dir: Vec3) -> Option<(Target, f32)> {
+    let h = zombye_sim::power::SWITCH_HEIGHT;
+    spots
+        .iter()
+        .enumerate()
+        .filter_map(|(room, s)| s.map(|s| (room as u16, s)))
+        .filter(|(_, s)| s.pos.distance(player) <= LOOK)
+        .filter_map(|(room, s)| {
+            let along = Vec2::new(-s.normal.y, s.normal.x) * 0.25;
+            ray_quad(origin, dir, s.pos - along, s.pos + along, h - 0.3, h + 0.3).map(|t| (Target::Switch(room, s.pos), t))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+}
+
 /// What the menu on `target` is called and what it offers, the likeliest first, for player `me`
 /// at `pos` (`view`: our private view, for what we carry). Out of reach it says so and offers
 /// nothing.
@@ -211,6 +229,11 @@ pub fn entries(target: Target, map: &TileMap, sites: &[ContainerSite], data: &Co
                 vec![WorldEntry::say("Too far away: walk up to it")]
             };
             ("Body".to_string(), lines)
+        }
+        Target::Switch(room, at) => {
+            let near = at.distance(pos) <= zombye_sim::power::SWITCH_REACH && map.room_at(pos) == room;
+            let lines = if near { vec![WorldEntry::send("Flick the switch", Intent::Light { player: me, on: None })] } else { vec![WorldEntry::say("Too far away: walk up to it")] };
+            ("Light switch".to_string(), lines)
         }
     }
 }
@@ -312,5 +335,17 @@ mod tests {
         assert_eq!(pick_body(bodies, Vec2::new(19.0, 8.0), o, d).map(|(t, _)| t), Some(Target::Body(4, Vec2::new(20.0, 8.0))));
         let (o, d) = ray_through(Vec3::new(23.0, 0.0, 8.0));
         assert!(pick_body(bodies, Vec2::new(19.0, 8.0), o, d).is_none(), "between the two");
+    }
+
+    #[test]
+    fn the_ray_finds_a_light_switch_on_its_wall() {
+        use zombye_sim::map::Side;
+        // A switch on the north wall of tile (10, 5), facing south into the room.
+        let spot = zombye_sim::power::SwitchSpot { pos: Vec2::new(10.5, 5.1), normal: Vec2::Y, tile: IVec2::new(10, 5), side: Side::N };
+        let spots = [None, Some(spot)];
+        let (o, d) = ray_through(Vec3::new(10.5, zombye_sim::power::SWITCH_HEIGHT, 5.1));
+        assert_eq!(pick_switch(&spots, Vec2::new(10.5, 6.0), o, d).map(|(t, _)| t), Some(Target::Switch(1, spot.pos)));
+        let (o, d) = ray_through(Vec3::new(12.0, zombye_sim::power::SWITCH_HEIGHT, 5.1));
+        assert!(pick_switch(&spots, Vec2::new(10.5, 6.0), o, d).is_none(), "a metre and a half along the wall");
     }
 }

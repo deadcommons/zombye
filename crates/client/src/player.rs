@@ -582,9 +582,13 @@ fn actions(
         // Otherwise search what we face; with nothing there either, the server says so once.
         // Already on the way over: nothing.
         let floor = !link.curr.floor_of(me.id).is_empty();
+        // Else the light switch of our room, in reach and faced (the server checks the reach).
+        let switch = !climb && light_switch_faced(&map.0, me.curr.pos, me.curr.facing);
         if me.curr.climb.is_none() {
             link.send(if climb {
                 Intent::Climb { player: me.id }
+            } else if switch {
+                Intent::Light { player: me.id, on: None }
             } else if floor {
                 Intent::PickUp { player: me.id }
             } else {
@@ -654,4 +658,17 @@ mod tests {
         assert!((MUZZLE_HEIGHT + 12.0 * level_pitch(12.0).tan() - CHEST).abs() < 1e-3);
         assert_eq!(level_pitch(0.1), level_pitch(2.0));
     }
+}
+
+/// Is the light switch of the room at `pos` within reach and in front of us (within 75 degrees
+/// of `facing`, or close enough to touch)? E flips it then.
+pub fn light_switch_faced(map: &zombye_sim::TileMap, pos: Vec2, facing: f32) -> bool {
+    let room = map.room_at(pos);
+    if room == 0 {
+        return false;
+    }
+    let Some(Some(spot)) = zombye_sim::power::switch_spots(map).get(room as usize).copied() else { return false };
+    let to = spot.pos - pos;
+    let d = to.length();
+    d <= zombye_sim::power::SWITCH_REACH - 0.1 && (d < 0.5 || to.normalize_or_zero().dot(Vec2::from_angle(facing)) > 75f32.to_radians().cos())
 }

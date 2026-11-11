@@ -123,6 +123,8 @@ pub struct WorldConfig {
     pub groups: crate::groups::GroupTuning,
     /// When E climbs a fence or an open or broken window ([`crate::players::climb_from`]). Not saved.
     pub climb: crate::players::ClimbTuning,
+    /// The grid and the lights (`assets/data/power.ron`, [`crate::power`]); saved with the settings.
+    pub power: crate::power::PowerDef,
     /// Blinds on windows and glazed doors: where the town has them and handling them
     /// ([`crate::blinds`]). Saved with the settings.
     pub blinds: crate::blinds::BlindTuning,
@@ -160,6 +162,7 @@ impl WorldConfig {
             bonds: Default::default(),
             groups: Default::default(),
             climb: Default::default(),
+            power: Default::default(),
             blinds: Default::default(),
             scripts: None,
         }
@@ -205,6 +208,11 @@ impl WorldConfig {
 
     pub fn with_population(mut self, population: PopulationDef) -> Self {
         self.population = population;
+        self
+    }
+
+    pub fn with_power(mut self, power: crate::power::PowerDef) -> Self {
+        self.power = power;
         self
     }
 
@@ -427,6 +435,8 @@ pub struct World {
     pub(crate) script: crate::script::ScriptState,
     /// The latest script errors, for whoever asks (not saved, not simulation state).
     pub(crate) script_errors: Vec<String>,
+    /// Power sources, light switches and the rooms lit ([`crate::power`]). Saved (the `POWR` section).
+    pub(crate) power: crate::power::Power,
 }
 
 /// Bare hands are added to weapons that have none (as the world does on creation).
@@ -475,7 +485,9 @@ impl World {
         let regions = RegionIndex::new(&map, config.tiers.region_size);
         let walk = WalkGrid::new(&map);
         let nav = Nav::default();
+        let power = crate::power::Power::new(&map, &config.power);
         let mut world = Self {
+            power,
             rng: Rng::new(config.generation.seed),
             combat_rng: Rng::new(config.generation.seed ^ 0xC0_4BA7),
             next_item_id: items.len() as u32 + 1,
@@ -748,6 +760,7 @@ impl World {
         self.nav.rebuild_all(&self.walk);
         self.flow_cache.invalidate();
         self.goal_dirty = true;
+        self.power.map_changed(&self.map);
     }
 
     /// The navigation graph and the long-range plans zombies share.
@@ -812,6 +825,7 @@ impl World {
         self.skip_health(hours);
         self.skip_needs(hours);
         self.step_first_night(hours);
+        self.step_power();
     }
 
     /// Full hit points of an edge of this kind (0 for anything that can't be battered).
@@ -1101,7 +1115,10 @@ impl World {
             // Stealth (#46): harder to see, and quieter sneaking.
             let stealth = p.skills.level(Skill::Stealth, &self.config.skills);
             let sight_mult = self.config.skills.sight_mult(stealth);
-            self.targets.push(Target { id: p.id, pos: p.state.pos, stance: p.state.stance, moving, ignored: p.dev.ignored, sight_mult });
+            // In a lit room (`crate::power`): seen through its windows as if by day.
+            let room = self.map.room_at(p.state.pos);
+            let lit = if room != 0 && self.power.is_lit(room) { self.config.power.lit_room_seen } else { 0.0 };
+            self.targets.push(Target { id: p.id, pos: p.state.pos, stance: p.state.stance, moving, ignored: p.dev.ignored, sight_mult, lit });
             if moving && self.heard.len() < MAX_SOUNDS {
                 let radius = match p.state.stance {
                     Stance::Sneak => t.sneak_noise * self.config.skills.footstep_mult(stealth),
@@ -1242,6 +1259,7 @@ impl World {
         self.step_health(hours, TICK_DT);
         self.step_needs(hours, true);
         self.step_first_night(hours);
+        self.step_power();
         // Fitness or Strength went up: the snapshot carries the new movement.
         self.refresh_skill_mods();
         // Spawn protection runs down; logged-out survivors whose time is up leave the world (#68).
@@ -1510,6 +1528,7 @@ impl World {
                 mix_stack(&mut mix, s);
             }
         }
+        self.power.hash(&mut mix);
         // Shoves adding up (mixed in only while there are any, so worlds without hash as before).
         for sh in &self.shoved {
             mix(0x5348_0000 | sh.count as u32);

@@ -37,7 +37,7 @@ pub enum CutKind {
     Structure = 5,
     /// A tree's trunk and branches: dimmed and thinned (not removed) while its foliage fades.
     Wood = 6,
-    /// Window glass of a room with a light on (`building_kit::room_lit`): like `Structure`, and it
+    /// Window glass of a room with a light on (`lights::LitRooms`): like `Structure`, and it
     /// glows warm amber at night (world.wesl).
     Lit = 7,
     /// A building detail that can stand over the player from outside (a porch roof, an awning, a
