@@ -94,7 +94,7 @@ impl FurnitureModels {
                 (k.clone(), m.tris.len(), m.tris.iter().filter(|t| t.3).count(), hi - lo, c / m.tris.len().max(1) as f32)
             })
             .collect();
-        out.sort();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
         out
     }
 
