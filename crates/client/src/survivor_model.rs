@@ -77,8 +77,10 @@ const STANCE_CLIPS: [&[&[&str]]; 3] = [
 /// The cadence (cycles a second, two steps each) each stance's clips are widened to reach
 /// ([`amplify`], at most [`MAX_SWING`]): the game's walk (3 m/s) and run (5.5 m/s) are brisker than the
 /// clips were made at, and played faster to keep the feet planted they'd step comically quickly
-/// (the owner). About 2.9 steps a second walking and running; the sneak as made.
-const CADENCE: [f32; 3] = [1.45, 1.45, 0.9];
+/// (the owner). About 2.9 steps a second walking; a run steps at a sprint's 3.7 a second (a real
+/// sprint at 5.5 m/s does, and a slower cadence stretched a jog's legs past what looks human); the
+/// sneak as made.
+const CADENCE: [f32; 3] = [1.45, 1.85, 0.9];
 const MAX_SWING: f32 = 1.6;
 const LEG_BONES: [&str; 6] = ["LeftUpLeg", "LeftLeg", "LeftFoot", "RightUpLeg", "RightLeg", "RightFoot"];
 /// Clips further apart than this (radians) aren't blended (two different runs' legs would mush):
@@ -1363,3 +1365,4 @@ mod tests {
         }
     }
 }
+
