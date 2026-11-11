@@ -64,8 +64,10 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// 23: shoves that add up and stomps to the head: the shove and stomp numbers in `CombatTuning`.
 /// 24: electricity (19) merged after 20-23.
 /// 25: stairs and the upper floor: `PlayerView::level` (bit 17 of `PlayerPacked::bits`),
-/// `SnapshotDelta::upstairs`, `Tunings::stairs`.)
-pub const PROTOCOL: u32 = 25;
+/// `SnapshotDelta::upstairs`, `Tunings::stairs`.
+/// 26: fire and cooking: `Intent::Fire`, `Snapshot::fires` (`SnapshotDelta::fires`), `Tunings::fire`,
+/// `RecipeDef::heat` and `places`, `Consumable::poison`, `WoundKind::Burn`, `DeathCause::Burned`.)
+pub const PROTOCOL: u32 = 26;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -341,6 +343,8 @@ pub struct Tunings {
     pub climb: zombye_sim::ClimbTuning,
     /// Walking between floors: the speed on a flight of stairs, which movement is predicted with.
     pub stairs: zombye_sim::StairTuning,
+    /// Fire and cooking (`zombye_sim::fire`): where the Make list says a cooking recipe has heat.
+    pub fire: zombye_sim::FireTuning,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -635,6 +639,8 @@ pub struct SnapshotDelta {
     pub group: Option<Option<zombye_sim::GroupView>>,
     /// The rooms lit and whether the grid is on (`zombye_sim::power`), when they change.
     pub lights: Option<(Vec<u16>, bool)>,
+    /// The campfires (`zombye_sim::fire`), when they change.
+    pub fires: Option<Vec<zombye_sim::FireView>>,
 }
 
 impl Snapshot {
@@ -674,6 +680,7 @@ impl Snapshot {
             groups: self.groups.iter().filter(|g| g.player == player).cloned().collect(),
             lit_rooms: self.lit_rooms.clone(),
             grid_on: self.grid_on,
+            fires: self.fires.clone(),
         }
     }
 }
@@ -825,6 +832,7 @@ pub struct DeltaEncoder {
     looks: Vec<OutfitView>,
     group: Option<zombye_sim::GroupView>,
     lights: (Vec<u16>, bool),
+    fires: Vec<zombye_sim::FireView>,
 }
 
 /// The entries of `next` that are new or differ from `last`'s (both sorted by `key`), and the keys
@@ -1025,9 +1033,14 @@ impl DeltaEncoder {
             self.lights = lights.clone();
             lights
         });
+        let fires = (first || view.fires != self.fires).then(|| {
+            self.fires = view.fires.clone();
+            view.fires
+        });
         SnapshotDelta {
             group,
             lights,
+            fires,
             tick: view.tick,
             time_of_day: view.time_of_day,
             time_scale: view.time_scale,
@@ -1116,6 +1129,9 @@ impl DeltaDecoder {
         if let Some((rooms, grid)) = delta.lights {
             (s.lit_rooms, s.grid_on) = (rooms, grid);
         }
+        if let Some(fires) = delta.fires {
+            s.fires = fires;
+        }
         if let Some(run) = delta.run {
             s.runs = vec![RunView { player, ..run }];
         }
@@ -1175,6 +1191,7 @@ impl Intent {
             | Intent::Blind { player, .. }
             | Intent::SmashWindow { player }
             | Intent::Light { player, .. }
+            | Intent::Fire { player, .. }
             | Intent::Attack { player }
             | Intent::Shove { player }
             | Intent::Stomp { player }

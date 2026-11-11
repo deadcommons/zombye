@@ -98,7 +98,7 @@ enum Kind {
 
 /// Every tool: name, title (shown to people by clients), kind. `tool_list` adds these to the
 /// definitions, and a test checks each tool has a row.
-const TOOLS: [(&str, &str, Kind); 62] = [
+const TOOLS: [(&str, &str, Kind); 64] = [
     ("observe", "Look around (ASCII map)", Kind::Look),
     ("screenshot", "Screenshot (rendered picture)", Kind::Look),
     ("stats", "World and player stats", Kind::Look),
@@ -116,6 +116,7 @@ const TOOLS: [(&str, &str, Kind); 62] = [
     ("containers_near", "Containers nearby", Kind::Look),
     ("saves", "List saves", Kind::Look),
     ("heard", "What a player heard said", Kind::Look),
+    ("fires", "Campfires and stoves nearby", Kind::Look),
     ("say", "Say something to whoever is near", Kind::Play),
     ("gesture", "Wave, put your hands up or point", Kind::Play),
     ("restrain", "Tie another survivor's hands", Kind::Play),
@@ -130,6 +131,7 @@ const TOOLS: [(&str, &str, Kind); 62] = [
     ("smash_window", "Smash a window", Kind::Play),
     ("light", "Switch the light of the room you're in", Kind::Play),
     ("blind", "Fit, roll or take down a blind", Kind::Play),
+    ("fire", "Tend a campfire: fuel, light, put out", Kind::Play),
     ("climb", "Climb a fence or an open window", Kind::Play),
     ("attack", "Attack", Kind::Play),
     ("shove", "Shove", Kind::Play),
@@ -632,6 +634,29 @@ fn tool_defs() -> Value {
                 window doesn't cross it; this does. The world steps until the player is over (about a second and a half), and \
                 the reply says where it is. Too heavy a load (overloaded) can't climb. Give facing (radians) to turn first.",
             "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}, "facing": {"type": "number"}}}
+        },
+        {
+            "name": "fires",
+            "description": "Read-only: the campfires within radius (default 30 m) of a player, nearest first: id, where, \
+                lit or not, fuel left, distance and whether it is in reach; the stoves near it and whether they have power; \
+                and whether the player has heat to cook with where it stands (recipes marked heat need a lit fire or a \
+                working stove in reach). Build a campfire with craft {recipe: build_campfire}.",
+            "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}, "radius": {"type": "number", "default": 30}}}
+        },
+        {
+            "name": "fire",
+            "description": "A player tends a campfire within 1.6 m (fire: its id from the fires tool; default the nearest). \
+                action: add_fuel (one carried item tagged fuel, e.g. firewood, plank or newspaper: item id or index of a \
+                carried stack; default the first fuel carried), light (needs fuel on it and something tagged fire carried: \
+                matches or a lighter, kept) or put_out (the fuel left stays). A lit fire lights the ground round it at night \
+                (and shows you to zombies), crackles now and then, and burns whoever stands in it. Time doesn't move.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "fire": {"type": "integer"},
+                "action": {"type": "string", "enum": ["add_fuel", "light", "put_out"]},
+                "item": {"type": "string"},
+                "index": {"type": "integer"}
+            }, "required": ["action"]}
         },
         {
             "name": "blind",
@@ -1404,6 +1429,89 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 t.reach(volume) * world.config.zombie.wall_muffle,
                 t.noise(volume)
             ))
+        }
+        "fires" => {
+            let id = player_id();
+            let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            let pos = p.state.pos;
+            let pi = world.players.iter().position(|q| q.id == id).unwrap();
+            let radius = num("radius").unwrap_or(30.0).clamp(1.0, 500.0) as f32;
+            let reach = world.config.fire.reach;
+            let mut fires: Vec<_> = world.fires().iter().filter(|f| f.pos.distance(pos) <= radius).collect();
+            fires.sort_by(|a, b| a.pos.distance(pos).total_cmp(&b.pos.distance(pos)));
+            let mut out = format!(
+                "player {id} at ({:.1}, {:.1}): {} to cook with here\n",
+                pos.x,
+                pos.y,
+                if world.heat_for(pi) { "heat" } else { "no heat" }
+            );
+            if fires.is_empty() {
+                out.push_str(&format!("no campfires within {radius:.0} m\n"));
+            }
+            for f in fires {
+                let d = f.pos.distance(pos);
+                out.push_str(&format!(
+                    "fire {} at ({:.1}, {:.1}): {}, {} of fuel, {d:.1} m{}\n",
+                    f.id,
+                    f.pos.x,
+                    f.pos.y,
+                    if f.lit { "burning" } else { "out" },
+                    zombye_sim::fire::hours_text(f.fuel_h),
+                    if d <= reach { ", in reach" } else { "" }
+                ));
+            }
+            let power = world.power();
+            for s in zombye_sim::fire::stoves(&world.map, &world.config.fire) {
+                let d = s.nearest(pos).distance(pos);
+                if d <= radius {
+                    out.push_str(&format!(
+                        "stove at ({}, {}): {}, {d:.1} m{}\n",
+                        s.min.x,
+                        s.min.y,
+                        if !world.config.fire.stoves_need_power || power.powered(s.building) { "working" } else { "no power" },
+                        if d <= reach { ", in reach" } else { "" }
+                    ));
+                }
+            }
+            Ok(out)
+        }
+        "fire" => {
+            let id = player_id();
+            let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            let pos = p.state.pos;
+            let fire = match num("fire") {
+                Some(f) => f as u32,
+                None => world
+                    .fires()
+                    .iter()
+                    .min_by(|a, b| a.pos.distance(pos).total_cmp(&b.pos.distance(pos)))
+                    .map(|f| f.id)
+                    .ok_or("there are no campfires: build one with craft {recipe: build_campfire}")?,
+            };
+            let op = match args.get("action").and_then(Value::as_str).unwrap_or("") {
+                "light" => zombye_sim::FireOp::Light,
+                "put_out" | "putout" | "out" => zombye_sim::FireOp::PutOut,
+                "add_fuel" | "fuel" => {
+                    let carried = &p.inventory.carried;
+                    let index = if let Some(i) = num("index") {
+                        i as usize
+                    } else if let Some(item) = args.get("item").and_then(Value::as_str) {
+                        let ix = world.item_index(item).ok_or_else(|| format!("no item {item:?}"))?;
+                        carried.iter().position(|s| s.item == ix).ok_or_else(|| format!("player {id} carries no {item}"))?
+                    } else {
+                        carried
+                            .iter()
+                            .position(|s| world.item_def(s.item).has_tag("fuel"))
+                            .ok_or_else(|| format!("player {id} carries nothing that burns (items tagged fuel: firewood, planks, newspaper)"))?
+                    };
+                    zombye_sim::FireOp::AddFuel { index: index as u32 }
+                }
+                other => return Err(format!("unknown action {other:?}: add_fuel, light or put_out")),
+            };
+            world.item_notes.clear();
+            let text = world.player_fire(id, fire, op).map_err(|e| format!("player {id}: {e}"))?;
+            world.item_notes.retain(|n| n.player != id);
+            Ok(format!("player {id}, fire {fire}: {text}; tick {}", world.tick))
         }
         "heard" => {
             let id = player_id();
@@ -4052,7 +4160,7 @@ mod tests {
             assert!(!persist.dirty, "{name} made the world need saving");
             called += 1;
         }
-        assert_eq!(called, 16);
+        assert_eq!(called, 17);
         // A tool that isn't read-only does make it need saving.
         let (_, err) = call(&mut world, &mut persist, "search", json!({"container": container}));
         assert!(!err && persist.dirty);

@@ -195,6 +195,9 @@ const SHOV: [u8; 4] = *b"SHOV";
 /// The players upstairs (id and floor) and the ground items lying there (`crate::stairs`); only
 /// when there are any, so adding it didn't change the format version.
 const LEVL: [u8; 4] = *b"LEVL";
+/// The campfires ([`crate::fire`]); only when there are any, so adding it didn't change the
+/// format version.
+const FIRE: [u8; 4] = *b"FIRE";
 const END: [u8; 4] = *b"END\0";
 /// Bytes before the first section: magic and version.
 const HEADER: usize = 12;
@@ -352,6 +355,8 @@ struct Settings {
     loot_seed: Option<u64>,
     #[serde(default)]
     blinds: crate::blinds::BlindTuning,
+    #[serde(default)]
+    fire: crate::fire::FireTuning,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -707,6 +712,7 @@ impl World {
             script,
             script_errors: _,
             power,
+            fires,
         } = self;
         // Survivors out of the world are saved among the players (in id order); `AWAY` says which.
         let away = AwaySave {
@@ -753,6 +759,7 @@ impl World {
             power: config.power.clone(),
             loot_seed: config.loot_seed,
             blinds: config.blinds.clone(),
+            fire: config.fire.clone(),
         };
         w.section(CONF, ron::to_string(&settings).expect("settings serialize").as_bytes());
         let layout = if *map_custom {
@@ -848,6 +855,9 @@ impl World {
         if !shoved.is_empty() {
             w.section(SHOV, &encode(shoved));
         }
+        if !fires.list.is_empty() || fires.next_id > 1 {
+            w.section(FIRE, &encode(fires));
+        }
         let levels: Vec<(u32, u8)> = players.iter().filter(|p| p.state.level > 0).map(|p| (p.id, p.state.level)).collect();
         let up_items: Vec<u32> = upstairs.iter().copied().filter(|id| items.binary_search_by_key(id, |it| it.id).is_ok()).collect();
         if !levels.is_empty() || !up_items.is_empty() {
@@ -899,6 +909,8 @@ impl World {
         config.loot_seed = settings.loot_seed;
         settings.blinds.check().map_err(save_check::invalid)?;
         config.blinds = settings.blinds;
+        settings.fire.check().map_err(save_check::invalid)?;
+        config.fire = settings.fire;
         save_check::check_settings(text, &config)?;
         let map_save: MapSave = decode(MAPD, r.expect(MAPD)?)?;
         let mut ws: WorldSave = decode(WRLD, r.expect(WRLD)?)?;
@@ -1046,6 +1058,7 @@ impl World {
         let mut blinds: Option<BlindSave> = None;
         let mut shoved: Option<Vec<crate::combat::Shoved>> = None;
         let mut levels: Option<(Vec<(u32, u8)>, Vec<u32>)> = None;
+        let mut fires: Option<crate::fire::Fires> = None;
         loop {
             let (tag, payload) = r.next()?;
             if tag == END {
@@ -1105,6 +1118,10 @@ impl World {
                 levels = Some(decode(LEVL, payload)?);
                 continue;
             }
+            if tag == FIRE && fires.is_none() {
+                fires = Some(decode(FIRE, payload)?);
+                continue;
+            }
             if tag == SHOV && shoved.is_none() {
                 shoved = Some(decode(SHOV, payload)?);
                 continue;
@@ -1113,7 +1130,7 @@ impl World {
                 script = Some(decode(MODS, payload)?);
                 continue;
             }
-            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || power.is_some() || shoved.is_some() || blinds.is_some() || levels.is_some() {
+            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || power.is_some() || shoved.is_some() || blinds.is_some() || levels.is_some() || fires.is_some() {
                 return Err(corrupt(format!("unexpected {} section", tag_name(tag))));
             }
             let block: ZombieBlock = decode(ZOMB, payload)?;
@@ -1242,6 +1259,12 @@ impl World {
         }
         w.shoved = shoved;
         w.far_ticks = far.unwrap_or(0);
+        if let Some(f) = fires {
+            match f.check(&w.map) {
+                Ok(()) => w.fires = f,
+                Err(why) => return Err(save_check::invalid(why)),
+            }
+        }
         if let Some(p) = power {
             match crate::power::Power::from_save(p, &w.map) {
                 Ok(p) => w.power = p,

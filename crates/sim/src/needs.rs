@@ -536,10 +536,16 @@ impl World {
             Some(Freshness::Mouldy) => (t.mouldy_food, self.config.health.poison_rotten),
             _ => (1.0, 0.0),
         };
+        // Raw meat and eggs (`Consumable::poison`) on top of going off.
+        let raw = c.poison.clamp(0.0, 1.0);
+        let poison = 1.0 - (1.0 - poison) * (1.0 - raw);
         let n = &mut self.players[pi].needs;
         let mut bits = Vec::new();
         if let Some(f) = fresh.filter(|f| *f != Freshness::Fresh) {
             bits.push(format!("it was {}", f.name()));
+        }
+        if raw > 0.0 {
+            bits.push("it was raw".into());
         }
         let mut change = |need: &mut f32, amount: f32, what: &str, waste: bool| {
             if amount == 0.0 {

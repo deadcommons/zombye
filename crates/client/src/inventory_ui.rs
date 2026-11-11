@@ -1010,7 +1010,7 @@ fn flush(mut out: ResMut<Outbox>, mut link: ResMut<ServerLink>) {
 #[allow(clippy::too_many_arguments)]
 fn rebuild(
     mut commands: Commands,
-    time: Res<Time>,
+    (time, map): (Res<Time>, Res<crate::server_link::ClientMap>),
     panel: Res<InventoryPanel>,
     link: Res<ServerLink>,
     join: Res<JoinInfo>,
@@ -1046,7 +1046,9 @@ fn rebuild(
     let now = link.curr.game_minute;
     // (The seconds a job has left only show in the Make list, so only count when it's open.)
     let secs = if make_ui.shown { busy.0 } else { 0.0 };
-    let signature = format!("{view:?}|{floor:?}|{secs:.1}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{}|{:?}", busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.keys, make_ui.open, make_ui.favs, make_ui.shown, *ui);
+    // Heat to cook with where we stand (`fire::heat_near`, the server's rule; stoves go by the grid).
+    let heat = zombye_sim::fire::heat_near(&map.0, &join.fire, link.curr.fires.iter().map(|f| (Vec2::from(f.pos), f.lit)), me.curr.pos, me.curr.level, |_| link.curr.grid_on);
+    let signature = format!("{heat}|{view:?}|{floor:?}|{secs:.1}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{}|{:?}", busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.keys, make_ui.open, make_ui.favs, make_ui.shown, *ui);
     if shown.0 == signature {
         return;
     }
@@ -1154,7 +1156,7 @@ fn rebuild(
             });
         });
         if let Some(v) = &view {
-            make(c, &join, v, busy.0, &flight, &make_ui);
+            make(c, &join, v, busy.0, &flight, &make_ui, heat);
         }
         c.spawn((Text::new("Click: move across   Alt-click: just one   Ctrl / Shift-click: pick   Right-click: menu   Tab: close"), font(ROW_FONT), TextColor(DIM)));
         if note_fresh && !last.text.is_empty() {
@@ -1333,6 +1335,9 @@ impl MakeUi {
     }
 }
 
+/// The Make list's family of recipes that need heat.
+const COOKING: &str = "cooking";
+
 /// What a click on a Make row does.
 #[derive(Clone)]
 enum MakeAct {
@@ -1381,12 +1386,14 @@ fn make_row(c: &mut ChildSpawnerCommands, label: String, right: String, act: Mak
 /// T-shirt, a jumper, ...) folded into one row that opens, pinned ones on top (right-click to pin),
 /// and what the rest are missing in plain words, dimmed. The one under way shows its seconds left
 /// (`busy`), queued ones counted.
-fn make(c: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f32, flight: &InFlight, ui: &MakeUi) {
+fn make(c: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f32, flight: &InFlight, ui: &MakeUi, heat: bool) {
     if join.recipes.is_empty() {
         return;
     }
     let items = &join.items;
     let mult = join.skills.craft_time_mult(v.skill_level(zombye_sim::Skill::Handiwork));
+    // The server's rule, with the heat a cooking recipe needs (`fire::heat_near`, worked out by the caller).
+    let check = |r: &zombye_sim::RecipeDef| crafting::check(r, &v.inventory, items).and_then(|()| if r.heat && !heat { Err(crafting::NEEDS_HEAT.to_string()) } else { Ok(()) });
     // One recipe's row. `lead` is "* " for a pinned one.
     let recipe_row = |c: &mut ChildSpawnerCommands, k: usize, indent: &str, lead: &str| {
         let r = &join.recipes[k];
@@ -1400,16 +1407,19 @@ fn make(c: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f3
             (false, 0) => String::new(),
             (false, n) => format!("  ({n} queued)"),
         };
-        let makes = r.outputs.iter().map(|o| crafting::amount(items, &o.item, o.count)).collect::<Vec<_>>().join(" + ");
+        let makes = match r.places {
+            Some(zombye_sim::Placed::Campfire) => "a campfire".to_string(),
+            None => r.outputs.iter().map(|o| crafting::amount(items, &o.item, o.count)).collect::<Vec<_>>().join(" + "),
+        };
         let fav = Some(r.id.clone());
-        match crafting::check(r, &v.inventory, items) {
+        match check(r) {
             Ok(()) => make_row(c, format!("{indent}{lead}{}{state}", r.name), format!("{makes}, {:.0} s", r.secs * mult), MakeAct::Craft(k), fav, TEXT),
             // Under way with what it takes set aside already.
             Err(_) if queued > 0 => make_row(c, format!("{indent}{lead}{}{state}", r.name), String::new(), MakeAct::None, fav, DIM),
             Err(why) => make_row(c, format!("{indent}{lead}{}", r.name), why, MakeAct::None, fav, DIM),
         }
     };
-    let can = |k: usize| crafting::check(&join.recipes[k], &v.inventory, items).is_ok() || v.jobs.contains(&JobKind::Craft { recipe: k as u16 });
+    let can = |k: usize| check(&join.recipes[k]).is_ok() || v.jobs.contains(&JobKind::Craft { recipe: k as u16 });
     let pinned = |k: usize| ui.favs.contains(&join.recipes[k].id);
     // One line until it's asked for: its title, a fold mark, and how many you can make now.
     let ready = (0..join.recipes.len()).filter(|&k| can(k)).count();
@@ -1443,7 +1453,8 @@ fn make(c: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f3
     // The rest in families by what they make first.
     let mut families: Vec<(String, Vec<usize>)> = Vec::new();
     for (k, r) in join.recipes.iter().enumerate().filter(|(k, _)| !pinned(*k)) {
-        let key = r.outputs.first().map_or(r.id.clone(), |o| o.item.clone());
+        // Cooking is one family of its own, whatever it makes.
+        let key = if r.heat { COOKING.to_string() } else { r.outputs.first().map_or(r.id.clone(), |o| o.item.clone()) };
         match families.iter_mut().find(|(f, _)| *f == key) {
             Some((_, v)) => v.push(k),
             None => families.push((key, vec![k])),
@@ -1451,15 +1462,27 @@ fn make(c: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f3
     }
     // Families with something to make come first (stable, so the file's order otherwise).
     families.sort_by_key(|(_, ks)| !ks.iter().any(|&k| can(k)));
+    // By a fire or a stove, cooking comes first, opened.
+    if heat && let Some(i) = families.iter().position(|(k, _)| k == COOKING) {
+        let f = families.remove(i);
+        families.insert(0, f);
+    }
     for (key, mut ks) in families {
-        if ks.len() == 1 {
+        if ks.len() == 1 && key != COOKING {
             recipe_row(c, ks[0], "", "");
             continue;
         }
         let ready = ks.iter().filter(|&&k| can(k)).count();
-        let open = ui.open.contains(&key) || ui.open.iter().any(|k| k == "*");
-        let name = items.iter().find(|d| d.id == key).map_or(key.clone(), |d| format!("{}s", d.name));
-        let summary = if ready == 0 { format!("{} ways, none yet", ks.len()) } else { format!("{ready} of {} ways ready", ks.len()) };
+        let cooking = key == COOKING;
+        let open = ui.open.contains(&key) || ui.open.iter().any(|k| k == "*") || (cooking && heat);
+        let name = if cooking { "Cooking".to_string() } else { items.iter().find(|d| d.id == key).map_or(key.clone(), |d| format!("{}s", d.name)) };
+        let summary = match (cooking, heat, ready) {
+            (true, false, _) => "needs a lit fire or a working stove".to_string(),
+            (true, true, 0) => format!("{} dishes, none you have the food for", ks.len()),
+            (true, true, n) => format!("{n} of {} dishes ready", ks.len()),
+            (false, _, 0) => format!("{} ways, none yet", ks.len()),
+            (false, _, n) => format!("{n} of {} ways ready", ks.len()),
+        };
         make_row(c, format!("{} {name}", if open { "v" } else { ">" }), summary, MakeAct::Family(key.clone()), None, if ready > 0 { TEXT } else { DIM });
         if open {
             ks.sort_by_key(|&k| !can(k));
@@ -2083,9 +2106,14 @@ fn world_menu(
         (Some(a), Some(b)) => Some(if b.1 < a.1 { b } else { a }),
         (a, b) => a.or(b),
     };
+    let fire = crate::world_actions::pick_fire(&link.curr.fires, me.curr.pos, ray.origin, *ray.direction);
+    let thing = match (thing, fire) {
+        (Some(a), Some(b)) => Some(if b.1 < a.1 { b } else { a }),
+        (a, b) => a.or(b),
+    };
     let thing = thing.filter(|(_, t)| nearest.is_none() || *t < ground_t - 0.3);
     if let Some((target, _)) = thing {
-        let (title, entries) = crate::world_actions::entries(target, &map.0, sites, &join.containers, &join.items, &join.blind_tag, me.id, me.curr.pos, link.own(me.id));
+        let (title, entries) = crate::world_actions::entries(target, &map.0, sites, &join.containers, &join.items, &join.blind_tag, join.fire.reach, me.id, me.curr.pos, link.own(me.id));
         if !entries.is_empty() {
             menu.show_world(title, entries, cursor);
         }

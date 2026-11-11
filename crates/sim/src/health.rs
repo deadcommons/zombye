@@ -139,10 +139,12 @@ pub enum WoundKind {
     Bite,
     /// From window glass.
     GlassCut,
+    /// From standing in a fire (`crate::fire`). Added last, so saves from before read as they did.
+    Burn,
 }
 
 impl WoundKind {
-    pub const ALL: [WoundKind; 5] = [Self::Bruise, Self::Scratch, Self::Gash, Self::Bite, Self::GlassCut];
+    pub const ALL: [WoundKind; 6] = [Self::Bruise, Self::Scratch, Self::Gash, Self::Bite, Self::GlassCut, Self::Burn];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -151,6 +153,7 @@ impl WoundKind {
             Self::Gash => "gash",
             Self::Bite => "bite",
             Self::GlassCut => "glass cut",
+            Self::Burn => "burn",
         }
     }
 
@@ -557,6 +560,8 @@ pub struct HealthTuning {
     pub gash: WoundTuning,
     pub bite: WoundTuning,
     pub glass_cut: WoundTuning,
+    /// A burn from standing in a fire (`crate::fire`): doesn't bleed, hurts, heals slowly.
+    pub burn: WoundTuning,
     /// Each wound's healing time is rolled within ± this share of its kind's.
     pub heal_spread: f32,
     /// A stitched wound heals this many times as fast (#10).
@@ -627,6 +632,7 @@ impl Default for HealthTuning {
             gash: wound((9.0, 13.0), 10.0, None, 40.0, 0.15, 0.7, 1.0, true),
             bite: wound((12.0, 18.0), 14.0, None, 60.0, 0.2, 0.5, 1.0, true),
             glass_cut: wound((5.0, 8.0), 8.0, None, 18.0, 0.12, 0.8, 1.0, true),
+            burn: wound((5.0, 9.0), 0.0, None, 30.0, 0.2, 0.6, 0.5, true),
             heal_spread: 0.25,
             stitched_heal_speed: 2.0,
             dressed_gash_bleed: 0.25,
@@ -682,6 +688,7 @@ impl HealthTuning {
             WoundKind::Gash => &self.gash,
             WoundKind::Bite => &self.bite,
             WoundKind::GlassCut => &self.glass_cut,
+            WoundKind::Burn => &self.burn,
         }
     }
 
@@ -784,7 +791,7 @@ impl InfectionTuning {
             WoundKind::Bite => bite,
             WoundKind::Gash => gash,
             WoundKind::Scratch => scratch,
-            WoundKind::Bruise | WoundKind::GlassCut => 0.0,
+            WoundKind::Bruise | WoundKind::GlassCut | WoundKind::Burn => 0.0,
         }
     }
 

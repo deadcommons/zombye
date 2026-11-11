@@ -1,0 +1,35 @@
+// Fire and cooking. Schema: zombye_sim::fire::FireTuning (checked on load; unknown fields are
+// refused; every field may be left out for the default below). Saved with a world's settings, so a
+// world keeps the numbers it began with. All numbers are our own.
+//
+// Campfires are built by a recipe (recipes.ron, `places: Some(Campfire)`), outdoors, and fed one
+// item tagged "fuel" at a time from the fire's menu. Cooking recipes (`heat: true`) need a lit
+// campfire or a working stove within reach.
+(
+    // Metres from a fire (or a stove's footprint) a survivor cooks at and tends it from.
+    reach: 1.6,
+    // Game hours of burning a kilogram of fuel gives (a 1.5 kg log of firewood: about 1 h 7 min;
+    // a game hour is 2.5 minutes of play by default), and the most a fire holds.
+    hours_per_kg: 0.75,
+    max_fuel_hours: 8.0,
+    // A new campfire goes this far in front of you, at least `spacing` from another; at most
+    // `max_fires` in a world. `indoors: true` allows them inside (fire doesn't spread).
+    build_ahead: 1.0,
+    spacing: 2.0,
+    max_fires: 200,
+    indoors: false,
+    // The hazard: standing within `burn_radius` of a lit fire's middle burns a leg or a foot this
+    // often a second (clothing there may stop it); a zombie in one loses this many HP a second.
+    burn_radius: 0.5,
+    burn_chance_per_sec: 0.6,
+    zombie_burn_per_sec: 6.0,
+    // A lit fire crackles (a noise this many metres round) every few seconds, and at night anyone
+    // within `light_radius` of it is seen by zombies as if by `seen_as_daylight` of daylight.
+    crackle_noise: 6.0,
+    crackle_every_secs: 4.0,
+    light_radius: 6.0,
+    seen_as_daylight: 0.6,
+    // Stoves cook while their building has power (`stoves_need_power: false`: always, like gas).
+    stove_furniture: "stove",
+    stoves_need_power: true,
+)

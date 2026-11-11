@@ -624,7 +624,7 @@ impl Host {
             edge_damage: EdgeDamage::all(&self.world),
             blinds: self.world.blinds_now(),
             glazed: self.world.glazed_doors(),
-            tunings: Tunings { combat: c.combat.clone(), health: c.health.clone(), infection: c.infection.clone(), needs: c.needs, skills: c.skills.clone(), carry: c.carry.clone(), climb: c.climb.clone(), stairs: c.stairs.clone() },
+            tunings: Tunings { combat: c.combat.clone(), health: c.health.clone(), infection: c.infection.clone(), needs: c.needs, skills: c.skills.clone(), carry: c.carry.clone(), climb: c.climb.clone(), stairs: c.stairs.clone(), fire: c.fire.clone() },
         };
         let (out, frames) = mpsc::sync_channel::<Vec<u8>>(OUT_QUEUE);
         let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));

@@ -63,6 +63,9 @@ pub enum Intent {
     /// Flip the light switch of the room the player stands in (`on`: to that; `None`: the other
     /// way). The light only comes on while the building has power (`zombye_sim::power`).
     Light { player: u32, on: Option<bool> },
+    /// Tend campfire `fire` (`zombye_sim::fire`): put fuel on it, light it, or put it out, from
+    /// within reach (`World::player_fire`).
+    Fire { player: u32, fire: u32, op: zombye_sim::FireOp },
     /// Swing the equipped weapon (bare hands: a punch). Lands after the weapon's windup; asked for
     /// during the last moments of the previous action, it's queued.
     Attack { player: u32 },
@@ -450,6 +453,9 @@ pub struct Snapshot {
     /// The town's grid is on.
     #[serde(default)]
     pub grid_on: bool,
+    /// The campfires (`zombye_sim::fire`), in id order: every snapshot (a server sends them when they change).
+    #[serde(default)]
+    pub fires: Vec<zombye_sim::FireView>,
 }
 
 /// What a body has on, for drawing it (#63): the clothing and accessories it wears in the order put
@@ -577,6 +583,7 @@ impl Snapshot {
             groups: if world.groups().is_empty() { Vec::new() } else { world.players.iter().filter_map(|p| world.group_view(p.id)).collect() },
             lit_rooms: world.power().lit().to_vec(),
             grid_on: world.power().grid_on(),
+            fires: world.fires().iter().map(|f| f.view()).collect(),
         }
     }
 
@@ -666,6 +673,9 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
         }
         Intent::Light { player, on } => {
             world.player_light(*player, *on);
+        }
+        Intent::Fire { player, fire, op } => {
+            let _ = world.player_fire(*player, *fire, *op);
         }
         Intent::Attack { player } => {
             world.player_attack(*player);
@@ -790,6 +800,7 @@ impl Intent {
             | Intent::Blind { player, .. }
             | Intent::SmashWindow { player }
             | Intent::Light { player, .. }
+            | Intent::Fire { player, .. }
             | Intent::Attack { player }
             | Intent::Shove { player }
             | Intent::Stomp { player }

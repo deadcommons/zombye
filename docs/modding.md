@@ -54,7 +54,7 @@ existing thing; any other id is a new item. Two tags matter to scripts:
 Food and drink are usable anyway, and scripts hear of those uses too.
 
 **`recipes.ron`** is a list in the format of `assets/data/items/recipes.ron`. A recipe id the game
-already has is an error.
+already has is an error. A recipe with `heat: true` needs a lit campfire or a working stove in reach (cooking), and one with `places: Some(Campfire)` builds a campfire from its inputs instead of making items (it may then have no `outputs`).
 
 **`loot.ron`** adds entries to loot tables the game has, so a new item turns up in the world:
 
