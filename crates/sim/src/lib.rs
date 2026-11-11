@@ -65,7 +65,7 @@ pub use firstaid::{Aid, AidView, CourseView, FirstAidTuning, Treatment};
 pub use firstnight::{FirstNight, Objective, Phase, Shelter};
 pub use health::{Dressing, Health, HealthTags, HealthTuning, HealthView, InfectionMode, InfectionStage, InfectionTuning, Part, Wound, WoundKind, WoundView};
 pub use inventory::{Burden, Carry, CarryTuning, Inventory, ItemJob, ItemNote, JobKind, Place, Slot};
-pub use items::{BodyPart, GroundItem, ItemCategory, ItemDef, ItemStack, Layer, WearSlot, WeaponCategory, WeaponDef};
+pub use items::{BodyPart, GroundItem, ItemCategory, ItemDef, ItemStack, Layer, Pouch, WearSlot, WeaponCategory, WeaponDef};
 pub use loot::{LootData, LootTable};
 pub use flow::FlowField;
 pub use map::TileMap;

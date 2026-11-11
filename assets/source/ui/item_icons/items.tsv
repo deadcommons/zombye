@@ -1,0 +1,86 @@
+tinned_beans	Tin of beans	Food	#8c8c93
+tinned_soup	Tin of soup	Food	#99594c
+tinned_fruit	Tin of fruit	Food	#bf994c
+crackers	Box of crackers	Food	#cca566
+peanut_butter	Jar of peanut butter	Food	#996b3f
+cereal	Box of cereal	Food	#d8b24c
+chocolate_bar	Chocolate bar	Food	#59331e
+crisps	Bag of crisps	Food	#d83333
+bread	Loaf of bread	Food	#c69960
+apple	Apple	Food	#b21914
+cheese	Block of cheese	Food	#eacc59
+water_bottle	Bottle of water	Drink	#8cbfe5
+empty_bottle	Empty bottle	Junk	#b2ccd8
+soda_can	Can of soda	Drink	#bf2626
+juice_carton	Carton of juice	Drink	#f29926
+milk	Bottle of milk	Drink	#f2f2ea
+plasters	Box of plasters	Medical	#d8b299
+gauze	Gauze roll	Medical	#f2f2f2
+rag	Rag	Medical	#998c72
+clean_rag	Clean rag	Medical	#d8d8cc
+antiseptic	Bottle of antiseptic	Medical	#8c4c33
+painkillers	Painkillers	Medical	#e5e5f2
+antibiotics	Antibiotics	Medical	#e5d87f
+sewing_kit	Sewing kit	Medical	#996699
+tin_opener	Tin opener	Tool	#99999e
+screwdriver	Screwdriver	Tool	#d8bf33
+scissors	Scissors	Tool	#334cb2
+saw	Hand saw	Tool	#a5a5ad
+lighter	Lighter	Tool	#cc337f
+matches	Box of matches	Tool	#d84c33
+duct_tape	Roll of duct tape	Tool	#8c9199
+nails	Box of nails	Material	#727277
+rope	Rope	Material	#b29966
+cable_tie	Cable tie	Material	#1e1e21
+roller_blind	Roller blind	Tool	#d8ceb2
+flashlight	Flashlight	Light	#26262b
+batteries	Batteries	Light	#4c7f4c
+candle	Candle	Light	#f2eacc
+bed_sheet	Bed sheet	Material	#d8d8e5
+towel	Towel	Material	#6699bf
+thread	Reel of thread	Material	#d8d8d8
+t_shirt	T-shirt	Clothing	#894942
+jumper	Jumper	Clothing	#3d4960
+hoodie	Hoodie	Clothing	#546042
+jeans	Jeans	Clothing	#495972
+leather_jacket	Leather jacket	Clothing	#3f2b21
+work_gloves	Work gloves	Clothing	#997a4f
+trainers	Trainers	Clothing	#d8d6c9
+work_boots	Work boots	Clothing	#594230
+glasses	Glasses	Clothing	#0c0c0f
+baseball_cap	Baseball cap	Clothing	#7a3a33
+beanie	Beanie	Clothing	#353a42
+woolly_hat	Woolly hat	Clothing	#997242
+scarf	Scarf	Clothing	#6b2d2b
+dust_mask	Dust mask	Clothing	#dbd8d1
+bandana	Bandana	Clothing	#893a33
+balaclava	Balaclava	Clothing	#2b2b2d
+plastic_bag	Plastic bag	Bag	#d3d1c6
+tote_bag	Tote bag	Bag	#b2a584
+school_backpack	School backpack	Bag	#44607c
+duffel_bag	Duffel bag	Bag	#4f563f
+hiking_pack	Hiking rucksack	Bag	#895433
+kitchen_knife	Kitchen knife	Weapon	#bfbfc6
+claw_hammer	Claw hammer	Weapon	#724c33
+frying_pan	Frying pan	Weapon	#262628
+baseball_bat	Baseball bat	Weapon	#b28c59
+golf_club	Golf club	Weapon	#bfbfcc
+wooden_plank	Wooden plank	Weapon	#997247
+crowbar	Crowbar	Weapon	#7f261e
+fire_axe	Fire axe	Weapon	#bf2619
+pistol	Pistol	Weapon	#28282d
+pistol_magazine	Pistol magazine	Tool	#333338
+pistol_rounds	Pistol round	Material	#b78e3f
+hunting_rifle	Hunting rifle	Weapon	#5b3d23
+rifle_rounds	Rifle round	Material	#bf994c
+shotgun	Shotgun	Weapon	#332d28
+shotgun_shells	Shotgun shell	Material	#b2231e
+mug	Mug	Junk	#e5e5d8
+magazine	Magazine	Junk	#cc667f
+tv_remote	TV remote	Junk	#191919
+picture_frame	Picture frame	Junk	#997f59
+pen	Pen	Junk	#193399
+umbrella	Umbrella	Junk	#262633
+baking_tray	Baking tray	Junk	#7f7f84
+alarm_clock	Alarm clock	Junk	#cc4c33
+cushion	Cushion	Junk	#7f4c72

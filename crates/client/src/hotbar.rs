@@ -247,7 +247,7 @@ struct Shown(Option<Vec<SlotView>>);
 struct SlotClicks(Vec<(usize, bool)>);
 
 #[derive(Component)]
-struct BarRoot;
+pub(crate) struct BarRoot;
 
 pub struct HotbarPlugin;
 

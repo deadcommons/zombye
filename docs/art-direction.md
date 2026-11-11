@@ -257,7 +257,7 @@ components, and a checklist for a new screen. In short:
 - **Paper for what the survivor holds.** The map is ink on worn paper (printed streets, the rest
   inked in as it is seen, red pencil for your own marks); notes, recipe cards and pages later follow
   it. Paper always sits inside the chrome's frame; chrome controls are never drawn on paper.
-- **One frame, many tabs.** Inventory, Make, Build, Health, Skills and Map are tabs of one frame: a
+- **One frame, many tabs.** Inventory, Make, Build, Survivor (Info, Health, Skills, Protection) and Map are tabs of one frame: a
   top bar with the title, a rail of tabs down the left, two or three columns, a footer of key hints.
   Nothing scrolls sideways.
 - **One accent.** Zombie green #8DB06B means "this one" (the open tab, what is picked, the main

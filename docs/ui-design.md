@@ -117,9 +117,12 @@ Every full screen is the same frame, and the screens are its tabs:
 - **Top bar:** the mark, the screen's title, one line of context (day, hour, the room you are in),
   and Close with its key at the right.
 - **Rail:** one tab per screen, an icon over its name with its key in the corner: Inventory, Make,
-  Build, Health, Skills, Map. The open one is bone white with a green icon and a 4-pixel green bar
+  Build, Survivor, Map. The open one is bone white with a green icon and a 4-pixel green bar
   on its outer edge. A screen's own key opens it and closes it; the rail and the other screens'
   keys switch between them without closing.
+- **Sub-tabs:** a screen with several pages (Survivor: Info, Health, Skills, Protection) lists them
+  in the top bar after the context line, as chips; the open one is green. `H` and `K` open Survivor
+  straight on Health and Skills.
 - **Body:** two or three columns divided by hairlines. A column has a title and scrolls on its own,
   up and down only. **Nothing scrolls sideways, ever:** content wraps to the width it has.
 - **Footer:** the keys that work on this screen, as keycaps with a word each. If an action has no
@@ -197,8 +200,10 @@ Each is one function in `theme.rs`; a panel never builds its own.
 | Inventory | Gear (hands, body slots, bag slots, hotbar, load) / You (a pane for the pockets and for each bag) / Nearby (the open container, the floor) | Search, sort, chips and the view switch over the middle column. |
 | Make | Recipes by category / the chosen recipe: what goes in, tools, what comes out, the time, Make | Fire and cooking add their recipes here. |
 | Build | What can be built, by category / the chosen piece: materials, tools, where it goes | Barricades first; walls, furniture and bigger works later, in the same list. |
-| Health | The body, part by part / wounds as rows with their state and treatments | |
-| Skills | The skills / the chosen skill: level, progress, what it gives | |
+| Survivor: Info | Who this is: name, Background, days survived, kills / Strengths and Flaws as two lists / appearance | A Strength is green with a plus, a Flaw amber with a minus, each with one line saying what it does. What character creation chose is shown here. |
+| Survivor: Health | The body, part by part / wounds as rows with their state and treatments | |
+| Survivor: Skills | The skills / the chosen skill: level, progress, what it gives | |
+| Survivor: Protection | The body, part by part / what covers each part and how much it stops, by kind of wound | The Gear column's one-line summary opens it. |
 | Map | Paper, filling the body | The survivor's paper map: printed streets, the rest inked in as it is seen, red pencil for your own marks. Pan and zoom keys in the footer. |
 | Menus, settings, character creation | The frame over an opaque ground, one column of choices and one of detail | |
 

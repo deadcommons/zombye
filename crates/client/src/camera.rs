@@ -315,12 +315,15 @@ fn rotate_and_zoom(
     window: Query<&Window, With<bevy::window::PrimaryWindow>>,
     panels: crate::hud::PanelHits,
     browser: Option<Res<crate::browser_ui::BrowserUi>>,
+    inventory: Option<Res<crate::inventory_ui::InventoryPanel>>,
     motion: Res<AccumulatedMouseMotion>,
     lock: Res<PointerLock>,
     notice: Option<ResMut<crate::saving::Notice>>,
     mut turned: Local<usize>,
 ) {
     let Ok((mut cam, mut projection)) = cams.single_mut() else { return };
+    // (The inventory screen covers the window: the wheel scrolls its columns.)
+    let inventory_open = inventory.is_some_and(|i| i.open);
     // `;` switches between the fixed view and first person (not in a picture: `--first-person`).
     if keys.just_pressed(KeyCode::Semicolon) && !options.offscreen() {
         cam.toggle_view();
@@ -334,14 +337,14 @@ fn rotate_and_zoom(
         if lock.0 {
             cam.look(motion.delta);
         }
-        if crate::hud::panel_under_cursor(window.single().ok(), &panels).is_some() || browser.is_some_and(|b| b.open) {
+        if crate::hud::panel_under_cursor(window.single().ok(), &panels).is_some() || browser.is_some_and(|b| b.open) || inventory_open {
             wheel.clear();
         }
         wheel.clear();
         return;
     }
     // Over a panel the wheel scrolls it (`hud.rs`), not the zoom; so with the server browser open.
-    if crate::hud::panel_under_cursor(window.single().ok(), &panels).is_some() || browser.is_some_and(|b| b.open) {
+    if crate::hud::panel_under_cursor(window.single().ok(), &panels).is_some() || browser.is_some_and(|b| b.open) || inventory_open {
         wheel.clear();
     }
     // Comma / period (Q quits on the death screen, E is pick up). While a text line is being

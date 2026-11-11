@@ -90,6 +90,8 @@ fn spawn(mut commands: Commands) {
         PanelRoot,
         crate::hud::TopPanel,
         crate::panels::PanelId::Health,
+        // (Over the inventory screen's frame, which covers the window.)
+        GlobalZIndex(7),
         Visibility::Hidden,
         Node {
             position_type: PositionType::Absolute,
