@@ -21,4 +21,9 @@
     // `colour` how much of its colour it keeps (0 = grey, 1 = all).
     unseen_day: (tint: (0.94, 0.9, 0.84), dark: 0.4, colour: 0.85),
     unseen_night: (tint: (0.55, 0.6, 0.75), dark: 0.86, colour: 0.25),
+    // Rooms other than the one you are in (every room, from outdoors): how much of what you have a
+    // line of sight to in them shows, through a doorway or a window. 0 = they are always dark, and
+    // nobody and nothing in them is drawn; 1 = sight alone decides. (This one is not only a look:
+    // zombies, survivors and items in such a room are drawn by it too.)
+    other_rooms: 0.0,
 )

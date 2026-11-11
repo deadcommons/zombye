@@ -337,7 +337,7 @@ impl Host {
 
     /// What this server says of itself to someone who asks without joining (#69).
     pub fn info(&self) -> ServerInfo {
-        ServerInfo { protocol: wire::PROTOCOL, version: env!("CARGO_PKG_VERSION").to_string(), rules: self.rules(), online: self.conns.len() as u32, password: !self.options.password.is_empty(), mods: self.options.mods.clone() }
+        ServerInfo { protocol: wire::PROTOCOL, version: crate::BUILD.to_string(), rules: self.rules(), online: self.conns.len() as u32, password: !self.options.password.is_empty(), mods: self.options.mods.clone() }
     }
 
     /// Is `player` played by a program, by its client's own word (#69)?

@@ -185,6 +185,9 @@ const FARC: [u8; 4] = *b"FARC";
 /// stream, events not yet handed to them, and which mods they were; optional, like `RUNS`: only
 /// written for a world with mods or with something of theirs in it).
 const MODS: [u8; 4] = *b"MODS";
+/// The power sources and light switches ([`crate::power`]); optional (a save without it gets a new
+/// world's: the grid as the settings say, the lights left on).
+const POWR: [u8; 4] = *b"POWR";
 /// Zombies shoved lately ([`crate::combat::Shoved`]), adding up toward a knockdown; only when
 /// there are any, so adding it didn't change the format version.
 const SHOV: [u8; 4] = *b"SHOV";
@@ -338,6 +341,8 @@ struct Settings {
     needs: NeedsTuning,
     #[serde(default)]
     skills: SkillTuning,
+    #[serde(default)]
+    power: crate::power::PowerDef,
     /// The seed loot rolls from (`WorldConfig::loot_seed`); none in older saves: the world seed.
     #[serde(default)]
     loot_seed: Option<u64>,
@@ -696,6 +701,7 @@ impl World {
             scripts: _,
             script,
             script_errors: _,
+            power,
         } = self;
         // Survivors out of the world are saved among the players (in id order); `AWAY` says which.
         let away = AwaySave {
@@ -739,6 +745,7 @@ impl World {
             infection: config.infection.clone(),
             needs: config.needs,
             skills: config.skills.clone(),
+            power: config.power.clone(),
             loot_seed: config.loot_seed,
             blinds: config.blinds.clone(),
         };
@@ -832,6 +839,7 @@ impl World {
         if *far_ticks != 0 {
             w.section(FARC, &encode(far_ticks));
         }
+        w.section(POWR, &encode(&power.to_save()));
         if !shoved.is_empty() {
             w.section(SHOV, &encode(shoved));
         }
@@ -876,6 +884,8 @@ impl World {
         config.infection = settings.infection;
         config.needs = settings.needs;
         config.skills = settings.skills;
+        config.power = settings.power;
+        config.power.validate().map_err(|why| save_check::invalid(format!("power settings: {why}")))?;
         config.loot_seed = settings.loot_seed;
         settings.blinds.check().map_err(save_check::invalid)?;
         config.blinds = settings.blinds;
@@ -1016,6 +1026,7 @@ impl World {
         let mut climbs: Option<Vec<(u32, crate::players::Climb)>> = None;
         let mut far: Option<u64> = None;
         let mut script: Option<crate::script::ScriptState> = None;
+        let mut power: Option<crate::power::PowerSave> = None;
         let mut away: Option<AwaySave> = None;
         let mut nights: Option<Vec<(u32, crate::firstnight::FirstNight)>> = None;
         let mut bonds: Option<BondSave> = None;
@@ -1069,6 +1080,10 @@ impl World {
                 groups = Some(decode(GRPS, payload)?);
                 continue;
             }
+            if tag == POWR && power.is_none() {
+                power = Some(decode(POWR, payload)?);
+                continue;
+            }
             if tag == BLND && blinds.is_none() {
                 blinds = Some(decode(BLND, payload)?);
                 continue;
@@ -1081,7 +1096,7 @@ impl World {
                 script = Some(decode(MODS, payload)?);
                 continue;
             }
-            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || blinds.is_some() || shoved.is_some() {
+            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || power.is_some() || shoved.is_some() || blinds.is_some() {
                 return Err(corrupt(format!("unexpected {} section", tag_name(tag))));
             }
             let block: ZombieBlock = decode(ZOMB, payload)?;
@@ -1186,6 +1201,14 @@ impl World {
         }
         w.shoved = shoved;
         w.far_ticks = far.unwrap_or(0);
+        if let Some(p) = power {
+            match crate::power::Power::from_save(p, &w.map) {
+                Ok(p) => w.power = p,
+                // Loaded anyway onto a new map: its rooms aren't the old ones.
+                Err(_) if new_map => notes.push("the map changed: the lights are as in a new world".into()),
+                Err(why) => return Err(save_check::invalid(why)),
+            }
+        }
         if let Some(mut state) = script {
             state.check(w.config.items.len(), w.config.recipes.len()).map_err(|why| save_check::invalid(format!("script state: {why}")))?;
             // Whose scripts ran the world then, against whose run it now.

@@ -57,6 +57,7 @@ pub struct FogLook {
     pub range_fade_from: f32,
     pub unseen_day: Unseen,
     pub unseen_night: Unseen,
+    pub other_rooms: f32,
 }
 
 const SHIPPED: &str = include_str!("../../../assets/data/fog.ron");
@@ -72,6 +73,7 @@ impl Default for FogLook {
             range_fade_from: 0.5,
             unseen_day: Unseen { tint: (0.94, 0.9, 0.84), dark: 0.4, colour: 0.85 },
             unseen_night: Unseen { tint: (0.55, 0.6, 0.75), dark: 0.86, colour: 0.25 },
+            other_rooms: 0.0,
         }
     }
 }
@@ -82,6 +84,7 @@ impl FogLook {
         let unit = |name: &str, v: f32| if (0.0..=1.0).contains(&v) { Ok(()) } else { Err(format!("{name} must be from 0 to 1, not {v}")) };
         unit("behind", look.behind)?;
         unit("range_fade_from", look.range_fade_from)?;
+        unit("other_rooms", look.other_rooms)?;
         for (name, u) in [("unseen_day", look.unseen_day), ("unseen_night", look.unseen_night)] {
             unit(&format!("{name}.dark"), u.dark)?;
             unit(&format!("{name}.colour"), u.colour)?;
@@ -144,7 +147,12 @@ pub struct FogState {
     /// What the rays were last cast with (eye, reach), and the origin the mask texture was last
     /// filled for: neither is done again until it changes (or the map does).
     cast: Option<(Vec2, f32)>,
-    filled: Option<Vec2>,
+    filled: Option<(Vec2, u16)>,
+    /// Per mask texel, whether it is in a room other than the one the player is in (its red in the
+    /// texture is the opposite): such a room shows only `other_rooms` of what sight gives.
+    other: Vec<bool>,
+    /// `FogLook::other_rooms`, for [`FogState::visibility`] and the shader.
+    pub other_rooms: f32,
 }
 
 /// The player's sight as of the last update: everything a mask texel's visibility follows from.
@@ -212,7 +220,8 @@ impl FogState {
         if t.x < 0 || t.y < 0 || t.x >= TEXELS as i32 || t.y >= TEXELS as i32 {
             return 0.0;
         }
-        self.view.as_ref().map_or(0.0, |v| v.texel(self.origin, t.x as u32, t.y as u32) as f32 / 255.0)
+        let seen = self.view.as_ref().map_or(0.0, |v| v.texel(self.origin, t.x as u32, t.y as u32) as f32 / 255.0);
+        if self.other[(t.y as u32 * TEXELS + t.x as u32) as usize] { seen * self.other_rooms } else { seen }
     }
 }
 
@@ -248,6 +257,8 @@ impl Plugin for FogPlugin {
             view: None,
             cast: None,
             filled: None,
+            other: vec![false; (TEXELS * TEXELS) as usize],
+            other_rooms: 0.0,
         })
             .init_resource::<FogLook>()
             .add_systems(Update, update_fog);
@@ -263,6 +274,7 @@ pub fn update_fog(
     join: Res<crate::server_link::JoinInfo>,
     me: Res<crate::player::LocalPlayer>,
     player: Query<(&Transform, &Player)>,
+    cams: Query<&crate::camera::IsoCamera>,
     mut fog: ResMut<FogState>,
     mut images: ResMut<Assets<Image>>,
 ) {
@@ -292,7 +304,15 @@ pub fn update_fog(
     // In the dark the rays go on past what we see by ourselves, as far as a lit place shows (below).
     let lit_dark = crate::lights::darkness(daylight.0);
     let far = if lit_dark > 0.0 { crate::lights::FAR_LIGHT } else { 0.0 };
-    let facing = Vec2::from_angle(player.facing);
+    // In first person what's ahead is where the camera looks, not where the body last walked: going by
+    // the body, zombies the camera turned to went behind the cone and weren't drawn.
+    let facing = match cams.single() {
+        Ok(cam) if cam.shoulder() => {
+            let (forward, _) = cam.ground_axes();
+            Vec2::new(forward.x, forward.z)
+        }
+        _ => Vec2::from_angle(player.facing),
+    };
     let fog = &mut *fog;
     let map_changed = map.is_changed();
 
@@ -329,15 +349,24 @@ pub fn update_fog(
     let half = fog.size_m * 0.5;
     let origin = ((eye - Vec2::splat(half)) / TEXEL_M).floor() * TEXEL_M;
     fog.origin = origin;
-    if (fog.filled != Some(origin) || map_changed)
+    // ...and which rooms aren't the one you're in: those stay dark, whatever you could see of them
+    // through a doorway or a window (`other_rooms` in fog.ron), so that changes with your room too.
+    let room = own_room(&map.0, eye);
+    fog.other_rooms = look.other_rooms;
+    if (fog.filled != Some((origin, room)) || map_changed)
         && let Some(mut image) = images.get_mut(&fog.image)
         && let Some(data) = image.data.as_mut()
     {
-        fog.filled = Some(origin);
+        fog.filled = Some((origin, room));
         for ty in 0..TEXELS {
             for tx in 0..TEXELS {
                 let q = origin + (Vec2::new(tx as f32, ty as f32) + 0.5) * TEXEL_M;
-                data[((ty * TEXELS + tx) * 2 + 1) as usize] = if map.0.tile(q.floor().as_ivec2()).room != 0 { 255 } else { 0 };
+                let at = map.0.tile(q.floor().as_ivec2()).room;
+                let other = other_room(&map.0, at, room);
+                let i = (ty * TEXELS + tx) as usize;
+                fog.other[i] = other;
+                data[i * 2] = if other { 0 } else { 255 };
+                data[i * 2 + 1] = if at != 0 { 255 } else { 0 };
             }
         }
     }
@@ -345,6 +374,35 @@ pub fn update_fog(
     let (look_lo, look_hi) = ((look.cone_behind.to_radians() * narrow).cos(), (look.cone_full.to_radians() * narrow).cos());
     fog.sight = [Vec4::new(eye.x, eye.y, max, beam), Vec4::new(facing.x, facing.y, look_lo, look_hi), Vec4::new(beam_cos, look.behind, look.close_radius, 1.0)];
     fog.soft = Vec2::new(look.close_fade, look.range_fade_from);
+}
+
+/// Is `room` an open porch (a room in name only: it stands open to the street)?
+fn open_porch(map: &zombye_sim::map::TileMap, room: u16) -> bool {
+    map.rooms.get(room as usize).and_then(|r| map.buildings.get(r.building as usize)).and_then(|b| b.look).and_then(|l| l.porch).is_some_and(|p| p.room == room)
+}
+
+/// The room the eye is in, for [`other_room`]: 0 outdoors, and on an open porch.
+fn own_room(map: &zombye_sim::map::TileMap, eye: Vec2) -> u16 {
+    let room = map.room_at(eye);
+    if open_porch(map, room) { 0 } else { room }
+}
+
+/// Does this edge stand on the room the eye is in (outdoors, when the eye is outdoors)? A door
+/// anywhere else belongs to rooms that stay dark, and isn't shown (its leaf by the world shader,
+/// its outline on a cut wall by `opening_hints`).
+pub fn on_own_room(map: &zombye_sim::map::TileMap, key: (IVec2, zombye_sim::map::OwnedEdge), eye: Vec2) -> bool {
+    let own = own_room(map, eye);
+    let beyond = key.0 - if key.1 == zombye_sim::map::OwnedEdge::North { IVec2::Y } else { IVec2::X };
+    [key.0, beyond].into_iter().any(|t| {
+        let room = map.tile(t).room;
+        own == if open_porch(map, room) { 0 } else { room }
+    })
+}
+
+/// Is a tile of room `at` in a room other than the one the player is in (`own`, from [`own_room`])?
+/// Outdoors and open porches never are; from outdoors every room is.
+fn other_room(map: &zombye_sim::map::TileMap, at: u16, own: u16) -> bool {
+    at != 0 && at != own && !open_porch(map, at)
 }
 
 /// The sight rays (`vision::visibility_rays`, the same values), cast in runs on the task pool: a
@@ -450,7 +508,7 @@ mod tests {
                 let far = |i: usize| (origin + (Vec2::new((i as u32 % TEXELS) as f32, (i as u32 / TEXELS) as f32) + 0.5) * TEXEL_M).distance(eye) > 23.0;
                 assert!(old.iter().enumerate().any(|(i, v)| *v > 0 && far(i)), "a light past the night's sight and the beam shows");
             }
-            let fog = FogState { image: Handle::default(), origin, size_m: 128.0, rays: Handle::default(), sight: [Vec4::ZERO; 3], soft: Vec2::ZERO, view: Some(view), cast: None, filled: None };
+            let fog = FogState { image: Handle::default(), origin, size_m: 128.0, rays: Handle::default(), sight: [Vec4::ZERO; 3], soft: Vec2::ZERO, view: Some(view), cast: None, filled: None, other: vec![false; (TEXELS * TEXELS) as usize], other_rooms: 0.0 };
             for ty in 0..TEXELS {
                 for tx in 0..TEXELS {
                     // Anywhere in the texel, its corners included.
@@ -467,6 +525,16 @@ mod tests {
     /// The shipped fog.ron is the defaults, mistakes are named, and the look is subtle: what's
     /// behind you is nearly as bright as what's ahead, and by day what's out of sight is a
     /// little dimmer, not a dark hole (at night it stays nearly black, #83).
+    /// Rooms other than the player's are other rooms; outdoors never is, and from outdoors every room is.
+    #[test]
+    fn only_the_room_you_are_in_is_yours() {
+        let map = zombye_sim::map::TileMap::new(2, 2);
+        assert!(!other_room(&map, 0, 0) && !other_room(&map, 0, 3), "outdoors is never another room");
+        assert!(!other_room(&map, 3, 3), "nor is our own");
+        assert!(other_room(&map, 4, 3) && other_room(&map, 4, 0), "any other is, from indoors or out");
+        assert_eq!(FogLook::parse(SHIPPED).unwrap().other_rooms, FogLook::default().other_rooms);
+    }
+
     #[test]
     fn the_shipped_look_is_subtle() {
         let look = FogLook::parse(SHIPPED).unwrap();

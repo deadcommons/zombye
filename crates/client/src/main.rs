@@ -106,6 +106,7 @@ mod health_ui;
 mod hotbar;
 mod hud;
 mod inventory_ui;
+mod join_screen;
 mod items_render;
 mod lights;
 mod materials;
@@ -279,6 +280,8 @@ pub struct Options {
     pub aim_at: Option<[f32; 2]>,
     /// The same, with the cursor on the nearest standing zombie (`--aim-at zombie`).
     pub aim_at_zombie: bool,
+    /// Start in the first-person view (`--first-person`, or its first name `--third-person`; `;` switches in game, `camera.rs`).
+    pub third_person: bool,
     /// Start with the cutaways off (`--walls-up`; F10 toggles them, `cutaway.rs`).
     pub walls_up: bool,
     /// Show the silhouettes of zombies you see that something covers (`--zombie-silhouettes`;
@@ -332,6 +335,11 @@ pub struct Options {
     /// server refuses, the game doesn't stop: it starts in its own world (`single`: the autosave
     /// the join left) with the browser open and the reason on it.
     pub from_browser: Option<String>,
+    /// The join screen (DCM-70, `join_screen.rs`) went through and started the game again to join
+    /// for real (`--joined`); a game whose join then fails goes back to the screen with the reason
+    /// (`--join-error RAW`, which starts the screen showing it).
+    pub joined: bool,
+    pub join_error: Option<String>,
     /// Graphics for this session, over the settings file's (`graphics.rs`): a whole preset
     /// (`--graphics low|medium|high|ultra|auto`), the vegetation's density (`--vegetation off|low|high|N`), and
     /// effects to switch off (`--no-post grain,tilt,vignette,bloom,ao,ground|all`).
@@ -519,6 +527,7 @@ impl Options {
             walk: value("--walk").map(|v| v.split(';').filter_map(parse_point).map(Vec2::from).collect()).unwrap_or_default(),
             aim_at: value("--aim-at").and_then(|v| parse_point(&v)),
             aim_at_zombie: value("--aim-at").is_some_and(|v| v == "zombie"),
+            third_person: flag("--first-person") || flag("--third-person"),
             walls_up: flag("--walls-up"),
             zombie_silhouettes: flag("--zombie-silhouettes").then_some(true),
             opening_hints: value("--opening-hints").and_then(|v| match v.as_str() {
@@ -547,6 +556,8 @@ impl Options {
                 Some((n.trim().parse().ok().filter(|n| *n >= 1)?, after.trim().parse().ok().filter(|s: &f32| s.is_finite() && *s >= 0.0)?))
             }),
             from_browser: value("--from-browser"),
+            joined: flag("--joined"),
+            join_error: value("--join-error"),
             graphics: value("--graphics"),
             vegetation: value("--vegetation"),
             no_post: value("--no-post"),
@@ -591,7 +602,7 @@ pub fn live(options: Res<Options>) -> bool {
 /// Ctrl-C, SIGTERM or SIGHUP in the terminal (`zombye_net::shutdown`): quit as if the window was
 /// closed, so `saving.rs` autosaves. (Our own handler rather than Bevy's `TerminalCtrlCHandlerPlugin`,
 /// whose `ctrlc` gives up on every signal when one was ignored at start, and has no SIGTERM.)
-fn exit_on_signal(mut exit: MessageWriter<AppExit>, mut sent: Local<bool>) {
+pub(crate) fn exit_on_signal(mut exit: MessageWriter<AppExit>, mut sent: Local<bool>) {
     if !*sent && zombye_net::shutdown::requested() {
         *sent = true;
         println!("Interrupted: quitting");
@@ -643,37 +654,12 @@ fn main() {
         }
         bevy::app::TerminalCtrlCHandlerPlugin::gracefully_exit();
     });
-    let assets = AssetPlugin { file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets").into(), ..default() };
-    let plugins = if options.offscreen() {
-        // No window, ever: no primary window, no winit (on macOS it would make this a foreground
-        // app that takes focus), no audio device, no gamepads. The loop is driven by the schedule
-        // runner and `offscreen.rs` exits when the picture is written.
-        DefaultPlugins
-            .set(WindowPlugin { primary_window: None, exit_condition: ExitCondition::DontExit, ..default() })
-            .set(assets)
-            .set(log_plugin())
-            .disable::<bevy::winit::WinitPlugin>()
-            .disable::<bevy::audio::AudioPlugin>()
-            .disable::<bevy::gilrs::GilrsPlugin>()
-            .disable::<bevy::app::TerminalCtrlCHandlerPlugin>()
-    } else {
-        DefaultPlugins
-            .set(WindowPlugin {
-                primary_window: Some(Window {
-                    title: "Zombye".into(),
-                    resolution: if options.size_given {
-                        bevy::window::WindowResolution::new(options.size.x, options.size.y).with_scale_factor_override(1.0)
-                    } else {
-                        (1600, 900).into()
-                    },
-                    present_mode: if options.novsync { PresentMode::AutoNoVsync } else { PresentMode::AutoVsync },
-                    ..default()
-                }),
-                ..default()
-            })
-            .set(assets)
-            .disable::<bevy::app::TerminalCtrlCHandlerPlugin>()
-    };
+    // `--connect` in a window: the join screen first (DCM-70), which starts the game again once
+    // the join has gone through.
+    if join_screen::wanted(&options) {
+        join_screen::run(options);
+    }
+    let plugins = window_plugins(&options);
     let offscreen = options.offscreen();
     let graphics = graphics::Graphics::from_options(&options);
     let mut app = App::new();
@@ -714,8 +700,44 @@ fn main() {
     }
 }
 
+/// Bevy's plugins for this run: a window (or, offscreen, none), the assets folder, our own signal
+/// handling.
+pub(crate) fn window_plugins(options: &Options) -> bevy::app::PluginGroupBuilder {
+    let assets = AssetPlugin { file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets").into(), ..default() };
+    if options.offscreen() {
+        // No window, ever: no primary window, no winit (on macOS it would make this a foreground
+        // app that takes focus), no audio device, no gamepads. The loop is driven by the schedule
+        // runner and `offscreen.rs` exits when the picture is written.
+        DefaultPlugins
+            .set(WindowPlugin { primary_window: None, exit_condition: ExitCondition::DontExit, ..default() })
+            .set(assets)
+            .set(log_plugin())
+            .disable::<bevy::winit::WinitPlugin>()
+            .disable::<bevy::audio::AudioPlugin>()
+            .disable::<bevy::gilrs::GilrsPlugin>()
+            .disable::<bevy::app::TerminalCtrlCHandlerPlugin>()
+    } else {
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "Zombye".into(),
+                    resolution: if options.size_given {
+                        bevy::window::WindowResolution::new(options.size.x, options.size.y).with_scale_factor_override(1.0)
+                    } else {
+                        (1600, 900).into()
+                    },
+                    present_mode: if options.novsync { PresentMode::AutoNoVsync } else { PresentMode::AutoVsync },
+                    ..default()
+                }),
+                ..default()
+            })
+            .set(assets)
+            .disable::<bevy::app::TerminalCtrlCHandlerPlugin>()
+    }
+}
+
 /// Run this program again with `next`'s arguments, in this one's place.
-fn relaunch(next: browser_ui::Relaunch) -> ! {
+pub(crate) fn relaunch(next: browser_ui::Relaunch) -> ! {
     let exe = std::env::current_exe().unwrap_or_else(|e| {
         eprintln!("can't start the game again: {e}");
         std::process::exit(1);

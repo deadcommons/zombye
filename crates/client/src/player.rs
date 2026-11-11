@@ -419,7 +419,7 @@ fn sync_other_players(
 #[allow(clippy::too_many_arguments)]
 fn face_cursor(
     windows: Query<&Window, With<PrimaryWindow>>,
-    cams: Query<(&Camera, &GlobalTransform), With<IsoCamera>>,
+    cams: Query<(&Camera, &GlobalTransform, &IsoCamera)>,
     auto: Res<AutoInput>,
     mouse: Res<ButtonInput<MouseButton>>,
     panel: Res<crate::inventory_ui::InventoryPanel>,
@@ -451,14 +451,11 @@ fn face_cursor(
         tf.rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - player.facing);
         return;
     }
-    let (Ok(window), Ok((camera, cam_tf))) = (windows.single(), cams.single()) else { return };
+    let (Ok(window), Ok((camera, cam_tf, iso))) = (windows.single(), cams.single()) else { return };
     let Some(cursor) = window.cursor_position() else { return };
     let Ok(ray) = camera.viewport_to_world(cam_tf, crate::render_scale::to_view(camera, window, cursor)) else { return };
-    if ray.direction.y.abs() < 1e-4 {
-        return;
-    }
-    let t = -ray.origin.y / ray.direction.y;
-    let hit = ray.origin + *ray.direction * t;
+    // The ground the pointer is on (first person: the middle of the screen, see `camera.rs`).
+    let Some(hit) = iso.aim_ground(ray.origin, *ray.direction) else { return };
     let from = Vec2::new(tf.translation.x, tf.translation.z);
     let mut d = Vec2::new(hit.x, hit.z) - from;
     // With a gun (#72) the aim is the body the cursor is on, at the height it is on it: the head
@@ -585,9 +582,13 @@ fn actions(
         // Otherwise search what we face; with nothing there either, the server says so once.
         // Already on the way over: nothing.
         let floor = !link.curr.floor_of(me.id).is_empty();
+        // Else the light switch of our room, in reach and faced (the server checks the reach).
+        let switch = !climb && light_switch_faced(&map.0, me.curr.pos, me.curr.facing);
         if me.curr.climb.is_none() {
             link.send(if climb {
                 Intent::Climb { player: me.id }
+            } else if switch {
+                Intent::Light { player: me.id, on: None }
             } else if floor {
                 Intent::PickUp { player: me.id }
             } else {
@@ -657,4 +658,17 @@ mod tests {
         assert!((MUZZLE_HEIGHT + 12.0 * level_pitch(12.0).tan() - CHEST).abs() < 1e-3);
         assert_eq!(level_pitch(0.1), level_pitch(2.0));
     }
+}
+
+/// Is the light switch of the room at `pos` within reach and in front of us (within 75 degrees
+/// of `facing`, or close enough to touch)? E flips it then.
+pub fn light_switch_faced(map: &zombye_sim::TileMap, pos: Vec2, facing: f32) -> bool {
+    let room = map.room_at(pos);
+    if room == 0 {
+        return false;
+    }
+    let Some(Some(spot)) = zombye_sim::power::switch_spots(map).get(room as usize).copied() else { return false };
+    let to = spot.pos - pos;
+    let d = to.length();
+    d <= zombye_sim::power::SWITCH_REACH - 0.1 && (d < 0.5 || to.normalize_or_zero().dot(Vec2::from_angle(facing)) > 75f32.to_radians().cos())
 }
