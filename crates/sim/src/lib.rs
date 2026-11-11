@@ -16,6 +16,7 @@ pub mod containers;
 pub mod corpses;
 pub mod crafting;
 pub mod difficulty;
+pub mod explore;
 pub mod firstaid;
 pub mod firstnight;
 pub mod flow;
@@ -64,6 +65,7 @@ pub use combat::{ActionEvent, CombatEvent, CombatEventKind, CombatTuning, HitEff
 pub use containers::{ContainerData, ContainerDef, ContainerSite};
 pub use difficulty::{DifficultyData, DifficultyDef, Sandbox, Setup};
 pub use crafting::{RecipeDef, RecipeItem, Tool};
+pub use explore::{ExploreTuning, Explored};
 pub use firstaid::{Aid, AidView, CourseView, FirstAidTuning, Treatment};
 pub use firstnight::{FirstNight, Objective, Phase, Shelter};
 pub use health::{Dressing, Health, HealthTags, HealthTuning, HealthView, InfectionMode, InfectionStage, InfectionTuning, Part, Wound, WoundKind, WoundView};

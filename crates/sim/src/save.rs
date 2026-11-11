@@ -63,7 +63,9 @@
 //! then `FARC` (how far the far clock is ahead of the tick, #57; optional, only written when it is),
 //! then `SHOV` (zombies shoved lately, whose shoves add up toward a knockdown; only when there are any),
 //! then `LEVL` (who and what is upstairs, `crate::stairs`; only when anyone or anything is),
-//! then `MODS` (what mod scripts keep, #25, `crate::script`; optional, only for a world with mods).
+//! then `MODS` (what mod scripts keep, #25, `crate::script`; optional, only for a world with mods),
+//! and `XPLR` (what each survivor has seen of the map, `crate::explore`, written after the first
+//! nights; only players with anything marked).
 //! Payloads are
 //! [postcard](https://docs.rs/postcard), and zombies are stored column by column. A file with
 //! another format version fails with [`LoadError::Version`] (format 3 added items, inventories and
@@ -179,6 +181,9 @@ const LOOK: [u8; 4] = *b"LOOK";
 /// Each player's first-night record (#19, `crate::firstnight`; optional, like `RUNS`: a save
 /// without it has none, and players with no record aren't listed).
 const NITE: [u8; 4] = *b"NITE";
+/// What each player has seen of the map (`crate::explore`; optional, like `RUNS`: a save without
+/// it loads with blank maps).
+const XPLR: [u8; 4] = *b"XPLR";
 /// How far the far clock has run ahead of the tick (#57; optional, like `RUNS`: a save without it
 /// has it at 0, and it is only written when it isn't).
 const FARC: [u8; 4] = *b"FARC";
@@ -852,6 +857,10 @@ impl World {
         if !origins.is_empty() {
             w.section(ORIG, &encode(&origins));
         }
+        let maps: Vec<(u32, &crate::explore::Explored)> = players.iter().filter(|p| p.explored.count() > 0).map(|p| (p.id, &p.explored)).collect();
+        if !maps.is_empty() {
+            w.section(XPLR, &encode(&maps));
+        }
         if *far_ticks != 0 {
             w.section(FARC, &encode(far_ticks));
         }
@@ -1057,6 +1066,7 @@ impl World {
         let mut away: Option<AwaySave> = None;
         let mut nights: Option<Vec<(u32, crate::firstnight::FirstNight)>> = None;
         let mut origins: Option<Vec<(u32, crate::origin::Origin)>> = None;
+        let mut maps: Option<Vec<(u32, crate::explore::Explored)>> = None;
         let mut bonds: Option<BondSave> = None;
         let mut groups: Option<crate::groups::Groups> = None;
         let mut blinds: Option<BlindSave> = None;
@@ -1103,6 +1113,10 @@ impl World {
             }
             if tag == ORIG && origins.is_none() {
                 origins = Some(decode(ORIG, payload)?);
+                continue;
+            }
+            if tag == XPLR && maps.is_none() {
+                maps = Some(decode(XPLR, payload)?);
                 continue;
             }
             if tag == BOND && bonds.is_none() {
@@ -1164,6 +1178,16 @@ impl World {
             let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("an origin for player {id}, who isn't in the save")))?;
             origin.check().map_err(|why| save_check::invalid(format!("player {id}'s origin: {why}")))?;
             p.origin = origin;
+        }
+        for (id, seen) in maps.unwrap_or_default() {
+            let (mw, mh, buildings) = (w.map.width(), w.map.height(), w.map.buildings.len());
+            let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("a map for player {id}, who isn't in the save")))?;
+            match seen.check(mw, mh, buildings) {
+                Ok(()) => p.explored = seen,
+                // Loaded anyway onto another map: what was seen of the old one means nothing here.
+                Err(_) if options.force => {}
+                Err(why) => return Err(save_check::invalid(format!("player {id}: {why}"))),
+            }
         }
         for (id, knock) in knocks.unwrap_or_default() {
             let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("player {id} is knocked back, but isn't in the save")))?;

@@ -43,7 +43,7 @@
 //! (or the `*_body.glb` in a folder) with its wearables; see `survivor_model.rs`.
 //!
 //! Sound (`audio.rs`): `--mute` starts with it off, `--volume V` sets the master volume (0..2,
-//! default 1), M mutes and unmutes. Music (`music.rs`): `--music V` its volume under the master
+//! default 1), Ctrl+M mutes and unmutes (M is the map). Music (`music.rs`): `--music V` its volume under the master
 //! (0..2, default 1; 0: none).
 //!
 //! Talking (`chat.rs`, #67): Enter opens the chat line (Tab there picks whisper, talk or shout, Enter
@@ -109,6 +109,7 @@ mod inventory_ui;
 mod join_screen;
 mod items_render;
 mod lights;
+mod map_ui;
 mod materials;
 mod meshgen;
 mod action_ui;
@@ -195,6 +196,13 @@ pub struct Options {
     pub morning: bool,
     /// Start with the graphics panel (F8) open (`--graphics-panel`): for pictures.
     pub graphics_panel: bool,
+    /// Start with the map screen (M) open (`--map`), at this scale (`--map-zoom PX`, UI pixels a
+    /// metre), looking here (`--map-center X,Y`), everything shown as explored (`--map-all`): for
+    /// pictures. See `map_ui.rs`.
+    pub map: bool,
+    pub map_zoom: Option<f32>,
+    pub map_center: Option<[f32; 2]>,
+    pub map_all: bool,
     pub skip_hours: Option<f32>,
     /// Start the inventory panel searching for this, showing one category, with these carried
     /// stacks picked (`--find TEXT`, `--filter CATEGORY[,CATEGORY]`, `--pick N,N`: for pictures of it).
@@ -292,7 +300,7 @@ pub struct Options {
     /// on|off`; Ctrl+F10 toggles it and saves it, `opening_hints.rs`). `None`: as the settings
     /// file says (offscreen: on).
     pub opening_hints: Option<bool>,
-    /// Start with the sound off (`--mute`; M toggles it).
+    /// Start with the sound off (`--mute`; Ctrl+M toggles it).
     pub mute: bool,
     /// Master volume (`--volume V`, 0..2, default 1).
     pub volume: f32,
@@ -506,6 +514,10 @@ impl Options {
             health: flag("--health"),
             morning: flag("--morning"),
             graphics_panel: flag("--graphics-panel"),
+            map: flag("--map"),
+            map_zoom: value("--map-zoom").and_then(|v| v.parse::<f32>().ok()).filter(|z| z.is_finite() && *z > 0.0),
+            map_center: value("--map-center").and_then(|v| parse_point(&v)),
+            map_all: flag("--map-all"),
             skip_hours: value("--skip-hours").and_then(|v| v.parse::<f32>().ok()).filter(|h| h.is_finite() && (0.0..=240.0).contains(h)),
             hud: flag("--hud"),
             find: value("--find"),
@@ -713,7 +725,7 @@ fn main() {
             zombie_render::ZombieRenderPlugin,
             items_render::ItemsRenderPlugin,
             (hud::HudPlugin, inventory_ui::InventoryUiPlugin, health_ui::HealthUiPlugin, death::DeathPlugin, needs_ui::NeedsUiPlugin, action_ui::ActionUiPlugin, skills_ui::SkillsUiPlugin, debug_stats::DebugStatsPlugin),
-            (fx::FxPlugin, heard::HeardPlugin, chat::ChatPlugin, film::FilmPlugin, graphics_ui::GraphicsUiPlugin, render_scale::RenderScalePlugin, vegetation::VegetationPlugin, rules_ui::RulesUiPlugin, browser_ui::BrowserUiPlugin),
+            (fx::FxPlugin, heard::HeardPlugin, chat::ChatPlugin, film::FilmPlugin, graphics_ui::GraphicsUiPlugin, render_scale::RenderScalePlugin, vegetation::VegetationPlugin, rules_ui::RulesUiPlugin, browser_ui::BrowserUiPlugin, map_ui::MapUiPlugin),
             survivor::SurvivorPlugin,
             (autoplay::AutoplayPlugin, duel::DuelPlugin, holdup::HoldupPlugin, aim_marker::AimMarkerPlugin),
             (saving::SavingPlugin, ui_scale::UiScalePlugin, panels::PanelsPlugin, hotbar::HotbarPlugin, firstnight_ui::FirstNightUiPlugin),

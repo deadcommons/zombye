@@ -349,6 +349,10 @@ pub struct Player {
     /// Saved in its own optional section, like `run`; `None` in a save from before it.
     #[serde(skip)]
     pub first_night: Option<crate::firstnight::FirstNight>,
+    /// What this survivor has seen of the map (`crate::explore`). Saved in its own optional
+    /// section, like `run`; blank in a save from before it.
+    #[serde(skip)]
+    pub explored: crate::explore::Explored,
     /// The tick of the snapshot this player's client was showing when it sent its latest input
     /// (`World::player_saw`; lag compensation, `crate::lagcomp`). 0: never said (a local player),
     /// so nothing is rewound for it. Not saved: a client says again every tick.
@@ -426,6 +430,7 @@ impl Player {
             dev: DevFlags::default(),
             run: RunStats::default(),
             first_night: None,
+            explored: crate::explore::Explored::default(),
             seen_tick: 0,
             gesture: None,
             restraint: None,
