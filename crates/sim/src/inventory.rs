@@ -858,7 +858,7 @@ impl World {
         let first = !self.opened.contains_key(&c);
         if first {
             let room_type = self.map.rooms.get(site.room as usize).map_or("", |r| r.room_type.as_str()).to_string();
-            let mut contents = crate::loot::fill(self.config.seed(), c, &def, &room_type, &self.config.loot, &self.config.items);
+            let mut contents = crate::loot::fill(self.config.loot_seed(), c, &def, &room_type, &self.config.loot, &self.config.items);
             // Food found was made before the world began (#11), some of it a while before.
             self.age_found_food(c, &mut contents);
             // Guns and magazines found hold what they were left with (#72).

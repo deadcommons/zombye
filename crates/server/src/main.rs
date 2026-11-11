@@ -216,6 +216,9 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // What a new world's containers hold: rolled from a fresh seed each time, so every game finds
+    // different things, unless `--loot-seed S` fixes it (a loaded save keeps its own).
+    config.loot_seed = Some(value("--loot-seed").unwrap_or_else(content::fresh_loot_seed));
     // Without --zombies, as many as the population file's densities give for the map.
     config.zombies = value("--zombies").map(|n| n as u32);
     // Player against player (docs/PLAN.md §4.8) for a new world: `--pvp on` (a loaded save keeps

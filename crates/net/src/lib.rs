@@ -801,7 +801,8 @@ impl LocalServer {
     /// under the map and meshes it already has) with one player in the bedroom. Returns the world
     /// and that player's id; [`LocalServer::replace_world`] serves it.
     pub fn new_run(config: &WorldConfig) -> (World, u32) {
-        let mut world = World::new(config.clone());
+        // The same town, but what's in it is rolled again: a new run finds different things.
+        let mut world = World::new(config.clone().with_loot_seed(content::fresh_loot_seed()));
         let id = world.add_player(world.player_spawn);
         (world, id)
     }
