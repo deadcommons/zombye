@@ -1151,7 +1151,16 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   drink, wear, equip, take a pill, use on a wound, put in the open container, drop, take, take in hand, split: one, or half of four or more),
   1-9 to pick, Esc or a click elsewhere to close; the same menu on a ground item in reach in the world (right-click it with
   the panel open, or a quick right tap with it shut; held, right mouse aims). `--menu carried:N|worn:N|hand|container:N|ground[:N]`
-  starts with one open, for pictures, and `--menu-pick N[@SECS]` presses its number key N (after SECS), for recordings. A
+  starts with one open, for pictures, and `--menu-pick N[@SECS]` presses its number key N (after SECS), for recordings.
+  **Right-clicking things in the world** (`world_actions.rs`): the same quick right tap (or a right-click with the panel
+  open) on a door, window, fence, blind, container or body opens its menu: open or close, climb through or over, smash the
+  glass, raise, lower, fit or take down the blind (from inside), search or look inside; out of reach it says so and
+  offers nothing. `world_actions::pick` finds what the pointer's ray meets first (a door's or window's opening, or the
+  ground just by it when the wall is cut down; a container's furniture as a 1 m box, a body as a low box, `pick_body`; an item on the floor wins unless
+  something stands in front of it) and `entries` lists its actions as intents. Actions that go by what the player faces
+  are sent as `Intent::Toward { player, facing, then }`: the server turns the player to the thing (`World::set_facing`)
+  and applies `then`, an action of that same player, as if it came alone, so reach and the rest are its own checks
+  (`wire::PROTOCOL` 21). New things to right-click: a `Target` variant, its test in `pick`, its lines in `entries`. A
   left click behind an open menu only closes it (it moves nothing), opening or shutting the panel closes it, and it opens
   at the pointer in UI pixels (the UI scale), kept on screen. The latest note shows at its foot, and under the HUD for a few seconds when
   it's shut (the same note again only keeps it up, and isn't printed again). One click is one request: row observers

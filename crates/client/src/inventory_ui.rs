@@ -1797,6 +1797,11 @@ enum MenuDo {
     Send { intent: Intent, from: Place, index: u32, whole: bool },
     /// Open the health panel to pick the wound to use this item on.
     UseOn(u16),
+    /// Something in the world (`world_actions`): send this, turning our survivor to `facing`
+    /// first if given, as the server will.
+    World { intent: Intent, facing: Option<f32> },
+    /// A line that only says something (too far away); picking it just closes the menu.
+    Nothing,
 }
 
 /// One line of the menu.
@@ -1918,6 +1923,15 @@ impl ItemMenu {
 }
 
 impl ItemMenu {
+    /// Open the menu of a thing in the world (a door, window, container) at the pointer.
+    pub fn show_world(&mut self, title: String, entries: Vec<crate::world_actions::WorldEntry>, at: Vec2) {
+        let entries = entries
+            .into_iter()
+            .map(|e| MenuEntry { label: e.label, act: match e.intent { Some(intent) => MenuDo::World { intent, facing: e.facing }, None => MenuDo::Nothing } })
+            .collect();
+        self.show(title, ItemStack::one(0), entries, Some(at));
+    }
+
     /// A menu is on screen (its number keys are its own).
     pub fn is_up(&self) -> bool {
         self.open.is_some()
@@ -1969,7 +1983,8 @@ fn open_menu(menu: &mut ItemMenu, link: &ServerLink, join: &JoinInfo, me: u32, f
 }
 
 /// The menu on a ground item in the world: right-click it with the panel open, or tap the right
-/// mouse on it with the panel shut (held, it aims). Only items within reach (our floor).
+/// mouse on it with the panel shut (held, it aims). Only items within reach (our floor). The same
+/// tap on a door, window, fence, blind or container opens its menu (`world_actions`).
 #[allow(clippy::too_many_arguments)]
 fn world_menu(
     time: Res<Time>,
@@ -1977,20 +1992,24 @@ fn world_menu(
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     cams: Query<(&Camera, &GlobalTransform), With<crate::camera::IsoCamera>>,
     hover: Res<bevy::picking::hover::HoverMap>,
-    nodes: Query<(), With<Node>>,
+    nodes: Query<&ComputedNode>,
     panel: Res<InventoryPanel>,
     link: Res<ServerLink>,
     join: Res<JoinInfo>,
     me: Res<LocalPlayer>,
+    map: Res<crate::server_link::ClientMap>,
     mut menu: ResMut<ItemMenu>,
     mut tap: Local<Option<(f32, Vec2)>>,
+    mut sites: Local<Option<Vec<zombye_sim::containers::ContainerSite>>>,
 ) {
     let (Ok(window), Ok((camera, cam_tf))) = (windows.single(), cams.single()) else { return };
     let Some(cursor) = window.cursor_position() else { return };
     let now = time.elapsed_secs();
     let mut want = false;
     if mouse.just_pressed(MouseButton::Right) {
-        let over_ui = hover.values().any(|m| m.keys().any(|e| nodes.contains(*e)));
+        // On a panel, button or the like; a node over the whole window (an overlay) doesn't count.
+        let whole = window.physical_size().as_vec2() * 0.95;
+        let over_ui = hover.values().any(|m| m.keys().any(|e| nodes.get(*e).is_ok_and(|n| !(n.size().x >= whole.x && n.size().y >= whole.y))));
         if over_ui || menu.fresh || me.dead {
             *tap = None;
             return;
@@ -2013,11 +2032,29 @@ fn world_menu(
     if ray.direction.y.abs() < 1e-4 {
         return;
     }
-    let hit = ray.origin + *ray.direction * (-ray.origin.y / ray.direction.y);
+    let ground_t = -ray.origin.y / ray.direction.y;
+    let hit = ray.origin + *ray.direction * ground_t;
     let ground = Vec2::new(hit.x, hit.z);
     let reach = link.curr.floor_of(me.id);
     let nearest = link.curr.items.iter().filter(|it| reach.contains(&it.id)).map(|it| (it.id, it.pos.distance(ground))).filter(|(_, d)| *d < 0.8).min_by(|a, b| a.1.total_cmp(&b.1));
-    if let Some((id, _)) = nearest {
+    // A door, window or container under the pointer, unless an item on the floor is (and nothing
+    // stands in front of it).
+    let sites = sites.get_or_insert_with(|| zombye_sim::containers::find_sites(&map.0, &join.containers));
+    let thing = crate::world_actions::pick(&map.0, sites, me.curr.pos, ray.origin, *ray.direction);
+    // A body lying in front of a door or cupboard is what the pointer is on.
+    let bodies = link.curr.zombies.iter().filter(|z| z.anim == zombye_sim::ZombieAnim::Dead).map(|z| (z.id, Vec2::from(z.pos)));
+    let body = crate::world_actions::pick_body(bodies, me.curr.pos, ray.origin, *ray.direction);
+    let thing = match (thing, body) {
+        (Some(a), Some(b)) => Some(if b.1 < a.1 { b } else { a }),
+        (a, b) => a.or(b),
+    };
+    let thing = thing.filter(|(_, t)| nearest.is_none() || *t < ground_t - 0.3);
+    if let Some((target, _)) = thing {
+        let (title, entries) = crate::world_actions::entries(target, &map.0, sites, &join.containers, &join.items, &join.blind_tag, me.id, me.curr.pos, link.own(me.id));
+        if !entries.is_empty() {
+            menu.show_world(title, entries, cursor);
+        }
+    } else if let Some((id, _)) = nearest {
         open_menu(&mut menu, &link, &join, me.id, Place::Ground, id, Some(cursor));
     }
 }
@@ -2068,7 +2105,7 @@ fn script_menu(time: Res<Time>, options: Option<Res<crate::Options>>, mut menu: 
 /// Do the entry picked, or close the menu on a press anywhere else, and when the panel opens or
 /// shuts under it.
 #[allow(clippy::too_many_arguments)]
-fn menu_act(time: Res<Time>, mouse: Res<ButtonInput<MouseButton>>, me: Res<LocalPlayer>, panel: Res<InventoryPanel>, mut panel_was: Local<bool>, mut menu: ResMut<ItemMenu>, mut flight: ResMut<InFlight>, mut out: ResMut<Outbox>, mut health: ResMut<crate::health_ui::HealthPanel>) {
+fn menu_act(time: Res<Time>, mouse: Res<ButtonInput<MouseButton>>, mut me: ResMut<LocalPlayer>, panel: Res<InventoryPanel>, mut panel_was: Local<bool>, mut menu: ResMut<ItemMenu>, mut flight: ResMut<InFlight>, mut out: ResMut<Outbox>, mut health: ResMut<crate::health_ui::HealthPanel>) {
     if *panel_was != panel.open {
         *panel_was = panel.open;
         if !menu.fresh {
@@ -2081,6 +2118,15 @@ fn menu_act(time: Res<Time>, mouse: Res<ButtonInput<MouseButton>>, me: Res<Local
         let Some((entry, stack)) = picked else { return };
         match entry.act {
             MenuDo::UseOn(item) => (health.open, health.use_item, health.selected) = (true, Some(item), None),
+            MenuDo::World { intent, facing } => {
+                // Turn as the server turns us, so the inputs that follow keep that facing.
+                if let Some(f) = facing {
+                    me.curr.facing = f;
+                    me.aim = f;
+                }
+                out.0.push(intent);
+            }
+            MenuDo::Nothing => {}
             MenuDo::Send { intent, from, index, whole } => {
                 if flight.ask(from, index, stack, !whole, time.elapsed_secs()) {
                     out.0.push(intent);
@@ -2135,7 +2181,8 @@ fn draw_menu(mut commands: Commands, menu: Res<ItemMenu>, ui: Res<UiScale>, wind
                 c.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(10), padding: UiRect::axes(px(6), px(3)), ..default() }, BackgroundColor(rest)))
                     .with_children(|r| {
                         r.spawn((Text::new(format!("{}", k + 1)), theme::strong(theme::SMALL), TextColor(OK), Pickable::IGNORE));
-                        r.spawn((Text::new(e.label.clone()), font(theme::BODY), TextColor(TEXT), Pickable::IGNORE));
+                        let colour = if matches!(e.act, MenuDo::Nothing) { DIM } else { TEXT };
+                        r.spawn((Text::new(e.label.clone()), font(theme::BODY), TextColor(colour), Pickable::IGNORE));
                     })
                     .observe(|ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>| {
                         if let Ok(mut bg) = q.get_mut(ev.entity) {

@@ -125,6 +125,7 @@ mod survivor;
 mod survivor_model;
 mod theme;
 mod ui_scale;
+mod world_actions;
 mod world_render;
 mod zombie_render;
 mod zvat;
