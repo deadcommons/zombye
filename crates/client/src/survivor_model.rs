@@ -112,6 +112,9 @@ const ACTION_CLIPS: [&str; 11] = [
 /// place of the fall onto the back) and the loops for busy hands, `eat`, `drink`, `loot` (searching
 /// a container) and `reload` (the whole body standing, the upper body over the gait when moving).
 const LIFE_CLIPS: [&str; 6] = ["hurt", "die", "eat", "drink", "loot", "reload"];
+/// And for getting through a window (`climb`) and over a fence (`vault`): made in place, played
+/// once over the crossing by how far across he is, the whole body. Without one he walks through.
+const CROSS_CLIPS: [&str; 2] = ["climb", "vault"];
 const HURT: usize = 0;
 const DIE: usize = 1;
 
@@ -350,6 +353,8 @@ pub struct SurvivorModel {
     guards: [Option<usize>; 4],
     /// The body's clips of [`LIFE_CLIPS`].
     life: [Option<usize>; LIFE_CLIPS.len()],
+    /// The body's clips of [`CROSS_CLIPS`].
+    cross: [Option<usize>; CROSS_CLIPS.len()],
     gaits: [Vec<Gait>; 3],
     /// The bones the hips' turn is taken back out of (the spine's first, under the hips).
     spine_base: Vec<usize>,
@@ -631,6 +636,7 @@ impl SurvivorModel {
         let guard = |name: &str| body.clips.iter().position(|c| c.name.eq_ignore_ascii_case(name));
         let guards = [guard("guard_fists"), guard("guard_one"), guard("guard_two").or_else(|| guard("guard_one")), guard("guard_gun")];
         let life = LIFE_CLIPS.map(guard);
+        let cross = CROSS_CLIPS.map(guard);
         let gaits = gaits(&mut body);
         let reference = idle.map_or_else(|| body.rig.rest(), |i| body.clips[i].frames[0].clone());
         let retarget = Retarget::new(&body, reference);
@@ -685,6 +691,7 @@ impl SurvivorModel {
             actions,
             guards,
             life,
+            cross,
             gaits,
             spine_base,
             gaze,
@@ -896,7 +903,18 @@ impl SurvivorModel {
                 pose.r[b] *= t.inverse() * Quat::IDENTITY.slerp(f.rot[g], w) * t;
             }
         }
+        // Through a window or over a fence: the body's own clip for it, the whole body, at how far
+        // across he is; its feet leave the ground as the clip has them.
+        let crossing = a.cross.filter(|_| a.cross_w > 0.0).and_then(|c| self.cross[c as usize]).map(|i| body.clips[i].sample(a.cross_u.clamp(0.0, 0.999)));
+        if let Some(over) = &crossing {
+            pose.blend_bones(over, a.cross_w, Some(&self.all));
+        }
         self.ground(&mut pose);
+        if let Some(mut over) = crossing {
+            let before = over.t[0].y;
+            self.ground(&mut over);
+            pose.t[0].y += a.cross_w * (before - over.t[0].y).max(0.0);
+        }
         let root = 0;
         // Running has a moment in the air each step.
         pose.t[root].y += a.run_w * a.move_w * 0.05 * (a.cycle * TAU * 2.0).sin().max(0.0);

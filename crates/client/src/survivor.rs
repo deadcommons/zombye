@@ -33,7 +33,7 @@ use zombye_sim::{ActionKind, CombatEventKind, Gesture, ItemCategory, JobKind, St
 use crate::items_render::WeaponLooks;
 use crate::player::LocalPlayer;
 use crate::rig::{Bone, Pose, box_faces, mix, rx, ry, rz, skin_matrices, smooth};
-use crate::server_link::{CombatEventsThisFrame, JoinInfo, ServerLink};
+use crate::server_link::{ClientMap, CombatEventsThisFrame, JoinInfo, ServerLink};
 use crate::survivor_model::SurvivorModel;
 
 pub(crate) const N: usize = 12;
@@ -354,6 +354,40 @@ pub struct SurvivorAnim {
     pub(crate) task_t: f32,
     /// Lying dead (not knocked down or asleep): a body's own death clip plays.
     pub(crate) died: bool,
+    /// Getting through an open or broken window or over a fence: which, eased in and out, how far
+    /// across (0 where it came into the climb zone, 1 where it leaves on the far side), and the
+    /// side of the edge it came from.
+    pub(crate) cross: Option<Cross>,
+    pub(crate) cross_w: f32,
+    pub(crate) cross_u: f32,
+    cross_side: f32,
+}
+
+/// What a survivor is getting across (its clip in [`crate::survivor_model`]'s `CROSS_CLIPS`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Cross {
+    /// Through an open or broken window.
+    Climb,
+    /// Over a fence.
+    Vault,
+}
+
+/// The edge a body at `p` is climbing across, if any (`TileMap::window_opening`'s rule), and how
+/// far `p` is from its line (signed: which side).
+pub(crate) fn crossing(map: &zombye_sim::map::TileMap, p: Vec2) -> Option<(Cross, f32)> {
+    use zombye_sim::map::CLIMB_ZONE;
+    let t = p.floor().as_ivec2();
+    let f = p - t.as_vec2();
+    let tile = map.tile(t);
+    [
+        (f.y, tile.north),
+        (f.x, tile.west),
+        (f.y - 1.0, map.tile(t + IVec2::Y).north),
+        (f.x - 1.0, map.tile(t + IVec2::X).west),
+    ]
+    .into_iter()
+    .find(|(d, e)| d.abs() < CLIMB_ZONE && e.is_climbable())
+    .map(|(d, e)| (if e == zombye_sim::map::Edge::Fence { Cross::Vault } else { Cross::Climb }, d))
 }
 
 /// What a survivor's hands are seen to be busy with (a body's `eat`, `drink`, `loot` and `reload`
@@ -410,6 +444,10 @@ impl SurvivorAnim {
             task_w: 0.0,
             task_t: 0.0,
             died: false,
+            cross: None,
+            cross_w: 0.0,
+            cross_u: 0.0,
+            cross_side: 1.0,
             gesture: None,
             gesture_w: 0.0,
             gesture_t: 0.0,
@@ -440,6 +478,7 @@ fn animate_survivors(
     link: Res<ServerLink>,
     me: Option<Res<LocalPlayer>>,
     join: Res<JoinInfo>,
+    map: Res<ClientMap>,
     events: Res<CombatEventsThisFrame>,
     model: Option<Res<SurvivorModel>>,
     options: Res<crate::Options>,
@@ -500,6 +539,17 @@ fn animate_survivors(
         a.task_w += (task.is_some() as u8 as f32 - a.task_w) * k(9.0);
         a.task_t += dt;
         a.died = view.dead;
+        // Through a window or over a fence: how far across goes by where the body is, so the clip
+        // keeps pace with the slow climb (and runs back if it backs out).
+        let cross = crossing(&map.0, pos).filter(|_| up);
+        if let Some((kind, d)) = cross {
+            if a.cross != Some(kind) || a.cross_w < 0.05 {
+                a.cross_side = if d < 0.0 { -1.0 } else { 1.0 };
+            }
+            a.cross = Some(kind);
+            a.cross_u = (0.5 - a.cross_side * d / (2.0 * zombye_sim::map::CLIMB_ZONE)).clamp(0.0, 1.0);
+        }
+        a.cross_w += (cross.is_some() as u8 as f32 - a.cross_w) * k(14.0);
         let cycle_m = match (&a.look, &model) {
             (Look::Model(_), Some(m)) => m.cycle_metres(a),
             _ => {
@@ -685,6 +735,7 @@ fn hold_pose(a: &mut SurvivorAnim, pose: &str, step: f32, now: f32) {
         a.sleeping = false;
         a.woke_at = None;
         (a.task, a.task_w, a.died) = (None, 0.0, false);
+        (a.cross, a.cross_w) = (None, 0.0);
         a.hurt_at = -100.0;
     };
     let act = |a: &mut SurvivorAnim, kind: ActionKind| {
@@ -730,6 +781,11 @@ fn hold_pose(a: &mut SurvivorAnim, pose: &str, step: f32, now: f32) {
                 _ => Task::Reload,
             };
             (a.task, a.task_w, a.task_t) = (Some(task), 1.0, u * 4.0);
+        }
+        // Through a window, over a fence: `U` of the way across.
+        "climb" | "vault" => {
+            locomotion(a, 0.0, 0.0, 0.0);
+            (a.cross, a.cross_w, a.cross_u) = (Some(if name == "climb" { Cross::Climb } else { Cross::Vault }), 1.0, u);
         }
         "sleep" => {
             locomotion(a, 0.0, 0.0, 0.0);
