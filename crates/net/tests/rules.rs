@@ -111,7 +111,8 @@ fn a_server_says_its_rules_to_anyone_who_asks() {
     assert_eq!(asked.rules, host.rules());
     assert_eq!((asked.protocol, asked.online, asked.password), (wire::PROTOCOL, 0, true));
     assert_eq!((asked.rules.camera, asked.rules.agents), (Camera::FirstPerson, Agents::Refused));
-    assert_eq!(asked.version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(asked.version, zombye_net::BUILD);
+    assert!(asked.version.starts_with(env!("CARGO_PKG_VERSION")));
     assert!(host.world.players.is_empty() && host.clients().is_empty(), "asking joins nobody");
     assert_eq!((host.stats.queries, host.stats.joined, host.stats.refused), (1, 0, 0));
 

@@ -5,6 +5,10 @@
 //!   so does any wall (of that building) that hides part of the room the player is in: the
 //!   room's own near walls and inner walls between it and the camera. The far walls and the rest
 //!   stand. Its roof and upper storeys are hidden (`world_render::hide_upper_floors`).
+//! - **Never a wall the player stands in front of** ([`in_front`]: on the camera's side of its
+//!   line): it is behind them on screen and hides nothing they need, so it stands at its full
+//!   height, whatever the two rules above say (an alcove's wall, the leg of an L-shaped room,
+//!   the camera-side wall of the next wing).
 //! - **Anywhere:** a wall piece that covers the player's body from the camera drops, whichever
 //!   building it belongs to. Nothing else of that building changes: it keeps its roof.
 //! - What still covers the player after that (a roof, an upper storey, walls with the cutaways
@@ -85,6 +89,20 @@ pub fn hides_room(map: &TileMap, key: EdgeKey, c: Vec2, room: u16) -> bool {
         }
     }
     false
+}
+
+/// A wall counts as further from the camera than the body when all of it is at least this far
+/// (metres on the ground, away from the camera) behind the body's middle.
+const BEHIND_CLEAR: f32 = 0.25;
+
+/// Is a body at `pos` in front of this edge's wall as the camera sees it? Either it is on the
+/// camera's side of the wall's line (by more than a hair), or the whole piece is further from the
+/// camera than the body (up the screen from it): a wall beside the body that runs on away from
+/// the camera. Such a wall is behind the body on screen, and stands.
+pub fn in_front(key: EdgeKey, pos: Vec2, c: Vec2) -> bool {
+    let (a, b) = TileMap::edge_segment(key.0, key.1);
+    let side = if key.1 == OwnedEdge::North { (pos.y - a.y) * c.y.signum() } else { (pos.x - a.x) * c.x.signum() };
+    side > BODY_CLEAR || a.dot(c).max(b.dot(c)) < pos.dot(c) - BEHIND_CLEAR
 }
 
 /// The walls of the building the player is inside that drop: its outside walls facing the camera,
@@ -270,6 +288,10 @@ pub struct Cutaway {
     /// The building's walls that drop for the room the player is in, and what they were worked out for.
     room: Vec<EdgeKey>,
     room_for: Option<(usize, u16, i32)>,
+    /// Those of them the player isn't in front of ([`in_front`]), this frame and last: the ones
+    /// that drop.
+    behind: Vec<EdgeKey>,
+    behind_was: Vec<EdgeKey>,
     /// The walls covering the body, this frame and last.
     body: Vec<EdgeKey>,
     body_was: Vec<EdgeKey>,
@@ -291,6 +313,8 @@ impl Cutaway {
             values: vec![0; (TEXELS * TEXELS * 2) as usize],
             room: Vec::with_capacity(256),
             room_for: None,
+            behind: Vec::with_capacity(256),
+            behind_was: Vec::with_capacity(256),
             body: Vec::with_capacity(16),
             body_was: Vec::with_capacity(16),
             keep: None,
@@ -314,7 +338,7 @@ impl Cutaway {
         self.moving.iter().filter(|m| m.amount > 0.0).map(|m| (m.key, self.amount(m.key)))
     }
 
-    /// Take the edges wanted now (`room` and `body`) into the moving list.
+    /// Take the edges wanted now (`behind` and `body`) into the moving list.
     fn retarget(&mut self) {
         for m in &mut self.moving {
             m.wanted = false;
@@ -322,8 +346,8 @@ impl Cutaway {
         if self.walls_up {
             return;
         }
-        for i in 0..self.room.len() + self.body.len() {
-            let key = if i < self.room.len() { self.room[i] } else { self.body[i - self.room.len()] };
+        for i in 0..self.behind.len() + self.body.len() {
+            let key = if i < self.behind.len() { self.behind[i] } else { self.body[i - self.behind.len()] };
             if Some(key) == self.keep {
                 continue;
             }
@@ -364,6 +388,13 @@ impl Cutaway {
             room_edges(map, pos, camera_dir, &mut self.room);
             changed = true;
         }
+        // Of those, never a wall the player stands in front of.
+        std::mem::swap(&mut self.behind, &mut self.behind_was);
+        self.behind.clear();
+        let (c, _) = ground_dir(camera_dir);
+        let (room, behind) = (&self.room, &mut self.behind);
+        behind.extend(room.iter().copied().filter(|key| !in_front(*key, pos, c)));
+        changed |= self.behind != self.behind_was;
         std::mem::swap(&mut self.body, &mut self.body_was);
         self.body.clear();
         let body = &mut self.body;
@@ -555,6 +586,72 @@ pub(crate) mod tests {
         }
         for x in 10..18 {
             assert!(cut.contains(&(IVec2::new(x, 16), N)));
+        }
+    }
+
+    /// A wall the player stands in front of never drops. An L-shaped room (a 6 x 6 main part with
+    /// a 3 x 3 leg off its south-west), camera from the south-east: both the leg's east wall and
+    /// the main part's south wall beside the leg face the camera, so the room's set has both;
+    /// standing in the main part, the leg's east wall is behind the player on screen and stands,
+    /// and standing in the leg, the main part's south wall does.
+    #[test]
+    fn a_wall_the_player_is_in_front_of_stands() {
+        let mut map = town();
+        add_building(&mut map, &[(IVec2::new(40, 10), IVec2::new(6, 6)), (IVec2::new(40, 16), IVec2::new(3, 3))], 1);
+        let main = map.tile(IVec2::new(40, 10)).room;
+        for y in 16..19 {
+            for x in 40..43 {
+                map.tile_mut(IVec2::new(x, y)).unwrap().room = main;
+            }
+        }
+        for x in 40..43 {
+            map.set_edge(IVec2::new(x, 16), Side::N, Edge::None);
+        }
+        let leg_east = |y: i32| (IVec2::new(43, y), W);
+        let main_south = |x: i32| (IVec2::new(x, 16), N);
+        let (in_main, in_leg) = (Vec2::new(44.5, 12.5), Vec2::new(41.5, 17.5));
+        for p in [in_main, in_leg] {
+            let set = room_set(&map, p, 0);
+            assert!((16..19).all(|y| set.contains(&leg_east(y))) && (43..46).all(|x| set.contains(&main_south(x))), "{set:?}");
+        }
+        let (c, _) = ground_dir(camera(0));
+        assert!(in_front(leg_east(17), in_main, c) && !in_front(main_south(44), in_main, c));
+        assert!(in_front(main_south(44), in_leg, c) && !in_front(leg_east(17), in_leg, c));
+        let mut cut = Cutaway::new(Handle::default(), false);
+        cut.update(&map, in_main, camera(0), 0.016);
+        for y in 16..19 {
+            assert_eq!(cut.amount(leg_east(y)), 0.0, "the leg's east wall at y {y}, behind the player");
+        }
+        for x in 43..46 {
+            assert_eq!(cut.amount(main_south(x)), 1.0, "the main part's south wall at x {x}");
+        }
+        // Into the leg: the two swap, eased.
+        for _ in 0..20 {
+            cut.update(&map, in_leg, camera(0), 0.016);
+        }
+        for y in 16..19 {
+            assert_eq!(cut.amount(leg_east(y)), 1.0, "the leg's east wall at y {y}");
+        }
+        for x in 44..46 {
+            assert_eq!(cut.amount(main_south(x)), 0.0, "the main part's south wall at x {x}, behind the player");
+        }
+        // A wall beside the player that runs on away from the camera: the pieces further from the
+        // camera than the player stand, though the player is on the far side of the wall's line.
+        // In the leg, by its east wall, at the leg's camera end: all of that wall is up the screen.
+        let low = Vec2::new(42.5, 18.8);
+        assert!(!in_front(leg_east(18), low, c), "the piece level with the player");
+        assert!(in_front(leg_east(16), low, c), "the piece two metres up the screen");
+        let mut cut = Cutaway::new(Handle::default(), false);
+        cut.update(&map, low, camera(0), 0.016);
+        assert_eq!(cut.amount(leg_east(16)), 0.0);
+        assert_eq!(cut.amount(leg_east(18)), 1.0);
+        // The same from the other side: nothing the player is in front of is down at any angle.
+        for angle in 0..4 {
+            let mut cut = Cutaway::new(Handle::default(), false);
+            cut.update(&map, in_main, camera(angle), 0.016);
+            let (c, _) = ground_dir(camera(angle));
+            let body = body_set(&map, in_main, angle);
+            assert!(cut.cut_edges().all(|(k, _)| !in_front(k, in_main, c) || body.contains(&k)), "angle {angle}");
         }
     }
 
