@@ -637,14 +637,18 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   level of its skill making that `CombatTuning::wear_skill_less` (4%) less likely; a swing at the air costs it nothing.
   So it lasts about `durability / wear_chance` hitting swings in new hands (shipped, ours: plank 20, golf club 36,
   kitchen knife 50, bat 80, frying pan 100, fire axe 140, claw hammer 165, crowbar 400). At `durability` knocks it
-  **breaks**: gone from the hand (bare hands from then on), with the note "your baseball bat broke". With
+  **breaks**, with the note "your baseball bat broke: it's no use as a weapon now", and **stays an item**: in the hand,
+  the bags, on its hotbar slot, `used` = `durability`. A broken weapon swings as before but does
+  `CombatTuning::broken_damage` (0.15) of its damage and knockback and staggers that much as often, never crits or
+  knocks down, and takes no more knocks; put it away and punch, or find another. (Mending or taking one apart for
+  parts: later.) With
   `battered_below` (a quarter) of its life or less left it is **battered**: `battered_damage` (0.85) of its damage,
-  and a note when it gets there. `wear::Condition` (`Good`, `Worn` at 60% or less, `Battered`), `wear::condition`,
+  and a note when it gets there. `wear::Condition` (`Good`, `Worn` at 60% or less, `Battered`, `Broken`), `wear::condition`,
   `World::condition_of(stack)`.
 - **The knocks ride on the stack** (`ItemStack::used`, which for a weapon that wears counts knocks, as it counts
   rounds for a gun and goes had for food: **no save format change**, and saves from before load with every weapon
   sound). So a weapon keeps its wear on the floor, in a cupboard and in other hands. `ranged::max_used` holds a save
-  to one under the `durability`. One made now is sound (debug spawns, kits, the floor weapons); one found in furniture
+  to the `durability` (broken). One made now is sound (debug spawns, kits, the floor weapons); one found in furniture
   has had a seeded 0-70% of its life (`CombatTuning::found_wear_max`), more often little (`World::wear_found`, by seed, container and stack).
 - **The roll** is `hash01` of the seed, tick, player and item (`World::wear_weapon`, called from `combat::land`), not
   a draw from the combat RNG: fights roll exactly as they did before.
@@ -656,9 +660,11 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   hand can hold something beside (a flashlight, a bag): it no longer empties the off hand (`ItemDef::both_hands`),
   and swung that way it hits `one_hand_power` (0.75) as hard and takes `one_hand_slow` (1.2) times as long
   (`combat::begin_action`). The fire axe, rifle and shotgun still take both.
-- **Shown:** the inventory row and the weapon panel say "worn" or "battered" after the name (nothing while good);
+- **Shown:** the inventory row and the weapon panel say "worn", "battered" or "broken" after the name (nothing while
+  good), and a hotbar slot whose weapon is broken says "broken" in red;
   MCP `inventory` says the knocks left, `weapons` each weapon's durability and close range, `items` which two-handed
-  items one hand will do for. `wire::PROTOCOL` 15 (the definitions and `CombatTuning` changed shape).
+  items one hand will do for. `wire::PROTOCOL` 15 (the definitions and `CombatTuning` changed shape); 18 for
+  `broken_damage`.
 - **Not yet:** repairing or sharpening, a separate head and handle, a skill for looking after weapons, guns that
   wear, hitting doors and trees.
 - Tests: `sim::wear::tests`.

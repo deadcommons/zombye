@@ -1,6 +1,8 @@
 //! Weapons wear out. A weapon with a `durability` in `weapons.ron` takes knocks as it is used: each
 //! swing that hits something may add one ([`WeaponDef::wear_chance`], less in practised hands), and
-//! at `durability` knocks it breaks and is gone. How many it has taken rides on its stack
+//! at `durability` knocks it breaks: it stays where it is (in the hand, the bags, the hotbar) as a
+//! broken thing, no use as a weapon ([`crate::CombatTuning::broken_damage`]) and never wearing
+//! further, until it can be mended or taken apart (later). How many it has taken rides on its stack
 //! ([`ItemStack::used`], which for such a weapon counts knocks: no save format change), so a
 //! weapon keeps its wear on the floor, in a cupboard and in another survivor's hands. Bare hands
 //! and guns don't wear. All numbers are ours.
@@ -26,6 +28,9 @@ pub enum Condition {
     Worn,
     /// Weaker ([`crate::CombatTuning::battered_damage`]), and not long for this world.
     Battered,
+    /// Every knock taken: still an item, but next to no use as a weapon
+    /// ([`crate::CombatTuning::broken_damage`], no crits or knockdowns).
+    Broken,
 }
 
 impl Condition {
@@ -34,6 +39,7 @@ impl Condition {
             Self::Good => "good",
             Self::Worn => "worn",
             Self::Battered => "battered",
+            Self::Broken => "broken",
         }
     }
 }
@@ -47,7 +53,9 @@ pub fn condition(items: &[ItemDef], weapons: &[WeaponDef], s: &ItemStack, batter
     }
     let left = of.saturating_sub(s.used);
     let share = left as f32 / of as f32;
-    let c = if share <= battered_below {
+    let c = if left == 0 {
+        Condition::Broken
+    } else if share <= battered_below {
         Condition::Battered
     } else if share <= 0.6 {
         Condition::Worn
@@ -63,16 +71,23 @@ impl World {
         condition(&self.config.items, &self.config.weapons, s, self.config.combat.battered_below)
     }
 
-    /// What is left of the damage of the weapon in player `pi`'s hand: less once it is battered.
+    /// The condition of the weapon in player `pi`'s hand (`None`: nothing there that wears).
+    pub(crate) fn hand_condition(&self, pi: usize) -> Option<Condition> {
+        self.players[pi].inventory.hand.and_then(|s| self.condition_of(&s)).map(|c| c.2)
+    }
+
+    /// What is left of the damage of the weapon in player `pi`'s hand: less once it is battered,
+    /// next to nothing once broken.
     pub(crate) fn wear_damage_mult(&self, pi: usize) -> f32 {
-        match self.players[pi].inventory.hand.and_then(|s| self.condition_of(&s)) {
-            Some((_, _, Condition::Battered)) => self.config.combat.battered_damage,
+        match self.hand_condition(pi) {
+            Some(Condition::Battered) => self.config.combat.battered_damage,
+            Some(Condition::Broken) => self.config.combat.broken_damage,
             _ => 1.0,
         }
     }
 
     /// Player `pi`'s swing `a` hit `hits` bodies: the weapon in its hand may take a knock, and
-    /// breaks at its last. Rolled from the seed, the tick and the player, not a stream, so worlds
+    /// breaks at its last (and stays in the hand, broken). Rolled from the seed, the tick and the player, not a stream, so worlds
     /// whose weapons don't wear run exactly as before.
     pub(crate) fn wear_weapon(&mut self, pi: usize, a: Action, hits: u32) {
         if a.kind != ActionKind::Swing || hits == 0 {
@@ -80,7 +95,8 @@ impl World {
         }
         let w = &self.config.weapons[a.weapon as usize];
         let Some(held) = self.players[pi].inventory.hand else { return };
-        if w.durability == 0 || self.item_weapon(held.item) != Some(a.weapon) {
+        // A broken one has nothing more to lose.
+        if w.durability == 0 || held.used >= w.durability || self.item_weapon(held.item) != Some(a.weapon) {
             return;
         }
         let level = self.skill_level(pi, w.skill());
@@ -92,8 +108,8 @@ impl World {
         let (of, name) = (w.durability, self.item_def(held.item).name.to_lowercase());
         let knocks = held.used.saturating_add(1);
         if knocks >= of {
-            self.players[pi].inventory.hand = None;
-            self.note(id, false, format!("your {name} broke"));
+            self.players[pi].inventory.hand = Some(ItemStack { used: of, ..held });
+            self.note(id, false, format!("your {name} broke: it's no use as a weapon now"));
         } else {
             let before = self.condition_of(&held).map(|c| c.2);
             self.players[pi].inventory.hand = Some(ItemStack { used: knocks, ..held });

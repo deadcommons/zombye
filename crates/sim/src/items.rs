@@ -651,7 +651,7 @@ pub fn complete_items(items: &mut Vec<ItemDef>, weapons: &[WeaponDef]) -> Vec<Op
 ///
 /// For a gun or a gun's magazine (#72, [`crate::ranged`]) `used` is something else: the rounds in
 /// it, 0 to what it takes ([`crate::ranged::max_used`]). Neither stacks. For a weapon that wears
-/// ([`crate::wear`]) it is the knocks it has taken, 0 to one under its `durability`.
+/// ([`crate::wear`]) it is the knocks it has taken, 0 to its `durability` (broken).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemStack {
     pub item: u16,

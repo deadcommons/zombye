@@ -55,8 +55,9 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// `CombatEventKind::Shot`, `JobKind::Reload`, the weapons' `ranged`. 14: `ZombieAnim::Lunge` and `Climb`.
 /// 15: weapons that wear: `durability`, `wear_chance` and `close_range` in the weapons, `one_hand`
 /// in the items, the wear numbers in `CombatTuning`. 16: ten skill levels and XP multipliers in `SkillTuning`.
-/// 17: climbing with E: `Intent::Climb`, `PlayerView::climb`, `Tunings::climb`.)
-pub const PROTOCOL: u32 = 17;
+/// 17: climbing with E: `Intent::Climb`, `PlayerView::climb`, `Tunings::climb`.
+/// 18: broken weapons stay as items: `CombatTuning::broken_damage`.)
+pub const PROTOCOL: u32 = 18;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.

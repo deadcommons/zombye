@@ -254,7 +254,7 @@ pub fn fit_top_panels(
 /// what is carried to reload it with: "  9/12  +12 +24" is nine in the gun, a full magazine and 24
 /// loose rounds in the pockets; "  0/5  (empty)" with nothing to reload it with. Empty when
 /// what's held is no gun. (R reloads, as the keys line says.) After a weapon that wears:
-/// "  (worn)" or "  (battered)", nothing while it is good.
+/// "  (worn)", "  (battered)" or "  (broken)", nothing while it is good.
 pub(crate) fn gun_line(join: &JoinInfo, inventory: Option<&zombye_sim::Inventory>) -> String {
     let Some(inv) = inventory else { return String::new() };
     let Some(gun) = inv.hand else { return String::new() };
