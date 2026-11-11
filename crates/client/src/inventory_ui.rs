@@ -2007,7 +2007,7 @@ fn click_away(
         return;
     }
     let (Ok(window), Some(hover)) = (windows.single(), hover) else { return };
-    if window.cursor_position().is_none() || pointer_on_ui(window, &hover, &nodes) {
+    if pointer_on_ui(window, &hover, &nodes) {
         return;
     }
     panel.open = false;
