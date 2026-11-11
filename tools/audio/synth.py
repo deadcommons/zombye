@@ -479,6 +479,15 @@ def pickup(rng):
     return s
 
 
+def light_switch(rng):
+    """A rocker snapping over: a sharp plastic tick and a softer one as it seats."""
+    s = silence(0.12)
+    place(s, burst(0.012, rng, "bp", 4200, 1.5, 0.0002, 0.003), 0.0, 1.0)
+    place(s, ring(0.04, rng.uniform(2600, 2900), 0.008, ((1, 1), (2.3, 0.3))), 0.0, 0.5)
+    place(s, burst(0.01, rng, "bp", 1800, 1.2, 0.0003, 0.004), 0.018, 0.45)
+    return s
+
+
 def level_up(rng):
     s = silence(0.8)
     for at, f in ((0.0, 659.3), (0.12, 880.0)):
@@ -571,6 +580,7 @@ add("sfx", "thump_window", thump_window, "a zombie battering a window", 2)
 add("sfx", "rummage", rummage, "searching a container", 3)
 add("sfx", "pickup", pickup, "picking something up", 1)
 add("sfx", "level_up", level_up, "a skill levelling up", 1)
+add("sfx", "light_switch", light_switch, "a light switch clicking", 1)
 add("sfx", "bird", bird, "a bird call by day", 3)
 add("ambience", "wind_loop", wind_loop, "wind outdoors (loop)")
 add("ambience", "room_loop", room_loop, "room tone indoors (loop)")

@@ -1,7 +1,10 @@
 //! Light sources in the dark, other than the one in our own hand (#83, second round; `daynight.rs`
 //! has the sun, the moon and our own flashlight or candle):
 //!
-//! - **Window pools:** a ground-floor window with a light on behind it (`building_kit::room_lit`)
+//! - **Room lights** (`zombye_sim::power`): the server says which rooms are lit (switch on, power
+//!   on) in every snapshot ([`LitRooms`]). The nearest few lit ground-floor rooms get a light under
+//!   their ceiling at night ([`MAX_ROOM_LIGHTS`]), so a room you switch on is lit inside.
+//! - **Window pools:** a ground-floor window with a light on behind it ([`LitRooms`])
 //!   is a small warm light at night, so it throws a pool on the ground outside and into its room,
 //!   and whatever walks through it is lit. No shadows (dozens can be in view).
 //! - **Other survivors' lights:** what another player holds reaches us in `Snapshot::outfits`, so
@@ -16,7 +19,73 @@ use bevy::prelude::*;
 
 use crate::daynight::{BEAM_AIM_M, BEAM_HEIGHT, BEAM_INNER, BEAM_OUTER, Daylight, HeldLight, held_light_in};
 use crate::player::LocalPlayer;
-use crate::server_link::{JoinInfo, ServerLink};
+use crate::server_link::{ClientMap, JoinInfo, ServerLink};
+use std::collections::HashMap;
+
+/// Lit rooms given a light of their own at once, and from how far off.
+pub const MAX_ROOM_LIGHTS: usize = 6;
+const ROOM_LIGHT_REACH: f32 = 30.0;
+/// A room light: how bright, how high (under a 3 m ceiling), and its reach past the room's own size.
+const ROOM_LUMENS: f32 = 160_000.0;
+const ROOM_HEIGHT: f32 = 2.6;
+const ROOM_SPILL: f32 = 2.5;
+
+/// The rooms lit now and whether the town's grid is on, as the server last said
+/// (`Snapshot::lit_rooms`, `grid_on`). Changes only when they do, so `is_changed` means a light
+/// went on or off.
+#[derive(Resource, Default, Debug, PartialEq)]
+pub struct LitRooms {
+    pub rooms: Vec<u16>,
+    pub grid: bool,
+}
+
+impl LitRooms {
+    pub fn is_lit(&self, room: u16) -> bool {
+        room != 0 && self.rooms.binary_search(&room).is_ok()
+    }
+
+    /// Either of the rooms either side of a wall.
+    pub fn either(&self, rooms: (u16, u16)) -> bool {
+        self.is_lit(rooms.0) || self.is_lit(rooms.1)
+    }
+}
+
+/// Take the lit rooms from the newest snapshot.
+pub fn sync_lit_rooms(link: Res<ServerLink>, mut lit: ResMut<LitRooms>) {
+    if lit.rooms != link.curr.lit_rooms || lit.grid != link.curr.grid_on {
+        lit.rooms.clone_from(&link.curr.lit_rooms);
+        lit.grid = link.curr.grid_on;
+    }
+}
+
+/// Where each ground-floor room is: the middle of its tiles and the radius round them, worked out
+/// the first time it is lit (`None`: no ground-floor tiles, an upstairs room).
+#[derive(Resource, Default)]
+struct RoomPlaces(HashMap<u16, Option<(Vec2, f32)>>);
+
+impl RoomPlaces {
+    fn of(&mut self, map: &zombye_sim::TileMap, room: u16) -> Option<(Vec2, f32)> {
+        *self.0.entry(room).or_insert_with(|| room_place(map, room))
+    }
+}
+
+fn room_place(map: &zombye_sim::TileMap, room: u16) -> Option<(Vec2, f32)> {
+    let b = map.buildings.get(map.rooms.get(room as usize)?.building as usize)?;
+    let (mut lo, mut hi, mut n) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN), 0);
+    for y in b.min.y..b.min.y + b.size.y {
+        for x in b.min.x..b.min.x + b.size.x {
+            if map.tile(IVec2::new(x, y)).room == room {
+                let t = Vec2::new(x as f32, y as f32);
+                (lo, hi, n) = (lo.min(t), hi.max(t + Vec2::ONE), n + 1);
+            }
+        }
+    }
+    (n > 0).then(|| ((lo + hi) * 0.5, (hi - lo).length() * 0.5))
+}
+
+/// One of the pool of room lights.
+#[derive(Component)]
+struct RoomLight(usize);
 
 /// A window pool: how far its light reaches, how bright, and how high up the window it sits.
 const WINDOW_RANGE: f32 = 8.0;
@@ -66,8 +135,11 @@ impl SeenLight {
 #[derive(Resource, Default)]
 pub struct NightLights(pub Vec<SeenLight>);
 
+/// A ground-floor window's pool, lit while either room it is between is.
 #[derive(Component)]
-struct WindowLight;
+struct WindowLight {
+    rooms: (u16, u16),
+}
 
 /// One of the pool of lights for other survivors: a cone and a flame per slot.
 #[derive(Component)]
@@ -81,18 +153,25 @@ pub struct LightsPlugin;
 impl Plugin for LightsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NightLights>()
+            .init_resource::<LitRooms>()
+            .init_resource::<RoomPlaces>()
             .add_systems(Startup, spawn_other_lights)
-            .add_systems(Update, (window_lights, other_lights, crate::campfire::fires).chain().before(crate::fog::update_fog));
+            .add_systems(Update, (sync_lit_rooms, window_lights, room_lights, other_lights, crate::campfire::fires).chain().before(crate::fog::update_fog));
     }
 }
 
-/// The light of a lit ground-floor window whose edge has its middle at `mid` (off until night).
-pub fn spawn_window_light(commands: &mut Commands, mid: Vec2) -> Entity {
+/// The light of a ground-floor window between `rooms` whose edge has its middle at `mid`: off
+/// until night, and while neither room is lit.
+pub fn spawn_window_light(commands: &mut Commands, mid: Vec2, rooms: (u16, u16)) -> Entity {
     let light = PointLight { intensity: 0.0, range: WINDOW_RANGE, radius: 0.3, color: Color::srgb(1.0, 0.6, 0.28), shadow_maps_enabled: false, ..default() };
-    commands.spawn((WindowLight, light, Transform::from_xyz(mid.x, WINDOW_HEIGHT, mid.y), Visibility::Hidden)).id()
+    commands.spawn((WindowLight { rooms }, light, Transform::from_xyz(mid.x, WINDOW_HEIGHT, mid.y), Visibility::Hidden)).id()
 }
 
 fn spawn_other_lights(mut commands: Commands) {
+    for slot in 0..MAX_ROOM_LIGHTS {
+        let light = PointLight { intensity: 0.0, range: 8.0, radius: 0.2, color: Color::srgb(1.0, 0.78, 0.52), shadow_maps_enabled: false, ..default() };
+        commands.spawn((RoomLight(slot), light, Transform::default(), Visibility::Hidden));
+    }
     for slot in 0..MAX_OTHER_LIGHTS {
         let beam = SpotLight {
             intensity: 0.0,
@@ -125,15 +204,17 @@ pub fn flicker(t: f32, seed: f32) -> f32 {
 /// Window pools come on as it gets dark, and the ones near us go on the list for the mask.
 fn window_lights(
     daylight: Res<Daylight>,
+    lit: Res<LitRooms>,
     me: Query<&Transform, (With<crate::player::Player>, Without<WindowLight>)>,
-    mut windows: Query<(&mut PointLight, &Transform, &mut Visibility), With<WindowLight>>,
+    mut windows: Query<(&WindowLight, &mut PointLight, &Transform, &mut Visibility)>,
     mut seen: ResMut<NightLights>,
 ) {
     seen.0.clear();
     let dark = darkness(daylight.0);
     let here = me.single().map(|t| t.translation.xz()).ok();
-    for (mut light, tf, mut vis) in &mut windows {
-        let want = if dark > 0.0 { Visibility::Visible } else { Visibility::Hidden };
+    for (window, mut light, tf, mut vis) in &mut windows {
+        let on = dark > 0.0 && lit.either(window.rooms);
+        let want = if on { Visibility::Visible } else { Visibility::Hidden };
         if *vis != want {
             *vis = want;
         }
@@ -142,8 +223,59 @@ fn window_lights(
             light.intensity = lumens;
         }
         let at = tf.translation.xz();
-        if dark > 0.0 && here.is_some_and(|h| h.distance(at) < FAR_LIGHT + WINDOW_SEEN) {
+        if on && here.is_some_and(|h| h.distance(at) < FAR_LIGHT + WINDOW_SEEN) {
             seen.0.push(SeenLight::round(at, WINDOW_SEEN));
+        }
+    }
+}
+
+/// The nearest lit ground-floor rooms get a light under the ceiling at night, and what it lights
+/// goes on the list for the mask.
+fn room_lights(
+    daylight: Res<Daylight>,
+    lit: Res<LitRooms>,
+    map: Res<ClientMap>,
+    mut places: ResMut<RoomPlaces>,
+    me: Query<&Transform, (With<crate::player::Player>, Without<RoomLight>)>,
+    mut lights: Query<(&RoomLight, &mut PointLight, &mut Transform, &mut Visibility)>,
+    mut seen: ResMut<NightLights>,
+) {
+    let dark = darkness(daylight.0);
+    let here = me.single().map(|t| t.translation.xz()).ok();
+    let mut near: Vec<(f32, u16, Vec2, f32)> = Vec::new();
+    if dark > 0.0
+        && let Some(h) = here
+    {
+        for &room in &lit.rooms {
+            if let Some((mid, radius)) = places.of(&map.0, room) {
+                let d = (h.distance(mid) - radius).max(0.0);
+                if d < ROOM_LIGHT_REACH {
+                    near.push((d, room, mid, radius));
+                }
+            }
+        }
+        near.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        near.truncate(MAX_ROOM_LIGHTS);
+    }
+    for (slot, mut light, mut tf, mut vis) in &mut lights {
+        match near.get(slot.0) {
+            Some(&(_, _, mid, radius)) => {
+                let at = Vec3::new(mid.x, ROOM_HEIGHT, mid.y);
+                if tf.translation != at {
+                    tf.translation = at;
+                }
+                light.range = radius + ROOM_SPILL;
+                light.intensity = ROOM_LUMENS * dark;
+                if *vis != Visibility::Visible {
+                    *vis = Visibility::Visible;
+                }
+                seen.0.push(SeenLight::round(mid, radius + 0.5));
+            }
+            None => {
+                if *vis != Visibility::Hidden {
+                    *vis = Visibility::Hidden;
+                }
+            }
         }
     }
 }
@@ -242,6 +374,23 @@ mod tests {
             assert!(pool.lit(Vec2::from_angle(a as f32 * 0.8) * 1.5) > 0.99);
         }
         assert_eq!(pool.lit(Vec2::new(0.0, 3.6)), 0.0);
+    }
+
+    #[test]
+    fn lit_rooms_say_which_rooms_are_lit() {
+        let lit = LitRooms { rooms: vec![3, 9, 14], grid: true };
+        assert!(lit.is_lit(9) && !lit.is_lit(4) && !lit.is_lit(0));
+        assert!(lit.either((0, 14)) && lit.either((3, 0)) && !lit.either((0, 5)));
+    }
+
+    #[test]
+    fn a_room_is_found_by_its_tiles() {
+        let w = zombye_sim::World::new(zombye_sim::WorldConfig::new(1, 0, vec![zombye_sim::BuildingTemplate::from_ron(include_str!("../../../assets/data/buildings/bungalow.ron")).unwrap()]));
+        let room = w.map.room_at(w.player_spawn);
+        let (mid, radius) = room_place(&w.map, room).expect("a ground-floor room");
+        assert_eq!(w.map.room_at(mid), room, "its middle is in it");
+        assert!(radius > 1.0 && radius < 12.0, "{radius}");
+        assert!(mid.distance(w.player_spawn) < radius + 0.01);
     }
 
     #[test]

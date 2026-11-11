@@ -114,12 +114,14 @@ pub struct Body {
     pub asleep: bool,
     /// The floor it is on (`crate::stairs`): nobody is seen from another floor.
     pub level: u8,
+    /// Standing in a lit room (`crate::power`), as daylight: seen as if by that much (0: not).
+    pub lit: f32,
 }
 
 impl Body {
     /// Standing at `pos` facing `facing`, walking, with no light.
     pub fn standing(id: u32, pos: Vec2, facing: f32) -> Self {
-        Self { id, pos, facing, stance: Stance::Walk, moving: true, sight_mult: 1.0, light: 0.0, asleep: false, level: 0 }
+        Self { id, pos, facing, stance: Stance::Walk, moving: true, sight_mult: 1.0, light: 0.0, asleep: false, level: 0, lit: 0.0 }
     }
 }
 
@@ -134,7 +136,7 @@ pub fn sight_range(t: &PlayerSightTuning, daylight: f32, viewer: &Body, target: 
         // A light in the dark shows from far off, whoever holds it and however quietly.
         eyes.night = eyes.night.max(t.lit_range);
     }
-    let seen = Target { id: target.id, pos: target.pos, stance: target.stance, moving: target.moving, ignored: false, sight_mult: target.sight_mult };
+    let seen = Target { id: target.id, pos: target.pos, stance: target.stance, moving: target.moving, ignored: false, sight_mult: target.sight_mult, lit: target.lit };
     let mut range = senses::eyes_range(&eyes, daylight, &seen, viewer.facing, dir);
     // In our own beam.
     if viewer.light > 0.0 && dark > 0.0 && Vec2::from_angle(viewer.facing).dot(dir) >= t.beam_deg.to_radians().cos() {
@@ -242,6 +244,7 @@ impl World {
                     light,
                     asleep: p.needs.asleep(),
                     level: p.state.level,
+                    lit: target.map_or(0.0, |t| t.lit),
                 }
             })
             .collect()
