@@ -28,40 +28,6 @@
     // Multiplies the weight of entries marked `rare` (0: never found).
     rare_scale: 1.0,
     tables: [
-        // ---- A dead zombie's pockets: what someone had on them when they died (what it wore is
-        // added by the game, from population.ron's outfits). Mostly little things; now and then a
-        // tool, a bag or something to fight with, rarely a gun.
-        (room: "any", container: "corpse", empty: 0.45, rolls: (1, 2), entries: [
-            (item: "chocolate_bar", weight: 4),
-            (item: "crisps", weight: 2),
-            (item: "soda_can", weight: 2),
-            (item: "water_bottle", weight: 1),
-            (item: "apple", weight: 1),
-            (item: "lighter", weight: 3),
-            (item: "matches", weight: 2),
-            (item: "pen", weight: 3),
-            (item: "painkillers", weight: 2),
-            (item: "plasters", weight: 2),
-            (item: "rag", weight: 1),
-            (item: "cable_tie", weight: 1, count: (1, 3)),
-            (item: "batteries", weight: 1),
-            (item: "candle", weight: 1),
-        ], groups: [
-            // What they were carrying or fighting with.
-            (name: "carried", chance: 0.12, rolls: (1, 1), entries: [
-                (item: "screwdriver", weight: 3),
-                (item: "flashlight", weight: 3),
-                (item: "scissors", weight: 2),
-                (item: "duct_tape", weight: 2),
-                (item: "tin_opener", weight: 2),
-                (item: "plastic_bag", weight: 3),
-                (item: "tote_bag", weight: 1),
-                (item: "kitchen_knife", weight: 2),
-                (item: "claw_hammer", weight: 1),
-                (item: "pistol_rounds", weight: 1, count: (1, 4), rare: true),
-                (item: "pistol", weight: 0.3, rare: true),
-            ]),
-        ]),
         // ---- Kitchen -------------------------------------------------------------------------
         (room: "kitchen", container: "fridge", empty: 0.15, rolls: (1, 4), entries: [
             (item: "soda_can", weight: 3, count: (1, 4)),
@@ -434,6 +400,40 @@
             (item: "candle", weight: 1),
             (item: "picture_frame", weight: 1),
             (item: "batteries", weight: 1),
+        ]),
+            // ---- A dead zombie's pockets: what someone had on them when they died (what it wore is
+        // added by the game, from population.ron's outfits). Mostly little things; now and then a
+        // tool, a bag or something to fight with, rarely a gun.
+        (room: "any", container: "corpse", empty: 0.45, rolls: (1, 2), entries: [
+            (item: "chocolate_bar", weight: 4),
+            (item: "crisps", weight: 2),
+            (item: "soda_can", weight: 2),
+            (item: "water_bottle", weight: 1),
+            (item: "apple", weight: 1),
+            (item: "lighter", weight: 3),
+            (item: "matches", weight: 2),
+            (item: "pen", weight: 3),
+            (item: "painkillers", weight: 2),
+            (item: "plasters", weight: 2),
+            (item: "rag", weight: 1),
+            (item: "cable_tie", weight: 1, count: (1, 3)),
+            (item: "batteries", weight: 1),
+            (item: "candle", weight: 1),
+        ], groups: [
+            // What they were carrying or fighting with.
+            (name: "carried", chance: 0.12, rolls: (1, 1), entries: [
+                (item: "screwdriver", weight: 3),
+                (item: "flashlight", weight: 3),
+                (item: "scissors", weight: 2),
+                (item: "duct_tape", weight: 2),
+                (item: "tin_opener", weight: 2),
+                (item: "plastic_bag", weight: 3),
+                (item: "tote_bag", weight: 1),
+                (item: "kitchen_knife", weight: 2),
+                (item: "claw_hammer", weight: 1),
+                (item: "pistol_rounds", weight: 1, count: (1, 4), rare: true),
+                (item: "pistol", weight: 0.3, rare: true),
+            ]),
         ]),
     ],
 )
