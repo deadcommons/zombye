@@ -338,6 +338,9 @@ pub enum JobKind {
     /// pushed in, the next following by itself), or with `spare` push a round into a carried
     /// magazine. Last, so saves from before it read as they did.
     Reload { spare: bool },
+    /// Blinds ([`crate::blinds`]): fit a carried blind to `edge`, or (`fit: false`) take its blind
+    /// down into the bags. After `Reload`, so saves from before it read as they did.
+    Blind { edge: crate::map::EdgeRef, fit: bool },
 }
 
 /// A queued job and the seconds it has left (only the first counts down).
@@ -807,6 +810,7 @@ impl World {
                 JobKind::Treat { wound, treatment, item } => self.do_treat(pi, wound, treatment, item),
                 JobKind::Craft { recipe } => self.do_craft(pi, recipe),
                 JobKind::Reload { spare } => self.do_reload(pi, spare),
+                JobKind::Blind { edge, fit } => self.do_blind(pi, edge, fit),
             };
             if result.is_ok() {
                 let p = &mut self.players[pi];
@@ -864,7 +868,7 @@ impl World {
                 self.fill_corpse(c, z, &site)
             } else {
                 let room_type = self.map.rooms.get(site.room as usize).map_or("", |r| r.room_type.as_str()).to_string();
-                crate::loot::fill(self.config.seed(), c, &def, &room_type, &self.config.loot, &self.config.items)
+                crate::loot::fill(self.config.loot_seed(), c, &def, &room_type, &self.config.loot, &self.config.items)
             };
             // Food found was made before the world began (#11), some of it a while before.
             self.age_found_food(c, &mut contents);

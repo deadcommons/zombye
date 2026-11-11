@@ -141,6 +141,9 @@ pub struct Options {
     /// `--zombies N`; without it, as many as `assets/data/population.ron` gives for the map.
     pub zombies: Option<u32>,
     pub seed: u64,
+    /// `--loot-seed S`: what containers hold rolled from S (the same every game). Without it a
+    /// new world rolls its loot from a fresh seed each time (`content::fresh_loot_seed`).
+    pub loot_seed: Option<u64>,
     pub start_hour: Option<f32>,
     /// Debug: start the player here instead of the bedroom (`--at X,Y`).
     pub at: Option<[f32; 2]>,
@@ -442,6 +445,7 @@ impl Options {
             holdup_auto: flag("--holdup-auto"),
             zombies: value("--zombies").and_then(|v| v.parse().ok()),
             seed: value("--seed").and_then(|v| v.parse().ok()).unwrap_or(1),
+            loot_seed: value("--loot-seed").and_then(|v| v.parse().ok()),
             start_hour: value("--time").and_then(|v| v.parse().ok()),
             at: value("--at").and_then(|v| parse_point(&v)),
             turns: {

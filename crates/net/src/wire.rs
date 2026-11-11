@@ -56,8 +56,9 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// 15: weapons that wear: `durability`, `wear_chance` and `close_range` in the weapons, `one_hand`
 /// in the items, the wear numbers in `CombatTuning`. 16: ten skill levels and XP multipliers in `SkillTuning`.
 /// 17: climbing with E: `Intent::Climb`, `PlayerView::climb`, `Tunings::climb`.
-/// 18: broken weapons stay as items: `CombatTuning::broken_damage`.)
-pub const PROTOCOL: u32 = 18;
+/// 18: broken weapons stay as items: `CombatTuning::broken_damage`. 20: blinds: `Intent::Blind`,
+/// `Snapshot::blind_changes`, `Welcome::blinds` and `Welcome::glazed`, `JobKind::Blind`.)
+pub const PROTOCOL: u32 = 20;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -338,6 +339,10 @@ pub struct Welcome {
     /// ...then the doors and windows opened, shut or broken since, and the cracks.
     pub map_edits: Vec<EdgeChange>,
     pub edge_damage: Vec<EdgeDamage>,
+    /// Every blind as it is now, which replace the ones the client's map was generated with, and
+    /// the doors with glass in them (the server's settings place them).
+    pub blinds: Vec<zombye_sim::map::BlindChange>,
+    pub glazed: Vec<zombye_sim::map::EdgeRef>,
     pub tunings: Tunings,
 }
 
@@ -588,6 +593,7 @@ pub struct SnapshotDelta {
     // Things that happened (each once).
     pub edge_changes: Vec<EdgeChange>,
     pub edge_damage: Vec<EdgeDamage>,
+    pub blind_changes: Vec<zombye_sim::map::BlindChange>,
     pub hits: Vec<CombatEvent>,
     pub private: Vec<PrivateView>,
     pub item_notes: Vec<ItemNote>,
@@ -629,6 +635,7 @@ impl Snapshot {
             zombies,
             edge_changes: self.edge_changes.clone(),
             edge_damage: self.edge_damage.clone(),
+            blind_changes: self.blind_changes.clone(),
             items: self.items.iter().filter(|i| near(i.pos)).copied().collect(),
             hits: self.hits.iter().filter(|h| near(h.pos)).copied().collect(),
             private: self.private.iter().filter(|v| v.player == player).cloned().collect(),
@@ -993,6 +1000,7 @@ impl DeltaEncoder {
             items_gone: i_gone,
             edge_changes: view.edge_changes,
             edge_damage: view.edge_damage,
+            blind_changes: view.blind_changes,
             hits: view.hits,
             private: view.private,
             item_notes: view.item_notes,
@@ -1049,6 +1057,7 @@ impl DeltaDecoder {
         patch(&mut s.items, &delta.items, &delta.items_gone, |i| i.id);
         s.edge_changes = delta.edge_changes;
         s.edge_damage = delta.edge_damage;
+        s.blind_changes = delta.blind_changes;
         s.hits = delta.hits;
         s.private = delta.private;
         s.item_notes = delta.item_notes;
@@ -1113,6 +1122,7 @@ impl Intent {
             Intent::PlayerInput { player, .. }
             | Intent::Interact { player }
             | Intent::Climb { player }
+            | Intent::Blind { player, .. }
             | Intent::SmashWindow { player }
             | Intent::Attack { player }
             | Intent::Shove { player }

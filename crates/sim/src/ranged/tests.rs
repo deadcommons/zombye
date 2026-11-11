@@ -648,7 +648,7 @@ fn guns_are_rare_loot_with_some_rounds_in() {
     for site in w.containers() {
         let def = w.container_def(site);
         let room = w.map.rooms.get(site.room as usize).map_or("", |r| r.room_type.as_str());
-        let mut contents = crate::loot::fill(w.config.seed(), site.id, def, room, &w.config.loot, &w.config.items);
+        let mut contents = crate::loot::fill(w.config.loot_seed(), site.id, def, room, &w.config.loot, &w.config.items);
         w.load_found(site.id, &mut contents);
         let mut again = contents.clone();
         w.load_found(site.id, &mut again);

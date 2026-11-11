@@ -1817,6 +1817,10 @@ fn menu_entries(player: u32, items: &[ItemDef], from: Place, index: u32, s: &Ite
     let half = n / 2;
     let halves = half > 1;
     let into = |to: Place, count: u16| move_intent(player, from, index, to, count);
+    // A roller blind: fit it to the window or glass door faced (the server checks reach and side).
+    if matches!(from, Place::Carried | Place::Slot(_)) && def.has_tag(&zombye_sim::BlindTuning::default().tag) {
+        out.extend(mk("Fit to the window".into(), Some(Intent::Blind { player, op: zombye_sim::BlindOp::Fit }), false));
+    }
     match from {
         Place::Carried => {
             match (Treatment::of_item(def), def.category) {

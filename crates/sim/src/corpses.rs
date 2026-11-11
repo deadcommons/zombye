@@ -203,7 +203,7 @@ impl World {
         let mut out: Vec<ItemStack> = self.zombie_look(zombie).into_iter().map(|i| self.fresh_stack(i, 1)).collect();
         let def = self.container_def(site);
         if self.config.loot.tables.iter().any(|t| t.container == CORPSE_KIND) {
-            out.extend(crate::loot::fill(self.config.seed(), c, def, crate::containers::ANY_ROOM, &self.config.loot, &self.config.items));
+            out.extend(crate::loot::fill(self.config.loot_seed(), c, def, crate::containers::ANY_ROOM, &self.config.loot, &self.config.items));
         }
         out
     }
