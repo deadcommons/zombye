@@ -30,7 +30,7 @@ use crate::Options;
 use crate::browser_ui::Relaunch;
 use crate::join_screen::args_without;
 use crate::survivor_model::{Dress, SurvivorModel};
-use crate::theme::{self, BAD, BODY, DIM, GOLD, INK, ROW, ROW_HOVER, ROW_PICKED, SMALL, TEXT, TITLE, font};
+use crate::theme::{self, BODY, SMALL, font};
 
 /// The survivor a new game began as, for starting it again in a new run (R after dying).
 #[derive(Resource, Clone, Default)]
@@ -360,7 +360,7 @@ pub fn run(options: Options) -> ! {
     };
     let offscreen = options.offscreen();
     let mut app = App::new();
-    app.insert_resource(ClearColor(Color::srgb(0.045, 0.045, 0.05))).add_plugins(crate::window_plugins(&options)).insert_resource(options).insert_resource(screen).add_plugins(theme::ThemePlugin);
+    app.insert_resource(ClearColor(flat::INK)).add_plugins(crate::window_plugins(&options)).insert_resource(options).insert_resource(screen).add_plugins(theme::ThemePlugin);
     if offscreen {
         app.add_plugins((bevy::app::ScheduleRunnerPlugin::run_loop(std::time::Duration::ZERO), crate::offscreen::OffscreenPlugin));
     }
@@ -381,8 +381,8 @@ struct Joints(Vec<Entity>);
 
 /// Where the survivor stands, and where the camera looks from: it stands left of the middle of
 /// the picture, in the space the sheet leaves.
-const CAMERA_AT: Vec3 = Vec3::new(2.05, 0.95, 6.3);
-const CAMERA_LOOKS_AT: Vec3 = Vec3::new(2.05, 0.42, 0.0);
+const CAMERA_AT: Vec3 = Vec3::new(2.94, 0.45, 9.4);
+const CAMERA_LOOKS_AT: Vec3 = Vec3::new(2.94, 0.19, 0.0);
 
 #[allow(clippy::too_many_arguments)]
 fn setup(
@@ -495,6 +495,47 @@ fn act(mut screen: ResMut<Screen>, mut exit: MessageWriter<AppExit>) {
     }
 }
 
+/// The flat chrome of docs/ui-design.md, as this screen needs it. The inventory rework brings
+/// these to `theme.rs` for every panel; when it has, this module goes and the screen takes them
+/// from there.
+mod flat {
+    use bevy::prelude::*;
+
+    /// The ground of a menu, and text on a green button.
+    pub const INK: Color = Color::srgb(0.078, 0.078, 0.078);
+    pub const BONE: Color = Color::srgb(0.949, 0.902, 0.788);
+    pub const DIM: Color = Color::srgb(0.725, 0.690, 0.604);
+    pub const FAINT: Color = Color::srgb(0.490, 0.467, 0.416);
+    // The guide's see-through tints of bone, as they come out over the opaque ink of a menu
+    // (worked out in sRGB, as the guide's sheets are drawn).
+    /// Bone at 11%: hairlines.
+    pub const LINE: Color = Color::srgb(0.174, 0.169, 0.156);
+    /// Bone at 4.5%: a tile, slot, chip or secondary button.
+    pub const CELL: Color = Color::srgb(0.117, 0.115, 0.110);
+    /// Bone at 9%, and the border at 50%: the thing under the pointer.
+    pub const CELL_HOVER: Color = Color::srgb(0.156, 0.152, 0.142);
+    pub const HOVER_LINE: Color = Color::srgb(0.514, 0.490, 0.433);
+    /// Green at 10%: the fill of what is picked.
+    pub const PICKED: Color = Color::srgb(0.126, 0.139, 0.112);
+    /// The one accent: the open page, what is picked, the main button.
+    pub const GREEN: Color = Color::srgb(0.553, 0.690, 0.420);
+    pub const AMBER: Color = Color::srgb(0.878, 0.690, 0.290);
+    pub const RED: Color = Color::srgb(0.843, 0.149, 0.169);
+
+    pub const SCREEN_TITLE: f32 = 30.0;
+    pub const COLUMN_TITLE: f32 = 22.0;
+    pub const BUTTON: f32 = 17.0;
+    pub const CHIP: f32 = 15.0;
+    pub const LABEL: f32 = 14.0;
+    pub const RADIUS: f32 = 6.0;
+    pub const TOP_BAR: f32 = 76.0;
+    pub const FOOTER: f32 = 46.0;
+    /// Padding inside a column (the guide's 16, for a window under 1600 wide; the screen is laid
+    /// out for 1280 x 720 and up).
+    pub const PAD: f32 = 16.0;
+}
+use flat::{AMBER, BONE, CELL, CELL_HOVER, DIM, FAINT, GREEN, HOVER_LINE, INK, LINE, PAD, RADIUS, RED};
+
 #[derive(Component)]
 struct Root;
 
@@ -502,7 +543,7 @@ struct Root;
 #[derive(Component)]
 struct Detail;
 
-const ROW_H: f32 = 25.0;
+const ROW_H: f32 = 30.0;
 
 fn draw(mut commands: Commands, mut screen: ResMut<Screen>, root: Option<Single<Entity, With<Root>>>) {
     if !screen.dirty {
@@ -511,34 +552,33 @@ fn draw(mut commands: Commands, mut screen: ResMut<Screen>, root: Option<Single<
     screen.dirty = false;
     let root = match root {
         Some(r) => *r,
-        None => commands.spawn((Root, Node { width: Val::Vw(100.0), height: Val::Vh(100.0), min_width: px(0), max_width: Val::Vw(100.0), max_height: Val::Vh(100.0), flex_direction: FlexDirection::Row, overflow: Overflow::clip(), ..default() })).id(),
+        None => commands.spawn((Root, Node { width: Val::Vw(100.0), height: Val::Vh(100.0), min_width: px(0), max_width: Val::Vw(100.0), max_height: Val::Vh(100.0), flex_direction: FlexDirection::Column, overflow: Overflow::clip(), ..default() })).id(),
     };
     let screen = &*screen;
     commands.entity(root).despawn_children();
     commands.entity(root).with_children(|c| {
-        // Left: the figure stands here; the wardrobe under it.
-        c.spawn(Node { width: percent(31), height: percent(100), flex_direction: FlexDirection::Column, justify_content: JustifyContent::FlexEnd, align_items: AlignItems::Center, padding: UiRect::all(px(18)), flex_shrink: 0.0, ..default() }).with_children(|left| wardrobe(left, screen));
-        // Right: the sheet.
-        c.spawn(Node { flex_grow: 1.0, flex_basis: px(0), min_width: px(0), height: percent(100), padding: UiRect::new(px(0), px(22), px(10), px(10)), overflow: Overflow::clip(), ..default() }).with_children(|right| {
-            right
-                .spawn((Node { width: percent(100), height: percent(100), flex_direction: FlexDirection::Column, row_gap: px(4), padding: UiRect::axes(px(theme::SHEET_PAD.0 + 6.0), px(theme::SHEET_PAD.1 + 2.0)), min_width: px(0), ..default() }, theme::sheet()))
-                .with_children(|p| {
-                    theme::title(p, "New game");
-                    p.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(8), justify_content: JustifyContent::Center, flex_shrink: 0.0, ..default() }).with_children(|row| {
-                        for (k, tab) in Tab::ALL.into_iter().enumerate() {
-                            button(row, &format!("{}  {}", k + 1, tab.label()), tab == screen.tab, Act::Tab(tab));
-                        }
-                    });
-                    theme::spawn_rule(p);
-                    p.spawn(Node { flex_grow: 1.0, flex_direction: FlexDirection::Column, row_gap: px(6), min_height: px(0), overflow: Overflow::clip(), ..default() }).with_children(|body| match screen.tab {
-                        Tab::Who => who(body, screen),
-                        Tab::Picks => picks(body, screen),
-                        Tab::World => world(body, screen),
-                    });
-                    theme::spawn_rule(p);
-                    footer(p, screen);
+        top_bar(c, screen);
+        c.spawn(Node { flex_grow: 1.0, min_height: px(0), flex_direction: FlexDirection::Row, ..default() }).with_children(|body| {
+            // You: the figure stands in this column, the wardrobe under it.
+            body.spawn((Node { width: percent(31), flex_shrink: 0.0, flex_direction: FlexDirection::Column, justify_content: JustifyContent::SpaceBetween, padding: UiRect::all(px(PAD)), border: UiRect::right(px(1)), ..default() }, BorderColor::all(LINE))).with_children(|left| {
+                column_title(left, "You");
+                wardrobe(left, screen);
+            });
+            // The page: a column of choices, a column of detail, and a line about what is pointed at.
+            body.spawn(Node { flex_grow: 1.0, flex_basis: px(0), min_width: px(0), flex_direction: FlexDirection::Column, overflow: Overflow::clip(), ..default() }).with_children(|right| {
+                right.spawn(Node { flex_grow: 1.0, min_height: px(0), flex_direction: FlexDirection::Row, overflow: Overflow::clip(), ..default() }).with_children(|cols| match screen.tab {
+                    Tab::Who => who(cols, screen),
+                    Tab::Picks => picks(cols, screen),
+                    Tab::World => world(cols, screen),
                 });
+                detail_line(right, match screen.tab {
+                    Tab::Who => "A Background is what you did before: the skills you start with, a few things in your pockets, and points to spend on Strengths.",
+                    Tab::Picks => "Point at a Strength or a Flaw to read about it. Click to take it, click again to drop it.",
+                    Tab::World => "The town is the same town; what is in its cupboards is rolled anew every game.",
+                });
+            });
         });
+        footer(c, screen);
     });
 }
 
@@ -550,64 +590,163 @@ fn line(c: &mut ChildSpawnerCommands, s: impl Into<String>, f: TextFont, colour:
     c.spawn((Text::new(s.into()), f, TextColor(colour), TextLayout::no_wrap(), Pickable::IGNORE));
 }
 
-fn header(c: &mut ChildSpawnerCommands, s: &str) {
-    c.spawn((Text::new(s.to_uppercase()), theme::head(BODY + 1.0), TextColor(DIM), TextLayout::no_wrap(), Node { margin: UiRect::bottom(px(2)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
+/// A column's title: GEAR, YOU, NEARBY.
+fn column_title(c: &mut ChildSpawnerCommands, s: &str) {
+    c.spawn((Text::new(s.to_uppercase()), theme::head(flat::COLUMN_TITLE), TextColor(BONE), TextLayout::no_wrap(), Node { margin: UiRect::bottom(px(6)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
 }
 
-fn button(parent: &mut ChildSpawnerCommands, label: &str, on: bool, act: Act) {
-    parent
-        .spawn((Node { padding: UiRect::axes(px(14), px(5)), flex_shrink: 0.0, justify_content: JustifyContent::Center, ..default() }, theme::button(on)))
-        .with_children(|b| {
-            b.spawn((Text::new(label.to_string()), theme::strong(BODY), TextColor(INK), TextLayout::no_wrap(), Pickable::IGNORE));
+/// A label over a group of things: HEAD, MAIN HAND.
+fn header(c: &mut ChildSpawnerCommands, s: &str) {
+    c.spawn((Text::new(s.to_uppercase()), theme::head(flat::LABEL), TextColor(DIM), TextLayout::no_wrap(), Node { margin: UiRect::bottom(px(2)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
+}
+
+/// A key to press: Barlow Medium in a rounded hairline box.
+fn keycap(c: &mut ChildSpawnerCommands, key: &str, colour: Color) {
+    c.spawn((Node { padding: UiRect::axes(px(6), px(0)), min_width: px(22), height: px(20), justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(4)), flex_shrink: 0.0, ..default() }, BorderColor::all(colour.with_alpha(0.45)), Pickable::IGNORE))
+        .with_children(|k| line(k, key, theme::strong(SMALL), colour));
+}
+
+/// A key and the word for what it does, in the footer.
+fn hint(c: &mut ChildSpawnerCommands, key: &str, does: &str) {
+    c.spawn((Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(8), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|row| {
+        keycap(row, key, BONE);
+        line(row, does, font(SMALL), DIM);
+    });
+}
+
+/// What a flat control looks like at rest, and under the pointer.
+#[derive(Clone, Copy)]
+struct Look {
+    fill: Color,
+    edge: Color,
+    /// Lit under the pointer (not what is already picked, or can't be pressed).
+    lights: bool,
+}
+
+impl Look {
+    const CELL: Look = Look { fill: CELL, edge: LINE, lights: true };
+    const PICKED: Look = Look { fill: flat::PICKED, edge: GREEN, lights: false };
+    const PRIMARY: Look = Look { fill: GREEN, edge: GREEN, lights: false };
+}
+
+/// Lights `e` under the pointer and presses it for `act`.
+fn live(e: &mut EntityCommands, look: Look, act: Option<Act>) {
+    if look.lights && act.is_some() {
+        e.observe(move |ev: On<PointerOver>, mut q: Query<(&mut BackgroundColor, &mut BorderColor)>| {
+            if let Ok((mut bg, mut edge)) = q.get_mut(ev.entity) {
+                bg.0 = CELL_HOVER;
+                *edge = BorderColor::all(HOVER_LINE);
+            }
         })
-        .observe(move |_: On<PointerPress>, mut screen: ResMut<Screen>| screen.acts.push(act.clone()));
+        .observe(move |ev: On<PointerOut>, mut q: Query<(&mut BackgroundColor, &mut BorderColor)>| {
+            if let Ok((mut bg, mut edge)) = q.get_mut(ev.entity) {
+                bg.0 = look.fill;
+                *edge = BorderColor::all(look.edge);
+            }
+        });
+    }
+    if let Some(act) = act {
+        e.observe(move |_: On<PointerPress>, mut screen: ResMut<Screen>| screen.acts.push(act.clone()));
+    }
+}
+
+/// A button, 38 high: the screen's one primary (green, ink text) or a secondary (a cell), its
+/// key in it as a keycap.
+fn button(parent: &mut ChildSpawnerCommands, label: &str, key: Option<&str>, primary: bool, act: Act) {
+    let look = if primary { Look::PRIMARY } else { Look::CELL };
+    let ink = if primary { INK } else { BONE };
+    let mut e = parent.spawn((Node { height: px(38), padding: UiRect::horizontal(px(14)), column_gap: px(10), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), ..default() }, BackgroundColor(look.fill), BorderColor::all(look.edge)));
+    e.with_children(|b| {
+        line(b, label.to_uppercase(), theme::head(flat::BUTTON), ink);
+        if let Some(key) = key {
+            keycap(b, key, ink);
+        }
+    });
+    live(&mut e, look, Some(act));
+}
+
+/// A chip, 32 high: one of a few, the open one green with ink text.
+fn chip(parent: &mut ChildSpawnerCommands, label: &str, key: Option<&str>, on: bool, act: Act) {
+    let look = if on { Look::PRIMARY } else { Look::CELL };
+    let ink = if on { INK } else { BONE };
+    let mut e = parent.spawn((Node { height: px(32), padding: UiRect::horizontal(px(12)), column_gap: px(8), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), ..default() }, BackgroundColor(look.fill), BorderColor::all(look.edge)));
+    e.with_children(|b| {
+        if let Some(key) = key {
+            keycap(b, key, ink);
+        }
+        line(b, label.to_uppercase(), theme::head(flat::CHIP), ink);
+    });
+    live(&mut e, look, Some(act));
 }
 
 /// A small square button: a stepper's arrow.
 fn arrow(parent: &mut ChildSpawnerCommands, label: &str, act: Act) {
-    parent
-        .spawn((Node { width: px(26), height: px(24), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, theme::button(false)))
-        .with_children(|b| {
-            b.spawn((Text::new(label.to_string()), theme::strong(BODY), TextColor(INK), Pickable::IGNORE));
-        })
-        .observe(move |_: On<PointerPress>, mut screen: ResMut<Screen>| screen.acts.push(act.clone()));
+    let mut e = parent.spawn((Node { width: px(26), height: px(24), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), ..default() }, BackgroundColor(CELL), BorderColor::all(LINE)));
+    e.with_children(|b| line(b, label, theme::strong(BODY), BONE));
+    live(&mut e, Look::CELL, Some(act));
 }
 
-/// A row of a list: a flat tint, lit under the pointer, pressed for `act`; pointing at it puts
-/// `about` on the detail line.
+/// A row of a list: a cell, lit under the pointer, pressed for `act`, outlined green when
+/// picked; pointing at it puts `about` on the detail line.
 fn row<'a>(list: &'a mut ChildSpawnerCommands, picked: bool, act: Option<Act>, about: String) -> EntityCommands<'a> {
-    let rest = if picked { ROW_PICKED } else { ROW };
-    let mut e = list.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(10), height: px(ROW_H), align_items: AlignItems::Center, padding: UiRect::horizontal(px(8)), flex_shrink: 0.0, overflow: Overflow::clip(), ..default() }, BackgroundColor(rest)));
-    let live = act.is_some();
-    e.observe(move |ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>, mut detail: Query<&mut Text, With<Detail>>| {
-        if let (true, Ok(mut bg)) = (live && !picked, q.get_mut(ev.entity)) {
-            bg.0 = ROW_HOVER;
-        }
+    let look = if picked { Look::PICKED } else { Look { edge: Color::NONE, ..Look::CELL } };
+    let mut e = list.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(8), height: px(ROW_H), align_items: AlignItems::Center, padding: UiRect::horizontal(px(10)), border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), flex_shrink: 0.0, overflow: Overflow::clip(), ..default() }, BackgroundColor(look.fill), BorderColor::all(look.edge)));
+    e.observe(move |_: On<PointerOver>, mut detail: Query<&mut Text, With<Detail>>| {
         for mut t in &mut detail {
             if t.0 != about {
                 t.0 = about.clone();
             }
         }
-    })
-    .observe(move |ev: On<PointerOut>, mut q: Query<&mut BackgroundColor>| {
-        if let Ok(mut bg) = q.get_mut(ev.entity) {
-            bg.0 = rest;
-        }
     });
-    if let Some(act) = act {
-        e.observe(move |_: On<PointerPress>, mut screen: ResMut<Screen>| screen.acts.push(act.clone()));
-    }
+    live(&mut e, look, act);
     e
 }
 
+/// The shape that says picked or not beside the green: a box, filled when picked (round for one
+/// of several, square for any of several).
+fn mark(r: &mut ChildSpawnerCommands, on: bool, round: bool) {
+    r.spawn((Node { width: px(14), height: px(14), flex_shrink: 0.0, border: UiRect::all(px(1.5)), border_radius: BorderRadius::all(px(if round { 7.0 } else { 3.0 })), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, BorderColor::all(if on { GREEN } else { FAINT }), Pickable::IGNORE)).with_children(|m| {
+        if on {
+            m.spawn((Node { width: px(7), height: px(7), border_radius: BorderRadius::all(px(if round { 3.5 } else { 1.5 })), ..default() }, BackgroundColor(GREEN), Pickable::IGNORE));
+        }
+    });
+}
+
+/// A plus or a minus, drawn: a Strength's green plus, a Flaw's amber minus.
+fn sign(r: &mut ChildSpawnerCommands, plus: bool, colour: Color) {
+    r.spawn((Node { width: px(10), height: px(10), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|s| {
+        s.spawn((Node { position_type: PositionType::Absolute, left: px(0), top: px(4), width: px(10), height: px(2), ..default() }, BackgroundColor(colour), Pickable::IGNORE));
+        if plus {
+            s.spawn((Node { position_type: PositionType::Absolute, left: px(4), top: px(0), width: px(2), height: px(10), ..default() }, BackgroundColor(colour), Pickable::IGNORE));
+        }
+    });
+}
+
+/// A column of the page, a hairline between it and the one before.
+fn column<'a>(cols: &'a mut ChildSpawnerCommands, grow: f32, divided: bool) -> EntityCommands<'a> {
+    cols.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(4), flex_basis: px(0), flex_grow: grow, min_width: px(0), padding: UiRect::all(px(PAD)), border: UiRect::left(px(if divided { 1.0 } else { 0.0 })), overflow: Overflow::clip(), ..default() }, BorderColor::all(LINE)))
+}
+
 fn detail_line(c: &mut ChildSpawnerCommands, first: &str) {
-    c.spawn((Node { min_height: px(40), padding: UiRect::axes(px(10), px(6)), flex_shrink: 0.0, ..default() }, BackgroundColor(theme::INSET), Pickable::IGNORE)).with_children(|d| {
-        d.spawn((Text::new(first.to_string()), font(SMALL), TextColor(TEXT), Detail, Pickable::IGNORE));
+    c.spawn((Node { min_height: px(46), margin: UiRect::new(px(PAD), px(PAD), px(0), px(PAD)), padding: UiRect::axes(px(12), px(6)), align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), flex_shrink: 0.0, ..default() }, BackgroundColor(CELL), BorderColor::all(LINE), Pickable::IGNORE)).with_children(|d| {
+        d.spawn((Text::new(first.to_string()), font(SMALL), TextColor(DIM), Detail, Pickable::IGNORE));
     });
 }
 
 fn points_word(n: i32) -> String {
     format!("{n} point{}", if n.abs() == 1 { "" } else { "s" })
+}
+
+/// The frame's top bar: the screen's title, its pages as chips, and the way back.
+fn top_bar(c: &mut ChildSpawnerCommands, screen: &Screen) {
+    c.spawn((Node { height: px(flat::TOP_BAR), flex_shrink: 0.0, flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(8), padding: UiRect::horizontal(px(24)), border: UiRect::bottom(px(1)), ..default() }, BorderColor::all(LINE))).with_children(|bar| {
+        bar.spawn((Text::new("NEW GAME"), theme::head(flat::SCREEN_TITLE), TextColor(BONE), TextLayout::no_wrap(), Node { margin: UiRect::right(px(20)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
+        for (k, tab) in Tab::ALL.into_iter().enumerate() {
+            chip(bar, tab.label(), Some(&format!("{}", k + 1)), tab == screen.tab, Act::Tab(tab));
+        }
+        bar.spawn(Node { flex_grow: 1.0, ..default() });
+        button(bar, "Back", Some("Esc"), false, Act::Back);
+    });
 }
 
 /// A Background's effects, a line each.
@@ -626,151 +765,165 @@ fn background_lines(b: &BackgroundDef, screen: &Screen) -> Vec<String> {
     out
 }
 
-fn who(body: &mut ChildSpawnerCommands, screen: &Screen) {
+fn who(cols: &mut ChildSpawnerCommands, screen: &Screen) {
     let o = &screen.rules.origins;
-    body.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(22), flex_grow: 1.0, min_height: px(0), ..default() }).with_children(|cols| {
-        // The Backgrounds.
-        cols.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(2), width: percent(44), flex_shrink: 0.0, ..default() }).with_children(|list| {
-            header(list, "Background");
-            for (k, b) in o.backgrounds.iter().enumerate() {
-                let picked = b.id == screen.choice.background;
-                row(list, picked, Some(Act::Background(k)), b.about.clone()).with_children(|r| {
-                    r.spawn((Node { width: px(10), height: px(10), flex_shrink: 0.0, ..default() }, theme::dab(if picked { GOLD } else { DIM.with_alpha(0.3) }), Pickable::IGNORE));
-                    r.spawn((Node { flex_grow: 1.0, ..default() }, Pickable::IGNORE)).with_children(|n| line(n, b.name.clone(), theme::strong(BODY), TEXT));
-                    line(r, points_word(b.points), font(SMALL), DIM);
-                });
-            }
-        });
-        // The one picked, and the skills the survivor starts with.
-        cols.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(4), flex_grow: 1.0, min_width: px(0), ..default() }).with_children(|d| {
-            let Some(b) = o.background(&screen.choice.background) else { return };
-            d.spawn((Text::new(b.name.to_uppercase()), theme::head(TITLE), TextColor(TEXT), Pickable::IGNORE));
-            text(d, b.about.clone(), font(BODY), TEXT);
-            for l in background_lines(b, screen) {
-                text(d, l, font(SMALL), DIM);
-            }
-            text(d, format!("{} to spend on Strengths.", points_word(b.points)), font(SMALL), GOLD);
-            d.spawn(Node { height: px(8), flex_shrink: 0.0, ..default() });
-            header(d, "You start with");
-            // As chosen; while the points don't add up, without the Strengths.
-            let start = screen.check().or_else(|_| o.resolve(&Choice { strengths: Vec::new(), ..screen.choice.clone() }, &screen.items)).unwrap_or_default();
-            let t: &SkillTuning = &screen.config.skills;
-            let skills = start.origin.start_skills(t);
-            let plain = zombye_sim::Skills::start(t);
-            for s in Skill::ALL {
-                let (level, base) = (skills.level(s, t), plain.level(s, t));
-                d.spawn((Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(10), height: px(21), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|r| {
-                    r.spawn((Node { width: px(96), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|n| line(n, s.name(), font(SMALL), if level > 0 { TEXT } else { DIM }));
-                    r.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(3), ..default() }, Pickable::IGNORE)).with_children(|pips| {
-                        for k in 0..t.top() {
-                            let colour = if k < base.min(level) { TEXT.with_alpha(0.75) } else if k < level { GOLD } else { DIM.with_alpha(0.16) };
-                            pips.spawn((Node { width: px(13), height: px(9), ..default() }, BackgroundColor(colour), Pickable::IGNORE));
-                        }
-                    });
-                    let mult = start.origin.perks.xp[s as usize];
-                    line(r, if mult == 1.0 { format!("{level}") } else { format!("{level}   learns x{}", (mult * 100.0).round() / 100.0) }, font(SMALL), if mult < 1.0 { BAD } else { DIM });
-                });
-            }
-        });
+    // The Backgrounds.
+    column(cols, 0.85, false).with_children(|list| {
+        column_title(list, "Background");
+        for (k, b) in o.backgrounds.iter().enumerate() {
+            let picked = b.id == screen.choice.background;
+            row(list, picked, Some(Act::Background(k)), b.about.clone()).with_children(|r| {
+                mark(r, picked, true);
+                r.spawn((Node { flex_grow: 1.0, ..default() }, Pickable::IGNORE)).with_children(|n| line(n, b.name.clone(), font(BODY), BONE));
+                line(r, points_word(b.points), font(SMALL), DIM);
+            });
+        }
     });
-    detail_line(body, "A Background is what you did before: the skills you start with, a few things in your pockets, and points to spend on Strengths.");
+    // The one picked, and the skills the survivor starts with.
+    column(cols, 1.0, true).with_children(|d| {
+        let Some(b) = o.background(&screen.choice.background) else { return };
+        column_title(d, &b.name);
+        text(d, b.about.clone(), font(BODY), BONE);
+        for l in background_lines(b, screen) {
+            text(d, l, font(SMALL), DIM);
+        }
+        d.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(6), align_items: AlignItems::Baseline, flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|p| {
+            line(p, format!("{}", b.points), theme::strong(BODY), BONE);
+            line(p, format!("point{} to spend on Strengths", if b.points == 1 { "" } else { "s" }), font(SMALL), DIM);
+        });
+        d.spawn(Node { height: px(10), flex_shrink: 0.0, ..default() });
+        header(d, "You start with");
+        // As chosen; while the points don't add up, without the Strengths.
+        let start = screen.check().or_else(|_| o.resolve(&Choice { strengths: Vec::new(), ..screen.choice.clone() }, &screen.items)).unwrap_or_default();
+        let t: &SkillTuning = &screen.config.skills;
+        let skills = start.origin.start_skills(t);
+        let plain = zombye_sim::Skills::start(t);
+        for s in Skill::ALL {
+            let (level, base) = (skills.level(s, t), plain.level(s, t));
+            d.spawn((Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(10), height: px(22), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|r| {
+                r.spawn((Node { width: px(96), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|n| line(n, s.name(), font(SMALL), if level > 0 { BONE } else { DIM }));
+                r.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(3), ..default() }, Pickable::IGNORE)).with_children(|pips| {
+                    for k in 0..t.top() {
+                        // What every survivor has in bone, what this one adds in green.
+                        let colour = if k < base.min(level) { BONE } else if k < level { GREEN } else { LINE };
+                        pips.spawn((Node { width: px(13), height: px(8), border_radius: BorderRadius::all(px(3)), ..default() }, BackgroundColor(colour), Pickable::IGNORE));
+                    }
+                });
+                let mult = start.origin.perks.xp[s as usize];
+                line(r, format!("{level}"), theme::strong(SMALL), if level > 0 { BONE } else { DIM });
+                if mult != 1.0 {
+                    line(r, format!("learns x{}", (mult * 100.0).round() / 100.0), font(SMALL), if mult < 1.0 { AMBER } else { DIM });
+                }
+            });
+        }
+    });
 }
 
 fn effects_text(p: &PickDef) -> String {
     p.effects.iter().map(|e| e.text()).collect::<Vec<_>>().join(",  ")
 }
 
-fn picks(body: &mut ChildSpawnerCommands, screen: &Screen) {
+fn picks(cols: &mut ChildSpawnerCommands, screen: &Screen) {
     let o = &screen.rules.origins;
     let left = o.points_left(&screen.choice);
-    body.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(14), align_items: AlignItems::Baseline, flex_shrink: 0.0, ..default() }).with_children(|top| {
-        line(top, format!("{} LEFT", points_word(left).to_uppercase()), theme::head(TITLE), if left < 0 { BAD } else { GOLD });
-        let b = o.background(&screen.choice.background);
-        line(top, format!("{} gives {}. A Strength costs points, a Flaw gives them.", b.map_or("Your Background", |b| b.name.as_str()), b.map_or(0, |b| b.points)), font(SMALL), DIM);
-    });
-    body.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(18), flex_grow: 1.0, min_height: px(0), min_width: px(0), ..default() }).with_children(|cols| {
-        for strengths in [true, false] {
-            let (from, picked) = if strengths { (&o.strengths, &screen.choice.strengths) } else { (&o.flaws, &screen.choice.flaws) };
-            cols.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(2), flex_basis: px(0), flex_grow: 1.0, min_width: px(0), overflow: Overflow::clip(), ..default() }).with_children(|list| {
-                header(list, if strengths { "Strengths" } else { "Flaws" });
-                for (k, p) in from.iter().enumerate() {
-                    let on = picked.contains(&p.id);
-                    let clash = (!on).then(|| screen.clash(p)).flatten();
-                    let dear = strengths && !on && p.points > left;
-                    let act = clash.is_none().then(|| if strengths { Act::Strength(k) } else { Act::Flaw(k) });
-                    let mut about = format!("{}  {}  ({})", p.name, p.about, effects_text(p));
-                    if let Some(c) = clash {
-                        about = format!("{about}  Can't go with {}.", c.name);
-                    }
-                    let name_colour = if clash.is_some() { DIM.with_alpha(0.45) } else { TEXT };
-                    row(list, on, act, about).with_children(|r| {
-                        r.spawn((Node { width: px(10), height: px(10), flex_shrink: 0.0, ..default() }, theme::dab(if on { GOLD } else { DIM.with_alpha(0.3) }), Pickable::IGNORE));
-                        line(r, p.name.clone(), theme::strong(BODY), name_colour);
-                        r.spawn((Node { flex_grow: 1.0, flex_basis: px(0), min_width: px(0), overflow: Overflow::clip(), ..default() }, Pickable::IGNORE)).with_children(|n| {
-                            line(n, clash.map_or_else(|| effects_text(p), |c| format!("not with {}", c.name)), font(SMALL), DIM.with_alpha(if clash.is_some() { 0.45 } else { 1.0 }));
-                        });
-                        line(r, format!("{}{}", if strengths { "-" } else { "+" }, p.points), theme::strong(BODY), if dear { BAD } else if clash.is_some() { DIM.with_alpha(0.45) } else if strengths { TEXT } else { GOLD });
-                    });
+    for strengths in [true, false] {
+        let (from, picked) = if strengths { (&o.strengths, &screen.choice.strengths) } else { (&o.flaws, &screen.choice.flaws) };
+        column(cols, 1.0, !strengths).with_children(|list| {
+            list.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(8), align_items: AlignItems::Baseline, flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|top| {
+                column_title(top, if strengths { "Strengths" } else { "Flaws" });
+                top.spawn(Node { flex_grow: 1.0, ..default() });
+                if strengths {
+                    line(top, format!("{left}"), theme::strong(flat::COLUMN_TITLE), if left < 0 { RED } else { BONE });
+                    line(top, if left < 0 { "points over" } else if left == 1 { "point left" } else { "points left" }, font(SMALL), if left < 0 { RED } else { DIM });
+                } else {
+                    line(top, "a Flaw gives points back", font(SMALL), DIM);
                 }
             });
-        }
-    });
-    detail_line(body, "Point at a Strength or a Flaw to read about it. Click to take it, click again to drop it.");
+            for (k, p) in from.iter().enumerate() {
+                let on = picked.contains(&p.id);
+                let clash = (!on).then(|| screen.clash(p)).flatten();
+                let dear = strengths && !on && p.points > left;
+                let act = clash.is_none().then(|| if strengths { Act::Strength(k) } else { Act::Flaw(k) });
+                let mut about = format!("{}  {}  ({})", p.name, p.about, effects_text(p));
+                if let Some(c) = clash {
+                    about = format!("{about}  Can't go with {}.", c.name);
+                }
+                let off = clash.is_some();
+                let kind = if strengths { GREEN } else { AMBER };
+                row(list, on, act, about).with_children(|r| {
+                    mark(r, on, false);
+                    sign(r, strengths, if off { FAINT } else { kind });
+                    line(r, p.name.clone(), font(BODY), if off { FAINT } else { BONE });
+                    r.spawn((Node { flex_grow: 1.0, flex_basis: px(0), min_width: px(0), overflow: Overflow::clip(), ..default() }, Pickable::IGNORE)).with_children(|n| {
+                        line(n, clash.map_or_else(|| effects_text(p), |c| format!("not with {}", c.name)), font(SMALL), if off { FAINT } else { DIM });
+                    });
+                    line(r, format!("{}{}", if strengths { "" } else { "+" }, p.points), theme::strong(BODY), if dear { RED } else if off { FAINT } else { BONE });
+                });
+            }
+        });
+    }
 }
 
-fn world(body: &mut ChildSpawnerCommands, screen: &Screen) {
+fn world(cols: &mut ChildSpawnerCommands, screen: &Screen) {
     let d = screen.preset();
-    header(body, "Difficulty");
-    body.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(8), flex_wrap: FlexWrap::Wrap, row_gap: px(6), flex_shrink: 0.0, ..default() }).with_children(|row| {
+    column(cols, 1.0, false).with_children(|list| {
+        column_title(list, "Difficulty");
         for (k, p) in screen.rules.difficulty.presets.iter().enumerate() {
-            button(row, &p.name, p.id == d.id, Act::Preset(k));
+            let on = p.id == d.id;
+            let look = if on { Look::PICKED } else { Look::CELL };
+            let mut e = list.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(10), align_items: AlignItems::Center, padding: UiRect::axes(px(12), px(8)), margin: UiRect::bottom(px(4)), border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), flex_shrink: 0.0, ..default() }, BackgroundColor(look.fill), BorderColor::all(look.edge)));
+            e.with_children(|r| {
+                mark(r, on, true);
+                r.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(2), flex_grow: 1.0, flex_basis: px(0), min_width: px(0), ..default() }, Pickable::IGNORE)).with_children(|t| {
+                    line(t, p.name.to_uppercase(), theme::head(flat::BUTTON), BONE);
+                    text(t, p.about.clone(), font(SMALL), DIM);
+                });
+            });
+            live(&mut e, look, Some(Act::Preset(k)));
+        }
+        // What the preset does that has no option of its own.
+        let mut also = Vec::new();
+        for (what, v) in [("sharper senses", d.zombie_senses), ("tougher", d.zombie_toughness), ("surer strikes", d.zombie_accuracy)] {
+            if v > 1.0 {
+                also.push(format!("{what} (+{:.0}%)", (v - 1.0) * 100.0));
+            } else if v < 1.0 {
+                also.push(format!("{} ({:.0}%)", what.replace("sharper", "duller").replace("tougher", "weaker").replace("surer", "wilder"), (v - 1.0) * 100.0));
+            }
+        }
+        if let Some(f) = d.fast_zombies {
+            also.push(format!("{:.0}% of them fast", f * 100.0));
+        }
+        if d.needs != 1.0 {
+            also.push(format!("hunger, thirst and tiredness x{}", d.needs));
+        }
+        if d.rare_loot != 1.0 {
+            also.push(format!("rare finds x{}", d.rare_loot));
+        }
+        if !also.is_empty() {
+            list.spawn(Node { height: px(4), flex_shrink: 0.0, ..default() });
+            header(list, &format!("{} also means", d.name));
+            text(list, format!("Zombies and needs: {}.", also.join(", ")), font(SMALL), DIM);
         }
     });
-    let own = Setup { start_hour: None, ..screen.setup.clone() }.custom();
-    text(body, if own { format!("{}  (with your own changes below)", d.about) } else { d.about.clone() }, font(BODY), TEXT);
-    // What the preset does that has no option of its own.
-    let mut also = Vec::new();
-    for (what, v) in [("sharper senses", d.zombie_senses), ("tougher", d.zombie_toughness), ("surer strikes", d.zombie_accuracy)] {
-        if v > 1.0 {
-            also.push(format!("{what} (+{:.0}%)", (v - 1.0) * 100.0));
-        } else if v < 1.0 {
-            also.push(format!("{} ({:.0}%)", what.replace("sharper", "duller").replace("tougher", "weaker").replace("surer", "wilder"), (v - 1.0) * 100.0));
-        }
-    }
-    if let Some(f) = d.fast_zombies {
-        also.push(format!("{:.0}% of them fast", f * 100.0));
-    }
-    if d.needs != 1.0 {
-        also.push(format!("hunger, thirst and tiredness x{}", d.needs));
-    }
-    if d.rare_loot != 1.0 {
-        also.push(format!("rare finds x{}", d.rare_loot));
-    }
-    if !also.is_empty() {
-        text(body, format!("Zombies and needs: {}.", also.join(", ")), font(SMALL), DIM);
-    }
-    body.spawn(Node { height: px(6), flex_shrink: 0.0, ..default() });
-    header(body, "Your own changes");
-    body.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(2), max_width: px(620), ..default() }).with_children(|list| {
+    column(cols, 1.0, true).with_children(|list| {
+        column_title(list, "Your own changes");
+        let mut changes = 0;
         for opt in Opt::ALL {
             let (steps, v) = (opt.steps(), screen.value(opt));
             let at = opt.nearest(v);
+            // The hour you wake isn't the preset's, so it is never a change to it.
             let changed = v != preset_value(opt, d);
-            list.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(10), height: px(ROW_H + 3.0), align_items: AlignItems::Center, padding: UiRect::horizontal(px(8)), flex_shrink: 0.0, ..default() }, BackgroundColor(ROW))).with_children(|r| {
-                r.spawn((Node { width: px(190), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|n| line(n, opt.label(), theme::strong(BODY), TEXT));
+            changes += changed as usize;
+            list.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(8), height: px(ROW_H + 4.0), align_items: AlignItems::Center, padding: UiRect::horizontal(px(10)), border_radius: BorderRadius::all(px(RADIUS)), flex_shrink: 0.0, ..default() }, BackgroundColor(CELL))).with_children(|r| {
+                r.spawn((Node { flex_grow: 1.0, flex_basis: px(0), min_width: px(0), overflow: Overflow::clip(), ..default() }, Pickable::IGNORE)).with_children(|n| line(n, opt.label(), font(BODY), BONE));
                 arrow(r, "<", Act::Step(opt, -1));
-                r.spawn((Node { width: px(170), justify_content: JustifyContent::Center, flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|n| line(n, steps[at].1, theme::strong(BODY), if changed { GOLD } else { TEXT }));
+                r.spawn((Node { width: px(132), justify_content: JustifyContent::Center, flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|n| line(n, steps[at].1, theme::strong(BODY), BONE));
                 arrow(r, ">", Act::Step(opt, 1));
-                // Where it stands among its steps.
-                r.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(3), margin: UiRect::left(px(8)), ..default() }, Pickable::IGNORE)).with_children(|pips| {
-                    for k in 0..steps.len() {
-                        pips.spawn((Node { width: px(13), height: px(9), ..default() }, BackgroundColor(if k == at { GOLD } else { DIM.with_alpha(0.16) }), Pickable::IGNORE));
-                    }
-                });
             });
         }
+        let own = Setup { start_hour: None, ..screen.setup.clone() }.custom();
+        text(list, if own { format!("Changed from {}: {changes}.", d.name) } else { format!("As {} has them.", d.name) }, font(SMALL), DIM);
     });
-    text(body, "The town is the same town; what is in its cupboards is rolled anew every game.", font(SMALL), DIM);
 }
 
 fn wardrobe(left: &mut ChildSpawnerCommands, screen: &Screen) {
@@ -778,18 +931,18 @@ fn wardrobe(left: &mut ChildSpawnerCommands, screen: &Screen) {
     if slots.is_empty() {
         return;
     }
-    left.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(3), padding: UiRect::axes(px(theme::STRIP_PAD.0 + 4.0), px(theme::STRIP_PAD.1 + 2.0)), width: percent(100), max_width: px(360), ..default() }, theme::strip())).with_children(|w| {
+    left.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(4), width: percent(100), ..default() }).with_children(|w| {
         header(w, "What you wake up in");
         for (k, slot) in slots.iter().enumerate() {
             let worn = screen.worn_from(k);
             let one = slot.items.len() + slot.default.is_none() as usize <= 1;
-            w.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(8), height: px(26), align_items: AlignItems::Center, ..default() }, Pickable::IGNORE)).with_children(|r| {
-                r.spawn((Node { width: px(62), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|n| line(n, slot.name.clone(), font(SMALL), DIM));
+            w.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(8), height: px(30), align_items: AlignItems::Center, padding: UiRect::horizontal(px(10)), border_radius: BorderRadius::all(px(RADIUS)), flex_shrink: 0.0, ..default() }, BackgroundColor(CELL), Pickable::IGNORE)).with_children(|r| {
+                r.spawn((Node { width: px(58), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|n| line(n, slot.name.to_uppercase(), theme::head(flat::LABEL), DIM));
                 if !one {
                     arrow(r, "<", Act::Wear(k, -1));
                 }
-                r.spawn((Node { flex_grow: 1.0, justify_content: JustifyContent::Center, min_width: px(0), overflow: Overflow::clip(), ..default() }, Pickable::IGNORE))
-                    .with_children(|n| line(n, worn.map_or_else(|| "Nothing".to_string(), |id| screen.item_name(id)), theme::strong(BODY), if worn.is_some() { TEXT } else { DIM }));
+                r.spawn((Node { flex_grow: 1.0, flex_basis: px(0), justify_content: JustifyContent::Center, min_width: px(0), overflow: Overflow::clip(), ..default() }, Pickable::IGNORE))
+                    .with_children(|n| line(n, worn.map_or_else(|| "Nothing".to_string(), |id| screen.item_name(id)), font(BODY), if worn.is_some() { BONE } else { FAINT }));
                 if !one {
                     arrow(r, ">", Act::Wear(k, 1));
                 }
@@ -798,6 +951,7 @@ fn wardrobe(left: &mut ChildSpawnerCommands, screen: &Screen) {
     });
 }
 
+/// The frame's footer: the keys that work here, who and what world it will be, and Start.
 fn footer(p: &mut ChildSpawnerCommands, screen: &Screen) {
     let o = &screen.rules.origins;
     let name = |ids: &[String], strengths: bool| ids.iter().filter_map(|id| if strengths { o.strength(id) } else { o.flaw(id) }).map(|p| p.name.clone()).collect::<Vec<_>>();
@@ -805,20 +959,19 @@ fn footer(p: &mut ChildSpawnerCommands, screen: &Screen) {
     who.extend(name(&screen.choice.strengths, true));
     who.extend(name(&screen.choice.flaws, false));
     let left = o.points_left(&screen.choice);
-    p.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(14), align_items: AlignItems::Center, flex_shrink: 0.0, ..default() }).with_children(|row| {
-        row.spawn((Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, flex_basis: px(0), min_width: px(0), row_gap: px(2), ..default() }, Pickable::IGNORE)).with_children(|s| {
-            text(s, who.join("  ·  "), theme::strong(BODY), TEXT);
+    p.spawn((Node { height: px(flat::FOOTER), flex_shrink: 0.0, flex_direction: FlexDirection::Row, column_gap: px(18), align_items: AlignItems::Center, padding: UiRect::new(px(24), px(4), px(0), px(0)), border: UiRect::top(px(1)), ..default() }, BorderColor::all(LINE))).with_children(|row| {
+        hint(row, "1-3", "page");
+        hint(row, "Tab", "next page");
+        hint(row, "Esc", "back");
+        row.spawn((Node { flex_grow: 1.0, flex_basis: px(0), min_width: px(0), justify_content: JustifyContent::FlexEnd, overflow: Overflow::clip(), ..default() }, Pickable::IGNORE)).with_children(|s| {
             let world = format!("{}{}", screen.preset().name, if screen.setup.custom() { ", your own way" } else { "" });
             match &screen.error {
-                Some(e) => text(s, format!("Can't start yet: {e}"), font(SMALL), BAD),
-                None if left < 0 => text(s, format!("{} over: drop a Strength or take a Flaw.", points_word(-left)), font(SMALL), BAD),
-                None => text(s, format!("{world}  ·  {} left", points_word(left)), font(SMALL), DIM),
+                Some(e) => line(s, format!("Can't start yet: {e}"), font(SMALL), RED),
+                None if left < 0 => line(s, format!("{} over: drop a Strength or take a Flaw.", points_word(-left)), font(SMALL), RED),
+                None => line(s, format!("{}  ·  {world}", who.join("  ·  ")), font(SMALL), DIM),
             }
         });
-        theme::keycap(row, "Esc", "back");
-        theme::keycap(row, "Tab", "next page");
-        button(row, "Back", false, Act::Back);
-        button(row, "Start", true, Act::Start);
+        button(row, "Start", Some("Enter"), true, Act::Start);
     });
 }
 

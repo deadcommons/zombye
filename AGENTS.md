@@ -1215,6 +1215,9 @@ A new single-player game can begin with a survivor of your making in a world of 
   screen opens with next time) and starts the game again with `--new-game-from` (`start_args`); Esc or Back starts it
   again with `--main-menu` (`back_args`). Start is refused, with the reason, while points are overspent.
   `--new-game-tab who|picks|world` opens a page (pictures: `--new-game --new-game-tab picks --render-to shot.png`).
+  **It is drawn to docs/ui-design.md** (flat dark chrome on opaque ink: a top bar with the pages as chips, columns divided
+  by hairlines, a footer of keycaps with the one green button, Start; a Strength a green plus, a Flaw an amber minus),
+  from the tokens in `new_game::flat` until `theme.rs` has the guide's components for every panel.
 - Tests: `sim::origin::tests`, `sim::difficulty::tests`, `net::newgame::tests`, `new_game.rs`'s own.
 
 ## Items, inventory and containers (`sim::items`, `sim::inventory`, `sim::containers`; #7)
