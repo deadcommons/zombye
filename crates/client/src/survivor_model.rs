@@ -30,6 +30,7 @@
 //! **Files:** the body is `--survivor PATH` (a body GLB, or a folder holding a `*_body.glb`, such as
 //! a character's `export/` folder in the art repo), else `ZOMBYE_SURVIVOR` (the MCP `screenshot`
 //! client inherits it, so a work-in-progress character can be reviewed in game), else
+//! the release build's own (`release_chars.rs`), else
 //! `<data>/../models/characters/survivor_01.glb`; `none`, or no file, keeps the grey-box. Wearables
 //! are every GLB in `<data>/../models/wearables/`, then those in `wearables/` beside the body,
 //! replacing any of the same name; an item names its file with `model` in `items.ron`.
@@ -410,7 +411,9 @@ fn body_path(options: &crate::Options) -> Option<PathBuf> {
     let path = match asked {
         Some(p) if p.trim().is_empty() || p.trim().eq_ignore_ascii_case("none") => return None,
         Some(p) => PathBuf::from(p.trim()),
-        None => options.data.join(format!("../models/characters/{DEFAULT_BODY}.glb")),
+        // Nothing asked for: the release build's own body, if it carries one, else this repo's.
+        None => crate::release_chars::survivor_in(crate::release_chars::root(), DEFAULT_BODY)
+            .unwrap_or_else(|| options.data.join(format!("../models/characters/{DEFAULT_BODY}.glb"))),
     };
     if path.is_dir() {
         let mut found: Vec<PathBuf> = std::fs::read_dir(&path).ok()?.flatten().map(|e| e.path()).filter(|p| p.to_string_lossy().ends_with("_body.glb")).collect();
