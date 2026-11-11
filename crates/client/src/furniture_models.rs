@@ -138,6 +138,12 @@ impl FurnitureModels {
         (2..).take_while(|n| self.0.contains_key(&format!("{kind}.{n}"))).count() as u32 + 1
     }
 
+    /// How tall variant `k` (from 0) of `kind` is, if there is one.
+    pub fn height(&self, kind: &str, k: u32) -> Option<f32> {
+        let key = if k == 0 { kind.to_string() } else { format!("{kind}.{}", k + 1) };
+        self.0.get(&key).map(|m| m.height)
+    }
+
     /// Adds variant `k` (from 0) of `kind` at its own proportions: its foot at `origin`, turned `yaw`
     /// about the vertical, scaled so it stands `height` tall. Triangles of a material named `leaves...`
     /// take the tag `leaves`, the rest `wood` (trees: the foliage fades, the trunk doesn't). False when

@@ -72,14 +72,17 @@ they replace; a street prop kind this repo has no model for is a grey-box withou
 same name; `ZOMBYE_EXTRA_MODELS` still goes over both. `trees/<kind>.glb` (`broadleaf`, `birch`, `pine`, `spruce`,
 `bush`: the foot at the origin, foliage the triangles of a material named `leaves`, so it fades over the player as
 generated foliage does) stands in for the generated tree or bush of that kind, scaled to its height
-(`meshgen/trees.rs`, `FurnitureModels::add_standing`). `items/<item id>.glb` is drawn for that item lying on the
+(`meshgen/trees.rs`, `FurnitureModels::add_standing`). `fences/fence.glb` (a metre of garden fence along x, standing on the origin) and `fences/fence_post.glb` (a post)
+stand in for the generated fence rails, one look (variant) a run, a post every other metre and at the run's end
+(`landscape::model_fence`; hedges and the sim's fence are unchanged). `items/<item id>.glb` is drawn for that item lying on the
 ground, at its own size, in place of its grey-box (`items_render.rs`). `held/<item id>.glb` is a weapon as the hand holds it, drawn in place of its
 grey-box bar (`WeaponLooks::held`, `survivor::show_held_weapons`): made with the grip at the origin, pointing along +Z, its top +Y. **Variants:** `<name>.2.glb`, `<name>.3.glb`,
 ... (numbered without a gap) beside any of them are other looks of the same thing, one picked per place by a hash of
 where it stands (`FurnitureModels::pick`), so a town's sofas and trees differ and stay the same between runs.
 Without the folder the game draws this repo's models and generated trees. A model's colours are its materials' base
 colours times its vertex colours (`COLOR_0`; textures aren't read), so one painted from a texture atlas is exported
-with the atlas's colours on its vertices. `check_the_release_folder` (an ignored test in `release_models.rs`) reads
+with the atlas's colours on its vertices. The same goes for alpha: a tree whose leaves are textured cards is exported with each
+card cut to the outline of its texture's opaque part, as plain triangles. `check_the_release_folder` (an ignored test in `release_models.rs`) reads
 a folder and checks every file.
 
 ## Remote machines

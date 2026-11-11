@@ -1756,9 +1756,37 @@ fn fence_or_hedge(mb: &mut MeshBuilder, land: &Land, t: IVec2, which: OwnedEdge)
         let (a, b) = TileMap::edge_segment(t, which);
         let h = 1.05 + 0.25 * hash01(start.x, start.y, 78);
         hedge(mb, a, b, h, back == 0, ahead == 0);
-    } else {
+    } else if !model_fence(mb, t, which, start, back, ahead) {
         fence(mb, t, which);
     }
+}
+
+/// A metre of fence from the release models (`fences/fence.glb`: a metre of it along x, standing on
+/// the origin; `fence_post.glb`: a post), one look a run, a post every other metre and at the run's
+/// end. False without the models.
+fn model_fence(mb: &mut MeshBuilder, t: IVec2, which: OwnedEdge, start: IVec2, back: i32, ahead: i32) -> bool {
+    let models = crate::release_models::fences();
+    let n = models.variants("fence");
+    if n == 0 {
+        return false;
+    }
+    let k = ((hash01(start.x, start.y, 79) * n as f32) as u32).min(n - 1);
+    let Some(h) = models.height("fence", k) else { return false };
+    let (a, b) = TileMap::edge_segment(t, which);
+    let yaw = if which == OwnedEdge::North { 0.0 } else { std::f32::consts::FRAC_PI_2 };
+    let tag = CutTag::default();
+    let mid = (a + b) * 0.5;
+    models.add_standing(mb, "fence", k, Vec3::new(mid.x, 0.0, mid.y), yaw, h, tag, tag);
+    if let Some(ph) = models.height("fence_post", k) {
+        let (lo, hi) = if a.x + a.y <= b.x + b.y { (a, b) } else { (b, a) };
+        if back % 2 == 0 {
+            models.add_standing(mb, "fence_post", k, Vec3::new(lo.x, 0.0, lo.y), yaw, ph, tag, tag);
+        }
+        if ahead == 0 {
+            models.add_standing(mb, "fence_post", k, Vec3::new(hi.x, 0.0, hi.y), yaw, ph, tag, tag);
+        }
+    }
+    true
 }
 
 fn fence(mb: &mut MeshBuilder, t: IVec2, which: OwnedEdge) {

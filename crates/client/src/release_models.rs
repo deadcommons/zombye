@@ -8,6 +8,8 @@
 //!   furniture/<kind>.glb    in place of assets/models/furniture/<kind>.glb
 //!   street/<model>.glb      in place of assets/models/street/<model>.glb
 //!   trees/<kind>.glb        in place of the generated trees: broadleaf, birch, pine, spruce, and bush
+//!   fences/fence.glb        a metre of garden fence, along x, in place of the generated rails;
+//!                           fences/fence_post.glb a post for it
 //!   items/<item id>.glb     an item lying on the ground, in place of its grey-box
 //!   held/<item id>.glb      a weapon as the hand holds it, in place of its grey-box bar: the grip
 //!                           at the origin, pointing along +z, its top up
@@ -52,6 +54,21 @@ pub fn trees() -> &'static FurnitureModels {
             let m = FurnitureModels::load(&dir.join("trees"));
             if m.len() > 0 {
                 println!("release models: {} tree and bush models", m.len());
+            }
+            m
+        }
+        None => FurnitureModels::default(),
+    })
+}
+
+/// The overlay's fence models (`fences/`), read once; none without the folder.
+pub fn fences() -> &'static FurnitureModels {
+    static FENCES: OnceLock<FurnitureModels> = OnceLock::new();
+    FENCES.get_or_init(|| match root() {
+        Some(dir) => {
+            let m = FurnitureModels::load(&dir.join("fences"));
+            if m.len() > 0 {
+                println!("release models: {} fence models", m.len());
             }
             m
         }
@@ -113,7 +130,7 @@ mod tests {
     #[ignore]
     fn check_the_release_folder() {
         let dir = PathBuf::from(std::env::var_os("ZOMBYE_RELEASE_MODELS").expect("set ZOMBYE_RELEASE_MODELS"));
-        for sub in ["furniture", "street", "trees", "items", "held"] {
+        for sub in ["furniture", "street", "trees", "fences", "items", "held"] {
             let files = std::fs::read_dir(dir.join(sub)).map(|d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "glb")).count()).unwrap_or(0);
             let models = FurnitureModels::load(&dir.join(sub));
             assert_eq!(models.len(), files, "{sub}: a file didn't read");
@@ -125,6 +142,7 @@ mod tests {
                     "trees" => assert!(leaves > 0 && (leaves < tris || name.starts_with("bush")) && size.y > 0.5, "{sub}/{name}: trunk and foliage"),
                     "items" => assert!(size.max_element() <= 1.2 && leaves == 0, "{sub}/{name}: item-sized"),
                     "held" => assert!(size.z <= 1.5 && size.z >= size.x && size.z >= size.y && leaves == 0, "{sub}/{name}: lies along the hand's reach"),
+                    "fences" => assert!(size.y <= 2.5 && size.x <= 1.05 && size.z <= 0.5 && leaves == 0, "{sub}/{name}: a metre of fence along x"),
                     "street" => assert!(size.y <= 4.5 && size.x.max(size.z) <= 10.0 && leaves == 0, "{sub}/{name}"),
                     _ => assert!(size.y <= 4.5 && leaves == 0, "{sub}/{name}"),
                 }
