@@ -112,7 +112,7 @@ pub struct TierWeights {
 
 impl Default for TierWeights {
     fn default() -> Self {
-        Self { common: 1.0, uncommon: 0.35, rare: 0.1, very_rare: 0.03 }
+        Self { common: 1.0, uncommon: 0.35, rare: 0.15, very_rare: 0.08 }
     }
 }
 
@@ -612,7 +612,7 @@ pub(crate) mod tests {
         // rare_scale 0: no rare entries at all.
         let mut l = shipped();
         l.rare_scale = 0.0;
-        let rare: Vec<&str> = l.tables.iter().flat_map(|t| t.entries.iter().chain(t.groups.iter().flat_map(|g| &g.entries))).filter(|e| e.rare).map(|e| e.item.as_str()).collect();
+        let rare: Vec<&str> = l.tables.iter().flat_map(|t| t.entries.iter().chain(t.groups.iter().flat_map(|g| &g.entries))).filter(|e| e.rare || e.tier >= Rarity::Rare).map(|e| e.item.as_str()).collect();
         assert!(!rare.is_empty());
         let cab = def(&c, "bathroom_cabinet");
         assert!((0..2000).all(|id| fill(5, id, cab, "bathroom", &l, &it).iter().all(|s| it[s.item as usize].id != "antibiotics")));

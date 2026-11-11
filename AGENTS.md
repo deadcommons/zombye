@@ -1173,15 +1173,28 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   in `items.ron`, container kinds in `containers.ron`; errors name the table, e.g. `(kitchen, fridge)`), loaded by
   `net::content::load_loot` into `WorldConfig::loot` (no file: no tables, every container holds nothing). A
   `LootTable` is `room` (a room type or `any`), `container` (a kind or `any`), `empty` (chance of nothing), `rolls`
-  (min, max picks), `entries` (`item`, `weight`, `count` per pick, `rare`) and `groups` (extra lists rolled after
+  (min, max picks), `entries` (`item`, `weight`, `count` per pick, `tier`, `rare`) and `groups` (extra lists rolled after
   the picks with their own `chance` and `rolls`: the kitchen's "cutlery drawer", the laundry's "toolbox"). A container
   uses the first of `(room, container)`, `(any, container)`, `(room, any)`, `(any, any)` (`LootData::find`): a fridge
   is a fridge anywhere, and shelves and workbenches (no `any` table of their own) hold what their room holds.
-- **Filling** (`loot::fill(seed, id, def, room_type, loot, items)`, called on a container's first search): from a
-  stream seeded by the world seed and container id only (`loot::container_rng`), so the same in any opening order and
-  across a save; picks add up into stacks of the item's stack size; a pick that doesn't fit the container's litres
-  is cut to what fits. **Sandbox:** `scale` multiplies every table's and group's rolls (a fraction rounds by chance;
-  0.25 scarce, 2 plenty), `rare_scale` the weight of `rare` entries.
+- **Rarity tiers:** each entry's `tier` (`loot::Rarity`: `Common`, the default, `Uncommon`, `Rare`, `VeryRare`)
+  multiplies its weight by that tier's number in the file's `tiers` (`loot::TierWeights`; shipped 1, 0.35, 0.15, 0.08),
+  so what's valuable is rare wherever it's listed and one number makes a whole tier rarer (sandbox, difficulty).
+  `LootEntry::weight_in`. Shipped: food, junk and plain clothes common; hoodies, hats, small bags, tools, the plainer
+  weapons and dressings uncommon; leather jackets, work boots, balaclavas, duffels, bats, crowbars, antibiotics, rounds
+  and magazines rare; guns, the fire axe and the hiking pack very rare (about 1-2 guns a town; `rare_things_are_rare_in_a_town`,
+  and the ignored `loot_census` prints every item's finds per town for tuning).
+- **A new game finds new things:** loot rolls from `WorldConfig::loot_seed()` (`loot_seed: Option<u64>`, saved with the
+  settings; `None`, as in tests and older saves, is the world seed). The client and server set a fresh one
+  (`net::content::fresh_loot_seed`) for every new world unless `--loot-seed S` (client and server) fixes it, and
+  `LocalServer::new_run` (R after death) rolls another, so the same town holds different things each game. The weapons
+  on the floor, and how worn, loaded and old found things are, follow it too. Benchmark scenarios keep the world seed.
+- **Filling** (`loot::fill(seed, id, def, room_type, loot, items)`, called on a container's first search with the loot
+  seed): from a stream seeded by the loot seed and container id only (`loot::container_rng`), so the same in any
+  opening order and across a save; picks add up into stacks of the item's stack size; a pick that doesn't fit the
+  container's litres is cut to what fits. **Sandbox:** `scale` multiplies every table's and group's rolls (a fraction
+  rounds by chance; 0.25 scarce, 2 plenty), `rare_scale` the weight of `Rare`, `VeryRare` and `rare: true` entries,
+  `tiers` each tier's.
 - **Tables shipped** (ours): kitchen (fridge, cupboard with the cutlery-drawer group, under-sink, pantry shelves),
   any-room fridge, cupboard, oven, under-sink, bathroom cabinet, wardrobe, coat cupboard, desk drawers, coffee-table
   drawer, TV shelf, drum; room tables for bathroom, bedroom, living, dining, hall, laundry (with a toolbox group),
