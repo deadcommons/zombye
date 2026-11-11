@@ -22,10 +22,10 @@
 
 use std::collections::BTreeSet;
 
-use glam::Vec2;
+use glam::{IVec2, Vec2};
 use serde::{Deserialize, Serialize};
 
-use crate::map::TileMap;
+use crate::map::{Edge, Side, TileMap};
 
 /// The grid as `power.ron` describes it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -133,6 +133,75 @@ pub struct Power {
     powered: Vec<bool>,
     /// Rooms lit now, in order (derived: switch on and powered).
     lit: Vec<u16>,
+    /// Where each room's switch is on its wall, by room (derived from the map: [`switch_spots`]).
+    spots: Vec<Option<SwitchSpot>>,
+}
+
+/// Where a room's light switch is: on the inside face of a wall, beside a doorway into the room
+/// (else on any of its walls). The same on every machine: worked out from the map alone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SwitchSpot {
+    /// The point on the wall's face, on the ground plane (the client draws it at
+    /// [`SWITCH_HEIGHT`]).
+    pub pos: Vec2,
+    /// The way the switch faces: out of the wall, into the room.
+    pub normal: Vec2,
+    /// The tile the switch is in, and the side of it the wall is on.
+    pub tile: IVec2,
+    pub side: Side,
+}
+
+/// How high a switch is on its wall, in metres.
+pub const SWITCH_HEIGHT: f32 = 1.2;
+/// How far from a switch a hand reaches it (the server's rule; the client asks the same).
+pub const SWITCH_REACH: f32 = 1.3;
+/// How far a switch sits out from the line of its wall: half a wall (0.08) and a little.
+const SWITCH_INSET: f32 = 0.1;
+/// How far along the wall from the middle of its tile edge, toward the doorway beside it.
+const SWITCH_TOWARD_DOOR: f32 = 0.3;
+
+/// Every room's switch, by room (room 0, outdoors, has none). Only ground-floor rooms are on the
+/// tiles, so upper rooms have none either (nobody is up there yet).
+pub fn switch_spots(map: &TileMap) -> Vec<Option<SwitchSpot>> {
+    let mut doorway: Vec<Option<SwitchSpot>> = vec![None; map.rooms.len()];
+    let mut any_wall: Vec<Option<SwitchSpot>> = vec![None; map.rooms.len()];
+    let spot = |t: IVec2, side: Side, along: Vec2| {
+        let out = side.offset().as_vec2();
+        let pos = t.as_vec2() + Vec2::splat(0.5) + out * (0.5 - SWITCH_INSET) + along;
+        SwitchSpot { pos, normal: -out, tile: t, side }
+    };
+    for b in &map.buildings {
+        for y in b.min.y..b.min.y + b.size.y {
+            for x in b.min.x..b.min.x + b.size.x {
+                let t = IVec2::new(x, y);
+                let r = map.tile(t).room;
+                if r == 0 || r as usize >= map.rooms.len() {
+                    continue;
+                }
+                for side in Side::ALL {
+                    let e = map.edge(t, side);
+                    if e == Edge::Wall && any_wall[r as usize].is_none() {
+                        any_wall[r as usize] = Some(spot(t, side, Vec2::ZERO));
+                    }
+                    let way_in = matches!(e, Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken | Edge::Arch) && map.tile(t + side.offset()).room != r;
+                    if !way_in || doorway[r as usize].is_some() {
+                        continue;
+                    }
+                    // The wall beside the doorway, inside this room: the tile next to the doorway's,
+                    // along the wall, whose same side is a wall.
+                    let perp = IVec2::new(side.offset().y, side.offset().x);
+                    for step in [perp, -perp] {
+                        let n = t + step;
+                        if map.in_bounds(n) && map.tile(n).room == r && map.edge(n, side) == Edge::Wall {
+                            doorway[r as usize] = Some(spot(n, side, -step.as_vec2() * SWITCH_TOWARD_DOOR));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    doorway.iter().zip(any_wall).enumerate().map(|(r, (d, w))| if r == 0 { None } else { d.or(w) }).collect()
 }
 
 /// What is saved of the power (the `POWR` section).
@@ -166,7 +235,7 @@ impl Power {
     /// A new world's power: the grid as `def` says, and the lights left on.
     pub fn new(map: &TileMap, def: &PowerDef) -> Self {
         let switches = (1..map.rooms.len() as u16).filter(|&r| starts_lit(map, r, def.lights_on_at_start)).collect();
-        let mut p = Self { sources: vec![Source { kind: SourceKind::Grid, covers: Coverage::Everywhere, on: def.grid.on }], grid_failed: false, switches, ..Default::default() };
+        let mut p = Self { sources: vec![Source { kind: SourceKind::Grid, covers: Coverage::Everywhere, on: def.grid.on }], grid_failed: false, switches, spots: switch_spots(map), ..Default::default() };
         p.refresh(map);
         p
     }
@@ -216,9 +285,32 @@ impl Power {
                 _ => {}
             }
         }
-        let mut p = Self { sources: save.sources, grid_failed: save.grid_failed, switches: save.switches.into_iter().collect(), ..Default::default() };
+        let mut p = Self { sources: save.sources, grid_failed: save.grid_failed, switches: save.switches.into_iter().collect(), spots: switch_spots(map), ..Default::default() };
         p.refresh(map);
         Ok(p)
+    }
+
+    /// Where a room's switch is, if it has one.
+    pub fn spot(&self, room: u16) -> Option<SwitchSpot> {
+        self.spots.get(room as usize).copied().flatten()
+    }
+
+    /// Every room's switch, by room.
+    pub fn spots(&self) -> &[Option<SwitchSpot>] {
+        &self.spots
+    }
+
+    /// The map was replaced (`World::map_changed`): forget what it hasn't, and find the switches again.
+    pub fn map_changed(&mut self, map: &TileMap) {
+        let (rooms, buildings) = (map.rooms.len(), map.buildings.len());
+        self.switches.retain(|&r| r != 0 && (r as usize) < rooms);
+        for s in &mut self.sources {
+            if let Coverage::Buildings(list) = &mut s.covers {
+                list.retain(|&b| (b as usize) < buildings);
+            }
+        }
+        self.spots = switch_spots(map);
+        self.refresh(map);
     }
 
     /// Fold into the state hash.
@@ -269,16 +361,25 @@ impl crate::world::World {
         room != 0 && self.power.is_lit(room)
     }
 
-    /// Flip the light switch of the room player `id` stands in (`on`: set it; `None`: the other
-    /// way). Says how it went in the player's notes. Returns whether the switch moved.
+    /// Flip the light switch of the room player `id` stands in, if it is within [`SWITCH_REACH`]
+    /// (`on`: set it; `None`: the other way). With no power in the building it clicks and does
+    /// nothing. Says how it went in the player's notes. Returns whether the switch moved.
     pub fn player_light(&mut self, id: u32, on: Option<bool>) -> bool {
         let Some(p) = self.players.iter().find(|p| p.id == id) else { return false };
         if p.dead || p.away.is_some() {
             return false;
         }
-        let room = self.map.room_at(p.state.pos);
-        if room == 0 {
-            self.note(id, false, "no light switch out here".into());
+        let pos = p.state.pos;
+        let room = self.map.room_at(pos);
+        if !self.power.spot(room).is_some_and(|s| s.pos.distance(pos) <= SWITCH_REACH) {
+            self.note(id, false, "no light switch in reach".into());
+            return false;
+        }
+        let building = self.map.rooms[room as usize].building as usize;
+        let name = self.map.rooms[room as usize].name.clone();
+        // No power: the switch clicks and nothing changes (lights left on come back with it).
+        if !self.power.powered(building) {
+            self.note(id, false, "click. Nothing: no power".into());
             return false;
         }
         let was = self.power.switches.contains(&room);
@@ -292,14 +393,7 @@ impl crate::world::World {
             self.power.switches.remove(&room);
         }
         self.power.refresh(&self.map);
-        let building = self.map.rooms[room as usize].building as usize;
-        let name = self.map.rooms[room as usize].name.clone();
-        let text = match (want, self.power.powered(building)) {
-            (true, true) => format!("light on in the {name}"),
-            (false, true) => format!("light off in the {name}"),
-            (true, false) => "you flick the switch: nothing. No power".to_string(),
-            (false, false) => "you flick the switch off. No power anyway".to_string(),
-        };
+        let text = if want { format!("light on in the {name}") } else { format!("light off in the {name}") };
         self.note(id, true, text);
         true
     }
@@ -381,24 +475,68 @@ mod tests {
         let id = w.add_player(w.player_spawn);
         let room = w.map.room_at(w.player_spawn);
         assert_ne!(room, 0, "wakes up indoors");
+        let spot = w.power().spot(room).expect("the bedroom has a switch");
+        // Out of reach of it: nothing.
+        let far = (w.map.buildings.iter().flat_map(|b| (b.min.y..b.min.y + b.size.y).flat_map(move |y| (b.min.x..b.min.x + b.size.x).map(move |x| IVec2::new(x, y)))))
+            .map(|t| t.as_vec2() + Vec2::splat(0.5))
+            .find(|p| w.map.room_at(*p) == room && p.distance(spot.pos) > SWITCH_REACH + 0.5);
+        if let Some(far) = far {
+            w.players[0].state.pos = far;
+            assert!(!w.player_light(id, None));
+            assert!(w.item_notes.last().unwrap().text.contains("in reach"));
+        }
+        w.players[0].state.pos = spot.pos + spot.normal * 0.4;
+        assert_eq!(w.map.room_at(w.players[0].state.pos), room);
         w.player_light(id, Some(false));
         assert!(!w.power().is_lit(room));
         assert!(w.player_light(id, None), "flipped on");
-        assert!(w.power().is_lit(room) && w.lit_at(w.player_spawn));
+        assert!(w.power().is_lit(room) && w.lit_at(w.players[0].state.pos));
         assert!(w.item_notes.last().unwrap().text.starts_with("light on"));
         assert!(!w.player_light(id, Some(true)), "already on");
         w.set_grid(false);
         assert!(!w.power().is_lit(room), "the grid down: dark");
         assert!(w.power().switches.contains(&room), "the switch stays on");
-        w.player_light(id, Some(false));
-        w.player_light(id, Some(true));
-        assert!(w.item_notes.last().unwrap().text.contains("No power"));
+        assert!(!w.player_light(id, Some(false)), "no power: the switch does nothing");
+        assert!(w.power().switches.contains(&room));
+        assert!(w.item_notes.last().unwrap().text.contains("no power"));
         w.set_grid(true);
         assert!(w.power().is_lit(room), "power back, light back");
         // Outdoors there is no switch.
         let out = (0..w.map.width()).map(|x| Vec2::new(x as f32 + 0.5, 0.5)).find(|p| w.map.room_at(*p) == 0).unwrap();
         w.players[0].state.pos = out;
         assert!(!w.player_light(id, None));
+    }
+
+    #[test]
+    fn every_room_has_a_switch_on_its_own_wall_by_a_door() {
+        let w = world();
+        let spots = w.power().spots();
+        assert!(spots[0].is_none(), "outdoors has none");
+        let (mut rooms, mut by_door) = (0, 0);
+        for b in &w.map.buildings {
+            for y in b.min.y..b.min.y + b.size.y {
+                for x in b.min.x..b.min.x + b.size.x {
+                    let t = IVec2::new(x, y);
+                    let r = w.map.tile(t).room;
+                    if r == 0 || spots[r as usize].is_some_and(|s| s.tile != t) {
+                        continue;
+                    }
+                    let Some(s) = spots[r as usize] else { continue };
+                    rooms += 1;
+                    assert_eq!(w.map.edge(s.tile, s.side), Edge::Wall, "room {r}: on a wall");
+                    assert_eq!(w.map.room_at(s.pos), r, "room {r}: inside its own room");
+                    assert_eq!(w.map.room_at(s.pos + s.normal * 0.3), r, "room {r}: faces into it");
+                    let perp = IVec2::new(s.side.offset().y, s.side.offset().x);
+                    if [perp, -perp].iter().any(|d| matches!(w.map.edge(t + *d, s.side), Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken | Edge::Arch)) {
+                        by_door += 1;
+                    }
+                }
+            }
+        }
+        let with_tiles = (1..w.map.rooms.len()).filter(|&r| spots[r].is_some()).count();
+        assert_eq!(rooms, with_tiles);
+        assert!(by_door * 10 >= rooms * 8, "{by_door} of {rooms} beside a doorway");
+        assert_eq!(switch_spots(&w.map), spots, "the same from the map alone");
     }
 
     #[test]
@@ -432,9 +570,11 @@ mod tests {
     fn switches_and_the_grid_save_and_load() {
         let mut w = world();
         let id = w.add_player(w.player_spawn);
+        let room = w.map.room_at(w.player_spawn);
+        let spot = w.power().spot(room).unwrap();
+        w.players[0].state.pos = spot.pos + spot.normal * 0.4;
         w.player_light(id, Some(true));
         w.set_grid(false);
-        let room = w.map.room_at(w.player_spawn);
         let back = World::load(&w.save(), &w.config).unwrap();
         assert_eq!(back.state_hash(), w.state_hash());
         assert!(!back.power().grid_on() && back.power().switches.contains(&room) && back.power().lit().is_empty());

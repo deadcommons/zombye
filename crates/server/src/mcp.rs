@@ -1027,9 +1027,10 @@ fn tool_defs() -> Value {
         },
         {
             "name": "light",
-            "description": "A player flips the light switch of the room it stands in (as Q does): on gives the room a light \
-                while its building has power (the town's grid; later generators and solar panels), off puts it out. With the \
-                power off the switch moves but nothing lights. At night zombies (and other survivors) see you in a lit room \
+            "description": "A player flips the light switch of the room it stands in (as E at the switch does): the switch is \
+                on a wall beside a doorway, and the player must be within 1.3 m of it (out of reach, the reply says where it \
+                is: move there first). On gives the room a light while its building has power (the town's grid; later \
+                generators and solar panels), off puts it out. With no power the switch clicks and does nothing. At night zombies (and other survivors) see you in a lit room \
                 as if by day, through its windows: switch it off to hide. Give on (true/false) to set it; without, it flips. \
                 The reply says the room, whether it is lit and whether it has power.",
             "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}, "on": {"type": "boolean"}}}
@@ -1869,6 +1870,10 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             let notes = take_notes(world, id);
             if room == 0 {
                 return Err(format!("player {id} is outdoors: no light switch here"));
+            }
+            let Some(spot) = world.power().spot(room) else { return Err(format!("the {} has no light switch", world.map.rooms[room as usize].name)) };
+            if spot.pos.distance(p) > zombye_sim::power::SWITCH_REACH {
+                return Err(format!("the {}'s light switch is at ({:.1}, {:.1}), {:.1} m away: move within {} m of it", world.map.rooms[room as usize].name, spot.pos.x, spot.pos.y, spot.pos.distance(p), zombye_sim::power::SWITCH_REACH));
             }
             let b = world.map.rooms[room as usize].building as usize;
             let (switch, lit, powered) = (world.power().switches.contains(&room), world.power().is_lit(room), world.power().powered(b));
@@ -4454,14 +4459,20 @@ mod tests {
         let mut world = small_world();
         let dir = scratch("light");
         let mut persist = session(&world, &dir.0);
+        let room = world.map.room_at(world.player(1).unwrap().state.pos);
+        let spot = world.power().spot(room).unwrap();
+        world.players[0].state.pos = spot.pos + spot.normal * 3.0;
+        if world.map.room_at(world.players[0].state.pos) == room {
+            let (text, err) = call(&mut world, &mut persist, "light", json!({"on": true}));
+            assert!(err && text.contains("m away"), "{text}");
+        }
+        world.players[0].state.pos = spot.pos + spot.normal * 0.4;
         let (text, err) = call(&mut world, &mut persist, "light", json!({"on": true}));
         assert!(!err && text.contains("switch on, lit, the building has power"), "{text}");
         let (text, err) = call(&mut world, &mut persist, "grid", json!({"on": false}));
         assert!(!err && text.contains("grid off; 0 rooms lit"), "{text}");
         let (text, err) = call(&mut world, &mut persist, "light", json!({}));
-        assert!(!err && text.contains("switch off, dark, no power"), "{text}");
-        let (text, _) = call(&mut world, &mut persist, "light", json!({"on": true}));
-        assert!(text.contains("nothing. No power"), "{text}");
+        assert!(!err && text.contains("Nothing: no power") && text.contains("switch on, dark, no power"), "{text}");
         let (text, _) = call(&mut world, &mut persist, "grid", json!({"on": true}));
         assert!(text.contains("grid on") && !text.contains("; 0 rooms lit"), "{text}");
     }

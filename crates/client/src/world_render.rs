@@ -55,11 +55,15 @@ struct Streamer {
     buildings: HashMap<usize, BuildingRender>,
     /// Door leaf or window pane entity per ground-floor edge.
     edges: HashMap<(IVec2, OwnedEdge), Entity>,
+    /// Where each room's light switch is (the sim's rule on our map copy), worked out once.
+    switches: Option<Vec<Option<zombye_sim::power::SwitchSpot>>>,
 }
 
 #[derive(Resource)]
 struct SharedMeshes {
     door: Handle<Mesh>,
+    /// A light switch on its wall, toggle down (off) and up (on): +z out of the wall, centred.
+    switch: [Handle<Mesh>; 2],
     pane: Handle<Mesh>,
     pane_lit: Handle<Mesh>,
     shards: Handle<Mesh>,
@@ -184,7 +188,7 @@ impl Plugin for WorldRenderPlugin {
         app.init_resource::<Streamer>()
             .add_systems(Startup, setup_shared)
             .add_systems(PostUpdate, fade_chunks.after(materials::update_params))
-            .add_systems(Update, (stream, apply_edge_changes, apply_edge_damage, relight_panes, animate_doors, animate_panes, hide_upper_floors, cut_edge_pieces).chain().after(crate::cutaway::CutawaySystems).after(crate::lights::sync_lit_rooms));
+            .add_systems(Update, (stream, apply_edge_changes, apply_edge_damage, relight_panes, update_switches, animate_doors, animate_panes, hide_upper_floors, cut_edge_pieces).chain().after(crate::cutaway::CutawaySystems).after(crate::lights::sync_lit_rooms));
     }
 }
 
@@ -265,7 +269,16 @@ fn setup_shared(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut ma
     let contact = graphics.contact_shadows.then(|| {
         materials.add(StandardMaterial { base_color: Color::WHITE, unlit: true, alpha_mode: AlphaMode::Blend, cull_mode: None, double_sided: true, ..default() })
     });
-    commands.insert_resource(SharedMeshes { door, pane, pane_lit, shards, lips, door_cracks, pane_cracks, furniture, contact });
+    // A light switch: a pale plate with a toggle, down for off and up for on.
+    let switch = [false, true].map(|on| {
+        let mut mb = MeshBuilder::default();
+        mb.set_tag(CutTag { kind: CutKind::Structure, ..default() });
+        mb.add_box(Vec3::new(-0.045, -0.065, 0.0), Vec3::new(0.045, 0.065, 0.012), meshgen::same(p.trim_light));
+        let y = if on { 0.008 } else { -0.038 };
+        mb.add_box(Vec3::new(-0.013, y, 0.012), Vec3::new(0.013, y + 0.03, 0.03), meshgen::same(meshgen::shade(p.trim_light, 0.8)));
+        meshes.add(mb.build())
+    });
+    commands.insert_resource(SharedMeshes { switch, door, pane, pane_lit, shards, lips, door_cracks, pane_cracks, furniture, contact });
 }
 
 /// Grey-box damage for a door leaf (dark cracks, and pale splintered wood when it's nearly gone)
@@ -406,7 +419,20 @@ fn stream(
         let loaded = streamer.buildings.contains_key(&i);
         if dist <= LOAD_RADIUS && !loaded && loads < budget {
             loads += 1;
-            let render = spawn_building(&mut commands, &mut meshes, &mats, &shared, map, i, b, &mut streamer.edges, &damage, &lit);
+            let switches = streamer.switches.get_or_insert_with(|| zombye_sim::power::switch_spots(map)).clone();
+            let mut render = spawn_building(&mut commands, &mut meshes, &mats, &shared, map, i, b, &mut streamer.edges, &damage, &lit);
+            for (room, spot) in switches.iter().enumerate() {
+                let Some(spot) = spot else { continue };
+                if map.rooms[room].building as usize != i {
+                    continue;
+                }
+                let on = lit.is_lit(room as u16);
+                let n = Vec3::new(spot.normal.x, 0.0, spot.normal.y);
+                let tf = Transform { translation: Vec3::new(spot.pos.x, zombye_sim::power::SWITCH_HEIGHT, spot.pos.y), rotation: Quat::from_rotation_arc(Vec3::Z, n), scale: Vec3::ONE };
+                let (owner, which) = spot.side.owner(spot.tile);
+                let e = commands.spawn((Mesh3d(shared.switch[on as usize].clone()), MeshMaterial3d(mats.building.clone()), tf, LightSwitch { room: room as u16, key: (owner, which), on })).id();
+                render.lower.push(e);
+            }
             streamer.buildings.insert(i, render);
         } else if dist > LOAD_RADIUS + 1 && loaded {
             let render = streamer.buildings.remove(&i).unwrap();
@@ -756,6 +782,33 @@ fn apply_edge_changes(
                 pane.broken = broken;
                 mesh.0 = pane.mesh(&shared);
             }
+        }
+    }
+}
+
+/// A room's light switch on its wall (`zombye_sim::power::switch_spots`).
+#[derive(Component)]
+struct LightSwitch {
+    room: u16,
+    /// The wall it is on, which the cutaways may drop.
+    key: (IVec2, OwnedEdge),
+    /// Drawn up (on).
+    on: bool,
+}
+
+/// Switches show up while their room is lit, down while dark; one on a wall that is cut away
+/// goes with it.
+fn update_switches(lit: Res<crate::lights::LitRooms>, cutaway: Res<crate::cutaway::Cutaway>, shared: Option<Res<SharedMeshes>>, mut switches: Query<(&mut LightSwitch, &mut Mesh3d, &mut Visibility)>) {
+    let Some(shared) = shared else { return };
+    for (mut sw, mut mesh, mut vis) in &mut switches {
+        let on = lit.is_lit(sw.room);
+        if sw.on != on {
+            sw.on = on;
+            mesh.0 = shared.switch[on as usize].clone();
+        }
+        let shown = if cutaway.amount(sw.key) < 0.5 { Visibility::Inherited } else { Visibility::Hidden };
+        if *vis != shown {
+            *vis = shown;
         }
     }
 }

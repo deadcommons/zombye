@@ -192,8 +192,8 @@ The client prints one stats line per second to stdout (time, room, stance, hp, e
 sent to it, chasing, zombies per tier active/near/virtual, sim tick ms, and the sounds started that second: `sounds 9 (Groan 4, FootstepHard 3, ...)` or `sound off`).
 In game: WASD move (he faces the way he walks), Shift run, C sneak (toggle), right mouse held: aim (he faces the
 cursor and strafes or backs off at 2.2 m/s, no running, in a guard stance), and only while aiming left mouse attack
-(swing your weapon, or punch; with a gun in hand: shoot at what the cursor is on, see Guns) and Space shove (or stomp, when a downed zombie lies right in front of you), R reload the gun you hold, E climb the fence or open or broken window you face (see Climbing under Players), else pick up the item you
-face (with nothing on the floor within reach: search the container you face), 1-9 the hotbar (swap to or use what's on that slot, see Hotbar), Tab or I the inventory panel, H the health panel, K the skills panel (drag any of the three by its title; they remember where they were and whether they were open), F open/close the door or window you face, G smash the window you face, Q the light switch of the room you're in (see Electricity and lights), dead: R a new run and Q or Esc quit,
+(swing your weapon, or punch; with a gun in hand: shoot at what the cursor is on, see Guns) and Space shove (or stomp, when a downed zombie lies right in front of you), R reload the gun you hold, E climb the fence or open or broken window you face (see Climbing under Players), else flick the light switch you face (see Electricity and lights), else pick up the item you
+face (with nothing on the floor within reach: search the container you face), 1-9 the hotbar (swap to or use what's on that slot, see Hotbar), Tab or I the inventory panel, H the health panel, K the skills panel (drag any of the three by its title; they remember where they were and whether they were open), F open/close the door or window you face, G smash the window you face, dead: R a new run and Q or Esc quit,
 B sleep (B again or WASD to get up), Enter the chat line (Tab there: whisper, talk or shout; Enter says it, Esc drops it), V wave, U hands up (again lowers them), P point (see Talking and gestures), Y tie the hands of the survivor you face or free tied ones, L search a tied survivor, J (held) struggle out of ties, N invite into your group or accept (Shift+N leaves), middle mouse a group marker (see Hold-ups and groups), T skip an hour, Z spawn zombies, wheel zoom (over the inventory, health or skills panel it scrolls that panel instead), F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), F3 the light preview (a time-of-day slider, see Light and mood), F4 the debug stats window (see Needs), F6 the server's rules (on a multiplayer server, see Multiplayer), F7 the server browser (see The server browser), `,` and `.` turn the camera a quarter turn left or right (see Turning the camera under Light and mood), F10 walls up / walls cut, Shift+F10 zombie silhouettes and Ctrl+F10 opening hints (see Cutaways and Opening hints under Light and mood), M mute, O hide or show the objectives and hints (see The first night), Ctrl (or Cmd) + `=` / `-` the UI scale (see UI scale), Ctrl+0 back to 100%. Walking into a fence or an open window stops you as a wall would: E climbs
 it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
 not Bevy's handler; a second Ctrl-C quits unsaved) autosaves; `--render-to` never does.
@@ -1214,11 +1214,19 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   (on at the start; `Some(h)`: it fails for good h game hours in, `World::step_power`, and an admin can still turn it back
   on), `lights_on_at_start` (0.22: the rooms with a light left on, never halls, porches or garages: the same rooms the
   client used to light by itself), `lit_room_seen` (0.8).
-- **Light switches:** every room has one (`Power::switches`). A room is lit while its switch is on and its building has
-  power (`Power::lit`, worked out again whenever either changes). **Q** (`Intent::Light { player, on }`,
-  `World::player_light`; `on: None` flips it) flips the switch of the room the player stands in; with no power the switch
-  moves but nothing lights ("you flick the switch: nothing. No power"), and lights left on come back with the power.
-  Outdoors there is no switch.
+- **Light switches:** every room has one (`Power::switches`, the ones on). A room is lit while its switch is on and its
+  building has power (`Power::lit`, worked out again whenever either changes). **Where:** on the inside face of a wall
+  beside a doorway into the room, 0.3 m from it, `SWITCH_HEIGHT` 1.2 m up (`power::switch_spots`, from the map alone, so
+  the server and every client agree; a room with no doorway gets one on any of its walls; derived, not saved). **E** at
+  it (`Intent::Light { player, on }`, `World::player_light`; `on: None` flips it) flips it: the player must be in the
+  room within `SWITCH_REACH` (1.3 m) of it; the client sends it for E when the switch is in reach and faced within 75°
+  (`player::light_switch_faced`; a climb comes first, then the switch, then picking up and searching). **With no power
+  it does nothing:** it clicks ("click. Nothing: no power") and stays as it was, and lights left on come back with the
+  power. Outdoors there is no switch. The client draws each switch as a small pale plate with a toggle, up while the
+  room is lit, down while dark (`world_render::LightSwitch`, two shared meshes; hidden while its wall is cut away), and
+  plays the `LightSwitch` cue (a click, placeholder from `synth.py`) where a room's light goes on or off, or where ours
+  clicked for nothing. A release audio folder's `sounds.ron` without a cue takes the game's entry for it
+  (`audio::parse_sounds_over`).
 - **Lit rooms give you away:** a player standing in a lit room is seen by zombies at night as if by `lit_room_seen` of
   daylight (`senses::Target::lit`; `eyes_range` takes `daylight.max(lit)`; line of sight unchanged, so walls and blinds
   still block it), and by other survivors the same way (`awareness::Body::lit`). Switch it off to hide.
