@@ -16,6 +16,9 @@
 //! A material's base colour is a triangle's colour, times the mean of its corners' vertex colours
 //! (`COLOR_0`) where the model has them. Textures aren't read. Release builds put models from the
 //! private art repo over these (`release_models.rs`).
+//!
+//! `<kind>.2.glb`, `<kind>.3.glb`, ... beside a kind's model are variants of it (same footprint): each
+//! placement draws one of them, picked by where it stands, so not every sofa in town is the same sofa.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -27,9 +30,11 @@ use crate::meshgen::MeshBuilder;
 
 /// One model: triangles (position, normal) with a colour each, in the model's own frame.
 pub struct FurnitureModel {
-    tris: Vec<([Vec3; 3], [Vec3; 3], LinearRgba)>,
+    tris: Vec<([Vec3; 3], [Vec3; 3], LinearRgba, bool)>,
     /// Footprint in tiles (x, z) when facing south.
     footprint: Vec2,
+    /// How tall it stands.
+    height: f32,
 }
 
 #[derive(Default)]
@@ -70,10 +75,70 @@ impl FurnitureModels {
         self.0.get(kind).map(|m| m.tris.len())
     }
 
+    /// The model for `kind` as a mesh of its own (positions, normals, a colour a vertex), for things
+    /// drawn as entities and not merged into a chunk: items on the floor.
+    pub fn mesh(&self, kind: &str) -> Option<Mesh> {
+        let m = self.0.get(kind)?;
+        let (mut pos, mut nrm, mut col) = (Vec::new(), Vec::new(), Vec::new());
+        for (p, n, c, _) in &m.tris {
+            for k in 0..3 {
+                pos.push(p[k].to_array());
+                nrm.push(n[k].to_array());
+                col.push([c.red, c.green, c.blue, 1.0]);
+            }
+        }
+        Some(
+            Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::RENDER_WORLD)
+                .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
+                .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, nrm)
+                .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, col),
+        )
+    }
+
+    /// The model drawn for `kind` at a place: the kind's own or one of its variants (`<kind>.2.glb`,
+    /// `<kind>.3.glb`, ... beside it, numbered without a gap), the same one every time for the same `salt`.
+    fn pick(&self, kind: &str, salt: u32) -> Option<&FurnitureModel> {
+        let first = self.0.get(kind)?;
+        let mut n = 1;
+        while self.0.contains_key(&format!("{kind}.{}", n + 1)) {
+            n += 1;
+        }
+        let k = (salt.wrapping_mul(0x9E37_79B9) >> 16) % n;
+        if k == 0 { Some(first) } else { self.0.get(&format!("{kind}.{}", k + 1)) }
+    }
+
+    /// How many models `kind` has to pick from (its own and its variants).
+    pub fn variants(&self, kind: &str) -> u32 {
+        if !self.0.contains_key(kind) {
+            return 0;
+        }
+        (2..).take_while(|n| self.0.contains_key(&format!("{kind}.{n}"))).count() as u32 + 1
+    }
+
+    /// Adds variant `k` (from 0) of `kind` at its own proportions: its foot at `origin`, turned `yaw`
+    /// about the vertical, scaled so it stands `height` tall. Triangles of a material named `leaves...`
+    /// take the tag `leaves`, the rest `wood` (trees: the foliage fades, the trunk doesn't). False when
+    /// there's no such model.
+    pub fn add_standing(&self, mb: &mut MeshBuilder, kind: &str, k: u32, origin: Vec3, yaw: f32, height: f32, wood: crate::meshgen::CutTag, leaves: crate::meshgen::CutTag) -> bool {
+        let key = if k == 0 { kind.to_string() } else { format!("{kind}.{}", k + 1) };
+        let Some(m) = self.0.get(&key) else { return false };
+        let rot = Quat::from_rotation_y(yaw);
+        let s = height / m.height.max(0.01);
+        for pass in [false, true] {
+            mb.set_tag(if pass { leaves } else { wood });
+            for (p, n, c, leaf) in &m.tris {
+                if *leaf == pass {
+                    mb.triangle_with_normals(p.map(|p| origin + rot * p * s), n.map(|n| rot * n), *c);
+                }
+            }
+        }
+        true
+    }
+
     /// Adds the model for `kind` filling the tile rectangle (`min`, `size` in metres) and turned to
     /// `facing`. False when there's no model for it.
     pub fn add(&self, mb: &mut MeshBuilder, kind: &str, min: Vec2, size: Vec2, facing: Side, base_y: f32) -> bool {
-        let Some(m) = self.0.get(kind) else { return false };
+        let Some(m) = self.pick(kind, (min.x as i32 as u32).wrapping_mul(73_856_093) ^ (min.y as i32 as u32).wrapping_mul(19_349_663)) else { return false };
         let mut turn = match facing {
             Side::S => 0,
             Side::E => 1,
@@ -96,7 +161,7 @@ impl FurnitureModels {
     /// stand in a tile without filling it), the middle of its footprint at `centre`, turned to
     /// `facing`. False when there's no model for it.
     pub fn add_at(&self, mb: &mut MeshBuilder, kind: &str, centre: Vec2, facing: Side, base_y: f32) -> bool {
-        let Some(m) = self.0.get(kind) else { return false };
+        let Some(m) = self.pick(kind, (centre.x as i32 as u32).wrapping_mul(73_856_093) ^ (centre.y as i32 as u32).wrapping_mul(19_349_663)) else { return false };
         let turn = match facing {
             Side::S => 0,
             Side::E => 1,
@@ -113,7 +178,7 @@ impl FurnitureModel {
     fn emit(&self, mb: &mut MeshBuilder, origin: Vec3, turn: i32, scale: Vec3) {
         // Positive turns about +y take the model's front (+z) toward +x (east).
         let rot = Quat::from_rotation_y(turn as f32 * std::f32::consts::FRAC_PI_2);
-        for (p, n, c) in &self.tris {
+        for (p, n, c, _) in &self.tris {
             let p = p.map(|p| origin + rot * p * scale);
             let n = n.map(|n| ((rot * n) / scale).normalize_or_zero());
             mb.triangle_with_normals(p, n, *c);
@@ -140,6 +205,7 @@ fn parse_glb(bytes: &[u8]) -> Result<FurnitureModel, String> {
         }
         for prim in mesh.primitives() {
             let c = prim.material().pbr_metallic_roughness().base_color_factor();
+            let leaf = prim.material().name().is_some_and(|n| n.starts_with("leaves"));
             let color = LinearRgba::new(c[0], c[1], c[2], 1.0);
             let reader = prim.reader(|b| match b.source() {
                 gltf::buffer::Source::Bin => blob,
@@ -169,7 +235,7 @@ fn parse_glb(bytes: &[u8]) -> Result<FurnitureModel, String> {
                     }
                     _ => color,
                 };
-                tris.push(([pos[a], pos[b], pos[c]], [nrm[a], nrm[b], nrm[c]], color));
+                tris.push(([pos[a], pos[b], pos[c]], [nrm[a], nrm[b], nrm[c]], color, leaf));
             }
         }
     }
@@ -181,7 +247,8 @@ fn parse_glb(bytes: &[u8]) -> Result<FurnitureModel, String> {
         let (lo, hi) = tris.iter().flat_map(|t| t.0).fold((Vec3::MAX, Vec3::MIN), |(lo, hi), p| (lo.min(p), hi.max(p)));
         Vec2::new((hi.x - lo.x).ceil().max(1.0), (hi.z - lo.z).ceil().max(1.0))
     });
-    Ok(FurnitureModel { tris, footprint })
+    let height = tris.iter().flat_map(|t| t.0).fold(0.0f32, |h, p| h.max(p.y));
+    Ok(FurnitureModel { tris, footprint, height })
 }
 
 #[cfg(test)]

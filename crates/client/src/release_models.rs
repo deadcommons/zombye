@@ -7,7 +7,12 @@
 //! release-models/
 //!   furniture/<kind>.glb    in place of assets/models/furniture/<kind>.glb
 //!   street/<model>.glb      in place of assets/models/street/<model>.glb
+//!   trees/<kind>.glb        in place of the generated trees: broadleaf, birch, pine, spruce, and bush
+//!   items/<item id>.glb     an item lying on the ground, in place of its grey-box
 //! ```
+//!
+//! `<name>.2.glb`, `<name>.3.glb`, ... beside any of them are variants, one picked per place. A tree
+//! stands with its foot at the origin; its foliage is the triangles of a material named `leaves`.
 //!
 //! Each file is a model as `furniture_models.rs` reads them (facing south, origin at the middle of
 //! its footprint on the floor, the footprint in the node's extras), named as the model it replaces;
@@ -35,6 +40,36 @@ pub fn root() -> Option<&'static Path> {
         found
     })
     .as_deref()
+}
+
+/// The overlay's tree and bush models (`trees/`), read once; none without the folder.
+pub fn trees() -> &'static FurnitureModels {
+    static TREES: OnceLock<FurnitureModels> = OnceLock::new();
+    TREES.get_or_init(|| match root() {
+        Some(dir) => {
+            let m = FurnitureModels::load(&dir.join("trees"));
+            if m.len() > 0 {
+                println!("release models: {} tree and bush models", m.len());
+            }
+            m
+        }
+        None => FurnitureModels::default(),
+    })
+}
+
+/// The overlay's item models (`items/`, named by item id), read once; none without the folder.
+pub fn items() -> &'static FurnitureModels {
+    static ITEMS: OnceLock<FurnitureModels> = OnceLock::new();
+    ITEMS.get_or_init(|| match root() {
+        Some(dir) => {
+            let m = FurnitureModels::load(&dir.join("items"));
+            if m.len() > 0 {
+                println!("release models: {} item models", m.len());
+            }
+            m
+        }
+        None => FurnitureModels::default(),
+    })
 }
 
 /// Put the overlay's models among `models`, replacing those of the same name. Returns how many it
