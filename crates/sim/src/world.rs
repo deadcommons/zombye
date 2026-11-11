@@ -351,6 +351,9 @@ pub struct World {
     pub(crate) private_dirty: BTreeSet<u32>,
     /// What bodies that rise wore (#63), for drawing them: not simulation state.
     pub(crate) rise_looks: RiseLooks,
+    /// Zombies shoved in the last `CombatTuning::shove_repeat_secs`, by id: each shove makes the
+    /// next likelier to floor it. Saved (`SHOV`), in the hash while any.
+    pub(crate) shoved: Vec<crate::combat::Shoved>,
     /// Index of bare hands in `config.weapons`.
     pub(crate) unarmed: u16,
     /// Hit points of damaged doors and windows, by [`EdgeRef::key`]. Missing = undamaged.
@@ -490,6 +493,7 @@ impl World {
             skill_mods_due: Vec::new(),
             private_dirty: BTreeSet::new(),
             rise_looks: RiseLooks::default(),
+            shoved: Vec::new(),
             unarmed,
             action_events: Vec::new(),
             hit_events: Vec::new(),
@@ -866,6 +870,21 @@ impl World {
             return false;
         }
         self.players[pi].state.climb = Some(climb);
+        true
+    }
+
+    /// Turn player `id` to `facing` (radians) at once, before an action aimed at something (a
+    /// right-click on a door, window or blind: `Intent::Toward`). Its input is turned too, so this
+    /// tick's movement doesn't turn it back; the client's next input carries the same facing.
+    /// Ignored for a dead, asleep, knocked, tied or climbing player, or a facing that isn't finite.
+    pub fn set_facing(&mut self, id: u32, facing: f32) -> bool {
+        let Some(p) = self.players.iter_mut().find(|p| p.id == id) else { return false };
+        if !facing.is_finite() || p.dead || p.needs.asleep() || p.knock.is_some() || p.away.is_some() || p.restraint.is_some() || p.state.climb.is_some() {
+            return false;
+        }
+        let facing = facing.rem_euclid(std::f32::consts::TAU);
+        p.state.facing = facing;
+        p.input.facing = facing;
         true
     }
 
@@ -1490,6 +1509,12 @@ impl World {
             for s in stacks {
                 mix_stack(&mut mix, s);
             }
+        }
+        // Shoves adding up (mixed in only while there are any, so worlds without hash as before).
+        for sh in &self.shoved {
+            mix(0x5348_0000 | sh.count as u32);
+            mix(sh.zombie);
+            mix(sh.tick as u32);
         }
         for (&(x, y, w), hp) in &self.edge_hp {
             mix(x as u32);

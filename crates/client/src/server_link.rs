@@ -160,6 +160,10 @@ pub struct JoinInfo {
     pub carry: zombye_sim::CarryTuning,
     /// When E climbs a fence or window (sent only where the server takes one).
     pub climb: zombye_sim::ClimbTuning,
+    /// Which furniture is a container, for right-clicking one in the world (`world_actions.rs`).
+    pub containers: zombye_sim::containers::ContainerData,
+    /// The item tag that makes an item a blind to fit.
+    pub blind_tag: String,
     /// The world's seed and what zombies wear (`population.ron`'s outfits): with them a zombie's
     /// outfit is worked out here as the server does (`zombye_sim::corpses::default_look`), for
     /// drawing the crowd variant that matches it. Snapshots send only the looks that differ.
@@ -356,6 +360,11 @@ impl Plugin for ServerLinkPlugin {
             server.send(Intent::SpawnZombies { count: DEMO_ZOMBIES, center: (me + Vec2::X * distance).to_array(), radius: 2.0 });
             server.send(Intent::MakeNoise { pos: me.to_array(), radius: distance + 5.0, lasting: false });
         }
+        if gun.is_some() || options.fight_demo {
+            // Take the weapon up now: an offscreen picture never ticks the world, and would show
+            // him bare-handed.
+            server.tick();
+        }
         if let Some((_, door, out)) = siege_at {
             siege(&mut server, player_id, door, out);
         }
@@ -452,6 +461,8 @@ fn join_info(config: &zombye_sim::WorldConfig, player_id: u32, player_spawn: Vec
         skills: config.skills.clone(),
         carry: config.carry.clone(),
         climb: config.climb.clone(),
+        containers: config.containers.clone(),
+        blind_tag: config.blinds.tag.clone(),
         seed: config.seed(),
         outfits: config.population.outfits.clone(),
     }
@@ -494,7 +505,10 @@ fn server_content(addr: &str, options: &Options, base: &zombye_sim::WorldConfig,
 fn join_remote(app: &mut App, addr: &str, options: &Options, content: &zombye_sim::WorldConfig, mods: String) -> Result<(), String> {
     // A client that plays by itself says so (`--agent`, and `--autoplay`, which is one): the
     // server's rules may refuse agents, or mark them to the other players (#69).
-    let mut remote = Remote::connect_as(addr, &options.name, &options.password, options.agent || options.autoplay, Duration::from_secs(10))?;
+    // Who we are on servers (DCM-66): a key made once and kept in the saves folder beside
+    // settings.ron. Our survivors there are that key's, whatever name we join under.
+    let identity = zombye_net::identity::Identity::load_or_create(&options.saves.join(zombye_net::identity::FILE))?;
+    let mut remote = Remote::connect_with(addr, &options.name, &options.password, options.agent || options.autoplay, &identity, Duration::from_secs(10))?;
     // The camera is a server rule (docs/PLAN.md §5), and this client has only the isometric one.
     if remote.welcome.rules.camera != zombye_net::wire::Camera::Isometric {
         return Err(format!("{} is first person only, and this version of the game has no first-person camera yet", remote.welcome.rules.name));

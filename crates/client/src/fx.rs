@@ -130,6 +130,9 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials
         Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
         // Above the world, below the HUD text spawned later.
         ZIndex(-1),
+        // It covers the whole window: never what the pointer is over (or right taps on the world
+        // would count as on the UI).
+        Pickable::IGNORE,
     ));
 }
 

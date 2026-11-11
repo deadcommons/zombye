@@ -184,6 +184,12 @@ pub struct ZombieTuning {
     /// Corpses kept at most (the oldest go first), and how long one lies before it's removed.
     pub max_corpses: u32,
     pub corpse_secs: f32,
+
+    // Knocked back.
+    /// A staggered or downed zombie's slide (from a shove or a blow) keeps this share of its speed
+    /// each tick, so it slides farther than a walker's (0.75) before it stops: a shove can push
+    /// one back about `0.25 m x slide / (1 - slide)` at most (1.5 m at 0.86).
+    pub knockback_slide: f32,
 }
 
 impl ZombieTuning {
@@ -272,6 +278,8 @@ impl Default for ZombieTuning {
 
             max_corpses: 300,
             corpse_secs: 900.0,
+
+            knockback_slide: 0.86,
         }
     }
 }
@@ -482,7 +490,8 @@ pub(crate) fn step_zombies(z: &mut Zombies, next_pos: &mut [Vec2], cx: &mut Ctx)
         }
 
         // Capped so a knockback can't carry it through a wall in one step.
-        let mut vel = z.vel[i].lerp(desired, 0.25).clamp_length_max(MAX_KNOCKBACK_SPEED);
+        // Reeling, a knockback slides on (a shove pushes it well back); else it walks as it wants.
+        let mut vel = if state.is_reeling() { z.vel[i] * t.knockback_slide } else { z.vel[i].lerp(desired, 0.25) }.clamp_length_max(MAX_KNOCKBACK_SPEED);
         let climbing = cx.walk.in_window_opening(cx.map, p);
         if climbing {
             // Clambering through a window frame or over a fence.

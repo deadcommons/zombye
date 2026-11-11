@@ -135,7 +135,8 @@ impl Feature {
 }
 
 /// A street prop the town generator placed (`crate::street_props`): its kind (an index into
-/// [`TileMap::prop_kinds`]), its tile (it stands in the middle) and which way its front faces.
+/// [`TileMap::prop_kinds`]), its tile (it stands in the middle; the least corner of one that covers
+/// several) and which way its front faces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StreetProp {
     pub kind: u16,
@@ -600,6 +601,20 @@ impl TileMap {
         self.street_prop(t).and_then(|p| self.prop_kinds.get(p.kind as usize)).map_or(STREET_PROP_RADIUS, |k| k.radius())
     }
 
+    /// The blocking street prop tile `t` is a whole tile of a prop bigger than one (a parked car):
+    /// bodies are kept out of all of it. Such a prop's first tile holds it; its others hold none.
+    pub fn street_prop_fills(&self, t: IVec2) -> bool {
+        match self.street_prop(t).and_then(|p| self.prop_kinds.get(p.kind as usize)) {
+            Some(k) => k.big(),
+            None => self.prop_kinds.iter().any(|k| k.big()),
+        }
+    }
+
+    /// The tiles a street prop covers: its least corner and size.
+    pub fn street_prop_rect(&self, p: &StreetProp) -> (IVec2, IVec2) {
+        (p.tile, self.prop_kinds.get(p.kind as usize).map_or(IVec2::ONE, |k| k.footprint(p.facing)))
+    }
+
     /// Room id at a world position (0 = outdoors).
     pub fn room_at(&self, p: Vec2) -> u16 {
         self.tile(p.floor().as_ivec2()).room
@@ -638,6 +653,9 @@ impl TileMap {
                         }
                         Feature::Furniture => {
                             p = push_out_of_box(p, radius, n.as_vec2() + Vec2::splat(0.05), n.as_vec2() + Vec2::splat(0.95));
+                        }
+                        Feature::StreetProp if self.street_prop_fills(n) => {
+                            p = push_out_of_box(p, radius, n.as_vec2(), n.as_vec2() + Vec2::ONE);
                         }
                         Feature::StreetProp => {
                             p = push_out_of_circle(p, radius, n.as_vec2() + Vec2::splat(0.5), self.street_prop_radius(n));

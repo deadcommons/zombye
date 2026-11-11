@@ -64,6 +64,27 @@ or Meshy (from an approved reference through four review gates the owner approve
 the sizes they all share: storey 3.0 m, walls 0.16 m, doors 1 × 2.1 m, window sill 0.9 m and head 2.1 m,
 and the rest. Change a building number in the code, change it there too.
 
+**Release models** (`release_models.rs`): models from bought asset packs, whose licence allows them only embedded
+in a game, are never in this repo. They live in the art repo's `release-models/` and release builds carry that
+folder: the client reads `$ZOMBYE_RELEASE_MODELS`, else `release-models` beside its binary (stdout says what was
+read). `furniture/<kind>.glb` and `street/<model>.glb` (models as `furniture_models.rs` reads them, named as the one
+they replace; a street prop kind this repo has no model for is a grey-box without them) replace the game's of the
+same name; `ZOMBYE_EXTRA_MODELS` still goes over both. `trees/<kind>.glb` (`broadleaf`, `birch`, `pine`, `spruce`,
+`bush`: the foot at the origin, foliage the triangles of a material named `leaves`, so it fades over the player as
+generated foliage does) stands in for the generated tree or bush of that kind, scaled to its height
+(`meshgen/trees.rs`, `FurnitureModels::add_standing`). `fences/fence.glb` (a metre of garden fence along x, standing on the origin) and `fences/fence_post.glb` (a post)
+stand in for the generated fence rails, one look (variant) a run, a post every other metre and at the run's end
+(`landscape::model_fence`; hedges and the sim's fence are unchanged). `items/<item id>.glb` is drawn for that item lying on the
+ground, at its own size, in place of its grey-box (`items_render.rs`). `held/<item id>.glb` is a weapon as the hand holds it, drawn in place of its
+grey-box bar (`WeaponLooks::held`, `survivor::show_held_weapons`): made with the grip at the origin, pointing along +Z, its top +Y. **Variants:** `<name>.2.glb`, `<name>.3.glb`,
+... (numbered without a gap) beside any of them are other looks of the same thing, one picked per place by a hash of
+where it stands (`FurnitureModels::pick`), so a town's sofas and trees differ and stay the same between runs.
+Without the folder the game draws this repo's models and generated trees. A model's colours are its materials' base
+colours times its vertex colours (`COLOR_0`; textures aren't read), so one painted from a texture atlas is exported
+with the atlas's colours on its vertices. The same goes for alpha: a tree whose leaves are textured cards is exported with each
+card cut to the outline of its texture's opaque part, as plain triangles. `check_the_release_folder` (an ignored test in `release_models.rs`) reads
+a folder and checks every file.
+
 ## Remote machines
 
 Development can run on two remote Linux machines, driven from Claude on the owner's Mac:
@@ -192,7 +213,7 @@ The client prints one stats line per second to stdout (time, room, stance, hp, e
 sent to it, chasing, zombies per tier active/near/virtual, sim tick ms, and the sounds started that second: `sounds 9 (Groan 4, FootstepHard 3, ...)` or `sound off`).
 In game: WASD move (he faces the way he walks), Shift run, C sneak (toggle), right mouse held: aim (he faces the
 cursor and strafes or backs off at 2.2 m/s, no running, in a guard stance), and only while aiming left mouse attack
-(swing your weapon, or punch; with a gun in hand: shoot at what the cursor is on, see Guns) and Space shove (or stomp, when a downed zombie lies right in front of you), R reload the gun you hold, E climb the fence or open or broken window you face (see Climbing under Players), else pick up the item you
+(swing your weapon, or punch; with a gun in hand: shoot at what the cursor is on, see Guns); Space, aiming or not (the way he faces), shove (or stomp, when a downed zombie's body or head lies in reach in front of you: `combat::stomp_spot`), R reload the gun you hold, E climb the fence or open or broken window you face (see Climbing under Players), else pick up the item you
 face (with nothing on the floor within reach: search the container you face), 1-9 the hotbar (swap to or use what's on that slot, see Hotbar), Tab or I the inventory panel, H the health panel, K the skills panel (drag any of the three by its title; they remember where they were and whether they were open), F open/close the door or window you face, Shift+F roll the blind of the window or glass door you face up or down (or fit one you carry), Shift+Alt+F take it down (see Blinds), G smash the window you face, dead: R a new run and Q or Esc quit,
 B sleep (B again or WASD to get up), Enter the chat line (Tab there: whisper, talk or shout; Enter says it, Esc drops it), V wave, U hands up (again lowers them), P point (see Talking and gestures), Y tie the hands of the survivor you face or free tied ones, L search a tied survivor, J (held) struggle out of ties, N invite into your group or accept (Shift+N leaves), middle mouse a group marker (see Hold-ups and groups), T skip an hour, Z spawn zombies, wheel zoom (over the inventory, health or skills panel it scrolls that panel instead), F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), F3 the light preview (a time-of-day slider, see Light and mood), F4 the debug stats window (see Needs), F6 the server's rules (on a multiplayer server, see Multiplayer), F7 the server browser (see The server browser), `,` and `.` turn the camera a quarter turn left or right (see Turning the camera under Light and mood), F10 walls up / walls cut, Shift+F10 zombie silhouettes and Ctrl+F10 opening hints (see Cutaways and Opening hints under Light and mood), M mute, O hide or show the objectives and hints (see The first night), Ctrl (or Cmd) + `=` / `-` the UI scale (see UI scale), Ctrl+0 back to 100%. Walking into a fence or an open window stops you as a wall would: E climbs
 it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
@@ -413,8 +434,8 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   into a corner only where the wall in line has no wall: `world_render::add_wall`) and `kerbs_stand_clear_of_the_ground`.
   `building_fights` and `chunk_fights` (ignored) print what's left over the whole town by kind of place: mostly faces
   buried inside walls and furniture, which nobody sees. Run them after adding geometry.
-- **Street props (#61, `sim::street_props`, `assets/data/street_props.ron`):** mailboxes, fire hydrants and bins
-  that the generator puts outside. The file lists the kinds (`id`; `model`, the model drawn (`assets/models/street/<model>.glb`, built in Blender: mailbox, fire_hydrant, trash_can), the id when
+- **Street props (#61, `sim::street_props`, `assets/data/street_props.ron`):** mailboxes, fire hydrants, bins,
+  street lamps and what stands in front of shops, which the generator puts outside. The file lists the kinds (`id`; `model`, the model drawn (`assets/models/street/<model>.glb`, built in Blender: mailbox, fire_hydrant, trash_can; the other kinds have none here and are grey-boxes unless the release models hold one), the id when
   left out; grey-box `size` and `color`; `blocks`, default true; `radius`, how far a body is kept from its middle,
   default half its larger side, at most 0.5) and the rules, applied in order: `GardenPath` (on the lawn beside the
   street end of a house's garden path, facing the street; `chance` per house), `HouseKerb` (at the kerb 2-3 m to one
@@ -429,7 +450,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   draws them), beside a
   door, or next to another prop (each keeps the eight tiles round it free); kerb props only on a straight kerb (5 m
   of it each way: clear of the 4 m kerb curves at junctions), away from turning circles, alley mouths and parking-lot
-  entries, and not in front of a garden path. Shipped: all three block; seed 1 has 48 mailboxes (most of the houses
+  entries, and not in front of a garden path. Shipped: twelve kinds (mailbox, hydrant, bin; a street lamp every 28-40 m of kerb and a power box now and then; in front of shops a bench, parking meter, planter, vending machine, phone box or post box; a trash bag at some houses' kerbs, the one kind that doesn't block); of the first three, seed 1 had 48 mailboxes (most of the houses
   whose front door has a path), 28 bins and 101 hydrants (both kerbs of every street). The map keeps them in
   `TileMap::street_props` (sorted by tile; `street_prop(t)`) with their kinds in `TileMap::prop_kinds`; a blocking
   one's tile is `Feature::StreetProp`, so the walk grid, flow fields, the nav graph, `clear_path` and every
@@ -441,6 +462,22 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   without one, merged into the chunk's props mesh (`meshgen/street_props.rs`, called from `spawn_chunk`): no draw
   call of its own. Cost: town generation the same (~6 ms, the props under 1 ms), chunk building +0.003 ms,
   frames the same.
+  **Bigger than a tile, and yards and parked vehicles:** a kind's `tiles: (across, deep)` (default one; at most
+  5 x 10) make it cover several tiles: its `StreetProp::tile` is the least corner, `PropKind::footprint(facing)` the
+  tiles turned with it (`TileMap::street_prop_rect`), it is drawn in the middle of them, and when it blocks every
+  tile it covers is a `Feature::StreetProp` that bodies are kept out of whole (`TileMap::street_prop_fills`, in
+  `resolve_circle`; `radius` isn't read). Four more rules place them (and one-tile kinds): `Yard` (open lawn beside
+  or behind a house, any way round, a tile of open lawn kept all round it; `chance` per house), `Roadside` (parked
+  on the road along a straight kerb in front of a house, no driveway beside it, two tiles of road left free;
+  `chance` per house), `ShopRoad` (the same in front of a shop or office on the main street) and `Parking` (in a
+  bay of a parking lot, nose in or out, kinds of at most 2 x 5; the generator hands the bays over as
+  `street_props::Bay`). A kind of more than one tile is refused in the four kerb and path rules. Shipped: yard
+  things (barbecue, deckchair, sun lounger, wheelbarrow, doghouse, rotary and straight washing lines, garden table,
+  swing set, trampoline, paddling pool, garden bed, shed) and vehicles (car, van, pickup, police car, ambulance,
+  wreck, school bus), all grey-boxes here unless the release models hold them; seed 1 has 26 cars, 17 sheds and
+  about 130 other yard things. **This changed every shipped map again:** saves from before load only with
+  `--load-anyway`. Tests: `street_props::tests` (`big_props_block_every_tile_they_cover`, where each kind stands,
+  that no way is closed).
 - **Buildings dressed (#59, `meshgen/building_kit.rs`):** `world_render::build_building` (pure: map in, a building's
   ground-floor, upper and roof meshes out) runs the building kit over every wall and the roof, merged into the same
   meshes (no draw calls of their own). Houses: a concrete foundation and a pale water-table board below the stub
@@ -538,7 +575,7 @@ through that glass. Barricades come later.
   {player, facing}`; `--walk` climbs what its way leads over (as E). `wire::PROTOCOL` 17.
 - `Intent`s (`crates/net`): `PlayerInput { player, seq, move_dir, facing, run, sneak, aim }` every tick (`aim`: the
   right mouse held; `step_movement` walks an aiming player at `AIM_SPEED` 2.2 m/s with no running, `PlayerView::aiming`
-  says so, and the server takes `Attack`, `Shove` and `Stomp` only from an aiming player; not saved)
+  says so, and the server takes `Attack` only from an aiming player (`Shove` and `Stomp` from anyone); not saved)
   (the server keeps the newest by `seq` and applies it once per tick; `move_dir` is clamped to
   length 1), `Interact { player }` (opens or closes the door or window that player faces, within
   1.6 m of its server position, otherwise ignored; doors make `door_noise`, windows the quieter
@@ -600,9 +637,22 @@ through that glass. Barricades come later.
   can't push through walls), then seeded rolls (`World::combat_rng`): knockdown, else stagger. From
   behind (the zombie faces away) crits are more likely and knockdowns easier; knockdowns are easier
   on a staggered zombie. Below `tired_below` endurance actions get weaker and slower; running out
-  winds you. Each action makes a noise heard that tick. **Shove:** short reach, wide arc, up to 3, no
-  damage, always staggers, may knock down (`shove_knockdown_chance` 0.25, +0.03 for a new survivor's Strength 2:
-  a little over one shove in four floors a lone zombie facing you, 0.45 from behind). **Stomp:** hits a downed zombie at your feet in front.
+  winds you. Each action makes a noise heard that tick. **Shove** (hands, or the weapon held across the body:
+  Space, no aiming needed): short reach (`shove_weapon_range` 0.2 m more with a melee weapon in hand), wide arc, up to
+  3, no damage, pushes them back about 1.1 m (`shove_knockback` 1.2, x`shove_weapon_knockback` 1.2 with a weapon,
+  more with Strength: a reeling zombie slides on, keeping `ZombieTuning::knockback_slide` 0.86 of its speed a tick,
+  so a push can reach about 1.5 m), always staggers, may knock down (`shove_knockdown_chance` 0.25, +0.03 for a new
+  survivor's Strength 2: a little over one first shove in four floors a lone zombie facing you, 0.45 from behind).
+  **Shoves add up:** each earlier shove on the same zombie in the last `shove_repeat_secs` (3 s; at most
+  `shove_repeat_max` 3) adds `shove_repeat_knockdown` (0.15), before the staggered and behind multipliers and how
+  tired you are, so the third shove in a row floors about three in five (`World::shoved`, sparse by zombie id; a
+  knockdown starts it over; saved in an optional `SHOV` section, in the hash only while any). **Stomp:** on a
+  downed zombie in front, anywhere along its body: it lies on its back, the head `down_head_offset` (1.45 m) behind
+  its feet (its position), and `combat::stomp_spot` (the server's and the client's Space rule) finds the head first
+  (within `stomp_head_reach` 0.9 m and in the arc), else the nearest point of the body within `stomp_range`.
+  36-48 damage, two or three to finish one; **on the head** x`stomp_head_mult` (4), which kills, shown as a crit. A
+  stomp that doesn't kill keeps it down at least `stomp_pin_secs` (1.5 s) before it starts to get up (one getting
+  up is stamped back down). `--autoplay` goes for the head.
   Swings and shoves pass over downed zombies. Results are in `World::action_events` and `hit_events`.
 - **Combat events (hit feedback):** every hit, kill, shove, stomp and wound is also pushed to
   `World::combat_events` (`combat::CombatEvent { kind, pos, dir, zombie, player, damage, crit }`, kinds
@@ -1159,7 +1209,16 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   drink, wear, equip, take a pill, use on a wound, put in the open container, drop, take, take in hand, split: one, or half of four or more),
   1-9 to pick, Esc or a click elsewhere to close; the same menu on a ground item in reach in the world (right-click it with
   the panel open, or a quick right tap with it shut; held, right mouse aims). `--menu carried:N|worn:N|hand|container:N|ground[:N]`
-  starts with one open, for pictures, and `--menu-pick N[@SECS]` presses its number key N (after SECS), for recordings. A
+  starts with one open, for pictures, and `--menu-pick N[@SECS]` presses its number key N (after SECS), for recordings.
+  **Right-clicking things in the world** (`world_actions.rs`): the same quick right tap (or a right-click with the panel
+  open) on a door, window, fence, blind, container or body opens its menu: open or close, climb through or over, smash the
+  glass, raise, lower, fit or take down the blind (from inside), search or look inside; out of reach it says so and
+  offers nothing. `world_actions::pick` finds what the pointer's ray meets first (a door's or window's opening, or the
+  ground just by it when the wall is cut down; a container's furniture as a 1 m box, a body as a low box, `pick_body`; an item on the floor wins unless
+  something stands in front of it) and `entries` lists its actions as intents. Actions that go by what the player faces
+  are sent as `Intent::Toward { player, facing, then }`: the server turns the player to the thing (`World::set_facing`)
+  and applies `then`, an action of that same player, as if it came alone, so reach and the rest are its own checks
+  (`wire::PROTOCOL` 21). New things to right-click: a `Target` variant, its test in `pick`, its lines in `entries`. A
   left click behind an open menu only closes it (it moves nothing), opening or shutting the panel closes it, and it opens
   at the pointer in UI pixels (the UI scale), kept on screen. The latest note shows at its foot, and under the HUD for a few seconds when
   it's shut (the same note again only keeps it up, and isn't printed again). One click is one request: row observers
@@ -1630,7 +1689,7 @@ stands still may count as changed.** Each of these cost milliseconds a frame bef
   holding a weapon at the ready, swing / shove / stomp (timed as before; but a body clip named `punch`, `swing_one`,
   `swing_two`, `shot`, `shove` or `stomp` plays instead of the grey-box poses for that action, by the held weapon's style:
   made in place, the blow at 45%, from and back to the idle's first pose; the whole body standing, the upper body over the
-  gait when moving, a stomp always whole; `survivor_model::ACTION_CLIPS`; besides those, `swing_one_b` / `swing_two_b` are second swings picked at random per swing, `stab` is a blade's swing, and `ground_one` / `ground_two` play over a stomp with a one- or two-handed weapon in hand: only the look, the stomp's damage stays the boot's; `action_clips` says which stand in when a body lacks one); and `survivor_model::LIFE_CLIPS`: `hurt` plays once over the upper body when a blow is taken, in place of the flinch, `die` once in place of the fall onto the back (ending on the ground, where the body stays), and the loops `eat`, `drink`, `loot` (searching a container) and `reload` while that item job is under way, the whole body standing and the upper body over the gait when moving; which job is known only for survivors whose private view we have (our own; in single-player all), so on a server other players' hands aren't seen busy; `--pose hurt|die|eat|drink|loot|reload[:U]` holds them, and `survivor_model::CROSS_CLIPS`: `climb` (through an open or broken window) and `vault` (over a fence) play once over the crossing, the whole body, by how far across the climb zone he is (`survivor::crossing`, from the client's map copy, so they keep pace with the slow climb and run back if he backs out; his feet leave the ground as the clip has them); a body without one walks through as before; `--pose climb|vault[:U]` holds them, the flinch (additive) and the fall onto the
+  gait when moving, a stomp always whole; `survivor_model::ACTION_CLIPS`; besides those, `swing_one_b` / `swing_two_b` are second swings picked at random per swing, `stab` is a blade's swing, and `ground_one` / `ground_two` play over a stomp with a one- or two-handed weapon in hand: only the look, the stomp's damage stays the boot's; `shove_armed` is the shove with a melee weapon in hand, held across the body like a bar and driven out (without it the grey-box's bar push, never the hands' `shove`); `action_clips` says which stand in when a body lacks one); and `survivor_model::LIFE_CLIPS`: `hurt` plays once over the upper body when a blow is taken, in place of the flinch, `die` once in place of the fall onto the back (ending on the ground, where the body stays), and the loops `eat`, `drink`, `loot` (searching a container) and `reload` while that item job is under way, the whole body standing and the upper body over the gait when moving; which job is known only for survivors whose private view we have (our own; in single-player all), so on a server other players' hands aren't seen busy; `--pose hurt|die|eat|drink|loot|reload[:U]` holds them, and `survivor_model::CROSS_CLIPS`: `climb` (through an open or broken window) and `vault` (over a fence) play once over the crossing, the whole body, by how far across the climb zone he is (`survivor::crossing`, from the client's map copy, so they keep pace with the slow climb and run back if he backs out; his feet leave the ground as the clip has them); a body without one walks through as before; `--pose climb|vault[:U]` holds them, the flinch (additive) and the fall onto the
   back when dead or asleep; then grounded on the lowest foot vertex. `step_movement` and prediction are untouched.
   **Dressing:** `Snapshot::outfits` (`net::OutfitView`: worn items, the back and shoulder bags, what's in each hand,
   by item index; every player, every snapshot) says what's drawn, for us and for others, changing the moment it does: the body with the
@@ -1953,11 +2012,22 @@ snapshots over the network: `zombye-server --host` serves a world and `zombye --
   (`World::map_base_hash`) against the server's, and applies the doors and windows changed since
   (`World::map_edits_now`) and every cracked one. Other game data, or another version's generator: refused, saying what
   differs.
-- **Who is who:** a name (at most 24 letters; none given: `survivor-N`). A name whose survivor nobody is playing takes
-  that survivor up again (in the world or out of it, see Logging out), dead or alive: back to a dead one, its player
-  sees how it ended and starts a new one with R. With `--save PATH` the names are kept in `PATH.players` (`id<TAB>name` a
-  line), so survivors are their players' again after a restart. Names aren't accounts: anyone who knows a name that
-  isn't playing can take its survivor (accounts are with #69).
+- **Who is who** (DCM-66, `net::identity`): each game install makes an Ed25519 key pair the first time it joins a
+  server, kept in the saves folder beside `settings.ron` (`identity.key`, the secret seed in hex, readable by the user
+  alone; a damaged one is an error, never silently replaced). The hello names the public key (`Hello::key`); the
+  server answers with a fresh challenge (`ServerMsg::Challenge`) and lets the hello in only once the key has signed it
+  with the name (`ClientMsg::Proof`, checked in the connection's reading thread before the host sees the hello).
+  **Survivors belong to the key, not the name:** a key takes up the survivor it played before (in the world or out of
+  it, see Logging out; dead or alive: back to a dead one, its player sees how it ended and starts a new one with R),
+  whatever name it joins under now (the name is what others see, and is updated; the log says `was OLDNAME`).
+  Someone else typing your name gets a new survivor of their own; one copy of a key plays at a time. The name is at
+  most 24 letters (none given: `survivor-N`) and two online can't share it. With `--save PATH` whose each survivor
+  is goes in `PATH.players` (`id<TAB>name<TAB>key` a line, the key in hex); a line from before keys (`id<TAB>name`)
+  is taken by the first key that joins under that name. Bans go by the key too (`Ban::key`), so a new name doesn't
+  get round one. Bots and tests join with a key worked out from the name (`Identity::for_name`, `Remote::connect`);
+  the game client uses its own (`Remote::connect_with`). No accounts and no service of ours: any server checks the
+  signature itself, so self-hosting stays free (`wire::PROTOCOL` 22). Tests: `identity::tests`,
+  `net/tests/multiplayer.rs`'s `survivors_and_bans_belong_to_a_key_not_a_name` and `a_hello_without_its_proof_is_refused`.
 - **Clients only act as themselves:** every intent's `player` is overwritten with the sender's (`Intent::player_mut`);
   `Intent::dev_only` ones (the dev toggles, `SpawnItem`, `SetGoal`, `SpawnZombies`, `SkipTime`, `MakeNoise`) are
   dropped unless `--allow-dev` (`HostStats::refused_dev`). `Respawn` (R on the death screen: "a new survivor") gets a
@@ -2228,7 +2298,7 @@ own, time paused between calls) and shares no tools with it but a few read-only 
   zombies by tier, bytes, joins / leaves / refusals, the rules, the save and when it was written, bans, the newest
   log line), `players` (JSON: `online` with id, name, address, seconds on, position and room, HP, dead, kills, KB/s,
   zombies in view, view lag; `offline` survivors; `bans`), `kick {player | name, reason, ban}` (`Host::kick`: the
-  client gets "kicked: REASON" and is dropped, its survivor left as when anyone leaves (the logout rules); `ban: true` also refuses the name, and the address
+  client gets "kicked: REASON" and is dropped, its survivor left as when anyone leaves (the logout rules); `ban: true` also refuses the name and the player's key (DCM-66), and the address
   unless it is loopback, until `unban {name}`: `Host::ban`, checked before anything else in `Host::hello`; bans last
   until the server restarts), `save {name}` (no name: the `--save` file, as the autosave; a name: that file in the
   saves folder; `PATH.players` beside it either way) and `saves`, `settings {...}` (no arguments: shows them as JSON;
