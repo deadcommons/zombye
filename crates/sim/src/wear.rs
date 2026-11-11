@@ -108,7 +108,7 @@ impl World {
     /// Weapons just found in container `c` have seen some use: a seeded number of knocks, more
     /// often few than many.
     pub(crate) fn wear_found(&self, c: u32, stacks: &mut [ItemStack]) {
-        let seed = self.config.seed() ^ FOUND_SALT;
+        let seed = self.config.loot_seed() ^ FOUND_SALT;
         for (k, s) in stacks.iter_mut().enumerate() {
             let of = durability(&self.config.items, &self.config.weapons, s.item);
             if of == 0 {

@@ -642,7 +642,7 @@ impl World {
     /// Guns and magazines just found in container `c` hold what they were left with: a seeded
     /// number of rounds, more often few than many.
     pub(crate) fn load_found(&self, c: u32, stacks: &mut [ItemStack]) {
-        let seed = self.config.seed() ^ FOUND_SALT;
+        let seed = self.config.loot_seed() ^ FOUND_SALT;
         for (k, s) in stacks.iter_mut().enumerate() {
             let Some(h) = self.holds(s.item) else { continue };
             let share = hash01(seed, c as u64, k as u64, s.item as u64);

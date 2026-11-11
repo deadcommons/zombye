@@ -327,6 +327,9 @@ struct Settings {
     needs: NeedsTuning,
     #[serde(default)]
     skills: SkillTuning,
+    /// The seed loot rolls from (`WorldConfig::loot_seed`); none in older saves: the world seed.
+    #[serde(default)]
+    loot_seed: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -721,6 +724,7 @@ impl World {
             infection: config.infection.clone(),
             needs: config.needs,
             skills: config.skills.clone(),
+            loot_seed: config.loot_seed,
         };
         w.section(CONF, ron::to_string(&settings).expect("settings serialize").as_bytes());
         let layout = if *map_custom {
@@ -847,6 +851,7 @@ impl World {
         config.infection = settings.infection;
         config.needs = settings.needs;
         config.skills = settings.skills;
+        config.loot_seed = settings.loot_seed;
         save_check::check_settings(text, &config)?;
         let map_save: MapSave = decode(MAPD, r.expect(MAPD)?)?;
         let mut ws: WorldSave = decode(WRLD, r.expect(WRLD)?)?;
