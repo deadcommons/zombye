@@ -289,7 +289,7 @@ impl PrivateView {
         let p = world.player(id)?;
         let open = p.open.and_then(|c| {
             let site = world.container(c)?;
-            let def = world.container_def(site);
+            let def = world.container_def(&site);
             Some(ContainerView { id: c, kind: def.id.clone(), name: def.name.clone(), room_l: def.room_l, stacks: world.container_contents(c).unwrap_or(&[]).to_vec() })
         });
         let carry = world.carry(p);
@@ -401,8 +401,11 @@ pub struct Snapshot {
     pub level_ups: Vec<LevelUp>,
     /// What every player has on (#63), every snapshot: the client draws it, for us and for others.
     pub outfits: Vec<OutfitView>,
-    /// What the zombies listed above that rose from players wore (#63), every snapshot.
-    pub risen: Vec<OutfitView>,
+    /// What the zombies listed above wear when it isn't their outfit (`World::zombie_look`): those
+    /// that rose from players (#63), in what they wore, and bodies that have been searched, in what is
+    /// left on them. Every snapshot. The rest wear what `zombye_sim::corpses::default_look` gives,
+    /// which a client works out for itself.
+    pub looks: Vec<OutfitView>,
     /// Players heard in this tick by a survivor that doesn't see them (#66): a sound at a
     /// position, as loud as its radius, not the player. A client gets only its own.
     #[serde(default)]
@@ -420,7 +423,7 @@ pub struct Snapshot {
 /// What a body has on, for drawing it (#63): the clothing and accessories it wears in the order put
 /// on, the bags on its back and shoulder, and what it holds in each hand (the client draws a bag
 /// there; #91), as item indices (into the item definitions the client got on joining). `id` is a
-/// player's in [`Snapshot::outfits`], a zombie's in [`Snapshot::risen`].
+/// player's in [`Snapshot::outfits`], a zombie's in [`Snapshot::looks`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OutfitView {
     pub id: u32,
@@ -476,10 +479,7 @@ impl Snapshot {
             .filter(|&i| world.in_interest(i))
             .map(|i| ZombieView { id: z.id[i], pos: z.pos[i].to_array(), facing: z.facing[i], speed: z.speed[i], anim: z.anim[i] })
             .collect();
-        let risen = zombies
-            .iter()
-            .filter_map(|v| world.risen_look(v.id).map(|look| OutfitView { id: v.id, worn: look.iter().filter_map(|i| world.item_index(i)).collect(), ..Default::default() }))
-            .collect();
+        let looks = zombies.iter().filter(|v| !world.zombie_look_is_default(v.id)).map(|v| OutfitView { id: v.id, worn: world.zombie_look(v.id), ..Default::default() }).collect();
         let players = world
             .players
             .iter()
@@ -537,7 +537,7 @@ impl Snapshot {
             runs: world.players.iter().map(|p| RunView { player: p.id, run: p.run.clone(), first_night: p.first_night.clone() }).collect(),
             level_ups: world.take_level_ups(),
             outfits: world.players.iter().map(OutfitView::of).collect(),
-            risen,
+            looks,
             heard: world.awareness().all_heard_now().copied().collect(),
             speech: world.take_speech(),
             groups: if world.groups().is_empty() { Vec::new() } else { world.players.iter().filter_map(|p| world.group_view(p.id)).collect() },

@@ -1621,11 +1621,26 @@ stands still may count as changed.** Each of these cost milliseconds a frame bef
   grip with the T-pose's arm turned down (`SurvivorModel::hang_joints`), and the bag is skinned to it; its model is
   built on the right hand and mirrored for the left (`SkinMesh::hung`). The held weapon sits on `hand_r`. Players are told apart by a flat
   ring round their feet, ours mustard, others teal, unlit but dimmed with the daylight to 15% at night (no glow in the dark).
-- **Rising in what it wore** (#63): a player who dies infected has what it wore noted (`World::rise_looks`, item ids,
-  before it drops everything), the zombie it rises as keeps it (`World::risen_look`, until the corpse is cleared away),
-  and `Snapshot::risen` sends it for the zombies listed; the crowd draws the baked variant nearest to it
-  (`zombie_render::variant_for`: a variant's wearables are its file name past the plainest one's, `zombie_02_hoodie` is
-  "hoodie"; most matches and fewest extras, else by id as usual).
+- **Rising in what it wore** (#63): a player who dies infected has what it wore noted (`World::rise_looks`, item ids)
+  and **keeps it on** (`drop_everything` drops the rest; the clothes go with the body when it rises), the zombie it rises
+  as wears it (`World::risen_look`, until the corpse is cleared away), and the crowd draws the baked variant nearest to it.
+- **What zombies wear, and looting their bodies** (`sim::corpses`): every zombie wears one of `population.ron`'s
+  `outfits` (item ids with a weight; `corpses::Outfit`, checked against `items.ron` on load: clothing, nothing that
+  clashes), picked from a hash of the seed and its id (`outfit_index`, `default_look`): nothing stored, no RNG, not in
+  the hash. A dead zombie's body is a **container** of kind `corpse` (`containers.ron`; none: no bodies to search) with id
+  `corpses::corpse_container(zombie)` (`CORPSE_BIT` set): searched with E like furniture (`container_in_reach` /
+  `containers_in_reach` include bodies within `CONTAINER_REACH` of `BODY_RADIUS` round where they lie, same room;
+  `ContainerSite::body`), it is filled the first time (`World::fill_corpse`): everything it wears, plus its pockets from
+  `loot.ron`'s `(any, corpse)` table. From then on what it wears is the clothing left in it (`World::zombie_look`), so
+  taking a hoodie off the body takes it off the body you see. Opening the inventory (Tab or I) beside a body, with no container open, searches it by itself (`corpses::body_in_reach`, the server's reach rule on the client's view), so its contents fill the right pane without E. Nothing can be put on a body. A body cleared away
+  (`corpse_secs`, `max_corpses`) takes what was left on it. **Drawing:** a client works out each zombie's outfit itself
+  (`JoinInfo::seed`, `outfits`); `Snapshot::looks` sends only the zombies that differ (risen players, searched bodies:
+  `World::zombie_look_is_default`), and the crowd draws the variant nearest to the look (`zombie_render::variant_of_zombie`:
+  a variant's wearables are its file name past the shared stem, or past a body's number, `zombie_03_hoodie_jeans` is
+  "hoodie_jeans"; most matches and fewest extras; ties between bodies in one outfit by id), changing it when the look
+  changes. Crowd variants are named `<body>_<item ids worn>` (`zombie_sk_t_shirt_jeans_trainers`), and the outfits list
+  should name what the bakes wear. No save format or `wire::PROTOCOL` change. MCP `containers_near` lists bodies with
+  what they wear; `search {container}` takes a body's id.
 
 ## Zombies
 

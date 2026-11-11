@@ -1021,6 +1021,9 @@ impl World {
         if let Some(wore) = self.rise_looks.bodies.remove(&self.players[pi].id) {
             self.rise_looks.risen.insert(self.zombies.id[zi], wore);
         }
+        // The clothes it kept on went with it (`drop_everything`).
+        self.players[pi].inventory.worn.clear();
+        self.refresh_carry(pi);
         self.private_dirty.insert(self.players[pi].id);
     }
 
@@ -1520,7 +1523,7 @@ mod tests {
         assert!(p.hp < 100.0 - 6.0 - 1.9);
     }
 
-    /// A turned player rises in what it wore (#63), though its things fell where it lay; the look
+    /// A turned player rises in what it wore (#63), though its other things fell where it lay; the look
     /// survives a save, and goes when the corpse is cleared away.
     #[test]
     fn a_turned_player_rises_in_what_it_wore() {
@@ -1539,12 +1542,17 @@ mod tests {
         while !me(&w, id).dead {
             w.skip_time(0.01);
         }
-        assert!(me(&w, id).inventory.worn.is_empty(), "everything fell where it lay");
+        // It keeps on what it wears, to rise in it (and to be taken off it once put down), so
+        // none of it lies on the floor as well.
+        assert_eq!(me(&w, id).inventory.worn.len(), 2, "the body keeps its clothes on");
+        let hoodie = w.item_index("hoodie").unwrap();
+        assert!(w.items.iter().all(|it| it.stack.item != hoodie), "no second hoodie on the floor");
         let zombies = w.zombies.len();
         for _ in 0..(31.0 / TICK_DT) as u32 {
             w.step();
         }
         assert_eq!(w.zombies.len(), zombies + 1, "the body rose");
+        assert!(me(&w, id).inventory.worn.is_empty(), "and took its clothes with it");
         let zid = w.zombies.id[zombies];
         assert_eq!(w.risen_look(zid), Some(&["hoodie".to_string(), "glasses".to_string()][..]));
         let back = World::load(&w.save(), &w.config).unwrap();
