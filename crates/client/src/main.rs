@@ -142,6 +142,9 @@ pub struct Options {
     /// `--zombies N`; without it, as many as `assets/data/population.ron` gives for the map.
     pub zombies: Option<u32>,
     pub seed: u64,
+    /// `--loot-seed S`: what containers hold rolled from S (the same every game). Without it a
+    /// new world rolls its loot from a fresh seed each time (`content::fresh_loot_seed`).
+    pub loot_seed: Option<u64>,
     pub start_hour: Option<f32>,
     /// Debug: start the player here instead of the bedroom (`--at X,Y`).
     pub at: Option<[f32; 2]>,
@@ -443,6 +446,7 @@ impl Options {
             holdup_auto: flag("--holdup-auto"),
             zombies: value("--zombies").and_then(|v| v.parse().ok()),
             seed: value("--seed").and_then(|v| v.parse().ok()).unwrap_or(1),
+            loot_seed: value("--loot-seed").and_then(|v| v.parse().ok()),
             start_hour: value("--time").and_then(|v| v.parse().ok()),
             at: value("--at").and_then(|v| parse_point(&v)),
             turns: {
@@ -607,6 +611,14 @@ fn main() {
         eprintln!("can't use the palette: {e}");
         std::process::exit(1);
     }
+    // How the fog of war looks, from the data folder's fog.ron.
+    let fog_look = match fog::FogLook::load(&options.data) {
+        Ok(look) => look,
+        Err(e) => {
+            eprintln!("can't use the fog's look: {e}");
+            std::process::exit(1);
+        }
+    };
     zombye_net::shutdown::install();
     // Wake the window's event loop when a signal comes in while it idles (unfocused), as Bevy's own
     // handler would; the loop then runs `exit_on_signal`.
@@ -650,7 +662,7 @@ fn main() {
     let offscreen = options.offscreen();
     let graphics = graphics::Graphics::from_options(&options);
     let mut app = App::new();
-    app.insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06))).add_plugins(plugins).insert_resource(options).insert_resource(graphics).add_systems(First, exit_on_signal);
+    app.insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06))).add_plugins(plugins).insert_resource(options).insert_resource(fog_look).insert_resource(graphics).add_systems(First, exit_on_signal);
     if offscreen {
         app.add_plugins((ScheduleRunnerPlugin::run_loop(Duration::ZERO), offscreen::OffscreenPlugin));
     }

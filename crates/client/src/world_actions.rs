@@ -23,6 +23,8 @@ const SILL: f32 = 0.9;
 const FENCE_TOP: f32 = 1.0;
 /// How tall furniture is taken to be, for the pointer to land on it.
 const FURNITURE_TOP: f32 = 1.0;
+/// How high a body lying on the ground is taken to be.
+const BODY_TOP: f32 = 0.5;
 /// How near the pointer's spot on the ground must be to a door or window cut down to a stub (the
 /// cutaways) for it still to count.
 const STUB_SLACK: f32 = 0.35;
@@ -37,6 +39,8 @@ pub enum Target {
     Edge(EdgeRef),
     /// A container: an index into the sites [`pick`] was given.
     Container(usize),
+    /// A dead zombie's body (its id, where it lies): searched like a container ([`pick_body`]).
+    Body(u32, Vec2),
 }
 
 /// One line of a world menu: its label and what it sends (`None`: a line that only says
@@ -170,6 +174,17 @@ pub fn pick(map: &TileMap, sites: &[ContainerSite], player: Vec2, origin: Vec3, 
     best
 }
 
+/// The body (a dead zombie's id and where it lies, from `bodies`) the pointer's ray meets first,
+/// as a low box round where it lies, with the ray parameter there.
+pub fn pick_body(bodies: impl IntoIterator<Item = (u32, Vec2)>, player: Vec2, origin: Vec3, dir: Vec3) -> Option<(Target, f32)> {
+    let half = Vec2::splat(zombye_sim::corpses::BODY_RADIUS + 0.4);
+    bodies
+        .into_iter()
+        .filter(|&(_, at)| at.distance(player) <= LOOK)
+        .filter_map(|(id, at)| ray_box(origin, dir, at - half, at + half, BODY_TOP).map(|t| (Target::Body(id, at), t)))
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+}
+
 /// What the menu on `target` is called and what it offers, the likeliest first, for player `me`
 /// at `pos` (`view`: our private view, for what we carry). Out of reach it says so and offers
 /// nothing.
@@ -187,6 +202,16 @@ pub fn entries(target: Target, map: &TileMap, sites: &[ContainerSite], data: &Co
                 vec![WorldEntry::say("Too far away: walk up to it")]
             };
             (name, lines)
+        }
+        Target::Body(id, at) => {
+            let c = zombye_sim::corpses::corpse_container(id);
+            let lines = if zombye_sim::corpses::body_in_reach(map, pos, [(id, at)]).is_some() {
+                let open = view.and_then(|v| v.open.as_ref()).is_some_and(|o| o.id == c);
+                vec![WorldEntry::send(if open { "Look inside" } else { "Search the body" }, Intent::Search { player: me, container: Some(c) })]
+            } else {
+                vec![WorldEntry::say("Too far away: walk up to it")]
+            };
+            ("Body".to_string(), lines)
         }
     }
 }
@@ -279,5 +304,14 @@ mod tests {
         assert!(ray_box(o, d, Vec2::new(8.0, 8.0), Vec2::new(9.0, 9.0), FURNITURE_TOP).is_none());
         let ground_t = -o.y / d.y;
         assert!(box_t < ground_t, "the box's top is met before the ground under it");
+    }
+
+    #[test]
+    fn the_ray_finds_a_body_on_the_ground() {
+        let (o, d) = ray_through(Vec3::new(20.2, 0.1, 7.9));
+        let bodies = [(4, Vec2::new(20.0, 8.0)), (9, Vec2::new(26.0, 8.0))];
+        assert_eq!(pick_body(bodies, Vec2::new(19.0, 8.0), o, d).map(|(t, _)| t), Some(Target::Body(4, Vec2::new(20.0, 8.0))));
+        let (o, d) = ray_through(Vec3::new(23.0, 0.0, 8.0));
+        assert!(pick_body(bodies, Vec2::new(19.0, 8.0), o, d).is_none(), "between the two");
     }
 }

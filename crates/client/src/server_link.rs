@@ -164,6 +164,11 @@ pub struct JoinInfo {
     pub containers: zombye_sim::containers::ContainerData,
     /// The item tag that makes an item a blind to fit.
     pub blind_tag: String,
+    /// The world's seed and what zombies wear (`population.ron`'s outfits): with them a zombie's
+    /// outfit is worked out here as the server does (`zombye_sim::corpses::default_look`), for
+    /// drawing the crowd variant that matches it. Snapshots send only the looks that differ.
+    pub seed: u64,
+    pub outfits: Vec<zombye_sim::corpses::Outfit>,
 }
 
 /// The `FixedUpdate` system that ticks the server. Input is sent before it and reconciled after it.
@@ -216,6 +221,9 @@ impl Plugin for ServerLinkPlugin {
     fn build(&self, app: &mut App) {
         let mut options = app.world().resource::<Options>().clone();
         let mut config = content::load_config(&options.data, options.seed).unwrap_or_else(|e| panic!("failed to load content: {e}"));
+        // A new world finds different things each game, unless `--loot-seed` fixes them (a
+        // loaded save keeps its own).
+        config.loot_seed = Some(options.loot_seed.unwrap_or_else(content::fresh_loot_seed));
         // Mods (#25): their items, recipes and loot join the game's; their scripts run in the
         // world this process makes (on a server they run there, and only the data matters here).
         let base = options.connect.is_some().then(|| config.clone());
@@ -450,6 +458,8 @@ fn join_info(config: &zombye_sim::WorldConfig, player_id: u32, player_spawn: Vec
         climb: config.climb.clone(),
         containers: config.containers.clone(),
         blind_tag: config.blinds.tag.clone(),
+        seed: config.seed(),
+        outfits: config.population.outfits.clone(),
     }
 }
 

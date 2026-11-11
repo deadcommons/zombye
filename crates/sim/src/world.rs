@@ -84,6 +84,12 @@ pub struct WorldConfig {
     pub containers: ContainerData,
     /// What containers hold, by room type and container kind (`assets/data/loot.ron`).
     pub loot: LootData,
+    /// The seed loot is rolled from: what containers and bodies hold, the weapons on the floor,
+    /// how worn, loaded and old what's found is. `None`: the world seed, so the same seed finds
+    /// the same things (tests, old saves). The game and the server pick a new one for every new
+    /// world and new run ([`WorldConfig::loot_seed`]), so the same town holds different things
+    /// each game. Saved with the settings.
+    pub loot_seed: Option<u64>,
     /// What can be made from what (`assets/data/items/recipes.ron`, see [`crate::crafting`]).
     pub recipes: Vec<RecipeDef>,
     /// Carry limits, burden and how long handling items takes.
@@ -138,6 +144,7 @@ impl WorldConfig {
             items: Vec::new(),
             containers: ContainerData::default(),
             loot: LootData::default(),
+            loot_seed: None,
             recipes: Vec::new(),
             carry: CarryTuning::default(),
             combat: CombatTuning::default(),
@@ -208,6 +215,17 @@ impl WorldConfig {
 
     pub fn seed(&self) -> u64 {
         self.generation.seed
+    }
+
+    /// The seed loot rolls from: `loot_seed` if set, else the world seed.
+    pub fn loot_seed(&self) -> u64 {
+        self.loot_seed.unwrap_or(self.generation.seed)
+    }
+
+    /// Loot rolled from `seed` instead of the world seed (see `loot_seed`).
+    pub fn with_loot_seed(mut self, seed: u64) -> Self {
+        self.loot_seed = Some(seed);
+        self
     }
 }
 
@@ -446,7 +464,7 @@ impl World {
         let item_weapons = (0..config.items.len()).map(|i| weapon_items.iter().position(|w| *w == Some(i as u16)).map(|w| w as u16)).collect();
         let unarmed = config.weapons.iter().position(|w| w.category == WeaponCategory::Unarmed).unwrap_or(0) as u16;
         let generated = worldgen::generate_with(&config.generation, &config.templates, &config.street_props);
-        let items = items::place_weapons(&generated.map, &config.weapons, &weapon_items, generated.spawn_building, config.generation.seed, 1);
+        let items = items::place_weapons(&generated.map, &config.weapons, &weapon_items, generated.spawn_building, config.loot_seed(), 1);
         let sites = containers::find_sites(&generated.map, &config.containers);
         let mut map = generated.map;
         crate::blinds::place(&mut map, config.generation.seed, &config.blinds);
@@ -1037,6 +1055,8 @@ impl World {
         removed.sort_unstable();
         let gone: Vec<bool> = z.id.iter().map(|id| removed.binary_search(id).is_ok()).collect();
         self.rise_looks.risen.retain(|id, _| removed.binary_search(id).is_err());
+        // What was left on a body goes with it; whoever had it open finds it gone.
+        self.opened.retain(|&c, _| crate::corpses::corpse_zombie(c).is_none_or(|z| removed.binary_search(&z).is_err()));
         self.zombies.remove_where(|i| gone[i]);
     }
 

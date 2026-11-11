@@ -334,6 +334,9 @@ struct Settings {
     needs: NeedsTuning,
     #[serde(default)]
     skills: SkillTuning,
+    /// The seed loot rolls from (`WorldConfig::loot_seed`); none in older saves: the world seed.
+    #[serde(default)]
+    loot_seed: Option<u64>,
     #[serde(default)]
     blinds: crate::blinds::BlindTuning,
 }
@@ -731,6 +734,7 @@ impl World {
             infection: config.infection.clone(),
             needs: config.needs,
             skills: config.skills.clone(),
+            loot_seed: config.loot_seed,
             blinds: config.blinds.clone(),
         };
         w.section(CONF, ron::to_string(&settings).expect("settings serialize").as_bytes());
@@ -864,6 +868,7 @@ impl World {
         config.infection = settings.infection;
         config.needs = settings.needs;
         config.skills = settings.skills;
+        config.loot_seed = settings.loot_seed;
         settings.blinds.check().map_err(save_check::invalid)?;
         config.blinds = settings.blinds;
         save_check::check_settings(text, &config)?;

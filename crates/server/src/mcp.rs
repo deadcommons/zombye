@@ -1738,6 +1738,31 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             let reach = world.containers_in_reach(id);
             let mut near: Vec<_> = world.containers().iter().filter(|s| s.distance(pos) <= radius).collect();
             near.sort_by(|a, b| a.distance(pos).total_cmp(&b.distance(pos)));
+            // Dead zombies' bodies are containers too (`zombye_sim::corpses`).
+            let mut bodies = world.corpses_near(pos, radius);
+            bodies.sort_by(|a, b| a.distance(pos).total_cmp(&b.distance(pos)).then(a.id.cmp(&b.id)));
+            let mut body_lines = String::new();
+            for s in &bodies {
+                let zombie = zombye_sim::corpses::corpse_zombie(s.id).unwrap_or(0);
+                let held = match world.container_contents(s.id) {
+                    None => {
+                        let wears = world.zombie_look(zombie).iter().map(|&i| world.config.items[i as usize].name.to_lowercase()).collect::<Vec<_>>();
+                        format!("not searched (wears {})", if wears.is_empty() { "nothing".to_string() } else { wears.join(", ") })
+                    }
+                    Some([]) => "searched: empty".to_string(),
+                    Some(v) => format!("searched: {}", stacks_text(world, v)),
+                };
+                body_lines.push_str(&format!(
+                    "  #{} body of zombie {zombie}, {:.1} m; {held}{}{}\n",
+                    s.id,
+                    s.distance(pos),
+                    if reach.contains(&s.id) { "; in reach" } else { "" },
+                    if p.open == Some(s.id) { "; OPEN" } else { "" },
+                ));
+            }
+            if near.is_empty() && !body_lines.is_empty() {
+                return Ok(format!("bodies within {radius:.0} m of player {id} (nearest first):\n{body_lines}"));
+            }
             if near.is_empty() {
                 return Ok(format!("no containers within {radius:.0} m of player {id}"));
             }
@@ -1765,6 +1790,9 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                     if reach.contains(&s.id) { "; in reach" } else { "" },
                     if p.open == Some(s.id) { "; OPEN" } else { "" },
                 ));
+            }
+            if !body_lines.is_empty() {
+                out.push_str(&format!("bodies:\n{body_lines}"));
             }
             Ok(out)
         }
@@ -2918,10 +2946,10 @@ fn loot_text(world: &World, room: Option<&str>, container: Option<&str>, n: u32)
         loot.rare_scale
     );
     let list = |out: &mut String, entries: &[zombye_sim::loot::LootEntry]| {
-        let weight = |e: &zombye_sim::loot::LootEntry| e.weight * if e.rare { loot.rare_scale } else { 1.0 };
+        let weight = |e: &zombye_sim::loot::LootEntry| e.weight_in(loot);
         let total: f32 = entries.iter().map(weight).sum::<f32>().max(1e-6);
         for e in entries {
-            out.push_str(&format!("    {} | weight {}{} | {:.0}% a pick | count {}-{}\n", e.item, e.weight, if e.rare { " (rare)" } else { "" }, weight(e) / total * 100.0, e.count.0, e.count.1));
+            out.push_str(&format!("    {} | weight {}{} | {:.0}% a pick | count {}-{}\n", e.item, e.weight, if e.tier != zombye_sim::loot::Rarity::Common { format!(" ({})", e.tier.label()) } else if e.rare { " (rare)".into() } else { String::new() }, weight(e) / total * 100.0, e.count.0, e.count.1));
         }
     };
     out.push_str("  entries (item | weight | chance per pick | count):\n");
@@ -2939,7 +2967,7 @@ fn loot_text(world: &World, room: Option<&str>, container: Option<&str>, n: u32)
     let mut seen: std::collections::BTreeMap<u16, (u32, u32)> = std::collections::BTreeMap::new();
     let (mut empty, mut stacks, mut litres, mut kg) = (0u32, 0u32, 0.0f32, 0.0f32);
     for k in 0..n {
-        let got = zombye_sim::loot::fill(world.config.seed(), u32::MAX - k, def, room, loot, items);
+        let got = zombye_sim::loot::fill(world.config.loot_seed(), u32::MAX - k, def, room, loot, items);
         empty += got.is_empty() as u32;
         stacks += got.len() as u32;
         let mut here = std::collections::BTreeSet::new();
@@ -3660,7 +3688,7 @@ fn inventory_text(world: &World, id: u32) -> Result<String, String> {
     if let Some(cid) = p.open
         && let Some(site) = world.container(cid)
     {
-        let def = world.container_def(site);
+        let def = world.container_def(&site);
         let stacks = world.container_contents(cid).unwrap_or(&[]);
         let used = zombye_sim::inventory::stacks_volume(&world.config.items, stacks);
         out.push_str(&format!("open: #{cid} {} ({used:.1} of {:.0} L): {}\n", def.name, def.room_l, if stacks.is_empty() { "empty".to_string() } else { stacks_text(world, stacks) }));
@@ -3676,7 +3704,7 @@ fn inventory_text(world: &World, id: u32) -> Result<String, String> {
         if reach.is_empty() {
             "-".to_string()
         } else {
-            reach.iter().map(|&c| format!("#{c} {}{}", world.container_def(world.container(c).expect("exists")).name, if world.container_contents(c).is_some() { " (searched)" } else { "" })).collect::<Vec<_>>().join(", ")
+            reach.iter().map(|&c| format!("#{c} {}{}", world.container_def(&world.container(c).expect("exists")).name, if world.container_contents(c).is_some() { " (searched)" } else { "" })).collect::<Vec<_>>().join(", ")
         }
     ));
     if !p.jobs.is_empty() {
