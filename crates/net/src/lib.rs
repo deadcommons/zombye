@@ -1396,10 +1396,14 @@ mod tests {
         let mut server = server();
         let id = server.join(None);
         let other = server.join(None);
-        // 16.5 kg: burdened at Strength 2 (a 15.5 kg limit), not at 4 (17 kg).
+        // 16.5 kg: burdened at Strength 3 (a 16.25 kg limit), not at 4 (17 kg).
         assert!(server.world.give_item(id, "wooden_plank", 7));
         assert!(server.world.hold_item(id, zombye_sim::Slot::Hand, "fire_axe"));
         let pi = server.world.players.iter().position(|p| p.id == id).unwrap();
+        // Strength 3 from the start (16.25 kg, still burdened), so the swing below takes it to 4.
+        let to3 = server.world.config.skills.xp_for(3) - server.world.players[pi].skills.xp(Skill::Strength);
+        assert_eq!(server.world.award_xp(pi, Skill::Strength, to3), Some(3));
+        server.world.take_level_ups();
         let snap = server.tick();
         let mut predicted = snap.players.iter().find(|p| p.id == id).unwrap().state();
         assert!(predicted.mods.speed < 1.0, "burdened: {:?}", predicted.mods);
