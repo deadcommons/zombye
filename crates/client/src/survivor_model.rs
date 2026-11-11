@@ -296,7 +296,7 @@ impl Retarget {
         };
         let mut spine: Vec<usize> = (0..rig.len()).filter(|&b| rig.bones[b].name.to_lowercase().starts_with("spine")).collect();
         spine.sort_by_key(|&b| depth(b));
-        let src = (0..rig.len())
+        let src: Vec<Src> = (0..rig.len())
             .map(|b| {
                 if let Some(k) = spine.iter().position(|&s| s == b) {
                     return Src::Mix(PELVIS, TORSO, (k + 1) as f32 / spine.len() as f32);
@@ -1341,6 +1341,7 @@ mod tests {
             let grey = survivor::action(zombye_sim::ActionKind::Shove, style, true, survivor::U_HIT, &survivor::idle(0.0, true));
             let g = rig.globals(&retarget.apply_square(&body, &grey));
             let (lh, rh) = (g[l].w_axis.truncate(), g[r].w_axis.truncate());
+            eprintln!("DBG {style:?} left {lh} right {rh} plain-apply right {}", rig.globals(&retarget.apply(&body, &grey))[r].w_axis.truncate());
             assert!((lh.z - rh.z).abs() < 0.08 && (lh.y - rh.y).abs() < 0.08, "{style:?}: left hand at {lh}, right at {rh}");
             assert!(lh.z > 0.3 && rh.z > 0.3, "{style:?}: hands out in front: left {lh}, right {rh}");
         }
