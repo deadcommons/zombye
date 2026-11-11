@@ -14,7 +14,7 @@ use crate::map::TileMap;
 use crate::players::Stance;
 use crate::rng::hash01;
 use crate::spatial::SpatialHash;
-use crate::vision::{line_of_sight, sight_through};
+use crate::vision::{sight_through, sound_line};
 use crate::zombies::{Tier, ZombieState, Zombies};
 
 /// Who or what made a sound.
@@ -267,7 +267,7 @@ pub(crate) fn hearing_pass(z: &mut Zombies, hash: &SpatialHash, map: &TileMap, s
         }
         let radius = s.radius * t.alertness_of(seed, z.id[i]);
         // Only pay for the ray when the sound would be out of earshot muffled.
-        (d <= radius && (d <= radius * t.wall_muffle || line_of_sight(map, z.pos[i], s.pos))).then_some(d)
+        (d <= radius && (d <= radius * t.wall_muffle || sound_line(map, z.pos[i], s.pos))).then_some(d)
     };
     if sounds.iter().filter(|s| s.radius > 0.0).count() < 2 {
         // One sound: nothing to save.
@@ -452,7 +452,7 @@ mod tests {
                     if plain.state[i] == ZombieState::Dead || d > radius || s.source == SoundSource::Zombie(plain.id[i]) {
                         continue;
                     }
-                    if d > radius * t.wall_muffle && !line_of_sight(&map, plain.pos[i], s.pos) {
+                    if d > radius * t.wall_muffle && !sound_line(&map, plain.pos[i], s.pos) {
                         continue;
                     }
                     react(&mut plain, i, s, d, &t);

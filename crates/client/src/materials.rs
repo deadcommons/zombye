@@ -80,7 +80,8 @@ pub struct WorldParams {
     /// x = how many entries of `trees` are in use.
     pub tree_count: Vec4,
     /// x = how dark it is, 0 by day to 1 at night: lit windows glow by it (#59). y = how much of
-    /// its colour an unseen surface keeps ([`unseen_colour`]).
+    /// its colour an unseen surface keeps (`FogLook::unseen_colour`). z, w = the fog's look:
+    /// `FogState::soft`.
     pub lights: Vec4,
     /// Sight for the per-pixel fog of war (`FogState::sight`).
     pub sight: [Vec4; 3],
@@ -135,19 +136,6 @@ pub fn write_params(buffers: &mut Assets<ShaderBuffer>, handle: &Handle<ShaderBu
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
-}
-
-/// What you can't see (rgb its tint, w how dark it gets): nearly black and cold at night (#83), and
-/// by day a dimmer, warm, faded version of itself rather than a grey hole (DCM-59), so the town
-/// reads as one sunlit place with your own view the brightest part of it.
-pub fn unseen_tint(daylight: f32) -> Vec4 {
-    Vec4::new(0.55, 0.6, 0.75, 0.86).lerp(Vec4::new(0.9, 0.83, 0.74, 0.56), daylight)
-}
-
-/// How much of its colour an unseen surface keeps (the rest goes grey): a quarter at night, three
-/// quarters by day (at dusk the unseen street is still amber, just dimmer).
-pub fn unseen_colour(daylight: f32) -> f32 {
-    0.25 + 0.5 * daylight
 }
 
 /// Must match the array size in world.wesl.
@@ -271,6 +259,7 @@ pub fn update_params(
     map: Res<ClientMap>,
     time: Res<Time>,
     daylight: Res<crate::daynight::Daylight>,
+    look: Res<crate::fog::FogLook>,
     buffer: Res<ParamBuffer>,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut fades: ResMut<TreeFades>,
@@ -320,9 +309,9 @@ pub fn update_params(
         player: chest.extend(0.0),
         camera_dir: camera_dir.extend(0.0),
         fog_rect: Vec4::new(fog.origin.x, fog.origin.y, fog.size_m, 0.0),
-        fog_tint: unseen_tint(daylight.0),
+        fog_tint: look.unseen_tint(daylight.0),
         tree_count: Vec4::new(n as f32, 0.0, 0.0, 0.0),
-        lights: Vec4::new(1.0 - smoothstep(0.05, 0.4, daylight.0), unseen_colour(daylight.0), 0.0, 0.0),
+        lights: Vec4::new(1.0 - smoothstep(0.05, 0.4, daylight.0), look.unseen_colour(daylight.0), fog.soft.x, fog.soft.y),
         sight: fog.sight,
         trees,
     };
@@ -332,17 +321,6 @@ pub fn update_params(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// DCM-59: by day what's unseen is a dimmer, warmer version of itself; at night it is as dark,
-    /// cold and grey as it was (#83).
-    #[test]
-    fn unseen_ground_is_warm_by_day_and_black_at_night() {
-        assert_eq!(unseen_tint(0.0), Vec4::new(0.55, 0.6, 0.75, 0.86));
-        assert_eq!(unseen_colour(0.0), 0.25);
-        let day = unseen_tint(1.0);
-        assert!(day.x > day.z && day.w < 0.7 && day.w > 0.4, "{day}");
-        assert!(unseen_colour(1.0) > 0.4 && unseen_colour(1.0) < 0.8);
-    }
 
     /// #81: a crown in front of the player fades; one beside the line of sight, or behind the
     /// player, doesn't, however tall.

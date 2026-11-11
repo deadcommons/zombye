@@ -8,6 +8,8 @@
 //! M1 simulates the ground level only. Upper floors and roofs exist as per-building render data in
 //! [`Building`]; walking upstairs comes later.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use glam::{IVec2, Vec2};
 use serde::{Deserialize, Serialize};
 
@@ -338,6 +340,16 @@ pub struct EdgeChange {
     pub kind: Edge,
 }
 
+/// A blind on a window or a glazed door appearing, going or rolled up or down (`blind`: `None`
+/// none any more, `Some(true)` down, `Some(false)` rolled up), replicated to clients in snapshots
+/// like [`EdgeChange`]s (see [`crate::blinds`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlindChange {
+    pub tile: IVec2,
+    pub edge: OwnedEdge,
+    pub blind: Option<bool>,
+}
+
 /// A cul-de-sac's turning circle as the generator laid it out: tiles whose middles are within
 /// `road` of `centre` are asphalt, then sidewalk out to `walk`. The street into it comes from the
 /// `entry` side, its asphalt `stem` either side of the line through the centre and its sidewalks
@@ -373,13 +385,23 @@ pub struct TileMap {
     pub street_props: Vec<StreetProp>,
     #[serde(skip)]
     pub prop_kinds: Vec<crate::street_props::PropKind>,
+    /// Blinds on windows and glazed doors ([`crate::blinds`]), by edge key: `true` down (glass
+    /// hidden), `false` rolled up. World state, saved in its own section (`BLND`), not with the
+    /// tiles; changes go out as [`BlindChange`]s.
+    #[serde(skip)]
+    pub blinds: BTreeMap<(i32, i32, u8), bool>,
+    /// Doors with glass in them (sight passes a shut one), by edge key. Derived like the street
+    /// props: placed with the map (`blinds::place`), not saved, in no hash; a network client gets
+    /// them on joining.
+    #[serde(skip)]
+    pub glazed: BTreeSet<(i32, i32, u8)>,
 }
 
 impl TileMap {
     pub fn new(chunks_x: i32, chunks_y: i32) -> Self {
         let chunks = (0..chunks_x * chunks_y).map(|_| Chunk { tiles: vec![Tile::default(); CHUNK_TILES] }).collect();
         let outdoors = Room { building: u16::MAX, name: "Outdoors".into(), room_type: "outdoors".into(), floor: Floor::Grass };
-        Self { chunks_x, chunks_y, chunks, rooms: vec![outdoors], buildings: Vec::new(), turning_circles: Vec::new(), street_props: Vec::new(), prop_kinds: Vec::new() }
+        Self { chunks_x, chunks_y, chunks, rooms: vec![outdoors], buildings: Vec::new(), turning_circles: Vec::new(), street_props: Vec::new(), prop_kinds: Vec::new(), blinds: BTreeMap::new(), glazed: BTreeSet::new() }
     }
 
     pub fn width(&self) -> i32 {
@@ -455,6 +477,59 @@ impl TileMap {
                 OwnedEdge::North => tile.north = kind,
                 OwnedEdge::West => tile.west = kind,
             }
+        }
+    }
+
+    /// The blind on edge `e`: `Some(true)` down, `Some(false)` rolled up, `None` none.
+    pub fn blind(&self, e: EdgeRef) -> Option<bool> {
+        self.blinds.get(&e.key()).copied()
+    }
+
+    /// Put up, roll, or (`None`) take down the blind on edge `e`.
+    pub fn set_blind(&mut self, e: EdgeRef, blind: Option<bool>) {
+        match blind {
+            Some(down) => {
+                self.blinds.insert(e.key(), down);
+            }
+            None => {
+                self.blinds.remove(&e.key());
+            }
+        }
+    }
+
+    /// Is edge `e` a door with glass in it?
+    pub fn glazed(&self, e: EdgeRef) -> bool {
+        self.glazed.contains(&e.key())
+    }
+
+    /// Can a blind hang on edge `e`? A window (shut, open or broken: it hangs inside the frame) or
+    /// a glazed door that is still on its hinges.
+    pub fn takes_blind(&self, e: EdgeRef) -> bool {
+        let kind = self.owned_edge(e.tile, e.edge);
+        kind.is_window() || (kind.is_door() && self.glazed(e))
+    }
+
+    /// Is there glass in edge `e` that sight passes (a window, or a glazed door that's shut)?
+    pub fn sees_through_glass(&self, e: EdgeRef) -> bool {
+        let kind = self.owned_edge(e.tile, e.edge);
+        kind.is_window() || (kind == Edge::DoorClosed && self.glazed(e))
+    }
+
+    /// Does crossing out of `t` through `side` block sight? Walls and shut doors do, unless the
+    /// door is glazed; glass (a window in any state, a shut glazed door) does behind a blind
+    /// that's down. An open door's blind swings away with it. The one rule for seeing: the fog of
+    /// war, zombies' and players' sight (`crate::vision`). Sound goes by the edges alone.
+    pub fn blocks_view(&self, t: IVec2, side: Side) -> bool {
+        let kind = self.edge(t, side);
+        match kind {
+            Edge::DoorClosed | Edge::Window | Edge::WindowOpen | Edge::WindowBroken if !(self.blinds.is_empty() && self.glazed.is_empty()) => {
+                let e = EdgeRef::of(t, side);
+                if kind == Edge::DoorClosed && !self.glazed(e) {
+                    return true;
+                }
+                self.blind(e) == Some(true)
+            }
+            _ => kind.blocks_sight(),
         }
     }
 

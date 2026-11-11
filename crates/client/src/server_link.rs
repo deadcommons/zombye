@@ -160,6 +160,11 @@ pub struct JoinInfo {
     pub carry: zombye_sim::CarryTuning,
     /// When E climbs a fence or window (sent only where the server takes one).
     pub climb: zombye_sim::ClimbTuning,
+    /// The world's seed and what zombies wear (`population.ron`'s outfits): with them a zombie's
+    /// outfit is worked out here as the server does (`zombye_sim::corpses::default_look`), for
+    /// drawing the crowd variant that matches it. Snapshots send only the looks that differ.
+    pub seed: u64,
+    pub outfits: Vec<zombye_sim::corpses::Outfit>,
 }
 
 /// The `FixedUpdate` system that ticks the server. Input is sent before it and reconciled after it.
@@ -212,6 +217,9 @@ impl Plugin for ServerLinkPlugin {
     fn build(&self, app: &mut App) {
         let mut options = app.world().resource::<Options>().clone();
         let mut config = content::load_config(&options.data, options.seed).unwrap_or_else(|e| panic!("failed to load content: {e}"));
+        // A new world finds different things each game, unless `--loot-seed` fixes them (a
+        // loaded save keeps its own).
+        config.loot_seed = Some(options.loot_seed.unwrap_or_else(content::fresh_loot_seed));
         // Mods (#25): their items, recipes and loot join the game's; their scripts run in the
         // world this process makes (on a server they run there, and only the data matters here).
         let base = options.connect.is_some().then(|| config.clone());
@@ -444,6 +452,8 @@ fn join_info(config: &zombye_sim::WorldConfig, player_id: u32, player_spawn: Vec
         skills: config.skills.clone(),
         carry: config.carry.clone(),
         climb: config.climb.clone(),
+        seed: config.seed(),
+        outfits: config.population.outfits.clone(),
     }
 }
 
@@ -736,6 +746,9 @@ fn take_up(
         transitions.0.push((*c, map.0.owned_edge(c.tile, c.edge)));
         map.0.set_owned_edge(c.tile, c.edge, c.kind);
         changes.0.push(*c);
+    }
+    for b in &snapshot.blind_changes {
+        map.0.set_blind(zombye_sim::map::EdgeRef::new(b.tile, b.edge), b.blind);
     }
     for d in &snapshot.edge_damage {
         if d.hp >= 1.0 {

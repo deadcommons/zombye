@@ -49,7 +49,7 @@ use zombye_net::OutfitView;
 use zombye_sim::items::WeaponCategory;
 use zombye_sim::{BodyPart, ItemDef, WearSlot};
 
-use crate::character::{Body, REGIONS, Rig, RigPose, SkinMesh, Wearable, parse_body, parse_wearable};
+use crate::character::{Body, HAIR_REGION, REGIONS, Rig, RigPose, SkinMesh, Wearable, parse_body, parse_wearable};
 use crate::rig::{globals, smooth};
 use crate::server_link::{JoinInfo, ServerLink};
 use crate::survivor::{
@@ -981,7 +981,8 @@ impl SurvivorModel {
     /// regions model-less clothing covers tinted its colour), and everything worn merged into one
     /// mesh (none if nothing is drawn).
     fn dress(&self, items: &[ItemDef], outfit: &OutfitView) -> (SkinMesh, Option<SkinMesh>) {
-        let mut hidden = [false; REGIONS.len()];
+        // One flag a region, and one more for the hair under a hat (`HAIR_REGION`).
+        let mut hidden = [false; REGIONS.len() + 1];
         let mut tint: [Option<(u8, [f32; 4])>; REGIONS.len()] = [None; REGIONS.len()];
         let mut worn = SkinMesh::default();
         let colour = |d: &ItemDef| Color::srgb(d.color.0, d.color.1, d.color.2).to_linear().to_f32_array();
@@ -1014,6 +1015,9 @@ impl SurvivorModel {
         for &d in &worn_defs {
             if buried(d) {
                 continue;
+            }
+            if takes_top(d).is_some() {
+                hidden[HAIR_REGION as usize] = true;
             }
             if let (Some(w), Some(layer), Some(under), Some(c)) = (model_of(d), takes_top(d), under_top, head_centre)
                 && layer > under

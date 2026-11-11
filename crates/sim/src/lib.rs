@@ -9,9 +9,11 @@
 
 pub mod ai;
 pub mod awareness;
+pub mod blinds;
 pub mod bonds;
 pub mod combat;
 pub mod containers;
+pub mod corpses;
 pub mod crafting;
 pub mod firstaid;
 pub mod firstnight;
@@ -51,6 +53,7 @@ pub mod zombies;
 
 pub use ai::{ZombieAttack, ZombieThump, ZombieTuning};
 pub use awareness::{Awareness, Heard, PlayerSightTuning};
+pub use blinds::{BlindOp, BlindTuning};
 pub use bonds::{BondTuning, HandsAct, HandsJob, HandsKind, Restraint};
 pub use groups::{Group, GroupTuning, GroupView, Groups, Marker, MemberView};
 pub use combat::{ActionEvent, CombatEvent, CombatEventKind, CombatTuning, HitEffect, HitEvent, PlayerHitEvent};

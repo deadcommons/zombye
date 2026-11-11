@@ -85,7 +85,7 @@ world_palette! {
         bark, bark_dark, birch_bark, birch_mark,
         // Buildings.
         trim_light, trim_dark, shopfront, foundation, step, deck, rain_gutter, chimney, chimney_cap, flue, aerial,
-        roof_unit, coping, sign, bone, gable_glass, door_leaf, door_handle, window_glass, crack_door, crack_glass, splinter,
+        roof_unit, coping, sign, bone, gable_glass, door_leaf, door_handle, window_glass, door_glass, blind, blind_rail, crack_door, crack_glass, splinter,
         floor_road_line,
         // Grey-box furniture.
         greybox_bed, greybox_bed_sheet, greybox_wardrobe, greybox_fridge, greybox_stove, greybox_counter, greybox_washer,

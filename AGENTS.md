@@ -13,13 +13,13 @@ Work is tracked on GitHub, not in the repo: the
 
 | Path | What | Licence |
 |---|---|---|
-| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `awareness.rs`: which players see and heard which, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), weapons wearing out and breaking (`wear.rs`, see Weapons in the hand), lag compensation for it (`lagcomp.rs`: a few ticks of positions, so a remote client's blow lands where it saw the target), guns (`ranged.rs`: a shot's flight over the map and through bodies, rounds, magazines and reloading, see Guns), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), the status icons a client shows of all that, their levels from data (`status.rs`), skills that improve with practice (`skills.rs` + `SkillTuning`), street props placed by the town generator from data (`street_props.rs`), run stats and the cause of death (`run.rs`), the first night's objectives and outcome (`firstnight.rs`), logging out, spawn protection and the start kit on a server (`logout.rs`), the benchmark's scenarios and score (`scenario.rs`, see The agent survival benchmark), proximity chat and gestures (`speech.rs`: who hears a line, the noise it makes, see Talking and gestures), tying hands, freeing and searching a tied survivor (`bonds.rs`) and optional groups with names and shared markers (`groups.rs`; both: see Hold-ups and groups), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`), the hook mod scripts run through (`script.rs`: events, the checked `script_*` functions, what scripts keep; see Mods and scripts). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
+| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `awareness.rs`: which players see and heard which, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), weapons wearing out and breaking (`wear.rs`, see Weapons in the hand), lag compensation for it (`lagcomp.rs`: a few ticks of positions, so a remote client's blow lands where it saw the target), guns (`ranged.rs`: a shot's flight over the map and through bodies, rounds, magazines and reloading, see Guns), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), the status icons a client shows of all that, their levels from data (`status.rs`), skills that improve with practice (`skills.rs` + `SkillTuning`), street props placed by the town generator from data (`street_props.rs`), run stats and the cause of death (`run.rs`), the first night's objectives and outcome (`firstnight.rs`), logging out, spawn protection and the start kit on a server (`logout.rs`), the benchmark's scenarios and score (`scenario.rs`, see The agent survival benchmark), proximity chat and gestures (`speech.rs`: who hears a line, the noise it makes, see Talking and gestures), roller blinds on windows and glazed doors (`blinds.rs`, see Blinds), tying hands, freeing and searching a tied survivor (`bonds.rs`) and optional groups with names and shared markers (`groups.rs`; both: see Hold-ups and groups), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`), the hook mod scripts run through (`script.rs`: events, the checked `script_*` functions, what scripts keep; see Mods and scripts). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), multiplayer over the network (see Multiplayer: the messages, framing and per-client delta snapshots in `wire.rs`, a client's view cut to what its survivor sees and hears of other players in `visibility.rs`, the server's connections in `host.rs`, a client's in `remote.rs`; the server browser's list and probes in `browser.rs`, see The server browser; a mod's data as a server hands it to joining clients, its hash and the client's cache in `modpack.rs`, see Mods downloaded on joining), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
 | `crates/mods` | Mods (see Mods and scripts): reads a mod's folder (`mod.ron`, `items.ron`, `recipes.ron`, `loot.ron`, `buildings/*.ron`, `*.luau`), merges its data into a `WorldConfig` (`lib.rs`: `Mod`, `apply`, `load_into`; `Mod::pack` / `from_pack` / `apply_packs`: the data a server hands to joining clients, #24) and runs its Luau scripts sandboxed, one VM a mod, as the world's script host (`luau.rs`, on `mlua`; Luau is built from source, so a C++ compiler is needed). The one crate with Luau in it. | MIT OR Apache-2.0 |
 | `mods/` | Sample mods: `alarm_clock` (an item behaviour by script; the worked example of [docs/modding.md](docs/modding.md)). | MIT OR Apache-2.0 |
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint (`--mcp` on stdio, `mcp.rs`; `--mcp-http` over streamable HTTP for remote agents, `mcp_http.rs`, see Connecting an agent); the multiplayer server (`--host`) and bot clients (`--bots N --connect ADDR`; `multiplayer.rs`, see Multiplayer); the operator's MCP admin endpoint on a hosting server (`--host --admin-mcp`, `admin.rs`, see Administering a server); the dedicated server from one config file (`--config FILE`, `config.rs`, and the `Dockerfile` at the root that runs it, see The dedicated server under Multiplayer); `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`); the agent survival benchmark (`--benchmark`, `benchmark.rs`, see The agent survival benchmark). | MIT OR Apache-2.0 |
 | `crates/client` | `zombye` Bevy client: camera, chunk streaming, building meshes (`world_render.rs`; their details, trim, siding lines, porches, chimneys, shopfronts and lit windows, from `meshgen/building_kit.rs`, see Buildings dressed under The world), the outdoors per chunk from the tile map alone (`meshgen/landscape.rs`: lawns, verges, forest floor and litter, road paint at real scale, kerbs, slab joints, driveways, front beds, fences and hedges; `meshgen/curves.rs`: what's drawn round over the tiles, see Curves under The world; `meshgen/trees.rs`: faceted broadleaves, birches, pines, spruces; colours from `assets/data/palette.ron` through `meshgen/palette.rs`), fog of war, cutaways (`cutaway.rs`: which walls drop, per building and wall edge; `silhouette.rs`: the player's shape through what still covers them; see Cutaways under Light and mood; `opening_hints.rs`: outlines of the doors and windows a building hides from the camera, see Opening hints there), day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd, or a character baked offline read from a `.zvat` (`zvat.rs`); `survivor.rs` skinned, CPU-posed players; `character.rs` reads a modular character's body and wearable GLBs and `survivor_model.rs` draws players as it, dressed in what they wear), hit feedback (`fx.rs`), the aim marker (`aim_marker.rs`, see Combat), lights in the dark (`lights.rs`, see Light and mood), instanced grass, flowers and litter (`vegetation.rs`), the film pass (`film.rs`) and the graphics settings (`graphics.rs`; all three: see Look and feel), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), street props merged into each chunk's props mesh from the same models (`meshgen/street_props.rs`, see Street props under The world), HUD (`hud.rs`; the hotbar on keys 1-9, `hotbar.rs`; panels dragged by their titles and remembered, `panels.rs`; the UI's one skin, `theme.rs`: text sizes and colours, and the painted sheets, buttons, slots and bars every panel uses, see The skin), the death screen and run summary (`death.rs`), the first night's objectives, hints and morning screen (`firstnight_ui.rs`), the skills panel and level-up line (`skills_ui.rs`), the chat line, speech bubbles and gesture keys (`chat.rs`, see Talking and gestures), tying, searching and group keys, the search panel, name tags and markers (`holdup.rs`, see Hold-ups and groups), the server browser (`browser_ui.rs`, F7, see The server browser), sound (`audio.rs`, see Sound), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
-| `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/items/recipes.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`, `data/street_props.ron`, `data/scenarios.ron`: the benchmark's scenarios, `data/status.ron`: the status icons' levels, labels and tips, `data/palette.ron`: every colour, for Blender assets and the generated world), models (`models/furniture/*.glb`, street props `models/street/*.glb`; the survivor's body `models/characters/survivor_01.glb` and its wearables `models/wearables/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), sound (`audio/sfx/*.wav`, `audio/ambience/*.wav`, listed in `data/sounds.ron`), the UI's typefaces (`fonts/barlow/`, see The skin), later textures. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); the Barlow fonts: SIL OFL 1.1; each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
+| `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/items/recipes.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`, `data/street_props.ron`, `data/scenarios.ron`: the benchmark's scenarios, `data/status.ron`: the status icons' levels, labels and tips, `data/fog.ron`: how the fog of war looks, `data/palette.ron`: every colour, for Blender assets and the generated world), models (`models/furniture/*.glb`, street props `models/street/*.glb`; the survivor's body `models/characters/survivor_01.glb` and its wearables `models/wearables/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), sound (`audio/sfx/*.wav`, `audio/ambience/*.wav`, listed in `data/sounds.ron`), the UI's typefaces (`fonts/barlow/`, see The skin), later textures. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); the Barlow fonts: SIL OFL 1.1; each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
 | `tools/blender/` | Python to build assets: run inside Blender, mesh builder, palette, renders, validation, GLB export (`zasset.py`, `palette.py`: reads `assets/data/palette.ron`, `build.py`), character clean-up, validation and skinned export (`zchar.py`), library animation clips retargeted onto a character's skeleton (`zretarget.py`, plain Python), VAT bake for the crowd, outfit variants with palette swatches (`zvat.py`, `build.py -- --crowd`); plain Python, art-repo work folders and promotion (`artrepo.py`). | MIT OR Apache-2.0 |
 | `tools/audio/` | `synth.py`: the placeholder sounds, synthesised from noise, tones and filters (plain Python, deterministic); `zsound.py`: the real sounds (#78), from a generator's raw takes to game-ready WAVs: slice, clean, audition, promote with ATTRIBUTION.md rows, check (plain Python; see the elevenlabs-sounds skill). | MIT OR Apache-2.0 |
 | `tools/remote/` | The remote machines (see Remote machines): `setup.sh` (a build or GPU box), `zgpu` (the client on the GPU box, as if local), `zwork` (an agent per issue, each in its own worktree), `zboard` (the owner's dashboard: a screen of review pictures or the game streamed, the issues' progress, feedback, approve), `dcv.sh` (a GPU machine's desktop shared by Amazon DCV, for remote play). | MIT OR Apache-2.0 |
@@ -193,7 +193,7 @@ sent to it, chasing, zombies per tier active/near/virtual, sim tick ms, and the 
 In game: WASD move (he faces the way he walks), Shift run, C sneak (toggle), right mouse held: aim (he faces the
 cursor and strafes or backs off at 2.2 m/s, no running, in a guard stance), and only while aiming left mouse attack
 (swing your weapon, or punch; with a gun in hand: shoot at what the cursor is on, see Guns) and Space shove (or stomp, when a downed zombie lies right in front of you), R reload the gun you hold, E climb the fence or open or broken window you face (see Climbing under Players), else pick up the item you
-face (with nothing on the floor within reach: search the container you face), 1-9 the hotbar (swap to or use what's on that slot, see Hotbar), Tab or I the inventory panel, H the health panel, K the skills panel (drag any of the three by its title; they remember where they were and whether they were open), F open/close the door or window you face, G smash the window you face, dead: R a new run and Q or Esc quit,
+face (with nothing on the floor within reach: search the container you face), 1-9 the hotbar (swap to or use what's on that slot, see Hotbar), Tab or I the inventory panel, H the health panel, K the skills panel (drag any of the three by its title; they remember where they were and whether they were open), F open/close the door or window you face, Shift+F roll the blind of the window or glass door you face up or down (or fit one you carry), Shift+Alt+F take it down (see Blinds), G smash the window you face, dead: R a new run and Q or Esc quit,
 B sleep (B again or WASD to get up), Enter the chat line (Tab there: whisper, talk or shout; Enter says it, Esc drops it), V wave, U hands up (again lowers them), P point (see Talking and gestures), Y tie the hands of the survivor you face or free tied ones, L search a tied survivor, J (held) struggle out of ties, N invite into your group or accept (Shift+N leaves), middle mouse a group marker (see Hold-ups and groups), T skip an hour, Z spawn zombies, wheel zoom (over the inventory, health or skills panel it scrolls that panel instead), F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), F3 the light preview (a time-of-day slider, see Light and mood), F4 the debug stats window (see Needs), F6 the server's rules (on a multiplayer server, see Multiplayer), F7 the server browser (see The server browser), `,` and `.` turn the camera a quarter turn left or right (see Turning the camera under Light and mood), F10 walls up / walls cut, Shift+F10 zombie silhouettes and Ctrl+F10 opening hints (see Cutaways and Opening hints under Light and mood), M mute, O hide or show the objectives and hints (see The first night), Ctrl (or Cmd) + `=` / `-` the UI scale (see UI scale), Ctrl+0 back to 100%. Walking into a fence or an open window stops you as a wall would: E climbs
 it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
 not Bevy's handler; a second Ctrl-C quits unsaved) autosaves; `--render-to` never does.
@@ -463,6 +463,47 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   (0.15 ms before; `building_build_time`, an ignored test, times every building of the default map and says where
   one of each template stands), about 9,800 triangles a building (6,000 before); a frame (1920 × 1080 offscreen,
   2,000 zombies, by day, default zoom) about 0.7 ms more: 9.3 against 8.2-8.7 ms mean.
+
+## Blinds (`sim::blinds`)
+
+Roller blinds on the inside of windows and of doors with glass in them: down, nobody outside sees in
+through that glass. Barricades come later.
+
+- **On the map** (`TileMap::blinds`, by `EdgeRef::key`: `true` down, `false` rolled up; `TileMap::glazed`: the
+  doors with glass in them). `TileMap::takes_blind(e)`: any window, or a glazed door. **Sight:** `TileMap::blocks_view`
+  is what `vision::cast_ray`, `line_of_sight` and `sight_through` use now: a shut glazed door is seen through like
+  a window (at `window_sight_mult`), and glass with its blind down blocks sight as a wall does, for zombies
+  (`senses`), other players (fair information) and the client's fog of war alike. A window's blind down blocks it
+  shut, open or broken (it hangs inside the opening); an open glazed door is open (its blind swings away with it).
+  **Hearing doesn't change:** a voice, a footstep and a thump go by `vision::sound_line`, the old edge-only rule.
+- **The town's own** (`blinds::place`, from `World::generate`, by a hash of the seed and the edge, so the same for
+  the same seed; not saved: a save stores the blinds themselves): every ground-floor window of a house has one with
+  chance `house_window` (0.45; shops 0.1, offices 0.6, civic 0.3), outside doors have glass (`glazed_front_door`
+  0.25, `glazed_back_door` 0.5, `glazed_shop_door` 0.85) and a glazed door a blind (`door_blind` 0.35), each blind
+  down with chance `down` (0.25). All in `BlindTuning` (`WorldConfig::blinds`, serde defaults, saved with the
+  settings and checked on load; `BlindTuning::none()` gives a town with neither).
+- **Using them** (`World::player_blind(id, BlindOp)`, `Intent::Blind { player, op }`): from the inside only
+  (`blinds::on_inside`: the indoor side; a blind can't be worked from the street), the window or glazed door faced,
+  by the doors' reach rule (`blinds::faced`, pure, as the client asks it). `Toggle` rolls it up or down at once
+  (a `noise` of 2.5 m); `Fit` takes one carried item with the tag `tag` ("blind"; shipped: `roller_blind`, loot in
+  bedrooms, laundries, sheds, garages and hardware shops) and fits it down in `fit_secs` (6); `TakeDown` puts it back
+  in the bags in `take_down_secs` (3); `Use` is the key's likely thing: roll it, or fit one if there is none. Fit
+  and take-down are the item job `JobKind::Blind { edge, fit }` (saved with the queue; the last variant), checked
+  again when due (still faced and in reach, still inside). A door battered down drops its blind on the floor
+  inside; a smashed window keeps its blind.
+- **Replication** (`wire::PROTOCOL` 20): `Snapshot::blind_changes` (`map::BlindChange`, from
+  `World::take_blind_changes`; to every client, not cut by interest), and a joining client gets every blind and
+  glazed door in `Welcome::blinds` / `Welcome::glazed`. **Saves:** an optional `BLND` section (every blind and
+  every glazed door), checked on load (glass only in doors, blinds only on edges that take one; on a map regenerated
+  anyway the misfits are dropped with a note); no format bump.
+- **Client** (`world_render.rs`): a glazed door's leaf has a dark glass panel (`door_glazed`); a blind is a cloth on
+  the inside face (palette `blind`, `blind_rail`), on a window its own entity below the head (hidden while its wall
+  is cut away), on a door a child of the leaf (swinging with it), easing down and up (`sync_blinds`,
+  `animate_blinds`). Shift+F sends `BlindOp::Use`, Shift+Alt+F `TakeDown`; a blind in the inventory has "Fit to the
+  window" in its right-click menu; the current-action bar says "Fitting a blind".
+- **MCP:** `blind {player, action: use | toggle | fit | take_down, facing}` (steps until a fit or take-down is
+  done); `edge` says which edges have glass and a blind, up or down.
+- Tests: `sim::blinds::tests`, `vision`'s `a_blind_down_hides_the_glass_and_a_glazed_door_shows_through`.
 
 ## Players, intents and prediction
 
@@ -1192,15 +1233,28 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   in `items.ron`, container kinds in `containers.ron`; errors name the table, e.g. `(kitchen, fridge)`), loaded by
   `net::content::load_loot` into `WorldConfig::loot` (no file: no tables, every container holds nothing). A
   `LootTable` is `room` (a room type or `any`), `container` (a kind or `any`), `empty` (chance of nothing), `rolls`
-  (min, max picks), `entries` (`item`, `weight`, `count` per pick, `rare`) and `groups` (extra lists rolled after
+  (min, max picks), `entries` (`item`, `weight`, `count` per pick, `tier`, `rare`) and `groups` (extra lists rolled after
   the picks with their own `chance` and `rolls`: the kitchen's "cutlery drawer", the laundry's "toolbox"). A container
   uses the first of `(room, container)`, `(any, container)`, `(room, any)`, `(any, any)` (`LootData::find`): a fridge
   is a fridge anywhere, and shelves and workbenches (no `any` table of their own) hold what their room holds.
-- **Filling** (`loot::fill(seed, id, def, room_type, loot, items)`, called on a container's first search): from a
-  stream seeded by the world seed and container id only (`loot::container_rng`), so the same in any opening order and
-  across a save; picks add up into stacks of the item's stack size; a pick that doesn't fit the container's litres
-  is cut to what fits. **Sandbox:** `scale` multiplies every table's and group's rolls (a fraction rounds by chance;
-  0.25 scarce, 2 plenty), `rare_scale` the weight of `rare` entries.
+- **Rarity tiers:** each entry's `tier` (`loot::Rarity`: `Common`, the default, `Uncommon`, `Rare`, `VeryRare`)
+  multiplies its weight by that tier's number in the file's `tiers` (`loot::TierWeights`; shipped 1, 0.35, 0.15, 0.08),
+  so what's valuable is rare wherever it's listed and one number makes a whole tier rarer (sandbox, difficulty).
+  `LootEntry::weight_in`. Shipped: food, junk and plain clothes common; hoodies, hats, small bags, tools, the plainer
+  weapons and dressings uncommon; leather jackets, work boots, balaclavas, duffels, bats, crowbars, antibiotics, rounds
+  and magazines rare; guns, the fire axe and the hiking pack very rare (about 1-2 guns a town; `rare_things_are_rare_in_a_town`,
+  and the ignored `loot_census` prints every item's finds per town for tuning).
+- **A new game finds new things:** loot rolls from `WorldConfig::loot_seed()` (`loot_seed: Option<u64>`, saved with the
+  settings; `None`, as in tests and older saves, is the world seed). The client and server set a fresh one
+  (`net::content::fresh_loot_seed`) for every new world unless `--loot-seed S` (client and server) fixes it, and
+  `LocalServer::new_run` (R after death) rolls another, so the same town holds different things each game. The weapons
+  on the floor, and how worn, loaded and old found things are, follow it too. Benchmark scenarios keep the world seed.
+- **Filling** (`loot::fill(seed, id, def, room_type, loot, items)`, called on a container's first search with the loot
+  seed): from a stream seeded by the loot seed and container id only (`loot::container_rng`), so the same in any
+  opening order and across a save; picks add up into stacks of the item's stack size; a pick that doesn't fit the
+  container's litres is cut to what fits. **Sandbox:** `scale` multiplies every table's and group's rolls (a fraction
+  rounds by chance; 0.25 scarce, 2 plenty), `rare_scale` the weight of `Rare`, `VeryRare` and `rare: true` entries,
+  `tiers` each tier's.
 - **Tables shipped** (ours): kitchen (fridge, cupboard with the cutlery-drawer group, under-sink, pantry shelves),
   any-room fridge, cupboard, oven, under-sink, bathroom cabinet, wardrobe, coat cupboard, desk drawers, coffee-table
   drawer, TV shelf, drum; room tables for bathroom, bedroom, living, dining, hall, laundry (with a toolbox group),
@@ -1289,6 +1343,13 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   for the fog mask, so zombies, survivors and items standing in a far pool or someone's beam are drawn. Client only.
   Cost: nothing by day; at night a few unshadowed point lights and, in multiplayer, up to three more shadow maps
   (about 0.8 ms each on an M-series Mac, as ours); not measurable on the GPU-less build machine.
+- **The fog's look is data** (`assets/data/fog.ron`, `fog::FogLook`; a data folder without it gets the shipped one):
+  soft on purpose, but there to be seen. Ground in your line of sight but behind you is a little dimmer than the cone
+  ahead (`behind` 0.5 of the way from out of sight to plain view; the cone eases from `cone_full` 60° to `cone_behind`
+  125° off your facing), and the cone eases in with distance (`close_radius` 1 m, `close_fade` 4 m), so there is no
+  ring round the player. What's out of sight is `unseen_day` / `unseen_night` (`tint`, `dark`, `colour` kept): by day
+  clearly dimmer (dark 0.4), at night nearly black as before. **Only the look:** which zombies, players and items are drawn is
+  `FogState::visibility`, with its own constants (what's behind you isn't drawn beyond 2.5 m), unchanged.
 - **Fog of war per pixel:** the sight rays go to the GPU (`FogState::rays`, 1,024 × 1 `R32Float`, with the range and cone in
   `FogState::sight`) and `world.wesl`'s `fog_at` works out what's seen per pixel by the same rule as the mask, so
   line-of-sight edges are smooth, not the mask's half-metre steps. The mask texture now only says what's indoors (its
@@ -1413,9 +1474,9 @@ and mood, and docs/art-direction.md). All of it is client only: nothing here is 
   and goes off in `Graphics::low`.**
 - **The day's light** (`daynight::sky_at`, `grade_at`): the sun is golden all day and lower than it was (about 47° up
   at noon, 32° by mid-afternoon), the fill a weak violet, the grade warm with soft contrast and lifted blacks; the
-  night's light and grade are unchanged (a test holds them). **Unseen ground by day** keeps three quarters of its
-  colour, dimmed and warmed, instead of going grey (`materials::unseen_tint`, `unseen_colour`, in `WorldParams::fog_tint`
-  and `lights.y`); at night it is as black as before.
+  night's light and grade are unchanged (a test holds them). **Unseen ground by day** keeps most of its
+  colour, a little dimmer and warmer, instead of going grey (`fog::FogLook::unseen_tint`, `unseen_colour`, from
+  `assets/data/fog.ron`, in `WorldParams::fog_tint` and `lights.y`); at night it is as black as before.
 - **The film pass** (`film.rs`, `assets/shaders/film.wesl`): one fullscreen pass after the tone map (Bevy's
   `FullscreenMaterial`): tilt-shift (the top and bottom of the screen soften, up to 2.6 px at 1080p, 13 taps) and grain
   (24 a second, by visual time, so it stands still in an offscreen render; about half strength at night). With both
@@ -1565,7 +1626,7 @@ stands still may count as changed.** Each of these cost milliseconds a frame bef
   back when dead or asleep; then grounded on the lowest foot vertex. `step_movement` and prediction are untouched.
   **Dressing:** `Snapshot::outfits` (`net::OutfitView`: worn items, the back and shoulder bags, what's in each hand,
   by item index; every player, every snapshot) says what's drawn, for us and for others, changing the moment it does: the body with the
-  regions worn wearables hide cut away, and every worn model merged into one more mesh (both cached per outfit; a garment whose regions are all hidden by a model on a higher layer that reaches at least as low, a t-shirt under a hoodie, isn't drawn; under a shorter leather jacket it is), and a worn model with a hem (`hem_z` in its extras: shirts, hoodies) cuts away, 3 cm above it, the faces other garments have in the regions it hides (a wearable can carry a `_REGION` per vertex: the jeans' top is Torso), so trousers never show through a shirt worn out over them, so a
+  regions worn wearables hide cut away (and, where a body marks hair with the `_REGION` past the body parts, `character::HAIR_REGION`, that hair while anything worn takes the head top: a hat sits on the head, with no hair through it), and every worn model merged into one more mesh (both cached per outfit; a garment whose regions are all hidden by a model on a higher layer that reaches at least as low, a t-shirt under a hoodie, isn't drawn; under a shorter leather jacket it is), and a worn model with a hem (`hem_z` in its extras: shirts, hoodies) cuts away, 3 cm above it, the faces other garments have in the regions it hides (a wearable can carry a `_REGION` per vertex: the jeans' top is Torso), so trousers never show through a shirt worn out over them, so a
   survivor is body + outfit + held weapon + ring draws. An item with no model is a grey-box: clothing tints the regions
   it covers (sampling a light texel of the shirt, so the colour shows), an accessory is a box on its socket, a bag a box
   on the back (or the left hip from the shoulder). **A bag in the hand** (#91: a carrier bag, a duffel) hangs straight
@@ -1573,11 +1634,26 @@ stands still may count as changed.** Each of these cost milliseconds a frame bef
   grip with the T-pose's arm turned down (`SurvivorModel::hang_joints`), and the bag is skinned to it; its model is
   built on the right hand and mirrored for the left (`SkinMesh::hung`). The held weapon sits on `hand_r`. Players are told apart by a flat
   ring round their feet, ours mustard, others teal, unlit but dimmed with the daylight to 15% at night (no glow in the dark).
-- **Rising in what it wore** (#63): a player who dies infected has what it wore noted (`World::rise_looks`, item ids,
-  before it drops everything), the zombie it rises as keeps it (`World::risen_look`, until the corpse is cleared away),
-  and `Snapshot::risen` sends it for the zombies listed; the crowd draws the baked variant nearest to it
-  (`zombie_render::variant_for`: a variant's wearables are its file name past the plainest one's, `zombie_02_hoodie` is
-  "hoodie"; most matches and fewest extras, else by id as usual).
+- **Rising in what it wore** (#63): a player who dies infected has what it wore noted (`World::rise_looks`, item ids)
+  and **keeps it on** (`drop_everything` drops the rest; the clothes go with the body when it rises), the zombie it rises
+  as wears it (`World::risen_look`, until the corpse is cleared away), and the crowd draws the baked variant nearest to it.
+- **What zombies wear, and looting their bodies** (`sim::corpses`): every zombie wears one of `population.ron`'s
+  `outfits` (item ids with a weight; `corpses::Outfit`, checked against `items.ron` on load: clothing, nothing that
+  clashes), picked from a hash of the seed and its id (`outfit_index`, `default_look`): nothing stored, no RNG, not in
+  the hash. A dead zombie's body is a **container** of kind `corpse` (`containers.ron`; none: no bodies to search) with id
+  `corpses::corpse_container(zombie)` (`CORPSE_BIT` set): searched with E like furniture (`container_in_reach` /
+  `containers_in_reach` include bodies within `CONTAINER_REACH` of `BODY_RADIUS` round where they lie, same room;
+  `ContainerSite::body`), it is filled the first time (`World::fill_corpse`): everything it wears, plus its pockets from
+  `loot.ron`'s `(any, corpse)` table. From then on what it wears is the clothing left in it (`World::zombie_look`), so
+  taking a hoodie off the body takes it off the body you see. Opening the inventory (Tab or I) beside a body, with no container open, searches it by itself (`corpses::body_in_reach`, the server's reach rule on the client's view), so its contents fill the right pane without E. Nothing can be put on a body. A body cleared away
+  (`corpse_secs`, `max_corpses`) takes what was left on it. **Drawing:** a client works out each zombie's outfit itself
+  (`JoinInfo::seed`, `outfits`); `Snapshot::looks` sends only the zombies that differ (risen players, searched bodies:
+  `World::zombie_look_is_default`), and the crowd draws the variant nearest to the look (`zombie_render::variant_of_zombie`:
+  a variant's wearables are its file name past the shared stem, or past a body's number, `zombie_03_hoodie_jeans` is
+  "hoodie_jeans"; most matches and fewest extras; ties between bodies in one outfit by id), changing it when the look
+  changes. Crowd variants are named `<body>_<item ids worn>` (`zombie_sk_t_shirt_jeans_trainers`), and the outfits list
+  should name what the bakes wear. No save format or `wire::PROTOCOL` change. MCP `containers_near` lists bodies with
+  what they wear; `search {container}` takes a body's id.
 
 ## Zombies
 
@@ -2453,7 +2529,7 @@ and checks the state hash, the tick and the session's dirty flag don't move), `P
 `add_player`, `pvp`, `dev`, `skip_time`, `load`, `restrain_now`) get a title starting `Debug:`, a description starting "Debug tool, for setting
 up tests" and `_meta: {"zombye/debug": true}`. Only `save` and `load` are `destructiveHint: true`; every tool is
 `openWorldHint: false`. **A new tool needs a row in `TOOLS`** (a test fails without one). `--no-debug-tools` leaves the
-debug tools out: not listed (46 tools instead of 58), and calling one is the unknown-tool error. `stats` has an
+debug tools out: not listed (47 tools instead of 59), and calling one is the unknown-tool error. `stats` has an
 `outputSchema` and returns its JSON as `structuredContent` beside the text (`output_schema`). The server's `instructions`
 (`mcp::instructions`, under 2,200 bytes: every client puts them in the model's context) say you are player 1, time only
 moves when a tool steps it, look with `observe` first, and the debug tools are for testing; detail belongs in the tools'
