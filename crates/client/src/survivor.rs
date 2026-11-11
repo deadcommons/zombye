@@ -1200,8 +1200,10 @@ fn action(kind: ActionKind, style: Style, armed: bool, u: f32, ready: &SPose) ->
             // arm's lift is about X), and a little more takes out the arm's inward turn.
             let bar = ry(FRAC_PI_2 + 0.18);
             let gather = upper(rx(-0.05), q, rz(-0.18) * rx(-0.55), rx(-1.75), rz(0.18) * rx(-0.55), rx(-1.75), bar);
-            let push = upper(rx(0.3), rx(-0.15), rz(-0.2) * rx(-1.4), rx(-0.15), rz(0.2) * rx(-1.4), rx(-0.15), bar);
-            let hold = upper(rx(0.22), rx(-0.1), rz(-0.18) * rx(-1.3), rx(-0.35), rz(0.18) * rx(-1.3), rx(-0.35), bar);
+            // The arms' lift is under the torso's lean, which swings them back as much: so they're
+            // raised by it more, to reach out level at the shoulders with the bar at chest height.
+            let push = upper(rx(0.2), rx(-0.12), rz(-0.2) * rx(-1.72), rx(-0.08), rz(0.2) * rx(-1.72), rx(-0.08), bar);
+            let hold = upper(rx(0.15), rx(-0.08), rz(-0.18) * rx(-1.55), rx(-0.25), rz(0.18) * rx(-1.55), rx(-0.25), bar);
             keyed(&[(0.0, ready.clone()), (0.25, gather), (U_HIT, push.clone()), (0.62, hold), (1.0, ready)], u)
         }
         (ActionKind::Shove, _) => {
@@ -1370,6 +1372,13 @@ mod tests {
                 assert!(dir.x > 0.9 && dir.y.abs() < 0.2, "{style:?}: the bar lies level to his left, not {dir}");
             }
             assert!(push.z > gather.z + 0.2, "{style:?}: driven out from {gather} to {push}");
+            // Out at chest height, not down at the waist: the hands no lower than a little under
+            // the shoulder, and as far out in front as the arm is long, near enough.
+            let p = action(ActionKind::Shove, style, true, U_HIT, &idle(0.0, true));
+            let g = globals(&BONES, &p);
+            let shoulder = g[UARM_R].transform_point3(Vec3::ZERO);
+            assert!(push.y > shoulder.y - 0.2, "{style:?}: hands at {push} under a shoulder at {shoulder}");
+            assert!(push.z - shoulder.z > 0.45, "{style:?}: hands at {push} not out in front of {shoulder}");
         }
     }
 
