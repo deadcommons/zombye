@@ -158,9 +158,9 @@
     (id: "kitchen_knife", name: "Kitchen knife", category: Weapon, weight_kg: 0.2, volume_l: 0.3, tags: ["cuts"], weapon: Some("kitchen_knife"), color: (0.75, 0.75, 0.78)),
     (id: "claw_hammer", name: "Claw hammer", category: Weapon, weight_kg: 0.6, volume_l: 0.5, weapon: Some("claw_hammer"), color: (0.45, 0.3, 0.2)),
     (id: "frying_pan", name: "Frying pan", category: Weapon, weight_kg: 1.2, volume_l: 2.0, weapon: Some("frying_pan"), color: (0.15, 0.15, 0.16)),
-    (id: "baseball_bat", name: "Baseball bat", category: Weapon, weight_kg: 1.0, volume_l: 2.5, two_handed: true, weapon: Some("baseball_bat"), color: (0.7, 0.55, 0.35)),
-    (id: "golf_club", name: "Golf club", category: Weapon, weight_kg: 0.4, volume_l: 2.0, two_handed: true, weapon: Some("golf_club"), color: (0.75, 0.75, 0.8)),
-    (id: "wooden_plank", name: "Wooden plank", category: Weapon, weight_kg: 2.0, volume_l: 4.0, two_handed: true, tags: ["wood", "fuel"], weapon: Some("wooden_plank"), color: (0.6, 0.45, 0.28)),
+    (id: "baseball_bat", name: "Baseball bat", category: Weapon, weight_kg: 1.0, volume_l: 2.5, two_handed: true, one_hand: true, weapon: Some("baseball_bat"), color: (0.7, 0.55, 0.35)),
+    (id: "golf_club", name: "Golf club", category: Weapon, weight_kg: 0.4, volume_l: 2.0, two_handed: true, one_hand: true, weapon: Some("golf_club"), color: (0.75, 0.75, 0.8)),
+    (id: "wooden_plank", name: "Wooden plank", category: Weapon, weight_kg: 2.0, volume_l: 4.0, two_handed: true, one_hand: true, tags: ["wood", "fuel"], weapon: Some("wooden_plank"), color: (0.6, 0.45, 0.28)),
     (id: "crowbar", name: "Crowbar", category: Weapon, weight_kg: 1.5, volume_l: 1.2, tags: ["pries"], weapon: Some("crowbar"), color: (0.5, 0.15, 0.12)),
     (id: "fire_axe", name: "Fire axe", category: Weapon, weight_kg: 2.5, volume_l: 4.0, two_handed: true, tags: ["chops"], weapon: Some("fire_axe"), color: (0.75, 0.15, 0.1)),
 

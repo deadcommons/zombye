@@ -44,6 +44,7 @@ pub mod street_props;
 pub mod template;
 pub mod tiers;
 pub mod vision;
+pub mod wear;
 pub mod world;
 pub mod worldgen;
 pub mod zombies;

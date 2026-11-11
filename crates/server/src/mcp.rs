@@ -2296,7 +2296,8 @@ fn weapon_line(w: &zombye_sim::WeaponDef) -> String {
         w.crit_multiplier,
         w.endurance_cost,
         w.noise_radius
-    )
+    ) + &if w.durability > 0 { format!(" | breaks after {} knocks, {:.0}% a hit", w.durability, w.wear_chance * 100.0) } else { " | never wears".into() }
+        + &if w.close_range > 0.0 { format!(" | cramped under {:.2} m", w.close_range) } else { String::new() }
 }
 
 fn noun(kind: Edge) -> &'static str {
@@ -2801,6 +2802,11 @@ fn stack_text(world: &World, s: &ItemStack) -> String {
     // A gun or a magazine says what's in it (#72).
     match world.holds(s.item) {
         Some(h) => format!("{name} ({} of {} rounds in it)", s.used, h.capacity),
+        // A weapon that wears says how it is holding up (`zombye_sim::wear`).
+        None if world.condition_of(s).is_some() => {
+            let (left, of, state) = world.condition_of(s).expect("checked");
+            format!("{name} ({}, {left} of {of} knocks left)", state.label())
+        }
         None if s.count > 1 => format!("{name} x{}", s.count),
         None => name.clone(),
     }
@@ -2913,7 +2919,7 @@ fn load_line(world: &World, id: u32) -> String {
 fn item_details(d: &zombye_sim::ItemDef) -> String {
     let mut v = Vec::new();
     if let Some(w) = &d.weapon {
-        v.push(format!("weapon {w}{}", if d.two_handed { ", two-handed" } else { "" }));
+        v.push(format!("weapon {w}{}", if d.both_hands() { ", two-handed" } else if d.two_handed { ", two-handed (one hand will do, weaker)" } else { "" }));
     }
     if let Some(c) = d.consumable() {
         v.push(format!("hunger {:+.2}, thirst {:+.2}, {} goes{}", c.hunger, c.thirst, c.uses, c.spoils_hours.map_or(String::new(), |h| format!(", spoils in {h:.0} h"))));

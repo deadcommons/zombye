@@ -53,8 +53,10 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// 11: the server browser, #27: `ServerInfo::mods`. 12: mods downloaded on joining, #24: a hash
 /// and a size in `ModInfo`, `ClientMsg::Fetch` and `ServerMsg::Mod`. 13: guns, #72: `Intent::Aim`,
 /// `CombatEventKind::Shot`, `JobKind::Reload`, the weapons' `ranged`. 14: `ZombieAnim::Lunge` and `Climb`.
-/// 15: climbing with E: `Intent::Climb`, `PlayerView::climb`, `Tunings::climb`.)
-pub const PROTOCOL: u32 = 15;
+/// 15: weapons that wear: `durability`, `wear_chance` and `close_range` in the weapons, `one_hand`
+/// in the items, the wear numbers in `CombatTuning`. 16: climbing with E: `Intent::Climb`,
+/// `PlayerView::climb`, `Tunings::climb`.)
+pub const PROTOCOL: u32 = 16;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.

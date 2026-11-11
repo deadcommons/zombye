@@ -859,6 +859,7 @@ impl World {
             self.age_found_food(c, &mut contents);
             // Guns and magazines found hold what they were left with (#72).
             self.load_found(c, &mut contents);
+            self.wear_found(c, &mut contents);
             self.opened.insert(c, contents);
         }
         let p = &self.players[pi];
@@ -1039,8 +1040,8 @@ impl World {
                 displaced.extend(inv.slot_mut(s).take());
                 match s {
                     // Both hands for a two-handed item; one already in both hands lets go.
-                    Slot::Hand if def.two_handed => displaced.extend(inv.off_hand.take()),
-                    Slot::OffHand if inv.hand.is_some_and(|h| items[h.item as usize].two_handed) => displaced.extend(inv.hand.take()),
+                    Slot::Hand if def.both_hands() => displaced.extend(inv.off_hand.take()),
+                    Slot::OffHand if inv.hand.is_some_and(|h| items[h.item as usize].both_hands()) => displaced.extend(inv.hand.take()),
                     _ => {}
                 }
                 *inv.slot_mut(s) = Some(moved.with_count(1));
@@ -1244,7 +1245,7 @@ impl World {
         if self.item_weapon(it.stack.item).is_some() {
             let mut inv = p.inventory.clone();
             let mut out: Vec<ItemStack> = inv.hand.take().into_iter().collect();
-            if def.two_handed {
+            if def.both_hands() {
                 out.extend(inv.off_hand.take());
             }
             inv.hand = Some(it.stack.with_count(1));
@@ -1584,19 +1585,19 @@ mod tests {
         }
         assert_eq!(swung, Some((w.weapon_index("kitchen_knife").unwrap(), 1)));
         assert!(w.zombies.index_of(1).is_none_or(|i| w.zombies.hp[i] < hp));
-        // A plastic bag in the other hand, then a two-handed bat: the bag goes into the pockets.
+        // A plastic bag in the other hand, then a fire axe, which takes both: the bag goes into the pockets.
         w.give_item(id, "plastic_bag", 1);
         let k = me(&w, id).inventory.carried.iter().position(|s| w.item_def(s.item).id == "plastic_bag").unwrap();
         w.player_equip(id, k as u32).unwrap();
         settle(&mut w, id);
         assert!(me(&w, id).inventory.off_hand.is_some());
         assert_eq!(w.carry(me(&w, id)).room_l, 11.0);
-        w.give_item(id, "baseball_bat", 1);
-        let k = me(&w, id).inventory.carried.iter().position(|s| w.item_def(s.item).id == "baseball_bat").unwrap();
+        w.give_item(id, "fire_axe", 1);
+        let k = me(&w, id).inventory.carried.iter().position(|s| w.item_def(s.item).id == "fire_axe").unwrap();
         w.player_equip(id, k as u32).unwrap();
         settle(&mut w, id);
         let inv = &me(&w, id).inventory;
-        assert_eq!(w.wielded(me(&w, id).weapon).id, "baseball_bat", "{}", last_note(&w, id));
+        assert_eq!(w.wielded(me(&w, id).weapon).id, "fire_axe", "{}", last_note(&w, id));
         assert!(inv.off_hand.is_none());
         let names: Vec<&str> = inv.carried.iter().map(|s| w.item_def(s.item).id.as_str()).collect();
         assert!(names.contains(&"kitchen_knife") && names.contains(&"plastic_bag"), "{names:?}");

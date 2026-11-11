@@ -13,7 +13,7 @@ Work is tracked on GitHub, not in the repo: the
 
 | Path | What | Licence |
 |---|---|---|
-| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `awareness.rs`: which players see and heard which, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), lag compensation for it (`lagcomp.rs`: a few ticks of positions, so a remote client's blow lands where it saw the target), guns (`ranged.rs`: a shot's flight over the map and through bodies, rounds, magazines and reloading, see Guns), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), the status icons a client shows of all that, their levels from data (`status.rs`), skills that improve with practice (`skills.rs` + `SkillTuning`), street props placed by the town generator from data (`street_props.rs`), run stats and the cause of death (`run.rs`), the first night's objectives and outcome (`firstnight.rs`), logging out, spawn protection and the start kit on a server (`logout.rs`), the benchmark's scenarios and score (`scenario.rs`, see The agent survival benchmark), proximity chat and gestures (`speech.rs`: who hears a line, the noise it makes, see Talking and gestures), tying hands, freeing and searching a tied survivor (`bonds.rs`) and optional groups with names and shared markers (`groups.rs`; both: see Hold-ups and groups), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`), the hook mod scripts run through (`script.rs`: events, the checked `script_*` functions, what scripts keep; see Mods and scripts). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
+| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `awareness.rs`: which players see and heard which, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), weapons wearing out and breaking (`wear.rs`, see Weapons in the hand), lag compensation for it (`lagcomp.rs`: a few ticks of positions, so a remote client's blow lands where it saw the target), guns (`ranged.rs`: a shot's flight over the map and through bodies, rounds, magazines and reloading, see Guns), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), the status icons a client shows of all that, their levels from data (`status.rs`), skills that improve with practice (`skills.rs` + `SkillTuning`), street props placed by the town generator from data (`street_props.rs`), run stats and the cause of death (`run.rs`), the first night's objectives and outcome (`firstnight.rs`), logging out, spawn protection and the start kit on a server (`logout.rs`), the benchmark's scenarios and score (`scenario.rs`, see The agent survival benchmark), proximity chat and gestures (`speech.rs`: who hears a line, the noise it makes, see Talking and gestures), tying hands, freeing and searching a tied survivor (`bonds.rs`) and optional groups with names and shared markers (`groups.rs`; both: see Hold-ups and groups), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`), the hook mod scripts run through (`script.rs`: events, the checked `script_*` functions, what scripts keep; see Mods and scripts). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), multiplayer over the network (see Multiplayer: the messages, framing and per-client delta snapshots in `wire.rs`, a client's view cut to what its survivor sees and hears of other players in `visibility.rs`, the server's connections in `host.rs`, a client's in `remote.rs`; the server browser's list and probes in `browser.rs`, see The server browser; a mod's data as a server hands it to joining clients, its hash and the client's cache in `modpack.rs`, see Mods downloaded on joining), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
 | `crates/mods` | Mods (see Mods and scripts): reads a mod's folder (`mod.ron`, `items.ron`, `recipes.ron`, `loot.ron`, `buildings/*.ron`, `*.luau`), merges its data into a `WorldConfig` (`lib.rs`: `Mod`, `apply`, `load_into`; `Mod::pack` / `from_pack` / `apply_packs`: the data a server hands to joining clients, #24) and runs its Luau scripts sandboxed, one VM a mod, as the world's script host (`luau.rs`, on `mlua`; Luau is built from source, so a C++ compiler is needed). The one crate with Luau in it. | MIT OR Apache-2.0 |
 | `mods/` | Sample mods: `alarm_clock` (an item behaviour by script; the worked example of [docs/modding.md](docs/modding.md)). | MIT OR Apache-2.0 |
@@ -486,7 +486,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   refuses with a note. Prediction stays exact (`PlayerView::climb`, own player only), it is in `state_hash` only
   while set, and saved in an optional `CLMB` section. `ClimbTuning` is `WorldConfig::climb` (serde defaults, not
   saved, like the server's other rules). Zombies are unchanged: they climb whatever they walk into. MCP `climb
-  {player, facing}`; `--walk` climbs what its way leads over (as E). `wire::PROTOCOL` 15.
+  {player, facing}`; `--walk` climbs what its way leads over (as E). `wire::PROTOCOL` 16.
 - `Intent`s (`crates/net`): `PlayerInput { player, seq, move_dir, facing, run, sneak, aim }` every tick (`aim`: the
   right mouse held; `step_movement` walks an aiming player at `AIM_SPEED` 2.2 m/s with no running, `PlayerView::aiming`
   says so, and the server takes `Attack`, `Shove` and `Stomp` only from an aiming player; not saved)
@@ -629,6 +629,39 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   rewinding. Tests: `sim::combat::lag_tests`, `net/tests/lagcomp.rs` (a real socket at 150 ms: the punch lands where
   the client saw the zombie; with the cap at 0 it misses).
 - Every number not in the weapon file is in `CombatTuning` (`WorldConfig::combat`, serde defaults). Ours.
+
+## Weapons in the hand: wear, cramped blows, one hand (`sim::wear`)
+
+- **Weapons wear out and break.** A weapon in `weapons.ron` with a `durability` (the knocks it takes; 0 or left out:
+  never wears, as bare hands and guns) takes a knock on a swing that hits something with chance `wear_chance`, each
+  level of its skill making that `CombatTuning::wear_skill_less` (8%) less likely; a swing at the air costs it nothing.
+  So it lasts about `durability / wear_chance` hitting swings in new hands (shipped, ours: plank 20, golf club 36,
+  kitchen knife 50, bat 80, frying pan 100, fire axe 140, claw hammer 165, crowbar 400). At `durability` knocks it
+  **breaks**: gone from the hand (bare hands from then on), with the note "your baseball bat broke". With
+  `battered_below` (a quarter) of its life or less left it is **battered**: `battered_damage` (0.85) of its damage,
+  and a note when it gets there. `wear::Condition` (`Good`, `Worn` at 60% or less, `Battered`), `wear::condition`,
+  `World::condition_of(stack)`.
+- **The knocks ride on the stack** (`ItemStack::used`, which for a weapon that wears counts knocks, as it counts
+  rounds for a gun and goes had for food: **no save format change**, and saves from before load with every weapon
+  sound). So a weapon keeps its wear on the floor, in a cupboard and in other hands. `ranged::max_used` holds a save
+  to one under the `durability`. One made now is sound (debug spawns, kits, the floor weapons); one found in furniture
+  has had a seeded 0-70% of its life (`CombatTuning::found_wear_max`), more often little (`World::wear_found`, by seed, container and stack).
+- **The roll** is `hash01` of the seed, tick, player and item (`World::wear_weapon`, called from `combat::land`), not
+  a draw from the combat RNG: fights roll exactly as they did before.
+- **Cramped blows:** a weapon's `close_range` (bat and fire axe 0.38 m, golf club and plank 0.4; to the target's
+  body: bodies touch 0.3 m apart, and a lone zombie striking you stands 0.4-0.6 m off) is too close for a full
+  swing: a target nearer, one pressed onto you by the crowd behind it or that you walked into, takes
+  `CombatTuning::cramped_damage` (0.6) of the damage. Shove them back first.
+- **One hand:** an item's `one_hand: true` (bat, golf club, plank) makes a `two_handed` weapon one that the other
+  hand can hold something beside (a flashlight, a bag): it no longer empties the off hand (`ItemDef::both_hands`),
+  and swung that way it hits `one_hand_power` (0.75) as hard and takes `one_hand_slow` (1.2) times as long
+  (`combat::begin_action`). The fire axe, rifle and shotgun still take both.
+- **Shown:** the inventory row and the weapon panel say "worn" or "battered" after the name (nothing while good);
+  MCP `inventory` says the knocks left, `weapons` each weapon's durability and close range, `items` which two-handed
+  items one hand will do for. `wire::PROTOCOL` 15 (the definitions and `CombatTuning` changed shape).
+- **Not yet:** repairing or sharpening, a separate head and handle, a skill for looking after weapons, guns that
+  wear, hitting doors and trees.
+- Tests: `sim::wear::tests`.
 
 ## Guns (`sim::ranged`; #72)
 
@@ -787,7 +820,7 @@ and tell the whole town where you are.
   the dressing state); click a wound for what it needs and the treatments you can do with what you carry (with times and
   uses left), click one to do it; pills at the foot. Right-click a dressing, antiseptic or sewing kit in the inventory to
   use it on a wound (the panel opens with the wounds it fits marked; right-click cancels); right-click a pill to take it.
-  Left mouse doesn't swing while the panel is open. A tags line in the vitals panel for what the status tags don't say
+  You can aim and swing with the panel open, just not with the pointer on it (or on any panel). A tags line in the vitals panel for what the status tags don't say
   (INJURED LEG / ARM, DROWSY (PAINKILLERS), and for 3 s where the last strike landed); bleeding, the fever, festering and
   food poisoning are status tags (see Needs).
 - **MCP:** `health {player}` (as the player's own view, plus wound ids (`#n`), dressings, effects, painkillers and
@@ -983,7 +1016,7 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
 
 - **Items are data:** `assets/data/items/items.ron`, a list of `items::ItemDef` (id, name, `category`: Food, Drink,
   Medical, Tool, Material, Clothing, Bag, Weapon, Light, Junk; `weight_kg`, `volume_l`, `stack`, `tags`,
-  `two_handed`, and per category `food`/`drink` (hunger, thirst, uses, spoils_hours), `medical` (uses), `bag`
+  `two_handed`, `one_hand`, and per category `food`/`drink` (hunger, thirst, uses, spoils_hours), `medical` (uses), `bag`
   (capacity_l, carried Back/Shoulder/Hand, slow), `clothing` (covers body parts, takes accessory places, protection,
   layer, hood), `light`, `weapon` (an id in `weapons.ron`), `model` (the wearable the client draws, #63) and grey-box
   `color`). About 70 ordinary things with real-world weights; validated by
