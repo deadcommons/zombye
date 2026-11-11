@@ -168,7 +168,7 @@ pub fn hint(c: &HintInput) -> Option<String> {
         return Some(if c.armed {
             "Zombie! Hold the right mouse button to aim, left click to swing, Space to shove it back.".to_string()
         } else {
-            "Zombie, and nothing in your hands! Hold right mouse and press Space to shove it back, or get away: they are slow.".to_string()
+            "Zombie, and nothing in your hands! Space shoves it back (again and again to floor it, then Space stamps on it), or get away: they are slow.".to_string()
         });
     }
     if c.bleeding {

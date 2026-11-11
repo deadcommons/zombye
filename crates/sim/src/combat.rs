@@ -76,13 +76,25 @@ pub struct CombatTuning {
     pub stagger_secs: (f32, f32),
     pub down_secs: (f32, f32),
 
-    // Shove.
+    // Shove: hands, or the weapon held across the body, to push them off and make room to swing.
     pub shove_range: f32,
     pub shove_arc_degrees: f32,
     pub shove_targets: u32,
+    /// How far a shove pushes a zombie back (metres, before Strength and how tired you are; at
+    /// most about 1.5 m, `ZombieTuning::knockback_slide`).
     pub shove_knockback: f32,
     /// Knockdown chance of a shove (it always staggers), before the staggered / behind multipliers.
     pub shove_knockdown_chance: f32,
+    /// A shove with a melee weapon in hand (pushed with its shaft): this much more reach, and
+    /// knockback times `shove_weapon_knockback`.
+    pub shove_weapon_range: f32,
+    pub shove_weapon_knockback: f32,
+    /// Shoves on the same zombie this close together add up: each earlier one (at most
+    /// `shove_repeat_max`) adds `shove_repeat_knockdown` to the knockdown chance. A knockdown
+    /// starts it over.
+    pub shove_repeat_secs: f32,
+    pub shove_repeat_knockdown: f32,
+    pub shove_repeat_max: u32,
     pub shove_windup: f32,
     pub shove_seconds: f32,
     pub shove_endurance: f32,
@@ -93,6 +105,16 @@ pub struct CombatTuning {
     pub stomp_range: f32,
     pub stomp_arc_degrees: f32,
     pub stomp_damage: (f32, f32),
+    /// A zombie on the ground lies on its back with its head this far behind its feet (its
+    /// position): the line between is the body a stomp can land on.
+    pub down_head_offset: f32,
+    /// A stomp from within this of the head (and in the arc) is a stomp to the head: its damage
+    /// times `stomp_head_mult`.
+    pub stomp_head_reach: f32,
+    pub stomp_head_mult: f32,
+    /// A stomp that doesn't kill keeps the zombie on the ground at least this long before it
+    /// starts to get up (one getting up is stamped back down).
+    pub stomp_pin_secs: f32,
     pub stomp_crit_chance: f32,
     pub stomp_crit_multiplier: f32,
     pub stomp_windup: f32,
@@ -187,8 +209,13 @@ impl Default for CombatTuning {
             shove_range: 0.75,
             shove_arc_degrees: 150.0,
             shove_targets: 3,
-            shove_knockback: 0.75,
+            shove_knockback: 1.2,
             shove_knockdown_chance: 0.25,
+            shove_weapon_range: 0.2,
+            shove_weapon_knockback: 1.2,
+            shove_repeat_secs: 3.0,
+            shove_repeat_knockdown: 0.15,
+            shove_repeat_max: 3,
             shove_windup: 0.1,
             shove_seconds: 0.6,
             shove_endurance: 0.035,
@@ -196,9 +223,15 @@ impl Default for CombatTuning {
 
             stomp_range: 1.1,
             stomp_arc_degrees: 140.0,
-            stomp_damage: (30.0, 42.0),
+            // Two or three to the body, one to the head.
+            stomp_damage: (36.0, 48.0),
+            down_head_offset: 1.45,
+            stomp_head_reach: 0.9,
+            stomp_head_mult: 4.0,
+            stomp_pin_secs: 1.5,
             stomp_crit_chance: 0.15,
-            stomp_crit_multiplier: 2.0,
+            // Short of a fresh zombie's HP even then: only the head is one stamp.
+            stomp_crit_multiplier: 1.6,
             stomp_windup: 0.15,
             stomp_seconds: 0.55,
             stomp_endurance: 0.04,
@@ -577,6 +610,8 @@ impl World {
         let sk = &self.config.skills;
         let level = |s: Skill| self.players[pi].skills.level(s, sk);
         let knock = sk.knockback_mult(level(Skill::Strength));
+        // Shoving with a melee weapon in hand: pushed with the shaft, it reaches and pushes further.
+        let armed = a.weapon != self.unarmed && self.config.weapons[a.weapon as usize].ranged.is_none();
         let s = match a.kind {
             ActionKind::Swing => {
                 let w = &self.config.weapons[a.weapon as usize];
@@ -599,13 +634,13 @@ impl World {
                 }
             }
             ActionKind::Shove => Strike {
-                range: c.shove_range,
+                range: c.shove_range + if armed { c.shove_weapon_range } else { 0.0 },
                 half_arc: (c.shove_arc_degrees * 0.5).to_radians(),
                 max_targets: c.shove_targets,
                 damage: (0.0, 0.0),
                 crit_chance: 0.0,
                 crit_multiplier: 1.0,
-                knockback: c.shove_knockback * knock,
+                knockback: c.shove_knockback * knock * if armed { c.shove_weapon_knockback } else { 1.0 },
                 stagger_chance: 1.0,
                 knockdown_chance: (c.shove_knockdown_chance + sk.shove_knockdown_bonus(level(Skill::Strength), level(Skill::Brawl))).min(1.0),
                 noise: c.shove_noise,
@@ -643,13 +678,23 @@ impl World {
         found.clear();
         let z = &self.zombies;
         let reach = s.range + if stomp { 0.0 } else { ZOMBIE_RADIUS };
-        self.hash.for_each_within(origin, reach + moved, |j| {
+        // A body on the ground reaches back to its head.
+        let lying = if stomp { c.down_head_offset.max(0.0) } else { 0.0 };
+        self.hash.for_each_within(origin, reach + lying + moved, |j| {
             // Swings and shoves pass over downed zombies; stomps only hit them.
             let state = z.state[j];
             if state == ZombieState::Dead || (state == ZombieState::Down) != stomp {
                 return;
             }
-            let to = frame.and_then(|f| f.zombie(z.id[j])).unwrap_or(z.pos[j]) - origin;
+            let feet = frame.and_then(|f| f.zombie(z.id[j])).unwrap_or(z.pos[j]);
+            if stomp {
+                // Anywhere along the body, the head first (`stomp_spot`).
+                if let Some(spot) = stomp_spot(c, origin, facing, feet, z.facing[j]) {
+                    found.push((spot.dist, j));
+                }
+                return;
+            }
+            let to = feet - origin;
             let d = to.length();
             if d > reach {
                 return;
@@ -698,10 +743,23 @@ impl World {
                 break;
             }
             let victim = (j & PLAYER_TARGET != 0).then_some(j & !PLAYER_TARGET);
-            let at = match victim {
+            let mut at = match victim {
                 Some(k) => frame.and_then(|f| f.player(self.players[k].id)).unwrap_or(self.players[k].state.pos),
                 None => frame.and_then(|f| f.zombie(self.zombies.id[j])).unwrap_or(self.zombies.pos[j]),
             };
+            // A stomp lands where on the body it reaches; on the head, it's decisive.
+            let mut struck = s;
+            if stomp && victim.is_none() {
+                let c = &self.config.combat;
+                if let Some(spot) = stomp_spot(c, origin, facing, at, self.zombies.facing[j]) {
+                    at = spot.at;
+                    if spot.head {
+                        // Shown as a crit (the heavy hit feedback).
+                        struck.crit_chance = 1.0;
+                        struck.crit_multiplier = c.stomp_head_mult;
+                    }
+                }
+            }
             if !clear_path(&self.map, origin, at) {
                 continue;
             }
@@ -709,7 +767,7 @@ impl World {
             let falloff = self.config.combat.multi_hit_falloff.powi(hits as i32) * if cramped { self.config.combat.cramped_damage } else { 1.0 };
             let effect = match victim {
                 Some(k) => self.strike_player(pi, a, &s, origin, forward, k, at, falloff),
-                None => self.strike(player, a, &s, origin, forward, j, at, falloff),
+                None => self.strike(player, a, &struck, origin, forward, j, at, falloff),
             };
             hits += 1;
             // Practice (#46): a hit with a weapon or fist, a kill instead, a zombie shoved, a stomp that kills.
@@ -750,9 +808,8 @@ impl World {
             damage *= s.crit_multiplier;
         }
         z.hp[j] -= damage;
-        if s.knockback > 0.0 {
-            z.vel[j] = dir * knockback_speed(s.knockback * a.power);
-        }
+        // Shoves on it in the last few seconds (none for anything else): each makes this one likelier to floor it.
+        let earlier = if a.kind == ActionKind::Shove { shoves_before(&self.shoved, z.id[j], self.tick, c) } else { 0 };
         // Whatever happens next, it knows who did it.
         z.target_player[j] = player;
         z.target_pos[j] = origin;
@@ -766,10 +823,14 @@ impl World {
             z.timer[j] = 0.0;
             HitEffect::Killed
         } else if was == ZombieState::Down {
-            // Stomped but not dead: stays down.
+            // Stomped but not dead: stays down, and one getting up is stamped back down.
+            if a.kind == ActionKind::Stomp {
+                z.timer[j] = z.timer[j].max(crate::zombies::GET_UP_SECS + c.stomp_pin_secs);
+                z.anim[j] = ZombieAnim::Down;
+            }
             HitEffect::Hit
         } else {
-            let mut knockdown = s.knockdown_chance * a.power;
+            let mut knockdown = (s.knockdown_chance + earlier as f32 * c.shove_repeat_knockdown) * a.power;
             if behind {
                 knockdown *= c.behind_knockdown_mult;
             }
@@ -799,6 +860,16 @@ impl World {
         if matches!(effect, HitEffect::Staggered | HitEffect::KnockedDown) {
             // No instant strike when it recovers.
             z.cooldown[j] = z.cooldown[j].max(zt.attack_windup);
+        }
+        // Knocked back: reeling or down it slides on further (`ZombieTuning::knockback_slide`),
+        // else it is soon walking again.
+        if s.knockback > 0.0 {
+            let slide = if z.state[j].is_reeling() { zt.knockback_slide } else { 0.75 };
+            z.vel[j] = dir * slide_speed(s.knockback * a.power, slide);
+        }
+        if a.kind == ActionKind::Shove {
+            let (id, tick) = (z.id[j], self.tick);
+            remember_shove(&mut self.shoved, id, tick, c, effect == HitEffect::KnockedDown);
         }
         let (zid, zpos) = (z.id[j], z.pos[j]);
         self.hit_events.push(HitEvent { player, zombie: zid, kind: a.kind, damage, crit, behind, effect });
@@ -1058,10 +1129,85 @@ impl World {
     }
 }
 
+/// Where a stomp from `origin`, facing `facing`, lands on a zombie lying on the ground with its
+/// feet at `feet` (its position) facing `zombie_facing`: on its back, its head
+/// `down_head_offset` behind its feet. The head when it is within `stomp_head_reach` and in the
+/// stomp's arc; else the nearest point of the body if that is within `stomp_range` and in the
+/// arc; else nowhere. The server and the client's Space (stomp or shove?) both ask this.
+pub fn stomp_spot(c: &CombatTuning, origin: Vec2, facing: f32, feet: Vec2, zombie_facing: f32) -> Option<StompSpot> {
+    let forward = Vec2::from_angle(facing);
+    let half_arc = (c.stomp_arc_degrees * 0.5).to_radians();
+    let in_arc = |p: Vec2| {
+        let to = p - origin;
+        let d = to.length();
+        d <= 1e-4 || forward.dot(to / d).clamp(-1.0, 1.0).acos() <= half_arc
+    };
+    let head = feet - Vec2::from_angle(zombie_facing) * c.down_head_offset.max(0.0);
+    let dh = head.distance(origin);
+    if dh <= c.stomp_head_reach && in_arc(head) {
+        return Some(StompSpot { dist: dh, at: head, head: true });
+    }
+    // The nearest point of the body from feet to head.
+    let body = head - feet;
+    let t = if body.length_squared() > 1e-8 { ((origin - feet).dot(body) / body.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
+    let near = feet + body * t;
+    let d = near.distance(origin);
+    (d <= c.stomp_range && in_arc(near)).then_some(StompSpot { dist: d, at: near, head: false })
+}
+
+/// Where a stomp lands on a body ([`stomp_spot`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StompSpot {
+    /// From the stomping player's centre.
+    pub dist: f32,
+    pub at: Vec2,
+    /// On the head: `stomp_head_mult` times the damage.
+    pub head: bool,
+}
+
+/// How many shoves zombie `id` has had within `shove_repeat_secs` before `tick` (at most
+/// `shove_repeat_max`).
+pub(crate) fn shoves_before(shoved: &[Shoved], id: u32, tick: u64, c: &CombatTuning) -> u32 {
+    let window = (c.shove_repeat_secs / TICK_DT).round() as u64;
+    match shoved.binary_search_by_key(&id, |s| s.zombie) {
+        Ok(k) if tick.saturating_sub(shoved[k].tick) <= window => (shoved[k].count as u32).min(c.shove_repeat_max),
+        _ => 0,
+    }
+}
+
+/// Note a shove on zombie `id` (or, `floored`, forget it: it starts over), and forget the ones
+/// too old to count.
+pub(crate) fn remember_shove(shoved: &mut Vec<Shoved>, id: u32, tick: u64, c: &CombatTuning, floored: bool) {
+    let before = shoves_before(shoved, id, tick, c);
+    let window = (c.shove_repeat_secs / TICK_DT).round() as u64;
+    shoved.retain(|s| s.zombie != id && tick.saturating_sub(s.tick) <= window);
+    if !floored {
+        let count = (before + 1).min(c.shove_repeat_max).min(u8::MAX as u32) as u8;
+        let at = shoved.partition_point(|s| s.zombie < id);
+        shoved.insert(at, Shoved { zombie: id, count, tick });
+    }
+}
+
+/// A zombie shoved lately ([`World::shoved`]): how many times running and when last.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Shoved {
+    pub zombie: u32,
+    pub count: u8,
+    pub tick: u64,
+}
+
 /// Initial speed that knocks a body back about `metres` (velocity decays by a quarter a tick, so
 /// the slide covers about 3 ticks' worth), capped at [`MAX_KNOCKBACK_SPEED`].
 pub fn knockback_speed(metres: f32) -> f32 {
-    (metres / (3.0 * TICK_DT)).min(MAX_KNOCKBACK_SPEED)
+    slide_speed(metres, 0.75)
+}
+
+/// The speed that slides a body `metres` before it stops, keeping `slide` of its speed each
+/// tick (a walker's 0.75, a reeling zombie's `ZombieTuning::knockback_slide`), at most
+/// [`MAX_KNOCKBACK_SPEED`].
+pub fn slide_speed(metres: f32, slide: f32) -> f32 {
+    let slide = slide.clamp(0.05, 0.98);
+    (metres * (1.0 - slide) / (slide * TICK_DT)).min(MAX_KNOCKBACK_SPEED)
 }
 
 #[cfg(test)]
@@ -1078,7 +1224,7 @@ mod tests {
     use crate::world::WorldConfig;
     use crate::{PlayerInput, items};
     use glam::IVec2;
-    use std::f32::consts::{PI, TAU};
+    use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
     fn templates() -> Vec<BuildingTemplate> {
         [include_str!("../../../assets/data/buildings/bungalow.ron"), include_str!("../../../assets/data/buildings/family_two_storey.ron")]
@@ -1274,8 +1420,12 @@ mod tests {
             until_ready(&mut w, id);
         }
         assert_eq!(w.zombies.anim[z], ZombieAnim::Down);
-        // On the ground it doesn't attack or chase, and swings pass over it.
+        // On the ground it doesn't attack or chase, and swings pass over it (once the shove's
+        // slide has run out).
         w.zombies.timer[z] = 10.0;
+        for _ in 0..20 {
+            w.step();
+        }
         let at = w.zombies.pos[z];
         for _ in 0..20 {
             w.step();
@@ -1449,6 +1599,8 @@ mod tests {
             w.players[0].skills = crate::skills::Skills::start(&w.config.skills);
             (w.zombies.pos[z], w.zombies.vel[z], w.zombies.facing[z]) = (Vec2::new(101.3, 100.5), Vec2::ZERO, facing);
             (w.zombies.state[z], w.zombies.timer[z], w.zombies.anim[z]) = (ZombieState::Wander, 0.0, ZombieAnim::Idle);
+            // A first shove each time (earlier ones add up, tested below).
+            w.shoved.clear();
             rest(&mut w, id);
             assert!(w.player_shove(id));
             let hits = until_ready(&mut w, id);
@@ -1470,6 +1622,136 @@ mod tests {
         assert!((front - c.shove_knockdown_chance).abs() < 0.07, "front {front}");
         assert!((behind - c.shove_knockdown_chance * c.behind_knockdown_mult).abs() < 0.08, "behind {behind}");
         assert!(front > 0.15 && behind > front);
+    }
+
+    /// A shove pushes a lone zombie well back (room for a swing), further with a weapon in hand.
+    #[test]
+    fn a_shove_makes_room_to_swing() {
+        let mut pushed = Vec::new();
+        for weapon in [None, Some("baseball_bat")] {
+            let (mut w, id) = arena(31);
+            if let Some(k) = weapon {
+                equip(&mut w, id, k);
+            }
+            w.config.combat.shove_knockdown_chance = 0.0;
+            let z = zombie(&mut w, Vec2::new(101.3, 100.5), PI);
+            let before = w.zombies.pos[z].x;
+            assert!(w.player_shove(id));
+            // How far back it slides before it comes on again.
+            let mut d: f32 = 0.0;
+            for _ in 0..30 {
+                w.step();
+                d = d.max(w.zombies.pos[z].x - before);
+            }
+            eprintln!("shove ({weapon:?}): pushed back {d:.2} m");
+            pushed.push(d);
+        }
+        assert!(pushed[0] > 1.0, "bare hands pushed only {:.2} m", pushed[0]);
+        assert!(pushed[1] > pushed[0] + 0.1, "a bat shoved no further: {pushed:?}");
+        // A bat's reach from the player's centre is its range plus a body: the zombie is now
+        // out at the end of it, not crowding it.
+        let bat = &weapons()[weapons().iter().position(|w| w.id == "baseball_bat").unwrap()];
+        assert!(0.8 + pushed[1] > bat.close_range + ZOMBIE_RADIUS + PLAYER_RADIUS);
+    }
+
+    /// Shoves on one zombie in quick succession add up: the third is far likelier to floor it than
+    /// the first. A knockdown starts the count over.
+    #[test]
+    fn repeated_shoves_add_up_to_a_knockdown() {
+        let (mut w, id) = arena(32);
+        let z = zombie(&mut w, Vec2::new(101.3, 100.5), PI);
+        let zid = w.zombies.id[z];
+        let mut downs = [0u32; 3];
+        let trials = 300;
+        for _ in 0..trials {
+            w.shoved.clear();
+            for k in 0..3 {
+                w.players[0].skills = crate::skills::Skills::start(&w.config.skills);
+                (w.zombies.pos[z], w.zombies.vel[z], w.zombies.facing[z]) = (Vec2::new(101.3, 100.5), Vec2::ZERO, PI);
+                // Recovered from the last one: only the count carries over, not the stagger.
+                (w.zombies.state[z], w.zombies.timer[z], w.zombies.anim[z]) = (ZombieState::Wander, 0.0, ZombieAnim::Idle);
+                rest(&mut w, id);
+                assert!(w.player_shove(id));
+                let hits = until_ready(&mut w, id);
+                if hits[0].effect == HitEffect::KnockedDown {
+                    downs[k] += 1;
+                    assert!(w.shoved.iter().all(|s| s.zombie != zid), "a knockdown starts over");
+                    break;
+                }
+                assert_eq!(super::shoves_before(&w.shoved, zid, w.tick, &w.config.combat), k as u32 + 1);
+            }
+        }
+        // Rates of the k-th shove flooring it, of those that got that far.
+        let first = downs[0] as f32 / trials as f32;
+        let third = downs[2] as f32 / (trials - downs[0] - downs[1]).max(1) as f32;
+        eprintln!("shove knockdowns: first {first:.2}, third {third:.2} ({downs:?})");
+        assert!(third > first + 0.2, "first {first}, third {third}");
+        // Shoves too far apart don't add up.
+        w.shoved.clear();
+        super::remember_shove(&mut w.shoved, zid, 100, &w.config.combat, false);
+        let late = 100 + (w.config.combat.shove_repeat_secs / TICK_DT) as u64 + 5;
+        assert_eq!(super::shoves_before(&w.shoved, zid, late, &w.config.combat), 0);
+        // And they are saved (in a generated town: the arena's map isn't one a save can rebuild).
+        let mut w = World::new(WorldConfig::new(53, 0, templates()).with_weapons(weapons()).with_items(items()));
+        w.add_player(w.player_spawn);
+        let at = w.player_spawn + Vec2::new(5.0, 0.0);
+        let z = zombie(&mut w, at, PI);
+        w.step();
+        let hash = w.state_hash();
+        super::remember_shove(&mut w.shoved, w.zombies.id[z], w.tick, &w.config.combat, false);
+        assert_ne!(w.state_hash(), hash, "shoves adding up are in the hash");
+        let loaded = World::load(&w.save(), &w.config).unwrap();
+        assert_eq!(loaded.shoved, w.shoved);
+        assert_eq!(loaded.state_hash(), w.state_hash());
+    }
+
+    #[test]
+    fn a_stomp_finds_the_body_and_the_head() {
+        let c = CombatTuning::default();
+        // A zombie that faced west, knocked onto its back: feet at (0, 0), head 1.45 m east.
+        let (feet, facing) = (Vec2::ZERO, PI);
+        let head = Vec2::new(c.down_head_offset, 0.0);
+        // Standing by the head, facing it: the head.
+        let s = super::stomp_spot(&c, head + Vec2::new(0.0, -0.6), FRAC_PI_2, feet, facing).unwrap();
+        assert!(s.head && s.at.distance(head) < 1e-4, "{s:?}");
+        // Beside the middle of the body: the body, where it's nearest.
+        let s = super::stomp_spot(&c, Vec2::new(0.6, -0.8), FRAC_PI_2, feet, facing).unwrap();
+        assert!(!s.head && (s.at - Vec2::new(0.6, 0.0)).length() < 1e-4, "{s:?}");
+        // At the feet, facing them: the body.
+        assert!(!super::stomp_spot(&c, Vec2::new(-0.7, 0.0), 0.0, feet, facing).unwrap().head);
+        // Facing away, or too far off: nothing.
+        assert!(super::stomp_spot(&c, Vec2::new(-0.7, 0.0), PI, feet, facing).is_none());
+        assert!(super::stomp_spot(&c, Vec2::new(0.6, -2.0), FRAC_PI_2, feet, facing).is_none());
+    }
+
+    /// One stamp on the head finishes a downed zombie; a stamp keeps one getting up on the ground.
+    #[test]
+    fn a_stomp_to_the_head_is_decisive() {
+        for seed in 1..=8 {
+            let (mut w, id) = arena(40 + seed);
+            let z = zombie(&mut w, Vec2::new(101.2, 100.5), PI);
+            (w.zombies.state[z], w.zombies.anim[z], w.zombies.timer[z]) = (ZombieState::Down, ZombieAnim::Down, 5.0);
+            // Stand south of its head, facing north.
+            let head = w.zombies.pos[z] + Vec2::new(w.config.combat.down_head_offset, 0.0);
+            w.players[0].state.pos = head + Vec2::new(0.0, 0.6);
+            w.players[0].state.facing = -FRAC_PI_2;
+            w.players[0].input.facing = -FRAC_PI_2;
+            assert!(w.player_stomp(id));
+            let hits = until_ready(&mut w, id);
+            assert_eq!(hits.len(), 1, "seed {seed}");
+            assert!(hits[0].crit, "seed {seed}: a head stomp is a crit");
+            assert_eq!(w.zombies.state[z], ZombieState::Dead, "seed {seed}: survived a stamp on the head ({:?})", hits[0]);
+        }
+        // Getting up: a stamp on the body puts it back down for a while.
+        let (mut w, id) = arena(50);
+        let z = zombie(&mut w, Vec2::new(101.2, 100.5), PI);
+        (w.zombies.state[z], w.zombies.anim[z], w.zombies.timer[z]) = (ZombieState::Down, ZombieAnim::GetUp, 1.0);
+        w.zombies.hp[z] = 1000.0;
+        assert!(w.player_stomp(id));
+        let hits = until_ready(&mut w, id);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(w.zombies.state[z], ZombieState::Down);
+        assert!(w.zombies.timer[z] > crate::zombies::GET_UP_SECS, "still getting up: {} s", w.zombies.timer[z]);
     }
 
     #[test]
