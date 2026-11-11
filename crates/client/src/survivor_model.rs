@@ -275,6 +275,9 @@ struct Retarget {
     ref_global: Vec<Quat>,
     /// Skeleton hip height over the grey-box's.
     hip_scale: f32,
+    /// How far round the reference pose's chest is turned from its hips' heading (radians about Y;
+    /// the idle's hips are faced forward, its chest isn't quite), for [`Retarget::apply_square`].
+    ref_chest: f32,
 }
 
 impl Retarget {
@@ -315,11 +318,24 @@ impl Retarget {
         let g = rig.globals(&reference);
         let ref_global = g.iter().map(|m| m.to_scale_rotation_translation().1).collect();
         let root_y = (0..rig.len()).find(|&b| rig.bones[b].parent.is_none()).map_or(HIP, |b| g[b].w_axis.y);
-        Self { src, reference, ref_global, hip_scale: (root_y / HIP).clamp(0.5, 2.0) }
+        let ref_chest = Gaze::new(rig).map_or(0.0, |gaze| gaze.chest(&g));
+        Self { src, reference, ref_global, hip_scale: (root_y / HIP).clamp(0.5, 2.0), ref_chest }
     }
 
     /// The grey-box pose `grey` on the skeleton.
     fn apply(&self, body: &Body, grey: &SPose) -> RigPose {
+        self.apply_turned(body, grey, Quat::IDENTITY)
+    }
+
+    /// The same with the chest square to the hips: the reference's spine, shoulders, neck and head
+    /// turned back by its chest's turn, the arms where the grey-box puts them. For poses that use both
+    /// arms alike (the weapon shove): over the reference's turned chest the right shoulder stood back,
+    /// so the right hand stayed by the chest while the left reached out (the owner).
+    fn apply_square(&self, body: &Body, grey: &SPose) -> RigPose {
+        self.apply_turned(body, grey, Quat::from_rotation_y(-self.ref_chest))
+    }
+
+    fn apply_turned(&self, body: &Body, grey: &SPose, chest: Quat) -> RigPose {
         let gg = globals(&survivor::BONES, grey).map(|m| m.to_scale_rotation_translation().1);
         let rig = &body.rig;
         let mut pose = self.reference.clone();
@@ -327,8 +343,9 @@ impl Retarget {
         for b in 0..rig.len() {
             let parent = rig.bones[b].parent.map_or(Quat::IDENTITY, |p| global[p]);
             global[b] = match self.src[b] {
+                Src::Grey(i @ (TORSO | HEAD)) => gg[i] * chest * self.ref_global[b],
                 Src::Grey(i) => gg[i] * self.ref_global[b],
-                Src::Mix(i, j, f) => gg[i].slerp(gg[j], f) * self.ref_global[b],
+                Src::Mix(i, j, f) => gg[i].slerp(gg[j], f) * chest * self.ref_global[b],
                 Src::Follow => parent * self.reference.r[b],
             };
             pose.r[b] = (parent.inverse() * global[b]).normalize();
@@ -921,7 +938,12 @@ impl SurvivorModel {
                 gaze.aim(&body.rig, &mut pose, w, !stomp);
             }
         } else if let Some((act, whole, w)) = survivor::action_now(a, now, style, armed) {
-            pose.blend_bones(&self.retarget.apply(body, &act), w, Some(if whole { &self.all } else { &self.upper }));
+            // A shove pushes with both arms alike: the chest square, so both reach out as far.
+            let act = match a.action.map(|c| c.kind) {
+                Some(zombye_sim::ActionKind::Shove) => self.retarget.apply_square(body, &act),
+                _ => self.retarget.apply(body, &act),
+            };
+            pose.blend_bones(&act, w, Some(if whole { &self.all } else { &self.upper }));
         }
         // A blow taken: the body's own reaction over the upper body, once through, eased in and out;
         // else the flinch, on top: each grey-box turn about the axes it has in the reference pose.
@@ -1279,6 +1301,25 @@ mod tests {
         let mut body = parse_body(&std::fs::read(&path).unwrap()).unwrap();
         face_forward(&mut body);
         (body, models.join("wearables"))
+    }
+
+    /// The weapon shove on the body (no clip of its own: the grey-box's pose carried over) pushes with
+    /// both arms alike: both hands as far out in front, level with each other (the owner: the right
+    /// hand stayed by the chest while the left reached out, over the idle's turned chest).
+    #[test]
+    fn the_weapon_shove_reaches_out_with_both_hands() {
+        let (body, _) = shipped_body();
+        let idle = body.clips.iter().position(|c| c.name.eq_ignore_ascii_case("idle")).unwrap();
+        let retarget = Retarget::new(&body, body.clips[idle].frames[0].clone());
+        let rig = &body.rig;
+        let (l, r) = (rig.find("LeftHand").unwrap(), rig.find("RightHand").unwrap());
+        for style in [Style::OneHand, Style::TwoHand] {
+            let grey = survivor::action(zombye_sim::ActionKind::Shove, style, true, survivor::U_HIT, &survivor::idle(0.0, true));
+            let g = rig.globals(&retarget.apply_square(&body, &grey));
+            let (lh, rh) = (g[l].w_axis.truncate(), g[r].w_axis.truncate());
+            assert!((lh.z - rh.z).abs() < 0.08 && (lh.y - rh.y).abs() < 0.08, "{style:?}: left hand at {lh}, right at {rh}");
+            assert!(lh.z > 0.3 && rh.z > 0.3, "{style:?}: hands out in front: left {lh}, right {rh}");
+        }
     }
 
     /// Through every blow the body's own clips play, his eyes are on the aim: straight ahead, or as

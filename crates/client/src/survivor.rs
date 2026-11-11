@@ -280,7 +280,7 @@ pub(crate) struct ActionClock {
 }
 
 /// Where in an action clip the blow lands: the windup plays before it, the recovery after.
-const U_HIT: f32 = 0.45;
+pub(crate) const U_HIT: f32 = 0.45;
 
 impl ActionClock {
     /// Normalised clip time now.
@@ -1050,7 +1050,7 @@ fn carry(p: &mut SPose, armed: bool, swing: f32) {
     }
 }
 
-fn idle(t: f32, armed: bool) -> SPose {
+pub(crate) fn idle(t: f32, armed: bool) -> SPose {
     let s = (t * TAU).sin();
     let mut p = SPose::default();
     p.rot[TORSO] = rx(0.04 + 0.012 * s);
@@ -1158,7 +1158,7 @@ fn upper(torso: Quat, head: Quat, uarm_l: Quat, farm_l: Quat, uarm_r: Quat, farm
 }
 
 /// An action's pose at normalised time `u` (the blow lands at [`U_HIT`]).
-fn action(kind: ActionKind, style: Style, armed: bool, u: f32, ready: &SPose) -> SPose {
+pub(crate) fn action(kind: ActionKind, style: Style, armed: bool, u: f32, ready: &SPose) -> SPose {
     let ready = ready.clone();
     let q = Quat::IDENTITY;
     match (kind, style) {
