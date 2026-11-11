@@ -424,3 +424,42 @@ fn holdup_saves() {
     step(&mut w, 30 * 20);
     save(&w, "tied");
 }
+
+/// Saves for the map screen (`--render-to shot.png --hud --map --load PATH`): `map_fresh` just
+/// woken up, `map_walked` after a walk round the nearest blocks and through a few houses.
+#[test]
+#[ignore]
+fn map_saves() {
+    let (mut w, id) = world();
+    step(&mut w, 20);
+    save(&w, "map_fresh");
+    // A walk: out to the street, round the blocks, looking into the buildings it passes. The body
+    // is put down every few metres (walls and all: only what it has been near matters here).
+    let home = w.player_spawn;
+    let legs = [(0.0, 26.0), (70.0, 26.0), (70.0, -50.0), (150.0, -50.0), (150.0, 40.0), (60.0, 40.0), (60.0, 110.0), (-20.0, 110.0), (-20.0, 20.0), (0.0, 0.0)];
+    let mut at = home;
+    let size = glam::Vec2::new(w.map.width() as f32 - 2.0, w.map.height() as f32 - 2.0);
+    for (dx, dy) in legs {
+        let to = (home + glam::Vec2::new(dx, dy)).clamp(glam::Vec2::splat(2.0), size);
+        let steps = ((to - at).length() / 5.0).ceil().max(1.0) as u32;
+        for k in 1..=steps {
+            let p = at.lerp(to, k as f32 / steps as f32);
+            w.players[0].state.pos = p;
+            step(&mut w, 10);
+        }
+        at = to;
+    }
+    // Into the three buildings nearest home besides its own.
+    let mut near: Vec<(f32, glam::Vec2)> = w.map.buildings.iter().map(|b| (b.min.as_vec2() + b.size.as_vec2() / 2.0)).map(|c| (c.distance(home), c)).filter(|(d, _)| *d > 6.0).collect();
+    near.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (_, c) in near.into_iter().take(3) {
+        w.players[0].state.pos = c;
+        step(&mut w, 10);
+    }
+    w.players[0].state.pos = home + glam::Vec2::new(14.0, 24.0);
+    w.players[0].state.facing = -0.6;
+    step(&mut w, 10);
+    let seen = w.explored(id);
+    println!("map_walked: {:.0}% explored, {} buildings entered", seen.share() * 100.0, seen.entered.len());
+    save(&w, "map_walked");
+}

@@ -447,6 +447,9 @@ pub struct Snapshot {
     /// Groups (#73): for each player with a group or an invitation, its members' names, shared
     /// markers and who invited it. Every snapshot; a client gets only its own.
     pub groups: Vec<zombye_sim::GroupView>,
+    /// What each living player has seen of the map, for the map screen (`sim::explore`); a
+    /// client gets only its own.
+    pub maps: Vec<MapView>,
     /// The rooms lit now, in order (`zombye_sim::power`): light switch on, building powered.
     #[serde(default)]
     pub lit_rooms: Vec<u16>,
@@ -486,6 +489,13 @@ impl OutfitView {
             off_hand: inv.off_hand.map(|s| s.item),
         }
     }
+}
+
+/// What one player has seen of the map ([`Snapshot::maps`], `sim::explore`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct MapView {
+    pub player: u32,
+    pub explored: zombye_sim::Explored,
 }
 
 /// One player's run stats ([`Snapshot::runs`]).
@@ -581,6 +591,7 @@ impl Snapshot {
             heard: world.awareness().all_heard_now().copied().collect(),
             speech: world.take_speech(),
             groups: if world.groups().is_empty() { Vec::new() } else { world.players.iter().filter_map(|p| world.group_view(p.id)).collect() },
+            maps: world.players.iter().filter(|p| p.explored.w > 0).map(|p| MapView { player: p.id, explored: p.explored.clone() }).collect(),
             lit_rooms: world.power().lit().to_vec(),
             grid_on: world.power().grid_on(),
             fires: world.fires().iter().map(|f| f.view()).collect(),
@@ -602,7 +613,13 @@ impl Snapshot {
         self.heard.retain(|h| h.listener == player);
         self.speech.retain(|s| s.listener == player);
         self.groups.retain(|g| g.player == player);
+        self.maps.retain(|m| m.player == player);
         self
+    }
+
+    /// What `player` has seen of the map, if it is in this snapshot.
+    pub fn map_of(&self, player: u32) -> Option<&zombye_sim::Explored> {
+        self.maps.iter().find(|m| m.player == player).map(|m| &m.explored)
     }
 
     /// `player`'s run stats, if it is in this snapshot.
