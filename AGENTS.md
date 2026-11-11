@@ -1415,7 +1415,7 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   ahead (`behind` 0.5 of the way from out of sight to plain view; the cone eases from `cone_full` 60° to `cone_behind`
   125° off your facing), and the cone eases in with distance (`close_radius` 1 m, `close_fade` 4 m), so there is no
   ring round the player. What's out of sight is `unseen_day` / `unseen_night` (`tint`, `dark`, `colour` kept): by day
-  clearly dimmer (dark 0.4), at night nearly black as before. **Only the look:** which zombies, players and items are drawn is
+  clearly dimmer (dark 0.4), at night nearly black as before. **Rooms other than yours stay dark** (`other_rooms`, 0: how much of a room other than the one you are in shows where you have a line of sight into it, through a doorway or a window; from outdoors every room is another room; an open porch counts as outdoors; `fog::other_room`, the mask's red, and `FogState::visibility` goes by it too, so zombies, survivors and items in another room aren't drawn; a door's leaf counts for the rooms on both its sides). **Otherwise only the look:** which zombies, players and items are drawn is
   `FogState::visibility`, with its own constants (what's behind you isn't drawn beyond 2.5 m), unchanged.
 - **Fog of war per pixel:** the sight rays go to the GPU (`FogState::rays`, 1,024 × 1 `R32Float`, with the range and cone in
   `FogState::sight`) and `world.wesl`'s `fog_at` works out what's seen per pixel by the same rule as the mask, so
@@ -1451,7 +1451,7 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   as a straight line. The room's set is worked out again only when the room or the camera's angle changes, the
   body's every frame (a few dozen tiles), the texture is uploaded only on frames where an amount moved, and nothing
   is allocated per frame. **Nothing inside is hidden:** furniture, containers, items and characters never are; a door
-  leaf sinks away with its wall and isn't drawn in a cut one (no stubby leaf; its outline, next, says where it is; **an open door's leaf lies flat against the face of the wall beside its hinge**, 0.11 m along its edge, `world_render::OPEN_LEAF_CLEAR`, the hinge moving as it swings: turned about the corner itself it lay inside that wall and couldn't be seen) and a
+  leaf is never squashed to a stub: on a cut wall a shut door's leaf stays at full size, a little see-through (`world_render::SHUT_DOOR_FADE`), and an open one's isn't drawn (its outline, next, says where it is; **an open door's leaf lies flat against the face of the wall beside its hinge**, 0.11 m along its edge, `world_render::OPEN_LEAF_CLEAR`, the hinge moving as it swings: turned about the corner itself it lay inside that wall and couldn't be seen) and a
   window becomes a low framed lip of glass standing on the stub (`world_render::piece_look`, by `Cutaway::amount`,
   the same eased amount the shader draws the wall by). **A cut door is outlined:** in place of the leaf, the door's
   outline at its full size in the doors' blue (the same shut, open or battered down; an open door's stands swung open where its leaf is, `world_render::door_leaf_at_rest`), fading in with the

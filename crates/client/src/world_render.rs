@@ -887,9 +887,14 @@ fn sync_blinds(
 
 /// Blinds roll down and up; one on a wall that is cut away isn't drawn (a door's fades with its
 /// leaf), but still hangs there for the light: a blind down keeps the sun out of the room.
-fn animate_blinds(time: Res<Time>, cutaway: Res<crate::cutaway::Cutaway>, mut blinds: Query<(&mut BlindPiece, &mut Transform, &mut MeshTag)>) {
+fn animate_blinds(
+    time: Res<Time>,
+    cutaway: Res<crate::cutaway::Cutaway>,
+    mut blinds: Query<(&mut BlindPiece, &mut Transform, &mut MeshTag, Option<&ChildOf>)>,
+    leaves: Query<&DoorLeaf>,
+) {
     let t = 1.0 - (-6.0 * time.delta_secs()).exp();
-    for (mut bp, mut tf, mut tag) in &mut blinds {
+    for (mut bp, mut tf, mut tag, on) in &mut blinds {
         let target = if bp.down { bp.full } else { bp.up };
         let left = target - bp.drop;
         if left != 0.0 {
@@ -897,7 +902,8 @@ fn animate_blinds(time: Res<Time>, cutaway: Res<crate::cutaway::Cutaway>, mut bl
             tf.scale.y = bp.drop;
         }
         let cut = cutaway.amount(bp.key);
-        let want = if bp.door { piece_look(true, cut, true).fade } else if cut > 0.02 { 1.0 } else { 0.0 };
+        let open = on.and_then(|c| leaves.get(c.parent()).ok()).is_some_and(|l| l.open);
+        let want = if bp.door { piece_look(true, cut, true, open).fade } else if cut > 0.02 { 1.0 } else { 0.0 };
         let want = fade_tag(want);
         if tag.value != want {
             tag.value = want;
@@ -1096,19 +1102,24 @@ struct PieceLook {
     fade: f32,
 }
 
-/// **A door's leaf fades out with its wall and isn't drawn once the wall is cut**: a leaf squashed to
-/// the stub's height read as a low gate, so a cut door is shown by its outline at full size
-/// instead (`opening_hints::cut_door`, which is what says a doorway holds a door: the
+/// How far a shut door's leaf fades on a wall that is cut away: it stays there, see-through, so a
+/// shut door reads as shut. An open one's fades out altogether (its outline says where it is).
+const SHUT_DOOR_FADE: f32 = 0.2;
+
+/// **A door's leaf fades with its wall once the wall is cut, and is never squashed**: a leaf squashed to
+/// the stub's height read as a low gate, so a cut door is shown at full size: a shut one's leaf
+/// see-through (`SHUT_DOOR_FADE`), an open one's not drawn, both with the door's outline
+/// (`opening_hints::cut_door`, which is what says a doorway holds a door: the
 /// playtest's "he doesn't fit through the door"). The leaf itself stays where it is, whole, and
 /// goes on casting its shadow: a shut door in a cut wall lets no sun into the room. A window is never hidden: it sinks with its wall for the first half of the way, then is a low
 /// framed lip of glass that grows out of the stub, so you still see where the windows are. Only
 /// a battered-down door has no leaf.
-fn piece_look(shown: bool, cut: f32, door: bool) -> PieceLook {
+fn piece_look(shown: bool, cut: f32, door: bool, open: bool) -> PieceLook {
     if !shown {
         return PieceLook { shown: false, height: 1.0, lift: 0.0, lip: false, fade: 0.0 };
     }
     if door {
-        PieceLook { shown: true, height: 1.0, lift: 0.0, lip: false, fade: if cut >= 0.995 { 1.0 } else { cut } }
+        PieceLook { shown: true, height: 1.0, lift: 0.0, lip: false, fade: if !open { cut * SHUT_DOOR_FADE } else if cut >= 0.995 { 1.0 } else { cut } }
     } else if cut < 0.5 {
         PieceLook { shown: true, height: 1.0 - cut, lift: 0.0, lip: false, fade: 0.0 }
     } else {
@@ -1122,16 +1133,16 @@ fn piece_look(shown: bool, cut: f32, door: bool) -> PieceLook {
 fn cut_edge_pieces(
     cutaway: Res<crate::cutaway::Cutaway>,
     shared: Option<Res<SharedMeshes>>,
-    mut pieces: Query<(Entity, &EdgePiece, Option<&WindowPane>, Option<&Cracks>, &mut Transform, &mut Visibility, &mut Mesh3d)>,
+    mut pieces: Query<(Entity, &EdgePiece, Option<&WindowPane>, Option<&DoorLeaf>, Option<&Cracks>, &mut Transform, &mut Visibility, &mut Mesh3d)>,
     mut tags: Query<&mut MeshTag>,
 ) {
     let Some(shared) = shared else { return };
-    for (entity, piece, pane, cracks, mut tf, mut vis, mut mesh) in &mut pieces {
+    for (entity, piece, pane, leaf, cracks, mut tf, mut vis, mut mesh) in &mut pieces {
         if !piece.ground {
             continue;
         }
         let cut = cutaway.amount(piece.key);
-        let look = piece_look(piece.shown, cut, pane.is_none());
+        let look = piece_look(piece.shown, cut, pane.is_none(), leaf.is_some_and(|l| l.open));
         let tag = fade_tag(look.fade);
         for e in [Some(entity), cracks.map(|c| c.overlay)].into_iter().flatten() {
             if let Ok(mut t) = tags.get_mut(e)
@@ -1214,16 +1225,19 @@ mod tests {
     /// shadow; a pane still goes with its wall, and a battered-down door's leaf is gone.
     #[test]
     fn a_door_in_a_cut_wall_has_no_stub_of_a_leaf() {
-        let door = piece_look(true, 1.0, true);
-        assert_eq!(fade_tag(door.fade), TAG_GONE, "no leaf drawn on a cut-away wall");
+        let door = piece_look(true, 1.0, true, true);
+        assert_eq!(fade_tag(door.fade), TAG_GONE, "no open leaf drawn on a cut-away wall");
+        let shut = piece_look(true, 1.0, true, false);
+        assert!(shut.fade > 0.1 && shut.fade < 0.5 && shut.height == 1.0, "a shut one stays, see-through and whole");
         assert!(door.shown && door.height == 1.0 && door.lift == 0.0, "but it stands there whole, for its shadow");
-        assert!(fade_tag(piece_look(true, 0.9, true).fade) < TAG_GONE, "still there on the way down");
+        assert!(fade_tag(piece_look(true, 0.9, true, true).fade) < TAG_GONE, "still there on the way down");
         let whole = PieceLook { shown: true, height: 1.0, lift: 0.0, lip: false, fade: 0.0 };
-        assert_eq!(piece_look(true, 0.0, true), whole, "whole in a standing wall");
-        assert_eq!(piece_look(true, 0.0, false), whole);
-        assert!(!piece_look(false, 1.0, true).shown && !piece_look(false, 0.0, true).shown, "a broken door has no leaf");
+        assert_eq!(piece_look(true, 0.0, true, true), whole, "whole in a standing wall");
+        assert_eq!(piece_look(true, 0.0, true, false), whole);
+        assert_eq!(piece_look(true, 0.0, false, false), whole);
+        assert!(!piece_look(false, 1.0, true, true).shown && !piece_look(false, 0.0, true, false).shown, "a broken door has no leaf");
         // Half way down it is half way between.
-        let half = piece_look(true, 0.5, true).fade;
+        let half = piece_look(true, 0.5, true, true).fade;
         assert!(half > 0.25 && half < 0.75, "{half}");
     }
 
@@ -1233,13 +1247,13 @@ mod tests {
     /// hidden entities: fully gone, the camera draws none of them and they still cast shadows.
     #[test]
     fn a_window_in_a_cut_wall_stands_on_the_stub() {
-        let cut = piece_look(true, 1.0, false);
+        let cut = piece_look(true, 1.0, false, false);
         assert!(cut.shown && cut.lip, "a window stays on a cut-away wall, as its lip");
         assert_eq!((cut.lift, cut.height), (STUB_HEIGHT, 1.0));
         assert!(STUB_HEIGHT + LIP_HEIGHT < WINDOW_SILL, "the lip is lower than the sill was");
         for k in 0..=20 {
             let a = k as f32 / 20.0;
-            let look = piece_look(true, a, false);
+            let look = piece_look(true, a, false, false);
             assert!(look.shown && look.height > 0.0);
             // The wall's top at this amount (world.wesl): the window is never left over it.
             let wall_top = 3.05 + (STUB_HEIGHT - 3.05) * a;

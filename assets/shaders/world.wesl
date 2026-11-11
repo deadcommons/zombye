@@ -332,6 +332,18 @@ fn fragment(
             seen = max(seen, lit * los_at(at));
         }
     }
+    // Rooms other than the one the player is in stay dark whatever the sight rays say (fog.rs
+    // `other_room`: the mask's red is 0 there; `tree_count.y` is how much shows, fog.ron's
+    // `other_rooms`). Sharpened, so the mask's half-metre blur doesn't dim our own floor by a wall.
+    var own_room = mask.x;
+    // A door's leaf belongs to the rooms on both its sides: it is seen, and in our room, if either
+    // face is, so a shut door of the room we're in shows from the far side too (through a cut wall).
+    if (piece_kind == 5u && abs(n.y) < 0.5) {
+        let back = wp.xz - normalize(n.xz) * 0.3;
+        seen = max(seen, fog_at(back));
+        own_room = max(own_room, fog_sample(back).x);
+    }
+    seen *= mix(1.0, mix(world_params.tree_count.y, 1.0, smoothstep(0.25, 0.5, own_room)), smoothstep(0.3, 0.7, indoors));
     // By day what's unseen keeps most of its colour, dimmed and warm; at night a quarter (DCM-59,
     // materials.rs `unseen_colour`).
     var unseen = mix(vec3(grey), out.color.rgb, world_params.lights.y) * world_params.fog_tint.rgb * (1.0 - world_params.fog_tint.w);
