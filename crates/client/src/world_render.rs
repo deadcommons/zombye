@@ -28,6 +28,9 @@ use crate::server_link::{ClientMap, EdgeChangesThisFrame, EdgeDamageMap, EdgeDam
 pub const STOREY: f32 = 3.0;
 /// Half a wall's thickness.
 pub(crate) const WALL_T: f32 = 0.08;
+/// How far a wall piece's ends stop short of the faces of the walls it meets (see `add_wall`):
+/// far less than a pixel at any zoom, enough for the depth buffer to tell the two apart.
+const END_INSET: f32 = 0.003;
 /// Height a cut-away wall drops to; must match `STUB_HEIGHT` in world.wesl.
 pub(crate) const STUB_HEIGHT: f32 = 0.4;
 /// Chunks within this many chunks of the player are loaded.
@@ -463,37 +466,91 @@ fn wall_side_color(map: &TileMap, room: u16, siding: LinearRgba) -> LinearRgba {
     if building_kit::outside(map, room) { siding } else { meshgen::interior_color(&map.rooms[room as usize].room_type) }
 }
 
-/// Wall pieces for one edge on one level. `rooms` = (north/west side, south/east side).
-fn add_wall(mb: &mut MeshBuilder, map: &TileMap, owner: IVec2, which: OwnedEdge, kind: Edge, base: f32, rooms: (u16, u16), siding: LinearRgba) {
+/// The height ranges of wall on an edge of this kind (window frames, door leaves and the rest are
+/// other pieces' business).
+fn wall_spans(kind: Edge) -> &'static [(f32, f32)] {
+    match kind {
+        Edge::Wall => &[(0.0, STOREY)],
+        Edge::Window | Edge::WindowOpen | Edge::WindowBroken => &[(0.0, WINDOW_SILL), (WINDOW_HEAD, STOREY)],
+        Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken => &[(2.1, STOREY)],
+        Edge::Arch => &[(2.4, STOREY)],
+        Edge::None | Edge::Fence => &[],
+    }
+}
+
+/// The walls of one level of a building by edge, for [`add_wall`] to see what each joins.
+#[derive(Default)]
+struct LevelWalls(std::collections::HashMap<(IVec2, bool), Edge>);
+
+impl LevelWalls {
+    fn add(&mut self, owner: IVec2, which: OwnedEdge, kind: Edge) {
+        self.0.insert((owner, which == OwnedEdge::North), kind);
+    }
+
+    /// What the edges in line with this one, before and after it, are.
+    fn in_line(&self, owner: IVec2, which: OwnedEdge) -> (Edge, Edge) {
+        let step = if which == OwnedEdge::North { IVec2::X } else { IVec2::Y };
+        let at = |t: IVec2| self.0.get(&(t, which == OwnedEdge::North)).copied().unwrap_or(Edge::None);
+        (at(owner - step), at(owner + step))
+    }
+}
+
+/// Wall pieces for one edge on one level. `rooms` = (north/west side, south/east side); `joins` =
+/// the edges in line with it, before and after ([`LevelWalls::in_line`]).
+///
+/// A piece is a box that runs half a wall's thickness past each end of its edge, so corners are
+/// filled. Two rules keep its faces out of the planes of other pieces' faces, where two colours
+/// in one plane would flicker in dashes (z-fighting):
+/// - its ends stop `END_INSET` short of the far face of a wall crossing there;
+/// - its two sides cover that run-on only where the wall in line with it has nothing: where it
+///   has wall, that wall's own sides (in its own rooms' colours) cover the same strip.
+#[allow(clippy::too_many_arguments)]
+fn add_wall(mb: &mut MeshBuilder, map: &TileMap, owner: IVec2, which: OwnedEdge, kind: Edge, base: f32, rooms: (u16, u16), siding: LinearRgba, joins: (Edge, Edge)) {
     let (a, b) = TileMap::edge_segment(owner, which);
-    mb.set_tag(CutTag { kind: CutKind::Wall, anchor: (a + b) * 0.5, radius: 0.0 });
+    let tag = CutTag { kind: CutKind::Wall, anchor: (a + b) * 0.5, radius: 0.0 };
+    mb.set_tag(tag);
     let (c0, c1) = (wall_side_color(map, rooms.0, siding), wall_side_color(map, rooms.1, siding));
     let cap = shade(siding, 0.75);
-    let piece = |mb: &mut MeshBuilder, h0: f32, h1: f32| {
-        let (min, max, faces) = match which {
-            // Faces: +x, -x, +y, -y, +z, -z. North edges run along x; their -z face looks north.
-            OwnedEdge::North => (Vec3::new(a.x - WALL_T, base + h0, a.y - WALL_T), Vec3::new(b.x + WALL_T, base + h1, a.y + WALL_T), [cap, cap, cap, cap, c1, c0]),
-            OwnedEdge::West => (Vec3::new(a.x - WALL_T, base + h0, a.y - WALL_T), Vec3::new(a.x + WALL_T, base + h1, b.y + WALL_T), [c1, c0, cap, cap, cap, cap]),
+    // `s` metres along the edge from its start, `t` across it (toward the south/east side).
+    let (along, across) = match which {
+        OwnedEdge::North => (Vec3::X, Vec3::Z),
+        OwnedEdge::West => (Vec3::Z, Vec3::X),
+    };
+    let p = |s: f32, y: f32, t: f32| Vec3::new(a.x, base + y, a.y) + along * s + across * t;
+    let (s0, s1) = (-WALL_T + END_INSET, 1.0 + WALL_T - END_INSET);
+    for &(h0, h1) in wall_spans(kind) {
+        // Ends, top and bottom.
+        for (s, out) in [(s0, -along), (s1, along)] {
+            mb.quad_facing([p(s, h0, -WALL_T), p(s, h1, -WALL_T), p(s, h1, WALL_T), p(s, h0, WALL_T)], out, cap);
+        }
+        for (y, out) in [(h1, Vec3::Y), (h0, Vec3::NEG_Y)] {
+            mb.quad_facing([p(s0, y, -WALL_T), p(s0, y, WALL_T), p(s1, y, WALL_T), p(s1, y, -WALL_T)], out, cap);
+        }
+        // Sides: the edge's own metre, and each run-on where the wall in line has no wall.
+        let side = |mb: &mut MeshBuilder, from: f32, to: f32, y0: f32, y1: f32| {
+            for (t, colour) in [(WALL_T, c1), (-WALL_T, c0)] {
+                mb.quad_facing([p(from, y0, t), p(from, y1, t), p(to, y1, t), p(to, y0, t)], across * t.signum(), colour);
+            }
         };
-        mb.add_box(min, max, faces);
+        side(mb, 0.0, 1.0, h0, h1);
+        for (from, to, joined) in [(s0, 0.0, joins.0), (1.0, s1, joins.1)] {
+            let mut y = h0;
+            for &(j0, j1) in wall_spans(joined) {
+                if j0 > y && j0 < h1 {
+                    side(mb, from, to, y, j0);
+                }
+                y = y.max(j1);
+            }
+            if y < h1 {
+                side(mb, from, to, y, h1);
+            }
+        }
         // A cap at stub height, shown only when the wall is cut, so the stub looks solid.
         if h0 < STUB_HEIGHT && h1 > STUB_HEIGHT {
-            let y = base + STUB_HEIGHT;
-            mb.set_tag(CutTag { kind: CutKind::WallCap, anchor: (a + b) * 0.5, radius: 0.0 });
-            mb.quad([Vec3::new(min.x, y, min.z), Vec3::new(min.x, y, max.z), Vec3::new(max.x, y, max.z), Vec3::new(max.x, y, min.z)], Vec3::Y, shade(siding, 0.6));
-            mb.set_tag(CutTag { kind: CutKind::Wall, anchor: (a + b) * 0.5, radius: 0.0 });
+            mb.set_tag(CutTag { kind: CutKind::WallCap, ..tag });
+            mb.quad([p(s0, STUB_HEIGHT, -WALL_T), p(s0, STUB_HEIGHT, WALL_T), p(s1, STUB_HEIGHT, WALL_T), p(s1, STUB_HEIGHT, -WALL_T)], Vec3::Y, shade(siding, 0.6));
+            mb.set_tag(tag);
         }
-    };
-    match kind {
-        Edge::Wall => piece(mb, 0.0, STOREY),
-        // Frames and muntins are the building kit's (`building_kit::Kit::dress_wall`).
-        Edge::Window | Edge::WindowOpen | Edge::WindowBroken => {
-            piece(mb, 0.0, WINDOW_SILL);
-            piece(mb, WINDOW_HEAD, STOREY);
-        }
-        Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken => piece(mb, 2.1, STOREY),
-        Edge::Arch => piece(mb, 2.4, STOREY),
-        Edge::None | Edge::Fence => {}
     }
     mb.set_tag(CutTag::default());
 }
@@ -542,8 +599,12 @@ pub fn build_building(map: &TileMap, index: usize, b: &Building, furniture: &Fur
     let mut upper = MeshBuilder::default();
     let mut roof = MeshBuilder::default();
     let ground = ground_edges(map, index, b);
+    let mut walls = LevelWalls::default();
+    for &(owner, which, kind, _) in &ground {
+        walls.add(owner, which, kind);
+    }
     for &(owner, which, kind, rooms) in &ground {
-        add_wall(&mut lower, map, owner, which, kind, 0.0, rooms, siding);
+        add_wall(&mut lower, map, owner, which, kind, 0.0, rooms, siding, walls.in_line(owner, which));
         kit.dress_wall(&mut lower, owner, which, kind, 0.0, rooms);
     }
     for f in b.furniture.iter() {
@@ -560,9 +621,13 @@ pub fn build_building(map: &TileMap, index: usize, b: &Building, furniture: &Fur
         let (x0, z0) = (t.x as f32, t.y as f32);
         upper.quad([Vec3::new(x0, y, z0), Vec3::new(x0, y, z0 + 1.0), Vec3::new(x0 + 1.0, y, z0 + 1.0), Vec3::new(x0 + 1.0, y, z0)], Vec3::Y, floor_color(floor, t.x, t.y));
     }
+    let mut storeys: std::collections::BTreeMap<i8, LevelWalls> = Default::default();
+    for (level, e) in &b.upper_edges {
+        storeys.entry(*level).or_default().add(e.tile, e.edge, e.kind);
+    }
     for (level, e) in &b.upper_edges {
         let base = STOREY * *level as f32;
-        add_wall(&mut upper, map, e.tile, e.edge, e.kind, base, e.rooms, siding);
+        add_wall(&mut upper, map, e.tile, e.edge, e.kind, base, e.rooms, siding, storeys[level].in_line(e.tile, e.edge));
         kit.dress_wall(&mut upper, e.tile, e.edge, e.kind, base, e.rooms);
     }
     add_roof(&mut roof, b);
@@ -1173,6 +1238,60 @@ mod tests {
             assert!(hi.x <= (b.min.x + b.size.x) as f32 + reach && hi.z <= (b.min.y + b.size.y) as f32 + reach, "building {i}: {hi}");
         }
         assert!(most <= 1500, "{most} triangles of contact shadow on one building");
+    }
+
+    /// The dashed lines down walls where they meet (z-fighting): no face of a wall piece lies in
+    /// the plane of another wall piece's face in another colour, in any building of the town.
+    #[test]
+    fn wall_pieces_never_share_a_plane_in_two_colours() {
+        let map = town();
+        let mut pieces = 0;
+        for (i, b) in map.buildings.iter().enumerate() {
+            let siding = building_kit::Kit::new(&map, i, b).wall;
+            let mut levels: std::collections::BTreeMap<i8, (LevelWalls, Vec<(IVec2, OwnedEdge, Edge, (u16, u16))>)> = Default::default();
+            let all = ground_edges(&map, i, b).into_iter().map(|e| (0, e)).chain(b.upper_edges.iter().map(|(l, e)| (*l, (e.tile, e.edge, e.kind, e.rooms))));
+            for (level, e) in all {
+                let l = levels.entry(level).or_default();
+                l.0.add(e.0, e.1, e.2);
+                l.1.push(e);
+            }
+            let mut mb = MeshBuilder::default();
+            for (level, (walls, edges)) in &levels {
+                for &(owner, which, kind, rooms) in edges {
+                    add_wall(&mut mb, &map, owner, which, kind, STOREY * *level as f32, rooms, siding, walls.in_line(owner, which));
+                    pieces += 1;
+                }
+            }
+            let fights = mb.fights();
+            assert!(fights.is_empty(), "{} at {},{}: {} fights, first {:?}", b.template, b.min.x, b.min.y, fights.len(), fights[0]);
+        }
+        assert!(pieces > 5000, "{pieces} wall pieces");
+    }
+
+    /// Where the faces of a building's meshes fight over one plane, by kind of place, for the
+    /// whole default town (`cargo test -p zombye-client --release building_fights -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn building_fights() {
+        let map = town();
+        let furniture = FurnitureModels::load(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/models/furniture"));
+        let mut seen: std::collections::BTreeMap<String, (usize, f32, Vec3)> = Default::default();
+        for (i, b) in map.buildings.iter().enumerate() {
+            let m = build_building(&map, i, b, &furniture);
+            for (name, mesh) in [("lower", &m.lower), ("upper", &m.upper), ("roof", &m.roof)] {
+                for f in mesh.fights() {
+                    let axis = if f.normal.y.abs() > 0.9 { "flat" } else if f.normal.y.abs() < 0.1 { "upright" } else { "sloped" };
+                    let e = seen.entry(format!("{name} {axis} kinds {:?} y {:.2}", f.kinds, (f.at.y * 20.0).round() / 20.0)).or_insert((0, 0.0, f.at));
+                    (e.0, e.1) = (e.0 + 1, e.1 + f.area);
+                }
+            }
+        }
+        let mut rows: Vec<_> = seen.into_iter().collect();
+        rows.sort_by(|a, b| b.1.1.total_cmp(&a.1.1));
+        for (k, (n, area, at)) in rows.iter().take(60) {
+            eprintln!("{area:9.3} m2 {n:6} x  {k}  e.g. {at:.3}");
+        }
+        eprintln!("{} kinds of place", rows.len());
     }
 
     /// Building meshes (walls, trim, furniture, upper storeys, roof), over every building of the
