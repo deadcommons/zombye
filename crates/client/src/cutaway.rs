@@ -1,21 +1,26 @@
-//! Camera cutaways: walls stand at their full height, always. The only ones that drop to stubs
-//! are the pieces that cover the player's body from the camera, decided per wall edge.
+//! Camera cutaways: which walls drop to stubs so the player and the room they're in can be seen,
+//! decided per building and per wall edge, never by a radius round the player.
 //!
-//! - **Anywhere, indoors or out:** a wall piece that covers the player's body from the camera
-//!   drops, whichever building it belongs to. Nothing else changes: the rest of the room's walls
-//!   and of the building stand whole. (Walls used to drop for the whole room the player was in;
-//!   the owner asked for full walls, hidden only when you go behind one.)
-//! - **Inside a building** its roof and upper storeys are hidden
-//!   (`world_render::hide_upper_floors`); its walls are not.
+//! - **Inside a building:** every outside wall of that building that faces the camera drops, and
+//!   so does any wall (of that building) that hides part of the room the player is in: the
+//!   room's own near walls and inner walls between it and the camera. The far walls and the rest
+//!   stand. Its roof and upper storeys are hidden (`world_render::hide_upper_floors`).
+//! - **Never a wall the player stands in front of** ([`in_front`]: on the camera's side of its
+//!   line): it is behind them on screen and hides nothing they need, so it stands at its full
+//!   height, whatever the two rules above say (an alcove's wall, the leg of an L-shaped room,
+//!   the camera-side wall of the next wing).
+//! - **Anywhere:** a wall piece that covers the player's body from the camera drops, whichever
+//!   building it belongs to. Nothing else of that building changes: it keeps its roof.
 //! - What still covers the player after that (a roof, an upper storey, walls with the cutaways
 //!   switched off) is said in [`Cutaway::occluded`], which shows the player's silhouette
 //!   (`silhouette.rs`).
 //!
-//! The decision is a plain function over the map ([`body_edges`]). The plugin eases each edge's
-//! cut amount over [`EASE_SECS`] and writes the amounts to a small texture the world shader reads
-//! (one texel a tile: red its north edge, green its west edge), so a wall sinks to its stub as one
-//! piece with a straight top. Door leaves and window panes read the same amounts on the CPU
-//! ([`Cutaway::amount`]). Nothing is allocated per frame: the lists keep their room, and the
+//! The decision is plain functions over the map ([`room_edges`], [`body_edges`]). The plugin eases
+//! each edge's cut amount over [`EASE_SECS`] and writes the amounts to a small texture the world
+//! shader reads (one texel a tile: red its north edge, green its west edge), so a wall sinks to
+//! its stub as one piece with a straight top. Door leaves and window panes read the same amounts
+//! on the CPU ([`Cutaway::amount`]). Nothing is allocated per frame: the lists keep their room,
+//! the room's set is worked out again only when the room or the camera's angle changes, and the
 //! texture is uploaded only on frames where an amount moved.
 //!
 //! F10 switches the cutaways off and on ("walls up" / "walls cut").
@@ -39,6 +44,10 @@ pub const EASE_SECS: f32 = 0.15;
 /// How far behind a wall (on the ground, away from the camera) it can hide the floor: a 3 m wall
 /// seen from 30° up covers about 5.2 m.
 pub const WALL_REACH: f32 = 5.5;
+/// An outside wall faces the camera when its outward normal has at least this much of the
+/// camera's ground direction (0.71 for the two sides that face a fixed angle; in the middle of a
+/// turn only the side the camera is square to).
+const FACING: f32 = 0.1;
 /// The player's body for the cut: half its width, and the top of its head.
 pub const BODY_HALF: f32 = 0.3;
 pub const BODY_TOP: f32 = 1.85;
@@ -62,6 +71,64 @@ pub fn ground_dir(camera_dir: Vec3) -> (Vec2, f32) {
     let flat = camera_dir.xz();
     let len = flat.length().max(1e-4);
     (flat / len, camera_dir.y / len)
+}
+
+/// Does the wall on this edge hide part of `room`'s floor from the camera? The floor behind it on
+/// screen (away from the camera, as far as a wall's height covers) runs into the room.
+pub fn hides_room(map: &TileMap, key: EdgeKey, c: Vec2, room: u16) -> bool {
+    let (a, b) = TileMap::edge_segment(key.0, key.1);
+    let along = (b - a) * 0.45;
+    let mid = (a + b) * 0.5;
+    for s in [mid, mid - along, mid + along] {
+        let mut t = 0.25;
+        while t <= WALL_REACH {
+            if map.room_at(s - c * t) == room {
+                return true;
+            }
+            t += 0.25;
+        }
+    }
+    false
+}
+
+/// Is a body at `pos` in front of this edge's wall as the camera sees it: on the camera's side of
+/// the wall's line (by more than a hair)? Such a wall is behind the body on screen, and stands.
+pub fn in_front(key: EdgeKey, pos: Vec2, c: Vec2) -> bool {
+    let (a, _) = TileMap::edge_segment(key.0, key.1);
+    let side = if key.1 == OwnedEdge::North { (pos.y - a.y) * c.y.signum() } else { (pos.x - a.x) * c.x.signum() };
+    side > BODY_CLEAR
+}
+
+/// The walls of the building the player is inside that drop: its outside walls facing the camera,
+/// and any of its walls hiding part of the player's room. Nothing when the player is outdoors.
+/// Depends only on the building, the room and the camera's angle (not on where in the room).
+pub fn room_edges(map: &TileMap, player: Vec2, camera_dir: Vec3, out: &mut Vec<EdgeKey>) {
+    let room = map.room_at(player);
+    let Some(index) = map.building_at(player) else { return };
+    let (c, _) = ground_dir(camera_dir);
+    let b = &map.buildings[index];
+    let belongs = |r: u16| r != 0 && map.rooms[r as usize].building as usize == index;
+    for y in b.min.y..=b.min.y + b.size.y {
+        for x in b.min.x..=b.min.x + b.size.x {
+            let owner = IVec2::new(x, y);
+            let tile = map.tile(owner);
+            // `toward`: from the edge's north / west side to its south / east side.
+            for (which, kind, other, toward) in [(OwnedEdge::North, tile.north, owner - IVec2::Y, Vec2::Y), (OwnedEdge::West, tile.west, owner - IVec2::X, Vec2::X)] {
+                if !stands(kind) {
+                    continue;
+                }
+                let (first, second) = (belongs(map.tile(other).room), belongs(tile.room));
+                if !(first || second) {
+                    continue;
+                }
+                // An outside wall: the building on one side only. Its outward normal points away from it.
+                let faces = first != second && (if first { toward } else { -toward }).dot(c) > FACING;
+                if faces || hides_room(map, (owner, which), c, room) {
+                    out.push((owner, which));
+                }
+            }
+        }
+    }
 }
 
 /// Where a wall edge crosses the strip of ground between a body at `pos` and the camera: the
@@ -212,6 +279,13 @@ pub struct Cutaway {
     pub inside: Option<usize>,
     moving: Vec<Moving>,
     values: Vec<u8>,
+    /// The building's walls that drop for the room the player is in, and what they were worked out for.
+    room: Vec<EdgeKey>,
+    room_for: Option<(usize, u16, i32)>,
+    /// Those of them the player isn't in front of ([`in_front`]), this frame and last: the ones
+    /// that drop.
+    behind: Vec<EdgeKey>,
+    behind_was: Vec<EdgeKey>,
     /// The walls covering the body, this frame and last.
     body: Vec<EdgeKey>,
     body_was: Vec<EdgeKey>,
@@ -231,6 +305,10 @@ impl Cutaway {
             inside: None,
             moving: Vec::with_capacity(256),
             values: vec![0; (TEXELS * TEXELS * 2) as usize],
+            room: Vec::with_capacity(256),
+            room_for: None,
+            behind: Vec::with_capacity(256),
+            behind_was: Vec::with_capacity(256),
             body: Vec::with_capacity(16),
             body_was: Vec::with_capacity(16),
             keep: None,
@@ -254,7 +332,7 @@ impl Cutaway {
         self.moving.iter().filter(|m| m.amount > 0.0).map(|m| (m.key, self.amount(m.key)))
     }
 
-    /// Take the edges wanted now (`body`) into the moving list.
+    /// Take the edges wanted now (`behind` and `body`) into the moving list.
     fn retarget(&mut self) {
         for m in &mut self.moving {
             m.wanted = false;
@@ -262,8 +340,8 @@ impl Cutaway {
         if self.walls_up {
             return;
         }
-        for i in 0..self.body.len() {
-            let key = self.body[i];
+        for i in 0..self.behind.len() + self.body.len() {
+            let key = if i < self.behind.len() { self.behind[i] } else { self.body[i - self.behind.len()] };
             if Some(key) == self.keep {
                 continue;
             }
@@ -294,7 +372,23 @@ impl Cutaway {
     pub fn update(&mut self, map: &TileMap, pos: Vec2, camera_dir: Vec3, dt: f32) -> bool {
         let inside = map.building_at(pos);
         self.inside = inside;
+        // The room's set: only when the room or the camera's angle changes.
+        let angle = (camera_dir.x.atan2(camera_dir.z) * 200.0).round() as i32;
+        let room_for = inside.map(|b| (b, map.room_at(pos), angle));
         let mut changed = self.fresh;
+        if room_for != self.room_for {
+            self.room_for = room_for;
+            self.room.clear();
+            room_edges(map, pos, camera_dir, &mut self.room);
+            changed = true;
+        }
+        // Of those, never a wall the player stands in front of.
+        std::mem::swap(&mut self.behind, &mut self.behind_was);
+        self.behind.clear();
+        let (c, _) = ground_dir(camera_dir);
+        let (room, behind) = (&self.room, &mut self.behind);
+        behind.extend(room.iter().copied().filter(|key| !in_front(*key, pos, c)));
+        changed |= self.behind != self.behind_was;
         std::mem::swap(&mut self.body, &mut self.body_was);
         self.body.clear();
         let body = &mut self.body;
@@ -439,6 +533,12 @@ pub(crate) mod tests {
         map
     }
 
+    fn room_set(map: &TileMap, player: Vec2, angle: i32) -> Vec<EdgeKey> {
+        let mut out = Vec::new();
+        room_edges(map, player, camera(angle), &mut out);
+        out
+    }
+
     fn body_set(map: &TileMap, player: Vec2, angle: i32) -> Vec<EdgeKey> {
         let mut out = Vec::new();
         body_edges(map, player, camera(angle), |k| out.push(k));
@@ -448,43 +548,126 @@ pub(crate) mod tests {
     const N: OwnedEdge = OwnedEdge::North;
     const W: OwnedEdge = OwnedEdge::West;
 
-    /// Inside, in the west room, camera from the south-east: only the pieces between the body and
-    /// the camera drop (of the wall between the rooms and of the south wall); every other wall of
-    /// the room and of the building stands at its full height.
+    /// Inside, in the west room, camera from the south-east: the whole building's south and east
+    /// outside walls drop (the other room's too), and the inner wall between the rooms (it hides
+    /// the player's room); the north and west walls stand. Nothing of the other building moves.
     #[test]
-    fn inside_only_the_pieces_covering_the_body_drop() {
+    fn inside_the_buildings_camera_side_walls_drop_whole() {
         let map = town();
-        let mut cut = Cutaway::new(Handle::default(), false);
-        cut.update(&map, Vec2::new(11.5, 12.5), camera(0), 0.016);
-        let down: Vec<EdgeKey> = cut.cut_edges().map(|(k, _)| k).collect();
-        assert!(down.contains(&(IVec2::new(14, 15), W)), "the wall between the rooms, in front of the body: {down:?}");
-        assert!(down.contains(&(IVec2::new(15, 16), N)) || down.contains(&(IVec2::new(14, 16), N)), "the south wall, in front of the body: {down:?}");
-        assert!(down.len() <= 5, "{down:?}");
-        // The rest of the camera-side walls stand, and so do the far ones.
-        for x in [10, 11, 12, 17] {
-            assert_eq!(cut.amount((IVec2::new(x, 16), N)), 0.0, "south wall at x {x}");
+        let cut = room_set(&map, Vec2::new(11.5, 12.5), 0);
+        for x in 10..18 {
+            assert!(cut.contains(&(IVec2::new(x, 16), N)), "south wall at x {x}");
+            assert!(!cut.contains(&(IVec2::new(x, 10), N)), "north wall at x {x}");
         }
         for y in 10..16 {
-            assert_eq!(cut.amount((IVec2::new(18, y), W)), 0.0, "east wall at y {y}");
-            assert_eq!(cut.amount((IVec2::new(10, y), W)), 0.0, "west wall at y {y}");
+            assert!(cut.contains(&(IVec2::new(18, y), W)), "east wall at y {y}");
+            assert!(!cut.contains(&(IVec2::new(10, y), W)), "west wall at y {y}");
+            assert!(cut.contains(&(IVec2::new(14, y), W)), "the wall between the rooms at y {y}");
         }
-        for y in 10..13 {
-            assert_eq!(cut.amount((IVec2::new(14, y), W)), 0.0, "the wall between the rooms at y {y}");
-        }
-        for x in 10..18 {
-            assert_eq!(cut.amount((IVec2::new(x, 10), N)), 0.0, "north wall at x {x}");
-        }
-        // Standing against the camera-side corner with nothing in front but the outside walls:
-        // nothing further off than a wall's reach drops either.
-        assert!(cut.cut_edges().all(|((t, _), _)| t.x < 20), "another building's wall");
+        assert!(cut.iter().all(|(t, _)| t.x < 20), "another building's wall: {cut:?}");
+        assert_eq!(cut.len(), 8 + 6 + 6);
     }
 
-    /// A building that doesn't cover the player is whole:
+    /// In the east room the inner wall is behind the room on screen: it stands. The outside walls
+    /// facing the camera still drop along the whole building.
+    #[test]
+    fn an_inner_wall_behind_the_room_stands() {
+        let map = town();
+        let cut = room_set(&map, Vec2::new(16.5, 12.5), 0);
+        for y in 10..16 {
+            assert!(!cut.contains(&(IVec2::new(14, y), W)), "the wall between the rooms at y {y}");
+            assert!(cut.contains(&(IVec2::new(18, y), W)));
+        }
+        for x in 10..18 {
+            assert!(cut.contains(&(IVec2::new(x, 16), N)));
+        }
+    }
+
+    /// A wall the player stands in front of never drops. An L-shaped room (a 6 x 6 main part with
+    /// a 3 x 3 leg off its south-west), camera from the south-east: both the leg's east wall and
+    /// the main part's south wall beside the leg face the camera, so the room's set has both;
+    /// standing in the main part, the leg's east wall is behind the player on screen and stands,
+    /// and standing in the leg, the main part's south wall does.
+    #[test]
+    fn a_wall_the_player_is_in_front_of_stands() {
+        let mut map = town();
+        add_building(&mut map, &[(IVec2::new(40, 10), IVec2::new(6, 6)), (IVec2::new(40, 16), IVec2::new(3, 3))], 1);
+        let main = map.tile(IVec2::new(40, 10)).room;
+        for y in 16..19 {
+            for x in 40..43 {
+                map.tile_mut(IVec2::new(x, y)).unwrap().room = main;
+            }
+        }
+        for x in 40..43 {
+            map.set_edge(IVec2::new(x, 16), Side::N, Edge::None);
+        }
+        let leg_east = |y: i32| (IVec2::new(43, y), W);
+        let main_south = |x: i32| (IVec2::new(x, 16), N);
+        let (in_main, in_leg) = (Vec2::new(44.5, 12.5), Vec2::new(41.5, 17.5));
+        for p in [in_main, in_leg] {
+            let set = room_set(&map, p, 0);
+            assert!((16..19).all(|y| set.contains(&leg_east(y))) && (43..46).all(|x| set.contains(&main_south(x))), "{set:?}");
+        }
+        let (c, _) = ground_dir(camera(0));
+        assert!(in_front(leg_east(17), in_main, c) && !in_front(main_south(44), in_main, c));
+        assert!(in_front(main_south(44), in_leg, c) && !in_front(leg_east(17), in_leg, c));
+        let mut cut = Cutaway::new(Handle::default(), false);
+        cut.update(&map, in_main, camera(0), 0.016);
+        for y in 16..19 {
+            assert_eq!(cut.amount(leg_east(y)), 0.0, "the leg's east wall at y {y}, behind the player");
+        }
+        for x in 43..46 {
+            assert_eq!(cut.amount(main_south(x)), 1.0, "the main part's south wall at x {x}");
+        }
+        // Into the leg: the two swap, eased.
+        for _ in 0..20 {
+            cut.update(&map, in_leg, camera(0), 0.016);
+        }
+        for y in 16..19 {
+            assert_eq!(cut.amount(leg_east(y)), 1.0, "the leg's east wall at y {y}");
+        }
+        for x in 44..46 {
+            assert_eq!(cut.amount(main_south(x)), 0.0, "the main part's south wall at x {x}, behind the player");
+        }
+        // The same from the other side: nothing the player is in front of is down at any angle.
+        for angle in 0..4 {
+            let mut cut = Cutaway::new(Handle::default(), false);
+            cut.update(&map, in_main, camera(angle), 0.016);
+            let (c, _) = ground_dir(camera(angle));
+            let body = body_set(&map, in_main, angle);
+            assert!(cut.cut_edges().all(|(k, _)| !in_front(k, in_main, c) || body.contains(&k)), "angle {angle}");
+        }
+    }
+
+    /// The sides that drop follow the camera: from each of its four angles, the two outside walls
+    /// facing it, and only those of the four.
+    #[test]
+    fn the_cut_sides_follow_the_camera() {
+        let map = town();
+        let p = Vec2::new(32.5, 12.5);
+        let side = |cut: &[EdgeKey], s: char| match s {
+            'n' => (30..36).all(|x| cut.contains(&(IVec2::new(x, 10), N))),
+            's' => (30..36).all(|x| cut.contains(&(IVec2::new(x, 16), N))),
+            'w' => (10..16).all(|y| cut.contains(&(IVec2::new(30, y), W))),
+            _ => (10..16).all(|y| cut.contains(&(IVec2::new(36, y), W))),
+        };
+        // Angle 0 looks from +x +z, 1 from +x -z, 2 from -x -z, 3 from -x +z.
+        for (angle, facing) in [(0, "se"), (1, "ne"), (2, "nw"), (3, "sw")] {
+            let cut = room_set(&map, p, angle);
+            for s in ['n', 's', 'e', 'w'] {
+                assert_eq!(side(&cut, s), facing.contains(s), "angle {angle}, side {s}: {cut:?}");
+            }
+            assert_eq!(cut.len(), 12, "angle {angle}");
+        }
+    }
+
+    /// Outdoors nothing drops for a room, and a building that doesn't cover the player is whole:
     /// in the open, in front of a house (on its camera side), and walking along its facade.
     #[test]
     fn buildings_that_dont_cover_the_player_stay_whole() {
         let map = town();
         for p in [Vec2::new(24.0, 24.0), Vec2::new(14.0, 18.5), Vec2::new(18.4, 12.5), Vec2::new(20.5, 13.0), Vec2::new(5.0, 13.0)] {
+            assert!(room_set(&map, p, 0).is_empty(), "{p}");
             assert!(body_set(&map, p, 0).is_empty(), "at {p}: {:?}", body_set(&map, p, 0));
             assert!(!bulk_hides(&map, p, camera(0), None), "{p}");
         }
@@ -546,8 +729,7 @@ pub(crate) mod tests {
         cut.update(&map, Vec2::new(12.5, 15.8), camera(0), 0.016);
         assert_eq!(cut.amount(window), 0.0);
         assert_eq!(cut.amount((IVec2::new(13, 16), N)), 1.0);
-        // Further in, behind that window as the camera sees it: it drops like any piece.
-        cut.update(&map, Vec2::new(11.8, 15.3), camera(0), 1.0);
+        cut.update(&map, Vec2::new(12.5, 15.0), camera(0), 1.0);
         assert_eq!(cut.amount(window), 1.0);
     }
 
@@ -559,8 +741,7 @@ pub(crate) mod tests {
         let map = town();
         let mut cut = Cutaway::new(Handle::default(), false);
         let (inside, outside) = (Vec2::new(11.5, 12.5), Vec2::new(24.0, 24.0));
-        // The piece of the south wall between the body and the camera.
-        let south = (IVec2::new(15, 16), N);
+        let south = (IVec2::new(12, 16), N);
         // A fresh state (a loaded save, an offscreen picture) takes its first decision at once.
         assert!(cut.update(&map, inside, camera(0), 0.016));
         assert_eq!(cut.amount(south), 1.0);
@@ -588,12 +769,12 @@ pub(crate) mod tests {
             cut.update(&map, inside, camera(0), 0.016);
         }
         assert_eq!(cut.amount(south), 1.0);
-        // The camera turns: the pieces that cover the body from there drop instead.
+        // The camera turns: the room's set follows.
         for _ in 0..20 {
             cut.update(&map, inside, camera(2), 0.016);
         }
         assert_eq!(cut.amount(south), 0.0);
-        assert_eq!(cut.amount((IVec2::new(10, 11), W)), 1.0);
+        assert_eq!(cut.amount((IVec2::new(12, 10), N)), 1.0);
     }
 
     /// A detail (an awning, a porch post) thins out only while it stands between the player and
@@ -671,10 +852,11 @@ pub(crate) mod tests {
         }
     }
 
-    /// The shipped town: wherever the player stands in a house, only a few wall pieces drop, each
-    /// one between the body and the camera; the rest of the room's walls stand.
+    /// The shipped town: wherever the player stands in a house, the room's cut is walls of that
+    /// building only, includes every camera-facing outside wall of it, and never a wall that is
+    /// behind the player's room on screen.
     #[test]
-    fn every_house_of_the_town_drops_only_what_covers_the_body() {
+    fn every_house_of_the_town_cuts_only_its_own_camera_side() {
         let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/data");
         let templates = zombye_net::content::load_building_templates(&data).expect("templates");
         let map = zombye_sim::worldgen::generate(&zombye_sim::worldgen::GenConfig::default(), &templates).map;
@@ -691,14 +873,19 @@ pub(crate) mod tests {
                     seen.push(room);
                     let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
                     for angle in 0..4 {
-                        let mut state = Cutaway::new(Handle::default(), false);
-                        state.update(&map, p, camera(angle), 0.016);
+                        let cut = room_set(&map, p, angle);
                         let (c, _) = ground_dir(camera(angle));
-                        let cut: Vec<EdgeKey> = state.cut_edges().map(|(k, _)| k).collect();
-                        assert!(cut.len() <= 12, "{} room {room} angle {angle}: {} pieces", b.template, cut.len());
-                        for key in &cut {
-                            let (near, far) = crossing(*key, p, c, BODY_HALF).expect("a piece beside the body's line dropped");
-                            assert!(far > 0.0 && near < WALL_REACH, "{}: {key:?} {near}..{far}", b.template);
+                        assert!(!cut.is_empty(), "{} room {room} angle {angle}", b.template);
+                        for &(t, which) in &cut {
+                            let other = t - if which == N { IVec2::Y } else { IVec2::X };
+                            let rooms = [map.tile(t).room, map.tile(other).room];
+                            assert!(rooms.iter().any(|r| *r != 0 && map.rooms[*r as usize].building as usize == i), "{}: a wall of another building", b.template);
+                            // The tile on the far side of it from the camera is the building's.
+                            let (a, e) = TileMap::edge_segment(t, which);
+                            // (Round a patio, an outside wall facing away can still stand in front of the room.)
+                            let behind = map.room_at((a + e) * 0.5 - c * 0.3);
+                            let ours = behind != 0 && map.rooms[behind as usize].building as usize == i;
+                            assert!(ours || hides_room(&map, (t, which), c, room), "{}: a far wall dropped", b.template);
                         }
                         checked += 1;
                     }

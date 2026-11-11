@@ -426,6 +426,14 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   tile edges stop where a curve takes over (`Curves::kerb_span`), and curved kerbs, grit, ring joints and bend
   centre lines are drawn by the chunk each stretch's middle is in. Cost: chunk building about 0.24 ms (0.22 without
   curves; `chunk_build_time`, an ignored test, times every chunk of the default map), frames the same.
+- **No two faces in one plane (`meshgen/overlap.rs`, tests only):** where two faces of different colours lie in the
+  same plane the GPU can't tell which is in front, and they flicker in dashes (z-fighting; it doesn't show in the
+  software renderer the build machines draw with, so pictures from there won't catch it). `MeshBuilder::fights()`
+  lists every such pair in a mesh. Two tests hold what was fixed with it: `wall_pieces_never_share_a_plane_in_two_colours`
+  (a wall piece's ends stop `END_INSET`, 3 mm, short of the face of the wall it meets, and its sides cover its run-on
+  into a corner only where the wall in line has no wall: `world_render::add_wall`) and `kerbs_stand_clear_of_the_ground`.
+  `building_fights` and `chunk_fights` (ignored) print what's left over the whole town by kind of place: mostly faces
+  buried inside walls and furniture, which nobody sees. Run them after adding geometry.
 - **Street props (#61, `sim::street_props`, `assets/data/street_props.ron`):** mailboxes, fire hydrants, bins,
   street lamps and what stands in front of shops, which the generator puts outside. The file lists the kinds (`id`; `model`, the model drawn (`assets/models/street/<model>.glb`, built in Blender: mailbox, fire_hydrant, trash_can; the other kinds have none here and are grey-boxes unless the release models hold one), the id when
   left out; grey-box `size` and `color`; `blocks`, default true; `radius`, how far a body is kept from its middle,
@@ -1423,13 +1431,15 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   Zombies the fog of war hides cast none. Cost with 2,000 zombies round the player (1920x1080): no more than before
   (day 10.5-10.7 against 11.7-14.6 ms at 26 m; night with a flashlight 9.0-10.5 against 10.0-11.4 ms), the per-frame
   crowd lighting update it replaced having cost about as much as the extra shadow pass.
-- **Cutaways** (`cutaway.rs`, `world.wesl`, `world_render.rs`, `silhouette.rs`; #84): **walls stand at their full
-  height, always**, indoors and out; the only pieces that drop to 0.4 m stubs are the ones that cover the player's
-  body from the camera (below), **per wall edge, never by a radius or a hole round the player**. No wall drops for
-  the room or the building you're in (they used to: the owner asked for full walls, hidden only when you go behind
-  one). **The window you're climbing through** (within `CLIMB_ZONE` of it, `cutaway::crossed_window`) stays whole whatever would cut it, so its frame doesn't sink away under the climb; the silhouette shows you where it covers you. Its roof and upper storeys (every floor above the player's;
+- **Cutaways** (`cutaway.rs`, `world.wesl`, `world_render.rs`, `silhouette.rs`; #84, redone per building): walls drop
+  to 0.4 m stubs **per building and per wall edge, never by a radius or a hole round the player**. *Inside a
+  building* (`cutaway::room_edges`): every outside wall of that building whose outward side faces the camera (two
+  sides at each of the four camera angles; they follow `,` / `.`), and any of its walls that hides part of the room
+  you're in (the floor behind it on screen, 5.5 m away from the camera, what a 3 m wall covers from 30° up, runs
+  into your room: the room's own near walls and inner walls between it and the camera). Its far walls, inner walls
+  behind your room and every other building stand. **Never a wall you stand in front of** (`cutaway::in_front`: you are on the camera's side of its line, so it is behind you on screen): it stands at its full height whatever the room's set says (an alcove's wall, the leg of an L-shaped room, the camera-side wall of the next wing), looked at every frame (`Cutaway::behind`). **The window you're climbing through** (within `CLIMB_ZONE` of it, `cutaway::crossed_window`) stays whole whatever would cut it, so its frame doesn't sink away under the climb; the silhouette shows you where it covers you. Its roof and upper storeys (every floor above the player's;
   players are only ever on the ground floor) fade out as one over 0.15 s and are then hidden
-  (`world_render::hide_upper_floors`: a stipple by the amount in their `MeshTag`). *What drops*
+  (`world_render::hide_upper_floors`: a stipple by the amount in their `MeshTag`). *Anywhere*
   (`cutaway::body_edges`): a wall piece that covers the player's body from the camera drops, whichever building it
   is part of (the edge crosses the 0.6 m strip of ground between the body and the camera within 5.5 m); the facade
   you walk along, behind you, doesn't. **From outside every building keeps its roof and floors**; a building that
@@ -1438,7 +1448,8 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   a save are settled) and writes the amounts to a 128 x 128 Rg8 texture (one texel a tile, by the tile's coordinates
   modulo 128: red its north edge, green its west edge; the world material's binding 105). `wall_cut` in world.wesl
   reads it by a wall piece's anchor and leaves out what is above the wall's top, which sinks from 3.05 m to the stub
-  as a straight line. The body's set is worked out every frame (a few dozen tiles), the texture is uploaded only on frames where an amount moved, and nothing
+  as a straight line. The room's set is worked out again only when the room or the camera's angle changes, the
+  body's every frame (a few dozen tiles), the texture is uploaded only on frames where an amount moved, and nothing
   is allocated per frame. **Nothing inside is hidden:** furniture, containers, items and characters never are; a door
   leaf sinks away with its wall and isn't drawn in a cut one (no stubby leaf; its outline, next, says where it is; **an open door's leaf lies flat against the face of the wall beside its hinge**, 0.11 m along its edge, `world_render::OPEN_LEAF_CLEAR`, the hinge moving as it swings: turned about the corner itself it lay inside that wall and couldn't be seen) and a
   window becomes a low framed lip of glass standing on the stub (`world_render::piece_look`, by `Cutaway::amount`,
