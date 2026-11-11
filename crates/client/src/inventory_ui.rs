@@ -1973,7 +1973,7 @@ fn world_menu(
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     cams: Query<(&Camera, &GlobalTransform), With<crate::camera::IsoCamera>>,
     hover: Res<bevy::picking::hover::HoverMap>,
-    nodes: Query<(), With<Node>>,
+    nodes: Query<&ComputedNode>,
     panel: Res<InventoryPanel>,
     link: Res<ServerLink>,
     join: Res<JoinInfo>,
@@ -1988,7 +1988,9 @@ fn world_menu(
     let now = time.elapsed_secs();
     let mut want = false;
     if mouse.just_pressed(MouseButton::Right) {
-        let over_ui = hover.values().any(|m| m.keys().any(|e| nodes.contains(*e)));
+        // On a panel, button or the like; a node over the whole window (an overlay) doesn't count.
+        let whole = window.physical_size().as_vec2() * 0.95;
+        let over_ui = hover.values().any(|m| m.keys().any(|e| nodes.get(*e).is_ok_and(|n| !(n.size().x >= whole.x && n.size().y >= whole.y))));
         if over_ui || menu.fresh || me.dead {
             *tap = None;
             return;
