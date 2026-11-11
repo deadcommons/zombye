@@ -277,6 +277,11 @@ fn setup_shared(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut ma
     // `<data>/../models/street` (street props).
     let mut furniture = FurnitureModels::load(&options.data.join("../models/furniture"));
     furniture.extend(FurnitureModels::load(&options.data.join("../models/street")));
+    // Models only release builds carry (the private art repo's `release-models`), over the game's own.
+    let released = crate::release_models::load_into(crate::release_models::root(), &mut furniture);
+    if released > 0 {
+        println!("release models: {released} read");
+    }
     // Models still in the works, checked in game before they're promoted (see furniture_models.rs).
     for dir in std::env::var("ZOMBYE_EXTRA_MODELS").unwrap_or_default().split(':').filter(|d| !d.is_empty()) {
         furniture.extend(FurnitureModels::load(std::path::Path::new(dir)));

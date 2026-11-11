@@ -1568,7 +1568,8 @@ impl TownBuilder<'_> {
                     }
                 }
                 if let Some(path_end) = path_end {
-                    self.fronts.houses.push(HouseFront { path_end, front: lot.front });
+                    let b = &self.map.buildings[placed.building];
+                    self.fronts.houses.push(HouseFront { path_end, front: lot.front, min: b.min, max: b.min + b.size });
                 }
                 return Some(placed.building);
             }
@@ -1608,6 +1609,22 @@ impl TownBuilder<'_> {
             };
             let line = bay && along % 3 == 0 && along > 0;
             set_floor(&mut self.map, t, if line { Floor::RoadLine } else { Floor::Asphalt });
+        }
+        // The bays, for what parks in them: two tiles between each pair of lines, five deep.
+        let mut rows = Vec::new();
+        if depth >= 14 {
+            for base in (0..depth).step_by(16) {
+                rows.extend([base + 1, base + 10].into_iter().filter(|r| r + 5 < depth - 5));
+            }
+        }
+        rows.push(depth - 5);
+        for d0 in rows {
+            for m in 0..lot.frontage() / 3 {
+                if 3 * m + 3 <= lot.frontage() {
+                    let r = lot.sub(3 * m + 1, 3 * m + 3, d0, d0 + 5);
+                    self.fronts.bays.push(street_props::Bay { min: r.min, size: r.size, front: lot.front });
+                }
+            }
         }
     }
 

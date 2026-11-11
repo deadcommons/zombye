@@ -101,6 +101,19 @@ pub fn tree_at(x: i32, y: i32, feature: Feature) -> Option<TreeSpec> {
 pub fn add_tree(mb: &mut MeshBuilder, t: &TreeSpec, simple: bool) {
     let wood = CutTag { kind: CutKind::Wood, anchor: t.base.xz(), radius: 0.0 };
     let leaves = CutTag { kind: CutKind::Canopy, anchor: t.base.xz(), radius: t.crown_r };
+    // A release build's tree models (`release_models.rs`) stand in for the generated tree of that kind:
+    // the same foot, height and tags, one of the kind's models by the tile.
+    let name = match t.kind {
+        TreeKind::Broadleaf => "broadleaf",
+        TreeKind::Birch => "birch",
+        TreeKind::Pine => "pine",
+        TreeKind::Spruce => "spruce",
+    };
+    let models = crate::release_models::trees();
+    let n = models.variants(name);
+    if n > 0 && models.add_standing(mb, name, ((t.h(60) * n as f32) as u32).min(n - 1), t.base, t.h(61) * TAU, t.height, wood, leaves) {
+        return;
+    }
     match t.kind {
         TreeKind::Broadleaf => broadleaf(mb, t, simple, wood, leaves),
         TreeKind::Birch => birch(mb, t, simple, wood, leaves),
@@ -369,6 +382,11 @@ pub fn add_bush(mb: &mut MeshBuilder, x: i32, y: i32, centre: Vec3, size: f32) {
         x,
         y,
     };
+    let models = crate::release_models::trees();
+    let n = models.variants("bush");
+    if n > 0 && models.add_standing(mb, "bush", ((t.h(60) * n as f32) as u32).min(n - 1), centre, t.h(61) * TAU, 1.1 * size, CutTag::default(), CutTag::default()) {
+        return;
+    }
     mb.set_tag(CutTag::default());
     let colour = palette::pick(&pal().shrub, (t.h(10) * 2.0) as usize);
     let n = if t.h(11) < 0.5 { 2 } else { 3 };

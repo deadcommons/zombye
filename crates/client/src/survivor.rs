@@ -1253,13 +1253,14 @@ pub(crate) fn dead(e: f32) -> SPose {
     p
 }
 
-/// Show the weapon each survivor holds (from snapshots), as a bar in the weapon's colour.
+/// Show the weapon each survivor holds (from snapshots): a release build's model of it where
+/// there is one, else a bar in the weapon's colour.
 fn show_held_weapons(
     link: Res<ServerLink>,
     looks: Option<Res<WeaponLooks>>,
     mut commands: Commands,
     mut held: Query<(Entity, &HeldWeapon, &mut Visibility, Option<&Children>)>,
-    mut bars: Query<(&mut Transform, &mut MeshMaterial3d<StandardMaterial>), Without<HeldWeapon>>,
+    mut bars: Query<(&mut Transform, &mut MeshMaterial3d<StandardMaterial>, &mut Mesh3d), Without<HeldWeapon>>,
 ) {
     let Some(looks) = looks else { return };
     for (e, h, mut vis, children) in &mut held {
@@ -1271,22 +1272,32 @@ fn show_held_weapons(
             *vis = want;
         }
         let Some(w) = weapon.filter(|_| len > 0.0) else { continue };
-        let material = looks.materials.get(w as usize).cloned().unwrap_or_default();
-        // The handle sticks out a little behind the fist.
-        let bar = Transform::from_xyz(0.0, 0.0, len * 0.5 - 0.1).with_scale(Vec3::new(0.05, 0.05, len));
+        let (mesh, material, bar) = match looks.held(w) {
+            // A model is made as the hand holds it.
+            Some((mesh, material)) => (mesh, material, Transform::IDENTITY),
+            // The handle sticks out a little behind the fist.
+            None => (
+                looks.cube.clone(),
+                looks.materials.get(w as usize).cloned().unwrap_or_default(),
+                Transform::from_xyz(0.0, 0.0, len * 0.5 - 0.1).with_scale(Vec3::new(0.05, 0.05, len)),
+            ),
+        };
         match children.and_then(|c| c.first().copied()) {
             Some(child) => {
-                if let Ok((mut tf, mut m)) = bars.get_mut(child) {
+                if let Ok((mut tf, mut m, mut shape)) = bars.get_mut(child) {
                     if *tf != bar {
                         *tf = bar;
                     }
                     if m.0 != material {
                         m.0 = material;
                     }
+                    if shape.0 != mesh {
+                        shape.0 = mesh;
+                    }
                 }
             }
             None => {
-                commands.spawn((Mesh3d(looks.cube.clone()), MeshMaterial3d(material), bar, ChildOf(e)));
+                commands.spawn((Mesh3d(mesh), MeshMaterial3d(material), bar, ChildOf(e)));
             }
         }
     }

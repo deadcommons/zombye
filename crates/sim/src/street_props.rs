@@ -7,8 +7,16 @@
 //! big a body it pushes away) and the rules that place them, applied in order: [`Place::GardenPath`]
 //! (on the lawn beside the street end of a house's garden path), [`Place::HouseKerb`] (at the kerb
 //! in front of a house, beside its path), [`Place::ShopKerb`] (at the kerb in front of a shop or
-//! office on the main street) and [`Place::Kerb`] (along every straight kerb, `spacing` metres
-//! apart). A data folder without the file has no street props.
+//! office on the main street), [`Place::Kerb`] (along every straight kerb, `spacing` metres
+//! apart), [`Place::Yard`] (on open lawn beside or behind a house), [`Place::Roadside`] and
+//! [`Place::ShopRoad`] (parked on the road along the kerb in front of a house, or of a shop) and
+//! [`Place::Parking`] (in a parking lot's bay). A data folder without the file has no street props.
+//!
+//! **Bigger than a tile:** a kind's `tiles` (across, deep; default one) make it cover several: a
+//! parked car is 2 x 5, a shed 3 x 3. Its [`StreetProp::tile`] is the least corner of the tiles it
+//! covers ([`PropKind::footprint`] turns them with its facing) and it stands in the middle of them.
+//! Such kinds go only in yards, on the road and in parking bays. In a yard it keeps a tile of open
+//! lawn all round it; parked, at least two tiles of road stay free beside it.
 //!
 //! **Placing** ([`place`], called at the end of `worldgen::generate`): every rule has its own random
 //! stream from the seed, so the same seed and data give the same props, and changing one rule
@@ -24,7 +32,8 @@
 //! blocking prop's tile is a [`Feature::StreetProp`]: the walk grid, flow fields, the navigation
 //! graph and straight-line checks treat it like a tree, and [`TileMap::resolve_circle`] pushes a body
 //! out of a circle of the kind's `radius` round its middle, the same for the server and the client's
-//! prediction.
+//! prediction. Every tile a bigger blocking prop covers is one, and a body is kept out of the whole
+//! of each ([`TileMap::street_prop_fills`]).
 
 use glam::{IVec2, Vec2};
 use serde::{Deserialize, Serialize};
@@ -63,6 +72,14 @@ pub struct PropKind {
     /// the larger of its width and depth.
     #[serde(default)]
     pub radius: Option<f32>,
+    /// Tiles it covers, across and deep, facing south (default one tile). A bigger one (a parked
+    /// car is 2 x 5) blocks every tile it covers whole, and `radius` isn't read.
+    #[serde(default = "one_tile")]
+    pub tiles: (u8, u8),
+}
+
+fn one_tile() -> (u8, u8) {
+    (1, 1)
 }
 
 fn yes() -> bool {
@@ -78,6 +95,17 @@ impl PropKind {
     pub fn radius(&self) -> f32 {
         self.radius.unwrap_or(0.5 * self.size.0.max(self.size.1)).clamp(0.0, 0.5)
     }
+
+    /// Covers more than one tile.
+    pub fn big(&self) -> bool {
+        self.tiles != (1, 1)
+    }
+
+    /// The tiles it covers (x, y) when its front faces `facing`.
+    pub fn footprint(&self, facing: Side) -> IVec2 {
+        let (w, d) = (self.tiles.0.max(1) as i32, self.tiles.1.max(1) as i32);
+        if matches!(facing, Side::E | Side::W) { IVec2::new(d, w) } else { IVec2::new(w, d) }
+    }
 }
 
 /// Where a rule puts its kind.
@@ -91,6 +119,14 @@ pub enum Place {
     ShopKerb,
     /// Along every straight kerb in town, `spacing` metres apart.
     Kerb,
+    /// In a house's yard, on open lawn beside or behind it (`chance` per house).
+    Yard,
+    /// On the road at the kerb in front of a house, parked along it (`chance` per house).
+    Roadside,
+    /// On the road at the kerb in front of a shop or office on the main street (`chance` per building).
+    ShopRoad,
+    /// In a parking lot's bay (`chance` per bay; kinds of at most 2 x 5 tiles).
+    Parking,
 }
 
 /// One placing rule.
@@ -136,9 +172,14 @@ impl StreetPropsDef {
             if k.model.as_deref() == Some("") {
                 return Err(format!("{name}: model is empty"));
             }
+            let (tw, td) = k.tiles;
+            if !((1..=5).contains(&tw) && (1..=10).contains(&td)) {
+                return Err(format!("{name}: tiles must be (1..5, 1..10), got ({tw}, {td})"));
+            }
             let (w, d, h) = k.size;
-            if ![w, d, h].iter().all(|v| v.is_finite() && *v > 0.0 && *v <= 3.0) {
-                return Err(format!("{name}: size must be metres in (0, 3] each, got ({w}, {d}, {h})"));
+            let (mw, md) = ((tw as f32).max(3.0), (td as f32).max(3.0));
+            if !([w, d, h].iter().all(|v| v.is_finite() && *v > 0.0) && w <= mw && d <= md && h <= 4.0) {
+                return Err(format!("{name}: size must be metres in (0, {mw}], (0, {md}] and (0, 4], got ({w}, {d}, {h})"));
             }
             let (r, g, b) = k.color;
             if ![r, g, b].iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) {
@@ -171,6 +212,14 @@ impl StreetPropsDef {
                 (_, Some(_)) => return Err(format!("{name}: only Kerb takes spacing")),
                 (_, None) => {}
             }
+            let kind = self.kinds.iter().find(|k| k.id == rule.kind).expect("checked above");
+            match rule.place {
+                Place::GardenPath | Place::HouseKerb | Place::ShopKerb | Place::Kerb if kind.big() => {
+                    return Err(format!("{name}: a kind of more than one tile goes in a Yard, at the Roadside, on a ShopRoad or in Parking"));
+                }
+                Place::Parking if kind.tiles.0 > 2 || kind.tiles.1 > 5 => return Err(format!("{name}: a parking bay is 2 x 5 tiles")),
+                _ => {}
+            }
         }
         Ok(())
     }
@@ -185,6 +234,17 @@ impl StreetPropsDef {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct HouseFront {
     pub path_end: IVec2,
+    pub front: Side,
+    /// The house's footprint.
+    pub min: IVec2,
+    pub max: IVec2,
+}
+
+/// A bay of a parking lot: its tiles (2 x 5) and the side its lot's street is on.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Bay {
+    pub min: IVec2,
+    pub size: IVec2,
     pub front: Side,
 }
 
@@ -201,6 +261,7 @@ pub(crate) struct ShopFront {
 pub(crate) struct Fronts {
     pub houses: Vec<HouseFront>,
     pub shops: Vec<ShopFront>,
+    pub bays: Vec<Bay>,
 }
 
 /// The direction along a street whose road is on side `s`.
@@ -224,6 +285,7 @@ struct Placer<'a> {
     /// A prop here or next to here.
     taken: Vec<bool>,
     placed: Vec<StreetProp>,
+    kinds: &'a [PropKind],
 }
 
 impl Placer<'_> {
@@ -284,15 +346,73 @@ impl Placer<'_> {
         self.map.turning_circles.iter().all(|tc| tc.centre.distance(c) > CIRCLE_CLEAR)
     }
 
+    /// Put a prop with its least corner on `t` (its one tile, for most).
     fn put(&mut self, kind: u16, t: IVec2, facing: Side) {
-        for dy in -1..=1 {
-            for dx in -1..=1 {
+        let fp = self.kinds[kind as usize].footprint(facing);
+        for dy in -1..=fp.y {
+            for dx in -1..=fp.x {
                 if let Some(i) = self.index(t + IVec2::new(dx, dy)) {
                     self.taken[i] = true;
                 }
             }
         }
         self.placed.push(StreetProp { kind, tile: t, facing });
+    }
+
+    /// Asphalt with nothing on it and no prop on it or next to it.
+    fn free_road(&self, t: IVec2) -> bool {
+        self.index(t).is_some_and(|i| !self.taken[i] && !self.clear[i]) && self.is_road(t) && self.map.tile(t).room == 0 && self.map.tile(t).feature == Feature::None
+    }
+
+    /// Where a `wide` x `long` vehicle parks on the road beside the kerb tiles from `k` on along
+    /// the street (road on side `s` of them): its least corner. The kerb beside it runs straight and
+    /// no driveway comes out there, the road under it is free, and two more tiles of road beyond it
+    /// are, so the street stays open.
+    fn park_at(&self, k: IVec2, s: Side, wide: i32, long: i32) -> Option<IVec2> {
+        let a = along(s);
+        if !self.straight_kerb(k + a * (long / 2), s) {
+            return None;
+        }
+        for j in 0..long {
+            let q = k + a * j;
+            if !self.is_walk(q) || self.index(q).is_none_or(|i| self.clear[i]) {
+                return None;
+            }
+            for w in 1..=wide + 2 {
+                if !self.free_road(q + s.offset() * w) {
+                    return None;
+                }
+            }
+        }
+        let (c0, c1) = (k + s.offset(), k + s.offset() * wide + a * (long - 1));
+        Some(c0.min(c1))
+    }
+
+    /// Open lawn for a prop of `fp` tiles with its least corner on `t`: those tiles and the ring
+    /// round them outdoors grass with nothing on it, no prop near, and no wall, fence or door
+    /// among them.
+    fn open_lawn(&self, t: IVec2, fp: IVec2) -> bool {
+        for dy in -1..=fp.y {
+            for dx in -1..=fp.x {
+                let q = t + IVec2::new(dx, dy);
+                let Some(i) = self.index(q) else { return false };
+                let tile = self.map.tile(q);
+                if self.clear[i] || self.taken[i] || tile.room != 0 || tile.feature != Feature::None || tile.floor != Floor::Grass || tile.north != Edge::None || tile.west != Edge::None {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// One of the two ways along a street whose road is on side `s`.
+    fn along_side(s: Side, forward: bool) -> Side {
+        match (matches!(s, Side::N | Side::S), forward) {
+            (true, true) => Side::E,
+            (true, false) => Side::W,
+            (false, true) => Side::S,
+            (false, false) => Side::N,
+        }
     }
 
     /// The kerb tile straight out from `from` toward the street on side `front`, within `reach`.
@@ -360,7 +480,7 @@ pub(crate) fn place(map: &mut TileMap, def: &StreetPropsDef, seed: u64, town_min
     let max = (town_max + IVec2::splat(2)).min(IVec2::new(map.width(), map.height()));
     let size = (max - min).max(IVec2::ZERO);
     let n = (size.x * size.y) as usize;
-    let mut p = Placer { map, min, size, clear: vec![false; n], taken: vec![false; n], placed: Vec::new() };
+    let mut p = Placer { map, min, size, clear: vec![false; n], taken: vec![false; n], placed: Vec::new(), kinds: &def.kinds };
     keep_driveways_clear(&mut p);
 
     for (ri, rule) in def.rules.iter().enumerate() {
@@ -425,6 +545,93 @@ pub(crate) fn place(map: &mut TileMap, def: &StreetPropsDef, seed: u64, town_min
                     }
                 }
             }
+            Place::Yard => {
+                for h in &fronts.houses {
+                    if rng.f32() >= rule.chance {
+                        continue;
+                    }
+                    // Any way round, as things stand in a yard.
+                    let facing = Side::ALL[rng.below(4) as usize];
+                    let fp = def.kinds[kind as usize].footprint(facing);
+                    // Beside and behind the house, up to 6 m out, never in front of its front wall.
+                    let (lo, hi) = (h.min - IVec2::splat(6) - fp, h.max + IVec2::splat(6));
+                    let mut spots = Vec::new();
+                    for y in lo.y..hi.y {
+                        for x in lo.x..hi.x {
+                            let t = IVec2::new(x, y);
+                            let in_front = match h.front {
+                                Side::N => t.y < h.min.y,
+                                Side::S => t.y + fp.y > h.max.y,
+                                Side::W => t.x < h.min.x,
+                                Side::E => t.x + fp.x > h.max.x,
+                            };
+                            if !in_front && p.open_lawn(t, fp) {
+                                spots.push(t);
+                            }
+                        }
+                    }
+                    if !spots.is_empty() {
+                        let t = spots[rng.below(spots.len() as u32) as usize];
+                        p.put(kind, t, facing);
+                    }
+                }
+            }
+            Place::Roadside => {
+                let (wide, long) = (def.kinds[kind as usize].tiles.0 as i32, def.kinds[kind as usize].tiles.1 as i32);
+                for h in &fronts.houses {
+                    if rng.f32() >= rule.chance {
+                        continue;
+                    }
+                    let Some(k) = p.kerb_from(h.path_end, h.front, 6) else { continue };
+                    let a = along(h.front);
+                    let facing = Placer::along_side(h.front, rng.f32() < 0.5);
+                    let offsets = if rng.f32() < 0.5 { [1, -long, 3, -long - 2] } else { [-long, 1, -long - 2, 3] };
+                    if let Some(t) = offsets.into_iter().find_map(|o| p.park_at(k + a * o, h.front, wide, long)) {
+                        p.put(kind, t, facing);
+                    }
+                }
+            }
+            Place::ShopRoad => {
+                let (wide, long) = (def.kinds[kind as usize].tiles.0 as i32, def.kinds[kind as usize].tiles.1 as i32);
+                for s in &fronts.shops {
+                    if rng.f32() >= rule.chance {
+                        continue;
+                    }
+                    let a = along(s.front);
+                    let (lo, hi) = if a.x != 0 { (s.min.x, s.max.x) } else { (s.min.y, s.max.y) };
+                    let edge = match s.front {
+                        Side::N => s.min.y,
+                        Side::S => s.max.y - 1,
+                        Side::W => s.min.x,
+                        Side::E => s.max.x - 1,
+                    };
+                    let facing = Placer::along_side(s.front, rng.f32() < 0.5);
+                    for _ in 0..4 {
+                        let at = lo + rng.below((hi - lo).max(1) as u32) as i32;
+                        let from = if a.x != 0 { IVec2::new(at, edge) } else { IVec2::new(edge, at) };
+                        if let Some(t) = p.kerb_from(from, s.front, 12).and_then(|k| p.park_at(k, s.front, wide, long)) {
+                            p.put(kind, t, facing);
+                            break;
+                        }
+                    }
+                }
+            }
+            Place::Parking => {
+                for b in &fronts.bays {
+                    if rng.f32() >= rule.chance {
+                        continue;
+                    }
+                    // Nose in or nose out.
+                    let facing = if rng.f32() < 0.5 { b.front } else { b.front.opposite() };
+                    let fp = def.kinds[kind as usize].footprint(facing);
+                    if fp.x > b.size.x || fp.y > b.size.y {
+                        continue;
+                    }
+                    if (0..fp.y).all(|dy| (0..fp.x).all(|dx| p.free_road(b.min + IVec2::new(dx, dy)))) {
+                        p.put(kind, b.min, facing);
+                    }
+                }
+            }
             Place::Kerb => {
                 let (lo, hi) = rule.spacing.unwrap_or((40.0, 60.0));
                 // Each run of kerb (sidewalk tiles in a line with road on the same side), in a fixed
@@ -470,10 +677,17 @@ pub(crate) fn place(map: &mut TileMap, def: &StreetPropsDef, seed: u64, town_min
     let mut placed = std::mem::take(&mut p.placed);
     placed.sort_by_key(|q| (q.tile.y, q.tile.x));
     for q in &placed {
-        if def.kinds[q.kind as usize].blocks
-            && let Some(tile) = map.tile_mut(q.tile)
-        {
-            tile.feature = Feature::StreetProp;
+        let k = &def.kinds[q.kind as usize];
+        if !k.blocks {
+            continue;
+        }
+        let fp = k.footprint(q.facing);
+        for dy in 0..fp.y {
+            for dx in 0..fp.x {
+                if let Some(tile) = map.tile_mut(q.tile + IVec2::new(dx, dy)) {
+                    tile.feature = Feature::StreetProp;
+                }
+            }
         }
     }
     map.street_props = placed;
