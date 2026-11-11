@@ -54,8 +54,8 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// and a size in `ModInfo`, `ClientMsg::Fetch` and `ServerMsg::Mod`. 13: guns, #72: `Intent::Aim`,
 /// `CombatEventKind::Shot`, `JobKind::Reload`, the weapons' `ranged`. 14: `ZombieAnim::Lunge` and `Climb`.
 /// 15: weapons that wear: `durability`, `wear_chance` and `close_range` in the weapons, `one_hand`
-/// in the items, the wear numbers in `CombatTuning`.)
-pub const PROTOCOL: u32 = 15;
+/// in the items, the wear numbers in `CombatTuning`. 16: ten skill levels and XP multipliers in `SkillTuning`.)
+pub const PROTOCOL: u32 = 16;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
