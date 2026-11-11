@@ -229,15 +229,18 @@ fn fragment(
     let cut_kind = u32(in.uv_b.x + 0.5);
     if (cut_kind == 1u) {
         // The wall sinks to its stub: everything above its top (a straight line) is left out.
-        if (wp.y < UPPER_Y) {
+        // Only the walls of the storey the player is on (player.w: its floor's height; stairs).
+        let rel = wp.y - world_params.player.w;
+        if (rel < UPPER_Y && (world_params.player.w == 0.0 || rel > 0.02)) {
             let cut = wall_cut(in.uv);
-            if (cut > 0.0 && wp.y > mix(UPPER_Y, STUB_HEIGHT, cut)) {
+            if (cut > 0.0 && rel > mix(UPPER_Y, STUB_HEIGHT, cut)) {
                 discard;
             }
         }
     } else if (cut_kind == 4u) {
         // The stub's flat top, once the wall is down.
-        if (wp.y > UPPER_Y || wall_cut(in.uv) < 0.97) {
+        let rel = wp.y - world_params.player.w;
+        if (rel < 0.0 || rel > UPPER_Y || wall_cut(in.uv) < 0.97) {
             discard;
         }
     } else if (cut_kind == 8u) {

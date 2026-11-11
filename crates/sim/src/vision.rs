@@ -12,6 +12,21 @@ pub fn cast_ray(map: &TileMap, origin: Vec2, dir: Vec2, max: f32) -> f32 {
     cast(map, origin, dir, max, |map, tile, side| map.blocks_view(tile, side))
 }
 
+/// [`cast_ray`] for eyes on the first upper floor (`crate::stairs`): that floor's walls stop the
+/// ray, its windows and doorways don't. Past the building (no upper floor either side of a
+/// crossing) it is the view from a window over the street: whatever blocks sight on the ground
+/// does, so the insides of other houses stay unseen.
+pub fn cast_upper_ray(map: &TileMap, origin: Vec2, dir: Vec2, max: f32) -> f32 {
+    let floor = |t: IVec2| map.upper_tile(t).is_some_and(|u| u.floor);
+    cast(map, origin, dir, max, |map, tile, side| {
+        let next = tile + side.offset();
+        if !map.in_bounds(next) {
+            return true;
+        }
+        if floor(tile) || floor(next) { map.upper_edge(tile, side) == crate::map::Edge::Wall } else { map.blocks_view(tile, side) }
+    })
+}
+
 /// Can something walk in a straight line from `a` to `b`? Walls, windows, closed doors, fences
 /// and blocked tiles (trees, furniture) in the way say no.
 pub fn clear_path(map: &TileMap, a: Vec2, b: Vec2) -> bool {

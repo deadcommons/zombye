@@ -573,6 +573,35 @@ through that glass. Barricades come later.
   while set, and saved in an optional `CLMB` section. `ClimbTuning` is `WorldConfig::climb` (serde defaults, not
   saved, like the server's other rules). Zombies are unchanged: they climb whatever they walk into. MCP `climb
   {player, facing}`; `--walk` climbs what its way leads over (as E). `wire::PROTOCOL` 17.
+- **Stairs** (`sim::stairs`, the module's docs; first stage): a `stairs` piece of furniture one tile wide and at
+  least two long in a building with an upper storey is a flight (`map::Stair`, `TileMap::stairs`, found by
+  `TileMap::index_storeys` when the world is made: derived, not saved), a ramp rising from the floor at its foot end
+  to `map::STOREY` at its top. **A player walks up it:** `PlayerState::level` (0 the ground floor and the flight, 1
+  the first upper floor) and `step_movement` do it, for the server and the client's prediction alike
+  (`prediction_matches_server_on_the_stairs`): on the ground a flight is entered at its foot only (its sides and top
+  are walls), a body on it keeps to it, moves at `StairTuning::speed` (0.4) of its speed on the flat and steps off the
+  top onto the landing upstairs; upstairs the body is kept in the upper floor's rooms by that floor's own walls and
+  furniture (`TileMap::resolve_walker`, `upper_tile`, `upper_edge`), its doors are open doorways, and the well is
+  entered at the top end only. `TileMap::height_at(level, pos)` / `PlayerState::height` is how high the feet are.
+  `StairTuning` (`WorldConfig::stairs`, serde defaults, not saved, sent in `wire::Tunings`; ours): `speed`, and
+  `out_of_reach` (1.6 m): higher than that above the ground **zombies neither see nor strike a player** (they still
+  hear it and gather below; zombies don't use stairs yet), no gun is fired ("no clear shot from up here") and bullets
+  pass under. Blows land only between bodies on one floor within that height of each other; players on different
+  floors don't see each other (`awareness`); ground-floor doors, windows, blinds and climbs are refused off the
+  ground. Upstairs furniture are containers (`ContainerSite::level`; ids unchanged), searched from upstairs only;
+  things dropped upstairs stay there (`World::upstairs`, sparse ids of ground items; `item_level`; `Snapshot::upstairs`)
+  and are in reach of that floor only; a sleeper upstairs takes the bed up there. **Saves:** an optional `LEVL`
+  section (players upstairs, upstairs items; no format bump; in `state_hash` only while any). `wire::PROTOCOL` 24
+  (`PlayerView::level`, a bit of `PlayerPacked::bits`, `SnapshotDelta::upstairs`, `Tunings::stairs`). **Client:**
+  `player::ViewFloor` (the floor shown: 1 from half way up a flight; our feet's height) lifts the survivor, the
+  camera's focus and the aim's plane; upstairs the building's roof alone fades (`hide_upper_floors`), the cutaways
+  cut the upper floor's walls by the same per-edge rule (`Cutaway::level`, `room_edges(.., level, ..)`; the shader cuts
+  the storey whose floor height is `world_params.player.w`), the upper floor has a well over the flight, the fog's
+  rays stop at the upper floor's walls (`vision::cast_upper_ray`), and others upstairs and things lying there are
+  drawn only while that floor is the one shown. A body's `stairs_up` / `stairs_down` clips (`survivor_model::STAIR_CLIPS`:
+  two-step loops made in place) play on a flight by the distance moved, without one he walks; `--pose
+  stairs|stairs_down[:U]`. **Not yet:** zombies on stairs, shooting from or at the upper floor, working upstairs
+  doors and windows, more than one upper floor, MCP tools that say the floor.
 - `Intent`s (`crates/net`): `PlayerInput { player, seq, move_dir, facing, run, sneak, aim }` every tick (`aim`: the
   right mouse held; `step_movement` walks an aiming player at `AIM_SPEED` 2.2 m/s with no running, `PlayerView::aiming`
   says so, and the server takes `Attack` only from an aiming player (`Shove` and `Stomp` from anyone); not saved)

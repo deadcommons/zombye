@@ -42,12 +42,15 @@ const MAX_LOADS_PER_FRAME: usize = 4;
 #[derive(Default)]
 struct BuildingRender {
     lower: Vec<Entity>,
-    /// Upper floors and roof: faded out while the player is inside (each has a `MeshTag`).
+    /// Upper floors: faded out while the player is inside on the ground floor (each has a
+    /// `MeshTag`).
     upper: Vec<Entity>,
-    /// How far they are gone now (0 there, 1 gone), and the amount they were last drawn with
-    /// (-1: not yet).
-    gone: f32,
-    drawn: f32,
+    /// The roof: faded out while the player is inside, on either floor.
+    roof: Vec<Entity>,
+    /// How far the upper floors and the roof are gone now (0 there, 1 gone), and the amounts they
+    /// were last drawn with (-1: not yet).
+    gone: [f32; 2],
+    drawn: [f32; 2],
     /// Ground-floor doors and windows, keyed in `Streamer::edges`.
     edge_keys: Vec<(IVec2, OwnedEdge)>,
 }
@@ -437,7 +440,7 @@ fn stream(
             streamer.buildings.insert(i, render);
         } else if dist > LOAD_RADIUS + 1 && loaded {
             let render = streamer.buildings.remove(&i).unwrap();
-            for e in render.lower.into_iter().chain(render.upper) {
+            for e in render.lower.into_iter().chain(render.upper).chain(render.roof) {
                 commands.entity(e).despawn();
             }
             for key in render.edge_keys {
@@ -621,6 +624,10 @@ pub fn build_building(map: &TileMap, index: usize, b: &Building, furniture: &Fur
     }
     // Upper storeys: floor slabs and walls.
     for (level, t, room) in &b.upper_floors {
+        // The stairwell: no floor over a flight of stairs, so a body comes up through it.
+        if *level == 1 && map.stair_on_tile(*t).is_some() {
+            continue;
+        }
         let y = STOREY * *level as f32;
         let floor = map.rooms[*room as usize].floor;
         let (x0, z0) = (t.x as f32, t.y as f32);
@@ -707,7 +714,7 @@ fn spawn_building(
     edges: &mut HashMap<(IVec2, OwnedEdge), Entity>,
     damage: &EdgeDamageMap,
 ) -> BuildingRender {
-    let mut render = BuildingRender { drawn: -1.0, ..default() };
+    let mut render = BuildingRender { drawn: [-1.0; 2], ..default() };
     // Door leaves and window panes, one entity each.
     let lit = |rooms: (u16, u16)| building_kit::room_lit(map, rooms.0) || building_kit::room_lit(map, rooms.1);
     for (owner, which, kind, rooms) in ground_edges(map, index, b) {
@@ -726,13 +733,15 @@ fn spawn_building(
     }
     for (level, e) in &b.upper_edges {
         let base = STOREY * *level as f32;
-        if let Some(d) = spawn_edge_piece(commands, shared, mats, e.tile, e.edge, base, e.kind, 1.0, lit(e.rooms), false) {
+        // Upstairs doors are open doorways to the sim (`zombye_sim::stairs`): drawn standing open.
+        let kind = if e.kind.is_door() { Edge::DoorOpen } else { e.kind };
+        if let Some(d) = spawn_edge_piece(commands, shared, mats, e.tile, e.edge, base, kind, 1.0, lit(e.rooms), false) {
             commands.entity(d).insert(MeshTag::new(0));
             render.upper.push(d);
         }
     }
     let BuildingMeshes { lower, upper, roof } = build_building(map, index, b, &shared.furniture);
-    for (mb, group) in [(lower, 0), (upper, 1), (roof, 1)] {
+    for (mb, group) in [(lower, 0), (upper, 1), (roof, 2)] {
         if mb.is_empty() {
             continue;
         }
@@ -742,7 +751,7 @@ fn spawn_building(
         } else {
             // The amount they're faded out by (`hide_upper_floors`).
             commands.entity(e).insert(MeshTag::new(0));
-            render.upper.push(e)
+            if group == 1 { render.upper.push(e) } else { render.roof.push(e) }
         }
     }
     if let Some(material) = &shared.contact {
@@ -1009,14 +1018,15 @@ fn animate_doors(time: Res<Time>, mut leaves: Query<(&DoorLeaf, &mut Transform)>
 /// when you leave).
 const UPPER_FADE_SECS: f32 = 0.15;
 
-/// Fade out a building's upper storeys and roof while you're inside it, so you see the floor
-/// you're on: every floor above the player's (players are only ever on the ground floor). The
-/// whole of them, as one, in a stipple by the amount in their `MeshTag` (world.wesl), then hidden.
-/// From outside every building keeps its roof and floors: nothing opens a hole in them, and a
-/// player they cover shows as a silhouette instead (`silhouette.rs`).
+/// Fade out what is over the player's head in the building they're inside, so you see the floor
+/// they're on: on the ground floor its upper storeys and roof, upstairs (`ViewFloor`, stairs) the
+/// roof alone. The whole of them, as one, in a stipple by the amount in their `MeshTag`
+/// (world.wesl), then hidden. From outside every building keeps its roof and floors: nothing opens
+/// a hole in them, and a player they cover shows as a silhouette instead (`silhouette.rs`).
 fn hide_upper_floors(
     map: Res<ClientMap>,
     time: Res<Time>,
+    view: Res<crate::player::ViewFloor>,
     mut streamer: ResMut<Streamer>,
     player: Query<&Transform, With<Player>>,
     mut upper: Query<(&mut Visibility, &mut MeshTag)>,
@@ -1028,31 +1038,34 @@ fn hide_upper_floors(
     let step = if *started { time.delta_secs() / UPPER_FADE_SECS } else { 1.0 };
     *started = true;
     for (i, render) in streamer.buildings.iter_mut() {
-        let to = if Some(*i) == inside { 1.0 } else { 0.0 };
-        if render.gone != to {
-            render.gone = if to > render.gone { (render.gone + step).min(1.0) } else { (render.gone - step).max(0.0) };
-        }
-        // Nearly every building, nearly every frame: as it was drawn last.
-        if render.drawn == render.gone {
-            continue;
-        }
-        let (want, tag) = upper_look(render.gone);
-        let mut all = true;
-        for e in &render.upper {
-            // A building spawned this frame has its entities from the next.
-            let Ok((mut v, mut t)) = upper.get_mut(*e) else {
-                all = false;
+        let here = Some(*i) == inside;
+        let to = [if here && view.level == 0 { 1.0 } else { 0.0 }, if here { 1.0 } else { 0.0 }];
+        for k in 0..2 {
+            if render.gone[k] != to[k] {
+                render.gone[k] = if to[k] > render.gone[k] { (render.gone[k] + step).min(1.0) } else { (render.gone[k] - step).max(0.0) };
+            }
+            // Nearly every building, nearly every frame: as it was drawn last.
+            if render.drawn[k] == render.gone[k] {
                 continue;
-            };
-            if *v != want {
-                *v = want;
             }
-            if t.value != tag {
-                t.value = tag;
+            let (want, tag) = upper_look(render.gone[k]);
+            let mut all = true;
+            for e in if k == 0 { &render.upper } else { &render.roof } {
+                // A building spawned this frame has its entities from the next.
+                let Ok((mut v, mut t)) = upper.get_mut(*e) else {
+                    all = false;
+                    continue;
+                };
+                if *v != want {
+                    *v = want;
+                }
+                if t.value != tag {
+                    t.value = tag;
+                }
             }
-        }
-        if all {
-            render.drawn = render.gone;
+            if all {
+                render.drawn[k] = render.gone[k];
+            }
         }
     }
 }
@@ -1101,8 +1114,9 @@ fn piece_look(shown: bool, cut: f32, door: bool) -> PieceLook {
     }
 }
 
-/// Ground-floor door leaves and window panes follow their wall down to the stub and up again, by
-/// the wall's own eased amount (`Cutaway::amount`, what the shader draws the wall by).
+/// Door leaves and window panes follow their wall down to the stub and up again, by the wall's
+/// own eased amount (`Cutaway::amount`, what the shader draws the wall by): the ground floor's,
+/// or the upper floor's while that is the one cut open (`Cutaway::level`, stairs).
 fn cut_edge_pieces(
     cutaway: Res<crate::cutaway::Cutaway>,
     shared: Option<Res<SharedMeshes>>,
@@ -1110,17 +1124,20 @@ fn cut_edge_pieces(
 ) {
     let Some(shared) = shared else { return };
     for (piece, pane, mut tf, mut vis, mut mesh) in &mut pieces {
-        if !piece.ground {
-            continue;
-        }
-        let cut = cutaway.amount(piece.key);
+        let cut = if piece.ground == (cutaway.level == 0) { cutaway.amount(piece.key) } else { 0.0 };
         let look = piece_look(piece.shown, cut, pane.is_none());
-        let want = if look.shown { Visibility::Inherited } else { Visibility::Hidden };
-        if *vis != want {
-            *vis = want;
+        let mut height = look.height;
+        if piece.ground {
+            let want = if look.shown { Visibility::Inherited } else { Visibility::Hidden };
+            if *vis != want {
+                *vis = want;
+            }
+        } else if !look.shown {
+            // An upper piece's visibility is its storey's (`hide_upper_floors`): gone by its height.
+            height = 0.0;
         }
-        if tf.scale.y != look.height {
-            tf.scale.y = look.height;
+        if tf.scale.y != height {
+            tf.scale.y = height;
         }
         if let Some(pane) = pane {
             let wanted = pane.mesh_ref(&shared, look.lip);

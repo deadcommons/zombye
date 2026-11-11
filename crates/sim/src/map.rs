@@ -838,6 +838,15 @@ impl TileMap {
         self.upper.get(&(t.y, t.x)).copied()
     }
 
+    /// The edge of the first upper floor on `side` of tile `t` (`Edge::None`: nothing there).
+    pub fn upper_edge(&self, t: IVec2, side: Side) -> Edge {
+        let (owner, which) = side.owner(t);
+        self.upper.get(&(owner.y, owner.x)).map_or(Edge::None, |u| match which {
+            OwnedEdge::North => u.north,
+            OwnedEdge::West => u.west,
+        })
+    }
+
     /// Every tile of the first upper floor, row by row.
     pub fn upper_tiles(&self) -> impl Iterator<Item = (IVec2, UpperTile)> + '_ {
         self.upper.iter().map(|(&(y, x), u)| (IVec2::new(x, y), *u))

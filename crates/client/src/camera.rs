@@ -202,6 +202,7 @@ fn follow(
     time: Res<Time>,
     options: Res<Options>,
     shake: Res<CameraShake>,
+    view: Res<crate::player::ViewFloor>,
     player: Query<&Transform, (With<Player>, Without<IsoCamera>)>,
     mut cams: Query<(&mut IsoCamera, &mut Transform)>,
 ) {
@@ -209,7 +210,8 @@ fn follow(
     // An offscreen render keeps the camera where it was put (on the player, or `--center`).
     if let Some(p) = player.single().ok().filter(|_| !options.offscreen()) {
         let t = 1.0 - (-8.0 * time.delta_secs()).exp();
-        cam.focus = cam.focus.lerp(p.translation.with_y(0.0), t);
+        // The floor the player stands on (a sleeper's body lies on a bed: not that).
+        cam.focus = cam.focus.lerp(p.translation.with_y(view.height), t);
     }
     *transform = Transform::from_translation(cam.focus + cam.offset_dir() * DISTANCE).looking_at(cam.focus, Vec3::Y);
     if shake.trauma > 0.0 {

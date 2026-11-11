@@ -162,7 +162,7 @@ pub struct StairTuning {
 
 impl Default for StairTuning {
     fn default() -> Self {
-        Self { speed: 0.6, out_of_reach: 1.6 }
+        Self { speed: 0.4, out_of_reach: 1.6 }
     }
 }
 

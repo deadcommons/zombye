@@ -86,7 +86,7 @@ fn setup(mut commands: Commands, join: Res<JoinInfo>, mut meshes: ResMut<Assets<
     commands.insert_resource(WeaponLooks { cube, materials: weapon_mats, lengths, item_materials, item_sizes, item_models, model_material, held_models });
 }
 
-fn sync_items(mut commands: Commands, link: Res<ServerLink>, fog: Res<FogState>, looks: Option<Res<WeaponLooks>>, mut entities: ResMut<ItemEntities>, mut query: Query<(&mut Visibility, &mut Transform)>) {
+fn sync_items(mut commands: Commands, link: Res<ServerLink>, fog: Res<FogState>, view: Res<crate::player::ViewFloor>, looks: Option<Res<WeaponLooks>>, mut entities: ResMut<ItemEntities>, mut query: Query<(&mut Visibility, &mut Transform)>) {
     let Some(looks) = looks else { return };
     let items = &link.curr.items;
     // Gone (picked up) or changed into another item: despawn (and respawn with the new look).
@@ -98,7 +98,10 @@ fn sync_items(mut commands: Commands, link: Res<ServerLink>, fog: Res<FogState>,
         keep
     });
     for it in items {
-        let visibility = if fog.visibility(it.pos) > 0.35 { Visibility::Inherited } else { Visibility::Hidden };
+        // Things lying upstairs (stairs) are drawn on that floor, and only while it is the one open.
+        let up = link.curr.upstairs.binary_search(&it.id).is_ok();
+        let lift = if up { zombye_sim::map::STOREY } else { 0.0 };
+        let visibility = if fog.visibility(it.pos) > 0.35 && (!up || view.level > 0) { Visibility::Inherited } else { Visibility::Hidden };
         match entities.0.get(&it.id) {
             Some(&(e, _)) => {
                 if let Ok((mut v, mut tf)) = query.get_mut(e) {
@@ -115,12 +118,12 @@ fn sync_items(mut commands: Commands, link: Res<ServerLink>, fog: Res<FogState>,
                 let e = match looks.item_models.get(it.stack.item as usize).cloned().flatten() {
                     // A model lies on the floor at its own size.
                     Some(model) => {
-                        let tf = Transform::from_xyz(it.pos.x, 0.01, it.pos.y).with_rotation(Quat::from_rotation_y(-it.angle));
+                        let tf = Transform::from_xyz(it.pos.x, 0.01 + lift, it.pos.y).with_rotation(Quat::from_rotation_y(-it.angle));
                         commands.spawn((Mesh3d(model), MeshMaterial3d(looks.model_material.clone()), tf, visibility)).id()
                     }
                     None => {
                         let size = looks.item_sizes.get(it.stack.item as usize).copied().unwrap_or(Vec3::splat(0.15));
-                        let tf = Transform::from_xyz(it.pos.x, size.y * 0.5 + 0.01, it.pos.y).with_rotation(Quat::from_rotation_y(-it.angle)).with_scale(size);
+                        let tf = Transform::from_xyz(it.pos.x, size.y * 0.5 + 0.01 + lift, it.pos.y).with_rotation(Quat::from_rotation_y(-it.angle)).with_scale(size);
                         let material = looks.item_materials.get(it.stack.item as usize).cloned().unwrap_or_default();
                         commands.spawn((Mesh3d(looks.cube.clone()), MeshMaterial3d(material), tf, visibility)).id()
                     }
