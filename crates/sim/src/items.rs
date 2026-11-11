@@ -88,6 +88,18 @@ pub struct WeaponDef {
     /// above mean then). Exactly the `Firearm` weapons have it.
     #[serde(default)]
     pub ranged: Option<crate::ranged::RangedDef>,
+    /// Wear: how many knocks it takes before it breaks (see [`crate::wear`]). 0: it never wears
+    /// (bare hands, guns). How worn one is rides on its stack ([`ItemStack::used`]).
+    #[serde(default)]
+    pub durability: u8,
+    /// Chance (0..1) that a swing that hits something knocks it one step nearer breaking. A
+    /// weapon lasts about `durability / wear_chance` such swings in unpractised hands.
+    #[serde(default)]
+    pub wear_chance: f32,
+    /// Too close for a full swing: a target whose body is nearer than this takes a cramped blow
+    /// ([`crate::CombatTuning::cramped_damage`]). 0: none.
+    #[serde(default)]
+    pub close_range: f32,
 }
 
 fn default_length() -> f32 {
@@ -129,6 +141,9 @@ impl WeaponDef {
             length: 0.0,
             color: (0.8, 0.65, 0.5),
             ranged: None,
+            durability: 0,
+            wear_chance: 0.0,
+            close_range: 0.0,
         }
     }
 
@@ -189,6 +204,16 @@ impl WeaponDef {
         }
         if !(0.0..=3.0).contains(&self.length) {
             return Err(format!("{id}: length must be in 0..3 m"));
+        }
+        chance("wear_chance", self.wear_chance)?;
+        if (self.durability > 0) != (self.wear_chance > 0.0) {
+            return Err(format!("{id}: durability and wear_chance go together (both 0: it never wears), got {} and {}", self.durability, self.wear_chance));
+        }
+        if self.durability > 0 && (self.ranged.is_some() || self.category == WeaponCategory::Unarmed) {
+            return Err(format!("{id}: bare hands and guns don't wear (durability must be 0)"));
+        }
+        if !(self.close_range >= 0.0 && self.close_range < self.range) {
+            return Err(format!("{id}: close_range must be in 0..range ({} m), got {}", self.range, self.close_range));
         }
         Ok(())
     }
@@ -389,6 +414,10 @@ pub struct ItemDef {
     /// Held in both hands.
     #[serde(default)]
     pub two_handed: bool,
+    /// A two-handed thing that can be swung in one hand while the other holds something, weaker
+    /// and slower ([`crate::CombatTuning::one_hand_power`]). Only read when `two_handed`.
+    #[serde(default)]
+    pub one_hand: bool,
     /// The weapon (id in `weapons.ron`) it swings as.
     #[serde(default)]
     pub weapon: Option<String>,
@@ -423,6 +452,11 @@ fn valid_id(id: &str) -> bool {
 }
 
 impl ItemDef {
+    /// Does holding it leave no hand free: two-handed, and not one that one hand can manage.
+    pub fn both_hands(&self) -> bool {
+        self.two_handed && !self.one_hand
+    }
+
     /// A plain item for a weapon that has none in the item data (tests, bare configs, a mod that
     /// adds a weapon but no item): 1 kg, 1.5 L.
     pub fn for_weapon(w: &WeaponDef) -> Self {
@@ -435,6 +469,7 @@ impl ItemDef {
             stack: 1,
             tags: Vec::new(),
             two_handed: w.length >= 0.8,
+            one_hand: false,
             weapon: Some(w.id.clone()),
             food: None,
             drink: None,
@@ -615,7 +650,8 @@ pub fn complete_items(items: &mut Vec<ItemDef>, weapons: &[WeaponDef]) -> Vec<Op
 /// ([`ItemStack::same_kind`]), so a stale loaf never hides among fresh ones.
 ///
 /// For a gun or a gun's magazine (#72, [`crate::ranged`]) `used` is something else: the rounds in
-/// it, 0 to what it takes ([`crate::ranged::max_used`]). Neither stacks.
+/// it, 0 to what it takes ([`crate::ranged::max_used`]). Neither stacks. For a weapon that wears
+/// ([`crate::wear`]) it is the knocks it has taken, 0 to one under its `durability`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemStack {
     pub item: u16,
