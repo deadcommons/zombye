@@ -175,6 +175,32 @@ pub fn switch_spots(map: &TileMap) -> Vec<Option<SwitchSpot>> {
     // The room's north and west walls face the camera from inside at its usual angle; its south
     // and east walls are the ones the cutaways drop, where a switch can only lie on the stub.
     let near_side = |side: Side| matches!(side, Side::S | Side::E);
+    // A tile in a recess of the room one tile wide (an alcove, a short passage): walled in on both
+    // sides along the wall, so a switch there would be tucked out of the way.
+    let recess = |t: IVec2, side: Side| {
+        let r = map.tile(t).room;
+        let perp = IVec2::new(side.offset().y, side.offset().x);
+        let open = |d: IVec2| Side::ALL.into_iter().find(|s| s.offset() == d).is_some_and(|s| map.edge(t, s) == Edge::None && map.tile(t + d).room == r);
+        !open(perp) && !open(-perp)
+    };
+    // How much of the room a switch on this tile's `side` wall looks out over: the room's tiles in
+    // a band 7 wide and 4 deep in front of it. A switch tucked in a corner of an L or a nook sees
+    // little of the room; one on its main wall sees a lot. Scored as what it misses.
+    let hidden = |t: IVec2, side: Side| {
+        let r = map.tile(t).room;
+        let inward = -side.offset();
+        let perp = IVec2::new(inward.y, inward.x);
+        let mut seen = 0u32;
+        for d in 0..4 {
+            for l in -3..=3 {
+                let q = t + inward * d + perp * l;
+                if map.in_bounds(q) && map.tile(q).room == r {
+                    seen += 1;
+                }
+            }
+        }
+        28 - seen
+    };
     // Each room's doorways (the tile inside), for how far a wall is from the nearest.
     let mut doors: Vec<Vec<IVec2>> = vec![Vec::new(); map.rooms.len()];
     let tiles = || map.buildings.iter().flat_map(|b| (b.min.y..b.min.y + b.size.y).flat_map(move |y| (b.min.x..b.min.x + b.size.x).map(move |x| IVec2::new(x, y))));
@@ -199,10 +225,10 @@ pub fn switch_spots(map: &TileMap) -> Vec<Option<SwitchSpot>> {
         let Some(r) = room_of(t) else { continue };
         for side in Side::ALL {
             if map.edge(t, side) == Edge::Wall {
-                // Any wall of the room: on the camera's side, as near a doorway as there is,
-                // before the wall beside a doorway that the cutaways drop.
+                // Any wall of the room: on the camera's side, near a doorway and looking out over
+                // the room, before the wall beside a doorway that the cutaways drop.
                 let to_door = doors[r as usize].iter().map(|d| (*d - t).abs().element_sum() as u32).min().unwrap_or(20).min(20);
-                let score = if near_side(side) { 300 } else { 40 } + to_door + if blocked(t) { 1000 } else { 0 };
+                let score = if near_side(side) { 300 } else { 4 } + to_door + if blocked(t) { 1000 } else { 0 } + if recess(t, side) { 30 } else { 0 } + hidden(t, side) * 2;
                 offer(r, score, spot(t, side, Vec2::ZERO));
             }
             if !way_in(t, side, r) {
@@ -217,7 +243,7 @@ pub fn switch_spots(map: &TileMap) -> Vec<Option<SwitchSpot>> {
                     if !map.in_bounds(n) || map.tile(n).room != r || map.edge(n, side) != Edge::Wall {
                         break;
                     }
-                    let score = k as u32 * 2 + if near_side(side) { 60 } else { 0 } + if blocked(n) { 1000 } else { 0 };
+                    let score = k as u32 * 2 + if near_side(side) { 60 } else { 0 } + if blocked(n) { 1000 } else { 0 } + if recess(n, side) { 30 } else { 0 } + hidden(n, side) * 2;
                     offer(r, score, spot(n, side, -step.as_vec2() * SWITCH_TOWARD_DOOR));
                 }
             }

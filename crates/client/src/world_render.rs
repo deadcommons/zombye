@@ -295,16 +295,14 @@ fn setup_shared(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut ma
     let contact = graphics.contact_shadows.then(|| {
         materials.add(StandardMaterial { base_color: Color::WHITE, unlit: true, alpha_mode: AlphaMode::Blend, cull_mode: None, double_sided: true, ..default() })
     });
-    // A light switch: a pale plate on a dark rim, drawn about twice life size so it can be made out
-    // at the game's zoom, with
-    // a toggle: dark and down for off, warm and up for on.
+    // A light switch, life size: a pale plate with a toggle, dark and down for off, warm and up
+    // for on.
     let switch = [false, true].map(|on| {
         let mut mb = MeshBuilder::default();
         mb.set_tag(CutTag { kind: CutKind::Structure, ..default() });
-        mb.add_box(Vec3::new(-0.15, -0.21, 0.0), Vec3::new(0.15, 0.21, 0.015), meshgen::same(meshgen::shade(p.trim_dark, 0.6)));
-        mb.add_box(Vec3::new(-0.115, -0.175, 0.015), Vec3::new(0.115, 0.175, 0.03), meshgen::same(p.trim_light));
-        let (y, c) = if on { (0.0, LinearRgba::new(1.6, 1.0, 0.3, 1.0)) } else { (-0.115, meshgen::shade(p.trim_dark, 0.6)) };
-        mb.add_box(Vec3::new(-0.05, y, 0.03), Vec3::new(0.05, y + 0.115, 0.075), meshgen::same(c));
+        mb.add_box(Vec3::new(-0.045, -0.065, 0.0), Vec3::new(0.045, 0.065, 0.012), meshgen::same(p.trim_light));
+        let (y, c) = if on { (0.008, LinearRgba::new(1.0, 0.72, 0.25, 1.0)) } else { (-0.038, meshgen::shade(p.trim_light, 0.8)) };
+        mb.add_box(Vec3::new(-0.013, y, 0.012), Vec3::new(0.013, y + 0.03, 0.03), meshgen::same(c));
         meshes.add(mb.build())
     });
     commands.insert_resource(SharedMeshes { switch, door, door_glazed, blind, pane, pane_lit, shards, lips, door_cracks, pane_cracks, furniture, contact });

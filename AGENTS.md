@@ -1343,17 +1343,17 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
 - **Light switches:** every room has one (`Power::switches`, the ones on). A room is lit while its switch is on and its
   building has power (`Power::lit`, worked out again whenever either changes). **Where:** on the inside face of a wall,
   `SWITCH_HEIGHT` 1.2 m up (`power::switch_spots`, from the map alone, so the server and every client agree; derived,
-  not saved): beside a doorway into the room (up to 4 m along, 0.3 m toward it) on its north or west wall, the walls the
-  camera sees from inside at its usual angle, else beside a doorway on its south or east wall (the ones the cutaways
-  drop), else the north or west wall nearest a doorway; never in front of furniture (a fridge or wardrobe would hide it).
-  On the default town 451 of 483 switches are on a north or west wall and none behind furniture. **E** at
+  not saved): on its north or west wall (the walls the camera sees from inside at its usual angle) beside a doorway
+  into the room (up to 4 m along, 0.3 m toward it), or on that side near one, wherever it looks out over most of the
+  room (not tucked in a nook or the arm of an L); else beside a doorway on its south or east wall (the ones the
+  cutaways drop); never in front of furniture (a fridge or wardrobe would hide it). On the default town 451 of 483 switches are on a north or west wall, 379 beside a doorway and none behind
+  furniture. **E** at
   it (`Intent::Light { player, on }`, `World::player_light`; `on: None` flips it) flips it: the player must be in the
   room within `SWITCH_REACH` (1.3 m) of it; the client sends it for E when the switch is in reach and faced within 75°
   (`player::light_switch_faced`; a climb comes first, then the switch, then picking up and searching). **With no power
   it does nothing:** it clicks ("click. Nothing: no power") and stays as it was, and lights left on come back with the
-  power. Outdoors there is no switch. The client draws each switch as a pale plate on a dark rim with a toggle, about twice
-  life size (30 x 42 cm) so it can be made out at the game's zoom, the toggle up and amber while the room is lit, down
-  and dark while not (`world_render::LightSwitch`, two shared meshes); while its wall is cut away it lies on top of the
+  power. Outdoors there is no switch. The client draws each switch life size as a pale plate with a toggle, up and amber while
+  the room is lit, down while not (`world_render::LightSwitch`, two shared meshes); while its wall is cut away it lies on top of the
   stub, and
   plays the `LightSwitch` cue (a click, placeholder from `synth.py`) where a room's light goes on or off, or where ours
   clicked for nothing. A release audio folder's `sounds.ron` without a cue takes the game's entry for it
