@@ -66,6 +66,72 @@ pub const VARIANTS: usize = 4;
 impl VegKind {
     pub const ALL: [VegKind; KINDS] =
         [VegKind::GrassLong, VegKind::Grass, VegKind::GrassThin, VegKind::Weed, VegKind::FlowersRed, VegKind::FlowersWhite, VegKind::Paper, VegKind::Pebbles];
+
+    /// The kind's name in the release models' `veg/` folder.
+    pub fn file(self) -> &'static str {
+        ["grass_long", "grass", "grass_thin", "weed", "flowers_red", "flowers_white", "paper", "pebbles"][self as usize]
+    }
+}
+
+/// Where the ground cover grows and how dry it is, from the data folder's `vegetation.ron` (every
+/// field optional: one left out takes its default, no file at all the shipped one).
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct VegLook {
+    pub dry: f32,
+    pub long_from: f32,
+    pub scale: f32,
+    pub long_scale: f32,
+    pub flowers: f32,
+    pub flower_cover: f32,
+    pub verge_stones: f32,
+    pub dirt_stones: f32,
+}
+
+impl Default for VegLook {
+    fn default() -> Self {
+        VegLook { dry: 0.0, long_from: 0.6, scale: 1.0, long_scale: 1.0, flowers: 1.0, flower_cover: 0.38, verge_stones: 0.0, dirt_stones: 0.0 }
+    }
+}
+
+const SHIPPED_LOOK: &str = include_str!("../../../assets/data/vegetation.ron");
+static LOOK: std::sync::OnceLock<VegLook> = std::sync::OnceLock::new();
+
+impl VegLook {
+    pub fn parse(text: &str) -> Result<VegLook, String> {
+        let look: VegLook = ron::from_str(text).map_err(|e| e.to_string())?;
+        let within = |name: &str, v: f32, lo: f32, hi: f32| if (lo..=hi).contains(&v) { Ok(()) } else { Err(format!("{name} must be from {lo} to {hi}, not {v}")) };
+        within("dry", look.dry, -1.0, 1.0)?;
+        within("long_from", look.long_from, 0.0, 1.0)?;
+        within("scale", look.scale, 0.25, 2.0)?;
+        within("long_scale", look.long_scale, 0.25, 2.0)?;
+        within("flowers", look.flowers, 0.0, 10.0)?;
+        within("flower_cover", look.flower_cover, 0.0, 1.0)?;
+        within("verge_stones", look.verge_stones, 0.0, 1.0)?;
+        within("dirt_stones", look.dirt_stones, 0.0, 1.0)?;
+        Ok(look)
+    }
+}
+
+/// Use `vegetation.ron` from the data folder `dir` (the shipped one if it has none). Call before
+/// any chunk is built; later calls change nothing.
+pub fn load_look(dir: &std::path::Path) -> Result<(), String> {
+    let path = dir.join("vegetation.ron");
+    let look = match std::fs::read_to_string(&path) {
+        Ok(text) => VegLook::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?,
+        Err(_) => shipped_look(),
+    };
+    let _ = LOOK.set(look);
+    Ok(())
+}
+
+fn shipped_look() -> VegLook {
+    VegLook::parse(SHIPPED_LOOK).expect("the shipped vegetation.ron is good (a test checks)")
+}
+
+/// The ground cover's look: the data folder's once [`load_look`]ed, else the shipped one.
+pub fn veg_look() -> &'static VegLook {
+    LOOK.get_or_init(shipped_look)
 }
 
 /// One patch: where, what, how it's turned and scaled, how dry (0 fresh .. 1 straw), and its rank
@@ -444,7 +510,37 @@ pub fn patch_triangles(kind: VegKind, variant: u8) -> usize {
     patch(kind, variant as u32 % VARIANTS as u32).positions.len() / 3
 }
 
+/// A patch from a release model (see `release_models::veg`): its `leaves` triangles become blades,
+/// tinted by the game and dark at the root as the generated ones are; the rest keep their colours.
+fn model_patch(tris: &[([Vec3; 3], LinearRgba, bool)]) -> Patch {
+    let mut m = Patch::default();
+    let top = tris.iter().filter(|t| t.2).flat_map(|t| t.0).fold(0.05f32, |a, p| a.max(p.y));
+    for (i, (corners, colour, leaf)) in tris.iter().enumerate() {
+        let colours = corners.map(|p| {
+            if *leaf {
+                // Whole blades differ a little, by a hash of where they stand in the list.
+                let vary = 0.9 + 0.2 * crate::meshgen::hash01(i as i32 / 2, 7, 911);
+                let t = (0.42 + 0.7 * (p.y / top).clamp(0.0, 1.0).powf(0.8)) * vary;
+                [t, t, t, 1.0]
+            } else {
+                [colour.red, colour.green, colour.blue, 0.0]
+            }
+        });
+        m.tri(*corners, colours);
+    }
+    m
+}
+
 fn patch_mesh(kind: VegKind, variant: u32) -> Mesh {
+    let models = crate::release_models::veg();
+    let n = models.variants(kind.file());
+    if n > 0 {
+        let k = variant % n;
+        let name = if k == 0 { kind.file().to_string() } else { format!("{}.{}", kind.file(), k + 1) };
+        if let Some(tris) = models.raw(&name) {
+            return model_patch(&tris).build();
+        }
+    }
     patch(kind, variant).build()
 }
 

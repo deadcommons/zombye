@@ -1,0 +1,45 @@
+// How the light looks (crates/client/src/daynight.rs): the sun, the light that fills shadows, and
+// the camera's grade and vignette, by day and at night (in between follows the daylight). Only the
+// look: what zombies see by is the simulation's own. Every field is optional; one left out takes
+// the value shown.
+(
+    sun: (
+        // Brightness at full daylight, in lux.
+        lux: 16000.0,
+        // How high it stands: `low` at the horizon's end of the day plus `climb` at noon, against
+        // 1 along the ground (0.2 + 0.4 is about 47 degrees up at noon), tilted `south`.
+        low: 0.2,
+        climb: 0.4,
+        south: 0.55,
+        // Its colour (sRGB) at its highest, and toward dawn and dusk.
+        colour_high: (1.0, 0.9, 0.74),
+        colour_low: (1.0, 0.64, 0.34),
+    ),
+    // The light in the shadows: its colour (sRGB) and brightness.
+    fill_day: (colour: (0.8, 0.74, 0.7), brightness: 150.0),
+    fill_night: (colour: (0.3, 0.38, 0.62), brightness: 12.0),
+    // The camera's grade. `shadows`: saturation, contrast, lift. `midtones`: saturation, contrast.
+    // `highlights`: saturation, gain. `vignette`: intensity, radius.
+    grade_day: (
+        exposure: 0.26,
+        temperature: 0.03,
+        tint: -0.01,
+        saturation: 0.96,
+        shadows: (0.85, 0.92, 0.02),
+        midtones: (0.95, 1.03),
+        highlights: (0.9, 1.04),
+        vignette: (0.46, 0.8),
+    ),
+    grade_night: (
+        exposure: 0.35,
+        temperature: -0.03,
+        tint: 0.0,
+        saturation: 0.72,
+        shadows: (0.6, 1.0, 0.0),
+        midtones: (0.8, 1.04),
+        highlights: (1.0, 1.0),
+        vignette: (0.6, 0.62),
+    ),
+    // Added to the temperature and to the saturation at dawn and dusk.
+    dusk: (0.06, 0.1),
+)

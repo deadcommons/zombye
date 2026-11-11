@@ -620,6 +620,11 @@ fn main() {
         eprintln!("can't use the palette: {e}");
         std::process::exit(1);
     }
+    // How the light looks (light.ron) and where the ground cover grows (vegetation.ron).
+    if let Err(e) = daynight::load(&options.data).and_then(|_| vegetation::load_look(&options.data)) {
+        eprintln!("can't use the look: {e}");
+        std::process::exit(1);
+    }
     // How the fog of war looks, from the data folder's fog.ron.
     let fog_look = match fog::FogLook::load(&options.data) {
         Ok(look) => look,

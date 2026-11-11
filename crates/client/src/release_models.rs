@@ -90,6 +90,22 @@ pub fn held() -> &'static FurnitureModels {
     })
 }
 
+/// The overlay's ground cover (`veg/`, named by kind: `grass_long`, `grass`, `grass_thin`, `weed`,
+/// `flowers_red`, `flowers_white`, `paper`, `pebbles`), read once; none without the folder.
+pub fn veg() -> &'static FurnitureModels {
+    static VEG: OnceLock<FurnitureModels> = OnceLock::new();
+    VEG.get_or_init(|| match root() {
+        Some(dir) => {
+            let m = FurnitureModels::load(&dir.join("veg"));
+            if m.len() > 0 {
+                println!("release models: {} patches of ground cover", m.len());
+            }
+            m
+        }
+        None => FurnitureModels::default(),
+    })
+}
+
 /// Put the overlay's models among `models`, replacing those of the same name. Returns how many it
 /// held.
 pub fn load_into(overlay: Option<&Path>, models: &mut FurnitureModels) -> usize {
