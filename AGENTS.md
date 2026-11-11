@@ -1140,10 +1140,10 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   the panel open, or a quick right tap with it shut; held, right mouse aims). `--menu carried:N|worn:N|hand|container:N|ground[:N]`
   starts with one open, for pictures, and `--menu-pick N[@SECS]` presses its number key N (after SECS), for recordings.
   **Right-clicking things in the world** (`world_actions.rs`): the same quick right tap (or a right-click with the panel
-  open) on a door, window, fence, blind or container opens its menu: open or close, climb through or over, smash the
+  open) on a door, window, fence, blind, container or body opens its menu: open or close, climb through or over, smash the
   glass, raise, lower, fit or take down the blind (from inside), search or look inside; out of reach it says so and
   offers nothing. `world_actions::pick` finds what the pointer's ray meets first (a door's or window's opening, or the
-  ground just by it when the wall is cut down; a container's furniture as a 1 m box; an item on the floor wins unless
+  ground just by it when the wall is cut down; a container's furniture as a 1 m box, a body as a low box, `pick_body`; an item on the floor wins unless
   something stands in front of it) and `entries` lists its actions as intents. Actions that go by what the player faces
   are sent as `Intent::Toward { player, facing, then }`: the server turns the player to the thing (`World::set_facing`)
   and applies `then`, an action of that same player, as if it came alone, so reach and the rest are its own checks
