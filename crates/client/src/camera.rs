@@ -433,6 +433,7 @@ fn lock_pointer(
     mut windows: Query<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
     mut dots: Query<&mut Visibility, With<CentreDot>>,
     mut lock: ResMut<PointerLock>,
+    mut grab_next: Local<bool>,
 ) {
     let Ok((mut window, mut cursor)) = windows.single_mut() else { return };
     let free = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight])
@@ -444,13 +445,26 @@ fn lock_pointer(
         || chat.is_some_and(|c| c.typing)
         || browser.is_some_and(|b| b.open);
     let hold = cams.single().is_ok_and(|c| c.shoulder()) && !free;
+    let middle = Vec2::new(window.width(), window.height()) * 0.5;
     if lock.0 != hold {
         lock.0 = hold;
-        cursor.grab_mode = if hold { CursorGrabMode::Locked } else { CursorGrabMode::None };
-    }
-    if hold {
-        let middle = Vec2::new(window.width(), window.height()) * 0.5;
-        if window.cursor_position().is_none_or(|c| c.distance(middle) > 0.5) {
+        if hold {
+            // Put it in the middle first and grab it on the next frame: on macOS moving a grabbed
+            // pointer lets it go again.
+            window.set_cursor_position(Some(middle));
+            *grab_next = true;
+        } else {
+            *grab_next = false;
+            cursor.grab_mode = CursorGrabMode::None;
+        }
+    } else if hold && *grab_next {
+        *grab_next = false;
+        cursor.grab_mode = CursorGrabMode::Locked;
+    } else if hold && !cfg!(target_os = "macos") {
+        // Where the pointer can only be kept in the window (X11), put it back each frame. Never on
+        // macOS: a grabbed pointer stays put there, and moving it frees it and swallows the mouse's
+        // movement for a moment, so the view shook and didn't turn.
+        if window.cursor_position().is_none_or(|c| c.distance(middle) > 1.5) {
             window.set_cursor_position(Some(middle));
         }
     }
