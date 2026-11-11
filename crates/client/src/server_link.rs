@@ -220,34 +220,40 @@ pub struct ServerLinkPlugin;
 impl Plugin for ServerLinkPlugin {
     fn build(&self, app: &mut App) {
         let mut options = app.world().resource::<Options>().clone();
-        let mut config = content::load_config(&options.data, options.seed).unwrap_or_else(|e| panic!("failed to load content: {e}"));
-        // A new world finds different things each game, unless `--loot-seed` fixes them (a
-        // loaded save keeps its own).
-        config.loot_seed = Some(options.loot_seed.unwrap_or_else(content::fresh_loot_seed));
-        // Mods (#25): their items, recipes and loot join the game's; their scripts run in the
-        // world this process makes (on a server they run there, and only the data matters here).
-        let base = options.connect.is_some().then(|| config.clone());
-        let own: Vec<ModPack> = match zombye_mods::load_into(&mut config, &options.mods) {
-            Ok(mods) => {
-                if !mods.is_empty() {
-                    println!("{}", zombye_mods::describe(&mods));
-                }
-                mods.iter().map(zombye_mods::Mod::pack).collect()
-            }
+        let (base, mut config, own) = match local_content(&options) {
+            Ok(c) => c,
             Err(e) => {
-                eprintln!("failed to load mods: {e}");
+                eprintln!("{e}");
                 std::process::exit(1);
             }
         };
+        let base = options.connect.is_some().then_some(base);
         // What the server browser counts a server's mods against (#27, #24): the ones we have,
         // loaded or downloaded before; the rest are downloaded on joining.
         let cache = modpack::Cache::in_saves(&options.saves);
         app.insert_resource(crate::browser_ui::LoadedMods(own.iter().map(ModPack::hash).chain(cache.listed()).collect()));
         if let (Some(addr), Some(base)) = (options.connect.clone(), base) {
             // The server's mods, not ours (#24): what we haven't got of them is downloaded first.
-            let joined = server_content(&addr, &options, &base, &own, &cache).and_then(|(content, mods)| join_remote(app, &addr, &options, &content, mods));
+            let mut joined = server_content(&addr, &options, &base, &own, &cache).and_then(|(content, mods)| join_remote(app, &addr, &options, &content, mods));
+            // After the join screen (DCM-70), whose own connection has only just closed: the
+            // server may not have let our key's survivor go yet. Ask again a moment later.
+            for _ in 0..3 {
+                match &joined {
+                    Err(e) if options.joined && e.contains("same player key") => {
+                        std::thread::sleep(Duration::from_millis(700));
+                        joined = server_content(&addr, &options, &base, &own, &cache).and_then(|(content, mods)| join_remote(app, &addr, &options, &content, mods));
+                    }
+                    _ => break,
+                }
+            }
             match joined {
                 Ok(()) => return,
+                // After the join screen: back to it, with what went wrong.
+                Err(e) if options.joined => {
+                    eprintln!("can't join {addr}: {e}");
+                    let args = crate::join_screen::failed_args(&std::env::args().skip(1).collect::<Vec<_>>(), &e);
+                    crate::relaunch(crate::browser_ui::Relaunch { args, password: options.password.clone() });
+                }
                 // Asked for in the server browser (#27): the game doesn't stop. Back to our own
                 // world (the autosave the join left, if we came from one), with the browser open
                 // and the reason on it.
@@ -463,6 +469,24 @@ fn join_info(config: &zombye_sim::WorldConfig, player_id: u32, player_spawn: Vec
     }
 }
 
+/// This game's own data, from the data folder (a fresh loot seed unless `--loot-seed`), as it is
+/// before our own `--mod`s (what a server's mods go into instead) and with them, and our mods as
+/// packs (#24, #25).
+pub fn local_content(options: &Options) -> Result<(zombye_sim::WorldConfig, zombye_sim::WorldConfig, Vec<ModPack>), String> {
+    let mut config = content::load_config(&options.data, options.seed).map_err(|e| format!("failed to load content: {e}"))?;
+    // A new world finds different things each game, unless `--loot-seed` fixes them (a
+    // loaded save keeps its own).
+    config.loot_seed = Some(options.loot_seed.unwrap_or_else(content::fresh_loot_seed));
+    // Mods (#25): their items, recipes and loot join the game's; their scripts run in the
+    // world this process makes (on a server they run there, and only the data matters here).
+    let base = config.clone();
+    let mods = zombye_mods::load_into(&mut config, &options.mods).map_err(|e| format!("failed to load mods: {e}"))?;
+    if !mods.is_empty() {
+        println!("{}", zombye_mods::describe(&mods));
+    }
+    Ok((base, config, mods.iter().map(zombye_mods::Mod::pack).collect()))
+}
+
 /// The game data to join `addr` with (#24): the game's own (`base`) with **the server's mods**,
 /// in the server's order. The server is asked what it runs; each mod's data comes from our own
 /// `--mod` folders (`own`) when one holds exactly that data (by hash), else from the cache of
@@ -470,8 +494,15 @@ fn join_info(config: &zombye_sim::WorldConfig, player_id: u32, player_spawn: Vec
 /// kept. Mods of ours the server doesn't run are left out while we play there. Only data arrives:
 /// a mod's scripts run on the server, never here. Also a line for the rules panel.
 fn server_content(addr: &str, options: &Options, base: &zombye_sim::WorldConfig, own: &[ModPack], cache: &modpack::Cache) -> Result<(zombye_sim::WorldConfig, String), String> {
+    let info = zombye_net::remote::query(addr, Duration::from_secs(10))?;
+    content_for(addr, &info, options, base, own, cache)
+}
+
+/// Our own game data (`base`, before our own mods) with `info`'s server's mods put in, from our
+/// own `--mod` folders, the download cache, or downloaded now; and the mods' names for the rules
+/// panel.
+pub fn content_for(addr: &str, info: &zombye_net::wire::ServerInfo, options: &Options, base: &zombye_sim::WorldConfig, own: &[ModPack], cache: &modpack::Cache) -> Result<(zombye_sim::WorldConfig, String), String> {
     let timeout = Duration::from_secs(10);
-    let info = zombye_net::remote::query(addr, timeout)?;
     let got = modpack::gather(addr, &options.password, &info.mods, own, Some(cache), timeout)?;
     for line in got.lines() {
         println!("{line}");

@@ -152,8 +152,8 @@ pub fn take_relaunch() -> Option<Relaunch> {
 /// for this run only, and with the server, the name and where to come back to if it refuses
 /// (`single`: our own autosaved world).
 pub fn relaunch_args(args: &[String], addr: &str, name: &str, single: bool) -> Vec<String> {
-    const WITH_VALUE: [&str; 9] = ["--connect", "--name", "--password", "--load", "--from-browser", "--browser-join", "--server-info", "--skip-hours", "--at"];
-    const ALONE: [&str; 9] = ["--browser", "--load-anyway", "--fight-demo", "--siege", "--duel", "--talk-demo", "--talk-wall", "--morning", "--pvp"];
+    const WITH_VALUE: [&str; 10] = ["--connect", "--name", "--password", "--load", "--from-browser", "--browser-join", "--server-info", "--skip-hours", "--at", "--join-error"];
+    const ALONE: [&str; 10] = ["--joined", "--browser", "--load-anyway", "--fight-demo", "--siege", "--duel", "--talk-demo", "--talk-wall", "--morning", "--pvp"];
     let mut out = Vec::new();
     let mut k = 0;
     while k < args.len() {
