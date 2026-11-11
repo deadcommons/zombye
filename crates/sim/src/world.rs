@@ -351,6 +351,9 @@ pub struct World {
     pub(crate) private_dirty: BTreeSet<u32>,
     /// What bodies that rise wore (#63), for drawing them: not simulation state.
     pub(crate) rise_looks: RiseLooks,
+    /// Zombies shoved in the last `CombatTuning::shove_repeat_secs`, by id: each shove makes the
+    /// next likelier to floor it. Saved (`SHOV`), in the hash while any.
+    pub(crate) shoved: Vec<crate::combat::Shoved>,
     /// Index of bare hands in `config.weapons`.
     pub(crate) unarmed: u16,
     /// Hit points of damaged doors and windows, by [`EdgeRef::key`]. Missing = undamaged.
@@ -490,6 +493,7 @@ impl World {
             skill_mods_due: Vec::new(),
             private_dirty: BTreeSet::new(),
             rise_looks: RiseLooks::default(),
+            shoved: Vec::new(),
             unarmed,
             action_events: Vec::new(),
             hit_events: Vec::new(),
@@ -1490,6 +1494,12 @@ impl World {
             for s in stacks {
                 mix_stack(&mut mix, s);
             }
+        }
+        // Shoves adding up (mixed in only while there are any, so worlds without hash as before).
+        for sh in &self.shoved {
+            mix(0x5348_0000 | sh.count as u32);
+            mix(sh.zombie);
+            mix(sh.tick as u32);
         }
         for (&(x, y, w), hp) in &self.edge_hp {
             mix(x as u32);

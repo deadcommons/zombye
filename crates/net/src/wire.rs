@@ -57,8 +57,9 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// in the items, the wear numbers in `CombatTuning`. 16: ten skill levels and XP multipliers in `SkillTuning`.
 /// 17: climbing with E: `Intent::Climb`, `PlayerView::climb`, `Tunings::climb`.
 /// 18: broken weapons stay as items: `CombatTuning::broken_damage`. 20: blinds: `Intent::Blind`,
-/// `Snapshot::blind_changes`, `Welcome::blinds` and `Welcome::glazed`, `JobKind::Blind`.)
-pub const PROTOCOL: u32 = 20;
+/// `Snapshot::blind_changes`, `Welcome::blinds` and `Welcome::glazed`, `JobKind::Blind`.
+/// 22: shoves that add up and stomps to the head: the shove and stomp numbers in `CombatTuning`.)
+pub const PROTOCOL: u32 = 22;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
