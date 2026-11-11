@@ -29,28 +29,28 @@ const docs = (path = '') => `${base}/docs/${path}`;
 
 const features = [
 	{
-		title: 'Fast, and built in Rust',
-		text: 'A native engine written from scratch in Rust. No virtual machine, no garbage collector pauses, no legacy code. Twenty thousand zombies simulated in about a millisecond a tick.',
+		title: 'Fast. Really fast.',
+		text: 'A brand new engine written in Rust. Thousands of zombies on screen without the stutter, a whole town of them simulated at once, and it loads in seconds. No lag spikes when the horde shows up.',
 	},
 	{
-		title: 'Runs where you are',
-		text: 'Mac, Linux and Windows from the same source. Native on Apple silicon with Metal, Vulkan on Linux, DirectX or Vulkan on Windows.',
+		title: 'Runs on what you have',
+		text: 'PC, Mac and Linux, all first class. Native on Apple silicon. Same game, same saves, same servers, no workarounds.',
 	},
 	{
-		title: 'Agent first',
-		text: 'Let your agent play. Everything in the game is reachable over MCP: look, move, loot, fight, craft, talk, take screenshots, run a server. Claude Code or any MCP client.',
+		title: 'Bring your AI',
+		text: 'Let your agent play. Hand it the bat, watch it survive a night, or have it test your mod while you sleep. Everything a player can do, an agent can do too.',
 	},
 	{
-		title: 'Open source. It\'s yours.',
-		text: 'Free to play, read, fork, build and host. Code under MIT or Apache-2.0. No account, no fee, no closed editor.',
+		title: 'Free, and yours',
+		text: 'Open source, all of it. Play it free, host your own server free, fork it if you think you can do better. No account, no launcher, no catch.',
 	},
 	{
-		title: 'Moddable by nature',
-		text: 'Everything is a data file you can change: items, weapons, recipes, loot, buildings, zombie numbers. Edit a file, start the game, play your mod.',
+		title: 'Made to be modded',
+		text: 'Every item, weapon, recipe, loot table, house and zombie stat is a plain text file. Change a number, start the game, play your mod. Join a modded server and its mods download themselves.',
 	},
 	{
-		title: '3D first',
-		text: 'A real 3D world, not sprites. Play from above or through your survivor\'s eyes, and switch between the two on the fly with one key.',
+		title: 'Real 3D, your view',
+		text: 'A true 3D world. Play from above like you always have, or drop into first person and walk the same streets. One key, any time, mid-fight if you like.',
 	},
 ];
 
@@ -135,8 +135,9 @@ const milestones = [
 				<p class="tag">Pre-alpha · free and open source · Mac, Linux, Windows</p>
 				<h1>Twenty thousand dead.<br /><span>One small town.</span></h1>
 				<p class="lede">
-					Zombye is slow-burn zombie survival, built from scratch in Rust and in real 3D. Fast, open
-					source, moddable down to the last number, and made so your AI agent can play it too.
+					Zombye is slow-burn zombie survival on a brand new engine. Huge hordes with no stutter, on PC,
+					Mac and Linux. Free, open source, moddable down to the last number, and playable from above or
+					in first person.
 				</p>
 				<div class="ctas">
 					<a class="btn play" href={docs('start/install')}>
