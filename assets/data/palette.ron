@@ -175,6 +175,9 @@
         "door_leaf": ("#6b472e", 0.9, 0.0),
         "door_handle": ("#bfb266", 0.9, 0.0),
         "window_glass": ("#c4d7e5", 0.9, 0.0),           // see-through (its alpha is in code)
+        "door_glass": ("#2f3742", 0.9, 0.0),             // the glass panel in a glazed door
+        "blind": ("#ddd3b8", 0.9, 0.0),                  // a roller blind's cloth
+        "blind_rail": ("#8a8172", 0.9, 0.0),             // its bottom rail
         "crack_door": ("#140d08", 0.9, 0.0),             // splits in a battered door
         "crack_glass": ("#e0ebf2", 0.9, 0.0),            // star cracks in glass
         "splinter": ("#a88052", 0.9, 0.0),               // pale wood where chunks came off

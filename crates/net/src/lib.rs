@@ -48,6 +48,9 @@ pub enum Intent {
     /// Climb the fence or open or broken window the player faces, if one is within reach
     /// (`World::player_climb`; E). Movement then takes it across by itself.
     Climb { player: u32 },
+    /// Roll up or down, fit or take down the blind of the window or glass door the player faces
+    /// from inside (`World::player_blind`; Shift+F, or a blind's menu).
+    Blind { player: u32, op: zombye_sim::BlindOp },
     /// Smash the window the player faces (shut or open), if it's within reach. Loud.
     SmashWindow { player: u32 },
     /// Swing the equipped weapon (bare hands: a punch). Lands after the weapon's windup; asked for
@@ -375,6 +378,9 @@ pub struct Snapshot {
     pub edge_changes: Vec<EdgeChange>,
     /// Doors and windows whose hit points changed since the previous snapshot (each once).
     pub edge_damage: Vec<EdgeDamage>,
+    /// Blinds put up, taken down or rolled up or down since the previous snapshot (each once, in
+    /// order); clients apply them to their map copy, as `edge_changes`.
+    pub blind_changes: Vec<zombye_sim::map::BlindChange>,
     /// Every item lying about (a short list for now; interest management later).
     pub items: Vec<GroundItem>,
     /// Hits, kills, shoves, stomps and wounds since the previous snapshot, for hit feedback.
@@ -522,6 +528,7 @@ impl Snapshot {
             zombies,
             edge_changes: std::mem::take(&mut world.edge_changes),
             edge_damage: world.take_edge_damage().into_iter().map(|(e, hp)| EdgeDamage { tile: e.tile, edge: e.edge, hp }).collect(),
+            blind_changes: world.take_blind_changes(),
             items: world.items().to_vec(),
             hits: std::mem::take(&mut world.combat_events),
             private,
@@ -603,6 +610,9 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
         Intent::Attack { player } | Intent::Shove { player } | Intent::Stomp { player } if !world.aiming(*player) => {}
         Intent::Climb { player } => {
             world.player_climb(*player);
+        }
+        Intent::Blind { player, op } => {
+            let _ = world.player_blind(*player, *op);
         }
         Intent::Interact { player } => {
             world.player_interact(*player);
@@ -728,6 +738,7 @@ impl Intent {
         match *self {
             Intent::Interact { player }
             | Intent::Climb { player }
+            | Intent::Blind { player, .. }
             | Intent::SmashWindow { player }
             | Intent::Attack { player }
             | Intent::Shove { player }

@@ -766,6 +766,11 @@ impl World {
     /// Give player `pi` one of item `id` (by data id): into its bags if there's room, else at its feet.
     fn give_back(&mut self, pi: usize, id: &str) {
         let Some(i) = self.item_index(id) else { return };
+        self.give_one(pi, i);
+    }
+
+    /// Give player `pi` one of item `i`: into its bags if there's room, else at its feet.
+    pub(crate) fn give_one(&mut self, pi: usize, i: u16) {
         let def = self.item_def(i);
         let (size, vol) = (def.stack, def.volume_l);
         let c = self.carry(&self.players[pi]);
@@ -780,7 +785,7 @@ impl World {
 }
 
 /// Take one of `item` from what `inv` treats with (carried first, then the hands).
-fn take_one(inv: &mut Inventory, item: u16) -> bool {
+pub(crate) fn take_one(inv: &mut Inventory, item: u16) -> bool {
     if let Some(k) = inv.carried.iter().position(|s| s.item == item) {
         inv.carried[k].count -= 1;
         if inv.carried[k].count == 0 {

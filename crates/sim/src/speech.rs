@@ -30,7 +30,6 @@ use serde::{Deserialize, Serialize};
 use crate::TICK_DT;
 use crate::map::TileMap;
 use crate::senses::SoundSource;
-use crate::vision::line_of_sight;
 use crate::world::World;
 
 /// Lines kept for whoever replicates the world if nobody takes them.
@@ -216,7 +215,7 @@ pub fn hears(map: &TileMap, muffle: f32, from: Vec2, at: Vec2, reach: f32) -> Op
     if d > reach {
         return None;
     }
-    let clear = line_of_sight(map, at, from);
+    let clear = crate::vision::sound_line(map, at, from);
     (clear || d <= reach * muffle).then_some(!clear)
 }
 

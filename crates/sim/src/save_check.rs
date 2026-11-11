@@ -184,7 +184,7 @@ fn job_item(kind: &JobKind) -> Option<u16> {
     match *kind {
         JobKind::Move { item, .. } | JobKind::Use { item, .. } => Some(item),
         JobKind::Treat { item, .. } => item,
-        JobKind::Search { .. } | JobKind::Craft { .. } | JobKind::Reload { .. } => None,
+        JobKind::Search { .. } | JobKind::Craft { .. } | JobKind::Reload { .. } | JobKind::Blind { .. } => None,
     }
 }
 
@@ -253,7 +253,7 @@ pub(crate) fn remap_items(plan: &ContentPlan, ground: &mut Vec<GroundItem>, play
             match &mut j.kind {
                 JobKind::Move { item, .. } | JobKind::Use { item, .. } => *item = to(*item).expect("kept"),
                 JobKind::Treat { item: Some(item), .. } => *item = to(*item).expect("kept"),
-                JobKind::Treat { item: None, .. } | JobKind::Search { .. } | JobKind::Craft { .. } | JobKind::Reload { .. } => {}
+                JobKind::Treat { item: None, .. } | JobKind::Search { .. } | JobKind::Craft { .. } | JobKind::Reload { .. } | JobKind::Blind { .. } => {}
             }
         }
         // Uses gone from an opened item that's no longer in the content: nothing to count.

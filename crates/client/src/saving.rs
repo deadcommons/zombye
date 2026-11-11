@@ -150,6 +150,9 @@ impl WorldSwap<'_> {
             self.map.0.set_owned_edge(c.tile, c.edge, c.kind);
             self.changes.0.push(c);
         }
+        // Blinds and glass in doors, as they are in the loaded world.
+        self.map.0.blinds = world.map.blinds.clone();
+        self.map.0.glazed = world.map.glazed.clone();
         let fresh: Vec<EdgeDamage> = EdgeDamage::all(&world);
         for &(tile, edge) in self.damage_map.0.keys() {
             if !fresh.iter().any(|d| d.tile == tile && d.edge == edge) {
