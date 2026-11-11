@@ -532,7 +532,7 @@ pub mod flat {
     /// A floating piece (a menu, a hover card): solid ink.
     pub const SOLID: Color = Color::srgb(0.086, 0.086, 0.086);
     pub const BONE: Color = Color::srgb(0.949, 0.902, 0.788);
-    pub const DIM: Color = Color::srgb(0.725, 0.69, 0.604);
+    pub const DIM: Color = Color::srgb(0.776, 0.741, 0.651);
     /// Only for what needn't be read to play: the label of an empty slot.
     pub const FAINT: Color = Color::srgb(0.49, 0.467, 0.416);
     pub const LINE: Color = Color::srgba(0.949, 0.902, 0.788, 0.11);

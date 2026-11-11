@@ -38,7 +38,7 @@ Five rules follow:
 |---|---|---|
 | `INK` | `#141414` (brand near-black) | Panel fill, at 86% over the game. Text on a green button. |
 | `BONE` | `#F2E6C9` (brand bone white) | Text, values, icons' lightest tone. |
-| `DIM` | `#B9B09A` | Secondary text: labels, units, hints. |
+| `DIM` | `#C6BDA6` | Secondary text: labels, units, hints. |
 | `FAINT` | `#7D776A` | Empty slots' labels, disabled things, resting rail tabs. Never for anything that must be read to play. |
 | `LINE` | bone at 11% | Hairlines: column dividers, pane rules, borders of tiles and buttons. |
 | `CELL` | bone at 4.5% | Fill of a tile, slot, chip or secondary button. |
