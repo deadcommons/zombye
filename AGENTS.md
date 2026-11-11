@@ -1430,8 +1430,8 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   you're in (the floor behind it on screen, 5.5 m away from the camera, what a 3 m wall covers from 30° up, runs
   into your room: the room's own near walls and inner walls between it and the camera). Its far walls, inner walls
   behind your room and every other building stand. **The window you're climbing through** (within `CLIMB_ZONE` of it, `cutaway::crossed_window`) stays whole whatever would cut it, so its frame doesn't sink away under the climb; the silhouette shows you where it covers you. Its roof and upper storeys (every floor above the player's;
-  players are only ever on the ground floor) fade out as one over 0.15 s and are then hidden
-  (`world_render::hide_upper_floors`: a stipple by the amount in their `MeshTag`). *Anywhere*
+  players are only ever on the ground floor) fade out as one over 0.15 s and are then not drawn
+  (`world_render::hide_upper_floors`: a stipple by the amount in their `MeshTag`, 255 = no pixel). *Anywhere*
   (`cutaway::body_edges`): a wall piece that covers the player's body from the camera drops, whichever building it
   is part of (the edge crosses the 0.6 m strip of ground between the body and the camera within 5.5 m); the facade
   you walk along, behind you, doesn't. **From outside every building keeps its roof and floors**; a building that
@@ -1448,7 +1448,7 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   the same eased amount the shader draws the wall by). **A cut door is outlined:** in place of the leaf, the door's
   outline at its full size in the doors' blue (the same shut, open or battered down; an open door's stands swung open where its leaf is, `world_render::door_leaf_at_rest`), fading in with the
   wall's cut and drawn only where nothing stands in front of it (`opening_hints::cut_door`, `draw_cut_doors`: the
-  hints' mesh and shader, a second material with the depth test the usual way round; always on). Cut walls still cast shadows. **Details standing over the
+  hints' mesh and shader, a second material with the depth test the usual way round; always on). **What the cutaway takes away is gone only from the camera, never from the light:** cut walls, the roof and upper storeys of the building you're in, and a cut wall's door leaf and blind all go on casting their shadows (the shadow passes don't run the world shader's cut, and nothing is made `Visibility::Hidden`: a faded piece is a visible entity whose `MeshTag` leaves its pixels out, `world_render::fade_tag`), so a room is lit as it is with its roof on: the sun comes in through the windows. To make up for it, while the player is inside a building the ambient fill is stronger by day (`daynight::INDOOR_FILL`, eased over 0.6 s). New things that hide for the camera must fade by tag the same way. **Details standing over the
   player from outside** (a porch roof, built a metre at a time; a shop's awning, a metre at a time; a door canopy; a
   porch post: `CutKind::Fade`, anchor its middle on the ground, radius its half-width) are thinned out whole, in a
   screen-space stipple (72% at most), while they stand in the strip between the body and the camera

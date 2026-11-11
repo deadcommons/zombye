@@ -261,7 +261,9 @@ fn fragment(
     }
 @if(!PREPASS_PIPELINE) {
     // The roof and upper storeys of the building the player is inside fade out as a whole (and
-    // back in), by the amount in their mesh's tag (`world_render::hide_upper_floors`).
+    // back in), by the amount in their mesh's tag (`world_render::hide_upper_floors`); so do a
+    // cut wall's door leaf and blind. At 255 no pixel is drawn. Only here, in the camera's pass:
+    // the shadow passes don't run this shader, so what's faded out still casts its shadow.
     let gone = f32(mesh_functions::get_tag(in.instance_index) & 255u) / 255.0;
     if (gone > 0.0 && gone > bayer4(vec2<u32>(in.position.xy) + vec2<u32>(2u, 1u))) {
         discard;

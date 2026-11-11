@@ -139,6 +139,11 @@ fn fit_sun_cascade(cams: Query<&IsoCamera>, mut sun: Query<&mut CascadeShadowCon
     }
 }
 
+/// How much stronger the ambient fill is by day while the player is inside a building (times
+/// 1 + this), and the seconds it takes to come and go.
+const INDOOR_FILL: f32 = 3.0;
+const INDOOR_EASE_SECS: f32 = 0.6;
+
 fn update_lights(
     link: Res<ServerLink>,
     preview: Res<crate::dev_time::LightPreview>,
@@ -148,6 +153,10 @@ fn update_lights(
     mut clear: ResMut<ClearColor>,
     mut glow: Query<&mut PointLight, With<PlayerGlow>>,
     mut held: Local<Option<Vec3>>,
+    time: Res<Time>,
+    map: Res<crate::server_link::ClientMap>,
+    player: Query<&Transform, (With<Player>, Without<Sun>)>,
+    mut indoors: Local<Option<f32>>,
 ) {
     let (dir, color, lux, day) = sky_at(preview.hour_or(link.curr.time_of_day));
     daylight.0 = day;
@@ -168,7 +177,17 @@ fn update_lights(
     // strong, and a touch cool against the golden sun without going blue.
     let noon = Color::srgb(0.74, 0.7, 0.73).to_linear();
     ambient.color = Color::from(night.mix(&noon, day));
-    ambient.brightness = 12.0 + 96.0 * day;
+    // Under a roof the sun only comes in through the windows (the roof casts its shadow whether
+    // the camera draws it or not), so while we're inside a building the fill is stronger by day,
+    // eased in and out: eyes used to the room. The first frame takes it at once (a picture).
+    let inside = player.single().is_ok_and(|p| map.0.building_at(p.translation.xz()).is_some());
+    let to = if inside { 1.0 } else { 0.0 };
+    let now = match *indoors {
+        Some(was) => was + (to - was).clamp(-time.delta_secs() / INDOOR_EASE_SECS, time.delta_secs() / INDOOR_EASE_SECS),
+        None => to,
+    };
+    *indoors = Some(now);
+    ambient.brightness = (12.0 + 96.0 * day) * (1.0 + INDOOR_FILL * day * now);
     clear.0 = Color::srgb(0.005 + 0.04 * day, 0.006 + 0.04 * day, 0.012 + 0.05 * day);
     // Just enough at night to see your own feet; a light in hand does the rest.
     if let Ok(mut l) = glow.single_mut() {
