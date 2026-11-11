@@ -38,6 +38,7 @@ use glam::{IVec2, Vec2};
 use zombye_sim::save::ContentPrint;
 use zombye_sim::{TICK_DT, World};
 
+use crate::identity::{self, Key};
 use crate::modpack::{Hash, ModPack};
 use crate::wire::{self, Agents, Camera, ClientMsg, DeltaEncoder, Hello, Limits, MapInterest, Rules, ServerInfo, ServerMsg, Tunings, Welcome};
 use crate::{EdgeDamage, Intent, Snapshot, apply_intent};
@@ -181,6 +182,8 @@ struct Conn {
     id: u64,
     player: u32,
     name: String,
+    /// The key it proved it holds on joining (DCM-66).
+    key: Key,
     addr: String,
     out: SyncSender<Vec<u8>>,
     queue: VecDeque<Intent>,
@@ -212,7 +215,18 @@ pub struct Ban {
     /// The address banned with it; never this machine's own (loopback), which would shut out
     /// everyone playing from the server's computer.
     pub ip: Option<IpAddr>,
+    /// The player's key banned with it (DCM-66), so a new name doesn't get round the ban.
+    pub key: Option<Key>,
     pub why: String,
+}
+
+/// Whose a survivor is (DCM-66): the key that plays it, and the name it last played under (what
+/// others see). `key` is `None` only for a name kept from before keys (an old `PATH.players`
+/// line): the first key that joins under that name takes the survivor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Owner {
+    pub name: String,
+    pub key: Option<Key>,
 }
 
 /// One connected client, for reports.
@@ -266,8 +280,8 @@ pub struct Host {
     next_conn: u64,
     /// Sockets open: connected clients and those still saying hello.
     open: Arc<AtomicUsize>,
-    /// Every name that has played here and its player.
-    names: BTreeMap<String, u32>,
+    /// Every survivor someone has played here, by player id: its key and name.
+    owners: BTreeMap<u32, Owner>,
     /// The players whose client said it is a program when it last joined (#69). With the agents
     /// rule at `Marked`, their views say so to whoever sees them.
     agents: BTreeSet<u32>,
@@ -293,7 +307,7 @@ impl Host {
         // Carry on round the town from where a loaded world's survivors left off.
         let next_spawn = (world.players.len() + world.parked().len()) as u32;
         let offer = options.packs.iter().filter(|p| p.check().is_ok()).map(|p| (p.hash(), p.id.clone(), Arc::new(wire::encode_frame(&ServerMsg::Mod(Box::new(p.clone())))))).collect();
-        Ok(Self { world, options, listener, events, events_tx, conns: Vec::new(), next_conn: 1, open: Arc::new(AtomicUsize::new(0)), names: BTreeMap::new(), agents: BTreeSet::new(), bans: Vec::new(), offer, next_spawn, stats: HostStats::default(), log: Vec::new() })
+        Ok(Self { world, options, listener, events, events_tx, conns: Vec::new(), next_conn: 1, open: Arc::new(AtomicUsize::new(0)), owners: BTreeMap::new(), agents: BTreeSet::new(), bans: Vec::new(), offer, next_spawn, stats: HostStats::default(), log: Vec::new() })
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -323,7 +337,7 @@ impl Host {
 
     /// What this server says of itself to someone who asks without joining (#69).
     pub fn info(&self) -> ServerInfo {
-        ServerInfo { protocol: wire::PROTOCOL, version: env!("CARGO_PKG_VERSION").to_string(), rules: self.rules(), online: self.conns.len() as u32, password: !self.options.password.is_empty(), mods: self.options.mods.clone() }
+        ServerInfo { protocol: wire::PROTOCOL, version: crate::BUILD.to_string(), rules: self.rules(), online: self.conns.len() as u32, password: !self.options.password.is_empty(), mods: self.options.mods.clone() }
     }
 
     /// Is `player` played by a program, by its client's own word (#69)?
@@ -356,14 +370,15 @@ impl Host {
         let name = c.name.clone();
         if ban {
             let ip = c.addr.parse::<SocketAddr>().ok().map(|a| a.ip()).filter(|ip| !ip.is_loopback());
-            self.ban(Ban { name: name.clone(), ip, why: why.to_string() });
+            let key = Some(c.key);
+            self.ban(Ban { name: name.clone(), ip, key, why: why.to_string() });
         }
         Some(name)
     }
 
     /// Shut a name (and an address) out. One ban per name: a second replaces the first.
     pub fn ban(&mut self, ban: Ban) {
-        self.bans.retain(|b| !b.name.eq_ignore_ascii_case(&ban.name));
+        self.bans.retain(|b| !b.name.eq_ignore_ascii_case(&ban.name) && (ban.key.is_none() || b.key != ban.key));
         self.bans.push(ban);
     }
 
@@ -379,24 +394,35 @@ impl Host {
         &self.bans
     }
 
-    /// Every name that has played here, with its player (to keep beside a save, so survivors are
-    /// their players' again after a restart).
-    pub fn names(&self) -> &BTreeMap<String, u32> {
-        &self.names
+    /// Every survivor someone has played here, with its key and name (to keep beside a save, so
+    /// survivors are their players' again after a restart).
+    pub fn owners(&self) -> &BTreeMap<u32, Owner> {
+        &self.owners
     }
 
-    /// Names from an earlier session of this world; those whose player the world no longer has are
-    /// left out.
-    pub fn set_names(&mut self, names: impl IntoIterator<Item = (String, u32)>) {
-        self.names = names.into_iter().filter(|(_, id)| self.world.survivor(*id).is_some()).collect();
-        for (name, &id) in &self.names {
-            self.world.set_player_name(id, name);
+    /// Owners from an earlier session of this world; those whose player the world no longer has
+    /// are left out.
+    pub fn set_owners(&mut self, owners: impl IntoIterator<Item = (u32, Owner)>) {
+        self.owners = owners.into_iter().filter(|(id, _)| self.world.survivor(*id).is_some()).collect();
+        for (&id, o) in &self.owners {
+            self.world.set_player_name(id, &o.name);
         }
+    }
+
+    /// Names with no key yet (a `PATH.players` file from before keys, bots set up by a bench):
+    /// the first key to join under each name takes its survivor.
+    pub fn set_names(&mut self, names: impl IntoIterator<Item = (String, u32)>) {
+        self.set_owners(names.into_iter().map(|(name, id)| (id, Owner { name, key: None })));
+    }
+
+    /// The player a name plays (or last played), if one does; with several, the newest.
+    pub fn player_named(&self, name: &str) -> Option<u32> {
+        self.owners.iter().rev().find(|(_, o)| o.name.eq_ignore_ascii_case(name.trim())).map(|(&id, _)| id)
     }
 
     /// The name playing (or that last played) `player`.
     pub fn name_of(&self, player: u32) -> Option<&str> {
-        self.names.iter().find(|(_, id)| **id == player).map(|(name, _)| name.as_str())
+        self.owners.get(&player).map(|o| o.name.as_str())
     }
 
     /// Survivors standing in the world with nobody playing them (a save from a server that was
@@ -527,7 +553,7 @@ impl Host {
                         }
                         ClientMsg::Ping(n) => send(c, &mut self.stats, &ServerMsg::Pong(n)),
                         ClientMsg::Bye => c.closing = Some(String::new()),
-                        ClientMsg::Hello(_) => c.closing = Some("hello twice".into()),
+                        ClientMsg::Hello(_) | ClientMsg::Proof(_) => c.closing = Some("hello twice".into()),
                         ClientMsg::Query(_) | ClientMsg::Fetch(_) => send(c, &mut self.stats, &ServerMsg::Bye("a query comes instead of a hello".into())),
                     }
                 }
@@ -548,7 +574,8 @@ impl Host {
             let _ = stream.shutdown(Shutdown::Both);
         };
         let ip = stream.peer_addr().ok().map(|a| a.ip());
-        let banned = |name: &str| self.bans.iter().find(|b| b.name.eq_ignore_ascii_case(name.trim()) || (b.ip.is_some() && b.ip == ip)).map(|b| if b.why.is_empty() { "you are banned from this server".to_string() } else { format!("you are banned from this server: {}", b.why) });
+        let key = hello.key;
+        let banned = |name: &str| self.bans.iter().find(|b| b.name.eq_ignore_ascii_case(name.trim()) || (b.ip.is_some() && b.ip == ip) || b.key == Some(key)).map(|b| if b.why.is_empty() { "you are banned from this server".to_string() } else { format!("you are banned from this server: {}", b.why) });
         let name = match banned(&hello.name).map_or_else(|| self.check(&hello), Err) {
             Ok(name) => name,
             Err(why) => {
@@ -561,14 +588,21 @@ impl Host {
         // Its survivor from before, or a new one.
         // Back (#68): one lying logged out gets up, one that had left the world is put back where
         // it lay, a dead one is still theirs (they see how it ended, and start a new one from there).
-        let back = self.names.get(&name).copied().filter(|&p| self.world.player_return(p));
+        // Whose survivor: the one this key played (under whatever name), else one kept from before
+        // keys under this name, which the key now takes (DCM-66). Someone else's name gets a new
+        // survivor, never theirs.
+        let mine = self.owners.iter().rev().find(|(_, o)| o.key == Some(key)).map(|(&p, _)| p);
+        let unclaimed = || self.owners.iter().rev().find(|(_, o)| o.key.is_none() && o.name == name).map(|(&p, _)| p);
+        let back = mine.or_else(unclaimed).filter(|&p| self.world.player_return(p));
         let player = back.unwrap_or_else(|| {
             let at = self.new_spawn();
             let id = self.world.add_player(at);
             self.outfit_new(id);
             id
         });
-        self.names.insert(name.clone(), player);
+        let renamed = self.owners.get(&player).filter(|o| o.name != name).map(|o| o.name.clone());
+        self.owners.retain(|_, o| o.key != Some(key));
+        self.owners.insert(player, Owner { name: name.clone(), key: Some(key) });
         // What its group is told it is called (#73).
         self.world.set_player_name(player, &name);
         // Who plays it now: a program or a person, by this hello (#69).
@@ -606,13 +640,14 @@ impl Host {
             return;
         }
         let tokens = self.options.budget as f32;
-        let mut conn = Conn { id, player, name: name.clone(), addr: addr.clone(), out, queue: VecDeque::new(), encoder: DeltaEncoder::default(), map: MapInterest::default(), tokens, said_at: None, held: 0, bytes_out: 0, bytes_in: 0, intents: 0, closing: None, joined: Instant::now() };
+        let mut conn = Conn { id, player, name: name.clone(), key, addr: addr.clone(), out, queue: VecDeque::new(), encoder: DeltaEncoder::default(), map: MapInterest::default(), tokens, said_at: None, held: 0, bytes_out: 0, bytes_in: 0, intents: 0, closing: None, joined: Instant::now() };
         send(&mut conn, &mut self.stats, &ServerMsg::Welcome(Box::new(welcome)));
         self.conns.push(conn);
         // Its private view goes with its first snapshot.
         self.world.mark_all_private_dirty();
         self.stats.joined += 1;
-        self.log.push(format!("{name}{} joined from {addr} as player {player}{} ({} online)", if hello.agent { " (an agent)" } else { "" }, if back.is_some() { " (back)" } else { "" }, self.conns.len()));
+        let was = renamed.map_or_else(String::new, |old| format!(", was {old}"));
+        self.log.push(format!("{name}{} joined from {addr} as player {player}{} (key {}{was}; {} online)", if hello.agent { " (an agent)" } else { "" }, if back.is_some() { " (back)" } else { "" }, identity::short(&key), self.conns.len()));
     }
 
     /// Someone about to join asks for mods of ours it hasn't got (#24). Who may join may have
@@ -695,7 +730,10 @@ impl Host {
             return Err("names are at most 24 letters".into());
         }
         if name.is_empty() {
-            return Ok((1..).map(|n| format!("survivor-{n}")).find(|n| !self.names.contains_key(n)).expect("a free name"));
+            return Ok((1..).map(|n| format!("survivor-{n}")).find(|n| !self.owners.values().any(|o| o.name == *n)).expect("a free name"));
+        }
+        if self.conns.iter().any(|c| c.key == hello.key) {
+            return Err("this game is already playing here (the same player key)".into());
         }
         if self.conns.iter().any(|c| c.name == name) {
             return Err(format!("{name} is already playing here"));
@@ -928,6 +966,16 @@ fn read_loop(id: u64, mut stream: TcpStream, tx: &Sender<Event>) {
             return;
         }
     };
+    // Who it is (DCM-66): it signs a fresh challenge with the key it named, or isn't let in.
+    let nonce = identity::nonce();
+    let proved = wire::write_frame(&mut stream, &ServerMsg::Challenge(nonce)).is_ok()
+        && matches!(wire::read_frame::<ClientMsg>(&mut stream, wire::MAX_CLIENT_FRAME), Ok((ClientMsg::Proof(sig), _)) if identity::verify(&hello.key, &nonce, &hello.name, &sig));
+    if !proved {
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+        let _ = wire::write_frame(&mut stream, &ServerMsg::Refused("your game couldn't prove who you are (its player key): both need the same version of the game".into()));
+        let _ = stream.shutdown(Shutdown::Both);
+        return;
+    }
     let Ok(writer) = stream.try_clone() else { return };
     let _ = stream.set_read_timeout(Some(IDLE));
     if tx.send(Event::Hello(id, hello, writer)).is_err() {

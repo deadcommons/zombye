@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use glam::Vec2;
 use zombye_net::host::{Host, HostOptions, Spawn};
+use zombye_net::identity::Identity;
 use zombye_net::remote::{Remote, build_map};
 use zombye_net::{Intent, Snapshot, content};
 use zombye_sim::players::step_movement;
@@ -32,6 +33,28 @@ fn join_as(host: &mut Host, name: &str, password: &str) -> Result<Remote, String
         std::thread::sleep(Duration::from_millis(1));
     }
     client.join().unwrap()
+}
+
+/// Join as `name` with a key of its own (DCM-66), not the one worked out from the name.
+fn join_with(host: &mut Host, name: &str, identity: &Identity) -> Result<Remote, String> {
+    let addr = host.local_addr().unwrap().to_string();
+    let (name, identity) = (name.to_string(), identity.clone());
+    let client = std::thread::spawn(move || Remote::connect_with(&addr, &name, "", false, &identity, Duration::from_secs(10)));
+    while !client.is_finished() {
+        host.pump();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    client.join().unwrap()
+}
+
+/// Drop a client and tick until the host has noticed.
+fn leave(host: &mut Host, client: Remote) {
+    let online = host.clients().len() - 1;
+    drop(client);
+    until(host, "the client to go", |h| {
+        h.tick();
+        h.clients().len() == online
+    });
 }
 
 fn join(host: &mut Host, name: &str) -> Remote {
@@ -219,7 +242,7 @@ fn clients_are_their_own_player_and_the_door_has_rules() {
     let bob = join_as(&mut host, "bob", "brains").unwrap();
     assert_eq!(bob.player(), bob_id, "the same survivor");
     assert_eq!(host.world.players.len(), 2);
-    assert_eq!(host.names().get("bob"), Some(&bob_id));
+    assert_eq!(host.owners().get(&bob_id).map(|o| o.name.as_str()), Some("bob"));
 }
 
 /// PvP is the server's rule: on, one client's swing wounds another's survivor and both hear of
@@ -635,4 +658,80 @@ fn an_operator_kicks_and_bans() {
     assert_eq!(host.unban("BOB"), 1);
     assert_eq!(join(&mut host, "bob").player(), bob_id);
     assert_eq!(ada.player(), ada_id);
+}
+
+/// Player identity (DCM-66): a survivor belongs to the key that played it, not the name. Someone
+/// else under your name gets a new survivor; you under a new name keep yours; a ban follows the key
+/// through a rename; a name kept from before keys is taken by the first key to join as it.
+#[test]
+fn survivors_and_bans_belong_to_a_key_not_a_name() {
+    let mut host = host(0, false, HostOptions::default());
+    let ada_key = Identity::generate().unwrap();
+    let ada = join_with(&mut host, "ada", &ada_key).unwrap();
+    let ada_id = ada.player();
+    leave(&mut host, ada);
+
+    // Someone else types her name while she's away: a survivor of their own.
+    let impostor = join_with(&mut host, "ada", &Identity::generate().unwrap()).unwrap();
+    assert_ne!(impostor.player(), ada_id, "her name doesn't get her survivor");
+    let impostor_id = impostor.player();
+    leave(&mut host, impostor);
+
+    // Ada comes back under another name: her own survivor, renamed.
+    let mut ada = join_with(&mut host, "ada the second", &ada_key).unwrap();
+    assert_eq!(ada.player(), ada_id);
+    assert_eq!(host.name_of(ada_id), Some("ada the second"));
+    assert!(host.log.iter().any(|l| l.contains("was ada")), "{:?}", host.log);
+    // ...and only one copy of her game plays at a time, whatever it calls itself.
+    assert!(join_with(&mut host, "ada again", &ada_key).unwrap_err().contains("already playing"));
+    tick(&mut host, &mut [&mut ada]);
+
+    // Banned, she can't get round it with a new name; lifted, she is back as herself.
+    assert!(host.kick(ada_id, "griefing", true).is_some());
+    host.tick();
+    assert_eq!(host.bans()[0].key, Some(ada_key.key()));
+    assert!(join_with(&mut host, "totally new", &ada_key).unwrap_err().contains("banned"));
+    assert!(join_with(&mut host, "cy", &Identity::generate().unwrap()).is_ok(), "others still get in");
+    assert_eq!(host.unban("ada the second"), 1);
+    assert_eq!(join_with(&mut host, "totally new", &ada_key).unwrap().player(), ada_id);
+    assert_ne!(impostor_id, ada_id);
+
+    // A survivor kept from before keys (a two-column names file): the first key that joins under
+    // the name takes it, and from then on only that key does.
+    let mut world = World::new(config(0));
+    let at = world.player_spawn;
+    let old = world.add_player(at);
+    let mut host = Host::bind(world, "127.0.0.1:0", HostOptions::default()).unwrap();
+    host.set_names([("bea".to_string(), old)]);
+    let bea_key = Identity::generate().unwrap();
+    let bea = join_with(&mut host, "bea", &bea_key).unwrap();
+    assert_eq!(bea.player(), old);
+    assert_eq!(host.owners()[&old].key, Some(bea_key.key()));
+    leave(&mut host, bea);
+    assert_ne!(join_with(&mut host, "bea", &Identity::generate().unwrap()).unwrap().player(), old, "claimed: another key is someone else");
+}
+
+/// A hello whose key the client can't sign for is refused before it is a player.
+#[test]
+fn a_hello_without_its_proof_is_refused() {
+    use std::net::TcpStream;
+    use zombye_net::wire::{self, ClientMsg, Hello, ServerMsg};
+    let mut host = host(0, false, HostOptions::default());
+    let addr = host.local_addr().unwrap();
+    let client = std::thread::spawn(move || {
+        let mut s = TcpStream::connect(addr).unwrap();
+        let someone = Identity::for_name("someone");
+        let hello = Hello { protocol: wire::PROTOCOL, name: "mallory".into(), password: String::new(), agent: false, key: someone.key() };
+        wire::write_frame(&mut s, &ClientMsg::Hello(hello)).unwrap();
+        let ServerMsg::Challenge(nonce) = wire::read_frame::<ServerMsg>(&mut s, wire::MAX_SERVER_FRAME).unwrap().0 else { panic!("no challenge") };
+        // Signed by another key than the hello named.
+        wire::write_frame(&mut s, &ClientMsg::Proof(Identity::for_name("mallory").sign(&nonce, "mallory"))).unwrap();
+        wire::read_frame::<ServerMsg>(&mut s, wire::MAX_SERVER_FRAME).map(|m| m.0)
+    });
+    while !client.is_finished() {
+        host.pump();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(matches!(client.join().unwrap(), Ok(ServerMsg::Refused(why)) if why.contains("prove who you are")));
+    assert!(host.clients().is_empty() && host.world.players.is_empty());
 }

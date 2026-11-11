@@ -662,8 +662,12 @@ impl FlowCache {
     /// Restore a saved cache (into one made with the same capacity and ranges), rebuilding the
     /// fields the save left out from `walk`.
     pub(crate) fn restore(&mut self, saved: SavedFlowCache, walk: &WalkGrid) -> Result<(), String> {
-        if saved.entries.len() > self.capacity || saved.requests.len() > self.capacity {
-            return Err(format!("flow cache: {} fields, {} requests (at most {})", saved.entries.len(), saved.requests.len(), self.capacity));
+        // Players' fields beyond the first come on top of the capacity (as in `update`), so a
+        // full server's cache holds more than `capacity` fields.
+        let players = saved.entries.iter().filter(|e| matches!(e.key, FlowKey::Player(_))).count();
+        let most = self.capacity + players.saturating_sub(1);
+        if saved.entries.len() > most || saved.requests.len() > self.capacity {
+            return Err(format!("flow cache: {} fields, {} requests (at most {} fields, {} requests)", saved.entries.len(), saved.requests.len(), most, self.capacity));
         }
         self.entries.clear();
         for e in saved.entries {
@@ -807,6 +811,11 @@ mod tests {
         c.update(&m, 200, |id| Some(at(id, 200)));
         assert!(c.get(noise, IVec2::new(80, 80), 200).is_some(), "a build is kept back for missing fields");
         assert_eq!(c.builds, 2);
+        // A cache over its capacity with players' fields saves and loads (a full server's save).
+        assert!(c.entries.len() > 4);
+        let mut back = FlowCache::new(4, 2, 30.0, 20.0, 1);
+        back.restore(c.to_saved(&m), &m).expect("a cache with players' fields over the capacity loads");
+        assert_eq!(back.entries.len(), c.entries.len());
     }
 
     /// Open ground (#70): where the grid says a tile is open, a zombie's body is never pushed

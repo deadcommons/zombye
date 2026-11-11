@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use zombye_sim::save::ContentPrint;
 use zombye_sim::{TileMap, World, WorldConfig};
 
+use crate::identity::Identity;
 use crate::modpack::ModPack;
 use crate::wire::{self, ClientMsg, DeltaDecoder, Hello, ServerInfo, ServerMsg, Welcome};
 use crate::{Intent, Snapshot};
@@ -176,12 +177,27 @@ impl Remote {
 
     /// [`Remote::connect`], saying whether a program plays this connection (`agent`: the bots, an
     /// AI agent's client; #69). A server's rules may refuse agents, or mark them to other players.
+    ///
+    /// Both join with a key worked out from the name ([`Identity::for_name`]): fine for bots and
+    /// tests, but anyone could work it out. A person's game uses [`Remote::connect_with`] and the
+    /// key kept for its install.
     pub fn connect_as(addr: &str, name: &str, password: &str, agent: bool, timeout: Duration) -> Result<Self, String> {
+        Self::connect_with(addr, name, password, agent, &Identity::for_name(name), timeout)
+    }
+
+    /// [`Remote::connect_as`] as `identity` (DCM-66): the server's challenge is signed with it, and
+    /// the survivor played is the one that key played there before (whatever it was called then).
+    pub fn connect_with(addr: &str, name: &str, password: &str, agent: bool, identity: &Identity, timeout: Duration) -> Result<Self, String> {
         let (mut stream, with_port) = dial(addr, timeout)?;
         let io = |e: std::io::Error| format!("lost the connection to {with_port}: {e}");
-        let hello = ClientMsg::Hello(Hello { protocol: wire::PROTOCOL, name: name.to_string(), password: password.to_string(), agent });
-        let bytes_out = wire::write_frame(&mut stream, &hello).map_err(io)? as u64;
-        let (answer, n) = wire::read_frame::<ServerMsg>(&mut stream, wire::MAX_SERVER_FRAME).map_err(io)?;
+        let hello = ClientMsg::Hello(Hello { protocol: wire::PROTOCOL, name: name.to_string(), password: password.to_string(), agent, key: identity.key() });
+        let mut bytes_out = wire::write_frame(&mut stream, &hello).map_err(io)? as u64;
+        let (mut answer, mut n) = wire::read_frame::<ServerMsg>(&mut stream, wire::MAX_SERVER_FRAME).map_err(io)?;
+        if let ServerMsg::Challenge(nonce) = answer {
+            bytes_out += wire::write_frame(&mut stream, &ClientMsg::Proof(identity.sign(&nonce, name))).map_err(io)? as u64;
+            let (next, m) = wire::read_frame::<ServerMsg>(&mut stream, wire::MAX_SERVER_FRAME).map_err(io)?;
+            (answer, n) = (next, n + m);
+        }
         let welcome = match answer {
             ServerMsg::Welcome(w) => *w,
             ServerMsg::Refused(why) | ServerMsg::Bye(why) => return Err(format!("{with_port} refused: {why}")),
@@ -315,7 +331,7 @@ impl Remote {
                 Ok(Ok(ServerMsg::Pong(sent))) => self.ping_ms = Some((self.started.elapsed().as_millis() as u32).wrapping_sub(sent) as f32),
                 Ok(Ok(ServerMsg::Bye(why))) => self.closed = Some(format!("the server closed the connection: {why}")),
                 Ok(Ok(ServerMsg::Refused(why))) => self.closed = Some(format!("refused: {why}")),
-                Ok(Ok(ServerMsg::Welcome(_) | ServerMsg::Info(_) | ServerMsg::Mod(_))) => {}
+                Ok(Ok(ServerMsg::Welcome(_) | ServerMsg::Info(_) | ServerMsg::Mod(_) | ServerMsg::Challenge(_))) => {}
                 Ok(Err(e)) => {
                     self.closed.get_or_insert(format!("lost the connection: {e}"));
                 }

@@ -124,7 +124,7 @@ impl LocalPlayer {
             ActionKind::Shove => Intent::Shove { player: self.id },
             ActionKind::Stomp => Intent::Stomp { player: self.id },
         });
-        if link.net.is_none() || self.dead || !self.aiming || self.acting(link, now) {
+        if link.net.is_none() || self.dead || (!self.aiming && kind == ActionKind::Swing) || self.acting(link, now) {
             return;
         }
         let Some(view) = link.curr.players.iter().find(|p| p.id == self.id) else { return };
@@ -557,14 +557,14 @@ fn actions(
     if me.aiming && mouse.just_pressed(MouseButton::Left) && !panel.open && !preview.hovered {
         me.act(&mut link, &join, ActionKind::Swing, now);
     }
-    if me.aiming && keys.just_pressed(KeyCode::Space) {
-        // Stomp if a downed zombie lies right in front, else shove (the server decides what it hits).
+    if keys.just_pressed(KeyCode::Space) {
+        // Space with or without aiming (it goes the way he faces): stomp if a downed zombie lies
+        // in reach in front, by the server's own rule (`stomp_spot`: its body, its head first),
+        // else shove (the server decides what it hits).
         let c = &join.combat;
-        let forward = Vec2::from_angle(me.aim);
-        let half_arc = (c.stomp_arc_degrees * 0.5).to_radians().cos();
+        let facing = if me.aiming { me.aim } else { me.curr.facing };
         let downed = link.curr.zombies.iter().any(|z| {
-            let to = Vec2::from(z.pos) - me.curr.pos;
-            matches!(z.anim, ZombieAnim::Down | ZombieAnim::GetUp) && to.length() <= c.stomp_range && forward.dot(to.normalize_or_zero()) >= half_arc
+            matches!(z.anim, ZombieAnim::Down | ZombieAnim::GetUp) && zombye_sim::stomp_spot(c, me.curr.pos, facing, Vec2::from(z.pos), z.facing).is_some()
         });
         me.act(&mut link, &join, if downed { ActionKind::Stomp } else { ActionKind::Shove }, now);
     }
