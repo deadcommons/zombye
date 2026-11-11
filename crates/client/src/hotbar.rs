@@ -177,7 +177,8 @@ impl Hotbar {
     }
 
     /// Put the weapons and lights that have newly come into our hands or bags on the first free
-    /// slots (in the order hand, other hand, bags). Only what wasn't on us last frame: an item
+    /// slots (in the order hand, other hand, bags); on the first look, first empty the slots of
+    /// things we don't carry. Only what wasn't on us last frame: an item
     /// taken off the bar stays off while we keep carrying it.
     pub fn auto_fill(&mut self, inv: &Inventory, items: &[ItemDef]) -> bool {
         let mut on_us: Vec<u16> = Vec::new();
@@ -187,6 +188,18 @@ impl Hotbar {
             }
         }
         let mut changed = false;
+        // The first look of a session: slots kept from an earlier game (the settings file) for
+        // things this survivor doesn't carry are emptied, so the bar starts with what's on us.
+        // (`--hotbar`'s slots, set for a picture, stay as asked.)
+        if self.seen.is_none() && !self.session_only {
+            for slot in self.slots.iter_mut() {
+                let carried = slot.as_deref().is_some_and(|id| items.iter().position(|d| d.id == id).is_some_and(|i| on_us.contains(&(i as u16))));
+                if slot.is_some() && !carried {
+                    *slot = None;
+                    changed = true;
+                }
+            }
+        }
         for &item in on_us.iter().filter(|i| self.seen.as_ref().is_none_or(|seen| !seen.contains(i))) {
             let Some(def) = items.get(item as usize).filter(|d| auto_kind(d)) else { continue };
             if self.slot_of(&def.id).is_none()
@@ -486,7 +499,26 @@ mod tests {
         assert_eq!(bar.ids(), [Some("baseball_bat".to_string()), Some("flashlight".to_string()), Some("kitchen_knife".to_string())]);
         // A full bar takes no more.
         let mut full = Hotbar::from_ids(&(0..SLOTS).map(|k| Some(format!("thing_{k}"))).collect::<Vec<_>>());
+        full.seen = Some(Vec::new());
         assert!(!full.auto_fill(&inv, &items));
+    }
+
+    /// Slots kept from an earlier game for things this survivor doesn't carry are emptied on the
+    /// first look ("no golf club on you" with a golf club on the bar); `--hotbar`'s are kept.
+    #[test]
+    fn a_new_game_starts_with_only_what_you_carry_on_the_bar() {
+        let items = items();
+        let inv = Inventory { carried: vec![stack(&items, "water_bottle", 1), stack(&items, "kitchen_knife", 1)], ..Default::default() };
+        let mut bar = Hotbar::from_ids(&[Some("golf_club".into()), Some("water_bottle".into()), None, Some("kitchen_knife".into())]);
+        assert!(bar.auto_fill(&inv, &items));
+        assert_eq!(bar.ids(), [None, Some("water_bottle".to_string()), None, Some("kitchen_knife".to_string())]);
+        // Only the first look: one put on the bar later and not carried stays (dimmed).
+        bar.slots[0] = Some("golf_club".into());
+        assert!(!bar.auto_fill(&inv, &items));
+        assert_eq!(bar.slot_of("golf_club"), Some(0));
+        let mut picture = Hotbar { session_only: true, ..Hotbar::parse("golf_club") };
+        picture.auto_fill(&inv, &items);
+        assert_eq!(picture.slot_of("golf_club"), Some(0));
     }
 
     /// On the smallest screen the panels are laid out for, the bar leaves the vitals their corner

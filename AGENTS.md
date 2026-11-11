@@ -233,7 +233,7 @@ when the first holds something one-handed, food and drink eaten or drunk (`Use`)
 dressing or antiseptic opens the health panel to pick the wound. A slot shows its key, the item's colour and name and
 how many you have in your hands and bags; the one in your hand is outlined, one you don't carry dimmed (its key says
 "no flashlight on you"). Weapons and lights take the first free slot by themselves when they first come into your
-hands or bags (`Hotbar::auto_fill`; one taken off the bar stays off while you keep carrying it). With the inventory
+hands or bags (`Hotbar::auto_fill`; one taken off the bar stays off while you keep carrying it). At the start of a session the slots kept from an earlier game for things this survivor doesn't carry are emptied. With the inventory
 open, point at a row and press Shift and 1-9 to put that item on that slot (1-9 alone still does the slot's thing, since the panel opens after every search; the same key again takes it off, an item already on
 another slot swaps with it; `inventory_ui::HoveredItem`); right-click a slot to empty it. While an item's right-click
 menu is up the number keys are the menu's, and Ctrl / Cmd with a number is never the hotbar's. The slots are kept in
