@@ -75,34 +75,34 @@
         "wool_black": ("#2b2b2e", 0.95, 0.0),            // a balaclava
 
         // Ground and roads (meshgen/landscape.rs)
-        "asphalt": ("#56575b", 0.9, 0.0),
-        "asphalt_patch": ("#45464a", 0.9, 0.0),          // repair patches: newer, darker tar
-        "wheel_track": ("#505155", 0.9, 0.0),            // the worn bands where the wheels run
-        "gutter": ("#646058", 0.9, 0.0),                 // dust and grit along the kerb
+        "asphalt": ("#424245", 0.9, 0.0),
+        "asphalt_patch": ("#333336", 0.9, 0.0),          // repair patches: newer, darker tar
+        "wheel_track": ("#3d3d40", 0.9, 0.0),            // the worn bands where the wheels run
+        "gutter": ("#4f4c47", 0.9, 0.0),                 // dust and grit along the kerb
         "paint_yellow": ("#bd9e4c", 0.9, 0.0),           // faded centre lines
         "paint_white": ("#ccc9bd", 0.9, 0.0),            // bays, crossings, stop lines
         "oil_stain": ("#2b2b2b", 0.9, 0.0),
-        "sidewalk": ("#b8ae99", 0.9, 0.0),
-        "sidewalk_joint": ("#8f8674", 0.9, 0.0),
-        "kerb_top": ("#c9c0ab", 0.9, 0.0),
-        "kerb_face": ("#968c7a", 0.9, 0.0),
+        "sidewalk": ("#99968c", 0.9, 0.0),
+        "sidewalk_joint": ("#737069", 0.9, 0.0),
+        "kerb_top": ("#adaba1", 0.9, 0.0),
+        "kerb_face": ("#807d75", 0.9, 0.0),
         "kerb_joint": ("#615e59", 0.9, 0.0),             // the line behind a kerb that reads from afar
         "driveway": ("#828075", 0.9, 0.0),
-        "path": ("#a8977a", 0.9, 0.0),                   // garden paths
-        "lawn_1": ("#7f8046", 0.9, 0.0),
-        "lawn_2": ("#777a41", 0.9, 0.0),
-        "lawn_3": ("#8c874a", 0.9, 0.0),
-        "long_grass": ("#938a4a", 0.9, 0.0),             // round fences and walls, vacant lots
-        "verge": ("#a3945c", 0.9, 0.0),                  // rough grass by roads with no sidewalk
+        "path": ("#8c8273", 0.9, 0.0),                   // garden paths
+        "lawn_1": ("#5e6e40", 0.9, 0.0),
+        "lawn_2": ("#57693b", 0.9, 0.0),
+        "lawn_3": ("#667345", 0.9, 0.0),
+        "long_grass": ("#6e7345", 0.9, 0.0),             // round fences and walls, vacant lots
+        "verge": ("#73704a", 0.9, 0.0),                  // rough grass by roads with no sidewalk
         "tuft": ("#828752", 0.9, 0.0),
         "tuft_dry": ("#998f5e", 0.9, 0.0),
-        "grass_blade": ("#8c9448", 0.9, 0.0),            // instanced grass (vegetation.rs): a blade's tip, fresh
-        "grass_blade_dry": ("#cfb862", 0.9, 0.0),        // and gone to straw; each patch is a mix of the two
-        "worn_ground": ("#a8926a", 0.9, 0.0),            // trodden earth by doors and in bare patches of lawn
-        "dirt": ("#9c8660", 0.9, 0.0),
+        "grass_blade": ("#7f8a4c", 0.9, 0.0),            // instanced grass (vegetation.rs): a blade's tip, fresh
+        "grass_blade_dry": ("#b59c5e", 0.9, 0.0),        // and gone to straw; each patch is a mix of the two
+        "worn_ground": ("#7a6648", 0.9, 0.0),            // trodden earth by doors and in bare patches of lawn
+        "dirt": ("#695740", 0.9, 0.0),
         "soil": ("#4a3b2e", 0.9, 0.0),                   // flower beds
-        "flower_red": ("#c2352e", 0.9, 0.0),
-        "flower_cream": ("#efe8cf", 0.9, 0.0),
+        "flower_red": ("#9e4540", 0.9, 0.0),
+        "flower_cream": ("#dbd4b5", 0.9, 0.0),
         "flower_mustard": ("#c7a852", 0.9, 0.0),
         "flower_mauve": ("#8a6994", 0.9, 0.0),
         "shrub_1": ("#3d572e", 0.9, 0.0),
@@ -110,12 +110,12 @@
         "hedge": ("#38522b", 0.9, 0.0),
         "hedge_top": ("#456133", 0.9, 0.0),
         "fence_wood": ("#8c7a61", 0.9, 0.0),
-        "forest_floor_1": ("#565432", 0.9, 0.0),
-        "forest_floor_2": ("#4c4a2c", 0.9, 0.0),
+        "forest_floor_1": ("#474c30", 0.9, 0.0),
+        "forest_floor_2": ("#40452b", 0.9, 0.0),
         "needles": ("#574730", 0.9, 0.0),                // brown needle litter under pines
         "fern_1": ("#405c2e", 0.9, 0.0),
         "fern_2": ("#4f6130", 0.9, 0.0),
-        "rock": ("#8f887a", 0.9, 0.0),
+        "rock": ("#808078", 0.9, 0.0),
         "deadwood": ("#5c4733", 0.9, 0.0),
         "cut_wood": ("#9e8057", 0.9, 0.0),               // the cut face of a stump or log
 
