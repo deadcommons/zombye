@@ -98,7 +98,7 @@ enum Kind {
 
 /// Every tool: name, title (shown to people by clients), kind. `tool_list` adds these to the
 /// definitions, and a test checks each tool has a row.
-const TOOLS: [(&str, &str, Kind); 58] = [
+const TOOLS: [(&str, &str, Kind); 59] = [
     ("observe", "Look around (ASCII map)", Kind::Look),
     ("screenshot", "Screenshot (rendered picture)", Kind::Look),
     ("stats", "World and player stats", Kind::Look),
@@ -128,6 +128,7 @@ const TOOLS: [(&str, &str, Kind); 58] = [
     ("move_player", "Move", Kind::Play),
     ("interact", "Open or close a door or window", Kind::Play),
     ("smash_window", "Smash a window", Kind::Play),
+    ("climb", "Climb a fence or an open window", Kind::Play),
     ("attack", "Attack", Kind::Play),
     ("shove", "Shove", Kind::Play),
     ("stomp", "Stomp", Kind::Play),
@@ -620,6 +621,14 @@ fn tool_defs() -> Value {
             "description": "A player opens or closes the door or window it faces, if one is within 1.6 m of it (face it with \
                 move_player's facing first if needed). Doors are noisy (10 m), windows quiet (2.5 m). Broken ones can't be shut.",
             "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}}}
+        },
+        {
+            "name": "climb",
+            "description": "A player climbs over the fence or through the open or broken window it faces (as E does): within \
+                1.1 m of it, faced within 70 degrees of square on, with room on the far side. Walking into a fence or an open \
+                window doesn't cross it; this does. The world steps until the player is over (about a second and a half), and \
+                the reply says where it is. Too heavy a load (overloaded) can't climb. Give facing (radians) to turn first.",
+            "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}, "facing": {"type": "number"}}}
         },
         {
             "name": "smash_window",
@@ -1468,6 +1477,52 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 Some(c) => Ok(format!("{} at tile ({}, {}) {:?} edge is now {}", noun(c.kind), c.tile.x, c.tile.y, c.edge, edge_name(c.kind))),
                 None => Err(format!("no door or window that opens or shuts within reach of player {id}")),
             }
+        }
+        "climb" => {
+            let id = player_id();
+            let start = world.player(id).ok_or_else(|| format!("no player {id}"))?.state;
+            if let Some(f) = num("facing") {
+                let seq = world.player(id).map_or(1, |p| p.last_input_seq + 1);
+                apply_intent(world, &Intent::PlayerInput { player: id, seq, move_dir: [0.0, 0.0], facing: f as f32, run: false, sneak: false, aim: false });
+                if let Some(p) = world.players.iter_mut().find(|p| p.id == id) {
+                    p.state.facing = (f as f32).rem_euclid(std::f32::consts::TAU);
+                }
+            }
+            world.item_notes.clear();
+            apply_intent(world, &Intent::Climb { player: id });
+            if world.player(id).is_none_or(|p| p.state.climb.is_none()) {
+                let notes = take_notes(world, id);
+                return Err(if notes.is_empty() {
+                    format!(
+                        "no fence or open or broken window within reach that player {id} faces ({} m, within {} degrees of square on, with room beyond)",
+                        world.config.climb.reach, world.config.climb.facing_degrees
+                    )
+                } else {
+                    format!("player {id}: {notes}")
+                });
+            }
+            let mut attacks = Events::default();
+            let mut ticks = 0;
+            while world.player(id).is_some_and(|p| p.state.climb.is_some()) && ticks < 20 * 10 {
+                if !benchmark::step(world) {
+                    break;
+                }
+                attacks.add(world);
+                ticks += 1;
+            }
+            world.edge_changes.clear();
+            world.combat_events.clear();
+            let p = world.player(id).expect("player exists").state;
+            Ok(format!(
+                "player {id} climbed from ({:.1}, {:.1}) to ({:.1}, {:.1}) in {ticks} ticks; now in {}; tick {}{}",
+                start.pos.x,
+                start.pos.y,
+                p.pos.x,
+                p.pos.y,
+                place(world, p.pos),
+                world.tick,
+                attacks.summary(world)
+            ))
         }
         "smash_window" => {
             let id = player_id();

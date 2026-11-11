@@ -115,6 +115,8 @@ pub struct WorldConfig {
     pub bonds: crate::bonds::BondTuning,
     /// Group sizes, invitations and markers (#73, [`crate::groups`]). Not saved.
     pub groups: crate::groups::GroupTuning,
+    /// When E climbs a fence or an open or broken window ([`crate::players::climb_from`]). Not saved.
+    pub climb: crate::players::ClimbTuning,
     /// The loaded mods' scripts (#25, [`crate::script`]): every world made from this config gets a
     /// host of its own from it. None: no scripts, and nothing of them in the world.
     pub scripts: Option<std::sync::Arc<dyn crate::script::ScriptEngine>>,
@@ -147,6 +149,7 @@ impl WorldConfig {
             speech: Default::default(),
             bonds: Default::default(),
             groups: Default::default(),
+            climb: Default::default(),
             scripts: None,
         }
     }
@@ -821,6 +824,25 @@ impl World {
         Some(self.toggle_edge(edge, SoundSource::World))
     }
 
+    /// Player `id` climbs the fence or open or broken window it faces (E): within
+    /// `WorldConfig::climb`'s reach and facing ([`crate::players::climb_from`]), movement then takes
+    /// it across by itself. Refused (false) dead, asleep, knocked, tied, already climbing, with no
+    /// such edge, or too loaded to climb (with a note saying so).
+    pub fn player_climb(&mut self, id: u32) -> bool {
+        let Some(pi) = self.players.iter().position(|p| p.id == id) else { return false };
+        let p = &self.players[pi];
+        if p.dead || p.needs.asleep() || p.knock.is_some() || p.away.is_some() || p.restraint.is_some() || p.state.climb.is_some() {
+            return false;
+        }
+        let Some(climb) = crate::players::climb_from(&self.map, p.state.pos, p.state.facing, &self.config.climb) else { return false };
+        if !p.state.mods.can_climb {
+            self.note(id, false, "too much on you to climb: lighten your load".to_string());
+            return false;
+        }
+        self.players[pi].state.climb = Some(climb);
+        true
+    }
+
     /// Player `id` opens or closes the door or window it faces, if one is within reach of where
     /// the server has it. Returns the new edge, or `None` (request ignored) if there is no such
     /// edge or player. Broken doors and windows can't be shut again.
@@ -1366,6 +1388,13 @@ impl World {
             mix(p.state.endurance.to_bits());
             // Dev toggles add bits only when on, so a world without them hashes as it always did.
             mix(p.state.stance as u32 | (p.state.winded as u32) << 8 | (p.dead as u32) << 9 | (p.dev.god as u32) << 10 | (p.dev.ignored as u32) << 11);
+            // Climbing (E): mixed in only then, for the same reason.
+            if let Some(c) = p.state.climb {
+                mix(0x434C_4D42);
+                for v in [c.at.x, c.at.y, c.dir.x, c.dir.y, c.left] {
+                    mix(v.to_bits());
+                }
+            }
             // Reeling or down (PvP): mixed in only then, for the same reason.
             if let Some(k) = p.knock {
                 mix(0x4B4E_0000 | k.down as u32);
@@ -2260,6 +2289,10 @@ mod tests {
         // Climb out: much slower than walking the same metre.
         let start = w.player(id).unwrap().state.pos;
         let mut ticks = 0;
+        // Walking into it isn't enough: it takes E.
+        walk(&mut w, dir, 10);
+        assert!(w.player(id).unwrap().state.pos.distance(start) < 0.3, "climbed out without E");
+        assert!(w.player_climb(id), "E at the open window");
         while w.player(id).unwrap().state.pos.distance(start) < 1.2 {
             walk(&mut w, dir, 1);
             ticks += 1;

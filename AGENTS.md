@@ -191,10 +191,10 @@ The client prints one stats line per second to stdout (time, room, stance, hp, e
 sent to it, chasing, zombies per tier active/near/virtual, sim tick ms, and the sounds started that second: `sounds 9 (Groan 4, FootstepHard 3, ...)` or `sound off`).
 In game: WASD move (he faces the way he walks), Shift run, C sneak (toggle), right mouse held: aim (he faces the
 cursor and strafes or backs off at 2.2 m/s, no running, in a guard stance), and only while aiming left mouse attack
-(swing your weapon, or punch; with a gun in hand: shoot at what the cursor is on, see Guns) and Space shove (or stomp, when a downed zombie lies right in front of you), R reload the gun you hold, E pick up the item you
+(swing your weapon, or punch; with a gun in hand: shoot at what the cursor is on, see Guns) and Space shove (or stomp, when a downed zombie lies right in front of you), R reload the gun you hold, E climb the fence or open or broken window you face (see Climbing under Players), else pick up the item you
 face (with nothing on the floor within reach: search the container you face), 1-9 the hotbar (swap to or use what's on that slot, see Hotbar), Tab or I the inventory panel, H the health panel, K the skills panel (drag any of the three by its title; they remember where they were and whether they were open), F open/close the door or window you face, G smash the window you face, dead: R a new run and Q or Esc quit,
-B sleep (B again or WASD to get up), Enter the chat line (Tab there: whisper, talk or shout; Enter says it, Esc drops it), V wave, U hands up (again lowers them), P point (see Talking and gestures), Y tie the hands of the survivor you face or free tied ones, L search a tied survivor, J (held) struggle out of ties, N invite into your group or accept (Shift+N leaves), middle mouse a group marker (see Hold-ups and groups), T skip an hour, Z spawn zombies, wheel zoom (over the inventory, health or skills panel it scrolls that panel instead), F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), F3 the light preview (a time-of-day slider, see Light and mood), F4 the debug stats window (see Needs), F6 the server's rules (on a multiplayer server, see Multiplayer), F7 the server browser (see The server browser), `,` and `.` turn the camera a quarter turn left or right (see Turning the camera under Light and mood), F10 walls up / walls cut, Shift+F10 zombie silhouettes and Ctrl+F10 opening hints (see Cutaways and Opening hints under Light and mood), M mute, O hide or show the objectives and hints (see The first night), Ctrl (or Cmd) + `=` / `-` the UI scale (see UI scale), Ctrl+0 back to 100%. Walk into an open or broken window to climb
-through it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
+B sleep (B again or WASD to get up), Enter the chat line (Tab there: whisper, talk or shout; Enter says it, Esc drops it), V wave, U hands up (again lowers them), P point (see Talking and gestures), Y tie the hands of the survivor you face or free tied ones, L search a tied survivor, J (held) struggle out of ties, N invite into your group or accept (Shift+N leaves), middle mouse a group marker (see Hold-ups and groups), T skip an hour, Z spawn zombies, wheel zoom (over the inventory, health or skills panel it scrolls that panel instead), F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), F3 the light preview (a time-of-day slider, see Light and mood), F4 the debug stats window (see Needs), F6 the server's rules (on a multiplayer server, see Multiplayer), F7 the server browser (see The server browser), `,` and `.` turn the camera a quarter turn left or right (see Turning the camera under Light and mood), F10 walls up / walls cut, Shift+F10 zombie silhouettes and Ctrl+F10 opening hints (see Cutaways and Opening hints under Light and mood), M mute, O hide or show the objectives and hints (see The first night), Ctrl (or Cmd) + `=` / `-` the UI scale (see UI scale), Ctrl+0 back to 100%. Walking into a fence or an open window stops you as a wall would: E climbs
+it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
 not Bevy's handler; a second Ctrl-C quits unsaved) autosaves; `--render-to` never does.
 
 Saves in the client: `quicksave.zsave` (F5) and `autosave.zsave` (on quit) in the saves folder (`--saves DIR`,
@@ -315,7 +315,8 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   and `WindowBroken` (passable, but crossing is a slow climb: `TileMap::in_window_opening`, within
   `CLIMB_ZONE` of the window line), `DoorClosed` (blocks both), `DoorOpen`, `DoorBroken` (a permanent
   opening; doesn't block sight), `Arch`, `Fence` (waist high: doesn't block sight, and like an open window
-  crossing it is a slow climb, for players and zombies; blows and hands reach over it). Helpers: `is_door`
+  crossing it is a slow climb, for players and zombies; blows and hands reach over it). Zombies climb what
+  they walk into; players only with E (see Climbing under Players). Helpers: `is_door`
   (openable), `is_window`, `is_breakable` (shut door or intact window), `is_climbable`, `broken()`.
 - Shut doors and intact windows have **hit points** on the server (`World::edge_hp(EdgeRef)`), stored
   sparsely in a sorted map (only damaged edges; part of the state hash). Full HP and every other
@@ -471,13 +472,27 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   player carries changes movement through `PlayerState::mods` (`MoveMods`: speed, run drain, regen, can run,
   can climb), which the server sets from the load (`World::refresh_carry`) and snapshots carry (`PlayerView::mods`),
   so prediction with the snapshot's modifiers stays exact (Fitness, #46, goes there too).
+- **Climbing** (fences and open or broken windows): **only with E**. Without a climb under way a climb zone
+  (`CLIMB_ZONE` either side of the edge) is a wall to a player, which it slides along; one already in a zone (a
+  climb given up, an old save) can walk out of it. E (`Intent::Climb { player }`, `World::player_climb`) starts
+  one when `players::climb_from` finds a fence or open or broken window within `ClimbTuning::reach` (1.1 m) of the
+  body, faced within `facing_degrees` (70) of square on, nothing that blocks walking in between and room on the
+  far side; the client asks the same pure function on its map copy (`JoinInfo::climb`, from `wire::Tunings`) and
+  sends a climb before a pick-up or a search. The climb is `PlayerState::climb` (`players::Climb`: the point on
+  the edge it crosses at, the way across, seconds left): `step_movement` walks the body to the near side of the
+  zone, then over it at `CLIMB_SPEED` to just past the far side, facing the way it goes, whatever the input says,
+  and lets go there (or after `give_up_secs`, 5, when something stands in the way). Overloaded (no `can_climb`)
+  refuses with a note. Prediction stays exact (`PlayerView::climb`, own player only), it is in `state_hash` only
+  while set, and saved in an optional `CLMB` section. `ClimbTuning` is `WorldConfig::climb` (serde defaults, not
+  saved, like the server's other rules). Zombies are unchanged: they climb whatever they walk into. MCP `climb
+  {player, facing}`; `--walk` climbs what its way leads over (as E). `wire::PROTOCOL` 15.
 - `Intent`s (`crates/net`): `PlayerInput { player, seq, move_dir, facing, run, sneak, aim }` every tick (`aim`: the
   right mouse held; `step_movement` walks an aiming player at `AIM_SPEED` 2.2 m/s with no running, `PlayerView::aiming`
   says so, and the server takes `Attack`, `Shove` and `Stomp` only from an aiming player; not saved)
   (the server keeps the newest by `seq` and applies it once per tick; `move_dir` is clamped to
   length 1), `Interact { player }` (opens or closes the door or window that player faces, within
   1.6 m of its server position, otherwise ignored; doors make `door_noise`, windows the quieter
-  `window_noise`; broken ones can't be shut), `SmashWindow { player }` (breaks the shut or open window
+  `window_noise`; broken ones can't be shut), `Climb { player }` (E: over the fence or through the open window it faces, see Climbing), `SmashWindow { player }` (breaks the shut or open window
   it faces; loud, `glass_break_noise`), `Attack`, `Shove`, `Stomp`, `PickUp` (all `{ player }`, see
   Combat and Items), the item intents (`MoveItem`, `Equip`, `Wear`, `Unequip`, `Drop`, `Use`, `Search`, see Items), `Craft { player, recipe }`
   (see Crafting),
@@ -1753,7 +1768,8 @@ stack's `born`/`used`, 7 crafting: craft jobs and the recipes in the content fin
   `save_check::check_far_clock`), `LOOK` (what bodies that rise wore, #63: `health::RiseLooks`, item ids by player and zombie id;
   optional too, checked by `save_check::check_looks`), `END`. PvP (#65) didn't bump the format either: the run stats
   gained `player_kills`, so they are written as `RUN2` (a `RUNS` section from before still loads, with none), and
-  players reeling or down are an optional `KNOC` section (ids and `Knock`s, only when there are any; checked on load).
+  players reeling or down are an optional `KNOC` section (ids and `Knock`s, only when there are any; checked on load),
+  and climbs under way an optional `CLMB` section the same way.
   Logged-out survivors and spawn protection (#68) are an optional `AWAY` section the same way (see Multiplayer),
   and tied hands (`BOND`) and groups (`GRPS`, #73) two more (see Hold-ups and groups).
   Per-region zombie sections are there so a later streaming save (#3, #22) can rewrite only what changed. Errors are
@@ -2400,8 +2416,9 @@ memory, timers, the edge it batters, and per player the distance, line of sight 
 of a tile, with HP for doors and windows), `step_ticks` (time only advances when you call it; reports
 zombie attacks, thumps and anything broken), `move_player` (player, compass `direction` or `dx`/`dy`,
 `ticks`, `run`/`sneak`, `facing`: holds that input while the world steps, then stops), `interact`
-(opens/closes the door or window player 1, or `player`, faces; `toggle_door` is an old alias),
-`smash_window`, `attack` / `shove` / `stomp` (player, optional `facing` or `target` zombie id to turn
+(opens/closes the door or window player 1, or `player`, faces; `toggle_door` is an old alias), `climb`
+(player, optional `facing`: over the fence or through the open or broken window it faces, as E; steps until it is
+over; walking into one with `move_player` doesn't cross it), `smash_window`, `attack` / `shove` / `stomp` (player, optional `facing` or `target` zombie id to turn
 first, or `target_player` a player id; steps until the action has landed and the player can act again, and reports what it hit: zombies under `HITS`, other players (PvP) under `PLAYER HITS: P1 hit P2 for 18: a gash on the left arm, staggered (82 HP left)`),
 `pvp {on}` (player against player on or off for this world; no argument says which; `--pvp on` starts with it on; `stats` has `pvp`, each player's `knocked` (`staggered` / `down`) and `run.player_kills`, and `observe` says who is staggered or knocked down),
 `pick_up` (the instant grab, as E), `dev {player, god, ignored}` (the dev toggles; a field left out stays as it is;

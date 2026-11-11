@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::health::Health;
 use crate::inventory::{Inventory, ItemJob};
-use crate::map::TileMap;
+use crate::map::{CLIMB_ZONE, TileMap};
 use crate::needs::Needs;
 use crate::run::RunStats;
 use crate::skills::Skills;
@@ -36,6 +36,8 @@ pub const CLIMB_SPEED: f32 = 0.7;
 pub const RUN_MIN_ENDURANCE: f32 = 0.05;
 /// Once winded (endurance fell to [`RUN_MIN_ENDURANCE`]), you can't run again until it is back above this.
 pub const RUN_RECOVER_ENDURANCE: f32 = 0.2;
+/// How far past a climb zone a climb ends (and starts from), so the body is clear of it.
+const CLIMB_CLEAR: f32 = 0.03;
 /// Endurance per second spent running / regained otherwise.
 pub const RUN_DRAIN: f32 = 0.06;
 pub const REGEN: f32 = 0.05;
@@ -116,12 +118,130 @@ pub struct PlayerState {
     pub winded: bool,
     /// From the load: set by the server, read by movement.
     pub mods: MoveMods,
+    /// Over a fence or through an open or broken window, started with E (`World::player_climb`):
+    /// while set, movement takes the body across by itself and the input's direction is ignored.
+    /// Without one a climb zone is a wall. Saved in a section of its own (`crate::save`, `CLMB`),
+    /// not here, so the player's layout (and the format) stays as it was.
+    #[serde(skip)]
+    pub climb: Option<Climb>,
 }
 
 impl PlayerState {
     pub fn new(pos: Vec2) -> Self {
-        Self { pos, facing: 0.0, stance: Stance::Walk, endurance: 1.0, winded: false, mods: MoveMods::default() }
+        Self { pos, facing: 0.0, stance: Stance::Walk, endurance: 1.0, winded: false, mods: MoveMods::default(), climb: None }
     }
+}
+
+/// A climb under way over a fence or through an open or broken window: the body walks to the
+/// near side of the edge's climb zone (if it isn't there yet), then crosses it at [`CLIMB_SPEED`]
+/// to just past the far side.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Climb {
+    /// The point on the edge's line it crosses at.
+    pub at: Vec2,
+    /// Unit, square across the edge, the way it goes.
+    pub dir: Vec2,
+    /// Seconds before it gives up (something stands in the way).
+    pub left: f32,
+}
+
+impl Climb {
+    /// How far along `dir` the body at `p` is from the edge's line (negative: still on the near side).
+    pub fn across(&self, p: Vec2) -> f32 {
+        (p - self.at).dot(self.dir)
+    }
+}
+
+/// When pressing E climbs (`WorldConfig::climb`; ours). The client gets it on joining, so it
+/// sends a climb only where the server takes one.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClimbTuning {
+    /// Furthest from the body's middle to the fence or window, in metres.
+    pub reach: f32,
+    /// How far off square on to the edge the player may face, in degrees either side.
+    pub facing_degrees: f32,
+    /// A climb that hasn't got across in this many seconds gives up.
+    pub give_up_secs: f32,
+}
+
+impl Default for ClimbTuning {
+    fn default() -> Self {
+        Self { reach: 1.1, facing_degrees: 70.0, give_up_secs: 5.0 }
+    }
+}
+
+impl ClimbTuning {
+    pub fn check(&self) -> Result<(), String> {
+        let ok = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
+        if !ok(self.reach, CLIMB_ZONE + CLIMB_CLEAR, 5.0) {
+            return Err(format!("climb.reach {} must be {} to 5 m", self.reach, CLIMB_ZONE + CLIMB_CLEAR));
+        }
+        if !ok(self.facing_degrees, 1.0, 180.0) {
+            return Err(format!("climb.facing_degrees {} must be 1 to 180", self.facing_degrees));
+        }
+        if !ok(self.give_up_secs, 0.5, 60.0) {
+            return Err(format!("climb.give_up_secs {} must be 0.5 to 60", self.give_up_secs));
+        }
+        Ok(())
+    }
+}
+
+/// The fence or open or broken window a player at `pos` facing `facing` would climb with E, if
+/// any: within `reach` of its middle, faced within `facing_degrees` of square on, nothing that
+/// blocks walking between, and room on the far side. The nearest and most squarely faced wins.
+/// Pure: the client asks it before sending a climb, the server again when it takes one.
+pub fn climb_from(map: &TileMap, pos: Vec2, facing: f32, t: &ClimbTuning) -> Option<Climb> {
+    use crate::map::Side;
+    use glam::IVec2;
+    let face = Vec2::from_angle(facing);
+    let min_dot = t.facing_degrees.to_radians().cos();
+    let r = t.reach.ceil() as i32 + 1;
+    let base = pos.floor().as_ivec2();
+    let mut best: Option<(f32, Climb)> = None;
+    for dy in -r..=r {
+        for dx in -r..=r {
+            let tile = base + IVec2::new(dx, dy);
+            if !map.in_bounds(tile) {
+                continue;
+            }
+            // The north edge runs along x at y = tile.y, the west edge along y at x = tile.x.
+            for (side, along, normal) in [(Side::N, Vec2::X, Vec2::Y), (Side::W, Vec2::Y, Vec2::X)] {
+                if !map.edge(tile, side).is_climbable() {
+                    continue;
+                }
+                let start = tile.as_vec2();
+                let a = (pos - start).dot(along).clamp(0.35, 0.65);
+                let at = start + along * a;
+                let s = (pos - at).dot(normal);
+                let dir = if s.abs() > 1e-3 {
+                    -normal * s.signum()
+                } else if face.dot(normal) >= 0.0 {
+                    normal
+                } else {
+                    -normal
+                };
+                // Past it already (out of its far side): nothing to climb.
+                if (pos - at).dot(dir) > CLIMB_ZONE {
+                    continue;
+                }
+                let d = pos.distance(at);
+                if d > t.reach || face.dot(dir) < min_dot {
+                    continue;
+                }
+                let near = at - dir * (CLIMB_ZONE + CLIMB_CLEAR);
+                let far = at + dir * (CLIMB_ZONE + CLIMB_CLEAR + 0.3);
+                if map.tile_blocked(far.floor().as_ivec2()) || !crate::vision::clear_reach(map, pos, near) {
+                    continue;
+                }
+                let score = d - face.dot(dir) * 0.5;
+                if best.is_none_or(|(b, _)| score < b) {
+                    best = Some((score, Climb { at, dir, left: t.give_up_secs }));
+                }
+            }
+        }
+    }
+    best.map(|(_, c)| c)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -292,7 +412,24 @@ pub struct Action {
 
 /// Advance one player by `dt` seconds of `input`. Pure: the same arguments always give the same result.
 pub fn step_movement(map: &TileMap, state: &mut PlayerState, input: &PlayerInput, dt: f32) {
-    let input = input.sanitized();
+    let mut input = input.sanitized();
+    // A climb under way walks the body across by itself: to the near side of the climb zone,
+    // then over to just past the far side, facing the way it goes; it stops there, or gives up.
+    let mut max_step = f32::INFINITY;
+    if let Some(mut c) = state.climb {
+        c.left -= dt;
+        let s = c.across(state.pos);
+        if s >= CLIMB_ZONE + CLIMB_CLEAR || c.left <= 0.0 || !state.mods.can_climb {
+            state.climb = None;
+        } else {
+            let near = c.at - c.dir * (CLIMB_ZONE + CLIMB_CLEAR);
+            let target = if s < -CLIMB_ZONE && state.pos.distance(near) > 0.02 { near } else { c.at + c.dir * (CLIMB_ZONE + CLIMB_CLEAR + 0.01) };
+            let to = target - state.pos;
+            max_step = to.length();
+            input = PlayerInput { move_dir: to.normalize_or_zero(), facing: c.dir.to_angle().rem_euclid(std::f32::consts::TAU), run: false, aim: false, ..input };
+            state.climb = Some(c);
+        }
+    }
     state.facing = input.facing;
     let moving = input.move_dir.length_squared() > 1e-4;
 
@@ -335,16 +472,27 @@ pub fn step_movement(map: &TileMap, state: &mut PlayerState, input: &PlayerInput
     if climbing {
         speed = speed.min(CLIMB_SPEED);
     }
-    let step = input.move_dir * speed * dt;
+    let step = (input.move_dir * speed * dt).clamp_length_max(max_step);
     // Sub-step so fast movement (or a long dt) can't tunnel through thin walls.
     let n = (step.length() / MAX_SUBSTEP).ceil().max(1.0) as u32;
     let part = step / n as f32;
+    // Fences and open windows are climbed only with E (a climb under way); otherwise their climb
+    // zone is a wall, which the body slides along. One already in a zone (a climb given up, a
+    // load) can walk out of it.
+    let may_enter = climbing || (mods.can_climb && state.climb.is_some());
     let mut p = state.pos;
     for _ in 0..n {
-        let next = map.resolve_circle(p + part, PLAYER_RADIUS);
-        // Too loaded to climb: a window opening is a wall (unless already in it).
-        if !mods.can_climb && !climbing && map.in_window_opening(next) {
-            break;
+        let mut next = map.resolve_circle(p + part, PLAYER_RADIUS);
+        if !may_enter && map.in_window_opening(next) {
+            let slide = [Vec2::new(part.x, 0.0), Vec2::new(0.0, part.y)]
+                .map(|d| map.resolve_circle(p + d, PLAYER_RADIUS))
+                .into_iter()
+                .filter(|q| !map.in_window_opening(*q))
+                .max_by(|a, b| a.distance_squared(p).total_cmp(&b.distance_squared(p)));
+            match slide {
+                Some(q) => next = q,
+                None => break,
+            }
         }
         p = next;
     }
@@ -473,14 +621,19 @@ mod tests {
         assert_eq!(s.endurance, 1.0);
     }
 
-    /// An open window is a way through, but climbing it is slow; a shut one is a wall.
+    /// An open window is a way through, but only with E (a climb), and climbing it is slow; a shut
+    /// one is a wall, and so is an open one walked into without E.
     #[test]
     fn climbing_through_an_open_window_is_slow() {
         let mut map = walled_map();
         let window = IVec2::new(16, 8);
-        let cross = |map: &TileMap| {
+        let tuning = ClimbTuning::default();
+        let cross = |map: &TileMap, press_e: bool| {
             let mut s = PlayerState::new(Vec2::new(14.5, 8.5));
             for t in 1..=200 {
+                if press_e && s.climb.is_none() {
+                    s.climb = climb_from(map, s.pos, s.facing, &tuning);
+                }
                 step_movement(map, &mut s, &PlayerInput { run: false, ..run_east() }, TICK_DT);
                 if s.pos.x > 18.5 {
                     return Some(t);
@@ -489,18 +642,62 @@ mod tests {
             None
         };
         map.set_edge(window, Side::W, Edge::Window);
-        assert_eq!(cross(&map), None, "walked through a shut window");
+        assert_eq!(cross(&map, true), None, "walked through a shut window");
         let plain = TileMap::new(2, 1);
-        let walk = cross(&plain).unwrap();
-        for kind in [Edge::WindowOpen, Edge::WindowBroken] {
+        let walk = cross(&plain, false).unwrap();
+        for kind in [Edge::WindowOpen, Edge::WindowBroken, Edge::Fence] {
             map.set_edge(window, Side::W, kind);
-            let climb = cross(&map).expect("climbs through");
+            assert_eq!(cross(&map, false), None, "{kind:?}: climbed without E");
+            let climb = cross(&map, true).expect("climbs through");
             // About 0.7 m of opening at climb speed instead of walking pace.
             assert!(climb as f32 * TICK_DT > walk as f32 * TICK_DT + 0.6, "{kind:?}: climbed in {climb} ticks, walked in {walk}");
         }
         assert!(map.in_window_opening(Vec2::new(16.1, 8.5)) && !map.in_window_opening(Vec2::new(15.5, 8.5)));
         // Walking along the wall past the window isn't climbing.
         assert!(!map.in_window_opening(Vec2::new(16.0 - PLAYER_RADIUS - 0.08, 8.5)));
+    }
+
+    /// E climbs only what is in reach and faced, with room beyond; the climb takes the body across
+    /// whatever the input says, and ends just past the far side.
+    #[test]
+    fn e_climbs_what_is_faced_and_in_reach() {
+        let mut map = TileMap::new(2, 1);
+        for y in 0..16 {
+            map.set_edge(IVec2::new(16, y), Side::W, Edge::Fence);
+        }
+        let t = ClimbTuning::default();
+        let at = |x: f32, y: f32| Vec2::new(x, y);
+        assert!(climb_from(&map, at(15.2, 8.3), 0.0, &t).is_some(), "facing it, close");
+        assert!(climb_from(&map, at(15.2, 8.3), std::f32::consts::PI, &t).is_none(), "back to it");
+        assert!(climb_from(&map, at(14.0, 8.3), 0.0, &t).is_none(), "out of reach");
+        // Off square within the arc still climbs, crossing square on at the tile it is beside.
+        let c = climb_from(&map, at(15.4, 8.9), 0.6, &t).expect("a little off square");
+        assert_eq!(c.dir, Vec2::X);
+        assert!((c.at - at(16.0, 8.65)).length() < 1e-4, "{}", c.at);
+        // A tree right behind it: no room to land.
+        let mut treed = map.clone();
+        treed.tile_mut(IVec2::new(16, 8)).unwrap().feature = crate::map::Feature::Tree;
+        assert!(climb_from(&treed, at(15.2, 8.5), 0.0, &t).is_none());
+        // Walking backwards the whole time: the climb still goes over, then lets go.
+        let mut s = PlayerState::new(at(15.2, 8.5));
+        s.climb = climb_from(&map, s.pos, 0.0, &t);
+        let back = PlayerInput { move_dir: -Vec2::X, facing: 0.0, ..Default::default() };
+        for _ in 0..60 {
+            step_movement(&map, &mut s, &back, TICK_DT);
+        }
+        assert!(s.climb.is_none() && s.pos.x > 16.0 + CLIMB_ZONE, "{} {:?}", s.pos, s.climb);
+        // Then walking back is a wall again.
+        for _ in 0..40 {
+            step_movement(&map, &mut s, &back, TICK_DT);
+        }
+        assert!(s.pos.x > 16.0 + CLIMB_ZONE - 1e-3, "walked back over without E: {}", s.pos);
+        // Walking along the fence diagonally slides along it instead of sticking.
+        let mut s = PlayerState::new(at(15.6, 4.5));
+        let diag = PlayerInput { move_dir: Vec2::new(1.0, 1.0).normalize(), facing: 0.8, ..Default::default() };
+        for _ in 0..30 {
+            step_movement(&map, &mut s, &diag, TICK_DT);
+        }
+        assert!(s.pos.y > 6.0 && s.pos.x < 16.0, "{}", s.pos);
     }
 
     /// A heavy load slows movement, drains running faster and can forbid running and climbing.

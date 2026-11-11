@@ -50,10 +50,11 @@ impl Plugin for AutoplayPlugin {
 }
 
 /// `--walk X,Y;X,Y;...`: the local player walks from point to point by itself and then stands,
-/// opening a shut door its next step leads through (as F does), for recordings of things seen
-/// while moving (the cutaways as you leave a house and go round it). Only the normal movement
-/// input and `Intent::Interact`. Lay the points so each door is crossed square on.
-fn walk(options: Res<Options>, mut link: ResMut<ServerLink>, me: Res<LocalPlayer>, mut auto: ResMut<AutoInput>, map: Res<ClientMap>, mut next: Local<usize>, mut door_wait: Local<f32>) {
+/// opening a shut door its next step leads through (as F does) and climbing a fence or open window
+/// in its way (as E does), for recordings of things seen while moving (the cutaways as you leave a
+/// house and go round it). Only the normal movement input, `Intent::Interact` and `Intent::Climb`.
+/// Lay the points so each door, fence and window is crossed square on.
+fn walk(options: Res<Options>, mut link: ResMut<ServerLink>, me: Res<LocalPlayer>, mut auto: ResMut<AutoInput>, map: Res<ClientMap>, join: Res<JoinInfo>, mut next: Local<usize>, mut door_wait: Local<f32>) {
     auto.move_dir = Vec2::ZERO;
     auto.run = false;
     *door_wait = (*door_wait - TICK_DT).max(0.0);
@@ -76,6 +77,11 @@ fn walk(options: Res<Options>, mut link: ResMut<ServerLink>, me: Res<LocalPlayer
     if *door_wait == 0.0 && side.is_some_and(|s| map.0.edge(a, s) == zombye_sim::map::Edge::DoorClosed) {
         link.send(Intent::Interact { player: me.id });
         *door_wait = 0.8;
+    }
+    // A fence or open window right ahead, the way it's going: climb it.
+    if *door_wait == 0.0 && me.curr.climb.is_none() && zombye_sim::players::climb_from(&map.0, pos, dir.to_angle(), &join.climb).is_some_and(|c| c.dir.dot(dir) > 0.7) {
+        link.send(Intent::Climb { player: me.id });
+        *door_wait = 0.3;
     }
 }
 

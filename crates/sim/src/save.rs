@@ -54,7 +54,8 @@
 //! player's run stats and cause of death, `crate::run`; optional, so format 4 saves from before
 //! #13 still load, with empty records; written as `RUN2` since PvP added the players killed, and
 //! `RUNS` is still read), then `KNOC` (players reeling or down from another player's blow; only when
-//! there are any), then `AWAY` (#68: which survivors are out of the world, logged out and their
+//! there are any), then `CLMB` (climbs under way over a fence or through a window, started with E;
+//! only when there are any), then `AWAY` (#68: which survivors are out of the world, logged out and their
 //! time run out, the seconds left to those still lying in it, and spawn protection left; only when
 //! there is any of it. Survivors out of the world are stored with the players in `WRLD`, so every
 //! check and content change reaches them, and set aside again on load), then `LOOK` (what bodies
@@ -117,6 +118,8 @@ const RUNS: [u8; 4] = *b"RUNS";
 const RUN2: [u8; 4] = *b"RUN2";
 /// Players reeling or down from another player's blow (PvP; optional, only when there are any).
 const KNOC: [u8; 4] = *b"KNOC";
+/// Climbs under way (E over a fence or through a window), by player id; only when there are any.
+const CLMB: [u8; 4] = *b"CLMB";
 
 /// [`crate::run::RunStats`] as the `RUNS` section held it, before players killed were counted.
 #[derive(Deserialize)]
@@ -779,6 +782,10 @@ impl World {
         if !knocks.is_empty() {
             w.section(KNOC, &encode(&knocks));
         }
+        let climbs: Vec<(u32, crate::players::Climb)> = players.iter().filter_map(|p| p.state.climb.map(|c| (p.id, c))).collect();
+        if !climbs.is_empty() {
+            w.section(CLMB, &encode(&climbs));
+        }
         if away != AwaySave::default() {
             w.section(AWAY, &encode(&away));
         }
@@ -970,6 +977,7 @@ impl World {
         let mut runs: Option<Vec<(u32, crate::run::RunStats)>> = None;
         let mut looks: Option<crate::health::RiseLooks> = None;
         let mut knocks: Option<Vec<(u32, crate::players::Knock)>> = None;
+        let mut climbs: Option<Vec<(u32, crate::players::Climb)>> = None;
         let mut far: Option<u64> = None;
         let mut script: Option<crate::script::ScriptState> = None;
         let mut away: Option<AwaySave> = None;
@@ -993,6 +1001,10 @@ impl World {
             }
             if tag == KNOC && knocks.is_none() {
                 knocks = Some(decode(KNOC, payload)?);
+                continue;
+            }
+            if tag == CLMB && climbs.is_none() {
+                climbs = Some(decode(CLMB, payload)?);
                 continue;
             }
             if tag == AWAY && away.is_none() {
@@ -1023,7 +1035,7 @@ impl World {
                 script = Some(decode(MODS, payload)?);
                 continue;
             }
-            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || far.is_some() || nights.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() {
+            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() {
                 return Err(corrupt(format!("unexpected {} section", tag_name(tag))));
             }
             let block: ZombieBlock = decode(ZOMB, payload)?;
@@ -1056,6 +1068,15 @@ impl World {
                 return Err(save_check::invalid(format!("player {id}: knocked back for {} s (dead: {})", knock.timer, p.dead)));
             }
             p.knock = Some(knock);
+        }
+        for (id, c) in climbs.unwrap_or_default() {
+            let (map, give_up) = (&w.map, w.config.climb.give_up_secs);
+            let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("player {id} is climbing, but isn't in the save")))?;
+            let finite = [c.at.x, c.at.y, c.dir.x, c.dir.y, c.left].iter().all(|v| v.is_finite());
+            if p.dead || p.state.climb.is_some() || !finite || !map.in_bounds(c.at.floor().as_ivec2()) || (c.dir.length() - 1.0).abs() > 1e-3 || !(0.0..=give_up.max(60.0)).contains(&c.left) {
+                return Err(save_check::invalid(format!("player {id}: climbing at {} toward {} for {} s (dead: {})", c.at, c.dir, c.left, p.dead)));
+            }
+            p.state.climb = Some(c);
         }
         // Tied hands (#73). An item that is gone from the content: the hands are free.
         for (id, item, by, struggled, struggling) in bonds.unwrap_or_default() {
@@ -1342,6 +1363,29 @@ pub(crate) mod tests {
         assert_eq!(loaded.save(), bytes);
         let info = read_info(&bytes[..4096.min(bytes.len())]).unwrap();
         assert_eq!((info.tick, info.zombies, info.players), (100, w.zombies.len() as u32, 1));
+    }
+
+    /// A climb under way (E over a fence or through a window) is saved and carries on after a load.
+    #[test]
+    fn a_climb_under_way_survives_a_save() {
+        let mut w = world(0);
+        let id = w.add_player(w.player_spawn);
+        let c = crate::players::Climb { at: w.player_spawn + Vec2::new(0.6, 0.0), dir: Vec2::X, left: 3.0 };
+        w.players[0].state.climb = Some(c);
+        let bytes = w.save();
+        let mut loaded = World::load(&bytes, &content()).unwrap();
+        assert_eq!(loaded.players[0].state.climb, Some(c));
+        assert_eq!(loaded.state_hash(), w.state_hash());
+        for t in 0..10 {
+            for x in [&mut w, &mut loaded] {
+                x.set_player_input(id, t + 1, PlayerInput::default());
+                x.step();
+            }
+            assert_eq!(loaded.state_hash(), w.state_hash(), "tick {t}");
+        }
+        // Climbing nowhere: refused.
+        w.players[0].state.climb = Some(crate::players::Climb { dir: Vec2::new(3.0, 0.0), ..c });
+        assert!(matches!(World::load(&w.save(), &content()), Err(LoadError::Invalid(_))));
     }
 
     /// The real test: a saved and loaded world steps exactly like the original, through combat,

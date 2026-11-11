@@ -1696,6 +1696,7 @@ mod tests {
                 w.players[0].state.pos = Vec2::new(101.8, 100.5);
                 for t in 0..80u32 {
                     w.set_player_input(id, k * 100 + t + 1, PlayerInput { move_dir: Vec2::X, facing: 0.0, run: false, sneak: false, aim: false });
+                    w.player_climb(id);
                     w.step();
                 }
                 assert!(me(&w, id).state.pos.x > 103.5, "didn't get through");

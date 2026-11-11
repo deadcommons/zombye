@@ -588,7 +588,7 @@ impl Host {
             map_hash: self.world.map_base_hash(),
             map_edits: self.world.map_edits_now(),
             edge_damage: EdgeDamage::all(&self.world),
-            tunings: Tunings { combat: c.combat.clone(), health: c.health.clone(), infection: c.infection.clone(), needs: c.needs, skills: c.skills.clone(), carry: c.carry.clone() },
+            tunings: Tunings { combat: c.combat.clone(), health: c.health.clone(), infection: c.infection.clone(), needs: c.needs, skills: c.skills.clone(), carry: c.carry.clone(), climb: c.climb.clone() },
         };
         let (out, frames) = mpsc::sync_channel::<Vec<u8>>(OUT_QUEUE);
         let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));

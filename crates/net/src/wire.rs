@@ -52,8 +52,9 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// (`PlayerPacked::bits` is a `u32` for them), `PrivateView::frisk`, `SnapshotDelta::group`.
 /// 11: the server browser, #27: `ServerInfo::mods`. 12: mods downloaded on joining, #24: a hash
 /// and a size in `ModInfo`, `ClientMsg::Fetch` and `ServerMsg::Mod`. 13: guns, #72: `Intent::Aim`,
-/// `CombatEventKind::Shot`, `JobKind::Reload`, the weapons' `ranged`. 14: `ZombieAnim::Lunge` and `Climb`.)
-pub const PROTOCOL: u32 = 14;
+/// `CombatEventKind::Shot`, `JobKind::Reload`, the weapons' `ranged`. 14: `ZombieAnim::Lunge` and `Climb`.
+/// 15: climbing with E: `Intent::Climb`, `PlayerView::climb`, `Tunings::climb`.)
+pub const PROTOCOL: u32 = 15;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -315,6 +316,8 @@ pub struct Tunings {
     pub needs: NeedsTuning,
     pub skills: SkillTuning,
     pub carry: CarryTuning,
+    /// When E climbs, so the client sends a climb only where the server takes one.
+    pub climb: zombye_sim::ClimbTuning,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -516,6 +519,7 @@ impl PlayerPacked {
             },
             endurance: 1.0,
             winded: false,
+            climb: None,
             last_input_seq: 0,
             hp: self.hp as f32,
             dead: bit(2),
@@ -1105,6 +1109,7 @@ impl Intent {
         match self {
             Intent::PlayerInput { player, .. }
             | Intent::Interact { player }
+            | Intent::Climb { player }
             | Intent::SmashWindow { player }
             | Intent::Attack { player }
             | Intent::Shove { player }
