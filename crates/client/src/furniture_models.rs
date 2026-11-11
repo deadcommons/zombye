@@ -65,6 +65,7 @@ impl FurnitureModels {
     }
 
     /// How many triangles the model for `kind` has, if there is one.
+    #[cfg(test)]
     pub fn triangles(&self, kind: &str) -> Option<usize> {
         self.0.get(kind).map(|m| m.tris.len())
     }
