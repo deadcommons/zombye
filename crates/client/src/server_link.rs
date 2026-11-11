@@ -160,6 +160,10 @@ pub struct JoinInfo {
     pub carry: zombye_sim::CarryTuning,
     /// When E climbs a fence or window (sent only where the server takes one).
     pub climb: zombye_sim::ClimbTuning,
+    /// Which furniture is a container, for right-clicking one in the world (`world_actions.rs`).
+    pub containers: zombye_sim::containers::ContainerData,
+    /// The item tag that makes an item a blind to fit.
+    pub blind_tag: String,
 }
 
 /// The `FixedUpdate` system that ticks the server. Input is sent before it and reconciled after it.
@@ -444,6 +448,8 @@ fn join_info(config: &zombye_sim::WorldConfig, player_id: u32, player_spawn: Vec
         skills: config.skills.clone(),
         carry: config.carry.clone(),
         climb: config.climb.clone(),
+        containers: config.containers.clone(),
+        blind_tag: config.blinds.tag.clone(),
     }
 }
 

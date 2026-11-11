@@ -57,8 +57,9 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// in the items, the wear numbers in `CombatTuning`. 16: ten skill levels and XP multipliers in `SkillTuning`.
 /// 17: climbing with E: `Intent::Climb`, `PlayerView::climb`, `Tunings::climb`.
 /// 18: broken weapons stay as items: `CombatTuning::broken_damage`. 20: blinds: `Intent::Blind`,
-/// `Snapshot::blind_changes`, `Welcome::blinds` and `Welcome::glazed`, `JobKind::Blind`.)
-pub const PROTOCOL: u32 = 20;
+/// `Snapshot::blind_changes`, `Welcome::blinds` and `Welcome::glazed`, `JobKind::Blind`.
+/// 21: right-click actions on things in the world: `Intent::Toward`.)
+pub const PROTOCOL: u32 = 21;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -1120,6 +1121,7 @@ impl Intent {
     pub fn player_mut(&mut self) -> Option<&mut u32> {
         match self {
             Intent::PlayerInput { player, .. }
+            | Intent::Toward { player, .. }
             | Intent::Interact { player }
             | Intent::Climb { player }
             | Intent::Blind { player, .. }
