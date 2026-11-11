@@ -81,6 +81,9 @@ pub struct LightLook {
     /// Added to the temperature and the saturation at dawn and dusk.
     pub dusk: (f32, f32),
     pub fire: FireLook,
+    /// How many times stronger the fill is by day while the player is inside a building: rooms
+    /// lie in their roof's shadow, hidden from the camera or not (1 = no stronger).
+    pub indoor_fill: f32,
 }
 
 impl Default for SunLook {
@@ -99,6 +102,7 @@ impl Default for LightLook {
             grade_night: GradeLook { exposure: 0.35, temperature: -0.03, tint: 0.0, saturation: 0.72, shadows: (0.6, 1.0, 0.0), midtones: (0.8, 1.04), highlights: (1.0, 1.0), vignette: (0.6, 0.62) },
             dusk: (0.06, 0.1),
             fire: FireLook { colour: (1.0, 0.55, 0.22), lumens: 600_000.0, range: 14.0, height: 0.7, seen: 7.0 },
+            indoor_fill: 4.0,
         }
     }
 }
@@ -111,6 +115,7 @@ impl LightLook {
         let look: LightLook = ron::from_str(text).map_err(|e| e.to_string())?;
         let within = |name: &str, v: f32, lo: f32, hi: f32| if (lo..=hi).contains(&v) { Ok(()) } else { Err(format!("{name} must be from {lo} to {hi}, not {v}")) };
         within("sun.lux", look.sun.lux, 0.0, 200_000.0)?;
+        within("indoor_fill", look.indoor_fill, 1.0, 20.0)?;
         within("sun.low", look.sun.low, 0.05, 2.0)?;
         within("sun.climb", look.sun.climb, 0.0, 3.0)?;
         within("sun.south", look.sun.south, -2.0, 2.0)?;
@@ -291,6 +296,9 @@ fn fit_sun_cascade(cams: Query<&IsoCamera>, mut sun: Query<&mut CascadeShadowCon
     }
 }
 
+/// Seconds for the stronger fill indoors (`LightLook::indoor_fill`) to come and go.
+const INDOOR_EASE_SECS: f32 = 0.6;
+
 fn update_lights(
     link: Res<ServerLink>,
     preview: Res<crate::dev_time::LightPreview>,
@@ -300,6 +308,10 @@ fn update_lights(
     mut clear: ResMut<ClearColor>,
     mut glow: Query<&mut PointLight, With<PlayerGlow>>,
     mut held: Local<Option<Vec3>>,
+    time: Res<Time>,
+    map: Res<crate::server_link::ClientMap>,
+    player: Query<&Transform, (With<Player>, Without<Sun>)>,
+    mut indoors: Local<Option<f32>>,
 ) {
     let (dir, color, lux, day) = sky_at(preview.hour_or(link.curr.time_of_day));
     daylight.0 = day;
@@ -320,7 +332,19 @@ fn update_lights(
     // By day the fill is soft and a touch cool against the golden sun without going blue
     // (light.ron).
     ambient.color = Color::from(fill(look.fill_night).mix(&fill(look.fill_day), day));
-    ambient.brightness = look.fill_night.brightness + (look.fill_day.brightness - look.fill_night.brightness) * day;
+    // Under a roof the sun only comes in through the windows (the roof casts its shadow whether
+    // the camera draws it or not), so while we're inside a building the fill is stronger by day
+    // (`indoor_fill`), eased in and out: eyes used to the room. The first frame takes it at once
+    // (a picture).
+    let inside = player.single().is_ok_and(|p| map.0.building_at(p.translation.xz()).is_some());
+    let to = if inside { 1.0 } else { 0.0 };
+    let now = match *indoors {
+        Some(was) => was + (to - was).clamp(-time.delta_secs() / INDOOR_EASE_SECS, time.delta_secs() / INDOOR_EASE_SECS),
+        None => to,
+    };
+    *indoors = Some(now);
+    let brightness = look.fill_night.brightness + (look.fill_day.brightness - look.fill_night.brightness) * day;
+    ambient.brightness = brightness * (1.0 + (look.indoor_fill - 1.0) * day * now);
     clear.0 = Color::srgb(0.005 + 0.04 * day, 0.006 + 0.04 * day, 0.012 + 0.05 * day);
     // Just enough at night to see your own feet; a light in hand does the rest.
     if let Ok(mut l) = glow.single_mut() {

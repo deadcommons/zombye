@@ -1415,7 +1415,7 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   ahead (`behind` 0.5 of the way from out of sight to plain view; the cone eases from `cone_full` 60° to `cone_behind`
   125° off your facing), and the cone eases in with distance (`close_radius` 1 m, `close_fade` 4 m), so there is no
   ring round the player. What's out of sight is `unseen_day` / `unseen_night` (`tint`, `dark`, `colour` kept): by day
-  clearly dimmer (dark 0.4), at night nearly black as before. **Only the look:** which zombies, players and items are drawn is
+  clearly dimmer (dark 0.4), at night nearly black as before. **Rooms other than yours stay dark** (`other_rooms`, 0: how much of a room other than the one you are in shows where you have a line of sight into it, through a doorway or a window; from outdoors every room is another room; an open porch counts as outdoors; `fog::other_room`, the mask's red, and `FogState::visibility` goes by it too, so zombies, survivors and items in another room aren't drawn; a door's leaf counts for the rooms on both its sides, and a door that isn't one of your room's shows neither its leaf nor, on a cut wall, its outline: `fog::on_own_room`). **Otherwise only the look:** which zombies, players and items are drawn is
   `FogState::visibility`, with its own constants (what's behind you isn't drawn beyond 2.5 m), unchanged.
 - **Fog of war per pixel:** the sight rays go to the GPU (`FogState::rays`, 1,024 × 1 `R32Float`, with the range and cone in
   `FogState::sight`) and `world.wesl`'s `fog_at` works out what's seen per pixel by the same rule as the mask, so
@@ -1438,8 +1438,8 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   you're in (the floor behind it on screen, 5.5 m away from the camera, what a 3 m wall covers from 30° up, runs
   into your room: the room's own near walls and inner walls between it and the camera). Its far walls, inner walls
   behind your room and every other building stand. **Never a wall you stand in front of** (`cutaway::in_front`: you are on the camera's side of its line, or the whole piece is further from the camera than you are, so it is behind you on screen; of a wall beside you that runs away from the camera, the pieces up the screen from you stand): it stands at its full height whatever the room's set says (an alcove's wall, the leg of an L-shaped room, the camera-side wall of the next wing), looked at every frame (`Cutaway::behind`). **The window you're climbing through** (within `CLIMB_ZONE` of it, `cutaway::crossed_window`) stays whole whatever would cut it, so its frame doesn't sink away under the climb; the silhouette shows you where it covers you. Its roof and upper storeys (every floor above the player's;
-  players are only ever on the ground floor) fade out as one over 0.15 s and are then hidden
-  (`world_render::hide_upper_floors`: a stipple by the amount in their `MeshTag`). *Anywhere*
+  players are only ever on the ground floor) fade out as one over 0.15 s and are then not drawn
+  (`world_render::hide_upper_floors`: a stipple by the amount in their `MeshTag`, 255 = no pixel). *Anywhere*
   (`cutaway::body_edges`): a wall piece that covers the player's body from the camera drops, whichever building it
   is part of (the edge crosses the 0.6 m strip of ground between the body and the camera within 5.5 m); the facade
   you walk along, behind you, doesn't. **From outside every building keeps its roof and floors**; a building that
@@ -1451,12 +1451,12 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   as a straight line. The room's set is worked out again only when the room or the camera's angle changes, the
   body's every frame (a few dozen tiles), the texture is uploaded only on frames where an amount moved, and nothing
   is allocated per frame. **Nothing inside is hidden:** furniture, containers, items and characters never are; a door
-  leaf sinks away with its wall and isn't drawn in a cut one (no stubby leaf; its outline, next, says where it is; **an open door's leaf lies flat against the face of the wall beside its hinge**, 0.11 m along its edge, `world_render::OPEN_LEAF_CLEAR`, the hinge moving as it swings: turned about the corner itself it lay inside that wall and couldn't be seen) and a
+  leaf is never squashed to a stub: on a cut wall a shut door's leaf stays at full size, a little see-through (`world_render::SHUT_DOOR_FADE`), and an open one's isn't drawn (its outline, next, says where it is; **an open door's leaf lies flat against the face of the wall beside its hinge**, 0.11 m along its edge, `world_render::OPEN_LEAF_CLEAR`, the hinge moving as it swings: turned about the corner itself it lay inside that wall and couldn't be seen) and a
   window becomes a low framed lip of glass standing on the stub (`world_render::piece_look`, by `Cutaway::amount`,
   the same eased amount the shader draws the wall by). **A cut door is outlined:** in place of the leaf, the door's
   outline at its full size in the doors' blue (the same shut, open or battered down; an open door's stands swung open where its leaf is, `world_render::door_leaf_at_rest`), fading in with the
   wall's cut and drawn only where nothing stands in front of it (`opening_hints::cut_door`, `draw_cut_doors`: the
-  hints' mesh and shader, a second material with the depth test the usual way round; always on). Cut walls still cast shadows. **Details standing over the
+  hints' mesh and shader, a second material with the depth test the usual way round; always on). **What the cutaway takes away is gone only from the camera, never from the light:** cut walls, the roof and upper storeys of the building you're in, and a cut wall's door leaf and blind all go on casting their shadows (the shadow passes don't run the world shader's cut, and nothing is made `Visibility::Hidden`: a faded piece is a visible entity whose `MeshTag` leaves its pixels out, `world_render::fade_tag`), so a room is lit as it is with its roof on: the sun comes in through the windows. To make up for it, while the player is inside a building the ambient fill is stronger by day (`light.ron`'s `indoor_fill`, 4 times, eased over 0.6 s). New things that hide for the camera must fade by tag the same way. **Details standing over the
   player from outside** (a porch roof, built a metre at a time; a shop's awning, a metre at a time; a door canopy; a
   porch post: `CutKind::Fade`, anchor its middle on the ground, radius its half-width) are thinned out whole, in a
   screen-space stipple (72% at most), while they stand in the strip between the body and the camera
