@@ -1,23 +1,39 @@
 ---
 import '@fontsource/anton/400.css';
 import '@fontsource-variable/inter';
-import Skyline from '../components/Skyline.astro';
-import ShotPlaceholder from '../components/ShotPlaceholder.astro';
+import { Image } from 'astro:assets';
+import crowd from '../assets/shots/crowd.jpg';
+import night from '../assets/shots/night.jpg';
+import yard from '../assets/shots/yard.jpg';
+import street from '../assets/shots/street.jpg';
 import observe from '../assets/observe.txt?raw';
 
 const repo = 'https://github.com/deadcommons/zombye';
 const discord = 'https://discord.gg/y7NsmVG2br';
+const email = 'hello@getzombye.com';
+// Set when the Steam page is live; until then the buttons say it's coming.
+const steam: string | null = null;
+const socials = [
+	['Discord', discord],
+	['GitHub', repo],
+	['X', 'https://x.com/zombyegame'],
+	['Bluesky', 'https://bsky.app/profile/getzombye.com'],
+	['YouTube', 'https://www.youtube.com/@zombyegame'],
+	['Instagram', 'https://www.instagram.com/zombyegame'],
+	['Reddit', 'https://www.reddit.com/r/zombyegame'],
+];
+const site = (Astro.site?.href ?? '').replace(/\/$/, '');
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 const docs = (path = '') => `${base}/docs/${path}`;
 
 const features = [
 	{
-		title: 'Slow-burn survival',
-		text: 'Wake up in a house in a small town, the day after. Scavenge, sneak or fight, patch your wounds, eat, sleep, and see how long you last. Death is permanent.',
+		title: 'A town that keeps going',
+		text: 'Twenty thousand zombies across a square kilometre, all simulated, whether you can see them or not. The ones two streets away are still wandering, still listening.',
 	},
 	{
-		title: 'Real 3D hordes',
-		text: 'A fixed isometric camera over a real 3D world. Thousands of zombies simulated across the map, hundreds on screen, and every one of them can hear you.',
+		title: 'Noise travels',
+		text: 'Break a door and the street hears it. Make a real racket and zombies 400 metres off start walking your way. They arrive minutes later, round the houses, not through them.',
 	},
 	{
 		title: 'Built for agents',
@@ -32,9 +48,16 @@ const features = [
 		text: 'The code, server and tools are MIT or Apache-2.0. Read it, fork it, build it, host it. No account, no fee, no closed editor.',
 	},
 	{
-		title: 'Host it anywhere',
-		text: 'One headless server binary. Self-hosting is free and documented, and official one-click hosting from Dead Commons is on its way.',
+		title: 'At home on a Mac',
+		text: 'Developed and played on Apple silicon, native on Metal. Linux and Windows build from the same source, and one headless binary hosts a server anywhere.',
 	},
+];
+
+const numbers = [
+	['20,000+', 'zombies simulated on a 1 km map'],
+	['1.1 ms', 'average server tick with a horde of 900 on your heels'],
+	['410 m', 'how far off a loud noise pulls zombies from'],
+	['1 seed', 'the same town and the same dead, every time'],
 ];
 
 const zombies = [
@@ -69,7 +92,7 @@ const milestones = [
 	['M3', 'Population', 'now'],
 	['M4', 'Survival and items', 'done'],
 	['M5', 'Content and art', 'now'],
-	['M6', 'Multiplayer and mods', 'next'],
+	['M6', 'Multiplayer and mods', 'now'],
 	['M7', 'Hosting launch', 'next'],
 ];
 ---
@@ -79,40 +102,65 @@ const milestones = [
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
-		<title>Zombye: open-source zombie survival in real 3D</title>
-		<meta name="description" content="Slow-burn zombie survival in real 3D. Open source, moddable from plain data files, and built so AI agents can play, test and mod it over MCP." />
+		<title>Zombye: open-source zombie survival with a town full of dead</title>
+		<meta name="description" content="Slow-burn zombie survival in a town where twenty thousand zombies are simulated at once. Open source, moddable from plain data files, and built so AI agents can play, test and mod it over MCP." />
 		<link rel="icon" href={`${base}/favicon.svg`} type="image/svg+xml" />
 		<meta property="og:title" content="Zombye" />
-		<meta property="og:description" content="Open-source zombie survival in real 3D, built for players, modders and AI agents." />
+		<meta property="og:description" content="Twenty thousand simulated zombies, one small town. Open source, moddable, and playable by AI agents." />
+		<meta property="og:type" content="website" />
+		<meta property="og:image" content={`${site}${base}/og.jpg`} />
+		<meta name="twitter:card" content="summary_large_image" />
 	</head>
 	<body>
 		<header class="nav">
 			<a class="wordmark" href={`${base}/`}>Zombye</a>
 			<nav>
+				<a href="#horde">The horde</a>
 				<a href="#survive">Survive</a>
 				<a href="#agents">Agents</a>
 				<a href="#mods">Mods</a>
 				<a href={docs()}>Docs</a>
+				<a href={discord}>Discord</a>
 				<a class="pill" href={repo}>GitHub</a>
 			</nav>
 		</header>
 
 		<section class="hero">
-			<Skyline class="hero-img" />
+			<Image class="hero-img" src={crowd} alt="A survivor backs across a street at dusk with a dozen zombies closing in, their shadows long on the road." widths={[800, 1280, 1600]} sizes="100vw" loading="eager" />
 			<div class="hero-shade"></div>
 			<div class="hero-text wrap">
-				<p class="tag">Pre-alpha · open source · free</p>
-				<h1>The dead are everywhere.<br /><span>The code is yours.</span></h1>
+				<p class="tag">Pre-alpha · open source · Mac, Linux, Windows</p>
+				<h1>Twenty thousand dead.<br /><span>One small town.</span></h1>
 				<p class="lede">
-					Zombye is slow-burn zombie survival in real 3D. One small town, thousands of zombies, and a
-					server your AI agent can play.
+					Zombye is slow-burn zombie survival where the whole horde is simulated, even the ones you can't
+					see. Make a noise and they come, from streets away. Open source, moddable, and your AI agent can
+					play it too.
 				</p>
 				<div class="ctas">
-					<a class="btn primary" href={docs('start/install')}>Build and play</a>
-					<a class="btn" href={docs('agents')}>Play with your agent</a>
-					<a class="btn ghost" href={discord}>Join the Discord</a>
+					{
+						steam ? (
+							<a class="btn primary" href={steam}>Wishlist on Steam</a>
+						) : (
+							<a class="btn primary" href="#early">Steam page coming soon</a>
+						)
+					}
+					<a class="btn" href={discord}>Join the Discord</a>
+					<a class="btn ghost" href={docs('start/install')}>Build it from source</a>
 				</div>
 			</div>
+		</section>
+
+		<section class="numbers">
+			<dl class="wrap">
+				{
+					numbers.map(([n, text]) => (
+						<div>
+							<dt>{n}</dt>
+							<dd>{text}</dd>
+						</div>
+					))
+				}
+			</dl>
 		</section>
 
 		<section class="features wrap">
@@ -124,6 +172,32 @@ const milestones = [
 					</article>
 				))
 			}
+		</section>
+
+		<section id="horde" class="split wrap">
+			<figure>
+				<Image src={yard} alt="Seen from above: zombies spread across the back gardens between two houses, the forest behind." widths={[640, 1280]} sizes="(max-width: 900px) 100vw, 580px" />
+				<figcaption>From the game. Every one of them has somewhere it's going.</figcaption>
+			</figure>
+			<div class="copy">
+				<p class="kicker">The horde</p>
+				<h2>They don't wait for you to show up.</h2>
+				<p>
+					Most games only run the zombies near you. Zombye runs all of them. Close ones see, hear, chase and
+					batter doors. Far ones wander the woods and drift toward whatever was loud. On our test map that's
+					about 1,300 up close and 20,000 further out, in about a millisecond a tick.
+				</p>
+				<p>
+					So a broken window on one side of town changes what's waiting on the other side ten minutes
+					later. Hordes build up and move on. Nothing spawns behind you to keep things tense.
+				</p>
+				<p>
+					And it's deterministic: the same seed and the same moves give the same town, the same zombies
+					and the same ending. Replay a fight from a save. Race a friend through the same town. A shared
+					town of the day is on the way.
+				</p>
+				<a class="more" href={docs('play/world')}>How the world works →</a>
+			</div>
 		</section>
 
 		<section id="survive" class="split wrap">
@@ -151,7 +225,8 @@ const milestones = [
 				<a class="more" href={docs('play/first-night')}>Your first night →</a>
 			</div>
 			<figure>
-				<ShotPlaceholder label="Night: zombies crowd round a bedroom window while the survivor inside holds a flashlight." ratio="4 / 3" />
+				<Image src={night} alt="Night. A survivor stands in a dark garden by a small campfire; one window of the house is lit." widths={[640, 960]} sizes="(max-width: 900px) 100vw, 580px" />
+				<figcaption>Night is properly dark. A fire or a lit window shows from a long way off.</figcaption>
 			</figure>
 		</section>
 
@@ -214,8 +289,32 @@ const milestones = [
 		</section>
 
 		<section class="town">
-			<div class="wrap town-shot"><ShotPlaceholder label="The town from above at dusk: main street, houses, gardens and the forest all round." ratio="21 / 9" dark /></div>
+			<div class="wrap town-shot"><Image src={street} alt="A street at the edge of town: houses with porches, a sidewalk with hydrants and bins, and the forest across the road." widths={[800, 1280]} sizes="(max-width: 1192px) 100vw, 1160px" /></div>
 			<p class="wrap caption">Every town is generated from a seed: a main street, a square, shops, cul-de-sacs and woods all round.</p>
+		</section>
+
+		<section id="early" class="early">
+			<div class="wrap">
+				<p class="kicker">Get in early</p>
+				<h2>It's pre-alpha. Come and break it.</h2>
+				<div class="cards">
+					<article>
+						<h3>Steam</h3>
+						<p>The store page is on its way. Wishlisting will be the best way to help once it's up.</p>
+						{steam ? <a class="btn primary" href={steam}>Wishlist on Steam</a> : <span class="soon">Page coming soon</span>}
+					</article>
+					<article>
+						<h3>Playtest</h3>
+						<p>A first public playtest is coming. Sign-ups will open in the Discord, so that's where to wait.</p>
+						<a class="btn" href={discord}>Join the Discord</a>
+					</article>
+					<article>
+						<h3>Play it today</h3>
+						<p>The source is all there. Build it in a few minutes and you're in the bedroom where it starts.</p>
+						<a class="btn" href={docs('start/install')}>Build and run</a>
+					</article>
+				</div>
+			</div>
 		</section>
 
 		<section class="open wrap">
@@ -251,8 +350,8 @@ const milestones = [
 				<span class="wordmark small">Zombye</span>
 				<nav>
 					<a href={docs()}>Docs</a>
-					<a href={repo}>GitHub</a>
-					<a href={discord}>Discord</a>
+					{socials.map(([name, href]) => <a href={href}>{name}</a>)}
+					<a href={`mailto:${email}`}>{email}</a>
 					<a href={`${repo}/blob/main/README.md#license`}>Licence</a>
 				</nav>
 				<p>
@@ -388,13 +487,14 @@ const milestones = [
 		width: 100%;
 		height: 100%;
 		object-fit: cover;
+		object-position: 70% 50%;
 	}
 	.hero-shade {
 		position: absolute;
 		inset: 0;
 		background:
 			linear-gradient(180deg, rgba(10, 10, 12, 0.55) 0%, rgba(10, 10, 12, 0) 22%),
-			linear-gradient(0deg, rgba(12, 11, 10, 0.92) 0%, rgba(12, 11, 10, 0.55) 38%, rgba(12, 11, 10, 0) 70%);
+			linear-gradient(0deg, rgba(12, 11, 10, 0.94) 0%, rgba(12, 11, 10, 0.7) 40%, rgba(12, 11, 10, 0.15) 78%);
 	}
 	.hero-text {
 		position: relative;
@@ -411,9 +511,9 @@ const milestones = [
 		transform: rotate(-1.5deg);
 	}
 	h1 {
-		font-size: clamp(2.8rem, 8vw, 6.4rem);
+		font-size: clamp(2.6rem, 7vw, 5.4rem);
 		margin: 0 0 0.25em;
-		max-width: 13ch;
+		max-width: 22ch;
 		text-shadow: 0 2px 24px rgba(0, 0, 0, 0.5);
 	}
 	h1 span {
@@ -453,6 +553,67 @@ const milestones = [
 		text-underline-offset: 4px;
 	}
 
+	/* Numbers */
+	.numbers {
+		background: var(--ink);
+		color: var(--bone);
+	}
+	.numbers dl {
+		display: grid;
+		grid-template-columns: repeat(4, 1fr);
+		gap: 24px;
+		margin-block: 0;
+		padding-block: 30px;
+	}
+	.numbers dt {
+		font-family: var(--display);
+		font-size: clamp(2rem, 4vw, 3rem);
+		line-height: 1;
+		color: var(--mustard);
+	}
+	.numbers dd {
+		margin: 8px 0 0;
+		color: #cfc7b8;
+		font-size: 0.95rem;
+		max-width: 22ch;
+	}
+
+	/* Early */
+	.early {
+		background: var(--paper);
+		border-block: 3px solid var(--ink);
+		padding-block: 72px;
+	}
+	.cards {
+		display: grid;
+		grid-template-columns: repeat(3, 1fr);
+		gap: 24px;
+		margin-top: 28px;
+	}
+	.cards article {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 10px;
+		padding: 24px;
+		border: 2px solid var(--ink);
+		border-radius: 8px;
+		background: var(--bone);
+	}
+	.cards p {
+		margin: 0 0 8px;
+		color: var(--ink-2);
+		flex: 1;
+	}
+	.soon {
+		display: inline-block;
+		padding: 12px 20px;
+		border: 2px dashed rgba(27, 25, 22, 0.45);
+		border-radius: 6px;
+		font-weight: 700;
+		color: var(--ink-2);
+	}
+
 	/* Features */
 	.features {
 		display: grid;
@@ -482,6 +643,9 @@ const milestones = [
 		gap: 56px;
 		align-items: center;
 		margin-block: 96px;
+	}
+	.split > * {
+		min-width: 0;
 	}
 	.split.rev > :first-child {
 		order: 2;
@@ -705,7 +869,8 @@ const milestones = [
 	}
 	.foot nav {
 		display: flex;
-		gap: 20px;
+		flex-wrap: wrap;
+		gap: 8px 20px;
 	}
 	.foot p {
 		flex-basis: 100%;
@@ -715,8 +880,15 @@ const milestones = [
 
 	@media (max-width: 900px) {
 		.features,
-		.body-list {
+		.body-list,
+		.cards {
 			grid-template-columns: 1fr;
+		}
+		.numbers dl {
+			grid-template-columns: 1fr 1fr;
+		}
+		.split > figure:first-child {
+			order: 2;
 		}
 		.features article,
 		.features article:nth-child(3n + 2),
