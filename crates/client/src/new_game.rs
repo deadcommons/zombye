@@ -381,7 +381,7 @@ struct Joints(Vec<Entity>);
 
 /// Where the survivor stands, and where the camera looks from: it stands left of the middle of
 /// the picture, in the space the sheet leaves.
-const CAMERA_AT: Vec3 = Vec3::new(2.94, 0.45, 9.4);
+const CAMERA_AT: Vec3 = Vec3::new(2.94, 0.6, 23.9);
 const CAMERA_LOOKS_AT: Vec3 = Vec3::new(2.94, 0.19, 0.0);
 
 #[allow(clippy::too_many_arguments)]
@@ -396,7 +396,7 @@ fn setup(
 ) {
     let mut camera = commands.spawn((
         Camera3d::default(),
-        Projection::Perspective(PerspectiveProjection { fov: 0.5, ..default() }),
+        Projection::Perspective(PerspectiveProjection { fov: 0.2, ..default() }),
         Transform::from_translation(CAMERA_AT).looking_at(CAMERA_LOOKS_AT, Vec3::Y),
         Msaa::Sample4,
     ));
