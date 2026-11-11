@@ -1245,7 +1245,8 @@ fn road_paint(paint: &mut Paint, mb: &mut MeshBuilder, land: &Land, t: IVec2) {
                     let (u0, u1) = (u0.max(a0), u1.min(a1));
                     if u1 - u0 > 0.05 {
                         let (p, q) = (at(u0, b0, st.along_x), at(u1, b0 + 0.5, st.along_x));
-                        decal(mb, p.min(q), p.max(q), Y_OVERLAY, white);
+                        // Over the curved kerb's grit, which lies at `Y_OVERLAY`.
+                        decal(mb, p.min(q), p.max(q), Y_OVERLAY + 0.001, white);
                     }
                 }
             }
@@ -1310,8 +1311,8 @@ fn sidewalk_tile(paint: &mut Paint, mb: &mut MeshBuilder, land: &Land, t: IVec2)
 fn kerb(mb: &mut MeshBuilder, tv: Vec2, side: Side, s0: f32, s1: f32) {
     let (w, h, j) = (KERB_WIDTH, KERB_HEIGHT, KERB_JOINT);
     let (top, joint, face) = (pal().kerb_top, pal().kerb_joint, pal().kerb_face);
-    // A point `a` of the way along the edge, `d` in from it toward the sidewalk, at height `y`.
-    let p = |a: f32, d: f32, y: f32| {
+    // A point `a` of the way along the edge, at height `y`, `d` in from it toward the sidewalk.
+    let p = |a: f32, y: f32, d: f32| {
         let (x, z) = match side {
             Side::N => (a, d),
             Side::S => (a, 1.0 - d),
@@ -2151,6 +2152,54 @@ mod tests {
         }
         eprintln!("{cut} tiles cut; kerb curves {kerbs}, bends {bends}, turning circles {rings} (counted once a chunk they reach)");
         assert!(cut > 1000 && kerbs > 100 && bends >= 4 && rings >= 1);
+    }
+
+    /// Where the faces of the ground and props meshes fight over one plane, for the whole default
+    /// town (`cargo test -p zombye-client --release chunk_fights -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn chunk_fights() {
+        let map = town();
+        let mut seen: std::collections::BTreeMap<String, (usize, f32, Vec3)> = Default::default();
+        for cy in 0..map.chunks_y {
+            for cx in 0..map.chunks_x {
+                let m = build_chunk(&map, IVec2::new(cx, cy));
+                for (name, mesh) in [("ground", &m.ground), ("props", &m.props)] {
+                    for f in mesh.fights() {
+                        let axis = if f.normal.y.abs() > 0.9 { "flat" } else if f.normal.y.abs() < 0.1 { "upright" } else { "sloped" };
+                        let c = |c: [f32; 4]| format!("{:.2},{:.2},{:.2}", c[0], c[1], c[2]);
+                        let e = seen.entry(format!("{name} {axis} y {:.3} {} / {}", f.at.y, c(f.colours[0]), c(f.colours[1]))).or_insert((0, 0.0, f.at));
+                        (e.0, e.1) = (e.0 + 1, e.1 + f.area);
+                    }
+                }
+            }
+        }
+        let mut rows: Vec<_> = seen.into_iter().collect();
+        rows.sort_by(|a, b| b.1.1.total_cmp(&a.1.1));
+        for (k, (n, area, at)) in rows.iter().take(60) {
+            eprintln!("{area:9.3} m2 {n:6} x  {k}  e.g. {at:.3}");
+        }
+        eprintln!("{} kinds of place", rows.len());
+    }
+
+    /// The shimmer along sidewalk edges (z-fighting): a kerb stands on the sidewalk, 6 cm up, with
+    /// its face down to the road; none of it lies flat in the paving's own plane.
+    #[test]
+    fn kerbs_stand_clear_of_the_ground() {
+        let mut mb = MeshBuilder::default();
+        kerb(&mut mb, Vec2::new(10.0, 20.0), Side::W, 0.0, 1.0);
+        let (lo, hi) = mb.bounds();
+        assert!((lo - Vec3::new(10.0, 0.0, 20.0)).length() < 1e-5 && (hi - Vec3::new(10.0 + KERB_WIDTH, KERB_HEIGHT, 21.0)).length() < 1e-5, "{lo} {hi}");
+        // And over a stretch of town, nothing flat on the ground shares its plane in two colours.
+        let map = town();
+        let mid = IVec2::new(map.chunks_x, map.chunks_y) / 2;
+        for cy in mid.y - 4..mid.y + 4 {
+            for cx in mid.x - 4..mid.x + 4 {
+                let m = build_chunk(&map, IVec2::new(cx, cy));
+                let flat: Vec<_> = m.ground.fights().into_iter().filter(|f| f.normal.y > 0.9 && f.at.y < 0.01).collect();
+                assert!(flat.is_empty(), "chunk {cx},{cy}: {:?}", &flat[..flat.len().min(3)]);
+            }
+        }
     }
 
     /// The landscape's share of chunk building, over every chunk of the default map

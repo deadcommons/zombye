@@ -426,6 +426,14 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   tile edges stop where a curve takes over (`Curves::kerb_span`), and curved kerbs, grit, ring joints and bend
   centre lines are drawn by the chunk each stretch's middle is in. Cost: chunk building about 0.24 ms (0.22 without
   curves; `chunk_build_time`, an ignored test, times every chunk of the default map), frames the same.
+- **No two faces in one plane (`meshgen/overlap.rs`, tests only):** where two faces of different colours lie in the
+  same plane the GPU can't tell which is in front, and they flicker in dashes (z-fighting; it doesn't show in the
+  software renderer the build machines draw with, so pictures from there won't catch it). `MeshBuilder::fights()`
+  lists every such pair in a mesh. Two tests hold what was fixed with it: `wall_pieces_never_share_a_plane_in_two_colours`
+  (a wall piece's ends stop `END_INSET`, 3 mm, short of the face of the wall it meets, and its sides cover its run-on
+  into a corner only where the wall in line has no wall: `world_render::add_wall`) and `kerbs_stand_clear_of_the_ground`.
+  `building_fights` and `chunk_fights` (ignored) print what's left over the whole town by kind of place: mostly faces
+  buried inside walls and furniture, which nobody sees. Run them after adding geometry.
 - **Street props (#61, `sim::street_props`, `assets/data/street_props.ron`):** mailboxes, fire hydrants, bins,
   street lamps and what stands in front of shops, which the generator puts outside. The file lists the kinds (`id`; `model`, the model drawn (`assets/models/street/<model>.glb`, built in Blender: mailbox, fire_hydrant, trash_can; the other kinds have none here and are grey-boxes unless the release models hold one), the id when
   left out; grey-box `size` and `color`; `blocks`, default true; `radius`, how far a body is kept from its middle,
