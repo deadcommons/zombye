@@ -205,13 +205,13 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials
     let pointer = commands.spawn(hidden()).id();
     let reticle = commands.spawn((hidden(), ChildOf(pointer))).id();
     let ring_root = commands.spawn((hidden(), ChildOf(pointer))).id();
+    let dot_root = commands.spawn((hidden(), ChildOf(reticle))).id();
     // A part and, a little further from the camera, its dark edge.
     let mut part = |parent: Entity, mesh: &Handle<Mesh>, material: &Handle<StandardMaterial>, behind: bool| {
         let z = if behind { -0.3 } else { 0.0 };
         commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), Transform::from_xyz(0.0, 0.0, z), NotShadowCaster, ChildOf(parent))).id()
     };
     let ticks = [0, 1, 2, 3].map(|_| (part(reticle, &square, &ink, false), part(reticle, &square, &dark, true)));
-    let dot_root = commands.spawn((hidden(), ChildOf(reticle))).id();
     part(dot_root, &dot, &ink, false);
     part(dot_root, &dot_edge, &dark, true);
     part(ring_root, &ring, &ink, false);
