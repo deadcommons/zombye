@@ -1993,6 +1993,15 @@ mod tests {
     #[test]
     fn a_garage_facing_the_side_gets_a_bent_driveway() {
         let mut map = shipped_town();
+        // The street props were placed clear of the driveway this garage had, not of the one the
+        // test gives it: take them away.
+        for p in std::mem::take(&mut map.street_props) {
+            if let Some(t) = map.tile_mut(p.tile) {
+                if t.feature == zombye_sim::map::Feature::StreetProp {
+                    t.feature = zombye_sim::map::Feature::None;
+                }
+            }
+        }
         let bi = map.buildings.iter().position(|b| b.template.contains("garage")).unwrap();
         let b = map.buildings[bi].clone();
         let front = b.look.unwrap().front;

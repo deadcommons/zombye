@@ -438,7 +438,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   draws them), beside a
   door, or next to another prop (each keeps the eight tiles round it free); kerb props only on a straight kerb (5 m
   of it each way: clear of the 4 m kerb curves at junctions), away from turning circles, alley mouths and parking-lot
-  entries, and not in front of a garden path. Shipped: all three block; seed 1 has 48 mailboxes (most of the houses
+  entries, and not in front of a garden path. Shipped: twelve kinds (mailbox, hydrant, bin; a street lamp every 28-40 m of kerb and a power box now and then; in front of shops a bench, parking meter, planter, vending machine, phone box or post box; a trash bag at some houses' kerbs, the one kind that doesn't block); of the first three, seed 1 had 48 mailboxes (most of the houses
   whose front door has a path), 28 bins and 101 hydrants (both kerbs of every street). The map keeps them in
   `TileMap::street_props` (sorted by tile; `street_prop(t)`) with their kinds in `TileMap::prop_kinds`; a blocking
   one's tile is `Feature::StreetProp`, so the walk grid, flow fields, the nav graph, `clear_path` and every
