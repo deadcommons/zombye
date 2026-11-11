@@ -5,13 +5,13 @@
 //! camera's transform) every frame, so movement keys, the cursor's aim, the cutaways, the
 //! silhouettes, the opening hints and the sound's panning follow a turn as it happens.
 //!
-//! **The third-person view** ([`View::Shoulder`], `;` switches to it and back, `--third-person`
-//! starts in it): the same camera entity with a perspective projection, a few metres behind the
-//! survivor and over the right shoulder. The mouse turns it (the pointer is held at the middle of
-//! the window, where a small dot marks it; [`PointerLock`]), W is the way it looks, and the
-//! pointer everything else asks for (the aim, the aim marker, a right tap's menu) is that middle
-//! point, so aiming, swings, shoves, stomps and right-clicks go by what the dot is on. The wheel
-//! moves the camera in and out, walls pull it in ([`clear_run`]), and the pointer comes free
+//! **The first-person view** ([`View::Shoulder`], `;` switches to it and back, `--first-person`
+//! starts in it): the same camera entity with a perspective projection, at the survivor's eyes
+//! (he isn't drawn: [`IsoCamera::too_close`]). The mouse turns it (the pointer is held at the
+//! middle of the window, where a small dot marks it; [`PointerLock`]), W is the way it looks, and
+//! the pointer everything else asks for (the aim, the aim marker, a right tap's menu) is that
+//! middle point, so aiming, swings, shoves, stomps and right-clicks go by what the dot is on. No
+//! wall is cut and no roof fades in this view (`Cutaway::set_held`). The pointer comes free
 //! while the inventory, a menu, the chat line or the server browser is up, once dead, and while
 //! Alt is held (for the health and skills panels). Back in the fixed view the camera settles on
 //! the nearest of its four angles.
@@ -44,30 +44,18 @@ const MAX_ZOOM: f32 = 90.0;
 /// Seconds a quarter turn takes.
 pub const TURN_SECS: f32 = 0.3;
 
-/// The third-person view's lens: its vertical field of view, and how far it draws.
-pub const SHOULDER_FOV: f32 = 55.0_f32 * std::f32::consts::PI / 180.0;
+/// The first-person view's lens: its vertical field of view, and how far it draws.
+pub const SHOULDER_FOV: f32 = 68.0_f32 * std::f32::consts::PI / 180.0;
 const SHOULDER_FAR: f32 = 260.0;
-/// The point the third-person camera swings round: this high, and this far to the survivor's right.
+/// How high the survivor's eyes are, and how far in front of the middle of his head the camera sits.
 const SHOULDER_HEIGHT: f32 = 1.6;
-const SHOULDER_SIDE: f32 = 0.55;
-/// How far behind that point it sits: at first, and as far in and out as the wheel takes it.
-const BOOM: f32 = 3.4;
-const BOOM_RANGE: (f32, f32) = (1.8, 8.0);
-/// How far up it looks down from (radians above level; below 0 it looks up): at first, and its limits.
-const PITCH: f32 = 0.24;
-const PITCH_RANGE: (f32, f32) = (-0.35, 1.05);
+const EYES_AHEAD: f32 = 0.12;
+/// How far down it looks (radians below level; below 0 it looks up): at first, and its limits.
+const PITCH: f32 = 0.06;
+const PITCH_RANGE: (f32, f32) = (-1.2, 1.2);
 /// Radians of turn for a pixel of mouse.
 const LOOK_RATE: f32 = 0.0026;
-/// The third-person camera stays this far from a wall behind it, and never lower than this.
-const WALL_GAP: f32 = 0.3;
-/// The third-person camera passes over what stands on a tile from this high (taller than a wardrobe).
-const OVER: f32 = 2.1;
-/// Pushed in nearer than this the third-person camera hides the survivor: he would fill the view.
-const TOO_CLOSE: f32 = 1.0;
-const LOWEST: f32 = 0.35;
-/// Indoors the third-person camera stays this low: under the ceiling (a storey is 3 m).
-const CEILING: f32 = 2.7;
-/// What the third-person aim is on when the middle of the screen is on ground nearer than this
+/// What the first-person aim is on when the middle of the screen is on ground nearer than this
 /// beyond the survivor, or on none (the sky): a point this far, or [`AIM_FAR`], ahead.
 const AIM_NEAR: f32 = 5.0;
 const AIM_FAR: f32 = 60.0;
@@ -78,11 +66,11 @@ pub enum View {
     /// The fixed isometric view from above (the default).
     #[default]
     Iso,
-    /// Third person: behind the survivor, over the right shoulder.
+    /// First person: at the survivor's eyes.
     Shoulder,
 }
 
-/// Whether the pointer is held at the middle of the window (the third-person view, with nothing
+/// Whether the pointer is held at the middle of the window (the first-person view, with nothing
 /// up that needs a pointer). `aim_marker.rs` keeps the system pointer hidden while it is.
 #[derive(Resource, Default)]
 pub struct PointerLock(pub bool);
@@ -91,36 +79,7 @@ pub struct PointerLock(pub bool);
 #[derive(Component)]
 struct CentreDot;
 
-/// How far a straight run from `from` along unit `dir` over the ground gets before a wall, a shut
-/// door or a window stops it, up to `max` (in steps of 0.2 m).
-pub fn clear_run(map: &TileMap, from: Vec2, dir: Vec2, max: f32) -> f32 {
-    let mut clear = 0.0;
-    while clear < max {
-        let next = (clear + 0.2).min(max);
-        if !zombye_sim::vision::clear_reach(map, from, from + dir * next) {
-            break;
-        }
-        clear = next;
-    }
-    clear
-}
-
-/// How far a run from `from` along unit `dir` gets before it is over a tile something stands on
-/// (furniture, a tree, a street prop) lower than [`OVER`] metres up, `height(d)` being how high
-/// the run is `d` metres along: the camera passes over a bed, not through a wardrobe.
-pub fn run_over(map: &TileMap, from: Vec2, dir: Vec2, max: f32, height: impl Fn(f32) -> f32) -> f32 {
-    let mut clear = 0.0;
-    while clear < max {
-        let next = (clear + 0.2).min(max);
-        if height(next) < OVER && map.tile_blocked((from + dir * next).floor().as_ivec2()) {
-            break;
-        }
-        clear = next;
-    }
-    clear
-}
-
-/// The yaw that puts the third-person camera behind a survivor facing `facing` (sim convention).
+/// The yaw that puts the first-person camera behind a survivor facing `facing` (sim convention).
 pub fn yaw_behind(facing: f32) -> f32 {
     (-facing.cos()).atan2(-facing.sin())
 }
@@ -139,12 +98,9 @@ pub struct IsoCamera {
     turn_at: f32,
     /// Which view it is in.
     pub view: View,
-    /// Third person: how far above level the camera sits round its pivot (radians), how far
-    /// behind it the wheel has put it, and how far it is now (walls pull it in).
+    /// First person: how far down it looks (radians; below 0, up).
     pub pitch: f32,
-    pub boom: f32,
-    boom_now: f32,
-    /// Third person: go behind the survivor at the next frame (just switched to).
+    /// First person: go behind the survivor at the next frame (just switched to).
     behind: bool,
 }
 
@@ -164,16 +120,16 @@ impl IsoCamera {
     /// A camera at rest at `angle` (0..4; a fraction is that far through the turn to the next
     /// angle and stays there until turned: for pictures).
     pub fn new(angle: f32, zoom: f32, focus: Vec3) -> Self {
-        Self { angle_index: angle.round() as i32, yaw: yaw_of(angle), zoom, focus, turn_from: yaw_of(angle), turn_at: 1.0, view: View::Iso, pitch: PITCH, boom: BOOM, boom_now: BOOM, behind: false }
+        Self { angle_index: angle.round() as i32, yaw: yaw_of(angle), zoom, focus, turn_from: yaw_of(angle), turn_at: 1.0, view: View::Iso, pitch: PITCH, behind: false }
     }
 
-    /// Switch to the other view. Into third person the camera goes behind the survivor; back, it
+    /// Switch to the other view. Into first person the camera goes behind the survivor; back, it
     /// turns to the nearest of the four fixed angles from where it was looking.
     pub fn toggle_view(&mut self) {
         match self.view {
             View::Iso => {
                 (self.view, self.behind, self.turn_at) = (View::Shoulder, true, 1.0);
-                (self.pitch, self.boom_now) = (PITCH, self.boom);
+                self.pitch = PITCH;
             }
             View::Shoulder => {
                 self.view = View::Iso;
@@ -195,53 +151,27 @@ impl IsoCamera {
         }
     }
 
-    /// Third person: turn by this much mouse (pixels; right and down positive).
+    /// First person: turn by this much mouse (pixels; right and down positive).
     pub fn look(&mut self, by: Vec2) {
         self.yaw -= by.x * LOOK_RATE;
         self.pitch = (self.pitch + by.y * LOOK_RATE).clamp(PITCH_RANGE.0, PITCH_RANGE.1);
     }
 
-    /// Third person: unit vector from the pivot toward the camera.
+    /// First person: unit vector from the pivot toward the camera.
     fn boom_dir(&self) -> Vec3 {
         Vec3::new(self.yaw.sin() * self.pitch.cos(), self.pitch.sin(), self.yaw.cos() * self.pitch.cos())
     }
 
-    /// Third person: where the camera is and which way it looks, with the walls of `map` pulling
-    /// it in toward the survivor (`dt`: seconds since the last frame, for easing back out).
-    fn shoulder_transform(&mut self, map: Option<&TileMap>, dt: f32) -> Transform {
-        let (forward, right) = self.ground_axes();
-        let feet = self.focus.xz();
-        let dir = self.boom_dir();
-        let level = self.pitch.cos().max(0.2);
-        let (mut side, mut reach) = (SHOULDER_SIDE, self.boom);
-        if let Some(map) = map {
-            // The shoulder itself mustn't be through a wall beside the survivor, nor the camera
-            // through one behind it, indoors or out: walls and roofs stay up in this view
-            // (`Cutaway::set_held`), so the camera stays in the room, or the street, he is in.
-            let walls = |from: Vec2, dir: Vec2, max: f32| clear_run(map, from, dir, max);
-            let beside = walls(feet, right.xz(), SHOULDER_SIDE + WALL_GAP).min(run_over(map, feet, right.xz(), SHOULDER_SIDE + WALL_GAP, |_| SHOULDER_HEIGHT));
-            side = (beside - WALL_GAP).clamp(0.0, SHOULDER_SIDE);
-            let pivot = feet + right.xz() * side;
-            let far = self.boom * level + WALL_GAP;
-            let rise = self.pitch.tan();
-            let back = walls(pivot, -forward.xz(), far).min(run_over(map, pivot, -forward.xz(), far, |d| SHOULDER_HEIGHT + rise * d));
-            reach = ((back - WALL_GAP) / level).clamp(0.3, self.boom);
-            // Under a ceiling it stays under it.
-            let up = self.pitch.sin();
-            if up > 0.05 && (map.building_at(feet).is_some() || map.building_at(pivot - forward.xz() * reach * level).is_some()) {
-                reach = reach.min(((CEILING - SHOULDER_HEIGHT) / up).max(0.3));
-            }
-        }
-        // In at once (a wall never shows from behind), out again smoothly.
-        self.boom_now = if reach < self.boom_now { reach } else { self.boom_now + (reach - self.boom_now) * (1.0 - (-6.0 * dt).exp()) };
-        let pivot = self.focus + Vec3::Y * SHOULDER_HEIGHT + right * side;
-        let mut at = pivot + dir * self.boom_now;
-        at.y = at.y.max(LOWEST);
-        Transform::from_translation(at).looking_to(-dir, Vec3::Y)
+    /// First person: the camera at the survivor's eyes, looking the way the mouse has turned it.
+    /// (No wall can come between: the eyes are inside his own body's radius.)
+    fn shoulder_transform(&self, _map: Option<&TileMap>, _dt: f32) -> Transform {
+        let (forward, _) = self.ground_axes();
+        let at = self.focus + Vec3::Y * SHOULDER_HEIGHT + forward * EYES_AHEAD;
+        Transform::from_translation(at).looking_to(-self.boom_dir(), Vec3::Y)
     }
 
     /// The point on the ground the aim is on, for the pointer's ray (`origin`, unit `dir`). The
-    /// fixed view: where the ray comes down. Third person: that too, but never nearer than a few
+    /// fixed view: where the ray comes down. First person: that too, but never nearer than a few
     /// metres ahead of the survivor (looking down at his feet he still aims ahead) and, with the
     /// pointer on the sky, a point far off the way the camera looks.
     pub fn aim_ground(&self, origin: Vec3, dir: Vec3) -> Option<Vec3> {
@@ -254,23 +184,23 @@ impl IsoCamera {
                     return None;
                 }
                 let down = if dir.y < -1e-4 { -origin.y / dir.y * len } else { f32::MAX };
-                let out = down.clamp(self.boom_now * self.pitch.cos().abs() + AIM_NEAR, AIM_FAR);
+                let out = down.clamp(AIM_NEAR, AIM_FAR);
                 let p = origin.xz() + flat / len * out;
                 Some(Vec3::new(p.x, 0.0, p.y))
             }
         }
     }
 
-    /// Third person, pushed in so close that the survivor would only be in the way of the view.
+    /// First person: our own survivor isn't drawn (he would only be in the way of the view).
     pub fn too_close(&self) -> bool {
-        self.shoulder() && self.boom_now < TOO_CLOSE
+        self.shoulder()
     }
 
     /// Metres of world top to bottom of the screen where the survivor stands, in either view.
     pub fn view_metres(&self) -> f32 {
         match self.view {
             View::Iso => self.zoom,
-            View::Shoulder => 2.0 * self.boom_now * (SHOULDER_FOV * 0.5).tan(),
+            View::Shoulder => 2.0 * (SHOULDER_FOV * 0.5).tan(),
         }
     }
 
@@ -301,7 +231,7 @@ impl IsoCamera {
         }
     }
 
-    /// Unit vector from focus toward the camera. In third person no flatter than a quarter of
+    /// Unit vector from focus toward the camera. In first person no flatter than a quarter of
     /// a radian: the cutaways and fades that go by it take it for the slope of the line of sight.
     pub fn offset_dir(&self) -> Vec3 {
         let e = if self.shoulder() { self.pitch.max(0.25) } else { ELEVATION };
@@ -335,7 +265,7 @@ fn spawn_camera(mut commands: Commands, join: Res<JoinInfo>, options: Res<Option
         cam.toggle_view();
     }
     let transform = Transform::from_translation(cam.focus + cam.offset_dir() * DISTANCE).looking_at(cam.focus, Vec3::Y);
-    // The dot at the middle of the screen while the pointer is held there (third person).
+    // The dot at the middle of the screen while the pointer is held there (first person).
     commands.spawn((
         CentreDot,
         Node { position_type: PositionType::Absolute, left: percent(50), top: percent(50), width: px(6), height: px(6), margin: UiRect::all(px(-3)), border: UiRect::all(px(1)), border_radius: BorderRadius::MAX, ..default() },
@@ -391,12 +321,12 @@ fn rotate_and_zoom(
     mut turned: Local<usize>,
 ) {
     let Ok((mut cam, mut projection)) = cams.single_mut() else { return };
-    // `;` switches between the fixed view and third person (not in a picture: `--third-person`).
+    // `;` switches between the fixed view and first person (not in a picture: `--first-person`).
     if keys.just_pressed(KeyCode::Semicolon) && !options.offscreen() {
         cam.toggle_view();
         *projection = cam.projection();
         if let Some(mut notice) = notice {
-            notice.say(time.elapsed_secs(), if cam.shoulder() { "Third-person view (; goes back, hold Alt for the pointer)" } else { "View from above (; for third person)" }.to_string());
+            notice.say(time.elapsed_secs(), if cam.shoulder() { "First-person view (; goes back, hold Alt for the pointer)" } else { "View from above (; for first person)" }.to_string());
         }
     }
     if cam.shoulder() {
@@ -407,9 +337,7 @@ fn rotate_and_zoom(
         if crate::hud::panel_under_cursor(window.single().ok(), &panels).is_some() || browser.is_some_and(|b| b.open) {
             wheel.clear();
         }
-        for ev in wheel.read() {
-            cam.boom = (cam.boom * (1.0 - ev.y.clamp(-3.0, 3.0) * 0.08)).clamp(BOOM_RANGE.0, BOOM_RANGE.1);
-        }
+        wheel.clear();
         return;
     }
     // Over a panel the wheel scrolls it (`hud.rs`), not the zoom; so with the server browser open.
@@ -452,7 +380,7 @@ fn follow(
 ) {
     let Ok((mut cam, mut transform)) = cams.single_mut() else { return };
     let cam = &mut *cam;
-    // Our own survivor is hidden while the third-person camera is pushed right up to him.
+    // Our own survivor is hidden in first person.
     if let Ok((.., mut shown)) = player.single_mut() {
         let want = if cam.too_close() { Visibility::Hidden } else { Visibility::Inherited };
         if *shown != want {
@@ -489,7 +417,7 @@ fn follow(
     }
 }
 
-/// Third person: hold the pointer at the middle of the window (hidden; a dot marks it), so the
+/// First person: hold the pointer at the middle of the window (hidden; a dot marks it), so the
 /// mouse turns the camera and everything that asks where the pointer is gets that middle point.
 /// It comes free while something that needs a pointer is up, once dead, and while Alt is held.
 #[allow(clippy::too_many_arguments)]
@@ -538,11 +466,11 @@ fn lock_pointer(
 mod tests {
     use super::*;
 
-    /// Third person: the camera starts behind the survivor whichever way he faces, W is the way
+    /// First person: the camera starts behind the survivor whichever way he faces, W is the way
     /// it looks, the mouse turns it the way it moves, and back in the fixed view it settles on
     /// the nearest of the four angles.
     #[test]
-    fn third_person_sits_behind_and_turns_with_the_mouse() {
+    fn first_person_is_at_the_eyes_and_turns_with_the_mouse() {
         for k in 0..16 {
             let facing = k as f32 * std::f32::consts::TAU / 16.0 - 3.0;
             let mut cam = IsoCamera::new(0.0, 26.0, Vec3::new(40.0, 0.0, 55.0));
@@ -553,9 +481,9 @@ mod tests {
             let (forward, right) = cam.ground_axes();
             assert!(forward.distance(ahead) < 1e-4, "W is not the way he faces at {facing}");
             let tf = cam.shoulder_transform(None, 0.016);
-            // Behind and above him, over his right shoulder, looking the way he faces.
+            // At his eyes, looking the way he faces, and he isn't drawn.
             let rel = tf.translation - cam.focus;
-            assert!(rel.dot(ahead) < -2.0 && rel.y > SHOULDER_HEIGHT && rel.dot(right) > 0.4, "{rel}");
+            assert!(rel.with_y(0.0).length() < 0.2 && (rel.y - SHOULDER_HEIGHT).abs() < 1e-4 && cam.too_close(), "{rel}");
             assert!(tf.forward().with_y(0.0).normalize().distance(ahead) < 1e-4);
             // Mouse right: the view turns right. Mouse down: it looks further down.
             let before = *tf.forward();
@@ -575,19 +503,19 @@ mod tests {
         }
     }
 
-    /// Third person: the aim is the ground under the middle of the screen, never nearer than a
+    /// First person: the aim is the ground under the middle of the screen, never nearer than a
     /// few metres ahead of the survivor, and far off the way the camera looks when on the sky.
     #[test]
-    fn third_person_aims_ahead() {
+    fn first_person_aims_ahead() {
         let mut cam = IsoCamera::new(0.0, 26.0, Vec3::ZERO);
         cam.toggle_view();
         cam.yaw = yaw_behind(0.0);
-        for pitch in [-0.3, 0.0, 0.1, 0.24, 0.6, 1.0] {
+        for pitch in [-1.0, -0.3, 0.0, 0.1, 0.24, 0.6, 1.0] {
             cam.pitch = pitch;
             let tf = cam.shoulder_transform(None, 0.016);
             let at = cam.aim_ground(tf.translation, *tf.forward()).expect("an aim");
             // East of him (the way he faces), nearly straight ahead.
-            assert!(at.y == 0.0 && at.x >= AIM_NEAR - 0.1 && at.x <= AIM_FAR && at.z.abs() < 0.6, "pitch {pitch}: {at}");
+            assert!(at.y == 0.0 && at.x >= AIM_NEAR - 0.1 && at.x <= AIM_FAR + 0.2 && at.z.abs() < 0.6, "pitch {pitch}: {at}");
         }
         // The fixed view: plainly where the ray comes down.
         cam.toggle_view();

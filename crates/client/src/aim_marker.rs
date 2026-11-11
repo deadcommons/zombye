@@ -16,7 +16,7 @@
 //! world covers them. Their size is kept the same on screen at any zoom; only a gun's spread is in
 //! real metres. While any of it shows the system pointer is hidden.
 //!
-//! **In the third-person view** (`camera.rs`) the pointer is the middle of the screen, and the
+//! **In the first-person view** (`camera.rs`) the pointer is the middle of the screen, and the
 //! camera's lens has perspective: the reticle and ring are drawn a metre in front of the camera
 //! on the pointer's line (on a body: on the line to the point aimed at), sized to look as they do
 //! from above, and a gun's spread is drawn as wide as it is where the aim lands.
@@ -63,7 +63,7 @@ const LIFT: f32 = 14.0;
 const WEDGE_Y: f32 = 0.05;
 /// How fast the reticle's gap follows the spread (per second).
 const GAP_RATE: f32 = 14.0;
-/// Third person: how far in front of the camera the reticle and ring are drawn (metres).
+/// First person: how far in front of the camera the reticle and ring are drawn (metres).
 const PLACE: f32 = 1.0;
 
 // The brand's bone white and accent red (zombye-art's palette anchors), and its near-black.
@@ -294,7 +294,7 @@ fn show(
     let shoulder = iso.shoulder();
     let eye = cam_tf.translation();
     let sight = match staged {
-        // Third person: the lines of sight meet at the camera.
+        // First person: the lines of sight meet at the camera.
         Some((at, up)) if shoulder => Some((eye, (Vec3::new(at.x, up, at.y) - eye).normalize_or(*cam_tf.forward()))),
         Some((at, up)) => Some((Vec3::new(at.x, up, at.y), *cam_tf.forward())),
         None if auto.active => None,
@@ -310,9 +310,9 @@ fn show(
         (Some(_), Some(g)) => (g.z - from.y).atan2(g.x - from.x),
         _ => player.facing,
     };
-    // The same on screen at any zoom (third person: as big as that, [`PLACE`] from the camera).
+    // The same on screen at any zoom (first person: as big as that, [`PLACE`] from the camera).
     let k = if shoulder { 2.0 * PLACE * (crate::camera::SHOULDER_FOV * 0.5).tan() / ZOOM } else { iso.zoom / ZOOM };
-    // Third person: what the pointer's parts are drawn on the line to, when not the pointer's own.
+    // First person: what the pointer's parts are drawn on the line to, when not the pointer's own.
     let mut on_body: Option<Vec3> = None;
     // A staged picture is of a world that doesn't tick, so `--gun` never reached the hand: take it by name.
     let named = staged.and(options.gun.as_deref()).and_then(|id| join.weapons.iter().find(|w| w.id == id));
@@ -342,7 +342,7 @@ fn show(
             color = DIMMED;
         }
         let moving = me.curr.pos.distance_squared(me.prev.pos) > 1e-8;
-        // Real metres where the aim lands; third person draws them [`PLACE`] from the camera.
+        // Real metres where the aim lands; first person draws them [`PLACE`] from the camera.
         let far = at.map_or(PLACE, |at| (at - eye).dot(*cam_tf.forward()).max(PLACE));
         let metres = if shoulder { PLACE / far } else { 1.0 };
         let want = (spread_radius(gun, dist, moving) * metres).max(MIN_GAP * k);
@@ -396,7 +396,7 @@ fn show(
 /// The marker is the pointer while it shows: hide the system's.
 fn hide_pointer(marker: Res<AimMarker>, auto: Res<AutoInput>, lock: Option<Res<crate::camera::PointerLock>>, mut cursors: Query<&mut bevy::window::CursorOptions, With<PrimaryWindow>>) {
     let Ok(mut cursor) = cursors.single_mut() else { return };
-    // Hidden too while the third-person view holds it at the middle of the window.
+    // Hidden too while the first-person view holds it at the middle of the window.
     let visible = !(marker.shown && !auto.active) && !lock.is_some_and(|l| l.0);
     if cursor.visible != visible {
         cursor.visible = visible;

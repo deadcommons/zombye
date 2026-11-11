@@ -23,6 +23,9 @@ pub struct Daylight(pub f32);
 #[derive(Component)]
 struct Sun;
 
+/// How much more ambient light there is indoors by day in the first-person view (times, at full daylight).
+const INDOOR_FILL: f32 = 2.0;
+
 /// The faint glow that lets you make out your own feet in the dark.
 #[derive(Component)]
 struct PlayerGlow;
@@ -130,7 +133,7 @@ fn sun_cascade(zoom: f32) -> CascadeShadowConfig {
     .build()
 }
 
-/// The third-person view's cascades: a perspective camera right behind the survivor, so fine
+/// The first-person view's cascades: a perspective camera right behind the survivor, so fine
 /// shadows near it and coarser ones out to where they stop mattering.
 fn shoulder_cascade() -> CascadeShadowConfig {
     CascadeShadowConfigBuilder { num_cascades: 3, minimum_distance: 0.1, first_cascade_far_bound: 9.0, maximum_distance: 90.0, ..default() }.build()
@@ -138,7 +141,7 @@ fn shoulder_cascade() -> CascadeShadowConfig {
 
 fn fit_sun_cascade(cams: Query<&IsoCamera>, mut sun: Query<&mut CascadeShadowConfig, With<Sun>>, mut fitted: Local<f32>) {
     let (Ok(cam), Ok(mut config)) = (cams.single(), sun.single_mut()) else { return };
-    // Refit when the zoom has moved by more than a few percent, or the view changed (-1: third person).
+    // Refit when the zoom has moved by more than a few percent, or the view changed (-1: first person).
     let want = if cam.shoulder() { -1.0 } else { cam.zoom };
     if (want - *fitted).abs() > want.abs() * 0.05 {
         *fitted = want;
@@ -146,11 +149,11 @@ fn fit_sun_cascade(cams: Query<&IsoCamera>, mut sun: Query<&mut CascadeShadowCon
     }
 }
 
-/// Third person: where the haze starts and where it has taken everything (metres from the
+/// First person: where the haze starts and where it has taken everything (metres from the
 /// camera): the chunks drawn end about 96 m out.
 const HAZE: (f32, f32) = (45.0, 92.0);
 
-/// The sky behind the third-person view's horizon at this much daylight (0 night, 1 day).
+/// The sky behind the first-person view's horizon at this much daylight (0 night, 1 day).
 pub fn sky_colour(day: f32) -> Color {
     let night = LinearRgba::rgb(0.006, 0.008, 0.016);
     let noon = LinearRgba::rgb(0.42, 0.55, 0.72);
@@ -169,7 +172,12 @@ fn update_lights(
     mut held: Local<Option<Vec3>>,
     mut commands: Commands,
     mut cams: Query<(Entity, &IsoCamera, Option<&mut DistanceFog>)>,
+    map: Option<Res<crate::server_link::ClientMap>>,
+    player: Query<&Transform, (With<Player>, Without<Sun>)>,
+    time: Res<Time>,
+    mut fill: Local<f32>,
 ) {
+    let mut indoors_fill = false;
     let (dir, color, lux, day) = sky_at(preview.hour_or(link.curr.time_of_day));
     daylight.0 = day;
     if let Ok((mut light, mut tf)) = sun.single_mut() {
@@ -191,9 +199,10 @@ fn update_lights(
     ambient.color = Color::from(night.mix(&noon, day));
     ambient.brightness = 12.0 + 96.0 * day;
     clear.0 = Color::srgb(0.005 + 0.04 * day, 0.006 + 0.04 * day, 0.012 + 0.05 * day);
-    // The third-person view sees the horizon: a sky of the hour's colour behind it, and a haze of
+    // The first-person view sees the horizon: a sky of the hour's colour behind it, and a haze of
     // the same colour that the far end of the drawn world fades into.
     if let Ok((entity, cam, haze)) = cams.single_mut() {
+        indoors_fill = cam.shoulder() && map.as_ref().zip(player.single().ok()).is_some_and(|(m, p)| m.0.building_at(p.translation.xz()).is_some());
         let sky = sky_colour(day);
         match (cam.shoulder(), haze) {
             (true, Some(mut haze)) => {
@@ -216,6 +225,12 @@ fn update_lights(
     if let Ok(mut l) = glow.single_mut() {
         l.intensity = 4_000.0 * (1.0 - day);
     }
+    // First person inside a building: more fill by day, so the walls the sun doesn't reach
+    // aren't one dark shade (from above the eye has the whole lit room to go by; here a wall
+    // can be all there is on screen).
+    let to = if indoors_fill { 1.0 } else { 0.0 };
+    *fill = if time.delta_secs() == 0.0 || (*fill - to).abs() < 0.01 { to } else { *fill + (to - *fill) * (1.0 - (-6.0 * time.delta_secs()).exp()) };
+    ambient.brightness *= 1.0 + INDOOR_FILL * day * *fill;
 }
 
 fn attach_player_glow(mut commands: Commands, players: Query<Entity, Added<Player>>) {

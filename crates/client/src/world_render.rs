@@ -45,7 +45,7 @@ struct BuildingRender {
     /// (-1: not yet).
     gone: f32,
     drawn: f32,
-    /// Third person inside it: they are drawn but cast no shadow, so the rooms are lit as they
+    /// First person inside it: they are drawn but cast no shadow, so the rooms are lit as they
     /// are from above. `lit` is what was asked for, `lit_done` what the entities have.
     lit: bool,
     lit_done: bool,
@@ -964,7 +964,7 @@ fn hide_upper_floors(
     mut started: Local<bool>,
 ) {
     let Ok(p) = player.single() else { return };
-    // Third person: the camera is under the roof with the survivor, so it stays; it only stops
+    // First person: the camera is under the roof, at the survivor's eyes, so it stays; it only stops
     // casting its shadow into the rooms, which are lit as they are with it gone.
     let shoulder = cams.single().is_ok_and(|c| c.shoulder());
     let within = map.0.building_at(p.translation.xz());

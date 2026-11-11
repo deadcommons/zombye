@@ -454,7 +454,7 @@ fn face_cursor(
     let (Ok(window), Ok((camera, cam_tf, iso))) = (windows.single(), cams.single()) else { return };
     let Some(cursor) = window.cursor_position() else { return };
     let Ok(ray) = camera.viewport_to_world(cam_tf, crate::render_scale::to_view(camera, window, cursor)) else { return };
-    // The ground the pointer is on (third person: the middle of the screen, see `camera.rs`).
+    // The ground the pointer is on (first person: the middle of the screen, see `camera.rs`).
     let Some(hit) = iso.aim_ground(ray.origin, *ray.direction) else { return };
     let from = Vec2::new(tf.translation.x, tf.translation.z);
     let mut d = Vec2::new(hit.x, hit.z) - from;
