@@ -2060,10 +2060,8 @@ fn world_menu(
         return;
     }
     let Ok(ray) = camera.viewport_to_world(cam_tf, crate::render_scale::to_view(camera, window, cursor)) else { return };
-    if ray.direction.y.abs() < 1e-4 {
-        return;
-    }
-    let ground_t = -ray.origin.y / ray.direction.y;
+    // Where the pointer's ray comes down (first person, looking level or up: nowhere near).
+    let ground_t = if ray.direction.y < -1e-4 { -ray.origin.y / ray.direction.y } else { 1e6 };
     let hit = ray.origin + *ray.direction * ground_t;
     let ground = Vec2::new(hit.x, hit.z);
     let reach = link.curr.floor_of(me.id);

@@ -124,10 +124,8 @@ fn actionable(kind: Edge) -> bool {
 /// down), or a container's furniture. With the ray parameter where it meets it, so a caller can
 /// weigh it against what else is under the pointer.
 pub fn pick(map: &TileMap, sites: &[ContainerSite], player: Vec2, origin: Vec3, dir: Vec3) -> Option<(Target, f32)> {
-    if dir.y.abs() < 1e-4 {
-        return None;
-    }
-    let ground_t = -origin.y / dir.y;
+    // Where the ray comes down; a level or rising one (first person, looking up) never does.
+    let ground_t = if dir.y < -1e-4 { -origin.y / dir.y } else { 1e6 };
     let ground = origin + dir * ground_t;
     let ground = Vec2::new(ground.x, ground.z);
     let mut best: Option<(Target, f32)> = None;
@@ -136,11 +134,12 @@ pub fn pick(map: &TileMap, sites: &[ContainerSite], player: Vec2, origin: Vec3, 
             best = Some((t, at));
         }
     };
-    // Edges round where the pointer is on the ground: what stands in front of it on screen is
-    // within a few metres of there (the camera looks down at 30 degrees and more).
-    let c = ground.floor().as_ivec2();
-    for dy in -4..=4 {
-        for dx in -4..=4 {
+    // Edges round the player: only those within `LOOK` of it count, wherever the ray comes down
+    // (in first person that can be far beyond the door it passes through).
+    let c = player.floor().as_ivec2();
+    let r = LOOK.ceil() as i32 + 1;
+    for dy in -r..=r {
+        for dx in -r..=r {
             let tile = c + IVec2::new(dx, dy);
             if !map.in_bounds(tile) {
                 continue;

@@ -147,11 +147,10 @@ fn spawn(mut commands: Commands) {
 fn cursor_ground(windows: &Query<&Window, With<PrimaryWindow>>, cams: &Query<(&Camera, &GlobalTransform), With<IsoCamera>>) -> Option<Vec2> {
     let (window, (camera, cam_tf)) = (windows.single().ok()?, cams.single().ok()?);
     let ray = camera.viewport_to_world(cam_tf, crate::render_scale::to_view(camera, window, window.cursor_position()?)).ok()?;
-    if ray.direction.y.abs() < 1e-4 {
-        return None;
-    }
-    let hit = ray.origin + *ray.direction * (-ray.origin.y / ray.direction.y);
-    Some(Vec2::new(hit.x, hit.z))
+    // A ray that never comes down (first person, looking level or up) is on no ground.
+    let t = if ray.direction.y.abs() < 1e-4 { return None } else { -ray.origin.y / ray.direction.y };
+    let hit = ray.origin + *ray.direction * t;
+    (t > 0.0).then_some(Vec2::new(hit.x, hit.z))
 }
 
 /// What Y asks for: free the survivor nearest us if its hands are tied, else tie them.

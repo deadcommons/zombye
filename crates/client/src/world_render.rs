@@ -1110,11 +1110,14 @@ fn hide_upper_floors(
     time: Res<Time>,
     mut streamer: ResMut<Streamer>,
     player: Query<&Transform, With<Player>>,
+    cams: Query<&crate::camera::IsoCamera>,
     mut upper: Query<(&mut Visibility, &mut MeshTag)>,
     mut started: Local<bool>,
 ) {
     let Ok(p) = player.single() else { return };
-    let inside = map.0.building_at(p.translation.xz());
+    // First person: the camera is under the roof, at the survivor's eyes, so it stays.
+    let shoulder = cams.single().is_ok_and(|c| c.shoulder());
+    let inside = if shoulder { None } else { map.0.building_at(p.translation.xz()) };
     // The first frame's state is taken at once (a picture of a save), like the walls'.
     let step = if *started { time.delta_secs() / UPPER_FADE_SECS } else { 1.0 };
     *started = true;
