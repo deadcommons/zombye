@@ -42,7 +42,11 @@ pub(crate) fn fires(
     let fire = look().fire;
     if !*made {
         *made = true;
-        for (i, at) in places(&map.0).into_iter().enumerate() {
+        let at = places(&map.0);
+        if !at.is_empty() {
+            info!("{} campfires, the first at {:.0}, {:.0}", at.len(), at[0].x, at[0].y);
+        }
+        for (i, at) in at.into_iter().enumerate() {
             let light = PointLight {
                 intensity: 0.0,
                 range: fire.range,
