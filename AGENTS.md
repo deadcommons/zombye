@@ -231,7 +231,7 @@ never reads or writes the file: its pictures depend on the flags alone (`--hud -
 id), and its key does the likely thing with the one you carry (`hotbar::press`, sending only the intents the inventory
 panel sends): a weapon or tool into your hand (`Equip`; what was there goes into the bags), a light into the other hand
 when the first holds something one-handed, food and drink eaten or drunk (`Use`), a pill taken, clothing worn, a
-dressing or antiseptic opens the health panel to pick the wound. A slot shows its key, the item's colour and name and
+dressing or antiseptic opens the health panel to pick the wound; the key of what is already in a hand puts it away (`Unequip`, into the bags). A slot shows its key, the item's colour and name and
 how many you have in your hands and bags; the one in your hand is outlined, one you don't carry dimmed (its key says
 "no flashlight on you"). Weapons and lights take the first free slot by themselves when they first come into your
 hands or bags (`Hotbar::auto_fill`; one taken off the bar stays off while you keep carrying it). At the start of a session the slots kept from an earlier game for things this survivor doesn't carry are emptied. With the inventory

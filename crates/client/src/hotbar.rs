@@ -5,7 +5,8 @@
 //! (or a click on it) does the likely thing with the one you carry ([`press`]): a weapon or tool
 //! goes into your hand (what was there into the bags, as `Equip` does), a light into the other
 //! hand when the first holds something one-handed, food and drink are eaten or drunk, a pill is
-//! taken, clothing put on, and a dressing or antiseptic opens the health panel to pick the wound.
+//! taken, clothing put on, and a dressing or antiseptic opens the health panel to pick the wound;
+//! the key of what is already in a hand puts it away into the bags (`Unequip`).
 //! It only sends the intents the inventory panel sends, so the server's rules and times apply.
 //! A slot shows its key, the item's colour and name and how many you have on you (in your hands
 //! and bags); the one in your hand is outlined, and one you don't carry is dimmed.
@@ -113,7 +114,8 @@ pub fn press(player: u32, inv: &Inventory, items: &[ItemDef], item: u16) -> Pres
         (None, ItemCategory::Food | ItemCategory::Drink) => return Press::Send(Intent::Use { player, from, index }),
         _ => {}
     }
-    let Found::Carried(index) = found else { return Press::Nothing(format!("the {name} is in your hand already")) };
+    // Its key again puts away what is in a hand (into the bags, as the inventory's "take off").
+    let Found::Carried(index) = found else { return Press::Send(Intent::Unequip { player, from, index: 0 }) };
     if def.clothing.is_some() {
         return Press::Send(Intent::Wear { player, index });
     }
@@ -453,8 +455,8 @@ mod tests {
         same(press(1, &inv, &items, torch), Press::Send(Intent::Equip { player: 1, index: 2 }));
         inv.hand = Some(inv.carried.remove(1));
         same(press(1, &inv, &items, torch), Press::Send(Intent::MoveItem { player: 1, from: Place::Carried, index: 1, to: Place::Slot(Slot::OffHand), count: 1 }));
-        // What's in the hand already stays there; the bat's key swaps to it.
-        same(press(1, &inv, &items, knife), Press::Nothing("the kitchen knife is in your hand already".into()));
+        // What's in a hand, its key puts away; the bat's key swaps to it.
+        same(press(1, &inv, &items, knife), Press::Send(Intent::Unequip { player: 1, from: Place::Slot(Slot::Hand), index: 0 }));
         same(press(1, &inv, &items, bat), Press::Send(Intent::Equip { player: 1, index: 2 }));
         inv.hand = Some(inv.carried.remove(2));
         // The bat can be swung with one hand, so the light goes beside it; the fire axe takes both,
@@ -622,5 +624,13 @@ mod tests {
         let link = app.world().resource::<ServerLink>();
         let hand = link.own(id).and_then(|v| v.inventory.hand);
         assert_eq!(hand.map(|s| s.item), Some(bat), "key {} put the bat in hand", other + 1);
+        // The same key again puts it away.
+        press(&mut app, &[DIGITS[other]]);
+        for _ in 0..20 {
+            app.world_mut().resource_mut::<ServerLink>().step_for_test();
+            app.update();
+        }
+        let inv = &app.world().resource::<ServerLink>().own(id).unwrap().inventory;
+        assert!(inv.hand.is_none() && inv.carried.iter().any(|s| s.item == bat), "key {} again put the bat in the bags: {inv:?}", other + 1);
     }
 }
