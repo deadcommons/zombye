@@ -45,6 +45,9 @@ pub enum Intent {
     /// Open or close the door or window the player faces, if it's within reach of the player's
     /// server position. Broken ones can't be shut.
     Interact { player: u32 },
+    /// Climb the fence or open or broken window the player faces, if one is within reach
+    /// (`World::player_climb`; E). Movement then takes it across by itself.
+    Climb { player: u32 },
     /// Smash the window the player faces (shut or open), if it's within reach. Loud.
     SmashWindow { player: u32 },
     /// Swing the equipped weapon (bare hands: a punch). Lands after the weapon's windup; asked for
@@ -183,6 +186,10 @@ pub struct PlayerView {
     pub endurance: f32,
     /// Ran out of breath (can't run until endurance recovers). Needed to predict movement exactly.
     pub winded: bool,
+    /// A climb under way over a fence or through a window (E). Needed to predict movement exactly;
+    /// only a client's own player has it (others are drawn by where they are).
+    #[serde(default)]
+    pub climb: Option<zombye_sim::Climb>,
     /// The newest input the server has applied; the owning client replays anything after it.
     pub last_input_seq: u32,
     pub hp: f32,
@@ -477,6 +484,7 @@ impl Snapshot {
                 stance: p.state.stance,
                 endurance: p.state.endurance,
                 winded: p.state.winded,
+                climb: p.state.climb,
                 last_input_seq: p.last_input_seq,
                 hp: p.hp,
                 dead: p.dead,
@@ -573,6 +581,7 @@ impl PlayerView {
             endurance: self.endurance,
             winded: self.winded,
             mods: self.mods,
+            climb: self.climb,
         }
     }
 }
@@ -592,6 +601,9 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
         }
         // Only an aiming player fights.
         Intent::Attack { player } | Intent::Shove { player } | Intent::Stomp { player } if !world.aiming(*player) => {}
+        Intent::Climb { player } => {
+            world.player_climb(*player);
+        }
         Intent::Interact { player } => {
             world.player_interact(*player);
         }
@@ -715,6 +727,7 @@ impl Intent {
     pub fn action_by(&self) -> Option<u32> {
         match *self {
             Intent::Interact { player }
+            | Intent::Climb { player }
             | Intent::SmashWindow { player }
             | Intent::Attack { player }
             | Intent::Shove { player }
@@ -1009,6 +1022,13 @@ mod tests {
         drive(&mut server, &mut client_map, &mut predicted, [0.0, 0.0], 1);
         assert_eq!(client_map.edge(inside, side_toward(inside, outside)), Edge::WindowOpen, "the client heard about the window");
         let start = predicted.pos;
+        // Walking into it doesn't climb it: that takes E.
+        drive(&mut server, &mut client_map, &mut predicted, dir.to_array(), 10);
+        assert!(predicted.pos.distance(start) < 0.3 && !client_map.in_window_opening(predicted.pos), "climbed without E");
+        server.send(Intent::Climb { player: id });
+        // The climb comes back in the snapshot; the client takes its player's state from it.
+        predicted = server.tick().players.iter().find(|p| p.id == id).unwrap().state();
+        assert!(predicted.climb.is_some(), "E climbs the open window");
         let mut climbed = 0;
         for _ in 0..60 {
             drive(&mut server, &mut client_map, &mut predicted, dir.to_array(), 1);

@@ -158,6 +158,8 @@ pub struct JoinInfo {
     /// The skills' numbers, and the carry limit Strength adds to (the skills panel, #46).
     pub skills: zombye_sim::SkillTuning,
     pub carry: zombye_sim::CarryTuning,
+    /// When E climbs a fence or window (sent only where the server takes one).
+    pub climb: zombye_sim::ClimbTuning,
 }
 
 /// The `FixedUpdate` system that ticks the server. Input is sent before it and reconciled after it.
@@ -441,6 +443,7 @@ fn join_info(config: &zombye_sim::WorldConfig, player_id: u32, player_spawn: Vec
         needs: config.needs,
         skills: config.skills.clone(),
         carry: config.carry.clone(),
+        climb: config.climb.clone(),
     }
 }
 

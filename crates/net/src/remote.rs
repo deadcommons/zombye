@@ -416,6 +416,7 @@ pub fn build_map(welcome: &Welcome, content: &WorldConfig) -> Result<Joined, Str
     config.zombies = Some(0);
     let t = &welcome.tunings;
     (config.combat, config.health, config.infection, config.needs, config.skills, config.carry) = (t.combat.clone(), t.health.clone(), t.infection.clone(), t.needs, t.skills.clone(), t.carry.clone());
+    config.climb = t.climb.clone();
     let (ours, theirs) = (ContentPrint::of(&config), &welcome.content);
     let mut differs = Vec::new();
     for (what, same) in [

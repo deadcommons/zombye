@@ -533,6 +533,7 @@ fn actions(
     time: Res<Time>,
     mut me: ResMut<LocalPlayer>,
     join: Res<JoinInfo>,
+    map: Res<ClientMap>,
     players: Query<(&Transform, &Player)>,
     mut link: ResMut<ServerLink>,
 ) {
@@ -577,10 +578,22 @@ fn actions(
         link.send(Intent::Use { player: me.id, from: zombye_sim::Place::Slot(zombye_sim::Slot::Hand), index: 0 });
     }
     if keys.just_pressed(KeyCode::KeyE) {
-        // Something on our floor (the snapshot's, by the server's reach rule): pick it up.
+        // A fence or an open or broken window faced and in reach (the server's rule, on our copy
+        // of the map): climb it. Walking into one no longer does.
+        let climb = zombye_sim::players::climb_from(&map.0, me.curr.pos, me.curr.facing, &join.climb).is_some();
+        // Else something on our floor (the snapshot's, by the server's reach rule): pick it up.
         // Otherwise search what we face; with nothing there either, the server says so once.
+        // Already on the way over: nothing.
         let floor = !link.curr.floor_of(me.id).is_empty();
-        link.send(if floor { Intent::PickUp { player: me.id } } else { Intent::Search { player: me.id, container: None } });
+        if me.curr.climb.is_none() {
+            link.send(if climb {
+                Intent::Climb { player: me.id }
+            } else if floor {
+                Intent::PickUp { player: me.id }
+            } else {
+                Intent::Search { player: me.id, container: None }
+            });
+        }
     }
     if keys.just_pressed(KeyCode::KeyF) {
         // The server picks the door or window this player faces and checks it's within reach.
