@@ -438,6 +438,11 @@ impl World {
         }
         // The trigger pulled on an empty gun (#72): it is reloaded instead, if there is anything
         // to reload it with (the refusal says what's missing), and a reload under way carries on.
+        // Not a gun from upstairs yet (`crate::stairs`): a shot's flight is over the ground floor.
+        if kind == ActionKind::Swing && self.players[pi].state.height(&self.map) > self.config.stairs.out_of_reach && self.players[pi].weapon.is_some_and(|w| self.config.weapons[w as usize].ranged.is_some()) {
+            self.note(id, false, "no clear shot from up here".to_string());
+            return false;
+        }
         if kind == ActionKind::Swing && self.gun_is_empty(pi) {
             let _ = self.player_reload(id);
             return false;
@@ -527,6 +532,7 @@ impl World {
         // A new survivor: its skills start over (#46).
         let skills = crate::skills::Skills::start(&self.config.skills);
         let p = &mut self.players[pi];
+        // (A new `Player` stands on the ground floor.)
         *p = Player { last_input_seq: p.last_input_seq, input: PlayerInput::default(), dev: p.dev, skills, seen_tick: p.seen_tick, ..Player::new(id, spawn, hp) };
         self.refresh_carry(pi);
         self.begin_first_night(pi);
@@ -680,7 +686,15 @@ impl World {
         let reach = s.range + if stomp { 0.0 } else { ZOMBIE_RADIUS };
         // A body on the ground reaches back to its head.
         let lying = if stomp { c.down_head_offset.max(0.0) } else { 0.0 };
+        // From upstairs, or high on a flight of stairs, a blow reaches nothing on the ground
+        // (`crate::stairs`): zombies are only ever there.
+        let (my_level, my_height) = (self.players[pi].state.level, self.players[pi].state.height(&self.map));
+        let out_of_reach = self.config.stairs.out_of_reach;
+        let above = my_height > out_of_reach;
         self.hash.for_each_within(origin, reach + lying + moved, |j| {
+            if above {
+                return;
+            }
             // Swings and shoves pass over downed zombies; stomps only hit them.
             let state = z.state[j];
             if state == ZombieState::Dead || (state == ZombieState::Down) != stomp {
@@ -716,6 +730,10 @@ impl World {
             for (k, o) in self.players.iter().enumerate() {
                 // A fresh survivor's spawn protection (#68): players' blows pass it by.
                 if k == pi || o.dead || o.protected > 0.0 || o.knock.is_some_and(|k| k.down) != stomp {
+                    continue;
+                }
+                // Only someone on the same floor, at about the same height.
+                if o.state.level != my_level || (o.state.height(&self.map) - my_height).abs() > out_of_reach {
                     continue;
                 }
                 let to = frame.and_then(|f| f.player(o.id)).unwrap_or(o.state.pos) - origin;
@@ -760,7 +778,7 @@ impl World {
                     }
                 }
             }
-            if !clear_path(&self.map, origin, at) {
+            if if my_level > 0 { !self.map.upper_clear(origin, at) } else { !clear_path(&self.map, origin, at) } {
                 continue;
             }
             let cramped = d - if victim.is_some() { PLAYER_RADIUS } else { ZOMBIE_RADIUS } < close;
@@ -1027,11 +1045,14 @@ impl World {
     fn push_player(&mut self, pi: usize, dir: Vec2, metres: f32) {
         const STEP: f32 = 0.1;
         let mut p = self.players[pi].state.pos;
-        let in_window = self.map.in_window_opening(p);
+        let level = self.players[pi].state.level;
+        // Never onto or off a flight of stairs either: a floor is changed on one's feet.
+        let stair = self.map.stair_at(p).is_some();
+        let in_window = level == 0 && !stair && self.map.in_window_opening(p);
         let mut left = metres;
         while left > 1e-4 {
-            let next = self.map.resolve_circle(p + dir * left.min(STEP), PLAYER_RADIUS);
-            if !in_window && self.map.in_window_opening(next) {
+            let next = self.map.resolve_walker(p + dir * left.min(STEP), PLAYER_RADIUS, level);
+            if (level == 0 && !stair && !in_window && self.map.in_window_opening(next)) || self.map.stair_at(next).is_some() != stair || (stair && self.map.stair_at(next).is_some_and(|s| s.progress(next) >= 1.0)) {
                 break;
             }
             p = next;

@@ -204,11 +204,11 @@ impl World {
         let aim = Vec2::from_angle(p.state.facing);
         self.players
             .iter()
-            .filter(|o| o.id != id && !o.dead)
+            .filter(|o| o.id != id && !o.dead && o.state.level == p.state.level)
             .filter_map(|o| {
                 let d = o.state.pos - p.state.pos;
                 let len = d.length();
-                (len <= reach && (len < 0.5 || d.dot(aim) >= len * 0.17) && clear_reach(&self.map, p.state.pos, o.state.pos)).then_some((len, o.id))
+                (len <= reach && (len < 0.5 || d.dot(aim) >= len * 0.17) && if p.state.level > 0 { self.map.upper_clear(p.state.pos, o.state.pos) } else { clear_reach(&self.map, p.state.pos, o.state.pos) }).then_some((len, o.id))
             })
             .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
             .map(|(_, id)| id)
@@ -398,7 +398,8 @@ impl World {
         let Some(r) = self.players[ti].restraint.take() else { return };
         if !self.restraint_is_cut(r.item) && (r.item as usize) < self.config.items.len() {
             let (pos, facing) = (self.players[ti].state.pos, self.players[ti].state.facing);
-            self.put_on_floor(ItemStack::one(r.item), pos, facing);
+            let level = self.players[ti].state.level;
+            self.put_on_floor(ItemStack::one(r.item), pos, facing, level);
         }
         self.refresh_carry(ti);
     }
@@ -562,8 +563,8 @@ impl World {
             merge_into(&mut p.inventory.carried, taken, n, size);
             self.refresh_carry(pi);
         } else {
-            let (pos, facing) = (p.state.pos, p.state.facing);
-            self.put_on_floor(taken, pos, facing);
+            let (pos, facing, level) = (p.state.pos, p.state.facing, p.state.level);
+            self.put_on_floor(taken, pos, facing, level);
         }
         let mine = if fits { format!("Took their {name}") } else { format!("Took their {name}: no room, it is at your feet") };
         Ok((mine, format!("A survivor took your {name}")))

@@ -406,6 +406,7 @@ pub(crate) fn check_settings(text: &str, config: &WorldConfig) -> Result<(), Loa
     config.infection.check().map_err(|e| invalid(format!("settings: {e}")))?;
     config.needs.check().map_err(|e| invalid(format!("settings: {e}")))?;
     config.skills.check().map_err(|e| invalid(format!("settings: {e}")))?;
+    config.stairs.check().map_err(|e| invalid(format!("settings: {e}")))?;
     Ok(())
 }
 

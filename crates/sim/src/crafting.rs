@@ -374,7 +374,8 @@ impl World {
             }
             while rest > 0 {
                 let n = rest.min(size);
-                self.put_on_floor(like.with_count(n), pos, facing);
+                let level = self.players[pi].state.level;
+                self.put_on_floor(like.with_count(n), pos, facing, level);
                 rest -= n;
             }
             let name = amount(&self.config.items, &x.item, 1);

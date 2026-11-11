@@ -361,7 +361,17 @@ pub struct SurvivorAnim {
     pub(crate) cross_w: f32,
     pub(crate) cross_u: f32,
     cross_side: f32,
+    /// On a flight of stairs and moving: going up (or down), eased in and out, and where in the
+    /// stair loop it is (a body's `stairs_up` / `stairs_down` clip; `STAIR_CYCLE_M` a loop).
+    pub(crate) stair: Option<bool>,
+    pub(crate) stair_w: f32,
+    pub(crate) stair_u: f32,
+    stair_p: Option<f32>,
 }
+
+/// Metres over the ground a stair loop (two steps) covers: what the clip it was made from rose in
+/// a loop (0.92 m), a flight rising a metre a metre, so a planted foot stays where it was put.
+pub(crate) const STAIR_CYCLE_M: f32 = 0.92;
 
 /// What a survivor is getting across (its clip in [`crate::survivor_model`]'s `CROSS_CLIPS`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -448,6 +458,10 @@ impl SurvivorAnim {
             cross_w: 0.0,
             cross_u: 0.0,
             cross_side: 1.0,
+            stair: None,
+            stair_w: 0.0,
+            stair_u: 0.0,
+            stair_p: None,
             gesture: None,
             gesture_w: 0.0,
             gesture_t: 0.0,
@@ -550,6 +564,19 @@ fn animate_survivors(
             a.cross_u = (0.5 - a.cross_side * d / (2.0 * zombye_sim::map::CLIMB_ZONE)).clamp(0.0, 1.0);
         }
         a.cross_w += (cross.is_some() as u8 as f32 - a.cross_w) * k(14.0);
+        // On a flight of stairs: which way goes by how far up it the body is and was.
+        let flight = map.0.stair_at(pos).filter(|_| up && view.level == 0).map(|s| s.progress(pos));
+        if let Some(p) = flight {
+            match a.stair_p {
+                // Just come onto it: from the foot going up, from the top coming down.
+                None => a.stair = Some(p < 0.5),
+                Some(was) if (p - was).abs() > 1e-4 => a.stair = Some(p > was),
+                _ => {}
+            }
+        }
+        a.stair_p = flight;
+        a.stair_w += ((flight.is_some() && a.speed > 0.3) as u8 as f32 - a.stair_w) * k(10.0);
+        a.stair_u = (a.stair_u + a.speed * dt / STAIR_CYCLE_M).fract();
         let cycle_m = match (&a.look, &model) {
             (Look::Model(_), Some(m)) => m.cycle_metres(a),
             _ => {
@@ -786,6 +813,11 @@ fn hold_pose(a: &mut SurvivorAnim, pose: &str, step: f32, now: f32) {
         "climb" | "vault" => {
             locomotion(a, 0.0, 0.0, 0.0);
             (a.cross, a.cross_w, a.cross_u) = (Some(if name == "climb" { Cross::Climb } else { Cross::Vault }), 1.0, u);
+        }
+        // On a flight of stairs: `U` of the loop.
+        "stairs" | "stairs_down" => {
+            locomotion(a, 0.0, 0.0, 1.0);
+            (a.stair, a.stair_w, a.stair_u) = (Some(name == "stairs"), 1.0, u);
         }
         "sleep" => {
             locomotion(a, 0.0, 0.0, 0.0);

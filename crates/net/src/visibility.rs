@@ -35,9 +35,13 @@ impl Snapshot {
         self.players.retain(|p| sees(p.id));
         self.outfits.retain(|o| sees(o.id));
         self.hits.retain(|h| sees(h.player) && sees(h.by));
-        let me: Option<Vec2> = world.player(player).map(|p| p.state.pos);
+        let me: Option<(Vec2, u8)> = world.player(player).map(|p| (p.state.pos, p.state.level));
         let floor = self.floor.iter().find(|f| f.player == player).map(|f| f.items.clone()).unwrap_or_default();
-        self.items.retain(|i| floor.contains(&i.id) || me.is_some_and(|m| line_of_sight(&world.map, m, i.pos)));
+        // On its own floor only: upstairs by that floor's walls.
+        self.items.retain(|i| {
+            floor.contains(&i.id)
+                || me.is_some_and(|(m, level)| world.item_level(i.id) == level && if level > 0 { world.map.upper_clear(m, i.pos) } else { line_of_sight(&world.map, m, i.pos) })
+        });
         self.heard.retain(|h| h.listener == player);
         // What was said (#67): only what our survivor heard, and from whom only if it sees them.
         self.speech.retain(|s| s.listener == player);

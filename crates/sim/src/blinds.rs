@@ -264,7 +264,7 @@ impl World {
     pub fn player_blind(&mut self, id: u32, op: BlindOp) -> Result<(), String> {
         let Some(pi) = self.players.iter().position(|p| p.id == id) else { return Err(format!("no player {id}")) };
         let p = &self.players[pi];
-        if p.dead || p.needs.asleep() || p.knock.is_some() || p.away.is_some() || p.state.climb.is_some() {
+        if p.dead || p.needs.asleep() || p.knock.is_some() || p.away.is_some() || p.state.climb.is_some() || p.state.off_ground(&self.map) {
             return Err("can't now".to_string());
         }
         if p.restraint.is_some() {

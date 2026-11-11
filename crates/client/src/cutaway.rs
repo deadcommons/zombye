@@ -75,14 +75,14 @@ pub fn ground_dir(camera_dir: Vec3) -> (Vec2, f32) {
 
 /// Does the wall on this edge hide part of `room`'s floor from the camera? The floor behind it on
 /// screen (away from the camera, as far as a wall's height covers) runs into the room.
-pub fn hides_room(map: &TileMap, key: EdgeKey, c: Vec2, room: u16) -> bool {
+pub fn hides_room(map: &TileMap, key: EdgeKey, c: Vec2, room: u16, level: u8) -> bool {
     let (a, b) = TileMap::edge_segment(key.0, key.1);
     let along = (b - a) * 0.45;
     let mid = (a + b) * 0.5;
     for s in [mid, mid - along, mid + along] {
         let mut t = 0.25;
         while t <= WALL_REACH {
-            if map.room_at(s - c * t) == room {
+            if map.room_on(level, s - c * t) == room {
                 return true;
             }
             t += 0.25;
@@ -108,8 +108,10 @@ pub fn in_front(key: EdgeKey, pos: Vec2, c: Vec2) -> bool {
 /// The walls of the building the player is inside that drop: its outside walls facing the camera,
 /// and any of its walls hiding part of the player's room. Nothing when the player is outdoors.
 /// Depends only on the building, the room and the camera's angle (not on where in the room).
-pub fn room_edges(map: &TileMap, player: Vec2, camera_dir: Vec3, out: &mut Vec<EdgeKey>) {
-    let room = map.room_at(player);
+///
+/// `level` 1 (stairs): the same for the first upper floor's own walls, when that is the floor shown.
+pub fn room_edges(map: &TileMap, player: Vec2, level: u8, camera_dir: Vec3, out: &mut Vec<EdgeKey>) {
+    let room = map.room_on(level, player);
     let Some(index) = map.building_at(player) else { return };
     let (c, _) = ground_dir(camera_dir);
     let b = &map.buildings[index];
@@ -117,19 +119,28 @@ pub fn room_edges(map: &TileMap, player: Vec2, camera_dir: Vec3, out: &mut Vec<E
     for y in b.min.y..=b.min.y + b.size.y {
         for x in b.min.x..=b.min.x + b.size.x {
             let owner = IVec2::new(x, y);
-            let tile = map.tile(owner);
+            // The tile's north and west edges and its room, on the floor asked for.
+            let at = |t: IVec2| {
+                if level == 0 {
+                    let tile = map.tile(t);
+                    (tile.north, tile.west, tile.room)
+                } else {
+                    map.upper_tile(t).map_or((Edge::None, Edge::None, 0), |u| (u.north, u.west, u.room))
+                }
+            };
+            let (north, west, own_room) = at(owner);
             // `toward`: from the edge's north / west side to its south / east side.
-            for (which, kind, other, toward) in [(OwnedEdge::North, tile.north, owner - IVec2::Y, Vec2::Y), (OwnedEdge::West, tile.west, owner - IVec2::X, Vec2::X)] {
+            for (which, kind, other, toward) in [(OwnedEdge::North, north, owner - IVec2::Y, Vec2::Y), (OwnedEdge::West, west, owner - IVec2::X, Vec2::X)] {
                 if !stands(kind) {
                     continue;
                 }
-                let (first, second) = (belongs(map.tile(other).room), belongs(tile.room));
+                let (first, second) = (belongs(at(other).2), belongs(own_room));
                 if !(first || second) {
                     continue;
                 }
                 // An outside wall: the building on one side only. Its outward normal points away from it.
                 let faces = first != second && (if first { toward } else { -toward }).dot(c) > FACING;
-                if faces || hides_room(map, (owner, which), c, room) {
+                if faces || hides_room(map, (owner, which), c, room, level) {
                     out.push((owner, which));
                 }
             }
@@ -289,7 +300,10 @@ pub struct Cutaway {
     values: Vec<u8>,
     /// The building's walls that drop for the room the player is in, and what they were worked out for.
     room: Vec<EdgeKey>,
-    room_for: Option<(usize, u16, i32)>,
+    room_for: Option<(usize, u16, i32, u8)>,
+    /// The floor whose walls the texture cuts: 0 the ground floor, 1 the first upper floor while
+    /// the player is up there (stairs). The shader cuts that storey's walls only.
+    pub level: u8,
     /// Those of them the player isn't in front of ([`in_front`]), this frame and last: the ones
     /// that drop.
     behind: Vec<EdgeKey>,
@@ -316,6 +330,7 @@ impl Cutaway {
             values: vec![0; (TEXELS * TEXELS * 2) as usize],
             room: Vec::with_capacity(256),
             room_for: None,
+            level: 0,
             behind: Vec::with_capacity(256),
             behind_was: Vec::with_capacity(256),
             body: Vec::with_capacity(16),
@@ -378,17 +393,20 @@ impl Cutaway {
 
     /// Decide the cut for a player at `pos` and move toward it by `dt` seconds. True if the texture
     /// needs sending again.
-    pub fn update(&mut self, map: &TileMap, pos: Vec2, camera_dir: Vec3, dt: f32) -> bool {
+    pub fn update(&mut self, map: &TileMap, pos: Vec2, level: u8, camera_dir: Vec3, dt: f32) -> bool {
         let inside = map.building_at(pos);
         self.inside = inside;
-        // The room's set: only when the room or the camera's angle changes.
+        // Upstairs only inside a building that has an upstairs here.
+        let level = if inside.is_some() && map.room_on(level.min(1), pos) != 0 { level.min(1) } else { 0 };
+        // The room's set: only when the room, the floor or the camera's angle changes.
         let angle = (camera_dir.x.atan2(camera_dir.z) * 200.0).round() as i32;
-        let room_for = inside.map(|b| (b, map.room_at(pos), angle));
-        let mut changed = self.fresh;
+        let room_for = inside.map(|b| (b, map.room_on(level, pos), angle, level));
+        let mut changed = self.fresh || level != self.level;
+        self.level = level;
         if room_for != self.room_for {
             self.room_for = room_for;
             self.room.clear();
-            room_edges(map, pos, camera_dir, &mut self.room);
+            room_edges(map, pos, level, camera_dir, &mut self.room);
             changed = true;
         }
         // Of those, never a wall the player stands in front of.
@@ -400,10 +418,14 @@ impl Cutaway {
         changed |= self.behind != self.behind_was;
         std::mem::swap(&mut self.body, &mut self.body_was);
         self.body.clear();
-        let body = &mut self.body;
-        body_edges(map, pos, camera_dir, |key| body.push(key));
+        // Upstairs nothing on the ground covers the body, and no window is climbed through.
+        let mut keep = None;
+        if level == 0 {
+            let body = &mut self.body;
+            body_edges(map, pos, camera_dir, |key| body.push(key));
+            keep = crossed_window(map, pos);
+        }
         changed |= self.body != self.body_was;
-        let keep = crossed_window(map, pos);
         changed |= keep != self.keep;
         self.keep = keep;
         if changed {
@@ -411,7 +433,7 @@ impl Cutaway {
         }
         // Still covered: by a roof or an upper storey, or by a wall that would have dropped.
         let kept_covers = keep.is_some_and(|k| self.body.contains(&k));
-        self.occluded = bulk_hides(map, pos, camera_dir, inside) || (self.walls_up && !self.body.is_empty()) || kept_covers;
+        self.occluded = level == 0 && (bulk_hides(map, pos, camera_dir, inside) || (self.walls_up && !self.body.is_empty()) || kept_covers);
         let step = if self.fresh { 1.0 } else { dt / EASE_SECS };
         self.fresh = false;
         self.ease(step)
@@ -473,12 +495,12 @@ fn toggle(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut cutaway: ResMut<
     }
 }
 
-fn decide(map: Res<ClientMap>, time: Res<Time>, mut cutaway: ResMut<Cutaway>, mut images: ResMut<Assets<Image>>, player: Query<&Transform, With<Player>>, cams: Query<&IsoCamera>) {
+fn decide(map: Res<ClientMap>, time: Res<Time>, view: Res<crate::player::ViewFloor>, mut cutaway: ResMut<Cutaway>, mut images: ResMut<Assets<Image>>, player: Query<&Transform, With<Player>>, cams: Query<&IsoCamera>) {
     let (Ok(p), Ok(cam)) = (player.single(), cams.single()) else { return };
     let cutaway = cutaway.as_mut();
     // First person: the camera is in the room with the survivor, so nothing is cut.
     cutaway.set_held(cam.shoulder());
-    let changed = cutaway.update(&map.0, p.translation.xz(), cam.offset_dir(), time.delta_secs());
+    let changed = cutaway.update(&map.0, p.translation.xz(), view.level, cam.offset_dir(), time.delta_secs());
     if cam.shoulder() {
         // First person: no silhouette (it goes by the fixed view's depth, and the camera is
         // right behind the survivor).
@@ -561,7 +583,7 @@ pub(crate) mod tests {
 
     fn room_set(map: &TileMap, player: Vec2, angle: i32) -> Vec<EdgeKey> {
         let mut out = Vec::new();
-        room_edges(map, player, camera(angle), &mut out);
+        room_edges(map, player, 0, camera(angle), &mut out);
         out
     }
 
@@ -638,7 +660,7 @@ pub(crate) mod tests {
         assert!(in_front(leg_east(17), in_main, c) && !in_front(main_south(44), in_main, c));
         assert!(in_front(main_south(44), in_leg, c) && !in_front(leg_east(17), in_leg, c));
         let mut cut = Cutaway::new(Handle::default(), false);
-        cut.update(&map, in_main, camera(0), 0.016);
+        cut.update(&map, in_main, 0, camera(0), 0.016);
         for y in 16..19 {
             assert_eq!(cut.amount(leg_east(y)), 0.0, "the leg's east wall at y {y}, behind the player");
         }
@@ -647,7 +669,7 @@ pub(crate) mod tests {
         }
         // Into the leg: the two swap, eased.
         for _ in 0..20 {
-            cut.update(&map, in_leg, camera(0), 0.016);
+            cut.update(&map, in_leg, 0, camera(0), 0.016);
         }
         for y in 16..19 {
             assert_eq!(cut.amount(leg_east(y)), 1.0, "the leg's east wall at y {y}");
@@ -662,13 +684,13 @@ pub(crate) mod tests {
         assert!(!in_front(leg_east(18), low, c), "the piece level with the player");
         assert!(in_front(leg_east(16), low, c), "the piece two metres up the screen");
         let mut cut = Cutaway::new(Handle::default(), false);
-        cut.update(&map, low, camera(0), 0.016);
+        cut.update(&map, low, 0, camera(0), 0.016);
         assert_eq!(cut.amount(leg_east(16)), 0.0);
         assert_eq!(cut.amount(leg_east(18)), 1.0);
         // The same from the other side: nothing the player is in front of is down at any angle.
         for angle in 0..4 {
             let mut cut = Cutaway::new(Handle::default(), false);
-            cut.update(&map, in_main, camera(angle), 0.016);
+            cut.update(&map, in_main, 0, camera(angle), 0.016);
             let (c, _) = ground_dir(camera(angle));
             let body = body_set(&map, in_main, angle);
             assert!(cut.cut_edges().all(|(k, _)| !in_front(k, in_main, c) || body.contains(&k)), "angle {angle}");
@@ -762,10 +784,10 @@ pub(crate) mod tests {
         assert_eq!(crossed_window(&map, Vec2::new(12.5, 15.8)), Some(window));
         assert_eq!(crossed_window(&map, Vec2::new(12.5, 15.5)), None);
         let mut cut = Cutaway::new(Handle::default(), false);
-        cut.update(&map, Vec2::new(12.5, 15.8), camera(0), 0.016);
+        cut.update(&map, Vec2::new(12.5, 15.8), 0, camera(0), 0.016);
         assert_eq!(cut.amount(window), 0.0);
         assert_eq!(cut.amount((IVec2::new(13, 16), N)), 1.0);
-        cut.update(&map, Vec2::new(12.5, 15.0), camera(0), 1.0);
+        cut.update(&map, Vec2::new(12.5, 15.0), 0, camera(0), 1.0);
         assert_eq!(cut.amount(window), 1.0);
     }
 
@@ -779,35 +801,35 @@ pub(crate) mod tests {
         let (inside, outside) = (Vec2::new(11.5, 12.5), Vec2::new(24.0, 24.0));
         let south = (IVec2::new(12, 16), N);
         // A fresh state (a loaded save, an offscreen picture) takes its first decision at once.
-        assert!(cut.update(&map, inside, camera(0), 0.016));
+        assert!(cut.update(&map, inside, 0, camera(0), 0.016));
         assert_eq!(cut.amount(south), 1.0);
         assert_eq!(cut.amount((IVec2::new(12, 10), N)), 0.0);
         // Nothing moves while nothing changes: no upload.
-        assert!(!cut.update(&map, inside + Vec2::new(0.3, 0.2), camera(0), 0.016));
+        assert!(!cut.update(&map, inside + Vec2::new(0.3, 0.2), 0, camera(0), 0.016));
         // Walking out: the walls stand up again over the ease, not at once.
-        assert!(cut.update(&map, outside, camera(0), EASE_SECS * 0.5));
+        assert!(cut.update(&map, outside, 0, camera(0), EASE_SECS * 0.5));
         let half = cut.amount(south);
         assert!(half > 0.2 && half < 0.8, "{half}");
-        assert!(cut.update(&map, outside, camera(0), EASE_SECS * 0.6));
+        assert!(cut.update(&map, outside, 0, camera(0), EASE_SECS * 0.6));
         assert_eq!(cut.amount(south), 0.0);
         assert!(cut.moving.is_empty() && cut.values.iter().all(|v| *v == 0));
         // Back in, with the walls up: nothing is cut.
         cut.set_walls_up(true);
         for _ in 0..20 {
-            cut.update(&map, inside, camera(0), 0.016);
+            cut.update(&map, inside, 0, camera(0), 0.016);
         }
         assert!(cut.values.iter().all(|v| *v == 0));
         // Behind the house with the walls up, the wall that would have dropped covers the player.
-        cut.update(&map, Vec2::new(18.6, 12.5), camera(2), 0.016);
+        cut.update(&map, Vec2::new(18.6, 12.5), 0, camera(2), 0.016);
         assert!(cut.occluded);
         cut.set_walls_up(false);
         for _ in 0..20 {
-            cut.update(&map, inside, camera(0), 0.016);
+            cut.update(&map, inside, 0, camera(0), 0.016);
         }
         assert_eq!(cut.amount(south), 1.0);
         // The camera turns: the room's set follows.
         for _ in 0..20 {
-            cut.update(&map, inside, camera(2), 0.016);
+            cut.update(&map, inside, 0, camera(2), 0.016);
         }
         assert_eq!(cut.amount(south), 0.0);
         assert_eq!(cut.amount((IVec2::new(12, 10), N)), 1.0);
@@ -921,7 +943,7 @@ pub(crate) mod tests {
                             // (Round a patio, an outside wall facing away can still stand in front of the room.)
                             let behind = map.room_at((a + e) * 0.5 - c * 0.3);
                             let ours = behind != 0 && map.rooms[behind as usize].building as usize == i;
-                            assert!(ours || hides_room(&map, (t, which), c, room), "{}: a far wall dropped", b.template);
+                            assert!(ours || hides_room(&map, (t, which), c, room, 0), "{}: a far wall dropped", b.template);
                         }
                         checked += 1;
                     }

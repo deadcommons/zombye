@@ -69,7 +69,7 @@ impl From<&WorldExt> for WorldKey {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorldParams {
-    /// xyz = player chest position, w = cutaway radius in metres (0 = off).
+    /// xyz = player chest position, w = the height of the floor whose walls the cutaway cuts.
     pub player: Vec4,
     /// xyz = unit vector from the scene toward the camera.
     pub camera_dir: Vec4,
@@ -257,6 +257,7 @@ pub struct TreeFades(pub Vec<(IVec2, Vec2, f32)>);
 #[allow(clippy::too_many_arguments)]
 pub fn update_params(
     fog: Res<FogState>,
+    cutaway: Option<Res<crate::cutaway::Cutaway>>,
     map: Res<ClientMap>,
     time: Res<Time>,
     daylight: Res<crate::daynight::Daylight>,
@@ -307,7 +308,8 @@ pub fn update_params(
         *slot = Vec4::new(f.1.x, f.1.y, f.2, 0.0);
     }
     let params = WorldParams {
-        player: chest.extend(0.0),
+        // w: the height of the floor whose walls are cut (the upper floor's while up there).
+        player: chest.extend(cutaway.map_or(0.0, |c| c.level as f32 * 3.0)),
         camera_dir: camera_dir.extend(0.0),
         fog_rect: Vec4::new(fog.origin.x, fog.origin.y, fog.size_m, 0.0),
         fog_tint: look.unseen_tint(daylight.0),

@@ -456,6 +456,10 @@ impl World {
                 if k == pi || o.dead || o.protected > 0.0 {
                     continue;
                 }
+                // A shot flies over the ground floor: it passes under whoever is upstairs.
+                if o.state.height(&self.map) > self.config.stairs.out_of_reach {
+                    continue;
+                }
                 let at = frame.and_then(|f| f.player(o.id)).unwrap_or(o.state.pos);
                 let top = player_top(o);
                 if let Some(t) = through(origin, dir, slope, path.end, at, PLAYER_RADIUS, top) {

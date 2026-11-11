@@ -773,6 +773,7 @@ pub fn generate_with(config: &GenConfig, templates: &[BuildingTemplate], props: 
         (b, tiles[rng.below(tiles.len() as u32) as usize].as_vec2() + Vec2::splat(0.5))
     };
     street_props::place(&mut map, props, config.seed, town_min, town_max, &fronts);
+    map.index_storeys();
     Generated { map, town_min, town_max, core, player_spawn, spawn_building, plan }
 }
 

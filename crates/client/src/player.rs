@@ -188,6 +188,7 @@ impl Plugin for PlayerPlugin {
             .add_systems(Update, (toggle_sneak, face_cursor, actions))
             .add_systems(FixedUpdate, (predict.in_set(PlayerInputSet).before(ServerTick).run_if(crate::live), reconcile.after(ServerTick)))
             // After the fixed ticks of this frame, before anything in Update reads the player's transform.
+            .init_resource::<ViewFloor>()
             .add_systems(RunFixedMainLoop, (place_player, sync_other_players).in_set(RunFixedMainLoopSystems::AfterFixedMainLoop))
             .add_systems(PostUpdate, lie_on_bed.before(bevy::transform::TransformSystems::Propagate));
     }
@@ -338,11 +339,35 @@ fn reconcile(link: Res<ServerLink>, map: Res<ClientMap>, mut me: ResMut<LocalPla
     me.curr = s;
 }
 
-fn place_player(fixed: Res<Time<Fixed>>, me: Res<LocalPlayer>, mut players: Query<&mut Transform, With<Player>>) {
+/// The storey the view is on (stairs): which floor of the building we're in is drawn open, and how
+/// high our survivor's feet are. Level 1 from half way up a flight, so the upper floor opens as
+/// the head comes through it.
+#[derive(Resource, Default, Clone, Copy, PartialEq, Debug)]
+pub struct ViewFloor {
+    pub level: u8,
+    pub height: f32,
+}
+
+impl ViewFloor {
+    /// Height above the ground from which the upper floor is the one shown.
+    pub const UP_FROM: f32 = zombye_sim::map::STOREY * 0.5;
+}
+
+fn place_player(fixed: Res<Time<Fixed>>, me: Res<LocalPlayer>, map: Res<ClientMap>, mut view: ResMut<ViewFloor>, mut players: Query<&mut Transform, With<Player>>) {
     let Ok(mut tf) = players.single_mut() else { return };
-    let p = me.prev.pos.lerp(me.curr.pos, fixed.overstep_fraction());
+    let a = fixed.overstep_fraction();
+    let p = me.prev.pos.lerp(me.curr.pos, a);
+    let (h0, h1) = (me.prev.height(&map.0), me.curr.height(&map.0));
+    let height = h0 + (h1 - h0) * a;
     tf.translation.x = p.x;
     tf.translation.z = p.y;
+    if tf.translation.y != height {
+        tf.translation.y = height;
+    }
+    let now = ViewFloor { level: (me.curr.level > 0 || height > ViewFloor::UP_FROM) as u8, height };
+    if *view != now {
+        *view = now;
+    }
 }
 
 /// How high a sleeper lies on a bed or a sofa, and how far from the middle of it its feet are (its
@@ -364,18 +389,13 @@ fn lie_on_bed(
 ) {
     for (mut tf, other) in &mut players {
         let id = other.map_or(me.id, |o| o.0);
-        let on = link.curr.players.iter().find(|p| p.id == id).filter(|v| v.asleep && !v.dead).and_then(|v| zombye_sim::needs::sleep_furniture(&map.0, Vec2::from(v.pos)));
-        let Some((f, spot)) = on else {
-            // Up again: back on the floor (`place_player` only sets our x and z).
-            if tf.translation.y != 0.0 {
-                tf.translation.y = 0.0;
-            }
-            continue;
-        };
+        let on = link.curr.players.iter().find(|p| p.id == id).filter(|v| v.asleep && !v.dead).and_then(|v| zombye_sim::needs::sleep_furniture(&map.0, Vec2::from(v.pos), v.level).map(|on| (on, v.level)));
+        // Awake, the body stands at its floor's height (`place_player`, `sync_other_players`).
+        let Some(((f, spot), level)) = on else { continue };
         let centre = f.min.as_vec2() + f.size.as_vec2() * 0.5;
         let front = f.facing.offset().as_vec2();
         let feet = centre + front * BED_FEET;
-        let top = if spot == zombye_sim::needs::SleepSpot::Bed { BED_TOP } else { SOFA_TOP };
+        let top = if spot == zombye_sim::needs::SleepSpot::Bed { BED_TOP } else { SOFA_TOP } + zombye_sim::map::STOREY * level as f32;
         tf.translation = Vec3::new(feet.x, top, feet.y);
         tf.rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - front.y.atan2(front.x));
     }
@@ -388,6 +408,8 @@ fn sync_other_players(
     me: Res<LocalPlayer>,
     fog: Res<FogState>,
     fixed: Res<Time<Fixed>>,
+    map: Res<ClientMap>,
+    view: Res<ViewFloor>,
     assets: Option<Res<SurvivorAssets>>,
     model: Option<Res<SurvivorModel>>,
     mut others: Query<(Entity, &OtherPlayer, &mut Transform, &mut Visibility)>,
@@ -402,9 +424,15 @@ fn sync_other_players(
         };
         let prev = link.prev.players.iter().find(|p| p.id == v.id).unwrap_or(v);
         let pos = Vec2::from(prev.pos).lerp(Vec2::from(v.pos), alpha);
-        tf.translation = Vec3::new(pos.x, 0.0, pos.y);
+        let (h0, h1) = (map.0.height_at(prev.level, Vec2::from(prev.pos)), map.0.height_at(v.level, Vec2::from(v.pos)));
+        tf.translation = Vec3::new(pos.x, h0 + (h1 - h0) * alpha, pos.y);
         tf.rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - lerp_angle(prev.facing, v.facing, alpha));
-        *vis = if fog.visibility(pos) > 0.35 { Visibility::Inherited } else { Visibility::Hidden };
+        // Someone upstairs is under a roof unless that floor is the one we see open.
+        let shown = fog.visibility(pos) > 0.35 && (v.level == 0 || view.level > 0);
+        let now = if shown { Visibility::Inherited } else { Visibility::Hidden };
+        if *vis != now {
+            *vis = now;
+        }
         seen.push(v.id);
     }
     for v in link.curr.players.iter().filter(|p| p.id != me.id && !seen.contains(&p.id)) {
@@ -454,8 +482,9 @@ fn face_cursor(
     let (Ok(window), Ok((camera, cam_tf, iso))) = (windows.single(), cams.single()) else { return };
     let Some(cursor) = window.cursor_position() else { return };
     let Ok(ray) = camera.viewport_to_world(cam_tf, crate::render_scale::to_view(camera, window, cursor)) else { return };
-    // The ground the pointer is on (first person: the middle of the screen, see `camera.rs`).
-    let Some(hit) = iso.aim_ground(ray.origin, *ray.direction) else { return };
+    // The floor the pointer is on: the one we stand on (first person: the middle of the screen,
+    // see `camera.rs`).
+    let Some(hit) = iso.aim_ground(ray.origin - Vec3::Y * tf.translation.y, *ray.direction) else { return };
     let from = Vec2::new(tf.translation.x, tf.translation.z);
     let mut d = Vec2::new(hit.x, hit.z) - from;
     // With a gun (#72) the aim is the body the cursor is on, at the height it is on it: the head

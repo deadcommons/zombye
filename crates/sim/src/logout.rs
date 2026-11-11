@@ -138,7 +138,7 @@ impl World {
         }
         let Some(k) = self.parked.iter().position(|p| p.id == id) else { return false };
         let mut p = self.parked.remove(k);
-        p.state.pos = self.map.resolve_circle(p.state.pos, PLAYER_RADIUS);
+        p.state.pos = self.map.resolve_walker(p.state.pos, PLAYER_RADIUS, p.state.level);
         let pi = self.players.partition_point(|o| o.id < id);
         self.players.insert(pi, p);
         self.refresh_carry(pi);

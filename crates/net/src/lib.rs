@@ -211,6 +211,10 @@ pub struct PlayerView {
     /// only a client's own player has it (others are drawn by where they are).
     #[serde(default)]
     pub climb: Option<zombye_sim::Climb>,
+    /// The floor it is on: 0 the ground floor (and its stairs), 1 upstairs (`zombye_sim::stairs`).
+    /// Part of what movement is predicted from, and where the client draws it.
+    #[serde(default)]
+    pub level: u8,
     /// The newest input the server has applied; the owning client replays anything after it.
     pub last_input_seq: u32,
     pub hp: f32,
@@ -401,6 +405,10 @@ pub struct Snapshot {
     pub blind_changes: Vec<zombye_sim::map::BlindChange>,
     /// Every item lying about (a short list for now; interest management later).
     pub items: Vec<GroundItem>,
+    /// Which of `items` lie on the first upper floor, by id, in order (`World::item_level`); the
+    /// rest lie on the ground floor.
+    #[serde(default)]
+    pub upstairs: Vec<u32>,
     /// Hits, kills, shoves, stomps and wounds since the previous snapshot, for hit feedback.
     pub hits: Vec<CombatEvent>,
     /// Players' private views (inventory, load, open container) that changed since the previous
@@ -515,6 +523,7 @@ impl Snapshot {
                 endurance: p.state.endurance,
                 winded: p.state.winded,
                 climb: p.state.climb,
+                level: p.state.level,
                 last_input_seq: p.last_input_seq,
                 hp: p.hp,
                 dead: p.dead,
@@ -557,6 +566,7 @@ impl Snapshot {
             hits: std::mem::take(&mut world.combat_events),
             private,
             item_notes: std::mem::take(&mut world.item_notes),
+            upstairs: world.upstairs_items(),
             floor: world.players.iter().map(|p| FloorView { player: p.id, items: world.floor_ids(p.id) }).collect(),
             runs: world.players.iter().map(|p| RunView { player: p.id, run: p.run.clone(), first_night: p.first_night.clone() }).collect(),
             level_ups: world.take_level_ups(),
@@ -615,6 +625,7 @@ impl PlayerView {
             winded: self.winded,
             mods: self.mods,
             climb: self.climb,
+            level: self.level,
         }
     }
 }
@@ -1129,6 +1140,43 @@ mod tests {
         assert!(climbed >= 15, "only {climbed} ticks climbing");
         assert_eq!(server.world.map.room_at(predicted.pos), 0, "got out");
         assert!(predicted.pos.distance(start) > 2.0);
+    }
+
+    /// Up a flight of stairs, about upstairs and down again: the client's prediction (the map it
+    /// built, the snapshot's floor) matches the server tick for tick, and the snapshot says which
+    /// floor the player and what it dropped are on.
+    #[test]
+    fn prediction_matches_server_on_the_stairs() {
+        let templates = [include_str!("../../../assets/data/buildings/bungalow.ron"), include_str!("../../../assets/data/buildings/family_two_storey.ron")].iter().map(|t| BuildingTemplate::from_ron(t).unwrap()).collect();
+        let mut server = LocalServer::new(WorldConfig::new(4, 0, templates));
+        let st = *server.world.map.stairs.first().expect("a staircase in town");
+        let foot = st.foot().as_vec2() + glam::Vec2::splat(0.5);
+        let top = st.landing().as_vec2() + glam::Vec2::splat(0.5);
+        let id = server.join(Some(foot.to_array()));
+        let client_map = server.world.map.clone();
+        let mut predicted = Snapshot::capture(&mut server.world).players.iter().find(|p| p.id == id).unwrap().state();
+        let (mut seq, mut highest, mut slow) = (0, 0.0f32, 0);
+        for (target, level) in [(top, 1), (foot, 0)] {
+            for _ in 0..400 {
+                let d = target - predicted.pos;
+                if predicted.level == level && d.length() < 0.1 {
+                    break;
+                }
+                seq += 1;
+                let (move_dir, facing) = (d.normalize_or_zero().to_array(), d.y.atan2(d.x));
+                server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run: false, sneak: false, aim: false });
+                let before = predicted.pos;
+                step_movement(&client_map, &mut predicted, &PlayerInput { move_dir: move_dir.into(), facing, run: false, sneak: false, aim: false }, TICK_DT);
+                let on_stairs = client_map.stair_at(predicted.pos).is_some() && predicted.level == 0;
+                slow += (on_stairs && predicted.pos.distance(before) < 2.0 * TICK_DT) as u32;
+                highest = highest.max(predicted.height(&client_map));
+                let snap = server.tick();
+                let view = snap.players.iter().find(|p| p.id == id).unwrap();
+                assert_eq!(view.state(), predicted, "diverged at seq {seq}");
+            }
+            assert_eq!(predicted.level, level, "didn't get to floor {level}: {:?}", predicted.pos);
+        }
+        assert!(highest >= 3.0 && slow > 20, "highest {highest}, {slow} slow ticks on the stairs");
     }
 
     fn side_toward(a: glam::IVec2, b: glam::IVec2) -> zombye_sim::map::Side {

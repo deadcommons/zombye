@@ -159,7 +159,7 @@ impl World {
         let pos = self.zombies.pos[i];
         let tile = pos.floor().as_ivec2();
         let room = if self.map.in_bounds(tile) { self.map.room_at(pos) } else { 0 };
-        ContainerSite { id: corpse_container(self.zombies.id[i]), def, building: u16::MAX, room, min: tile, size: IVec2::ONE, body: Some(pos) }
+        ContainerSite { id: corpse_container(self.zombies.id[i]), def, level: 0, building: u16::MAX, room, min: tile, size: IVec2::ONE, body: Some(pos) }
     }
 
     /// Container `c` if it is the body of a dead zombie still lying in the world.

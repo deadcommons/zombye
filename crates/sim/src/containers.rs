@@ -116,6 +116,8 @@ pub struct ContainerSite {
     pub id: u32,
     /// Index into `ContainerData::containers`.
     pub def: u16,
+    /// The floor it stands on: 0 the ground floor, 1 the first upper floor (`crate::stairs`).
+    pub level: u8,
     pub building: u16,
     pub room: u16,
     /// Footprint in tiles: `min..min+size`.
@@ -151,8 +153,8 @@ impl ContainerSite {
     }
 }
 
-/// Every container in the map, in id order: ground-floor furniture whose (kind, room type) maps to
-/// a container.
+/// Every container in the map, in id order: furniture on the ground floor and the first upper
+/// floor whose (kind, room type) maps to a container.
 pub fn find_sites(map: &TileMap, data: &ContainerData) -> Vec<ContainerSite> {
     let mut out = Vec::new();
     let mut id = 0u32;
@@ -160,13 +162,14 @@ pub fn find_sites(map: &TileMap, data: &ContainerData) -> Vec<ContainerSite> {
         for f in &b.furniture {
             let this = id;
             id += 1;
-            if f.level != 0 || !map.in_bounds(f.min) {
+            if !(0..=1).contains(&f.level) || !map.in_bounds(f.min) {
                 continue;
             }
-            let room = map.tile(f.min).room;
+            let level = f.level as u8;
+            let room = if level == 0 { map.tile(f.min).room } else { map.upper_tile(f.min).map_or(0, |u| u.room) };
             let room_type = map.rooms.get(room as usize).map_or("", |r| r.room_type.as_str());
             if let Some(def) = data.lookup(&f.kind, room_type) {
-                out.push(ContainerSite { id: this, def, building: bi as u16, room, min: f.min, size: f.size, body: None });
+                out.push(ContainerSite { id: this, def, level, building: bi as u16, room, min: f.min, size: f.size, body: None });
             }
         }
     }

@@ -119,6 +119,10 @@ const LIFE_CLIPS: [&str; 6] = ["hurt", "die", "eat", "drink", "loot", "reload"];
 /// And for getting through a window (`climb`) and over a fence (`vault`): made in place, played
 /// once over the crossing by how far across he is, the whole body. Without one he walks through.
 const CROSS_CLIPS: [&str; 2] = ["climb", "vault"];
+/// And for a flight of stairs: loops of two steps made in place (no rise, no travel), played by
+/// the distance moved (`survivor::STAIR_CYCLE_M` a loop) in place of the gait, the whole body.
+/// Without `stairs_down` he walks down; without either he walks both ways.
+const STAIR_CLIPS: [&str; 2] = ["stairs_up", "stairs_down"];
 const HURT: usize = 0;
 const DIE: usize = 1;
 
@@ -382,6 +386,10 @@ pub struct SurvivorModel {
     life: [Option<usize>; LIFE_CLIPS.len()],
     /// The body's clips of [`CROSS_CLIPS`].
     cross: [Option<usize>; CROSS_CLIPS.len()],
+    /// The body's clips of [`STAIR_CLIPS`], and how high each one's lower foot is off the ground
+    /// on average over its loop (see `compose`).
+    stairs: [Option<usize>; STAIR_CLIPS.len()],
+    stair_mid: [f32; STAIR_CLIPS.len()],
     gaits: [Vec<Gait>; 3],
     /// The bones the hips' turn is taken back out of (the spine's first, under the hips).
     spine_base: Vec<usize>,
@@ -681,6 +689,7 @@ impl SurvivorModel {
         let guards = [guard("guard_fists"), guard("guard_one"), guard("guard_two").or_else(|| guard("guard_one")), guard("guard_gun")];
         let life = LIFE_CLIPS.map(guard);
         let cross = CROSS_CLIPS.map(guard);
+        let stairs = STAIR_CLIPS.map(guard);
         let gaits = gaits(&mut body);
         let reference = idle.map_or_else(|| body.rig.rest(), |i| body.clips[i].frames[0].clone());
         let retarget = Retarget::new(&body, reference);
@@ -736,6 +745,8 @@ impl SurvivorModel {
             guards,
             life,
             cross,
+            stairs,
+            stair_mid: [0.0; STAIR_CLIPS.len()],
             gaits,
             spine_base,
             gaze,
@@ -763,7 +774,8 @@ impl SurvivorModel {
             body,
         };
         let (bare, _) = model.dress(&[], &OutfitView::default());
-        let model = Self { bare: meshes.add(bare.to_mesh()), ..model };
+        let stair_mid = model.stairs.map(|i| i.map_or(0.0, |i| (0..32).map(|k| model.foot_height(&model.body.clips[i].sample(k as f32 / 32.0))).sum::<f32>() / 32.0));
+        let model = Self { bare: meshes.add(bare.to_mesh()), stair_mid, ..model };
         info!(
             "survivor: {} ({} bones, {} triangles), gaits {}, {} wearables",
             path.display(),
@@ -875,6 +887,10 @@ impl SurvivorModel {
         let standing = self.clip_at(self.idle, idle_u).blend(&sneak, a.sneak_w);
         let moving = walk.blend(&run, a.run_w).blend(&sneak, a.sneak_w);
         let mut pose = standing.blend(&moving, a.move_w);
+        // On a flight of stairs: the body's own stair loop in place of the gait.
+        if let Some(i) = a.stair.filter(|_| a.stair_w > 0.0).and_then(|up| self.stairs[!up as usize]) {
+            pose.blend_bones(&body.clips[i].sample(a.stair_u.fract()), a.stair_w, Some(&self.all));
+        }
         if armed {
             let held = self.retarget.apply(body, &survivor::locomotion(a, armed));
             pose.blend_bones(&held, 1.0, Some(&self.right_arm));
@@ -969,6 +985,12 @@ impl SurvivorModel {
             pose.blend_bones(over, a.cross_w, Some(&self.all));
         }
         self.ground(&mut pose);
+        // On stairs the loop's steps are real ones: the planted foot goes down under the body as
+        // the flight carries it up, the other reaches for the next tread. So the body rides over
+        // its lower foot by what the clip has, about the middle of it (the flight's line).
+        if let Some((i, k)) = a.stair.filter(|_| a.stair_w > 0.0).and_then(|up| self.stairs[!up as usize].map(|i| (i, !up as usize))) {
+            pose.t[0].y += a.stair_w * (self.foot_height(&body.clips[i].sample(a.stair_u.fract())) - self.stair_mid[k]);
+        }
         if let Some(mut over) = crossing {
             let before = over.t[0].y;
             self.ground(&mut over);
@@ -988,6 +1010,13 @@ impl SurvivorModel {
     }
 
     /// Push the pose down (or up) so the lowest point of the feet is on the ground.
+    /// How far off the ground the pose's lowest foot is as the pose has it.
+    fn foot_height(&self, pose: &RigPose) -> f32 {
+        let mut grounded = pose.clone();
+        self.ground(&mut grounded);
+        pose.t[0].y - grounded.t[0].y
+    }
+
     fn ground(&self, pose: &mut RigPose) {
         if self.feet.is_empty() {
             return;

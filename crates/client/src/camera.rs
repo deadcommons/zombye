@@ -374,6 +374,7 @@ fn follow(
     time: Res<Time>,
     options: Res<Options>,
     shake: Res<CameraShake>,
+    view: Res<crate::player::ViewFloor>,
     map: Option<Res<ClientMap>>,
     mut player: Query<(&Transform, &Player, &mut Visibility), Without<IsoCamera>>,
     mut cams: Query<(&mut IsoCamera, &mut Transform)>,
@@ -392,18 +393,18 @@ fn follow(
             if cam.behind {
                 // Behind him as he stands; in a picture `--angle` turns it on round him by quarters.
                 cam.yaw = yaw_behind(player.facing) + if options.offscreen() { FRAC_PI_2 * options.angle } else { 0.0 };
-                (cam.behind, cam.focus) = (false, p.translation.with_y(0.0));
+                (cam.behind, cam.focus) = (false, p.translation.with_y(view.height));
             }
             // Close behind him: a loose follow would swing him about the screen.
             let t = 1.0 - (-24.0 * time.delta_secs()).exp();
-            cam.focus = cam.focus.lerp(p.translation.with_y(0.0), t);
+            cam.focus = cam.focus.lerp(p.translation.with_y(view.height), t);
         }
         *transform = cam.shoulder_transform(map.as_deref().map(|m| &m.0), time.delta_secs());
     } else {
         // An offscreen render keeps the camera where it was put (on the player, or `--center`).
         if let Some((p, ..)) = player.single().ok().filter(|_| !options.offscreen()) {
             let t = 1.0 - (-8.0 * time.delta_secs()).exp();
-            cam.focus = cam.focus.lerp(p.translation.with_y(0.0), t);
+            cam.focus = cam.focus.lerp(p.translation.with_y(view.height), t);
         }
         *transform = Transform::from_translation(cam.focus + cam.offset_dir() * DISTANCE).looking_at(cam.focus, Vec3::Y);
     }

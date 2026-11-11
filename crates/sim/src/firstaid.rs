@@ -778,8 +778,8 @@ impl World {
             merge_into(&mut self.players[pi].inventory.carried, ItemStack::new(i, 1), 1, size);
         } else {
             let p = &self.players[pi];
-            let (pos, angle) = (p.state.pos, p.state.facing);
-            self.put_on_floor(ItemStack::one(i), pos, angle);
+            let (pos, angle, level) = (p.state.pos, p.state.facing, p.state.level);
+            self.put_on_floor(ItemStack::one(i), pos, angle, level);
         }
     }
 }

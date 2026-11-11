@@ -146,7 +146,7 @@ pub struct FogState {
     view: Option<View>,
     /// What the rays were last cast with (eye, reach), and the origin the mask texture was last
     /// filled for: neither is done again until it changes (or the map does).
-    cast: Option<(Vec2, f32)>,
+    cast: Option<(Vec2, f32, u8)>,
     filled: Option<(Vec2, u16)>,
     /// Per mask texel, whether it is in a room other than the one the player is in (its red in the
     /// texture is the opposite): such a room shows only `other_rooms` of what sight gives.
@@ -273,6 +273,7 @@ pub fn update_fog(
     link: Res<crate::server_link::ServerLink>,
     join: Res<crate::server_link::JoinInfo>,
     me: Res<crate::player::LocalPlayer>,
+    floor: Res<crate::player::ViewFloor>,
     player: Query<(&Transform, &Player)>,
     cams: Query<&crate::camera::IsoCamera>,
     mut fog: ResMut<FogState>,
@@ -318,11 +319,12 @@ pub fn update_fog(
 
     // The rays: cast again only when the eye, their reach or the map changed (standing still costs
     // nothing), and sent to the GPU only when they came out different.
-    let cast = (eye, reach_max.max(far));
+    // Upstairs (stairs) the eye is over the ground floor's walls: that floor's own stop the rays.
+    let cast = (eye, reach_max.max(far), floor.level);
     let mut view = fog.view.take();
     if fog.cast != Some(cast) || map_changed || view.is_none() {
         fog.cast = Some(cast);
-        let rays = cast_rays(&map.0, cast.0, cast.1);
+        let rays = cast_rays(&map.0, cast.0, cast.1, cast.2);
         if view.as_ref().is_none_or(|v| v.rays != rays) {
             if let Some(mut image) = images.get_mut(&fog.rays)
                 && let Some(data) = image.data.as_mut()
@@ -351,7 +353,9 @@ pub fn update_fog(
     fog.origin = origin;
     // ...and which rooms aren't the one you're in: those stay dark, whatever you could see of them
     // through a doorway or a window (`other_rooms` in fog.ron), so that changes with your room too.
-    let room = own_room(&map.0, eye);
+    // Upstairs (stairs) the rooms are the upper floor's, where it has any.
+    let up = floor.level > 0 && map.0.room_on(1, eye) != 0;
+    let room = if up { map.0.room_on(1, eye) } else { own_room(&map.0, eye) };
     fog.other_rooms = look.other_rooms;
     if (fog.filled != Some((origin, room)) || map_changed)
         && let Some(mut image) = images.get_mut(&fog.image)
@@ -361,7 +365,10 @@ pub fn update_fog(
         for ty in 0..TEXELS {
             for tx in 0..TEXELS {
                 let q = origin + (Vec2::new(tx as f32, ty as f32) + 0.5) * TEXEL_M;
-                let at = map.0.tile(q.floor().as_ivec2()).room;
+                let at = match map.0.room_on(1, q) {
+                    over if up && over != 0 => over,
+                    _ => map.0.tile(q.floor().as_ivec2()).room,
+                };
                 let other = other_room(&map.0, at, room);
                 let i = (ty * TEXELS + tx) as usize;
                 fog.other[i] = other;
@@ -407,12 +414,13 @@ fn other_room(map: &zombye_sim::map::TileMap, at: u16, own: u16) -> bool {
 
 /// The sight rays (`vision::visibility_rays`, the same values), cast in runs on the task pool: a
 /// thousand rays of up to 70 m are most of what's left of the fog's cost while walking.
-fn cast_rays(map: &zombye_sim::map::TileMap, eye: Vec2, reach: f32) -> Vec<f32> {
+fn cast_rays(map: &zombye_sim::map::TileMap, eye: Vec2, reach: f32, level: u8) -> Vec<f32> {
+    let ray = move |a: f32| if level == 0 { vision::cast_ray(map, eye, Vec2::from_angle(a), reach) } else { vision::cast_upper_ray(map, eye, Vec2::from_angle(a), reach) };
     const RUN: usize = RAYS / 8;
-    let Some(pool) = bevy::tasks::ComputeTaskPool::try_get() else { return vision::visibility_rays(map, eye, reach, RAYS) };
+    let Some(pool) = bevy::tasks::ComputeTaskPool::try_get() else { return (0..RAYS).map(|i| ray(i as f32 / RAYS as f32 * std::f32::consts::TAU)).collect() };
     let mut runs = pool.scope(|s| {
         for k in 0..RAYS / RUN {
-            s.spawn(async move { (k, (k * RUN..(k + 1) * RUN).map(|i| vision::cast_ray(map, eye, Vec2::from_angle(i as f32 / RAYS as f32 * std::f32::consts::TAU), reach)).collect::<Vec<f32>>()) });
+            s.spawn(async move { (k, (k * RUN..(k + 1) * RUN).map(|i| ray(i as f32 / RAYS as f32 * std::f32::consts::TAU)).collect::<Vec<f32>>()) });
         }
     });
     runs.sort_by_key(|r| r.0);
