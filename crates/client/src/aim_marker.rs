@@ -83,6 +83,8 @@ struct AimMarker {
     ring: Entity,
     /// The reticle's four ticks (east, north, west, south), each with its dark edge behind it.
     ticks: [(Entity, Entity); 4],
+    /// The dot in the reticle's middle (kept the same size on screen).
+    dot: Entity,
     /// The swing's wedge on the ground, and the reach and arc its mesh was built for.
     wedge: Entity,
     wedge_for: Option<(f32, f32)>,
@@ -209,13 +211,14 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials
         commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), Transform::from_xyz(0.0, 0.0, z), NotShadowCaster, ChildOf(parent))).id()
     };
     let ticks = [0, 1, 2, 3].map(|_| (part(reticle, &square, &ink, false), part(reticle, &square, &dark, true)));
-    part(reticle, &dot, &ink, false);
-    part(reticle, &dot_edge, &dark, true);
+    let dot_root = commands.spawn((hidden(), ChildOf(reticle))).id();
+    part(dot_root, &dot, &ink, false);
+    part(dot_root, &dot_edge, &dark, true);
     part(ring_root, &ring, &ink, false);
     part(ring_root, &ring_edge, &dark, true);
 
     let wedge = commands.spawn((Mesh3d(meshes.add(wedge_mesh(1.0, 90.0))), MeshMaterial3d(ground.clone()), Transform::default(), Visibility::Hidden, NotShadowCaster)).id();
-    commands.insert_resource(AimMarker { pointer, reticle, ring: ring_root, ticks, wedge, wedge_for: None, ink, ground, gap: None, shown: false });
+    commands.insert_resource(AimMarker { pointer, reticle, ring: ring_root, ticks, dot: dot_root, wedge, wedge_for: None, ink, ground, gap: None, shown: false });
 }
 
 /// Give a material this colour (only when it changes, so nothing is uploaded again for nothing).
@@ -236,6 +239,7 @@ fn show(
     time: Res<Time>,
     join: Res<JoinInfo>,
     link: Res<ServerLink>,
+    fog: Res<crate::fog::FogState>,
     me: Res<LocalPlayer>,
     players: Query<(&Player, &Transform)>,
     mut marker: ResMut<AimMarker>,
@@ -271,7 +275,9 @@ fn show(
         return hide(marker, &mut parts);
     }
     let from = Vec2::new(player_tf.translation.x, player_tf.translation.z);
-    let standing = || link.curr.zombies.iter().filter(|z| !matches!(z.anim, ZombieAnim::Dead | ZombieAnim::Down | ZombieAnim::GetUp)).map(|z| Vec2::from(z.pos));
+    // Only what the fog of war draws: the marker mustn't say that a body stands where we see none.
+    let seen = |p: Vec2| fog.visibility(p) > 0.35;
+    let standing = || link.curr.zombies.iter().filter(|z| !matches!(z.anim, ZombieAnim::Dead | ZombieAnim::Down | ZombieAnim::GetUp)).map(|z| Vec2::from(z.pos)).filter(|&p| seen(p));
     // (where, how high up the cursor's line passes there)
     let staged = match on_zombie {
         true => standing().min_by(|a, b| a.distance_squared(from).total_cmp(&b.distance_squared(from))).map(|z| (z, 1.1)).or(Some((from + Vec2::X * 3.0, 0.0))),
@@ -310,7 +316,7 @@ fn show(
             // As `player::face_cursor` aims it: at the body the cursor is on.
             let zombies = link.curr.zombies.iter().filter(|z| z.anim != ZombieAnim::Dead).map(|z| (Vec2::from(z.pos), matches!(z.anim, ZombieAnim::Down | ZombieAnim::GetUp)));
             let others = link.curr.players.iter().filter(|p| p.id != me.id && !p.dead).map(|p| (Vec2::from(p.pos), p.asleep || p.knock.is_some_and(|k| k.down)));
-            if let Some((to, pitch)) = crate::player::gun_aim(from, origin, dir, zombies.chain(others)) {
+            if let Some((to, pitch)) = crate::player::gun_aim(from, origin, dir, zombies.chain(others).filter(|&(p, _)| seen(p))) {
                 dist = to.length();
                 let body = from + to;
                 at = Some(Vec3::new(body.x, MUZZLE_HEIGHT + pitch.tan() * dist.max(0.5), body.y));
@@ -349,6 +355,7 @@ fn show(
     }
     tint(&mut materials, &marker.ink, color);
     set(&mut parts, marker.reticle, gun.is_some(), Some(Transform::default()));
+    set(&mut parts, marker.dot, true, Some(Transform::from_scale(Vec3::new(k, k, 1.0))));
     set(&mut parts, marker.ring, gun.is_none(), Some(Transform::from_scale(Vec3::new(k, k, 1.0))));
     match (at, sight) {
         (Some(at), Some((_, dir))) if dir.y < -1e-4 => {

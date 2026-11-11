@@ -635,7 +635,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   any of the body in reach and arc; not the clear line). **A gun:** a reticle under the cursor, four ticks round a
   dot, the gap between the ticks the gun's spread where you aim in real metres (`aim_marker::spread_radius`: wider
   further off and on the move, wide for the shotgun); on a body it sits on the point `player::gun_aim` aims at and
-  turns red; beyond the gun's `range` or with the gun empty it is dimmed. The reticle and ring face the camera and
+  turns red; beyond the gun's `range` or with the gun empty it is dimmed. Only bodies the fog of war draws count, for the red of either: the marker never says a body stands where you see none. The reticle and ring face the camera and
   are lifted toward it along the line of sight (the camera is orthographic, so that moves nothing on screen and
   nothing covers them), and keep their size on screen at any zoom. `--autoplay` shows only the wedge.
   `--aim-at DX,DY` shows the marker in an offscreen picture as if aiming with the cursor on the ground that many
