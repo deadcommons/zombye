@@ -357,6 +357,11 @@ fn fragment(
     if (piece_kind == 1u || piece_kind == 4u || piece_kind == 5u || piece_kind == 7u || piece_kind == 8u) {
         hide_contents *= 0.25;
     }
+    // ...but not the doors of other rooms: a door that isn't one of our room's is as dark as
+    // what is in those rooms.
+    if (piece_kind == 5u) {
+        hide_contents = mix(smoothstep(0.3, 0.7, indoors), hide_contents, smoothstep(0.25, 0.5, own_room));
+    }
     unseen = mix(unseen, out.color.rgb * vec3(0.03, 0.03, 0.04), hide_contents);
     out.color = vec4(mix(unseen, out.color.rgb, seen), out.color.a);
     // A window with a light on behind it glows warm at night, seen or not (#59): a light source,

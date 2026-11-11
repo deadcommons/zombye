@@ -378,6 +378,18 @@ fn own_room(map: &zombye_sim::map::TileMap, eye: Vec2) -> u16 {
     if open_porch(map, room) { 0 } else { room }
 }
 
+/// Does this edge stand on the room the eye is in (outdoors, when the eye is outdoors)? A door
+/// anywhere else belongs to rooms that stay dark, and isn't shown (its leaf by the world shader,
+/// its outline on a cut wall by `opening_hints`).
+pub fn on_own_room(map: &zombye_sim::map::TileMap, key: (IVec2, zombye_sim::map::OwnedEdge), eye: Vec2) -> bool {
+    let own = own_room(map, eye);
+    let beyond = key.0 - if key.1 == zombye_sim::map::OwnedEdge::North { IVec2::Y } else { IVec2::X };
+    [key.0, beyond].into_iter().any(|t| {
+        let room = map.tile(t).room;
+        own == if open_porch(map, room) { 0 } else { room }
+    })
+}
+
 /// Is a tile of room `at` in a room other than the one the player is in (`own`, from [`own_room`])?
 /// Outdoors and open porches never are; from outdoors every room is.
 fn other_room(map: &zombye_sim::map::TileMap, at: u16, own: u16) -> bool {
