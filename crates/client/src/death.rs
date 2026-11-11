@@ -304,7 +304,16 @@ pub(crate) fn start_new_run(swap: &mut WorldSwap, notice: &mut Notice, now: f32)
         swap.link.send(zombye_net::Intent::Respawn { player: me });
         return notice.say(now, "A new survivor".to_string());
     };
-    let (world, id) = LocalServer::new_run(&config);
+    // The same survivor again: as the new game made it, else (a loaded save) who it was.
+    let me = swap.player();
+    let start = swap.start_as.as_ref().and_then(|s| s.0.clone()).or_else(|| {
+        let origin = swap.link.world()?.player(me)?.origin.clone();
+        (!origin.is_plain()).then(|| zombye_sim::Start { origin, ..Default::default() })
+    });
+    let (mut world, id) = LocalServer::new_run(&config);
+    if let Some(start) = &start {
+        world.begin_as(id, start);
+    }
     if !swap.fits(&world) {
         // A map edited by hand (tests, editors) can't be generated again.
         return notice.say(now, "Can't start a new run here: this map wasn't generated from its seed".to_string());

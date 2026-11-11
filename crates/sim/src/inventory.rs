@@ -422,7 +422,7 @@ impl World {
         let t = &self.config.carry;
         let weight_kg = p.inventory.weight(items);
         // Strength (#46) adds to the limit.
-        let limit_kg = t.limit(p.skills.level(crate::skills::Skill::Strength, &self.config.skills));
+        let limit_kg = (t.limit(p.skills.level(crate::skills::Skill::Strength, &self.config.skills)) + p.origin.perks.carry_kg).max(1.0);
         Carry { weight_kg, limit_kg, room_l: p.inventory.room(items, t.pockets_l), used_l: p.inventory.used(items), burden: t.burden(weight_kg / limit_kg.max(0.1)) }
     }
 
@@ -444,7 +444,10 @@ impl World {
         let c = self.carry(p);
         let slow = p.inventory.bag_slow(&self.config.items);
         let fitness = p.skills.level(crate::skills::Skill::Fitness, &self.config.skills);
-        let load = self.config.skills.move_mods(fitness, self.config.carry.mods(c.weight_kg / c.limit_kg.max(0.1), slow));
+        let mut load = self.config.skills.move_mods(fitness, self.config.carry.mods(c.weight_kg / c.limit_kg.max(0.1), slow));
+        // Who the survivor is (`crate::origin`): running tires it more or less, breath comes back faster or slower.
+        load.run_drain *= p.origin.perks.run_drain;
+        load.regen *= p.origin.perks.recovery;
         let mut mods = self.needs_mods(pi, self.health_mods(pi, load));
         // Reeling or down from another player's blow (PvP) doesn't move either; knocks start and
         // end in `step_player_actions`, after movement too.

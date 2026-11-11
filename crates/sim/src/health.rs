@@ -867,7 +867,7 @@ impl World {
         let heal_h = t.wound(kind).heal_h.max(0.01) * self.combat_rng.range(1.0 - spread, 1.0 + spread);
         let infected = match infect {
             Some(forced) => forced,
-            None => zombie && self.combat_rng.f32() < inf.chance(kind),
+            None => zombie && self.combat_rng.f32() < inf.chance(kind) * self.players[pi].origin.perks.infection,
         };
         let stages = infected.then(|| {
             let m = inf.stage_mult.clamp(0.5, 3.0);
@@ -1057,6 +1057,7 @@ impl World {
             }
             let before = signature(&p.health, t);
             let pid = p.id as u64;
+            let perks = p.origin.perks;
             let h = &mut p.health;
             let stopped = h.healing_stopped();
             // An antibiotic dose working: nothing starts festering (#10).
@@ -1076,10 +1077,10 @@ impl World {
                 match wt.bleeds_for_h {
                     // Stops by itself: it bleeds only for the part of this step before then.
                     Some(stop) if w.bleeding && w.age_h >= stop => {
-                        loss += w.bleed_per_h(t) * (stop - age).clamp(0.0, dt_h);
+                        loss += w.bleed_per_h(t) * (stop - age).clamp(0.0, dt_h) * perks.bleeding;
                         w.bleeding = false;
                     }
-                    _ => loss += w.bleed_per_h(t) * dt_h,
+                    _ => loss += w.bleed_per_h(t) * dt_h * perks.bleeding,
                 }
                 // Festering: one seeded roll per game hour of the wound's life.
                 let mut k = hour + 1.0;
@@ -1093,7 +1094,7 @@ impl World {
                     loss += t.fester_hp_per_h * dt_h;
                 }
                 if !stopped {
-                    w.healed_h += dt_h * w.heal_speed(t);
+                    w.healed_h += dt_h * w.heal_speed(t) * perks.healing;
                 }
             }
             h.wounds.retain(|w| w.healed_h < w.heal_h);

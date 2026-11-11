@@ -1172,6 +1172,21 @@ impl SurvivorModel {
     }
 
     /// A grey-box box from `min` to `max` on a socket (`hip_l`: the left hip, on the hips bone).
+    /// For the new-game screen: the body and outfit meshes of a survivor wearing `worn` (item
+    /// indices) and holding nothing.
+    pub(crate) fn dressed(&self, items: &[ItemDef], worn: &[u16]) -> (Mesh, Option<Mesh>) {
+        let (body, outfit) = self.dress(items, &OutfitView { worn: worn.to_vec(), ..default() });
+        (body.to_mesh(), outfit.map(|o| o.to_mesh()))
+    }
+
+    /// For the new-game screen: standing idle, `secs` into the idle clip, feet on the ground.
+    pub(crate) fn standing(&self, secs: f32) -> RigPose {
+        let len = self.idle.map_or(1.0, |i| self.body.clips[i].secs.max(0.1));
+        let mut pose = self.clip_at(self.idle, (secs / len).fract());
+        self.ground(&mut pose);
+        pose
+    }
+
     fn socket_box(&self, into: &mut SkinMesh, socket: &str, min: Vec3, max: Vec3, color: [f32; 4]) {
         let frame = if socket == "hip_l" {
             self.body.rig.find("Hips").map(|b| (b, Mat4::from_translation(self.body.rig.inverse_bind[b].inverse().transform_point3(Vec3::ZERO) + Vec3::new(0.17, -0.12, 0.0))))
@@ -1191,6 +1206,13 @@ pub struct Dress {
     body: Entity,
     outfit: Entity,
     worn: Option<OutfitView>,
+}
+
+impl Dress {
+    /// The body's and the outfit's entities.
+    pub(crate) fn parts(&self) -> (Entity, Entity) {
+        (self.body, self.outfit)
+    }
 }
 
 /// Build a survivor's skeleton (one joint per bone), body, outfit, held weapon and ring under `root`.
