@@ -22,6 +22,10 @@ use zombye_sim::BodyPart;
 
 /// The body regions in `_REGION`'s order (`zgarment.REGIONS`, the order of [`BodyPart`]).
 pub const REGIONS: [BodyPart; 6] = [BodyPart::Head, BodyPart::Torso, BodyPart::Arms, BodyPart::Hands, BodyPart::Legs, BodyPart::Feet];
+/// One more `_REGION` value a body may use, past [`REGIONS`]: the hair a hat sits on. A body's vertices
+/// with it are left out while anything worn takes the head top, so a hat fits the head and no hair
+/// comes through it. Hair a hat leaves showing (below its rim) stays in `Head`.
+pub const HAIR_REGION: u8 = REGIONS.len() as u8;
 
 /// Sanity limits, so a broken file is refused rather than eating memory.
 const MAX_BONES: usize = 128;
