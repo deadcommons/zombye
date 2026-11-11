@@ -10,8 +10,9 @@
 //! and put in its place, with its dryness and brightness on its vertices. So a chunk's ground
 //! cover is one entity and one draw, whatever grows in it (a patch an entity, as it was at first,
 //! put about 7,000 entities in a zoomed-out view, and going through them cost more each frame
-//! than drawing them). The mesh is small on the GPU, 12 bytes a vertex: positions packed to 16
-//! bits within the chunk, colours to 8, no normals and no indices. The material ([`VegMaterial`])
+//! than drawing them). The mesh is small on the GPU, 16 bytes a vertex: three floats of position
+//! and a colour of 8 bits a channel, no normals and no indices (positions packed to 16 bits with
+//! `Mesh::compress_positions` drew nothing with this material, so they stay floats). The material ([`VegMaterial`])
 //! is the world material's fragment shader (lighting, shadows, fog of war) behind
 //! `assets/shaders/vegetation.wesl`, which colours each blade, sways it in the wind and bends it
 //! away from the player's feet. Vegetation casts no shadows (it would double the crowd's shadow
@@ -305,7 +306,6 @@ fn chunk_mesh(patches: &[[Patch; VARIANTS]; KINDS], spots: &[VegSpot], density: 
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
         .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     mesh.quantize_colors(AttributeQuantization::Unorm8).expect("colours are four floats");
-    mesh.compress_positions().expect("positions are three floats, and there are some");
     Some(mesh)
 }
 
@@ -634,8 +634,8 @@ mod tests {
         assert_eq!(mesh.count_vertices(), count(VegKind::Grass) + count(VegKind::Pebbles));
         assert_eq!(chunk_mesh(&patches, &spots, 2.0).unwrap().count_vertices(), mesh.count_vertices() + count(VegKind::GrassLong));
         assert!(mesh.indices().is_none() && mesh.attribute(Mesh::ATTRIBUTE_NORMAL).is_none());
-        // 8 bytes of position and 4 of colour a vertex.
-        assert!(matches!(mesh.attribute(Mesh::ATTRIBUTE_POSITION), Some(VertexAttributeValues::Snorm16x4(_))));
+        // 12 bytes of position and 4 of colour a vertex.
+        let Some(VertexAttributeValues::Float32x3(positions)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!("positions aren't floats") };
         let Some(VertexAttributeValues::Unorm8x4(colours)) = mesh.attribute(Mesh::ATTRIBUTE_COLOR) else { panic!("colours aren't packed") };
         assert_eq!(VertexFormat::Unorm8x4.size(), 4);
         let (grass, stones) = colours.split_at(count(VegKind::Grass));
@@ -643,8 +643,7 @@ mod tests {
         assert!(grass.iter().all(|c| c[1] == 128 && c[2] == bright && c[3] == 255), "blades carry their spot's dryness and brightness");
         assert!(stones.iter().all(|c| c[3] == 0), "stones keep their own colour");
         // Each spot's vertices stand round it: within its patch, scaled.
-        let aabb = mesh.final_aabb.expect("packed positions keep their bounds");
-        assert!(aabb.min.x > 35.0 - 1.25 && aabb.max.x < 38.0 + 1.25 && (aabb.min.z - 40.0).abs() < 1.25 && aabb.min.y >= 0.0, "{aabb:?}");
+        assert!(positions.iter().all(|p| p[0] > 35.0 - 1.25 && p[0] < 38.0 + 1.25 && (p[2] - 40.0).abs() < 1.25 && p[1] >= 0.0));
         // A blade's tone fits in the 8 bits it's stored in.
         for kind in VegKind::ALL {
             for v in 0..VARIANTS as u32 {

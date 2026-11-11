@@ -1579,8 +1579,8 @@ and mood, and docs/art-direction.md). All of it is client only: nothing here is 
   and quarter turns (it would poke into the room); in the open it is jittered and turned freely. **Drawing:** all of a
   chunk's patches are one mesh, one entity (a child of the chunk's ground entity, which holds the spot list as
   `ChunkVeg`) and one draw (`vegetation::chunk_mesh`: each spot's patch turned, scaled and put in place; it was an
-  entity a patch, about 7,000 in view zoomed out, which cost more to walk each frame than to draw). A vertex is 12
-  bytes: its position packed to 16 bits a coordinate over the mesh's box (`Mesh::compress_positions`) and a colour of
+  entity a patch, about 7,000 in view zoomed out, which cost more to walk each frame than to draw). A vertex is 16
+  bytes: its position (three floats; `Mesh::compress_positions` drew nothing with this material) and a colour of
   8 bits a channel, no normal (the shader gives every blade the ground's) and no indices. The colour's alpha says
   what the rest is: 1, a blade: red its tone along the blade, green the spot's dryness, blue its brightness; 0, the
   vertex's own colour (litter, stones, a release model's flowers); both times 0.8 (`COLOUR_PACK`, in the shader too)
@@ -1593,7 +1593,7 @@ and mood, and docs/art-direction.md). All of it is client only: nothing here is 
   chunks a frame as you walk (all at once for the first view and offscreen), dropped 8 m further out. **Density:** a
   spot is in the mesh when its rank is under the setting: every tile's first patch ranks 0 to 1, a second between
   them 1 to 2; changing the setting builds the meshes again; `--vegetation off` builds none. About 6,100 triangles
-  and 220 KB a chunk at the default density, so some 5 to 12 MB of vertices round the camera.
+  and 290 KB a chunk at the default density, so some 7 to 16 MB of vertices round the camera.
 - **Cost** (measured only on the GPU-less build VM, software rendering under other load, so these are upper bounds
   of the CPU-side work and say little about a GPU: best of three, 1920 x 1080 offscreen, 2,000 zombies, a yard by
   day; from when every patch was an instance of a shared mesh, before the mesh a chunk): the default town averages
