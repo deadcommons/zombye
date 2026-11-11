@@ -28,7 +28,7 @@ use bevy::camera::visibility::NoFrustumCulling;
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
-use zombye_sim::{ActionKind, CombatEventKind, Gesture, Stance, TICK_DT, WeaponCategory};
+use zombye_sim::{ActionKind, CombatEventKind, Gesture, ItemCategory, JobKind, Stance, TICK_DT, WeaponCategory};
 
 use crate::items_render::WeaponLooks;
 use crate::player::LocalPlayer;
@@ -347,6 +347,38 @@ pub struct SurvivorAnim {
     pub(crate) tied_w: f32,
     pub(crate) reach_w: f32,
     pub(crate) struggling: bool,
+    /// What its hands are busy with, where we are told (its item job under way: eating, drinking,
+    /// searching, reloading), eased in and out, and how long it has been at it (seconds).
+    pub(crate) task: Option<Task>,
+    pub(crate) task_w: f32,
+    pub(crate) task_t: f32,
+    /// Lying dead (not knocked down or asleep): a body's own death clip plays.
+    pub(crate) died: bool,
+}
+
+/// What a survivor's hands are seen to be busy with (a body's `eat`, `drink`, `loot` and `reload`
+/// clips; the grey-box has no pose for them).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Task {
+    Eat,
+    Drink,
+    Loot,
+    Reload,
+}
+
+impl Task {
+    fn of(job: &JobKind, join: &JoinInfo) -> Option<Self> {
+        match job {
+            JobKind::Search { .. } => Some(Self::Loot),
+            JobKind::Reload { .. } => Some(Self::Reload),
+            JobKind::Use { item, .. } => match join.items.get(*item as usize)?.category {
+                ItemCategory::Drink => Some(Self::Drink),
+                ItemCategory::Food => Some(Self::Eat),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
 }
 
 impl SurvivorAnim {
@@ -374,6 +406,10 @@ impl SurvivorAnim {
             dead_since: None,
             sleeping: false,
             woke_at: None,
+            task: None,
+            task_w: 0.0,
+            task_t: 0.0,
+            died: false,
             gesture: None,
             gesture_w: 0.0,
             gesture_t: 0.0,
@@ -453,6 +489,17 @@ fn animate_survivors(
         a.tied_w += ((view.restrained && up) as u8 as f32 - a.tied_w) * k(9.0);
         a.reach_w += ((view.hands.is_some() && up) as u8 as f32 - a.reach_w) * k(9.0);
         a.struggling = view.struggling && up;
+        // Its item job under way, where we know which (our own survivor's; single-player: anyone's).
+        let task = link.own(a.player).and_then(|v| v.jobs.first()).filter(|_| up && view.busy > 0.0).and_then(|j| Task::of(j, &join));
+        if let Some(t) = task {
+            if a.task != Some(t) || a.task_w < 0.05 {
+                a.task_t = 0.0;
+            }
+            a.task = Some(t);
+        }
+        a.task_w += (task.is_some() as u8 as f32 - a.task_w) * k(9.0);
+        a.task_t += dt;
+        a.died = view.dead;
         let cycle_m = match (&a.look, &model) {
             (Look::Model(_), Some(m)) => m.cycle_metres(a),
             _ => {
@@ -637,6 +684,8 @@ fn hold_pose(a: &mut SurvivorAnim, pose: &str, step: f32, now: f32) {
         a.dead_since = None;
         a.sleeping = false;
         a.woke_at = None;
+        (a.task, a.task_w, a.died) = (None, 0.0, false);
+        a.hurt_at = -100.0;
     };
     let act = |a: &mut SurvivorAnim, kind: ActionKind| {
         locomotion(a, 0.0, 0.0, 0.0);
@@ -659,6 +708,28 @@ fn hold_pose(a: &mut SurvivorAnim, pose: &str, step: f32, now: f32) {
         "dead" => {
             locomotion(a, 0.0, 0.0, 0.0);
             a.dead_since = Some(now - 10.0);
+            a.died = true;
+        }
+        // Dying, `U` of a second into it; hurt, `U` of a second after the blow.
+        "die" => {
+            locomotion(a, 0.0, 0.0, 0.0);
+            a.dead_since = Some(now - u);
+            a.died = true;
+        }
+        "hurt" => {
+            locomotion(a, 0.0, 0.0, 0.0);
+            a.hurt_at = now - u;
+        }
+        // Hands busy (a body's own clips), `U` x 4 s into it.
+        "eat" | "drink" | "loot" | "reload" => {
+            locomotion(a, 0.0, 0.0, 0.0);
+            let task = match name {
+                "eat" => Task::Eat,
+                "drink" => Task::Drink,
+                "loot" => Task::Loot,
+                _ => Task::Reload,
+            };
+            (a.task, a.task_w, a.task_t) = (Some(task), 1.0, u * 4.0);
         }
         "sleep" => {
             locomotion(a, 0.0, 0.0, 0.0);

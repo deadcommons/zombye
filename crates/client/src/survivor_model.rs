@@ -107,6 +107,14 @@ const ACTION_CLIPS: [&str; 11] = [
     "punch", "swing_one", "swing_two", "shot", "shove", "stomp", "swing_one_b", "swing_two_b", "stab", "ground_one", "ground_two",
 ];
 
+/// More clips a body can carry, each played instead of nothing or of a grey-box pose: `hurt` (a blow
+/// taken: once, over the upper body, in place of the flinch), `die` (once, ending on the ground, in
+/// place of the fall onto the back) and the loops for busy hands, `eat`, `drink`, `loot` (searching
+/// a container) and `reload` (the whole body standing, the upper body over the gait when moving).
+const LIFE_CLIPS: [&str; 6] = ["hurt", "die", "eat", "drink", "loot", "reload"];
+const HURT: usize = 0;
+const DIE: usize = 1;
+
 /// Which of the body's guard clips aiming holds: bare hands, a one-handed weapon, a two-handed one,
 /// a gun.
 fn guard_slot(style: Style, armed: bool) -> usize {
@@ -340,6 +348,8 @@ pub struct SurvivorModel {
     /// (`guard_one`), a two-handed one (`guard_two`, else the one-handed) and a gun held out level
     /// (`guard_gun`; without it the grey-box's).
     guards: [Option<usize>; 4],
+    /// The body's clips of [`LIFE_CLIPS`].
+    life: [Option<usize>; LIFE_CLIPS.len()],
     gaits: [Vec<Gait>; 3],
     /// The bones the hips' turn is taken back out of (the spine's first, under the hips).
     spine_base: Vec<usize>,
@@ -620,6 +630,7 @@ impl SurvivorModel {
         let actions = ACTION_CLIPS.map(|name| body.clips.iter().position(|c| c.name.eq_ignore_ascii_case(name)));
         let guard = |name: &str| body.clips.iter().position(|c| c.name.eq_ignore_ascii_case(name));
         let guards = [guard("guard_fists"), guard("guard_one"), guard("guard_two").or_else(|| guard("guard_one")), guard("guard_gun")];
+        let life = LIFE_CLIPS.map(guard);
         let gaits = gaits(&mut body);
         let reference = idle.map_or_else(|| body.rig.rest(), |i| body.clips[i].frames[0].clone());
         let retarget = Retarget::new(&body, reference);
@@ -673,6 +684,7 @@ impl SurvivorModel {
             idle,
             actions,
             guards,
+            life,
             gaits,
             spine_base,
             gaze,
@@ -838,6 +850,14 @@ impl SurvivorModel {
             // Tied hands, or hands at work on another survivor (#73): both arms.
             pose.blend_bones(&self.retarget.apply(body, &b), w, Some(self.arms.as_slice()));
         }
+        if let Some(i) = a.task.filter(|_| a.task_w > 0.0).and_then(|t| self.life[2 + t as usize]) {
+            // Hands busy with something (eating, drinking, searching, reloading): the body's loop
+            // for it, the whole body standing and the upper body over the gait when moving.
+            let mut busy = body.clips[i].sample((a.task_t / body.clips[i].secs).fract());
+            pose.blend_bones(&busy, a.task_w * (1.0 - a.move_w), Some(&self.all));
+            over_hips(&mut busy, &pose, &self.spine_base);
+            pose.blend_bones(&busy, a.task_w, Some(&self.upper));
+        }
         let clip = survivor::action_clock(a, now)
             .and_then(|(kind, n, u, w)| {
                 let i = action_clips(kind, category, n).iter().find_map(|&c| self.actions[c])?;
@@ -859,9 +879,17 @@ impl SurvivorModel {
         } else if let Some((act, whole, w)) = survivor::action_now(a, now, style, armed) {
             pose.blend_bones(&self.retarget.apply(body, &act), w, Some(if whole { &self.all } else { &self.upper }));
         }
-        // The flinch, on top: each grey-box turn about the axes it has in the reference pose.
+        // A blow taken: the body's own reaction over the upper body, once through, eased in and out;
+        // else the flinch, on top: each grey-box turn about the axes it has in the reference pose.
         let w = survivor::flinch_weight(a, now);
-        if w > 0.0 {
+        if let Some(i) = self.life[HURT] {
+            let u = (now - a.hurt_at) / body.clips[i].secs;
+            if (0.0..1.0).contains(&u) {
+                let mut hurt = body.clips[i].sample(u);
+                over_hips(&mut hurt, &pose, &self.spine_base);
+                pose.blend_bones(&hurt, smooth(0.0, 0.12, u) * (1.0 - smooth(0.7, 1.0, u)), Some(&self.upper));
+            }
+        } else if w > 0.0 {
             let f = survivor::flinch();
             for &(b, g) in &self.flinching {
                 let t = self.retarget.ref_global[b];
@@ -873,7 +901,11 @@ impl SurvivorModel {
         // Running has a moment in the air each step.
         pose.t[root].y += a.run_w * a.move_w * 0.05 * (a.cycle * TAU * 2.0).sin().max(0.0);
         if let Some((lie, w)) = survivor::lying(a, now) {
-            pose = pose.blend(&self.retarget.apply(body, &lie), w);
+            pose = match (self.life[DIE].filter(|_| a.died), a.dead_since) {
+                // Dead: the body's own death, once through and then still as it ends.
+                (Some(i), Some(since)) => pose.blend(&body.clips[i].sample(((now - since) / body.clips[i].secs).clamp(0.0, 0.999)), w),
+                _ => pose.blend(&self.retarget.apply(body, &lie), w),
+            };
         }
         pose
     }
