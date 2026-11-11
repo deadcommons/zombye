@@ -730,6 +730,15 @@ impl World {
         self.nav.rebuild_all(&self.walk);
         self.flow_cache.invalidate();
         self.goal_dirty = true;
+        // A switch or a source can only stand for rooms and buildings the new map has.
+        let (rooms, buildings) = (self.map.rooms.len(), self.map.buildings.len());
+        self.power.switches.retain(|&r| r != 0 && (r as usize) < rooms);
+        for s in &mut self.power.sources {
+            if let crate::power::Coverage::Buildings(list) = &mut s.covers {
+                list.retain(|&b| (b as usize) < buildings);
+            }
+        }
+        self.power.refresh(&self.map);
     }
 
     /// The navigation graph and the long-range plans zombies share.

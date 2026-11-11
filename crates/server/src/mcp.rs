@@ -4111,7 +4111,7 @@ mod tests {
         let list = tool_list(opts);
         let names: Vec<&str> = list.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
         let debug: Vec<&str> = TOOLS.iter().filter(|t| t.2 == Kind::Debug).map(|t| t.0).collect();
-        assert_eq!(debug.len(), 12);
+        assert_eq!(debug.len(), 13);
         assert_eq!(names.len(), TOOLS.len() - debug.len());
         for name in &debug {
             assert!(!names.contains(name), "{name} is listed");
