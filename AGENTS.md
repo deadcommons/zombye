@@ -1423,15 +1423,13 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   Zombies the fog of war hides cast none. Cost with 2,000 zombies round the player (1920x1080): no more than before
   (day 10.5-10.7 against 11.7-14.6 ms at 26 m; night with a flashlight 9.0-10.5 against 10.0-11.4 ms), the per-frame
   crowd lighting update it replaced having cost about as much as the extra shadow pass.
-- **Cutaways** (`cutaway.rs`, `world.wesl`, `world_render.rs`, `silhouette.rs`; #84, redone per building): walls drop
-  to 0.4 m stubs **per building and per wall edge, never by a radius or a hole round the player**. *Inside a
-  building* (`cutaway::room_edges`): every outside wall of that building whose outward side faces the camera (two
-  sides at each of the four camera angles; they follow `,` / `.`), and any of its walls that hides part of the room
-  you're in (the floor behind it on screen, 5.5 m away from the camera, what a 3 m wall covers from 30° up, runs
-  into your room: the room's own near walls and inner walls between it and the camera). Its far walls, inner walls
-  behind your room and every other building stand. **The window you're climbing through** (within `CLIMB_ZONE` of it, `cutaway::crossed_window`) stays whole whatever would cut it, so its frame doesn't sink away under the climb; the silhouette shows you where it covers you. Its roof and upper storeys (every floor above the player's;
+- **Cutaways** (`cutaway.rs`, `world.wesl`, `world_render.rs`, `silhouette.rs`; #84): **walls stand at their full
+  height, always**, indoors and out; the only pieces that drop to 0.4 m stubs are the ones that cover the player's
+  body from the camera (below), **per wall edge, never by a radius or a hole round the player**. No wall drops for
+  the room or the building you're in (they used to: the owner asked for full walls, hidden only when you go behind
+  one). **The window you're climbing through** (within `CLIMB_ZONE` of it, `cutaway::crossed_window`) stays whole whatever would cut it, so its frame doesn't sink away under the climb; the silhouette shows you where it covers you. Its roof and upper storeys (every floor above the player's;
   players are only ever on the ground floor) fade out as one over 0.15 s and are then hidden
-  (`world_render::hide_upper_floors`: a stipple by the amount in their `MeshTag`). *Anywhere*
+  (`world_render::hide_upper_floors`: a stipple by the amount in their `MeshTag`). *What drops*
   (`cutaway::body_edges`): a wall piece that covers the player's body from the camera drops, whichever building it
   is part of (the edge crosses the 0.6 m strip of ground between the body and the camera within 5.5 m); the facade
   you walk along, behind you, doesn't. **From outside every building keeps its roof and floors**; a building that
@@ -1440,8 +1438,7 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   a save are settled) and writes the amounts to a 128 x 128 Rg8 texture (one texel a tile, by the tile's coordinates
   modulo 128: red its north edge, green its west edge; the world material's binding 105). `wall_cut` in world.wesl
   reads it by a wall piece's anchor and leaves out what is above the wall's top, which sinks from 3.05 m to the stub
-  as a straight line. The room's set is worked out again only when the room or the camera's angle changes, the
-  body's every frame (a few dozen tiles), the texture is uploaded only on frames where an amount moved, and nothing
+  as a straight line. The body's set is worked out every frame (a few dozen tiles), the texture is uploaded only on frames where an amount moved, and nothing
   is allocated per frame. **Nothing inside is hidden:** furniture, containers, items and characters never are; a door
   leaf sinks away with its wall and isn't drawn in a cut one (no stubby leaf; its outline, next, says where it is; **an open door's leaf lies flat against the face of the wall beside its hinge**, 0.11 m along its edge, `world_render::OPEN_LEAF_CLEAR`, the hinge moving as it swings: turned about the corner itself it lay inside that wall and couldn't be seen) and a
   window becomes a low framed lip of glass standing on the stub (`world_render::piece_look`, by `Cutaway::amount`,
