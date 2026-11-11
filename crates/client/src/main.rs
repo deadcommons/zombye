@@ -81,6 +81,7 @@ mod browser_ui;
 mod duel;
 mod holdup;
 mod camera;
+mod campfire;
 mod character;
 mod chat;
 mod cutaway;

@@ -37,6 +37,19 @@ pub struct FillLook {
     pub brightness: f32,
 }
 
+/// A fire burning outdoors (a campfire's light at night): its colour (sRGB), brightness in lumens,
+/// how far its light reaches, how high above the ground it sits, and how far round it what stands
+/// in its light is seen in the dark.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FireLook {
+    pub colour: (f32, f32, f32),
+    pub lumens: f32,
+    pub range: f32,
+    pub height: f32,
+    pub seen: f32,
+}
+
 /// The camera's grade and vignette at one end of the day (night, or full daylight).
 #[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -67,6 +80,7 @@ pub struct LightLook {
     pub grade_night: GradeLook,
     /// Added to the temperature and the saturation at dawn and dusk.
     pub dusk: (f32, f32),
+    pub fire: FireLook,
 }
 
 impl Default for SunLook {
@@ -84,6 +98,7 @@ impl Default for LightLook {
             grade_day: GradeLook { exposure: 0.2, temperature: 0.04, tint: -0.01, saturation: 0.92, shadows: (0.8, 0.94, 0.012), midtones: (0.95, 1.03), highlights: (0.9, 1.04), vignette: (0.46, 0.8) },
             grade_night: GradeLook { exposure: 0.35, temperature: -0.03, tint: 0.0, saturation: 0.72, shadows: (0.6, 1.0, 0.0), midtones: (0.8, 1.04), highlights: (1.0, 1.0), vignette: (0.6, 0.62) },
             dusk: (0.06, 0.1),
+            fire: FireLook { colour: (1.0, 0.55, 0.22), lumens: 600_000.0, range: 14.0, height: 0.7, seen: 7.0 },
         }
     }
 }
@@ -117,6 +132,13 @@ impl LightLook {
             within(&format!("{name}.vignette intensity"), g.vignette.0, 0.0, 2.0)?;
             within(&format!("{name}.vignette radius"), g.vignette.1, 0.0, 2.0)?;
         }
+        for v in [look.fire.colour.0, look.fire.colour.1, look.fire.colour.2] {
+            within("fire.colour", v, 0.0, 1.0)?;
+        }
+        within("fire.lumens", look.fire.lumens, 0.0, 10_000_000.0)?;
+        within("fire.range", look.fire.range, 1.0, 40.0)?;
+        within("fire.height", look.fire.height, 0.1, 3.0)?;
+        within("fire.seen", look.fire.seen, 0.0, 40.0)?;
         within("dusk temperature", look.dusk.0, -1.0, 1.0)?;
         within("dusk saturation", look.dusk.1, -1.0, 1.0)?;
         Ok(look)
