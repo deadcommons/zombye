@@ -91,12 +91,18 @@ pub fn hides_room(map: &TileMap, key: EdgeKey, c: Vec2, room: u16) -> bool {
     false
 }
 
-/// Is a body at `pos` in front of this edge's wall as the camera sees it: on the camera's side of
-/// the wall's line (by more than a hair)? Such a wall is behind the body on screen, and stands.
+/// A wall counts as further from the camera than the body when all of it is at least this far
+/// (metres on the ground, away from the camera) behind the body's middle.
+const BEHIND_CLEAR: f32 = 0.25;
+
+/// Is a body at `pos` in front of this edge's wall as the camera sees it? Either it is on the
+/// camera's side of the wall's line (by more than a hair), or the whole piece is further from the
+/// camera than the body (up the screen from it): a wall beside the body that runs on away from
+/// the camera. Such a wall is behind the body on screen, and stands.
 pub fn in_front(key: EdgeKey, pos: Vec2, c: Vec2) -> bool {
-    let (a, _) = TileMap::edge_segment(key.0, key.1);
+    let (a, b) = TileMap::edge_segment(key.0, key.1);
     let side = if key.1 == OwnedEdge::North { (pos.y - a.y) * c.y.signum() } else { (pos.x - a.x) * c.x.signum() };
-    side > BODY_CLEAR
+    side > BODY_CLEAR || a.dot(c).max(b.dot(c)) < pos.dot(c) - BEHIND_CLEAR
 }
 
 /// The walls of the building the player is inside that drop: its outside walls facing the camera,
@@ -629,6 +635,16 @@ pub(crate) mod tests {
         for x in 44..46 {
             assert_eq!(cut.amount(main_south(x)), 0.0, "the main part's south wall at x {x}, behind the player");
         }
+        // A wall beside the player that runs on away from the camera: the pieces further from the
+        // camera than the player stand, though the player is on the far side of the wall's line.
+        // In the leg, by its east wall, at the leg's camera end: all of that wall is up the screen.
+        let low = Vec2::new(42.5, 18.8);
+        assert!(!in_front(leg_east(18), low, c), "the piece level with the player");
+        assert!(in_front(leg_east(16), low, c), "the piece two metres up the screen");
+        let mut cut = Cutaway::new(Handle::default(), false);
+        cut.update(&map, low, camera(0), 0.016);
+        assert_eq!(cut.amount(leg_east(16)), 0.0);
+        assert_eq!(cut.amount(leg_east(18)), 1.0);
         // The same from the other side: nothing the player is in front of is down at any angle.
         for angle in 0..4 {
             let mut cut = Cutaway::new(Handle::default(), false);
