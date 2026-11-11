@@ -433,7 +433,13 @@ fn toggle(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut cutaway: ResMut<
 fn decide(map: Res<ClientMap>, time: Res<Time>, mut cutaway: ResMut<Cutaway>, mut images: ResMut<Assets<Image>>, player: Query<&Transform, With<Player>>, cams: Query<&IsoCamera>) {
     let (Ok(p), Ok(cam)) = (player.single(), cams.single()) else { return };
     let cutaway = cutaway.as_mut();
-    if !cutaway.update(&map.0, p.translation.xz(), cam.offset_dir(), time.delta_secs()) {
+    let changed = cutaway.update(&map.0, p.translation.xz(), cam.offset_dir(), time.delta_secs());
+    if cam.shoulder() {
+        // Third person: no silhouette (it goes by the fixed view's depth, and the camera is
+        // right behind the survivor).
+        cutaway.occluded = false;
+    }
+    if !changed {
         return;
     }
     if let Some(mut image) = images.get_mut(&cutaway.image)

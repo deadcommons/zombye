@@ -492,7 +492,11 @@ fn draw(
     }
     // Only a frame in which something is decided anew or fades goes on (and counts as a change).
     let hints = hints.bypass_change_detection();
+    // Not in third person: the outlines go by the fixed view's depth.
+    let on = hints.on;
+    hints.on = on && !cam.shoulder();
     let decided = hints.decide(&map.0, map.is_changed(), p.translation.xz(), cam.offset_dir(), cutaway.inside);
+    hints.on = on;
     let moved = hints.ease(time.delta_secs());
     if !(decided || moved) {
         return;

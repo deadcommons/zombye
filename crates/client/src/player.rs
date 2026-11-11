@@ -419,7 +419,7 @@ fn sync_other_players(
 #[allow(clippy::too_many_arguments)]
 fn face_cursor(
     windows: Query<&Window, With<PrimaryWindow>>,
-    cams: Query<(&Camera, &GlobalTransform), With<IsoCamera>>,
+    cams: Query<(&Camera, &GlobalTransform, &IsoCamera)>,
     auto: Res<AutoInput>,
     mouse: Res<ButtonInput<MouseButton>>,
     panel: Res<crate::inventory_ui::InventoryPanel>,
@@ -451,14 +451,11 @@ fn face_cursor(
         tf.rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - player.facing);
         return;
     }
-    let (Ok(window), Ok((camera, cam_tf))) = (windows.single(), cams.single()) else { return };
+    let (Ok(window), Ok((camera, cam_tf, iso))) = (windows.single(), cams.single()) else { return };
     let Some(cursor) = window.cursor_position() else { return };
     let Ok(ray) = camera.viewport_to_world(cam_tf, crate::render_scale::to_view(camera, window, cursor)) else { return };
-    if ray.direction.y.abs() < 1e-4 {
-        return;
-    }
-    let t = -ray.origin.y / ray.direction.y;
-    let hit = ray.origin + *ray.direction * t;
+    // The ground the pointer is on (third person: the middle of the screen, see `camera.rs`).
+    let Some(hit) = iso.aim_ground(ray.origin, *ray.direction) else { return };
     let from = Vec2::new(tf.translation.x, tf.translation.z);
     let mut d = Vec2::new(hit.x, hit.z) - from;
     // With a gun (#72) the aim is the body the cursor is on, at the height it is on it: the head

@@ -16,6 +16,11 @@
 //! world covers them. Their size is kept the same on screen at any zoom; only a gun's spread is in
 //! real metres. While any of it shows the system pointer is hidden.
 //!
+//! **In the third-person view** (`camera.rs`) the pointer is the middle of the screen, and the
+//! camera's lens has perspective: the reticle and ring are drawn a metre in front of the camera
+//! on the pointer's line (on a body: on the line to the point aimed at), sized to look as they do
+//! from above, and a gun's spread is drawn as wide as it is where the aim lands.
+//!
 //! `--aim-at DX,DY` shows it in an offscreen picture (`--render-to`), as if you aimed with the
 //! cursor on the ground that many metres east and south of you, or with `--aim-at zombie` on the
 //! nearest standing zombie; `--gun ID` then names the weapon (a picture's world doesn't tick, so
@@ -58,6 +63,8 @@ const LIFT: f32 = 14.0;
 const WEDGE_Y: f32 = 0.05;
 /// How fast the reticle's gap follows the spread (per second).
 const GAP_RATE: f32 = 14.0;
+/// Third person: how far in front of the camera the reticle and ring are drawn (metres).
+const PLACE: f32 = 1.0;
 
 // The brand's bone white and accent red (zombye-art's palette anchors), and its near-black.
 const BONE: Color = Color::srgb(0.95, 0.9, 0.79);
@@ -284,7 +291,11 @@ fn show(
         false => staged.map(|by| (from + by, 0.0)),
     };
     // The line of sight through the cursor. `--autoplay` aims without one: only the wedge shows.
+    let shoulder = iso.shoulder();
+    let eye = cam_tf.translation();
     let sight = match staged {
+        // Third person: the lines of sight meet at the camera.
+        Some((at, up)) if shoulder => Some((eye, (Vec3::new(at.x, up, at.y) - eye).normalize_or(*cam_tf.forward()))),
         Some((at, up)) => Some((Vec3::new(at.x, up, at.y), *cam_tf.forward())),
         None if auto.active => None,
         None => windows
@@ -294,13 +305,15 @@ fn show(
             .and_then(|(w, cursor)| camera.viewport_to_world(cam_tf, crate::render_scale::to_view(camera, w, cursor)).ok())
             .map(|ray| (ray.origin, *ray.direction)),
     };
-    let ground = sight.filter(|(_, dir)| dir.y.abs() > 1e-4).map(|(origin, dir)| origin + dir * (-origin.y / dir.y));
+    let ground = sight.and_then(|(origin, dir)| iso.aim_ground(origin, dir));
     let facing = match (staged, ground) {
         (Some(_), Some(g)) => (g.z - from.y).atan2(g.x - from.x),
         _ => player.facing,
     };
-    // The same on screen at any zoom.
-    let k = iso.zoom / ZOOM;
+    // The same on screen at any zoom (third person: as big as that, [`PLACE`] from the camera).
+    let k = if shoulder { 2.0 * PLACE * (crate::camera::SHOULDER_FOV * 0.5).tan() / ZOOM } else { iso.zoom / ZOOM };
+    // Third person: what the pointer's parts are drawn on the line to, when not the pointer's own.
+    let mut on_body: Option<Vec3> = None;
     // A staged picture is of a world that doesn't tick, so `--gun` never reached the hand: take it by name.
     let named = staged.and(options.gun.as_deref()).and_then(|id| join.weapons.iter().find(|w| w.id == id));
     let weapon = named.or_else(|| me.weapon.and_then(|w| join.weapons.get(w as usize)));
@@ -320,6 +333,7 @@ fn show(
                 dist = to.length();
                 let body = from + to;
                 at = Some(Vec3::new(body.x, MUZZLE_HEIGHT + pitch.tan() * dist.max(0.5), body.y));
+                on_body = at;
                 color = RED;
             }
         }
@@ -328,7 +342,10 @@ fn show(
             color = DIMMED;
         }
         let moving = me.curr.pos.distance_squared(me.prev.pos) > 1e-8;
-        let want = spread_radius(gun, dist, moving).max(MIN_GAP * k);
+        // Real metres where the aim lands; third person draws them [`PLACE`] from the camera.
+        let far = at.map_or(PLACE, |at| (at - eye).dot(*cam_tf.forward()).max(PLACE));
+        let metres = if shoulder { PLACE / far } else { 1.0 };
+        let want = (spread_radius(gun, dist, moving) * metres).max(MIN_GAP * k);
         let gap = marker.gap.map_or(want, |g| g + (want - g) * (1.0 - (-GAP_RATE * time.delta_secs()).exp()));
         marker.gap = Some(gap);
         for (i, (tick, edge)) in marker.ticks.into_iter().enumerate() {
@@ -358,6 +375,14 @@ fn show(
     set(&mut parts, marker.dot, true, Some(Transform::from_scale(Vec3::new(k, k, 1.0))));
     set(&mut parts, marker.ring, gun.is_none(), Some(Transform::from_scale(Vec3::new(k, k, 1.0))));
     match (at, sight) {
+        (_, Some((_, dir))) if shoulder => {
+            // On the pointer's own line (or the line to the body aimed at), just in front of the
+            // camera: over everything, and flattened so the dark edges sit right behind the parts.
+            let line = on_body.map_or(dir, |b| (b - eye).normalize_or(dir));
+            let along = line.dot(*cam_tf.forward());
+            let tf = Transform::from_translation(eye + line * (PLACE / along.max(0.2))).with_rotation(cam_tf.rotation()).with_scale(Vec3::new(1.0, 1.0, 0.02));
+            set(&mut parts, marker.pointer, along > 0.0, Some(tf));
+        }
         (Some(at), Some((_, dir))) if dir.y < -1e-4 => {
             // Toward the camera along the line of sight: the same place on screen, over everything.
             let lifted = at - dir * ((LIFT - at.y).max(0.0) / -dir.y);
@@ -369,9 +394,10 @@ fn show(
 }
 
 /// The marker is the pointer while it shows: hide the system's.
-fn hide_pointer(marker: Res<AimMarker>, auto: Res<AutoInput>, mut cursors: Query<&mut bevy::window::CursorOptions, With<PrimaryWindow>>) {
+fn hide_pointer(marker: Res<AimMarker>, auto: Res<AutoInput>, lock: Option<Res<crate::camera::PointerLock>>, mut cursors: Query<&mut bevy::window::CursorOptions, With<PrimaryWindow>>) {
     let Ok(mut cursor) = cursors.single_mut() else { return };
-    let visible = !(marker.shown && !auto.active);
+    // Hidden too while the third-person view holds it at the middle of the window.
+    let visible = !(marker.shown && !auto.active) && !lock.is_some_and(|l| l.0);
     if cursor.visible != visible {
         cursor.visible = visible;
     }
