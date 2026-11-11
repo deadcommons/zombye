@@ -740,6 +740,9 @@ fn take_up(
         map.0.set_owned_edge(c.tile, c.edge, c.kind);
         changes.0.push(*c);
     }
+    for b in &snapshot.blind_changes {
+        map.0.set_blind(zombye_sim::map::EdgeRef::new(b.tile, b.edge), b.blind);
+    }
     for d in &snapshot.edge_damage {
         if d.hp >= 1.0 {
             damage_map.0.remove(&(d.tile, d.edge));

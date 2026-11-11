@@ -115,9 +115,41 @@ fn a_weapon_wears_only_on_hits_and_breaks_at_its_last_knock() {
     assert_eq!(w.condition_of(&hand(&w, id).unwrap()).unwrap().2, Condition::Battered);
     w.item_notes.clear();
     swing(&mut w, id, 1.2);
-    assert!(hand(&w, id).is_none(), "the last knock breaks it");
-    assert_eq!(w.player(id).unwrap().weapon, None, "bare hands now");
+    let broken = hand(&w, id).expect("the last knock breaks it, and it stays in the hand");
+    assert_eq!(broken.used, of);
+    assert_eq!(w.condition_of(&broken).unwrap(), (0, of, Condition::Broken));
+    assert!(w.player(id).unwrap().weapon.is_some(), "still the plank in hand, broken");
     assert!(w.item_notes.iter().any(|n| n.player == id && n.text.contains("plank broke")), "{:?}", w.item_notes);
+    // It wears no further, and no new note comes of it.
+    w.item_notes.clear();
+    for _ in 0..3 {
+        swing(&mut w, id, 1.2);
+    }
+    assert_eq!(hand(&w, id).unwrap().used, of);
+    assert!(!w.item_notes.iter().any(|n| n.text.contains("broke")), "{:?}", w.item_notes);
+}
+
+#[test]
+fn a_broken_weapon_is_next_to_no_use() {
+    let mean = |used: u8| {
+        let mut c = config(7);
+        c.weapons.iter_mut().find(|w| w.id == "crowbar").unwrap().wear_chance = 1e-9;
+        let (mut w, id) = field(c, "crowbar");
+        w.players[0].inventory.hand.as_mut().unwrap().used = used;
+        let z = dummy(&mut w, 1.0);
+        let before = w.zombies.hp[z];
+        let mut down = 0;
+        for _ in 0..40 {
+            swing(&mut w, id, 1.0);
+            down += (w.zombies.state[z] == crate::zombies::ZombieState::Down) as u32;
+        }
+        ((before - w.zombies.hp[z]) / 40.0, down)
+    };
+    let c = config(7);
+    let of = c.weapons.iter().find(|w| w.id == "crowbar").unwrap().durability;
+    let ((sound, _), (broken, down)) = (mean(0), mean(of));
+    assert!((broken / sound - c.combat.broken_damage).abs() < 0.05, "sound {sound}, broken {broken}");
+    assert_eq!(down, 0, "a broken weapon never knocks down");
 }
 
 #[test]
@@ -161,9 +193,11 @@ fn practised_hands_wear_a_weapon_slower() {
         }
         hand(&w, id).unwrap().used as f32
     };
-    let (new, old) = (knocks(0), knocks(5));
+    // Level 10 (40% less likely; level 5's 20% sat right on the bound, so which rolls the hashes
+    // gave decided it).
+    let (new, old) = (knocks(0), knocks(10));
     assert!((new / 120.0 - 0.5).abs() < 0.12, "{new} knocks in 120 hits at 0.5");
-    assert!(old < new * 0.8, "level 5: {old} against {new}");
+    assert!(old < new * 0.8, "level 10: {old} against {new}");
 }
 
 #[test]
@@ -261,9 +295,13 @@ fn wear_is_saved_checked_and_deterministic() {
     let loaded = World::load(&a.save(), &a.config).unwrap();
     assert_eq!(loaded.state_hash(), a.state_hash());
     assert_eq!(hand(&loaded, id).unwrap().used, used);
-    // More knocks than it can take is not a save a game made.
+    // A broken one (every knock taken) loads; more knocks than it can take is not a save a game made.
+    let (mut broken, _) = run();
+    let of = durability(&broken.config.items, &broken.config.weapons, hand(&broken, id).unwrap().item);
+    broken.players[0].inventory.hand.as_mut().unwrap().used = of;
+    let loaded = World::load(&broken.save(), &broken.config).unwrap();
+    assert_eq!(loaded.condition_of(&hand(&loaded, id).unwrap()).unwrap().2, Condition::Broken);
     let (mut bad, _) = run();
-    let of = durability(&bad.config.items, &bad.config.weapons, hand(&bad, id).unwrap().item);
-    bad.players[0].inventory.hand.as_mut().unwrap().used = of;
+    bad.players[0].inventory.hand.as_mut().unwrap().used = of + 1;
     assert!(World::load(&bad.save(), &bad.config).is_err());
 }

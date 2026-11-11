@@ -190,12 +190,12 @@ pub fn holds(items: &[ItemDef], weapons: &[WeaponDef], item: u16) -> Option<Hold
 }
 
 /// The most [`ItemStack::used`] can be for `item`: a gun's or magazine's capacity, one under
-/// the knocks a weapon that wears takes ([`crate::wear`]), else one under the goes a thing to
+/// the knocks a weapon that wears takes ([`crate::wear`]: all of them, broken), else one under the goes a thing to
 /// eat or drink has.
 pub fn max_used(items: &[ItemDef], weapons: &[WeaponDef], item: u16) -> u8 {
     match holds(items, weapons, item) {
         Some(h) => h.capacity,
-        None if crate::wear::durability(items, weapons, item) > 0 => crate::wear::durability(items, weapons, item) - 1,
+        None if crate::wear::durability(items, weapons, item) > 0 => crate::wear::durability(items, weapons, item),
         None => items.get(item as usize).and_then(|d| d.consumable()).map_or(1, |c| c.uses.max(1)) - 1,
     }
 }

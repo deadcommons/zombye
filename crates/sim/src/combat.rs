@@ -143,6 +143,9 @@ pub struct CombatTuning {
     /// of its damage.
     pub battered_below: f32,
     pub battered_damage: f32,
+    /// A broken weapon (every knock taken: `crate::wear`) stays in the hand as an item, but its
+    /// swing does this much of its damage and knockback, and never crits or knocks down.
+    pub broken_damage: f32,
     /// Each level of the weapon's skill makes a knock this much less likely.
     pub wear_skill_less: f32,
     /// A weapon found in furniture has had at most this share of its life (0: every one is sound).
@@ -223,6 +226,7 @@ impl Default for CombatTuning {
             one_hand_slow: 1.2,
             battered_below: 0.25,
             battered_damage: 0.85,
+            broken_damage: 0.15,
             wear_skill_less: 0.04,
             found_wear_max: 0.7,
         }
@@ -576,18 +580,20 @@ impl World {
         let s = match a.kind {
             ActionKind::Swing => {
                 let w = &self.config.weapons[a.weapon as usize];
-                // A battered weapon hits weaker (`crate::wear`).
+                // A battered weapon hits weaker, a broken one hardly at all (`crate::wear`).
                 let dm = sk.damage_mult(w.skill(), level(w.skill())) * self.wear_damage_mult(pi);
+                let broken = self.hand_condition(pi) == Some(crate::wear::Condition::Broken);
+                let bk = if broken { c.broken_damage } else { 1.0 };
                 Strike {
                     range: w.range,
                     half_arc: (w.arc_degrees * 0.5).to_radians(),
                     max_targets: w.max_targets,
                     damage: (w.damage.0 * dm, w.damage.1 * dm),
-                    crit_chance: w.crit_chance,
+                    crit_chance: if broken { 0.0 } else { w.crit_chance },
                     crit_multiplier: w.crit_multiplier,
-                    knockback: w.knockback * knock,
-                    stagger_chance: w.stagger_chance,
-                    knockdown_chance: w.knockdown_chance,
+                    knockback: w.knockback * knock * bk,
+                    stagger_chance: w.stagger_chance * bk,
+                    knockdown_chance: if broken { 0.0 } else { w.knockdown_chance },
                     noise: w.noise_radius,
                     shot: None,
                 }

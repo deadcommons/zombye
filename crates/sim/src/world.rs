@@ -60,7 +60,7 @@ const SPAWN_CLEAR_RADIUS: f32 = 14.0;
 /// How far a door or window can be from the player using it (to the middle of the edge).
 pub const INTERACT_REACH: f32 = 1.6;
 /// A player aims interactions this far ahead, so the door you face wins over one behind you.
-const INTERACT_AIM_AHEAD: f32 = 0.6;
+pub(crate) const INTERACT_AIM_AHEAD: f32 = 0.6;
 
 #[derive(Clone, Debug)]
 pub struct WorldConfig {
@@ -123,6 +123,9 @@ pub struct WorldConfig {
     pub groups: crate::groups::GroupTuning,
     /// When E climbs a fence or an open or broken window ([`crate::players::climb_from`]). Not saved.
     pub climb: crate::players::ClimbTuning,
+    /// Blinds on windows and glazed doors: where the town has them and handling them
+    /// ([`crate::blinds`]). Saved with the settings.
+    pub blinds: crate::blinds::BlindTuning,
     /// The loaded mods' scripts (#25, [`crate::script`]): every world made from this config gets a
     /// host of its own from it. None: no scripts, and nothing of them in the world.
     pub scripts: Option<std::sync::Arc<dyn crate::script::ScriptEngine>>,
@@ -157,6 +160,7 @@ impl WorldConfig {
             bonds: Default::default(),
             groups: Default::default(),
             climb: Default::default(),
+            blinds: Default::default(),
             scripts: None,
         }
     }
@@ -287,6 +291,8 @@ pub struct World {
     pub stats: TickStats,
     /// Map edits since the last snapshot (door toggles), for replication.
     pub edge_changes: Vec<EdgeChange>,
+    /// Blinds put up, taken down or rolled since the last snapshot ([`crate::blinds`]), for replication.
+    pub(crate) blind_changes: Vec<crate::map::BlindChange>,
     /// Hours added by time skips.
     pub(crate) clock_offset_hours: f32,
     /// Ticks the far clock ([`World::far_tick`]) has run ahead of `tick`: while everyone sleeps the
@@ -460,7 +466,8 @@ impl World {
         let generated = worldgen::generate_with(&config.generation, &config.templates, &config.street_props);
         let items = items::place_weapons(&generated.map, &config.weapons, &weapon_items, generated.spawn_building, config.loot_seed(), 1);
         let sites = containers::find_sites(&generated.map, &config.containers);
-        let map = generated.map;
+        let mut map = generated.map;
+        crate::blinds::place(&mut map, config.generation.seed, &config.blinds);
         let hash = SpatialHash::new(map.width() as f32, map.height() as f32, 1.0);
         let regions = RegionIndex::new(&map, config.tiers.region_size);
         let walk = WalkGrid::new(&map);
@@ -510,6 +517,7 @@ impl World {
             tick: 0,
             stats: TickStats::default(),
             edge_changes: Vec::new(),
+            blind_changes: Vec::new(),
             clock_offset_hours: 0.0,
             far_ticks: 0,
             attack_events: Vec::new(),
@@ -950,6 +958,15 @@ impl World {
             self.edge_hp_dirty.insert(edge.key());
         }
         self.set_edge(edge, broken);
+        // A door battered off its hinges takes its blind down with it, onto the floor inside.
+        if broken == Edge::DoorBroken && self.map.blind(edge).is_some() {
+            self.set_blind(edge, None);
+            let inside = crate::blinds::inside(&self.map, edge).as_vec2() + Vec2::splat(0.5);
+            if let Some(i) = self.config.items.iter().position(|d| d.has_tag(&self.config.blinds.tag)) {
+                let stack = self.fresh_stack(i as u16, 1);
+                self.put_on_floor(stack, inside, 0.0);
+            }
+        }
         self.break_events.push(EdgeChange { tile: edge.tile, edge: edge.edge, kind: broken });
         let t = &self.config.zombie;
         let noise = if broken == Edge::DoorBroken { t.door_break_noise } else { t.glass_break_noise };
@@ -1455,6 +1472,7 @@ impl World {
                     crate::inventory::JobKind::Treat { wound, treatment, item } => wound.unwrap_or(0xFFFF) ^ (treatment as u32) << 16 ^ item.map_or(0xFF, u32::from) << 20 ^ 0x7000_0000,
                     crate::inventory::JobKind::Craft { recipe } => recipe as u32 ^ 0xC4AF_0000,
                     crate::inventory::JobKind::Reload { spare } => spare as u32 ^ 0x4E10_0000,
+                    crate::inventory::JobKind::Blind { edge, fit } => (edge.tile.x as u32) ^ (edge.tile.y as u32) << 12 ^ (edge.edge as u32) << 24 ^ (fit as u32) << 25 ^ 0xB100_0000,
                 });
             }
         }
@@ -1476,6 +1494,11 @@ impl World {
             mix(y as u32);
             mix(w as u32);
             mix(hp.to_bits());
+        }
+        for (&(x, y, w), &down) in &self.map.blinds {
+            mix(x as u32 ^ 0xB11D_0000);
+            mix(y as u32);
+            mix(w as u32 | (down as u32) << 8);
         }
         self.population.hash_into(&mut mix);
         // Only once the far clock has run ahead, so worlds nobody slept in hash as before.
