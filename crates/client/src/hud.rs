@@ -253,11 +253,16 @@ pub fn fit_top_panels(
 /// What follows a gun's name in the weapon panel (#72): the rounds in it of those it takes, and
 /// what is carried to reload it with: "  9/12  +12 +24" is nine in the gun, a full magazine and 24
 /// loose rounds in the pockets; "  0/5  (empty)" with nothing to reload it with. Empty when
-/// what's held is no gun. (R reloads, as the keys line says.)
+/// what's held is no gun. (R reloads, as the keys line says.) After a weapon that wears:
+/// "  (worn)" or "  (battered)", nothing while it is good.
 pub(crate) fn gun_line(join: &JoinInfo, inventory: Option<&zombye_sim::Inventory>) -> String {
     let Some(inv) = inventory else { return String::new() };
     let Some(gun) = inv.hand else { return String::new() };
     let holds = |item: u16| zombye_sim::ranged::holds(&join.items, &join.weapons, item);
+    // A weapon that has seen use says how it is holding up (`zombye_sim::wear`).
+    if let Some((_, _, state)) = zombye_sim::wear::condition(&join.items, &join.weapons, &gun, join.combat.battered_below) {
+        return if state == zombye_sim::wear::Condition::Good { String::new() } else { format!("  ({})", state.label()) };
+    }
     let Some(h) = holds(gun.item).filter(|h| !h.magazine) else { return String::new() };
     let mut line = format!("  {}/{}", gun.used, h.capacity);
     for s in inv.carried.iter().filter(|s| holds(s.item).is_some_and(|m| m.magazine && m.ammo == h.ammo)) {

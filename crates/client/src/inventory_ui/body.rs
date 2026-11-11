@@ -388,7 +388,7 @@ mod tests {
         let mut listed = Vec::new();
         {
             let (flight, find, picked, ui) = (InFlight::default(), Find::default(), Picked::default(), PanelUi::default());
-            let ctx = Ctx { items: &items, now: 0, me: 7, flight: &flight, find: &find, picked: &picked, ui: &ui, view: None, open: None };
+            let ctx = Ctx { items: &items, wear: super::super::Wear { weapons: &[], battered_below: 0.25 }, now: 0, me: 7, flight: &flight, find: &find, picked: &picked, ui: &ui, view: None, open: None };
             let world = app.world_mut();
             let mut commands = world.commands();
             commands.spawn(Node { position_type: PositionType::Absolute, top: px(0), left: px(0), width: px(384), flex_direction: FlexDirection::Column, ..default() }).with_children(|col| draw(&ctx, &mut listed, col, &inv));

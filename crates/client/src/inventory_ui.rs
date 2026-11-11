@@ -719,10 +719,10 @@ fn keep_note(time: Res<Time>, notes: Res<ItemNotesThisFrame>, panel: Res<Invento
 
 /// "Loaf of bread x2 (stale, 2/3 left)": the name, how many, and for food and drink how fresh it
 /// is at game minute `now` and the goes left of the top one (#11).
-fn name_of(items: &[ItemDef], now: i32, s: &ItemStack) -> String {
+fn name_of(items: &[ItemDef], wear: Wear, now: i32, s: &ItemStack) -> String {
     let Some(def) = items.get(s.item as usize) else { return "?".into() };
     let mut out = if s.count > 1 { format!("{} x{}", def.name, s.count) } else { def.name.clone() };
-    let notes = state_of(items, now, s);
+    let notes = state_of(items, wear, now, s);
     if !notes.is_empty() {
         out.push_str(&format!(" ({notes})"));
     }
@@ -730,8 +730,9 @@ fn name_of(items: &[ItemDef], now: i32, s: &ItemStack) -> String {
 }
 
 /// "stale, 2/3 left": what a row says after the name about food and drink (how fresh at game
-/// minute `now`, the goes left of the top one); empty for the rest.
-fn state_of(items: &[ItemDef], now: i32, s: &ItemStack) -> String {
+/// minute `now`, the goes left of the top one), "worn" or "battered" about a weapon that has
+/// seen use (`zombye_sim::wear`); empty for the rest.
+fn state_of(items: &[ItemDef], wear: Wear, now: i32, s: &ItemStack) -> String {
     let Some(def) = items.get(s.item as usize) else { return String::new() };
     let mut notes = Vec::new();
     if let Some(f) = zombye_sim::needs::freshness(def, s, now).filter(|f| *f != zombye_sim::Freshness::Fresh) {
@@ -739,6 +740,10 @@ fn state_of(items: &[ItemDef], now: i32, s: &ItemStack) -> String {
     }
     if let Some(c) = def.consumable().filter(|_| s.used > 0) {
         notes.push(format!("{}/{} left", c.uses - s.used, c.uses));
+    } else if let Some((_, _, state)) = zombye_sim::wear::condition(items, wear.weapons, s, wear.battered_below) {
+        if state != zombye_sim::wear::Condition::Good {
+            notes.push(state.label().into());
+        }
     } else if s.used > 0 {
         // A gun or a magazine (#72): what's in it.
         notes.push(format!("{} in it", s.used));
@@ -1031,7 +1036,7 @@ fn rebuild(
     let open = view.as_ref().and_then(|v| v.open.as_ref().map(|c| (c.id, c.name.to_lowercase())));
     // What the right pane shows, and so where a click on what you carry sends it.
     let right = ui.right(open.as_ref().map(|(id, _)| *id));
-    let ctx = Ctx { items, now, me: me.id, flight: &flight, find: &find, picked: &picked, ui: &ui, view: view.as_ref(), open: open.as_ref().map(|(id, n)| (*id, n.as_str())) };
+    let ctx = Ctx { items, wear: Wear::of(&join), now, me: me.id, flight: &flight, find: &find, picked: &picked, ui: &ui, view: view.as_ref(), open: open.as_ref().map(|(id, n)| (*id, n.as_str())) };
     // The item rows drawn, in order, for Shift-click's ranges and the move-all buttons.
     let mut rows: Vec<Key> = Vec::new();
     commands.entity(root).with_children(|c| {
@@ -1139,9 +1144,24 @@ fn rebuild(
     listed.0 = rows;
 }
 
+/// What it takes to say how worn a weapon is: the weapons, and the share of its life under
+/// which one is battered (the server's `CombatTuning::battered_below`).
+#[derive(Clone, Copy)]
+pub(crate) struct Wear<'a> {
+    pub(crate) weapons: &'a [zombye_sim::WeaponDef],
+    pub(crate) battered_below: f32,
+}
+
+impl<'a> Wear<'a> {
+    pub(crate) fn of(join: &'a JoinInfo) -> Self {
+        Self { weapons: &join.weapons, battered_below: join.combat.battered_below }
+    }
+}
+
 /// What drawing a pane's rows needs to know.
 struct Ctx<'a> {
     items: &'a [ItemDef],
+    wear: Wear<'a>,
     /// The game minute (food goes off).
     now: i32,
     me: u32,
@@ -1161,14 +1181,14 @@ impl Ctx<'_> {
 
     /// What a click on the row of `l` (and `more`, the other stacks it stands for) does.
     fn act(&self, l: &Line, to: Place, more: Vec<Line>) -> RowAction {
-        RowAction { stack: l.stack, title: name_of(self.items, self.now, &l.stack), left: Some((l.from, l.index, to)), more, menu: menu_entries(self.me, self.items, l.from, l.index, &l.stack, self.open), craft: None }
+        RowAction { stack: l.stack, title: name_of(self.items, self.wear, self.now, &l.stack), left: Some((l.from, l.index, to)), more, menu: menu_entries(self.me, self.items, l.from, l.index, &l.stack, self.open), craft: None }
     }
 
     /// What follows the name, dimmed: how fresh, goes left, uses left in the opened one (a box of
     /// plasters, a roll of gauze), and that it is on its way.
     fn note(&self, l: &Line) -> String {
         let mut notes = Vec::new();
-        let state = state_of(self.items, self.now, &l.stack);
+        let state = state_of(self.items, self.wear, self.now, &l.stack);
         if !state.is_empty() {
             notes.push(state);
         }
@@ -1921,7 +1941,7 @@ fn open_menu(menu: &mut ItemMenu, link: &ServerLink, join: &JoinInfo, me: u32, f
     if entries.is_empty() {
         return false;
     }
-    menu.show(name_of(&join.items, link.curr.game_minute, &s), s, entries, at);
+    menu.show(name_of(&join.items, Wear::of(join), link.curr.game_minute, &s), s, entries, at);
     true
 }
 
