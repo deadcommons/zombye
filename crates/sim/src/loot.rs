@@ -659,9 +659,15 @@ pub(crate) mod tests {
     fn search(w: &mut World, id: u32, c: u32) {
         let site = w.container(c).unwrap().clone();
         let spots = (-1..=site.size.y).flat_map(|dy| (-1..=site.size.x).map(move |dx| site.min + glam::IVec2::new(dx, dy)));
-        let Some(t) = spots.filter(|&t| w.map.in_bounds(t) && !w.map.tile_blocked(t) && w.map.tile(t).room == site.room).min_by_key(|t| (t.x, t.y)) else { return };
+        // On the floor the container stands on (upstairs ones too: `crate::stairs`).
+        let free = |t: glam::IVec2| match site.level {
+            0 => w.map.in_bounds(t) && !w.map.tile_blocked(t) && w.map.tile(t).room == site.room,
+            _ => w.map.upper_tile(t).is_some_and(|u| u.floor && !u.blocked && u.room == site.room),
+        };
+        let Some(t) = spots.filter(|&t| free(t)).min_by_key(|t| (t.x, t.y)) else { return };
         let pi = w.players.iter().position(|p| p.id == id).unwrap();
         w.players[pi].state.pos = t.as_vec2() + Vec2::splat(0.5);
+        w.players[pi].state.level = site.level;
         if w.player_search(id, Some(c)).is_ok() {
             settle(w, id);
         }

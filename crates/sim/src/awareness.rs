@@ -112,12 +112,14 @@ pub struct Body {
     pub light: f32,
     /// Eyes shut: sees nobody.
     pub asleep: bool,
+    /// The floor it is on (`crate::stairs`): nobody is seen from another floor.
+    pub level: u8,
 }
 
 impl Body {
     /// Standing at `pos` facing `facing`, walking, with no light.
     pub fn standing(id: u32, pos: Vec2, facing: f32) -> Self {
-        Self { id, pos, facing, stance: Stance::Walk, moving: true, sight_mult: 1.0, light: 0.0, asleep: false }
+        Self { id, pos, facing, stance: Stance::Walk, moving: true, sight_mult: 1.0, light: 0.0, asleep: false, level: 0 }
     }
 }
 
@@ -144,7 +146,10 @@ pub fn sight_range(t: &PlayerSightTuning, daylight: f32, viewer: &Body, target: 
 /// Does `viewer` see `target`: within [`sight_range`] with a line of sight (windows don't block
 /// it; walls and shut doors do)?
 pub fn sees(map: &TileMap, t: &PlayerSightTuning, daylight: f32, viewer: &Body, target: &Body) -> bool {
-    !viewer.asleep && viewer.pos.distance(target.pos) <= sight_range(t, daylight, viewer, target) && line_of_sight(map, viewer.pos, target.pos)
+    if viewer.asleep || viewer.level != target.level || viewer.pos.distance(target.pos) > sight_range(t, daylight, viewer, target) {
+        return false;
+    }
+    if viewer.level > 0 { map.upper_clear(viewer.pos, target.pos) } else { line_of_sight(map, viewer.pos, target.pos) }
 }
 
 /// A player `listener` heard without seeing it: a sound at a position, as loud as its radius.
@@ -236,6 +241,7 @@ impl World {
                     sight_mult: target.map_or(1.0, |t| t.sight_mult),
                     light,
                     asleep: p.needs.asleep(),
+                    level: p.state.level,
                 }
             })
             .collect()

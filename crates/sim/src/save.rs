@@ -62,6 +62,7 @@
 //! that rise wore, #63; optional too),
 //! then `FARC` (how far the far clock is ahead of the tick, #57; optional, only written when it is),
 //! then `SHOV` (zombies shoved lately, whose shoves add up toward a knockdown; only when there are any),
+//! then `LEVL` (who and what is upstairs, `crate::stairs`; only when anyone or anything is),
 //! then `MODS` (what mod scripts keep, #25, `crate::script`; optional, only for a world with mods).
 //! Payloads are
 //! [postcard](https://docs.rs/postcard), and zombies are stored column by column. A file with
@@ -188,6 +189,9 @@ const MODS: [u8; 4] = *b"MODS";
 /// Zombies shoved lately ([`crate::combat::Shoved`]), adding up toward a knockdown; only when
 /// there are any, so adding it didn't change the format version.
 const SHOV: [u8; 4] = *b"SHOV";
+/// The players upstairs (id and floor) and the ground items lying there (`crate::stairs`); only
+/// when there are any, so adding it didn't change the format version.
+const LEVL: [u8; 4] = *b"LEVL";
 const END: [u8; 4] = *b"END\0";
 /// Bytes before the first section: magic and version.
 const HEADER: usize = 12;
@@ -677,6 +681,7 @@ impl World {
             private_dirty: _,
             rise_looks,
             shoved,
+            upstairs,
             parked,
             // Scratch, refilled every tick.
             targets: _,
@@ -835,6 +840,11 @@ impl World {
         if !shoved.is_empty() {
             w.section(SHOV, &encode(shoved));
         }
+        let levels: Vec<(u32, u8)> = players.iter().filter(|p| p.state.level > 0).map(|p| (p.id, p.state.level)).collect();
+        let up_items: Vec<u32> = upstairs.iter().copied().filter(|id| items.binary_search_by_key(id, |it| it.id).is_ok()).collect();
+        if !levels.is_empty() || !up_items.is_empty() {
+            w.section(LEVL, &encode(&(levels, up_items)));
+        }
         // Mod scripts (#25): what they keep, and whose they are. A world without mods has none.
         let mods = config.scripts.as_ref().map(|e| e.mods()).unwrap_or_default();
         if !script.is_empty() || !mods.is_empty() {
@@ -953,6 +963,8 @@ impl World {
                 // `BLND` section, if any, replaces the blinds below).
                 map.glazed = std::mem::take(&mut w.map.glazed);
                 map.blinds = std::mem::take(&mut w.map.blinds);
+                map.stair_speed = w.map.stair_speed;
+                map.index_storeys();
                 w.map = map;
                 // Containers are the stored map's furniture, not the generated one's.
                 w.sites = crate::containers::find_sites(&w.map, &w.config.containers);
@@ -1022,6 +1034,7 @@ impl World {
         let mut groups: Option<crate::groups::Groups> = None;
         let mut blinds: Option<BlindSave> = None;
         let mut shoved: Option<Vec<crate::combat::Shoved>> = None;
+        let mut levels: Option<(Vec<(u32, u8)>, Vec<u32>)> = None;
         loop {
             let (tag, payload) = r.next()?;
             if tag == END {
@@ -1073,6 +1086,10 @@ impl World {
                 blinds = Some(decode(BLND, payload)?);
                 continue;
             }
+            if tag == LEVL && levels.is_none() {
+                levels = Some(decode(LEVL, payload)?);
+                continue;
+            }
             if tag == SHOV && shoved.is_none() {
                 shoved = Some(decode(SHOV, payload)?);
                 continue;
@@ -1081,7 +1098,7 @@ impl World {
                 script = Some(decode(MODS, payload)?);
                 continue;
             }
-            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || blinds.is_some() || shoved.is_some() {
+            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || blinds.is_some() || shoved.is_some() || levels.is_some() {
                 return Err(corrupt(format!("unexpected {} section", tag_name(tag))));
             }
             let block: ZombieBlock = decode(ZOMB, payload)?;
@@ -1149,6 +1166,30 @@ impl World {
                 notes.push(format!("{dropped} blinds dropped: their windows or doors aren't on the new map"));
             }
             w.map.blinds = kept;
+        }
+        // Who and what is upstairs (`crate::stairs`). On a map that no longer has a floor there
+        // (loaded anyway onto a changed one), they are on the ground floor.
+        let (levels, up_items) = levels.unwrap_or_default();
+        for (id, level) in levels {
+            let map = &w.map;
+            let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("player {id} is upstairs, but isn't in the save")))?;
+            if level != 1 || p.state.level != 0 {
+                return Err(save_check::invalid(format!("player {id} on floor {level}")));
+            }
+            if map.upper_tile(p.state.pos.floor().as_ivec2()).is_some_and(|u| u.floor && !u.blocked) {
+                p.state.level = 1;
+            } else {
+                notes.push(format!("player {id} was upstairs where there is no floor now: put on the ground floor"));
+            }
+        }
+        if up_items.windows(2).any(|p| p[0] >= p[1]) {
+            return Err(save_check::invalid("upstairs items out of order"));
+        }
+        for id in up_items {
+            let it = w.items.iter().find(|it| it.id == id).ok_or_else(|| save_check::invalid(format!("ground item {id} is upstairs, but isn't in the save")))?;
+            if w.map.upper_tile(it.pos.floor().as_ivec2()).is_some_and(|u| u.floor) {
+                w.upstairs.insert(id);
+            }
         }
         for (id, c) in climbs.unwrap_or_default() {
             let (map, give_up) = (&w.map, w.config.climb.give_up_secs);

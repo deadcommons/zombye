@@ -5,8 +5,10 @@
 //! Collision, pathfinding and line of sight all read the same edge data, and the client builds
 //! its 3D wall meshes from it.
 //!
-//! M1 simulates the ground level only. Upper floors and roofs exist as per-building render data in
-//! [`Building`]; walking upstairs comes later.
+//! Zombies, sight, doors and windows are simulated on the ground level only. Players can also walk
+//! up a building's stairs onto its first upper floor ([`Stair`], [`TileMap::resolve_walker`]): the
+//! upper floor's tiles and walls come from the per-building data in [`Building`], indexed by
+//! [`TileMap::index_storeys`].
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -22,6 +24,125 @@ pub const TREE_RADIUS: f32 = 0.3;
 /// A body whose centre is this close to an open or broken window's line is climbing through it.
 /// Just under a body radius plus the wall, so brushing past a window along the wall doesn't count.
 pub const CLIMB_ZONE: f32 = 0.35;
+/// Floor to floor, in metres (docs/asset-pipeline.md): how high a flight of stairs rises.
+pub const STOREY: f32 = 3.0;
+
+/// A flight of stairs from the ground floor up to the first upper floor: the tiles of a piece of
+/// `stairs` furniture, a ramp rising toward `up` from the floor at its foot end to [`STOREY`] at
+/// its top end. Bodies get on and off at the two ends only; its long sides are walls, and so is
+/// its top end to anyone on the ground floor (it is solid underneath). Upstairs it is a well in
+/// the floor, open at the top end. Derived from the buildings ([`TileMap::index_storeys`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Stair {
+    pub building: u16,
+    /// Tiles: `min..min+size`.
+    pub min: IVec2,
+    pub size: IVec2,
+    /// The way it rises.
+    pub up: Side,
+}
+
+impl Stair {
+    fn lo(&self) -> Vec2 {
+        self.min.as_vec2()
+    }
+
+    fn hi(&self) -> Vec2 {
+        (self.min + self.size).as_vec2()
+    }
+
+    /// How long the flight is over the ground, in metres.
+    pub fn length(&self) -> f32 {
+        match self.up {
+            Side::N | Side::S => self.size.y as f32,
+            Side::E | Side::W => self.size.x as f32,
+        }
+    }
+
+    /// How far up the flight a body at `p` is: 0 at the foot end, 1 at the top end (less and more
+    /// beyond them).
+    pub fn progress(&self, p: Vec2) -> f32 {
+        let (lo, hi) = (self.lo(), self.hi());
+        match self.up {
+            Side::N => (hi.y - p.y) / self.length(),
+            Side::S => (p.y - lo.y) / self.length(),
+            Side::E => (p.x - lo.x) / self.length(),
+            Side::W => (hi.x - p.x) / self.length(),
+        }
+    }
+
+    /// Is a body centred at `p` on the flight (between its sides, from the foot end up to, not
+    /// including, the top end)?
+    pub fn on(&self, p: Vec2) -> bool {
+        let (lo, hi) = (self.lo(), self.hi());
+        let across = match self.up {
+            Side::N | Side::S => p.x >= lo.x && p.x < hi.x,
+            Side::E | Side::W => p.y >= lo.y && p.y < hi.y,
+        };
+        across && (0.0..1.0).contains(&self.progress(p))
+    }
+
+    /// The upstairs tile a body steps onto from the top end.
+    pub fn landing(&self) -> IVec2 {
+        let top = match self.up {
+            Side::N | Side::W => self.min,
+            Side::S | Side::E => self.min + self.size - IVec2::ONE,
+        };
+        top + self.up.offset()
+    }
+
+    /// The ground-floor tile a body steps onto the foot end from.
+    pub fn foot(&self) -> IVec2 {
+        let bottom = match self.up {
+            Side::N | Side::W => self.min + self.size - IVec2::ONE,
+            Side::S | Side::E => self.min,
+        };
+        bottom - self.up.offset()
+    }
+
+    /// The middle of the flight's foot end and of its top end, on the ground.
+    pub fn ends(&self) -> (Vec2, Vec2) {
+        let (lo, hi) = (self.lo(), self.hi());
+        let mid = (lo + hi) * 0.5;
+        match self.up {
+            Side::N => (Vec2::new(mid.x, hi.y), Vec2::new(mid.x, lo.y)),
+            Side::S => (Vec2::new(mid.x, lo.y), Vec2::new(mid.x, hi.y)),
+            Side::E => (Vec2::new(lo.x, mid.y), Vec2::new(hi.x, mid.y)),
+            Side::W => (Vec2::new(hi.x, mid.y), Vec2::new(lo.x, mid.y)),
+        }
+    }
+
+    /// Its two long sides, its foot end and its top end, as segments on the ground.
+    fn walls(&self) -> ([(Vec2, Vec2); 2], (Vec2, Vec2), (Vec2, Vec2)) {
+        let (lo, hi) = (self.lo(), self.hi());
+        let (a, b, c, d) = (lo, Vec2::new(hi.x, lo.y), hi, Vec2::new(lo.x, hi.y));
+        // a-b is the north end, b-c the east side, c-d the south end, d-a the west side.
+        match self.up {
+            Side::N => ([(b, c), (d, a)], (c, d), (a, b)),
+            Side::S => ([(b, c), (d, a)], (a, b), (c, d)),
+            Side::E => ([(a, b), (c, d)], (d, a), (b, c)),
+            Side::W => ([(a, b), (c, d)], (b, c), (d, a)),
+        }
+    }
+}
+
+/// One tile of the first upper floor ([`TileMap::index_storeys`]): its floor, and the north and
+/// west edges it owns up there. A tile just outside a building has edges and no floor.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct UpperTile {
+    pub floor: bool,
+    /// Furniture stands on it.
+    pub blocked: bool,
+    pub room: u16,
+    pub north: Edge,
+    pub west: Edge,
+}
+
+/// Does an upper floor's edge stop a body? Walls and windows do. Upstairs doors can't be shut
+/// yet: they are open doorways.
+pub fn upper_edge_blocks(e: Edge) -> bool {
+    matches!(e, Edge::Wall | Edge::Window)
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
@@ -396,13 +517,24 @@ pub struct TileMap {
     /// them on joining.
     #[serde(skip)]
     pub glazed: BTreeSet<(i32, i32, u8)>,
+    /// The flights of stairs players can walk up, in building order, and the first upper floor's
+    /// tiles by `(y, x)`. Derived from `buildings` by [`TileMap::index_storeys`]: not saved, in no
+    /// hash.
+    #[serde(skip)]
+    pub stairs: Vec<Stair>,
+    #[serde(skip)]
+    upper: BTreeMap<(i32, i32), UpperTile>,
+    /// How fast a body moves on a flight of stairs, as a share of its speed on the flat
+    /// (`StairTuning::speed`; 0 until the world sets it, which reads as 1).
+    #[serde(skip)]
+    pub stair_speed: f32,
 }
 
 impl TileMap {
     pub fn new(chunks_x: i32, chunks_y: i32) -> Self {
         let chunks = (0..chunks_x * chunks_y).map(|_| Chunk { tiles: vec![Tile::default(); CHUNK_TILES] }).collect();
         let outdoors = Room { building: u16::MAX, name: "Outdoors".into(), room_type: "outdoors".into(), floor: Floor::Grass };
-        Self { chunks_x, chunks_y, chunks, rooms: vec![outdoors], buildings: Vec::new(), turning_circles: Vec::new(), street_props: Vec::new(), prop_kinds: Vec::new(), blinds: BTreeMap::new(), glazed: BTreeSet::new() }
+        Self { chunks_x, chunks_y, chunks, rooms: vec![outdoors], buildings: Vec::new(), turning_circles: Vec::new(), street_props: Vec::new(), prop_kinds: Vec::new(), blinds: BTreeMap::new(), glazed: BTreeSet::new(), stairs: Vec::new(), upper: BTreeMap::new(), stair_speed: 0.0 }
     }
 
     pub fn width(&self) -> i32 {
@@ -633,6 +765,212 @@ impl TileMap {
             OwnedEdge::North => (o, o + Vec2::X),
             OwnedEdge::West => (o, o + Vec2::Y),
         }
+    }
+
+    /// Work out the stairs and the first upper floor from the buildings (after the map is
+    /// generated, loaded or its buildings edited). A piece of `stairs` furniture on the ground
+    /// floor of a building with an upper storey is a [`Stair`] when it is one tile wide, there is
+    /// free floor upstairs to step onto from its top end and a free tile at its foot.
+    pub fn index_storeys(&mut self) {
+        let mut upper: BTreeMap<(i32, i32), UpperTile> = BTreeMap::new();
+        for b in &self.buildings {
+            for &(level, t, room) in &b.upper_floors {
+                if level == 1 {
+                    let u = upper.entry((t.y, t.x)).or_default();
+                    u.floor = true;
+                    u.room = room;
+                }
+            }
+            for (level, e) in &b.upper_edges {
+                if *level == 1 {
+                    let u = upper.entry((e.tile.y, e.tile.x)).or_default();
+                    match e.edge {
+                        OwnedEdge::North => u.north = e.kind,
+                        OwnedEdge::West => u.west = e.kind,
+                    }
+                }
+            }
+            for f in b.furniture.iter().filter(|f| f.level == 1) {
+                for y in 0..f.size.y {
+                    for x in 0..f.size.x {
+                        if let Some(u) = upper.get_mut(&(f.min.y + y, f.min.x + x)) {
+                            u.blocked = true;
+                        }
+                    }
+                }
+            }
+        }
+        let mut stairs = Vec::new();
+        for (bi, b) in self.buildings.iter().enumerate() {
+            if b.levels < 2 {
+                continue;
+            }
+            for f in b.furniture.iter().filter(|f| f.level == 0 && f.kind == "stairs") {
+                let s = Stair { building: bi as u16, min: f.min, size: f.size, up: f.facing };
+                let wide = match s.up {
+                    Side::N | Side::S => f.size.x,
+                    Side::E | Side::W => f.size.y,
+                };
+                let landing = s.landing();
+                let lands = upper.get(&(landing.y, landing.x)).is_some_and(|u| u.floor && !u.blocked);
+                if wide == 1 && s.length() >= 2.0 && lands && !self.tile_blocked(s.foot()) {
+                    stairs.push(s);
+                }
+            }
+        }
+        self.upper = upper;
+        self.stairs = stairs;
+    }
+
+    /// The flight of stairs a body centred at `p` is on, if any ([`Stair::on`]).
+    pub fn stair_at(&self, p: Vec2) -> Option<&Stair> {
+        self.stairs.iter().find(|s| s.on(p))
+    }
+
+    /// The flight of stairs covering tile `t`, if any.
+    pub fn stair_on_tile(&self, t: IVec2) -> Option<&Stair> {
+        self.stairs.iter().find(|s| t.cmpge(s.min).all() && t.cmplt(s.min + s.size).all())
+    }
+
+    /// A tile of the first upper floor (floor, furniture, room, the edges it owns), if there is
+    /// anything of it there.
+    pub fn upper_tile(&self, t: IVec2) -> Option<UpperTile> {
+        self.upper.get(&(t.y, t.x)).copied()
+    }
+
+    /// Every tile of the first upper floor, row by row.
+    pub fn upper_tiles(&self) -> impl Iterator<Item = (IVec2, UpperTile)> + '_ {
+        self.upper.iter().map(|(&(y, x), u)| (IVec2::new(x, y), *u))
+    }
+
+    /// How high above the ground a body on `level` at `p` stands: on a flight of stairs its
+    /// height there, upstairs a storey.
+    pub fn height_at(&self, level: u8, p: Vec2) -> f32 {
+        if level > 0 {
+            return STOREY * level as f32;
+        }
+        self.stair_at(p).map_or(0.0, |s| s.progress(p).clamp(0.0, 1.0) * STOREY)
+    }
+
+    /// Room id at a position on `level` (0 = outdoors, or no floor there).
+    pub fn room_on(&self, level: u8, p: Vec2) -> u16 {
+        if level == 0 {
+            return self.room_at(p);
+        }
+        self.upper_tile(p.floor().as_ivec2()).filter(|u| u.floor).map_or(0, |u| u.room)
+    }
+
+    /// Is the straight line from `a` to `b` on the first upper floor clear of its walls and
+    /// windows, and over floor all the way? (For a hand's reach upstairs.)
+    pub fn upper_clear(&self, a: Vec2, b: Vec2) -> bool {
+        let steps = (a.distance(b) / 0.1).ceil().max(1.0) as i32;
+        let mut prev = a.floor().as_ivec2();
+        for k in 0..=steps {
+            let p = a.lerp(b, k as f32 / steps as f32);
+            let t = p.floor().as_ivec2();
+            if !self.upper_tile(t).is_some_and(|u| u.floor) {
+                return false;
+            }
+            if t != prev {
+                let d = t - prev;
+                let crossed = |owner: IVec2, north: bool| self.upper_tile(owner).is_some_and(|u| upper_edge_blocks(if north { u.north } else { u.west }));
+                if (d.x != 0 && crossed(IVec2::new(prev.x.max(t.x), prev.y), false))
+                    || (d.y != 0 && crossed(IVec2::new(prev.x, prev.y.max(t.y)), true))
+                    || (d.x != 0 && d.y != 0 && (crossed(IVec2::new(prev.x.max(t.x), t.y), false) || crossed(IVec2::new(t.x, prev.y.max(t.y)), true)))
+                {
+                    return false;
+                }
+                prev = t;
+            }
+        }
+        true
+    }
+
+    /// [`resolve_circle`](Self::resolve_circle) for a body that can use the stairs (a player), on
+    /// `level` (0 the ground floor and the stairs, 1 upstairs). On the ground a flight of stairs
+    /// is not a block of furniture but a ramp between two walls, shut at its top end to anyone not
+    /// on it; upstairs the body is kept on the floor, out of the upper walls and furniture, and
+    /// out of the stairwell but through its top end.
+    pub fn resolve_walker(&self, mut p: Vec2, radius: f32, level: u8) -> Vec2 {
+        if self.stairs.is_empty() && level == 0 {
+            return self.resolve_circle(p, radius);
+        }
+        let wall = radius + WALL_HALF_THICKNESS;
+        for _ in 0..2 {
+            let t = p.floor().as_ivec2();
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let n = t + IVec2::new(dx, dy);
+                    if level == 0 {
+                        p = self.push_out_of_tile(p, radius, n, true);
+                        continue;
+                    }
+                    let Some(u) = self.upper_tile(n) else {
+                        p = push_out_of_box(p, radius, n.as_vec2(), n.as_vec2() + Vec2::ONE);
+                        continue;
+                    };
+                    if !u.floor {
+                        p = push_out_of_box(p, radius, n.as_vec2(), n.as_vec2() + Vec2::ONE);
+                    } else if u.blocked {
+                        p = push_out_of_box(p, radius, n.as_vec2() + Vec2::splat(0.05), n.as_vec2() + Vec2::splat(0.95));
+                    }
+                    for (which, kind) in [(OwnedEdge::North, u.north), (OwnedEdge::West, u.west)] {
+                        if upper_edge_blocks(kind) {
+                            let (a, b) = Self::edge_segment(n, which);
+                            p = push_out_of_segment(p, wall, a, b);
+                        }
+                    }
+                }
+            }
+            for s in &self.stairs {
+                let (lo, hi) = (s.lo() - Vec2::splat(1.0), s.hi() + Vec2::splat(1.0));
+                if p.x < lo.x || p.y < lo.y || p.x > hi.x || p.y > hi.y {
+                    continue;
+                }
+                let (sides, foot, top) = s.walls();
+                for (a, b) in sides {
+                    p = push_out_of_segment(p, wall, a, b);
+                }
+                if level > 0 {
+                    p = push_out_of_segment(p, wall, foot.0, foot.1);
+                } else if !s.on(p) {
+                    p = push_out_of_segment(p, wall, top.0, top.1);
+                }
+            }
+        }
+        p
+    }
+
+    /// One tile's part of [`resolve_circle`](Self::resolve_circle): out of what stands on tile
+    /// `n` and of the edges it owns. With `stairs`, a tile of a flight of stairs isn't a block.
+    fn push_out_of_tile(&self, mut p: Vec2, radius: f32, n: IVec2, stairs: bool) -> Vec2 {
+        if !self.in_bounds(n) {
+            return push_out_of_box(p, radius, n.as_vec2(), n.as_vec2() + Vec2::ONE);
+        }
+        let tile = self.tile(n);
+        match tile.feature {
+            Feature::Tree | Feature::PineTree => {
+                p = push_out_of_circle(p, radius, n.as_vec2() + Vec2::splat(0.5), TREE_RADIUS);
+            }
+            Feature::Furniture if stairs && self.stair_on_tile(n).is_some() => {}
+            Feature::Furniture => {
+                p = push_out_of_box(p, radius, n.as_vec2() + Vec2::splat(0.05), n.as_vec2() + Vec2::splat(0.95));
+            }
+            Feature::StreetProp if self.street_prop_fills(n) => {
+                p = push_out_of_box(p, radius, n.as_vec2(), n.as_vec2() + Vec2::ONE);
+            }
+            Feature::StreetProp => {
+                p = push_out_of_circle(p, radius, n.as_vec2() + Vec2::splat(0.5), self.street_prop_radius(n));
+            }
+            _ => {}
+        }
+        for (which, kind) in [(OwnedEdge::North, tile.north), (OwnedEdge::West, tile.west)] {
+            if kind.blocks_movement() {
+                let (a, b) = Self::edge_segment(n, which);
+                p = push_out_of_segment(p, radius + WALL_HALF_THICKNESS, a, b);
+            }
+        }
+        p
     }
 
     /// Push a circle out of blocking edges, trees, furniture, street props and the map border.

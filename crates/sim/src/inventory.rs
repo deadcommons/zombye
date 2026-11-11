@@ -54,6 +54,8 @@ pub const CONTAINER_KEEP_OPEN: f32 = 2.2;
 /// E prefers a container within this angle of where the player faces (to the nearest point of the
 /// furniture), nearest first; with none there, the nearest in reach.
 const FACING_DEGREES: f32 = 60.0;
+/// How far up or down a flight of stairs a hand reaches for something lying on it (m).
+const STAIR_REACH: f32 = 1.2;
 /// What E says with nothing on the floor within reach and no container to search.
 pub const NOTHING_HERE: &str = "nothing to pick up or search here";
 /// Item notes kept if nobody drains them.
@@ -508,7 +510,7 @@ impl World {
     }
 
     fn within(&self, p: &Player, site: &ContainerSite, reach: f32) -> bool {
-        !p.dead && self.map.room_at(p.state.pos) == site.room && site.distance(p.state.pos) <= reach
+        !p.dead && p.state.level == site.level && self.map.room_on(p.state.level, p.state.pos) == site.room && site.distance(p.state.pos) <= reach
     }
 
     /// The container player `id` faces within reach, if any: of those within [`FACING_DEGREES`]
@@ -554,7 +556,32 @@ impl World {
     /// one rule for the floor: [`World::floor_of`], moves from the floor and `PickUp` all use it,
     /// and snapshots send each player its floor by it.
     fn floor_reaches(&self, p: &Player, it: &GroundItem) -> bool {
-        !p.dead && it.pos.distance(p.state.pos) <= PICKUP_REACH && clear_reach(&self.map, p.state.pos, it.pos)
+        if p.dead || it.pos.distance(p.state.pos) > PICKUP_REACH || self.item_level(it.id) != p.state.level {
+            return false;
+        }
+        if p.state.level > 0 {
+            return self.map.upper_clear(p.state.pos, it.pos);
+        }
+        // Something left on a flight of stairs lies at its height there.
+        (self.map.height_at(0, p.state.pos) - self.map.height_at(0, it.pos)).abs() <= STAIR_REACH && clear_reach(&self.map, p.state.pos, it.pos)
+    }
+
+    /// The floor ground item `id` lies on: 1 upstairs, else 0 (`crate::stairs`).
+    pub fn item_level(&self, id: u32) -> u8 {
+        self.upstairs.contains(&id) as u8
+    }
+
+    /// The ids of the ground items lying upstairs, in order (for snapshots).
+    pub fn upstairs_items(&self) -> Vec<u32> {
+        self.upstairs.iter().copied().collect()
+    }
+
+    /// Forget the upstairs items that are gone (taken, merged away, cleared by a script).
+    pub(crate) fn prune_upstairs(&mut self) {
+        if !self.upstairs.is_empty() {
+            let items = &self.items;
+            self.upstairs.retain(|id| items.binary_search_by_key(id, |it| it.id).is_ok());
+        }
     }
 
     /// The ids of the ground items player `id` can reach, nearest first (its floor, for snapshots).
@@ -1140,7 +1167,8 @@ impl World {
             }
         }
         for s in to_ground {
-            self.put_on_floor(s, pos, facing);
+            let level = self.players[pi].state.level;
+            self.put_on_floor(s, pos, facing, level);
         }
         self.refresh_carry(pi);
         let what = if n > 1 { format!("{n} x {name}") } else { name };
@@ -1172,22 +1200,26 @@ impl World {
 
     /// Put a stack on the floor at `pos`: onto a pile of the same item lying right there if it has
     /// room, else as a new ground item. Returns the ground item's id.
-    pub(crate) fn put_on_floor(&mut self, s: ItemStack, pos: Vec2, angle: f32) -> u32 {
+    pub(crate) fn put_on_floor(&mut self, s: ItemStack, pos: Vec2, angle: f32, level: u8) -> u32 {
         let size = self.config.items.get(s.item as usize).map_or(1, |d| d.stack);
-        if let Some(it) = self.items.iter_mut().find(|it| it.stack.same_kind(&s) && it.pos.distance(pos) < 0.25 && it.stack.count + s.count <= size) {
+        let upstairs = &self.upstairs;
+        if let Some(it) = self.items.iter_mut().find(|it| it.stack.same_kind(&s) && it.pos.distance(pos) < 0.25 && it.stack.count + s.count <= size && upstairs.contains(&it.id) == (level > 0)) {
             it.stack.count += s.count;
             return it.id;
         }
         let id = self.next_item_id;
         self.next_item_id += 1;
         self.items.push(GroundItem { id, stack: s, pos, angle });
+        if level > 0 {
+            self.upstairs.insert(id);
+        }
         id
     }
 
     /// Player `pi` died: everything it had falls where it lay, in a small heap.
     pub(crate) fn drop_everything(&mut self, pi: usize) {
         let p = &mut self.players[pi];
-        let (id, pos, facing) = (p.id, p.state.pos, p.state.facing);
+        let (id, pos, facing, level) = (p.id, p.state.pos, p.state.facing, p.state.level);
         // A body that will rise keeps on what it wears: it gets up in it, and its clothes are
         // taken off it once it is put down (`crate::corpses`), not picked off the floor too.
         let rises = p.health.rise_in.is_some();
@@ -1200,9 +1232,9 @@ impl World {
         for (k, s) in all.into_iter().enumerate() {
             let roll = |j: u64| crate::rng::hash01(seed ^ 0xD20F, id as u64, self.tick, k as u64 * 2 + j);
             let off = if k == 0 { Vec2::ZERO } else { Vec2::from_angle(roll(0) * std::f32::consts::TAU) * (0.15 + 0.3 * roll(1)) };
-            let at = self.map.resolve_circle(pos + off, 0.05);
+            let at = self.map.resolve_walker(pos + off, 0.05, level);
             let at = if self.map.in_bounds(at.floor().as_ivec2()) { at } else { pos };
-            self.put_on_floor(s, at, facing + k as f32);
+            self.put_on_floor(s, at, facing + k as f32, level);
         }
         self.refresh_carry(pi);
     }
@@ -1296,7 +1328,8 @@ impl World {
                 self.items.remove(k);
             }
             for s in left {
-                self.put_on_floor(s, pos, facing);
+                let level = self.players[pi].state.level;
+                self.put_on_floor(s, pos, facing, level);
             }
             self.players[pi].inventory = inv;
             self.players[pi].run.items_taken += 1;
@@ -1807,7 +1840,7 @@ mod tests {
         let (mut w, id) = field();
         let def = w.config.containers.lookup("fridge", "kitchen").unwrap();
         // A 2 x 1 fridge east of the player, its west edge at x = 62.
-        w.sites.push(ContainerSite { id: 7, def, building: 0, room: 0, min: IVec2::new(62, 60), size: IVec2::new(2, 1), body: None });
+        w.sites.push(ContainerSite { id: 7, def, level: 0, building: 0, room: 0, min: IVec2::new(62, 60), size: IVec2::new(2, 1), body: None });
         let at = |w: &mut World, x: f32| {
             w.players[0].state.pos = Vec2::new(x, 60.5);
             w.players[0].jobs.clear();
@@ -1848,9 +1881,9 @@ mod tests {
         let def = w.config.containers.lookup("counter", "kitchen").unwrap();
         // Player at (60.5, 60.5): one cupboard south-west (0.71 m to its corner), one east
         // (0.5 m), one further east behind it (1.5 m, in reach).
-        w.sites.push(ContainerSite { id: 1, def, building: 0, room: 0, min: IVec2::new(59, 61), size: IVec2::ONE, body: None });
-        w.sites.push(ContainerSite { id: 2, def, building: 0, room: 0, min: IVec2::new(61, 60), size: IVec2::ONE, body: None });
-        w.sites.push(ContainerSite { id: 3, def, building: 0, room: 0, min: IVec2::new(62, 59), size: IVec2::new(1, 3), body: None });
+        w.sites.push(ContainerSite { id: 1, def, level: 0, building: 0, room: 0, min: IVec2::new(59, 61), size: IVec2::ONE, body: None });
+        w.sites.push(ContainerSite { id: 2, def, level: 0, building: 0, room: 0, min: IVec2::new(61, 60), size: IVec2::ONE, body: None });
+        w.sites.push(ContainerSite { id: 3, def, level: 0, building: 0, room: 0, min: IVec2::new(62, 59), size: IVec2::new(1, 3), body: None });
         w.players[0].state.facing = 0.0; // east
         assert_eq!(w.container_in_reach(id), Some(2), "the nearest of those ahead");
         w.players[0].state.facing = std::f32::consts::PI; // west: nothing ahead within 60 degrees but #1 (south-west, 45)

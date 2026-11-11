@@ -68,7 +68,7 @@ fn by_a_bed(seed: u64) -> (World, u32) {
     let around = (-1..=bed.size.y).flat_map(|dy| (-1..=bed.size.x).map(move |dx| bed.min + IVec2::new(dx, dy)));
     let t = around.filter(|&t| w.map.in_bounds(t) && !w.map.tile_blocked(t) && w.map.tile(t).room == room).min_by_key(|t| (t.x, t.y)).expect("room by the bed");
     w.players[0].state.pos = t.as_vec2() + Vec2::splat(0.5);
-    assert_eq!(w.sleep_spot(w.players[0].state.pos), SleepSpot::Bed);
+    assert_eq!(w.sleep_spot(w.players[0].state.pos, 0), SleepSpot::Bed);
     (w, id)
 }
 

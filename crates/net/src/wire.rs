@@ -60,8 +60,10 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// `Snapshot::blind_changes`, `Welcome::blinds` and `Welcome::glazed`, `JobKind::Blind`.
 /// 21: right-click actions on things in the world: `Intent::Toward`.
 /// 22: player identity (DCM-66): `Hello::key`, `ServerMsg::Challenge` and `ClientMsg::Proof`.
-/// 23: shoves that add up and stomps to the head: the shove and stomp numbers in `CombatTuning`.)
-pub const PROTOCOL: u32 = 23;
+/// 23: shoves that add up and stomps to the head: the shove and stomp numbers in `CombatTuning`.
+/// 24: stairs and the upper floor: `PlayerView::level` (bit 17 of `PlayerPacked::bits`),
+/// `SnapshotDelta::upstairs`, `Tunings::stairs`.)
+pub const PROTOCOL: u32 = 24;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -335,6 +337,8 @@ pub struct Tunings {
     pub carry: CarryTuning,
     /// When E climbs, so the client sends a climb only where the server takes one.
     pub climb: zombye_sim::ClimbTuning,
+    /// Walking between floors: the speed on a flight of stairs, which movement is predicted with.
+    pub stairs: zombye_sim::StairTuning,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -478,7 +482,8 @@ pub struct PlayerPacked {
     /// Bits 0-1 the stance, then dead, asleep, aiming, bleeding, limping, sick, injured arm, and
     /// in bits 9-10 its gesture (#67: 0 none, 1 wave, 2 hands up, 3 point); #73: bit 11 its hands
     /// are tied, 12 struggling, 13-15 what its hands do to another (0 nothing, 1 tying, 2 freeing,
-    /// 3 searching, 4 taking); in bit 16 that it is a marked agent (#69).
+    /// 3 searching, 4 taking); in bit 16 that it is a marked agent (#69); in bit 17 that it is
+    /// upstairs.
     pub bits: u32,
     /// Hit points, rounded up.
     pub hp: u8,
@@ -516,7 +521,7 @@ impl PlayerPacked {
             x: (p.pos[0].max(0.0) * POS_STEPS).round() as u32,
             y: (p.pos[1].max(0.0) * POS_STEPS).round() as u32,
             facing: ((turn * 256.0).round() as u32 & 255) as u8,
-            bits: p.stance as u32 | bit(p.dead, 2) | bit(p.asleep, 3) | bit(p.aiming, 4) | bit(h.bleeding, 5) | bit(h.limping, 6) | bit(h.sick, 7) | bit(h.injured_arm, 8) | gesture << 9 | bit(p.restrained, 11) | bit(p.struggling, 12) | hands << 13 | bit(p.agent, 16),
+            bits: p.stance as u32 | bit(p.dead, 2) | bit(p.asleep, 3) | bit(p.aiming, 4) | bit(h.bleeding, 5) | bit(h.limping, 6) | bit(h.sick, 7) | bit(h.injured_arm, 8) | gesture << 9 | bit(p.restrained, 11) | bit(p.struggling, 12) | hands << 13 | bit(p.agent, 16) | bit(p.level > 0, 17),
             hp: p.hp.clamp(0.0, 255.0).ceil() as u8,
             weapon: p.weapon,
             action: p.action,
@@ -541,6 +546,7 @@ impl PlayerPacked {
             endurance: 1.0,
             winded: false,
             climb: None,
+            level: bit(17) as u8,
             last_input_seq: 0,
             hp: self.hp as f32,
             dead: bit(2),
@@ -617,6 +623,8 @@ pub struct SnapshotDelta {
     pub speech: Vec<Said>,
     /// Sent when they change (the run about once a second while only its clocks move).
     pub floor: Option<Vec<u32>>,
+    /// Which of the client's ground items lie upstairs, by id, when that changes.
+    pub upstairs: Option<Vec<u32>>,
     /// The run with the first night's record (#19).
     pub run: Option<RunView>,
     pub outfits: Option<Vec<OutfitView>>,
@@ -650,6 +658,7 @@ impl Snapshot {
             edge_damage: self.edge_damage.clone(),
             blind_changes: self.blind_changes.clone(),
             items: self.items.iter().filter(|i| near(i.pos)).copied().collect(),
+            upstairs: self.upstairs.clone(),
             hits: self.hits.iter().filter(|h| near(h.pos)).copied().collect(),
             private: self.private.iter().filter(|v| v.player == player).cloned().collect(),
             item_notes: self.item_notes.iter().filter(|n| n.player == player).cloned().collect(),
@@ -804,6 +813,7 @@ pub struct DeltaEncoder {
     pub stats: EncodeStats,
     items: Vec<GroundItem>,
     floor: Vec<u32>,
+    upstairs: Vec<u32>,
     run: Option<RunView>,
     outfits: Vec<OutfitView>,
     looks: Vec<OutfitView>,
@@ -959,6 +969,12 @@ impl DeltaEncoder {
         let mut items = view.items;
         items.sort_by_key(|i| i.id);
         let (i_changed, i_gone) = diff(&self.items, &items, |i| i.id);
+        // Of the items this client has, the ones upstairs.
+        let upstairs: Vec<u32> = view.upstairs.iter().copied().filter(|id| items.binary_search_by_key(id, |i| i.id).is_ok()).collect();
+        let upstairs = (first || upstairs != self.upstairs).then(|| {
+            self.upstairs = upstairs.clone();
+            upstairs
+        });
         self.items = items;
 
         let floor = view.floor.into_iter().next().map(|f| f.items).unwrap_or_default();
@@ -1021,6 +1037,7 @@ impl DeltaEncoder {
             heard: view.heard.iter().map(|h| (h.pos, h.radius)).collect(),
             speech: view.speech,
             floor,
+            upstairs,
             run,
             outfits,
             looks,
@@ -1079,6 +1096,9 @@ impl DeltaDecoder {
         s.speech = delta.speech;
         if let Some(items) = delta.floor {
             s.floor = vec![FloorView { player, items }];
+        }
+        if let Some(up) = delta.upstairs {
+            s.upstairs = up;
         }
         if let Some(run) = delta.run {
             s.runs = vec![RunView { player, ..run }];

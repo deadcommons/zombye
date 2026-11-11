@@ -124,11 +124,57 @@ pub struct PlayerState {
     /// not here, so the player's layout (and the format) stays as it was.
     #[serde(skip)]
     pub climb: Option<Climb>,
+    /// The floor it walks on: 0 the ground (and a flight of stairs, all the way up it), 1 the
+    /// first upper floor. Movement changes it at the top end of a flight
+    /// ([`TileMap::resolve_walker`]). Saved in a section of its own (`LEVL`), like the climb.
+    #[serde(skip)]
+    pub level: u8,
 }
 
 impl PlayerState {
     pub fn new(pos: Vec2) -> Self {
-        Self { pos, facing: 0.0, stance: Stance::Walk, endurance: 1.0, winded: false, mods: MoveMods::default(), climb: None }
+        Self { pos, facing: 0.0, stance: Stance::Walk, endurance: 1.0, winded: false, mods: MoveMods::default(), climb: None, level: 0 }
+    }
+
+    /// How high above the ground it stands (on the stairs, upstairs).
+    pub fn height(&self, map: &TileMap) -> f32 {
+        map.height_at(self.level, self.pos)
+    }
+
+    /// Off the ground floor: upstairs, or on a flight of stairs.
+    pub fn off_ground(&self, map: &TileMap) -> bool {
+        self.level > 0 || map.stair_at(self.pos).is_some()
+    }
+}
+
+/// Walking between floors (`WorldConfig::stairs`; ours). The world hands `speed` to its map
+/// (`TileMap::stair_speed`), which is what movement reads, so a client's prediction has it too.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StairTuning {
+    /// Speed on a flight of stairs, as a share of the speed on the flat (walking, running or
+    /// sneaking alike).
+    pub speed: f32,
+    /// Zombies neither see nor strike a player standing higher than this above the ground, in
+    /// metres (part-way up a flight; upstairs is always out of their sight and reach).
+    pub out_of_reach: f32,
+}
+
+impl Default for StairTuning {
+    fn default() -> Self {
+        Self { speed: 0.6, out_of_reach: 1.6 }
+    }
+}
+
+impl StairTuning {
+    pub fn check(&self) -> Result<(), String> {
+        if !(self.speed.is_finite() && (0.05..=1.0).contains(&self.speed)) {
+            return Err(format!("stairs: speed {} (0.05 to 1)", self.speed));
+        }
+        if !(self.out_of_reach.is_finite() && (0.0..=10.0).contains(&self.out_of_reach)) {
+            return Err(format!("stairs: out_of_reach {} (0 to 10)", self.out_of_reach));
+        }
+        Ok(())
     }
 }
 
@@ -468,9 +514,15 @@ pub fn step_movement(map: &TileMap, state: &mut PlayerState, input: &PlayerInput
             Stance::Walk => WALK_SPEED,
             Stance::Sneak => SNEAK_SPEED,
         };
-    let climbing = map.in_window_opening(state.pos);
+    // Upstairs and on a flight of stairs the ground floor's windows and fences are out of it.
+    let mut level = state.level;
+    let on_stairs = level == 0 && map.stair_at(state.pos).is_some();
+    let climbing = level == 0 && !on_stairs && map.in_window_opening(state.pos);
     if climbing {
         speed = speed.min(CLIMB_SPEED);
+    }
+    if on_stairs && map.stair_speed > 0.0 {
+        speed *= map.stair_speed;
     }
     let step = (input.move_dir * speed * dt).clamp_length_max(max_step);
     // Sub-step so fast movement (or a long dt) can't tunnel through thin walls.
@@ -482,10 +534,22 @@ pub fn step_movement(map: &TileMap, state: &mut PlayerState, input: &PlayerInput
     let may_enter = climbing || (mods.can_climb && state.climb.is_some());
     let mut p = state.pos;
     for _ in 0..n {
-        let mut next = map.resolve_circle(p + part, PLAYER_RADIUS);
-        if !may_enter && map.in_window_opening(next) {
+        let mut next = map.resolve_walker(p + part, PLAYER_RADIUS, level);
+        let stair = if level == 0 { map.stair_at(p) } else { None };
+        if level > 0 {
+            // Upstairs: stepping into the stairwell (only its top end is open) is onto the flight.
+            if map.stair_at(next).is_some() {
+                level = 0;
+            }
+        } else if let Some(s) = stair {
+            // On a flight: past its top end is the upper floor.
+            if s.progress(next) >= 1.0 {
+                level = 1;
+                next = map.resolve_walker(next, PLAYER_RADIUS, level);
+            }
+        } else if !may_enter && map.stair_at(next).is_none() && map.in_window_opening(next) {
             let slide = [Vec2::new(part.x, 0.0), Vec2::new(0.0, part.y)]
-                .map(|d| map.resolve_circle(p + d, PLAYER_RADIUS))
+                .map(|d| map.resolve_walker(p + d, PLAYER_RADIUS, level))
                 .into_iter()
                 .filter(|q| !map.in_window_opening(*q))
                 .max_by(|a, b| a.distance_squared(p).total_cmp(&b.distance_squared(p)));
@@ -497,6 +561,7 @@ pub fn step_movement(map: &TileMap, state: &mut PlayerState, input: &PlayerInput
         p = next;
     }
     state.pos = p;
+    state.level = level;
 }
 
 #[cfg(test)]

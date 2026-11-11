@@ -123,6 +123,8 @@ pub struct WorldConfig {
     pub groups: crate::groups::GroupTuning,
     /// When E climbs a fence or an open or broken window ([`crate::players::climb_from`]). Not saved.
     pub climb: crate::players::ClimbTuning,
+    /// Walking between floors ([`crate::players::StairTuning`]). Not saved, like the climb's.
+    pub stairs: crate::players::StairTuning,
     /// Blinds on windows and glazed doors: where the town has them and handling them
     /// ([`crate::blinds`]). Saved with the settings.
     pub blinds: crate::blinds::BlindTuning,
@@ -160,6 +162,7 @@ impl WorldConfig {
             bonds: Default::default(),
             groups: Default::default(),
             climb: Default::default(),
+            stairs: Default::default(),
             blinds: Default::default(),
             scripts: None,
         }
@@ -317,6 +320,10 @@ pub struct World {
     /// Items lying about, in id order.
     pub(crate) items: Vec<GroundItem>,
     pub(crate) next_item_id: u32,
+    /// The ground items lying on the first upper floor, by id (`crate::stairs`); every other one
+    /// lies on the ground floor (or on a flight of stairs). Sparse, so the items themselves and
+    /// worlds with nothing upstairs are stored and hashed as before.
+    pub(crate) upstairs: std::collections::BTreeSet<u32>,
     /// Per item in `config.items`, the weapon it swings as (derived from the content).
     pub(crate) item_weapons: Vec<Option<u16>>,
     /// Every container in the map, in id order (derived from the map and `config.containers`).
@@ -470,6 +477,7 @@ impl World {
         let items = items::place_weapons(&generated.map, &config.weapons, &weapon_items, generated.spawn_building, config.loot_seed(), 1);
         let sites = containers::find_sites(&generated.map, &config.containers);
         let mut map = generated.map;
+        map.stair_speed = config.stairs.speed;
         crate::blinds::place(&mut map, config.generation.seed, &config.blinds);
         let hash = SpatialHash::new(map.width() as f32, map.height() as f32, 1.0);
         let regions = RegionIndex::new(&map, config.tiers.region_size);
@@ -479,6 +487,7 @@ impl World {
             rng: Rng::new(config.generation.seed),
             combat_rng: Rng::new(config.generation.seed ^ 0xC0_4BA7),
             next_item_id: items.len() as u32 + 1,
+            upstairs: Default::default(),
             items,
             item_weapons,
             sites,
@@ -861,7 +870,7 @@ impl World {
     pub fn player_climb(&mut self, id: u32) -> bool {
         let Some(pi) = self.players.iter().position(|p| p.id == id) else { return false };
         let p = &self.players[pi];
-        if p.dead || p.needs.asleep() || p.knock.is_some() || p.away.is_some() || p.restraint.is_some() || p.state.climb.is_some() {
+        if p.dead || p.needs.asleep() || p.knock.is_some() || p.away.is_some() || p.restraint.is_some() || p.state.climb.is_some() || p.state.off_ground(&self.map) {
             return false;
         }
         let Some(climb) = crate::players::climb_from(&self.map, p.state.pos, p.state.facing, &self.config.climb) else { return false };
@@ -892,7 +901,8 @@ impl World {
     /// the server has it. Returns the new edge, or `None` (request ignored) if there is no such
     /// edge or player. Broken doors and windows can't be shut again.
     pub fn player_interact(&mut self, id: u32) -> Option<Edge> {
-        let s = self.player(id)?.state;
+        // The doors and windows of the map are the ground floor's (`crate::stairs`).
+        let s = self.player(id).filter(|p| !p.state.off_ground(&self.map))?.state;
         let aim = s.pos + Vec2::from_angle(s.facing) * INTERACT_AIM_AHEAD;
         let edge = self.edge_in_reach(s.pos, aim, Self::can_interact)?;
         Some(self.toggle_edge(edge, SoundSource::Player(id)))
@@ -902,7 +912,7 @@ impl World {
     /// Returns the broken edge, or `None` if there is no such window or player.
     pub fn player_smash_window(&mut self, id: u32) -> Option<EdgeRef> {
         // Not with tied hands (#73).
-        let s = self.player(id).filter(|p| p.restraint.is_none())?.state;
+        let s = self.player(id).filter(|p| p.restraint.is_none() && !p.state.off_ground(&self.map))?.state;
         let aim = s.pos + Vec2::from_angle(s.facing) * INTERACT_AIM_AHEAD;
         let edge = self.edge_in_reach(s.pos, aim, |e| matches!(e, Edge::Window | Edge::WindowOpen))?;
         self.break_edge(edge, SoundSource::Player(id));
@@ -983,7 +993,7 @@ impl World {
             let inside = crate::blinds::inside(&self.map, edge).as_vec2() + Vec2::splat(0.5);
             if let Some(i) = self.config.items.iter().position(|d| d.has_tag(&self.config.blinds.tag)) {
                 let stack = self.fresh_stack(i as u16, 1);
-                self.put_on_floor(stack, inside, 0.0);
+                self.put_on_floor(stack, inside, 0.0, 0);
             }
         }
         self.break_events.push(EdgeChange { tile: edge.tile, edge: edge.edge, kind: broken });
@@ -1094,14 +1104,15 @@ impl World {
             p.run.secs += TICK_DT as f64;
             p.run.distance_m += p.state.pos.distance(before) as f64;
             // Starting to climb through a broken window: the glass left in the frame may cut.
-            if !self.map.in_window_opening(before) && self.map.window_opening(p.state.pos) == Some(Edge::WindowBroken) {
+            let height = p.state.height(&self.map);
+            if height == 0.0 && !self.map.in_window_opening(before) && self.map.window_opening(p.state.pos) == Some(Edge::WindowBroken) {
                 climbed_glass.push(pi);
             }
             let moving = p.state.pos.distance_squared(before) > 1e-8;
             // Stealth (#46): harder to see, and quieter sneaking.
             let stealth = p.skills.level(Skill::Stealth, &self.config.skills);
             let sight_mult = self.config.skills.sight_mult(stealth);
-            self.targets.push(Target { id: p.id, pos: p.state.pos, stance: p.state.stance, moving, ignored: p.dev.ignored, sight_mult });
+            self.targets.push(Target { id: p.id, pos: p.state.pos, stance: p.state.stance, moving, ignored: p.dev.ignored || height > self.config.stairs.out_of_reach, sight_mult });
             if moving && self.heard.len() < MAX_SOUNDS {
                 let radius = match p.state.stance {
                     Stance::Sneak => t.sneak_noise * self.config.skills.footstep_mult(stealth),
@@ -1251,6 +1262,7 @@ impl World {
         let respawned = (far_from..far_from + far_steps).map(|far| self.respawn(far)).sum();
         self.far_ticks += far_steps - 1;
         // Which players see and heard which, for what each client is told (#66).
+        self.prune_upstairs();
         self.step_awareness();
         // Mod scripts (#25): their hooks for what this tick did, then their tick hooks. What they
         // change shows in the next snapshot; a noise they make is heard next tick.
@@ -1444,6 +1456,11 @@ impl World {
             mix(p.state.endurance.to_bits());
             // Dev toggles add bits only when on, so a world without them hashes as it always did.
             mix(p.state.stance as u32 | (p.state.winded as u32) << 8 | (p.dead as u32) << 9 | (p.dev.god as u32) << 10 | (p.dev.ignored as u32) << 11);
+            // Upstairs (`crate::stairs`): mixed in only then, for the same reason.
+            if p.state.level > 0 {
+                mix(0x4C45_564C);
+                mix(p.state.level as u32);
+            }
             // Climbing (E): mixed in only then, for the same reason.
             if let Some(c) = p.state.climb {
                 mix(0x434C_4D42);
@@ -1502,6 +1519,11 @@ impl World {
             mix_stack(&mut mix, &it.stack);
             mix(it.pos.x.to_bits());
             mix(it.pos.y.to_bits());
+        }
+        // What lies upstairs (`crate::stairs`): only when something does.
+        for &id in self.upstairs.iter().filter(|id| self.items.binary_search_by_key(*id, |it| it.id).is_ok()) {
+            mix(0x5550_0000);
+            mix(id);
         }
         for (&c, stacks) in &self.opened {
             mix(c);
