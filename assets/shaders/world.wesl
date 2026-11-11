@@ -264,7 +264,9 @@ fn fragment(
     }
 @if(!PREPASS_PIPELINE) {
     // The roof and upper storeys of the building the player is inside fade out as a whole (and
-    // back in), by the amount in their mesh's tag (`world_render::hide_upper_floors`).
+    // back in), by the amount in their mesh's tag (`world_render::hide_upper_floors`); so do a
+    // cut wall's door leaf and blind. At 255 no pixel is drawn. Only here, in the camera's pass:
+    // the shadow passes don't run this shader, so what's faded out still casts its shadow.
     let gone = f32(mesh_functions::get_tag(in.instance_index) & 255u) / 255.0;
     if (gone > 0.0 && gone > bayer4(vec2<u32>(in.position.xy) + vec2<u32>(2u, 1u))) {
         discard;
@@ -333,6 +335,18 @@ fn fragment(
             seen = max(seen, lit * los_at(at));
         }
     }
+    // Rooms other than the one the player is in stay dark whatever the sight rays say (fog.rs
+    // `other_room`: the mask's red is 0 there; `tree_count.y` is how much shows, fog.ron's
+    // `other_rooms`). Sharpened, so the mask's half-metre blur doesn't dim our own floor by a wall.
+    var own_room = mask.x;
+    // A door's leaf belongs to the rooms on both its sides: it is seen, and in our room, if either
+    // face is, so a shut door of the room we're in shows from the far side too (through a cut wall).
+    if (piece_kind == 5u && abs(n.y) < 0.5) {
+        let back = wp.xz - normalize(n.xz) * 0.3;
+        seen = max(seen, fog_at(back));
+        own_room = max(own_room, fog_sample(back).x);
+    }
+    seen *= mix(1.0, mix(world_params.tree_count.y, 1.0, smoothstep(0.25, 0.5, own_room)), smoothstep(0.3, 0.7, indoors));
     // By day what's unseen keeps most of its colour, dimmed and warm; at night a quarter (DCM-59,
     // materials.rs `unseen_colour`).
     var unseen = mix(vec3(grey), out.color.rgb, world_params.lights.y) * world_params.fog_tint.rgb * (1.0 - world_params.fog_tint.w);
@@ -345,6 +359,11 @@ fn fragment(
     var hide_contents = smoothstep(0.3, 0.7, indoors);
     if (piece_kind == 1u || piece_kind == 4u || piece_kind == 5u || piece_kind == 7u || piece_kind == 8u) {
         hide_contents *= 0.25;
+    }
+    // ...but not the doors of other rooms: a door that isn't one of our room's is as dark as
+    // what is in those rooms.
+    if (piece_kind == 5u) {
+        hide_contents = mix(smoothstep(0.3, 0.7, indoors), hide_contents, smoothstep(0.25, 0.5, own_room));
     }
     unseen = mix(unseen, out.color.rgb * vec3(0.03, 0.03, 0.04), hide_contents);
     out.color = vec4(mix(unseen, out.color.rgb, seen), out.color.a);

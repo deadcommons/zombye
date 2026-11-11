@@ -492,7 +492,11 @@ fn draw(
     }
     // Only a frame in which something is decided anew or fades goes on (and counts as a change).
     let hints = hints.bypass_change_detection();
+    // Not in first person: the outlines go by the fixed view's depth.
+    let on = hints.on;
+    hints.on = on && !cam.shoulder();
     let decided = hints.decide(&map.0, map.is_changed(), p.translation.xz(), cam.offset_dir(), cutaway.inside);
+    hints.on = on;
     let moved = hints.ease(time.delta_secs());
     if !(decided || moved) {
         return;
@@ -554,14 +558,20 @@ fn draw_cut_doors(
     assets: Option<Res<HintAssets>>,
     mut doors: ResMut<CutDoors>,
     mut drawn: Query<(&mut Transform, &mut MeshTag, &mut Visibility), Without<Player>>,
+    player: Query<&Transform, With<Player>>,
 ) {
     let Some(assets) = assets else { return };
+    let eye = player.single().map(|p| p.translation.xz()).ok();
     let CutDoors { shown, spare } = doors.bypass_change_detection();
     for d in shown.iter_mut() {
         d.seen = false;
     }
     for (key, amount) in cutaway.cut_edges() {
         let Some((_, tag)) = cut_door(&map.0, key, amount) else { continue };
+        // Only the doors of the room we're in: other rooms stay dark, their doors with them.
+        if eye.is_some_and(|eye| !crate::fog::on_own_room(&map.0, key, eye)) {
+            continue;
+        }
         let open = stands_open(&map.0, key);
         match shown.iter_mut().find(|d| d.key == key) {
             Some(d) => {

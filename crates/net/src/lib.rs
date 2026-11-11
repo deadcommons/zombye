@@ -9,12 +9,18 @@ pub mod browser;
 pub mod content;
 pub mod host;
 pub mod identity;
+pub mod joining;
 pub mod modpack;
 pub mod remote;
 pub mod save_file;
 pub mod shutdown;
 pub mod visibility;
 pub mod wire;
+
+/// This build's version (DCM-70): the package version and the git commit it was built from,
+/// `0.1.0 (abc1234)` (`, changed` when the checkout had changes), or the package version alone
+/// without git. A server says it in its answer to a query ([`wire::ServerInfo::version`]).
+pub const BUILD: &str = env!("ZOMBYE_BUILD");
 
 use serde::{Deserialize, Serialize};
 use zombye_sim::map::{EdgeChange, OwnedEdge};

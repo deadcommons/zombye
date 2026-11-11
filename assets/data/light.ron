@@ -46,4 +46,8 @@
     // how high over the ground it sits (metres), and how far round it what stands in its light is
     // seen in the dark.
     fire: (colour: (1.0, 0.55, 0.22), lumens: 600000.0, range: 14.0, height: 0.7, seen: 7.0),
+    // How many times stronger the fill is by day while you are inside a building. Rooms lie in
+    // their roof's shadow (the roof casts it whether the camera draws the roof or not), so only
+    // the windows let the sun in. 1 = no stronger.
+    indoor_fill: 4.0,
 )
