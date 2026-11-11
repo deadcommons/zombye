@@ -17,7 +17,9 @@
 //! real metres. While any of it shows the system pointer is hidden.
 //!
 //! `--aim-at DX,DY` shows it in an offscreen picture (`--render-to`), as if you aimed with the
-//! cursor on the ground that many metres east and south of you.
+//! cursor on the ground that many metres east and south of you, or with `--aim-at zombie` on the
+//! nearest standing zombie; `--gun ID` then names the weapon (a picture's world doesn't tick, so
+//! nothing was put in his hand).
 //!
 //! Not shown: how much tired or hurt arms widen a gun's spread (the server's, by the shot's
 //! power), and whether something stands in a shot's way.
@@ -263,15 +265,21 @@ fn show(
 
     // `--aim-at` (offscreen pictures): as if aiming with the cursor that far from us on the ground.
     let staged = options.aim_at.filter(|_| options.offscreen()).map(Vec2::from);
+    let on_zombie = options.aim_at_zombie && options.offscreen();
     let (Ok((camera, cam_tf, iso)), Ok((player, player_tf))) = (cams.single(), players.single()) else { return hide(marker, &mut parts) };
-    if me.dead || !(me.aiming || staged.is_some()) {
+    if me.dead || !(me.aiming || staged.is_some() || on_zombie) {
         return hide(marker, &mut parts);
     }
     let from = Vec2::new(player_tf.translation.x, player_tf.translation.z);
-    let staged = staged.map(|by| from + by);
+    let standing = || link.curr.zombies.iter().filter(|z| !matches!(z.anim, ZombieAnim::Dead | ZombieAnim::Down | ZombieAnim::GetUp)).map(|z| Vec2::from(z.pos));
+    // (where, how high up the cursor's line passes there)
+    let staged = match on_zombie {
+        true => standing().min_by(|a, b| a.distance_squared(from).total_cmp(&b.distance_squared(from))).map(|z| (z, 1.1)).or(Some((from + Vec2::X * 3.0, 0.0))),
+        false => staged.map(|by| (from + by, 0.0)),
+    };
     // The line of sight through the cursor. `--autoplay` aims without one: only the wedge shows.
     let sight = match staged {
-        Some(at) => Some((Vec3::new(at.x, 0.0, at.y), *cam_tf.forward())),
+        Some((at, up)) => Some((Vec3::new(at.x, up, at.y), *cam_tf.forward())),
         None if auto.active => None,
         None => windows
             .single()
@@ -287,8 +295,9 @@ fn show(
     };
     // The same on screen at any zoom.
     let k = iso.zoom / ZOOM;
-    let weapon = me.weapon.and_then(|w| join.weapons.get(w as usize));
-    let standing = || link.curr.zombies.iter().filter(|z| !matches!(z.anim, ZombieAnim::Dead | ZombieAnim::Down | ZombieAnim::GetUp)).map(|z| Vec2::from(z.pos));
+    // A staged picture is of a world that doesn't tick, so `--gun` never reached the hand: take it by name.
+    let named = staged.and(options.gun.as_deref()).and_then(|id| join.weapons.iter().find(|w| w.id == id));
+    let weapon = named.or_else(|| me.weapon.and_then(|w| join.weapons.get(w as usize)));
 
     // Where the pointer's parts sit (a point under the cursor), and their colour.
     let mut at: Option<Vec3> = ground;

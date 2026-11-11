@@ -271,6 +271,8 @@ pub struct Options {
     /// Show the aim marker in an offscreen picture as if aiming with the cursor on the ground this
     /// many metres east and south of the player (`--aim-at DX,DY`, `aim_marker.rs`).
     pub aim_at: Option<[f32; 2]>,
+    /// The same, with the cursor on the nearest standing zombie (`--aim-at zombie`).
+    pub aim_at_zombie: bool,
     /// Start with the cutaways off (`--walls-up`; F10 toggles them, `cutaway.rs`).
     pub walls_up: bool,
     /// Show the silhouettes of zombies you see that something covers (`--zombie-silhouettes`;
@@ -509,6 +511,7 @@ impl Options {
             pose: value("--pose"),
             walk: value("--walk").map(|v| v.split(';').filter_map(parse_point).map(Vec2::from).collect()).unwrap_or_default(),
             aim_at: value("--aim-at").and_then(|v| parse_point(&v)),
+            aim_at_zombie: value("--aim-at").is_some_and(|v| v == "zombie"),
             walls_up: flag("--walls-up"),
             zombie_silhouettes: flag("--zombie-silhouettes").then_some(true),
             opening_hints: value("--opening-hints").and_then(|v| match v.as_str() {
