@@ -172,11 +172,11 @@ fn fog_at(xz: vec2<f32>) -> f32 {
         return 0.0;
     }
     let los = los_at(xz);
-    let range = 1.0 - smoothstep(range_m * 0.5, range_m, dist);
-    var cone = 1.0;
-    if (dist >= s2.z) {
-        cone = s2.y + (1.0 - s2.y) * smoothstep(s1.z, s1.w, dot(s1.xy, dir));
-    }
+    // The look (assets/data/fog.ron): the far end fades out, and what's behind is a little dimmer
+    // than the cone ahead, easing in with distance so there is no ring round the player.
+    let range = 1.0 - smoothstep(range_m * min(world_params.lights.w, 0.99), range_m, dist);
+    var cone = s2.y + (1.0 - s2.y) * smoothstep(s1.z, s1.w, dot(s1.xy, dir));
+    cone = mix(1.0, cone, smoothstep(s2.z, s2.z + max(world_params.lights.z, 0.01), dist));
     return los * range * cone;
 }
 

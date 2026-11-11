@@ -1,0 +1,24 @@
+// How the fog of war looks (crates/client/src/fog.rs, assets/shaders/world.wesl). Only the look:
+// which zombies, players and items are drawn at all is the client's own rule and isn't changed
+// here. Every field is optional; one left out takes the value shown.
+(
+    // Ground you have a line of sight to, but behind you, is this far from "out of sight" (0) to
+    // "in plain view" (1). 1 = no view cone at all; lower makes the cone stand out more.
+    behind: 0.72,
+    // The cone, in degrees off the way you face: in full view inside `cone_full`, easing to
+    // `behind` by `cone_behind`. (Tiredness narrows both.)
+    cone_full: 50.0,
+    cone_behind: 150.0,
+    // Right round you everything in sight is in full view, behind you too: wholly so within
+    // `close_radius` metres, easing into the cone over the next `close_fade` metres (so there is
+    // no ring round the player).
+    close_radius: 1.0,
+    close_fade: 7.0,
+    // The far end of your sight fades out from this share of the sight range to all of it.
+    range_fade_from: 0.5,
+    // What is out of sight, by day and at night (in between follows the daylight): `tint` its
+    // colour cast, `dark` how much darker it is (0 = as bright as what you see, 1 = black),
+    // `colour` how much of its colour it keeps (0 = grey, 1 = all).
+    unseen_day: (tint: (0.97, 0.94, 0.9), dark: 0.24, colour: 0.9),
+    unseen_night: (tint: (0.55, 0.6, 0.75), dark: 0.86, colour: 0.25),
+)
