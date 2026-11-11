@@ -90,7 +90,7 @@ pub struct VegLook {
 
 impl Default for VegLook {
     fn default() -> Self {
-        VegLook { dry: 0.0, long_from: 0.6, scale: 1.0, long_scale: 1.0, flowers: 1.0, flower_cover: 0.38, verge_stones: 0.0, dirt_stones: 0.0 }
+        VegLook { dry: 0.0, long_from: 0.6, scale: 1.0, long_scale: 1.0, flowers: 1.4, flower_cover: 0.4, verge_stones: 0.1, dirt_stones: 0.12 }
     }
 }
 
