@@ -351,11 +351,6 @@ pub struct ViewFloor {
 impl ViewFloor {
     /// Height above the ground from which the upper floor is the one shown.
     pub const UP_FROM: f32 = zombye_sim::map::STOREY * 0.5;
-
-    /// The height of the floor shown.
-    pub fn base(&self) -> f32 {
-        zombye_sim::map::STOREY * self.level as f32
-    }
 }
 
 fn place_player(fixed: Res<Time<Fixed>>, me: Res<LocalPlayer>, map: Res<ClientMap>, mut view: ResMut<ViewFloor>, mut players: Query<&mut Transform, With<Player>>) {
