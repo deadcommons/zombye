@@ -138,7 +138,7 @@ cargo run -p zombye-server --release -- --mcp --mod mods/alarm_clock
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --angle 0..3 --turn N@SECS[,N@SECS...] --opening-hints on|off --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --weapons-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --mod DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab worn|body|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --graphics-panel --skip-hours H --hover-tag N --debug-stats --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --music V --ui-scale PCT --connect HOST[:PORT] --name NAME --password P --agent --server-info HOST[:PORT] --server-list FILE|URL --browser --browser-join N[@SECS] --joined --join-error TEXT --hotbar ID[,ID...] --hotbar-press K@SECS[,K@SECS...] --panel-at PANEL:X,Y[;PANEL:X,Y] --drag-panel PANEL:DX,DY[@SECS] --lag MS --say TEXT[@SECS] --shout TEXT[@SECS] --whisper TEXT[@SECS] --gesture NAME[@SECS] --talk-demo --talk-wall --holdup-demo --holdup-auto --graphics low|medium|high|ultra|auto --vegetation off|low|high|N --no-post LIST --msaa N --shadow-map N --render-scale F --frame-bench N --gun ID --walls-up --zombie-silhouettes --aim-at DX,DY|zombie --first-person --walk X,Y;X,Y;...` (`--aim-at`: see The aim marker under Combat; `--first-person`: see The first-person view under Light and mood; the last walks the local player from point to point by itself, opening shut doors its way leads through, for recordings; the two before it: see Cutaways under Light and mood; the one before those: see Guns; the seven before it: see Look and feel; the two before them: see Hold-ups and groups; the six before those: see Talking and gestures) (the camera always turns with `,` and `.`, see Turning the camera under Light and mood: `--turn` does it by itself for recordings, `--opening-hints`: see Opening hints there, and `--rotate`, which turning used to need, is still accepted and does nothing; `--zoom` is the metres of world visible vertically, 8–90, default 26;
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --angle 0..3 --turn N@SECS[,N@SECS...] --opening-hints on|off --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --weapons-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --mod DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab rows|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --graphics-panel --skip-hours H --hover-tag N --debug-stats --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --music V --ui-scale PCT --connect HOST[:PORT] --name NAME --password P --agent --server-info HOST[:PORT] --server-list FILE|URL --browser --browser-join N[@SECS] --joined --join-error TEXT --hotbar ID[,ID...] --hotbar-press K@SECS[,K@SECS...] --panel-at PANEL:X,Y[;PANEL:X,Y] --drag-panel PANEL:DX,DY[@SECS] --lag MS --say TEXT[@SECS] --shout TEXT[@SECS] --whisper TEXT[@SECS] --gesture NAME[@SECS] --talk-demo --talk-wall --holdup-demo --holdup-auto --graphics low|medium|high|ultra|auto --vegetation off|low|high|N --no-post LIST --msaa N --shadow-map N --render-scale F --frame-bench N --gun ID --walls-up --zombie-silhouettes --aim-at DX,DY|zombie --first-person --walk X,Y;X,Y;...` (`--aim-at`: see The aim marker under Combat; `--first-person`: see The first-person view under Light and mood; the last walks the local player from point to point by itself, opening shut doors its way leads through, for recordings; the two before it: see Cutaways under Light and mood; the one before those: see Guns; the seven before it: see Look and feel; the two before them: see Hold-ups and groups; the six before those: see Talking and gestures) (the camera always turns with `,` and `.`, see Turning the camera under Light and mood: `--turn` does it by itself for recordings, `--opening-hints`: see Opening hints there, and `--rotate`, which turning used to need, is still accepted and does nothing; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost). `--size WxH` makes the window exactly that many pixels, at scale factor 1, so a
 `--screenshot` is WxH on a high-DPI screen too; without it the window is 1600x900 at the screen's scale.
@@ -281,7 +281,7 @@ ground the game draws (sunlit concrete), `TEXT` over pure white too (`DIM` 4.5:1
 textures' own pixels, blended in linear light as the UI is drawn (which is why the sheets are 96% opaque: a few per
 cent of sunlit ground behind a dark panel is a lot). Checked in offscreen pictures at 1280 x 720 and 1920 x 1080.
 
-**The skin (Linear DCM-61, `theme.rs`; the look is in docs/art-direction.md, UI):** one rough painted skin, and one
+**The skin (Linear DCM-61, `theme.rs`; the look is in docs/art-direction.md, UI; full screens use the flat frame instead, docs/ui-design.md and `theme::flat`, see the inventory screen under Items):** one rough painted skin, and one
 module every panel takes it from: the inventory with its right-click menu and Make list, the health and skills panels,
 the HUD (weapon panel, status icons and their tooltip, hotbar, current action, the first night's objectives and hint),
 the death and morning screens, the server's rules panel, the server browser, and the hold-up bar and search panel. **New panels take their text sizes, colours, backings, buttons, bars and rules from
@@ -1222,69 +1222,79 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   ground item ids (`Snapshot::floor`, `FloorView`; a client gets its own). A request for what is already queued
   (a repeated click) queues nothing and refuses nothing; E with no container and an empty floor says "nothing to pick
   up or search here" (`inventory::NOTHING_HERE`).
-- **Client:** the inventory panel (`inventory_ui.rs`, Tab or I, and it opens by itself when a container search finishes: `search_done`; laid out in Linear DCM-56): two panes side by side, one
-  title each. Left, what you carry; right, the open container, or the floor in reach. Slim tabs down each pane's outer
-  edge pick what it shows: Carried or Worn (what you hold and wear, slot by slot) on the left, the open container or
-  Floor (each with its count) on the right; a newly opened container comes to the front (`PanelUi`). Under each title a
-  thin bar and one line: your load against the limit (coloured, with the burden stage) and litres used, the container's
-  litres and weight, the floor's weight. Every row is one line of the same cells, so the columns line up: a swatch of the
-  item's colour, name (then dimmed: stale, goes left, moving), type, count, kg. The headers Name, Type and kg sort both
-  panes (`Sort`: a press, again the other way round, a third time as things lie). Several stacks of one item collapse into
-  one row with their count and weight together (`arrange`): a click moves them all (`click_intents`, from the back so
-  indices don't shift), the `+` at its start opens it to its stacks. `>>` and `<<` between the panes move everything a
-  pane shows across (`MoveAll`; never what you hold or wear). Two text sizes in all (`ROW_FONT`, `HEAD_FONT`). Click a row to move it
-  (yours into what the right pane shows: the container, or the floor; theirs into your bags; slots off), Alt-click (Option on a Mac) for one, right-click any
-  row for its menu (#95, `inventory_ui::menu_entries`): one flat list of what can be done with it, the likeliest first (eat or
-  drink, wear, equip, take a pill, use on a wound, put in the open container, drop, take, take in hand, split: one, or half of four or more),
-  1-9 to pick, Esc or a click elsewhere to close; the same menu on a ground item in reach in the world (right-click it with
-  the panel open, or a quick right tap with it shut; held, right mouse aims). `--menu carried:N|worn:N|hand|container:N|ground[:N]`
-  starts with one open, for pictures, and `--menu-pick N[@SECS]` presses its number key N (after SECS), for recordings.
-  **Right-clicking things in the world** (`world_actions.rs`): the same quick right tap (or a right-click with the panel
-  open) on a door, window, fence, blind, container, body or light switch opens its menu: open or close, climb through or over, smash the
-  glass, raise, lower, fit or take down the blind (from inside), search or look inside, flick the switch; out of reach it says so and
-  offers nothing. `world_actions::pick` finds what the pointer's ray meets first (a door's or window's opening, or the
-  ground just by it when the wall is cut down; a container's furniture as a 1 m box, a body as a low box, `pick_body`; a light switch as its plate on the wall, `pick_switch`; an item on the floor wins unless
-  something stands in front of it) and `entries` lists its actions as intents. Actions that go by what the player faces
-  are sent as `Intent::Toward { player, facing, then }`: the server turns the player to the thing (`World::set_facing`)
-  and applies `then`, an action of that same player, as if it came alone, so reach and the rest are its own checks
-  (`wire::PROTOCOL` 21). New things to right-click: a `Target` variant, its test in `pick`, its lines in `entries`. A
-  left click behind an open menu only closes it (it moves nothing), opening or shutting the panel closes it, and it opens
-  at the pointer in UI pixels (the UI scale), kept on screen. The latest note shows at its foot, and under the HUD for a few seconds when
-  it's shut (the same note again only keeps it up, and isn't printed again). One click is one request: row observers
-  only record presses, `send_clicks` sends at most one per button per frame and none for a stack already on its way
-  (`InFlight`, until the snapshot shows the answer, a refusal, or 3 s); a floor item being taken leaves the Floor
-  column at once. The Floor column and E use the snapshot's floor, not a distance guess. Left mouse doesn't swing while it's open.
-  **Current action** (#98, `action_ui.rs`): while a job is under way a bar at the bottom centre names it ("Wash rags in clean water"), shows progress and seconds left, the number queued, and X or a click cancels it, Shift+X the whole queue (`Intent::CancelJobs { player, all }`, `World::player_cancel_jobs`).
-  **Finding and moving several** (#94): a search box (`/` or a click to type; Enter or Esc stops; while
-  typing every other key is held back, `inventory_ui::TextEntry`, which key handlers in `PreUpdate` run after) and
-  category chips (Food, Drink, Medical, Weapons, Clothing, Tools, Materials, Bags, Other; each a toggle, so several can
-  be on, and All turns them off) narrow both panes but your hand and
-  bag slots. They are out of sight until wanted: the small "Find" control at the top right, or `/`, brings them out, they
-  stay while a search or chip is set (`Find::in_use`), and "Find" again puts them away, cleared. Each pane's title has a "pick all" for
-  the stacks it shows (of yours, only what you carry, never what you hold or wear; pressed again, it unpicks them); Ctrl-click picks rows (a picked row always shows; a collapsed row: all its stacks), Shift-click every row from the last one picked to it in that pane
-  (only the rows on show, so a range under a search skips what it hides),
-  and the top row (always that high, so picking doesn't shift the rows, and in view however long the
-  lists are) then says how many are picked and their weight and sends every picked stack to the bags, the open container or
-  the floor at once. Names never wrap, and one too long for its cell is cut off at the next.
-  `--find TEXT`, `--filter CATEGORY[,CATEGORY...]` and `--pick N,N` (carried stacks) start it that way, for pictures, as do
-  `--tab worn|body|floor` (several with a comma; `body`: the Worn tab as the body view), `--sort name|type|weight` and `--expand` (collapsed rows opened);
-  `--pick-range A,B[@SECS]` Ctrl-clicks carried row A and Shift-clicks row B (after SECS), and `--drop-picked-after SECS`
-  presses the move-to row's "floor", for recordings (`review_saves.rs` writes `panel.zsave`: a pack, a container
-  open and things on the floor, and `panel_full.zsave`: the pack full, with several stacks of one item, things held and more on the floor). Ground items are drawn as boxes of their size and colour,
-  weapons as bars. Under the panes, the Make list (see Crafting), one line ("3 you can make now") until a click opens it.
-  **The body view** (Linear DCM-43, `inventory_ui/body.rs`): the Worn tab's title has "List" (the default) and "Body";
-  Body shows what you hold and wear on a simple outline of a person instead of as rows. A column of places either side
-  of the figure (`body::Spot`: head, face, neck, torso, hands, legs, feet, and arms when something is listed there; the
-  hand, off hand, back and shoulder slots), each listing what is at it, outermost first, or a dash. A worn item is
-  listed once (`Spot::of`: the accessory place it takes, else the main part it covers: a hoodie the torso, boots the
-  feet), and the figure's parts take the colour of what covers them (`body::tint`: a part's own garment before one that
-  only reaches it, then the outermost; a hood up until a hat is on), with a bag behind the shoulders or at the hip and
-  a bar in a hand that holds something. Each item is a tile with the list rows' own presses (`inventory_ui::clickable`,
-  the same `RowAction`): click to take it off into the bags, Alt-, Ctrl- and Shift-click, the right-click menu and the
-  hotbar's keys as on a row. The search and chips don't narrow it. Which view is kept in `settings.ron`
-  (`ClientSettings::inventory_body`); `--tab body` starts with it (pictures: `review_saves.rs` writes `body`,
-  `body_some` and `body_bare`). A survivor with three layers on is taller than a 1280 x 720 screen leaves room for
-  while the objectives are up: the panel then scrolls, as its lists do.
+- **Bags have their own room** (`items::Pouch`: `Pockets`, `Back`, `Shoulder`, `Hand`, `OffHand`; `ItemStack::home`):
+  every carried stack is in the pockets or in one bag carried, and each of those holds only its own litres
+  (`Inventory::pouch_room`, `pouch_used`, `pouches`: the pockets always, and each bag there is). Nobody saying where,
+  a thing goes with a stack of its kind that has room, else the first place that takes it, the back's bag first and
+  the pockets last (`auto_home`); `Place::Pouch(p)` as a move's `to` puts a carried stack in that one (only somewhere
+  to put things: they are taken from `Carried` by index), refused when it doesn't fit. A bag put down or taken off
+  goes with what is in it only as far as the rest has room, as before; what stays is settled into the other places
+  (`Inventory::settle`, moving as little as can be). Stacks of one kind in two bags stay two stacks. **Saves:** an
+  optional `BAGS` section (which place each carried stack is in; only when anything is in a bag; no format bump: an
+  older save's things are settled on load). `wire::PROTOCOL` 26 (`Place::Pouch`, the stacks' homes in the private
+  view, `PrivateView::homes`).
+- **Client: the inventory screen** (`inventory_ui.rs`; Tab or I, and it opens by itself when a container search
+  finishes: `search_done`). The first screen of the **flat frame** every full screen is to use: read
+  **[docs/ui-design.md](docs/ui-design.md)** before building or changing one (colours, type, the frame, components,
+  icons, behaviour, and a checklist). Its tokens and helpers are `theme::flat` (`VEIL`, `SOLID`, `TEXT`, `DIM`,
+  `GREEN`, `chip`, `button`, `key`, `hint`, `bar`, `line`, `icon`, `item_icon`); the painted skin (below, The skin)
+  stays for the HUD and the small floating panels until they move over. The frame: a veil over the whole window
+  (`PanelRoot`, `GlobalZIndex(6)`; the HUD's bottom-left column, the hotbar and the first night's panel aren't drawn
+  under it, `hide_hud`; the health and skills panels float over it, the current-action bar too), a top bar (the
+  screen's name, the clock, Close), a rail of screens down the left (`rail`: Inventory, Make, Health, Skills; a new
+  full screen is a tab there), three columns and a footer of key hints with the latest note.
+  **Gear** (left): what each hand holds, then a slot a place (`GEAR`, by `body::Spot`: head, face, neck, torso, hands,
+  legs, feet, back, shoulder; several layers on one place are several tiles), the hotbar, and at the foot the load
+  against the limit with the burden stage and the litres used. **You** (middle): a pane for each bag carried and for
+  the pockets, each with its icon, where it is carried and a bar of its litres (amber when nearly full, red over).
+  **Nearby** (right): the open container and the floor within reach, a pane each; "your things go here" marks the one
+  a click on your things sends them to (a press on a pane's name makes it that; a newly opened container takes it);
+  "Take all" and "Put mine in" / "Drop mine" at its foot move everything across (never what you hold or wear).
+  **Nothing scrolls sideways:** things are tiles of 104 px that wrap (`Ctx::tiles`, `Ctx::tile`: the item's icon, its
+  count, a mark for stale food or a worn weapon, the name cut with dots when too long), or with "View: rows" one-line
+  rows (`Ctx::rows`; `--tab rows`); each column scrolls up and down by itself (`scroll_frame`, the wheel over it; the
+  wheel doesn't zoom the camera while the screen is open); several stacks of one item in a pane are one tile or row
+  with their count together and a `+` that opens it to its stacks (`arrange`); a pane folds to its head (`-`); the
+  search box (`/` or a click; Enter or Esc stops; while typing every other key is held back, `TextEntry`), the
+  category chips (each a toggle; All clears them) and "Sort" (as packed, name, type, weight: `Sort::next`) work on
+  every pane at once. Pointing at a thing shows a card with what there is to say about it (`HoverCard`, `draw_card`).
+  **Item icons** are one atlas, `assets/ui/item_icons.png` with `item_icons.txt` naming each cell by item id (86, our
+  own, sources in `assets/source/ui/item_icons/`; `theme::flat::item_icon`; an item without one, a mod's, gets a
+  tile of its `color`); a test holds every shipped item to an icon. **A new item needs its icon in the atlas.**
+  **Presses** are as they were: click a thing to move it across (yours into the Nearby pane that is the target,
+  theirs into your pockets and bags, off a slot into your bags), Alt-click (Option on a Mac) for one of a stack,
+  Ctrl-click picks, Shift-click picks the range from the last one picked in that column, and with something picked a
+  bar at the foot of You sends them all to a bag, the container or the floor; right-click for the menu (#95,
+  `menu_entries`): one flat list of what can be done with it, the likeliest first (eat or drink, wear, hold, take a
+  pill, use on a wound, put in the open container, **put in each other bag carried or the pockets**, drop, take, take
+  in hand, split: one, or half of four or more), 1-9 to pick, Esc or a click elsewhere to close; the same menu on a
+  ground item in reach in the world (right-click it with the screen open, or a quick right tap with it shut; held,
+  right mouse aims). With the pointer on a thing, Shift and 1-9 puts it on that hotbar slot. One click is one request:
+  observers only record presses, `send_clicks` sends at most one per button per frame and none for a stack already
+  on its way (`InFlight`, until the snapshot shows the answer, a refusal, or 3 s). A click on the bare veil shuts the
+  screen and goes no further. `--menu carried:N|worn:N|hand|container:N|ground[:N]` starts with a menu open and
+  `--menu-pick N[@SECS]` presses its number key.
+  **Right-clicking things in the world** (`world_actions.rs`): the same quick right tap (or a right-click with the
+  screen open) on a door, window, fence, blind, container, body or light switch opens its menu: open or close, climb
+  through or over, smash the glass, raise, lower, fit or take down the blind (from inside), search or look inside,
+  flick the switch; out of reach it says so and offers nothing. `world_actions::pick` finds what the pointer's ray
+  meets first (a door's or window's opening, or the ground just by it when the wall is cut down; a container's
+  furniture as a 1 m box, a body as a low box, `pick_body`; a light switch as its plate on the wall, `pick_switch`; an
+  item on the floor wins unless something stands in front of it) and `entries` lists its actions as intents. Actions
+  that go by what the player faces are sent as `Intent::Toward { player, facing, then }`: the server turns the player
+  to the thing (`World::set_facing`) and applies `then`, an action of that same player, as if it came alone, so reach
+  and the rest are its own checks (`wire::PROTOCOL` 21). New things to right-click: a `Target` variant, its test in
+  `pick`, its lines in `entries`.
+  **Current action** (#98, `action_ui.rs`): while a job is under way a bar at the bottom centre names it ("Wash rags
+  in clean water"), shows progress and seconds left, the number queued, and X or a click cancels it, Shift+X the whole
+  queue (`Intent::CancelJobs { player, all }`, `World::player_cancel_jobs`).
+  **For pictures:** `--find TEXT`, `--filter CATEGORY[,CATEGORY...]`, `--pick N,N` (carried stacks), `--tab rows|floor`
+  (the rows view; the floor as the target), `--sort name|type|weight`, `--expand` (collapsed stacks opened);
+  `--pick-range A,B[@SECS]` and `--drop-picked-after SECS` for recordings. `review_saves.rs` writes `panel`,
+  `panel_full` (a full pack, a wardrobe open, things on the floor), `bags` (a rucksack, a tote bag and the pockets),
+  `body`, `body_some` and `body_bare` (the gear slots dressed, partly, bare) and `make`. Ground items in the world are
+  drawn as boxes of their size and colour, weapons as bars. The body view (the figure, Linear DCM-43) is gone: the
+  gear slots took its place (`ClientSettings::inventory_body` is still read from old settings files and unused).
 
 ## Crafting (`sim::crafting`, `assets/data/items/recipes.ron`; #12)
 
@@ -1314,10 +1324,10 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   (`ContentPrint::recipes` / `recipe_ids`): any change loads with a note, queued crafts matched up by id
   (`save_check::remap_recipes`), and those of a recipe that's gone called off (nothing was used up yet). A craft's
   recipe index out of range is `LoadError::Invalid`.
-- **Client:** the inventory panel's Make list (`inventory_ui.rs`; shut to one line until clicked): every recipe; the ones you can make (by
-  `crafting::check` over your private view) are rows to click (one request until the answer, like moves), with what
-  they make and their time; the one under way shows its seconds left, queued ones how many; the rest say what's
-  missing. No key of its own.
+- **Client:** Make is the second screen on the inventory screen's rail (`inventory_ui.rs`, `make_column`, `make`):
+  every recipe; the ones you can make (by `crafting::check` over your private view) are rows to click (one request
+  until the answer, like moves), with what they make and their time; the one under way shows its seconds left,
+  queued ones how many; the rest say what's missing. No key of its own.
 - **MCP:** `recipes` (the table; read-only), `craft {player, recipe}` (no recipe: what the player can make now, and what
   the rest need; with a recipe id: queues it, steps until done, and says what was made and what changed, carried and on
   the floor).
@@ -2787,7 +2797,7 @@ container, the floor in reach with ground item ids, containers in reach, the job
 it fills from and which fallback, entries with chance per pick, groups, and `n` sample fills, default 200, with how
 often each item turns up; read-only), `search {player, container}`, `take
 {player, from: container|ground, index, count}`, `move_item {player, from, index, to, count}` (places: carried, hand,
-off_hand, back, shoulder, worn, container, ground), `drop {player, from, index, count}`, `equip {player, index}`, `wear
+off_hand, back, shoulder, worn, container, ground; as `to`, `pockets`, `bag_back`, `bag_shoulder`, `bag_hand` or `bag_off_hand` puts a carried stack in that one bag: `inventory` says which each is in and how full each is), `drop {player, from, index, count}`, `equip {player, index}`, `wear
 {player, index}`, `unequip {player, from, index}`, `use {player, from, index}` (each queues the job and steps the world
 until the player's queue is empty, then reports what happened and the inventory; `use` also says beforehand what it will
 do, and the needs before and after), `recipes` (every crafting recipe: inputs, tools, outputs, seconds; read-only) and

@@ -59,10 +59,11 @@ tile has a green outline *and* a tick; a full bag's gauge turns amber *and* read
 | Token | Value | Use |
 |---|---|---|
 | `PAPER` | `#E9DCBB` | The sheet. |
-| `PAPER_LIGHT` | `#F1E7CD` | Roads on the map, a highlighted line. |
+| `PAPER_LIGHT` | `#F8F0DA` | Roads on the map, a highlighted line. |
 | `PAPER_INK` | `#2B2620` | Everything printed or drawn: lines, labels, building walls. |
 | `PENCIL` | `#D7262B` | The survivor's own marks: where you are, where you walked, a cross, a note. |
 | fills | dusty tan `#C9A27A`, dusty red `#C98372`, blue-grey `#8F9BAA`, sage `#B9C08F` | Flat tints by kind of thing. Muted: paper is never brighter than the chrome's bone text. |
+| greens | grass `#D2D6A2`, broadleaf trees `#8C9A6A`, pines `#77875E` | The map's ground and trees. |
 
 Paper may carry a little grain and a fold line or two, being a thing and not chrome. Text on paper is
 ink, in the same typefaces. Chrome controls (buttons, chips, the rail) are never drawn on paper: a
@@ -206,6 +207,14 @@ Each is one function in `theme.rs`; a panel never builds its own.
 | Survivor: Protection | The body, part by part / what covers each part and how much it stops, by kind of wound | The Gear column's one-line summary opens it. |
 | Map | Paper, filling the body | The survivor's paper map: printed streets, the rest inked in as it is seen, red pencil for your own marks. Pan and zoom keys in the footer. |
 | Menus, settings, character creation | The frame over an opaque ground, one column of choices and one of detail | |
+
+### What is built
+
+The guide is ahead of the game. Built on the frame today: **Inventory** and **Make** (a plain list of
+recipes, no categories or detail column yet), with the veil at 97.5% so text keeps its contrast over
+sunlit ground. Health and Skills are still the painted floating panels: their rail tabs open them
+over the frame, with their own keys. Build, Survivor, the Map and the menus are other pieces of
+work that move onto these tokens as they land; until then the rail lists only what opens.
 
 ## The HUD
 
