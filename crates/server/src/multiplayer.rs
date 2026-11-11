@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use glam::Vec2;
-use zombye_net::host::{BUDGET_RANGE, DEFAULT_BUDGET, Host, HostOptions, Spawn};
+use zombye_net::host::{BUDGET_RANGE, DEFAULT_BUDGET, Host, HostOptions, Owner, Spawn};
+use zombye_net::identity;
 use zombye_net::remote::Remote;
 use zombye_net::{Intent, Snapshot, shutdown, wire};
 use zombye_sim::logout::StartKit;
@@ -128,20 +129,40 @@ fn parse_kit(text: &str) -> Result<StartKit, String> {
         .collect()
 }
 
-/// The file beside a save that says whose each survivor is: a line per name, `id<TAB>name`.
+/// The file beside a save that says whose each survivor is: a line per survivor,
+/// `id<TAB>name<TAB>key` (the player's public key in hex, DCM-66). A line from before keys,
+/// `id<TAB>name`, is a survivor the first key to join under that name takes.
 fn names_path(save: &Path) -> PathBuf {
     let mut name = save.as_os_str().to_os_string();
     name.push(".players");
     PathBuf::from(name)
 }
 
-fn read_names(save: &Path) -> Vec<(String, u32)> {
+fn read_names(save: &Path) -> Vec<(u32, Owner)> {
     let Ok(text) = std::fs::read_to_string(names_path(save)) else { return Vec::new() };
-    text.lines().filter_map(|l| l.split_once('\t')).filter_map(|(id, name)| Some((name.to_string(), id.parse().ok()?))).collect()
+    text.lines()
+        .filter_map(|l| {
+            let mut parts = l.split('\t');
+            let id = parts.next()?.parse().ok()?;
+            let name = parts.next()?.to_string();
+            let key = match parts.next() {
+                Some(hex) => Some(identity::from_hex(hex.trim())?),
+                None => None,
+            };
+            Some((id, Owner { name, key }))
+        })
+        .collect()
 }
 
 pub fn write_names(save: &Path, host: &Host) {
-    let text: String = host.names().iter().map(|(name, id)| format!("{id}\t{name}\n")).collect();
+    let text: String = host
+        .owners()
+        .iter()
+        .map(|(id, o)| match o.key {
+            Some(key) => format!("{id}\t{}\t{}\n", o.name, identity::hex(&key)),
+            None => format!("{id}\t{}\n", o.name),
+        })
+        .collect();
     if let Err(e) = std::fs::write(names_path(save), text) {
         eprintln!("can't write {}: {e}", names_path(save).display());
     }
@@ -162,7 +183,7 @@ pub fn host(mut world: World, new_world: bool, args: HostArgs, persist: &mut Per
         }
     };
     if let Some(save) = &persist.path {
-        host.set_names(read_names(save));
+        host.set_owners(read_names(save));
     }
     // Survivors a loaded world has standing about with nobody playing them lie down and leave.
     let unplayed = host.log_out_unplayed();
@@ -611,8 +632,10 @@ mod tests {
         let save = dir.join("server.zsave");
         assert_eq!(names_path(&save), dir.join("server.zsave.players"));
         assert!(read_names(&save).is_empty());
-        std::fs::write(names_path(&save), "3\tada\nnot a line\n7\tbob the builder\nx\tcy\n").unwrap();
-        assert_eq!(read_names(&save), vec![("ada".to_string(), 3), ("bob the builder".to_string(), 7)]);
+        let key = [7u8; 32];
+        std::fs::write(names_path(&save), format!("3\tada\nnot a line\n7\tbob the builder\t{}\nx\tcy\n9\tdee\tnot a key\n", identity::hex(&key))).unwrap();
+        let owner = |name: &str, key| Owner { name: name.to_string(), key };
+        assert_eq!(read_names(&save), vec![(3, owner("ada", None)), (7, owner("bob the builder", Some(key)))]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
