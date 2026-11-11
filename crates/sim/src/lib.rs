@@ -56,7 +56,7 @@ pub use awareness::{Awareness, Heard, PlayerSightTuning};
 pub use blinds::{BlindOp, BlindTuning};
 pub use bonds::{BondTuning, HandsAct, HandsJob, HandsKind, Restraint};
 pub use groups::{Group, GroupTuning, GroupView, Groups, Marker, MemberView};
-pub use combat::{ActionEvent, CombatEvent, CombatEventKind, CombatTuning, HitEffect, HitEvent, PlayerHitEvent};
+pub use combat::{ActionEvent, CombatEvent, CombatEventKind, CombatTuning, HitEffect, HitEvent, PlayerHitEvent, StompSpot, stomp_spot};
 pub use containers::{ContainerData, ContainerDef, ContainerSite};
 pub use crafting::{RecipeDef, RecipeItem, Tool};
 pub use firstaid::{Aid, AidView, CourseView, FirstAidTuning, Treatment};

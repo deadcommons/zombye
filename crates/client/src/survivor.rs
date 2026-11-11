@@ -280,7 +280,7 @@ pub(crate) struct ActionClock {
 }
 
 /// Where in an action clip the blow lands: the windup plays before it, the recovery after.
-const U_HIT: f32 = 0.45;
+pub(crate) const U_HIT: f32 = 0.45;
 
 impl ActionClock {
     /// Normalised clip time now.
@@ -1050,7 +1050,7 @@ fn carry(p: &mut SPose, armed: bool, swing: f32) {
     }
 }
 
-fn idle(t: f32, armed: bool) -> SPose {
+pub(crate) fn idle(t: f32, armed: bool) -> SPose {
     let s = (t * TAU).sin();
     let mut p = SPose::default();
     p.rot[TORSO] = rx(0.04 + 0.012 * s);
@@ -1158,7 +1158,7 @@ fn upper(torso: Quat, head: Quat, uarm_l: Quat, farm_l: Quat, uarm_r: Quat, farm
 }
 
 /// An action's pose at normalised time `u` (the blow lands at [`U_HIT`]).
-fn action(kind: ActionKind, style: Style, armed: bool, u: f32, ready: &SPose) -> SPose {
+pub(crate) fn action(kind: ActionKind, style: Style, armed: bool, u: f32, ready: &SPose) -> SPose {
     let ready = ready.clone();
     let q = Quat::IDENTITY;
     match (kind, style) {
@@ -1192,6 +1192,19 @@ fn action(kind: ActionKind, style: Style, armed: bool, u: f32, ready: &SPose) ->
             kick.rot[UARM_L] = rz(-0.3) * rx(-1.5);
             kick.rot[TORSO] = rx(-0.03);
             keyed(&[(0.0, ready.clone()), (U_HIT * 0.6, level.clone()), (U_HIT, level), (0.56, kick), (1.0, ready)], u)
+        }
+        (ActionKind::Shove, style) if armed && style != Style::Gun => {
+            // A melee weapon in hand: held across the chest in both hands like a bar and driven
+            // straight out from the body. The bar points along the hand's +Z; a quarter turn about
+            // the hand's Y lays it level across to his left hand, whatever the arm's lift (the
+            // arm's lift is about X), and a little more takes out the arm's inward turn.
+            let bar = ry(FRAC_PI_2 + 0.18);
+            let gather = upper(rx(-0.05), q, rz(-0.18) * rx(-0.55), rx(-1.75), rz(0.18) * rx(-0.55), rx(-1.75), bar);
+            // The arms' lift is under the torso's lean, which swings them back as much: so they're
+            // raised by it more, to reach out level at the shoulders with the bar at chest height.
+            let push = upper(rx(0.2), rx(-0.12), rz(-0.2) * rx(-1.72), rx(-0.08), rz(0.2) * rx(-1.72), rx(-0.08), bar);
+            let hold = upper(rx(0.15), rx(-0.08), rz(-0.18) * rx(-1.55), rx(-0.25), rz(0.18) * rx(-1.55), rx(-0.25), bar);
+            keyed(&[(0.0, ready.clone()), (0.25, gather), (U_HIT, push.clone()), (0.62, hold), (1.0, ready)], u)
         }
         (ActionKind::Shove, _) => {
             let hand = if armed { rx(0.3) } else { q };
@@ -1353,6 +1366,31 @@ mod tests {
         assert!(shot.z > 0.95, "level as the shot goes: {shot}");
         assert!(kick.y > shot.y + 0.2 && kick.z > 0.5, "then the muzzle rises: {kick}");
         assert_eq!(style(WeaponCategory::Firearm), Style::Gun);
+    }
+
+    /// A shove with a weapon in hand holds it level across the body like a bar and drives it out.
+    #[test]
+    fn a_weapon_shove_pushes_with_it_across_the_body() {
+        for style in [Style::OneHand, Style::TwoHand] {
+            let at = |u: f32| {
+                let p = action(ActionKind::Shove, style, true, u, &idle(0.0, true));
+                let g = globals(&BONES, &p);
+                (g[HAND_R].transform_vector3(Vec3::Z), g[HAND_R].transform_point3(Vec3::ZERO))
+            };
+            let (gather_dir, gather) = at(0.25);
+            let (push_dir, push) = at(U_HIT);
+            for dir in [gather_dir, push_dir] {
+                assert!(dir.x > 0.9 && dir.y.abs() < 0.2, "{style:?}: the bar lies level to his left, not {dir}");
+            }
+            assert!(push.z > gather.z + 0.2, "{style:?}: driven out from {gather} to {push}");
+            // Out at chest height, not down at the waist: the hands no lower than a little under
+            // the shoulder, and as far out in front as the arm is long, near enough.
+            let p = action(ActionKind::Shove, style, true, U_HIT, &idle(0.0, true));
+            let g = globals(&BONES, &p);
+            let shoulder = g[UARM_R].transform_point3(Vec3::ZERO);
+            assert!(push.y > shoulder.y - 0.2, "{style:?}: hands at {push} under a shoulder at {shoulder}");
+            assert!(push.z - shoulder.z > 0.45, "{style:?}: hands at {push} not out in front of {shoulder}");
+        }
     }
 
     /// The weapon points backward in the windup and forward when the blow lands.

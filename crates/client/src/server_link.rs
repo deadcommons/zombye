@@ -360,6 +360,11 @@ impl Plugin for ServerLinkPlugin {
             server.send(Intent::SpawnZombies { count: DEMO_ZOMBIES, center: (me + Vec2::X * distance).to_array(), radius: 2.0 });
             server.send(Intent::MakeNoise { pos: me.to_array(), radius: distance + 5.0, lasting: false });
         }
+        if gun.is_some() || options.fight_demo {
+            // Take the weapon up now: an offscreen picture never ticks the world, and would show
+            // him bare-handed.
+            server.tick();
+        }
         if let Some((_, door, out)) = siege_at {
             siege(&mut server, player_id, door, out);
         }
