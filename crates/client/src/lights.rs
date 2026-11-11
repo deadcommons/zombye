@@ -43,7 +43,7 @@ pub struct SeenLight {
 }
 
 impl SeenLight {
-    fn round(pos: Vec2, radius: f32) -> Self {
+    pub(crate) fn round(pos: Vec2, radius: f32) -> Self {
         Self { pos, radius, dir: Vec2::X, cos: -1.0 }
     }
 
@@ -80,7 +80,9 @@ pub struct LightsPlugin;
 
 impl Plugin for LightsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<NightLights>().add_systems(Startup, spawn_other_lights).add_systems(Update, (window_lights, other_lights).chain().before(crate::fog::update_fog));
+        app.init_resource::<NightLights>()
+            .add_systems(Startup, spawn_other_lights)
+            .add_systems(Update, (window_lights, other_lights, crate::campfire::fires).chain().before(crate::fog::update_fog));
     }
 }
 
