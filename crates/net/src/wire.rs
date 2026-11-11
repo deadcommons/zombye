@@ -64,8 +64,9 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// 23: shoves that add up and stomps to the head: the shove and stomp numbers in `CombatTuning`.
 /// 24: electricity (19) merged after 20-23.
 /// 25: stairs and the upper floor: `PlayerView::level` (bit 17 of `PlayerPacked::bits`),
-/// `SnapshotDelta::upstairs`, `Tunings::stairs`.)
-pub const PROTOCOL: u32 = 25;
+/// `SnapshotDelta::upstairs`, `Tunings::stairs`. 26: the map screen: `SnapshotDelta::map`, what
+/// the client's survivor has seen of the map.)
+pub const PROTOCOL: u32 = 26;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -635,6 +636,8 @@ pub struct SnapshotDelta {
     pub group: Option<Option<zombye_sim::GroupView>>,
     /// The rooms lit and whether the grid is on (`zombye_sim::power`), when they change.
     pub lights: Option<(Vec<u16>, bool)>,
+    /// What the client's survivor has seen of the map (`zombye_sim::explore`), when it changes.
+    pub map: Option<zombye_sim::Explored>,
 }
 
 impl Snapshot {
@@ -672,6 +675,7 @@ impl Snapshot {
             heard: self.heard.iter().filter(|h| h.listener == player).copied().collect(),
             speech: self.speech.iter().filter(|s| s.listener == player).cloned().collect(),
             groups: self.groups.iter().filter(|g| g.player == player).cloned().collect(),
+            maps: self.maps.iter().filter(|m| m.player == player).cloned().collect(),
             lit_rooms: self.lit_rooms.clone(),
             grid_on: self.grid_on,
         }
@@ -825,6 +829,7 @@ pub struct DeltaEncoder {
     looks: Vec<OutfitView>,
     group: Option<zombye_sim::GroupView>,
     lights: (Vec<u16>, bool),
+    map: zombye_sim::Explored,
 }
 
 /// The entries of `next` that are new or differ from `last`'s (both sorted by `key`), and the keys
@@ -1025,9 +1030,15 @@ impl DeltaEncoder {
             self.lights = lights.clone();
             lights
         });
+        let map = view.maps.into_iter().next().map(|m| m.explored).unwrap_or_default();
+        let map = (first || map != self.map).then(|| {
+            self.map = map.clone();
+            map
+        });
         SnapshotDelta {
             group,
             lights,
+            map,
             tick: view.tick,
             time_of_day: view.time_of_day,
             time_scale: view.time_scale,
@@ -1127,6 +1138,9 @@ impl DeltaDecoder {
         }
         if let Some(group) = delta.group {
             s.groups = group.into_iter().collect();
+        }
+        if let Some(explored) = delta.map {
+            s.maps = if explored.w == 0 { Vec::new() } else { vec![crate::MapView { player, explored }] };
         }
         s.clone()
     }
@@ -1262,8 +1276,10 @@ mod tests {
 
             let own = |s: &Snapshot| s.players.iter().find(|p| p.id == a).copied().unwrap();
             let others = |s: &Snapshot| s.players.iter().filter(|p| p.id != a).map(PlayerPacked::pack).collect::<Vec<_>>();
-            let exact = |s: &Snapshot| postcard::to_allocvec(&(s.tick, s.time_of_day, s.game_minute, own(s), others(s), &s.items_sorted(), &s.floor, &s.outfits, &s.looks, &s.private, &s.item_notes, &s.hits, &s.level_ups, &s.speech)).unwrap();
+            let exact = |s: &Snapshot| postcard::to_allocvec(&(s.tick, s.time_of_day, s.game_minute, own(s), others(s), &s.items_sorted(), &s.floor, &s.outfits, &s.looks, &s.private, &s.item_notes, &s.hits, &s.level_ups, &s.speech, &s.maps)).unwrap();
             assert_eq!(exact(&got), exact(&view), "tick {t}");
+            // The map screen's record: only our own, whole (it is sent only when it grows).
+            assert!(got.maps.len() == 1 && got.maps[0].player == a && got.maps[0].explored.count() > 0 || t < 10, "tick {t}");
             assert!(others(&got).len() == 1 && got.players.iter().all(|p| p.id == a || p.last_input_seq == 0), "nothing of another player's that can't be seen");
             assert_eq!(got.zombies.len(), view.zombies.len(), "tick {t}");
             let me = glam::Vec2::from(own(&view).pos);
