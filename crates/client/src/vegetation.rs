@@ -304,7 +304,7 @@ fn stream_veg(
     }
     *drawn_at = Some(density);
     let focus = cam.focus.xz();
-    let radius = veg_radius(cam.zoom);
+    let radius = veg_radius(if cam.shoulder() { 90.0 } else { cam.zoom });
     // Everything at once for a picture and for the first view; then a few chunks a frame.
     let all_at_once = options.offscreen() || chunks.iter().all(|(.., shown)| shown.is_none());
     let mut budget = if all_at_once { usize::MAX } else { CHUNKS_PER_FRAME };
@@ -341,7 +341,7 @@ fn update_params(assets: Option<Res<VegAssets>>, mut buffers: ResMut<Assets<Shad
     let feet = player.single().map_or(Vec2::splat(-1e6), |p| p.translation.xz());
     let p = pal();
     let veg = VegParams {
-        focus: Vec4::new(cam.focus.x, cam.focus.z, veg_radius(cam.zoom), time.elapsed_secs_wrapped()),
+        focus: Vec4::new(cam.focus.x, cam.focus.z, veg_radius(if cam.shoulder() { 90.0 } else { cam.zoom }), time.elapsed_secs_wrapped()),
         player: Vec4::new(feet.x, feet.y, WIND, 0.0),
         green: p.grass_blade.to_vec4(),
         dry: p.grass_blade_dry.to_vec4(),

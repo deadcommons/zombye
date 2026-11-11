@@ -1253,7 +1253,7 @@ fn sync_zombies(
     let (Some(assets), Some(mut entities)) = (assets, entities) else { return };
     *frame = frame.wrapping_add(1);
     // Silhouettes (off by default): only of zombies drawn at all, which is the ones the survivor sees.
-    let ghosts = cams.single().ok().filter(|_| silhouettes.0).map(|cam| cam.offset_dir());
+    let ghosts = cams.single().ok().filter(|cam| silhouettes.0 && !cam.shoulder()).map(|cam| cam.offset_dir());
     let now = time.elapsed_secs();
     // The shader's clock (`globals.time`).
     let t = time.elapsed_secs_wrapped();
