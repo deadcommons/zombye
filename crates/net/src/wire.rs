@@ -56,8 +56,9 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// 15: weapons that wear: `durability`, `wear_chance` and `close_range` in the weapons, `one_hand`
 /// in the items, the wear numbers in `CombatTuning`. 16: ten skill levels and XP multipliers in `SkillTuning`.
 /// 17: climbing with E: `Intent::Climb`, `PlayerView::climb`, `Tunings::climb`.
-/// 18: broken weapons stay as items: `CombatTuning::broken_damage`.)
-pub const PROTOCOL: u32 = 18;
+/// 18: broken weapons stay as items: `CombatTuning::broken_damage`. 19: electricity and room
+/// lights: `Intent::Light`, `Intent::Grid`, `SnapshotDelta::lights`.)
+pub const PROTOCOL: u32 = 19;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -604,6 +605,8 @@ pub struct SnapshotDelta {
     pub risen: Option<Vec<OutfitView>>,
     /// The client's group and invitations (#73), when they change; `Some(None)`: none any more.
     pub group: Option<Option<zombye_sim::GroupView>>,
+    /// The rooms lit and whether the grid is on (`zombye_sim::power`), when they change.
+    pub lights: Option<(Vec<u16>, bool)>,
 }
 
 impl Snapshot {
@@ -639,6 +642,8 @@ impl Snapshot {
             heard: self.heard.iter().filter(|h| h.listener == player).copied().collect(),
             speech: self.speech.iter().filter(|s| s.listener == player).cloned().collect(),
             groups: self.groups.iter().filter(|g| g.player == player).cloned().collect(),
+            lit_rooms: self.lit_rooms.clone(),
+            grid_on: self.grid_on,
         }
     }
 }
@@ -788,6 +793,7 @@ pub struct DeltaEncoder {
     outfits: Vec<OutfitView>,
     risen: Vec<OutfitView>,
     group: Option<zombye_sim::GroupView>,
+    lights: (Vec<u16>, bool),
 }
 
 /// The entries of `next` that are new or differ from `last`'s (both sorted by `key`), and the keys
@@ -977,8 +983,14 @@ impl DeltaEncoder {
             self.group = group.clone();
             group
         });
+        let lights = (view.lit_rooms.clone(), view.grid_on);
+        let lights = (first || lights != self.lights).then(|| {
+            self.lights = lights.clone();
+            lights
+        });
         SnapshotDelta {
             group,
+            lights,
             tick: view.tick,
             time_of_day: view.time_of_day,
             time_scale: view.time_scale,
@@ -1058,6 +1070,9 @@ impl DeltaDecoder {
         if let Some(items) = delta.floor {
             s.floor = vec![FloorView { player, items }];
         }
+        if let Some((rooms, grid)) = delta.lights {
+            (s.lit_rooms, s.grid_on) = (rooms, grid);
+        }
         if let Some(run) = delta.run {
             s.runs = vec![RunView { player, ..run }];
         }
@@ -1114,6 +1129,7 @@ impl Intent {
             | Intent::Interact { player }
             | Intent::Climb { player }
             | Intent::SmashWindow { player }
+            | Intent::Light { player, .. }
             | Intent::Attack { player }
             | Intent::Shove { player }
             | Intent::Stomp { player }
@@ -1142,14 +1158,14 @@ impl Intent {
             | Intent::Group { player, .. }
             | Intent::Aim { player, .. }
             | Intent::Dev { player, .. } => Some(player),
-            Intent::SpawnItem { .. } | Intent::SetGoal { .. } | Intent::SpawnZombies { .. } | Intent::SkipTime { .. } | Intent::MakeNoise { .. } => None,
+            Intent::SpawnItem { .. } | Intent::SetGoal { .. } | Intent::SpawnZombies { .. } | Intent::SkipTime { .. } | Intent::Grid { .. } | Intent::MakeNoise { .. } => None,
         }
     }
 
     /// Only for developers: the dev toggles and the debug and admin intents. A multiplayer server
     /// takes them only with `--allow-dev`.
     pub fn dev_only(&self) -> bool {
-        matches!(self, Intent::Dev { .. } | Intent::SpawnItem { .. } | Intent::SetGoal { .. } | Intent::SpawnZombies { .. } | Intent::SkipTime { .. } | Intent::MakeNoise { .. })
+        matches!(self, Intent::Dev { .. } | Intent::SpawnItem { .. } | Intent::SetGoal { .. } | Intent::SpawnZombies { .. } | Intent::SkipTime { .. } | Intent::Grid { .. } | Intent::MakeNoise { .. })
     }
 }
 

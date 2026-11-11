@@ -28,6 +28,7 @@ pub mod nav;
 pub mod needs;
 pub mod players;
 pub mod population;
+pub mod power;
 pub mod ranged;
 pub mod rng;
 pub mod run;
@@ -68,6 +69,7 @@ pub use needs::{Freshness, Needs, NeedsTuning, NeedsView, SleepSpot, WakeReason}
 pub use status::{StatusData, StatusInput, StatusTag, TagKind};
 pub use players::{Action, ActionKind, Climb, ClimbTuning, DevFlags, Knock, MoveMods, Player, PlayerInput, PlayerState, Stance};
 pub use population::{Attractor, PopulationDef, Zone};
+pub use power::{Coverage, PowerDef, Source, SourceKind};
 pub use template::BuildingTemplate;
 pub use run::{Death, DeathCause, RunStats};
 pub use save::{LoadError, LoadOptions, Loaded, SaveInfo};

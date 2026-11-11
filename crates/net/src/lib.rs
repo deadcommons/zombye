@@ -50,6 +50,9 @@ pub enum Intent {
     Climb { player: u32 },
     /// Smash the window the player faces (shut or open), if it's within reach. Loud.
     SmashWindow { player: u32 },
+    /// Flip the light switch of the room the player stands in (`on`: to that; `None`: the other
+    /// way). The light only comes on while the building has power (`zombye_sim::power`).
+    Light { player: u32, on: Option<bool> },
     /// Swing the equipped weapon (bare hands: a punch). Lands after the weapon's windup; asked for
     /// during the last moments of the previous action, it's queued.
     Attack { player: u32 },
@@ -108,6 +111,8 @@ pub enum Intent {
     SpawnZombies { count: u32, center: [f32; 2], radius: f32 },
     /// Debug/admin: move the clock forward.
     SkipTime { hours: f32 },
+    /// Debug/admin: turn the town's grid on or off.
+    Grid { on: bool },
     /// Debug: a noise at `pos` that zombies within `radius` metres (less through walls) come to
     /// investigate. Loud ones draw the far horde in over the following minutes; `lasting` makes
     /// that pull last much longer (like an alarm left ringing).
@@ -409,6 +414,12 @@ pub struct Snapshot {
     /// Groups (#73): for each player with a group or an invitation, its members' names, shared
     /// markers and who invited it. Every snapshot; a client gets only its own.
     pub groups: Vec<zombye_sim::GroupView>,
+    /// The rooms lit now, in order (`zombye_sim::power`): light switch on, building powered.
+    #[serde(default)]
+    pub lit_rooms: Vec<u16>,
+    /// The town's grid is on.
+    #[serde(default)]
+    pub grid_on: bool,
 }
 
 /// What a body has on, for drawing it (#63): the clothing and accessories it wears in the order put
@@ -534,6 +545,8 @@ impl Snapshot {
             heard: world.awareness().all_heard_now().copied().collect(),
             speech: world.take_speech(),
             groups: if world.groups().is_empty() { Vec::new() } else { world.players.iter().filter_map(|p| world.group_view(p.id)).collect() },
+            lit_rooms: world.power().lit().to_vec(),
+            grid_on: world.power().grid_on(),
         }
     }
 
@@ -609,6 +622,9 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
         }
         Intent::SmashWindow { player } => {
             world.player_smash_window(*player);
+        }
+        Intent::Light { player, on } => {
+            world.player_light(*player, *on);
         }
         Intent::Attack { player } => {
             world.player_attack(*player);
@@ -711,6 +727,7 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
             world.spawn_zombies(*count, (*center).into(), *radius);
         }
         Intent::SkipTime { hours } => world.skip_time(hours.clamp(0.0, 24.0)),
+        Intent::Grid { on } => world.set_grid(*on),
         Intent::MakeNoise { pos, radius, lasting } => world.make_noise((*pos).into(), radius.clamp(0.0, 500.0), *lasting),
     }
 }
@@ -729,6 +746,7 @@ impl Intent {
             Intent::Interact { player }
             | Intent::Climb { player }
             | Intent::SmashWindow { player }
+            | Intent::Light { player, .. }
             | Intent::Attack { player }
             | Intent::Shove { player }
             | Intent::Stomp { player }

@@ -602,6 +602,10 @@ fn actions(
     if keys.just_pressed(KeyCode::KeyG) {
         link.send(Intent::SmashWindow { player: me.id });
     }
+    if keys.just_pressed(KeyCode::KeyQ) {
+        // The light switch of the room we're in; the server says what came of it.
+        link.send(Intent::Light { player: me.id, on: None });
+    }
     if keys.just_pressed(KeyCode::KeyT) {
         link.send(Intent::SkipTime { hours: 1.0 });
     }

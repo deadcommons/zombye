@@ -177,6 +177,9 @@ const FARC: [u8; 4] = *b"FARC";
 /// stream, events not yet handed to them, and which mods they were; optional, like `RUNS`: only
 /// written for a world with mods or with something of theirs in it).
 const MODS: [u8; 4] = *b"MODS";
+/// The power sources and light switches ([`crate::power`]); optional (a save without it gets a new
+/// world's: the grid as the settings say, the lights left on).
+const POWR: [u8; 4] = *b"POWR";
 const END: [u8; 4] = *b"END\0";
 /// Bytes before the first section: magic and version.
 const HEADER: usize = 12;
@@ -327,6 +330,8 @@ struct Settings {
     needs: NeedsTuning,
     #[serde(default)]
     skills: SkillTuning,
+    #[serde(default)]
+    power: crate::power::PowerDef,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -678,6 +683,7 @@ impl World {
             scripts: _,
             script,
             script_errors: _,
+            power,
         } = self;
         // Survivors out of the world are saved among the players (in id order); `AWAY` says which.
         let away = AwaySave {
@@ -721,6 +727,7 @@ impl World {
             infection: config.infection.clone(),
             needs: config.needs,
             skills: config.skills.clone(),
+            power: config.power.clone(),
         };
         w.section(CONF, ron::to_string(&settings).expect("settings serialize").as_bytes());
         let layout = if *map_custom {
@@ -806,6 +813,7 @@ impl World {
         if *far_ticks != 0 {
             w.section(FARC, &encode(far_ticks));
         }
+        w.section(POWR, &encode(&power.to_save()));
         // Mod scripts (#25): what they keep, and whose they are. A world without mods has none.
         let mods = config.scripts.as_ref().map(|e| e.mods()).unwrap_or_default();
         if !script.is_empty() || !mods.is_empty() {
@@ -847,6 +855,8 @@ impl World {
         config.infection = settings.infection;
         config.needs = settings.needs;
         config.skills = settings.skills;
+        config.power = settings.power;
+        config.power.validate().map_err(|why| save_check::invalid(format!("power settings: {why}")))?;
         save_check::check_settings(text, &config)?;
         let map_save: MapSave = decode(MAPD, r.expect(MAPD)?)?;
         let mut ws: WorldSave = decode(WRLD, r.expect(WRLD)?)?;
@@ -980,6 +990,7 @@ impl World {
         let mut climbs: Option<Vec<(u32, crate::players::Climb)>> = None;
         let mut far: Option<u64> = None;
         let mut script: Option<crate::script::ScriptState> = None;
+        let mut power: Option<crate::power::PowerSave> = None;
         let mut away: Option<AwaySave> = None;
         let mut nights: Option<Vec<(u32, crate::firstnight::FirstNight)>> = None;
         let mut bonds: Option<BondSave> = None;
@@ -1031,11 +1042,15 @@ impl World {
                 groups = Some(decode(GRPS, payload)?);
                 continue;
             }
+            if tag == POWR && power.is_none() {
+                power = Some(decode(POWR, payload)?);
+                continue;
+            }
             if tag == MODS && script.is_none() {
                 script = Some(decode(MODS, payload)?);
                 continue;
             }
-            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() {
+            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || power.is_some() {
                 return Err(corrupt(format!("unexpected {} section", tag_name(tag))));
             }
             let block: ZombieBlock = decode(ZOMB, payload)?;
@@ -1100,6 +1115,14 @@ impl World {
         w.zombies = reorder(z, &order);
         w.rise_looks = looks.unwrap_or_default();
         w.far_ticks = far.unwrap_or(0);
+        if let Some(p) = power {
+            match crate::power::Power::from_save(p, &w.map) {
+                Ok(p) => w.power = p,
+                // Loaded anyway onto a new map: its rooms aren't the old ones.
+                Err(_) if new_map => notes.push("the map changed: the lights are as in a new world".into()),
+                Err(why) => return Err(save_check::invalid(why)),
+            }
+        }
         if let Some(mut state) = script {
             state.check(w.config.items.len(), w.config.recipes.len()).map_err(|why| save_check::invalid(format!("script state: {why}")))?;
             // Whose scripts ran the world then, against whose run it now.

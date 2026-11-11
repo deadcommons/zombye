@@ -147,8 +147,9 @@ struct WindowPane {
     lift: f32,
     open: bool,
     broken: bool,
-    /// In a room with a light on (`building_kit::room_lit`).
+    /// In a room with a light on (`lights::LitRooms`), and the rooms either side.
     lit: bool,
+    rooms: (u16, u16),
 }
 
 impl WindowPane {
@@ -183,7 +184,7 @@ impl Plugin for WorldRenderPlugin {
         app.init_resource::<Streamer>()
             .add_systems(Startup, setup_shared)
             .add_systems(PostUpdate, fade_chunks.after(materials::update_params))
-            .add_systems(Update, (stream, apply_edge_changes, apply_edge_damage, animate_doors, animate_panes, hide_upper_floors, cut_edge_pieces).chain().after(crate::cutaway::CutawaySystems));
+            .add_systems(Update, (stream, apply_edge_changes, apply_edge_damage, relight_panes, animate_doors, animate_panes, hide_upper_floors, cut_edge_pieces).chain().after(crate::cutaway::CutawaySystems).after(crate::lights::sync_lit_rooms));
     }
 }
 
@@ -359,6 +360,7 @@ fn stream(
     mut streamer: ResMut<Streamer>,
     mut meshes: ResMut<Assets<Mesh>>,
     damage: Res<EdgeDamageMap>,
+    lit: Res<crate::lights::LitRooms>,
     options: Res<Options>,
     player: Query<&Transform, With<Player>>,
     cams: Query<&IsoCamera>,
@@ -404,7 +406,7 @@ fn stream(
         let loaded = streamer.buildings.contains_key(&i);
         if dist <= LOAD_RADIUS && !loaded && loads < budget {
             loads += 1;
-            let render = spawn_building(&mut commands, &mut meshes, &mats, &shared, map, i, b, &mut streamer.edges, &damage);
+            let render = spawn_building(&mut commands, &mut meshes, &mats, &shared, map, i, b, &mut streamer.edges, &damage, &lit);
             streamer.buildings.insert(i, render);
         } else if dist > LOAD_RADIUS + 1 && loaded {
             let render = streamer.buildings.remove(&i).unwrap();
@@ -611,26 +613,26 @@ fn spawn_building(
     b: &Building,
     edges: &mut HashMap<(IVec2, OwnedEdge), Entity>,
     damage: &EdgeDamageMap,
+    lit_rooms: &crate::lights::LitRooms,
 ) -> BuildingRender {
     let mut render = BuildingRender { drawn: -1.0, ..default() };
     // Door leaves and window panes, one entity each.
-    let lit = |rooms: (u16, u16)| building_kit::room_lit(map, rooms.0) || building_kit::room_lit(map, rooms.1);
     for (owner, which, kind, rooms) in ground_edges(map, index, b) {
         let hp = damage.0.get(&(owner, which)).copied().unwrap_or(1.0);
-        if let Some(e) = spawn_edge_piece(commands, shared, mats, owner, which, 0.0, kind, hp, lit(rooms)) {
+        if let Some(e) = spawn_edge_piece(commands, shared, mats, owner, which, 0.0, kind, hp, rooms, lit_rooms) {
             edges.insert((owner, which), e);
             render.edge_keys.push((owner, which));
             render.lower.push(e);
         }
-        // A ground-floor window with a light on behind it throws a warm pool at night (`lights.rs`).
-        if kind.is_window() && lit(rooms) {
+        // A ground-floor window throws a warm pool at night while a light is on behind it (`lights.rs`).
+        if kind.is_window() {
             let mid = owner.as_vec2() + if which == OwnedEdge::North { Vec2::new(0.5, 0.0) } else { Vec2::new(0.0, 0.5) };
-            render.lower.push(crate::lights::spawn_window_light(commands, mid));
+            render.lower.push(crate::lights::spawn_window_light(commands, mid, rooms));
         }
     }
     for (level, e) in &b.upper_edges {
         let base = STOREY * *level as f32;
-        if let Some(d) = spawn_edge_piece(commands, shared, mats, e.tile, e.edge, base, e.kind, 1.0, lit(e.rooms)) {
+        if let Some(d) = spawn_edge_piece(commands, shared, mats, e.tile, e.edge, base, e.kind, 1.0, e.rooms, lit_rooms) {
             commands.entity(d).insert(MeshTag::new(0));
             render.upper.push(d);
         }
@@ -667,9 +669,10 @@ fn door_rotations(which: OwnedEdge) -> (Quat, Quat) {
 }
 
 /// The door leaf or window pane for an edge, in the state the map has it now (`None` for edges
-/// with neither), with cracks for `hp` (fraction of its hit points left); a window `lit` glows at night.
+/// with neither), with cracks for `hp` (fraction of its hit points left); a window between `rooms`
+/// glows at night while one of them is lit.
 #[allow(clippy::too_many_arguments)]
-fn spawn_edge_piece(commands: &mut Commands, shared: &SharedMeshes, mats: &WorldMaterials, owner: IVec2, which: OwnedEdge, base: f32, kind: Edge, hp: f32, lit: bool) -> Option<Entity> {
+fn spawn_edge_piece(commands: &mut Commands, shared: &SharedMeshes, mats: &WorldMaterials, owner: IVec2, which: OwnedEdge, base: f32, kind: Edge, hp: f32, rooms: (u16, u16), lit_rooms: &crate::lights::LitRooms) -> Option<Entity> {
     let (closed, open_rot) = door_rotations(which);
     let start = owner.as_vec2();
     let piece = EdgePiece { key: (owner, which), ground: base == 0.0, shown: kind != Edge::DoorBroken };
@@ -685,7 +688,7 @@ fn spawn_edge_piece(commands: &mut Commands, shared: &SharedMeshes, mats: &World
             let (open, broken) = (kind == Edge::WindowOpen, kind == Edge::WindowBroken);
             let lift = if open { SASH_LIFT } else { 0.0 };
             let tf = Transform { translation: Vec3::new(start.x, base + lift, start.y), rotation: closed, scale: Vec3::ONE };
-            let pane = WindowPane { base, lift, open, broken, lit };
+            let pane = WindowPane { base, lift, open, broken, lit: lit_rooms.either(rooms), rooms };
             let e = commands.spawn((Mesh3d(pane.mesh(shared)), MeshMaterial3d(mats.glass.clone()), tf, pane, piece)).id();
             add_cracks(commands, shared, mats, e, false, if broken { 1.0 } else { hp });
             Some(e)
@@ -751,6 +754,24 @@ fn apply_edge_changes(
             let broken = c.kind == Edge::WindowBroken;
             if broken != pane.broken {
                 pane.broken = broken;
+                mesh.0 = pane.mesh(&shared);
+            }
+        }
+    }
+}
+
+/// A light switched on or off, or the power gone or back: the glass of the rooms either side
+/// glows or doesn't (ground-floor panes take their mesh in `cut_edge_pieces`).
+fn relight_panes(lit: Res<crate::lights::LitRooms>, shared: Option<Res<SharedMeshes>>, mut panes: Query<(&mut WindowPane, &EdgePiece, &mut Mesh3d)>) {
+    let Some(shared) = shared else { return };
+    if !lit.is_changed() {
+        return;
+    }
+    for (mut pane, piece, mut mesh) in &mut panes {
+        let now = lit.either(pane.rooms);
+        if pane.lit != now {
+            pane.lit = now;
+            if !piece.ground {
                 mesh.0 = pane.mesh(&shared);
             }
         }

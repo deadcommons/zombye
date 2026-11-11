@@ -56,6 +56,9 @@ pub struct Target {
     pub ignored: bool,
     /// Multiplies every sight range against this player (Stealth, #46: 1 at level 0).
     pub sight_mult: f32,
+    /// How lit the place it stands is, as daylight (0: not; a lit room, `crate::power`): sight
+    /// against it is never worse than in that much daylight.
+    pub lit: f32,
 }
 
 pub const SUNRISE: f32 = 6.0;
@@ -130,7 +133,8 @@ pub fn eyes_range(e: &Eyes, daylight: f32, target: &Target, facing: f32, dir: Ve
         return e.rear_range * stance;
     }
     let motion = if target.moving { 1.0 } else { e.still_mult };
-    let range = (e.night + (e.day - e.night) * daylight) * stance * motion;
+    let light = daylight.max(target.lit);
+    let range = (e.night + (e.day - e.night) * light) * stance * motion;
     if ahead >= e.cone.full { range } else { range * e.peripheral_mult }
 }
 
@@ -473,7 +477,7 @@ mod tests {
     fn sight_range_depends_on_cone_light_and_stance() {
         let t = ZombieTuning::default();
         let cone = Cone::new(&t);
-        let walker = Target { id: 1, pos: Vec2::ZERO, stance: Stance::Walk, moving: true, ignored: false, sight_mult: 1.0 };
+        let walker = Target { id: 1, pos: Vec2::ZERO, stance: Stance::Walk, moving: true, ignored: false, sight_mult: 1.0, lit: 0.0 };
         let ahead = sight_range(&t, cone, 1.0, &walker, 0.0, Vec2::X);
         let side = sight_range(&t, cone, 1.0, &walker, 0.0, Vec2::Y);
         let behind = sight_range(&t, cone, 1.0, &walker, 0.0, -Vec2::X);

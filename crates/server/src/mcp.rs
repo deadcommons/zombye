@@ -98,7 +98,7 @@ enum Kind {
 
 /// Every tool: name, title (shown to people by clients), kind. `tool_list` adds these to the
 /// definitions, and a test checks each tool has a row.
-const TOOLS: [(&str, &str, Kind); 59] = [
+const TOOLS: [(&str, &str, Kind); 61] = [
     ("observe", "Look around (ASCII map)", Kind::Look),
     ("screenshot", "Screenshot (rendered picture)", Kind::Look),
     ("stats", "World and player stats", Kind::Look),
@@ -128,6 +128,7 @@ const TOOLS: [(&str, &str, Kind); 59] = [
     ("move_player", "Move", Kind::Play),
     ("interact", "Open or close a door or window", Kind::Play),
     ("smash_window", "Smash a window", Kind::Play),
+    ("light", "Switch the light of the room you're in", Kind::Play),
     ("climb", "Climb a fence or an open window", Kind::Play),
     ("attack", "Attack", Kind::Play),
     ("shove", "Shove", Kind::Play),
@@ -154,6 +155,7 @@ const TOOLS: [(&str, &str, Kind); 59] = [
     ("wound", "Wound a player", Kind::Debug),
     ("add_player", "Add a player", Kind::Debug),
     ("pvp", "Player against player on or off", Kind::Debug),
+    ("grid", "The town's power grid on or off", Kind::Debug),
     ("dev", "God mode and ignored by zombies", Kind::Debug),
     ("restrain_now", "Tie a player's hands at once", Kind::Debug),
     ("skip_time", "Skip time", Kind::Debug),
@@ -1024,6 +1026,21 @@ fn tool_defs() -> Value {
             "inputSchema": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}}}
         },
         {
+            "name": "light",
+            "description": "A player flips the light switch of the room it stands in (as Q does): on gives the room a light \
+                while its building has power (the town's grid; later generators and solar panels), off puts it out. With the \
+                power off the switch moves but nothing lights. At night zombies (and other survivors) see you in a lit room \
+                as if by day, through its windows: switch it off to hide. Give on (true/false) to set it; without, it flips. \
+                The reply says the room, whether it is lit and whether it has power.",
+            "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}, "on": {"type": "boolean"}}}
+        },
+        {
+            "name": "grid",
+            "description": "Turn the town's power grid on or off (every building it reaches: rooms with their switch on light \
+                or go dark). With no argument: says whether it is on, and how many rooms are lit.",
+            "inputSchema": {"type": "object", "properties": {"on": {"type": "boolean"}}}
+        },
+        {
             "name": "pvp",
             "description": "Player against player on or off for this world (docs/PLAN.md 4.8; off by default, on with --pvp on; saved \
                 with the world's settings). On, swings, shoves and stomps hit other players as they hit zombies. With no argument: \
@@ -1844,6 +1861,32 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             let p = world.player(id).expect("just added");
             Ok(format!("player {id} joined at ({:.1}, {:.1}) in {}", p.state.pos.x, p.state.pos.y, place(world, p.state.pos)))
         }
+        "light" => {
+            let id = player_id();
+            let p = world.player(id).ok_or_else(|| format!("no player {id}"))?.state.pos;
+            let room = world.map.room_at(p);
+            apply_intent(world, &Intent::Light { player: id, on: args.get("on").and_then(Value::as_bool) });
+            let notes = take_notes(world, id);
+            if room == 0 {
+                return Err(format!("player {id} is outdoors: no light switch here"));
+            }
+            let b = world.map.rooms[room as usize].building as usize;
+            let (switch, lit, powered) = (world.power().switches.contains(&room), world.power().is_lit(room), world.power().powered(b));
+            Ok(format!(
+                "{}: {}; switch {}, {}, {}",
+                world.map.rooms[room as usize].name,
+                if notes.is_empty() { "the switch is already that way".to_string() } else { notes },
+                on_off(switch),
+                if lit { "lit" } else { "dark" },
+                if powered { "the building has power" } else { "no power" }
+            ))
+        }
+        "grid" => {
+            if let Some(on) = args.get("on").and_then(Value::as_bool) {
+                apply_intent(world, &Intent::Grid { on });
+            }
+            Ok(format!("grid {}; {} rooms lit, {} switches on", on_off(world.power().grid_on()), world.power().lit().len(), world.power().switches.len()))
+        }
         "pvp" => {
             if let Some(on) = args.get("on").and_then(Value::as_bool) {
                 world.config.combat.pvp = on;
@@ -2031,6 +2074,7 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             "last_tick_hits": world.hit_events.len(),
             "last_tick_player_hits": world.player_hit_events.len(),
             "pvp": world.config.combat.pvp,
+            "power": {"grid": world.power().grid_on(), "lit_rooms": world.power().lit().len(), "switches_on": world.power().switches.len()},
             "last_tick_thumps": world.stats.thumps,
             "damaged_edges": world.damaged_edges().count(),
             "chasing": world.stats.chasing,
@@ -2545,7 +2589,7 @@ fn zombie_detail(world: &World, i: usize) -> String {
     for pl in &world.players {
         let to = pl.state.pos - p;
         let d = to.length();
-        let target = Target { id: pl.id, pos: pl.state.pos, stance: pl.state.stance, moving: pl.input.move_dir.length_squared() > 1e-4, ignored: pl.dev.ignored, sight_mult: world.player_sight_mult(pl.id) };
+        let target = Target { id: pl.id, pos: pl.state.pos, stance: pl.state.stance, moving: pl.input.move_dir.length_squared() > 1e-4, ignored: pl.dev.ignored, sight_mult: world.player_sight_mult(pl.id), lit: if world.lit_at(pl.state.pos) { world.config.power.lit_room_seen } else { 0.0 } };
         let range = senses::sight_range(t, cone, daylight, &target, z.facing[i], to.normalize_or_zero());
         out.push_str(&format!(
             "  P{}: {:.1} m {}, line of sight {}, could be seen out to {:.1} m from here ({:?}{})\n",
@@ -3853,7 +3897,7 @@ mod tests {
             assert_eq!(t["annotations"]["readOnlyHint"], true, "{name}");
             assert_eq!(t.get("_meta"), None, "{name}");
         }
-        for name in ["spawn_zombies", "spawn_item", "dev", "wound", "set_needs", "skip_time", "set_goal", "load", "make_noise", "add_player", "pvp", "restrain_now"] {
+        for name in ["spawn_zombies", "spawn_item", "dev", "wound", "set_needs", "skip_time", "set_goal", "load", "make_noise", "add_player", "pvp", "grid", "restrain_now"] {
             let t = tool(&list, name);
             assert!(t["title"].as_str().unwrap().starts_with("Debug: "), "{name}: {}", t["title"]);
             assert!(t["description"].as_str().unwrap().starts_with("Debug tool, for setting up tests"), "{name}");
@@ -4402,6 +4446,24 @@ mod tests {
         let (text, _) = call(&mut world, &mut persist, "group", json!({"player": 2}));
         assert!(text.contains("P2 is in no group"), "one member alone is no group: {text}");
         assert_eq!(world.tick, tick, "the group tool doesn't step time");
+    }
+
+    /// The light switch and the grid through the tools: on, off, no power, outdoors.
+    #[test]
+    fn light_and_grid_tools() {
+        let mut world = small_world();
+        let dir = scratch("light");
+        let mut persist = session(&world, &dir.0);
+        let (text, err) = call(&mut world, &mut persist, "light", json!({"on": true}));
+        assert!(!err && text.contains("switch on, lit, the building has power"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "grid", json!({"on": false}));
+        assert!(!err && text.contains("grid off; 0 rooms lit"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "light", json!({}));
+        assert!(!err && text.contains("switch off, dark, no power"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "light", json!({"on": true}));
+        assert!(text.contains("nothing. No power"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "grid", json!({"on": true}));
+        assert!(text.contains("grid on") && !text.contains("; 0 rooms lit"), "{text}");
     }
 
     /// PvP through the tools: off, a swing at another player hits nothing; `pvp {on: true}` and the
