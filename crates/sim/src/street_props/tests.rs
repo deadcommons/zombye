@@ -16,6 +16,20 @@ fn town(seed: u64) -> Generated {
     generate_with(&GenConfig { seed, ..Default::default() }, &shipped_templates(), &shipped())
 }
 
+/// Every tile a prop covers, by index: which prop.
+fn covered(map: &TileMap) -> std::collections::BTreeMap<(i32, i32), usize> {
+    let mut out = std::collections::BTreeMap::new();
+    for (i, p) in map.street_props.iter().enumerate() {
+        let (min, size) = map.street_prop_rect(p);
+        for dy in 0..size.y {
+            for dx in 0..size.x {
+                assert!(out.insert((min.x + dx, min.y + dy), i).is_none(), "two props on {}", min + IVec2::new(dx, dy));
+            }
+        }
+    }
+    out
+}
+
 fn kind_id<'a>(map: &'a TileMap, p: &StreetProp) -> &'a str {
     &map.prop_kinds[p.kind as usize].id
 }
@@ -44,8 +58,15 @@ fn reachable(g: &Generated) -> Vec<bool> {
 #[test]
 fn the_shipped_file_parses_and_unknown_fields_are_refused() {
     let def = shipped();
-    assert_eq!(def.kinds.len(), 12);
-    assert!(def.kinds.iter().all(|k| k.blocks || k.id == "trash_bag"));
+    assert_eq!(def.kinds.len(), 32);
+    assert!(def.kinds.iter().all(|k| k.blocks || k.id == "trash_bag" || k.id == "washing_line"));
+    let car = def.kinds.iter().find(|k| k.id == "car").unwrap();
+    assert!(car.big() && car.footprint(Side::S) == IVec2::new(2, 5) && car.footprint(Side::E) == IVec2::new(5, 2));
+    let big = "(kinds: [(id: \"x\", size: (2.0, 4.0, 1.0), color: (0.0, 0.0, 0.0), tiles: (2, 5))], rules: [(kind: \"x\", place: PLACE, chance: 0.5)])";
+    assert!(parse_street_props(&big.replace("PLACE", "Roadside")).is_ok());
+    assert!(parse_street_props(&big.replace("PLACE", "HouseKerb")).unwrap_err().contains("more than one tile"));
+    assert!(parse_street_props(&big.replace("(2, 5)", "(3, 5)").replace("PLACE", "Parking")).unwrap_err().contains("parking bay"));
+    assert!(parse_street_props(&big.replace("(2, 5)", "(6, 5)").replace("PLACE", "Yard")).unwrap_err().contains("tiles"));
     assert!((def.kinds[0].radius() - 0.2).abs() < 1e-6 && (def.kinds[2].radius() - 0.33).abs() < 1e-6);
     assert!(parse_street_props("(kinds: [], extra: 1)").is_err());
     assert!(parse_street_props("(kinds: [(id: \"x\", size: (0.5, 0.5, 0.0), color: (0.0, 0.0, 0.0))])").unwrap_err().contains("size"));
@@ -68,24 +89,27 @@ fn placement_is_deterministic_and_only_adds_props() {
     assert!(bare.map.street_props.is_empty());
     assert_eq!(bare.player_spawn, a.player_spawn);
     assert_eq!(bare.map.buildings.len(), a.map.buildings.len());
+    let under = covered(&a.map);
     for y in 0..a.map.height() {
         for x in 0..a.map.width() {
             let t = IVec2::new(x, y);
             let (p, q) = (a.map.tile(t), bare.map.tile(t));
-            if a.map.street_prop(t).is_some() {
+            if under.contains_key(&(x, y)) {
                 assert_eq!((p.floor, p.room, q.feature), (q.floor, q.room, Feature::None), "{t}");
             } else {
                 assert_eq!(p, q, "{t}");
             }
         }
     }
-    // Sorted by tile, one a tile, a blocking one's tile a StreetProp.
+    // Sorted by tile, one a tile, every tile a blocking one covers a StreetProp.
     for w in a.map.street_props.windows(2) {
         assert!((w[0].tile.y, w[0].tile.x) < (w[1].tile.y, w[1].tile.x));
     }
     for p in &a.map.street_props {
-        if a.map.prop_kinds[p.kind as usize].blocks {
-            assert_eq!(a.map.tile(p.tile).feature, Feature::StreetProp);
+        let (min, size) = a.map.street_prop_rect(p);
+        for q in (0..size.y).flat_map(|dy| (0..size.x).map(move |dx| min + IVec2::new(dx, dy))) {
+            let want = if a.map.prop_kinds[p.kind as usize].blocks { Feature::StreetProp } else { Feature::None };
+            assert_eq!(a.map.tile(q).feature, want, "{} at {q}", kind_id(&a.map, p));
         }
         assert_eq!(a.map.street_prop(p.tile), Some(p));
     }
@@ -130,20 +154,73 @@ fn props_stand_where_they_belong() {
                 }
             }
         }
-        for p in &m.street_props {
+        let under = covered(m);
+        for (pi, p) in m.street_props.iter().enumerate() {
             let id = kind_id(m, p);
             *counts.entry(id).or_insert(0) += 1;
+            let kind = &m.prop_kinds[p.kind as usize];
+            let (min, size) = m.street_prop_rect(p);
+            let parked = ["car", "van", "pickup", "police_car", "ambulance", "car_wreck", "school_bus"].contains(&id);
+            assert_eq!(parked, kind.tiles.1 >= 5 && id != "washing_line", "{id}");
+            for q in (0..size.y).flat_map(|dy| (0..size.x).map(move |dx| min + IVec2::new(dx, dy))) {
+                let tile = m.tile(q);
+                assert_eq!(tile.room, 0, "seed {seed}: {id} at {q} indoors");
+                assert_eq!(tile.floor.is_road(), parked, "seed {seed}: {id} at {q} on {:?}", tile.floor);
+                assert!(tile.floor != Floor::Path, "seed {seed}: {id} at {q} on a path");
+                assert!(!drive.contains(&(q.x, q.y)), "seed {seed}: {id} at {q} on a driveway");
+                for s in Side::ALL {
+                    let e = m.edge(q, s);
+                    let inside = (q + s.offset() - min).cmpge(IVec2::ZERO).all() && (q + s.offset() - min).cmplt(size).all();
+                    assert!(inside && e == Edge::None || !inside && !(e.is_door() || e == Edge::Arch || e == Edge::DoorBroken), "seed {seed}: {id} at {q}: {e:?} to the {s:?}");
+                }
+                // Nothing else on it or next to it.
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        assert!(under.get(&(q.x + dx, q.y + dy)).is_none_or(|&o| o == pi), "seed {seed}: {id} at {q} beside another prop");
+                    }
+                }
+            }
+            if parked {
+                // Along a kerb or in a lot, and the road beside it stays open: two tiles of it free
+                // on one long side at least.
+                let long = if size.x > size.y { IVec2::X } else { IVec2::Y };
+                let across = long.perp().abs();
+                let wide = size.dot(across);
+                let open = [-1, 1].into_iter().any(|way| {
+                    (0..size.dot(long)).all(|j| {
+                        (1..=2).all(|w| {
+                            let q = min + long * j + across * if way > 0 { wide - 1 + w } else { -w };
+                            m.tile(q).floor.is_road() && !m.tile_blocked(q)
+                        })
+                    })
+                });
+                // In a lot's bay the aisle is at one end.
+                let len = size.dot(long);
+                let aisle = [-1, 1].into_iter().any(|way| {
+                    (0..wide).all(|j| {
+                        (1..=2).all(|w| {
+                            let q = min + across * j + long * if way > 0 { len - 1 + w } else { -w };
+                            m.tile(q).floor.is_road() && !m.tile_blocked(q)
+                        })
+                    })
+                });
+                assert!(open || aisle, "seed {seed}: {id} at {} shuts its street", p.tile);
+                continue;
+            }
+            if matches!(m.tile(p.tile).floor, Floor::Grass) && id != "mailbox" {
+                // A yard: on lawn, a tile of open lawn all round it.
+                for dy in -1..=size.y {
+                    for dx in -1..=size.x {
+                        let q = min + IVec2::new(dx, dy);
+                        let tile = m.tile(q);
+                        let own = under.get(&(q.x, q.y)) == Some(&pi);
+                        assert!(tile.floor == Floor::Grass && tile.room == 0 && (own || tile.feature == Feature::None), "seed {seed}: {id} at {} has {:?} {:?} at {q}", p.tile, tile.floor, tile.feature);
+                    }
+                }
+                assert!(!["fire_hydrant", "street_lamp", "trash_can", "park_bench"].contains(&id), "seed {seed}: {id} in a yard");
+                continue;
+            }
             let tile = m.tile(p.tile);
-            assert_eq!(tile.room, 0, "seed {seed}: {id} at {} indoors", p.tile);
-            assert!(!tile.floor.is_road() && tile.floor != Floor::Path, "seed {seed}: {id} at {} on {:?}", p.tile, tile.floor);
-            assert!(!drive.contains(&(p.tile.x, p.tile.y)), "seed {seed}: {id} at {} on a driveway", p.tile);
-            for s in Side::ALL {
-                let e = m.edge(p.tile, s);
-                assert!(!(e.is_door() || e == Edge::Arch || e == Edge::DoorBroken), "seed {seed}: {id} at {} in a doorway", p.tile);
-            }
-            for o in &m.street_props {
-                assert!(o.tile == p.tile || (o.tile - p.tile).abs().max_element() >= 2, "seed {seed}: props at {} and {} side by side", p.tile, o.tile);
-            }
             let ahead = p.tile + p.facing.offset();
             match id {
                 "mailbox" => {
@@ -166,6 +243,9 @@ fn props_stand_where_they_belong() {
         assert!(counts.get("mailbox").copied().unwrap_or(0) >= 40, "seed {seed}: {counts:?}");
         assert!(counts.get("fire_hydrant").copied().unwrap_or(0) >= 40, "seed {seed}: {counts:?}");
         assert!(counts.get("trash_can").copied().unwrap_or(0) >= 10, "seed {seed}: {counts:?}");
+        assert!(counts.get("car").copied().unwrap_or(0) >= 12, "seed {seed}: {counts:?}");
+        assert!(counts.get("garden_shed").copied().unwrap_or(0) >= 5, "seed {seed}: {counts:?}");
+        assert!(counts.get("barbecue").copied().unwrap_or(0) >= 5, "seed {seed}: {counts:?}");
     }
 }
 
@@ -180,7 +260,7 @@ fn props_never_close_a_way() {
         let w = with.map.width();
         for (i, (&yes, &before)) in a.iter().zip(&b).enumerate() {
             let t = IVec2::new(i as i32 % w, i as i32 / w);
-            if before && with.map.street_prop(t).is_none() {
+            if before && with.map.tile(t).feature != Feature::StreetProp {
                 assert!(yes, "seed {seed}: {t} can't be reached with the street props");
             }
         }
@@ -213,6 +293,46 @@ fn blocking_props_block_movement() {
     let field = crate::flow::FlowField::build(&walk, (centre + a * 3.0).floor().as_ivec2(), 40.0);
     assert!(field.distance(centre).is_none(), "a path through the hydrant");
     assert!(field.distance(centre - a * 3.0).is_some_and(|d| d > 6.0 - 1e-3), "no way round");
+}
+
+/// A prop of several tiles blocks all of them, whole: a body walking at a parked car stops at its
+/// side wherever it meets it, and paths go round.
+#[test]
+fn big_props_block_every_tile_they_cover() {
+    let g = town(1);
+    let m = &g.map;
+    let car = m.street_props.iter().find(|p| kind_id(m, p) == "car").unwrap();
+    let (min, size) = m.street_prop_rect(car);
+    assert_eq!(size.min_element(), 2);
+    assert_eq!(size.max_element(), 5);
+    let (lo, hi) = (min.as_vec2(), (min + size).as_vec2());
+    for q in (0..size.y).flat_map(|dy| (0..size.x).map(move |dx| min + IVec2::new(dx, dy))) {
+        assert!(m.tile_blocked(q) && m.street_prop_fills(q), "{q}");
+    }
+    // Walk at it across the road, toward each tile of its long side.
+    let long = if size.x > size.y { Vec2::X } else { Vec2::Y };
+    let across = long.perp().abs();
+    for j in 0..5 {
+        let aim = lo + long * (j as f32 + 0.5) + across * 1.0;
+        for way in [-1.0, 1.0] {
+            let from = aim + across * way * 3.0;
+            if m.tile_blocked(from.floor().as_ivec2()) || m.tile(from.floor().as_ivec2()).room != 0 {
+                continue;
+            }
+            let mut state = PlayerState::new(from);
+            let input = PlayerInput { move_dir: -across * way, facing: 0.0, run: false, sneak: false, aim: false };
+            for _ in 0..80 {
+                step_movement(m, &mut state, &input, crate::TICK_DT);
+            }
+            let p = state.pos;
+            let out = (lo - p).max(p - hi).max_element();
+            assert!(out >= PLAYER_RADIUS - 1e-3, "walked into the car at {p}: {out} from its side");
+        }
+    }
+    let walk = crate::flow::WalkGrid::new(m);
+    let mid = (lo + hi) * 0.5;
+    let field = crate::flow::FlowField::build(&walk, (mid + across * 3.0).floor().as_ivec2(), 40.0);
+    assert!(field.distance(mid).is_none(), "a path through the car");
 }
 
 /// A world made with street props saves and loads with them (the map is regenerated), the same

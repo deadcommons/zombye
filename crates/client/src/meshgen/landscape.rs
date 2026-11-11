@@ -1996,9 +1996,12 @@ mod tests {
         // The street props were placed clear of the driveway this garage had, not of the one the
         // test gives it: take them away.
         for p in std::mem::take(&mut map.street_props) {
-            if let Some(t) = map.tile_mut(p.tile) {
-                if t.feature == zombye_sim::map::Feature::StreetProp {
-                    t.feature = zombye_sim::map::Feature::None;
+            let (min, size) = map.street_prop_rect(&p);
+            for q in (0..size.y).flat_map(|y| (0..size.x).map(move |x| min + IVec2::new(x, y))) {
+                if let Some(t) = map.tile_mut(q) {
+                    if t.feature == zombye_sim::map::Feature::StreetProp {
+                        t.feature = zombye_sim::map::Feature::None;
+                    }
                 }
             }
         }

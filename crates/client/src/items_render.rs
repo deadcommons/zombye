@@ -24,6 +24,8 @@ pub struct WeaponLooks {
     /// A release build's model of an item (by index), where it has one, and the material they share.
     item_models: Vec<Option<Handle<Mesh>>>,
     model_material: Handle<StandardMaterial>,
+    /// A release build's model of a weapon in the hand (by weapon index), where it has one.
+    held_models: Vec<Option<Handle<Mesh>>>,
 }
 
 /// Bar thickness and the shortest bar drawn (so a frying pan still shows up).
@@ -35,6 +37,12 @@ impl WeaponLooks {
     pub fn length(&self, w: u16) -> f32 {
         let l = self.lengths.get(w as usize).copied().unwrap_or(0.0);
         if l > 0.0 { l.max(MIN_LENGTH) } else { 0.0 }
+    }
+
+    /// The model drawn for weapon `w` in a hand (its grip at the origin, pointing along +z), with
+    /// its material, where a release build has one; else the weapon is a bar.
+    pub fn held(&self, w: u16) -> Option<(Handle<Mesh>, Handle<StandardMaterial>)> {
+        Some((self.held_models.get(w as usize)?.clone()?, self.model_material.clone()))
     }
 }
 
@@ -72,8 +80,10 @@ fn setup(mut commands: Commands, join: Res<JoinInfo>, mut meshes: ResMut<Assets<
         .collect();
     let released = crate::release_models::items();
     let item_models = join.items.iter().map(|d| released.mesh(&d.id).map(|m| meshes.add(m))).collect();
+    let in_hand = crate::release_models::held();
+    let held_models = join.weapons.iter().map(|w| join.items.iter().find(|d| d.weapon.as_deref() == Some(w.id.as_str())).and_then(|d| in_hand.mesh(&d.id)).map(|m| meshes.add(m))).collect();
     let model_material = materials.add(StandardMaterial { base_color: Color::WHITE, perceptual_roughness: 0.8, ..default() });
-    commands.insert_resource(WeaponLooks { cube, materials: weapon_mats, lengths, item_materials, item_sizes, item_models, model_material });
+    commands.insert_resource(WeaponLooks { cube, materials: weapon_mats, lengths, item_materials, item_sizes, item_models, model_material, held_models });
 }
 
 fn sync_items(mut commands: Commands, link: Res<ServerLink>, fog: Res<FogState>, looks: Option<Res<WeaponLooks>>, mut entities: ResMut<ItemEntities>, mut query: Query<(&mut Visibility, &mut Transform)>) {

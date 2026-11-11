@@ -500,7 +500,7 @@ impl World {
     /// began, so it goes off in its own time whenever it's found.
     pub(crate) fn age_found_food(&self, c: u32, stacks: &mut [ItemStack]) {
         let (lo, hi) = self.config.needs.found_food_age;
-        let seed = self.config.seed() ^ FOOD_AGE_SALT;
+        let seed = self.config.loot_seed() ^ FOOD_AGE_SALT;
         for (k, s) in stacks.iter_mut().enumerate() {
             let Some(h) = self.config.items.get(s.item as usize).and_then(|d| d.consumable()).and_then(|c| c.spoils_hours) else { continue };
             let share = lo + (hi - lo) * hash01(seed, c as u64, k as u64, s.item as u64);

@@ -239,6 +239,8 @@ impl ScenarioDef {
     pub fn config(&self, content: &WorldConfig) -> WorldConfig {
         let mut config = content.clone().with_map_chunks(self.map_chunks);
         config.generation.seed = self.seed;
+        // The same loot every time too: a scenario is the same world for every agent.
+        config.loot_seed = None;
         config.zombies = self.zombies;
         config.start_hour = self.start_hour;
         config.combat.pvp = false;

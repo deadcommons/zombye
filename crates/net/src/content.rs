@@ -197,6 +197,16 @@ pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig
     Ok(config)
 }
 
+/// A seed for a new game's loot ([`zombye_sim::WorldConfig::loot_seed`]): different every
+/// call, from the process's random hasher keys and the clock. Kept under 2^48 so it reads back
+/// from the settings' RON exactly.
+pub fn fresh_loot_seed() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
+    h.finish() & ((1 << 48) - 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

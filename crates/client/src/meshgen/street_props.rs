@@ -2,8 +2,9 @@
 //! (`TileMap::street_props`), merged into a chunk's props mesh, so they get the world material (fog
 //! of war, lighting, shadows) and cost no draw call of their own. Each is its kind's model from the
 //! furniture models (`FurnitureModels`, `ZOMBYE_EXTRA_MODELS` included), at its own size in the
-//! middle of its tile, facing the street; a kind with no model is a grey-box of its size and colour
-//! from `street_props.ron`.
+//! middle of its tile (of the tiles it covers, for a kind bigger than one: a parked car, a shed),
+//! facing the street; a kind with no model is a grey-box of its size and colour from
+//! `street_props.ron`. A prop is drawn by the chunk its first tile is in.
 
 use bevy::prelude::*;
 use zombye_sim::map::{CHUNK_SIZE, Side, StreetProp, TileMap};
@@ -24,11 +25,17 @@ pub fn add(mb: &mut MeshBuilder, map: &TileMap, c: IVec2, models: &FurnitureMode
     mb.set_tag(CutTag::default());
     for p in in_chunk(map, c) {
         let Some(kind) = map.prop_kinds.get(p.kind as usize) else { continue };
-        let centre = p.tile.as_vec2() + Vec2::splat(0.5);
+        let centre = centre(map, p);
         if !models.add_at(mb, kind.model(), centre, p.facing, 0.0) {
             grey_box(mb, centre, p.facing, kind.size, kind.color);
         }
     }
+}
+
+/// The middle of the tiles a prop covers.
+fn centre(map: &TileMap, p: &StreetProp) -> Vec2 {
+    let (min, size) = map.street_prop_rect(p);
+    min.as_vec2() + size.as_vec2() * 0.5
 }
 
 /// A box of the kind's size and colour, its front (south when facing south) a little darker.
@@ -75,8 +82,8 @@ mod tests {
         m
     }
 
-    /// Every prop is drawn by the chunk it stands in, once, inside its tile, on the ground; a kind
-    /// with no model is a grey-box of its size.
+    /// Every prop is drawn by the chunk it stands in, once, inside the tiles it covers, on the
+    /// ground; a kind with no model is a grey-box of its size.
     #[test]
     fn every_prop_is_drawn_once_in_its_tile() {
         let map = town();
@@ -92,15 +99,23 @@ mod tests {
         }
         assert_eq!(seen, map.street_props.len());
         let none = FurnitureModels::default();
-        for p in map.street_props.iter().take(40) {
+        // Some of every kind, the big ones among them.
+        let mut left = vec![4; map.prop_kinds.len()];
+        for p in &map.street_props {
+            if left[p.kind as usize] == 0 {
+                continue;
+            }
+            left[p.kind as usize] -= 1;
             let kind = &map.prop_kinds[p.kind as usize];
             let mut mb = MeshBuilder::default();
             add(&mut mb, &map, p.tile.div_euclid(IVec2::splat(CHUNK_SIZE)), &none);
             // The chunk's props: find this one's box among them by its tile.
             let mut one = MeshBuilder::default();
-            grey_box(&mut one, p.tile.as_vec2() + Vec2::splat(0.5), p.facing, kind.size, kind.color);
+            grey_box(&mut one, centre(&map, p), p.facing, kind.size, kind.color);
             let (lo, hi) = one.bounds();
-            assert!(lo.x >= p.tile.x as f32 && lo.z >= p.tile.y as f32 && hi.x <= p.tile.x as f32 + 1.0 && hi.z <= p.tile.y as f32 + 1.0, "{} at {}: {lo} {hi}", kind.id, p.tile);
+            let (min, size) = map.street_prop_rect(p);
+            let (min, max) = (min.as_vec2(), (min + size).as_vec2());
+            assert!(lo.x >= min.x && lo.z >= min.y && hi.x <= max.x && hi.z <= max.y, "{} at {}: {lo} {hi}", kind.id, p.tile);
             assert!(lo.y.abs() < 1e-4 && (hi.y - kind.size.2).abs() < 1e-4);
             assert!(!mb.is_empty());
         }

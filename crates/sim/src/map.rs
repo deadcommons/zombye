@@ -8,6 +8,8 @@
 //! M1 simulates the ground level only. Upper floors and roofs exist as per-building render data in
 //! [`Building`]; walking upstairs comes later.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use glam::{IVec2, Vec2};
 use serde::{Deserialize, Serialize};
 
@@ -133,7 +135,8 @@ impl Feature {
 }
 
 /// A street prop the town generator placed (`crate::street_props`): its kind (an index into
-/// [`TileMap::prop_kinds`]), its tile (it stands in the middle) and which way its front faces.
+/// [`TileMap::prop_kinds`]), its tile (it stands in the middle; the least corner of one that covers
+/// several) and which way its front faces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StreetProp {
     pub kind: u16,
@@ -338,6 +341,16 @@ pub struct EdgeChange {
     pub kind: Edge,
 }
 
+/// A blind on a window or a glazed door appearing, going or rolled up or down (`blind`: `None`
+/// none any more, `Some(true)` down, `Some(false)` rolled up), replicated to clients in snapshots
+/// like [`EdgeChange`]s (see [`crate::blinds`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlindChange {
+    pub tile: IVec2,
+    pub edge: OwnedEdge,
+    pub blind: Option<bool>,
+}
+
 /// A cul-de-sac's turning circle as the generator laid it out: tiles whose middles are within
 /// `road` of `centre` are asphalt, then sidewalk out to `walk`. The street into it comes from the
 /// `entry` side, its asphalt `stem` either side of the line through the centre and its sidewalks
@@ -373,13 +386,23 @@ pub struct TileMap {
     pub street_props: Vec<StreetProp>,
     #[serde(skip)]
     pub prop_kinds: Vec<crate::street_props::PropKind>,
+    /// Blinds on windows and glazed doors ([`crate::blinds`]), by edge key: `true` down (glass
+    /// hidden), `false` rolled up. World state, saved in its own section (`BLND`), not with the
+    /// tiles; changes go out as [`BlindChange`]s.
+    #[serde(skip)]
+    pub blinds: BTreeMap<(i32, i32, u8), bool>,
+    /// Doors with glass in them (sight passes a shut one), by edge key. Derived like the street
+    /// props: placed with the map (`blinds::place`), not saved, in no hash; a network client gets
+    /// them on joining.
+    #[serde(skip)]
+    pub glazed: BTreeSet<(i32, i32, u8)>,
 }
 
 impl TileMap {
     pub fn new(chunks_x: i32, chunks_y: i32) -> Self {
         let chunks = (0..chunks_x * chunks_y).map(|_| Chunk { tiles: vec![Tile::default(); CHUNK_TILES] }).collect();
         let outdoors = Room { building: u16::MAX, name: "Outdoors".into(), room_type: "outdoors".into(), floor: Floor::Grass };
-        Self { chunks_x, chunks_y, chunks, rooms: vec![outdoors], buildings: Vec::new(), turning_circles: Vec::new(), street_props: Vec::new(), prop_kinds: Vec::new() }
+        Self { chunks_x, chunks_y, chunks, rooms: vec![outdoors], buildings: Vec::new(), turning_circles: Vec::new(), street_props: Vec::new(), prop_kinds: Vec::new(), blinds: BTreeMap::new(), glazed: BTreeSet::new() }
     }
 
     pub fn width(&self) -> i32 {
@@ -458,6 +481,59 @@ impl TileMap {
         }
     }
 
+    /// The blind on edge `e`: `Some(true)` down, `Some(false)` rolled up, `None` none.
+    pub fn blind(&self, e: EdgeRef) -> Option<bool> {
+        self.blinds.get(&e.key()).copied()
+    }
+
+    /// Put up, roll, or (`None`) take down the blind on edge `e`.
+    pub fn set_blind(&mut self, e: EdgeRef, blind: Option<bool>) {
+        match blind {
+            Some(down) => {
+                self.blinds.insert(e.key(), down);
+            }
+            None => {
+                self.blinds.remove(&e.key());
+            }
+        }
+    }
+
+    /// Is edge `e` a door with glass in it?
+    pub fn glazed(&self, e: EdgeRef) -> bool {
+        self.glazed.contains(&e.key())
+    }
+
+    /// Can a blind hang on edge `e`? A window (shut, open or broken: it hangs inside the frame) or
+    /// a glazed door that is still on its hinges.
+    pub fn takes_blind(&self, e: EdgeRef) -> bool {
+        let kind = self.owned_edge(e.tile, e.edge);
+        kind.is_window() || (kind.is_door() && self.glazed(e))
+    }
+
+    /// Is there glass in edge `e` that sight passes (a window, or a glazed door that's shut)?
+    pub fn sees_through_glass(&self, e: EdgeRef) -> bool {
+        let kind = self.owned_edge(e.tile, e.edge);
+        kind.is_window() || (kind == Edge::DoorClosed && self.glazed(e))
+    }
+
+    /// Does crossing out of `t` through `side` block sight? Walls and shut doors do, unless the
+    /// door is glazed; glass (a window in any state, a shut glazed door) does behind a blind
+    /// that's down. An open door's blind swings away with it. The one rule for seeing: the fog of
+    /// war, zombies' and players' sight (`crate::vision`). Sound goes by the edges alone.
+    pub fn blocks_view(&self, t: IVec2, side: Side) -> bool {
+        let kind = self.edge(t, side);
+        match kind {
+            Edge::DoorClosed | Edge::Window | Edge::WindowOpen | Edge::WindowBroken if !(self.blinds.is_empty() && self.glazed.is_empty()) => {
+                let e = EdgeRef::of(t, side);
+                if kind == Edge::DoorClosed && !self.glazed(e) {
+                    return true;
+                }
+                self.blind(e) == Some(true)
+            }
+            _ => kind.blocks_sight(),
+        }
+    }
+
     pub fn owned_edge(&self, owner: IVec2, which: OwnedEdge) -> Edge {
         let tile = self.tile(owner);
         match which {
@@ -525,6 +601,20 @@ impl TileMap {
         self.street_prop(t).and_then(|p| self.prop_kinds.get(p.kind as usize)).map_or(STREET_PROP_RADIUS, |k| k.radius())
     }
 
+    /// The blocking street prop tile `t` is a whole tile of a prop bigger than one (a parked car):
+    /// bodies are kept out of all of it. Such a prop's first tile holds it; its others hold none.
+    pub fn street_prop_fills(&self, t: IVec2) -> bool {
+        match self.street_prop(t).and_then(|p| self.prop_kinds.get(p.kind as usize)) {
+            Some(k) => k.big(),
+            None => self.prop_kinds.iter().any(|k| k.big()),
+        }
+    }
+
+    /// The tiles a street prop covers: its least corner and size.
+    pub fn street_prop_rect(&self, p: &StreetProp) -> (IVec2, IVec2) {
+        (p.tile, self.prop_kinds.get(p.kind as usize).map_or(IVec2::ONE, |k| k.footprint(p.facing)))
+    }
+
     /// Room id at a world position (0 = outdoors).
     pub fn room_at(&self, p: Vec2) -> u16 {
         self.tile(p.floor().as_ivec2()).room
@@ -563,6 +653,9 @@ impl TileMap {
                         }
                         Feature::Furniture => {
                             p = push_out_of_box(p, radius, n.as_vec2() + Vec2::splat(0.05), n.as_vec2() + Vec2::splat(0.95));
+                        }
+                        Feature::StreetProp if self.street_prop_fills(n) => {
+                            p = push_out_of_box(p, radius, n.as_vec2(), n.as_vec2() + Vec2::ONE);
                         }
                         Feature::StreetProp => {
                             p = push_out_of_circle(p, radius, n.as_vec2() + Vec2::splat(0.5), self.street_prop_radius(n));

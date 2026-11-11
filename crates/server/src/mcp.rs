@@ -98,7 +98,7 @@ enum Kind {
 
 /// Every tool: name, title (shown to people by clients), kind. `tool_list` adds these to the
 /// definitions, and a test checks each tool has a row.
-const TOOLS: [(&str, &str, Kind); 59] = [
+const TOOLS: [(&str, &str, Kind); 60] = [
     ("observe", "Look around (ASCII map)", Kind::Look),
     ("screenshot", "Screenshot (rendered picture)", Kind::Look),
     ("stats", "World and player stats", Kind::Look),
@@ -128,6 +128,7 @@ const TOOLS: [(&str, &str, Kind); 59] = [
     ("move_player", "Move", Kind::Play),
     ("interact", "Open or close a door or window", Kind::Play),
     ("smash_window", "Smash a window", Kind::Play),
+    ("blind", "Fit, roll or take down a blind", Kind::Play),
     ("climb", "Climb a fence or an open window", Kind::Play),
     ("attack", "Attack", Kind::Play),
     ("shove", "Shove", Kind::Play),
@@ -629,6 +630,20 @@ fn tool_defs() -> Value {
                 window doesn't cross it; this does. The world steps until the player is over (about a second and a half), and \
                 the reply says where it is. Too heavy a load (overloaded) can't climb. Give facing (radians) to turn first.",
             "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}, "facing": {"type": "number"}}}
+        },
+        {
+            "name": "blind",
+            "description": "A player works the roller blind of the window or glass door it faces, from inside, within 1.6 m \
+                (face it with move_player's facing first, or give facing in radians). action: use (default: roll it up or \
+                down, or fit one if there is none), toggle (roll up or down, at once, a quiet noise), fit (one carried item \
+                tagged blind, e.g. roller_blind; takes a few seconds, fitted down) or take_down (back into the bags; a few \
+                seconds). A blind that is down stops zombies outside seeing in through that glass; sounds still carry. The \
+                world steps until a fit or take-down is done. The edge tool says which edges have blinds and glass.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "action": {"type": "string", "enum": ["use", "toggle", "fit", "take_down"], "default": "use"},
+                "facing": {"type": "number"}
+            }}
         },
         {
             "name": "smash_window",
@@ -1524,6 +1539,50 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 attacks.summary(world)
             ))
         }
+        "blind" => {
+            let id = player_id();
+            world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            let op = match args.get("action").and_then(Value::as_str).unwrap_or("use") {
+                "use" => zombye_sim::BlindOp::Use,
+                "toggle" => zombye_sim::BlindOp::Toggle,
+                "fit" => zombye_sim::BlindOp::Fit,
+                "take_down" | "takedown" => zombye_sim::BlindOp::TakeDown,
+                other => return Err(format!("unknown action {other:?}: use, toggle, fit or take_down")),
+            };
+            if let Some(f) = num("facing")
+                && let Some(p) = world.players.iter_mut().find(|p| p.id == id)
+            {
+                p.state.facing = (f as f32).rem_euclid(std::f32::consts::TAU);
+            }
+            world.item_notes.clear();
+            world.player_blind(id, op).map_err(|e| format!("player {id}: {e}"))?;
+            let busy = |w: &World| w.player(id).is_some_and(|p| p.jobs.iter().any(|j| matches!(j.kind, zombye_sim::inventory::JobKind::Blind { .. })));
+            let mut ticks = 0;
+            while busy(world) && ticks < 20 * 15 {
+                if !benchmark::step(world) {
+                    break;
+                }
+                ticks += 1;
+            }
+            let notes = take_notes(world, id);
+            let changes = world.take_blind_changes();
+            let state = match changes.last() {
+                Some(c) => format!(
+                    "the blind at tile ({}, {}) {:?} edge is now {}",
+                    c.tile.x,
+                    c.tile.y,
+                    c.edge,
+                    match c.blind {
+                        Some(true) => "down",
+                        Some(false) => "up",
+                        None => "gone",
+                    }
+                ),
+                None => "nothing changed".to_string(),
+            };
+            let notes = if notes.is_empty() { String::new() } else { format!(" ({notes})") };
+            Ok(format!("player {id}: {state}{notes}; {ticks} ticks, tick {}", world.tick))
+        }
         "smash_window" => {
             let id = player_id();
             world.player(id).ok_or_else(|| format!("no player {id}"))?;
@@ -1870,7 +1929,14 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             for side in Side::ALL {
                 let e = EdgeRef::of(t, side);
                 let kind = world.map.owned_edge(e.tile, e.edge);
-                out.push_str(&format!("  {side:?}: {}{}\n", edge_name(kind), hp_text(world, e)));
+                let glass = if world.map.glazed(e) { " with glass in it" } else { "" };
+                let blind = match world.map.blind(e) {
+                    Some(true) => ", blind down",
+                    Some(false) => ", blind up",
+                    None if world.map.takes_blind(e) => ", no blind",
+                    None => "",
+                };
+                out.push_str(&format!("  {side:?}: {}{glass}{blind}{}\n", edge_name(kind), hp_text(world, e)));
             }
             Ok(out)
         }
@@ -2852,10 +2918,10 @@ fn loot_text(world: &World, room: Option<&str>, container: Option<&str>, n: u32)
         loot.rare_scale
     );
     let list = |out: &mut String, entries: &[zombye_sim::loot::LootEntry]| {
-        let weight = |e: &zombye_sim::loot::LootEntry| e.weight * if e.rare { loot.rare_scale } else { 1.0 };
+        let weight = |e: &zombye_sim::loot::LootEntry| e.weight_in(loot);
         let total: f32 = entries.iter().map(weight).sum::<f32>().max(1e-6);
         for e in entries {
-            out.push_str(&format!("    {} | weight {}{} | {:.0}% a pick | count {}-{}\n", e.item, e.weight, if e.rare { " (rare)" } else { "" }, weight(e) / total * 100.0, e.count.0, e.count.1));
+            out.push_str(&format!("    {} | weight {}{} | {:.0}% a pick | count {}-{}\n", e.item, e.weight, if e.tier != zombye_sim::loot::Rarity::Common { format!(" ({})", e.tier.label()) } else if e.rare { " (rare)".into() } else { String::new() }, weight(e) / total * 100.0, e.count.0, e.count.1));
         }
     };
     out.push_str("  entries (item | weight | chance per pick | count):\n");
@@ -2873,7 +2939,7 @@ fn loot_text(world: &World, room: Option<&str>, container: Option<&str>, n: u32)
     let mut seen: std::collections::BTreeMap<u16, (u32, u32)> = std::collections::BTreeMap::new();
     let (mut empty, mut stacks, mut litres, mut kg) = (0u32, 0u32, 0.0f32, 0.0f32);
     for k in 0..n {
-        let got = zombye_sim::loot::fill(world.config.seed(), u32::MAX - k, def, room, loot, items);
+        let got = zombye_sim::loot::fill(world.config.loot_seed(), u32::MAX - k, def, room, loot, items);
         empty += got.is_empty() as u32;
         stacks += got.len() as u32;
         let mut here = std::collections::BTreeSet::new();

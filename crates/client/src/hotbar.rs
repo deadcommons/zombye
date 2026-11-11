@@ -82,6 +82,15 @@ pub fn find(inv: &Inventory, item: u16) -> Option<Found> {
     }
 }
 
+/// The stack of `item` [`find`] finds.
+fn stack_of(inv: &Inventory, item: u16) -> Option<zombye_sim::ItemStack> {
+    match find(inv, item)? {
+        Found::Hand => inv.hand,
+        Found::OffHand => inv.off_hand,
+        Found::Carried(i) => inv.carried.get(i as usize).copied(),
+    }
+}
+
 /// How many of `item` we have in our hands and bags.
 pub fn count(inv: &Inventory, item: u16) -> u32 {
     inv.hand.iter().chain(inv.off_hand.iter()).chain(inv.carried.iter()).filter(|s| s.item == item).map(|s| s.count as u32).sum()
@@ -223,6 +232,8 @@ struct SlotView {
     color: Option<(f32, f32, f32)>,
     count: u32,
     held: bool,
+    /// The one we'd reach for is a broken weapon (`zombye_sim::wear`): it says so.
+    broken: bool,
     /// Holds an item at all.
     set: bool,
 }
@@ -364,7 +375,8 @@ fn rebuild(mut commands: Commands, bar: Res<Hotbar>, link: Res<ServerLink>, join
                 return SlotView { name: id.clone(), set: true, ..default() };
             };
             let (count, held) = inv.map_or((0, false), |inv| (count(inv, item as u16), inv.hand.is_some_and(|s| s.item == item as u16)));
-            SlotView { name: def.name.clone(), color: Some(def.color), count, held, set: true }
+            let broken = inv.and_then(|inv| stack_of(inv, item as u16)).and_then(|s| zombye_sim::wear::condition(&join.items, &join.weapons, &s, join.combat.battered_below)).is_some_and(|c| c.2 == zombye_sim::wear::Condition::Broken);
+            SlotView { name: def.name.clone(), color: Some(def.color), count, held, broken, set: true }
         })
         .collect();
     if shown.0.as_ref() == Some(&views) {
@@ -395,6 +407,10 @@ fn rebuild(mut commands: Commands, bar: Res<Hotbar>, link: Res<ServerLink>, join
                 });
                 if v.set {
                     s.spawn((Text::new(v.name.clone()), font(theme::SMALL), TextColor(if have { TEXT } else { DIM }), Pickable::IGNORE));
+                }
+                // A broken weapon stays on its slot, marked (`zombye_sim::wear`).
+                if v.broken && have {
+                    s.spawn((Text::new("broken"), font(theme::SMALL), TextColor(theme::BAD), Pickable::IGNORE));
                 }
             })
             .observe(|ev: On<PointerOver>, mut q: Query<&mut ImageNode>| {

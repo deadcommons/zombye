@@ -9,6 +9,8 @@
 //!   street/<model>.glb      in place of assets/models/street/<model>.glb
 //!   trees/<kind>.glb        in place of the generated trees: broadleaf, birch, pine, spruce, and bush
 //!   items/<item id>.glb     an item lying on the ground, in place of its grey-box
+//!   held/<item id>.glb      a weapon as the hand holds it, in place of its grey-box bar: the grip
+//!                           at the origin, pointing along +z, its top up
 //! ```
 //!
 //! `<name>.2.glb`, `<name>.3.glb`, ... beside any of them are variants, one picked per place. A tree
@@ -72,6 +74,22 @@ pub fn items() -> &'static FurnitureModels {
     })
 }
 
+/// The overlay's models of weapons in the hand (`held/`, named by item id), read once; none without
+/// the folder.
+pub fn held() -> &'static FurnitureModels {
+    static HELD: OnceLock<FurnitureModels> = OnceLock::new();
+    HELD.get_or_init(|| match root() {
+        Some(dir) => {
+            let m = FurnitureModels::load(&dir.join("held"));
+            if m.len() > 0 {
+                println!("release models: {} models of weapons in the hand", m.len());
+            }
+            m
+        }
+        None => FurnitureModels::default(),
+    })
+}
+
 /// Put the overlay's models among `models`, replacing those of the same name. Returns how many it
 /// held.
 pub fn load_into(overlay: Option<&Path>, models: &mut FurnitureModels) -> usize {
@@ -95,7 +113,7 @@ mod tests {
     #[ignore]
     fn check_the_release_folder() {
         let dir = PathBuf::from(std::env::var_os("ZOMBYE_RELEASE_MODELS").expect("set ZOMBYE_RELEASE_MODELS"));
-        for sub in ["furniture", "street", "trees", "items"] {
+        for sub in ["furniture", "street", "trees", "items", "held"] {
             let files = std::fs::read_dir(dir.join(sub)).map(|d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "glb")).count()).unwrap_or(0);
             let models = FurnitureModels::load(&dir.join(sub));
             assert_eq!(models.len(), files, "{sub}: a file didn't read");
@@ -106,6 +124,8 @@ mod tests {
                 match sub {
                     "trees" => assert!(leaves > 0 && (leaves < tris || name.starts_with("bush")) && size.y > 0.5, "{sub}/{name}: trunk and foliage"),
                     "items" => assert!(size.max_element() <= 1.2 && leaves == 0, "{sub}/{name}: item-sized"),
+                    "held" => assert!(size.z <= 1.5 && size.z >= size.x && size.z >= size.y && leaves == 0, "{sub}/{name}: lies along the hand's reach"),
+                    "street" => assert!(size.y <= 4.5 && size.x.max(size.z) <= 10.0 && leaves == 0, "{sub}/{name}"),
                     _ => assert!(size.y <= 4.5 && leaves == 0, "{sub}/{name}"),
                 }
             }

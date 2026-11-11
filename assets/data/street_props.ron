@@ -5,15 +5,23 @@
 // or a ZOMBYE_EXTRA_MODELS folder; the id when left out); `size`, metres (width, depth, height) of the
 // grey-box drawn when there's no model; `color`, its sRGB colour; `blocks` (default true), whether it
 // blocks walking (its tile is blocked for paths, and bodies are kept `radius` metres from its middle;
-// `radius` defaults to half the larger of width and depth, at most 0.5).
+// `radius` defaults to half the larger of width and depth, at most 0.5); `tiles` (default (1, 1)), the
+// tiles it covers across and deep, at most (5, 10): a bigger one (a parked car is (2, 5)) stands in
+// the middle of them and, when it blocks, blocks all of them whole.
 //
 // rules, applied in order (a later rule never puts a prop on or next to an earlier one's):
 //   GardenPath  on the lawn beside the street end of a house's garden path (`chance` per house)
 //   HouseKerb   at the kerb in front of a house, 2-3 m to one side of its path (`chance` per house)
 //   ShopKerb    at the kerb in front of a shop or office on the main street (`chance` per building)
 //   Kerb        along every straight kerb in town, `spacing: (min, max)` metres apart
-// Props stand in the middle of a tile, facing the street, never on a road, path or driveway, beside
-// a door, at a corner, junction or turning circle, or where an alley or parking lot meets the street.
+//   Yard        on open lawn beside or behind a house, any way round (`chance` per house)
+//   Roadside    parked on the road along the kerb in front of a house (`chance` per house)
+//   ShopRoad    parked on the road in front of a shop or office on the main street (`chance` per building)
+//   Parking     in a bay of a parking lot, nose in or out (`chance` per bay; at most (2, 5) tiles)
+// Kerb and path props stand in the middle of a tile, facing the street, never on a road, path or
+// driveway, beside a door, at a corner, junction or turning circle, or where an alley or parking lot
+// meets the street. Kinds of more than one tile go only in the last four places. A parked vehicle
+// leaves at least two metres of road free beside it.
 (
     kinds: [
         (id: "mailbox", size: (0.27, 0.56, 1.15), color: (0.90, 0.88, 0.82), radius: Some(0.2)),
@@ -29,6 +37,28 @@
         (id: "post_box", size: (0.6, 0.55, 1.2), color: (0.20, 0.32, 0.55)),
         (id: "power_box", size: (0.9, 0.6, 1.5), color: (0.50, 0.55, 0.50)),
         (id: "trash_bag", size: (0.65, 0.65, 0.6), color: (0.12, 0.12, 0.13), blocks: false),
+        // In yards.
+        (id: "barbecue", size: (1.25, 0.7, 1.15), color: (0.25, 0.26, 0.27), tiles: (2, 1)),
+        (id: "deckchair", size: (0.67, 0.62, 0.94), color: (0.35, 0.50, 0.75), radius: Some(0.3)),
+        (id: "sun_lounger", size: (0.7, 2.0, 0.75), color: (0.30, 0.45, 0.75), tiles: (1, 2)),
+        (id: "wheelbarrow", size: (0.64, 1.24, 0.75), color: (0.50, 0.52, 0.54), tiles: (1, 2)),
+        (id: "doghouse", size: (0.97, 0.94, 1.0), color: (0.62, 0.50, 0.38)),
+        (id: "rotary_line", size: (0.2, 0.2, 2.2), color: (0.70, 0.70, 0.70), radius: Some(0.15)),
+        (id: "garden_table", size: (2.0, 2.0, 0.8), color: (0.36, 0.27, 0.18), tiles: (2, 2)),
+        (id: "washing_line", size: (5.0, 0.3, 2.0), color: (0.75, 0.75, 0.72), tiles: (5, 1), blocks: false),
+        (id: "swing_set", size: (3.0, 2.9, 2.6), color: (0.55, 0.42, 0.26), tiles: (3, 3)),
+        (id: "trampoline", size: (3.0, 3.0, 0.6), color: (0.13, 0.14, 0.16), tiles: (3, 3)),
+        (id: "paddling_pool", size: (4.0, 4.0, 0.95), color: (0.42, 0.62, 0.85), tiles: (4, 4)),
+        (id: "garden_bed", size: (3.75, 2.0, 0.7), color: (0.36, 0.28, 0.20), tiles: (4, 2)),
+        (id: "garden_shed", size: (2.4, 2.5, 2.8), color: (0.68, 0.58, 0.46), tiles: (3, 3)),
+        // Vehicles, left where they stood.
+        (id: "car", size: (1.9, 4.6, 1.5), color: (0.22, 0.32, 0.62), tiles: (2, 5)),
+        (id: "van", size: (2.0, 4.5, 1.9), color: (0.20, 0.30, 0.60), tiles: (2, 5)),
+        (id: "pickup", size: (2.0, 5.0, 1.9), color: (0.25, 0.35, 0.65), tiles: (2, 5)),
+        (id: "police_car", size: (1.9, 5.0, 1.6), color: (0.85, 0.85, 0.86), tiles: (2, 5)),
+        (id: "ambulance", size: (2.0, 4.5, 2.3), color: (0.90, 0.88, 0.84), tiles: (2, 5)),
+        (id: "car_wreck", size: (1.9, 4.6, 1.4), color: (0.30, 0.25, 0.22), tiles: (2, 5)),
+        (id: "school_bus", size: (3.0, 7.3, 2.9), color: (0.93, 0.68, 0.12), tiles: (3, 8)),
     ],
     rules: [
         (kind: "mailbox", place: GardenPath, chance: 0.85),
@@ -44,5 +74,32 @@
         (kind: "phone_box", place: ShopKerb, chance: 0.08),
         (kind: "post_box", place: ShopKerb, chance: 0.08),
         (kind: "trash_bag", place: HouseKerb, chance: 0.15),
+        // Vehicles first, the biggest things, then yards from the biggest down.
+        (kind: "school_bus", place: ShopRoad, chance: 0.03),
+        (kind: "car", place: ShopRoad, chance: 0.3),
+        (kind: "police_car", place: ShopRoad, chance: 0.04),
+        (kind: "ambulance", place: ShopRoad, chance: 0.03),
+        (kind: "car", place: Roadside, chance: 0.22),
+        (kind: "pickup", place: Roadside, chance: 0.07),
+        (kind: "van", place: Roadside, chance: 0.05),
+        (kind: "car_wreck", place: Roadside, chance: 0.05),
+        (kind: "car", place: Parking, chance: 0.3),
+        (kind: "pickup", place: Parking, chance: 0.08),
+        (kind: "van", place: Parking, chance: 0.06),
+        (kind: "police_car", place: Parking, chance: 0.02),
+        (kind: "ambulance", place: Parking, chance: 0.01),
+        (kind: "garden_shed", place: Yard, chance: 0.25),
+        (kind: "paddling_pool", place: Yard, chance: 0.06),
+        (kind: "trampoline", place: Yard, chance: 0.1),
+        (kind: "swing_set", place: Yard, chance: 0.12),
+        (kind: "garden_bed", place: Yard, chance: 0.15),
+        (kind: "washing_line", place: Yard, chance: 0.2),
+        (kind: "garden_table", place: Yard, chance: 0.2),
+        (kind: "rotary_line", place: Yard, chance: 0.12),
+        (kind: "barbecue", place: Yard, chance: 0.25),
+        (kind: "sun_lounger", place: Yard, chance: 0.12),
+        (kind: "deckchair", place: Yard, chance: 0.25),
+        (kind: "doghouse", place: Yard, chance: 0.12),
+        (kind: "wheelbarrow", place: Yard, chance: 0.12),
     ],
 )
