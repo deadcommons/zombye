@@ -254,13 +254,14 @@ impl Plugin for IsoCameraPlugin {
     }
 }
 
-fn spawn_camera(mut commands: Commands, join: Res<JoinInfo>, options: Res<Options>, graphics: Res<crate::graphics::Graphics>, offscreen: Option<Res<OffscreenTarget>>) {
+fn spawn_camera(mut commands: Commands, join: Res<JoinInfo>, options: Res<Options>, store: Option<Res<crate::ui_scale::SettingsStore>>, graphics: Res<crate::graphics::Graphics>, offscreen: Option<Res<OffscreenTarget>>) {
     // `--center` only applies offscreen (a live camera follows the player).
     let at = options.center.filter(|_| offscreen.is_some()).map_or(join.player_spawn, Vec2::from);
     let focus = Vec3::new(at.x, 0.0, at.y);
     let zoom = options.zoom.unwrap_or(26.0).clamp(MIN_ZOOM, MAX_ZOOM);
     let mut cam = IsoCamera::new(options.angle, zoom, focus);
-    if options.third_person {
+    // `--first-person`, else (in a window) the view the settings screen says to start in.
+    if options.third_person || (!options.offscreen() && store.is_some_and(|s| s.settings.first_person)) {
         // `follow` puts it behind the survivor at the first frame.
         cam.toggle_view();
     }
@@ -431,6 +432,7 @@ fn lock_pointer(
     menu: Option<Res<crate::inventory_ui::ItemMenu>>,
     chat: Option<Res<crate::chat::ChatEntry>>,
     browser: Option<Res<crate::browser_ui::BrowserUi>>,
+    pause: Option<Res<crate::pause_menu::PauseMenu>>,
     mut windows: Query<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
     mut dots: Query<&mut Visibility, With<CentreDot>>,
     mut lock: ResMut<PointerLock>,
@@ -444,7 +446,8 @@ fn lock_pointer(
         || inventory.is_some_and(|p| p.open)
         || menu.is_some_and(|m| m.is_up())
         || chat.is_some_and(|c| c.typing)
-        || browser.is_some_and(|b| b.open);
+        || browser.is_some_and(|b| b.open)
+        || pause.is_some_and(|p| p.open);
     let hold = cams.single().is_ok_and(|c| c.shoulder()) && !free;
     let middle = Vec2::new(window.width(), window.height()) * 0.5;
     if lock.0 != hold {

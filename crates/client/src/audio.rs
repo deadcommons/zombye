@@ -610,21 +610,30 @@ impl Plugin for GameAudioPlugin {
     }
 }
 
-fn load_bank(mut commands: Commands, options: Res<Options>) {
+fn load_bank(mut commands: Commands, options: Res<Options>, store: Option<Res<crate::ui_scale::SettingsStore>>) {
     let (data, audio) = bank_dirs(&options);
-    commands.insert_resource(AudioSettings { volume: options.volume, muted: options.mute });
+    // The flags for this session, else what the settings screen kept.
+    let kept = store.map(|s| s.settings.clone()).unwrap_or_default();
+    commands.insert_resource(AudioSettings { volume: options.volume.unwrap_or(kept.volume), muted: options.mute || kept.muted });
     match SoundBank::load_from(&data, &audio, crate::release_audio::root()) {
         Ok(bank) => commands.insert_resource(bank),
         Err(e) => eprintln!("sound off: {e}"),
     }
 }
 
-fn toggle_mute(keys: Res<ButtonInput<KeyCode>>, settings: Option<ResMut<AudioSettings>>) {
+fn toggle_mute(keys: Res<ButtonInput<KeyCode>>, settings: Option<ResMut<AudioSettings>>, store: Option<ResMut<crate::ui_scale::SettingsStore>>) {
     if let Some(mut s) = settings
         && keys.just_pressed(KeyCode::KeyM)
     {
         s.muted = !s.muted;
         println!("sound {}", if s.muted { "off" } else { "on" });
+        // Kept, as the settings screen's switch is.
+        let muted = s.muted;
+        if let Some(mut store) = store
+            && let Err(e) = store.change(|k| k.muted = muted)
+        {
+            eprintln!("{e}");
+        }
     }
 }
 

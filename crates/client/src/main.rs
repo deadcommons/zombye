@@ -28,10 +28,15 @@
 //! quickloads, and quitting (closing the window, Ctrl-C or SIGTERM in the terminal) autosaves
 //! (`autosave` in the saves folder); `--quicksave-after SECS` and
 //! `--quickload-after SECS` do F5 / F9 by themselves, for verification. Dead, the death screen
-//! (`death.rs`) sums up the run: R starts a new run (the same town from the start), Q or Esc quits;
+//! (`death.rs`) sums up the run: R starts a new run (the same town from the start), Q quits, Esc the pause menu;
 //! `--new-run-after SECS` presses R by itself. `--angle N` starts at
 //! one of the four fixed camera angles (0..3), `--player ID` plays as that player of a loaded
 //! save, `--data DIR` reads game data from another folder.
+//!
+//! Menus: a plain start (no flag that sets up a world or a scene) opens the main menu first
+//! (`main_menu.rs`; `--main-menu` forces it, `--no-menu` skips it); Esc while playing is the pause menu
+//! (`pause_menu.rs`; `--pause` starts with it up), whose Settings is the settings screen (`settings_ui.rs`;
+//! `--settings graphics|audio|controls|game` starts with it up).
 //!
 //! `--render-to PATH` renders one PNG offscreen and exits, without ever opening a window
 //! (`offscreen.rs`): usually with `--load`, plus `--size WxH`, `--zoom`, `--angle`, `--player` and
@@ -109,6 +114,8 @@ mod inventory_ui;
 mod join_screen;
 mod items_render;
 mod lights;
+mod main_menu;
+mod menu_skin;
 mod materials;
 mod meshgen;
 mod action_ui;
@@ -117,11 +124,13 @@ mod needs_ui;
 mod offscreen;
 mod opening_hints;
 mod panels;
+mod pause_menu;
 mod player;
 mod rig;
 mod rules_ui;
 mod saving;
 mod server_link;
+mod settings_ui;
 mod silhouette;
 mod skills_ui;
 mod survivor;
@@ -293,10 +302,23 @@ pub struct Options {
     pub opening_hints: Option<bool>,
     /// Start with the sound off (`--mute`; M toggles it).
     pub mute: bool,
-    /// Master volume (`--volume V`, 0..2, default 1).
-    pub volume: f32,
-    /// Music volume under the master (`--music V`, 0..2, default 1; 0: no music). See `music.rs`.
-    pub music: f32,
+    /// Master volume for this session (`--volume V`, 0..2; without it the settings file's, else 1).
+    pub volume: Option<f32>,
+    /// Music volume under the master for this session (`--music V`, 0..2; 0: no music is loaded;
+    /// without it the settings file's, else 1). See `music.rs`.
+    pub music: Option<f32>,
+    /// The main menu (`main_menu.rs`): `--main-menu` shows it whatever else is asked for,
+    /// `--no-menu` never; without either it is shown when nothing on the command line chooses a
+    /// world or is there for a test or a picture (`plain`).
+    pub main_menu: bool,
+    pub no_menu: bool,
+    pub plain: bool,
+    /// `--new-game` / `--new-game-from PATH`: the new-game screen's (never the main menu).
+    pub new_game: bool,
+    /// Start with the pause menu up (`--pause`), or the settings screen on a tab
+    /// (`--settings graphics|audio|controls|game`): for pictures.
+    pub pause: bool,
+    pub settings: Option<String>,
     /// UI scale in percent for this session, not saved (`--ui-scale PCT`, 75..150; without it the
     /// client settings file's, else 100). See `ui_scale.rs`.
     pub ui_scale: Option<u32>,
@@ -536,8 +558,14 @@ impl Options {
                 _ => None,
             }),
             mute: flag("--mute"),
-            volume: value("--volume").and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite()).map_or(1.0, |v| v.clamp(0.0, 2.0)),
-            music: value("--music").and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite()).map_or(1.0, |v| v.clamp(0.0, 2.0)),
+            volume: value("--volume").and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 2.0)),
+            music: value("--music").and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 2.0)),
+            main_menu: flag("--main-menu"),
+            no_menu: flag("--no-menu"),
+            plain: main_menu::plain(args),
+            new_game: flag("--new-game") || flag("--new-game-from"),
+            pause: flag("--pause"),
+            settings: value("--settings"),
             ui_scale: value("--ui-scale").and_then(|v| ui_scale::parse_pct(&v)),
             hotbar: value("--hotbar"),
             hotbar_press: value("--hotbar-press").map_or(Vec::new(), |v| v.split(',').filter_map(parse_menu_pick).collect()),
@@ -659,6 +687,11 @@ fn main() {
     if join_screen::wanted(&options) {
         join_screen::run(options);
     }
+    // Started with nothing that chooses a world: the main menu first, which starts the game again
+    // with what was picked there.
+    if main_menu::wanted(&options) {
+        main_menu::run(options);
+    }
     let plugins = window_plugins(&options);
     let offscreen = options.offscreen();
     let graphics = graphics::Graphics::from_options(&options);
@@ -682,7 +715,7 @@ fn main() {
             (fx::FxPlugin, heard::HeardPlugin, chat::ChatPlugin, film::FilmPlugin, graphics_ui::GraphicsUiPlugin, render_scale::RenderScalePlugin, vegetation::VegetationPlugin, rules_ui::RulesUiPlugin, browser_ui::BrowserUiPlugin),
             survivor::SurvivorPlugin,
             (autoplay::AutoplayPlugin, duel::DuelPlugin, holdup::HoldupPlugin, aim_marker::AimMarkerPlugin),
-            (saving::SavingPlugin, ui_scale::UiScalePlugin, panels::PanelsPlugin, hotbar::HotbarPlugin, firstnight_ui::FirstNightUiPlugin),
+            (saving::SavingPlugin, ui_scale::UiScalePlugin, panels::PanelsPlugin, hotbar::HotbarPlugin, firstnight_ui::FirstNightUiPlugin, settings_ui::SettingsUiPlugin, pause_menu::PauseMenuPlugin),
         ));
     // An offscreen render has no audio device (Bevy's audio is off there).
     if !offscreen {
@@ -692,7 +725,7 @@ fn main() {
     let failed = app.run().is_error();
     // A join asked for in the server browser (#27): the game has shut down (and autosaved); start
     // it again on that server.
-    if let Some(next) = browser_ui::take_relaunch() {
+    if let Some(next) = browser_ui::take_relaunch().or_else(main_menu::take_relaunch) {
         relaunch(next);
     }
     if failed {
@@ -717,16 +750,19 @@ pub(crate) fn window_plugins(options: &Options) -> bevy::app::PluginGroupBuilder
             .disable::<bevy::gilrs::GilrsPlugin>()
             .disable::<bevy::app::TerminalCtrlCHandlerPlugin>()
     } else {
+        // The window's own settings (the settings screen, `settings_ui.rs`).
+        let kept = ui_scale::ClientSettings::load(&ui_scale::ClientSettings::path(&options.saves)).0;
         DefaultPlugins
             .set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "Zombye".into(),
+                    mode: settings_ui::window_mode(kept.fullscreen && !options.size_given),
                     resolution: if options.size_given {
                         bevy::window::WindowResolution::new(options.size.x, options.size.y).with_scale_factor_override(1.0)
                     } else {
                         (1600, 900).into()
                     },
-                    present_mode: if options.novsync { PresentMode::AutoNoVsync } else { PresentMode::AutoVsync },
+                    present_mode: if options.novsync || !kept.vsync { PresentMode::AutoNoVsync } else { PresentMode::AutoVsync },
                     ..default()
                 }),
                 ..default()

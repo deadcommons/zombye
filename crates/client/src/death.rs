@@ -17,7 +17,7 @@
 //! with new zombies, untouched houses and empty run stats. The same seed because the client's map
 //! copy and meshes are built once for that map; the new world is taken up like a quickload
 //! (`saving::WorldSwap`). The world options of the command line that only set up the first world
-//! (`--at`, `--fight-demo`, `--siege`) don't apply again. **Q or Esc quits** (autosaving, as
+//! (`--at`, `--fight-demo`, `--siege`) don't apply again. **Q quits** and Esc is the pause menu (autosaving, as
 //! closing the window does). `--new-run-after SECS` presses R by itself once we're dead and SECS
 //! have passed, for verification.
 
@@ -172,7 +172,8 @@ fn spawn_screen(mut commands: Commands, link: Option<Res<crate::server_link::Ser
                     rule(c);
                     c.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, column_gap: px(40), margin: UiRect::top(px(4)), ..default() }).with_children(|row| {
                         theme::keycap(row, "R", again);
-                        theme::keycap(row, "Q / Esc", "quit");
+                        theme::keycap(row, "Q", "quit");
+                        theme::keycap(row, "Esc", "menu");
                     });
                 });
         });
@@ -269,7 +270,7 @@ fn update_screen(
     }
 }
 
-/// Dead: R (or `--new-run-after`) starts a new run, Q or Esc quits.
+/// Dead: R (or `--new-run-after`) starts a new run, Q quits (Esc is the pause menu, `pause_menu.rs`).
 fn death_keys(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
@@ -283,7 +284,7 @@ fn death_keys(
         return;
     }
     let now = time.elapsed_secs();
-    if keys.any_just_pressed([KeyCode::KeyQ, KeyCode::Escape]) {
+    if keys.just_pressed(KeyCode::KeyQ) {
         println!("Quitting from the death screen");
         exit.write(AppExit::Success);
         return;
