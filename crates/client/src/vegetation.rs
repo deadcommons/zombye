@@ -1,30 +1,34 @@
-//! Instanced vegetation and litter (Linear DCM-59): grass in three lengths, weeds in the cracks,
+//! Vegetation and litter (Linear DCM-59): grass in three lengths, weeds in the cracks,
 //! drifts of red and white wildflowers, loose papers and small stones.
 //!
 //! **Where** is worked out by the chunk mesher from the tile map alone
 //! (`meshgen::landscape::scatter`, deterministic: the same map always grows the same grass), as a
 //! list of [`VegSpot`]s per chunk, kept on the chunk's ground entity ([`ChunkVeg`]).
 //!
-//! **Drawing** reuses the crowd's instanced path (`zombie_render.rs`): every spot is an entity
-//! with one of a few dozen small shared meshes ([`KINDS`] x [`VARIANTS`], built here in code),
-//! one shared material and a `MeshTag` for its colour, so Bevy batches all the instances of a mesh
-//! into one draw; no spot has a mesh, a material or a draw call of its own, and nothing is
-//! allocated per frame. The material ([`VegMaterial`]) is the world material's fragment shader
-//! (lighting, shadows, fog of war) behind `assets/shaders/vegetation.wesl`, which colours each
-//! patch, sways it in the wind and bends it away from the player's feet. Vegetation casts no
-//! shadows (it would double the crowd's shadow pass for something ankle-high).
+//! **Drawing:** a chunk's spots are merged into one mesh ([`chunk_mesh`]): each spot is a copy of
+//! one of a few dozen small patches ([`KINDS`] x [`VARIANTS`], built here in code), turned, scaled
+//! and put in its place, with its dryness and brightness on its vertices. So a chunk's ground
+//! cover is one entity and one draw, whatever grows in it (a patch an entity, as it was at first,
+//! put about 7,000 entities in a zoomed-out view, and going through them cost more each frame
+//! than drawing them). The mesh is small on the GPU, 12 bytes a vertex: positions packed to 16
+//! bits within the chunk, colours to 8, no normals and no indices. The material ([`VegMaterial`])
+//! is the world material's fragment shader (lighting, shadows, fog of war) behind
+//! `assets/shaders/vegetation.wesl`, which colours each blade, sways it in the wind and bends it
+//! away from the player's feet. Vegetation casts no shadows (it would double the crowd's shadow
+//! pass for something ankle-high).
 //!
-//! **Culling:** only chunks within [`veg_radius`] of the camera's focus have their spots spawned
-//! (a few chunks a frame as you walk), the shader shrinks patches to nothing over the last 16% of
-//! that radius so nothing pops, and Bevy's frustum culling drops what is off screen.
+//! **Culling:** only chunks within [`veg_radius`] of the camera's focus have their mesh (built a
+//! few chunks a frame as you walk, dropped again when they're left behind), the shader shrinks
+//! blades to nothing over the last 16% of that radius so nothing pops, and Bevy's frustum culling
+//! drops the chunks that are off screen.
 //!
 //! **Settings** (`graphics.rs`): `vegetation` 0..2 is the density: each spot has a rank and is
 //! drawn when the density is above it (ranks under 1 are the default cover, 1..2 extra patches
-//! between them); `--vegetation off` spawns nothing at all.
+//! between them); a new density builds the meshes again; `--vegetation off` builds none.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::light::NotShadowCaster;
-use bevy::mesh::{Indices, MeshTag, MeshVertexBufferLayoutRef, PrimitiveTopology};
+use bevy::mesh::{AttributeQuantization, MeshVertexBufferLayoutRef, PrimitiveTopology};
 use bevy::pbr::{ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline};
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, Face, RenderPipelineDescriptor, SpecializedMeshPipelineError};
@@ -154,9 +158,10 @@ pub struct ChunkVeg {
     pub spots: Vec<VegSpot>,
 }
 
-/// The spot entities of a chunk while they are spawned (its children).
+/// A chunk's ground cover while it is drawn: the entity with its mesh (its child), or none when
+/// nothing grows there at this density.
 #[derive(Component)]
-struct VegShown(Vec<Entity>);
+struct VegShown(Option<Entity>);
 
 /// Vegetation is drawn out to this far from the camera's focus (metres) at this zoom (metres of
 /// world visible top to bottom): just past the corners of a 16:9 view, within limits.
@@ -168,9 +173,9 @@ const MIN_RADIUS: f32 = 24.0;
 /// The view's corners are further than this from the focus above a zoom of about 42 m; from there
 /// the grass thins out toward the edges of the screen (at that scale a blade is two pixels).
 const MAX_RADIUS: f32 = 60.0;
-/// A chunk's spots are removed once it is this much further than the radius.
+/// A chunk's mesh is dropped once it is this much further than the radius.
 const KEEP_MARGIN: f32 = 8.0;
-/// Chunks whose spots are spawned per frame while walking.
+/// Chunks whose mesh is built per frame while walking.
 const CHUNKS_PER_FRAME: usize = 2;
 /// How hard the wind leans the grass (metres of sway per metre of blade).
 const WIND: f32 = 0.16;
@@ -190,7 +195,7 @@ pub struct VegExt {
     #[texture(103, sample_type = "float", filterable = false)]
     pub rays: Handle<Image>,
     /// [`VegParams`], in a buffer for the reason the world's are: the clock in them changes every
-    /// frame, and a changed material would have every patch of grass extracted and queued again.
+    /// frame, and a changed material would have every chunk's grass extracted and queued again.
     #[storage(104, read_only)]
     pub veg: Handle<ShaderBuffer>,
 }
@@ -234,7 +239,8 @@ impl VegParams {
 
 #[derive(Resource)]
 struct VegAssets {
-    meshes: [[Handle<Mesh>; VARIANTS]; KINDS],
+    /// The patch of each variant of each kind, copied into the chunks' meshes.
+    patches: [[Patch; VARIANTS]; KINDS],
     material: Handle<VegMaterial>,
     /// The buffer holding the material's [`VegParams`].
     params: Handle<ShaderBuffer>,
@@ -251,8 +257,8 @@ impl Plugin for VegetationPlugin {
     }
 }
 
-fn setup(mut commands: Commands, fog: Res<FogState>, world: Res<ParamBuffer>, mut buffers: ResMut<Assets<ShaderBuffer>>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<VegMaterial>>) {
-    let handles = VegKind::ALL.map(|kind| std::array::from_fn(|v| meshes.add(patch_mesh(kind, v as u32))));
+fn setup(mut commands: Commands, fog: Res<FogState>, world: Res<ParamBuffer>, mut buffers: ResMut<Assets<ShaderBuffer>>, mut materials: ResMut<Assets<VegMaterial>>) {
+    let patches = VegKind::ALL.map(|kind| std::array::from_fn(|v| patch_of(kind, v as u32)));
     let params = param_buffer(&mut buffers, VegParams::default().floats());
     let material = materials.add(ExtendedMaterial {
         // Blades are seen from both sides, lit the same on each (the shader gives them the ground's
@@ -260,13 +266,47 @@ fn setup(mut commands: Commands, fog: Res<FogState>, world: Res<ParamBuffer>, mu
         base: StandardMaterial { base_color: Color::WHITE, perceptual_roughness: 0.95, reflectance: 0.2, cull_mode: None::<Face>, ..default() },
         extension: VegExt { params: world.0.clone(), fog: fog.image.clone(), rays: fog.rays.clone(), veg: params.clone() },
     });
-    commands.insert_resource(VegAssets { meshes: handles, material, params });
+    commands.insert_resource(VegAssets { patches, material, params });
 }
 
-/// The tint and variety a spot's instance carries to the shader: bits 0-7 dryness, 8-15 brightness.
-fn spot_tag(spot: &VegSpot) -> u32 {
-    let bright = crate::meshgen::hash01((spot.pos.x * 16.0) as i32, (spot.pos.y * 16.0) as i32, 901);
-    (spot.dry.clamp(0.0, 1.0) * 255.0) as u32 | ((bright * 255.0) as u32) << 8
+/// How bright a spot's blades are beside their neighbours' (0..1), by where it stands.
+fn spot_bright(spot: &VegSpot) -> f32 {
+    crate::meshgen::hash01((spot.pos.x * 16.0) as i32, (spot.pos.y * 16.0) as i32, 901)
+}
+
+/// Colours are stored in 8 bits (0..1), and a blade's baked tone goes a little over 1: they are
+/// stored times this, and the shader divides by it.
+const COLOUR_PACK: f32 = 0.8;
+
+/// The spots drawn at `density` as one mesh, in world coordinates; none when there are none.
+/// Positions, and a colour a vertex that the shader reads as (vegetation.wesl): alpha 1, a blade:
+/// red its baked tone, green its spot's dryness, blue its spot's brightness; alpha 0, its own
+/// colour. Both packed (see the module's notes). No normals (the shader lights everything as the
+/// ground), no indices (no two blades share a corner).
+fn chunk_mesh(patches: &[[Patch; VARIANTS]; KINDS], spots: &[VegSpot], density: f32) -> Option<Mesh> {
+    let shown = || spots.iter().filter(|s| s.rank < density);
+    let n: usize = shown().map(|s| patches[s.kind as usize][s.variant as usize % VARIANTS].positions.len()).sum();
+    if n == 0 {
+        return None;
+    }
+    let (mut positions, mut colors) = (Vec::with_capacity(n), Vec::with_capacity(n));
+    for spot in shown() {
+        let patch = &patches[spot.kind as usize][spot.variant as usize % VARIANTS];
+        // As a `Transform` turned `turn` about the vertical and scaled would place it.
+        let (sin, cos) = spot.turn.sin_cos();
+        let (dry, bright) = (spot.dry.clamp(0.0, 1.0), spot_bright(spot));
+        for (p, c) in patch.positions.iter().zip(&patch.colors) {
+            let [x, y, z] = p.map(|v| v * spot.scale);
+            positions.push([spot.pos.x + x * cos + z * sin, y, spot.pos.y - x * sin + z * cos]);
+            colors.push(if c[3] > 0.5 { [c[0] * COLOUR_PACK, dry, bright, 1.0] } else { [c[0] * COLOUR_PACK, c[1] * COLOUR_PACK, c[2] * COLOUR_PACK, 0.0] });
+        }
+    }
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    mesh.quantize_colors(AttributeQuantization::Unorm8).expect("colours are four floats");
+    mesh.compress_positions().expect("positions are three floats, and there are some");
+    Some(mesh)
 }
 
 /// Shortest distance from `p` to chunk `c`'s square on the ground.
@@ -276,9 +316,10 @@ fn chunk_distance(c: IVec2, p: Vec2) -> f32 {
     (p - p.clamp(lo, hi)).length()
 }
 
-/// Spawn the spots of chunks that came within the drawn radius, remove those of chunks that left.
+/// Build the ground cover of chunks that came within the drawn radius, drop that of chunks that left.
 fn stream_veg(
     mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
     graphics: Res<Graphics>,
     options: Res<Options>,
     assets: Option<Res<VegAssets>>,
@@ -288,12 +329,12 @@ fn stream_veg(
 ) {
     let (Some(assets), Ok(cam)) = (assets, cams.single()) else { return };
     let density = graphics.vegetation;
-    // A new density (the graphics preset changed): take every chunk's spots down; they come back
-    // at the new density a few chunks a frame.
+    // A new density (the graphics preset changed): take every chunk's mesh down; they are built
+    // again at the new density a few chunks a frame.
     if drawn_at.is_some_and(|d| d != density) {
         for (entity, _, shown) in &chunks {
-            if let Some(VegShown(spawned)) = shown {
-                for &e in spawned {
+            if let Some(VegShown(mesh)) = shown {
+                if let Some(e) = *mesh {
                     commands.entity(e).despawn();
                 }
                 commands.entity(entity).remove::<VegShown>();
@@ -312,19 +353,14 @@ fn stream_veg(
         let d = chunk_distance(veg.chunk, focus);
         match shown {
             None if density > 0.0 && d < radius && budget > 0 => {
-                budget -= 1;
-                let mut spawned = Vec::with_capacity(veg.spots.len());
-                commands.entity(entity).with_children(|c| {
-                    for spot in veg.spots.iter().filter(|s| s.rank < density) {
-                        let mesh = assets.meshes[spot.kind as usize][spot.variant as usize % VARIANTS].clone();
-                        let transform = Transform::from_xyz(spot.pos.x, 0.0, spot.pos.y).with_rotation(Quat::from_rotation_y(spot.turn)).with_scale(Vec3::splat(spot.scale));
-                        spawned.push(c.spawn((Mesh3d(mesh), MeshMaterial3d(assets.material.clone()), transform, MeshTag::new(spot_tag(spot)), NotShadowCaster)).id());
-                    }
+                let mesh = chunk_mesh(&assets.patches, &veg.spots, density).map(|mesh| {
+                    budget -= 1;
+                    commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(assets.material.clone()), Transform::IDENTITY, NotShadowCaster, ChildOf(entity))).id()
                 });
-                commands.entity(entity).insert(VegShown(spawned));
+                commands.entity(entity).insert(VegShown(mesh));
             }
-            Some(VegShown(spawned)) if density <= 0.0 || d > radius + KEEP_MARGIN => {
-                for &e in spawned {
+            Some(VegShown(mesh)) if density <= 0.0 || d > radius + KEEP_MARGIN => {
+                if let Some(e) = *mesh {
                     commands.entity(e).despawn();
                 }
                 commands.entity(entity).remove::<VegShown>();
@@ -367,7 +403,8 @@ impl Rng {
     }
 }
 
-/// Triangles with a colour per corner; every normal points up (see vegetation.wesl).
+/// Triangles with a colour per corner (alpha 1: a blade, the colour its tone; alpha 0: its own
+/// colour); the shader lights them all as the ground (see vegetation.wesl).
 #[derive(Default)]
 struct Patch {
     positions: Vec<[f32; 3]>,
@@ -413,15 +450,6 @@ impl Patch {
             let c = [colour.red * k, colour.green * k, colour.blue * k, 0.0];
             self.tri([ring[i], ring[(i + 1) % sides as usize], top], [c; 3]);
         }
-    }
-
-    fn build(self) -> Mesh {
-        let n = self.positions.len();
-        Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.positions)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 1.0, 0.0]; n])
-            .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, self.colors)
-            .with_inserted_indices(Indices::U32((0..n as u32).collect()))
     }
 }
 
@@ -531,17 +559,18 @@ fn model_patch(tris: &[([Vec3; 3], LinearRgba, bool)]) -> Patch {
     m
 }
 
-fn patch_mesh(kind: VegKind, variant: u32) -> Mesh {
+/// The patch drawn for a variant of a kind: the release models' where they have one, else ours.
+fn patch_of(kind: VegKind, variant: u32) -> Patch {
     let models = crate::release_models::veg();
     let n = models.variants(kind.file());
     if n > 0 {
         let k = variant % n;
         let name = if k == 0 { kind.file().to_string() } else { format!("{}.{}", kind.file(), k + 1) };
         if let Some(tris) = models.raw(&name) {
-            return model_patch(&tris).build();
+            return model_patch(&tris);
         }
     }
-    patch(kind, variant).build()
+    patch(kind, variant)
 }
 
 #[cfg(test)]
@@ -591,12 +620,36 @@ mod tests {
         assert_eq!(chunk_distance(IVec2::new(1, 1), Vec2::new(10.0, 20.0)), 6.0);
     }
 
+    /// A chunk's spots become one mesh of the spots the density shows, each in its place, with
+    /// its dryness and brightness on its blades and packed small.
     #[test]
-    fn tags_carry_dryness_and_brightness() {
-        let spot = |dry: f32| VegSpot { pos: Vec2::new(3.5, 9.25), kind: VegKind::Grass, variant: 0, turn: 0.0, scale: 1.0, dry, rank: 0.0 };
-        assert_eq!(spot_tag(&spot(0.0)) & 255, 0);
-        assert_eq!(spot_tag(&spot(1.0)) & 255, 255);
-        assert_eq!(spot_tag(&spot(7.0)) & 255, 255);
-        assert!(spot_tag(&spot(0.5)) >> 16 == 0);
+    fn a_chunks_spots_merge_into_one_packed_mesh() {
+        use bevy::mesh::{VertexAttributeValues, VertexFormat};
+        let patches = VegKind::ALL.map(|kind| std::array::from_fn(|v| patch(kind, v as u32)));
+        let spot = |x: f32, kind: VegKind, dry: f32, rank: f32| VegSpot { pos: Vec2::new(x, 40.0), kind, variant: 1, turn: 1.0, scale: 1.5, dry, rank };
+        let spots = [spot(35.0, VegKind::Grass, 0.5, 0.2), spot(38.0, VegKind::Pebbles, 0.0, 0.4), spot(44.0, VegKind::GrassLong, 7.0, 1.5)];
+        let count = |kind: VegKind| patch(kind, 1).positions.len();
+        assert!(chunk_mesh(&patches, &spots, 0.1).is_none());
+        let mesh = chunk_mesh(&patches, &spots, 1.0).unwrap();
+        assert_eq!(mesh.count_vertices(), count(VegKind::Grass) + count(VegKind::Pebbles));
+        assert_eq!(chunk_mesh(&patches, &spots, 2.0).unwrap().count_vertices(), mesh.count_vertices() + count(VegKind::GrassLong));
+        assert!(mesh.indices().is_none() && mesh.attribute(Mesh::ATTRIBUTE_NORMAL).is_none());
+        // 8 bytes of position and 4 of colour a vertex.
+        assert!(matches!(mesh.attribute(Mesh::ATTRIBUTE_POSITION), Some(VertexAttributeValues::Snorm16x4(_))));
+        let Some(VertexAttributeValues::Unorm8x4(colours)) = mesh.attribute(Mesh::ATTRIBUTE_COLOR) else { panic!("colours aren't packed") };
+        assert_eq!(VertexFormat::Unorm8x4.size(), 4);
+        let (grass, stones) = colours.split_at(count(VegKind::Grass));
+        let bright = (spot_bright(&spots[0]) * 255.0).round() as u8;
+        assert!(grass.iter().all(|c| c[1] == 128 && c[2] == bright && c[3] == 255), "blades carry their spot's dryness and brightness");
+        assert!(stones.iter().all(|c| c[3] == 0), "stones keep their own colour");
+        // Each spot's vertices stand round it: within its patch, scaled.
+        let aabb = mesh.final_aabb.expect("packed positions keep their bounds");
+        assert!(aabb.min.x > 35.0 - 1.25 && aabb.max.x < 38.0 + 1.25 && (aabb.min.z - 40.0).abs() < 1.25 && aabb.min.y >= 0.0, "{aabb:?}");
+        // A blade's tone fits in the 8 bits it's stored in.
+        for kind in VegKind::ALL {
+            for v in 0..VARIANTS as u32 {
+                assert!(patch(kind, v).colors.iter().all(|c| c[..3].iter().all(|v| v * COLOUR_PACK <= 1.0)), "{kind:?} {v}");
+            }
+        }
     }
 }

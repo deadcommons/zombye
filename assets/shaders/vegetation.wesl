@@ -1,8 +1,9 @@
-// Instanced vegetation and litter (Linear DCM-59, crates/client/src/vegetation.rs): the vertex
-// stage of a material whose fragment stage is world.wesl, so grass is lit, shadowed and fogged
-// exactly like the ground it stands on. Every patch is one instance of a small shared mesh; this
-// shader gives each its colour (from its MeshTag), sways it in the wind, bends it away from the
-// player's feet and shrinks it to nothing toward the edge of the drawn radius.
+// Vegetation and litter (Linear DCM-59, crates/client/src/vegetation.rs): the vertex stage of a
+// material whose fragment stage is world.wesl, so grass is lit, shadowed and fogged exactly like
+// the ground it stands on. A chunk's patches are one mesh in world coordinates; this shader gives
+// each blade its colour (its spot's dryness and brightness ride on its vertices), sways it in the
+// wind, bends it away from the player's feet and shrinks it to nothing toward the edge of the
+// drawn radius.
 
 import bevy_pbr::render::{
     mesh_functions,
@@ -23,21 +24,22 @@ struct VegParams {
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(104) var<storage, read> veg: VegParams;
 
+// Colours are stored times this, in 8 bits (`COLOUR_PACK` in vegetation.rs).
+const COLOUR_PACK: f32 = 0.8;
+
 @vertex
 fn vertex(vertex_in: Vertex) -> VertexOutput {
     var out: VertexOutput;
     let v = decompress_vertex(vertex_in, vertex_in.instance_index);
     let world_from_local = mesh_functions::get_world_from_local(vertex_in.instance_index);
-    let tag = mesh_functions::get_tag(vertex_in.instance_index);
     var world = mesh_functions::mesh_position_local_to_world(world_from_local, vec4<f32>(v.position, 1.0));
-    let root = world_from_local[3].xyz;
-    // How far up the blade this vertex is (0 at the root): what moves it.
-    let h = max(world.y - root.y, 0.0);
+    // How far up the blade this vertex is (the ground is at 0): what moves it.
+    let h = max(world.y, 0.0);
 
-    // Wind: gusts rolling across the field, and each patch a little out of step with the next.
+    // Wind: gusts rolling across the field, and each tuft a little out of step with the next.
     let t = veg.focus.w;
     let along = world.x * 0.31 + world.z * 0.17;
-    let gust = sin(along - t * 1.3) * 0.6 + sin(along * 2.7 + root.x * 1.9 - t * 2.9) * 0.3 + 0.35;
+    let gust = sin(along - t * 1.3) * 0.6 + sin(along * 2.7 + world.x * 1.9 - t * 2.9) * 0.3 + 0.35;
     let sway = vec2(0.88, 0.47) * gust * veg.player.z * h;
 
     // Trodden: blades within a step of the player lean away and lie lower.
@@ -47,8 +49,8 @@ fn vertex(vertex_in: Vertex) -> VertexOutput {
 
     // Shrunk to nothing toward the edge of what's drawn, so patches never pop in.
     let reach = veg.focus.z;
-    let shown = 1.0 - smoothstep(reach * 0.84, reach, length(root.xz - veg.focus.xy));
-    world = vec4(world.x + sway.x + push.x, root.y + h * shown * (1.0 - 0.55 * near), world.z + sway.y + push.y, 1.0);
+    let shown = 1.0 - smoothstep(reach * 0.84, reach, length(world.xz - veg.focus.xy));
+    world = vec4(world.x + sway.x + push.x, h * shown * (1.0 - 0.55 * near), world.z + sway.y + push.y, 1.0);
 
     out.world_position = world;
     out.position = position_world_to_clip(world.xyz);
@@ -63,12 +65,11 @@ fn vertex(vertex_in: Vertex) -> VertexOutput {
     out.world_tangent = vec4(1.0, 0.0, 0.0, 1.0);
 
 @if(VERTEX_COLORS) {
-    // Alpha 1: a blade, coloured here (a brightness baked along it, times this patch's mix of
-    // fresh and dry). Alpha 0: its own colour (petals, paper, stones).
-    let dryness = f32(tag & 255u) / 255.0;
-    let bright = 0.86 + 0.28 * f32((tag >> 8u) & 255u) / 255.0;
-    let blade = mix(veg.green.rgb, veg.dry.rgb, dryness) * bright;
-    out.color = vec4(v.color.rgb * mix(vec3(1.0), blade, v.color.a), 1.0);
+    // Alpha 1: a blade: red its tone (a brightness baked along it), green its spot's dryness,
+    // blue its spot's brightness. Alpha 0: its own colour (petals, paper, stones).
+    let bright = 0.86 + 0.28 * v.color.b;
+    let blade = mix(veg.green.rgb, veg.dry.rgb, v.color.g) * bright * v.color.r;
+    out.color = vec4(mix(v.color.rgb, blade, v.color.a) / COLOUR_PACK, 1.0);
 }
 
 @if(VERTEX_OUTPUT_INSTANCE_INDEX)

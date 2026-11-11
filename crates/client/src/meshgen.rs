@@ -72,6 +72,23 @@ pub struct MeshBuilder {
     uv1: Vec<[f32; 2]>,
     indices: Vec<u32>,
     tag: CutTag,
+    /// The lighter copy drawn when zoomed far out ([`MeshBuilder::with_far`]), if one is kept.
+    far: Option<Box<MeshBuilder>>,
+    /// Which of the two copies geometry added now goes to.
+    detail: Detail,
+    /// Whether anything went to one copy only: without that the far copy is the same mesh.
+    far_differs: bool,
+}
+
+/// Which copy of a mesh geometry goes to (see [`MeshBuilder::with_far`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Detail {
+    #[default]
+    Both,
+    /// Only the full mesh: a model at full detail.
+    Near,
+    /// Only the far copy: the model's lighter stand-in.
+    Far,
 }
 
 /// Face order for [`MeshBuilder::add_box`]: +x, -x, +y, -y, +z, -z.
@@ -93,7 +110,44 @@ impl MeshBuilder {
             uv1: Vec::with_capacity(v),
             indices: Vec::with_capacity(v),
             tag: CutTag::default(),
+            far: None,
+            detail: Detail::Both,
+            far_differs: false,
         }
+    }
+
+    /// Also keep a far copy of this mesh: everything added goes to both, but what's added between
+    /// [`MeshBuilder::only`]`(Detail::Near)` and `only(Detail::Far)` to one of them, so a heavy model
+    /// can have a lighter stand-in drawn when the camera is zoomed far out
+    /// (`world_render::swap_detail`). A builder without one ignores `Detail::Far` geometry.
+    pub fn with_far(mut self) -> Self {
+        self.far = Some(Box::default());
+        self
+    }
+
+    /// Geometry added from now on goes to this copy (`Detail::Both` again afterwards).
+    pub fn only(&mut self, detail: Detail) {
+        self.detail = detail;
+        if detail != Detail::Both && self.far.is_some() {
+            self.far_differs = true;
+        }
+    }
+
+    /// The far copy, if one was kept and it differs from the full mesh.
+    pub fn take_far(&mut self) -> Option<MeshBuilder> {
+        let far = self.far.take()?;
+        self.far_differs.then_some(*far)
+    }
+
+    /// Passes what's being added on to the far copy; true when the full mesh is to take it too.
+    fn mirror(&mut self, add: impl FnOnce(&mut MeshBuilder)) -> bool {
+        if self.detail != Detail::Near
+            && let Some(far) = &mut self.far
+        {
+            far.tag = self.tag;
+            add(far);
+        }
+        self.detail != Detail::Far
     }
 
     #[cfg(test)]
@@ -119,6 +173,9 @@ impl MeshBuilder {
     }
 
     pub fn quad(&mut self, corners: [Vec3; 4], normal: Vec3, color: LinearRgba) {
+        if !self.mirror(|far| far.quad(corners, normal, color)) {
+            return;
+        }
         let base = self.positions.len() as u32;
         for c in corners {
             self.push_vertex(c, normal, color);
@@ -146,6 +203,9 @@ impl MeshBuilder {
 
     /// A triangle with its own vertex normals (imported models).
     pub fn triangle_with_normals(&mut self, corners: [Vec3; 3], normals: [Vec3; 3], color: LinearRgba) {
+        if !self.mirror(|far| far.triangle_with_normals(corners, normals, color)) {
+            return;
+        }
         let base = self.positions.len() as u32;
         for (c, n) in corners.into_iter().zip(normals) {
             self.push_vertex(c, n, color);
@@ -155,6 +215,9 @@ impl MeshBuilder {
 
     /// A triangle with a colour at each corner, blended across it.
     pub fn triangle_shaded(&mut self, corners: [Vec3; 3], colors: [LinearRgba; 3]) {
+        if !self.mirror(|far| far.triangle_shaded(corners, colors)) {
+            return;
+        }
         let normal = (corners[1] - corners[0]).cross(corners[2] - corners[0]).normalize_or_zero();
         let base = self.positions.len() as u32;
         for (c, col) in corners.into_iter().zip(colors) {
@@ -170,6 +233,9 @@ impl MeshBuilder {
     }
 
     pub fn triangle(&mut self, corners: [Vec3; 3], color: LinearRgba) {
+        if !self.mirror(|far| far.triangle(corners, color)) {
+            return;
+        }
         let normal = (corners[1] - corners[0]).cross(corners[2] - corners[0]).normalize_or_zero();
         let base = self.positions.len() as u32;
         for c in corners {
