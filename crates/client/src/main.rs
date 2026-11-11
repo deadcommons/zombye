@@ -610,6 +610,14 @@ fn main() {
         eprintln!("can't use the palette: {e}");
         std::process::exit(1);
     }
+    // How the fog of war looks, from the data folder's fog.ron.
+    let fog_look = match fog::FogLook::load(&options.data) {
+        Ok(look) => look,
+        Err(e) => {
+            eprintln!("can't use the fog's look: {e}");
+            std::process::exit(1);
+        }
+    };
     zombye_net::shutdown::install();
     // Wake the window's event loop when a signal comes in while it idles (unfocused), as Bevy's own
     // handler would; the loop then runs `exit_on_signal`.
@@ -653,7 +661,7 @@ fn main() {
     let offscreen = options.offscreen();
     let graphics = graphics::Graphics::from_options(&options);
     let mut app = App::new();
-    app.insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06))).add_plugins(plugins).insert_resource(options).insert_resource(graphics).add_systems(First, exit_on_signal);
+    app.insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06))).add_plugins(plugins).insert_resource(options).insert_resource(fog_look).insert_resource(graphics).add_systems(First, exit_on_signal);
     if offscreen {
         app.add_plugins((ScheduleRunnerPlugin::run_loop(Duration::ZERO), offscreen::OffscreenPlugin));
     }
