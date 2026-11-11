@@ -340,7 +340,7 @@ impl Plugin for ServerLinkPlugin {
             // A bat in hand and a small group just ahead (the player faces +x), called over by a
             // noise. With a gun instead, they start further off.
             let me = server.world.player(player_id).map(|p| p.state.pos).unwrap_or(server.world.player_spawn);
-            if gun.is_none() {
+            if gun.is_none() && !options.weapons_demo {
                 server.send(Intent::SpawnItem { item: "baseball_bat".into(), count: 1, pos: me.to_array() });
                 server.send(Intent::PickUp { player: player_id });
             }
@@ -532,8 +532,8 @@ fn join_remote(app: &mut App, addr: &str, options: &Options, content: &zombye_si
 fn join_local(app: &mut App, mut server: LocalServer, player_id: u32) {
     // `--god` / `--ignored`: as if F1 / F2 were pressed at once.
     let options = app.world().resource::<Options>();
-    if options.god || options.ignored {
-        server.send(Intent::Dev { player: player_id, god: options.god.then_some(true), ignored: options.ignored.then_some(true) });
+    if options.god || options.ignored || options.weapons_demo {
+        server.send(Intent::Dev { player: player_id, god: (options.god || options.weapons_demo).then_some(true), ignored: options.ignored.then_some(true) });
     }
     let first = Snapshot::capture(&mut server.world);
     // Player against player: other survivors only as ours sees them, as on a server (#66).
