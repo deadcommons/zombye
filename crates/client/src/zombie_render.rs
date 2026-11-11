@@ -796,7 +796,11 @@ fn crowd_vat_paths(options: &Options) -> Vec<PathBuf> {
             .filter(|p| !p.as_os_str().is_empty())
             .flat_map(|p| if p.is_dir() { zvats_in(&p) } else { vec![p] })
             .collect(),
-        None => zvats_in(&options.data.join("../models/characters")),
+        // Nothing asked for: the release build's own crowd, if it carries one, else this repo's.
+        None => crate::release_chars::crowd_in(crate::release_chars::root())
+            .map(|dir| zvats_in(&dir))
+            .filter(|found| !found.is_empty())
+            .unwrap_or_else(|| zvats_in(&options.data.join("../models/characters"))),
     }
 }
 
