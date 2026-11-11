@@ -520,6 +520,18 @@ mod tests {
     /// First person: the aim is the ground under the middle of the screen, never nearer than a
     /// few metres ahead of the survivor, and far off the way the camera looks when on the sky.
     #[test]
+    fn behind_him_the_camera_looks_the_way_he_faces() {
+        // The fog of war's cone goes by the camera in first person and by the body from above: the
+        // two must agree when the camera stands behind him.
+        let mut cam = IsoCamera::new(0.0, 26.0, Vec3::ZERO);
+        for f in [-2.5f32, -1.0, 0.0, 0.7, 1.6, 3.0] {
+            cam.yaw = yaw_behind(f);
+            let (forward, _) = cam.ground_axes();
+            assert!(Vec2::new(forward.x, forward.z).distance(Vec2::from_angle(f)) < 1e-4, "facing {f}");
+        }
+    }
+
+    #[test]
     fn first_person_aims_ahead() {
         let mut cam = IsoCamera::new(0.0, 26.0, Vec3::ZERO);
         cam.toggle_view();

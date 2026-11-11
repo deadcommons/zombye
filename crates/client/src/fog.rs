@@ -274,6 +274,7 @@ pub fn update_fog(
     join: Res<crate::server_link::JoinInfo>,
     me: Res<crate::player::LocalPlayer>,
     player: Query<(&Transform, &Player)>,
+    cams: Query<&crate::camera::IsoCamera>,
     mut fog: ResMut<FogState>,
     mut images: ResMut<Assets<Image>>,
 ) {
@@ -303,7 +304,15 @@ pub fn update_fog(
     // In the dark the rays go on past what we see by ourselves, as far as a lit place shows (below).
     let lit_dark = crate::lights::darkness(daylight.0);
     let far = if lit_dark > 0.0 { crate::lights::FAR_LIGHT } else { 0.0 };
-    let facing = Vec2::from_angle(player.facing);
+    // In first person what's ahead is where the camera looks, not where the body last walked: going by
+    // the body, zombies the camera turned to went behind the cone and weren't drawn.
+    let facing = match cams.single() {
+        Ok(cam) if cam.shoulder() => {
+            let (forward, _) = cam.ground_axes();
+            Vec2::new(forward.x, forward.z)
+        }
+        _ => Vec2::from_angle(player.facing),
+    };
     let fog = &mut *fog;
     let map_changed = map.is_changed();
 
