@@ -123,6 +123,16 @@ pub fn veg() -> &'static FurnitureModels {
     })
 }
 
+/// The overlay's street props (`street/`), read once, for things drawn as entities of their own (a
+/// campfire someone built); none without the folder.
+pub fn street() -> &'static FurnitureModels {
+    static STREET: OnceLock<FurnitureModels> = OnceLock::new();
+    STREET.get_or_init(|| match root() {
+        Some(dir) => FurnitureModels::load(&dir.join("street")),
+        None => FurnitureModels::default(),
+    })
+}
+
 /// Put the overlay's models among `models`, replacing those of the same name. Returns how many it
 /// held.
 pub fn load_into(overlay: Option<&Path>, models: &mut FurnitureModels) -> usize {

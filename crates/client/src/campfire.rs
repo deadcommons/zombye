@@ -95,6 +95,9 @@ pub(crate) struct BuiltLook {
     log: Handle<StandardMaterial>,
     ash: Handle<StandardMaterial>,
     flame: Handle<StandardMaterial>,
+    /// The release build's campfire street prop (`street/campfire.glb`), drawn in place of the
+    /// grey-box stones and logs where there is one, and the material for its vertex colours.
+    model: Option<(Handle<Mesh>, Handle<StandardMaterial>)>,
 }
 
 /// Stones round a built fire, and the ring's radius.
@@ -133,7 +136,8 @@ pub(crate) fn built_fires(
             unlit: true,
             ..default()
         });
-        BuiltLook { cube: meshes.add(Cuboid::new(1.0, 1.0, 1.0)), stone, log, ash, flame }
+        let model = crate::release_models::street().mesh(KIND).map(|m| (meshes.add(m), materials.add(StandardMaterial { base_color: Color::WHITE, perceptual_roughness: 0.85, ..default() })));
+        BuiltLook { cube: meshes.add(Cuboid::new(1.0, 1.0, 1.0)), stone, log, ash, flame, model }
     });
     // Gone: despawn.
     for (e, b, _, _) in &built {
@@ -200,6 +204,12 @@ fn spawn_built(commands: &mut Commands, look: &BuiltLook, f: &zombye_sim::FireVi
         .id();
     let mut root = commands.spawn((Built { id: f.id, flame, light }, Transform::from_xyz(at.x, 0.0, at.y), vis));
     root.add_child(light).add_child(flame);
+    if let Some((mesh, material)) = &look.model {
+        root.with_children(|c| {
+            c.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), Transform::from_rotation(Quat::from_rotation_y(f.id as f32 * 1.3))));
+        });
+        return;
+    }
     root.with_children(|c| {
         // The ring of stones, each a little different.
         for i in 0..STONES {
