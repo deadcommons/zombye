@@ -55,10 +55,10 @@ const features = [
 ];
 
 const numbers = [
-	['20,000+', 'zombies simulated on a 1 km map'],
-	['1.1 ms', 'average server tick with a horde of 900 on your heels'],
-	['410 m', 'how far off a loud noise pulls zombies from'],
-	['1 seed', 'the same town and the same dead, every time'],
+	['20,000+', 'zombies alive in one town, all at once'],
+	['2,000', 'on your screen at a smooth frame rate'],
+	['32', 'players on a server you can host yourself'],
+	['3', 'systems: PC, Mac and Linux'],
 ];
 
 const zombies = [
@@ -187,20 +187,19 @@ const milestones = [
 			</figure>
 			<div class="copy">
 				<p class="kicker">Performance</p>
-				<h2>They don't wait for you to show up.</h2>
+				<h2>The horde is real. All of it.</h2>
 				<p>
-					Most games only run the zombies near you. Zombye runs all of them. Close ones see, hear, chase and
-					batter doors. Far ones wander the woods and drift toward whatever was loud. On our test map that's
-					about 1,300 up close and 20,000 further out, in about a millisecond a tick.
+					Every zombie in town exists, all the time. The ones next to you see, hear, chase and batter
+					doors. The ones across town are still out there, wandering, and they heard that window break.
 				</p>
 				<p>
-					So a broken window on one side of town changes what's waiting on the other side ten minutes
-					later. Hordes build up and move on. Nothing spawns behind you to keep things tense.
+					Make enough noise and the far side of town starts walking. Ten minutes later they're on your
+					street. Nothing pops in behind you to keep things tense, and nothing vanishes when you look
+					away.
 				</p>
 				<p>
-					And it's deterministic: the same seed and the same moves give the same town, the same zombies
-					and the same ending. Replay a fight from a save. Race a friend through the same town. A shared
-					town of the day is on the way.
+					And it stays smooth. No stutter when the crowd arrives, no slideshow when you zoom out, on a
+					desktop or a laptop.
 				</p>
 				<a class="more" href={docs('play/world')}>How the world works →</a>
 			</div>
@@ -276,17 +275,16 @@ const milestones = [
 		<section id="agents" class="agents">
 			<div class="wrap split rev">
 				<div class="copy">
-					<p class="kicker">Agents</p>
-					<h2>Your agent can play too.</h2>
+					<p class="kicker">AI agents</p>
+					<h2>Your AI can play too.</h2>
 					<p>
-						<code>zombye-server --mcp</code> is a Model Context Protocol server. Add it to Claude Code, or any
-						MCP client, and your agent gets the same view and the same moves a player has: look around, open
-						doors, search cupboards, swing a bat, dress a wound, sleep.
+						Connect Claude, or any AI agent that speaks MCP, and it gets what a player gets: it looks around,
+						opens doors, searches cupboards, swings a bat, patches itself up and sleeps. Then it tells you
+						exactly why it died.
 					</p>
 					<p>
-						Time only moves when the agent asks it to, so it can think as long as it likes between steps. It can
-						take screenshots of the world, run the same fight again from a save, and tell you exactly why it
-						died.
+						Send it out for a night and watch. Have it play your mod before you release it. Put a few on your
+						server. Server owners choose whether agents are allowed, and they're marked so everyone knows.
 					</p>
 					<pre class="cmd"><code>claude mcp add zombye -- ./target/release/zombye-server --mcp</code></pre>
 					<a class="more" href={docs('agents/tutorial')}>Tutorial: an agent survives →</a>
@@ -301,15 +299,15 @@ const milestones = [
 		<section id="mods" class="split wrap">
 			<div class="copy">
 				<p class="kicker">Mods</p>
-				<h2>Everything is a data file.</h2>
+				<h2>If it's in the game, you can change it.</h2>
 				<p>
-					Items, weapons, recipes, loot tables, furniture, houses, how many zombies live in the woods, what
-					a door sounds like when it breaks: it's all plain text in <code>assets/data</code>, checked when the
-					game loads it, with errors that point at the line.
+					Items, weapons, recipes, loot, houses, how many zombies live in the woods, what a door sounds
+					like when it breaks. It's all plain text files. Get one wrong and the game tells you which line.
 				</p>
 				<p>
-					Copy the folder, change it, start the game with <code>--data</code>. Or ask your agent to make the
-					mod, play it, and show you a screenshot.
+					Want more? Mods can add their own items and houses and script new behaviour. Run one on your
+					server and everyone who joins gets it automatically. Or just ask your agent to build the mod,
+					play it and show you a screenshot.
 				</p>
 				<a class="more" href={docs('modding/first-mod')}>Make a nail bat in ten minutes →</a>
 			</div>
@@ -348,11 +346,14 @@ const milestones = [
 		<section class="open wrap">
 			<div>
 				<p class="kicker">Open source</p>
-				<h2>Yours to read, run, fork and host.</h2>
+				<h2>Free. Open. Yours to keep.</h2>
 				<p>
-					Code under MIT or Apache-2.0. Art and audio under CC BY-NC-SA 4.0, free for mods and fan work.
-					Record, stream and monetise videos of it without asking. Self-hosting is free forever; official
-					one-click hosting is how we'll pay for development.
+					The whole game is open source and free to play. Host your own server for nothing, forever.
+					Make mods, make videos, stream it and earn from it, no permission needed.
+				</p>
+				<p>
+					Paid one-click hosting from us is coming for people who'd rather not run a server, and that's
+					how development gets funded. It'll never be the only way to play.
 				</p>
 				<div class="ctas">
 					<a class="btn primary" href={repo}>Star it on GitHub</a>
