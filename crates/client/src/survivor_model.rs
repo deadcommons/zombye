@@ -120,11 +120,14 @@ const CROSS_CLIPS: [&str; 2] = ["climb", "vault"];
 const HURT: usize = 0;
 const DIE: usize = 1;
 
+/// The gun's place among the guard clips ([`guard_slot`]).
+const GUARD_GUN: usize = 3;
+
 /// Which of the body's guard clips aiming holds: bare hands, a one-handed weapon, a two-handed one,
 /// a gun.
 fn guard_slot(style: Style, armed: bool) -> usize {
     match style {
-        Style::Gun if armed => 3,
+        Style::Gun if armed => GUARD_GUN,
         Style::TwoHand if armed => 2,
         Style::Punch => 0,
         _ if !armed => 0,
@@ -585,6 +588,21 @@ fn over_hips(clip: &mut RigPose, pose: &RigPose, spine_base: &[usize]) {
     }
 }
 
+/// Turns a ready stance's whole pose, by `w` (0 to 1), so its chest is square to the aim. The packs'
+/// ready stances stand side-on (a fighter's stance: the shipped one 44° round, the release ones 39°),
+/// which is right standing still, feet and all. But laid over legs that strafe with the hips square
+/// to the aim, the chest kept that heading and he walked with his body twisted (the owner). The
+/// stance is turned as one piece, so the arms hold what they held, now in front of him; the head,
+/// which looked along the aim, goes round with it and is turned back by [`Gaze::aim`].
+fn square_chest(rig: &Rig, gaze: &Gaze, stance: &mut RigPose, w: f32) {
+    if w <= 0.0 {
+        return;
+    }
+    let root = 0;
+    let chest = gaze.chest(&rig.globals(stance));
+    stance.r[root] = (Quat::from_rotation_y(-chest * w.min(1.0)) * stance.r[root]).normalize();
+}
+
 /// A flat ring round a survivor's feet.
 fn ring_mesh() -> Mesh {
     let (inner, outer, n) = (0.36, 0.44, 40);
@@ -838,14 +856,24 @@ impl SurvivorModel {
             pose.blend_bones(&held, 1.0, Some(&self.right_arm));
         }
         if a.aim_w > 0.0 {
-            match self.guards[guard_slot(style, armed)] {
+            let slot = guard_slot(style, armed);
+            match self.guards[slot] {
                 // Aiming: the body's own ready stance for what he holds, the whole body standing and
                 // the upper body over the gait when moving (the swings start from it and come back to it).
                 Some(i) => {
                     let mut guard = body.clips[i].sample((now / body.clips[i].secs + a.player as f32 * 0.37).fract());
                     pose.blend_bones(&guard, a.aim_w * (1.0 - a.move_w), Some(&self.all));
+                    // On the move the chest squares up to the aim: see `square_chest`. Not a gun's
+                    // stance, whose line is the barrel's.
+                    let square = if slot == GUARD_GUN { 0.0 } else { a.move_w };
+                    if let Some(gaze) = &self.gaze {
+                        square_chest(&body.rig, gaze, &mut guard, square);
+                    }
                     over_hips(&mut guard, &pose, &self.spine_base);
                     pose.blend_bones(&guard, a.aim_w, Some(&self.upper));
+                    if let Some(gaze) = &self.gaze {
+                        gaze.aim(&body.rig, &mut pose, a.aim_w * square, false);
+                    }
                 }
                 // A body without one: the grey-box's guard over the upper body.
                 _ => pose.blend_bones(&self.retarget.apply(body, &survivor::guard(style, armed)), a.aim_w, Some(&self.upper)),
@@ -1275,6 +1303,65 @@ mod tests {
             let most = 0.45;
             assert!(now.abs() < most, "{name}: looks {:.0}° off the aim at the blow", now.to_degrees());
         }
+    }
+
+    /// Aiming on the move, sideways or back, the chest is square to the aim over the strafing hips
+    /// and his eyes are on it: not the ready stance's side-on chest twisted round over them (the
+    /// owner: "the body is twisted as he has an arm forward ... when you strafe it can look strange").
+    #[test]
+    fn aiming_on_the_move_the_chest_is_square_to_the_aim() {
+        let (body, _) = shipped_body();
+        let rig = &body.rig;
+        let gaze = Gaze::new(rig).unwrap();
+        let spine_base: Vec<usize> = (0..rig.len()).filter(|&b| rig.bones[b].parent == Some(0) && rig.bones[b].name.to_lowercase().starts_with("spine")).collect();
+        let mut up = vec![false; rig.len()];
+        for b in 0..rig.len() {
+            up[b] = rig.bones[b].name.to_lowercase().starts_with("spine") || rig.bones[b].parent.is_some_and(|p| up[p]);
+        }
+        let upper: Vec<usize> = (0..rig.len()).filter(|&b| up[b]).collect();
+        let (hand_l, hand_r) = (rig.find("LeftHand").unwrap(), rig.find("RightHand").unwrap());
+        for guard in ["guard_one", "guard_fists"] {
+            let Some(guard_clip) = body.clip(guard) else { continue };
+            for legs in ["walk_left", "walk_right", "walk_back", "sneak_left"] {
+                let Some(legs_clip) = body.clip(legs) else { continue };
+                for k in 0..8 {
+                    let u = k as f32 / 8.0;
+                    let over = |square: bool| {
+                        let mut pose = legs_clip.sample(u);
+                        let mut stance = guard_clip.sample(u);
+                        let before: Vec<f32> = [hand_l, hand_r].iter().map(|&h| (rig.globals(&stance)[h].w_axis.truncate() - rig.globals(&stance)[upper[0]].w_axis.truncate()).length()).collect();
+                        if square {
+                            square_chest(rig, &gaze, &mut stance, 1.0);
+                        }
+                        // The stance is turned as one piece: the hands are where they were about the spine.
+                        let after: Vec<f32> = [hand_l, hand_r].iter().map(|&h| (rig.globals(&stance)[h].w_axis.truncate() - rig.globals(&stance)[upper[0]].w_axis.truncate()).length()).collect();
+                        assert!(before.iter().zip(&after).all(|(a, b)| (a - b).abs() < 1e-4));
+                        over_hips(&mut stance, &pose, &spine_base);
+                        pose.blend_bones(&stance, 1.0, Some(&upper));
+                        if square {
+                            gaze.aim(rig, &mut pose, 1.0, false);
+                        }
+                        let g = rig.globals(&pose);
+                        (gaze.chest(&g).to_degrees(), gaze.looks(&g).0.to_degrees())
+                    };
+                    let ((was, _), (chest, eyes)) = (over(false), over(true));
+                    if k == 0 {
+                        println!("{guard} over {legs}: the chest {chest:.0}° off the aim, was {was:.0}°; the eyes {eyes:.0}°");
+                    }
+                    assert!(chest.abs() < 3.0, "{guard} over {legs} at {u}: the chest is {chest:.0}° off the aim");
+                    assert!(eyes.abs() < 3.0, "{guard} over {legs} at {u}: he looks {eyes:.0}° off the aim");
+                }
+            }
+        }
+        // By halves: half way round at half the weight, and nothing at none.
+        let stance = body.clip("guard_one").unwrap().sample(0.0);
+        let side_on = gaze.chest(&rig.globals(&stance));
+        assert!(side_on.abs().to_degrees() > 15.0, "the shipped stance is side-on: {:.0}°", side_on.to_degrees());
+        let (mut half, mut none) = (stance.clone(), stance.clone());
+        square_chest(rig, &gaze, &mut half, 0.5);
+        square_chest(rig, &gaze, &mut none, 0.0);
+        assert!((gaze.chest(&rig.globals(&half)) - side_on * 0.5).abs() < 0.02);
+        assert!(none.r[0].angle_between(stance.r[0]) < 1e-5);
     }
 
     /// A two-handed swing on the move lands on the aim too: the upper body keeps the clip's heading
