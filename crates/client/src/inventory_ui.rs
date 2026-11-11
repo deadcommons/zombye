@@ -1992,6 +1992,10 @@ fn world_menu(
         let whole = window.physical_size().as_vec2() * 0.95;
         let over_ui = hover.values().any(|m| m.keys().any(|e| nodes.get(*e).is_ok_and(|n| !(n.size().x >= whole.x && n.size().y >= whole.y))));
         if over_ui || menu.fresh || me.dead {
+            if over_ui {
+                let what: Vec<String> = hover.values().flat_map(|m| m.keys()).filter_map(|e| nodes.get(*e).ok().map(|n| format!("{e} {:.0}x{:.0}", n.size().x, n.size().y))).collect();
+                println!("right tap: over the UI ({})", what.join(", "));
+            }
             *tap = None;
             return;
         }
@@ -2005,6 +2009,9 @@ fn world_menu(
         && let Some((t, p)) = tap.take()
     {
         want = now - t < 0.25 && p.distance(cursor) < 8.0;
+        if !want {
+            println!("right tap: held {:.2} s, moved {:.0} px (a tap is under 0.25 s and 8 px)", now - t, p.distance(cursor));
+        }
     }
     if !want {
         return;
@@ -2023,6 +2030,7 @@ fn world_menu(
     let sites = sites.get_or_insert_with(|| zombye_sim::containers::find_sites(&map.0, &join.containers));
     let thing = crate::world_actions::pick(&map.0, sites, me.curr.pos, ray.origin, *ray.direction);
     let thing = thing.filter(|(_, t)| nearest.is_none() || *t < ground_t - 0.3);
+    println!("right tap: ground {:.1},{:.1}, player {:.1},{:.1}, picked {:?}, item {:?}", ground.x, ground.y, me.curr.pos.x, me.curr.pos.y, thing, nearest);
     if let Some((target, _)) = thing {
         let (title, entries) = crate::world_actions::entries(target, &map.0, sites, &join.containers, &join.items, &join.blind_tag, me.id, me.curr.pos, link.own(me.id));
         if !entries.is_empty() {
