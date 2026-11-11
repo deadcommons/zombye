@@ -190,7 +190,7 @@ war in `fog.rs` and `world.wesl`). Numbers live there; this is what they're for.
 - **Inside by day:** windows are the light; the far side of a room is dimmer; a room with no window
   is dark.
 - **Fog of war** is subtle by day: what the player can't see is a little dimmer and a touch faded,
-  and the view cone ahead only slightly brighter than what's behind, with no ring round the player
+  and the view cone ahead a little brighter than what's behind, enough to see where you look, with no ring round the player
   (the numbers are `assets/data/fog.ron`). At night it turns what's unseen nearly black. Every asset must still read as a silhouette dimmed, and buildings' outlines and ways in stay
   readable (Gate 4: check it dimmed and at night by flashlight).
 - **Frame cost** is reported for every lighting change (offscreen 1920 × 1080 with 2,000 zombies at

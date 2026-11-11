@@ -64,13 +64,13 @@ const SHIPPED: &str = include_str!("../../../assets/data/fog.ron");
 impl Default for FogLook {
     fn default() -> Self {
         FogLook {
-            behind: 0.72,
-            cone_full: 50.0,
-            cone_behind: 150.0,
+            behind: 0.5,
+            cone_full: 60.0,
+            cone_behind: 125.0,
             close_radius: 1.0,
-            close_fade: 7.0,
+            close_fade: 4.0,
             range_fade_from: 0.5,
-            unseen_day: Unseen { tint: (0.97, 0.94, 0.9), dark: 0.24, colour: 0.9 },
+            unseen_day: Unseen { tint: (0.94, 0.9, 0.84), dark: 0.4, colour: 0.85 },
             unseen_night: Unseen { tint: (0.55, 0.6, 0.75), dark: 0.86, colour: 0.25 },
         }
     }
@@ -471,9 +471,11 @@ mod tests {
     fn the_shipped_look_is_subtle() {
         let look = FogLook::parse(SHIPPED).unwrap();
         assert_eq!(look, FogLook::default());
-        assert!(look.behind >= 0.6 && look.close_fade >= 3.0);
+        // Behind you is dimmer enough to see the cone, never a hard wedge or a ring.
+        assert!((0.4..=0.7).contains(&look.behind) && look.close_fade >= 3.0);
+        assert!(look.cone_behind - look.cone_full >= 45.0);
         let day = look.unseen_tint(1.0);
-        assert!(day.w <= 0.35 && day.x > day.z && look.unseen_colour(1.0) >= 0.8, "{day}");
+        assert!(day.w <= 0.45 && day.x > day.z && look.unseen_colour(1.0) >= 0.8, "{day}");
         assert_eq!(look.unseen_tint(0.0), Vec4::new(0.55, 0.6, 0.75, 0.86));
         assert_eq!(look.unseen_colour(0.0), 0.25);
         assert_eq!(FogLook::parse("(behind: 0.5)").unwrap().behind, 0.5);

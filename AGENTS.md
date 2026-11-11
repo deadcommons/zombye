@@ -1318,11 +1318,11 @@ The first playable loop: wake up in a bedroom, search the house, stay or go, liv
   Cost: nothing by day; at night a few unshadowed point lights and, in multiplayer, up to three more shadow maps
   (about 0.8 ms each on an M-series Mac, as ours); not measurable on the GPU-less build machine.
 - **The fog's look is data** (`assets/data/fog.ron`, `fog::FogLook`; a data folder without it gets the shipped one):
-  subtle on purpose. Ground in your line of sight but behind you is only a little dimmer than the cone ahead (`behind`
-  0.72 of the way from out of sight to plain view; the cone eases from `cone_full` 50° to `cone_behind` 150° off your
-  facing), and the cone eases in with distance (`close_radius` 1 m, `close_fade` 7 m), so there is no ring round the
-  player. What's out of sight is `unseen_day` / `unseen_night` (`tint`, `dark`, `colour` kept): by day a little dimmer
-  (dark 0.24), at night nearly black as before. **Only the look:** which zombies, players and items are drawn is
+  soft on purpose, but there to be seen. Ground in your line of sight but behind you is a little dimmer than the cone
+  ahead (`behind` 0.5 of the way from out of sight to plain view; the cone eases from `cone_full` 60° to `cone_behind`
+  125° off your facing), and the cone eases in with distance (`close_radius` 1 m, `close_fade` 4 m), so there is no
+  ring round the player. What's out of sight is `unseen_day` / `unseen_night` (`tint`, `dark`, `colour` kept): by day
+  clearly dimmer (dark 0.4), at night nearly black as before. **Only the look:** which zombies, players and items are drawn is
   `FogState::visibility`, with its own constants (what's behind you isn't drawn beyond 2.5 m), unchanged.
 - **Fog of war per pixel:** the sight rays go to the GPU (`FogState::rays`, 1,024 × 1 `R32Float`, with the range and cone in
   `FogState::sight`) and `world.wesl`'s `fog_at` works out what's seen per pixel by the same rule as the mask, so
