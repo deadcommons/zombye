@@ -104,6 +104,20 @@ pub struct ClientSettings {
     /// Doors and windows a building hides from the camera are outlined through it
     /// (`opening_hints.rs`; Ctrl+F10).
     pub opening_hints: bool,
+    /// Sound (`audio.rs`, `music.rs`; the settings screen, `settings_ui.rs`): the master volume and
+    /// the music's under it (each 0..2, 1 as made) and whether the sound is off (M).
+    pub volume: f32,
+    pub music: f32,
+    pub muted: bool,
+    /// Start in the first-person view (`camera.rs`; `;` switches while playing).
+    pub first_person: bool,
+    /// The window fills the screen, without a border.
+    pub fullscreen: bool,
+    /// Frames wait for the screen's refresh (`--novsync` turns it off for a session).
+    pub vsync: bool,
+    /// Start straight in the game, without the main menu (`main_menu::skipped`; for development:
+    /// `ZOMBYE_NO_MENU=1` does the same without the file). `--main-menu` still shows it.
+    pub skip_menu: bool,
 }
 
 impl Default for ClientSettings {
@@ -119,6 +133,13 @@ impl Default for ClientSettings {
             inventory_body: false,
             zombie_silhouettes: false,
             opening_hints: true,
+            volume: 1.0,
+            music: 1.0,
+            muted: false,
+            first_person: false,
+            fullscreen: false,
+            vsync: true,
+            skip_menu: false,
         }
     }
 }
@@ -224,6 +245,8 @@ impl ClientSettings {
                     p.at = p.at.filter(|&at| ok(at));
                 }
                 s.hotbar.truncate(crate::hotbar::SLOTS);
+                let level = |v: f32| if v.is_finite() { v.clamp(0.0, 2.0) } else { 1.0 };
+                (s.volume, s.music) = (level(s.volume), level(s.music));
                 (s, None)
             }
             Err(e) => (
