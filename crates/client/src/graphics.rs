@@ -92,6 +92,12 @@ pub struct Graphics {
     pub render_scale: f32,
 }
 
+/// High's (and Medium's) render scale: full. Drawn scaled, the world goes through a second
+/// camera (`render_scale.rs`), and some high-refresh monitors (an LG UltraGear on DisplayPort at
+/// 95 Hz with DSC) blank for a frame every few seconds with that, though every frame is drawn
+/// right. Low keeps a lower scale for slow machines, and any scale is still a setting.
+pub const HIGH_RENDER_SCALE: f32 = 1.0;
+
 impl Default for Graphics {
     fn default() -> Self {
         Self::high()
@@ -100,7 +106,7 @@ impl Default for Graphics {
 
 impl Graphics {
     pub fn high() -> Self {
-        Self { preset: Preset::High, vegetation: 1.0, grain: true, tilt_shift: true, vignette: true, bloom: true, contact_shadows: true, soft_shadows: true, haze: true, ground_detail: true, shadow_map: 4096, msaa: 4, render_scale: 0.75 }
+        Self { preset: Preset::High, vegetation: 1.0, grain: true, tilt_shift: true, vignette: true, bloom: true, contact_shadows: true, soft_shadows: true, haze: true, ground_detail: true, shadow_map: 4096, msaa: 4, render_scale: HIGH_RENDER_SCALE }
     }
     /// For slow machines: a little grass, and nothing that costs a pass or a blend.
     pub fn low() -> Self {
@@ -232,7 +238,7 @@ mod tests {
         let g = Graphics::from_options(&options("--vegetation off --no-post grain,tilt"));
         assert_eq!(g, Graphics { preset: Preset::Custom, vegetation: 0.0, grain: false, tilt_shift: false, ..Graphics::high() });
         let g = Graphics::from_options(&options("--no-post all"));
-        assert_eq!(g, Graphics { preset: Preset::Custom, vegetation: 1.0, shadow_map: 4096, msaa: 4, render_scale: 0.75, ..Graphics::low() });
+        assert_eq!(g, Graphics { preset: Preset::Custom, vegetation: 1.0, shadow_map: 4096, msaa: 4, render_scale: HIGH_RENDER_SCALE, ..Graphics::low() });
         let g = Graphics::from_options(&options("--msaa 1 --shadow-map 3000 --render-scale 0.2"));
         assert_eq!((g.msaa, g.shadow_map, g.render_scale, g.preset), (1, 4096, 0.5, Preset::Custom));
         // Mistakes leave the setting alone.
