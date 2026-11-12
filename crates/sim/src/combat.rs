@@ -530,10 +530,12 @@ impl World {
         // An infected body left behind gets up now.
         self.rise(pi);
         // A new survivor: its skills start over (#46).
-        let skills = crate::skills::Skills::start(&self.config.skills);
+        // The same person again (`crate::origin`): who it was stays, with the skills it began with.
+        let origin = self.players[pi].origin.clone();
+        let skills = origin.start_skills(&self.config.skills);
         let p = &mut self.players[pi];
         // (A new `Player` stands on the ground floor.)
-        *p = Player { last_input_seq: p.last_input_seq, input: PlayerInput::default(), dev: p.dev, skills, seen_tick: p.seen_tick, ..Player::new(id, spawn, hp) };
+        *p = Player { last_input_seq: p.last_input_seq, input: PlayerInput::default(), dev: p.dev, skills, origin, seen_tick: p.seen_tick, ..Player::new(id, spawn, hp) };
         self.refresh_carry(pi);
         self.begin_first_night(pi);
         self.script_event(crate::script::ScriptEvent::Spawned { player: id });

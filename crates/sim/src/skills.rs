@@ -582,7 +582,8 @@ impl World {
     pub fn award_xp(&mut self, pi: usize, skill: Skill, xp: f32) -> Option<u32> {
         let t = &self.config.skills;
         let p = self.players.get_mut(pi)?;
-        let xp = xp * t.xp_mult_of(skill);
+        // The survivor's own multiplier too (its Background, Strengths and Flaws: `crate::origin`).
+        let xp = xp * t.xp_mult_of(skill) * p.origin.perks.xp[skill as usize];
         if p.dead || xp.is_nan() || xp <= 0.0 {
             return None;
         }

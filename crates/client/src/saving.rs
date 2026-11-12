@@ -130,6 +130,8 @@ pub(crate) struct WorldSwap<'w> {
     me: ResMut<'w, LocalPlayer>,
     join: ResMut<'w, JoinInfo>,
     clear_fx: MessageWriter<'w, ClearFx>,
+    /// The survivor this game began as (`new_game.rs`), for a new run.
+    pub start_as: Option<Res<'w, crate::new_game::StartAs>>,
 }
 
 impl WorldSwap<'_> {

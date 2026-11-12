@@ -66,7 +66,7 @@ pub fn plain(args: &[String]) -> bool {
 
 /// Whether to show the menu instead of going straight into the game (see the module docs).
 pub fn wanted(o: &Options) -> bool {
-    !o.no_menu && !o.new_game && o.connect.is_none() && o.server_info.is_none() && (o.main_menu || (o.plain && !o.offscreen()))
+    !o.new_game && o.new_game_from.is_none() && o.connect.is_none() && o.server_info.is_none() && (o.main_menu || (!o.no_menu && o.plain && !o.offscreen()))
 }
 
 /// Whether a menu that would show is skipped for development: `ZOMBYE_NO_MENU` set (to anything
@@ -398,7 +398,7 @@ mod tests {
             assert!(wanted(&options(line)), "{line}");
         }
         // Anything that chooses a world, or is there for a test or a picture, goes straight in.
-        for line in ["--no-menu", "--load autosave", "--seed 4", "--zombies 500", "--fight-demo --autoplay", "--exit-after 5", "--screenshot s.png", "--render-to x.png", "--connect a", "--browser", "--new-game", "--new-game-from f.ron", "--main-menu --no-menu", "--time 9", "stray", "--server-info a --main-menu"] {
+        for line in ["--no-menu", "--load autosave", "--seed 4", "--zombies 500", "--fight-demo --autoplay", "--exit-after 5", "--screenshot s.png", "--render-to x.png", "--connect a", "--browser", "--new-game", "--new-game-from f.ron", "--time 9", "stray", "--server-info a --main-menu"] {
             assert!(!wanted(&options(line)), "{line}");
         }
     }
@@ -427,6 +427,10 @@ mod tests {
         let back = to_menu_args(&args("--saves s --connect 1.2.3.4 --joined --from-browser single --load autosave --no-menu --pause"));
         assert_eq!(back, args("--saves s --main-menu"));
         assert!(wanted(&Options::parse(&back)));
+        // Back from the new-game screen: the menu again, though `--no-menu` brought the screen up.
+        let back = crate::new_game::back_args(&new_game_args(&a, 77));
+        assert!(wanted(&Options::parse(&back)), "{back:?}");
+        assert!(crate::new_game::wanted(&Options::parse(&new_game_args(&a, 77))));
         // A new game's seed is one the game takes.
         let seed = fresh_seed();
         assert!((1..=999_999).contains(&seed));
