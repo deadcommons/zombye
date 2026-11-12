@@ -15,19 +15,24 @@
         colour_high: (1.0, 0.88, 0.7),
         colour_low: (1.0, 0.64, 0.34),
     ),
+    // The moon: its brightness in lux and its colour (sRGB).
+    moon: (lux: 1100.0, colour: (0.55, 0.65, 1.0)),
+    // How wide the sun and moon are, as the size of a soft shadow's edge: 0 = hard-edged. Drawn
+    // only with "Soft shadows" on in the graphics settings.
+    soft_shadows: 6.0,
     // The light in the shadows: its colour (sRGB) and brightness.
-    fill_day: (colour: (0.74, 0.7, 0.73), brightness: 108.0),
-    fill_night: (colour: (0.3, 0.38, 0.62), brightness: 12.0),
+    fill_day: (colour: (0.86, 0.74, 0.62), brightness: 520.0),
+    fill_night: (colour: (0.3, 0.38, 0.66), brightness: 40.0),
     // The camera's grade. `shadows`: saturation, contrast, lift. `midtones`: saturation, contrast.
     // `highlights`: saturation, gain. `vignette`: intensity, radius.
     grade_day: (
-        exposure: 0.2,
+        exposure: 0.45,
         temperature: 0.04,
         tint: -0.01,
-        saturation: 0.92,
-        shadows: (0.8, 0.94, 0.012),
-        midtones: (0.95, 1.03),
-        highlights: (0.9, 1.04),
+        saturation: 0.95,
+        shadows: (0.9, 1.0, 0.006),
+        midtones: (0.97, 1.08),
+        highlights: (0.92, 1.1),
         vignette: (0.46, 0.8),
     ),
     grade_night: (
@@ -42,6 +47,13 @@
     ),
     // Added to the temperature and to the saturation at dawn and dusk.
     dusk: (0.06, 0.1),
+    // The haze: what stands up the screen from the survivor is washed toward its colour, in slow
+    // banks. `colour` (sRGB), `brightness` against sunlit ground and `strength` (how much of what
+    // stands in it it takes at most, 0 = none) are for a low sun, at dawn and dusk; `day` and
+    // `day_colour` the same for the thin veil with the sun high (day: 0 = none by day). `near` and
+    // `far`: how many metres from the survivor it starts and is thickest, at the default zoom (they
+    // follow the zoom). Drawn only with "Haze" on in the graphics settings.
+    haze: (colour: (1.0, 0.7, 0.42), brightness: 1.15, strength: 0.26, day: 0.24, day_colour: (0.95, 0.93, 0.86), near: 8.0, far: 34.0),
     // A campfire at night: its colour (sRGB), brightness in lumens, how far its light reaches and
     // how high over the ground it sits (metres), and how far round it what stands in its light is
     // seen in the dark.
@@ -49,5 +61,5 @@
     // How many times stronger the fill is by day while you are inside a building. Rooms lie in
     // their roof's shadow (the roof casts it whether the camera draws the roof or not), so only
     // the windows let the sun in. 1 = no stronger.
-    indoor_fill: 4.0,
+    indoor_fill: 1.6,
 )

@@ -26,7 +26,9 @@ pub fn add(mb: &mut MeshBuilder, map: &TileMap, c: IVec2, models: &FurnitureMode
     for p in in_chunk(map, c) {
         let Some(kind) = map.prop_kinds.get(p.kind as usize) else { continue };
         let centre = centre(map, p);
-        if !models.add_at(mb, kind.model(), centre, p.facing, 0.0) {
+        // Worn as its kind is (decay.ron): dust, rust, and for vehicles a paint of their own.
+        let wear = super::decay::Wear::of(super::decay::look(), &kind.id, centre, models.body_colour(kind.model(), centre));
+        if !models.add_at_worn(mb, kind.model(), centre, p.facing, 0.0, wear.as_ref()) {
             grey_box(mb, centre, p.facing, kind.size, kind.color);
         }
     }
