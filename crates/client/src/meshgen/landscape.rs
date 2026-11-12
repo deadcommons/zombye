@@ -929,7 +929,7 @@ fn scatter(out: &mut Vec<VegSpot>, land: &Land, looks: &SoftLooks, paint: &Paint
         let grow = if !free { 1.0 } else if kind == VegKind::GrassLong { veg.scale * veg.long_scale } else { veg.scale };
         let grass = matches!(kind, VegKind::GrassLong | VegKind::Grass | VegKind::GrassThin | VegKind::Weed);
         let dry = if grass { (dry + veg.dry).clamp(0.0, 1.0) } else { dry };
-        out.push(VegSpot { pos, kind, variant: (h(salt + 2) * VARIANTS as f32) as u8, turn, scale: scale * grow, dry, rank });
+        out.push(VegSpot { pos, kind, variant: (h(salt + 2) * VARIANTS as f32) as u8, turn, scale: scale * grow, dry, rank, ground: 0.0 });
     };
     let anywhere = |salt: u32, margin: f32| t.as_vec2() + Vec2::new(margin + (1.0 - 2.0 * margin) * h(salt), margin + (1.0 - 2.0 * margin) * h(salt + 7));
     let hard = |p: IVec2| {

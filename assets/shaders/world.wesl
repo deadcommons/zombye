@@ -244,6 +244,12 @@ fn fragment(
     @builtin(front_facing) is_front: bool,
 ) -> FragmentOutput {
     let wp = in.world_position.xyz;
+    // Height above the ground under this point: the terrain's ground carries it in its first UVs
+    // (`MeshBuilder::drape`); everything else in town stands on level ground.
+    var above = wp.y;
+@if(TERRAIN && VERTEX_UVS_A) {
+    above = wp.y - in.uv.x;
+}
 
     // Cutaway (see crates/client/src/cutaway.rs): every vertex of a piece carries the same anchor
     // in UV0 and its kind in UV1, so a whole wall drops to a stub as one piece, with a crisp,
@@ -308,7 +314,7 @@ fn fragment(
 @if(GROUND) {
     // Ground detail (DCM-59): the flat colours of the outdoors broken up, in the same faceted
     // style as everything else. Not indoors (floors keep their colour).
-    if (wp.y < 0.05 && in.world_normal.y > 0.9) {
+    if (above < 0.05 && in.world_normal.y > 0.9) {
         let outdoors = 1.0 - smoothstep(0.3, 0.7, fog_sample(wp.xz).y);
         let c = pbr_input.material.base_color.rgb;
         pbr_input.material.base_color = vec4(mix(c, ground_detail(wp.xz, c), outdoors), pbr_input.material.base_color.a);
@@ -341,14 +347,14 @@ fn fragment(
     }
     // Roofs and the outside of upper storeys read as "seen" when the wall below them is, rather
     // than showing patches of whatever is visible through the windows underneath.
-    if (wp.y > 2.95 && indoors < 0.5) {
+    if (above > 2.95 && indoors < 0.5) {
         let to_player = world_params.player.xz - wp.xz;
         let dir = to_player / max(length(to_player), 1e-3);
         seen = max(fog_at(wp.xz + dir * 1.5), fog_at(wp.xz + dir * 3.0));
     }
     // Roofs keep out of the sight shadows by day (fog.ron `roofs_seen`): nothing hides on one, and
     // the shadows' edges across them only distract.
-    if (piece_kind == 2u || (wp.y > 2.95 && indoors < 0.5 && n.y > 0.5)) {
+    if (piece_kind == 2u || (above > 2.95 && indoors < 0.5 && n.y > 0.5)) {
         seen = max(seen, world_params.tree_count.z);
     }
     // The haze (light.ron `haze`): a thin veil all day, thick and warm with a low sun. The camera
@@ -364,7 +370,7 @@ fn fragment(
         let away = smoothstep(hz.z, hz.w, max(up_screen, 0.5 * length(off)));
         let q = wp.xz + hz.xy;
         let banks = vnoise(q * 0.055) * 0.65 + vnoise(q * 0.17 + vec2(7.3, 2.1)) * 0.35;
-        let low = 1.0 - 0.6 * smoothstep(1.5, 9.0, wp.y);
+        let low = 1.0 - 0.6 * smoothstep(1.5, 9.0, above);
         let a = world_params.haze.w * (0.15 + 0.85 * away) * (0.4 + 1.0 * banks) * low * (1.0 - smoothstep(0.3, 0.7, indoors));
         out.color = vec4(mix(out.color.rgb, world_params.haze.rgb, clamp(a, 0.0, 0.9)), out.color.a);
     }
@@ -421,7 +427,7 @@ fn fragment(
         out.color = vec4(mix(out.color.rgb, glow, 0.85 * night), max(out.color.a, night));
     }
     out.color = vec4(out.color.rgb * (1.0 - 0.55 * wood_fade), out.color.a);
-    if (wp.y < 0.1 && n.y > 0.9) {
+    if (above < 0.1 && n.y > 0.9) {
         let albedo = pbr_input.material.base_color.rgb;
         let pale = smoothstep(0.3, 0.5, dot(albedo, vec3(0.299, 0.587, 0.114)));
         let moon = albedo * pale * world_params.lights.x * PAINT_NIGHT * mix(0.4, 1.0, seen);

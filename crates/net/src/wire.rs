@@ -72,8 +72,8 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// `DeathCause::Burned`; sitting down: `Intent::Sit`, `PlayerView::seated` (bits 18-20 of `PlayerPacked::bits`). 30: building and barricades: `Intent::Build`,
 /// `Intent::Unbuild`, `Snapshot::barricade_changes`, `Welcome::barricades`, `JobKind::Build`, `Edge::WindowBoarded`
 /// and `Edge::DoorBoarded`. 31: movement and endurance in settings: `Tunings::movement`,
-/// `PlayerView::endurance_cap`.)
-pub const PROTOCOL: u32 = 31;
+/// `PlayerView::endurance_cap`. 32: the ground's height (`GenConfig::terrain`, in `Welcome::generation`).)
+pub const PROTOCOL: u32 = 32;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.

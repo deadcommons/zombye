@@ -6,6 +6,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use zombye_sim::map::{Floor, Side};
+use zombye_sim::terrain::{Facet, Terrain};
 
 use palette::{between, pal};
 
@@ -18,6 +19,86 @@ pub mod overlap;
 pub mod palette;
 pub mod street_props;
 pub mod trees;
+
+/// Is `q` inside facet `f` (seen from above), its edges included?
+fn in_facet(f: &Facet, q: Vec2) -> bool {
+    let (a, b, c) = (f[0].xz(), f[1].xz(), f[2].xz());
+    let s = (b - a).perp_dot(c - a).signum();
+    [(a, b), (b, c), (c, a)].iter().all(|(u, v)| (*v - *u).perp_dot(q - *u) * s >= -1e-4)
+}
+
+/// A facet's normal, facing up.
+fn facet_normal(f: &Facet) -> Vec3 {
+    let n = (f[1] - f[0]).cross(f[2] - f[0]).normalize_or(Vec3::Y);
+    if n.y < 0.0 { -n } else { n }
+}
+
+/// The convex polygon `poly` (seen from above) cut to what lies over facet `f`.
+fn clip_to_facet(mut poly: Vec<Vec2>, f: &Facet) -> Vec<Vec2> {
+    let (a, b, c) = (f[0].xz(), f[1].xz(), f[2].xz());
+    let s = (b - a).perp_dot(c - a).signum();
+    for (u, v) in [(a, b), (b, c), (c, a)] {
+        let side = |q: Vec2| (v - u).perp_dot(q - u) * s;
+        let mut out = Vec::with_capacity(poly.len() + 2);
+        for k in 0..poly.len() {
+            let (p, q) = (poly[k], poly[(k + 1) % poly.len()]);
+            let (sp, sq) = (side(p), side(q));
+            if sp >= 0.0 {
+                out.push(p);
+            }
+            if (sp >= 0.0) != (sq >= 0.0) {
+                out.push(p + (q - p) * (sp / (sp - sq)));
+            }
+        }
+        poly = out;
+        if poly.len() < 3 {
+            break;
+        }
+    }
+    // Drop corners that came out (nearly) on top of each other.
+    poly.dedup_by(|q, p| q.distance_squared(*p) < 1e-10);
+    if poly.len() > 1 && poly[0].distance_squared(poly[poly.len() - 1]) < 1e-10 {
+        poly.pop();
+    }
+    poly
+}
+
+/// Barycentric weights over a triangle seen from above.
+struct Bary {
+    a: Vec2,
+    e1: Vec2,
+    e2: Vec2,
+    inv: f32,
+}
+
+impl Bary {
+    fn new(p: [Vec2; 3]) -> Self {
+        let (e1, e2) = (p[1] - p[0], p[2] - p[0]);
+        Self { a: p[0], e1, e2, inv: 1.0 / e1.perp_dot(e2) }
+    }
+
+    fn at(&self, q: Vec2) -> [f32; 3] {
+        let d = q - self.a;
+        let v = d.perp_dot(self.e2) * self.inv;
+        let w = self.e1.perp_dot(d) * self.inv;
+        [1.0 - v - w, v, w]
+    }
+}
+
+/// The ground's colour on a facet: on a slope it drifts toward bare earth, and on the steepest
+/// toward pale rock, as grass gives way on a bank.
+fn slope_tint(c: LinearRgba, normal: Vec3) -> LinearRgba {
+    let grade = normal.xz().length() / normal.y.max(1e-3);
+    let earth = smooth(0.05, 0.10, grade);
+    let rock = smooth(0.10, 0.14, grade);
+    let p = pal();
+    c.mix(&p.dirt, 0.45 * earth).mix(&p.rock, 0.55 * rock)
+}
+
+fn smooth(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
 
 /// What a piece of geometry is, for the cutaway shader (stored in the second UV channel).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -260,6 +341,124 @@ impl MeshBuilder {
         self.quad([c(false, false, true), c(false, false, false), c(true, false, false), c(true, false, true)], Vec3::NEG_Y, colors[3]);
         self.quad([c(true, false, true), c(true, true, true), c(false, true, true), c(false, false, true)], Vec3::Z, colors[4]);
         self.quad([c(false, false, false), c(false, true, false), c(true, true, false), c(true, false, false)], Vec3::NEG_Z, colors[5]);
+    }
+
+    /// Lay what was built on flat ground over the terrain (`zombye_sim::terrain`): every vertex
+    /// rises by the ground's height under it, and every triangle that would cross a fold between
+    /// two facets is cut along it, so the ground is faceted exactly as the sim's [`Terrain::height`]
+    /// and paint and clutter lying on it stay on it. Faces lying flat take their facet's normal (the
+    /// low-poly look) and, on a slope, its colour drifts to bare earth and rock (`slope_tint`).
+    /// Nothing changes where the ground is level (all of town).
+    pub fn drape(&mut self, t: &Terrain) {
+        if t.is_flat() {
+            return;
+        }
+        if let Some(far) = &mut self.far {
+            far.drape(t);
+        }
+        let n = self.positions.len();
+        let lifted: Vec<[f32; 3]> = self.positions.iter().map(|p| [p[0], p[1] + t.height(Vec2::new(p[0], p[2])), p[2]]).collect();
+        let old_pos = std::mem::replace(&mut self.positions, lifted);
+        let indices = std::mem::take(&mut self.indices);
+        let mut keep = Vec::with_capacity(indices.len());
+        // A vertex's facet normal and tint, once a flat face on one facet has given it one.
+        let mut facet_of: Vec<Option<Vec3>> = vec![None; n];
+        let mut cut: Vec<[u32; 3]> = Vec::new();
+        for tri in indices.chunks_exact(3) {
+            let ids = [tri[0], tri[1], tri[2]];
+            let p = ids.map(|i| Vec3::from(old_pos[i as usize]));
+            let (min, max) = (p[0].xz().min(p[1].xz()).min(p[2].xz()), p[0].xz().max(p[1].xz()).max(p[2].xz()));
+            let area = (p[1].xz() - p[0].xz()).perp_dot(p[2].xz() - p[0].xz());
+            let flat = Vec3::from(self.normals[ids[0] as usize]).y > 0.7;
+            if area.abs() < 1e-7 || t.level_over(min, max).is_some() {
+                // Standing up (a kerb's face, a post), or on level ground: each corner simply rises.
+                keep.extend_from_slice(&ids);
+                continue;
+            }
+            let f = t.facet_at((p[0].xz() + p[1].xz() + p[2].xz()) / 3.0);
+            if p.iter().all(|q| in_facet(&f, q.xz())) {
+                if flat {
+                    let normal = facet_normal(&f);
+                    for i in ids {
+                        facet_of[i as usize] = Some(normal);
+                    }
+                }
+                keep.extend_from_slice(&ids);
+            } else {
+                cut.push(ids);
+            }
+        }
+        for (i, normal) in facet_of.iter().enumerate() {
+            if let Some(normal) = normal {
+                self.normals[i] = normal.to_array();
+                self.colors[i] = slope_tint(LinearRgba::from_f32_array(self.colors[i]), *normal).to_f32_array();
+            }
+        }
+        self.indices = keep;
+        // The ground material has no cutaway, so its first UVs are free: they carry the height of
+        // the ground under each vertex, for the shader to tell height above the ground (world.wesl).
+        for (k, p) in self.positions.iter().enumerate() {
+            self.uv0[k] = [t.height(Vec2::new(p[0], p[2])), 0.0];
+        }
+        // The triangles across a fold, cut into a piece on each facet they cross.
+        for ids in cut {
+            let p = ids.map(|i| Vec3::from(old_pos[i as usize]));
+            let flat = Vec3::from(self.normals[ids[0] as usize]).y > 0.7;
+            let (min, max) = (p[0].xz().min(p[1].xz()).min(p[2].xz()), p[0].xz().max(p[1].xz()).max(p[2].xz()));
+            let (lo, hi) = t.squares(min, max);
+            let bary = Bary::new(p.map(|q| q.xz()));
+            for j in lo.y..=hi.y {
+                for i in lo.x..=hi.x {
+                    for f in t.facets(i, j) {
+                        let poly = clip_to_facet(vec![p[0].xz(), p[1].xz(), p[2].xz()], &f);
+                        if poly.len() < 3 {
+                            continue;
+                        }
+                        let normal = facet_normal(&f);
+                        let base = self.positions.len() as u32;
+                        for q in &poly {
+                            let w = bary.at(*q);
+                            let y = p[0].y * w[0] + p[1].y * w[1] + p[2].y * w[2] + t.height(*q);
+                            let mut c = [0.0f32; 4];
+                            for (k, id) in ids.iter().enumerate() {
+                                let col = self.colors[*id as usize];
+                                for (ch, v) in c.iter_mut().zip(col) {
+                                    *ch += v * w[k];
+                                }
+                            }
+                            let (nrm, col) = if flat { (normal, slope_tint(LinearRgba::from_f32_array(c), normal).to_f32_array()) } else { (Vec3::from(self.normals[ids[0] as usize]), c) };
+                            self.positions.push([q.x, y, q.y]);
+                            self.normals.push(nrm.to_array());
+                            self.colors.push(col);
+                            self.uv0.push([t.height(*q), 0.0]);
+                            self.uv1.push(self.uv1[ids[0] as usize]);
+                        }
+                        for k in 1..poly.len() as u32 - 1 {
+                            self.indices.extend_from_slice(&[base, base + k, base + k + 1]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Stand what was built on flat ground on the terrain without bending it: each piece rises by
+    /// the ground's height at its cutaway anchor (a tree, a wall) where it has one, and its lowest
+    /// few centimetres follow the ground under them, so a trunk or a post meets a slope. Pieces
+    /// without an anchor (fences, hedges, clutter) follow the ground vertex by vertex.
+    pub fn lift(&mut self, t: &Terrain) {
+        if t.is_flat() {
+            return;
+        }
+        if let Some(far) = &mut self.far {
+            far.lift(t);
+        }
+        for (k, p) in self.positions.iter_mut().enumerate() {
+            let here = t.height(Vec2::new(p[0], p[2]));
+            let anchor = Vec2::from(self.uv0[k]);
+            let anchored = self.uv1[k][0] as u32 != CutKind::Never as u32 || anchor != Vec2::ZERO;
+            p[1] += if anchored && p[1] > 0.05 { t.height(anchor) } else { here };
+        }
     }
 
     pub fn build(self) -> Mesh {

@@ -585,8 +585,15 @@ fn rebuild_felled(mut commands: Commands, map: Res<ClientMap>, link: Res<crate::
 }
 
 fn spawn_chunk(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &WorldMaterials, map: &TileMap, c: IVec2, models: &FurnitureModels) -> Vec<Entity> {
-    let landscape::ChunkMeshes { ground, mut props, veg } = landscape::build_chunk(map, c);
+    let landscape::ChunkMeshes { mut ground, mut props, mut veg } = landscape::build_chunk(map, c);
     meshgen::street_props::add(&mut props, map, c, models);
+    // Outside town the ground rises in hills (`zombye_sim::terrain`): everything built on the flat
+    // is laid over it.
+    ground.drape(&map.terrain);
+    props.lift(&map.terrain);
+    for spot in &mut veg {
+        spot.ground = map.ground(spot.pos);
+    }
     // The ground is flat but for ankle-high clutter (kerbs, tufts, ferns, rocks): it receives
     // shadows and casts none, which keeps it out of every shadow cascade. It also holds the chunk's
     // vegetation spots, whose instances `vegetation.rs` spawns as its children when it's near.

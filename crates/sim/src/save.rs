@@ -1071,6 +1071,8 @@ impl World {
                     })
                     .collect();
                 map.prop_kinds = kinds;
+                // Nor is the ground's height: the generated map's.
+                map.terrain = std::mem::take(&mut w.map.terrain);
                 // Glazed doors and blinds aren't stored with the tiles: the generated map's (the
                 // `BLND` section, if any, replaces the blinds below).
                 map.glazed = std::mem::take(&mut w.map.glazed);

@@ -630,6 +630,10 @@ pub fn step_movement(map: &TileMap, state: &mut PlayerState, input: &PlayerInput
     if on_stairs && map.stair_speed > 0.0 {
         speed *= map.stair_speed;
     }
+    // Uphill is slower (`crate::terrain`; 1 in town and on the stairs).
+    if level == 0 && !on_stairs {
+        speed *= map.terrain.slope_factor(state.pos, input.move_dir);
+    }
     let step = (input.move_dir * speed * dt).clamp_length_max(max_step);
     // Sub-step so fast movement (or a long dt) can't tunnel through thin walls.
     let n = (step.length() / MAX_SUBSTEP).ceil().max(1.0) as u32;

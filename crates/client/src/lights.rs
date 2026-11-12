@@ -293,6 +293,7 @@ fn other_lights(
     mut beams: Query<(&OtherBeam, &mut SpotLight, &mut Transform, &mut Visibility), Without<OtherFlame>>,
     mut flames: Query<(&OtherFlame, &mut PointLight, &mut Transform, &mut Visibility), Without<OtherBeam>>,
     mut seen: ResMut<NightLights>,
+    map: Res<crate::server_link::ClientMap>,
 ) {
     let alpha = fixed.overstep_fraction();
     let ours = link.curr.players.iter().find(|p| p.id == me.id).map(|p| Vec2::from(p.pos));
@@ -321,7 +322,7 @@ fn other_lights(
         match slot(beam.0).filter(|h| !h.3.flame) {
             Some((_, pos, facing, light, _)) => {
                 let dir = Vec2::from_angle(facing);
-                let (foot, forward) = (Vec3::new(pos.x, 0.0, pos.y), Vec3::new(dir.x, 0.0, dir.y));
+                let (foot, forward) = (Vec3::new(pos.x, map.0.ground(pos), pos.y), Vec3::new(dir.x, 0.0, dir.y));
                 *tf = Transform::from_translation(foot + Vec3::Y * BEAM_HEIGHT + forward * 0.35).looking_at(foot + forward * BEAM_AIM_M, Vec3::Y);
                 spot.range = light.radius_m + 2.0;
                 spot.intensity = 900_000.0 * dim;
@@ -338,7 +339,7 @@ fn other_lights(
         match slot(flame.0).filter(|h| h.3.flame) {
             Some((_, pos, facing, light, id)) => {
                 let dir = Vec2::from_angle(facing);
-                *tf = Transform::from_xyz(pos.x + dir.x * 0.3, 1.1, pos.y + dir.y * 0.3);
+                *tf = Transform::from_xyz(pos.x + dir.x * 0.3, 1.1 + map.0.ground(pos), pos.y + dir.y * 0.3);
                 point.range = light.radius_m + 1.0;
                 point.intensity = 40_000.0 * dim * flicker(time.elapsed_secs(), id as f32);
                 *vis = Visibility::Visible;

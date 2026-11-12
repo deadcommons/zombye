@@ -81,6 +81,9 @@ pub struct GenConfig {
     /// district (both sides of the street). 0: none (the core is the civic district alone).
     #[serde(default = "default_commercial_blocks")]
     pub commercial_blocks: i32,
+    /// The height of the ground: low-poly hills outside a flat town (`crate::terrain`).
+    #[serde(default)]
+    pub terrain: crate::terrain::TerrainDef,
 }
 
 fn default_commercial_blocks() -> i32 {
@@ -90,7 +93,7 @@ fn default_commercial_blocks() -> i32 {
 impl Default for GenConfig {
     fn default() -> Self {
         // 30 chunks (480 m) holds the default town (at most about 420 × 320 m) with forest round it.
-        Self { seed: 1, chunks: IVec2::new(30, 30), blocks: IVec2::new(5, 4), commercial_blocks: default_commercial_blocks() }
+        Self { seed: 1, chunks: IVec2::new(30, 30), blocks: IVec2::new(5, 4), commercial_blocks: default_commercial_blocks(), terrain: crate::terrain::TerrainDef::default() }
     }
 }
 
@@ -773,6 +776,7 @@ pub fn generate_with(config: &GenConfig, templates: &[BuildingTemplate], props: 
         (b, tiles[rng.below(tiles.len() as u32) as usize].as_vec2() + Vec2::splat(0.5))
     };
     street_props::place(&mut map, props, config.seed, town_min, town_max, &fronts);
+    map.terrain = crate::terrain::Terrain::generate(&config.terrain, config.seed, size, town_min, town_max);
     map.index_storeys();
     Generated { map, town_min, town_max, core, player_spawn, spawn_building, plan }
 }

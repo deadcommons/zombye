@@ -1298,7 +1298,7 @@ fn sync_zombies(
             tr.climb = climb;
             let (clip, play) = tr.play(now, t, &v.timing);
             let tag = pack_tag(z.id, clip, play, z.speed, false);
-            let transform = Transform { translation: Vec3::new(pos.x, 0.0, pos.y), rotation, scale: Vec3::ONE };
+            let transform = Transform { translation: Vec3::new(pos.x, map.0.ground(pos), pos.y), rotation, scale: Vec3::ONE };
             tr.entity = commands
                 .spawn((
                     Mesh3d(v.mesh.clone()),
@@ -1351,7 +1351,7 @@ fn sync_zombies(
         }
         let (clip, play) = tr.play(now, t, timing);
         let tag = pack_tag(z.id, clip, play, z.speed, now < tr.flash_until);
-        let transform = Transform { translation: Vec3::new(pos.x, 0.0, pos.y), rotation, scale: Vec3::ONE };
+        let transform = Transform { translation: Vec3::new(pos.x, map.0.ground(pos), pos.y), rotation, scale: Vec3::ONE };
         if let Ok((mut tf, mut mt, mut vis)) = query.get_mut(tr.entity) {
             // Only a zombie that is drawn and has moved gets a new Transform: a changed one is
             // propagated, extracted and uploaded again, zombie by zombie, and in a crowd most
