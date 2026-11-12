@@ -360,7 +360,7 @@ pub fn run(options: Options) -> ! {
     };
     let offscreen = options.offscreen();
     let mut app = App::new();
-    app.insert_resource(ClearColor(flat::INK)).add_plugins(crate::window_plugins(&options)).insert_resource(options).insert_resource(screen).add_plugins(theme::ThemePlugin);
+    app.insert_resource(ClearColor(flat::INK)).add_plugins(crate::window_plugins(&options)).insert_resource(options).insert_resource(screen).add_plugins((theme::ThemePlugin, crate::release_brand::BrandPlugin));
     if offscreen {
         app.add_plugins((bevy::app::ScheduleRunnerPlugin::run_loop(std::time::Duration::ZERO), crate::offscreen::OffscreenPlugin));
     }

@@ -78,6 +78,7 @@ mod aim_marker;
 mod audio;
 mod music;
 mod release_audio;
+mod release_brand;
 mod release_anim;
 mod release_chars;
 mod release_models;
@@ -116,6 +117,7 @@ mod inventory_ui;
 mod join_screen;
 mod items_render;
 mod lights;
+mod loading;
 mod main_menu;
 mod map_ui;
 mod menu_skin;
@@ -330,6 +332,8 @@ pub struct Options {
     /// Start with the pause menu up (`--pause`), or the settings screen on a tab
     /// (`--settings graphics|audio|controls|game`): for pictures.
     pub pause: bool,
+    /// Show the loading screen and hold it up (`--loading-screen`): for pictures (`loading.rs`).
+    pub loading_screen: bool,
     pub settings: Option<String>,
     /// How much the UI explains, for this session, not saved (`--help-text full|short|off`; without
     /// it the settings file's, else full). See `help_text.rs`.
@@ -605,6 +609,7 @@ impl Options {
             no_menu: flag("--no-menu"),
             plain: main_menu::plain(args),
             pause: flag("--pause"),
+            loading_screen: flag("--loading-screen"),
             settings: value("--settings"),
             help_text: value("--help-text").and_then(|v| help_text::HelpText::parse(&v)),
             old_look: value("--old-look").and_then(|v| film::OldLook::parse(&v)),
@@ -762,7 +767,7 @@ fn main() {
         app.add_plugins((ScheduleRunnerPlugin::run_loop(Duration::ZERO), offscreen::OffscreenPlugin));
     }
     app.add_plugins((
-            (theme::ThemePlugin, server_link::ServerLinkPlugin),
+            (theme::ThemePlugin, release_brand::BrandPlugin, loading::LoadingPlugin, server_link::ServerLinkPlugin),
             (fog::FogPlugin, cutaway::CutawayPlugin, silhouette::SilhouettePlugin, opening_hints::OpeningHintsPlugin),
             materials::WorldMaterialPlugin,
             world_render::WorldRenderPlugin,
