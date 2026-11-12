@@ -78,7 +78,8 @@ pub struct WorldParams {
     /// rgb = tint for unseen areas, w = how dark unseen areas get (0..1).
     pub fog_tint: Vec4,
     /// x = how many entries of `trees` are in use. y = how much of a room other than the player's
-    /// shows (`FogLook::other_rooms`).
+    /// shows (`FogLook::other_rooms`). z = how far roofs are kept out of the sight shadows now
+    /// (`FogLook::roofs_seen`, none at night).
     pub tree_count: Vec4,
     /// x = how dark it is, 0 by day to 1 at night: lit windows glow by it (#59). y = how much of
     /// its colour an unseen surface keeps (`FogLook::unseen_colour`). z, w = the fog's look:
@@ -321,7 +322,7 @@ pub fn update_params(
         camera_dir: camera_dir.extend(0.0),
         fog_rect: Vec4::new(fog.origin.x, fog.origin.y, fog.size_m, 0.0),
         fog_tint: look.unseen_tint(daylight.0),
-        tree_count: Vec4::new(n as f32, fog.other_rooms, 0.0, 0.0),
+        tree_count: Vec4::new(n as f32, fog.other_rooms, look.roofs_seen * smoothstep(0.05, 0.4, daylight.0), 0.0),
         lights: Vec4::new(1.0 - smoothstep(0.05, 0.4, daylight.0), look.unseen_colour(daylight.0), fog.soft.x, fog.soft.y),
         haze: haze.0,
         haze_at: {

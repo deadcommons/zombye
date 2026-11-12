@@ -58,6 +58,8 @@ pub struct FogLook {
     pub unseen_day: Unseen,
     pub unseen_night: Unseen,
     pub other_rooms: f32,
+    /// How far roofs are kept out of the sight shadows by day (1 = a roof is never shadowed).
+    pub roofs_seen: f32,
 }
 
 const SHIPPED: &str = include_str!("../../../assets/data/fog.ron");
@@ -74,6 +76,7 @@ impl Default for FogLook {
             unseen_day: Unseen { tint: (0.94, 0.9, 0.84), dark: 0.4, colour: 0.85 },
             unseen_night: Unseen { tint: (0.5, 0.58, 0.8), dark: 0.7, colour: 0.3 },
             other_rooms: 0.0,
+            roofs_seen: 1.0,
         }
     }
 }
@@ -85,6 +88,7 @@ impl FogLook {
         unit("behind", look.behind)?;
         unit("range_fade_from", look.range_fade_from)?;
         unit("other_rooms", look.other_rooms)?;
+        unit("roofs_seen", look.roofs_seen)?;
         for (name, u) in [("unseen_day", look.unseen_day), ("unseen_night", look.unseen_night)] {
             unit(&format!("{name}.dark"), u.dark)?;
             unit(&format!("{name}.colour"), u.colour)?;

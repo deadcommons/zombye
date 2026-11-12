@@ -26,4 +26,7 @@
     // nobody and nothing in them is drawn; 1 = sight alone decides. (This one is not only a look:
     // zombies, survivors and items in such a room are drawn by it too.)
     other_rooms: 0.0,
+    // Roofs by day: how far they are kept out of the shadows of what you can't see (1 = a roof is
+    // never shadowed, 0 = shadowed like the ground). At night roofs go dark with the rest.
+    roofs_seen: 1.0,
 )

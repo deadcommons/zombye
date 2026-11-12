@@ -346,6 +346,11 @@ fn fragment(
         let dir = to_player / max(length(to_player), 1e-3);
         seen = max(fog_at(wp.xz + dir * 1.5), fog_at(wp.xz + dir * 3.0));
     }
+    // Roofs keep out of the sight shadows by day (fog.ron `roofs_seen`): nothing hides on one, and
+    // the shadows' edges across them only distract.
+    if (piece_kind == 2u || (wp.y > 2.95 && indoors < 0.5 && n.y > 0.5)) {
+        seen = max(seen, world_params.tree_count.z);
+    }
     // The haze (light.ron `haze`): a thin veil all day, thick and warm with a low sun. The camera
     // is orthographic, so nothing is "far" by depth; what stands up the screen from the player
     // (away from the camera over the ground), and a little of what stands off to the sides and
