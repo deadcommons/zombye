@@ -26,6 +26,8 @@ struct WorldParams {
     fog_tint: vec4<f32>,
     tree_count: vec4<f32>,
     lights: vec4<f32>,
+    haze: vec4<f32>,
+    haze_at: vec4<f32>,
     sight: array<vec4<f32>, 3>,
     trees: array<vec4<f32>, 32>,
 };
@@ -204,14 +206,36 @@ fn facet(p: vec2<f32>, size: f32, salt: f32) -> f32 {
 
 // The ground's colour at a point, broken up (DCM-59): broad drifts of lighter and darker, flat
 // facets a metre or so across over them, a finer set inside those, and on grass and dirt (not
-// asphalt or concrete, which have no green over blue) patches gone dry and yellow.
+// asphalt or concrete, which have no green over blue) patches gone dry and yellow and patches
+// grown lush and dark. Hard ground instead is worn: sand and dust lying in drifts, dark stains,
+// and cracks along some of its facets.
 fn ground_detail(p: vec2<f32>, c: vec3<f32>) -> vec3<f32> {
     let broad = vnoise(p * 0.09 + vec2(3.7, 9.2));
     let mid = vnoise(p * 0.31 + vec2(41.0, 17.0));
     let tone = (broad - 0.5) * 0.16 + (mid - 0.5) * 0.10 + (facet(p, 1.7, 0.0) - 0.5) * 0.11 + (facet(p, 0.55, 5.0) - 0.5) * 0.06;
     let soft = clamp((c.g - c.b) * 14.0, 0.0, 1.0);
     let dry = smoothstep(0.52, 0.78, broad * 0.55 + mid * 0.45) * soft;
-    return c * (1.0 + tone * (0.6 + 0.4 * soft)) * mix(vec3(1.0), vec3(1.16, 1.03, 0.78), dry * 0.55);
+    var o = c * (1.0 + tone * (0.6 + 0.4 * soft)) * mix(vec3(1.0), vec3(1.16, 1.03, 0.78), dry * 0.55);
+    let lush = smoothstep(0.6, 0.82, vnoise(p * 0.2 + vec2(13.0, 77.0))) * soft * (1.0 - dry);
+    o *= mix(vec3(1.0), vec3(0.8, 0.93, 0.74), lush * 0.6);
+    let hard = 1.0 - soft;
+    if (hard > 0.01) {
+        let fine = vnoise(p * 0.9 + vec2(5.0, 31.0));
+        // Sand and dust, in drifts with ragged edges.
+        let sand = smoothstep(0.5, 0.74, vnoise(p * 0.075 + vec2(61.0, 8.0)) * 0.62 + mid * 0.2 + fine * 0.18);
+        o = mix(o, vec3(0.5, 0.42, 0.29) * (0.55 + dot(c, vec3(0.6))), sand * 0.34 * hard);
+        // Stains: oil, damp, old tar.
+        let stain = smoothstep(0.66, 0.86, vnoise(p * 0.5 + vec2(19.0, 47.0)) * 0.75 + fine * 0.25);
+        o *= 1.0 - 0.22 * stain * hard;
+        // Cracks: along the sides of wobbly triangles, where a broad mask lets them show.
+        let w = p + (vec2(fine, vnoise(p * 0.9 + vec2(70.0, 2.0))) - 0.5) * 0.5;
+        let q = vec2(w.x * 0.7986 - w.y * 0.6018, w.x * 0.6018 + w.y * 0.7986) / 3.4;
+        let f = fract(q);
+        let edge = min(min(f.x, f.y), abs(f.x + f.y - 1.0) * 0.7071) * 3.4;
+        let shown = smoothstep(0.56, 0.68, vnoise(p * 0.14 + vec2(90.0, 3.0)));
+        o *= 1.0 - 0.32 * (1.0 - smoothstep(0.02, 0.05, edge)) * shown * hard;
+    }
+    return o;
 }
 
 @fragment
@@ -321,6 +345,18 @@ fn fragment(
         let to_player = world_params.player.xz - wp.xz;
         let dir = to_player / max(length(to_player), 1e-3);
         seen = max(fog_at(wp.xz + dir * 1.5), fog_at(wp.xz + dir * 3.0));
+    }
+    // The low sun's haze (light.ron `haze`): the camera is orthographic, so nothing is "far" by
+    // depth; what stands away from the player is washed toward the sun's colour instead, in slow
+    // banks, thickest near the ground. Outdoors only, and before the fog of war dims what's unseen.
+    if (world_params.haze.w > 0.0) {
+        let hz = world_params.haze_at;
+        let away = smoothstep(hz.z, hz.w, length(wp.xz - world_params.player.xz));
+        let q = wp.xz + hz.xy;
+        let banks = vnoise(q * 0.055) * 0.65 + vnoise(q * 0.17 + vec2(7.3, 2.1)) * 0.35;
+        let low = 1.0 - 0.6 * smoothstep(1.5, 9.0, wp.y);
+        let a = world_params.haze.w * (0.15 + 0.85 * away) * (0.4 + 1.0 * banks) * low * (1.0 - smoothstep(0.3, 0.7, indoors));
+        out.color = vec4(mix(out.color.rgb, world_params.haze.rgb, clamp(a, 0.0, 0.9)), out.color.a);
     }
     let grey = dot(out.color.rgb, vec3(0.299, 0.587, 0.114));
     let albedo_lum = dot(pbr_input.material.base_color.rgb, vec3(0.299, 0.587, 0.114));

@@ -84,6 +84,11 @@ pub struct WorldParams {
     /// its colour an unseen surface keeps (`FogLook::unseen_colour`). z, w = the fog's look:
     /// `FogState::soft`.
     pub lights: Vec4,
+    /// The low sun's haze (`daynight::haze_at`): rgb its colour, w how much it takes (0 = none).
+    pub haze: Vec4,
+    /// x, y = where its banks have drifted to (metres), z, w = where it starts and where it is
+    /// thickest, metres from the player.
+    pub haze_at: Vec4,
     /// Sight for the per-pixel fog of war (`FogState::sight`).
     pub sight: [Vec4; 3],
     /// Trees whose foliage is fading: (trunk foot x, z, fade 0..1 (1 = foliage gone), 0).
@@ -99,6 +104,8 @@ impl Default for WorldParams {
             fog_tint: Vec4::ZERO,
             tree_count: Vec4::ZERO,
             lights: Vec4::ZERO,
+            haze: Vec4::ZERO,
+            haze_at: Vec4::ZERO,
             sight: [Vec4::ZERO; 3],
             trees: [Vec4::ZERO; MAX_FADING_TREES],
         }
@@ -108,7 +115,7 @@ impl Default for WorldParams {
 impl WorldParams {
     /// The struct as world.wesl declares it: every field a `vec4<f32>` (or an array of them), in order.
     fn floats(&self) -> Vec<f32> {
-        let head = [self.player, self.camera_dir, self.fog_rect, self.fog_tint, self.tree_count, self.lights];
+        let head = [self.player, self.camera_dir, self.fog_rect, self.fog_tint, self.tree_count, self.lights, self.haze, self.haze_at];
         head.iter().chain(&self.sight).chain(&self.trees).flat_map(|v| v.to_array()).collect()
     }
 }
@@ -262,6 +269,7 @@ pub fn update_params(
     time: Res<Time>,
     daylight: Res<crate::daynight::Daylight>,
     look: Res<crate::fog::FogLook>,
+    haze: Res<crate::daynight::Haze>,
     buffer: Res<ParamBuffer>,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut fades: ResMut<TreeFades>,
@@ -315,6 +323,13 @@ pub fn update_params(
         fog_tint: look.unseen_tint(daylight.0),
         tree_count: Vec4::new(n as f32, fog.other_rooms, 0.0, 0.0),
         lights: Vec4::new(1.0 - smoothstep(0.05, 0.4, daylight.0), look.unseen_colour(daylight.0), fog.soft.x, fog.soft.y),
+        haze: haze.0,
+        haze_at: {
+            // The banks drift slowly with the wind; nothing to work out or upload with no haze.
+            let h = crate::daynight::look().haze;
+            let t = if haze.0.w > 0.0 { (time.elapsed_secs_wrapped() * 10.0).floor() / 10.0 } else { 0.0 };
+            Vec4::new(t * 0.35, t * 0.12, h.near, h.far)
+        },
         sight: fog.sight,
         trees,
     };

@@ -11,6 +11,7 @@ use palette::{between, pal};
 
 pub mod building_kit;
 pub mod curves;
+pub mod decay;
 pub mod landscape;
 #[cfg(test)]
 pub mod overlap;

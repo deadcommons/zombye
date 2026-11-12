@@ -79,6 +79,8 @@ pub struct Graphics {
     pub contact_shadows: bool,
     /// Shadows of the sun and moon with soft edges that widen away from what casts them.
     pub soft_shadows: bool,
+    /// The warm haze of a low sun (`daynight::HazeLook`).
+    pub haze: bool,
     /// Patchy colour on the ground, worked out per pixel.
     pub ground_detail: bool,
     /// The sun's shadow map, texels a side (one cascade fitted to the view, `daynight.rs`).
@@ -98,11 +100,11 @@ impl Default for Graphics {
 
 impl Graphics {
     pub fn high() -> Self {
-        Self { preset: Preset::High, vegetation: 1.0, grain: true, tilt_shift: true, vignette: true, bloom: true, contact_shadows: true, soft_shadows: true, ground_detail: true, shadow_map: 4096, msaa: 4, render_scale: 0.75 }
+        Self { preset: Preset::High, vegetation: 1.0, grain: true, tilt_shift: true, vignette: true, bloom: true, contact_shadows: true, soft_shadows: true, haze: true, ground_detail: true, shadow_map: 4096, msaa: 4, render_scale: 0.75 }
     }
     /// For slow machines: a little grass, and nothing that costs a pass or a blend.
     pub fn low() -> Self {
-        Self { preset: Preset::Low, vegetation: 0.35, grain: false, tilt_shift: false, vignette: false, bloom: false, contact_shadows: false, soft_shadows: false, ground_detail: false, shadow_map: 2048, msaa: 2, render_scale: 0.6 }
+        Self { preset: Preset::Low, vegetation: 0.35, grain: false, tilt_shift: false, vignette: false, bloom: false, contact_shadows: false, soft_shadows: false, haze: false, ground_detail: false, shadow_map: 2048, msaa: 2, render_scale: 0.6 }
     }
     /// Most of the look: thinner grass, no tilt-shift, half the shadow map.
     pub fn medium() -> Self {
@@ -174,9 +176,10 @@ impl Graphics {
                 "ao" | "contact" => g.contact_shadows = false,
                 "ground" => g.ground_detail = false,
                 "soft" | "soft-shadows" => g.soft_shadows = false,
+                "haze" => g.haze = false,
                 "all" => g = Self { preset: g.preset, vegetation: g.vegetation, shadow_map: g.shadow_map, msaa: g.msaa, render_scale: g.render_scale, ..Self::low() },
                 "" => {}
-                other => eprintln!("--no-post {other}: grain, tilt, vignette, bloom, ao, ground, soft or all"),
+                other => eprintln!("--no-post {other}: grain, tilt, vignette, bloom, ao, ground, soft, haze or all"),
             }
         }
         if let Some(n) = options.msaa {

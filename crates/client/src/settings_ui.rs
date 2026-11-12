@@ -64,6 +64,7 @@ pub enum Switch {
     Vignette,
     ContactShadows,
     SoftShadows,
+    Haze,
     GroundDetail,
     Fullscreen,
     Vsync,
@@ -137,6 +138,7 @@ fn switch_of(s: &mut ClientSettings, switch: Switch) -> &mut bool {
         Switch::Vignette => &mut s.graphics.vignette,
         Switch::ContactShadows => &mut s.graphics.contact_shadows,
         Switch::SoftShadows => &mut s.graphics.soft_shadows,
+        Switch::Haze => &mut s.graphics.haze,
         Switch::GroundDetail => &mut s.graphics.ground_detail,
         Switch::Fullscreen => &mut s.fullscreen,
         Switch::Vsync => &mut s.vsync,
@@ -205,6 +207,7 @@ pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
             switch("Vignette", "Darkened corners.", s, Switch::Vignette),
             switch("Contact shadows", "A soft dark line where walls meet the ground. Changes on the next start.", s, Switch::ContactShadows),
             switch("Soft shadows", "Shadow edges that soften away from what casts them. Costs frame rate.", s, Switch::SoftShadows),
+            switch("Haze", "A warm haze over the distance when the sun is low.", s, Switch::Haze),
             switch("Ground detail", "Patchy colour on the ground. Changes on the next start.", s, Switch::GroundDetail),
         ],
         Tab::Audio => vec![
