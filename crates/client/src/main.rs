@@ -173,6 +173,12 @@ pub struct Options {
     /// by (`--turn N@SECS[,N@SECS...]`), in time order. `--rotate` (rotation used to need it) is
     /// still accepted and does nothing.
     pub turns: Vec<(i32, f32)>,
+    /// For recordings and for timing it: switch between the view from above and first person (as `;`)
+    /// once each SECS has gone by (`--view-at SECS[,SECS...]`).
+    pub view_at: Vec<f32>,
+    /// For pictures of the switch: hold the camera this far (0..1 of its time) on the way from the view
+    /// from above to first person (`--view-mix U`).
+    pub view_mix: Option<f32>,
     pub novsync: bool,
     pub screenshot: Option<String>,
     /// When to take it (seconds); several times (`--screenshot-after 3,4.5,6`) number the files
@@ -596,6 +602,12 @@ impl Options {
             aim_at: value("--aim-at").and_then(|v| parse_point(&v)),
             aim_at_zombie: value("--aim-at").is_some_and(|v| v == "zombie"),
             third_person: flag("--first-person") || flag("--third-person"),
+            view_mix: value("--view-mix").and_then(|v| v.parse::<f32>().ok()).filter(|u| u.is_finite()).map(|u| u.clamp(0.0, 1.0)),
+            view_at: {
+                let mut at: Vec<f32> = value("--view-at").map_or(Vec::new(), |v| v.split(',').filter_map(|t| t.trim().parse().ok()).filter(|t: &f32| t.is_finite() && *t >= 0.0).collect());
+                at.sort_by(f32::total_cmp);
+                at
+            },
             walls_up: flag("--walls-up"),
             zombie_silhouettes: flag("--zombie-silhouettes").then_some(true),
             opening_hints: value("--opening-hints").and_then(|v| match v.as_str() {

@@ -432,13 +432,32 @@ fn shoulder_cascade() -> CascadeShadowConfig {
     CascadeShadowConfigBuilder { num_cascades: 3, minimum_distance: 0.1, first_cascade_far_bound: 9.0, maximum_distance: 90.0, ..default() }.build()
 }
 
+/// On the way between the views (`boom` metres from what the camera looks at, through a
+/// perspective lens): one cascade round what the view from above shows, wherever the camera is.
+fn switch_cascade(zoom: f32, boom: f32) -> CascadeShadowConfig {
+    let reach = zoom * 1.6 + 12.0;
+    CascadeShadowConfigBuilder { num_cascades: 1, minimum_distance: (boom - reach).max(0.1), maximum_distance: boom + reach, ..default() }.build()
+}
+
+/// Nearer its pivot than this the camera has first person's cascades.
+const SHOULDER_CASCADES_WITHIN: f32 = 1.0;
+
 fn fit_sun_cascade(cams: Query<&IsoCamera>, mut sun: Query<&mut CascadeShadowConfig, With<Sun>>, mut fitted: Local<f32>) {
     let (Ok(cam), Ok(mut config)) = (cams.single(), sun.single_mut()) else { return };
-    // Refit when the zoom has moved by more than a few percent, or the view changed (-1: first person).
-    let want = if cam.shoulder() { -1.0 } else { cam.zoom };
+    // Refit when the zoom has moved by more than a few percent, or the view changed (-1: first
+    // person; below that: on the way between the views, as the camera moves).
+    let want = match cam.boom() {
+        None => cam.zoom,
+        Some(boom) if boom < SHOULDER_CASCADES_WITHIN => -1.0,
+        Some(boom) => -2.0 - boom,
+    };
     if (want - *fitted).abs() > want.abs() * 0.05 {
         *fitted = want;
-        *config = if cam.shoulder() { shoulder_cascade() } else { sun_cascade(cam.zoom) };
+        *config = match cam.boom() {
+            None => sun_cascade(cam.zoom),
+            Some(boom) if boom < SHOULDER_CASCADES_WITHIN => shoulder_cascade(),
+            Some(boom) => switch_cascade(cam.zoom, boom),
+        };
     }
 }
 
@@ -520,24 +539,27 @@ fn update_lights(
     ambient.brightness = brightness * (1.0 + (look.indoor_fill - 1.0) * day * now);
     clear.0 = Color::srgb(0.005 + 0.04 * day, 0.006 + 0.04 * day, 0.012 + 0.05 * day);
     // The first-person view sees the horizon: a sky of the hour's colour behind it, and a haze of
-    // the same colour that the far end of the drawn world fades into.
+    // the same colour that the far end of the drawn world fades into. The camera always has the
+    // haze (taking it on and off made the renderer build every shader again at the first switch
+    // of view): in the view from above it starts too far off to touch anything, and on the way
+    // between the views it keeps its distance from what the camera looks at.
     if let Ok((entity, cam, haze)) = cams.single_mut() {
         let sky = sky_colour(day);
-        match (cam.shoulder(), haze) {
-            (true, Some(mut haze)) => {
-                clear.0 = sky;
-                if haze.color != sky {
-                    haze.color = sky;
+        let falloff = match cam.boom() {
+            None => FogFalloff::Linear { start: 1.0e6, end: 2.0e6 },
+            Some(boom) => FogFalloff::Linear { start: HAZE.0 + boom, end: HAZE.1 + boom },
+        };
+        clear.0 = Color::from(clear.0.to_linear().mix(&sky.to_linear(), cam.eased()));
+        match haze {
+            Some(mut haze) => {
+                let same = matches!((&haze.falloff, &falloff), (FogFalloff::Linear { start: a, .. }, FogFalloff::Linear { start: b, .. }) if a == b);
+                if haze.color != sky || !same {
+                    (haze.color, haze.falloff) = (sky, falloff);
                 }
             }
-            (true, None) => {
-                clear.0 = sky;
-                commands.entity(entity).insert(DistanceFog { color: sky, falloff: FogFalloff::Linear { start: HAZE.0, end: HAZE.1 }, ..default() });
+            None => {
+                commands.entity(entity).insert(DistanceFog { color: sky, falloff, ..default() });
             }
-            (false, Some(_)) => {
-                commands.entity(entity).remove::<DistanceFog>();
-            }
-            (false, None) => {}
         }
     }
     // Just enough at night to see your own feet; a light in hand does the rest.

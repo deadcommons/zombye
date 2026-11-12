@@ -495,7 +495,7 @@ fn draw(
     let hints = hints.bypass_change_detection();
     // Not in first person: the outlines go by the fixed view's depth.
     let on = hints.on;
-    hints.on = on && !cam.shoulder();
+    hints.on = on && !cam.low();
     let decided = hints.decide(&map.0, map.is_changed(), p.translation.xz(), cam.offset_dir(), cutaway.inside);
     hints.on = on;
     let moved = hints.ease(time.delta_secs());
