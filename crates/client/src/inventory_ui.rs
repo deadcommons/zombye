@@ -565,6 +565,7 @@ impl Plugin for InventoryUiPlugin {
             .init_resource::<LastNote>()
             .init_resource::<Shown>()
             .init_resource::<Clicks>()
+            .init_resource::<Drag>()
             .init_resource::<Outbox>()
             .init_resource::<InFlight>()
             .init_resource::<MakeUi>()
@@ -576,7 +577,7 @@ impl Plugin for InventoryUiPlugin {
             .add_systems(Startup, spawn.after(crate::hud::spawn_hud))
             .add_systems(PreUpdate, (type_search, menu_keys).chain().in_set(TextEntry).after(bevy::input::InputSystems))
             .add_systems(PreUpdate, click_away.after(bevy::input::InputSystems).after(bevy::picking::PickingSystems::Hover))
-            .add_systems(Update, (toggle, keep_note, track_flight, follow_open, prune_picked, script_picks, menu_from_options, send_clicks, world_menu, script_menu, menu_act, follow_up, send_picked, flush, scroll_frame, rebuild, draw_menu, draw_card, hide_hud).chain());
+            .add_systems(Update, (toggle, keep_note, track_flight, follow_open, prune_picked, script_picks, menu_from_options, drag, send_clicks, world_menu, script_menu, menu_act, follow_up, send_picked, flush, scroll_frame, rebuild, draw_menu, draw_card, hide_hud).chain());
     }
 }
 
@@ -1180,6 +1181,7 @@ fn footer(c: &mut ChildSpawnerCommands, note: Option<(String, bool)>) {
             f.spawn((Text::new(text), theme::strong(flat::BODY), TextColor(if ok { OK } else { NO }), TextLayout::no_wrap(), Node { flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
         }
         flat::hint(f, &["Click"], "move");
+        flat::hint(f, &["Drag"], "to a bag, a slot or the floor");
         flat::hint(f, &["Alt", "Click"], "move one");
         flat::hint(f, &["Ctrl", "Click"], "pick several");
         flat::hint(f, &["Shift", "Click"], "pick a range");
@@ -1211,9 +1213,9 @@ fn gear(mid: &mut ChildSpawnerCommands, ctx: &Ctx, listed: &mut Vec<Key>, v: &Pr
         scroller(col, 0, y, UiRect::new(px(20), px(20), px(18), px(16)), 8.0).with_children(|s| {
             column_title(s, "Gear", None);
             for (spot, label, empty) in [(Spot::Hand, "Main hand", "Nothing: your fists"), (Spot::OffHand, "Off hand", "Nothing")] {
-                ctx.hand_card(listed, s, body::lines(ctx.items, inv, spot).first().copied(), label, empty);
+                ctx.hand_card(listed, s, body::lines(ctx.items, inv, spot).first().copied(), label, empty, if spot == Spot::Hand { Slot::Hand } else { Slot::OffHand });
             }
-            s.spawn(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: px(8), row_gap: px(8), flex_shrink: 0.0, ..default() }).with_children(|g| {
+            s.spawn((DropTo::Gear, Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: px(8), row_gap: px(8), flex_shrink: 0.0, ..default() })).with_children(|g| {
                 for spot in GEAR {
                     let here = body::lines(ctx.items, inv, spot);
                     // (Nothing shipped is listed at the arms: sleeves come with the torso's garment.)
@@ -1234,7 +1236,7 @@ fn gear(mid: &mut ChildSpawnerCommands, ctx: &Ctx, listed: &mut Vec<Key>, v: &Pr
                     for (k, id) in bar.slots.iter().enumerate() {
                         let def = id.as_ref().and_then(|id| ctx.items.iter().position(|d| d.id == *id));
                         let have = def.is_some_and(|i| crate::hotbar::count(inv, i as u16) > 0);
-                        h.spawn((Node { width: px(44), height: px(44), justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(flat::RADIUS)), flex_shrink: 0.0, ..default() }, BorderColor::all(LINE), BackgroundColor(if def.is_some() { ROW } else { Color::NONE }), Pickable::IGNORE)).with_children(|c| {
+                        h.spawn((DropTo::Hotbar(k), Node { width: px(44), height: px(44), justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(flat::RADIUS)), flex_shrink: 0.0, ..default() }, BorderColor::all(LINE), BackgroundColor(if def.is_some() { ROW } else { Color::NONE }), Pickable::IGNORE)).with_children(|c| {
                             if let Some(i) = def {
                                 flat::item_icon(c, ctx.items.get(i), 30.0, if have { 1.0 } else { 0.35 });
                             }
@@ -1274,7 +1276,7 @@ fn gear(mid: &mut ChildSpawnerCommands, ctx: &Ctx, listed: &mut Vec<Key>, v: &Pr
 #[allow(clippy::too_many_arguments)]
 fn you(mid: &mut ChildSpawnerCommands, ctx: &Ctx, listed: &mut Vec<Key>, v: &PrivateView, pouches: &[(Pouch, String, f32, f32)], right: Place, y: f32, picked: (usize, f32)) {
     let inv = &v.inventory;
-    mid.spawn(Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, flex_basis: px(0), min_width: px(0), ..default() }).with_children(|col| {
+    mid.spawn((DropTo::Place(Place::Carried), Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, flex_basis: px(0), min_width: px(0), ..default() })).with_children(|col| {
         col.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(10), padding: UiRect::new(px(24), px(24), px(18), px(10)), flex_shrink: 0.0, ..default() }).with_children(|h| {
             find_row(h, ctx.find, ctx.ui);
             h.spawn(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: px(6), row_gap: px(6), ..default() }).with_children(|bar| {
@@ -1295,10 +1297,12 @@ fn you(mid: &mut ChildSpawnerCommands, ctx: &Ctx, listed: &mut Vec<Key>, v: &Pri
                 let pane = Pane::Pouch(*p);
                 let shut = ctx.ui.shut.contains(&pane);
                 let bag = p.slot().and_then(|slot| inv.slot(slot)).and_then(|b| ctx.items.get(b.item as usize));
-                pane_head(s, Head { pane, def: bag.or_else(|| ctx.items.iter().find(|d| d.id == "jeans")), name, sub: pouch_where(*p).into(), right: format!("{used:.1} / {room:.0} L"), share: Some(used / room.max(0.1)), shut, count: lines.len(), target: None });
-                if !shut {
-                    ctx.pane_body(listed, s, lines, right, "Empty");
-                }
+                drop_pane(s, Place::Pouch(*p)).with_children(|s| {
+                    pane_head(s, Head { pane, def: bag.or_else(|| ctx.items.iter().find(|d| d.id == "jeans")), name, sub: pouch_where(*p).into(), right: format!("{used:.1} / {room:.0} L"), share: Some(used / room.max(0.1)), shut, count: lines.len(), target: None });
+                    if !shut {
+                        ctx.pane_body(listed, s, lines, right, "Empty");
+                    }
+                });
             }
         });
         if picked.0 > 0 {
@@ -1354,25 +1358,29 @@ fn find_row(h: &mut ChildSpawnerCommands, find: &Find, ui: &PanelUi) {
 /// pane's name makes it the one your things go to. At its foot, everything across at once.
 fn nearby(mid: &mut ChildSpawnerCommands, ctx: &Ctx, listed: &mut Vec<Key>, v: &PrivateView, floor: &[(u32, ItemStack)], right: Place, y: f32) {
     let items = ctx.items;
-    mid.spawn((Node { width: percent(27), min_width: px(300), max_width: px(500), flex_direction: FlexDirection::Column, flex_shrink: 0.0, border: UiRect::left(px(1)), ..default() }, BorderColor::all(LINE))).with_children(|col| {
+    mid.spawn((DropTo::Place(right), Node { width: percent(27), min_width: px(300), max_width: px(500), flex_direction: FlexDirection::Column, flex_shrink: 0.0, border: UiRect::left(px(1)), ..default() }, BorderColor::all(LINE))).with_children(|col| {
         col.spawn((Node { flex_direction: FlexDirection::Column, padding: UiRect::new(px(20), px(20), px(18), px(10)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|h| column_title(h, "Nearby", None));
         let to_floor = matches!(right, Place::Ground);
         scroller(col, 2, y, UiRect::new(px(20), px(20), px(0), px(16)), 12.0).with_children(|s| {
             if let Some(cv) = &v.open {
                 let used = zombye_sim::inventory::stacks_volume(items, &cv.stacks);
                 let shut = ctx.ui.shut.contains(&Pane::Container);
-                pane_head(s, Head { pane: Pane::Container, def: None, name: &cv.name, sub: if to_floor { String::new() } else { "your things go here".into() }, right: format!("{used:.1} / {:.0} L", cv.room_l), share: Some(used / cv.room_l.max(0.1)), shut, count: cv.stacks.len(), target: Some(!to_floor) });
-                if !shut {
-                    ctx.pane_body(listed, s, cv.stacks.iter().enumerate().map(|(k, s)| Line { from: Place::Container(cv.id), index: k as u32, stack: *s }).collect(), Place::Carried, "Empty");
-                }
+                drop_pane(s, Place::Container(cv.id)).with_children(|s| {
+                    pane_head(s, Head { pane: Pane::Container, def: None, name: &cv.name, sub: if to_floor { String::new() } else { "your things go here".into() }, right: format!("{used:.1} / {:.0} L", cv.room_l), share: Some(used / cv.room_l.max(0.1)), shut, count: cv.stacks.len(), target: Some(!to_floor) });
+                    if !shut {
+                        ctx.pane_body(listed, s, cv.stacks.iter().enumerate().map(|(k, s)| Line { from: Place::Container(cv.id), index: k as u32, stack: *s }).collect(), Place::Carried, "Empty");
+                    }
+                });
             }
             let kg: f32 = floor.iter().map(|(_, s)| stack_kg(items, s)).sum();
             let shut = ctx.ui.shut.contains(&Pane::Floor);
             let sub = if v.open.is_some() && to_floor { "your things go here" } else { "within reach" };
-            pane_head(s, Head { pane: Pane::Floor, def: None, name: "Floor", sub: sub.into(), right: format!("{:.1} kg", kg.max(0.0)), share: None, shut, count: floor.len(), target: Some(to_floor && v.open.is_some()) });
-            if !shut {
-                ctx.pane_body(listed, s, floor.iter().map(|(id, s)| Line { from: Place::Ground, index: *id, stack: *s }).collect(), Place::Carried, "Nothing within reach");
-            }
+            drop_pane(s, Place::Ground).with_children(|s| {
+                pane_head(s, Head { pane: Pane::Floor, def: None, name: "Floor", sub: sub.into(), right: format!("{:.1} kg", kg.max(0.0)), share: None, shut, count: floor.len(), target: Some(to_floor && v.open.is_some()) });
+                if !shut {
+                    ctx.pane_body(listed, s, floor.iter().map(|(id, s)| Line { from: Place::Ground, index: *id, stack: *s }).collect(), Place::Carried, "Nothing within reach");
+                }
+            });
             if v.open.is_none() {
                 dim(s, "E: search the cupboard, drawer or fridge you face".into());
             }
@@ -1383,6 +1391,11 @@ fn nearby(mid: &mut ChildSpawnerCommands, ctx: &Ctx, listed: &mut Vec<Key>, v: &
             flat::button(b, if to_floor { "Drop mine" } else { "Put mine in" }, false).observe(|_: On<PointerPress>, mut all: ResMut<MoveAll>| all.0 = Some(Column::You));
         });
     });
+}
+
+/// A pane's head and things together: somewhere a dragged thing can be dropped (`to`).
+fn drop_pane<'a>(s: &'a mut ChildSpawnerCommands, to: Place) -> EntityCommands<'a> {
+    s.spawn((DropTo::Place(to), Node { flex_direction: FlexDirection::Column, row_gap: px(12), flex_shrink: 0.0, ..default() }))
 }
 
 /// A pane that folds: the pockets or a bag, the open container, the floor.
@@ -1690,10 +1703,11 @@ impl Ctx<'_> {
     }
 
     /// What a hand holds, as a card across the Gear column (or that it holds nothing).
-    fn hand_card(&self, listed: &mut Vec<Key>, col: &mut ChildSpawnerCommands, l: Option<Line>, label: &str, empty: &str) {
+    fn hand_card(&self, listed: &mut Vec<Key>, col: &mut ChildSpawnerCommands, l: Option<Line>, label: &str, empty: &str, slot: Slot) {
+        let drop = DropTo::Place(Place::Slot(slot));
         let node = Node { height: px(64), flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(12), padding: UiRect::axes(px(12), px(0)), border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(flat::RADIUS)), flex_shrink: 0.0, overflow: Overflow::clip_x(), ..default() };
         let Some(l) = l else {
-            col.spawn((node, BorderColor::all(LINE), Pickable::IGNORE)).with_children(|c| {
+            col.spawn((drop, node, BorderColor::all(LINE), Pickable::IGNORE)).with_children(|c| {
                 c.spawn((Node { width: px(40), flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
                 c.spawn((Node { flex_direction: FlexDirection::Column, ..default() }, Pickable::IGNORE)).with_children(|t| {
                     t.spawn((Text::new(label.to_uppercase()), theme::head(flat::SMALL), TextColor(flat::FAINT), TextLayout::no_wrap(), Pickable::IGNORE));
@@ -1707,7 +1721,7 @@ impl Ctx<'_> {
         let rest = if picked { ROW_PICKED } else { ROW };
         let def = self.items.get(l.stack.item as usize);
         let note = self.note(&l);
-        let mut e = col.spawn((node, BorderColor::all(if picked { flat::GREEN } else { LINE }), BackgroundColor(rest)));
+        let mut e = col.spawn((drop, node, BorderColor::all(if picked { flat::GREEN } else { LINE }), BackgroundColor(rest)));
         e.with_children(|c| {
             flat::item_icon(c, def, 40.0, 1.0);
             c.spawn((Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, flex_basis: px(0), min_width: px(0), overflow: Overflow::clip_x(), ..default() }, Pickable::IGNORE)).with_children(|t| {
@@ -2120,7 +2134,7 @@ fn clickable(e: &mut EntityCommands, action: RowAction, rest: Color) {
             c.0 = None;
         }
     })
-    .observe(move |ev: On<PointerPress>, keys: Res<ButtonInput<KeyCode>>, mut clicks: ResMut<Clicks>, mut picked: Option<ResMut<Picked>>, listed: Option<Res<Listed>>| {
+    .observe(move |ev: On<PointerPress>, keys: Res<ButtonInput<KeyCode>>, mut clicks: ResMut<Clicks>, mut picked: Option<ResMut<Picked>>, listed: Option<Res<Listed>>, mut drag: Option<ResMut<Drag>>, windows: Query<&Window, With<bevy::window::PrimaryWindow>>| {
         let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
         let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
         let keys_of = action.keys();
@@ -2136,8 +2150,193 @@ fn clickable(e: &mut EntityCommands, action: RowAction, rest: Color) {
             return;
         }
         let one = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
-        clicks.0.push(RowClick { action: action.clone(), button: ev.button, one });
+        let click = RowClick { action: action.clone(), button: ev.button, one };
+        // The left button on a thing is held ([`drag`]): let go where it was pressed it is the
+        // click, moved first it is dragged.
+        if let (PointerButton::Primary, Some(_), None, Some(drag)) = (ev.button, action.left, action.craft, drag.as_mut()) {
+            drag.0 = Some(Held { click, from: windows.single().ok().and_then(|w| w.cursor_position()).unwrap_or_default(), dragging: false });
+            return;
+        }
+        clicks.0.push(click);
     });
+}
+
+// ---- Dragging things ----
+
+/// Somewhere a dragged thing can be let go.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+enum DropTo {
+    Place(Place),
+    /// The gear slots: wherever the thing belongs ([`belongs`]).
+    Gear,
+    /// A slot of the hotbar: the thing's kind goes on that key.
+    Hotbar(usize),
+}
+
+/// The left button held down on a thing.
+struct Held {
+    click: RowClick,
+    /// Where the pointer was when it went down (window pixels).
+    from: Vec2,
+    /// It has moved far enough to be a drag.
+    dragging: bool,
+}
+
+/// The thing the left button is held on, if any.
+#[derive(Resource, Default)]
+struct Drag(Option<Held>);
+
+/// The picture of the dragged thing, under the pointer.
+#[derive(Component)]
+struct Ghost;
+
+/// A press that moves less than this (window pixels) before it is let go is a click.
+const DRAG_PX: f32 = 6.0;
+
+/// Where a thing goes when it is dropped on the gear slots: clothing is worn, a bag goes where
+/// it is carried, anything else into the hand.
+fn belongs(def: &ItemDef) -> Place {
+    use zombye_sim::items::BagCarry;
+    match (def.category, def.bag.as_ref().map(|b| b.carried)) {
+        (ItemCategory::Clothing, _) => Place::Worn,
+        (_, Some(BagCarry::Back)) => Place::Slot(Slot::Back),
+        (_, Some(BagCarry::Shoulder)) => Place::Slot(Slot::Shoulder),
+        (_, Some(_)) => Place::Slot(Slot::OffHand),
+        _ => Place::Slot(Slot::Hand),
+    }
+}
+
+/// The intents that dropping the thing of `action` on `to` sends: every stack its tile stands
+/// for (just the first onto a slot or the body, which take one thing; `one`: one of the first),
+/// from the back first so the indices of the ones still to go don't shift. Nothing for a stack
+/// that is already there, or already on its way.
+fn drop_intents(action: &RowAction, to: Place, one: bool, player: u32, flight: &mut InFlight, now: f32) -> Vec<Intent> {
+    let Some((from, index, _)) = action.left else { return Vec::new() };
+    let single = matches!(to, Place::Slot(_) | Place::Worn);
+    let mut lines = vec![Line { from, index, stack: action.stack }];
+    if !single && !one {
+        lines.extend(action.more.iter().copied());
+    }
+    lines.sort_by_key(|l| std::cmp::Reverse(l.index));
+    let count = if single || one { 1 } else { 0 };
+    let there = |l: &Line| matches!((l.from, to), (Place::Carried, Place::Pouch(p)) if l.stack.home == p);
+    lines.into_iter().filter(|l| !there(l)).filter_map(|l| move_intent(player, l.from, l.index, to, count).filter(|_| flight.ask(l.from, l.index, l.stack, count == 1, now))).collect()
+}
+
+/// The drop target under `cursor` (physical pixels): the smallest one it is in.
+fn drop_under<'a>(targets: impl Iterator<Item = (Entity, &'a DropTo, &'a ComputedNode, &'a UiGlobalTransform)>, cursor: Vec2) -> Option<(Entity, DropTo)> {
+    targets.filter(|(_, _, node, at)| node.contains_point(**at, cursor)).min_by(|a, b| (a.2.size.x * a.2.size.y).total_cmp(&(b.2.size.x * b.2.size.y))).map(|(e, to, ..)| (e, *to))
+}
+
+/// The held thing: let go where it was pressed, the click it always was ([`Clicks`]); moved
+/// first, its picture follows the pointer, the place under it is outlined, and letting go there
+/// moves it: a bag's or the pockets' pane, a hand, the gear slots (worn, or where a bag is
+/// carried), the open container, the floor, a hotbar slot. Dragging one of several picked
+/// stacks to a pane moves them all. Esc or the right button calls it off.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn drag(
+    mut commands: Commands,
+    time: Res<Time>,
+    (mouse, keys): (Option<Res<ButtonInput<MouseButton>>>, Res<ButtonInput<KeyCode>>),
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    (ui, join, me): (Option<Res<UiScale>>, Option<Res<JoinInfo>>, Option<Res<LocalPlayer>>),
+    (panel, menu, picked): (Option<Res<InventoryPanel>>, Option<Res<ItemMenu>>, Option<Res<Picked>>),
+    (mut held, mut clicks, mut flight, mut out): (ResMut<Drag>, ResMut<Clicks>, ResMut<InFlight>, ResMut<Outbox>),
+    (mut send, mut bar, mut card): (Option<ResMut<SendPicked>>, Option<ResMut<crate::hotbar::SlotClicks>>, Option<ResMut<HoverCard>>),
+    targets: Query<(Entity, &DropTo, &ComputedNode, &UiGlobalTransform)>,
+    mut ghosts: Query<(Entity, &mut Node), With<Ghost>>,
+    mut marked: Local<Option<Entity>>,
+) {
+    let mut unmark = |commands: &mut Commands, now: Option<Entity>| {
+        if *marked == now {
+            return;
+        }
+        if let Some(mut e) = marked.and_then(|e| commands.get_entity(e).ok()) {
+            e.try_remove::<Outline>();
+        }
+        if let Some(mut e) = now.and_then(|e| commands.get_entity(e).ok()) {
+            e.try_insert(Outline::new(px(2), px(2), flat::GREEN));
+        }
+        *marked = now;
+    };
+    let Some(h) = held.0.as_mut() else {
+        unmark(&mut commands, None);
+        for (e, _) in &ghosts {
+            commands.entity(e).despawn();
+        }
+        return;
+    };
+    let window = windows.single().ok();
+    let cursor = window.and_then(|w| w.cursor_position());
+    let down = mouse.as_ref().is_some_and(|m| m.pressed(MouseButton::Left));
+    let off = keys.just_pressed(KeyCode::Escape) || mouse.as_ref().is_some_and(|m| m.just_pressed(MouseButton::Right)) || menu.as_ref().is_some_and(|m| m.is_up()) || panel.as_ref().is_some_and(|p| !p.open);
+    if off && (h.dragging || down) {
+        held.0 = None;
+        return;
+    }
+    if let Some(c) = cursor
+        && !h.dragging
+        && down
+        && c.distance(h.from) > DRAG_PX
+    {
+        h.dragging = true;
+        let def = join.as_ref().and_then(|j| j.items.get(h.click.action.stack.item as usize));
+        let n: u32 = h.click.action.stack.count as u32 + h.click.action.more.iter().map(|l| l.stack.count as u32).sum::<u32>();
+        commands.spawn((Ghost, GlobalZIndex(30), Node { position_type: PositionType::Absolute, left: px(-200), top: px(-200), width: px(64), height: px(64), justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(flat::RADIUS)), ..default() }, BackgroundColor(flat::SOLID), BorderColor::all(flat::GREEN), Pickable::IGNORE)).with_children(|g| {
+            flat::item_icon(g, def, 44.0, 1.0);
+            if n > 1 {
+                g.spawn((Text::new(format!("x{n}")), theme::strong(flat::SMALL), TextColor(TEXT), TextLayout::no_wrap(), Node { position_type: PositionType::Absolute, right: px(5), top: px(2), ..default() }, Pickable::IGNORE));
+            }
+        });
+    }
+    let over = if h.dragging { window.and_then(|w| w.physical_cursor_position()).and_then(|c| drop_under(targets.iter(), c)) } else { None };
+    if h.dragging {
+        if let Some(c) = card.as_mut().filter(|c| c.0.is_some()) {
+            c.0 = None;
+        }
+        let scale = ui.as_ref().map_or(1.0, |u| u.0.max(0.1));
+        if let (Some(c), Ok((_, mut node))) = (cursor, ghosts.single_mut()) {
+            let at = c / scale - Vec2::splat(32.0);
+            if node.left != px(at.x) || node.top != px(at.y) {
+                (node.left, node.top) = (px(at.x), px(at.y));
+            }
+        }
+        unmark(&mut commands, over.map(|(e, _)| e));
+    }
+    if down {
+        return;
+    }
+    let Some(h) = held.0.take() else { return };
+    if !h.dragging {
+        clicks.0.push(h.click);
+        return;
+    }
+    let Some((_, to)) = over else { return };
+    let a = &h.click.action;
+    let place = match to {
+        DropTo::Place(p) => p,
+        DropTo::Gear => match join.as_ref().and_then(|j| j.items.get(a.stack.item as usize)) {
+            Some(def) => belongs(def),
+            None => return,
+        },
+        DropTo::Hotbar(k) => {
+            if let Some(bar) = bar.as_mut() {
+                bar.1.push((k, a.stack.item));
+            }
+            return;
+        }
+    };
+    // One of several picked stacks, dragged to a pane: they all go.
+    let key = a.left.map(|(from, index, _)| (from, index, a.stack.item));
+    if let (Some(picked), Some(send), false) = (picked.as_ref(), send.as_mut(), matches!(place, Place::Slot(_) | Place::Worn))
+        && picked.keys.len() > 1
+        && key.is_some_and(|k| picked.keys.contains(&k))
+    {
+        send.0 = Some(place);
+        return;
+    }
+    let one = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
+    out.0.extend(drop_intents(a, place, one, me.map_or(0, |m| m.id), &mut flight, time.elapsed_secs()));
 }
 
 // ---- The right-click menu (#95) ----
@@ -3428,4 +3627,112 @@ mod tests {
         assert_eq!(app.world().resource::<Presses>().0, 2);
         assert!(app.world().resource::<Clicks>().0.is_empty());
     }
+    #[test]
+    fn a_dragged_thing_goes_where_it_is_dropped() {
+        let items = shipped_items();
+        let idx = |id: &str| items.iter().position(|d| d.id == id).unwrap() as u16;
+        let stack = |id: &str, n: u16, home: Pouch| ItemStack { home, ..ItemStack::new(idx(id), n) };
+        let act = |from: Place, index: u32, s: ItemStack, more: Vec<Line>| RowAction { stack: s, title: String::new(), left: Some((from, index, Place::Carried)), more, menu: Vec::new(), craft: None };
+        let mut flight = InFlight::default();
+        // From the floor into the rucksack: the whole stack, to that bag.
+        let beans = stack("tinned_beans", 3, Pouch::Pockets);
+        let out = drop_intents(&act(Place::Ground, 9, beans, Vec::new()), Place::Pouch(Pouch::Back), false, 1, &mut flight, 0.0);
+        assert!(matches!(out[..], [Intent::MoveItem { from: Place::Ground, index: 9, to: Place::Pouch(Pouch::Back), count: 0, .. }]), "{out:?}");
+        // Again before the answer: nothing more.
+        assert!(drop_intents(&act(Place::Ground, 9, beans, Vec::new()), Place::Pouch(Pouch::Back), false, 1, &mut flight, 0.1).is_empty());
+        // A tile of two stacks, one already in the bag it is dropped on: only the other moves.
+        let mut flight = InFlight::default();
+        let (a, b) = (stack("tinned_beans", 2, Pouch::Pockets), stack("tinned_beans", 1, Pouch::Back));
+        let out = drop_intents(&act(Place::Carried, 0, a, vec![Line { from: Place::Carried, index: 4, stack: b }]), Place::Pouch(Pouch::Back), false, 1, &mut flight, 0.0);
+        assert!(matches!(out[..], [Intent::MoveItem { from: Place::Carried, index: 0, to: Place::Pouch(Pouch::Back), .. }]), "{out:?}");
+        // To the floor: both, from the back first; with Alt just one of the first.
+        let mut flight = InFlight::default();
+        let out = drop_intents(&act(Place::Carried, 0, a, vec![Line { from: Place::Carried, index: 4, stack: b }]), Place::Ground, false, 1, &mut flight, 0.0);
+        assert!(matches!(out[..], [Intent::Drop { index: 4, count: 0, .. }, Intent::Drop { index: 0, count: 0, .. }]), "{out:?}");
+        let mut flight = InFlight::default();
+        let out = drop_intents(&act(Place::Carried, 0, a, vec![Line { from: Place::Carried, index: 4, stack: b }]), Place::Ground, true, 1, &mut flight, 0.0);
+        assert!(matches!(out[..], [Intent::Drop { index: 0, count: 1, .. }]), "{out:?}");
+        // Onto the gear slots a thing goes where it belongs, one of it; what is worn back to a bag.
+        assert_eq!(belongs(&items[idx("hoodie") as usize]), Place::Worn);
+        assert_eq!(belongs(&items[idx("hiking_pack") as usize]), Place::Slot(Slot::Back));
+        assert_eq!(belongs(&items[idx("tinned_beans") as usize]), Place::Slot(Slot::Hand));
+        let mut flight = InFlight::default();
+        let hoodie = stack("hoodie", 2, Pouch::Pockets);
+        let out = drop_intents(&act(Place::Container(3), 1, hoodie, Vec::new()), Place::Worn, false, 1, &mut flight, 0.0);
+        assert!(matches!(out[..], [Intent::MoveItem { from: Place::Container(3), index: 1, to: Place::Worn, count: 1, .. }]), "{out:?}");
+        let out = drop_intents(&act(Place::Worn, 0, hoodie, Vec::new()), Place::Pouch(Pouch::Pockets), false, 1, &mut flight, 0.0);
+        assert!(matches!(out[..], [Intent::MoveItem { from: Place::Worn, index: 0, to: Place::Pouch(Pouch::Pockets), .. }]), "{out:?}");
+        // Dropped where it already is: nothing.
+        assert!(drop_intents(&act(Place::Worn, 0, hoodie, Vec::new()), Place::Worn, false, 1, &mut InFlight::default(), 0.0).is_empty());
+    }
+
+    /// The whole of a drag, as the plugin runs it: press on a tile, move, let go over a pane.
+    #[test]
+    fn a_press_moved_is_a_drag_and_one_let_go_in_place_a_click() {
+        let mut app = ui_app();
+        app.init_resource::<Clicks>().init_resource::<InFlight>().init_resource::<Outbox>().init_resource::<Drag>().init_resource::<ButtonInput<KeyCode>>();
+        app.add_systems(Update, drag);
+        app.world_mut().spawn(Camera2d);
+        app.world_mut().commands().spawn(Node { position_type: PositionType::Absolute, top: px(0), left: px(0), flex_direction: FlexDirection::Row, column_gap: px(100), ..default() }).with_children(|col| {
+            col.spawn(Node { width: px(200), flex_direction: FlexDirection::Column, ..default() }).with_children(|c| {
+                row(c, Cells::plain("Alarm clock", "0.4"), RowAction { stack: beans(1), title: String::new(), left: Some((Place::Carried, 0, Place::Ground)), more: Vec::new(), menu: Vec::new(), craft: None }, false);
+            });
+            col.spawn((DropTo::Place(Place::Pouch(Pouch::Back)), Node { width: px(200), height: px(200), ..default() }));
+        });
+        app.world_mut().flush();
+        for _ in 0..3 {
+            app.update();
+        }
+        let window = app.world_mut().query_filtered::<Entity, With<PrimaryWindow>>().single(app.world()).unwrap();
+        let press = |app: &mut App, state: ButtonState| {
+            let e = MouseButtonInput { button: MouseButton::Left, state, window };
+            app.world_mut().write_message(e);
+            app.world_mut().write_message(WindowEvent::MouseButtonInput(e));
+        };
+        let go = |app: &mut App, position: Vec2| {
+            app.world_mut().query::<&mut Window>().single_mut(app.world_mut()).unwrap().set_cursor_position(Some(position));
+            let moved = CursorMoved { window, position, delta: None };
+            app.world_mut().write_message(moved.clone());
+            app.world_mut().write_message(WindowEvent::CursorMoved(moved));
+            app.update();
+            app.update();
+        };
+        // Pressed and let go where it was: the click.
+        go(&mut app, Vec2::new(20.0, 8.0));
+        press(&mut app, ButtonState::Pressed);
+        app.update();
+        assert!(app.world().resource::<Drag>().0.is_some(), "held");
+        assert!(app.world().resource::<Clicks>().0.is_empty(), "nothing until it is let go");
+        press(&mut app, ButtonState::Released);
+        app.update();
+        app.update();
+        assert_eq!(app.world().resource::<Clicks>().0.len(), 1);
+        assert!(app.world().resource::<Outbox>().0.is_empty());
+        app.world_mut().resource_mut::<Clicks>().0.clear();
+        // Pressed, moved over the bag's pane, let go: it goes to that bag, and no click.
+        press(&mut app, ButtonState::Pressed);
+        app.update();
+        go(&mut app, Vec2::new(400.0, 100.0));
+        assert_eq!(app.world_mut().query_filtered::<(), With<Ghost>>().iter(app.world()).count(), 1, "its picture follows the pointer");
+        assert_eq!(app.world_mut().query_filtered::<(), With<Outline>>().iter(app.world()).count(), 1, "the pane under it is outlined");
+        press(&mut app, ButtonState::Released);
+        app.update();
+        app.update();
+        let out = &app.world().resource::<Outbox>().0;
+        assert!(matches!(out[..], [Intent::MoveItem { from: Place::Carried, index: 0, to: Place::Pouch(Pouch::Back), count: 0, .. }]), "{out:?}");
+        assert!(app.world().resource::<Clicks>().0.is_empty());
+        assert_eq!(app.world_mut().query_filtered::<(), With<Ghost>>().iter(app.world()).count(), 0);
+        assert_eq!(app.world_mut().query_filtered::<(), With<Outline>>().iter(app.world()).count(), 0);
+        // Dropped on nothing: nothing.
+        app.world_mut().resource_mut::<InFlight>().asked.clear();
+        go(&mut app, Vec2::new(20.0, 8.0));
+        press(&mut app, ButtonState::Pressed);
+        app.update();
+        go(&mut app, Vec2::new(20.0, 400.0));
+        press(&mut app, ButtonState::Released);
+        app.update();
+        app.update();
+        assert_eq!(app.world().resource::<Outbox>().0.len(), 1);
+    }
+
 }

@@ -244,7 +244,7 @@ struct Shown(Option<Vec<SlotView>>);
 
 /// A slot pressed or emptied with the pointer, for [`keys`] to act on.
 #[derive(Resource, Default)]
-struct SlotClicks(Vec<(usize, bool)>);
+pub(crate) struct SlotClicks(Vec<(usize, bool)>, pub(crate) Vec<(usize, u16)>);
 
 #[derive(Component)]
 pub(crate) struct BarRoot;
@@ -333,6 +333,13 @@ fn keys(
         if let Some(id) = bar.slots[k].take() {
             let name = join.items.iter().find(|d| d.id == id).map_or(id.clone(), |d| d.name.clone());
             say(format!("{name} off the hotbar"));
+            keep(&bar, &mut store);
+        }
+    }
+    // A thing dragged from the inventory onto a slot there goes on that key.
+    for (k, item) in std::mem::take(&mut clicks.1) {
+        if let Some(def) = join.items.get(item as usize).filter(|d| bar.slots.get(k).is_some_and(|s| s.as_deref() != Some(d.id.as_str()))) {
+            say(bar.assign(k, &def.id, &def.name));
             keep(&bar, &mut store);
         }
     }
