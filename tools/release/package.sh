@@ -70,7 +70,11 @@ mkdir -p "$bindir" "$resdir"
 
 cp "$bin/$exe" "$bindir/"
 cp "$bin/$server" "$bindir/"
-if [ "$platform" != windows ] && command -v strip >/dev/null; then
+if [ "$platform" = windows ]; then
+  if command -v x86_64-w64-mingw32-strip >/dev/null; then
+    x86_64-w64-mingw32-strip "$bindir/zombye.exe" "$bindir/zombye-server.exe"
+  fi
+elif command -v strip >/dev/null; then
   strip "$bindir/zombye" "$bindir/zombye-server" 2>/dev/null || true
 fi
 
