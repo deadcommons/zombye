@@ -43,6 +43,8 @@ pub enum Target {
     Body(u32, Vec2),
     /// A room's light switch (the room, where the switch is: `power::switch_spots`).
     Switch(u16, Vec2),
+    /// A campfire someone built (its id, where it stands, burning or not, game minutes of fuel).
+    Fire(u32, Vec2, bool, u16),
 }
 
 /// One line of a world menu: its label and what it sends (`None`: a line that only says
@@ -202,11 +204,62 @@ pub fn pick_switch(spots: &[Option<zombye_sim::power::SwitchSpot>], player: Vec2
         .min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
+/// How far round a built fire the pointer may land, and how high it is taken to be.
+const FIRE_HALF: f32 = 0.55;
+const FIRE_TOP: f32 = 0.5;
+
+/// The built fire (`fires`: the snapshot's) the pointer's ray meets first, as a low box round
+/// it, with the ray parameter there.
+pub fn pick_fire(fires: &[zombye_sim::FireView], player: Vec2, origin: Vec3, dir: Vec3) -> Option<(Target, f32)> {
+    let half = Vec2::splat(FIRE_HALF);
+    fires
+        .iter()
+        .map(|f| (f, Vec2::from(f.pos)))
+        .filter(|(_, at)| at.distance(player) <= LOOK)
+        .filter_map(|(f, at)| ray_box(origin, dir, at - half, at + half, FIRE_TOP).map(|t| (Target::Fire(f.id, at, f.lit, f.fuel_min), t)))
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+}
+
+/// What a fire's menu offers: put on each kind of fuel carried, light it (with something to
+/// light it with), put it out. `reach`: `FireTuning::reach`.
+pub fn fire_entries(id: u32, at: Vec2, lit: bool, fuel_min: u16, items: &[ItemDef], reach: f32, me: u32, pos: Vec2, view: Option<&PrivateView>) -> (String, Vec<WorldEntry>) {
+    let fuel = zombye_sim::fire::hours_text(fuel_min as f32 / 60.0);
+    let title = if lit { format!("Campfire (burning, {fuel} left)") } else if fuel_min > 0 { format!("Campfire (out, {fuel} of fuel)") } else { "Campfire (out, no fuel)".to_string() };
+    if at.distance(pos) > reach {
+        return (title, vec![WorldEntry::say("Too far away: walk up to it")]);
+    }
+    let fire = |op| Intent::Fire { player: me, fire: id, op };
+    let has_tag = |s: &zombye_sim::ItemStack, tag: &str| items.get(s.item as usize).is_some_and(|d| d.has_tag(tag));
+    let mut lines = Vec::new();
+    if lit {
+        lines.push(WorldEntry::send("Put it out", fire(zombye_sim::FireOp::PutOut)));
+    } else if fuel_min > 0 {
+        let can = view.is_some_and(|v| v.inventory.carried.iter().chain(v.inventory.hand.iter()).chain(v.inventory.off_hand.iter()).any(|s| has_tag(s, "fire")));
+        lines.push(if can { WorldEntry::send("Light it", fire(zombye_sim::FireOp::Light)) } else { WorldEntry::say("Needs matches or a lighter to light") });
+    }
+    // One line per kind of fuel carried (the first stack of each).
+    if let Some(v) = view {
+        let mut seen: Vec<u16> = Vec::new();
+        for (i, s) in v.inventory.carried.iter().enumerate() {
+            if !has_tag(s, "fuel") || seen.contains(&s.item) {
+                continue;
+            }
+            seen.push(s.item);
+            let name = items.get(s.item as usize).map_or("fuel".to_string(), |d| d.name.to_lowercase());
+            lines.push(WorldEntry::send(format!("Put on a {name}"), fire(zombye_sim::FireOp::AddFuel { index: i as u32 })));
+        }
+    }
+    if lines.is_empty() {
+        lines.push(WorldEntry::say("Nothing to burn on you: firewood, planks or newspaper"));
+    }
+    (title, lines)
+}
+
 /// What the menu on `target` is called and what it offers, the likeliest first, for player `me`
 /// at `pos` (`view`: our private view, for what we carry). Out of reach it says so and offers
 /// nothing.
 #[allow(clippy::too_many_arguments)]
-pub fn entries(target: Target, map: &TileMap, sites: &[ContainerSite], data: &ContainerData, items: &[ItemDef], builds: &[BuildDef], blind_tag: &str, me: u32, pos: Vec2, view: Option<&PrivateView>) -> (String, Vec<WorldEntry>) {
+pub fn entries(target: Target, map: &TileMap, sites: &[ContainerSite], data: &ContainerData, items: &[ItemDef], builds: &[BuildDef], blind_tag: &str, fire_reach: f32, me: u32, pos: Vec2, view: Option<&PrivateView>) -> (String, Vec<WorldEntry>) {
     match target {
         Target::Edge(e) => edge_entries(e, map, items, builds, blind_tag, me, pos, view),
         Target::Container(k) => {
@@ -231,6 +284,7 @@ pub fn entries(target: Target, map: &TileMap, sites: &[ContainerSite], data: &Co
             };
             ("Body".to_string(), lines)
         }
+        Target::Fire(id, at, lit, fuel) => fire_entries(id, at, lit, fuel, items, fire_reach, me, pos, view),
         Target::Switch(room, at) => {
             let near = at.distance(pos) <= zombye_sim::power::SWITCH_REACH && map.room_at(pos) == room;
             let lines = if near { vec![WorldEntry::send("Flick the switch", Intent::Light { player: me, on: None })] } else { vec![WorldEntry::say("Too far away: walk up to it")] };

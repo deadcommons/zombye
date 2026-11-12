@@ -64,6 +64,9 @@ pub enum Intent {
     /// Flip the light switch of the room the player stands in (`on`: to that; `None`: the other
     /// way). The light only comes on while the building has power (`zombye_sim::power`).
     Light { player: u32, on: Option<bool> },
+    /// Tend campfire `fire` (`zombye_sim::fire`): put fuel on it, light it, or put it out, from
+    /// within reach (`World::player_fire`).
+    Fire { player: u32, fire: u32, op: zombye_sim::FireOp },
     /// Swing the equipped weapon (bare hands: a punch). Lands after the weapon's windup; asked for
     /// during the last moments of the previous action, it's queued.
     Attack { player: u32 },
@@ -106,6 +109,9 @@ pub enum Intent {
     /// Lie down and sleep (`sleep: true`; on a bed or sofa within reach, else the floor), or get up
     /// (`false`). Any other action while asleep also gets the player up, and does nothing else.
     Sleep { player: u32, sleep: bool },
+    /// Sit down (`Some(true)`: on the sofa, bed, toilet or bench beside you, else the ground), get
+    /// up (`Some(false)`) or the other (`None`): `zombye_sim::sit`. Moving gets you up too.
+    Sit { player: u32, sit: Option<bool> },
     /// Cancel the item job under way (`all: false`) or the whole queue (`all: true`): moves, searches,
     /// eating, treatments and crafts. Nothing is lost: a job only takes effect when it finishes.
     CancelJobs { player: u32, all: bool },
@@ -247,6 +253,9 @@ pub struct PlayerView {
     pub health: HealthTags,
     /// Asleep (lying down; it doesn't move until it wakes).
     pub asleep: bool,
+    /// Sitting down, and on what (`zombye_sim::sit`; where is `sit::seat_at` on the map).
+    #[serde(default)]
+    pub seated: Option<zombye_sim::SeatKind>,
     /// Aiming (the right mouse held): facing its aim, at the ready.
     pub aiming: bool,
     /// Reeling (`down` false) or on the ground after another player's blow (PvP), with the seconds
@@ -476,6 +485,9 @@ pub struct Snapshot {
     /// The town's grid is on.
     #[serde(default)]
     pub grid_on: bool,
+    /// The campfires (`zombye_sim::fire`), in id order: every snapshot (a server sends them when they change).
+    #[serde(default)]
+    pub fires: Vec<zombye_sim::FireView>,
 }
 
 /// What a body has on, for drawing it (#63): the clothing and accessories it wears in the order put
@@ -571,6 +583,7 @@ impl Snapshot {
                 health: if p.dead { HealthTags::default() } else { p.health.tags(&world.config.health) },
                 // A logged-out survivor (#68) lies asleep to everyone who sees it.
                 asleep: p.needs.asleep() || (p.away.is_some() && !p.dead),
+                seated: p.seated,
                 aiming: p.input.aim && !p.dead,
                 knock: p.knock,
                 protected: p.protected > 0.0,
@@ -613,6 +626,7 @@ impl Snapshot {
             maps: world.players.iter().filter(|p| p.explored.w > 0).map(|p| MapView { player: p.id, explored: p.explored.clone() }).collect(),
             lit_rooms: world.power().lit().to_vec(),
             grid_on: world.power().grid_on(),
+            fires: world.fires().iter().map(|f| f.view()).collect(),
         }
     }
 
@@ -715,6 +729,9 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
         Intent::Light { player, on } => {
             world.player_light(*player, *on);
         }
+        Intent::Fire { player, fire, op } => {
+            let _ = world.player_fire(*player, *fire, *op);
+        }
         Intent::Attack { player } => {
             world.player_attack(*player);
         }
@@ -761,6 +778,9 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
             } else {
                 world.wake_player(*player);
             }
+        }
+        Intent::Sit { player, sit } => {
+            let _ = world.player_sit(*player, *sit);
         }
         Intent::CancelJobs { player, all } => world.player_cancel_jobs(*player, *all),
         Intent::Seen { player, tick } => world.player_saw(*player, *tick),
@@ -840,6 +860,7 @@ impl Intent {
             | Intent::Unbuild { player }
             | Intent::SmashWindow { player }
             | Intent::Light { player, .. }
+            | Intent::Fire { player, .. }
             | Intent::Attack { player }
             | Intent::Shove { player }
             | Intent::Stomp { player }

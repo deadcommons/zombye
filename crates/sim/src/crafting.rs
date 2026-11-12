@@ -70,8 +70,20 @@ pub struct RecipeDef {
     pub inputs: Vec<RecipeItem>,
     #[serde(default)]
     pub tools: Vec<Tool>,
+    /// Made new. May be empty for a recipe that `places` something.
+    #[serde(default)]
     pub outputs: Vec<RecipeItem>,
+    /// Cooking: only made within reach of a lit fire or a working stove (`crate::fire::heat_near`).
+    #[serde(default)]
+    pub heat: bool,
+    /// Puts something down in front of the survivor (a campfire, fed with the inputs that are
+    /// fuel: `crate::fire`), as well as making the outputs.
+    #[serde(default)]
+    pub places: Option<crate::fire::Placed>,
 }
+
+/// Why a cooking recipe (`heat`) can't be made here.
+pub const NEEDS_HEAT: &str = "needs a lit fire or a working stove within reach";
 
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
@@ -94,8 +106,8 @@ impl RecipeDef {
         if self.inputs.is_empty() {
             return Err(format!("{what}: needs at least one input (it would make something from nothing)"));
         }
-        if self.outputs.is_empty() {
-            return Err(format!("{what}: makes nothing (no outputs)"));
+        if self.outputs.is_empty() && self.places.is_none() {
+            return Err(format!("{what}: makes nothing (no outputs, nothing it places)"));
         }
         for (list, kind) in [(&self.inputs, "input"), (&self.outputs, "output")] {
             for (k, r) in list.iter().enumerate() {
@@ -235,7 +247,15 @@ pub fn tool_text(items: &[ItemDef], t: &Tool) -> String {
 pub fn describe(r: &RecipeDef, items: &[ItemDef]) -> String {
     let list = |v: &[RecipeItem]| v.iter().map(|x| amount(items, &x.item, x.count)).collect::<Vec<_>>().join(" + ");
     let tools = if r.tools.is_empty() { String::new() } else { format!(", with {}", r.tools.iter().map(|t| tool_text(items, t)).collect::<Vec<_>>().join(" and ")) };
-    format!("{} -> {} ({:.0} s{tools})", list(&r.inputs), list(&r.outputs), r.secs)
+    let mut made = list(&r.outputs);
+    if let Some(p) = r.places {
+        let what = match p {
+            crate::fire::Placed::Campfire => "a campfire",
+        };
+        made = if made.is_empty() { what.to_string() } else { format!("{made} + {what}") };
+    }
+    let heat = if r.heat { ", over a fire or a stove" } else { "" };
+    format!("{} -> {made} ({:.0} s{tools}{heat})", list(&r.inputs), r.secs)
 }
 
 /// Can `r` be made `times` times over from what `inv` carries and holds (inputs for all of them,
@@ -257,6 +277,25 @@ pub fn check_times(r: &RecipeDef, inv: &Inventory, items: &[ItemDef], times: u32
         missing.push(format!("needs {} to hand (kept)", tool_text(items, t)));
     }
     if missing.is_empty() { Ok(()) } else { Err(missing.join("; ")) }
+}
+
+/// What [`check`] finds missing, in a few words for someone who knows the game: "needs log, saw"
+/// (each input short of its count, and each tool not to hand: for a tag the first item that has
+/// it). `None` when nothing is. The client's Make list says this with its help text short.
+pub fn missing_brief(r: &RecipeDef, inv: &Inventory, items: &[ItemDef]) -> Option<String> {
+    let mut missing = Vec::new();
+    for x in &r.inputs {
+        if index_of(items, &x.item).map_or(0, |i| have(inv, i)) < x.count as u32 {
+            missing.push(amount(items, &x.item, x.count));
+        }
+    }
+    for t in r.tools.iter().filter(|t| !has_tool(inv, t, items)) {
+        missing.push(match t {
+            Tool::Item(id) => amount(items, id, 1),
+            Tool::Tag(tag) => items.iter().find(|d| d.has_tag(tag)).map_or(tag.clone(), |d| d.name.to_lowercase()),
+        });
+    }
+    (!missing.is_empty()).then(|| format!("needs {}", missing.join(", ")))
 }
 
 /// Can `r` be made once from what `inv` carries and holds? See [`check_times`].
@@ -344,8 +383,24 @@ impl World {
             let text = format!("can't {}: {why}", lower(&r.name));
             return self.refuse(id, text);
         }
+        if let Err(why) = self.craft_place_ok(pi, r) {
+            let text = format!("can't {}: {why}", lower(&r.name));
+            return self.refuse(id, text);
+        }
         let secs = self.handiwork_secs(pi, r.secs);
         self.queue_job(id, JobKind::Craft { recipe }, secs)
+    }
+
+    /// What a recipe needs of where player `pi` stands (`crate::fire`): heat to cook with, room
+    /// for what it puts down.
+    fn craft_place_ok(&self, pi: usize, r: &RecipeDef) -> Result<Option<glam::Vec2>, String> {
+        if r.heat && !self.heat_for(pi) {
+            return Err(NEEDS_HEAT.into());
+        }
+        match r.places {
+            Some(crate::fire::Placed::Campfire) => self.campfire_spot(pi).map(Some),
+            None => Ok(None),
+        }
     }
 
     /// Carry out a craft (a due `JobKind::Craft`), checked again: the inputs and tools still to
@@ -359,6 +414,7 @@ impl World {
         let mut floor = self.floor_of(id);
         check(&r, &with_floor(&inv, floor.iter().map(|g| g.stack)), items).map_err(|why| format!("can't {}: {why}", lower(&r.name)))?;
         // What it carries and holds first, then what lies on its floor.
+        let place = self.craft_place_ok(pi, &r).map_err(|why| format!("can't {}: {why}", lower(&r.name)))?;
         for x in &r.inputs {
             let i = index_of(items, &x.item).ok_or_else(|| format!("no item {}", x.item))?;
             let own = (have(&inv, i).min(x.count as u32)) as u16;
@@ -414,6 +470,12 @@ impl World {
             let name = amount(&self.config.items, &x.item, 1);
             made.push(if x.count > 1 { format!("{} x {name}", x.count) } else { name });
         }
+        if let Some(at) = place {
+            let fuel: Vec<(u16, u16)> = r.inputs.iter().filter_map(|x| Some((index_of(&self.config.items, &x.item)?, x.count))).collect();
+            let fire = self.place_campfire(at, &fuel);
+            let hours = self.fires.get(fire).map_or(0.0, |f| f.fuel_h);
+            made.push(format!("a campfire (about {} of fuel)", crate::fire::hours_text(hours)));
+        }
         self.on_crafted(pi);
         self.script_event(crate::script::ScriptEvent::Crafted { player: id, recipe });
         self.refresh_carry(pi);
@@ -453,6 +515,8 @@ mod tests {
         let mut c = WorldConfig::new(seed, 0, templates).with_weapons(weapons).with_items(items).with_recipes(recipes);
         c.start_hour = 12.0;
         c.infection.mode = InfectionMode::Off;
+        // These tests count on 3 L of pockets.
+        c.carry.pockets_l = 3.0;
         c
     }
 
@@ -513,8 +577,10 @@ mod tests {
         for id in ["rip_t_shirt", "cut_jeans", "rip_bed_sheet", "wash_rags"] {
             assert!(r.iter().any(|x| x.id == id), "{id}");
         }
-        // Every recipe but sawing wood makes something first aid can use, or what makes it.
-        assert!(r.iter().filter(|x| x.id != "saw_log_planks" && x.id != "open_nails").all(|x| x.outputs.iter().any(|o| o.item == "rag" || o.item == "clean_rag")));
+        // Every recipe that isn't wood, cooking or a fire makes something first aid can use, or what makes it.
+        let fire = |x: &RecipeDef| x.heat || x.places.is_some() || x.outputs.iter().any(|o| o.item == "firewood") || x.id == "saw_log_planks" || x.id == "open_nails";
+        assert!(r.iter().filter(|x| !fire(x)).all(|x| x.outputs.iter().any(|o| o.item == "rag" || o.item == "clean_rag")));
+        assert!(r.iter().any(|x| x.heat) && r.iter().any(|x| x.places.is_some()));
         assert_eq!(describe(&r[0], &items), "t-shirt -> rag x3 (3 s)");
         assert!(describe(r.iter().find(|x| x.id == "cut_jeans").unwrap(), &items).contains("with scissors or kitchen knife"));
     }
@@ -591,6 +657,20 @@ mod tests {
 
     /// Nothing to make it from, no tool, a worn T-shirt, a half-drunk bottle: refused, saying why,
     /// and nothing queued. Gone by the time it's due: refused then, nothing used.
+    #[test]
+    fn what_is_missing_in_brief() {
+        let (mut w, id) = arena(5);
+        let jeans = w.config.recipes[recipe(&w, "cut_jeans") as usize].clone();
+        let brief = |w: &World| missing_brief(&jeans, &me(w, id).inventory, &w.config.items);
+        assert_eq!(brief(&w).as_deref(), Some("needs jeans, scissors"));
+        w.give_item(id, "jeans", 1);
+        assert_eq!(brief(&w).as_deref(), Some("needs scissors"));
+        w.give_item(id, "scissors", 1);
+        // Nothing missing exactly when the full check passes.
+        assert_eq!(brief(&w), None);
+        assert!(check(&jeans, &me(&w, id).inventory, &w.config.items).is_ok());
+    }
+
     #[test]
     fn missing_inputs_and_tools_are_refused() {
         let (mut w, id) = arena(5);

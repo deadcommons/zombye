@@ -91,6 +91,8 @@ pub enum DeathCause {
     /// an index into `WorldConfig::weapons` (bare hands for a punch);
     /// [`DeathCause::describe_with`] names it.
     Survivor { by: u32, weapon: u16, stomp: bool, part: Part, wound: WoundKind },
+    /// Standing in a fire (`crate::fire`; added last, like `Survivor`).
+    Burned { part: Part },
 }
 
 /// "a gash", "an ..." for a wound kind; a clothing-stopped blow is "a blow".
@@ -101,6 +103,7 @@ fn a_wound(w: WoundKind) -> &'static str {
         WoundKind::Gash => "a gash",
         WoundKind::Bite => "a bite",
         WoundKind::GlassCut => "a glass cut",
+        WoundKind::Burn => "a burn",
     }
 }
 
@@ -146,6 +149,7 @@ impl DeathCause {
             Self::Wound { part, wound } => format!("Died of {} to the {}", a_wound(wound), part.name()),
             Self::Other => "Died".to_string(),
             Self::Survivor { part, wound, .. } => format!("Killed by another survivor: {} to the {}", a_wound(wound), part.name()),
+            Self::Burned { part } => format!("Burned to death standing in a fire: a burn on the {}", part.name()),
         }
     }
 
@@ -160,6 +164,7 @@ impl DeathCause {
             Self::Wound { .. } => "wound",
             Self::Other => "other",
             Self::Survivor { .. } => "survivor",
+            Self::Burned { .. } => "burned",
         }
     }
 }

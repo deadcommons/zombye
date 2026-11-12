@@ -406,7 +406,7 @@ impl Default for CarryTuning {
         Self {
             limit_kg: 14.0,
             strength_kg: 0.75,
-            pockets_l: 3.0,
+            pockets_l: 8.0,
             burdened_at: 1.0,
             heavy_at: 1.3,
             overloaded_at: 1.6,
@@ -612,6 +612,10 @@ impl World {
         // end in `step_player_actions`, after movement too.
         if (still || p.knock.is_some()) && !p.dead {
             mods = MoveMods { speed: 0.0, run_speed: 0.0, can_run: false, can_climb: false, ..mods };
+        }
+        // Seated ([`crate::sit`]): no moving, breath back faster.
+        if p.seated.is_some() && !p.dead {
+            mods = MoveMods { speed: 0.0, run_speed: 0.0, can_run: false, can_climb: false, regen: mods.regen * self.config.sit.endurance_regen, ..mods };
         }
         // Tied hands (#73): a slow walk, no running, no climbing. Tied and freed in `step_bonds`,
         // after movement too.
@@ -1217,7 +1221,15 @@ impl World {
         };
         // Wherever it was, it is in no pouch on its way.
         let moved = ItemStack { home: Pouch::Pockets, ..moved };
-        self.finish_move(pi, inv, before, src_box, ground_take, def, moved, from, to, spill, pos, facing)
+        // A two-handed thing taken up that the pockets and bags can't hold (a log) is carried in the hands.
+        let to_hands = to == Place::Carried && def.two_handed && moved.count == 1 && matches!(from, Place::Ground | Place::Container(_));
+        let first = self.finish_move(pi, inv.clone(), before, src_box.clone(), ground_take, def.clone(), moved, from, to, spill, pos, facing);
+        match first {
+            Err(e) if to_hands && e.starts_with("no room") => {
+                self.finish_move(pi, inv, before, src_box, ground_take, def, moved, from, Place::Slot(Slot::Hand), spill, pos, facing).map_err(|_| e)
+            }
+            r => r,
+        }
     }
 
     /// The second half of a move: put `moved` (`n` of a kind of item) at `to`, check the result and commit.
@@ -1596,6 +1608,8 @@ mod tests {
         let containers = crate::containers::parse_containers(include_str!("../../../assets/data/containers.ron")).unwrap();
         let mut c = WorldConfig::new(seed, 0, templates).with_weapons(weapons).with_items(items).with_containers(containers).with_loot(crate::loot::tests::shipped()).with_map_chunks(8);
         c.start_hour = 12.0;
+        // These tests count on 3 L of pockets.
+        c.carry.pockets_l = 3.0;
         c
     }
 

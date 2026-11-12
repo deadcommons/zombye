@@ -17,6 +17,8 @@ fn config(pvp: bool) -> WorldConfig {
     let mut c = WorldConfig::new(7, 0, templates).with_weapons(weapons).with_items(items).with_map_chunks(10).with_pvp(pvp);
     c.start_hour = 12.0;
     c.needs = crate::needs::NeedsTuning::off();
+    // These tests count on 3 L of pockets.
+    c.carry.pockets_l = 3.0;
     c
 }
 

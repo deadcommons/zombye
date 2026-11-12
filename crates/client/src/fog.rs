@@ -58,6 +58,8 @@ pub struct FogLook {
     pub unseen_day: Unseen,
     pub unseen_night: Unseen,
     pub other_rooms: f32,
+    /// How far roofs are kept out of the sight shadows by day (1 = a roof is never shadowed).
+    pub roofs_seen: f32,
 }
 
 const SHIPPED: &str = include_str!("../../../assets/data/fog.ron");
@@ -72,8 +74,9 @@ impl Default for FogLook {
             close_fade: 4.0,
             range_fade_from: 0.5,
             unseen_day: Unseen { tint: (0.94, 0.9, 0.84), dark: 0.4, colour: 0.85 },
-            unseen_night: Unseen { tint: (0.55, 0.6, 0.75), dark: 0.86, colour: 0.25 },
+            unseen_night: Unseen { tint: (0.5, 0.58, 0.8), dark: 0.7, colour: 0.3 },
             other_rooms: 0.0,
+            roofs_seen: 1.0,
         }
     }
 }
@@ -85,6 +88,7 @@ impl FogLook {
         unit("behind", look.behind)?;
         unit("range_fade_from", look.range_fade_from)?;
         unit("other_rooms", look.other_rooms)?;
+        unit("roofs_seen", look.roofs_seen)?;
         for (name, u) in [("unseen_day", look.unseen_day), ("unseen_night", look.unseen_night)] {
             unit(&format!("{name}.dark"), u.dark)?;
             unit(&format!("{name}.colour"), u.colour)?;
@@ -552,8 +556,8 @@ mod tests {
         assert!(look.cone_behind - look.cone_full >= 45.0);
         let day = look.unseen_tint(1.0);
         assert!(day.w <= 0.45 && day.x > day.z && look.unseen_colour(1.0) >= 0.8, "{day}");
-        assert_eq!(look.unseen_tint(0.0), Vec4::new(0.55, 0.6, 0.75, 0.86));
-        assert_eq!(look.unseen_colour(0.0), 0.25);
+        assert_eq!(look.unseen_tint(0.0), Vec4::new(0.5, 0.58, 0.8, 0.7));
+        assert_eq!(look.unseen_colour(0.0), 0.3);
         assert_eq!(FogLook::parse("(behind: 0.5)").unwrap().behind, 0.5);
         assert!(FogLook::parse("(behind: 1.5)").unwrap_err().contains("behind"));
         assert!(FogLook::parse("(cone_full: 170, cone_behind: 90)").unwrap_err().contains("cone"));

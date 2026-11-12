@@ -13,7 +13,8 @@
 //   weapon      Some("id") of a weapon in weapons.ron: the item swings like it. Every weapon there
 //               (but bare hands) should have an item here; one without gets a plain 1 kg item.
 //   food, drink Some((hunger: 0..1 restored, thirst: 0..1 restored (negative: makes you thirsty),
-//               uses: goes, spoils_hours: Some(game hours) or None)). Effects come with #11.
+//               uses: goes, spoils_hours: Some(game hours) or None, poison: 0..1 chance of food
+//               poisoning each go eaten as it is: raw meat and eggs, cook them first)).
 //   medical     Some((uses: n)). What it treats comes with #9 and #10 (by tag).
 //   bag         Some((capacity_l: room it adds, carried: Back | Shoulder | Hand, slow: 0..1
 //               speed lost while carried))
@@ -49,6 +50,34 @@
         food: Some((hunger: 0.08, thirst: 0.04, spoils_hours: Some(120.0))), color: (0.7, 0.1, 0.08)),
     (id: "cheese", name: "Block of cheese", category: Food, weight_kg: 0.25, volume_l: 0.25, stack: 4,
         food: Some((hunger: 0.20, uses: 2, spoils_hours: Some(48.0))), color: (0.92, 0.8, 0.35)),
+
+    // ---- Food to cook (recipes.ron: over a lit campfire or a working stove) ----------------------
+    // Raw meat and eggs can be eaten as they are, at a good chance of food poisoning.
+    (id: "raw_chicken", name: "Raw chicken", category: Food, weight_kg: 0.6, volume_l: 0.7, stack: 2, tags: ["raw"],
+        food: Some((hunger: 0.30, uses: 2, spoils_hours: Some(36.0), poison: 0.6)), color: (0.93, 0.78, 0.72)),
+    (id: "cooked_chicken", name: "Cooked chicken", category: Food, weight_kg: 0.5, volume_l: 0.7, stack: 2,
+        food: Some((hunger: 0.45, uses: 2, spoils_hours: Some(48.0))), color: (0.78, 0.55, 0.3)),
+    (id: "sausages", name: "Pack of sausages", category: Food, weight_kg: 0.45, volume_l: 0.5, stack: 2, tags: ["raw"],
+        food: Some((hunger: 0.25, uses: 2, spoils_hours: Some(72.0), poison: 0.35)), color: (0.8, 0.5, 0.48)),
+    (id: "cooked_sausages", name: "Cooked sausages", category: Food, weight_kg: 0.4, volume_l: 0.5, stack: 2,
+        food: Some((hunger: 0.35, uses: 2, spoils_hours: Some(48.0))), color: (0.55, 0.3, 0.2)),
+    (id: "egg", name: "Egg", category: Food, weight_kg: 0.06, volume_l: 0.08, stack: 12, tags: ["raw"],
+        food: Some((hunger: 0.05, spoils_hours: Some(240.0), poison: 0.15)), color: (0.95, 0.9, 0.8)),
+    (id: "scrambled_eggs", name: "Scrambled eggs", category: Food, weight_kg: 0.12, volume_l: 0.2, stack: 2,
+        food: Some((hunger: 0.18, spoils_hours: Some(12.0))), color: (0.98, 0.85, 0.4)),
+    // Dry, it keeps for ever and does little for you; boiled in a pot of water it's a meal.
+    (id: "dry_pasta", name: "Bag of pasta", category: Food, weight_kg: 0.5, volume_l: 0.8, stack: 4,
+        food: Some((hunger: 0.06, thirst: -0.06)), color: (0.93, 0.83, 0.55)),
+    (id: "cooked_pasta", name: "Pot of pasta", category: Food, weight_kg: 1.1, volume_l: 1.2, stack: 1,
+        food: Some((hunger: 0.35, thirst: 0.04, uses: 3, spoils_hours: Some(36.0))), color: (0.95, 0.88, 0.62)),
+    (id: "dry_rice", name: "Bag of rice", category: Food, weight_kg: 0.5, volume_l: 0.6, stack: 4,
+        food: Some((hunger: 0.05, thirst: -0.06)), color: (0.96, 0.95, 0.9)),
+    (id: "cooked_rice", name: "Pot of rice", category: Food, weight_kg: 1.1, volume_l: 1.2, stack: 1,
+        food: Some((hunger: 0.33, thirst: 0.04, uses: 3, spoils_hours: Some(36.0))), color: (0.97, 0.96, 0.92)),
+    (id: "hot_soup", name: "Hot soup", category: Food, weight_kg: 0.42, volume_l: 0.4, stack: 1,
+        food: Some((hunger: 0.26, thirst: 0.12, spoils_hours: Some(8.0))), color: (0.7, 0.3, 0.2)),
+    (id: "hot_beans", name: "Hot beans", category: Food, weight_kg: 0.45, volume_l: 0.4, stack: 1,
+        food: Some((hunger: 0.36, thirst: -0.02, spoils_hours: Some(8.0))), color: (0.6, 0.35, 0.2)),
 
     // ---- Drink ---------------------------------------------------------------------------------
     (id: "water_bottle", name: "Bottle of water", category: Drink, weight_kg: 1.05, volume_l: 1.0, stack: 4, tags: ["refillable"],
@@ -86,6 +115,11 @@
     (id: "scissors", name: "Scissors", category: Tool, weight_kg: 0.1, volume_l: 0.1, tags: ["cuts"], color: (0.2, 0.3, 0.7)),
     (id: "saw", name: "Hand saw", category: Tool, weight_kg: 0.6, volume_l: 1.2, tags: ["saws"], color: (0.65, 0.65, 0.68)),
     (id: "lighter", name: "Lighter", category: Tool, weight_kg: 0.03, volume_l: 0.02, stack: 5, tags: ["fire"], color: (0.8, 0.2, 0.5)),
+    // A pot boils pasta and rice; a pot or a pan (or a baking tray) cooks the rest (tag cookware).
+    (id: "cooking_pot", name: "Cooking pot", category: Tool, weight_kg: 1.3, volume_l: 4.0, tags: ["cookware", "pot"], color: (0.55, 0.56, 0.58)),
+    // Firewood: the fuel a campfire is built from (planks, magazines and newspapers burn too).
+    (id: "firewood", name: "Firewood", category: Material, weight_kg: 1.5, volume_l: 1.2, stack: 4, tags: ["wood", "fuel"], color: (0.45, 0.32, 0.2)),
+    (id: "newspaper", name: "Newspaper", category: Junk, weight_kg: 0.3, volume_l: 0.4, stack: 5, tags: ["junk", "fuel"], color: (0.82, 0.8, 0.74)),
     (id: "matches", name: "Box of matches", category: Tool, weight_kg: 0.02, volume_l: 0.03, stack: 10, tags: ["fire"], color: (0.85, 0.3, 0.2)),
     (id: "duct_tape", name: "Roll of duct tape", category: Tool, weight_kg: 0.3, volume_l: 0.3, stack: 4, color: (0.55, 0.57, 0.6)),
     (id: "nails", name: "Box of nails", category: Material, weight_kg: 0.5, volume_l: 0.2, stack: 5, color: (0.45, 0.45, 0.47)),
@@ -109,7 +143,7 @@
     (id: "towel", name: "Towel", category: Material, weight_kg: 0.5, volume_l: 1.5, stack: 2, tags: ["rippable"], color: (0.4, 0.6, 0.75)),
     // A length of trunk from a felled tree (zombye_sim::trees): sawn into planks or split into
     // firewood (recipes.ron). Heavy and bulky: a bag, or both hands.
-    (id: "log", name: "Log", category: Material, weight_kg: 6.0, volume_l: 9.0, tags: ["wood", "log", "fuel"], color: (0.42, 0.3, 0.19)),
+    (id: "log", name: "Log", category: Material, weight_kg: 6.0, volume_l: 9.0, two_handed: true, tags: ["wood", "log", "fuel"], color: (0.42, 0.3, 0.19)),
     (id: "thread", name: "Reel of thread", category: Material, weight_kg: 0.02, volume_l: 0.02, stack: 10, color: (0.85, 0.85, 0.85)),
 
     // ---- Clothing ------------------------------------------------------------------------------
@@ -164,7 +198,7 @@
     // ---- Weapons (combat numbers in weapons.ron) -------------------------------------------------
     (id: "kitchen_knife", name: "Kitchen knife", category: Weapon, weight_kg: 0.2, volume_l: 0.3, tags: ["cuts"], weapon: Some("kitchen_knife"), color: (0.75, 0.75, 0.78)),
     (id: "claw_hammer", name: "Claw hammer", category: Weapon, weight_kg: 0.6, volume_l: 0.5, tags: ["hammers", "pries"], weapon: Some("claw_hammer"), color: (0.45, 0.3, 0.2)),
-    (id: "frying_pan", name: "Frying pan", category: Weapon, weight_kg: 1.2, volume_l: 2.0, weapon: Some("frying_pan"), color: (0.15, 0.15, 0.16)),
+    (id: "frying_pan", name: "Frying pan", category: Weapon, weight_kg: 1.2, volume_l: 2.0, tags: ["cookware"], weapon: Some("frying_pan"), color: (0.15, 0.15, 0.16)),
     (id: "baseball_bat", name: "Baseball bat", category: Weapon, weight_kg: 1.0, volume_l: 2.5, two_handed: true, one_hand: true, weapon: Some("baseball_bat"), color: (0.7, 0.55, 0.35)),
     (id: "golf_club", name: "Golf club", category: Weapon, weight_kg: 0.4, volume_l: 2.0, two_handed: true, one_hand: true, weapon: Some("golf_club"), color: (0.75, 0.75, 0.8)),
     (id: "wooden_plank", name: "Wooden plank", category: Weapon, weight_kg: 2.0, volume_l: 4.0, two_handed: true, one_hand: true, tags: ["wood", "fuel"], weapon: Some("wooden_plank"), color: (0.6, 0.45, 0.28)),
@@ -190,7 +224,7 @@
     (id: "picture_frame", name: "Picture frame", category: Junk, weight_kg: 0.4, volume_l: 0.6, tags: ["junk"], color: (0.6, 0.5, 0.35)),
     (id: "pen", name: "Pen", category: Junk, weight_kg: 0.01, volume_l: 0.01, stack: 10, tags: ["junk"], color: (0.1, 0.2, 0.6)),
     (id: "umbrella", name: "Umbrella", category: Junk, weight_kg: 0.5, volume_l: 1.0, tags: ["junk"], color: (0.15, 0.15, 0.2)),
-    (id: "baking_tray", name: "Baking tray", category: Junk, weight_kg: 0.6, volume_l: 1.5, tags: ["junk"], color: (0.5, 0.5, 0.52)),
+    (id: "baking_tray", name: "Baking tray", category: Junk, weight_kg: 0.6, volume_l: 1.5, tags: ["junk", "cookware"], color: (0.5, 0.5, 0.52)),
     (id: "alarm_clock", name: "Alarm clock", category: Junk, weight_kg: 0.3, volume_l: 0.4, tags: ["junk"], color: (0.8, 0.3, 0.2)),
     (id: "cushion", name: "Cushion", category: Junk, weight_kg: 0.4, volume_l: 3.0, tags: ["junk"], color: (0.5, 0.3, 0.45)),
 ]

@@ -84,5 +84,20 @@ umbrella	Umbrella	Junk	#262633
 baking_tray	Baking tray	Junk	#7f7f84
 alarm_clock	Alarm clock	Junk	#cc4c33
 cushion	Cushion	Junk	#7f4c72
+raw_chicken	Raw chicken	Food	#e8b4a8
+cooked_chicken	Cooked chicken	Food	#c07a3a
+sausages	Pack of sausages	Food	#d98a86
+cooked_sausages	Cooked sausages	Food	#9a5530
+egg	Egg	Food	#efe3cc
+scrambled_eggs	Scrambled eggs	Food	#f0cf5a
+dry_pasta	Bag of pasta	Food	#e2c27a
+cooked_pasta	Pot of pasta	Food	#e8cf8c
+dry_rice	Bag of rice	Food	#e9e4d6
+cooked_rice	Pot of rice	Food	#f1ede2
+hot_soup	Hot soup	Food	#b5603f
+hot_beans	Hot beans	Food	#b0583a
+cooking_pot	Cooking pot	Tool	#8c8f94
+firewood	Firewood	Material	#73523a
+newspaper	Newspaper	Junk	#d1ccbd
 log	Log	Material	#6b4d30
 hatchet	Hatchet	Weapon	#80593a

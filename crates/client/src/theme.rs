@@ -615,6 +615,10 @@ pub mod flat {
 
     /// A key and what it does, for the footer: "[Click] move".
     pub fn hint(c: &mut ChildSpawnerCommands, keys: &[&str], does: &str) {
+        // (Not with the help text off: `help_text.rs`.)
+        if !crate::help_text::keys() {
+            return;
+        }
         c.spawn((Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(5), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|r| {
             for k in keys {
                 key(r, k);

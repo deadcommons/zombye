@@ -20,6 +20,7 @@ use bevy::prelude::*;
 use bevy::window::{MonitorSelection, PresentMode, PrimaryWindow, WindowMode};
 
 use crate::graphics::{Graphics, MAX_VEGETATION, Preset};
+use crate::help_text::{self, HelpText};
 use crate::menu_skin::{self as skin, BONE, DIM, Look};
 use crate::theme::{self, BODY, SMALL, font};
 use crate::ui_scale::{self, ClientSettings, SettingsStore};
@@ -63,6 +64,8 @@ pub enum Switch {
     TiltShift,
     Vignette,
     ContactShadows,
+    SoftShadows,
+    Haze,
     GroundDetail,
     Fullscreen,
     Vsync,
@@ -88,6 +91,8 @@ pub enum Change {
     Music(i32),
     /// Steps of `ui_scale::STEP`.
     UiScale(i32),
+    /// How much the UI explains (`help_text.rs`).
+    HelpText(HelpText),
     /// Everything on this tab as the game ships it.
     Defaults(Tab),
 }
@@ -112,12 +117,13 @@ pub fn change(s: &mut ClientSettings, c: Change) {
         Change::Volume(n) => s.volume = stepped(s.volume, n, 10, 0, 200),
         Change::Music(n) => s.music = stepped(s.music, n, 10, 0, 200),
         Change::UiScale(n) => s.ui_scale = ui_scale::step(s.ui_scale, n > 0),
+        Change::HelpText(h) => s.help_text = h,
         Change::Defaults(tab) => {
             let d = ClientSettings::default();
             match tab {
                 Tab::Graphics => (s.graphics, s.fullscreen, s.vsync) = (d.graphics, d.fullscreen, d.vsync),
                 Tab::Audio => (s.volume, s.music, s.muted) = (d.volume, d.music, d.muted),
-                Tab::Game => (s.first_person, s.ui_scale, s.zombie_silhouettes, s.opening_hints, s.skip_menu) = (d.first_person, d.ui_scale, d.zombie_silhouettes, d.opening_hints, d.skip_menu),
+                Tab::Game => (s.first_person, s.ui_scale, s.zombie_silhouettes, s.opening_hints, s.skip_menu, s.help_text) = (d.first_person, d.ui_scale, d.zombie_silhouettes, d.opening_hints, d.skip_menu, d.help_text),
                 Tab::Controls => {}
             }
         }
@@ -135,6 +141,8 @@ fn switch_of(s: &mut ClientSettings, switch: Switch) -> &mut bool {
         Switch::TiltShift => &mut s.graphics.tilt_shift,
         Switch::Vignette => &mut s.graphics.vignette,
         Switch::ContactShadows => &mut s.graphics.contact_shadows,
+        Switch::SoftShadows => &mut s.graphics.soft_shadows,
+        Switch::Haze => &mut s.graphics.haze,
         Switch::GroundDetail => &mut s.graphics.ground_detail,
         Switch::Fullscreen => &mut s.fullscreen,
         Switch::Vsync => &mut s.vsync,
@@ -202,6 +210,8 @@ pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
             switch("Tilt-shift", "Soft focus toward the top and bottom of the screen.", s, Switch::TiltShift),
             switch("Vignette", "Darkened corners.", s, Switch::Vignette),
             switch("Contact shadows", "A soft dark line where walls meet the ground. Changes on the next start.", s, Switch::ContactShadows),
+            switch("Soft shadows", "Shadow edges that soften away from what casts them. Costs frame rate.", s, Switch::SoftShadows),
+            switch("Haze", "A thin haze over the distance, thick and warm when the sun is low.", s, Switch::Haze),
             switch("Ground detail", "Patchy colour on the ground. Changes on the next start.", s, Switch::GroundDetail),
         ],
         Tab::Audio => vec![
@@ -224,6 +234,15 @@ pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
                     down: (s.ui_scale > ui_scale::MIN_PCT).then_some(Change::UiScale(-1)),
                     up: (s.ui_scale < ui_scale::MAX_PCT).then_some(Change::UiScale(1)),
                 },
+            },
+            Row {
+                label: "Help text",
+                about: match s.help_text {
+                    HelpText::Full => "Cards and panels explain what things are for and how they work.",
+                    HelpText::Short => "Cards keep names, numbers and what's needed. The explaining lines go.",
+                    HelpText::Off => "As Short, and the reminders of what keys and clicks do go too.",
+                },
+                control: Control::Choice(HelpText::ALL.into_iter().map(|h| (h.name().to_string(), h == s.help_text, Change::HelpText(h))).collect()),
             },
             switch("Opening hints", "Outlines of the doors and windows a building hides from the camera.", s, Switch::OpeningHints),
             switch("Zombie silhouettes", "Zombies you can see show through what covers them from the camera.", s, Switch::ZombieSilhouettes),
@@ -275,7 +294,9 @@ pub struct SettingsUiPlugin;
 impl Plugin for SettingsUiPlugin {
     fn build(&self, app: &mut App) {
         let options = app.world().get_resource::<crate::Options>().cloned();
-        SettingsStore::ensure(app);
+        // (A flag's level for the session stays until the setting itself is changed here.)
+        let settings = SettingsStore::ensure(app);
+        help_text::set(options.as_ref().and_then(|o| o.help_text).unwrap_or(settings.help_text));
         let tab = options.as_ref().and_then(|o| o.settings.as_deref()).map(|t| Tab::parse(t).unwrap_or_default());
         let in_game = app.world().contains_resource::<crate::server_link::ServerLink>();
         app.insert_resource(SettingsUi { open: tab.is_some(), tab: tab.unwrap_or_default(), in_game, ..default() }).add_systems(Startup, spawn).add_systems(Update, (act, apply_live, draw).chain());
@@ -380,6 +401,9 @@ fn apply_live(
         && let Some(mut z) = silhouettes
     {
         z.0 = now.zombie_silhouettes;
+    }
+    if was.help_text != now.help_text {
+        help_text::set(now.help_text);
     }
     if was.opening_hints != now.opening_hints
         && let Some(mut h) = hints
@@ -548,6 +572,24 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn help_text_is_a_choice_of_three_kept_in_the_settings() {
+        let mut s = ClientSettings::default();
+        let row = |s: &ClientSettings| rows(Tab::Game, s).into_iter().find(|r| r.label == "Help text").expect("on the Game tab");
+        let Control::Choice(choices) = row(&s).control else { panic!("a choice") };
+        assert_eq!(choices.iter().map(|(n, on, _)| (n.as_str(), *on)).collect::<Vec<_>>(), [("Full", true), ("Short", false), ("Off", false)]);
+        let full = row(&s).about;
+        change(&mut s, choices[1].2);
+        assert_eq!(s.help_text, HelpText::Short);
+        assert_ne!(row(&s).about, full, "the line says what the level in force does");
+        // It is read back from the file, and an older file without it is Full.
+        let text = ron::ser::to_string(&s).unwrap();
+        assert_eq!(ron::from_str::<ClientSettings>(&text).unwrap().help_text, HelpText::Short);
+        assert_eq!(ron::from_str::<ClientSettings>("(ui_scale: 110)").unwrap().help_text, HelpText::Full);
+        change(&mut s, Change::Defaults(Tab::Game));
+        assert_eq!(s.help_text, HelpText::Full);
     }
 
     #[test]

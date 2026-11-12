@@ -536,10 +536,16 @@ impl World {
             Some(Freshness::Mouldy) => (t.mouldy_food, self.config.health.poison_rotten),
             _ => (1.0, 0.0),
         };
+        // Raw meat and eggs (`Consumable::poison`) on top of going off.
+        let raw = c.poison.clamp(0.0, 1.0);
+        let poison = 1.0 - (1.0 - poison) * (1.0 - raw);
         let n = &mut self.players[pi].needs;
         let mut bits = Vec::new();
         if let Some(f) = fresh.filter(|f| *f != Freshness::Fresh) {
             bits.push(format!("it was {}", f.name()));
+        }
+        if raw > 0.0 {
+            bits.push("it was raw".into());
         }
         let mut change = |need: &mut f32, amount: f32, what: &str, waste: bool| {
             if amount == 0.0 {
@@ -759,6 +765,7 @@ impl World {
             let running = p.state.stance == Stance::Run;
             // Who the survivor is (`crate::origin`): a big appetite, a light sleeper.
             let perks = p.origin.perks;
+            let seated = p.seated.is_some();
             let n = &mut p.needs;
             let asleep = n.asleep();
             n.hunger += if asleep { t.hunger_asleep_per_h } else { t.hunger_per_h } * dt_h * perks.hunger;
@@ -768,6 +775,8 @@ impl World {
                     n.tiredness -= t.rest_per_h(s.spot) * dt_h;
                     s.hours += dt_h;
                 }
+                // Sitting down rests you a little (`crate::sit`).
+                None if seated => n.tiredness -= self.config.sit.rest_per_h * dt_h,
                 None => n.tiredness += t.tired_per_h * dt_h * perks.tiredness,
             }
             n.hunger = n.hunger.clamp(0.0, 1.0);

@@ -1272,7 +1272,10 @@ mod tests {
     }
 
     fn world(seed: u64, zombies: u32) -> World {
-        World::new(WorldConfig::new(seed, zombies, templates()).with_weapons(weapons()).with_items(items()))
+        let mut c = WorldConfig::new(seed, zombies, templates()).with_weapons(weapons()).with_items(items());
+        // These tests count on 3 L of pockets.
+        c.carry.pockets_l = 3.0;
+        World::new(c)
     }
 
     /// An empty grass field at noon with one player at (100.5, 100.5) facing east and nothing else.
@@ -1833,6 +1836,8 @@ mod tests {
         }
 
         let (mut w, id) = arena(11);
+        // The old 3 L pockets, so the mug below fills them.
+        w.config.carry.pockets_l = 3.0;
         assert!(w.player_pick_up(id).is_none(), "nothing to pick up");
         let bat = w.spawn_item("baseball_bat", 1, Vec2::new(101.3, 100.5)).unwrap();
         let knife = w.spawn_item("kitchen_knife", 1, Vec2::new(103.5, 100.5)).unwrap();

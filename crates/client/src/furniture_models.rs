@@ -41,6 +41,8 @@ pub struct FurnitureModel {
     footprint: Vec2,
     /// How tall it stands.
     height: f32,
+    /// Its main colour, if a saturated one covers a good part of it ([`body_colour`]).
+    body: Option<Vec3>,
 }
 
 #[derive(Default)]
@@ -206,14 +208,29 @@ impl FurnitureModels {
     /// stand in a tile without filling it), the middle of its footprint at `centre`, turned to
     /// `facing`. False when there's no model for it.
     pub fn add_at(&self, mb: &mut MeshBuilder, kind: &str, centre: Vec2, facing: Side, base_y: f32) -> bool {
-        let Some(m) = self.pick(kind, (centre.x as i32 as u32).wrapping_mul(73_856_093) ^ (centre.y as i32 as u32).wrapping_mul(19_349_663)) else { return false };
+        self.add_at_worn(mb, kind, centre, facing, base_y, None)
+    }
+
+    /// The main colour of the model [`Self::add_at`] draws for `kind` at `centre`: the saturated
+    /// colour that covers most of it (a car's paintwork), if one covers a good part.
+    pub fn body_colour(&self, kind: &str, centre: Vec2) -> Option<Vec3> {
+        self.pick(kind, Self::salt_at(centre))?.body
+    }
+
+    fn salt_at(centre: Vec2) -> u32 {
+        (centre.x as i32 as u32).wrapping_mul(73_856_093) ^ (centre.y as i32 as u32).wrapping_mul(19_349_663)
+    }
+
+    /// [`Self::add_at`], each triangle's colour worn as `wear` says (`meshgen::decay`).
+    pub fn add_at_worn(&self, mb: &mut MeshBuilder, kind: &str, centre: Vec2, facing: Side, base_y: f32, wear: Option<&crate::meshgen::decay::Wear>) -> bool {
+        let Some(m) = self.pick(kind, Self::salt_at(centre)) else { return false };
         let turn = match facing {
             Side::S => 0,
             Side::E => 1,
             Side::N => 2,
             Side::W => 3,
         };
-        m.emit(mb, Vec3::new(centre.x, base_y, centre.y), turn, Vec3::ONE);
+        m.emit_worn(mb, Vec3::new(centre.x, base_y, centre.y), turn, Vec3::ONE, wear);
         true
     }
 }
@@ -221,14 +238,22 @@ impl FurnitureModels {
 impl FurnitureModel {
     /// Every triangle, scaled, turned `turn` quarters and moved to `origin`.
     fn emit(&self, mb: &mut MeshBuilder, origin: Vec3, turn: i32, scale: Vec3) {
+        self.emit_worn(mb, origin, turn, scale, None);
+    }
+
+    fn emit_worn(&self, mb: &mut MeshBuilder, origin: Vec3, turn: i32, scale: Vec3, wear: Option<&crate::meshgen::decay::Wear>) {
         // Positive turns about +y take the model's front (+z) toward +x (east).
         let rot = Quat::from_rotation_y(turn as f32 * std::f32::consts::FRAC_PI_2);
         for (detail, tris) in self.details() {
             mb.only(detail);
             for (p, n, c, _) in tris {
+                let c = match wear {
+                    Some(w) => [0, 1, 2].map(|i| w.colour(p[i], n[i], *c)),
+                    None => [*c; 3],
+                };
                 let p = p.map(|p| origin + rot * p * scale);
                 let n = n.map(|n| ((rot * n) / scale).normalize_or_zero());
-                mb.triangle_with_normals(p, n, *c);
+                mb.triangle_with_normals_shaded(p, n, c);
             }
         }
         mb.only(Detail::Both);
@@ -241,6 +266,27 @@ impl FurnitureModel {
         let far = self.far.as_deref().map(|far| [(Detail::Near, &self.tris[..]), (Detail::Far, far)]);
         both.into_iter().chain(far.into_iter().flatten())
     }
+}
+
+/// A model's main colour: the saturated colour covering the most of its surface, if that is at
+/// least a tenth of it (a car's paintwork; not its tyres, glass or lights).
+fn body_colour(tris: &[Tri]) -> Option<Vec3> {
+    let mut by_colour: Vec<(Vec3, f32)> = Vec::new();
+    let mut total = 0.0;
+    for (p, _, c, _) in tris {
+        let area = (p[1] - p[0]).cross(p[2] - p[0]).length() * 0.5;
+        total += area;
+        let v = Vec3::new(c.red, c.green, c.blue);
+        let (hi, lo) = (v.max_element(), v.min_element());
+        if hi < 0.08 || (hi - lo) / hi < 0.45 {
+            continue;
+        }
+        match by_colour.iter_mut().find(|(k, _)| (*k - v).abs().max_element() < 0.02) {
+            Some(slot) => slot.1 += area,
+            None => by_colour.push((v, area)),
+        }
+    }
+    by_colour.into_iter().max_by(|a, b| a.1.total_cmp(&b.1)).filter(|(_, area)| *area > total * 0.1).map(|(v, _)| v)
 }
 
 fn parse_glb(bytes: &[u8]) -> Result<FurnitureModel, String> {
@@ -306,7 +352,8 @@ fn parse_glb(bytes: &[u8]) -> Result<FurnitureModel, String> {
     });
     let height = tris.iter().flat_map(|t| t.0).fold(0.0f32, |h, p| h.max(p.y));
     let far = simplify(&tris);
-    Ok(FurnitureModel { tris, far, footprint, height })
+    let body = body_colour(&tris);
+    Ok(FurnitureModel { tris, far, footprint, height, body })
 }
 
 /// A part of a model (its foliage, or the rest) of at most this many triangles is drawn as it is
@@ -700,8 +747,8 @@ mod tests {
     #[test]
     fn stand_ins_go_to_the_far_copy_of_a_mesh() {
         let tris = fine_sheet(40, 0.025);
-        let heavy = FurnitureModel { far: simplify(&tris), tris, footprint: Vec2::ONE, height: 1.0 };
-        let light = FurnitureModel { far: None, tris: fine_sheet(4, 0.25), footprint: Vec2::ONE, height: 1.0 };
+        let heavy = FurnitureModel { far: simplify(&tris), tris, footprint: Vec2::ONE, height: 1.0, body: None };
+        let light = FurnitureModel { far: None, tris: fine_sheet(4, 0.25), footprint: Vec2::ONE, height: 1.0, body: None };
         let far_tris = heavy.far.as_ref().unwrap().len();
         let models = FurnitureModels(HashMap::from([("tree".to_string(), heavy), ("post".to_string(), light)]));
         let tag = crate::meshgen::CutTag::default();

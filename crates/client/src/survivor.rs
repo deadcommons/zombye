@@ -367,6 +367,10 @@ pub struct SurvivorAnim {
     pub(crate) stair_w: f32,
     pub(crate) stair_u: f32,
     stair_p: Option<f32>,
+    /// Sitting down (`zombye_sim::sit`): on what, eased in and out (the whole body; moved onto
+    /// the seat by `player::sit_on_seat`).
+    pub(crate) seat: Option<zombye_sim::SeatKind>,
+    pub(crate) sit_w: f32,
 }
 
 /// Metres over the ground a stair loop (two steps) covers: what the clip it was made from rose in
@@ -468,6 +472,8 @@ impl SurvivorAnim {
             tied_w: 0.0,
             reach_w: 0.0,
             struggling: false,
+            seat: None,
+            sit_w: 0.0,
         }
     }
 }
@@ -542,6 +548,11 @@ fn animate_survivors(
         a.tied_w += ((view.restrained && up) as u8 as f32 - a.tied_w) * k(9.0);
         a.reach_w += ((view.hands.is_some() && up) as u8 as f32 - a.reach_w) * k(9.0);
         a.struggling = view.struggling && up;
+        let seat = view.seated.filter(|_| up);
+        if seat.is_some() {
+            a.seat = seat;
+        }
+        a.sit_w += (seat.is_some() as u8 as f32 - a.sit_w) * k(7.0);
         // Its item job under way, where we know which (our own survivor's; single-player: anyone's).
         let task = link.own(a.player).and_then(|v| v.jobs.first()).filter(|_| up && view.busy > 0.0).and_then(|j| Task::of(j, &join));
         if let Some(t) = task {
@@ -763,6 +774,7 @@ fn hold_pose(a: &mut SurvivorAnim, pose: &str, step: f32, now: f32) {
         a.woke_at = None;
         (a.task, a.task_w, a.died) = (None, 0.0, false);
         (a.cross, a.cross_w) = (None, 0.0);
+        (a.seat, a.sit_w) = (None, 0.0);
         a.hurt_at = -100.0;
     };
     let act = |a: &mut SurvivorAnim, kind: ActionKind| {
@@ -818,6 +830,12 @@ fn hold_pose(a: &mut SurvivorAnim, pose: &str, step: f32, now: f32) {
         "stairs" | "stairs_down" => {
             locomotion(a, 0.0, 0.0, 1.0);
             (a.stair, a.stair_w, a.stair_u) = (Some(name == "stairs"), 1.0, u);
+        }
+        // Sitting down: on a seat (a sofa's height) or on the ground.
+        "sit" | "sit_ground" => {
+            locomotion(a, 0.0, 0.0, 0.0);
+            let kind = if name == "sit" { zombye_sim::SeatKind::Sofa } else { zombye_sim::SeatKind::Ground };
+            (a.seat, a.sit_w) = (Some(kind), 1.0);
         }
         "sleep" => {
             locomotion(a, 0.0, 0.0, 0.0);
@@ -1009,10 +1027,50 @@ fn compose(a: &SurvivorAnim, now: f32, style: Style, armed: bool) -> SPose {
     ground(&mut pose);
     // Running has a moment in the air each step.
     pose.offset.y += a.run_w * a.move_w * 0.05 * (a.cycle * TAU * 2.0).sin().max(0.0);
+    if let Some((sit, w)) = sitting_now(a) {
+        pose = pose.blend(&sit, w);
+    }
     if let Some((lie, w)) = lying(a, now) {
         pose = pose.blend(&lie, w);
     }
     pose
+}
+
+/// The seated pose and how much of it to blend over the rest, while sitting or getting up.
+pub(crate) fn sitting_now(a: &SurvivorAnim) -> Option<(SPose, f32)> {
+    let kind = a.seat.filter(|_| a.sit_w > 0.01)?;
+    let mut p = seated(kind == zombye_sim::SeatKind::Ground);
+    ground(&mut p);
+    Some((p, a.sit_w))
+}
+
+/// Sitting: on a seat, thighs level and shins down to the floor, hands on the knees; on the
+/// ground, legs out in front and leaning back a little on straight arms. Grounded by the feet
+/// (on a seat that puts the hips at about a chair's height).
+pub(crate) fn seated(on_ground: bool) -> SPose {
+    let mut p = SPose::default();
+    if on_ground {
+        p.rot[THIGH_L] = rx(-1.45) * rz(0.12);
+        p.rot[THIGH_R] = rx(-1.45) * rz(-0.12);
+        p.rot[SHIN_L] = rx(0.25);
+        p.rot[SHIN_R] = rx(0.25);
+        p.rot[TORSO] = rx(0.12);
+        p.rot[UARM_L] = rx(0.45) * rz(0.2);
+        p.rot[UARM_R] = rx(0.45) * rz(-0.2);
+        p.offset = Vec3::new(0.0, 0.0, 0.08);
+    } else {
+        p.rot[THIGH_L] = rx(-FRAC_PI_2) * rz(0.08);
+        p.rot[THIGH_R] = rx(-FRAC_PI_2) * rz(-0.08);
+        p.rot[SHIN_L] = rx(FRAC_PI_2 - 0.1);
+        p.rot[SHIN_R] = rx(FRAC_PI_2 - 0.1);
+        p.rot[TORSO] = rx(-0.06);
+        p.rot[UARM_L] = rx(-0.35) * rz(0.1);
+        p.rot[UARM_R] = rx(-0.35) * rz(-0.1);
+        p.rot[FARM_L] = rx(-0.9);
+        p.rot[FARM_R] = rx(-0.9);
+    }
+    p.rot[HEAD] = rx(-0.05);
+    p
 }
 
 /// How long a sleeper takes to get up after waking.
