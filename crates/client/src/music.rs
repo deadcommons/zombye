@@ -118,7 +118,7 @@ impl Music {
     /// Load the moods from `path` and their files from `audio_dir`, or from the release audio
     /// folder `overlay` where it has them (#154).
     fn load(path: &Path, audio_dir: &Path, overlay: Option<&Path>, sources: &mut Assets<AudioSource>, level: f32) -> Result<Self, String> {
-        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let text = crate::pack::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let data = parse_music(&text)?;
         let mut tracks = BTreeMap::new();
         for (mood, def) in &data.moods {

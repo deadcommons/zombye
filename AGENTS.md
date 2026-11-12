@@ -388,6 +388,37 @@ like a quickload through `saving::WorldSwap`); `--at`, `--fight-demo` and `--sie
 `Intent::Respawn` (a new run for that player, same world). A cyan GOD / IGNORED
 tag beside the stance (and in the stats line) while a dev toggle is on.
 
+## Playtest builds (`net::install`, `pack.rs`, `report.rs`, `tools/release/`)
+
+A packaged game for playtesters, handed out from a restricted itch.io page (deadcommons.itch.io/zombye).
+
+- **Where files are** (`zombye_net::install`): from a checkout everything is where the repo keeps it. A packaged game
+  (`assets/` beside the executable, or in a macOS `.app`'s `Contents/Resources`; `ZOMBYE_ASSETS` names another,
+  `ZOMBYE_PACKAGED=1` acts packaged beside a checkout) reads its assets there (`install::assets_dir`, which
+  `content::default_data_dir` and Bevy's `AssetPlugin` use) and keeps saves, settings, logs and reports in the
+  player's own folder (`install::user_dir`: `~/Library/Application Support/Zombye`, `%APPDATA%\Zombye`,
+  `~/.local/share/zombye`). `install::build_name` is `ZOMBYE_BUILD` from compile time (the packaging script sets it),
+  shown on the main menu's foot and by `zombye --version`.
+- **The bought art is packed** (`pack.rs`): `zombye.pak` beside the executable holds the release folders
+  (`release-models`, `release-characters`, `release-anim`, `release-audio`) scrambled with a key
+  (`ZOMBYE_PACK_KEY` at compile time, else a built-in one), mounted where it lies, so a pack entry
+  `release-models/trees/pine.glb` reads as that file beside the executable. The release folders' loaders read through
+  `pack::read`, `read_dir`, `is_file` and `is_dir` (disk first, then the pack): **a new loader of release files does
+  too.** `zombye --write-pack OUT DIR...` writes one. `ZOMBYE_PACK=PATH` opens another.
+- **Dev tools off** (`install::dev_tools`): in a packaged game without `--dev` (or `ZOMBYE_DEV=1`) the local server
+  refuses `Intent::dev_only` intents (god, ignored, spawning, skipping time, the debug intents), F1/F2/T/Z send
+  nothing, `--give` does nothing, F4 doesn't open and the HUD's top-left read-out is one line (the time, Esc, F12).
+- **Log, crash and F12** (`report.rs`): a packaged game runs itself again as a child with its output in
+  `logs/zombye.log` (the last kept as `zombye.prev.log`); a crash (exit code other than 0 or 1) is copied to
+  `logs/crash-<time>.log` and the next start says so on the yellow line. **F12** writes `reports/<time>/` (screenshot,
+  the log so far, `world.zsave` in single-player, `about.txt`) and opens it in the file manager.
+- **Packaging:** `tools/release/package.sh linux|windows|mac` (Linux and Windows on the build VM, Windows cross-compiled
+  to `x86_64-pc-windows-gnu` with `--features zombye-client/windows-gui`, no console window; the Mac's `Zombye.app`,
+  ad-hoc signed, on the Mac) builds into `dist/zombye-<platform>/`: the game and server, `assets/` without
+  `source/`, `specs/` and (when the release crowd is packed) the placeholder crowd, `zombye.pak` from `$ZOMBYE_ART`,
+  `README.txt` (`tools/release/README-playtest.txt`) and `build.txt`. `ITCH_TARGET=deadcommons/zombye
+  tools/release/push.sh PLATFORM` uploads it with butler (its API key only in the environment, never here).
+
 ## The world
 
 - 1 tile = 1 m; chunks are 16 × 16 tiles. Each tile owns its **north and west edges** (wall, window,

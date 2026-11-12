@@ -36,8 +36,8 @@ pub fn root() -> Option<&'static Path> {
     ROOT.get_or_init(|| {
         let found = std::env::var_os("ZOMBYE_RELEASE_MODELS")
             .map(PathBuf::from)
-            .or_else(|| std::env::current_exe().ok()?.parent().map(|d| d.join("release-models")))
-            .filter(|p| p.is_dir());
+            .or_else(|| crate::pack::beside_exe("release-models"))
+            .filter(|p| crate::pack::is_dir(p));
         if let Some(p) = &found {
             println!("release models: {}", p.display());
         }

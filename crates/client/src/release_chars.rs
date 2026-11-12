@@ -25,8 +25,8 @@ pub fn root() -> Option<&'static Path> {
     ROOT.get_or_init(|| {
         let found = std::env::var_os("ZOMBYE_RELEASE_CHARACTERS")
             .map(PathBuf::from)
-            .or_else(|| std::env::current_exe().ok()?.parent().map(|d| d.join("release-characters")))
-            .filter(|p| p.is_dir());
+            .or_else(|| crate::pack::beside_exe("release-characters"))
+            .filter(|p| crate::pack::is_dir(p));
         if let Some(p) = &found {
             println!("release characters: {}", p.display());
         }
@@ -37,12 +37,12 @@ pub fn root() -> Option<&'static Path> {
 
 /// The survivors' body named `body` (a file stem) in `overlay`, if it holds one.
 pub fn survivor_in(overlay: Option<&Path>, body: &str) -> Option<PathBuf> {
-    overlay.map(|o| o.join("survivor").join(format!("{body}.glb"))).filter(|p| p.is_file())
+    overlay.map(|o| o.join("survivor").join(format!("{body}.glb"))).filter(|p| crate::pack::is_file(p))
 }
 
 /// The crowd's folder in `overlay`, if it holds one.
 pub fn crowd_in(overlay: Option<&Path>) -> Option<PathBuf> {
-    overlay.map(|o| o.join("crowd")).filter(|p| p.is_dir())
+    overlay.map(|o| o.join("crowd")).filter(|p| crate::pack::is_dir(p))
 }
 
 #[cfg(test)]
