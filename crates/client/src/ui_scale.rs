@@ -122,6 +122,8 @@ pub struct ClientSettings {
     /// How much the UI explains (`help_text.rs`): everything, cards without their explaining
     /// sentences, or those and the key reminders gone too.
     pub help_text: crate::help_text::HelpText,
+    /// The old look (`film.rs`): the picture as a faded print, off, subtle or strong.
+    pub old_look: crate::film::OldLook,
 }
 
 impl Default for ClientSettings {
@@ -145,6 +147,7 @@ impl Default for ClientSettings {
             vsync: true,
             skip_menu: false,
             help_text: crate::help_text::HelpText::Full,
+            old_look: crate::film::OldLook::Off,
         }
     }
 }

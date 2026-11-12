@@ -54,6 +54,16 @@
     // `far`: how many metres from the survivor it starts and is thickest, at the default zoom (they
     // follow the zoom). Drawn only with "Haze" on in the graphics settings.
     haze: (colour: (1.0, 0.7, 0.42), brightness: 1.15, strength: 0.26, day: 0.24, day_colour: (0.95, 0.93, 0.86), near: 8.0, far: 34.0),
+    // The old look (the settings' "Old look": Off, Subtle, Strong): the picture as a faded print.
+    // `fade`: how far the blacks lift toward `ink` (sRGB, a warm brown). `wash`: how far the whites
+    // come down to `paper` (sRGB, a warm cream that tints everything through them). `desaturate`:
+    // how much colour goes. `grain`: grain added to the film grain's. `glow`: the soft glow round
+    // the brightest parts. `night`: the share of `fade` kept at night, so the dark stays dark.
+    // Every amount is 0 for none.
+    old_look: (
+        subtle: (fade: 0.3, ink: (0.3, 0.22, 0.16), wash: 0.45, paper: (0.97, 0.9, 0.76), desaturate: 0.12, grain: 0.05, glow: 0.25, night: 0.35),
+        strong: (fade: 0.55, ink: (0.34, 0.25, 0.18), wash: 0.8, paper: (0.95, 0.86, 0.7), desaturate: 0.3, grain: 0.11, glow: 0.45, night: 0.35),
+    ),
     // A campfire at night: its colour (sRGB), brightness in lumens, how far its light reaches and
     // how high over the ground it sits (metres), and how far round it what stands in its light is
     // seen in the dark.

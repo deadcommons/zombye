@@ -334,6 +334,9 @@ pub struct Options {
     /// How much the UI explains, for this session, not saved (`--help-text full|short|off`; without
     /// it the settings file's, else full). See `help_text.rs`.
     pub help_text: Option<help_text::HelpText>,
+    /// The old look for this session, not saved (`--old-look off|subtle|strong`; without it the
+    /// settings file's, else off). See `film.rs`.
+    pub old_look: Option<film::OldLook>,
     /// UI scale in percent for this session, not saved (`--ui-scale PCT`, 75..150; without it the
     /// client settings file's, else 100). See `ui_scale.rs`.
     pub ui_scale: Option<u32>,
@@ -604,6 +607,7 @@ impl Options {
             pause: flag("--pause"),
             settings: value("--settings"),
             help_text: value("--help-text").and_then(|v| help_text::HelpText::parse(&v)),
+            old_look: value("--old-look").and_then(|v| film::OldLook::parse(&v)),
             ui_scale: value("--ui-scale").and_then(|v| ui_scale::parse_pct(&v)),
             hotbar: value("--hotbar"),
             hotbar_press: value("--hotbar-press").map_or(Vec::new(), |v| v.split(',').filter_map(parse_menu_pick).collect()),
