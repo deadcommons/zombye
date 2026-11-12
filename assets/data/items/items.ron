@@ -141,7 +141,7 @@
     (id: "towel", name: "Towel", category: Material, weight_kg: 0.5, volume_l: 1.5, stack: 2, tags: ["rippable"], color: (0.4, 0.6, 0.75)),
     // A length of trunk from a felled tree (zombye_sim::trees): sawn into planks or split into
     // firewood (recipes.ron). Heavy and bulky: a bag, or both hands.
-    (id: "log", name: "Log", category: Material, weight_kg: 6.0, volume_l: 9.0, tags: ["wood", "log", "fuel"], color: (0.42, 0.3, 0.19)),
+    (id: "log", name: "Log", category: Material, weight_kg: 6.0, volume_l: 9.0, two_handed: true, tags: ["wood", "log", "fuel"], color: (0.42, 0.3, 0.19)),
     (id: "thread", name: "Reel of thread", category: Material, weight_kg: 0.02, volume_l: 0.02, stack: 10, color: (0.85, 0.85, 0.85)),
 
     // ---- Clothing ------------------------------------------------------------------------------

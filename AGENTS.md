@@ -859,7 +859,7 @@ Trees come down: wood for planks now, firewood and building later.
 - **Felled** (`World::fell_tree`): the tile becomes `Feature::Stump` (walked over, sight passes), the walk grid, nav
   graph and flow fields are updated, a `fall_noise` (40 m) sound is made, and `tree_logs` (2) or `pine_logs` (3)
   of `log_item` ("log", 6 kg, tags `wood`, `log`, `fuel`) lie on the ground the way it fell. Recipe
-  `saw_log_planks`: a log and a `saws` tool make 3 `wooden_plank`. A log (9 L) doesn't fit in pockets, so it is sawn where it lies (crafting takes inputs from the floor in reach) or carried in a bag.
+  `saw_log_planks`: a log and a `saws` tool make 3 `wooden_plank`. Recipe `split_log`: a log and a `chops` tool make 4 `firewood`. A log (9 L) doesn't fit in pockets: it is sawn or split where it lies (crafting takes inputs from the floor in reach), carried in both hands (`two_handed`) or in a bag.
 - **State** (`World::trees`, `trees::Trees`): chopped trees' hit points and the felled tiles, sorted maps; in
   `state_hash` only while any. **Saves:** an optional `TREE` section straight after `MAPD` (no format bump), put back
   on the regenerated map (`restore_trees`, checked: a tree's tile, hit points in range, sorted; on a map loaded
@@ -870,7 +870,7 @@ Trees come down: wood for planks now, firewood and building later.
   cut trunk (`landscape::felled_stump`, or the release models' `trees/stump.glb`); chips fly off the bark (`fx.rs`)
   with the blade's hit sound, and a fall adds a thud and a shake; a log on the ground is a short cylinder unless the
   release models hold `items/log.glb`. MCP `observe` draws stumps `u`.
-- **Not yet:** splitting logs into firewood (with the fire and cooking work), saws on stumps, trees growing back,
+- **Not yet:** saws on stumps, trees growing back,
   bushes, the tree toppling as it falls, zombies drawn by chopping beyond the swing's own noise.
 - Tests: `sim::trees::tests`.
 

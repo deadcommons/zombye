@@ -63,4 +63,7 @@
     // Logs come from trees felled with an axe (zombye_sim::trees). Planks board up windows and doors.
     (id: "saw_log_planks", name: "Saw a log into planks", secs: 30.0,
         inputs: [(item: "log")], tools: [Tag("saws")], outputs: [(item: "wooden_plank", count: 3)]),
+    // Split with a hatchet or an axe where it lies: firewood for a campfire, four to a log.
+    (id: "split_log", name: "Split a log into firewood", secs: 20.0,
+        inputs: [(item: "log")], tools: [Tag("chops")], outputs: [(item: "firewood", count: 4)]),
 ]
