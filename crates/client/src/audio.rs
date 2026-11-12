@@ -622,6 +622,8 @@ fn load_bank(mut commands: Commands, options: Res<Options>) {
 fn toggle_mute(keys: Res<ButtonInput<KeyCode>>, settings: Option<ResMut<AudioSettings>>) {
     if let Some(mut s) = settings
         && keys.just_pressed(KeyCode::KeyM)
+        // M alone is the map (`map_ui.rs`).
+        && keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::SuperLeft, KeyCode::SuperRight])
     {
         s.muted = !s.muted;
         println!("sound {}", if s.muted { "off" } else { "on" });

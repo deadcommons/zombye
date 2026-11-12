@@ -118,6 +118,9 @@ pub struct WorldConfig {
     /// How survivors see and hear each other (#66, [`crate::awareness`]): what a server tells
     /// each client of the other players. A server's rule, not the world's: not saved.
     pub player_sight: crate::awareness::PlayerSightTuning,
+    /// How far a survivor's map fills in round it ([`crate::explore`]). A rule of the game, not
+    /// of one world: not saved.
+    pub explore: crate::explore::ExploreTuning,
     /// How far voices carry and the noise they make (#67, [`crate::speech`]). Not saved either.
     pub speech: crate::speech::SpeechTuning,
     /// Tying hands, freeing and searching a tied survivor (#73, [`crate::bonds`]). Not saved.
@@ -164,6 +167,7 @@ impl WorldConfig {
             population: PopulationDef::default(),
             street_props: StreetPropsDef::default(),
             player_sight: Default::default(),
+            explore: Default::default(),
             speech: Default::default(),
             bonds: Default::default(),
             groups: Default::default(),
@@ -1225,6 +1229,8 @@ impl World {
         let senses_ms = start.elapsed().as_secs_f32() * 1000.0 - tier_ms;
         // XP for running, moving overloaded and sneaking near zombies (#46).
         self.step_skills();
+        // Each survivor's map fills in round it.
+        self.step_explore();
 
         // Build the fields zombies asked for last tick, and follow moving players.
         let targets = &self.targets;

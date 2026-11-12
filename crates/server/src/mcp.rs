@@ -488,6 +488,7 @@ fn output_schema(name: &str) -> Option<Value> {
                         "tiredness": number(),
                         "tags": {"type": "array", "items": {"type": "string"}, "description": "Status tags, as the HUD shows them"},
                         "run": {"type": "object", "description": "This life: time survived, kills, distance, and once dead the death"},
+                        "map": {"type": "object", "description": "What this survivor has seen of the town (its map screen): the share explored, 0 to 1, and buildings entered"},
                         "cause_of_death": {"type": ["string", "null"]}
                     }
                 }},
@@ -2180,6 +2181,7 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 "run": run_json(&p.run, &world.config.weapons),
                 "cause_of_death": p.run.cause_of_death_with(&world.config.weapons),
                 "first_night": p.first_night.as_ref().map(|f| first_night_json(f, &p.run)),
+                "map": json!({"explored": (p.explored.share() * 1000.0).round() / 1000.0, "buildings_entered": p.explored.entered.len()}),
                 "knocked": p.knock.map(|k| if k.down { "down" } else { "staggered" }),
                 "gesture": p.gesture.map(|g| g.kind.name()),
                 "restrained": p.restraint.map(|r| world.item_def(r.item).id.clone()),
