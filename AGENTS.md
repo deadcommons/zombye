@@ -616,9 +616,10 @@ upgrades and the rest come as new categories of the same list.
   while any; no format bump.
 - **Client:** planks drawn across the opening, a little askew
   (`world_render::sync_barricades`, on both faces of the wall so they read from the street, one entity a plank, hidden while their wall is cut away), the leaf or pane left as
-  it was under them. **Shift+B** opens the build menu (`build_ui.rs`: the catalog by category, what a piece needs and
-  whether you carry it, the same check the server makes; a click builds on what you face; `--build-menu` starts with
-  it open). Right-click a window or door for "Board up a window" / "Nail another plank on" / "Prise a plank off"
+  it was under them. **Shift+B** opens the build menu, the Build tab on the inventory screen's rail (`build_ui.rs`, drawn in
+  the frame's middle like Health and Skills, `inventory_ui::screens`: the catalog by category as cards, what a piece needs
+  and whether you carry it, the same check the server makes; its Build button builds on what you face; `--build-menu`
+  starts with it open). Right-click a window or door for "Board up a window" / "Nail another plank on" / "Prise a plank off"
   (`world_actions.rs`); the current-action bar names the job; opening hints draw a boarded opening as barred.
 - **MCP:** `builds` (the catalog, read-only), `build {player, build, facing}`, `unbuild {player, facing}` (each
   steps until the piece is done); `edge` and `observe` show boarded edges (`H` on the map).

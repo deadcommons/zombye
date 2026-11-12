@@ -1,13 +1,14 @@
 //! The build menu (Shift+B): everything a survivor can build, by category, from the build
-//! catalog (`assets/data/build.ron`, `zombye_sim::build`).
+//! catalog (`assets/data/build.ron`, `zombye_sim::build`). A screen of the inventory's flat frame
+//! (`inventory_ui`, its rail's Build tab; docs/ui-design.md), drawn between its rail, top bar and
+//! footer as Health and Skills are.
 //!
 //! Barricades are all there is for now: boarding up a window or a door, a plank at a time. Walls,
 //! house upgrades and the rest go in the same list as new categories of the catalog. Each entry
 //! shows what it's for, the materials one piece uses and the tools it needs, how many it stacks to,
 //! and whether what we carry is enough (the same check the server makes: `build::check_build`).
-//! A click on an entry builds it on what our survivor faces (`Intent::Build`), as the right-click
-//! menu on a window or door does (`world_actions.rs`). The rows come from [`rows`], a pure function,
-//! so the panel can move into a shared frame without the logic moving with it.
+//! Its Build button builds it on what our survivor faces (`Intent::Build`), as the right-click
+//! menu on a window or door does (`world_actions.rs`). The rows come from [`rows`], a pure function.
 
 use bevy::prelude::*;
 use zombye_net::{Intent, PrivateView};
@@ -15,11 +16,12 @@ use zombye_sim::{BuildCategory, BuildDef, ItemDef};
 
 use crate::player::LocalPlayer;
 use crate::server_link::{JoinInfo, ServerLink};
-use crate::theme::{self, BAD, DIM, GOLD, TEXT, font};
+use crate::theme::{self, flat, font};
 
-const ROW_W: f32 = 460.0;
+/// The width of one entry's card (several to a row on a wide screen).
+const CARD_W: f32 = 360.0;
 
-/// Is the menu open.
+/// Is the menu open (the frame keeps it in step: `inventory_ui::screens`).
 #[derive(Resource, Default)]
 pub struct BuildMenu {
     pub open: bool,
@@ -27,10 +29,6 @@ pub struct BuildMenu {
 
 #[derive(Component)]
 struct MenuRoot;
-
-/// An entry of the menu, to build when clicked.
-#[derive(Component)]
-struct BuildRow(String);
 
 /// One entry of the build menu, in words.
 #[derive(Clone, Debug, PartialEq)]
@@ -83,37 +81,18 @@ impl Plugin for BuildUiPlugin {
 struct Shown(Option<Vec<Row>>);
 
 fn spawn(mut commands: Commands) {
-    commands.spawn((
-        MenuRoot,
-        crate::hud::TopPanel,
-        Visibility::Hidden,
-        Node {
-            position_type: PositionType::Absolute,
-            top: px(70),
-            right: px(24),
-            flex_direction: FlexDirection::Column,
-            row_gap: px(4),
-            padding: UiRect::axes(px(theme::SHEET_PAD.0), px(theme::SHEET_PAD.1)),
-            width: px(ROW_W + 2.0 * theme::SHEET_PAD.0),
-            max_height: Val::Percent(80.0),
-            overflow: Overflow::scroll_y(),
-            ..default()
-        },
-        theme::sheet(),
-        Pickable::IGNORE,
-    ));
+    // The middle of the frame (`inventory_ui`): between its rail, top bar and footer, over its veil.
+    commands.spawn((MenuRoot, GlobalZIndex(7), Visibility::Hidden, Node { position_type: PositionType::Absolute, left: px(flat::RAIL), top: px(flat::TOP_BAR), right: px(0), bottom: px(flat::FOOTER), flex_direction: FlexDirection::Column, ..default() }));
 }
 
 fn toggle(keys: Res<ButtonInput<KeyCode>>, mut menu: ResMut<BuildMenu>) {
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     if shift && keys.just_pressed(KeyCode::KeyB) {
         menu.open = !menu.open;
-    } else if menu.open && keys.just_pressed(KeyCode::Escape) {
-        menu.open = false;
     }
 }
 
-fn rebuild(mut commands: Commands, menu: Res<BuildMenu>, link: Res<ServerLink>, join: Res<JoinInfo>, me: Res<LocalPlayer>, mut shown: ResMut<Shown>, mut root: Query<(Entity, &mut Visibility), With<MenuRoot>>) {
+fn rebuild(mut commands: Commands, menu: Res<BuildMenu>, link: Res<ServerLink>, join: Res<JoinInfo>, me: Res<LocalPlayer>, scrolls: Option<Res<crate::inventory_ui::Scrolls>>, mut shown: ResMut<Shown>, mut root: Query<(Entity, &mut Visibility), With<MenuRoot>>) {
     let Ok((root, mut vis)) = root.single_mut() else { return };
     let want = if menu.open { Visibility::Inherited } else { Visibility::Hidden };
     if *vis != want {
@@ -127,57 +106,64 @@ fn rebuild(mut commands: Commands, menu: Res<BuildMenu>, link: Res<ServerLink>, 
         return;
     }
     commands.entity(root).despawn_children();
+    let y = scrolls.map_or(0.0, |s| s.0[7]);
     commands.entity(root).with_children(|c| {
-        theme::title(c, "Build");
-        c.spawn((Text::new("Face what to build on, then click an entry. Shift+B: close"), font(theme::SMALL), TextColor(DIM), Pickable::IGNORE));
-        if list.is_empty() {
-            c.spawn((Text::new("Nothing to build: this game's data has no build.ron."), font(theme::BODY), TextColor(DIM), Pickable::IGNORE));
-        }
-        let mut last = None;
-        for r in &list {
-            if last != Some(r.category) {
-                last = Some(r.category);
-                theme::spawn_rule(c);
-                c.spawn((Text::new(r.category.label().to_uppercase()), theme::head(theme::BODY), TextColor(TEXT), Pickable::IGNORE));
+        c.spawn((Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::FlexEnd, padding: UiRect::new(px(24), px(24), px(18), px(12)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|h| {
+            h.spawn((Text::new("BUILD"), theme::head(flat::TITLE), TextColor(flat::BONE), Pickable::IGNORE));
+            h.spawn((Text::new("Face the window or door first, then build."), font(flat::SMALL), TextColor(flat::DIM), Pickable::IGNORE));
+        });
+        crate::inventory_ui::scroller(c, 7, y, UiRect::new(px(24), px(24), px(0), px(16)), 14.0).with_children(|s| {
+            if list.is_empty() {
+                s.spawn((Text::new("Nothing to build: this game's data has no build.ron."), font(flat::BODY), TextColor(flat::DIM), Pickable::IGNORE));
             }
-            let ready = r.ready.is_ok();
-            c.spawn((
-                BuildRow(r.id.clone()),
-                Node { width: px(ROW_W), flex_direction: FlexDirection::Column, row_gap: px(2), padding: UiRect::all(px(6)), ..default() },
-                BackgroundColor(theme::ROW),
-            ))
-            .observe(|over: On<PointerOver>, mut bg: Query<&mut BackgroundColor>| {
-                if let Ok(mut b) = bg.get_mut(over.entity) {
-                    b.0 = theme::ROW_HOVER;
-                }
-            })
-            .observe(|out: On<PointerOut>, mut bg: Query<&mut BackgroundColor>| {
-                if let Ok(mut b) = bg.get_mut(out.entity) {
-                    b.0 = theme::ROW;
-                }
-            })
-            .observe(|click: On<PointerPress>, rows: Query<&BuildRow>, me: Res<LocalPlayer>, mut link: ResMut<ServerLink>| {
-                if click.button == PointerButton::Primary
-                    && let Ok(r) = rows.get(click.entity)
-                {
-                    link.send(Intent::Build { player: me.id, build: r.0.clone() });
-                }
-            })
-            .with_children(|row| {
-                row.spawn((Text::new(r.name.clone()), theme::strong(theme::BODY), TextColor(if ready { GOLD } else { TEXT }), Pickable::IGNORE));
-                if !r.description.is_empty() {
-                    row.spawn((Text::new(r.description.clone()), font(theme::SMALL), TextColor(DIM), Pickable::IGNORE));
-                }
-                row.spawn((Text::new(format!("On {}: {}", r.on, r.needs)), font(theme::SMALL), TextColor(DIM), Pickable::IGNORE));
-                let (text, color) = match &r.ready {
-                    Ok(()) => ("You have what it takes.".to_string(), GOLD),
-                    Err(why) => (format!("Missing: {why}"), BAD),
-                };
-                row.spawn((Text::new(text), font(theme::SMALL), TextColor(color), Pickable::IGNORE));
-            });
-        }
+            let mut i = 0;
+            while i < list.len() {
+                let cat = list[i].category;
+                let n = list[i..].iter().take_while(|r| r.category == cat).count();
+                s.spawn((Text::new(cat.label().to_uppercase()), theme::head(flat::HEAD), TextColor(flat::DIM), Pickable::IGNORE));
+                s.spawn((Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: px(12), row_gap: px(12), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|grid| {
+                    for r in &list[i..i + n] {
+                        card(grid, r, me.id);
+                    }
+                });
+                i += n;
+            }
+        });
     });
     shown.0 = Some(list);
+}
+
+/// One entry: its picture, name, what it's for, what a piece takes, and its Build button.
+fn card(grid: &mut ChildSpawnerCommands, r: &Row, me: u32) {
+    let ready = r.ready.is_ok();
+    grid.spawn((Node { flex_grow: 1.0, flex_basis: px(CARD_W), min_width: px(CARD_W), max_width: px(CARD_W * 1.6), flex_direction: FlexDirection::Column, row_gap: px(6), padding: UiRect::axes(px(14), px(12)), border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(flat::RADIUS)), ..default() }, BorderColor::all(if ready { flat::GREEN } else { flat::LINE }), BackgroundColor(flat::CELL), Pickable::IGNORE)).with_children(|card| {
+        card.spawn((Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(12), ..default() }, Pickable::IGNORE)).with_children(|t| {
+            if let Some(image) = flat::icon("wooden_plank", Color::WHITE) {
+                t.spawn((Node { width: px(44), height: px(44), flex_shrink: 0.0, ..default() }, image, Pickable::IGNORE));
+            }
+            t.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(2), ..default() }, Pickable::IGNORE)).with_children(|n| {
+                n.spawn((Text::new(r.name.to_uppercase()), theme::head(flat::HEAD), TextColor(flat::BONE), Pickable::IGNORE));
+                n.spawn((Text::new(format!("On {}", r.on)), font(flat::SMALL), TextColor(flat::DIM), Pickable::IGNORE));
+            });
+        });
+        if !r.description.is_empty() {
+            card.spawn((Text::new(r.description.clone()), font(flat::SMALL), TextColor(flat::DIM), Pickable::IGNORE));
+        }
+        card.spawn((Text::new(r.needs.clone()), font(flat::SMALL), TextColor(flat::BONE), Pickable::IGNORE));
+        let (text, color) = match &r.ready {
+            Ok(()) => ("You have what it takes.".to_string(), flat::GREEN),
+            Err(why) => (format!("Missing: {why}"), flat::RED_TEXT),
+        };
+        card.spawn((Text::new(text), theme::strong(flat::SMALL), TextColor(color), Pickable::IGNORE));
+        card.spawn((Node { flex_direction: FlexDirection::Row, margin: UiRect::top(px(4)), ..default() }, Pickable::IGNORE)).with_children(|b| {
+            let id = r.id.clone();
+            flat::button(b, "Build", ready).observe(move |click: On<PointerPress>, mut link: ResMut<ServerLink>| {
+                if click.button == PointerButton::Primary {
+                    link.send(Intent::Build { player: me, build: id.clone() });
+                }
+            });
+        });
+    });
 }
 
 #[cfg(test)]
