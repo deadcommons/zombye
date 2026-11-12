@@ -469,6 +469,24 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   included). Changing the generator changes every map: saves made before #80 load only with `--load-anyway` /
   `load {force: true}`. Lot details use coordinates relative to their lot, so a bigger map gives the same
   town. `print_town` (an ignored test; `ZOMBYE_SEED`, and `ZOMBYE_PPM=PATH` for a one-pixel-a-tile picture) prints it.
+- **Terrain (DCM-83, `sim::terrain`; stage 1):** the ground has hills, low-poly: heights at the corners of a
+  `cell_m` (4 m) grid, each square two flat facets (the diagonal alternating), from seeded value noise
+  (`Terrain::generate`, `+ - * / sqrt` only, so the same on every machine). **The town is level:** corners within
+  `flat_margin_m` (6 m) of the town's bounds are 0 and the hills rise over `ramp_m` (70 m) beyond to `relief_m`
+  (9 m) of relief, `wavelength_m` 150; no facet is steeper than `max_grade` (0.14: every slope is walkable).
+  `TerrainDef` is `GenConfig::terrain` (serde default, saved with the settings, checked on load, `TerrainDef::flat()`
+  none); the heights are derived from the seed and the town, never saved or sent: a client builds them with the map
+  from `Welcome::generation` (`wire::PROTOCOL` 32). `TileMap::terrain`, `TileMap::ground(p)` (the height of the
+  facet under p); `height_at` stays height above the ground (stairs, `out_of_reach`, blows). Walking uphill is slower
+  (`Terrain::slope_factor`: `1 - uphill_slow (1.5) x climb`, never under half), for players in `step_movement` (so
+  prediction stays exact) and active zombies; downhill and across are as on the flat. **Client:** `MeshBuilder::drape`
+  lays a chunk's ground over the facets (every triangle that would cross a fold cut along it, flat faces taking their
+  facet's normal and drifting to the palette's `dirt` then `rock` as the grade passes 0.05 and 0.10), its first UVs
+  carrying the ground's height so `world.wesl` tests height above the ground (`above`, under `TERRAIN`: ground
+  detail, roofs, haze, moon paint); `MeshBuilder::lift` stands props and trees on it (by their anchor, the lowest
+  5 cm following the slope); players, zombies, items, grass, effects, lights and the aim marker add
+  `ground(pos)`. **Not yet:** near-tier zombies slowed by slopes, bullets over hills (they fly level), water and
+  sand, cliffs, a gentle grade in town with a level pad per lot (stage 2).
 - **Curves (#82, `meshgen/curves.rs`):** the tiles stay square (walking, sight and the sim go by them), but what's
   drawn follows real curves, faceted, never stepped. Turning circles are true circles (48 facets) of asphalt, kerb and
   a sidewalk ring with slab joints across it, opening into their street through a 4 m reverse curve each side. Every

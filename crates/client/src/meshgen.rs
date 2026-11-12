@@ -350,11 +350,13 @@ impl MeshBuilder {
     /// low-poly look) and, on a slope, its colour drifts to bare earth and rock (`slope_tint`).
     /// Nothing changes where the ground is level (all of town).
     pub fn drape(&mut self, t: &Terrain) {
-        if t.is_flat() {
-            return;
-        }
         if let Some(far) = &mut self.far {
             far.drape(t);
+        }
+        if t.is_flat() {
+            // Level everywhere: the ground's height (the first UVs, below) is 0 all over.
+            self.uv0.iter_mut().for_each(|uv| *uv = [0.0, 0.0]);
+            return;
         }
         let n = self.positions.len();
         let lifted: Vec<[f32; 3]> = self.positions.iter().map(|p| [p[0], p[1] + t.height(Vec2::new(p[0], p[2])), p[2]]).collect();
@@ -364,6 +366,8 @@ impl MeshBuilder {
         // A vertex's facet normal and tint, once a flat face on one facet has given it one.
         let mut facet_of: Vec<Option<Vec3>> = vec![None; n];
         let mut cut: Vec<[u32; 3]> = Vec::new();
+        // The colours as built, before any tint: a piece cut across a fold is tinted from these.
+        let built = self.colors.clone();
         for tri in indices.chunks_exact(3) {
             let ids = [tri[0], tri[1], tri[2]];
             let p = ids.map(|i| Vec3::from(old_pos[i as usize]));
@@ -421,7 +425,7 @@ impl MeshBuilder {
                             let y = p[0].y * w[0] + p[1].y * w[1] + p[2].y * w[2] + t.height(*q);
                             let mut c = [0.0f32; 4];
                             for (k, id) in ids.iter().enumerate() {
-                                let col = self.colors[*id as usize];
+                                let col = built[*id as usize];
                                 for (ch, v) in c.iter_mut().zip(col) {
                                     *ch += v * w[k];
                                 }
@@ -606,5 +610,65 @@ pub fn add_furniture(mb: &mut MeshBuilder, kind: &str, min: Vec2, size: Vec2, fa
             }
         }
         _ => block(mb, lo, hi, 0.0, 0.8, p.greybox_other),
+    }
+}
+
+#[cfg(test)]
+mod drape_tests {
+    use super::*;
+    use zombye_sim::terrain::TerrainDef;
+
+    fn hills() -> Terrain {
+        Terrain::generate(&TerrainDef::default(), 7, IVec2::splat(240), IVec2::splat(100), IVec2::splat(130))
+    }
+
+    #[test]
+    fn draped_ground_lies_on_the_facets() {
+        let t = hills();
+        assert!(!t.is_flat());
+        let mut m = MeshBuilder::default();
+        // A lawn of one-metre tiles out in the hills, as the landscape builds it, and a kerb face.
+        for z in 170..186 {
+            for x in 170..186 {
+                let (x, z) = (x as f32, z as f32);
+                m.quad([Vec3::new(x, 0.0, z), Vec3::new(x, 0.0, z + 1.0), Vec3::new(x + 1.0, 0.0, z + 1.0), Vec3::new(x + 1.0, 0.0, z)], Vec3::Y, rgb(0.2, 0.5, 0.2));
+            }
+        }
+        m.quad([Vec3::new(170.0, 0.0, 190.5), Vec3::new(170.0, 0.15, 190.5), Vec3::new(186.0, 0.15, 190.5), Vec3::new(186.0, 0.0, 190.5)], Vec3::Z, rgb(0.5, 0.5, 0.5));
+        m.drape(&t);
+        let mut flat = 0;
+        for tri in m.indices.chunks_exact(3) {
+            let p = [0, 1, 2].map(|k| Vec3::from(m.positions[tri[k] as usize]));
+            let n = Vec3::from(m.normals[tri[0] as usize]);
+            if n.y < 0.7 {
+                continue;
+            }
+            flat += 1;
+            for q in p {
+                assert!((q.y - t.height(q.xz())).abs() < 1e-3, "a corner off the ground at {q}");
+            }
+            // Wholly on one facet: its middle is on the ground too, not cutting across a fold.
+            let mid = (p[0] + p[1] + p[2]) / 3.0;
+            assert!((mid.y - t.height(mid.xz())).abs() < 1e-3, "a triangle across a fold at {mid}");
+            // Its normal is its facet's (the low-poly look).
+            let f = t.facet_at(mid.xz());
+            assert!((n - facet_normal(&f)).length() < 1e-3);
+        }
+        assert!(flat >= 16 * 16 * 2);
+        // The ground's height rides in the first UVs, for the shader.
+        for (k, q) in m.positions.iter().enumerate() {
+            assert!((m.uv0[k][0] - t.height(Vec2::new(q[0], q[2]))).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn draping_level_ground_changes_nothing() {
+        let t = Terrain::default();
+        let mut m = MeshBuilder::default();
+        m.quad([Vec3::ZERO, Vec3::Z, Vec3::new(1.0, 0.0, 1.0), Vec3::X], Vec3::Y, rgb(0.2, 0.5, 0.2));
+        let before = m.positions.clone();
+        m.drape(&t);
+        assert_eq!(m.positions, before);
+        assert!(m.uv0.iter().all(|uv| *uv == [0.0, 0.0]));
     }
 }
