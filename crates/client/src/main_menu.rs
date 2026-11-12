@@ -41,7 +41,7 @@ use crate::theme::{self, BODY, SMALL, font};
 
 /// Flags (with a value, and alone) that only set the scene: with nothing but these, the game
 /// starts on the menu.
-const SCENE_WITH_VALUE: [&str; 19] = ["--size", "--saves", "--data", "--mod", "--graphics", "--vegetation", "--no-post", "--msaa", "--shadow-map", "--render-scale", "--ui-scale", "--volume", "--music", "--name", "--server-list", "--crowd-vat", "--survivor", "--opening-hints", "--help-text"];
+const SCENE_WITH_VALUE: [&str; 20] = ["--size", "--saves", "--data", "--mod", "--graphics", "--vegetation", "--no-post", "--msaa", "--shadow-map", "--render-scale", "--ui-scale", "--volume", "--music", "--name", "--server-list", "--crowd-vat", "--survivor", "--opening-hints", "--help-text", "--old-look"];
 const SCENE_ALONE: [&str; 8] = ["--novsync", "--mute", "--load-anyway", "--first-person", "--third-person", "--zombie-silhouettes", "--walls-up", "--rotate"];
 /// What chose this run's world or screen, dropped when another is chosen.
 const WORLD_WITH_VALUE: [&str; 13] = ["--connect", "--password", "--load", "--from-browser", "--browser-join", "--join-error", "--seed", "--new-game-from", "--settings", "--menu-screen", "--server-info", "--skip-hours", "--at"];
