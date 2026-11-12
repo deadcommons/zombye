@@ -30,7 +30,7 @@ use zombye_sim::template::{BuildingKind, BuildingLook, Porch};
 
 use super::palette::{self, pal};
 use super::{CutKind, CutTag, FaceColors, MeshBuilder, hash01, same, shade};
-use crate::world_render::{STOREY, STUB_HEIGHT, WALL_T, WINDOW_HEAD, WINDOW_SILL};
+use crate::world_render::{SILL_LIFT, STOREY, STUB_HEIGHT, WALL_T, WINDOW_HEAD, WINDOW_SILL};
 
 // Sizes, in metres.
 /// Top of the foundation and of the water-table board above it (both under the 0.4 m stub).
@@ -233,7 +233,7 @@ impl<'a> Kit<'a> {
                 f.cube(mb, 0.02, 0.12, sill, head, face - 0.01, face + PROUD, c);
                 f.cube(mb, 0.88, 0.98, sill, head, face - 0.01, face + PROUD, c);
                 f.cube(mb, -0.02, 1.02, head, head + 0.1, face - 0.01, face + PROUD + 0.01, c);
-                f.cube(mb, -0.05, 1.05, sill - 0.07, sill, face - 0.04, face + 0.07, c);
+                f.cube(mb, -0.05, 1.05, sill - 0.07, sill + SILL_LIFT, face - 0.04, face + 0.07, c);
                 if self.commercial && base == 0.0 && side_dir(self.look.front) == f.out && matches!(self.look.kind, BuildingKind::Shop) {
                     // A shopfront's stall riser under the glass.
                     f.cube(mb, -0.02, 1.02, FOUNDATION_TOP, sill - 0.07, face - 0.01, face + 0.03, lit_box(pal().shopfront));
@@ -249,7 +249,7 @@ impl<'a> Kit<'a> {
             // Muntins: a centre mullion and a meeting rail across, in the wall's middle.
             let f = Frame { origin: a, along: (b - a).normalize(), out: (b - a).normalize().perp() };
             let c = same(self.trim);
-            f.cube(mb, 0.47, 0.53, base + WINDOW_SILL, base + WINDOW_HEAD, -0.03, 0.03, c);
+            f.cube(mb, 0.47, 0.53, base + WINDOW_SILL + SILL_LIFT, base + WINDOW_HEAD, -0.03, 0.03, c);
             f.cube(mb, 0.04, 0.96, base + 1.47, base + 1.53, -0.03, 0.03, c);
         }
         mb.set_tag(CutTag::default());

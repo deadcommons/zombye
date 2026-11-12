@@ -78,6 +78,22 @@ fn area(poly: &[Vec2]) -> (f32, Vec2) {
 }
 
 impl MeshBuilder {
+    /// One builder holding the triangles of several, for finding fights between meshes drawn
+    /// one over the other (a building's ground floor and its upper storeys).
+    pub fn merged(parts: &[&MeshBuilder]) -> MeshBuilder {
+        let mut out = MeshBuilder::default();
+        for m in parts {
+            let base = out.positions.len() as u32;
+            out.positions.extend_from_slice(&m.positions);
+            out.normals.extend_from_slice(&m.normals);
+            out.colors.extend_from_slice(&m.colors);
+            out.uv0.extend_from_slice(&m.uv0);
+            out.uv1.extend_from_slice(&m.uv1);
+            out.indices.extend(m.indices.iter().map(|i| i + base));
+        }
+        out
+    }
+
     /// Every pair of faces in this mesh that fight (see the module docs). Faces of one colour
     /// don't count (nobody can see which wins), nor do the tops of wall stubs against anything
     /// (drawn only while their wall is down).
