@@ -115,6 +115,9 @@ pub struct ClientSettings {
     pub fullscreen: bool,
     /// Frames wait for the screen's refresh (`--novsync` turns it off for a session).
     pub vsync: bool,
+    /// Start straight in the game, without the main menu (`main_menu::skipped`; for development:
+    /// `ZOMBYE_NO_MENU=1` does the same without the file). `--main-menu` still shows it.
+    pub skip_menu: bool,
 }
 
 impl Default for ClientSettings {
@@ -136,6 +139,7 @@ impl Default for ClientSettings {
             first_person: false,
             fullscreen: false,
             vsync: true,
+            skip_menu: false,
         }
     }
 }

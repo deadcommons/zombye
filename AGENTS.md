@@ -236,7 +236,7 @@ under the HUD says what was saved or loaded (or why not), and stdout gets the sa
 an allowlist of flags a menu can carry on, such as `--saves`, `--data`, `--mod`, `--size`, `--ui-scale`, `--name`,
 `--graphics`; anything else, `--load`, `--connect`, `--seed`, `--zombies`, `--fight-demo`, `--render-to` alone and the
 rest, starts the game as before, so every recipe in this file and every tool is unchanged). `--main-menu` forces it,
-`--no-menu` skips it. It is a small app of its own before the game, like the join screen (the game builds its map
+`--no-menu` skips it. For development, `ZOMBYE_NO_MENU=1` or "Skip the main menu" on the settings' Game tab (`skip_menu` in `settings.ron`) skips it on every plain start (`main_menu::skipped`); `--main-menu` and the pause menu's way back still show it. It is a small app of its own before the game, like the join screen (the game builds its map
 once a start), and every choice starts the game again with the arguments for it (`main_menu::load_args`,
 `new_game_args`, `multiplayer_args`; on Unix an `exec`): **Continue** (the autosave, which leaving a game writes; not shown
 without one), **New game** (asks first when an autosave would be overwritten; `--new-game --seed <a fresh one>

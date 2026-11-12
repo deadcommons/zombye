@@ -69,6 +69,17 @@ pub fn wanted(o: &Options) -> bool {
     !o.no_menu && !o.new_game && o.connect.is_none() && o.server_info.is_none() && (o.main_menu || (o.plain && !o.offscreen()))
 }
 
+/// Whether a menu that would show is skipped for development: `ZOMBYE_NO_MENU` set (to anything
+/// but nothing or 0), or "Skip the main menu" in the settings. `--main-menu` shows it regardless
+/// (the pause menu's way back, and the way to the switch again).
+pub fn skipped(o: &Options) -> bool {
+    !o.main_menu && skip_asked(std::env::var("ZOMBYE_NO_MENU").ok().as_deref(), || crate::ui_scale::ClientSettings::load(&crate::ui_scale::ClientSettings::path(&o.saves)).0.skip_menu)
+}
+
+fn skip_asked(env: Option<&str>, setting: impl FnOnce() -> bool) -> bool {
+    env.is_some_and(|v| !v.is_empty() && v != "0") || setting()
+}
+
 /// This run's arguments for the game itself, in the world `add` says.
 fn game_args(args: &[String], add: &[&str]) -> Vec<String> {
     let mut out = args_without(args, &WORLD_WITH_VALUE, &WORLD_ALONE, add);
@@ -390,6 +401,14 @@ mod tests {
         for line in ["--no-menu", "--load autosave", "--seed 4", "--zombies 500", "--fight-demo --autoplay", "--exit-after 5", "--screenshot s.png", "--render-to x.png", "--connect a", "--browser", "--new-game", "--new-game-from f.ron", "--main-menu --no-menu", "--time 9", "stray", "--server-info a --main-menu"] {
             assert!(!wanted(&options(line)), "{line}");
         }
+    }
+
+    #[test]
+    fn development_can_skip_the_menu() {
+        assert!(!skip_asked(None, || false) && !skip_asked(Some(""), || false) && !skip_asked(Some("0"), || false));
+        assert!(skip_asked(Some("1"), || false) && skip_asked(None, || true));
+        // `--main-menu` shows it whatever the settings or the environment say.
+        assert!(!skipped(&options("--main-menu")));
     }
 
     #[test]

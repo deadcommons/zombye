@@ -689,7 +689,7 @@ fn main() {
     }
     // Started with nothing that chooses a world: the main menu first, which starts the game again
     // with what was picked there.
-    if main_menu::wanted(&options) {
+    if main_menu::wanted(&options) && !main_menu::skipped(&options) {
         main_menu::run(options);
     }
     let plugins = window_plugins(&options);
