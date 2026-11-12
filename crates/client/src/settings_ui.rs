@@ -20,6 +20,7 @@ use bevy::prelude::*;
 use bevy::window::{MonitorSelection, PresentMode, PrimaryWindow, WindowMode};
 
 use crate::graphics::{Graphics, MAX_VEGETATION, Preset};
+use crate::film::{OldLook, OldLookNow};
 use crate::help_text::{self, HelpText};
 use crate::menu_skin::{self as skin, BONE, DIM, Look};
 use crate::theme::{self, BODY, SMALL, font};
@@ -93,6 +94,8 @@ pub enum Change {
     UiScale(i32),
     /// How much the UI explains (`help_text.rs`).
     HelpText(HelpText),
+    /// The picture as a faded print (`film.rs`).
+    OldLook(OldLook),
     /// Everything on this tab as the game ships it.
     Defaults(Tab),
 }
@@ -118,10 +121,11 @@ pub fn change(s: &mut ClientSettings, c: Change) {
         Change::Music(n) => s.music = stepped(s.music, n, 10, 0, 200),
         Change::UiScale(n) => s.ui_scale = ui_scale::step(s.ui_scale, n > 0),
         Change::HelpText(h) => s.help_text = h,
+        Change::OldLook(o) => s.old_look = o,
         Change::Defaults(tab) => {
             let d = ClientSettings::default();
             match tab {
-                Tab::Graphics => (s.graphics, s.fullscreen, s.vsync) = (d.graphics, d.fullscreen, d.vsync),
+                Tab::Graphics => (s.graphics, s.fullscreen, s.vsync, s.old_look) = (d.graphics, d.fullscreen, d.vsync, d.old_look),
                 Tab::Audio => (s.volume, s.music, s.muted) = (d.volume, d.music, d.muted),
                 Tab::Game => (s.first_person, s.ui_scale, s.zombie_silhouettes, s.opening_hints, s.skip_menu, s.help_text) = (d.first_person, d.ui_scale, d.zombie_silhouettes, d.opening_hints, d.skip_menu, d.help_text),
                 Tab::Controls => {}
@@ -204,6 +208,15 @@ pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
                 label: "Anti-aliasing",
                 about: "Samples a pixel. Window glass looks best at 4x.",
                 control: Control::Choice([(1u32, "Off"), (2, "2x"), (4, "4x")].into_iter().map(|(n, name)| (name.to_string(), n == g.msaa, Change::Msaa(n))).collect()),
+            },
+            Row {
+                label: "Old look",
+                about: match s.old_look {
+                    OldLook::Off => "The picture as a faded old print: washed-out blacks, cream whites, more grain.",
+                    OldLook::Subtle => "A light fade: warm blacks, cream whites, a little more grain.",
+                    OldLook::Strong => "A heavy fade, like a print left in the sun for years.",
+                },
+                control: Control::Choice(OldLook::ALL.into_iter().map(|o| (o.name().to_string(), o == s.old_look, Change::OldLook(o))).collect()),
             },
             switch("Bloom", "The glow round lamps, fires and lit windows.", s, Switch::Bloom),
             switch("Film grain", "A little noise over the picture.", s, Switch::Grain),
@@ -359,6 +372,7 @@ fn apply_live(
     scale: Option<ResMut<ui_scale::UiScalePct>>,
     silhouettes: Option<ResMut<crate::silhouette::ZombieSilhouettes>>,
     hints: Option<ResMut<crate::opening_hints::OpeningHints>>,
+    old_look: Option<ResMut<OldLookNow>>,
     mut cams: Query<(&mut crate::camera::IsoCamera, &mut Projection)>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
 ) {
@@ -404,6 +418,11 @@ fn apply_live(
     }
     if was.help_text != now.help_text {
         help_text::set(now.help_text);
+    }
+    if was.old_look != now.old_look
+        && let Some(mut o) = old_look
+    {
+        o.0 = now.old_look;
     }
     if was.opening_hints != now.opening_hints
         && let Some(mut h) = hints
@@ -572,6 +591,25 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_old_look_is_a_choice_of_three_no_preset_touches() {
+        let mut s = ClientSettings::default();
+        let row = |s: &ClientSettings| rows(Tab::Graphics, s).into_iter().find(|r| r.label == "Old look").expect("on the Graphics tab");
+        let Control::Choice(choices) = row(&s).control else { panic!("a choice") };
+        assert_eq!(choices.iter().map(|(n, on, _)| (n.as_str(), *on)).collect::<Vec<_>>(), [("Off", true), ("Subtle", false), ("Strong", false)]);
+        change(&mut s, choices[2].2);
+        assert_eq!(s.old_look, OldLook::Strong);
+        // A look, not a cost: it leaves the preset alone, and a preset leaves it alone.
+        assert_eq!(s.graphics.preset, Preset::High);
+        change(&mut s, Change::Preset(Preset::Low));
+        assert_eq!(s.old_look, OldLook::Strong);
+        let text = ron::ser::to_string(&s).unwrap();
+        assert_eq!(ron::from_str::<ClientSettings>(&text).unwrap().old_look, OldLook::Strong);
+        assert_eq!(ron::from_str::<ClientSettings>("(ui_scale: 110)").unwrap().old_look, OldLook::Off);
+        change(&mut s, Change::Defaults(Tab::Graphics));
+        assert_eq!(s.old_look, OldLook::Off);
     }
 
     #[test]
