@@ -4673,9 +4673,9 @@ mod tests {
         assert!(err && text.contains("nail"), "nothing to build with: {text}");
         assert!(world.give_item(1, "wooden_plank", 2) && world.give_item(1, "nail", 8) && world.give_item(1, "claw_hammer", 1));
         let (text, err) = call(&mut world, &mut persist, "build", json!({"build": "board_window"}));
-        assert!(!err && text.contains("has 1 plank(s), 25/25 HP"), "{text}");
+        assert!(!err && text.contains("has 1 plank(s), 60/60 HP"), "{text}");
         let (text, err) = call(&mut world, &mut persist, "build", json!({"build": "board_window"}));
-        assert!(!err && text.contains("has 2 plank(s), 50/50 HP"), "{text}");
+        assert!(!err && text.contains("has 2 plank(s), 120/120 HP"), "{text}");
         let (text, _) = call(&mut world, &mut persist, "edge", json!({"x": e.tile.x, "y": e.tile.y}));
         assert!(text.contains("window (boarded up)"), "{text}");
         let (text, err) = call(&mut world, &mut persist, "unbuild", json!({}));

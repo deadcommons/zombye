@@ -10,7 +10,7 @@
 //   secs         seconds each piece takes (Handiwork makes it faster, as crafting)
 //   inputs       [(item: "id", count: n)]: used up by each piece (whole items, carried or held)
 //   tools        [Item("id")] or [Tag("tag")]: needed to hand, kept
-//   hp           hit points of each piece against zombies battering it (a shut door has 40, glass 6)
+//   hp           hit points of each piece against zombies battering it (a shut door has 40, glass 6; a zombie does about 1 every 1.6 s)
 //   max          pieces it stacks up to on one window or door
 //   noise        metres putting a piece up is heard; break_noise, a piece battered down
 //   xp           Handiwork XP for each piece
@@ -24,13 +24,13 @@
         description: "Nail a plank across the window. Up to four; zombies batter them down one by one.",
         category: Barricades, on: Window, secs: 5.0,
         inputs: [(item: "wooden_plank"), (item: "nail", count: 4)], tools: [Tag("hammers")],
-        hp: 25.0, max: 4, noise: 22.0, break_noise: 30.0, xp: 4.0,
+        hp: 60.0, max: 4, noise: 22.0, break_noise: 30.0, xp: 4.0,
         remove: (secs: 4.0, tools: [Tag("pries")], returns: [(item: "wooden_plank")], noise: 12.0)),
     // The same across a shut or broken door: more planks for the bigger opening.
     (id: "board_door", name: "Board up a door",
         description: "Nail a plank across the door. Up to five; the door still has to be battered through once they're down.",
         category: Barricades, on: Door, secs: 6.0,
         inputs: [(item: "wooden_plank"), (item: "nail", count: 4)], tools: [Tag("hammers")],
-        hp: 25.0, max: 5, noise: 22.0, break_noise: 30.0, xp: 4.0,
+        hp: 60.0, max: 5, noise: 22.0, break_noise: 30.0, xp: 4.0,
         remove: (secs: 5.0, tools: [Tag("pries")], returns: [(item: "wooden_plank")], noise: 12.0)),
 ]

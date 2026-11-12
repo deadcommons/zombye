@@ -596,7 +596,7 @@ upgrades and the rest come as new categories of the same list.
   `Door` shut or broken), `secs` a piece (Handiwork makes it faster, as crafting), `inputs` used up and `tools`
   kept (a recipe's `RecipeItem` / `Tool`, tags allowed: the hammer is `Tag("hammers")`), `hp` a piece, `max`
   pieces, `noise`, `break_noise`, `xp` (Handiwork a piece) and `remove` (`RemoveDef`: secs, tools, what each piece
-  gives back, noise). Shipped (ours): `board_window` (a plank and four nails with a hammer, 5 s, 25 HP a plank, up to
+  gives back, noise). Shipped (ours): `board_window` (a plank and four nails with a hammer, 5 s, 60 HP a plank, up to
   4) and `board_door` (6 s, up to 5); prised off with anything tagged `pries` (crowbar, claw hammer), the plank back,
   the nails lost. Nails are an item (`nail`; a box opens into 50, `open_nails`), loot in sheds and garages.
 - **Boarded edges:** the first plank turns the edge into `Edge::WindowBoarded` / `DoorBoarded` (`is_boarded`): it

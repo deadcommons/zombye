@@ -108,11 +108,11 @@ fn a_boarded_window_blocks_walking_and_sight_and_comes_down_plank_by_plank() {
     build(&mut w, id, "board_window");
     build(&mut w, id, "board_window");
     assert_eq!(w.map.barricade(e).unwrap().planks, 3);
-    assert_eq!(w.edge_hp(e), Some((75.0, 75.0)));
-    // Battered: a plank comes down for each 25 hp.
-    assert!(w.damage_edge(e, 30.0));
+    assert_eq!(w.edge_hp(e), Some((180.0, 180.0)));
+    // Battered: a plank comes down for each 60 hp.
+    assert!(w.damage_edge(e, 72.0));
     assert_eq!(w.map.barricade(e).unwrap().planks, 2);
-    assert!(w.damage_edge(e, 44.0));
+    assert!(w.damage_edge(e, 106.0));
     assert_eq!(w.map.barricade(e).unwrap().planks, 1);
     assert!(w.damage_edge(e, 10.0));
     assert_eq!(w.map.owned_edge(e.tile, e.edge), Edge::Window, "the window as it was");
