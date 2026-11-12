@@ -1836,7 +1836,7 @@ and mood, and docs/art-direction.md). All of it is client only: nothing here is 
   image of that size, sharpens it lightly (CAS) and shows it behind the UI, which stays at full resolution; on a
   scale-factor-1 screen the scale is raised a third of the way back to 1; anything projecting a cursor into the
   world or the world onto the screen goes through `render_scale::to_view` / `from_view`).
-  **High is the look the game is made to and the default** (3D at 0.75 on Retina); Medium drops tilt-shift, thins
+  **High is the look the game is made to and the default** (3D at full resolution: at 0.75 on Retina some screens blanked for a frame every few seconds, though every frame drawn was whole); Medium drops tilt-shift, thins
   the grass to 0.6 and halves the shadow map; Low is grass 0.35, every switch off, a 2048 map, 2x MSAA and 0.6
   scale; Ultra is grass 1.5, an 8192 map and full-resolution 3D. **Auto** plays at High, measures 5 s of frames after the first 3, and keeps High up to 14.5 ms a frame,
   Medium up to 22 ms, else Low, then saves that (`graphics_ui.rs`); a game started with no settings file starts on
