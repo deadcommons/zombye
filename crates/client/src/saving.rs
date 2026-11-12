@@ -35,6 +35,7 @@ pub struct SavingPlugin;
 impl Plugin for SavingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Notice>()
+            .init_resource::<Asked>()
             .add_systems(Startup, spawn_notice.after(crate::hud::spawn_hud))
             // Before Update, so renderers see this frame's edge changes from a quickload.
             .add_systems(PreUpdate, quick_save_load.after(InputSystems).after(crate::inventory_ui::TextEntry))
@@ -48,6 +49,14 @@ impl Plugin for SavingPlugin {
 /// the frame is seen before the frame ends. (Unordered, it could run first and miss it.)
 fn add_autosave(app: &mut App) {
     app.add_systems(Last, autosave_on_exit.in_set(OnAppExitSystems));
+}
+
+/// A quicksave or quickload asked for elsewhere than the keys (the pause menu's Save and Load),
+/// done by [`quick_save_load`] as F5 and F9 are.
+#[derive(Resource, Default)]
+pub(crate) struct Asked {
+    pub save: bool,
+    pub load: bool,
 }
 
 /// A short message under the HUD ("Saved ...", "Loaded ...", or what went wrong).
@@ -178,7 +187,7 @@ impl WorldSwap<'_> {
     }
 }
 
-fn quick_save_load(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, options: Res<Options>, mut swap: WorldSwap, mut notice: ResMut<Notice>, mut automated: Local<(bool, bool)>) {
+fn quick_save_load(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, options: Res<Options>, mut swap: WorldSwap, mut notice: ResMut<Notice>, mut asked: ResMut<Asked>, mut automated: Local<(bool, bool)>) {
     let now = time.elapsed_secs();
     // `--quicksave-after` / `--quickload-after`: the same as pressing the key, once.
     let due = |at: Option<f32>, done: &mut bool| {
@@ -186,8 +195,9 @@ fn quick_save_load(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, options: Re
         *done |= fire;
         fire
     };
-    let save = keys.just_pressed(KeyCode::F5) | due(options.quicksave_after, &mut automated.0);
-    let load = keys.just_pressed(KeyCode::F9) | due(options.quickload_after, &mut automated.1);
+    let asked = std::mem::take(&mut *asked);
+    let save = keys.just_pressed(KeyCode::F5) | due(options.quicksave_after, &mut automated.0) | asked.save;
+    let load = keys.just_pressed(KeyCode::F9) | due(options.quickload_after, &mut automated.1) | asked.load;
     if save {
         let text = match save_to(&swap.link, &options, QUICKSAVE) {
             Ok(saved) => format!("Saved: {saved}"),

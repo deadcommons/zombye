@@ -74,8 +74,8 @@ pub fn describe(p: Preset) -> &'static str {
 }
 
 #[derive(Resource, Default)]
-struct GraphicsUi {
-    open: bool,
+pub(crate) struct GraphicsUi {
+    pub(crate) open: bool,
     /// A preset clicked in the panel, applied in [`pick`].
     picked: Option<Preset>,
     /// The panel shows this (rebuilt when it changes).
@@ -84,7 +84,7 @@ struct GraphicsUi {
 
 /// Auto's frame times while it measures.
 #[derive(Resource, Default)]
-struct AutoMeasure {
+pub(crate) struct AutoMeasure {
     played: f32,
     frames: u32,
     total: f32,

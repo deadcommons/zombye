@@ -65,10 +65,11 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// 24: electricity (19) merged after 20-23.
 /// 25: stairs and the upper floor: `PlayerView::level` (bit 17 of `PlayerPacked::bits`),
 /// `SnapshotDelta::upstairs`, `Tunings::stairs`. 26: the map screen: `SnapshotDelta::map`, what
-/// the client's survivor has seen of the map. 27: building and barricades: `Intent::Build`,
-/// `Intent::Unbuild`, `Snapshot::barricade_changes`, `Welcome::barricades`, `JobKind::Build`,
-/// `Edge::WindowBoarded` and `Edge::DoorBoarded`.)
-pub const PROTOCOL: u32 = 27;
+/// the client's survivor has seen of the map. 27: bags with their own room: `Place::Pouch`,
+/// `PrivateView::homes`. 28: building and barricades: `Intent::Build`, `Intent::Unbuild`,
+/// `Snapshot::barricade_changes`, `Welcome::barricades`, `JobKind::Build`, `Edge::WindowBoarded`
+/// and `Edge::DoorBoarded`.)
+pub const PROTOCOL: u32 = 28;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -1122,6 +1123,9 @@ impl DeltaDecoder {
         s.barricade_changes = delta.barricade_changes;
         s.hits = delta.hits;
         s.private = delta.private;
+        for v in &mut s.private {
+            v.restore_homes();
+        }
         s.item_notes = delta.item_notes;
         s.level_ups = delta.level_ups;
         s.heard = delta.heard.iter().map(|&(pos, radius)| zombye_sim::Heard { listener: player, pos, radius, at: delta.tick }).collect();

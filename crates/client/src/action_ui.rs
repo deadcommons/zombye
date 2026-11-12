@@ -59,6 +59,8 @@ fn spawn(mut commands: Commands) {
                 ..default()
             },
             theme::strip(),
+            // Over the inventory screen's frame too: what you are doing stays in view there.
+            GlobalZIndex(8),
             Visibility::Hidden,
         ))
         .with_children(|c| {
