@@ -135,6 +135,8 @@ cargo run -p zombye-server --release -- --mcp --benchmark first_night --agent NA
 cargo run -p zombye-client --release -- --mod mods/alarm_clock
 cargo run -p zombye-server --release -- --host --mod mods/alarm_clock
 cargo run -p zombye-server --release -- --mcp --mod mods/alarm_clock
+# The docs site's game reference (deadcommons/zombye-web): every MCP tool, data file, tuning number and flag, from the game itself
+cargo run -p zombye-server -- --docs ../zombye-web/src/content/docs/docs/reference/game   # --docs-strict fails on anything undocumented
 # Rebuild, validate, render and export every furniture model (Blender 5.x; see the blender-assets skill)
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
