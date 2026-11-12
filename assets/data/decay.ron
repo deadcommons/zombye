@@ -1,0 +1,42 @@
+// How worn the street props are drawn (crates/client/src/meshgen/decay.rs): dust, rust and faded
+// paint worked into each model's colours as its chunk is built. Only the look, and no cost in a
+// frame. Every field is optional; one left out takes the value shown here.
+(
+    // How worn each kind is, 0 as made .. 1 a wreck. Kinds not listed take `other`.
+    wear: {
+        "car": 0.6,
+        "van": 0.65,
+        "pickup": 0.7,
+        "police_car": 0.5,
+        "ambulance": 0.5,
+        "school_bus": 0.65,
+        "car_wreck": 0.9,
+        "trash_can": 0.5,
+        "vending_machine": 0.5,
+        "phone_box": 0.5,
+        "garden_shed": 0.45,
+        "wheelbarrow": 0.6,
+        "barbecue": 0.5,
+    },
+    other: 0.25,
+    // One thing of a kind differs from the next by up to this much either way.
+    spread: 0.25,
+    // What settles on them and what they rust to (sRGB).
+    dust: (0.62, 0.55, 0.42),
+    rust: (0.45, 0.24, 0.12),
+    // Kinds whose paintwork differs from one to the next: each takes one of `paints` (sRGB) in
+    // place of its model's main colour.
+    repaint: ["car", "van", "pickup"],
+    paints: [
+        (0.20, 0.33, 0.60),
+        (0.62, 0.16, 0.14),
+        (0.80, 0.78, 0.72),
+        (0.30, 0.42, 0.32),
+        (0.72, 0.60, 0.28),
+        (0.36, 0.38, 0.40),
+        (0.55, 0.36, 0.24),
+        (0.16, 0.20, 0.30),
+        (0.74, 0.46, 0.20),
+        (0.52, 0.62, 0.66),
+    ],
+)

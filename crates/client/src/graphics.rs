@@ -77,6 +77,10 @@ pub struct Graphics {
     pub bloom: bool,
     /// The soft dark line where walls meet the ground and floors.
     pub contact_shadows: bool,
+    /// Shadows of the sun and moon with soft edges that widen away from what casts them.
+    pub soft_shadows: bool,
+    /// The haze over the distance (`daynight::HazeLook`).
+    pub haze: bool,
     /// Patchy colour on the ground, worked out per pixel.
     pub ground_detail: bool,
     /// The sun's shadow map, texels a side (one cascade fitted to the view, `daynight.rs`).
@@ -96,15 +100,15 @@ impl Default for Graphics {
 
 impl Graphics {
     pub fn high() -> Self {
-        Self { preset: Preset::High, vegetation: 1.0, grain: true, tilt_shift: true, vignette: true, bloom: true, contact_shadows: true, ground_detail: true, shadow_map: 4096, msaa: 4, render_scale: 0.75 }
+        Self { preset: Preset::High, vegetation: 1.0, grain: true, tilt_shift: true, vignette: true, bloom: true, contact_shadows: true, soft_shadows: true, haze: true, ground_detail: true, shadow_map: 4096, msaa: 4, render_scale: 0.75 }
     }
     /// For slow machines: a little grass, and nothing that costs a pass or a blend.
     pub fn low() -> Self {
-        Self { preset: Preset::Low, vegetation: 0.35, grain: false, tilt_shift: false, vignette: false, bloom: false, contact_shadows: false, ground_detail: false, shadow_map: 2048, msaa: 2, render_scale: 0.6 }
+        Self { preset: Preset::Low, vegetation: 0.35, grain: false, tilt_shift: false, vignette: false, bloom: false, contact_shadows: false, soft_shadows: false, haze: false, ground_detail: false, shadow_map: 2048, msaa: 2, render_scale: 0.6 }
     }
     /// Most of the look: thinner grass, no tilt-shift, half the shadow map.
     pub fn medium() -> Self {
-        Self { preset: Preset::Medium, vegetation: 0.6, tilt_shift: false, shadow_map: 2048, ..Self::high() }
+        Self { preset: Preset::Medium, vegetation: 0.6, tilt_shift: false, soft_shadows: false, shadow_map: 2048, ..Self::high() }
     }
     /// More than the game was made to: denser grass and a finer shadow map.
     pub fn ultra() -> Self {
@@ -119,6 +123,17 @@ impl Graphics {
             Preset::High | Preset::Custom => Self::high(),
             Preset::Ultra => Self::ultra(),
             Preset::Auto => Self { preset: Preset::Auto, ..Self::high() },
+        }
+    }
+    /// Settings as read from the settings file: a named preset is what that preset stands for
+    /// now, whatever values were stored with it (a file stores every value, so one saved before
+    /// a preset was retuned, or before a setting existed, would otherwise keep old numbers under
+    /// the preset's name); only Custom keeps its stored values. A hand-edited file that changes
+    /// single values must say `preset: Custom`.
+    pub fn settled(self) -> Self {
+        match self.preset {
+            Preset::Custom => self.clamped(),
+            named => Self::of(named),
         }
     }
     /// Values a hand-edited file could hold, made sane.
@@ -171,9 +186,11 @@ impl Graphics {
                 "bloom" => g.bloom = false,
                 "ao" | "contact" => g.contact_shadows = false,
                 "ground" => g.ground_detail = false,
+                "soft" | "soft-shadows" => g.soft_shadows = false,
+                "haze" => g.haze = false,
                 "all" => g = Self { preset: g.preset, vegetation: g.vegetation, shadow_map: g.shadow_map, msaa: g.msaa, render_scale: g.render_scale, ..Self::low() },
                 "" => {}
-                other => eprintln!("--no-post {other}: grain, tilt, vignette, bloom, ao, ground or all"),
+                other => eprintln!("--no-post {other}: grain, tilt, vignette, bloom, ao, ground, soft, haze or all"),
             }
         }
         if let Some(n) = options.msaa {
@@ -255,6 +272,12 @@ mod tests {
         // An older file has none: the defaults.
         assert_eq!(ron::from_str::<ClientSettings>("(ui_scale: 110)").unwrap().graphics, Graphics::high());
         assert_eq!(ron::from_str::<ClientSettings>("(graphics: (grain: false))").unwrap().graphics, Graphics { grain: false, ..Graphics::high() });
+        // A named preset read from a file is the preset as it is now; Custom keeps its values.
+        let stale = Graphics { soft_shadows: true, shadow_map: 4096, ..Graphics::medium() };
+        assert_eq!(stale.settled(), Graphics::medium());
+        assert_eq!(Graphics { preset: Preset::Auto, grain: false, ..Graphics::high() }.settled(), Graphics::of(Preset::Auto));
+        let custom = Graphics { preset: Preset::Custom, grain: false, msaa: 3, ..Graphics::low() };
+        assert_eq!(custom.clone().settled(), Graphics { msaa: 2, ..custom });
         // A file from before the presets (no preset, shadow map or MSAA): High's.
         let old = ron::from_str::<ClientSettings>("(graphics: (vegetation: 0.5, grain: true, tilt_shift: true, vignette: true, bloom: true, contact_shadows: true, ground_detail: true))").unwrap().graphics;
         assert_eq!(old, Graphics { vegetation: 0.5, ..Graphics::high() });

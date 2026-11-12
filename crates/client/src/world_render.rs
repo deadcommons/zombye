@@ -276,7 +276,7 @@ fn setup_shared(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut ma
     let pane_mesh = |kind: CutKind| {
         let mut mb = MeshBuilder::default();
         mb.set_tag(CutTag { kind, ..default() });
-        mb.add_box(Vec3::new(0.05, WINDOW_SILL, -0.012), Vec3::new(0.95, WINDOW_HEAD, 0.012), meshgen::same(glass));
+        mb.add_box(Vec3::new(0.05, WINDOW_SILL + SILL_LIFT, -0.012), Vec3::new(0.95, WINDOW_HEAD, 0.012), meshgen::same(glass));
         mb.build()
     };
     let pane = meshes.add(pane_mesh(CutKind::Structure));
@@ -437,6 +437,12 @@ fn crack_mesh(door: bool, stage: usize) -> Mesh {
 
 /// Bottom and top of a window opening above its storey's floor.
 pub(crate) const WINDOW_SILL: f32 = 0.9;
+/// How far the window sill's top, the muntins' and the glass's foot stand above the top of the
+/// wall below the window: in its plane they'd fight it for the pixels (dashes along the sill).
+pub(crate) const SILL_LIFT: f32 = 0.01;
+/// How far an upper storey's floor lies above the walls of the storey below: level with their
+/// tops, the two fight for the pixels along every wall and doorway upstairs.
+pub(crate) const FLOOR_LIFT: f32 = 0.01;
 pub(crate) const WINDOW_HEAD: f32 = 2.1;
 
 #[allow(clippy::too_many_arguments)]
@@ -740,7 +746,7 @@ pub fn build_building(map: &TileMap, index: usize, b: &Building, furniture: &Fur
         if *level == 1 && map.stair_on_tile(*t).is_some() {
             continue;
         }
-        let y = STOREY * *level as f32;
+        let y = STOREY * *level as f32 + FLOOR_LIFT;
         let floor = map.rooms[*room as usize].floor;
         let (x0, z0) = (t.x as f32, t.y as f32);
         upper.quad([Vec3::new(x0, y, z0), Vec3::new(x0, y, z0 + 1.0), Vec3::new(x0 + 1.0, y, z0 + 1.0), Vec3::new(x0 + 1.0, y, z0)], Vec3::Y, floor_color(floor, t.x, t.y));
@@ -1497,6 +1503,34 @@ mod tests {
         assert!(pieces > 5000, "{pieces} wall pieces");
     }
 
+    /// Upstairs floors don't lie in the plane of the wall tops below them, and window sills,
+    /// muntins and glass don't lie in the plane of the wall top under the window: each showed as
+    /// flickering dashes along the walls upstairs and along every sill.
+    #[test]
+    fn floors_and_sills_clear_the_wall_tops() {
+        let map = town();
+        let furniture = FurnitureModels::default();
+        let mut worst: Vec<(f32, Vec3)> = Vec::new();
+        for (i, b) in map.buildings.iter().enumerate() {
+            let m = build_building(&map, i, b, &furniture);
+            for f in MeshBuilder::merged(&[&m.lower, &m.upper]).fights() {
+                if f.normal.y.abs() < 0.9 {
+                    continue;
+                }
+                let base = (f.at.y / STOREY).round() * STOREY;
+                // A wall's top against the bottom of the wall standing on it is buried in them.
+                let wall = CutKind::Wall as u32;
+                let storey = (f.at.y - base).abs() < 0.003 && f.at.y > 1.0 && f.kinds != [wall, wall];
+                let sill = (f.at.y - (f.at.y / STOREY).floor() * STOREY - WINDOW_SILL).abs() < 0.003;
+                if (storey || sill) && f.area > 0.002 {
+                    worst.push((f.area, f.at));
+                }
+            }
+        }
+        worst.sort_by(|a, b| b.0.total_cmp(&a.0));
+        assert!(worst.is_empty(), "{} fights at a floor or sill, biggest {:?}", worst.len(), &worst[..worst.len().min(5)]);
+    }
+
     /// Where the faces of a building's meshes fight over one plane, by kind of place, for the
     /// whole default town (`cargo test -p zombye-client --release building_fights -- --ignored --nocapture`).
     #[test]
@@ -1507,7 +1541,8 @@ mod tests {
         let mut seen: std::collections::BTreeMap<String, (usize, f32, Vec3)> = Default::default();
         for (i, b) in map.buildings.iter().enumerate() {
             let m = build_building(&map, i, b, &furniture);
-            for (name, mesh) in [("lower", &m.lower), ("upper", &m.upper), ("roof", &m.roof)] {
+            let both = MeshBuilder::merged(&[&m.lower, &m.upper]);
+            for (name, mesh) in [("lower+upper", &both), ("roof", &m.roof)] {
                 for f in mesh.fights() {
                     let axis = if f.normal.y.abs() > 0.9 { "flat" } else if f.normal.y.abs() < 0.1 { "upright" } else { "sloped" };
                     let e = seen.entry(format!("{name} {axis} kinds {:?} y {:.2}", f.kinds, (f.at.y * 20.0).round() / 20.0)).or_insert((0, 0.0, f.at));

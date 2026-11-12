@@ -128,6 +128,11 @@ Every full screen is the same frame, and the screens are its tabs:
   up and down only. **Nothing scrolls sideways, ever:** content wraps to the width it has.
 - **Footer:** the keys that work on this screen, as keycaps with a word each. If an action has no
   place in the footer it doesn't have a hidden key.
+- **Help text** (the Game settings; `help_text.rs`): a player chooses how much the UI explains. Write
+  cards so they still stand at each level: the name, the numbers and what is needed always show; a
+  sentence that explains what a thing is for or how it works shows only at Full
+  (`help_text::explains()`); key reminders, the footer's included, go at Off (`help_text::keys()`).
+  Never put a requirement or the reason for a refusal in an explaining line.
 - Below 1600 UI pixels wide the rail narrows to icons (64), column padding drops to 16 and the side
   columns narrow; the layout holds down to 1280 x 720.
 - The game goes on behind a screen in play (a multiplayer server never pauses), which is why the

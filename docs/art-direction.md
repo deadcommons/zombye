@@ -165,9 +165,10 @@ war in `fog.rs` and `world.wesl`). Numbers live there; this is what they're for.
 - **Day:** a low, warm sun for most of the day (never overhead), long hard shadows, little fill light,
   so a building's shadow side is clearly darker. A faint haze. Late afternoon is the look to aim for,
   and since Linear DCM-59 the whole day leans that way: the sun is golden even at its highest (about
-  47° up at noon, 32° by mid-afternoon) and deep amber toward dawn and dusk, the fill is a weak violet
-  so shadows stay strong and cool against it, and the grade is warm with soft contrast and blacks a
-  little lifted and faded (`daynight::grade_at`). What you can't see is no longer a grey hole by day:
+  47° up at noon, 32° by mid-afternoon) and deep amber toward dawn and dusk, the fill is warm
+  and strong enough that a shadow keeps about a third of the light (shade, not a grey patch), shadow edges soften away
+  from what casts them, and the grade is warm over a wide range, highlights bright and blacks barely lifted
+  (`daynight::grade_at`). What you can't see is no longer a grey hole by day:
   it keeps over half its colour, dimmed and warmed (`materials::unseen_tint`, `unseen_colour`), so the
   town reads as one sunlit place and your own view is the brightest part of it.
 - **Film (DCM-59, `film.rs`, `film.wesl`):** one pass after the tone map: a little tilt-shift (the top

@@ -29,6 +29,14 @@ pub struct SunLook {
     pub colour_low: (f32, f32, f32),
 }
 
+/// The moon: how bright (lux) and its colour (sRGB).
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MoonLook {
+    pub lux: f32,
+    pub colour: (f32, f32, f32),
+}
+
 /// The light that fills shadows (the ambient light): its colour and brightness.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -67,6 +75,36 @@ pub struct GradeLook {
     pub vignette: (f32, f32),
 }
 
+/// The haze: what stands up the screen from the survivor (and a little of what stands off to the
+/// sides) is washed toward its colour, in drifting banks, thickest near the ground: a thin pale
+/// veil all day, thick and warm with a low sun (dawn and dusk). The camera is orthographic, so
+/// this stands in for distance fog (world.wesl). Drawn only with the graphics settings' haze on.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HazeLook {
+    /// Its colour with the sun low (sRGB) and how bright it is against sunlit ground.
+    pub colour: (f32, f32, f32),
+    pub brightness: f32,
+    /// How much of what stands in it the haze takes at most, with the sun at the horizon (0 = none).
+    pub strength: f32,
+    /// The same with the sun high (0 = no haze by day), and its colour then.
+    pub day: f32,
+    pub day_colour: (f32, f32, f32),
+    /// Metres from the survivor where it starts and where it is at its thickest, at the default
+    /// zoom ([`HAZE_ZOOM`]); they shrink and grow with the zoom, so the screen is as hazy at any.
+    pub near: f32,
+    pub far: f32,
+}
+
+/// The zoom (metres of world top to bottom) `HazeLook::near` and `far` are given at.
+pub const HAZE_ZOOM: f32 = 26.0;
+
+impl Default for HazeLook {
+    fn default() -> Self {
+        HazeLook { colour: (1.0, 0.7, 0.42), brightness: 1.15, strength: 0.26, day: 0.24, day_colour: (0.95, 0.93, 0.86), near: 8.0, far: 34.0 }
+    }
+}
+
 /// How the light looks, from the data folder's `light.ron` (every field optional: one left out
 /// takes its default, no file at all the shipped one). Only the look: the sim's own daylight
 /// (what zombies see by) is `sim::senses::daylight`.
@@ -74,12 +112,17 @@ pub struct GradeLook {
 #[serde(default, deny_unknown_fields)]
 pub struct LightLook {
     pub sun: SunLook,
+    pub moon: MoonLook,
+    /// How wide the sun and moon are, as a soft shadow's size (0 = hard-edged shadows). Only
+    /// drawn soft with the graphics settings' soft shadows on.
+    pub soft_shadows: f32,
     pub fill_day: FillLook,
     pub fill_night: FillLook,
     pub grade_day: GradeLook,
     pub grade_night: GradeLook,
     /// Added to the temperature and the saturation at dawn and dusk.
     pub dusk: (f32, f32),
+    pub haze: HazeLook,
     pub fire: FireLook,
     /// How many times stronger the fill is by day while the player is inside a building: rooms
     /// lie in their roof's shadow, hidden from the camera or not (1 = no stronger).
@@ -96,13 +139,16 @@ impl Default for LightLook {
     fn default() -> Self {
         LightLook {
             sun: SunLook::default(),
-            fill_day: FillLook { colour: (0.74, 0.7, 0.73), brightness: 108.0 },
-            fill_night: FillLook { colour: (0.3, 0.38, 0.62), brightness: 12.0 },
-            grade_day: GradeLook { exposure: 0.2, temperature: 0.04, tint: -0.01, saturation: 0.92, shadows: (0.8, 0.94, 0.012), midtones: (0.95, 1.03), highlights: (0.9, 1.04), vignette: (0.46, 0.8) },
+            moon: MoonLook { lux: 1100.0, colour: (0.55, 0.65, 1.0) },
+            soft_shadows: 6.0,
+            fill_day: FillLook { colour: (0.86, 0.74, 0.62), brightness: 520.0 },
+            fill_night: FillLook { colour: (0.3, 0.38, 0.66), brightness: 40.0 },
+            grade_day: GradeLook { exposure: 0.45, temperature: 0.04, tint: -0.01, saturation: 0.95, shadows: (0.9, 1.0, 0.006), midtones: (0.97, 1.08), highlights: (0.92, 1.1), vignette: (0.46, 0.8) },
             grade_night: GradeLook { exposure: 0.35, temperature: -0.03, tint: 0.0, saturation: 0.72, shadows: (0.6, 1.0, 0.0), midtones: (0.8, 1.04), highlights: (1.0, 1.0), vignette: (0.6, 0.62) },
             dusk: (0.06, 0.1),
+            haze: HazeLook::default(),
             fire: FireLook { colour: (1.0, 0.55, 0.22), lumens: 600_000.0, range: 14.0, height: 0.7, seen: 7.0 },
-            indoor_fill: 4.0,
+            indoor_fill: 1.6,
         }
     }
 }
@@ -116,10 +162,12 @@ impl LightLook {
         let within = |name: &str, v: f32, lo: f32, hi: f32| if (lo..=hi).contains(&v) { Ok(()) } else { Err(format!("{name} must be from {lo} to {hi}, not {v}")) };
         within("sun.lux", look.sun.lux, 0.0, 200_000.0)?;
         within("indoor_fill", look.indoor_fill, 1.0, 20.0)?;
+        within("moon.lux", look.moon.lux, 0.0, 20_000.0)?;
+        within("soft_shadows", look.soft_shadows, 0.0, 40.0)?;
         within("sun.low", look.sun.low, 0.05, 2.0)?;
         within("sun.climb", look.sun.climb, 0.0, 3.0)?;
         within("sun.south", look.sun.south, -2.0, 2.0)?;
-        for (name, c) in [("sun.colour_high", look.sun.colour_high), ("sun.colour_low", look.sun.colour_low), ("fill_day.colour", look.fill_day.colour), ("fill_night.colour", look.fill_night.colour)] {
+        for (name, c) in [("sun.colour_high", look.sun.colour_high), ("sun.colour_low", look.sun.colour_low), ("fill_day.colour", look.fill_day.colour), ("fill_night.colour", look.fill_night.colour), ("moon.colour", look.moon.colour)] {
             for v in [c.0, c.1, c.2] {
                 within(name, v, 0.0, 1.0)?;
             }
@@ -144,6 +192,17 @@ impl LightLook {
         within("fire.range", look.fire.range, 1.0, 40.0)?;
         within("fire.height", look.fire.height, 0.1, 3.0)?;
         within("fire.seen", look.fire.seen, 0.0, 40.0)?;
+        for v in [look.haze.colour.0, look.haze.colour.1, look.haze.colour.2] {
+            within("haze.colour", v, 0.0, 1.0)?;
+        }
+        within("haze.brightness", look.haze.brightness, 0.0, 20.0)?;
+        within("haze.strength", look.haze.strength, 0.0, 1.0)?;
+        within("haze.day", look.haze.day, 0.0, 1.0)?;
+        for v in [look.haze.day_colour.0, look.haze.day_colour.1, look.haze.day_colour.2] {
+            within("haze.day_colour", v, 0.0, 1.0)?;
+        }
+        within("haze.near", look.haze.near, 0.0, 200.0)?;
+        within("haze.far", look.haze.far, look.haze.near + 1.0, 400.0)?;
         within("dusk temperature", look.dusk.0, -1.0, 1.0)?;
         within("dusk saturation", look.dusk.1, -1.0, 1.0)?;
         Ok(look)
@@ -210,6 +269,7 @@ pub struct DayNightPlugin;
 impl Plugin for DayNightPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Daylight>()
+            .init_resource::<Haze>()
             // The graphics preset sets its size (`graphics_ui::apply`); High's until then.
             .insert_resource(DirectionalLightShadowMap { size: 4096 })
             .add_systems(Startup, spawn_lights)
@@ -252,9 +312,29 @@ pub fn sky_at(hour: f32) -> (Vec3, Color, f32, f32) {
         let c = hi.lerp(lo, warm);
         (dir, Color::srgb(c.x, c.y, c.z), sun.lux * daylight, daylight)
     } else {
-        (Vec3::new(0.35, -1.0, 0.25).normalize(), Color::srgb(0.55, 0.65, 1.0), 320.0, 0.0)
+        let moon = look().moon;
+        (Vec3::new(0.35, -1.0, 0.25).normalize(), Color::srgb(moon.colour.0, moon.colour.1, moon.colour.2), moon.lux, 0.0)
     }
 }
+
+/// The haze at this hour (`HazeLook`): rgb its colour in the scene's light (linear, by the sun's
+/// brightness), w how much it takes: `day` with the sun high, the most just over the horizon,
+/// none at night.
+pub fn haze_at(hour: f32) -> Vec4 {
+    let day = ((hour - SUNRISE) / (SUNSET - SUNRISE)).clamp(0.0, 1.0);
+    let elevation = (day * PI).sin();
+    let (_, _, lux, daylight) = sky_at(hour);
+    let h = look().haze;
+    let low = 1.0 - smoothstep(0.2, 0.75, elevation);
+    let lin = |c: (f32, f32, f32)| Color::srgb(c.0, c.1, c.2).to_linear().to_vec3();
+    let c = lin(h.day_colour).lerp(lin(h.colour), low);
+    let bright = h.brightness * lux / look().sun.lux.max(1.0);
+    (c * bright).extend((h.day + (h.strength - h.day) * low) * daylight)
+}
+
+/// The haze as drawn now (`haze_at`; w is 0 with the graphics settings' haze off).
+#[derive(Resource, Default)]
+pub struct Haze(pub Vec4);
 
 /// How far the sun (or moon) moves across the sky before the light's direction follows: 0.3°,
 /// about every 3.5 s of a default day.
@@ -335,12 +415,24 @@ fn update_lights(
     map: Res<crate::server_link::ClientMap>,
     player: Query<&Transform, (With<Player>, Without<Sun>)>,
     mut indoors: Local<Option<f32>>,
+    graphics: Res<crate::graphics::Graphics>,
+    mut haze_now: ResMut<Haze>,
 ) {
-    let (dir, color, lux, day) = sky_at(preview.hour_or(link.curr.time_of_day));
+    let hour = preview.hour_or(link.curr.time_of_day);
+    let (dir, color, lux, day) = sky_at(hour);
     daylight.0 = day;
+    let haze = if graphics.haze { haze_at(hour) } else { Vec4::ZERO };
+    if haze_now.0 != haze {
+        haze_now.0 = haze;
+    }
     if let Ok((mut light, mut tf)) = sun.single_mut() {
         light.illuminance = lux;
         light.color = color;
+        // Soft-edged shadows (light.ron `soft_shadows`, the graphics setting of the same name).
+        let soft = (graphics.soft_shadows && look().soft_shadows > 0.0).then_some(look().soft_shadows);
+        if light.soft_shadow_size != soft {
+            light.soft_shadow_size = soft;
+        }
         // Only when the direction steps: the transform stays unchanged in between, so the shadow
         // map is drawn on the same texel grid frame after frame.
         let dir = sun_step(*held, dir);
@@ -531,10 +623,10 @@ mod tests {
         assert_eq!(sun_step(held, moon), moon);
     }
 
-    /// DCM-59: by day the sun is low and golden and the grade warm and soft; the night's light and
-    /// grade are what they were (#83).
+    /// DCM-59: by day the sun is low and golden and the grade warm; the night's grade is what it
+    /// was (#83) under a brighter, blue moon, so shapes read in the dark.
     #[test]
-    fn the_day_is_golden_and_the_night_as_dark_as_it_was() {
+    fn the_day_is_golden_and_the_night_blue_and_readable() {
         for hour in [7.5, 10.0, 12.0, 13.0, 14.0, 16.0, 18.5] {
             let (dir, color, lux, day) = sky_at(hour);
             let up = (-dir.y).asin().to_degrees();
@@ -546,12 +638,24 @@ mod tests {
         // Lower and redder late in the day than at noon.
         assert!(sky_at(18.0).0.y > sky_at(13.0).0.y && sky_at(18.0).1.to_srgba().blue < sky_at(13.0).1.to_srgba().blue);
         let (_, moon, lux, day) = sky_at(23.0);
-        assert_eq!((moon.to_srgba(), lux, day), (Srgba::rgb(0.55, 0.65, 1.0), 320.0, 0.0));
+        assert_eq!((moon.to_srgba(), lux, day), (Srgba::rgb(0.55, 0.65, 1.0), 1100.0, 0.0));
 
         let (night, noon, dusk) = (grade_at(0.0), grade_at(1.0), grade_at(0.5));
         assert_eq!((night.global.exposure, night.global.temperature, night.global.tint, night.global.post_saturation), (0.35, -0.03, 0.0, 0.72));
         assert_eq!((night.shadows.saturation, night.shadows.contrast, night.shadows.lift, night.midtones.saturation, night.midtones.contrast, night.highlights.gain), (0.6, 1.0, 0.0, 0.8, 1.04, 1.0));
         assert!(noon.global.temperature > 0.0 && dusk.global.temperature > noon.global.temperature);
-        assert!(noon.midtones.contrast <= night.midtones.contrast && noon.shadows.lift > 0.0, "soft contrast and lifted blacks by day");
+        assert!(noon.global.exposure > night.global.exposure && noon.highlights.gain > 1.0 && noon.shadows.lift > 0.0, "a wide range by day, blacks a touch lifted");
+    }
+    /// A thin haze all day, the most at dusk and dawn, none at night.
+    #[test]
+    fn the_haze_is_thin_by_day_and_thick_with_a_low_sun() {
+        assert!((haze_at(13.0).w - look().haze.day).abs() < 0.01);
+        assert_eq!(haze_at(1.0).w, 0.0);
+        assert!(haze_at(19.0).w > 0.15 && haze_at(7.0).w > 0.15);
+        assert!(haze_at(19.0).w > haze_at(13.0).w);
+        // Pale by day, warm with the sun low.
+        let (noon, dusk) = (haze_at(13.0), haze_at(19.0));
+        assert!(dusk.x / dusk.z > 1.5 * noon.x / noon.z);
+        assert!(haze_at(19.0).w <= look().haze.strength);
     }
 }
