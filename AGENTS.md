@@ -1911,7 +1911,7 @@ and mood, and docs/art-direction.md). All of it is client only: nothing here is 
   image of that size, sharpens it lightly (CAS) and shows it behind the UI, which stays at full resolution; on a
   scale-factor-1 screen the scale is raised a third of the way back to 1; anything projecting a cursor into the
   world or the world onto the screen goes through `render_scale::to_view` / `from_view`).
-  **High is the look the game is made to and the default** (3D at 0.75 on Retina); Medium drops tilt-shift, thins
+  **High is the look the game is made to and the default** (3D at full resolution: at 0.75 on Retina some screens blanked for a frame every few seconds, though every frame drawn was whole); Medium drops tilt-shift, thins
   the grass to 0.6 and halves the shadow map; Low is grass 0.35, every switch off, a 2048 map, 2x MSAA and 0.6
   scale; Ultra is grass 1.5, an 8192 map and full-resolution 3D. **Auto** plays at High, measures 5 s of frames after the first 3, and keeps High up to 14.5 ms a frame,
   Medium up to 22 ms, else Low, then saves that (`graphics_ui.rs`); a game started with no settings file starts on
@@ -2025,6 +2025,10 @@ stands still may count as changed.** Each of these cost milliseconds a frame bef
   anything. **A change to rendering is checked with pictures:** render the same scene before and after into
   `target/cmp/NAME-a.png` and `NAME-b.png` and run `cargo test --release -p zombye-client compare_pictures -- --ignored
   --nocapture` (pixels that differ, by how much, where).
+- **Flicker:** `ZOMBYE_BLACK_WATCH=1` reads every frame back and prints the ones far darker or brighter than the rest
+  (`black_watch.rs` in a window, a line every 300 frames; offscreen over a benchmark's frames). A black frame it doesn't
+  see isn't drawn by the game: look at the screen's cable, hub and refresh rate (a 4K screen on an odd rate such as 95 Hz
+  is a link at its limit).
 - Measured on that VM (CPU-side spans, `--bench-live 200 --crowd 2000`, 1280 x 720; before and after these rules):
   the main world's update 7.4 to 5.1 ms, mesh extraction 2.0 to 0.1 ms, `update_fog` 2.2 to 0.05 ms, and material
   specialising, queueing and bind groups (2.3 ms together) to nothing; as a client of a server with 5,300 zombies in
