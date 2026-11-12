@@ -84,7 +84,7 @@ pub use map::TileMap;
 pub use origin::{BackgroundDef, Choice, Effect, Origin, OriginData, Perks, PickDef, Start, WardrobeSlot};
 pub use needs::{Freshness, Needs, NeedsTuning, NeedsView, SleepSpot, WakeReason};
 pub use status::{StatusData, StatusInput, StatusTag, TagKind};
-pub use players::{Action, ActionKind, Climb, ClimbTuning, DevFlags, StairTuning, Knock, MoveMods, Player, PlayerInput, PlayerState, Stance};
+pub use players::{Action, ActionKind, Climb, ClimbTuning, DevFlags, StairTuning, Knock, MoveMods, MoveTuning, Player, PlayerInput, PlayerState, Stance};
 pub use population::{Attractor, PopulationDef, Zone};
 pub use power::{Coverage, PowerDef, Source, SourceKind};
 pub use template::BuildingTemplate;

@@ -38,10 +38,12 @@ pub const RUN_MIN_ENDURANCE: f32 = 0.05;
 pub const RUN_RECOVER_ENDURANCE: f32 = 0.2;
 /// How far past a climb zone a climb ends (and starts from), so the body is clear of it.
 const CLIMB_CLEAR: f32 = 0.03;
-/// Endurance per second spent running / regained otherwise.
+/// Endurance per second spent running / regained standing still / walking / sneaking (the
+/// defaults of [`MoveTuning`]).
 pub const RUN_DRAIN: f32 = 0.06;
 pub const REGEN: f32 = 0.05;
-pub const SNEAK_REGEN: f32 = 0.04;
+pub const WALK_REGEN: f32 = 0.02;
+pub const SNEAK_REGEN: f32 = 0.03;
 /// Longest single collision step, well under the body radius so walls can't be tunnelled through.
 const MAX_SUBSTEP: f32 = 0.1;
 
@@ -97,11 +99,20 @@ pub struct MoveMods {
     pub can_run: bool,
     /// Can start climbing through an open or broken window.
     pub can_climb: bool,
+    /// The most endurance there can be (tiredness lowers it: `NeedsTuning::tired_endurance`).
+    /// Not saved with the player (the mods are worked out again on load) and sent on its own
+    /// (`PlayerView::endurance_cap`), so the save and the player's layout stay as they were.
+    #[serde(skip, default = "one")]
+    pub max_endurance: f32,
+}
+
+fn one() -> f32 {
+    1.0
 }
 
 impl Default for MoveMods {
     fn default() -> Self {
-        Self { speed: 1.0, run_speed: 1.0, run_drain: 1.0, regen: 1.0, can_run: true, can_climb: true }
+        Self { speed: 1.0, run_speed: 1.0, run_drain: 1.0, regen: 1.0, can_run: true, can_climb: true, max_endurance: 1.0 }
     }
 }
 
@@ -144,6 +155,80 @@ impl PlayerState {
     /// Off the ground floor: upstairs, or on a flight of stairs.
     pub fn off_ground(&self, map: &TileMap) -> bool {
         self.level > 0 || map.stair_at(self.pos).is_some()
+    }
+}
+
+/// How fast a survivor moves and how its endurance (stamina) drains and comes back
+/// (`WorldConfig::movement`; ours). Saved with the world's settings, and reachable from a
+/// difficulty preset's `tuning`. The world hands it to its map (`TileMap::movement`), which is
+/// what [`step_movement`] reads, so a client's prediction has the server's numbers too (sent in
+/// the join's tunings). The `*_SPEED`, `RUN_DRAIN` and `*_ENDURANCE` constants are its defaults.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MoveTuning {
+    /// Speeds in m/s, before load, wounds and needs (`MoveMods`).
+    pub walk_speed: f32,
+    pub run_speed: f32,
+    pub sneak_speed: f32,
+    /// Walking while aiming.
+    pub aim_speed: f32,
+    /// Top speed while climbing through a window or over a fence.
+    pub climb_speed: f32,
+    /// Endurance a second spent running.
+    pub run_drain: f32,
+    /// Endurance a second regained standing still (or sitting: `SitTuning::endurance_regen` on top).
+    pub stand_regen: f32,
+    /// ...walking (or aiming, or climbing): catching your breath on the move is slow.
+    pub walk_regen: f32,
+    /// ...sneaking.
+    pub sneak_regen: f32,
+    /// Running needs more endurance than this; running down to it winds you.
+    pub run_min_endurance: f32,
+    /// Winded, you can't run again until endurance is back above this.
+    pub run_recover_endurance: f32,
+}
+
+impl Default for MoveTuning {
+    fn default() -> Self {
+        Self {
+            walk_speed: WALK_SPEED,
+            run_speed: RUN_SPEED,
+            sneak_speed: SNEAK_SPEED,
+            aim_speed: AIM_SPEED,
+            climb_speed: CLIMB_SPEED,
+            run_drain: RUN_DRAIN,
+            stand_regen: REGEN,
+            walk_regen: WALK_REGEN,
+            sneak_regen: SNEAK_REGEN,
+            run_min_endurance: RUN_MIN_ENDURANCE,
+            run_recover_endurance: RUN_RECOVER_ENDURANCE,
+        }
+    }
+}
+
+impl MoveTuning {
+    pub fn check(&self) -> Result<(), String> {
+        for (name, v, lo, hi) in [
+            ("walk_speed", self.walk_speed, 0.1, 20.0),
+            ("run_speed", self.run_speed, 0.1, 30.0),
+            ("sneak_speed", self.sneak_speed, 0.1, 20.0),
+            ("aim_speed", self.aim_speed, 0.1, 20.0),
+            ("climb_speed", self.climb_speed, 0.05, 10.0),
+            ("run_drain", self.run_drain, 0.0, 10.0),
+            ("stand_regen", self.stand_regen, 0.0, 10.0),
+            ("walk_regen", self.walk_regen, 0.0, 10.0),
+            ("sneak_regen", self.sneak_regen, 0.0, 10.0),
+            ("run_min_endurance", self.run_min_endurance, 0.0, 0.9),
+            ("run_recover_endurance", self.run_recover_endurance, 0.0, 1.0),
+        ] {
+            if !(v.is_finite() && (lo..=hi).contains(&v)) {
+                return Err(format!("movement: {name} {v} ({lo} to {hi})"));
+            }
+        }
+        if self.run_recover_endurance < self.run_min_endurance {
+            return Err(format!("movement: run_recover_endurance {} below run_min_endurance {}", self.run_recover_endurance, self.run_min_endurance));
+        }
+        Ok(())
     }
 }
 
@@ -494,11 +579,12 @@ pub fn step_movement(map: &TileMap, state: &mut PlayerState, input: &PlayerInput
     state.facing = input.facing;
     let moving = input.move_dir.length_squared() > 1e-4;
 
-    if state.winded && state.endurance > RUN_RECOVER_ENDURANCE {
+    let t = map.movement;
+    if state.winded && state.endurance > t.run_recover_endurance {
         state.winded = false;
     }
     let mods = state.mods;
-    let can_run = mods.can_run && !state.winded && state.endurance > RUN_MIN_ENDURANCE;
+    let can_run = mods.can_run && !state.winded && state.endurance > t.run_min_endurance;
     // Running beats sneaking: holding run while sneak is toggled on means "get out of here".
     state.stance = if input.run && moving && can_run && !input.aim {
         Stance::Run
@@ -508,33 +594,38 @@ pub fn step_movement(map: &TileMap, state: &mut PlayerState, input: &PlayerInput
         Stance::Walk
     };
 
+    let cap = mods.max_endurance.clamp(0.0, 1.0);
     match state.stance {
         Stance::Run => {
-            state.endurance = (state.endurance - RUN_DRAIN * mods.run_drain * dt).max(0.0);
-            if state.endurance <= RUN_MIN_ENDURANCE {
+            state.endurance = (state.endurance - t.run_drain * mods.run_drain * dt).max(0.0);
+            if state.endurance <= t.run_min_endurance {
                 state.winded = true;
             }
         }
-        Stance::Sneak => state.endurance = (state.endurance + SNEAK_REGEN * mods.regen * dt).min(1.0),
-        Stance::Walk => state.endurance = (state.endurance + REGEN * mods.regen * dt).min(1.0),
+        // Breath comes back fastest standing still, slowly on the move.
+        _ if !moving => state.endurance += t.stand_regen * mods.regen * dt,
+        Stance::Sneak => state.endurance += t.sneak_regen * mods.regen * dt,
+        Stance::Walk => state.endurance += t.walk_regen * mods.regen * dt,
     }
+    // Tired, the bar doesn't fill all the way (and what's over the cap is gone).
+    state.endurance = state.endurance.min(cap);
 
     if !moving {
         return;
     }
     let mut speed = mods.speed
         * match state.stance {
-            Stance::Run => RUN_SPEED * mods.run_speed,
-            Stance::Walk if input.aim => AIM_SPEED,
-            Stance::Walk => WALK_SPEED,
-            Stance::Sneak => SNEAK_SPEED,
+            Stance::Run => t.run_speed * mods.run_speed,
+            Stance::Walk if input.aim => t.aim_speed,
+            Stance::Walk => t.walk_speed,
+            Stance::Sneak => t.sneak_speed,
         };
     // Upstairs and on a flight of stairs the ground floor's windows and fences are out of it.
     let mut level = state.level;
     let on_stairs = level == 0 && map.stair_at(state.pos).is_some();
     let climbing = level == 0 && !on_stairs && map.in_window_opening(state.pos);
     if climbing {
-        speed = speed.min(CLIMB_SPEED);
+        speed = speed.min(t.climb_speed);
     }
     if on_stairs && map.stair_speed > 0.0 {
         speed *= map.stair_speed;
@@ -699,6 +790,41 @@ mod tests {
             step_movement(&map, &mut s, &PlayerInput::default(), TICK_DT);
         }
         assert_eq!(s.endurance, 1.0);
+    }
+
+    /// Breath comes back fastest standing still, slowly walking; the map's tuning is what moves
+    /// a body, and a cap (tiredness) holds the bar down.
+    #[test]
+    fn endurance_comes_back_slower_on_the_move() {
+        let map = TileMap::new(8, 8);
+        let ticks = |secs: f32| (secs / TICK_DT).round() as u32;
+        let walk = PlayerInput { run: false, ..run_east() };
+        let mut s = PlayerState::new(Vec2::new(64.0, 64.0));
+        s.endurance = 0.2;
+        for _ in 0..ticks(5.0) {
+            step_movement(&map, &mut s, &walk, TICK_DT);
+        }
+        assert!((s.endurance - (0.2 + 5.0 * WALK_REGEN)).abs() < 0.01, "walking: {}", s.endurance);
+        let mut s = PlayerState::new(Vec2::new(64.0, 64.0));
+        s.endurance = 0.2;
+        for _ in 0..ticks(5.0) {
+            step_movement(&map, &mut s, &PlayerInput::default(), TICK_DT);
+        }
+        assert!((s.endurance - (0.2 + 5.0 * REGEN)).abs() < 0.01, "standing: {}", s.endurance);
+        // Tired: the bar stops at the cap.
+        s.mods.max_endurance = 0.4;
+        for _ in 0..ticks(20.0) {
+            step_movement(&map, &mut s, &PlayerInput::default(), TICK_DT);
+        }
+        assert!((s.endurance - 0.4).abs() < 1e-5, "capped: {}", s.endurance);
+        // Speeds and drain come from the map's tuning.
+        let mut map = TileMap::new(8, 8);
+        map.movement = MoveTuning { run_speed: 8.0, run_drain: 0.5, ..MoveTuning::default() };
+        let mut s = PlayerState::new(Vec2::new(64.0, 64.0));
+        step_movement(&map, &mut s, &run_east(), 1.0);
+        assert!((s.pos.x - 72.0).abs() < 0.01 && (s.endurance - 0.5).abs() < 0.01, "{s:?}");
+        assert!(MoveTuning::default().check().is_ok());
+        assert!(MoveTuning { run_recover_endurance: 0.01, ..MoveTuning::default() }.check().is_err());
     }
 
     /// An open window is a way through, but only with E (a climb), and climbing it is slow; a shut

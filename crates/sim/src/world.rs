@@ -133,6 +133,8 @@ pub struct WorldConfig {
     pub climb: crate::players::ClimbTuning,
     /// Walking between floors ([`crate::players::StairTuning`]). Not saved, like the climb's.
     pub stairs: crate::players::StairTuning,
+    /// Speeds and endurance ([`crate::players::MoveTuning`]). Saved with the settings.
+    pub movement: crate::players::MoveTuning,
     /// The grid and the lights (`assets/data/power.ron`, [`crate::power`]); saved with the settings.
     pub power: crate::power::PowerDef,
     /// Blinds on windows and glazed doors: where the town has them and handling them
@@ -185,6 +187,7 @@ impl WorldConfig {
             groups: Default::default(),
             climb: Default::default(),
             stairs: Default::default(),
+            movement: Default::default(),
             power: Default::default(),
             blinds: Default::default(),
             fire: Default::default(),
@@ -527,6 +530,7 @@ impl World {
         let sites = containers::find_sites(&generated.map, &config.containers);
         let mut map = generated.map;
         map.stair_speed = config.stairs.speed;
+        map.movement = config.movement;
         crate::blinds::place(&mut map, config.generation.seed, &config.blinds);
         let hash = SpatialHash::new(map.width() as f32, map.height() as f32, 1.0);
         let regions = RegionIndex::new(&map, config.tiers.region_size);

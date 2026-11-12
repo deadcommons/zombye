@@ -394,6 +394,9 @@ struct Settings {
     /// A difficulty's multipliers on the content (`crate::difficulty`); none in older saves.
     #[serde(default)]
     sandbox: crate::difficulty::Sandbox,
+    /// Speeds and endurance (`crate::players::MoveTuning`); none in older saves: the defaults.
+    #[serde(default)]
+    movement: crate::players::MoveTuning,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -809,6 +812,7 @@ impl World {
             fire: config.fire.clone(),
             chop: config.chop.clone(),
             sandbox: config.sandbox.clone(),
+            movement: config.movement,
         };
         w.section(CONF, ron::to_string(&settings).expect("settings serialize").as_bytes());
         let layout = if *map_custom {
@@ -995,6 +999,7 @@ impl World {
         config.fire = settings.fire;
         settings.chop.check().map_err(save_check::invalid)?;
         config.chop = settings.chop;
+        config.movement = settings.movement;
         save_check::check_settings(text, &config)?;
         let map_save: MapSave = decode(MAPD, r.expect(MAPD)?)?;
         let trees: Option<crate::trees::TreeSave> = r.optional(TREE)?.map(|p| decode(TREE, p)).transpose()?;
@@ -1071,6 +1076,7 @@ impl World {
                 map.glazed = std::mem::take(&mut w.map.glazed);
                 map.blinds = std::mem::take(&mut w.map.blinds);
                 map.stair_speed = w.map.stair_speed;
+                map.movement = w.map.movement;
                 map.index_storeys();
                 w.map = map;
                 // Containers are the stored map's furniture, not the generated one's.

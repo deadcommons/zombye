@@ -444,6 +444,7 @@ pub fn build_map(welcome: &Welcome, content: &WorldConfig) -> Result<Joined, Str
     config.climb = t.climb.clone();
     config.stairs = t.stairs.clone();
     config.fire = t.fire.clone();
+    config.movement = t.movement;
     let (ours, theirs) = (ContentPrint::of(&config), &welcome.content);
     let mut differs = Vec::new();
     for (what, same) in [

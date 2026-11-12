@@ -630,11 +630,19 @@ upgrades and the rest come as new categories of the same list.
 ## Players, intents and prediction
 
 - A player is a server entity (`sim::players::Player`): position, facing, stance (Walk 3 m/s, Run 5.5 m/s,
-  Sneak 1.4 m/s; at most `CLIMB_SPEED` 0.7 m/s while climbing through a window) and endurance (0..1; running drains it, and once it runs out you can't run until it
-  recovers a bit). `players::step_movement` is the one movement function: the server tick and the
+  Sneak 1.4 m/s; at most 0.7 m/s while climbing through a window) and endurance (0..1; running drains it, and once it runs out you can't run until it
+  recovers a bit). **Speeds and endurance are data:** `players::MoveTuning` (`WorldConfig::movement`, serde defaults,
+  saved with the settings, checked on load, a difficulty preset's `tuning: (movement: Some((...)))`; ours): `walk_speed`
+  3, `run_speed` 5.5, `sneak_speed` 1.4, `aim_speed` 2.2, `climb_speed` 0.7; `run_drain` 0.06 a second (about 16 s of
+  running from full); endurance back `stand_regen` 0.05 a second standing still (or sitting), but only `walk_regen`
+  0.02 walking and `sneak_regen` 0.03 sneaking, so running away costs something; winded at `run_min_endurance` 0.05
+  until `run_recover_endurance` 0.2. The `WALK_SPEED`, `RUN_DRAIN`, ... constants are its defaults. The world hands it
+  to its map (`TileMap::movement`, like `stair_speed`) and a joining client gets it in `wire::Tunings::movement`
+  (PROTOCOL 31), so prediction moves by the server's numbers. `players::step_movement` is the one movement function: the server tick and the
   client's prediction both call it, so keep it pure (map + state + input + dt in, state out). What the
   player carries changes movement through `PlayerState::mods` (`MoveMods`: speed, run drain, regen, can run,
-  can climb), which the server sets from the load (`World::refresh_carry`) and snapshots carry (`PlayerView::mods`),
+  can climb, `max_endurance`), which the server sets from the load (`World::refresh_carry`) and snapshots carry (`PlayerView::mods`;
+  `max_endurance` isn't saved or in `MoveMods`' encoding, it goes as `PlayerView::endurance_cap`),
   so prediction with the snapshot's modifiers stays exact (Fitness, #46, goes there too).
 - **Climbing** (fences and open or broken windows): **only with E**. Without a climb under way a climb zone
   (`CLIMB_ZONE` either side of the edge) is a wall to a player, which it slides along; one already in a zone (a
@@ -1194,7 +1202,8 @@ the start, and gardens, trees, fences and buildings are inked in where the survi
   x2 with food poisoning; +0.02/h running, +0.002 a swing), tiredness +0.05 awake, -0.12 / -0.09 / -0.06 asleep on a bed /
   sofa / the floor. Levels at 0.35 / 0.6 / 0.85: Peckish, Hungry (no HP back, endurance recovery x0.85), Starving (-2 HP/h,
   swing power x0.85); Dry, Thirsty (recovery x0.75), Parched (-3 HP/h, no running); Drowsy, Tired (swing time x1.1, the
-  client's view cone x0.85), Exhausted (swing time x1.25, walking x0.9). Pain (wounds plus a night on the floor) at 0.2 /
+  client's view cone x0.85, endurance at most `tired_endurance` 0.75), Exhausted (swing time x1.25, walking x0.9, endurance at most
+  `exhausted_endurance` 0.5: `MoveMods::max_endurance`, so a tired survivor runs out of breath sooner). Pain (wounds plus a night on the floor) at 0.2 /
   0.45 / 0.75 weakens swings x0.95 / x0.85 / x0.7. Movement effects go into `MoveMods` (`World::needs_mods`, from
   `refresh_carry` whenever a level or sleep changes); HP loss goes through `hurt_player` (god mode holds). `World::step`
   runs `step_needs` after `step_health`; `skip_time` steps both in 0.1 h steps. `NeedsTuning::off()`: needs never rise
