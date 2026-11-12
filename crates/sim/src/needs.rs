@@ -757,16 +757,18 @@ impl World {
             let p = &mut self.players[pi];
             let (before, view_before) = (signature(&p.needs, &t), view_key(&p.needs));
             let running = p.state.stance == Stance::Run;
+            // Who the survivor is (`crate::origin`): a big appetite, a light sleeper.
+            let perks = p.origin.perks;
             let n = &mut p.needs;
             let asleep = n.asleep();
-            n.hunger += if asleep { t.hunger_asleep_per_h } else { t.hunger_per_h } * dt_h;
-            n.thirst += (if asleep { t.thirst_asleep_per_h } else { t.thirst_per_h } * thirst_mult + if running { t.run_thirst_per_h } else { 0.0 }) * dt_h;
+            n.hunger += if asleep { t.hunger_asleep_per_h } else { t.hunger_per_h } * dt_h * perks.hunger;
+            n.thirst += (if asleep { t.thirst_asleep_per_h } else { t.thirst_per_h } * thirst_mult + if running { t.run_thirst_per_h } else { 0.0 }) * dt_h * perks.thirst;
             match &mut n.sleep {
                 Some(s) => {
                     n.tiredness -= t.rest_per_h(s.spot) * dt_h;
                     s.hours += dt_h;
                 }
-                None => n.tiredness += t.tired_per_h * dt_h,
+                None => n.tiredness += t.tired_per_h * dt_h * perks.tiredness,
             }
             n.hunger = n.hunger.clamp(0.0, 1.0);
             n.thirst = n.thirst.clamp(0.0, 1.0);

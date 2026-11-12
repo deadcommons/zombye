@@ -379,6 +379,10 @@ pub struct Player {
     /// not saved (level after a load, until the next), not in the state hash.
     #[serde(skip)]
     pub pitch: f32,
+    /// Who this survivor was: its Background, Strengths and Flaws and what they do
+    /// (`crate::origin`). Saved in a section of its own (`ORIG`), so not here.
+    #[serde(skip)]
+    pub origin: crate::origin::Origin,
 }
 
 /// A player staggered or knocked down by another player's swing or shove (see `combat`).
@@ -433,6 +437,7 @@ impl Player {
             hands: None,
             frisking: None,
             pitch: 0.0,
+            origin: crate::origin::Origin::default(),
         }
     }
 }
