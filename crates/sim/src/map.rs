@@ -569,13 +569,17 @@ pub struct TileMap {
     /// (`StairTuning::speed`; 0 until the world sets it, which reads as 1).
     #[serde(skip)]
     pub stair_speed: f32,
+    /// Speeds and endurance (`WorldConfig::movement`), which movement reads from here like
+    /// `stair_speed`, so the server and a client's prediction move by the same numbers.
+    #[serde(skip)]
+    pub movement: crate::players::MoveTuning,
 }
 
 impl TileMap {
     pub fn new(chunks_x: i32, chunks_y: i32) -> Self {
         let chunks = (0..chunks_x * chunks_y).map(|_| Chunk { tiles: vec![Tile::default(); CHUNK_TILES] }).collect();
         let outdoors = Room { building: u16::MAX, name: "Outdoors".into(), room_type: "outdoors".into(), floor: Floor::Grass };
-        Self { chunks_x, chunks_y, chunks, rooms: vec![outdoors], buildings: Vec::new(), turning_circles: Vec::new(), street_props: Vec::new(), prop_kinds: Vec::new(), blinds: BTreeMap::new(), glazed: BTreeSet::new(), barricades: BTreeMap::new(), stairs: Vec::new(), upper: BTreeMap::new(), stair_speed: 0.0 }
+        Self { chunks_x, chunks_y, chunks, rooms: vec![outdoors], buildings: Vec::new(), turning_circles: Vec::new(), street_props: Vec::new(), prop_kinds: Vec::new(), blinds: BTreeMap::new(), glazed: BTreeSet::new(), barricades: BTreeMap::new(), stairs: Vec::new(), upper: BTreeMap::new(), stair_speed: 0.0, movement: Default::default() }
     }
 
     pub fn width(&self) -> i32 {

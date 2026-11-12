@@ -78,6 +78,7 @@ mod aim_marker;
 mod audio;
 mod music;
 mod release_audio;
+mod release_brand;
 mod release_anim;
 mod release_chars;
 mod release_models;
@@ -116,6 +117,7 @@ mod inventory_ui;
 mod join_screen;
 mod items_render;
 mod lights;
+mod loading;
 mod main_menu;
 mod map_ui;
 mod menu_skin;
@@ -146,6 +148,7 @@ mod world_actions;
 mod world_render;
 mod zombie_render;
 mod zvat;
+mod window_handoff;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -336,10 +339,15 @@ pub struct Options {
     /// Start with the pause menu up (`--pause`), or the settings screen on a tab
     /// (`--settings graphics|audio|controls|game`): for pictures.
     pub pause: bool,
+    /// Show the loading screen and hold it up (`--loading-screen`): for pictures (`loading.rs`).
+    pub loading_screen: bool,
     pub settings: Option<String>,
     /// How much the UI explains, for this session, not saved (`--help-text full|short|off`; without
     /// it the settings file's, else full). See `help_text.rs`.
     pub help_text: Option<help_text::HelpText>,
+    /// The old look for this session, not saved (`--old-look off|subtle|strong`; without it the
+    /// settings file's, else off). See `film.rs`.
+    pub old_look: Option<film::OldLook>,
     /// UI scale in percent for this session, not saved (`--ui-scale PCT`, 75..150; without it the
     /// client settings file's, else 100). See `ui_scale.rs`.
     pub ui_scale: Option<u32>,
@@ -614,8 +622,10 @@ impl Options {
             no_menu: flag("--no-menu"),
             plain: main_menu::plain(args),
             pause: flag("--pause"),
+            loading_screen: flag("--loading-screen"),
             settings: value("--settings"),
             help_text: value("--help-text").and_then(|v| help_text::HelpText::parse(&v)),
+            old_look: value("--old-look").and_then(|v| film::OldLook::parse(&v)),
             ui_scale: value("--ui-scale").and_then(|v| ui_scale::parse_pct(&v)),
             hotbar: value("--hotbar"),
             hotbar_press: value("--hotbar-press").map_or(Vec::new(), |v| v.split(',').filter_map(parse_menu_pick).collect()),
@@ -770,7 +780,7 @@ fn main() {
         app.add_plugins((ScheduleRunnerPlugin::run_loop(Duration::ZERO), offscreen::OffscreenPlugin));
     }
     app.add_plugins((
-            (theme::ThemePlugin, server_link::ServerLinkPlugin),
+            (theme::ThemePlugin, release_brand::BrandPlugin, loading::LoadingPlugin, server_link::ServerLinkPlugin),
             (fog::FogPlugin, cutaway::CutawayPlugin, silhouette::SilhouettePlugin, opening_hints::OpeningHintsPlugin),
             materials::WorldMaterialPlugin,
             world_render::WorldRenderPlugin,
@@ -828,7 +838,7 @@ pub(crate) fn window_plugins(options: &Options) -> bevy::app::PluginGroupBuilder
             .set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "Zombye".into(),
-                    mode: settings_ui::window_mode(kept.fullscreen && !options.size_given),
+                    mode: settings_ui::window_mode((kept.fullscreen || window_handoff::fullscreen_asked()) && !options.size_given),
                     resolution: if options.size_given {
                         bevy::window::WindowResolution::new(options.size.x, options.size.y).with_scale_factor_override(1.0)
                     } else {
@@ -841,7 +851,13 @@ pub(crate) fn window_plugins(options: &Options) -> bevy::app::PluginGroupBuilder
             })
             .set(assets)
             .disable::<bevy::app::TerminalCtrlCHandlerPlugin>()
+            .add(window_handoff::HandoffPlugin)
     }
+}
+
+/// Whether this run is to end in a start-again (`relaunch`).
+pub(crate) fn relaunch_pending() -> bool {
+    browser_ui::relaunch_asked() || main_menu::relaunch_asked() || new_game::relaunch_asked() || join_screen::relaunch_asked()
 }
 
 /// Run this program again with `next`'s arguments, in this one's place.
@@ -852,6 +868,7 @@ pub(crate) fn relaunch(next: browser_ui::Relaunch) -> ! {
     });
     let mut command = std::process::Command::new(exe);
     command.args(&next.args);
+    window_handoff::pass_on(&mut command);
     if next.password.is_empty() {
         command.env_remove("ZOMBYE_PASSWORD");
     } else {

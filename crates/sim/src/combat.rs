@@ -29,7 +29,7 @@ use crate::ai::{self, ZOMBIE_RADIUS};
 use crate::health::{Part, WoundKind};
 use crate::items::{GroundItem, WeaponCategory, WeaponDef};
 use crate::run::DeathCause;
-use crate::players::{Action, ActionKind, DevFlags, Knock, PLAYER_RADIUS, Player, PlayerInput, RUN_MIN_ENDURANCE};
+use crate::players::{Action, ActionKind, DevFlags, Knock, PLAYER_RADIUS, Player, PlayerInput};
 use crate::senses::{Sound, SoundSource};
 use crate::skills::Skill;
 use crate::vision::clear_path;
@@ -512,7 +512,7 @@ impl World {
         let (power, slow) = c.fatigue(p.state.endurance);
         let (power, slow) = (power * arm_power * grip_power, slow * arm_time * skill_time * grip_time);
         p.state.endurance = (p.state.endurance - cost).max(0.0);
-        if p.state.endurance <= RUN_MIN_ENDURANCE {
+        if p.state.endurance <= self.config.movement.run_min_endurance {
             p.state.winded = true;
         }
         // Attacking ends spawn protection (#68).

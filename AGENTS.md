@@ -85,6 +85,23 @@ with the atlas's colours on its vertices. The same goes for alpha: a tree whose 
 card cut to the outline of its texture's opaque part, as plain triangles. **Far stand-ins:** a model of more than 200 triangles gets a lighter copy when it is read (`furniture_models::simplify`: a crown of many loose leaves has most of them dropped and the rest grown to cover as much, `thin`; anything else has edges collapsed by quadric error, `collapse`, rims held, at most 7 cm off, and is kept only if it covers about what the model did and is a fifth lighter). A chunk's props mesh is built twice in one go (`MeshBuilder::with_far`, `Detail`, `take_far`): the full one, and one with the stand-ins where there are any; `world_render::swap_detail` shows the far one once the zoom is over 40 m and the full one again under 37 m (the camera is orthographic, so size on screen goes by the zoom alone; at 40 m a metre is 27 pixels of a 1080p screen). `ZOMBYE_FAR_ZOOM=N` moves the line for measuring (95: never). `stand_in_report` (ignored; `ZOMBYE_MODELS_DIR=DIR`) prints each model's counts. `check_the_release_folder` (an ignored test in `release_models.rs`) reads
 a folder and checks every file.
 
+**The brand** (`release_brand.rs`, docs/brand/README.md): the Zombye name and logos are trade marks of Grillo Ltd, all
+rights reserved, so no logo file is in this repo (never under `assets/`, whose art licence would cover it). They live
+in the art repo's `release-brand/` (made from its `brand/` kit by `brand/src/release_brand.py`) and release builds
+carry that folder: the client reads `$ZOMBYE_RELEASE_BRAND`, else `release-brand` beside its binary (stdout says
+`release brand: ...`). `logo.png` is drawn on the main menu's home screen and the loading screen, `wordmark.png` on
+the menu's other screens, `mark.png` (the road Z) in the top bar of the inventory's frame, and `icon.png` is the
+window's icon (Windows and X11; a Mac shows its `.app`'s `zombye.icns`, Wayland the desktop entry's). Each is at a
+fixed handle (`BrandPlugin`, added after `ThemePlugin` in every app: game, main menu, new game, join screen), so a
+screen asks `release_brand::title(c, Mark::Logo, width, dim)` or `image(Mark::Z, width)` and draws its fallback when
+that says there is none: the name as text with a small TM (`text_title`), the UI's green head. Written as a mark the
+name is ZOMBYE™ (pending, not ®). **The loading screen** (`loading.rs`): the logo over the whole window from the
+game's first frame until the render world has had no shader pipeline waiting for a few frames (at least 0.7 s, at
+most 20 s), then a 0.35 s fade; in your own world time stands still behind it (`pause_menu::stop_time`). Only on a
+player's start (`loading::wanted`: `--no-menu`, which the main menu passes on, or a plain start, and no
+`--screenshot` / `--exit-after`), so runs driven by flags are as before. `--loading-screen` shows and holds it:
+`--render-to shot.png --hud --loading-screen`; `--main-menu --render-to shot.png` for the menu's logo.
+
 ## Remote machines
 
 Development can run on two remote Linux machines, driven from Claude on the owner's Mac:
@@ -141,7 +158,7 @@ cargo run -p zombye-server -- --docs ../zombye-web/src/content/docs/docs/referen
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --angle 0..3 --turn N@SECS[,N@SECS...] --opening-hints on|off --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --weapons-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --mod DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab rows|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --graphics-panel --map --map-zoom PX --map-center X,Y --map-all --skip-hours H --hover-tag N --debug-stats --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --music V --ui-scale PCT --help-text full|short|off --connect HOST[:PORT] --name NAME --password P --agent --server-info HOST[:PORT] --server-list FILE|URL --browser --browser-join N[@SECS] --joined --join-error TEXT --hotbar ID[,ID...] --hotbar-press K@SECS[,K@SECS...] --panel-at PANEL:X,Y[;PANEL:X,Y] --drag-panel PANEL:DX,DY[@SECS] --lag MS --say TEXT[@SECS] --shout TEXT[@SECS] --whisper TEXT[@SECS] --gesture NAME[@SECS] --talk-demo --talk-wall --holdup-demo --holdup-auto --graphics low|medium|high|ultra|auto --vegetation off|low|high|N --no-post LIST --msaa N --shadow-map N --render-scale F --frame-bench N --gun ID --give ID[:N],... --walls-up --zombie-silhouettes --aim-at DX,DY|zombie --first-person --view-at SECS[,SECS...] --view-mix U --new-game --new-game-tab who|picks|world --new-game-from PATH --background ID --strengths ID[,ID...] --flaws ID[,ID...] --outfit ITEM[,ITEM...] --difficulty ID --walk X,Y;X,Y;...` (`--give`: a new world with those items in your pockets, for trying things out, e.g. `--give firewood:2,matches,raw_chicken,frying_pan`; the eight before the last: see A new game; `--aim-at`: see The aim marker under Combat; `--first-person`: see The first-person view under Light and mood; the last walks the local player from point to point by itself, opening shut doors its way leads through, for recordings; the two before it: see Cutaways under Light and mood; the one before those: see Guns; the seven before it: see Look and feel; the two before them: see Hold-ups and groups; the six before those: see Talking and gestures) (the camera always turns with `,` and `.`, see Turning the camera under Light and mood: `--turn` does it by itself for recordings, `--opening-hints`: see Opening hints there, and `--rotate`, which turning used to need, is still accepted and does nothing; `--zoom` is the metres of world visible vertically, 8–90, default 26;
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --angle 0..3 --turn N@SECS[,N@SECS...] --opening-hints on|off --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --weapons-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --mod DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab rows|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --loading-screen --graphics-panel --map --map-zoom PX --map-center X,Y --map-all --skip-hours H --hover-tag N --debug-stats --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --music V --ui-scale PCT --help-text full|short|off --old-look off|subtle|strong --connect HOST[:PORT] --name NAME --password P --agent --server-info HOST[:PORT] --server-list FILE|URL --browser --browser-join N[@SECS] --joined --join-error TEXT --hotbar ID[,ID...] --hotbar-press K@SECS[,K@SECS...] --panel-at PANEL:X,Y[;PANEL:X,Y] --drag-panel PANEL:DX,DY[@SECS] --lag MS --say TEXT[@SECS] --shout TEXT[@SECS] --whisper TEXT[@SECS] --gesture NAME[@SECS] --talk-demo --talk-wall --holdup-demo --holdup-auto --graphics low|medium|high|ultra|auto --vegetation off|low|high|N --no-post LIST --msaa N --shadow-map N --render-scale F --frame-bench N --gun ID --give ID[:N],... --walls-up --zombie-silhouettes --aim-at DX,DY|zombie --first-person --view-at SECS[,SECS...] --view-mix U --new-game --new-game-tab who|picks|world --new-game-from PATH --background ID --strengths ID[,ID...] --flaws ID[,ID...] --outfit ITEM[,ITEM...] --difficulty ID --walk X,Y;X,Y;...` (`--loading-screen`: see The brand under Assets built in Blender; `--give`: a new world with those items in your pockets, for trying things out, e.g. `--give firewood:2,matches,raw_chicken,frying_pan`; the eight before the last: see A new game; `--aim-at`: see The aim marker under Combat; `--first-person`: see The first-person view under Light and mood; the last walks the local player from point to point by itself, opening shut doors its way leads through, for recordings; the two before it: see Cutaways under Light and mood; the one before those: see Guns; the seven before it: see Look and feel; the two before them: see Hold-ups and groups; the six before those: see Talking and gestures) (the camera always turns with `,` and `.`, see Turning the camera under Light and mood: `--turn` does it by itself for recordings, `--opening-hints`: see Opening hints there, and `--rotate`, which turning used to need, is still accepted and does nothing; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost). `--size WxH` makes the window exactly that many pixels, at scale factor 1, so a
 `--screenshot` is WxH on a high-DPI screen too; without it the window is 1600x900 at the screen's scale.
@@ -266,6 +283,12 @@ next start. Each tab has its "defaults" button. **A new client setting gets a fi
 now), `first_person`, `fullscreen`, `vsync`; `--volume` / `--music` / `--mute` / `--first-person` / `--novsync` still
 win for a session. Gameplay and difficulty settings are a world's, chosen on the new-game screen, not here. Tests:
 `main_menu::tests`, `pause_menu::tests`, `settings_ui::tests`.
+**Full screen across a start-again (`window_handoff.rs`):** each screen is a run of its own with its own window, and a
+Mac keeps a full-screen window in a Space of its own, which a run that ended while full screen left behind with the old
+screen on it. So on a Mac an exit that leads to a start-again (`crate::relaunch_pending`) is held back while the window
+is full screen (`hold_exit`, before anything acts on the exit): the window leaves full screen, the exit goes on once it
+has been out for a few frames (3 s at most), and the next run opens full screen (`ZOMBYE_WINDOW_FULLSCREEN=1` in its
+environment). `ZOMBYE_WINDOW_HANDOFF=1` does the same on any system, for trying it.
 
 **UI scale (#109, `ui_scale.rs`):** one setting, 75% to 150%, that every panel follows (the HUD, status tags, inventory,
 skills, health, the current action, the death screen, the light preview and the yellow line), through Bevy's `UiScale`.
@@ -632,11 +655,19 @@ upgrades and the rest come as new categories of the same list.
 ## Players, intents and prediction
 
 - A player is a server entity (`sim::players::Player`): position, facing, stance (Walk 3 m/s, Run 5.5 m/s,
-  Sneak 1.4 m/s; at most `CLIMB_SPEED` 0.7 m/s while climbing through a window) and endurance (0..1; running drains it, and once it runs out you can't run until it
-  recovers a bit). `players::step_movement` is the one movement function: the server tick and the
+  Sneak 1.4 m/s; at most 0.7 m/s while climbing through a window) and endurance (0..1; running drains it, and once it runs out you can't run until it
+  recovers a bit). **Speeds and endurance are data:** `players::MoveTuning` (`WorldConfig::movement`, serde defaults,
+  saved with the settings, checked on load, a difficulty preset's `tuning: (movement: Some((...)))`; ours): `walk_speed`
+  3, `run_speed` 5.5, `sneak_speed` 1.4, `aim_speed` 2.2, `climb_speed` 0.7; `run_drain` 0.06 a second (about 16 s of
+  running from full); endurance back `stand_regen` 0.05 a second standing still (or sitting), but only `walk_regen`
+  0.02 walking and `sneak_regen` 0.03 sneaking, so running away costs something; winded at `run_min_endurance` 0.05
+  until `run_recover_endurance` 0.2. The `WALK_SPEED`, `RUN_DRAIN`, ... constants are its defaults. The world hands it
+  to its map (`TileMap::movement`, like `stair_speed`) and a joining client gets it in `wire::Tunings::movement`
+  (PROTOCOL 31), so prediction moves by the server's numbers. `players::step_movement` is the one movement function: the server tick and the
   client's prediction both call it, so keep it pure (map + state + input + dt in, state out). What the
   player carries changes movement through `PlayerState::mods` (`MoveMods`: speed, run drain, regen, can run,
-  can climb), which the server sets from the load (`World::refresh_carry`) and snapshots carry (`PlayerView::mods`),
+  can climb, `max_endurance`), which the server sets from the load (`World::refresh_carry`) and snapshots carry (`PlayerView::mods`;
+  `max_endurance` isn't saved or in `MoveMods`' encoding, it goes as `PlayerView::endurance_cap`),
   so prediction with the snapshot's modifiers stays exact (Fitness, #46, goes there too).
 - **Climbing** (fences and open or broken windows): **only with E**. Without a climb under way a climb zone
   (`CLIMB_ZONE` either side of the edge) is a wall to a player, which it slides along; one already in a zone (a
@@ -1196,7 +1227,8 @@ the start, and gardens, trees, fences and buildings are inked in where the survi
   x2 with food poisoning; +0.02/h running, +0.002 a swing), tiredness +0.05 awake, -0.12 / -0.09 / -0.06 asleep on a bed /
   sofa / the floor. Levels at 0.35 / 0.6 / 0.85: Peckish, Hungry (no HP back, endurance recovery x0.85), Starving (-2 HP/h,
   swing power x0.85); Dry, Thirsty (recovery x0.75), Parched (-3 HP/h, no running); Drowsy, Tired (swing time x1.1, the
-  client's view cone x0.85), Exhausted (swing time x1.25, walking x0.9). Pain (wounds plus a night on the floor) at 0.2 /
+  client's view cone x0.85, endurance at most `tired_endurance` 0.75), Exhausted (swing time x1.25, walking x0.9, endurance at most
+  `exhausted_endurance` 0.5: `MoveMods::max_endurance`, so a tired survivor runs out of breath sooner). Pain (wounds plus a night on the floor) at 0.2 /
   0.45 / 0.75 weakens swings x0.95 / x0.85 / x0.7. Movement effects go into `MoveMods` (`World::needs_mods`, from
   `refresh_carry` whenever a level or sleep changes); HP loss goes through `hurt_player` (god mode holds). `World::step`
   runs `step_needs` after `step_health`; `skip_time` steps both in 0.1 h steps. `NeedsTuning::off()`: needs never rise
@@ -2007,6 +2039,15 @@ and mood, and docs/art-direction.md). All of it is client only: nothing here is 
   `FullscreenMaterial`): tilt-shift (the top and bottom of the screen soften, up to 2.6 px at 1080p, 13 taps) and grain
   (24 a second, by visual time, so it stands still in an offscreen render; about half strength at night). With both
   off the camera has no `Film` and the pass isn't run.
+  **The old look** (the settings' Graphics tab, "Old look": Off, Subtle or Strong; `ClientSettings::old_look`,
+  `film::OldLook`; `--old-look off|subtle|strong` for a session, not saved, and the way to get it in an offscreen
+  picture) rides on the same pass: the picture as a faded print. Blacks lift toward a warm brown `ink`, whites come
+  down to a cream `paper` (which tints everything), a little colour goes, grain is added to the film grain's, and
+  the brightest parts get a soft glow (12 taps on two rings). Each strength's numbers are data: `light.ron`'s
+  `old_look: (subtle: (...), strong: (...))` (`daynight::OldLookStyle`, `OldLookLevel`: `fade`, `ink`, `wash`,
+  `paper`, `desaturate`, `grain`, `glow`, and `night`, the share of the fade kept at night so the dark stays dark).
+  It is a choice of look, not of cost: no graphics preset sets or clears it, and it draws with the grain and
+  tilt-shift switches off. Off (the default) adds nothing to the pass.
 - **Ground detail** (`world.wesl` `ground_detail`, only in the ground material, `WorldKey::ground` / `GROUND`):
   outdoors, the ground's colour is broken up per pixel: broad drifts, flat triangular facets 1.7 m and 0.55 m across,
   and dry and lush patches on grass and dirt; hard ground (asphalt, concrete) is worn instead: sand in drifts, dark

@@ -105,6 +105,54 @@ impl Default for HazeLook {
     }
 }
 
+/// One strength of the old look (`film.rs`, the settings' "Old look"): the picture as a faded
+/// print. Colours are sRGB; every amount is 0 for none.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OldLookLevel {
+    /// How far the blacks are lifted toward `ink` (0 = true black stays, 1 = black becomes `ink`).
+    pub fade: f32,
+    /// What the darkest parts fade to: a warm brown, as old ink does.
+    pub ink: (f32, f32, f32),
+    /// How far the whites are pulled down to `paper` (0 = white stays white, 1 = white is `paper`).
+    pub wash: f32,
+    /// The colour of the paper: a warm cream that tints the whole picture through the whites.
+    pub paper: (f32, f32, f32),
+    /// How much colour is taken out (0 = none, 1 = grey before the tint).
+    pub desaturate: f32,
+    /// Grain added on top of the film grain (as its strength; that is 0.085 by day).
+    pub grain: f32,
+    /// The soft glow round the brightest parts (0 = none, 1 = a lot).
+    pub glow: f32,
+    /// The share of `fade` kept at night (in between follows the daylight), so the dark stays dark.
+    pub night: f32,
+}
+
+impl Default for OldLookLevel {
+    fn default() -> Self {
+        OldLookStyle::default().subtle
+    }
+}
+
+/// The old look at each strength the settings offer (Off draws none of it).
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OldLookStyle {
+    /// The setting's "Subtle".
+    pub subtle: OldLookLevel,
+    /// The setting's "Strong".
+    pub strong: OldLookLevel,
+}
+
+impl Default for OldLookStyle {
+    fn default() -> Self {
+        OldLookStyle {
+            subtle: OldLookLevel { fade: 0.3, ink: (0.3, 0.22, 0.16), wash: 0.45, paper: (0.97, 0.9, 0.76), desaturate: 0.12, grain: 0.05, glow: 0.25, night: 0.35 },
+            strong: OldLookLevel { fade: 0.55, ink: (0.34, 0.25, 0.18), wash: 0.8, paper: (0.95, 0.86, 0.7), desaturate: 0.3, grain: 0.11, glow: 0.45, night: 0.35 },
+        }
+    }
+}
+
 /// How the light looks, from the data folder's `light.ron` (every field optional: one left out
 /// takes its default, no file at all the shipped one). Only the look: the sim's own daylight
 /// (what zombies see by) is `sim::senses::daylight`.
@@ -123,6 +171,8 @@ pub struct LightLook {
     /// Added to the temperature and the saturation at dawn and dusk.
     pub dusk: (f32, f32),
     pub haze: HazeLook,
+    /// The old look: the picture as a faded print, at the strengths the settings offer.
+    pub old_look: OldLookStyle,
     pub fire: FireLook,
     /// How many times stronger the fill is by day while the player is inside a building: rooms
     /// lie in their roof's shadow, hidden from the camera or not (1 = no stronger).
@@ -147,6 +197,7 @@ impl Default for LightLook {
             grade_night: GradeLook { exposure: 0.35, temperature: -0.03, tint: 0.0, saturation: 0.72, shadows: (0.6, 1.0, 0.0), midtones: (0.8, 1.04), highlights: (1.0, 1.0), vignette: (0.6, 0.62) },
             dusk: (0.06, 0.1),
             haze: HazeLook::default(),
+            old_look: OldLookStyle::default(),
             fire: FireLook { colour: (1.0, 0.55, 0.22), lumens: 600_000.0, range: 14.0, height: 0.7, seen: 7.0 },
             indoor_fill: 1.6,
         }
@@ -203,6 +254,13 @@ impl LightLook {
         }
         within("haze.near", look.haze.near, 0.0, 200.0)?;
         within("haze.far", look.haze.far, look.haze.near + 1.0, 400.0)?;
+        for (name, o) in [("old_look.subtle", look.old_look.subtle), ("old_look.strong", look.old_look.strong)] {
+            for v in [o.ink.0, o.ink.1, o.ink.2, o.paper.0, o.paper.1, o.paper.2, o.fade, o.wash, o.desaturate, o.night] {
+                within(&format!("{name}: fade, wash, desaturate, night and the colours"), v, 0.0, 1.0)?;
+            }
+            within(&format!("{name}.grain"), o.grain, 0.0, 0.5)?;
+            within(&format!("{name}.glow"), o.glow, 0.0, 2.0)?;
+        }
         within("dusk temperature", look.dusk.0, -1.0, 1.0)?;
         within("dusk saturation", look.dusk.1, -1.0, 1.0)?;
         Ok(look)

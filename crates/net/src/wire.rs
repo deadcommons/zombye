@@ -71,8 +71,9 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// (`SnapshotDelta::fires`), `Tunings::fire`, `RecipeDef::heat` and `places`, `Consumable::poison`, `WoundKind::Burn`,
 /// `DeathCause::Burned`; sitting down: `Intent::Sit`, `PlayerView::seated` (bits 18-20 of `PlayerPacked::bits`). 30: building and barricades: `Intent::Build`,
 /// `Intent::Unbuild`, `Snapshot::barricade_changes`, `Welcome::barricades`, `JobKind::Build`, `Edge::WindowBoarded`
-/// and `Edge::DoorBoarded`.)
-pub const PROTOCOL: u32 = 30;
+/// and `Edge::DoorBoarded`. 31: movement and endurance in settings: `Tunings::movement`,
+/// `PlayerView::endurance_cap`.)
+pub const PROTOCOL: u32 = 31;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -350,6 +351,8 @@ pub struct Tunings {
     pub stairs: zombye_sim::StairTuning,
     /// Fire and cooking (`zombye_sim::fire`): where the Make list says a cooking recipe has heat.
     pub fire: zombye_sim::FireTuning,
+    /// Speeds and endurance, which movement is predicted with.
+    pub movement: zombye_sim::MoveTuning,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -570,6 +573,7 @@ impl PlayerPacked {
             action_left: self.action_left as f32 / 100.0,
             ready_in: self.ready_in as f32 / 100.0,
             mods: MoveMods::default(),
+            endurance_cap: 1.0,
             busy: 0.0,
             jobs: 0,
             dev: DevFlags::default(),

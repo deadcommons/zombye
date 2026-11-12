@@ -23,6 +23,8 @@ ron.workspace = true
 gltf = { version = "1.4", default-features = false, features = ["utils", "extras"] }
 # Half floats for the crowd's vertex animation texture (MIT OR Apache-2.0; already in Bevy's tree).
 half = "2"
+# The window's icon type (`release_brand.rs`); the version Bevy's window backend uses, already in its tree.
+winit = { version = "0.30", default-features = false }
 # Only for `--features profile` (per-system timings, `profile.rs`); both already in Bevy's tree.
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", optional = true, default-features = false, features = ["registry"] }

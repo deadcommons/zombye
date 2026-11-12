@@ -349,6 +349,10 @@ pub fn back_args(args: &[String]) -> Vec<String> {
 
 static NEXT: Mutex<Option<Relaunch>> = Mutex::new(None);
 
+pub fn relaunch_asked() -> bool {
+    NEXT.lock().is_ok_and(|n| n.is_some())
+}
+
 /// Runs the screen and then the game it ended in (or nothing, if the window was closed).
 pub fn run(options: Options) -> ! {
     let screen = match Screen::new(options.clone()) {
@@ -360,7 +364,7 @@ pub fn run(options: Options) -> ! {
     };
     let offscreen = options.offscreen();
     let mut app = App::new();
-    app.insert_resource(ClearColor(flat::INK)).add_plugins(crate::window_plugins(&options)).insert_resource(options).insert_resource(screen).add_plugins(theme::ThemePlugin);
+    app.insert_resource(ClearColor(flat::INK)).add_plugins(crate::window_plugins(&options)).insert_resource(options).insert_resource(screen).add_plugins((theme::ThemePlugin, crate::release_brand::BrandPlugin));
     if offscreen {
         app.add_plugins((bevy::app::ScheduleRunnerPlugin::run_loop(std::time::Duration::ZERO), crate::offscreen::OffscreenPlugin));
     }

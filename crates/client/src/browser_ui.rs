@@ -143,6 +143,10 @@ pub struct Relaunch {
 
 static RELAUNCH: Mutex<Option<Relaunch>> = Mutex::new(None);
 
+pub fn relaunch_asked() -> bool {
+    RELAUNCH.lock().is_ok_and(|r| r.is_some())
+}
+
 /// The join asked for in the browser, once the game has shut down (`main` runs it).
 pub fn take_relaunch() -> Option<Relaunch> {
     RELAUNCH.lock().ok().and_then(|mut r| r.take())

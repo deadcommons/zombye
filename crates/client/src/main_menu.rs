@@ -36,11 +36,12 @@ use crate::browser_ui::Relaunch;
 use crate::join_screen::args_without;
 use crate::settings_ui::SettingsUi;
 use crate::menu_skin::{self as skin, BONE, DIM, Look};
+use crate::release_brand::{self as brand, Mark};
 use crate::theme::{self, BODY, SMALL, font};
 
 /// Flags (with a value, and alone) that only set the scene: with nothing but these, the game
 /// starts on the menu.
-const SCENE_WITH_VALUE: [&str; 19] = ["--size", "--saves", "--data", "--mod", "--graphics", "--vegetation", "--no-post", "--msaa", "--shadow-map", "--render-scale", "--ui-scale", "--volume", "--music", "--name", "--server-list", "--crowd-vat", "--survivor", "--opening-hints", "--help-text"];
+const SCENE_WITH_VALUE: [&str; 20] = ["--size", "--saves", "--data", "--mod", "--graphics", "--vegetation", "--no-post", "--msaa", "--shadow-map", "--render-scale", "--ui-scale", "--volume", "--music", "--name", "--server-list", "--crowd-vat", "--survivor", "--opening-hints", "--help-text", "--old-look"];
 const SCENE_ALONE: [&str; 8] = ["--novsync", "--mute", "--load-anyway", "--first-person", "--third-person", "--zombie-silhouettes", "--walls-up", "--rotate"];
 /// What chose this run's world or screen, dropped when another is chosen.
 const WORLD_WITH_VALUE: [&str; 13] = ["--connect", "--password", "--load", "--from-browser", "--browser-join", "--join-error", "--seed", "--new-game-from", "--settings", "--menu-screen", "--server-info", "--skip-hours", "--at"];
@@ -115,6 +116,10 @@ pub fn ask_relaunch(args: Vec<String>, options: &Options) {
     if let Ok(mut n) = NEXT.lock() {
         *n = Some(Relaunch { args, password: options.password.clone() });
     }
+}
+
+pub fn relaunch_asked() -> bool {
+    NEXT.lock().is_ok_and(|n| n.is_some())
 }
 
 pub fn take_relaunch() -> Option<Relaunch> {
@@ -217,7 +222,7 @@ pub fn run(options: Options) -> ! {
     if offscreen {
         app.add_plugins((ScheduleRunnerPlugin::run_loop(Duration::ZERO), crate::offscreen::OffscreenPlugin));
     }
-    app.add_plugins((theme::ThemePlugin, crate::ui_scale::UiScalePlugin, crate::settings_ui::SettingsUiPlugin))
+    app.add_plugins((theme::ThemePlugin, crate::release_brand::BrandPlugin, crate::ui_scale::UiScalePlugin, crate::settings_ui::SettingsUiPlugin))
         .add_systems(Startup, camera)
         .add_systems(First, crate::exit_on_signal)
         .add_systems(Update, (keys, act, draw).chain());
@@ -229,6 +234,9 @@ pub fn run(options: Options) -> ! {
 }
 
 const WIDTH: f32 = 520.0;
+/// The logo over the home screen's buttons, and the word alone over the other screens.
+const LOGO_WIDTH: f32 = 440.0;
+const WORDMARK_WIDTH: f32 = 360.0;
 
 fn camera(mut commands: Commands, target: Option<Res<crate::offscreen::OffscreenTarget>>) {
     let mut cam = commands.spawn(Camera2d);
@@ -309,8 +317,7 @@ fn draw(mut commands: Commands, mut menu: ResMut<Menu>, root: Option<Single<Enti
     let now = SystemTime::now();
     commands.entity(root).with_children(|c| {
         c.spawn(Node { flex_grow: 1.0, padding: UiRect::left(percent(9)), flex_direction: FlexDirection::Column, justify_content: JustifyContent::Center, row_gap: px(8), ..default() }).with_children(|col| {
-            col.spawn((Text::new("ZOMBYE"), theme::head(104.0), TextColor(BONE), TextLayout::no_wrap()));
-            col.spawn((Text::new("OPEN-SOURCE ZOMBIE SURVIVAL"), theme::head(20.0), TextColor(skin::GREEN), TextLayout::no_wrap(), Node { margin: UiRect::new(px(3), px(0), px(-12), px(26)), ..default() }));
+            title(col, menu.screen);
             match menu.screen {
                 Screen::Home => home(col, &menu, now),
                 Screen::Load => load(col, &menu, now),
@@ -328,9 +335,25 @@ fn draw(mut commands: Commands, mut menu: ResMut<Menu>, root: Option<Single<Enti
                 }
             }
             skin::spacer(row);
+            row.spawn((Text::new(brand::NOTICE), font(SMALL), TextColor(skin::FAINT), TextLayout::no_wrap()));
             row.spawn((Text::new(format!("v{}", env!("CARGO_PKG_VERSION"))), font(SMALL), TextColor(DIM)));
         });
     });
+}
+
+/// The head of a screen: the logo on the home screen and the word alone on the others, which
+/// need the room for their lists. A build without the brand's pictures (`release_brand.rs`) has
+/// the name as text.
+fn title(col: &mut ChildSpawnerCommands, screen: Screen) {
+    let (mark, width) = if screen == Screen::Home { (Mark::Logo, LOGO_WIDTH) } else { (Mark::Wordmark, WORDMARK_WIDTH) };
+    let mut drawn = false;
+    // (Out to the left by the picture's own margin, so the word starts where the buttons do,
+    // and the room below that the tagline's margin gives the text title.)
+    col.spawn(Node { margin: UiRect::new(px(-width * 0.04), px(0), px(0), px(18)), flex_shrink: 0.0, ..default() }).with_children(|c| drawn = brand::title(c, mark, width, DIM));
+    if !drawn {
+        brand::text_title(col, 104.0, BONE, DIM);
+        col.spawn((Text::new("ZOMBIE SURVIVAL"), theme::head(20.0), TextColor(skin::GREEN), TextLayout::no_wrap(), Node { margin: UiRect::new(px(3), px(0), px(-12), px(26)), ..default() }));
+    }
 }
 
 fn button(parent: &mut ChildSpawnerCommands, label: &str, detail: Option<&str>, look: Look, act: Act) {

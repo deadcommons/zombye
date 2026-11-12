@@ -171,12 +171,13 @@ fn act(mut menu: ResMut<PauseMenu>, mut settings: ResMut<SettingsUi>, mut asked:
 
 /// Your own world stands still while the menu is up; a server's goes on. (Not in a picture, whose
 /// visual time must run for poses to settle.)
-fn stop_time(menu: Res<PauseMenu>, link: Res<ServerLink>, options: Res<Options>, mut time: ResMut<Time<Virtual>>) {
+fn stop_time(menu: Res<PauseMenu>, loading: Option<Res<crate::loading::Loading>>, link: Res<ServerLink>, options: Res<Options>, mut time: ResMut<Time<Virtual>>) {
     // (The offscreen renderer stops and starts visual time itself.)
     if options.offscreen() {
         return;
     }
-    let stop = menu.open && link.net.is_none();
+    // (And behind the loading screen: nothing happens to a survivor you can't see yet.)
+    let stop = (menu.open || loading.is_some_and(|l| l.up)) && link.net.is_none();
     if time.is_paused() != stop {
         if stop { time.pause() } else { time.unpause() }
     }
