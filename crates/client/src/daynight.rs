@@ -29,6 +29,14 @@ pub struct SunLook {
     pub colour_low: (f32, f32, f32),
 }
 
+/// The moon: how bright (lux) and its colour (sRGB).
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MoonLook {
+    pub lux: f32,
+    pub colour: (f32, f32, f32),
+}
+
 /// The light that fills shadows (the ambient light): its colour and brightness.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -74,6 +82,10 @@ pub struct GradeLook {
 #[serde(default, deny_unknown_fields)]
 pub struct LightLook {
     pub sun: SunLook,
+    pub moon: MoonLook,
+    /// How wide the sun and moon are, as a soft shadow's size (0 = hard-edged shadows). Only
+    /// drawn soft with the graphics settings' soft shadows on.
+    pub soft_shadows: f32,
     pub fill_day: FillLook,
     pub fill_night: FillLook,
     pub grade_day: GradeLook,
@@ -96,13 +108,15 @@ impl Default for LightLook {
     fn default() -> Self {
         LightLook {
             sun: SunLook::default(),
-            fill_day: FillLook { colour: (0.74, 0.7, 0.73), brightness: 108.0 },
-            fill_night: FillLook { colour: (0.3, 0.38, 0.62), brightness: 12.0 },
-            grade_day: GradeLook { exposure: 0.2, temperature: 0.04, tint: -0.01, saturation: 0.92, shadows: (0.8, 0.94, 0.012), midtones: (0.95, 1.03), highlights: (0.9, 1.04), vignette: (0.46, 0.8) },
+            moon: MoonLook { lux: 1100.0, colour: (0.55, 0.65, 1.0) },
+            soft_shadows: 6.0,
+            fill_day: FillLook { colour: (0.86, 0.74, 0.62), brightness: 520.0 },
+            fill_night: FillLook { colour: (0.3, 0.38, 0.66), brightness: 40.0 },
+            grade_day: GradeLook { exposure: 0.45, temperature: 0.04, tint: -0.01, saturation: 0.95, shadows: (0.9, 1.0, 0.006), midtones: (0.97, 1.08), highlights: (0.92, 1.1), vignette: (0.46, 0.8) },
             grade_night: GradeLook { exposure: 0.35, temperature: -0.03, tint: 0.0, saturation: 0.72, shadows: (0.6, 1.0, 0.0), midtones: (0.8, 1.04), highlights: (1.0, 1.0), vignette: (0.6, 0.62) },
             dusk: (0.06, 0.1),
             fire: FireLook { colour: (1.0, 0.55, 0.22), lumens: 600_000.0, range: 14.0, height: 0.7, seen: 7.0 },
-            indoor_fill: 4.0,
+            indoor_fill: 1.6,
         }
     }
 }
@@ -116,10 +130,12 @@ impl LightLook {
         let within = |name: &str, v: f32, lo: f32, hi: f32| if (lo..=hi).contains(&v) { Ok(()) } else { Err(format!("{name} must be from {lo} to {hi}, not {v}")) };
         within("sun.lux", look.sun.lux, 0.0, 200_000.0)?;
         within("indoor_fill", look.indoor_fill, 1.0, 20.0)?;
+        within("moon.lux", look.moon.lux, 0.0, 20_000.0)?;
+        within("soft_shadows", look.soft_shadows, 0.0, 40.0)?;
         within("sun.low", look.sun.low, 0.05, 2.0)?;
         within("sun.climb", look.sun.climb, 0.0, 3.0)?;
         within("sun.south", look.sun.south, -2.0, 2.0)?;
-        for (name, c) in [("sun.colour_high", look.sun.colour_high), ("sun.colour_low", look.sun.colour_low), ("fill_day.colour", look.fill_day.colour), ("fill_night.colour", look.fill_night.colour)] {
+        for (name, c) in [("sun.colour_high", look.sun.colour_high), ("sun.colour_low", look.sun.colour_low), ("fill_day.colour", look.fill_day.colour), ("fill_night.colour", look.fill_night.colour), ("moon.colour", look.moon.colour)] {
             for v in [c.0, c.1, c.2] {
                 within(name, v, 0.0, 1.0)?;
             }
@@ -252,7 +268,8 @@ pub fn sky_at(hour: f32) -> (Vec3, Color, f32, f32) {
         let c = hi.lerp(lo, warm);
         (dir, Color::srgb(c.x, c.y, c.z), sun.lux * daylight, daylight)
     } else {
-        (Vec3::new(0.35, -1.0, 0.25).normalize(), Color::srgb(0.55, 0.65, 1.0), 320.0, 0.0)
+        let moon = look().moon;
+        (Vec3::new(0.35, -1.0, 0.25).normalize(), Color::srgb(moon.colour.0, moon.colour.1, moon.colour.2), moon.lux, 0.0)
     }
 }
 
@@ -335,12 +352,18 @@ fn update_lights(
     map: Res<crate::server_link::ClientMap>,
     player: Query<&Transform, (With<Player>, Without<Sun>)>,
     mut indoors: Local<Option<f32>>,
+    graphics: Res<crate::graphics::Graphics>,
 ) {
     let (dir, color, lux, day) = sky_at(preview.hour_or(link.curr.time_of_day));
     daylight.0 = day;
     if let Ok((mut light, mut tf)) = sun.single_mut() {
         light.illuminance = lux;
         light.color = color;
+        // Soft-edged shadows (light.ron `soft_shadows`, the graphics setting of the same name).
+        let soft = (graphics.soft_shadows && look().soft_shadows > 0.0).then_some(look().soft_shadows);
+        if light.soft_shadow_size != soft {
+            light.soft_shadow_size = soft;
+        }
         // Only when the direction steps: the transform stays unchanged in between, so the shadow
         // map is drawn on the same texel grid frame after frame.
         let dir = sun_step(*held, dir);
@@ -531,10 +554,10 @@ mod tests {
         assert_eq!(sun_step(held, moon), moon);
     }
 
-    /// DCM-59: by day the sun is low and golden and the grade warm and soft; the night's light and
-    /// grade are what they were (#83).
+    /// DCM-59: by day the sun is low and golden and the grade warm; the night's grade is what it
+    /// was (#83) under a brighter, blue moon, so shapes read in the dark.
     #[test]
-    fn the_day_is_golden_and_the_night_as_dark_as_it_was() {
+    fn the_day_is_golden_and_the_night_blue_and_readable() {
         for hour in [7.5, 10.0, 12.0, 13.0, 14.0, 16.0, 18.5] {
             let (dir, color, lux, day) = sky_at(hour);
             let up = (-dir.y).asin().to_degrees();
@@ -546,12 +569,12 @@ mod tests {
         // Lower and redder late in the day than at noon.
         assert!(sky_at(18.0).0.y > sky_at(13.0).0.y && sky_at(18.0).1.to_srgba().blue < sky_at(13.0).1.to_srgba().blue);
         let (_, moon, lux, day) = sky_at(23.0);
-        assert_eq!((moon.to_srgba(), lux, day), (Srgba::rgb(0.55, 0.65, 1.0), 320.0, 0.0));
+        assert_eq!((moon.to_srgba(), lux, day), (Srgba::rgb(0.55, 0.65, 1.0), 1100.0, 0.0));
 
         let (night, noon, dusk) = (grade_at(0.0), grade_at(1.0), grade_at(0.5));
         assert_eq!((night.global.exposure, night.global.temperature, night.global.tint, night.global.post_saturation), (0.35, -0.03, 0.0, 0.72));
         assert_eq!((night.shadows.saturation, night.shadows.contrast, night.shadows.lift, night.midtones.saturation, night.midtones.contrast, night.highlights.gain), (0.6, 1.0, 0.0, 0.8, 1.04, 1.0));
         assert!(noon.global.temperature > 0.0 && dusk.global.temperature > noon.global.temperature);
-        assert!(noon.midtones.contrast <= night.midtones.contrast && noon.shadows.lift > 0.0, "soft contrast and lifted blacks by day");
+        assert!(noon.global.exposure > night.global.exposure && noon.highlights.gain > 1.0 && noon.shadows.lift > 0.0, "a wide range by day, blacks a touch lifted");
     }
 }

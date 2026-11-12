@@ -63,6 +63,7 @@ pub enum Switch {
     TiltShift,
     Vignette,
     ContactShadows,
+    SoftShadows,
     GroundDetail,
     Fullscreen,
     Vsync,
@@ -135,6 +136,7 @@ fn switch_of(s: &mut ClientSettings, switch: Switch) -> &mut bool {
         Switch::TiltShift => &mut s.graphics.tilt_shift,
         Switch::Vignette => &mut s.graphics.vignette,
         Switch::ContactShadows => &mut s.graphics.contact_shadows,
+        Switch::SoftShadows => &mut s.graphics.soft_shadows,
         Switch::GroundDetail => &mut s.graphics.ground_detail,
         Switch::Fullscreen => &mut s.fullscreen,
         Switch::Vsync => &mut s.vsync,
@@ -202,6 +204,7 @@ pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
             switch("Tilt-shift", "Soft focus toward the top and bottom of the screen.", s, Switch::TiltShift),
             switch("Vignette", "Darkened corners.", s, Switch::Vignette),
             switch("Contact shadows", "A soft dark line where walls meet the ground. Changes on the next start.", s, Switch::ContactShadows),
+            switch("Soft shadows", "Shadow edges that soften away from what casts them. Costs frame rate.", s, Switch::SoftShadows),
             switch("Ground detail", "Patchy colour on the ground. Changes on the next start.", s, Switch::GroundDetail),
         ],
         Tab::Audio => vec![

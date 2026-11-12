@@ -1819,10 +1819,15 @@ and mood, and docs/art-direction.md). All of it is client only: nothing here is 
   its frame rate every second and a mean/median/p99 summary on exit (`fps_log.rs`). **A new effect gets a switch there, a place in each preset,
   and goes off in `Graphics::low`.**
 - **The day's light** (`daynight::sky_at`, `grade_at`): the sun is golden all day and lower than it was (about 47° up
-  at noon, 32° by mid-afternoon), the fill a weak violet, the grade warm with soft contrast and lifted blacks; the
-  night's light and grade are unchanged (a test holds them). **Unseen ground by day** keeps most of its
+  at noon, 32° by mid-afternoon), the fill warm and strong enough that a shadow keeps about a third of the light and
+  reads as shade, not a grey patch, and the grade warm over a wide range (brighter highlights, blacks barely lifted);
+  the night's grade is unchanged under a brighter blue moon (`light.ron` `moon`), so roads, cars and roofs read in
+  the dark (a test holds them). **Soft shadows** (`Graphics::soft_shadows`, on in High and Ultra; `light.ron`
+  `soft_shadows` is the sun's width): the sun's and moon's shadow edges soften away from what casts them (Bevy's
+  PCSS, the `experimental_pbr_pcss` feature); `--no-post soft` or the settings' "Soft shadows" switch turns it off.
+  Its frame cost is not measured on a GPU yet. **Unseen ground by day** keeps most of its
   colour, a little dimmer and warmer, instead of going grey (`fog::FogLook::unseen_tint`, `unseen_colour`, from
-  `assets/data/fog.ron`, in `WorldParams::fog_tint` and `lights.y`); at night it is as black as before.
+  `assets/data/fog.ron`, in `WorldParams::fog_tint` and `lights.y`); at night it is dark blue, shapes still showing.
 - **The film pass** (`film.rs`, `assets/shaders/film.wesl`): one fullscreen pass after the tone map (Bevy's
   `FullscreenMaterial`): tilt-shift (the top and bottom of the screen soften, up to 2.6 px at 1080p, 13 taps) and grain
   (24 a second, by visual time, so it stands still in an offscreen render; about half strength at night). With both

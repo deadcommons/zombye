@@ -72,7 +72,7 @@ impl Default for FogLook {
             close_fade: 4.0,
             range_fade_from: 0.5,
             unseen_day: Unseen { tint: (0.94, 0.9, 0.84), dark: 0.4, colour: 0.85 },
-            unseen_night: Unseen { tint: (0.55, 0.6, 0.75), dark: 0.86, colour: 0.25 },
+            unseen_night: Unseen { tint: (0.5, 0.58, 0.8), dark: 0.7, colour: 0.3 },
             other_rooms: 0.0,
         }
     }
@@ -552,8 +552,8 @@ mod tests {
         assert!(look.cone_behind - look.cone_full >= 45.0);
         let day = look.unseen_tint(1.0);
         assert!(day.w <= 0.45 && day.x > day.z && look.unseen_colour(1.0) >= 0.8, "{day}");
-        assert_eq!(look.unseen_tint(0.0), Vec4::new(0.55, 0.6, 0.75, 0.86));
-        assert_eq!(look.unseen_colour(0.0), 0.25);
+        assert_eq!(look.unseen_tint(0.0), Vec4::new(0.5, 0.58, 0.8, 0.7));
+        assert_eq!(look.unseen_colour(0.0), 0.3);
         assert_eq!(FogLook::parse("(behind: 0.5)").unwrap().behind, 0.5);
         assert!(FogLook::parse("(behind: 1.5)").unwrap_err().contains("behind"));
         assert!(FogLook::parse("(cone_full: 170, cone_behind: 90)").unwrap_err().contains("cone"));
