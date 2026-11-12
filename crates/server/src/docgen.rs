@@ -577,6 +577,7 @@ fn tuning_values(c: &zombye_sim::WorldConfig) -> Vec<(&'static str, Value)> {
         day_length_secs,
         zombie,
         carry,
+        movement,
         combat,
         health,
         infection,
