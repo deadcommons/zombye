@@ -18,7 +18,7 @@ use bevy::input::InputSystems;
 use bevy::prelude::*;
 use zombye_net::{EdgeDamage, Intent, save_file};
 use zombye_sim::World;
-use zombye_sim::map::{CHUNK_SIZE, EdgeChange, OwnedEdge, TileMap};
+use zombye_sim::map::{CHUNK_SIZE, EdgeChange, Feature, OwnedEdge, TileMap};
 
 use crate::Options;
 use crate::fx::ClearFx;
@@ -161,6 +161,11 @@ impl WorldSwap<'_> {
             self.map.0.set_owned_edge(c.tile, c.edge, c.kind);
             self.changes.0.push(c);
         }
+        // Trees felled (or standing again) in the loaded world: those chunks are built again.
+        let trees = tree_differences(&self.map.0, &world.map);
+        for &(tile, feature) in &trees {
+            self.map.0.tile_mut(tile).expect("same map").feature = feature;
+        }
         // Blinds and glass in doors, as they are in the loaded world.
         self.map.0.blinds = world.map.blinds.clone();
         self.map.0.glazed = world.map.glazed.clone();
@@ -175,6 +180,7 @@ impl WorldSwap<'_> {
         // Dev toggles aren't saved; they're this session's, so they carry over to the new world.
         let dev = self.me.dev;
         let want = player.unwrap_or(self.join.player_id);
+        self.link.felled.extend(trees.iter().map(|&(t, _)| t));
         let snap = self.link.replace_world(world);
         if let Some(view) = snap.players.iter().find(|p| p.id == want).or(snap.players.first()) {
             self.me.resume(view, snap.tick);
@@ -261,9 +267,31 @@ fn same_ground(a: &TileMap, b: &TileMap) -> bool {
     (0..a.chunks_y).all(|cy| {
         (0..a.chunks_x).all(|cx| {
             let (ta, tb) = (&a.chunk(cx, cy).expect("in range").tiles, &b.chunk(cx, cy).expect("in range").tiles);
-            ta.iter().zip(tb).all(|(x, y)| (x.floor, x.feature, x.room) == (y.floor, y.feature, y.room))
+            ta.iter().zip(tb).all(|(x, y)| (x.floor, ground_feature(x.feature), x.room) == (y.floor, ground_feature(y.feature), y.room))
         })
     })
+}
+
+/// A tile's feature as far as the ground goes: a tree and the stump it was felled to are one
+/// (felling changes only that chunk's meshes, which [`WorldSwap::take_up`] rebuilds).
+fn ground_feature(f: Feature) -> Feature {
+    if f == Feature::Stump || f == Feature::PineTree { Feature::Tree } else { f }
+}
+
+/// Tiles where `to` has a tree and `from` its stump, or the other way round (same ground).
+fn tree_differences(from: &TileMap, to: &TileMap) -> Vec<(IVec2, Feature)> {
+    let mut out = Vec::new();
+    for cy in 0..from.chunks_y {
+        for cx in 0..from.chunks_x {
+            let (ta, tb) = (&from.chunk(cx, cy).expect("in range").tiles, &to.chunk(cx, cy).expect("in range").tiles);
+            for (k, (x, y)) in ta.iter().zip(tb).enumerate() {
+                if x.feature != y.feature {
+                    out.push((IVec2::new(cx * CHUNK_SIZE + k as i32 % CHUNK_SIZE, cy * CHUNK_SIZE + k as i32 / CHUNK_SIZE), y.feature));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Every owned edge of `to` that differs from `from` (same-sized maps).

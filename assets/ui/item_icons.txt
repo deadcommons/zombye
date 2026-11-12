@@ -84,3 +84,5 @@ umbrella
 baking_tray
 alarm_clock
 cushion
+log
+hatchet

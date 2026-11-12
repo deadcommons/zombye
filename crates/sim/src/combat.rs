@@ -336,6 +336,10 @@ pub enum CombatEventKind {
     /// has its own event): `player` shot it, `pos` is where it stopped, `dir` the way it flew
     /// over the ground and `damage` how far (metres), so the line starts at `pos - dir * damage`.
     Shot,
+    /// A swing of something that chops bit into a tree (`crate::trees`): `player` swung, `pos` is
+    /// the bark it hit, `dir` the blow's way, `damage` the hit points it took off; `crit` when the
+    /// tree came down.
+    Chop,
 }
 
 /// Something worth showing: blood, a flash, a flinch. Collected every tick into
@@ -802,7 +806,10 @@ impl World {
         }
         self.scratch_hits = found;
         self.lag_history = history;
-        self.wear_weapon(pi, a, hits);
+        // A swing that hit no body bites into the tree it faces, if what it swings chops
+        // (`crate::trees`); a chop wears the blade like a hit.
+        let chopped = a.kind == ActionKind::Swing && hits == 0 && self.chop_swing(pi, origin, facing, s.range, s.half_arc, (s.damage.0 + s.damage.1) * 0.5);
+        self.wear_weapon(pi, a, hits.max(chopped as u32));
         self.action_events.push(ActionEvent { player, kind: a.kind, weapon: a.weapon, hits });
         if s.noise > 0.0 && self.heard.len() < crate::world::MAX_SOUNDS {
             // Heard this tick, like footsteps.
