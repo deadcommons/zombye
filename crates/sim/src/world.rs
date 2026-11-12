@@ -526,7 +526,7 @@ impl World {
         let item_weapons = (0..config.items.len()).map(|i| weapon_items.iter().position(|w| *w == Some(i as u16)).map(|w| w as u16)).collect();
         let unarmed = config.weapons.iter().position(|w| w.category == WeaponCategory::Unarmed).unwrap_or(0) as u16;
         let generated = worldgen::generate_with(&config.generation, &config.templates, &config.street_props);
-        let items = items::place_weapons(&generated.map, &config.weapons, &weapon_items, generated.spawn_building, config.loot_seed(), 1);
+        let items = crate::loot::place_floor(&generated.map, &config.loot, &config.items, generated.spawn_building, config.loot_seed(), 1);
         let sites = containers::find_sites(&generated.map, &config.containers);
         let mut map = generated.map;
         map.stair_speed = config.stairs.speed;

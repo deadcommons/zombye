@@ -35,6 +35,27 @@
     // things turns up in one container in eight or so, an Uncommon one in one in twenty, a Rare one
     // in one in fifty, a VeryRare one in one in a hundred and more: a gun or two in a town.
     tiers: (common: 1.0, uncommon: 0.35, rare: 0.15, very_rare: 0.08),
+    // What lies loose on building floors when the world begins (not in any furniture): a knife
+    // left by the kitchen counter, a bat in the hall. `per_building` things in each building
+    // ((min, max), times `scale`), at least `spawn_house_min` in the house you wake up in, so there
+    // is always something to fight with. Each is picked by `weight` (and `tier`, as in the tables),
+    // `room_bonus` times as likely in a room its `rooms` name; `count` is how many lie together.
+    floor: (
+        per_building: (0, 2),
+        spawn_house_min: 1,
+        room_bonus: 3.0,
+        entries: [
+            (item: "kitchen_knife", weight: 3.0, rooms: ["kitchen", "dining"]),
+            (item: "claw_hammer", weight: 2.5, rooms: ["laundry", "hall"]),
+            (item: "frying_pan", weight: 3.0, rooms: ["kitchen"]),
+            (item: "baseball_bat", weight: 0.6, rooms: ["bedroom", "hall"]),
+            (item: "golf_club", weight: 1.0, rooms: ["hall", "living"]),
+            (item: "wooden_plank", weight: 3.0, rooms: ["laundry", "living"]),
+            (item: "crowbar", weight: 0.3, rooms: ["laundry"]),
+            (item: "hatchet", weight: 0.6, rooms: ["shed", "garage"]),
+            (item: "fire_axe", weight: 0.1, rooms: ["laundry"]),
+        ],
+    ),
     tables: [
         // ---- Kitchen -------------------------------------------------------------------------
         (room: "kitchen", container: "fridge", empty: 0.15, rolls: (1, 4), entries: [

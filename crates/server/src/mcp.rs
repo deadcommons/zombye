@@ -3188,6 +3188,11 @@ fn loot_text(world: &World, room: Option<&str>, container: Option<&str>, n: u32)
         for t in &loot.tables {
             out.push_str(&format!("  {}: empty {:.0}%, rolls {}-{}, {} entries, {} groups\n", t.key(), t.empty * 100.0, t.rolls.0, t.rolls.1, t.entries.len(), t.groups.len()));
         }
+        let f = &loot.floor;
+        if !f.entries.is_empty() {
+            let things: Vec<String> = f.entries.iter().map(|e| if e.rooms.is_empty() { e.item.clone() } else { format!("{} (x{} in {})", e.item, f.room_bonus, e.rooms.join(", ")) }).collect();
+            out.push_str(&format!("loose on floors when the world begins: {}-{} per building, at least {} in the spawn house: {}\n", f.per_building.0, f.per_building.1, f.spawn_house_min, things.join(", ")));
+        }
         out.push_str("ask for one with {room, container} (a container kind or a furniture kind) to see its entries and sample fills");
         return Ok(out);
     };

@@ -1272,7 +1272,8 @@ mod tests {
     }
 
     fn world(seed: u64, zombies: u32) -> World {
-        let mut c = WorldConfig::new(seed, zombies, templates()).with_weapons(weapons()).with_items(items());
+        // The shipped loot for its floor weapons (no containers are set, so they hold nothing).
+        let mut c = WorldConfig::new(seed, zombies, templates()).with_weapons(weapons()).with_items(items()).with_loot(crate::loot::tests::shipped());
         // These tests count on 3 L of pockets.
         c.carry.pockets_l = 3.0;
         World::new(c)

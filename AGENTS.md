@@ -790,14 +790,13 @@ upgrades and the rest come as new categories of the same list.
 
 - **Weapons are data:** `assets/data/items/weapons.ron`, a list of `items::WeaponDef` (damage
   range, reach to the zombie's body, arc, windup and swing time, max targets, knockback,
-  stagger/knockdown/crit chances, crit multiplier, endurance cost, noise, spawn weight, `found_in`
-  room types, grey-box length and colour, and `skill`: the skill it trains, see Skills), validated by `items::parse_weapons` and loaded by
+  stagger/knockdown/crit chances, crit multiplier, endurance cost, noise,
+  grey-box length and colour, and `skill`: the skill it trains, see Skills), validated by `items::parse_weapons` and loaded by
   `net::content::load_weapons` into `WorldConfig::weapons`. Exactly one is `Unarmed` (bare hands);
   if the content has none, `WeaponDef::fists()` is added. Add a weapon by adding an entry.
 - **Weapons are items** (an item with `weapon: Some(id)`, see Items): the weapon swung is the one the item in the
-  player's `Hand` slot names (`Player::weapon`, derived from the hand). The world places 0–2 weapon items per house
-  on free ground-floor tiles (at least one in the spawn house), weighted by `spawn_weight` and ×3 in `found_in`
-  rooms, from its own seeded RNG (`GroundItem { id, stack, pos, angle }`). A player who dies drops everything it has
+  player's `Hand` slot names (`Player::weapon`, derived from the hand). What lies on floors when the world begins is
+  loot, not weapon data: `loot.ron`'s `floor` (see Loot; `GroundItem { id, stack, pos, angle }`). A player who dies drops everything it has
   where it fell.
 - **Actions** (`players::ActionKind`: `Swing`, `Shove`, `Stomp`): start when the intent arrives (or are
   queued if it comes within `action_buffer_secs` of the last one ending), cost endurance at once, and
@@ -1735,9 +1734,12 @@ Campfires to cook on and to see by, stoves in kitchens, and fire that burns.
   shops keep it on shelves, never counters, which would hold kitchen things); `(any, any)` clutter. On the default town (#18) that is about two months of food for one player at 2.0
   hunger a day (`the_default_town_feeds_one_player_for_weeks`).
 - **Weapons** are loot entries too (knives in the cutlery drawer, a pan in the oven, a bat in a wardrobe, a golf club
-  in the coat cupboard, hammers and crowbars on laundry, shed and garage shelves, a rare fire axe). The floor weapons
-  (`items::place_weapons`, `found_in`, at least one in the spawn house) stay for now, so the spawn house always has
-  something to fight with; `found_in` folds into the tables when that is retired.
+  in the coat cupboard, hammers and crowbars on laundry, shed and garage shelves, a rare fire axe). **Loose on
+  floors** (`loot::FloorLoot`, `floor` in `loot.ron`, laid out by `loot::place_floor` from the loot seed when the
+  world is made): `per_building` things per building (default 0-2, times `scale`), at least `spawn_house_min` (1) in
+  the spawn house so there is always something to fight with, each picked by weight and tier, `room_bonus` (3) times
+  as likely in its `rooms`, `count` together. Ships the old floor weapons (knife, hammer, pan, bat, golf club, plank,
+  crowbar, hatchet, fire axe); anything in `items.ron` can go there. No `floor` (or no file): nothing lies about.
 - **Saves:** `loot.ron` shares the `containers` fingerprint with `containers.ron` (no format change); a change loads
   with a note: opened containers keep what they hold, unopened ones fill from the tables as they are now. Not yet:
   food starting partly spoiled (needs item freshness, #11).

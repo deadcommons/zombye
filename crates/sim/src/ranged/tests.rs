@@ -107,7 +107,6 @@ fn guns_are_data_and_mistakes_are_refused() {
     let all = items::parse_items(ITEMS, &w).unwrap();
     for g in &guns {
         assert_eq!(g.category, items::WeaponCategory::Firearm);
-        assert_eq!(g.spawn_weight, 0.0, "{}: guns come from loot tables, not floors", g.id);
         assert!(g.noise_radius >= 100.0, "{}: a shot is very loud", g.id);
         let item = all.iter().position(|d| d.weapon.as_deref() == Some(g.id.as_str())).unwrap() as u16;
         let h = holds(&all, &w, item).unwrap();
