@@ -416,6 +416,13 @@ fn update_hud(
     );
     println!("{line}");
     if let Ok(mut t) = text.single_mut() {
+        // A packaged game (playtesters) without `--dev`: no developer's read-out, only where the
+        // keys are and how to report a problem.
+        if !zombye_net::install::dev_tools() {
+            t.0 = format!("{:02}:{:02} | Esc menu (the keys are under Settings, Controls) | F12 report a problem", hour.floor() as u32, ((hour - hour.floor()) * 60.0) as u32);
+            *stats = FrameStats::default();
+            return;
+        }
         let rotate = ", . turn camera | ; first person | ";
         t.0 = format!(
             "{line}\nWASD move | Shift run | C sneak{} | RMB (hold) aim | aiming: LMB attack or shoot, Space shove/stomp | R reload | E pick up / search | 1-9 hotbar | Tab inventory | H health | K skills | B sleep | Enter talk | V wave | U hands up | P point | Y tie/free | L search them | J (hold) struggle | N group | F door/window | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load | F1 god{} | F2 ignored{} | F3 light preview | F4 debug stats{} | M map | Ctrl+M mute | O objectives",

@@ -35,9 +35,13 @@ pub struct DebugStats {
     pub open: bool,
 }
 
-/// Can the window be used here: always in single-player; on a server only with its dev tools on.
+/// Can the window be used here: in single-player when the dev tools are on (always from a
+/// checkout, in a packaged game with `--dev`); on a server only with its dev tools on.
 pub fn allowed(net: Option<&NetInfo>) -> bool {
-    net.is_none_or(|n| n.allow_dev)
+    match net {
+        None => zombye_net::install::dev_tools(),
+        Some(n) => n.allow_dev,
+    }
 }
 
 /// Something that cost us HP.

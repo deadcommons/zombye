@@ -22,8 +22,8 @@ pub fn root() -> Option<&'static Path> {
     ROOT.get_or_init(|| {
         let found = std::env::var_os("ZOMBYE_RELEASE_AUDIO")
             .map(PathBuf::from)
-            .or_else(|| std::env::current_exe().ok()?.parent().map(|d| d.join("release-audio")))
-            .filter(|p| p.is_dir());
+            .or_else(|| crate::pack::beside_exe("release-audio"))
+            .filter(|p| crate::pack::is_dir(p));
         if let Some(p) = &found {
             println!("release audio: {}", p.display());
         }
@@ -36,7 +36,7 @@ pub fn root() -> Option<&'static Path> {
 /// game is using its own data, else the one in `data`.
 pub fn data_file(overlay: Option<&Path>, data: &Path, own_data: bool, name: &str) -> PathBuf {
     if own_data {
-        if let Some(p) = overlay.map(|o| o.join("data").join(name)).filter(|p| p.is_file()) {
+        if let Some(p) = overlay.map(|o| o.join("data").join(name)).filter(|p| crate::pack::is_file(p)) {
             return p;
         }
     }
@@ -46,8 +46,8 @@ pub fn data_file(overlay: Option<&Path>, data: &Path, own_data: bool, name: &str
 /// Read the audio file `file` (relative to `assets/audio`): the release folder's copy if it has
 /// one, else the one in `audio`.
 pub fn read(overlay: Option<&Path>, audio: &Path, file: &str) -> std::io::Result<Vec<u8>> {
-    if let Some(p) = overlay.map(|o| o.join("audio").join(file)).filter(|p| p.is_file()) {
-        return std::fs::read(p);
+    if let Some(p) = overlay.map(|o| o.join("audio").join(file)).filter(|p| crate::pack::is_file(p)) {
+        return crate::pack::read(&p);
     }
     std::fs::read(audio.join(file))
 }
