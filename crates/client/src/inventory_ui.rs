@@ -2015,7 +2015,8 @@ fn make(c: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f3
             Ok(()) => make_row(c, format!("{indent}{lead}{}{state}", r.name), format!("{makes}, {:.0} s", r.secs * mult), MakeAct::Craft(k), fav, TEXT),
             // Under way with what it takes set aside already.
             Err(_) if queued > 0 => make_row(c, format!("{indent}{lead}{}{state}", r.name), String::new(), MakeAct::None, fav, DIM),
-            Err(why) => make_row(c, format!("{indent}{lead}{}", r.name), why, MakeAct::None, fav, DIM),
+            // (In full: each thing missing, how many you have, that a tool is kept. Short: their names.)
+            Err(why) => make_row(c, format!("{indent}{lead}{}", r.name), if crate::help_text::explains() { why } else { crafting::missing_brief(r, &v.inventory, items).unwrap_or(why) }, MakeAct::None, fav, DIM),
         }
     };
     let can = |k: usize| crafting::check(&join.recipes[k], &v.inventory, items).is_ok() || v.jobs.contains(&JobKind::Craft { recipe: k as u16 });

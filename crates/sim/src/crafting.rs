@@ -259,6 +259,25 @@ pub fn check_times(r: &RecipeDef, inv: &Inventory, items: &[ItemDef], times: u32
     if missing.is_empty() { Ok(()) } else { Err(missing.join("; ")) }
 }
 
+/// What [`check`] finds missing, in a few words for someone who knows the game: "needs log, saw"
+/// (each input short of its count, and each tool not to hand: for a tag the first item that has
+/// it). `None` when nothing is. The client's Make list says this with its help text short.
+pub fn missing_brief(r: &RecipeDef, inv: &Inventory, items: &[ItemDef]) -> Option<String> {
+    let mut missing = Vec::new();
+    for x in &r.inputs {
+        if index_of(items, &x.item).map_or(0, |i| have(inv, i)) < x.count as u32 {
+            missing.push(amount(items, &x.item, x.count));
+        }
+    }
+    for t in r.tools.iter().filter(|t| !has_tool(inv, t, items)) {
+        missing.push(match t {
+            Tool::Item(id) => amount(items, id, 1),
+            Tool::Tag(tag) => items.iter().find(|d| d.has_tag(tag)).map_or(tag.clone(), |d| d.name.to_lowercase()),
+        });
+    }
+    (!missing.is_empty()).then(|| format!("needs {}", missing.join(", ")))
+}
+
 /// Can `r` be made once from what `inv` carries and holds? See [`check_times`].
 pub fn check(r: &RecipeDef, inv: &Inventory, items: &[ItemDef]) -> Result<(), String> {
     check_times(r, inv, items, 1)
@@ -591,6 +610,20 @@ mod tests {
 
     /// Nothing to make it from, no tool, a worn T-shirt, a half-drunk bottle: refused, saying why,
     /// and nothing queued. Gone by the time it's due: refused then, nothing used.
+    #[test]
+    fn what_is_missing_in_brief() {
+        let (mut w, id) = arena(5);
+        let jeans = w.config.recipes[recipe(&w, "cut_jeans") as usize].clone();
+        let brief = |w: &World| missing_brief(&jeans, &me(w, id).inventory, &w.config.items);
+        assert_eq!(brief(&w).as_deref(), Some("needs jeans, scissors"));
+        w.give_item(id, "jeans", 1);
+        assert_eq!(brief(&w).as_deref(), Some("needs scissors"));
+        w.give_item(id, "scissors", 1);
+        // Nothing missing exactly when the full check passes.
+        assert_eq!(brief(&w), None);
+        assert!(check(&jeans, &me(&w, id).inventory, &w.config.items).is_ok());
+    }
+
     #[test]
     fn missing_inputs_and_tools_are_refused() {
         let (mut w, id) = arena(5);
