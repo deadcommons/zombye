@@ -394,6 +394,9 @@ pub struct Options {
     /// Start a new world holding this gun, loaded, with ammunition for it (`--gun ID`, #72: an id
     /// in weapons.ron, e.g. `pistol`); `--fight-demo` then gives no bat and puts its zombies 16 m off.
     pub gun: Option<String>,
+    /// Start a new world with these in our pockets (`--give ID[:N],...`, item ids in items.ron):
+    /// for trying things out without searching the town for them.
+    pub give: Option<String>,
     /// `--new-game`: the new-game screen first (`new_game.rs`): who the survivor is and how the
     /// world is set; it starts the game again with `--new-game-from`.
     pub new_game: bool,
@@ -622,6 +625,7 @@ impl Options {
             frame_bench: value("--frame-bench").and_then(|v| v.parse().ok()),
             lag_ms: value("--lag").and_then(|v| v.parse::<u32>().ok()).map_or(0, |v| v.min(2000)),
             gun: value("--gun"),
+            give: value("--give"),
             new_game: flag("--new-game"),
             new_game_from: value("--new-game-from"),
             background: value("--background"),

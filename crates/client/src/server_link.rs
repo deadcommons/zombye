@@ -373,6 +373,15 @@ impl Plugin for ServerLinkPlugin {
             }
             give(&r.ammo, r.capacity as u16 * 3);
         }
+        // `--give`: things straight into our pockets, however much room they take.
+        for want in options.give.iter().flat_map(|g| g.split(',')).map(str::trim).filter(|w| !w.is_empty()) {
+            let (id, n) = want.split_once(':').map_or((want, 1), |(id, n)| (id, n.parse().unwrap_or(1)));
+            if server.world.give_item(player_id, id, n) {
+                println!("--give: {n} x {id}");
+            } else {
+                eprintln!("--give: no item {id:?} in items.ron");
+            }
+        }
         if options.fight_demo {
             // A bat in hand and a small group just ahead (the player faces +x), called over by a
             // noise. With a gun instead, they start further off.
