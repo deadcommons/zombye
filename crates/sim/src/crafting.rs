@@ -481,8 +481,8 @@ mod tests {
         for id in ["rip_t_shirt", "cut_jeans", "rip_bed_sheet", "wash_rags"] {
             assert!(r.iter().any(|x| x.id == id), "{id}");
         }
-        // Every recipe makes something first aid can use, or what makes it.
-        assert!(r.iter().all(|x| x.outputs.iter().any(|o| o.item == "rag" || o.item == "clean_rag")));
+        // Every recipe but sawing wood makes something first aid can use, or what makes it.
+        assert!(r.iter().filter(|x| x.id != "saw_log_planks").all(|x| x.outputs.iter().any(|o| o.item == "rag" || o.item == "clean_rag")));
         assert_eq!(describe(&r[0], &items), "t-shirt -> rag x3 (3 s)");
         assert!(describe(r.iter().find(|x| x.id == "cut_jeans").unwrap(), &items).contains("with scissors or kitchen knife"));
     }

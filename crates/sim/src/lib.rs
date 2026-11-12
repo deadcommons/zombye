@@ -50,6 +50,7 @@ pub mod status;
 pub mod street_props;
 pub mod template;
 pub mod tiers;
+pub mod trees;
 pub mod vision;
 pub mod wear;
 pub mod world;

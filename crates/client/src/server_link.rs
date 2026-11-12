@@ -102,6 +102,9 @@ pub struct ServerLink {
     /// What our survivor heard said, from the snapshots taken up this frame (#67; our own lines
     /// too), for `chat.rs`.
     pub speech: Vec<zombye_sim::Said>,
+    /// Tiles whose tree came down (stumps now) in the snapshots taken up this frame, or in a
+    /// world taken up: their chunks are built again (`world_render`).
+    pub felled: Vec<IVec2>,
     /// Single-player with PvP on: every player in the world, seen by ours or not, for the scenario
     /// bot that plays another survivor from this process (`duel.rs`: its own client would always
     /// have itself). Empty otherwise.
@@ -619,7 +622,7 @@ fn join_local(app: &mut App, mut server: LocalServer, player_id: u32) {
 /// The resources a joined client has, and the systems that tick the server (or take up what it sent).
 fn finish_join(app: &mut App, server: Backend, net: Option<NetInfo>, first: Snapshot, map: ClientMap, damage: EdgeDamageMap, join: JoinInfo) {
     let private = first.private.clone();
-    app.insert_resource(ServerLink { server, net, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3], private, heard: Vec::new(), speech: Vec::new(), everyone: Vec::new() })
+    app.insert_resource(ServerLink { server, net, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3], private, heard: Vec::new(), speech: Vec::new(), felled: Vec::new(), everyone: Vec::new() })
         .insert_resource(map)
         .insert_resource(join)
         .insert_resource(damage)
@@ -648,7 +651,7 @@ impl ServerLink {
         let id = server.join(None);
         let first = server.tick();
         let private = first.private.clone();
-        (Self { server: Backend::Local(server), net: None, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3], private, heard: Vec::new(), speech: Vec::new(), everyone: Vec::new() }, id)
+        (Self { server: Backend::Local(server), net: None, prev: first.clone(), curr: first, sim_ms: 0.0, chasing: 0, tiers: [0; 3], private, heard: Vec::new(), speech: Vec::new(), felled: Vec::new(), everyone: Vec::new() }, id)
     }
 
     /// Tests: what a client joining as `player` keeps of the world's config.
@@ -722,6 +725,9 @@ fn clear_frame_changes(
     }
     if !link.speech.is_empty() {
         link.speech.clear();
+    }
+    if !link.felled.is_empty() {
+        link.felled.clear();
     }
     ups.0.clear();
     changes.0.clear();
@@ -810,6 +816,13 @@ fn take_up(
     }
     for b in &snapshot.blind_changes {
         map.0.set_blind(zombye_sim::map::EdgeRef::new(b.tile, b.edge), b.blind);
+    }
+    // Trees felled: stumps on our map copy (walking past them predicts as the server moves).
+    for t in &snapshot.tree_changes {
+        if let Some(tile) = map.0.tile_mut(t.tile) {
+            tile.feature = t.feature;
+            link.felled.push(t.tile);
+        }
     }
     for d in &snapshot.edge_damage {
         if d.hp >= 1.0 {

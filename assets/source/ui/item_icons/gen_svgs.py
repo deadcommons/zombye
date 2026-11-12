@@ -163,6 +163,11 @@ I['wooden_plank'] = rot('<rect x="2" y="17" width="44" height="14" rx="1.5" fill
                         '<path d="M12 25h14M30 27h12M16 22h10" stroke="$D" stroke-width="1.4" stroke-linecap="round"/><circle cx="12" cy="24" r="2.2" fill="$D"/><circle cx="40" cy="24" r="1.6" fill="$D"/>')
 I['fire_axe'] = rot('<rect x="6" y="22" width="40" height="4.6" rx="2" fill="$C"/><path d="M8 11c6 3 10 3 14 2v22c-4-1-8-1-14 2-4-8-4-18 0-26z" fill="$L"/><path d="M22 18h8l6 5-6 4h-8z" fill="$D"/>'
                   '<path d="M8 11c-4 8-4 18 0 26" stroke="$D" stroke-width="2" fill="none"/><path d="M22 13v22" stroke="$D" stroke-width="2"/><rect x="38" y="21" width="3" height="6.6" fill="$D"/>')
+I['log'] = ('<path d="M10 14h28v20H10z" fill="$C"/><path d="M10 14h28v5H10z" fill="$L"/><path d="M16 22h10M20 29h14" stroke="$D" stroke-width="1.6" stroke-linecap="round"/>'
+            '<ellipse cx="38" cy="24" rx="6" ry="10" fill="$D"/><ellipse cx="38" cy="24" rx="4.6" ry="8.4" fill="#d9b98a"/><ellipse cx="38" cy="24" rx="2.6" ry="5" fill="none" stroke="#a9875a" stroke-width="1.1"/><circle cx="38" cy="24" r="0.9" fill="#a9875a"/>'
+            '<ellipse cx="10" cy="24" rx="3" ry="10" fill="$D"/>')
+I['hatchet'] = rot('<rect x="10" y="22" width="34" height="4.6" rx="2" fill="$C"/><path d="M4 12c5 3 9 3 13 2v20c-4-1-8-1-13 2-4-8-4-16 0-24z" fill="#b9bcc2"/><path d="M4 12c-4 8-4 16 0 24" stroke="#e6e8ea" stroke-width="2.2" fill="none"/>'
+                   '<path d="M16 16.5h8v15h-8z" fill="#5c6068"/><rect x="38" y="21" width="3" height="6.6" fill="$D"/>')
 I['pistol'] = ('<path d="M5 13h37v11H20l-1 3H9c-1 0-2-1-2-2z" fill="$C"/><path d="M5 13h37v3H5z" fill="$L"/><path d="M26 24h14v1.5H26z" fill="$D"/>'
                '<path d="M19 24h-5l-4 17c0 1 1 2 2 2h8c1 0 2-1 2-2z" fill="$D"/><path d="M22 27h13v4c0 1-1 2-2 2h-5" stroke="$D" stroke-width="2.4" fill="none"/>'
                '<rect x="41" y="12" width="3" height="4" fill="$D"/><path d="M15 17h12" stroke="$D" stroke-width="1.6"/><rect x="5" y="10.5" width="3" height="2.5" fill="$L"/><circle cx="23.5" cy="29.5" r="1.1" fill="$K"/>')

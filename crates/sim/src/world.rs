@@ -133,6 +133,9 @@ pub struct WorldConfig {
     /// Blinds on windows and glazed doors: where the town has them and handling them
     /// ([`crate::blinds`]). Saved with the settings.
     pub blinds: crate::blinds::BlindTuning,
+    /// Chopping trees down (`crate::trees`): their hit points, what chops, the logs they give.
+    /// Saved with the settings.
+    pub chop: crate::trees::ChopTuning,
     /// A difficulty's multipliers on the content above (population, loot: [`crate::difficulty`]).
     /// Saved with the settings and put on again when the save is loaded. Changes nothing by default.
     pub sandbox: crate::difficulty::Sandbox,
@@ -174,6 +177,7 @@ impl WorldConfig {
             stairs: Default::default(),
             power: Default::default(),
             blinds: Default::default(),
+            chop: Default::default(),
             sandbox: Default::default(),
             scripts: None,
         }
@@ -377,6 +381,8 @@ pub struct World {
     /// Zombies shoved in the last `CombatTuning::shove_repeat_secs`, by id: each shove makes the
     /// next likelier to floor it. Saved (`SHOV`), in the hash while any.
     pub(crate) shoved: Vec<crate::combat::Shoved>,
+    /// Trees chopped at and felled (`crate::trees`). Saved (`TREE`), in the hash while any.
+    pub(crate) trees: crate::trees::Trees,
     /// Index of bare hands in `config.weapons`.
     pub(crate) unarmed: u16,
     /// Hit points of damaged doors and windows, by [`EdgeRef::key`]. Missing = undamaged.
@@ -523,6 +529,7 @@ impl World {
             private_dirty: BTreeSet::new(),
             rise_looks: RiseLooks::default(),
             shoved: Vec::new(),
+            trees: Default::default(),
             unarmed,
             action_events: Vec::new(),
             hit_events: Vec::new(),
@@ -1104,6 +1111,7 @@ impl World {
         self.removed_corpses.clear();
         self.left_world.clear();
         self.action_events.clear();
+        self.trees.events.clear();
         self.hit_events.clear();
         self.player_hit_events.clear();
         self.used_items.clear();
@@ -1576,6 +1584,8 @@ impl World {
             mix(sh.zombie);
             mix(sh.tick as u32);
         }
+        // Trees chopped at and felled (mixed in only while any, so worlds without hash as before).
+        self.trees.hash(&mut mix);
         for (&(x, y, w), hp) in &self.edge_hp {
             mix(x as u32);
             mix(y as u32);
