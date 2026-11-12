@@ -60,6 +60,12 @@
 //!   NAME`; `--benchmark ID|all --baseline idle|brawler|runner` plays it with a built-in script instead;
 //!   `table` ranks the results in the folder.
 //!
+//! - `zombye-server --docs DIR [--repo DIR] [--docs-base PATH] [--docs-strict]` — write the game's reference as Markdown pages
+//!   into DIR (`docgen.rs`): every MCP tool, every data file with its fields and shipped values, every
+//!   tuning number and these flags, from the game itself, for the docs site. Says what it found
+//!   undocumented; `--docs-strict` exits 1 if anything is. `--docs-base` is the site path the pages
+//!   are served under (default `/docs/reference/game`).
+//!
 //! Common options: `--zombies N` (default: as many as `population.ron` gives for the map, about 2,600
 //! on the default map), `--seed S` (default 1), `--map-chunks N` (a square
 //! map N × N chunks of 16 m; default 30, so 480 m; 64 is about 1 km), `--data DIR` (content
@@ -85,6 +91,7 @@
 mod admin;
 mod benchmark;
 mod config;
+mod docgen;
 mod mcp;
 mod mcp_http;
 mod multiplayer;
@@ -199,6 +206,26 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // `--docs DIR` (`docgen.rs`): the game's reference as Markdown pages, for the docs site, from the game as
+    // shipped (no mods). `--repo DIR` is the source tree (default: here); `--docs-strict` fails on anything
+    // left undocumented.
+    if let Some(out) = text("--docs") {
+        let repo = text("--repo").map_or_else(|| PathBuf::from("."), PathBuf::from);
+        let base = text("--docs-base").unwrap_or_else(|| "/docs/reference/game".to_string());
+        match docgen::write(Path::new(&out), &base, &repo, &data, &config, &mcp::listed_tools(), &mcp::listed_instructions()) {
+            Ok(report) => {
+                for w in &report.warnings {
+                    eprintln!("undocumented: {w}");
+                }
+                println!("wrote {} pages to {out} ({} undocumented)", report.pages, report.warnings.len());
+                std::process::exit(if flag("--docs-strict") && !report.warnings.is_empty() { 1 } else { 0 });
+            }
+            Err(e) => {
+                eprintln!("--docs: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
     // Mods (#25, docs/modding.md): `--mod DIR`, as often as wanted, in order. Their data joins the
     // game's and their Luau scripts run in every world made from this config.
     let mod_dirs: Vec<PathBuf> = args.windows(2).filter(|w| w[0] == "--mod").map(|w| PathBuf::from(&w[1])).collect();

@@ -540,6 +540,16 @@ fn tool_list(opts: Options) -> Value {
     Value::Array(out)
 }
 
+/// Every tool a server with everything on lists, for the docs (`--docs`, `docgen.rs`).
+pub fn listed_tools() -> Value {
+    tool_list(Options::default())
+}
+
+/// What such a server tells an agent on connecting, for the docs.
+pub fn listed_instructions() -> String {
+    instructions(Options::default())
+}
+
 /// Each tool's name, description and input schema.
 fn tool_defs() -> Value {
     json!([
