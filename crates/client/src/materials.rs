@@ -330,7 +330,7 @@ pub fn update_params(
             let h = crate::daynight::look().haze;
             let t = if haze.0.w > 0.0 { (time.elapsed_secs_wrapped() * 10.0).floor() / 10.0 } else { 0.0 };
             // Its reach is in metres at the default zoom: scaled with the zoom, the screen is as hazy at any.
-            let k = if cam.shoulder() { 1.0 } else { cam.zoom / crate::daynight::HAZE_ZOOM };
+            let k = if cam.low() { 1.0 } else { cam.zoom / crate::daynight::HAZE_ZOOM };
             Vec4::new(t * 0.35, t * 0.12, h.near * k, h.far * k)
         },
         sight: fog.sight,

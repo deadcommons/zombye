@@ -15,23 +15,34 @@
 //! while the inventory, a menu, the chat line or the server browser is up, once dead, and while
 //! Alt is held (for the health and skills panels). Back in the fixed view the camera settles on
 //! the nearest of its four angles.
+//!
+//! **The switch between the two is a move, not a cut** ([`SWITCH_SECS`]): the camera comes down
+//! from the fixed view to the survivor's eyes (and back up) along the line of sight, turning to
+//! behind him as it goes, while its lens opens from one narrow enough to pass for the fixed
+//! view's parallel one to first person's (a dolly zoom: what stands at the survivor keeps
+//! growing smoothly, never jumps). `;` again on the way turns it round where it is.
+//! **Both views draw through one kind of lens** ([`Lens`], a custom projection): Bevy compiles
+//! every material's shaders once for each kind of projection a camera has, so a camera that
+//! changed from an orthographic to a perspective one stalled on the first switch while all of
+//! them were built again. With one kind there is nothing to build, at the first switch or any.
 
 use std::f32::consts::FRAC_PI_2;
 
-use bevy::camera::{Hdr, RenderTarget, ScalingMode, ShadowLodOrigin};
+use bevy::camera::primitives::Frustum;
+use bevy::camera::{CameraProjection, Hdr, RenderTarget, ScalingMode, ShadowLodOrigin, SubCameraView};
+use bevy::math::Vec3A;
 use bevy::input::mouse::{AccumulatedMouseMotion, MouseWheel};
 use bevy::post_process::bloom::{Bloom, BloomPrefilter};
 use bevy::post_process::effect_stack::Vignette;
 use bevy::prelude::*;
 use bevy::render::view::{ColorGrading, Tonemapping};
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
-use zombye_sim::map::TileMap;
 
 use crate::Options;
 use crate::fx::CameraShake;
 use crate::offscreen::OffscreenTarget;
 use crate::player::Player;
-use crate::server_link::{ClientMap, JoinInfo};
+use crate::server_link::JoinInfo;
 
 const ELEVATION: f32 = 30.0_f32 * std::f32::consts::PI / 180.0;
 pub const DISTANCE: f32 = 120.0;
@@ -59,6 +70,58 @@ const LOOK_RATE: f32 = 0.0026;
 /// beyond the survivor, or on none (the sky): a point this far, or [`AIM_FAR`], ahead.
 const AIM_NEAR: f32 = 5.0;
 const AIM_FAR: f32 = 60.0;
+
+/// Seconds the switch between the two views takes.
+pub const SWITCH_SECS: f32 = 0.75;
+/// The lens the switch starts from above with: so narrow, from so far, that the picture is the
+/// fixed view's (things 20 m nearer or further are 3% bigger or smaller).
+const SWITCH_FOV: f32 = 2.5_f32 * std::f32::consts::PI / 180.0;
+/// Nearer the eyes than this the survivor isn't drawn (the camera is about to be in his head).
+const HIDE_WITHIN: f32 = 0.9;
+/// From this far through the switch the world is dressed for first person (walls and roofs up).
+const DRESSED_FROM: f32 = 0.85;
+
+/// The camera's projection in either view: the fixed view's parallel one or first person's
+/// perspective, as one type behind [`Projection::Custom`], so that changing between them doesn't
+/// change the kind of projection the renderer sees (see the module's docs).
+#[derive(Debug, Clone)]
+pub enum Lens {
+    Flat(OrthographicProjection),
+    Deep(PerspectiveProjection),
+}
+
+impl Lens {
+    fn inner(&self) -> &dyn CameraProjection {
+        match self {
+            Lens::Flat(p) => p,
+            Lens::Deep(p) => p,
+        }
+    }
+}
+
+impl CameraProjection for Lens {
+    fn get_clip_from_view(&self) -> Mat4 {
+        self.inner().get_clip_from_view()
+    }
+    fn get_clip_from_view_for_sub(&self, sub_view: &SubCameraView) -> Mat4 {
+        self.inner().get_clip_from_view_for_sub(sub_view)
+    }
+    fn update(&mut self, width: f32, height: f32) {
+        match self {
+            Lens::Flat(p) => p.update(width, height),
+            Lens::Deep(p) => p.update(width, height),
+        }
+    }
+    fn far(&self) -> f32 {
+        self.inner().far()
+    }
+    fn get_frustum_corners(&self, z_near: f32, z_far: f32) -> [Vec3A; 8] {
+        self.inner().get_frustum_corners(z_near, z_far)
+    }
+    fn compute_frustum(&self, camera_transform: &GlobalTransform) -> Frustum {
+        self.inner().compute_frustum(camera_transform)
+    }
+}
 
 /// Which of its two views the camera is in.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -102,6 +165,14 @@ pub struct IsoCamera {
     pub pitch: f32,
     /// First person: go behind the survivor at the next frame (just switched to).
     behind: bool,
+    /// How far through the switch it is: 0 the fixed view, 1 first person, moving toward `view`.
+    blend: f32,
+    /// The two yaws `yaw` is mixed from by `blend`: the fixed view's (its turns) and first
+    /// person's (the mouse's; kept unwrapped, so the mix never goes the long way round).
+    fixed_yaw: f32,
+    look_yaw: f32,
+    /// Held where it is on the way (`--view-mix`, a picture of the switch).
+    held: bool,
 }
 
 /// The yaw `u` (0..1) of the way through a turn from `from` to `to`: slow out, slow in, and
@@ -120,54 +191,148 @@ impl IsoCamera {
     /// A camera at rest at `angle` (0..4; a fraction is that far through the turn to the next
     /// angle and stays there until turned: for pictures).
     pub fn new(angle: f32, zoom: f32, focus: Vec3) -> Self {
-        Self { angle_index: angle.round() as i32, yaw: yaw_of(angle), zoom, focus, turn_from: yaw_of(angle), turn_at: 1.0, view: View::Iso, pitch: PITCH, behind: false }
+        Self { angle_index: angle.round() as i32, yaw: yaw_of(angle), zoom, focus, turn_from: yaw_of(angle), turn_at: 1.0, view: View::Iso, pitch: PITCH, behind: false, blend: 0.0, fixed_yaw: yaw_of(angle), look_yaw: yaw_of(angle), held: false }
     }
 
-    /// Switch to the other view. Into first person the camera goes behind the survivor; back, it
-    /// turns to the nearest of the four fixed angles from where it was looking.
+    /// Switch to the other view: the camera sets off for it ([`Self::step`] moves it). Into first
+    /// person from the fixed view it goes behind the survivor; back from first person, to the
+    /// nearest of the four fixed angles from where it was looking. Asked for on the way, it
+    /// turns round and goes back to where it came from.
     pub fn toggle_view(&mut self) {
         match self.view {
             View::Iso => {
-                (self.view, self.behind, self.turn_at) = (View::Shoulder, true, 1.0);
-                self.pitch = PITCH;
+                self.view = View::Shoulder;
+                if self.blend == 0.0 {
+                    (self.behind, self.pitch, self.look_yaw) = (true, PITCH, self.fixed_yaw);
+                }
             }
             View::Shoulder => {
                 self.view = View::Iso;
-                self.angle_index = ((self.yaw - std::f32::consts::FRAC_PI_4) / FRAC_PI_2).round() as i32;
-                (self.turn_from, self.turn_at) = (self.yaw, 0.0);
+                if self.blend == 1.0 {
+                    self.angle_index = ((self.look_yaw - std::f32::consts::FRAC_PI_4) / FRAC_PI_2).round() as i32;
+                    (self.fixed_yaw, self.turn_at) = (self.target_yaw(), 1.0);
+                }
             }
         }
     }
 
+    /// Is first person the view it is in, or on its way to? (The mouse turns it, the pointer is
+    /// held: what the player does goes by this from the moment of the key.)
     pub fn shoulder(&self) -> bool {
         self.view == View::Shoulder
     }
 
-    /// The projection of the view it is in.
-    pub fn projection(&self) -> Projection {
-        match self.view {
-            View::Iso => Projection::from(OrthographicProjection { scaling_mode: ScalingMode::FixedVertical { viewport_height: self.zoom }, near: NEAR, far: FAR, ..OrthographicProjection::default_3d() }),
-            View::Shoulder => Projection::from(PerspectiveProjection { fov: SHOULDER_FOV, near: NEAR, far: SHOULDER_FAR, ..default() }),
+    /// Is a switch between the views under way?
+    pub fn switching(&self) -> bool {
+        self.blend != if self.shoulder() { 1.0 } else { 0.0 }
+    }
+
+    /// Is the world to be dressed for first person (walls up, roofs on, no silhouettes or
+    /// opening hints)? Only once the camera is nearly down: on its way it looks in from above.
+    pub fn low(&self) -> bool {
+        self.eased() > DRESSED_FROM
+    }
+
+    /// Move a switch under way on by `dt` seconds. At rest nothing is written.
+    pub fn step(&mut self, dt: f32) {
+        let to = if self.shoulder() { 1.0 } else { 0.0 };
+        if self.blend != to && !self.held {
+            let by = dt / SWITCH_SECS;
+            self.blend = if to > self.blend { (self.blend + by).min(1.0) } else { (self.blend - by).max(0.0) };
+            self.mix();
         }
+    }
+
+    /// End a switch under way at once (a view to start in, a picture).
+    pub fn land(&mut self) {
+        self.blend = if self.shoulder() { 1.0 } else { 0.0 };
+        self.mix();
+    }
+
+    /// How far through the switch the camera is drawn (0 the fixed view, 1 first person): slow
+    /// out of either view and slow into the other.
+    pub fn eased(&self) -> f32 {
+        let u = self.blend;
+        u * u * (3.0 - 2.0 * u)
+    }
+
+    /// `yaw` from the two views' yaws: exactly either's at rest.
+    fn mix(&mut self) {
+        self.yaw = match self.blend {
+            0.0 => self.fixed_yaw,
+            1.0 => self.look_yaw,
+            _ => self.fixed_yaw + (self.look_yaw - self.fixed_yaw) * self.eased(),
+        };
+    }
+
+    /// First person: look along `yaw` (taken the short way round from the fixed view's).
+    pub fn face(&mut self, yaw: f32) {
+        let turn = (yaw - self.fixed_yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+        self.look_yaw = self.fixed_yaw + turn;
+        self.mix();
+    }
+
+    /// On the way between the views: the lens's vertical field of view and how far the camera is
+    /// from its pivot, `e` (eased) of the way. The metres of world to the screen's height at the
+    /// pivot shrink from the zoom to nothing, each moment by about the same share of what is
+    /// left (so it reads as one even zoom in, not a wait and a rush: `zoom^(1-e) x CLOSE^e`,
+    /// less `CLOSE x e` so it ends on nothing), while the lens opens, evenly in its logarithm,
+    /// from [`SWITCH_FOV`] to first person's and the camera comes in to match: at `e` = 1 it is
+    /// at the pivot, the eyes.
+    fn lens_at(&self, e: f32) -> (f32, f32) {
+        const CLOSE: f32 = 1.5;
+        let fov = SWITCH_FOV * (SHOULDER_FOV / SWITCH_FOV).powf(e);
+        let height = (self.zoom.powf(1.0 - e) * CLOSE.powf(e) - CLOSE * e).max(0.0);
+        (fov, height / (2.0 * (fov * 0.5).tan()))
+    }
+
+    /// How far the camera is from its pivot when its lens is a perspective one (a switch under
+    /// way, or first person: 0); `None` in the fixed view, where the lens is parallel.
+    pub fn boom(&self) -> Option<f32> {
+        (self.blend > 0.0).then(|| self.lens_at(self.eased()).1)
+    }
+
+    /// The projection as the camera is now.
+    pub fn projection(&self) -> Projection {
+        Projection::custom(match self.boom() {
+            None => Lens::Flat(OrthographicProjection { scaling_mode: ScalingMode::FixedVertical { viewport_height: self.zoom }, near: NEAR, far: FAR, ..OrthographicProjection::default_3d() }),
+            // (A perspective lens draws to any distance; `far` is only where it stops looking for things to draw.)
+            Some(boom) => Lens::Deep(PerspectiveProjection { fov: self.lens_at(self.eased()).0, near: NEAR, far: boom + SHOULDER_FAR, ..default() }),
+        })
     }
 
     /// First person: turn by this much mouse (pixels; right and down positive).
     pub fn look(&mut self, by: Vec2) {
-        self.yaw -= by.x * LOOK_RATE;
+        self.look_yaw -= by.x * LOOK_RATE;
         self.pitch = (self.pitch + by.y * LOOK_RATE).clamp(PITCH_RANGE.0, PITCH_RANGE.1);
+        self.mix();
     }
 
-    /// First person: unit vector from the pivot toward the camera.
+    /// How far above level the camera looks down from: the fixed view's elevation, first
+    /// person's pitch, and between them on the way (staying high until late, then levelling out).
+    fn elevation(&self) -> f32 {
+        let e = self.eased();
+        ELEVATION + (self.pitch - ELEVATION) * e * e
+    }
+
+    /// Unit vector from the pivot toward the camera.
     fn boom_dir(&self) -> Vec3 {
-        Vec3::new(self.yaw.sin() * self.pitch.cos(), self.pitch.sin(), self.yaw.cos() * self.pitch.cos())
+        let el = self.elevation();
+        Vec3::new(self.yaw.sin() * el.cos(), el.sin(), self.yaw.cos() * el.cos())
     }
 
-    /// First person: the camera at the survivor's eyes, looking the way the mouse has turned it.
-    /// (No wall can come between: the eyes are inside his own body's radius.)
-    fn shoulder_transform(&self, _map: Option<&TileMap>, _dt: f32) -> Transform {
+    /// Where the camera is and looks. The fixed view: [`DISTANCE`] back from the focus. First
+    /// person: at the survivor's eyes, looking the way the mouse has turned it (no wall can come
+    /// between: the eyes are inside his own body's radius). On the way: looking at a pivot that
+    /// rises from his feet to his eyes, from as far as the lens of the moment asks.
+    pub fn transform(&self) -> Transform {
+        let Some(boom) = self.boom() else {
+            return Transform::from_translation(self.focus + self.offset_dir() * DISTANCE).looking_at(self.focus, Vec3::Y);
+        };
         let (forward, _) = self.ground_axes();
-        let at = self.focus + Vec3::Y * SHOULDER_HEIGHT + forward * EYES_AHEAD;
-        Transform::from_translation(at).looking_to(-self.boom_dir(), Vec3::Y)
+        let dir = self.boom_dir();
+        let pivot = self.focus + (Vec3::Y * SHOULDER_HEIGHT + forward * EYES_AHEAD) * self.eased();
+        Transform::from_translation(pivot + dir * boom).looking_to(-dir, Vec3::Y)
     }
 
     /// The point on the ground the aim is on, for the pointer's ray (`origin`, unit `dir`). The
@@ -191,16 +356,17 @@ impl IsoCamera {
         }
     }
 
-    /// First person: our own survivor isn't drawn (he would only be in the way of the view).
+    /// First person, and the last of the way down to it: our own survivor isn't drawn (he would
+    /// only be in the way of the view).
     pub fn too_close(&self) -> bool {
-        self.shoulder()
+        self.boom().is_some_and(|b| b < HIDE_WITHIN)
     }
 
     /// Metres of world top to bottom of the screen where the survivor stands, in either view.
     pub fn view_metres(&self) -> f32 {
-        match self.view {
-            View::Iso => self.zoom,
-            View::Shoulder => 2.0 * (SHOULDER_FOV * 0.5).tan(),
+        match self.boom() {
+            None => self.zoom,
+            Some(boom) => 2.0 * boom.max(1.0) * (self.lens_at(self.eased()).0 * 0.5).tan(),
         }
     }
 
@@ -213,7 +379,7 @@ impl IsoCamera {
     pub fn turn(&mut self, quarters: i32) {
         if quarters != 0 {
             self.angle_index += quarters;
-            self.turn_from = self.yaw;
+            self.turn_from = self.fixed_yaw;
             self.turn_at = 0.0;
         }
     }
@@ -227,14 +393,15 @@ impl IsoCamera {
     pub fn advance(&mut self, dt: f32) {
         if self.turn_at < 1.0 {
             self.turn_at = (self.turn_at + dt / TURN_SECS).min(1.0);
-            self.yaw = eased_yaw(self.turn_from, self.target_yaw(), self.turn_at);
+            self.fixed_yaw = eased_yaw(self.turn_from, self.target_yaw(), self.turn_at);
+            self.mix();
         }
     }
 
-    /// Unit vector from focus toward the camera. In first person no flatter than a quarter of
-    /// a radian: the cutaways and fades that go by it take it for the slope of the line of sight.
+    /// Unit vector from focus toward the camera. Out of the fixed view no flatter than a quarter
+    /// of a radian: the cutaways and fades that go by it take it for the slope of the line of sight.
     pub fn offset_dir(&self) -> Vec3 {
-        let e = if self.shoulder() { self.pitch.max(0.25) } else { ELEVATION };
+        let e = if self.blend > 0.0 { self.elevation().max(0.25) } else { ELEVATION };
         Vec3::new(self.yaw.sin() * e.cos(), e.sin(), self.yaw.cos() * e.cos())
     }
 
@@ -262,10 +429,19 @@ fn spawn_camera(mut commands: Commands, join: Res<JoinInfo>, options: Res<Option
     let mut cam = IsoCamera::new(options.angle, zoom, focus);
     // `--first-person`, else (in a window) the view the settings screen says to start in.
     if options.third_person || (!options.offscreen() && store.is_some_and(|s| s.settings.first_person)) {
-        // `follow` puts it behind the survivor at the first frame.
+        // There from the start (`follow` puts it behind the survivor at the first frame).
         cam.toggle_view();
+        cam.land();
     }
-    let transform = Transform::from_translation(cam.focus + cam.offset_dir() * DISTANCE).looking_at(cam.focus, Vec3::Y);
+    // `--view-mix U`: held that far on the way down to first person, for a picture of the switch.
+    if let Some(u) = options.view_mix {
+        if !cam.shoulder() {
+            cam.toggle_view();
+        }
+        (cam.blend, cam.held) = (u, true);
+        cam.mix();
+    }
+    let transform = cam.transform();
     // The dot at the middle of the screen while the pointer is held there (first person).
     commands.spawn((
         CentreDot,
@@ -288,6 +464,9 @@ fn spawn_camera(mut commands: Commands, join: Res<JoinInfo>, options: Res<Option
     // vignette that `daynight.rs` sets from the time of day. Bloom picks up only what's brighter
     // than sunlit ground: a flashlight's hot spot, a candle, a lit window.
     camera.insert((Hdr, Tonemapping::TonyMcMapface, ColorGrading::default(), Vignette { intensity: 0.45, radius: 0.8, smoothness: 2.2, ..default() }));
+    // First person's haze, on from the start and out of reach until then (`daynight.rs` sets it):
+    // a camera that gains or loses it has every shader built again.
+    camera.insert(bevy::pbr::DistanceFog { falloff: bevy::pbr::FogFalloff::Linear { start: 1.0e6, end: 2.0e6 }, ..default() });
     // Each post effect is a graphics setting (`graphics.rs`): the film pass is added by `film.rs`.
     if graphics.bloom {
         camera.insert(bloom());
@@ -321,6 +500,7 @@ fn rotate_and_zoom(
     lock: Res<PointerLock>,
     notice: Option<ResMut<crate::saving::Notice>>,
     mut turned: Local<usize>,
+    mut viewed: Local<usize>,
 ) {
     let Ok((mut cam, mut projection)) = cams.single_mut() else { return };
     // (The inventory screen covers the window: the wheel scrolls its columns.)
@@ -328,18 +508,24 @@ fn rotate_and_zoom(
     // `;` switches between the fixed view and first person (not in a picture: `--first-person`).
     if keys.just_pressed(KeyCode::Semicolon) && !options.offscreen() {
         cam.toggle_view();
-        *projection = cam.projection();
         if let Some(mut notice) = notice {
             notice.say(time.elapsed_secs(), if cam.shoulder() { "First-person view (; goes back, hold Alt for the pointer)" } else { "View from above (; for first person)" }.to_string());
         }
     }
+    // `--view-at SECS,...`: switches by themselves, for recordings and for timing them.
+    while options.view_at.get(*viewed).is_some_and(|&t| time.elapsed_secs() >= t) {
+        cam.toggle_view();
+        *viewed += 1;
+    }
+    // A switch under way moves on; the lens is set again each frame of it.
+    if cam.switching() {
+        cam.step(time.delta_secs());
+        *projection = cam.projection();
+    }
     if cam.shoulder() {
-        // The mouse turns the camera while the pointer is held; the wheel moves it in and out.
+        // The mouse turns the camera while the pointer is held (the wheel does nothing here).
         if lock.0 {
             cam.look(motion.delta);
-        }
-        if crate::hud::panel_under_cursor(window.single().ok(), &panels).is_some() || browser.is_some_and(|b| b.open) || inventory_open {
-            wheel.clear();
         }
         wheel.clear();
         return;
@@ -368,9 +554,7 @@ fn rotate_and_zoom(
     }
     if zoom != cam.zoom {
         cam.zoom = zoom;
-        if let Projection::Orthographic(ortho) = projection.as_mut() {
-            ortho.scaling_mode = ScalingMode::FixedVertical { viewport_height: zoom };
-        }
+        *projection = cam.projection();
     }
 }
 
@@ -379,7 +563,6 @@ fn follow(
     options: Res<Options>,
     shake: Res<CameraShake>,
     view: Res<crate::player::ViewFloor>,
-    map: Option<Res<ClientMap>>,
     mut player: Query<(&Transform, &Player, &mut Visibility), Without<IsoCamera>>,
     mut cams: Query<(&mut IsoCamera, &mut Transform)>,
 ) {
@@ -396,21 +579,25 @@ fn follow(
         if let Ok((p, player, _)) = player.single() {
             if cam.behind {
                 // Behind him as he stands; in a picture `--angle` turns it on round him by quarters.
-                cam.yaw = yaw_behind(player.facing) + if options.offscreen() { FRAC_PI_2 * options.angle } else { 0.0 };
-                (cam.behind, cam.focus) = (false, p.translation.with_y(view.height));
+                cam.face(yaw_behind(player.facing) + if options.offscreen() { FRAC_PI_2 * options.angle } else { 0.0 });
+                cam.behind = false;
+                if !cam.switching() {
+                    cam.focus = p.translation.with_y(view.height);
+                }
             }
-            // Close behind him: a loose follow would swing him about the screen.
-            let t = 1.0 - (-24.0 * time.delta_secs()).exp();
+            // Close behind him: a loose follow would swing him about the screen. (On the way
+            // down the follow tightens from the fixed view's to this.)
+            let t = 1.0 - (-(8.0 + 16.0 * cam.eased()) * time.delta_secs()).exp();
             cam.focus = cam.focus.lerp(p.translation.with_y(view.height), t);
         }
-        *transform = cam.shoulder_transform(map.as_deref().map(|m| &m.0), time.delta_secs());
+        *transform = cam.transform();
     } else {
         // An offscreen render keeps the camera where it was put (on the player, or `--center`).
         if let Some((p, ..)) = player.single().ok().filter(|_| !options.offscreen()) {
-            let t = 1.0 - (-8.0 * time.delta_secs()).exp();
+            let t = 1.0 - (-(8.0 + 16.0 * cam.eased()) * time.delta_secs()).exp();
             cam.focus = cam.focus.lerp(p.translation.with_y(view.height), t);
         }
-        *transform = Transform::from_translation(cam.focus + cam.offset_dir() * DISTANCE).looking_at(cam.focus, Vec3::Y);
+        *transform = cam.transform();
     }
     if shake.trauma > 0.0 {
         // A small jitter in the screen plane, strongest right after a hit.
@@ -498,12 +685,13 @@ mod tests {
             let facing = k as f32 * std::f32::consts::TAU / 16.0 - 3.0;
             let mut cam = IsoCamera::new(0.0, 26.0, Vec3::new(40.0, 0.0, 55.0));
             cam.toggle_view();
-            assert!(cam.shoulder() && cam.behind);
-            cam.yaw = yaw_behind(facing);
+            assert!(cam.shoulder() && cam.behind && cam.switching());
+            cam.land();
+            cam.face(yaw_behind(facing));
             let ahead = Vec3::new(facing.cos(), 0.0, facing.sin());
             let (forward, right) = cam.ground_axes();
             assert!(forward.distance(ahead) < 1e-4, "W is not the way he faces at {facing}");
-            let tf = cam.shoulder_transform(None, 0.016);
+            let tf = cam.transform();
             // At his eyes, looking the way he faces, and he isn't drawn.
             let rel = tf.translation - cam.focus;
             assert!(rel.with_y(0.0).length() < 0.2 && (rel.y - SHOULDER_HEIGHT).abs() < 1e-4 && cam.too_close(), "{rel}");
@@ -511,17 +699,18 @@ mod tests {
             // Mouse right: the view turns right. Mouse down: it looks further down.
             let before = *tf.forward();
             cam.look(Vec2::new(40.0, 0.0));
-            let after = *cam.shoulder_transform(None, 0.016).forward();
+            let after = *cam.transform().forward();
             assert!(after.dot(right) > before.dot(right) + 0.05);
             cam.look(Vec2::new(0.0, 60.0));
-            assert!(cam.shoulder_transform(None, 0.016).forward().y < after.y - 0.05);
+            assert!(cam.transform().forward().y < after.y - 0.05);
             cam.look(Vec2::new(0.0, 1e6));
             assert_eq!(cam.pitch, PITCH_RANGE.1);
-            // Back: an eased turn to the nearest fixed angle, never more than an eighth of a turn.
+            // Back: to the nearest fixed angle, never more than an eighth of a turn away.
             cam.toggle_view();
-            assert!(!cam.shoulder() && cam.turning());
+            assert!(!cam.shoulder() && cam.switching());
             assert!((cam.target_yaw() - cam.yaw).abs() <= std::f32::consts::FRAC_PI_4 + 1e-4);
-            cam.advance(TURN_SECS);
+            cam.step(SWITCH_SECS + 0.01);
+            assert!(!cam.switching());
             assert_eq!(cam.yaw, cam.target_yaw());
         }
     }
@@ -533,8 +722,10 @@ mod tests {
         // The fog of war's cone goes by the camera in first person and by the body from above: the
         // two must agree when the camera stands behind him.
         let mut cam = IsoCamera::new(0.0, 26.0, Vec3::ZERO);
+        cam.toggle_view();
+        cam.land();
         for f in [-2.5f32, -1.0, 0.0, 0.7, 1.6, 3.0] {
-            cam.yaw = yaw_behind(f);
+            cam.face(yaw_behind(f));
             let (forward, _) = cam.ground_axes();
             assert!(Vec2::new(forward.x, forward.z).distance(Vec2::from_angle(f)) < 1e-4, "facing {f}");
         }
@@ -544,19 +735,126 @@ mod tests {
     fn first_person_aims_ahead() {
         let mut cam = IsoCamera::new(0.0, 26.0, Vec3::ZERO);
         cam.toggle_view();
-        cam.yaw = yaw_behind(0.0);
+        cam.land();
+        cam.face(yaw_behind(0.0));
         for pitch in [-1.0, -0.3, 0.0, 0.1, 0.24, 0.6, 1.0] {
             cam.pitch = pitch;
-            let tf = cam.shoulder_transform(None, 0.016);
+            let tf = cam.transform();
             let at = cam.aim_ground(tf.translation, *tf.forward()).expect("an aim");
             // East of him (the way he faces), nearly straight ahead.
             assert!(at.y == 0.0 && at.x >= AIM_NEAR - 0.1 && at.x <= AIM_FAR + 0.2 && at.z.abs() < 0.6, "pitch {pitch}: {at}");
         }
         // The fixed view: plainly where the ray comes down.
         cam.toggle_view();
+        cam.land();
         let at = cam.aim_ground(Vec3::new(1.0, 10.0, 2.0), Vec3::new(0.0, -1.0, 0.0)).unwrap();
         assert!(at.distance(Vec3::new(1.0, 0.0, 2.0)) < 1e-5);
         assert_eq!(cam.aim_ground(Vec3::Y, Vec3::X), None);
+    }
+
+    /// What the lens shows of the ground: the height of the screen in metres at `at`, a point
+    /// in front of the camera, and whether that point is in the middle of the screen.
+    fn seen(cam: &IsoCamera, at: Vec3) -> (f32, f32) {
+        let tf = cam.transform();
+        let rel = at - tf.translation;
+        let depth = rel.dot(*tf.forward());
+        let off = (rel - *tf.forward() * depth).length();
+        let Projection::Custom(lens) = cam.projection() else { panic!("the camera's lens is always a custom projection") };
+        match lens.get::<Lens>().expect("a Lens") {
+            Lens::Flat(_) => (cam.zoom, off),
+            Lens::Deep(p) => (2.0 * depth * (p.fov * 0.5).tan(), off),
+        }
+    }
+
+    /// The switch between the views is a move: it takes `SWITCH_SECS` whatever the frame rate,
+    /// starts on the fixed view's picture and ends exactly on first person's, and on the way the
+    /// camera never jumps and what stands at its pivot only grows (down) or shrinks (up).
+    #[test]
+    fn the_switch_between_views_is_a_move() {
+        let focus = Vec3::new(40.0, 0.0, 55.0);
+        for (fps, facing) in [(240.0, 0.3f32), (60.0, -2.0), (30.0, 3.0), (11.0, 1.2)] {
+            let mut cam = IsoCamera::new(1.0, 26.0, focus);
+            let rest = cam.transform();
+            // Both views draw through one kind of lens (no shaders to build again on a switch).
+            assert!(matches!(cam.projection(), Projection::Custom(_)));
+            cam.toggle_view();
+            cam.face(yaw_behind(facing));
+            cam.behind = false;
+            // The first frame: the same picture as the fixed view's, from further off.
+            cam.step(1e-4);
+            let tf = cam.transform();
+            assert!(matches!(cam.projection(), Projection::Custom(_)));
+            assert!(tf.forward().distance(*rest.forward()) < 1e-3, "{fps}: it looks the same way at first");
+            let (height, off) = seen(&cam, focus);
+            assert!((height - 26.0).abs() < 0.05 && off < 0.05, "{fps}: {height} m at the survivor, {off} m off the middle");
+            // Down: closer every frame, never a jump, he grows on the screen, and he is hidden
+            // only once the camera is nearly at his head.
+            let (mut last, mut last_height, mut secs) = (tf, height, 1e-4);
+            let mut was = cam.boom().unwrap();
+            while cam.switching() {
+                cam.step(1.0 / fps);
+                secs += 1.0 / fps;
+                let tf = cam.transform();
+                let to = cam.boom().unwrap();
+                assert!(to <= was, "{fps}: back from {was} to {to}");
+                was = to;
+                assert!(tf.forward().angle_between(*last.forward()) < 6.0 * std::f32::consts::PI / (fps * SWITCH_SECS), "{fps}: it swung round in a frame");
+                let (fov, boom) = cam.lens_at(cam.eased());
+                let height = 2.0 * boom * (fov * 0.5).tan();
+                // He grows on the screen, and evenly: no frame takes more of the 26 m than its share
+                // of the time allows (at its steepest two and a half times the mean).
+                assert!(height <= last_height + 1e-3 && last_height - height <= 26.0 * 2.5 / (fps * SWITCH_SECS) + 0.01, "{fps}: {last_height} then {height}");
+                assert_eq!(cam.too_close(), cam.boom().unwrap() < HIDE_WITHIN);
+                (last, last_height) = (tf, height);
+            }
+            assert!(secs >= SWITCH_SECS - 1e-3 && secs < SWITCH_SECS + 1.0 / fps + 1e-3, "{fps} fps: {secs} s");
+            // There: at his eyes, looking the way he faces, exactly first person's lens.
+            let tf = cam.transform();
+            assert!(cam.too_close() && cam.low() && cam.boom() == Some(0.0));
+            assert!((tf.translation - focus - Vec3::Y * SHOULDER_HEIGHT).length() < EYES_AHEAD + 1e-4);
+            assert!(tf.forward().with_y(0.0).normalize().distance(Vec3::new(facing.cos(), 0.0, facing.sin())) < 1e-4);
+            let Projection::Custom(lens) = cam.projection() else { panic!() };
+            assert!(matches!(lens.get::<Lens>(), Some(Lens::Deep(p)) if (p.fov - SHOULDER_FOV).abs() < 1e-6));
+            // Back up: the fixed view again, exactly, on the angle nearest to where he looked.
+            cam.toggle_view();
+            let mut up = 0.0;
+            while cam.switching() {
+                cam.step(1.0 / fps);
+                let now = cam.boom().unwrap_or(f32::MAX);
+                assert!(now >= up, "{fps}: down again from {up} to {now}");
+                up = now;
+            }
+            assert!(cam.boom().is_none() && !cam.too_close() && !cam.low());
+            assert_eq!(cam.yaw, cam.target_yaw());
+            assert!((cam.target_yaw() - cam.look_yaw).abs() <= std::f32::consts::FRAC_PI_4 + 1e-4);
+            let Projection::Custom(lens) = cam.projection() else { panic!() };
+            assert!(matches!(lens.get::<Lens>(), Some(Lens::Flat(_))));
+            assert!(cam.transform().translation.distance(focus + cam.offset_dir() * DISTANCE) < 1e-3);
+        }
+    }
+
+    /// `;` again on the way turns the camera round where it is: no jump, and it ends where it
+    /// set out from.
+    #[test]
+    fn a_switch_turns_round_on_the_way() {
+        let mut cam = IsoCamera::new(2.0, 30.0, Vec3::ZERO);
+        cam.toggle_view();
+        cam.face(yaw_behind(1.0));
+        cam.behind = false;
+        cam.step(SWITCH_SECS * 0.6);
+        let (mid, yaw) = (cam.transform(), cam.yaw);
+        cam.toggle_view();
+        assert!(!cam.shoulder() && cam.switching());
+        assert_eq!((cam.transform().translation, cam.yaw, cam.angle_index), (mid.translation, yaw, 2));
+        cam.step(SWITCH_SECS * 0.3);
+        cam.toggle_view();
+        let again = cam.transform();
+        cam.step(1e-4);
+        assert!(cam.transform().translation.distance(again.translation) < 0.5);
+        cam.toggle_view();
+        cam.step(SWITCH_SECS);
+        assert!(!cam.switching());
+        assert_eq!((cam.yaw, cam.angle_index), (yaw_of(2.0), 2));
     }
 
     /// A quarter turn takes `TURN_SECS`, starts and ends slowly, never overshoots, and ends

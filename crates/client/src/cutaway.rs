@@ -499,9 +499,9 @@ fn decide(map: Res<ClientMap>, time: Res<Time>, view: Res<crate::player::ViewFlo
     let (Ok(p), Ok(cam)) = (player.single(), cams.single()) else { return };
     let cutaway = cutaway.as_mut();
     // First person: the camera is in the room with the survivor, so nothing is cut.
-    cutaway.set_held(cam.shoulder());
+    cutaway.set_held(cam.low());
     let changed = cutaway.update(&map.0, p.translation.xz(), view.level, cam.offset_dir(), time.delta_secs());
-    if cam.shoulder() {
+    if cam.low() {
         // First person: no silhouette (it goes by the fixed view's depth, and the camera is
         // right behind the survivor).
         cutaway.occluded = false;
