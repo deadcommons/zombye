@@ -1825,7 +1825,9 @@ and mood, and docs/art-direction.md). All of it is client only: nothing here is 
   the dark (a test holds them). **Soft shadows** (`Graphics::soft_shadows`, on in High and Ultra; `light.ron`
   `soft_shadows` is the sun's width): the sun's and moon's shadow edges soften away from what casts them (Bevy's
   PCSS, the `experimental_pbr_pcss` feature); `--no-post soft` or the settings' "Soft shadows" switch turns it off.
-  Its frame cost is not measured on a GPU yet. **Haze** (`Graphics::haze`, off in Low; `light.ron` `haze`: colour,
+  Cost on an M3 MacBook (1920 x 1080 offscreen, 2,000 zombies, 120 frames, the machine not idle): none measurable,
+  13.9 ms median with and without at 26 m; the haze the same (15.5 against 15.0-15.5 ms at dusk); ground detail
+  0.4-0.8 ms. **Haze** (`Graphics::haze`, off in Low; `light.ron` `haze`: colour,
   brightness, strength, near, far; `daynight::haze_at`): with the sun low, at dawn and dusk, what stands away from the
   survivor is washed toward the sun's colour in slow drifting banks, thickest near the ground and outdoors only
   (a term in world.wesl before the fog of war, from `WorldParams::haze` / `haze_at`: the camera is orthographic, so
