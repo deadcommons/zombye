@@ -107,11 +107,11 @@ pub fn parse_music(text: &str) -> Result<MusicData, String> {
 
 /// The tracks, loaded once.
 #[derive(Resource)]
-struct Music {
+pub(crate) struct Music {
     data: MusicData,
     tracks: BTreeMap<Mood, Vec<Handle<AudioSource>>>,
     /// `--music`, 0..2.
-    level: f32,
+    pub(crate) level: f32,
 }
 
 impl Music {
@@ -186,17 +186,20 @@ impl Plugin for MusicPlugin {
     }
 }
 
-fn load_music(mut commands: Commands, options: Res<Options>, mut sources: ResMut<Assets<AudioSource>>, mut state: ResMut<State>, time: Res<Time>) {
-    if options.music <= 0.0 {
+fn load_music(mut commands: Commands, options: Res<Options>, store: Option<Res<crate::ui_scale::SettingsStore>>, mut sources: ResMut<Assets<AudioSource>>, mut state: ResMut<State>, time: Res<Time>) {
+    // `--music 0`: none is loaded. Without the flag the level is the settings screen's, which can
+    // turn it up again, so the music is loaded even at 0.
+    if options.music.is_some_and(|v| v <= 0.0) {
         return;
     }
+    let level = options.music.unwrap_or_else(|| store.map_or(1.0, |s| s.settings.music));
     let own = options.data.join("music.ron").exists();
     let data = if own { options.data.clone() } else { zombye_net::content::default_data_dir() };
     let audio = data.join("..").join("audio");
     let overlay = crate::release_audio::root();
     let game_data = data == zombye_net::content::default_data_dir();
     let path = crate::release_audio::data_file(overlay, &data, game_data, "music.ron");
-    match Music::load(&path, &audio, overlay, &mut sources, options.music) {
+    match Music::load(&path, &audio, overlay, &mut sources, level) {
         Ok(m) => {
             let n: usize = m.tracks.values().map(Vec::len).sum();
             if n > 0 {

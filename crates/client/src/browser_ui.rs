@@ -360,7 +360,7 @@ impl BrowserUi {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn keys(
+pub(crate) fn keys(
     mut typed: MessageReader<KeyboardInput>,
     mut wheel: MessageReader<MouseWheel>,
     mut keys: ResMut<ButtonInput<KeyCode>>,
