@@ -108,6 +108,7 @@ mod profile;
 mod vegetation;
 mod heard;
 mod health_ui;
+mod help_text;
 mod hotbar;
 mod hud;
 mod inventory_ui;
@@ -326,6 +327,9 @@ pub struct Options {
     /// (`--settings graphics|audio|controls|game`): for pictures.
     pub pause: bool,
     pub settings: Option<String>,
+    /// How much the UI explains, for this session, not saved (`--help-text full|short|off`; without
+    /// it the settings file's, else full). See `help_text.rs`.
+    pub help_text: Option<help_text::HelpText>,
     /// UI scale in percent for this session, not saved (`--ui-scale PCT`, 75..150; without it the
     /// client settings file's, else 100). See `ui_scale.rs`.
     pub ui_scale: Option<u32>,
@@ -594,6 +598,7 @@ impl Options {
             plain: main_menu::plain(args),
             pause: flag("--pause"),
             settings: value("--settings"),
+            help_text: value("--help-text").and_then(|v| help_text::HelpText::parse(&v)),
             ui_scale: value("--ui-scale").and_then(|v| ui_scale::parse_pct(&v)),
             hotbar: value("--hotbar"),
             hotbar_press: value("--hotbar-press").map_or(Vec::new(), |v| v.split(',').filter_map(parse_menu_pick).collect()),

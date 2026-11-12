@@ -1068,7 +1068,7 @@ fn rebuild(
         (.., true) => Tab::Make,
         _ => Tab::Inventory,
     };
-    let signature = format!("{tab:?}|{view:?}|{floor:?}|{secs:.1}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|{clock}|{hotbar:?}", busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.keys, make_ui.open, make_ui.favs, make_ui.shown, *ui);
+    let signature = format!("{tab:?}|{view:?}|{floor:?}|{secs:.1}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|{clock}|{hotbar:?}|{:?}", busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.keys, make_ui.open, make_ui.favs, make_ui.shown, *ui, crate::help_text::level());
     if shown.0 == signature {
         return;
     }
@@ -1543,7 +1543,7 @@ fn pane_head(s: &mut ChildSpawnerCommands, h: Head) {
 fn make_column(mid: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f32, flight: &InFlight, ui: &MakeUi, y: f32) {
     mid.spawn(Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, flex_basis: px(0), min_width: px(0), max_width: px(1000), ..default() }).with_children(|col| {
         col.spawn((Node { flex_direction: FlexDirection::Column, padding: UiRect::new(px(24), px(24), px(18), px(10)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|h| {
-            column_title(h, "Things to make", Some("Click a group to open it. Right-click a recipe to pin it (*).".into()));
+            column_title(h, "Things to make", crate::help_text::keys().then(|| "Click a group to open it. Right-click a recipe to pin it (*).".into()));
         });
         scroller(col, 3, y, UiRect::new(px(24), px(24), px(0), px(16)), 3.0).with_children(|s| {
             if join.recipes.is_empty() {
@@ -2015,7 +2015,8 @@ fn make(c: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f3
             Ok(()) => make_row(c, format!("{indent}{lead}{}{state}", r.name), format!("{makes}, {:.0} s", r.secs * mult), MakeAct::Craft(k), fav, TEXT),
             // Under way with what it takes set aside already.
             Err(_) if queued > 0 => make_row(c, format!("{indent}{lead}{}{state}", r.name), String::new(), MakeAct::None, fav, DIM),
-            Err(why) => make_row(c, format!("{indent}{lead}{}", r.name), why, MakeAct::None, fav, DIM),
+            // (In full: each thing missing, how many you have, that a tool is kept. Short: their names.)
+            Err(why) => make_row(c, format!("{indent}{lead}{}", r.name), if crate::help_text::explains() { why } else { crafting::missing_brief(r, &v.inventory, items).unwrap_or(why) }, MakeAct::None, fav, DIM),
         }
     };
     let can = |k: usize| crafting::check(&join.recipes[k], &v.inventory, items).is_ok() || v.jobs.contains(&JobKind::Craft { recipe: k as u16 });
