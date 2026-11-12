@@ -611,7 +611,7 @@ upgrades and the rest come as new categories of the same list.
   again when due. `Intent::Unbuild { player }` prises a plank off the barricade faced. Both are refused off the ground
   floor, tied, asleep, reeling or climbing.
 - **Replication:** `Snapshot::barricade_changes` (`map::BarricadeChange`), `Welcome::barricades` for a joining
-  client; `wire::PROTOCOL` 28. **Saves:** an optional `BARR` section (builds by id, so a changed catalog needs no
+  client; `wire::PROTOCOL` 29. **Saves:** an optional `BARR` section (builds by id, so a changed catalog needs no
   remap; a barricade whose build is gone or whose edge no longer fits is taken down with a note), in `state_hash`
   while any; no format bump.
 - **Client:** planks drawn across the opening, a little askew
@@ -884,8 +884,38 @@ upgrades and the rest come as new categories of the same list.
   items one hand will do for. `wire::PROTOCOL` 15 (the definitions and `CombatTuning` changed shape); 18 for
   `broken_damage`.
 - **Not yet:** repairing or sharpening, a separate head and handle, a skill for looking after weapons, guns that
-  wear, hitting doors and trees.
+  wear, hitting doors.
 - Tests: `sim::wear::tests`.
+
+## Chopping trees (`sim::trees`)
+
+Trees come down: wood for planks now, firewood and building later.
+
+- **What chops:** a held item with the tag `ChopTuning::tag` ("chops": the `hatchet`, uncommon in sheds, garages and
+  hardware shops, and the fire axe). An aimed swing (right mouse, left click) that hits no body bites the nearest
+  broadleaf, birch, pine or spruce trunk in its reach and arc with nothing in the way (`trees::tree_in_reach`,
+  `World::chop_swing`, from `combat::land`): a zombie or survivor in front takes the blow instead. Anything else (a
+  bat, fists) does nothing to a tree. A bite takes the weapon's middle damage times `damage_mult`; a broadleaf has
+  `tree_hp` (480: about 14 swings of a hatchet), a pine `pine_hp` (400). Each bite costs the blade a knock as a hit
+  would (`wear_weapon`), refunds `1 - endurance_mult` of the swing's endurance (chopping is steadier work than
+  fighting), and gives `chop_xp` Strength (`fell_xp` for the last one).
+- **Felled** (`World::fell_tree`): the tile becomes `Feature::Stump` (walked over, sight passes), the walk grid, nav
+  graph and flow fields are updated, a `fall_noise` (40 m) sound is made, and `tree_logs` (2) or `pine_logs` (3)
+  of `log_item` ("log", 6 kg, tags `wood`, `log`, `fuel`) lie on the ground the way it fell. Recipe
+  `saw_log_planks`: a log and a `saws` tool make 3 `wooden_plank`. A log (9 L) doesn't fit in pockets, so it is sawn where it lies (crafting takes inputs from the floor in reach) or carried in a bag.
+- **State** (`World::trees`, `trees::Trees`): chopped trees' hit points and the felled tiles, sorted maps; in
+  `state_hash` only while any. **Saves:** an optional `TREE` section straight after `MAPD` (no format bump), put back
+  on the regenerated map (`restore_trees`, checked: a tree's tile, hit points in range, sorted; on a map loaded
+  anyway, misfits dropped with a note). `ChopTuning` is `WorldConfig::chop`, saved with the settings.
+- **Replication** (`wire::PROTOCOL` 28): `Snapshot::tree_changes` (`TreeChange`, from `take_tree_changes`; to every
+  client) and `Welcome::stumps`. Each bite is a `CombatEventKind::Chop` (`damage` the hit points the bite took, `crit` when it
+  fell). **Client:** the chunk round a felled tree is rebuilt at once (`world_render::rebuild_felled`); a stump is a
+  cut trunk (`landscape::felled_stump`, or the release models' `trees/stump.glb`); chips fly off the bark (`fx.rs`)
+  with the blade's hit sound, and a fall adds a thud and a shake; a log on the ground is a short cylinder unless the
+  release models hold `items/log.glb`. MCP `observe` draws stumps `u`.
+- **Not yet:** splitting logs into firewood (with the fire and cooking work), saws on stumps, trees growing back,
+  bushes, the tree toppling as it falls, zombies drawn by chopping beyond the swing's own noise.
+- Tests: `sim::trees::tests`.
 
 ## Guns (`sim::ranged`; #72)
 
@@ -1510,7 +1540,7 @@ A new single-player game can begin with a survivor of your making in a world of 
   over an inventory (`crafting::check` / `check_times`, which the inventory panel uses too), taking the recipe's `secs`
   (`World::craft_secs`: Handiwork, #46, `SkillTuning::craft_time_mult`, 5% faster a level down to half; each craft done
   gives 5 Handiwork XP in `World::on_crafted`, see Skills). Inputs and tools are what the player
-  carries and holds (`firstaid::usable`), not what it wears (the refusal says to take it off); only whole items count
+  carries and holds (`firstaid::usable`) and what lies on its floor in reach (`crafting::with_floor`, `World::floor_of`: a log too big for any bag is sawn where it lies; the client's Make list and a floor item's right-click menu go by the same), not what it wears (the refusal says to take it off); only whole items count
   as inputs (`crafting::whole`: the part-used top one of a stack doesn't). Like eating, it doesn't stop you walking; a
   strike landing drops queued crafts with the treatments (`interrupt_treatment`), and swinging, shoving or stomping
   drops the whole queue; a sleeper's `Craft` only gets it up. Asking again for a recipe already queued queues another
@@ -2972,7 +3002,7 @@ unknown tool is the JSON-RPC error -32602 (a tool's own failure is still a resul
 
 The agent plays player 1, who wakes up in the bedroom. Tools: `screenshot` (below), `observe` (double-resolution ASCII map
 with walls `-` `|`, shut windows `=` `!`, open windows `o`, broken windows `x`, shut doors `D` (`d`
-when damaged), open doors `/`, broken doors `#`, fences `~`, furniture `f`, street props `^`, containers `c` (not searched yet) and `o` (searched; on a tile, not a wall line), players `P` and zombies by
+when damaged), open doors `/`, broken doors `#`, fences `~`, trees `T`, stumps `u`, furniture `f`, street props `^`, containers `c` (not searched yet) and `o` (searched; on a tile, not a wall line), players `P` and zombies by
 state: `Z` wander, `I` investigate, `C` chase, `L` lunge, `A` attack, `B` battering a door or window;
 `S` staggered, `v` down, `%` corpse; zombies on the cheaper tiers `n` near, `?` virtual; weapons on the floor `w`, other items `i`, dead players `X`; plus players (HP,
 weapon, action, load, whether they're climbing or dead), items in view, damaged doors and windows in view

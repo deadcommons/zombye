@@ -23,7 +23,7 @@ use zombye_sim::map::{CHUNK_SIZE, Edge, Feature, Floor, OwnedEdge, Side, Tile, T
 use super::curves::{ArcSpan, Curves, Kerb, PieceBuf, Poly, Surface};
 use super::palette::{self, pal};
 use super::trees::{self, add_bush, add_tree};
-use super::{CutTag, MeshBuilder, floor_color, hash01, shade};
+use super::{CutKind, CutTag, MeshBuilder, floor_color, hash01, shade};
 use crate::vegetation::{VARIANTS, VegKind, VegSpot};
 
 /// Oil stains lie this far above the ground (everything else flat is cut into the ground itself,
@@ -1080,6 +1080,8 @@ pub fn build_chunk(map: &TileMap, c: IVec2) -> ChunkMeshes {
                         add_tree(&mut props, &spec, simple);
                     }
                 }
+                // What a felled tree leaves (`zombye_sim::trees`), where its trunk stood.
+                Feature::Stump => felled_stump(&mut props, x, y),
                 // A bush gives way to a driveway (bushes are only drawn: the sim walks through them).
                 Feature::Bush if land.on_driveway(t) => {}
                 Feature::Bush => {
@@ -1723,6 +1725,37 @@ fn stump(mb: &mut MeshBuilder, p: Vec3, r: f32, k: f32) {
         tri_out(mb, [ring(i, 0.0, r * 1.15), ring(i + 1, 0.0, r * 1.15), ring(i + 1, h, r)], inside, pal().deadwood);
         tri_out(mb, [ring(i, 0.0, r * 1.15), ring(i + 1, h, r), ring(i, h, r)], inside, pal().deadwood);
         tri_up(mb, [p + Vec3::Y * h, ring(i, h, r), ring(i + 1, h, r)], pal().cut_wood);
+    }
+}
+
+/// The stump of a tree felled in play, standing where its trunk did (`trees::tree_at`'s foot and
+/// size for the tile): a release build's `trees/stump.glb` when there is one, else a short
+/// seven-sided trunk in bark, its sawn top pale.
+fn felled_stump(mb: &mut MeshBuilder, x: i32, y: i32) {
+    let Some(t) = trees::tree_at(x, y, Feature::Tree) else { return };
+    let wood = CutTag { kind: CutKind::Wood, anchor: t.base.xz(), radius: 0.0 };
+    let models = crate::release_models::trees();
+    let n = models.variants("stump");
+    let k = hash01(x, y, 131);
+    let h = (0.32 + 0.14 * k) * t.scale;
+    if n > 0 && models.add_standing(mb, "stump", ((k * n as f32) as u32).min(n - 1), t.base, hash01(x, y, 132) * TAU, h, wood, wood) {
+        return;
+    }
+    mb.set_tag(wood);
+    let r = 0.19 * t.scale;
+    let p = t.base;
+    let ring = |i: u32, y: f32, rr: f32| {
+        let a = k * TAU + i as f32 * TAU / 7.0;
+        p + Vec3::new(a.cos() * rr, y, a.sin() * rr)
+    };
+    // The cut slopes a little where the last chops went in.
+    let top = |i: u32| h * (1.0 - 0.12 * (k * TAU + i as f32 * TAU / 7.0).cos());
+    let inside = p + Vec3::Y * h * 0.5;
+    for i in 0..7 {
+        let bark = shade(pal().bark, 0.9 + 0.08 * (i % 2) as f32);
+        tri_out(mb, [ring(i, 0.0, r * 1.25), ring(i + 1, 0.0, r * 1.25), ring(i + 1, top(i + 1), r)], inside, bark);
+        tri_out(mb, [ring(i, 0.0, r * 1.25), ring(i + 1, top(i + 1), r), ring(i, top(i), r)], inside, bark);
+        tri_up(mb, [p + Vec3::Y * h, ring(i, top(i), r), ring(i + 1, top(i + 1), r)], pal().cut_wood);
     }
 }
 

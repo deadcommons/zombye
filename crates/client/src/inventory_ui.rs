@@ -1106,7 +1106,10 @@ fn rebuild(
                 return;
             }
             if tab == Tab::Make {
-                make_column(mid, &join, v, busy.0, &flight, &make_ui, y[3]);
+                // What lies in reach counts too (`crafting::with_floor`, the server's rule): a log
+                // too big for a bag is sawn where it lies.
+                let near = PrivateView { inventory: crafting::with_floor(&v.inventory, floor.iter().map(|f| f.1)), ..v.clone() };
+                make_column(mid, &join, &near, busy.0, &flight, &make_ui, y[3]);
                 return;
             }
             gear(mid, &ctx, &mut rows, v, bar.as_deref(), y[0]);
@@ -1610,7 +1613,7 @@ impl Ctx<'_> {
     /// The recipes a thing lying nearby would let us make ([`makes_with`]); none for our own.
     fn makes(&self, l: &Line) -> Vec<(u16, String, u16)> {
         match (l.from, self.view) {
-            (Place::Container(_) | Place::Ground, Some(v)) => makes_with(self.recipes, self.items, &v.inventory, &l.stack),
+            (Place::Container(_) | Place::Ground, Some(v)) => makes_with(self.recipes, self.items, &v.inventory, &v.inventory, &l.stack),
             _ => Vec::new(),
         }
     }
@@ -2494,11 +2497,17 @@ fn follow_up(time: Res<Time>, link: Res<ServerLink>, join: Res<JoinInfo>, me: Re
 
 /// The recipes a stack lying nearby would let us make once taken, that we can't make without it:
 /// (recipe, its name, how many of the stack to take).
-fn makes_with(recipes: &[crafting::RecipeDef], items: &[ItemDef], inv: &zombye_sim::Inventory, s: &ItemStack) -> Vec<(u16, String, u16)> {
+/// A recipe that can be made now with what lies in reach (`near`: ours and the floor's) comes
+/// with 0 to take: it is made straight away, where it lies.
+fn makes_with(recipes: &[crafting::RecipeDef], items: &[ItemDef], inv: &zombye_sim::Inventory, near: &zombye_sim::Inventory, s: &ItemStack) -> Vec<(u16, String, u16)> {
     let Some(def) = items.get(s.item as usize) else { return Vec::new() };
     let mut out = Vec::new();
     for (k, r) in recipes.iter().enumerate() {
         let Some(need) = r.inputs.iter().find(|x| x.item == def.id).map(|x| x.count as u32) else { continue };
+        if crafting::check(r, near, items).is_ok() && crafting::check(r, inv, items).is_err() {
+            out.push((k as u16, r.name.clone(), 0));
+            continue;
+        }
         let have: u32 = inv.carried.iter().filter(|c| c.item == s.item).map(|c| crafting::whole(c) as u32).sum();
         if have >= need || (crafting::whole(s) as u32) < need - have {
             continue;
@@ -2607,7 +2616,11 @@ fn menu_entries(player: u32, items: &[ItemDef], from: Place, index: u32, s: &Ite
                 out.extend(mk("Take in hand".into(), into(Place::Slot(Slot::Hand), 0), true));
             }
             for (recipe, name, count) in makes {
-                out.extend(then(name.clone(), Then::Craft(*recipe), *count));
+                if *count == 0 {
+                    out.push(MenuEntry { label: name.clone(), act: MenuDo::Send { intent: Intent::Craft { player, recipe: *recipe }, from, index, whole: false } });
+                } else {
+                    out.extend(then(name.clone(), Then::Craft(*recipe), *count));
+                }
             }
             out.extend(mk(take.into(), into(Place::Carried, 0), true));
             if from == Place::Ground
@@ -2714,7 +2727,8 @@ fn open_menu(menu: &mut ItemMenu, link: &ServerLink, join: &JoinInfo, me: u32, f
     let Some(s) = stack_at(&v, &floor, from, index) else { return false };
     let open = v.open.as_ref().map(|c| (c.id, c.name.to_lowercase()));
     let pouches = pouch_names(&join.items, &v.inventory, join.carry.pockets_l);
-    let makes = if matches!(from, Place::Container(_) | Place::Ground) { makes_with(&join.recipes, &join.items, &v.inventory, &s) } else { Vec::new() };
+    let near = crafting::with_floor(&v.inventory, floor.iter().map(|f| f.1));
+    let makes = if matches!(from, Place::Container(_) | Place::Ground) { makes_with(&join.recipes, &join.items, &v.inventory, &near, &s) } else { Vec::new() };
     let entries = menu_entries(me, &join.items, from, index, &s, open.as_ref().map(|(id, n)| (*id, n.as_str())), &pouches, &makes);
     if entries.is_empty() {
         return false;
@@ -3454,16 +3468,16 @@ mod tests {
         let e = menu_entries(1, items, Place::Ground, 9, &stack("tinned_beans", 3), None, &[], &[]);
         assert!(matches!(e[0].act, MenuDo::TakeThen { take: Intent::MoveItem { from: Place::Ground, index: 9, to: Place::Carried, count: 1, .. }, then: Then::Use, .. }));
         let tee = stack("t_shirt", 1);
-        let makes = makes_with(&config.recipes, items, &zombye_sim::Inventory::default(), &tee);
+        let makes = makes_with(&config.recipes, items, &zombye_sim::Inventory::default(), &zombye_sim::Inventory::default(), &tee);
         assert_eq!(makes.len(), 1, "ripping it into rags needs nothing else: {makes:?}");
         let e = menu_entries(1, items, Place::Ground, 4, &tee, None, &[], &makes);
         assert_eq!(e.iter().map(|e| e.label.as_str()).collect::<Vec<_>>(), ["Wear", makes[0].1.as_str(), "Pick up"]);
         assert!(matches!(e[1].act, MenuDo::TakeThen { then: Then::Craft(_), .. }));
         // Jeans need something that cuts: not offered without it; with one already carried, no need to take another.
-        assert!(makes_with(&config.recipes, items, &zombye_sim::Inventory::default(), &stack("jeans", 1)).is_empty());
+        assert!(makes_with(&config.recipes, items, &zombye_sim::Inventory::default(), &zombye_sim::Inventory::default(), &stack("jeans", 1)).is_empty());
         let mut inv = zombye_sim::Inventory::default();
         inv.carried.push(tee);
-        assert!(makes_with(&config.recipes, items, &inv, &tee).is_empty());
+        assert!(makes_with(&config.recipes, items, &inv, &inv, &tee).is_empty());
         // The intents are the ones a drag or a click would send.
         let e = menu_entries(1, items, Place::Carried, 2, &stack("tinned_beans", 4), None, &[], &[]);
         assert!(matches!(e[0].act, MenuDo::Send { intent: Intent::Use { index: 2, .. }, whole: false, .. }));

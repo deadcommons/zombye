@@ -107,6 +107,9 @@
     // ---- Materials -----------------------------------------------------------------------------
     (id: "bed_sheet", name: "Bed sheet", category: Material, weight_kg: 0.6, volume_l: 1.5, stack: 2, tags: ["rippable"], color: (0.85, 0.85, 0.9)),
     (id: "towel", name: "Towel", category: Material, weight_kg: 0.5, volume_l: 1.5, stack: 2, tags: ["rippable"], color: (0.4, 0.6, 0.75)),
+    // A length of trunk from a felled tree (zombye_sim::trees): sawn into planks or split into
+    // firewood (recipes.ron). Heavy and bulky: a bag, or both hands.
+    (id: "log", name: "Log", category: Material, weight_kg: 6.0, volume_l: 9.0, tags: ["wood", "log", "fuel"], color: (0.42, 0.3, 0.19)),
     (id: "thread", name: "Reel of thread", category: Material, weight_kg: 0.02, volume_l: 0.02, stack: 10, color: (0.85, 0.85, 0.85)),
 
     // ---- Clothing ------------------------------------------------------------------------------
@@ -166,6 +169,7 @@
     (id: "golf_club", name: "Golf club", category: Weapon, weight_kg: 0.4, volume_l: 2.0, two_handed: true, one_hand: true, weapon: Some("golf_club"), color: (0.75, 0.75, 0.8)),
     (id: "wooden_plank", name: "Wooden plank", category: Weapon, weight_kg: 2.0, volume_l: 4.0, two_handed: true, one_hand: true, tags: ["wood", "fuel"], weapon: Some("wooden_plank"), color: (0.6, 0.45, 0.28)),
     (id: "crowbar", name: "Crowbar", category: Weapon, weight_kg: 1.5, volume_l: 1.2, tags: ["pries"], weapon: Some("crowbar"), color: (0.5, 0.15, 0.12)),
+    (id: "hatchet", name: "Hatchet", category: Weapon, weight_kg: 0.9, volume_l: 1.0, tags: ["chops"], weapon: Some("hatchet"), color: (0.5, 0.36, 0.22)),
     (id: "fire_axe", name: "Fire axe", category: Weapon, weight_kg: 2.5, volume_l: 4.0, two_handed: true, tags: ["chops"], weapon: Some("fire_axe"), color: (0.75, 0.15, 0.1)),
 
     // ---- Guns, their rounds and magazines (#72; numbers in weapons.ron's `ranged`) -----------------

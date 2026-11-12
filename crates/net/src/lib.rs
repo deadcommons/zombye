@@ -423,6 +423,9 @@ pub struct Snapshot {
     /// clients apply them to their map copy, as `blind_changes` (`zombye_sim::build`).
     #[serde(default)]
     pub barricade_changes: Vec<zombye_sim::map::BarricadeChange>,
+    /// Trees felled since the previous snapshot (each once, `zombye_sim::trees`): stumps now, which
+    /// clients put on their map copy.
+    pub tree_changes: Vec<zombye_sim::trees::TreeChange>,
     /// Every item lying about (a short list for now; interest management later).
     pub items: Vec<GroundItem>,
     /// Which of `items` lie on the first upper floor, by id, in order (`World::item_level`); the
@@ -593,6 +596,7 @@ impl Snapshot {
             edge_damage: world.take_edge_damage().into_iter().map(|(e, hp)| EdgeDamage { tile: e.tile, edge: e.edge, hp }).collect(),
             blind_changes: world.take_blind_changes(),
             barricade_changes: world.take_barricade_changes(),
+            tree_changes: world.take_tree_changes(),
             items: world.items().to_vec(),
             hits: std::mem::take(&mut world.combat_events),
             private,

@@ -259,6 +259,8 @@ pub enum Feature {
     /// A street prop that blocks walking: a hydrant, a bin, a mailbox (see
     /// [`TileMap::street_props`] for which, and `crate::street_props`).
     StreetProp,
+    /// What a felled tree leaves (`crate::trees`): low enough to step past, so nothing goes round it.
+    Stump,
 }
 
 impl Feature {

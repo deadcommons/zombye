@@ -34,4 +34,8 @@
     // ---- Building (build.ron uses these) --------------------------------------------------------
     (id: "open_nails", name: "Open a box of nails", secs: 1.0,
         inputs: [(item: "nails")], outputs: [(item: "nail", count: 50)]),
+    // ---- Wood ----------------------------------------------------------------------------------
+    // Logs come from trees felled with an axe (zombye_sim::trees). Planks board up windows and doors.
+    (id: "saw_log_planks", name: "Saw a log into planks", secs: 30.0,
+        inputs: [(item: "log")], tools: [Tag("saws")], outputs: [(item: "wooden_plank", count: 3)]),
 ]
