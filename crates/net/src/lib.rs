@@ -9,6 +9,7 @@ pub mod browser;
 pub mod content;
 pub mod host;
 pub mod identity;
+pub mod install;
 pub mod joining;
 pub mod modpack;
 pub mod newgame;
@@ -846,7 +847,8 @@ impl Intent {
 pub struct LocalServer {
     pub world: World,
     inbox: Vec<Intent>,
-    /// Takes [`Intent::Dev`] (single-player: yes; a hosted server: only with `--allow-dev`).
+    /// Takes [`Intent::Dev`] and the debug intents ([`Intent::dev_only`]; single-player: yes, but
+    /// not in a packaged game without `--dev`; a hosted server: only with `--allow-dev`).
     pub allow_dev: bool,
     /// Dev intents refused so far.
     pub refused_dev: u32,
@@ -901,7 +903,7 @@ impl LocalServer {
     /// Apply queued intents, advance one tick, and return the new snapshot.
     pub fn tick(&mut self) -> Snapshot {
         for intent in self.inbox.drain(..) {
-            if intent.is_dev() && !self.allow_dev {
+            if intent.dev_only() && !self.allow_dev {
                 self.refused_dev += 1;
                 continue;
             }

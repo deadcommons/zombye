@@ -50,13 +50,13 @@ impl FurnitureModels {
     /// Every `*.glb` in `dir`, by file name. Unreadable ones are skipped with a warning.
     pub fn load(dir: &Path) -> Self {
         let mut models = HashMap::new();
-        let Ok(entries) = std::fs::read_dir(dir) else { return Self(models) };
-        for path in entries.flatten().map(|e| e.path()) {
+        let Ok(entries) = crate::pack::read_dir(dir) else { return Self(models) };
+        for path in entries {
             if path.extension().is_none_or(|e| e != "glb") {
                 continue;
             }
             let kind = path.file_stem().unwrap().to_string_lossy().into_owned();
-            match std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| parse_glb(&b)) {
+            match crate::pack::read(&path).map_err(|e| e.to_string()).and_then(|b| parse_glb(&b)) {
                 Ok(m) => {
                     models.insert(kind, m);
                 }

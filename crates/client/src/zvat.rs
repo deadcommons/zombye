@@ -224,13 +224,13 @@ pub fn find_texture(zvat: &Path) -> Option<(PathBuf, Vec<u8>, &'static str)> {
     let stem = zvat.file_stem()?.to_string_lossy().into_owned();
     for name in [format!("{stem}.png"), format!("{stem}.jpg"), format!("{stem}_base_color.png"), format!("{stem}_base_color.jpg")] {
         let p = dir.join(name);
-        if let Ok(b) = std::fs::read(&p) {
+        if let Ok(b) = crate::pack::read(&p) {
             let e = ext(&p);
             return Some((p, b, e));
         }
     }
     let glb = dir.join(format!("{stem}.glb"));
-    let bytes = std::fs::read(&glb).ok()?;
+    let bytes = crate::pack::read(&glb).ok()?;
     let (image, mime) = glb_base_color(&bytes)?;
     Some((glb, image, if mime == "image/png" { "png" } else { "jpg" }))
 }

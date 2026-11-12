@@ -41,7 +41,7 @@ use crate::theme::{self, BODY, SMALL, font};
 /// Flags (with a value, and alone) that only set the scene: with nothing but these, the game
 /// starts on the menu.
 const SCENE_WITH_VALUE: [&str; 19] = ["--size", "--saves", "--data", "--mod", "--graphics", "--vegetation", "--no-post", "--msaa", "--shadow-map", "--render-scale", "--ui-scale", "--volume", "--music", "--name", "--server-list", "--crowd-vat", "--survivor", "--opening-hints", "--help-text"];
-const SCENE_ALONE: [&str; 8] = ["--novsync", "--mute", "--load-anyway", "--first-person", "--third-person", "--zombie-silhouettes", "--walls-up", "--rotate"];
+const SCENE_ALONE: [&str; 9] = ["--dev", "--novsync", "--mute", "--load-anyway", "--first-person", "--third-person", "--zombie-silhouettes", "--walls-up", "--rotate"];
 /// What chose this run's world or screen, dropped when another is chosen.
 const WORLD_WITH_VALUE: [&str; 13] = ["--connect", "--password", "--load", "--from-browser", "--browser-join", "--join-error", "--seed", "--new-game-from", "--settings", "--menu-screen", "--server-info", "--skip-hours", "--at"];
 const WORLD_ALONE: [&str; 6] = ["--joined", "--browser", "--no-menu", "--main-menu", "--new-game", "--pause"];
@@ -328,7 +328,9 @@ fn draw(mut commands: Commands, mut menu: ResMut<Menu>, root: Option<Single<Enti
                 }
             }
             skin::spacer(row);
-            row.spawn((Text::new(format!("v{}", env!("CARGO_PKG_VERSION"))), font(SMALL), TextColor(DIM)));
+            // The build (the packaging script names it: commit and date), so a report says what it was.
+            let report = if zombye_net::install::packaged() { "F12 in game: report a problem   " } else { "" };
+            row.spawn((Text::new(format!("{report}{}", zombye_net::install::build_name())), font(SMALL), TextColor(DIM)));
         });
     });
 }

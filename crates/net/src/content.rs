@@ -12,9 +12,10 @@ use zombye_sim::population::{PopulationDef, parse_population};
 use zombye_sim::status::{StatusData, parse_status};
 use zombye_sim::street_props::{StreetPropsDef, parse_street_props};
 
-/// The repo's `assets/data` folder (used when running from a checkout).
+/// The game's `assets/data` folder: the checkout's when running from one, else a packaged
+/// game's beside its executable (`crate::install::assets_dir`).
 pub fn default_data_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/data")
+    crate::install::assets_dir().join("data")
 }
 
 /// The data folder of a server that may be running away from a checkout (an installed binary, a

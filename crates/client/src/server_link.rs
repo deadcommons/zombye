@@ -319,6 +319,9 @@ impl Plugin for ServerLinkPlugin {
             Some(world) => LocalServer::from_world(world),
             None => LocalServer::new(config),
         };
+        // A packaged game (a playtest build) keeps the dev tools to itself unless asked for: no
+        // god mode, spawning, skipping time or `--give` for a player who didn't ask.
+        server.allow_dev = zombye_net::install::dev_tools();
         if resumed {
             // `--player ID` plays (or renders) as that player; otherwise the save's first.
             let player_id = match (options.player, server.world.players.first()) {
@@ -374,7 +377,7 @@ impl Plugin for ServerLinkPlugin {
             give(&r.ammo, r.capacity as u16 * 3);
         }
         // `--give`: things into our pockets, or at our feet when there's no room for them (a log).
-        for want in options.give.iter().flat_map(|g| g.split(',')).map(str::trim).filter(|w| !w.is_empty()) {
+        for want in options.give.iter().filter(|_| zombye_net::install::dev_tools()).flat_map(|g| g.split(',')).map(str::trim).filter(|w| !w.is_empty()) {
             let (id, n) = want.split_once(':').map_or((want, 1), |(id, n)| (id, n.parse().unwrap_or(1)));
             let Some(i) = server.world.item_index(id) else {
                 eprintln!("--give: no item {id:?} in items.ron");

@@ -30,3 +30,5 @@ tracing-subscriber = { version = "0.3", optional = true, default-features = fals
 [features]
 # Time every system and print the top ones at the end of `--bench-live` (adds Bevy's trace spans).
 profile = ["bevy/trace", "bevy/debug", "dep:tracing", "dep:tracing-subscriber"]
+# Packaged Windows builds: no console window (tools/release/package.sh).
+windows-gui = []

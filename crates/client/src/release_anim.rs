@@ -27,8 +27,8 @@ pub fn root() -> Option<&'static Path> {
     ROOT.get_or_init(|| {
         let found = std::env::var_os("ZOMBYE_RELEASE_ANIM")
             .map(PathBuf::from)
-            .or_else(|| std::env::current_exe().ok()?.parent().map(|d| d.join("release-anim")))
-            .filter(|p| p.is_dir());
+            .or_else(|| crate::pack::beside_exe("release-anim"))
+            .filter(|p| crate::pack::is_dir(p));
         if let Some(p) = &found {
             println!("release animation: {}", p.display());
         }
@@ -59,12 +59,12 @@ pub fn merge(clips: &mut Vec<Clip>, more: Vec<Clip>) -> (usize, usize) {
 /// Read the overlay's clip files for the body named `body` into `clips`. Returns a line a file, to
 /// print: what it gave, or why it was left out (a bad file never stops the game).
 pub fn load_into(overlay: Option<&Path>, body: &str, rig: &Rig, clips: &mut Vec<Clip>) -> Vec<String> {
-    let Some(dir) = overlay.map(|o| o.join("characters").join(body)).filter(|d| d.is_dir()) else { return Vec::new() };
-    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("glb"))).collect();
+    let Some(dir) = overlay.map(|o| o.join("characters").join(body)).filter(|d| crate::pack::is_dir(d)) else { return Vec::new() };
+    let mut files: Vec<PathBuf> = crate::pack::read_dir(&dir).into_iter().flatten().filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("glb"))).collect();
     files.sort();
     files
         .iter()
-        .map(|file| match std::fs::read(file).map_err(|e| e.to_string()).and_then(|b| parse_clips(&b, rig)) {
+        .map(|file| match crate::pack::read(file).map_err(|e| e.to_string()).and_then(|b| parse_clips(&b, rig)) {
             Ok(more) => {
                 let names: Vec<String> = more.iter().map(|c| c.name.clone()).collect();
                 let (replaced, added) = merge(clips, more);

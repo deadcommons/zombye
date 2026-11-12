@@ -565,10 +565,12 @@ fn actions(
 ) {
     let now = time.elapsed_secs();
     // Dev toggles: flip what the server last said.
-    if keys.just_pressed(KeyCode::F1) {
+    // A packaged game keeps them to itself without `--dev` (the server would refuse them anyway).
+    let dev = zombye_net::install::dev_tools();
+    if dev && keys.just_pressed(KeyCode::F1) {
         link.send(Intent::Dev { player: me.id, god: Some(!me.dev.god), ignored: None });
     }
-    if keys.just_pressed(KeyCode::F2) {
+    if dev && keys.just_pressed(KeyCode::F2) {
         link.send(Intent::Dev { player: me.id, god: None, ignored: Some(!me.dev.ignored) });
     }
     // Dead: the death screen (`death.rs`) takes R (a new run) and Q / Esc (quit).
@@ -641,11 +643,11 @@ fn actions(
     if keys.just_pressed(KeyCode::KeyG) {
         link.send(Intent::SmashWindow { player: me.id });
     }
-    if keys.just_pressed(KeyCode::KeyT) {
+    if dev && keys.just_pressed(KeyCode::KeyT) {
         link.send(Intent::SkipTime { hours: 1.0 });
     }
     let Ok((tf, player)) = players.single() else { return };
-    if keys.just_pressed(KeyCode::KeyZ) {
+    if dev && keys.just_pressed(KeyCode::KeyZ) {
         let p = Vec2::new(tf.translation.x, tf.translation.z);
         let center = p + Vec2::from_angle(player.facing) * 30.0;
         link.send(Intent::SpawnZombies { count: 250, center: center.to_array(), radius: 8.0 });
