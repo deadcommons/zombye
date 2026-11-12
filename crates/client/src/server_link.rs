@@ -373,13 +373,20 @@ impl Plugin for ServerLinkPlugin {
             }
             give(&r.ammo, r.capacity as u16 * 3);
         }
-        // `--give`: things straight into our pockets, however much room they take.
+        // `--give`: things into our pockets, or at our feet when there's no room for them (a log).
         for want in options.give.iter().flat_map(|g| g.split(',')).map(str::trim).filter(|w| !w.is_empty()) {
             let (id, n) = want.split_once(':').map_or((want, 1), |(id, n)| (id, n.parse().unwrap_or(1)));
-            if server.world.give_item(player_id, id, n) {
-                println!("--give: {n} x {id}");
-            } else {
+            let Some(i) = server.world.item_index(id) else {
                 eprintln!("--give: no item {id:?} in items.ron");
+                continue;
+            };
+            let p = server.world.player(player_id).expect("just joined");
+            let (c, pos) = (server.world.carry(p), p.state.pos);
+            let fits = server.world.item_def(i).volume_l * n as f32 <= (c.room_l - c.used_l).max(0.0) + 1e-4;
+            if fits && server.world.give_item(player_id, id, n) {
+                println!("--give: {n} x {id}");
+            } else if server.world.spawn_item(id, n, pos).is_some() {
+                println!("--give: {n} x {id} at your feet (no room for it)");
             }
         }
         if options.fight_demo {

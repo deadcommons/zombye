@@ -208,3 +208,26 @@ fn logs_saw_into_planks() {
     assert!(c.items.iter().any(|d| d.id == ChopTuning::default().log_item));
 }
 
+
+#[test]
+fn a_log_on_the_floor_is_sawn_where_it_lies() {
+    let (mut w, id) = field("hatchet");
+    w.config.recipes = crate::crafting::parse_recipes(RECIPES).unwrap();
+    let recipe = w.recipe_index("saw_log_planks").unwrap();
+    // Too big for the pockets, so it can't be picked up: it lies at our feet.
+    w.spawn_item("log", 1, ORIGIN + Vec2::new(0.5, 0.0)).unwrap();
+    assert!(w.player_craft(id, recipe).is_err(), "no saw yet");
+    assert!(w.give_item(id, "saw", 1));
+    w.player_craft(id, recipe).unwrap();
+    for _ in 0..2000 {
+        w.step();
+        if w.player(id).unwrap().jobs.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(logs_on_floor(&w), 0, "the log was used");
+    let plank = w.item_index("wooden_plank").unwrap();
+    let carried: u16 = w.player(id).unwrap().inventory.carried.iter().filter(|s| s.item == plank).map(|s| s.count).sum();
+    let lying: u16 = w.items().iter().filter(|it| it.stack.item == plank).map(|it| it.stack.count).sum();
+    assert_eq!(carried + lying, 3);
+}

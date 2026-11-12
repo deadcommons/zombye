@@ -859,7 +859,7 @@ Trees come down: wood for planks now, firewood and building later.
 - **Felled** (`World::fell_tree`): the tile becomes `Feature::Stump` (walked over, sight passes), the walk grid, nav
   graph and flow fields are updated, a `fall_noise` (40 m) sound is made, and `tree_logs` (2) or `pine_logs` (3)
   of `log_item` ("log", 6 kg, tags `wood`, `log`, `fuel`) lie on the ground the way it fell. Recipe
-  `saw_log_planks`: a log and a `saws` tool make 3 `wooden_plank`.
+  `saw_log_planks`: a log and a `saws` tool make 3 `wooden_plank`. A log (9 L) doesn't fit in pockets, so it is sawn where it lies (crafting takes inputs from the floor in reach) or carried in a bag.
 - **State** (`World::trees`, `trees::Trees`): chopped trees' hit points and the felled tiles, sorted maps; in
   `state_hash` only while any. **Saves:** an optional `TREE` section straight after `MAPD` (no format bump), put back
   on the regenerated map (`restore_trees`, checked: a tree's tile, hit points in range, sorted; on a map loaded
@@ -1497,7 +1497,7 @@ A new single-player game can begin with a survivor of your making in a world of 
   over an inventory (`crafting::check` / `check_times`, which the inventory panel uses too), taking the recipe's `secs`
   (`World::craft_secs`: Handiwork, #46, `SkillTuning::craft_time_mult`, 5% faster a level down to half; each craft done
   gives 5 Handiwork XP in `World::on_crafted`, see Skills). Inputs and tools are what the player
-  carries and holds (`firstaid::usable`), not what it wears (the refusal says to take it off); only whole items count
+  carries and holds (`firstaid::usable`) and what lies on its floor in reach (`crafting::with_floor`, `World::floor_of`: a log too big for any bag is sawn where it lies; the client's Make list and a floor item's right-click menu go by the same), not what it wears (the refusal says to take it off); only whole items count
   as inputs (`crafting::whole`: the part-used top one of a stack doesn't). Like eating, it doesn't stop you walking; a
   strike landing drops queued crafts with the treatments (`interrupt_treatment`), and swinging, shoving or stomping
   drops the whole queue; a sleeper's `Craft` only gets it up. Asking again for a recipe already queued queues another
