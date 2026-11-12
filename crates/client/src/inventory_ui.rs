@@ -1068,7 +1068,7 @@ fn rebuild(
         (.., true) => Tab::Make,
         _ => Tab::Inventory,
     };
-    let signature = format!("{tab:?}|{view:?}|{floor:?}|{secs:.1}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|{clock}|{hotbar:?}", busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.keys, make_ui.open, make_ui.favs, make_ui.shown, *ui);
+    let signature = format!("{tab:?}|{view:?}|{floor:?}|{secs:.1}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|{clock}|{hotbar:?}|{:?}", busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.keys, make_ui.open, make_ui.favs, make_ui.shown, *ui, crate::help_text::level());
     if shown.0 == signature {
         return;
     }
@@ -1540,7 +1540,7 @@ fn pane_head(s: &mut ChildSpawnerCommands, h: Head) {
 fn make_column(mid: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f32, flight: &InFlight, ui: &MakeUi, y: f32) {
     mid.spawn(Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, flex_basis: px(0), min_width: px(0), max_width: px(1000), ..default() }).with_children(|col| {
         col.spawn((Node { flex_direction: FlexDirection::Column, padding: UiRect::new(px(24), px(24), px(18), px(10)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|h| {
-            column_title(h, "Things to make", Some("Click a group to open it. Right-click a recipe to pin it (*).".into()));
+            column_title(h, "Things to make", crate::help_text::keys().then(|| "Click a group to open it. Right-click a recipe to pin it (*).".into()));
         });
         scroller(col, 3, y, UiRect::new(px(24), px(24), px(0), px(16)), 3.0).with_children(|s| {
             if join.recipes.is_empty() {

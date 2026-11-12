@@ -119,6 +119,9 @@ pub struct ClientSettings {
     /// Start straight in the game, without the main menu (`main_menu::skipped`; for development:
     /// `ZOMBYE_NO_MENU=1` does the same without the file). `--main-menu` still shows it.
     pub skip_menu: bool,
+    /// How much the UI explains (`help_text.rs`): everything, cards without their explaining
+    /// sentences, or those and the key reminders gone too.
+    pub help_text: crate::help_text::HelpText,
 }
 
 impl Default for ClientSettings {
@@ -141,6 +144,7 @@ impl Default for ClientSettings {
             fullscreen: false,
             vsync: true,
             skip_menu: false,
+            help_text: crate::help_text::HelpText::Full,
         }
     }
 }
