@@ -118,6 +118,10 @@ pub fn ask_relaunch(args: Vec<String>, options: &Options) {
     }
 }
 
+pub fn relaunch_asked() -> bool {
+    NEXT.lock().is_ok_and(|n| n.is_some())
+}
+
 pub fn take_relaunch() -> Option<Relaunch> {
     NEXT.lock().ok().and_then(|mut n| n.take())
 }

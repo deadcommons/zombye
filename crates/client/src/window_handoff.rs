@@ -1,0 +1,131 @@
+//! Keeping the window's full screen across a start-again.
+//!
+//! The main menu, the new-game screen, the join screen and the game are each a run of this program
+//! that hands over to the next (`crate::relaunch`), so each has a window of its own. A Mac puts a
+//! full-screen window (the green button, or the Fullscreen setting) in a Space of its own, and a
+//! window that was still full screen when its run ended left that Space behind with the old screen
+//! on it, while the next screen opened as a small window on the desktop.
+//!
+//! So an exit that leads to a start-again is held back while the window is full screen: the window
+//! leaves full screen first, the exit goes on once it has (or after [`GIVE_UP`]), and the next run
+//! is told to open full screen ([`VAR`]), so the next screen comes up as the last one was.
+//!
+//! Only on a Mac: elsewhere a full-screen window goes with its run. `ZOMBYE_WINDOW_HANDOFF=1`
+//! does it on any system, for trying it out.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+use bevy::app::OnAppExitSystems;
+use bevy::ecs::message::Messages;
+use bevy::ecs::system::NonSendMarker;
+use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
+
+/// Set for the next run when this one's window was full screen.
+pub const VAR: &str = "ZOMBYE_WINDOW_FULLSCREEN";
+/// Frames the window has been out of full screen before the exit goes on.
+const SETTLED_FRAMES: u32 = 3;
+/// The longest an exit is held back.
+const GIVE_UP: Duration = Duration::from_secs(3);
+
+/// Whether this run's window was full screen when it handed over.
+static WAS_FULLSCREEN: AtomicBool = AtomicBool::new(false);
+
+/// Whether this run was started by one whose window was full screen.
+pub fn fullscreen_asked() -> bool {
+    std::env::var_os(VAR).is_some_and(|v| v == "1")
+}
+
+/// Tell the run `command` starts how this one's window was.
+pub fn pass_on(command: &mut std::process::Command) {
+    if WAS_FULLSCREEN.load(Ordering::Relaxed) {
+        command.env(VAR, "1");
+    } else {
+        command.env_remove(VAR);
+    }
+}
+
+fn enabled() -> bool {
+    cfg!(target_os = "macos") || std::env::var_os("ZOMBYE_WINDOW_HANDOFF").is_some_and(|v| v == "1")
+}
+
+/// An exit being held back.
+#[derive(Default)]
+struct Held {
+    since: Option<Instant>,
+    /// Frames in a row the window has been out of full screen.
+    out: u32,
+    /// The exit went on: hold nothing more.
+    let_go: bool,
+}
+
+/// Whether a held exit may go on.
+fn may_go(out_frames: u32, held_for: Duration) -> bool {
+    out_frames >= SETTLED_FRAMES || held_for >= GIVE_UP
+}
+
+pub struct HandoffPlugin;
+
+impl Plugin for HandoffPlugin {
+    fn build(&self, app: &mut App) {
+        if enabled() {
+            // Before anything that acts on the exit (the autosave), so a held exit is seen by
+            // nobody until it goes on.
+            app.add_systems(Last, hold_exit.before(OnAppExitSystems));
+        }
+    }
+}
+
+fn hold_exit(_main: NonSendMarker, mut exits: ResMut<Messages<AppExit>>, window: Query<Entity, With<PrimaryWindow>>, mut held: Local<Held>) {
+    if held.let_go {
+        return;
+    }
+    let Ok(entity) = window.single() else { return };
+    let asked = !exits.is_empty();
+    if held.since.is_none() && !(asked && crate::relaunch_pending()) {
+        return;
+    }
+    // Is the window full screen? Leave it, if this is where the hold begins.
+    let begin = held.since.is_none();
+    let full = bevy::winit::WINIT_WINDOWS.with_borrow(|windows| {
+        let window = windows.get_window(entity)?;
+        let full = window.fullscreen().is_some();
+        if full && begin {
+            window.set_fullscreen(None);
+        }
+        Some(full)
+    });
+    let Some(full) = full else { return };
+    if begin {
+        if !full {
+            // A plain window goes with its run.
+            return;
+        }
+        WAS_FULLSCREEN.store(true, Ordering::Relaxed);
+        held.since = Some(Instant::now());
+    }
+    // (Anything asking again meanwhile is held with the first.)
+    exits.drain().for_each(drop);
+    held.out = if full { 0 } else { held.out + 1 };
+    if may_go(held.out, held.since.map_or(GIVE_UP, |s| s.elapsed())) {
+        held.let_go = true;
+        exits.write(AppExit::Success);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_held_exit_goes_on_once_the_window_is_out_or_time_is_up() {
+        let ms = Duration::from_millis;
+        // Still full screen, or only just out.
+        assert!(!may_go(0, ms(500)));
+        assert!(!may_go(SETTLED_FRAMES - 1, ms(500)));
+        assert!(may_go(SETTLED_FRAMES, ms(500)));
+        // A window that never leaves full screen doesn't hold the game for ever.
+        assert!(may_go(0, GIVE_UP));
+    }
+}

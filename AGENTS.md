@@ -283,6 +283,12 @@ next start. Each tab has its "defaults" button. **A new client setting gets a fi
 now), `first_person`, `fullscreen`, `vsync`; `--volume` / `--music` / `--mute` / `--first-person` / `--novsync` still
 win for a session. Gameplay and difficulty settings are a world's, chosen on the new-game screen, not here. Tests:
 `main_menu::tests`, `pause_menu::tests`, `settings_ui::tests`.
+**Full screen across a start-again (`window_handoff.rs`):** each screen is a run of its own with its own window, and a
+Mac keeps a full-screen window in a Space of its own, which a run that ended while full screen left behind with the old
+screen on it. So on a Mac an exit that leads to a start-again (`crate::relaunch_pending`) is held back while the window
+is full screen (`hold_exit`, before anything acts on the exit): the window leaves full screen, the exit goes on once it
+has been out for a few frames (3 s at most), and the next run opens full screen (`ZOMBYE_WINDOW_FULLSCREEN=1` in its
+environment). `ZOMBYE_WINDOW_HANDOFF=1` does the same on any system, for trying it.
 
 **UI scale (#109, `ui_scale.rs`):** one setting, 75% to 150%, that every panel follows (the HUD, status tags, inventory,
 skills, health, the current action, the death screen, the light preview and the yellow line), through Bevy's `UiScale`.
