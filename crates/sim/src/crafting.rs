@@ -217,6 +217,15 @@ pub fn has_tool(inv: &Inventory, t: &Tool, items: &[ItemDef]) -> bool {
     })
 }
 
+/// What a player crafts with: `inv` and the stacks lying on its floor (in reach, [`World::floor_of`]),
+/// which count as carried. So a log too big for any bag can be sawn where it lies, with a saw from
+/// the floor too. The client works the Make list out over the same.
+pub fn with_floor(inv: &Inventory, floor: impl IntoIterator<Item = ItemStack>) -> Inventory {
+    let mut v = inv.clone();
+    v.carried.extend(floor);
+    v
+}
+
 /// "rag x3", "t-shirt": an item by id, lowercase, and how many.
 pub fn amount(items: &[ItemDef], id: &str, n: u16) -> String {
     let name = items.iter().find(|d| d.id == id).map_or(id.to_string(), |d| d.name.to_lowercase());
@@ -346,7 +355,8 @@ impl World {
         let Some(r) = self.config.recipes.get(recipe as usize) else { return self.refuse(id, format!("no recipe {recipe}")) };
         let p = &self.players[pi];
         let queued = p.jobs.iter().filter(|j| j.kind == JobKind::Craft { recipe }).count() as u32;
-        if let Err(why) = check_times(r, &p.inventory, &self.config.items, queued + 1) {
+        let near = with_floor(&p.inventory, self.floor_of(id).into_iter().map(|g| g.stack));
+        if let Err(why) = check_times(r, &near, &self.config.items, queued + 1) {
             if queued > 0 {
                 // Already on it (a repeated click), and there's not enough for another.
                 return Ok(());
@@ -381,13 +391,35 @@ impl World {
         let r = self.config.recipes.get(recipe as usize).cloned().ok_or("that recipe is gone")?;
         let items = &self.config.items;
         let mut inv = self.players[pi].inventory.clone();
-        check(&r, &inv, items).map_err(|why| format!("can't {}: {why}", lower(&r.name)))?;
+        let id = self.players[pi].id;
+        let mut floor = self.floor_of(id);
+        check(&r, &with_floor(&inv, floor.iter().map(|g| g.stack)), items).map_err(|why| format!("can't {}: {why}", lower(&r.name)))?;
+        // What it carries and holds first, then what lies on its floor.
         let place = self.craft_place_ok(pi, &r).map_err(|why| format!("can't {}: {why}", lower(&r.name)))?;
-        let items = &self.config.items;
         for x in &r.inputs {
             let i = index_of(items, &x.item).ok_or_else(|| format!("no item {}", x.item))?;
-            if !take_whole(&mut inv, i, x.count) {
+            let own = (have(&inv, i).min(x.count as u32)) as u16;
+            let mut rest = x.count - own;
+            if own > 0 && !take_whole(&mut inv, i, own) {
                 return Err(format!("can't {}: the {} is gone", lower(&r.name), amount(items, &x.item, 1)));
+            }
+            for g in floor.iter_mut().filter(|g| g.stack.item == i) {
+                let take = whole(&g.stack).min(rest);
+                g.stack.count -= take;
+                rest -= take;
+            }
+            if rest > 0 {
+                return Err(format!("can't {}: the {} is gone", lower(&r.name), amount(items, &x.item, 1)));
+            }
+        }
+        for g in &floor {
+            if let Some(k) = self.items.iter().position(|it| it.id == g.id) {
+                if g.stack.count == 0 {
+                    self.items.remove(k);
+                    self.upstairs.remove(&g.id);
+                } else {
+                    self.items[k].stack.count = g.stack.count;
+                }
             }
         }
         let used = r.inputs.iter().map(|x| if x.count > 1 { amount(items, &x.item, x.count) } else { format!("the {}", amount(items, &x.item, 1)) }).collect::<Vec<_>>().join(" and ");
@@ -426,7 +458,6 @@ impl World {
             made.push(format!("a campfire (about {} of fuel)", crate::fire::hours_text(hours)));
         }
         self.on_crafted(pi);
-        let id = self.players[pi].id;
         self.script_event(crate::script::ScriptEvent::Crafted { player: id, recipe });
         self.refresh_carry(pi);
         let floor = if dropped.is_empty() { String::new() } else { format!(" ({} at your feet: no room)", dropped.join(" and ")) };
@@ -527,8 +558,8 @@ mod tests {
         for id in ["rip_t_shirt", "cut_jeans", "rip_bed_sheet", "wash_rags"] {
             assert!(r.iter().any(|x| x.id == id), "{id}");
         }
-        // Every recipe that isn't cooking or a fire makes something first aid can use, or what makes it.
-        let fire = |x: &RecipeDef| x.heat || x.places.is_some() || x.outputs.iter().any(|o| o.item == "firewood");
+        // Every recipe that isn't wood, cooking or a fire makes something first aid can use, or what makes it.
+        let fire = |x: &RecipeDef| x.heat || x.places.is_some() || x.outputs.iter().any(|o| o.item == "firewood") || x.id == "saw_log_planks";
         assert!(r.iter().filter(|x| !fire(x)).all(|x| x.outputs.iter().any(|o| o.item == "rag" || o.item == "clean_rag")));
         assert!(r.iter().any(|x| x.heat) && r.iter().any(|x| x.places.is_some()));
         assert_eq!(describe(&r[0], &items), "t-shirt -> rag x3 (3 s)");

@@ -59,4 +59,8 @@
         inputs: [(item: "tinned_soup")], tools: [Tag("opens_tins"), Tag("cookware")], outputs: [(item: "hot_soup")]),
     (id: "heat_beans", name: "Heat a tin of beans", secs: 10.0, heat: true,
         inputs: [(item: "tinned_beans")], tools: [Tag("opens_tins"), Tag("cookware")], outputs: [(item: "hot_beans")]),
+    // ---- Wood ----------------------------------------------------------------------------------
+    // Logs come from trees felled with an axe (zombye_sim::trees). Planks board up windows and doors.
+    (id: "saw_log_planks", name: "Saw a log into planks", secs: 30.0,
+        inputs: [(item: "log")], tools: [Tag("saws")], outputs: [(item: "wooden_plank", count: 3)]),
 ]

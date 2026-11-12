@@ -76,6 +76,8 @@ struct FxAssets {
     blood: Handle<StandardMaterial>,
     /// Bullet streaks and muzzle flashes: unlit and bright enough to bloom.
     tracer: Handle<StandardMaterial>,
+    /// Wood chips off a chopped tree (`CombatEventKind::Chop`).
+    chips: Handle<StandardMaterial>,
     splats: Vec<Handle<Mesh>>,
 }
 
@@ -122,6 +124,7 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials
         cube: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
         blood: materials.add(StandardMaterial { base_color: Color::srgb(0.5, 0.02, 0.02), perceptual_roughness: 0.35, ..default() }),
         tracer: materials.add(StandardMaterial { base_color: Color::BLACK, emissive: LinearRgba::rgb(14.0, 10.0, 4.5), perceptual_roughness: 1.0, ..default() }),
+        chips: materials.add(StandardMaterial { base_color: Color::srgb(0.78, 0.64, 0.42), perceptual_roughness: 0.9, ..default() }),
         splats,
     });
     commands.spawn((
@@ -232,6 +235,31 @@ fn spawn_fx(
             CombatEventKind::Stomp => (9, 0.25, 1, 1.2),
             CombatEventKind::PlayerHurt => (6, 1.25, 1, 0.8),
             CombatEventKind::Shove | CombatEventKind::PlayerShoved => (0, 0.0, 0, 0.0),
+            // An axe biting into a trunk: pale chips thrown back off the bark, no blood; a little
+            // shake for our own when the tree comes down (`crit`).
+            CombatEventKind::Chop => {
+                if e.crit && me.as_ref().is_some_and(|m| m.id == e.player) {
+                    shake.trauma = (shake.trauma + 0.3).min(0.6);
+                }
+                let origin = Vec3::new(e.pos.x, 1.0, e.pos.y);
+                for _ in 0..if e.crit { 14 } else { 6 } {
+                    if live >= MAX_PARTICLES {
+                        break;
+                    }
+                    live += 1;
+                    let spread = Vec3::new(rng.range(-1.0, 1.0), 0.0, rng.range(-1.0, 1.0)) * 1.1;
+                    let vel = -dir * rng.range(0.8, 2.2) + spread + Vec3::Y * rng.range(0.6, 2.0);
+                    let s = rng.range(0.03, 0.06);
+                    commands.spawn((
+                        Particle { vel, life: rng.range(0.4, 0.8) },
+                        Mesh3d(assets.cube.clone()),
+                        MeshMaterial3d(assets.chips.clone()),
+                        Transform::from_translation(origin + Vec3::Y * rng.range(-0.15, 0.15)).with_scale(Vec3::new(s * 1.6, s * 0.5, s)),
+                        NotShadowCaster,
+                    ));
+                }
+                continue;
+            }
             // A bullet's flight (#72): a streak along it and a flash at the muzzle, no blood (what
             // it hit has its own event).
             CombatEventKind::Shot => {

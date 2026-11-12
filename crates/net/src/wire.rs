@@ -66,10 +66,11 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// 25: stairs and the upper floor: `PlayerView::level` (bit 17 of `PlayerPacked::bits`),
 /// `SnapshotDelta::upstairs`, `Tunings::stairs`. 26: the map screen: `SnapshotDelta::map`, what
 /// the client's survivor has seen of the map. 27: bags with their own room: `Place::Pouch`,
-/// `PrivateView::homes`. 28: fire and cooking: `Intent::Fire`, `Snapshot::fires` (`SnapshotDelta::fires`),
-/// `Tunings::fire`, `RecipeDef::heat` and `places`, `Consumable::poison`, `WoundKind::Burn`, `DeathCause::Burned`; sitting down: `Intent::Sit`,
-/// `PlayerView::seated` (bits 18-20 of `PlayerPacked::bits`).)
-pub const PROTOCOL: u32 = 28;
+/// `PrivateView::homes`. 28: chopping trees: `Snapshot::tree_changes`, `Welcome::stumps`,
+/// `CombatEventKind::Chop`, `Feature::Stump`. 29: fire and cooking: `Intent::Fire`, `Snapshot::fires`
+/// (`SnapshotDelta::fires`), `Tunings::fire`, `RecipeDef::heat` and `places`, `Consumable::poison`, `WoundKind::Burn`,
+/// `DeathCause::Burned`; sitting down: `Intent::Sit`, `PlayerView::seated` (bits 18-20 of `PlayerPacked::bits`).)
+pub const PROTOCOL: u32 = 29;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -368,6 +369,8 @@ pub struct Welcome {
     /// the doors with glass in them (the server's settings place them).
     pub blinds: Vec<zombye_sim::map::BlindChange>,
     pub glazed: Vec<zombye_sim::map::EdgeRef>,
+    /// Every tree felled so far (stumps now, `zombye_sim::trees`).
+    pub stumps: Vec<zombye_sim::trees::TreeChange>,
     pub tunings: Tunings,
 }
 
@@ -622,6 +625,7 @@ pub struct SnapshotDelta {
     pub edge_changes: Vec<EdgeChange>,
     pub edge_damage: Vec<EdgeDamage>,
     pub blind_changes: Vec<zombye_sim::map::BlindChange>,
+    pub tree_changes: Vec<zombye_sim::trees::TreeChange>,
     pub hits: Vec<CombatEvent>,
     pub private: Vec<PrivateView>,
     pub item_notes: Vec<ItemNote>,
@@ -672,6 +676,7 @@ impl Snapshot {
             edge_changes: self.edge_changes.clone(),
             edge_damage: self.edge_damage.clone(),
             blind_changes: self.blind_changes.clone(),
+            tree_changes: self.tree_changes.clone(),
             items: self.items.iter().filter(|i| near(i.pos)).copied().collect(),
             upstairs: self.upstairs.clone(),
             hits: self.hits.iter().filter(|h| near(h.pos)).copied().collect(),
@@ -1069,6 +1074,7 @@ impl DeltaEncoder {
             edge_changes: view.edge_changes,
             edge_damage: view.edge_damage,
             blind_changes: view.blind_changes,
+            tree_changes: view.tree_changes,
             hits: view.hits,
             private: view.private,
             item_notes: view.item_notes,
@@ -1127,6 +1133,7 @@ impl DeltaDecoder {
         s.edge_changes = delta.edge_changes;
         s.edge_damage = delta.edge_damage;
         s.blind_changes = delta.blind_changes;
+        s.tree_changes = delta.tree_changes;
         s.hits = delta.hits;
         s.private = delta.private;
         for v in &mut s.private {

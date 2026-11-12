@@ -371,6 +371,7 @@ impl Remote {
                     edge_changes: std::mem::take(&mut s.edge_changes),
                     edge_damage: std::mem::take(&mut s.edge_damage),
                     blind_changes: std::mem::take(&mut s.blind_changes),
+                    tree_changes: std::mem::take(&mut s.tree_changes),
                     hits: std::mem::take(&mut s.hits),
                     item_notes: std::mem::take(&mut s.item_notes),
                     level_ups: std::mem::take(&mut s.level_ups),
@@ -385,12 +386,14 @@ impl Remote {
                     once.edge_changes.append(&mut part.edge_changes);
                     once.edge_damage.append(&mut part.edge_damage);
                     once.blind_changes.append(&mut part.blind_changes);
+                    once.tree_changes.append(&mut part.tree_changes);
                     once.hits.append(&mut part.hits);
                     once.item_notes.append(&mut part.item_notes);
                     once.level_ups.append(&mut part.level_ups);
                 }
                 (s.private, s.edge_changes, s.edge_damage, s.hits, s.item_notes, s.level_ups) = (once.private, once.edge_changes, once.edge_damage, once.hits, once.item_notes, once.level_ups);
                 s.blind_changes = once.blind_changes;
+                s.tree_changes = once.tree_changes;
                 return Ok(s);
             }
             if let Some(why) = &self.closed {
@@ -466,6 +469,12 @@ pub fn build_map(welcome: &Welcome, content: &WorldConfig) -> Result<Joined, Str
     // Blinds and glazed doors are as the server has them, whatever the client's settings place.
     world.map.glazed = welcome.glazed.iter().filter(|e| world.map.in_bounds(e.tile)).map(|e| e.key()).collect();
     world.map.blinds = welcome.blinds.iter().filter(|b| world.map.in_bounds(b.tile)).filter_map(|b| Some((zombye_sim::map::EdgeRef::new(b.tile, b.edge).key(), b.blind?))).collect();
+    // Trees felled on the server are stumps here too.
+    for t in &welcome.stumps {
+        if let Some(tile) = world.map.tile_mut(t.tile) {
+            tile.feature = t.feature;
+        }
+    }
     let map = std::mem::replace(&mut world.map, TileMap::new(1, 1));
     Ok(Joined { map, player_spawn: world.player_spawn, config: world.config })
 }

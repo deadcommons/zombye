@@ -99,3 +99,5 @@ hot_beans
 cooking_pot
 firewood
 newspaper
+log
+hatchet

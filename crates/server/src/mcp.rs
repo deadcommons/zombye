@@ -545,7 +545,7 @@ fn tool_defs() -> Value {
             "description": "Look at the world around a point (default: player 1). ASCII map at double resolution: \
                 tiles sit between wall lines. Walls - |, shut windows = !, open windows o, broken windows x, \
                 shut doors D (d when damaged), open doors /, broken doors #, fences ~, \
-                floors: . grass  , road  : sidewalk/path  _ indoors; T tree, * bush, f furniture, ^ a street prop (mailbox, hydrant, bin), c a container not searched yet, \
+                floors: . grass  , road  : sidewalk/path  _ indoors; T tree, u stump, * bush, f furniture, ^ a street prop (mailbox, hydrant, bin), c a container not searched yet, \
                 o (on a tile) a searched container, w a weapon on the floor, i any other item on the floor, \
                 P player (X dead), h a player heard but not seen, G debug goal, @ spawn. \
                 With PvP on it is `player`'s view (default 1), by the rule a multiplayer server tells clients by: other players only while that survivor \
@@ -2885,6 +2885,7 @@ fn observe(world: &World, centre: Vec2, radius: i32, viewer: Option<u32>) -> Str
                     Feature::StreetProp => '^',
                     Feature::Tree | Feature::PineTree => 'T',
                     Feature::Bush => '*',
+                    Feature::Stump => 'u',
                     Feature::Furniture => 'f',
                     Feature::None if tile.room != 0 => '_',
                     Feature::None => match tile.floor {
