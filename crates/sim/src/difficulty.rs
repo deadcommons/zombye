@@ -130,6 +130,8 @@ pub struct Tunings {
     pub health: Option<crate::health::HealthTuning>,
     pub needs: Option<crate::needs::NeedsTuning>,
     pub carry: Option<crate::inventory::CarryTuning>,
+    /// Speeds and endurance (`crate::players::MoveTuning`).
+    pub movement: Option<crate::players::MoveTuning>,
 }
 
 /// One preset.
@@ -237,6 +239,9 @@ impl DifficultyDef {
         }
         if let Some(c) = &t.carry {
             config.carry = c.clone();
+        }
+        if let Some(m) = &t.movement {
+            config.movement = *m;
         }
         config.zombie.alertness = (config.zombie.alertness.0 * self.zombie_senses, config.zombie.alertness.1 * self.zombie_senses);
         config.combat.zombie_hp = (config.combat.zombie_hp.0 * self.zombie_toughness, config.combat.zombie_hp.1 * self.zombie_toughness);

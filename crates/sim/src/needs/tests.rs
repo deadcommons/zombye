@@ -171,6 +171,7 @@ fn ignoring_needs_hurts_and_slows() {
     let mods = me(&w, id).state.mods;
     let t = w.config.needs;
     assert!(!mods.can_run && (mods.speed - t.exhausted_walk).abs() < 1e-5, "{mods:?}");
+    assert!((mods.max_endurance - t.exhausted_endurance).abs() < 1e-5, "{mods:?}");
     let fit = w.config.skills.move_mods(w.config.skills.start_fitness, MoveMods::default()).regen;
     assert!((mods.regen - t.hungry_regen * t.thirsty_regen * fit).abs() < 1e-5);
     let (power, time) = w.needs_swing(0);
@@ -538,4 +539,25 @@ fn tuning_checks_and_status_tags() {
     assert_eq!(tags.iter().map(|t| t.kind).collect::<Vec<_>>(), [TagKind::Bleeding, TagKind::Pain, TagKind::Queasy, TagKind::Hunger, TagKind::Thirst, TagKind::Tiredness, TagKind::Endurance, TagKind::Load]);
     assert_eq!(tags[3].severity, 4);
     assert!(tags[3].tip.starts_with("Starving: losing health"));
+}
+
+/// Tired, the endurance bar doesn't fill all the way; exhausted, less again; rested, all of it.
+#[test]
+fn tiredness_caps_endurance() {
+    let (mut w, id) = arena(3);
+    let t = w.config.needs;
+    w.set_needs(id, Some(0.0), Some(0.0), Some(0.7));
+    assert!((me(&w, id).state.mods.max_endurance - t.tired_endurance).abs() < 1e-5);
+    // Standing still the bar comes back only to the cap.
+    w.players[0].state.endurance = 0.2;
+    for _ in 0..(30.0 / crate::TICK_DT) as u32 {
+        w.step();
+    }
+    let e = me(&w, id).state.endurance;
+    assert!((e - t.tired_endurance).abs() < 1e-4, "tired: {e}");
+    w.set_needs(id, None, None, Some(0.9));
+    w.step();
+    assert!((me(&w, id).state.endurance - t.exhausted_endurance).abs() < 1e-4, "exhausted: {}", me(&w, id).state.endurance);
+    w.set_needs(id, None, None, Some(0.1));
+    assert_eq!(me(&w, id).state.mods.max_endurance, 1.0);
 }

@@ -243,6 +243,9 @@ pub struct PlayerView {
     pub ready_in: f32,
     /// What its load does to its movement. Needed to predict movement exactly.
     pub mods: MoveMods,
+    /// `mods.max_endurance`, which `MoveMods` doesn't carry itself (it isn't saved): the most
+    /// endurance tiredness leaves it.
+    pub endurance_cap: f32,
     /// Busy with its things: seconds left on the item job under way (0 if none), and jobs queued.
     pub busy: f32,
     pub jobs: u8,
@@ -577,6 +580,7 @@ impl Snapshot {
                 action_left: p.action.map_or(0.0, |a| a.timer.max(0.0)),
                 ready_in: p.ready_in,
                 mods: p.state.mods,
+                endurance_cap: p.state.mods.max_endurance,
                 busy: p.jobs.first().map_or(0.0, |j| j.left.max(0.0)),
                 jobs: p.jobs.len().min(255) as u8,
                 dev: p.dev,
@@ -679,7 +683,7 @@ impl PlayerView {
             stance: self.stance,
             endurance: self.endurance,
             winded: self.winded,
-            mods: self.mods,
+            mods: MoveMods { max_endurance: self.endurance_cap, ..self.mods },
             climb: self.climb,
             level: self.level,
         }

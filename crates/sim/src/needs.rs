@@ -287,6 +287,10 @@ pub struct NeedsTuning {
     pub exhausted_walk: f32,
     /// The client's view cone while tired or worse (a multiplier on its angle).
     pub tired_sight: f32,
+    /// The most endurance there can be while tired, and while exhausted (`MoveMods::max_endurance`):
+    /// a tired survivor runs out of breath sooner, so sleep matters for getting away too.
+    pub tired_endurance: f32,
+    pub exhausted_endurance: f32,
 
     /// Pain levels (sore, hurting, agony) and swing power at each.
     pub pain_sore: f32,
@@ -350,6 +354,8 @@ impl Default for NeedsTuning {
             exhausted_swing_time: 1.25,
             exhausted_walk: 0.9,
             tired_sight: 0.85,
+            tired_endurance: 0.75,
+            exhausted_endurance: 0.5,
 
             pain_sore: 0.2,
             pain_hurting: 0.45,
@@ -451,6 +457,9 @@ impl NeedsTuning {
         let (lo, hi) = self.found_food_age;
         if !(0.0 <= lo && lo <= hi && hi <= 10.0) {
             return Err(format!("needs.found_food_age {:?} must be a range within 0..10", self.found_food_age));
+        }
+        if !(self.exhausted_endurance.is_finite() && 0.1 <= self.exhausted_endurance && self.exhausted_endurance <= self.tired_endurance && self.tired_endurance <= 1.0) {
+            return Err(format!("needs: tired_endurance {} and exhausted_endurance {} must be 0.1 to 1, exhausted no more than tired", self.tired_endurance, self.exhausted_endurance));
         }
         if !(1.0..=MAX_TIME_SCALE).contains(&self.sleep_time_scale) {
             return Err(format!("needs.sleep_time_scale is {} (1 to {MAX_TIME_SCALE})", self.sleep_time_scale));
@@ -594,8 +603,13 @@ impl World {
             Level::Strong => m.regen *= t.thirsty_regen,
             _ => {}
         }
-        if n.tiredness_level(t) == Level::Severe {
-            m.speed *= t.exhausted_walk;
+        match n.tiredness_level(t) {
+            Level::Severe => {
+                m.speed *= t.exhausted_walk;
+                m.max_endurance = m.max_endurance.min(t.exhausted_endurance);
+            }
+            Level::Strong => m.max_endurance = m.max_endurance.min(t.tired_endurance),
+            _ => {}
         }
         m
     }
