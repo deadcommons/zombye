@@ -103,6 +103,7 @@ mod graphics;
 mod graphics_ui;
 mod render_scale;
 mod bench_live;
+mod black_watch;
 #[cfg(feature = "profile")]
 mod profile;
 mod vegetation;
@@ -778,6 +779,9 @@ fn main() {
         app.add_plugins((audio::GameAudioPlugin, music::MusicPlugin));
     }
     app.add_plugins((fps_log::FpsLogPlugin, bench_live::BenchLivePlugin));
+    if black_watch::wanted() && !offscreen {
+        app.add_plugins(black_watch::BlackWatchPlugin);
+    }
     let failed = app.run().is_error();
     // A join asked for in the server browser (#27): the game has shut down (and autosaved); start
     // it again on that server.
