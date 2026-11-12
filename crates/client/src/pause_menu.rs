@@ -7,7 +7,7 @@
 //! Load.
 //!
 //! Esc opens it only when nothing else wants the key: not while a line is being typed (chat, the
-//! inventory's search), a right-click menu, the graphics panel or the server browser is up, which
+//! inventory's search), a right-click menu, the graphics panel, the map or the server browser is up, which
 //! Esc shuts as before. While the menu (or the settings screen) is up the game's keys and mouse
 //! buttons are held back, as with the server browser, and Esc goes one step back: from the
 //! settings to the menu, from the menu to the game.
@@ -108,6 +108,7 @@ fn keys(
     find: Option<Res<crate::inventory_ui::Find>>,
     item_menu: Option<Res<crate::inventory_ui::ItemMenu>>,
     graphics: Option<Res<crate::graphics_ui::GraphicsUi>>,
+    map: Option<Res<crate::map_ui::MapUi>>,
 ) {
     let esc = keys.just_pressed(KeyCode::Escape);
     if menu.open {
@@ -122,7 +123,7 @@ fn keys(
         mouse.reset_all();
         return;
     }
-    let busy = browser.is_some_and(|b| b.open) || chat.is_some_and(|c| c.typing) || find.is_some_and(|f| f.typing) || item_menu.is_some_and(|m| m.is_up()) || graphics.is_some_and(|g| g.open);
+    let busy = browser.is_some_and(|b| b.open) || chat.is_some_and(|c| c.typing) || find.is_some_and(|f| f.typing) || item_menu.is_some_and(|m| m.is_up()) || graphics.is_some_and(|g| g.open) || map.is_some_and(|m| m.open);
     if esc && !busy {
         menu.open = true;
         keys.reset_all();

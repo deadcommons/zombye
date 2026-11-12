@@ -1,0 +1,31 @@
+// How the map screen looks (crates/client/src/map_ui.rs, assets/shaders/map.wesl): a survivor's
+// paper map. The street plan is printed on the sheet from the start; gardens, trees, fences and
+// buildings are inked in where the survivor has been. Every field is optional; one left out takes
+// the value shown. Colours are "#rrggbb".
+(
+    // The sheet, the ink on it, and the dark veil round it (the game shows through a little).
+    paper: "#e9dcbb",
+    ink: "#2b2620",
+    table: "#141414",
+    // The ground, inked in.
+    grass: "#d2d6a2",
+    road: "#f8f0da",
+    walk: "#e4d8b8",
+    path: "#dccb9f",
+    dirt: "#d2bc8e",
+    // Buildings, by what they are.
+    house: "#c9a27a",
+    shop: "#c98372",
+    office: "#8f9baa",
+    civic: "#d8b850",
+    // Trees.
+    tree: "#8c9a6a",
+    pine: "#77875e",
+    // You and where you started; the survivors of your group; the group's markers.
+    marker: "#d7262b",
+    friend: "#3f8f8a",
+    pin: "#d8a530",
+    // The scale the map opens at, and the closest it goes (screen pixels a metre at 100% UI scale).
+    zoom: 3.0,
+    zoom_max: 16.0,
+)

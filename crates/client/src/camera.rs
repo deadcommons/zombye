@@ -433,6 +433,7 @@ fn lock_pointer(
     chat: Option<Res<crate::chat::ChatEntry>>,
     browser: Option<Res<crate::browser_ui::BrowserUi>>,
     pause: Option<Res<crate::pause_menu::PauseMenu>>,
+    map: Option<Res<crate::map_ui::MapUi>>,
     mut windows: Query<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
     mut dots: Query<&mut Visibility, With<CentreDot>>,
     mut lock: ResMut<PointerLock>,
@@ -447,7 +448,8 @@ fn lock_pointer(
         || menu.is_some_and(|m| m.is_up())
         || chat.is_some_and(|c| c.typing)
         || browser.is_some_and(|b| b.open)
-        || pause.is_some_and(|p| p.open);
+        || pause.is_some_and(|p| p.open)
+        || map.is_some_and(|m| m.open);
     let hold = cams.single().is_ok_and(|c| c.shoulder()) && !free;
     let middle = Vec2::new(window.width(), window.height()) * 0.5;
     if lock.0 != hold {
