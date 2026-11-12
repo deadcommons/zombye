@@ -210,10 +210,11 @@ Each is one function in `theme.rs`; a panel never builds its own.
 
 ### What is built
 
-The guide is ahead of the game. Built on the frame today: **Inventory** and **Make** (a plain list of
-recipes, no categories or detail column yet), with the veil at 97.5% so text keeps its contrast over
-sunlit ground. Health and Skills are still the painted floating panels: their rail tabs open them
-over the frame, with their own keys. Build, Survivor, the Map and the menus are other pieces of
+The guide is ahead of the game. Built on the frame today: **Inventory** (with dragging between bags,
+gear slots, the hotbar and what is nearby), **Make** (a plain list of recipes, no categories or detail
+column yet), **Health** (condition and status on the left, wounds as cards with their treatments on
+the right) and **Skills** (a card a skill), with the veil at 97.5% so text keeps its contrast over
+sunlit ground. Health and Skills are tabs of their own for now; the Survivor screen will gather them. Build, Survivor, the Map and the menus are other pieces of
 work that move onto these tokens as they land; until then the rail lists only what opens.
 
 ## The HUD

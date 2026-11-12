@@ -214,7 +214,7 @@ sent to it, chasing, zombies per tier active/near/virtual, sim tick ms, and the 
 In game: WASD move (he faces the way he walks), Shift run, C sneak (toggle), right mouse held: aim (he faces the
 cursor and strafes or backs off at 2.2 m/s, no running, in a guard stance), and only while aiming left mouse attack
 (swing your weapon, or punch; with a gun in hand: shoot at what the cursor is on, see Guns); Space, aiming or not (the way he faces), shove (or stomp, when a downed zombie's body or head lies in reach in front of you: `combat::stomp_spot`), R reload the gun you hold, E climb the fence or open or broken window you face (see Climbing under Players), else flick the light switch you face (see Electricity and lights), else pick up the item you
-face (with nothing on the floor within reach: search the container you face), 1-9 the hotbar (swap to or use what's on that slot, see Hotbar), Tab or I the inventory panel, H the health panel, K the skills panel (drag any of the three by its title; they remember where they were and whether they were open), F open/close the door or window you face, Shift+F roll the blind of the window or glass door you face up or down (or fit one you carry), Shift+Alt+F take it down (see Blinds), G smash the window you face, dead: R a new run and Q or Esc quit,
+face (with nothing on the floor within reach: search the container you face), 1-9 the hotbar (swap to or use what's on that slot, see Hotbar), Tab or I the inventory screen, H its Health screen, K its Skills screen, F open/close the door or window you face, Shift+F roll the blind of the window or glass door you face up or down (or fit one you carry), Shift+Alt+F take it down (see Blinds), G smash the window you face, dead: R a new run and Q or Esc quit,
 B sleep (B again or WASD to get up), Enter the chat line (Tab there: whisper, talk or shout; Enter says it, Esc drops it), V wave, U hands up (again lowers them), P point (see Talking and gestures), Y tie the hands of the survivor you face or free tied ones, L search a tied survivor, J (held) struggle out of ties, N invite into your group or accept (Shift+N leaves), middle mouse a group marker (see Hold-ups and groups), T skip an hour, Z spawn zombies, wheel zoom (over the inventory, health or skills panel it scrolls that panel instead), F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), F3 the light preview (a time-of-day slider, see Light and mood), F4 the debug stats window (see Needs), F6 the server's rules (on a multiplayer server, see Multiplayer), F7 the server browser (see The server browser), `,` and `.` turn the camera a quarter turn left or right (see Turning the camera under Light and mood), `;` the first-person view and back (see The first-person view there), F10 walls up / walls cut, Shift+F10 zombie silhouettes and Ctrl+F10 opening hints (see Cutaways and Opening hints under Light and mood), M the map (see The map), Ctrl+M mute, O hide or show the objectives and hints (see The first night), Ctrl (or Cmd) + `=` / `-` the UI scale (see UI scale), Ctrl+0 back to 100%. Walking into a fence or an open window stops you as a wall would: E climbs
 it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
 not Bevy's handler; a second Ctrl-C quits unsaved) autosaves; `--render-to` never does.
@@ -262,7 +262,7 @@ menu is up the number keys are the menu's, and Ctrl / Cmd with a number is never
 `settings.ron` (`ClientSettings::hotbar`). `--hotbar ID,ID,...` (`-` an empty slot) sets them for a session (pictures:
 offscreen never reads the file), `--hotbar-press K@SECS[,K@SECS...]` presses keys by itself (recordings).
 
-**Panels remember (#97, `panels.rs`):** the inventory, health and skills panels (`panels::PanelId`, beside
+**Panels remember (#97, `panels.rs`):** (health and skills are screens of the inventory's frame now and are neither dragged nor left open between sessions; what follows is for panels that still float) the inventory, health and skills panels (`panels::PanelId`, beside
 `hud::TopPanel` on each root) are dragged by their title (a press on the 40 UI pixels along the top that moves 4 or
 more; not while the panel is scrolled down, when its title is out of sight) and stay where they're let go:
 `PanelPlaces` keeps the top-left corner in UI pixels and `hud::fit_top_panels` puts the panel there, kept on the screen
@@ -963,11 +963,15 @@ and tell the whole town where you are.
   changes. `PlayerHurt` combat events carry `part` and `wound`. Saves check every wound, illness and first-aid value
   (`save_check::check_health`; opened items and treatment jobs are remapped like other item indices) and the tunings
   (`HealthTuning::check` with `FirstAidTuning::check`, `InfectionTuning::check`).
-- **Client** (`health_ui.rs`): H opens the health panel (wounds by part, head to feet, colour for bleeding and festering,
-  the dressing state); click a wound for what it needs and the treatments you can do with what you carry (with times and
-  uses left), click one to do it; pills at the foot. Right-click a dressing, antiseptic or sewing kit in the inventory to
-  use it on a wound (the panel opens with the wounds it fits marked; right-click cancels); right-click a pill to take it.
-  You can aim and swing with the panel open, just not with the pointer on it (or on any panel). A tags line in the vitals panel for what the status tags don't say
+- **Client** (`health_ui.rs`): H opens the Health screen, a tab of the inventory's frame (see the inventory screen under
+  Items; `inventory_ui::screens` keeps the two in step). Left, **Condition**: health as a figure and a bar, what is being
+  lost an hour, pain, painkillers and antibiotics, the fever, then every status that shows (the status icons' labels and
+  tips, `needs_ui::StatusIcons::tags`) and the pills you can take as buttons. Right, **Wounds** by part, head to feet, a
+  card each (`wound_card`: bleeding in red, festering and a dirty dressing in amber, a bar of how far it has healed);
+  click a wound for what it needs and the treatments you can do with what you carry (buttons, with times and uses left).
+  Right-click a dressing, antiseptic or sewing kit in the inventory to use it on a wound (the screen opens with the wounds
+  it fits marked; right-click cancels); right-click a pill to take it. H again, Tab or Close goes back to the game.
+  A tags line in the vitals panel for what the status tags don't say
   (INJURED LEG / ARM, DROWSY (PAINKILLERS), and for 3 s where the last strike landed); bleeding, the fever, festering and
   food poisoning are status tags (see Needs).
 - **MCP:** `health {player}` (as the player's own view, plus wound ids (`#n`), dressings, effects, painkillers and
@@ -1200,8 +1204,9 @@ the start, and gardens, trees, fences and buildings are inked in where the survi
   the hash) go out in `Snapshot::level_ups` (a client gets only its own); the client shows `LevelUp::text` ("Edged 2") as
   the yellow line under the HUD and prints it (`skills_ui.rs`). `PrivateView::skills` (`SkillView`: level, whole XP,
   the next level's XP, progress) goes to the player's own client when a whole XP point or a level changes.
-- **Client:** K opens the skills panel (`skills_ui.rs`): each skill's level, a bar to the next level with XP, what the
-  level gives now and what the next gives (`SkillTuning::gives`), and how XP is earned (`earned_by`). The health panel's
+- **Client:** K opens the Skills screen (`skills_ui.rs`), a tab of the inventory's frame: a card a skill, wrapping (three
+  across at 1280 x 720): its level of the top level, a bar to the next level with XP, what the
+  level gives now and what the next gives (`SkillTuning::gives`), and how XP is earned (`earned_by`). The health screen's
   treatment times use our First Aid level.
 - **Crafting (#12):** `crafting`'s `on_crafted` gives `SkillTuning::craft_xp` Handiwork per craft done
   (`World::award_xp(pi, skill, xp)`), and a craft takes its recipe's time times `SkillTuning::craft_time_mult(level)`
@@ -1286,9 +1291,14 @@ the start, and gardens, trees, fences and buildings are inked in where the survi
   `GREEN`, `chip`, `button`, `key`, `hint`, `bar`, `line`, `icon`, `item_icon`); the painted skin (below, The skin)
   stays for the HUD and the small floating panels until they move over. The frame: a veil over the whole window
   (`PanelRoot`, `GlobalZIndex(6)`; the HUD's bottom-left column, the hotbar and the first night's panel aren't drawn
-  under it, `hide_hud`; the health and skills panels float over it, the current-action bar too), a top bar (the
-  screen's name, the clock, Close), a rail of screens down the left (`rail`: Inventory, Make, Health, Skills; a new
-  full screen is a tab there), three columns and a footer of key hints with the latest note.
+  under it, `hide_hud`; the current-action bar shows over it), a top bar (the
+  screen's name, the clock, Close), a rail of screens down the left (`rail`, `Tab`: Inventory, Make, Health, Skills; a new
+  full screen is a tab there), three columns and a footer of key hints with the latest note. **Health and Skills**
+  (`health_ui.rs`, `skills_ui.rs`) are screens of the same frame: each draws its own middle in a root laid over the
+  frame's (between the rail, top bar and footer, `GlobalZIndex(7)`) while its resource says open (`HealthPanel::open`,
+  `SkillsPanel::open`: H, K, the rail, `--health`, `--skills`, "use on a wound"), and `inventory_ui::screens` keeps
+  the frame in step: opening one opens the frame on it and shuts the other, its key again goes back to the game,
+  shutting the frame shuts both. A screen's scrolling part is an `inventory_ui::scroller` (`Scrolls` keeps where each was).
   **Gear** (left): what each hand holds, then a slot a place (`GEAR`, by `body::Spot`: head, face, neck, torso, hands,
   legs, feet, back, shoulder; several layers on one place are several tiles), the hotbar, and at the foot the load
   against the limit with the burden stage and the litres used. **You** (middle): a pane for each bag carried and for
@@ -1315,7 +1325,18 @@ the start, and gardens, trees, fences and buildings are inked in where the survi
   pill, use on a wound, put in the open container, **put in each other bag carried or the pockets**, drop, take, take
   in hand, split: one, or half of four or more), 1-9 to pick, Esc or a click elsewhere to close; the same menu on a
   ground item in reach in the world (right-click it with the screen open, or a quick right tap with it shut; held,
-  right mouse aims). With the pointer on a thing, Shift and 1-9 puts it on that hotbar slot. One click is one request:
+  right mouse aims). **A thing lying nearby** (in the open container or on the floor) offers what can be done with it
+  straight away: Wear and "Put it on" (a bag) go straight to their place; Eat, Drink, Use, taking a pill and the recipes
+  it would let you make (`makes_with`) take it and then do it (`MenuDo::TakeThen`, `FollowUp`: the client waits until
+  the thing is in the pockets or bags, at most 4 s, then sends the second request; no protocol change). **Dragging**
+  (`drag`, `DropTo`, `drop_intents`): the left button held on a thing and moved 6 px picks it up (its picture follows
+  the pointer, the place under it is outlined); let go on a bag's or the pockets' pane it goes into that one
+  (`Place::Pouch`), on a hand's card into that hand, on the gear slots where it belongs (`belongs`: clothing worn, a bag
+  where it is carried, anything else in the hand), on the container's or the floor's pane there, on a hotbar slot of the
+  Gear column its kind goes on that key; anywhere else nothing. A tile of several stacks moves them all, Alt just one,
+  one of several picked stacks moves all the picked; Esc or the right button calls it off. A press let go where it was
+  made is the click it always was (so a click now acts when the button comes up). With the pointer on a thing, Shift
+  and 1-9 puts it on that hotbar slot. One click is one request:
   observers only record presses, `send_clicks` sends at most one per button per frame and none for a stack already
   on its way (`InFlight`, until the snapshot shows the answer, a refusal, or 3 s). A click on the bare veil shuts the
   screen and goes no further. `--menu carried:N|worn:N|hand|container:N|ground[:N]` starts with a menu open and

@@ -57,6 +57,56 @@ pub struct InventoryPanel {
     pub open: bool,
 }
 
+/// The frame's screens, down its rail. Health and Skills draw their own middle (`health_ui`,
+/// `skills_ui`) over the frame while theirs is the one shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tab {
+    Inventory,
+    Make,
+    Health,
+    Skills,
+}
+
+/// A press on the rail: the screen to show.
+#[derive(Resource, Default)]
+struct Goto(Option<Tab>);
+
+/// Keeps the frame and its screens in step. Health and Skills are shown while their own
+/// resources say open (H and K, `--health`, "use on a wound"): opening one opens the frame on it
+/// and shuts the other; its key again goes back to the game; shutting the frame shuts both.
+fn screens(mut panel: ResMut<InventoryPanel>, mut health: ResMut<crate::health_ui::HealthPanel>, mut skills: ResMut<crate::skills_ui::SkillsPanel>, mut make: ResMut<MakeUi>, mut goto: ResMut<Goto>, mut was: Local<[bool; 3]>) {
+    let [p, h, s] = *was;
+    let mut want = [panel.open, health.open, skills.open];
+    if let Some(tab) = goto.0.take() {
+        want = [true, tab == Tab::Health, tab == Tab::Skills];
+        if matches!(tab, Tab::Inventory | Tab::Make) && make.shown != (tab == Tab::Make) {
+            make.shown = tab == Tab::Make;
+        }
+    } else if health.open && !h {
+        want = [true, true, false];
+    } else if skills.open && !s {
+        want = [true, false, true];
+    } else if p && panel.open && ((h && !health.open) || (s && !skills.open)) {
+        want[0] = false;
+    }
+    if !want[0] {
+        want = [false; 3];
+    }
+    if panel.open != want[0] {
+        panel.open = want[0];
+    }
+    if health.open != want[1] {
+        health.open = want[1];
+        if !want[1] {
+            health.use_item = None;
+        }
+    }
+    if skills.open != want[2] {
+        skills.open = want[2];
+    }
+    *was = want;
+}
+
 /// The latest answer to an item request, and when it came (seconds).
 #[derive(Resource, Default)]
 struct LastNote {
@@ -566,6 +616,7 @@ impl Plugin for InventoryUiPlugin {
             .init_resource::<Shown>()
             .init_resource::<Clicks>()
             .init_resource::<Drag>()
+            .init_resource::<Goto>()
             .init_resource::<Outbox>()
             .init_resource::<InFlight>()
             .init_resource::<MakeUi>()
@@ -577,7 +628,7 @@ impl Plugin for InventoryUiPlugin {
             .add_systems(Startup, spawn.after(crate::hud::spawn_hud))
             .add_systems(PreUpdate, (type_search, menu_keys).chain().in_set(TextEntry).after(bevy::input::InputSystems))
             .add_systems(PreUpdate, click_away.after(bevy::input::InputSystems).after(bevy::picking::PickingSystems::Hover))
-            .add_systems(Update, (toggle, keep_note, track_flight, follow_open, prune_picked, script_picks, menu_from_options, drag, send_clicks, world_menu, script_menu, menu_act, follow_up, send_picked, flush, scroll_frame, rebuild, draw_menu, draw_card, hide_hud).chain());
+            .add_systems(Update, ((toggle, screens.after(crate::health_ui::toggle).after(crate::skills_ui::toggle)).chain(), keep_note, track_flight, follow_open, prune_picked, script_picks, menu_from_options, drag, send_clicks, world_menu, script_menu, menu_act, follow_up, send_picked, flush, scroll_frame, rebuild, draw_menu, draw_card, hide_hud).chain());
     }
 }
 
@@ -979,6 +1030,7 @@ fn rebuild(
     flight: Res<InFlight>,
     (find, picked, ui): (Res<Find>, Res<Picked>, Res<PanelUi>),
     (scrolls, bar, mut card): (Res<Scrolls>, Option<Res<crate::hotbar::Hotbar>>, ResMut<HoverCard>),
+    (health, skills): (Option<Res<crate::health_ui::HealthPanel>>, Option<Res<crate::skills_ui::SkillsPanel>>),
     mut listed: ResMut<Listed>,
     mut make_ui: ResMut<MakeUi>,
     options: Option<Res<crate::Options>>,
@@ -1010,7 +1062,13 @@ fn rebuild(
     let secs = if make_ui.shown { busy.0 } else { 0.0 };
     let clock = clock_text(link.curr.time_of_day);
     let hotbar = bar.as_ref().map(|b| b.ids());
-    let signature = format!("{view:?}|{floor:?}|{secs:.1}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|{clock}|{hotbar:?}", busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.keys, make_ui.open, make_ui.favs, make_ui.shown, *ui);
+    let tab = match (health.is_some_and(|h| h.open), skills.is_some_and(|s| s.open), make_ui.shown) {
+        (true, ..) => Tab::Health,
+        (_, true, _) => Tab::Skills,
+        (.., true) => Tab::Make,
+        _ => Tab::Inventory,
+    };
+    let signature = format!("{tab:?}|{view:?}|{floor:?}|{secs:.1}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|{clock}|{hotbar:?}", busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.keys, make_ui.open, make_ui.favs, make_ui.shown, *ui);
     if shown.0 == signature {
         return;
     }
@@ -1032,11 +1090,15 @@ fn rebuild(
     let y = scrolls.0;
     let note = (note_fresh && !last.text.is_empty()).then(|| (last.text.clone(), last.ok));
     commands.entity(root).with_children(|c| {
-        top(c, if make_ui.shown { "Make" } else { "Inventory" }, &clock);
+        top(c, &format!("{tab:?}"), &clock);
         c.spawn(Node { flex_direction: FlexDirection::Row, flex_grow: 1.0, flex_basis: px(0), min_height: px(0), ..default() }).with_children(|mid| {
-            rail(mid, make_ui.shown);
+            rail(mid, tab);
             let Some(v) = &view else { return };
-            if make_ui.shown {
+            // (Health and Skills draw their own middle over the frame.)
+            if matches!(tab, Tab::Health | Tab::Skills) {
+                return;
+            }
+            if tab == Tab::Make {
                 make_column(mid, &join, v, busy.0, &flight, &make_ui, y[3]);
                 return;
             }
@@ -1044,7 +1106,7 @@ fn rebuild(
             you(mid, &ctx, &mut rows, v, &pouches, right, y[1], (picked.keys.len(), kg));
             nearby(mid, &ctx, &mut rows, v, &floor, right, y[2]);
         });
-        footer(c, note);
+        footer(c, note, tab);
     });
     listed.0 = rows;
 }
@@ -1076,13 +1138,13 @@ fn pouch_where(p: Pouch) -> &'static str {
 /// A column's part that scrolls up and down (never sideways): the wheel moves it
 /// ([`scroll_frame`]), and it comes back where it was after a rebuild ([`Scrolls`]).
 #[derive(Component, Clone, Copy)]
-struct Scroller(usize);
+pub(crate) struct Scroller(usize);
 
-/// How far down each scroller is (gear, you, nearby, make), in UI pixels.
+/// How far down each scroller is (gear, you, nearby, make, wounds, skills, condition), in UI pixels.
 #[derive(Resource, Default)]
-struct Scrolls([f32; 4]);
+pub(crate) struct Scrolls(pub(crate) [f32; 7]);
 
-fn scroller<'a>(c: &'a mut ChildSpawnerCommands, k: usize, y: f32, padding: UiRect, gap: f32) -> EntityCommands<'a> {
+pub(crate) fn scroller<'a>(c: &'a mut ChildSpawnerCommands, k: usize, y: f32, padding: UiRect, gap: f32) -> EntityCommands<'a> {
     c.spawn((Scroller(k), ScrollPosition(Vec2::new(0.0, y)), Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, flex_basis: px(0), min_height: px(0), row_gap: px(gap), padding, overflow: Overflow::scroll_y(), ..default() }))
 }
 
@@ -1132,22 +1194,12 @@ fn top(c: &mut ChildSpawnerCommands, title: &str, clock: &str) {
     });
 }
 
-/// The rail down the left: the frame's screens. Health and Skills still open their own sheets
-/// over it, until they move into the frame as Survivor.
-fn rail(mid: &mut ChildSpawnerCommands, making: bool) {
+/// The rail down the left: the frame's screens.
+fn rail(mid: &mut ChildSpawnerCommands, tab: Tab) {
     mid.spawn((Node { width: px(flat::RAIL), flex_direction: FlexDirection::Column, row_gap: px(4), padding: UiRect::top(px(12)), border: UiRect::right(px(1)), flex_shrink: 0.0, ..default() }, BorderColor::all(LINE))).with_children(|r| {
-        rail_tab(r, "Inventory", "hiking_pack", Some("Tab"), !making).observe(|_: On<PointerPress>, mut m: ResMut<MakeUi>| m.shown = false);
-        rail_tab(r, "Make", "claw_hammer", None, making).observe(|_: On<PointerPress>, mut m: ResMut<MakeUi>| m.shown = true);
-        rail_tab(r, "Health", "plasters", Some("H"), false).observe(|_: On<PointerPress>, mut h: Option<ResMut<crate::health_ui::HealthPanel>>| {
-            if let Some(h) = h.as_mut() {
-                h.open = !h.open;
-            }
-        });
-        rail_tab(r, "Skills", "magazine", Some("K"), false).observe(|_: On<PointerPress>, mut s: Option<ResMut<crate::skills_ui::SkillsPanel>>| {
-            if let Some(s) = s.as_mut() {
-                s.open = !s.open;
-            }
-        });
+        for (to, icon, key) in [(Tab::Inventory, "hiking_pack", Some("Tab")), (Tab::Make, "claw_hammer", None), (Tab::Health, "plasters", Some("H")), (Tab::Skills, "magazine", Some("K"))] {
+            rail_tab(r, &format!("{to:?}"), icon, key, tab == to).observe(move |_: On<PointerPress>, mut goto: ResMut<Goto>| goto.0 = Some(to));
+        }
     });
 }
 
@@ -1175,10 +1227,23 @@ fn rail_tab<'a>(r: &'a mut ChildSpawnerCommands, label: &str, icon: &str, key: O
 }
 
 /// The footer: the latest answer to a request, then what the mouse does.
-fn footer(c: &mut ChildSpawnerCommands, note: Option<(String, bool)>) {
+fn footer(c: &mut ChildSpawnerCommands, note: Option<(String, bool)>, tab: Tab) {
     c.spawn((Node { height: px(flat::FOOTER), flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(22), padding: UiRect::axes(px(28), px(0)), border: UiRect::top(px(1)), flex_shrink: 0.0, overflow: Overflow::clip_x(), ..default() }, BorderColor::all(LINE))).with_children(|f| {
         if let Some((text, ok)) = note {
             f.spawn((Text::new(text), theme::strong(flat::BODY), TextColor(if ok { OK } else { NO }), TextLayout::no_wrap(), Node { flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
+        }
+        match tab {
+            Tab::Health => {
+                flat::hint(f, &["Click"], "a wound: what it needs, and what you can do");
+                flat::hint(f, &["Right-click"], "stop using an item");
+                flat::hint(f, &["H"], "back to the game");
+                return;
+            }
+            Tab::Skills => {
+                flat::hint(f, &["K"], "back to the game");
+                return;
+            }
+            _ => {}
         }
         flat::hint(f, &["Click"], "move");
         flat::hint(f, &["Drag"], "to a bag, a slot or the floor");
@@ -3733,6 +3798,50 @@ mod tests {
         app.update();
         app.update();
         assert_eq!(app.world().resource::<Outbox>().0.len(), 1);
+    }
+
+    /// Health and Skills are screens of the frame: their keys open it on them, the rail goes
+    /// between them, the key again or shutting the frame goes back to the game.
+    #[test]
+    fn health_and_skills_are_screens_of_the_frame() {
+        use crate::health_ui::HealthPanel;
+        use crate::skills_ui::SkillsPanel;
+        let mut app = App::new();
+        app.init_resource::<InventoryPanel>().init_resource::<HealthPanel>().init_resource::<SkillsPanel>().init_resource::<MakeUi>().init_resource::<Goto>().add_systems(Update, screens);
+        let state = |app: &mut App| (app.world().resource::<InventoryPanel>().open, app.world().resource::<HealthPanel>().open, app.world().resource::<SkillsPanel>().open);
+        app.update();
+        assert_eq!(state(&mut app), (false, false, false));
+        // H: the frame opens on Health.
+        app.world_mut().resource_mut::<HealthPanel>().open = true;
+        app.update();
+        assert_eq!(state(&mut app), (true, true, false));
+        // K: over to Skills.
+        app.world_mut().resource_mut::<SkillsPanel>().open = true;
+        app.update();
+        assert_eq!(state(&mut app), (true, false, true));
+        // The rail: to Make, and the frame stays.
+        app.world_mut().resource_mut::<Goto>().0 = Some(Tab::Make);
+        app.update();
+        assert_eq!(state(&mut app), (true, false, false));
+        assert!(app.world().resource::<MakeUi>().shown);
+        app.world_mut().resource_mut::<Goto>().0 = Some(Tab::Health);
+        app.update();
+        assert_eq!(state(&mut app), (true, true, false));
+        // H again: back to the game.
+        app.world_mut().resource_mut::<HealthPanel>().open = false;
+        app.update();
+        assert_eq!(state(&mut app), (false, false, false));
+        // "Use on a wound" from the open inventory: Health, with the item kept; Tab shuts it all.
+        app.world_mut().resource_mut::<InventoryPanel>().open = true;
+        app.update();
+        *app.world_mut().resource_mut::<HealthPanel>() = HealthPanel { open: true, selected: None, use_item: Some(3) };
+        app.update();
+        assert_eq!(state(&mut app), (true, true, false));
+        assert_eq!(app.world().resource::<HealthPanel>().use_item, Some(3));
+        app.world_mut().resource_mut::<InventoryPanel>().open = false;
+        app.update();
+        assert_eq!(state(&mut app), (false, false, false));
+        assert_eq!(app.world().resource::<HealthPanel>().use_item, None);
     }
 
 }
