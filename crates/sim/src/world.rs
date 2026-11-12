@@ -120,6 +120,8 @@ pub struct WorldConfig {
     pub explore: crate::explore::ExploreTuning,
     /// How far voices carry and the noise they make (#67, [`crate::speech`]). Not saved either.
     pub speech: crate::speech::SpeechTuning,
+    /// Sitting down ([`crate::sit`]): how fast breath and rest come back. Not saved, like `speech`.
+    pub sit: crate::sit::SitTuning,
     /// Tying hands, freeing and searching a tied survivor (#73, [`crate::bonds`]). Not saved.
     pub bonds: crate::bonds::BondTuning,
     /// Group sizes, invitations and markers (#73, [`crate::groups`]). Not saved.
@@ -136,6 +138,9 @@ pub struct WorldConfig {
     /// Campfires, stoves, cooking and burns (`assets/data/fire.ron`, [`crate::fire`]); saved with
     /// the settings.
     pub fire: crate::fire::FireTuning,
+    /// A difficulty's multipliers on the content above (population, loot: [`crate::difficulty`]).
+    /// Saved with the settings and put on again when the save is loaded. Changes nothing by default.
+    pub sandbox: crate::difficulty::Sandbox,
     /// The loaded mods' scripts (#25, [`crate::script`]): every world made from this config gets a
     /// host of its own from it. None: no scripts, and nothing of them in the world.
     pub scripts: Option<std::sync::Arc<dyn crate::script::ScriptEngine>>,
@@ -168,6 +173,7 @@ impl WorldConfig {
             player_sight: Default::default(),
             explore: Default::default(),
             speech: Default::default(),
+            sit: Default::default(),
             bonds: Default::default(),
             groups: Default::default(),
             climb: Default::default(),
@@ -175,6 +181,7 @@ impl WorldConfig {
             power: Default::default(),
             blinds: Default::default(),
             fire: Default::default(),
+            sandbox: Default::default(),
             scripts: None,
         }
     }
@@ -1142,7 +1149,7 @@ impl World {
             let moving = p.state.pos.distance_squared(before) > 1e-8;
             // Stealth (#46): harder to see, and quieter sneaking.
             let stealth = p.skills.level(Skill::Stealth, &self.config.skills);
-            let sight_mult = self.config.skills.sight_mult(stealth);
+            let sight_mult = self.config.skills.sight_mult(stealth) * p.origin.perks.seen_from;
             // In a lit room (`crate::power`): seen through its windows as if by day.
             let room = self.map.room_at(p.state.pos);
             let lit = if room != 0 && self.power.is_lit(room) { self.config.power.lit_room_seen } else { 0.0 };
@@ -1154,7 +1161,7 @@ impl World {
                     Stance::Sneak => t.sneak_noise * self.config.skills.footstep_mult(stealth),
                     Stance::Walk => t.walk_noise,
                     Stance::Run => t.run_noise,
-                };
+                } * p.origin.perks.footsteps;
                 self.heard.push(Sound::new(p.state.pos, radius, SoundSource::Player(p.id)));
             }
         }
@@ -1186,6 +1193,8 @@ impl World {
         self.step_gestures();
         // Tied hands worked loose, tying, freeing and searching other survivors (#73).
         self.step_bonds();
+        // Seated survivors get up when they move, fight, fall asleep or are knocked about.
+        self.step_sit();
         self.step_groups();
         // Ignored players (dev) aren't heard: their footsteps, swings, doors and searches are
         // dropped here, before anything listens (senses, the far tiers, migration).
@@ -1495,6 +1504,10 @@ impl World {
             mix(p.state.pos.y.to_bits());
             mix(p.state.facing.to_bits());
             mix(p.state.endurance.to_bits());
+            // Who the survivor is (`crate::origin`), only when it is anyone: a plain one hashes as before.
+            if !p.origin.is_plain() {
+                p.origin.hash(&mut mix);
+            }
             // Dev toggles add bits only when on, so a world without them hashes as it always did.
             mix(p.state.stance as u32 | (p.state.winded as u32) << 8 | (p.dead as u32) << 9 | (p.dev.god as u32) << 10 | (p.dev.ignored as u32) << 11);
             // Upstairs (`crate::stairs`): mixed in only then, for the same reason.
@@ -1513,6 +1526,10 @@ impl World {
             if let Some(k) = p.knock {
                 mix(0x4B4E_0000 | k.down as u32);
                 mix(k.timer.to_bits());
+            }
+            // Sitting down: likewise only while seated.
+            if let Some(s) = p.seated {
+                mix(0x5345_4100 | s as u32);
             }
             // Logged out, or spawn protection (#68): likewise only while set.
             if let Some(left) = p.away {
@@ -1538,6 +1555,11 @@ impl World {
             mix(p.action.map_or(u32::MAX, |a| a.kind as u32 | a.timer.to_bits() << 2));
             for s in p.inventory.stacks() {
                 mix_stack(&mut mix, s);
+            }
+            // Which pouch each carried stack is in (only stacks out of the pockets, so a world with
+            // no bags hashes as it did).
+            for (k, s) in p.inventory.carried.iter().enumerate().filter(|(_, s)| s.home != crate::items::Pouch::Pockets) {
+                mix(0xBA60_0000 | (s.home as u32) << 12 | k as u32 & 0xFFF);
             }
             let inv = &p.inventory;
             mix(inv.worn.len() as u32 | (inv.carried.len() as u32) << 8 | (inv.hand.is_some() as u32) << 16 | (inv.off_hand.is_some() as u32) << 17 | (inv.back.is_some() as u32) << 18 | (inv.shoulder.is_some() as u32) << 19);

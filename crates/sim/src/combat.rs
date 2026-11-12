@@ -530,10 +530,12 @@ impl World {
         // An infected body left behind gets up now.
         self.rise(pi);
         // A new survivor: its skills start over (#46).
-        let skills = crate::skills::Skills::start(&self.config.skills);
+        // The same person again (`crate::origin`): who it was stays, with the skills it began with.
+        let origin = self.players[pi].origin.clone();
+        let skills = origin.start_skills(&self.config.skills);
         let p = &mut self.players[pi];
         // (A new `Player` stands on the ground floor.)
-        *p = Player { last_input_seq: p.last_input_seq, input: PlayerInput::default(), dev: p.dev, skills, seen_tick: p.seen_tick, ..Player::new(id, spawn, hp) };
+        *p = Player { last_input_seq: p.last_input_seq, input: PlayerInput::default(), dev: p.dev, skills, origin, seen_tick: p.seen_tick, ..Player::new(id, spawn, hp) };
         self.refresh_carry(pi);
         self.begin_first_night(pi);
         self.script_event(crate::script::ScriptEvent::Spawned { player: id });
@@ -1263,7 +1265,10 @@ mod tests {
     }
 
     fn world(seed: u64, zombies: u32) -> World {
-        World::new(WorldConfig::new(seed, zombies, templates()).with_weapons(weapons()).with_items(items()))
+        let mut c = WorldConfig::new(seed, zombies, templates()).with_weapons(weapons()).with_items(items());
+        // These tests count on 3 L of pockets.
+        c.carry.pockets_l = 3.0;
+        World::new(c)
     }
 
     /// An empty grass field at noon with one player at (100.5, 100.5) facing east and nothing else.
@@ -1824,6 +1829,8 @@ mod tests {
         }
 
         let (mut w, id) = arena(11);
+        // The old 3 L pockets, so the mug below fills them.
+        w.config.carry.pockets_l = 3.0;
         assert!(w.player_pick_up(id).is_none(), "nothing to pick up");
         let bat = w.spawn_item("baseball_bat", 1, Vec2::new(101.3, 100.5)).unwrap();
         let knife = w.spawn_item("kitchen_knife", 1, Vec2::new(103.5, 100.5)).unwrap();

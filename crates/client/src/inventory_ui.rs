@@ -1,62 +1,46 @@
-//! The inventory panel (Tab or I): two panes side by side. Left, what you carry, with your load
-//! against the carry limit; right, the container you have open (search one with E) or the floor
-//! within reach. Slim tabs down each pane's outer edge pick what it shows: "Carried" or "Worn"
-//! (what you hold and wear, slot by slot) on the left, the open container or "Floor" on the right
-//! (a newly opened container comes to the front; the Worn tab can show the body view instead of
-//! its list, [`body`], Linear DCM-43). Click a row to move it across: from you into
-//! what the right pane shows (the container, or the floor), from a container or the floor into
-//! your pockets and bags, off a slot into your bags. The `>>` and `<<` buttons between the panes
-//! move everything a pane shows.
+//! The inventory screen (Tab or I), the first screen of the flat frame (docs/ui-design.md): a top
+//! bar, a rail of screens down the left, three columns, and a footer of key hints, on a veil over
+//! the world.
 //!
-//! **Rows** (Linear DCM-56) are one line with the same cells in every pane, so they line up: a
-//! swatch of the item's colour, its name (and dimmed what there is to say: stale, goes left,
-//! moving), its type, how many and their weight. The column headers sort both panes by name, type
-//! or weight ([`Sort`]: a press, again for the other way round, a third time back to the order
-//! things lie in). Several stacks of one item (things that don't stack, or more than a stack
-//! holds) collapse into one row with their count and weight together ([`arrange`]); a click
-//! moves them all, and the fold mark at its start opens it to its stacks, each a row of its own.
-//! The panel has two text sizes: one for rows and everything small, one for titles.
-//! Right-click any row for a small flat menu of what can be done with it (#95; [`menu_entries`]):
-//! equip, wear, eat or drink, take a pill, use a dressing, antiseptic or sewing kit on a wound (it
-//! opens the health panel to pick the wound, #10), put it in the open container, drop it, take it,
-//! or split the stack (one, or half). The likeliest first; 1-9 pick by number, Esc or a click
-//! elsewhere closes it. The same menu opens on a ground item in the world: right-click it with the
-//! panel open, or tap the right mouse on it (a quick tap, not held to aim). Alt-click (Option-click on a Mac) moves just one of a stack. Everything goes to
-//! the server as intents; the panel only shows what the latest
-//! snapshot said. Moving takes a moment (the server queues it): the current action's bar
-//! (`action_ui.rs`) shows how busy you are.
-//! The last answer to a request (done, or why not) shows at the foot of the panel, and for a few
-//! seconds under the HUD when the panel is shut (the same answer again just stays up longer).
+//! **Gear** (left): what each hand holds, what is worn and carried place by place ([`body::Spot`]),
+//! the hotbar, and at the foot the load against the carry limit. **You** (middle): a pane for the
+//! pockets and for each bag carried, each with its own room (`Inventory::pouches`): a thing is in
+//! one of them (`ItemStack::home`). **Nearby** (right): the open container (search one with E) and
+//! the floor within reach, each a pane; a press on a pane's name makes it the one your things go
+//! to. "Take all" and "Put mine in" at its foot move everything across.
 //!
-//! **One click, one request.** A press on a row is only recorded by its observer ([`Clicks`]);
+//! **Nothing scrolls sideways.** Things are tiles that wrap ([`Ctx::tiles`]) or, with the "Rows"
+//! control, compact one-line rows ([`Ctx::rows`]); each column scrolls up and down by itself
+//! ([`scroll_frame`]); several stacks of one item collapse into one tile or row with their count
+//! together ([`arrange`]; the fold mark opens it to its stacks); a pane folds to its head; the
+//! search box and the category chips narrow every pane at once.
+//!
+//! Click a thing to move it across: from you into the pane of Nearby that is the target, from a
+//! container or the floor into your pockets and bags, off a slot into your bags. Alt-click
+//! (Option on a Mac) moves just one of a stack; Ctrl-click picks, Shift-click picks a range, and
+//! with something picked a bar at the foot of You sends them all to a bag, the container or the
+//! floor. Right-click for the menu of what can be done with it (#95; [`menu_entries`]): the
+//! likeliest first, 1-9 pick by number, Esc or a click elsewhere closes it; the same menu opens
+//! on a ground item in the world. Pointing at a thing shows a card with what there is to say about
+//! it ([`HoverCard`]). Everything goes to the server as intents; the screen only shows what the
+//! latest snapshot said. The last answer to a request (done, or why not) shows in the footer, and
+//! for a few seconds under the HUD when the screen is shut.
+//!
+//! **One click, one request.** A press is only recorded by its observer ([`Clicks`]);
 //! [`send_clicks`] turns at most one press per button per frame into an intent, and not one for
 //! a stack that is already on its way ([`InFlight`]: what was asked, until the snapshot shows the
-//! answer, a refusal comes, or 3 s pass). A floor item being taken drops out of the Floor column
-//! at once, and the other rows being moved say so.
+//! answer, a refusal comes, or 3 s pass).
 //!
 //! **The floor** is the server's: the ground items the snapshot says this player can reach
 //! (`Snapshot::floor`, by the same rule the server checks moves with), not a guess from distance.
 //!
-//! **Finding and moving several** (#94): a search box and category chips narrow both panes (the
-//! chips are toggles: several can be on, "All" turns them off). They are out of sight until
-//! wanted: the "Find" control at the top right (or `/`) brings them out, and they stay while a
-//! search or a chip is set ([`Find::in_use`]); "Find" again puts them away, cleared. `/` or a
-//! click on the box types (Enter or Esc to stop; while typing, the game's keys are held back).
-//! Each pane's title has a "pick all" for the stacks it shows; Ctrl-click picks rows (a collapsed
-//! row: all its stacks), Shift-click picks every row from the last one picked to it in that pane
-//! (only rows on show: the search and chips narrow a range too), and with something picked the
-//! top row says how many and sends every picked stack to your bags, the open container or the
-//! floor at once. A name too long for its cell is cut off, never wrapped. `--find TEXT`,
-//! `--filter CATEGORY[,CATEGORY]` and `--pick N,N` set them from the start (for pictures), as do
-//! `--tab worn|floor`, `--sort name|type|weight` and `--expand` (collapsed rows opened);
-//! `--pick-range A,B[@SECS]` Ctrl-clicks carried row A and Shift-clicks row B, and
-//! `--drop-picked-after SECS` presses the move-to row's "floor" (for recordings).
+//! **Make** (#12) is the rail's second screen: every recipe; the ones you have the inputs and
+//! tools for (by the server's own rule, `crafting::check`, over our private view) can be clicked
+//! to make them, the rest say what's missing.
 //!
-//! **Make** (#12): under the panes, one line saying how many things you can make now; a click
-//! opens the list. Every recipe; the ones you have the inputs and tools for
-//! (by the server's own rule, `crafting::check`, over our private view) can be clicked to make
-//! them, the rest say what's missing. The one under way shows the seconds it has left (our queue is
-//! in the private view), and queued ones how many.
+//! For pictures: `--find TEXT`, `--filter CATEGORY[,CATEGORY]`, `--pick N,N`, `--tab floor|rows`,
+//! `--sort name|type|weight`, `--expand`; for recordings `--pick-range A,B[@SECS]` and
+//! `--drop-picked-after SECS`.
 
 use bevy::prelude::*;
 use zombye_net::{Intent, PrivateView};
@@ -71,6 +55,56 @@ mod body;
 #[derive(Resource, Default)]
 pub struct InventoryPanel {
     pub open: bool,
+}
+
+/// The frame's screens, down its rail. Health and Skills draw their own middle (`health_ui`,
+/// `skills_ui`) over the frame while theirs is the one shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tab {
+    Inventory,
+    Make,
+    Health,
+    Skills,
+}
+
+/// A press on the rail: the screen to show.
+#[derive(Resource, Default)]
+struct Goto(Option<Tab>);
+
+/// Keeps the frame and its screens in step. Health and Skills are shown while their own
+/// resources say open (H and K, `--health`, "use on a wound"): opening one opens the frame on it
+/// and shuts the other; its key again goes back to the game; shutting the frame shuts both.
+fn screens(mut panel: ResMut<InventoryPanel>, mut health: ResMut<crate::health_ui::HealthPanel>, mut skills: ResMut<crate::skills_ui::SkillsPanel>, mut make: ResMut<MakeUi>, mut goto: ResMut<Goto>, mut was: Local<[bool; 3]>) {
+    let [p, h, s] = *was;
+    let mut want = [panel.open, health.open, skills.open];
+    if let Some(tab) = goto.0.take() {
+        want = [true, tab == Tab::Health, tab == Tab::Skills];
+        if matches!(tab, Tab::Inventory | Tab::Make) && make.shown != (tab == Tab::Make) {
+            make.shown = tab == Tab::Make;
+        }
+    } else if health.open && !h {
+        want = [true, true, false];
+    } else if skills.open && !s {
+        want = [true, false, true];
+    } else if p && panel.open && ((h && !health.open) || (s && !skills.open)) {
+        want[0] = false;
+    }
+    if !want[0] {
+        want = [false; 3];
+    }
+    if panel.open != want[0] {
+        panel.open = want[0];
+    }
+    if health.open != want[1] {
+        health.open = want[1];
+        if !want[1] {
+            health.use_item = None;
+        }
+    }
+    if skills.open != want[2] {
+        skills.open = want[2];
+    }
+    *was = want;
 }
 
 /// The latest answer to an item request, and when it came (seconds).
@@ -90,38 +124,31 @@ struct NoteLine;
 #[derive(Resource, Default, PartialEq)]
 struct Shown(String);
 
-use crate::theme::{self, DIM, INK, ROW, ROW_HOVER, ROW_PICKED, TEXT, font};
+use crate::theme::{self, flat, font};
+use body::Spot;
+use zombye_sim::Pouch;
 
-/// The fold mark's small backing, and the search box's (typing: lit).
-const CHIP: Color = Color::srgba(1.0, 1.0, 1.0, 0.1);
-const CHIP_ON: Color = theme::ROW_PICKED;
-/// A pane's backing (set into the panel's sheet), a tab that isn't the one shown, and a hairline.
-const PANE: Color = theme::INSET;
-const TAB: Color = Color::srgba(1.0, 1.0, 1.0, 0.05);
-const LINE: Color = theme::LINE;
-const OK: Color = theme::GOLD;
-const NO: Color = theme::BAD;
+// The flat skin's colours (docs/ui-design.md), under the names the rows have always used.
+const TEXT: Color = flat::BONE;
+const DIM: Color = flat::DIM;
+const INK: Color = flat::INK;
+const ROW: Color = flat::CELL;
+const ROW_HOVER: Color = flat::CELL_HOVER;
+const ROW_PICKED: Color = flat::GREEN_SOFT;
+/// A fold mark's small backing.
+const CHIP: Color = Color::srgba(0.949, 0.902, 0.788, 0.1);
+const LINE: Color = flat::LINE;
+const OK: Color = flat::GREEN;
+const NO: Color = flat::RED_TEXT;
 const NOTE_SECS: f32 = 4.0;
-/// The panel's two text sizes: rows (and everything small), and headers.
-const ROW_FONT: f32 = theme::BODY;
-const HEAD_FONT: f32 = 18.0;
-/// The tabs' labels and the column headers: the heading face, a size up from the rows (it is
-/// condensed, so it reads smaller than the text face at the same size).
-const TAB_FONT: f32 = 16.0;
-/// A pane's width, a tab's, and a row's cells: the fold mark, the swatch, type, count and weight
-/// (the name takes the rest).
-const PANE_W: f32 = 400.0;
-const TAB_W: f32 = 26.0;
+const ROW_FONT: f32 = flat::BODY;
+/// A compact row's cells: the fold mark, the icon, type, count and weight (the name takes the rest).
 const W_LEAD: f32 = 12.0;
-const W_SWATCH: f32 = 10.0;
+const W_ICON: f32 = 22.0;
 const W_KIND: f32 = 78.0;
 const W_QTY: f32 = 28.0;
 const W_KG: f32 = 40.0;
 const CELL_GAP: f32 = 6.0;
-/// The panel's widest: two panes with their tabs, the move-all buttons between, the padding.
-/// (918: on a 1280 screen it stops short of the health panel on the left, which opens beside it
-/// to use something on a wound.)
-const PANEL_W: f32 = 2.0 * (PANE_W + TAB_W) + 42.0 + 2.0 * theme::SHEET_PAD.0;
 /// A request with no answer after this long is forgotten (and its row can be clicked again).
 const FLIGHT_SECS: f32 = 3.0;
 
@@ -201,25 +228,12 @@ pub struct Find {
     pub typing: bool,
     /// The chips that are on (each a toggle; none: every kind).
     groups: Vec<Group>,
-    /// The search box and chips asked for with the "Find" control, though nothing is set yet.
-    open: bool,
 }
 
 impl Find {
     fn shows(&self, items: &[ItemDef], s: &ItemStack) -> bool {
         let Some(def) = items.get(s.item as usize) else { return true };
         (self.groups.is_empty() || self.groups.contains(&Group::of(def.category))) && (self.query.is_empty() || def.name.to_lowercase().contains(&self.query.to_lowercase()))
-    }
-
-    /// Whether the search box and chips are on show: only while they're in use (typing, a search
-    /// or a chip set) or asked for.
-    fn in_use(&self) -> bool {
-        self.open || self.typing || !self.query.is_empty() || !self.groups.is_empty()
-    }
-
-    /// The "Find" control pressed: show the search box and chips; in use, put them away, cleared.
-    fn press(&mut self) {
-        *self = Find { open: !self.in_use(), ..default() };
     }
 
     /// A chip pressed: on if it was off, off if it was on (the others stay as they are).
@@ -248,7 +262,7 @@ enum Column {
 impl Column {
     fn of(place: Place) -> Column {
         match place {
-            Place::Slot(_) | Place::Worn | Place::Carried => Column::You,
+            Place::Slot(_) | Place::Worn | Place::Carried | Place::Pouch(_) => Column::You,
             Place::Container(_) => Column::Container,
             Place::Ground => Column::Floor,
         }
@@ -321,24 +335,6 @@ impl Picked {
             }
         }
     }
-
-    /// A column's "pick all": every stack `listed` shows in `col` (what the search and chips
-    /// leave) added to what is picked; if they all were already, they're unpicked instead. What
-    /// you hold and wear is never part of it (pick all, then "to floor", would undress you): of
-    /// yours, only what you carry.
-    fn pick_all(&mut self, col: Column, listed: &[Key]) {
-        let rows: Vec<Key> = listed.iter().copied().filter(|k| Column::of(k.0) == col && !matches!(k.0, Place::Slot(_) | Place::Worn)).collect();
-        if rows.iter().all(|k| self.keys.contains(k)) {
-            self.keys.retain(|k| !rows.contains(k));
-        } else {
-            for k in rows {
-                if !self.keys.contains(&k) {
-                    self.keys.push(k);
-                }
-            }
-        }
-        self.anchor = None;
-    }
 }
 
 /// What the column headers sort the rows by.
@@ -373,8 +369,30 @@ struct Sort {
 }
 
 impl Sort {
+    /// What the sort control says.
+    fn name(&self) -> &'static str {
+        match self.key {
+            SortKey::None => "as packed",
+            SortKey::Name => "name",
+            SortKey::Kind => "type",
+            SortKey::Weight => "weight",
+        }
+    }
+
+    /// The sort control pressed: by name, by type, by weight, then as things lie again.
+    fn next(&mut self) {
+        let key = match self.key {
+            SortKey::None => SortKey::Name,
+            SortKey::Name => SortKey::Kind,
+            SortKey::Kind => SortKey::Weight,
+            SortKey::Weight => SortKey::None,
+        };
+        *self = Sort { key, flipped: false };
+    }
+
     /// A column header pressed: sort by it; again, the other way round; a third time, back to
     /// the order things lie in.
+    #[cfg(test)]
     fn press(&mut self, key: SortKey) {
         *self = match (self.key == key, self.flipped) {
             (false, _) => Sort { key, flipped: false },
@@ -384,6 +402,7 @@ impl Sort {
     }
 
     /// The mark after a header: which way its column is sorted, if it is.
+    #[cfg(test)]
     fn mark(&self, key: SortKey) -> &'static str {
         match (self.key == key, self.flipped != (key == SortKey::Weight)) {
             (false, _) => "",
@@ -434,15 +453,15 @@ fn arrange(items: &[ItemDef], lines: impl IntoIterator<Item = Line>, sort: Sort)
     rows
 }
 
-/// How the panes are set: which tab each shows, the order of the rows, and which collapsed rows
-/// are opened.
+/// How the panes are set: tiles or rows, which are folded, where your things go, the order,
+/// and which collapsed rows are opened.
 #[derive(Resource, Default, Debug, Clone, PartialEq)]
 struct PanelUi {
-    /// The left pane shows what you hold and wear (else what you carry).
-    worn: bool,
-    /// ...and shows it on the outline of a person (`body.rs`, DCM-43) instead of as a list.
-    body: bool,
-    /// The right pane shows the floor though a container is open.
+    /// Things show as compact rows (else as tiles).
+    rows: bool,
+    /// The panes folded to their heads.
+    shut: Vec<Pane>,
+    /// Your things go to the floor though a container is open.
     floor: bool,
     /// The container open when we last looked (`None`: not looked yet).
     seen_open: Option<Option<u32>>,
@@ -576,12 +595,10 @@ impl Plugin for InventoryUiPlugin {
         // Open as it was left last session (`panels.rs`), or by `--inventory`.
         let settings = crate::ui_scale::SettingsStore::ensure(app);
         let open = options.as_ref().is_some_and(|o| o.inventory) || settings.panels.inventory.open;
-        let find = Find { query: options.as_ref().and_then(|o| o.find.clone()).unwrap_or_default(), typing: false, groups: options.as_ref().and_then(|o| o.filter.as_deref()).map_or(Vec::new(), Group::parse_list), open: false };
+        let find = Find { query: options.as_ref().and_then(|o| o.find.clone()).unwrap_or_default(), typing: false, groups: options.as_ref().and_then(|o| o.filter.as_deref()).map_or(Vec::new(), Group::parse_list) };
         let tabs = options.as_ref().and_then(|o| o.tab.clone()).unwrap_or_default().to_ascii_lowercase();
         let ui = PanelUi {
-            // (`--tab body`: the Worn tab as the body view; else as it was left last session.)
-            worn: tabs.split(',').any(|t| matches!(t.trim(), "worn" | "body")),
-            body: tabs.split(',').any(|t| t.trim() == "body") || settings.inventory_body,
+            rows: tabs.split(',').any(|t| t.trim() == "rows"),
             floor: tabs.split(',').any(|t| t.trim() == "floor"),
             sort: Sort { key: options.as_ref().and_then(|o| o.sort.as_deref()).and_then(SortKey::parse).unwrap_or_default(), flipped: false },
             unfold_all: options.as_ref().is_some_and(|o| o.expand),
@@ -598,51 +615,41 @@ impl Plugin for InventoryUiPlugin {
             .init_resource::<LastNote>()
             .init_resource::<Shown>()
             .init_resource::<Clicks>()
+            .init_resource::<Drag>()
+            .init_resource::<Goto>()
             .init_resource::<Outbox>()
             .init_resource::<InFlight>()
             .init_resource::<MakeUi>()
             .init_resource::<ItemMenu>()
             .init_resource::<HoveredItem>()
+            .init_resource::<HoverCard>()
+            .init_resource::<FollowUp>()
+            .init_resource::<Scrolls>()
             .add_systems(Startup, spawn.after(crate::hud::spawn_hud))
             .add_systems(PreUpdate, (type_search, menu_keys).chain().in_set(TextEntry).after(bevy::input::InputSystems))
             .add_systems(PreUpdate, click_away.after(bevy::input::InputSystems).after(bevy::picking::PickingSystems::Hover))
-            .add_systems(Update, (toggle, keep_note, track_flight, follow_open, prune_picked, script_picks, menu_from_options, send_clicks, world_menu, script_menu, menu_act, send_picked, flush, remember_view, rebuild, draw_menu).chain());
+            .add_systems(Update, ((toggle, screens.after(crate::health_ui::toggle).after(crate::skills_ui::toggle)).chain(), keep_note, track_flight, follow_open, prune_picked, script_picks, menu_from_options, drag, send_clicks, world_menu, script_menu, menu_act, follow_up, send_picked, flush, scroll_frame, rebuild, draw_menu, draw_card, hide_hud).chain());
     }
 }
 
-/// The Worn tab's view (list or body) is kept between sessions, written when it changes.
-fn remember_view(ui: Res<PanelUi>, mut store: ResMut<crate::ui_scale::SettingsStore>) {
-    if ui.is_changed()
-        && store.settings.inventory_body != ui.body
-        && let Err(e) = store.change(|s| s.inventory_body = ui.body)
-    {
-        eprintln!("{e}");
+/// The frame covers the screen and has the hotbar and load in it: the HUD's bottom-left column
+/// and the hotbar are not drawn under it (they would show faintly through the veil).
+fn hide_hud(panel: Res<InventoryPanel>, mut hud: Query<&mut Visibility, Or<(With<crate::hud::BottomLeft>, With<crate::hotbar::BarRoot>)>>) {
+    let want = if panel.open { Visibility::Hidden } else { Visibility::Inherited };
+    for mut v in &mut hud {
+        if *v != want {
+            *v = want;
+        }
     }
 }
 
 fn spawn(mut commands: Commands, column: Query<Entity, With<crate::hud::BottomLeft>>) {
-    commands.spawn((
-        PanelRoot,
-        crate::hud::TopPanel,
-        crate::panels::PanelId::Inventory,
-        Visibility::Hidden,
-        Node {
-            position_type: PositionType::Absolute,
-            top: px(70),
-            right: px(16),
-            flex_direction: FlexDirection::Column,
-            row_gap: px(8),
-            padding: UiRect::axes(px(theme::SHEET_PAD.0), px(theme::SHEET_PAD.1)),
-            max_width: px(PANEL_W),
-            max_height: Val::Percent(85.0),
-            overflow: Overflow::scroll_y(),
-            ..default()
-        },
-        theme::sheet(),
-    ));
+    // The frame: the whole window, veiled (docs/ui-design.md). Over the HUD; the sheets that
+    // still float (health, skills) and the menus are over it.
+    commands.spawn((PanelRoot, Visibility::Hidden, GlobalZIndex(6), Node { position_type: PositionType::Absolute, left: px(0), top: px(0), width: percent(100), height: percent(100), flex_direction: FlexDirection::Column, ..default() }, BackgroundColor(flat::VEIL)));
     // The latest note while the panel is shut: just above the HUD's bottom-left column (the tags
     // and the vitals), however tall that is, on a backing so it reads over the world (#97).
-    let note = (NoteLine, Text::new(""), theme::strong(15.0), TextColor(OK), TextLayout::no_wrap(), BackgroundColor(Color::NONE), Pickable::IGNORE);
+    let note = (NoteLine, Text::new(""), theme::strong(15.0), TextColor(theme::GOLD), TextLayout::no_wrap(), BackgroundColor(Color::NONE), Pickable::IGNORE);
     match column.single() {
         Ok(column) => {
             commands.spawn((note, Node { position_type: PositionType::Absolute, bottom: percent(100), left: px(0), margin: UiRect::bottom(px(6)), ..default() }, ChildOf(column)));
@@ -668,7 +675,6 @@ fn type_search(mut typed: MessageReader<bevy::input::keyboard::KeyboardInput>, m
     if !find.typing {
         if keys.just_pressed(KeyCode::Slash) {
             find.typing = true;
-            find.open = true;
             keys.reset_all();
         }
         typed.clear();
@@ -683,8 +689,6 @@ fn type_search(mut typed: MessageReader<bevy::input::keyboard::KeyboardInput>, m
             }
             Key::Enter | Key::Escape => {
                 find.typing = false;
-                // Nothing set: the box goes away again.
-                find.open = !find.query.is_empty() || !find.groups.is_empty();
             }
             _ => {}
         }
@@ -734,7 +738,7 @@ fn keep_note(time: Res<Time>, notes: Res<ItemNotesThisFrame>, panel: Res<Invento
         t.0 = want;
         bg.0 = if show { crate::theme::HUD_BG } else { Color::NONE };
     }
-    c.0 = if last.ok { OK } else { NO };
+    c.0 = if last.ok { theme::GOLD } else { theme::BAD };
 }
 
 /// "Loaf of bread x2 (stale, 2/3 left)": the name, how many, and for food and drink how fresh it
@@ -814,6 +818,8 @@ fn stack_at(v: &PrivateView, floor: &[(u32, ItemStack)], place: Place, index: u3
         Place::Carried => v.inventory.carried.get(i).copied(),
         Place::Worn => v.inventory.worn.get(i).copied(),
         Place::Slot(slot) => v.inventory.slot(slot),
+        // (Only somewhere things go to.)
+        Place::Pouch(_) => None,
         Place::Container(id) => v.open.as_ref().filter(|c| c.id == id).and_then(|c| c.stacks.get(i)).copied(),
         Place::Ground => floor.iter().find(|(g, _)| *g == index).map(|(_, s)| *s),
     }
@@ -826,7 +832,7 @@ fn track_flight(time: Res<Time>, link: Res<ServerLink>, me: Res<LocalPlayer>, no
 
 /// A container newly opened comes to the front of the right pane, and a search that has just
 /// finished opens the panel if it was shut, so what was found is on show ([`search_done`]).
-fn follow_open(link: Res<ServerLink>, me: Res<LocalPlayer>, mut ui: ResMut<PanelUi>, mut panel: ResMut<InventoryPanel>, mut searching: Local<Option<u32>>) {
+fn follow_open(link: Res<ServerLink>, me: Res<LocalPlayer>, mut ui: ResMut<PanelUi>, mut panel: ResMut<InventoryPanel>, mut make: ResMut<MakeUi>, mut searching: Local<Option<u32>>) {
     let view = link.own(me.id);
     let open = view.and_then(|v| v.open.as_ref().map(|c| c.id));
     if ui.seen_open != Some(open) {
@@ -836,8 +842,13 @@ fn follow_open(link: Res<ServerLink>, me: Res<LocalPlayer>, mut ui: ResMut<Panel
         Some(JobKind::Search { container }) => Some(*container),
         _ => None,
     });
-    if search_done(*searching, now, open) && !panel.open {
-        panel.open = true;
+    if search_done(*searching, now, open) {
+        if !panel.open {
+            panel.open = true;
+        }
+        if make.shown {
+            make.shown = false;
+        }
     }
     *searching = now;
 }
@@ -1017,9 +1028,9 @@ fn rebuild(
     me: Res<LocalPlayer>,
     last: Res<LastNote>,
     flight: Res<InFlight>,
-    find: Res<Find>,
-    picked: Res<Picked>,
-    ui: Res<PanelUi>,
+    (find, picked, ui): (Res<Find>, Res<Picked>, Res<PanelUi>),
+    (scrolls, bar, mut card): (Res<Scrolls>, Option<Res<crate::hotbar::Hotbar>>, ResMut<HoverCard>),
+    (health, skills): (Option<Res<crate::health_ui::HealthPanel>>, Option<Res<crate::skills_ui::SkillsPanel>>),
     mut listed: ResMut<Listed>,
     mut make_ui: ResMut<MakeUi>,
     options: Option<Res<crate::Options>>,
@@ -1032,6 +1043,9 @@ fn rebuild(
         *vis = want;
     }
     if !panel.open {
+        if card.0.is_some() {
+            card.0 = None;
+        }
         return;
     }
     if !make_ui.loaded {
@@ -1048,122 +1062,495 @@ fn rebuild(
     let secs = if make_ui.shown { busy.0 } else { 0.0 };
     // Heat to cook with where we stand (`fire::heat_near`, the server's rule; stoves go by the grid).
     let heat = zombye_sim::fire::heat_near(&map.0, &join.fire, link.curr.fires.iter().map(|f| (Vec2::from(f.pos), f.lit)), me.curr.pos, me.curr.level, |_| link.curr.grid_on);
-    let signature = format!("{heat}|{view:?}|{floor:?}|{secs:.1}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{}|{:?}", busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.keys, make_ui.open, make_ui.favs, make_ui.shown, *ui);
+    let clock = clock_text(link.curr.time_of_day);
+    let hotbar = bar.as_ref().map(|b| b.ids());
+    let tab = match (health.is_some_and(|h| h.open), skills.is_some_and(|s| s.open), make_ui.shown) {
+        (true, ..) => Tab::Health,
+        (_, true, _) => Tab::Skills,
+        (.., true) => Tab::Make,
+        _ => Tab::Inventory,
+    };
+    let signature = format!("{heat}|{tab:?}|{view:?}|{floor:?}|{secs:.1}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|{clock}|{hotbar:?}", busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.keys, make_ui.open, make_ui.favs, make_ui.shown, *ui);
     if shown.0 == signature {
         return;
     }
     shown.0 = signature;
     commands.entity(root).despawn_children();
+    // (What the pointer was on is gone with the rest.)
+    card.0 = None;
     let items = &join.items;
     let open = view.as_ref().and_then(|v| v.open.as_ref().map(|c| (c.id, c.name.to_lowercase())));
-    // What the right pane shows, and so where a click on what you carry sends it.
+    // Where a click on what you carry sends it: the pane of the Nearby column that is the target.
     let right = ui.right(open.as_ref().map(|(id, _)| *id));
-    let ctx = Ctx { items, wear: Wear::of(&join), now, me: me.id, flight: &flight, find: &find, picked: &picked, ui: &ui, view: view.as_ref(), open: open.as_ref().map(|(id, n)| (*id, n.as_str())) };
+    // The pockets and each bag carried: (pouch, its name, litres of room, litres used).
+    let pouches: Vec<(Pouch, String, f32, f32)> = view.as_ref().map_or(Vec::new(), |v| v.inventory.pouches(items, join.carry.pockets_l).into_iter().map(|(p, room, used)| (p, pouch_name(items, &v.inventory, p), room, used)).collect());
+    let pouch_names: Vec<(Pouch, String)> = pouches.iter().map(|(p, n, ..)| (*p, n.to_lowercase())).collect();
+    let ctx = Ctx { items, wear: Wear::of(&join), now, me: me.id, flight: &flight, find: &find, picked: &picked, ui: &ui, view: view.as_ref(), open: open.as_ref().map(|(id, n)| (*id, n.as_str())), pouches: &pouch_names, recipes: &join.recipes };
     // The item rows drawn, in order, for Shift-click's ranges and the move-all buttons.
     let mut rows: Vec<Key> = Vec::new();
+    let kg: f32 = view.as_ref().map_or(0.0, |v| picked.keys.iter().filter_map(|&(p, i, _)| stack_at(v, &floor, p, i)).map(|s| stack_kg(items, &s)).sum());
+    let y = scrolls.0;
+    let note = (note_fresh && !last.text.is_empty()).then(|| (last.text.clone(), last.ok));
     commands.entity(root).with_children(|c| {
-        // The top row: the move-to bar for picked stacks (always this high, so picking a first row
-        // doesn't shift the rows under the pointer) and the one control that brings out the search.
-        let kg: f32 = view.as_ref().map_or(0.0, |v| picked.keys.iter().filter_map(|&(p, i, _)| stack_at(v, &floor, p, i)).map(|s| stack_kg(items, &s)).sum());
-        top_bar(c, &find, picked.keys.len(), kg, open.clone());
-        if find.in_use() {
-            toolbar(c, &find);
-        }
-        c.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::FlexStart, ..default() }).with_children(|panes| {
-            // Left: what you carry, or (its other tab) what you hold and wear.
-            panes.spawn(tab_strip()).with_children(|t| {
-                tab(t, "Carried", !ui.worn).observe(|_: On<PointerPress>, mut ui: ResMut<PanelUi>| ui.worn = false);
-                tab(t, "Worn", ui.worn).observe(|_: On<PointerPress>, mut ui: ResMut<PanelUi>| ui.worn = true);
-            });
-            let load = view.as_ref().map(|v| {
-                let k = &v.carry;
-                let (tag, color) = match k.burden {
-                    Burden::None => ("", TEXT),
-                    Burden::Burdened => ("  BURDENED", OK),
-                    Burden::Heavy => ("  HEAVY", NO),
-                    Burden::Overloaded => ("  OVERLOADED", Color::srgb(1.0, 0.3, 0.25)),
-                };
-                Gauge { share: Some(k.weight_kg / k.limit_kg.max(0.1)), color, left: format!("{:.1} / {:.1} kg{tag}", k.weight_kg, k.limit_kg), right: format!("{:.1} / {:.0} L", k.used_l, k.room_l) }
-            });
-            pane(panes, if ui.worn { "Worn and held" } else { "Carried" }, if ui.worn { PaneTop::View { body: ui.body } } else { PaneTop::PickAll(Column::You) }, load.unwrap_or_default(), ui.sort, |col| {
-                let Some(v) = &view else { return };
-                let inv = &v.inventory;
-                if ui.worn && ui.body {
-                    body::draw(&ctx, &mut rows, col, inv);
-                    return;
-                }
-                if ui.worn {
-                    for (label, slot) in [("Hand", Slot::Hand), ("Off hand", Slot::OffHand), ("Back", Slot::Back), ("Shoulder", Slot::Shoulder)] {
-                        match inv.slot(slot) {
-                            Some(stack) => ctx.slot_row(&mut rows, col, Line { from: Place::Slot(slot), index: 0, stack }, label),
-                            None => empty_row(col, label),
-                        }
-                    }
-                    for (k, s) in inv.worn.iter().enumerate().filter(|(k, s)| ctx.shows(Place::Worn, *k as u32, s)) {
-                        ctx.slot_row(&mut rows, col, Line { from: Place::Worn, index: k as u32, stack: *s }, "Worn");
-                    }
-                    return;
-                }
-                if inv.carried.is_empty() {
-                    dim(col, "Nothing".into());
-                } else if !inv.carried.iter().any(|s| find.shows(items, s)) {
-                    dim(col, "Nothing that matches".into());
-                }
-                ctx.rows(&mut rows, col, inv.carried.iter().enumerate().map(|(k, s)| Line { from: Place::Carried, index: k as u32, stack: *s }), right);
-            });
-            // Between the panes: everything one shows, across to the other.
-            panes.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(6), width: px(34), margin: UiRect::axes(px(4), px(0)), padding: UiRect::top(px(94)), flex_shrink: 0.0, ..default() }).with_children(|mid| {
-                let across = if matches!(right, Place::Ground) { Column::Floor } else { Column::Container };
-                chip(mid, ">>".into(), false).observe(|_: On<PointerPress>, mut all: ResMut<MoveAll>| all.0 = Some(Column::You));
-                chip(mid, "<<".into(), false).observe(move |_: On<PointerPress>, mut all: ResMut<MoveAll>| all.0 = Some(across));
-            });
-            // Right: the open container, or (its other tab, and with none open) the floor in reach.
-            let floor_kg: f32 = floor.iter().map(|(_, s)| stack_kg(items, s)).sum();
-            match view.as_ref().and_then(|v| v.open.as_ref()).filter(|_| matches!(right, Place::Container(_))) {
-                Some(cv) => {
-                    let used = zombye_sim::inventory::stacks_volume(items, &cv.stacks);
-                    let kg: f32 = cv.stacks.iter().map(|s| stack_kg(items, s)).sum();
-                    let gauge = Gauge { share: Some(used / cv.room_l.max(0.1)), color: TEXT, left: format!("{used:.1} / {:.0} L", cv.room_l), right: format!("{kg:.1} kg") };
-                    pane(panes, &cv.name, PaneTop::PickAll(Column::Container), gauge, ui.sort, |col| {
-                        if cv.stacks.is_empty() {
-                            dim(col, "Empty".into());
-                        } else if !cv.stacks.iter().any(|s| find.shows(items, s)) {
-                            dim(col, "Nothing that matches".into());
-                        }
-                        ctx.rows(&mut rows, col, cv.stacks.iter().enumerate().map(|(k, s)| Line { from: Place::Container(cv.id), index: k as u32, stack: *s }), Place::Carried);
-                    });
-                }
-                None => {
-                    let gauge = Gauge { share: None, color: TEXT, left: "Within reach".into(), right: format!("{floor_kg:.1} kg") };
-                    pane(panes, "Floor", PaneTop::PickAll(Column::Floor), gauge, ui.sort, |col| {
-                        if floor.is_empty() {
-                            dim(col, "Nothing within reach".into());
-                        } else if !floor.iter().any(|(_, s)| find.shows(items, s)) {
-                            dim(col, "Nothing that matches".into());
-                        }
-                        ctx.rows(&mut rows, col, floor.iter().map(|(id, s)| Line { from: Place::Ground, index: *id, stack: *s }), Place::Carried);
-                        if open.is_none() {
-                            dim(col, "E: search the cupboard, drawer or fridge you face".into());
-                        }
-                    });
-                }
+        top(c, &format!("{tab:?}"), &clock);
+        c.spawn(Node { flex_direction: FlexDirection::Row, flex_grow: 1.0, flex_basis: px(0), min_height: px(0), ..default() }).with_children(|mid| {
+            rail(mid, tab);
+            let Some(v) = &view else { return };
+            // (Health and Skills draw their own middle over the frame.)
+            if matches!(tab, Tab::Health | Tab::Skills) {
+                return;
             }
-            panes.spawn(tab_strip()).with_children(|t| {
-                if let Some(cv) = view.as_ref().and_then(|v| v.open.as_ref()) {
-                    tab(t, &format!("{} {}", cv.name, cv.stacks.len()), matches!(right, Place::Container(_))).observe(|_: On<PointerPress>, mut ui: ResMut<PanelUi>| ui.floor = false);
-                }
-                tab(t, &format!("Floor {}", floor.len()), matches!(right, Place::Ground)).observe(|_: On<PointerPress>, mut ui: ResMut<PanelUi>| ui.floor = true);
-            });
+            if tab == Tab::Make {
+                make_column(mid, &join, v, busy.0, &flight, &make_ui, y[3], heat);
+                return;
+            }
+            gear(mid, &ctx, &mut rows, v, bar.as_deref(), y[0]);
+            you(mid, &ctx, &mut rows, v, &pouches, right, y[1], (picked.keys.len(), kg));
+            nearby(mid, &ctx, &mut rows, v, &floor, right, y[2]);
         });
-        if let Some(v) = &view {
-            make(c, &join, v, busy.0, &flight, &make_ui, heat);
-        }
-        c.spawn((Text::new("Click: move across   Alt-click: just one   Ctrl / Shift-click: pick   Right-click: menu   Tab: close"), font(ROW_FONT), TextColor(DIM)));
-        if note_fresh && !last.text.is_empty() {
-            c.spawn((Text::new(last.text.clone()), font(ROW_FONT), TextColor(if last.ok { OK } else { NO })));
-        }
+        footer(c, note, tab);
     });
     listed.0 = rows;
+}
+
+/// "14:20" from the hour of the day.
+fn clock_text(hour: f32) -> String {
+    let mins = (hour.rem_euclid(24.0) * 60.0) as u32 / 10 * 10;
+    format!("{:02}:{:02}", mins / 60 % 24, mins % 60)
+}
+
+/// What a pouch is called on its pane: "Pockets", or the bag's name.
+fn pouch_name(items: &[ItemDef], inv: &zombye_sim::Inventory, p: Pouch) -> String {
+    p.slot().and_then(|s| inv.slot(s)).and_then(|bag| items.get(bag.item as usize)).map_or("Pockets".into(), |d| d.name.clone())
+}
+
+/// Where a pouch is carried, after its name.
+fn pouch_where(p: Pouch) -> &'static str {
+    match p {
+        Pouch::Pockets => "",
+        Pouch::Back => "on your back",
+        Pouch::Shoulder => "on your shoulder",
+        Pouch::Hand => "in your hand",
+        Pouch::OffHand => "in your other hand",
+    }
+}
+
+// ---- The frame (docs/ui-design.md): top bar, rail, columns, footer ----
+
+/// A column's part that scrolls up and down (never sideways): the wheel moves it
+/// ([`scroll_frame`]), and it comes back where it was after a rebuild ([`Scrolls`]).
+#[derive(Component, Clone, Copy)]
+pub(crate) struct Scroller(usize);
+
+/// How far down each scroller is (gear, you, nearby, make, wounds, skills, condition), in UI pixels.
+#[derive(Resource, Default)]
+pub(crate) struct Scrolls(pub(crate) [f32; 7]);
+
+pub(crate) fn scroller<'a>(c: &'a mut ChildSpawnerCommands, k: usize, y: f32, padding: UiRect, gap: f32) -> EntityCommands<'a> {
+    c.spawn((Scroller(k), ScrollPosition(Vec2::new(0.0, y)), Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, flex_basis: px(0), min_height: px(0), row_gap: px(gap), padding, overflow: Overflow::scroll_y(), ..default() }))
+}
+
+/// The mouse wheel over a column scrolls it.
+fn scroll_frame(mut wheel: MessageReader<bevy::input::mouse::MouseWheel>, panel: Res<InventoryPanel>, window: Query<&Window, With<bevy::window::PrimaryWindow>>, mut scrollers: Query<(&Scroller, &ComputedNode, &UiGlobalTransform, &mut ScrollPosition)>, mut scrolls: ResMut<Scrolls>) {
+    use bevy::input::mouse::MouseScrollUnit;
+    let px = wheel.read().map(|ev| if ev.unit == MouseScrollUnit::Line { ev.y * 40.0 } else { ev.y }).fold(0.0, |a, b| a + b);
+    if px == 0.0 || !panel.open {
+        return;
+    }
+    let Some(cursor) = window.single().ok().and_then(|w| w.physical_cursor_position()) else { return };
+    for (which, node, at, mut pos) in &mut scrollers {
+        if !node.contains_point(*at, cursor) {
+            continue;
+        }
+        // Physical pixels to UI pixels, as `ScrollPosition` is.
+        let max = (node.content_size.y - node.size.y) * node.inverse_scale_factor();
+        let y = crate::hud::scrolled(pos.y, px, max);
+        if pos.y != y {
+            pos.y = y;
+        }
+        if let Some(kept) = scrolls.0.get_mut(which.0) {
+            *kept = y;
+        }
+    }
+}
+
+/// The top bar: our mark, the screen's name, the hour, and the way out.
+fn top(c: &mut ChildSpawnerCommands, title: &str, clock: &str) {
+    c.spawn((Node { height: px(flat::TOP_BAR), flex_direction: FlexDirection::Row, align_items: AlignItems::Center, justify_content: JustifyContent::SpaceBetween, padding: UiRect::axes(px(28), px(0)), border: UiRect::bottom(px(1)), flex_shrink: 0.0, ..default() }, BorderColor::all(LINE))).with_children(|b| {
+        b.spawn((Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(18), ..default() }, Pickable::IGNORE)).with_children(|l| {
+            // The mark: a green head with two eyes.
+            l.spawn((Node { width: px(38), height: px(38), border_radius: BorderRadius::MAX, flex_shrink: 0.0, ..default() }, BackgroundColor(flat::GREEN), Pickable::IGNORE)).with_children(|m| {
+                for left in [9.0, 22.0] {
+                    m.spawn((Node { position_type: PositionType::Absolute, left: px(left), top: px(13), width: px(7), height: px(11), border_radius: BorderRadius::MAX, ..default() }, BackgroundColor(INK), Pickable::IGNORE));
+                }
+            });
+            l.spawn((Text::new(title.to_uppercase()), theme::head(flat::DISPLAY), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
+            l.spawn((Text::new(clock.to_string()), font(flat::BODY), TextColor(DIM), TextLayout::no_wrap(), Node { margin: UiRect::top(px(6)), ..default() }, Pickable::IGNORE));
+        });
+        b.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(8), padding: UiRect::axes(px(8), px(6)), ..default() })
+            .with_children(|r| {
+                r.spawn((Text::new("Close"), font(flat::BODY), TextColor(DIM), Pickable::IGNORE));
+                flat::key(r, "Tab");
+            })
+            .observe(|_: On<PointerPress>, mut panel: ResMut<InventoryPanel>| panel.open = false);
+    });
+}
+
+/// The rail down the left: the frame's screens.
+fn rail(mid: &mut ChildSpawnerCommands, tab: Tab) {
+    mid.spawn((Node { width: px(flat::RAIL), flex_direction: FlexDirection::Column, row_gap: px(4), padding: UiRect::top(px(12)), border: UiRect::right(px(1)), flex_shrink: 0.0, ..default() }, BorderColor::all(LINE))).with_children(|r| {
+        for (to, icon, key) in [(Tab::Inventory, "hiking_pack", Some("Tab")), (Tab::Make, "claw_hammer", None), (Tab::Health, "plasters", Some("H")), (Tab::Skills, "magazine", Some("K"))] {
+            rail_tab(r, &format!("{to:?}"), icon, key, tab == to).observe(move |_: On<PointerPress>, mut goto: ResMut<Goto>| goto.0 = Some(to));
+        }
+    });
+}
+
+fn rail_tab<'a>(r: &'a mut ChildSpawnerCommands, label: &str, icon: &str, key: Option<&str>, on: bool) -> EntityCommands<'a> {
+    let rest = if on { flat::GREEN_SOFT } else { Color::NONE };
+    let mut e = r.spawn((Node { height: px(84), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, justify_content: JustifyContent::Center, row_gap: px(6), flex_shrink: 0.0, ..default() }, BackgroundColor(rest)));
+    e.with_children(|t| {
+        if on {
+            t.spawn((Node { position_type: PositionType::Absolute, left: px(0), top: px(0), bottom: px(0), width: px(3), ..default() }, BackgroundColor(flat::GREEN), Pickable::IGNORE));
+        }
+        if let Some(image) = flat::icon(icon, Color::srgba(1.0, 1.0, 1.0, if on { 1.0 } else { 0.55 })) {
+            t.spawn((Node { width: px(32), height: px(32), ..default() }, image, Pickable::IGNORE));
+        }
+        t.spawn((Text::new(label.to_uppercase()), theme::head(flat::SMALL), TextColor(if on { TEXT } else { DIM }), TextLayout::no_wrap(), Pickable::IGNORE));
+        if let Some(k) = key {
+            t.spawn((Node { position_type: PositionType::Absolute, top: px(3), right: px(5), ..default() }, Pickable::IGNORE)).with_children(|c| {
+                c.spawn((Text::new(k.to_string()), font(flat::SMALL), TextColor(flat::FAINT), TextLayout::no_wrap(), Pickable::IGNORE));
+            });
+        }
+    });
+    if !on {
+        flat::hover(&mut e, rest);
+    }
+    e
+}
+
+/// The footer: the latest answer to a request, then what the mouse does.
+fn footer(c: &mut ChildSpawnerCommands, note: Option<(String, bool)>, tab: Tab) {
+    c.spawn((Node { height: px(flat::FOOTER), flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(22), padding: UiRect::axes(px(28), px(0)), border: UiRect::top(px(1)), flex_shrink: 0.0, overflow: Overflow::clip_x(), ..default() }, BorderColor::all(LINE))).with_children(|f| {
+        if let Some((text, ok)) = note {
+            f.spawn((Text::new(text), theme::strong(flat::BODY), TextColor(if ok { OK } else { NO }), TextLayout::no_wrap(), Node { flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
+        }
+        match tab {
+            Tab::Health => {
+                flat::hint(f, &["Click"], "a wound: what it needs, and what you can do");
+                flat::hint(f, &["Right-click"], "stop using an item");
+                flat::hint(f, &["H"], "back to the game");
+                return;
+            }
+            Tab::Skills => {
+                flat::hint(f, &["K"], "back to the game");
+                return;
+            }
+            _ => {}
+        }
+        flat::hint(f, &["Click"], "move");
+        flat::hint(f, &["Drag"], "to a bag, a slot or the floor");
+        flat::hint(f, &["Alt", "Click"], "move one");
+        flat::hint(f, &["Ctrl", "Click"], "pick several");
+        flat::hint(f, &["Shift", "Click"], "pick a range");
+        flat::hint(f, &["Right-click"], "actions");
+        flat::hint(f, &["Shift", "1-9"], "onto the hotbar");
+    });
+}
+
+/// A column's title.
+fn column_title(c: &mut ChildSpawnerCommands, title: &str, right: Option<String>) {
+    c.spawn((Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::FlexEnd, flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|t| {
+        t.spawn((Text::new(title.to_uppercase()), theme::head(flat::TITLE), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
+        if let Some(right) = right {
+            t.spawn((Text::new(right), font(flat::SMALL), TextColor(DIM), TextLayout::no_wrap(), Pickable::IGNORE));
+        }
+    });
+}
+
+/// The places of the Gear column's grid, in reading order (the two hands have cards of their own).
+const GEAR: [Spot; 10] = [Spot::Head, Spot::Face, Spot::Neck, Spot::Torso, Spot::Arms, Spot::Hands, Spot::Legs, Spot::Feet, Spot::Back, Spot::Shoulder];
+/// A slot of the Gear grid (three across in the narrowest column).
+const SLOT: f32 = 92.0;
+
+/// The Gear column: what the hands hold, what is worn and carried place by place, the hotbar,
+/// and at its foot the load.
+fn gear(mid: &mut ChildSpawnerCommands, ctx: &Ctx, listed: &mut Vec<Key>, v: &PrivateView, bar: Option<&crate::hotbar::Hotbar>, y: f32) {
+    let inv = &v.inventory;
+    mid.spawn((Node { width: percent(27), min_width: px(336), max_width: px(500), flex_direction: FlexDirection::Column, flex_shrink: 0.0, border: UiRect::right(px(1)), ..default() }, BorderColor::all(LINE))).with_children(|col| {
+        scroller(col, 0, y, UiRect::new(px(20), px(20), px(18), px(16)), 8.0).with_children(|s| {
+            column_title(s, "Gear", None);
+            for (spot, label, empty) in [(Spot::Hand, "Main hand", "Nothing: your fists"), (Spot::OffHand, "Off hand", "Nothing")] {
+                ctx.hand_card(listed, s, body::lines(ctx.items, inv, spot).first().copied(), label, empty, if spot == Spot::Hand { Slot::Hand } else { Slot::OffHand });
+            }
+            s.spawn((DropTo::Gear, Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: px(8), row_gap: px(8), flex_shrink: 0.0, ..default() })).with_children(|g| {
+                for spot in GEAR {
+                    let here = body::lines(ctx.items, inv, spot);
+                    // (Nothing shipped is listed at the arms: sleeves come with the torso's garment.)
+                    if here.is_empty() && spot != Spot::Arms {
+                        g.spawn((Node { width: px(SLOT), height: px(SLOT), border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(flat::RADIUS)), flex_shrink: 0.0, ..default() }, BorderColor::all(LINE))).with_children(|e| {
+                            e.spawn((Text::new(spot.label().to_uppercase()), theme::head(flat::SMALL), TextColor(flat::FAINT), TextLayout::no_wrap(), Node { position_type: PositionType::Absolute, top: px(4), left: px(7), ..default() }, Pickable::IGNORE));
+                        });
+                    }
+                    for l in here {
+                        listed.push(l.key());
+                        ctx.tile(g, &l, Some(spot.label()), Lead::Nothing, l.stack.count as u32, String::new(), ctx.act(&l, Place::Carried, Vec::new()), ctx.picked.keys.contains(&l.key()), SLOT);
+                    }
+                }
+            });
+            if let Some(bar) = bar {
+                s.spawn((Text::new("HOTBAR"), theme::head(flat::SMALL), TextColor(DIM), Node { margin: UiRect::top(px(8)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
+                s.spawn((Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: px(6), row_gap: px(6), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|h| {
+                    for (k, id) in bar.slots.iter().enumerate() {
+                        let def = id.as_ref().and_then(|id| ctx.items.iter().position(|d| d.id == *id));
+                        let have = def.is_some_and(|i| crate::hotbar::count(inv, i as u16) > 0);
+                        h.spawn((DropTo::Hotbar(k), Node { width: px(44), height: px(44), justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(flat::RADIUS)), flex_shrink: 0.0, ..default() }, BorderColor::all(LINE), BackgroundColor(if def.is_some() { ROW } else { Color::NONE }), Pickable::IGNORE)).with_children(|c| {
+                            if let Some(i) = def {
+                                flat::item_icon(c, ctx.items.get(i), 30.0, if have { 1.0 } else { 0.35 });
+                            }
+                            c.spawn((Text::new((k + 1).to_string()), font(flat::SMALL), TextColor(flat::FAINT), Node { position_type: PositionType::Absolute, top: px(0), left: px(4), ..default() }, Pickable::IGNORE));
+                        });
+                    }
+                });
+            }
+        });
+        // The load, always in view.
+        let k = &v.carry;
+        let (word, color) = match k.burden {
+            Burden::None => ("Fine", flat::GREEN),
+            Burden::Burdened => ("Burdened", flat::AMBER),
+            Burden::Heavy => ("Heavy", flat::AMBER),
+            Burden::Overloaded => ("Overloaded", flat::RED_TEXT),
+        };
+        col.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(6), padding: UiRect::axes(px(20), px(12)), border: UiRect::top(px(1)), flex_shrink: 0.0, ..default() }, BorderColor::all(LINE), Pickable::IGNORE)).with_children(|l| {
+            l.spawn((Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::FlexEnd, ..default() }, Pickable::IGNORE)).with_children(|t| {
+                t.spawn((Text::new("LOAD"), theme::head(flat::HEAD), TextColor(DIM), Pickable::IGNORE));
+                t.spawn((Node { flex_direction: FlexDirection::Row, align_items: AlignItems::FlexEnd, column_gap: px(5), ..default() }, Pickable::IGNORE)).with_children(|n| {
+                    n.spawn((Text::new(format!("{:.1}", k.weight_kg)), theme::strong(flat::TITLE), TextColor(TEXT), Pickable::IGNORE));
+                    n.spawn((Text::new(format!("/ {:.1} kg", k.limit_kg)), font(flat::BODY), TextColor(DIM), Node { margin: UiRect::bottom(px(3)), ..default() }, Pickable::IGNORE));
+                });
+            });
+            flat::bar(l, k.weight_kg / k.limit_kg.max(0.1), color, Node { height: px(5), ..default() });
+            l.spawn((Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, ..default() }, Pickable::IGNORE)).with_children(|t| {
+                t.spawn((Text::new(word), theme::strong(flat::SMALL), TextColor(color), Pickable::IGNORE));
+                t.spawn((Text::new(format!("{:.1} / {:.0} L of room used", k.used_l, k.room_l)), font(flat::SMALL), TextColor(DIM), Pickable::IGNORE));
+            });
+        });
+    });
+}
+
+/// The You column: the search, sort and chips, then a pane for the pockets and for each bag,
+/// each with its own room; with stacks picked, where to send them, at its foot.
+#[allow(clippy::too_many_arguments)]
+fn you(mid: &mut ChildSpawnerCommands, ctx: &Ctx, listed: &mut Vec<Key>, v: &PrivateView, pouches: &[(Pouch, String, f32, f32)], right: Place, y: f32, picked: (usize, f32)) {
+    let inv = &v.inventory;
+    mid.spawn((DropTo::Place(Place::Carried), Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, flex_basis: px(0), min_width: px(0), ..default() })).with_children(|col| {
+        col.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(10), padding: UiRect::new(px(24), px(24), px(18), px(10)), flex_shrink: 0.0, ..default() }).with_children(|h| {
+            find_row(h, ctx.find, ctx.ui);
+            h.spawn(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: px(6), row_gap: px(6), ..default() }).with_children(|bar| {
+                flat::chip(bar, "All", ctx.find.groups.is_empty()).observe(|_: On<PointerPress>, mut find: ResMut<Find>| find.groups.clear());
+                for g in Group::ALL {
+                    flat::chip(bar, g.name(), ctx.find.groups.contains(&g)).observe(move |_: On<PointerPress>, mut find: ResMut<Find>| find.toggle(g));
+                }
+            });
+            let n: u32 = inv.carried.iter().map(|s| s.count as u32).sum();
+            let kg: f32 = inv.carried.iter().map(|s| stack_kg(ctx.items, s)).sum();
+            column_title(h, "You", Some(format!("{n} {}, {kg:.1} kg carried", if n == 1 { "thing" } else { "things" })));
+        });
+        scroller(col, 1, y, UiRect::new(px(24), px(24), px(0), px(16)), 12.0).with_children(|s| {
+            for (p, name, room, used) in pouches {
+                // (A stack whose pouch isn't there, should that ever be: with the pockets.)
+                let here = |s: &ItemStack| s.home == *p || (*p == Pouch::Pockets && !pouches.iter().any(|x| x.0 == s.home));
+                let lines: Vec<Line> = inv.carried.iter().enumerate().filter(|(_, s)| here(s)).map(|(k, s)| Line { from: Place::Carried, index: k as u32, stack: *s }).collect();
+                let pane = Pane::Pouch(*p);
+                let shut = ctx.ui.shut.contains(&pane);
+                let bag = p.slot().and_then(|slot| inv.slot(slot)).and_then(|b| ctx.items.get(b.item as usize));
+                drop_pane(s, Place::Pouch(*p)).with_children(|s| {
+                    pane_head(s, Head { pane, def: bag.or_else(|| ctx.items.iter().find(|d| d.id == "jeans")), name, sub: pouch_where(*p).into(), right: format!("{used:.1} / {room:.0} L"), share: Some(used / room.max(0.1)), shut, count: lines.len(), target: None });
+                    if !shut {
+                        ctx.pane_body(listed, s, lines, right, "Empty");
+                    }
+                });
+            }
+        });
+        if picked.0 > 0 {
+            col.spawn((Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, align_items: AlignItems::Center, column_gap: px(8), row_gap: px(6), margin: UiRect::new(px(24), px(24), px(0), px(12)), padding: UiRect::axes(px(12), px(8)), border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(flat::RADIUS)), flex_shrink: 0.0, ..default() }, BorderColor::all(flat::GREEN), BackgroundColor(flat::GREEN_SOFT))).with_children(|l| {
+                l.spawn((Text::new(format!("{} picked, {:.1} kg", picked.0, picked.1)), theme::strong(flat::BODY), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
+                l.spawn((Text::new("move to"), font(flat::BODY), TextColor(DIM), TextLayout::no_wrap(), Pickable::IGNORE));
+                flat::chip(l, "Bags", false).observe(|_: On<PointerPress>, mut send: ResMut<SendPicked>| send.0 = Some(Place::Carried));
+                if pouches.len() > 1 {
+                    for (p, name, ..) in pouches {
+                        let p = *p;
+                        flat::chip(l, name, false).observe(move |_: On<PointerPress>, mut send: ResMut<SendPicked>| send.0 = Some(Place::Pouch(p)));
+                    }
+                }
+                if let Some((id, name)) = ctx.open {
+                    flat::chip(l, name, false).observe(move |_: On<PointerPress>, mut send: ResMut<SendPicked>| send.0 = Some(Place::Container(id)));
+                }
+                flat::chip(l, "Floor", false).observe(|_: On<PointerPress>, mut send: ResMut<SendPicked>| send.0 = Some(Place::Ground));
+                flat::chip(l, "Clear", false).observe(|_: On<PointerPress>, mut picked: ResMut<Picked>| *picked = Picked::default());
+            });
+        }
+    });
+}
+
+/// The search box, how the panes are sorted, and how they show their things (tiles or rows).
+fn find_row(h: &mut ChildSpawnerCommands, find: &Find, ui: &PanelUi) {
+    h.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(8), ..default() }).with_children(|r| {
+        let (text, color) = match (find.query.is_empty(), find.typing) {
+            (true, false) => ("Search".to_string(), DIM),
+            (_, true) => (format!("{}_", find.query), TEXT),
+            (false, false) => (find.query.clone(), TEXT),
+        };
+        r.spawn((
+            Node { flex_grow: 1.0, flex_basis: px(0), min_width: px(0), height: px(38), flex_direction: FlexDirection::Row, align_items: AlignItems::Center, justify_content: JustifyContent::SpaceBetween, padding: UiRect::axes(px(12), px(0)), border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(flat::RADIUS)), overflow: Overflow::clip_x(), ..default() },
+            BackgroundColor(ROW),
+            BorderColor::all(if find.typing { flat::GREEN } else { LINE }),
+        ))
+        .with_children(|b| {
+            b.spawn((Text::new(text), font(flat::BODY), TextColor(color), TextLayout::no_wrap(), Pickable::IGNORE));
+            if !find.typing {
+                flat::key(b, "/");
+            }
+        })
+        .observe(|_: On<PointerPress>, mut find: ResMut<Find>| find.typing = true);
+        if !find.query.is_empty() || !find.groups.is_empty() {
+            flat::chip(r, "Clear", false).observe(|_: On<PointerPress>, mut find: ResMut<Find>| *find = Find::default());
+        }
+        flat::chip(r, &format!("Sort: {}", ui.sort.name()), false).observe(|_: On<PointerPress>, mut ui: ResMut<PanelUi>| ui.sort.next());
+        flat::chip(r, if ui.rows { "View: rows" } else { "View: tiles" }, false).observe(|_: On<PointerPress>, mut ui: ResMut<PanelUi>| ui.rows = !ui.rows);
+    });
+}
+
+/// The Nearby column: the open container and the floor in reach, each a pane; a press on a
+/// pane's name makes it the one your things go to. At its foot, everything across at once.
+fn nearby(mid: &mut ChildSpawnerCommands, ctx: &Ctx, listed: &mut Vec<Key>, v: &PrivateView, floor: &[(u32, ItemStack)], right: Place, y: f32) {
+    let items = ctx.items;
+    mid.spawn((DropTo::Place(right), Node { width: percent(27), min_width: px(300), max_width: px(500), flex_direction: FlexDirection::Column, flex_shrink: 0.0, border: UiRect::left(px(1)), ..default() }, BorderColor::all(LINE))).with_children(|col| {
+        col.spawn((Node { flex_direction: FlexDirection::Column, padding: UiRect::new(px(20), px(20), px(18), px(10)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|h| column_title(h, "Nearby", None));
+        let to_floor = matches!(right, Place::Ground);
+        scroller(col, 2, y, UiRect::new(px(20), px(20), px(0), px(16)), 12.0).with_children(|s| {
+            if let Some(cv) = &v.open {
+                let used = zombye_sim::inventory::stacks_volume(items, &cv.stacks);
+                let shut = ctx.ui.shut.contains(&Pane::Container);
+                drop_pane(s, Place::Container(cv.id)).with_children(|s| {
+                    pane_head(s, Head { pane: Pane::Container, def: None, name: &cv.name, sub: if to_floor { String::new() } else { "your things go here".into() }, right: format!("{used:.1} / {:.0} L", cv.room_l), share: Some(used / cv.room_l.max(0.1)), shut, count: cv.stacks.len(), target: Some(!to_floor) });
+                    if !shut {
+                        ctx.pane_body(listed, s, cv.stacks.iter().enumerate().map(|(k, s)| Line { from: Place::Container(cv.id), index: k as u32, stack: *s }).collect(), Place::Carried, "Empty");
+                    }
+                });
+            }
+            let kg: f32 = floor.iter().map(|(_, s)| stack_kg(items, s)).sum();
+            let shut = ctx.ui.shut.contains(&Pane::Floor);
+            let sub = if v.open.is_some() && to_floor { "your things go here" } else { "within reach" };
+            drop_pane(s, Place::Ground).with_children(|s| {
+                pane_head(s, Head { pane: Pane::Floor, def: None, name: "Floor", sub: sub.into(), right: format!("{:.1} kg", kg.max(0.0)), share: None, shut, count: floor.len(), target: Some(to_floor && v.open.is_some()) });
+                if !shut {
+                    ctx.pane_body(listed, s, floor.iter().map(|(id, s)| Line { from: Place::Ground, index: *id, stack: *s }).collect(), Place::Carried, "Nothing within reach");
+                }
+            });
+            if v.open.is_none() {
+                dim(s, "E: search the cupboard, drawer or fridge you face".into());
+            }
+        });
+        col.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(8), padding: UiRect::new(px(20), px(20), px(10), px(14)), flex_shrink: 0.0, ..default() }).with_children(|b| {
+            let across = if to_floor { Column::Floor } else { Column::Container };
+            flat::button(b, "Take all", true).observe(move |_: On<PointerPress>, mut all: ResMut<MoveAll>| all.0 = Some(across));
+            flat::button(b, if to_floor { "Drop mine" } else { "Put mine in" }, false).observe(|_: On<PointerPress>, mut all: ResMut<MoveAll>| all.0 = Some(Column::You));
+        });
+    });
+}
+
+/// A pane's head and things together: somewhere a dragged thing can be dropped (`to`).
+fn drop_pane<'a>(s: &'a mut ChildSpawnerCommands, to: Place) -> EntityCommands<'a> {
+    s.spawn((DropTo::Place(to), Node { flex_direction: FlexDirection::Column, row_gap: px(12), flex_shrink: 0.0, ..default() }))
+}
+
+/// A pane that folds: the pockets or a bag, the open container, the floor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pane {
+    Pouch(Pouch),
+    Container,
+    Floor,
+}
+
+/// What a pane's head says.
+struct Head<'a> {
+    pane: Pane,
+    /// The bag, for its icon.
+    def: Option<&'a ItemDef>,
+    name: &'a str,
+    /// After the name, quietly: where the bag is carried, or that this pane is the target.
+    sub: String,
+    /// At the right end: how full.
+    right: String,
+    /// How full, as the line under the head (`None`: no limit, a plain hairline).
+    share: Option<f32>,
+    shut: bool,
+    count: usize,
+    /// A pane of the Nearby column: whether your things go to it (a press on its head makes it so).
+    target: Option<bool>,
+}
+
+/// A pane's head: a fold mark, its name and how full it is, over a thin bar of that.
+fn pane_head(s: &mut ChildSpawnerCommands, h: Head) {
+    let pane = h.pane;
+    let mut e = s.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(6), flex_shrink: 0.0, ..default() });
+    e.with_children(|c| {
+        c.spawn((Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(8), ..default() }, Pickable::IGNORE)).with_children(|r| {
+            r.spawn((Node { width: px(20), height: px(20), justify_content: JustifyContent::Center, align_items: AlignItems::Center, border_radius: BorderRadius::all(px(4)), flex_shrink: 0.0, ..default() }, BackgroundColor(CHIP)))
+                .with_children(|f| {
+                    f.spawn((Text::new(if h.shut { "+" } else { "-" }), theme::strong(flat::SMALL), TextColor(TEXT), Pickable::IGNORE));
+                })
+                .observe(move |mut ev: On<PointerPress>, mut ui: ResMut<PanelUi>| {
+                    ev.propagate(false);
+                    match ui.shut.iter().position(|p| *p == pane) {
+                        Some(i) => {
+                            ui.shut.remove(i);
+                        }
+                        None => ui.shut.push(pane),
+                    }
+                });
+            if h.def.is_some() {
+                flat::item_icon(r, h.def, 24.0, 1.0);
+            }
+            r.spawn((Text::new(h.name.to_uppercase()), theme::head(flat::HEAD), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
+            if !h.sub.is_empty() {
+                r.spawn((Text::new(h.sub), font(flat::SMALL), TextColor(if h.target == Some(true) { flat::GREEN } else { DIM }), TextLayout::no_wrap(), Pickable::IGNORE));
+            }
+            r.spawn((Node { flex_grow: 1.0, ..default() }, Pickable::IGNORE));
+            if h.shut {
+                r.spawn((Text::new(format!("{} {}", h.count, if h.count == 1 { "stack" } else { "stacks" })), font(flat::SMALL), TextColor(DIM), TextLayout::no_wrap(), Pickable::IGNORE));
+            }
+            r.spawn((Text::new(h.right), theme::strong(flat::SMALL), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
+        });
+        match h.share {
+            Some(share) => flat::bar(c, share, if share > 1.0 { flat::RED } else if share > 0.85 { flat::AMBER } else { flat::GREEN }, Node::default()),
+            None => flat::line(c),
+        }
+    });
+    if h.target.is_some() {
+        e.observe(move |_: On<PointerPress>, mut ui: ResMut<PanelUi>| {
+            let floor = pane == Pane::Floor;
+            if ui.floor != floor {
+                ui.floor = floor;
+            }
+        });
+    }
+}
+
+/// The Make screen: the recipes, in the frame's one wide column.
+fn make_column(mid: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f32, flight: &InFlight, ui: &MakeUi, y: f32, heat: bool) {
+    mid.spawn(Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, flex_basis: px(0), min_width: px(0), max_width: px(1000), ..default() }).with_children(|col| {
+        col.spawn((Node { flex_direction: FlexDirection::Column, padding: UiRect::new(px(24), px(24), px(18), px(10)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|h| {
+            column_title(h, "Things to make", Some("Click a group to open it. Right-click a recipe to pin it (*).".into()));
+        });
+        scroller(col, 3, y, UiRect::new(px(24), px(24), px(0), px(16)), 3.0).with_children(|s| {
+            if join.recipes.is_empty() {
+                dim(s, "Nothing to make".into());
+            }
+            make(s, join, v, busy, flight, ui, heat);
+        });
+    });
 }
 
 /// What it takes to say how worn a weapon is: the weapons, and the share of its life under
@@ -1194,6 +1581,9 @@ struct Ctx<'a> {
     view: Option<&'a PrivateView>,
     /// The open container (id, name), for the menus.
     open: Option<(u32, &'a str)>,
+    /// The pockets and bags carried (which, name), for the menus.
+    pouches: &'a [(Pouch, String)],
+    recipes: &'a [crafting::RecipeDef],
 }
 
 impl Ctx<'_> {
@@ -1203,7 +1593,15 @@ impl Ctx<'_> {
 
     /// What a click on the row of `l` (and `more`, the other stacks it stands for) does.
     fn act(&self, l: &Line, to: Place, more: Vec<Line>) -> RowAction {
-        RowAction { stack: l.stack, title: name_of(self.items, self.wear, self.now, &l.stack), left: Some((l.from, l.index, to)), more, menu: menu_entries(self.me, self.items, l.from, l.index, &l.stack, self.open), craft: None }
+        RowAction { stack: l.stack, title: name_of(self.items, self.wear, self.now, &l.stack), left: Some((l.from, l.index, to)), more, menu: menu_entries(self.me, self.items, l.from, l.index, &l.stack, self.open, self.pouches, &self.makes(l)), craft: None }
+    }
+
+    /// The recipes a thing lying nearby would let us make ([`makes_with`]); none for our own.
+    fn makes(&self, l: &Line) -> Vec<(u16, String, u16)> {
+        match (l.from, self.view) {
+            (Place::Container(_) | Place::Ground, Some(v)) => makes_with(self.recipes, self.items, &v.inventory, &l.stack),
+            _ => Vec::new(),
+        }
     }
 
     /// What follows the name, dimmed: how fresh, goes left, uses left in the opened one (a box of
@@ -1231,6 +1629,7 @@ impl Ctx<'_> {
         Cells {
             lead,
             swatch: def.map(|d| Color::srgb(d.color.0, d.color.1, d.color.2)),
+            icon: def.map(|d| d.id.clone()),
             name: def.map_or("?".into(), |d| d.name.clone()),
             note: self.note(l),
             kind: kind.map_or_else(|| def.map_or("", |d| Group::of(d.category).name()).to_string(), str::to_string),
@@ -1238,13 +1637,6 @@ impl Ctx<'_> {
             kg: format!("{:.1}", stack_kg(self.items, &l.stack)),
             faint: false,
         }
-    }
-
-    /// The row of something held or worn: its slot where the others say their type; a click
-    /// takes it off into the bags.
-    fn slot_row(&self, listed: &mut Vec<Key>, col: &mut ChildSpawnerCommands, l: Line, slot: &str) {
-        listed.push(l.key());
-        row(col, self.cells(&l, Lead::Nothing, Some(slot)), self.act(&l, Place::Carried, Vec::new()), self.picked.keys.contains(&l.key()));
     }
 
     /// A pane's rows from its stacks (`lines`: the ones the search and chips leave get a row), a
@@ -1276,6 +1668,220 @@ impl Ctx<'_> {
             }
         }
     }
+
+    /// A pane's things as tiles that wrap (never a line wider than the pane): the same stacks,
+    /// order and folding as [`Ctx::rows`]. Several stacks of one item are one tile with their
+    /// count together and a fold mark; opened, each stack is a tile after it.
+    fn tiles(&self, listed: &mut Vec<Key>, col: &mut ChildSpawnerCommands, lines: impl Iterator<Item = Line>, to: Place) {
+        let is_picked = |l: &Line| self.picked.keys.contains(&l.key());
+        col.spawn(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: px(8), row_gap: px(8), flex_shrink: 0.0, ..default() }).with_children(|wrap| {
+            for stacks in arrange(self.items, lines.filter(|l| self.shows(l.from, l.index, &l.stack)), self.ui.sort) {
+                let first = stacks[0];
+                if stacks.len() == 1 {
+                    listed.push(first.key());
+                    self.tile(wrap, &first, None, Lead::Nothing, first.stack.count as u32, self.note(&first), self.act(&first, to, Vec::new()), is_picked(&first), flat::TILE);
+                    continue;
+                }
+                let fold = (Column::of(first.from), first.stack.item);
+                let open = self.ui.unfolded(fold.0, fold.1) || (stacks.iter().any(is_picked) && !stacks.iter().all(is_picked));
+                let note = if stacks.iter().any(|l| self.flight.asked_for(l.from, l.index, l.stack.item) > 0) { "moving".into() } else { String::new() };
+                self.tile(wrap, &first, None, Lead::Fold { open, key: fold }, stacks.iter().map(|l| l.stack.count as u32).sum(), note, self.act(&first, to, stacks[1..].to_vec()), stacks.iter().all(is_picked), flat::TILE);
+                for l in &stacks {
+                    listed.push(l.key());
+                    if open {
+                        self.tile(wrap, l, None, Lead::Child, l.stack.count as u32, self.note(l), self.act(l, to, Vec::new()), is_picked(l), flat::TILE);
+                    }
+                }
+            }
+        });
+    }
+
+    /// One thing as a tile, `size` square: its icon, how many at the top right, its name along
+    /// the foot (one line, cut off if too long: the hover card has it whole), and at the top left
+    /// `label` (the place it is worn at) or else what there is to say about it (`note`: stale,
+    /// 2/3 left, moving). A weapon that wears shows how much life it has left as a thin bar.
+    #[allow(clippy::too_many_arguments)]
+    fn tile(&self, wrap: &mut ChildSpawnerCommands, l: &Line, label: Option<&str>, lead: Lead, qty: u32, note: String, action: RowAction, picked: bool, size: f32) {
+        let def = self.items.get(l.stack.item as usize);
+        let rest = if picked { ROW_PICKED } else { ROW };
+        let moving = self.flight.asked_for(l.from, l.index, l.stack.item) > 0;
+        let edge = match (picked, lead) {
+            (true, _) => flat::GREEN,
+            (false, Lead::Child) => Color::srgba(0.553, 0.69, 0.42, 0.45),
+            _ => LINE,
+        };
+        let mut e = wrap.spawn((Node { width: px(size), height: px(size), border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(flat::RADIUS)), flex_shrink: 0.0, overflow: Overflow::clip(), ..default() }, BorderColor::all(edge), BackgroundColor(rest)));
+        e.with_children(|t| {
+            let icon = (size * 0.5).round();
+            t.spawn((Node { position_type: PositionType::Absolute, left: px((size - 2.0 - icon) / 2.0), top: px((size - icon) / 2.0 - 8.0), ..default() }, Pickable::IGNORE)).with_children(|i| flat::item_icon(i, def, icon, if moving { 0.4 } else { 1.0 }));
+            // Top left: the fold mark, then the place or the note.
+            t.spawn((Node { position_type: PositionType::Absolute, left: px(5), top: px(3), max_width: px(size - 38.0), flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(4), overflow: Overflow::clip_x(), ..default() }, Pickable::IGNORE)).with_children(|tl| {
+                if let Lead::Fold { open, key } = lead {
+                    tl.spawn((Node { width: px(18), height: px(18), justify_content: JustifyContent::Center, align_items: AlignItems::Center, border_radius: BorderRadius::all(px(4)), flex_shrink: 0.0, ..default() }, BackgroundColor(CHIP)))
+                        .with_children(|f| {
+                            f.spawn((Text::new(if open { "-" } else { "+" }), theme::strong(flat::SMALL), TextColor(TEXT), Pickable::IGNORE));
+                        })
+                        .observe(move |mut ev: On<PointerPress>, mut ui: Option<ResMut<PanelUi>>| {
+                            ev.propagate(false);
+                            if let (PointerButton::Primary, Some(ui)) = (ev.button, ui.as_mut()) {
+                                ui.toggle_fold(key);
+                            }
+                        });
+                }
+                match label {
+                    Some(label) => {
+                        tl.spawn((Text::new(label.to_uppercase()), theme::head(flat::SMALL), TextColor(DIM), TextLayout::no_wrap(), Node { flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
+                    }
+                    None if !note.is_empty() => {
+                        tl.spawn((Text::new(note.clone()), font(flat::SMALL), TextColor(note_colour(&note)), TextLayout::no_wrap(), Node { flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
+                    }
+                    None => {}
+                }
+            });
+            if qty > 1 {
+                t.spawn((Text::new(format!("x{qty}")), theme::strong(flat::SMALL), TextColor(TEXT), TextLayout::no_wrap(), Node { position_type: PositionType::Absolute, right: px(6), top: px(3), ..default() }, Pickable::IGNORE));
+            }
+            // The name: centred when it fits, else from the start and cut off.
+            let mut name = def.map_or("?".to_string(), |d| d.name.clone());
+            let wide = |n: &str| theme::width(theme::Face::Text, n, flat::SMALL) > size - 12.0;
+            let fits = !wide(&name);
+            if !fits {
+                // Too long for the tile: cut, with dots (the card on hover has it whole).
+                while name.chars().count() > 3 && wide(&format!("{}...", name.trim_end())) {
+                    name.pop();
+                }
+                name = format!("{}...", name.trim_end());
+            }
+            t.spawn((Node { position_type: PositionType::Absolute, left: px(5), right: px(5), bottom: px(7), justify_content: if fits { JustifyContent::Center } else { JustifyContent::FlexStart }, overflow: Overflow::clip_x(), ..default() }, Pickable::IGNORE)).with_children(|n| {
+                n.spawn((Text::new(name), font(flat::SMALL), TextColor(TEXT), TextLayout::no_wrap(), Node { flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
+            });
+            // A weapon that wears: the life it has left.
+            if let Some((left, of, state)) = zombye_sim::wear::condition(self.items, self.wear.weapons, &l.stack, self.wear.battered_below) {
+                use zombye_sim::wear::Condition;
+                let colour = match state {
+                    Condition::Good => flat::GREEN,
+                    Condition::Broken => flat::RED,
+                    _ => flat::AMBER,
+                };
+                flat::bar(t, left as f32 / (of as f32).max(1.0), colour, Node { position_type: PositionType::Absolute, left: px(8), right: px(8), bottom: px(3), height: px(2), ..default() });
+            }
+        });
+        clickable(&mut e, action, rest);
+    }
+
+    /// What a hand holds, as a card across the Gear column (or that it holds nothing).
+    fn hand_card(&self, listed: &mut Vec<Key>, col: &mut ChildSpawnerCommands, l: Option<Line>, label: &str, empty: &str, slot: Slot) {
+        let drop = DropTo::Place(Place::Slot(slot));
+        let node = Node { height: px(64), flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(12), padding: UiRect::axes(px(12), px(0)), border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(flat::RADIUS)), flex_shrink: 0.0, overflow: Overflow::clip_x(), ..default() };
+        let Some(l) = l else {
+            col.spawn((drop, node, BorderColor::all(LINE), Pickable::IGNORE)).with_children(|c| {
+                c.spawn((Node { width: px(40), flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
+                c.spawn((Node { flex_direction: FlexDirection::Column, ..default() }, Pickable::IGNORE)).with_children(|t| {
+                    t.spawn((Text::new(label.to_uppercase()), theme::head(flat::SMALL), TextColor(flat::FAINT), TextLayout::no_wrap(), Pickable::IGNORE));
+                    t.spawn((Text::new(empty.to_string()), font(flat::BODY), TextColor(DIM), TextLayout::no_wrap(), Pickable::IGNORE));
+                });
+            });
+            return;
+        };
+        listed.push(l.key());
+        let picked = self.picked.keys.contains(&l.key());
+        let rest = if picked { ROW_PICKED } else { ROW };
+        let def = self.items.get(l.stack.item as usize);
+        let note = self.note(&l);
+        let mut e = col.spawn((drop, node, BorderColor::all(if picked { flat::GREEN } else { LINE }), BackgroundColor(rest)));
+        e.with_children(|c| {
+            flat::item_icon(c, def, 40.0, 1.0);
+            c.spawn((Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, flex_basis: px(0), min_width: px(0), overflow: Overflow::clip_x(), ..default() }, Pickable::IGNORE)).with_children(|t| {
+                t.spawn((Text::new(label.to_uppercase()), theme::head(flat::SMALL), TextColor(DIM), TextLayout::no_wrap(), Pickable::IGNORE));
+                t.spawn((Text::new(def.map_or("?".to_string(), |d| d.name.clone())), theme::strong(flat::BODY), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
+            });
+            c.spawn((Node { flex_direction: FlexDirection::Column, align_items: AlignItems::FlexEnd, flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|r| {
+                r.spawn((Text::new(format!("{:.1} kg", stack_kg(self.items, &l.stack))), font(flat::SMALL), TextColor(DIM), TextLayout::no_wrap(), Pickable::IGNORE));
+                if !note.is_empty() {
+                    r.spawn((Text::new(note.clone()), font(flat::SMALL), TextColor(note_colour(&note)), TextLayout::no_wrap(), Pickable::IGNORE));
+                }
+            });
+        });
+        clickable(&mut e, self.act(&l, Place::Carried, Vec::new()), rest);
+    }
+
+    /// A pane's things: tiles, or rows; or a line saying there are none (or none that match).
+    fn pane_body(&self, listed: &mut Vec<Key>, col: &mut ChildSpawnerCommands, lines: Vec<Line>, to: Place, empty: &str) {
+        if lines.is_empty() {
+            dim(col, empty.into());
+            return;
+        }
+        if !lines.iter().any(|l| self.shows(l.from, l.index, &l.stack)) {
+            dim(col, "Nothing that matches".into());
+            return;
+        }
+        if self.ui.rows {
+            col.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(1), flex_shrink: 0.0, ..default() }).with_children(|rows| self.rows(listed, rows, lines.into_iter(), to));
+        } else {
+            self.tiles(listed, col, lines.into_iter(), to);
+        }
+    }
+}
+
+/// The colour of what a tile says about its thing: the worst red, a warning amber, the rest quiet.
+fn note_colour(note: &str) -> Color {
+    if ["mouldy", "broken"].iter().any(|w| note.contains(w)) {
+        flat::RED_TEXT
+    } else if ["stale", "battered", "worn", "empty"].iter().any(|w| note.contains(w)) {
+        flat::AMBER
+    } else {
+        DIM
+    }
+}
+
+/// The pockets and each bag carried, with the name a menu or a chip calls it by.
+fn pouch_names(items: &[ItemDef], inv: &zombye_sim::Inventory, pockets_l: f32) -> Vec<(Pouch, String)> {
+    inv.pouches(items, pockets_l).into_iter().map(|(p, ..)| (p, pouch_name(items, inv, p).to_lowercase())).collect()
+}
+
+/// The thing the pointer is on (its tile or row, its stack, and how many stacks that stands
+/// for), for the card that says the rest about it ([`draw_card`]).
+#[derive(Resource, Default)]
+struct HoverCard(Option<(Entity, ItemStack, usize)>);
+
+#[derive(Component)]
+struct CardRoot;
+
+/// The hover card: a thing's whole name, its kind and weight, and what there is to say about
+/// it, beside the pointer. Drawn when what the pointer is on changes.
+#[allow(clippy::too_many_arguments)]
+fn draw_card(mut commands: Commands, card: Res<HoverCard>, panel: Res<InventoryPanel>, menu: Res<ItemMenu>, join: Res<JoinInfo>, link: Res<ServerLink>, ui: Res<UiScale>, windows: Query<&Window, With<bevy::window::PrimaryWindow>>, mut drawn: Local<Option<Entity>>, roots: Query<Entity, With<CardRoot>>) {
+    let want = card.0.filter(|_| panel.open && menu.open.is_none());
+    if want.map(|w| w.0) == *drawn {
+        return;
+    }
+    *drawn = want.map(|w| w.0);
+    for e in &roots {
+        commands.entity(e).despawn();
+    }
+    let Some((_, stack, n)) = want else { return };
+    let Some(def) = join.items.get(stack.item as usize) else { return };
+    let Some(window) = windows.single().ok() else { return };
+    let Some(cursor) = window.cursor_position() else { return };
+    let size = Vec2::new(280.0, 120.0);
+    let at = (cursor / ui.0.max(0.1) + Vec2::new(18.0, 18.0)).min((Vec2::new(window.width(), window.height()) / ui.0.max(0.1) - size).max(Vec2::ZERO));
+    let state = state_of(&join.items, Wear::of(&join), link.curr.game_minute, &stack);
+    let mut facts = vec![Group::of(def.category).name().to_string(), format!("{:.1} kg", def.weight_kg), format!("{:.1} L", def.volume_l)];
+    if stack.count > 1 {
+        facts.push(format!("{} in the stack", stack.count));
+    }
+    if n > 1 {
+        facts.push(format!("{n} stacks"));
+    }
+    commands
+        .spawn((CardRoot, GlobalZIndex(19), Node { position_type: PositionType::Absolute, left: px(at.x), top: px(at.y), max_width: px(size.x), flex_direction: FlexDirection::Column, row_gap: px(3), padding: UiRect::axes(px(12), px(9)), border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(8)), ..default() }, BackgroundColor(flat::SOLID), BorderColor::all(Color::srgba(0.949, 0.902, 0.788, 0.25)), Pickable::IGNORE))
+        .with_children(|c| {
+            c.spawn((Text::new(def.name.clone()), theme::strong(flat::BODY), TextColor(TEXT), Pickable::IGNORE));
+            c.spawn((Text::new(facts.join("  ·  ")), font(flat::SMALL), TextColor(DIM), Pickable::IGNORE));
+            if !state.is_empty() {
+                c.spawn((Text::new(state.clone()), font(flat::SMALL), TextColor(note_colour(&state)), Pickable::IGNORE));
+            }
+        });
 }
 
 /// The Make list's own state (#96): which families are open and which recipes are pinned.
@@ -1351,7 +1957,7 @@ enum MakeAct {
 fn make_row(c: &mut ChildSpawnerCommands, label: String, right: String, act: MakeAct, fav: Option<String>, color: Color) {
     let hover = !matches!(act, MakeAct::None);
     c.spawn((
-        Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, column_gap: px(10), padding: UiRect::axes(px(6), px(3)), ..default() },
+        Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, column_gap: px(10), padding: UiRect::axes(px(10), px(6)), border_radius: BorderRadius::all(px(4)), flex_shrink: 0.0, ..default() },
         BackgroundColor(ROW),
     ))
     .with_children(|r| {
@@ -1421,29 +2027,6 @@ fn make(c: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f3
     };
     let can = |k: usize| check(&join.recipes[k]).is_ok() || v.jobs.contains(&JobKind::Craft { recipe: k as u16 });
     let pinned = |k: usize| ui.favs.contains(&join.recipes[k].id);
-    // One line until it's asked for: its title, a fold mark, and how many you can make now.
-    let ready = (0..join.recipes.len()).filter(|&k| can(k)).count();
-    let summary = match (ui.shown, ready) {
-        (true, _) => "click a group to open it; right-click a recipe to pin it (*)".to_string(),
-        (false, 0) => "nothing you can make yet".to_string(),
-        (false, n) => format!("{n} you can make now"),
-    };
-    c.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(8), align_items: AlignItems::Center, margin: UiRect::top(px(4)), ..default() })
-        .with_children(|t| {
-            t.spawn((Node { width: px(W_LEAD + 10.0), justify_content: JustifyContent::Center, ..default() }, theme::button(false), Pickable::IGNORE)).with_children(|f| {
-                f.spawn((Text::new(if ui.shown { "-" } else { "+" }), font(ROW_FONT), TextColor(INK), Pickable::IGNORE));
-            });
-            t.spawn((Text::new("MAKE"), theme::head(HEAD_FONT), TextColor(TEXT), Pickable::IGNORE));
-            t.spawn((Text::new(summary), font(ROW_FONT), TextColor(DIM), Pickable::IGNORE));
-        })
-        .observe(|ev: On<PointerPress>, mut ui: ResMut<MakeUi>| {
-            if ev.button == PointerButton::Primary {
-                ui.shown = !ui.shown;
-            }
-        });
-    if !ui.shown {
-        return;
-    }
     // Pinned first, makeable ones leading.
     let mut favs: Vec<usize> = (0..join.recipes.len()).filter(|&k| pinned(k)).collect();
     favs.sort_by_key(|&k| !can(k));
@@ -1493,174 +2076,6 @@ fn make(c: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f3
     }
 }
 
-/// What a pane says under its title about how full it is: a bar (`share` of it filled; none for
-/// the floor, which has no limit), and a figure at each end of the line under it.
-#[derive(Default)]
-struct Gauge {
-    share: Option<f32>,
-    color: Color,
-    left: String,
-    right: String,
-}
-
-/// What stands at the end of a pane's title.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum PaneTop {
-    /// "pick all" for the stacks the pane shows.
-    PickAll(Column),
-    /// The pane of what you hold and wear: "List" and "Body", the two ways it shows them
-    /// (`body`: on the outline of a person, `body.rs`).
-    View { body: bool },
-}
-
-/// A pane: one title (with what `top` says at its end), how full it is, the column headers (a
-/// press sorts both panes by that column; none over the body view) and its rows.
-fn pane(panes: &mut ChildSpawnerCommands, title: &str, top: PaneTop, gauge: Gauge, sort: Sort, body: impl FnOnce(&mut ChildSpawnerCommands)) {
-    panes.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(1), width: px(PANE_W), min_height: px(230), padding: UiRect::all(px(8)), flex_shrink: 0.0, ..default() }, BackgroundColor(PANE))).with_children(|col| {
-        // The pane's title, centred; "pick all" at its right end, out of the layout.
-        col.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::Center, align_items: AlignItems::Center, margin: UiRect::bottom(px(6)), ..default() }).with_children(|t| {
-            t.spawn((Text::new(title.to_uppercase()), theme::head(HEAD_FONT), TextColor(TEXT), TextLayout::no_wrap()));
-            match top {
-                // Every stack this pane shows, picked in one click (again: unpicked).
-                PaneTop::PickAll(which) => {
-                    t.spawn((Text::new("pick all"), font(ROW_FONT), TextColor(DIM), TextLayout::no_wrap(), Node { position_type: PositionType::Absolute, right: px(0), ..default() }))
-                        .observe(move |_: On<PointerPress>, listed: Res<Listed>, mut picked: ResMut<Picked>| picked.pick_all(which, &listed.0));
-                }
-                // The two ways the pane of what you hold and wear shows them, at the title's right
-                // end, out of the layout (the title stays centred).
-                PaneTop::View { body } => {
-                    t.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(2), position_type: PositionType::Absolute, right: px(0), ..default() }).with_children(|v| {
-                        chip(v, "List".into(), !body).observe(|_: On<PointerPress>, mut ui: ResMut<PanelUi>| ui.body = false);
-                        chip(v, "Body".into(), body).observe(|_: On<PointerPress>, mut ui: ResMut<PanelUi>| ui.body = true);
-                    });
-                }
-            }
-        });
-        // How full it is, as a brushed bar (none for the floor, which has no limit).
-        // (Not shrinking: a panel taller than its room scrolls, and would squeeze the bar to nothing.)
-        let mut bar = col.spawn(Node { height: px(8), flex_shrink: 0.0, ..default() });
-        if let Some(share) = gauge.share {
-            bar.insert(theme::bar_track()).with_children(|b| {
-                b.spawn((Node { width: Val::Percent(share.clamp(0.0, 1.0) * 100.0), height: Val::Percent(100.0), ..default() }, theme::bar_fill(gauge.color)));
-            });
-        }
-        col.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, margin: UiRect::axes(px(0), px(4)), ..default() }).with_children(|g| {
-            g.spawn((Text::new(gauge.left), font(ROW_FONT), TextColor(gauge.color), TextLayout::no_wrap()));
-            g.spawn((Text::new(gauge.right), font(ROW_FONT), TextColor(DIM), TextLayout::no_wrap()));
-        });
-        if top == (PaneTop::View { body: true }) {
-            body(col);
-            return;
-        }
-        // The column headers, over the rows' cells.
-        col.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(CELL_GAP), padding: UiRect::axes(px(6), px(3)), ..default() }).with_children(|h| {
-            h.spawn(Node { width: px(W_LEAD + CELL_GAP + W_SWATCH), flex_shrink: 0.0, ..default() });
-            head(h, "Name", Some(SortKey::Name), sort, Node { flex_grow: 1.0, flex_basis: px(0), ..default() });
-            head(h, "Type", Some(SortKey::Kind), sort, Node { width: px(W_KIND), flex_shrink: 0.0, ..default() });
-            head(h, "Qty", None, sort, Node { width: px(W_QTY), flex_shrink: 0.0, justify_content: JustifyContent::FlexEnd, ..default() });
-            head(h, "kg", Some(SortKey::Weight), sort, Node { width: px(W_KG), flex_shrink: 0.0, justify_content: JustifyContent::FlexEnd, ..default() });
-        });
-        col.spawn((Node { height: px(1), flex_shrink: 0.0, margin: UiRect::bottom(px(3)), ..default() }, BackgroundColor(LINE)));
-        body(col);
-    });
-}
-
-/// A column header; pressed, both panes sort by `key` (again: the other way; a third time: unsorted).
-fn head(h: &mut ChildSpawnerCommands, label: &str, key: Option<SortKey>, sort: Sort, node: Node) {
-    let (mark, on) = key.map_or(("", false), |k| (sort.mark(k), sort.key == k));
-    let mut e = h.spawn(node);
-    e.with_children(|c| {
-        c.spawn((Text::new(format!("{label}{mark}")), theme::head(TAB_FONT), TextColor(if on { TEXT } else { DIM }), TextLayout::no_wrap(), Pickable::IGNORE));
-    });
-    if let Some(key) = key {
-        e.observe(move |_: On<PointerPress>, mut ui: ResMut<PanelUi>| ui.sort.press(key));
-    }
-}
-
-/// The strip down a pane's outer edge that its tabs hang in.
-fn tab_strip() -> Node {
-    Node { flex_direction: FlexDirection::Column, row_gap: px(4), width: px(TAB_W), flex_shrink: 0.0, ..default() }
-}
-
-/// How tall a tab is for its label (in capitals, in the heading face, measured from the face's own
-/// widths) with 12 UI pixels of room at each end.
-fn tab_height(label: &str) -> f32 {
-    (theme::width(theme::Face::Head, &label.to_uppercase(), TAB_FONT) + 24.0).ceil()
-}
-
-/// A slim tab on a pane's edge, its label turned to read down it; `on`: the one the pane shows.
-/// The caller observes its presses.
-fn tab<'a>(strip: &'a mut ChildSpawnerCommands, label: &str, on: bool) -> EntityCommands<'a> {
-    // (The label doesn't take part in the tab's height once turned, so the tab is sized for it.)
-    let height = tab_height(label);
-    let mut e = strip.spawn((Node { width: px(TAB_W), height: px(height), justify_content: JustifyContent::Center, align_items: AlignItems::Center, flex_shrink: 0.0, ..default() }, BackgroundColor(if on { PANE } else { TAB })));
-    e.with_children(|t| {
-        t.spawn((Text::new(label.to_uppercase()), theme::head(TAB_FONT), TextColor(if on { TEXT } else { DIM }), TextLayout::no_wrap(), Node { flex_shrink: 0.0, ..default() }, UiTransform::from_rotation(Rot2::degrees(90.0)), Pickable::IGNORE));
-    });
-    e
-}
-
-/// A small clickable label (a chip, a button); the caller observes its presses.
-fn chip<'a>(parent: &'a mut ChildSpawnerCommands, text: String, on: bool) -> EntityCommands<'a> {
-    // A plain light button with a worn edge (`theme::button`); the one that's on is gold.
-    let mut e = parent.spawn((Node { padding: UiRect::axes(px(7), px(3)), justify_content: JustifyContent::Center, ..default() }, theme::button(on)));
-    e.with_children(|b| {
-        b.spawn((Text::new(text), theme::strong(ROW_FONT), TextColor(INK), TextLayout::no_wrap(), Pickable::IGNORE));
-    });
-    e
-}
-
-/// The top row. Left: the panel's name, or with stacks picked what to do with them (send them all
-/// to the bags, the open container or the floor). Right: the one small control that brings out the
-/// search box and the chips (or puts them away, cleared).
-fn top_bar(c: &mut ChildSpawnerCommands, find: &Find, n: usize, kg: f32, open: Option<(u32, String)>) {
-    c.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::Center, min_height: px(30), flex_shrink: 0.0, ..default() }).with_children(|bar| {
-        // The panel's name, centred over both panes (out of the layout: the controls either side
-        // come and go without moving it). With stacks picked, the move-to row has the line.
-        if n == 0 {
-            bar.spawn((Node { position_type: PositionType::Absolute, left: px(0), right: px(0), top: px(0), bottom: px(0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, Pickable::IGNORE)).with_children(|t| {
-                t.spawn((Text::new("INVENTORY"), theme::head(theme::TITLE), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
-            });
-        }
-        bar.spawn(Node { flex_direction: FlexDirection::Row, column_gap: px(6), align_items: AlignItems::Center, ..default() }).with_children(|l| {
-            if n == 0 {
-                return;
-            }
-            l.spawn((Text::new(format!("{n} picked ({kg:.1} kg), move to:")), font(ROW_FONT), TextColor(OK), TextLayout::no_wrap()));
-            chip(l, "bags".into(), false).observe(|_: On<PointerPress>, mut send: ResMut<SendPicked>| send.0 = Some(Place::Carried));
-            if let Some((id, name)) = open {
-                chip(l, name, false).observe(move |_: On<PointerPress>, mut send: ResMut<SendPicked>| send.0 = Some(Place::Container(id)));
-            }
-            chip(l, "floor".into(), false).observe(|_: On<PointerPress>, mut send: ResMut<SendPicked>| send.0 = Some(Place::Ground));
-            chip(l, "clear".into(), false).observe(|_: On<PointerPress>, mut picked: ResMut<Picked>| *picked = Picked::default());
-        });
-        chip(bar, if find.in_use() { "Find  x".into() } else { "Find  /".into() }, find.in_use()).observe(|_: On<PointerPress>, mut find: ResMut<Find>| find.press());
-    });
-}
-
-/// The search box and the category chips: on show only while in use ([`Find::in_use`]).
-fn toolbar(c: &mut ChildSpawnerCommands, find: &Find) {
-    c.spawn(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: px(4), row_gap: px(4), align_items: AlignItems::Center, max_width: px(PANEL_W - 2.0 * theme::SHEET_PAD.0), ..default() }).with_children(|bar| {
-        let text = match (find.query.is_empty(), find.typing) {
-            (true, false) => "Search ( / )".to_string(),
-            (_, true) => format!("Search: {}_", find.query),
-            (false, false) => format!("Search: {}", find.query),
-        };
-        bar.spawn((Node { min_width: px(170), padding: UiRect::axes(px(7), px(3)), ..default() }, BackgroundColor(if find.typing { CHIP_ON } else { CHIP })))
-            .with_children(|b| {
-                b.spawn((Text::new(text), font(ROW_FONT), TextColor(if find.query.is_empty() && !find.typing { DIM } else { TEXT }), Pickable::IGNORE));
-            })
-            .observe(|_: On<PointerPress>, mut find: ResMut<Find>| find.typing = true);
-        if !find.query.is_empty() {
-            chip(bar, "x".into(), false).observe(|_: On<PointerPress>, mut find: ResMut<Find>| find.query.clear());
-        }
-        chip(bar, "All".into(), find.groups.is_empty()).observe(|_: On<PointerPress>, mut find: ResMut<Find>| find.groups.clear());
-        for g in Group::ALL {
-            chip(bar, g.name().into(), find.groups.contains(&g)).observe(move |_: On<PointerPress>, mut find: ResMut<Find>| find.toggle(g));
-        }
-    });
-}
-
 /// Whether the stack at `from`/`index` gets a row: it fits the search and chips, or it is picked
 /// (a picked stack always shows, so what the bar will move is in view).
 fn on_show(find: &Find, items: &[ItemDef], picked: &Picked, from: Place, index: u32, s: &ItemStack) -> bool {
@@ -1669,7 +2084,7 @@ fn on_show(find: &Find, items: &[ItemDef], picked: &Picked, from: Place, index: 
 
 /// A line of plain dimmed text in a pane (nothing here, nothing that matches).
 fn dim(col: &mut ChildSpawnerCommands, text: String) {
-    col.spawn((Text::new(text), font(ROW_FONT), TextColor(DIM), Node { margin: UiRect::axes(px(6), px(3)), ..default() }));
+    col.spawn((Text::new(text), font(ROW_FONT), TextColor(DIM), Node { margin: UiRect::axes(px(2), px(3)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
 }
 
 /// What stands at the start of a row.
@@ -1686,8 +2101,10 @@ enum Lead {
 #[derive(Clone, Debug)]
 struct Cells {
     lead: Lead,
-    /// The item's own colour, as a small mark before its name.
+    /// The item's own colour, as a small mark before its name when it has no icon.
     swatch: Option<Color>,
+    /// The item's id, for its icon.
+    icon: Option<String>,
     name: String,
     /// After the name, dimmed (stale, 2/3 left, moving).
     note: String,
@@ -1704,7 +2121,7 @@ impl Cells {
     /// A row that only says `name` and `kg` (tests).
     #[cfg(test)]
     fn plain(name: &str, kg: &str) -> Cells {
-        Cells { lead: Lead::Nothing, swatch: None, name: name.into(), note: String::new(), kind: String::new(), qty: String::new(), kg: kg.into(), faint: false }
+        Cells { lead: Lead::Nothing, swatch: None, icon: None, name: name.into(), note: String::new(), kind: String::new(), qty: String::new(), kg: kg.into(), faint: false }
     }
 }
 
@@ -1718,7 +2135,7 @@ fn cell(r: &mut ChildSpawnerCommands, width: f32, text: String, color: Color, en
 /// A row's cells on a backing of `bg`: fold mark, swatch, name (and note), kind, count, weight.
 fn cells_row<'a>(col: &'a mut ChildSpawnerCommands, cells: Cells, bg: Color) -> EntityCommands<'a> {
     let text = if cells.faint { DIM } else { TEXT };
-    let mut e = col.spawn((Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(CELL_GAP), padding: UiRect::axes(px(6), px(3)), flex_shrink: 0.0, ..default() }, BackgroundColor(bg)));
+    let mut e = col.spawn((Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(CELL_GAP), padding: UiRect::axes(px(6), px(3)), border_radius: BorderRadius::all(px(4)), flex_shrink: 0.0, ..default() }, BackgroundColor(bg)));
     e.with_children(|r| {
         match cells.lead {
             // The fold mark takes its own presses: they open and shut the row, and go no further
@@ -1739,8 +2156,19 @@ fn cells_row<'a>(col: &'a mut ChildSpawnerCommands, cells: Cells, bg: Color) -> 
                 r.spawn((Node { width: px(W_LEAD), flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
             }
         }
-        let swatch = cells.swatch.filter(|_| cells.lead != Lead::Child).unwrap_or(Color::NONE);
-        r.spawn((Node { width: px(W_SWATCH), height: px(W_SWATCH), flex_shrink: 0.0, border_radius: BorderRadius::all(px(2)), ..default() }, BackgroundColor(swatch), Pickable::IGNORE));
+        // Its icon (one of the stacks under an opened row: none of its own), else its colour.
+        let own = cells.lead != Lead::Child;
+        match cells.icon.as_deref().filter(|_| own).and_then(|id| flat::icon(id, Color::WHITE)) {
+            Some(image) => {
+                r.spawn((Node { width: px(W_ICON), height: px(W_ICON), flex_shrink: 0.0, ..default() }, image, Pickable::IGNORE));
+            }
+            None => {
+                let swatch = cells.swatch.filter(|_| own).unwrap_or(Color::NONE);
+                r.spawn((Node { width: px(W_ICON), height: px(W_ICON), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, Pickable::IGNORE)).with_children(|b| {
+                    b.spawn((Node { width: px(10), height: px(10), border_radius: BorderRadius::all(px(2)), ..default() }, BackgroundColor(swatch), Pickable::IGNORE));
+                });
+            }
+        }
         // One line whatever the name: it never wraps, and a name too long for its cell is cut
         // off at the next cell instead of pushing it out.
         r.spawn((Node { min_width: px(0), flex_grow: 1.0, flex_shrink: 1.0, flex_basis: px(0), column_gap: px(8), overflow: Overflow::clip_x(), ..default() }, Pickable::IGNORE)).with_children(|l| {
@@ -1754,11 +2182,6 @@ fn cells_row<'a>(col: &'a mut ChildSpawnerCommands, cells: Cells, bg: Color) -> 
         cell(r, W_KG, cells.kg, DIM, true);
     });
     e
-}
-
-/// A slot with nothing in it, in the pane of what you hold and wear.
-fn empty_row(col: &mut ChildSpawnerCommands, slot: &str) {
-    cells_row(col, Cells { lead: Lead::Nothing, swatch: None, name: "-".into(), note: String::new(), kind: slot.into(), qty: String::new(), kg: String::new(), faint: true }, Color::NONE);
 }
 
 /// A clickable row of `cells`, highlighted if `picked`. A press is only recorded here
@@ -1776,23 +2199,30 @@ fn row(col: &mut ChildSpawnerCommands, cells: Cells, action: RowAction, picked: 
 fn clickable(e: &mut EntityCommands, action: RowAction, rest: Color) {
     // The item under the pointer, for the hotbar's keys (not a recipe's row).
     let item = action.left.filter(|_| action.craft.is_none()).map(|_| action.stack.item);
-    e.observe(move |ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>, mut hovered: Option<ResMut<HoveredItem>>| {
+    let (stack, n) = (action.stack, 1 + action.more.len());
+    e.observe(move |ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>, mut hovered: Option<ResMut<HoveredItem>>, mut card: Option<ResMut<HoverCard>>| {
         if let Ok(mut bg) = q.get_mut(ev.entity) {
             bg.0 = ROW_HOVER;
         }
         if let Some(h) = hovered.as_mut() {
             h.0 = item.map(|i| (ev.entity, i));
         }
+        if let Some(c) = card.as_mut() {
+            c.0 = item.map(|_| (ev.entity, stack, n));
+        }
     })
-    .observe(move |ev: On<PointerOut>, mut q: Query<&mut BackgroundColor>, mut hovered: Option<ResMut<HoveredItem>>| {
+    .observe(move |ev: On<PointerOut>, mut q: Query<&mut BackgroundColor>, mut hovered: Option<ResMut<HoveredItem>>, mut card: Option<ResMut<HoverCard>>| {
         if let Ok(mut bg) = q.get_mut(ev.entity) {
             bg.0 = rest;
         }
         if let Some(h) = hovered.as_mut().filter(|h| h.0.is_some_and(|(e, _)| e == ev.entity)) {
             h.0 = None;
         }
+        if let Some(c) = card.as_mut().filter(|c| c.0.is_some_and(|(e, ..)| e == ev.entity)) {
+            c.0 = None;
+        }
     })
-    .observe(move |ev: On<PointerPress>, keys: Res<ButtonInput<KeyCode>>, mut clicks: ResMut<Clicks>, mut picked: Option<ResMut<Picked>>, listed: Option<Res<Listed>>| {
+    .observe(move |ev: On<PointerPress>, keys: Res<ButtonInput<KeyCode>>, mut clicks: ResMut<Clicks>, mut picked: Option<ResMut<Picked>>, listed: Option<Res<Listed>>, mut drag: Option<ResMut<Drag>>, windows: Query<&Window, With<bevy::window::PrimaryWindow>>| {
         let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
         let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
         let keys_of = action.keys();
@@ -1808,8 +2238,193 @@ fn clickable(e: &mut EntityCommands, action: RowAction, rest: Color) {
             return;
         }
         let one = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
-        clicks.0.push(RowClick { action: action.clone(), button: ev.button, one });
+        let click = RowClick { action: action.clone(), button: ev.button, one };
+        // The left button on a thing is held ([`drag`]): let go where it was pressed it is the
+        // click, moved first it is dragged.
+        if let (PointerButton::Primary, Some(_), None, Some(drag)) = (ev.button, action.left, action.craft, drag.as_mut()) {
+            drag.0 = Some(Held { click, from: windows.single().ok().and_then(|w| w.cursor_position()).unwrap_or_default(), dragging: false });
+            return;
+        }
+        clicks.0.push(click);
     });
+}
+
+// ---- Dragging things ----
+
+/// Somewhere a dragged thing can be let go.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+enum DropTo {
+    Place(Place),
+    /// The gear slots: wherever the thing belongs ([`belongs`]).
+    Gear,
+    /// A slot of the hotbar: the thing's kind goes on that key.
+    Hotbar(usize),
+}
+
+/// The left button held down on a thing.
+struct Held {
+    click: RowClick,
+    /// Where the pointer was when it went down (window pixels).
+    from: Vec2,
+    /// It has moved far enough to be a drag.
+    dragging: bool,
+}
+
+/// The thing the left button is held on, if any.
+#[derive(Resource, Default)]
+struct Drag(Option<Held>);
+
+/// The picture of the dragged thing, under the pointer.
+#[derive(Component)]
+struct Ghost;
+
+/// A press that moves less than this (window pixels) before it is let go is a click.
+const DRAG_PX: f32 = 6.0;
+
+/// Where a thing goes when it is dropped on the gear slots: clothing is worn, a bag goes where
+/// it is carried, anything else into the hand.
+fn belongs(def: &ItemDef) -> Place {
+    use zombye_sim::items::BagCarry;
+    match (def.category, def.bag.as_ref().map(|b| b.carried)) {
+        (ItemCategory::Clothing, _) => Place::Worn,
+        (_, Some(BagCarry::Back)) => Place::Slot(Slot::Back),
+        (_, Some(BagCarry::Shoulder)) => Place::Slot(Slot::Shoulder),
+        (_, Some(_)) => Place::Slot(Slot::OffHand),
+        _ => Place::Slot(Slot::Hand),
+    }
+}
+
+/// The intents that dropping the thing of `action` on `to` sends: every stack its tile stands
+/// for (just the first onto a slot or the body, which take one thing; `one`: one of the first),
+/// from the back first so the indices of the ones still to go don't shift. Nothing for a stack
+/// that is already there, or already on its way.
+fn drop_intents(action: &RowAction, to: Place, one: bool, player: u32, flight: &mut InFlight, now: f32) -> Vec<Intent> {
+    let Some((from, index, _)) = action.left else { return Vec::new() };
+    let single = matches!(to, Place::Slot(_) | Place::Worn);
+    let mut lines = vec![Line { from, index, stack: action.stack }];
+    if !single && !one {
+        lines.extend(action.more.iter().copied());
+    }
+    lines.sort_by_key(|l| std::cmp::Reverse(l.index));
+    let count = if single || one { 1 } else { 0 };
+    let there = |l: &Line| matches!((l.from, to), (Place::Carried, Place::Pouch(p)) if l.stack.home == p);
+    lines.into_iter().filter(|l| !there(l)).filter_map(|l| move_intent(player, l.from, l.index, to, count).filter(|_| flight.ask(l.from, l.index, l.stack, count == 1, now))).collect()
+}
+
+/// The drop target under `cursor` (physical pixels): the smallest one it is in.
+fn drop_under<'a>(targets: impl Iterator<Item = (Entity, &'a DropTo, &'a ComputedNode, &'a UiGlobalTransform)>, cursor: Vec2) -> Option<(Entity, DropTo)> {
+    targets.filter(|(_, _, node, at)| node.contains_point(**at, cursor)).min_by(|a, b| (a.2.size.x * a.2.size.y).total_cmp(&(b.2.size.x * b.2.size.y))).map(|(e, to, ..)| (e, *to))
+}
+
+/// The held thing: let go where it was pressed, the click it always was ([`Clicks`]); moved
+/// first, its picture follows the pointer, the place under it is outlined, and letting go there
+/// moves it: a bag's or the pockets' pane, a hand, the gear slots (worn, or where a bag is
+/// carried), the open container, the floor, a hotbar slot. Dragging one of several picked
+/// stacks to a pane moves them all. Esc or the right button calls it off.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn drag(
+    mut commands: Commands,
+    time: Res<Time>,
+    (mouse, keys): (Option<Res<ButtonInput<MouseButton>>>, Res<ButtonInput<KeyCode>>),
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    (ui, join, me): (Option<Res<UiScale>>, Option<Res<JoinInfo>>, Option<Res<LocalPlayer>>),
+    (panel, menu, picked): (Option<Res<InventoryPanel>>, Option<Res<ItemMenu>>, Option<Res<Picked>>),
+    (mut held, mut clicks, mut flight, mut out): (ResMut<Drag>, ResMut<Clicks>, ResMut<InFlight>, ResMut<Outbox>),
+    (mut send, mut bar, mut card): (Option<ResMut<SendPicked>>, Option<ResMut<crate::hotbar::SlotClicks>>, Option<ResMut<HoverCard>>),
+    targets: Query<(Entity, &DropTo, &ComputedNode, &UiGlobalTransform)>,
+    mut ghosts: Query<(Entity, &mut Node), With<Ghost>>,
+    mut marked: Local<Option<Entity>>,
+) {
+    let mut unmark = |commands: &mut Commands, now: Option<Entity>| {
+        if *marked == now {
+            return;
+        }
+        if let Some(mut e) = marked.and_then(|e| commands.get_entity(e).ok()) {
+            e.try_remove::<Outline>();
+        }
+        if let Some(mut e) = now.and_then(|e| commands.get_entity(e).ok()) {
+            e.try_insert(Outline::new(px(2), px(2), flat::GREEN));
+        }
+        *marked = now;
+    };
+    let Some(h) = held.0.as_mut() else {
+        unmark(&mut commands, None);
+        for (e, _) in &ghosts {
+            commands.entity(e).despawn();
+        }
+        return;
+    };
+    let window = windows.single().ok();
+    let cursor = window.and_then(|w| w.cursor_position());
+    let down = mouse.as_ref().is_some_and(|m| m.pressed(MouseButton::Left));
+    let off = keys.just_pressed(KeyCode::Escape) || mouse.as_ref().is_some_and(|m| m.just_pressed(MouseButton::Right)) || menu.as_ref().is_some_and(|m| m.is_up()) || panel.as_ref().is_some_and(|p| !p.open);
+    if off && (h.dragging || down) {
+        held.0 = None;
+        return;
+    }
+    if let Some(c) = cursor
+        && !h.dragging
+        && down
+        && c.distance(h.from) > DRAG_PX
+    {
+        h.dragging = true;
+        let def = join.as_ref().and_then(|j| j.items.get(h.click.action.stack.item as usize));
+        let n: u32 = h.click.action.stack.count as u32 + h.click.action.more.iter().map(|l| l.stack.count as u32).sum::<u32>();
+        commands.spawn((Ghost, GlobalZIndex(30), Node { position_type: PositionType::Absolute, left: px(-200), top: px(-200), width: px(64), height: px(64), justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(flat::RADIUS)), ..default() }, BackgroundColor(flat::SOLID), BorderColor::all(flat::GREEN), Pickable::IGNORE)).with_children(|g| {
+            flat::item_icon(g, def, 44.0, 1.0);
+            if n > 1 {
+                g.spawn((Text::new(format!("x{n}")), theme::strong(flat::SMALL), TextColor(TEXT), TextLayout::no_wrap(), Node { position_type: PositionType::Absolute, right: px(5), top: px(2), ..default() }, Pickable::IGNORE));
+            }
+        });
+    }
+    let over = if h.dragging { window.and_then(|w| w.physical_cursor_position()).and_then(|c| drop_under(targets.iter(), c)) } else { None };
+    if h.dragging {
+        if let Some(c) = card.as_mut().filter(|c| c.0.is_some()) {
+            c.0 = None;
+        }
+        let scale = ui.as_ref().map_or(1.0, |u| u.0.max(0.1));
+        if let (Some(c), Ok((_, mut node))) = (cursor, ghosts.single_mut()) {
+            let at = c / scale - Vec2::splat(32.0);
+            if node.left != px(at.x) || node.top != px(at.y) {
+                (node.left, node.top) = (px(at.x), px(at.y));
+            }
+        }
+        unmark(&mut commands, over.map(|(e, _)| e));
+    }
+    if down {
+        return;
+    }
+    let Some(h) = held.0.take() else { return };
+    if !h.dragging {
+        clicks.0.push(h.click);
+        return;
+    }
+    let Some((_, to)) = over else { return };
+    let a = &h.click.action;
+    let place = match to {
+        DropTo::Place(p) => p,
+        DropTo::Gear => match join.as_ref().and_then(|j| j.items.get(a.stack.item as usize)) {
+            Some(def) => belongs(def),
+            None => return,
+        },
+        DropTo::Hotbar(k) => {
+            if let Some(bar) = bar.as_mut() {
+                bar.1.push((k, a.stack.item));
+            }
+            return;
+        }
+    };
+    // One of several picked stacks, dragged to a pane: they all go.
+    let key = a.left.map(|(from, index, _)| (from, index, a.stack.item));
+    if let (Some(picked), Some(send), false) = (picked.as_ref(), send.as_mut(), matches!(place, Place::Slot(_) | Place::Worn))
+        && picked.keys.len() > 1
+        && key.is_some_and(|k| picked.keys.contains(&k))
+    {
+        send.0 = Some(place);
+        return;
+    }
+    let one = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
+    out.0.extend(drop_intents(a, place, one, me.map_or(0, |m| m.id), &mut flight, time.elapsed_secs()));
 }
 
 // ---- The right-click menu (#95) ----
@@ -1824,8 +2439,88 @@ enum MenuDo {
     /// Something in the world (`world_actions`): send this, turning our survivor to `facing`
     /// first if given, as the server will.
     World { intent: Intent, facing: Option<f32> },
+    /// Something lying nearby (a container's, the floor's): take what it needs with `take`, and
+    /// once it is in our pockets or bags do `then` with it ([`FollowUp`]).
+    TakeThen { take: Intent, from: Place, index: u32, item: u16, then: Then },
     /// A line that only says something (too far away); picking it just closes the menu.
     Nothing,
+}
+
+/// What to do with a thing taken for it, once it has arrived ([`MenuDo::TakeThen`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Then {
+    /// Eat, drink or use it.
+    Use,
+    /// Take the pill.
+    Treat(Treatment),
+    /// Make this recipe with it.
+    Craft(u16),
+}
+
+/// The second half of a [`MenuDo::TakeThen`]: what was asked for, waiting for the thing to show
+/// in what we carry (a few seconds at most; a refused take just lets it lapse).
+#[derive(Resource, Default)]
+struct FollowUp(Option<Follow>);
+
+struct Follow {
+    item: u16,
+    then: Then,
+    /// How many of the item we carried when it was asked.
+    had: u32,
+    until: f32,
+}
+
+/// How many of `item` are carried (pockets and bags).
+fn carried_count(inv: &zombye_sim::Inventory, item: u16) -> u32 {
+    inv.carried.iter().filter(|s| s.item == item).map(|s| s.count as u32).sum()
+}
+
+/// Send the second half of a take-then once the thing has arrived: the use, the pill, or the craft
+/// (a craft once the server's own rule says it can be made).
+fn follow_up(time: Res<Time>, link: Res<ServerLink>, join: Res<JoinInfo>, me: Res<LocalPlayer>, mut follow: ResMut<FollowUp>, mut out: ResMut<Outbox>) {
+    let Some(f) = &follow.0 else { return };
+    let (Some(v), _) = panel_view(&link, me.id) else { return };
+    if time.elapsed_secs() > f.until || me.dead {
+        follow.0 = None;
+        return;
+    }
+    if carried_count(&v.inventory, f.item) <= f.had {
+        return;
+    }
+    let Some(index) = v.inventory.carried.iter().rposition(|s| s.item == f.item) else { return };
+    let (player, index) = (me.id, index as u32);
+    match f.then {
+        Then::Use => out.0.push(Intent::Use { player, from: Place::Carried, index }),
+        Then::Treat(action) => out.0.push(Intent::Treat { player, wound: None, action, item: Some(f.item) }),
+        Then::Craft(recipe) => {
+            if join.recipes.get(recipe as usize).is_none_or(|r| crafting::check(r, &v.inventory, &join.items).is_err()) {
+                return;
+            }
+            out.0.push(Intent::Craft { player, recipe });
+        }
+    }
+    follow.0 = None;
+}
+
+/// The recipes a stack lying nearby would let us make once taken, that we can't make without it:
+/// (recipe, its name, how many of the stack to take).
+fn makes_with(recipes: &[crafting::RecipeDef], items: &[ItemDef], inv: &zombye_sim::Inventory, s: &ItemStack) -> Vec<(u16, String, u16)> {
+    let Some(def) = items.get(s.item as usize) else { return Vec::new() };
+    let mut out = Vec::new();
+    for (k, r) in recipes.iter().enumerate() {
+        let Some(need) = r.inputs.iter().find(|x| x.item == def.id).map(|x| x.count as u32) else { continue };
+        let have: u32 = inv.carried.iter().filter(|c| c.item == s.item).map(|c| crafting::whole(c) as u32).sum();
+        if have >= need || (crafting::whole(s) as u32) < need - have {
+            continue;
+        }
+        let take = (need - have) as u16;
+        let mut with = inv.clone();
+        with.carried.push(ItemStack { count: take, used: 0, ..*s });
+        if crafting::check(r, &with, items).is_ok() {
+            out.push((k as u16, r.name.clone(), take));
+        }
+    }
+    out
 }
 
 /// One line of the menu.
@@ -1836,8 +2531,9 @@ struct MenuEntry {
 }
 
 /// Everything that can be done with the stack `s` at `from`/`index`, the likeliest first: one
-/// level, no sub-menus. `open` is the container the player has open (id, name).
-fn menu_entries(player: u32, items: &[ItemDef], from: Place, index: u32, s: &ItemStack, open: Option<(u32, &str)>) -> Vec<MenuEntry> {
+/// level, no sub-menus. `open` is the container the player has open (id, name), `pouches` the
+/// pockets and bags carried (a carried thing can go from one to another).
+fn menu_entries(player: u32, items: &[ItemDef], from: Place, index: u32, s: &ItemStack, open: Option<(u32, &str)>, pouches: &[(Pouch, String)], makes: &[(u16, String, u16)]) -> Vec<MenuEntry> {
     let Some(def) = items.get(s.item as usize) else { return Vec::new() };
     let mut out = Vec::new();
     let mk = |label: String, intent: Option<Intent>, whole: bool| intent.map(|intent| MenuEntry { label, act: MenuDo::Send { intent, from, index, whole } });
@@ -1868,6 +2564,10 @@ fn menu_entries(player: u32, items: &[ItemDef], from: Place, index: u32, s: &Ite
             if let Some((id, name)) = open {
                 out.extend(mk(format!("Put in {name}"), into(Place::Container(id), 0), true));
             }
+            // Into another of the bags carried (or the pockets).
+            for (p, name) in pouches.iter().filter(|(p, _)| *p != s.home) {
+                out.extend(mk(format!("Put in {name}"), into(Place::Pouch(*p), 0), true));
+            }
             out.extend(mk("Drop".into(), into(Place::Ground, 0), true));
             if n > 1 {
                 if let Some((id, name)) = open {
@@ -1889,10 +2589,35 @@ fn menu_entries(player: u32, items: &[ItemDef], from: Place, index: u32, s: &Ite
             }
             out.extend(mk("Drop".into(), into(Place::Ground, 0), true));
         }
+        // (Only somewhere things go to.)
+        Place::Pouch(_) => {}
         Place::Container(_) | Place::Ground => {
             let take = if from == Place::Ground { "Pick up" } else { "Take" };
+            // What can be done with it straight from where it lies: one is taken, then used
+            // (worn and held things go straight to their place).
+            let then = |label: String, then: Then, count: u16| into(Place::Carried, count).map(|take| MenuEntry { label, act: MenuDo::TakeThen { take, from, index, item: s.item, then } });
+            match (Treatment::of_item(def), def.category) {
+                (Some(t), _) if !t.on_wound() => out.extend(then(format!("Take {}", def.name.to_lowercase()), Then::Treat(t), 1)),
+                (Some(_), _) => {}
+                (None, ItemCategory::Food) => out.extend(then("Eat".into(), Then::Use, 1)),
+                (None, ItemCategory::Drink) => out.extend(then("Drink".into(), Then::Use, 1)),
+                (None, _) if def.usable() => out.extend(then("Use".into(), Then::Use, 1)),
+                (None, ItemCategory::Clothing) => out.extend(mk("Wear".into(), into(Place::Worn, 1), false)),
+                (None, ItemCategory::Bag) => {
+                    let slot = match def.bag.as_ref().map(|b| b.carried) {
+                        Some(zombye_sim::items::BagCarry::Back) => Slot::Back,
+                        Some(zombye_sim::items::BagCarry::Shoulder) => Slot::Shoulder,
+                        _ => Slot::OffHand,
+                    };
+                    out.extend(mk("Put it on".into(), into(Place::Slot(slot), 1), false));
+                }
+                (None, _) => {}
+            }
             if def.weapon.is_some() {
                 out.extend(mk("Take in hand".into(), into(Place::Slot(Slot::Hand), 0), true));
+            }
+            for (recipe, name, count) in makes {
+                out.extend(then(name.clone(), Then::Craft(*recipe), *count));
             }
             out.extend(mk(take.into(), into(Place::Carried, 0), true));
             if from == Place::Ground
@@ -1998,7 +2723,9 @@ fn open_menu(menu: &mut ItemMenu, link: &ServerLink, join: &JoinInfo, me: u32, f
     let (Some(v), floor) = panel_view(link, me) else { return false };
     let Some(s) = stack_at(&v, &floor, from, index) else { return false };
     let open = v.open.as_ref().map(|c| (c.id, c.name.to_lowercase()));
-    let entries = menu_entries(me, &join.items, from, index, &s, open.as_ref().map(|(id, n)| (*id, n.as_str())));
+    let pouches = pouch_names(&join.items, &v.inventory, join.carry.pockets_l);
+    let makes = if matches!(from, Place::Container(_) | Place::Ground) { makes_with(&join.recipes, &join.items, &v.inventory, &s) } else { Vec::new() };
+    let entries = menu_entries(me, &join.items, from, index, &s, open.as_ref().map(|(id, n)| (*id, n.as_str())), &pouches, &makes);
     if entries.is_empty() {
         return false;
     }
@@ -2168,7 +2895,7 @@ fn script_menu(time: Res<Time>, options: Option<Res<crate::Options>>, mut menu: 
 /// Do the entry picked, or close the menu on a press anywhere else, and when the panel opens or
 /// shuts under it.
 #[allow(clippy::too_many_arguments)]
-fn menu_act(time: Res<Time>, mouse: Res<ButtonInput<MouseButton>>, mut me: ResMut<LocalPlayer>, panel: Res<InventoryPanel>, mut panel_was: Local<bool>, mut menu: ResMut<ItemMenu>, mut flight: ResMut<InFlight>, mut out: ResMut<Outbox>, mut health: ResMut<crate::health_ui::HealthPanel>) {
+fn menu_act(time: Res<Time>, mouse: Res<ButtonInput<MouseButton>>, mut me: ResMut<LocalPlayer>, panel: Res<InventoryPanel>, mut panel_was: Local<bool>, mut menu: ResMut<ItemMenu>, mut flight: ResMut<InFlight>, mut out: ResMut<Outbox>, mut health: ResMut<crate::health_ui::HealthPanel>, link: Res<ServerLink>, mut follow: ResMut<FollowUp>) {
     if *panel_was != panel.open {
         *panel_was = panel.open;
         if !menu.fresh {
@@ -2190,6 +2917,13 @@ fn menu_act(time: Res<Time>, mouse: Res<ButtonInput<MouseButton>>, mut me: ResMu
                 out.0.push(intent);
             }
             MenuDo::Nothing => {}
+            MenuDo::TakeThen { take, from, index, item, then } => {
+                if flight.ask(from, index, stack, true, time.elapsed_secs()) {
+                    out.0.push(take);
+                    let had = panel_view(&link, me.id).0.map_or(0, |v| carried_count(&v.inventory, item));
+                    follow.0 = Some(Follow { item, then, had, until: time.elapsed_secs() + 4.0 });
+                }
+            }
             MenuDo::Send { intent, from, index, whole } => {
                 if flight.ask(from, index, stack, !whole, time.elapsed_secs()) {
                     out.0.push(intent);
@@ -2207,7 +2941,7 @@ fn menu_act(time: Res<Time>, mouse: Res<ButtonInput<MouseButton>>, mut me: ResMu
 
 /// About how big a menu of `entries` lines is drawn (UI pixels), for keeping it on screen.
 fn menu_size(entries: usize) -> Vec2 {
-    Vec2::new(280.0 + 2.0 * theme::STRIP_PAD.0, 34.0 + 2.0 * theme::STRIP_PAD.1 + 25.0 * entries as f32)
+    Vec2::new(300.0, 52.0 + 29.0 * entries as f32)
 }
 
 /// Draw the menu when it changes: its title, then the entries numbered, the first highlighted.
@@ -2228,24 +2962,24 @@ fn draw_menu(mut commands: Commands, menu: Res<ItemMenu>, ui: Res<UiScale>, wind
             Err(_) => at,
         }
     });
-    // On a painted strip of its own, like every small piece of the HUD (`theme::strip`).
-    let pad = UiRect::axes(px(theme::STRIP_PAD.0), px(theme::STRIP_PAD.1));
+    // A floating piece of the flat skin: solid ink, a hairline round it.
+    let node = Node { position_type: PositionType::Absolute, flex_direction: FlexDirection::Column, row_gap: px(1), padding: UiRect::all(px(8)), min_width: px(200), border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(8)), ..default() };
     let node = match at {
-        Some(at) => Node { position_type: PositionType::Absolute, left: px(at.x), top: px(at.y), flex_direction: FlexDirection::Column, row_gap: px(1), padding: pad, min_width: px(190), ..default() },
-        None => Node { position_type: PositionType::Absolute, right: px(PANEL_W + 30.0), top: px(140), flex_direction: FlexDirection::Column, row_gap: px(1), padding: pad, min_width: px(190), ..default() },
+        Some(at) => Node { left: px(at.x), top: px(at.y), ..node },
+        None => Node { left: percent(40), top: px(190), ..node },
     };
     commands
-        .spawn((MenuRoot, node, GlobalZIndex(20), theme::strip()))
+        .spawn((MenuRoot, node, GlobalZIndex(20), BackgroundColor(flat::SOLID), BorderColor::all(Color::srgba(0.949, 0.902, 0.788, 0.25))))
         .with_children(|c| {
-            c.spawn((Text::new(m.title.to_uppercase()), theme::head(theme::BODY), TextColor(DIM), Node { align_self: AlignSelf::Center, padding: UiRect::axes(px(6), px(2)), ..default() }));
-            c.spawn((Node { height: px(2), margin: UiRect::bottom(px(3)), ..default() }, theme::rule(), Pickable::IGNORE));
+            c.spawn((Text::new(m.title.to_uppercase()), theme::head(flat::BODY), TextColor(DIM), TextLayout::no_wrap(), Node { padding: UiRect::axes(px(8), px(2)), ..default() }));
+            c.spawn((Node { height: px(1), margin: UiRect::axes(px(0), px(4)), ..default() }, BackgroundColor(LINE), Pickable::IGNORE));
             for (k, e) in m.entries.iter().enumerate() {
-                let rest = if k == 0 { ROW_PICKED } else { ROW };
-                c.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(10), padding: UiRect::axes(px(6), px(3)), ..default() }, BackgroundColor(rest)))
+                let rest = if k == 0 { ROW_PICKED } else { Color::NONE };
+                c.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(10), padding: UiRect::axes(px(8), px(5)), border_radius: BorderRadius::all(px(4)), ..default() }, BackgroundColor(rest)))
                     .with_children(|r| {
-                        r.spawn((Text::new(format!("{}", k + 1)), theme::strong(theme::SMALL), TextColor(OK), Pickable::IGNORE));
+                        r.spawn((Text::new(format!("{}", k + 1)), theme::strong(flat::SMALL), TextColor(OK), Node { width: px(12), ..default() }, Pickable::IGNORE));
                         let colour = if matches!(e.act, MenuDo::Nothing) { DIM } else { TEXT };
-                        r.spawn((Text::new(e.label.clone()), font(theme::BODY), TextColor(colour), Pickable::IGNORE));
+                        r.spawn((Text::new(e.label.clone()), font(flat::BODY), TextColor(colour), TextLayout::no_wrap(), Pickable::IGNORE));
                     })
                     .observe(|ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>| {
                         if let Ok(mut bg) = q.get_mut(ev.entity) {
@@ -2400,16 +3134,6 @@ mod tests {
         assert_eq!(all_of(Column::You, &listed), carried(3));
         assert_eq!(all_of(Column::Floor, &listed), vec![(Place::Ground, 40, 3)]);
         assert!(all_of(Column::Container, &listed).is_empty());
-        let mut f = Find::default();
-        assert!(!f.in_use());
-        f.press();
-        assert!(f.in_use());
-        f.toggle(Group::Food);
-        f.query = "bean".into();
-        f.press();
-        assert_eq!(f, Find::default(), "put away, cleared");
-        f.groups = vec![Group::Food];
-        assert!(f.in_use(), "a chip set from the start (--filter) shows them");
     }
 
     /// A left click on the world (off every panel) with the inventory open shuts it and is used
@@ -2663,32 +3387,6 @@ mod tests {
         }
     }
 
-    /// A column's "pick all" picks what the column shows (under a search, only that), never what
-    /// you hold or wear, and never another column's rows; pressed again, it unpicks them.
-    #[test]
-    fn pick_all_picks_a_columns_rows_on_show() {
-        let mut listed: Vec<Key> = vec![(Place::Slot(Slot::Back), 0, 9), (Place::Worn, 0, 8)];
-        listed.extend(carried(3));
-        listed.extend([(Place::Container(4), 0, 3), (Place::Ground, 40, 3), (Place::Ground, 41, 5)]);
-        let mut p = Picked::default();
-        p.pick_all(Column::You, &listed);
-        assert_eq!(p.keys, carried(3), "the pack and what's worn stay out of it");
-        p.pick_all(Column::Floor, &listed);
-        assert_eq!(p.keys.len(), 5);
-        assert!(!p.keys.contains(&(Place::Container(4), 0, 3)));
-        // Some picked already: the rest join them. All picked: unpicked, the other column's stay.
-        let mut p = Picked::default();
-        p.toggle(carried(3)[1]);
-        p.pick_all(Column::You, &listed);
-        assert_eq!(p.keys.len(), 3);
-        p.pick_all(Column::Floor, &listed);
-        p.pick_all(Column::You, &listed);
-        assert_eq!(p.keys, vec![(Place::Ground, 40, 3), (Place::Ground, 41, 5)]);
-        // A column with nothing to pick changes nothing.
-        p.pick_all(Column::Container, &[]);
-        assert_eq!(p.keys.len(), 2);
-    }
-
     /// Typing into the search box, headless through Bevy's input: `/` starts it, letters go into
     /// the search and are held back from the game (W doesn't stay pressed), Backspace and Enter work.
     #[test]
@@ -2746,29 +3444,71 @@ mod tests {
         let config = zombye_net::content::load_config(&data, 1).unwrap();
         let items = &config.items;
         let stack = |id: &str, n: u16| ItemStack::new(items.iter().position(|d| d.id == id).unwrap() as u16, n);
-        let labels = |from: Place, s: ItemStack, open: Option<(u32, &str)>| menu_entries(1, items, from, 2, &s, open).into_iter().map(|e| e.label).collect::<Vec<_>>();
+        let labels = |from: Place, s: ItemStack, open: Option<(u32, &str)>| menu_entries(1, items, from, 2, &s, open, &[], &[]).into_iter().map(|e| e.label).collect::<Vec<_>>();
         assert_eq!(labels(Place::Carried, stack("tinned_beans", 3), Some((7, "fridge"))), ["Eat", "Put in fridge", "Drop", "Put one in fridge", "Drop one"], "half of three is one: not offered twice");
         assert_eq!(labels(Place::Carried, stack("tinned_beans", 4), Some((7, "fridge"))), ["Eat", "Put in fridge", "Drop", "Put one in fridge", "Put half in fridge (2)", "Drop one", "Drop half (2)"]);
-        assert_eq!(labels(Place::Ground, stack("tinned_beans", 2), Some((7, "fridge"))), ["Pick up", "Put in fridge", "Pick up one"]);
-        assert!(menu_entries(1, items, Place::Carried, 0, &stack("tinned_beans", 60), Some((7, "fridge"))).len() <= DIGITS.len(), "every entry has a number key");
+        assert_eq!(labels(Place::Ground, stack("tinned_beans", 2), Some((7, "fridge"))), ["Eat", "Pick up", "Put in fridge", "Pick up one"]);
+        assert!(menu_entries(1, items, Place::Carried, 0, &stack("tinned_beans", 60), Some((7, "fridge")), &[], &[]).len() <= DIGITS.len(), "every entry has a number key");
         assert_eq!(labels(Place::Carried, stack("kitchen_knife", 1), None), ["Hold in hand", "Drop"]);
         // A thing a mod gives a use to (#25): "Use", not "Hold in hand". Without the mod, as before.
         assert_eq!(labels(Place::Carried, stack("alarm_clock", 1), None), ["Hold in hand", "Drop"]);
         let mut modded = config.clone();
         zombye_mods::load_into(&mut modded, &[data.join("../../mods/alarm_clock")]).unwrap();
         let clock = ItemStack::new(modded.items.iter().position(|d| d.id == "alarm_clock").unwrap() as u16, 1);
-        assert_eq!(menu_entries(1, &modded.items, Place::Carried, 0, &clock, None).into_iter().map(|e| e.label).collect::<Vec<_>>(), ["Use", "Drop"]);
+        assert_eq!(menu_entries(1, &modded.items, Place::Carried, 0, &clock, None, &[], &[]).into_iter().map(|e| e.label).collect::<Vec<_>>(), ["Use", "Drop"]);
         assert_eq!(labels(Place::Carried, stack("rag", 1), None)[0], "Use on a wound...");
         assert_eq!(labels(Place::Worn, stack("rag", 1), None), ["Take off", "Drop"]);
         assert_eq!(labels(Place::Ground, stack("kitchen_knife", 1), None), ["Take in hand", "Pick up"]);
-        assert_eq!(labels(Place::Container(7), stack("tinned_beans", 4), None), ["Take", "Take one", "Take half (2)"]);
+        assert_eq!(labels(Place::Container(7), stack("tinned_beans", 4), None), ["Eat", "Take", "Take one", "Take half (2)"]);
+        // Things lying nearby can be used straight away: worn and slung go to their place, food
+        // and a recipe's input are taken (one, or what the recipe needs) and then used.
+        assert_eq!(labels(Place::Container(7), stack("hoodie", 1), None), ["Wear", "Take"]);
+        assert_eq!(labels(Place::Ground, stack("hiking_pack", 1), None), ["Put it on", "Pick up"]);
+        let e = menu_entries(1, items, Place::Container(7), 2, &stack("hoodie", 1), None, &[], &[]);
+        assert!(matches!(e[0].act, MenuDo::Send { intent: Intent::MoveItem { from: Place::Container(7), index: 2, to: Place::Worn, count: 1, .. }, .. }));
+        let e = menu_entries(1, items, Place::Ground, 9, &stack("tinned_beans", 3), None, &[], &[]);
+        assert!(matches!(e[0].act, MenuDo::TakeThen { take: Intent::MoveItem { from: Place::Ground, index: 9, to: Place::Carried, count: 1, .. }, then: Then::Use, .. }));
+        let tee = stack("t_shirt", 1);
+        let makes = makes_with(&config.recipes, items, &zombye_sim::Inventory::default(), &tee);
+        assert_eq!(makes.len(), 1, "ripping it into rags needs nothing else: {makes:?}");
+        let e = menu_entries(1, items, Place::Ground, 4, &tee, None, &[], &makes);
+        assert_eq!(e.iter().map(|e| e.label.as_str()).collect::<Vec<_>>(), ["Wear", makes[0].1.as_str(), "Pick up"]);
+        assert!(matches!(e[1].act, MenuDo::TakeThen { then: Then::Craft(_), .. }));
+        // Jeans need something that cuts: not offered without it; with one already carried, no need to take another.
+        assert!(makes_with(&config.recipes, items, &zombye_sim::Inventory::default(), &stack("jeans", 1)).is_empty());
+        let mut inv = zombye_sim::Inventory::default();
+        inv.carried.push(tee);
+        assert!(makes_with(&config.recipes, items, &inv, &tee).is_empty());
         // The intents are the ones a drag or a click would send.
-        let e = menu_entries(1, items, Place::Carried, 2, &stack("tinned_beans", 4), None);
+        let e = menu_entries(1, items, Place::Carried, 2, &stack("tinned_beans", 4), None, &[], &[]);
         assert!(matches!(e[0].act, MenuDo::Send { intent: Intent::Use { index: 2, .. }, whole: false, .. }));
         assert!(matches!(e[2].act, MenuDo::Send { intent: Intent::Drop { index: 2, count: 1, .. }, whole: false, .. }));
         assert!(matches!(e[3].act, MenuDo::Send { intent: Intent::Drop { index: 2, count: 2, .. }, .. }));
-        let e = menu_entries(1, items, Place::Ground, 9, &stack("kitchen_knife", 1), None);
+        let e = menu_entries(1, items, Place::Ground, 9, &stack("kitchen_knife", 1), None, &[], &[]);
         assert!(matches!(e[0].act, MenuDo::Send { intent: Intent::MoveItem { from: Place::Ground, index: 9, to: Place::Slot(Slot::Hand), .. }, .. }));
+    }
+
+    /// With bags on, a carried stack's menu offers each other place it could be kept (never the
+    /// one it is in), as a move into that bag; the sort control goes round its four orders.
+    #[test]
+    fn the_menu_offers_the_other_bags_and_the_sort_goes_round() {
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/data");
+        let items = zombye_net::content::load_config(&data, 1).unwrap().items;
+        let mut beans = ItemStack::new(items.iter().position(|d| d.id == "tinned_beans").unwrap() as u16, 2);
+        beans.home = Pouch::Back;
+        let pouches = [(Pouch::Pockets, "pockets".to_string()), (Pouch::Back, "rucksack".to_string()), (Pouch::Shoulder, "tote bag".to_string())];
+        let e = menu_entries(1, &items, Place::Carried, 3, &beans, None, &pouches, &[]);
+        assert_eq!(e.iter().map(|e| e.label.as_str()).collect::<Vec<_>>(), ["Eat", "Put in pockets", "Put in tote bag", "Drop", "Drop one"]);
+        assert!(matches!(e[2].act, MenuDo::Send { intent: Intent::MoveItem { from: Place::Carried, index: 3, to: Place::Pouch(Pouch::Shoulder), count: 0, .. }, whole: true, .. }));
+        // Things on the floor or in a cupboard go where the server puts them: no bag entries.
+        assert!(menu_entries(1, &items, Place::Ground, 3, &beans, None, &pouches, &[]).iter().all(|e| !e.label.starts_with("Put in")));
+        let mut sort = Sort::default();
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            sort.next();
+            seen.push(sort.name());
+        }
+        assert_eq!(seen, ["name", "type", "weight", "as packed"]);
     }
 
     /// A right-click on a row opens its menu; with a menu up, a left click on a row behind it
@@ -2779,7 +3519,7 @@ mod tests {
         let items = zombye_net::content::load_config(&data, 1).unwrap().items;
         let beans = ItemStack::new(items.iter().position(|d| d.id == "tinned_beans").unwrap() as u16, 4);
         let on_row = |index: u32, button| RowClick {
-            action: RowAction { stack: beans, title: format!("row {index}"), left: Some((Place::Carried, index, Place::Ground)), more: Vec::new(), menu: menu_entries(1, &items, Place::Carried, index, &beans, None), craft: None },
+            action: RowAction { stack: beans, title: format!("row {index}"), left: Some((Place::Carried, index, Place::Ground)), more: Vec::new(), menu: menu_entries(1, &items, Place::Carried, index, &beans, None, &[], &[]), craft: None },
             button,
             one: false,
         };
@@ -2980,4 +3720,156 @@ mod tests {
         assert_eq!(app.world().resource::<Presses>().0, 2);
         assert!(app.world().resource::<Clicks>().0.is_empty());
     }
+    #[test]
+    fn a_dragged_thing_goes_where_it_is_dropped() {
+        let items = shipped_items();
+        let idx = |id: &str| items.iter().position(|d| d.id == id).unwrap() as u16;
+        let stack = |id: &str, n: u16, home: Pouch| ItemStack { home, ..ItemStack::new(idx(id), n) };
+        let act = |from: Place, index: u32, s: ItemStack, more: Vec<Line>| RowAction { stack: s, title: String::new(), left: Some((from, index, Place::Carried)), more, menu: Vec::new(), craft: None };
+        let mut flight = InFlight::default();
+        // From the floor into the rucksack: the whole stack, to that bag.
+        let beans = stack("tinned_beans", 3, Pouch::Pockets);
+        let out = drop_intents(&act(Place::Ground, 9, beans, Vec::new()), Place::Pouch(Pouch::Back), false, 1, &mut flight, 0.0);
+        assert!(matches!(out[..], [Intent::MoveItem { from: Place::Ground, index: 9, to: Place::Pouch(Pouch::Back), count: 0, .. }]), "{out:?}");
+        // Again before the answer: nothing more.
+        assert!(drop_intents(&act(Place::Ground, 9, beans, Vec::new()), Place::Pouch(Pouch::Back), false, 1, &mut flight, 0.1).is_empty());
+        // A tile of two stacks, one already in the bag it is dropped on: only the other moves.
+        let mut flight = InFlight::default();
+        let (a, b) = (stack("tinned_beans", 2, Pouch::Pockets), stack("tinned_beans", 1, Pouch::Back));
+        let out = drop_intents(&act(Place::Carried, 0, a, vec![Line { from: Place::Carried, index: 4, stack: b }]), Place::Pouch(Pouch::Back), false, 1, &mut flight, 0.0);
+        assert!(matches!(out[..], [Intent::MoveItem { from: Place::Carried, index: 0, to: Place::Pouch(Pouch::Back), .. }]), "{out:?}");
+        // To the floor: both, from the back first; with Alt just one of the first.
+        let mut flight = InFlight::default();
+        let out = drop_intents(&act(Place::Carried, 0, a, vec![Line { from: Place::Carried, index: 4, stack: b }]), Place::Ground, false, 1, &mut flight, 0.0);
+        assert!(matches!(out[..], [Intent::Drop { index: 4, count: 0, .. }, Intent::Drop { index: 0, count: 0, .. }]), "{out:?}");
+        let mut flight = InFlight::default();
+        let out = drop_intents(&act(Place::Carried, 0, a, vec![Line { from: Place::Carried, index: 4, stack: b }]), Place::Ground, true, 1, &mut flight, 0.0);
+        assert!(matches!(out[..], [Intent::Drop { index: 0, count: 1, .. }]), "{out:?}");
+        // Onto the gear slots a thing goes where it belongs, one of it; what is worn back to a bag.
+        assert_eq!(belongs(&items[idx("hoodie") as usize]), Place::Worn);
+        assert_eq!(belongs(&items[idx("hiking_pack") as usize]), Place::Slot(Slot::Back));
+        assert_eq!(belongs(&items[idx("tinned_beans") as usize]), Place::Slot(Slot::Hand));
+        let mut flight = InFlight::default();
+        let hoodie = stack("hoodie", 2, Pouch::Pockets);
+        let out = drop_intents(&act(Place::Container(3), 1, hoodie, Vec::new()), Place::Worn, false, 1, &mut flight, 0.0);
+        assert!(matches!(out[..], [Intent::MoveItem { from: Place::Container(3), index: 1, to: Place::Worn, count: 1, .. }]), "{out:?}");
+        let out = drop_intents(&act(Place::Worn, 0, hoodie, Vec::new()), Place::Pouch(Pouch::Pockets), false, 1, &mut flight, 0.0);
+        assert!(matches!(out[..], [Intent::MoveItem { from: Place::Worn, index: 0, to: Place::Pouch(Pouch::Pockets), .. }]), "{out:?}");
+        // Dropped where it already is: nothing.
+        assert!(drop_intents(&act(Place::Worn, 0, hoodie, Vec::new()), Place::Worn, false, 1, &mut InFlight::default(), 0.0).is_empty());
+    }
+
+    /// The whole of a drag, as the plugin runs it: press on a tile, move, let go over a pane.
+    #[test]
+    fn a_press_moved_is_a_drag_and_one_let_go_in_place_a_click() {
+        let mut app = ui_app();
+        app.init_resource::<Clicks>().init_resource::<InFlight>().init_resource::<Outbox>().init_resource::<Drag>().init_resource::<ButtonInput<KeyCode>>();
+        app.add_systems(Update, drag);
+        app.world_mut().spawn(Camera2d);
+        app.world_mut().commands().spawn(Node { position_type: PositionType::Absolute, top: px(0), left: px(0), flex_direction: FlexDirection::Row, column_gap: px(100), ..default() }).with_children(|col| {
+            col.spawn(Node { width: px(200), flex_direction: FlexDirection::Column, ..default() }).with_children(|c| {
+                row(c, Cells::plain("Alarm clock", "0.4"), RowAction { stack: beans(1), title: String::new(), left: Some((Place::Carried, 0, Place::Ground)), more: Vec::new(), menu: Vec::new(), craft: None }, false);
+            });
+            col.spawn((DropTo::Place(Place::Pouch(Pouch::Back)), Node { width: px(200), height: px(200), ..default() }));
+        });
+        app.world_mut().flush();
+        for _ in 0..3 {
+            app.update();
+        }
+        let window = app.world_mut().query_filtered::<Entity, With<PrimaryWindow>>().single(app.world()).unwrap();
+        let press = |app: &mut App, state: ButtonState| {
+            let e = MouseButtonInput { button: MouseButton::Left, state, window };
+            app.world_mut().write_message(e);
+            app.world_mut().write_message(WindowEvent::MouseButtonInput(e));
+        };
+        let go = |app: &mut App, position: Vec2| {
+            app.world_mut().query::<&mut Window>().single_mut(app.world_mut()).unwrap().set_cursor_position(Some(position));
+            let moved = CursorMoved { window, position, delta: None };
+            app.world_mut().write_message(moved.clone());
+            app.world_mut().write_message(WindowEvent::CursorMoved(moved));
+            app.update();
+            app.update();
+        };
+        // Pressed and let go where it was: the click.
+        go(&mut app, Vec2::new(20.0, 8.0));
+        press(&mut app, ButtonState::Pressed);
+        app.update();
+        assert!(app.world().resource::<Drag>().0.is_some(), "held");
+        assert!(app.world().resource::<Clicks>().0.is_empty(), "nothing until it is let go");
+        press(&mut app, ButtonState::Released);
+        app.update();
+        app.update();
+        assert_eq!(app.world().resource::<Clicks>().0.len(), 1);
+        assert!(app.world().resource::<Outbox>().0.is_empty());
+        app.world_mut().resource_mut::<Clicks>().0.clear();
+        // Pressed, moved over the bag's pane, let go: it goes to that bag, and no click.
+        press(&mut app, ButtonState::Pressed);
+        app.update();
+        go(&mut app, Vec2::new(400.0, 100.0));
+        assert_eq!(app.world_mut().query_filtered::<(), With<Ghost>>().iter(app.world()).count(), 1, "its picture follows the pointer");
+        assert_eq!(app.world_mut().query_filtered::<(), With<Outline>>().iter(app.world()).count(), 1, "the pane under it is outlined");
+        press(&mut app, ButtonState::Released);
+        app.update();
+        app.update();
+        let out = &app.world().resource::<Outbox>().0;
+        assert!(matches!(out[..], [Intent::MoveItem { from: Place::Carried, index: 0, to: Place::Pouch(Pouch::Back), count: 0, .. }]), "{out:?}");
+        assert!(app.world().resource::<Clicks>().0.is_empty());
+        assert_eq!(app.world_mut().query_filtered::<(), With<Ghost>>().iter(app.world()).count(), 0);
+        assert_eq!(app.world_mut().query_filtered::<(), With<Outline>>().iter(app.world()).count(), 0);
+        // Dropped on nothing: nothing.
+        app.world_mut().resource_mut::<InFlight>().asked.clear();
+        go(&mut app, Vec2::new(20.0, 8.0));
+        press(&mut app, ButtonState::Pressed);
+        app.update();
+        go(&mut app, Vec2::new(20.0, 400.0));
+        press(&mut app, ButtonState::Released);
+        app.update();
+        app.update();
+        assert_eq!(app.world().resource::<Outbox>().0.len(), 1);
+    }
+
+    /// Health and Skills are screens of the frame: their keys open it on them, the rail goes
+    /// between them, the key again or shutting the frame goes back to the game.
+    #[test]
+    fn health_and_skills_are_screens_of_the_frame() {
+        use crate::health_ui::HealthPanel;
+        use crate::skills_ui::SkillsPanel;
+        let mut app = App::new();
+        app.init_resource::<InventoryPanel>().init_resource::<HealthPanel>().init_resource::<SkillsPanel>().init_resource::<MakeUi>().init_resource::<Goto>().add_systems(Update, screens);
+        let state = |app: &mut App| (app.world().resource::<InventoryPanel>().open, app.world().resource::<HealthPanel>().open, app.world().resource::<SkillsPanel>().open);
+        app.update();
+        assert_eq!(state(&mut app), (false, false, false));
+        // H: the frame opens on Health.
+        app.world_mut().resource_mut::<HealthPanel>().open = true;
+        app.update();
+        assert_eq!(state(&mut app), (true, true, false));
+        // K: over to Skills.
+        app.world_mut().resource_mut::<SkillsPanel>().open = true;
+        app.update();
+        assert_eq!(state(&mut app), (true, false, true));
+        // The rail: to Make, and the frame stays.
+        app.world_mut().resource_mut::<Goto>().0 = Some(Tab::Make);
+        app.update();
+        assert_eq!(state(&mut app), (true, false, false));
+        assert!(app.world().resource::<MakeUi>().shown);
+        app.world_mut().resource_mut::<Goto>().0 = Some(Tab::Health);
+        app.update();
+        assert_eq!(state(&mut app), (true, true, false));
+        // H again: back to the game.
+        app.world_mut().resource_mut::<HealthPanel>().open = false;
+        app.update();
+        assert_eq!(state(&mut app), (false, false, false));
+        // "Use on a wound" from the open inventory: Health, with the item kept; Tab shuts it all.
+        app.world_mut().resource_mut::<InventoryPanel>().open = true;
+        app.update();
+        *app.world_mut().resource_mut::<HealthPanel>() = HealthPanel { open: true, selected: None, use_item: Some(3) };
+        app.update();
+        assert_eq!(state(&mut app), (true, true, false));
+        assert_eq!(app.world().resource::<HealthPanel>().use_item, Some(3));
+        app.world_mut().resource_mut::<InventoryPanel>().open = false;
+        app.update();
+        assert_eq!(state(&mut app), (false, false, false));
+        assert_eq!(app.world().resource::<HealthPanel>().use_item, None);
+    }
+
 }

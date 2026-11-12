@@ -123,6 +123,9 @@ const CROSS_CLIPS: [&str; 2] = ["climb", "vault"];
 /// the distance moved (`survivor::STAIR_CYCLE_M` a loop) in place of the gait, the whole body.
 /// Without `stairs_down` he walks down; without either he walks both ways.
 const STAIR_CLIPS: [&str; 2] = ["stairs_up", "stairs_down"];
+/// And for sitting down: loops made in place, on a chair-high seat (`sit`) and on the ground
+/// (`sit_ground`), the whole body, its feet on the floor. Without them the grey-box's.
+const SIT_CLIPS: [&str; 2] = ["sit", "sit_ground"];
 const HURT: usize = 0;
 const DIE: usize = 1;
 
@@ -390,6 +393,8 @@ pub struct SurvivorModel {
     /// on average over its loop (see `compose`).
     stairs: [Option<usize>; STAIR_CLIPS.len()],
     stair_mid: [f32; STAIR_CLIPS.len()],
+    /// The body's clips of [`SIT_CLIPS`].
+    sit: [Option<usize>; SIT_CLIPS.len()],
     gaits: [Vec<Gait>; 3],
     /// The bones the hips' turn is taken back out of (the spine's first, under the hips).
     spine_base: Vec<usize>,
@@ -690,6 +695,7 @@ impl SurvivorModel {
         let life = LIFE_CLIPS.map(guard);
         let cross = CROSS_CLIPS.map(guard);
         let stairs = STAIR_CLIPS.map(guard);
+        let sit = SIT_CLIPS.map(guard);
         let gaits = gaits(&mut body);
         let reference = idle.map_or_else(|| body.rig.rest(), |i| body.clips[i].frames[0].clone());
         let retarget = Retarget::new(&body, reference);
@@ -746,6 +752,7 @@ impl SurvivorModel {
             life,
             cross,
             stairs,
+            sit,
             stair_mid: [0.0; STAIR_CLIPS.len()],
             gaits,
             spine_base,
@@ -999,6 +1006,16 @@ impl SurvivorModel {
         let root = 0;
         // Running has a moment in the air each step.
         pose.t[root].y += a.run_w * a.move_w * 0.05 * (a.cycle * TAU * 2.0).sin().max(0.0);
+        if let Some((grey, w)) = survivor::sitting_now(a) {
+            // Sitting: the body's own loop for the seat or the ground, else the grey-box's pose.
+            let ground = a.seat == Some(zombye_sim::SeatKind::Ground);
+            let mut sit = match self.sit[ground as usize] {
+                Some(i) => body.clips[i].sample((now / body.clips[i].secs + a.player as f32 * 0.37).fract()),
+                None => self.retarget.apply(body, &grey),
+            };
+            self.ground(&mut sit);
+            pose = pose.blend(&sit, w);
+        }
         if let Some((lie, w)) = survivor::lying(a, now) {
             pose = match (self.life[DIE].filter(|_| a.died), a.dead_since) {
                 // Dead: the body's own death, once through and then still as it ends.
@@ -1172,6 +1189,21 @@ impl SurvivorModel {
     }
 
     /// A grey-box box from `min` to `max` on a socket (`hip_l`: the left hip, on the hips bone).
+    /// For the new-game screen: the body and outfit meshes of a survivor wearing `worn` (item
+    /// indices) and holding nothing.
+    pub(crate) fn dressed(&self, items: &[ItemDef], worn: &[u16]) -> (Mesh, Option<Mesh>) {
+        let (body, outfit) = self.dress(items, &OutfitView { worn: worn.to_vec(), ..default() });
+        (body.to_mesh(), outfit.map(|o| o.to_mesh()))
+    }
+
+    /// For the new-game screen: standing idle, `secs` into the idle clip, feet on the ground.
+    pub(crate) fn standing(&self, secs: f32) -> RigPose {
+        let len = self.idle.map_or(1.0, |i| self.body.clips[i].secs.max(0.1));
+        let mut pose = self.clip_at(self.idle, (secs / len).fract());
+        self.ground(&mut pose);
+        pose
+    }
+
     fn socket_box(&self, into: &mut SkinMesh, socket: &str, min: Vec3, max: Vec3, color: [f32; 4]) {
         let frame = if socket == "hip_l" {
             self.body.rig.find("Hips").map(|b| (b, Mat4::from_translation(self.body.rig.inverse_bind[b].inverse().transform_point3(Vec3::ZERO) + Vec3::new(0.17, -0.12, 0.0))))
@@ -1191,6 +1223,13 @@ pub struct Dress {
     body: Entity,
     outfit: Entity,
     worn: Option<OutfitView>,
+}
+
+impl Dress {
+    /// The body's and the outfit's entities.
+    pub(crate) fn parts(&self) -> (Entity, Entity) {
+        (self.body, self.outfit)
+    }
 }
 
 /// Build a survivor's skeleton (one joint per bone), body, outfit, held weapon and ring under `root`.

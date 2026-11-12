@@ -98,7 +98,7 @@ enum Kind {
 
 /// Every tool: name, title (shown to people by clients), kind. `tool_list` adds these to the
 /// definitions, and a test checks each tool has a row.
-const TOOLS: [(&str, &str, Kind); 64] = [
+const TOOLS: [(&str, &str, Kind); 65] = [
     ("observe", "Look around (ASCII map)", Kind::Look),
     ("screenshot", "Screenshot (rendered picture)", Kind::Look),
     ("stats", "World and player stats", Kind::Look),
@@ -146,6 +146,7 @@ const TOOLS: [(&str, &str, Kind); 64] = [
     ("unequip", "Take off or put away an item", Kind::Play),
     ("use", "Eat or drink", Kind::Play),
     ("sleep", "Sleep", Kind::Play),
+    ("sit", "Sit down or get up", Kind::Play),
     ("treat", "Treat a wound", Kind::Play),
     ("craft", "Craft", Kind::Play),
     ("respawn", "Get up again after dying", Kind::Play),
@@ -789,7 +790,9 @@ fn tool_defs() -> Value {
             "name": "move_item",
             "description": "Move `count` (default all) of the stack at `from`/`index` to `to`. Places: carried (pockets and bags), \
                 hand, off_hand, back, shoulder, worn, container (the open one), ground (index = ground item id). Slots take one \
-                item; whatever was in the way goes into pockets and bags. Steps the world until done.",
+                item; whatever was in the way goes into pockets and bags. Each bag has its own room: as `to`, pockets, bag_back, \
+                bag_shoulder, bag_hand or bag_off_hand puts a carried stack in that one (`inventory` says where each is). Steps \
+                the world until done.",
             "inputSchema": {"type": "object", "required": ["from", "to"], "properties": {
                 "player": {"type": "integer", "default": 1}, "from": {"type": "string"}, "index": {"type": "integer", "default": 0},
                 "to": {"type": "string"}, "count": {"type": "integer", "default": 0}
@@ -847,6 +850,15 @@ fn tool_defs() -> Value {
                 of simulation.",
             "inputSchema": {"type": "object", "properties": {
                 "player": {"type": "integer", "default": 1}, "max_hours": {"type": "number", "default": 12, "maximum": 24}
+            }}
+        },
+        {
+            "name": "sit",
+            "description": "A player sits down (on the sofa, bed, toilet, bench or deckchair within 0.9 m, else the ground) or \
+                gets up. Seated it doesn't move, gets its breath back twice as fast and slowly loses tiredness; moving, swinging, \
+                climbing or sleeping gets it up. Eating, crafting and cooking work seated. Time doesn't move.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1}, "sit": {"type": "boolean", "description": "true sit, false get up; left out: the other"}
             }}
         },
         {
@@ -1948,7 +1960,13 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
         "move_item" => {
             let id = player_id();
             let from = place_arg(world, id, args.get("from").and_then(Value::as_str).ok_or("from is required")?)?;
-            let to = place_arg(world, id, args.get("to").and_then(Value::as_str).ok_or("to is required")?)?;
+            let to = args.get("to").and_then(Value::as_str).ok_or("to is required")?;
+            // Into one bag carried, or the pockets (only somewhere to put things: they are taken
+            // from "carried", by index).
+            let to = match pouch_arg(to) {
+                Some(p) => Place::Pouch(p),
+                None => place_arg(world, id, to)?,
+            };
             let index = args.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
             let count = args.get("count").and_then(Value::as_u64).unwrap_or(0).min(u16::MAX as u64) as u16;
             run_item_tool(world, id, Intent::MoveItem { player: id, from, index, to, count })
@@ -1981,6 +1999,10 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 Ok(t) => Ok(format!("{ahead}{t}\nneeds before: {before}\nneeds now: {}", needs_line(world, id))),
                 Err(t) => Err(format!("{ahead}{t}")),
             }
+        }
+        "sit" => {
+            let id = player_id();
+            world.player_sit(id, args.get("sit").and_then(Value::as_bool)).map_err(|e| format!("P{id} can't sit down: {e}"))
         }
         "sleep" => sleep_tool(world, player_id(), args.get("max_hours").and_then(Value::as_f64).unwrap_or(12.0).clamp(0.1, 24.0) as f32),
         "set_needs" => {
@@ -2232,6 +2254,7 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 "thirst": p.needs.thirst,
                 "tiredness": p.needs.tiredness,
                 "asleep": p.needs.sleep.map(|s| s.spot.name()),
+                "seated": p.seated.map(|s| s.name()),
                 "tags": world.status_tags(p.id).iter().map(|t| t.label.clone()).collect::<Vec<_>>(),
                 "skills": zombye_sim::Skill::ALL.iter().map(|&s| (s.id().to_string(), json!(p.skills.level(s, &world.config.skills)))).collect::<serde_json::Map<_, _>>(),
             })).collect::<Vec<_>>(),
@@ -3213,6 +3236,24 @@ fn item_details(d: &zombye_sim::ItemDef) -> String {
     v.join("; ")
 }
 
+/// What the tools call each place carried things are kept in (`move_item`'s `to`, and after each
+/// carried stack in `inventory`).
+const POUCH_NAMES: [(zombye_sim::Pouch, &str); 5] = [
+    (zombye_sim::Pouch::Pockets, "pockets"),
+    (zombye_sim::Pouch::Back, "bag_back"),
+    (zombye_sim::Pouch::Shoulder, "bag_shoulder"),
+    (zombye_sim::Pouch::Hand, "bag_hand"),
+    (zombye_sim::Pouch::OffHand, "bag_off_hand"),
+];
+
+fn pouch_arg(name: &str) -> Option<zombye_sim::Pouch> {
+    POUCH_NAMES.iter().find(|(_, n)| *n == name).map(|(p, _)| *p)
+}
+
+fn pouch_name(p: zombye_sim::Pouch) -> &'static str {
+    POUCH_NAMES.iter().find(|(q, _)| *q == p).map_or("pockets", |(_, n)| n)
+}
+
 /// A place named in a tool's arguments; "container" is the one the player has open.
 fn place_arg(world: &World, id: u32, name: &str) -> Result<Place, String> {
     Ok(match name {
@@ -3227,7 +3268,7 @@ fn place_arg(world: &World, id: u32, name: &str) -> Result<Place, String> {
             Some(c) => Place::Container(c),
             None => return Err(format!("player {id} has no container open: search one first")),
         },
-        other => return Err(format!("unknown place {other:?}: carried, hand, off_hand, back, shoulder, worn, container or ground")),
+        other => return Err(format!("unknown place {other:?}: carried, hand, off_hand, back, shoulder, worn, container or ground (and, to put a carried thing in one bag: pockets, bag_back, bag_shoulder, bag_hand, bag_off_hand)")),
     })
 }
 
@@ -3847,8 +3888,10 @@ fn inventory_text(world: &World, id: u32) -> Result<String, String> {
         slot(inv.back),
         slot(inv.shoulder),
         if inv.worn.is_empty() { "-".to_string() } else { stacks_text(world, &inv.worn) },
-        if inv.carried.is_empty() { "-".to_string() } else { stacks_text(world, &inv.carried) },
+        if inv.carried.is_empty() { "-".to_string() } else { inv.carried.iter().enumerate().map(|(k, s)| format!("[{k}] {} (in {})", stack_text(world, s), pouch_name(s.home))).collect::<Vec<_>>().join(", ") },
     );
+    // Each bag has its own room: what is where, and how full.
+    out.push_str(&format!("kept in: {}\n", inv.pouches(&world.config.items, t.pockets_l).into_iter().map(|(p, room, used)| format!("{} {used:.1} of {room:.0} L", pouch_name(p))).collect::<Vec<_>>().join(", ")));
     if let Some(cid) = p.open
         && let Some(site) = world.container(cid)
     {
@@ -3935,6 +3978,23 @@ mod tests {
         }
         let inventory = call_tool(&mut world, "inventory", &json!({})).unwrap();
         assert!(inventory.contains("(0.0 of") && !inventory.contains("-0.0"), "{inventory}");
+    }
+
+    /// Each bag has its own room: `inventory` says which one a carried thing is in and how full
+    /// each is, and `move_item` puts it in another.
+    #[test]
+    fn agents_see_and_choose_the_bag() {
+        let mut world = small_world();
+        world.give_kit(1, &[("hiking_pack".to_string(), 1)]);
+        call_tool(&mut world, "equip", &json!({"index": 0})).unwrap();
+        world.give_kit(1, &[("tinned_beans".to_string(), 2)]);
+        let inv = call_tool(&mut world, "inventory", &json!({})).unwrap();
+        assert!(inv.contains("x2 (in pockets)") && inv.contains("kept in: bag_back 0.0 of 50 L, pockets 0.8 of 8 L"), "{inv}");
+        let moved = call_tool(&mut world, "move_item", &json!({"from": "carried", "index": 0, "to": "bag_back", "count": 1})).unwrap();
+        assert!(moved.contains("(in pockets)") && moved.contains("(in bag_back)"), "{moved}");
+        // No bag on the shoulder: nothing goes there.
+        let _ = call_tool(&mut world, "move_item", &json!({"from": "carried", "to": "bag_shoulder"}));
+        assert!(!call_tool(&mut world, "inventory", &json!({})).unwrap().contains("bag_shoulder"));
     }
 
     /// A folder of its own for one test, removed when dropped (pass or fail).

@@ -230,7 +230,7 @@ pub fn run(options: Options) -> ! {
 static NEXT: Mutex<Option<Relaunch>> = Mutex::new(None);
 
 /// This run's arguments without `drop` (flags, and flags with a value) and with `add`.
-fn args_without(args: &[String], with_value: &[&str], alone: &[&str], add: &[&str]) -> Vec<String> {
+pub(crate) fn args_without(args: &[String], with_value: &[&str], alone: &[&str], add: &[&str]) -> Vec<String> {
     let mut out = Vec::new();
     let mut k = 0;
     while k < args.len() {

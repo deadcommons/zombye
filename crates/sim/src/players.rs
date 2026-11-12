@@ -329,6 +329,10 @@ pub struct Player {
     /// player's layout (and the format) stays as it was.
     #[serde(skip)]
     pub knock: Option<Knock>,
+    /// Sitting down, and on what ([`crate::sit`]): no moving, breath back faster. Saved in a
+    /// section of its own (`SEAT`), like `knock`.
+    #[serde(skip)]
+    pub seated: Option<crate::sit::SeatKind>,
     /// Logged out (#68, `crate::logout`): nobody plays it, and it lies where it was left, asleep and
     /// defenceless, for this many more seconds before it leaves the world. Saved in a section of
     /// its own, like `knock`.
@@ -379,6 +383,10 @@ pub struct Player {
     /// not saved (level after a load, until the next), not in the state hash.
     #[serde(skip)]
     pub pitch: f32,
+    /// Who this survivor was: its Background, Strengths and Flaws and what they do
+    /// (`crate::origin`). Saved in a section of its own (`ORIG`), so not here.
+    #[serde(skip)]
+    pub origin: crate::origin::Origin,
 }
 
 /// A player staggered or knocked down by another player's swing or shove (see `combat`).
@@ -421,6 +429,7 @@ impl Player {
             ready_in: 0.0,
             queued: None,
             knock: None,
+            seated: None,
             away: None,
             protected: 0.0,
             dev: DevFlags::default(),
@@ -433,6 +442,7 @@ impl Player {
             hands: None,
             frisking: None,
             pitch: 0.0,
+            origin: crate::origin::Origin::default(),
         }
     }
 }

@@ -11,6 +11,7 @@ pub mod host;
 pub mod identity;
 pub mod joining;
 pub mod modpack;
+pub mod newgame;
 pub mod remote;
 pub mod save_file;
 pub mod shutdown;
@@ -108,6 +109,9 @@ pub enum Intent {
     /// Lie down and sleep (`sleep: true`; on a bed or sofa within reach, else the floor), or get up
     /// (`false`). Any other action while asleep also gets the player up, and does nothing else.
     Sleep { player: u32, sleep: bool },
+    /// Sit down (`Some(true)`: on the sofa, bed, toilet or bench beside you, else the ground), get
+    /// up (`Some(false)`) or the other (`None`): `zombye_sim::sit`. Moving gets you up too.
+    Sit { player: u32, sit: Option<bool> },
     /// Cancel the item job under way (`all: false`) or the whole queue (`all: true`): moves, searches,
     /// eating, treatments and crafts. Nothing is lost: a job only takes effect when it finishes.
     CancelJobs { player: u32, all: bool },
@@ -242,6 +246,9 @@ pub struct PlayerView {
     pub health: HealthTags,
     /// Asleep (lying down; it doesn't move until it wakes).
     pub asleep: bool,
+    /// Sitting down, and on what (`zombye_sim::sit`; where is `sit::seat_at` on the map).
+    #[serde(default)]
+    pub seated: Option<zombye_sim::SeatKind>,
     /// Aiming (the right mouse held): facing its aim, at the ready.
     pub aiming: bool,
     /// Reeling (`down` false) or on the ground after another player's blow (PvP), with the seconds
@@ -307,6 +314,9 @@ pub struct PrivateView {
     pub frisk: Option<FriskView>,
     /// What its own hands are tied with (an item index), if they are.
     pub restraint: Option<u16>,
+    /// Which pouch (pockets, or which bag: `Pouch as u8`) each carried stack is in, in order: a
+    /// stack doesn't carry that over the network itself ([`PrivateView::restore_homes`]).
+    pub homes: Vec<u8>,
 }
 
 impl PrivateView {
@@ -324,7 +334,12 @@ impl PrivateView {
         let jobs = p.jobs.iter().map(|j| j.kind).collect();
         let frisk = p.frisking.and_then(|t| Some(FriskView { target: t, inventory: world.player(t)?.inventory.clone() }));
         let restraint = p.restraint.map(|r| r.item);
-        Some(Self { player: id, inventory: p.inventory.clone(), carry, max_kg: carry.limit_kg * world.config.carry.max_load, open, health, needs, skills, jobs, frisk, restraint })
+        Some(Self { player: id, inventory: p.inventory.clone(), carry, max_kg: carry.limit_kg * world.config.carry.max_load, open, health, needs, skills, jobs, frisk, restraint, homes: p.inventory.homes() })
+    }
+
+    /// After a trip over the network: put each carried stack back in its pouch.
+    pub fn restore_homes(&mut self) {
+        self.inventory.set_homes(&self.homes);
     }
 
     /// What our status icons are worked out from: this view, plus the share of full HP lost, the
@@ -554,6 +569,7 @@ impl Snapshot {
                 health: if p.dead { HealthTags::default() } else { p.health.tags(&world.config.health) },
                 // A logged-out survivor (#68) lies asleep to everyone who sees it.
                 asleep: p.needs.asleep() || (p.away.is_some() && !p.dead),
+                seated: p.seated,
                 aiming: p.input.aim && !p.dead,
                 knock: p.knock,
                 protected: p.protected > 0.0,
@@ -740,6 +756,9 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
             } else {
                 world.wake_player(*player);
             }
+        }
+        Intent::Sit { player, sit } => {
+            let _ = world.player_sit(*player, *sit);
         }
         Intent::CancelJobs { player, all } => world.player_cancel_jobs(*player, *all),
         Intent::Seen { player, tick } => world.player_saw(*player, *tick),

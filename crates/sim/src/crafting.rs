@@ -465,6 +465,8 @@ mod tests {
         let mut c = WorldConfig::new(seed, 0, templates).with_weapons(weapons).with_items(items).with_recipes(recipes);
         c.start_hour = 12.0;
         c.infection.mode = InfectionMode::Off;
+        // These tests count on 3 L of pockets.
+        c.carry.pockets_l = 3.0;
         c
     }
 

@@ -65,10 +65,11 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// 24: electricity (19) merged after 20-23.
 /// 25: stairs and the upper floor: `PlayerView::level` (bit 17 of `PlayerPacked::bits`),
 /// `SnapshotDelta::upstairs`, `Tunings::stairs`. 26: the map screen: `SnapshotDelta::map`, what
-/// the client's survivor has seen of the map.
-/// 27: fire and cooking: `Intent::Fire`, `Snapshot::fires` (`SnapshotDelta::fires`), `Tunings::fire`,
-/// `RecipeDef::heat` and `places`, `Consumable::poison`, `WoundKind::Burn`, `DeathCause::Burned`.)
-pub const PROTOCOL: u32 = 27;
+/// the client's survivor has seen of the map. 27: bags with their own room: `Place::Pouch`,
+/// `PrivateView::homes`. 28: fire and cooking: `Intent::Fire`, `Snapshot::fires` (`SnapshotDelta::fires`),
+/// `Tunings::fire`, `RecipeDef::heat` and `places`, `Consumable::poison`, `WoundKind::Burn`, `DeathCause::Burned`; sitting down: `Intent::Sit`,
+/// `PlayerView::seated` (bits 18-20 of `PlayerPacked::bits`).)
+pub const PROTOCOL: u32 = 28;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -490,7 +491,7 @@ pub struct PlayerPacked {
     /// in bits 9-10 its gesture (#67: 0 none, 1 wave, 2 hands up, 3 point); #73: bit 11 its hands
     /// are tied, 12 struggling, 13-15 what its hands do to another (0 nothing, 1 tying, 2 freeing,
     /// 3 searching, 4 taking); in bit 16 that it is a marked agent (#69); in bit 17 that it is
-    /// upstairs.
+    /// upstairs; in bits 18-20 what it sits on (`SeatKind::bits`, 0 standing).
     pub bits: u32,
     /// Hit points, rounded up.
     pub hp: u8,
@@ -528,7 +529,7 @@ impl PlayerPacked {
             x: (p.pos[0].max(0.0) * POS_STEPS).round() as u32,
             y: (p.pos[1].max(0.0) * POS_STEPS).round() as u32,
             facing: ((turn * 256.0).round() as u32 & 255) as u8,
-            bits: p.stance as u32 | bit(p.dead, 2) | bit(p.asleep, 3) | bit(p.aiming, 4) | bit(h.bleeding, 5) | bit(h.limping, 6) | bit(h.sick, 7) | bit(h.injured_arm, 8) | gesture << 9 | bit(p.restrained, 11) | bit(p.struggling, 12) | hands << 13 | bit(p.agent, 16) | bit(p.level > 0, 17),
+            bits: p.stance as u32 | bit(p.dead, 2) | bit(p.asleep, 3) | bit(p.aiming, 4) | bit(h.bleeding, 5) | bit(h.limping, 6) | bit(h.sick, 7) | bit(h.injured_arm, 8) | gesture << 9 | bit(p.restrained, 11) | bit(p.struggling, 12) | hands << 13 | bit(p.agent, 16) | bit(p.level > 0, 17) | zombye_sim::SeatKind::bits(p.seated) << 18,
             hp: p.hp.clamp(0.0, 255.0).ceil() as u8,
             weapon: p.weapon,
             action: p.action,
@@ -567,6 +568,7 @@ impl PlayerPacked {
             dev: DevFlags::default(),
             health: HealthTags { bleeding: bit(5), limping: bit(6), sick: bit(7), injured_arm: bit(8) },
             asleep: bit(3),
+            seated: zombye_sim::SeatKind::from_bits(self.bits >> 18 & 7),
             aiming: bit(4),
             knock: self.knock.map(|(down, tenths)| Knock { down, timer: tenths as f32 / 10.0 }),
             // Not sent of others (#68): you can't see that a stranger is protected, only our own
@@ -1127,6 +1129,9 @@ impl DeltaDecoder {
         s.blind_changes = delta.blind_changes;
         s.hits = delta.hits;
         s.private = delta.private;
+        for v in &mut s.private {
+            v.restore_homes();
+        }
         s.item_notes = delta.item_notes;
         s.level_ups = delta.level_ups;
         s.heard = delta.heard.iter().map(|&(pos, radius)| zombye_sim::Heard { listener: player, pos, radius, at: delta.tick }).collect();
@@ -1220,6 +1225,7 @@ impl Intent {
             | Intent::Treat { player, .. }
             | Intent::Craft { player, .. }
             | Intent::Sleep { player, .. }
+            | Intent::Sit { player, .. }
             | Intent::CancelJobs { player, .. }
             | Intent::Seen { player, .. }
             | Intent::Respawn { player }

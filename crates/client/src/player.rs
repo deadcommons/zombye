@@ -190,7 +190,7 @@ impl Plugin for PlayerPlugin {
             // After the fixed ticks of this frame, before anything in Update reads the player's transform.
             .init_resource::<ViewFloor>()
             .add_systems(RunFixedMainLoop, (place_player, sync_other_players).in_set(RunFixedMainLoopSystems::AfterFixedMainLoop))
-            .add_systems(PostUpdate, lie_on_bed.before(bevy::transform::TransformSystems::Propagate));
+            .add_systems(PostUpdate, (lie_on_bed, sit_on_seat).before(bevy::transform::TransformSystems::Propagate));
     }
 }
 
@@ -401,6 +401,24 @@ fn lie_on_bed(
     }
 }
 
+/// A survivor sitting on a sofa, bed, toilet or bench is drawn on it, facing the way it faces
+/// (`zombye_sim::sit::seat_at`, the server's rule); on the ground, where it is.
+fn sit_on_seat(link: Res<ServerLink>, map: Res<ClientMap>, me: Res<LocalPlayer>, mut players: Bodies) {
+    for (mut tf, other) in &mut players {
+        let id = other.map_or(me.id, |o| o.0);
+        let Some(v) = link.curr.players.iter().find(|p| p.id == id).filter(|v| v.seated.is_some_and(|s| s != zombye_sim::SeatKind::Ground) && !v.dead && !v.asleep) else { continue };
+        let seat = zombye_sim::sit::seat_at(&map.0, Vec2::from(v.pos), v.level);
+        if seat.kind == zombye_sim::SeatKind::Ground {
+            continue;
+        }
+        tf.translation.x = seat.at.x;
+        tf.translation.z = seat.at.y;
+        if let Some(f) = seat.facing {
+            tf.rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - f);
+        }
+    }
+}
+
 /// Mirror other players from snapshots, interpolated between the last two.
 fn sync_other_players(
     mut commands: Commands,
@@ -581,6 +599,12 @@ fn actions(
     let moving = keys.any_just_pressed([KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD]);
     if keys.just_pressed(KeyCode::KeyB) || (asleep && moving) {
         link.send(Intent::Sleep { player: me.id, sleep: !asleep });
+    }
+    // Q sits down (on the sofa, bed or bench beside you, else the ground) or gets up; seated,
+    // setting off (WASD) gets up too (`zombye_sim::sit`).
+    let seated = link.curr.players.iter().any(|p| p.id == me.id && p.seated.is_some());
+    if keys.just_pressed(KeyCode::KeyQ) || (seated && moving) {
+        link.send(Intent::Sit { player: me.id, sit: Some(!seated) });
     }
     // Fighting is for aiming (right mouse held); the server refuses it otherwise.
     if me.aiming && mouse.just_pressed(MouseButton::Left) && !panel.open && !preview.hovered {
