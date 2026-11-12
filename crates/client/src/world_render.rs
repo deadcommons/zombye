@@ -243,7 +243,7 @@ impl Plugin for WorldRenderPlugin {
             .add_systems(Startup, setup_shared)
             .add_systems(PostUpdate, fade_chunks.after(materials::update_params))
             .add_systems(Update, swap_detail.after(stream))
-            .add_systems(Update, (stream, apply_edge_changes, sync_blinds, apply_edge_damage, relight_panes, update_switches, animate_doors, animate_panes, hide_upper_floors, cut_edge_pieces, animate_blinds).chain().after(crate::cutaway::CutawaySystems).after(crate::lights::sync_lit_rooms));
+            .add_systems(Update, (rebuild_felled, stream, apply_edge_changes, sync_blinds, apply_edge_damage, relight_panes, update_switches, animate_doors, animate_panes, hide_upper_floors, cut_edge_pieces, animate_blinds).chain().after(crate::cutaway::CutawaySystems).after(crate::lights::sync_lit_rooms));
     }
 }
 
@@ -526,6 +526,35 @@ fn stream(
                 }
             }
         }
+    }
+}
+
+/// Trees felled this frame (`ServerLink::felled`): build the chunks they stand in again, and a
+/// neighbour too where the tile is on its border (the ground there reads its neighbours' tiles),
+/// so the tree gives way to its stump on the spot.
+fn rebuild_felled(mut commands: Commands, map: Res<ClientMap>, link: Res<crate::server_link::ServerLink>, mats: Option<Res<WorldMaterials>>, shared: Option<Res<SharedMeshes>>, mut streamer: ResMut<Streamer>, mut meshes: ResMut<Assets<Mesh>>) {
+    let (Some(mats), Some(shared)) = (mats, shared) else { return };
+    if link.felled.is_empty() {
+        return;
+    }
+    let mut chunks: Vec<IVec2> = Vec::new();
+    for &t in &link.felled {
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let c = (t + IVec2::new(dx, dy)).div_euclid(IVec2::splat(CHUNK_SIZE));
+                if !chunks.contains(&c) {
+                    chunks.push(c);
+                }
+            }
+        }
+    }
+    for c in chunks {
+        let Some(old) = streamer.chunks.remove(&c) else { continue };
+        for e in old {
+            commands.entity(e).despawn();
+        }
+        let entities = spawn_chunk(&mut commands, &mut meshes, &mats, &map.0, c, &shared.furniture);
+        streamer.chunks.insert(c, entities);
     }
 }
 

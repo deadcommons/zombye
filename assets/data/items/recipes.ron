@@ -30,4 +30,9 @@
     // A rag dresses a wound dirty (it may fester); washed in clean water it goes on clean, like gauze.
     (id: "wash_rags", name: "Wash rags in clean water", secs: 12.0,
         inputs: [(item: "rag", count: 3), (item: "water_bottle")], outputs: [(item: "clean_rag", count: 3), (item: "empty_bottle")]),
+
+    // ---- Wood ----------------------------------------------------------------------------------
+    // Logs come from trees felled with an axe (zombye_sim::trees). Planks board up windows and doors.
+    (id: "saw_log_planks", name: "Saw a log into planks", secs: 30.0,
+        inputs: [(item: "log")], tools: [Tag("saws")], outputs: [(item: "wooden_plank", count: 3)]),
 ]

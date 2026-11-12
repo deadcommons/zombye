@@ -61,6 +61,8 @@
 //! check and content change reaches them, and set aside again on load), then `LOOK` (what bodies
 //! that rise wore, #63; optional too),
 //! then `FARC` (how far the far clock is ahead of the tick, #57; optional, only written when it is),
+//! `TREE` (trees chopped at and felled, `crate::trees`; only when there are any) comes straight
+//! after `MAPD`, so the stumps are on the map before anything is built from it;
 //! then `SHOV` (zombies shoved lately, whose shoves add up toward a knockdown; only when there are any),
 //! then `LEVL` (who and what is upstairs, `crate::stairs`; only when anyone or anything is),
 //! then `BAGS` (which pocket or bag each carried stack is in; only when anything is in a bag),
@@ -208,6 +210,9 @@ const BAGS: [u8; 4] = *b"BAGS";
 /// Who each survivor was ([`crate::origin::Origin`]: Background, Strengths and Flaws, and what
 /// they come to); only survivors that have one, so adding it didn't change the format version.
 const ORIG: [u8; 4] = *b"ORIG";
+/// Trees chopped at and felled (`crate::trees::TreeSave`), written straight after `MAPD`; only
+/// when there are any, so adding it didn't change the format version.
+const TREE: [u8; 4] = *b"TREE";
 const END: [u8; 4] = *b"END\0";
 /// Bytes before the first section: magic and version.
 const HEADER: usize = 12;
@@ -365,6 +370,9 @@ struct Settings {
     loot_seed: Option<u64>,
     #[serde(default)]
     blinds: crate::blinds::BlindTuning,
+    /// Chopping trees (`crate::trees`); none in older saves: the defaults.
+    #[serde(default)]
+    chop: crate::trees::ChopTuning,
     /// A difficulty's multipliers on the content (`crate::difficulty`); none in older saves.
     #[serde(default)]
     sandbox: crate::difficulty::Sandbox,
@@ -611,6 +619,14 @@ impl<'a> Reader<'a> {
     }
 
     /// The next section, which must be `tag`.
+    /// The next section's payload if it is `tag`, else nothing (and nothing read).
+    fn optional(&mut self, tag: [u8; 4]) -> Result<Option<&'a [u8]>, LoadError> {
+        if self.bytes.get(self.at..self.at + 4) != Some(&tag[..]) {
+            return Ok(None);
+        }
+        self.next().map(|(_, payload)| Some(payload))
+    }
+
     fn expect(&mut self, tag: [u8; 4]) -> Result<&'a [u8], LoadError> {
         let (found, payload) = self.next()?;
         if found != tag {
@@ -702,6 +718,7 @@ impl World {
             private_dirty: _,
             rise_looks,
             shoved,
+            trees,
             upstairs,
             parked,
             // Scratch, refilled every tick.
@@ -769,6 +786,7 @@ impl World {
             power: config.power.clone(),
             loot_seed: config.loot_seed,
             blinds: config.blinds.clone(),
+            chop: config.chop.clone(),
             sandbox: config.sandbox.clone(),
         };
         w.section(CONF, ron::to_string(&settings).expect("settings serialize").as_bytes());
@@ -788,6 +806,11 @@ impl World {
         let map_save =
             MapSave { base_hash: *map_base_hash, town_min: *town_min, town_max: *town_max, player_spawn: *player_spawn, spawn_building: *spawn_building as u32, layout };
         w.section(MAPD, &encode(&map_save));
+        // Trees chopped at and felled, straight after the map: on load the stumps go on it before
+        // anything is built from it. Only when there are any.
+        if !trees.is_empty() {
+            w.section(TREE, &encode(&trees.to_save()));
+        }
         let world = WorldSave {
             tick: *tick,
             clock_offset_hours: *clock_offset_hours,
@@ -932,8 +955,11 @@ impl World {
         config.loot_seed = settings.loot_seed;
         settings.blinds.check().map_err(save_check::invalid)?;
         config.blinds = settings.blinds;
+        settings.chop.check().map_err(save_check::invalid)?;
+        config.chop = settings.chop;
         save_check::check_settings(text, &config)?;
         let map_save: MapSave = decode(MAPD, r.expect(MAPD)?)?;
+        let trees: Option<crate::trees::TreeSave> = r.optional(TREE)?.map(|p| decode(TREE, p)).transpose()?;
         let mut ws: WorldSave = decode(WRLD, r.expect(WRLD)?)?;
         // Weapons are named by index into the save's own list: move them to the content's.
         let mut blocking: Vec<String> = save_check::remap_weapons(&plan, &mut ws.players, force, &mut notes)?.into_iter().collect();
@@ -1017,6 +1043,14 @@ impl World {
                 w.regions = RegionIndex::new(&w.map, w.config.tiers.region_size);
                 w.hash = SpatialHash::new(w.map.width() as f32, w.map.height() as f32, 1.0);
             }
+        }
+        // Stumps where trees were felled, before the walk grid and the nav graph are built on.
+        if let Some(trees) = trees {
+            let dropped = w.restore_trees(trees, new_map).map_err(save_check::invalid)?;
+            if dropped > 0 {
+                notes.push(format!("the map changed: {dropped} felled or chopped trees no longer fit and were dropped"));
+            }
+            w.walk = WalkGrid::new(&w.map);
         }
         // On a new map the town, the spawn and its house are the new map's.
         if !new_map {
