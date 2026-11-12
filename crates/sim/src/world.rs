@@ -120,6 +120,8 @@ pub struct WorldConfig {
     pub explore: crate::explore::ExploreTuning,
     /// How far voices carry and the noise they make (#67, [`crate::speech`]). Not saved either.
     pub speech: crate::speech::SpeechTuning,
+    /// Sitting down ([`crate::sit`]): how fast breath and rest come back. Not saved, like `speech`.
+    pub sit: crate::sit::SitTuning,
     /// Tying hands, freeing and searching a tied survivor (#73, [`crate::bonds`]). Not saved.
     pub bonds: crate::bonds::BondTuning,
     /// Group sizes, invitations and markers (#73, [`crate::groups`]). Not saved.
@@ -133,6 +135,9 @@ pub struct WorldConfig {
     /// Blinds on windows and glazed doors: where the town has them and handling them
     /// ([`crate::blinds`]). Saved with the settings.
     pub blinds: crate::blinds::BlindTuning,
+    /// Campfires, stoves, cooking and burns (`assets/data/fire.ron`, [`crate::fire`]); saved with
+    /// the settings.
+    pub fire: crate::fire::FireTuning,
     /// Chopping trees down (`crate::trees`): their hit points, what chops, the logs they give.
     /// Saved with the settings.
     pub chop: crate::trees::ChopTuning,
@@ -171,12 +176,14 @@ impl WorldConfig {
             player_sight: Default::default(),
             explore: Default::default(),
             speech: Default::default(),
+            sit: Default::default(),
             bonds: Default::default(),
             groups: Default::default(),
             climb: Default::default(),
             stairs: Default::default(),
             power: Default::default(),
             blinds: Default::default(),
+            fire: Default::default(),
             chop: Default::default(),
             sandbox: Default::default(),
             scripts: None,
@@ -228,6 +235,11 @@ impl WorldConfig {
 
     pub fn with_power(mut self, power: crate::power::PowerDef) -> Self {
         self.power = power;
+        self
+    }
+
+    pub fn with_fire(mut self, fire: crate::fire::FireTuning) -> Self {
+        self.fire = fire;
         self
     }
 
@@ -458,6 +470,8 @@ pub struct World {
     pub(crate) script_errors: Vec<String>,
     /// Power sources, light switches and the rooms lit ([`crate::power`]). Saved (the `POWR` section).
     pub(crate) power: crate::power::Power,
+    /// Campfires ([`crate::fire`]). Saved (the optional `FIRE` section), in the hash while any.
+    pub(crate) fires: crate::fire::Fires,
 }
 
 /// Bare hands are added to weapons that have none (as the world does on creation).
@@ -510,6 +524,7 @@ impl World {
         let power = crate::power::Power::new(&map, &config.power);
         let mut world = Self {
             power,
+            fires: Default::default(),
             rng: Rng::new(config.generation.seed),
             combat_rng: Rng::new(config.generation.seed ^ 0xC0_4BA7),
             next_item_id: items.len() as u32 + 1,
@@ -850,6 +865,7 @@ impl World {
         self.skip_needs(hours);
         self.step_first_night(hours);
         self.step_power();
+        self.step_fires(hours, 0.0);
     }
 
     /// Full hit points of an edge of this kind (0 for anything that can't be battered).
@@ -1145,6 +1161,8 @@ impl World {
             // In a lit room (`crate::power`): seen through its windows as if by day.
             let room = self.map.room_at(p.state.pos);
             let lit = if room != 0 && self.power.is_lit(room) { self.config.power.lit_room_seen } else { 0.0 };
+            // By a lit fire (`crate::fire`): seen in its light.
+            let lit = if self.fires.list.is_empty() { lit } else { lit.max(crate::fire::firelight(&self.fires, &self.config.fire, p.state.pos)) };
             self.targets.push(Target { id: p.id, pos: p.state.pos, stance: p.state.stance, moving, ignored: p.dev.ignored || height > self.config.stairs.out_of_reach, sight_mult, lit });
             if moving && self.heard.len() < MAX_SOUNDS {
                 let radius = match p.state.stance {
@@ -1183,6 +1201,8 @@ impl World {
         self.step_gestures();
         // Tied hands worked loose, tying, freeing and searching other survivors (#73).
         self.step_bonds();
+        // Seated survivors get up when they move, fight, fall asleep or are knocked about.
+        self.step_sit();
         self.step_groups();
         // Ignored players (dev) aren't heard: their footsteps, swings, doors and searches are
         // dropped here, before anything listens (senses, the far tiers, migration).
@@ -1289,6 +1309,10 @@ impl World {
         self.step_needs(hours, true);
         self.step_first_night(hours);
         self.step_power();
+        // Fires burn down, crackle and burn what stands in them (`crate::fire`).
+        self.step_fires(hours, TICK_DT);
+        // Fallen logs lie about the forest near players (`crate::trees`).
+        self.step_deadwood();
         // Fitness or Strength went up: the snapshot carries the new movement.
         self.refresh_skill_mods();
         // Spawn protection runs down; logged-out survivors whose time is up leave the world (#68).
@@ -1513,6 +1537,10 @@ impl World {
                 mix(0x4B4E_0000 | k.down as u32);
                 mix(k.timer.to_bits());
             }
+            // Sitting down: likewise only while seated.
+            if let Some(s) = p.seated {
+                mix(0x5345_4100 | s as u32);
+            }
             // Logged out, or spawn protection (#68): likewise only while set.
             if let Some(left) = p.away {
                 mix(0x4157_4159);
@@ -1578,6 +1606,7 @@ impl World {
             }
         }
         self.power.hash(&mut mix);
+        self.fires.hash(&mut mix);
         // Shoves adding up (mixed in only while there are any, so worlds without hash as before).
         for sh in &self.shoved {
             mix(0x5348_0000 | sh.count as u32);

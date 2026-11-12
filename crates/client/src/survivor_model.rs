@@ -123,6 +123,9 @@ const CROSS_CLIPS: [&str; 2] = ["climb", "vault"];
 /// the distance moved (`survivor::STAIR_CYCLE_M` a loop) in place of the gait, the whole body.
 /// Without `stairs_down` he walks down; without either he walks both ways.
 const STAIR_CLIPS: [&str; 2] = ["stairs_up", "stairs_down"];
+/// And for sitting down: loops made in place, on a chair-high seat (`sit`) and on the ground
+/// (`sit_ground`), the whole body, its feet on the floor. Without them the grey-box's.
+const SIT_CLIPS: [&str; 2] = ["sit", "sit_ground"];
 const HURT: usize = 0;
 const DIE: usize = 1;
 
@@ -390,6 +393,8 @@ pub struct SurvivorModel {
     /// on average over its loop (see `compose`).
     stairs: [Option<usize>; STAIR_CLIPS.len()],
     stair_mid: [f32; STAIR_CLIPS.len()],
+    /// The body's clips of [`SIT_CLIPS`].
+    sit: [Option<usize>; SIT_CLIPS.len()],
     gaits: [Vec<Gait>; 3],
     /// The bones the hips' turn is taken back out of (the spine's first, under the hips).
     spine_base: Vec<usize>,
@@ -690,6 +695,7 @@ impl SurvivorModel {
         let life = LIFE_CLIPS.map(guard);
         let cross = CROSS_CLIPS.map(guard);
         let stairs = STAIR_CLIPS.map(guard);
+        let sit = SIT_CLIPS.map(guard);
         let gaits = gaits(&mut body);
         let reference = idle.map_or_else(|| body.rig.rest(), |i| body.clips[i].frames[0].clone());
         let retarget = Retarget::new(&body, reference);
@@ -746,6 +752,7 @@ impl SurvivorModel {
             life,
             cross,
             stairs,
+            sit,
             stair_mid: [0.0; STAIR_CLIPS.len()],
             gaits,
             spine_base,
@@ -999,6 +1006,16 @@ impl SurvivorModel {
         let root = 0;
         // Running has a moment in the air each step.
         pose.t[root].y += a.run_w * a.move_w * 0.05 * (a.cycle * TAU * 2.0).sin().max(0.0);
+        if let Some((grey, w)) = survivor::sitting_now(a) {
+            // Sitting: the body's own loop for the seat or the ground, else the grey-box's pose.
+            let ground = a.seat == Some(zombye_sim::SeatKind::Ground);
+            let mut sit = match self.sit[ground as usize] {
+                Some(i) => body.clips[i].sample((now / body.clips[i].secs + a.player as f32 * 0.37).fract()),
+                None => self.retarget.apply(body, &grey),
+            };
+            self.ground(&mut sit);
+            pose = pose.blend(&sit, w);
+        }
         if let Some((lie, w)) = survivor::lying(a, now) {
             pose = match (self.life[DIE].filter(|_| a.died), a.dead_since) {
                 // Dead: the body's own death, once through and then still as it ends.

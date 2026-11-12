@@ -279,6 +279,10 @@ pub struct Consumable {
     /// Game hours until it goes off (`None`: keeps).
     #[serde(default)]
     pub spoils_hours: Option<f32>,
+    /// Chance of food poisoning each go, eaten as it is (raw meat, raw eggs: cook them first,
+    /// `crate::fire`). On top of going off.
+    #[serde(default)]
+    pub poison: f32,
 }
 
 /// A medical item. What it treats is in its tags (`bandage`, `clean`, `disinfects`, ...); the
@@ -560,6 +564,9 @@ impl ItemDef {
             }
             if c.spoils_hours.is_some_and(|h| !(h > 0.0 && h.is_finite())) {
                 return Err(format!("{id}: spoils_hours must be positive"));
+            }
+            if !(0.0..=1.0).contains(&c.poison) {
+                return Err(format!("{id}: poison must be a chance in 0..1, got {}", c.poison));
             }
         }
         if let Some(m) = &self.medical

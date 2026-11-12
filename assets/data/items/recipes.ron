@@ -9,7 +9,11 @@
 //            part-drunk bottle won't do. Carried or held, not worn (take it off first).
 //   tools    [Item("id")] or [Tag("tag")] (any item with that tag in items.ron): needed, kept
 //   outputs  [(item: "id", count: n)]: made, into pockets and bags while they have room, the rest
-//            at your feet. An output can't also be an input.
+//            at your feet. An output can't also be an input. Empty for a recipe that only places.
+//   heat     true: cooking. Only made within reach of a lit campfire or a working stove (a stove
+//            needs its building's power). Cooked food is made fresh.
+//   places   Some(Campfire): also puts a lit campfire down a metre in front of you, outdoors, its
+//            first fuel the inputs tagged fuel (fire.ron: hours a kg). Feed it from its menu.
 [
     // ---- Rags from cloth ------------------------------------------------------------------------
     (id: "rip_t_shirt", name: "Rip a T-shirt into rags", secs: 3.0,
@@ -31,8 +35,35 @@
     (id: "wash_rags", name: "Wash rags in clean water", secs: 12.0,
         inputs: [(item: "rag", count: 3), (item: "water_bottle")], outputs: [(item: "clean_rag", count: 3), (item: "empty_bottle")]),
 
+    // ---- Fire ---------------------------------------------------------------------------------
+    (id: "build_campfire", name: "Build a campfire", secs: 15.0,
+        inputs: [(item: "firewood", count: 2)], tools: [Tag("fire")], places: Some(Campfire)),
+    (id: "build_campfire_planks", name: "Build a campfire from planks", secs: 15.0,
+        inputs: [(item: "wooden_plank", count: 2)], tools: [Tag("fire")], places: Some(Campfire)),
+    // Breaking a plank up with a saw or an axe: firewood stacks and packs better than planks.
+    (id: "saw_firewood", name: "Saw a plank into firewood", secs: 10.0,
+        inputs: [(item: "wooden_plank")], tools: [Tag("saws")], outputs: [(item: "firewood")]),
+
+    // ---- Cooking (over a lit campfire or a working stove) --------------------------------------
+    (id: "cook_chicken", name: "Cook the chicken", secs: 20.0, heat: true,
+        inputs: [(item: "raw_chicken")], tools: [Tag("cookware")], outputs: [(item: "cooked_chicken")]),
+    (id: "cook_sausages", name: "Cook the sausages", secs: 15.0, heat: true,
+        inputs: [(item: "sausages")], tools: [Tag("cookware")], outputs: [(item: "cooked_sausages")]),
+    (id: "scramble_eggs", name: "Scramble some eggs", secs: 8.0, heat: true,
+        inputs: [(item: "egg", count: 2)], tools: [Tag("cookware")], outputs: [(item: "scrambled_eggs")]),
+    (id: "boil_pasta", name: "Boil pasta", secs: 25.0, heat: true,
+        inputs: [(item: "dry_pasta"), (item: "water_bottle")], tools: [Tag("pot")], outputs: [(item: "cooked_pasta"), (item: "empty_bottle")]),
+    (id: "boil_rice", name: "Boil rice", secs: 25.0, heat: true,
+        inputs: [(item: "dry_rice"), (item: "water_bottle")], tools: [Tag("pot")], outputs: [(item: "cooked_rice"), (item: "empty_bottle")]),
+    (id: "heat_soup", name: "Heat a tin of soup", secs: 10.0, heat: true,
+        inputs: [(item: "tinned_soup")], tools: [Tag("opens_tins"), Tag("cookware")], outputs: [(item: "hot_soup")]),
+    (id: "heat_beans", name: "Heat a tin of beans", secs: 10.0, heat: true,
+        inputs: [(item: "tinned_beans")], tools: [Tag("opens_tins"), Tag("cookware")], outputs: [(item: "hot_beans")]),
     // ---- Wood ----------------------------------------------------------------------------------
     // Logs come from trees felled with an axe (zombye_sim::trees). Planks board up windows and doors.
     (id: "saw_log_planks", name: "Saw a log into planks", secs: 30.0,
         inputs: [(item: "log")], tools: [Tag("saws")], outputs: [(item: "wooden_plank", count: 3)]),
+    // Split with a hatchet or an axe where it lies: firewood for a campfire, four to a log.
+    (id: "split_log", name: "Split a log into firewood", secs: 20.0,
+        inputs: [(item: "log")], tools: [Tag("chops")], outputs: [(item: "firewood", count: 4)]),
 ]

@@ -98,7 +98,7 @@ enum Kind {
 
 /// Every tool: name, title (shown to people by clients), kind. `tool_list` adds these to the
 /// definitions, and a test checks each tool has a row.
-const TOOLS: [(&str, &str, Kind); 62] = [
+const TOOLS: [(&str, &str, Kind); 65] = [
     ("observe", "Look around (ASCII map)", Kind::Look),
     ("screenshot", "Screenshot (rendered picture)", Kind::Look),
     ("stats", "World and player stats", Kind::Look),
@@ -116,6 +116,7 @@ const TOOLS: [(&str, &str, Kind); 62] = [
     ("containers_near", "Containers nearby", Kind::Look),
     ("saves", "List saves", Kind::Look),
     ("heard", "What a player heard said", Kind::Look),
+    ("fires", "Campfires and stoves nearby", Kind::Look),
     ("say", "Say something to whoever is near", Kind::Play),
     ("gesture", "Wave, put your hands up or point", Kind::Play),
     ("restrain", "Tie another survivor's hands", Kind::Play),
@@ -130,6 +131,7 @@ const TOOLS: [(&str, &str, Kind); 62] = [
     ("smash_window", "Smash a window", Kind::Play),
     ("light", "Switch the light of the room you're in", Kind::Play),
     ("blind", "Fit, roll or take down a blind", Kind::Play),
+    ("fire", "Tend a campfire: fuel, light, put out", Kind::Play),
     ("climb", "Climb a fence or an open window", Kind::Play),
     ("attack", "Attack", Kind::Play),
     ("shove", "Shove", Kind::Play),
@@ -144,6 +146,7 @@ const TOOLS: [(&str, &str, Kind); 62] = [
     ("unequip", "Take off or put away an item", Kind::Play),
     ("use", "Eat or drink", Kind::Play),
     ("sleep", "Sleep", Kind::Play),
+    ("sit", "Sit down or get up", Kind::Play),
     ("treat", "Treat a wound", Kind::Play),
     ("craft", "Craft", Kind::Play),
     ("respawn", "Get up again after dying", Kind::Play),
@@ -635,6 +638,29 @@ fn tool_defs() -> Value {
             "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}, "facing": {"type": "number"}}}
         },
         {
+            "name": "fires",
+            "description": "Read-only: the campfires within radius (default 30 m) of a player, nearest first: id, where, \
+                lit or not, fuel left, distance and whether it is in reach; the stoves near it and whether they have power; \
+                and whether the player has heat to cook with where it stands (recipes marked heat need a lit fire or a \
+                working stove in reach). Build a campfire with craft {recipe: build_campfire}.",
+            "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}, "radius": {"type": "number", "default": 30}}}
+        },
+        {
+            "name": "fire",
+            "description": "A player tends a campfire within 1.6 m (fire: its id from the fires tool; default the nearest). \
+                action: add_fuel (one carried item tagged fuel, e.g. firewood, plank or newspaper: item id or index of a \
+                carried stack; default the first fuel carried), light (needs fuel on it and something tagged fire carried: \
+                matches or a lighter, kept) or put_out (the fuel left stays). A lit fire lights the ground round it at night \
+                (and shows you to zombies), crackles now and then, and burns whoever stands in it. Time doesn't move.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "fire": {"type": "integer"},
+                "action": {"type": "string", "enum": ["add_fuel", "light", "put_out"]},
+                "item": {"type": "string"},
+                "index": {"type": "integer"}
+            }, "required": ["action"]}
+        },
+        {
             "name": "blind",
             "description": "A player works the roller blind of the window or glass door it faces, from inside, within 1.6 m \
                 (face it with move_player's facing first, or give facing in radians). action: use (default: roll it up or \
@@ -824,6 +850,15 @@ fn tool_defs() -> Value {
                 of simulation.",
             "inputSchema": {"type": "object", "properties": {
                 "player": {"type": "integer", "default": 1}, "max_hours": {"type": "number", "default": 12, "maximum": 24}
+            }}
+        },
+        {
+            "name": "sit",
+            "description": "A player sits down (on the sofa, bed, toilet, bench or deckchair within 0.9 m, else the ground) or \
+                gets up. Seated it doesn't move, gets its breath back twice as fast and slowly loses tiredness; moving, swinging, \
+                climbing or sleeping gets it up. Eating, crafting and cooking work seated. Time doesn't move.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1}, "sit": {"type": "boolean", "description": "true sit, false get up; left out: the other"}
             }}
         },
         {
@@ -1408,6 +1443,89 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 t.noise(volume)
             ))
         }
+        "fires" => {
+            let id = player_id();
+            let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            let pos = p.state.pos;
+            let pi = world.players.iter().position(|q| q.id == id).unwrap();
+            let radius = num("radius").unwrap_or(30.0).clamp(1.0, 500.0) as f32;
+            let reach = world.config.fire.reach;
+            let mut fires: Vec<_> = world.fires().iter().filter(|f| f.pos.distance(pos) <= radius).collect();
+            fires.sort_by(|a, b| a.pos.distance(pos).total_cmp(&b.pos.distance(pos)));
+            let mut out = format!(
+                "player {id} at ({:.1}, {:.1}): {} to cook with here\n",
+                pos.x,
+                pos.y,
+                if world.heat_for(pi) { "heat" } else { "no heat" }
+            );
+            if fires.is_empty() {
+                out.push_str(&format!("no campfires within {radius:.0} m\n"));
+            }
+            for f in fires {
+                let d = f.pos.distance(pos);
+                out.push_str(&format!(
+                    "fire {} at ({:.1}, {:.1}): {}, {} of fuel, {d:.1} m{}\n",
+                    f.id,
+                    f.pos.x,
+                    f.pos.y,
+                    if f.lit { "burning" } else { "out" },
+                    zombye_sim::fire::hours_text(f.fuel_h),
+                    if d <= reach { ", in reach" } else { "" }
+                ));
+            }
+            let power = world.power();
+            for s in zombye_sim::fire::stoves(&world.map, &world.config.fire) {
+                let d = s.nearest(pos).distance(pos);
+                if d <= radius {
+                    out.push_str(&format!(
+                        "stove at ({}, {}): {}, {d:.1} m{}\n",
+                        s.min.x,
+                        s.min.y,
+                        if !world.config.fire.stoves_need_power || power.powered(s.building) { "working" } else { "no power" },
+                        if d <= reach { ", in reach" } else { "" }
+                    ));
+                }
+            }
+            Ok(out)
+        }
+        "fire" => {
+            let id = player_id();
+            let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            let pos = p.state.pos;
+            let fire = match num("fire") {
+                Some(f) => f as u32,
+                None => world
+                    .fires()
+                    .iter()
+                    .min_by(|a, b| a.pos.distance(pos).total_cmp(&b.pos.distance(pos)))
+                    .map(|f| f.id)
+                    .ok_or("there are no campfires: build one with craft {recipe: build_campfire}")?,
+            };
+            let op = match args.get("action").and_then(Value::as_str).unwrap_or("") {
+                "light" => zombye_sim::FireOp::Light,
+                "put_out" | "putout" | "out" => zombye_sim::FireOp::PutOut,
+                "add_fuel" | "fuel" => {
+                    let carried = &p.inventory.carried;
+                    let index = if let Some(i) = num("index") {
+                        i as usize
+                    } else if let Some(item) = args.get("item").and_then(Value::as_str) {
+                        let ix = world.item_index(item).ok_or_else(|| format!("no item {item:?}"))?;
+                        carried.iter().position(|s| s.item == ix).ok_or_else(|| format!("player {id} carries no {item}"))?
+                    } else {
+                        carried
+                            .iter()
+                            .position(|s| world.item_def(s.item).has_tag("fuel"))
+                            .ok_or_else(|| format!("player {id} carries nothing that burns (items tagged fuel: firewood, planks, newspaper)"))?
+                    };
+                    zombye_sim::FireOp::AddFuel { index: index as u32 }
+                }
+                other => return Err(format!("unknown action {other:?}: add_fuel, light or put_out")),
+            };
+            world.item_notes.clear();
+            let text = world.player_fire(id, fire, op).map_err(|e| format!("player {id}: {e}"))?;
+            world.item_notes.retain(|n| n.player != id);
+            Ok(format!("player {id}, fire {fire}: {text}; tick {}", world.tick))
+        }
         "heard" => {
             let id = player_id();
             let me = world.player(id).ok_or_else(|| format!("no player {id}"))?.state.pos;
@@ -1882,6 +2000,10 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 Err(t) => Err(format!("{ahead}{t}")),
             }
         }
+        "sit" => {
+            let id = player_id();
+            world.player_sit(id, args.get("sit").and_then(Value::as_bool)).map_err(|e| format!("P{id} can't sit down: {e}"))
+        }
         "sleep" => sleep_tool(world, player_id(), args.get("max_hours").and_then(Value::as_f64).unwrap_or(12.0).clamp(0.1, 24.0) as f32),
         "set_needs" => {
             let id = player_id();
@@ -2132,6 +2254,7 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 "thirst": p.needs.thirst,
                 "tiredness": p.needs.tiredness,
                 "asleep": p.needs.sleep.map(|s| s.spot.name()),
+                "seated": p.seated.map(|s| s.name()),
                 "tags": world.status_tags(p.id).iter().map(|t| t.label.clone()).collect::<Vec<_>>(),
                 "skills": zombye_sim::Skill::ALL.iter().map(|&s| (s.id().to_string(), json!(p.skills.level(s, &world.config.skills)))).collect::<serde_json::Map<_, _>>(),
             })).collect::<Vec<_>>(),
@@ -3867,7 +3990,7 @@ mod tests {
         call_tool(&mut world, "equip", &json!({"index": 0})).unwrap();
         world.give_kit(1, &[("tinned_beans".to_string(), 2)]);
         let inv = call_tool(&mut world, "inventory", &json!({})).unwrap();
-        assert!(inv.contains("x2 (in pockets)") && inv.contains("kept in: bag_back 0.0 of 50 L, pockets 0.8 of 3 L"), "{inv}");
+        assert!(inv.contains("x2 (in pockets)") && inv.contains("kept in: bag_back 0.0 of 50 L, pockets 0.8 of 8 L"), "{inv}");
         let moved = call_tool(&mut world, "move_item", &json!({"from": "carried", "index": 0, "to": "bag_back", "count": 1})).unwrap();
         assert!(moved.contains("(in pockets)") && moved.contains("(in bag_back)"), "{moved}");
         // No bag on the shoulder: nothing goes there.
@@ -4100,7 +4223,7 @@ mod tests {
             assert!(!persist.dirty, "{name} made the world need saving");
             called += 1;
         }
-        assert_eq!(called, 16);
+        assert_eq!(called, 17);
         // A tool that isn't read-only does make it need saving.
         let (_, err) = call(&mut world, &mut persist, "search", json!({"container": container}));
         assert!(!err && persist.dirty);
