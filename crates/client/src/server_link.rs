@@ -281,6 +281,17 @@ impl Plugin for ServerLinkPlugin {
         config.start_hour = options.start_hour.unwrap_or(WAKE_HOUR);
         // Player against player (a new world; a loaded one keeps its own setting).
         config.combat.pvp = options.pvp;
+        // A new game's choices (`new_game.rs`): the world's options onto the content, and the
+        // survivor to make once it has joined. A loaded world keeps its own.
+        let start_as = if options.load.is_none() {
+            crate::new_game::from_options(&options, &mut config).unwrap_or_else(|e| {
+                eprintln!("can't start that game: {e}");
+                std::process::exit(2);
+            })
+        } else {
+            None
+        };
+        app.insert_resource(crate::new_game::StartAs(start_as.clone()));
         // `--load`: the saved world, with its own seed, map and players (the world options and
         // the demo setups don't apply).
         let loaded = options.load.as_ref().map(|name| {
@@ -333,6 +344,11 @@ impl Plugin for ServerLinkPlugin {
             }
         }
         let player_id = server.join(options.at.or(siege_at.map(|s| s.0.to_array())).or(demo_at));
+        if let Some(start) = &start_as {
+            server.world.begin_as(player_id, start);
+            let o = &start.origin;
+            println!("new game: {} ({} strengths, {} flaws), {}", o.background, o.strengths.len(), o.flaws.len(), server.world.config.sandbox.difficulty);
+        }
         // `--gun ID` (#72): that gun in hand, loaded, with a spare magazine if it takes one and
         // three loads of loose rounds in the pockets.
         let gun = options.gun.as_deref().and_then(|id| {

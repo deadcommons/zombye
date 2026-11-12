@@ -200,6 +200,9 @@ const SHOV: [u8; 4] = *b"SHOV";
 /// The players upstairs (id and floor) and the ground items lying there (`crate::stairs`); only
 /// when there are any, so adding it didn't change the format version.
 const LEVL: [u8; 4] = *b"LEVL";
+/// Who each survivor was ([`crate::origin::Origin`]: Background, Strengths and Flaws, and what
+/// they come to); only survivors that have one, so adding it didn't change the format version.
+const ORIG: [u8; 4] = *b"ORIG";
 const END: [u8; 4] = *b"END\0";
 /// Bytes before the first section: magic and version.
 const HEADER: usize = 12;
@@ -357,6 +360,9 @@ struct Settings {
     loot_seed: Option<u64>,
     #[serde(default)]
     blinds: crate::blinds::BlindTuning,
+    /// A difficulty's multipliers on the content (`crate::difficulty`); none in older saves.
+    #[serde(default)]
+    sandbox: crate::difficulty::Sandbox,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -758,6 +764,7 @@ impl World {
             power: config.power.clone(),
             loot_seed: config.loot_seed,
             blinds: config.blinds.clone(),
+            sandbox: config.sandbox.clone(),
         };
         w.section(CONF, ron::to_string(&settings).expect("settings serialize").as_bytes());
         let layout = if *map_custom {
@@ -846,6 +853,10 @@ impl World {
         if !nights.is_empty() {
             w.section(NITE, &encode(&nights));
         }
+        let origins: Vec<(u32, crate::origin::Origin)> = players.iter().filter(|p| !p.origin.is_plain()).map(|p| (p.id, p.origin.clone())).collect();
+        if !origins.is_empty() {
+            w.section(ORIG, &encode(&origins));
+        }
         let maps: Vec<(u32, &crate::explore::Explored)> = players.iter().filter(|p| p.explored.count() > 0).map(|p| (p.id, &p.explored)).collect();
         if !maps.is_empty() {
             w.section(XPLR, &encode(&maps));
@@ -886,11 +897,15 @@ impl World {
         let force = options.force;
         let mut r = Reader::new(bytes)?;
         let info: SaveInfo = decode(INFO, r.expect(INFO)?)?;
-        let plan = save_check::plan_content(&info.content, &ContentPrint::of(content));
-        let mut notes = plan.notes.clone();
         let text = std::str::from_utf8(r.expect(CONF)?).map_err(|_| corrupt("settings aren't text"))?;
         let settings: Settings = ron::from_str(text).map_err(|e| corrupt(format!("settings: {e}")))?;
+        // The game's difficulty multiplies the content (`crate::difficulty`): put it on what we
+        // were given first, so the content is compared as the save had it.
         let mut config = content.clone();
+        settings.sandbox.check().map_err(|why| save_check::invalid(format!("settings: {why}")))?;
+        settings.sandbox.apply(&mut config);
+        let plan = save_check::plan_content(&info.content, &ContentPrint::of(&config));
+        let mut notes = plan.notes.clone();
         config.generation = settings.generation;
         config.zombies = settings.zombies;
         config.start_hour = settings.start_hour;
@@ -1050,6 +1065,7 @@ impl World {
         let mut power: Option<crate::power::PowerSave> = None;
         let mut away: Option<AwaySave> = None;
         let mut nights: Option<Vec<(u32, crate::firstnight::FirstNight)>> = None;
+        let mut origins: Option<Vec<(u32, crate::origin::Origin)>> = None;
         let mut maps: Option<Vec<(u32, crate::explore::Explored)>> = None;
         let mut bonds: Option<BondSave> = None;
         let mut groups: Option<crate::groups::Groups> = None;
@@ -1095,6 +1111,10 @@ impl World {
                 nights = Some(decode(NITE, payload)?);
                 continue;
             }
+            if tag == ORIG && origins.is_none() {
+                origins = Some(decode(ORIG, payload)?);
+                continue;
+            }
             if tag == XPLR && maps.is_none() {
                 maps = Some(decode(XPLR, payload)?);
                 continue;
@@ -1127,7 +1147,7 @@ impl World {
                 script = Some(decode(MODS, payload)?);
                 continue;
             }
-            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || power.is_some() || shoved.is_some() || blinds.is_some() || levels.is_some() {
+            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || origins.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || power.is_some() || shoved.is_some() || blinds.is_some() || levels.is_some() {
                 return Err(corrupt(format!("unexpected {} section", tag_name(tag))));
             }
             let block: ZombieBlock = decode(ZOMB, payload)?;
@@ -1153,6 +1173,11 @@ impl World {
             let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("a first night for player {id}, who isn't in the save")))?;
             night.check().map_err(|why| save_check::invalid(format!("player {id}: {why}")))?;
             p.first_night = Some(night);
+        }
+        for (id, origin) in origins.unwrap_or_default() {
+            let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("an origin for player {id}, who isn't in the save")))?;
+            origin.check().map_err(|why| save_check::invalid(format!("player {id}'s origin: {why}")))?;
+            p.origin = origin;
         }
         for (id, seen) in maps.unwrap_or_default() {
             let (mw, mh, buildings) = (w.map.width(), w.map.height(), w.map.buildings.len());
