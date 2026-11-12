@@ -77,8 +77,7 @@ pub enum State {
     /// Shut and whole.
     Shut,
     /// Locked, barricaded or boarded up: drawn dimmer. No edge in the map is any of these yet, so
-    /// nothing gives this state today; an edge kind that is must be given it in [`classify`].
-    #[allow(dead_code)]
+    /// boarded up with planks (the build menu's barricades).
     Barred,
     /// Open or broken: a way in.
     Open,
@@ -93,6 +92,8 @@ pub fn classify(edge: Edge) -> Option<(Kind, State)> {
         Edge::DoorOpen | Edge::DoorBroken => Some((Kind::Door, State::Open)),
         Edge::Window => Some((Kind::Window, State::Shut)),
         Edge::WindowOpen | Edge::WindowBroken => Some((Kind::Window, State::Open)),
+        Edge::DoorBoarded => Some((Kind::Door, State::Barred)),
+        Edge::WindowBoarded => Some((Kind::Window, State::Barred)),
         Edge::None | Edge::Wall | Edge::Arch | Edge::Fence => None,
     }
 }

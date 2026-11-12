@@ -66,6 +66,9 @@ struct Streamer {
     /// The blind on a ground-floor edge that has one (`TileMap::blinds`): a child of a door's leaf,
     /// or on its own inside a window.
     blinds: HashMap<(IVec2, OwnedEdge), Entity>,
+    /// The planks nailed across a ground-floor edge that is boarded up (`TileMap::barricades`):
+    /// how many there are, which side they're on, and an entity each.
+    barricades: HashMap<(IVec2, OwnedEdge), (u8, bool, Vec<Entity>)>,
 }
 
 #[derive(Resource)]
@@ -77,6 +80,8 @@ struct SharedMeshes {
     door_glazed: Handle<Mesh>,
     /// A roller blind's cloth, 1 m wide and 1 m down from its roller (scaled to its opening).
     blind: Handle<Mesh>,
+    /// A plank of a barricade: 1 m along +x from the origin, 0.15 m high, centred on it.
+    plank: Handle<Mesh>,
     pane: Handle<Mesh>,
     pane_lit: Handle<Mesh>,
     shards: Handle<Mesh>,
@@ -243,7 +248,7 @@ impl Plugin for WorldRenderPlugin {
             .add_systems(Startup, setup_shared)
             .add_systems(PostUpdate, fade_chunks.after(materials::update_params))
             .add_systems(Update, swap_detail.after(stream))
-            .add_systems(Update, (rebuild_felled, stream, apply_edge_changes, sync_blinds, apply_edge_damage, relight_panes, update_switches, animate_doors, animate_panes, hide_upper_floors, cut_edge_pieces, animate_blinds).chain().after(crate::cutaway::CutawaySystems).after(crate::lights::sync_lit_rooms));
+            .add_systems(Update, (rebuild_felled, stream, apply_edge_changes, sync_blinds, sync_barricades, apply_edge_damage, relight_panes, update_switches, animate_doors, animate_panes, hide_upper_floors, cut_edge_pieces, animate_blinds, fade_planks).chain().after(crate::cutaway::CutawaySystems).after(crate::lights::sync_lit_rooms));
     }
 }
 
@@ -269,6 +274,16 @@ fn setup_shared(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut ma
     mb.add_box(Vec3::new(0.0, -1.0, -0.006), Vec3::new(1.0, 0.0, 0.006), meshgen::same(p.blind));
     mb.add_box(Vec3::new(0.0, -1.0, -0.012), Vec3::new(1.0, -0.96, 0.012), meshgen::same(p.blind_rail));
     let blind = meshes.add(mb.build());
+    // A barricade's plank, with two nail heads near each end.
+    let mut mb = MeshBuilder::default();
+    mb.set_tag(CutTag { kind: CutKind::Structure, ..default() });
+    mb.add_box(Vec3::new(0.0, -0.075, -0.014), Vec3::new(1.0, 0.075, 0.014), meshgen::same(p.fence_wood));
+    for x in [0.06, 0.94] {
+        for y in [-0.035, 0.035] {
+            mb.add_box(Vec3::new(x - 0.008, y - 0.008, -0.018), Vec3::new(x + 0.008, y + 0.008, 0.018), meshgen::same(p.door_handle));
+        }
+    }
+    let plank = meshes.add(mb.build());
 
     // Window glass along +x from the edge's start, filling the frame between sill and header.
     // Structure, like door leaves: dimmed but readable in unseen rooms, down to the stub with its wall.
@@ -353,7 +368,7 @@ fn setup_shared(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut ma
         mb.add_box(Vec3::new(-0.013, y, 0.012), Vec3::new(0.013, y + 0.03, 0.03), meshgen::same(c));
         meshes.add(mb.build())
     });
-    commands.insert_resource(SharedMeshes { switch, door, door_glazed, blind, pane, pane_lit, shards, lips, door_cracks, pane_cracks, furniture, contact });
+    commands.insert_resource(SharedMeshes { switch, door, door_glazed, blind, plank, pane, pane_lit, shards, lips, door_cracks, pane_cracks, furniture, contact });
 }
 
 /// Grey-box damage for a door leaf (dark cracks, and pale splintered wood when it's nearly gone)
@@ -530,6 +545,11 @@ fn stream(
                 if let Some(b) = streamer.blinds.remove(&key) {
                     commands.entity(b).try_despawn();
                 }
+                if let Some((_, _, planks)) = streamer.barricades.remove(&key) {
+                    for e in planks {
+                        commands.entity(e).try_despawn();
+                    }
+                }
             }
         }
     }
@@ -597,8 +617,8 @@ fn wall_side_color(map: &TileMap, room: u16, siding: LinearRgba) -> LinearRgba {
 fn wall_spans(kind: Edge) -> &'static [(f32, f32)] {
     match kind {
         Edge::Wall => &[(0.0, STOREY)],
-        Edge::Window | Edge::WindowOpen | Edge::WindowBroken => &[(0.0, WINDOW_SILL), (WINDOW_HEAD, STOREY)],
-        Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken => &[(2.1, STOREY)],
+        Edge::Window | Edge::WindowOpen | Edge::WindowBroken | Edge::WindowBoarded => &[(0.0, WINDOW_SILL), (WINDOW_HEAD, STOREY)],
+        Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken | Edge::DoorBoarded => &[(2.1, STOREY)],
         Edge::Arch => &[(2.4, STOREY)],
         Edge::None | Edge::Fence => &[],
     }
@@ -835,9 +855,11 @@ fn spawn_building(
 ) -> BuildingRender {
     let mut render = BuildingRender { drawn: [-1.0; 2], ..default() };
     // Door leaves and window panes, one entity each.
-    for (owner, which, kind, rooms) in ground_edges(map, index, b) {
+    for (owner, which, _, rooms) in ground_edges(map, index, b) {
         let hp = damage.0.get(&(owner, which)).copied().unwrap_or(1.0);
         let glazed = map.glazed(EdgeRef::new(owner, which));
+        // A boarded-up door or window is drawn as it was under its planks (`sync_barricades`).
+        let kind = map.drawn_edge(EdgeRef::new(owner, which));
         if let Some(e) = spawn_edge_piece(commands, shared, mats, owner, which, 0.0, kind, hp, rooms, lit_rooms, glazed) {
             edges.insert((owner, which), e);
             render.edge_keys.push((owner, which));
@@ -1012,6 +1034,84 @@ fn sync_blinds(
     }
 }
 
+/// A plank of a barricade, on the edge it boards up.
+#[derive(Component)]
+struct PlankPiece {
+    key: (IVec2, OwnedEdge),
+}
+
+/// Where plank `i` of a barricade goes on a door or window: its height and its slant. Planks fill
+/// the opening from the middle out, each a little askew (by a hash of the edge, so every client
+/// draws the same), the way they'd be nailed up in a hurry.
+fn plank_slot(e: EdgeRef, door: bool, i: usize) -> (f32, f32) {
+    let (lo, hi, order): (f32, f32, &[usize]) = if door { (0.25, 1.95, &[2, 1, 3, 0, 4]) } else { (WINDOW_SILL + 0.14, WINDOW_HEAD - 0.14, &[1, 2, 0, 3]) };
+    let slots = order.len();
+    let slot = order[i % slots];
+    let y = lo + (hi - lo) * slot as f32 / (slots - 1) as f32 + 0.04 * (i / slots) as f32;
+    let h = zombye_sim::rng::hash01(0xBA22, e.tile.x as u64 ^ (e.tile.y as u64) << 20, e.edge as u64, i as u64);
+    let slant = (h - 0.5) * 0.28 + if i % 2 == 0 { 0.06 } else { -0.06 };
+    (y, slant)
+}
+
+/// The planks of each boarded-up ground-floor edge loaded now, as the client's map copy has them:
+/// one entity a plank on each face of the wall, a little out from it.
+fn sync_barricades(
+    mut commands: Commands,
+    map: Res<ClientMap>,
+    mats: Option<Res<WorldMaterials>>,
+    shared: Option<Res<SharedMeshes>>,
+    mut streamer: ResMut<Streamer>,
+) {
+    let (Some(mats), Some(shared)) = (mats, shared) else { return };
+    if !map.is_changed() && !streamer.is_changed() {
+        return;
+    }
+    let map = &map.0;
+    let keys: Vec<(IVec2, OwnedEdge)> = streamer.edges.keys().copied().chain(streamer.barricades.keys().copied()).collect();
+    for key in keys {
+        let e = EdgeRef::new(key.0, key.1);
+        let want = map.barricade(e).filter(|_| streamer.edges.contains_key(&key)).map(|b| (b.planks, b.owner_side, b.under.is_door()));
+        let have = streamer.barricades.get(&key).map(|(n, side, _)| (*n, *side));
+        if want.map(|(n, side, _)| (n, side)) == have {
+            continue;
+        }
+        if let Some((_, _, old)) = streamer.barricades.remove(&key) {
+            for p in old {
+                commands.entity(p).try_despawn();
+            }
+        }
+        let Some((n, side, door)) = want else { continue };
+        let (closed, _) = door_rotations(e.edge);
+        let (along, across) = if e.edge == OwnedEdge::North { (Vec3::X, Vec3::Z) } else { (Vec3::Z, Vec3::X) };
+        let mut planks = Vec::with_capacity(2 * n as usize);
+        // On both faces of the wall, so a boarded-up window reads as one from the street and from
+        // inside alike; the side it was nailed from first.
+        for s in if side { [1.0, -1.0] } else { [-1.0, 1.0] } {
+            let start = Vec3::new(e.tile.x as f32, 0.0, e.tile.y as f32) - along * 0.12 + across * s * (WALL_T + 0.03);
+            for i in 0..n as usize {
+                let (y, slant) = plank_slot(e, door, i);
+                // Each plank a hair further out than the last, so crossing ones never share a plane.
+                let out = across * s * 0.004 * i as f32;
+                let rotation = closed * Quat::from_rotation_z(slant * s);
+                let middle = start + along * 0.62 + Vec3::Y * y + out;
+                let tf = Transform { translation: middle - rotation * Vec3::new(0.62, 0.0, 0.0), rotation, scale: Vec3::new(1.24, 1.0, 1.0) };
+                planks.push(commands.spawn((Mesh3d(shared.plank.clone()), MeshMaterial3d(mats.building.clone()), tf, PlankPiece { key }, MeshTag::new(0))).id());
+            }
+        }
+        streamer.barricades.insert(key, (n, side, planks));
+    }
+}
+
+/// Planks on a wall that is cut away aren't drawn (they still cast their shadows, as the wall does).
+fn fade_planks(cutaway: Res<crate::cutaway::Cutaway>, mut planks: Query<(&PlankPiece, &mut MeshTag)>) {
+    for (p, mut tag) in &mut planks {
+        let want = fade_tag(if cutaway.amount(p.key) > 0.02 { 1.0 } else { 0.0 });
+        if tag.value != want {
+            tag.value = want;
+        }
+    }
+}
+
 /// Blinds roll down and up; one on a wall that is cut away isn't drawn (a door's fades with its
 /// leaf), but still hangs there for the light: a blind down keeps the sun out of the room.
 fn animate_blinds(
@@ -1083,6 +1183,10 @@ fn apply_edge_changes(
 ) {
     let Some(shared) = shared else { return };
     for c in &changes.0 {
+        // Boarding an edge up leaves its leaf or pane as it was, under the planks.
+        if c.kind.is_boarded() {
+            continue;
+        }
         let Some(e) = streamer.edges.get(&(c.tile, c.edge)) else { continue };
         let Ok((mut piece, leaf, pane, mut mesh)) = pieces.get_mut(*e) else { continue };
         if let Some(mut leaf) = leaf {

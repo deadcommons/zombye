@@ -184,7 +184,7 @@ fn job_item(kind: &JobKind) -> Option<u16> {
     match *kind {
         JobKind::Move { item, .. } | JobKind::Use { item, .. } => Some(item),
         JobKind::Treat { item, .. } => item,
-        JobKind::Search { .. } | JobKind::Craft { .. } | JobKind::Reload { .. } | JobKind::Blind { .. } => None,
+        JobKind::Search { .. } | JobKind::Craft { .. } | JobKind::Reload { .. } | JobKind::Blind { .. } | JobKind::Build { .. } => None,
     }
 }
 
@@ -253,7 +253,7 @@ pub(crate) fn remap_items(plan: &ContentPlan, ground: &mut Vec<GroundItem>, play
             match &mut j.kind {
                 JobKind::Move { item, .. } | JobKind::Use { item, .. } => *item = to(*item).expect("kept"),
                 JobKind::Treat { item: Some(item), .. } => *item = to(*item).expect("kept"),
-                JobKind::Treat { item: None, .. } | JobKind::Search { .. } | JobKind::Craft { .. } | JobKind::Reload { .. } | JobKind::Blind { .. } => {}
+                JobKind::Treat { item: None, .. } | JobKind::Search { .. } | JobKind::Craft { .. } | JobKind::Reload { .. } | JobKind::Blind { .. } | JobKind::Build { .. } => {}
             }
         }
         // Uses gone from an opened item that's no longer in the content: nothing to count.
@@ -328,12 +328,76 @@ pub(crate) fn fit_containers(w: &mut World, plan: &ContentPlan, new_map: bool, f
     Ok(None)
 }
 
+/// Put a save's barricades (`crate::build`, the `BARR` section) on the loaded map. Each must stand
+/// on a boarded edge of its kind, with a build the catalog has, its planks and hit points in range;
+/// every boarded edge must have one. A save that breaks that is refused, except where it can't
+/// help it: a build since gone from the catalog, or (`new_map`) a map regenerated anyway; there
+/// the edge goes back to what it was underneath, with a note.
+pub(crate) fn load_barricades(w: &mut World, list: Vec<((i32, i32, u8), String, u8, f32, Edge, bool)>, new_map: bool, notes: &mut Vec<String>) -> Result<(), LoadError> {
+    use crate::map::{Barricade, EdgeRef, OwnedEdge};
+    let mut dropped = 0;
+    let mut reset: Vec<(EdgeRef, Edge)> = Vec::new();
+    for (key, id, planks, hp, under, owner_side) in list {
+        if key.2 > 1 {
+            return Err(invalid(format!("a barricade on edge side {}", key.2)));
+        }
+        let e = edge_of_key(key);
+        let kind = if w.map.in_bounds(e.tile) { w.map.owned_edge(e.tile, e.edge) } else { Edge::None };
+        let Some(build) = w.config.builds.iter().position(|d| d.id == id) else {
+            dropped += 1;
+            if kind.is_boarded() {
+                reset.push((e, under));
+            }
+            continue;
+        };
+        let d = &w.config.builds[build];
+        if !kind.is_boarded() || kind != d.on.boarded() || !d.on.takes(under) {
+            if new_map {
+                dropped += 1;
+                continue;
+            }
+            return Err(invalid(format!("a barricade at {} {:?} on {kind:?} over {under:?}", e.tile, e.edge)));
+        }
+        if planks == 0 || planks > d.max || !hp.is_finite() || hp <= 0.0 || hp > d.hp * planks as f32 + 1e-3 {
+            return Err(invalid(format!("a barricade at {} {:?}: {planks} planks, {hp} hp", e.tile, e.edge)));
+        }
+        w.map.barricades.insert(key, Barricade { build: build as u16, planks, hp, under, owner_side });
+    }
+    // Boarded edges with no barricade (a map regenerated anyway; a build gone): back to a shut
+    // window or door.
+    let (wd, ht) = (w.map.width(), w.map.height());
+    for y in 0..ht {
+        for x in 0..wd {
+            for which in [OwnedEdge::North, OwnedEdge::West] {
+                let e = EdgeRef::new(IVec2::new(x, y), which);
+                let kind = w.map.owned_edge(e.tile, e.edge);
+                if kind.is_boarded() && w.map.barricade(e).is_none() && !reset.iter().any(|(r, _)| *r == e) {
+                    if !new_map && dropped == 0 {
+                        return Err(invalid(format!("a boarded edge at {} {which:?} with no barricade", e.tile)));
+                    }
+                    reset.push((e, if kind == Edge::WindowBoarded { Edge::Window } else { Edge::DoorClosed }));
+                }
+            }
+        }
+    }
+    for (e, under) in reset {
+        w.map.set_owned_edge(e.tile, e.edge, under);
+        w.map_edits.insert(e.key());
+        w.walk.update_around(&w.map, e.tile);
+        w.nav.edge_changed(&w.walk, e.tile);
+    }
+    if dropped > 0 {
+        notes.push(format!("{dropped} barricades taken down: their builds or their windows and doors aren't in the game any more"));
+    }
+    Ok(())
+}
+
 /// Can a saved map edit (`saved`, a door or window opened, shut or broken) stand on the edge as
 /// generated (`generated`)? Doors stay doors and windows windows; nothing else is ever edited.
 pub(crate) fn edit_fits(generated: Edge, saved: Edge) -> bool {
     let family = |e: Edge| match e {
-        Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken => 1,
-        Edge::Window | Edge::WindowOpen | Edge::WindowBroken => 2,
+        Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken | Edge::DoorBoarded => 1,
+        Edge::Window | Edge::WindowOpen | Edge::WindowBroken | Edge::WindowBoarded => 2,
         _ => 0,
     };
     family(generated) != 0 && family(generated) == family(saved)

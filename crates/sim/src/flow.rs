@@ -183,7 +183,7 @@ impl WalkGrid {
                     extra |= 1 << (CLIMB_BITS + bit);
                 } else if open_beyond && edge == Edge::Window {
                     extra |= 1 << (WINDOW_BITS + bit);
-                } else if open_beyond && edge == Edge::DoorClosed {
+                } else if open_beyond && (edge == Edge::DoorClosed || edge.is_boarded()) {
                     extra |= 1 << (DOOR_BITS + bit);
                 }
                 map.can_step(t, side)

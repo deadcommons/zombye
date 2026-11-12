@@ -15,7 +15,7 @@ use bevy::prelude::*;
 use zombye_net::{Intent, PrivateView};
 use zombye_sim::containers::{ContainerData, ContainerSite};
 use zombye_sim::map::{Edge, EdgeRef, OwnedEdge, TileMap};
-use zombye_sim::{BlindOp, ItemDef};
+use zombye_sim::{BlindOp, BuildDef, ItemDef};
 
 /// How high a door's opening is, and a window's sill and head (docs/asset-pipeline.md).
 const DOOR_TOP: f32 = 2.1;
@@ -118,7 +118,7 @@ fn to_segment(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 
 /// The edges near `around` something can be done with: doors, windows and fences.
 fn actionable(kind: Edge) -> bool {
-    kind.is_door() || kind.is_window() || kind == Edge::DoorBroken || kind == Edge::Fence
+    kind.is_door() || kind.is_window() || kind.is_boarded() || kind == Edge::DoorBroken || kind == Edge::Fence
 }
 
 /// The thing the pointer's ray (from `origin` along `dir`) meets first near the player at
@@ -258,9 +258,10 @@ pub fn fire_entries(id: u32, at: Vec2, lit: bool, fuel_min: u16, items: &[ItemDe
 /// What the menu on `target` is called and what it offers, the likeliest first, for player `me`
 /// at `pos` (`view`: our private view, for what we carry). Out of reach it says so and offers
 /// nothing.
-pub fn entries(target: Target, map: &TileMap, sites: &[ContainerSite], data: &ContainerData, items: &[ItemDef], blind_tag: &str, fire_reach: f32, me: u32, pos: Vec2, view: Option<&PrivateView>) -> (String, Vec<WorldEntry>) {
+#[allow(clippy::too_many_arguments)]
+pub fn entries(target: Target, map: &TileMap, sites: &[ContainerSite], data: &ContainerData, items: &[ItemDef], builds: &[BuildDef], blind_tag: &str, fire_reach: f32, me: u32, pos: Vec2, view: Option<&PrivateView>) -> (String, Vec<WorldEntry>) {
     match target {
-        Target::Edge(e) => edge_entries(e, map, items, blind_tag, me, pos, view),
+        Target::Edge(e) => edge_entries(e, map, items, builds, blind_tag, me, pos, view),
         Target::Container(k) => {
             let Some(s) = sites.get(k) else { return (String::new(), Vec::new()) };
             let name = data.containers.get(s.def as usize).map_or("container".to_string(), |d| d.name.clone());
@@ -292,7 +293,8 @@ pub fn entries(target: Target, map: &TileMap, sites: &[ContainerSite], data: &Co
     }
 }
 
-fn edge_entries(e: EdgeRef, map: &TileMap, items: &[ItemDef], blind_tag: &str, me: u32, pos: Vec2, view: Option<&PrivateView>) -> (String, Vec<WorldEntry>) {
+#[allow(clippy::too_many_arguments)]
+fn edge_entries(e: EdgeRef, map: &TileMap, items: &[ItemDef], builds: &[BuildDef], blind_tag: &str, me: u32, pos: Vec2, view: Option<&PrivateView>) -> (String, Vec<WorldEntry>) {
     let kind = map.owned_edge(e.tile, e.edge);
     let glazed = map.glazed(e);
     let title = match kind {
@@ -303,6 +305,8 @@ fn edge_entries(e: EdgeRef, map: &TileMap, items: &[ItemDef], blind_tag: &str, m
         Edge::WindowOpen => "Open window",
         Edge::WindowBroken => "Broken window",
         Edge::Fence => "Fence",
+        Edge::WindowBoarded => "Boarded-up window",
+        Edge::DoorBoarded => "Boarded-up door",
         _ => "",
     }
     .to_string();
@@ -345,6 +349,26 @@ fn edge_entries(e: EdgeRef, map: &TileMap, items: &[ItemDef], blind_tag: &str, m
         }
     }
     let mut out: Vec<WorldEntry> = lines.into_iter().map(|(label, i)| WorldEntry { facing: Some(facing), ..WorldEntry::send(label, toward(i)) }).collect();
+    // The build menu's pieces that go on this edge (`assets/data/build.ron`): board it up, or one
+    // plank more; prise one off. What's missing is said instead, as the server would say it.
+    let inv = view.map(|v| &v.inventory);
+    for (i, d) in builds.iter().enumerate() {
+        if !zombye_sim::build::fits(map, d, i as u16, e) {
+            continue;
+        }
+        let label = if kind.is_boarded() { "Nail another plank on".to_string() } else { d.name.clone() };
+        match inv.map(|inv| zombye_sim::build::check_build(d, inv, items, 1)) {
+            Some(Err(why)) => out.push(WorldEntry::say(format!("{label}: {why}"))),
+            _ => out.push(WorldEntry { facing: Some(facing), ..WorldEntry::send(label, toward(Intent::Build { player: me, build: d.id.clone() })) }),
+        }
+    }
+    if let Some(b) = map.barricade(e) {
+        let missing = builds.get(b.build as usize).zip(inv).and_then(|(d, inv)| zombye_sim::build::check_removal(d, inv, items).err());
+        match missing {
+            Some(why) => out.push(WorldEntry::say(format!("Prise a plank off: {why}"))),
+            None => out.push(WorldEntry { facing: Some(facing), ..WorldEntry::send("Prise a plank off", toward(Intent::Unbuild { player: me })) }),
+        }
+    }
     if out.is_empty() {
         out.push(WorldEntry::say(if kind == Edge::DoorBroken { "Broken: it won't shut again" } else { "Nothing to do with it" }));
     }

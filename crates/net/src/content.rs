@@ -161,6 +161,20 @@ pub fn load_recipes(data_dir: &Path, items: &[ItemDef], weapons: &[WeaponDef]) -
     parse_recipes_for(&text, &all).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// What can be built (the build menu, `zombye_sim::build`): `<data>/build.ron`, validated, every
+/// item id and tool tag checked against `items` (and the plain items weapons without one get). A
+/// data folder without the file has no builds.
+pub fn load_builds(data_dir: &Path, items: &[ItemDef], weapons: &[WeaponDef]) -> Result<Vec<zombye_sim::BuildDef>, String> {
+    let path = data_dir.join("build.ron");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut all = items.to_vec();
+    zombye_sim::items::complete_items(&mut all, weapons);
+    zombye_sim::build::parse_builds_for(&text, &all).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// What a new survivor on a server starts with, from `<data>/start_kit.ron` (#68), checked against
 /// the items. A data folder without the file gives nothing.
 pub fn load_start_kit(data_dir: &Path, items: &[ItemDef]) -> Result<zombye_sim::logout::StartKit, String> {
@@ -222,6 +236,7 @@ pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig
     let containers = load_containers(data_dir)?;
     let loot = load_loot(data_dir, &items, &weapons, &containers)?;
     let recipes = load_recipes(data_dir, &items, &weapons)?;
+    let builds = load_builds(data_dir, &items, &weapons)?;
     let population = load_population(data_dir)?;
     // What zombies wear must be clothing there is.
     zombye_sim::corpses::check_outfits(&population.outfits, &items).map_err(|e| format!("{}: {e}", data_dir.join("population.ron").display()))?;
@@ -234,6 +249,7 @@ pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig
         .with_containers(containers)
         .with_loot(loot)
         .with_recipes(recipes)
+        .with_builds(builds)
         .with_population(population)
         .with_street_props(street_props)
         .with_power(power)

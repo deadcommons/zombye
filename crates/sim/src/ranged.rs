@@ -264,7 +264,7 @@ pub fn flight(map: &TileMap, origin: Vec2, dir: Vec2, max: f32, slope: f32) -> F
         let edge = map.edge(tile, side);
         let through = match edge {
             Edge::None => true,
-            Edge::Wall | Edge::DoorClosed => false,
+            Edge::Wall | Edge::DoorClosed | Edge::WindowBoarded | Edge::DoorBoarded => false,
             Edge::Window | Edge::WindowOpen | Edge::WindowBroken => (SILL_HEIGHT..=HEAD_HEIGHT).contains(&h),
             Edge::DoorOpen | Edge::DoorBroken | Edge::Arch => h <= HEAD_HEIGHT,
             Edge::Fence => h > FENCE_HEIGHT,

@@ -191,16 +191,23 @@ pub enum Edge {
     WindowBroken,
     /// A door battered off its hinges: a permanent opening.
     DoorBroken,
+    /// A window boarded up with planks ([`crate::build`]): blocks movement and sight; zombies batter
+    /// the boards. What the window was underneath is in [`TileMap::barricades`]. (Last, so saved
+    /// edges of the kinds before keep their numbers.)
+    WindowBoarded,
+    /// A shut or broken door boarded up the same way.
+    DoorBoarded,
 }
 
 impl Edge {
     pub fn blocks_movement(self) -> bool {
-        matches!(self, Edge::Wall | Edge::Window | Edge::DoorClosed)
+        matches!(self, Edge::Wall | Edge::Window | Edge::DoorClosed | Edge::WindowBoarded | Edge::DoorBoarded)
     }
 
-    /// Walls and closed doors. Glass doesn't, and neither does a doorway whose door is gone.
+    /// Walls, closed doors and boarded-up openings. Glass doesn't, and neither does a doorway
+    /// whose door is gone.
     pub fn blocks_sight(self) -> bool {
-        matches!(self, Edge::Wall | Edge::DoorClosed)
+        matches!(self, Edge::Wall | Edge::DoorClosed | Edge::WindowBoarded | Edge::DoorBoarded)
     }
 
     /// A door a player can open or close.
@@ -208,14 +215,19 @@ impl Edge {
         matches!(self, Edge::DoorClosed | Edge::DoorOpen)
     }
 
-    /// Any window, whatever its state.
+    /// Any window, whatever its state (boarded up too).
     pub fn is_window(self) -> bool {
-        matches!(self, Edge::Window | Edge::WindowOpen | Edge::WindowBroken)
+        matches!(self, Edge::Window | Edge::WindowOpen | Edge::WindowBroken | Edge::WindowBoarded)
     }
 
-    /// Shut and in one piece: something zombies can batter (and that has hit points).
+    /// Shut and in one piece, or boarded up: something zombies can batter (and that has hit points).
     pub fn is_breakable(self) -> bool {
-        matches!(self, Edge::DoorClosed | Edge::Window)
+        matches!(self, Edge::DoorClosed | Edge::Window | Edge::WindowBoarded | Edge::DoorBoarded)
+    }
+
+    /// Boarded up with planks ([`crate::build`]).
+    pub fn is_boarded(self) -> bool {
+        matches!(self, Edge::WindowBoarded | Edge::DoorBoarded)
     }
 
     /// An open or broken window, or a fence: passable, but crossing it is a slow climb.
@@ -474,6 +486,28 @@ pub struct BlindChange {
     pub blind: Option<bool>,
 }
 
+/// Planks nailed across a window or door ([`crate::build`]): which build made them (an index into
+/// `WorldConfig::builds`), how many planks are up, the hit points they have left between them, what
+/// the edge was underneath (it goes back to that when the last plank goes), and which side they
+/// were nailed on (`true`: the owner tile's, south or east).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Barricade {
+    pub build: u16,
+    pub planks: u8,
+    pub hp: f32,
+    pub under: Edge,
+    pub owner_side: bool,
+}
+
+/// A barricade appearing, changing (a plank more or less) or going (`None`), replicated to clients
+/// in snapshots like [`BlindChange`]s. `frac` is the hit points left of the planks up.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BarricadeChange {
+    pub tile: IVec2,
+    pub edge: OwnedEdge,
+    pub barricade: Option<Barricade>,
+}
+
 /// A cul-de-sac's turning circle as the generator laid it out: tiles whose middles are within
 /// `road` of `centre` are asphalt, then sidewalk out to `walk`. The street into it comes from the
 /// `entry` side, its asphalt `stem` either side of the line through the centre and its sidewalks
@@ -519,6 +553,11 @@ pub struct TileMap {
     /// them on joining.
     #[serde(skip)]
     pub glazed: BTreeSet<(i32, i32, u8)>,
+    /// Boarded-up windows and doors ([`crate::build`]), by edge key; their edge is
+    /// [`Edge::WindowBoarded`] or [`Edge::DoorBoarded`]. World state, saved in its own section
+    /// (`BARR`), not with the tiles; changes go out as [`BarricadeChange`]s.
+    #[serde(skip)]
+    pub barricades: BTreeMap<(i32, i32, u8), Barricade>,
     /// The flights of stairs players can walk up, in building order, and the first upper floor's
     /// tiles by `(y, x)`. Derived from `buildings` by [`TileMap::index_storeys`]: not saved, in no
     /// hash.
@@ -536,7 +575,7 @@ impl TileMap {
     pub fn new(chunks_x: i32, chunks_y: i32) -> Self {
         let chunks = (0..chunks_x * chunks_y).map(|_| Chunk { tiles: vec![Tile::default(); CHUNK_TILES] }).collect();
         let outdoors = Room { building: u16::MAX, name: "Outdoors".into(), room_type: "outdoors".into(), floor: Floor::Grass };
-        Self { chunks_x, chunks_y, chunks, rooms: vec![outdoors], buildings: Vec::new(), turning_circles: Vec::new(), street_props: Vec::new(), prop_kinds: Vec::new(), blinds: BTreeMap::new(), glazed: BTreeSet::new(), stairs: Vec::new(), upper: BTreeMap::new(), stair_speed: 0.0 }
+        Self { chunks_x, chunks_y, chunks, rooms: vec![outdoors], buildings: Vec::new(), turning_circles: Vec::new(), street_props: Vec::new(), prop_kinds: Vec::new(), blinds: BTreeMap::new(), glazed: BTreeSet::new(), barricades: BTreeMap::new(), stairs: Vec::new(), upper: BTreeMap::new(), stair_speed: 0.0 }
     }
 
     pub fn width(&self) -> i32 {
@@ -632,6 +671,17 @@ impl TileMap {
         }
     }
 
+    /// The planks on edge `e`, if it's boarded up.
+    pub fn barricade(&self, e: EdgeRef) -> Option<&Barricade> {
+        self.barricades.get(&e.key())
+    }
+
+    /// What edge `e` is under any planks: what to draw as its frame, leaf or pane.
+    pub fn drawn_edge(&self, e: EdgeRef) -> Edge {
+        let kind = self.owned_edge(e.tile, e.edge);
+        if kind.is_boarded() { self.barricade(e).map_or(kind, |b| b.under) } else { kind }
+    }
+
     /// Is edge `e` a door with glass in it?
     pub fn glazed(&self, e: EdgeRef) -> bool {
         self.glazed.contains(&e.key())
@@ -641,7 +691,7 @@ impl TileMap {
     /// a glazed door that is still on its hinges.
     pub fn takes_blind(&self, e: EdgeRef) -> bool {
         let kind = self.owned_edge(e.tile, e.edge);
-        kind.is_window() || (kind.is_door() && self.glazed(e))
+        kind.is_window() || ((kind.is_door() || kind == Edge::DoorBoarded) && self.glazed(e))
     }
 
     /// Is there glass in edge `e` that sight passes (a window, or a glazed door that's shut)?

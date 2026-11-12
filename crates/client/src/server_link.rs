@@ -150,6 +150,9 @@ pub struct JoinInfo {
     pub items: Vec<ItemDef>,
     /// The crafting recipes (#12); `Intent::Craft` names one by index into this.
     pub recipes: Vec<zombye_sim::RecipeDef>,
+    /// The build catalog (`build.ron`): barricades now, walls and upgrades later. `Intent::Build`
+    /// names an entry by id; a job names it by index into this.
+    pub builds: Vec<zombye_sim::BuildDef>,
     /// Combat reach and arcs, for choosing between shove and stomp.
     pub combat: CombatTuning,
     /// The infection's settings (night sight while turning).
@@ -497,6 +500,7 @@ fn join_info(config: &zombye_sim::WorldConfig, player_id: u32, player_spawn: Vec
         weapons: config.weapons.clone(),
         items: config.items.clone(),
         recipes: config.recipes.clone(),
+        builds: config.builds.clone(),
         combat: config.combat.clone(),
         infection: config.infection.clone(),
         first_aid: config.health.first_aid.clone(),
@@ -828,6 +832,14 @@ fn take_up(
     link.keep_private(&snapshot.private);
     notes.0.extend(snapshot.item_notes.iter().cloned());
     ups.0.extend_from_slice(&snapshot.level_ups);
+    // Barricades first, so an edge turning boarded already has what's under its planks.
+    for b in &snapshot.barricade_changes {
+        let key = zombye_sim::map::EdgeRef::new(b.tile, b.edge).key();
+        match b.barricade {
+            Some(r) => map.0.barricades.insert(key, r),
+            None => map.0.barricades.remove(&key),
+        };
+    }
     for c in &snapshot.edge_changes {
         transitions.0.push((*c, map.0.owned_edge(c.tile, c.edge)));
         map.0.set_owned_edge(c.tile, c.edge, c.kind);

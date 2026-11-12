@@ -145,15 +145,15 @@ fn wall_sides(owner: IVec2, which: OwnedEdge, kind: Edge, base: f32, rooms: (u16
 fn pieces(kind: Edge) -> &'static [(f32, f32)] {
     match kind {
         Edge::Wall => &[(0.0, STOREY)],
-        Edge::Window | Edge::WindowOpen | Edge::WindowBroken => &[(0.0, WINDOW_SILL), (WINDOW_HEAD, STOREY)],
-        Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken => &[(2.1, STOREY)],
+        Edge::Window | Edge::WindowOpen | Edge::WindowBroken | Edge::WindowBoarded => &[(0.0, WINDOW_SILL), (WINDOW_HEAD, STOREY)],
+        Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken | Edge::DoorBoarded => &[(2.1, STOREY)],
         Edge::Arch => &[(ARCH_TOP, STOREY)],
         Edge::None | Edge::Fence => &[],
     }
 }
 
 fn is_door(kind: Edge) -> bool {
-    matches!(kind, Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken)
+    matches!(kind, Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken | Edge::DoorBoarded)
 }
 
 /// The kit for one building.

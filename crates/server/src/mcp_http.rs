@@ -939,8 +939,8 @@ mod tests {
         assert_eq!(
             play,
             [
-                "attack", "blind", "buildings", "climb", "containers_near", "craft", "drop", "edge", "equip", "fire", "fires", "free", "gesture", "group", "health", "heard", "interact", "inventory", "items", "light", "loot", "move_item", "move_player", "observe",
-                "pick_up", "recipes", "regions", "respawn", "restrain", "say", "screenshot", "search", "search_player", "shove", "sit", "skills", "sleep", "smash_window", "stats", "step_ticks", "stomp", "struggle", "take", "take_from", "treat", "unequip",
+                "attack", "blind", "build", "buildings", "builds", "climb", "containers_near", "craft", "drop", "edge", "equip", "fire", "fires", "free", "gesture", "group", "health", "heard", "interact", "inventory", "items", "light", "loot", "move_item", "move_player", "observe",
+                "pick_up", "recipes", "regions", "respawn", "restrain", "say", "screenshot", "search", "search_player", "shove", "sit", "skills", "sleep", "smash_window", "stats", "step_ticks", "stomp", "struggle", "take", "take_from", "treat", "unbuild", "unequip",
                 "use", "weapons", "wear", "zombie",
             ],
             "a new tool: list it here if players may use it on a public server; a debug tool (Kind::Debug in mcp::TOOLS) in DEV_TOOLS"

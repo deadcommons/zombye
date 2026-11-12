@@ -495,6 +495,10 @@ pub enum JobKind {
     /// Blinds ([`crate::blinds`]): fit a carried blind to `edge`, or (`fit: false`) take its blind
     /// down into the bags. After `Reload`, so saves from before it read as they did.
     Blind { edge: crate::map::EdgeRef, fit: bool },
+    /// Building ([`crate::build`]): a piece of build `build` (an index into `WorldConfig::builds`)
+    /// onto `edge`, or (`add: false`) one off it. After `Blind`, so saves from before it read as
+    /// they did.
+    Build { edge: crate::map::EdgeRef, build: u16, add: bool },
 }
 
 /// A queued job and the seconds it has left (only the first counts down).
@@ -1013,6 +1017,7 @@ impl World {
                 JobKind::Craft { recipe } => self.do_craft(pi, recipe),
                 JobKind::Reload { spare } => self.do_reload(pi, spare),
                 JobKind::Blind { edge, fit } => self.do_blind(pi, edge, fit),
+                JobKind::Build { edge, build, add } => self.do_build(pi, edge, build, add),
             };
             if result.is_ok() {
                 let p = &mut self.players[pi];
