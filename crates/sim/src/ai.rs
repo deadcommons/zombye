@@ -248,10 +248,10 @@ impl Default for ZombieTuning {
             wander_speed: 0.4,
             search_radius: 3.5,
 
-            lunge_range: 2.4,
+            lunge_range: 1.7,
             lunge_secs: 0.45,
-            lunge_speed_mult: 2.2,
-            lunge_min_speed: 2.6,
+            lunge_speed_mult: 1.6,
+            lunge_min_speed: 1.8,
             lunge_cooldown: 2.0,
             attack_reach: 0.9,
             attack_windup: 0.35,
@@ -585,9 +585,12 @@ fn hunt(z: &mut Zombies, i: usize, cx: &mut Ctx) -> (Vec2, bool, Option<Vec2>, b
                     return (Vec2::ZERO, false, None, false);
                 }
             }
-            // Shuffle in to stay in contact.
-            let close_in = if d > t.attack_reach * 0.8 { dir * z.speed[i] * 0.5 } else { Vec2::ZERO };
-            (close_in, true, Some(to), false)
+            // Shuffle in to stay in contact: walking, so the feet go with the body (the attack clip is
+            // made in place); clawing once in contact.
+            if d > t.attack_reach * 0.8 {
+                return (dir * z.speed[i] * 0.5, false, Some(to), false);
+            }
+            (Vec2::ZERO, true, Some(to), false)
         }
         _ => {
             let sees = z.sees[i] > 0;
@@ -653,6 +656,9 @@ pub(crate) fn recover(z: &mut Zombies, i: usize, t: &ZombieTuning) {
 fn start_attack(z: &mut Zombies, i: usize, t: &ZombieTuning) {
     z.state[i] = ZombieState::Attack;
     z.cooldown[i] = z.cooldown[i].max(t.attack_windup);
+    // Feet planted: a lunge's speed would otherwise carry on for a few ticks under an attack clip
+    // made in place, sliding it forward.
+    z.vel[i] = Vec2::ZERO;
 }
 
 /// Lost (or lost interest in) its player: investigate the last known spot for a while.

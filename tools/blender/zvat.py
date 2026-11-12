@@ -84,7 +84,12 @@ def _split_vertices(me, hidden=None, uv_of_material=None):
 
 def _stride(arm, action, f0, cycle, fps):
     """Metres the body would cover per loop of an in-place walk: while a foot is planted (in its lowest
-    fifth) it slides backward at the walking speed."""
+    fifth) it slides backward at the walking speed. An action with a `stride_m` custom property (metres a
+    loop, from the clip's root-motion version) is taken at its word: a dragging or limping walk keeps a
+    foot low the whole cycle, and the median slide of the low feet then says nothing."""
+    given = bpy.data.actions[action].get("stride_m")
+    if given is not None:
+        return float(given)
     pb = arm.pose.bones
     feet = [b for b in pb if "foot" in b.name.lower()]
     if not feet:
