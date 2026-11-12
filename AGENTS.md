@@ -1858,8 +1858,11 @@ and mood, and docs/art-direction.md). All of it is client only: nothing here is 
   Cost on an M3 MacBook (1920 x 1080 offscreen, 2,000 zombies, 120 frames, the machine not idle): none measurable,
   13.9 ms median with and without at 26 m; the haze the same (15.5 against 15.0-15.5 ms at dusk); ground detail
   0.4-0.8 ms. **Haze** (`Graphics::haze`, off in Low; `light.ron` `haze`: colour,
-  brightness, strength, near, far; `daynight::haze_at`): with the sun low, at dawn and dusk, what stands away from the
-  survivor is washed toward the sun's colour in slow drifting banks, thickest near the ground and outdoors only
+  brightness, strength, day, day_colour, near, far; `daynight::haze_at`): what stands up the screen from the survivor
+  (away from the camera over the ground; half as much to the sides and below) is washed toward the haze's colour in
+  slow drifting banks, thickest near the ground and outdoors only: a thin pale veil all day (`day`, `day_colour`),
+  thick and the sun's colour at dawn and dusk (`strength`, `colour`), none at night. `near` and `far` are metres at the
+  default zoom (`daynight::HAZE_ZOOM`, 26) and follow the zoom, so the screen is as hazy zoomed in as out
   (a term in world.wesl before the fog of war, from `WorldParams::haze` / `haze_at`: the camera is orthographic, so
   distance fog does nothing); `--no-post haze` or the settings' "Haze" switch turns it off, and with none the shader
   skips it. The crowd and the survivors aren't hazed (their own shaders). **Unseen ground by day** keeps most of its
@@ -1879,7 +1882,7 @@ and mood, and docs/art-direction.md). All of it is client only: nothing here is 
   prop's triangles are repainted (`Wear::colour`, by hashes of where it stands, so the same every time): the kinds in
   `repaint` (car, van, pickup) take one of `paints` in place of their model's main colour
   (`FurnitureModels::body_colour`: the saturated colour covering most of it), paint fades, `dust` settles on what
-  faces up and near the ground, and `rust` comes through in patches, by the kind's `wear` (0 as made .. 1 a wreck;
+  faces up and near the ground, and `rust` comes through in soft patches (all of it smooth noise asked per corner and blended across each triangle: asked once a triangle, big panels came out as shards), by the kind's `wear` (0 as made .. 1 a wreck;
   `other` for kinds not listed, `spread` between one and the next). Baked into the vertex colours: no cost in a
   frame, and nothing of it in the sim or a save. A data folder without the file gets the shipped one.
 - **Contact shadows** (`world_render::contact_shadows`): a strip of black fading to clear, 0.6 m wide, on the ground

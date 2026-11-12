@@ -204,12 +204,17 @@ impl MeshBuilder {
 
     /// A triangle with its own vertex normals (imported models).
     pub fn triangle_with_normals(&mut self, corners: [Vec3; 3], normals: [Vec3; 3], color: LinearRgba) {
-        if !self.mirror(|far| far.triangle_with_normals(corners, normals, color)) {
+        self.triangle_with_normals_shaded(corners, normals, [color; 3]);
+    }
+
+    /// The same with a colour at each corner, blended across it.
+    pub fn triangle_with_normals_shaded(&mut self, corners: [Vec3; 3], normals: [Vec3; 3], colors: [LinearRgba; 3]) {
+        if !self.mirror(|far| far.triangle_with_normals_shaded(corners, normals, colors)) {
             return;
         }
         let base = self.positions.len() as u32;
-        for (c, n) in corners.into_iter().zip(normals) {
-            self.push_vertex(c, n, color);
+        for ((c, n), col) in corners.into_iter().zip(normals).zip(colors) {
+            self.push_vertex(c, n, col);
         }
         self.indices.extend_from_slice(&[base, base + 1, base + 2]);
     }

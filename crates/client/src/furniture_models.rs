@@ -248,12 +248,12 @@ impl FurnitureModel {
             mb.only(detail);
             for (p, n, c, _) in tris {
                 let c = match wear {
-                    Some(w) => w.colour((p[0] + p[1] + p[2]) / 3.0, (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero(), *c),
-                    None => *c,
+                    Some(w) => [0, 1, 2].map(|i| w.colour(p[i], n[i], *c)),
+                    None => [*c; 3],
                 };
                 let p = p.map(|p| origin + rot * p * scale);
                 let n = n.map(|n| ((rot * n) / scale).normalize_or_zero());
-                mb.triangle_with_normals(p, n, c);
+                mb.triangle_with_normals_shaded(p, n, c);
             }
         }
         mb.only(Detail::Both);

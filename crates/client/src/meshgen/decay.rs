@@ -1,7 +1,7 @@
 //! Decay on street props: the models are clean and all of one colour (every parked car the same
 //! blue), so as a chunk's props mesh is built each prop's triangles are repainted a little: a
 //! vehicle takes one of a handful of paints, paint fades toward grey, dust settles on what faces
-//! up and mud on what is near the ground, and rust comes through in patches. All by hashes of
+//! up and mud on what is near the ground, and rust comes through in soft patches. All by hashes of
 //! where the prop stands, so a town looks the same every time. The amounts and colours are data
 //! (`assets/data/decay.ron`). Baked into the vertex colours: nothing is added to a frame.
 
@@ -119,7 +119,7 @@ fn linear((r, g, b): (f32, f32, f32)) -> Vec3 {
     Vec3::new(c.red, c.green, c.blue)
 }
 
-/// How one prop is repainted: made per prop by [`Wear::of`], asked per triangle.
+/// How one prop is repainted: made per prop by [`Wear::of`], asked per corner.
 #[derive(Clone, Copy, Debug)]
 pub struct Wear {
     /// 0 as made .. 1 a wreck.
@@ -148,8 +148,10 @@ impl Wear {
         (amount > 0.0 || paint.is_some()).then(|| Wear { amount, seed: (x as u32).wrapping_mul(73_856_093) ^ (y as u32).wrapping_mul(19_349_663), paint, dust: linear(look.dust), rust: linear(look.rust) })
     }
 
-    /// The colour of a triangle of the model: its middle `p` and normal `n` in the model's own
-    /// frame (metres, y up from the ground), `c` as the model has it.
+    /// The colour of a corner of the model: where it is, `p`, and its normal `n` in the model's
+    /// own frame (metres, y up from the ground), `c` as the model has it. Everything here varies
+    /// smoothly from place to place and is asked per corner, so it blends across a panel: asked
+    /// once a triangle in hard patches, a car's big panels came out as shards of rust and dust.
     pub fn colour(&self, p: Vec3, n: Vec3, c: LinearRgba) -> LinearRgba {
         let mut v = Vec3::new(c.red, c.green, c.blue);
         if let Some((from, to)) = self.paint
@@ -164,20 +166,29 @@ impl Wear {
         let lum = v.dot(Vec3::new(0.2126, 0.7152, 0.0722));
         // Paint fades in the sun: toward its own grey, a little paler.
         v = v.lerp(Vec3::splat(lum * 1.15 + 0.01), w * 0.35);
-        // Patches, some 0.4 m across: one tone a patch, so the facets stay flat.
-        let cell = |size: f32, salt: u32| hash((p.x / size).floor() as i32, (p.y / size).floor() as i32, (p.z / size).floor() as i32, self.seed ^ salt);
-        // Dust on what faces up, mud on what is near the ground.
+        // Dust on what faces up, mud on what is near the ground, in broad soft drifts.
         let up = ((n.y - 0.35) / 0.5).clamp(0.0, 1.0);
         let low = 1.0 - ((p.y - 0.12) / 0.55).clamp(0.0, 1.0);
-        let dust = w * (0.12 + 0.38 * up + 0.5 * low) * (0.45 + 0.9 * cell(0.45, 11));
+        let dust = w * (0.12 + 0.38 * up + 0.5 * low) * (0.6 + 0.6 * self.drift(p, 1.1, 11));
         v = v.lerp(self.dust * (0.35 + lum.sqrt() * 0.9).min(1.0), dust.clamp(0.0, 0.8));
-        // Rust in patches, more of it low down and the more worn the thing is.
-        let rusty = cell(0.3, 23) + 0.12 * low;
-        let from = 1.0 - w * w * 0.2;
-        if rusty > from {
-            v = v.lerp(self.rust * (0.55 + 0.6 * cell(0.3, 31)), (0.3 + (rusty - from) * 5.0).min(0.7));
-        }
+        // Rust creeping up from the sills and blooming here and there, soft at its edges, the
+        // more of it the more worn the thing is.
+        let rusty = self.drift(p, 0.7, 23) + 0.3 * low;
+        let from = 1.0 - w * w * 0.45;
+        let rust = ((rusty - from) / 0.22).clamp(0.0, 1.0);
+        v = v.lerp(self.rust * (0.7 + 0.3 * self.drift(p, 0.5, 31)), rust * rust * (3.0 - 2.0 * rust) * 0.6);
         LinearRgba::new(v.x, v.y, v.z, c.alpha)
+    }
+
+    /// Smooth noise over the model, 0..1, its features `size` metres across.
+    fn drift(&self, p: Vec3, size: f32, salt: u32) -> f32 {
+        let q = p / size;
+        let (i, f) = (q.floor(), q - q.floor());
+        let f = f * f * (Vec3::splat(3.0) - 2.0 * f);
+        let at = |dx: i32, dy: i32, dz: i32| hash(i.x as i32 + dx, i.y as i32 + dy, i.z as i32 + dz, self.seed ^ salt);
+        let along = |dy: i32, dz: i32| at(0, dy, dz) + (at(1, dy, dz) - at(0, dy, dz)) * f.x;
+        let plane = |dz: i32| along(0, dz) + (along(1, dz) - along(0, dz)) * f.y;
+        plane(0) + (plane(1) - plane(0)) * f.z
     }
 }
 

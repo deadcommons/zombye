@@ -47,10 +47,13 @@
     ),
     // Added to the temperature and to the saturation at dawn and dusk.
     dusk: (0.06, 0.1),
-    // The warm haze of a low sun, at dawn and dusk: its colour (sRGB) and brightness against sunlit
-    // ground, how much of what stands in it it takes at most (0 = none), and how many metres from
-    // the survivor it starts and is thickest. Drawn only with "Haze" on in the graphics settings.
-    haze: (colour: (1.0, 0.7, 0.42), brightness: 1.15, strength: 0.26, near: 8.0, far: 34.0),
+    // The haze: what stands up the screen from the survivor is washed toward its colour, in slow
+    // banks. `colour` (sRGB), `brightness` against sunlit ground and `strength` (how much of what
+    // stands in it it takes at most, 0 = none) are for a low sun, at dawn and dusk; `day` and
+    // `day_colour` the same for the thin veil with the sun high (day: 0 = none by day). `near` and
+    // `far`: how many metres from the survivor it starts and is thickest, at the default zoom (they
+    // follow the zoom). Drawn only with "Haze" on in the graphics settings.
+    haze: (colour: (1.0, 0.7, 0.42), brightness: 1.15, strength: 0.26, day: 0.24, day_colour: (0.95, 0.93, 0.86), near: 8.0, far: 34.0),
     // A campfire at night: its colour (sRGB), brightness in lumens, how far its light reaches and
     // how high over the ground it sits (metres), and how far round it what stands in its light is
     // seen in the dark.

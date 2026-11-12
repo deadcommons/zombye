@@ -84,7 +84,7 @@ pub struct WorldParams {
     /// its colour an unseen surface keeps (`FogLook::unseen_colour`). z, w = the fog's look:
     /// `FogState::soft`.
     pub lights: Vec4,
-    /// The low sun's haze (`daynight::haze_at`): rgb its colour, w how much it takes (0 = none).
+    /// The haze (`daynight::haze_at`): rgb its colour, w how much it takes (0 = none).
     pub haze: Vec4,
     /// x, y = where its banks have drifted to (metres), z, w = where it starts and where it is
     /// thickest, metres from the player.
@@ -328,7 +328,9 @@ pub fn update_params(
             // The banks drift slowly with the wind; nothing to work out or upload with no haze.
             let h = crate::daynight::look().haze;
             let t = if haze.0.w > 0.0 { (time.elapsed_secs_wrapped() * 10.0).floor() / 10.0 } else { 0.0 };
-            Vec4::new(t * 0.35, t * 0.12, h.near, h.far)
+            // Its reach is in metres at the default zoom: scaled with the zoom, the screen is as hazy at any.
+            let k = if cam.shoulder() { 1.0 } else { cam.zoom / crate::daynight::HAZE_ZOOM };
+            Vec4::new(t * 0.35, t * 0.12, h.near * k, h.far * k)
         },
         sight: fog.sight,
         trees,

@@ -211,7 +211,7 @@ pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
             switch("Vignette", "Darkened corners.", s, Switch::Vignette),
             switch("Contact shadows", "A soft dark line where walls meet the ground. Changes on the next start.", s, Switch::ContactShadows),
             switch("Soft shadows", "Shadow edges that soften away from what casts them. Costs frame rate.", s, Switch::SoftShadows),
-            switch("Haze", "A warm haze over the distance when the sun is low.", s, Switch::Haze),
+            switch("Haze", "A thin haze over the distance, thick and warm when the sun is low.", s, Switch::Haze),
             switch("Ground detail", "Patchy colour on the ground. Changes on the next start.", s, Switch::GroundDetail),
         ],
         Tab::Audio => vec![

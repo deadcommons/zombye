@@ -79,7 +79,7 @@ pub struct Graphics {
     pub contact_shadows: bool,
     /// Shadows of the sun and moon with soft edges that widen away from what casts them.
     pub soft_shadows: bool,
-    /// The warm haze of a low sun (`daynight::HazeLook`).
+    /// The haze over the distance (`daynight::HazeLook`).
     pub haze: bool,
     /// Patchy colour on the ground, worked out per pixel.
     pub ground_detail: bool,

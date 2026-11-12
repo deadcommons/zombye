@@ -346,12 +346,17 @@ fn fragment(
         let dir = to_player / max(length(to_player), 1e-3);
         seen = max(fog_at(wp.xz + dir * 1.5), fog_at(wp.xz + dir * 3.0));
     }
-    // The low sun's haze (light.ron `haze`): the camera is orthographic, so nothing is "far" by
-    // depth; what stands away from the player is washed toward the sun's colour instead, in slow
-    // banks, thickest near the ground. Outdoors only, and before the fog of war dims what's unseen.
+    // The haze (light.ron `haze`): a thin veil all day, thick and warm with a low sun. The camera
+    // is orthographic, so nothing is "far" by depth; what stands up the screen from the player
+    // (away from the camera over the ground), and a little of what stands off to the sides and
+    // below, is washed toward the haze's colour instead, in slow banks, thickest near the ground.
+    // `haze_at.zw` are metres at the zoom drawn, so it shows as much zoomed in as out. Outdoors
+    // only, and before the fog of war dims what's unseen.
     if (world_params.haze.w > 0.0) {
         let hz = world_params.haze_at;
-        let away = smoothstep(hz.z, hz.w, length(wp.xz - world_params.player.xz));
+        let off = wp.xz - world_params.player.xz;
+        let up_screen = -dot(off, ground_camera_dir());
+        let away = smoothstep(hz.z, hz.w, max(up_screen, 0.5 * length(off)));
         let q = wp.xz + hz.xy;
         let banks = vnoise(q * 0.055) * 0.65 + vnoise(q * 0.17 + vec2(7.3, 2.1)) * 0.35;
         let low = 1.0 - 0.6 * smoothstep(1.5, 9.0, wp.y);
