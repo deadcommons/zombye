@@ -179,6 +179,30 @@ pub fn load_start_kit(data_dir: &Path, items: &[ItemDef]) -> Result<zombye_sim::
     zombye_sim::logout::parse_start_kit(&text, items).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Backgrounds, Strengths and Flaws and the starting wardrobe (`<data>/backgrounds.ron` and
+/// `<data>/strengths_and_flaws.ron`, [`zombye_sim::origin`]), checked against `items`. A data
+/// folder with neither has none (every survivor is a plain one); with one of the two, the other
+/// is empty.
+pub fn load_origins(data_dir: &Path, items: &[ItemDef]) -> Result<zombye_sim::origin::OriginData, String> {
+    use zombye_sim::origin;
+    let (b, p) = (data_dir.join("backgrounds.ron"), data_dir.join("strengths_and_flaws.ron"));
+    let read = |path: &Path| std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()));
+    let backgrounds = if b.exists() { origin::parse_backgrounds(&read(&b)?).map_err(|e| format!("{}: {e}", b.display()))? } else { Vec::new() };
+    let picks = if p.exists() { origin::parse_picks(&read(&p)?).map_err(|e| format!("{}: {e}", p.display()))? } else { Default::default() };
+    origin::OriginData::new(backgrounds, picks, items).map_err(|e| format!("{} / {}: {e}", b.display(), p.display()))
+}
+
+/// The difficulty presets (`<data>/difficulty.ron`, [`zombye_sim::difficulty`]). A data folder
+/// without the file has the one built in, which changes nothing.
+pub fn load_difficulty(data_dir: &Path) -> Result<zombye_sim::difficulty::DifficultyData, String> {
+    let path = data_dir.join("difficulty.ron");
+    if !path.exists() {
+        return Ok(zombye_sim::difficulty::DifficultyData::builtin());
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    zombye_sim::difficulty::parse_difficulty(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// The benchmark scenarios in `<data>/scenarios.ron` (#29), validated, the items they name checked
 /// against `items` (and the plain items weapons without one get). A data folder without the file
 /// has none.

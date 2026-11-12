@@ -115,6 +115,7 @@ mod meshgen;
 mod action_ui;
 mod debug_stats;
 mod needs_ui;
+mod new_game;
 mod offscreen;
 mod opening_hints;
 mod panels;
@@ -376,6 +377,21 @@ pub struct Options {
     /// Start a new world holding this gun, loaded, with ammunition for it (`--gun ID`, #72: an id
     /// in weapons.ron, e.g. `pistol`); `--fight-demo` then gives no bat and puts its zombies 16 m off.
     pub gun: Option<String>,
+    /// `--new-game`: the new-game screen first (`new_game.rs`): who the survivor is and how the
+    /// world is set; it starts the game again with `--new-game-from`.
+    pub new_game: bool,
+    /// `--new-game-from FILE`: start a new world as that file says (`zombye_net::newgame`).
+    pub new_game_from: Option<String>,
+    /// The same choices as flags (they go over the file's): `--background ID`,
+    /// `--strengths ID,ID`, `--flaws ID,ID`, `--outfit ITEM,ITEM` (from the starting wardrobe;
+    /// `none`: nothing), `--difficulty ID`.
+    pub background: Option<String>,
+    pub strengths: Option<Vec<String>>,
+    pub flaws: Option<Vec<String>>,
+    pub outfit: Option<Vec<String>>,
+    pub difficulty: Option<String>,
+    /// `--new-game-tab survivor|picks|world`: the new-game screen's tab at the start (pictures).
+    pub new_game_tab: Option<String>,
     /// For recordings and pictures of the chat (#67): lines our survivor says by itself
     /// (`--say TEXT[@SECS]`, `--shout TEXT[@SECS]`, `--whisper TEXT[@SECS]`, each as often as
     /// wanted) and gestures it makes (`--gesture wave|hands_up|point[@SECS]`).
@@ -585,6 +601,14 @@ impl Options {
             frame_bench: value("--frame-bench").and_then(|v| v.parse().ok()),
             lag_ms: value("--lag").and_then(|v| v.parse::<u32>().ok()).map_or(0, |v| v.min(2000)),
             gun: value("--gun"),
+            new_game: flag("--new-game"),
+            new_game_from: value("--new-game-from"),
+            background: value("--background"),
+            strengths: value("--strengths").map(|v| id_list(&v)),
+            flaws: value("--flaws").map(|v| id_list(&v)),
+            outfit: value("--outfit").map(|v| id_list(&v)),
+            difficulty: value("--difficulty"),
+            new_game_tab: value("--new-game-tab"),
         }
     }
 
@@ -597,6 +621,11 @@ impl Options {
     pub fn offscreen(&self) -> bool {
         self.render_to.is_some()
     }
+}
+
+/// `a,b,c` as ids (`none` or nothing: none).
+fn id_list(v: &str) -> Vec<String> {
+    v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && s != "none").collect()
 }
 
 /// Run condition: the game is live (not a frozen offscreen render). The local server doesn't tick
@@ -674,6 +703,11 @@ fn main() {
     // the join has gone through.
     if join_screen::wanted(&options) {
         join_screen::run(options);
+    }
+    // `--new-game`: who the survivor is and how the world is set, before there is a world
+    // (`new_game.rs`); it starts the game again with the choices made.
+    if new_game::wanted(&options) {
+        new_game::run(options);
     }
     let plugins = window_plugins(&options);
     let offscreen = options.offscreen();

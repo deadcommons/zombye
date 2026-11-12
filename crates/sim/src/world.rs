@@ -136,6 +136,9 @@ pub struct WorldConfig {
     /// Blinds on windows and glazed doors: where the town has them and handling them
     /// ([`crate::blinds`]). Saved with the settings.
     pub blinds: crate::blinds::BlindTuning,
+    /// A difficulty's multipliers on the content above (population, loot: [`crate::difficulty`]).
+    /// Saved with the settings and put on again when the save is loaded. Changes nothing by default.
+    pub sandbox: crate::difficulty::Sandbox,
     /// The loaded mods' scripts (#25, [`crate::script`]): every world made from this config gets a
     /// host of its own from it. None: no scripts, and nothing of them in the world.
     pub scripts: Option<std::sync::Arc<dyn crate::script::ScriptEngine>>,
@@ -175,6 +178,7 @@ impl WorldConfig {
             stairs: Default::default(),
             power: Default::default(),
             blinds: Default::default(),
+            sandbox: Default::default(),
             scripts: None,
         }
     }
@@ -1163,7 +1167,7 @@ impl World {
             let moving = p.state.pos.distance_squared(before) > 1e-8;
             // Stealth (#46): harder to see, and quieter sneaking.
             let stealth = p.skills.level(Skill::Stealth, &self.config.skills);
-            let sight_mult = self.config.skills.sight_mult(stealth);
+            let sight_mult = self.config.skills.sight_mult(stealth) * p.origin.perks.seen_from;
             // In a lit room (`crate::power`): seen through its windows as if by day.
             let room = self.map.room_at(p.state.pos);
             let lit = if room != 0 && self.power.is_lit(room) { self.config.power.lit_room_seen } else { 0.0 };
@@ -1173,7 +1177,7 @@ impl World {
                     Stance::Sneak => t.sneak_noise * self.config.skills.footstep_mult(stealth),
                     Stance::Walk => t.walk_noise,
                     Stance::Run => t.run_noise,
-                };
+                } * p.origin.perks.footsteps;
                 self.heard.push(Sound::new(p.state.pos, radius, SoundSource::Player(p.id)));
             }
         }
@@ -1512,6 +1516,10 @@ impl World {
             mix(p.state.pos.y.to_bits());
             mix(p.state.facing.to_bits());
             mix(p.state.endurance.to_bits());
+            // Who the survivor is (`crate::origin`), only when it is anyone: a plain one hashes as before.
+            if !p.origin.is_plain() {
+                p.origin.hash(&mut mix);
+            }
             // Dev toggles add bits only when on, so a world without them hashes as it always did.
             mix(p.state.stance as u32 | (p.state.winded as u32) << 8 | (p.dead as u32) << 9 | (p.dev.god as u32) << 10 | (p.dev.ignored as u32) << 11);
             // Upstairs (`crate::stairs`): mixed in only then, for the same reason.

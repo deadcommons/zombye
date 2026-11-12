@@ -1,0 +1,51 @@
+// Backgrounds: what a survivor did before (sim::origin, docs in AGENTS.md "Who you were").
+// A new game picks one. Each gives starting skill levels (on top of every survivor's own), XP
+// multipliers, a few things in the pockets, and points to spend on Strengths
+// (strengths_and_flaws.ron). The plainest Background gives the most points.
+//
+//   id       lower-case letters, digits and _
+//   name     what the new-game screen shows
+//   about    one line
+//   points   0 to 40
+//   skills   [(Skill, levels)]: Fitness, Strength, Bludgeon, Edged, Brawl, Stealth, FirstAid,
+//            Scavenging, Handiwork; 1 to 6 levels
+//   xp       [(Skill, multiplier)]: 0.25 to 4
+//   items    [(item: "id", count: 1)]: item ids from items/items.ron; a weapon starts in the hand
+//
+// The first one is what a new game starts on. Names and numbers are ours.
+[
+    (id: "between_jobs", name: "Between jobs", points: 10,
+        about: "No trade to speak of, and nothing to unlearn. The most points to spend."),
+    (id: "night_nurse", name: "Night nurse", points: 2,
+        about: "Twelve-hour shifts on the ward. You have patched up worse than this.",
+        skills: [(FirstAid, 3)], xp: [(FirstAid, 1.3)],
+        items: [(item: "gauze", count: 2), (item: "antiseptic"), (item: "painkillers")]),
+    (id: "site_labourer", name: "Site labourer", points: 0,
+        about: "You carried bricks and swung a hammer for a living.",
+        skills: [(Strength, 1), (Handiwork, 2), (Bludgeon, 1)], xp: [(Handiwork, 1.25)],
+        items: [(item: "claw_hammer"), (item: "nails"), (item: "work_gloves")]),
+    (id: "line_cook", name: "Line cook", points: 3,
+        about: "Years at a hot stove with a sharp knife and no time.",
+        skills: [(Edged, 2), (Handiwork, 1)], xp: [(Edged, 1.25)],
+        items: [(item: "kitchen_knife"), (item: "tin_opener")]),
+    (id: "bike_courier", name: "Bike courier", points: 3,
+        about: "You know every short cut in town, and you can keep going all day.",
+        skills: [(Fitness, 2), (Scavenging, 1)], xp: [(Fitness, 1.25)],
+        items: [(item: "water_bottle"), (item: "chocolate_bar")]),
+    (id: "door_staff", name: "Door staff", points: 3,
+        about: "Friday nights taught you how to move people who don't want to move.",
+        skills: [(Brawl, 2), (Strength, 1)], xp: [(Brawl, 1.3)],
+        items: [(item: "flashlight"), (item: "batteries")]),
+    (id: "groundskeeper", name: "Groundskeeper", points: 3,
+        about: "Out in all weathers, quiet work, sharp tools.",
+        skills: [(Fitness, 1), (Stealth, 1), (Edged, 1)], xp: [(Stealth, 1.2)],
+        items: [(item: "work_gloves"), (item: "saw")]),
+    (id: "removals_driver", name: "Removals driver", points: 1,
+        about: "Other people's houses, other people's cupboards, and all of it down the stairs.",
+        skills: [(Strength, 2), (Scavenging, 2)], xp: [(Scavenging, 1.25)],
+        items: [(item: "duct_tape"), (item: "rope")]),
+    (id: "student", name: "Student", points: 7,
+        about: "No skills yet, but you pick things up quickly.",
+        xp: [(FirstAid, 1.2), (Scavenging, 1.2), (Handiwork, 1.2)],
+        items: [(item: "crackers"), (item: "pen")]),
+]

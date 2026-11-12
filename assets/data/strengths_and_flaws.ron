@@ -1,0 +1,90 @@
+// Strengths and Flaws: who a survivor is (sim::origin). A Strength costs points, a Flaw gives
+// them; the points come from the Background (backgrounds.ron) and must not go below 0.
+//
+//   id, name, about   as for Backgrounds; a Strength and a Flaw can't share an id
+//   points            1 to 20: what a Strength costs, or a Flaw gives
+//   effects           1 to 6 of:
+//                       Skill(Skill, levels)      starting levels
+//                       Xp(Skill, multiplier)     XP earned in that skill
+//                       Carry(kg)                 on or off the carry limit
+//                       Hunger(m) Thirst(m) Tiredness(m)   how fast each rises
+//                       RunDrain(m) Recovery(m)   endurance spent running, and how fast it returns
+//                       SeenFrom(m)               the distance zombies see you from
+//                       Footsteps(m)              how far your steps carry
+//                       Healing(m) Bleeding(m)    wounds
+//                       Infection(m)              the chance a zombie's wound infects (0: never)
+//                     multipliers are 0.25 to 4
+//   excludes          ids this can't be taken with (one side naming the other is enough)
+//
+// wardrobe: the clothes a new survivor may start in, a slot at a time (items must be clothing
+// in items/items.ron; `default` is worn until the player picks another, none: nothing).
+// Names and numbers are ours.
+(
+    strengths: [
+        (id: "strong_back", name: "Strong back", points: 4, about: "You carry more before it slows you.",
+            effects: [Carry(4)]),
+        (id: "light_eater", name: "Light eater", points: 3, about: "A tin does you for the day.",
+            effects: [Hunger(0.75)]),
+        (id: "runners_lungs", name: "Runner's lungs", points: 4, about: "You run further and get your breath back sooner.",
+            effects: [RunDrain(0.8), Recovery(1.2)]),
+        (id: "camel", name: "Camel", points: 3, about: "You get by on little water.",
+            effects: [Thirst(0.75)]),
+        (id: "short_sleeper", name: "Short sleeper", points: 3, about: "Five hours and you're up.",
+            effects: [Tiredness(0.75)]),
+        (id: "fast_healer", name: "Fast healer", points: 3, about: "Cuts close quickly on you.",
+            effects: [Healing(1.5)]),
+        (id: "light_on_your_feet", name: "Light on your feet", points: 4, about: "Floorboards don't seem to notice you.",
+            effects: [Footsteps(0.8), Skill(Stealth, 1)]),
+        (id: "easy_to_miss", name: "Easy to miss", points: 4, about: "People never remembered you at parties. Nor do the dead.",
+            effects: [SeenFrom(0.85)]),
+        (id: "clots_fast", name: "Clots fast", points: 2, about: "You don't bleed for long.",
+            effects: [Bleeding(0.7)]),
+        (id: "iron_constitution", name: "Iron constitution", points: 6, about: "You never caught what was going round.",
+            effects: [Infection(0.6)]),
+        (id: "scrapper", name: "Scrapper", points: 4, about: "You grew up settling things with your hands.",
+            effects: [Skill(Brawl, 1), Xp(Brawl, 1.3), Xp(Bludgeon, 1.15)]),
+        (id: "first_aid_course", name: "First-aid course", points: 3, about: "A weekend in a church hall with a plastic dummy. It stuck.",
+            effects: [Skill(FirstAid, 1), Xp(FirstAid, 1.25)]),
+        (id: "magpie", name: "Magpie", points: 3, about: "You always know which drawer the good stuff is in.",
+            effects: [Skill(Scavenging, 1), Xp(Scavenging, 1.3)]),
+        (id: "good_with_your_hands", name: "Good with your hands", points: 3, about: "You fix things without the instructions.",
+            effects: [Skill(Handiwork, 1), Xp(Handiwork, 1.4)]),
+    ],
+    flaws: [
+        (id: "bad_back", name: "Bad back", points: 4, about: "A full pack is too much for you.",
+            effects: [Carry(-3)], excludes: ["strong_back"]),
+        (id: "big_appetite", name: "Big appetite", points: 3, about: "You're hungry again an hour after eating.",
+            effects: [Hunger(1.3)], excludes: ["light_eater"]),
+        (id: "always_thirsty", name: "Always thirsty", points: 3, about: "You get through water fast.",
+            effects: [Thirst(1.3)], excludes: ["camel"]),
+        (id: "needs_eight_hours", name: "Needs eight hours", points: 3, about: "You tire early and it shows.",
+            effects: [Tiredness(1.3)], excludes: ["short_sleeper"]),
+        (id: "smokers_lungs", name: "Smoker's lungs", points: 4, about: "A flight of stairs leaves you wheezing.",
+            effects: [RunDrain(1.25), Recovery(0.8)], excludes: ["runners_lungs"]),
+        (id: "heavy_footed", name: "Heavy-footed", points: 4, about: "Everyone downstairs always knew where you were.",
+            effects: [Footsteps(1.25)], excludes: ["light_on_your_feet"]),
+        (id: "hard_to_miss", name: "Hard to miss", points: 4, about: "Something about you catches the eye, even a dead one.",
+            effects: [SeenFrom(1.15)], excludes: ["easy_to_miss"]),
+        (id: "slow_healer", name: "Slow healer", points: 3, about: "A graze takes weeks on you.",
+            effects: [Healing(0.7)], excludes: ["fast_healer"]),
+        (id: "bleeder", name: "Bleeder", points: 3, about: "A small cut makes a big mess.",
+            effects: [Bleeding(1.4)], excludes: ["clots_fast"]),
+        (id: "sickly", name: "Sickly", points: 5, about: "You catch everything.",
+            effects: [Infection(1.4)], excludes: ["iron_constitution"]),
+        (id: "all_thumbs", name: "All thumbs", points: 2, about: "Flat-pack furniture beats you.",
+            effects: [Xp(Handiwork, 0.6)], excludes: ["good_with_your_hands"]),
+        (id: "squeamish", name: "Squeamish", points: 2, about: "The sight of blood turns your stomach.",
+            effects: [Xp(FirstAid, 0.6)], excludes: ["first_aid_course"]),
+        (id: "never_thrown_a_punch", name: "Never thrown a punch", points: 3, about: "Fighting doesn't come to you, and it's slow to learn.",
+            effects: [Xp(Brawl, 0.6), Xp(Bludgeon, 0.75), Xp(Edged, 0.75)], excludes: ["scrapper"]),
+    ],
+    wardrobe: [
+        (name: "Shirt", items: ["t_shirt"], default: Some("t_shirt")),
+        (name: "Over it", items: ["jumper", "hoodie"]),
+        (name: "Legs", items: ["jeans"], default: Some("jeans")),
+        (name: "Feet", items: ["trainers", "work_boots"], default: Some("trainers")),
+        (name: "Head", items: ["baseball_cap", "beanie", "woolly_hat"]),
+        (name: "Face", items: ["glasses"]),
+        (name: "Neck", items: ["scarf"]),
+    ],
+)
