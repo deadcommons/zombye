@@ -1874,7 +1874,7 @@ Campfires to cook on and to see by, stoves in kitchens, and fire that burns.
   `IsoCamera::projection`), 1.6 m up and 0.12 m ahead of the middle of his head (`IsoCamera::transform`); our own
   survivor isn't drawn (`IsoCamera::too_close`). **The switch is a move, not a cut** (`camera::SWITCH_SECS`, 0.75 s,
   eased; `IsoCamera::step`, `blend`): the camera comes down the line of sight to his eyes, turning to behind him and
-  levelling out late, while its lens opens from 2.5 degrees (from about 600 m, the same picture as the fixed view's)
+  levelling out late, while its lens opens from 0.3 degrees (from about 5 km, the same picture as the fixed view's to a pixel or two)
   to 68 (`lens_at`: a dolly zoom, the metres of world to the screen's height at the survivor shrinking by an even
   share each moment); back up, it settles on the fixed angle nearest to where he looked; `;` again on the way turns it round
   where it is. From the key the mouse, pointer and keys are the new view's (`shoulder()`); the world is dressed for

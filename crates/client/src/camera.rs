@@ -74,8 +74,15 @@ const AIM_FAR: f32 = 60.0;
 /// Seconds the switch between the two views takes.
 pub const SWITCH_SECS: f32 = 0.75;
 /// The lens the switch starts from above with: so narrow, from so far, that the picture is the
-/// fixed view's (things 20 m nearer or further are 3% bigger or smaller).
-const SWITCH_FOV: f32 = 2.5_f32 * std::f32::consts::PI / 180.0;
+/// fixed view's (things 20 m nearer or further are 0.4% bigger or smaller, a pixel or two at the
+/// screen's edge: at 2.5 degrees it was 3%, and the picture jumped as the view from above took
+/// over). At the default zoom that is 5 km away, so the near plane goes out with the camera.
+const SWITCH_FOV: f32 = 0.3_f32 * std::f32::consts::PI / 180.0;
+/// The lens the rest of the switch is paced from, and how far through (eased) the narrow start
+/// has given way to it: the camera is soon near enough to be past the trees and roofs on its
+/// line of sight.
+const PACE_FOV: f32 = 2.5_f32 * std::f32::consts::PI / 180.0;
+const PACE_FROM: f32 = 0.25;
 /// Nearer the eyes than this the survivor isn't drawn (the camera is about to be in his head).
 const HIDE_WITHIN: f32 = 0.9;
 /// From this far through the switch the world is dressed for first person (walls and roofs up).
@@ -277,11 +284,12 @@ impl IsoCamera {
     /// pivot shrink from the zoom to nothing, each moment by about the same share of what is
     /// left (so it reads as one even zoom in, not a wait and a rush: `zoom^(1-e) x CLOSE^e`,
     /// less `CLOSE x e` so it ends on nothing), while the lens opens, evenly in its logarithm,
-    /// from [`SWITCH_FOV`] to first person's and the camera comes in to match: at `e` = 1 it is
+    /// from [`SWITCH_FOV`] (quickly, then from [`PACE_FOV`]) to first person's and the camera comes in to match: at `e` = 1 it is
     /// at the pivot, the eyes.
     fn lens_at(&self, e: f32) -> (f32, f32) {
         const CLOSE: f32 = 1.5;
-        let fov = SWITCH_FOV * (SHOULDER_FOV / SWITCH_FOV).powf(e);
+        let narrow = (1.0 - e / PACE_FROM).max(0.0);
+        let fov = PACE_FOV * (SHOULDER_FOV / PACE_FOV).powf(e) * (SWITCH_FOV / PACE_FOV).powf(narrow * narrow);
         let height = (self.zoom.powf(1.0 - e) * CLOSE.powf(e) - CLOSE * e).max(0.0);
         (fov, height / (2.0 * (fov * 0.5).tan()))
     }
@@ -297,7 +305,7 @@ impl IsoCamera {
         Projection::custom(match self.boom() {
             None => Lens::Flat(OrthographicProjection { scaling_mode: ScalingMode::FixedVertical { viewport_height: self.zoom }, near: NEAR, far: FAR, ..OrthographicProjection::default_3d() }),
             // (A perspective lens draws to any distance; `far` is only where it stops looking for things to draw.)
-            Some(boom) => Lens::Deep(PerspectiveProjection { fov: self.lens_at(self.eased()).0, near: NEAR, far: boom + SHOULDER_FAR, ..default() }),
+            Some(boom) => Lens::Deep(PerspectiveProjection { fov: self.lens_at(self.eased()).0, near: (boom - SHOULDER_FAR).max(NEAR), far: boom + SHOULDER_FAR, ..default() }),
         })
     }
 
