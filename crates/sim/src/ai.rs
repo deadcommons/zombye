@@ -248,10 +248,10 @@ impl Default for ZombieTuning {
             wander_speed: 0.4,
             search_radius: 3.5,
 
-            lunge_range: 2.4,
+            lunge_range: 1.7,
             lunge_secs: 0.45,
-            lunge_speed_mult: 2.2,
-            lunge_min_speed: 2.6,
+            lunge_speed_mult: 1.6,
+            lunge_min_speed: 1.8,
             lunge_cooldown: 2.0,
             attack_reach: 0.9,
             attack_windup: 0.35,
