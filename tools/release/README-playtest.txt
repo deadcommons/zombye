@@ -6,10 +6,8 @@ Thanks for playing. This is an early build: things will break, and that is what 
 STARTING
   Windows: run zombye.exe. If Windows SmartScreen says it protected your PC, click "More info",
            then "Run anyway" (the build isn't signed yet).
-  Mac:     Apple Silicon only for now. It isn't notarised yet, so the first time macOS says it
-           "could not verify" Zombye: click Done, open System Settings > Privacy & Security,
-           scroll down, click Open Anyway beside Zombye, and open it again. (Or in Terminal:
-           xattr -dr com.apple.quarantine Zombye.app.) After that it opens normally.
+  Mac:     Apple Silicon only for now. Drag Zombye.app to Applications (or anywhere) and open it.
+           It is signed and notarised by Apple, so it opens like any other app.
   Linux:   run ./zombye (x86_64; needs Vulkan drivers).
 
 THE KEYS
