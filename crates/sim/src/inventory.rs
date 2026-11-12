@@ -1216,7 +1216,15 @@ impl World {
         };
         // Wherever it was, it is in no pouch on its way.
         let moved = ItemStack { home: Pouch::Pockets, ..moved };
-        self.finish_move(pi, inv, before, src_box, ground_take, def, moved, from, to, spill, pos, facing)
+        // A two-handed thing taken up that the pockets and bags can't hold (a log) is carried in the hands.
+        let to_hands = to == Place::Carried && def.two_handed && moved.count == 1 && matches!(from, Place::Ground | Place::Container(_));
+        let first = self.finish_move(pi, inv.clone(), before, src_box.clone(), ground_take, def.clone(), moved, from, to, spill, pos, facing);
+        match first {
+            Err(e) if to_hands && e.starts_with("no room") => {
+                self.finish_move(pi, inv, before, src_box, ground_take, def, moved, from, Place::Slot(Slot::Hand), spill, pos, facing).map_err(|_| e)
+            }
+            r => r,
+        }
     }
 
     /// The second half of a move: put `moved` (`n` of a kind of item) at `to`, check the result and commit.
