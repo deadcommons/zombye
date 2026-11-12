@@ -628,7 +628,8 @@ impl Plugin for InventoryUiPlugin {
             .add_systems(Startup, spawn.after(crate::hud::spawn_hud))
             .add_systems(PreUpdate, (type_search, menu_keys).chain().in_set(TextEntry).after(bevy::input::InputSystems))
             .add_systems(PreUpdate, click_away.after(bevy::input::InputSystems).after(bevy::picking::PickingSystems::Hover))
-            .add_systems(Update, ((toggle, screens.after(crate::health_ui::toggle).after(crate::skills_ui::toggle)).chain(), keep_note, track_flight, follow_open, prune_picked, script_picks, menu_from_options, drag, send_clicks, world_menu, script_menu, menu_act, follow_up, send_picked, flush, scroll_frame, rebuild, draw_menu, draw_card, hide_hud).chain());
+            .add_systems(Update, ((toggle, screens.after(crate::health_ui::toggle).after(crate::skills_ui::toggle)).chain(), keep_note, track_flight, follow_open, prune_picked, script_picks, menu_from_options, drag, send_clicks, world_menu, script_menu, menu_act, follow_up, send_picked, flush, scroll_frame, rebuild, draw_menu, draw_card, hide_hud).chain())
+            .add_systems(Update, count_down.after(rebuild));
     }
 }
 
@@ -1058,8 +1059,9 @@ fn rebuild(
     let note_fresh = time.elapsed_secs() - last.at < NOTE_SECS * 2.0;
     // (The game hour too: food goes off as time passes.)
     let now = link.curr.game_minute;
-    // (The seconds a job has left only show in the Make list, so only count when it's open.)
-    let secs = if make_ui.shown { busy.0 } else { 0.0 };
+    // (The seconds a job has left are not in it: `count_down` writes them into the Make row in
+    // place, so the list isn't built again ten times a second, which made the row under the
+    // pointer flicker between its hover and plain backings.)
     let clock = clock_text(link.curr.time_of_day);
     let hotbar = bar.as_ref().map(|b| b.ids());
     let tab = match (health.is_some_and(|h| h.open), skills.is_some_and(|s| s.open), make_ui.shown) {
@@ -1068,7 +1070,7 @@ fn rebuild(
         (.., true) => Tab::Make,
         _ => Tab::Inventory,
     };
-    let signature = format!("{tab:?}|{view:?}|{floor:?}|{secs:.1}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|{clock}|{hotbar:?}|{:?}", busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.keys, make_ui.open, make_ui.favs, make_ui.shown, *ui, crate::help_text::level());
+    let signature = format!("{tab:?}|{view:?}|{floor:?}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|{clock}|{hotbar:?}|{:?}", busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.keys, make_ui.open, make_ui.favs, make_ui.shown, *ui, crate::help_text::level());
     if shown.0 == signature {
         return;
     }
@@ -1897,6 +1899,9 @@ struct MakeUi {
     shown: bool,
     path: Option<std::path::PathBuf>,
     loaded: bool,
+    /// The row the pointer is on (`MakeAct::key`), so a row built again under it keeps its
+    /// hover backing instead of flashing plain for a frame.
+    hover: Option<String>,
 }
 
 impl MakeUi {
@@ -1950,26 +1955,77 @@ enum MakeAct {
     None,
 }
 
+impl MakeAct {
+    /// What the row is, the same from one build of the list to the next.
+    fn key(&self, label: &str) -> String {
+        match self {
+            MakeAct::Craft(k) => format!("craft:{k}"),
+            MakeAct::Family(f) => format!("family:{f}"),
+            MakeAct::None => format!("none:{label}"),
+        }
+    }
+}
+
+/// The label of the recipe under way: its name before the seconds left, which `count_down`
+/// writes in each frame; `more` queued after it.
+#[derive(Component, Clone, Debug, PartialEq)]
+struct MakingLeft {
+    head: String,
+    more: usize,
+}
+
+impl MakingLeft {
+    fn text(&self, busy: f32) -> String {
+        match self.more {
+            0 => format!("{}  (making: {busy:.1} s left)", self.head),
+            n => format!("{}  (making: {busy:.1} s left, {n} more queued)", self.head),
+        }
+    }
+}
+
+/// The seconds left on the recipe under way, written into its row in place.
+fn count_down(link: Res<ServerLink>, me: Res<LocalPlayer>, mut rows: Query<(&MakingLeft, &mut Text)>) {
+    let busy = link.curr.players.iter().find(|p| p.id == me.id).map_or(0.0, |p| p.busy);
+    for (m, mut text) in &mut rows {
+        let want = m.text(busy);
+        if text.0 != want {
+            text.0 = want;
+        }
+    }
+}
+
 /// A row of the Make list: left click makes the recipe or opens the family; right click pins or
 /// unpins the recipe.
-fn make_row(c: &mut ChildSpawnerCommands, label: String, right: String, act: MakeAct, fav: Option<String>, color: Color) {
+#[allow(clippy::too_many_arguments)]
+fn make_row(c: &mut ChildSpawnerCommands, ui: &MakeUi, label: String, making: Option<MakingLeft>, right: String, act: MakeAct, fav: Option<String>, color: Color) {
     let hover = !matches!(act, MakeAct::None);
+    let key = act.key(&label);
+    // Built again under the pointer: start hovered, as it was.
+    let bg = if hover && ui.hover.as_deref() == Some(key.as_str()) { ROW_HOVER } else { ROW };
+    let (over_key, out_key) = (key.clone(), key);
     c.spawn((
         Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, column_gap: px(10), padding: UiRect::axes(px(10), px(6)), border_radius: BorderRadius::all(px(4)), flex_shrink: 0.0, ..default() },
-        BackgroundColor(ROW),
+        BackgroundColor(bg),
     ))
     .with_children(|r| {
-        r.spawn((Text::new(label), font(ROW_FONT), TextColor(color), Pickable::IGNORE));
+        let mut text = r.spawn((Text::new(label), font(ROW_FONT), TextColor(color), Pickable::IGNORE));
+        if let Some(m) = making {
+            text.insert(m);
+        }
         r.spawn((Text::new(right), font(ROW_FONT), TextColor(DIM), Pickable::IGNORE));
     })
-    .observe(move |ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>| {
+    .observe(move |ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>, mut ui: ResMut<MakeUi>| {
         if hover && let Ok(mut bg) = q.get_mut(ev.entity) {
             bg.0 = ROW_HOVER;
         }
+        ui.hover = Some(over_key.clone());
     })
-    .observe(|ev: On<PointerOut>, mut q: Query<&mut BackgroundColor>| {
+    .observe(move |ev: On<PointerOut>, mut q: Query<&mut BackgroundColor>, mut ui: ResMut<MakeUi>| {
         if let Ok(mut bg) = q.get_mut(ev.entity) {
             bg.0 = ROW;
+        }
+        if ui.hover.as_deref() == Some(out_key.as_str()) {
+            ui.hover = None;
         }
     })
     .observe(move |ev: On<PointerPress>, mut clicks: ResMut<Clicks>, mut ui: ResMut<MakeUi>| match (ev.button, &act) {
@@ -2002,21 +2058,23 @@ fn make(c: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f3
         let k = k as u16;
         let craft = JobKind::Craft { recipe: k };
         let queued = v.jobs.iter().filter(|j| **j == craft).count();
-        let state = match (v.jobs.first() == Some(&craft), queued) {
-            (true, 1) => format!("  (making: {busy:.1} s left)"),
-            (true, n) => format!("  (making: {busy:.1} s left, {} more queued)", n - 1),
-            (false, 0) if flight.crafts.iter().any(|(x, _)| *x == k) => "  (asked)".to_string(),
-            (false, 0) => String::new(),
-            (false, n) => format!("  ({n} queued)"),
+        let head = format!("{indent}{lead}{}", r.name);
+        // The one under way counts down in place (`count_down`).
+        let making = (v.jobs.first() == Some(&craft)).then(|| MakingLeft { head: head.clone(), more: queued.saturating_sub(1) });
+        let state = match (&making, queued) {
+            (Some(m), _) => m.text(busy),
+            (None, 0) if flight.crafts.iter().any(|(x, _)| *x == k) => format!("{head}  (asked)"),
+            (None, 0) => head.clone(),
+            (None, n) => format!("{head}  ({n} queued)"),
         };
         let makes = r.outputs.iter().map(|o| crafting::amount(items, &o.item, o.count)).collect::<Vec<_>>().join(" + ");
         let fav = Some(r.id.clone());
         match crafting::check(r, &v.inventory, items) {
-            Ok(()) => make_row(c, format!("{indent}{lead}{}{state}", r.name), format!("{makes}, {:.0} s", r.secs * mult), MakeAct::Craft(k), fav, TEXT),
+            Ok(()) => make_row(c, ui, state, making, format!("{makes}, {:.0} s", r.secs * mult), MakeAct::Craft(k), fav, TEXT),
             // Under way with what it takes set aside already.
-            Err(_) if queued > 0 => make_row(c, format!("{indent}{lead}{}{state}", r.name), String::new(), MakeAct::None, fav, DIM),
+            Err(_) if queued > 0 => make_row(c, ui, state, making, String::new(), MakeAct::None, fav, DIM),
             // (In full: each thing missing, how many you have, that a tool is kept. Short: their names.)
-            Err(why) => make_row(c, format!("{indent}{lead}{}", r.name), if crate::help_text::explains() { why } else { crafting::missing_brief(r, &v.inventory, items).unwrap_or(why) }, MakeAct::None, fav, DIM),
+            Err(why) => make_row(c, ui, head, None, if crate::help_text::explains() { why } else { crafting::missing_brief(r, &v.inventory, items).unwrap_or(why) }, MakeAct::None, fav, DIM),
         }
     };
     let can = |k: usize| crafting::check(&join.recipes[k], &v.inventory, items).is_ok() || v.jobs.contains(&JobKind::Craft { recipe: k as u16 });
@@ -2047,7 +2105,7 @@ fn make(c: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f3
         let open = ui.open.contains(&key) || ui.open.iter().any(|k| k == "*");
         let name = items.iter().find(|d| d.id == key).map_or(key.clone(), |d| format!("{}s", d.name));
         let summary = if ready == 0 { format!("{} ways, none yet", ks.len()) } else { format!("{ready} of {} ways ready", ks.len()) };
-        make_row(c, format!("{} {name}", if open { "v" } else { ">" }), summary, MakeAct::Family(key.clone()), None, if ready > 0 { TEXT } else { DIM });
+        make_row(c, ui, format!("{} {name}", if open { "v" } else { ">" }), None, summary, MakeAct::Family(key.clone()), None, if ready > 0 { TEXT } else { DIM });
         if open {
             ks.sort_by_key(|&k| !can(k));
             for k in ks {
