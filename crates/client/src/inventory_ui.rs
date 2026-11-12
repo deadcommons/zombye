@@ -571,11 +571,12 @@ impl Plugin for InventoryUiPlugin {
             .init_resource::<ItemMenu>()
             .init_resource::<HoveredItem>()
             .init_resource::<HoverCard>()
+            .init_resource::<FollowUp>()
             .init_resource::<Scrolls>()
             .add_systems(Startup, spawn.after(crate::hud::spawn_hud))
             .add_systems(PreUpdate, (type_search, menu_keys).chain().in_set(TextEntry).after(bevy::input::InputSystems))
             .add_systems(PreUpdate, click_away.after(bevy::input::InputSystems).after(bevy::picking::PickingSystems::Hover))
-            .add_systems(Update, (toggle, keep_note, track_flight, follow_open, prune_picked, script_picks, menu_from_options, send_clicks, world_menu, script_menu, menu_act, send_picked, flush, scroll_frame, rebuild, draw_menu, draw_card, hide_hud).chain());
+            .add_systems(Update, (toggle, keep_note, track_flight, follow_open, prune_picked, script_picks, menu_from_options, send_clicks, world_menu, script_menu, menu_act, follow_up, send_picked, flush, scroll_frame, rebuild, draw_menu, draw_card, hide_hud).chain());
     }
 }
 
@@ -1023,7 +1024,7 @@ fn rebuild(
     // The pockets and each bag carried: (pouch, its name, litres of room, litres used).
     let pouches: Vec<(Pouch, String, f32, f32)> = view.as_ref().map_or(Vec::new(), |v| v.inventory.pouches(items, join.carry.pockets_l).into_iter().map(|(p, room, used)| (p, pouch_name(items, &v.inventory, p), room, used)).collect());
     let pouch_names: Vec<(Pouch, String)> = pouches.iter().map(|(p, n, ..)| (*p, n.to_lowercase())).collect();
-    let ctx = Ctx { items, wear: Wear::of(&join), now, me: me.id, flight: &flight, find: &find, picked: &picked, ui: &ui, view: view.as_ref(), open: open.as_ref().map(|(id, n)| (*id, n.as_str())), pouches: &pouch_names };
+    let ctx = Ctx { items, wear: Wear::of(&join), now, me: me.id, flight: &flight, find: &find, picked: &picked, ui: &ui, view: view.as_ref(), open: open.as_ref().map(|(id, n)| (*id, n.as_str())), pouches: &pouch_names, recipes: &join.recipes };
     // The item rows drawn, in order, for Shift-click's ranges and the move-all buttons.
     let mut rows: Vec<Key> = Vec::new();
     let kg: f32 = view.as_ref().map_or(0.0, |v| picked.keys.iter().filter_map(|&(p, i, _)| stack_at(v, &floor, p, i)).map(|s| stack_kg(items, &s)).sum());
@@ -1502,6 +1503,7 @@ struct Ctx<'a> {
     open: Option<(u32, &'a str)>,
     /// The pockets and bags carried (which, name), for the menus.
     pouches: &'a [(Pouch, String)],
+    recipes: &'a [crafting::RecipeDef],
 }
 
 impl Ctx<'_> {
@@ -1511,7 +1513,15 @@ impl Ctx<'_> {
 
     /// What a click on the row of `l` (and `more`, the other stacks it stands for) does.
     fn act(&self, l: &Line, to: Place, more: Vec<Line>) -> RowAction {
-        RowAction { stack: l.stack, title: name_of(self.items, self.wear, self.now, &l.stack), left: Some((l.from, l.index, to)), more, menu: menu_entries(self.me, self.items, l.from, l.index, &l.stack, self.open, self.pouches), craft: None }
+        RowAction { stack: l.stack, title: name_of(self.items, self.wear, self.now, &l.stack), left: Some((l.from, l.index, to)), more, menu: menu_entries(self.me, self.items, l.from, l.index, &l.stack, self.open, self.pouches, &self.makes(l)), craft: None }
+    }
+
+    /// The recipes a thing lying nearby would let us make ([`makes_with`]); none for our own.
+    fn makes(&self, l: &Line) -> Vec<(u16, String, u16)> {
+        match (l.from, self.view) {
+            (Place::Container(_) | Place::Ground, Some(v)) => makes_with(self.recipes, self.items, &v.inventory, &l.stack),
+            _ => Vec::new(),
+        }
     }
 
     /// What follows the name, dimmed: how fresh, goes left, uses left in the opened one (a box of
@@ -2142,8 +2152,88 @@ enum MenuDo {
     /// Something in the world (`world_actions`): send this, turning our survivor to `facing`
     /// first if given, as the server will.
     World { intent: Intent, facing: Option<f32> },
+    /// Something lying nearby (a container's, the floor's): take what it needs with `take`, and
+    /// once it is in our pockets or bags do `then` with it ([`FollowUp`]).
+    TakeThen { take: Intent, from: Place, index: u32, item: u16, then: Then },
     /// A line that only says something (too far away); picking it just closes the menu.
     Nothing,
+}
+
+/// What to do with a thing taken for it, once it has arrived ([`MenuDo::TakeThen`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Then {
+    /// Eat, drink or use it.
+    Use,
+    /// Take the pill.
+    Treat(Treatment),
+    /// Make this recipe with it.
+    Craft(u16),
+}
+
+/// The second half of a [`MenuDo::TakeThen`]: what was asked for, waiting for the thing to show
+/// in what we carry (a few seconds at most; a refused take just lets it lapse).
+#[derive(Resource, Default)]
+struct FollowUp(Option<Follow>);
+
+struct Follow {
+    item: u16,
+    then: Then,
+    /// How many of the item we carried when it was asked.
+    had: u32,
+    until: f32,
+}
+
+/// How many of `item` are carried (pockets and bags).
+fn carried_count(inv: &zombye_sim::Inventory, item: u16) -> u32 {
+    inv.carried.iter().filter(|s| s.item == item).map(|s| s.count as u32).sum()
+}
+
+/// Send the second half of a take-then once the thing has arrived: the use, the pill, or the craft
+/// (a craft once the server's own rule says it can be made).
+fn follow_up(time: Res<Time>, link: Res<ServerLink>, join: Res<JoinInfo>, me: Res<LocalPlayer>, mut follow: ResMut<FollowUp>, mut out: ResMut<Outbox>) {
+    let Some(f) = &follow.0 else { return };
+    let (Some(v), _) = panel_view(&link, me.id) else { return };
+    if time.elapsed_secs() > f.until || me.dead {
+        follow.0 = None;
+        return;
+    }
+    if carried_count(&v.inventory, f.item) <= f.had {
+        return;
+    }
+    let Some(index) = v.inventory.carried.iter().rposition(|s| s.item == f.item) else { return };
+    let (player, index) = (me.id, index as u32);
+    match f.then {
+        Then::Use => out.0.push(Intent::Use { player, from: Place::Carried, index }),
+        Then::Treat(action) => out.0.push(Intent::Treat { player, wound: None, action, item: Some(f.item) }),
+        Then::Craft(recipe) => {
+            if join.recipes.get(recipe as usize).is_none_or(|r| crafting::check(r, &v.inventory, &join.items).is_err()) {
+                return;
+            }
+            out.0.push(Intent::Craft { player, recipe });
+        }
+    }
+    follow.0 = None;
+}
+
+/// The recipes a stack lying nearby would let us make once taken, that we can't make without it:
+/// (recipe, its name, how many of the stack to take).
+fn makes_with(recipes: &[crafting::RecipeDef], items: &[ItemDef], inv: &zombye_sim::Inventory, s: &ItemStack) -> Vec<(u16, String, u16)> {
+    let Some(def) = items.get(s.item as usize) else { return Vec::new() };
+    let mut out = Vec::new();
+    for (k, r) in recipes.iter().enumerate() {
+        let Some(need) = r.inputs.iter().find(|x| x.item == def.id).map(|x| x.count as u32) else { continue };
+        let have: u32 = inv.carried.iter().filter(|c| c.item == s.item).map(|c| crafting::whole(c) as u32).sum();
+        if have >= need || (crafting::whole(s) as u32) < need - have {
+            continue;
+        }
+        let take = (need - have) as u16;
+        let mut with = inv.clone();
+        with.carried.push(ItemStack { count: take, used: 0, ..*s });
+        if crafting::check(r, &with, items).is_ok() {
+            out.push((k as u16, r.name.clone(), take));
+        }
+    }
+    out
 }
 
 /// One line of the menu.
@@ -2156,7 +2246,7 @@ struct MenuEntry {
 /// Everything that can be done with the stack `s` at `from`/`index`, the likeliest first: one
 /// level, no sub-menus. `open` is the container the player has open (id, name), `pouches` the
 /// pockets and bags carried (a carried thing can go from one to another).
-fn menu_entries(player: u32, items: &[ItemDef], from: Place, index: u32, s: &ItemStack, open: Option<(u32, &str)>, pouches: &[(Pouch, String)]) -> Vec<MenuEntry> {
+fn menu_entries(player: u32, items: &[ItemDef], from: Place, index: u32, s: &ItemStack, open: Option<(u32, &str)>, pouches: &[(Pouch, String)], makes: &[(u16, String, u16)]) -> Vec<MenuEntry> {
     let Some(def) = items.get(s.item as usize) else { return Vec::new() };
     let mut out = Vec::new();
     let mk = |label: String, intent: Option<Intent>, whole: bool| intent.map(|intent| MenuEntry { label, act: MenuDo::Send { intent, from, index, whole } });
@@ -2216,8 +2306,31 @@ fn menu_entries(player: u32, items: &[ItemDef], from: Place, index: u32, s: &Ite
         Place::Pouch(_) => {}
         Place::Container(_) | Place::Ground => {
             let take = if from == Place::Ground { "Pick up" } else { "Take" };
+            // What can be done with it straight from where it lies: one is taken, then used
+            // (worn and held things go straight to their place).
+            let then = |label: String, then: Then, count: u16| into(Place::Carried, count).map(|take| MenuEntry { label, act: MenuDo::TakeThen { take, from, index, item: s.item, then } });
+            match (Treatment::of_item(def), def.category) {
+                (Some(t), _) if !t.on_wound() => out.extend(then(format!("Take {}", def.name.to_lowercase()), Then::Treat(t), 1)),
+                (Some(_), _) => {}
+                (None, ItemCategory::Food) => out.extend(then("Eat".into(), Then::Use, 1)),
+                (None, ItemCategory::Drink) => out.extend(then("Drink".into(), Then::Use, 1)),
+                (None, _) if def.usable() => out.extend(then("Use".into(), Then::Use, 1)),
+                (None, ItemCategory::Clothing) => out.extend(mk("Wear".into(), into(Place::Worn, 1), false)),
+                (None, ItemCategory::Bag) => {
+                    let slot = match def.bag.as_ref().map(|b| b.carried) {
+                        Some(zombye_sim::items::BagCarry::Back) => Slot::Back,
+                        Some(zombye_sim::items::BagCarry::Shoulder) => Slot::Shoulder,
+                        _ => Slot::OffHand,
+                    };
+                    out.extend(mk("Put it on".into(), into(Place::Slot(slot), 1), false));
+                }
+                (None, _) => {}
+            }
             if def.weapon.is_some() {
                 out.extend(mk("Take in hand".into(), into(Place::Slot(Slot::Hand), 0), true));
+            }
+            for (recipe, name, count) in makes {
+                out.extend(then(name.clone(), Then::Craft(*recipe), *count));
             }
             out.extend(mk(take.into(), into(Place::Carried, 0), true));
             if from == Place::Ground
@@ -2324,7 +2437,8 @@ fn open_menu(menu: &mut ItemMenu, link: &ServerLink, join: &JoinInfo, me: u32, f
     let Some(s) = stack_at(&v, &floor, from, index) else { return false };
     let open = v.open.as_ref().map(|c| (c.id, c.name.to_lowercase()));
     let pouches = pouch_names(&join.items, &v.inventory, join.carry.pockets_l);
-    let entries = menu_entries(me, &join.items, from, index, &s, open.as_ref().map(|(id, n)| (*id, n.as_str())), &pouches);
+    let makes = if matches!(from, Place::Container(_) | Place::Ground) { makes_with(&join.recipes, &join.items, &v.inventory, &s) } else { Vec::new() };
+    let entries = menu_entries(me, &join.items, from, index, &s, open.as_ref().map(|(id, n)| (*id, n.as_str())), &pouches, &makes);
     if entries.is_empty() {
         return false;
     }
@@ -2489,7 +2603,7 @@ fn script_menu(time: Res<Time>, options: Option<Res<crate::Options>>, mut menu: 
 /// Do the entry picked, or close the menu on a press anywhere else, and when the panel opens or
 /// shuts under it.
 #[allow(clippy::too_many_arguments)]
-fn menu_act(time: Res<Time>, mouse: Res<ButtonInput<MouseButton>>, mut me: ResMut<LocalPlayer>, panel: Res<InventoryPanel>, mut panel_was: Local<bool>, mut menu: ResMut<ItemMenu>, mut flight: ResMut<InFlight>, mut out: ResMut<Outbox>, mut health: ResMut<crate::health_ui::HealthPanel>) {
+fn menu_act(time: Res<Time>, mouse: Res<ButtonInput<MouseButton>>, mut me: ResMut<LocalPlayer>, panel: Res<InventoryPanel>, mut panel_was: Local<bool>, mut menu: ResMut<ItemMenu>, mut flight: ResMut<InFlight>, mut out: ResMut<Outbox>, mut health: ResMut<crate::health_ui::HealthPanel>, link: Res<ServerLink>, mut follow: ResMut<FollowUp>) {
     if *panel_was != panel.open {
         *panel_was = panel.open;
         if !menu.fresh {
@@ -2511,6 +2625,13 @@ fn menu_act(time: Res<Time>, mouse: Res<ButtonInput<MouseButton>>, mut me: ResMu
                 out.0.push(intent);
             }
             MenuDo::Nothing => {}
+            MenuDo::TakeThen { take, from, index, item, then } => {
+                if flight.ask(from, index, stack, true, time.elapsed_secs()) {
+                    out.0.push(take);
+                    let had = panel_view(&link, me.id).0.map_or(0, |v| carried_count(&v.inventory, item));
+                    follow.0 = Some(Follow { item, then, had, until: time.elapsed_secs() + 4.0 });
+                }
+            }
             MenuDo::Send { intent, from, index, whole } => {
                 if flight.ask(from, index, stack, !whole, time.elapsed_secs()) {
                     out.0.push(intent);
@@ -3031,28 +3152,47 @@ mod tests {
         let config = zombye_net::content::load_config(&data, 1).unwrap();
         let items = &config.items;
         let stack = |id: &str, n: u16| ItemStack::new(items.iter().position(|d| d.id == id).unwrap() as u16, n);
-        let labels = |from: Place, s: ItemStack, open: Option<(u32, &str)>| menu_entries(1, items, from, 2, &s, open, &[]).into_iter().map(|e| e.label).collect::<Vec<_>>();
+        let labels = |from: Place, s: ItemStack, open: Option<(u32, &str)>| menu_entries(1, items, from, 2, &s, open, &[], &[]).into_iter().map(|e| e.label).collect::<Vec<_>>();
         assert_eq!(labels(Place::Carried, stack("tinned_beans", 3), Some((7, "fridge"))), ["Eat", "Put in fridge", "Drop", "Put one in fridge", "Drop one"], "half of three is one: not offered twice");
         assert_eq!(labels(Place::Carried, stack("tinned_beans", 4), Some((7, "fridge"))), ["Eat", "Put in fridge", "Drop", "Put one in fridge", "Put half in fridge (2)", "Drop one", "Drop half (2)"]);
-        assert_eq!(labels(Place::Ground, stack("tinned_beans", 2), Some((7, "fridge"))), ["Pick up", "Put in fridge", "Pick up one"]);
-        assert!(menu_entries(1, items, Place::Carried, 0, &stack("tinned_beans", 60), Some((7, "fridge")), &[]).len() <= DIGITS.len(), "every entry has a number key");
+        assert_eq!(labels(Place::Ground, stack("tinned_beans", 2), Some((7, "fridge"))), ["Eat", "Pick up", "Put in fridge", "Pick up one"]);
+        assert!(menu_entries(1, items, Place::Carried, 0, &stack("tinned_beans", 60), Some((7, "fridge")), &[], &[]).len() <= DIGITS.len(), "every entry has a number key");
         assert_eq!(labels(Place::Carried, stack("kitchen_knife", 1), None), ["Hold in hand", "Drop"]);
         // A thing a mod gives a use to (#25): "Use", not "Hold in hand". Without the mod, as before.
         assert_eq!(labels(Place::Carried, stack("alarm_clock", 1), None), ["Hold in hand", "Drop"]);
         let mut modded = config.clone();
         zombye_mods::load_into(&mut modded, &[data.join("../../mods/alarm_clock")]).unwrap();
         let clock = ItemStack::new(modded.items.iter().position(|d| d.id == "alarm_clock").unwrap() as u16, 1);
-        assert_eq!(menu_entries(1, &modded.items, Place::Carried, 0, &clock, None, &[]).into_iter().map(|e| e.label).collect::<Vec<_>>(), ["Use", "Drop"]);
+        assert_eq!(menu_entries(1, &modded.items, Place::Carried, 0, &clock, None, &[], &[]).into_iter().map(|e| e.label).collect::<Vec<_>>(), ["Use", "Drop"]);
         assert_eq!(labels(Place::Carried, stack("rag", 1), None)[0], "Use on a wound...");
         assert_eq!(labels(Place::Worn, stack("rag", 1), None), ["Take off", "Drop"]);
         assert_eq!(labels(Place::Ground, stack("kitchen_knife", 1), None), ["Take in hand", "Pick up"]);
-        assert_eq!(labels(Place::Container(7), stack("tinned_beans", 4), None), ["Take", "Take one", "Take half (2)"]);
+        assert_eq!(labels(Place::Container(7), stack("tinned_beans", 4), None), ["Eat", "Take", "Take one", "Take half (2)"]);
+        // Things lying nearby can be used straight away: worn and slung go to their place, food
+        // and a recipe's input are taken (one, or what the recipe needs) and then used.
+        assert_eq!(labels(Place::Container(7), stack("hoodie", 1), None), ["Wear", "Take"]);
+        assert_eq!(labels(Place::Ground, stack("hiking_pack", 1), None), ["Put it on", "Pick up"]);
+        let e = menu_entries(1, items, Place::Container(7), 2, &stack("hoodie", 1), None, &[], &[]);
+        assert!(matches!(e[0].act, MenuDo::Send { intent: Intent::MoveItem { from: Place::Container(7), index: 2, to: Place::Worn, count: 1, .. }, .. }));
+        let e = menu_entries(1, items, Place::Ground, 9, &stack("tinned_beans", 3), None, &[], &[]);
+        assert!(matches!(e[0].act, MenuDo::TakeThen { take: Intent::MoveItem { from: Place::Ground, index: 9, to: Place::Carried, count: 1, .. }, then: Then::Use, .. }));
+        let tee = stack("t_shirt", 1);
+        let makes = makes_with(&config.recipes, items, &zombye_sim::Inventory::default(), &tee);
+        assert_eq!(makes.len(), 1, "ripping it into rags needs nothing else: {makes:?}");
+        let e = menu_entries(1, items, Place::Ground, 4, &tee, None, &[], &makes);
+        assert_eq!(e.iter().map(|e| e.label.as_str()).collect::<Vec<_>>(), ["Wear", makes[0].1.as_str(), "Pick up"]);
+        assert!(matches!(e[1].act, MenuDo::TakeThen { then: Then::Craft(_), .. }));
+        // Jeans need something that cuts: not offered without it; with one already carried, no need to take another.
+        assert!(makes_with(&config.recipes, items, &zombye_sim::Inventory::default(), &stack("jeans", 1)).is_empty());
+        let mut inv = zombye_sim::Inventory::default();
+        inv.carried.push(tee);
+        assert!(makes_with(&config.recipes, items, &inv, &tee).is_empty());
         // The intents are the ones a drag or a click would send.
-        let e = menu_entries(1, items, Place::Carried, 2, &stack("tinned_beans", 4), None, &[]);
+        let e = menu_entries(1, items, Place::Carried, 2, &stack("tinned_beans", 4), None, &[], &[]);
         assert!(matches!(e[0].act, MenuDo::Send { intent: Intent::Use { index: 2, .. }, whole: false, .. }));
         assert!(matches!(e[2].act, MenuDo::Send { intent: Intent::Drop { index: 2, count: 1, .. }, whole: false, .. }));
         assert!(matches!(e[3].act, MenuDo::Send { intent: Intent::Drop { index: 2, count: 2, .. }, .. }));
-        let e = menu_entries(1, items, Place::Ground, 9, &stack("kitchen_knife", 1), None, &[]);
+        let e = menu_entries(1, items, Place::Ground, 9, &stack("kitchen_knife", 1), None, &[], &[]);
         assert!(matches!(e[0].act, MenuDo::Send { intent: Intent::MoveItem { from: Place::Ground, index: 9, to: Place::Slot(Slot::Hand), .. }, .. }));
     }
 
@@ -3065,11 +3205,11 @@ mod tests {
         let mut beans = ItemStack::new(items.iter().position(|d| d.id == "tinned_beans").unwrap() as u16, 2);
         beans.home = Pouch::Back;
         let pouches = [(Pouch::Pockets, "pockets".to_string()), (Pouch::Back, "rucksack".to_string()), (Pouch::Shoulder, "tote bag".to_string())];
-        let e = menu_entries(1, &items, Place::Carried, 3, &beans, None, &pouches);
+        let e = menu_entries(1, &items, Place::Carried, 3, &beans, None, &pouches, &[]);
         assert_eq!(e.iter().map(|e| e.label.as_str()).collect::<Vec<_>>(), ["Eat", "Put in pockets", "Put in tote bag", "Drop", "Drop one"]);
         assert!(matches!(e[2].act, MenuDo::Send { intent: Intent::MoveItem { from: Place::Carried, index: 3, to: Place::Pouch(Pouch::Shoulder), count: 0, .. }, whole: true, .. }));
         // Things on the floor or in a cupboard go where the server puts them: no bag entries.
-        assert!(menu_entries(1, &items, Place::Ground, 3, &beans, None, &pouches).iter().all(|e| !e.label.starts_with("Put in")));
+        assert!(menu_entries(1, &items, Place::Ground, 3, &beans, None, &pouches, &[]).iter().all(|e| !e.label.starts_with("Put in")));
         let mut sort = Sort::default();
         let mut seen = Vec::new();
         for _ in 0..4 {
@@ -3087,7 +3227,7 @@ mod tests {
         let items = zombye_net::content::load_config(&data, 1).unwrap().items;
         let beans = ItemStack::new(items.iter().position(|d| d.id == "tinned_beans").unwrap() as u16, 4);
         let on_row = |index: u32, button| RowClick {
-            action: RowAction { stack: beans, title: format!("row {index}"), left: Some((Place::Carried, index, Place::Ground)), more: Vec::new(), menu: menu_entries(1, &items, Place::Carried, index, &beans, None, &[]), craft: None },
+            action: RowAction { stack: beans, title: format!("row {index}"), left: Some((Place::Carried, index, Place::Ground)), more: Vec::new(), menu: menu_entries(1, &items, Place::Carried, index, &beans, None, &[], &[]), craft: None },
             button,
             one: false,
         };
