@@ -1,14 +1,13 @@
 Zombye and Dead Commons brand: license
 
 The names "Zombye" and "Dead Commons", their wordmarks and logos (for Zombye: the wordmark, the
-sunset, water tower and road logo, the badge, the road Z mark and the app icon), the taglines used
-with them, and the Zombye mascot (the waving zombie in the hoodie), including every file in this
-directory in every colour, size and format, and every copy of them wherever it is kept or shipped,
-official builds of the game included (the "Marks"), are owned by Grillo Ltd, trading as Dead
-Commons ("Dead Commons"). They are trademarks and are NOT open source. They are not covered by the
-MIT or Apache-2.0 licenses in this repository, nor by the CC BY-NC-SA 4.0 license of its art and
-audio (assets/LICENSE), and nothing in those licenses, in NOTICE or in any other file of this
-repository grants any right to them.
+sunset, water tower and road logo, the badge, the road Z mark and the app icon), and the taglines
+used with them, including every file in this directory in every colour, size and format, and every
+copy of them wherever it is kept or shipped, official builds of the game included (the "Marks"),
+are owned by Grillo Ltd, trading as Dead Commons ("Dead Commons"). They are trademarks and are NOT
+open source. They are not covered by the MIT or Apache-2.0 licenses in this repository, nor by the
+CC BY-NC-SA 4.0 license of its art and audio (assets/LICENSE), and nothing in those licenses, in
+NOTICE or in any other file of this repository grants any right to them.
 
 ZOMBYE is the subject of a United Kingdom trade mark application by Grillo Ltd. Write it as
 ZOMBYE(TM), not with the registered symbol, until the registration is granted.
@@ -25,9 +24,6 @@ What you may do without asking
      "a mod for Zombye", or that your project "is based on Zombye by Dead Commons".
      Use the plain name only, not the logo, and don't make it the most prominent part of your
      own name or branding.
-  4. Make and share fan art of the mascot: draw it, remix it, dress it up, animate it, put it
-     in your mods, videos, streams and posts. Fan art must not be sold, and must not be used as
-     the logo, icon or main branding of anything other than official Zombye.
 
 What needs written permission
 
@@ -36,8 +32,7 @@ What needs written permission
   - Calling a server, hosting service, launcher, build or fork "official", "verified",
     "endorsed" or similar, or suggesting in any way that Dead Commons made, sponsors, certifies
     or supports it.
-  - Modifying the logos (redrawing, recolouring, cropping, combining them with other marks),
-    other than fan art of the mascot as allowed in point 4.
+  - Modifying the logos (redrawing, recolouring, cropping, combining them with other marks).
   - Selling merchandise with the Marks.
   - Using the Marks to train or prompt a generative model to make look-alike marks.
 
