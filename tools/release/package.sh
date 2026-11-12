@@ -14,6 +14,10 @@
 #                    Without it (or with ZOMBYE_NO_PACK=1) the build has this repo's own art only.
 #   ZOMBYE_PACK_KEY  the key the pack is scrambled with (compiled into the game). Optional.
 #   OUT              where packages go (default dist/).
+#   ZOMBYE_SIGN_ID   (mac) a "Developer ID Application: ..." identity in the keychain; without it the
+#                    app is signed ad hoc.
+#   ZOMBYE_NOTARY_PROFILE  (mac) a notarytool keychain profile (xcrun notarytool store-credentials);
+#                    with it the signed app is notarised and stapled.
 #
 # What's left out of assets/: Blender sources and specs (assets/source, assets/specs), and the
 # placeholder crowd (assets/models/characters/zombie_*.zvat) when the release crowd is packed.
@@ -122,8 +126,26 @@ if [ "$platform" = mac ]; then
 </dict>
 </plist>
 PLIST
-  # Signed ad hoc (no Apple Developer account yet): testers right-click, Open, the first time.
-  codesign --force --deep -s - "$app"
+  if [ -n "${ZOMBYE_SIGN_ID:-}" ]; then
+    # Developer ID, hardened runtime, then notarised and stapled so Gatekeeper opens it at once.
+    codesign --force --options runtime --timestamp -s "$ZOMBYE_SIGN_ID" "$bindir/zombye-server"
+    codesign --force --options runtime --timestamp -s "$ZOMBYE_SIGN_ID" "$app"
+    codesign --verify --strict --verbose=2 "$app"
+    if [ -n "${ZOMBYE_NOTARY_PROFILE:-}" ]; then
+      zip="$out/Zombye-notarize.zip"
+      rm -f "$zip"
+      ditto -c -k --keepParent "$app" "$zip"
+      xcrun notarytool submit "$zip" --keychain-profile "$ZOMBYE_NOTARY_PROFILE" --wait
+      xcrun stapler staple "$app"
+      rm -f "$zip"
+      spctl --assess --type execute --verbose=2 "$app"
+    else
+      echo "warning: ZOMBYE_NOTARY_PROFILE not set: signed but not notarised" >&2
+    fi
+  else
+    # Signed ad hoc: testers allow it once in System Settings > Privacy & Security.
+    codesign --force --deep -s - "$app"
+  fi
 fi
 
 echo "$ZOMBYE_BUILD" > "$stage/build.txt"
