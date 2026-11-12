@@ -229,6 +229,10 @@ pub fn run(options: Options) -> ! {
 
 static NEXT: Mutex<Option<Relaunch>> = Mutex::new(None);
 
+pub fn relaunch_asked() -> bool {
+    NEXT.lock().is_ok_and(|n| n.is_some())
+}
+
 /// This run's arguments without `drop` (flags, and flags with a value) and with `add`.
 pub(crate) fn args_without(args: &[String], with_value: &[&str], alone: &[&str], add: &[&str]) -> Vec<String> {
     let mut out = Vec::new();

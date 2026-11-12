@@ -148,6 +148,7 @@ mod world_actions;
 mod world_render;
 mod zombie_render;
 mod zvat;
+mod window_handoff;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -825,7 +826,7 @@ pub(crate) fn window_plugins(options: &Options) -> bevy::app::PluginGroupBuilder
             .set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "Zombye".into(),
-                    mode: settings_ui::window_mode(kept.fullscreen && !options.size_given),
+                    mode: settings_ui::window_mode((kept.fullscreen || window_handoff::fullscreen_asked()) && !options.size_given),
                     resolution: if options.size_given {
                         bevy::window::WindowResolution::new(options.size.x, options.size.y).with_scale_factor_override(1.0)
                     } else {
@@ -838,7 +839,13 @@ pub(crate) fn window_plugins(options: &Options) -> bevy::app::PluginGroupBuilder
             })
             .set(assets)
             .disable::<bevy::app::TerminalCtrlCHandlerPlugin>()
+            .add(window_handoff::HandoffPlugin)
     }
+}
+
+/// Whether this run is to end in a start-again (`relaunch`).
+pub(crate) fn relaunch_pending() -> bool {
+    browser_ui::relaunch_asked() || main_menu::relaunch_asked() || new_game::relaunch_asked() || join_screen::relaunch_asked()
 }
 
 /// Run this program again with `next`'s arguments, in this one's place.
@@ -849,6 +856,7 @@ pub(crate) fn relaunch(next: browser_ui::Relaunch) -> ! {
     });
     let mut command = std::process::Command::new(exe);
     command.args(&next.args);
+    window_handoff::pass_on(&mut command);
     if next.password.is_empty() {
         command.env_remove("ZOMBYE_PASSWORD");
     } else {

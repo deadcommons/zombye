@@ -349,6 +349,10 @@ pub fn back_args(args: &[String]) -> Vec<String> {
 
 static NEXT: Mutex<Option<Relaunch>> = Mutex::new(None);
 
+pub fn relaunch_asked() -> bool {
+    NEXT.lock().is_ok_and(|n| n.is_some())
+}
+
 /// Runs the screen and then the game it ended in (or nothing, if the window was closed).
 pub fn run(options: Options) -> ! {
     let screen = match Screen::new(options.clone()) {
