@@ -214,7 +214,7 @@ pub fn run(options: Options) -> ! {
     app.insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06)))
         .add_plugins(crate::window_plugins(&options))
         .insert_resource(Join::new(options))
-        .add_plugins(theme::ThemePlugin)
+        .add_plugins((theme::ThemePlugin, crate::release_brand::BrandPlugin))
         .add_systems(Startup, |mut commands: Commands| {
             commands.spawn(Camera2d);
         })

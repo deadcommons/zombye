@@ -1190,12 +1190,16 @@ fn scroll_frame(mut wheel: MessageReader<bevy::input::mouse::MouseWheel>, panel:
 fn top(c: &mut ChildSpawnerCommands, title: &str, clock: &str) {
     c.spawn((Node { height: px(flat::TOP_BAR), flex_direction: FlexDirection::Row, align_items: AlignItems::Center, justify_content: JustifyContent::SpaceBetween, padding: UiRect::axes(px(28), px(0)), border: UiRect::bottom(px(1)), flex_shrink: 0.0, ..default() }, BorderColor::all(LINE))).with_children(|b| {
         b.spawn((Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(18), ..default() }, Pickable::IGNORE)).with_children(|l| {
-            // The mark: a green head with two eyes.
+            // The mark: the road Z, or without the brand's pictures a green head with two eyes.
+            if let Some((picture, node)) = crate::release_brand::image(crate::release_brand::Mark::Z, 34.0) {
+                l.spawn((picture, node, Pickable::IGNORE));
+            } else {
             l.spawn((Node { width: px(38), height: px(38), border_radius: BorderRadius::MAX, flex_shrink: 0.0, ..default() }, BackgroundColor(flat::GREEN), Pickable::IGNORE)).with_children(|m| {
                 for left in [9.0, 22.0] {
                     m.spawn((Node { position_type: PositionType::Absolute, left: px(left), top: px(13), width: px(7), height: px(11), border_radius: BorderRadius::MAX, ..default() }, BackgroundColor(INK), Pickable::IGNORE));
                 }
             });
+            }
             l.spawn((Text::new(title.to_uppercase()), theme::head(flat::DISPLAY), TextColor(TEXT), TextLayout::no_wrap(), Pickable::IGNORE));
             l.spawn((Text::new(clock.to_string()), font(flat::BODY), TextColor(DIM), TextLayout::no_wrap(), Node { margin: UiRect::top(px(6)), ..default() }, Pickable::IGNORE));
         });
