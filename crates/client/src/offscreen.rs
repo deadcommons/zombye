@@ -64,6 +64,15 @@ struct SyncGpu(Arc<AtomicBool>);
 #[derive(Resource, Clone, Default)]
 struct Readback(Arc<Mutex<Option<Image>>>);
 
+/// `ZOMBYE_BLACK_WATCH=1`: the mean brightness (0..255) of every frame of the benchmark, read
+/// back as it is drawn, to catch frames that come out black or blank on a GPU.
+#[derive(Resource, Clone, Default)]
+struct Brightness(Arc<Mutex<Vec<(u32, f32)>>>);
+
+fn black_watch() -> bool {
+    std::env::var("ZOMBYE_BLACK_WATCH").is_ok_and(|v| v != "0")
+}
+
 #[derive(PartialEq, Debug)]
 enum Phase {
     Warm,
@@ -108,6 +117,7 @@ impl Plugin for OffscreenPlugin {
             .insert_resource(pending.clone())
             .insert_resource(sync.clone())
             .init_resource::<Readback>()
+            .init_resource::<Brightness>()
             .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(FRAME_SECS)))
             .insert_resource(Job { path, started: now, frame: 0, phase: Phase::Warm, settled: 0, captures: 0, previous: None, bench, live, times: Vec::new(), last: now })
             .add_systems(Last, drive);
@@ -139,9 +149,23 @@ fn drive(
     mut time: ResMut<Time<Virtual>>,
     mut exit: MessageWriter<AppExit>,
     drawn: Query<(&ViewVisibility, &Mesh3d)>,
+    brightness: Res<Brightness>,
 ) {
     job.frame += 1;
     if job.phase == Phase::Bench {
+        if black_watch() {
+            let (slot, frame) = (brightness.0.clone(), job.frame);
+            commands.spawn(Screenshot::image(target.0.clone())).observe(move |captured: On<ScreenshotCaptured>| {
+                if let Some(data) = &captured.image.data {
+                    let (mut sum, mut n) = (0u64, 0u64);
+                    for px in data.chunks(4).step_by(7) {
+                        sum += px[0] as u64 + px[1] as u64 + px[2] as u64;
+                        n += 3;
+                    }
+                    slot.lock().expect("brightness lock").push((frame, sum as f32 / n.max(1) as f32));
+                }
+            });
+        }
         let now = Instant::now();
         let ms = (now - job.last).as_secs_f32() * 1000.0;
         job.last = now;
@@ -167,6 +191,15 @@ fn drive(
                 }
             }
             println!("drawn: {instances} mesh instances, {} distinct meshes", ids.len());
+            if black_watch() {
+                let seen = brightness.0.lock().expect("brightness lock").clone();
+                let mut sorted: Vec<f32> = seen.iter().map(|s| s.1).collect();
+                sorted.sort_by(f32::total_cmp);
+                if let Some(&median) = sorted.get(sorted.len() / 2) {
+                    let odd: Vec<String> = seen.iter().filter(|s| (s.1 - median).abs() > 0.25 * median.max(4.0)).map(|s| format!("{}:{:.1}", s.0, s.1)).collect();
+                    println!("black watch: {} frames read, brightness median {median:.1}, least {:.1}, most {:.1}; {} odd frames{}{}", seen.len(), sorted[0], sorted[sorted.len() - 1], odd.len(), if odd.is_empty() { "" } else { ": " }, odd.join(" "));
+                }
+            }
             #[cfg(feature = "profile")]
             crate::profile::report(t.len() as u32);
             exit.write(AppExit::Success);
