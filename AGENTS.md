@@ -1840,7 +1840,7 @@ and mood, and docs/art-direction.md). All of it is client only: nothing here is 
   the grass to 0.6 and halves the shadow map; Low is grass 0.35, every switch off, a 2048 map, 2x MSAA and 0.6
   scale; Ultra is grass 1.5, an 8192 map and full-resolution 3D. **Auto** plays at High, measures 5 s of frames after the first 3, and keeps High up to 14.5 ms a frame,
   Medium up to 22 ms, else Low, then saves that (`graphics_ui.rs`); a game started with no settings file starts on
-  Auto. From `graphics` in the client settings file (`settings.ron`, see UI scale; never read offscreen), then
+  Auto. From `graphics` in the client settings file (`settings.ron`, see UI scale; never read offscreen; a named preset read from it is that preset as it is now, `Graphics::settled`, and only `preset: Custom` keeps the values stored), then
   `--graphics low|medium|high|ultra|auto`, `--vegetation off|low|high|N`, `--no-post LIST` (`grain`, `tilt`,
   `vignette`, `bloom`, `ao`, `ground`, `soft`, `haze`, or `all`), `--msaa 1|2|4`, `--shadow-map N` and `--render-scale F`. **F8** opens a panel to pick
   a preset in game (saved); vegetation, the film pass, vignette, bloom, the shadow map and MSAA change at once,

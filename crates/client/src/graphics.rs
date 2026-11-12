@@ -125,6 +125,17 @@ impl Graphics {
             Preset::Auto => Self { preset: Preset::Auto, ..Self::high() },
         }
     }
+    /// Settings as read from the settings file: a named preset is what that preset stands for
+    /// now, whatever values were stored with it (a file stores every value, so one saved before
+    /// a preset was retuned, or before a setting existed, would otherwise keep old numbers under
+    /// the preset's name); only Custom keeps its stored values. A hand-edited file that changes
+    /// single values must say `preset: Custom`.
+    pub fn settled(self) -> Self {
+        match self.preset {
+            Preset::Custom => self.clamped(),
+            named => Self::of(named),
+        }
+    }
     /// Values a hand-edited file could hold, made sane.
     pub fn clamped(mut self) -> Self {
         self.vegetation = if self.vegetation.is_finite() { self.vegetation.clamp(0.0, MAX_VEGETATION) } else { 1.0 };
@@ -261,6 +272,12 @@ mod tests {
         // An older file has none: the defaults.
         assert_eq!(ron::from_str::<ClientSettings>("(ui_scale: 110)").unwrap().graphics, Graphics::high());
         assert_eq!(ron::from_str::<ClientSettings>("(graphics: (grain: false))").unwrap().graphics, Graphics { grain: false, ..Graphics::high() });
+        // A named preset read from a file is the preset as it is now; Custom keeps its values.
+        let stale = Graphics { soft_shadows: true, shadow_map: 4096, ..Graphics::medium() };
+        assert_eq!(stale.settled(), Graphics::medium());
+        assert_eq!(Graphics { preset: Preset::Auto, grain: false, ..Graphics::high() }.settled(), Graphics::of(Preset::Auto));
+        let custom = Graphics { preset: Preset::Custom, grain: false, msaa: 3, ..Graphics::low() };
+        assert_eq!(custom.clone().settled(), Graphics { msaa: 2, ..custom });
         // A file from before the presets (no preset, shadow map or MSAA): High's.
         let old = ron::from_str::<ClientSettings>("(graphics: (vegetation: 0.5, grain: true, tilt_shift: true, vignette: true, bloom: true, contact_shadows: true, ground_detail: true))").unwrap().graphics;
         assert_eq!(old, Graphics { vegetation: 0.5, ..Graphics::high() });
