@@ -10,6 +10,7 @@
 //! rule for what may be picked is the sim's (`OriginData::resolve`), asked here before Start and
 //! again by the game.
 //!
+//! The footer's button (and Enter) is **Next** on the first two pages and **Start** only on the last.
 //! **Start** writes the choices to `new_game.ron` in the saves folder (so the next new game
 //! begins from them) and starts the game again with `--new-game-from` that file; **Back**
 //! starts it again with `--main-menu`. The same choices can be given to the game as flags
@@ -98,6 +99,11 @@ enum Tab {
 impl Tab {
     const ALL: [Tab; 3] = [Tab::Who, Tab::Picks, Tab::World];
 
+    /// The page after this one; none after the last, where the game starts.
+    fn next(self) -> Option<Tab> {
+        Tab::ALL.iter().position(|t| *t == self).and_then(|at| Tab::ALL.get(at + 1).copied())
+    }
+
     fn label(self) -> &'static str {
         match self {
             Tab::Who => "Who you were",
@@ -174,6 +180,8 @@ fn preset_value(opt: Opt, d: &DifficultyDef) -> f32 {
 #[derive(Clone, Debug, PartialEq)]
 enum Act {
     Tab(Tab),
+    /// On to the page after this one (the first two pages' button; the last one's is Start).
+    Next,
     Background(usize),
     Strength(usize),
     Flaw(usize),
@@ -288,6 +296,11 @@ impl Screen {
         self.dirty = true;
         match act {
             Act::Tab(t) => self.tab = t,
+            Act::Next => {
+                if let Some(t) = self.tab.next() {
+                    self.tab = t;
+                }
+            }
             Act::Background(k) => {
                 if let Some(b) = self.rules.origins.backgrounds.get(k) {
                     self.choice.background = b.id.clone();
@@ -455,7 +468,9 @@ fn dress(mut commands: Commands, mut screen: ResMut<Screen>, model: Option<Res<S
 
 fn keys(keys: Res<ButtonInput<KeyCode>>, mut screen: ResMut<Screen>) {
     if keys.just_pressed(KeyCode::Enter) {
-        screen.acts.push(Act::Start);
+        // Enter is the footer's button: Next until the last page, then Start.
+        let act = if screen.tab.next().is_some() { Act::Next } else { Act::Start };
+        screen.acts.push(act);
     }
     if keys.just_pressed(KeyCode::Escape) {
         screen.acts.push(Act::Back);
@@ -955,7 +970,7 @@ fn wardrobe(left: &mut ChildSpawnerCommands, screen: &Screen) {
     });
 }
 
-/// The frame's footer: the keys that work here, who and what world it will be, and Start.
+/// The frame's footer: the keys that work here, who and what world it will be, and Next (Start on the last page).
 fn footer(p: &mut ChildSpawnerCommands, screen: &Screen) {
     let o = &screen.rules.origins;
     let name = |ids: &[String], strengths: bool| ids.iter().filter_map(|id| if strengths { o.strength(id) } else { o.flaw(id) }).map(|p| p.name.clone()).collect::<Vec<_>>();
@@ -975,7 +990,11 @@ fn footer(p: &mut ChildSpawnerCommands, screen: &Screen) {
                 None => line(s, format!("{}  ·  {world}", who.join("  ·  ")), font(SMALL), DIM),
             }
         });
-        button(row, "Start", Some("Enter"), true, Act::Start);
+        // The pages are steps: Next walks through them, and only the last one starts the game.
+        match screen.tab.next() {
+            Some(_) => button(row, "Next", Some("Enter"), true, Act::Next),
+            None => button(row, "Start", Some("Enter"), true, Act::Start),
+        }
     });
 }
 
@@ -990,6 +1009,20 @@ mod tests {
     fn screen(line: &str) -> Screen {
         let saves = std::env::temp_dir().join(format!("zombye-new-game-test-{}-{}", std::process::id(), line.len()));
         Screen::new(Options::parse(&[args(line), vec!["--saves".into(), saves.to_string_lossy().into_owned()]].concat())).expect("the shipped data")
+    }
+
+    #[test]
+    fn next_walks_the_pages_and_only_the_last_starts() {
+        let mut s = screen("--new-game --seed 5");
+        s.tab = Tab::Who;
+        assert_eq!(s.apply(Act::Next), None);
+        assert_eq!(s.tab, Tab::Picks);
+        assert_eq!(s.apply(Act::Next), None);
+        assert_eq!(s.tab, Tab::World);
+        assert_eq!(s.tab.next(), None);
+        assert_eq!(s.apply(Act::Next), None);
+        assert_eq!(s.tab, Tab::World);
+        assert_eq!(s.apply(Act::Start), Some(Act::Start));
     }
 
     #[test]
