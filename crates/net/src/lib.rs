@@ -305,6 +305,9 @@ pub struct PrivateView {
     pub frisk: Option<FriskView>,
     /// What its own hands are tied with (an item index), if they are.
     pub restraint: Option<u16>,
+    /// Which pouch (pockets, or which bag: `Pouch as u8`) each carried stack is in, in order: a
+    /// stack doesn't carry that over the network itself ([`PrivateView::restore_homes`]).
+    pub homes: Vec<u8>,
 }
 
 impl PrivateView {
@@ -322,7 +325,12 @@ impl PrivateView {
         let jobs = p.jobs.iter().map(|j| j.kind).collect();
         let frisk = p.frisking.and_then(|t| Some(FriskView { target: t, inventory: world.player(t)?.inventory.clone() }));
         let restraint = p.restraint.map(|r| r.item);
-        Some(Self { player: id, inventory: p.inventory.clone(), carry, max_kg: carry.limit_kg * world.config.carry.max_load, open, health, needs, skills, jobs, frisk, restraint })
+        Some(Self { player: id, inventory: p.inventory.clone(), carry, max_kg: carry.limit_kg * world.config.carry.max_load, open, health, needs, skills, jobs, frisk, restraint, homes: p.inventory.homes() })
+    }
+
+    /// After a trip over the network: put each carried stack back in its pouch.
+    pub fn restore_homes(&mut self) {
+        self.inventory.set_homes(&self.homes);
     }
 
     /// What our status icons are worked out from: this view, plus the share of full HP lost, the

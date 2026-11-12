@@ -652,17 +652,53 @@ pub fn complete_items(items: &mut Vec<ItemDef>, weapons: &[WeaponDef]) -> Vec<Op
 /// For a gun or a gun's magazine (#72, [`crate::ranged`]) `used` is something else: the rounds in
 /// it, 0 to what it takes ([`crate::ranged::max_used`]). Neither stacks. For a weapon that wears
 /// ([`crate::wear`]) it is the knocks it has taken, 0 to its `durability` (broken).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct ItemStack {
     pub item: u16,
     pub count: u16,
     pub born: i32,
     pub used: u8,
+    /// Which of its player's pockets and bags a carried stack is in ([`Pouch`]); `Pockets` for a
+    /// stack anywhere else. Not part of what a stack *is*: two stacks are equal whatever pouch
+    /// they are in, and it isn't written with the stack (saves keep it in their own section,
+    /// snapshots beside the inventory), so neither format changed for it.
+    #[serde(skip)]
+    pub home: Pouch,
+}
+
+impl PartialEq for ItemStack {
+    fn eq(&self, o: &Self) -> bool {
+        self.item == o.item && self.count == o.count && self.born == o.born && self.used == o.used
+    }
+}
+
+impl Eq for ItemStack {}
+
+/// Where a carried stack is: in the pockets, or in the bag in one of the four places a bag is
+/// carried. Each has its own room (`Inventory::pouch_room`). In the order things are put away
+/// when nobody says where: the bag on the back first, pockets last.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Pouch {
+    #[default]
+    Pockets,
+    Back,
+    Shoulder,
+    Hand,
+    OffHand,
+}
+
+impl Pouch {
+    /// Every pouch, in the order things are put away by themselves.
+    pub const ALL: [Pouch; 5] = [Pouch::Back, Pouch::Shoulder, Pouch::Hand, Pouch::OffHand, Pouch::Pockets];
+
+    pub fn from_u8(v: u8) -> Option<Pouch> {
+        [Pouch::Pockets, Pouch::Back, Pouch::Shoulder, Pouch::Hand, Pouch::OffHand].get(v as usize).copied()
+    }
 }
 
 impl ItemStack {
     pub fn new(item: u16, count: u16) -> Self {
-        Self { item, count, born: 0, used: 0 }
+        Self { item, count, born: 0, used: 0, home: Pouch::Pockets }
     }
 
     pub fn one(item: u16) -> Self {

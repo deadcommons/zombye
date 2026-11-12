@@ -193,8 +193,10 @@ pub const ROW: Color = Color::srgba(1.0, 1.0, 1.0, 0.03);
 pub const ROW_HOVER: Color = Color::srgba(0.95, 0.93, 0.85, 0.2);
 pub const ROW_PICKED: Color = Color::srgba(0.97, 0.84, 0.36, 0.26);
 /// A pane set into a sheet: a shade darker.
+#[allow(dead_code)]
 pub const INSET: Color = Color::srgba(0.0, 0.0, 0.0, 0.38);
 /// A hairline.
+#[allow(dead_code)]
 pub const LINE: Color = Color::srgba(0.95, 0.94, 0.9, 0.16);
 
 // --- The textures -----------------------------------------------------------------------------
@@ -417,6 +419,7 @@ impl Plugin for ThemePlugin {
         for (handle, canvas) in [(SHEET, paint(&SHEET_PAINT)), (STRIP, paint(&STRIP_PAINT)), (BUTTON, paint(&BUTTON_PAINT)), (SLOT, slot_pixels()), (BAR, bar_pixels()), (DAB, dab_pixels())] {
             let _ = images.insert(handle.id(), canvas.image());
         }
+        flat::load(&mut images);
     }
 }
 
@@ -515,6 +518,173 @@ pub fn keycap(c: &mut ChildSpawnerCommands, key: &str, does: &str) {
     });
 }
 
+// --- The flat skin (docs/ui-design.md) ------------------------------------------------------------
+
+/// The new UI's flat chrome (docs/ui-design.md): tokens and the few pieces every screen of the
+/// frame is built from. Screens move to it one at a time; the painted pieces above stay for the
+/// ones that haven't yet.
+pub mod flat {
+    use super::*;
+
+    /// The frame's backing over the world. The guide's "ink at 86%" is how it looks; the UI is
+    /// blended in linear light, where that takes this much (as the painted sheets found, #97).
+    pub const VEIL: Color = Color::srgba(0.078, 0.078, 0.078, 0.975);
+    /// A floating piece (a menu, a hover card): solid ink.
+    pub const SOLID: Color = Color::srgb(0.086, 0.086, 0.086);
+    pub const BONE: Color = Color::srgb(0.949, 0.902, 0.788);
+    pub const DIM: Color = Color::srgb(0.776, 0.741, 0.651);
+    /// Only for what needn't be read to play: the label of an empty slot.
+    pub const FAINT: Color = Color::srgb(0.49, 0.467, 0.416);
+    pub const LINE: Color = Color::srgba(0.949, 0.902, 0.788, 0.11);
+    pub const CELL: Color = Color::srgba(0.949, 0.902, 0.788, 0.045);
+    pub const CELL_HOVER: Color = Color::srgba(0.949, 0.902, 0.788, 0.12);
+    pub const GREEN: Color = Color::srgb(0.553, 0.69, 0.42);
+    pub const GREEN_SOFT: Color = Color::srgba(0.553, 0.69, 0.42, 0.16);
+    pub const AMBER: Color = Color::srgb(0.878, 0.69, 0.29);
+    pub const RED: Color = Color::srgb(0.843, 0.149, 0.169);
+    /// Red as text on ink (the accent itself is too dark to read there).
+    pub const RED_TEXT: Color = Color::srgb(0.95, 0.42, 0.38);
+    pub const INK: Color = Color::srgb(0.078, 0.078, 0.078);
+
+    /// Text sizes: a screen's name, a column's title, a pane's name, body, small.
+    pub const DISPLAY: f32 = 30.0;
+    pub const TITLE: f32 = 22.0;
+    pub const HEAD: f32 = 17.0;
+    pub const BODY: f32 = 15.0;
+    pub const SMALL: f32 = 14.0;
+
+    /// The frame: top bar, rail and footer; a tile and a compact row.
+    pub const TOP_BAR: f32 = 76.0;
+    pub const RAIL: f32 = 92.0;
+    pub const FOOTER: f32 = 46.0;
+    pub const TILE: f32 = 104.0;
+    pub const RADIUS: f32 = 6.0;
+
+    const ICONS: Handle<Image> = uuid_handle!("6f1f8a52-51c1-4c0e-9a57-2f6f3a1d0c81");
+    const ICON_PX: f32 = 96.0;
+    const ICON_COLUMNS: usize = 10;
+    const ICON_IDS: &str = include_str!("../../../assets/ui/item_icons.txt");
+
+    /// The item icons (`assets/ui/item_icons.png`), compiled in like the typefaces.
+    pub(super) fn load(images: &mut Assets<Image>) {
+        use bevy::image::{CompressedImageFormats, ImageSampler, ImageType};
+        let bytes = include_bytes!("../../../assets/ui/item_icons.png");
+        match Image::from_buffer(bytes, ImageType::Extension("png"), CompressedImageFormats::NONE, true, ImageSampler::linear(), RenderAssetUsages::default()) {
+            Ok(image) => {
+                let _ = images.insert(ICONS.id(), image);
+            }
+            Err(e) => eprintln!("item icons: {e}"),
+        }
+    }
+
+    /// Where the icon of the item `id` is in the sheet, if it has one.
+    pub fn icon_cell(id: &str) -> Option<Rect> {
+        let k = ICON_IDS.lines().position(|l| l.trim() == id)?;
+        let at = Vec2::new((k % ICON_COLUMNS) as f32, (k / ICON_COLUMNS) as f32) * ICON_PX;
+        Some(Rect::from_corners(at, at + Vec2::splat(ICON_PX)))
+    }
+
+    /// The icon of the item `id`, tinted `color` (white: as drawn). `None`: it has none (a mod's
+    /// item), and the caller draws the item's colour instead.
+    pub fn icon(id: &str, color: Color) -> Option<ImageNode> {
+        icon_cell(id).map(|rect| ImageNode { image: ICONS, rect: Some(rect), color, ..default() })
+    }
+
+    /// An item's picture, `size` square: its icon, else a block of its own colour.
+    pub fn item_icon(c: &mut ChildSpawnerCommands, def: Option<&zombye_sim::ItemDef>, size: f32, alpha: f32) {
+        let node = Node { width: px(size), height: px(size), flex_shrink: 0.0, ..default() };
+        match def.and_then(|d| icon(&d.id, Color::srgba(1.0, 1.0, 1.0, alpha))) {
+            Some(image) => {
+                c.spawn((node, image, Pickable::IGNORE));
+            }
+            None => {
+                let colour = def.map_or(FAINT, |d| Color::srgba(d.color.0, d.color.1, d.color.2, alpha));
+                c.spawn((node, Pickable::IGNORE)).with_children(|b| {
+                    b.spawn((Node { position_type: PositionType::Absolute, left: percent(22), right: percent(22), top: percent(22), bottom: percent(22), border_radius: BorderRadius::all(px(4)), ..default() }, BackgroundColor(colour), Pickable::IGNORE));
+                });
+            }
+        }
+    }
+
+    /// A key, as a small outlined cap: "[Tab]".
+    pub fn key(c: &mut ChildSpawnerCommands, key: &str) {
+        c.spawn((Node { padding: UiRect::axes(px(6), px(1)), min_width: px(22), justify_content: JustifyContent::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(4)), flex_shrink: 0.0, ..default() }, BorderColor::all(Color::srgba(0.949, 0.902, 0.788, 0.3)), BackgroundColor(CELL), Pickable::IGNORE)).with_children(|k| {
+            k.spawn((Text::new(key.to_string()), strong(SMALL), TextColor(BONE), TextLayout::no_wrap(), Pickable::IGNORE));
+        });
+    }
+
+    /// A key and what it does, for the footer: "[Click] move".
+    pub fn hint(c: &mut ChildSpawnerCommands, keys: &[&str], does: &str) {
+        c.spawn((Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(5), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|r| {
+            for k in keys {
+                key(r, k);
+            }
+            r.spawn((Text::new(does.to_string()), font(SMALL), TextColor(DIM), TextLayout::no_wrap(), Node { margin: UiRect::left(px(3)), ..default() }, Pickable::IGNORE));
+        });
+    }
+
+    /// A chip or small button: a caps label in a rounded cell; `on`: the accent. The caller
+    /// observes its presses.
+    pub fn chip<'a>(parent: &'a mut ChildSpawnerCommands, text: &str, on: bool) -> EntityCommands<'a> {
+        let rest = if on { GREEN } else { CELL };
+        let mut e = parent.spawn((
+            Node { padding: UiRect::axes(px(11), px(5)), justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), flex_shrink: 0.0, ..default() },
+            BorderColor::all(if on { GREEN } else { LINE }),
+            BackgroundColor(rest),
+        ));
+        e.with_children(|b| {
+            b.spawn((Text::new(text.to_uppercase()), head(BODY), TextColor(if on { INK } else { BONE }), TextLayout::no_wrap(), Pickable::IGNORE));
+        });
+        if !on {
+            hover(&mut e, rest);
+        }
+        e
+    }
+
+    /// A wide button (the main action of a column is `main`: filled with the accent).
+    pub fn button<'a>(parent: &'a mut ChildSpawnerCommands, text: &str, main: bool) -> EntityCommands<'a> {
+        let rest = if main { GREEN } else { CELL };
+        let mut e = parent.spawn((
+            Node { flex_grow: 1.0, flex_basis: px(0), height: px(38), justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), ..default() },
+            BorderColor::all(if main { GREEN } else { LINE }),
+            BackgroundColor(rest),
+        ));
+        e.with_children(|b| {
+            b.spawn((Text::new(text.to_uppercase()), head(HEAD), TextColor(if main { INK } else { BONE }), TextLayout::no_wrap(), Pickable::IGNORE));
+        });
+        if !main {
+            hover(&mut e, rest);
+        }
+        e
+    }
+
+    /// Lit while the pointer is on it, back to `rest` after.
+    pub fn hover(e: &mut EntityCommands, rest: Color) {
+        e.observe(|ev: On<PointerOver>, mut q: Query<&mut BackgroundColor>| {
+            if let Ok(mut bg) = q.get_mut(ev.entity) {
+                bg.0 = CELL_HOVER;
+            }
+        })
+        .observe(move |ev: On<PointerOut>, mut q: Query<&mut BackgroundColor>| {
+            if let Ok(mut bg) = q.get_mut(ev.entity) {
+                bg.0 = rest;
+            }
+        });
+    }
+
+    /// A thin bar, `share` of it filled in `color`.
+    pub fn bar(c: &mut ChildSpawnerCommands, share: f32, color: Color, node: Node) {
+        c.spawn((Node { height: px(3), border_radius: BorderRadius::all(px(2)), flex_shrink: 0.0, ..node }, BackgroundColor(LINE), Pickable::IGNORE)).with_children(|b| {
+            b.spawn((Node { width: Val::Percent(share.clamp(0.0, 1.0) * 100.0), height: Val::Percent(100.0), border_radius: BorderRadius::all(px(2)), ..default() }, BackgroundColor(color), Pickable::IGNORE));
+        });
+    }
+
+    /// A hairline across a column.
+    pub fn line(c: &mut ChildSpawnerCommands) {
+        c.spawn((Node { height: px(1), flex_shrink: 0.0, ..default() }, BackgroundColor(LINE), Pickable::IGNORE));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -587,6 +757,24 @@ mod tests {
         }
         // What it was before #97's pass: dim text on the vitals' 55% backing over bright ground.
         assert!(contrast(luminance((0.7, 0.68, 0.62)), over((0.02, 0.02, 0.03), 0.55, 1.0)) < 3.0);
+    }
+
+    /// The flat frame's text reads over the brightest ground too, and every shipped item has
+    /// its icon in the sheet.
+    #[test]
+    fn the_flat_frame_reads_and_every_item_has_an_icon() {
+        let veil = flat::VEIL.to_srgba();
+        for (what, color, least) in [("bone", flat::BONE, 7.0), ("dim", flat::DIM, 7.0), ("green", flat::GREEN, 4.5), ("amber", flat::AMBER, 4.5), ("red text", flat::RED_TEXT, 4.5)] {
+            for world in [0.0, SUNLIT] {
+                let got = contrast(luminance(rgb(color)), over((veil.red, veil.green, veil.blue), veil.alpha, world));
+                assert!(got >= least, "{what} on the veil over {world}: {got:.1}:1");
+            }
+        }
+        assert!(flat::SMALL >= SMALL);
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/data");
+        let items = zombye_net::content::load_config(&data, 1).unwrap().items;
+        let missing: Vec<&str> = items.iter().filter(|d| flat::icon_cell(&d.id).is_none()).map(|d| d.id.as_str()).collect();
+        assert!(missing.is_empty(), "items with no icon: {missing:?}");
     }
 
     #[test]

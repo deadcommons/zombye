@@ -109,6 +109,7 @@ fn keys(
     item_menu: Option<Res<crate::inventory_ui::ItemMenu>>,
     graphics: Option<Res<crate::graphics_ui::GraphicsUi>>,
     map: Option<Res<crate::map_ui::MapUi>>,
+    mut inventory: Option<ResMut<crate::inventory_ui::InventoryPanel>>,
 ) {
     let esc = keys.just_pressed(KeyCode::Escape);
     if menu.open {
@@ -124,6 +125,14 @@ fn keys(
         return;
     }
     let busy = browser.is_some_and(|b| b.open) || chat.is_some_and(|c| c.typing) || find.is_some_and(|f| f.typing) || item_menu.is_some_and(|m| m.is_up()) || graphics.is_some_and(|g| g.open) || map.is_some_and(|m| m.open);
+    // The inventory's frame (with its Health and Skills screens) is shut by Esc first.
+    if esc && !busy && inventory.as_ref().is_some_and(|p| p.open) {
+        if let Some(p) = inventory.as_mut() {
+            p.open = false;
+        }
+        keys.clear_just_pressed(KeyCode::Escape);
+        return;
+    }
     if esc && !busy {
         menu.open = true;
         keys.reset_all();

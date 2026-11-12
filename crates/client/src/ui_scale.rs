@@ -97,7 +97,8 @@ pub struct ClientSettings {
     pub name: String,
     pub server_list: Option<String>,
     pub servers: Vec<String>,
-    /// The inventory panel's Worn tab shows the body view, not the list (`inventory_ui/body.rs`, DCM-43).
+    /// Unused: the inventory's body view is gone (the gear slots took its place). Kept so older
+    /// settings files read as they did.
     pub inventory_body: bool,
     /// Zombies you see show through what covers them from the camera (`silhouette.rs`; Shift+F10).
     pub zombie_silhouettes: bool,

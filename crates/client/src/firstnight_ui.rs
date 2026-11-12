@@ -269,11 +269,12 @@ fn update_panel(
     me: Res<LocalPlayer>,
     ui: Res<FirstNightUi>,
     mut shown: ResMut<Shown>,
+    inventory: Option<Res<crate::inventory_ui::InventoryPanel>>,
     mut panel: Query<&mut Visibility, With<ObjectivesPanel>>,
     body: Query<Entity, With<ObjectivesBody>>,
 ) {
     let (Ok(mut vis), Ok(body)) = (panel.single_mut(), body.single()) else { return };
-    let rec = record(&options, &link, &me).filter(|_| !ui.hidden && !ui.over && !ui.morning && !me.dead);
+    let rec = record(&options, &link, &me).filter(|_| !ui.hidden && !ui.over && !ui.morning && !me.dead && !inventory.as_ref().is_some_and(|i| i.open));
     let want = if rec.is_some() { Visibility::Inherited } else { Visibility::Hidden };
     if *vis != want {
         *vis = want;
@@ -316,11 +317,12 @@ fn update_hint(
     icons: Res<crate::needs_ui::StatusIcons>,
     me: Res<LocalPlayer>,
     ui: Res<FirstNightUi>,
+    inventory: Option<Res<crate::inventory_ui::InventoryPanel>>,
     mut hint_box: Query<&mut Visibility, With<HintBox>>,
     mut text: Query<&mut Text, With<HintText>>,
 ) {
     let (Ok(mut vis), Ok(mut text)) = (hint_box.single_mut(), text.single_mut()) else { return };
-    let line = record(&options, &link, &me).filter(|_| !ui.hidden && !ui.over && !ui.morning && !me.dead).and_then(|(f, run)| {
+    let line = record(&options, &link, &me).filter(|_| !ui.hidden && !ui.over && !ui.morning && !me.dead && !inventory.as_ref().is_some_and(|i| i.open)).and_then(|(f, run)| {
         let own = link.own(me.id);
         let tags = icons.tags(&link, &join, &me);
         let tag = |kind: TagKind, from: u8| tags.iter().any(|t| t.kind == kind && t.severity >= from);
