@@ -222,6 +222,13 @@ impl MaterialExtension for VegExt {
         "shaders/world.wesl".into()
     }
 
+    // Out of the camera's depth prepass: the blades sway and bend in this vertex shader, which
+    // the prepass doesn't run, so there they'd stand somewhere else and punch holes in what's
+    // behind. Grass is too thin to matter to the ambient occlusion anyway.
+    fn enable_prepass() -> bool {
+        false
+    }
+
     fn specialize(
         _pipeline: &MaterialExtensionPipeline,
         _descriptor: &mut RenderPipelineDescriptor,

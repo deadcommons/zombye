@@ -3,11 +3,13 @@
 //! measures the frame time for a few seconds and settles on a preset (`graphics.rs`).
 //!
 //! Applied live: the grass and flowers' density, the film pass (grain, tilt-shift), the vignette,
-//! bloom, the sun's shadow map, multisampling and the render scale (`render_scale.rs`). Contact shadows and ground detail are built into
+//! bloom, ambient occlusion, the sun's shadow map, multisampling and the render scale (`render_scale.rs`). Contact shadows and ground detail are built into
 //! the meshes and materials when the town is, so they change on the next start; the panel says so.
 
 use bevy::input::InputSystems;
 use bevy::light::DirectionalLightShadowMap;
+use bevy::anti_alias::smaa::Smaa;
+use bevy::pbr::ScreenSpaceAmbientOcclusion;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 
@@ -48,6 +50,12 @@ pub fn msaa(samples: u32) -> Msaa {
         2 | 3 => Msaa::Sample2,
         _ => Msaa::Sample4,
     }
+}
+
+/// The camera's multisampling for these settings: off with ambient occlusion on (Bevy's SSAO
+/// can't run with it; SMAA smooths edges then), else [`msaa`] of the setting.
+pub fn camera_msaa(graphics: &Graphics) -> Msaa {
+    if graphics.occlusion { Msaa::Off } else { msaa(graphics.msaa) }
 }
 
 /// Auto's pick for a mean frame time (ms).
@@ -151,18 +159,35 @@ fn auto_pick(time: Res<Time<Real>>, mut auto: ResMut<AutoMeasure>, mut graphics:
 }
 
 /// Put the settings into effect when they change.
-fn apply(graphics: Res<Graphics>, mut shadow: ResMut<DirectionalLightShadowMap>, mut commands: Commands, mut cams: Query<(Entity, &mut Msaa, Has<Bloom>), With<IsoCamera>>) {
+fn apply(
+    graphics: Res<Graphics>,
+    mut shadow: ResMut<DirectionalLightShadowMap>,
+    mut commands: Commands,
+    mut cams: Query<(Entity, &mut Msaa, Has<Bloom>, Has<ScreenSpaceAmbientOcclusion>), With<IsoCamera>>,
+) {
     if !graphics.is_changed() {
         return;
     }
     if shadow.size != graphics.shadow_map as usize {
         shadow.size = graphics.shadow_map as usize;
     }
-    for (cam, mut msaa, has_bloom) in &mut cams {
-        let want = self::msaa(graphics.msaa);
+    for (entity, mut msaa, has_bloom, has_ssao) in &mut cams {
+        // Occlusion first when it comes on, multisampling first when it goes: SSAO never sees
+        // a multisampled camera.
+        match (graphics.occlusion, has_ssao) {
+            (true, false) => {
+                commands.entity(entity).insert(crate::camera::occlusion());
+            }
+            (false, true) => {
+                commands.entity(entity).remove::<(ScreenSpaceAmbientOcclusion, Smaa)>();
+            }
+            _ => {}
+        }
+        let want = camera_msaa(&graphics);
         if *msaa != want {
             *msaa = want;
         }
+        let cam = entity;
         match (graphics.bloom, has_bloom) {
             (true, false) => {
                 commands.entity(cam).insert(crate::camera::bloom());

@@ -20,6 +20,8 @@ use std::f32::consts::FRAC_PI_2;
 
 use bevy::camera::{Hdr, RenderTarget, ScalingMode, ShadowLodOrigin};
 use bevy::input::mouse::{AccumulatedMouseMotion, MouseWheel};
+use bevy::anti_alias::smaa::{Smaa, SmaaPreset};
+use bevy::pbr::{ScreenSpaceAmbientOcclusion, ScreenSpaceAmbientOcclusionQualityLevel};
 use bevy::post_process::bloom::{Bloom, BloomPrefilter};
 use bevy::post_process::effect_stack::Vignette;
 use bevy::prelude::*;
@@ -275,13 +277,14 @@ fn spawn_camera(mut commands: Commands, join: Res<JoinInfo>, options: Res<Option
         Visibility::Hidden,
         Pickable::IGNORE,
     ));
+    let occlusion = graphics.occlusion.then(occlusion);
     let mut camera = commands.spawn((
         Camera3d::default(),
         cam.projection(),
         transform,
         // Window glass is drawn with alpha to coverage, which needs multisampling (graphics
         // preset: 4 from Medium up).
-        crate::graphics_ui::msaa(graphics.msaa),
+        crate::graphics_ui::camera_msaa(&graphics),
         cam,
     ));
     // The mood (#83): HDR so light sources can glow, a filmic tone map, and the grade and
@@ -292,6 +295,9 @@ fn spawn_camera(mut commands: Commands, join: Res<JoinInfo>, options: Res<Option
     if graphics.bloom {
         camera.insert(bloom());
     }
+    if let Some(occlusion) = occlusion {
+        camera.insert(occlusion);
+    }
     if let Some(target) = offscreen {
         // The only camera: it is also the origin for point-light shadow detail.
         camera.insert((RenderTarget::Image(target.0.clone().into()), ShadowLodOrigin));
@@ -300,6 +306,28 @@ fn spawn_camera(mut commands: Commands, join: Res<JoinInfo>, options: Res<Option
             camera.insert(IsDefaultUiCamera);
         }
     }
+}
+
+/// How far ambient occlusion looks for what shades a point, in metres: enough for a car's
+/// underside, a doorway's corners and the foot of a wall, not so far that a whole house darkens.
+const OCCLUSION_RADIUS: f32 = 1.1;
+
+/// Ambient occlusion (a graphics setting) and SMAA, which smooths edges in place of the
+/// multisampling SSAO can't run with (`graphics_ui::camera_msaa`).
+pub fn occlusion() -> (ScreenSpaceAmbientOcclusion, Smaa) {
+    (
+        ScreenSpaceAmbientOcclusion { quality_level: ScreenSpaceAmbientOcclusionQualityLevel::Medium, radius: OCCLUSION_RADIUS, constant_object_thickness: 0.4 },
+        Smaa { preset: SmaaPreset::High },
+    )
+}
+
+/// Puts our copy of Bevy's SSAO shader (`ssao_ortho.wesl`, right for an orthographic camera) in
+/// place of Bevy's own. Called after `DefaultPlugins` registered theirs and before the render
+/// pipelines load it.
+pub fn patch_ssao_shader(app: &mut App) {
+    use bevy::asset::io::embedded::EmbeddedAssetRegistry;
+    let registry = app.world_mut().resource_mut::<EmbeddedAssetRegistry>();
+    registry.insert_asset(std::path::PathBuf::new(), std::path::Path::new("bevy_pbr/ssao/ssao.wesl"), include_bytes!("ssao_ortho.wesl").as_slice());
 }
 
 /// The camera's bloom (a graphics setting): only what's brighter than sunlit ground glows.
