@@ -844,6 +844,12 @@ fn world_events(
             // A gun going off (#72): once a shot, however many pellets, at the muzzle.
             CombatEventKind::Shot if shot.insert(e.player) => queue.at(Cue::Gunshot, e.pos - e.dir * e.damage, 1.0),
             CombatEventKind::Shot => {}
+            // An axe into a trunk: the blade's thunk, lower; the tree coming down a body's fall, louder.
+            CombatEventKind::Chop if e.crit => {
+                queue.at(Cue::HitBlade, e.pos, 0.8);
+                queue.at_later(Cue::BodyFall, e.pos, 1.4, 0.45);
+            }
+            CombatEventKind::Chop => queue.at(Cue::HitBlade, e.pos, 0.85),
         }
     }
     if snap.tick != track.last_tick {

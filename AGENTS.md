@@ -139,7 +139,7 @@ cargo run -p zombye-server --release -- --mcp --mod mods/alarm_clock
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --angle 0..3 --turn N@SECS[,N@SECS...] --opening-hints on|off --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --weapons-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --mod DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab rows|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --graphics-panel --map --map-zoom PX --map-center X,Y --map-all --skip-hours H --hover-tag N --debug-stats --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --music V --ui-scale PCT --connect HOST[:PORT] --name NAME --password P --agent --server-info HOST[:PORT] --server-list FILE|URL --browser --browser-join N[@SECS] --joined --join-error TEXT --hotbar ID[,ID...] --hotbar-press K@SECS[,K@SECS...] --panel-at PANEL:X,Y[;PANEL:X,Y] --drag-panel PANEL:DX,DY[@SECS] --lag MS --say TEXT[@SECS] --shout TEXT[@SECS] --whisper TEXT[@SECS] --gesture NAME[@SECS] --talk-demo --talk-wall --holdup-demo --holdup-auto --graphics low|medium|high|ultra|auto --vegetation off|low|high|N --no-post LIST --msaa N --shadow-map N --render-scale F --frame-bench N --gun ID --walls-up --zombie-silhouettes --aim-at DX,DY|zombie --first-person --new-game --new-game-tab who|picks|world --new-game-from PATH --background ID --strengths ID[,ID...] --flaws ID[,ID...] --outfit ITEM[,ITEM...] --difficulty ID --walk X,Y;X,Y;...` (the eight before the last: see A new game; `--aim-at`: see The aim marker under Combat; `--first-person`: see The first-person view under Light and mood; the last walks the local player from point to point by itself, opening shut doors its way leads through, for recordings; the two before it: see Cutaways under Light and mood; the one before those: see Guns; the seven before it: see Look and feel; the two before them: see Hold-ups and groups; the six before those: see Talking and gestures) (the camera always turns with `,` and `.`, see Turning the camera under Light and mood: `--turn` does it by itself for recordings, `--opening-hints`: see Opening hints there, and `--rotate`, which turning used to need, is still accepted and does nothing; `--zoom` is the metres of world visible vertically, 8–90, default 26;
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --angle 0..3 --turn N@SECS[,N@SECS...] --opening-hints on|off --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --weapons-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --mod DIR --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab rows|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --graphics-panel --map --map-zoom PX --map-center X,Y --map-all --skip-hours H --hover-tag N --debug-stats --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --music V --ui-scale PCT --help-text full|short|off --connect HOST[:PORT] --name NAME --password P --agent --server-info HOST[:PORT] --server-list FILE|URL --browser --browser-join N[@SECS] --joined --join-error TEXT --hotbar ID[,ID...] --hotbar-press K@SECS[,K@SECS...] --panel-at PANEL:X,Y[;PANEL:X,Y] --drag-panel PANEL:DX,DY[@SECS] --lag MS --say TEXT[@SECS] --shout TEXT[@SECS] --whisper TEXT[@SECS] --gesture NAME[@SECS] --talk-demo --talk-wall --holdup-demo --holdup-auto --graphics low|medium|high|ultra|auto --vegetation off|low|high|N --no-post LIST --msaa N --shadow-map N --render-scale F --frame-bench N --gun ID --walls-up --zombie-silhouettes --aim-at DX,DY|zombie --first-person --new-game --new-game-tab who|picks|world --new-game-from PATH --background ID --strengths ID[,ID...] --flaws ID[,ID...] --outfit ITEM[,ITEM...] --difficulty ID --walk X,Y;X,Y;...` (the eight before the last: see A new game; `--aim-at`: see The aim marker under Combat; `--first-person`: see The first-person view under Light and mood; the last walks the local player from point to point by itself, opening shut doors its way leads through, for recordings; the two before it: see Cutaways under Light and mood; the one before those: see Guns; the seven before it: see Look and feel; the two before them: see Hold-ups and groups; the six before those: see Talking and gestures) (the camera always turns with `,` and `.`, see Turning the camera under Light and mood: `--turn` does it by itself for recordings, `--opening-hints`: see Opening hints there, and `--rotate`, which turning used to need, is still accepted and does nothing; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost). `--size WxH` makes the window exactly that many pixels, at scale factor 1, so a
 `--screenshot` is WxH on a high-DPI screen too; without it the window is 1600x900 at the screen's scale.
@@ -256,7 +256,7 @@ the first-person pointer is free. Leaving saves as quitting does. `--pause` star
 Graphics (the preset, and each of F8's settings by itself: vegetation, shadows, anti-aliasing, 3D resolution, the film
 switches, plus fullscreen and vsync), Audio (master and music volume, mute), Controls (the keys, a list to read: they
 can't be changed yet) and Game (UI scale, the view a game starts in: from above or first person, zombie silhouettes,
-opening hints). Every change is one `settings_ui::Change` applied by the pure `settings_ui::change` to
+opening hints, help text). **Help text (`help_text.rs`, `ClientSettings::help_text`; `--help-text full|short|off` for a session, not saved):** how much the UI explains. Full (as shipped) is everything; Short drops the explaining sentences (`help_text::explains()`: a skill card's next level and how its XP is earned, what a status does to you on the Health screen; the Make list says what a recipe is missing by name alone, `crafting::missing_brief`: "needs jeans, scissors") and keeps names, numbers and what is needed; Off also drops the reminders of what keys and clicks do (`help_text::keys()`: every footer's key hints, which `theme::flat::hint` then doesn't draw, the Make list's line, the first night's hint line). What a thing needs and why something was refused are never help text. **New cards and panels ask `help_text::explains()` before drawing a line that explains, and put `help_text::level()` in what they compare to rebuild.** Every change is one `settings_ui::Change` applied by the pure `settings_ui::change` to
 `ClientSettings` through `SettingsStore`, so it is saved at once, and `apply_live` hands on what changed to the
 running game (graphics, volumes, UI scale, the view, the window); contact shadows and ground detail still take the
 next start. Each tab has its "defaults" button. **A new client setting gets a field in `ClientSettings`, a `Change`, a row in
@@ -841,8 +841,38 @@ through that glass. Barricades come later.
   items one hand will do for. `wire::PROTOCOL` 15 (the definitions and `CombatTuning` changed shape); 18 for
   `broken_damage`.
 - **Not yet:** repairing or sharpening, a separate head and handle, a skill for looking after weapons, guns that
-  wear, hitting doors and trees.
+  wear, hitting doors.
 - Tests: `sim::wear::tests`.
+
+## Chopping trees (`sim::trees`)
+
+Trees come down: wood for planks now, firewood and building later.
+
+- **What chops:** a held item with the tag `ChopTuning::tag` ("chops": the `hatchet`, uncommon in sheds, garages and
+  hardware shops, and the fire axe). An aimed swing (right mouse, left click) that hits no body bites the nearest
+  broadleaf, birch, pine or spruce trunk in its reach and arc with nothing in the way (`trees::tree_in_reach`,
+  `World::chop_swing`, from `combat::land`): a zombie or survivor in front takes the blow instead. Anything else (a
+  bat, fists) does nothing to a tree. A bite takes the weapon's middle damage times `damage_mult`; a broadleaf has
+  `tree_hp` (480: about 14 swings of a hatchet), a pine `pine_hp` (400). Each bite costs the blade a knock as a hit
+  would (`wear_weapon`), refunds `1 - endurance_mult` of the swing's endurance (chopping is steadier work than
+  fighting), and gives `chop_xp` Strength (`fell_xp` for the last one).
+- **Felled** (`World::fell_tree`): the tile becomes `Feature::Stump` (walked over, sight passes), the walk grid, nav
+  graph and flow fields are updated, a `fall_noise` (40 m) sound is made, and `tree_logs` (2) or `pine_logs` (3)
+  of `log_item` ("log", 6 kg, tags `wood`, `log`, `fuel`) lie on the ground the way it fell. Recipe
+  `saw_log_planks`: a log and a `saws` tool make 3 `wooden_plank`. A log (9 L) doesn't fit in pockets, so it is sawn where it lies (crafting takes inputs from the floor in reach) or carried in a bag.
+- **State** (`World::trees`, `trees::Trees`): chopped trees' hit points and the felled tiles, sorted maps; in
+  `state_hash` only while any. **Saves:** an optional `TREE` section straight after `MAPD` (no format bump), put back
+  on the regenerated map (`restore_trees`, checked: a tree's tile, hit points in range, sorted; on a map loaded
+  anyway, misfits dropped with a note). `ChopTuning` is `WorldConfig::chop`, saved with the settings.
+- **Replication** (`wire::PROTOCOL` 28): `Snapshot::tree_changes` (`TreeChange`, from `take_tree_changes`; to every
+  client) and `Welcome::stumps`. Each bite is a `CombatEventKind::Chop` (`damage` the hit points the bite took, `crit` when it
+  fell). **Client:** the chunk round a felled tree is rebuilt at once (`world_render::rebuild_felled`); a stump is a
+  cut trunk (`landscape::felled_stump`, or the release models' `trees/stump.glb`); chips fly off the bark (`fx.rs`)
+  with the blade's hit sound, and a fall adds a thud and a shake; a log on the ground is a short cylinder unless the
+  release models hold `items/log.glb`. MCP `observe` draws stumps `u`.
+- **Not yet:** splitting logs into firewood (with the fire and cooking work), saws on stumps, trees growing back,
+  bushes, the tree toppling as it falls, zombies drawn by chopping beyond the swing's own noise.
+- Tests: `sim::trees::tests`.
 
 ## Guns (`sim::ranged`; #72)
 
@@ -1467,7 +1497,7 @@ A new single-player game can begin with a survivor of your making in a world of 
   over an inventory (`crafting::check` / `check_times`, which the inventory panel uses too), taking the recipe's `secs`
   (`World::craft_secs`: Handiwork, #46, `SkillTuning::craft_time_mult`, 5% faster a level down to half; each craft done
   gives 5 Handiwork XP in `World::on_crafted`, see Skills). Inputs and tools are what the player
-  carries and holds (`firstaid::usable`), not what it wears (the refusal says to take it off); only whole items count
+  carries and holds (`firstaid::usable`) and what lies on its floor in reach (`crafting::with_floor`, `World::floor_of`: a log too big for any bag is sawn where it lies; the client's Make list and a floor item's right-click menu go by the same), not what it wears (the refusal says to take it off); only whole items count
   as inputs (`crafting::whole`: the part-used top one of a stack doesn't). Like eating, it doesn't stop you walking; a
   strike landing drops queued crafts with the treatments (`interrupt_treatment`), and swinging, shoving or stomping
   drops the whole queue; a sleeper's `Craft` only gets it up. Asking again for a recipe already queued queues another
@@ -2949,7 +2979,7 @@ unknown tool is the JSON-RPC error -32602 (a tool's own failure is still a resul
 
 The agent plays player 1, who wakes up in the bedroom. Tools: `screenshot` (below), `observe` (double-resolution ASCII map
 with walls `-` `|`, shut windows `=` `!`, open windows `o`, broken windows `x`, shut doors `D` (`d`
-when damaged), open doors `/`, broken doors `#`, fences `~`, furniture `f`, street props `^`, containers `c` (not searched yet) and `o` (searched; on a tile, not a wall line), players `P` and zombies by
+when damaged), open doors `/`, broken doors `#`, fences `~`, trees `T`, stumps `u`, furniture `f`, street props `^`, containers `c` (not searched yet) and `o` (searched; on a tile, not a wall line), players `P` and zombies by
 state: `Z` wander, `I` investigate, `C` chase, `L` lunge, `A` attack, `B` battering a door or window;
 `S` staggered, `v` down, `%` corpse; zombies on the cheaper tiers `n` near, `?` virtual; weapons on the floor `w`, other items `i`, dead players `X`; plus players (HP,
 weapon, action, load, whether they're climbing or dead), items in view, damaged doors and windows in view

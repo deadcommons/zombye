@@ -30,7 +30,7 @@ struct PanelRoot;
 
 /// What the panel shows, to rebuild it only when that changes.
 #[derive(Resource, Default, PartialEq)]
-struct Shown(Option<Vec<SkillView>>);
+struct Shown(Option<(Vec<SkillView>, crate::help_text::HelpText)>);
 
 pub struct SkillsUiPlugin;
 
@@ -71,7 +71,9 @@ fn rebuild(mut commands: Commands, panel: Res<SkillsPanel>, link: Res<ServerLink
         return;
     }
     let skills = link.own(me.id).map(|v| v.skills.clone()).unwrap_or_default();
-    if shown.0.as_ref() == Some(&skills) {
+    // (With the help text short a card keeps what its level gives now; the rest is explaining.)
+    let help = crate::help_text::level();
+    if shown.0.as_ref().is_some_and(|(s, h)| *s == skills && *h == help) {
         return;
     }
     commands.entity(root).despawn_children();
@@ -80,7 +82,9 @@ fn rebuild(mut commands: Commands, panel: Res<SkillsPanel>, link: Res<ServerLink
     commands.entity(root).with_children(|c| {
         c.spawn((Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::FlexEnd, padding: UiRect::new(px(24), px(24), px(18), px(12)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|h| {
             h.spawn((Text::new("SKILLS"), theme::head(flat::TITLE), TextColor(flat::BONE), Pickable::IGNORE));
-            h.spawn((Text::new("Practice raises them. Nothing is lost."), font(flat::SMALL), TextColor(flat::DIM), Pickable::IGNORE));
+            if help.explains() {
+                h.spawn((Text::new("Practice raises them. Nothing is lost."), font(flat::SMALL), TextColor(flat::DIM), Pickable::IGNORE));
+            }
         });
         crate::inventory_ui::scroller(c, 5, y, UiRect::new(px(24), px(24), px(0), px(16)), 0.0).with_children(|s| {
             // Cards that wrap: three across on a small screen, more on a wide one.
@@ -111,14 +115,16 @@ fn rebuild(mut commands: Commands, panel: Res<SkillsPanel>, link: Res<ServerLink
                         if v.level > 0 {
                             line(card, format!("Now: {}", t.gives(sk, v.level, carry, aid)), flat::BONE);
                         }
-                        if v.level < t.top() {
-                            line(card, format!("Level {}: {}", v.level + 1, t.gives(sk, v.level + 1, carry, aid)), flat::DIM);
+                        if help.explains() {
+                            if v.level < t.top() {
+                                line(card, format!("Level {}: {}", v.level + 1, t.gives(sk, v.level + 1, carry, aid)), flat::DIM);
+                            }
+                            line(card, format!("From {}", t.earned_by(sk)), flat::DIM);
                         }
-                        line(card, format!("From {}", t.earned_by(sk)), flat::DIM);
                     });
                 }
             });
         });
     });
-    shown.0 = Some(skills);
+    shown.0 = Some((skills, help));
 }

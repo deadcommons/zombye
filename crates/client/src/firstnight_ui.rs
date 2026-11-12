@@ -322,7 +322,8 @@ fn update_hint(
     mut text: Query<&mut Text, With<HintText>>,
 ) {
     let (Ok(mut vis), Ok(mut text)) = (hint_box.single_mut(), text.single_mut()) else { return };
-    let line = record(&options, &link, &me).filter(|_| !ui.hidden && !ui.over && !ui.morning && !me.dead && !inventory.as_ref().is_some_and(|i| i.open)).and_then(|(f, run)| {
+    // (The hint line is a reminder of what to do and its key: not with the help text off.)
+    let line = record(&options, &link, &me).filter(|_| crate::help_text::keys() && !ui.hidden && !ui.over && !ui.morning && !me.dead && !inventory.as_ref().is_some_and(|i| i.open)).and_then(|(f, run)| {
         let own = link.own(me.id);
         let tags = icons.tags(&link, &join, &me);
         let tag = |kind: TagKind, from: u8| tags.iter().any(|t| t.kind == kind && t.severity >= from);

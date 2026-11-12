@@ -273,7 +273,7 @@ fn rebuild(
     let busy = link.curr.players.iter().find(|p| p.id == me.id).map_or(0.0, |p| p.busy);
     let health = view.as_ref().map(|v| v.health.clone()).unwrap_or_default();
     let status = icons.as_ref().map_or(Vec::new(), |i| i.tags(&link, &join, &me));
-    let signature = format!("{view:?}|{:.0}|{}|{:?}|{:?}|{:.1}|{status:?}", me.hp, me.dead, panel.selected, panel.use_item, busy);
+    let signature = format!("{view:?}|{:.0}|{}|{:?}|{:?}|{:.1}|{status:?}|{:?}", me.hp, me.dead, panel.selected, panel.use_item, busy, crate::help_text::level());
     if shown.0 == signature {
         return;
     }
@@ -344,7 +344,8 @@ fn rebuild(
                         if let Some(first) = tip.get(..1).map(str::to_uppercase) {
                             tip.replace_range(..1, &first);
                         }
-                        if !tip.is_empty() {
+                        // (What a status does to you is explaining: `help_text.rs`.)
+                        if !tip.is_empty() && crate::help_text::explains() {
                             x.spawn((Text::new(tip), font(flat::SMALL), TextColor(flat::DIM), Pickable::IGNORE));
                         }
                     });
