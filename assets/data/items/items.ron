@@ -196,19 +196,22 @@
         bag: Some((capacity_l: 50.0, carried: Back)), model: Some("hiking_pack"), color: (0.54, 0.33, 0.2)),
 
     // ---- Weapons (combat numbers in weapons.ron) -------------------------------------------------
-    (id: "kitchen_knife", name: "Kitchen knife", category: Weapon, weight_kg: 0.2, volume_l: 0.3, tags: ["cuts"], weapon: Some("kitchen_knife"), color: (0.75, 0.75, 0.78)),
-    (id: "claw_hammer", name: "Claw hammer", category: Weapon, weight_kg: 0.6, volume_l: 0.5, tags: ["hammers", "pries"], weapon: Some("claw_hammer"), color: (0.45, 0.3, 0.2)),
-    (id: "frying_pan", name: "Frying pan", category: Weapon, weight_kg: 1.2, volume_l: 2.0, tags: ["cookware"], weapon: Some("frying_pan"), color: (0.15, 0.15, 0.16)),
-    (id: "baseball_bat", name: "Baseball bat", category: Weapon, weight_kg: 1.0, volume_l: 2.5, two_handed: true, one_hand: true, weapon: Some("baseball_bat"), color: (0.7, 0.55, 0.35)),
-    (id: "golf_club", name: "Golf club", category: Weapon, weight_kg: 0.4, volume_l: 2.0, two_handed: true, one_hand: true, weapon: Some("golf_club"), color: (0.75, 0.75, 0.8)),
-    (id: "wooden_plank", name: "Wooden plank", category: Weapon, weight_kg: 2.0, volume_l: 4.0, two_handed: true, one_hand: true, tags: ["wood", "fuel"], weapon: Some("wooden_plank"), color: (0.6, 0.45, 0.28)),
-    (id: "crowbar", name: "Crowbar", category: Weapon, weight_kg: 1.5, volume_l: 1.2, tags: ["pries"], weapon: Some("crowbar"), color: (0.5, 0.15, 0.12)),
-    (id: "hatchet", name: "Hatchet", category: Weapon, weight_kg: 0.9, volume_l: 1.0, tags: ["chops"], weapon: Some("hatchet"), color: (0.5, 0.36, 0.22)),
-    (id: "fire_axe", name: "Fire axe", category: Weapon, weight_kg: 2.5, volume_l: 4.0, two_handed: true, tags: ["chops"], weapon: Some("fire_axe"), color: (0.75, 0.15, 0.1)),
+    (id: "kitchen_knife", name: "Kitchen knife", category: Weapon, weight_kg: 0.2, volume_l: 0.3, tags: ["cuts", "mend_handle"], weapon: Some("kitchen_knife"), color: (0.75, 0.75, 0.78)),
+    (id: "claw_hammer", name: "Claw hammer", category: Weapon, weight_kg: 0.6, volume_l: 0.5, tags: ["hammers", "pries", "mend_handle"], weapon: Some("claw_hammer"), color: (0.45, 0.3, 0.2)),
+    (id: "frying_pan", name: "Frying pan", category: Weapon, weight_kg: 1.2, volume_l: 2.0, tags: ["cookware", "mend_metal"], weapon: Some("frying_pan"), color: (0.15, 0.15, 0.16)),
+    (id: "baseball_bat", name: "Baseball bat", category: Weapon, weight_kg: 1.0, volume_l: 2.5, two_handed: true, one_hand: true, tags: ["mend_wood"], weapon: Some("baseball_bat"), color: (0.7, 0.55, 0.35)),
+    (id: "golf_club", name: "Golf club", category: Weapon, weight_kg: 0.4, volume_l: 2.0, two_handed: true, one_hand: true, tags: ["mend_metal"], weapon: Some("golf_club"), color: (0.75, 0.75, 0.8)),
+    (id: "wooden_plank", name: "Wooden plank", category: Weapon, weight_kg: 2.0, volume_l: 4.0, two_handed: true, one_hand: true, tags: ["wood", "fuel", "mend_wood"], weapon: Some("wooden_plank"), color: (0.6, 0.45, 0.28)),
+    (id: "crowbar", name: "Crowbar", category: Weapon, weight_kg: 1.5, volume_l: 1.2, tags: ["pries", "mend_metal"], weapon: Some("crowbar"), color: (0.5, 0.15, 0.12)),
+    (id: "hatchet", name: "Hatchet", category: Weapon, weight_kg: 0.9, volume_l: 1.0, tags: ["chops", "mend_handle"], weapon: Some("hatchet"), color: (0.5, 0.36, 0.22)),
+    (id: "fire_axe", name: "Fire axe", category: Weapon, weight_kg: 2.5, volume_l: 4.0, two_handed: true, tags: ["chops", "mend_handle"], weapon: Some("fire_axe"), color: (0.75, 0.15, 0.1)),
 
     // ---- Guns, their rounds and magazines (#72; numbers in weapons.ron's `ranged`) -----------------
     // A gun or a magazine has its rounds in it (they don't stack); loose rounds do. Using the gun in
     // your hand reloads it, using a magazine in your pocket fills it.
+    // Made by hand (recipes.ron).
+    (id: "nailed_bat", name: "Nailed bat", category: Weapon, weight_kg: 1.1, volume_l: 2.6, two_handed: true, one_hand: true, tags: ["mend_wood"], weapon: Some("nailed_bat"), color: (0.62, 0.5, 0.34)),
+    (id: "spear", name: "Spear", category: Weapon, weight_kg: 2.3, volume_l: 4.5, two_handed: true, tags: ["mend_wood"], weapon: Some("spear"), color: (0.62, 0.5, 0.35)),
     (id: "pistol", name: "Pistol", category: Weapon, weight_kg: 0.9, volume_l: 0.6, weapon: Some("pistol"), color: (0.16, 0.16, 0.18)),
     (id: "pistol_magazine", name: "Pistol magazine", category: Tool, weight_kg: 0.25, volume_l: 0.15, tags: ["ammo", "magazine"], color: (0.2, 0.2, 0.22)),
     (id: "pistol_rounds", name: "Pistol round", category: Material, weight_kg: 0.012, volume_l: 0.004, stack: 50, tags: ["ammo"], color: (0.72, 0.56, 0.25)),

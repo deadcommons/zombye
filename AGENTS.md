@@ -1270,7 +1270,8 @@ the start, and gardens, trees, fences and buildings are inked in where the survi
   skips, never wrapping; 0 for things that keep). Fresh until `spoils_hours`, Stale to twice that (x0.7 of what it gives,
   `HealthTuning::poison_stale` 10%), then Mouldy (x0.4, `poison_rotten` 70%), through `World::poison_player` (combat RNG).
   Food found in furniture (`World::age_found_food` on first search) was made 0-60% of its `spoils_hours` before the world
-  began (seeded per container and stack). No per-tick aging; fridges don't slow it yet (no power).
+  began (seeded per container and stack). No per-tick aging; a **fridge** in a building with power (`power.ron`'s `fridges`: container kinds and
+  `spoil_mult`, 0.25) slows it by moving its food's `born` on as the minutes pass (`World::step_fridges`, stateless).
 - **Sleep** (`World::player_sleep`, `Intent::Sleep`, B, MCP `sleep`): needs tiredness 0.3+ (after dark any, and then being rested doesn't wake you before sunrise: `sleep_through_night`, #19) and no agony, unless a painkiller dose is
   working (#57, `World::pain_stops_sleep`: you sleep through it, and wake in pain when the last dose wears off if it's
   still agony; the Pain tag's tip says which); on a bed (else a
@@ -1621,6 +1622,14 @@ A new single-player game can begin with a survivor of your making in a world of 
 - **Shipped** (ours): rip a T-shirt (3 rags), a jumper (4), a hoodie (5), a towel (4), tear a bed sheet (6), cut jeans
   (4, a `cuts` tool: scissors or a kitchen knife), and wash 3 rags in a bottle of water into 3 clean rags (and an empty
   bottle). A rag dresses a wound dirty, a clean rag clean (first aid's `bandage` / `clean` tags).
+- **Water, mending and made weapons** (the loot and crafting pass): `water: true` recipes need a running tap within
+  reach (`power::water_near`: `power.ron`'s `water.taps`, sinks and baths, same room and floor, while
+  `water.on` and before `water.fails_after_hours`; stateless, from the clock; `Snapshot::water_on`): fill a bottle.
+  `repairs: Some((tag, knocks))` mends the most worn weapon held or carried with that item tag
+  (`crafting::mend_target`, the same pure rule for the Make list; `mend_wood`, `mend_handle`, `mend_metal` in
+  `items.ron`), taking knocks off its wear (`ItemStack::used`, see weapon wear): duct tape on a bat or plank, a
+  loose handle, or beaten out with a hammer for a pan, a club or a crowbar. A nailed bat (bat + 6 nails, a hammer)
+  and a spear (knife + plank + tape) are weapons of their own in `weapons.ron`.
 - **Crafting is an item job** (`JobKind::Craft { recipe }`, `World::player_craft`, `Intent::Craft { player, recipe }`
   with an index into the recipes the client got on joining): checked when asked and again when due by one pure rule
   over an inventory (`crafting::check` / `check_times`, which the inventory panel uses too), taking the recipe's `secs`

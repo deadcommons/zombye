@@ -876,7 +876,9 @@ impl World {
     /// healing, festering, the infection), and needs too (hunger, thirst, tiredness, sleep), in
     /// small steps.
     pub fn skip_time(&mut self, hours: f32) {
+        let minute = self.game_minute();
         self.clock_offset_hours += hours;
+        self.step_fridges(minute, self.game_minute());
         self.skip_health(hours);
         self.skip_needs(hours);
         self.step_first_night(hours);
@@ -1159,6 +1161,7 @@ impl World {
 
     pub fn step(&mut self) {
         let start = Instant::now();
+        let minute = self.game_minute();
         self.attack_events.clear();
         self.thump_events.clear();
         self.break_events.clear();
@@ -1373,6 +1376,8 @@ impl World {
         }
 
         self.tick += 1;
+        // Food in fridges with power keeps (`crate::power`).
+        self.step_fridges(minute, self.game_minute());
         // Where everybody stands now, for blows of lagging clients landing in the next few ticks (#23).
         self.record_lag_frame();
         let tier_counts = self.tier_counts();

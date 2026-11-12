@@ -7,6 +7,24 @@
         // (Some(72.0): three days of power).
         fails_after_hours: None,
     ),
+    // The town's running water. While it runs, a tap within reach (one of `taps`, furniture
+    // kinds, in the room you stand in) fills an empty bottle (recipes.ron: `water: true`).
+    water: (
+        // Running when the world begins.
+        on: true,
+        // Game hours after the world began when it goes off for good: None, it never does
+        // (Some(72.0): three days of water).
+        fails_after_hours: None,
+        taps: ["sink", "bathtub"],
+        // Metres from a tap's footprint you can use it from.
+        reach: 1.6,
+    ),
+    // Fridges keep food while their building has power: food in one goes off `spoil_mult` as
+    // fast (0.25: it lasts four times as long). `containers`: container kinds (containers.ron).
+    fridges: (
+        containers: ["fridge"],
+        spoil_mult: 0.25,
+    ),
     // The share of rooms (not halls, porches or garages) with a light left on at the start.
     lights_on_at_start: 0.22,
     // How well zombies, and other survivors, see you in a lit room at night, as daylight

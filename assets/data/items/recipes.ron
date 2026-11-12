@@ -14,6 +14,11 @@
 //            needs its building's power). Cooked food is made fresh.
 //   places   Some(Campfire): also puts a lit campfire down a metre in front of you, outdoors, its
 //            first fuel the inputs tagged fuel (fire.ron: hours a kg). Feed it from its menu.
+//   water    true: needs running water. Only made within reach of a tap (power.ron's water.taps:
+//            sinks and baths, in the room you stand in) while the town's water is on.
+//   repairs  Some((tag: "t", knocks: n)): mends the most worn weapon you hold or carry that has
+//            item tag t, taking n knocks off its wear (weapons.ron's durability); a broken one
+//            works again. Can't be made with nothing worn to mend. Outputs may then be empty.
 [
     // ---- Rags from cloth ------------------------------------------------------------------------
     (id: "rip_t_shirt", name: "Rip a T-shirt into rags", secs: 3.0,
@@ -34,6 +39,26 @@
     // A rag dresses a wound dirty (it may fester); washed in clean water it goes on clean, like gauze.
     (id: "wash_rags", name: "Wash rags in clean water", secs: 12.0,
         inputs: [(item: "rag", count: 3), (item: "water_bottle")], outputs: [(item: "clean_rag", count: 3), (item: "empty_bottle")]),
+
+    // ---- Water ----------------------------------------------------------------------------------
+    (id: "fill_bottle", name: "Fill a bottle at the tap", secs: 3.0, water: true,
+        inputs: [(item: "empty_bottle")], outputs: [(item: "water_bottle")]),
+
+    // ---- Mending weapons (zombye_sim::wear) --------------------------------------------------------
+    // Duct tape round a split handle or a cracked bat buys a few more fights. A worn weapon can't be
+    // an input (only whole things are), so mend it before you build on it.
+    (id: "tape_wooden_weapon", name: "Tape up a wooden weapon", secs: 8.0,
+        inputs: [(item: "duct_tape")], repairs: Some((tag: "mend_wood", knocks: 3))),
+    (id: "tape_handle", name: "Tape a loose handle", secs: 8.0,
+        inputs: [(item: "duct_tape")], repairs: Some((tag: "mend_handle", knocks: 3))),
+    (id: "beat_out_dents", name: "Beat out the dents and tape it", secs: 12.0,
+        inputs: [(item: "duct_tape")], tools: [Tag("hammers")], repairs: Some((tag: "mend_metal", knocks: 3))),
+
+    // ---- Weapons -----------------------------------------------------------------------------------
+    (id: "make_nailed_bat", name: "Drive nails through a bat", secs: 20.0,
+        inputs: [(item: "baseball_bat"), (item: "nail", count: 6)], tools: [Tag("hammers")], outputs: [(item: "nailed_bat")]),
+    (id: "make_spear", name: "Tape a knife to a plank: a spear", secs: 25.0,
+        inputs: [(item: "kitchen_knife"), (item: "wooden_plank"), (item: "duct_tape")], outputs: [(item: "spear")]),
 
     // ---- Fire ---------------------------------------------------------------------------------
     (id: "build_campfire", name: "Build a campfire", secs: 15.0,

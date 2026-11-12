@@ -72,8 +72,10 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// `DeathCause::Burned`; sitting down: `Intent::Sit`, `PlayerView::seated` (bits 18-20 of `PlayerPacked::bits`). 30: building and barricades: `Intent::Build`,
 /// `Intent::Unbuild`, `Snapshot::barricade_changes`, `Welcome::barricades`, `JobKind::Build`, `Edge::WindowBoarded`
 /// and `Edge::DoorBoarded`. 31: movement and endurance in settings: `Tunings::movement`,
-/// `PlayerView::endurance_cap`.)
-pub const PROTOCOL: u32 = 31;
+/// `PlayerView::endurance_cap`. 32: the loot and crafting pass: running water (`Snapshot::water_on`
+/// in `SnapshotDelta::lights`), `RecipeDef::water` and `repairs`, no `spawn_weight` or `found_in`
+/// in the weapons.)
+pub const PROTOCOL: u32 = 32;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -653,8 +655,9 @@ pub struct SnapshotDelta {
     pub looks: Option<Vec<OutfitView>>,
     /// The client's group and invitations (#73), when they change; `Some(None)`: none any more.
     pub group: Option<Option<zombye_sim::GroupView>>,
-    /// The rooms lit and whether the grid is on (`zombye_sim::power`), when they change.
-    pub lights: Option<(Vec<u16>, bool)>,
+    /// The rooms lit, whether the grid is on and whether the water runs (`zombye_sim::power`),
+    /// when they change.
+    pub lights: Option<(Vec<u16>, bool, bool)>,
     /// What the client's survivor has seen of the map (`zombye_sim::explore`), when it changes.
     pub map: Option<zombye_sim::Explored>,
     /// The campfires (`zombye_sim::fire`), when they change.
@@ -701,6 +704,7 @@ impl Snapshot {
             maps: self.maps.iter().filter(|m| m.player == player).cloned().collect(),
             lit_rooms: self.lit_rooms.clone(),
             grid_on: self.grid_on,
+            water_on: self.water_on,
             fires: self.fires.clone(),
         }
     }
@@ -852,7 +856,7 @@ pub struct DeltaEncoder {
     outfits: Vec<OutfitView>,
     looks: Vec<OutfitView>,
     group: Option<zombye_sim::GroupView>,
-    lights: (Vec<u16>, bool),
+    lights: (Vec<u16>, bool, bool),
     map: zombye_sim::Explored,
     fires: Vec<zombye_sim::FireView>,
 }
@@ -1050,7 +1054,7 @@ impl DeltaEncoder {
             self.group = group.clone();
             group
         });
-        let lights = (view.lit_rooms.clone(), view.grid_on);
+        let lights = (view.lit_rooms.clone(), view.grid_on, view.water_on);
         let lights = (first || lights != self.lights).then(|| {
             self.lights = lights.clone();
             lights
@@ -1161,8 +1165,8 @@ impl DeltaDecoder {
         if let Some(up) = delta.upstairs {
             s.upstairs = up;
         }
-        if let Some((rooms, grid)) = delta.lights {
-            (s.lit_rooms, s.grid_on) = (rooms, grid);
+        if let Some((rooms, grid, water)) = delta.lights {
+            (s.lit_rooms, s.grid_on, s.water_on) = (rooms, grid, water);
         }
         if let Some(fires) = delta.fires {
             s.fires = fires;

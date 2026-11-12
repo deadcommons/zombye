@@ -258,6 +258,59 @@
         color: (0.75, 0.12, 0.08),
     ),
 
+    // ---- Made by hand (recipes.ron) ---------------------------------------------------------------
+    // A bat with nails driven through the end: hits harder and bleeds them, wears faster.
+    (
+        id: "nailed_bat",
+        name: "Nailed bat",
+        category: LongBlunt,
+        skill: Some(Bludgeon),
+        damage: (32.0, 44.0),
+        range: 1.25,
+        arc_degrees: 105.0,
+        windup_seconds: 0.34,
+        swing_seconds: 0.95,
+        max_targets: 3,
+        knockback: 0.55,
+        stagger_chance: 0.6,
+        knockdown_chance: 0.3,
+        crit_chance: 0.14,
+        crit_multiplier: 1.9,
+        endurance_cost: 0.09,
+        noise_radius: 6.0,
+        length: 0.85,
+        durability: 8,
+        wear_chance: 0.12,
+        close_range: 0.38,
+        color: (0.62, 0.5, 0.34),
+    ),
+    // A kitchen knife taped to the end of a plank: the longest reach of anything, one target at
+    // a time, and it doesn't last.
+    (
+        id: "spear",
+        name: "Spear",
+        category: Axe,
+        skill: Some(Edged),
+        damage: (30.0, 42.0),
+        range: 1.7,
+        arc_degrees: 35.0,
+        windup_seconds: 0.4,
+        swing_seconds: 1.05,
+        max_targets: 1,
+        knockback: 0.45,
+        stagger_chance: 0.45,
+        knockdown_chance: 0.15,
+        crit_chance: 0.2,
+        crit_multiplier: 2.0,
+        endurance_cost: 0.1,
+        noise_radius: 4.0,
+        length: 1.6,
+        durability: 6,
+        wear_chance: 0.12,
+        close_range: 0.6,
+        color: (0.62, 0.5, 0.35),
+    ),
+
     // ---- Guns (#72; zombye_sim::ranged) -----------------------------------------------------------
     // A `Firearm` shoots: `ranged` says what it is loaded with (items in items.ron), how far a
     // bullet flies, how far off the aim it may go (degrees, standing and extra on the move), how

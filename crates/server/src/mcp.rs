@@ -2390,7 +2390,7 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             "last_tick_hits": world.hit_events.len(),
             "last_tick_player_hits": world.player_hit_events.len(),
             "pvp": world.config.combat.pvp,
-            "power": {"grid": world.power().grid_on(), "lit_rooms": world.power().lit().len(), "switches_on": world.power().switches.len()},
+            "power": {"grid": world.power().grid_on(), "water": world.water_on(), "lit_rooms": world.power().lit().len(), "switches_on": world.power().switches.len()},
             "last_tick_thumps": world.stats.thumps,
             "damaged_edges": world.damaged_edges().count(),
             "chasing": world.stats.chasing,

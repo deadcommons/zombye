@@ -19,6 +19,16 @@
 //!
 //! The switches and the sources' state are saved (the optional `POWR` section) and in the state
 //! hash; [`PowerDef`] is saved with the settings. Clients get the lit rooms in each snapshot.
+//!
+//! **Running water** ([`WaterDef`]): the town's water is on when the world begins (or not) and can
+//! go off for good some game hours later, like the grid. While it runs, a tap ([`WaterDef::taps`]:
+//! sinks and baths) within reach in the room you stand in fills bottles (recipes with `water: true`,
+//! [`water_near`]). It depends on nothing but the clock, so it isn't saved; snapshots say whether it
+//! runs.
+//!
+//! **Fridges** ([`FridgeDef`]): food in a fridge (a container of one of its kinds) in a building
+//! with power goes off `spoil_mult` as fast. It is done by moving each stack's `born` on as the
+//! minutes pass (`World::step_fridges`), so freshness everywhere else reads as before.
 
 use std::collections::BTreeSet;
 
@@ -43,11 +53,77 @@ impl Default for GridDef {
     }
 }
 
+/// The town's running water (`water` in `power.ron`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WaterDef {
+    /// Running when the world begins.
+    pub on: bool,
+    /// Game hours after the world began when the water goes off for good (`None`: it never does).
+    pub fails_after_hours: Option<f32>,
+    /// Furniture kinds that are taps (`sink`, `bathtub`).
+    pub taps: Vec<String>,
+    /// Metres from a tap's footprint a survivor can use it from (same room, same floor).
+    pub reach: f32,
+}
+
+impl Default for WaterDef {
+    fn default() -> Self {
+        Self { on: true, fails_after_hours: None, taps: vec!["sink".into(), "bathtub".into()], reach: 1.6 }
+    }
+}
+
+impl WaterDef {
+    /// Is the water running `hours` game hours after the world began?
+    pub fn running(&self, hours: f64) -> bool {
+        self.on && self.fails_after_hours.is_none_or(|h| hours < h as f64)
+    }
+}
+
+/// Fridges keeping food (`fridges` in `power.ron`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FridgeDef {
+    /// Container kinds (`containers.ron`) that are fridges.
+    pub containers: Vec<String>,
+    /// How fast food in a fridge with power goes off, against out of it (0.25: four times as long).
+    pub spoil_mult: f32,
+}
+
+impl Default for FridgeDef {
+    fn default() -> Self {
+        Self { containers: vec!["fridge".into()], spoil_mult: 0.25 }
+    }
+}
+
+/// Why a recipe that needs running water (`water`) can't be made here.
+pub const NEEDS_WATER: &str = "needs a running tap within reach (a sink or a bath, while the water's on)";
+
+/// Is there a tap with water running within `def.reach` of `pos` on floor `level`, in the same room?
+/// The one rule for the server and the client's Make list.
+pub fn water_near(map: &TileMap, def: &WaterDef, running: bool, pos: Vec2, level: u8) -> bool {
+    if !running {
+        return false;
+    }
+    let room = map.room_at(pos);
+    room != 0
+        && map.buildings.iter().flat_map(|b| b.furniture.iter()).any(|f| {
+            f.level == level as i8 && def.taps.iter().any(|t| *t == f.kind) && {
+                let near = pos.clamp(f.min.as_vec2(), (f.min + f.size).as_vec2());
+                near.distance(pos) <= def.reach && map.room_at(f.min.as_vec2() + f.size.as_vec2() * 0.5) == room
+            }
+        })
+}
+
 /// `assets/data/power.ron`: the grid and the lights. Every field is optional (these defaults).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PowerDef {
     pub grid: GridDef,
+    /// Running water and taps.
+    pub water: WaterDef,
+    /// Fridges keeping food while they have power.
+    pub fridges: FridgeDef,
     /// The share of rooms (not halls, porches or garages) with a light left on when the world begins.
     pub lights_on_at_start: f32,
     /// How well zombies see a player standing in a lit room at night, as daylight (0 dark, 1 full day).
@@ -56,7 +132,7 @@ pub struct PowerDef {
 
 impl Default for PowerDef {
     fn default() -> Self {
-        Self { grid: GridDef::default(), lights_on_at_start: 0.22, lit_room_seen: 0.8 }
+        Self { grid: GridDef::default(), water: WaterDef::default(), fridges: FridgeDef::default(), lights_on_at_start: 0.22, lit_room_seen: 0.8 }
     }
 }
 
@@ -69,6 +145,11 @@ impl PowerDef {
         if let Some(h) = self.grid.fails_after_hours {
             check("grid.fails_after_hours", h, 0.0, 1e6)?;
         }
+        if let Some(h) = self.water.fails_after_hours {
+            check("water.fails_after_hours", h, 0.0, 1e6)?;
+        }
+        check("water.reach", self.water.reach, 0.0, 5.0)?;
+        check("fridges.spoil_mult", self.fridges.spoil_mult, 0.0, 1.0)?;
         Ok(())
     }
 }
@@ -447,6 +528,52 @@ impl crate::world::World {
     }
 
     /// Each tick: the grid fails when its time comes (`GridDef::fails_after_hours`).
+    /// Is the town's water running now?
+    pub fn water_on(&self) -> bool {
+        self.config.power.water.running(self.game_hours())
+    }
+
+    /// Is there running water where player `pi` stands ([`water_near`])?
+    pub fn water_for(&self, pi: usize) -> bool {
+        let p = &self.players[pi];
+        water_near(&self.map, &self.config.power.water, self.water_on(), p.state.pos, p.state.level)
+    }
+
+    /// Food in powered fridges goes off `spoil_mult` as fast: as game time goes from minute `from`
+    /// to `to`, each such stack's `born` moves on by the minutes it didn't age (never past now).
+    /// Stateless (it works from whole minutes), so it needs nothing saved.
+    pub(crate) fn step_fridges(&mut self, from: i32, to: i32) {
+        if to <= from || self.opened.is_empty() {
+            return;
+        }
+        let f = &self.config.power.fridges;
+        let keep = 1.0 - f.spoil_mult as f64;
+        let shift = ((to as f64 * keep).floor() - (from as f64 * keep).floor()) as i32;
+        if shift <= 0 {
+            return;
+        }
+        let kinds: Vec<bool> = self.config.containers.containers.iter().map(|c| f.containers.iter().any(|k| *k == c.id)).collect();
+        let mut changed = false;
+        for site in &self.sites {
+            if !kinds.get(site.def as usize).copied().unwrap_or(false) || !self.power.powered(site.building as usize) {
+                continue;
+            }
+            let Some(stacks) = self.opened.get_mut(&site.id) else { continue };
+            for st in stacks.iter_mut() {
+                let spoils = self.config.items.get(st.item as usize).and_then(|d| d.consumable()).is_some_and(|c| c.spoils_hours.is_some());
+                if spoils {
+                    st.born = (st.born + shift).min(to);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            // Whoever has a fridge open sees its food stay fresh.
+            let open: Vec<u32> = self.players.iter().filter(|p| p.open.is_some()).map(|p| p.id).collect();
+            self.private_dirty.extend(open);
+        }
+    }
+
     pub(crate) fn step_power(&mut self) {
         if self.power.grid_failed {
             return;
@@ -638,3 +765,7 @@ mod tests {
         assert_eq!(back.power().switches, w.power().switches);
     }
 }
+
+#[cfg(test)]
+#[path = "power_water_tests.rs"]
+mod water_tests;

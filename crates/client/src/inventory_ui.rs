@@ -1070,6 +1070,7 @@ fn rebuild(
     // pointer flicker between its hover and plain backings.)
     // Heat to cook with where we stand (`fire::heat_near`, the server's rule; stoves go by the grid).
     let heat = zombye_sim::fire::heat_near(&map.0, &join.fire, link.curr.fires.iter().map(|f| (Vec2::from(f.pos), f.lit)), me.curr.pos, me.curr.level, |_| link.curr.grid_on);
+    let water = zombye_sim::power::water_near(&map.0, &join.water, link.curr.water_on, me.curr.pos, me.curr.level);
     let clock = clock_text(link.curr.time_of_day);
     let hotbar = bar.as_ref().map(|b| b.ids());
     let tab = match (health.is_some_and(|h| h.open), skills.is_some_and(|s| s.open), build.is_some_and(|b| b.open), make_ui.shown) {
@@ -1079,7 +1080,7 @@ fn rebuild(
         (.., true) => Tab::Make,
         _ => Tab::Inventory,
     };
-    let signature = format!("{heat}|{tab:?}|{view:?}|{floor:?}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|{clock}|{hotbar:?}|{:?}", busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.keys, make_ui.open, make_ui.favs, make_ui.shown, *ui, crate::help_text::level());
+    let signature = format!("{heat}|{water}|{tab:?}|{view:?}|{floor:?}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|{clock}|{hotbar:?}|{:?}", busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.keys, make_ui.open, make_ui.favs, make_ui.shown, *ui, crate::help_text::level());
     if shown.0 == signature {
         return;
     }
@@ -1113,7 +1114,7 @@ fn rebuild(
                 // What lies in reach counts too (`crafting::with_floor`, the server's rule): a log
                 // too big for a bag is sawn where it lies.
                 let near = PrivateView { inventory: crafting::with_floor(&v.inventory, floor.iter().map(|f| f.1)), ..v.clone() };
-                make_column(mid, &join, &near, busy.0, &flight, &make_ui, y[3], heat);
+                make_column(mid, &join, &near, busy.0, &flight, &make_ui, y[3], heat, water);
                 return;
             }
             gear(mid, &ctx, &mut rows, v, bar.as_deref(), y[0]);
@@ -1561,7 +1562,7 @@ fn pane_head(s: &mut ChildSpawnerCommands, h: Head) {
 }
 
 /// The Make screen: the recipes, in the frame's one wide column.
-fn make_column(mid: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f32, flight: &InFlight, ui: &MakeUi, y: f32, heat: bool) {
+fn make_column(mid: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f32, flight: &InFlight, ui: &MakeUi, y: f32, heat: bool, water: bool) {
     mid.spawn(Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, flex_basis: px(0), min_width: px(0), max_width: px(1000), ..default() }).with_children(|col| {
         col.spawn((Node { flex_direction: FlexDirection::Column, padding: UiRect::new(px(24), px(24), px(18), px(10)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|h| {
             column_title(h, "Things to make", crate::help_text::keys().then(|| "Click a group to open it. Right-click a recipe to pin it (*).".into()));
@@ -1570,7 +1571,7 @@ fn make_column(mid: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView,
             if join.recipes.is_empty() {
                 dim(s, "Nothing to make".into());
             }
-            make(s, join, v, busy, flight, ui, heat);
+            make(s, join, v, busy, flight, ui, heat, water);
         });
     });
 }
@@ -2068,14 +2069,14 @@ fn make_row(c: &mut ChildSpawnerCommands, ui: &MakeUi, label: String, making: Op
 /// T-shirt, a jumper, ...) folded into one row that opens, pinned ones on top (right-click to pin),
 /// and what the rest are missing in plain words, dimmed. The one under way shows its seconds left
 /// (`busy`), queued ones counted.
-fn make(c: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f32, flight: &InFlight, ui: &MakeUi, heat: bool) {
+fn make(c: &mut ChildSpawnerCommands, join: &JoinInfo, v: &PrivateView, busy: f32, flight: &InFlight, ui: &MakeUi, heat: bool, water: bool) {
     if join.recipes.is_empty() {
         return;
     }
     let items = &join.items;
     let mult = join.skills.craft_time_mult(v.skill_level(zombye_sim::Skill::Handiwork));
     // The server's rule, with the heat a cooking recipe needs (`fire::heat_near`, worked out by the caller).
-    let check = |r: &zombye_sim::RecipeDef| crafting::check(r, &v.inventory, items).and_then(|()| if r.heat && !heat { Err(crafting::NEEDS_HEAT.to_string()) } else { Ok(()) });
+    let check = |r: &zombye_sim::RecipeDef| crafting::check(r, &v.inventory, items).and_then(|()| if r.heat && !heat { Err(crafting::NEEDS_HEAT.to_string()) } else if r.water && !water { Err(zombye_sim::power::NEEDS_WATER.to_string()) } else { Ok(()) });
     // One recipe's row. `lead` is "* " for a pinned one.
     let recipe_row = |c: &mut ChildSpawnerCommands, k: usize, indent: &str, lead: &str| {
         let r = &join.recipes[k];

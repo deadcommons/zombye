@@ -76,11 +76,32 @@ pub struct RecipeDef {
     /// Cooking: only made within reach of a lit fire or a working stove (`crate::fire::heat_near`).
     #[serde(default)]
     pub heat: bool,
+    /// Needs running water: only made within reach of a tap while the town's water is on
+    /// (`crate::power::water_near`): filling a bottle.
+    #[serde(default)]
+    pub water: bool,
+    /// Mends a worn or broken weapon carried or held (`crate::wear`): the most worn one with this
+    /// item tag loses `knocks` knocks.
+    #[serde(default)]
+    pub repairs: Option<Repair>,
     /// Puts something down in front of the survivor (a campfire, fed with the inputs that are
     /// fuel: `crate::fire`), as well as making the outputs.
     #[serde(default)]
     pub places: Option<crate::fire::Placed>,
 }
+
+/// What a mending recipe mends (`RecipeDef::repairs`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Repair {
+    /// An item tag (`items.ron`): what it can mend.
+    pub tag: String,
+    /// Knocks it takes off (1 to 50).
+    pub knocks: u8,
+}
+
+/// Why a mending recipe can't be made: nothing it mends is worn.
+pub const NOTHING_TO_MEND: &str = "nothing worn to mend";
 
 /// Why a cooking recipe (`heat`) can't be made here.
 pub const NEEDS_HEAT: &str = "needs a lit fire or a working stove within reach";
@@ -106,7 +127,12 @@ impl RecipeDef {
         if self.inputs.is_empty() {
             return Err(format!("{what}: needs at least one input (it would make something from nothing)"));
         }
-        if self.outputs.is_empty() && self.places.is_none() {
+        if let Some(rp) = &self.repairs {
+            if !valid_id(&rp.tag) || !(1..=50).contains(&rp.knocks) {
+                return Err(format!("{what}: repairs needs a lowercase tag and knocks in 1..50"));
+            }
+        }
+        if self.outputs.is_empty() && self.places.is_none() && self.repairs.is_none() {
             return Err(format!("{what}: makes nothing (no outputs, nothing it places)"));
         }
         for (list, kind) in [(&self.inputs, "input"), (&self.outputs, "output")] {
@@ -174,6 +200,11 @@ pub fn check_recipes(defs: &[RecipeDef], items: &[ItemDef]) -> Result<(), String
                 Tool::Tag(s) if !items.iter().any(|d| d.has_tag(s)) => return Err(format!("{what}: no item in items.ron has the tag {s:?} (tool Tag({s:?}))")),
                 _ => {}
             }
+        }
+        if let Some(rp) = &r.repairs
+            && !items.iter().any(|d| d.weapon.is_some() && d.has_tag(&rp.tag))
+        {
+            return Err(format!("{what}: no weapon in items.ron has the tag {:?} it repairs", rp.tag));
         }
     }
     Ok(())
@@ -254,7 +285,11 @@ pub fn describe(r: &RecipeDef, items: &[ItemDef]) -> String {
         };
         made = if made.is_empty() { what.to_string() } else { format!("{made} + {what}") };
     }
-    let heat = if r.heat { ", over a fire or a stove" } else { "" };
+    if let Some(rp) = &r.repairs {
+        let what = format!("mends {} knocks off a {} thing", rp.knocks, rp.tag);
+        made = if made.is_empty() { what } else { format!("{made} + {what}") };
+    }
+    let heat = if r.heat { ", over a fire or a stove" } else if r.water { ", at a running tap" } else { "" };
     format!("{} -> {made} ({:.0} s{tools}{heat})", list(&r.inputs), r.secs)
 }
 
@@ -300,7 +335,53 @@ pub fn missing_brief(r: &RecipeDef, inv: &Inventory, items: &[ItemDef]) -> Optio
 
 /// Can `r` be made once from what `inv` carries and holds? See [`check_times`].
 pub fn check(r: &RecipeDef, inv: &Inventory, items: &[ItemDef]) -> Result<(), String> {
-    check_times(r, inv, items, 1)
+    check_times(r, inv, items, 1)?;
+    if r.repairs.is_some() && mend_target(r, inv, items).is_none() {
+        return Err(NOTHING_TO_MEND.into());
+    }
+    Ok(())
+}
+
+/// Where a mending recipe would mend: the most worn thing with its tag in the hand, the off hand
+/// or carried (`None` if nothing it mends has taken a knock).
+pub fn mend_target(r: &RecipeDef, inv: &Inventory, items: &[ItemDef]) -> Option<MendAt> {
+    let rp = r.repairs.as_ref()?;
+    let fits = |s: &ItemStack| s.used > 0 && items.get(s.item as usize).is_some_and(|d| d.weapon.is_some() && d.has_tag(&rp.tag));
+    let mut best: Option<(u8, MendAt)> = None;
+    let mut consider = |s: &ItemStack, at: MendAt| {
+        if fits(s) && best.is_none_or(|(u, _)| s.used > u) {
+            best = Some((s.used, at));
+        }
+    };
+    if let Some(s) = &inv.hand {
+        consider(s, MendAt::Hand);
+    }
+    if let Some(s) = &inv.off_hand {
+        consider(s, MendAt::OffHand);
+    }
+    for (k, s) in inv.carried.iter().enumerate() {
+        consider(s, MendAt::Carried(k));
+    }
+    best.map(|(_, at)| at)
+}
+
+/// Where a thing being mended is ([`mend_target`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MendAt {
+    Hand,
+    OffHand,
+    Carried(usize),
+}
+
+/// Take `knocks` off the thing at `at`; its name, for the note.
+fn mend(inv: &mut Inventory, at: MendAt, knocks: u8) -> Option<u16> {
+    let s = match at {
+        MendAt::Hand => inv.hand.as_mut()?,
+        MendAt::OffHand => inv.off_hand.as_mut()?,
+        MendAt::Carried(k) => inv.carried.get_mut(k)?,
+    };
+    s.used = s.used.saturating_sub(knocks);
+    Some(s.item)
 }
 
 /// Seconds a recipe of `secs` takes at Handiwork `level` (#46), with the built-in skill numbers
@@ -397,6 +478,9 @@ impl World {
         if r.heat && !self.heat_for(pi) {
             return Err(NEEDS_HEAT.into());
         }
+        if r.water && !self.water_for(pi) {
+            return Err(crate::power::NEEDS_WATER.into());
+        }
         match r.places {
             Some(crate::fire::Placed::Campfire) => self.campfire_spot(pi).map(Some),
             None => Ok(None),
@@ -431,6 +515,13 @@ impl World {
                 return Err(format!("can't {}: the {} is gone", lower(&r.name), amount(items, &x.item, 1)));
             }
         }
+        let mended = match &r.repairs {
+            Some(rp) => {
+                let at = mend_target(&r, &inv, items).ok_or_else(|| format!("can't {}: {NOTHING_TO_MEND}", lower(&r.name)))?;
+                mend(&mut inv, at, rp.knocks)
+            }
+            None => None,
+        };
         for g in &floor {
             if let Some(k) = self.items.iter().position(|it| it.id == g.id) {
                 if g.stack.count == 0 {
@@ -470,6 +561,7 @@ impl World {
             let name = amount(&self.config.items, &x.item, 1);
             made.push(if x.count > 1 { format!("{} x {name}", x.count) } else { name });
         }
+        let mended = mended.map(|i| self.config.items[i as usize].name.to_lowercase());
         if let Some(at) = place {
             let fuel: Vec<(u16, u16)> = r.inputs.iter().filter_map(|x| Some((index_of(&self.config.items, &x.item)?, x.count))).collect();
             let fire = self.place_campfire(at, &fuel);
@@ -480,7 +572,11 @@ impl World {
         self.script_event(crate::script::ScriptEvent::Crafted { player: id, recipe });
         self.refresh_carry(pi);
         let floor = if dropped.is_empty() { String::new() } else { format!(" ({} at your feet: no room)", dropped.join(" and ")) };
-        Ok(format!("made {} from {used}{floor}", made.join(" and ")))
+        Ok(match mended {
+            Some(m) if made.is_empty() => format!("mended the {m} with {used}"),
+            Some(m) => format!("mended the {m} and made {} from {used}{floor}", made.join(" and ")),
+            None => format!("made {} from {used}{floor}", made.join(" and ")),
+        })
     }
 }
 
