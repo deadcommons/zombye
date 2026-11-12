@@ -218,6 +218,9 @@ const ORIG: [u8; 4] = *b"ORIG";
 /// Trees chopped at and felled (`crate::trees::TreeSave`), written straight after `MAPD`; only
 /// when there are any, so adding it didn't change the format version.
 const TREE: [u8; 4] = *b"TREE";
+/// Deadwood laid out near players and taken (`crate::trees::DeadwoodSave`); only when there is
+/// any, so adding it didn't change the format version.
+const DEAD: [u8; 4] = *b"DEAD";
 const END: [u8; 4] = *b"END\0";
 /// Bytes before the first section: magic and version.
 const HEADER: usize = 12;
@@ -912,6 +915,9 @@ impl World {
         if !fires.list.is_empty() || fires.next_id > 1 {
             w.section(FIRE, &encode(fires));
         }
+        if !trees.deadwood_is_empty() {
+            w.section(DEAD, &encode(&trees.deadwood_save()));
+        }
         let levels: Vec<(u32, u8)> = players.iter().filter(|p| p.state.level > 0).map(|p| (p.id, p.state.level)).collect();
         let up_items: Vec<u32> = upstairs.iter().copied().filter(|id| items.binary_search_by_key(id, |it| it.id).is_ok()).collect();
         if !levels.is_empty() || !up_items.is_empty() {
@@ -1135,6 +1141,7 @@ impl World {
         let mut shoved: Option<Vec<crate::combat::Shoved>> = None;
         let mut levels: Option<(Vec<(u32, u8)>, Vec<u32>)> = None;
         let mut fires: Option<crate::fire::Fires> = None;
+        let mut dead: Option<crate::trees::DeadwoodSave> = None;
         let mut bags: Option<Vec<(u32, Vec<u8>)>> = None;
         loop {
             let (tag, payload) = r.next()?;
@@ -1215,6 +1222,10 @@ impl World {
                 fires = Some(decode(FIRE, payload)?);
                 continue;
             }
+            if tag == DEAD && dead.is_none() {
+                dead = Some(decode(DEAD, payload)?);
+                continue;
+            }
             if tag == SHOV && shoved.is_none() {
                 shoved = Some(decode(SHOV, payload)?);
                 continue;
@@ -1223,7 +1234,7 @@ impl World {
                 script = Some(decode(MODS, payload)?);
                 continue;
             }
-            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || origins.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || power.is_some() || shoved.is_some() || blinds.is_some() || levels.is_some() || bags.is_some() || fires.is_some() || seats.is_some() {
+            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || origins.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || power.is_some() || shoved.is_some() || blinds.is_some() || levels.is_some() || bags.is_some() || fires.is_some() || seats.is_some() || dead.is_some() {
                 return Err(corrupt(format!("unexpected {} section", tag_name(tag))));
             }
             let block: ZombieBlock = decode(ZOMB, payload)?;
@@ -1386,6 +1397,9 @@ impl World {
                 Ok(()) => w.fires = f,
                 Err(why) => return Err(save_check::invalid(why)),
             }
+        }
+        if let Some(d) = dead {
+            w.restore_deadwood(d).map_err(save_check::invalid)?;
         }
         if let Some(p) = power {
             match crate::power::Power::from_save(p, &w.map) {

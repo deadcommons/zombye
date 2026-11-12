@@ -15,10 +15,19 @@
 //! [`TreeChange`] (`World::take_tree_changes`), and a joining client gets every stump
 //! (`World::stumps`).
 //!
+//! **Deadwood:** fallen logs lie about the forest floor (`deadwood_spot`: a seeded share of the
+//! open forest tiles, `ChopTuning::deadwood_chance`). They are real ground items, but only near
+//! someone: every `deadwood_every_ticks` the world lays one on each spot within `deadwood_reach`
+//! of a player, and takes back again the ones nobody touched once every player is
+//! `deadwood_reach + DEADWOOD_SLACK` away, so a big forest costs nothing until it is walked
+//! through. A log picked up, sawn, split or moved is gone from its spot for good. `Trees::dead_out`
+//! (spots with their log lying there, by its item id) and `Trees::dead_gone` (spots taken) are
+//! saved (the optional `DEAD` section) and in `state_hash` only while there are any.
+//!
 //! Every number is in [`ChopTuning`] (`WorldConfig::chop`, serde defaults, saved with the
 //! settings; ours).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use glam::{IVec2, Vec2};
 use serde::{Deserialize, Serialize};
@@ -56,7 +65,16 @@ pub struct ChopTuning {
     pub chop_xp: f32,
     /// Strength XP for felling a tree.
     pub fell_xp: f32,
+    /// Share of open forest tiles with a fallen log lying on them (0: none).
+    pub deadwood_chance: f32,
+    /// Logs are laid on the deadwood spots within this many metres of a player.
+    pub deadwood_reach: f32,
+    /// How often (ticks) the deadwood near players is laid out and taken back.
+    pub deadwood_every_ticks: u32,
 }
+
+/// Untouched deadwood is taken back once every player is this much further off than the reach.
+pub const DEADWOOD_SLACK: f32 = 20.0;
 
 impl Default for ChopTuning {
     fn default() -> Self {
@@ -72,6 +90,9 @@ impl Default for ChopTuning {
             endurance_mult: 0.5,
             chop_xp: 0.5,
             fell_xp: 4.0,
+            deadwood_chance: 0.006,
+            deadwood_reach: 45.0,
+            deadwood_every_ticks: 20,
         }
     }
 }
@@ -85,6 +106,9 @@ impl ChopTuning {
         }
         if !ok(self.damage_mult, 0.0, 100.0) || !ok(self.fall_noise, 0.0, 1000.0) || !ok(self.chop_xp, 0.0, 1000.0) || !ok(self.fell_xp, 0.0, 1000.0) || !ok(self.endurance_mult, 0.0, 10.0) {
             return Err("chop settings: damage_mult, fall_noise, endurance_mult or XP out of range".into());
+        }
+        if !ok(self.deadwood_chance, 0.0, 0.2) || !ok(self.deadwood_reach, 5.0, 200.0) || !(1..=1200).contains(&self.deadwood_every_ticks) {
+            return Err("chop settings: deadwood_chance 0 to 0.2, deadwood_reach 5 to 200 m, deadwood_every_ticks 1 to 1200".into());
         }
         if self.tree_logs > 20 || self.pine_logs > 20 {
             return Err("chop settings: at most 20 logs a tree".into());
@@ -134,6 +158,17 @@ pub struct Trees {
     pub(crate) changes: Vec<TreeChange>,
     /// Chops this tick.
     pub(crate) events: Vec<ChopEvent>,
+    /// Deadwood spots whose log lies there now, by tile: the log's ground item id. Saved.
+    pub(crate) dead_out: BTreeMap<(i32, i32), u32>,
+    /// Deadwood spots whose log was taken (picked up, used, moved). Saved.
+    pub(crate) dead_gone: BTreeSet<(i32, i32)>,
+}
+
+/// What a save keeps of the deadwood (`DEAD`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub(crate) struct DeadwoodSave {
+    pub out: Vec<((i32, i32), u32)>,
+    pub gone: Vec<(i32, i32)>,
 }
 
 /// What a save keeps of the trees (`TREE`).
@@ -152,7 +187,26 @@ impl Trees {
         TreeSave { hp: self.hp.iter().map(|(&k, &v)| (k, v)).collect(), felled: self.felled.iter().map(|(&k, &v)| (k, v)).collect() }
     }
 
+    pub(crate) fn deadwood_is_empty(&self) -> bool {
+        self.dead_out.is_empty() && self.dead_gone.is_empty()
+    }
+
+    pub(crate) fn deadwood_save(&self) -> DeadwoodSave {
+        DeadwoodSave { out: self.dead_out.iter().map(|(&k, &v)| (k, v)).collect(), gone: self.dead_gone.iter().copied().collect() }
+    }
+
     pub(crate) fn hash(&self, mix: &mut impl FnMut(u32)) {
+        for (&(x, y), &id) in &self.dead_out {
+            mix(0x4457_0000);
+            mix(x as u32);
+            mix(y as u32);
+            mix(id);
+        }
+        for &(x, y) in &self.dead_gone {
+            mix(0x4447_0000);
+            mix(x as u32);
+            mix(y as u32);
+        }
         for (&(x, y), hp) in &self.hp {
             mix(0x5452_0000);
             mix(x as u32);
@@ -165,6 +219,26 @@ impl Trees {
             mix(y as u32);
         }
     }
+}
+
+/// Whether a fallen log lies on tile `t` of a new world: open ground in the forest (outside town,
+/// off the roads, nothing standing on it, a tree within two tiles), picked by a hash of the seed and the tile. Pure.
+pub fn deadwood_spot(map: &crate::map::TileMap, town: &crate::worldgen::Town, seed: u64, chance: f32, t: IVec2) -> bool {
+    if chance <= 0.0 || !map.in_bounds(t) || crate::rng::hash01(seed ^ 0xDEAD_D00D, t.x as u64, t.y as u64, 0) >= chance {
+        return false;
+    }
+    let tile = map.tile(t);
+    if tile.room != 0 || tile.feature != Feature::None || tile.floor.is_road() || map.street_prop(t).is_some() {
+        return false;
+    }
+    if t.x >= town.min.x && t.y >= town.min.y && t.x < town.max.x && t.y < town.max.y {
+        return false;
+    }
+    // Under trees: a tree within two tiles.
+    (-2..=2).any(|dy| (-2..=2).any(|dx| {
+        let n = t + IVec2::new(dx, dy);
+        map.in_bounds(n) && matches!(map.tile(n).feature, Feature::Tree | Feature::PineTree)
+    }))
 }
 
 /// The tree nearest `origin` whose trunk a blow facing `facing` with reach `range` (to the bark)
@@ -307,6 +381,94 @@ impl World {
             let s = self.fresh_stack(log, 1);
             self.put_on_floor(s, at, angle + std::f32::consts::FRAC_PI_2, 0);
         }
+    }
+
+    /// Lay out the deadwood near players and take back what nobody touched far from all of them
+    /// (`ChopTuning::deadwood_*`). Every `deadwood_every_ticks`, from `World::step`.
+    pub(crate) fn step_deadwood(&mut self) {
+        let tune = &self.config.chop;
+        if tune.deadwood_chance <= 0.0 || self.tick % tune.deadwood_every_ticks as u64 != 0 {
+            return;
+        }
+        let (chance, reach) = (tune.deadwood_chance, tune.deadwood_reach);
+        let Some(log) = self.item_index(&tune.log_item.clone()) else { return };
+        let eyes: Vec<Vec2> = self.players.iter().map(|p| p.state.pos).collect();
+        // Logs out: taken if touched, taken back if untouched and nobody is near.
+        let far = (reach + DEADWOOD_SLACK) * (reach + DEADWOOD_SLACK);
+        let mut back: Vec<u32> = Vec::new();
+        let out: Vec<((i32, i32), u32)> = self.trees.dead_out.iter().map(|(&k, &v)| (k, v)).collect();
+        for (k, id) in out {
+            let lies = Self::deadwood_pos(self.config.generation.seed, IVec2::new(k.0, k.1));
+            let untouched = self.items.binary_search_by_key(&id, |it| it.id).ok().map(|i| &self.items[i]).filter(|it| it.stack.item == log && it.stack.count == 1 && it.pos.distance_squared(lies.0) < 1e-4 && !self.upstairs.contains(&id));
+            match untouched {
+                None => {
+                    self.trees.dead_out.remove(&k);
+                    self.trees.dead_gone.insert(k);
+                }
+                Some(_) if eyes.iter().all(|e| e.distance_squared(lies.0) > far) => {
+                    self.trees.dead_out.remove(&k);
+                    back.push(id);
+                }
+                Some(_) => {}
+            }
+        }
+        if !back.is_empty() {
+            back.sort_unstable();
+            self.items.retain(|it| back.binary_search(&it.id).is_err());
+        }
+        if eyes.is_empty() {
+            return;
+        }
+        // Spots in reach of anyone with no log out and not taken: lay one.
+        let town = self.town();
+        let r = reach.ceil() as i32;
+        let mut new: BTreeSet<(i32, i32)> = BTreeSet::new();
+        for e in &eyes {
+            let c = e.floor().as_ivec2();
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    let t = c + IVec2::new(dx, dy);
+                    let k = (t.x, t.y);
+                    if (dx * dx + dy * dy) as f32 > reach * reach || self.trees.dead_out.contains_key(&k) || self.trees.dead_gone.contains(&k) || new.contains(&k) {
+                        continue;
+                    }
+                    if deadwood_spot(&self.map, &town, self.config.generation.seed, chance, t) {
+                        new.insert(k);
+                    }
+                }
+            }
+        }
+        for k in new {
+            let (pos, angle) = Self::deadwood_pos(self.config.generation.seed, IVec2::new(k.0, k.1));
+            let stack = self.fresh_stack(log, 1);
+            let id = self.next_item_id;
+            self.next_item_id += 1;
+            self.items.push(crate::items::GroundItem { id, stack, pos, angle });
+            self.trees.dead_out.insert(k, id);
+        }
+    }
+
+    /// Where on its tile a deadwood log lies, and which way.
+    fn deadwood_pos(seed: u64, t: IVec2) -> (Vec2, f32) {
+        let h = |c: u64| crate::rng::hash01(seed ^ 0xDEAD_D00D, t.x as u64, t.y as u64, c);
+        (t.as_vec2() + Vec2::new(0.3 + 0.4 * h(1), 0.3 + 0.4 * h(2)), h(3) * std::f32::consts::TAU)
+    }
+
+    /// Put the saved deadwood back (load).
+    pub(crate) fn restore_deadwood(&mut self, save: DeadwoodSave) -> Result<(), String> {
+        if save.out.windows(2).any(|p| p[0].0 >= p[1].0) || save.gone.windows(2).any(|p| p[0] >= p[1]) {
+            return Err("deadwood out of order".into());
+        }
+        self.trees.dead_gone = save.gone.into_iter().collect();
+        // A log dropped on load (its item gone from the game data) leaves its spot taken.
+        for (k, id) in save.out {
+            if self.items.binary_search_by_key(&id, |it| it.id).is_ok() {
+                self.trees.dead_out.insert(k, id);
+            } else {
+                self.trees.dead_gone.insert(k);
+            }
+        }
+        Ok(())
     }
 
     /// Put the saved trees on a map regenerated from the seed (load): stumps where trees were

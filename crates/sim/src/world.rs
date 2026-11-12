@@ -1311,6 +1311,8 @@ impl World {
         self.step_power();
         // Fires burn down, crackle and burn what stands in them (`crate::fire`).
         self.step_fires(hours, TICK_DT);
+        // Fallen logs lie about the forest near players (`crate::trees`).
+        self.step_deadwood();
         // Fitness or Strength went up: the snapshot carries the new movement.
         self.refresh_skill_mods();
         // Spawn protection runs down; logged-out survivors whose time is up leave the world (#68).

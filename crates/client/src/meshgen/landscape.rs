@@ -1655,9 +1655,8 @@ fn soft_tile(paint: &mut Paint, mb: &mut MeshBuilder, props: &mut MeshBuilder, l
             rock(mb, at, 0.18 + 0.2 * hash01(x, y, 125), hash01(x, y, 126));
         } else if roll < 0.32 {
             stump(mb, at, 0.18 + 0.1 * hash01(x, y, 127), hash01(x, y, 128));
-        } else if roll < 0.34 {
-            log(mb, at, 1.1 + 0.6 * hash01(x, y, 129), 0.13 + 0.06 * hash01(x, y, 130), hash01(x, y, 131));
         }
+        // Fallen logs are real wood now, lying about the forest as ground items (`sim::trees`).
     } else if trees > 0 && !dirt && roll < 0.07 {
         // Scrub where town meets the trees.
         add_bush(props, x, y, at, 0.5 + 0.25 * hash01(x, y, 132));
@@ -1756,29 +1755,6 @@ fn felled_stump(mb: &mut MeshBuilder, x: i32, y: i32) {
         tri_out(mb, [ring(i, 0.0, r * 1.25), ring(i + 1, 0.0, r * 1.25), ring(i + 1, top(i + 1), r)], inside, bark);
         tri_out(mb, [ring(i, 0.0, r * 1.25), ring(i + 1, top(i + 1), r), ring(i, top(i), r)], inside, bark);
         tri_up(mb, [p + Vec3::Y * h, ring(i, top(i), r), ring(i + 1, top(i + 1), r)], pal().cut_wood);
-    }
-}
-
-/// A fallen log: a six-sided tube lying on the ground with cut ends.
-fn log(mb: &mut MeshBuilder, p: Vec3, len: f32, r: f32, k: f32) {
-    let a = k * TAU;
-    let dir = Vec3::new(a.cos(), 0.0, a.sin());
-    let side = Vec3::new(-dir.z, 0.0, dir.x);
-    let centre = p + Vec3::Y * r * 0.85;
-    let ring = |i: u32, end: f32| {
-        let ang = i as f32 * TAU / 6.0;
-        centre + dir * end + (side * ang.cos() + Vec3::Y * ang.sin()) * r
-    };
-    let (e0, e1) = (-len * 0.5, len * 0.5);
-    for i in 0..6 {
-        tri_out(mb, [ring(i, e0), ring(i + 1, e0), ring(i + 1, e1)], centre, pal().deadwood);
-        tri_out(mb, [ring(i, e0), ring(i + 1, e1), ring(i, e1)], centre, pal().deadwood);
-    }
-    for e in [e0, e1] {
-        let mid = centre + dir * e;
-        for i in 0..6 {
-            tri_out(mb, [mid, ring(i, e), ring(i + 1, e)], centre, pal().cut_wood);
-        }
     }
 }
 

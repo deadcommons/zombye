@@ -29,6 +29,8 @@ fn config(seed: u64) -> WorldConfig {
 /// An empty field with a broadleaf a metre east of a player at `ORIGIN` holding `held`.
 fn field(held: &str) -> (World, u32) {
     let mut w = World::new(config(3));
+    // No deadwood: the logs counted are the tree's.
+    w.config.chop.deadwood_chance = 0.0;
     w.map = TileMap::new(w.map.width() / crate::map::CHUNK_SIZE, w.map.height() / crate::map::CHUNK_SIZE);
     w.map.tile_mut(TREE).unwrap().feature = Feature::Tree;
     w.map_changed();
@@ -230,4 +232,46 @@ fn a_log_on_the_floor_is_sawn_where_it_lies() {
     let carried: u16 = w.player(id).unwrap().inventory.carried.iter().filter(|s| s.item == plank).map(|s| s.count).sum();
     let lying: u16 = w.items().iter().filter(|it| it.stack.item == plank).map(|it| it.stack.count).sum();
     assert_eq!(carried + lying, 3);
+}
+
+/// Deadwood: logs lie on the forest's spots near a player, go back when nobody is near, and a
+/// log taken is gone from its spot for good; a save keeps it all.
+#[test]
+fn deadwood_lies_near_players_and_is_taken_back() {
+    let mut w = World::new(config(5));
+    let town = w.town();
+    let seed = w.config.generation.seed;
+    let chance = w.config.chop.deadwood_chance;
+    let spot = (0..w.map.height() as i32)
+        .flat_map(|y| (0..w.map.width() as i32).map(move |x| IVec2::new(x, y)))
+        .find(|&t| t.x > 50 && t.y > 50 && deadwood_spot(&w.map, &town, seed, chance, t))
+        .expect("a deadwood spot");
+    let start = w.items.len();
+    let id = w.add_player(spot.as_vec2() + Vec2::new(0.5, 3.0));
+    for _ in 0..w.config.chop.deadwood_every_ticks {
+        w.step();
+    }
+    let k = (spot.x, spot.y);
+    let log = *w.trees.dead_out.get(&k).expect("a log on the spot");
+    assert!(w.items.iter().any(|it| it.id == log && it.pos.floor().as_ivec2() == spot));
+    let laid = w.items.len() - start;
+    assert!(laid >= 1 && laid < 200, "{laid} logs");
+    // A save keeps them, and the world carries on the same.
+    let mut copy = World::load(&w.save(), &w.config).expect("loads");
+    assert_eq!(copy.state_hash(), w.state_hash());
+    // Taken: gone from its spot, and not laid again.
+    w.items.retain(|it| it.id != log);
+    for _ in 0..w.config.chop.deadwood_every_ticks {
+        w.step();
+        copy.step();
+    }
+    assert!(w.trees.dead_gone.contains(&k) && !w.trees.dead_out.contains_key(&k));
+    // Far away: the untouched ones are taken back.
+    w.players[0].state.pos = Vec2::new(5.0, 5.0);
+    let _ = (&mut copy, id);
+    for _ in 0..w.config.chop.deadwood_every_ticks {
+        w.step();
+    }
+    assert!(w.trees.dead_out.keys().all(|&(x, y)| Vec2::new(x as f32, y as f32).distance(Vec2::splat(5.0)) < 70.0));
+    assert!(w.trees.dead_gone.contains(&k));
 }
