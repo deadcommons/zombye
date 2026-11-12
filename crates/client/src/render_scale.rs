@@ -79,7 +79,7 @@ fn target_image(size: UVec2) -> Image {
         TextureDimension::D2,
         &[0, 0, 0, 255],
         TextureFormat::Rgba8UnormSrgb,
-        if std::env::var("ZOMBYE_TRY_GPU_TARGET").is_ok() { RenderAssetUsages::RENDER_WORLD } else { RenderAssetUsages::default() },
+        RenderAssetUsages::default(),
     );
     image.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::RENDER_ATTACHMENT;
     image.sampler = ImageSampler::linear();
@@ -105,7 +105,7 @@ fn apply(
         (true, None) => {
             let image = images.add(target_image(size));
             *target = RenderTarget::Image(image.clone().into());
-            commands.entity(cam).remove::<IsDefaultUiCamera>().insert(ContrastAdaptiveSharpening { enabled: std::env::var("ZOMBYE_TRY_NO_CAS").is_err(), sharpening_strength: SHARPEN, denoise: false });
+            commands.entity(cam).remove::<IsDefaultUiCamera>().insert(ContrastAdaptiveSharpening { enabled: true, sharpening_strength: SHARPEN, denoise: false });
             let ui_camera = commands
                 .spawn((Camera2d, Camera { order: 1, clear_color: ClearColorConfig::Custom(Color::BLACK), ..default() }, RenderTarget::Window(WindowRef::Primary), Msaa::Off, IsDefaultUiCamera))
                 .id();
