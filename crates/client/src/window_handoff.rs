@@ -24,6 +24,10 @@ use bevy::window::PrimaryWindow;
 
 /// Set for the next run when this one's window was full screen.
 pub const VAR: &str = "ZOMBYE_WINDOW_FULLSCREEN";
+/// Where this run's window stood (its outer top left corner, physical pixels: `x,y`), so the next
+/// run's opens on the same monitor, in the same place, rather than wherever the system puts a new
+/// window (with two monitors, often the other one).
+pub const AT_VAR: &str = "ZOMBYE_WINDOW_AT";
 /// Frames the window has been out of full screen before the exit goes on.
 const SETTLED_FRAMES: u32 = 3;
 /// The longest an exit is held back.
@@ -31,6 +35,27 @@ const GIVE_UP: Duration = Duration::from_secs(3);
 
 /// Whether this run's window was full screen when it handed over.
 static WAS_FULLSCREEN: AtomicBool = AtomicBool::new(false);
+
+/// Where this run's window stood when it handed over.
+static WAS_AT: std::sync::Mutex<Option<IVec2>> = std::sync::Mutex::new(None);
+
+/// Where the run before this one left its window, if it said.
+pub fn position_asked() -> Option<IVec2> {
+    parse_at(&std::env::var(AT_VAR).ok()?)
+}
+
+fn parse_at(s: &str) -> Option<IVec2> {
+    let (x, y) = s.split_once(',')?;
+    Some(IVec2::new(x.trim().parse().ok()?, y.trim().parse().ok()?))
+}
+
+/// Where a new window opens: where the last run's was, else in the middle of the main monitor.
+pub fn first_position() -> bevy::window::WindowPosition {
+    match position_asked() {
+        Some(at) => bevy::window::WindowPosition::At(at),
+        None => bevy::window::WindowPosition::Centered(bevy::window::MonitorSelection::Primary),
+    }
+}
 
 /// Whether this run was started by one whose window was full screen.
 pub fn fullscreen_asked() -> bool {
@@ -44,6 +69,10 @@ pub fn pass_on(command: &mut std::process::Command) {
     } else {
         command.env_remove(VAR);
     }
+    match WAS_AT.lock().ok().and_then(|a| *a) {
+        Some(at) => command.env(AT_VAR, format!("{},{}", at.x, at.y)),
+        None => command.env_remove(AT_VAR),
+    };
 }
 
 fn enabled() -> bool {
@@ -69,11 +98,10 @@ pub struct HandoffPlugin;
 
 impl Plugin for HandoffPlugin {
     fn build(&self, app: &mut App) {
-        if enabled() {
-            // Before anything that acts on the exit (the autosave), so a held exit is seen by
-            // nobody until it goes on.
-            app.add_systems(Last, hold_exit.before(OnAppExitSystems));
-        }
+        // Before anything that acts on the exit (the autosave), so a held exit is seen by
+        // nobody until it goes on. (Everywhere it notes where the window is; only where
+        // `enabled` does it hold the exit for full screen.)
+        app.add_systems(Last, hold_exit.before(OnAppExitSystems));
     }
 }
 
@@ -90,7 +118,16 @@ fn hold_exit(_main: NonSendMarker, mut exits: ResMut<Messages<AppExit>>, window:
     let begin = held.since.is_none();
     let full = bevy::winit::WINIT_WINDOWS.with_borrow(|windows| {
         let window = windows.get_window(entity)?;
+        if begin && let Ok(p) = window.outer_position() {
+            // (Full screen, the monitor's own corner: the next window opens on that monitor.)
+            if let Ok(mut at) = WAS_AT.lock() {
+                *at = Some(IVec2::new(p.x, p.y));
+            }
+        }
         let full = window.fullscreen().is_some();
+        if !enabled() {
+            return Some(false);
+        }
         if full && begin {
             window.set_fullscreen(None);
         }
@@ -117,6 +154,14 @@ fn hold_exit(_main: NonSendMarker, mut exits: ResMut<Messages<AppExit>>, window:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn where_the_window_stood_is_read_back() {
+        assert_eq!(parse_at("-1920,25"), Some(IVec2::new(-1920, 25)));
+        assert_eq!(parse_at(" 40 , 60"), Some(IVec2::new(40, 60)));
+        assert_eq!(parse_at("40"), None);
+        assert_eq!(parse_at("a,b"), None);
+    }
 
     #[test]
     fn a_held_exit_goes_on_once_the_window_is_out_or_time_is_up() {

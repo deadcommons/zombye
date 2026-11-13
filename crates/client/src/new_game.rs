@@ -398,7 +398,8 @@ pub fn run(options: Options) -> ! {
         .init_resource::<Front>()
         .add_systems(Startup, setup)
         .add_systems(First, crate::exit_on_signal)
-        .add_systems(Update, (keys, act, draw, dress, pose).chain());
+        .init_resource::<PickScroll>()
+        .add_systems(Update, ((keys, act, draw, dress, pose).chain(), scroll_picks.after(draw)));
     let failed = app.run().is_error();
     if let Some(next) = take_relaunch() {
         crate::relaunch(next);
@@ -451,7 +452,7 @@ pub struct NewGamePlugin;
 
 impl Plugin for NewGamePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Front>().add_systems(Update, (enter, setup.run_if(resource_added::<Screen>), (keys, act, draw, dress, pose).chain().run_if(resource_exists::<Screen>)).chain());
+        app.init_resource::<Front>().init_resource::<PickScroll>().add_systems(Update, ((enter, setup.run_if(resource_added::<Screen>), (keys, act, draw, dress, pose).chain().run_if(resource_exists::<Screen>)).chain(), scroll_picks.after(draw)));
     }
 }
 
@@ -506,8 +507,9 @@ struct Joints(Vec<Entity>);
 
 /// Where the survivor stands, and where the camera looks from: it stands left of the middle of
 /// the picture, in the space the sheet leaves.
-const CAMERA_AT: Vec3 = Vec3::new(2.94, 0.6, 23.9);
-const CAMERA_LOOKS_AT: Vec3 = Vec3::new(2.94, 0.19, 0.0);
+/// Low enough that the feet stand clear of the wardrobe under them.
+const CAMERA_AT: Vec3 = Vec3::new(2.94, 0.32, 23.9);
+const CAMERA_LOOKS_AT: Vec3 = Vec3::new(2.94, -0.09, 0.0);
 
 #[allow(clippy::too_many_arguments)]
 fn setup(
@@ -685,6 +687,54 @@ struct Root;
 struct Detail;
 
 const ROW_H: f32 = 30.0;
+
+/// The Strengths' and Flaws' lists, which scroll: which one, 0 or 1.
+#[derive(Component)]
+struct PickList(usize);
+
+/// The line under a list that says there is more of it out of sight.
+#[derive(Component)]
+struct MoreBelow(usize);
+
+/// Where each list was scrolled to, kept while the screen is drawn again after a click.
+#[derive(Resource, Default)]
+struct PickScroll([f32; 2]);
+
+/// The wheel over a list scrolls it; the line under it says when more is out of sight.
+fn scroll_picks(
+    mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
+    window: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    mut kept: ResMut<PickScroll>,
+    mut lists: Query<(&PickList, &ComputedNode, &UiGlobalTransform, &mut ScrollPosition)>,
+    mut more: Query<(&MoreBelow, &mut Visibility)>,
+) {
+    use bevy::input::mouse::MouseScrollUnit;
+    let px = wheel.read().map(|ev| if ev.unit == MouseScrollUnit::Line { ev.y * 40.0 } else { ev.y }).fold(0.0, |a, b| a + b);
+    let cursor = window.single().ok().and_then(|w| w.physical_cursor_position());
+    let mut hidden = [0.0f32; 2];
+    for (which, node, at, mut pos) in &mut lists {
+        let k = which.0.min(1);
+        // Physical pixels to UI pixels, as `ScrollPosition` is.
+        let max = ((node.content_size.y - node.size.y) * node.inverse_scale_factor()).max(0.0);
+        let mut y = kept.0[k].min(max);
+        if px != 0.0 && cursor.is_some_and(|c| node.contains_point(*at, c)) {
+            y = crate::hud::scrolled(y, px, max);
+        }
+        if pos.y != y {
+            pos.y = y;
+        }
+        if kept.0[k] != y && (px != 0.0 || max > 0.0) {
+            kept.0[k] = y;
+        }
+        hidden[k] = max - y;
+    }
+    for (which, mut v) in &mut more {
+        let want = if hidden[which.0.min(1)] > 2.0 { Visibility::Inherited } else { Visibility::Hidden };
+        if *v != want {
+            *v = want;
+        }
+    }
+}
 
 fn draw(mut commands: Commands, mut screen: ResMut<Screen>, root: Option<Single<Entity, With<Root>>>) {
     if !screen.dirty {
@@ -994,6 +1044,8 @@ fn picks(cols: &mut ChildSpawnerCommands, screen: &Screen) {
                     line(top, "a Flaw gives points back", font(SMALL), DIM);
                 }
             });
+            let which = if strengths { 0 } else { 1 };
+            list.spawn((PickList(which), ScrollPosition(Vec2::ZERO), Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, flex_basis: px(0), min_height: px(0), row_gap: px(4), overflow: Overflow::scroll_y(), ..default() })).with_children(|list| {
             for (k, p) in from.iter().enumerate() {
                 let on = picked.contains(&p.id);
                 let clash = (!on).then(|| screen.clash(p)).flatten();
@@ -1005,16 +1057,25 @@ fn picks(cols: &mut ChildSpawnerCommands, screen: &Screen) {
                 }
                 let off = clash.is_some();
                 let kind = if strengths { STRENGTH } else { RUST };
-                row(list, on, act, about).with_children(|r| {
+                let mut e = row(list, on, act, about);
+                // Two lines: the name, and under it what it does, wrapping rather than cut off.
+                e.entry::<Node>().and_modify(|mut n| {
+                    n.height = Val::Auto;
+                    n.min_height = px(ROW_H);
+                    n.padding = UiRect::axes(px(10), px(5));
+                });
+                e.with_children(|r| {
                     mark(r, on, false);
                     sign(r, strengths, if off { FAINT } else { kind });
-                    line(r, p.name.clone(), font(BODY), if off { FAINT } else { BONE });
-                    r.spawn((Node { flex_grow: 1.0, flex_basis: px(0), min_width: px(0), overflow: Overflow::clip(), ..default() }, Pickable::IGNORE)).with_children(|n| {
-                        line(n, clash.map_or_else(|| effects_text(p), |c| format!("not with {}", c.name)), font(SMALL), if off { FAINT } else { DIM });
+                    r.spawn((Node { flex_grow: 1.0, flex_basis: px(0), min_width: px(0), flex_direction: FlexDirection::Column, ..default() }, Pickable::IGNORE)).with_children(|n| {
+                        line(n, p.name.clone(), font(BODY), if off { FAINT } else { BONE });
+                        text(n, clash.map_or_else(|| effects_text(p), |c| format!("not with {}", c.name)), font(SMALL), if off { FAINT } else { DIM });
                     });
                     line(r, format!("{}{}", if strengths { "" } else { "+" }, p.points), theme::strong(BODY), if dear { RED } else if off { FAINT } else { BONE });
                 });
             }
+            });
+            list.spawn((MoreBelow(which), Text::new("More below: scroll"), font(SMALL), TextColor(DIM), TextLayout::no_wrap(), Visibility::Hidden, Node { align_self: AlignSelf::Center, flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
         });
     }
 }
