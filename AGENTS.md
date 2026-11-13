@@ -1690,7 +1690,7 @@ A new single-player game can begin with a survivor of your making in a world of 
   over an inventory (`crafting::check` / `check_times`, which the inventory panel uses too), taking the recipe's `secs`
   (`World::craft_secs`: Handiwork, #46, `SkillTuning::craft_time_mult`, 5% faster a level down to half; each craft done
   gives 5 Handiwork XP in `World::on_crafted`, see Skills). Inputs and tools are what the player
-  carries and holds (`firstaid::usable`) and what lies on its floor in reach (`crafting::with_floor`, `World::floor_of`: a log too big for any bag is sawn where it lies; the client's Make list and a floor item's right-click menu go by the same), not what it wears (the refusal says to take it off); only whole items count
+  carries and holds (`firstaid::usable`), what lies on its floor in reach (`crafting::with_floor`, `World::floor_of`: a log too big for any bag is sawn where it lies) and what is in the container it has open (`World::craft_stock`; inputs are taken from there last; the client's Make list and right-click menus go by the same, `inventory_ui::stock`), not what it wears (the refusal says to take it off); only whole items count
   as inputs (`crafting::whole`: the part-used top one of a stack doesn't). Like eating, it doesn't stop you walking; a
   strike landing drops queued crafts with the treatments (`interrupt_treatment`), and swinging, shoving or stomping
   drops the whole queue; a sleeper's `Craft` only gets it up. Asking again for a recipe already queued queues another
@@ -1703,7 +1703,7 @@ A new single-player game can begin with a survivor of your making in a world of 
   recipe index out of range is `LoadError::Invalid`.
 - **Client:** Make is the second screen on the inventory screen's rail (`inventory_ui.rs`, `make_column`, `make`):
   every recipe; the ones you can make (by `crafting::check` over your private view) are rows to click (one request
-  until the answer, like moves), with what they make and their time; the one under way shows its seconds left,
+  until the answer, like moves), with what they make and their time; **Shift-click makes all** (as many as there's the stuff for, at most the job queue's room and 16: `crafting::times_can`, one `Intent::Craft` each; a recipe in a right-click menu has a "...: all N" line too, `MenuDo::Many`); the one under way shows its seconds left,
   queued ones how many; the rest say what's missing. No key of its own.
 - **MCP:** `recipes` (the table; read-only), `craft {player, recipe}` (no recipe: what the player can make now, and what
   the rest need; with a recipe id: queues it, steps until done, and says what was made and what changed, carried and on

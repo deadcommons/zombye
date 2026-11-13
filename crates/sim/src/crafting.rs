@@ -366,6 +366,12 @@ pub fn check(r: &RecipeDef, inv: &Inventory, items: &[ItemDef]) -> Result<(), St
     check_times(r, inv, items, 1)
 }
 
+/// How many times over `r` can be made from `inv` (0: not once), counting no further than `cap`:
+/// what "make all" queues.
+pub fn times_can(r: &RecipeDef, inv: &Inventory, items: &[ItemDef], cap: u32) -> u32 {
+    (1..=cap).take_while(|&n| check_times(r, inv, items, n).is_ok()).last().unwrap_or(0)
+}
+
 /// Where a mending recipe would mend: the most worn thing with its tag in the hand, the off hand
 /// or carried (`None` if nothing it mends has taken a knock).
 pub fn mend_target(r: &RecipeDef, inv: &Inventory, items: &[ItemDef]) -> Option<MendAt> {
@@ -479,7 +485,7 @@ impl World {
         let Some(r) = self.config.recipes.get(recipe as usize) else { return self.refuse(id, format!("no recipe {recipe}")) };
         let p = &self.players[pi];
         let queued = p.jobs.iter().filter(|j| j.kind == JobKind::Craft { recipe }).count() as u32;
-        let near = with_floor(&p.inventory, self.floor_of(id).into_iter().map(|g| g.stack));
+        let near = self.craft_stock(pi);
         if let Err(why) = check_times(r, &near, &self.config.items, queued + 1) {
             if queued > 0 {
                 // Already on it (a repeated click), and there's not enough for another.
@@ -494,6 +500,14 @@ impl World {
         }
         let secs = self.handiwork_secs(pi, r.secs);
         self.queue_job(id, JobKind::Craft { recipe }, secs)
+    }
+
+    /// What player `pi` has to craft with: what it carries and holds, what lies on its floor in
+    /// reach, and what is in the container it has open (`with_open`, the client's rule too).
+    pub fn craft_stock(&self, pi: usize) -> Inventory {
+        let p = &self.players[pi];
+        let near = with_floor(&p.inventory, self.floor_of(p.id).into_iter().map(|g| g.stack));
+        with_floor(&near, p.open.and_then(|c| self.opened.get(&c)).into_iter().flatten().copied())
     }
 
     /// What a recipe needs of where player `pi` stands (`crate::fire`): heat to cook with, room
@@ -520,8 +534,11 @@ impl World {
         let mut inv = self.players[pi].inventory.clone();
         let id = self.players[pi].id;
         let mut floor = self.floor_of(id);
-        check(&r, &with_floor(&inv, floor.iter().map(|g| g.stack)), items).map_err(|why| format!("can't {}: {why}", lower(&r.name)))?;
-        // What it carries and holds first, then what lies on its floor.
+        let open = self.players[pi].open.filter(|c| self.opened.contains_key(c));
+        let mut took_shelf = false;
+        let mut shelf: Vec<ItemStack> = open.and_then(|c| self.opened.get(&c)).cloned().unwrap_or_default();
+        check(&r, &self.craft_stock(pi), items).map_err(|why| format!("can't {}: {why}", lower(&r.name)))?;
+        // What it carries and holds first, then what lies on its floor, then the open container.
         let place = self.craft_place_ok(pi, &r).map_err(|why| format!("can't {}: {why}", lower(&r.name)))?;
         for x in &r.inputs {
             let i = index_of(items, &x.item).ok_or_else(|| format!("no item {}", x.item))?;
@@ -534,6 +551,12 @@ impl World {
                 let take = whole(&g.stack).min(rest);
                 g.stack.count -= take;
                 rest -= take;
+            }
+            for c in shelf.iter_mut().filter(|c| c.item == i) {
+                let take = whole(c).min(rest);
+                c.count -= take;
+                rest -= take;
+                took_shelf |= take > 0;
             }
             if rest > 0 {
                 return Err(format!("can't {}: the {} is gone", lower(&r.name), amount(items, &x.item, 1)));
@@ -555,6 +578,11 @@ impl World {
                     self.items[k].stack.count = g.stack.count;
                 }
             }
+        }
+        if let Some(c) = open.filter(|_| took_shelf) {
+            shelf.retain(|c| c.count > 0);
+            self.opened.insert(c, shelf);
+            self.container_changed(c);
         }
         let used = r.inputs.iter().map(|x| if x.count > 1 { amount(items, &x.item, x.count) } else { format!("the {}", amount(items, &x.item, 1)) }).collect::<Vec<_>>().join(" and ");
         self.players[pi].inventory = inv;
@@ -921,6 +949,25 @@ mod tests {
         w.player_treat(id, Some(gash), Treatment::Dress, None).unwrap();
         settle(&mut w, id);
         assert_eq!(me(&w, id).health.wounds.iter().find(|x| x.id == gash).unwrap().dressing, Dressing::Clean);
+    }
+
+    /// What is in the container the player has open counts as its own to craft with, and is
+    /// taken from there.
+    #[test]
+    fn the_open_container_is_crafted_from() {
+        let (mut w, id) = arena(12);
+        let pi = w.players.iter().position(|p| p.id == id).unwrap();
+        let tee = w.item_index("t_shirt").unwrap();
+        w.opened.insert(77, vec![ItemStack::new(tee, 2)]);
+        let r = recipe(&w, "rip_t_shirt");
+        assert!(check(&w.config.recipes[r as usize], &w.craft_stock(pi), &w.config.items).is_err(), "not open: not to hand");
+        w.players[pi].open = Some(77);
+        assert_eq!(times_can(&w.config.recipes[r as usize], &w.craft_stock(pi), &w.config.items, 16), 2);
+        w.do_craft(pi, r).unwrap();
+        assert_eq!((count(&w, id, "rag"), w.opened[&77][0].count), (3, 1));
+        w.do_craft(pi, r).unwrap();
+        assert!(w.opened[&77].is_empty(), "the last one taken");
+        assert!(w.do_craft(pi, r).is_err());
     }
 
     /// Handiwork (#46) makes crafting faster: 5% a level, down to half.

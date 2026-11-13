@@ -3760,11 +3760,13 @@ fn craft_tool(world: &mut World, id: u32, recipe: Option<&str>) -> Result<String
     let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
     let items = &world.config.items;
     let Some(name) = recipe else {
+        // What it carries, the floor in reach and the open container, as the server crafts from.
+        let stock = world.players.iter().position(|q| q.id == id).map(|pi| world.craft_stock(pi)).unwrap_or_else(|| p.inventory.clone());
         let (mut can, mut cant) = (Vec::new(), Vec::new());
         for (k, r) in world.config.recipes.iter().enumerate() {
             let secs = world.craft_secs(id, k as u16).unwrap_or(r.secs);
             let line = format!("  {}: {}: {} [{secs:.1} s for you]", r.id, r.name, crafting::describe(r, items));
-            match crafting::check(r, &p.inventory, items) {
+            match crafting::check(r, &stock, items) {
                 Ok(()) => can.push(line),
                 Err(why) => cant.push(format!("{line}\n      {why}")),
             }
