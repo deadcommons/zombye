@@ -465,7 +465,7 @@ pub struct Options {
     pub flaws: Option<Vec<String>>,
     pub outfit: Option<Vec<String>>,
     pub difficulty: Option<String>,
-    /// `--new-game-tab survivor|picks|world`: the new-game screen's tab at the start (pictures).
+    /// `--new-game-tab who|picks|world|sandbox|everything`: the new-game screen's tab at the start (pictures).
     pub new_game_tab: Option<String>,
     /// For recordings and pictures of the chat (#67): lines our survivor says by itself
     /// (`--say TEXT[@SECS]`, `--shout TEXT[@SECS]`, `--whisper TEXT[@SECS]`, each as often as

@@ -81,8 +81,9 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// the weapons; world events' toilet cisterns (`Snapshot::cisterns`, in `SnapshotDelta::lights`). 37: vehicles sent by
 /// need: `SnapshotDelta::vehicles` is the cars changed and the ids gone, a far moving car every `FAR_CAR_EVERY` ticks. 38: cars stage 4: `VehicleView::locked` and
 /// `start`, `VehicleOp::Hotwire`, `TakeKey`, `Lock`, `BreakIn`, `Repair`, `JobKind::Hotwire` and `Repair`,
-/// `Skill::Mechanics`, `VehicleData::work`.)
-pub const PROTOCOL: u32 = 38;
+/// `Skill::Mechanics`, `VehicleData::work`. 39: the
+/// world's difficulty in the rules (`Rules::difficulty`), and `CombatTuning::zombie_damage` in the tunings.)
+pub const PROTOCOL: u32 = 39;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -288,6 +289,8 @@ pub struct Rules {
     /// The map's width and height in metres, and the zombies the world holds now.
     pub map_m: [u32; 2],
     pub zombies: u32,
+    /// The world's difficulty in words (`zombye_sim::difficulty::Sandbox::describe`).
+    pub difficulty: String,
 }
 
 impl Rules {
@@ -338,6 +341,9 @@ impl Rules {
             ),
             ("World", format!("{} x {} m, {} zombies", self.map_m[0], self.map_m[1], self.zombies)),
         ];
+        if !self.difficulty.is_empty() {
+            lines.push(("Difficulty", self.difficulty.clone()));
+        }
         if self.allow_dev {
             lines.push(("Dev tools", "on: god mode and the debug tools are taken from players".to_string()));
         }

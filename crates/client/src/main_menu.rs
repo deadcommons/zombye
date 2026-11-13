@@ -529,6 +529,11 @@ fn start_here(mut commands: Commands, mut front: ResMut<crate::new_game::Front>,
 /// The new game's world: the one behind the menu's town, made afresh with the choices on it.
 fn new_world(swap: &crate::saving::WorldSwap, options: &Options, game: &zombye_net::newgame::NewGame) -> Option<(zombye_sim::World, u32, Option<zombye_sim::Start>)> {
     let mut config = swap.link.world()?.config.clone();
+    // A difficulty is put on over the game's own numbers: a town made on another one is started
+    // again instead, or its numbers would be multiplied twice.
+    if config.sandbox.changes_anything() {
+        return None;
+    }
     let rules = zombye_net::newgame::Rules::load(&options.data, &config.items).map_err(|e| eprintln!("can't start that game: {e}")).ok()?;
     let start = rules.begin(game, &mut config).map_err(|e| eprintln!("can't start that game: {e}")).ok()?;
     let (mut world, id) = zombye_net::LocalServer::new_run(&config);

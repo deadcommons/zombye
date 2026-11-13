@@ -859,7 +859,7 @@ impl World {
             kind = WoundKind::Bruise;
         }
         let (lo, hi) = self.config.health.wound(kind).damage;
-        (part, kind, self.combat_rng.range(lo, hi))
+        (part, kind, self.combat_rng.range(lo, hi) * self.config.combat.zombie_damage)
     }
 
     /// A new wound on player `pi` (no HP taken here; see [`World::hurt_player`]). `zombie`: left
