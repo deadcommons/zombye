@@ -763,6 +763,8 @@ pub fn generate_with(config: &GenConfig, templates: &[BuildingTemplate], props: 
     town.roads_out(size, main_y);
     let TownBuilder { mut map, mut rng, homes, plan, fronts, .. } = town;
 
+    // The hills first: the forest thins out on their steepest faces, so the ground shows there.
+    map.terrain = crate::terrain::Terrain::generate(&config.terrain, config.seed, size, town_min, town_max);
     plant_forest(&mut map, &mut rng, town_min, town_max, config.seed, &wild);
 
     // Wake up in a ground-floor bedroom of a house.
@@ -776,7 +778,6 @@ pub fn generate_with(config: &GenConfig, templates: &[BuildingTemplate], props: 
         (b, tiles[rng.below(tiles.len() as u32) as usize].as_vec2() + Vec2::splat(0.5))
     };
     street_props::place(&mut map, props, config.seed, town_min, town_max, &fronts);
-    map.terrain = crate::terrain::Terrain::generate(&config.terrain, config.seed, size, town_min, town_max);
     map.index_storeys();
     Generated { map, town_min, town_max, core, player_spawn, spawn_building, plan }
 }
@@ -1870,6 +1871,9 @@ fn plant_forest(map: &mut TileMap, rng: &mut Rng, keep_min: IVec2, keep_max: IVe
             let dist = outside.max_element() as f32;
             let n = value_noise(seed, p.as_vec2() / 18.0) * 0.65 + value_noise(seed ^ 0xabc, p.as_vec2() / 6.0) * 0.35;
             let density = (0.04 + 0.5 * smoothstep(0.35, 0.75, n) + 0.2 * (dist / 40.0).min(1.0) + if in_wild { 0.12 } else { 0.0 }).min(0.55);
+            // Steep hillsides are bare, open ground and rock: few trees take hold there.
+            let grade = map.terrain.gradient(p.as_vec2() + Vec2::splat(0.5)).length();
+            let density = density * (1.0 - 0.85 * smoothstep(0.11, 0.19, grade));
             let roll = rng.f32();
             if roll < density {
                 let pine = rng.f32() < 0.35 + 0.4 * (dist / 60.0).min(1.0);

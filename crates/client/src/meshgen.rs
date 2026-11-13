@@ -89,8 +89,8 @@ impl Bary {
 /// toward pale rock, as grass gives way on a bank.
 fn slope_tint(c: LinearRgba, normal: Vec3) -> LinearRgba {
     let grade = normal.xz().length() / normal.y.max(1e-3);
-    let earth = smooth(0.05, 0.10, grade);
-    let rock = smooth(0.10, 0.14, grade);
+    let earth = smooth(0.06, 0.12, grade);
+    let rock = smooth(0.12, 0.20, grade);
     let p = pal();
     c.mix(&p.dirt, 0.45 * earth).mix(&p.rock, 0.55 * rock)
 }
@@ -381,10 +381,25 @@ impl MeshBuilder {
             }
             let f = t.facet_at((p[0].xz() + p[1].xz() + p[2].xz()) / 3.0);
             if p.iter().all(|q| in_facet(&f, q.xz())) {
+                let mut ids = ids;
                 if flat {
                     let normal = facet_normal(&f);
-                    for i in ids {
-                        facet_of[i as usize] = Some(normal);
+                    for i in ids.iter_mut() {
+                        match facet_of[*i as usize] {
+                            // A quad whose diagonal is the fold has its two halves on two facets:
+                            // the corners they share are split, so each half keeps its own normal.
+                            Some(other) if (other - normal).length_squared() > 1e-8 => {
+                                let k = *i as usize;
+                                self.positions.push(self.positions[k]);
+                                self.normals.push(self.normals[k]);
+                                self.colors.push(built[k]);
+                                self.uv0.push(self.uv0[k]);
+                                self.uv1.push(self.uv1[k]);
+                                facet_of.push(Some(normal));
+                                *i = self.positions.len() as u32 - 1;
+                            }
+                            _ => facet_of[*i as usize] = Some(normal),
+                        }
                     }
                 }
                 keep.extend_from_slice(&ids);
