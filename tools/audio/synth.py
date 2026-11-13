@@ -547,6 +547,77 @@ def crickets_loop(rng):
     return seamless(s, 0.5)
 
 
+def engine_loop(rng):
+    """A petrol engine idling: firing pulses at about 30 Hz with their harmonics, a rough low
+    rumble and a little intake hiss. Played faster as the car goes faster (the client)."""
+    dur = 2.0 + 0.25
+    f = 30.0  # firing rate; whole cycles in the 2 s loop
+    s = [0.0] * samples(dur)
+    for k, g in ((1, 1.0), (2, 0.7), (3, 0.45), (4, 0.25), (6, 0.12)):
+        tone = osc(dur, lambda t, k=k: f * k, "saw" if k == 1 else "sine")
+        s = [a + b * g for a, b in zip(s, tone)]
+    s = filt(s, "lp", 380, 0.8)
+    wobble = lambda t: 0.85 + 0.15 * math.sin(2 * math.pi * 3 * t / 2.0)
+    s = [x * wobble(i / RATE) for i, x in enumerate(s)]
+    rumble = filt(brown(dur, rng), "lp", 120, 0.7)
+    top = max(abs(x) for x in rumble) or 1.0
+    hiss = filt(white(dur, rng), "bp", 1800, 1.5)
+    peak = max(abs(x) for x in s) or 1.0
+    return seamless([a / peak + 0.35 * r / top + 0.03 * h for a, r, h in zip(s, rumble, hiss)], 0.25)
+
+
+def engine_start(rng):
+    """A starter motor grinding over, then the engine catching and revving once."""
+    s = silence(1.6)
+    crank = [0.0] * samples(0.7)
+    for i in range(7):
+        place(crank, burst(0.06, rng, "bp", 500, 1.2, 0.005, 0.04), i * 0.1, 0.7)
+    place(crank, mul(osc(0.7, lambda t: 140 + 20 * math.sin(2 * math.pi * 10 * t), "saw"), env(0.7, 0.02, 0.05, 0.6)), 0.0, 0.25)
+    place(s, filt(crank, "lp", 1500), 0.0, 0.9)
+    rev = osc(0.9, lambda t: 32 + 40 * math.sin(math.pi * min(t / 0.9, 1.0)) ** 2, "saw")
+    rev = filt(mul(rev, env(0.9, 0.05, 0.4, 0.3)), "lp", 500, 0.8)
+    place(s, rev, 0.62, 1.0)
+    return s
+
+
+def horn(rng):
+    """A car horn: two reedy tones a third apart, held."""
+    dur = 0.7
+    s = [0.0] * samples(dur)
+    for f in (420.0, 525.0):
+        tone = osc(dur, lambda t, f=f: f, "tri")
+        s = [a + b for a, b in zip(s, tone)]
+    s = filt(s, "lp", 2400, 0.7)
+    return mul(s, env(dur, 0.01, 0.05, 0.6))
+
+
+def car_crash(rng):
+    """Metal crumpling into something: a heavy thud, a scrape and glass tinkling after."""
+    s = silence(1.4)
+    place(s, thud(0.5, 90, 40, 0.25), 0.0, 1.0)
+    place(s, burst(0.4, rng, "bp", 900, 0.8, 0.002, 0.25), 0.0, 0.8)
+    place(s, crackle(0.6, rng, 90, 2500, 2.0, 0.3), 0.05, 0.5)
+    for i in range(6):
+        place(s, ring(0.25, rng.uniform(3000, 6000), 0.06), 0.2 + i * rng.uniform(0.05, 0.12), 0.25)
+    return s
+
+
+def car_door(rng):
+    """A car door shutting: a solid thunk and the latch."""
+    s = silence(0.4)
+    place(s, thud(0.25, 110, 60, 0.08), 0.0, 1.0)
+    place(s, burst(0.03, rng, "bp", 2200, 2.0, 0.0005, 0.01), 0.01, 0.5)
+    return s
+
+
+def radio_static(rng):
+    """Tuning between stations: hiss sweeping through a whistle."""
+    dur = 0.8
+    hiss = sweep(white(dur, rng), "bp", lambda t: 1200 + 2500 * t / dur, 0.8)
+    whistle = osc(dur, lambda t: 900 + 1400 * math.sin(math.pi * t / dur))
+    return mul([a + 0.12 * b for a, b in zip(hiss, whistle)], env(dur, 0.03, 0.15, 0.6))
+
+
 # name -> (folder, maker, what it is)
 SOUNDS = {}
 
@@ -582,6 +653,12 @@ add("sfx", "pickup", pickup, "picking something up", 1)
 add("sfx", "level_up", level_up, "a skill levelling up", 1)
 add("sfx", "light_switch", light_switch, "a light switch clicking", 1)
 add("sfx", "bird", bird, "a bird call by day", 3)
+add("sfx", "engine_start", engine_start, "a car's engine starting", 1)
+add("sfx", "horn", horn, "a car horn", 1)
+add("sfx", "car_crash", car_crash, "a car crashing into something", 1)
+add("sfx", "car_door", car_door, "a car door shutting", 1)
+add("sfx", "radio_static", radio_static, "a car radio's static between stations", 1)
+add("ambience", "engine_loop", engine_loop, "a car's engine running (loop)")
 add("ambience", "wind_loop", wind_loop, "wind outdoors (loop)")
 add("ambience", "room_loop", room_loop, "room tone indoors (loop)")
 add("ambience", "crickets_loop", crickets_loop, "crickets at night (loop)")

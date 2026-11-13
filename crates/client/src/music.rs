@@ -77,6 +77,48 @@ pub struct MusicData {
     #[serde(default = "one")]
     pub volume: f32,
     pub moods: BTreeMap<Mood, MoodDef>,
+    /// The car radio (cars stage 5, #39): its stations. None: the radio only gets static.
+    #[serde(default)]
+    pub radio: RadioDef,
+}
+
+/// The car radio's stations, in the order R tunes through them (then off).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RadioDef {
+    #[serde(default)]
+    pub stations: Vec<StationDef>,
+    /// The radio's level under the music's.
+    #[serde(default = "radio_volume")]
+    pub volume: f32,
+    /// Seconds of static between stations before the next one comes in.
+    #[serde(default = "static_secs")]
+    pub static_secs: f32,
+}
+
+impl Default for RadioDef {
+    fn default() -> Self {
+        Self { stations: Vec::new(), volume: radio_volume(), static_secs: static_secs() }
+    }
+}
+
+/// One station: its name (said on the yellow line) and its tracks, played one after another.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StationDef {
+    pub name: String,
+    pub files: Vec<String>,
+}
+
+fn radio_volume() -> f32 {
+    0.8
+}
+fn static_secs() -> f32 {
+    0.8
+}
+
+fn bad_file(f: &str) -> bool {
+    f.contains("..") || f.starts_with('/') || f.contains('\\') || !f.ends_with(".ogg")
 }
 
 pub fn parse_music(text: &str) -> Result<MusicData, String> {
@@ -95,11 +137,29 @@ pub fn parse_music(text: &str) -> Result<MusicData, String> {
         if !(d.gap.0 >= 0.0 && d.gap.1 >= d.gap.0 && d.gap.1 <= 3600.0) {
             return bad("gap must be (min, max) seconds, 0 <= min <= max <= 3600");
         }
-        if d.files.iter().any(|f| f.contains("..") || f.starts_with('/') || f.contains('\\') || !f.ends_with(".ogg")) {
+        if d.files.iter().any(|f| bad_file(f)) {
             return bad("files must be .ogg (OGG Vorbis) inside assets/audio");
         }
         if !(d.fade_in > 0.0 && d.fade_in <= 60.0 && d.fade_out > 0.0 && d.fade_out <= 60.0) {
             return bad("fades must be over 0 and at most 60 seconds");
+        }
+    }
+    let radio = &data.radio;
+    if !(0.0..=2.0).contains(&radio.volume) {
+        return Err("music.ron: radio: volume must be 0 to 2".into());
+    }
+    if !(radio.static_secs >= 0.0 && radio.static_secs <= 10.0) {
+        return Err("music.ron: radio: static_secs must be 0 to 10".into());
+    }
+    if radio.stations.len() > 9 {
+        return Err("music.ron: radio: at most 9 stations".into());
+    }
+    for st in &radio.stations {
+        if st.name.trim().is_empty() || st.name.chars().count() > 40 {
+            return Err("music.ron: radio: a station's name must be 1 to 40 letters".into());
+        }
+        if st.files.is_empty() || st.files.iter().any(|f| bad_file(f)) {
+            return Err(format!("music.ron: radio: {}: files must be .ogg (OGG Vorbis) inside assets/audio, at least one", st.name));
         }
     }
     Ok(data)
@@ -110,6 +170,8 @@ pub fn parse_music(text: &str) -> Result<MusicData, String> {
 pub(crate) struct Music {
     data: MusicData,
     tracks: BTreeMap<Mood, Vec<Handle<AudioSource>>>,
+    /// The radio's stations' tracks, by station.
+    stations: Vec<Vec<Handle<AudioSource>>>,
     /// `--music`, 0..2.
     pub(crate) level: f32,
 }
@@ -131,7 +193,24 @@ impl Music {
             }
             tracks.insert(*mood, list);
         }
-        Ok(Self { data, tracks, level })
+        let stations = data
+            .radio
+            .stations
+            .iter()
+            .map(|st| {
+                st.files
+                    .iter()
+                    .filter_map(|file| match crate::release_audio::read(overlay, audio_dir, file) {
+                        Ok(bytes) => Some(sources.add(AudioSource { bytes: Arc::from(bytes) })),
+                        Err(e) => {
+                            eprintln!("radio: {}: {file}: {e} (left out)", st.name);
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        Ok(Self { data, tracks, stations, level })
     }
 
     fn has(&self, mood: Mood) -> bool {
@@ -182,7 +261,9 @@ impl Plugin for MusicPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(State { mood: Mood::Day, next_at: 0.0, danger_until: f32::NEG_INFINITY, last_day: None, dawn_due: false, once_playing: None, death_played: false, last_pick: None, dice: 0x9E37_79B9_7F4A_7C15 })
             .add_systems(Startup, load_music)
-            .add_systems(PostUpdate, (choose, play).chain().run_if(resource_exists::<Music>).run_if(resource_exists::<LocalPlayer>));
+            .init_resource::<Radio>()
+            .add_message::<RadioTuned>()
+            .add_systems(PostUpdate, (choose, tune, play, play_radio).chain().run_if(resource_exists::<Music>).run_if(resource_exists::<LocalPlayer>));
     }
 }
 
@@ -271,6 +352,7 @@ fn play(
     settings: Option<Res<AudioSettings>>,
     local: Res<LocalPlayer>,
     link: Res<ServerLink>,
+    radio: Res<Radio>,
     mut state: ResMut<State>,
     mut tracks: Query<(Entity, &mut Track, Option<&mut AudioSink>)>,
 ) {
@@ -279,12 +361,14 @@ fn play(
     let mood = state.mood;
     let asleep = link.curr.players.iter().any(|p| p.id == local.id && p.asleep);
     let master = settings.map_or(1.0, |s| s.master()) * music.level * music.data.volume * if asleep { 0.6 } else { 1.0 };
+    // The car radio is on: the score keeps quiet (and what was playing fades out).
+    let radio_on = radio.playing(&local);
 
     // Fade, end and clear out.
     let mut current = None;
     for (e, mut t, sink) in &mut tracks {
         let def = &music.data.moods[&t.mood];
-        if t.mood != mood && !t.leaving {
+        if (t.mood != mood || radio_on) && !t.leaving {
             t.leaving = true;
             if state.once_playing == Some(t.mood) {
                 state.once_playing = None;
@@ -318,7 +402,7 @@ fn play(
     }
 
     // Start one.
-    if current.is_some() || !music.has(mood) {
+    if current.is_some() || !music.has(mood) || radio_on {
         return;
     }
     let start = match mood {
@@ -355,6 +439,123 @@ fn play(
     }
 }
 
+/// The car radio (cars stage 5, #39): at the wheel R tunes from off through each station of
+/// `music.ron`'s `radio` and off again, with a burst of static between (`RadioTuned`, which
+/// `audio.rs` plays). A station plays its tracks one after another, picked at random, while we
+/// drive; the score keeps quiet meanwhile. Getting out turns it down (and back up on getting in
+/// again). With no stations (this repo has no songs: they come with the release audio) the dial
+/// only finds static.
+#[derive(Resource, Default)]
+pub struct Radio {
+    /// The station tuned to, by index, or off.
+    pub station: Option<usize>,
+    /// When the station comes in through the static (app seconds).
+    from: f32,
+    last_pick: Option<usize>,
+}
+
+impl Radio {
+    /// A station is on and we are at the wheel.
+    pub fn playing(&self, local: &LocalPlayer) -> bool {
+        self.station.is_some() && local.car.is_some()
+    }
+}
+
+/// The dial turned: static to play (`audio.rs`).
+#[derive(Message, Clone, Copy, Debug)]
+pub struct RadioTuned;
+
+/// The station after `now` on a radio of `stations` stations: off, the first, ..., the last, off.
+pub fn next_station(now: Option<usize>, stations: usize) -> Option<usize> {
+    match now {
+        None if stations > 0 => Some(0),
+        Some(i) if i + 1 < stations => Some(i + 1),
+        _ => None,
+    }
+}
+
+fn tune(
+    time: Res<Time>,
+    keys: Option<Res<ButtonInput<KeyCode>>>,
+    local: Res<LocalPlayer>,
+    music: Res<Music>,
+    mut radio: ResMut<Radio>,
+    mut tuned: MessageWriter<RadioTuned>,
+    notice: Option<ResMut<crate::saving::Notice>>,
+) {
+    let Some(keys) = keys else { return };
+    if local.car.is_none() || local.dead || !crate::keys::just_pressed(&keys, crate::keys::Action::Radio) {
+        return;
+    }
+    let now = time.elapsed_secs();
+    let stations = &music.data.radio.stations;
+    radio.station = next_station(radio.station, stations.len());
+    radio.from = now + music.data.radio.static_secs;
+    radio.last_pick = None;
+    tuned.write(RadioTuned);
+    let line = match radio.station {
+        Some(i) => format!("Radio: {}", stations[i].name),
+        None if stations.is_empty() => "Radio: nothing but static".to_string(),
+        None => "Radio off".to_string(),
+    };
+    println!("{line}");
+    if let Some(mut notice) = notice {
+        notice.say(now, line);
+    }
+}
+
+/// A radio track playing, the station it is of, and how far it's faded in (0..1).
+#[derive(Component)]
+struct RadioTrack {
+    station: usize,
+    level: f32,
+}
+
+/// How fast the radio comes in and goes (seconds).
+const RADIO_FADE: f32 = 0.6;
+
+#[allow(clippy::too_many_arguments)]
+fn play_radio(
+    mut commands: Commands,
+    time: Res<Time>,
+    music: Res<Music>,
+    settings: Option<Res<AudioSettings>>,
+    local: Res<LocalPlayer>,
+    mut radio: ResMut<Radio>,
+    mut tracks: Query<(Entity, &mut RadioTrack, Option<&mut AudioSink>)>,
+) {
+    let now = time.elapsed_secs();
+    let dt = time.delta_secs();
+    let on = radio.playing(&local);
+    let master = settings.map_or(1.0, |s| s.master()) * music.level * music.data.volume * music.data.radio.volume;
+    let mut current = false;
+    for (e, mut t, sink) in &mut tracks {
+        let keep = on && radio.station == Some(t.station);
+        t.level = if keep { (t.level + dt / RADIO_FADE).min(1.0) } else { t.level - dt / RADIO_FADE * 2.0 };
+        let ended = sink.as_ref().is_some_and(|s| s.empty());
+        if t.level <= 0.0 || ended {
+            commands.entity(e).despawn();
+            continue;
+        }
+        if let Some(mut s) = sink {
+            let v = t.level * master;
+            if (s.volume().to_linear() - v).abs() > 1e-4 {
+                s.set_volume(Volume::Linear(v));
+            }
+        }
+        current |= keep;
+    }
+    let Some(station) = radio.station.filter(|_| on && !current && now >= radio.from) else { return };
+    let Some(list) = music.stations.get(station).filter(|l| !l.is_empty()) else { return };
+    // The next track: at random, not the one just played.
+    let mut pick = ((now * 977.0) as usize) % list.len();
+    if list.len() > 1 && radio.last_pick == Some(pick) {
+        pick = (pick + 1) % list.len();
+    }
+    radio.last_pick = Some(pick);
+    commands.spawn((AudioPlayer(list[pick].clone()), PlaybackSettings { mode: PlaybackMode::Once, volume: Volume::Linear(0.0), ..default() }, RadioTrack { station, level: 0.0 }));
+}
+
 /// A track came to its end: a silence before the next.
 fn finished(music: &Music, state: &mut State, mood: Mood, now: f32) {
     let after = if mood.once() { Mood::Day } else { mood };
@@ -382,6 +583,27 @@ mod tests {
                 assert!(attribution.contains(&format!("`assets/audio/{f}`")), "{f} has no ATTRIBUTION.md row");
             }
         }
+    }
+
+    #[test]
+    fn the_radio_tunes_through_its_stations_and_off() {
+        assert_eq!(next_station(None, 0), None, "no stations: only static");
+        assert_eq!(next_station(None, 2), Some(0));
+        assert_eq!(next_station(Some(0), 2), Some(1));
+        assert_eq!(next_station(Some(1), 2), None);
+        let good = shipped();
+        assert!(parse_music(&good).unwrap().radio.stations.is_empty());
+        let with = good.replace("radio: (stations: []", "radio: (stations: [(name: \"Country 98\", files: [\"music/a.ogg\"])]");
+        let data = parse_music(&with).unwrap();
+        assert_eq!(data.radio.stations[0].name, "Country 98");
+        assert!(parse_music(&good.replace("radio: (stations: []", "radio: (stations: [(name: \"X\", files: [\"../a.ogg\"])]")).unwrap_err().contains("radio"));
+        assert!(parse_music(&good.replace("radio: (stations: []", "radio: (stations: [(name: \"X\", files: [])]")).unwrap_err().contains("radio"));
+        assert!(parse_music(&good.replace("static_secs: 0.8", "static_secs: 99.0")).unwrap_err().contains("static_secs"));
+        // Older music files, the release audio's among them, have no radio: the dial finds static.
+        let start = good.find("    radio:").unwrap();
+        let end = start + good[start..].find('\n').unwrap() + 1;
+        let old = format!("{}{}", &good[..start], &good[end..]);
+        assert!(parse_music(&old).unwrap().radio.stations.is_empty());
     }
 
     #[test]

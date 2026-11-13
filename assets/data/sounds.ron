@@ -8,8 +8,9 @@
 //   muffle   through a wall, shut door or window: this much of the volume, and low-passed
 //   voices   at most this many of the cue playing at once (the nearest win)
 //
-// Ambience loops (Wind, Room, Crickets) and Bird are heard where the listener is; reach and muffle
-// don't apply to them. All placeholders from tools/audio/synth.py until the real sounds (#78) replace them.
+// Ambience loops (Wind, Room, Crickets), Bird, our Horn and RadioStatic are heard where the listener is;
+// reach and muffle don't apply to them. Engine is one loop for the loudest running car: ours in full, others
+// falling off to its reach, played faster with the speed. All placeholders from tools/audio/synth.py until the real sounds (#78) replace them.
 (
     sounds: {
         FootstepHard: (files: ["sfx/footstep_hard_1.wav", "sfx/footstep_hard_2.wav", "sfx/footstep_hard_3.wav", "sfx/footstep_hard_4.wav"], volume: 0.35, pitch: (0.9, 1.1), reach: 25.0, voices: 6),
@@ -45,5 +46,11 @@
         Gunshot: (files: ["sfx/door_break_1.wav", "sfx/door_break_2.wav", "sfx/stomp_1.wav"], volume: 1.6, pitch: (1.7, 2.0), reach: 220.0, muffle: 0.6, voices: 4),
         Reload: (files: ["sfx/window_close.wav", "sfx/pickup.wav"], volume: 0.45, pitch: (1.25, 1.45), reach: 12.0, voices: 2),
         LightSwitch: (files: ["sfx/light_switch.wav"], volume: 0.5, pitch: (0.95, 1.05), reach: 10.0, voices: 2),
+        Engine: (files: ["ambience/engine_loop.wav"], volume: 0.5, pitch: (1.0, 1.0), reach: 45.0, voices: 1),
+        EngineStart: (files: ["sfx/engine_start.wav"], volume: 0.8, pitch: (0.95, 1.05), reach: 50.0, muffle: 0.5, voices: 2),
+        Horn: (files: ["sfx/horn.wav"], volume: 0.9, pitch: (1.0, 1.0), reach: 80.0, muffle: 0.6, voices: 2),
+        CarCrash: (files: ["sfx/car_crash.wav"], volume: 1.2, pitch: (0.9, 1.1), reach: 80.0, muffle: 0.6, voices: 3),
+        CarDoor: (files: ["sfx/car_door.wav"], volume: 0.7, pitch: (0.92, 1.08), reach: 25.0, voices: 2),
+        RadioStatic: (files: ["sfx/radio_static.wav"], volume: 0.35, pitch: (0.9, 1.1), reach: 10.0, voices: 1),
     },
 )

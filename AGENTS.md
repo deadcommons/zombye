@@ -1086,7 +1086,7 @@ Stage 2: fuel, engine noise, running zombies over and crash damage.
   found cars' conditions. **Wire:** `VehicleView` carries `fuel_dl`, `engine_on` and `parts` (per cent);
   `wire::PROTOCOL` 35. **Client:** while driving the stance text is the driving line (`hud::driving_line`: "driving the
   van  31 km/h  fuel 12/70 L", with "engine off" and worn parts). The keys are `keys.ron`'s `horn` (H: an action read
-  only at the wheel, `Action::at_wheel`, so it shares H with the Health screen on foot) and `refuel` (Shift+E:
+  only at the wheel, `Action::at_wheel`, as `radio` is, so it shares H with the Health screen on foot) and `refuel` (Shift+E:
   `Action::beside_car`, asked first by `interact.rs` beside a car, and it leaves E with Shift held to interact
   everywhere else).
 - **Online (stage 3, DCM-88):** our own car is predicted with `step_vehicle` from the snapshot's car and the
@@ -1123,8 +1123,25 @@ Stage 2: fuel, engine noise, running zombies over and crash damage.
   holding E beside a car or at its wheel opens its menu (`world_actions::car_entries`: get in or out, lock, smash in,
   boot, glovebox, hotwire, take the key, fuel, the repairs with what each is missing); the driving line says "no key".
   Tests: `vehicles::tests` (from `the_shipped_work_settings_name_real_items` on).
-- **Not yet:** the camera pulling back with speed, MCP tools, running players over, engine and horn sounds, damage
-  drawn on the car, the radio, more vehicle kinds, a key's car shown on the key, picking locks.
+- **The look and sound (stage 5, #39; client only, nothing in the sim):** the body sways on its springs as drawn
+  (`vehicles_render::Sway`, `sway_target`: it leans out of a turn by the speed across it, up to 4°, and pitches back
+  as it gets going and forward as it brakes, eased); the camera pulls back with speed (`camera::speed_pull_of`: from
+  4 m/s up to 30% more of the world at 20 m/s, eased out and back, `IsoCamera::speed_pull`; not offscreen); a
+  running car has a shadowed headlight beam and a red tail light, brighter while braking, on the nearest
+  `MAX_CAR_LIGHTS` (3) running cars (`vehicles_render::car_lights`, in the lights' chain; the beam shows what it
+  lights through the fog of war as a flashlight's does; `DrawnCars` is each car as drawn this frame). **Sounds**
+  (`audio.rs`'s `car_sounds`, cues `Engine`, `EngineStart`, `Horn`, `CarCrash`, `CarDoor`, `RadioStatic`,
+  placeholders from `synth.py`): one engine loop for the loudest running car (ours in full, `engine_note`), played
+  faster with the speed; the engine catching, a crash (a speed lost at once), a door as a driver gets in or out, and
+  our horn. **The radio** (`music.rs`'s `Radio`, `tune`, `play_radio`): at the wheel `radio` (R, `keys.ron`) tunes
+  from off through the stations of `music.ron`'s `radio` and off again, with static between (`static_secs`); a
+  station plays its OGG tracks one after another, picked at random, and the score keeps quiet meanwhile; getting out
+  turns it down. This repo's `music.ron` has no stations (the dial finds only static); the songs come with the
+  release audio's `music.ron`. The driver is hidden whole in offscreen pictures too (`camera::follow` asks the
+  snapshot who drives, so hair no longer pokes through the roof).
+- **Not yet:** MCP tools, running players over, damage drawn on the car, more vehicle kinds, a key's car shown on
+  the key, picking locks, spinning and steering wheels, see-through glass and an inside view (the car models need
+  splitting into parts), other cars' horns heard (the snapshot doesn't say), the engine heard from where each car is.
 - Tests: `sim::vehicles::tests`.
 
 ## Chopping trees (`sim::trees`)

@@ -7,6 +7,11 @@
 //! (a stall, or a far car sent only now and then), a correction glided out the same way. A car
 //! someone else drives is shown only where our survivor could see it, as other players are; a
 //! parked one always, as the props are.
+//!
+//! Cars stage 5 (#39): the body sways on its springs as drawn ([`Sway`]: a lean out of turns, a
+//! pitch back as it speeds up and forward as it brakes), and a running car has headlights and tail
+//! lights ([`car_lights`], the nearest [`MAX_CAR_LIGHTS`]), whose beams show what they light
+//! through the fog of war as other lights do. Client only: nothing here is in the sim.
 
 use std::collections::HashMap;
 
@@ -26,6 +31,80 @@ use crate::zombie_render::lerp_angle;
 /// A vehicle's body, by its id.
 #[derive(Component)]
 struct CarBody(u32);
+
+/// How a body sits on its springs as drawn, eased toward [`sway_target`].
+#[derive(Component, Default, Clone, Copy, Debug, PartialEq)]
+pub struct Sway {
+    /// Radians about the car's length (below 0: the roof toward its right) and about its width
+    /// (above 0: the nose down).
+    pub roll: f32,
+    pub pitch: f32,
+    /// The speed at the last frame, and how fast it has been changing (m/s², eased).
+    last_speed: Option<f32>,
+    pub accel: f32,
+}
+
+/// The most a body leans out of a turn and pitches (radians: about 4 and 2.5 degrees).
+const MAX_ROLL: f32 = 0.07;
+const MAX_PITCH: f32 = 0.045;
+/// Lean per m/s² across the car, and pitch per m/s² along it.
+const ROLL_PER: f32 = 0.012;
+const PITCH_PER: f32 = 0.009;
+/// Slowing faster than this (m/s²) lights the brake lights.
+const BRAKING: f32 = 1.5;
+
+/// The lean and pitch a car going `speed` (m/s) with its wheels at `steer` (radians, above 0
+/// turning toward +y) on a `wheelbase`, its speed changing at `accel` (m/s²), sits at: out of
+/// the turn, back as it gets going, forward as it brakes. (The body's +x is its right as it faces
+/// +z: see the turn in [`draw_vehicles`].)
+pub fn sway_target(speed: f32, steer: f32, wheelbase: f32, accel: f32) -> (f32, f32) {
+    let yaw_rate = speed / wheelbase.max(0.5) * steer.tan();
+    let across = speed * yaw_rate;
+    ((-across * ROLL_PER).clamp(-MAX_ROLL, MAX_ROLL), (-accel * PITCH_PER).clamp(-MAX_PITCH, MAX_PITCH))
+}
+
+impl Sway {
+    /// One frame of `dt` seconds with the car at `speed` and `steer`.
+    pub fn step(&mut self, speed: f32, steer: f32, wheelbase: f32, dt: f32) {
+        if dt <= 0.0 {
+            return;
+        }
+        let raw = self.last_speed.map_or(0.0, |l| (speed - l) / dt).clamp(-30.0, 30.0);
+        self.last_speed = Some(speed);
+        self.accel += (raw - self.accel) * (dt * 5.0).min(1.0);
+        let (roll, pitch) = sway_target(speed, steer, wheelbase, self.accel);
+        let ease = (dt * 6.0).min(1.0);
+        self.roll += (roll - self.roll) * ease;
+        self.pitch += (pitch - self.pitch) * ease;
+    }
+
+    /// Turned this way on top of the car's heading.
+    pub fn turn(&self) -> Quat {
+        Quat::from_rotation_z(self.roll) * Quat::from_rotation_x(self.pitch)
+    }
+}
+
+/// A car as drawn this frame, for its lights and sounds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrawnCar {
+    pub id: u32,
+    pub pos: Vec2,
+    pub heading: f32,
+    pub speed: f32,
+    pub engine_on: bool,
+    /// Slowing hard (the brake lights).
+    pub braking: bool,
+    /// We drive it.
+    pub ours: bool,
+    /// Drawn (someone else's car out of sight isn't).
+    pub shown: bool,
+    pub length: f32,
+    pub width: f32,
+}
+
+/// The cars drawn this frame.
+#[derive(Resource, Default)]
+pub struct DrawnCars(pub Vec<DrawnCar>);
 
 /// Cars other than ours, as drawn: carried on along their way between snapshots, and the
 /// difference a snapshot makes taken out over a few ticks.
@@ -124,6 +203,8 @@ impl Plugin for VehiclesRenderPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CarMeshes>()
             .init_resource::<RemoteCars>()
+            .init_resource::<DrawnCars>()
+            .add_systems(Startup, spawn_car_lights)
             .add_systems(FixedUpdate, follow_remote_cars.after(crate::server_link::ServerTick))
             .add_systems(RunFixedMainLoop, draw_vehicles.in_set(RunFixedMainLoopSystems::AfterFixedMainLoop));
     }
@@ -160,14 +241,21 @@ fn draw_vehicles(
     shared: Option<Res<SharedMeshes>>,
     mats: Option<Res<WorldMaterials>>,
     remote: Res<RemoteCars>,
+    time: Res<Time>,
     mut made: ResMut<CarMeshes>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut cars: Query<(Entity, &CarBody, &mut Transform, &mut Visibility)>,
+    mut drawn: ResMut<DrawnCars>,
+    mut cars: Query<(Entity, &CarBody, &mut Transform, &mut Visibility, &mut Sway)>,
 ) {
     let views = &link.curr.vehicles;
     if views.is_empty() && cars.is_empty() {
+        if !drawn.0.is_empty() {
+            drawn.0.clear();
+        }
         return;
     }
+    drawn.0.clear();
+    let dt = time.delta_secs();
     let (Some(shared), Some(mats)) = (shared, mats) else { return };
     for (e, body, ..) in &cars {
         if !views.iter().any(|v| v.id == body.0) {
@@ -179,14 +267,34 @@ fn draw_vehicles(
     let ours = me.as_ref().and_then(|m| m.car);
     for v in views {
         // Where it is: ours as predicted, the rest between the snapshots.
-        let (pos, heading) = match ours.filter(|c| c.id == v.id) {
+        let mine = ours.filter(|c| c.id == v.id);
+        let (pos, heading) = match mine {
             Some(c) => (c.prev.pos.lerp(c.curr.pos, alpha) + c.off, lerp_angle(c.prev.heading, c.curr.heading, alpha) + c.off_heading),
             None => remote.0.get(&v.id).map_or((v.state.pos, v.state.heading), |c| c.shown(alpha)),
         };
-        let tf = Transform::from_xyz(pos.x, map.0.ground(pos), pos.y).with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - heading));
+        let now = mine.map(|c| c.curr).or_else(|| remote.0.get(&v.id).map(|c| c.curr)).unwrap_or(v.state);
+        let kind = join.vehicles.kinds.get(v.kind as usize);
+        let wheelbase = kind.map_or(2.6, |k| k.wheelbase);
         let shown = v.driver == 0 || v.driver == me_id || fog.visibility(pos) > 0.35;
         let want = if shown { Visibility::Inherited } else { Visibility::Hidden };
-        if let Some((_, _, mut t, mut vis)) = cars.iter_mut().find(|(_, b, ..)| b.0 == v.id) {
+        let yaw = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - heading);
+        let mut car = DrawnCar {
+            id: v.id,
+            pos,
+            heading,
+            speed: now.speed,
+            engine_on: v.engine_on,
+            braking: false,
+            ours: mine.is_some(),
+            shown,
+            length: kind.map_or(4.4, |k| k.length),
+            width: kind.map_or(1.8, |k| k.width),
+        };
+        if let Some((_, _, mut t, mut vis, mut sway)) = cars.iter_mut().find(|(_, b, ..)| b.0 == v.id) {
+            sway.step(now.speed, now.steer, wheelbase, dt);
+            car.braking = now.speed.abs() > 0.5 && sway.accel * now.speed.signum() < -BRAKING;
+            drawn.0.push(car);
+            let tf = Transform::from_xyz(pos.x, map.0.ground(pos), pos.y).with_rotation(yaw * sway.turn());
             if *t != tf {
                 *t = tf;
             }
@@ -204,7 +312,123 @@ fn draw_vehicles(
                 h
             }
         };
-        commands.spawn((CarBody(v.id), Mesh3d(mesh), MeshMaterial3d(mats.props.clone()), tf, want));
+        drawn.0.push(car);
+        let tf = Transform::from_xyz(pos.x, map.0.ground(pos), pos.y).with_rotation(yaw);
+        commands.spawn((CarBody(v.id), Sway::default(), Mesh3d(mesh), MeshMaterial3d(mats.props.clone()), tf, want));
+    }
+}
+
+/// How many running cars have lights at once (the nearest), each a shadowed headlight beam and a
+/// red tail light.
+pub const MAX_CAR_LIGHTS: usize = 3;
+/// How far a car's lights carry before they are left off (m from our survivor).
+const CAR_LIGHT_REACH: f32 = 70.0;
+/// The headlights: how high, how far ahead they are aimed, how far they reach.
+const HEAD_HEIGHT: f32 = 0.75;
+const HEAD_AIM_M: f32 = 12.0;
+const HEAD_RANGE: f32 = 30.0;
+const HEAD_OUTER: f32 = 0.5;
+
+#[derive(Component)]
+struct HeadLight(usize);
+
+#[derive(Component)]
+struct TailLight(usize);
+
+fn spawn_car_lights(mut commands: Commands) {
+    for slot in 0..MAX_CAR_LIGHTS {
+        let beam = SpotLight {
+            intensity: 0.0,
+            range: HEAD_RANGE,
+            radius: 0.1,
+            color: Color::srgb(1.0, 0.95, 0.85),
+            shadow_maps_enabled: true,
+            outer_angle: HEAD_OUTER,
+            inner_angle: HEAD_OUTER * 0.55,
+            ..default()
+        };
+        commands.spawn((HeadLight(slot), beam, Transform::default(), Visibility::Hidden));
+        let tail = PointLight { intensity: 0.0, range: 4.0, radius: 0.1, color: Color::srgb(1.0, 0.08, 0.05), shadow_maps_enabled: false, ..default() };
+        commands.spawn((TailLight(slot), tail, Transform::default(), Visibility::Hidden));
+    }
+}
+
+/// The running cars nearest `from` (ours first) that get lights, nearest first.
+pub fn lit_cars(cars: &[DrawnCar], from: Option<Vec2>) -> Vec<DrawnCar> {
+    let mut lit: Vec<(f32, DrawnCar)> = cars
+        .iter()
+        .filter(|c| c.engine_on && c.shown)
+        .map(|c| (if c.ours { -1.0 } else { from.map_or(0.0, |f| f.distance(c.pos)) }, *c))
+        .filter(|(d, _)| *d < CAR_LIGHT_REACH)
+        .collect();
+    lit.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.id.cmp(&b.1.id)));
+    lit.into_iter().take(MAX_CAR_LIGHTS).map(|(_, c)| c).collect()
+}
+
+/// Headlights and tail lights on the nearest running cars (`lights.rs`'s chain, after the
+/// survivors' own lights): the beam lights the road ahead, brighter in the dark, and what it falls
+/// on shows through the fog of war; the tail light glows red, brighter while braking.
+pub fn car_lights(
+    drawn: Res<DrawnCars>,
+    link: Res<ServerLink>,
+    me: Res<LocalPlayer>,
+    daylight: Res<crate::daynight::Daylight>,
+    map: Res<ClientMap>,
+    mut heads: Query<(&HeadLight, &mut SpotLight, &mut Transform, &mut Visibility), Without<TailLight>>,
+    mut tails: Query<(&TailLight, &mut PointLight, &mut Transform, &mut Visibility), Without<HeadLight>>,
+    mut seen: ResMut<crate::lights::NightLights>,
+) {
+    let from = link.curr.players.iter().find(|p| p.id == me.id).map(|p| Vec2::from(p.pos));
+    let lit = lit_cars(&drawn.0, from);
+    let dim = 1.0 - 0.85 * daylight.0;
+    let dark = crate::lights::darkness(daylight.0);
+    for (slot, mut spot, mut tf, mut vis) in &mut heads {
+        let want = match lit.get(slot.0) {
+            Some(c) => {
+                let dir = Vec2::from_angle(c.heading);
+                let front = c.pos + dir * (c.length * 0.5);
+                let ground = map.0.ground(front);
+                let at = Vec3::new(front.x, ground + HEAD_HEIGHT, front.y);
+                let aim = front + dir * HEAD_AIM_M;
+                let t = Transform::from_translation(at).looking_at(Vec3::new(aim.x, map.0.ground(aim), aim.y), Vec3::Y);
+                if *tf != t {
+                    *tf = t;
+                }
+                let power = 2_500_000.0 * dim;
+                if spot.intensity != power {
+                    spot.intensity = power;
+                }
+                if dark > 0.0 {
+                    seen.0.push(crate::lights::SeenLight { pos: c.pos, radius: HEAD_RANGE * 0.8, dir, cos: (HEAD_OUTER * 0.9).cos() });
+                    seen.0.push(crate::lights::SeenLight::round(c.pos, c.length * 0.6));
+                }
+                Visibility::Visible
+            }
+            None => Visibility::Hidden,
+        };
+        if *vis != want {
+            *vis = want;
+        }
+    }
+    for (slot, mut point, mut tf, mut vis) in &mut tails {
+        let want = match lit.get(slot.0) {
+            Some(c) => {
+                let back = c.pos - Vec2::from_angle(c.heading) * (c.length * 0.5 + 0.3);
+                let t = Transform::from_xyz(back.x, map.0.ground(back) + 0.8, back.y);
+                if *tf != t {
+                    *tf = t;
+                }
+                let power = if c.braking { 60_000.0 } else { 15_000.0 } * (0.3 + 0.7 * dark);
+                if point.intensity != power {
+                    point.intensity = power;
+                }
+                Visibility::Visible
+            }
+            None => Visibility::Hidden,
+        };
+        if *vis != want {
+            *vis = want;
+        }
     }
 }
 
@@ -272,5 +496,35 @@ mod tests {
         let mut p = RemoteCar::new(at(4.0, 0.0));
         p.tick(at(4.0, 0.0), 2.7);
         assert_eq!((p.curr, p.off), (at(4.0, 0.0), Vec2::ZERO));
+    }
+
+    /// A car turning leans its roof out of the turn and pitches back as it gets going, forward as
+    /// it brakes; standing still it sits level.
+    #[test]
+    fn a_car_leans_out_of_its_turns() {
+        assert_eq!(sway_target(0.0, 0.3, 2.6, 0.0), (0.0, 0.0));
+        // Heading east, turning toward +y: the turn's middle is on the +y side.
+        let (roll, _) = sway_target(12.0, 0.3, 2.6, 0.0);
+        assert!(roll < 0.0 && roll >= -MAX_ROLL);
+        let heading = 0.0f32;
+        let turn = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - heading) * Sway { roll, ..default() }.turn();
+        let roof = turn * Vec3::Y;
+        assert!(roof.z < -0.01, "the roof goes toward -y (sim), out of the turn: {roof}");
+        let (_, getting_going) = sway_target(5.0, 0.0, 2.6, 3.0);
+        let (_, braking) = sway_target(5.0, 0.0, 2.6, -6.0);
+        assert!(getting_going < 0.0 && braking > 0.0, "back as it speeds up, nose down braking");
+        // Eased: one frame doesn't take it all the way.
+        let mut s = Sway::default();
+        s.step(12.0, 0.3, 2.6, 1.0 / 60.0);
+        assert!(s.roll < 0.0 && s.roll > roll);
+    }
+
+    /// Lights go on the running cars nearest us, ours first, at most three.
+    #[test]
+    fn the_nearest_running_cars_get_lights() {
+        let car = |id, x: f32, on, ours| DrawnCar { id, pos: Vec2::new(x, 0.0), heading: 0.0, speed: 0.0, engine_on: on, braking: false, ours, shown: true, length: 4.4, width: 1.8 };
+        let cars = [car(1, 50.0, true, false), car(2, 5.0, true, false), car(3, 2.0, false, false), car(4, 30.0, true, true), car(5, 20.0, true, false), car(6, 200.0, true, false)];
+        let lit: Vec<u32> = lit_cars(&cars, Some(Vec2::ZERO)).iter().map(|c| c.id).collect();
+        assert_eq!(lit, vec![4, 2, 5]);
     }
 }
