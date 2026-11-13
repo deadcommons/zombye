@@ -402,6 +402,13 @@ impl SettingsUi {
     pub fn close(&mut self) {
         self.open = false;
     }
+
+    /// The tab `by` along from this one, round the end (the pad's bumpers: `focus.rs`).
+    pub fn step_tab(&mut self, by: i32) {
+        let n = Tab::ALL.len() as i32;
+        let at = Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0) as i32;
+        self.acts.push(Act::Tab(Tab::ALL[(at + by).rem_euclid(n) as usize]));
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -744,6 +751,7 @@ pub const PAD_ROWS: [(&str, &[PadRow]); 3] = [
             PadRow::Held(Pa::Key(Action::Interact), "A wheel of everything you can do with what you face"),
             PadRow::Bound(Pa::Only(Only::ItemWheel), "Item wheel: point at one, let go to use it"),
             PadRow::Bound(Pa::Only(Only::MakeWheel), "Make wheel: point at one, let go to make it"),
+            PadRow::Bound(Pa::Only(Only::Chat), "Say something, on the on-screen keyboard"),
             PadRow::Bound(Pa::Key(Action::Flashlight), "Flashlight or candle on and off"),
             PadRow::Bound(Pa::Key(Action::Sit), "Sit down, and get up"),
             PadRow::Bound(Pa::Key(Action::Sleep), "Sleep, and get up"),

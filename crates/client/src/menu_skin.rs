@@ -97,6 +97,10 @@ pub fn button<'a>(parent: &'a mut ChildSpawnerCommands, label: &str, detail: Opt
         Look::Plain | Look::Row | Look::Chip(false) => Some((CELL_HOVER, LINE_HOVER)),
         Look::Chip(true) | Look::Disabled => None,
     };
+    // A controller can move to it and press it (`focus.rs`).
+    if look != Look::Disabled {
+        e.insert(crate::focus::Focusable);
+    }
     if let Some((over_fill, over_line)) = over {
         e.observe(move |ev: On<PointerOver>, mut q: Query<(&mut BackgroundColor, &mut BorderColor)>| {
             if let Ok((mut bg, mut border)) = q.get_mut(ev.entity) {

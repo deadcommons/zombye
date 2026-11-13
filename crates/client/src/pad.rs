@@ -242,10 +242,12 @@ pub enum Only {
     ItemWheel,
     /// The make wheel, held.
     MakeWheel,
+    /// The chat line, with the on-screen keyboard (`osk.rs`).
+    Chat,
 }
 
 impl Only {
-    pub const ALL: [Only; 10] = [Only::Attack, Only::Aim, Only::TurnLeft, Only::TurnRight, Only::ZoomIn, Only::ZoomOut, Only::FirstPerson, Only::Pause, Only::ItemWheel, Only::MakeWheel];
+    pub const ALL: [Only; 11] = [Only::Attack, Only::Aim, Only::TurnLeft, Only::TurnRight, Only::ZoomIn, Only::ZoomOut, Only::FirstPerson, Only::Pause, Only::ItemWheel, Only::MakeWheel, Only::Chat];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -259,6 +261,7 @@ impl Only {
             Only::Pause => "pause",
             Only::ItemWheel => "item_wheel",
             Only::MakeWheel => "make_wheel",
+            Only::Chat => "chat",
         }
     }
 }
@@ -355,6 +358,8 @@ pub struct PadFile {
     pub item_wheel: Option<Vec<String>>,
     /// The make wheel, held: what you can make here; letting go makes it.
     pub make_wheel: Option<Vec<String>>,
+    /// The chat line, typed on the on-screen keyboard.
+    pub chat: Option<Vec<String>>,
 }
 
 impl PadFile {
@@ -394,6 +399,7 @@ impl PadFile {
             (PadAction::Only(Only::Pause), self.pause),
             (PadAction::Only(Only::ItemWheel), self.item_wheel),
             (PadAction::Only(Only::MakeWheel), self.make_wheel),
+            (PadAction::Only(Only::Chat), self.chat),
         ];
         all.into_iter().filter_map(|(a, b)| b.map(|b| (a.id().to_string(), b))).collect()
     }
@@ -588,6 +594,11 @@ pub struct InputMode {
 }
 
 impl InputMode {
+    /// The pad read: the one last touched, if any has been.
+    pub fn gamepad(&self) -> Option<Entity> {
+        self.gamepad
+    }
+
     /// The setting and what was touched last: is the controller the one in use?
     pub fn follow(setting: InputSetting, was_pad: bool, pad_touched: bool, keys_touched: bool) -> bool {
         match setting {
@@ -628,6 +639,11 @@ pub struct Pad {
     pub select: Vec2,
     pub confirm: bool,
     pub cancel: bool,
+    /// In the pause menu and the settings (`focus.rs`): the d-pad pressed this frame as a step
+    /// (x right, y up), the left stick held, and the shoulder buttons tapped (a tab either way).
+    pub nav_step: IVec2,
+    pub nav_stick: Vec2,
+    pub nav_tab: i32,
 }
 
 /// Keys the pad pressed for the game this frame, let go of next frame.
@@ -750,7 +766,7 @@ impl Screens<'_> {
 
     /// A line being typed: the pad does nothing meanwhile.
     fn typing(&self) -> bool {
-        self.chat.as_ref().is_some_and(|c| c.typing) || self.find.as_ref().is_some_and(|f| f.typing)
+        self.chat.as_ref().is_some_and(|c| c.typing) || self.find.as_ref().is_some_and(|f| f.typing) || self.browser.as_ref().is_some_and(|b| b.typing())
     }
 }
 
@@ -780,7 +796,8 @@ fn read_pad(
     }
     let gamepad = mode.gamepad.and_then(|e| gamepads.get(e).ok()).or_else(|| gamepads.iter().next()).map(|(_, g)| g);
     // Which is in use: real keys and clicks (the pad's own presses come after this).
-    let keys_touched = keys.get_just_pressed().next().is_some() || mouse.get_just_pressed().next().is_some();
+    // (The on-screen keyboard types as keys no keyboard has: `osk.rs`. They aren't the keyboard.)
+    let keys_touched = keys.get_just_pressed().any(|k| !matches!(k, KeyCode::Unidentified(_))) || mouse.get_just_pressed().next().is_some();
     let pad_touched = gamepad.is_some_and(touched);
     let was = mode.pad;
     let now_pad = InputMode::follow(mode.setting, was, pad_touched, keys_touched);
@@ -861,7 +878,7 @@ fn read_pad(
         return;
     }
     // B on a screen, and Menu anywhere, are Esc; in the pause menu and the settings the pad does
-    // nothing else (their own keys go by focus, a later stage).
+    // nothing else but move the focus (below).
     let back = g.just_pressed(Button::B.gamepad()) && screens.open();
     let menus = screens.menus();
     let mut press = |k: KeyCode, keys: &mut ButtonInput<KeyCode>| {
@@ -871,6 +888,15 @@ fn read_pad(
     if back || started.contains(&PadAction::Only(Only::Pause)) {
         press(KeyCode::Escape, &mut keys);
     }
+    if menus {
+        // The pause menu and the settings go by focus (`focus.rs`): the d-pad or the left stick
+        // moves it, A presses what has it, the bumpers change tab.
+        let step = |b: Button| g.just_pressed(b.gamepad()) as i32;
+        out.nav_step = IVec2::new(step(Button::Right) - step(Button::Left), step(Button::Up) - step(Button::Down));
+        out.nav_stick = dead_zone(g.left_stick());
+        out.confirm = g.just_pressed(Button::A.gamepad());
+        out.nav_tab = step(Button::RB) - step(Button::LB);
+    }
     if menus || back {
         *KEYS.write().unwrap() = KeyFrame::default();
         if *pad != out {
@@ -878,7 +904,7 @@ fn read_pad(
         }
         return;
     }
-    for (only, key) in [(Only::TurnLeft, KeyCode::Comma), (Only::TurnRight, KeyCode::Period), (Only::FirstPerson, KeyCode::Semicolon)] {
+    for (only, key) in [(Only::TurnLeft, KeyCode::Comma), (Only::TurnRight, KeyCode::Period), (Only::FirstPerson, KeyCode::Semicolon), (Only::Chat, KeyCode::Enter)] {
         if started.contains(&PadAction::Only(only)) {
             press(key, &mut keys);
         }
