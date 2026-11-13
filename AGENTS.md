@@ -845,14 +845,13 @@ upgrades and the rest come as new categories of the same list.
 
 - **Weapons are data:** `assets/data/items/weapons.ron`, a list of `items::WeaponDef` (damage
   range, reach to the zombie's body, arc, windup and swing time, max targets, knockback,
-  stagger/knockdown/crit chances, crit multiplier, endurance cost, noise, spawn weight, `found_in`
-  room types, grey-box length and colour, and `skill`: the skill it trains, see Skills), validated by `items::parse_weapons` and loaded by
+  stagger/knockdown/crit chances, crit multiplier, endurance cost, noise,
+  grey-box length and colour, and `skill`: the skill it trains, see Skills), validated by `items::parse_weapons` and loaded by
   `net::content::load_weapons` into `WorldConfig::weapons`. Exactly one is `Unarmed` (bare hands);
   if the content has none, `WeaponDef::fists()` is added. Add a weapon by adding an entry.
 - **Weapons are items** (an item with `weapon: Some(id)`, see Items): the weapon swung is the one the item in the
-  player's `Hand` slot names (`Player::weapon`, derived from the hand). The world places 0–2 weapon items per house
-  on free ground-floor tiles (at least one in the spawn house), weighted by `spawn_weight` and ×3 in `found_in`
-  rooms, from its own seeded RNG (`GroundItem { id, stack, pos, angle }`). A player who dies drops everything it has
+  player's `Hand` slot names (`Player::weapon`, derived from the hand). What lies on floors when the world begins is
+  loot, not weapon data: `loot.ron`'s `floor` (see Loot; `GroundItem { id, stack, pos, angle }`). A player who dies drops everything it has
   where it fell.
 - **Actions** (`players::ActionKind`: `Swing`, `Shove`, `Stomp`): start when the intent arrives (or are
   queued if it comes within `action_buffer_secs` of the last one ending), cost endurance at once, and
@@ -1390,7 +1389,8 @@ the start, and gardens, trees, fences and buildings are inked in where the survi
   skips, never wrapping; 0 for things that keep). Fresh until `spoils_hours`, Stale to twice that (x0.7 of what it gives,
   `HealthTuning::poison_stale` 10%), then Mouldy (x0.4, `poison_rotten` 70%), through `World::poison_player` (combat RNG).
   Food found in furniture (`World::age_found_food` on first search) was made 0-60% of its `spoils_hours` before the world
-  began (seeded per container and stack). No per-tick aging; fridges don't slow it yet (no power).
+  began (seeded per container and stack). No per-tick aging; a **fridge** in a building with power (`power.ron`'s `fridges`: container kinds and
+  `spoil_mult`, 0.25) slows it by moving its food's `born` on as the minutes pass (`World::step_fridges`, stateless).
 - **Sleep** (`World::player_sleep`, `Intent::Sleep`, B, MCP `sleep`): needs tiredness 0.3+ (after dark any, and then being rested doesn't wake you before sunrise: `sleep_through_night`, #19) and no agony, unless a painkiller dose is
   working (#57, `World::pain_stops_sleep`: you sleep through it, and wake in pain when the last dose wears off if it's
   still agony; the Pain tag's tip says which); on a bed (else a
@@ -1650,7 +1650,7 @@ A new single-player game can begin with a survivor of your making in a world of 
   optional `BAGS` section (which place each carried stack is in; only when anything is in a bag; no format bump: an
   older save's things are settled on load). `wire::PROTOCOL` 27 (`Place::Pouch`, the stacks' homes in the private
   view, `PrivateView::homes`).
-- **Client: the inventory screen** (`inventory_ui.rs`; Tab or I, and it opens by itself when a container search
+- **Client: the inventory screen** (`inventory_ui.rs`; Tab or I, Shift+C on its Make screen, Shift+B Build, and it opens by itself when a container search
   finishes: `search_done`). The first screen of the **flat frame** every full screen is to use: read
   **[docs/ui-design.md](docs/ui-design.md)** before building or changing one (colours, type, the frame, components,
   icons, behaviour, and a checklist). Its tokens and helpers are `theme::flat` (`VEIL`, `SOLID`, `TEXT`, `DIM`,
@@ -1688,7 +1688,7 @@ A new single-player game can begin with a survivor of your making in a world of 
   Ctrl-click picks, Shift-click picks the range from the last one picked in that column, and with something picked a
   bar at the foot of You sends them all to a bag, the container or the floor; right-click for the menu (#95,
   `menu_entries`): one flat list of what can be done with it, the likeliest first (eat or drink, wear, hold, take a
-  pill, use on a wound, put in the open container, **put in each other bag carried or the pockets**, drop, take, take
+  pill, use on a wound, **the recipes it goes into that can be made now** (`makes_from`: open a box of nails, rip a shirt, mend a bat; not heat or water recipes), put in the open container, **put in each other bag carried or the pockets**, drop, take, take
   in hand, split: one, or half of four or more), 1-9 to pick, Esc or a click elsewhere to close; the same menu on a
   ground item in reach in the world (right-click it with the screen open, or a quick right tap with it shut; held,
   right mouse aims). **A thing lying nearby** (in the open container or on the floor) offers what can be done with it
@@ -1741,12 +1741,20 @@ A new single-player game can begin with a survivor of your making in a world of 
 - **Shipped** (ours): rip a T-shirt (3 rags), a jumper (4), a hoodie (5), a towel (4), tear a bed sheet (6), cut jeans
   (4, a `cuts` tool: scissors or a kitchen knife), and wash 3 rags in a bottle of water into 3 clean rags (and an empty
   bottle). A rag dresses a wound dirty, a clean rag clean (first aid's `bandage` / `clean` tags).
+- **Water, mending and made weapons** (the loot and crafting pass): `water: true` recipes need a running tap within
+  reach (`power::water_near`: `power.ron`'s `water.taps`, sinks, baths and toilets, same room and floor, while
+  `water.on` and before `water.fails_after_hours`; stateless, from the clock; `Snapshot::water_on`, `wire::PROTOCOL` 36): fill a bottle, from the Make list or a right-click on the sink, bath or toilet (`world_actions::tap_entries`; a tap that isn't a container is `Target::Tap`, `pick_tap`). **What can be filled is data:** an item's `fills: Some("water_bottle")` in `items.ron` (the empty bottle's) gets a recipe `fill_<id>` by itself (`crafting::add_fill_recipes`, from `content::load_recipes` and a mod's `apply`), so a jug or canteen is one line.
+  `repairs: Some((tag, knocks))` mends the most worn weapon held or carried with that item tag
+  (`crafting::mend_target`, the same pure rule for the Make list; `mend_wood`, `mend_handle`, `mend_metal` in
+  `items.ron`), taking knocks off its wear (`ItemStack::used`, see weapon wear): duct tape on a bat or plank, a
+  loose handle, or beaten out with a hammer for a pan, a club or a crowbar. A nailed bat (bat + 6 nails, a hammer)
+  and a spear (knife + plank + tape) are weapons of their own in `weapons.ron`.
 - **Crafting is an item job** (`JobKind::Craft { recipe }`, `World::player_craft`, `Intent::Craft { player, recipe }`
   with an index into the recipes the client got on joining): checked when asked and again when due by one pure rule
   over an inventory (`crafting::check` / `check_times`, which the inventory panel uses too), taking the recipe's `secs`
   (`World::craft_secs`: Handiwork, #46, `SkillTuning::craft_time_mult`, 5% faster a level down to half; each craft done
   gives 5 Handiwork XP in `World::on_crafted`, see Skills). Inputs and tools are what the player
-  carries and holds (`firstaid::usable`) and what lies on its floor in reach (`crafting::with_floor`, `World::floor_of`: a log too big for any bag is sawn where it lies; the client's Make list and a floor item's right-click menu go by the same), not what it wears (the refusal says to take it off); only whole items count
+  carries and holds (`firstaid::usable`), what lies on its floor in reach (`crafting::with_floor`, `World::floor_of`: a log too big for any bag is sawn where it lies) and what is in the container it has open (`World::craft_stock`; inputs are taken from there last; the client's Make list and right-click menus go by the same, `inventory_ui::stock`), not what it wears (the refusal says to take it off); only whole items count
   as inputs (`crafting::whole`: the part-used top one of a stack doesn't). Like eating, it doesn't stop you walking; a
   strike landing drops queued crafts with the treatments (`interrupt_treatment`), and swinging, shoving or stomping
   drops the whole queue; a sleeper's `Craft` only gets it up. Asking again for a recipe already queued queues another
@@ -1759,7 +1767,7 @@ A new single-player game can begin with a survivor of your making in a world of 
   recipe index out of range is `LoadError::Invalid`.
 - **Client:** Make is the second screen on the inventory screen's rail (`inventory_ui.rs`, `make_column`, `make`):
   every recipe; the ones you can make (by `crafting::check` over your private view) are rows to click (one request
-  until the answer, like moves), with what they make and their time; the one under way shows its seconds left,
+  until the answer, like moves), with what they make and their time; **Shift-click makes all** (as many as there's the stuff for, at most the job queue's room and 16: `crafting::times_can`, one `Intent::Craft` each; a recipe in a right-click menu has a "...: all N" line too, `MenuDo::Many`); the one under way shows its seconds left,
   queued ones how many; the rest say what's missing. No key of its own.
 - **MCP:** `recipes` (the table; read-only), `craft {player, recipe}` (no recipe: what the player can make now, and what
   the rest need; with a recipe id: queues it, steps until done, and says what was made and what changed, carried and on
@@ -1896,12 +1904,43 @@ them yet (no body temperature, no effect on sight or hearing, nothing drawn or h
   shops keep it on shelves, never counters, which would hold kitchen things); `(any, any)` clutter. On the default town (#18) that is about two months of food for one player at 2.0
   hunger a day (`the_default_town_feeds_one_player_for_weeks`).
 - **Weapons** are loot entries too (knives in the cutlery drawer, a pan in the oven, a bat in a wardrobe, a golf club
-  in the coat cupboard, hammers and crowbars on laundry, shed and garage shelves, a rare fire axe). The floor weapons
-  (`items::place_weapons`, `found_in`, at least one in the spawn house) stay for now, so the spawn house always has
-  something to fight with; `found_in` folds into the tables when that is retired.
+  in the coat cupboard, hammers and crowbars on laundry, shed and garage shelves, a rare fire axe). **Loose on
+  floors** (`loot::FloorLoot`, `floor` in `loot.ron`, laid out by `loot::place_floor` from the loot seed when the
+  world is made): `per_building` things per building (default 0-2, times `scale`), at least `spawn_house_min` (1) in
+  the spawn house so there is always something to fight with, each picked by weight and tier, `room_bonus` (3) times
+  as likely in its `rooms`, `count` together. Ships the old floor weapons (knife, hammer, pan, bat, golf club, plank,
+  crowbar, hatchet, fire axe); anything in `items.ron` can go there. No `floor` (or no file): nothing lies about.
 - **Saves:** `loot.ron` shares the `containers` fingerprint with `containers.ron` (no format change); a change loads
   with a note: opened containers keep what they hold, unopened ones fill from the tables as they are now. Not yet:
   food starting partly spoiled (needs item freshness, #11).
+
+## World events (`sim::events`, `assets/data/events.ron`)
+
+Things that happen to the whole town on a day of their own: the water going off, the grid failing. Data, not code.
+
+- **The file** (`EventsDef`, `parse_events`, unknown fields refused; `net::content::load_events`, none: no events;
+  `WorldConfig::events`, saved with the settings): a list of `EventDef` with `id`, `name`, `message` (told to every
+  living survivor when it happens), `days: (min, max)` (game days from the start; the day is rolled once per world
+  from the loot seed and the id, `EventsDef::when`), `chance` (that it happens at all, default 1), `effect`
+  (`EventEffect`: `Notice`, `WaterOff`, `WaterOn`, `PowerOff`, `PowerOn`) and `warn: Some((hours, text))`, a line told
+  that many hours before. Shipped (ours): `water_off` days 3-7, `power_off` days 2-5, each warned beforehand;
+  `water_on` and `power_on` with chance 0, for an admin or a test to trigger. A new effect is an `EventEffect`
+  variant and its line in `World::apply_event`.
+- **Running:** `World::step_events` every 20 ticks (and after a skip) fires what is due and gives warnings.
+  `trigger_event(id)` fires one now, `schedule_event(id, Some(hours) | None)` moves or cancels it.
+  `WaterOff` makes `water_on()` false (the taps run dry), `PowerOff` fails the grid (`set_grid`). The old
+  `power.ron` / water `fails_after_hours` fields still work beside it.
+- **Toilet cisterns:** once the water is off a toilet still holds `power.ron`'s `water.cisterns.fills` (3) fills of
+  dirty water (`cisterns.kinds`, toilets). An item's `fills_dirty: Some("dirty_water_bottle")` gets a recipe
+  `fill_dirty_<id>` (`cistern: true`, `power::cistern_near`, refused with `NEEDS_CISTERN`). Each fill is counted per
+  toilet (`EventState::cisterns`, by furniture index; `Snapshot::cisterns`, the `lights` delta, `wire::PROTOCOL` 36).
+  Dirty water (`poison` 0.5) is boiled into clean in a pot (`boil_water`, a heat recipe). Right-click the toilet for it.
+- **Saves:** an optional `EVNT` section (`EventState`: what fired and when, warnings given, moved times, the water off,
+  cisterns used; no format bump), in `state_hash` only while any.
+- **MCP:** `events` (read-only: each event's day and hour, done or not, water and grid now), and the debug
+  `trigger_event {id}` and `schedule_event {id, in_hours, cancel}`; the admin endpoint has all three.
+- Weather is apart from this (`weather.ron`); an event that forces weather would use `World::force_weather`.
+- Tests: `sim::events::tests`, `mcp::tests::agents_see_and_drive_world_events`.
 
 ## Electricity and lights (`sim::power`, `assets/data/power.ron`)
 
@@ -3340,7 +3379,7 @@ and checks the state hash, the tick and the session's dirty flag don't move), `P
 `add_player`, `pvp`, `dev`, `skip_time`, `load`, `restrain_now`, `set_weather`) get a title starting `Debug:`, a description starting "Debug tool, for setting
 up tests" and `_meta: {"zombye/debug": true}`. Only `save` and `load` are `destructiveHint: true`; every tool is
 `openWorldHint: false`. **A new tool needs a row in `TOOLS`** (a test fails without one). `--no-debug-tools` leaves the
-debug tools out: not listed (57 tools instead of 71), and calling one is the unknown-tool error. `stats` has an
+debug tools out: not listed (58 tools instead of 74), and calling one is the unknown-tool error. `stats` has an
 `outputSchema` and returns its JSON as `structuredContent` beside the text (`output_schema`). The server's `instructions`
 (`mcp::instructions`, under 2,200 bytes: every client puts them in the model's context) say you are player 1, time only
 moves when a tool steps it, look with `observe` first, and the debug tools are for testing; detail belongs in the tools'

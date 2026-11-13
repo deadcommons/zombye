@@ -256,6 +256,12 @@ pub fn apply(config: &mut WorldConfig, mods: &[Mod]) -> Result<(), String> {
             scripts.push(ModScripts { id: id.clone(), sources: m.scripts.clone() });
         }
     }
+    // A mod's container with `fills` can be filled at a tap, as the game's are.
+    if !mods.is_empty() {
+        let mut all = config.items.clone();
+        complete_items(&mut all, &config.weapons);
+        zombye_sim::crafting::add_fill_recipes(&mut config.recipes, &all);
+    }
     if !scripts.is_empty() {
         config.scripts = Some(Arc::new(LuauEngine::new(scripts)?));
     }

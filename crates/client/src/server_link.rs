@@ -168,6 +168,8 @@ pub struct JoinInfo {
     pub climb: zombye_sim::ClimbTuning,
     /// Fires and cooking: a fire's reach, what heats a pot (the Make list, a fire's menu).
     pub fire: zombye_sim::FireTuning,
+    /// The town's taps (`zombye_sim::power::WaterDef`): where the Make list says a recipe has water.
+    pub water: zombye_sim::power::WaterDef,
     /// The vehicle kinds and the rules round driving (`vehicles.ron`): our own car is predicted
     /// with them, and every car drawn and kept out of by its kind's box.
     pub vehicles: zombye_sim::VehicleData,
@@ -515,6 +517,7 @@ fn join_info(config: &zombye_sim::WorldConfig, player_id: u32, player_spawn: Vec
         carry: config.carry.clone(),
         climb: config.climb.clone(),
         fire: config.fire.clone(),
+        water: config.power.water.clone(),
         vehicles: config.vehicles.clone(),
         containers: config.containers.clone(),
         blind_tag: config.blinds.tag.clone(),

@@ -1,0 +1,31 @@
+// World events: one-off things that happen to the whole town on a day and change it for good
+// (crates/sim/src/events.rs). Weather is not here: it follows from the clock (weather.ron).
+//
+// Each event:
+//   id       unique; what MCP (`events`, `trigger_event`, `schedule_event`) calls it
+//   name     a short name for lists
+//   message  what every survivor is told when it happens ("" for nothing)
+//   days     (from, to): game days after the world began; it happens at a time in between, picked
+//            from the world's loot seed, so the same world always has the same day and a new game
+//            another
+//   chance   the chance it happens at all in a world (default 1: always)
+//   effect   Notice (the message only), WaterOff, WaterOn, PowerOff, PowerOn
+//   warn     Some((hours, "words")): a warning that many game hours before
+//
+// WaterOn and PowerOn are for putting things back by hand: `trigger_event` (MCP, or a hosted
+// server's admin endpoint). Their days are far off and their chance 0, so they never happen by
+// themselves. No file: no events.
+(
+    events: [
+        (id: "water_off", name: "The water goes off", days: (3.0, 7.0), effect: WaterOff,
+            message: "The taps cough and run dry. The town's water is off.",
+            warn: Some((6.0, "The water pressure is dropping. Fill what you can."))),
+        (id: "power_off", name: "The power goes off", days: (2.0, 5.0), effect: PowerOff,
+            message: "The lights die all over town. The power is off.",
+            warn: Some((3.0, "The lights flicker and dim. The grid won't hold much longer."))),
+        (id: "water_on", name: "The water comes back", days: (3650.0, 3650.0), chance: 0.0, effect: WaterOn,
+            message: "Water spits from the taps again."),
+        (id: "power_on", name: "The power comes back", days: (3650.0, 3650.0), chance: 0.0, effect: PowerOn,
+            message: "The lights come back on."),
+    ],
+)

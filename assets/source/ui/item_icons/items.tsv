@@ -101,5 +101,9 @@ firewood	Firewood	Material	#73523a
 newspaper	Newspaper	Junk	#d1ccbd
 log	Log	Material	#6b4d30
 hatchet	Hatchet	Weapon	#80593a
+nail	Nail	Material	#8c8c91
+nailed_bat	Nailed bat	Weapon	#9e8057
+spear	Spear	Weapon	#9e8059
+dirty_water_bottle	Bottle of dirty water	Drink	#8c9973
 petrol_can	Petrol can	Tool	#bf1f1a
 siphon_hose	Siphon hose	Tool	#33734d

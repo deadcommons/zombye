@@ -499,6 +499,13 @@ pub struct Snapshot {
     /// The town's grid is on.
     #[serde(default)]
     pub grid_on: bool,
+    /// The town's water is running (`zombye_sim::power::WaterDef`): taps fill bottles.
+    #[serde(default)]
+    pub water_on: bool,
+    /// Fills taken from each toilet's cistern since the water went off (by furniture index:
+    /// `zombye_sim::power::cistern_near`).
+    #[serde(default)]
+    pub cisterns: Vec<(u32, u8)>,
     /// The campfires (`zombye_sim::fire`), in id order: every snapshot (a server sends them when they change).
     #[serde(default)]
     pub fires: Vec<zombye_sim::FireView>,
@@ -649,6 +656,8 @@ impl Snapshot {
             maps: world.players.iter().filter(|p| p.explored.w > 0).map(|p| MapView { player: p.id, explored: p.explored.clone() }).collect(),
             lit_rooms: world.power().lit().to_vec(),
             grid_on: world.power().grid_on(),
+            water_on: world.water_on(),
+            cisterns: world.cisterns_taken(),
             fires: world.fires().iter().map(|f| f.view()).collect(),
             vehicles: world.vehicles().iter().map(zombye_sim::VehicleView::of).collect(),
         }
@@ -1009,7 +1018,8 @@ mod tests {
         let weapons = zombye_sim::items::parse_weapons(include_str!("../../../assets/data/items/weapons.ron")).unwrap();
         let items = zombye_sim::items::parse_items(include_str!("../../../assets/data/items/items.ron"), &weapons).unwrap();
         let containers = zombye_sim::containers::parse_containers(include_str!("../../../assets/data/containers.ron")).unwrap();
-        LocalServer::new(WorldConfig::new(4, 50, templates).with_weapons(weapons).with_items(items).with_containers(containers))
+        let loot = zombye_sim::loot::parse_loot(include_str!("../../../assets/data/loot.ron")).unwrap();
+        LocalServer::new(WorldConfig::new(4, 50, templates).with_weapons(weapons).with_items(items).with_containers(containers).with_loot(loot))
     }
 
     /// Picking up, swinging and getting hurt all go through intents and show up in snapshots.

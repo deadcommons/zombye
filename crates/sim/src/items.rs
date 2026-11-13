@@ -3,7 +3,7 @@
 //! (`assets/data/items/weapons.ron`, [`parse_weapons`]) and an item swings like one when it names it
 //! (`weapon: Some("baseball_bat")`). Things are carried, held and worn as [`ItemStack`]s (an item and
 //! a count; see [`crate::inventory`]), lie in furniture ([`crate::containers`]) or on the floor as
-//! [`GroundItem`]s. A few weapons lie on house floors from the start ([`place_weapons`]).
+//! [`GroundItem`]s. What lies on floors from the start is loot (`loot.ron`'s `floor`, [`crate::loot::place_floor`]).
 
 use glam::{IVec2, Vec2};
 use serde::{Deserialize, Serialize};
@@ -72,12 +72,6 @@ pub struct WeaponDef {
     pub endurance_cost: f32,
     /// Radius of the noise a swing makes.
     pub noise_radius: f32,
-    /// Relative chance of being placed in a house (0 = never).
-    #[serde(default)]
-    pub spawn_weight: f32,
-    /// Room types (`kitchen`, `bedroom`, ...) where it's three times as likely to turn up.
-    #[serde(default)]
-    pub found_in: Vec<String>,
     /// Grey-box look: length in metres and colour (linear-ish RGB 0..1).
     #[serde(default = "default_length")]
     pub length: f32,
@@ -136,8 +130,6 @@ impl WeaponDef {
             crit_multiplier: 1.5,
             endurance_cost: 0.02,
             noise_radius: 3.0,
-            spawn_weight: 0.0,
-            found_in: Vec::new(),
             length: 0.0,
             color: (0.8, 0.65, 0.5),
             ranged: None,
@@ -190,17 +182,11 @@ impl WeaponDef {
             (None, true) => return Err(format!("{id}: a Firearm needs `ranged: Some((...))`")),
             (None, false) => {}
         }
-        if !(self.spawn_weight >= 0.0 && self.spawn_weight.is_finite()) {
-            return Err(format!("{id}: spawn_weight must be >= 0"));
-        }
         if !self.skill().is_weapon_skill() {
             return Err(format!("{id}: skill {:?} isn't a weapon skill (Bludgeon, Edged or Brawl)", self.skill()));
         }
         if self.category == WeaponCategory::Unarmed && self.skill() != Skill::Brawl {
             return Err(format!("{id}: bare hands are Brawl, not {:?}", self.skill()));
-        }
-        if self.category == WeaponCategory::Unarmed && self.spawn_weight > 0.0 {
-            return Err(format!("{id}: an Unarmed weapon can't lie about (spawn_weight must be 0)"));
         }
         if !(0.0..=3.0).contains(&self.length) {
             return Err(format!("{id}: length must be in 0..3 m"));
@@ -442,6 +428,17 @@ pub struct ItemDef {
     /// doesn't have: a grey-box in its colour.
     #[serde(default)]
     pub model: Option<String>,
+    /// The item this one becomes when filled at a running tap: an empty bottle `"water_bottle"`.
+    /// Every item with one can be filled at a sink, from its right-click menu, the sink's and the
+    /// Make list ([`crate::crafting::add_fill_recipes`] makes the recipe), so a new container (a
+    /// jug, a canteen, a pot) needs only this line.
+    #[serde(default)]
+    pub fills: Option<String>,
+    /// The item it becomes filled from a toilet's cistern once the town's water is off (a bottle
+    /// of dirty water: `power.ron`'s `water.cisterns`); [`crate::crafting::add_fill_recipes`]
+    /// makes that recipe too.
+    #[serde(default)]
+    pub fills_dirty: Option<String>,
     /// A can of fuel for vehicles (`crate::vehicles`): the litres it holds. Its stack's `used`
     /// counts the litres in it (as it counts a gun's rounds); each litre weighs
     /// [`FUEL_KG_PER_L`] more. Doesn't stack.
@@ -490,6 +487,8 @@ impl ItemDef {
             clothing: None,
             light: None,
             model: None,
+            fills: None,
+            fills_dirty: None,
             fuel_l: None,
             color: w.color,
         }
@@ -640,6 +639,16 @@ pub fn validate_items(defs: &[ItemDef], weapons: &[WeaponDef]) -> Result<(), Str
         if let Some(r) = d.weapon.as_ref().and_then(|w| weapons.iter().find(|x| &x.id == w)).and_then(|w| w.ranged.as_ref()) {
             r.check_items(&d.id, defs)?;
         }
+        if let Some(f) = &d.fills
+            && (f == &d.id || !defs.iter().any(|o| &o.id == f))
+        {
+            return Err(format!("item {}: fills names {f:?}, which isn't another item", d.id));
+        }
+        if let Some(f) = &d.fills_dirty
+            && (f == &d.id || !defs.iter().any(|o| &o.id == f))
+        {
+            return Err(format!("item {}: fills_dirty names {f:?}, which isn't another item", d.id));
+        }
     }
     Ok(())
 }
@@ -746,60 +755,6 @@ pub struct GroundItem {
     pub angle: f32,
 }
 
-/// Scatter weapons over house floors: 0–2 per building on free ground-floor tiles, at least one in
-/// `spawn_building`, chosen by `spawn_weight` (three times as likely in a room of a `found_in`
-/// type), each as the item that swings it (`weapon_items`, from [`complete_items`]). Deterministic
-/// for the same map, weapons and seed; doesn't touch the world RNG.
-pub fn place_weapons(map: &TileMap, weapons: &[WeaponDef], weapon_items: &[Option<u16>], spawn_building: usize, seed: u64, first_id: u32) -> Vec<GroundItem> {
-    let mut out = Vec::new();
-    let placeable = |wi: usize, w: &WeaponDef| w.spawn_weight > 0.0 && weapon_items.get(wi).copied().flatten().is_some();
-    if !weapons.iter().enumerate().any(|(wi, w)| placeable(wi, w)) {
-        return out;
-    }
-    let mut rng = Rng::new(seed ^ 0x17E5_CA77_E2ED);
-    let mut tiles: Vec<IVec2> = Vec::new();
-    for (bi, b) in map.buildings.iter().enumerate() {
-        tiles.clear();
-        for y in b.min.y..b.min.y + b.size.y {
-            for x in b.min.x..b.min.x + b.size.x {
-                let t = IVec2::new(x, y);
-                let tile = map.tile(t);
-                if tile.room != 0 && map.rooms[tile.room as usize].building as usize == bi && tile.feature == Feature::None {
-                    tiles.push(t);
-                }
-            }
-        }
-        let mut count = rng.below(3);
-        if bi == spawn_building {
-            count = count.max(1);
-        }
-        for _ in 0..count.min(tiles.len() as u32) {
-            let k = rng.below(tiles.len() as u32) as usize;
-            let t = tiles.swap_remove(k);
-            let room_type = &map.rooms[map.tile(t).room as usize].room_type;
-            let weight = |wi: usize, w: &WeaponDef| if placeable(wi, w) { w.spawn_weight * if w.found_in.iter().any(|r| r == room_type) { 3.0 } else { 1.0 } } else { 0.0 };
-            let total: f32 = weapons.iter().enumerate().map(|(wi, w)| weight(wi, w)).sum();
-            let mut roll = rng.f32() * total;
-            let mut pick = None;
-            for (wi, w) in weapons.iter().enumerate() {
-                let wt = weight(wi, w);
-                if wt <= 0.0 {
-                    continue;
-                }
-                pick = Some(wi);
-                if roll < wt {
-                    break;
-                }
-                roll -= wt;
-            }
-            let Some(item) = pick.and_then(|wi| weapon_items[wi]) else { continue };
-            let pos = t.as_vec2() + Vec2::new(rng.range(0.3, 0.7), rng.range(0.3, 0.7));
-            out.push(GroundItem { id: first_id + out.len() as u32, stack: ItemStack::one(item), pos, angle: rng.range(0.0, std::f32::consts::TAU) });
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -813,7 +768,6 @@ mod tests {
         let w = weapons();
         assert!(w.len() >= 9, "only {} weapons", w.len());
         assert_eq!(w.iter().filter(|d| d.category == WeaponCategory::Unarmed).count(), 1);
-        assert!(w.iter().filter(|d| d.spawn_weight > 0.0).count() >= 8);
         // Every weapon names its skill (#46), and it is the one its category hits with. A gun
         // names none: shooting trains no skill yet (#72).
         for d in &w {

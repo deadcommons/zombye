@@ -41,6 +41,7 @@
     inventory: ["Tab", "I"],
     health: ["H"],
     skills: ["K"],
+    make: ["Shift+C"],
     build: ["Shift+B"],
     map: ["M"],
     objectives: ["O"],

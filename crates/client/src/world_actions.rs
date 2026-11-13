@@ -45,6 +45,9 @@ pub enum Target {
     Switch(u16, Vec2),
     /// A campfire someone built (its id, where it stands, burning or not, game minutes of fuel).
     Fire(u32, Vec2, bool, u16),
+    /// A tap that isn't a container (a bath, a toilet: `power.ron`'s `water.taps`): its
+    /// furniture's min corner, floor and kind ([`pick_tap`]).
+    Tap(IVec2, i8, &'static str),
 }
 
 /// One line of a world menu: its label and what it sends (`None`: a line that only says
@@ -61,7 +64,7 @@ impl WorldEntry {
         Self { label: label.into(), intent: Some(intent), facing: None }
     }
 
-    fn say(label: impl Into<String>) -> Self {
+    pub fn say(label: impl Into<String>) -> Self {
         Self { label: label.into(), intent: None, facing: None }
     }
 }
@@ -311,6 +314,30 @@ pub fn pick_fire(fires: &[zombye_sim::FireView], player: Vec2, origin: Vec3, dir
         .min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
+/// How high a tap that isn't a container (a bath, a toilet) is taken to be.
+const TAP_TOP: f32 = 0.8;
+
+/// The tap (furniture of a kind in `water.taps` or `water.cisterns`, on the player's floor, not a container: a
+/// sink is one already) the pointer's ray meets first, with the ray parameter there.
+pub fn pick_tap(map: &TileMap, sites: &[ContainerSite], water: &zombye_sim::power::WaterDef, player: Vec2, level: u8, origin: Vec3, dir: Vec3) -> Option<(Target, f32)> {
+    map.buildings
+        .iter()
+        .flat_map(|b| b.furniture.iter())
+        .filter(|f| f.level == level as i8 && water.taps.iter().chain(&water.cisterns.kinds).any(|t| *t == f.kind))
+        .filter(|f| !sites.iter().any(|s| s.min == f.min && s.level as i8 == f.level))
+        .filter(|f| (f.min.as_vec2() + f.size.as_vec2() * 0.5).distance(player) <= LOOK)
+        .filter_map(|f| {
+            let kind: &'static str = match f.kind.as_str() {
+                "bathtub" => "Bath",
+                "toilet" => "Toilet",
+                "sink" => "Sink",
+                _ => "Tap",
+            };
+            ray_box(origin, dir, f.min.as_vec2(), (f.min + f.size).as_vec2(), TAP_TOP).map(|t| (Target::Tap(f.min, f.level, kind), t))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+}
+
 /// What a fire's menu offers: put on each kind of fuel carried, light it (with something to
 /// light it with), put it out. `reach`: `FireTuning::reach`.
 pub fn fire_entries(id: u32, at: Vec2, lit: bool, fuel_min: u16, items: &[ItemDef], reach: f32, me: u32, pos: Vec2, view: Option<&PrivateView>) -> (String, Vec<WorldEntry>) {
@@ -381,7 +408,42 @@ pub fn entries(target: Target, map: &TileMap, sites: &[ContainerSite], data: &Co
             let lines = if near { vec![WorldEntry::send("Flick the switch", Intent::Light { player: me, on: None })] } else { vec![WorldEntry::say("Too far away: walk up to it")] };
             ("Light switch".to_string(), lines)
         }
+        // The fill lines are `tap_entries`', which the caller adds.
+        Target::Tap(_, _, kind) => (kind.to_string(), Vec::new()),
     }
+}
+
+/// The toilet whose cistern the player can fill from here ([`zombye_sim::power::cistern_near`],
+/// with the fills taken that the snapshot says).
+pub fn cistern_here(map: &TileMap, water: &zombye_sim::power::WaterDef, snap: &zombye_net::Snapshot, pos: Vec2, level: u8) -> Option<u32> {
+    let taken = |k: u32| snap.cisterns.iter().find(|(c, _)| *c == k).map_or(0, |(_, n)| *n);
+    zombye_sim::power::cistern_near(map, water, snap.water_on, taken, pos, level)
+}
+
+/// A tap (a sink, a bath or a toilet, by its furniture's min corner and floor; `power.ron`'s
+/// `water.taps` and `water.cisterns`): the recipes that need running water (`water: true`,
+/// filling a bottle) while it runs, or once it's off a toilet's cistern (`cistern: true`, dirty
+/// water), each a line that makes it, or says what's missing; none when the player isn't at it
+/// or there's nothing to fill from (`power::water_near`, `cistern_near`: the server's rules).
+#[allow(clippy::too_many_arguments)]
+pub fn tap_entries(min: IVec2, floor: i8, map: &TileMap, water: &zombye_sim::power::WaterDef, snap: &zombye_net::Snapshot, recipes: &[zombye_sim::RecipeDef], items: &[ItemDef], me: u32, pos: Vec2, level: u8, view: Option<&PrivateView>) -> Vec<WorldEntry> {
+    let kind = map.buildings.iter().flat_map(|b| b.furniture.iter()).find(|f| f.min == min && f.level == floor).map(|f| f.kind.as_str());
+    let Some(kind) = kind else { return Vec::new() };
+    let tap = water.taps.iter().any(|t| t == kind) && zombye_sim::power::water_near(map, water, snap.water_on, pos, level);
+    let cistern = !tap && water.cisterns.kinds.iter().any(|t| t == kind) && cistern_here(map, water, snap, pos, level).is_some();
+    if !tap && !cistern {
+        return Vec::new();
+    }
+    let Some(v) = view else { return Vec::new() };
+    recipes
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| if tap { r.water } else { r.cistern })
+        .map(|(i, r)| match zombye_sim::crafting::check(r, &v.inventory, items) {
+            Ok(()) => WorldEntry::send(r.name.clone(), Intent::Craft { player: me, recipe: i as u16 }),
+            Err(why) => WorldEntry::say(format!("{}: {why}", r.name)),
+        })
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]

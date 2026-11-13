@@ -49,6 +49,9 @@ I['cheese'] = ('<path d="M7 25h27v15H7z" fill="$C"/><path d="M7 25l8-10h27l-8 10
 # ---------- Drink
 I['water_bottle'] = ('<path d="M20 6h8v7l5 6v20a3 3 0 0 1-3 3H18a3 3 0 0 1-3-3V19l5-6z" fill="$L"/><path d="M15 24h18v15a3 3 0 0 1-3 3H18a3 3 0 0 1-3-3z" fill="$C"/>'
                      '<rect x="19" y="4" width="10" height="5" rx="1.5" fill="$D"/><rect x="15" y="29" width="18" height="6" fill="$D"/><path d="M15 24c3-2 5 2 9 0s6 2 9 0v2H15z" fill="$L"/>')
+I['dirty_water_bottle'] = ('<path d="M20 6h8v7l5 6v20a3 3 0 0 1-3 3H18a3 3 0 0 1-3-3V19l5-6z" fill="#cfd6d8"/><path d="M15 24h18v15a3 3 0 0 1-3 3H18a3 3 0 0 1-3-3z" fill="$C"/>'
+                     '<rect x="19" y="4" width="10" height="5" rx="1.5" fill="#4c5a66"/><path d="M15 24c3-2 5 2 9 0s6 2 9 0v2H15z" fill="$L"/>'
+                     '<circle cx="19" cy="31" r="1.2" fill="$D"/><circle cx="27" cy="34" r="1.6" fill="$D"/><circle cx="23" cy="38" r="1.1" fill="$D"/><circle cx="29" cy="29" r="0.9" fill="$D"/><path d="M15 39h18v0a3 3 0 0 1-3 3H18a3 3 0 0 1-3-3z" fill="$D"/>')
 I['empty_bottle'] = rot('<path d="M4 20h8l5-3h17a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4H17l-5-3H4z" fill="$C"/><path d="M17 17h17a4 4 0 0 1 4 4v1H17z" fill="$L"/>'
                         '<rect x="0" y="19" width="6" height="10" rx="1.5" fill="$D"/><rect x="21" y="25" width="14" height="2" rx="1" fill="$L"/><path d="M17 17v14" stroke="$D" stroke-width="1.6"/>', -35)
 I['soda_can'] = ('<rect x="14" y="9" width="20" height="31" rx="3" fill="$C"/><rect x="14" y="17" width="20" height="14" fill="$D"/><ellipse cx="24" cy="9" rx="10" ry="3" fill="$L"/>'
@@ -247,6 +250,13 @@ I['hot_beans'] = '<path d="M7 24h34c0 9-7 15-17 15S7 33 7 24z" fill="#d6d1c4"/><
 I['cooking_pot'] = '<rect x="9" y="17" width="30" height="22" rx="3" fill="$C"/><rect x="9" y="17" width="30" height="5" fill="$L"/><rect x="3" y="19" width="7" height="3" rx="1.5" fill="$D"/><rect x="38" y="19" width="7" height="3" rx="1.5" fill="$D"/><ellipse cx="24" cy="17" rx="15" ry="4" fill="$D"/><ellipse cx="24" cy="17" rx="13" ry="3" fill="$K"/><rect x="9" y="34" width="30" height="5" rx="2" fill="$D"/>'
 I['firewood'] = '<rect x="5" y="27" width="34" height="9" rx="1.5" fill="$C" transform="rotate(-8 22 31)"/><ellipse cx="39" cy="28.5" rx="3" ry="4.5" fill="$L" transform="rotate(-8 39 28)"/><rect x="9" y="16" width="34" height="9" rx="1.5" fill="$C" transform="rotate(10 26 20)"/><ellipse cx="9" cy="17" rx="3" ry="4.5" fill="$L" transform="rotate(10 9 17)"/><path d="M12 31h20M15 20l20 3" stroke="$D" stroke-width="1.3"/>'
 I['newspaper'] = '<path d="M7 10h30l4 4v26H11l-4-4z" fill="$C"/><path d="M37 10v4h4" fill="$D"/><rect x="11" y="14" width="24" height="5" fill="$D"/><path d="M11 23h12M11 27h12M11 31h12M11 35h12M26 23h11M26 27h11M26 31h11M26 35h11" stroke="$D" stroke-width="1.4"/>'
+
+# ---------- Made with the loot and crafting pass
+I['nail'] = rot('<rect x="9" y="22.5" width="30" height="3" fill="$L"/><path d="M39 22.5l6 1.5-6 1.5z" fill="$L"/><rect x="5" y="17" width="4.5" height="14" rx="1.2" fill="$L"/><rect x="9" y="22.5" width="30" height="1" fill="$C"/>')
+I['nailed_bat'] = rot(''.join(f'<path d="M{x} {y0}l1.2 {d}" stroke="#c9c9cf" stroke-width="1.8" stroke-linecap="round"/>' for x, y0, d in ((7, 16.5, -5), (13, 17, -5), (19, 18, -5), (10, 31.5, 5), (16, 31, 5), (22, 30, 5))) +
+    '<path d="M2 20c0-3 2-4 5-4l22 4h14v8H29L7 32c-3 0-5-1-5-4z" fill="$C"/><rect x="34" y="20" width="9" height="8" fill="$D"/><rect x="43" y="18.5" width="3" height="11" rx="1.5" fill="$D"/>' +
+    ''.join(f'<circle cx="{x}" cy="{y}" r="1.4" fill="#d9d9de"/>' for x, y in ((7, 20), (13, 21), (19, 22), (10, 28), (16, 27), (22, 26))))
+I['spear'] = rot('<rect x="14" y="21.5" width="33" height="5" rx="1" fill="$C"/><rect x="14" y="21.5" width="33" height="1.6" fill="$L"/><path d="M1 24l9-5h8v10h-8z" fill="#d6d6dc"/><path d="M1 24l9-5h8" stroke="#8c8c93" stroke-width="1" fill="none"/><rect x="15" y="20" width="6" height="8" rx="1" fill="#8c8c93"/><path d="M16.5 20v8M19.5 20v8" stroke="#6e6e75" stroke-width="0.8"/>')
 
 # ---------- Fuel for cars
 I['petrol_can'] = ('<path d="M10 14l6-6h20a4 4 0 0 1 4 4v26a3 3 0 0 1-3 3H13a3 3 0 0 1-3-3z" fill="$C"/>'

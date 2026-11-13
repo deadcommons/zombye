@@ -76,11 +76,36 @@ pub struct RecipeDef {
     /// Cooking: only made within reach of a lit fire or a working stove (`crate::fire::heat_near`).
     #[serde(default)]
     pub heat: bool,
+    /// Needs running water: only made within reach of a tap while the town's water is on
+    /// (`crate::power::water_near`): filling a bottle.
+    #[serde(default)]
+    pub water: bool,
+    /// Needs a toilet's cistern with water left in it, the town's water being off
+    /// (`crate::power::cistern_near`); each one made takes a fill from it.
+    #[serde(default)]
+    pub cistern: bool,
+    /// Mends a worn or broken weapon carried or held (`crate::wear`): the most worn one with this
+    /// item tag loses `knocks` knocks.
+    #[serde(default)]
+    pub repairs: Option<Repair>,
     /// Puts something down in front of the survivor (a campfire, fed with the inputs that are
     /// fuel: `crate::fire`), as well as making the outputs.
     #[serde(default)]
     pub places: Option<crate::fire::Placed>,
 }
+
+/// What a mending recipe mends (`RecipeDef::repairs`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Repair {
+    /// An item tag (`items.ron`): what it can mend.
+    pub tag: String,
+    /// Knocks it takes off (1 to 50).
+    pub knocks: u8,
+}
+
+/// Why a mending recipe can't be made: nothing it mends is worn.
+pub const NOTHING_TO_MEND: &str = "nothing worn to mend";
 
 /// Why a cooking recipe (`heat`) can't be made here.
 pub const NEEDS_HEAT: &str = "needs a lit fire or a working stove within reach";
@@ -106,7 +131,12 @@ impl RecipeDef {
         if self.inputs.is_empty() {
             return Err(format!("{what}: needs at least one input (it would make something from nothing)"));
         }
-        if self.outputs.is_empty() && self.places.is_none() {
+        if let Some(rp) = &self.repairs {
+            if !valid_id(&rp.tag) || !(1..=50).contains(&rp.knocks) {
+                return Err(format!("{what}: repairs needs a lowercase tag and knocks in 1..50"));
+            }
+        }
+        if self.outputs.is_empty() && self.places.is_none() && self.repairs.is_none() {
             return Err(format!("{what}: makes nothing (no outputs, nothing it places)"));
         }
         for (list, kind) in [(&self.inputs, "input"), (&self.outputs, "output")] {
@@ -175,6 +205,11 @@ pub fn check_recipes(defs: &[RecipeDef], items: &[ItemDef]) -> Result<(), String
                 _ => {}
             }
         }
+        if let Some(rp) = &r.repairs
+            && !items.iter().any(|d| d.weapon.is_some() && d.has_tag(&rp.tag))
+        {
+            return Err(format!("{what}: no weapon in items.ron has the tag {:?} it repairs", rp.tag));
+        }
     }
     Ok(())
 }
@@ -191,6 +226,35 @@ pub fn parse_recipes_for(text: &str, items: &[ItemDef]) -> Result<Vec<RecipeDef>
     let defs = parse_recipes(text)?;
     check_recipes(&defs, items)?;
     Ok(defs)
+}
+
+/// Add a recipe that fills each item with a `fills` ([`ItemDef::fills`]) at a running tap:
+/// `fill_<item id>`, 3 s, the empty one in, the filled one out. A recipe of that id already there
+/// (written out in a recipes file) is left as it is.
+pub fn add_fill_recipes(recipes: &mut Vec<RecipeDef>, items: &[ItemDef]) {
+    for d in items {
+        for (full, cistern) in [(&d.fills, false), (&d.fills_dirty, true)] {
+            let Some(full) = full else { continue };
+            let id = if cistern { format!("fill_dirty_{}", d.id) } else { format!("fill_{}", d.id) };
+            if recipes.iter().any(|r| r.id == id) || !items.iter().any(|o| &o.id == full) {
+                continue;
+            }
+            let name = d.name.to_lowercase();
+            recipes.push(RecipeDef {
+                id,
+                name: if cistern { format!("Fill the {name} from the toilet cistern") } else { format!("Fill the {name} at the tap") },
+                secs: 3.0,
+                inputs: vec![RecipeItem { item: d.id.clone(), count: 1 }],
+                tools: Vec::new(),
+                outputs: vec![RecipeItem { item: full.clone(), count: 1 }],
+                heat: false,
+                water: !cistern,
+                cistern,
+                repairs: None,
+                places: None,
+            });
+        }
+    }
 }
 
 fn index_of(items: &[ItemDef], id: &str) -> Option<u16> {
@@ -254,7 +318,11 @@ pub fn describe(r: &RecipeDef, items: &[ItemDef]) -> String {
         };
         made = if made.is_empty() { what.to_string() } else { format!("{made} + {what}") };
     }
-    let heat = if r.heat { ", over a fire or a stove" } else { "" };
+    if let Some(rp) = &r.repairs {
+        let what = format!("mends {} knocks off a {} thing", rp.knocks, rp.tag);
+        made = if made.is_empty() { what } else { format!("{made} + {what}") };
+    }
+    let heat = if r.heat { ", over a fire or a stove" } else if r.water { ", at a running tap" } else if r.cistern { ", at a toilet once the water is off" } else { "" };
     format!("{} -> {made} ({:.0} s{tools}{heat})", list(&r.inputs), r.secs)
 }
 
@@ -275,6 +343,9 @@ pub fn check_times(r: &RecipeDef, inv: &Inventory, items: &[ItemDef], times: u32
     }
     for t in r.tools.iter().filter(|t| !has_tool(inv, t, items)) {
         missing.push(format!("needs {} to hand (kept)", tool_text(items, t)));
+    }
+    if missing.is_empty() && r.repairs.is_some() && mend_target(r, inv, items).is_none() {
+        missing.push(NOTHING_TO_MEND.into());
     }
     if missing.is_empty() { Ok(()) } else { Err(missing.join("; ")) }
 }
@@ -301,6 +372,54 @@ pub fn missing_brief(r: &RecipeDef, inv: &Inventory, items: &[ItemDef]) -> Optio
 /// Can `r` be made once from what `inv` carries and holds? See [`check_times`].
 pub fn check(r: &RecipeDef, inv: &Inventory, items: &[ItemDef]) -> Result<(), String> {
     check_times(r, inv, items, 1)
+}
+
+/// How many times over `r` can be made from `inv` (0: not once), counting no further than `cap`:
+/// what "make all" queues.
+pub fn times_can(r: &RecipeDef, inv: &Inventory, items: &[ItemDef], cap: u32) -> u32 {
+    (1..=cap).take_while(|&n| check_times(r, inv, items, n).is_ok()).last().unwrap_or(0)
+}
+
+/// Where a mending recipe would mend: the most worn thing with its tag in the hand, the off hand
+/// or carried (`None` if nothing it mends has taken a knock).
+pub fn mend_target(r: &RecipeDef, inv: &Inventory, items: &[ItemDef]) -> Option<MendAt> {
+    let rp = r.repairs.as_ref()?;
+    let fits = |s: &ItemStack| s.used > 0 && items.get(s.item as usize).is_some_and(|d| d.weapon.is_some() && d.has_tag(&rp.tag));
+    let mut best: Option<(u8, MendAt)> = None;
+    let mut consider = |s: &ItemStack, at: MendAt| {
+        if fits(s) && best.is_none_or(|(u, _)| s.used > u) {
+            best = Some((s.used, at));
+        }
+    };
+    if let Some(s) = &inv.hand {
+        consider(s, MendAt::Hand);
+    }
+    if let Some(s) = &inv.off_hand {
+        consider(s, MendAt::OffHand);
+    }
+    for (k, s) in inv.carried.iter().enumerate() {
+        consider(s, MendAt::Carried(k));
+    }
+    best.map(|(_, at)| at)
+}
+
+/// Where a thing being mended is ([`mend_target`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MendAt {
+    Hand,
+    OffHand,
+    Carried(usize),
+}
+
+/// Take `knocks` off the thing at `at`; its name, for the note.
+fn mend(inv: &mut Inventory, at: MendAt, knocks: u8) -> Option<u16> {
+    let s = match at {
+        MendAt::Hand => inv.hand.as_mut()?,
+        MendAt::OffHand => inv.off_hand.as_mut()?,
+        MendAt::Carried(k) => inv.carried.get_mut(k)?,
+    };
+    s.used = s.used.saturating_sub(knocks);
+    Some(s.item)
 }
 
 /// Seconds a recipe of `secs` takes at Handiwork `level` (#46), with the built-in skill numbers
@@ -374,7 +493,7 @@ impl World {
         let Some(r) = self.config.recipes.get(recipe as usize) else { return self.refuse(id, format!("no recipe {recipe}")) };
         let p = &self.players[pi];
         let queued = p.jobs.iter().filter(|j| j.kind == JobKind::Craft { recipe }).count() as u32;
-        let near = with_floor(&p.inventory, self.floor_of(id).into_iter().map(|g| g.stack));
+        let near = self.craft_stock(pi);
         if let Err(why) = check_times(r, &near, &self.config.items, queued + 1) {
             if queued > 0 {
                 // Already on it (a repeated click), and there's not enough for another.
@@ -391,11 +510,25 @@ impl World {
         self.queue_job(id, JobKind::Craft { recipe }, secs)
     }
 
+    /// What player `pi` has to craft with: what it carries and holds, what lies on its floor in
+    /// reach, and what is in the container it has open (`with_open`, the client's rule too).
+    pub fn craft_stock(&self, pi: usize) -> Inventory {
+        let p = &self.players[pi];
+        let near = with_floor(&p.inventory, self.floor_of(p.id).into_iter().map(|g| g.stack));
+        with_floor(&near, p.open.and_then(|c| self.opened.get(&c)).into_iter().flatten().copied())
+    }
+
     /// What a recipe needs of where player `pi` stands (`crate::fire`): heat to cook with, room
     /// for what it puts down.
     fn craft_place_ok(&self, pi: usize, r: &RecipeDef) -> Result<Option<glam::Vec2>, String> {
         if r.heat && !self.heat_for(pi) {
             return Err(NEEDS_HEAT.into());
+        }
+        if r.water && !self.water_for(pi) {
+            return Err(crate::power::NEEDS_WATER.into());
+        }
+        if r.cistern && self.cistern_for(pi).is_none() {
+            return Err(crate::power::NEEDS_CISTERN.into());
         }
         match r.places {
             Some(crate::fire::Placed::Campfire) => self.campfire_spot(pi).map(Some),
@@ -412,9 +545,13 @@ impl World {
         let mut inv = self.players[pi].inventory.clone();
         let id = self.players[pi].id;
         let mut floor = self.floor_of(id);
-        check(&r, &with_floor(&inv, floor.iter().map(|g| g.stack)), items).map_err(|why| format!("can't {}: {why}", lower(&r.name)))?;
-        // What it carries and holds first, then what lies on its floor.
+        let open = self.players[pi].open.filter(|c| self.opened.contains_key(c));
+        let mut took_shelf = false;
+        let mut shelf: Vec<ItemStack> = open.and_then(|c| self.opened.get(&c)).cloned().unwrap_or_default();
+        check(&r, &self.craft_stock(pi), items).map_err(|why| format!("can't {}: {why}", lower(&r.name)))?;
+        // What it carries and holds first, then what lies on its floor, then the open container.
         let place = self.craft_place_ok(pi, &r).map_err(|why| format!("can't {}: {why}", lower(&r.name)))?;
+        let cistern = if r.cistern { self.cistern_for(pi) } else { None };
         for x in &r.inputs {
             let i = index_of(items, &x.item).ok_or_else(|| format!("no item {}", x.item))?;
             let own = (have(&inv, i).min(x.count as u32)) as u16;
@@ -427,10 +564,23 @@ impl World {
                 g.stack.count -= take;
                 rest -= take;
             }
+            for c in shelf.iter_mut().filter(|c| c.item == i) {
+                let take = whole(c).min(rest);
+                c.count -= take;
+                rest -= take;
+                took_shelf |= take > 0;
+            }
             if rest > 0 {
                 return Err(format!("can't {}: the {} is gone", lower(&r.name), amount(items, &x.item, 1)));
             }
         }
+        let mended = match &r.repairs {
+            Some(rp) => {
+                let at = mend_target(&r, &inv, items).ok_or_else(|| format!("can't {}: {NOTHING_TO_MEND}", lower(&r.name)))?;
+                mend(&mut inv, at, rp.knocks)
+            }
+            None => None,
+        };
         for g in &floor {
             if let Some(k) = self.items.iter().position(|it| it.id == g.id) {
                 if g.stack.count == 0 {
@@ -442,6 +592,14 @@ impl World {
             }
         }
         let used = r.inputs.iter().map(|x| if x.count > 1 { amount(items, &x.item, x.count) } else { format!("the {}", amount(items, &x.item, 1)) }).collect::<Vec<_>>().join(" and ");
+        if let Some(k) = cistern {
+            *self.events.cisterns.entry(k).or_insert(0) += 1;
+        }
+        if let Some(c) = open.filter(|_| took_shelf) {
+            shelf.retain(|c| c.count > 0);
+            self.opened.insert(c, shelf);
+            self.container_changed(c);
+        }
         self.players[pi].inventory = inv;
         let (pos, facing) = (self.players[pi].state.pos, self.players[pi].state.facing);
         let mut made = Vec::new();
@@ -470,6 +628,7 @@ impl World {
             let name = amount(&self.config.items, &x.item, 1);
             made.push(if x.count > 1 { format!("{} x {name}", x.count) } else { name });
         }
+        let mended = mended.map(|i| self.config.items[i as usize].name.to_lowercase());
         if let Some(at) = place {
             let fuel: Vec<(u16, u16)> = r.inputs.iter().filter_map(|x| Some((index_of(&self.config.items, &x.item)?, x.count))).collect();
             let fire = self.place_campfire(at, &fuel);
@@ -480,7 +639,11 @@ impl World {
         self.script_event(crate::script::ScriptEvent::Crafted { player: id, recipe });
         self.refresh_carry(pi);
         let floor = if dropped.is_empty() { String::new() } else { format!(" ({} at your feet: no room)", dropped.join(" and ")) };
-        Ok(format!("made {} from {used}{floor}", made.join(" and ")))
+        Ok(match mended {
+            Some(m) if made.is_empty() => format!("mended the {m} with {used}"),
+            Some(m) => format!("mended the {m} and made {} from {used}{floor}", made.join(" and ")),
+            None => format!("made {} from {used}{floor}", made.join(" and ")),
+        })
     }
 }
 
@@ -578,7 +741,8 @@ mod tests {
             assert!(r.iter().any(|x| x.id == id), "{id}");
         }
         // Every recipe that isn't wood, cooking or a fire makes something first aid can use, or what makes it.
-        let fire = |x: &RecipeDef| x.heat || x.places.is_some() || x.outputs.iter().any(|o| o.item == "firewood") || x.id == "saw_log_planks" || x.id == "open_nails";
+        let fire = |x: &RecipeDef| x.heat || x.places.is_some() || x.outputs.iter().any(|o| o.item == "firewood") || x.id == "saw_log_planks" || x.id == "open_nails"
+            || x.water || x.repairs.is_some() || x.outputs.iter().any(|o| o.item == "nailed_bat" || o.item == "spear");
         assert!(r.iter().filter(|x| !fire(x)).all(|x| x.outputs.iter().any(|o| o.item == "rag" || o.item == "clean_rag")));
         assert!(r.iter().any(|x| x.heat) && r.iter().any(|x| x.places.is_some()));
         assert_eq!(describe(&r[0], &items), "t-shirt -> rag x3 (3 s)");
@@ -800,6 +964,25 @@ mod tests {
         w.player_treat(id, Some(gash), Treatment::Dress, None).unwrap();
         settle(&mut w, id);
         assert_eq!(me(&w, id).health.wounds.iter().find(|x| x.id == gash).unwrap().dressing, Dressing::Clean);
+    }
+
+    /// What is in the container the player has open counts as its own to craft with, and is
+    /// taken from there.
+    #[test]
+    fn the_open_container_is_crafted_from() {
+        let (mut w, id) = arena(12);
+        let pi = w.players.iter().position(|p| p.id == id).unwrap();
+        let tee = w.item_index("t_shirt").unwrap();
+        w.opened.insert(77, vec![ItemStack::new(tee, 2)]);
+        let r = recipe(&w, "rip_t_shirt");
+        assert!(check(&w.config.recipes[r as usize], &w.craft_stock(pi), &w.config.items).is_err(), "not open: not to hand");
+        w.players[pi].open = Some(77);
+        assert_eq!(times_can(&w.config.recipes[r as usize], &w.craft_stock(pi), &w.config.items, 16), 2);
+        w.do_craft(pi, r).unwrap();
+        assert_eq!((count(&w, id, "rag"), w.opened[&77][0].count), (3, 1));
+        w.do_craft(pi, r).unwrap();
+        assert!(w.opened[&77].is_empty(), "the last one taken");
+        assert!(w.do_craft(pi, r).is_err());
     }
 
     /// Handiwork (#46) makes crafting faster: 5% a level, down to half.

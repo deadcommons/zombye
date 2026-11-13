@@ -38,13 +38,14 @@ pub enum Action {
     Inventory,
     Health,
     Skills,
+    Make,
     Build,
     Map,
     Objectives,
 }
 
 impl Action {
-    pub const ALL: [Action; 22] = [
+    pub const ALL: [Action; 23] = [
         Action::MoveUp,
         Action::MoveDown,
         Action::MoveLeft,
@@ -64,6 +65,7 @@ impl Action {
         Action::Inventory,
         Action::Health,
         Action::Skills,
+        Action::Make,
         Action::Build,
         Action::Map,
         Action::Objectives,
@@ -91,6 +93,7 @@ impl Action {
             Action::Inventory => "inventory",
             Action::Health => "health",
             Action::Skills => "skills",
+            Action::Make => "make",
             Action::Build => "build",
             Action::Map => "map",
             Action::Objectives => "objectives",
@@ -160,6 +163,8 @@ pub struct KeysFile {
     pub health: Option<Vec<String>>,
     /// The Skills screen.
     pub skills: Option<Vec<String>>,
+    /// The Make screen (crafting).
+    pub make: Option<Vec<String>>,
     /// The build menu.
     pub build: Option<Vec<String>>,
     /// The map.
@@ -191,6 +196,7 @@ impl KeysFile {
             (Action::Inventory, self.inventory),
             (Action::Health, self.health),
             (Action::Skills, self.skills),
+            (Action::Make, self.make),
             (Action::Build, self.build),
             (Action::Map, self.map),
             (Action::Objectives, self.objectives),
