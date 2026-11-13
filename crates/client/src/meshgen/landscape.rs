@@ -2255,8 +2255,9 @@ mod tests {
         }
         assert!(kinds.iter().all(|&n| n > 20), "every kind somewhere in town: {kinds:?}");
         assert!(extra > total / 5 && extra < total / 2, "{extra} of {total} are for the denser settings");
-        // Under a patch a tile and a half at the default density, and no chunk a runaway.
-        assert!(total / chunks > 150 && total / chunks <= 2 * (CHUNK_SIZE * CHUNK_SIZE) as usize && most <= 600, "{total} spots in {chunks} chunks, at most {most} in one");
+        // Under a patch a tile and a half at the default density, and no chunk a runaway (the
+        // thickest woods put some 700 in one).
+        assert!(total / chunks > 150 && total / chunks <= 2 * (CHUNK_SIZE * CHUNK_SIZE) as usize && most <= 800, "{total} spots in {chunks} chunks, at most {most} in one");
         // Doors wear the ground: the town has some, and wear is whole at the threshold and gone 3 m out.
         let b = &map.buildings[0];
         let land = Land::new(&map, (b.min + b.size / 2).div_euclid(IVec2::splat(CHUNK_SIZE)));

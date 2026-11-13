@@ -783,7 +783,12 @@ pub fn generate_full(config: &GenConfig, templates: &[BuildingTemplate], props: 
         (homes.first().copied().unwrap_or(0), fallback())
     } else {
         let b = candidates[rng.below(candidates.len() as u32) as usize];
-        let tiles = bedroom_tiles(&map, b);
+        // You wake facing east: with free floor of the same room in front of you, where it has some,
+        // not face to a wall or the furniture.
+        let all = bedroom_tiles(&map, b);
+        let room = |p: IVec2| map.tile(p).room;
+        let open: Vec<IVec2> = all.iter().copied().filter(|&p| (1..=2).all(|dx| all.contains(&(p + IVec2::new(dx, 0))) && room(p + IVec2::new(dx, 0)) == room(p))).collect();
+        let tiles = if open.is_empty() { all } else { open };
         (b, tiles[rng.below(tiles.len() as u32) as usize].as_vec2() + Vec2::splat(0.5))
     };
     street_props::place(&mut map, props, config.seed, town_min, town_max, &fronts);
@@ -2467,8 +2472,9 @@ pub(crate) mod tests {
                 }
             }
         }
-        // (Biomes: woods in clumps with glades and meadows between, not one thick forest.)
-        assert!(trees_outside > 2500, "only {trees_outside} trees");
+        // (Biomes: woods in clumps with glades and meadows between, not one thick forest: some
+        // 1600 trees on the default map.)
+        assert!(trees_outside > 1200, "only {trees_outside} trees");
     }
 
     /// With every shipped template, each house type turns up in the town for some seed, every

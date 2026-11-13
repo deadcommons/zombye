@@ -358,11 +358,12 @@ impl MeshBuilder {
     /// and paint and clutter lying on it stay on it. Faces lying flat take their facet's normal (the
     /// low-poly look) and, on a slope, its colour drifts to bare earth and rock (`slope_tint`).
     /// Nothing changes where the ground is level (all of town).
+    #[cfg(test)]
     pub fn drape(&mut self, t: &Terrain) {
         self.drape_with(t, None);
     }
 
-    /// [`drape`](Self::drape), the bare earth and rock of each slope its biome's (`biomes.ron`).
+    /// `drape`, the bare earth and rock of each slope its biome's (`biomes.ron`).
     pub fn drape_with(&mut self, t: &Terrain, biomes: Option<&zombye_sim::biomes::BiomeMap>) {
         if let Some(far) = &mut self.far {
             far.drape_with(t, biomes);
