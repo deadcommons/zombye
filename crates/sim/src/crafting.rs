@@ -579,12 +579,12 @@ impl World {
                 }
             }
         }
+        let used = r.inputs.iter().map(|x| if x.count > 1 { amount(items, &x.item, x.count) } else { format!("the {}", amount(items, &x.item, 1)) }).collect::<Vec<_>>().join(" and ");
         if let Some(c) = open.filter(|_| took_shelf) {
             shelf.retain(|c| c.count > 0);
             self.opened.insert(c, shelf);
             self.container_changed(c);
         }
-        let used = r.inputs.iter().map(|x| if x.count > 1 { amount(items, &x.item, x.count) } else { format!("the {}", amount(items, &x.item, 1)) }).collect::<Vec<_>>().join(" and ");
         self.players[pi].inventory = inv;
         let (pos, facing) = (self.players[pi].state.pos, self.players[pi].state.facing);
         let mut made = Vec::new();
