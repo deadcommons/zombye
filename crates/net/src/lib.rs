@@ -191,6 +191,9 @@ pub enum Intent {
     /// Prise a piece off the build the player faces (a plank off a boarded window or door), with
     /// the build's remove tools (`World::player_unbuild`).
     Unbuild { player: u32 },
+    /// Switch the light held in a hand (a flashlight, a candle) on (`Some(true)`), off
+    /// (`Some(false)`) or the other way (`None`): `World::player_flashlight`. F in the client.
+    Flashlight { player: u32, on: Option<bool> },
 }
 
 /// What a player asks of its group ([`Intent::Group`]).
@@ -525,6 +528,9 @@ pub struct OutfitView {
     pub hand: Option<u16>,
     #[serde(default)]
     pub off_hand: Option<u16>,
+    /// The light in a hand is switched off (F): it isn't drawn.
+    #[serde(default)]
+    pub light_off: bool,
 }
 
 impl OutfitView {
@@ -537,6 +543,7 @@ impl OutfitView {
             shoulder: inv.shoulder.map(|s| s.item),
             hand: inv.hand.map(|s| s.item),
             off_hand: inv.off_hand.map(|s| s.item),
+            light_off: p.light_off,
         }
     }
 }
@@ -769,6 +776,9 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
         Intent::Light { player, on } => {
             world.player_light(*player, *on);
         }
+        Intent::Flashlight { player, on } => {
+            world.player_flashlight(*player, *on);
+        }
         Intent::Fire { player, fire, op } => {
             let _ = world.player_fire(*player, *fire, *op);
         }
@@ -900,6 +910,7 @@ impl Intent {
             | Intent::Unbuild { player }
             | Intent::SmashWindow { player }
             | Intent::Light { player, .. }
+            | Intent::Flashlight { player, .. }
             | Intent::Fire { player, .. }
             | Intent::Attack { player }
             | Intent::Shove { player }

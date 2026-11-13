@@ -704,7 +704,7 @@ fn type_search(mut typed: MessageReader<bevy::input::keyboard::KeyboardInput>, m
 }
 
 fn toggle(keys: Res<ButtonInput<KeyCode>>, mut panel: ResMut<InventoryPanel>, link: Res<ServerLink>, me: Res<LocalPlayer>, map: Res<crate::server_link::ClientMap>, mut out: ResMut<Outbox>) {
-    if keys.just_pressed(KeyCode::Tab) || keys.just_pressed(KeyCode::KeyI) {
+    if crate::keys::just_pressed(&keys, crate::keys::Action::Inventory) {
         panel.open = !panel.open;
         if panel.open
             && let Some(intent) = open_body(&link, me.id, &map.0)
@@ -716,7 +716,7 @@ fn toggle(keys: Res<ButtonInput<KeyCode>>, mut panel: ResMut<InventoryPanel>, li
 
 /// Shift+C: the Make screen, or back to the game when it is the one shown.
 fn make_key(keys: Res<ButtonInput<KeyCode>>, mut panel: ResMut<InventoryPanel>, make: Res<MakeUi>, mut goto: ResMut<Goto>, health: Option<Res<crate::health_ui::HealthPanel>>, skills: Option<Res<crate::skills_ui::SkillsPanel>>, build: Option<Res<crate::build_ui::BuildMenu>>) {
-    if !(keys.just_pressed(KeyCode::KeyC) && keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight])) {
+    if !crate::keys::just_pressed(&keys, crate::keys::Action::Make) {
         return;
     }
     let other = health.is_some_and(|h| h.open) || skills.is_some_and(|s| s.open) || build.is_some_and(|b| b.open);
@@ -1240,8 +1240,11 @@ fn top(c: &mut ChildSpawnerCommands, title: &str, clock: &str) {
 /// The rail down the left: the frame's screens.
 fn rail(mid: &mut ChildSpawnerCommands, tab: Tab) {
     mid.spawn((Node { width: px(flat::RAIL), flex_direction: FlexDirection::Column, row_gap: px(4), padding: UiRect::top(px(12)), border: UiRect::right(px(1)), flex_shrink: 0.0, ..default() }, BorderColor::all(LINE))).with_children(|r| {
-        for (to, icon, key) in [(Tab::Inventory, "hiking_pack", Some("Tab")), (Tab::Make, "claw_hammer", Some("Shift+C")), (Tab::Build, "wooden_plank", Some("Shift+B")), (Tab::Health, "plasters", Some("H")), (Tab::Skills, "magazine", Some("K"))] {
-            rail_tab(r, &format!("{to:?}"), icon, key, tab == to).observe(move |_: On<PointerPress>, mut goto: ResMut<Goto>| goto.0 = Some(to));
+        // Each screen's key, as bound (`keys.rs`).
+        use crate::keys::{Action, short};
+        for (to, icon, key) in [(Tab::Inventory, "hiking_pack", Some(Action::Inventory)), (Tab::Make, "claw_hammer", Some(Action::Make)), (Tab::Build, "wooden_plank", Some(Action::Build)), (Tab::Health, "plasters", Some(Action::Health)), (Tab::Skills, "magazine", Some(Action::Skills))] {
+            let key = key.map(short);
+            rail_tab(r, &format!("{to:?}"), icon, key.as_deref(), tab == to).observe(move |_: On<PointerPress>, mut goto: ResMut<Goto>| goto.0 = Some(to));
         }
     });
 }
@@ -1279,17 +1282,17 @@ fn footer(c: &mut ChildSpawnerCommands, note: Option<(String, bool)>, tab: Tab) 
             Tab::Health => {
                 flat::hint(f, &["Click"], "a wound: what it needs, and what you can do");
                 flat::hint(f, &["Right-click"], "stop using an item");
-                flat::hint(f, &["H"], "back to the game");
+                flat::hint(f, &[&crate::keys::short(crate::keys::Action::Health)], "back to the game");
                 return;
             }
             Tab::Skills => {
-                flat::hint(f, &["K"], "back to the game");
+                flat::hint(f, &[&crate::keys::short(crate::keys::Action::Skills)], "back to the game");
                 return;
             }
             Tab::Build => {
                 flat::hint(f, &["Click"], "build it on the window or door you face");
                 flat::hint(f, &["Right-click"], "a window or door in the world: board it up");
-                flat::hint(f, &["Shift", "B"], "back to the game");
+                flat::hint(f, &[&crate::keys::short(crate::keys::Action::Build)], "back to the game");
                 return;
             }
             _ => {}
@@ -2898,7 +2901,7 @@ fn menu_keys(mut keys: ResMut<ButtonInput<KeyCode>>, mut menu: ResMut<ItemMenu>)
 }
 
 /// Open the menu for the stack at `from`/`index`, at `at`.
-fn open_menu(menu: &mut ItemMenu, link: &ServerLink, join: &JoinInfo, me: u32, from: Place, index: u32, at: Option<Vec2>) -> bool {
+pub(crate) fn open_menu(menu: &mut ItemMenu, link: &ServerLink, join: &JoinInfo, me: u32, from: Place, index: u32, at: Option<Vec2>) -> bool {
     let (Some(v), floor) = panel_view(link, me) else { return false };
     let Some(s) = stack_at(&v, &floor, from, index) else { return false };
     let open = v.open.as_ref().map(|c| (c.id, c.name.to_lowercase()));

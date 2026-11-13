@@ -534,6 +534,29 @@ impl crate::world::World {
         room != 0 && self.power.is_lit(room)
     }
 
+    /// Switch the light the player holds (a flashlight or candle in either hand) on or off
+    /// (`None`: the other way). With none in hand it says so. Returns whether it changed.
+    pub fn player_flashlight(&mut self, id: u32, on: Option<bool>) -> bool {
+        let Some(pi) = self.players.iter().position(|p| p.id == id) else { return false };
+        let p = &self.players[pi];
+        if p.dead || p.away.is_some() {
+            return false;
+        }
+        let inv = &p.inventory;
+        let held = [inv.hand, inv.off_hand].into_iter().flatten().find_map(|s| self.config.items.get(s.item as usize).filter(|d| d.light.is_some())).map(|d| d.name.to_lowercase());
+        let Some(name) = held else {
+            self.note(id, false, "no flashlight or candle in your hands".into());
+            return false;
+        };
+        let off = !on.unwrap_or(p.light_off);
+        if off == p.light_off {
+            return false;
+        }
+        self.players[pi].light_off = off;
+        self.note(id, true, if off { format!("{name} off") } else { format!("{name} on") });
+        true
+    }
+
     /// Flip the light switch of the room player `id` stands in, if it is within [`SWITCH_REACH`]
     /// (`on`: set it; `None`: the other way). With no power in the building it clicks and does
     /// nothing. Says how it went in the player's notes. Returns whether the switch moved.

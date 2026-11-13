@@ -77,6 +77,8 @@
 // A packaged Windows build (`--features windows-gui`) opens no console window beside the game.
 #![cfg_attr(all(windows, feature = "windows-gui"), windows_subsystem = "windows")]
 
+mod interact;
+mod keys;
 mod aim_marker;
 mod audio;
 mod music;
@@ -805,7 +807,7 @@ fn main() {
             world_render::WorldRenderPlugin,
             (daynight::DayNightPlugin, lights::LightsPlugin),
             dev_time::DevTimePlugin,
-            player::PlayerPlugin,
+            (player::PlayerPlugin, interact::InteractPlugin),
             camera::IsoCameraPlugin,
             zombie_render::ZombieRenderPlugin,
             (items_render::ItemsRenderPlugin, vehicles_render::VehiclesRenderPlugin),
