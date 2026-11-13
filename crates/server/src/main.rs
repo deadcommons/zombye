@@ -70,7 +70,9 @@
 //! on the default map), `--seed S` (default 1), `--map-chunks N` (a square
 //! map N × N chunks of 16 m; default 30, so 480 m; 64 is about 1 km), `--data DIR` (content
 //! folder; default `$ZOMBYE_DATA`, else the repo's `assets/data`, else a `data` folder beside the
-//! binary: `content::installed_data_dir`).
+//! binary: `content::installed_data_dir`), `--biomes FILE` (a biomes file to read in place of the
+//! data folder's `biomes.ron`) and `--biome ID` (that one biome over all the wild ground, for trying
+//! its settings; see docs/biomes.md).
 //!
 //! Saves: `--save PATH` loads that save if it exists (the world options are then ignored) or
 //! makes a new world and saves it there; the server then autosaves to it every
@@ -199,6 +201,8 @@ fn main() {
     let value = |name: &str| text(name).and_then(|v| v.parse::<u64>().ok());
 
     let data = text("--data").map(PathBuf::from).unwrap_or_else(content::installed_data_dir);
+    // What grows outside town: another biomes file, or one biome everywhere (docs/biomes.md).
+    content::set_biome_flags(text("--biomes").map(PathBuf::from), text("--biome"));
     let mut config = match content::load_config(&data, value("--seed").unwrap_or(1)) {
         Ok(c) => c,
         Err(e) => {

@@ -9,6 +9,7 @@
 
 pub mod ai;
 pub mod awareness;
+pub mod biomes;
 pub mod blinds;
 pub mod bonds;
 pub mod build;

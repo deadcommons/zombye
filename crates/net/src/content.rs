@@ -90,6 +90,61 @@ pub fn load_weather(data_dir: &Path) -> Result<zombye_sim::WeatherTuning, String
     zombye_sim::weather::parse_weather(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// `--biomes FILE` and `--biome ID`, as the program was started ([`set_biome_flags`]).
+static BIOME_FLAGS: std::sync::OnceLock<(Option<PathBuf>, Option<String>)> = std::sync::OnceLock::new();
+
+/// Tell [`load_biomes`] what the command line asked for: a biomes file to read in place of the
+/// data folder's (`--biomes FILE`) and one biome to grow everywhere (`--biome ID`). Once, before
+/// any content is loaded. Without it (or with `None`s) the environment's `ZOMBYE_BIOMES` and
+/// `ZOMBYE_BIOME` say the same, so a program started by this one (the MCP `screenshot` tool's
+/// client) can be told too: [`biome_args`].
+pub fn set_biome_flags(file: Option<PathBuf>, everywhere: Option<String>) {
+    let _ = BIOME_FLAGS.set((file, everywhere));
+}
+
+/// The biomes file and the one biome asked for: the flags', else the environment's.
+pub fn biome_flags() -> (Option<PathBuf>, Option<String>) {
+    let env = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
+    let (file, everywhere) = BIOME_FLAGS.get().cloned().unwrap_or_default();
+    (file.or_else(|| env("ZOMBYE_BIOMES").map(PathBuf::from)), everywhere.or_else(|| env("ZOMBYE_BIOME")))
+}
+
+/// [`biome_flags`] as arguments for another run of the game, so it grows the same world.
+pub fn biome_args() -> Vec<String> {
+    let (file, everywhere) = biome_flags();
+    let mut out = Vec::new();
+    if let Some(f) = file {
+        out.extend(["--biomes".to_string(), f.to_string_lossy().into_owned()]);
+    }
+    if let Some(id) = everywhere {
+        out.extend(["--biome".to_string(), id]);
+    }
+    out
+}
+
+/// The biomes file in use: `--biomes FILE` (or `ZOMBYE_BIOMES`), else `<data>/biomes.ron`.
+pub fn biomes_path(data_dir: &Path) -> PathBuf {
+    biome_flags().0.unwrap_or_else(|| data_dir.join("biomes.ron"))
+}
+
+/// What grows on the wild ground ([`zombye_sim::biomes`]): the file at [`biomes_path`], validated,
+/// with `--biome ID` (or `ZOMBYE_BIOME`) grown everywhere if asked. A data folder without the file
+/// has the shipped biomes; a file named by `--biomes` must be there.
+pub fn load_biomes(data_dir: &Path) -> Result<zombye_sim::biomes::BiomeData, String> {
+    let (file, everywhere) = biome_flags();
+    let path = biomes_path(data_dir);
+    let data = if file.is_none() && !path.exists() {
+        zombye_sim::biomes::BiomeData::default()
+    } else {
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        zombye_sim::biomes::parse_biomes(&text).map_err(|e| format!("{}: {e}", path.display()))?
+    };
+    match everywhere {
+        Some(id) => data.with_everywhere(&id).map_err(|e| format!("--biome {id}: {e}")),
+        None => Ok(data),
+    }
+}
+
 /// World events in `<data>/events.ron` (`zombye_sim::events`): the water and power going off and
 /// the like. Without the file, none.
 pub fn load_events(data_dir: &Path) -> Result<zombye_sim::EventsDef, String> {
@@ -281,6 +336,7 @@ pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig
     // What zombies wear must be clothing there is.
     zombye_sim::corpses::check_outfits(&population.outfits, &items).map_err(|e| format!("{}: {e}", data_dir.join("population.ron").display()))?;
     let street_props = load_street_props(data_dir)?;
+    let biomes = load_biomes(data_dir)?;
     let power = load_power(data_dir)?;
     let fire = load_fire(data_dir)?;
     let vehicles = load_vehicles(data_dir, &street_props, &items)?;
@@ -295,6 +351,7 @@ pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig
         .with_builds(builds)
         .with_population(population)
         .with_street_props(street_props)
+        .with_biomes(biomes)
         .with_power(power)
         .with_fire(fire)
         .with_vehicles(vehicles)

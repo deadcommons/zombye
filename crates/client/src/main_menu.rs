@@ -43,8 +43,8 @@ use zombye_mods::folder::{self as mods_folder, Folder};
 
 /// Flags (with a value, and alone) that only set the scene: with nothing but these, the game
 /// starts on the menu.
-const SCENE_WITH_VALUE: [&str; 21] = ["--size", "--saves", "--data", "--mod", "--mods-dir", "--graphics", "--vegetation", "--no-post", "--msaa", "--shadow-map", "--render-scale", "--ui-scale", "--volume", "--music", "--name", "--server-list", "--crowd-vat", "--survivor", "--opening-hints", "--help-text", "--old-look"];
-const SCENE_ALONE: [&str; 10] = ["--dev", "--no-mods", "--novsync", "--mute", "--load-anyway", "--first-person", "--third-person", "--zombie-silhouettes", "--walls-up", "--rotate"];
+const SCENE_WITH_VALUE: [&str; 23] = ["--biome", "--biomes", "--size", "--saves", "--data", "--mod", "--mods-dir", "--graphics", "--vegetation", "--no-post", "--msaa", "--shadow-map", "--render-scale", "--ui-scale", "--volume", "--music", "--name", "--server-list", "--crowd-vat", "--survivor", "--opening-hints", "--help-text", "--old-look"];
+const SCENE_ALONE: [&str; 11] = ["--watch-biomes", "--dev", "--no-mods", "--novsync", "--mute", "--load-anyway", "--first-person", "--third-person", "--zombie-silhouettes", "--walls-up", "--rotate"];
 /// What chose this run's world or screen, dropped when another is chosen.
 const WORLD_WITH_VALUE: [&str; 13] = ["--connect", "--password", "--load", "--from-browser", "--browser-join", "--join-error", "--seed", "--new-game-from", "--settings", "--menu-screen", "--server-info", "--skip-hours", "--at"];
 const WORLD_ALONE: [&str; 6] = ["--joined", "--browser", "--no-menu", "--main-menu", "--new-game", "--pause"];
