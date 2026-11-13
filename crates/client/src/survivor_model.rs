@@ -53,7 +53,7 @@ use crate::character::{Body, HAIR_REGION, REGIONS, Rig, RigPose, SkinMesh, Weara
 use crate::rig::{globals, smooth};
 use crate::server_link::{JoinInfo, ServerLink};
 use crate::survivor::{
-    self, FARM_L, FARM_R, HAND_R, HEAD, HIP, HeldWeapon, JACKET_ME, JACKET_OTHER, PELVIS, SHIN_L, SHIN_R, SPose, Style, SurvivorAnim, THIGH_L,
+    self, FARM_L, FARM_R, HAND_R, HEAD, HIP, HeldItem, JACKET_ME, JACKET_OTHER, PELVIS, SHIN_L, SHIN_R, SPose, Style, SurvivorAnim, THIGH_L,
     THIGH_R, TORSO, UARM_L, UARM_R, UPPER,
 };
 
@@ -414,9 +414,13 @@ pub struct SurvivorModel {
     /// A light texel of the body's texture, for tinting (see [`light_uv`]).
     light_uv: Option<[f32; 2]>,
     hand_r: usize,
+    /// The left hand's bone, where the off hand's item is held.
+    hand_l: usize,
     /// Per hand (right, left): its bone and its grip in the rest pose, for the hang joints.
     hang: [(usize, Vec3); 2],
     weapon_frame: Transform,
+    /// The off hand's grip frame on `hand_l`, as `weapon_frame` is the right's.
+    off_frame: Transform,
     bare: Handle<Mesh>,
     body_material: Handle<StandardMaterial>,
     outfit_material: Handle<StandardMaterial>,
@@ -720,6 +724,11 @@ impl SurvivorModel {
         let rest_rot = rig.inverse_bind[hand_r].inverse().to_scale_rotation_translation().1;
         let grip = body.sockets.get("hand_r").map_or(Vec3::ZERO, |s| rest_rot.inverse() * s.offset);
         let weapon_frame = Transform::from_translation(grip).with_rotation(retarget.ref_global[hand_r].inverse() * Quat::IDENTITY);
+        // The off hand's the same way, on `hand_l` (#35): what it holds points as the right hand's does.
+        let hand_l = rig.find("LeftHand").or_else(|| body.sockets.get("hand_l").map(|s| s.bone)).unwrap_or(0);
+        let rest_rot_l = rig.inverse_bind[hand_l].inverse().to_scale_rotation_translation().1;
+        let grip_l = body.sockets.get("hand_l").map_or(Vec3::ZERO, |s| rest_rot_l.inverse() * s.offset);
+        let off_frame = Transform::from_translation(grip_l).with_rotation(retarget.ref_global[hand_l].inverse());
         // The texture's own colours times the vertex colours (white, or a tint).
         let texture = body.texture.as_ref().and_then(|(bytes, ext)| match crate::zvat::texture_image(bytes, ext) {
             Ok(i) => Some(i),
@@ -766,8 +775,10 @@ impl SurvivorModel {
             feet,
             light_uv: light,
             hand_r,
+            hand_l,
             hang,
             weapon_frame,
+            off_frame,
             retarget,
             bare: Handle::default(),
             body_material,
@@ -1249,7 +1260,8 @@ pub fn attach(commands: &mut Commands, model: &SurvivorModel, root: Entity, play
     // Posed far from the rest pose (lying down), so don't cull by the rest-pose bounds.
     let body = commands.spawn((Mesh3d(model.bare.clone()), MeshMaterial3d(model.body_material.clone()), skin.clone(), NoFrustumCulling, Transform::default(), ChildOf(root))).id();
     let outfit = commands.spawn((MeshMaterial3d(model.outfit_material.clone()), skin, NoFrustumCulling, Transform::default(), Visibility::Hidden, ChildOf(root))).id();
-    commands.spawn((HeldWeapon { player }, model.weapon_frame, Visibility::Hidden, ChildOf(joints[model.hand_r])));
+    commands.spawn((HeldItem { player, hand: 0 }, model.weapon_frame, Visibility::Hidden, ChildOf(joints[model.hand_r])));
+    commands.spawn((HeldItem { player, hand: 1 }, model.off_frame, Visibility::Hidden, ChildOf(joints[model.hand_l])));
     let ring = if local { model.ring_me.clone() } else { model.ring_other.clone() };
     let mut ring = commands.spawn((Mesh3d(model.ring.clone()), MeshMaterial3d(ring), Transform::from_xyz(0.0, 0.02, 0.0), NotShadowCaster, ChildOf(root)));
     if !local {

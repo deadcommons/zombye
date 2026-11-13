@@ -203,10 +203,13 @@ impl SurvivorAssets {
     }
 }
 
-/// The weapon in a survivor's right hand: a bar in the weapon's colour, child of the hand joint.
+/// What a survivor holds in one hand (#35): a child of that hand's grip frame (the grip at the
+/// origin, pointing along +Z), drawn as `WeaponLooks::in_hand` says; hidden while the hand is empty.
 #[derive(Component)]
-pub struct HeldWeapon {
+pub struct HeldItem {
     pub(crate) player: u32,
+    /// 0 the right hand (`Hand`), 1 the left (`OffHand`).
+    pub(crate) hand: u8,
 }
 
 /// Build a survivor's joints, skinned body and held weapon under `root` (which carries the
@@ -228,7 +231,8 @@ pub fn attach(commands: &mut Commands, assets: &SurvivorAssets, model: Option<&S
         joints[b] = commands.spawn((Transform::from_translation(local_pivot), Visibility::Inherited, ChildOf(parent_entity))).id();
     }
     // The grip sits in the fist; the bar points along the hand's +Z (forward when the arm hangs).
-    commands.spawn((HeldWeapon { player }, Transform::from_xyz(0.0, -0.07, 0.0), Visibility::Hidden, ChildOf(joints[HAND_R])));
+    // The grey-box has a right hand only, so whatever is in the off hand isn't drawn on it.
+    commands.spawn((HeldItem { player, hand: 0 }, Transform::from_xyz(0.0, -0.07, 0.0), Visibility::Hidden, ChildOf(joints[HAND_R])));
     let body = commands
         .spawn((
             Mesh3d(if local { assets.me.clone() } else { assets.other.clone() }),
@@ -488,7 +492,7 @@ pub struct SurvivorPlugin;
 
 impl Plugin for SurvivorPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (animate_survivors, show_held_weapons, crate::survivor_model::dress_survivors, crate::survivor_model::dim_rings, crate::survivor_model::mark_agents));
+        app.add_systems(Update, (animate_survivors, show_held_items, crate::survivor_model::dress_survivors, crate::survivor_model::dim_rings, crate::survivor_model::mark_agents));
     }
 }
 
@@ -1358,38 +1362,29 @@ pub(crate) fn dead(e: f32) -> SPose {
 
 /// Show the weapon each survivor holds (from snapshots): a release build's model of it where
 /// there is one, else a bar in the weapon's colour.
-fn show_held_weapons(
+fn show_held_items(
     link: Res<ServerLink>,
     looks: Option<Res<WeaponLooks>>,
     mut commands: Commands,
-    mut held: Query<(Entity, &HeldWeapon, &mut Visibility, Option<&Children>)>,
-    mut bars: Query<(&mut Transform, &mut MeshMaterial3d<StandardMaterial>, &mut Mesh3d), Without<HeldWeapon>>,
+    mut held: Query<(Entity, &HeldItem, &mut Visibility, Option<&Children>)>,
+    mut shapes: Query<(&mut Transform, &mut MeshMaterial3d<StandardMaterial>, &mut Mesh3d), Without<HeldItem>>,
 ) {
     let Some(looks) = looks else { return };
     for (e, h, mut vis, children) in &mut held {
-        let view = link.curr.players.iter().find(|p| p.id == h.player);
-        let weapon = view.filter(|v| !v.dead).and_then(|v| v.weapon);
-        let len = weapon.map_or(0.0, |w| looks.length(w));
-        let want = if len > 0.0 { Visibility::Inherited } else { Visibility::Hidden };
+        let alive = link.curr.players.iter().any(|p| p.id == h.player && !p.dead);
+        let outfit = link.curr.outfits.iter().find(|o| o.id == h.player).filter(|_| alive);
+        let item = outfit.and_then(|o| if h.hand == 0 { o.hand } else { o.off_hand });
+        let look = item.and_then(|i| looks.in_hand(i));
+        let want = if look.is_some() { Visibility::Inherited } else { Visibility::Hidden };
         if *vis != want {
             *vis = want;
         }
-        let Some(w) = weapon.filter(|_| len > 0.0) else { continue };
-        let (mesh, material, bar) = match looks.held(w) {
-            // A model is made as the hand holds it.
-            Some((mesh, material)) => (mesh, material, Transform::IDENTITY),
-            // The handle sticks out a little behind the fist.
-            None => (
-                looks.cube.clone(),
-                looks.materials.get(w as usize).cloned().unwrap_or_default(),
-                Transform::from_xyz(0.0, 0.0, len * 0.5 - 0.1).with_scale(Vec3::new(0.05, 0.05, len)),
-            ),
-        };
+        let Some((mesh, material, place)) = look else { continue };
         match children.and_then(|c| c.first().copied()) {
             Some(child) => {
-                if let Ok((mut tf, mut m, mut shape)) = bars.get_mut(child) {
-                    if *tf != bar {
-                        *tf = bar;
+                if let Ok((mut tf, mut m, mut shape)) = shapes.get_mut(child) {
+                    if *tf != place {
+                        *tf = place;
                     }
                     if m.0 != material {
                         m.0 = material;
@@ -1400,7 +1395,7 @@ fn show_held_weapons(
                 }
             }
             None => {
-                commands.spawn((Mesh3d(mesh), MeshMaterial3d(material), bar, ChildOf(e)));
+                commands.spawn((Mesh3d(mesh), MeshMaterial3d(material), place, ChildOf(e)));
             }
         }
     }
