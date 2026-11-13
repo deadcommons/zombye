@@ -1362,10 +1362,34 @@ pub(crate) fn dead(e: f32) -> SPose {
     p
 }
 
-/// Show the weapon each survivor holds (from snapshots): a release build's model of it where
-/// there is one, else a bar in the weapon's colour.
+/// What a survivor's left hand holds while an item job is under way: the food or drink being
+/// had, the pill or dressing being used, the magazine or round going into the gun (#35). Known
+/// where we know its jobs (our own survivor's; single-player: anyone's), as the hands' clips are.
+fn busy_with(link: &ServerLink, join: &JoinInfo, player: u32) -> Option<u16> {
+    let view = link.curr.players.iter().find(|p| p.id == player)?;
+    if view.dead || view.asleep || view.busy <= 0.0 {
+        return None;
+    }
+    let by_id = |id: &str| join.items.iter().position(|d| d.id == id).map(|i| i as u16);
+    match link.own(player)?.jobs.first()? {
+        JobKind::Use { item, .. } => Some(*item),
+        JobKind::Treat { item, .. } => *item,
+        JobKind::Reload { spare } => {
+            let ranged = join.weapons.get(view.weapon? as usize)?.ranged.as_ref()?;
+            match (&ranged.magazine, spare) {
+                (Some(mag), false) => by_id(mag),
+                _ => by_id(&ranged.ammo),
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Show what each survivor holds in either hand (from snapshots; while eating, drinking, taking a
+/// pill or reloading, the thing in use in the left hand): see `WeaponLooks::in_hand`.
 fn show_held_items(
     link: Res<ServerLink>,
+    join: Res<JoinInfo>,
     looks: Option<Res<WeaponLooks>>,
     mut commands: Commands,
     mut held: Query<(Entity, &HeldItem, &mut Visibility, Option<&Children>)>,
@@ -1375,7 +1399,8 @@ fn show_held_items(
     for (e, h, mut vis, children) in &mut held {
         let alive = link.curr.players.iter().any(|p| p.id == h.player && !p.dead);
         let outfit = link.curr.outfits.iter().find(|o| o.id == h.player).filter(|_| alive);
-        let item = outfit.and_then(|o| if h.hand == 0 { o.hand } else { o.off_hand });
+        let busy = if h.hand == 1 { busy_with(&link, &join, h.player) } else { None };
+        let item = busy.or_else(|| outfit.and_then(|o| if h.hand == 0 { o.hand } else { o.off_hand }));
         let look = item.and_then(|i| looks.in_hand(i));
         let want = if look.is_some() { Visibility::Inherited } else { Visibility::Hidden };
         if *vis != want {
