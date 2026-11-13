@@ -548,6 +548,7 @@ pub fn bloom() -> Bloom {
     Bloom { intensity: 0.18, prefilter: BloomPrefilter { threshold: 1.1, threshold_softness: 0.4 }, ..Bloom::NATURAL }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rotate_and_zoom(
     keys: Res<ButtonInput<KeyCode>>,
     mut wheel: MessageReader<MouseWheel>,
@@ -626,6 +627,7 @@ fn rotate_and_zoom(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn follow(
     time: Res<Time>,
     options: Res<Options>,

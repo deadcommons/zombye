@@ -330,10 +330,10 @@ const HEAD_RANGE: f32 = 30.0;
 const HEAD_OUTER: f32 = 0.5;
 
 #[derive(Component)]
-struct HeadLight(usize);
+pub(crate) struct HeadLight(usize);
 
 #[derive(Component)]
-struct TailLight(usize);
+pub(crate) struct TailLight(usize);
 
 fn spawn_car_lights(mut commands: Commands) {
     for slot in 0..MAX_CAR_LIGHTS {
@@ -368,6 +368,7 @@ pub fn lit_cars(cars: &[DrawnCar], from: Option<Vec2>) -> Vec<DrawnCar> {
 /// Headlights and tail lights on the nearest running cars (`lights.rs`'s chain, after the
 /// survivors' own lights): the beam lights the road ahead, brighter in the dark, and what it falls
 /// on shows through the fog of war; the tail light glows red, brighter while braking.
+#[allow(clippy::too_many_arguments)]
 pub fn car_lights(
     drawn: Res<DrawnCars>,
     link: Res<ServerLink>,
