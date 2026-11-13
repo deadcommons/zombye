@@ -86,9 +86,9 @@ impl Bary {
 }
 
 /// The ground's colour on a facet: on a slope it drifts toward bare earth, and on the steepest
-/// toward pale rock, as grass gives way on a bank.
-fn slope_tint(c: LinearRgba, normal: Vec3) -> LinearRgba {
-    let grade = normal.xz().length() / normal.y.max(1e-3);
+/// toward pale rock, as grass gives way on a bank. `grade` is the hillside's
+/// (`Terrain::broad_grade`), not one facet's, so the colour follows the hill.
+fn slope_tint(c: LinearRgba, grade: f32) -> LinearRgba {
     let earth = smooth(0.06, 0.12, grade);
     let rock = smooth(0.11, 0.18, grade);
     let p = pal();
@@ -364,7 +364,7 @@ impl MeshBuilder {
         let indices = std::mem::take(&mut self.indices);
         let mut keep = Vec::with_capacity(indices.len());
         // A vertex's facet normal and tint, once a flat face on one facet has given it one.
-        let mut facet_of: Vec<Option<Vec3>> = vec![None; n];
+        let mut facet_of: Vec<Option<(Vec3, f32)>> = vec![None; n];
         let mut cut: Vec<[u32; 3]> = Vec::new();
         // The colours as built, before any tint: a piece cut across a fold is tinted from these.
         let built = self.colors.clone();
@@ -384,21 +384,22 @@ impl MeshBuilder {
                 let mut ids = ids;
                 if flat {
                     let normal = facet_normal(&f);
+                    let grade = t.broad_grade((f[0] + f[1] + f[2]).xz() / 3.0);
                     for i in ids.iter_mut() {
                         match facet_of[*i as usize] {
                             // A quad whose diagonal is the fold has its two halves on two facets:
                             // the corners they share are split, so each half keeps its own normal.
-                            Some(other) if (other - normal).length_squared() > 1e-8 => {
+                            Some((other, _)) if (other - normal).length_squared() > 1e-8 => {
                                 let k = *i as usize;
                                 self.positions.push(self.positions[k]);
                                 self.normals.push(self.normals[k]);
                                 self.colors.push(built[k]);
                                 self.uv0.push(self.uv0[k]);
                                 self.uv1.push(self.uv1[k]);
-                                facet_of.push(Some(normal));
+                                facet_of.push(Some((normal, grade)));
                                 *i = self.positions.len() as u32 - 1;
                             }
-                            _ => facet_of[*i as usize] = Some(normal),
+                            _ => facet_of[*i as usize] = Some((normal, grade)),
                         }
                     }
                 }
@@ -408,9 +409,9 @@ impl MeshBuilder {
             }
         }
         for (i, normal) in facet_of.iter().enumerate() {
-            if let Some(normal) = normal {
+            if let Some((normal, grade)) = normal {
                 self.normals[i] = normal.to_array();
-                self.colors[i] = slope_tint(LinearRgba::from_f32_array(self.colors[i]), *normal).to_f32_array();
+                self.colors[i] = slope_tint(LinearRgba::from_f32_array(self.colors[i]), *grade).to_f32_array();
             }
         }
         self.indices = keep;
@@ -434,6 +435,7 @@ impl MeshBuilder {
                             continue;
                         }
                         let normal = facet_normal(&f);
+                        let grade = t.broad_grade((f[0] + f[1] + f[2]).xz() / 3.0);
                         let base = self.positions.len() as u32;
                         for q in &poly {
                             let w = bary.at(*q);
@@ -445,7 +447,7 @@ impl MeshBuilder {
                                     *ch += v * w[k];
                                 }
                             }
-                            let (nrm, col) = if flat { (normal, slope_tint(LinearRgba::from_f32_array(c), normal).to_f32_array()) } else { (Vec3::from(self.normals[ids[0] as usize]), c) };
+                            let (nrm, col) = if flat { (normal, slope_tint(LinearRgba::from_f32_array(c), grade).to_f32_array()) } else { (Vec3::from(self.normals[ids[0] as usize]), c) };
                             self.positions.push([q.x, y, q.y]);
                             self.normals.push(nrm.to_array());
                             self.colors.push(col);

@@ -39,11 +39,15 @@ pub struct TerrainDef {
     /// How much a slope slows a body walking up it: its speed times 1 − `uphill_slow` × the grade
     /// it climbs (never below half). Walking down or across is as on the flat.
     pub uphill_slow: f32,
+    /// How far each corner of the grid is raised or lowered at random, in metres, on top of the
+    /// hills (none in town): the facets then tilt each its own way and the light picks each one
+    /// out, even on a gentle slope. 0 leaves the hills smooth.
+    pub roughness_m: f32,
 }
 
 impl Default for TerrainDef {
     fn default() -> Self {
-        Self { relief_m: 18.0, cell_m: 4, wavelength_m: 130.0, flat_margin_m: 6.0, ramp_m: 70.0, max_grade: 0.22, uphill_slow: 1.5 }
+        Self { relief_m: 18.0, cell_m: 6, wavelength_m: 130.0, flat_margin_m: 6.0, ramp_m: 70.0, max_grade: 0.22, uphill_slow: 1.5, roughness_m: 0.6 }
     }
 }
 
@@ -70,6 +74,9 @@ impl TerrainDef {
         }
         if !(0.01..=1.0).contains(&self.max_grade) || !(0.0..=3.0).contains(&self.uphill_slow) {
             return Err("terrain: max_grade must be 0.01 to 1, uphill_slow 0 to 3".into());
+        }
+        if !(0.0..=5.0).contains(&self.roughness_m) || !self.roughness_m.is_finite() {
+            return Err(format!("terrain: roughness_m {} is not 0 to 5", self.roughness_m));
         }
         Ok(())
     }
@@ -113,6 +120,9 @@ impl Terrain {
                 let n = fbm(p / def.wavelength_m, seed);
                 // Mostly rising, a little falling: hollows below the town's level.
                 h[k] = def.relief_m * m * (n * 1.25 - 0.25);
+                // Each corner a little up or down, so neighbouring facets catch the light differently.
+                let jitter = crate::rng::hash01(seed, i as u64, j as u64, 0x7e45) * 2.0 - 1.0;
+                h[k] += def.roughness_m * m * jitter;
             }
         }
         // Keep every facet gentle: the difference along a side at most this (a facet's grade is
@@ -198,6 +208,21 @@ impl Terrain {
         // Normal of the facet: (u × v); height gradient = -(n.x, n.z) / n.y.
         let n = u.cross(v);
         if n.y.abs() < 1e-6 { Vec2::ZERO } else { Vec2::new(-n.x / n.y, -n.z / n.y) }
+    }
+
+    /// How steep the ground is round `p` at the scale of the hills, rise over run: the slope over
+    /// a few cells either way, so it follows the hillside and not one facet's tilt (the
+    /// [`TerrainDef::roughness_m`] each corner has). What grows there and what colour the ground is
+    /// go by it.
+    pub fn broad_grade(&self, p: Vec2) -> f32 {
+        if self.is_flat() {
+            return 0.0;
+        }
+        let d = 1.5 * self.cell as f32;
+        let (dx, dy) = (Vec2::new(d, 0.0), Vec2::new(0.0, d));
+        let gx = (self.height(p + dx) - self.height(p - dx)) / (2.0 * d);
+        let gy = (self.height(p + dy) - self.height(p - dy)) / (2.0 * d);
+        Vec2::new(gx, gy).length()
     }
 
     /// What a body moving along `dir` at `p` gets of its speed: less climbing (see

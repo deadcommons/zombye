@@ -1876,7 +1876,7 @@ fn plant_forest(map: &mut TileMap, rng: &mut Rng, keep_min: IVec2, keep_max: IVe
                 let pine = rng.f32() < 0.35 + 0.4 * (dist / 60.0).min(1.0);
                 // Steep hillsides are bare, open ground and rock: few trees take hold there. Thinned by a
                 // hash, not the stream, so the rest of the town draws the same numbers with or without hills.
-                let grade = map.terrain.gradient(p.as_vec2() + Vec2::splat(0.5)).length();
+                let grade = map.terrain.broad_grade(p.as_vec2() + Vec2::splat(0.5));
                 if crate::rng::hash01(seed, p.x as u64, p.y as u64, 0x7e44) < 0.85 * smoothstep(0.11, 0.19, grade) {
                     continue;
                 }

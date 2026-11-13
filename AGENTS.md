@@ -470,11 +470,11 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   `load {force: true}`. Lot details use coordinates relative to their lot, so a bigger map gives the same
   town. `print_town` (an ignored test; `ZOMBYE_SEED`, and `ZOMBYE_PPM=PATH` for a one-pixel-a-tile picture) prints it.
 - **Terrain (DCM-83, `sim::terrain`; stage 1):** the ground has hills, low-poly: heights at the corners of a
-  `cell_m` (4 m) grid, each square two flat facets (the diagonal alternating), from seeded value noise
+  `cell_m` (6 m) grid, each square two flat facets (the diagonal alternating), from seeded value noise
   (`Terrain::generate`, `+ - * / sqrt` only, so the same on every machine). **The town is level:** corners within
   `flat_margin_m` (6 m) of the town's bounds are 0 and the hills rise over `ramp_m` (70 m) beyond to `relief_m`
-  (18 m) of relief, `wavelength_m` 130; no facet is steeper than `max_grade` (0.22, about 12°: every slope is
-  walkable). The forest thins out on the steepest faces (`plant_forest`: up to 85% fewer trees from a grade of 0.11
+  (18 m) of relief, `wavelength_m` 130, each corner then raised or lowered at random by up to `roughness_m` (0.6 m), so neighbouring facets tilt their own ways and the light picks each out; no facet is steeper than `max_grade` (0.22, about 12°: every slope is
+  walkable). The forest thins out on the steepest faces (`plant_forest`, by `broad_grade`: up to 85% fewer trees from a grade of 0.11
   to 0.19), so bare ground and rock show there.
   `TerrainDef` is `GenConfig::terrain` (serde default, saved with the settings, checked on load, `TerrainDef::flat()`
   none); the heights are derived from the seed and the town, never saved or sent: a client builds them with the map
@@ -483,7 +483,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   (`Terrain::slope_factor`: `1 - uphill_slow (1.5) x climb`, never under half), for players in `step_movement` (so
   prediction stays exact) and active zombies; downhill and across are as on the flat. **Client:** `MeshBuilder::drape`
   lays a chunk's ground over the facets (every triangle that would cross a fold cut along it, flat faces taking their
-  facet's normal and drifting to the palette's `dirt` then pale `cliff` stone as the grade passes 0.06 and 0.11), its first UVs
+  facet's normal and drifting to the palette's `dirt` then pale `cliff` stone as the hillside's grade (`Terrain::broad_grade`, over a few cells, not one facet's tilt) passes 0.06 and 0.11), its first UVs
   carrying the ground's height so `world.wesl` tests height above the ground (`above`, under `TERRAIN`: ground
   detail, roofs, haze, moon paint); `MeshBuilder::lift` stands props and trees on it (by their anchor, the lowest
   5 cm following the slope); players, zombies, items, grass, effects, lights and the aim marker add
