@@ -293,6 +293,8 @@ pub enum KeyRow {
     Bound(Action, &'static str),
     Hold(Action, &'static str),
     Fixed(&'static str, &'static str),
+    /// An action's button, held.
+    Held(crate::pad::PadAction, &'static str),
 }
 
 impl KeyRow {
@@ -593,9 +595,9 @@ fn chip(parent: &mut ChildSpawnerCommands, label: &str, on: bool, act: Option<Ac
 
 fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsStore>, mode: Option<Res<crate::pad::InputMode>>, mut root: Query<&mut Node, With<Root>>, panel: Query<Entity, With<Panel>>) {
     // The Controls tab opens on the list of what is in use; the controller's buttons by its maker's names.
-    let (in_use, family) = mode.map_or((false, crate::pad::Family::Xbox), |m| (m.pad, m.family));
+    let (in_use, family, input) = mode.map_or((false, crate::pad::Family::Xbox, store.settings.input), |m| (m.pad, m.family, m.setting));
     let pad_view = ui.pad_view.unwrap_or(in_use);
-    let want = (ui.open, ui.tab, ui.changes + ((pad_view as u32) << 30) + ((family as u32) << 28));
+    let want = (ui.open, ui.tab, ui.changes + ((pad_view as u32) << 30) + ((family as u32) << 28) + ((input as u32) << 26));
     if ui.shown == Some(want) {
         return;
     }
@@ -627,7 +629,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
             skin::divider(body);
             body.spawn(Node { flex_grow: 1.0, flex_direction: FlexDirection::Column, padding: UiRect::axes(px(24), px(14)), min_height: px(300), ..default() }).with_children(|col| {
                 if tab == Tab::Controls {
-                    controls_head(col, s.input, pad_view);
+                    controls_head(col, input, pad_view);
                     if pad_view {
                         pad_list(col, family);
                     } else {
@@ -661,8 +663,8 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
                     Tab::Graphics => "Auto measures the first seconds of a game and picks what this machine holds.",
                     Tab::Audio => "Flags on the command line win for their session.",
                     Tab::Controls if ui.capture.is_some() => "Press the new key (with Shift, Ctrl or Alt if you like). Esc keeps the old one.",
-                    Tab::Controls if pad_view => "The controller's buttons are in pad.ron; choosing them here comes later. Any controller works: its own button names are shown.",
-                    Tab::Controls => "Click a key to change it. Kept in your settings; the game's own keys are in keys.ron.",
+                    Tab::Controls if pad_view => "The buttons are in pad.ron; choosing them here comes later. Auto plays with what you touched last: a button or stick, a key or a click.",
+                    Tab::Controls => "Click a key to change it; the game's own keys are in keys.ron. Auto plays with what you touched last.",
                     Tab::Game => "Difficulty and the world's own options are chosen when you start a new game.",
                 };
                 col.spawn((Text::new(note), font(SMALL), TextColor(DIM), Node { margin: UiRect::top(px(10)), ..default() }));
@@ -682,25 +684,15 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
 
 /// The top of the Controls tab: which the game is played with, and which list is shown.
 fn controls_head(p: &mut ChildSpawnerCommands, input: crate::pad::InputSetting, pad_view: bool) {
+    // One row, so the keyboard's list below still fits a 900-pixel screen.
     p.spawn(Node { align_items: AlignItems::Center, column_gap: px(8), min_height: px(38), ..default() }).with_children(|row| {
-        row.spawn(Node { width: px(150), flex_shrink: 0.0, ..default() }).with_children(|l| {
-            l.spawn((Text::new("Play with"), theme::strong(BODY), TextColor(BONE)));
-        });
+        row.spawn((Text::new("Play with"), theme::strong(BODY), TextColor(BONE), Node { margin: UiRect::right(px(4)), ..default() }));
         for i in crate::pad::InputSetting::ALL {
             chip(row, i.name(), i == input, Some(Act::Change(Change::Input(i))), Val::Auto);
         }
-    });
-    p.spawn((
-        Text::new("Auto follows what you touch last: a button or stick on the controller, a key or a click."),
-        font(SMALL),
-        TextColor(DIM),
-        Node { margin: UiRect::left(px(158)), ..default() },
-    ));
-    p.spawn(Node { align_items: AlignItems::Center, column_gap: px(8), min_height: px(38), margin: UiRect::top(px(6)), ..default() }).with_children(|row| {
-        row.spawn(Node { width: px(150), flex_shrink: 0.0, ..default() }).with_children(|l| {
-            l.spawn((Text::new("Show"), theme::strong(BODY), TextColor(BONE)));
-        });
-        chip(row, "Keyboard and mouse", !pad_view, Some(Act::PadView(false)), Val::Auto);
+        skin::spacer(row);
+        row.spawn((Text::new("Show"), theme::strong(BODY), TextColor(BONE), Node { margin: UiRect::right(px(4)), ..default() }));
+        chip(row, "Keys", !pad_view, Some(Act::PadView(false)), Val::Auto);
         chip(row, "Controller", pad_view, Some(Act::PadView(true)), Val::Auto);
     });
     skin::rule(p);
@@ -722,12 +714,13 @@ impl PadRow {
             PadRow::Bound(a, _) => crate::pad::current().label(a, family),
             PadRow::Button(b, _) => b.label(family).to_string(),
             PadRow::Fixed(k, _) => k.to_string(),
+            PadRow::Held(a, _) => format!("Hold {}", crate::pad::current().label(a, family)),
         }
     }
 
     pub fn does(self) -> &'static str {
         match self {
-            PadRow::Bound(_, d) | PadRow::Button(_, d) | PadRow::Fixed(_, d) => d,
+            PadRow::Bound(_, d) | PadRow::Button(_, d) | PadRow::Fixed(_, d) | PadRow::Held(_, d) => d,
         }
     }
 }
@@ -748,7 +741,7 @@ pub const PAD_ROWS: [(&str, &[PadRow]); 3] = [
             PadRow::Bound(Pa::Key(Action::Reload), "Reload"),
             PadRow::Bound(Pa::Key(Action::Stop), "Stop what you're doing"),
             PadRow::Bound(Pa::Key(Action::Interact), "Open, shut, climb, get in, pick up, search"),
-            PadRow::Fixed("Hold it", "Everything you can do with what you face"),
+            PadRow::Held(Pa::Key(Action::Interact), "Everything you can do with what you face"),
             PadRow::Bound(Pa::Key(Action::Flashlight), "Flashlight or candle on and off"),
             PadRow::Bound(Pa::Key(Action::Sit), "Sit down, and get up"),
             PadRow::Bound(Pa::Key(Action::Sleep), "Sleep, and get up"),

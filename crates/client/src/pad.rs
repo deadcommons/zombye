@@ -135,7 +135,7 @@ impl Button {
     /// What it is called on a pad of this family ("A", "Cross", "B" for the bottom one on a
     /// Nintendo pad).
     pub fn label(self, family: Family) -> &'static str {
-        use Button::*;
+        use self::Button::*;
         match family {
             Family::Xbox => match self {
                 A => "A",
@@ -388,7 +388,7 @@ impl PadFile {
 }
 
 /// A button, pressed or held for [`HOLD_SECS`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Bind {
     pub button: Button,
     pub hold: bool,
