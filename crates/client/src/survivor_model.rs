@@ -449,22 +449,22 @@ fn body_path(options: &crate::Options) -> Option<PathBuf> {
         None => crate::release_chars::survivor_in(crate::release_chars::root(), DEFAULT_BODY)
             .unwrap_or_else(|| options.data.join(format!("../models/characters/{DEFAULT_BODY}.glb"))),
     };
-    if path.is_dir() {
-        let mut found: Vec<PathBuf> = std::fs::read_dir(&path).ok()?.flatten().map(|e| e.path()).filter(|p| p.to_string_lossy().ends_with("_body.glb")).collect();
+    if crate::pack::is_dir(&path) {
+        let mut found: Vec<PathBuf> = crate::pack::read_dir(&path).ok()?.into_iter().filter(|p| p.to_string_lossy().ends_with("_body.glb")).collect();
         found.sort();
         return found.into_iter().next();
     }
-    path.is_file().then_some(path)
+    crate::pack::is_file(&path).then_some(path)
 }
 
 /// Every wearable GLB in `dir`, by file name, read against `body`.
 fn load_wearables(dir: &Path, body: &Body, into: &mut HashMap<String, Wearable>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "glb")).collect();
+    let Ok(entries) = crate::pack::read_dir(dir) else { return };
+    let mut paths: Vec<PathBuf> = entries.into_iter().filter(|p| p.extension().is_some_and(|e| e == "glb")).collect();
     paths.sort();
     for path in paths {
         let name = path.file_stem().unwrap().to_string_lossy().into_owned();
-        match std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| parse_wearable(&b, &body.rig)) {
+        match crate::pack::read(&path).map_err(|e| e.to_string()).and_then(|b| parse_wearable(&b, &body.rig)) {
             Ok(w) => {
                 info!("wearable {name}: {} triangles, hides {:?} ({})", w.mesh.triangles(), w.hides, path.display());
                 into.insert(name, w);
@@ -670,7 +670,7 @@ impl SurvivorModel {
         bindposes: &mut Assets<SkinnedMeshInverseBindposes>,
     ) -> Option<Self> {
         let path = body_path(options)?;
-        let mut body = match std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| parse_body(&b)) {
+        let mut body = match crate::pack::read(&path).map_err(|e| e.to_string()).and_then(|b| parse_body(&b)) {
             Ok(b) => b,
             Err(e) => {
                 warn!("survivor body {}: {e}; drawing the grey-box", path.display());

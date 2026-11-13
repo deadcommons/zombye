@@ -573,17 +573,68 @@ pub struct TileMap {
     /// `stair_speed`, so the server and a client's prediction move by the same numbers.
     #[serde(skip)]
     pub movement: crate::players::MoveTuning,
+    /// The vehicles ([`crate::vehicles`]) as boxes that bodies are kept out of, in id order, and a
+    /// bit for each tile near one. Set by the world whenever a vehicle moves and by a client from
+    /// its snapshots ([`TileMap::set_vehicles`]), so movement and its prediction see the same
+    /// cars. Not saved (the world's `VEHC` section is), in no hash.
+    #[serde(skip)]
+    pub vehicles: Vec<VehicleBox>,
+    #[serde(skip)]
+    vehicle_cover: Vec<u64>,
     /// The height of the ground outside town (`crate::terrain`), from the generator. Derived like
     /// the street props: not saved (a map stored whole gets the generated map's), in no hash.
     #[serde(skip)]
     pub terrain: crate::terrain::Terrain,
 }
 
+/// A vehicle as the map sees it: a box `half` (half its length, half its width) round `pos`, its
+/// length along `heading` (radians, 0 east, as a player's facing).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VehicleBox {
+    pub id: u32,
+    pub pos: Vec2,
+    pub heading: f32,
+    pub half: Vec2,
+}
+
+impl VehicleBox {
+    /// Its corners' extent, the axis-aligned box round it.
+    pub fn bounds(&self) -> (Vec2, Vec2) {
+        let (f, l) = (Vec2::from_angle(self.heading), Vec2::from_angle(self.heading).perp());
+        let ext = (f * self.half.x).abs() + (l * self.half.y).abs();
+        (self.pos - ext, self.pos + ext)
+    }
+
+    /// `p` in the box's own frame: x along its length, y across.
+    pub fn local(&self, p: Vec2) -> Vec2 {
+        Vec2::from_angle(-self.heading).rotate(p - self.pos)
+    }
+
+    /// A circle at `p` of `r` pushed out of the box (unchanged if it isn't in it).
+    pub fn push_out(&self, p: Vec2, r: f32) -> Vec2 {
+        let o = self.local(p);
+        if o.x.abs() >= self.half.x + r || o.y.abs() >= self.half.y + r {
+            return p;
+        }
+        let q = push_out_of_box(o, r, -self.half, self.half);
+        if q == o {
+            return p;
+        }
+        self.pos + Vec2::from_angle(self.heading).rotate(q)
+    }
+
+    /// How far `p` is from the box (0 inside).
+    pub fn distance(&self, p: Vec2) -> f32 {
+        let o = self.local(p);
+        (o.abs() - self.half).max(Vec2::ZERO).length()
+    }
+}
+
 impl TileMap {
     pub fn new(chunks_x: i32, chunks_y: i32) -> Self {
         let chunks = (0..chunks_x * chunks_y).map(|_| Chunk { tiles: vec![Tile::default(); CHUNK_TILES] }).collect();
         let outdoors = Room { building: u16::MAX, name: "Outdoors".into(), room_type: "outdoors".into(), floor: Floor::Grass };
-        Self { chunks_x, chunks_y, chunks, rooms: vec![outdoors], buildings: Vec::new(), turning_circles: Vec::new(), street_props: Vec::new(), prop_kinds: Vec::new(), blinds: BTreeMap::new(), glazed: BTreeSet::new(), barricades: BTreeMap::new(), stairs: Vec::new(), upper: BTreeMap::new(), stair_speed: 0.0, movement: Default::default(), terrain: Default::default() }
+        Self { chunks_x, chunks_y, chunks, rooms: vec![outdoors], buildings: Vec::new(), turning_circles: Vec::new(), street_props: Vec::new(), prop_kinds: Vec::new(), blinds: BTreeMap::new(), glazed: BTreeSet::new(), barricades: BTreeMap::new(), stairs: Vec::new(), upper: BTreeMap::new(), stair_speed: 0.0, movement: Default::default(), vehicles: Vec::new(), vehicle_cover: Vec::new(), terrain: Default::default() }
     }
 
     pub fn width(&self) -> i32 {
@@ -807,6 +858,91 @@ impl TileMap {
         (p.tile, self.prop_kinds.get(p.kind as usize).map_or(IVec2::ONE, |k| k.footprint(p.facing)))
     }
 
+    /// Put the vehicles' boxes on the map (in id order), and mark the tiles near them. Does
+    /// nothing if they are as they were.
+    pub fn set_vehicles(&mut self, boxes: Vec<VehicleBox>) {
+        if boxes == self.vehicles {
+            return;
+        }
+        let (w, h) = (self.width(), self.height());
+        let words = ((w.max(0) * h.max(0)) as usize).div_ceil(64);
+        if self.vehicle_cover.len() != words {
+            self.vehicle_cover = vec![0; words];
+        }
+        for b in &self.vehicles {
+            Self::cover(&mut self.vehicle_cover, w, h, b, false);
+        }
+        for b in &boxes {
+            Self::cover(&mut self.vehicle_cover, w, h, b, true);
+        }
+        self.vehicles = boxes;
+    }
+
+    /// Set (or clear) the bits of the tiles within a tile of box `b`. Overlapping boxes are
+    /// marked again after every clear, so a clear never takes another's tiles.
+    fn cover(bits: &mut [u64], w: i32, h: i32, b: &VehicleBox, on: bool) {
+        let (lo, hi) = b.bounds();
+        let (lo, hi) = ((lo - Vec2::ONE).floor().as_ivec2().max(IVec2::ZERO), (hi + Vec2::ONE).floor().as_ivec2().min(IVec2::new(w - 1, h - 1)));
+        for y in lo.y..=hi.y {
+            for x in lo.x..=hi.x {
+                let i = (y * w + x) as usize;
+                if on {
+                    bits[i / 64] |= 1 << (i % 64);
+                } else {
+                    bits[i / 64] &= !(1 << (i % 64));
+                }
+            }
+        }
+    }
+
+    /// Is a vehicle on or beside tile `t`? Cheap: a bit a tile.
+    pub fn near_vehicle(&self, t: IVec2) -> bool {
+        if self.vehicles.is_empty() || !self.in_bounds(t) {
+            return false;
+        }
+        let i = (t.y * self.width() + t.x) as usize;
+        self.vehicle_cover.get(i / 64).is_some_and(|b| b & (1 << (i % 64)) != 0)
+    }
+
+    /// A circle pushed out of every vehicle but `skip` (0: none).
+    pub fn push_out_of_vehicles(&self, mut p: Vec2, radius: f32, skip: u32) -> Vec2 {
+        if !self.near_vehicle(p.floor().as_ivec2()) {
+            return p;
+        }
+        for b in &self.vehicles {
+            if b.id != skip {
+                p = b.push_out(p, radius);
+            }
+        }
+        p
+    }
+
+    /// A vehicle's circle (`crate::vehicles`) pushed out of what a vehicle can't drive through:
+    /// as [`resolve_circle`](Self::resolve_circle), but every edge but an empty one blocks it
+    /// (fences, open windows and doorways too), and not out of its own box (`skip`).
+    pub fn resolve_vehicle_circle(&self, mut p: Vec2, radius: f32, skip: u32) -> Vec2 {
+        for _ in 0..2 {
+            p = self.resolve_circle_skip(p, radius, skip);
+            let t = p.floor().as_ivec2();
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let n = t + IVec2::new(dx, dy);
+                    if !self.in_bounds(n) {
+                        continue;
+                    }
+                    let tile = self.tile(n);
+                    for (which, kind) in [(OwnedEdge::North, tile.north), (OwnedEdge::West, tile.west)] {
+                        if kind != Edge::None && !kind.blocks_movement() {
+                            let (a, b) = Self::edge_segment(n, which);
+                            p = push_out_of_segment(p, radius + WALL_HALF_THICKNESS, a, b);
+                        }
+                    }
+                }
+            }
+        }
+        p
+    }
+
     /// Room id at a world position (0 = outdoors).
     pub fn room_at(&self, p: Vec2) -> u16 {
         self.tile(p.floor().as_ivec2()).room
@@ -972,6 +1108,9 @@ impl TileMap {
         }
         let wall = radius + WALL_HALF_THICKNESS;
         for _ in 0..2 {
+            if level == 0 {
+                p = self.push_out_of_vehicles(p, radius, 0);
+            }
             let t = p.floor().as_ivec2();
             for dy in -1..=1 {
                 for dx in -1..=1 {
@@ -1048,9 +1187,15 @@ impl TileMap {
         p
     }
 
-    /// Push a circle out of blocking edges, trees, furniture, street props and the map border.
-    pub fn resolve_circle(&self, mut p: Vec2, radius: f32) -> Vec2 {
+    /// Push a circle out of blocking edges, trees, furniture, street props, vehicles and the map border.
+    pub fn resolve_circle(&self, p: Vec2, radius: f32) -> Vec2 {
+        self.resolve_circle_skip(p, radius, 0)
+    }
+
+    /// [`resolve_circle`](Self::resolve_circle), but not out of vehicle `skip` (0: none).
+    pub fn resolve_circle_skip(&self, mut p: Vec2, radius: f32, skip: u32) -> Vec2 {
         for _ in 0..2 {
+            p = self.push_out_of_vehicles(p, radius, skip);
             let t = p.floor().as_ivec2();
             for dy in -1..=1 {
                 for dx in -1..=1 {

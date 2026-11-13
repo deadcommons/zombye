@@ -260,7 +260,7 @@ impl SoundBank {
     /// Load the cues from `path` and their files from `audio`, or from the release audio folder
     /// `overlay` where it has them (#154, `release_audio`).
     pub fn load_from(path: &Path, audio: &Path, overlay: Option<&Path>) -> Result<Self, String> {
-        let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let text = crate::pack::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         // The release folder's own cues: the game's fill in what it lacks.
         let base = overlay.filter(|o| path.starts_with(o)).and_then(|_| std::fs::read_to_string(audio.join("../data/sounds.ron")).ok());
         let defs = parse_sounds_over(&text, base.as_deref())?.sounds;

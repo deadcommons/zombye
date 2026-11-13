@@ -794,7 +794,7 @@ fn crowd_vat_paths(options: &Options) -> Vec<PathBuf> {
             .split(',')
             .flat_map(|part| std::env::split_paths(part.trim()).collect::<Vec<_>>())
             .filter(|p| !p.as_os_str().is_empty())
-            .flat_map(|p| if p.is_dir() { zvats_in(&p) } else { vec![p] })
+            .flat_map(|p| if crate::pack::is_dir(&p) { zvats_in(&p) } else { vec![p] })
             .collect(),
         // Nothing asked for: the release build's own crowd, if it carries one, else this repo's.
         None => crate::release_chars::crowd_in(crate::release_chars::root())
@@ -806,8 +806,8 @@ fn crowd_vat_paths(options: &Options) -> Vec<PathBuf> {
 
 /// Every `*.zvat` in `dir`, by file name.
 fn zvats_in(dir: &Path) -> Vec<PathBuf> {
-    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map(|d| d.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "zvat")).collect())
+    let mut found: Vec<PathBuf> = crate::pack::read_dir(dir)
+        .map(|d| d.into_iter().filter(|p| p.extension().is_some_and(|e| e == "zvat")).collect())
         .unwrap_or_default();
     found.sort();
     found
@@ -816,7 +816,7 @@ fn zvats_in(dir: &Path) -> Vec<PathBuf> {
 /// A baked crowd character, its texture (if one was found) and a line saying what was loaded, or
 /// why it couldn't be.
 fn load_baked(path: &Path) -> Result<(Baked, Option<Image>, String), String> {
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let bytes = crate::pack::read(path).map_err(|e| e.to_string())?;
     let z = Zvat::parse(&bytes)?;
     let baked = build_baked(&z)?;
     let (texture, note) = match zvat::find_texture(path) {

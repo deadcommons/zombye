@@ -168,6 +168,9 @@ pub struct JoinInfo {
     pub climb: zombye_sim::ClimbTuning,
     /// Fires and cooking: a fire's reach, what heats a pot (the Make list, a fire's menu).
     pub fire: zombye_sim::FireTuning,
+    /// The vehicle kinds and the rules round driving (`vehicles.ron`): our own car is predicted
+    /// with them, and every car drawn and kept out of by its kind's box.
+    pub vehicles: zombye_sim::VehicleData,
     /// Which furniture is a container, for right-clicking one in the world (`world_actions.rs`).
     pub containers: zombye_sim::containers::ContainerData,
     /// The item tag that makes an item a blind to fit.
@@ -324,6 +327,9 @@ impl Plugin for ServerLinkPlugin {
             Some(world) => LocalServer::from_world(world),
             None => LocalServer::new(config),
         };
+        // A packaged game (a playtest build) keeps the dev tools to itself unless asked for: no
+        // god mode, spawning, skipping time or `--give` for a player who didn't ask.
+        server.allow_dev = zombye_net::install::dev_tools();
         if resumed {
             // `--player ID` plays (or renders) as that player; otherwise the save's first.
             let player_id = match (options.player, server.world.players.first()) {
@@ -379,7 +385,7 @@ impl Plugin for ServerLinkPlugin {
             give(&r.ammo, r.capacity as u16 * 3);
         }
         // `--give`: things into our pockets, or at our feet when there's no room for them (a log).
-        for want in options.give.iter().flat_map(|g| g.split(',')).map(str::trim).filter(|w| !w.is_empty()) {
+        for want in options.give.iter().filter(|_| zombye_net::install::dev_tools()).flat_map(|g| g.split(',')).map(str::trim).filter(|w| !w.is_empty()) {
             let (id, n) = want.split_once(':').map_or((want, 1), |(id, n)| (id, n.parse().unwrap_or(1)));
             let Some(i) = server.world.item_index(id) else {
                 eprintln!("--give: no item {id:?} in items.ron");
@@ -509,6 +515,7 @@ fn join_info(config: &zombye_sim::WorldConfig, player_id: u32, player_spawn: Vec
         carry: config.carry.clone(),
         climb: config.climb.clone(),
         fire: config.fire.clone(),
+        vehicles: config.vehicles.clone(),
         containers: config.containers.clone(),
         blind_tag: config.blinds.tag.clone(),
         seed: config.seed(),

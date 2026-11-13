@@ -472,6 +472,10 @@ pub struct Player {
     /// (`crate::origin`). Saved in a section of its own (`ORIG`), so not here.
     #[serde(skip)]
     pub origin: crate::origin::Origin,
+    /// The vehicle it is at the wheel of (`crate::vehicles`, by id): its body sits in the seat
+    /// and doesn't walk. The vehicle names its driver in the save (`VEHC`), so not here.
+    #[serde(skip)]
+    pub vehicle: Option<u32>,
 }
 
 /// A player staggered or knocked down by another player's swing or shove (see `combat`).
@@ -528,6 +532,7 @@ impl Player {
             frisking: None,
             pitch: 0.0,
             origin: crate::origin::Origin::default(),
+            vehicle: None,
         }
     }
 }

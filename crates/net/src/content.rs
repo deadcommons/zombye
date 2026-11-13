@@ -12,9 +12,10 @@ use zombye_sim::population::{PopulationDef, parse_population};
 use zombye_sim::status::{StatusData, parse_status};
 use zombye_sim::street_props::{StreetPropsDef, parse_street_props};
 
-/// The repo's `assets/data` folder (used when running from a checkout).
+/// The game's `assets/data` folder: the checkout's when running from one, else a packaged
+/// game's beside its executable (`crate::install::assets_dir`).
 pub fn default_data_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/data")
+    crate::install::assets_dir().join("data")
 }
 
 /// The data folder of a server that may be running away from a checkout (an installed binary, a
@@ -79,6 +80,14 @@ pub fn load_fire(data_dir: &Path) -> Result<zombye_sim::FireTuning, String> {
     let path = data_dir.join("fire.ron");
     let Ok(text) = std::fs::read_to_string(&path) else { return Ok(zombye_sim::FireTuning::default()) };
     zombye_sim::fire::parse_fire(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The calendar, climate and weather in `<data>/weather.ron` (`zombye_sim::weather`); without the
+/// file, the defaults.
+pub fn load_weather(data_dir: &Path) -> Result<zombye_sim::WeatherTuning, String> {
+    let path = data_dir.join("weather.ron");
+    let Ok(text) = std::fs::read_to_string(&path) else { return Ok(zombye_sim::WeatherTuning::default()) };
+    zombye_sim::weather::parse_weather(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// The street props in `<data>/street_props.ron` (#61: mailboxes, hydrants, bins and where the town
@@ -229,6 +238,20 @@ pub fn load_scenarios(data_dir: &Path, items: &[ItemDef], weapons: &[WeaponDef])
 /// Everything a world is made from in `<data>`: building templates, weapons, items, containers,
 /// loot tables, recipes, the population file, the street props and the power, as a config for `seed` (the zombie count as the
 /// population file gives).
+/// `vehicles.ron` (`zombye_sim::vehicles`): none if the file isn't there. Every kind must be parked
+/// as a street prop kind `street_props` has.
+pub fn load_vehicles(data_dir: &Path, street_props: &zombye_sim::street_props::StreetPropsDef) -> Result<zombye_sim::VehicleData, String> {
+    let path = data_dir.join("vehicles.ron");
+    let Ok(text) = std::fs::read_to_string(&path) else { return Ok(zombye_sim::VehicleData::default()) };
+    let data = zombye_sim::parse_vehicles(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    for k in &data.kinds {
+        if !street_props.kinds.iter().any(|p| p.id == k.prop) {
+            return Err(format!("{}: vehicle {:?} is parked as {:?}, which street_props.ron doesn't have", path.display(), k.id, k.prop));
+        }
+    }
+    Ok(data)
+}
+
 pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig, String> {
     let templates = load_building_templates(data_dir)?;
     let weapons = load_weapons(data_dir)?;
@@ -243,6 +266,8 @@ pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig
     let street_props = load_street_props(data_dir)?;
     let power = load_power(data_dir)?;
     let fire = load_fire(data_dir)?;
+    let vehicles = load_vehicles(data_dir, &street_props)?;
+    let weather = load_weather(data_dir)?;
     let mut config = zombye_sim::WorldConfig::new(seed, 0, templates)
         .with_weapons(weapons)
         .with_items(items)
@@ -253,7 +278,9 @@ pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig
         .with_population(population)
         .with_street_props(street_props)
         .with_power(power)
-        .with_fire(fire);
+        .with_fire(fire)
+        .with_vehicles(vehicles)
+        .with_weather(weather);
     config.zombies = None;
     Ok(config)
 }

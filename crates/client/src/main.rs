@@ -74,11 +74,16 @@
 //! slots for one session. The inventory, health and skills panels are dragged by their titles and
 //! remembered with their open state in the same settings file (`panels.rs`).
 
+// A packaged Windows build (`--features windows-gui`) opens no console window beside the game.
+#![cfg_attr(all(windows, feature = "windows-gui"), windows_subsystem = "windows")]
+
 mod aim_marker;
 mod audio;
 mod music;
 mod release_audio;
 mod release_brand;
+mod pack;
+mod report;
 mod release_anim;
 mod release_chars;
 mod release_models;
@@ -116,6 +121,7 @@ mod hud;
 mod inventory_ui;
 mod join_screen;
 mod items_render;
+mod vehicles_render;
 mod lights;
 mod loading;
 mod main_menu;
@@ -581,7 +587,7 @@ impl Options {
             god: flag("--god"),
             ignored: flag("--ignored"),
             map_chunks: value("--map-chunks").and_then(|v| v.parse().ok()).filter(|n: &i32| (1..=256).contains(n)),
-            saves: value("--saves").map(Into::into).unwrap_or_else(|| zombye_net::save_file::DEFAULT_DIR.into()),
+            saves: value("--saves").map(Into::into).unwrap_or_else(zombye_net::install::default_saves_dir),
             load: value("--load"),
             load_anyway: flag("--load-anyway"),
             quicksave_after: value("--quicksave-after").and_then(|v| v.parse().ok()),
@@ -713,6 +719,19 @@ pub(crate) fn exit_on_signal(mut exit: MessageWriter<AppExit>, mut sent: Local<b
 }
 
 fn main() {
+    // `--write-pack OUT DIR...`: pack the release folders for a packaged build (`pack.rs`).
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|a| a == "--write-pack") {
+        pack::write_from_args(&args[2..]);
+    }
+    if args.get(1).is_some_and(|a| a == "--version") {
+        println!("Zombye {}", zombye_net::install::build_name());
+        return;
+    }
+    // A packaged game runs itself again with its output to a log file (`report.rs`).
+    if let Some(code) = report::supervise() {
+        std::process::exit(code);
+    }
     let options = Options::from_args();
     // `--server-info HOST`: what that server is and its rules, without joining it (#69).
     if let Some(addr) = &options.server_info {
@@ -789,7 +808,7 @@ fn main() {
             player::PlayerPlugin,
             camera::IsoCameraPlugin,
             zombie_render::ZombieRenderPlugin,
-            items_render::ItemsRenderPlugin,
+            (items_render::ItemsRenderPlugin, vehicles_render::VehiclesRenderPlugin),
             (hud::HudPlugin, inventory_ui::InventoryUiPlugin, health_ui::HealthUiPlugin, death::DeathPlugin, needs_ui::NeedsUiPlugin, action_ui::ActionUiPlugin, skills_ui::SkillsUiPlugin, debug_stats::DebugStatsPlugin, build_ui::BuildUiPlugin),
             (fx::FxPlugin, heard::HeardPlugin, chat::ChatPlugin, film::FilmPlugin, graphics_ui::GraphicsUiPlugin, render_scale::RenderScalePlugin, vegetation::VegetationPlugin, rules_ui::RulesUiPlugin, browser_ui::BrowserUiPlugin, map_ui::MapUiPlugin),
             survivor::SurvivorPlugin,
@@ -800,7 +819,7 @@ fn main() {
     if !offscreen {
         app.add_plugins((audio::GameAudioPlugin, music::MusicPlugin));
     }
-    app.add_plugins((fps_log::FpsLogPlugin, bench_live::BenchLivePlugin));
+    app.add_plugins((fps_log::FpsLogPlugin, bench_live::BenchLivePlugin, report::ReportPlugin));
     if black_watch::wanted() && !offscreen {
         app.add_plugins(black_watch::BlackWatchPlugin);
     }
@@ -818,7 +837,7 @@ fn main() {
 /// Bevy's plugins for this run: a window (or, offscreen, none), the assets folder, our own signal
 /// handling.
 pub(crate) fn window_plugins(options: &Options) -> bevy::app::PluginGroupBuilder {
-    let assets = AssetPlugin { file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets").into(), ..default() };
+    let assets = AssetPlugin { file_path: zombye_net::install::assets_dir().to_string_lossy().into_owned(), ..default() };
     if options.offscreen() {
         // No window, ever: no primary window, no winit (on macOS it would make this a foreground
         // app that takes focus), no audio device, no gamepads. The loop is driven by the schedule
