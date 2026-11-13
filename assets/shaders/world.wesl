@@ -20,8 +20,8 @@ import bevy_pbr::render::{
 };
 
 // How strongly a hill facet's turn to the sun is told again in its colour (see the fragment).
-const FACET_TOWARD: f32 = 0.9;
-const FACET_AWAY: f32 = 1.8;
+const FACET_TOWARD: f32 = 1.2;
+const FACET_AWAY: f32 = 2.4;
 
 struct WorldParams {
     player: vec4<f32>,

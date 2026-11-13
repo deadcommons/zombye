@@ -483,7 +483,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   (`Terrain::slope_factor`: `1 - uphill_slow (1.5) x climb`, never under half), for players in `step_movement` (so
   prediction stays exact) and active zombies; downhill and across are as on the flat. **Client:** `MeshBuilder::drape`
   lays a chunk's ground over the facets (every triangle that would cross a fold cut along it, flat faces taking their
-  facet's normal and drifting to the palette's `dirt` then pale `cliff` stone as the hillside's grade (`Terrain::broad_grade`, over a few cells, not one facet's tilt) passes 0.06 and 0.11), on the terrain each facet's turn toward or away from the sun is told again in its colour (`world.wesl`, `FACET_TOWARD` 0.9, `FACET_AWAY` 1.8, as against level ground: the tone map squeezes a few degrees' difference on pale ground to nothing, and the low-poly look is each face catching the light its own way), its first UVs
+  facet's normal and drifting to the palette's `dirt` then pale `cliff` stone as the hillside's grade (`Terrain::broad_grade`, over a few cells, not one facet's tilt) passes 0.06 and 0.11), on the terrain each facet's turn toward or away from the sun is told again in its colour (`world.wesl`, `FACET_TOWARD` 1.2, `FACET_AWAY` 2.4, as against level ground: the tone map squeezes a few degrees' difference on pale ground to nothing, and the low-poly look is each face catching the light its own way), its first UVs
   carrying the ground's height so `world.wesl` tests height above the ground (`above`, under `TERRAIN`: ground
   detail, roofs, haze, moon paint); `MeshBuilder::lift` stands props and trees on it (by their anchor, the lowest
   5 cm following the slope); players, zombies, items, grass, effects, lights and the aim marker add
@@ -2083,7 +2083,7 @@ and mood, and docs/art-direction.md). All of it is client only: nothing here is 
   frame, and nothing of it in the sim or a save. A data folder without the file gets the shipped one.
 - **Contact shadows** (`world_render::contact_shadows`): a strip of black fading to clear, 0.6 m wide, on the ground
   and floors along both faces of every ground-floor wall and window: one small blended, unlit mesh a building (16 to
-  about 1,000 triangles), spawned and despawned with it. Trees and bushes get the same: a soft blot round each foot, darkest at the trunk, half the crown's radius plus 0.35 m across, laid over the hills (`landscape::foot_shade`, one mesh a chunk, with the setting). They stand in for ambient occlusion: the screen-space kind
+  about 1,000 triangles), spawned and despawned with it. Trees and bushes get the same: a soft blot round each foot, darkest at the trunk, out to two thirds of the crown's radius plus half a metre, laid over the hills (`landscape::foot_shade`, one mesh a chunk, with the setting). They stand in for ambient occlusion: the screen-space kind
   needs MSAA off, and the window glass is alpha to coverage.
 - **Vegetation and litter, a mesh a chunk** (`vegetation.rs`, `assets/shaders/vegetation.wesl`): eight kinds
   (`VegKind`: long grass, lawn grass, thin grass, a weed, red and white flowers, loose paper, small stones), four

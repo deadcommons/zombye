@@ -2261,7 +2261,7 @@ mod tests {
 
 
 /// How dark the ground is right at a trunk, under [`foot_shade`]'s soft blot.
-const FOOT_DARK: f32 = 0.42;
+const FOOT_DARK: f32 = 0.62;
 /// How far over the ground the blot floats, so a fold between two facets never cuts into it.
 const FOOT_LIFT: f32 = 0.04;
 
@@ -2275,7 +2275,7 @@ pub fn foot_shade(map: &TileMap, c: IVec2) -> MeshBuilder {
     let mut mb = MeshBuilder::default();
     const SEGMENTS: usize = 14;
     // The blot's rings: (share of its radius, share of its darkness).
-    const RINGS: [(f32, f32); 3] = [(0.3, 0.8), (0.65, 0.35), (1.0, 0.0)];
+    const RINGS: [(f32, f32); 3] = [(0.35, 0.85), (0.7, 0.4), (1.0, 0.0)];
     for y in land.min.y..land.min.y + CHUNK_SIZE {
         for x in land.min.x..land.min.x + CHUNK_SIZE {
             let t = IVec2::new(x, y);
@@ -2285,12 +2285,12 @@ pub fn foot_shade(map: &TileMap, c: IVec2) -> MeshBuilder {
             }
             let (centre, radius) = match tile.feature {
                 Feature::Tree | Feature::PineTree => match trees::tree_at(x, y, tile.feature) {
-                    Some(spec) => (spec.base, 0.5 * spec.crown_r + 0.35),
+                    Some(spec) => (spec.base, 0.65 * spec.crown_r + 0.5),
                     None => continue,
                 },
                 Feature::Bush if !land.on_driveway(t) => {
                     let size = 0.85 + 0.4 * hash01(x, y, 5);
-                    (Vec3::new(x as f32 + 0.3 + 0.4 * hash01(x, y, 3), 0.0, y as f32 + 0.3 + 0.4 * hash01(x, y, 4)), 0.75 * size)
+                    (Vec3::new(x as f32 + 0.3 + 0.4 * hash01(x, y, 3), 0.0, y as f32 + 0.3 + 0.4 * hash01(x, y, 4)), 0.9 * size)
                 }
                 _ => continue,
             };
