@@ -674,6 +674,7 @@ fn actions(
     map: Res<ClientMap>,
     players: Query<(&Transform, &Player)>,
     mut link: ResMut<ServerLink>,
+    notice: Option<ResMut<crate::saving::Notice>>,
 ) {
     let now = time.elapsed_secs();
     // Dev toggles: flip what the server last said.
@@ -738,6 +739,13 @@ fn actions(
         // A car beside us, faced (the server's rule on our copy of the boxes): get in at the wheel.
         let vehicle = map.0.vehicles.get(i).map(|b| b.id);
         link.send(Intent::Vehicle { player: me.id, op: zombye_sim::VehicleOp::Enter { vehicle } });
+    } else if keys.just_pressed(KeyCode::KeyE)
+        && let Some(name) = parked_car_faced(&map.0, &join.vehicles, me.curr.pos, me.curr.facing)
+    {
+        // A parked car that isn't one of the drivable ones: say so, and where the nearest that is.
+        if let Some(mut notice) = notice {
+            notice.say(now, wont_start(&name, &link, &join, me.curr.pos));
+        }
     } else if keys.just_pressed(KeyCode::KeyE) {
         // A fence or an open or broken window faced and in reach (the server's rule, on our copy
         // of the map): climb it. Walking into one no longer does.
@@ -835,4 +843,48 @@ pub fn light_switch_faced(map: &zombye_sim::TileMap, pos: Vec2, facing: f32) -> 
     let to = spot.pos - pos;
     let d = to.length();
     d <= zombye_sim::power::SWITCH_REACH - 0.1 && (d < 0.5 || to.normalize_or_zero().dot(Vec2::from_angle(facing)) > 75f32.to_radians().cos())
+}
+
+/// The name of a parked car (a street prop of a vehicle kind, not one of the drivable ones, which
+/// are off the map) beside `pos` and faced, within the reach E gets into a car from.
+fn parked_car_faced(map: &zombye_sim::TileMap, data: &zombye_sim::VehicleData, pos: Vec2, facing: f32) -> Option<String> {
+    let reach = data.tuning.enter_reach;
+    let ahead = Vec2::from_angle(facing);
+    let mut best: Option<(f32, String)> = None;
+    for p in &map.street_props {
+        let Some(pk) = map.prop_kinds.get(p.kind as usize) else { continue };
+        let Some(k) = data.of_prop(&pk.id).and_then(|i| data.kinds.get(i)) else { continue };
+        let (corner, size) = map.street_prop_rect(p);
+        let (lo, hi) = (corner.as_vec2(), (corner + size).as_vec2());
+        let closest = pos.clamp(lo, hi);
+        let to = closest - pos;
+        let d = to.length();
+        if d > reach {
+            continue;
+        }
+        let faces = d < 0.05 || ahead.dot(to / d) > 75f32.to_radians().cos();
+        if faces && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+            best = Some((d, if k.name.is_empty() { k.id.replace('_', " ") } else { k.name.clone() }));
+        }
+    }
+    best.map(|(_, n)| n)
+}
+
+/// "This car won't start. The nearest one that will: a van 40 m to the north-east."
+fn wont_start(name: &str, link: &ServerLink, join: &JoinInfo, pos: Vec2) -> String {
+    let free = link.curr.vehicles.iter().filter(|v| v.driver == 0);
+    let near = free.min_by(|a, b| a.state.pos.distance(pos).total_cmp(&b.state.pos.distance(pos)));
+    let lower = name.to_lowercase();
+    match near {
+        Some(v) => {
+            let other = join.vehicles.kinds.get(v.kind as usize).map_or("car".to_string(), |k| if k.name.is_empty() { k.id.replace('_', " ") } else { k.name.to_lowercase() });
+            let to = v.state.pos;
+            format!(
+                "This {lower} won't start. The nearest one that will: a {other} {:.0} m {}",
+                to.distance(pos),
+                crate::chat::compass(pos, to)
+            )
+        }
+        None => format!("This {lower} won't start, and none here will"),
+    }
 }
