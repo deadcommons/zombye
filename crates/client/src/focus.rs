@@ -1,10 +1,12 @@
 //! Moving round a screen's buttons with a controller (#12, stage 3).
 //!
 //! Every button made with `menu_skin::button` (except a faint one with nothing to do) is
-//! [`Focusable`]. While the controller is the one in use and the pause menu or the settings is up,
-//! one of them has the focus, outlined in green: the d-pad or the left stick moves it to the
-//! nearest button that way, A presses it (the same press a click makes, so every button works with
-//! no change of its own), the bumpers change the settings' tab, and B goes back (Esc, `pad.rs`).
+//! [`Focusable`], and so is every pressable cell of the new-game screen. While the controller is
+//! the one in use and the main menu, the new-game screen, the pause menu or the settings is up, one
+//! of them has the focus, outlined in green: the d-pad or the left stick moves it to the nearest
+//! button that way (as if the pointer were over it: lit, and on the new-game screen its line shown),
+//! A presses it (the same press a click makes, so every button works with no change of its own),
+//! the bumpers change the settings' tab or the new-game page, and B goes back (Esc, `pad.rs`).
 //! Only the buttons of the screen on top count (the one with the highest `GlobalZIndex` over it).
 //! When a screen is drawn again the focus goes to the button nearest where it was.
 //!
@@ -12,7 +14,7 @@
 
 use bevy::camera::NormalizedRenderTarget;
 use bevy::picking::backend::HitData;
-use bevy::picking::events::{Pointer, PointerPress};
+use bevy::picking::events::{Pointer, PointerOut, PointerOver, PointerPress};
 use bevy::picking::pointer::{Location, PointerButton, PointerId};
 use bevy::prelude::*;
 
@@ -100,6 +102,9 @@ fn navigate(
     mode: Option<Res<InputMode>>,
     pad: Option<Res<Pad>>,
     pause: Option<Res<crate::pause_menu::PauseMenu>>,
+    menu: Option<Res<crate::main_menu::MenuLayer>>,
+    front: Option<Res<crate::new_game::Front>>,
+    mut new_game: Option<ResMut<crate::new_game::Screen>>,
     mut settings: Option<ResMut<crate::settings_ui::SettingsUi>>,
     time: Res<Time>,
     buttons: Query<(Entity, &ComputedNode, &UiGlobalTransform, &InheritedVisibility, Has<Lead>), With<Focusable>>,
@@ -107,7 +112,8 @@ fn navigate(
     z: Query<&GlobalZIndex>,
 ) {
     let settings_open = settings.as_ref().is_some_and(|s| s.open);
-    let up = pause.as_ref().is_some_and(|p| p.open) || settings_open;
+    let front_up = front.as_ref().is_some_and(|f| f.up());
+    let up = pause.as_ref().is_some_and(|p| p.open) || settings_open || menu.as_ref().is_some_and(|m| m.up) || front_up;
     if !up || !mode.as_ref().is_some_and(|m| m.pad) {
         if focus.on.is_some() || focus.layer.is_some() {
             *focus = Focus { outlined: focus.outlined, ..default() };
@@ -169,13 +175,22 @@ fn navigate(
     {
         (on, at) = (e, c);
     }
+    // The pointer's way in and out, as if it had moved there: the hover look, and the new-game
+    // screen's line about the row pointed at.
+    if focus.on != Some(on) {
+        if let Some(old) = focus.on.filter(|o| items.iter().any(|i| i.0 == *o)) {
+            commands.trigger(PointerOut { entity: old, pointer: pointer(at), hit: hit() });
+        }
+        commands.trigger(PointerOver { entity: on, pointer: pointer(at), hit: hit() });
+    }
     focus.on = Some(on);
     focus.last = Some(at);
-    if pad.nav_tab != 0
-        && settings_open
-        && let Some(s) = settings.as_mut()
-    {
-        s.step_tab(pad.nav_tab);
+    if pad.nav_tab != 0 {
+        if settings_open && let Some(s) = settings.as_mut() {
+            s.step_tab(pad.nav_tab);
+        } else if front_up && let Some(s) = new_game.as_mut() {
+            s.step_tab(pad.nav_tab);
+        }
     }
     if pad.confirm {
         commands.trigger(press(on, at));
@@ -184,8 +199,16 @@ fn navigate(
 
 /// The press a primary click on `entity` makes, as if the pointer were at `at`.
 fn press(entity: Entity, at: Vec2) -> PointerPress {
-    let location = Location { target: NormalizedRenderTarget::None { width: 1, height: 1 }, position: at };
-    PointerPress { entity, pointer: Pointer::new(PointerId::Mouse, location), button: PointerButton::Primary, hit: HitData::new(Entity::PLACEHOLDER, 0.0, None, None), count: 1 }
+    PointerPress { entity, pointer: pointer(at), button: PointerButton::Primary, hit: hit(), count: 1 }
+}
+
+/// The mouse's pointer, as if at `at`.
+fn pointer(at: Vec2) -> Pointer {
+    Pointer::new(PointerId::Mouse, Location { target: NormalizedRenderTarget::None { width: 1, height: 1 }, position: at })
+}
+
+fn hit() -> HitData {
+    HitData::new(Entity::PLACEHOLDER, 0.0, None, None)
 }
 
 /// The green outline round the button with the focus (and none round the one that had it).

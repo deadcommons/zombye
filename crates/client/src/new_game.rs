@@ -200,7 +200,7 @@ enum Act {
 }
 
 #[derive(Resource)]
-struct Screen {
+pub struct Screen {
     options: Options,
     rules: Rules,
     items: Vec<ItemDef>,
@@ -218,6 +218,13 @@ struct Screen {
 }
 
 impl Screen {
+    /// The page `by` along (the controller's bumpers), round from the last to the first.
+    pub fn step_tab(&mut self, by: i32) {
+        let n = Tab::ALL.len() as i32;
+        let at = Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0) as i32;
+        self.acts.push(Act::Tab(Tab::ALL[(at + by).rem_euclid(n) as usize]));
+    }
+
     fn new(options: Options) -> Result<Self, String> {
         Self::with_base(options, std::env::args().skip(1).collect())
     }
@@ -956,6 +963,11 @@ fn live(e: &mut EntityCommands, look: Look, act: Option<Act>) {
         });
     }
     if let Some(act) = act {
+        // The controller moves to it too (`focus.rs`), starting on what is picked.
+        e.insert(crate::focus::Focusable);
+        if look.fill == flat::PICKED {
+            e.insert(crate::focus::Lead);
+        }
         e.observe(move |_: On<PointerPress>, mut screen: ResMut<Screen>| screen.acts.push(act.clone()));
     }
 }

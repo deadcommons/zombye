@@ -741,6 +741,8 @@ pub(crate) struct Screens<'w> {
     chat: Option<Res<'w, crate::chat::ChatEntry>>,
     find: Option<Res<'w, crate::inventory_ui::Find>>,
     wheel: Option<Res<'w, crate::wheel::Wheel>>,
+    menu: Option<Res<'w, crate::main_menu::MenuLayer>>,
+    front: Option<Res<'w, crate::new_game::Front>>,
 }
 
 impl Screens<'_> {
@@ -754,9 +756,13 @@ impl Screens<'_> {
             || self.menus()
     }
 
-    /// The pause menu or the settings: they take the pad whole (Menu and B are Esc there).
+    /// The main menu, the new-game screen, the pause menu or the settings: they take the pad whole
+    /// (Menu and B are Esc there).
     fn menus(&self) -> bool {
-        self.pause.as_ref().is_some_and(|p| p.open) || self.settings.as_ref().is_some_and(|s| s.open)
+        self.pause.as_ref().is_some_and(|p| p.open)
+            || self.settings.as_ref().is_some_and(|s| s.open)
+            || self.menu.as_ref().is_some_and(|m| m.up)
+            || self.front.as_ref().is_some_and(|f| f.up())
     }
 
     /// A wheel is up: the sticks pick and A and B are its own.

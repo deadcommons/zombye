@@ -405,17 +405,20 @@ the Make list's rule (`inventory_ui::make_check`), made when let go; A held on a
 (`interact.rs`, `wheel::action_entries`) that stays up after A is let go (A's thumb picks): A does it, B goes back.
 While one is up the pad does nothing else (`pad::read_pad` hands the sticks to `Pad::select`) and the game goes on.
 `--wheel items|make[:N]` brings one up with the Nth picked, for pictures (`--render-to shot.png --hud --wheel items:1`).
-**Menus by focus** (`focus.rs`): every `menu_skin::button` that does something is `focus::Focusable`; while the
-pad is in use and the pause menu or the settings is up, one has the focus (a green outline): the d-pad or the left
-stick moves it to the nearest button that way (held: repeating), A presses it (the same `PointerPress` a click
-triggers, so buttons need nothing of their own), LB / RB change the settings' tab, B goes back. Only the screen on
+**Menus by focus** (`focus.rs`): every `menu_skin::button` that does something is `focus::Focusable`, and so is every
+pressable cell of the new-game screen (`new_game::live`; what is picked is `focus::Lead`, where the focus starts); while
+the pad is in use and the main menu (`MenuLayer::up`), the new-game screen (`Front::up`), the pause menu or the settings
+is up, one has the focus (a green outline): the d-pad or the left stick moves it to the nearest button that way (held:
+repeating; the focus is a `PointerOver`, so a button lights as under the mouse and the new-game screen shows the line
+about it), A presses it (the same `PointerPress` a click triggers, so buttons need nothing of their own), LB / RB
+change the settings' tab or the new-game page, B goes back. Only the screen on
 top counts (the highest `GlobalZIndex` over a button), and after a redraw the focus goes to the button nearest where
 it was. **The on-screen keyboard** (`osk.rs`): while the pad is in use and a line is typed (the chat line, which Hold
 Up opens: `pad.ron`'s `chat`; the inventory's search; the server browser's fields) a keyboard comes up at the foot
 of the screen: the d-pad or stick moves over it, A types, X deletes, Y is a space, LB shifts, Menu is done (Enter),
 B cancels (Esc). It writes keyboard messages with `KeyCode::Unidentified` key codes, so text fields take it as they
 are, no game key is pressed and the pad stays the one in use. `--osk` shows it, for pictures. Nothing of it reaches
-the sim, a save or a snapshot. **Not yet** (the plan's later stages): focus on the main menu, the new-game screen, the
+the sim, a save or a snapshot. **Not yet** (the plan's later stages): focus on the
 inventory and the server browser's list, button glyphs, rumble, quick chat, choosing the buttons on the Controls tab,
 a Steam Deck pass. Tests: `pad::tests`, `wheel::tests`, `focus::tests`, `osk::tests`, `settings_ui`'s
 `the_controller_list_shows_every_button`.
