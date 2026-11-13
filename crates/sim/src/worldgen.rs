@@ -2547,7 +2547,14 @@ pub(crate) mod tests {
     fn print_town() {
         let templates = crate::template::tests::shipped_templates();
         let seed = std::env::var("ZOMBYE_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
-        let g = generate(&GenConfig { seed, ..Default::default() }, &templates);
+        // `ZOMBYE_CHUNKS=N`: an N x N chunk map instead of the default.
+        let mut config = GenConfig { seed, ..Default::default() };
+        if let Some(n) = std::env::var("ZOMBYE_CHUNKS").ok().and_then(|s| s.parse::<i32>().ok()) {
+            config.chunks = IVec2::splat(n);
+        }
+        let started = std::time::Instant::now();
+        let g = generate(&config, &templates);
+        eprintln!("{}x{} tiles generated in {:.2} s", g.map.width(), g.map.height(), started.elapsed().as_secs_f64());
         eprintln!("town {}..{}, square {:?}, cul-de-sacs {:?}, spawn {}", g.town_min, g.town_max, g.plan.square, g.plan.cul_de_sacs, g.player_spawn);
         // A top-down picture too (a PPM file, one pixel a tile), when asked for.
         if let Ok(path) = std::env::var("ZOMBYE_PPM") {
