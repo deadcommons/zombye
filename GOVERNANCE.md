@@ -14,7 +14,7 @@ Dead Commons owns the Zombye name and logos. The code is MIT OR Apache-2.0 and o
 
 Bug fixes, small features, data tweaks and docs need no meeting:
 
-1. Pick an open issue from the [project board](https://github.com/orgs/deadcommons/projects/2), or open one.
+1. Pick an open issue from the [project board](https://github.com/orgs/deadcommons/projects/3), or open one.
 2. Say in the issue that you're taking it.
 3. Send a small pull request, signed off (`git commit -s`, see CONTRIBUTING.md).
 4. A maintainer reviews and merges it.

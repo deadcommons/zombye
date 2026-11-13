@@ -18,8 +18,8 @@ hosting, the game here. Read another repo when the work needs it (the asset tool
 ## Working from the GitHub project
 
 All development work goes through the
-[Game development project](https://github.com/orgs/deadcommons/projects/2) on GitHub
-(`gh project … --owner deadcommons`, project number 2). The repo doesn't keep task lists.
+[Game development project](https://github.com/orgs/deadcommons/projects/3) on GitHub
+(`gh project … --owner deadcommons`, project number 3). The repo doesn't keep task lists.
 
 - **Before starting:** find the issue for the work, or create one in the right milestone and add it
   to the project. Set its board Status to **In Progress**.
@@ -30,7 +30,7 @@ All development work goes through the
 - **On the remote machines** (docs/remote-dev.md) an issue ends differently: the agent commits with
   `Refs #N` and opens a draft PR saying `Closes #N`; the owner approves the review pictures, and merging
   the PR closes the issue (then set Status to **Done**).
-- Only the **Game development** board (project 2) is for development. "Dead Commons roadmap"
+- Only the **Game development** board (project 3) is for development. "Dead Commons roadmap"
   (project 1) is private admin work; don't touch it.
 
 ## Working on the remote machines from the Mac

@@ -221,7 +221,7 @@ cargo run --release --bin zombye -- --connect localhost        # join it
 | **Agents** | [AGENTS.md](AGENTS.md), [docs/benchmark.md](docs/benchmark.md) |
 | **Hosting** | [docs/self-hosting.md](docs/self-hosting.md) |
 | **Design** | [VISION.md](VISION.md), [docs/PLAN.md](docs/PLAN.md), [docs/art-direction.md](docs/art-direction.md) |
-| **Roadmap** | the [Game development board](https://github.com/orgs/deadcommons/projects/2) and the [milestones](https://github.com/deadcommons/zombye/milestones) |
+| **Roadmap** | the [Game development board](https://github.com/orgs/deadcommons/projects/3) and the [milestones](https://github.com/deadcommons/zombye/milestones) |
 
 ## Come and build it with us
 

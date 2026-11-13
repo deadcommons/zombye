@@ -412,7 +412,7 @@ directly.
 ## 7. Milestones
 
 Milestones and their tasks live on GitHub, not in this file:
-- [Game development project](https://github.com/orgs/deadcommons/projects/2): the board, by status
+- [Game development project](https://github.com/orgs/deadcommons/projects/3): the board, by status
 - [Milestones](https://github.com/deadcommons/zombye/milestones): M2 to M7, plus a backlog of
   later ideas with no milestone
 

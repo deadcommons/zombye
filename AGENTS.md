@@ -5,7 +5,7 @@ can read it, run it, play it and mod it. The design is in [docs/PLAN.md](docs/PL
 before making architectural changes.
 
 Work is tracked on GitHub, not in the repo: the
-[Game development project](https://github.com/orgs/deadcommons/projects/2) board and the
+[Game development project](https://github.com/orgs/deadcommons/projects/3) board and the
 [milestones](https://github.com/deadcommons/zombye/milestones). Reference issues in commits
 (`Closes #N`), and keep each issue's board status current (Todo, In Progress, Done).
 

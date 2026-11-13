@@ -154,7 +154,7 @@ Hi all. Zombye is an open-source survival sandbox from Dead Commons: isometric z
 • A headless server with a benchmark mode and an MCP endpoint. Agents can observe the map, step time, set goals and spawn zombies.
 • A Bevy client: an isometric camera over a test town, and a horde of 1,000+ zombies that chases you
 
-**Next up: M1, world and visibility.** Building templates, a seeded town generator, wall cutaways, fog of war and day/night. The full roadmap is on the Game development board (https://github.com/orgs/deadcommons/projects/2), and #devlog will carry progress as it lands.
+**Next up: M1, world and visibility.** Building templates, a seeded town generator, wall cutaways, fog of war and day/night. The full roadmap is on the Game development board (https://github.com/orgs/deadcommons/projects/3), and #devlog will carry progress as it lands.
 
 **Get involved**
 • Your answers to "What brings you here?" open the matching channels. You can change them any time under Channels & Roles.
