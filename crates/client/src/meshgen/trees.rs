@@ -57,7 +57,31 @@ impl TreeSpec {
     }
 }
 
-/// The tree a tile with `feature` grows, if any.
+/// The tree tile (`x`, `y`) of `map` grows, if any: on wild ground a kind and a height from the
+/// tile's biome (`zombye_sim::biomes`, `biomes.ron`), in town (and for a tree the biome has no
+/// kind for) [`tree_at`]'s.
+pub fn tree_on(map: &zombye_sim::map::TileMap, x: i32, y: i32) -> Option<TreeSpec> {
+    use zombye_sim::biomes::TreeKind as K;
+    let t = IVec2::new(x, y);
+    let feature = map.tile(t).feature;
+    if !matches!(feature, Feature::Tree | Feature::PineTree) {
+        return None;
+    }
+    match map.biomes.at(t).and_then(|b| b.tree_kind(t, feature == Feature::PineTree)) {
+        Some(k) => {
+            let kind = match k.kind {
+                K::Broadleaf => TreeKind::Broadleaf,
+                K::Birch => TreeKind::Birch,
+                K::Pine => TreeKind::Pine,
+                K::Spruce => TreeKind::Spruce,
+            };
+            Some(spec(x, y, kind, Some(k.height)))
+        }
+        None => tree_at(x, y, feature),
+    }
+}
+
+/// The tree a tile with `feature` grows where no biome says (in town), if any.
 pub fn tree_at(x: i32, y: i32, feature: Feature) -> Option<TreeSpec> {
     let h = |k: u32| hash01(x, y, 200 + k);
     let kind = match feature {
@@ -67,9 +91,28 @@ pub fn tree_at(x: i32, y: i32, feature: Feature) -> Option<TreeSpec> {
         Feature::PineTree => TreeKind::Pine,
         _ => return None,
     };
+    Some(spec(x, y, kind, None))
+}
+
+/// A tree of `kind` on tile (`x`, `y`): `height` metres tall (somewhere from, to), or the size
+/// town trees have.
+fn spec(x: i32, y: i32, kind: TreeKind, height: Option<(f32, f32)>) -> TreeSpec {
+    let h = |k: u32| hash01(x, y, 200 + k);
     // Trunks stay within 0.15 m of the tile centre: the sim's trunk is 0.3 m across there.
     let base = Vec3::new(x as f32 + 0.5 + (h(1) - 0.5) * 0.3, 0.0, y as f32 + 0.5 + (h(2) - 0.5) * 0.3);
-    let scale = 0.8 + 0.45 * h(3);
+    let scale = match height {
+        // How tall the kind stands at scale 1 (as worked out below).
+        Some((lo, hi)) => {
+            let full = match kind {
+                TreeKind::Broadleaf => 1.5 + 0.7 * h(6) + 2.9,
+                TreeKind::Birch => 1.6 + 0.4 * h(6) + 2.8,
+                TreeKind::Pine => 6.0 + 1.6 * h(6),
+                TreeKind::Spruce => 6.6 + 1.8 * h(6),
+            };
+            (lo + (hi - lo) * h(3)) / full
+        }
+        None => 0.8 + 0.45 * h(3),
+    };
     let a = h(4) * TAU;
     let lean = Vec2::new(a.cos(), a.sin()) * 0.065 * h(5) * h(5);
     let s = scale;
@@ -93,7 +136,7 @@ pub fn tree_at(x: i32, y: i32, feature: Feature) -> Option<TreeSpec> {
         }
     };
     let crown = base + Vec3::new(lean.x * crown_y, crown_y, lean.y * crown_y);
-    Some(TreeSpec { kind, base, scale, lean, fork, height, crown, crown_r, crown_h, x, y })
+    TreeSpec { kind, base, scale, lean, fork, height, crown, crown_r, crown_h, x, y }
 }
 
 /// Add a tree to `mb`. `simple` (deep in the forest, where neighbours hide most of it) uses fewer

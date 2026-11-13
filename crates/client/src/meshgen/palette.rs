@@ -30,6 +30,14 @@ fn hex(s: &str) -> Option<LinearRgba> {
     Some(Color::srgb_u8(byte(0)?, byte(2)?, byte(4)?).to_linear())
 }
 
+/// An sRGB colour of 8 bits a channel as a linear one (a table: mesh building asks thousands of
+/// times a chunk for the biomes' colours, `zombye_sim::biomes::Colour`).
+pub fn srgb8([r, g, b]: [u8; 3]) -> LinearRgba {
+    static TABLE: OnceLock<[f32; 256]> = OnceLock::new();
+    let t = TABLE.get_or_init(|| std::array::from_fn(|i| Color::srgb_u8(i as u8, 0, 0).to_linear().red));
+    LinearRgba::new(t[r as usize], t[g as usize], t[b as usize], 1.0)
+}
+
 macro_rules! world_palette {
     (colours { $($c:ident),* $(,)? } sets { $($s:ident: $n:expr),* $(,)? }) => {
         /// Every colour the generated world uses, by its name in the palette file, and the named

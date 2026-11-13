@@ -88,11 +88,20 @@ impl Bary {
 /// The ground's colour on a facet: on a slope it drifts toward bare earth, and on the steepest
 /// toward pale rock, as grass gives way on a bank. `grade` is the hillside's
 /// (`Terrain::broad_grade`), not one facet's, so the colour follows the hill.
-fn slope_tint(c: LinearRgba, grade: f32) -> LinearRgba {
+fn slope_tint(c: LinearRgba, grade: f32, [dirt, cliff]: &[LinearRgba; 2]) -> LinearRgba {
     let earth = smooth(0.06, 0.12, grade);
     let rock = smooth(0.11, 0.18, grade);
-    let p = pal();
-    c.mix(&p.dirt, 0.45 * earth).mix(&p.cliff, 0.85 * rock)
+    c.mix(dirt, 0.45 * earth).mix(cliff, 0.85 * rock)
+}
+
+/// The earth and the stone a slope at `p` shows ([`slope_tint`]): its biome's
+/// (`biomes.ron`: `ground.slope`, `ground.rock`), else the palette's `dirt` and `cliff`.
+fn slope_colours(biomes: Option<&zombye_sim::biomes::BiomeMap>, p: Vec2) -> [LinearRgba; 2] {
+    let ground = biomes.and_then(|b| b.at(p.floor().as_ivec2())).map(|b| &b.ground);
+    [
+        ground.and_then(|g| g.slope).map_or(pal().dirt, |c| palette::srgb8(c.0)),
+        ground.and_then(|g| g.rock).map_or(pal().cliff, |c| palette::srgb8(c.0)),
+    ]
 }
 
 fn smooth(e0: f32, e1: f32, x: f32) -> f32 {
@@ -349,9 +358,15 @@ impl MeshBuilder {
     /// and paint and clutter lying on it stay on it. Faces lying flat take their facet's normal (the
     /// low-poly look) and, on a slope, its colour drifts to bare earth and rock (`slope_tint`).
     /// Nothing changes where the ground is level (all of town).
+    #[cfg(test)]
     pub fn drape(&mut self, t: &Terrain) {
+        self.drape_with(t, None);
+    }
+
+    /// `drape`, the bare earth and rock of each slope its biome's (`biomes.ron`).
+    pub fn drape_with(&mut self, t: &Terrain, biomes: Option<&zombye_sim::biomes::BiomeMap>) {
         if let Some(far) = &mut self.far {
-            far.drape(t);
+            far.drape_with(t, biomes);
         }
         if t.is_flat() {
             // Level everywhere: the ground's height (the first UVs, below) is 0 all over.
@@ -364,7 +379,7 @@ impl MeshBuilder {
         let indices = std::mem::take(&mut self.indices);
         let mut keep = Vec::with_capacity(indices.len());
         // A vertex's facet normal and tint, once a flat face on one facet has given it one.
-        let mut facet_of: Vec<Option<(Vec3, f32)>> = vec![None; n];
+        let mut facet_of: Vec<Option<(Vec3, f32, [LinearRgba; 2])>> = vec![None; n];
         let mut cut: Vec<[u32; 3]> = Vec::new();
         // The colours as built, before any tint: a piece cut across a fold is tinted from these.
         let built = self.colors.clone();
@@ -385,21 +400,22 @@ impl MeshBuilder {
                 if flat {
                     let normal = facet_normal(&f);
                     let grade = t.broad_grade((f[0] + f[1] + f[2]).xz() / 3.0);
+                    let tint = slope_colours(biomes, (f[0] + f[1] + f[2]).xz() / 3.0);
                     for i in ids.iter_mut() {
                         match facet_of[*i as usize] {
                             // A quad whose diagonal is the fold has its two halves on two facets:
                             // the corners they share are split, so each half keeps its own normal.
-                            Some((other, _)) if (other - normal).length_squared() > 1e-8 => {
+                            Some((other, _, _)) if (other - normal).length_squared() > 1e-8 => {
                                 let k = *i as usize;
                                 self.positions.push(self.positions[k]);
                                 self.normals.push(self.normals[k]);
                                 self.colors.push(built[k]);
                                 self.uv0.push(self.uv0[k]);
                                 self.uv1.push(self.uv1[k]);
-                                facet_of.push(Some((normal, grade)));
+                                facet_of.push(Some((normal, grade, tint)));
                                 *i = self.positions.len() as u32 - 1;
                             }
-                            _ => facet_of[*i as usize] = Some((normal, grade)),
+                            _ => facet_of[*i as usize] = Some((normal, grade, tint)),
                         }
                     }
                 }
@@ -409,9 +425,9 @@ impl MeshBuilder {
             }
         }
         for (i, normal) in facet_of.iter().enumerate() {
-            if let Some((normal, grade)) = normal {
+            if let Some((normal, grade, tint)) = normal {
                 self.normals[i] = normal.to_array();
-                self.colors[i] = slope_tint(LinearRgba::from_f32_array(self.colors[i]), *grade).to_f32_array();
+                self.colors[i] = slope_tint(LinearRgba::from_f32_array(self.colors[i]), *grade, tint).to_f32_array();
             }
         }
         self.indices = keep;
@@ -436,6 +452,7 @@ impl MeshBuilder {
                         }
                         let normal = facet_normal(&f);
                         let grade = t.broad_grade((f[0] + f[1] + f[2]).xz() / 3.0);
+                        let tint = slope_colours(biomes, (f[0] + f[1] + f[2]).xz() / 3.0);
                         let base = self.positions.len() as u32;
                         for q in &poly {
                             let w = bary.at(*q);
@@ -447,7 +464,7 @@ impl MeshBuilder {
                                     *ch += v * w[k];
                                 }
                             }
-                            let (nrm, col) = if flat { (normal, slope_tint(LinearRgba::from_f32_array(c), grade).to_f32_array()) } else { (Vec3::from(self.normals[ids[0] as usize]), c) };
+                            let (nrm, col) = if flat { (normal, slope_tint(LinearRgba::from_f32_array(c), grade, &tint).to_f32_array()) } else { (Vec3::from(self.normals[ids[0] as usize]), c) };
                             self.positions.push([q.x, y, q.y]);
                             self.normals.push(nrm.to_array());
                             self.colors.push(col);

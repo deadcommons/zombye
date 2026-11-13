@@ -111,6 +111,7 @@ mod graphics;
 mod graphics_ui;
 mod render_scale;
 mod bench_live;
+mod biome_watch;
 mod black_watch;
 #[cfg(feature = "profile")]
 mod profile;
@@ -324,6 +325,9 @@ pub struct Options {
     pub third_person: bool,
     /// Start with the cutaways off (`--walls-up`; F10 toggles them, `cutaway.rs`).
     pub walls_up: bool,
+    /// `--watch-biomes`: start the game again where it is whenever the biomes file is saved
+    /// (`biome_watch.rs`, docs/biomes.md).
+    pub watch_biomes: bool,
     /// Show the silhouettes of zombies you see that something covers (`--zombie-silhouettes`;
     /// Shift+F10 toggles it and saves it, `silhouette.rs`). `None`: as the settings file says.
     pub zombie_silhouettes: Option<bool>,
@@ -617,6 +621,7 @@ impl Options {
                 at
             },
             walls_up: flag("--walls-up"),
+            watch_biomes: flag("--watch-biomes"),
             zombie_silhouettes: flag("--zombie-silhouettes").then_some(true),
             opening_hints: value("--opening-hints").and_then(|v| match v.as_str() {
                 "on" => Some(true),
@@ -752,6 +757,12 @@ fn main() {
             }
         }
     }
+    // What grows on the wild ground: `--biomes FILE` and `--biome ID` (docs/biomes.md), told to the
+    // content loader before any world is made.
+    {
+        let value = |flag: &str| args.iter().position(|a| a == flag).and_then(|k| args.get(k + 1)).cloned();
+        zombye_net::content::set_biome_flags(value("--biomes").map(Into::into), value("--biome"));
+    }
     // The world's colours, from the data folder's palette.ron (#60), before anything is drawn.
     if let Err(e) = meshgen::palette::load(&options.data) {
         eprintln!("can't use the palette: {e}");
@@ -823,7 +834,7 @@ fn main() {
     if !offscreen {
         app.add_plugins((audio::GameAudioPlugin, music::MusicPlugin));
     }
-    app.add_plugins((fps_log::FpsLogPlugin, bench_live::BenchLivePlugin, report::ReportPlugin));
+    app.add_plugins((fps_log::FpsLogPlugin, bench_live::BenchLivePlugin, report::ReportPlugin, biome_watch::BiomeWatchPlugin));
     if black_watch::wanted() && !offscreen {
         app.add_plugins(black_watch::BlackWatchPlugin);
     }
