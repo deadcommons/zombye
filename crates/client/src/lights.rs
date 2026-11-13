@@ -304,7 +304,7 @@ fn other_lights(
         .iter()
         .filter(|p| p.id != me.id && !p.dead)
         .filter_map(|p| {
-            let outfit = link.curr.outfits.iter().find(|o| o.id == p.id)?;
+            let outfit = link.curr.outfits.iter().find(|o| o.id == p.id).filter(|o| !o.light_off)?;
             let light = held_light_in(&join, [outfit.hand, outfit.off_hand])?;
             let prev = link.prev.players.iter().find(|q| q.id == p.id).unwrap_or(p);
             let pos = Vec2::from(prev.pos).lerp(Vec2::from(p.pos), alpha);

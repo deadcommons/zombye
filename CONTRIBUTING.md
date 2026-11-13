@@ -2,11 +2,23 @@
 
 Thanks for helping. Contributions from people and from AI agents working for people are both
 welcome. Whoever opens the pull request is responsible for everything in it, including what their
-agent wrote.
+agent wrote. How we use AI, and what we ask of work made with it, is in [AI.md](AI.md).
 
 ## Licence of your contribution
 
-There's no CLA and no sign-off. By opening a pull request you agree that:
+There's no CLA. Every commit carries a sign-off under the
+[Developer Certificate of Origin](https://developercertificate.org/) (DCO 1.1): a line at the end of
+the commit message, added by `git commit -s`:
+
+```
+Signed-off-by: Your Name <you@example.com>
+```
+
+It says you wrote the change, or otherwise have the right to submit it under this project's
+licences. A commit an agent wrote for you is signed off by you. A pull request whose commits aren't
+signed off can't be merged; `git rebase --signoff main` adds the line to commits you already made.
+
+By signing off you agree that:
 - code, data, shaders and docs you contribute are licensed under MIT OR Apache-2.0, like the rest
   of the code;
 - art and audio you contribute (models, textures, animations, images, sounds, music) are licensed
@@ -15,6 +27,15 @@ There's no CLA and no sign-off. By opening a pull request you agree that:
 
 You keep the copyright to your work. Only submit work you have the right to license this way, and
 add its row to ATTRIBUTION.md.
+
+## This repo and the official build
+
+Everything here is open, and a build from this repo alone is the whole game with its own art. Dead
+Commons also sells an official build, which adds art and audio bought under licences that don't
+allow publishing the files. Those never come into this repo, and contributions never depend on them:
+if a change looks right with this repo's art, it's right. The Zombye and Dead Commons names and logos
+are trademarks, not open source ([docs/brand/LICENSE-brand.txt](docs/brand/LICENSE-brand.txt)): a
+fork you publish takes its own name.
 
 ## Clean-room rules (non-negotiable)
 
@@ -41,15 +62,19 @@ If you're unsure whether something is allowed, ask in an issue before you write 
 
 Follow the policy in [ATTRIBUTION.md](ATTRIBUTION.md): every asset file has a row there, added in
 the same commit. Original work, open-licensed work, or AI-generated work made on a plan whose terms
-let us redistribute it. No assets from other games and no third-party asset packs, not even as
+let us redistribute it. No assets from other games and no third-party asset packs (bought ones included), not even as
 placeholders.
 
 ## Making a change
 
 1. For anything larger than a bug fix, open an issue first so we can agree on the approach.
 2. Keep pull requests focused: one change per PR.
-3. Run `cargo fmt`, `cargo clippy` and `cargo test` before you push.
-4. Describe what you changed and how you tested it. For gameplay changes, say what a player will
+3. Run `cargo clippy` and `cargo test --release --workspace` before you push. Match the style of
+   the code round your change; don't run `cargo fmt` over the tree (the code isn't rustfmt-formatted,
+   and it would rewrite every file).
+4. Sign off every commit (`git commit -s`, see above), and add an `Assisted-by:` line where a tool
+   did a real part of it ([AI.md](AI.md)).
+5. Describe what you changed and how you tested it. For gameplay changes, say what a player will
    notice.
 
 ## How decisions are made

@@ -103,7 +103,7 @@ fn describe(kind: JobKind, join: &JoinInfo) -> String {
 }
 
 fn cancel_key(keys: Res<ButtonInput<KeyCode>>, me: Res<LocalPlayer>, mut link: ResMut<ServerLink>) {
-    if me.dead || !keys.just_pressed(KeyCode::KeyX) {
+    if me.dead || !crate::keys::just_pressed(&keys, crate::keys::Action::Stop) {
         return;
     }
     let all = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);

@@ -48,7 +48,7 @@ fn spawn(mut commands: Commands) {
 }
 
 pub(crate) fn toggle(keys: Res<ButtonInput<KeyCode>>, mut panel: ResMut<SkillsPanel>) {
-    if keys.just_pressed(KeyCode::KeyK) {
+    if crate::keys::just_pressed(&keys, crate::keys::Action::Skills) {
         panel.open = !panel.open;
     }
 }

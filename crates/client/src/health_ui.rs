@@ -108,8 +108,8 @@ fn preselect(mut panel: ResMut<HealthPanel>, link: Res<ServerLink>, me: Res<Loca
 }
 
 pub(crate) fn toggle(keys: Res<ButtonInput<KeyCode>>, me: Option<Res<LocalPlayer>>, mut panel: ResMut<HealthPanel>) {
-    // At the wheel H is the horn (`player.rs`).
-    if keys.just_pressed(KeyCode::KeyH) && !me.is_some_and(|m| m.car.is_some()) {
+    // At the wheel the key is the horn's (`keys::Action::Horn`, `player.rs`).
+    if crate::keys::just_pressed(&keys, crate::keys::Action::Health) && !me.is_some_and(|m| m.car.is_some()) {
         panel.open = !panel.open;
         panel.use_item = None;
     }

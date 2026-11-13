@@ -128,7 +128,7 @@ pub fn change(s: &mut ClientSettings, c: Change) {
                 Tab::Graphics => (s.graphics, s.fullscreen, s.vsync, s.old_look) = (d.graphics, d.fullscreen, d.vsync, d.old_look),
                 Tab::Audio => (s.volume, s.music, s.muted) = (d.volume, d.music, d.muted),
                 Tab::Game => (s.first_person, s.ui_scale, s.zombie_silhouettes, s.opening_hints, s.skip_menu, s.help_text) = (d.first_person, d.ui_scale, d.zombie_silhouettes, d.opening_hints, d.skip_menu, d.help_text),
-                Tab::Controls => {}
+                Tab::Controls => s.keys.clear(),
             }
         }
     }
@@ -264,14 +264,96 @@ pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
     }
 }
 
-/// The keys, by what they are for. (Shown, not changed here: rebinding comes later.)
-pub const KEYS: [(&str, &[(&str, &str)]); 6] = [
-    ("Moving", &[("W A S D", "Walk"), ("Shift", "Run"), ("C", "Sneak"), ("E", "Climb a fence or window"), ("B", "Sleep, and get up")]),
-    ("Fighting", &[("Right mouse", "Aim"), ("Left mouse", "Attack or shoot, while aiming"), ("Space", "Shove, or stomp one that's down"), ("R", "Reload")]),
-    ("Things", &[("E", "Pick up, search, flick a switch"), ("F", "Open or shut a door or window"), ("Shift + F", "Roll a blind, or fit one"), ("G", "Smash a window"), ("1 - 9", "Hotbar"), ("X", "Stop what you're doing")]),
-    ("Panels", &[("Tab or I", "Inventory"), ("H", "Health"), ("K", "Skills"), ("O", "Objectives and hints"), ("Esc", "Pause menu")]),
-    ("Camera", &[(", and .", "Turn a quarter"), (";", "First person and back"), ("Wheel", "Zoom"), ("F10", "Walls up or cut away")]),
-    ("Other", &[("Enter", "Chat"), ("V  U  P", "Wave, hands up, point"), ("M", "Map"), ("Ctrl + M", "Mute"), ("F5 / F9", "Quicksave / quickload"), ("F7", "Server browser"), ("Ctrl + / -", "UI scale")]),
+/// A line of the Controls tab: an action whose keys can be changed (`keys.rs`), the menu of the
+/// thing faced (holding the interact key), or a key that stays as it is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum KeyRow {
+    Bound(Action, &'static str),
+    Hold(Action, &'static str),
+    Fixed(&'static str, &'static str),
+}
+
+impl KeyRow {
+    /// The key it shows, as bound now.
+    pub fn key(self) -> String {
+        match self {
+            KeyRow::Bound(a, _) => crate::keys::label(a),
+            KeyRow::Hold(a, _) => format!("Hold {}", crate::keys::short(a)),
+            KeyRow::Fixed(k, _) => k.to_string(),
+        }
+    }
+
+    pub fn does(self) -> &'static str {
+        match self {
+            KeyRow::Bound(_, d) | KeyRow::Hold(_, d) | KeyRow::Fixed(_, d) => d,
+        }
+    }
+}
+
+use crate::keys::Action;
+
+/// The keys, by what they are for. The bound ones are changed by clicking them.
+pub const KEYS: [(&str, &[KeyRow]); 6] = [
+    (
+        "Moving",
+        &[
+            KeyRow::Bound(Action::MoveUp, "Walk up the screen"),
+            KeyRow::Bound(Action::MoveDown, "Walk down"),
+            KeyRow::Bound(Action::MoveLeft, "Walk left"),
+            KeyRow::Bound(Action::MoveRight, "Walk right"),
+            KeyRow::Bound(Action::Run, "Run"),
+            KeyRow::Bound(Action::Sneak, "Sneak"),
+            KeyRow::Bound(Action::Sleep, "Sleep, and get up"),
+            KeyRow::Bound(Action::Sit, "Sit down, and get up"),
+        ],
+    ),
+    (
+        "Fighting",
+        &[
+            KeyRow::Fixed("Right mouse", "Aim"),
+            KeyRow::Fixed("Left mouse", "Attack or shoot, while aiming"),
+            KeyRow::Bound(Action::Shove, "Shove, or stomp one that's down"),
+            KeyRow::Bound(Action::Reload, "Reload"),
+        ],
+    ),
+    (
+        "The world",
+        &[
+            KeyRow::Bound(Action::Interact, "Open, shut, climb, get in, pick up, search: what you face"),
+            KeyRow::Hold(Action::Interact, "Everything you can do with what you face"),
+            KeyRow::Fixed("Right-click", "Everything you can do with what's under the pointer"),
+            KeyRow::Bound(Action::Flashlight, "Flashlight or candle on and off"),
+            KeyRow::Bound(Action::Smash, "Smash a window"),
+            KeyRow::Bound(Action::Refuel, "Pour fuel into a car, or siphon it out"),
+            KeyRow::Bound(Action::Horn, "Horn, at the wheel"),
+            KeyRow::Fixed("1 - 9", "Hotbar"),
+            KeyRow::Bound(Action::Stop, "Stop what you're doing"),
+        ],
+    ),
+    (
+        "Screens",
+        &[
+            KeyRow::Bound(Action::Inventory, "Inventory"),
+            KeyRow::Bound(Action::Health, "Health"),
+            KeyRow::Bound(Action::Skills, "Skills"),
+            KeyRow::Bound(Action::Build, "Build"),
+            KeyRow::Bound(Action::Map, "Map"),
+            KeyRow::Bound(Action::Objectives, "Objectives and hints"),
+            KeyRow::Fixed("Esc", "Pause menu"),
+        ],
+    ),
+    ("Camera", &[KeyRow::Fixed(", and .", "Turn a quarter"), KeyRow::Fixed(";", "First person and back"), KeyRow::Fixed("Wheel", "Zoom"), KeyRow::Fixed("F10", "Walls up or cut away")]),
+    (
+        "Other",
+        &[
+            KeyRow::Fixed("Enter", "Chat"),
+            KeyRow::Fixed("V  U  P", "Wave, hands up, point"),
+            KeyRow::Fixed("Ctrl + M", "Mute"),
+            KeyRow::Fixed("F5 / F9", "Quicksave / quickload"),
+            KeyRow::Fixed("F7", "Server browser"),
+            KeyRow::Fixed("Ctrl + / -", "UI scale"),
+        ],
+    ),
 ];
 
 /// The screen's state. Whoever shows it (the pause menu, the main menu) opens and shuts it.
@@ -287,6 +369,8 @@ pub struct SettingsUi {
     pub changes: u32,
     /// Drawn in the game (which puts changes into effect at once) or in the main menu.
     pub in_game: bool,
+    /// Waiting for the key to bind to this action (the Controls tab: [`capture`]).
+    pub capture: Option<Action>,
 }
 
 impl SettingsUi {
@@ -299,6 +383,8 @@ impl SettingsUi {
 enum Act {
     Tab(Tab),
     Change(Change),
+    /// Wait for the next key, for this action.
+    Rebind(Action),
     Close,
 }
 
@@ -309,10 +395,12 @@ impl Plugin for SettingsUiPlugin {
         let options = app.world().get_resource::<crate::Options>().cloned();
         // (A flag's level for the session stays until the setting itself is changed here.)
         let settings = SettingsStore::ensure(app);
+        // The keys: the data folder's keys.ron with the player's picks over it.
+        crate::keys::init(options.as_ref().map(|o| o.data.as_path()), &settings.keys);
         help_text::set(options.as_ref().and_then(|o| o.help_text).unwrap_or(settings.help_text));
         let tab = options.as_ref().and_then(|o| o.settings.as_deref()).map(|t| Tab::parse(t).unwrap_or_default());
         let in_game = app.world().contains_resource::<crate::server_link::ServerLink>();
-        app.insert_resource(SettingsUi { open: tab.is_some(), tab: tab.unwrap_or_default(), in_game, ..default() }).add_systems(Startup, spawn).add_systems(Update, (act, apply_live, draw).chain());
+        app.insert_resource(SettingsUi { open: tab.is_some(), tab: tab.unwrap_or_default(), in_game, ..default() }).add_systems(Startup, spawn).add_systems(PreUpdate, capture.after(bevy::input::InputSystems)).add_systems(Update, (act, apply_live, draw).chain());
     }
 }
 
@@ -340,11 +428,19 @@ fn act(mut ui: ResMut<SettingsUi>, mut store: ResMut<SettingsStore>) {
     for a in std::mem::take(&mut ui.acts) {
         match a {
             Act::Tab(t) => ui.tab = t,
-            Act::Close => ui.open = false,
+            Act::Close => {
+                ui.open = false;
+                ui.capture = None;
+            }
+            Act::Rebind(a) => {
+                ui.capture = if ui.capture == Some(a) { None } else { Some(a) };
+                ui.changes += 1;
+            }
             Act::Change(c) => {
                 if let Err(e) = store.change(|s| change(s, c)) {
                     eprintln!("settings not saved: {e}");
                 }
+                crate::keys::set_overrides(&store.settings.keys);
                 ui.changes += 1;
             }
         }
@@ -495,7 +591,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
             skin::divider(body);
             body.spawn(Node { flex_grow: 1.0, flex_direction: FlexDirection::Column, padding: UiRect::axes(px(24), px(14)), min_height: px(300), ..default() }).with_children(|col| {
                 if tab == Tab::Controls {
-                    keys_list(col);
+                    keys_list(col, ui.capture);
                 }
                 for r in rows(tab, &s) {
                     col.spawn(Node { align_items: AlignItems::Center, column_gap: px(16), min_height: px(38), ..default() }).with_children(|row| {
@@ -523,7 +619,8 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
                     Tab::Graphics if in_game => "Changes show at once round this screen.",
                     Tab::Graphics => "Auto measures the first seconds of a game and picks what this machine holds.",
                     Tab::Audio => "Flags on the command line win for their session.",
-                    Tab::Controls => "The keys can't be changed yet.",
+                    Tab::Controls if ui.capture.is_some() => "Press the new key (with Shift, Ctrl or Alt if you like). Esc keeps the old one.",
+                    Tab::Controls => "Click a key to change it. Kept in your settings; the game's own keys are in keys.ron.",
                     Tab::Game => "Difficulty and the world's own options are chosen when you start a new game.",
                 };
                 col.spawn((Text::new(note), font(SMALL), TextColor(DIM), Node { margin: UiRect::top(px(10)), ..default() }));
@@ -534,30 +631,96 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
         p.spawn(Node { height: px(50), padding: UiRect::horizontal(px(24)), align_items: AlignItems::Center, column_gap: px(18), flex_shrink: 0.0, ..default() }).with_children(|row| {
             skin::keycap(row, "Esc", if in_game { "back to the menu" } else { "back" });
             skin::spacer(row);
-            if tab != Tab::Controls {
+            {
                 skin::button(row, &format!("{} defaults", tab.name()), None, Look::Plain, Val::Auto).observe(move |_: On<PointerPress>, mut ui: ResMut<SettingsUi>| ui.acts.push(Act::Change(Change::Defaults(tab))));
             }
         });
     });
 }
 
-/// The Controls tab: the keys in three columns of groups.
-fn keys_list(p: &mut ChildSpawnerCommands) {
+/// The Controls tab: the keys in three columns of groups. A bound key is a chip that waits for
+/// the new one when clicked; one shared with another action says so.
+fn keys_list(p: &mut ChildSpawnerCommands, capture: Option<Action>) {
+    let bindings = crate::keys::current();
     p.spawn(Node { column_gap: px(22), align_items: AlignItems::FlexStart, ..default() }).with_children(|cols| {
         for pair in KEYS.chunks(2) {
             cols.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(3), flex_basis: percent(33), ..default() }).with_children(|col| {
                 for (group, keys) in pair {
                     col.spawn((Text::new(group.to_uppercase()), theme::head(BODY + 2.0), TextColor(skin::GREEN), Node { margin: UiRect::top(px(6)), ..default() }));
-                    for (key, does) in keys.iter() {
-                        col.spawn(Node { column_gap: px(8), ..default() }).with_children(|row| {
-                            row.spawn((Text::new(*key), theme::strong(SMALL), TextColor(BONE), TextLayout::no_wrap(), Node { width: px(92), flex_shrink: 0.0, ..default() }));
-                            row.spawn((Text::new(*does), font(SMALL), TextColor(DIM)));
+                    for row in keys.iter().copied() {
+                        col.spawn(Node { column_gap: px(8), align_items: AlignItems::Center, ..default() }).with_children(|line| {
+                            line.spawn(Node { width: px(104), flex_shrink: 0.0, ..default() }).with_children(|k| match row {
+                                KeyRow::Bound(a, _) => {
+                                    let label = if capture == Some(a) { "Press a key".to_string() } else { row.key() };
+                                    chip(k, &label, capture == Some(a), Some(Act::Rebind(a)), Val::Auto);
+                                }
+                                _ => {
+                                    k.spawn((Text::new(row.key()), theme::strong(SMALL), TextColor(BONE), TextLayout::no_wrap()));
+                                }
+                            });
+                            let clash = match row {
+                                KeyRow::Bound(a, _) => bindings.clashes(a),
+                                _ => Vec::new(),
+                            };
+                            let does = match clash.first() {
+                                Some(o) => format!("{} (also {})", row.does(), KEYS.iter().flat_map(|g| g.1.iter()).find_map(|r| matches!(r, KeyRow::Bound(b, _) if b == o).then(|| r.does().to_lowercase())).unwrap_or_default()),
+                                None => row.does().to_string(),
+                            };
+                            line.spawn((Text::new(does), font(SMALL), TextColor(if clash.is_empty() { DIM } else { theme::flat::RED_TEXT })));
                         });
                     }
                 }
             });
         }
     });
+}
+
+/// Rebinding: while the Controls tab waits for a key, the next one pressed (with the modifiers
+/// held) becomes the action's key, saved in the settings and in force at once. A modifier pressed
+/// and let go alone is bound alone (Shift to run). Esc keeps the old key. Runs before the pause
+/// menu's keys, and takes every key it sees, so none reaches the game or closes the screen.
+pub fn capture(mut keys: ResMut<ButtonInput<KeyCode>>, mut ui: ResMut<SettingsUi>, mut store: ResMut<SettingsStore>, mut lone: Local<Option<KeyCode>>) {
+    let Some(action) = ui.capture.filter(|_| ui.open && ui.tab == Tab::Controls) else {
+        *lone = None;
+        return;
+    };
+    let is_mod = |k: KeyCode| matches!(k, KeyCode::ShiftLeft | KeyCode::ShiftRight | KeyCode::ControlLeft | KeyCode::ControlRight | KeyCode::SuperLeft | KeyCode::SuperRight | KeyCode::AltLeft | KeyCode::AltRight);
+    let mut picked: Option<String> = None;
+    if keys.just_pressed(KeyCode::Escape) {
+        ui.capture = None;
+        ui.changes += 1;
+    } else if let Some(k) = keys.get_just_pressed().copied().find(|k| !is_mod(*k)) {
+        *lone = None;
+        if let Some(name) = crate::keys::name_of(k) {
+            let mut text = String::new();
+            for (held, m) in [([KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::SuperLeft, KeyCode::SuperRight].as_slice(), "Ctrl"), (&[KeyCode::AltLeft, KeyCode::AltRight], "Alt"), (&[KeyCode::ShiftLeft, KeyCode::ShiftRight], "Shift")] {
+                if keys.any_pressed(held.iter().copied()) {
+                    text.push_str(m);
+                    text.push('+');
+                }
+            }
+            text.push_str(&name);
+            picked = Some(text);
+        }
+    } else if let Some(k) = keys.get_just_pressed().copied().find(|k| is_mod(*k)) {
+        *lone = Some(k);
+    } else if let Some(k) = *lone
+        && keys.just_released(k)
+    {
+        *lone = None;
+        picked = crate::keys::name_of(k);
+    }
+    if let Some(text) = picked {
+        if let Err(e) = store.change(|s| {
+            s.keys.insert(action.id().to_string(), vec![text]);
+        }) {
+            eprintln!("settings not saved: {e}");
+        }
+        crate::keys::set_overrides(&store.settings.keys);
+        ui.capture = None;
+        ui.changes += 1;
+    }
+    keys.reset_all();
 }
 
 #[cfg(test)]
@@ -688,6 +851,21 @@ mod tests {
         assert_eq!(Tab::parse(" Game "), Some(Tab::Game));
         assert_eq!(Tab::parse("sound"), None);
         // Every group has keys, and no key or line is empty.
-        assert!(KEYS.iter().all(|(g, keys)| !g.is_empty() && !keys.is_empty() && keys.iter().all(|(k, d)| !k.is_empty() && !d.is_empty())));
+        assert!(KEYS.iter().all(|(g, keys)| !g.is_empty() && !keys.is_empty() && keys.iter().all(|r| !r.key().is_empty() && !r.does().is_empty())));
+        // Every action that can be rebound is on the tab.
+        for a in crate::keys::Action::ALL {
+            assert!(KEYS.iter().any(|(_, rows)| rows.contains(&KeyRow::Bound(a, rows.iter().find_map(|r| match r { KeyRow::Bound(b, d) if *b == a => Some(*d), _ => None }).unwrap_or("")))), "{} isn't on the Controls tab", a.id());
+        }
+    }
+
+    #[test]
+    fn controls_defaults_drop_the_players_keys() {
+        let mut s = ClientSettings::default();
+        s.keys.insert("interact".into(), vec!["F".into()]);
+        let text = ron::ser::to_string(&s).unwrap();
+        assert_eq!(ron::from_str::<ClientSettings>(&text).unwrap().keys, s.keys);
+        assert!(ron::from_str::<ClientSettings>("(ui_scale: 110)").unwrap().keys.is_empty());
+        change(&mut s, Change::Defaults(Tab::Controls));
+        assert!(s.keys.is_empty());
     }
 }
