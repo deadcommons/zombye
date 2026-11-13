@@ -2083,7 +2083,7 @@ and mood, and docs/art-direction.md). All of it is client only: nothing here is 
   frame, and nothing of it in the sim or a save. A data folder without the file gets the shipped one.
 - **Contact shadows** (`world_render::contact_shadows`): a strip of black fading to clear, 0.6 m wide, on the ground
   and floors along both faces of every ground-floor wall and window: one small blended, unlit mesh a building (16 to
-  about 1,000 triangles), spawned and despawned with it. They stand in for ambient occlusion: the screen-space kind
+  about 1,000 triangles), spawned and despawned with it. Trees and bushes get the same: a soft blot round each foot, darkest at the trunk, half the crown's radius plus 0.35 m across, laid over the hills (`landscape::foot_shade`, one mesh a chunk, with the setting). They stand in for ambient occlusion: the screen-space kind
   needs MSAA off, and the window glass is alpha to coverage.
 - **Vegetation and litter, a mesh a chunk** (`vegetation.rs`, `assets/shaders/vegetation.wesl`): eight kinds
   (`VegKind`: long grass, lawn grass, thin grass, a weed, red and white flowers, loose paper, small stones), four

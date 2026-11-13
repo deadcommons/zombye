@@ -497,7 +497,7 @@ fn stream(
     }
     wanted.sort_by_key(|c| (*c - here).length_squared());
     for c in wanted.into_iter().take(budget) {
-        let entities = spawn_chunk(&mut commands, &mut meshes, &mats, map, c, &shared.furniture);
+        let entities = spawn_chunk(&mut commands, &mut meshes, &mats, map, c, &shared.furniture, shared.contact.as_ref());
         streamer.chunks.insert(c, entities);
     }
     let far: Vec<IVec2> = streamer.chunks.keys().copied().filter(|c| (*c - here).abs().max_element() > LOAD_RADIUS + 1).collect();
@@ -579,12 +579,12 @@ fn rebuild_felled(mut commands: Commands, map: Res<ClientMap>, link: Res<crate::
         for e in old {
             commands.entity(e).despawn();
         }
-        let entities = spawn_chunk(&mut commands, &mut meshes, &mats, &map.0, c, &shared.furniture);
+        let entities = spawn_chunk(&mut commands, &mut meshes, &mats, &map.0, c, &shared.furniture, shared.contact.as_ref());
         streamer.chunks.insert(c, entities);
     }
 }
 
-fn spawn_chunk(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &WorldMaterials, map: &TileMap, c: IVec2, models: &FurnitureModels) -> Vec<Entity> {
+fn spawn_chunk(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &WorldMaterials, map: &TileMap, c: IVec2, models: &FurnitureModels, contact: Option<&Handle<StandardMaterial>>) -> Vec<Entity> {
     let landscape::ChunkMeshes { mut ground, mut props, mut veg } = landscape::build_chunk(map, c);
     meshgen::street_props::add(&mut props, map, c, models);
     // Outside town the ground rises in hills (`zombye_sim::terrain`): everything built on the flat
@@ -609,6 +609,13 @@ fn spawn_chunk(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &WorldM
             e.insert(PropsDetail { full, far });
         }
         out.push(e.id());
+    }
+    // Soft shade round the foot of each tree and bush, with the walls' contact shadows.
+    if let Some(material) = contact {
+        let shade = landscape::foot_shade(map, c);
+        if !shade.is_empty() {
+            out.push(commands.spawn((Mesh3d(meshes.add(shade.build())), MeshMaterial3d(material.clone()), Transform::IDENTITY, NotShadowCaster)).id());
+        }
     }
     out
 }

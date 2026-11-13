@@ -2259,3 +2259,59 @@ mod tests {
     }
 }
 
+
+/// How dark the ground is right at a trunk, under [`foot_shade`]'s soft blot.
+const FOOT_DARK: f32 = 0.42;
+/// How far over the ground the blot floats, so a fold between two facets never cuts into it.
+const FOOT_LIFT: f32 = 0.04;
+
+/// A soft dark blot round the foot of every tree and bush in chunk `c`, darkest at the trunk and
+/// clear at its edge: the shade a crown keeps off the ground right under it, which the sun's
+/// shadow alone doesn't give (it falls off to one side), so a trunk sits in the ground instead of
+/// on it. Drawn as the walls' contact shadows are (blended black, unlit), laid over the hills
+/// ring by ring, and only with that setting on.
+pub fn foot_shade(map: &TileMap, c: IVec2) -> MeshBuilder {
+    let land = Land::new(map, c);
+    let mut mb = MeshBuilder::default();
+    const SEGMENTS: usize = 14;
+    // The blot's rings: (share of its radius, share of its darkness).
+    const RINGS: [(f32, f32); 3] = [(0.3, 0.8), (0.65, 0.35), (1.0, 0.0)];
+    for y in land.min.y..land.min.y + CHUNK_SIZE {
+        for x in land.min.x..land.min.x + CHUNK_SIZE {
+            let t = IVec2::new(x, y);
+            let tile = land.tile(t);
+            if tile.room != 0 {
+                continue;
+            }
+            let (centre, radius) = match tile.feature {
+                Feature::Tree | Feature::PineTree => match trees::tree_at(x, y, tile.feature) {
+                    Some(spec) => (spec.base, 0.5 * spec.crown_r + 0.35),
+                    None => continue,
+                },
+                Feature::Bush if !land.on_driveway(t) => {
+                    let size = 0.85 + 0.4 * hash01(x, y, 5);
+                    (Vec3::new(x as f32 + 0.3 + 0.4 * hash01(x, y, 3), 0.0, y as f32 + 0.3 + 0.4 * hash01(x, y, 4)), 0.75 * size)
+                }
+                _ => continue,
+            };
+            let at = |r: f32, k: usize| {
+                let a = k as f32 / SEGMENTS as f32 * TAU;
+                let q = centre.xz() + Vec2::new(a.cos(), a.sin()) * r * radius;
+                Vec3::new(q.x, map.terrain.height(q) + FOOT_LIFT, q.y)
+            };
+            let shade = |d: f32| LinearRgba::new(0.0, 0.0, 0.0, FOOT_DARK * d);
+            let middle = Vec3::new(centre.x, map.terrain.height(centre.xz()) + FOOT_LIFT, centre.z);
+            for k in 0..SEGMENTS {
+                let (a, b) = (at(RINGS[0].0, k), at(RINGS[0].0, k + 1));
+                mb.triangle_shaded([middle, b, a], [shade(1.0), shade(RINGS[0].1), shade(RINGS[0].1)]);
+                for w in RINGS.windows(2) {
+                    let ((r0, d0), (r1, d1)) = (w[0], w[1]);
+                    let (i0, i1, o0, o1) = (at(r0, k), at(r0, k + 1), at(r1, k), at(r1, k + 1));
+                    mb.triangle_shaded([i0, i1, o1], [shade(d0), shade(d0), shade(d1)]);
+                    mb.triangle_shaded([i0, o1, o0], [shade(d0), shade(d1), shade(d1)]);
+                }
+            }
+        }
+    }
+    mb
+}
