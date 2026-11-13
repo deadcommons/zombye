@@ -150,6 +150,7 @@ fn press(
     mut link: ResMut<ServerLink>,
     mut menu: ResMut<ItemMenu>,
     notice: Option<ResMut<crate::saving::Notice>>,
+    (mode, mut wheel): (Res<crate::pad::InputMode>, ResMut<crate::wheel::Wheel>),
     mut down: Local<Option<f32>>,
     mut held: Local<bool>,
 ) {
@@ -186,6 +187,8 @@ fn press(
             Some(crate::render_scale::from_view(camera, window, v))
         };
         match &facing.0 {
+            // On the controller, a wheel round the middle of the screen (`wheel.rs`).
+            Some(Faced::Thing { title, lines, .. }) if mode.pad => wheel.show(crate::wheel::Kind::Actions, title.clone(), crate::wheel::action_entries(lines)),
             Some(Faced::Thing { title, lines, at }) => menu.show_world(title.clone(), lines.clone(), spot(*at).unwrap_or(Vec2::splat(200.0))),
             Some(Faced::Floor(id, _)) => {
                 let at = link.curr.items.iter().find(|i| i.id == *id).map(|i| i.pos).unwrap_or(me.curr.pos);
