@@ -50,7 +50,7 @@ fn mistakes_name_the_biome_and_the_field() {
     assert!(e.contains("wood_edge") && e.contains("twice"), "{e}");
     let e = with("everywhere: None", "everywhere: Some(\"swamp\")");
     assert!(e.contains("swamp") && e.contains("meadow"), "{e}");
-    let e = with("thick: 7.0", "thick: 70.0");
+    let e = with("thick: 14.0", "thick: 70.0");
     assert!(e.contains("mixed_woods") && e.contains("trees.thick"), "{e}");
     let e = with("spacing: 3", "spacing: 0");
     assert!(e.contains("meadow") && e.contains("spacing"), "{e}");

@@ -2472,8 +2472,8 @@ pub(crate) mod tests {
                 }
             }
         }
-        // (Biomes: woods in clumps with glades and meadows between, not one thick forest: some
-        // 1600 trees on the default map.)
+        // (Biomes: woods in clumps with glades and meadows between, not one thick forest; the count is
+        // a floor well under what the shipped biomes grow.)
         assert!(trees_outside > 1200, "only {trees_outside} trees");
     }
 

@@ -29,7 +29,7 @@
             name: "Edge of the woods",
             area: (weight: 1.5, patch_m: 70.0, town_distance: (0.0, 40.0), grade: (0.0, 0.14)),
             trees: (
-                thick: 4.5, thin: 0.5, clump_m: 16.0, clumped: 0.35, soft: 0.35, spacing: 2,
+                thick: 6.5, thin: 1.0, clump_m: 16.0, clumped: 0.45, soft: 0.35, spacing: 2,
                 kinds: [
                     (kind: Broadleaf, weight: 3.0, height: (4.2, 6.8)),
                     (kind: Birch, weight: 1.5, height: (4.0, 6.5)),
@@ -37,17 +37,17 @@
                 ],
             ),
             bushes: (per_100m2: 2.2, in_clumps: 0.5, size: (0.7, 1.25)),
-            ground: (colours: ["#6e7345", "#687041", "#74764a"], patch_m: 6.0, bare_per_100m2: 0.8),
+            ground: (colours: ["#5f6e41", "#58693c", "#6e7345"], patch_m: 6.0, bare_per_100m2: 0.8),
             litter: (ferns: 5.0, rocks: 0.3, rock_size: (0.3, 0.55), stumps: 0.4, branches: 1.5, pebbles: 0.4),
-            grass: (open: Long, under_trees: Short, cover: 1.0, cover_under_trees: 0.8, dry: (0.2, 0.65), flowers: 0.9),
+            grass: (open: Long, under_trees: Short, cover: 1.0, cover_under_trees: 0.8, dry: (0.05, 0.4), flowers: 0.9),
         ),
         // The ordinary woods: broadleaves with some conifers, in thickets with glades between.
         (
             id: "mixed_woods",
             name: "Mixed woods",
-            area: (weight: 1.0, patch_m: 110.0, town_distance: (25.0, 100000.0), grade: (0.0, 0.16), in_town: false),
+            area: (weight: 1.2, patch_m: 110.0, town_distance: (25.0, 100000.0), grade: (0.0, 0.16), in_town: false),
             trees: (
-                thick: 7.0, thin: 1.0, clump_m: 24.0, clumped: 0.5, soft: 0.3, spacing: 2,
+                thick: 14.0, thin: 2.5, clump_m: 24.0, clumped: 0.6, soft: 0.3, spacing: 1,
                 kinds: [
                     (kind: Broadleaf, weight: 3.0, height: (4.6, 7.6)),
                     (kind: Birch, weight: 1.0, height: (4.4, 7.0)),
@@ -56,9 +56,9 @@
                 ],
             ),
             bushes: (per_100m2: 1.2, in_clumps: 0.6),
-            ground: (colours: ["#646b40", "#5d663c", "#6b6f44"], patch_m: 7.0, under_trees: ["#474c30", "#40452b"], needle_cover: 0.25, bare_per_100m2: 1.2),
+            ground: (colours: ["#596a3d", "#536539", "#627042"], patch_m: 7.0, under_trees: ["#474c30", "#40452b"], needle_cover: 0.25, bare_per_100m2: 1.2),
             litter: (ferns: 9.0, ferns_open: 0.6, rocks: 0.8, stumps: 0.9, branches: 3.0, pebbles: 0.5),
-            grass: (open: Long, under_trees: Thin, cover: 0.9, cover_under_trees: 0.55, dry: (0.15, 0.6), flowers: 0.35),
+            grass: (open: Long, under_trees: Thin, cover: 0.9, cover_under_trees: 0.55, dry: (0.05, 0.35), flowers: 0.35),
         ),
         // Conifers further out: tall, dark, a floor of needles, little under them.
         (
@@ -66,7 +66,7 @@
             name: "Pine wood",
             area: (weight: 0.95, patch_m: 140.0, town_distance: (70.0, 100000.0), in_town: false),
             trees: (
-                thick: 8.0, thin: 1.8, clump_m: 30.0, clumped: 0.6, soft: 0.4, spacing: 2,
+                thick: 16.0, thin: 4.0, clump_m: 30.0, clumped: 0.65, soft: 0.4, spacing: 1,
                 kinds: [
                     (kind: Pine, weight: 3.0, height: (6.5, 10.5)),
                     (kind: Spruce, weight: 2.0, height: (7.0, 11.5)),
@@ -75,9 +75,9 @@
                 slope_from: 0.14, slope_to: 0.24, slope_most: 0.7,
             ),
             bushes: (per_100m2: 0.3),
-            ground: (colours: ["#5b6040", "#565b3b"], patch_m: 8.0, under_trees: ["#454730", "#3e402b"], needles: Some("#574730"), needle_cover: 0.6, bare_per_100m2: 1.8),
+            ground: (colours: ["#54603f", "#4f5a3a"], patch_m: 8.0, under_trees: ["#454730", "#3e402b"], needles: Some("#574730"), needle_cover: 0.6, bare_per_100m2: 1.8),
             litter: (ferns: 4.0, rocks: 1.4, rock_size: (0.35, 0.8), stumps: 0.6, branches: 3.5, pebbles: 0.8),
-            grass: (open: Short, under_trees: Thin, cover: 0.7, cover_under_trees: 0.3, dry: (0.3, 0.7), flowers: 0.1),
+            grass: (open: Short, under_trees: Thin, cover: 0.7, cover_under_trees: 0.3, dry: (0.15, 0.5), flowers: 0.1),
         ),
         // Small bright stands of birch.
         (
@@ -85,22 +85,22 @@
             name: "Birch grove",
             area: (weight: 0.7, patch_m: 55.0, town_distance: (10.0, 100000.0), grade: (0.0, 0.12)),
             trees: (
-                thick: 9.0, thin: 1.2, clump_m: 13.0, clumped: 0.5, soft: 0.25, spacing: 1,
+                thick: 16.0, thin: 2.0, clump_m: 13.0, clumped: 0.55, soft: 0.25, spacing: 1,
                 kinds: [
                     (kind: Birch, weight: 5.0, height: (4.6, 7.8)),
                     (kind: Broadleaf, weight: 0.5, height: (4.2, 6.0)),
                 ],
             ),
             bushes: (per_100m2: 0.8),
-            ground: (colours: ["#6c7446", "#667042"], patch_m: 5.0, under_trees: ["#565e38", "#4f5834"], bare_per_100m2: 0.6),
+            ground: (colours: ["#627243", "#5b6c3e"], patch_m: 5.0, under_trees: ["#565e38", "#4f5834"], bare_per_100m2: 0.6),
             litter: (ferns: 12.0, ferns_open: 1.5, rocks: 0.3, stumps: 0.4, branches: 2.0, branch_size: (0.5, 1.1)),
-            grass: (open: Long, under_trees: Short, cover: 1.0, cover_under_trees: 0.8, dry: (0.1, 0.45), flowers: 0.7),
+            grass: (open: Long, under_trees: Short, cover: 1.0, cover_under_trees: 0.8, dry: (0.0, 0.3), flowers: 0.7),
         ),
         // Clearings: long grass and wildflowers, a lone tree or a knot of bushes.
         (
             id: "meadow",
             name: "Meadow",
-            area: (weight: 0.8, patch_m: 75.0, grade: (0.0, 0.09)),
+            area: (weight: 0.55, patch_m: 75.0, grade: (0.0, 0.09)),
             trees: (
                 thick: 1.4, thin: 0.04, clump_m: 11.0, clumped: 0.12, soft: 0.2, spacing: 3,
                 kinds: [
@@ -109,9 +109,9 @@
                 ],
             ),
             bushes: (per_100m2: 0.5, in_clumps: 8.0, size: (0.8, 1.4)),
-            ground: (colours: ["#737647", "#6e7345", "#7b7a4c"], patch_m: 9.0, bare_per_100m2: 0.4),
+            ground: (colours: ["#697443", "#627040", "#737848"], patch_m: 9.0, bare_per_100m2: 0.4),
             litter: (rocks: 0.25, rock_size: (0.3, 0.6), branches: 0.2, pebbles: 0.3),
-            grass: (open: Long, under_trees: Long, cover: 1.0, cover_under_trees: 1.0, dry: (0.25, 0.8), flowers: 2.4),
+            grass: (open: Long, under_trees: Long, cover: 1.0, cover_under_trees: 1.0, dry: (0.15, 0.55), flowers: 2.4),
         ),
         // Old, close woods deep in the forest: big trees, dark floor, ferns and deadwood.
         (
@@ -119,7 +119,7 @@
             name: "Deep woods",
             area: (weight: 0.7, patch_m: 90.0, town_distance: (90.0, 100000.0), grade: (0.0, 0.14), in_town: false),
             trees: (
-                thick: 11.0, thin: 3.0, clump_m: 34.0, clumped: 0.65, soft: 0.5, spacing: 1,
+                thick: 20.0, thin: 7.0, clump_m: 34.0, clumped: 0.7, soft: 0.5, spacing: 1,
                 kinds: [
                     (kind: Broadleaf, weight: 3.0, height: (5.5, 9.0)),
                     (kind: Spruce, weight: 1.2, height: (7.5, 12.0)),
@@ -127,9 +127,9 @@
                 ],
             ),
             bushes: (per_100m2: 0.6),
-            ground: (colours: ["#565c39", "#50573a"], patch_m: 6.0, under_trees: ["#40452b", "#393e27"], needle_cover: 0.3, bare_per_100m2: 2.0),
+            ground: (colours: ["#4f5c38", "#4a5636"], patch_m: 6.0, under_trees: ["#40452b", "#393e27"], needle_cover: 0.3, bare_per_100m2: 2.0),
             litter: (ferns: 14.0, ferns_open: 2.0, rocks: 1.0, stumps: 1.6, branches: 5.0, branch_size: (0.8, 2.0), pebbles: 0.3),
-            grass: (open: Short, under_trees: Thin, cover: 0.6, cover_under_trees: 0.3, dry: (0.1, 0.45), flowers: 0.15),
+            grass: (open: Short, under_trees: Thin, cover: 0.6, cover_under_trees: 0.3, dry: (0.05, 0.3), flowers: 0.15),
         ),
         // The hills' steep faces: thin dry grass, bare earth, rocks, a few stunted conifers.
         (
@@ -137,7 +137,7 @@
             name: "Rocky hillside",
             area: (weight: 3.0, patch_m: 60.0, grade: (0.13, 10.0), in_town: false),
             trees: (
-                thick: 3.0, thin: 0.3, clump_m: 14.0, clumped: 0.3, soft: 0.3, spacing: 2,
+                thick: 4.0, thin: 0.6, clump_m: 14.0, clumped: 0.3, soft: 0.3, spacing: 2,
                 kinds: [
                     (kind: Pine, weight: 3.0, height: (4.0, 7.0)),
                     (kind: Spruce, weight: 1.0, height: (4.5, 7.5)),
@@ -146,9 +146,9 @@
                 slope_from: 0.2, slope_to: 0.3, slope_most: 0.6,
             ),
             bushes: (per_100m2: 1.0, size: (0.5, 0.9)),
-            ground: (colours: ["#73704a", "#7a714c", "#6c6c45"], patch_m: 4.0, under_trees: ["#5a5b3b", "#525435"], bare_per_100m2: 5.0),
-            litter: (ferns: 1.0, rocks: 6.0, rock_size: (0.3, 0.9), rock_groups: 0.6, branches: 0.8, pebbles: 5.0),
-            grass: (open: Thin, under_trees: Thin, cover: 0.6, cover_under_trees: 0.4, dry: (0.45, 0.9), flowers: 0.1),
+            ground: (colours: ["#6b6e47", "#73704a", "#646a43"], patch_m: 4.0, under_trees: ["#5a5b3b", "#525435"], bare_per_100m2: 5.0),
+            litter: (ferns: 1.0, rocks: 10.0, rock_size: (0.35, 1.15), rock_groups: 0.7, branches: 0.8, pebbles: 5.0),
+            grass: (open: Thin, under_trees: Thin, cover: 0.6, cover_under_trees: 0.4, dry: (0.35, 0.75), flowers: 0.1),
         ),
     ],
 )
