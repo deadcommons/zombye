@@ -420,7 +420,8 @@ mod tests {
         assert!(w.power().grid_on());
         w.skip_time(1.5);
         assert!(!w.power().grid_on(), "moved");
-        // Saved and loaded: what has happened stays.
+        // Saved and loaded: what has happened stays. (The dev flags aren't saved, and are in the hash while on.)
+        w.set_dev(id, Some(false), Some(false));
         let content = w.config.clone();
         let back = World::load(&w.save(), &content).unwrap();
         assert_eq!(back.state_hash(), w.state_hash());
