@@ -69,8 +69,12 @@ pub enum Switch {
     TiltShift,
     Vignette,
     ContactShadows,
+    Occlusion,
     SoftShadows,
     Haze,
+    Sky,
+    SkyLight,
+    LightShafts,
     GroundDetail,
     Fullscreen,
     Vsync,
@@ -133,7 +137,9 @@ pub fn change(s: &mut ClientSettings, c: Change) {
                 Tab::Graphics => (s.graphics, s.fullscreen, s.vsync) = (d.graphics, d.fullscreen, d.vsync),
                 Tab::Effects => {
                     let g = &mut s.graphics;
-                    (g.bloom, g.grain, g.tilt_shift, g.vignette, g.haze) = (d.graphics.bloom, d.graphics.grain, d.graphics.tilt_shift, d.graphics.vignette, d.graphics.haze);
+                    let dg = &d.graphics;
+                    (g.bloom, g.grain, g.tilt_shift, g.vignette, g.haze) = (dg.bloom, dg.grain, dg.tilt_shift, dg.vignette, dg.haze);
+                    (g.sky, g.sky_light, g.light_shafts, g.ground_detail) = (dg.sky, dg.sky_light, dg.light_shafts, dg.ground_detail);
                     s.old_look = d.old_look;
                 }
                 Tab::Audio => (s.volume, s.music, s.muted) = (d.volume, d.music, d.muted),
@@ -155,8 +161,12 @@ fn switch_of(s: &mut ClientSettings, switch: Switch) -> &mut bool {
         Switch::TiltShift => &mut s.graphics.tilt_shift,
         Switch::Vignette => &mut s.graphics.vignette,
         Switch::ContactShadows => &mut s.graphics.contact_shadows,
+        Switch::Occlusion => &mut s.graphics.occlusion,
         Switch::SoftShadows => &mut s.graphics.soft_shadows,
         Switch::Haze => &mut s.graphics.haze,
+        Switch::Sky => &mut s.graphics.sky,
+        Switch::SkyLight => &mut s.graphics.sky_light,
+        Switch::LightShafts => &mut s.graphics.light_shafts,
         Switch::GroundDetail => &mut s.graphics.ground_detail,
         Switch::Fullscreen => &mut s.fullscreen,
         Switch::Vsync => &mut s.vsync,
@@ -222,7 +232,7 @@ pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
             },
             switch("Soft shadows", "Shadow edges that soften away from what casts them. Costs frame rate.", s, Switch::SoftShadows),
             switch("Contact shadows", "A soft dark line where walls meet the ground. Changes on the next start.", s, Switch::ContactShadows),
-            switch("Ground detail", "Patchy colour on the ground. Changes on the next start.", s, Switch::GroundDetail),
+            switch("Ambient occlusion", "Soft shade in corners, under cars and where things meet the ground. Turns anti-aliasing to SMAA.", s, Switch::Occlusion),
         ],
         Tab::Effects => vec![
             Row {
@@ -239,6 +249,10 @@ pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
             switch("Tilt-shift", "Soft focus toward the top and bottom of the screen.", s, Switch::TiltShift),
             switch("Vignette", "Darkened corners.", s, Switch::Vignette),
             switch("Haze", "A thin haze over the distance, thick and warm when the sun is low.", s, Switch::Haze),
+            switch("Sky", "In first person, a sky that follows the hour, with the sun, moon and stars.", s, Switch::Sky),
+            switch("Sky light", "The shade lit by the sky: bluer facing up, warmer facing down. Changes on the next start.", s, Switch::SkyLight),
+            switch("Light shafts", "Sunlight scattering in the air. Experimental, and costs a lot of frame rate.", s, Switch::LightShafts),
+            switch("Ground detail", "Patchy colour on the ground. Changes on the next start.", s, Switch::GroundDetail),
         ],
         Tab::Audio => vec![
             switch("Mute", "All sound off. Ctrl+M does the same while you play.", s, Switch::Muted),
@@ -633,7 +647,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
                 let note = match tab {
                     Tab::Graphics if in_game => "Changes show at once round this screen.",
                     Tab::Graphics => "Auto measures the first seconds of a game and picks what this machine holds.",
-                    Tab::Effects => "A look, not a cost: no preset turns the old look on or off.",
+                    Tab::Effects => "The look over the picture. No preset turns the old look on or off.",
                     Tab::Audio => "Flags on the command line win for their session.",
                     Tab::Controls if ui.capture.is_some() => "Press the new key (with Shift, Ctrl or Alt if you like). Esc keeps the old one.",
                     Tab::Controls => "Click a key to change it. Kept in your settings; the game's own keys are in keys.ron.",
@@ -795,7 +809,7 @@ mod tests {
         // From Low, they are a change by hand.
         change(&mut s, Change::Preset(Preset::Low));
         change(&mut s, Change::Defaults(Tab::Effects));
-        assert_eq!(s.graphics, Graphics { preset: Preset::Custom, bloom: true, grain: true, tilt_shift: true, vignette: true, haze: true, ..Graphics::low() });
+        assert_eq!(s.graphics, Graphics { preset: Preset::Custom, bloom: true, grain: true, tilt_shift: true, vignette: true, haze: true, sky: true, ground_detail: true, ..Graphics::low() });
     }
 
     #[test]

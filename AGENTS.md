@@ -313,8 +313,8 @@ chat line or search being typed, a right-click menu, the graphics panel, the map
 game's keys and mouse buttons are held back (`pause_menu::keys`, in `PreUpdate` before the other key handlers) and
 the first-person pointer is free. Leaving saves as quitting does. `--pause` starts with it up (`--render-to shot.png
 --hud --pause`). **The settings screen** (from either menu; `--settings graphics|effects|audio|controls|game`) has five tabs down its left side:
-Graphics (the preset, and what costs frame rate, each by itself: 3D resolution, vegetation, shadow detail, anti-aliasing, soft and contact shadows, ground detail,
-plus fullscreen and vsync; fullscreen is also Alt+Enter or F11, see The window), Effects (the look over the picture: the old look, bloom, film grain, tilt-shift, vignette, haze; a tab holds at most ten rows, so the screen fits 1280 x 720), Audio (master and music volume, mute), Controls (every key; click one, press the new one, Esc keeps the old; a clash with another action is marked; the defaults button puts back `keys.ron`'s) and Game (UI scale, the view a game starts in: from above or first person, zombie silhouettes,
+Graphics (the preset, and what costs frame rate, each by itself: 3D resolution, vegetation, shadow detail, anti-aliasing, soft and contact shadows, ambient occlusion,
+plus fullscreen and vsync; fullscreen is also Alt+Enter or F11, see The window), Effects (the look over the picture: the old look, bloom, film grain, tilt-shift, vignette, haze, sky, sky light, light shafts, ground detail; a tab holds at most ten rows, so the screen fits 1280 x 720), Audio (master and music volume, mute), Controls (every key; click one, press the new one, Esc keeps the old; a clash with another action is marked; the defaults button puts back `keys.ron`'s) and Game (UI scale, the view a game starts in: from above or first person, zombie silhouettes,
 opening hints, help text). **Help text (`help_text.rs`, `ClientSettings::help_text`; `--help-text full|short|off` for a session, not saved):** how much the UI explains. Full (as shipped) is everything; Short drops the explaining sentences (`help_text::explains()`: a skill card's next level and how its XP is earned, what a status does to you on the Health screen; the Make list says what a recipe is missing by name alone, `crafting::missing_brief`: "needs jeans, scissors") and keeps names, numbers and what is needed; Off also drops the reminders of what keys and clicks do (`help_text::keys()`: every footer's key hints, which `theme::flat::hint` then doesn't draw, the Make list's line, the first night's hint line). What a thing needs and why something was refused are never help text. **New cards and panels ask `help_text::explains()` before drawing a line that explains, and put `help_text::level()` in what they compare to rebuild.** Every change is one `settings_ui::Change` applied by the pure `settings_ui::change` to
 `ClientSettings` through `SettingsStore`, so it is saved at once, and `apply_live` hands on what changed to the
 running game (graphics, volumes, UI scale, the view, the window); contact shadows and ground detail still take the
@@ -2228,7 +2228,7 @@ Things that happen to the whole town on a day of their own: the water going off,
   by the fixed view's linear depth); the sun's shadows use three cascades out to 90 m (`daynight::shoulder_cascade`).
   `world_actions::pick` looks at the edges round the player, not round where the ray comes down. Back in the fixed
   view the camera eases to the nearest of its four angles. The clear colour is the sky's by the hour
-  (`daynight::sky_colour`) and a linear haze (45 to 92 m) hides where the loaded chunks end. Not yet: a drawn sky,
+  (`daynight::sky_colour`) and a linear haze (45 to 92 m) hides where the loaded chunks end; with "Sky" on, a drawn sky behind it (see The sky and its light under Look and feel). Not yet:
   his own hands and weapon in view, a pad's right stick; checked in offscreen pictures, not yet played. Tests:
   `camera::tests` (`first_person_is_at_the_eyes_and_turns_with_the_mouse`, `first_person_aims_ahead`).
 - **Turning the camera** (`camera.rs`): always on. `,` turns it a quarter turn one way and `.` the other, between the
@@ -2324,6 +2324,19 @@ and mood, and docs/art-direction.md). All of it is client only: nothing here is 
   skips it. The crowd and the survivors aren't hazed (their own shaders). **Unseen ground by day** keeps most of its
   colour, a little dimmer and warmer, instead of going grey (`fog::FogLook::unseen_tint`, `unseen_colour`, from
   `assets/data/fog.ron`, in `WorldParams::fog_tint` and `lights.y`); at night it is dark blue, shapes still showing.
+- **The sky and its light** (`sky.rs`, `assets/shaders/sky.wesl`, `skylight.rs`, `shafts.rs`; light.ron's `sky`,
+  `sky_light` and `shafts`, each field commented there). **Sky** (`Graphics::sky`, Medium up, `--no-post sky`): the
+  first-person view draws a sky behind everything, a gradient from the horizon to the zenith by the hour, a glow round
+  the sun or moon worked out as the haze's is (so the far edge of the world melts into it), their discs and a few
+  hundred stars at night; the view from above never sees it (byte-identical pictures). About 1 ms in first person.
+  **Sky light** (`Graphics::sky_light`, Ultra only, `--no-post skylight`): `share` of the fill comes from around
+  instead of evenly, through an environment light whose diffuse cube is one texel a face (`skylight::faces`: the sky
+  above, the horizon round the sides brighter toward the sun, the ground's bounce below, together as bright as the
+  fill), so shade facing up turns sky-blue and rooms at dusk go warm. Taken on at start-up only (adding the
+  environment light builds every shader again). 1.5-3 ms. **Light shafts** (`Graphics::light_shafts`, in no preset,
+  `--no-post shafts`): the engine's volumetric fog in a box round the focus, lit by the sun's shadow map, taken on and
+  off live, by day only. About 8 ms and so far an even warm veil rather than beams: a switch to try things with.
+  Costs measured on an M1 Max, 1920 x 1080, 2,000 zombies, `--frame-bench 120`; about 1 ms between runs is noise.
 - **The film pass** (`film.rs`, `assets/shaders/film.wesl`): one fullscreen pass after the tone map (Bevy's
   `FullscreenMaterial`): tilt-shift (the top and bottom of the screen soften, up to 2.6 px at 1080p, 13 taps) and grain
   (24 a second, by visual time, so it stands still in an offscreen render; about half strength at night). With both
@@ -2352,8 +2365,9 @@ and mood, and docs/art-direction.md). All of it is client only: nothing here is 
   frame, and nothing of it in the sim or a save. A data folder without the file gets the shipped one.
 - **Contact shadows** (`world_render::contact_shadows`): a strip of black fading to clear, 0.6 m wide, on the ground
   and floors along both faces of every ground-floor wall and window: one small blended, unlit mesh a building (16 to
-  about 1,000 triangles), spawned and despawned with it. Trees and bushes get the same: a soft blot round each foot, darkest at the trunk, out to two thirds of the crown's radius plus half a metre, laid over the hills (`landscape::foot_shade`, one mesh a chunk, with the setting). They stand in for ambient occlusion: the screen-space kind
-  needs MSAA off, and the window glass is alpha to coverage.
+  about 1,000 triangles), spawned and despawned with it. Trees and bushes get the same: a soft blot round each foot, darkest at the trunk, out to two thirds of the crown's radius plus half a metre, laid over the hills (`landscape::foot_shade`, one mesh a chunk, with the setting). With "Ambient occlusion" on (High and Ultra; `Graphics::occlusion`, `--no-post occlusion`) screen-space occlusion
+  (`ssao_ortho.wesl`, the engine's own with the orthographic camera handled) darkens corners and where things meet as
+  well; it needs MSAA off, so the camera takes SMAA instead, which costs about what the MSAA did (measured: no cost).
 - **Vegetation and litter, a mesh a chunk** (`vegetation.rs`, `assets/shaders/vegetation.wesl`): eight kinds
   (`VegKind`: long grass, lawn grass, thin grass, a weed, red and white flowers, loose paper, small stones), four
   mesh variants each, built in code (12 to 91 triangles; blades are single triangles, dark at the root). **Where**
