@@ -33,6 +33,8 @@ Work is tracked in GitHub issues on two boards, nowhere else (not Linear, not li
   a comment saying where it got to.
 - **New ideas** from the project chat are triaged into issues the same day: the game's in
   deadcommons/zombye, the business's in zombye-art with the `business` label.
+- **Setting Status:** on the build machine, `tools/github/board.sh status REPO N STATUS`
+  (tools/github/README.md); from a cloud session, reach the build machine first.
 - **On the remote machines** (docs/remote-dev.md) the agent commits with `Refs #N` and opens a draft
   PR saying `Closes #N`; the owner approves the review pictures, and merging the PR closes the issue.
 - deadcommons/zombye is public: business plans, keys, addresses and private repo contents never go in
