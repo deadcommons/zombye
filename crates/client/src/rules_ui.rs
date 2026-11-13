@@ -126,6 +126,7 @@ mod tests {
             spread_spawns: true,
             start_kit: vec![("Bottle of water".into(), 1), ("Rag".into(), 2)],
             map_m: [480, 480],
+            difficulty: String::new(),
             zombies: 2950,
         };
         let (title, sub, lines) = rows("Dead Commons", "play.example:7777", &rules);

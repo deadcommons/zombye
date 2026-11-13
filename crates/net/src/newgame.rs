@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use zombye_sim::difficulty::{DifficultyData, Setup};
+use zombye_sim::difficulty::{DifficultyData, SandboxOptions, Setup};
 use zombye_sim::origin::{Choice, OriginData, Start};
 use zombye_sim::{ItemDef, WorldConfig};
 
@@ -30,12 +30,14 @@ pub struct NewGame {
 pub struct Rules {
     pub origins: OriginData,
     pub difficulty: DifficultyData,
+    /// What the Sandbox page offers by name.
+    pub sandbox: SandboxOptions,
 }
 
 impl Rules {
     /// From `<data>`, checked against `items` (the game's, with its mods').
     pub fn load(data_dir: &Path, items: &[ItemDef]) -> Result<Self, String> {
-        Ok(Self { origins: content::load_origins(data_dir, items)?, difficulty: content::load_difficulty(data_dir)? })
+        Ok(Self { origins: content::load_origins(data_dir, items)?, difficulty: content::load_difficulty(data_dir)?, sandbox: content::load_sandbox(data_dir)? })
     }
 
     /// Put `game`'s world options onto a fresh `config`, and work out its survivor. The error is
@@ -68,11 +70,11 @@ mod tests {
         let data = content::default_data_dir();
         let mut config = content::load_config(&data, 3).unwrap();
         let rules = Rules::load(&data, &config.items).unwrap();
-        assert!(rules.origins.backgrounds.len() >= 8 && rules.difficulty.presets.len() >= 3);
+        assert!(rules.origins.backgrounds.len() >= 8 && rules.difficulty.presets.len() >= 3 && !rules.sandbox.groups.is_empty());
         let hard = rules.difficulty.presets.last().unwrap().id.clone();
         let game = NewGame {
             survivor: Some(Choice { background: "night_nurse".into(), strengths: vec!["strong_back".into()], flaws: vec!["big_appetite".into()], ..rules.origins.default_choice() }),
-            world: Setup { difficulty: hard, ..Default::default() },
+            world: Setup { difficulty: hard, values: [("zombie.memory_secs".to_string(), "40".to_string())].into(), ..Default::default() },
         };
         let dir = std::env::temp_dir().join(format!("zombye-newgame-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -84,6 +86,7 @@ mod tests {
         let plain = config.population.scale;
         let start = rules.begin(&game, &mut config).unwrap().expect("a survivor");
         assert!(config.population.scale > plain);
+        assert_eq!(config.zombie.memory_secs, 40.0);
         let mut server = crate::LocalServer::new(config);
         let id = server.join(None);
         assert!(server.world.begin_as(id, &start));
