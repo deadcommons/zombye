@@ -131,6 +131,7 @@ const TOOLS: [(&str, &str, Kind); 70] = [
     ("interact", "Open or close a door or window", Kind::Play),
     ("smash_window", "Smash a window", Kind::Play),
     ("light", "Switch the light of the room you're in", Kind::Play),
+    ("flashlight", "Switch the light in your hands on or off", Kind::Play),
     ("blind", "Fit, roll or take down a blind", Kind::Play),
     ("builds", "The build menu's catalog", Kind::Look),
     ("build", "Board up a window or door", Kind::Play),
@@ -1167,6 +1168,13 @@ fn tool_defs() -> Value {
                 generators and solar panels), off puts it out. With no power the switch clicks and does nothing. At night zombies (and other survivors) see you in a lit room \
                 as if by day, through its windows: switch it off to hide. Give on (true/false) to set it; without, it flips. \
                 The reply says the room, whether it is lit and whether it has power.",
+            "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}, "on": {"type": "boolean"}}}
+        },
+        {
+            "name": "flashlight",
+            "description": "A player switches the light it holds (a flashlight or candle in either hand) on or off, as F does in \
+                the game. Off, it still holds it but nobody sees its beam: go dark to hide at night. Give on (true/false) to set it; \
+                without, it flips. A light taken into the hand starts on.",
             "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}, "on": {"type": "boolean"}}}
         },
         {
@@ -2278,6 +2286,17 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 if lit { "lit" } else { "dark" },
                 if powered { "the building has power" } else { "no power" }
             ))
+        }
+        "flashlight" => {
+            let id = player_id();
+            world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            apply_intent(world, &Intent::Flashlight { player: id, on: args.get("on").and_then(Value::as_bool) });
+            let notes = take_notes(world, id);
+            if let Some(why) = notes.strip_prefix("refused: ") {
+                return Err(why.to_string());
+            }
+            let off = world.player(id).is_some_and(|p| p.light_off);
+            Ok(if notes.is_empty() { format!("already {}", if off { "off" } else { "on" }) } else { notes })
         }
         "grid" => {
             if let Some(on) = args.get("on").and_then(Value::as_bool) {
