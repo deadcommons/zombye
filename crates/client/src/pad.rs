@@ -238,10 +238,14 @@ pub enum Only {
     ZoomOut,
     FirstPerson,
     Pause,
+    /// The item wheel, held (`wheel.rs`).
+    ItemWheel,
+    /// The make wheel, held.
+    MakeWheel,
 }
 
 impl Only {
-    pub const ALL: [Only; 8] = [Only::Attack, Only::Aim, Only::TurnLeft, Only::TurnRight, Only::ZoomIn, Only::ZoomOut, Only::FirstPerson, Only::Pause];
+    pub const ALL: [Only; 10] = [Only::Attack, Only::Aim, Only::TurnLeft, Only::TurnRight, Only::ZoomIn, Only::ZoomOut, Only::FirstPerson, Only::Pause, Only::ItemWheel, Only::MakeWheel];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -253,6 +257,8 @@ impl Only {
             Only::ZoomOut => "zoom_out",
             Only::FirstPerson => "first_person",
             Only::Pause => "pause",
+            Only::ItemWheel => "item_wheel",
+            Only::MakeWheel => "make_wheel",
         }
     }
 }
@@ -345,6 +351,10 @@ pub struct PadFile {
     pub first_person: Option<Vec<String>>,
     /// The pause menu (Esc).
     pub pause: Option<Vec<String>>,
+    /// The item wheel, held: the stick picks, letting go uses it.
+    pub item_wheel: Option<Vec<String>>,
+    /// The make wheel, held: what you can make here; letting go makes it.
+    pub make_wheel: Option<Vec<String>>,
 }
 
 impl PadFile {
@@ -382,6 +392,8 @@ impl PadFile {
             (PadAction::Only(Only::ZoomOut), self.zoom_out),
             (PadAction::Only(Only::FirstPerson), self.first_person),
             (PadAction::Only(Only::Pause), self.pause),
+            (PadAction::Only(Only::ItemWheel), self.item_wheel),
+            (PadAction::Only(Only::MakeWheel), self.make_wheel),
         ];
         all.into_iter().filter_map(|(a, b)| b.map(|b| (a.id().to_string(), b))).collect()
     }
@@ -606,6 +618,16 @@ pub struct Pad {
     pub run: bool,
     /// Zoom, -1 out to 1 in, held.
     pub zoom: f32,
+    /// The wheels' buttons (`wheel.rs`): started this frame, and held.
+    pub items_start: bool,
+    pub items_held: bool,
+    pub make_start: bool,
+    pub make_held: bool,
+    /// While a wheel is up: the stick pushed further (it picks), A pressed, B pressed. The
+    /// sticks then walk and look nowhere.
+    pub select: Vec2,
+    pub confirm: bool,
+    pub cancel: bool,
 }
 
 /// Keys the pad pressed for the game this frame, let go of next frame.
@@ -702,6 +724,7 @@ pub(crate) struct Screens<'w> {
     item_menu: Option<Res<'w, crate::inventory_ui::ItemMenu>>,
     chat: Option<Res<'w, crate::chat::ChatEntry>>,
     find: Option<Res<'w, crate::inventory_ui::Find>>,
+    wheel: Option<Res<'w, crate::wheel::Wheel>>,
 }
 
 impl Screens<'_> {
@@ -718,6 +741,11 @@ impl Screens<'_> {
     /// The pause menu or the settings: they take the pad whole (Menu and B are Esc there).
     fn menus(&self) -> bool {
         self.pause.as_ref().is_some_and(|p| p.open) || self.settings.as_ref().is_some_and(|s| s.open)
+    }
+
+    /// A wheel is up: the sticks pick and A and B are its own.
+    fn wheel(&self) -> bool {
+        self.wheel.as_ref().is_some_and(|w| w.is_up())
     }
 
     /// A line being typed: the pad does nothing meanwhile.
@@ -815,6 +843,22 @@ fn read_pad(
                 held.tapped.extend(taps);
             }
         }
+    }
+    out.items_start = started.contains(&PadAction::Only(Only::ItemWheel));
+    out.items_held = holding.contains(&PadAction::Only(Only::ItemWheel));
+    out.make_start = started.contains(&PadAction::Only(Only::MakeWheel));
+    out.make_held = holding.contains(&PadAction::Only(Only::MakeWheel));
+    // A wheel up: the sticks pick (the one pushed further), A and B are its own, nothing else.
+    if screens.wheel() {
+        let (l, r) = (dead_zone(g.left_stick()), dead_zone(g.right_stick()));
+        out.select = if r.length() > l.length() { r } else { l };
+        out.confirm = g.just_pressed(Button::A.gamepad());
+        out.cancel = g.just_pressed(Button::B.gamepad()) || started.contains(&PadAction::Only(Only::Pause));
+        *KEYS.write().unwrap() = KeyFrame::default();
+        if *pad != out {
+            *pad = out;
+        }
+        return;
     }
     // B on a screen, and Menu anywhere, are Esc; in the pause menu and the settings the pad does
     // nothing else (their own keys go by focus, a later stage).

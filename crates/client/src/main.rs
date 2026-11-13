@@ -157,6 +157,8 @@ mod survivor;
 mod survivor_model;
 mod theme;
 mod ui_scale;
+mod wheel;
+mod wheel_ui;
 mod world_actions;
 mod world_render;
 mod zombie_render;
@@ -369,6 +371,9 @@ pub struct Options {
     /// Keyboard and mouse, the controller or auto, for this session, not saved (`--input
     /// auto|keyboard|controller`; without it the settings file's). See `pad.rs`.
     pub input: Option<pad::InputSetting>,
+    /// A controller wheel up from the start, for pictures (`--wheel items|make[:N]`, the Nth
+    /// choice picked). See `wheel.rs`.
+    pub wheel: Option<String>,
     /// The old look for this session, not saved (`--old-look off|subtle|strong`; without it the
     /// settings file's, else off). See `film.rs`.
     pub old_look: Option<film::OldLook>,
@@ -653,6 +658,7 @@ impl Options {
             settings: value("--settings"),
             help_text: value("--help-text").and_then(|v| help_text::HelpText::parse(&v)),
             input: value("--input").and_then(|v| pad::InputSetting::parse(&v)),
+            wheel: value("--wheel"),
             old_look: value("--old-look").and_then(|v| film::OldLook::parse(&v)),
             ui_scale: value("--ui-scale").and_then(|v| ui_scale::parse_pct(&v)),
             hotbar: value("--hotbar"),
@@ -844,7 +850,7 @@ fn main() {
             world_render::WorldRenderPlugin,
             (daynight::DayNightPlugin, lights::LightsPlugin, sky::SkyPlugin, skylight::SkyLightPlugin, shafts::ShaftsPlugin),
             dev_time::DevTimePlugin,
-            (player::PlayerPlugin, interact::InteractPlugin, pad::PadPlugin),
+            (player::PlayerPlugin, interact::InteractPlugin, pad::PadPlugin, wheel::WheelPlugin, wheel_ui::WheelUiPlugin),
             camera::IsoCameraPlugin,
             zombie_render::ZombieRenderPlugin,
             (items_render::ItemsRenderPlugin, vehicles_render::VehiclesRenderPlugin),

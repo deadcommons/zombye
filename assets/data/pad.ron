@@ -12,8 +12,8 @@
 //
 // An action left out has no button; the actions are the same as in keys.ron, plus the ones only
 // a controller needs (attack, aim, turn_left, turn_right, zoom_in, zoom_out, first_person,
-// pause). Players change these on the settings screen's Controls tab; what they pick is kept in
-// their settings.ron and goes over this file.
+// pause, item_wheel, make_wheel). A player's own picks are kept in their settings.ron and go over
+// this file.
 (
     // Moving
     run: ["L3"],
@@ -36,12 +36,17 @@
     // At the wheel (RT drives, LT brakes and reverses, B is the handbrake, A gets out).
     horn: ["X"],
 
+    // The wheels: hold, point a stick at one, let go to use or make it (A held on a thing is the
+    // wheel of what you can do with it: A takes the one picked, B goes back).
+    item_wheel: ["Hold LB"],
+    make_wheel: ["Hold RB"],
+
     // Screens
     inventory: ["Y"],
     map: ["View"],
     pause: ["Menu"],
 
-    // The camera
+    // The camera (LB and RB tapped; held, they are the wheels)
     turn_left: ["LB"],
     turn_right: ["RB"],
     zoom_in: ["Right"],
