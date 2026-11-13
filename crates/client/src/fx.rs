@@ -104,6 +104,8 @@ fn pick_layer(overlapping: impl Iterator<Item = u8>) -> u8 {
 struct Particle {
     vel: Vec3,
     life: f32,
+    /// The height of the ground where it burst from (hills, `zombye_sim::terrain`): it's gone there.
+    floor: f32,
 }
 
 /// A bullet's streak or a muzzle flash (#72): the same cube as the blood, in the one bright
@@ -214,6 +216,7 @@ fn spawn_fx(
     mut decals: ResMut<Decals>,
     mut shake: ResMut<CameraShake>,
     mut flash: ResMut<HurtFlash>,
+    map: Option<Res<crate::server_link::ClientMap>>,
     particles: Query<(), With<Particle>>,
     tracers: Query<(), With<Tracer>>,
     mut seed: Local<u32>,
@@ -228,6 +231,7 @@ fn spawn_fx(
     let mut streaks = tracers.iter().count();
     for e in &events.0 {
         let dir = Vec3::new(e.dir.x, 0.0, e.dir.y);
+        let ground = map.as_ref().map_or(0.0, |m| m.0.ground(e.pos));
         // (particles, height they burst from, splats, splat size)
         let (count, height, splats, size) = match e.kind {
             CombatEventKind::ZombieHit => (if e.crit { 12 } else { 7 }, 1.35, 1, 1.0),
@@ -241,7 +245,7 @@ fn spawn_fx(
                 if e.crit && me.as_ref().is_some_and(|m| m.id == e.player) {
                     shake.trauma = (shake.trauma + 0.3).min(0.6);
                 }
-                let origin = Vec3::new(e.pos.x, 1.0, e.pos.y);
+                let origin = Vec3::new(e.pos.x, 1.0 + ground, e.pos.y);
                 for _ in 0..if e.crit { 14 } else { 6 } {
                     if live >= MAX_PARTICLES {
                         break;
@@ -251,7 +255,7 @@ fn spawn_fx(
                     let vel = -dir * rng.range(0.8, 2.2) + spread + Vec3::Y * rng.range(0.6, 2.0);
                     let s = rng.range(0.03, 0.06);
                     commands.spawn((
-                        Particle { vel, life: rng.range(0.4, 0.8) },
+                        Particle { vel, life: rng.range(0.4, 0.8), floor: ground },
                         Mesh3d(assets.cube.clone()),
                         MeshMaterial3d(assets.chips.clone()),
                         Transform::from_translation(origin + Vec3::Y * rng.range(-0.15, 0.15)).with_scale(Vec3::new(s * 1.6, s * 0.5, s)),
@@ -269,7 +273,7 @@ fn spawn_fx(
                 }
                 let muzzle = e.pos - e.dir * e.damage;
                 // The gun is held out in front of the chest.
-                let from = Vec3::new(muzzle.x, MUZZLE_Y, muzzle.y) + dir * 0.7;
+                let from = Vec3::new(muzzle.x, MUZZLE_Y + map.as_ref().map_or(0.0, |m| m.0.ground(muzzle)), muzzle.y) + dir * 0.7;
                 let length = (e.damage - 0.7).max(0.3);
                 if streaks + 2 <= MAX_TRACERS {
                     streaks += 2;
@@ -296,7 +300,7 @@ fn spawn_fx(
             shake.trauma = (shake.trauma + 0.45).min(1.0);
             flash.0 = flash.0.max(0.8);
         }
-        let origin = Vec3::new(e.pos.x, height, e.pos.y) - dir * 0.15;
+        let origin = Vec3::new(e.pos.x, height + ground, e.pos.y) - dir * 0.15;
         for _ in 0..count {
             if live >= MAX_PARTICLES {
                 break;
@@ -306,7 +310,7 @@ fn spawn_fx(
             let vel = dir * rng.range(1.0, 3.2) + spread + Vec3::Y * rng.range(0.8, 2.6);
             let s = rng.range(0.035, 0.075);
             commands.spawn((
-                Particle { vel, life: rng.range(0.5, 0.9) },
+                Particle { vel, life: rng.range(0.5, 0.9), floor: ground },
                 Mesh3d(assets.cube.clone()),
                 MeshMaterial3d(assets.blood.clone()),
                 Transform::from_translation(origin + Vec3::Y * rng.range(-0.1, 0.1)).with_scale(Vec3::splat(s)),
@@ -327,7 +331,7 @@ fn spawn_fx(
             // A height of its own among the splats it overlaps, so none of them flicker.
             let reach = SPLAT_REACH * scale * stretch.max(1.0);
             let layer = pick_layer(decals.0.iter().filter(|(_, c, r, _)| c.distance(at) < r + reach).map(|d| d.3));
-            let y = SPLAT_BASE_Y + SPLAT_LAYER_STEP * layer as f32;
+            let y = SPLAT_BASE_Y + SPLAT_LAYER_STEP * layer as f32 + map.as_ref().map_or(0.0, |m| m.0.ground(at));
             let shape = assets.splats[(rng.next() * SPLAT_SHAPES as f32) as usize % assets.splats.len()].clone();
             let entity = commands
                 .spawn((
@@ -370,7 +374,7 @@ fn move_particles(time: Res<Time>, mut commands: Commands, mut particles: Query<
         p.life -= dt;
         p.vel.y -= GRAVITY * dt;
         tf.translation += p.vel * dt;
-        if p.life <= 0.0 || tf.translation.y <= 0.02 {
+        if p.life <= 0.0 || tf.translation.y <= p.floor + 0.02 {
             commands.entity(e).despawn();
         }
     }
@@ -419,7 +423,7 @@ mod tests {
         app.init_resource::<Decals>().init_resource::<CameraShake>().init_resource::<HurtFlash>().add_message::<ClearFx>().add_systems(Update, clear_fx);
         let world = app.world_mut();
         let splats: Vec<Entity> = (0..5).map(|_| world.spawn(Transform::default()).id()).collect();
-        let drops: Vec<Entity> = (0..7).map(|_| world.spawn(Particle { vel: Vec3::ZERO, life: 1.0 }).id()).collect();
+        let drops: Vec<Entity> = (0..7).map(|_| world.spawn(Particle { vel: Vec3::ZERO, life: 1.0, floor: 0.0 }).id()).collect();
         let keep = world.spawn(Transform::default()).id();
         world.resource_mut::<Decals>().0.extend(splats.iter().map(|&e| (e, Vec2::ZERO, 0.5, 0)));
         world.resource_mut::<CameraShake>().trauma = 0.7;

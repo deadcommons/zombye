@@ -437,7 +437,10 @@ fn reconcile(link: Res<ServerLink>, map: Res<ClientMap>, join: Res<JoinInfo>, mu
 #[derive(Resource, Default, Clone, Copy, PartialEq, Debug)]
 pub struct ViewFloor {
     pub level: u8,
+    /// How high our feet are above the ground (stairs, upstairs).
     pub height: f32,
+    /// The height of the ground itself under us (hills outside town, `zombye_sim::terrain`).
+    pub ground: f32,
 }
 
 impl ViewFloor {
@@ -451,12 +454,13 @@ fn place_player(fixed: Res<Time<Fixed>>, me: Res<LocalPlayer>, map: Res<ClientMa
     let p = me.prev.pos.lerp(me.curr.pos, a);
     let (h0, h1) = (me.prev.height(&map.0), me.curr.height(&map.0));
     let height = h0 + (h1 - h0) * a;
+    let ground = map.0.ground(p);
     tf.translation.x = p.x;
     tf.translation.z = p.y;
-    if tf.translation.y != height {
-        tf.translation.y = height;
+    if tf.translation.y != height + ground {
+        tf.translation.y = height + ground;
     }
-    let now = ViewFloor { level: (me.curr.level > 0 || height > ViewFloor::UP_FROM) as u8, height };
+    let now = ViewFloor { level: (me.curr.level > 0 || height > ViewFloor::UP_FROM) as u8, height, ground };
     if *view != now {
         *view = now;
     }
@@ -535,7 +539,7 @@ fn sync_other_players(
         let prev = link.prev.players.iter().find(|p| p.id == v.id).unwrap_or(v);
         let pos = Vec2::from(prev.pos).lerp(Vec2::from(v.pos), alpha);
         let (h0, h1) = (map.0.height_at(prev.level, Vec2::from(prev.pos)), map.0.height_at(v.level, Vec2::from(v.pos)));
-        tf.translation = Vec3::new(pos.x, h0 + (h1 - h0) * alpha, pos.y);
+        tf.translation = Vec3::new(pos.x, h0 + (h1 - h0) * alpha + map.0.ground(pos), pos.y);
         tf.rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - lerp_angle(prev.facing, v.facing, alpha));
         // Someone upstairs is under a roof unless that floor is the one we see open.
         // At the wheel of a car they are in it (the car is drawn).

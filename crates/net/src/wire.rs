@@ -73,8 +73,8 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// `Intent::Unbuild`, `Snapshot::barricade_changes`, `Welcome::barricades`, `JobKind::Build`, `Edge::WindowBoarded`
 /// and `Edge::DoorBoarded`. 31: movement and endurance in settings: `Tunings::movement`,
 /// `PlayerView::endurance_cap`. 32: vehicles: `Intent::Vehicle`, `Intent::Drive`, `Snapshot::vehicles`
-/// (`SnapshotDelta::vehicles`).)
-pub const PROTOCOL: u32 = 32;
+/// (`SnapshotDelta::vehicles`). 33: the ground's height (`GenConfig::terrain`, in `Welcome::generation`).)
+pub const PROTOCOL: u32 = 33;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.

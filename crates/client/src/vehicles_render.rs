@@ -92,7 +92,7 @@ fn draw_vehicles(
                 (prev.pos.lerp(v.state.pos, alpha), lerp_angle(prev.heading, v.state.heading, alpha))
             }
         };
-        let tf = Transform::from_xyz(pos.x, 0.0, pos.y).with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - heading));
+        let tf = Transform::from_xyz(pos.x, map.0.ground(pos), pos.y).with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - heading));
         let shown = v.driver == 0 || v.driver == me_id || fog.visibility(pos) > 0.35;
         let want = if shown { Visibility::Inherited } else { Visibility::Hidden };
         if let Some((_, _, mut t, mut vis)) = cars.iter_mut().find(|(_, b, ..)| b.0 == v.id) {

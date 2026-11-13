@@ -52,6 +52,7 @@ pub mod speech;
 pub mod status;
 pub mod street_props;
 pub mod template;
+pub mod terrain;
 pub mod tiers;
 pub mod trees;
 pub mod vehicles;

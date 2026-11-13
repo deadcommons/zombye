@@ -93,7 +93,7 @@ fn setup(mut commands: Commands, join: Res<JoinInfo>, mut meshes: ResMut<Assets<
     commands.insert_resource(WeaponLooks { cube, materials: weapon_mats, lengths, item_materials, item_sizes, item_models, item_logs, log, model_material, held_models });
 }
 
-fn sync_items(mut commands: Commands, link: Res<ServerLink>, fog: Res<FogState>, view: Res<crate::player::ViewFloor>, looks: Option<Res<WeaponLooks>>, mut entities: ResMut<ItemEntities>, mut query: Query<(&mut Visibility, &mut Transform)>) {
+fn sync_items(mut commands: Commands, link: Res<ServerLink>, map: Res<crate::server_link::ClientMap>, fog: Res<FogState>, view: Res<crate::player::ViewFloor>, looks: Option<Res<WeaponLooks>>, mut entities: ResMut<ItemEntities>, mut query: Query<(&mut Visibility, &mut Transform)>) {
     let Some(looks) = looks else { return };
     let items = &link.curr.items;
     // Gone (picked up) or changed into another item: despawn (and respawn with the new look).
@@ -107,7 +107,7 @@ fn sync_items(mut commands: Commands, link: Res<ServerLink>, fog: Res<FogState>,
     for it in items {
         // Things lying upstairs (stairs) are drawn on that floor, and only while it is the one open.
         let up = link.curr.upstairs.binary_search(&it.id).is_ok();
-        let lift = if up { zombye_sim::map::STOREY } else { 0.0 };
+        let lift = if up { zombye_sim::map::STOREY } else { 0.0 } + map.0.ground(it.pos);
         let visibility = if fog.visibility(it.pos) > 0.35 && (!up || view.level > 0) { Visibility::Inherited } else { Visibility::Hidden };
         match entities.0.get(&it.id) {
             Some(&(e, _)) => {

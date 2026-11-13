@@ -581,6 +581,10 @@ pub struct TileMap {
     pub vehicles: Vec<VehicleBox>,
     #[serde(skip)]
     vehicle_cover: Vec<u64>,
+    /// The height of the ground outside town (`crate::terrain`), from the generator. Derived like
+    /// the street props: not saved (a map stored whole gets the generated map's), in no hash.
+    #[serde(skip)]
+    pub terrain: crate::terrain::Terrain,
 }
 
 /// A vehicle as the map sees it: a box `half` (half its length, half its width) round `pos`, its
@@ -630,7 +634,7 @@ impl TileMap {
     pub fn new(chunks_x: i32, chunks_y: i32) -> Self {
         let chunks = (0..chunks_x * chunks_y).map(|_| Chunk { tiles: vec![Tile::default(); CHUNK_TILES] }).collect();
         let outdoors = Room { building: u16::MAX, name: "Outdoors".into(), room_type: "outdoors".into(), floor: Floor::Grass };
-        Self { chunks_x, chunks_y, chunks, rooms: vec![outdoors], buildings: Vec::new(), turning_circles: Vec::new(), street_props: Vec::new(), prop_kinds: Vec::new(), blinds: BTreeMap::new(), glazed: BTreeSet::new(), barricades: BTreeMap::new(), stairs: Vec::new(), upper: BTreeMap::new(), stair_speed: 0.0, movement: Default::default(), vehicles: Vec::new(), vehicle_cover: Vec::new() }
+        Self { chunks_x, chunks_y, chunks, rooms: vec![outdoors], buildings: Vec::new(), turning_circles: Vec::new(), street_props: Vec::new(), prop_kinds: Vec::new(), blinds: BTreeMap::new(), glazed: BTreeSet::new(), barricades: BTreeMap::new(), stairs: Vec::new(), upper: BTreeMap::new(), stair_speed: 0.0, movement: Default::default(), vehicles: Vec::new(), vehicle_cover: Vec::new(), terrain: Default::default() }
     }
 
     pub fn width(&self) -> i32 {
@@ -1042,6 +1046,12 @@ impl TileMap {
     /// Every tile of the first upper floor, row by row.
     pub fn upper_tiles(&self) -> impl Iterator<Item = (IVec2, UpperTile)> + '_ {
         self.upper.iter().map(|(&(y, x), u)| (IVec2::new(x, y), *u))
+    }
+
+    /// The height of the ground at `p` above the town's level (0 everywhere in town; hills
+    /// outside it, `crate::terrain`). What [`height_at`](Self::height_at) is measured from.
+    pub fn ground(&self, p: Vec2) -> f32 {
+        self.terrain.height(p)
     }
 
     /// How high above the ground a body on `level` at `p` stands: on a flight of stairs its
