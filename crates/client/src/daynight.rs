@@ -447,7 +447,7 @@ pub struct Sun;
 
 /// The faint glow that lets you make out your own feet in the dark.
 #[derive(Component)]
-struct PlayerGlow;
+pub(crate) struct PlayerGlow;
 
 /// The light the local player holds: a flashlight's cone or a candle's pool.
 #[derive(Component)]
