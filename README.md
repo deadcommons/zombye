@@ -111,7 +111,12 @@ is free.
 </table>
 
 <p align="center">
-  <a href="docs/readme/inventory.jpg"><img src="docs/readme/inventory.jpg" alt="The inventory screen: a crowbar in hand, worn gear, a packed rucksack and pockets" width="860"></a>
+  <a href="docs/readme/drive.jpg"><img src="docs/readme/drive.jpg" alt="A car drives through a junction as zombies close in from the pavements and the park" width="860"></a>
+  <br><i>The parked cars start, if they have fuel. The engine is heard a long way off.</i>
+</p>
+
+<p align="center">
+  <a href="docs/readme/inventory.jpg"><img src="docs/readme/inventory.jpg" alt="The inventory screen: a crowbar in hand, worn gear, a packed rucksack, and a kitchen cupboard being searched" width="860"></a>
   <br><i>Everything you carry has weight and takes up room. Choose what comes with you.</i>
 </p>
 
