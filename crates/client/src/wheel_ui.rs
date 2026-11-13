@@ -205,7 +205,19 @@ fn tile(ring: &mut ChildSpawnerCommands, entry: &Entry, pos: Vec2, picked: bool,
             t.spawn((Node { position_type: PositionType::Absolute, left: px(0), top: px(0), right: px(0), bottom: px(0), ..default() }, BackgroundColor(flat::GREEN_SOFT), Pickable::IGNORE));
         }
         match entry.item {
-            Some(i) => flat::item_icon(t, items.get(i as usize), if picked { 68.0 } else { 56.0 }, if entry.ready { 1.0 } else { 0.35 }),
+            Some(i) => {
+                flat::item_icon(t, items.get(i as usize), if picked { 68.0 } else { 56.0 }, if entry.ready { 1.0 } else { 0.35 });
+                // How many you carry, in the corner, as the inventory's tiles show it ("x3").
+                if entry.detail.starts_with('x') {
+                    t.spawn((
+                        Text::new(entry.detail.clone()),
+                        theme::strong(flat::SMALL),
+                        TextColor(flat::BONE),
+                        Node { position_type: PositionType::Absolute, right: px(5.0), bottom: px(2.0), ..default() },
+                        Pickable::IGNORE,
+                    ));
+                }
+            }
             None => {
                 let colour = match (entry.ready, picked) {
                     (false, _) => flat::DIM.with_alpha(0.55),

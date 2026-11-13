@@ -224,12 +224,12 @@ fn build(kind: Kind, me: &LocalPlayer, join: &JoinInfo, link: &ServerLink, map: 
             let v = link.own(me.id)?;
             let hotbar: Vec<Option<String>> = bar.map_or(Vec::new(), |b| b.slots.to_vec());
             let entries = item_entries(me.id, &v.inventory, &join.items, &hotbar);
-            Some((if entries.is_empty() { "Nothing to use" } else { "Items" }, entries))
+            Some((if entries.is_empty() { "Nothing to use" } else { kind.title() }, entries))
         }
         Kind::Make => {
             let ok = crate::inventory_ui::make_check(link, map, join, me);
             let entries = make_entries(me.id, &join.recipes, &join.items, ok);
-            Some((if entries.is_empty() { "Nothing to make here" } else { "Make" }, entries))
+            Some((if entries.is_empty() { "Nothing to make here" } else { kind.title() }, entries))
         }
         Kind::Actions => None,
     }
