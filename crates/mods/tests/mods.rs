@@ -616,3 +616,88 @@ fn a_pack_is_a_mods_data_without_its_scripts() {
     wrong.files[0].1 = "[(id: \"Bad Id\")]".into();
     assert!(zombye_mods::apply_packs(&mut base(5), &[wrong]).unwrap_err().starts_with("mod whistles: items.ron"));
 }
+
+/// Write a mod folder `id` in `dir` with this `mod.ron` body and files.
+fn write_mod(dir: &std::path::Path, folder: &str, manifest: &str, files: &[(&str, &str)]) {
+    let d = dir.join(folder);
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("mod.ron"), manifest).unwrap();
+    for (name, text) in files {
+        std::fs::write(d.join(name), text).unwrap();
+    }
+}
+
+#[test]
+fn the_mods_folder_loads_what_is_on_and_leaves_broken_mods_off() {
+    use zombye_mods::folder::{self, load_folder_into, scan};
+    let dir = std::env::temp_dir().join(format!("zombye-mods-folder-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    // No folder at all: no mods, nothing wrong.
+    let mut config = base(5);
+    let loaded = load_folder_into(&mut config, Some(&dir), &[]).unwrap();
+    assert!(loaded.mods.is_empty() && loaded.problems.is_empty());
+
+    let whistle = r#"[(id: "whistle", name: "Whistle", category: Junk, weight_kg: 0.02, volume_l: 0.02)]"#;
+    let recipe = r#"[(id: "carve_whistle", name: "Carve a whistle", secs: 5.0, inputs: [(item: "magazine", count: 1)], outputs: [(item: "whistle", count: 1)])]"#;
+    write_mod(&dir, "whistles", r#"(id: "whistles", name: "Whistles", version: "1.0")"#, &[("items.ron", whistle)]);
+    // Needs the whistle: fine after `whistles`, not before it or without it.
+    write_mod(&dir, "carving", r#"(id: "carving", name: "Carving")"#, &[("recipes.ron", recipe)]);
+    write_mod(&dir, "broken", "(id: \"broken\", name: ", &[]);
+    write_mod(&dir, "zz_twin", r#"(id: "whistles", name: "Another")"#, &[]);
+    std::fs::create_dir_all(dir.join("not_a_mod")).unwrap();
+
+    // Found, but nothing on: nothing loads.
+    let f = scan(&dir);
+    assert_eq!(f.entries.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["broken", "carving", "whistles", "whistles"]);
+    assert!(f.entries.iter().all(|e| !e.enabled));
+    assert!(f.entries[0].problem.as_deref().unwrap().contains("mod.ron"));
+    assert!(f.entries[3].problem.as_deref().unwrap().contains("another mod has the id whistles"));
+    let mut config = base(5);
+    assert!(load_folder_into(&mut config, Some(&dir), &[]).unwrap().mods.is_empty());
+    assert!(!config.items.iter().any(|i| i.id == "whistle"));
+
+    // On in the wrong order: carving is left off with the reason, the game still gets whistles.
+    folder::write_enabled(&dir, &["carving".into(), "whistles".into(), "gone".into()]).unwrap();
+    let mut config = base(5);
+    let loaded = load_folder_into(&mut config, Some(&dir), &[]).unwrap();
+    assert_eq!(loaded.mods.iter().map(|m| m.manifest.id.as_str()).collect::<Vec<_>>(), ["whistles"]);
+    assert!(loaded.problems.iter().any(|p| p.contains("gone is turned on but isn't in")), "{:?}", loaded.problems);
+    assert!(loaded.problems.iter().any(|p| p.starts_with("mod carving is left off: mod carving: recipes.ron")), "{:?}", loaded.problems);
+    assert!(config.items.iter().any(|i| i.id == "whistle") && !config.recipes.iter().any(|r| r.id == "carve_whistle"));
+
+    // The menu's moves: carving after whistles, saved, and then both load.
+    let mut f = scan(&dir);
+    assert_eq!(f.enabled_ids(), ["carving", "whistles"]);
+    assert!(f.shift("carving", false) && !f.shift("carving", false) && !f.shift("broken", true));
+    f.save().unwrap();
+    assert_eq!(folder::read_enabled(&dir).unwrap(), ["whistles", "carving"]);
+    let mut config = base(5);
+    let loaded = load_folder_into(&mut config, Some(&dir), &[]).unwrap();
+    assert_eq!(loaded.mods.len(), 2);
+    assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
+    assert!(config.recipes.iter().any(|r| r.id == "carve_whistle"));
+
+    // A mod that is off is checked as if turned on last; turning one off puts it with the rest.
+    let mut f = scan(&dir);
+    f.check(&base(5));
+    assert!(f.entries.iter().find(|e| e.id == "carving").unwrap().active());
+    assert!(f.set_enabled("whistles", false));
+    assert_eq!(f.enabled_ids(), ["carving"]);
+    f.check(&base(5));
+    assert!(f.entries.iter().find(|e| e.id == "carving").unwrap().problem.is_some());
+    assert_eq!(f.entries.iter().find(|e| e.id == "whistles").unwrap().contents(), "1 item");
+
+    // A `--mod` of the same id takes the folder's place; a broken one is an error, as ever.
+    write_mod(&dir, "../dev_whistles", r#"(id: "whistles", name: "Dev whistles")"#, &[("items.ron", whistle)]);
+    let mut config = base(5);
+    let loaded = load_folder_into(&mut config, Some(&dir), &[dir.join("../dev_whistles")]).unwrap();
+    assert_eq!(loaded.mods.iter().map(|m| m.manifest.name.as_str()).collect::<Vec<_>>(), ["Dev whistles"]);
+    assert!(load_folder_into(&mut base(5), Some(&dir), &[dir.join("broken")]).is_err());
+
+    // A damaged enabled.ron turns nothing on, and says so.
+    std::fs::write(dir.join(folder::ENABLED), "(mods: [").unwrap();
+    let loaded = load_folder_into(&mut base(5), Some(&dir), &[]).unwrap();
+    assert!(loaded.mods.is_empty() && loaded.problems[0].contains("no mods are on until it is fixed"));
+    std::fs::remove_dir_all(dir.join("../dev_whistles")).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+}

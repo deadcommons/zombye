@@ -233,7 +233,7 @@ pub struct ServerLinkPlugin;
 impl Plugin for ServerLinkPlugin {
     fn build(&self, app: &mut App) {
         let mut options = app.world().resource::<Options>().clone();
-        let (base, mut config, own) = match local_content(&options) {
+        let (base, mut config, own, mod_problems) = match local_content(&options) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("{e}");
@@ -245,6 +245,11 @@ impl Plugin for ServerLinkPlugin {
         // loaded or downloaded before; the rest are downloaded on joining.
         let cache = modpack::Cache::in_saves(&options.saves);
         app.insert_resource(crate::browser_ui::LoadedMods(own.iter().map(ModPack::hash).chain(cache.listed()).collect()));
+        // Mods the folder turns on that were left off: said on the yellow line once the game is up
+        // (in our own world; on a server its mods are the ones that count).
+        if options.connect.is_none() && !mod_problems.is_empty() {
+            app.insert_resource(ModProblems(mod_problems)).add_systems(Update, say_mod_problems);
+        }
         if let (Some(addr), Some(base)) = (options.connect.clone(), base) {
             // The server's mods, not ours (#24): what we haven't got of them is downloaded first.
             let mut joined = server_content(&addr, &options, &base, &own, &cache).and_then(|(content, mods)| join_remote(app, &addr, &options, &content, mods));
@@ -526,10 +531,29 @@ fn join_info(config: &zombye_sim::WorldConfig, player_id: u32, player_spawn: Vec
     }
 }
 
+/// What was wrong with the mods folder at start-up (`local_content`).
+#[derive(Resource)]
+struct ModProblems(Vec<String>);
+
+/// The yellow line, once, a moment after the start: which mods were left off and why (the whole
+/// of it is on stderr, and the main menu's Mods screen shows each on its mod).
+fn say_mod_problems(time: Res<Time>, problems: Res<ModProblems>, mut notice: ResMut<crate::saving::Notice>, mut done: Local<bool>) {
+    if *done || time.elapsed_secs() < 2.5 {
+        return;
+    }
+    *done = true;
+    let n = problems.0.len();
+    let first = problems.0[0].chars().take(160).collect::<String>();
+    let more = if n > 1 { format!(" (and {} more: see Mods on the main menu)", n - 1) } else { " (see Mods on the main menu)".to_string() };
+    notice.say(time.elapsed_secs(), format!("{first}{more}"));
+}
+
 /// This game's own data, from the data folder (a fresh loot seed unless `--loot-seed`), as it is
-/// before our own `--mod`s (what a server's mods go into instead) and with them, and our mods as
-/// packs (#24, #25).
-pub fn local_content(options: &Options) -> Result<(zombye_sim::WorldConfig, zombye_sim::WorldConfig, Vec<ModPack>), String> {
+/// before our own mods (what a server's mods go into instead) and with them, our mods as packs
+/// (#24, #25), and what was wrong with the mods folder: the mods it turns on that were left off,
+/// and why (the game starts without them). Our mods are those the mods folder turns on
+/// (`zombye_mods::folder`), then `--mod`'s; a `--mod` that doesn't load is an error.
+pub fn local_content(options: &Options) -> Result<(zombye_sim::WorldConfig, zombye_sim::WorldConfig, Vec<ModPack>, Vec<String>), String> {
     let mut config = content::load_config(&options.data, options.seed).map_err(|e| format!("failed to load content: {e}"))?;
     // A new world finds different things each game, unless `--loot-seed` fixes them (a
     // loaded save keeps its own).
@@ -537,11 +561,14 @@ pub fn local_content(options: &Options) -> Result<(zombye_sim::WorldConfig, zomb
     // Mods (#25): their items, recipes and loot join the game's; their scripts run in the
     // world this process makes (on a server they run there, and only the data matters here).
     let base = config.clone();
-    let mods = zombye_mods::load_into(&mut config, &options.mods).map_err(|e| format!("failed to load mods: {e}"))?;
-    if !mods.is_empty() {
-        println!("{}", zombye_mods::describe(&mods));
+    let loaded = zombye_mods::folder::load_folder_into(&mut config, options.mods_folder(), &options.mods).map_err(|e| format!("failed to load mods: {e}"))?;
+    if !loaded.mods.is_empty() {
+        println!("{}", zombye_mods::describe(&loaded.mods));
     }
-    Ok((base, config, mods.iter().map(zombye_mods::Mod::pack).collect()))
+    for p in &loaded.problems {
+        eprintln!("{p}");
+    }
+    Ok((base, config, loaded.mods.iter().map(zombye_mods::Mod::pack).collect(), loaded.problems))
 }
 
 /// The game data to join `addr` with (#24): the game's own (`base`) with **the server's mods**,

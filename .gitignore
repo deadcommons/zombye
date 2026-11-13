@@ -19,3 +19,6 @@ __pycache__/
 
 # Raw Meshy downloads (never committed; what ships goes through Blender into assets/)
 /meshy_output/
+
+# Which mods the Mods menu turned on (the mods folder is mods/ from a checkout)
+/mods/enabled.ron

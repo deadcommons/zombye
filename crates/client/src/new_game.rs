@@ -210,7 +210,7 @@ struct Screen {
 
 impl Screen {
     fn new(options: Options) -> Result<Self, String> {
-        let (_, config, _) = crate::server_link::local_content(&options)?;
+        let (_, config, _, _) = crate::server_link::local_content(&options)?;
         let rules = Rules::load(&options.data, &config.items)?;
         if rules.origins.backgrounds.is_empty() {
             return Err(format!("no Backgrounds in {} (backgrounds.ron): nothing to choose", options.data.display()));

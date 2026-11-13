@@ -95,6 +95,14 @@ pub fn default_saves_dir() -> PathBuf {
     user_dir().map_or_else(|| PathBuf::from(crate::save_file::DEFAULT_DIR), |d| d.join("saves"))
 }
 
+/// The mods folder players put mods in (`mods/` in the player's own folder in a packaged game,
+/// else `mods/` in the working folder: from a checkout, the repo's sample mods). Which of them are
+/// on is its `enabled.ron` (`zombye_mods::folder`). Not the download cache of a server's mods,
+/// which is in the saves folder (`modpack::Cache`).
+pub fn mods_dir() -> PathBuf {
+    user_dir().map_or_else(|| PathBuf::from("mods"), |d| d.join("mods"))
+}
+
 /// The build this is: `ZOMBYE_BUILD` when it was compiled (the packaging script sets the commit
 /// and date), else the crate version.
 pub fn build_name() -> &'static str {

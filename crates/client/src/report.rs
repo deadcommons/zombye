@@ -194,7 +194,7 @@ fn reports_dir() -> PathBuf {
 }
 
 /// Open `dir` in the system's file manager (best effort).
-fn reveal(dir: &Path) {
+pub(crate) fn reveal(dir: &Path) {
     let opener = if cfg!(target_os = "macos") {
         "open"
     } else if cfg!(windows) {

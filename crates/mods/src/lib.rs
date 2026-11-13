@@ -20,6 +20,7 @@
 //! loaded save, a new run) runs them at the end of each tick ([`luau`]). `sim` itself has no Luau
 //! in it: it only knows the hook.
 
+pub mod folder;
 pub mod luau;
 
 use std::path::{Path, PathBuf};
@@ -144,6 +145,32 @@ impl Mod {
         self.manifest.scripts.push(name.to_string());
         self.scripts.push((name.to_string(), source.to_string()));
         self
+    }
+
+    /// What the mod brings, in words: "2 items, 1 recipe, 1 loot table change, 1 building,
+    /// 1 script" ("nothing yet" for an empty one). Files that don't parse count none.
+    pub fn contents(&self) -> String {
+        let items = self.items.as_deref().and_then(|t| ron::from_str::<Vec<ItemDef>>(t).ok()).map_or(0, |v| v.len());
+        let recipes = self.recipes.as_deref().and_then(|t| parse_recipes(t).ok()).map_or(0, |v| v.len());
+        let loot = self.loot.as_deref().and_then(|t| ron::from_str::<Vec<LootAdd>>(t).ok()).map_or(0, |v| v.len());
+        let plural = |n: usize, one: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {one}s") };
+        let mut parts = Vec::new();
+        if self.items.is_some() {
+            parts.push(plural(items, "item"));
+        }
+        if self.recipes.is_some() {
+            parts.push(plural(recipes, "recipe"));
+        }
+        if self.loot.is_some() {
+            parts.push(plural(loot, "loot table change"));
+        }
+        if !self.buildings.is_empty() {
+            parts.push(plural(self.buildings.len(), "building"));
+        }
+        if !self.scripts.is_empty() {
+            parts.push(plural(self.scripts.len(), "script"));
+        }
+        if parts.is_empty() { "nothing yet".to_string() } else { parts.join(", ") }
     }
 
     /// Read a mod's folder. Errors name the file.

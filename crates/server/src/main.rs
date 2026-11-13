@@ -235,12 +235,16 @@ fn main() {
     let mod_dirs: Vec<PathBuf> = args.windows(2).filter(|w| w[0] == "--mod").map(|w| PathBuf::from(&w[1])).collect();
     // What a hosting server tells whoever asks what it runs (#27: the server browser's mods), and
     // hands to the clients that join without them (#24): each mod's data, named by its hash.
+    let base = config.clone();
     let mod_packs: Vec<zombye_net::modpack::ModPack> = match zombye_mods::load_into(&mut config, &mod_dirs) {
         Ok(mods) => {
             if !mods.is_empty() {
                 eprintln!("{}", zombye_mods::describe(&mods));
             }
-            mods.iter().map(zombye_mods::Mod::pack).collect()
+            let packs = mods.iter().map(zombye_mods::Mod::pack).collect();
+            // For the MCP `mods` tool: what runs, and the data a mod being written is checked against.
+            mcp::set_mods(mcp::ModsInfo { base, loaded: mods });
+            packs
         }
         Err(e) => {
             eprintln!("failed to load mods: {e}");

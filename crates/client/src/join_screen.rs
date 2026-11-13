@@ -89,7 +89,7 @@ fn attempt(options: &Options, tx: &Sender<Msg>) -> Result<(), String> {
     let _ = tx.send(Msg::Info { name: info.rules.name.clone(), version: info.version.clone() });
 
     say(Step::Check, format!("{} of {} players on", info.online, info.rules.max_players));
-    let (base, _, own) = crate::server_link::local_content(options)?;
+    let (base, _, own, _) = crate::server_link::local_content(options)?;
     let cache = modpack::Cache::in_saves(&options.saves);
     let have: Vec<modpack::Hash> = own.iter().map(ModPack::hash).chain(cache.listed()).collect();
     zombye_net::browser::can_join(&info, &have, false)?;
