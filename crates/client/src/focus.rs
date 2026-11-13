@@ -12,7 +12,7 @@
 
 use bevy::camera::NormalizedRenderTarget;
 use bevy::picking::backend::HitData;
-use bevy::picking::events::{Pointer, Press};
+use bevy::picking::events::{Pointer, PointerPress};
 use bevy::picking::pointer::{Location, PointerButton, PointerId};
 use bevy::prelude::*;
 
@@ -182,9 +182,9 @@ fn navigate(
 }
 
 /// The press a primary click on `entity` makes, as if the pointer were at `at`.
-fn press(entity: Entity, at: Vec2) -> Pointer<Press> {
+fn press(entity: Entity, at: Vec2) -> PointerPress {
     let location = Location { target: NormalizedRenderTarget::None { width: 1, height: 1 }, position: at };
-    Pointer::new(PointerId::Mouse, location, Press { button: PointerButton::Primary, hit: HitData::new(Entity::PLACEHOLDER, 0.0, None, None) }, entity)
+    PointerPress { entity, pointer: Pointer::new(PointerId::Mouse, location), button: PointerButton::Primary, hit: HitData::new(Entity::PLACEHOLDER, 0.0, None, None), count: 1 }
 }
 
 /// The green outline round the button with the focus (and none round the one that had it).
