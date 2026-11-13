@@ -26,9 +26,10 @@ pub const DIM: Color = Color::srgb(0.804, 0.737, 0.627);
 pub const FAINT: Color = Color::srgb(0.592, 0.537, 0.478);
 /// Hairlines: cream at 14%.
 pub const LINE: Color = Color::srgba(0.914, 0.847, 0.733, 0.14);
-/// The fill of a button or chip at rest.
-pub const CELL: Color = Color::srgba(0.914, 0.847, 0.733, 0.05);
-const CELL_HOVER: Color = Color::srgba(0.914, 0.847, 0.733, 0.1);
+/// The fill of a button or chip at rest: cream at 5% over the ground, made solid, so nothing
+/// behind (the grain, the horizon) shows through.
+pub const CELL: Color = Color::srgb(0.206, 0.176, 0.159);
+const CELL_HOVER: Color = Color::srgb(0.244, 0.212, 0.189);
 const LINE_HOVER: Color = Color::srgba(0.914, 0.847, 0.733, 0.5);
 /// The accent, mustard (#E0A646): this one, the open tab, the main button.
 pub const ACCENT: Color = Color::srgb(0.878, 0.651, 0.275);

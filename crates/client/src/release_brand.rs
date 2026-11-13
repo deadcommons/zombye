@@ -164,14 +164,15 @@ fn window_icon(_main: NonSendMarker, mut commands: Commands, icon: Res<IconPixel
     }
 }
 
-/// The horizon standing on the foot of its parent at its right-hand end, `share` of the parent's
-/// width, behind what the parent holds (spawn it first; keep what is in front of it to the left).
-/// Nothing without the brand folder.
-pub fn horizon(parent: &mut ChildSpawnerCommands, share: f32) {
+/// The horizon `high` UI pixels high, its foot `above` pixels over the foot of its parent, at the
+/// parent's right-hand end, behind what the parent holds (spawn it first; keep what is in front of
+/// it to the left). Nothing without the brand folder.
+pub fn horizon(parent: &mut ChildSpawnerCommands, high: f32, above: f32) {
     let Some(size) = LOADED.get().and_then(|l| l[Mark::Horizon as usize]) else { return };
+    let wide = (high * size.x / size.y.max(1.0)).round();
     parent.spawn((
         ImageNode::new(Mark::Horizon.handle()),
-        Node { position_type: PositionType::Absolute, right: px(0), bottom: px(0), width: percent(share * 100.0), aspect_ratio: Some(size.x / size.y.max(1.0)), ..default() },
+        Node { position_type: PositionType::Absolute, right: px(0), bottom: px(above), width: px(wide), height: px(high), ..default() },
         Pickable::IGNORE,
     ));
 }

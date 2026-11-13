@@ -702,7 +702,8 @@ fn draw(mut commands: Commands, mut menu: ResMut<Menu>, root: Option<Single<Enti
         // The ground printed: grain, and on the home screen the sun and the town along its foot.
         skin::ground(c);
         if menu.screen == Screen::Home {
-            brand::horizon(c, 0.42);
+            // (Standing on the rule over the footer: 46 px of footer and the rule's 1.)
+            brand::horizon(c, 120.0, 47.0);
         }
         c.spawn(Node { flex_grow: 1.0, padding: UiRect::left(percent(9)), flex_direction: FlexDirection::Column, justify_content: JustifyContent::Center, row_gap: px(8), ..default() }).with_children(|col| {
             // (The server browser's sheet has the Join screen to itself.)
