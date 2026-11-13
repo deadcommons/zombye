@@ -216,13 +216,15 @@ fn outline(mut commands: Commands, mut focus: ResMut<Focus>, exists: Query<(), W
     if focus.outlined == focus.on {
         return;
     }
+    // (Either may be gone by the time the commands run: a press that leaves its screen, Start on
+    // the new-game screen, despawns the button it was made on. Hence the `try_`s.)
     if let Some(old) = focus.outlined
         && exists.get(old).is_ok()
     {
-        commands.entity(old).remove::<Outline>();
+        commands.entity(old).try_remove::<Outline>();
     }
-    if let Some(new) = focus.on {
-        commands.entity(new).insert(Outline::new(px(2), px(2), ACCENT));
+    if let Some(new) = focus.on.filter(|e| exists.get(*e).is_ok()) {
+        commands.entity(new).try_insert(Outline::new(px(2), px(2), ACCENT));
     }
     focus.outlined = focus.on;
 }
