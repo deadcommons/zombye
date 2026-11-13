@@ -311,6 +311,9 @@ pub fn check_times(r: &RecipeDef, inv: &Inventory, items: &[ItemDef], times: u32
     for t in r.tools.iter().filter(|t| !has_tool(inv, t, items)) {
         missing.push(format!("needs {} to hand (kept)", tool_text(items, t)));
     }
+    if missing.is_empty() && r.repairs.is_some() && mend_target(r, inv, items).is_none() {
+        missing.push(NOTHING_TO_MEND.into());
+    }
     if missing.is_empty() { Ok(()) } else { Err(missing.join("; ")) }
 }
 
@@ -335,11 +338,7 @@ pub fn missing_brief(r: &RecipeDef, inv: &Inventory, items: &[ItemDef]) -> Optio
 
 /// Can `r` be made once from what `inv` carries and holds? See [`check_times`].
 pub fn check(r: &RecipeDef, inv: &Inventory, items: &[ItemDef]) -> Result<(), String> {
-    check_times(r, inv, items, 1)?;
-    if r.repairs.is_some() && mend_target(r, inv, items).is_none() {
-        return Err(NOTHING_TO_MEND.into());
-    }
-    Ok(())
+    check_times(r, inv, items, 1)
 }
 
 /// Where a mending recipe would mend: the most worn thing with its tag in the hand, the off hand
@@ -674,7 +673,8 @@ mod tests {
             assert!(r.iter().any(|x| x.id == id), "{id}");
         }
         // Every recipe that isn't wood, cooking or a fire makes something first aid can use, or what makes it.
-        let fire = |x: &RecipeDef| x.heat || x.places.is_some() || x.outputs.iter().any(|o| o.item == "firewood") || x.id == "saw_log_planks" || x.id == "open_nails";
+        let fire = |x: &RecipeDef| x.heat || x.places.is_some() || x.outputs.iter().any(|o| o.item == "firewood") || x.id == "saw_log_planks" || x.id == "open_nails"
+            || x.water || x.repairs.is_some() || x.outputs.iter().any(|o| o.item == "nailed_bat" || o.item == "spear");
         assert!(r.iter().filter(|x| !fire(x)).all(|x| x.outputs.iter().any(|o| o.item == "rag" || o.item == "clean_rag")));
         assert!(r.iter().any(|x| x.heat) && r.iter().any(|x| x.places.is_some()));
         assert_eq!(describe(&r[0], &items), "t-shirt -> rag x3 (3 s)");

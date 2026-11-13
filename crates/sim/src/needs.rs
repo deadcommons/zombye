@@ -515,6 +515,22 @@ impl World {
             let share = lo + (hi - lo) * hash01(seed, c as u64, k as u64, s.item as u64);
             s.born = -((h * share * 60.0).round() as i32);
         }
+        // A powered fridge has kept it since the world began: what `step_fridges` would have done
+        // had it been opened at minute 0, so the food is the same whenever it is first opened.
+        let f = &self.config.power.fridges;
+        let fridge = self.sites.iter().find(|s| s.id == c).is_some_and(|site| {
+            self.config.containers.containers.get(site.def as usize).is_some_and(|d| f.containers.iter().any(|k| *k == d.id))
+                && self.power.powered(site.building as usize)
+        });
+        let now = self.game_minute();
+        let shift = (now as f64 * (1.0 - f.spoil_mult as f64)).floor() as i32;
+        if fridge && shift > 0 {
+            for s in stacks.iter_mut() {
+                if self.config.items.get(s.item as usize).and_then(|d| d.consumable()).is_some_and(|c| c.spoils_hours.is_some()) {
+                    s.born = (s.born + shift).min(now);
+                }
+            }
+        }
     }
 
     /// Seconds eating or drinking `item` takes (other uses: `CarryTuning::use_secs`).

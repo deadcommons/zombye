@@ -975,7 +975,8 @@ mod tests {
         let weapons = zombye_sim::items::parse_weapons(include_str!("../../../assets/data/items/weapons.ron")).unwrap();
         let items = zombye_sim::items::parse_items(include_str!("../../../assets/data/items/items.ron"), &weapons).unwrap();
         let containers = zombye_sim::containers::parse_containers(include_str!("../../../assets/data/containers.ron")).unwrap();
-        LocalServer::new(WorldConfig::new(4, 50, templates).with_weapons(weapons).with_items(items).with_containers(containers))
+        let loot = zombye_sim::loot::parse_loot(include_str!("../../../assets/data/loot.ron")).unwrap();
+        LocalServer::new(WorldConfig::new(4, 50, templates).with_weapons(weapons).with_items(items).with_containers(containers).with_loot(loot))
     }
 
     /// Picking up, swinging and getting hurt all go through intents and show up in snapshots.
