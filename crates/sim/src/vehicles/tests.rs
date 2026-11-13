@@ -71,7 +71,7 @@ fn the_shipped_file_parses_and_mistakes_are_named() {
     assert!(data.kinds.len() >= 6);
     assert!(data.of_prop("car_wreck").is_none(), "wrecks never drive");
     let text = include_str!("../../../../assets/data/vehicles.ron");
-    assert!(parse_vehicles(&text.replace("drivable_share: 0.1", "drivable_share: 1.5")).unwrap_err().contains("drivable_share"));
+    assert!(parse_vehicles(&text.replace("drivable_share: 1.0", "drivable_share: 1.5")).unwrap_err().contains("drivable_share"));
     assert!(parse_vehicles(&text.replace("wheelbase: 2.7", "wheelbase: 9.0")).unwrap_err().contains("\"car\""));
     assert!(parse_vehicles(&text.replace("bounce: 0.2", "bounce: 0.2, extra: 1")).is_err());
     assert!(parse_vehicles(&text.replace("prop: \"van\"", "prop: \"car\"")).unwrap_err().contains("already parked"));
