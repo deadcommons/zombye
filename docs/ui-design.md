@@ -237,6 +237,10 @@ while keeping this guide's frame, shapes and behaviour:
   everywhere; the loading lines in Special Elite (`theme::note`), the survivor's voice, a line at a
   time.
 - No grain, halftone or wear: those belong on printed things, not on text.
+- Buttons are road signs, as on the website: corners of 5 px and a 2 px outline. The main button
+  (and the page you are on) is mustard with a charcoal outline and a hard rust shadow 5 px down and
+  right, no blur, which closes up while it is held; the others keep their cell fill with a cream
+  outline. List rows keep the hairline (`menu_skin::button`, `sign_shadow`, `press_in`).
 
 The tokens are `menu_skin.rs`'s (and the new-game screen's `flat`, which takes them). Once in the
 game, every panel is this guide's chrome again.
