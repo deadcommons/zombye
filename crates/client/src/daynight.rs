@@ -293,7 +293,7 @@ pub fn look() -> &'static LightLook {
 pub struct Daylight(pub f32);
 
 #[derive(Component)]
-struct Sun;
+pub struct Sun;
 
 
 /// The faint glow that lets you make out your own feet in the dark.

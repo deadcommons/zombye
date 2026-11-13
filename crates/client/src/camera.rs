@@ -571,14 +571,16 @@ fn follow(
     options: Res<Options>,
     shake: Res<CameraShake>,
     view: Res<crate::player::ViewFloor>,
+    me: Option<Res<crate::player::LocalPlayer>>,
     mut player: Query<(&Transform, &Player, &mut Visibility), Without<IsoCamera>>,
     mut cams: Query<(&mut IsoCamera, &mut Transform)>,
 ) {
     let Ok((mut cam, mut transform)) = cams.single_mut() else { return };
     let cam = &mut *cam;
-    // Our own survivor is hidden in first person.
+    // Our own survivor is hidden in first person, and at the wheel of a car (the car is drawn).
     if let Ok((.., mut shown)) = player.single_mut() {
-        let want = if cam.too_close() { Visibility::Hidden } else { Visibility::Inherited };
+        let driving = me.as_ref().is_some_and(|m| m.car.is_some());
+        let want = if cam.too_close() || driving { Visibility::Hidden } else { Visibility::Inherited };
         if *shown != want {
             *shown = want;
         }
@@ -590,20 +592,20 @@ fn follow(
                 cam.face(yaw_behind(player.facing) + if options.offscreen() { FRAC_PI_2 * options.angle } else { 0.0 });
                 cam.behind = false;
                 if !cam.switching() {
-                    cam.focus = p.translation.with_y(view.height);
+                    cam.focus = p.translation.with_y(view.height + view.ground);
                 }
             }
             // Close behind him: a loose follow would swing him about the screen. (On the way
             // down the follow tightens from the fixed view's to this.)
             let t = 1.0 - (-(8.0 + 16.0 * cam.eased()) * time.delta_secs()).exp();
-            cam.focus = cam.focus.lerp(p.translation.with_y(view.height), t);
+            cam.focus = cam.focus.lerp(p.translation.with_y(view.height + view.ground), t);
         }
         *transform = cam.transform();
     } else {
         // An offscreen render keeps the camera where it was put (on the player, or `--center`).
         if let Some((p, ..)) = player.single().ok().filter(|_| !options.offscreen()) {
             let t = 1.0 - (-(8.0 + 16.0 * cam.eased()) * time.delta_secs()).exp();
-            cam.focus = cam.focus.lerp(p.translation.with_y(view.height), t);
+            cam.focus = cam.focus.lerp(p.translation.with_y(view.height + view.ground), t);
         }
         *transform = cam.transform();
     }

@@ -72,8 +72,9 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// `DeathCause::Burned`; sitting down: `Intent::Sit`, `PlayerView::seated` (bits 18-20 of `PlayerPacked::bits`). 30: building and barricades: `Intent::Build`,
 /// `Intent::Unbuild`, `Snapshot::barricade_changes`, `Welcome::barricades`, `JobKind::Build`, `Edge::WindowBoarded`
 /// and `Edge::DoorBoarded`. 31: movement and endurance in settings: `Tunings::movement`,
-/// `PlayerView::endurance_cap`.)
-pub const PROTOCOL: u32 = 31;
+/// `PlayerView::endurance_cap`. 32: vehicles: `Intent::Vehicle`, `Intent::Drive`, `Snapshot::vehicles`
+/// (`SnapshotDelta::vehicles`). 33: the ground's height (`GenConfig::terrain`, in `Welcome::generation`).)
+pub const PROTOCOL: u32 = 33;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -659,6 +660,8 @@ pub struct SnapshotDelta {
     pub map: Option<zombye_sim::Explored>,
     /// The campfires (`zombye_sim::fire`), when they change.
     pub fires: Option<Vec<zombye_sim::FireView>>,
+    /// The vehicles (`zombye_sim::vehicles`), when any of them changes.
+    pub vehicles: Option<Vec<zombye_sim::VehicleView>>,
 }
 
 impl Snapshot {
@@ -702,6 +705,7 @@ impl Snapshot {
             lit_rooms: self.lit_rooms.clone(),
             grid_on: self.grid_on,
             fires: self.fires.clone(),
+            vehicles: self.vehicles.clone(),
         }
     }
 }
@@ -855,6 +859,7 @@ pub struct DeltaEncoder {
     lights: (Vec<u16>, bool),
     map: zombye_sim::Explored,
     fires: Vec<zombye_sim::FireView>,
+    vehicles: Vec<zombye_sim::VehicleView>,
 }
 
 /// The entries of `next` that are new or differ from `last`'s (both sorted by `key`), and the keys
@@ -1064,7 +1069,12 @@ impl DeltaEncoder {
             self.fires = view.fires.clone();
             view.fires
         });
+        let vehicles = (first || view.vehicles != self.vehicles).then(|| {
+            self.vehicles = view.vehicles.clone();
+            view.vehicles
+        });
         SnapshotDelta {
+            vehicles,
             group,
             lights,
             map,
@@ -1167,6 +1177,9 @@ impl DeltaDecoder {
         if let Some(fires) = delta.fires {
             s.fires = fires;
         }
+        if let Some(vehicles) = delta.vehicles {
+            s.vehicles = vehicles;
+        }
         if let Some(run) = delta.run {
             s.runs = vec![RunView { player, ..run }];
         }
@@ -1247,6 +1260,8 @@ impl Intent {
             | Intent::Craft { player, .. }
             | Intent::Sleep { player, .. }
             | Intent::Sit { player, .. }
+            | Intent::Vehicle { player, .. }
+            | Intent::Drive { player, .. }
             | Intent::CancelJobs { player, .. }
             | Intent::Seen { player, .. }
             | Intent::Respawn { player }

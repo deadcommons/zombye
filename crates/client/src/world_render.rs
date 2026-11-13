@@ -72,7 +72,7 @@ struct Streamer {
 }
 
 #[derive(Resource)]
-struct SharedMeshes {
+pub(crate) struct SharedMeshes {
     door: Handle<Mesh>,
     /// A light switch on its wall, toggle down (off) and up (on): +z out of the wall, centred.
     switch: [Handle<Mesh>; 2],
@@ -91,7 +91,7 @@ struct SharedMeshes {
     door_cracks: [Handle<Mesh>; CRACK_STAGES],
     pane_cracks: [Handle<Mesh>; CRACK_STAGES],
     /// Blender-built furniture, drawn instead of the grey-box shapes where there is a model.
-    furniture: FurnitureModels,
+    pub(crate) furniture: FurnitureModels,
     /// The blended black of contact shadows ([`contact_shadows`]); `None` with the setting off.
     contact: Option<Handle<StandardMaterial>>,
 }
@@ -497,7 +497,7 @@ fn stream(
     }
     wanted.sort_by_key(|c| (*c - here).length_squared());
     for c in wanted.into_iter().take(budget) {
-        let entities = spawn_chunk(&mut commands, &mut meshes, &mats, map, c, &shared.furniture);
+        let entities = spawn_chunk(&mut commands, &mut meshes, &mats, map, c, &shared.furniture, shared.contact.as_ref());
         streamer.chunks.insert(c, entities);
     }
     let far: Vec<IVec2> = streamer.chunks.keys().copied().filter(|c| (*c - here).abs().max_element() > LOAD_RADIUS + 1).collect();
@@ -579,14 +579,21 @@ fn rebuild_felled(mut commands: Commands, map: Res<ClientMap>, link: Res<crate::
         for e in old {
             commands.entity(e).despawn();
         }
-        let entities = spawn_chunk(&mut commands, &mut meshes, &mats, &map.0, c, &shared.furniture);
+        let entities = spawn_chunk(&mut commands, &mut meshes, &mats, &map.0, c, &shared.furniture, shared.contact.as_ref());
         streamer.chunks.insert(c, entities);
     }
 }
 
-fn spawn_chunk(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &WorldMaterials, map: &TileMap, c: IVec2, models: &FurnitureModels) -> Vec<Entity> {
-    let landscape::ChunkMeshes { ground, mut props, veg } = landscape::build_chunk(map, c);
+fn spawn_chunk(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &WorldMaterials, map: &TileMap, c: IVec2, models: &FurnitureModels, contact: Option<&Handle<StandardMaterial>>) -> Vec<Entity> {
+    let landscape::ChunkMeshes { mut ground, mut props, mut veg } = landscape::build_chunk(map, c);
     meshgen::street_props::add(&mut props, map, c, models);
+    // Outside town the ground rises in hills (`zombye_sim::terrain`): everything built on the flat
+    // is laid over it.
+    ground.drape(&map.terrain);
+    props.lift(&map.terrain);
+    for spot in &mut veg {
+        spot.ground = map.ground(spot.pos);
+    }
     // The ground is flat but for ankle-high clutter (kerbs, tufts, ferns, rocks): it receives
     // shadows and casts none, which keeps it out of every shadow cascade. It also holds the chunk's
     // vegetation spots, whose instances `vegetation.rs` spawns as its children when it's near.
@@ -602,6 +609,13 @@ fn spawn_chunk(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &WorldM
             e.insert(PropsDetail { full, far });
         }
         out.push(e.id());
+    }
+    // Soft shade round the foot of each tree and bush, with the walls' contact shadows.
+    if let Some(material) = contact {
+        let shade = landscape::foot_shade(map, c);
+        if !shade.is_empty() {
+            out.push(commands.spawn((Mesh3d(meshes.add(shade.build())), MeshMaterial3d(material.clone()), Transform::IDENTITY, NotShadowCaster)).id());
+        }
     }
     out
 }

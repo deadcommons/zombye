@@ -114,6 +114,12 @@ pub enum Intent {
     /// Sit down (`Some(true)`: on the sofa, bed, toilet or bench beside you, else the ground), get
     /// up (`Some(false)`) or the other (`None`): `zombye_sim::sit`. Moving gets you up too.
     Sit { player: u32, sit: Option<bool> },
+    /// Get into a vehicle (the one faced, or by id) or out of the one you're in:
+    /// `zombye_sim::vehicles`. Refusals are noted for the player's client.
+    Vehicle { player: u32, op: zombye_sim::VehicleOp },
+    /// The driver's controls this tick (sent before `PlayerInput` while at a wheel, held until the
+    /// next): throttle -1 (reverse) to 1, steer -1 (left) to 1 (right), the brake.
+    Drive { player: u32, throttle: f32, steer: f32, brake: bool },
     /// Cancel the item job under way (`all: false`) or the whole queue (`all: true`): moves, searches,
     /// eating, treatments and crafts. Nothing is lost: a job only takes effect when it finishes.
     CancelJobs { player: u32, all: bool },
@@ -493,6 +499,10 @@ pub struct Snapshot {
     /// The campfires (`zombye_sim::fire`), in id order: every snapshot (a server sends them when they change).
     #[serde(default)]
     pub fires: Vec<zombye_sim::FireView>,
+    /// The vehicles (`zombye_sim::vehicles`), in id order: every snapshot (a server sends them
+    /// when they change).
+    #[serde(default)]
+    pub vehicles: Vec<zombye_sim::VehicleView>,
 }
 
 /// What a body has on, for drawing it (#63): the clothing and accessories it wears in the order put
@@ -633,6 +643,7 @@ impl Snapshot {
             lit_rooms: world.power().lit().to_vec(),
             grid_on: world.power().grid_on(),
             fires: world.fires().iter().map(|f| f.view()).collect(),
+            vehicles: world.vehicles().iter().map(zombye_sim::VehicleView::of).collect(),
         }
     }
 
@@ -700,7 +711,22 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
     {
         return;
     }
+    // At the wheel (`zombye_sim::vehicles`) a survivor drives and can eat, drink, treat its
+    // wounds, craft and move things between its pockets and bags; nothing else.
+    if let Some(player) = intent.action_by()
+        && world.in_vehicle(player)
+        && !matches!(intent, Intent::MoveItem { .. } | Intent::Equip { .. } | Intent::Wear { .. } | Intent::Unequip { .. } | Intent::Use { .. } | Intent::Treat { .. } | Intent::Craft { .. })
+    {
+        return;
+    }
     match intent {
+        Intent::Sleep { player, .. } | Intent::Sit { player, .. } if world.in_vehicle(*player) => {}
+        Intent::Vehicle { player, op } => {
+            let _ = world.player_vehicle(*player, *op);
+        }
+        Intent::Drive { player, throttle, steer, brake } => {
+            world.player_drive(*player, zombye_sim::DriveInput { throttle: *throttle, steer: *steer, brake: *brake });
+        }
         Intent::PlayerInput { player, seq, move_dir, facing, run, sneak, aim } => {
             let input = PlayerInput { move_dir: (*move_dir).into(), facing: *facing, run: *run, sneak: *sneak, aim: *aim };
             world.set_player_input(*player, *seq, input);

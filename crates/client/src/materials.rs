@@ -51,6 +51,9 @@ pub struct WorldExt {
     pub cutaway: bool,
     /// Built with the ground detail (patchy colour worked out per pixel, DCM-59)? Only the ground.
     pub ground: bool,
+    /// The chunks' ground, whose first UVs carry the height of the terrain under each vertex
+    /// (`MeshBuilder::drape`) rather than a cutaway anchor.
+    pub terrain: bool,
 }
 
 /// The pipeline key of a [`WorldExt`]: whether its shader has the cutaway and the ground detail.
@@ -59,11 +62,12 @@ pub struct WorldExt {
 pub struct WorldKey {
     pub cutaway: bool,
     pub ground: bool,
+    pub terrain: bool,
 }
 
 impl From<&WorldExt> for WorldKey {
     fn from(ext: &WorldExt) -> Self {
-        WorldKey { cutaway: ext.cutaway, ground: ext.ground }
+        WorldKey { cutaway: ext.cutaway, ground: ext.ground, terrain: ext.terrain }
     }
 }
 
@@ -90,6 +94,9 @@ pub struct WorldParams {
     /// x, y = where its banks have drifted to (metres), z, w = where it starts and where it is
     /// thickest, metres from the player.
     pub haze_at: Vec4,
+    /// xyz = unit vector toward the sun (the one directional light: the moon at night), w = 1 when
+    /// there is one. The terrain's facets are shaded by it (world.wesl, `FACET_TOWARD`).
+    pub sun: Vec4,
     /// Sight for the per-pixel fog of war (`FogState::sight`).
     pub sight: [Vec4; 3],
     /// Trees whose foliage is fading: (trunk foot x, z, fade 0..1 (1 = foliage gone), 0).
@@ -107,6 +114,7 @@ impl Default for WorldParams {
             lights: Vec4::ZERO,
             haze: Vec4::ZERO,
             haze_at: Vec4::ZERO,
+            sun: Vec4::ZERO,
             sight: [Vec4::ZERO; 3],
             trees: [Vec4::ZERO; MAX_FADING_TREES],
         }
@@ -116,7 +124,7 @@ impl Default for WorldParams {
 impl WorldParams {
     /// The struct as world.wesl declares it: every field a `vec4<f32>` (or an array of them), in order.
     fn floats(&self) -> Vec<f32> {
-        let head = [self.player, self.camera_dir, self.fog_rect, self.fog_tint, self.tree_count, self.lights, self.haze, self.haze_at];
+        let head = [self.player, self.camera_dir, self.fog_rect, self.fog_tint, self.tree_count, self.lights, self.haze, self.haze_at, self.sun];
         head.iter().chain(&self.sight).chain(&self.trees).flat_map(|v| v.to_array()).collect()
     }
 }
@@ -200,6 +208,9 @@ impl MaterialExtension for WorldExt {
             if key.bind_group_data.ground {
                 fragment.shader_defs.push("GROUND".into());
             }
+            if key.bind_group_data.terrain {
+                fragment.shader_defs.push("TERRAIN".into());
+            }
         }
         Ok(())
     }
@@ -238,7 +249,7 @@ impl Plugin for WorldMaterialPlugin {
 
 fn create_materials(mut commands: Commands, fog: Res<FogState>, cut: Res<crate::cutaway::Cutaway>, params: Res<ParamBuffer>, graphics: Res<crate::graphics::Graphics>, mut materials: ResMut<Assets<WorldMaterial>>) {
     let mut make_with =
-        |base: StandardMaterial, cutaway: bool, ground: bool| materials.add(ExtendedMaterial { base, extension: WorldExt { params: params.0.clone(), fog: fog.image.clone(), rays: fog.rays.clone(), cut: cut.image.clone(), cutaway, ground } });
+        |base: StandardMaterial, cutaway: bool, ground: bool, terrain: bool| materials.add(ExtendedMaterial { base, extension: WorldExt { params: params.0.clone(), fog: fog.image.clone(), rays: fog.rays.clone(), cut: cut.image.clone(), cutaway, ground, terrain } });
     let vertex_colored = |roughness: f32, double_sided: bool| StandardMaterial {
         base_color: Color::WHITE,
         perceptual_roughness: roughness,
@@ -246,8 +257,8 @@ fn create_materials(mut commands: Commands, fog: Res<FogState>, cut: Res<crate::
         cull_mode: if double_sided { None } else { Some(bevy::render::render_resource::Face::Back) },
         ..default()
     };
-    let ground = make_with(vertex_colored(0.95, false), false, graphics.ground_detail);
-    let mut make = |base: StandardMaterial, cutaway: bool| make_with(base, cutaway, false);
+    let ground = make_with(vertex_colored(0.95, false), false, graphics.ground_detail, true);
+    let mut make = |base: StandardMaterial, cutaway: bool| make_with(base, cutaway, false, false);
     let building = make(vertex_colored(0.85, true), true);
     let props = make(vertex_colored(0.85, false), false);
     let props_cut = make(vertex_colored(0.85, false), true);
@@ -276,9 +287,12 @@ pub fn update_params(
     mut fades: ResMut<TreeFades>,
     player: Query<&Transform, With<Player>>,
     cams: Query<&IsoCamera>,
+    sun: Query<&GlobalTransform, With<crate::daynight::Sun>>,
 ) {
     let (Ok(p), Ok(cam)) = (player.single(), cams.single()) else { return };
     let chest = p.translation.with_y(1.1);
+    // Where the chest really is, over hills too (trees stand on the ground, `zombye_sim::terrain`).
+    let chest_world = p.translation + Vec3::Y * 1.1;
     let camera_dir = cam.offset_dir();
     // Trees in front of the player fade their foliage out; the rest fade back in.
     let step = time.delta_secs() / FADE_SECS;
@@ -292,7 +306,7 @@ pub fn update_params(
                 continue;
             }
             if let Some(spec) = crate::meshgen::trees::tree_at(x, y, map.0.tile(t).feature)
-                && crown_hides(&spec, chest, camera_dir)
+                && crown_hides(&spec, chest_world - Vec3::Y * map.0.ground(spec.base.xz()), camera_dir)
             {
                 hiding.push((t, spec.base.xz()));
             }
@@ -333,6 +347,7 @@ pub fn update_params(
             let k = if cam.low() { 1.0 } else { cam.zoom / crate::daynight::HAZE_ZOOM };
             Vec4::new(t * 0.35, t * 0.12, h.near * k, h.far * k)
         },
+        sun: sun.single().map_or(Vec4::ZERO, |t| (-t.forward().as_vec3()).extend(1.0)),
         sight: fog.sight,
         trees,
     };

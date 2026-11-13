@@ -78,7 +78,7 @@ world_palette! {
         // Ground and roads.
         asphalt, asphalt_patch, wheel_track, gutter, paint_yellow, paint_white, oil_stain, sidewalk, sidewalk_joint,
         kerb_top, kerb_face, kerb_joint, driveway, path, long_grass, verge, tuft, tuft_dry, dirt, soil, hedge, hedge_top,
-        fence_wood, needles, rock, deadwood, cut_wood,
+        fence_wood, needles, rock, cliff, deadwood, cut_wood,
         // Instanced vegetation and litter (vegetation.rs).
         grass_blade, grass_blade_dry, worn_ground, flower_red, flower_cream, paper,
         // Trees.
