@@ -14,7 +14,9 @@
 //! `survivor_model.rs` plays). A body is matched by its file's name, so a `--survivor` body of
 //! another name takes none.
 //!
-//! The folder is `$ZOMBYE_RELEASE_ANIM`, else `release-anim` beside the game's binary. Without one
+//! The folder is `$ZOMBYE_RELEASE_ANIM`, else `release-anim` beside the game's binary (or in its pack), else, run from a checkout, that
+//! folder in the private art repo's checkout (`pack::art_repo`: `$ZOMBYE_ART`, else `zombye-art` beside
+//! this checkout, else `~/games/zombye-art`). Without one
 //! the game plays the public clips: anyone can build and mod it from this repo alone.
 
 use crate::character::{Clip, Rig, parse_clips};
@@ -25,14 +27,7 @@ use std::sync::OnceLock;
 pub fn root() -> Option<&'static Path> {
     static ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
     ROOT.get_or_init(|| {
-        let found = std::env::var_os("ZOMBYE_RELEASE_ANIM")
-            .map(PathBuf::from)
-            .or_else(|| crate::pack::beside_exe("release-anim"))
-            .filter(|p| crate::pack::is_dir(p));
-        if let Some(p) = &found {
-            println!("release animation: {}", p.display());
-        }
-        found
+        crate::pack::release_dir("ZOMBYE_RELEASE_ANIM", "release-anim")
     })
     .as_deref()
 }
