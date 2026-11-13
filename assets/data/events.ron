@@ -2,7 +2,7 @@
 // (crates/sim/src/events.rs). Weather is not here: it follows from the clock (weather.ron).
 //
 // Each event:
-//   id       unique; what MCP (`events`, `trigger_event`, `schedule_event`, `cancel_event`) calls it
+//   id       unique; what MCP (`events`, `trigger_event`, `schedule_event`) calls it
 //   name     a short name for lists
 //   message  what every survivor is told when it happens ("" for nothing)
 //   days     (from, to): game days after the world began; it happens at a time in between, picked

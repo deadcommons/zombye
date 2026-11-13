@@ -351,6 +351,8 @@ mod tests {
     fn world(events: EventsDef) -> World {
         let mut c = WorldConfig::new(7, 0, crate::worldgen::tests::templates());
         c.events = events;
+        // Days go by in these tests: nobody should die of thirst before the water goes off.
+        c.needs = crate::needs::NeedsTuning::off();
         World::new(c)
     }
 
@@ -386,6 +388,7 @@ mod tests {
     fn the_water_and_power_go_off_with_a_warning_and_a_message() {
         let mut w = world(parse_events(FILE).unwrap());
         let id = w.add_player(glam::Vec2::new(20.5, 20.5));
+        w.set_dev(id, Some(true), Some(true));
         let water = w.event_schedule().into_iter().find(|s| s.id == "water_off").unwrap().due_h.unwrap();
         assert!(w.water_on() && w.event_state().is_empty());
         let warn = w.config.events.events[w.config.events.index_of("water_off").unwrap()].warn.clone().unwrap();
