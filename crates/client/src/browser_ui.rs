@@ -665,10 +665,12 @@ fn draw(mut commands: Commands, mut ui: ResMut<BrowserUi>, mods: Res<LoadedMods>
     let selected = ui.selected.clone().filter(|s| b.row(s).is_some()).or(first);
     let at = selected.as_ref().and_then(|s| all.iter().position(|l| *l == Line::Server(s.clone())));
     let top = scrolled(ui.top, at, all.len());
+    // A file is named by its name alone: its whole path says nothing to a player.
+    let named = |s: &str| if s.starts_with("http://") || s.starts_with("https://") { s.to_string() } else { std::path::Path::new(s).file_name().map_or(s.to_string(), |n| n.to_string_lossy().into_owned()) };
     let source = match (&b.list, b.source()) {
         (_, "") => "Community list: none set (--server-list FILE or http://..., or server_list in settings.ron), so only servers you add".to_string(),
-        (ListState::Loading, s) => format!("Reading the community list: {s}"),
-        (ListState::Ready, s) => format!("Community list: {s}"),
+        (ListState::Loading, s) => format!("Reading the community list: {}", named(s)),
+        (ListState::Ready, s) => format!("Community list: {}", named(s)),
         (ListState::Failed(e), _) => format!("Can't use the community list: {e}"),
     };
     let source_colour = if matches!(b.list, ListState::Failed(_)) { WARN } else { DIM };

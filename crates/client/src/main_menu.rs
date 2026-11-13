@@ -784,7 +784,7 @@ fn multi(col: &mut ChildSpawnerCommands) {
 
 /// The Host screen's widths: a row's label, and what is beside it.
 const HOST_LABEL: f32 = 130.0;
-const HOST_WIDE: f32 = 640.0;
+const HOST_WIDE: f32 = WIDTH;
 
 /// A line of text to type in: its label, what is typed (or what it will be when left empty).
 fn host_field(col: &mut ChildSpawnerCommands, label: &str, text: &str, empty: &str, focused: bool, which: HostField) {
