@@ -344,7 +344,8 @@ fn predict(
     if let (Some(mut car), Some(d)) = (me.car, drive) {
         let Some(kind) = join.vehicles.kinds.get(car.kind as usize) else { return };
         car.prev = car.curr;
-        step_vehicle(&map.0, kind, car.id, &mut car.curr, d, TICK_DT, join.vehicles.tuning.bounce);
+        let perf = link.curr.vehicles.iter().find(|v| v.id == car.id).map_or(zombye_sim::Perf::NEW, |v| v.perf());
+        step_vehicle(&map.0, kind, car.id, &mut car.curr, d, perf, TICK_DT, join.vehicles.tuning.bounce);
         me.curr.pos = seat_of(kind, &car.curr);
         me.curr.facing = car.curr.heading;
         me.car = Some(car);
@@ -410,9 +411,10 @@ fn reconcile(link: Res<ServerLink>, map: Res<ClientMap>, join: Res<JoinInfo>, mu
     {
         // At the wheel: the server's car, and the driving it hasn't had yet.
         let mut cs = v.state;
+        let perf = v.perf();
         for (_, _, d) in &me.pending {
             if let Some(d) = d {
-                step_vehicle(&map.0, kind, car.id, &mut cs, *d, TICK_DT, join.vehicles.tuning.bounce);
+                step_vehicle(&map.0, kind, car.id, &mut cs, *d, perf, TICK_DT, join.vehicles.tuning.bounce);
             }
         }
         car.curr = cs;
@@ -694,10 +696,14 @@ fn actions(
     if me.dead {
         return;
     }
-    // At the wheel of a car: E gets out; Space is the brake (in `predict`), nothing else here.
+    // At the wheel of a car: E gets out, H sounds the horn; Space is the brake (in `predict`),
+    // nothing else here.
     if me.car.is_some() {
         if keys.just_pressed(KeyCode::KeyE) {
             link.send(Intent::Vehicle { player: me.id, op: zombye_sim::VehicleOp::Exit });
+        }
+        if keys.just_pressed(KeyCode::KeyH) {
+            link.send(Intent::Vehicle { player: me.id, op: zombye_sim::VehicleOp::Horn });
         }
         return;
     }
@@ -737,7 +743,15 @@ fn actions(
     if gun && keys.just_pressed(KeyCode::KeyR) && !morning.is_some_and(|m| m.morning) {
         link.send(Intent::Use { player: me.id, from: zombye_sim::Place::Slot(zombye_sim::Slot::Hand), index: 0 });
     }
-    if keys.just_pressed(KeyCode::KeyE)
+    let shift_e = keys.just_pressed(KeyCode::KeyE) && shift;
+    if shift_e && let Some(i) = zombye_sim::vehicles::enterable(&map.0.vehicles, me.curr.pos, me.curr.facing, join.vehicles.tuning.enter_reach) {
+        // Shift+E at a car: pour the fuel we carry into it, else siphon its fuel into our can (the
+        // server says what's missing).
+        let vehicle = map.0.vehicles.get(i).map(|b| b.id);
+        let pour = link.own(me.id).is_some_and(|v| fuel_to_pour(&v.inventory, &join));
+        let op = if pour { zombye_sim::VehicleOp::Refuel { vehicle } } else { zombye_sim::VehicleOp::Siphon { vehicle } };
+        link.send(Intent::Vehicle { player: me.id, op });
+    } else if keys.just_pressed(KeyCode::KeyE)
         && let Some(i) = zombye_sim::vehicles::enterable(&map.0.vehicles, me.curr.pos, me.curr.facing, join.vehicles.tuning.enter_reach)
     {
         // A car beside us, faced (the server's rule on our copy of the boxes): get in at the wheel.
@@ -847,6 +861,12 @@ pub fn light_switch_faced(map: &zombye_sim::TileMap, pos: Vec2, facing: f32) -> 
     let to = spot.pos - pos;
     let d = to.length();
     d <= zombye_sim::power::SWITCH_REACH - 0.1 && (d < 0.5 || to.normalize_or_zero().dot(Vec2::from_angle(facing)) > 75f32.to_radians().cos())
+}
+
+/// Do we carry a fuel can with fuel in it (`VehicleTuning::fuel_item`)?
+fn fuel_to_pour(inv: &zombye_sim::Inventory, join: &JoinInfo) -> bool {
+    let can = join.items.iter().position(|d| d.id == join.vehicles.tuning.fuel_item);
+    can.is_some_and(|c| inv.stacks().any(|s| s.item as usize == c && s.used > 0))
 }
 
 /// The name of a parked car (a street prop of a vehicle kind, not one of the drivable ones, which
