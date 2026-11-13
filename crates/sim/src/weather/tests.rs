@@ -93,7 +93,8 @@ fn winter_is_devastating_and_summer_very_hot() {
     let t = WeatherTuning::default();
     for seed in [1, 2, 3] {
         let year = sample(&t, seed, 360.0, 1.0);
-        let in_month = |m: u8| year.iter().filter(move |(h, _)| t.date_at(*h).month == m).map(|(_, w)| w);
+        let tr = &t;
+        let in_month = |m: u8| year.iter().filter(move |(h, _)| tr.date_at(*h).month == m).map(|(_, w)| w);
         let mean = |m: u8| in_month(m).map(|w| w.temp_c).sum::<f32>() / in_month(m).count() as f32;
         let coldest = year.iter().map(|(_, w)| w.temp_c).fold(f32::INFINITY, f32::min);
         let hottest = year.iter().map(|(_, w)| w.temp_c).fold(f32::NEG_INFINITY, f32::max);

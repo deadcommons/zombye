@@ -2437,14 +2437,8 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             "tick": world.tick,
             "time_of_day": clock(world.time_of_day()),
             "daylight": world.daylight(),
-            "date": {
-                let d = world.date();
-                json!({"year": d.year, "month": d.month, "month_name": world.month_name(), "day": d.day, "season": d.season().id(), "day_number": d.day_number})
-            },
-            "weather": {
-                let w = world.weather();
-                json!({"kind": w.kind.id(), "intensity": w.intensity, "cloud": w.cloud, "wind": w.wind, "temp_c": w.temp_c, "forced": w.forced})
-            },
+            "date": date_json(world),
+            "weather": weather_json(world),
             "zombies": world.zombies.len(),
             "zombie_tiers": {
                 "active": world.stats.active,
@@ -5400,4 +5394,16 @@ mod tests {
         let (text, err) = call(&mut world, &mut persist, "step_ticks", json!({"n": 20}));
         assert!(!err, "{text}");
     }
+}
+
+/// The world's calendar for `stats`.
+fn date_json(world: &World) -> serde_json::Value {
+    let d = world.date();
+    json!({"year": d.year, "month": d.month, "month_name": world.month_name(), "day": d.day, "season": d.season().id(), "day_number": d.day_number})
+}
+
+/// The weather outdoors for `stats`.
+fn weather_json(world: &World) -> serde_json::Value {
+    let w = world.weather();
+    json!({"kind": w.kind.id(), "intensity": w.intensity, "cloud": w.cloud, "wind": w.wind, "temp_c": w.temp_c, "forced": w.forced})
 }
