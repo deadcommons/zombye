@@ -62,7 +62,8 @@
 //! that rise wore, #63; optional too),
 //! then `FARC` (how far the far clock is ahead of the tick, #57; optional, only written when it is),
 //! `TREE` (trees chopped at and felled, `crate::trees`; only when there are any) comes straight
-//! after `MAPD`, so the stumps are on the map before anything is built from it;
+//! after `MAPD`, so the stumps are on the map before anything is built from it, and `VEHC`
+//! (vehicles, `crate::vehicles`; only when there are any) straight after that, for the same reason;
 //! then `SHOV` (zombies shoved lately, whose shoves add up toward a knockdown; only when there are any),
 //! then `LEVL` (who and what is upstairs, `crate::stairs`; only when anyone or anything is),
 //! then `BAGS` (which pocket or bag each carried stack is in; only when anything is in a bag),
@@ -232,6 +233,10 @@ const TREE: [u8; 4] = *b"TREE";
 /// Deadwood laid out near players and taken (`crate::trees::DeadwoodSave`); only when there is
 /// any, so adding it didn't change the format version.
 const DEAD: [u8; 4] = *b"DEAD";
+/// Vehicles (`crate::vehicles::VehicleSave`), written straight after `TREE` (or `MAPD`): their
+/// props come off the regenerated map before anything is built from it. Only when there are any,
+/// so adding it didn't change the format version.
+const VEHC: [u8; 4] = *b"VEHC";
 const END: [u8; 4] = *b"END\0";
 /// Bytes before the first section: magic and version.
 const HEADER: usize = 12;
@@ -746,6 +751,7 @@ impl World {
             private_dirty: _,
             rise_looks,
             shoved,
+            vehicles,
             trees,
             upstairs,
             parked,
@@ -843,6 +849,10 @@ impl World {
         // anything is built from it. Only when there are any.
         if !trees.is_empty() {
             w.section(TREE, &encode(&trees.to_save()));
+        }
+        // Vehicles, for the same reason: their props come off the map on load.
+        if !vehicles.list.is_empty() {
+            w.section(VEHC, &encode(&self.vehicle_save()));
         }
         let world = WorldSave {
             tick: *tick,
@@ -1016,6 +1026,7 @@ impl World {
         save_check::check_settings(text, &config)?;
         let map_save: MapSave = decode(MAPD, r.expect(MAPD)?)?;
         let trees: Option<crate::trees::TreeSave> = r.optional(TREE)?.map(|p| decode(TREE, p)).transpose()?;
+        let vehicles: Option<crate::vehicles::VehicleSave> = r.optional(VEHC)?.map(|p| decode(VEHC, p)).transpose()?;
         let mut ws: WorldSave = decode(WRLD, r.expect(WRLD)?)?;
         // Weapons are named by index into the save's own list: move them to the content's.
         let mut blocking: Vec<String> = save_check::remap_weapons(&plan, &mut ws.players, force, &mut notes)?.into_iter().collect();
@@ -1108,6 +1119,19 @@ impl World {
                 notes.push(format!("the map changed: {dropped} felled or chopped trees no longer fit and were dropped"));
             }
             w.walk = WalkGrid::new(&w.map);
+        }
+        // Vehicles where they were driven to, their parked props off the map. On a new map they
+        // could stand anywhere, so they are left out.
+        if let Some(vehicles) = vehicles {
+            if new_map {
+                notes.push(format!("the map changed: {} vehicles were left out", vehicles.list.len()));
+            } else {
+                let dropped = w.restore_vehicles(vehicles).map_err(save_check::invalid)?;
+                if dropped > 0 {
+                    notes.push(format!("{dropped} vehicles of kinds the game no longer has were dropped"));
+                }
+                w.walk = WalkGrid::new(&w.map);
+            }
         }
         // On a new map the town, the spawn and its house are the new map's.
         if !new_map {
@@ -1498,6 +1522,8 @@ impl World {
         // What's in hand and what the load does to movement follow from the inventories.
         w.refresh_all_carry();
         save_check::validate(&w)?;
+        // Drivers back at their wheels.
+        w.seat_drivers().map_err(save_check::invalid)?;
         // Logged-out survivors and spawn protection (#68); those out of the world are set aside.
         let away = away.unwrap_or_default();
         let limit = crate::logout::MAX_LOGOUT_SECS;

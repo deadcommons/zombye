@@ -26,7 +26,7 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use zombye_net::Intent;
 use zombye_sim::players::step_movement;
-use zombye_sim::{ActionKind, DevFlags, PlayerInput, PlayerState, TICK_DT, ZombieAnim};
+use zombye_sim::{ActionKind, DevFlags, DriveInput, PlayerInput, PlayerState, TICK_DT, VehicleState, ZombieAnim, seat_of, step_vehicle};
 
 use crate::autoplay::AutoInput;
 use crate::camera::IsoCamera;
@@ -55,8 +55,9 @@ struct OtherPlayer(u32);
 pub struct LocalPlayer {
     pub id: u32,
     seq: u32,
-    /// Inputs sent but not yet confirmed by a snapshot, oldest first.
-    pending: VecDeque<(u32, PlayerInput)>,
+    /// Inputs sent but not yet confirmed by a snapshot, oldest first, with the driving input sent
+    /// with each while at a wheel.
+    pending: VecDeque<(u32, PlayerInput, Option<DriveInput>)>,
     /// Predicted state after the previous and the latest tick, for interpolation.
     pub prev: PlayerState,
     pub curr: PlayerState,
@@ -82,6 +83,19 @@ pub struct LocalPlayer {
     /// On a multiplayer server: our latest swing, shove or stomp, begun on the click rather than
     /// when the server's word of it comes back (`LocalPlayer::act`; `survivor.rs` plays it).
     pub swing: Option<OwnSwing>,
+    /// The car we are driving (`zombye_sim::vehicles`), predicted like our body: the snapshot's
+    /// state of it with the driving inputs it hasn't applied replayed on top. Our body sits in its
+    /// seat.
+    pub car: Option<CarPred>,
+}
+
+/// Our own car, predicted (see [`LocalPlayer::car`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CarPred {
+    pub id: u32,
+    pub kind: u16,
+    pub prev: VehicleState,
+    pub curr: VehicleState,
 }
 
 /// An action of our own begun on the click, on a multiplayer server (#23). Our survivor is
@@ -103,7 +117,7 @@ impl LocalPlayer {
     #[cfg(test)]
     pub fn for_test(id: u32, pos: Vec2) -> Self {
         let state = PlayerState::new(pos);
-        Self { id, seq: 0, pending: VecDeque::new(), prev: state, curr: state, sneak: false, aim: 0.0, aiming: false, pitch: 0.0, sent_pitch: 0.0, last_snapshot_tick: 0, hp: 100.0, dead: false, weapon: None, action: None, dev: DevFlags::default(), swing: None }
+        Self { id, seq: 0, pending: VecDeque::new(), prev: state, curr: state, sneak: false, aim: 0.0, aiming: false, pitch: 0.0, sent_pitch: 0.0, last_snapshot_tick: 0, hp: 100.0, dead: false, weapon: None, action: None, dev: DevFlags::default(), swing: None, car: None }
     }
 
     /// How far behind our own survivor the picture of everything else is, in seconds: the inputs
@@ -186,7 +200,7 @@ impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_player)
             .add_systems(Update, (toggle_sneak, face_cursor, actions))
-            .add_systems(FixedUpdate, (predict.in_set(PlayerInputSet).before(ServerTick).run_if(crate::live), reconcile.after(ServerTick)))
+            .add_systems(FixedUpdate, (predict.in_set(PlayerInputSet).before(ServerTick).run_if(crate::live), (vehicle_boxes, reconcile).chain().after(ServerTick)))
             // After the fixed ticks of this frame, before anything in Update reads the player's transform.
             .init_resource::<ViewFloor>()
             .add_systems(RunFixedMainLoop, (place_player, sync_other_players).in_set(RunFixedMainLoopSystems::AfterFixedMainLoop))
@@ -228,6 +242,7 @@ fn spawn_player(
         action,
         dev,
         swing: None,
+        car: None,
     });
 
     let assets = SurvivorAssets::new(&mut meshes, &mut materials, &mut bindposes);
@@ -252,6 +267,7 @@ fn toggle_sneak(keys: Res<ButtonInput<KeyCode>>, mut me: ResMut<LocalPlayer>) {
 fn predict(
     keys: Res<ButtonInput<KeyCode>>,
     map: Res<ClientMap>,
+    join: Res<JoinInfo>,
     auto: Res<AutoInput>,
     cams: Query<&IsoCamera>,
     mut me: ResMut<LocalPlayer>,
@@ -282,10 +298,24 @@ fn predict(
     if !me.aiming {
         me.aim = facing;
     }
-    let input = PlayerInput { move_dir, facing, run, sneak: me.sneak, aim: me.aiming };
+    let mut input = PlayerInput { move_dir, facing, run, sneak: me.sneak, aim: me.aiming };
     if me.dead {
         // The server ignores a dead player's input; nothing to predict.
         return;
+    }
+    // At a wheel (the snapshot says so): W/S throttle and reverse, A/D steer, Space the brake;
+    // the body stays in the seat.
+    follow_car(&mut me, &link, &join);
+    let drive = me.car.map(|_| {
+        let key = |k: KeyCode| if keys.pressed(k) { 1.0 } else { 0.0 };
+        if auto.active {
+            DriveInput::default()
+        } else {
+            DriveInput { throttle: key(KeyCode::KeyW) - key(KeyCode::KeyS), steer: key(KeyCode::KeyD) - key(KeyCode::KeyA), brake: keys.pressed(KeyCode::Space) }
+        }
+    });
+    if let Some(car) = me.car {
+        input = PlayerInput { move_dir: Vec2::ZERO, facing: car.curr.heading, run: false, sneak: me.sneak, aim: false };
     }
     me.seq += 1;
     let seq = me.seq;
@@ -301,20 +331,60 @@ fn predict(
         link.send(Intent::Aim { player: me.id, pitch });
         me.sent_pitch = pitch;
     }
-    link.send(Intent::PlayerInput { player: me.id, seq, move_dir: input.move_dir.to_array(), facing: input.facing, run, sneak: input.sneak, aim: input.aim });
+    if let Some(d) = drive {
+        link.send(Intent::Drive { player: me.id, throttle: d.throttle, steer: d.steer, brake: d.brake });
+    }
+    link.send(Intent::PlayerInput { player: me.id, seq, move_dir: input.move_dir.to_array(), facing: input.facing, run: input.run, sneak: input.sneak, aim: input.aim });
 
     if me.pending.len() >= MAX_PENDING {
         me.pending.pop_front();
     }
-    me.pending.push_back((seq, input));
+    me.pending.push_back((seq, input, drive));
     me.prev = me.curr;
+    if let (Some(mut car), Some(d)) = (me.car, drive) {
+        let Some(kind) = join.vehicles.kinds.get(car.kind as usize) else { return };
+        car.prev = car.curr;
+        step_vehicle(&map.0, kind, car.id, &mut car.curr, d, TICK_DT, join.vehicles.tuning.bounce);
+        me.curr.pos = seat_of(kind, &car.curr);
+        me.curr.facing = car.curr.heading;
+        me.car = Some(car);
+        return;
+    }
     let mut s = me.curr;
     step_movement(&map.0, &mut s, &input, TICK_DT);
     me.curr = s;
 }
 
+/// Whether we are at a wheel, by the latest snapshot: start predicting the car when we got in,
+/// stop when we got out.
+fn follow_car(me: &mut LocalPlayer, link: &ServerLink, join: &JoinInfo) {
+    let view = link.curr.vehicles.iter().find(|v| v.driver == me.id && v.driver != 0);
+    match (view, me.car) {
+        (None, _) => me.car = None,
+        (Some(v), Some(c)) if c.id == v.id => {}
+        (Some(v), _) => {
+            if join.vehicles.kinds.get(v.kind as usize).is_some() {
+                me.car = Some(CarPred { id: v.id, kind: v.kind, prev: v.state, curr: v.state });
+            }
+        }
+    }
+}
+
+/// The vehicles' boxes on our copy of the map, from each new snapshot, so walking (ours and the
+/// prediction of it) is kept out of them as on the server. Cars don't block sight, so nothing
+/// that redraws on a map change needs to hear of it.
+fn vehicle_boxes(link: Res<ServerLink>, join: Res<JoinInfo>, mut map: ResMut<ClientMap>) {
+    if link.curr.vehicles.is_empty() && map.0.vehicles.is_empty() {
+        return;
+    }
+    let boxes: Vec<_> = link.curr.vehicles.iter().filter_map(|v| v.boxed(&join.vehicles.kinds)).collect();
+    if boxes != map.0.vehicles {
+        map.bypass_change_detection().0.set_vehicles(boxes);
+    }
+}
+
 /// On a new snapshot: start from the server's state and replay the inputs it hasn't applied yet.
-fn reconcile(link: Res<ServerLink>, map: Res<ClientMap>, mut me: ResMut<LocalPlayer>) {
+fn reconcile(link: Res<ServerLink>, map: Res<ClientMap>, join: Res<JoinInfo>, mut me: ResMut<LocalPlayer>) {
     if link.curr.tick == me.last_snapshot_tick {
         return;
     }
@@ -329,12 +399,34 @@ fn reconcile(link: Res<ServerLink>, map: Res<ClientMap>, mut me: ResMut<LocalPla
         me.curr = view.state();
         return;
     }
-    while me.pending.front().is_some_and(|(seq, _)| *seq <= view.last_input_seq) {
+    while me.pending.front().is_some_and(|(seq, _, _)| *seq <= view.last_input_seq) {
         me.pending.pop_front();
     }
     let mut s = view.state();
-    for (_, input) in &me.pending {
-        step_movement(&map.0, &mut s, input, TICK_DT);
+    follow_car(me, &link, &join);
+    if let Some(mut car) = me.car
+        && let Some(v) = link.curr.vehicles.iter().find(|v| v.id == car.id)
+        && let Some(kind) = join.vehicles.kinds.get(car.kind as usize)
+    {
+        // At the wheel: the server's car, and the driving it hasn't had yet.
+        let mut cs = v.state;
+        for (_, _, d) in &me.pending {
+            if let Some(d) = d {
+                step_vehicle(&map.0, kind, car.id, &mut cs, *d, TICK_DT, join.vehicles.tuning.bounce);
+            }
+        }
+        car.curr = cs;
+        me.car = Some(car);
+        s.pos = seat_of(kind, &cs);
+        s.facing = cs.heading;
+        me.curr = s;
+        return;
+    }
+    for (_, input, d) in &me.pending {
+        // Inputs sent while we were still at a wheel didn't walk.
+        if d.is_none() {
+            step_movement(&map.0, &mut s, input, TICK_DT);
+        }
     }
     me.curr = s;
 }
@@ -446,7 +538,9 @@ fn sync_other_players(
         tf.translation = Vec3::new(pos.x, h0 + (h1 - h0) * alpha, pos.y);
         tf.rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - lerp_angle(prev.facing, v.facing, alpha));
         // Someone upstairs is under a roof unless that floor is the one we see open.
-        let shown = fog.visibility(pos) > 0.35 && (v.level == 0 || view.level > 0);
+        // At the wheel of a car they are in it (the car is drawn).
+        let driving = link.curr.vehicles.iter().any(|c| c.driver == v.id);
+        let shown = !driving && fog.visibility(pos) > 0.35 && (v.level == 0 || view.level > 0);
         let now = if shown { Visibility::Inherited } else { Visibility::Hidden };
         if *vis != now {
             *vis = now;
@@ -580,6 +674,7 @@ fn actions(
     map: Res<ClientMap>,
     players: Query<(&Transform, &Player)>,
     mut link: ResMut<ServerLink>,
+    notice: Option<ResMut<crate::saving::Notice>>,
 ) {
     let now = time.elapsed_secs();
     // Dev toggles: flip what the server last said.
@@ -593,6 +688,13 @@ fn actions(
     }
     // Dead: the death screen (`death.rs`) takes R (a new run) and Q / Esc (quit).
     if me.dead {
+        return;
+    }
+    // At the wheel of a car: E gets out; Space is the brake (in `predict`), nothing else here.
+    if me.car.is_some() {
+        if keys.just_pressed(KeyCode::KeyE) {
+            link.send(Intent::Vehicle { player: me.id, op: zombye_sim::VehicleOp::Exit });
+        }
         return;
     }
     // B lies down to sleep or gets up; asleep, setting off (WASD) gets up too (#11). Anything
@@ -631,7 +733,20 @@ fn actions(
     if gun && keys.just_pressed(KeyCode::KeyR) && !morning.is_some_and(|m| m.morning) {
         link.send(Intent::Use { player: me.id, from: zombye_sim::Place::Slot(zombye_sim::Slot::Hand), index: 0 });
     }
-    if keys.just_pressed(KeyCode::KeyE) {
+    if keys.just_pressed(KeyCode::KeyE)
+        && let Some(i) = zombye_sim::vehicles::enterable(&map.0.vehicles, me.curr.pos, me.curr.facing, join.vehicles.tuning.enter_reach)
+    {
+        // A car beside us, faced (the server's rule on our copy of the boxes): get in at the wheel.
+        let vehicle = map.0.vehicles.get(i).map(|b| b.id);
+        link.send(Intent::Vehicle { player: me.id, op: zombye_sim::VehicleOp::Enter { vehicle } });
+    } else if keys.just_pressed(KeyCode::KeyE)
+        && let Some(name) = parked_car_faced(&map.0, &join.vehicles, me.curr.pos, me.curr.facing)
+    {
+        // A parked car that isn't one of the drivable ones: say so, and where the nearest that is.
+        if let Some(mut notice) = notice {
+            notice.say(now, wont_start(&name, &link, &join, me.curr.pos));
+        }
+    } else if keys.just_pressed(KeyCode::KeyE) {
         // A fence or an open or broken window faced and in reach (the server's rule, on our copy
         // of the map): climb it. Walking into one no longer does.
         let climb = zombye_sim::players::climb_from(&map.0, me.curr.pos, me.curr.facing, &join.climb).is_some();
@@ -728,4 +843,48 @@ pub fn light_switch_faced(map: &zombye_sim::TileMap, pos: Vec2, facing: f32) -> 
     let to = spot.pos - pos;
     let d = to.length();
     d <= zombye_sim::power::SWITCH_REACH - 0.1 && (d < 0.5 || to.normalize_or_zero().dot(Vec2::from_angle(facing)) > 75f32.to_radians().cos())
+}
+
+/// The name of a parked car (a street prop of a vehicle kind, not one of the drivable ones, which
+/// are off the map) beside `pos` and faced, within the reach E gets into a car from.
+fn parked_car_faced(map: &zombye_sim::TileMap, data: &zombye_sim::VehicleData, pos: Vec2, facing: f32) -> Option<String> {
+    let reach = data.tuning.enter_reach;
+    let ahead = Vec2::from_angle(facing);
+    let mut best: Option<(f32, String)> = None;
+    for p in &map.street_props {
+        let Some(pk) = map.prop_kinds.get(p.kind as usize) else { continue };
+        let Some(k) = data.of_prop(&pk.id).and_then(|i| data.kinds.get(i)) else { continue };
+        let (corner, size) = map.street_prop_rect(p);
+        let (lo, hi) = (corner.as_vec2(), (corner + size).as_vec2());
+        let closest = pos.clamp(lo, hi);
+        let to = closest - pos;
+        let d = to.length();
+        if d > reach {
+            continue;
+        }
+        let faces = d < 0.05 || ahead.dot(to / d) > 75f32.to_radians().cos();
+        if faces && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+            best = Some((d, if k.name.is_empty() { k.id.replace('_', " ") } else { k.name.clone() }));
+        }
+    }
+    best.map(|(_, n)| n)
+}
+
+/// "This car won't start. The nearest one that will: a van 40 m to the north-east."
+fn wont_start(name: &str, link: &ServerLink, join: &JoinInfo, pos: Vec2) -> String {
+    let free = link.curr.vehicles.iter().filter(|v| v.driver == 0);
+    let near = free.min_by(|a, b| a.state.pos.distance(pos).total_cmp(&b.state.pos.distance(pos)));
+    let lower = name.to_lowercase();
+    match near {
+        Some(v) => {
+            let other = join.vehicles.kinds.get(v.kind as usize).map_or("car".to_string(), |k| if k.name.is_empty() { k.id.replace('_', " ") } else { k.name.to_lowercase() });
+            let to = v.state.pos;
+            format!(
+                "This {lower} won't start. The nearest one that will: a {other} {:.0} m {}",
+                to.distance(pos),
+                crate::chat::compass(pos, to)
+            )
+        }
+        None => format!("This {lower} won't start, and none here will"),
+    }
 }

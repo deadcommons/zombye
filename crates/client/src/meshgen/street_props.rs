@@ -41,7 +41,7 @@ fn centre(map: &TileMap, p: &StreetProp) -> Vec2 {
 }
 
 /// A box of the kind's size and colour, its front (south when facing south) a little darker.
-fn grey_box(mb: &mut MeshBuilder, centre: Vec2, facing: Side, (w, d, h): (f32, f32, f32), (r, g, b): (f32, f32, f32)) {
+pub(crate) fn grey_box(mb: &mut MeshBuilder, centre: Vec2, facing: Side, (w, d, h): (f32, f32, f32), (r, g, b): (f32, f32, f32)) {
     let (w, d) = if matches!(facing, Side::E | Side::W) { (d, w) } else { (w, d) };
     let c = rgb(r, g, b);
     let mut faces = same(c);

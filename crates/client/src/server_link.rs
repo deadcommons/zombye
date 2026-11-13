@@ -168,6 +168,9 @@ pub struct JoinInfo {
     pub climb: zombye_sim::ClimbTuning,
     /// Fires and cooking: a fire's reach, what heats a pot (the Make list, a fire's menu).
     pub fire: zombye_sim::FireTuning,
+    /// The vehicle kinds and the rules round driving (`vehicles.ron`): our own car is predicted
+    /// with them, and every car drawn and kept out of by its kind's box.
+    pub vehicles: zombye_sim::VehicleData,
     /// Which furniture is a container, for right-clicking one in the world (`world_actions.rs`).
     pub containers: zombye_sim::containers::ContainerData,
     /// The item tag that makes an item a blind to fit.
@@ -512,6 +515,7 @@ fn join_info(config: &zombye_sim::WorldConfig, player_id: u32, player_spawn: Vec
         carry: config.carry.clone(),
         climb: config.climb.clone(),
         fire: config.fire.clone(),
+        vehicles: config.vehicles.clone(),
         containers: config.containers.clone(),
         blind_tag: config.blinds.tag.clone(),
         seed: config.seed(),

@@ -72,7 +72,7 @@ struct Streamer {
 }
 
 #[derive(Resource)]
-struct SharedMeshes {
+pub(crate) struct SharedMeshes {
     door: Handle<Mesh>,
     /// A light switch on its wall, toggle down (off) and up (on): +z out of the wall, centred.
     switch: [Handle<Mesh>; 2],
@@ -91,7 +91,7 @@ struct SharedMeshes {
     door_cracks: [Handle<Mesh>; CRACK_STAGES],
     pane_cracks: [Handle<Mesh>; CRACK_STAGES],
     /// Blender-built furniture, drawn instead of the grey-box shapes where there is a model.
-    furniture: FurnitureModels,
+    pub(crate) furniture: FurnitureModels,
     /// The blended black of contact shadows ([`contact_shadows`]); `None` with the setting off.
     contact: Option<Handle<StandardMaterial>>,
 }
