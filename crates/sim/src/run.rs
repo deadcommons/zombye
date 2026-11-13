@@ -93,6 +93,8 @@ pub enum DeathCause {
     Survivor { by: u32, weapon: u16, stomp: bool, part: Part, wound: WoundKind },
     /// Standing in a fire (`crate::fire`; added last, like `Survivor`).
     Burned { part: Part },
+    /// A crash at the wheel of a vehicle (`crate::vehicles`; added last).
+    Crash,
 }
 
 /// "a gash", "an ..." for a wound kind; a clothing-stopped blow is "a blow".
@@ -150,6 +152,7 @@ impl DeathCause {
             Self::Other => "Died".to_string(),
             Self::Survivor { part, wound, .. } => format!("Killed by another survivor: {} to the {}", a_wound(wound), part.name()),
             Self::Burned { part } => format!("Burned to death standing in a fire: a burn on the {}", part.name()),
+            Self::Crash => "Killed in a car crash".to_string(),
         }
     }
 
@@ -165,6 +168,7 @@ impl DeathCause {
             Self::Other => "other",
             Self::Survivor { .. } => "survivor",
             Self::Burned { .. } => "burned",
+            Self::Crash => "crash",
         }
     }
 }

@@ -312,7 +312,7 @@ impl Inventory {
 }
 
 pub fn stack_weight(items: &[ItemDef], s: &ItemStack) -> f32 {
-    items.get(s.item as usize).map_or(0.0, |d| d.weight_kg * s.count as f32)
+    items.get(s.item as usize).map_or(0.0, |d| (d.weight_kg + if d.fuel_l.is_some() { s.used as f32 * crate::items::FUEL_KG_PER_L } else { 0.0 }) * s.count as f32)
 }
 
 pub fn stacks_volume(items: &[ItemDef], stacks: &[ItemStack]) -> f32 {
