@@ -389,6 +389,8 @@ mod tests {
         let mut w = world(parse_events(FILE).unwrap());
         let id = w.add_player(glam::Vec2::new(20.5, 20.5));
         w.set_dev(id, Some(true), Some(true));
+        // The power may go off before the water in this world: keep it on until it is cut by hand below.
+        w.schedule_event("power_off", None).unwrap();
         let water = w.event_schedule().into_iter().find(|s| s.id == "water_off").unwrap().due_h.unwrap();
         assert!(w.water_on() && w.event_state().is_empty());
         let warn = w.config.events.events[w.config.events.index_of("water_off").unwrap()].warn.clone().unwrap();
