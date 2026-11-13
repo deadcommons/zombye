@@ -347,7 +347,7 @@ pub const KEYS: [(&str, &[KeyRow]); 6] = [
     (
         "The world",
         &[
-            KeyRow::Bound(Action::Interact, "Open, shut, climb, get in, pick up, search: what you face"),
+            KeyRow::Bound(Action::Interact, "Open, climb, get in, pick up or search what you face"),
             KeyRow::Hold(Action::Interact, "Everything you can do with what you face"),
             KeyRow::Fixed("Right-click", "Everything you can do with what's under the pointer"),
             KeyRow::Bound(Action::Flashlight, "Flashlight or candle on and off"),
@@ -358,6 +358,7 @@ pub const KEYS: [(&str, &[KeyRow]); 6] = [
             KeyRow::Bound(Action::Stop, "Stop what you're doing"),
         ],
     ),
+    ("Camera", &[KeyRow::Fixed(", and .", "Turn a quarter"), KeyRow::Fixed(";", "First person and back"), KeyRow::Fixed("Wheel", "Zoom"), KeyRow::Fixed("F10", "Walls up or cut away")]),
     (
         "Screens",
         &[
@@ -371,7 +372,6 @@ pub const KEYS: [(&str, &[KeyRow]); 6] = [
             KeyRow::Fixed("Esc", "Pause menu"),
         ],
     ),
-    ("Camera", &[KeyRow::Fixed(", and .", "Turn a quarter"), KeyRow::Fixed(";", "First person and back"), KeyRow::Fixed("Wheel", "Zoom"), KeyRow::Fixed("F10", "Walls up or cut away")]),
     (
         "Other",
         &[
