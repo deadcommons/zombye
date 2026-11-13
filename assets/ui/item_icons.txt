@@ -101,5 +101,9 @@ firewood
 newspaper
 log
 hatchet
+nail
+nailed_bat
+spear
+dirty_water_bottle
 petrol_can
 siphon_hose

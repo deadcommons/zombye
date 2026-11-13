@@ -1410,7 +1410,7 @@ impl World {
     }
 
     /// Players with container `c` open hear about its new contents.
-    fn container_changed(&mut self, c: u32) {
+    pub(crate) fn container_changed(&mut self, c: u32) {
         let ids: Vec<u32> = self.players.iter().filter(|p| p.open == Some(c)).map(|p| p.id).collect();
         self.private_dirty.extend(ids);
     }

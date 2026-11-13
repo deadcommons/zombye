@@ -29,11 +29,19 @@
 //! new game (the game and server pick it), so the same town holds different things each game: a container holds the same whenever, and in whatever order, the
 //! houses are searched, and an unopened container costs nothing to save. Changing the tables only
 //! changes containers nobody has opened yet (`save_check` loads such a save with a note).
+//!
+//! **On the floor:** `floor` ([`FloorLoot`]) is what lies loose on building floors when the world
+//! begins (a knife by the kitchen counter, a bat in the hall): a few things per building, at least
+//! some in the house you wake up in, each picked by weight and more likely in the rooms its entry
+//! names. [`place_floor`] lays them out, from the loot seed too.
 
 use serde::{Deserialize, Serialize};
 
+use glam::{IVec2, Vec2};
+
 use crate::containers::{ANY_ROOM, ContainerData, ContainerDef};
-use crate::items::{ItemDef, ItemStack};
+use crate::items::{GroundItem, ItemDef, ItemStack};
+use crate::map::{Feature, TileMap};
 use crate::rng::Rng;
 
 /// The key that matches any room type or any container kind.
@@ -176,12 +184,130 @@ pub struct LootData {
     pub tiers: TierWeights,
     #[serde(default)]
     pub tables: Vec<LootTable>,
+    /// What lies loose on building floors when the world begins.
+    #[serde(default)]
+    pub floor: FloorLoot,
 }
 
 impl Default for LootData {
     fn default() -> Self {
-        Self { scale: 1.0, rare_scale: 1.0, tiers: TierWeights::default(), tables: Vec::new() }
+        Self { scale: 1.0, rare_scale: 1.0, tiers: TierWeights::default(), tables: Vec::new(), floor: FloorLoot::default() }
     }
+}
+
+/// What lies loose on building floors when the world begins (`floor` in `loot.ron`). The default
+/// has no entries: nothing lies about.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct FloorLoot {
+    /// How many things lie in each building, (min, max), uniform, times [`LootData::scale`].
+    pub per_building: (u8, u8),
+    /// At least this many lie in the house you wake up in (whatever `scale` says).
+    pub spawn_house_min: u8,
+    /// An entry's weight is multiplied by this in a room of one of its `rooms`.
+    pub room_bonus: f32,
+    pub entries: Vec<FloorEntry>,
+}
+
+impl Default for FloorLoot {
+    fn default() -> Self {
+        Self { per_building: (0, 2), spawn_house_min: 1, room_bonus: 3.0, entries: Vec::new() }
+    }
+}
+
+/// One thing that can lie on a floor.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FloorEntry {
+    /// An item id (`items.ron`).
+    pub item: String,
+    /// Relative chance among the floor's entries (positive).
+    #[serde(default = "one_f32")]
+    pub weight: f32,
+    /// How many lie there together, (min, max), uniform.
+    #[serde(default = "one_one")]
+    pub count: (u16, u16),
+    /// How rare it is ([`Rarity`]), as in the tables.
+    #[serde(default)]
+    pub tier: Rarity,
+    /// Room types (`kitchen`, `hall`, ...) where it is `room_bonus` times as likely.
+    #[serde(default)]
+    pub rooms: Vec<String>,
+}
+
+impl FloorEntry {
+    /// Its weight in a pick in a room of type `room`.
+    pub fn weight_in(&self, loot: &LootData, room: &str) -> f32 {
+        let rare = if self.tier >= Rarity::Rare { loot.rare_scale } else { 1.0 };
+        let bonus = if self.rooms.iter().any(|r| r == room) { loot.floor.room_bonus } else { 1.0 };
+        self.weight * loot.tiers.of(self.tier) * rare * bonus
+    }
+}
+
+/// Lay out `loot.floor` over every building's free ground-floor tiles (rooms of that building, no
+/// furniture): `per_building` things each (scaled), at least `spawn_house_min` in `spawn_building`.
+/// Deterministic for the same map, loot and seed; doesn't touch the world RNG. Ground item ids
+/// start at `first_id`.
+pub fn place_floor(map: &TileMap, loot: &LootData, items: &[ItemDef], spawn_building: usize, seed: u64, first_id: u32) -> Vec<GroundItem> {
+    let mut out = Vec::new();
+    let floor = &loot.floor;
+    let index = |id: &str| items.iter().position(|d| d.id == id).map(|i| i as u16);
+    if floor.entries.is_empty() {
+        return out;
+    }
+    let mut rng = Rng::new(seed ^ 0x17E5_CA77_E2ED);
+    let mut tiles: Vec<IVec2> = Vec::new();
+    for (bi, b) in map.buildings.iter().enumerate() {
+        tiles.clear();
+        for y in b.min.y..b.min.y + b.size.y {
+            for x in b.min.x..b.min.x + b.size.x {
+                let t = IVec2::new(x, y);
+                let tile = map.tile(t);
+                if tile.room != 0 && map.rooms[tile.room as usize].building as usize == bi && tile.feature == Feature::None {
+                    tiles.push(t);
+                }
+            }
+        }
+        let mut count = scaled(&mut rng, floor.per_building, loot.scale);
+        if bi == spawn_building {
+            count = count.max(floor.spawn_house_min as u32);
+        }
+        for _ in 0..count.min(tiles.len() as u32) {
+            let k = rng.below(tiles.len() as u32) as usize;
+            let t = tiles.swap_remove(k);
+            let room = map.rooms[map.tile(t).room as usize].room_type.as_str();
+            let total: f32 = floor.entries.iter().map(|e| e.weight_in(loot, room)).sum();
+            if total <= 0.0 {
+                continue;
+            }
+            let mut roll = rng.f32() * total;
+            let mut pick = None;
+            for e in &floor.entries {
+                let w = e.weight_in(loot, room);
+                if w <= 0.0 {
+                    continue;
+                }
+                pick = Some(e);
+                if roll < w {
+                    break;
+                }
+                roll -= w;
+            }
+            let Some(e) = pick else { continue };
+            let Some(item) = index(&e.item) else { continue };
+            let n = e.count.0 + rng.below((e.count.1 - e.count.0) as u32 + 1) as u16;
+            let size = items[item as usize].stack.max(1);
+            let pos = t.as_vec2() + Vec2::new(rng.range(0.3, 0.7), rng.range(0.3, 0.7));
+            let angle = rng.range(0.0, std::f32::consts::TAU);
+            let mut left = n;
+            while left > 0 {
+                let c = left.min(size);
+                out.push(GroundItem { id: first_id + out.len() as u32, stack: ItemStack::new(item, c), pos, angle });
+                left -= c;
+            }
+        }
+    }
+    out
 }
 
 fn one_f32() -> f32 {
@@ -248,6 +374,28 @@ impl LootData {
                 return Err(format!("tiers: {} must be in 0..100, got {w}", tier.label()));
             }
         }
+        let f = &self.floor;
+        check_rolls("floor: per_building", f.per_building)?;
+        if !(f.room_bonus.is_finite() && (0.0..=100.0).contains(&f.room_bonus)) {
+            return Err(format!("floor: room_bonus must be in 0..100, got {}", f.room_bonus));
+        }
+        for (i, e) in f.entries.iter().enumerate() {
+            if !valid_id(&e.item) {
+                return Err(format!("floor: item {:?} must be an item id (lowercase letters, digits and _)", e.item));
+            }
+            if !(e.weight > 0.0 && e.weight <= 1000.0) {
+                return Err(format!("floor: {} has weight {}; weights must be in (0, 1000]", e.item, e.weight));
+            }
+            if e.count.0 == 0 || e.count.0 > e.count.1 || e.count.1 > 100 {
+                return Err(format!("floor: {} has count {:?}; it must be (min, max) with 1 <= min <= max <= 100", e.item, e.count));
+            }
+            if f.entries[..i].iter().any(|o| o.item == e.item) {
+                return Err(format!("floor: {} is listed twice (give it one entry with the weight of both)", e.item));
+            }
+            if let Some(r) = e.rooms.iter().find(|r| !valid_id(r)) {
+                return Err(format!("floor: {}: room {r:?} must be a lowercase room type", e.item));
+            }
+        }
         for (i, t) in self.tables.iter().enumerate() {
             let what = format!("loot table {}", t.key());
             if !valid_id(&t.room) || !valid_id(&t.container) {
@@ -296,6 +444,11 @@ impl LootData {
                 if !items.iter().any(|d| d.id == e.item) {
                     return Err(format!("{what}: item {:?} isn't in items.ron", e.item));
                 }
+            }
+        }
+        for e in &self.floor.entries {
+            if !items.iter().any(|d| d.id == e.item) {
+                return Err(format!("floor: item {:?} isn't in items.ron", e.item));
             }
         }
         Ok(())
@@ -445,6 +598,33 @@ pub(crate) mod tests {
 
     pub(crate) fn shipped() -> LootData {
         parse_loot(include_str!("../../../assets/data/loot.ron")).unwrap()
+    }
+
+    /// What lies on floors is loot data: the shipped file lays weapons out (some in the spawn
+    /// house), a floor with no entries lays out nothing, and bad entries are explained.
+    #[test]
+    fn floor_loot_comes_from_the_loot_file() {
+        let base = WorldConfig::new(3, 0, templates()).with_items(items());
+        let w = World::new(base.clone().with_loot(shipped()));
+        assert!(!w.items().is_empty());
+        assert!(w.items().iter().any(|g| w.map.building_at(g.pos) == Some(w.spawn_building)), "nothing in the spawn house");
+        assert!(w.items().iter().all(|g| shipped().floor.entries.iter().any(|e| e.item == w.item_def(g.stack.item).id)));
+        let mut none = shipped();
+        none.floor.entries.clear();
+        assert!(World::new(base.clone().with_loot(none)).items().is_empty());
+        // Only mugs, three to a spot in kitchens: the file decides what lies about.
+        let mut mugs = shipped();
+        mugs.floor.entries = vec![FloorEntry { item: "mug".into(), weight: 1.0, count: (3, 3), tier: Rarity::Common, rooms: vec!["kitchen".into()] }];
+        let w = World::new(base.with_loot(mugs));
+        assert!(!w.items().is_empty() && w.items().iter().all(|g| w.item_def(g.stack.item).id == "mug" && g.stack.count == 3));
+        let bad = |edit: fn(&mut LootData)| {
+            let mut l = shipped();
+            edit(&mut l);
+            l.validate().err().or_else(|| l.check(&items(), &parse_containers(include_str!("../../../assets/data/containers.ron")).unwrap()).err()).unwrap_or_default()
+        };
+        assert!(bad(|l| l.floor.entries[0].weight = 0.0).contains("weight"));
+        assert!(bad(|l| l.floor.entries[0].item = "no_such_thing".into()).contains("isn't in items.ron"));
+        assert!(bad(|l| l.floor.per_building = (3, 1)).contains("per_building"));
     }
 
     fn items() -> Vec<ItemDef> {

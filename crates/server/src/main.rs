@@ -399,7 +399,7 @@ fn main() {
     } else {
         eprintln!(
             "usage: zombye-server (--config FILE | --mcp | --mcp-http [ADDR[:PORT]] [--mcp-token T | --mcp-no-auth] [--mcp-token-in-url] [--mcp-no-dev] [--mcp-origin ORIGIN] | --bench [--ticks N] [--players N] [--horde N] [--save-bench] \
-             | --host [ADDR[:PORT]] [--name NAME] [--max-players N] [--pvp on|off] [--spawn spread|together] [--password P] [--allow-dev] [--budget KB] [--fair-sight on|off] \
+             | --host [ADDR[:PORT]] [--no-reports] [--name NAME] [--max-players N] [--pvp on|off] [--spawn spread|together] [--password P] [--allow-dev] [--budget KB] [--fair-sight on|off] \
              [--logout-secs S] [--logout-safe-secs S] [--spawn-protection S] [--admin-mcp [ADDR[:PORT]] [--admin-token T] [--admin-origin ORIGIN]] \
              | --bots N --connect HOST[:PORT] [--secs S] [--name PREFIX] [--password P] [--bots-hostile] [--lag MS] \
              | --benchmark list|table|ID|all [--baseline idle|brawler|runner] [--agent NAME] [--results DIR] (ID with --mcp or --mcp-http: an agent plays it)) \

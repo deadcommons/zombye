@@ -149,6 +149,9 @@ pub struct WorldConfig {
     /// The calendar, the climate and the weather (`assets/data/weather.ron`, [`crate::weather`]);
     /// saved with the settings, so a world keeps its calendar.
     pub weather: crate::weather::WeatherTuning,
+    /// World events: the water and power going off and the like (`assets/data/events.ron`,
+    /// [`crate::events`]); saved with the settings, so a world keeps its schedule.
+    pub events: crate::events::EventsDef,
     /// Chopping trees down (`crate::trees`): their hit points, what chops, the logs they give.
     /// Saved with the settings.
     pub chop: crate::trees::ChopTuning,
@@ -203,6 +206,7 @@ impl WorldConfig {
             blinds: Default::default(),
             fire: Default::default(),
             weather: Default::default(),
+            events: Default::default(),
             chop: Default::default(),
             vehicles: Default::default(),
             sandbox: Default::default(),
@@ -270,6 +274,11 @@ impl WorldConfig {
 
     pub fn with_vehicles(mut self, vehicles: crate::vehicles::VehicleData) -> Self {
         self.vehicles = vehicles;
+        self
+    }
+
+    pub fn with_events(mut self, events: crate::events::EventsDef) -> Self {
+        self.events = events;
         self
     }
 
@@ -519,6 +528,9 @@ pub struct World {
     /// Weather set by hand ([`crate::weather::Forced`], MCP `set_weather`). Saved (the optional
     /// `WTHR` section), in the hash while set. The climate's weather follows from the seed and clock.
     pub(crate) weather_forced: Option<crate::weather::Forced>,
+    /// What world events have done ([`crate::events`]). Saved (the optional `EVNT` section), in
+    /// the hash while there is any.
+    pub(crate) events: crate::events::EventState,
 }
 
 /// Bare hands are added to weapons that have none (as the world does on creation).
@@ -563,7 +575,7 @@ impl World {
         let item_weapons = (0..config.items.len()).map(|i| weapon_items.iter().position(|w| *w == Some(i as u16)).map(|w| w as u16)).collect();
         let unarmed = config.weapons.iter().position(|w| w.category == WeaponCategory::Unarmed).unwrap_or(0) as u16;
         let generated = worldgen::generate_full(&config.generation, &config.templates, &config.street_props, &config.biomes);
-        let items = items::place_weapons(&generated.map, &config.weapons, &weapon_items, generated.spawn_building, config.loot_seed(), 1);
+        let items = crate::loot::place_floor(&generated.map, &config.loot, &config.items, generated.spawn_building, config.loot_seed(), 1);
         let sites = containers::find_sites(&generated.map, &config.containers);
         let mut map = generated.map;
         map.stair_speed = config.stairs.speed;
@@ -578,6 +590,7 @@ impl World {
             power,
             fires: Default::default(),
             weather_forced: None,
+            events: Default::default(),
             rng: Rng::new(config.generation.seed),
             combat_rng: Rng::new(config.generation.seed ^ 0xC0_4BA7),
             next_item_id: items.len() as u32 + 1,
@@ -915,11 +928,14 @@ impl World {
     /// healing, festering, the infection), and needs too (hunger, thirst, tiredness, sleep), in
     /// small steps.
     pub fn skip_time(&mut self, hours: f32) {
+        let minute = self.game_minute();
         self.clock_offset_hours += hours;
+        self.step_fridges(minute, self.game_minute());
         self.skip_health(hours);
         self.skip_needs(hours);
         self.step_first_night(hours);
         self.step_power();
+        self.step_events(true);
         self.step_fires(hours, 0.0);
     }
 
@@ -1198,6 +1214,7 @@ impl World {
 
     pub fn step(&mut self) {
         let start = Instant::now();
+        let minute = self.game_minute();
         self.attack_events.clear();
         self.thump_events.clear();
         self.break_events.clear();
@@ -1398,6 +1415,8 @@ impl World {
         self.step_needs(hours, true);
         self.step_first_night(hours);
         self.step_power();
+        // World events (`crate::events`): the water and power going off.
+        self.step_events(false);
         // Fires burn down, crackle and burn what stands in them (`crate::fire`).
         self.step_fires(hours, TICK_DT);
         // Fallen logs lie about the forest near players (`crate::trees`).
@@ -1424,6 +1443,8 @@ impl World {
         }
 
         self.tick += 1;
+        // Food in fridges with power keeps (`crate::power`).
+        self.step_fridges(minute, self.game_minute());
         // Where everybody stands now, for blows of lagging clients landing in the next few ticks (#23).
         self.record_lag_frame();
         let tier_counts = self.tier_counts();
@@ -1700,6 +1721,7 @@ impl World {
         if let Some(f) = &self.weather_forced {
             f.hash(&mut mix);
         }
+        self.events.hash(&mut mix);
         // Shoves adding up (mixed in only while there are any, so worlds without hash as before).
         for sh in &self.shoved {
             mix(0x5348_0000 | sh.count as u32);
