@@ -407,6 +407,7 @@ impl Bind {
     }
 
     /// As the file writes it.
+    #[cfg(test)]
     pub fn text(self) -> String {
         if self.hold { format!("Hold {}", self.button.id()) } else { self.button.id().to_string() }
     }

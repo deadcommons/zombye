@@ -293,8 +293,6 @@ pub enum KeyRow {
     Bound(Action, &'static str),
     Hold(Action, &'static str),
     Fixed(&'static str, &'static str),
-    /// An action's button, held.
-    Held(crate::pad::PadAction, &'static str),
 }
 
 impl KeyRow {
@@ -705,6 +703,8 @@ pub enum PadRow {
     Bound(crate::pad::PadAction, &'static str),
     Button(crate::pad::Button, &'static str),
     Fixed(&'static str, &'static str),
+    /// An action's button, held.
+    Held(crate::pad::PadAction, &'static str),
 }
 
 impl PadRow {
