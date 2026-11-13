@@ -35,6 +35,8 @@ const DONE: Color = theme::GOLD;
 const TODO: Color = Color::srgba(1.0, 1.0, 1.0, 0.2);
 /// Narrow enough to clear the vitals and the objectives panel on a 1280 px screen.
 const HINT_WIDTH: f32 = 540.0;
+/// Over the E prompt (`interact::PROMPT_UP`, one strip high), so the two never cover each other.
+const HINT_UP: f32 = 136.0;
 /// A zombie this close (metres) is the hint's business.
 const THREAT_M: f32 = 5.0;
 /// An outcome this fresh (ticks) is this session's dawn, not a quickload's.
@@ -103,7 +105,7 @@ fn spawn(mut commands: Commands) {
         .spawn((
             HintBox,
             // (Clear of the current action's bar, which moved up above the hotbar, #97.)
-            Node { position_type: PositionType::Absolute, bottom: px(crate::hotbar::REACH + 84.0), left: percent(50), margin: UiRect::left(px(-HINT_WIDTH / 2.0)), width: px(HINT_WIDTH), justify_content: JustifyContent::Center, padding: UiRect::axes(px(theme::STRIP_PAD.0 + 4.0), px(theme::STRIP_PAD.1)), ..default() },
+            Node { position_type: PositionType::Absolute, bottom: px(crate::hotbar::REACH + HINT_UP), left: percent(50), margin: UiRect::left(px(-HINT_WIDTH / 2.0)), width: px(HINT_WIDTH), justify_content: JustifyContent::Center, padding: UiRect::axes(px(theme::STRIP_PAD.0 + 4.0), px(theme::STRIP_PAD.1)), ..default() },
             theme::strip(),
             Visibility::Hidden,
             Pickable::IGNORE,

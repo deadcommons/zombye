@@ -14,7 +14,7 @@
 //! Gameplay tuning and difficulty aren't here: they belong to a world, so they are chosen when a
 //! new game is started (the new-game screen), and a server's are its own.
 //!
-//! `--settings graphics|audio|controls|game` starts with the screen up on that tab (pictures).
+//! `--settings display|graphics|effects|audio|controls|game` starts with the screen up on that tab (pictures).
 
 use bevy::prelude::*;
 use bevy::window::{MonitorSelection, PresentMode, PrimaryWindow, WindowMode};
@@ -27,25 +27,32 @@ use crate::theme::{self, BODY, SMALL, font};
 use crate::ui_scale::{self, ClientSettings, SettingsStore};
 
 /// (As wide inside the sheet's ragged edge.)
-const WIDTH: f32 = 1040.0;
+const WIDTH: f32 = 1180.0;
 const TABS_W: f32 = 190.0;
-const LABEL_W: f32 = 430.0;
+/// (Wide enough that a setting's line about itself stays one line.)
+const LABEL_W: f32 = 600.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Tab {
+    /// The window: full screen or not, its size, vsync, the UI's scale.
     #[default]
+    Display,
     Graphics,
+    /// The film's effects over the picture: a look, apart from what costs frame rate.
+    Effects,
     Audio,
     Controls,
     Game,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Graphics, Tab::Audio, Tab::Controls, Tab::Game];
+    pub const ALL: [Tab; 6] = [Tab::Display, Tab::Graphics, Tab::Effects, Tab::Audio, Tab::Controls, Tab::Game];
 
     pub fn name(self) -> &'static str {
         match self {
+            Tab::Display => "Display",
             Tab::Graphics => "Graphics",
+            Tab::Effects => "Effects",
             Tab::Audio => "Audio",
             Tab::Controls => "Controls",
             Tab::Game => "Game",
@@ -95,6 +102,8 @@ pub enum Change {
     /// Steps of 10%.
     Volume(i32),
     Music(i32),
+    /// The window's size, a step down or up the list (`window_mode::SIZES`).
+    WindowSize(i32),
     /// Steps of `ui_scale::STEP`.
     UiScale(i32),
     /// How much the UI explains (`help_text.rs`).
@@ -126,6 +135,11 @@ pub fn change(s: &mut ClientSettings, c: Change) {
         Change::Set(switch, on) => *switch_of(s, switch) = on,
         Change::Volume(n) => s.volume = stepped(s.volume, n, 10, 0, 200),
         Change::Music(n) => s.music = stepped(s.music, n, 10, 0, 200),
+        Change::WindowSize(n) => {
+            if let Some(size) = crate::window_mode::step_size(s.window_size.unwrap_or(crate::window_mode::DEFAULT_SIZE), n > 0) {
+                s.window_size = Some(size);
+            }
+        }
         Change::UiScale(n) => s.ui_scale = ui_scale::step(s.ui_scale, n > 0),
         Change::HelpText(h) => s.help_text = h,
         Change::OldLook(o) => s.old_look = o,
@@ -133,9 +147,17 @@ pub fn change(s: &mut ClientSettings, c: Change) {
         Change::Defaults(tab) => {
             let d = ClientSettings::default();
             match tab {
-                Tab::Graphics => (s.graphics, s.fullscreen, s.vsync, s.old_look) = (d.graphics, d.fullscreen, d.vsync, d.old_look),
+                Tab::Display => (s.fullscreen, s.vsync, s.window_size, s.ui_scale) = (d.fullscreen, d.vsync, d.window_size, d.ui_scale),
+                Tab::Graphics => s.graphics = d.graphics,
+                Tab::Effects => {
+                    let g = &mut s.graphics;
+                    let dg = &d.graphics;
+                    (g.bloom, g.grain, g.tilt_shift, g.vignette, g.haze) = (dg.bloom, dg.grain, dg.tilt_shift, dg.vignette, dg.haze);
+                    (g.sky, g.sky_light, g.light_shafts, g.ground_detail) = (dg.sky, dg.sky_light, dg.light_shafts, dg.ground_detail);
+                    s.old_look = d.old_look;
+                }
                 Tab::Audio => (s.volume, s.music, s.muted) = (d.volume, d.music, d.muted),
-                Tab::Game => (s.first_person, s.ui_scale, s.zombie_silhouettes, s.opening_hints, s.skip_menu, s.help_text, s.send_reports) = (d.first_person, d.ui_scale, d.zombie_silhouettes, d.opening_hints, d.skip_menu, d.help_text, d.send_reports),
+                Tab::Game => (s.first_person, s.zombie_silhouettes, s.opening_hints, s.skip_menu, s.help_text, s.send_reports) = (d.first_person, d.zombie_silhouettes, d.opening_hints, d.skip_menu, d.help_text, d.send_reports),
                 Tab::Controls => {
                     s.keys.clear();
                     s.pad.clear();
@@ -145,7 +167,7 @@ pub fn change(s: &mut ClientSettings, c: Change) {
         }
     }
     s.graphics = s.graphics.clone().clamped();
-    if s.graphics != before && !matches!(c, Change::Preset(_) | Change::Defaults(_)) {
+    if s.graphics != before && !matches!(c, Change::Preset(_) | Change::Defaults(Tab::Graphics)) {
         s.graphics.preset = Preset::Custom;
     }
 }
@@ -206,14 +228,42 @@ fn stepper(label: &'static str, about: &'static str, value: f32, lo: f32, hi: f3
 pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
     let g = &s.graphics;
     match tab {
+        Tab::Display => {
+            let size = s.window_size.unwrap_or(crate::window_mode::DEFAULT_SIZE);
+            let step = |up: bool| crate::window_mode::step_size(size, up).map(|_| Change::WindowSize(if up { 1 } else { -1 }));
+            vec![
+                switch("Fullscreen", "The window fills the screen, without a border. Alt+Enter or F11 switches.", s, Switch::Fullscreen),
+                if s.fullscreen {
+                    Row {
+                        label: "Resolution",
+                        about: "Full screen uses the screen's own resolution. Turn Fullscreen off to pick a window size.",
+                        control: Control::Stepper { value: "Screen".into(), down: None, up: None },
+                    }
+                } else {
+                    Row {
+                        label: "Resolution",
+                        about: "The window's size. One bigger than the screen is brought down to fit it.",
+                        control: Control::Stepper { value: format!("{} x {}", size.0, size.1), down: step(false), up: step(true) },
+                    }
+                },
+                switch("VSync", "Frames wait for the screen's refresh: no tearing.", s, Switch::Vsync),
+                Row {
+                    label: "UI scale",
+                    about: "The size of every panel and text. Ctrl and + or - while you play.",
+                    control: Control::Stepper {
+                        value: format!("{}%", s.ui_scale),
+                        down: (s.ui_scale > ui_scale::MIN_PCT).then_some(Change::UiScale(-1)),
+                        up: (s.ui_scale < ui_scale::MAX_PCT).then_some(Change::UiScale(1)),
+                    },
+                },
+            ]
+        }
         Tab::Graphics => vec![
             Row {
                 label: "Preset",
                 about: crate::graphics_ui::describe(g.preset),
                 control: Control::Choice(Preset::CHOICES.into_iter().map(|p| (p.name().to_string(), p == g.preset, Change::Preset(p))).collect()),
             },
-            switch("Fullscreen", "The window fills the screen, without a border.", s, Switch::Fullscreen),
-            switch("VSync", "Frames wait for the screen's refresh: no tearing.", s, Switch::Vsync),
             stepper("3D resolution", "The world's share of a Retina screen's pixels. The UI stays sharp.", g.render_scale, 0.5, 1.0, Change::RenderScale),
             stepper("Grass and flowers", "How dense the ground cover is. 0% is none.", g.vegetation, 0.0, MAX_VEGETATION, Change::Vegetation),
             Row {
@@ -226,6 +276,11 @@ pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
                 about: "Samples a pixel. Window glass looks best at 4x.",
                 control: Control::Choice([(1u32, "Off"), (2, "2x"), (4, "4x")].into_iter().map(|(n, name)| (name.to_string(), n == g.msaa, Change::Msaa(n))).collect()),
             },
+            switch("Soft shadows", "Shadow edges that soften away from what casts them. Costs frame rate.", s, Switch::SoftShadows),
+            switch("Contact shadows", "A soft dark line where walls meet the ground. Changes on the next start.", s, Switch::ContactShadows),
+            switch("Ambient occlusion", "Soft shade in corners, under cars and where things meet the ground. Turns anti-aliasing to SMAA.", s, Switch::Occlusion),
+        ],
+        Tab::Effects => vec![
             Row {
                 label: "Old look",
                 about: match s.old_look {
@@ -239,9 +294,6 @@ pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
             switch("Film grain", "A little noise over the picture.", s, Switch::Grain),
             switch("Tilt-shift", "Soft focus toward the top and bottom of the screen.", s, Switch::TiltShift),
             switch("Vignette", "Darkened corners.", s, Switch::Vignette),
-            switch("Contact shadows", "A soft dark line where walls meet the ground. Changes on the next start.", s, Switch::ContactShadows),
-            switch("Ambient occlusion", "Soft shade in corners, under cars and where things meet the ground. Turns anti-aliasing to SMAA.", s, Switch::Occlusion),
-            switch("Soft shadows", "Shadow edges that soften away from what casts them. Costs frame rate.", s, Switch::SoftShadows),
             switch("Haze", "A thin haze over the distance, thick and warm when the sun is low.", s, Switch::Haze),
             switch("Sky", "In first person, a sky that follows the hour, with the sun, moon and stars.", s, Switch::Sky),
             switch("Sky light", "The shade lit by the sky: bluer facing up, warmer facing down. Changes on the next start.", s, Switch::SkyLight),
@@ -259,15 +311,6 @@ pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
                 label: "View",
                 about: "The view a game starts in. The ; key switches while you play.",
                 control: Control::Choice(vec![("From above".into(), !s.first_person, Change::Set(Switch::FirstPerson, false)), ("First person".into(), s.first_person, Change::Set(Switch::FirstPerson, true))]),
-            },
-            Row {
-                label: "UI scale",
-                about: "The size of every panel and text. Ctrl and + or - while you play.",
-                control: Control::Stepper {
-                    value: format!("{}%", s.ui_scale),
-                    down: (s.ui_scale > ui_scale::MIN_PCT).then_some(Change::UiScale(-1)),
-                    up: (s.ui_scale < ui_scale::MAX_PCT).then_some(Change::UiScale(1)),
-                },
             },
             Row {
                 label: "Help text",
@@ -341,7 +384,7 @@ pub const KEYS: [(&str, &[KeyRow]); 6] = [
     (
         "The world",
         &[
-            KeyRow::Bound(Action::Interact, "Open, shut, climb, get in, pick up, search: what you face"),
+            KeyRow::Bound(Action::Interact, "Open, climb, get in, pick up or search what you face"),
             KeyRow::Hold(Action::Interact, "Everything you can do with what you face"),
             KeyRow::Fixed("Right-click", "Everything you can do with what's under the pointer"),
             KeyRow::Bound(Action::Flashlight, "Flashlight or candle on and off"),
@@ -352,6 +395,7 @@ pub const KEYS: [(&str, &[KeyRow]); 6] = [
             KeyRow::Bound(Action::Stop, "Stop what you're doing"),
         ],
     ),
+    ("Camera", &[KeyRow::Fixed(", and .", "Turn a quarter"), KeyRow::Fixed(";", "First person and back"), KeyRow::Fixed("Wheel", "Zoom"), KeyRow::Fixed("F10", "Walls up or cut away")]),
     (
         "Screens",
         &[
@@ -365,7 +409,6 @@ pub const KEYS: [(&str, &[KeyRow]); 6] = [
             KeyRow::Fixed("Esc", "Pause menu"),
         ],
     ),
-    ("Camera", &[KeyRow::Fixed(", and .", "Turn a quarter"), KeyRow::Fixed(";", "First person and back"), KeyRow::Fixed("Wheel", "Zoom"), KeyRow::Fixed("F10", "Walls up or cut away")]),
     (
         "Other",
         &[
@@ -447,6 +490,10 @@ fn spawn(mut commands: Commands, ui: Res<SettingsUi>) {
             GlobalZIndex(31),
         ))
         .with_children(|c| {
+            // Before a game, the menu's printed ground round the panel.
+            if !ui.in_game {
+                skin::ground(c);
+            }
             c.spawn((Panel, Node { width: px(WIDTH), flex_direction: FlexDirection::Column, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(8)), ..default() }, skin::panel()));
         });
 }
@@ -504,6 +551,7 @@ fn apply_live(
     old_look: Option<ResMut<OldLookNow>>,
     mut cams: Query<(&mut crate::camera::IsoCamera, &mut Projection)>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
+    monitors: Query<&bevy::window::Monitor>,
 ) {
     let (seen, was) = last.get_or_insert_with(|| (ui.changes, store.settings.clone()));
     if *seen == ui.changes {
@@ -579,6 +627,22 @@ fn apply_live(
             window.present_mode = present;
         }
     }
+    // A size picked here: the window takes it now, held to its screen as at a start.
+    if was.window_size != now.window_size
+        && !options.as_ref().is_some_and(|o| o.size_given)
+        && let Some(size) = now.window_size
+        && let Ok(mut window) = windows.single_mut()
+        && window.mode == WindowMode::Windowed
+    {
+        let mut size = (size.0 as f32, size.1 as f32);
+        if let Some(m) = monitors.iter().next() {
+            let scale = if m.scale_factor > 0.0 { m.scale_factor as f32 } else { 1.0 };
+            size = crate::window_mode::fit(size, (m.physical_width as f32 / scale, m.physical_height as f32 / scale));
+        }
+        if (window.resolution.width(), window.resolution.height()) != size {
+            window.resolution.set(size.0, size.1);
+        }
+    }
     (*seen, *was) = (ui.changes, now.clone());
 }
 
@@ -612,6 +676,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
         // The top bar: what this is, and the way out.
         p.spawn(Node { height: px(58), padding: UiRect::horizontal(px(24)), align_items: AlignItems::Center, column_gap: px(16), flex_shrink: 0.0, ..default() }).with_children(|bar| {
             skin::title(bar, "Settings");
+            skin::stripes(bar, 44.0);
             bar.spawn((Text::new("Kept as you change them."), font(SMALL), TextColor(DIM), TextLayout::no_wrap()));
             skin::spacer(bar);
             skin::button(bar, "Close", None, Look::Plain, Val::Auto).observe(|_: On<PointerPress>, mut ui: ResMut<SettingsUi>| ui.acts.push(Act::Close));
@@ -619,13 +684,15 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
         skin::rule(p);
         // The body: the tabs down the left, the open one's settings beside them.
         p.spawn(Node { align_items: AlignItems::Stretch, ..default() }).with_children(|body| {
-            body.spawn(Node { width: px(TABS_W), flex_shrink: 0.0, flex_direction: FlexDirection::Column, row_gap: px(8), padding: UiRect::all(px(16)), ..default() }).with_children(|col| {
+            body.spawn(Node { width: px(TABS_W), flex_shrink: 0.0, flex_direction: FlexDirection::Column, row_gap: px(8), padding: UiRect::all(px(20)), ..default() }).with_children(|col| {
                 for t in Tab::ALL {
                     chip(col, t.name(), t == tab, Some(Act::Tab(t)), percent(100));
                 }
             });
             skin::divider(body);
-            body.spawn(Node { flex_grow: 1.0, flex_direction: FlexDirection::Column, padding: UiRect::axes(px(24), px(14)), min_height: px(300), ..default() }).with_children(|col| {
+            // The key list is the tallest thing here: it keeps tight margins so it fits 1280 x 720.
+            let (pad, gap) = if tab == Tab::Controls { (12, 0) } else { (20, 8) };
+            body.spawn(Node { flex_grow: 1.0, flex_direction: FlexDirection::Column, padding: UiRect::axes(px(28), px(pad)), row_gap: px(gap), min_height: px(300), ..default() }).with_children(|col| {
                 if tab == Tab::Controls {
                     controls_head(col, input, pad_view);
                     if pad_view {
@@ -635,8 +702,8 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
                     }
                 }
                 for r in rows(tab, &s) {
-                    col.spawn(Node { align_items: AlignItems::Center, column_gap: px(16), min_height: px(38), ..default() }).with_children(|row| {
-                        row.spawn(Node { width: px(LABEL_W), flex_shrink: 0.0, flex_direction: FlexDirection::Column, ..default() }).with_children(|l| {
+                    col.spawn(Node { align_items: AlignItems::Center, column_gap: px(24), min_height: px(44), ..default() }).with_children(|row| {
+                        row.spawn(Node { width: px(LABEL_W), flex_shrink: 0.0, flex_direction: FlexDirection::Column, row_gap: px(2), ..default() }).with_children(|l| {
                             l.spawn((Text::new(r.label), theme::strong(BODY), TextColor(BONE)));
                             l.spawn((Text::new(r.about), font(SMALL), TextColor(DIM)));
                         });
@@ -648,7 +715,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
                             }
                             Control::Stepper { value, down, up } => {
                                 chip(c, "-", false, down.map(Act::Change), Val::Auto);
-                                c.spawn(Node { width: px(64), justify_content: JustifyContent::Center, ..default() }).with_children(|v| {
+                                c.spawn(Node { min_width: px(64), justify_content: JustifyContent::Center, ..default() }).with_children(|v| {
                                     v.spawn((Text::new(value.clone()), theme::strong(BODY), TextColor(BONE), TextLayout::no_wrap()));
                                 });
                                 chip(c, "+", false, up.map(Act::Change), Val::Auto);
@@ -657,15 +724,17 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
                     });
                 }
                 let note = match tab {
+                    Tab::Display => "Kept between sessions. For more frame rate at the same size, lower 3D resolution on the Graphics tab.",
                     Tab::Graphics if in_game => "Changes show at once round this screen.",
                     Tab::Graphics => "Auto measures the first seconds of a game and picks what this machine holds.",
+                    Tab::Effects => "The look over the picture. No preset turns the old look on or off.",
                     Tab::Audio => "Flags on the command line win for their session.",
                     Tab::Controls if ui.capture.is_some() => "Press the new key (with Shift, Ctrl or Alt if you like). Esc keeps the old one.",
                     Tab::Controls if pad_view => "The buttons are in pad.ron; choosing them here comes later. Auto plays with what you touched last: a button or stick, a key or a click.",
                     Tab::Controls => "Click a key to change it; the game's own keys are in keys.ron. Auto plays with what you touched last.",
                     Tab::Game => "Difficulty and the world's own options are chosen when you start a new game.",
                 };
-                col.spawn((Text::new(note), font(SMALL), TextColor(DIM), Node { margin: UiRect::top(px(10)), ..default() }));
+                col.spawn((Text::new(note), font(SMALL), TextColor(DIM), Node { margin: UiRect::top(px(if tab == Tab::Controls { 6 } else { 10 })), ..default() }));
             });
         });
         skin::rule(p);
@@ -782,7 +851,7 @@ fn pad_list(p: &mut ChildSpawnerCommands, family: crate::pad::Family) {
     p.spawn(Node { column_gap: px(22), align_items: AlignItems::FlexStart, ..default() }).with_children(|cols| {
         for (group, rows) in PAD_ROWS {
             cols.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(3), flex_basis: percent(33), ..default() }).with_children(|col| {
-                col.spawn((Text::new(group.to_uppercase()), theme::head(BODY + 2.0), TextColor(skin::GREEN), Node { margin: UiRect::top(px(6)), ..default() }));
+                col.spawn((Text::new(group.to_uppercase()), theme::head(BODY + 2.0), TextColor(skin::ACCENT), Node { margin: UiRect::top(px(6)), ..default() }));
                 for row in rows.iter().copied() {
                     col.spawn(Node { column_gap: px(8), align_items: AlignItems::Center, min_height: px(28), ..default() }).with_children(|line| {
                         line.spawn(Node { width: px(104), flex_shrink: 0.0, ..default() }).with_children(|k| {
@@ -802,9 +871,9 @@ fn keys_list(p: &mut ChildSpawnerCommands, capture: Option<Action>) {
     let bindings = crate::keys::current();
     p.spawn(Node { column_gap: px(22), align_items: AlignItems::FlexStart, ..default() }).with_children(|cols| {
         for pair in KEYS.chunks(2) {
-            cols.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(3), flex_basis: percent(33), ..default() }).with_children(|col| {
+            cols.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(2), flex_basis: percent(33), ..default() }).with_children(|col| {
                 for (group, keys) in pair {
-                    col.spawn((Text::new(group.to_uppercase()), theme::head(BODY + 2.0), TextColor(skin::GREEN), Node { margin: UiRect::top(px(6)), ..default() }));
+                    col.spawn((Text::new(group.to_uppercase()), theme::brand(BODY + 6.0), TextColor(skin::ACCENT), Node { margin: UiRect::top(px(6)), ..default() }));
                     for row in keys.iter().copied() {
                         col.spawn(Node { column_gap: px(8), align_items: AlignItems::Center, ..default() }).with_children(|line| {
                             line.spawn(Node { width: px(104), flex_shrink: 0.0, ..default() }).with_children(|k| match row {
@@ -917,7 +986,7 @@ mod tests {
     #[test]
     fn the_old_look_is_a_choice_of_three_no_preset_touches() {
         let mut s = ClientSettings::default();
-        let row = |s: &ClientSettings| rows(Tab::Graphics, s).into_iter().find(|r| r.label == "Old look").expect("on the Graphics tab");
+        let row = |s: &ClientSettings| rows(Tab::Effects, s).into_iter().find(|r| r.label == "Old look").expect("on the Effects tab");
         let Control::Choice(choices) = row(&s).control else { panic!("a choice") };
         assert_eq!(choices.iter().map(|(n, on, _)| (n.as_str(), *on)).collect::<Vec<_>>(), [("Off", true), ("Subtle", false), ("Strong", false)]);
         change(&mut s, choices[2].2);
@@ -930,7 +999,14 @@ mod tests {
         assert_eq!(ron::from_str::<ClientSettings>(&text).unwrap().old_look, OldLook::Strong);
         assert_eq!(ron::from_str::<ClientSettings>("(ui_scale: 110)").unwrap().old_look, OldLook::Off);
         change(&mut s, Change::Defaults(Tab::Graphics));
-        assert_eq!(s.old_look, OldLook::Off);
+        assert_eq!(s.old_look, OldLook::Strong, "the Graphics tab's defaults leave the Effects tab's look");
+        // The Effects tab's defaults put its switches and the look back.
+        change(&mut s, Change::Defaults(Tab::Effects));
+        assert_eq!((s.old_look, s.graphics.clone()), (OldLook::Off, Graphics::high()));
+        // From Low, they are a change by hand.
+        change(&mut s, Change::Preset(Preset::Low));
+        change(&mut s, Change::Defaults(Tab::Effects));
+        assert_eq!(s.graphics, Graphics { preset: Preset::Custom, bloom: true, grain: true, tilt_shift: true, vignette: true, haze: true, sky: true, ground_detail: true, ..Graphics::low() });
     }
 
     #[test]
@@ -967,7 +1043,7 @@ mod tests {
         let audio = rows(Tab::Audio, &s);
         assert!(matches!(&audio[1].control, Control::Stepper { up: None, down: Some(_), .. }));
         let graphics = rows(Tab::Graphics, &s);
-        assert!(matches!(&graphics[4].control, Control::Stepper { up: Some(_), down: None, .. }));
+        assert!(matches!(&graphics[2].control, Control::Stepper { up: Some(_), down: None, .. }));
     }
 
     #[test]
@@ -1004,10 +1080,32 @@ mod tests {
     }
 
     #[test]
+    fn a_resolution_is_picked_for_a_window_and_full_screen_has_the_screens() {
+        let mut s = ClientSettings::default();
+        let row = |s: &ClientSettings| rows(Tab::Display, s).into_iter().find(|r| r.label == "Resolution").expect("on the Display tab");
+        s.fullscreen = false;
+        assert!(matches!(row(&s).control, Control::Stepper { ref value, down: Some(_), up: Some(_) } if value == "1600 x 900"));
+        change(&mut s, Change::WindowSize(1));
+        assert_eq!(s.window_size, Some((1920, 1080)));
+        change(&mut s, Change::WindowSize(-1));
+        change(&mut s, Change::WindowSize(-1));
+        assert_eq!(s.window_size, Some((1366, 768)));
+        // It leaves the graphics preset alone.
+        assert_eq!(s.graphics, ClientSettings::default().graphics);
+        // Full screen: the screen's own, nothing to step.
+        s.fullscreen = true;
+        assert!(matches!(row(&s).control, Control::Stepper { ref value, down: None, up: None } if value == "Screen"));
+        change(&mut s, Change::Defaults(Tab::Display));
+        assert_eq!(s.window_size, None);
+    }
+
+    #[test]
     fn tabs_and_keys() {
         assert_eq!(Tab::parse("audio"), Some(Tab::Audio));
         assert_eq!(Tab::parse(" Game "), Some(Tab::Game));
         assert_eq!(Tab::parse("sound"), None);
+        // No tab is taller than the screen it must fit: ten rows at most.
+        assert!(Tab::ALL.into_iter().all(|t| rows(t, &ClientSettings::default()).len() <= 10));
         // Every group has keys, and no key or line is empty.
         assert!(KEYS.iter().all(|(g, keys)| !g.is_empty() && !keys.is_empty() && keys.iter().all(|r| !r.key().is_empty() && !r.does().is_empty())));
         // Every action that can be rebound is on the tab.
