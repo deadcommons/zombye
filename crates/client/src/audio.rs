@@ -18,6 +18,7 @@
 //!   sound (nobody did them). `--mute`, `--volume V` and M (mute) control it; offscreen renders
 //!   have no audio at all.
 
+use zombye_sim::RoomId;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -739,16 +740,16 @@ fn switch_clicks(
     local: Res<LocalPlayer>,
     lit: Res<crate::lights::LitRooms>,
     notes: Res<crate::server_link::ItemNotesThisFrame>,
-    mut was: Local<Option<Vec<u16>>>,
+    mut was: Local<Option<Vec<RoomId>>>,
     mut spots: Local<Option<Vec<Option<zombye_sim::power::SwitchSpot>>>>,
     mut queue: ResMut<Queue>,
 ) {
     let spots = spots.get_or_insert_with(|| zombye_sim::power::switch_spots(&map.0));
-    let at = |room: u16| spots.get(room as usize).copied().flatten().map(|s| s.pos);
+    let at = |room: RoomId| spots.get(room as usize).copied().flatten().map(|s| s.pos);
     if lit.is_changed() {
         if let Some(before) = was.as_ref() {
             // A room lit or dark now, where its switch moved (not the whole town at once: the grid).
-            let changed: Vec<u16> = lit.rooms.iter().filter(|r| !before.contains(r)).chain(before.iter().filter(|r| !lit.rooms.contains(r))).copied().collect();
+            let changed: Vec<RoomId> = lit.rooms.iter().filter(|r| !before.contains(r)).chain(before.iter().filter(|r| !lit.rooms.contains(r))).copied().collect();
             if changed.len() <= 2 {
                 for pos in changed.into_iter().filter_map(at) {
                     queue.at(Cue::LightSwitch, pos, 1.0);

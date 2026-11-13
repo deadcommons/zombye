@@ -597,7 +597,7 @@ impl Options {
             debug_stats: flag("--debug-stats"),
             god: flag("--god"),
             ignored: flag("--ignored"),
-            map_chunks: value("--map-chunks").and_then(|v| v.parse().ok()).filter(|n: &i32| (1..=256).contains(n)),
+            map_chunks: value("--map-chunks").and_then(|v| v.parse().ok()).filter(|n: &i32| (1..=zombye_sim::map::MAX_MAP_CHUNKS).contains(n)),
             saves: value("--saves").map(Into::into).unwrap_or_else(zombye_net::install::default_saves_dir),
             load: value("--load"),
             load_anyway: flag("--load-anyway"),

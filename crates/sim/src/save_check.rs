@@ -38,7 +38,7 @@ use glam::{IVec2, Vec2};
 
 use crate::inventory::JobKind;
 use crate::items::{GroundItem, ItemStack};
-use crate::map::{Edge, TileMap};
+use crate::map::{Edge, MAX_MAP_CHUNKS, TileMap};
 use crate::players::Player;
 use crate::save::{ContentPrint, LoadError};
 use crate::tiers::{RegionIndex, settle};
@@ -454,8 +454,8 @@ pub(crate) fn check_settings(text: &str, config: &WorldConfig) -> Result<(), Loa
         }
     }
     let g = &config.generation;
-    if g.chunks.x < 1 || g.chunks.y < 1 || g.chunks.x > 256 || g.chunks.y > 256 {
-        return Err(invalid(format!("settings: generation.chunks {} (1 to 256 a side)", g.chunks)));
+    if g.chunks.x < 1 || g.chunks.y < 1 || g.chunks.x > MAX_MAP_CHUNKS || g.chunks.y > MAX_MAP_CHUNKS {
+        return Err(invalid(format!("settings: generation.chunks {} (1 to {MAX_MAP_CHUNKS} a side)", g.chunks)));
     }
     if g.blocks.x < 1 || g.blocks.y < 1 || g.blocks.x > 32 || g.blocks.y > 32 {
         return Err(invalid(format!("settings: generation.blocks {} (1 to 32 a side)", g.blocks)));

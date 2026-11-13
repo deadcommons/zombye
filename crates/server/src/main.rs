@@ -260,7 +260,7 @@ fn main() {
     // its own setting; `--host` decides for itself, on unless `--pvp off`).
     config.combat.pvp = text("--pvp").as_deref() == Some("on");
     if let Some(chunks) = value("--map-chunks") {
-        config = config.with_map_chunks(chunks.clamp(1, 256) as i32);
+        config = config.with_map_chunks(chunks.clamp(1, zombye_sim::map::MAX_MAP_CHUNKS as _) as i32);
     }
 
     let save_path = text("--save").map(PathBuf::from);

@@ -24,6 +24,7 @@
 //!
 //! Colours come from the palette file (`assets/data/palette.ron`, through [`super::palette`]).
 
+use zombye_sim::RoomId;
 use bevy::prelude::*;
 use zombye_sim::map::{Building, Edge, Feature, Floor, OwnedEdge, RoofStyle, Side, TileMap};
 use zombye_sim::template::{BuildingKind, BuildingLook, Porch};
@@ -53,7 +54,7 @@ const PORCH_ROOF_FALL: f32 = 0.22;
 const ARCH_TOP: f32 = 2.4;
 
 /// Is this room outside, as far as the outside of a wall goes: outdoors, or a porch.
-pub fn outside(map: &TileMap, room: u16) -> bool {
+pub fn outside(map: &TileMap, room: RoomId) -> bool {
     room == 0 || map.rooms[room as usize].room_type == "porch"
 }
 
@@ -123,7 +124,7 @@ struct WallSide {
     anchor: Vec2,
 }
 
-fn wall_sides(owner: IVec2, which: OwnedEdge, kind: Edge, base: f32, rooms: (u16, u16), map: &TileMap) -> Vec<WallSide> {
+fn wall_sides(owner: IVec2, which: OwnedEdge, kind: Edge, base: f32, rooms: (RoomId, RoomId), map: &TileMap) -> Vec<WallSide> {
     let (a, b) = TileMap::edge_segment(owner, which);
     let along = (b - a).normalize();
     let anchor = (a + b) * 0.5;
@@ -189,14 +190,14 @@ impl<'a> Kit<'a> {
         Kit { map, b, index, look, wall, trim, line, commercial, porch }
     }
 
-    fn belongs(&self, room: u16) -> bool {
+    fn belongs(&self, room: RoomId) -> bool {
         room != 0 && self.map.rooms[room as usize].building as usize == self.index
     }
 
     /// The outside of one wall edge on one level: foundation and water table, siding lines, window
     /// frames and muntins, door casings. Added after `add_wall`, tagged like it.
     #[allow(clippy::too_many_arguments)]
-    pub fn dress_wall(&self, mb: &mut MeshBuilder, owner: IVec2, which: OwnedEdge, kind: Edge, base: f32, rooms: (u16, u16)) {
+    pub fn dress_wall(&self, mb: &mut MeshBuilder, owner: IVec2, which: OwnedEdge, kind: Edge, base: f32, rooms: (RoomId, RoomId)) {
         let (a, b) = TileMap::edge_segment(owner, which);
         let anchor = (a + b) * 0.5;
         mb.set_tag(CutTag { kind: CutKind::Wall, anchor, radius: 0.0 });
@@ -270,7 +271,7 @@ impl<'a> Kit<'a> {
 
     /// Everything that isn't one wall: corner boards, the roof's details, the porch, steps and the
     /// shopfront. `ground` are the ground-floor edges `add_wall` drew (tile, edge, kind, rooms).
-    pub fn finish(&self, ground: &[(IVec2, OwnedEdge, Edge, (u16, u16))], lower: &mut MeshBuilder, upper: &mut MeshBuilder, roof: &mut MeshBuilder) {
+    pub fn finish(&self, ground: &[(IVec2, OwnedEdge, Edge, (RoomId, RoomId))], lower: &mut MeshBuilder, upper: &mut MeshBuilder, roof: &mut MeshBuilder) {
         let ground_sides: Vec<WallSide> = ground.iter().flat_map(|&(o, w, k, r)| wall_sides(o, w, k, 0.0, r, self.map)).collect();
         self.corners(lower, &ground_sides);
         let mut by_level: Vec<(i8, Vec<WallSide>)> = Vec::new();
@@ -475,7 +476,7 @@ impl<'a> Kit<'a> {
     }
 
     /// Two steps up to every outside door with no porch (one low step on shops and offices).
-    fn steps(&self, mb: &mut MeshBuilder, ground: &[(IVec2, OwnedEdge, Edge, (u16, u16))]) {
+    fn steps(&self, mb: &mut MeshBuilder, ground: &[(IVec2, OwnedEdge, Edge, (RoomId, RoomId))]) {
         let c = lit_box(pal().step);
         for &(owner, which, kind, rooms) in ground {
             if !is_door(kind) {
@@ -638,7 +639,7 @@ impl<'a> Kit<'a> {
 
     /// A porch room under the main roof: posts along its open sides, a railing across its arches
     /// but the way in.
-    fn room_porch(&self, mb: &mut MeshBuilder, p: &Porch, ground: &[(IVec2, OwnedEdge, Edge, (u16, u16))]) {
+    fn room_porch(&self, mb: &mut MeshBuilder, p: &Porch, ground: &[(IVec2, OwnedEdge, Edge, (RoomId, RoomId))]) {
         let map = self.map;
         // Its arches to the outside, as (start, end) points on the wall line.
         let mut open: Vec<(Vec2, Vec2, IVec2)> = Vec::new();
@@ -738,7 +739,7 @@ impl<'a> Kit<'a> {
     }
 
     /// A flat canopy over each front door of an office.
-    fn door_canopies(&self, roof: &mut MeshBuilder, ground: &[(IVec2, OwnedEdge, Edge, (u16, u16))]) {
+    fn door_canopies(&self, roof: &mut MeshBuilder, ground: &[(IVec2, OwnedEdge, Edge, (RoomId, RoomId))]) {
         for &(owner, which, kind, rooms) in ground {
             if !is_door(kind) {
                 continue;

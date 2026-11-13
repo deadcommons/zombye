@@ -17,6 +17,7 @@
 //! `--map` starts with it open, `--map-zoom PX` and `--map-center X,Y` set the view and `--map-all`
 //! shows everything as explored (pictures).
 
+use zombye_sim::RoomId;
 use bevy::asset::RenderAssetUsages;
 use bevy::image::ImageSampler;
 use bevy::input::InputSystems;
@@ -222,7 +223,7 @@ pub struct MapUi {
 #[derive(Clone, PartialEq)]
 struct Baked {
     size: IVec2,
-    entered: Vec<u16>,
+    entered: Vec<zombye_sim::BuildingId>,
 }
 
 impl MapUi {
@@ -468,10 +469,10 @@ fn input(
 pub fn bake_tiles(map: &TileMap, entered: &dyn Fn(usize) -> bool) -> Vec<u8> {
     let (w, h) = (map.width().max(0), map.height().max(0));
     let mut out = vec![0u8; (w * h) as usize * 4];
-    let building_of = |room: u16| if room == 0 { None } else { map.rooms.get(room as usize).map(|r| r.building as usize) };
+    let building_of = |room: RoomId| if room == 0 { None } else { map.rooms.get(room as usize).map(|r| r.building as usize) };
     // An edge between two tiles: 1 an outside wall, 2 a wall between rooms, 3 a fence, 0 nothing
     // drawn (open ground, doors and arches, which read as gaps in the wall).
-    let edge_kind = |edge: Edge, a: u16, b: u16| -> u8 {
+    let edge_kind = |edge: Edge, a: RoomId, b: RoomId| -> u8 {
         match edge {
             Edge::None | Edge::Arch => 0,
             Edge::Fence => 3,

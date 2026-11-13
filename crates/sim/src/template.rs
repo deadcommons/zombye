@@ -118,7 +118,7 @@ pub struct Porch {
     /// The side it opens to, away from the house.
     pub facing: Side,
     /// The porch room ([`PorchDef::Room`]), or 0 for a porch built onto the front wall.
-    pub room: u16,
+    pub room: crate::map::RoomId,
 }
 
 /// How a template is placed: footprint min corner, clockwise quarter turns, mirror along x.
@@ -136,7 +136,7 @@ pub struct Placed {
     /// Doors on the outside of the building: world tile (inside) and world side.
     pub exterior_doors: Vec<(IVec2, Side, bool)>,
     /// Ground-floor room ids by local room character.
-    pub rooms: BTreeMap<char, u16>,
+    pub rooms: BTreeMap<char, crate::map::RoomId>,
 }
 
 impl BuildingTemplate {
@@ -258,11 +258,11 @@ impl BuildingTemplate {
 
         for (li, level) in self.levels.iter().enumerate() {
             // Rooms for this level.
-            let mut room_ids: BTreeMap<char, u16> = BTreeMap::new();
+            let mut room_ids: BTreeMap<char, crate::map::RoomId> = BTreeMap::new();
             for (c, def) in &self.rooms {
                 if level.layout.iter().any(|r| r.contains(*c)) {
-                    map.rooms.push(Room { building: building as u16, name: def.name.clone(), room_type: def.room_type.clone(), floor: def.floor });
-                    room_ids.insert(*c, (map.rooms.len() - 1) as u16);
+                    map.rooms.push(Room { building: crate::map::building_id(building), name: def.name.clone(), room_type: def.room_type.clone(), floor: def.floor });
+                    room_ids.insert(*c, crate::map::room_id(map.rooms.len() - 1));
                 }
             }
             let room_of = |c: char| room_ids.get(&c).copied().unwrap_or(0);

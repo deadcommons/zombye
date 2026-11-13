@@ -1097,6 +1097,8 @@ impl World {
                 }
             }
             MapLayout::Full(map) => {
+                let mut map = map;
+                map.normalise_outdoors();
                 if !blocking.is_empty() {
                     return Err(LoadError::ContentChanged(blocking));
                 }

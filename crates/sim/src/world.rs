@@ -1842,7 +1842,7 @@ mod tests {
         let mut w = world(3, 850);
         let goal = street_point(&w);
         w.set_goal(Some(goal));
-        let rooms_before: Vec<u16> = w.zombies.pos.iter().map(|p| w.map.room_at(*p)).collect();
+        let rooms_before: Vec<crate::map::RoomId> = w.zombies.pos.iter().map(|p| w.map.room_at(*p)).collect();
         let near = |w: &World| w.zombies.pos.iter().filter(|p| p.distance(goal) < 15.0).count();
         let before = near(&w);
         for _ in 0..20 * 40 {
@@ -3527,7 +3527,7 @@ mod tests {
             // A shut 4 x 4 room round the noise.
             let c = noise.floor().as_ivec2();
             w.map.rooms.push(crate::map::Room { building: 999, name: "Shed".into(), room_type: "shed".into(), floor: crate::map::Floor::Concrete });
-            let id = (w.map.rooms.len() - 1) as u16;
+            let id = crate::map::room_id(w.map.rooms.len() - 1);
             for dy in -2..2 {
                 for dx in -2..2 {
                     w.map.tile_mut(c + IVec2::new(dx, dy)).unwrap().room = id;

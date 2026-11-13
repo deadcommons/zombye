@@ -175,7 +175,7 @@ pub fn place(map: &mut TileMap, seed: u64, t: &BlindTuning) {
                     let e = EdgeRef::new(IVec2::new(x, y), which);
                     let (sa, sb) = sides(e);
                     let (ra, rb) = (map.tile(sa).room, map.tile(sb).room);
-                    let ours = |r: u16| r != 0 && map.rooms.get(r as usize).is_some_and(|room| room.building as usize == b);
+                    let ours = |r: crate::map::RoomId| r != 0 && map.rooms.get(r as usize).is_some_and(|room| room.building as usize == b);
                     if !(ours(ra) || ours(rb)) {
                         continue;
                     }

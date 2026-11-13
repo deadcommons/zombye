@@ -86,7 +86,7 @@ pub use inventory::{Burden, Carry, CarryTuning, Inventory, ItemJob, ItemNote, Jo
 pub use items::{BodyPart, GroundItem, ItemCategory, ItemDef, ItemStack, Layer, Pouch, WearSlot, WeaponCategory, WeaponDef};
 pub use loot::{LootData, LootTable};
 pub use flow::FlowField;
-pub use map::TileMap;
+pub use map::{BuildingId, NO_BUILDING, RoomId, TileMap};
 pub use origin::{BackgroundDef, Choice, Effect, Origin, OriginData, Perks, PickDef, Start, WardrobeSlot};
 pub use needs::{Freshness, Needs, NeedsTuning, NeedsView, SleepSpot, WakeReason};
 pub use status::{StatusData, StatusInput, StatusTag, TagKind};

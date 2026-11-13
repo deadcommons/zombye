@@ -11,6 +11,7 @@
 //!
 //! **Adding something:** a [`Target`] variant, its test in [`pick`], and its lines in [`entries`].
 
+use zombye_sim::RoomId;
 use bevy::prelude::*;
 use zombye_net::{Intent, PrivateView};
 use zombye_sim::containers::{ContainerData, ContainerSite};
@@ -42,7 +43,7 @@ pub enum Target {
     /// A dead zombie's body (its id, where it lies): searched like a container ([`pick_body`]).
     Body(u32, Vec2),
     /// A room's light switch (the room, where the switch is: `power::switch_spots`).
-    Switch(u16, Vec2),
+    Switch(RoomId, Vec2),
     /// A campfire someone built (its id, where it stands, burning or not, game minutes of fuel).
     Fire(u32, Vec2, bool, u16),
     /// A tap that isn't a container (a bath, a toilet: `power.ron`'s `water.taps`): its
@@ -289,7 +290,7 @@ pub fn pick_switch(spots: &[Option<zombye_sim::power::SwitchSpot>], player: Vec2
     spots
         .iter()
         .enumerate()
-        .filter_map(|(room, s)| s.map(|s| (room as u16, s)))
+        .filter_map(|(room, s)| s.map(|s| (room as RoomId, s)))
         .filter(|(_, s)| s.pos.distance(player) <= LOOK)
         .filter_map(|(room, s)| {
             let along = Vec2::new(-s.normal.y, s.normal.x) * 0.25;

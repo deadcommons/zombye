@@ -62,7 +62,7 @@ pub struct Explored {
     /// One bit a cell, row by row, 64 to a word.
     pub cells: Vec<u64>,
     /// Buildings entered (indices into the map's buildings), sorted.
-    pub entered: Vec<u16>,
+    pub entered: Vec<crate::map::BuildingId>,
     /// The tile this survivor stood on at its first look: where it woke up, or joined.
     pub home: Option<(i16, i16)>,
 }
@@ -125,7 +125,7 @@ impl Explored {
 
     /// Notes a building as entered. True if it wasn't yet.
     pub fn enter(&mut self, building: usize) -> bool {
-        let Ok(b) = u16::try_from(building) else { return false };
+        let Ok(b) = crate::map::BuildingId::try_from(building) else { return false };
         match self.entered.binary_search(&b) {
             Ok(_) => false,
             Err(at) => {
@@ -136,7 +136,7 @@ impl Explored {
     }
 
     pub fn has_entered(&self, building: usize) -> bool {
-        u16::try_from(building).is_ok_and(|b| self.entered.binary_search(&b).is_ok())
+        crate::map::BuildingId::try_from(building).is_ok_and(|b| self.entered.binary_search(&b).is_ok())
     }
 
     /// Cells marked.
@@ -279,7 +279,7 @@ mod tests {
         let home = w.player_spawn;
         assert!(woke.at(home) && woke.count() > 4, "the bedroom and round it: {} cells", woke.count());
         assert!(!woke.at(home + Vec2::new(40.0, 0.0)), "indoors it reaches {} m", w.config.explore.indoors_m);
-        assert_eq!(woke.entered, vec![w.map.building_at(home).unwrap() as u16]);
+        assert_eq!(woke.entered, vec![w.map.building_at(home).unwrap() as crate::map::BuildingId]);
         assert_eq!(woke.home, Some((home.x.floor() as i16, home.y.floor() as i16)));
         // Further on, more of the map; what was seen stays.
         w.players[0].state.pos = home + Vec2::new(40.0, 0.0);
