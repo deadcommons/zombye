@@ -155,6 +155,8 @@ pub fn wanted(o: &Options) -> bool {
 #[derive(Resource)]
 pub struct Loading {
     pub up: bool,
+    /// Where a start's time goes, printed once when the screen fades ([`Timeline`]).
+    timeline: Timeline,
     /// Held up for a picture (`--loading-screen`).
     hold: bool,
     frames: u32,
@@ -201,16 +203,18 @@ fn install(app: &mut App, hold: bool, offscreen: bool, data: &std::path::Path, l
     let now = Instant::now();
     // A picture shows the file's first line; a player's start begins anywhere, or where the
     // screen before this one left off.
+    let mut timeline = Timeline::default();
     let (seed, started) = if hold || offscreen {
         (0, now)
     } else if let Some((seed, shown)) = handed(std::env::var(HANDED).ok().as_deref()) {
+        timeline.before_ms = shown.as_millis() as u64;
         (seed, now.checked_sub(shown).unwrap_or(now))
     } else {
         (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64 >> 10), now)
     };
     let line = (started.elapsed().as_secs_f32() / lines.every_secs) as u64;
     let waiting = Waiting::default();
-    app.insert_resource(Loading { up: true, hold, frames: 0, quiet: 0, started, fading: None, seed, line, least: least + started.elapsed(), stay: false, fade_in: if splash && !hold { SPLASH_IN_SECS } else { 0.0 }, fade_out: if splash { SPLASH_OUT_SECS } else { FADE_SECS } })
+    app.insert_resource(Loading { up: true, timeline, hold, frames: 0, quiet: 0, started, fading: None, seed, line, least: least + started.elapsed(), stay: false, fade_in: if splash && !hold { SPLASH_IN_SECS } else { 0.0 }, fade_out: if splash { SPLASH_OUT_SECS } else { FADE_SECS } })
         .insert_resource(lines)
         .insert_resource(waiting.clone())
         .add_systems(Startup, spawn)
@@ -284,6 +288,44 @@ fn leave(
     *frames += 1;
     if *frames == COVER_FRAMES {
         exit.write(AppExit::Success);
+    }
+}
+
+/// When this process began (`main` sets it first thing), for the start's timeline.
+pub static PROCESS_START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+/// When the game's app was built (the town made, its data read), just before it ran.
+pub static PLUGINS_BUILT: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+/// Where a start's time went: process start to the first frame (data, the town, meshes), and on
+/// until the render world stopped waiting for shaders. One line on stdout, so the wait between a
+/// screen's Start and the game can be measured.
+#[derive(Default)]
+struct Timeline {
+    /// Milliseconds the screen before this run showed the logo for (handed on).
+    before_ms: u64,
+    first_frame: Option<Duration>,
+    /// The last frame that had a pipeline waiting, and the most waiting at once.
+    last_waiting: Option<Duration>,
+    most_waiting: usize,
+    told: bool,
+}
+
+impl Timeline {
+    fn since_start() -> Duration {
+        PROCESS_START.get().map_or(Duration::ZERO, |t| t.elapsed())
+    }
+
+    fn line(&self, fade_at: Duration) -> String {
+        let ms = |d: Option<Duration>| d.map_or("-".to_string(), |d| format!("{} ms", d.as_millis()));
+        format!(
+            "start: {} before this run, app built at {}, first frame at {}, shaders done at {} ({} at most waiting), logo fades at {} ms",
+            if self.before_ms > 0 { format!("{} ms", self.before_ms) } else { "nothing".into() },
+            ms(PROCESS_START.get().zip(PLUGINS_BUILT.get()).map(|(a, b)| b.saturating_duration_since(*a))),
+            ms(self.first_frame),
+            ms(self.last_waiting),
+            self.most_waiting,
+            fade_at.as_millis()
+        )
     }
 }
 
@@ -380,9 +422,22 @@ fn drive(
             text.0 = lines.shown(loading.seed, k);
         }
     }
-    loading.quiet = if waiting.0.load(Ordering::Relaxed) == 0 { loading.quiet + 1 } else { 0 };
+    let now_waiting = waiting.0.load(Ordering::Relaxed);
+    loading.quiet = if now_waiting == 0 { loading.quiet + 1 } else { 0 };
+    let since = Timeline::since_start();
+    if loading.timeline.first_frame.is_none() {
+        loading.timeline.first_frame = Some(since);
+    }
+    if now_waiting > 0 {
+        loading.timeline.last_waiting = Some(since);
+        loading.timeline.most_waiting = loading.timeline.most_waiting.max(now_waiting);
+    }
     if loading.fading.is_none() && !loading.stay && ready(loading.frames, loading.quiet, loading.started.elapsed(), loading.least) {
         loading.fading = Some(0.0);
+        if !loading.timeline.told {
+            loading.timeline.told = true;
+            println!("{}", loading.timeline.line(since));
+        }
     }
     // Coming up out of black: the logo and the line, over the ground.
     if loading.fading.is_none() && loading.fade_in > 0.0 {

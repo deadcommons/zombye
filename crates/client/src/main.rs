@@ -745,6 +745,7 @@ pub(crate) fn exit_on_signal(mut exit: MessageWriter<AppExit>, mut sent: Local<b
 }
 
 fn main() {
+    let _ = loading::PROCESS_START.set(std::time::Instant::now());
     // `--write-pack OUT DIR...`: pack the release folders for a packaged build (`pack.rs`).
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).is_some_and(|a| a == "--write-pack") {
@@ -859,6 +860,7 @@ fn main() {
     if black_watch::wanted() && !offscreen {
         app.add_plugins(black_watch::BlackWatchPlugin);
     }
+    let _ = loading::PLUGINS_BUILT.set(std::time::Instant::now());
     let failed = app.run().is_error();
     // A join asked for in the server browser (#27): the game has shut down (and autosaved); start
     // it again on that server.
