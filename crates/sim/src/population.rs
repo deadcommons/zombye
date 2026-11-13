@@ -446,22 +446,35 @@ impl Population {
     /// Targets and zones per region for `map`, from the densities. `spawnable(t)` rules out tiles
     /// nothing should spawn on (the player's start). Targets are the natural numbers (density ×
     /// area); scale them with [`Population::scale_targets`] to hit a given total.
-    pub fn new(map: &TileMap, regions: &RegionIndex, def: &PopulationDef, town: &Town, spawnable: impl Fn(IVec2) -> bool) -> Self {
+    pub fn new(map: &TileMap, regions: &RegionIndex, def: &PopulationDef, town: &Town, spawnable: impl Fn(IVec2) -> bool + Sync) -> Self {
         let n = regions.regions();
         let mut target = vec![0.0f64; n];
         let mut zone_tiles = vec![[0u32; 7]; n];
-        for y in 0..map.height() {
-            for x in 0..map.width() {
-                let t = IVec2::new(x, y);
-                if map.tile_blocked(t) {
-                    continue;
-                }
-                let r = regions.region_of(t.as_vec2() + Vec2::splat(0.5));
-                zone_tiles[r][def.zone_at(map, town, t) as usize] += 1;
-                if spawnable(t) {
-                    target[r] += def.tile_density(map, town, t) as f64 * 1e-6;
+        // A row of regions at a time on threads (#19): each tile's zone and density, summed into its
+        // region in tile order as before (a region's tiles all lie in one row of regions), so every
+        // target is the same to the last bit whatever the thread count.
+        let cols = regions.cols().max(0) as usize;
+        let row_of = |y: i32| regions.region_of(Vec2::new(0.5, y as f32 + 0.5)) / cols.max(1);
+        let mut rows: Vec<(Vec<f64>, Vec<[u32; 7]>)> = vec![(vec![0.0; cols], vec![[0; 7]; cols]); regions.rows().max(0) as usize];
+        crate::par::rows(&mut rows, 1, |rr, one| {
+            let (target, zone_tiles) = &mut one[0];
+            for y in (0..map.height()).filter(|&y| row_of(y) == rr) {
+                for x in 0..map.width() {
+                    let t = IVec2::new(x, y);
+                    if map.tile_blocked(t) {
+                        continue;
+                    }
+                    let r = regions.region_of(t.as_vec2() + Vec2::splat(0.5)) - rr * cols;
+                    zone_tiles[r][def.zone_at(map, town, t) as usize] += 1;
+                    if spawnable(t) {
+                        target[r] += def.tile_density(map, town, t) as f64 * 1e-6;
+                    }
                 }
             }
+        });
+        for (rr, (t, z)) in rows.into_iter().enumerate() {
+            target[rr * cols..rr * cols + t.len()].copy_from_slice(&t);
+            zone_tiles[rr * cols..rr * cols + z.len()].copy_from_slice(&z);
         }
         let zone = zone_tiles
             .iter()

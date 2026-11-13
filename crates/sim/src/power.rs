@@ -222,7 +222,7 @@ pub enum Coverage {
     /// Every building on the map.
     Everywhere,
     /// These buildings (indices into `TileMap::buildings`).
-    Buildings(Vec<u16>),
+    Buildings(Vec<crate::map::BuildingId>),
     /// Every building whose middle is within `radius` metres of `center`.
     Within { center: Vec2, radius: f32 },
 }
@@ -253,11 +253,11 @@ pub struct Power {
     /// The grid's failure (`GridDef::fails_after_hours`) has happened (it happens once).
     pub grid_failed: bool,
     /// Rooms whose light switch is on.
-    pub switches: BTreeSet<u16>,
+    pub switches: BTreeSet<crate::map::RoomId>,
     /// Per building: has power (derived from the sources).
     powered: Vec<bool>,
     /// Rooms lit now, in order (derived: switch on and powered).
-    lit: Vec<u16>,
+    lit: Vec<crate::map::RoomId>,
     /// Where each room's switch is on its wall, by room (derived from the map: [`switch_spots`]).
     spots: Vec<Option<SwitchSpot>>,
 }
@@ -333,14 +333,14 @@ pub fn switch_spots(map: &TileMap) -> Vec<Option<SwitchSpot>> {
         let r = map.tile(t).room;
         (r != 0 && (r as usize) < map.rooms.len()).then_some(r)
     };
-    let way_in = |t: IVec2, side: Side, r: u16| matches!(map.edge(t, side), Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken | Edge::Arch) && map.tile(t + side.offset()).room != r;
+    let way_in = |t: IVec2, side: Side, r: crate::map::RoomId| matches!(map.edge(t, side), Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken | Edge::Arch) && map.tile(t + side.offset()).room != r;
     for t in tiles() {
         let Some(r) = room_of(t) else { continue };
         if Side::ALL.into_iter().any(|side| way_in(t, side, r)) {
             doors[r as usize].push(t);
         }
     }
-    let mut offer = |r: u16, score: u32, s: SwitchSpot| {
+    let mut offer = |r: crate::map::RoomId, score: u32, s: SwitchSpot| {
         let slot = &mut best[r as usize];
         if slot.map_or(true, |(b, _)| score < b) {
             *slot = Some((score, s));
@@ -382,12 +382,12 @@ pub fn switch_spots(map: &TileMap) -> Vec<Option<SwitchSpot>> {
 pub struct PowerSave {
     pub sources: Vec<Source>,
     pub grid_failed: bool,
-    pub switches: Vec<u16>,
+    pub switches: Vec<crate::map::RoomId>,
 }
 
 /// Does this room start with its light on? About `share` of the rooms, by a hash of the room,
 /// never a hall, porch or garage (the hash the client lit windows by before there was power).
-pub fn starts_lit(map: &TileMap, room: u16, share: f32) -> bool {
+pub fn starts_lit(map: &TileMap, room: crate::map::RoomId, share: f32) -> bool {
     if room == 0 {
         return false;
     }
@@ -407,7 +407,7 @@ fn hash01(x: i32, y: i32, salt: u32) -> f32 {
 impl Power {
     /// A new world's power: the grid as `def` says, and the lights left on.
     pub fn new(map: &TileMap, def: &PowerDef) -> Self {
-        let switches = (1..map.rooms.len() as u16).filter(|&r| starts_lit(map, r, def.lights_on_at_start)).collect();
+        let switches = (1..crate::map::room_id(map.rooms.len())).filter(|&r| starts_lit(map, r, def.lights_on_at_start)).collect();
         let mut p = Self { sources: vec![Source { kind: SourceKind::Grid, covers: Coverage::Everywhere, on: def.grid.on }], grid_failed: false, switches, spots: switch_spots(map), ..Default::default() };
         p.refresh(map);
         p
@@ -417,7 +417,7 @@ impl Power {
     /// rooms changed.
     pub fn refresh(&mut self, map: &TileMap) -> bool {
         self.powered = (0..map.buildings.len()).map(|b| self.sources.iter().any(|s| s.on && s.covers.covers(map, b))).collect();
-        let lit: Vec<u16> = self.switches.iter().copied().filter(|&r| map.rooms.get(r as usize).is_some_and(|room| self.powered.get(room.building as usize).copied().unwrap_or(false))).collect();
+        let lit: Vec<crate::map::RoomId> = self.switches.iter().copied().filter(|&r| map.rooms.get(r as usize).is_some_and(|room| self.powered.get(room.building as usize).copied().unwrap_or(false))).collect();
         let changed = lit != self.lit;
         self.lit = lit;
         changed
@@ -429,11 +429,11 @@ impl Power {
     }
 
     /// The rooms lit now, in order.
-    pub fn lit(&self) -> &[u16] {
+    pub fn lit(&self) -> &[crate::map::RoomId] {
         &self.lit
     }
 
-    pub fn is_lit(&self, room: u16) -> bool {
+    pub fn is_lit(&self, room: crate::map::RoomId) -> bool {
         self.lit.binary_search(&room).is_ok()
     }
 
@@ -464,7 +464,7 @@ impl Power {
     }
 
     /// Where a room's switch is, if it has one.
-    pub fn spot(&self, room: u16) -> Option<SwitchSpot> {
+    pub fn spot(&self, room: crate::map::RoomId) -> Option<SwitchSpot> {
         self.spots.get(room as usize).copied().flatten()
     }
 

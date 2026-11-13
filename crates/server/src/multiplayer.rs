@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use glam::Vec2;
-use zombye_net::host::{BUDGET_RANGE, DEFAULT_BUDGET, Host, HostOptions, Owner, Spawn};
+use zombye_net::host::{BUDGET_RANGE, DEFAULT_BUDGET, Host, HostOptions, MAX_SNAPSHOT_THREADS, Owner, Spawn};
 use zombye_net::identity;
 use zombye_net::remote::Remote;
 use zombye_net::{Intent, Snapshot, shutdown, wire};
@@ -67,6 +67,10 @@ impl HostArgs {
             None => DEFAULT_BUDGET,
             Some(v) => v.parse::<u32>().ok().filter(|kb| (least..=most).contains(kb)).ok_or(format!("--budget is {least} to {most} (KB a second per client), not {v}"))? * 1000,
         };
+        let snapshot_threads = match text("--snapshot-threads") {
+            None => zombye_net::host::default_snapshot_threads(),
+            Some(v) => v.parse::<usize>().ok().filter(|n| (1..=MAX_SNAPSHOT_THREADS).contains(n)).ok_or(format!("--snapshot-threads is 1 to {MAX_SNAPSHOT_THREADS}, not {v}"))?,
+        };
         // Seconds, 0 to an hour (#68).
         let secs = |name: &str, default: f32| match text(name) {
             None => Ok(default),
@@ -85,6 +89,7 @@ impl HostArgs {
             spawn_protection_secs: secs("--spawn-protection", defaults.spawn_protection_secs)?,
             kit: Vec::new(),
             budget,
+            snapshot_threads,
             fair_sight: on_off("--fair-sight")?,
             camera: match text("--camera") {
                 None => wire::Camera::default(),
@@ -401,14 +406,17 @@ pub struct BotArgs {
 /// join, each on its own connection, and play them from another thread. The server ticks at the
 /// real rate; once every bot is on, `ticks` ticks are measured: the whole tick (intents, the world,
 /// every client's snapshot), the active zombies and the bytes each client was sent.
-pub fn bench(mut world: World, players: u32, horde: u32, spread: bool, ticks: u64, lag_ms: u32) {
+pub fn bench(mut world: World, players: u32, horde: u32, spread: bool, ticks: u64, lag_ms: u32, snapshot_threads: Option<usize>) {
     world.config.combat.pvp = true;
     let zombies = world.zombies.len();
     let ids = crate::place_bench_players(&mut world, players, horde, spread);
     for &id in &ids {
         world.set_dev(id, Some(true), None);
     }
-    let options = HostOptions { name: "bench".into(), max_players: players as usize, ..HostOptions::default() };
+    let defaults = HostOptions::default();
+    let snapshot_threads = snapshot_threads.unwrap_or(defaults.snapshot_threads).clamp(1, MAX_SNAPSHOT_THREADS);
+    println!("snapshot threads: {snapshot_threads}");
+    let options = HostOptions { name: "bench".into(), max_players: players as usize, snapshot_threads, ..defaults };
     let mut host = Host::bind(world, "127.0.0.1:0", options).expect("a free loopback port");
     // Each bot takes up the survivor placed for it.
     host.set_names(ids.iter().enumerate().map(|(k, &id)| (format!("bot-{}", k + 1), id)));

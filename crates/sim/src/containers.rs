@@ -118,8 +118,8 @@ pub struct ContainerSite {
     pub def: u16,
     /// The floor it stands on: 0 the ground floor, 1 the first upper floor (`crate::stairs`).
     pub level: u8,
-    pub building: u16,
-    pub room: u16,
+    pub building: crate::map::BuildingId,
+    pub room: crate::map::RoomId,
     /// Footprint in tiles: `min..min+size`.
     pub min: IVec2,
     pub size: IVec2,
@@ -169,7 +169,7 @@ pub fn find_sites(map: &TileMap, data: &ContainerData) -> Vec<ContainerSite> {
             let room = if level == 0 { map.tile(f.min).room } else { map.upper_tile(f.min).map_or(0, |u| u.room) };
             let room_type = map.rooms.get(room as usize).map_or("", |r| r.room_type.as_str());
             if let Some(def) = data.lookup(&f.kind, room_type) {
-                out.push(ContainerSite { id: this, def, level, building: bi as u16, room, min: f.min, size: f.size, body: None });
+                out.push(ContainerSite { id: this, def, level, building: crate::map::building_id(bi), room, min: f.min, size: f.size, body: None });
             }
         }
     }

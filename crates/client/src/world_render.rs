@@ -7,6 +7,7 @@
 //! The upper floors and roof of the building you're in fade out so you can see inside, and door
 //! leaves and panes follow their wall when it is cut away (`cutaway.rs`): down to the stub, never hidden.
 
+use zombye_sim::RoomId;
 use std::collections::HashMap;
 use std::f32::consts::FRAC_PI_2;
 
@@ -171,7 +172,7 @@ struct WindowPane {
     broken: bool,
     /// In a room with a light on (`lights::LitRooms`), and the rooms either side.
     lit: bool,
-    rooms: (u16, u16),
+    rooms: (RoomId, RoomId),
 }
 
 impl WindowPane {
@@ -522,7 +523,7 @@ fn stream(
                 if map.rooms[room].building as usize != i {
                     continue;
                 }
-                let on = lit.is_lit(room as u16);
+                let on = lit.is_lit(room as RoomId);
                 let n = Vec3::new(spot.normal.x, 0.0, spot.normal.y);
                 let tf = Transform { translation: Vec3::new(spot.pos.x, zombye_sim::power::SWITCH_HEIGHT, spot.pos.y), rotation: Quat::from_rotation_arc(Vec3::Z, n), scale: Vec3::ONE };
                 // On a wall the cutaways drop, the switch lies on top of the stub instead, facing
@@ -530,7 +531,7 @@ fn stream(
                 let wall = Vec3::new(spot.pos.x, 0.0, spot.pos.y) - n * zombye_sim::power::SWITCH_INSET;
                 let flat = Transform { translation: wall + Vec3::Y * (STUB_HEIGHT + 0.005), rotation: { let a = n.cross(Vec3::Y); Quat::from_mat3(&Mat3::from_cols(a.cross(Vec3::Y), a, Vec3::Y)) }, scale: Vec3::ONE };
                 let (owner, which) = spot.side.owner(spot.tile);
-                let e = commands.spawn((Mesh3d(shared.switch[on as usize].clone()), MeshMaterial3d(mats.building.clone()), tf, LightSwitch { room: room as u16, key: (owner, which), on, standing: tf, flat })).id();
+                let e = commands.spawn((Mesh3d(shared.switch[on as usize].clone()), MeshMaterial3d(mats.building.clone()), tf, LightSwitch { room: room as RoomId, key: (owner, which), on, standing: tf, flat })).id();
                 render.lower.push(e);
             }
             streamer.buildings.insert(i, render);
@@ -622,7 +623,7 @@ fn spawn_chunk(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &WorldM
 
 /// Colour of one side of a wall: the room's paint inside, the building's siding outside (and on a
 /// porch).
-fn wall_side_color(map: &TileMap, room: u16, siding: LinearRgba) -> LinearRgba {
+fn wall_side_color(map: &TileMap, room: RoomId, siding: LinearRgba) -> LinearRgba {
     if building_kit::outside(map, room) { siding } else { meshgen::interior_color(&map.rooms[room as usize].room_type) }
 }
 
@@ -665,7 +666,7 @@ impl LevelWalls {
 /// - its two sides cover that run-on only where the wall in line with it has nothing: where it
 ///   has wall, that wall's own sides (in its own rooms' colours) cover the same strip.
 #[allow(clippy::too_many_arguments)]
-fn add_wall(mb: &mut MeshBuilder, map: &TileMap, owner: IVec2, which: OwnedEdge, kind: Edge, base: f32, rooms: (u16, u16), siding: LinearRgba, joins: (Edge, Edge)) {
+fn add_wall(mb: &mut MeshBuilder, map: &TileMap, owner: IVec2, which: OwnedEdge, kind: Edge, base: f32, rooms: (RoomId, RoomId), siding: LinearRgba, joins: (Edge, Edge)) {
     let (a, b) = TileMap::edge_segment(owner, which);
     let tag = CutTag { kind: CutKind::Wall, anchor: (a + b) * 0.5, radius: 0.0 };
     mb.set_tag(tag);
@@ -835,8 +836,8 @@ pub fn contact_shadows(map: &TileMap, index: usize, b: &Building) -> MeshBuilder
 /// The ground-floor edges of building `index` with something on them (walls, doors, windows,
 /// arches): every edge in and just around its footprint touching one of its rooms, with the rooms
 /// either side (north/west, south/east).
-fn ground_edges(map: &TileMap, index: usize, b: &Building) -> Vec<(IVec2, OwnedEdge, Edge, (u16, u16))> {
-    let belongs = |room: u16| room != 0 && map.rooms[room as usize].building as usize == index;
+fn ground_edges(map: &TileMap, index: usize, b: &Building) -> Vec<(IVec2, OwnedEdge, Edge, (RoomId, RoomId))> {
+    let belongs = |room: RoomId| room != 0 && map.rooms[room as usize].building as usize == index;
     let mut out = Vec::new();
     for y in b.min.y..=b.min.y + b.size.y {
         for x in b.min.x..=b.min.x + b.size.x {
@@ -929,7 +930,7 @@ fn door_rotations(which: OwnedEdge) -> (Quat, Quat) {
 /// with neither), with cracks for `hp` (fraction of its hit points left); a window between `rooms`
 /// glows at night while one of them is lit, a `glazed` door has glass in it.
 #[allow(clippy::too_many_arguments)]
-fn spawn_edge_piece(commands: &mut Commands, shared: &SharedMeshes, mats: &WorldMaterials, owner: IVec2, which: OwnedEdge, base: f32, kind: Edge, hp: f32, rooms: (u16, u16), lit_rooms: &crate::lights::LitRooms, glazed: bool) -> Option<Entity> {
+fn spawn_edge_piece(commands: &mut Commands, shared: &SharedMeshes, mats: &WorldMaterials, owner: IVec2, which: OwnedEdge, base: f32, kind: Edge, hp: f32, rooms: (RoomId, RoomId), lit_rooms: &crate::lights::LitRooms, glazed: bool) -> Option<Entity> {
     let (closed, open_rot) = door_rotations(which);
     let start = owner.as_vec2();
     let piece = EdgePiece { key: (owner, which), ground: base == 0.0, shown: kind != Edge::DoorBroken };
@@ -1222,7 +1223,7 @@ fn apply_edge_changes(
 /// A room's light switch on its wall (`zombye_sim::power::switch_spots`).
 #[derive(Component)]
 struct LightSwitch {
-    room: u16,
+    room: RoomId,
     /// The wall it is on, which the cutaways may drop.
     key: (IVec2, OwnedEdge),
     /// Drawn up (on).
@@ -1601,7 +1602,7 @@ mod tests {
         let mut pieces = 0;
         for (i, b) in map.buildings.iter().enumerate() {
             let siding = building_kit::Kit::new(&map, i, b).wall;
-            let mut levels: std::collections::BTreeMap<i8, (LevelWalls, Vec<(IVec2, OwnedEdge, Edge, (u16, u16))>)> = Default::default();
+            let mut levels: std::collections::BTreeMap<i8, (LevelWalls, Vec<(IVec2, OwnedEdge, Edge, (RoomId, RoomId))>)> = Default::default();
             let all = ground_edges(&map, i, b).into_iter().map(|e| (0, e)).chain(b.upper_edges.iter().map(|(l, e)| (*l, (e.tile, e.edge, e.kind, e.rooms))));
             for (level, e) in all {
                 let l = levels.entry(level).or_default();

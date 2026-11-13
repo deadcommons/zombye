@@ -12,6 +12,14 @@ use zombye_sim::population::{PopulationDef, parse_population};
 use zombye_sim::status::{StatusData, parse_status};
 use zombye_sim::street_props::{StreetPropsDef, parse_street_props};
 
+/// `ZOMBYE_GEN_THREADS=N`: make worlds on N threads (#19, `zombye_sim::par`; 1 to 64, default
+/// the cores up to 8). The server and the client call this first thing.
+pub fn gen_threads_from_env() {
+    if let Some(n) = std::env::var("ZOMBYE_GEN_THREADS").ok().and_then(|v| v.trim().parse::<usize>().ok()).filter(|n| *n >= 1) {
+        zombye_sim::par::set_threads(n);
+    }
+}
+
 /// The game's `assets/data` folder: the checkout's when running from one, else a packaged
 /// game's beside its executable (`crate::install::assets_dir`).
 pub fn default_data_dir() -> PathBuf {

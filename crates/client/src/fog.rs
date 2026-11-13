@@ -15,6 +15,7 @@
 //! constants below) and **how the ground looks** ([`FogLook`], from the data folder's `fog.ron`: a
 //! soft cone only a little brighter than what's behind you, and how dim what's out of sight is).
 
+use zombye_sim::RoomId;
 use bevy::asset::RenderAssetUsages;
 use bevy::image::ImageSampler;
 use bevy::prelude::*;
@@ -151,7 +152,7 @@ pub struct FogState {
     /// What the rays were last cast with (eye, reach), and the origin the mask texture was last
     /// filled for: neither is done again until it changes (or the map does).
     cast: Option<(Vec2, f32, u8)>,
-    filled: Option<(Vec2, u16)>,
+    filled: Option<(Vec2, RoomId)>,
     /// Per mask texel, whether it is in a room other than the one the player is in (its red in the
     /// texture is the opposite): such a room shows only `other_rooms` of what sight gives.
     other: Vec<bool>,
@@ -388,12 +389,12 @@ pub fn update_fog(
 }
 
 /// Is `room` an open porch (a room in name only: it stands open to the street)?
-fn open_porch(map: &zombye_sim::map::TileMap, room: u16) -> bool {
+fn open_porch(map: &zombye_sim::map::TileMap, room: RoomId) -> bool {
     map.rooms.get(room as usize).and_then(|r| map.buildings.get(r.building as usize)).and_then(|b| b.look).and_then(|l| l.porch).is_some_and(|p| p.room == room)
 }
 
 /// The room the eye is in, for [`other_room`]: 0 outdoors, and on an open porch.
-fn own_room(map: &zombye_sim::map::TileMap, eye: Vec2) -> u16 {
+fn own_room(map: &zombye_sim::map::TileMap, eye: Vec2) -> RoomId {
     let room = map.room_at(eye);
     if open_porch(map, room) { 0 } else { room }
 }
@@ -412,7 +413,7 @@ pub fn on_own_room(map: &zombye_sim::map::TileMap, key: (IVec2, zombye_sim::map:
 
 /// Is a tile of room `at` in a room other than the one the player is in (`own`, from [`own_room`])?
 /// Outdoors and open porches never are; from outdoors every room is.
-fn other_room(map: &zombye_sim::map::TileMap, at: u16, own: u16) -> bool {
+fn other_room(map: &zombye_sim::map::TileMap, at: RoomId, own: RoomId) -> bool {
     at != 0 && at != own && !open_porch(map, at)
 }
 

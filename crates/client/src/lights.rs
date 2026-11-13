@@ -15,6 +15,7 @@
 //!   brightly a surface is lit; [`NightLights`] lists the same lights for the fog mask, which
 //!   decides which zombies, survivors and items are drawn.
 
+use zombye_sim::RoomId;
 use bevy::prelude::*;
 
 use crate::daynight::{BEAM_AIM_M, BEAM_HEIGHT, BEAM_INNER, BEAM_OUTER, Daylight, HeldLight, held_light_in};
@@ -35,17 +36,17 @@ const ROOM_SPILL: f32 = 2.5;
 /// went on or off.
 #[derive(Resource, Default, Debug, PartialEq)]
 pub struct LitRooms {
-    pub rooms: Vec<u16>,
+    pub rooms: Vec<RoomId>,
     pub grid: bool,
 }
 
 impl LitRooms {
-    pub fn is_lit(&self, room: u16) -> bool {
+    pub fn is_lit(&self, room: RoomId) -> bool {
         room != 0 && self.rooms.binary_search(&room).is_ok()
     }
 
     /// Either of the rooms either side of a wall.
-    pub fn either(&self, rooms: (u16, u16)) -> bool {
+    pub fn either(&self, rooms: (RoomId, RoomId)) -> bool {
         self.is_lit(rooms.0) || self.is_lit(rooms.1)
     }
 }
@@ -61,15 +62,15 @@ pub fn sync_lit_rooms(link: Res<ServerLink>, mut lit: ResMut<LitRooms>) {
 /// Where each ground-floor room is: the middle of its tiles and the radius round them, worked out
 /// the first time it is lit (`None`: no ground-floor tiles, an upstairs room).
 #[derive(Resource, Default)]
-struct RoomPlaces(HashMap<u16, Option<(Vec2, f32)>>);
+struct RoomPlaces(HashMap<RoomId, Option<(Vec2, f32)>>);
 
 impl RoomPlaces {
-    fn of(&mut self, map: &zombye_sim::TileMap, room: u16) -> Option<(Vec2, f32)> {
+    fn of(&mut self, map: &zombye_sim::TileMap, room: RoomId) -> Option<(Vec2, f32)> {
         *self.0.entry(room).or_insert_with(|| room_place(map, room))
     }
 }
 
-fn room_place(map: &zombye_sim::TileMap, room: u16) -> Option<(Vec2, f32)> {
+fn room_place(map: &zombye_sim::TileMap, room: RoomId) -> Option<(Vec2, f32)> {
     let b = map.buildings.get(map.rooms.get(room as usize)?.building as usize)?;
     let (mut lo, mut hi, mut n) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN), 0);
     for y in b.min.y..b.min.y + b.size.y {
@@ -138,7 +139,7 @@ pub struct NightLights(pub Vec<SeenLight>);
 /// A ground-floor window's pool, lit while either room it is between is.
 #[derive(Component)]
 struct WindowLight {
-    rooms: (u16, u16),
+    rooms: (RoomId, RoomId),
 }
 
 /// One of the pool of lights for other survivors: a cone and a flame per slot.
@@ -162,7 +163,7 @@ impl Plugin for LightsPlugin {
 
 /// The light of a ground-floor window between `rooms` whose edge has its middle at `mid`: off
 /// until night, and while neither room is lit.
-pub fn spawn_window_light(commands: &mut Commands, mid: Vec2, rooms: (u16, u16)) -> Entity {
+pub fn spawn_window_light(commands: &mut Commands, mid: Vec2, rooms: (RoomId, RoomId)) -> Entity {
     let light = PointLight { intensity: 0.0, range: WINDOW_RANGE, radius: 0.3, color: Color::srgb(1.0, 0.6, 0.28), shadow_maps_enabled: false, ..default() };
     commands.spawn((WindowLight { rooms }, light, Transform::from_xyz(mid.x, WINDOW_HEIGHT, mid.y), Visibility::Hidden)).id()
 }
@@ -242,7 +243,7 @@ fn room_lights(
 ) {
     let dark = darkness(daylight.0);
     let here = me.single().map(|t| t.translation.xz()).ok();
-    let mut near: Vec<(f32, u16, Vec2, f32)> = Vec::new();
+    let mut near: Vec<(f32, RoomId, Vec2, f32)> = Vec::new();
     if dark > 0.0
         && let Some(h) = here
     {

@@ -25,6 +25,7 @@
 //!
 //! F10 switches the cutaways off and on ("walls up" / "walls cut").
 
+use zombye_sim::RoomId;
 use bevy::asset::RenderAssetUsages;
 use bevy::image::ImageSampler;
 use bevy::prelude::*;
@@ -75,7 +76,7 @@ pub fn ground_dir(camera_dir: Vec3) -> (Vec2, f32) {
 
 /// Does the wall on this edge hide part of `room`'s floor from the camera? The floor behind it on
 /// screen (away from the camera, as far as a wall's height covers) runs into the room.
-pub fn hides_room(map: &TileMap, key: EdgeKey, c: Vec2, room: u16, level: u8) -> bool {
+pub fn hides_room(map: &TileMap, key: EdgeKey, c: Vec2, room: RoomId, level: u8) -> bool {
     let (a, b) = TileMap::edge_segment(key.0, key.1);
     let along = (b - a) * 0.45;
     let mid = (a + b) * 0.5;
@@ -115,7 +116,7 @@ pub fn room_edges(map: &TileMap, player: Vec2, level: u8, camera_dir: Vec3, out:
     let Some(index) = map.building_at(player) else { return };
     let (c, _) = ground_dir(camera_dir);
     let b = &map.buildings[index];
-    let belongs = |r: u16| r != 0 && map.rooms[r as usize].building as usize == index;
+    let belongs = |r: RoomId| r != 0 && map.rooms[r as usize].building as usize == index;
     for y in b.min.y..=b.min.y + b.size.y {
         for x in b.min.x..=b.min.x + b.size.x {
             let owner = IVec2::new(x, y);
@@ -300,7 +301,7 @@ pub struct Cutaway {
     values: Vec<u8>,
     /// The building's walls that drop for the room the player is in, and what they were worked out for.
     room: Vec<EdgeKey>,
-    room_for: Option<(usize, u16, i32, u8)>,
+    room_for: Option<(usize, RoomId, i32, u8)>,
     /// The floor whose walls the texture cuts: 0 the ground floor, 1 the first upper floor while
     /// the player is up there (stairs). The shader cuts that storey's walls only.
     pub level: u8,
@@ -533,8 +534,8 @@ pub(crate) mod tests {
         let index = map.buildings.len();
         let (mut lo, mut hi) = (IVec2::MAX, IVec2::MIN);
         for (min, size) in rooms {
-            let id = map.rooms.len() as u16;
-            map.rooms.push(Room { building: index as u16, name: format!("room {id}"), room_type: "living".into(), floor: Default::default() });
+            let id = zombye_sim::map::room_id(map.rooms.len());
+            map.rooms.push(Room { building: zombye_sim::map::building_id(index), name: format!("room {id}"), room_type: "living".into(), floor: Default::default() });
             for y in min.y..min.y + size.y {
                 for x in min.x..min.x + size.x {
                     map.tile_mut(IVec2::new(x, y)).unwrap().room = id;

@@ -718,10 +718,12 @@ impl World {
 
     /// A new world's vehicles: the parked props the share picks become vehicles, off the map.
     /// Before the walk grid and the nav graph are built on the map (`World::new`).
-    pub(crate) fn place_vehicles(&mut self) {
+    /// Returns the street props' footprints it cleared (the walk grid is updated round them).
+    pub(crate) fn place_vehicles(&mut self) -> Vec<(IVec2, IVec2)> {
         let data = &self.config.vehicles;
+        let mut cleared = Vec::new();
         if data.kinds.is_empty() || data.drivable_share <= 0.0 {
-            return;
+            return cleared;
         }
         let seed = self.config.generation.seed;
         let mut picked = Vec::new();
@@ -734,8 +736,9 @@ impl World {
         }
         for (p, kind) in picked {
             let (min, size) = self.map.street_prop_rect(&p);
+            cleared.push((min, size));
             let state = VehicleState { pos: min.as_vec2() + size.as_vec2() * 0.5, heading: heading_of(p.facing), speed: 0.0, steer: 0.0 };
-            take_prop(&mut self.map, p.tile);
+            let _ = take_prop(&mut self.map, p.tile);
             self.vehicles.next_id = self.vehicles.next_id.max(1);
             let id = self.vehicles.next_id;
             self.vehicles.next_id += 1;
@@ -745,13 +748,16 @@ impl World {
         }
         let boxes = self.vehicle_boxes();
         self.map.set_vehicles(boxes);
+        cleared
     }
 
     /// Put saved vehicles back on a map regenerated from the seed (load): their props off it, the
     /// vehicles on. Kinds by id; a vehicle whose kind is gone is dropped (counted). Before the walk
     /// grid is rebuilt.
+    /// The walk grid is updated round the props they took off the map (#19).
     pub(crate) fn restore_vehicles(&mut self, save: VehicleSave) -> Result<usize, String> {
         let mut dropped = 0;
+        let mut cleared = Vec::new();
         let mut prev = 0;
         for r in save.list {
             if r.id <= prev || r.id >= save.next_id {
@@ -767,7 +773,7 @@ impl World {
                 dropped += 1;
                 continue;
             };
-            take_prop(&mut self.map, r.from);
+            cleared.extend(take_prop(&mut self.map, r.from));
             // As found until the `VCND` section (if the save has one) says otherwise.
             let data = &self.config.vehicles;
             let cond = Condition::found(self.config.generation.seed, r.from, &data.kinds[kind], &data.tuning);
@@ -778,6 +784,13 @@ impl World {
         self.vehicles.next_id = save.next_id;
         let boxes = self.vehicle_boxes();
         self.map.set_vehicles(boxes);
+        for (min, size) in cleared {
+            for y in min.y..min.y + size.y {
+                for x in min.x..min.x + size.x {
+                    self.walk.update_around(&self.map, IVec2::new(x, y));
+                }
+            }
+        }
         Ok(dropped)
     }
 
@@ -1342,8 +1355,9 @@ fn vision_clear(map: &TileMap, a: Vec2, b: Vec2) -> bool {
 }
 
 /// Take the street prop whose least corner is `tile` off the map (its tiles free again).
-pub fn take_prop(map: &mut TileMap, tile: IVec2) {
-    let Ok(i) = map.street_props.binary_search_by_key(&(tile.y, tile.x), |p| (p.tile.y, p.tile.x)) else { return };
+/// Returns the footprint it cleared, if there was a prop there.
+pub fn take_prop(map: &mut TileMap, tile: IVec2) -> Option<(IVec2, IVec2)> {
+    let Ok(i) = map.street_props.binary_search_by_key(&(tile.y, tile.x), |p| (p.tile.y, p.tile.x)) else { return None };
     let p = map.street_props.remove(i);
     let (min, size) = map.street_prop_rect(&p);
     for y in min.y..min.y + size.y {
@@ -1355,6 +1369,7 @@ pub fn take_prop(map: &mut TileMap, tile: IVec2) {
             }
         }
     }
+    Some((min, size))
 }
 
 /// The `VEHC` section.

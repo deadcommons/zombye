@@ -1112,6 +1112,8 @@ impl World {
                 }
             }
             MapLayout::Full(map) => {
+                let mut map = map;
+                map.normalise_outdoors();
                 if !blocking.is_empty() {
                     return Err(LoadError::ContentChanged(blocking));
                 }
@@ -1155,12 +1157,15 @@ impl World {
             }
         }
         // Stumps where trees were felled, before the walk grid and the nav graph are built on.
+        // (The walk grid is built again, below, if they changed the map; the vehicles update it
+        // round each prop they take: #19.)
+        let mut walk_stale = false;
         if let Some(trees) = trees {
             let dropped = w.restore_trees(trees, new_map).map_err(save_check::invalid)?;
             if dropped > 0 {
                 notes.push(format!("the map changed: {dropped} felled or chopped trees no longer fit and were dropped"));
             }
-            w.walk = WalkGrid::new(&w.map);
+            walk_stale = true;
         }
         // Vehicles where they were driven to, their parked props off the map. On a new map they
         // could stand anywhere, so they are left out.
@@ -1178,8 +1183,10 @@ impl World {
                 if dropped > 0 {
                     notes.push(format!("{dropped} vehicles of kinds the game no longer has were dropped"));
                 }
-                w.walk = WalkGrid::new(&w.map);
             }
+        }
+        if walk_stale {
+            w.walk = WalkGrid::new(&w.map);
         }
         // On a new map the town, the spawn and its house are the new map's.
         if !new_map {

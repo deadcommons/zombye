@@ -495,7 +495,7 @@ pub struct Snapshot {
     pub maps: Vec<MapView>,
     /// The rooms lit now, in order (`zombye_sim::power`): light switch on, building powered.
     #[serde(default)]
-    pub lit_rooms: Vec<u16>,
+    pub lit_rooms: Vec<zombye_sim::RoomId>,
     /// The town's grid is on.
     #[serde(default)]
     pub grid_on: bool,

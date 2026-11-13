@@ -36,6 +36,7 @@ pub struct ServerConfig {
     pub camera: Option<CameraRule>,
     pub agents: Option<AgentsRule>,
     pub budget_kb: Option<u32>,
+    pub snapshot_threads: Option<u32>,
     pub allow_dev: bool,
     /// `None` only when the file says `save: None`: a world that is never saved.
     pub save: Option<PathBuf>,
@@ -65,6 +66,7 @@ impl Default for ServerConfig {
             camera: None,
             agents: None,
             budget_kb: None,
+            snapshot_threads: None,
             allow_dev: false,
             save: Some(PathBuf::from(DEFAULT_SAVE)),
             autosave_mins: None,
@@ -166,6 +168,7 @@ impl ServerConfig {
             AgentsRule::Marked => "marked".to_string(),
         }));
         put("--budget", self.budget_kb.map(|kb| kb.to_string()));
+        put("--snapshot-threads", self.snapshot_threads.map(|n| n.to_string()));
         put("--save", self.save.as_ref().filter(|p| !p.as_os_str().is_empty()).map(path));
         put("--autosave-mins", self.autosave_mins.map(|m| m.to_string()));
         put("--seed", self.seed.map(|s| s.to_string()));
@@ -272,7 +275,7 @@ mod tests {
         }
         // Every field is in it, set or as a commented example.
         for field in [
-            "name", "listen", "max_players", "password", "pvp", "spawn", "fair_sight", "logout_secs", "logout_safe_secs", "spawn_protection_secs", "start_kit", "camera", "agents", "budget_kb", "allow_dev", "save",
+            "name", "listen", "max_players", "password", "pvp", "spawn", "fair_sight", "logout_secs", "logout_safe_secs", "spawn_protection_secs", "start_kit", "camera", "agents", "budget_kb", "snapshot_threads", "allow_dev", "save",
             "autosave_mins", "seed", "map_chunks", "zombies", "load_anyway", "data", "admin", "token", "origins",
         ] {
             assert!(TEMPLATE.contains(&format!("{field}:")), "{field} is explained in the template");
@@ -338,6 +341,7 @@ mod tests {
             logout_safe_secs: 2,
             spawn_protection_secs: 0,
             budget_kb: 64,
+            snapshot_threads: 3,
             allow_dev: true,
             save: "worlds/town.zsave",
             autosave_mins: 0.5,
@@ -353,7 +357,7 @@ mod tests {
         let host = HostArgs::parse(&args, None).unwrap();
         assert_eq!(host.addr, "127.0.0.1:7001");
         let o = &host.options;
-        assert_eq!((o.name.as_str(), o.max_players, o.password.as_str(), o.allow_dev, o.budget), ("Dead Commons", 8, "let me in", true, 64_000));
+        assert_eq!((o.name.as_str(), o.max_players, o.password.as_str(), o.allow_dev, o.budget, o.snapshot_threads), ("Dead Commons", 8, "let me in", true, 64_000, 3));
         assert_eq!((o.spawn, o.fair_sight, host.pvp), (Some(Spawn::Spread), Some(true), Some(false)));
         assert_eq!((o.logout_secs, o.logout_safe_secs, o.spawn_protection_secs), (12.5, 2.0, 0.0));
         let admin = host.admin.expect("the admin endpoint");

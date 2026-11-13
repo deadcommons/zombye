@@ -664,7 +664,7 @@ pub struct SnapshotDelta {
     pub group: Option<Option<zombye_sim::GroupView>>,
     /// The rooms lit, whether the grid is on and whether the water runs (`zombye_sim::power`),
     /// when they change.
-    pub lights: Option<(Vec<u16>, bool, bool, Vec<(u32, u8)>)>,
+    pub lights: Option<(Vec<zombye_sim::RoomId>, bool, bool, Vec<(u32, u8)>)>,
     /// What the client's survivor has seen of the map (`zombye_sim::explore`), when it changes.
     pub map: Option<zombye_sim::Explored>,
     /// The campfires (`zombye_sim::fire`), when they change.
@@ -872,7 +872,7 @@ pub struct DeltaEncoder {
     outfits: Vec<OutfitView>,
     looks: Vec<OutfitView>,
     group: Option<zombye_sim::GroupView>,
-    lights: (Vec<u16>, bool, bool, Vec<(u32, u8)>),
+    lights: (Vec<zombye_sim::RoomId>, bool, bool, Vec<(u32, u8)>),
     map: zombye_sim::Explored,
     fires: Vec<zombye_sim::FireView>,
     vehicles: Vec<zombye_sim::VehicleView>,

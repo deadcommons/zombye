@@ -237,7 +237,14 @@ prints `frame cost: M ms mean, W ms worst` (how frame costs in this file are mea
 `walk`, `run`, `sneak` at `U` (0..1) of the locomotion cycle, `swing`, `swing_b` (a swing's second variant), `shove`, `stomp` at `U` of the action (the blow
 lands at 0.45), `idle`, `dead`.
 `--map-chunks N` makes the map N × N chunks of 16 m (default 30, 480 m; 64 is about 1 km): the same town in the
-middle with more forest round it (a map too small for the town is grown to fit). The server takes it too.
+middle with more forest round it (a map too small for the town is grown to fit). The server takes it too. At most 512 a side (8 km;
+`map::MAX_MAP_CHUNKS`, also checked in a save's settings). Room and building ids are `u32` (`map::RoomId`, `map::BuildingId`; the
+outdoors and corpse sites have `NO_BUILDING`), so a city can have more than 65,536 rooms; a tile is 8 bytes. Measured on the
+32-core build box (`net`'s `map_size` test, ignored, times a big map; #19, on 8 threads, see Making a world on threads under
+The world): 128 chunks (2 km) is made in ~0.3 s, 0.2 GB; 256 (4 km) ~1.05 s, 0.75 GB, a 1.4 MB save that loads in ~1.0 s (nearly all
+regenerating the map); 512 (8 km) ~4.3 s and loads in ~4.1 s, 2.9 GB. On one thread: ~1.3, ~5.1 and ~24 s. The town
+stays ~390 x 275 m, so a 256-chunk map is over 99% forest and wild ground. A joining client builds the same map (`World::new`).
+32 bots on 256 chunks: 7.4 ms a tick on average, but ~34 KB/s down each, over the 32 KB/s budget.
 Without `--zombies` (client and server) the world holds as many zombies as `assets/data/population.ron` gives for the
 map: about 2,950 on the default map, about 3,450 on a 1 km one (the extra ground is sparse forest); `--zombies N`
 sets the total and keeps the file's proportions.
@@ -678,6 +685,22 @@ A packaged game for playtesters, handed out from a restricted itch.io page (dead
   (0.15 ms before; `building_build_time`, an ignored test, times every building of the default map and says where
   one of each template stands), about 9,800 triangles a building (6,000 before); a frame (1920 × 1080 offscreen,
   2,000 zombies, by day, default zoom) about 0.7 ms more: 9.3 against 8.2-8.7 ms mean.
+
+### Making a world on threads (`sim::par`; #19)
+
+The passes of world generation that go over every tile run on threads (`std::thread::scope`, no new dependency): the
+biomes, the first pass of planting the wild ground, the walk grid, the nav graph's areas (a row of chunks a thread) and
+the population's per-region densities (a row of regions a thread). Each tile's answer reads only the map as it was before
+that pass and hashes of the seed and the tile, and sums are added in tile order, so **the world is the same bit for bit
+on any number of threads**: `net`'s `gen_threads` test makes and loads the same world on 1 and on 2, 4 and 7 threads and
+compares the map hash, walk grid, nav graph, state hash, save and 100 ticks of play. What draws from a random stream in
+turn (the town's layout, placing zombies) or reads what it wrote a tile before (spacing trees: the second pass of
+planting, over the tiles the first found wanting something) stays on one thread. When the vehicles take their street
+props off the map (new world and load) the walk grid is updated round each, not built again. How many threads:
+`par::threads()`, the cores up to 8; `ZOMBYE_GEN_THREADS=N` for the server and client (`content::gen_threads_from_env`),
+`par::with_threads` in tests; 1 runs the old one-thread code. Measured (`World::new` / loading the save, release, shared
+32-core VM): 4 km 7.2 s / 7.0 s before, 5.1 / 4.8 s on 1 thread, 1.05 / 1.03 s on 8; 8 km 28.9 / 27.8 s before, 4.3 /
+4.1 s on 8. A joining client's map (`remote::build_map`) on 4 km: 7.3 s before, 1.0 s on 8.
 
 ## Blinds (`sim::blinds`)
 
@@ -2761,7 +2784,8 @@ over the old one: a crash mid-write leaves the previous save whole).
 - **The map is regenerated, not stored**: from the saved seed and size plus the content's templates, then the edges
   edited since (`World::map_edits`: doors and windows opened, shut, broken) are applied. A 1 km map is a million tiles
   (several MB even packed) while a game's edits are a few hundred bytes; the price is regenerating on load
-  (~0.2 s on 1 km, ~45 ms on the default map). A hash of the generated map (`map_base_hash`) is checked on load
+  (~0.2 s on 1 km, ~45 ms on the default map, on one thread; the passes over every tile run on threads, see Making a
+  world on threads under The world). A hash of the generated map (`map_base_hash`) is checked on load
   (`LoadError::MapChanged` if the generator changed). After `World::map_changed` (a hand-edited map: tests,
   editors) the whole map is stored instead. **Street props (#61) changed every shipped map:** saves made before
   them no longer match (`ContentPrint::templates` now hashes the templates with `street_props.ron`, and the map has
@@ -2997,6 +3021,12 @@ snapshots over the network: `zombye-server --host` serves a world and `zombye --
 - **Threads** (`host.rs`): each connection has a thread reading frames into one channel and a thread writing them from
   a queue of 100 (5 s of snapshots); a client whose queue fills, that floods (400 intents waiting) or that says nothing
   for 20 s (clients ping every second) is dropped. The tick itself never waits on a socket.
+  Each client's snapshot (cut to what it may know, then delta-encoded within its budget) is built on
+  `--snapshot-threads N` threads (#18; `snapshot_threads` in the config; default the cores up to 8, 1 to 64; 1: on the
+  tick's thread): runs of clients, each only reading the world, their frames sent in the clients' order, byte for byte
+  the same whatever the count (`host::tests::snapshot_threads_send_the_same_frames`). Measured on the shared 32-core
+  VM (`--bench --bots N --spread --horde 1000`, medians of 3): the per-client part of a tick, 32 bots, 1 thread to 8:
+  4 km 1.8 to 0.9 ms, 1 km 1.4 to 0.7 ms; 64 bots, 4 km 3.5 to 1.6 ms, 1 km 4.1 to 1.2 ms. Bandwidth is unchanged.
 - **Melee is lag-compensated** (#23, see Combat): clients say which snapshot they show, blows land where the attacker
   saw the target (at most 0.35 s back), trades of blows go by what each side saw. `wire::PROTOCOL` 13 (12: mods
   downloaded on joining, #24; 7: #68's spawn

@@ -2001,7 +2001,7 @@ mod tests {
         assert!(w.hold_item(id, Slot::Back, "hiking_pack"));
         let kind = |w: &World, s: &ContainerSite| w.container_def(s).id.clone();
         let mut kitchens = 0;
-        let rooms: Vec<u16> = w.containers().iter().filter(|s| kind(&w, s) == "kitchen_cupboard").map(|s| s.room).collect();
+        let rooms: Vec<crate::map::RoomId> = w.containers().iter().filter(|s| kind(&w, s) == "kitchen_cupboard").map(|s| s.room).collect();
         for room in rooms {
             let here: Vec<ContainerSite> = w.containers().iter().filter(|s| s.room == room).cloned().collect();
             let find = |k: &str| here.iter().find(|s| kind(&w, s) == k).cloned();

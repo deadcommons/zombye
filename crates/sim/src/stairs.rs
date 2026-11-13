@@ -140,7 +140,7 @@ mod tests {
             assert_ne!(map.room_on(1, s.pos), 0);
         }
         // Every upstairs room can be walked into from the landing (doors are open doorways).
-        let mut rooms: Vec<u16> = map.upper_tiles().filter(|(_, u)| u.floor).map(|(_, u)| u.room).collect();
+        let mut rooms: Vec<crate::map::RoomId> = map.upper_tiles().filter(|(_, u)| u.floor).map(|(_, u)| u.room).collect();
         rooms.sort_unstable();
         rooms.dedup();
         assert!(rooms.len() >= 4, "{rooms:?}");

@@ -88,6 +88,7 @@ the file's folder. It is read once, at start.
 | `camera` | `Isometric` | The camera everyone plays with: `Isometric` or `FirstPerson`. No game client has first person yet, so only headless clients can join a first-person server. |
 | `agents` | `Marked` | Programs (bots, AI agents: clients that say they are one): `Marked` lets them in and shows players which survivors they are, `Allowed` lets them in unmarked, `Refused` keeps them out. |
 | `budget_kb` | `32` | KB a second down to each client at most (8 to 1000). |
+| `snapshot_threads` | the cores, at most 8 | Threads that cut and encode the clients' snapshots each tick (1 to 64; 1 keeps it on the tick's thread). |
 | `allow_dev` | `false` | Take god mode and the debug intents from clients. For testing. |
 | `save` | `"world.zsave"` | The world's file: loaded if there, else made. `None`: never saved. |
 | `autosave_mins` | `5` | Minutes between autosaves; `0`: only on shutdown. |

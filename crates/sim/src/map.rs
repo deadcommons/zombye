@@ -16,6 +16,8 @@ use glam::{IVec2, Vec2};
 use serde::{Deserialize, Serialize};
 
 pub const CHUNK_SIZE: i32 = 16;
+/// Chunks a side at most (8 km at 16 m a chunk): what a save, the server and the client accept.
+pub const MAX_MAP_CHUNKS: i32 = 512;
 const CHUNK_TILES: usize = (CHUNK_SIZE * CHUNK_SIZE) as usize;
 /// Half thickness of a wall for collision, in metres.
 pub const WALL_HALF_THICKNESS: f32 = 0.08;
@@ -27,6 +29,25 @@ pub const CLIMB_ZONE: f32 = 0.35;
 /// Floor to floor, in metres (docs/asset-pipeline.md): how high a flight of stairs rises.
 pub const STOREY: f32 = 3.0;
 
+/// An index into [`TileMap::rooms`] (0 is the outdoors). Saved and sent as a postcard varint, so
+/// widening it from `u16` left every save and message the same bytes.
+pub type RoomId = u32;
+/// An index into [`TileMap::buildings`].
+pub type BuildingId = u32;
+/// The building of a room in none: the outdoors (room 0) and a corpse's container site.
+/// Saves from before the ids were widened hold `u16::MAX` there: [`TileMap::normalise_outdoors`].
+pub const NO_BUILDING: BuildingId = BuildingId::MAX;
+
+/// Room `n`'s id: panics rather than wraps if a map ever has more rooms than an id holds.
+pub fn room_id(n: usize) -> RoomId {
+    RoomId::try_from(n).expect("more rooms than a RoomId holds")
+}
+
+/// Building `n`'s id, the same way.
+pub fn building_id(n: usize) -> BuildingId {
+    BuildingId::try_from(n).expect("more buildings than a BuildingId holds")
+}
+
 /// A flight of stairs from the ground floor up to the first upper floor: the tiles of a piece of
 /// `stairs` furniture, a ramp rising toward `up` from the floor at its foot end to [`STOREY`] at
 /// its top end. Bodies get on and off at the two ends only; its long sides are walls, and so is
@@ -34,7 +55,7 @@ pub const STOREY: f32 = 3.0;
 /// the floor, open at the top end. Derived from the buildings ([`TileMap::index_storeys`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Stair {
-    pub building: u16,
+    pub building: BuildingId,
     /// Tiles: `min..min+size`.
     pub min: IVec2,
     pub size: IVec2,
@@ -133,7 +154,7 @@ pub struct UpperTile {
     pub floor: bool,
     /// Furniture stands on it.
     pub blocked: bool,
-    pub room: u16,
+    pub room: RoomId,
     pub north: Edge,
     pub west: Edge,
 }
@@ -354,7 +375,7 @@ pub struct Tile {
     pub west: Edge,
     pub feature: Feature,
     /// Index into [`TileMap::rooms`], or 0 for outdoors.
-    pub room: u16,
+    pub room: RoomId,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -365,7 +386,7 @@ pub struct Chunk {
 /// A room: drives floor type, loot (later) and "which building am I in".
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Room {
-    pub building: u16,
+    pub building: BuildingId,
     pub name: String,
     pub room_type: String,
     pub floor: Floor,
@@ -390,7 +411,7 @@ pub struct UpperEdge {
     pub edge: OwnedEdge,
     pub kind: Edge,
     /// Rooms on either side (0 = outside): (north/west side, south/east side).
-    pub rooms: (u16, u16),
+    pub rooms: (RoomId, RoomId),
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -411,7 +432,7 @@ pub struct Building {
     /// Number of storeys (1 or 2 in M1).
     pub levels: u8,
     /// Upper-floor tiles per level ≥ 1: (tile, room).
-    pub upper_floors: Vec<(i8, IVec2, u16)>,
+    pub upper_floors: Vec<(i8, IVec2, RoomId)>,
     pub upper_edges: Vec<(i8, UpperEdge)>,
     pub furniture: Vec<PlacedFurniture>,
     pub roof: RoofStyle,
@@ -638,7 +659,7 @@ impl VehicleBox {
 impl TileMap {
     pub fn new(chunks_x: i32, chunks_y: i32) -> Self {
         let chunks = (0..chunks_x * chunks_y).map(|_| Chunk { tiles: vec![Tile::default(); CHUNK_TILES] }).collect();
-        let outdoors = Room { building: u16::MAX, name: "Outdoors".into(), room_type: "outdoors".into(), floor: Floor::Grass };
+        let outdoors = Room { building: NO_BUILDING, name: "Outdoors".into(), room_type: "outdoors".into(), floor: Floor::Grass };
         Self { chunks_x, chunks_y, chunks, rooms: vec![outdoors], buildings: Vec::new(), turning_circles: Vec::new(), street_props: Vec::new(), prop_kinds: Vec::new(), blinds: BTreeMap::new(), glazed: BTreeSet::new(), barricades: BTreeMap::new(), stairs: Vec::new(), upper: BTreeMap::new(), stair_speed: 0.0, movement: Default::default(), vehicles: Vec::new(), vehicle_cover: Vec::new(), terrain: Default::default(), biomes: Default::default() }
     }
 
@@ -657,6 +678,14 @@ impl TileMap {
             && rooms > 0
             && self.chunks.iter().all(|c| c.tiles.len() == CHUNK_TILES && c.tiles.iter().all(|t| (t.room as usize) < rooms))
             && self.rooms.iter().skip(1).all(|r| (r.building as usize) < self.buildings.len())
+    }
+
+    /// Make room 0 the outdoors whatever building a save gave it: saves from before ids were
+    /// widened to u32 hold `u16::MAX` there, now [`NO_BUILDING`]. Called on every map read whole.
+    pub fn normalise_outdoors(&mut self) {
+        if let Some(r) = self.rooms.first_mut() {
+            r.building = NO_BUILDING;
+        }
     }
 
     pub fn height(&self) -> i32 {
@@ -949,7 +978,7 @@ impl TileMap {
     }
 
     /// Room id at a world position (0 = outdoors).
-    pub fn room_at(&self, p: Vec2) -> u16 {
+    pub fn room_at(&self, p: Vec2) -> RoomId {
         self.tile(p.floor().as_ivec2()).room
     }
 
@@ -1007,7 +1036,7 @@ impl TileMap {
                 continue;
             }
             for f in b.furniture.iter().filter(|f| f.level == 0 && f.kind == "stairs") {
-                let s = Stair { building: bi as u16, min: f.min, size: f.size, up: f.facing };
+                let s = Stair { building: building_id(bi), min: f.min, size: f.size, up: f.facing };
                 let wide = match s.up {
                     Side::N | Side::S => f.size.x,
                     Side::E | Side::W => f.size.y,
@@ -1069,7 +1098,7 @@ impl TileMap {
     }
 
     /// Room id at a position on `level` (0 = outdoors, or no floor there).
-    pub fn room_on(&self, level: u8, p: Vec2) -> u16 {
+    pub fn room_on(&self, level: u8, p: Vec2) -> RoomId {
         if level == 0 {
             return self.room_at(p);
         }
@@ -1289,6 +1318,91 @@ fn push_out_of_box(p: Vec2, r: f32, min: Vec2, max: Vec2) -> Vec2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Room and building ids are `u32` (Linear DCM-94): a map can have more than 65,536 rooms,
+    /// tiles keep ids past `u16::MAX`, and the map is still well formed and hashes them all.
+    #[test]
+    fn room_ids_go_past_u16() {
+        println!("size_of::<Tile>() = {} bytes", std::mem::size_of::<Tile>());
+        let mut map = TileMap::new(2, 2);
+        let rooms = 70_000usize;
+        for n in 1..=rooms {
+            let building = building_id(n / 4);
+            map.rooms.push(Room { building, name: format!("room {n}"), room_type: "living".into(), floor: Floor::Wood });
+        }
+        map.buildings = (0..=rooms / 4).map(|_| Building { template: "t".into(), min: IVec2::ZERO, size: IVec2::ONE, levels: 1, upper_floors: Vec::new(), upper_edges: Vec::new(), furniture: Vec::new(), roof: RoofStyle::Flat, siding: 0, roof_color: 0, look: None }).collect();
+        let last = room_id(rooms);
+        assert!(last > RoomId::from(u16::MAX));
+        let before = crate::save::map_hash(&map);
+        map.tile_mut(IVec2::new(5, 7)).unwrap().room = last;
+        assert!(map.is_consistent());
+        assert_eq!(map.room_at(Vec2::new(5.5, 7.5)), last);
+        assert_eq!(map.building_at(Vec2::new(5.5, 7.5)), Some(rooms / 4));
+        assert_ne!(crate::save::map_hash(&map), before, "a room id over u16 is in the hash");
+        // And through postcard and back.
+        let tile = map.tile(IVec2::new(5, 7));
+        let back: Tile = postcard::from_bytes(&postcard::to_allocvec(&tile).unwrap()).unwrap();
+        assert_eq!(back.room, last);
+        // A room id that is out of range is still caught.
+        map.tile_mut(IVec2::new(5, 7)).unwrap().room = last + 1;
+        assert!(!map.is_consistent());
+    }
+
+    /// Ids fail loudly rather than wrap.
+    #[test]
+    #[should_panic(expected = "more rooms than a RoomId holds")]
+    fn room_ids_never_wrap() {
+        room_id(RoomId::MAX as usize + 1);
+    }
+
+    /// Saves and the wire are postcard, whose integers are varints: a tile or a room written when
+    /// ids were `u16` reads back the same as `u32`, and the outdoors' old `u16::MAX` building is
+    /// made [`NO_BUILDING`] by [`TileMap::normalise_outdoors`].
+    #[test]
+    fn u16_ids_read_back_as_u32() {
+        #[derive(Serialize)]
+        struct OldTile {
+            floor: Floor,
+            north: Edge,
+            west: Edge,
+            feature: Feature,
+            room: u16,
+        }
+        #[derive(Serialize)]
+        struct OldRoom {
+            building: u16,
+            name: String,
+            room_type: String,
+            floor: Floor,
+        }
+        #[derive(Serialize)]
+        struct OldUpper {
+            tile: IVec2,
+            edge: OwnedEdge,
+            kind: Edge,
+            rooms: (u16, u16),
+        }
+        for room in [0u16, 1, 127, 128, 300, 16_384, u16::MAX] {
+            let old = postcard::to_allocvec(&OldTile { floor: Floor::TileFloor, north: Edge::Wall, west: Edge::DoorClosed, feature: Feature::None, room }).unwrap();
+            let new = Tile { floor: Floor::TileFloor, north: Edge::Wall, west: Edge::DoorClosed, feature: Feature::None, room: room.into() };
+            assert_eq!(postcard::to_allocvec(&new).unwrap(), old, "the same bytes for room {room}");
+            assert_eq!(postcard::from_bytes::<Tile>(&old).unwrap(), new);
+            let e = postcard::to_allocvec(&OldUpper { tile: IVec2::new(3, 4), edge: OwnedEdge::North, kind: Edge::Wall, rooms: (room, 1) }).unwrap();
+            let back: UpperEdge = postcard::from_bytes(&e).unwrap();
+            assert_eq!(back.rooms, (room.into(), 1));
+        }
+        let mut map = TileMap::new(1, 1);
+        let rooms = vec![
+            OldRoom { building: u16::MAX, name: "Outdoors".into(), room_type: "outdoors".into(), floor: Floor::Grass },
+            OldRoom { building: 0, name: "Kitchen".into(), room_type: "kitchen".into(), floor: Floor::TileFloor },
+        ];
+        map.rooms = postcard::from_bytes(&postcard::to_allocvec(&rooms).unwrap()).unwrap();
+        assert_eq!(map.rooms[0].building, 65_535);
+        assert_eq!(map.rooms[1].building, 0);
+        map.normalise_outdoors();
+        assert_eq!(map.rooms[0].building, NO_BUILDING);
+        assert_eq!(map.rooms[1].building, 0);
+    }
 
     #[test]
     fn edges_are_shared_between_neighbours() {

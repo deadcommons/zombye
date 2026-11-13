@@ -26,7 +26,7 @@ fn save(w: &World, name: &str) {
 /// The spawn house's outside windows and doors, each with the tile inside it.
 fn openings(w: &World) -> Vec<(EdgeRef, IVec2)> {
     let b = &w.map.buildings[w.spawn_building];
-    let inside = |r: u16| r != 0 && w.map.rooms[r as usize].building as usize == w.spawn_building;
+    let inside = |r: zombye_sim::RoomId| r != 0 && w.map.rooms[r as usize].building as usize == w.spawn_building;
     let mut out = Vec::new();
     for y in b.min.y..=b.min.y + b.size.y {
         for x in b.min.x..=b.min.x + b.size.x {

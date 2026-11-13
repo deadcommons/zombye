@@ -598,9 +598,11 @@ impl BiomeMap {
         let salts: Vec<u64> = defs.iter().map(|b| seed ^ salt(&b.id)).collect();
         let in_town = |p: IVec2| p.cmpge(town_min).all() && p.cmplt(town_max).all();
         // The best biome of each square, by its middle.
+        // Each square and each tile by itself, in bands of rows over threads (#19).
         let mut grid = vec![0u8; (cells.x * cells.y) as usize];
         if everywhere.is_none() {
-            for cy in 0..cells.y {
+            crate::par::rows(&mut grid, cells.x as usize, |cy, row| {
+                let cy = cy as i32;
                 for cx in 0..cells.x {
                     let c = (IVec2::new(cx, cy).as_vec2() + Vec2::splat(0.5)) * cell as f32;
                     let ci = c.as_ivec2();
@@ -624,20 +626,21 @@ impl BiomeMap {
                             (best, best_score) = (i, score);
                         }
                     }
-                    grid[(cy * cells.x + cx) as usize] = best as u8;
+                    row[cx as usize] = best as u8;
                 }
-            }
+            });
         }
         let wild_at = |p: IVec2| wild.iter().any(|(lo, hi)| p.cmpge(*lo).all() && p.cmplt(*hi).all());
         let mut out = vec![NONE; (tiles.x * tiles.y) as usize];
         let ragged = data.ragged_m.max(0.0);
-        for y in 0..tiles.y {
+        crate::par::rows(&mut out, tiles.x as usize, |y, row| {
+            let y = y as i32;
             for x in 0..tiles.x {
                 let p = IVec2::new(x, y);
                 if in_town(p) && !wild_at(p) {
                     continue;
                 }
-                out[(y * tiles.x + x) as usize] = match everywhere {
+                row[x as usize] = match everywhere {
                     Some(i) => i as u8,
                     None => {
                         // Pushed aside by up to `ragged_m`, in drifts and tile by tile, so borders wander.
@@ -651,7 +654,7 @@ impl BiomeMap {
                     }
                 };
             }
-        }
+        });
         Self { defs, size: tiles, seed, tiles: out }
     }
 

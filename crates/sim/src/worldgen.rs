@@ -1877,34 +1877,70 @@ fn plant_wild(map: &mut TileMap) {
         return;
     }
     let flat = map.terrain.is_flat();
-    for y in 0..map.height() {
-        for x in 0..map.width() {
-            let p = IVec2::new(x, y);
-            let Some(biome) = map.biomes.at(p) else { continue };
-            let spacing = biome.trees.spacing;
-            if !clear_around(map, p, 1) {
-                continue;
+    let want_at = |map: &TileMap, p: IVec2| -> Option<Plant> {
+        if map.biomes.at(p).is_none() || !clear_around(map, p, 1) {
+            return None;
+        }
+        let grade = if flat { 0.0 } else { map.terrain.broad_grade(p.as_vec2() + Vec2::splat(0.5)) };
+        map.biomes.plant(p, grade)
+    };
+    if crate::par::threads() == 1 {
+        // On one thread, tile by tile: a tile next to something planted a moment ago is passed
+        // over before its hashes are worked out.
+        for y in 0..map.height() {
+            for x in 0..map.width() {
+                let p = IVec2::new(x, y);
+                if let Some(want) = want_at(map, p) {
+                    plant_one(map, p, want);
+                }
             }
-            let grade = if flat { 0.0 } else { map.terrain.broad_grade(p.as_vec2() + Vec2::splat(0.5)) };
-            match map.biomes.plant(p, grade) {
-                Some(Plant::Tree(feature)) => {
-                    if spacing <= 1 || !tree_within(map, p, spacing) {
-                        if let Some(t) = map.tile_mut(p) {
-                            t.feature = feature;
-                        }
-                    }
-                }
-                Some(Plant::Bush) => {
-                    if let Some(t) = map.tile_mut(p) {
-                        t.feature = Feature::Bush;
-                    }
-                }
-                Some(Plant::Bare) => {
-                    if let Some(t) = map.tile_mut(p) {
-                        t.floor = Floor::Dirt;
-                    }
-                }
-                None => {}
+        }
+        return;
+    }
+    // On threads (#19): first what each tile would grow, from the map before anything is planted
+    // (its biome, the slope and the hashes: the costly part). Planting only adds trees, bushes and
+    // bare earth, so a tile not clear now never will be; those clear now are asked again below.
+    let w = map.width().max(0) as usize;
+    let mut wants: Vec<Option<Plant>> = vec![None; w * map.height().max(0) as usize];
+    {
+        let map = &*map;
+        crate::par::rows(&mut wants, w, |y, row| {
+            for (x, want) in row.iter_mut().enumerate() {
+                *want = want_at(map, IVec2::new(x as i32, y as i32));
+            }
+        });
+    }
+    // Then in tile order, as on one thread, so the same tiles are clear and each tree keeps its
+    // biome's spacing from those planted before it: the same forest.
+    for (i, want) in wants.into_iter().enumerate() {
+        let Some(want) = want else { continue };
+        let p = IVec2::new((i % w) as i32, (i / w) as i32);
+        if clear_around(map, p, 1) {
+            plant_one(map, p, want);
+        }
+    }
+}
+
+/// Grow `want` on tile `p` (open grass, its biome's): a tree only if none is within the biome's spacing.
+fn plant_one(map: &mut TileMap, p: IVec2, want: crate::biomes::Plant) {
+    use crate::biomes::Plant;
+    let spacing = map.biomes.at(p).map_or(1, |b| b.trees.spacing);
+    match want {
+        Plant::Tree(feature) => {
+            if (spacing <= 1 || !tree_within(map, p, spacing))
+                && let Some(t) = map.tile_mut(p)
+            {
+                t.feature = feature;
+            }
+        }
+        Plant::Bush => {
+            if let Some(t) = map.tile_mut(p) {
+                t.feature = Feature::Bush;
+            }
+        }
+        Plant::Bare => {
+            if let Some(t) = map.tile_mut(p) {
+                t.floor = Floor::Dirt;
             }
         }
     }
@@ -2547,7 +2583,14 @@ pub(crate) mod tests {
     fn print_town() {
         let templates = crate::template::tests::shipped_templates();
         let seed = std::env::var("ZOMBYE_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
-        let g = generate(&GenConfig { seed, ..Default::default() }, &templates);
+        // `ZOMBYE_CHUNKS=N`: an N x N chunk map instead of the default.
+        let mut config = GenConfig { seed, ..Default::default() };
+        if let Some(n) = std::env::var("ZOMBYE_CHUNKS").ok().and_then(|s| s.parse::<i32>().ok()) {
+            config.chunks = IVec2::splat(n);
+        }
+        let started = std::time::Instant::now();
+        let g = generate(&config, &templates);
+        eprintln!("{}x{} tiles generated in {:.2} s", g.map.width(), g.map.height(), started.elapsed().as_secs_f64());
         eprintln!("town {}..{}, square {:?}, cul-de-sacs {:?}, spawn {}", g.town_min, g.town_max, g.plan.square, g.plan.cul_de_sacs, g.player_spawn);
         // A top-down picture too (a PPM file, one pixel a tile), when asked for.
         if let Ok(path) = std::env::var("ZOMBYE_PPM") {
