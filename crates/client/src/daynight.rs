@@ -259,7 +259,7 @@ impl Default for SkyLook {
             moon_size: 1.8,
             moon_brightness: 1.2,
             stars: 0.35,
-            star_brightness: 1.5,
+            star_brightness: 1.0,
         }
     }
 }

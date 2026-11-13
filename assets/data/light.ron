@@ -97,7 +97,7 @@
         moon_size: 1.8,
         moon_brightness: 1.2,
         stars: 0.35,
-        star_brightness: 1.5,
+        star_brightness: 1.0,
     ),
     // Light from the sky in the shade, in both views: `share` of the fill (0..1) comes from
     // around instead of evenly, so what faces up takes the sky's colour, what faces the sun its

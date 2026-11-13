@@ -51,18 +51,19 @@ fn hash3(p: vec3<f32>) -> f32 {
 
 // Stars: a point in some of the cells of a grid round the camera, as seen along `dir`.
 fn stars(dir: vec3<f32>) -> f32 {
-    let cells = 120.0;
+    // Fine cells and few of them lit: a few hundred stars in view, each a pixel or two.
+    let cells = 300.0;
     let p = dir * cells;
     let cell = floor(p);
     let h = hash3(cell);
-    if h > look.night.z * 0.25 {
+    if h > look.night.z * 0.012 {
         return 0.0;
     }
     // Kept off the cell's edges, so no star is cut in half by its neighbour's cell.
     let at = normalize(cell + 0.25 + 0.5 * vec3<f32>(hash3(cell + 7.1), hash3(cell + 3.7), hash3(cell + 1.3)));
     let angle = acos(clamp(dot(dir, at), -1.0, 1.0));
-    let size = 0.0016 + 0.0024 * hash3(cell + 9.9);
-    let twinkle = 0.75 + 0.25 * sin(globals.time * (1.5 + 3.0 * h * 4.0) + h * 40.0);
+    let size = 0.0007 + 0.0009 * hash3(cell + 9.9);
+    let twinkle = 0.75 + 0.25 * sin(globals.time * (1.5 + 3.0 * h / max(look.night.z * 0.012, 1e-4)) + h * 4000.0);
     return (1.0 - smoothstep(size * 0.4, size, angle)) * twinkle * (0.4 + 0.6 * hash3(cell + 5.5));
 }
 
