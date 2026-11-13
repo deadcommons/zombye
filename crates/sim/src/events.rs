@@ -392,7 +392,7 @@ mod tests {
         // The power may go off before the water in this world: keep it on until it is cut by hand below.
         w.schedule_event("power_off", None).unwrap();
         let water = w.event_schedule().into_iter().find(|s| s.id == "water_off").unwrap().due_h.unwrap();
-        assert!(w.water_on() && w.event_state().is_empty());
+        assert!(w.water_on() && w.event_state().fired.is_empty() && w.event_state().warned.is_empty());
         let warn = w.config.events.events[w.config.events.index_of("water_off").unwrap()].warn.clone().unwrap();
         w.skip_time((water - warn.0 as f64 + 0.1) as f32);
         assert!(w.water_on() && w.event_state().warned.contains(&"water_off".to_string()));
