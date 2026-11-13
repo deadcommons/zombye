@@ -6,6 +6,41 @@ on the server (in single-player, that is the game itself), in a sandbox: they ca
 clock or the network, and they can't make the game stop repeating itself (same seed and inputs,
 same world), which replays, saves, multiplayer and the benchmark all rely on.
 
+## Installing and turning mods on
+
+Players put mods in the **mods folder**: one folder per mod, each with its `mod.ron`. The game
+finds them by itself:
+
+| Where | The mods folder |
+|---|---|
+| A packaged game on macOS | `~/Library/Application Support/Zombye/mods` |
+| On Windows | `%APPDATA%\Zombye\mods` |
+| On Linux | `~/.local/share/zombye/mods` |
+| Run from a checkout | `mods/` in the repo (it holds the sample mod) |
+
+A mod in the folder is **off** until it is turned on: **Mods** on the main menu lists every mod
+in the folder, turns each on or off, sets the order they load in (Up and Down: a later mod wins
+where two change the same thing) and shows what each brings. "Open mods folder" opens it in the
+file manager; "Look again" reads it again after you drop a mod in. What is on is kept in the
+folder's `enabled.ron`:
+
+```ron
+(mods: ["alarm_clock", "bigger_kitchens"])
+```
+
+The mods that are on load in every game you start or load from then on. **A mod that doesn't
+load** (a mistake in its data, a script that doesn't compile, a recipe needing an item no mod
+that loads before it has, two mods with one id) is left off: the game starts without it, says so
+on the yellow line and on stderr, and the Mods screen shows the reason in red on its row. The
+menu checks a mod that is off as if it were turned on last, so it can tell you beforehand. A
+multiplayer server plays with its own mods, not yours (see
+[Joining a modded server](#joining-a-modded-server)).
+
+`--mods-dir DIR` reads another mods folder, `--no-mods` none. An offscreen render (`--render-to`)
+never reads the folder: its pictures depend on its flags alone.
+
+## Working on a mod: `--mod DIR`
+
 ```bash
 # The sample mod: alarm clocks you can wind up and set down as a lure
 cargo run -p zombye-client --release -- --mod mods/alarm_clock
@@ -13,10 +48,14 @@ cargo run -p zombye-server --release -- --host --mod mods/alarm_clock      # cli
 cargo run -p zombye-server --release -- --mcp --mod mods/alarm_clock       # an agent's world with the mod
 ```
 
-`--mod DIR` can be given several times; mods load in that order. A mod that doesn't load (a
-mistake in its data, a script that doesn't compile) stops the game at start-up with the mod, the
-file and the reason. A server and its clients play with the same mod data, and a client gets it
-by itself: see [Joining a modded server](#joining-a-modded-server).
+`--mod DIR` loads a mod's folder wherever it is, on top of the mods folder's (a `--mod` of the
+same id takes the folder's copy's place). It can be given several times; mods load in that order.
+A `--mod` that doesn't load stops the game at start-up with the mod, the file and the reason:
+it is the one you are working on. A server reads only its `--mod` folders, never a mods folder.
+The MCP server's `mods` tool lists the mods a world runs and checks a folder without loading it
+(`mods {check: "path/to/my_mod"}`, or `mods {folder: "path/to/mods"}` for a whole mods folder).
+A server and its clients play with the same mod data, and a client gets it by itself: see
+[Joining a modded server](#joining-a-modded-server).
 
 ## A mod's folder
 
@@ -253,6 +292,8 @@ A save made with mods holds what their scripts stored. Loading it:
   an item only that mod has it is refused (or loaded without those items with `--load-anyway`);
 - with a mod it wasn't made with: loads, with a note; the mod's scripts start then.
 
+A save doesn't yet remember which mods it was made with: it loads with the mods that are on now.
+
 ## How it works (for contributors)
 
 - `crates/sim/src/script.rs`: the hook. `sim` has no Luau in it (it stays engine-free): it defines
@@ -263,6 +304,10 @@ A save made with mods holds what their scripts stored. Loading it:
   and hashes and saves as before.
 - `crates/mods`: reads mod folders (`Mod::load`), merges their data into a `WorldConfig`
   (`apply`), and runs the scripts (`luau.rs`: `mlua` with Luau built from source; one VM a mod).
+  `folder.rs` is the mods folder: `scan` (its mods and `enabled.ron`), `Folder::check` (each mod
+  that is on against the game's data and the ones before it; a broken one is left off with the
+  reason), `load_folder_into` (the folder's mods then `--mod`'s, what the client does at start-up).
+  The folder is `zombye_net::install::mods_dir`; the client's Mods screen is in `main_menu.rs`.
 - Download on join: `Mod::pack` is a mod's data as it goes over the network
   (`zombye_net::modpack::ModPack`, its hash, the client's cache, `gather`), `Mod::from_pack` /
   `apply_packs` what a client makes of it. A new kind of data file needs a name in
