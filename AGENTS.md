@@ -1066,7 +1066,7 @@ Stage 2: fuel, engine noise, running zombies over and crash damage.
   along their way at their speed and steering (`carry`) while no news comes, for at most `CARRY_TICKS` (12), and
   news glides them in the same way. On the wire only the cars that changed go (`SnapshotDelta::vehicles`: changed
   and gone), and a car moving beyond a client's view only every `wire::FAR_CAR_EVERY` (10) ticks; getting in or
-  out, stopping and coming near go at once. `wire::PROTOCOL` 36. Tests: `net/tests/driving.rs` (a driver at
+  out, stopping and coming near go at once. `wire::PROTOCOL` 37. Tests: `net/tests/driving.rs` (a driver at
   150 ms of ping predicts its car exactly; a far car is sent now and then), `vehicles_render`'s own.
 - **Not yet:** the camera pulling back with speed, MCP tools, running players over, engine and horn sounds, damage
   drawn on the car, repairing parts, keys and hotwiring (a Mechanics skill), the radio, more vehicle kinds.

@@ -76,9 +76,9 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// (`SnapshotDelta::vehicles`). 33: the ground's height (`GenConfig::terrain`, in `Welcome::generation`). 34: the held
 /// light switched on and off: `Intent::Flashlight`, `OutfitView::light_off`. 35: cars' fuel, engines and parts
 /// (`VehicleView::fuel_dl`, `engine_on`, `parts`), `VehicleOp::Refuel`, `Siphon`, `Horn`, `ItemDef::fuel_l`, the
-/// vehicles' new numbers, `DeathCause::Crash`. 36: vehicles sent by need: `SnapshotDelta::vehicles` is the cars
+/// vehicles' new numbers, `DeathCause::Crash`. 36: loot and crafting (#228). 37: vehicles sent by need: `SnapshotDelta::vehicles` is the cars
 /// changed and the ids gone, a far moving car every `FAR_CAR_EVERY` ticks.)
-pub const PROTOCOL: u32 = 36;
+pub const PROTOCOL: u32 = 37;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
