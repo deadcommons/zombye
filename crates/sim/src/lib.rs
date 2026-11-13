@@ -36,6 +36,7 @@ pub mod map;
 pub mod nav;
 pub mod needs;
 pub mod origin;
+pub mod par;
 pub mod players;
 pub mod population;
 pub mod power;
@@ -109,3 +110,4 @@ pub use zombies::{Tier, ZombieAnim, ZombieState, Zombies};
 pub const TICK_RATE: u32 = 20;
 /// Seconds per simulation tick.
 pub const TICK_DT: f32 = 1.0 / TICK_RATE as f32;
+

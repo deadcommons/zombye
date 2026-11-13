@@ -1,6 +1,7 @@
 //! How long a big map takes to build and how much memory it holds (Linear DCM-94). Ignored: run
 //! with `ZOMBYE_MAP_CHUNKS=128,256 cargo test -p zombye-net --release --test map_size -- --ignored --nocapture`.
 //! A joining client builds its map the same way (`remote::build_map`: `World::new` with no zombies).
+//! `ZOMBYE_GEN_THREADS=N` makes them on N threads (#19).
 
 use std::time::Instant;
 
@@ -19,6 +20,7 @@ fn rss_mb() -> f64 {
 #[test]
 #[ignore]
 fn map_size_report() {
+    content::gen_threads_from_env();
     let sizes = std::env::var("ZOMBYE_MAP_CHUNKS").unwrap_or_else(|_| "128,256".into());
     let base = content::load_config(&content::default_data_dir(), 1).expect("content");
     for n in sizes.split(',').filter_map(|s| s.trim().parse::<i32>().ok()) {

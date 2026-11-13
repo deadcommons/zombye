@@ -176,6 +176,7 @@ fn load_or_create(path: &Path, config: WorldConfig, options: LoadOptions, prepar
 }
 
 fn main() {
+    content::gen_threads_from_env();
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let admin_token = std::env::var("ZOMBYE_ADMIN_TOKEN").ok().filter(|t| !t.trim().is_empty());
     // `--config FILE` (#20, `config.rs`): the dedicated server's settings from one file, as the

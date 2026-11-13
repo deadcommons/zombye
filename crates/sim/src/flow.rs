@@ -78,7 +78,7 @@ pub(crate) const OFFSETS: [IVec2; 8] = [
 ///
 /// Alongside, per tile, which of the 4 straight steps climb through an open window, or would
 /// breach a shut window or door (see [`breach_side`](Self::breach_side)).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct WalkGrid {
     width: i32,
     height: i32,
@@ -121,25 +121,34 @@ fn step_side(k: usize) -> Side {
 
 impl WalkGrid {
     pub fn new(map: &TileMap) -> Self {
-        let n = (map.width() * map.height()) as usize;
-        let mut g = Self { width: map.width(), height: map.height(), mask: vec![0; n], extra: vec![0; n] };
-        for y in 0..g.height {
-            for x in 0..g.width {
-                g.refresh_steps(map, IVec2::new(x, y));
+        let (width, height) = (map.width(), map.height());
+        let w = width.max(0) as usize;
+        // Each tile's steps and whether it is clear taken alone, rows in bands over threads (#19:
+        // each reads only the map, so the grid is the same on any number).
+        let mut cells = vec![(0u8, 0u16, false); w * height.max(0) as usize];
+        crate::par::rows(&mut cells, w, |y, row| {
+            for (x, c) in row.iter_mut().enumerate() {
+                let t = IVec2::new(x as i32, y as i32);
+                let (m, e) = steps_at(map, t);
+                *c = (m, e, clear_alone(map, t));
             }
-        }
-        // Open ground, for the whole map at once: each tile's own answer, then the nine together.
-        let clear: Vec<bool> = (0..g.height).flat_map(|y| (0..g.width).map(move |x| IVec2::new(x, y))).map(|t| clear_alone(map, t)).collect();
-        let w = g.width as usize;
-        for y in 1..(g.height - 1).max(1) as usize {
-            for x in 1..(g.width - 1).max(1) as usize {
+        });
+        let mask = cells.iter().map(|c| c.0).collect();
+        let mut extra: Vec<u16> = cells.iter().map(|c| c.1).collect();
+        // Open ground: the nine tiles round it all clear.
+        let clear = |i: usize| cells[i].2;
+        crate::par::rows(&mut extra, w, |y, row| {
+            if y == 0 || y + 1 >= height as usize {
+                return;
+            }
+            for x in 1..w.saturating_sub(1) {
                 let i = y * w + x;
-                if (0..3).all(|dy| clear[i + dy * w - w - 1..i + dy * w - w + 2].iter().all(|c| *c)) {
-                    g.extra[i] |= OPEN_BIT;
+                if (0..3).all(|dy| (0..3).all(|dx| clear(i + dy * w + dx - w - 1))) {
+                    row[x] |= OPEN_BIT;
                 }
             }
-        }
-        g
+        });
+        Self { width, height, mask, extra }
     }
 
     /// Is `t` open ground: nothing in reach of a body standing on it to push it back or to climb
@@ -172,6 +181,16 @@ impl WalkGrid {
     }
 
     fn refresh_steps(&mut self, map: &TileMap, t: IVec2) {
+        let (m, extra) = steps_at(map, t);
+        let i = (t.y * self.width + t.x) as usize;
+        self.mask[i] = m;
+        self.extra[i] = extra;
+    }
+}
+
+/// Tile `t`'s walkable steps and its climbing, window, door and blocked bits ([`WalkGrid`]).
+fn steps_at(map: &TileMap, t: IVec2) -> (u8, u16) {
+    {
         let mut m = 0u8;
         let mut extra = 0u16;
         for (k, d) in OFFSETS.iter().enumerate() {
@@ -199,10 +218,11 @@ impl WalkGrid {
         if map.tile_blocked(t) {
             extra |= BLOCKED_BIT;
         }
-        let i = (t.y * self.width + t.x) as usize;
-        self.mask[i] = m;
-        self.extra[i] = extra;
+        (m, extra)
     }
+}
+
+impl WalkGrid {
 
     /// Recompute the tiles whose steps an edit at tile `t` (its edges or contents) can affect.
     pub fn update_around(&mut self, map: &TileMap, t: IVec2) {

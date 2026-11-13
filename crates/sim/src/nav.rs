@@ -168,14 +168,74 @@ fn edge_between(a: IVec2, b: IVec2) -> EdgeRef {
     EdgeRef::of(a, side)
 }
 
+/// Chunk `o`'s areas: the tiles a body can walk between without leaving the chunk, each marked in
+/// `area` (at `index(t)`) with its number, and their nodes in tile order.
+fn split_area(walk: &WalkGrid, o: IVec2, area: &mut [u8], index: impl Fn(IVec2) -> usize) -> Vec<Node> {
+    for ly in 0..C {
+        for lx in 0..C {
+            area[index(o + IVec2::new(lx, ly))] = NONE;
+        }
+    }
+    let inside = |t: IVec2| t.x >= o.x && t.y >= o.y && t.x < o.x + C && t.y < o.y + C;
+    let mut nodes = Vec::new();
+    let (mut stack, mut tiles) = (Vec::new(), Vec::new());
+    for ly in 0..C {
+        for lx in 0..C {
+            let t = o + IVec2::new(lx, ly);
+            if nodes.len() >= MAX_AREAS || walk.blocked(t) || area[index(t)] != NONE {
+                continue;
+            }
+            let k = nodes.len() as u8;
+            area[index(t)] = k;
+            stack.push(t);
+            tiles.clear();
+            while let Some(u) = stack.pop() {
+                tiles.push(u);
+                let steps = walk.steps(u);
+                for (j, d) in OFFSETS.iter().enumerate() {
+                    let n = u + *d;
+                    if steps & (1 << j) == 0 || !inside(n) || walk.blocked(n) {
+                        continue;
+                    }
+                    let ni = index(n);
+                    if area[ni] == NONE {
+                        area[ni] = k;
+                        stack.push(n);
+                    }
+                }
+            }
+            // The tile nearest the mean (in integers, ties to the first in tile order).
+            let n = tiles.len() as i64;
+            let (sx, sy) = tiles.iter().fold((0i64, 0i64), |(x, y), u| (x + u.x as i64, y + u.y as i64));
+            let center = *tiles.iter().min_by_key(|u| ((u.x as i64 * n - sx).pow(2) + (u.y as i64 * n - sy).pow(2), u.y, u.x)).expect("at least the seed");
+            nodes.push(Node { center, tiles: tiles.len() as u16, links: Vec::new() });
+        }
+    }
+    nodes
+}
+
 impl NavGraph {
     /// Build the graph for the whole map.
     pub fn new(walk: &WalkGrid) -> Self {
         let (width, height) = (walk.width(), walk.height());
         let (cols, rows) = (width / C, height / C);
         let mut g = Self { width, height, cols, rows, area: vec![NONE; (width * height).max(0) as usize], chunks: vec![Vec::new(); (cols * rows).max(0) as usize], offsets: Vec::new(), ids: Vec::new() };
+        // Each chunk's areas on its own (#19): a row of chunks is one run of the area grid, so rows
+        // of chunks go to threads, each splitting its chunks into its own run; then the links, as a
+        // rebuild makes them (each node's links sorted, so the same whatever order they came in).
+        let band = width.max(0) as usize * C as usize;
+        if band > 0 && rows > 0 {
+            let mut row_nodes: Vec<Vec<Vec<Node>>> = vec![Vec::new(); rows as usize];
+            let mut work: Vec<(&mut [u8], &mut Vec<Vec<Node>>)> = g.area.chunks_mut(band).take(rows as usize).zip(row_nodes.iter_mut()).collect();
+            crate::par::rows(&mut work, 1, |cy, one| {
+                let (area, nodes) = &mut one[0];
+                let y0 = cy as i32 * C;
+                **nodes = (0..cols).map(|cx| split_area(walk, IVec2::new(cx * C, y0), area, |t| ((t.y - y0) * width + t.x) as usize)).collect();
+            });
+            g.chunks = row_nodes.into_iter().flatten().collect();
+        }
         let all: Vec<usize> = (0..g.chunks.len()).collect();
-        g.rebuild(walk, &all);
+        g.link(walk, &all);
         g
     }
 
@@ -260,49 +320,8 @@ impl NavGraph {
     /// Split chunk `c` into its areas (setting the per-tile area map), with no links yet.
     fn split_chunk(&mut self, walk: &WalkGrid, c: usize) -> Vec<Node> {
         let o = self.origin(c);
-        for ly in 0..C {
-            for lx in 0..C {
-                let i = self.tile_index(o + IVec2::new(lx, ly));
-                self.area[i] = NONE;
-            }
-        }
-        let inside = |t: IVec2| t.x >= o.x && t.y >= o.y && t.x < o.x + C && t.y < o.y + C;
-        let mut nodes = Vec::new();
-        let (mut stack, mut tiles) = (Vec::new(), Vec::new());
-        for ly in 0..C {
-            for lx in 0..C {
-                let t = o + IVec2::new(lx, ly);
-                if nodes.len() >= MAX_AREAS || walk.blocked(t) || self.area[self.tile_index(t)] != NONE {
-                    continue;
-                }
-                let k = nodes.len() as u8;
-                let i = self.tile_index(t);
-                self.area[i] = k;
-                stack.push(t);
-                tiles.clear();
-                while let Some(u) = stack.pop() {
-                    tiles.push(u);
-                    let steps = walk.steps(u);
-                    for (j, d) in OFFSETS.iter().enumerate() {
-                        let n = u + *d;
-                        if steps & (1 << j) == 0 || !inside(n) || walk.blocked(n) {
-                            continue;
-                        }
-                        let ni = self.tile_index(n);
-                        if self.area[ni] == NONE {
-                            self.area[ni] = k;
-                            stack.push(n);
-                        }
-                    }
-                }
-                // The tile nearest the mean (in integers, ties to the first in tile order).
-                let n = tiles.len() as i64;
-                let (sx, sy) = tiles.iter().fold((0i64, 0i64), |(x, y), u| (x + u.x as i64, y + u.y as i64));
-                let center = *tiles.iter().min_by_key(|u| ((u.x as i64 * n - sx).pow(2) + (u.y as i64 * n - sy).pow(2), u.y, u.x)).expect("at least the seed");
-                nodes.push(Node { center, tiles: tiles.len() as u16, links: Vec::new() });
-            }
-        }
-        nodes
+        let width = self.width;
+        split_area(walk, o, &mut self.area, |t| (t.y * width + t.x) as usize)
     }
 
     fn link_pair(&mut self, a: IVec2, b: IVec2, kind: PortalKind) {
@@ -385,10 +404,15 @@ impl NavGraph {
     /// Rebuild chunks `chunks` (ascending): their areas, every link of theirs, and the links into
     /// them from their neighbours.
     pub fn rebuild(&mut self, walk: &WalkGrid, chunks: &[usize]) {
-        let in_set = |c: usize| chunks.binary_search(&c).is_ok();
         for &c in chunks {
             self.chunks[c] = self.split_chunk(walk, c);
         }
+        self.link(walk, chunks);
+    }
+
+    /// The links of chunks `chunks` (ascending, their areas just split) and those into them.
+    fn link(&mut self, walk: &WalkGrid, chunks: &[usize]) {
+        let in_set = |c: usize| chunks.binary_search(&c).is_ok();
         let mut touched = chunks.to_vec();
         for &c in chunks {
             for nb in self.neighbours(c) {

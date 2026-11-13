@@ -559,8 +559,15 @@ impl World {
     pub fn new(config: WorldConfig) -> Self {
         let mut world = Self::generate(config);
         if !world.config.vehicles.kinds.is_empty() {
-            world.place_vehicles();
-            world.walk = WalkGrid::new(&world.map);
+            // The walk grid again where props made way for the vehicles (#19: not the whole map;
+            // the grid reads only tiles and edges, never the vehicles themselves).
+            for (min, size) in world.place_vehicles() {
+                for y in min.y..min.y + size.y {
+                    for x in min.x..min.x + size.x {
+                        world.walk.update_around(&world.map, IVec2::new(x, y));
+                    }
+                }
+            }
         }
         world.nav = Nav::new(&world.walk);
         world.populate();
@@ -871,6 +878,11 @@ impl World {
     }
 
     /// The navigation graph and the long-range plans zombies share.
+    /// Which steps out of each tile are walkable (read only).
+    pub fn walk(&self) -> &WalkGrid {
+        &self.walk
+    }
+
     pub fn nav(&self) -> &Nav {
         &self.nav
     }

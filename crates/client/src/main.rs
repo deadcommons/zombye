@@ -740,6 +740,7 @@ pub(crate) fn exit_on_signal(mut exit: MessageWriter<AppExit>, mut sent: Local<b
 }
 
 fn main() {
+    zombye_net::content::gen_threads_from_env();
     // `--write-pack OUT DIR...`: pack the release folders for a packaged build (`pack.rs`).
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).is_some_and(|a| a == "--write-pack") {
