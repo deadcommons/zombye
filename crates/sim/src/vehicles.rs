@@ -1202,7 +1202,7 @@ impl World {
         let inv = &self.players[pi].inventory;
         // The can to use: in a hand, else the bags; one with fuel to pour, or room to fill.
         let usable = |s: &crate::items::ItemStack| s.item == can && if fill { s.used > 0 } else { s.used < holds };
-        let slot = [crate::items::Slot::Hand, crate::items::Slot::OffHand].into_iter().find(|&sl| inv.slot(sl).is_some_and(|s| usable(&s)));
+        let slot = [crate::Slot::Hand, crate::Slot::OffHand].into_iter().find(|&sl| inv.slot(sl).is_some_and(|s| usable(&s)));
         let carried = inv.carried.iter().position(usable);
         if slot.is_none() && carried.is_none() {
             return Err(if fill { "you need a fuel can with fuel in it".into() } else { "you need a fuel can with room in it".into() });
