@@ -3349,7 +3349,7 @@ and checks the state hash, the tick and the session's dirty flag don't move), `P
 `add_player`, `pvp`, `dev`, `skip_time`, `load`, `restrain_now`, `set_weather`) get a title starting `Debug:`, a description starting "Debug tool, for setting
 up tests" and `_meta: {"zombye/debug": true}`. Only `save` and `load` are `destructiveHint: true`; every tool is
 `openWorldHint: false`. **A new tool needs a row in `TOOLS`** (a test fails without one). `--no-debug-tools` leaves the
-debug tools out: not listed (57 tools instead of 71), and calling one is the unknown-tool error. `stats` has an
+debug tools out: not listed (58 tools instead of 72), and calling one is the unknown-tool error. `stats` has an
 `outputSchema` and returns its JSON as `structuredContent` beside the text (`output_schema`). The server's `instructions`
 (`mcp::instructions`, under 2,200 bytes: every client puts them in the model's context) say you are player 1, time only
 moves when a tool steps it, look with `observe` first, and the debug tools are for testing; detail belongs in the tools'
