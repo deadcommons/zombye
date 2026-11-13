@@ -61,7 +61,7 @@ pub struct WaterDef {
     pub on: bool,
     /// Game hours after the world began when the water goes off for good (`None`: it never does).
     pub fails_after_hours: Option<f32>,
-    /// Furniture kinds that are taps (`sink`, `bathtub`).
+    /// Furniture kinds that are taps (`sink`, `bathtub`, `toilet`).
     pub taps: Vec<String>,
     /// Metres from a tap's footprint a survivor can use it from (same room, same floor).
     pub reach: f32,
@@ -69,7 +69,7 @@ pub struct WaterDef {
 
 impl Default for WaterDef {
     fn default() -> Self {
-        Self { on: true, fails_after_hours: None, taps: vec!["sink".into(), "bathtub".into()], reach: 1.6 }
+        Self { on: true, fails_after_hours: None, taps: vec!["sink".into(), "bathtub".into(), "toilet".into()], reach: 1.6 }
     }
 }
 

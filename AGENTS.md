@@ -1678,8 +1678,8 @@ A new single-player game can begin with a survivor of your making in a world of 
   (4, a `cuts` tool: scissors or a kitchen knife), and wash 3 rags in a bottle of water into 3 clean rags (and an empty
   bottle). A rag dresses a wound dirty, a clean rag clean (first aid's `bandage` / `clean` tags).
 - **Water, mending and made weapons** (the loot and crafting pass): `water: true` recipes need a running tap within
-  reach (`power::water_near`: `power.ron`'s `water.taps`, sinks and baths, same room and floor, while
-  `water.on` and before `water.fails_after_hours`; stateless, from the clock; `Snapshot::water_on`, `wire::PROTOCOL` 34): fill a bottle, from the Make list or the sink's right-click menu (`world_actions::tap_entries`). **What can be filled is data:** an item's `fills: Some("water_bottle")` in `items.ron` (the empty bottle's) gets a recipe `fill_<id>` by itself (`crafting::add_fill_recipes`, from `content::load_recipes` and a mod's `apply`), so a jug or canteen is one line.
+  reach (`power::water_near`: `power.ron`'s `water.taps`, sinks, baths and toilets, same room and floor, while
+  `water.on` and before `water.fails_after_hours`; stateless, from the clock; `Snapshot::water_on`, `wire::PROTOCOL` 34): fill a bottle, from the Make list or a right-click on the sink, bath or toilet (`world_actions::tap_entries`; a tap that isn't a container is `Target::Tap`, `pick_tap`). **What can be filled is data:** an item's `fills: Some("water_bottle")` in `items.ron` (the empty bottle's) gets a recipe `fill_<id>` by itself (`crafting::add_fill_recipes`, from `content::load_recipes` and a mod's `apply`), so a jug or canteen is one line.
   `repairs: Some((tag, knocks))` mends the most worn weapon held or carried with that item tag
   (`crafting::mend_target`, the same pure rule for the Make list; `mend_wood`, `mend_handle`, `mend_metal` in
   `items.ron`), taking knocks off its wear (`ItemStack::used`, see weapon wear): duct tape on a bat or plank, a

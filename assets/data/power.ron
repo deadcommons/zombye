@@ -15,7 +15,7 @@
         // Game hours after the world began when it goes off for good: None, it never does
         // (Some(72.0): three days of water).
         fails_after_hours: None,
-        taps: ["sink", "bathtub"],
+        taps: ["sink", "bathtub", "toilet"],
         // Metres from a tap's footprint you can use it from.
         reach: 1.6,
     ),

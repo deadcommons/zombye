@@ -3013,14 +3013,26 @@ fn world_menu(
         (Some(a), Some(b)) => Some(if b.1 < a.1 { b } else { a }),
         (a, b) => a.or(b),
     };
+    let tap = crate::world_actions::pick_tap(&map.0, sites, &join.water.taps, me.curr.pos, me.curr.level, ray.origin, *ray.direction);
+    let thing = match (thing, tap) {
+        (Some(a), Some(b)) => Some(if b.1 < a.1 { b } else { a }),
+        (a, b) => a.or(b),
+    };
     let thing = thing.filter(|(_, t)| nearest.is_none() || *t < ground_t - 0.3);
     if let Some((target, _)) = thing {
         let (title, mut entries) = crate::world_actions::entries(target, &map.0, sites, &join.containers, &join.items, &join.builds, &join.blind_tag, join.fire.reach, me.id, me.curr.pos, link.own(me.id));
-        // A sink or a bath with the water on: fill a bottle there too.
-        if let crate::world_actions::Target::Container(k) = target
-            && let Some(site) = sites.get(k)
-        {
-            entries.extend(crate::world_actions::tap_entries(site, &map.0, &join.water, link.curr.water_on, &join.recipes, &join.items, me.id, me.curr.pos, me.curr.level, link.own(me.id)));
+        // A sink, a bath or a toilet with the water on: fill a bottle there too.
+        let at = match target {
+            crate::world_actions::Target::Container(k) => sites.get(k).map(|s| (s.min, s.level as i8)),
+            crate::world_actions::Target::Tap(min, floor, _) => Some((min, floor)),
+            _ => None,
+        };
+        if let Some((min, floor)) = at {
+            let fills = crate::world_actions::tap_entries(min, floor, &map.0, &join.water, link.curr.water_on, &join.recipes, &join.items, me.id, me.curr.pos, me.curr.level, link.own(me.id));
+            if fills.is_empty() && matches!(target, crate::world_actions::Target::Tap(..)) {
+                entries.push(crate::world_actions::WorldEntry::say(if link.curr.water_on { "Too far away: walk up to it" } else { "No water: the taps have run dry" }));
+            }
+            entries.extend(fills);
         }
         if !entries.is_empty() {
             menu.show_world(title, entries, cursor);

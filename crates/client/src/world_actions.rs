@@ -45,6 +45,9 @@ pub enum Target {
     Switch(u16, Vec2),
     /// A campfire someone built (its id, where it stands, burning or not, game minutes of fuel).
     Fire(u32, Vec2, bool, u16),
+    /// A tap that isn't a container (a bath, a toilet: `power.ron`'s `water.taps`): its
+    /// furniture's min corner, floor and kind ([`pick_tap`]).
+    Tap(IVec2, i8, &'static str),
 }
 
 /// One line of a world menu: its label and what it sends (`None`: a line that only says
@@ -61,7 +64,7 @@ impl WorldEntry {
         Self { label: label.into(), intent: Some(intent), facing: None }
     }
 
-    fn say(label: impl Into<String>) -> Self {
+    pub fn say(label: impl Into<String>) -> Self {
         Self { label: label.into(), intent: None, facing: None }
     }
 }
@@ -220,6 +223,30 @@ pub fn pick_fire(fires: &[zombye_sim::FireView], player: Vec2, origin: Vec3, dir
         .min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
+/// How high a tap that isn't a container (a bath, a toilet) is taken to be.
+const TAP_TOP: f32 = 0.8;
+
+/// The tap (furniture of a kind in `water.taps`, on the player's floor, not a container: a
+/// sink is one already) the pointer's ray meets first, with the ray parameter there.
+pub fn pick_tap(map: &TileMap, sites: &[ContainerSite], taps: &[String], player: Vec2, level: u8, origin: Vec3, dir: Vec3) -> Option<(Target, f32)> {
+    map.buildings
+        .iter()
+        .flat_map(|b| b.furniture.iter())
+        .filter(|f| f.level == level as i8 && taps.iter().any(|t| *t == f.kind))
+        .filter(|f| !sites.iter().any(|s| s.min == f.min && s.level as i8 == f.level))
+        .filter(|f| (f.min.as_vec2() + f.size.as_vec2() * 0.5).distance(player) <= LOOK)
+        .filter_map(|f| {
+            let kind: &'static str = match f.kind.as_str() {
+                "bathtub" => "Bath",
+                "toilet" => "Toilet",
+                "sink" => "Sink",
+                _ => "Tap",
+            };
+            ray_box(origin, dir, f.min.as_vec2(), (f.min + f.size).as_vec2(), TAP_TOP).map(|t| (Target::Tap(f.min, f.level, kind), t))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+}
+
 /// What a fire's menu offers: put on each kind of fuel carried, light it (with something to
 /// light it with), put it out. `reach`: `FireTuning::reach`.
 pub fn fire_entries(id: u32, at: Vec2, lit: bool, fuel_min: u16, items: &[ItemDef], reach: f32, me: u32, pos: Vec2, view: Option<&PrivateView>) -> (String, Vec<WorldEntry>) {
@@ -290,16 +317,18 @@ pub fn entries(target: Target, map: &TileMap, sites: &[ContainerSite], data: &Co
             let lines = if near { vec![WorldEntry::send("Flick the switch", Intent::Light { player: me, on: None })] } else { vec![WorldEntry::say("Too far away: walk up to it")] };
             ("Light switch".to_string(), lines)
         }
+        // The fill lines are `tap_entries`', which the caller adds.
+        Target::Tap(_, _, kind) => (kind.to_string(), Vec::new()),
     }
 }
 
-/// A container that is a tap (a sink or a bath, `power.ron`'s `water.taps`): the recipes that
+/// A tap (a sink, a bath or a toilet, by its furniture's min corner and floor; `power.ron`'s `water.taps`): the recipes that
 /// need running water (`water: true`, filling a bottle), each a line that makes it, or says what's
 /// missing; none when the tap isn't one or the player isn't at it with the water on
 /// (`power::water_near`, the server's rule).
 #[allow(clippy::too_many_arguments)]
-pub fn tap_entries(site: &ContainerSite, map: &TileMap, water: &zombye_sim::power::WaterDef, running: bool, recipes: &[zombye_sim::RecipeDef], items: &[ItemDef], me: u32, pos: Vec2, level: u8, view: Option<&PrivateView>) -> Vec<WorldEntry> {
-    let tap = map.buildings.iter().flat_map(|b| b.furniture.iter()).any(|f| f.min == site.min && f.level == site.level as i8 && water.taps.iter().any(|t| *t == f.kind));
+pub fn tap_entries(min: IVec2, floor: i8, map: &TileMap, water: &zombye_sim::power::WaterDef, running: bool, recipes: &[zombye_sim::RecipeDef], items: &[ItemDef], me: u32, pos: Vec2, level: u8, view: Option<&PrivateView>) -> Vec<WorldEntry> {
+    let tap = map.buildings.iter().flat_map(|b| b.furniture.iter()).any(|f| f.min == min && f.level == floor && water.taps.iter().any(|t| *t == f.kind));
     if !tap || !zombye_sim::power::water_near(map, water, running, pos, level) {
         return Vec::new();
     }
