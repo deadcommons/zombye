@@ -324,6 +324,8 @@ pub const KEYS: [(&str, &[KeyRow]); 6] = [
             KeyRow::Fixed("Right-click", "Everything you can do with what's under the pointer"),
             KeyRow::Bound(Action::Flashlight, "Flashlight or candle on and off"),
             KeyRow::Bound(Action::Smash, "Smash a window"),
+            KeyRow::Bound(Action::Refuel, "Pour fuel into a car, or siphon it out"),
+            KeyRow::Bound(Action::Horn, "Horn, at the wheel"),
             KeyRow::Fixed("1 - 9", "Hotbar"),
             KeyRow::Bound(Action::Stop, "Stop what you're doing"),
         ],

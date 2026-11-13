@@ -48,7 +48,8 @@ fn park(w: &mut World, kind: &str, pos: Vec2, heading: f32) -> u32 {
     let id = w.vehicles.next_id;
     w.vehicles.next_id += 1;
     let state = VehicleState { pos, heading, speed: 0.0, steer: 0.0 };
-    w.vehicles.list.push(Vehicle { id, kind: k as u16, state, input: DriveInput::PARKED, driver: None, from: IVec2::new(-1, -1) });
+    let cond = Condition { fuel: w.config.vehicles.kinds[k].tank_l, ..Condition::default() };
+    w.vehicles.list.push(Vehicle { id, kind: k as u16, state, input: DriveInput::PARKED, driver: None, from: IVec2::new(-1, -1), cond });
     let boxes = w.vehicle_boxes();
     w.map.set_vehicles(boxes);
     id
@@ -154,8 +155,8 @@ fn a_car_pushes_zombies_and_survivors_aside() {
     let b = w.vehicles.list[0].boxed(&w.config.vehicles.kinds[0]);
     let o = pi(&w, other);
     assert!(b.distance(w.players[o].state.pos) > 0.25, "standing in the car: {}", w.players[o].state.pos);
-    for p in &w.zombies.pos {
-        assert!(b.distance(*p) > 0.25, "a zombie in the car at {p}");
+    for (p, st) in w.zombies.pos.iter().zip(&w.zombies.state) {
+        assert!(*st == crate::zombies::ZombieState::Dead || b.distance(*p) > 0.25, "a zombie in the car at {p}");
     }
 }
 
@@ -258,4 +259,177 @@ fn driving_is_deterministic() {
         (w.state_hash(), car(&w, w.vehicles.list[0].id))
     };
     assert_eq!(run_once(), run_once());
+}
+
+fn vehicle(w: &World, vid: u32) -> &Vehicle {
+    w.vehicles.list.iter().find(|v| v.id == vid).unwrap()
+}
+
+#[test]
+fn the_engine_starts_burns_fuel_and_dies_when_the_tank_is_dry() {
+    let (mut w, id, vid) = field();
+    let vi = w.vehicles.list.iter().position(|v| v.id == vid).unwrap();
+    w.vehicles.list[vi].cond.fuel = 0.04;
+    w.player_vehicle(id, VehicleOp::Enter { vehicle: None }).unwrap();
+    assert!(!vehicle(&w, vid).cond.engine_on);
+    drive(&mut w, id, 1.0, 0.0, 0.2);
+    assert!(vehicle(&w, vid).cond.engine_on, "the throttle starts it");
+    // A loud start: a sound bigger than the idle's.
+    drive(&mut w, id, 1.0, 0.0, 8.0);
+    let c = vehicle(&w, vid).cond;
+    assert_eq!(c.fuel, 0.0, "{c:?}");
+    assert!(!c.engine_on);
+    // Dry: the throttle does nothing more; it coasts to a stop.
+    let x = car(&w, vid).pos.x;
+    drive(&mut w, id, 1.0, 0.0, 20.0);
+    let s = car(&w, vid);
+    assert_eq!(s.speed, 0.0, "{s:?}");
+    drive(&mut w, id, 1.0, 0.0, 2.0);
+    assert_eq!(car(&w, vid).pos, s.pos);
+    assert!(s.pos.x > x);
+    // Getting out stops an engine too.
+    let mut w2 = field().0;
+    let id2 = w2.players[0].id;
+    w2.player_vehicle(id2, VehicleOp::Enter { vehicle: None }).unwrap();
+    drive(&mut w2, id2, 0.2, 0.0, 0.3);
+    for _ in 0..60 {
+        w2.player_drive(id2, DriveInput::PARKED);
+        w2.step();
+    }
+    w2.player_vehicle(id2, VehicleOp::Exit).unwrap();
+    assert!(!w2.vehicles.list[0].cond.engine_on);
+}
+
+#[test]
+fn a_running_engine_and_the_horn_are_heard() {
+    let (mut w, id, _) = field();
+    w.player_vehicle(id, VehicleOp::Enter { vehicle: None }).unwrap();
+    let t = w.config.vehicles.tuning.clone();
+    let mut loudest = 0.0f32;
+    for _ in 0..60 {
+        w.player_drive(id, DriveInput { throttle: 1.0, steer: 0.0, brake: false });
+        w.step();
+        loudest = w.sounds_heard().iter().fold(loudest, |a, s| a.max(s.radius));
+    }
+    assert!(loudest >= t.start_noise.min(t.rev_noise) - 0.01, "loudest {loudest}");
+    w.player_vehicle(id, VehicleOp::Horn).unwrap();
+    w.step();
+    assert!(w.sounds_heard().iter().any(|s| (s.radius - t.horn_noise).abs() < 0.01));
+    // Out of a car there is no horn.
+    let (mut w2, id2, _) = field();
+    assert!(w2.player_vehicle(id2, VehicleOp::Horn).is_err());
+}
+
+#[test]
+fn a_fast_car_runs_a_zombie_over_and_a_slow_one_only_pushes() {
+    // Fast: a zombie standing 20 m on is run over, and the kill is the driver's.
+    let (mut w, id, vid) = field();
+    w.spawn_zombies(1, Vec2::new(125.0, 100.0), 0.0);
+    w.player_vehicle(id, VehicleOp::Enter { vehicle: None }).unwrap();
+    let hp = w.zombies.hp[0];
+    drive(&mut w, id, 1.0, 0.0, 4.0);
+    assert!(w.zombies.hp[0] < hp, "not hit: {} of {hp}", w.zombies.hp[0]);
+    assert!(matches!(w.zombies.state[0], crate::zombies::ZombieState::Dead | crate::zombies::ZombieState::Down), "{:?}", w.zombies.state[0]);
+    let dead = w.zombies.state[0] == crate::zombies::ZombieState::Dead;
+    assert_eq!(w.players[pi(&w, id)].run.kills, dead as u32);
+    assert!(vehicle(&w, vid).cond.parts[3] < 1.0, "the body takes a knock");
+    // Slow: one met at walking pace is only pushed.
+    let (mut w, id, _) = field();
+    w.spawn_zombies(1, Vec2::new(103.0, 100.0), 0.0);
+    w.player_vehicle(id, VehicleOp::Enter { vehicle: None }).unwrap();
+    let hp = w.zombies.hp[0];
+    drive(&mut w, id, 0.15, 0.0, 2.0);
+    assert!(car(&w, vid).speed < w.config.vehicles.tuning.run_over_min_speed);
+    assert_eq!(w.zombies.hp[0], hp);
+}
+
+#[test]
+fn a_crash_wears_the_car_and_hurts_the_driver() {
+    let (mut w, id, vid) = field();
+    for y in 90..111 {
+        w.map.set_edge(IVec2::new(125, y), Side::W, Edge::Wall);
+    }
+    w.map_changed();
+    w.player_vehicle(id, VehicleOp::Enter { vehicle: Some(vid) }).unwrap();
+    let i = pi(&w, id);
+    let hp = w.players[i].hp;
+    drive(&mut w, id, 1.0, 0.0, 5.0);
+    let c = vehicle(&w, vid).cond;
+    assert!(c.parts.iter().all(|p| *p < 1.0), "{c:?}");
+    assert!(w.players[i].hp < hp);
+    // A worn engine and tyres go slower.
+    let worn = Condition { fuel: 10.0, engine_on: true, parts: [0.4, 0.5, 1.0, 1.0] };
+    let p = worn.perf();
+    assert!(p.runs && p.top < 0.8 && p.power < 0.8);
+    assert!(!Condition { parts: [0.0, 1.0, 1.0, 1.0], ..worn }.perf().runs);
+    assert!(!Condition { fuel: 0.0, ..worn }.perf().runs);
+    // Killed in it: a crash.
+    let (mut w, id, vid) = field();
+    for y in 90..111 {
+        w.map.set_edge(IVec2::new(125, y), Side::W, Edge::Wall);
+    }
+    w.map_changed();
+    w.player_vehicle(id, VehicleOp::Enter { vehicle: Some(vid) }).unwrap();
+    let i = pi(&w, id);
+    w.players[i].hp = 1.0;
+    drive(&mut w, id, 1.0, 0.0, 5.0);
+    let d = w.players[pi(&w, id)].run.death.expect("dead");
+    assert_eq!(d.cause, crate::run::DeathCause::Crash);
+}
+
+/// Items for fuel: a can and a hose.
+fn fuel_items(w: &mut World) {
+    let text = r#"[
+        (id: "petrol_can", name: "Petrol can", category: Tool, weight_kg: 1.2, volume_l: 12.0, fuel_l: Some(10)),
+        (id: "siphon_hose", name: "Siphon hose", category: Tool, weight_kg: 0.4, volume_l: 1.0, tags: ["siphons"]),
+    ]"#;
+    w.config.items = crate::items::parse_items(text, &[]).unwrap();
+}
+
+#[test]
+fn a_can_fills_the_tank_and_a_hose_siphons_it_out() {
+    let (mut w, id, vid) = field();
+    fuel_items(&mut w);
+    let vi = w.vehicles.list.iter().position(|v| v.id == vid).unwrap();
+    w.vehicles.list[vi].cond.fuel = 3.0;
+    let i = pi(&w, id);
+    assert!(w.player_vehicle(id, VehicleOp::Refuel { vehicle: None }).unwrap_err().contains("fuel can"));
+    w.give_item(id, "petrol_can", 1);
+    assert_eq!(w.players[i].inventory.carried[0].used, 10, "a new can is full");
+    let heavy = crate::inventory::stack_weight(&w.config.items, &w.players[i].inventory.carried[0]);
+    let msg = w.player_vehicle(id, VehicleOp::Refuel { vehicle: None }).unwrap();
+    assert!(msg.contains("10 L"), "{msg}");
+    assert_eq!(vehicle(&w, vid).cond.fuel, 13.0);
+    let can = w.players[i].inventory.carried[0];
+    assert_eq!(can.used, 0);
+    assert!(crate::inventory::stack_weight(&w.config.items, &can) < heavy, "an empty can is lighter");
+    assert!(w.player_vehicle(id, VehicleOp::Refuel { vehicle: None }).is_err(), "the can is empty");
+    // Siphoning needs a hose.
+    assert!(w.player_vehicle(id, VehicleOp::Siphon { vehicle: None }).unwrap_err().contains("hose"));
+    w.give_item(id, "siphon_hose", 1);
+    w.player_vehicle(id, VehicleOp::Siphon { vehicle: None }).unwrap();
+    assert_eq!(vehicle(&w, vid).cond.fuel, 3.0);
+    assert_eq!(w.players[pi(&w, id)].inventory.carried.iter().find(|s| s.item == 0).unwrap().used, 10);
+    // From the wheel you can't.
+    w.player_vehicle(id, VehicleOp::Enter { vehicle: None }).unwrap();
+    assert!(w.player_vehicle(id, VehicleOp::Refuel { vehicle: None }).is_err());
+}
+
+#[test]
+fn a_saved_car_keeps_its_fuel_and_damage() {
+    let mut w = town();
+    let vid = w.vehicles.list[0].id;
+    w.vehicles.list[0].cond = Condition { fuel: 7.5, engine_on: false, parts: [0.5, 0.75, 0.25, 0.6] };
+    let mut content = WorldConfig::new(3, 0, shipped_templates());
+    content.street_props = w.config.street_props.clone();
+    content.vehicles = w.config.vehicles.clone();
+    let l = World::load(&w.save(), &content).unwrap();
+    assert_eq!(vehicle(&l, vid).cond, vehicle(&w, vid).cond);
+    assert_eq!(l.state_hash(), w.state_hash());
+    // Found cars hold a seeded share of their tanks, the same for the same seed.
+    let t = &w.config.vehicles.tuning;
+    for v in &town().vehicles.list {
+        let tank = w.config.vehicles.kinds[v.kind as usize].tank_l;
+        assert!(v.cond.fuel >= tank * t.start_fuel.0 - 0.1 && v.cond.fuel <= tank * t.start_fuel.1 + 0.1, "{v:?}");
+    }
 }

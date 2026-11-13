@@ -30,6 +30,8 @@ pub enum Action {
     Interact,
     Smash,
     Flashlight,
+    Refuel,
+    Horn,
     Shove,
     Reload,
     Stop,
@@ -43,7 +45,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 21] = [
+    pub const ALL: [Action; 23] = [
         Action::MoveUp,
         Action::MoveDown,
         Action::MoveLeft,
@@ -55,6 +57,8 @@ impl Action {
         Action::Interact,
         Action::Smash,
         Action::Flashlight,
+        Action::Refuel,
+        Action::Horn,
         Action::Shove,
         Action::Reload,
         Action::Stop,
@@ -81,6 +85,8 @@ impl Action {
             Action::Interact => "interact",
             Action::Smash => "smash",
             Action::Flashlight => "flashlight",
+            Action::Refuel => "refuel",
+            Action::Horn => "horn",
             Action::Shove => "shove",
             Action::Reload => "reload",
             Action::Stop => "stop",
@@ -96,6 +102,21 @@ impl Action {
 
     pub fn from_id(id: &str) -> Option<Action> {
         Action::ALL.into_iter().find(|a| a.id() == id)
+    }
+}
+
+impl Action {
+    /// Read only at the wheel of a car (the horn), so it may share a key with one read only on
+    /// foot (H: the Health screen on foot, the horn at the wheel).
+    pub fn at_wheel(self) -> bool {
+        matches!(self, Action::Horn)
+    }
+
+    /// Does something only beside a car (pouring fuel), and gives way to the action it shares a
+    /// key with everywhere else: its chord with Shift doesn't take Shift from that key (E while
+    /// running still interacts; `interact.rs` asks for this one first beside a car).
+    pub fn beside_car(self) -> bool {
+        matches!(self, Action::Refuel)
     }
 }
 
@@ -126,6 +147,10 @@ pub struct KeysFile {
     pub smash: Option<Vec<String>>,
     /// The flashlight or candle in your hands, on and off.
     pub flashlight: Option<Vec<String>>,
+    /// Beside a car: pour the fuel you carry into it, or with none siphon its fuel into a can.
+    pub refuel: Option<Vec<String>>,
+    /// At the wheel: the horn.
+    pub horn: Option<Vec<String>>,
     /// Shove, or stomp one that's down; the brake at the wheel.
     pub shove: Option<Vec<String>>,
     /// Reload the gun in your hand.
@@ -163,6 +188,8 @@ impl KeysFile {
             (Action::Interact, self.interact),
             (Action::Smash, self.smash),
             (Action::Flashlight, self.flashlight),
+            (Action::Refuel, self.refuel),
+            (Action::Horn, self.horn),
             (Action::Shove, self.shove),
             (Action::Reload, self.reload),
             (Action::Stop, self.stop),
@@ -335,7 +362,7 @@ impl Bindings {
     /// Is `c` a key with no modifier whose key some action also binds with Shift? Then it wants
     /// Shift up (B sleeps, Shift+B builds); otherwise Shift may be held (E while running).
     fn shift_taken(&self, c: &Chord) -> bool {
-        !c.shift && self.map.values().flatten().any(|o| o.shift && o.keys == c.keys)
+        !c.shift && self.map.iter().filter(|(a, _)| !a.beside_car()).flat_map(|(_, cs)| cs).any(|o| o.shift && o.keys == c.keys)
     }
 
     fn mods_ok(&self, input: &ButtonInput<KeyCode>, c: &Chord) -> bool {
@@ -376,7 +403,7 @@ impl Bindings {
         let mine = self.chords(a);
         Action::ALL
             .into_iter()
-            .filter(|&o| o != a && self.chords(o).iter().any(|c| mine.iter().any(|m| m.keys == c.keys && m.shift == c.shift && m.ctrl == c.ctrl && m.alt == c.alt)))
+            .filter(|&o| o != a && o.at_wheel() == a.at_wheel() && self.chords(o).iter().any(|c| mine.iter().any(|m| m.keys == c.keys && m.shift == c.shift && m.ctrl == c.ctrl && m.alt == c.alt)))
             .collect()
     }
 }
@@ -509,6 +536,13 @@ mod tests {
         assert!(!b.just_pressed(&input(&[KeyCode::ControlLeft], &[KeyCode::KeyM]), Action::Map));
         // Shift alone runs.
         assert!(b.pressed(&input(&[shift], &[]), Action::Run));
+        // Shift+E is the refuel key beside a car, and E with Shift still interacts everywhere
+        // (`interact.rs` asks for refuelling first).
+        assert!(b.just_pressed(&input(&[shift], &[KeyCode::KeyE]), Action::Refuel));
+        assert!(!b.just_pressed(&input(&[], &[KeyCode::KeyE]), Action::Refuel));
+        // H is the Health screen on foot and the horn at the wheel: not a clash.
+        assert!(b.just_pressed(&input(&[], &[KeyCode::KeyH]), Action::Horn));
+        assert!(b.clashes(Action::Horn).is_empty() && b.clashes(Action::Health).is_empty());
     }
 
     #[test]

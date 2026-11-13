@@ -258,6 +258,17 @@ I['nailed_bat'] = rot(''.join(f'<path d="M{x} {y0}l1.2 {d}" stroke="#c9c9cf" str
     ''.join(f'<circle cx="{x}" cy="{y}" r="1.4" fill="#d9d9de"/>' for x, y in ((7, 20), (13, 21), (19, 22), (10, 28), (16, 27), (22, 26))))
 I['spear'] = rot('<rect x="14" y="21.5" width="33" height="5" rx="1" fill="$C"/><rect x="14" y="21.5" width="33" height="1.6" fill="$L"/><path d="M1 24l9-5h8v10h-8z" fill="#d6d6dc"/><path d="M1 24l9-5h8" stroke="#8c8c93" stroke-width="1" fill="none"/><rect x="15" y="20" width="6" height="8" rx="1" fill="#8c8c93"/><path d="M16.5 20v8M19.5 20v8" stroke="#6e6e75" stroke-width="0.8"/>')
 
+# ---------- Fuel for cars
+I['petrol_can'] = ('<path d="M10 14l6-6h20a4 4 0 0 1 4 4v26a3 3 0 0 1-3 3H13a3 3 0 0 1-3-3z" fill="$C"/>'
+                   '<path d="M14 12l3-3h7v6h-10z" fill="$D"/><rect x="18" y="10" width="4" height="3" rx="1" fill="$K"/>'
+                   '<path d="M16 20l18 14M34 20L16 34" stroke="$D" stroke-width="2.4" stroke-linecap="round"/>'
+                   '<rect x="13" y="17" width="24" height="20" rx="2" fill="none" stroke="$D" stroke-width="1.6"/>'
+                   '<path d="M30 9l6-4 3 3-5 5z" fill="$L"/><rect x="12" y="14" width="3" height="24" rx="1.5" fill="$L"/>')
+I['siphon_hose'] = ('<ellipse cx="22" cy="27" rx="15" ry="11" fill="none" stroke="$C" stroke-width="4.5"/>'
+                    '<ellipse cx="22" cy="27" rx="8" ry="5.5" fill="none" stroke="$D" stroke-width="4"/>'
+                    '<path d="M35 22c4-4 6-9 6-14" stroke="$C" stroke-width="4.5" fill="none" stroke-linecap="round"/>'
+                    '<rect x="37" y="4" width="8" height="5" rx="1.5" fill="$L"/><path d="M12 22c4-3 16-3 20 0" stroke="$L" stroke-width="1.5" fill="none"/>')
+
 def main():
     rows = [l.rstrip('\n').split('\t') for l in open(os.path.join(HERE, 'items.tsv')) if l.strip()]
     ids = [r[0] for r in rows]

@@ -25,6 +25,10 @@
     smash: ["G"],
     // The flashlight or candle in your hands, on and off.
     flashlight: ["F"],
+    // Beside a car: pour the fuel you carry into it, or with none siphon its fuel into a can.
+    refuel: ["Shift+E"],
+    // At the wheel: the horn (on foot H is the Health screen).
+    horn: ["H"],
 
     // Fighting
     shove: ["Space"],

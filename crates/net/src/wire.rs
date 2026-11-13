@@ -74,10 +74,12 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// and `Edge::DoorBoarded`. 31: movement and endurance in settings: `Tunings::movement`,
 /// `PlayerView::endurance_cap`. 32: vehicles: `Intent::Vehicle`, `Intent::Drive`, `Snapshot::vehicles`
 /// (`SnapshotDelta::vehicles`). 33: the ground's height (`GenConfig::terrain`, in `Welcome::generation`). 34: the held
-/// light switched on and off: `Intent::Flashlight`, `OutfitView::light_off`. 35: the loot and crafting pass: running water
+/// light switched on and off: `Intent::Flashlight`, `OutfitView::light_off`. 35: cars' fuel, engines and parts
+/// (`VehicleView::fuel_dl`, `engine_on`, `parts`), `VehicleOp::Refuel`, `Siphon`, `Horn`, `ItemDef::fuel_l`, the
+/// vehicles' new numbers, `DeathCause::Crash`. 36: the loot and crafting pass: running water
 /// (`Snapshot::water_on` in `SnapshotDelta::lights`), `RecipeDef::water` and `repairs`, no `spawn_weight` or `found_in` in
 /// the weapons; world events' toilet cisterns (`Snapshot::cisterns`, in `SnapshotDelta::lights`).)
-pub const PROTOCOL: u32 = 35;
+pub const PROTOCOL: u32 = 36;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.

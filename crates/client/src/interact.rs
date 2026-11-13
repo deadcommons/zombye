@@ -152,6 +152,19 @@ fn press(
     mut held: Local<bool>,
 ) {
     let now = time.elapsed_secs();
+    // Beside a car the refuel key (Shift+E) comes first: pour the fuel we carry in, else siphon
+    // the car's fuel into our can (the server says what's missing). E's own tap is then dropped.
+    if !me.dead
+        && keys::just_pressed(&keys_in, Action::Refuel)
+        && let Some(Faced::Enter(vehicle)) = &facing.0
+    {
+        let pour = link.own(me.id).is_some_and(|v| crate::player::fuel_to_pour(&v.inventory, &join));
+        let vehicle = *vehicle;
+        let op = if pour { zombye_sim::VehicleOp::Refuel { vehicle } } else { zombye_sim::VehicleOp::Siphon { vehicle } };
+        link.send(Intent::Vehicle { player: me.id, op });
+        *down = None;
+        return;
+    }
     if keys::just_pressed(&keys_in, Action::Interact) {
         *down = Some(now);
         *held = false;
