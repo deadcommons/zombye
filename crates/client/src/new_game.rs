@@ -411,7 +411,7 @@ pub fn run(options: Options) -> ! {
         .add_systems(First, crate::exit_on_signal)
         .init_resource::<PickScroll>()
         .add_systems(PreUpdate, keys.in_set(NewGameKeys).after(bevy::input::InputSystems))
-        .add_systems(Update, ((act, draw, dress, pose, layer_figure).chain(), scroll_picks.after(draw)));
+        .add_systems(Update, ((act, draw, dress, pose, turn, layer_figure).chain(), scroll_picks.after(draw)));
     let failed = app.run().is_error();
     if let Some(next) = take_relaunch() {
         crate::relaunch(next);
@@ -514,7 +514,7 @@ impl Plugin for NewGamePlugin {
         app.init_resource::<Front>()
             .init_resource::<PickScroll>()
             .add_systems(PreUpdate, keys.in_set(NewGameKeys).after(bevy::input::InputSystems).run_if(resource_exists::<Screen>))
-            .add_systems(Update, ((enter, setup.run_if(resource_added::<Screen>), (act, draw, dress, pose, layer_figure).chain().distributive_run_if(resource_exists::<Screen>)).chain(), scroll_picks.after(draw).run_if(resource_exists::<Screen>)));
+            .add_systems(Update, ((enter, setup.run_if(resource_added::<Screen>), (act, draw, dress, pose, turn, layer_figure).chain().distributive_run_if(resource_exists::<Screen>)).chain(), scroll_picks.after(draw).run_if(resource_exists::<Screen>)));
     }
 }
 
@@ -623,6 +623,30 @@ fn setup(
         commands.insert_resource(Joints(joints));
         commands.insert_resource(FigureModel(model));
     }
+}
+
+/// The figure turned with the mouse: drag across its column (the left 31% of the window) and it
+/// turns with the pointer, as far as it is dragged.
+fn turn(
+    buttons: Res<ButtonInput<MouseButton>>,
+    window: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    mut figure: Query<&mut Transform, (With<Figure>, With<Scene>)>,
+    mut drag: Local<Option<f32>>,
+) {
+    let Ok(window) = window.single() else { return };
+    let x = window.cursor_position().map(|p| p.x);
+    if buttons.just_pressed(MouseButton::Left) {
+        *drag = x.filter(|x| *x < window.width() * 0.31);
+    }
+    if !buttons.pressed(MouseButton::Left) {
+        *drag = None;
+        return;
+    }
+    let (Some(from), Some(x)) = (*drag, x) else { return };
+    let Ok(mut t) = figure.single_mut() else { return };
+    // A full turn for about a window's width of drag.
+    t.rotate_y((x - from) / window.width().max(1.0) * std::f32::consts::TAU);
+    *drag = Some(x);
 }
 
 /// The idle clip on the figure.
@@ -844,7 +868,10 @@ fn draw(mut commands: Commands, mut screen: ResMut<Screen>, root: Option<Single<
         c.spawn(Node { flex_grow: 1.0, min_height: px(0), flex_direction: FlexDirection::Row, ..default() }).with_children(|body| {
             // You: the figure stands in this column, the wardrobe under it.
             body.spawn((Node { width: percent(31), flex_shrink: 0.0, flex_direction: FlexDirection::Column, justify_content: JustifyContent::SpaceBetween, padding: UiRect::all(px(PAD)), border: UiRect::right(px(1)), ..default() }, BorderColor::all(LINE))).with_children(|left| {
-                column_title(left, "You");
+                left.spawn((Node { flex_direction: FlexDirection::Column, ..default() }, Pickable::IGNORE)).with_children(|t| {
+                    column_title(t, "You");
+                    line(t, "Drag to turn", font(SMALL), DIM);
+                });
                 wardrobe(left, screen);
             });
             // The page: a column of choices, a column of detail, and a line about what is pointed at.
