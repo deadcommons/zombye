@@ -3,7 +3,7 @@
 // parked car stays a street prop. All numbers are our own.
 //
 // Each kind is parked in town as a street prop (`prop`, a kind in street_props.ron, which places
-// them); `drivable_share` of the props of those kinds are real vehicles in a new world, picked by a
+// them); `drivable_share` (0 to 1) of the props of those kinds are real vehicles in a new world, picked by a
 // hash of the seed and where they stand (the rest stay props). Wrecks are never listed here.
 //
 // Per kind: `length` and `width` (m) are the box nothing walks through; `wheelbase` (m) how tight
@@ -13,7 +13,7 @@
 // second; `driver_seat` is metres forward of its middle and to its left. `body` is how it moves:
 // Car, or Long (a bus; the same for now).
 (
-    drivable_share: 0.1,
+    drivable_share: 1.0,
     kinds: [
         (id: "car", name: "car", prop: "car", length: 4.4, width: 1.8, wheelbase: 2.7,
          max_speed: 15.0, reverse_speed: 4.0, accel: 4.5, brake: 10.0, coast: 0.8,

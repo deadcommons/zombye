@@ -960,7 +960,7 @@ multiplayer. Fuel, noise, running zombies over and damage come in DCM-87.
   `net::content::load_vehicles`, which checks each kind's `prop` is a street prop kind; no file: no vehicles). Each
   kind names the street prop it is parked as, its box (`length`, `width`), `wheelbase`, speeds, `accel`, `brake`,
   `coast`, steering (`steer_degrees`, `steer_rate_degrees`, `steer_falloff`), `seats`, `driver_seat` and `body`
-  (`Car`, `Long`; more later). `drivable_share` (0.1) of the props of those kinds are vehicles in a new world, picked by
+  (`Car`, `Long`; more later). `drivable_share` (1: every one; the data allows fewer) of the props of those kinds are vehicles in a new world, picked by
   a hash of the seed and where they stand. Wrecks are never listed.
 - **On the map:** `World::new` takes the picked props off the map (`place_vehicles`) after the map's base hash is
   worked out, so saves and the content fingerprint are unchanged. Each vehicle is a turned box in
