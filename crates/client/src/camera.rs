@@ -68,6 +68,10 @@ const PITCH: f32 = 0.06;
 const PITCH_RANGE: (f32, f32) = (-1.2, 1.2);
 /// Radians of turn for a pixel of mouse.
 const LOOK_RATE: f32 = 0.0026;
+/// The controller's right stick in first person: mouse pixels a second at full over (#12).
+const PAD_LOOK: f32 = 900.0;
+/// The controller's zoom: the share of the zoom a second, held.
+const PAD_ZOOM: f32 = 0.6;
 /// What the first-person aim is on when the middle of the screen is on ground nearer than this
 /// beyond the survivor, or on none (the sky): a point this far, or [`AIM_FAR`], ahead.
 const AIM_NEAR: f32 = 5.0;
@@ -427,7 +431,7 @@ pub struct IsoCameraPlugin;
 
 impl Plugin for IsoCameraPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<PointerLock>().add_systems(Startup, spawn_camera).add_systems(Update, (rotate_and_zoom, follow, lock_pointer).chain());
+        app.init_resource::<PointerLock>().add_systems(Startup, spawn_camera).add_systems(Update, (rotate_and_zoom.run_if(crate::main_menu::layer_down), follow, lock_pointer).chain());
     }
 }
 
@@ -535,6 +539,7 @@ fn rotate_and_zoom(
     motion: Res<AccumulatedMouseMotion>,
     lock: Res<PointerLock>,
     notice: Option<ResMut<crate::saving::Notice>>,
+    pad: Option<Res<crate::pad::Pad>>,
     mut turned: Local<usize>,
     mut viewed: Local<usize>,
 ) {
@@ -563,6 +568,11 @@ fn rotate_and_zoom(
         if lock.0 {
             cam.look(motion.delta);
         }
+        // The controller's right stick turns it too (#12), faster the further over (squared, for
+        // fine control near the middle): at full over about 2.3 radians a second.
+        if let Some(look) = pad.as_ref().map(|p| p.look).filter(|l| *l != Vec2::ZERO) {
+            cam.look(Vec2::new(look.x, -look.y) * look.length() * PAD_LOOK * time.delta_secs());
+        }
         wheel.clear();
         return;
     }
@@ -587,6 +597,10 @@ fn rotate_and_zoom(
     let mut zoom = cam.zoom;
     for ev in wheel.read() {
         zoom = (zoom * (1.0 - ev.y.clamp(-3.0, 3.0) * 0.08)).clamp(MIN_ZOOM, MAX_ZOOM);
+    }
+    // The controller's zoom buttons, held: about half again a second (#12).
+    if let Some(z) = pad.as_ref().map(|p| p.zoom).filter(|z| *z != 0.0 && !inventory_open) {
+        zoom = (zoom * (1.0 - z * PAD_ZOOM * time.delta_secs())).clamp(MIN_ZOOM, MAX_ZOOM);
     }
     if zoom != cam.zoom {
         cam.zoom = zoom;
@@ -662,6 +676,7 @@ fn lock_pointer(
     browser: Option<Res<crate::browser_ui::BrowserUi>>,
     pause: Option<Res<crate::pause_menu::PauseMenu>>,
     map: Option<Res<crate::map_ui::MapUi>>,
+    layer: Option<Res<crate::main_menu::MenuLayer>>,
     mut windows: Query<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
     mut dots: Query<&mut Visibility, With<CentreDot>>,
     mut lock: ResMut<PointerLock>,
@@ -677,7 +692,8 @@ fn lock_pointer(
         || chat.is_some_and(|c| c.typing)
         || browser.is_some_and(|b| b.open)
         || pause.is_some_and(|p| p.open)
-        || map.is_some_and(|m| m.open);
+        || map.is_some_and(|m| m.open)
+        || layer.is_some_and(|l| l.up);
     let hold = cams.single().is_ok_and(|c| c.shoulder()) && !free;
     let middle = Vec2::new(window.width(), window.height()) * 0.5;
     if lock.0 != hold {

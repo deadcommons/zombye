@@ -17,6 +17,12 @@
 //! ])
 //! ```
 //!
+//! **Official servers** are a second list in the same format (`official_servers.ron`,
+//! [`OFFICIAL_FILE`]) that only the game's own files name: the browser shows its servers in a section
+//! of their own, above the community's, and no community list or typed address can put a server
+//! there, rename one of them or take one off. This repo ships it empty (a fork lists its own); the
+//! official build carries Dead Commons' ([`read_official`]).
+//!
 //! `address` is `host[:port]` (port 7777 without). `name` is shown until the server answers with
 //! its own, `note` is a line the list's keeper adds, `featured` puts the server in the section at
 //! the top. Fields this version doesn't know are ignored, so a list can grow fields without
@@ -41,6 +47,8 @@ pub const MAX_SERVERS: usize = 200;
 pub const MAX_LIST_BYTES: usize = 256 * 1024;
 /// The list file in the data folder, used when nothing else is set.
 pub const LIST_FILE: &str = "servers.ron";
+/// The official servers' list, in the data folder (shipped empty) or the official build's own.
+pub const OFFICIAL_FILE: &str = "official_servers.ron";
 /// Servers asked at once.
 const WORKERS: usize = 8;
 const NAME_CHARS: usize = 48;
@@ -112,6 +120,21 @@ pub fn parse_list(text: &str) -> Result<ServerList, String> {
         }
     }
     Ok(ServerList { servers })
+}
+
+/// The official servers in the file at `path`: none when there is no such file, and none (with
+/// the reason on stderr) when it can't be read as a list. `featured` means nothing there.
+pub fn read_official(path: &std::path::Path) -> Vec<ListEntry> {
+    if !path.is_file() {
+        return Vec::new();
+    }
+    match Source::File(path.to_path_buf()).read(Duration::from_secs(1)).and_then(|text| parse_list(&text)) {
+        Ok(list) => list.servers,
+        Err(e) => {
+            eprintln!("official servers: {e}");
+            Vec::new()
+        }
+    }
 }
 
 /// Where a list comes from.
@@ -247,6 +270,8 @@ pub struct Row {
     pub addr: String,
     /// Added by hand in the browser rather than named by the list.
     pub mine: bool,
+    /// One of the game's official servers ([`OFFICIAL_FILE`]), not the community's.
+    pub official: bool,
     pub status: Status,
 }
 
@@ -286,6 +311,8 @@ enum Event {
 /// come in; nothing here blocks.
 pub struct Browser {
     source: String,
+    /// The official servers, in their file's order.
+    official: Vec<ListEntry>,
     mine: Vec<String>,
     pub list: ListState,
     rows: Vec<Row>,
@@ -304,12 +331,29 @@ impl Browser {
         Self::with_timeout(source, mine, Duration::from_secs(5))
     }
 
+    /// As [`Browser::open`], with the game's official servers (see [`read_official`]) in a
+    /// section of their own.
+    pub fn open_with(official: &[ListEntry], source: &str, mine: &[String]) -> Self {
+        Self::with_all(official, source, mine, Duration::from_secs(5))
+    }
+
     /// As [`Browser::open`], waiting `timeout` for the list and for each server.
     pub fn with_timeout(source: &str, mine: &[String], timeout: Duration) -> Self {
+        Self::with_all(&[], source, mine, timeout)
+    }
+
+    /// As [`Browser::open_with`], waiting `timeout` for the list and for each server.
+    pub fn with_all(official: &[ListEntry], source: &str, mine: &[String], timeout: Duration) -> Self {
         let (tx, rx) = mpsc::channel();
-        let mut b = Self { source: source.trim().to_string(), mine: Vec::new(), list: ListState::Loading, rows: Vec::new(), tx, rx: Mutex::new(rx), generation: 0, timeout };
+        let mut named: Vec<ListEntry> = Vec::new();
+        for e in official {
+            if check_address(&e.address).is_ok() && !named.iter().any(|o| key(&o.address) == key(&e.address)) {
+                named.push(ListEntry { featured: false, ..e.clone() });
+            }
+        }
+        let mut b = Self { source: source.trim().to_string(), official: named, mine: Vec::new(), list: ListState::Loading, rows: Vec::new(), tx, rx: Mutex::new(rx), generation: 0, timeout };
         for a in mine {
-            if check_address(a).is_ok() && !b.mine.iter().any(|m| key(m) == key(a)) {
+            if check_address(a).is_ok() && !b.mine.iter().any(|m| key(m) == key(a)) && !b.official.iter().any(|o| key(&o.address) == key(a)) {
                 b.mine.push(a.trim().to_string());
             }
         }
@@ -334,14 +378,22 @@ impl Browser {
         for r in &mut self.rows {
             r.status = Status::Asking;
         }
-        // Our own servers don't wait for the list.
+        // The official servers and our own don't wait for the list.
+        for entry in self.official.clone() {
+            let k = key(&entry.address);
+            match self.rows.iter_mut().find(|r| key(&r.addr) == k) {
+                Some(r) => (r.entry, r.mine, r.official) = (entry, false, true),
+                None => self.rows.push(Row { addr: remote::with_port(&entry.address), entry, mine: false, official: true, status: Status::Asking }),
+            }
+        }
         let mine: Vec<String> = self.mine.clone();
         for a in &mine {
             self.put_row(ListEntry { address: a.clone(), ..Default::default() }, true);
         }
-        self.ask(self.rows.iter().filter(|r| r.mine).map(|r| r.addr.clone()).collect());
+        self.sort_rows(&[]);
+        self.ask(self.rows.iter().filter(|r| r.mine || r.official).map(|r| r.addr.clone()).collect());
         if self.source.is_empty() {
-            self.rows.retain(|r| r.mine);
+            self.rows.retain(|r| r.mine || r.official);
             self.list = ListState::Ready;
             return;
         }
@@ -360,6 +412,13 @@ impl Browser {
     pub fn add(&mut self, address: &str) -> Result<String, String> {
         check_address(address)?;
         let address = address.trim().to_string();
+        if let Some(r) = self.rows.iter_mut().find(|r| r.official && key(&r.addr) == key(&address)) {
+            // An official server typed in: it is there already. Ask it again.
+            r.status = Status::Asking;
+            let addr = r.addr.clone();
+            self.ask(vec![addr.clone()]);
+            return Ok(addr);
+        }
         if !self.rows.iter().any(|r| key(&r.addr) == key(&address)) && !self.mine.iter().any(|m| key(m) == key(&address)) {
             self.mine.push(address.clone());
         }
@@ -373,7 +432,7 @@ impl Browser {
 
     /// Take a server added by hand off the list. False for one the list names.
     pub fn remove(&mut self, addr: &str) -> bool {
-        let Some(i) = self.rows.iter().position(|r| r.addr == addr && r.mine) else { return false };
+        let Some(i) = self.rows.iter().position(|r| r.addr == addr && r.mine && !r.official) else { return false };
         self.rows.remove(i);
         self.mine.retain(|m| key(m) != key(addr));
         true
@@ -383,8 +442,9 @@ impl Browser {
     fn put_row(&mut self, entry: ListEntry, mine: bool) -> String {
         let k = key(&entry.address);
         match self.rows.iter_mut().find(|r| key(&r.addr) == k) {
+            // (An official server stays as its own file names it, whatever a list says of it.)
             Some(r) => {
-                if !mine {
+                if !mine && !r.official {
                     // The list's word on a server we'd added by hand too.
                     r.entry = entry;
                     r.mine = false;
@@ -393,10 +453,23 @@ impl Browser {
             }
             None => {
                 let addr = remote::with_port(&entry.address);
-                self.rows.push(Row { entry, addr: addr.clone(), mine, status: Status::Asking });
+                self.rows.push(Row { entry, addr: addr.clone(), mine, official: false, status: Status::Asking });
                 addr
             }
         }
+    }
+
+    /// The official servers first, in their file's order, then the list's in its order (`named`:
+    /// their keys), then ours.
+    fn sort_rows(&mut self, named: &[String]) {
+        let official: Vec<String> = self.official.iter().map(|o| key(&o.address)).collect();
+        self.rows.sort_by_key(|r| {
+            let k = key(&r.addr);
+            match official.iter().position(|o| *o == k).filter(|_| r.official) {
+                Some(i) => (0, i),
+                None => (1, named.iter().position(|n| *n == k).unwrap_or(usize::MAX)),
+            }
+        });
     }
 
     /// Ask these servers, a few at a time, each on a worker thread.
@@ -431,22 +504,22 @@ impl Browser {
                 Event::List(_, Ok(list)) => {
                     // The list's servers in its order, then ours; a server it no longer names goes.
                     let named: Vec<String> = list.servers.iter().map(|s| key(&s.address)).collect();
-                    self.rows.retain(|r| r.mine || named.contains(&key(&r.addr)));
+                    self.rows.retain(|r| r.mine || r.official || named.contains(&key(&r.addr)));
                     let mut ask = Vec::new();
                     for entry in list.servers {
-                        let was_mine = self.rows.iter().any(|r| key(&r.addr) == key(&entry.address) && r.mine);
+                        let was_mine = self.rows.iter().any(|r| key(&r.addr) == key(&entry.address) && (r.mine || r.official));
                         let addr = self.put_row(entry, false);
                         if !was_mine {
                             ask.push(addr);
                         }
                     }
-                    self.rows.sort_by_key(|r| named.iter().position(|n| *n == key(&r.addr)).unwrap_or(usize::MAX));
+                    self.sort_rows(&named);
                     self.ask(ask);
                     self.list = ListState::Ready;
                     changed = true;
                 }
                 Event::List(_, Err(e)) => {
-                    self.rows.retain(|r| r.mine);
+                    self.rows.retain(|r| r.mine || r.official);
                     self.list = ListState::Failed(e);
                     changed = true;
                 }
@@ -488,15 +561,27 @@ impl Browser {
         self.rows.iter().find(|r| r.addr == addr)
     }
 
-    /// The featured servers, in the list's order.
+    /// The game's official servers, in their file's order.
+    pub fn official(&self) -> Vec<&Row> {
+        self.rows.iter().filter(|r| r.official).collect()
+    }
+
+    /// The community's servers: the list's featured ones, then the rest ([`Browser::others`]).
+    pub fn community(&self) -> Vec<&Row> {
+        let mut rows = self.featured();
+        rows.extend(self.others());
+        rows
+    }
+
+    /// The list's featured servers, in its order.
     pub fn featured(&self) -> Vec<&Row> {
-        self.rows.iter().filter(|r| r.entry.featured).collect()
+        self.rows.iter().filter(|r| r.entry.featured && !r.official).collect()
     }
 
     /// The rest: those that answered first, quickest first, then those still asked, then those
     /// that didn't answer; otherwise in the list's order.
     pub fn others(&self) -> Vec<&Row> {
-        let mut rows: Vec<&Row> = self.rows.iter().filter(|r| !r.entry.featured).collect();
+        let mut rows: Vec<&Row> = self.rows.iter().filter(|r| !r.entry.featured && !r.official).collect();
         rows.sort_by_key(|r| match &r.status {
             Status::Online { ping_ms, .. } => (0, *ping_ms),
             Status::Asking => (1, 0),
@@ -505,10 +590,10 @@ impl Browser {
         rows
     }
 
-    /// Every row as shown: featured, then the others.
+    /// Every row as shown: the official servers, then the community's.
     pub fn shown(&self) -> Vec<&Row> {
-        let mut rows = self.featured();
-        rows.extend(self.others());
+        let mut rows = self.official();
+        rows.extend(self.community());
         rows
     }
 
@@ -630,6 +715,47 @@ mod tests {
         assert!(Source::parse("http://host:port/x").unwrap_err().contains("isn't a port"));
         assert!(Source::parse("  ").is_err());
         assert!(Source::File("no/such/list.ron".into()).read(Duration::from_secs(1)).unwrap_err().contains("can't read"));
+    }
+
+    #[test]
+    fn official_servers_keep_a_section_no_list_can_touch() {
+        let dir = std::env::temp_dir().join(format!("zombye-official-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Nothing listens on port 1: every server is "no answer", quickly.
+        let official_file = dir.join(OFFICIAL_FILE);
+        std::fs::write(&official_file, r#"(servers: [(address: "127.0.0.1:1", name: "Official one", note: "ours", featured: true), (address: "localhost:1", name: "Official two")])"#).unwrap();
+        let official = read_official(&official_file);
+        assert_eq!(official.len(), 2);
+        assert!(read_official(&dir.join("none.ron")).is_empty(), "no file: no official servers");
+        std::fs::write(dir.join("bad.ron"), "nope").unwrap();
+        assert!(read_official(&dir.join("bad.ron")).is_empty());
+        // A community list that names an official server (to rename it) and two of its own.
+        let list = dir.join("community.ron");
+        std::fs::write(&list, r#"(servers: [(address: "127.0.0.2:1", name: "Community"), (address: "127.0.0.1:1", name: "Impostor", featured: true), (address: "127.0.0.3:1", featured: true)])"#).unwrap();
+        let mut b = Browser::with_all(&official, list.to_str().unwrap(), &["127.0.0.4:1".into(), "LOCALHOST:1".into()], Duration::from_secs(2));
+        assert!(b.wait(Duration::from_secs(20)));
+        let names = |rows: Vec<&Row>| rows.iter().map(|r| r.name().to_string()).collect::<Vec<_>>();
+        assert_eq!(names(b.official()), ["Official one", "Official two"]);
+        assert_eq!(names(b.community()), ["127.0.0.3:1", "Community", "127.0.0.4:1"], "featured first; the official one isn't the community's too");
+        assert_eq!(names(b.shown())[..2], ["Official one", "Official two"]);
+        assert_eq!(b.mine(), ["127.0.0.4:1"], "an official server typed in isn't one of ours");
+        // Typed in again, taken off: still official, still there.
+        assert_eq!(b.add("localhost:1").unwrap(), "localhost:1");
+        assert!(!b.remove("localhost:1") && !b.remove("127.0.0.1:1"));
+        assert!(b.wait(Duration::from_secs(20)));
+        assert_eq!(b.official().len(), 2);
+        assert_eq!(b.mine(), ["127.0.0.4:1"]);
+        // A list that can't be read takes nothing official away.
+        std::fs::remove_file(&list).unwrap();
+        b.refresh();
+        assert!(b.wait(Duration::from_secs(20)));
+        assert!(matches!(b.list, ListState::Failed(_)));
+        assert_eq!((b.official().len(), b.community().len()), (2, 1));
+        // With no official file a browser is as it was.
+        let mut plain = Browser::with_timeout("", &["127.0.0.4:1".into()], Duration::from_secs(2));
+        assert!(plain.wait(Duration::from_secs(20)));
+        assert!(plain.official().is_empty() && plain.shown().len() == 1);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn info(online: u32) -> ServerInfo {

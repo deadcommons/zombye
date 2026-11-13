@@ -35,6 +35,8 @@ const DONE: Color = theme::GOLD;
 const TODO: Color = Color::srgba(1.0, 1.0, 1.0, 0.2);
 /// Narrow enough to clear the vitals and the objectives panel on a 1280 px screen.
 const HINT_WIDTH: f32 = 540.0;
+/// Over the E prompt (`interact::PROMPT_UP`, one strip high), so the two never cover each other.
+const HINT_UP: f32 = 136.0;
 /// A zombie this close (metres) is the hint's business.
 const THREAT_M: f32 = 5.0;
 /// An outcome this fresh (ticks) is this session's dawn, not a quickload's.
@@ -103,7 +105,7 @@ fn spawn(mut commands: Commands) {
         .spawn((
             HintBox,
             // (Clear of the current action's bar, which moved up above the hotbar, #97.)
-            Node { position_type: PositionType::Absolute, bottom: px(crate::hotbar::REACH + 84.0), left: percent(50), margin: UiRect::left(px(-HINT_WIDTH / 2.0)), width: px(HINT_WIDTH), justify_content: JustifyContent::Center, padding: UiRect::axes(px(theme::STRIP_PAD.0 + 4.0), px(theme::STRIP_PAD.1)), ..default() },
+            Node { position_type: PositionType::Absolute, bottom: px(crate::hotbar::REACH + HINT_UP), left: percent(50), margin: UiRect::left(px(-HINT_WIDTH / 2.0)), width: px(HINT_WIDTH), justify_content: JustifyContent::Center, padding: UiRect::axes(px(theme::STRIP_PAD.0 + 4.0), px(theme::STRIP_PAD.1)), ..default() },
             theme::strip(),
             Visibility::Hidden,
             Pickable::IGNORE,
@@ -320,12 +322,13 @@ fn update_hint(
     me: Res<LocalPlayer>,
     ui: Res<FirstNightUi>,
     inventory: Option<Res<crate::inventory_ui::InventoryPanel>>,
+    wheel: Option<Res<crate::wheel::Wheel>>,
     mut hint_box: Query<&mut Visibility, With<HintBox>>,
     mut text: Query<&mut Text, With<HintText>>,
 ) {
     let (Ok(mut vis), Ok(mut text)) = (hint_box.single_mut(), text.single_mut()) else { return };
     // (The hint line is a reminder of what to do and its key: not with the help text off.)
-    let line = record(&options, &link, &me).filter(|_| crate::help_text::keys() && !ui.hidden && !ui.over && !ui.morning && !me.dead && !inventory.as_ref().is_some_and(|i| i.open)).and_then(|(f, run)| {
+    let line = record(&options, &link, &me).filter(|_| crate::help_text::keys() && !ui.hidden && !ui.over && !ui.morning && !me.dead && !inventory.as_ref().is_some_and(|i| i.open) && !wheel.as_ref().is_some_and(|w| w.is_up())).and_then(|(f, run)| {
         let own = link.own(me.id);
         let tags = icons.tags(&link, &join, &me);
         let tag = |kind: TagKind, from: u8| tags.iter().any(|t| t.kind == kind && t.severity >= from);

@@ -89,6 +89,7 @@ the file's folder. It is read once, at start.
 | `agents` | `Marked` | Programs (bots, AI agents: clients that say they are one): `Marked` lets them in and shows players which survivors they are, `Allowed` lets them in unmarked, `Refused` keeps them out. |
 | `budget_kb` | `32` | KB a second down to each client at most (8 to 1000). |
 | `allow_dev` | `false` | Take god mode and the debug intents from clients. For testing. |
+| `stop_when_empty_secs` | left out | Save and stop once nobody has been on for this many seconds (5 to 86400); before anyone has joined it waits at least two minutes. Left out: it runs until stopped. It is how a game hosted from the game's menu ends. |
 | `save` | `"world.zsave"` | The world's file: loaded if there, else made. `None`: never saved. |
 | `autosave_mins` | `5` | Minutes between autosaves; `0`: only on shutdown. |
 | `seed`, `map_chunks`, `zombies` | `1`, `30`, by the data | A new world only. The map is `map_chunks` × 16 m each way (64: about 1 km). |
@@ -127,9 +128,13 @@ from elsewhere put an HTTPS reverse proxy or a tunnel in front; never publish th
 
 ## Getting found: the server browser
 
-Players press F7 in the game for the server browser. It shows the servers a **list** names, and
-there is no central list: nobody runs one for the game, and the game asks no service of ours. A
-list is a small text file that anyone can keep and hand round, as a file or behind a plain
+Players open the server browser from the main menu (Multiplayer, Join a game) or with F7 in the
+game. It has two sections. **Official servers** are the ones the build's maker hosts: they come
+from `official_servers.ron` in the game's data folder, which the open-source game ships empty and
+the official build fills in (a fork that hosts servers ships its own; the format is the list's
+below). **Community servers** are everyone else's, yours included: the servers a **list** names
+and the ones a player adds by hand. There is no central list: nobody runs one for the game, and the
+game asks no service of ours. A list is a small text file that anyone can keep and hand round, as a file or behind a plain
 `http://` address (https can't be read yet):
 
 ```ron
@@ -159,6 +164,17 @@ building templates, never the scripts, which run on your server alone
 get the mods. A mod with more than 2 MB of data isn't handed out (the server says so when it
 starts): its players need it by hand. The server's log says each download (`sent 1 mod (0.4 KB)
 to ...`).
+
+## Hosting from the game's menu
+
+For a game with a few friends there is no need for any of the above: Multiplayer, Host a game in
+the game's main menu starts this same server on the player's computer and joins it. The menu asks
+for a name, a password, co-op or PvP and how many players, writes them as a config file like the
+one above (`hosted/server.ron` in the saves folder, with the world and `server.log` beside it,
+and `stop_when_empty_secs: 60`), and the server saves and stops a minute after the last player
+leaves. Friends on the same network join at the address the screen shows; over the internet the
+router has to forward the port (TCP 7777) to that computer. The port is `host: (port: ...)` in
+the game's `settings.ron`.
 
 ## What to know
 

@@ -10,7 +10,8 @@
 #
 # Environment:
 #   ZOMBYE_ART       the private art repo (default ~/games/zombye-art); its release-models,
-#                    release-characters, release-anim and release-audio go into zombye.pak.
+#                    release-characters, release-anim and release-audio go into zombye.pak, and its
+#                    release-brand/official_servers.ron becomes the build's official server list.
 #                    Without it (or with ZOMBYE_NO_PACK=1) the build has this repo's own art only.
 #   ZOMBYE_PACK_KEY  the key the pack is scrambled with (compiled into the game). Needed whenever the
 #                    bought art is packed: the built-in key is in the public source, so a pack made with
@@ -114,6 +115,14 @@ crowd_exclude=""
 # shellcheck disable=SC2086
 tar -C assets --exclude=./source --exclude=./specs --exclude=.DS_Store $crowd_exclude -cf - . | tar -C "$resdir/assets" -xf -
 cp ATTRIBUTION.md assets/LICENSE "$resdir/"
+# The official servers (the server list's first section): the art repo's list in place of this
+# repo's empty one. No server address is kept in this repo.
+if [ -f "$art/release-brand/official_servers.ron" ]; then
+  cp "$art/release-brand/official_servers.ron" "$resdir/assets/data/official_servers.ron"
+  echo "official servers: $art/release-brand/official_servers.ron"
+else
+  echo "official servers: none ($art/release-brand/official_servers.ron isn't there): the build lists no official server"
+fi
 cp tools/release/README-playtest.txt "$stage/README.txt"
 
 # The bought art, packed.

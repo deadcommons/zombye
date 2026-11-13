@@ -825,6 +825,17 @@ impl RowAction {
     }
 }
 
+/// The Make list's rule for a recipe, for the make wheel (`wheel.rs`): can it be made here and
+/// now, from what we carry, our floor and the open container, with the heat or water it needs.
+pub fn make_check<'a>(link: &'a ServerLink, map: &crate::server_link::ClientMap, join: &'a JoinInfo, me: &LocalPlayer) -> impl Fn(&zombye_sim::RecipeDef) -> bool + 'a {
+    let (view, floor) = panel_view(link, me.id);
+    let near = view.as_ref().map(|v| stock(v, &floor));
+    let heat = zombye_sim::fire::heat_near(&map.0, &join.fire, link.curr.fires.iter().map(|f| (Vec2::from(f.pos), f.lit)), me.curr.pos, me.curr.level, |_| link.curr.grid_on);
+    let water = zombye_sim::power::water_near(&map.0, &join.water, link.curr.water_on, me.curr.pos, me.curr.level);
+    let cistern = crate::world_actions::cistern_here(&map.0, &join.water, &link.curr, me.curr.pos, me.curr.level).is_some();
+    move |r: &zombye_sim::RecipeDef| near.as_ref().is_some_and(|n| crafting::check(r, n, &join.items).is_ok() && (!r.heat || heat) && (!r.water || water) && (!r.cistern || cistern))
+}
+
 /// What the panel shows and the requests are checked against: our private view and our floor
 /// (ground item id and stack, nearest first), from the latest snapshot.
 fn panel_view(link: &ServerLink, me: u32) -> (Option<PrivateView>, Vec<(u32, ItemStack)>) {

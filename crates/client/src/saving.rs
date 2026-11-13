@@ -244,12 +244,14 @@ fn quick_save_load(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, options: Re
 /// Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal,
 /// which `main.rs` turns into an `AppExit`) saves to `autosave`; a second Ctrl-C quits at once,
 /// unsaved. An offscreen render (`--render-to`) never saves: it only looks.
-fn autosave_on_exit(mut exit: MessageReader<AppExit>, link: Res<ServerLink>, options: Res<Options>, mut done: Local<bool>) {
+fn autosave_on_exit(mut exit: MessageReader<AppExit>, link: Res<ServerLink>, options: Res<Options>, layer: Option<Res<crate::main_menu::MenuLayer>>, mut done: Local<bool>) {
     if exit.read().next().is_none() || *done {
         return;
     }
     *done = true;
-    if !options.offscreen() && link.world().is_some() {
+    // (Not from the menu over the game (#36): its world is saved as it went up, or is a new one
+    // nobody played, which mustn't take the autosave's place.)
+    if !options.offscreen() && link.world().is_some() && crate::main_menu::layer_down(layer) {
         match save_to(&link, &options, AUTOSAVE) {
             Ok(saved) => println!("Autosaved: {saved}"),
             Err(e) => eprintln!("Autosave failed: {e}"),
