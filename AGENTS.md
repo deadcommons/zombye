@@ -1058,6 +1058,16 @@ Stage 2: fuel, engine noise, running zombies over and crash damage.
   only at the wheel, `Action::at_wheel`, so it shares H with the Health screen on foot) and `refuel` (Shift+E:
   `Action::beside_car`, asked first by `interact.rs` beside a car, and it leaves E with Shift held to interact
   everywhere else).
+- **Online (stage 3, DCM-88):** our own car is predicted with `step_vehicle` from the snapshot's car and the
+  driving it hasn't had (`player::CarPred`), and where a snapshot corrects it (a zombie in the way, which the
+  client's map doesn't hold) the car and the camera glide there over a few ticks instead of jumping
+  (`CarPred::correct` / `settle`: `CAR_SMOOTH_KEEP` 0.85 of the drawn difference kept a tick; over `CAR_SNAP_M`
+  4 m or `CAR_SNAP_RAD` 0.8 rad it is taken at once). Other cars (`vehicles_render::RemoteCars`) are carried on
+  along their way at their speed and steering (`carry`) while no news comes, for at most `CARRY_TICKS` (12), and
+  news glides them in the same way. On the wire only the cars that changed go (`SnapshotDelta::vehicles`: changed
+  and gone), and a car moving beyond a client's view only every `wire::FAR_CAR_EVERY` (10) ticks; getting in or
+  out, stopping and coming near go at once. `wire::PROTOCOL` 36. Tests: `net/tests/driving.rs` (a driver at
+  150 ms of ping predicts its car exactly; a far car is sent now and then), `vehicles_render`'s own.
 - **Not yet:** the camera pulling back with speed, MCP tools, running players over, engine and horn sounds, damage
   drawn on the car, repairing parts, keys and hotwiring (a Mechanics skill), the radio, more vehicle kinds.
 - Tests: `sim::vehicles::tests`.
