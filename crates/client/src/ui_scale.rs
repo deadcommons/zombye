@@ -124,6 +124,10 @@ pub struct ClientSettings {
     pub help_text: crate::help_text::HelpText,
     /// The old look (`film.rs`): the picture as a faded print, off, subtle or strong.
     pub old_look: crate::film::OldLook,
+    /// Send crash, F12, hitch and desync reports to the developers (`report.rs`, Linear DCM-92).
+    pub send_reports: bool,
+    /// The yellow line has said once that reports are sent and how to turn it off.
+    pub reports_notice_seen: bool,
     /// The keys the player picked on the Controls tab (`keys.rs`): an action's id to its keys,
     /// over `assets/data/keys.ron`. Only the ones changed.
     pub keys: std::collections::BTreeMap<String, Vec<String>>,
@@ -151,6 +155,8 @@ impl Default for ClientSettings {
             skip_menu: false,
             help_text: crate::help_text::HelpText::Full,
             old_look: crate::film::OldLook::Off,
+            send_reports: true,
+            reports_notice_seen: false,
             keys: Default::default(),
         }
     }

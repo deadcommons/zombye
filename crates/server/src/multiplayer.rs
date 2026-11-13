@@ -30,6 +30,9 @@ pub struct HostArgs {
     pub start_kit: Option<StartKit>,
     /// `--admin-mcp`: the operator's MCP endpoint (#26, `admin.rs`), if asked for.
     pub admin: Option<HttpArgs>,
+    /// Send the server's panics and slow ticks to the developers when there is a report address
+    /// (`zombye_net::report::endpoint`); `--no-reports` says no.
+    pub reports: bool,
 }
 
 impl HostArgs {
@@ -96,7 +99,7 @@ impl HostArgs {
             packs: Vec::new(),
         };
         let start_kit = text("--start-kit").map(|v| parse_kit(&v)).transpose()?;
-        Ok(Self { addr, options, pvp: on_off("--pvp")?, start_kit, admin: crate::admin::parse(args, admin_token)? })
+        Ok(Self { addr, options, pvp: on_off("--pvp")?, start_kit, admin: crate::admin::parse(args, admin_token)?, reports: !flag("--no-reports") })
     }
 
     /// What new survivors start with: `--start-kit` if given, else the data folder's
@@ -229,6 +232,7 @@ pub fn host(mut world: World, new_world: bool, args: HostArgs, persist: &mut Per
         }
     }
     let mut report = Report::new(&host);
+    report.problems = problem_reports(args.reports, persist, &host);
     host.run(|h| {
         // What the host logged, deaths, and the admin calls waiting, between two ticks.
         persist.dirty |= admin.tick(h, persist);
@@ -260,15 +264,83 @@ struct Report {
     clients: Vec<(u32, u64)>,
     ms: f32,
     worst: f32,
+    /// Where problem reports wait to be sent (`problem_reports`), and when a slow tick was last
+    /// reported. Kept from one count to the next.
+    problems: Option<PathBuf>,
+    slow_sent: Option<Instant>,
+}
+
+/// A tick this long (three ticks' worth) is reported as slow.
+const SLOW_TICK_MS: f32 = TICK_DT * 3000.0;
+/// At most one slow-tick report this often.
+const SLOW_TICK_GAP: Duration = Duration::from_secs(10 * 60);
+
+/// When the server sends problem reports (`reports` and a report address): the folder they wait
+/// in (`reports/` beside the save, else in the working folder), a panic hook that sends the
+/// server's panics, and what an earlier run left waiting sent. `None`: no reports.
+fn problem_reports(reports: bool, persist: &Persist, host: &Host) -> Option<PathBuf> {
+    use zombye_net::report;
+    if !reports || report::endpoint().is_none() {
+        return None;
+    }
+    let dir = persist.path.as_ref().and_then(|p| p.parent()).filter(|d| !d.as_os_str().is_empty()).map_or_else(|| PathBuf::from("reports"), |d| d.join("reports"));
+    println!("problem reports: panics and ticks over {SLOW_TICK_MS:.0} ms go to the developers (--no-reports turns it off); waiting ones in {}", dir.display());
+    let name = host.rules().name.clone();
+    let hook_dir = dir.clone();
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let r = report::panic_report("server", info).detail("server", &name);
+        if report::queue(&hook_dir, &r).is_ok() {
+            let _ = report::flush(&hook_dir);
+        }
+        previous(info);
+    }));
+    let waiting = dir.clone();
+    std::thread::spawn(move || {
+        let f = report::flush(&waiting);
+        if !f.taken.is_empty() {
+            println!("problem reports: sent {} left from before", f.taken.len());
+        }
+    });
+    Some(dir)
 }
 
 impl Report {
     fn new(host: &Host) -> Self {
         let clients = host.clients().iter().map(|c| (c.player, c.bytes_out)).collect();
-        Self { since: Instant::now(), ticks: host.stats.ticks, bytes_out: host.stats.bytes_out, held: host.stats.held, clients, ms: 0.0, worst: 0.0 }
+        Self { since: Instant::now(), ticks: host.stats.ticks, bytes_out: host.stats.bytes_out, held: host.stats.held, clients, ms: 0.0, worst: 0.0, problems: None, slow_sent: None }
+    }
+
+    /// A tick far over budget: a report, at most one every [`SLOW_TICK_GAP`].
+    fn slow_tick(&mut self, host: &Host) {
+        use zombye_net::report::{self, Report as Problem, kind};
+        let Some(dir) = &self.problems else { return };
+        let ms = host.stats.tick_ms;
+        if ms < SLOW_TICK_MS || self.slow_sent.is_some_and(|t| t.elapsed() < SLOW_TICK_GAP) {
+            return;
+        }
+        self.slow_sent = Some(Instant::now());
+        let s = host.world.stats;
+        let r = Problem::new(kind::SLOW_TICK, "server", format!("A server tick took {ms:.0} ms (budget {:.0})", TICK_DT * 1000.0), "slow_tick | server")
+            .detail("tick_ms", format!("{ms:.1}"))
+            .detail("world_ms", format!("{:.1}", s.tick_ms))
+            .detail("tick", host.world.tick)
+            .detail("online", host.clients().len())
+            .detail("zombies", host.world.zombies.len())
+            .detail("active", s.active)
+            .detail("near", s.near)
+            .detail("virtual", s.virtual_)
+            .detail("server", &host.rules().name);
+        let dir = dir.clone();
+        std::thread::spawn(move || {
+            if report::queue(&dir, &r).is_ok() {
+                let _ = report::flush(&dir);
+            }
+        });
     }
 
     fn tick(&mut self, host: &Host, log: &mut Log) {
+        self.slow_tick(host);
         self.ms += host.stats.tick_ms;
         self.worst = self.worst.max(host.stats.tick_ms);
         let secs = self.since.elapsed().as_secs_f32();
@@ -302,7 +374,8 @@ impl Report {
                 host.world.config.combat.lag_comp_max_secs * 1000.0,
             ));
         }
-        *self = Self::new(host);
+        let (problems, slow_sent) = (self.problems.take(), self.slow_sent);
+        *self = Self { problems, slow_sent, ..Self::new(host) };
     }
 }
 
