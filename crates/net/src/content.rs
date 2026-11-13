@@ -90,6 +90,14 @@ pub fn load_weather(data_dir: &Path) -> Result<zombye_sim::WeatherTuning, String
     zombye_sim::weather::parse_weather(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// World events in `<data>/events.ron` (`zombye_sim::events`): the water and power going off and
+/// the like. Without the file, none.
+pub fn load_events(data_dir: &Path) -> Result<zombye_sim::EventsDef, String> {
+    let path = data_dir.join("events.ron");
+    let Ok(text) = std::fs::read_to_string(&path) else { return Ok(zombye_sim::EventsDef::default()) };
+    zombye_sim::events::parse_events(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// The street props in `<data>/street_props.ron` (#61: mailboxes, hydrants, bins and where the town
 /// generator puts them), validated. A data folder without the file has none.
 pub fn load_street_props(data_dir: &Path) -> Result<StreetPropsDef, String> {
@@ -161,13 +169,17 @@ pub fn load_loot(data_dir: &Path, items: &[ItemDef], weapons: &[WeaponDef], cont
 /// items' tags. A data folder without the file has no recipes.
 pub fn load_recipes(data_dir: &Path, items: &[ItemDef], weapons: &[WeaponDef]) -> Result<Vec<RecipeDef>, String> {
     let path = data_dir.join("items/recipes.ron");
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut all = items.to_vec();
     zombye_sim::items::complete_items(&mut all, weapons);
-    parse_recipes_for(&text, &all).map_err(|e| format!("{}: {e}", path.display()))
+    let mut recipes = if path.exists() {
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        parse_recipes_for(&text, &all).map_err(|e| format!("{}: {e}", path.display()))?
+    } else {
+        Vec::new()
+    };
+    // Filling a bottle (or anything with `fills`) at a tap is a recipe of its own.
+    zombye_sim::crafting::add_fill_recipes(&mut recipes, &all);
+    Ok(recipes)
 }
 
 /// What can be built (the build menu, `zombye_sim::build`): `<data>/build.ron`, validated, every
@@ -273,6 +285,7 @@ pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig
     let fire = load_fire(data_dir)?;
     let vehicles = load_vehicles(data_dir, &street_props, &items)?;
     let weather = load_weather(data_dir)?;
+    let events = load_events(data_dir)?;
     let mut config = zombye_sim::WorldConfig::new(seed, 0, templates)
         .with_weapons(weapons)
         .with_items(items)
@@ -285,7 +298,8 @@ pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig
         .with_power(power)
         .with_fire(fire)
         .with_vehicles(vehicles)
-        .with_weather(weather);
+        .with_weather(weather)
+        .with_events(events);
     config.zombies = None;
     Ok(config)
 }
@@ -420,7 +434,8 @@ mod tests {
     fn recipes_load_and_name_their_mistakes() {
         let c = load_config(&default_data_dir(), 1).unwrap();
         assert!(c.recipes.len() >= 7 && c.recipes.iter().any(|r| r.id == "rip_t_shirt"));
-        assert!(load_recipes(Path::new("/nonexistent-zombye-data"), &c.items, &c.weapons).unwrap().is_empty());
+        let none = load_recipes(Path::new("/nonexistent-zombye-data"), &c.items, &c.weapons).unwrap();
+        assert!(!none.is_empty() && none.iter().all(|r| (r.water || r.cistern) && r.id.starts_with("fill_")), "no file: only the made-up fill recipes");
         let dir = std::env::temp_dir().join(format!("zombye-recipes-test-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("items")).unwrap();
         let write = |text: &str| {

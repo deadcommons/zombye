@@ -339,6 +339,7 @@ pub const KEYS: [(&str, &[KeyRow]); 6] = [
             KeyRow::Bound(Action::Inventory, "Inventory"),
             KeyRow::Bound(Action::Health, "Health"),
             KeyRow::Bound(Action::Skills, "Skills"),
+            KeyRow::Bound(Action::Make, "Make"),
             KeyRow::Bound(Action::Build, "Build"),
             KeyRow::Bound(Action::Map, "Map"),
             KeyRow::Bound(Action::Objectives, "Objectives and hints"),

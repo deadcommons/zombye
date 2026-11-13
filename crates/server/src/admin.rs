@@ -138,7 +138,7 @@ impl Default for Admin {
 
 /// Each tool: name, title, whether it only reads, whether it can lose something (a connection, a
 /// save of that name, hours of the world).
-const TOOLS: [(&str, &str, bool, bool); 14] = [
+const TOOLS: [(&str, &str, bool, bool); 16] = [
     ("status", "Server status", true, false),
     ("players", "Players online, offline and banned", true, false),
     ("logs", "Read the server log", true, false),
@@ -153,11 +153,13 @@ const TOOLS: [(&str, &str, bool, bool); 14] = [
     ("spawn_item", "Event: drop items", false, false),
     ("skip_time", "Event: move the clock forward", false, true),
     ("teleport", "Move a player", false, false),
+    ("trigger_event", "Event: make a world event happen now", false, false),
+    ("schedule_event", "Event: move or call off a world event", false, false),
 ];
 /// The game's own read-only tools, offered here on the hosted world (`mcp.rs`).
-const LOOK: [&str; 7] = ["observe", "stats", "inventory", "health", "regions", "zombie", "items"];
+const LOOK: [&str; 8] = ["observe", "stats", "inventory", "health", "regions", "zombie", "items", "events"];
 /// The game's debug tools that are admin events here, under the same names.
-const EVENTS: [&str; 4] = ["spawn_zombies", "make_noise", "spawn_item", "skip_time"];
+const EVENTS: [&str; 6] = ["spawn_zombies", "make_noise", "spawn_item", "skip_time", "trigger_event", "schedule_event"];
 
 fn instructions() -> String {
     "You are the operator of a running Zombye multiplayer server (a zombie survival game: a town on a tile map, 1 tile = 1 m, x east, y south). \
@@ -166,7 +168,7 @@ fn instructions() -> String {
      observe / stats / inventory / health / regions show the world itself, and change nothing.\n\
      - Players are named by `player` (the id) or `name`. kick drops a connection and says why (the survivor stays in the world; `ban: true` keeps the name and address out, unban lifts it).\n\
      - save writes the world now (the server also autosaves); settings shows the rules and changes them (pvp, max_players, password, ...).\n\
-     - Events change the game for everyone: spawn_zombies, horde, make_noise, spawn_item, skip_time, teleport. Use them when asked to, sparingly: a horde on a player usually kills them.\n\
+     - Events change the game for everyone: spawn_zombies, horde, make_noise, spawn_item, skip_time, teleport, and the world events (events lists them; trigger_event, schedule_event: the water and power going off). Use them when asked to, sparingly: a horde on a player usually kills them.\n\
      - Everything you change is written to the server's log."
         .to_string()
 }
@@ -232,6 +234,10 @@ fn tool_list() -> Value {
             "inputSchema": {"type": "object", "properties": {"hours": {"type": "number", "description": "Game hours to skip"}, "to_hour": {"type": "number", "description": "Or: skip forward to this hour of the day (0-24), e.g. 7 for morning"}}}}),
         json!({"name": "teleport", "description": "Move a player's survivor: to x, y, or beside another player (`to_player` / `to_name`). For someone stuck, or to bring people together. Refused if the place is off the map or inside something solid.",
             "inputSchema": {"type": "object", "properties": place(json!({"to_player": {"type": "integer", "description": "Put them beside this player instead of at x, y"}, "to_name": {"type": "string"}}))}}),
+        json!({"name": "trigger_event", "description": "Event: make one of the world's events (events.ron; the events tool lists them) happen now: water_off and power_off cut the town's water or power for everyone, water_on and power_on bring them back. Everyone is told its message.",
+            "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}}),
+        json!({"name": "schedule_event", "description": "Event: move a world event to `in_hours` game hours from now, or with `cancel: true` call it off for this world.",
+            "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}, "in_hours": {"type": "number"}, "cancel": {"type": "boolean"}}, "required": ["id"]}}),
     ];
     for def in &mut defs {
         let Some(&(name, title, read_only, destructive)) = TOOLS.iter().find(|t| def["name"] == t.0) else { continue };
@@ -424,6 +430,12 @@ impl Admin {
                 debug_assert!(EVENTS.contains(&name));
                 let said = mcp::world_tool(&mut host.world, name, &args)?;
                 self.did(host, persist, format!("{name} {at}: {said}"));
+                Ok(said)
+            }
+            "trigger_event" | "schedule_event" => {
+                let said = mcp::world_tool(&mut host.world, name, args)?;
+                let first = said.lines().next().unwrap_or_default().to_string();
+                self.did(host, persist, format!("{name} {}: {first}", args.get("id").and_then(Value::as_str).unwrap_or("?")));
                 Ok(said)
             }
             "skip_time" => {

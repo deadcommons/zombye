@@ -277,7 +277,7 @@ fn some_two_handed_weapons_swing_in_one_hand_weaker_and_slower() {
 fn wear_is_saved_checked_and_deterministic() {
     let run = || {
         let mut c = config(19);
-        c.weapons.iter_mut().find(|w| w.id == "golf_club").unwrap().wear_chance = 0.5;
+        c.weapons.iter_mut().find(|w| w.id == "golf_club").unwrap().wear_chance = 0.9;
         let (mut w, id) = field(c, "golf_club");
         dummy(&mut w, 1.2);
         for _ in 0..4 {
@@ -290,7 +290,7 @@ fn wear_is_saved_checked_and_deterministic() {
     let (a, id) = run();
     let (b, _) = run();
     let used = hand(&a, id).unwrap().used;
-    assert!(used > 0, "four hits at 0.5 left a knock");
+    assert!(used > 0, "four hits at 0.9 left a knock");
     assert_eq!(a.state_hash(), b.state_hash());
     let loaded = World::load(&a.save(), &a.config).unwrap();
     assert_eq!(loaded.state_hash(), a.state_hash());
