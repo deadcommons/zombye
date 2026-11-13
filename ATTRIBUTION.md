@@ -16,7 +16,9 @@ is one of:
   tool and the plan it was made on — see below);
 - public domain / CC0, OSI open source, or a Creative Commons licence that allows redistribution.
 
-No third-party asset packs (Synty, marketplace packs and similar), even if you own them.
+No third-party asset packs (Synty, marketplace packs and similar) in this repository, even if you own them.
+Official builds add art and audio from bought packs, kept in the private art repo with their own
+ATTRIBUTION.md and shipped only packed inside the game (see AGENTS.md, Open source and the official build).
 In the table, our own art and audio use the licence `CC BY-NC-SA 4.0`.
 Until an asset exists, the game uses grey-box shapes.
 
