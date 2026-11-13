@@ -58,7 +58,10 @@ use crate::zombies::ZombieState;
 /// The most levels the settings may list (the top level is [`SkillTuning::top`]).
 pub const MAX_LEVEL: u32 = 10;
 /// How many skills there are.
-pub const SKILL_COUNT: usize = 9;
+pub const SKILL_COUNT: usize = 10;
+/// The skills there were before Mechanics: saves and origins write this many in their arrays, and
+/// the rest in sections of their own (`MECH`), so older saves read as they did.
+pub const LEGACY_SKILLS: usize = 9;
 /// Level-ups kept for replication if nobody drains them (headless servers, tests).
 pub const MAX_LEVEL_UPS: usize = 64;
 /// No skill makes a time, cost or noise smaller than this share of its usual.
@@ -78,11 +81,13 @@ pub enum Skill {
     Scavenging,
     /// Crafting (#12; this module only keeps its XP and level).
     Handiwork,
+    /// Cars ([`crate::vehicles`], stage 4): hotwiring and repairing them.
+    Mechanics,
 }
 
 impl Skill {
     pub const ALL: [Skill; SKILL_COUNT] =
-        [Self::Fitness, Self::Strength, Self::Bludgeon, Self::Edged, Self::Brawl, Self::Stealth, Self::FirstAid, Self::Scavenging, Self::Handiwork];
+        [Self::Fitness, Self::Strength, Self::Bludgeon, Self::Edged, Self::Brawl, Self::Stealth, Self::FirstAid, Self::Scavenging, Self::Handiwork, Self::Mechanics];
 
     /// Lowercase id (MCP arguments).
     pub fn id(self) -> &'static str {
@@ -96,6 +101,7 @@ impl Skill {
             Self::FirstAid => "first_aid",
             Self::Scavenging => "scavenging",
             Self::Handiwork => "handiwork",
+            Self::Mechanics => "mechanics",
         }
     }
 
@@ -110,6 +116,7 @@ impl Skill {
             Self::FirstAid => "First Aid",
             Self::Scavenging => "Scavenging",
             Self::Handiwork => "Handiwork",
+            Self::Mechanics => "Mechanics",
         }
     }
 
@@ -123,11 +130,40 @@ impl Skill {
     }
 }
 
-/// A player's XP in each skill (index: `Skill as usize`). Saved with the player.
+/// A player's XP in each skill (index: `Skill as usize`). Saved with the player: the first
+/// [`LEGACY_SKILLS`] there, Mechanics in the save's `MECH` section.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Skills {
+    #[serde(with = "legacy_zero")]
     pub xp: [f32; SKILL_COUNT],
 }
+
+/// An array of a number per skill written as the [`LEGACY_SKILLS`] numbers saves have always held
+/// (a fixed tuple, no length), the rest read back as `$fill`. What the newer skills hold is saved
+/// in a section of its own.
+macro_rules! legacy_array {
+    ($name:ident, $fill:expr) => {
+        pub mod $name {
+            use super::{LEGACY_SKILLS, SKILL_COUNT};
+            use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+            pub fn serialize<S: Serializer>(v: &[f32; SKILL_COUNT], s: S) -> Result<S::Ok, S::Error> {
+                let mut old = [0.0f32; LEGACY_SKILLS];
+                old.copy_from_slice(&v[..LEGACY_SKILLS]);
+                old.serialize(s)
+            }
+
+            pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[f32; SKILL_COUNT], D::Error> {
+                let old = <[f32; LEGACY_SKILLS]>::deserialize(d)?;
+                let mut v = [$fill; SKILL_COUNT];
+                v[..LEGACY_SKILLS].copy_from_slice(&old);
+                Ok(v)
+            }
+        }
+    };
+}
+legacy_array!(legacy_zero, 0.0f32);
+legacy_array!(legacy_one, 1.0f32);
 
 impl Default for Skills {
     /// A new survivor with the built-in numbers (`World::add_player` uses the world's own).
@@ -238,6 +274,10 @@ pub struct SkillTuning {
     pub search_xp: f32,
     /// Handiwork per craft (#12).
     pub craft_xp: f32,
+    /// Mechanics per car hotwired, per try at it that failed, and per repair done.
+    pub hotwire_xp: f32,
+    pub hotwire_fail_xp: f32,
+    pub repair_xp: f32,
 
     // What each level gives.
     /// Fitness: running drains endurance this much slower, and it recovers this much faster.
@@ -261,6 +301,11 @@ pub struct SkillTuning {
     pub search_quieter: f32,
     /// Handiwork: crafting faster (a share).
     pub craft_faster: f32,
+    /// Mechanics: hotwiring and repairs faster, repairs mending more (shares), and the chance a
+    /// try at hotwiring works added (a chance, 0..1).
+    pub mechanics_faster: f32,
+    pub mechanics_more: f32,
+    pub mechanics_hotwire: f32,
 }
 
 impl Default for SkillTuning {
@@ -285,6 +330,9 @@ impl Default for SkillTuning {
             treat_xp: 10.0,
             search_xp: 2.0,
             craft_xp: 5.0,
+            hotwire_xp: 20.0,
+            hotwire_fail_xp: 4.0,
+            repair_xp: 12.0,
 
             fitness_drain: 0.03,
             fitness_regen: 0.03,
@@ -300,6 +348,9 @@ impl Default for SkillTuning {
             search_faster: 0.05,
             search_quieter: 0.05,
             craft_faster: crate::crafting::HANDIWORK_FASTER_PER_LEVEL,
+            mechanics_faster: 0.06,
+            mechanics_more: 0.06,
+            mechanics_hotwire: 0.08,
         }
     }
 }
@@ -430,6 +481,16 @@ impl SkillTuning {
         down(self.craft_faster, handiwork).max(crate::crafting::HANDIWORK_MIN_MULT)
     }
 
+    /// Hotwiring and repairing a car take this share of their time at this Mechanics.
+    pub fn mechanics_time_mult(&self, mechanics: u32) -> f32 {
+        down(self.mechanics_faster, mechanics)
+    }
+
+    /// A repair mends this many times what it says at this Mechanics.
+    pub fn mechanics_amount_mult(&self, mechanics: u32) -> f32 {
+        up(self.mechanics_more, mechanics)
+    }
+
     /// Movement with Fitness on top: running drains endurance slower, it comes back faster.
     pub fn move_mods(&self, fitness: u32, mods: MoveMods) -> MoveMods {
         MoveMods { run_drain: mods.run_drain * down(self.fitness_drain, fitness), regen: mods.regen * up(self.fitness_regen, fitness), ..mods }
@@ -466,6 +527,12 @@ impl SkillTuning {
             ),
             Skill::Scavenging => format!("searching {} faster and {} quieter", pct(self.search_time_mult(l)), pct(self.search_noise_mult(l))),
             Skill::Handiwork => format!("crafting {} faster", pct(self.craft_time_mult(l))),
+            Skill::Mechanics => format!(
+                "hotwiring and car repairs {} faster, repairs mend {} more, hotwiring works +{:.0}% more often",
+                pct(self.mechanics_time_mult(l)),
+                pct(self.mechanics_amount_mult(l)),
+                self.mechanics_hotwire * l as f32 * 100.0
+            ),
         }
     }
 
@@ -492,6 +559,7 @@ impl SkillTuning {
             Skill::FirstAid => format!("each treatment ({} XP)", self.treat_xp),
             Skill::Scavenging => format!("each container searched for the first time ({} XP)", self.search_xp),
             Skill::Handiwork => format!("each thing crafted ({} XP)", self.craft_xp),
+            Skill::Mechanics => format!("hotwiring a car ({} XP, {} a try that fails), each car repair ({} XP)", self.hotwire_xp, self.hotwire_fail_xp, self.repair_xp),
         }
     }
 
@@ -530,6 +598,9 @@ impl SkillTuning {
             ("treat_xp", self.treat_xp),
             ("search_xp", self.search_xp),
             ("craft_xp", self.craft_xp),
+            ("hotwire_xp", self.hotwire_xp),
+            ("hotwire_fail_xp", self.hotwire_fail_xp),
+            ("repair_xp", self.repair_xp),
         ];
         if let Some((name, v)) = numbers.iter().find(|(_, v)| !(v.is_finite() && (0.0..=1e4).contains(v))) {
             return Err(format!("skills.{name} is {v} (must be 0 to 10000)"));
@@ -549,6 +620,9 @@ impl SkillTuning {
             ("search_faster", self.search_faster),
             ("search_quieter", self.search_quieter),
             ("craft_faster", self.craft_faster),
+            ("mechanics_faster", self.mechanics_faster),
+            ("mechanics_more", self.mechanics_more),
+            ("mechanics_hotwire", self.mechanics_hotwire),
         ];
         if let Some((name, v)) = shares.iter().find(|(_, v)| !(v.is_finite() && (0.0..=0.5).contains(v))) {
             return Err(format!("skills.{name} is {v} (a share a level, 0 to 0.5)"));

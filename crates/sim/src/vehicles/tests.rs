@@ -7,6 +7,7 @@ use super::*;
 use crate::map::{Edge, Side};
 use crate::street_props::parse_street_props;
 use crate::template::tests::shipped_templates;
+use crate::inventory::Place;
 use crate::world::WorldConfig;
 
 fn shipped() -> VehicleData {
@@ -49,7 +50,7 @@ fn park(w: &mut World, kind: &str, pos: Vec2, heading: f32) -> u32 {
     w.vehicles.next_id += 1;
     let state = VehicleState { pos, heading, speed: 0.0, steer: 0.0 };
     let cond = Condition { fuel: w.config.vehicles.kinds[k].tank_l, ..Condition::default() };
-    w.vehicles.list.push(Vehicle { id, kind: k as u16, state, input: DriveInput::PARKED, driver: None, from: IVec2::new(-1, -1), cond });
+    w.vehicles.list.push(Vehicle { id, kind: k as u16, state, input: DriveInput::PARKED, driver: None, from: IVec2::new(-1, -1), cond, access: Access { ignition: true, ..Access::default() } });
     let boxes = w.vehicle_boxes();
     w.map.set_vehicles(boxes);
     id
@@ -215,6 +216,8 @@ fn the_town_parks_its_cars_as_vehicles_and_the_same_seed_parks_the_same() {
 #[test]
 fn a_saved_world_keeps_its_cars_where_they_were_driven() {
     let mut w = town();
+    // Unlocked with its key in it (how it's found is stage 4's test).
+    w.vehicles.list[0].access = Access { ignition: true, ..Access::default() };
     let v = w.vehicles.list[0].clone();
     let kind = w.config.vehicles.kinds[v.kind as usize].clone();
     // Stand a player beside its driver's door and drive it a little.
@@ -432,4 +435,223 @@ fn a_saved_car_keeps_its_fuel_and_damage() {
         let tank = w.config.vehicles.kinds[v.kind as usize].tank_l;
         assert!(v.cond.fuel >= tank * t.start_fuel.0 - 0.1 && v.cond.fuel <= tank * t.start_fuel.1 + 0.1, "{v:?}");
     }
+}
+
+// ---- Stage 4: keys, hotwiring, the boot and glovebox, repairs, Mechanics ----------------------
+
+/// The field with the shipped items, containers and loot, and the car as found: locked or not, no
+/// key in it.
+fn workshop(locked: bool) -> (World, u32, u32) {
+    let (mut w, id, vid) = field();
+    let weapons = crate::items::parse_weapons(include_str!("../../../../assets/data/items/weapons.ron")).unwrap();
+    w.config.items = crate::items::parse_items(include_str!("../../../../assets/data/items/items.ron"), &weapons).unwrap();
+    w.config.weapons = weapons;
+    w.config.containers = crate::containers::parse_containers(include_str!("../../../../assets/data/containers.ron")).unwrap();
+    w.config.loot = crate::loot::parse_loot(include_str!("../../../../assets/data/loot.ron")).unwrap();
+    let vi = w.vehicles.list.iter().position(|v| v.id == vid).unwrap();
+    w.vehicles.list[vi].access = Access { locked, ..Access::default() };
+    // Facing the car through its input too, so it still faces it after the world steps.
+    w.set_facing(id, std::f32::consts::FRAC_PI_2);
+    (w, id, vid)
+}
+
+fn access(w: &World, vid: u32) -> Access {
+    vehicle(w, vid).access
+}
+
+#[test]
+fn the_shipped_work_settings_name_real_items() {
+    let weapons = crate::items::parse_weapons(include_str!("../../../../assets/data/items/weapons.ron")).unwrap();
+    let items = crate::items::parse_items(include_str!("../../../../assets/data/items/items.ron"), &weapons).unwrap();
+    let data = shipped();
+    data.work.check_items(&items).unwrap();
+    assert_eq!(data.work, WorkTuning::default(), "vehicles.ron's work block is the built-in one");
+    let mut bad = data.clone();
+    bad.work.repairs[0].mends = 0.0;
+    assert!(check(&bad).unwrap_err().contains("Fix the engine"));
+}
+
+#[test]
+fn town_cars_are_found_locked_or_not_with_keys_here_and_there() {
+    let w = town();
+    let n = w.vehicles.list.len();
+    let locked = w.vehicles.list.iter().filter(|v| v.access.locked).count();
+    let ignition = w.vehicles.list.iter().filter(|v| v.access.ignition).count();
+    assert!(locked > 0 && locked < n, "{locked} of {n} locked");
+    assert!(w.vehicles.list.iter().all(|v| !(v.access.ignition && (v.access.locked || v.access.glovebox_key))));
+    assert!(ignition < n);
+    assert_eq!(town().vehicles, w.vehicles, "the same seed, the same locks");
+}
+
+#[test]
+fn a_locked_car_keeps_you_out_until_a_window_is_smashed() {
+    let (mut w, id, vid) = workshop(true);
+    let why = w.player_vehicle(id, VehicleOp::Enter { vehicle: None }).unwrap_err();
+    assert!(why.contains("locked"), "{why}");
+    // Nor can its boot or glovebox be opened.
+    assert!(w.player_search(id, Some(vehicle_container(vid, GLOVEBOX))).is_err());
+    let windows = vehicle(&w, vid).cond.parts[2];
+    w.player_vehicle(id, VehicleOp::BreakIn { vehicle: None }).unwrap();
+    assert!(!access(&w, vid).locked);
+    assert!(vehicle(&w, vid).cond.parts[2] < windows, "smashing in costs the windows");
+    w.player_vehicle(id, VehicleOp::Enter { vehicle: None }).unwrap();
+}
+
+#[test]
+fn without_a_key_it_wont_start_until_hotwired() {
+    let (mut w, id, vid) = workshop(false);
+    w.config.vehicles.work.hotwire_chance = 1.0;
+    let msg = w.player_vehicle(id, VehicleOp::Enter { vehicle: None }).unwrap();
+    assert!(msg.contains("no key"), "{msg}");
+    let at = car(&w, vid).pos;
+    drive(&mut w, id, 1.0, 0.0, 1.5);
+    assert_eq!(car(&w, vid).pos, at, "no key: it doesn't start");
+    assert!(!vehicle(&w, vid).cond.engine_on);
+    assert!(!w.vehicle_views()[0].start);
+    // Hotwiring needs a screwdriver.
+    assert!(w.player_vehicle(id, VehicleOp::Hotwire).unwrap_err().contains("screwdriver"));
+    w.give_item(id, "screwdriver", 1);
+    w.player_vehicle(id, VehicleOp::Hotwire).unwrap();
+    let secs = w.config.vehicles.work.hotwire_secs + 0.5;
+    run(&mut w, secs);
+    assert!(access(&w, vid).hotwired);
+    let i = pi(&w, id);
+    assert!(w.players[i].skills.xp(crate::skills::Skill::Mechanics) > 0.0, "hotwiring trains Mechanics");
+    assert!(w.vehicle_views()[0].start);
+    drive(&mut w, id, 1.0, 0.0, 1.5);
+    assert!(car(&w, vid).pos.distance(at) > 1.0, "hotwired, it goes");
+}
+
+#[test]
+fn a_key_found_in_the_glovebox_starts_and_locks_its_car() {
+    let (mut w, id, vid) = workshop(false);
+    let vi = w.vehicles.list.iter().position(|v| v.id == vid).unwrap();
+    w.vehicles.list[vi].access.glovebox_key = true;
+    w.player_search(id, Some(vehicle_container(vid, GLOVEBOX))).unwrap();
+    run(&mut w, 2.0);
+    let key = w.item_index("car_key").unwrap();
+    let held = w.container_contents(vehicle_container(vid, GLOVEBOX)).unwrap().iter().position(|s| s.item == key).expect("the key is in the glovebox");
+    assert!(!access(&w, vid).glovebox_key);
+    w.player_move_item(id, Place::Container(vehicle_container(vid, GLOVEBOX)), held as u32, Place::Carried, 0).unwrap();
+    run(&mut w, 1.0);
+    let i = pi(&w, id);
+    assert!(w.carries_key(i, vid));
+    // It locks and unlocks with the key, from outside.
+    w.player_vehicle(id, VehicleOp::Lock { vehicle: None }).unwrap();
+    assert!(access(&w, vid).locked);
+    // ...and with it on you, you get in (unlocking it) and it starts.
+    w.player_vehicle(id, VehicleOp::Enter { vehicle: None }).unwrap();
+    assert!(!access(&w, vid).locked);
+    let at = car(&w, vid).pos;
+    drive(&mut w, id, 1.0, 0.0, 1.5);
+    assert!(car(&w, vid).pos.distance(at) > 1.0);
+    // Someone else without it is kept out of the locked car.
+    let other = w.add_player(Vec2::new(103.0, 98.4));
+    // Brake to a stop first: nobody gets out of a moving car.
+    for _ in 0..(3.0 / crate::TICK_DT).ceil() as u32 {
+        w.player_drive(id, DriveInput { throttle: 0.0, steer: 0.0, brake: true });
+        w.step();
+    }
+    assert_eq!(car(&w, vid).speed, 0.0);
+    w.player_vehicle(id, VehicleOp::Lock { vehicle: None }).unwrap();
+    w.player_vehicle(id, VehicleOp::Exit).unwrap();
+    assert!(w.player_vehicle(other, VehicleOp::Enter { vehicle: Some(vid) }).is_err());
+}
+
+#[test]
+fn the_key_in_the_ignition_comes_out() {
+    let (mut w, id, vid) = workshop(false);
+    let vi = w.vehicles.list.iter().position(|v| v.id == vid).unwrap();
+    w.vehicles.list[vi].access.ignition = true;
+    w.player_vehicle(id, VehicleOp::Enter { vehicle: None }).unwrap();
+    w.player_vehicle(id, VehicleOp::TakeKey).unwrap();
+    assert!(!access(&w, vid).ignition);
+    let i = pi(&w, id);
+    assert!(w.carries_key(i, vid));
+    assert!(w.vehicle_views()[0].start, "the key on the driver starts it");
+    assert!(w.player_vehicle(id, VehicleOp::TakeKey).is_err());
+}
+
+#[test]
+fn the_boot_is_reached_from_behind_and_takes_things() {
+    let (mut w, id, vid) = workshop(false);
+    let boot = vehicle_container(vid, BOOT);
+    // From the driver's door the boot is too far; from behind it isn't.
+    assert!(w.player_search(id, Some(boot)).is_err());
+    let i = pi(&w, id);
+    w.players[i].state.pos = Vec2::new(97.0, 100.0);
+    w.player_search(id, Some(boot)).unwrap();
+    run(&mut w, 3.0);
+    assert!(w.container_contents(boot).is_some(), "searched");
+    w.give_item(id, "rope", 1);
+    let rope = w.item_index("rope").unwrap();
+    let k = w.players[i].inventory.carried.iter().position(|s| s.item == rope).unwrap();
+    w.player_move_item(id, Place::Carried, k as u32, Place::Container(boot), 0).unwrap();
+    run(&mut w, 1.0);
+    assert!(w.container_contents(boot).unwrap().iter().any(|s| s.item == rope), "put in the boot");
+    assert!(w.containers_in_reach(id).contains(&boot));
+}
+
+#[test]
+fn repairs_use_parts_and_tools_and_train_mechanics() {
+    let (mut w, id, vid) = workshop(false);
+    let vi = w.vehicles.list.iter().position(|v| v.id == vid).unwrap();
+    w.vehicles.list[vi].cond.parts = [0.2, 0.3, 1.0, 1.0];
+    let tyre = w.config.vehicles.work.repairs.iter().position(|r| r.part == Part::Tyres).unwrap() as u8;
+    let engine = w.config.vehicles.work.repairs.iter().position(|r| r.part == Part::Engine).unwrap() as u8;
+    assert!(w.player_vehicle(id, VehicleOp::Repair { vehicle: None, repair: tyre }).unwrap_err().contains("spare tyre"));
+    w.give_item(id, "spare_tyre", 1);
+    w.give_item(id, "wrench", 1);
+    w.player_vehicle(id, VehicleOp::Repair { vehicle: None, repair: tyre }).unwrap();
+    run(&mut w, 21.0);
+    assert!((vehicle(&w, vid).cond.parts[1] - 0.8).abs() < 1e-4, "{:?}", vehicle(&w, vid).cond.parts);
+    let i = pi(&w, id);
+    assert!(w.item_index("spare_tyre").is_some_and(|t| !w.players[i].inventory.stacks().any(|s| s.item == t)), "the tyre is used");
+    assert!(w.players[i].skills.xp(crate::skills::Skill::Mechanics) > 0.0);
+    // The engine needs Mechanics 1.
+    w.give_item(id, "engine_parts", 1);
+    assert!(w.player_vehicle(id, VehicleOp::Repair { vehicle: None, repair: engine }).unwrap_err().contains("Mechanics 1"));
+    // Windows patched only so far.
+    let window = w.config.vehicles.work.repairs.iter().position(|r| r.part == Part::Windows).unwrap() as u8;
+    let vi = w.vehicles.list.iter().position(|v| v.id == vid).unwrap();
+    w.vehicles.list[vi].cond.parts[2] = 0.7;
+    assert!(w.player_vehicle(id, VehicleOp::Repair { vehicle: None, repair: window }).unwrap_err().contains("better than"));
+}
+
+#[test]
+fn locks_keys_and_mechanics_are_saved() {
+    let mut w = town();
+    let weapons = crate::items::parse_weapons(include_str!("../../../../assets/data/items/weapons.ron")).unwrap();
+    let items = crate::items::parse_items(include_str!("../../../../assets/data/items/items.ron"), &weapons).unwrap();
+    w.config.items = items.clone();
+    w.config.weapons = weapons.clone();
+    let vid = w.vehicles.list[0].id;
+    w.vehicles.list[0].access = Access { locked: true, ignition: false, hotwired: true, glovebox_key: true };
+    let id = w.add_player(Vec2::new(200.0, 200.0));
+    let i = pi(&w, id);
+    w.award_xp(i, crate::skills::Skill::Mechanics, 120.0);
+    w.give_item(id, "car_key", 1);
+    let key = w.item_index("car_key").unwrap();
+    let k = w.players[i].inventory.carried.iter().position(|s| s.item == key).unwrap();
+    w.players[i].inventory.carried[k].born = vid as i32;
+    let mut content = WorldConfig::new(3, 0, shipped_templates()).with_weapons(weapons).with_items(items);
+    content.street_props = w.config.street_props.clone();
+    content.vehicles = w.config.vehicles.clone();
+    let l = World::load(&w.save(), &content).unwrap();
+    assert_eq!(access(&l, vid), access(&w, vid));
+    let li = pi(&l, id);
+    assert_eq!(l.players[li].skills.xp(crate::skills::Skill::Mechanics), w.players[i].skills.xp(crate::skills::Skill::Mechanics));
+    assert!(l.carries_key(li, vid), "the key still opens its car");
+    assert_eq!(l.state_hash(), w.state_hash());
+}
+
+#[test]
+fn hotwiring_gets_likelier_with_mechanics() {
+    let w = WorkTuning::default();
+    let s = crate::skills::SkillTuning::default();
+    assert!(hotwire_chance(&w, &s, 0) < hotwire_chance(&w, &s, 5));
+    assert!(hotwire_chance(&w, &s, 10) <= 0.95);
+    assert_eq!(vehicle_of_container(vehicle_container(7, GLOVEBOX)), Some((7, GLOVEBOX)));
+    assert_eq!(vehicle_of_container(crate::corpses::corpse_container(7)), None);
+    assert_eq!(vehicle_of_container(12), None);
 }

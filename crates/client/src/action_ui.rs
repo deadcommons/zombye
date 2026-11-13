@@ -99,6 +99,8 @@ fn describe(kind: JobKind, join: &JoinInfo) -> String {
         JobKind::Blind { fit: false, .. } => "Taking a blind down".to_string(),
         JobKind::Build { add: true, build, .. } => join.builds.get(build as usize).map_or("Building".to_string(), |b| b.name.clone()),
         JobKind::Build { add: false, .. } => "Prising a plank off".to_string(),
+        JobKind::Hotwire { .. } => "Hotwiring".to_string(),
+        JobKind::Repair { repair, .. } => join.vehicles.work.repairs.get(repair as usize).map_or("Repairing".to_string(), |r| r.name.clone()),
     }
 }
 

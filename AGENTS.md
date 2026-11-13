@@ -4,10 +4,11 @@ Zombye is an open-source, true-3D isometric zombie survival game (Rust + Bevy), 
 can read it, run it, play it and mod it. The design is in [docs/PLAN.md](docs/PLAN.md). Read it
 before making architectural changes.
 
-Work is tracked on GitHub, not in the repo: the
-[Game development project](https://github.com/orgs/deadcommons/projects/3) board and the
-[milestones](https://github.com/deadcommons/zombye/milestones). Reference issues in commits
-(`Closes #N`), and keep each issue's board status current (Todo, In Progress, Done).
+Work is tracked in GitHub issues on the public
+[Game development board](https://github.com/orgs/deadcommons/projects/3), not in the repo. Start from an issue
+(open one if there is none) and set it In Progress; reference it in commits (`Refs #N`, `Closes #N`); when
+the work is done, close it with a comment naming the commit or PR, or comment where it got to if it stops
+part way. New work you find becomes its own issue, not a TODO.
 
 ## Layout
 
@@ -18,9 +19,9 @@ Work is tracked on GitHub, not in the repo: the
 | `crates/mods` | Mods (see Mods and scripts): reads a mod's folder (`mod.ron`, `items.ron`, `recipes.ron`, `loot.ron`, `buildings/*.ron`, `*.luau`), merges its data into a `WorldConfig` (`lib.rs`: `Mod`, `apply`, `load_into`; `Mod::pack` / `from_pack` / `apply_packs`: the data a server hands to joining clients, #24) and runs its Luau scripts sandboxed, one VM a mod, as the world's script host (`luau.rs`, on `mlua`; Luau is built from source, so a C++ compiler is needed). The one crate with Luau in it. | MIT OR Apache-2.0 |
 | `mods/` | Sample mods: `alarm_clock` (an item behaviour by script; the worked example of [docs/modding.md](docs/modding.md)). | MIT OR Apache-2.0 |
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint (`--mcp` on stdio, `mcp.rs`; `--mcp-http` over streamable HTTP for remote agents, `mcp_http.rs`, see Connecting an agent); the multiplayer server (`--host`) and bot clients (`--bots N --connect ADDR`; `multiplayer.rs`, see Multiplayer); the operator's MCP admin endpoint on a hosting server (`--host --admin-mcp`, `admin.rs`, see Administering a server); the dedicated server from one config file (`--config FILE`, `config.rs`, and the `Dockerfile` at the root that runs it, see The dedicated server under Multiplayer); `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`); the agent survival benchmark (`--benchmark`, `benchmark.rs`, see The agent survival benchmark). | MIT OR Apache-2.0 |
-| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building meshes (`world_render.rs`; their details, trim, siding lines, porches, chimneys, shopfronts and lit windows, from `meshgen/building_kit.rs`, see Buildings dressed under The world), the outdoors per chunk from the tile map alone (`meshgen/landscape.rs`: lawns, verges, forest floor and litter, road paint at real scale, kerbs, slab joints, driveways, front beds, fences and hedges; `meshgen/curves.rs`: what's drawn round over the tiles, see Curves under The world; `meshgen/trees.rs`: faceted broadleaves, birches, pines, spruces; colours from `assets/data/palette.ron` through `meshgen/palette.rs`), fog of war, cutaways (`cutaway.rs`: which walls drop, per building and wall edge; `silhouette.rs`: the player's shape through what still covers them; see Cutaways under Light and mood; `opening_hints.rs`: outlines of the doors and windows a building hides from the camera, see Opening hints there), day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd, or a character baked offline read from a `.zvat` (`zvat.rs`); `survivor.rs` skinned, CPU-posed players; `character.rs` reads a modular character's body and wearable GLBs and `survivor_model.rs` draws players as it, dressed in what they wear), hit feedback (`fx.rs`), the aim marker (`aim_marker.rs`, see Combat), lights in the dark (`lights.rs`, see Light and mood), instanced grass, flowers and litter (`vegetation.rs`), the film pass (`film.rs`) and the graphics settings (`graphics.rs`; all three: see Look and feel), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), street props merged into each chunk's props mesh from the same models (`meshgen/street_props.rs`, see Street props under The world), HUD (`hud.rs`; the hotbar on keys 1-9, `hotbar.rs`; panels dragged by their titles and remembered, `panels.rs`; the UI's one skin, `theme.rs`: text sizes and colours, and the painted sheets, buttons, slots and bars every panel uses, see The skin), the death screen and run summary (`death.rs`), the first night's objectives, hints and morning screen (`firstnight_ui.rs`), the skills panel and level-up line (`skills_ui.rs`), the chat line, speech bubbles and gesture keys (`chat.rs`, see Talking and gestures), tying, searching and group keys, the search panel, name tags and markers (`holdup.rs`, see Hold-ups and groups), the build menu (`build_ui.rs`, Shift+B, see Building and barricades), the server browser (`browser_ui.rs`, F7, see The server browser), the map screen (`map_ui.rs`, M, see The map), the main menu (with its Mods screen), pause menu and settings screen (`main_menu.rs`, `pause_menu.rs`, `settings_ui.rs`, drawn with `menu_skin.rs`, see Menus), the new-game screen (`new_game.rs`, see A new game), the join screen before the game on `--connect` (`join_screen.rs`, see The join screen there), sound (`audio.rs`, see Sound), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
+| `crates/client` | `zombye` Bevy client: camera, chunk streaming, building meshes (`world_render.rs`; their details, trim, siding lines, porches, chimneys, shopfronts and lit windows, from `meshgen/building_kit.rs`, see Buildings dressed under The world), the outdoors per chunk from the tile map alone (`meshgen/landscape.rs`: lawns, verges, forest floor and litter, road paint at real scale, kerbs, slab joints, driveways, front beds, fences and hedges; `meshgen/curves.rs`: what's drawn round over the tiles, see Curves under The world; `meshgen/trees.rs`: faceted broadleaves, birches, pines, spruces; colours from `assets/data/palette.ron` through `meshgen/palette.rs`), fog of war, cutaways (`cutaway.rs`: which walls drop, per building and wall edge; `silhouette.rs`: the player's shape through what still covers them; see Cutaways under Light and mood; `opening_hints.rs`: outlines of the doors and windows a building hides from the camera, see Opening hints there), day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd, or a character baked offline read from a `.zvat` (`zvat.rs`); `survivor.rs` skinned, CPU-posed players; `character.rs` reads a modular character's body and wearable GLBs and `survivor_model.rs` draws players as it, dressed in what they wear), hit feedback (`fx.rs`), the aim marker (`aim_marker.rs`, see Combat), lights in the dark (`lights.rs`, see Light and mood), instanced grass, flowers and litter (`vegetation.rs`), the film pass (`film.rs`) and the graphics settings (`graphics.rs`; all three: see Look and feel), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), street props merged into each chunk's props mesh from the same models (`meshgen/street_props.rs`, see Street props under The world), HUD (`hud.rs`; the hotbar on keys 1-9, `hotbar.rs`; panels dragged by their titles and remembered, `panels.rs`; the UI's one skin, `theme.rs`: text sizes and colours, and the painted sheets, buttons, slots and bars every panel uses, see The skin), the death screen and run summary (`death.rs`), the first night's objectives, hints and morning screen (`firstnight_ui.rs`), the skills panel and level-up line (`skills_ui.rs`), the chat line, speech bubbles and gesture keys (`chat.rs`, see Talking and gestures), tying, searching and group keys, the search panel, name tags and markers (`holdup.rs`, see Hold-ups and groups), the build menu (`build_ui.rs`, Shift+B, see Building and barricades), the server browser (`browser_ui.rs`, F7, see The server browser), the map screen (`map_ui.rs`, M, see The map), the main menu (with its Mods screen), pause menu and settings screen (`main_menu.rs`, `pause_menu.rs`, `settings_ui.rs`, drawn with `menu_skin.rs`, see Menus), the new-game screen (`new_game.rs`, see A new game), the window's mode and size (`window_mode.rs`, see The window under Menus), the loading screen and its lines (`loading.rs`, see The brand), the join screen before the game on `--connect` (`join_screen.rs`, see The join screen there), sound (`audio.rs`, see Sound), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
 | `crates/reports` | `zombye-reports`: the problem-report service. Takes crash, panic, F12, hitch, desync and slow-tick reports from games and servers into SQLite with their files, groups them into problems, and answers an agent's questions as JSON (`problems`, `list`, `show`, `mark`, `sql`; see [docs/bug-reports.md](docs/bug-reports.md)). | MIT OR Apache-2.0 |
-| `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/items/recipes.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`, `data/street_props.ron`, `data/power.ron`: the grid and the lights, `data/fire.ron`: campfires, burns and cooking heat, `data/vehicles.ron`: the vehicles you can drive, `data/weather.ron`: the calendar and the climate by month, `data/scenarios.ron`: the benchmark's scenarios, `data/status.ron`: the status icons' levels, labels and tips, `data/fog.ron`: how the fog of war looks, `data/light.ron`: the sun, fill, grade, haze and firelight, `data/decay.ron`: how worn street props are drawn, `data/vegetation.ron`: where ground cover grows, `data/biomes.ron`: what grows on the wild ground outside town (see Biomes), `data/palette.ron`: every colour, for Blender assets and the generated world), models (`models/furniture/*.glb`, street props `models/street/*.glb`; the survivor's body `models/characters/survivor_01.glb` and its wearables `models/wearables/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), sound (`audio/sfx/*.wav`, `audio/ambience/*.wav`, listed in `data/sounds.ron`), the UI's typefaces (`fonts/barlow/`, see The skin), later textures. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); the Barlow fonts: SIL OFL 1.1; each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
+| `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/items/recipes.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`, `data/street_props.ron`, `data/power.ron`: the grid and the lights, `data/fire.ron`: campfires, burns and cooking heat, `data/vehicles.ron`: the vehicles you can drive, `data/weather.ron`: the calendar and the climate by month, `data/scenarios.ron`: the benchmark's scenarios, `data/status.ron`: the status icons' levels, labels and tips, `data/fog.ron`: how the fog of war looks, `data/loading_lines.ron`: the loading screen's lines, `data/light.ron`: the sun, fill, grade, haze and firelight, `data/decay.ron`: how worn street props are drawn, `data/vegetation.ron`: where ground cover grows, `data/biomes.ron`: what grows on the wild ground outside town (see Biomes), `data/palette.ron`: every colour, for Blender assets and the generated world), models (`models/furniture/*.glb`, street props `models/street/*.glb`; the survivor's body `models/characters/survivor_01.glb` and its wearables `models/wearables/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), sound (`audio/sfx/*.wav`, `audio/ambience/*.wav`, listed in `data/sounds.ron`), the UI's typefaces (`fonts/barlow/`, see The skin), later textures. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); the Barlow fonts: SIL OFL 1.1; each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
 | `tools/blender/` | Python to build assets: run inside Blender, mesh builder, palette, renders, validation, GLB export (`zasset.py`, `palette.py`: reads `assets/data/palette.ron`, `build.py`), character clean-up, validation and skinned export (`zchar.py`), library animation clips retargeted onto a character's skeleton (`zretarget.py`, plain Python), VAT bake for the crowd, outfit variants with palette swatches (`zvat.py`, `build.py -- --crowd`); plain Python, art-repo work folders and promotion (`artrepo.py`). | MIT OR Apache-2.0 |
 | `tools/audio/` | `synth.py`: the placeholder sounds, synthesised from noise, tones and filters (plain Python, deterministic); `zsound.py`: the real sounds (#78), from a generator's raw takes to game-ready WAVs: slice, clean, audition, promote with ATTRIBUTION.md rows, check (plain Python; see the elevenlabs-sounds skill). | MIT OR Apache-2.0 |
 | `tools/remote/` | The remote machines (see Remote machines): `setup.sh` (a build or GPU box), `zgpu` (the client on the GPU box, as if local), `zwork` (an agent per issue, each in its own worktree), `zboard` (the owner's dashboard: a screen of review pictures or the game streamed, the issues' progress, feedback, approve), `dcv.sh` (a GPU machine's desktop shared by Amazon DCV, for remote play). | MIT OR Apache-2.0 |
@@ -130,7 +131,20 @@ game's first frame until the render world has had no shader pipeline waiting for
 most 20 s), then a 0.35 s fade; in your own world time stands still behind it (`pause_menu::stop_time`). Only on a
 player's start (`loading::wanted`: `--no-menu`, which the main menu passes on, or a plain start, and no
 `--screenshot` / `--exit-after`), so runs driven by flags are as before. `--loading-screen` shows and holds it:
-`--render-to shot.png --hud --loading-screen`; `--main-menu --render-to shot.png` for the menu's logo.
+`--render-to shot.png --hud --loading-screen`. **Loading lines:** under the logo one line at a time says something is
+happening ("WAKING THE DEAD..."), the next every `every_secs` (1.8), each once before any comes again and in a
+different order each start (`loading::line_at`; a picture shows the file's first). They are data,
+`assets/data/loading_lines.ron` (`loading::LoadingLines`: at most 60 characters a line, drawn in capitals with three
+dots; a data folder without it gets the shipped one, a bad file is a warning and the shipped one). **Add a line by
+adding a string;** `--main-menu --render-to shot.png` for the menu's logo.
+**The logo first** (`loading::FrontLoadingPlugin`, in the main menu's and the new-game screen's apps): a plain start
+(`loading::front_wanted`) opens on the logo, which comes up out of black over 0.9 s, stands until 3.2 s
+(`SPLASH_SHOWN`) and fades into the menu over 0.9 s. When a screen starts the game again (`crate::relaunch_pending`)
+the logo covers the window for a few frames before the exit (`loading::leave`), and the line it showed goes with the
+start (`loading::pass_on`, `ZOMBYE_LOADING_LINE`), so the game's loading screen carries on from it. **New game in the
+menu's window** (`new_game::NewGamePlugin`, `Front`): the menu's New game asks `Front::open`; `new_game::enter` puts
+the menu's cameras to sleep and builds the screen in the same window (its camera is the UI's default camera), Back
+gives the window back (`give_back`), and the menu's own systems stand still meanwhile (`new_game::away`).
 
 ## Remote machines
 
@@ -188,10 +202,10 @@ cargo run -p zombye-server -- --docs ../zombye-web/src/content/docs/docs/referen
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --angle 0..3 --turn N@SECS[,N@SECS...] --opening-hints on|off --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --weapons-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --mod DIR --mods-dir DIR --no-mods --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab rows|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --loading-screen --graphics-panel --map --map-zoom PX --map-center X,Y --map-all --skip-hours H --hover-tag N --debug-stats --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --music V --ui-scale PCT --help-text full|short|off --old-look off|subtle|strong --connect HOST[:PORT] --name NAME --password P --agent --server-info HOST[:PORT] --server-list FILE|URL --browser --browser-join N[@SECS] --joined --join-error TEXT --hotbar ID[,ID...] --hotbar-press K@SECS[,K@SECS...] --panel-at PANEL:X,Y[;PANEL:X,Y] --drag-panel PANEL:DX,DY[@SECS] --lag MS --say TEXT[@SECS] --shout TEXT[@SECS] --whisper TEXT[@SECS] --gesture NAME[@SECS] --talk-demo --talk-wall --holdup-demo --holdup-auto --graphics low|medium|high|ultra|auto --vegetation off|low|high|N --no-post LIST --msaa N --shadow-map N --render-scale F --frame-bench N --gun ID --give ID[:N],... --walls-up --zombie-silhouettes --aim-at DX,DY|zombie --first-person --view-at SECS[,SECS...] --view-mix U --new-game --new-game-tab who|picks|world --new-game-from PATH --background ID --strengths ID[,ID...] --flaws ID[,ID...] --outfit ITEM[,ITEM...] --difficulty ID --biome ID --biomes FILE --watch-biomes --walk X,Y;X,Y;...` (`--biome`, `--biomes`, `--watch-biomes`: see Biomes under The world; `--loading-screen`: see The brand under Assets built in Blender; `--give`: a new world with those items in your pockets, for trying things out, e.g. `--give firewood:2,matches,raw_chicken,frying_pan`; the eight before the last: see A new game; `--aim-at`: see The aim marker under Combat; `--first-person`: see The first-person view under Light and mood; the last walks the local player from point to point by itself, opening shut doors its way leads through, for recordings; the two before it: see Cutaways under Light and mood; the one before those: see Guns; the seven before it: see Look and feel; the two before them: see Hold-ups and groups; the six before those: see Talking and gestures) (the camera always turns with `,` and `.`, see Turning the camera under Light and mood: `--turn` does it by itself for recordings, `--opening-hints`: see Opening hints there, and `--rotate`, which turning used to need, is still accepted and does nothing; `--zoom` is the metres of world visible vertically, 8–90, default 26;
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --angle 0..3 --turn N@SECS[,N@SECS...] --opening-hints on|off --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --weapons-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --mod DIR --mods-dir DIR --no-mods --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab rows|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --loading-screen --graphics-panel --map --map-zoom PX --map-center X,Y --map-all --skip-hours H --hover-tag N --debug-stats --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --music V --ui-scale PCT --help-text full|short|off --input auto|keyboard|controller --wheel items|make[:N] --old-look off|subtle|strong --connect HOST[:PORT] --name NAME --password P --agent --server-info HOST[:PORT] --server-list FILE|URL --browser --browser-join N[@SECS] --joined --join-error TEXT --hotbar ID[,ID...] --hotbar-press K@SECS[,K@SECS...] --panel-at PANEL:X,Y[;PANEL:X,Y] --drag-panel PANEL:DX,DY[@SECS] --lag MS --say TEXT[@SECS] --shout TEXT[@SECS] --whisper TEXT[@SECS] --gesture NAME[@SECS] --talk-demo --talk-wall --holdup-demo --holdup-auto --graphics low|medium|high|ultra|auto --vegetation off|low|high|N --no-post LIST --msaa N --shadow-map N --render-scale F --frame-bench N --gun ID --give ID[:N],... --walls-up --zombie-silhouettes --aim-at DX,DY|zombie --first-person --view-at SECS[,SECS...] --view-mix U --new-game --new-game-tab who|picks|world --new-game-from PATH --background ID --strengths ID[,ID...] --flaws ID[,ID...] --outfit ITEM[,ITEM...] --difficulty ID --biome ID --biomes FILE --watch-biomes --walk X,Y;X,Y;...` (`--biome`, `--biomes`, `--watch-biomes`: see Biomes under The world; `--loading-screen`: see The brand under Assets built in Blender; `--give`: a new world with those items in your pockets, for trying things out, e.g. `--give firewood:2,matches,raw_chicken,frying_pan`; the eight before the last: see A new game; `--aim-at`: see The aim marker under Combat; `--first-person`: see The first-person view under Light and mood; the last walks the local player from point to point by itself, opening shut doors its way leads through, for recordings; the two before it: see Cutaways under Light and mood; the one before those: see Guns; the seven before it: see Look and feel; the two before them: see Hold-ups and groups; the six before those: see Talking and gestures) (the camera always turns with `,` and `.`, see Turning the camera under Light and mood: `--turn` does it by itself for recordings, `--opening-hints`: see Opening hints there, and `--rotate`, which turning used to need, is still accepted and does nothing; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost). `--size WxH` makes the window exactly that many pixels, at scale factor 1, so a
-`--screenshot` is WxH on a high-DPI screen too; without it the window is 1600x900 at the screen's scale.
+`--screenshot` is WxH on a high-DPI screen too; without it the window is as The window (under Menus) says: full screen in a packaged game, else a window of the size it was last left at (1600x900 the first time).
 For verifying combat without a keyboard: `--fight-demo` starts you on open ground near the house you'd wake up in
 (unless `--at` says otherwise) with a baseball bat in hand and six zombies 7 m east, called over by a noise;
 `--autoplay` makes the local player fight by itself (`autoplay.rs`): it faces the nearest standing zombie and
@@ -264,7 +278,7 @@ sent to it, chasing, zombies per tier active/near/virtual, sim tick ms, and the 
 In game: WASD move (he faces the way he walks), Shift run, C sneak (toggle), right mouse held: aim (he faces the
 cursor and strafes or backs off at 2.2 m/s, no running, in a guard stance), and only while aiming left mouse attack
 (swing your weapon, or punch; with a gun in hand: shoot at what the cursor is on, see Guns); Space, aiming or not (the way he faces), shove (or stomp, when a downed zombie's body or head lies in reach in front of you: `combat::stomp_spot`), R reload the gun you hold, **E the one key for the world** (`interact.rs`): tapped, it does the likeliest thing for what you face, and a prompt over the hotbar says what ("E  Open  door"): get out of or into a car, open or shut a door or window, climb the fence or open or broken window (see Climbing under Players), flick the light switch (see Electricity and lights), tend a fire, pick up the item nearest, search the container or body (with nothing faced: search the nearest); **held** (0.3 s) it opens the menu of everything you can do with it, the same menu as a right tap (`world_actions::entries`, whose first line is what a tap does: blinds, smashing, boarding up, every fuel), 1-9 the hotbar (swap to or use what's on that slot, see Hotbar), Tab or I the inventory screen, H its Health screen, K its Skills screen, F the flashlight or candle in your hands on and off (`Intent::Flashlight`, `World::player_flashlight`; `OutfitView::light_off`, so others see it go dark), Shift+B the build menu (see Building and barricades), G smash the window you face, Esc the pause menu (see Menus), dead: R a new run and Q quits,
-B sleep (B again or WASD to get up), Q sit down on the sofa, bed or bench beside you, else the ground (Q again or WASD to get up), Enter the chat line (Tab there: whisper, talk or shout; Enter says it, Esc drops it), V wave, U hands up (again lowers them), P point (see Talking and gestures), Y tie the hands of the survivor you face or free tied ones, L search a tied survivor, J (held) struggle out of ties, N invite into your group or accept (Shift+N leaves), middle mouse a group marker (see Hold-ups and groups), T skip an hour, Z spawn zombies, wheel zoom (over the inventory, health or skills panel it scrolls that panel instead), F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), F3 the light preview (a time-of-day slider, see Light and mood), F4 the debug stats window (see Needs), F6 the server's rules (on a multiplayer server, see Multiplayer), F7 the server browser (see The server browser), `,` and `.` turn the camera a quarter turn left or right (see Turning the camera under Light and mood), `;` the first-person view and back (see The first-person view there), F10 walls up / walls cut, Shift+F10 zombie silhouettes and Ctrl+F10 opening hints (see Cutaways and Opening hints under Light and mood), M the map (see The map), Ctrl+M mute, O hide or show the objectives and hints (see The first night), Ctrl (or Cmd) + `=` / `-` the UI scale (see UI scale), Ctrl+0 back to 100%. **The keys are data** (`assets/data/keys.ron`, `keys.rs`: each action and the keys or chords that do it; a key without a modifier still works with Shift held unless another action takes it with Shift) and rebindable on the settings' Controls tab (kept in `settings.ron`'s `keys`, over the file); the camera, dev, chat and gesture keys are fixed for now. **A new key is an `Action`, a line in `keys.ron` and a row on the Controls tab.** Walking into a fence or an open window stops you as a wall would: E climbs
+B sleep (B again or WASD to get up), Q sit down on the sofa, bed or bench beside you, else the ground (Q again or WASD to get up), Enter the chat line (Tab there: whisper, talk or shout; Enter says it, Esc drops it), V wave, U hands up (again lowers them), P point (see Talking and gestures), Y tie the hands of the survivor you face or free tied ones, L search a tied survivor, J (held) struggle out of ties, N invite into your group or accept (Shift+N leaves), middle mouse a group marker (see Hold-ups and groups), T skip an hour, Z spawn zombies, wheel zoom (over the inventory, health or skills panel it scrolls that panel instead), F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), F3 the light preview (a time-of-day slider, see Light and mood), F4 the debug stats window (see Needs), F6 the server's rules (on a multiplayer server, see Multiplayer), F7 the server browser (see The server browser), `,` and `.` turn the camera a quarter turn left or right (see Turning the camera under Light and mood), `;` the first-person view and back (see The first-person view there), F10 walls up / walls cut, Shift+F10 zombie silhouettes and Ctrl+F10 opening hints (see Cutaways and Opening hints under Light and mood), M the map (see The map), Ctrl+M mute, O hide or show the objectives and hints (see The first night), Ctrl (or Cmd) + `=` / `-` the UI scale (see UI scale), Ctrl+0 back to 100%. **The keys are data** (`assets/data/keys.ron`, `keys.rs`: each action and the keys or chords that do it; a key without a modifier still works with Shift held unless another action takes it with Shift) and rebindable on the settings' Controls tab (kept in `settings.ron`'s `keys`, over the file); the camera, dev, chat and gesture keys are fixed for now. **A new key is an `Action`, a line in `keys.ron` and a row on the Controls tab.** **A controller works too** (see The controller). Walking into a fence or an open window stops you as a wall would: E climbs
 it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
 not Bevy's handler; a second Ctrl-C quits unsaved) autosaves; `--render-to` never does.
 
@@ -280,14 +294,12 @@ and blood splats and particles are cleared (`fx::ClearFx`): they belong to the t
 `--quicksave-after SECS` / `--quickload-after SECS` press F5 / F9 by themselves, for verification. A yellow line
 under the HUD says what was saved or loaded (or why not), and stdout gets the same line.
 
-**Menus (`main_menu.rs`, `pause_menu.rs`, `settings_ui.rs`):** three screens in flat, dark chrome (`menu_skin.rs`: solid fills, hairlines, bone-white text, zombie green for the one main button and what is picked; the typefaces are `theme.rs`'s; the menus' pieces only, until `theme.rs` has flat components for every panel).
+**Menus (`main_menu.rs`, `pause_menu.rs`, `settings_ui.rs`):** three screens in the brand's look (`menu_skin.rs`, docs/ui-design.md, The screens before the game: warm charcoal, hairlines, cream text, mustard for the one main button and what is picked, titles and buttons in Bebas Neue (`theme::brand`), text in Barlow; the new-game screen and the loading screen take the same, its lines in Special Elite, `theme::note`; once in the game every panel is the flat chrome again).
 **The main menu** comes first on a plain start: a run with no flag that sets up a world or a scene (`main_menu::plain`:
 an allowlist of flags a menu can carry on, such as `--saves`, `--data`, `--mod`, `--size`, `--ui-scale`, `--name`,
 `--graphics`; anything else, `--load`, `--connect`, `--seed`, `--zombies`, `--fight-demo`, `--render-to` alone and the
 rest, starts the game as before, so every recipe in this file and every tool is unchanged). `--main-menu` forces it (over `--no-menu` too: the new-game screen's Back adds it),
-`--no-menu` skips it. For development, `ZOMBYE_NO_MENU=1` or "Skip the main menu" on the settings' Game tab (`skip_menu` in `settings.ron`) skips it on every plain start (`main_menu::skipped`); `--main-menu` and the pause menu's way back still show it. It is a small app of its own before the game, like the join screen (the game builds its map
-once a start), and every choice starts the game again with the arguments for it (`main_menu::load_args`,
-`new_game_args`, `browser_ui::relaunch_args`; on Unix an `exec`). Home: **Continue** (the autosave, which leaving a game writes; not shown
+`--no-menu` skips it. For development, `ZOMBYE_NO_MENU=1` or "Skip the main menu" on the settings' Game tab (`skip_menu` in `settings.ron`) skips it on every plain start (`main_menu::skipped`); `--main-menu` and the pause menu's way back still show it. **In a window it is a layer over the game** (#36, `main_menu::MenuLayer`, `MenuLayerPlugin`): one program from the first logo on. The game starts as ever behind the loading screen, in the world the menu leads to first (`main_menu::as_layer`: the autosave when one reads, else a fresh world with a new seed), and the logo fades into the menu, drawn over it (`GlobalZIndex(28)`) while time stands still (`pause_menu::stop_time`) and the game's keys and buttons are held back (`hold_keys`, in `PreUpdate` after the menu's, the new-game screen's, the browser's and the settings' own). Continue takes the menu away; Start on the new-game screen makes the survivor in the world behind when nobody has played it (`start_here`: its seed is the new game's, taken up through `saving::WorldSwap`); Load game takes up a save of the same town in place (`load_here`); the pause menu's "Save and exit to menu" saves and raises the menu (`MenuLayer::raise`). What needs another town or a server (New game over a world already played, a save of another town, Join, Host, anything after mods were turned on or off) starts the game again with the arguments for it, as before (`main_menu::load_args`, `new_game_args`, `browser_ui::relaunch_args`; on Unix an `exec`); nothing is autosaved while the menu is up. The new-game screen over the game draws with its own camera on render layer 9 (`new_game::FIGURE_LAYER`), the game's cameras off meanwhile. Offscreen (`--main-menu --render-to`) the menu is still a small app of its own. Home: **Continue** (the autosave, which leaving a game writes; not shown
 without one), **Single player**, **Multiplayer**, Mods, Settings, Quit. **Single player** is Continue, **New game** (asks first when an autosave would be overwritten; `--new-game --seed <a fresh one>
 --no-menu`: the character and world screen of a new game hangs on `--new-game`) and **Load game** (the folder's saves,
 newest first, each with its hour in the game, its zombies and how long ago it was saved; a click loads one). **Multiplayer** is **Join a game** (the server browser drawn over the menu, `BrowserUiPlugin` in the menu's app: official servers, then community servers, see The server browser; a join starts the game again with `--connect ADDR --from-browser menu`, and one that doesn't come off comes back to this screen, `main_menu::multiplayer_screen_args`) and **Host a game** (see Hosting from the menu under Multiplayer). **Mods** (the mods folder: which are on and in what order, see Mods and scripts), **Settings**, **Quit**. Enter is the green button, Esc goes back a screen. `--menu-screen
@@ -299,9 +311,8 @@ the menu says so and has no Save or Load ("Leave the server"). Esc opens it only
 chat line or search being typed, a right-click menu, the graphics panel, the map, the server browser), and while it is up the
 game's keys and mouse buttons are held back (`pause_menu::keys`, in `PreUpdate` before the other key handlers) and
 the first-person pointer is free. Leaving saves as quitting does. `--pause` starts with it up (`--render-to shot.png
---hud --pause`). **The settings screen** (from either menu; `--settings graphics|audio|controls|game`) has four tabs down its left side:
-Graphics (the preset, and each of F8's settings by itself: vegetation, shadows, anti-aliasing, 3D resolution, the film
-switches, plus fullscreen and vsync), Audio (master and music volume, mute), Controls (every key; click one, press the new one, Esc keeps the old; a clash with another action is marked; the defaults button puts back `keys.ron`'s) and Game (UI scale, the view a game starts in: from above or first person, zombie silhouettes,
+--hud --pause`). **The settings screen** (from either menu; `--settings display|graphics|effects|audio|controls|game`) has six tabs down its left side:
+Display (fullscreen, also Alt+Enter or F11, see The window; Resolution: the window's size, stepped through `window_mode::SIZES` and taken at once, held to the screen, while full screen is the screen's own; vsync; UI scale), Graphics (the preset, and what costs frame rate, each by itself: 3D resolution, vegetation, shadow detail, anti-aliasing, soft and contact shadows, ambient occlusion), Effects (the look over the picture: the old look, bloom, film grain, tilt-shift, vignette, haze, sky, sky light, light shafts, ground detail; a tab holds at most ten rows, so the screen fits 1280 x 720), Audio (master and music volume, mute), Controls (every key; click one, press the new one, Esc keeps the old; a clash with another action is marked; the defaults button puts back `keys.ron`'s) and Game (the view a game starts in: from above or first person, zombie silhouettes,
 opening hints, help text). **Help text (`help_text.rs`, `ClientSettings::help_text`; `--help-text full|short|off` for a session, not saved):** how much the UI explains. Full (as shipped) is everything; Short drops the explaining sentences (`help_text::explains()`: a skill card's next level and how its XP is earned, what a status does to you on the Health screen; the Make list says what a recipe is missing by name alone, `crafting::missing_brief`: "needs jeans, scissors") and keeps names, numbers and what is needed; Off also drops the reminders of what keys and clicks do (`help_text::keys()`: every footer's key hints, which `theme::flat::hint` then doesn't draw, the Make list's line, the first night's hint line). What a thing needs and why something was refused are never help text. **New cards and panels ask `help_text::explains()` before drawing a line that explains, and put `help_text::level()` in what they compare to rebuild.** Every change is one `settings_ui::Change` applied by the pure `settings_ui::change` to
 `ClientSettings` through `SettingsStore`, so it is saved at once, and `apply_live` hands on what changed to the
 running game (graphics, volumes, UI scale, the view, the window); contact shadows and ground detail still take the
@@ -310,6 +321,19 @@ next start. Each tab has its "defaults" button. **A new client setting gets a fi
 now), `first_person`, `fullscreen`, `vsync`; `--volume` / `--music` / `--mute` / `--first-person` / `--novsync` still
 win for a session. Gameplay and difficulty settings are a world's, chosen on the new-game screen, not here. Tests:
 `main_menu::tests`, `pause_menu::tests`, `settings_ui::tests`.
+**The window (`window_mode.rs`):** a packaged game opens **borderless full screen** at the desktop's resolution until
+its player chooses otherwise (`ui_scale::default_fullscreen`, `starts_fullscreen`; `ClientSettings::fullscreen_chosen`
+is set by `SettingsStore::change` whenever `fullscreen` changes, so a file from before it, or one whose player never
+chose, still gets the default); from a checkout it opens as a window, so every recipe and tool here is as before
+(`ZOMBYE_PACKAGED=1` to try the packaged way). **Alt+Enter or F11** switches on every screen (menu, new game, join
+screen, game) and is kept like the settings' Fullscreen switch; the keys are fixed (not `keys.ron`'s: they work before
+there is a game), read in `PreUpdate` before every other key handler, and Alt+Enter's Enter is taken so it doesn't
+also press a menu's button or open the chat line. **A window keeps its size** (`ClientSettings::window_size`, UI
+pixels, written once a new size has stood still for 45 frames; 1600 x 900 the first time) and one bigger than the
+screen it opens on is brought down to 92% of it, keeping its shape (`window_mode::fit`, once the monitor is known).
+`--size` is a window of exactly that size and none of this applies or is kept. `WindowModePlugin` is added by
+`window_plugins`, so every windowed app has it; a screen without a `SettingsStore` writes the file itself. Tests:
+`window_mode::tests`.
 **Full screen across a start-again (`window_handoff.rs`):** each screen is a run of its own with its own window, and a
 Mac keeps a full-screen window in a Space of its own, which a run that ended while full screen left behind with the old
 screen on it. So on a Mac an exit that leads to a start-again (`crate::relaunch_pending`) is held back while the window
@@ -347,6 +371,43 @@ another slot swaps with it; `inventory_ui::HoveredItem`); right-click a slot to 
 menu is up the number keys are the menu's, and Ctrl / Cmd with a number is never the hotbar's. The slots are kept in
 `settings.ron` (`ClientSettings::hotbar`). `--hotbar ID,ID,...` (`-` an empty slot) sets them for a session (pictures:
 offscreen never reads the file), `--hotbar-press K@SECS[,K@SECS...]` presses keys by itself (recordings).
+
+**The controller (#12, `pad.rs`, `assets/data/pad.ron`):** a gamepad plays the game as well as the keys and mouse,
+switched between freely. **Its buttons are data** like the keys: `pad.ron` (`pad::PadFile`: each action's buttons, `A`
+`B` `X` `Y` `LB` `RB` `LT` `RT` `L3` `R3` `Up` `Down` `Left` `Right` `View` `Menu`, `"Hold X"` for a hold of
+`pad::HOLD_SECS`, 0.35 s; a button with a hold action does its plain one when let go sooner), the player's picks in
+`settings.ron`'s `pad` over it. An action is a keyboard one (`keys::Action`) or one only a pad needs (`pad::Only`:
+attack, aim, the camera's turns and zoom, first person, pause). **How the game hears it:** `pad::read_pad` (in
+`PreUpdate`, before every other key handler) works out what the pad started, holds and let go of each frame, and
+`keys::just_pressed` / `pressed` / `just_released` answer for the pad too, so everything that asks for an action
+follows the pad with no change of its own; the keys that aren't actions are pressed for the game (`pad::Injected`: Menu,
+and B on a screen, are Esc; the bumpers `,` and `.`; held View `;`), and the sticks, triggers, aim and zoom are the
+`pad::Pad` resource (`player.rs`: the left stick walks, part way over slower, since the sim scales the step by the
+input's length; L3 toggles running until the stick comes back; `camera.rs`: zoom held, the right stick looks round in
+first person). **Fighting:** LT held aims and the right stick turns the aim (camera-relative); RT swings or shoots,
+and pulled without LT aims by itself for `PAD_AIM_SECS` (0.6 s) and swings once an input saying so has gone to the server
+(only an aiming player's attack is taken). **Aim assist** (`player::pad_aim_at`, `pad::soft_lock`): a melee weapon turns
+onto the body nearest the facing within its reach + 0.9 m and 30° (12° with the right stick pushed), a gun within its
+range and 12° (6°) and is pitched at its chest; only bodies the fog of war shows (and other players only with PvP on). In
+first person the right stick turns the camera and the aim is the middle of the screen, as the mouse's. **At the wheel**
+RT drives and LT brakes and reverses (analog, through `Intent::Drive`), the left stick steers, B (shove) is the brake, X
+the horn, A gets out. **Which is in use** (`pad::InputMode`): the Input setting (`ClientSettings::input`: Auto, Keyboard
+and mouse, Controller; `--input` for a session): on Auto a pad button or a stick past half way makes the controller the
+one in use, a key or a click the keyboard (moving the mouse never does). A pad plugged in or out says so on the yellow
+line, and its maker picks the names its buttons go by (`pad::Family`: the common names, PlayStation's, Nintendo's).
+**The Controls tab** has the Input setting and two lists, Keyboard and mouse and Controller (`settings_ui::PAD_ROWS`),
+opening on the one in use. **The wheels** (`wheel.rs`, drawn by `wheel_ui.rs`): a ring of up to 12 choices round the
+middle of the screen, picked by pointing either stick (the one pushed further; the pick stays when the stick comes
+back; `wheel::sector`, choice 0 straight up, the rest clockwise). LB held (`pad.ron`'s `item_wheel`) is the items:
+the hotbar's things you carry, then the other weapons, lights, food, drink and medicine (`wheel::item_entries`),
+used as their hotbar key would (`hotbar::press`) when LB is let go; RB held (`make_wheel`) is what you can make here by
+the Make list's rule (`inventory_ui::make_check`), made when let go; A held on a thing is its world menu as a wheel
+(`interact.rs`, `wheel::action_entries`) that stays up after A is let go (A's thumb picks): A does it, B goes back.
+While one is up the pad does nothing else (`pad::read_pad` hands the sticks to `Pad::select`) and the game goes on.
+`--wheel items|make[:N]` brings one up with the Nth picked, for pictures (`--render-to shot.png --hud --wheel items:1`).
+Nothing of it reaches the sim, a save or a snapshot. **Not yet** (the plan's later stages): menus and screens by focus
+with an on-screen keyboard, button glyphs, rumble, quick chat, choosing the buttons on the Controls tab, a Steam Deck
+pass. Tests: `pad::tests`, `wheel::tests`, `settings_ui`'s `the_controller_list_shows_every_button`.
 
 **Panels remember (#97, `panels.rs`):** (health and skills are screens of the inventory's frame now and are neither dragged nor left open between sessions; what follows is for panels that still float) the inventory, health and skills panels (`panels::PanelId`, beside
 `hud::TopPanel` on each root) are dragged by their title (a press on the 40 UI pixels along the top that moves 4 or
@@ -390,7 +451,7 @@ weights used in `assets/fonts/barlow/` with `OFL.txt`, compiled into the client 
 like the textures, so offscreen renders and tests have them). Figures are tabular (the `tnum` feature, on in every
 `theme` face), so counts, weights and clocks line up and don't shuffle as they change. Bevy's built-in monospace
 (`theme::mono`) is kept only for the developer's read-outs: the stats line and keys at the top left, the debug stats
-window (F4) and the light preview's label (F3). **Every text takes its `TextFont` from one of those four functions.**
+window (F4) and the light preview's label (F3). **Every text takes its `TextFont` from one of those four functions** (the screens before the game add `theme::brand`, Bebas Neue, and `theme::note`, Special Elite: see Menus).
 Nothing may assume a letter's width: lay text out with flex, and where a size must be known before layout (the
 inventory's turned tabs, the hotbar's slot test) ask `theme::width(face, text, size)`, which reads the advances from
 the face's own tables. Cost: nothing measurable (the inventory open
@@ -443,7 +504,7 @@ A packaged game for playtesters, handed out from a restricted itch.io page (dead
   address (`ZOMBYE_REPORT_URL`, compiled in by `package.sh`; never in this repo) and "Send problem reports" on (Settings,
   Game), the game sends its panics and crashes (the child's panic hook leaves `logs/panic.zrpt` for the parent), the F12
   folder, frames over 1 s and repeated prediction corrections to the report service (`zombye-reports`), and `--host`
-  sends its own panics and ticks over 150 ms (`--no-reports` turns that off). An agent triages them into Linear with the
+  sends its own panics and ticks over 150 ms (`--no-reports` turns that off). An agent triages them into GitHub issues with the
   [triage-reports skill](.claude/skills/triage-reports/SKILL.md). **A new kind of problem worth catching** goes through
   `zombye_net::report::Report` and `queue` / `flush`, with a signature that groups it.
 - **Packaging:** `tools/release/package.sh linux|windows|mac` (Linux and Windows on the build VM, Windows cross-compiled
@@ -1097,8 +1158,32 @@ Stage 2: fuel, engine noise, running zombies over and crash damage.
   and gone), and a car moving beyond a client's view only every `wire::FAR_CAR_EVERY` (10) ticks; getting in or
   out, stopping and coming near go at once. `wire::PROTOCOL` 37. Tests: `net/tests/driving.rs` (a driver at
   150 ms of ping predicts its car exactly; a far car is sent now and then), `vehicles_render`'s own.
+- **Keys, hotwiring, the boot and glovebox, repairs (stage 4, #14; `vehicles/work.rs`, `vehicles.ron`'s `work`,
+  `WorkTuning`):** a found car is `locked` (0.6), has its key in the ignition (`ignition` 0.1; never locked then), in
+  its glovebox (`glovebox_key` 0.2) or nowhere (`Access::found`, by the seed and where it was parked). A key is the
+  item `car_key` whose stack's `born` is the id of the car it opens (`holds_key`; keys to two cars never stack). The
+  engine starts only with the key in the ignition, the key on the driver or the wires crossed (`World::startable`);
+  `VehicleView::start` says so, so prediction stays exact (`perf()` goes by it), and `locked` and `key_in` go too.
+  `VehicleOp::Hotwire` (at the wheel, a tool tagged `hotwires`: the screwdriver) is the job `JobKind::Hotwire`, a try
+  of `hotwire_secs` that works `hotwire_chance` (+`SkillTuning::mechanics_hotwire` a level, at most 0.95; a roll
+  hashed on the seed, car, tick and player). `TakeKey` takes the key out of the ignition; `Lock` locks or unlocks with
+  the key on you or from inside; a locked car is got into with its key (which unlocks it) or `BreakIn` (smashes a
+  window: `break_in_windows` off the windows, a 35 m noise). **The boot and glovebox** (the boot is called the trunk in game) are containers (`boot`,
+  `glovebox` in `containers.ron`; loot `(any, boot)`, `(any, glovebox)`) with ids `vehicle_container(vid, slot)`
+  (`VEHICLE_BIT`), placed where the car stands (`World::vehicle_site`): the boot from behind it, the glovebox from
+  the driver's seat or the open door, neither while it's locked (`vehicle_container_open_to`, in `within`); things go
+  in both and travel with the car; a key left in the glovebox is put there when it is first searched. **Repairs** are
+  data (`work.repairs`, `RepairDef`: part, inputs, tools, `mends`, `up_to`, `secs`, Mechanics `level`): `VehicleOp::
+  Repair { vehicle, repair }` is the job `JobKind::Repair`, checked again when due (`crate::build::check_have`); shipped:
+  engine parts and a wrench (Mechanics 1), a spare tyre and a wrench, plastic and tape on a window (to 60%), a hammer on
+  the body (to 70%), tape and a plank on the body (Mechanics 2, to 90%). New items: `car_key`, `wrench`, `spare_tyre`,
+  `engine_parts` (garages, hardware shops, boots). **Saves:** an optional `VACC` section after `VCND` (each car's
+  `Access`; without it cars are as found); Mechanics XP in `MECH` (below, Skills). `wire::PROTOCOL` 38. **Client:**
+  holding E beside a car or at its wheel opens its menu (`world_actions::car_entries`: get in or out, lock, smash in,
+  boot, glovebox, hotwire, take the key, fuel, the repairs with what each is missing); the driving line says "no key".
+  Tests: `vehicles::tests` (from `the_shipped_work_settings_name_real_items` on).
 - **Not yet:** the camera pulling back with speed, MCP tools, running players over, engine and horn sounds, damage
-  drawn on the car, repairing parts, keys and hotwiring (a Mechanics skill), the radio, more vehicle kinds.
+  drawn on the car, the radio, more vehicle kinds, a key's car shown on the key, picking locks.
 - Tests: `sim::vehicles::tests`.
 
 ## Chopping trees (`sim::trees`)
@@ -1505,7 +1590,7 @@ the start, and gardens, trees, fences and buildings are inked in where the survi
 
 ## Skills (`sim::skills`; #46)
 
-- **Nine skills, levels 0-10, raised only by practice.** `Player::skills` (`Skills { xp: [f32; 9] }`, by `Skill as usize`)
+- **Ten skills, levels 0-10, raised only by practice.** `Player::skills` (`Skills { xp: [f32; 10] }`, by `Skill as usize`)
   holds XP; the level is worked out from it at the cumulative thresholds `SkillTuning::levels` (75, 225, 450, 750, 1,150,
   1,650, 2,300, 3,100, 4,100, 5,400; XP stops at the top, `SkillTuning::top`: as many levels as listed, at most
   `MAX_LEVEL` 10, so a world saved with the five levels before DCM-63 keeps its five and its numbers, read from the RON tuple
@@ -1530,6 +1615,7 @@ the start, and gardens, trees, fences and buildings are inked in where the survi
 | First Aid | each treatment done: 10 | treatment 5% faster; from 6, stitching stings half as much |
 | Scavenging | each container searched for the first time: 2 | first searches 5% faster and 5% quieter |
 | Handiwork | each craft (#12): 5 | crafting 5% faster (`SkillTuning::craft_time_mult`) |
+| Mechanics | a car hotwired: 20 (a try that fails: 4); a car repair done: 12 | hotwiring and repairs 6% quicker, repairs mend 6% more, a hotwiring try 8% likelier (cars stage 4, #14) |
 
 - **Weapon skills follow how a weapon hits:** each entry in `weapons.ron` names its `skill` (`Some(Bludgeon)`, `Some(Edged)`
   or `Some(Brawl)`; left out, `WeaponCategory::skill`: `ShortBlunt`/`LongBlunt` Bludgeon, `ShortBlade`/`Axe` Edged,
@@ -1557,7 +1643,9 @@ the start, and gardens, trees, fences and buildings are inked in where the survi
   (`World::award_xp(pi, skill, xp)`), and a craft takes its recipe's time times `SkillTuning::craft_time_mult(level)`
   (`World::craft_secs`; never below `crafting::HANDIWORK_MIN_MULT`, half). `World::skill_level(pi, skill)` and
   `award_xp` are by player index, as the item jobs are.
-- **Saves:** XP per skill with the player (format 8), in `state_hash`; checked on load (`save_check::check_skills`: finite,
+- **Saves:** XP per skill with the player (format 8), in `state_hash`; the first nine are written with the player
+  as before (`skills::legacy_zero`, `legacy_one` for a Background's multipliers), and Mechanics, the tenth, in an
+  optional `MECH` section (each player with Mechanics XP or a multiplier on it), so older saves load unchanged; checked on load (`save_check::check_skills`: finite,
   0 to the top level's XP) and `SkillTuning::check`. **MCP:** `skills {player}` (each skill's level, XP and to go, what it
   gives now and at the next level, how it's earned; read-only), `stats` (each player's `skills` levels by id),
   `step_ticks` / `move_player` / `attack` report `LEVEL UP: P1 Edged 2`, and `weapons` shows each weapon's skill.
@@ -1586,14 +1674,37 @@ A new single-player game can begin with a survivor of your making in a world of 
   file; no format bump), in `state_hash` only for a survivor that has one.
 - **Difficulty is data** (`assets/data/difficulty.ron`, a list of `difficulty::DifficultyDef`; none: the built-in
   ones): a name, a line about it and multipliers on what the settings already hold (`zombies`, `fast_zombies`,
-  `zombie_senses`, `zombie_toughness`, `zombie_accuracy`, `respawn`, `loot`, `rare_loot`, `xp`, `needs`, `infection`,
-  `day_minutes`), plus `tuning`: any whole tuning struct set outright. Shipped: Easy street, Survivor (changes
+  `zombie_senses` (alertness), `zombie_sight`, `zombie_hearing` (`ZombieTuning::hearing`, on every sound a zombie
+  hears, on every tier), `zombie_memory`, `zombie_speed`, `zombie_toughness`, `zombie_accuracy`, `zombie_damage`
+  (`CombatTuning::zombie_damage`, on every wound one leaves), `respawn`, `loot`, `rare_loot`, `xp`, `needs`,
+  `infection`, `day_minutes`), plus `tuning`: any whole tuning struct set outright, and `values`: any single number
+  by its path. Shipped: Easy street, Survivor (changes
   nothing), Hard times, Last one left. A new game's world is a `difficulty::Setup` (a preset's id and the options
   changed on top of it); `DifficultyData::apply` puts it on a `WorldConfig` before the world is made. **The numbers
   that multiply content** (population scale, fast share, respawn; loot scales) are a `difficulty::Sandbox`
   (`WorldConfig::sandbox`), saved with the settings and put on the content again on load, so the content fingerprint
   holds; putting it on twice gives the same (it remembers the file's own values). **A new tuning number is reachable
-  from a preset's `tuning` with no code.**
+  from a preset's `tuning` and the Sandbox with no code.**
+- **Any number by its path** (`sim::tune`): every tuning section of `WorldConfig` (`tune::SECTIONS`: zombie,
+  population, combat, health, infection, needs, movement, carry, skills, loot, fire, weather, chop, blinds, tiers, and
+  the server's rules player_sight, speech, sit, bonds, groups, explore) is walked by its serde fields
+  (`tune::leaves`: hundreds of numbers and switches; lists aren't gone into), read by path (`tune::get`,
+  `"zombie.sight_day"`, a tuple's parts by number: `"combat.zombie_hp.1"`) and set by path (`tune::set`: the text
+  read as RON into the field, then the section checked as its own data would be, and nothing changed on a refusal).
+  `combat.pvp` is the server's, never a difficulty's (`tune::FIXED`). A setup's or preset's `values` (path to text)
+  go on after the multipliers and are kept by the `Sandbox` (`Sandbox::values`, at most 1,000, each checked), so a
+  load puts them on again whatever section they are in: saved sections, content (population, loot: the fingerprint
+  holds) and the rules a save doesn't keep. `Sandbox::describe` names the world's difficulty ("Hard times, with 3
+  numbers set in the Sandbox"), which a server's rules show (`Rules::difficulty`, `wire::PROTOCOL` 39).
+- **The Sandbox page's names are data** (`assets/data/sandbox.ron`, `difficulty::SandboxOptions`, checked by
+  `parse_sandbox`: every path a leaf, none twice, numbers with `min < max` and a step in range, whole numbers stepped
+  whole): groups of the numbers a player is likeliest to want, each with a name, a line, a range, a step and a unit.
+  **A number worth a name gets a line there**; every other one is on the page anyway, under Everything.
+- **A server's difficulty** (`zombye-server --host`, the dedicated server's config): `--difficulty ID`,
+  `--sandbox FILE` (a `Setup` as RON, or a whole `NewGame` file such as the screen's `new_game.ron`, whose world it
+  takes) and `--set PATH=VALUE` (as often as wanted, over both), or `difficulty`, `sandbox` and `set: {...}` in the
+  config file. Only for a new world: a save keeps its own, and the server says so when the flags are given. Refused
+  with `--benchmark` (results compare the game as shipped).
 - **The file and the flags** (`net::newgame`): `NewGame { survivor: Option<Choice>, world: Setup }` as RON.
   `--new-game-from PATH` starts a new world from one; `--background ID`, `--strengths ID,ID`, `--flaws ID,ID`,
   `--outfit ITEM,ITEM` and `--difficulty ID` go over it (or stand alone, for pictures and tests):
@@ -1602,18 +1713,24 @@ A new single-player game can begin with a survivor of your making in a world of 
   everyone is a plain survivor (choosing there needs a message of its own).
 - **The screen** (`new_game.rs`; `--new-game`): a small app of its own before the game, like the join screen, since
   a world is built once per process. Left, the survivor as the game draws it (the body and wearables,
-  `SurvivorModel::dressed`), turning slowly, over "What you wake up in" (the wardrobe's slots). Right, three pages
-  (1-3 or Tab): **Who you were** (the Backgrounds, with the skills each starts with), **Strengths and Flaws** (points
+  `SurvivorModel::dressed`), turning slowly, over "What you wake up in" (the wardrobe's slots). Right, four pages
+  (1-4 or Tab): **Who you were** (the Backgrounds, with the skills each starts with), **Strengths and Flaws** (points
   left; one that can't go with another says so; point at one to read about it) and **The world** (the presets, and
   steppers over them: zombies, things to find, how fast skills grow, whether zombies come back, the infection, the
-  day's length, the hour you wake). Enter or Start writes `new_game.ron` in the saves folder (also the choices the
+  day's length, the hour you wake), and, a page to go to rather than a step (Next stops at The world),
+  **Sandbox** (`new_game/sandbox.rs`): the named groups of `sandbox.ron` or, with Everything, every section, each
+  number or switch with arrows (by the file's step and range, else `sandbox::nudge`: half its leading power of ten),
+  shown as it stands with the preset and the other changes on; a change goes into the setup's `values`, one stepped
+  back to the preset's value is no change, and every one is checked by `tune::set` (refused on the footer with the
+  reason); Reset and Reset all. Enter or Start writes `new_game.ron` in the saves folder (also the choices the
   screen opens with next time) and starts the game again with `--new-game-from` (`start_args`); Esc or Back starts it
   again with `--main-menu` (`back_args`). Start is refused, with the reason, while points are overspent.
-  `--new-game-tab who|picks|world` opens a page (pictures: `--new-game --new-game-tab picks --render-to shot.png`).
+  `--new-game-tab who|picks|world|sandbox|everything` opens a page (pictures: `--new-game --new-game-tab picks --render-to shot.png`).
   **It is drawn to docs/ui-design.md** (flat dark chrome on opaque ink: a top bar with the pages as chips, columns divided
   by hairlines, a footer of keycaps with the one green button, Start; a Strength a green plus, a Flaw an amber minus),
   from the tokens in `new_game::flat` until `theme.rs` has the guide's components for every panel.
-- Tests: `sim::origin::tests`, `sim::difficulty::tests`, `net::newgame::tests`, `new_game.rs`'s own.
+- Tests: `sim::origin::tests`, `sim::difficulty::tests`, `sim::tune::tests`, `net::newgame::tests`, `new_game.rs`'s
+  and `new_game/sandbox.rs`'s own.
 
 ## Items, inventory and containers (`sim::items`, `sim::inventory`, `sim::containers`; #7)
 
@@ -1697,6 +1814,19 @@ A new single-player game can begin with a survivor of your making in a world of 
   `SkillsPanel::open`: H, K, the rail, `--health`, `--skills`, "use on a wound"), and `inventory_ui::screens` keeps
   the frame in step: opening one opens the frame on it and shuts the other, its key again goes back to the game,
   shutting the frame shuts both. A screen's scrolling part is an `inventory_ui::scroller` (`Scrolls` keeps where each was).
+  **The Inventory tab's three parts are windows** (#45, `inv_windows.rs`) wherever the frame's middle has room for
+  them side by side (`inv_windows::fits`: from about 1600 x 900 UI pixels; a smaller window, 1280 x 720, keeps
+  the three columns, as does `--tab columns`): Gear, You and Nearby each a window as tall as what is in it, which start
+  together in the middle (`home`: about 1,450 px across however wide the screen), under a light veil
+  (`inv_windows::VEIL`) so the game shows round them, while the top bar, rail and footer keep the full veil as
+  their own backing. A window is dragged by its title strip (the strip's observer sets `Windows::pressed`,
+  `inv_windows::track` follows the pointer before `rebuild`, `place` moves the nodes after it, so a drag builds nothing
+  again) and stays where it is let go: `Windows::at`, its corner in UI pixels from the middle's corner, kept as
+  `inventory_windows` in `settings.ron`; `clamped` keeps its title in reach and 80 px of it on the screen; the one
+  touched last is on top; a double-click on a title puts it back. **Fixed** (`Windows::fixed`, `--tab fixed`): the
+  windows stand where they start and take no drag, for a controller, whose stick goes from one to the next by their
+  order: the controller's code sets it while the pad is the one in use. `--panel-at gear:X,Y;you:X,Y;nearby:X,Y`
+  places them for a picture. The other tabs are full screens on the veil. Tests: `inv_windows::tests`.
   **Gear** (left): what each hand holds, then a slot a place (`GEAR`, by `body::Spot`: head, face, neck, torso, hands,
   legs, feet, back, shoulder; several layers on one place are several tiles), the hotbar, and at the foot the load
   against the limit with the burden stage and the litres used. **You** (middle): a pane for each bag carried and for
@@ -1883,7 +2013,7 @@ them yet (no body temperature, no effect on sight or hearing, nothing drawn or h
   seeded drift of up to `swing_c` (5) either way over `swing_days` (3) (cold snaps and heatwaves), all scaled about
   `mild_c` (12) by `harshness` (1; 0.6 a mild climate, 1.3 a harsh one). `World::air_temp_at(pos, level)`: indoors
   (a room, or upstairs) goes `indoor_mix` (0.6) of the way to `indoor_c` (16); a lit campfire adds `fire_c` (15) at
-  its middle, falling to nothing at `fire_radius` (4 m). **The default climate is hard** (Andres, 2026-11-13): January
+  its middle, falling to nothing at `fire_radius` (4 m). **The default climate is hard** (the owner, 2026-11-13): January
   averages about -11 C with cold-snap nights below -20 and weeks of snow and blizzards, July about 27 C with heatwave
   afternoons over 40, dry with the odd violent storm; October and November are the wettest months.
 - **Forced weather** (`World::force_weather`, MCP `set_weather`, for tests and pictures): a kind, intensity and
@@ -2202,7 +2332,7 @@ Things that happen to the whole town on a day of their own: the water going off,
   by the fixed view's linear depth); the sun's shadows use three cascades out to 90 m (`daynight::shoulder_cascade`).
   `world_actions::pick` looks at the edges round the player, not round where the ray comes down. Back in the fixed
   view the camera eases to the nearest of its four angles. The clear colour is the sky's by the hour
-  (`daynight::sky_colour`) and a linear haze (45 to 92 m) hides where the loaded chunks end. Not yet: a drawn sky,
+  (`daynight::sky_colour`) and a linear haze (45 to 92 m) hides where the loaded chunks end; with "Sky" on, a drawn sky behind it (see The sky and its light under Look and feel). Not yet:
   his own hands and weapon in view, a pad's right stick; checked in offscreen pictures, not yet played. Tests:
   `camera::tests` (`first_person_is_at_the_eyes_and_turns_with_the_mouse`, `first_person_aims_ahead`).
 - **Turning the camera** (`camera.rs`): always on. `,` turns it a quarter turn one way and `.` the other, between the
@@ -2298,6 +2428,19 @@ and mood, and docs/art-direction.md). All of it is client only: nothing here is 
   skips it. The crowd and the survivors aren't hazed (their own shaders). **Unseen ground by day** keeps most of its
   colour, a little dimmer and warmer, instead of going grey (`fog::FogLook::unseen_tint`, `unseen_colour`, from
   `assets/data/fog.ron`, in `WorldParams::fog_tint` and `lights.y`); at night it is dark blue, shapes still showing.
+- **The sky and its light** (`sky.rs`, `assets/shaders/sky.wesl`, `skylight.rs`, `shafts.rs`; light.ron's `sky`,
+  `sky_light` and `shafts`, each field commented there). **Sky** (`Graphics::sky`, Medium up, `--no-post sky`): the
+  first-person view draws a sky behind everything, a gradient from the horizon to the zenith by the hour, a glow round
+  the sun or moon worked out as the haze's is (so the far edge of the world melts into it), their discs and a few
+  hundred stars at night; the view from above never sees it (byte-identical pictures). About 1 ms in first person.
+  **Sky light** (`Graphics::sky_light`, Ultra only, `--no-post skylight`): `share` of the fill comes from around
+  instead of evenly, through an environment light whose diffuse cube is one texel a face (`skylight::faces`: the sky
+  above, the horizon round the sides brighter toward the sun, the ground's bounce below, together as bright as the
+  fill), so shade facing up turns sky-blue and rooms at dusk go warm. Taken on at start-up only (adding the
+  environment light builds every shader again). 1.5-3 ms. **Light shafts** (`Graphics::light_shafts`, in no preset,
+  `--no-post shafts`): the engine's volumetric fog in a box round the focus, lit by the sun's shadow map, taken on and
+  off live, by day only. About 8 ms and so far an even warm veil rather than beams: a switch to try things with.
+  Costs measured on an M1 Max, 1920 x 1080, 2,000 zombies, `--frame-bench 120`; about 1 ms between runs is noise.
 - **The film pass** (`film.rs`, `assets/shaders/film.wesl`): one fullscreen pass after the tone map (Bevy's
   `FullscreenMaterial`): tilt-shift (the top and bottom of the screen soften, up to 2.6 px at 1080p, 13 taps) and grain
   (24 a second, by visual time, so it stands still in an offscreen render; about half strength at night). With both
@@ -2326,8 +2469,9 @@ and mood, and docs/art-direction.md). All of it is client only: nothing here is 
   frame, and nothing of it in the sim or a save. A data folder without the file gets the shipped one.
 - **Contact shadows** (`world_render::contact_shadows`): a strip of black fading to clear, 0.6 m wide, on the ground
   and floors along both faces of every ground-floor wall and window: one small blended, unlit mesh a building (16 to
-  about 1,000 triangles), spawned and despawned with it. Trees and bushes get the same: a soft blot round each foot, darkest at the trunk, out to two thirds of the crown's radius plus half a metre, laid over the hills (`landscape::foot_shade`, one mesh a chunk, with the setting). They stand in for ambient occlusion: the screen-space kind
-  needs MSAA off, and the window glass is alpha to coverage.
+  about 1,000 triangles), spawned and despawned with it. Trees and bushes get the same: a soft blot round each foot, darkest at the trunk, out to two thirds of the crown's radius plus half a metre, laid over the hills (`landscape::foot_shade`, one mesh a chunk, with the setting). With "Ambient occlusion" on (High and Ultra; `Graphics::occlusion`, `--no-post occlusion`) screen-space occlusion
+  (`ssao_ortho.wesl`, the engine's own with the orthographic camera handled) darkens corners and where things meet as
+  well; it needs MSAA off, so the camera takes SMAA instead, which costs about what the MSAA did (measured: no cost).
 - **Vegetation and litter, a mesh a chunk** (`vegetation.rs`, `assets/shaders/vegetation.wesl`): eight kinds
   (`VegKind`: long grass, lawn grass, thin grass, a weed, red and white flowers, loose paper, small stones), four
   mesh variants each, built in code (12 to 91 triangles; blades are single triangles, dark at the root). **Where**

@@ -332,6 +332,7 @@ impl Host {
             start_kit: o.kit.iter().map(|(id, n)| (w.config.items.iter().find(|i| i.id == *id).map_or_else(|| id.clone(), |i| i.name.clone()), *n)).collect(),
             map_m: [w.map.width() as u32, w.map.height() as u32],
             zombies: (0..w.zombies.len()).filter(|&i| w.zombies.state[i] != zombye_sim::ZombieState::Dead).count() as u32,
+            difficulty: w.config.sandbox.describe(),
         }
     }
 

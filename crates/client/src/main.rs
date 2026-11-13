@@ -36,7 +36,7 @@
 //! Menus: a plain start (no flag that sets up a world or a scene) opens the main menu first
 //! (`main_menu.rs`; `--main-menu` forces it, `--no-menu` skips it); Esc while playing is the pause menu
 //! (`pause_menu.rs`; `--pause` starts with it up), whose Settings is the settings screen (`settings_ui.rs`;
-//! `--settings graphics|audio|controls|game` starts with it up).
+//! `--settings display|graphics|effects|audio|controls|game` starts with it up).
 //!
 //! `--render-to PATH` renders one PNG offscreen and exits, without ever opening a window
 //! (`offscreen.rs`): usually with `--load`, plus `--size WxH`, `--zoom`, `--angle`, `--player` and
@@ -79,6 +79,7 @@
 
 mod interact;
 mod keys;
+mod pad;
 mod aim_marker;
 mod audio;
 mod music;
@@ -123,6 +124,7 @@ mod help_text;
 mod hotbar;
 mod hud;
 mod inventory_ui;
+mod inv_windows;
 mod join_screen;
 mod items_render;
 mod vehicles_render;
@@ -150,15 +152,21 @@ mod settings_ui;
 mod silhouette;
 mod build_ui;
 mod skills_ui;
+mod sky;
+mod skylight;
+mod shafts;
 mod survivor;
 mod survivor_model;
 mod theme;
 mod ui_scale;
+mod wheel;
+mod wheel_ui;
 mod world_actions;
 mod world_render;
 mod zombie_render;
 mod zvat;
 mod window_handoff;
+mod window_mode;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -354,8 +362,10 @@ pub struct Options {
     pub main_menu: bool,
     pub no_menu: bool,
     pub plain: bool,
+    /// The game starts with the main menu over it (#36, `main_menu::as_layer`): not a flag.
+    pub menu_layer: bool,
     /// Start with the pause menu up (`--pause`), or the settings screen on a tab
-    /// (`--settings graphics|audio|controls|game`): for pictures.
+    /// (`--settings display|graphics|effects|audio|controls|game`): for pictures.
     pub pause: bool,
     /// Show the loading screen and hold it up (`--loading-screen`): for pictures (`loading.rs`).
     pub loading_screen: bool,
@@ -363,6 +373,12 @@ pub struct Options {
     /// How much the UI explains, for this session, not saved (`--help-text full|short|off`; without
     /// it the settings file's, else full). See `help_text.rs`.
     pub help_text: Option<help_text::HelpText>,
+    /// Keyboard and mouse, the controller or auto, for this session, not saved (`--input
+    /// auto|keyboard|controller`; without it the settings file's). See `pad.rs`.
+    pub input: Option<pad::InputSetting>,
+    /// A controller wheel up from the start, for pictures (`--wheel items|make[:N]`, the Nth
+    /// choice picked). See `wheel.rs`.
+    pub wheel: Option<String>,
     /// The old look for this session, not saved (`--old-look off|subtle|strong`; without it the
     /// settings file's, else off). See `film.rs`.
     pub old_look: Option<film::OldLook>,
@@ -450,7 +466,7 @@ pub struct Options {
     pub flaws: Option<Vec<String>>,
     pub outfit: Option<Vec<String>>,
     pub difficulty: Option<String>,
-    /// `--new-game-tab survivor|picks|world`: the new-game screen's tab at the start (pictures).
+    /// `--new-game-tab who|picks|world|sandbox|everything`: the new-game screen's tab at the start (pictures).
     pub new_game_tab: Option<String>,
     /// For recordings and pictures of the chat (#67): lines our survivor says by itself
     /// (`--say TEXT[@SECS]`, `--shout TEXT[@SECS]`, `--whisper TEXT[@SECS]`, each as often as
@@ -642,10 +658,13 @@ impl Options {
             main_menu: flag("--main-menu"),
             no_menu: flag("--no-menu"),
             plain: main_menu::plain(args),
+            menu_layer: false,
             pause: flag("--pause"),
             loading_screen: flag("--loading-screen"),
             settings: value("--settings"),
             help_text: value("--help-text").and_then(|v| help_text::HelpText::parse(&v)),
+            input: value("--input").and_then(|v| pad::InputSetting::parse(&v)),
+            wheel: value("--wheel"),
             old_look: value("--old-look").and_then(|v| film::OldLook::parse(&v)),
             ui_scale: value("--ui-scale").and_then(|v| ui_scale::parse_pct(&v)),
             hotbar: value("--hotbar"),
@@ -741,6 +760,7 @@ pub(crate) fn exit_on_signal(mut exit: MessageWriter<AppExit>, mut sent: Local<b
 }
 
 fn main() {
+    let _ = loading::PROCESS_START.set(std::time::Instant::now());
     // `--write-pack OUT DIR...`: pack the release folders for a packaged build (`pack.rs`).
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).is_some_and(|a| a == "--write-pack") {
@@ -810,10 +830,14 @@ fn main() {
     if join_screen::wanted(&options) {
         join_screen::run(options);
     }
-    // Started with nothing that chooses a world: the main menu first, which starts the game again
-    // with what was picked there.
+    // Started with nothing that chooses a world: the main menu first. In a window it is a layer
+    // over the game (#36), whose world is made behind it; a picture of it is its own small app.
+    let mut options = options;
     if main_menu::wanted(&options) && !main_menu::skipped(&options) {
-        main_menu::run(options);
+        if options.offscreen() {
+            main_menu::run(options);
+        }
+        options = main_menu::as_layer(options);
     }
     // `--new-game`: who the survivor is and how the world is set, before there is a world
     // (`new_game.rs`); it starts the game again with the choices made.
@@ -825,6 +849,8 @@ fn main() {
     let graphics = graphics::Graphics::from_options(&options);
     let mut app = App::new();
     app.insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06))).add_plugins(plugins).insert_resource(options).insert_resource(fog_look).insert_resource(graphics).add_systems(First, exit_on_signal);
+    // Bevy's SSAO shader as patched for our orthographic camera (ambient occlusion, `camera.rs`).
+    camera::patch_ssao_shader(&mut app);
     if offscreen {
         app.add_plugins((ScheduleRunnerPlugin::run_loop(Duration::ZERO), offscreen::OffscreenPlugin));
     }
@@ -833,9 +859,9 @@ fn main() {
             (fog::FogPlugin, cutaway::CutawayPlugin, silhouette::SilhouettePlugin, opening_hints::OpeningHintsPlugin),
             materials::WorldMaterialPlugin,
             world_render::WorldRenderPlugin,
-            (daynight::DayNightPlugin, lights::LightsPlugin),
+            (daynight::DayNightPlugin, lights::LightsPlugin, sky::SkyPlugin, skylight::SkyLightPlugin, shafts::ShaftsPlugin),
             dev_time::DevTimePlugin,
-            (player::PlayerPlugin, interact::InteractPlugin),
+            (player::PlayerPlugin, interact::InteractPlugin, pad::PadPlugin, wheel::WheelPlugin, wheel_ui::WheelUiPlugin),
             camera::IsoCameraPlugin,
             zombie_render::ZombieRenderPlugin,
             (items_render::ItemsRenderPlugin, vehicles_render::VehiclesRenderPlugin),
@@ -850,13 +876,18 @@ fn main() {
         app.add_plugins((audio::GameAudioPlugin, music::MusicPlugin));
     }
     app.add_plugins((fps_log::FpsLogPlugin, bench_live::BenchLivePlugin, report::ReportPlugin, biome_watch::BiomeWatchPlugin));
+    // The main menu over the game: up from the start, or for the pause menu's way out (#36).
+    if !offscreen && app.world().resource::<Options>().connect.is_none() {
+        app.add_plugins(main_menu::MenuLayerPlugin);
+    }
     if black_watch::wanted() && !offscreen {
         app.add_plugins(black_watch::BlackWatchPlugin);
     }
+    let _ = loading::PLUGINS_BUILT.set(std::time::Instant::now());
     let failed = app.run().is_error();
     // A join asked for in the server browser (#27): the game has shut down (and autosaved); start
     // it again on that server.
-    if let Some(next) = browser_ui::take_relaunch().or_else(main_menu::take_relaunch) {
+    if let Some(next) = browser_ui::take_relaunch().or_else(main_menu::take_relaunch).or_else(new_game::take_relaunch) {
         relaunch(next);
     }
     if failed {
@@ -887,11 +918,13 @@ pub(crate) fn window_plugins(options: &Options) -> bevy::app::PluginGroupBuilder
             .set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "Zombye".into(),
-                    mode: settings_ui::window_mode((kept.fullscreen || window_handoff::fullscreen_asked()) && !options.size_given),
+                    // On the main monitor, or where the screen before this one was.
+                    position: window_handoff::first_position(),
+                    mode: window_handoff::first_mode(kept.fullscreen && !options.size_given),
                     resolution: if options.size_given {
                         bevy::window::WindowResolution::new(options.size.x, options.size.y).with_scale_factor_override(1.0)
                     } else {
-                        (1600, 900).into()
+                        kept.window_size.unwrap_or(window_mode::DEFAULT_SIZE).into()
                     },
                     present_mode: if options.novsync || !kept.vsync { PresentMode::AutoNoVsync } else { PresentMode::AutoVsync },
                     ..default()
@@ -901,6 +934,7 @@ pub(crate) fn window_plugins(options: &Options) -> bevy::app::PluginGroupBuilder
             .set(assets)
             .disable::<bevy::app::TerminalCtrlCHandlerPlugin>()
             .add(window_handoff::HandoffPlugin)
+            .add(window_mode::WindowModePlugin { saves: options.saves.clone(), fixed: options.size_given })
     }
 }
 
@@ -918,6 +952,7 @@ pub(crate) fn relaunch(next: browser_ui::Relaunch) -> ! {
     let mut command = std::process::Command::new(exe);
     command.args(&next.args);
     window_handoff::pass_on(&mut command);
+    loading::pass_on(&mut command);
     if next.password.is_empty() {
         command.env_remove("ZOMBYE_PASSWORD");
     } else {

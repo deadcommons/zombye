@@ -65,6 +65,13 @@ const CONDENSED: Handle<Font> = uuid_handle!("6f1f8a52-51c1-4c0e-9a57-2f6f3a1d0c
 const BARLOW_TTF: &[u8] = include_bytes!("../../../assets/fonts/barlow/Barlow-Regular.ttf");
 const BARLOW_MEDIUM_TTF: &[u8] = include_bytes!("../../../assets/fonts/barlow/Barlow-Medium.ttf");
 const CONDENSED_TTF: &[u8] = include_bytes!("../../../assets/fonts/barlow/BarlowCondensed-SemiBold.ttf");
+// The brand's two faces, for the screens before the game (docs/ui-design.md, The screens before
+// the game): Bebas Neue (SIL OFL 1.1) for titles and buttons, Special Elite (Apache 2.0) for the
+// loading lines.
+const BEBAS: Handle<Font> = uuid_handle!("6f1f8a52-51c1-4c0e-9a57-2f6f3a1d0c74");
+const ELITE: Handle<Font> = uuid_handle!("6f1f8a52-51c1-4c0e-9a57-2f6f3a1d0c75");
+const BEBAS_TTF: &[u8] = include_bytes!("../../../assets/fonts/bebas-neue/BebasNeue-Regular.ttf");
+const ELITE_TTF: &[u8] = include_bytes!("../../../assets/fonts/special-elite/SpecialElite-Regular.ttf");
 
 /// The faces the UI is set in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +82,10 @@ pub enum Face {
     Strong,
     /// Barlow Condensed SemiBold: titles, tabs, headers ([`head`]).
     Head,
+    /// Bebas Neue: the brand's headline face, on the screens before the game ([`brand`]).
+    Brand,
+    /// Special Elite: the survivor's voice, the loading lines ([`note`]).
+    Note,
 }
 
 impl Face {
@@ -83,6 +94,8 @@ impl Face {
             Face::Text => BARLOW_TTF,
             Face::Strong => BARLOW_MEDIUM_TTF,
             Face::Head => CONDENSED_TTF,
+            Face::Brand => BEBAS_TTF,
+            Face::Note => ELITE_TTF,
         }
     }
 
@@ -91,6 +104,8 @@ impl Face {
             Face::Text => (BARLOW, FontWeight::NORMAL),
             Face::Strong => (BARLOW_MEDIUM, FontWeight::MEDIUM),
             Face::Head => (CONDENSED, FontWeight::SEMIBOLD),
+            Face::Brand => (BEBAS, FontWeight::NORMAL),
+            Face::Note => (ELITE, FontWeight::NORMAL),
         };
         // Tabular figures: every digit as wide as the next, so counts, weights and clocks line up
         // down a column and don't shuffle sideways as they change.
@@ -99,7 +114,7 @@ impl Face {
 
     /// The advance of each printable ASCII character (space to `~`), in ems.
     fn advances(self) -> &'static [f32; 95] {
-        static TABLES: LazyLock<[[f32; 95]; 3]> = LazyLock::new(|| [Face::Text, Face::Strong, Face::Head].map(|f| advances(f.ttf()).unwrap_or([0.6; 95])));
+        static TABLES: LazyLock<[[f32; 95]; 5]> = LazyLock::new(|| [Face::Text, Face::Strong, Face::Head, Face::Brand, Face::Note].map(|f| advances(f.ttf()).unwrap_or([0.6; 95])));
         &TABLES[self as usize]
     }
 }
@@ -117,6 +132,17 @@ pub fn strong(size: f32) -> TextFont {
 /// Titles, tabs and section headers: Barlow Condensed SemiBold. Made for capitals.
 pub fn head(size: f32) -> TextFont {
     Face::Head.font(size)
+}
+
+/// Titles and buttons on the screens before the game (the menus, settings, new game): Bebas
+/// Neue, the brand's headline face. Capitals only.
+pub fn brand(size: f32) -> TextFont {
+    Face::Brand.font(size)
+}
+
+/// The survivor's voice, a line or two at most (the loading lines): Special Elite.
+pub fn note(size: f32) -> TextFont {
+    Face::Note.font(size)
 }
 
 /// Bevy's built-in monospace, for the developer's read-outs (the stats line, the debug stats
@@ -207,6 +233,9 @@ const BUTTON: Handle<Image> = uuid_handle!("6f1f8a52-51c1-4c0e-9a57-2f6f3a1d0c63
 const SLOT: Handle<Image> = uuid_handle!("6f1f8a52-51c1-4c0e-9a57-2f6f3a1d0c64");
 const BAR: Handle<Image> = uuid_handle!("6f1f8a52-51c1-4c0e-9a57-2f6f3a1d0c65");
 const DAB: Handle<Image> = uuid_handle!("6f1f8a52-51c1-4c0e-9a57-2f6f3a1d0c66");
+const GRAIN: Handle<Image> = uuid_handle!("6f1f8a52-51c1-4c0e-9a57-2f6f3a1d0c67");
+/// The grain's tile, texels a side.
+const GRAIN_SIZE: u32 = 256;
 
 /// A sheet of paint cut in nine: `border` texels of ragged edge each side, and a middle of
 /// `period` texels that repeats.
@@ -405,18 +434,38 @@ fn dab_pixels() -> Canvas {
     c
 }
 
+/// The grain of an old print, to lay over a screen's ground: fine pale specks and dark ones.
+/// Repeats without a seam (and has nothing big enough to show that it repeats).
+fn grain_pixels() -> Canvas {
+    let n = GRAIN_SIZE;
+    let mut c = Canvas::new(n, n);
+    for y in 0..n {
+        for x in 0..n {
+            let speck = hash(x as i32, y as i32, 82);
+            let pale = smooth(0.95, 1.0, speck) * 0.07;
+            let dark = smooth(0.06, 0.0, speck) * 0.12;
+            if pale >= dark {
+                c.push((0.914, 0.847, 0.733), pale);
+            } else {
+                c.push((0.0, 0.0, 0.0), dark);
+            }
+        }
+    }
+    c
+}
+
 /// Makes the skin's textures. Add it before the UI's plugins (it needs Bevy's image assets).
 pub struct ThemePlugin;
 
 impl Plugin for ThemePlugin {
     fn build(&self, app: &mut App) {
         if let Some(mut fonts) = app.world_mut().get_resource_mut::<Assets<Font>>() {
-            for (handle, face) in [(BARLOW, Face::Text), (BARLOW_MEDIUM, Face::Strong), (CONDENSED, Face::Head)] {
+            for (handle, face) in [(BARLOW, Face::Text), (BARLOW_MEDIUM, Face::Strong), (CONDENSED, Face::Head), (BEBAS, Face::Brand), (ELITE, Face::Note)] {
                 let _ = fonts.insert(handle.id(), Font::from_bytes(face.ttf().to_vec()));
             }
         }
         let Some(mut images) = app.world_mut().get_resource_mut::<Assets<Image>>() else { return };
-        for (handle, canvas) in [(SHEET, paint(&SHEET_PAINT)), (STRIP, paint(&STRIP_PAINT)), (BUTTON, paint(&BUTTON_PAINT)), (SLOT, slot_pixels()), (BAR, bar_pixels()), (DAB, dab_pixels())] {
+        for (handle, canvas) in [(SHEET, paint(&SHEET_PAINT)), (STRIP, paint(&STRIP_PAINT)), (BUTTON, paint(&BUTTON_PAINT)), (SLOT, slot_pixels()), (BAR, bar_pixels()), (DAB, dab_pixels()), (GRAIN, grain_pixels())] {
             let _ = images.insert(handle.id(), canvas.image());
         }
         flat::load(&mut images);
@@ -436,6 +485,12 @@ fn sliced(image: Handle<Image>, border: BorderRect, color: Color, tile: bool) ->
         visual_box: VisualBox::BorderBox,
         ..default()
     }
+}
+
+/// The grain of an old print, repeated over its whole node: lay it over the ground of a screen
+/// before the game (the brand's side), under everything else on it.
+pub fn grain() -> ImageNode {
+    ImageNode { image: GRAIN, image_mode: NodeImageMode::Tiled { tile_x: true, tile_y: true, stretch_value: 1.0 }, ..default() }
 }
 
 /// A panel's backing: a charcoal sheet with brushed, torn edges. Give the node [`SHEET_PAD`] of

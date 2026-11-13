@@ -1,0 +1,34 @@
+// The lines under the logo on the loading screen (crates/client/src/loading.rs): one is shown at a
+// time, in a different order each start, so a wait says that something is happening. Only words:
+// nothing here changes the game. Add a line by adding a string (at most 60 characters, one line;
+// it is drawn in capitals with three dots after it).
+(
+    // Seconds a line stays before the next takes its place.
+    every_secs: 1.8,
+    lines: [
+        "Waking the dead",
+        "Rattling door handles",
+        "Counting the nails",
+        "Chomp chomping",
+        "Zombifying the neighbours",
+        "Shuffling into place",
+        "Boarding up the windows",
+        "Emptying the fridges",
+        "Hiding the last tin opener",
+        "Losing the car keys",
+        "Drawing the blinds",
+        "Practising the groan",
+        "Winding the alarm clocks",
+        "Scattering the loot",
+        "Trimming the hedges, badly",
+        "Checking under the bed",
+        "Teaching the dead to climb fences",
+        "Misplacing the antibiotics",
+        "Leaving a light on upstairs",
+        "Wearing in the baseball bats",
+        "Letting the grass grow",
+        "Running the taps while they last",
+        "Parking badly on the main street",
+        "Stocking the pharmacy, a bit",
+    ],
+)

@@ -263,13 +263,13 @@ pub(crate) fn hearing_pass(z: &mut Zombies, hash: &SpatialHash, map: &TileMap, s
     const IDLE: u8 = 1;
     const DONE: u8 = 2;
     const REST: u8 = 3;
-    let reach_mult = t.max_alertness();
+    let reach_mult = t.max_alertness() * t.hearing;
     let heard = |z: &Zombies, i: usize, s: &Sound| {
         let d = z.pos[i].distance(s.pos);
         if d > s.radius * reach_mult || s.source == SoundSource::Zombie(z.id[i]) || !would_react(z, i, s) {
             return None;
         }
-        let radius = s.radius * t.alertness_of(seed, z.id[i]);
+        let radius = s.radius * t.alertness_of(seed, z.id[i]) * t.hearing;
         // Only pay for the ray when the sound would be out of earshot muffled.
         (d <= radius && (d <= radius * t.wall_muffle || sound_line(map, z.pos[i], s.pos))).then_some(d)
     };

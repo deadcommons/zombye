@@ -32,6 +32,8 @@ use bevy::camera::primitives::Frustum;
 use bevy::camera::{CameraProjection, Hdr, RenderTarget, ScalingMode, ShadowLodOrigin, SubCameraView};
 use bevy::math::Vec3A;
 use bevy::input::mouse::{AccumulatedMouseMotion, MouseWheel};
+use bevy::anti_alias::smaa::{Smaa, SmaaPreset};
+use bevy::pbr::{ScreenSpaceAmbientOcclusion, ScreenSpaceAmbientOcclusionQualityLevel};
 use bevy::post_process::bloom::{Bloom, BloomPrefilter};
 use bevy::post_process::effect_stack::Vignette;
 use bevy::prelude::*;
@@ -66,6 +68,10 @@ const PITCH: f32 = 0.06;
 const PITCH_RANGE: (f32, f32) = (-1.2, 1.2);
 /// Radians of turn for a pixel of mouse.
 const LOOK_RATE: f32 = 0.0026;
+/// The controller's right stick in first person: mouse pixels a second at full over (#12).
+const PAD_LOOK: f32 = 900.0;
+/// The controller's zoom: the share of the zoom a second, held.
+const PAD_ZOOM: f32 = 0.6;
 /// What the first-person aim is on when the middle of the screen is on ground nearer than this
 /// beyond the survivor, or on none (the sky): a point this far, or [`AIM_FAR`], ahead.
 const AIM_NEAR: f32 = 5.0;
@@ -425,7 +431,7 @@ pub struct IsoCameraPlugin;
 
 impl Plugin for IsoCameraPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<PointerLock>().add_systems(Startup, spawn_camera).add_systems(Update, (rotate_and_zoom, follow, lock_pointer).chain());
+        app.init_resource::<PointerLock>().add_systems(Startup, spawn_camera).add_systems(Update, (rotate_and_zoom.run_if(crate::main_menu::layer_down), follow, lock_pointer).chain());
     }
 }
 
@@ -459,13 +465,14 @@ fn spawn_camera(mut commands: Commands, join: Res<JoinInfo>, options: Res<Option
         Visibility::Hidden,
         Pickable::IGNORE,
     ));
+    let occlusion = graphics.occlusion.then(occlusion);
     let mut camera = commands.spawn((
         Camera3d::default(),
         cam.projection(),
         transform,
         // Window glass is drawn with alpha to coverage, which needs multisampling (graphics
         // preset: 4 from Medium up).
-        crate::graphics_ui::msaa(graphics.msaa),
+        crate::graphics_ui::camera_msaa(&graphics),
         cam,
     ));
     // The mood (#83): HDR so light sources can glow, a filmic tone map, and the grade and
@@ -479,6 +486,9 @@ fn spawn_camera(mut commands: Commands, join: Res<JoinInfo>, options: Res<Option
     if graphics.bloom {
         camera.insert(bloom());
     }
+    if let Some(occlusion) = occlusion {
+        camera.insert(occlusion);
+    }
     if let Some(target) = offscreen {
         // The only camera: it is also the origin for point-light shadow detail.
         camera.insert((RenderTarget::Image(target.0.clone().into()), ShadowLodOrigin));
@@ -487,6 +497,28 @@ fn spawn_camera(mut commands: Commands, join: Res<JoinInfo>, options: Res<Option
             camera.insert(IsDefaultUiCamera);
         }
     }
+}
+
+/// How far ambient occlusion looks for what shades a point, in metres: enough for a car's
+/// underside, a doorway's corners and the foot of a wall, not so far that a whole house darkens.
+const OCCLUSION_RADIUS: f32 = 1.1;
+
+/// Ambient occlusion (a graphics setting) and SMAA, which smooths edges in place of the
+/// multisampling SSAO can't run with (`graphics_ui::camera_msaa`).
+pub fn occlusion() -> (ScreenSpaceAmbientOcclusion, Smaa) {
+    (
+        ScreenSpaceAmbientOcclusion { quality_level: ScreenSpaceAmbientOcclusionQualityLevel::Medium, radius: OCCLUSION_RADIUS, constant_object_thickness: 0.4 },
+        Smaa { preset: SmaaPreset::High },
+    )
+}
+
+/// Puts our copy of Bevy's SSAO shader (`ssao_ortho.wesl`, right for an orthographic camera) in
+/// place of Bevy's own. Called after `DefaultPlugins` registered theirs and before the render
+/// pipelines load it.
+pub fn patch_ssao_shader(app: &mut App) {
+    use bevy::asset::io::embedded::EmbeddedAssetRegistry;
+    let registry = app.world_mut().resource_mut::<EmbeddedAssetRegistry>();
+    registry.insert_asset(std::path::PathBuf::new(), std::path::Path::new("bevy_pbr/ssao/ssao.wesl"), include_bytes!("ssao_ortho.wesl").as_slice());
 }
 
 /// The camera's bloom (a graphics setting): only what's brighter than sunlit ground glows.
@@ -507,6 +539,7 @@ fn rotate_and_zoom(
     motion: Res<AccumulatedMouseMotion>,
     lock: Res<PointerLock>,
     notice: Option<ResMut<crate::saving::Notice>>,
+    pad: Option<Res<crate::pad::Pad>>,
     mut turned: Local<usize>,
     mut viewed: Local<usize>,
 ) {
@@ -535,6 +568,11 @@ fn rotate_and_zoom(
         if lock.0 {
             cam.look(motion.delta);
         }
+        // The controller's right stick turns it too (#12), faster the further over (squared, for
+        // fine control near the middle): at full over about 2.3 radians a second.
+        if let Some(look) = pad.as_ref().map(|p| p.look).filter(|l| *l != Vec2::ZERO) {
+            cam.look(Vec2::new(look.x, -look.y) * look.length() * PAD_LOOK * time.delta_secs());
+        }
         wheel.clear();
         return;
     }
@@ -559,6 +597,10 @@ fn rotate_and_zoom(
     let mut zoom = cam.zoom;
     for ev in wheel.read() {
         zoom = (zoom * (1.0 - ev.y.clamp(-3.0, 3.0) * 0.08)).clamp(MIN_ZOOM, MAX_ZOOM);
+    }
+    // The controller's zoom buttons, held: about half again a second (#12).
+    if let Some(z) = pad.as_ref().map(|p| p.zoom).filter(|z| *z != 0.0 && !inventory_open) {
+        zoom = (zoom * (1.0 - z * PAD_ZOOM * time.delta_secs())).clamp(MIN_ZOOM, MAX_ZOOM);
     }
     if zoom != cam.zoom {
         cam.zoom = zoom;
@@ -634,6 +676,7 @@ fn lock_pointer(
     browser: Option<Res<crate::browser_ui::BrowserUi>>,
     pause: Option<Res<crate::pause_menu::PauseMenu>>,
     map: Option<Res<crate::map_ui::MapUi>>,
+    layer: Option<Res<crate::main_menu::MenuLayer>>,
     mut windows: Query<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
     mut dots: Query<&mut Visibility, With<CentreDot>>,
     mut lock: ResMut<PointerLock>,
@@ -649,7 +692,8 @@ fn lock_pointer(
         || chat.is_some_and(|c| c.typing)
         || browser.is_some_and(|b| b.open)
         || pause.is_some_and(|p| p.open)
-        || map.is_some_and(|m| m.open);
+        || map.is_some_and(|m| m.open)
+        || layer.is_some_and(|l| l.up);
     let hold = cams.single().is_ok_and(|c| c.shoulder()) && !free;
     let middle = Vec2::new(window.width(), window.height()) * 0.5;
     if lock.0 != hold {

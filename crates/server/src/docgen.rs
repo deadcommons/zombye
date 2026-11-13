@@ -56,6 +56,7 @@ const DATA_FILES: &[(&str, &str, Part, &str)] = &[
     ("fire.ron", "fire::FireTuning", Part::Rules, "Campfires, stoves, cooking and burns."),
     ("weather.ron", "weather::WeatherTuning", Part::Rules, "The calendar, the climate by month and the weather."),
     ("difficulty.ron", "difficulty::DifficultyData", Part::Rules, "Difficulty presets a new game offers."),
+    ("sandbox.ron", "difficulty::SandboxOptions", Part::Rules, "The Sandbox page: the tuning numbers it names, with ranges and steps."),
     ("backgrounds.ron", "[origin::BackgroundDef]", Part::Rules, "Backgrounds: who a survivor was before."),
     ("strengths_and_flaws.ron", "origin::PicksFile", Part::Rules, "Strengths and Flaws a new survivor can pick."),
     ("start_kit.ron", "logout::KitFile", Part::Rules, "What a new survivor on a server starts with."),
@@ -67,12 +68,14 @@ const DATA_FILES: &[(&str, &str, Part, &str)] = &[
     ("light.ron", "daynight::LightLook", Part::Look, "Sun, fill light, colour grade and haze."),
     ("fog.ron", "fog::FogLook", Part::Look, "How the fog of war looks."),
     ("map.ron", "map_ui::MapStyle", Part::Look, "How the map screen looks."),
+    ("loading_lines.ron", "loading::LoadingLines", Part::Look, "The lines under the logo while the game loads."),
     ("palette.ron", "palette::PaletteFile", Part::Look, "Every colour in the game's art."),
     ("decay.ron", "decay::DecayLook", Part::Look, "How worn street props are drawn."),
     ("vegetation.ron", "vegetation::VegLook", Part::Look, "Where grass, flowers and stones grow."),
     ("servers.ron", "browser::ServerList", Part::Look, "The server browser's community list."),
     ("official_servers.ron", "browser::ServerList", Part::Look, "The server browser's official servers (shipped empty)."),
     ("keys.ron", "keys::KeysFile", Part::Look, "The game's keys: what each action is pressed with."),
+    ("pad.ron", "pad::PadFile", Part::Look, "The controller's buttons: what each action is pressed with."),
 ];
 
 /// `WorldConfig` fields that are content (documented with their data file) or not settings at all.

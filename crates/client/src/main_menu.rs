@@ -34,6 +34,7 @@ use std::time::{Duration, SystemTime};
 
 use bevy::app::ScheduleRunnerPlugin;
 use bevy::camera::RenderTarget;
+use bevy::input::InputSystems;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
 use zombye_net::save_file::{self, SaveEntry};
@@ -51,7 +52,7 @@ use zombye_mods::folder::{self as mods_folder, Folder};
 
 /// Flags (with a value, and alone) that only set the scene: with nothing but these, the game
 /// starts on the menu.
-const SCENE_WITH_VALUE: [&str; 23] = ["--biome", "--biomes", "--size", "--saves", "--data", "--mod", "--mods-dir", "--graphics", "--vegetation", "--no-post", "--msaa", "--shadow-map", "--render-scale", "--ui-scale", "--volume", "--music", "--name", "--server-list", "--crowd-vat", "--survivor", "--opening-hints", "--help-text", "--old-look"];
+const SCENE_WITH_VALUE: [&str; 24] = ["--biome", "--biomes", "--size", "--saves", "--data", "--mod", "--mods-dir", "--graphics", "--vegetation", "--no-post", "--msaa", "--shadow-map", "--render-scale", "--ui-scale", "--volume", "--music", "--name", "--server-list", "--crowd-vat", "--survivor", "--opening-hints", "--help-text", "--old-look", "--input"];
 const SCENE_ALONE: [&str; 11] = ["--watch-biomes", "--dev", "--no-mods", "--novsync", "--mute", "--load-anyway", "--first-person", "--third-person", "--zombie-silhouettes", "--walls-up", "--rotate"];
 /// What chose this run's world or screen, dropped when another is chosen.
 const WORLD_WITH_VALUE: [&str; 13] = ["--connect", "--password", "--load", "--from-browser", "--browser-join", "--join-error", "--seed", "--new-game-from", "--settings", "--menu-screen", "--server-info", "--skip-hours", "--at"];
@@ -368,7 +369,8 @@ impl Menu {
     }
 }
 
-/// Runs the menu and then whatever was picked: the game, or nothing (Quit).
+/// Runs the menu and then whatever was picked: the game, or nothing (Quit). Only for pictures
+/// now (offscreen): in a window the menu is a layer over the game ([`MenuLayerPlugin`]).
 pub fn run(options: Options) -> ! {
     let offscreen = options.offscreen();
     let mut app = App::new();
@@ -377,15 +379,196 @@ pub fn run(options: Options) -> ! {
         app.add_plugins((ScheduleRunnerPlugin::run_loop(Duration::ZERO), crate::offscreen::OffscreenPlugin));
     }
     // (The server browser is the game's own, drawn over the menu's Join a game screen.)
-    app.add_plugins((theme::ThemePlugin, crate::release_brand::BrandPlugin, crate::ui_scale::UiScalePlugin, crate::settings_ui::SettingsUiPlugin, crate::browser_ui::BrowserUiPlugin))
-        .add_systems(Startup, (camera, open_join))
-        .add_systems(First, crate::exit_on_signal)
-        .add_systems(Update, (keys, act, follow_browser, host_poll, draw).chain());
+    // The logo first and over every start-again (`loading.rs`), and the new-game screen in this
+    // same window (`new_game::Front`): while it is up the menu stands back.
+    app.add_plugins((theme::ThemePlugin, crate::release_brand::BrandPlugin, crate::ui_scale::UiScalePlugin, crate::settings_ui::SettingsUiPlugin, crate::browser_ui::BrowserUiPlugin, crate::loading::FrontLoadingPlugin, crate::new_game::NewGamePlugin))
+        .add_systems(Startup, camera)
+        .add_systems(First, crate::exit_on_signal);
+    add_menu(&mut app);
     let failed = app.run().is_error();
-    if let Some(next) = crate::browser_ui::take_relaunch().or_else(take_relaunch) {
+    if let Some(next) = crate::browser_ui::take_relaunch().or_else(take_relaunch).or_else(crate::new_game::take_relaunch) {
         crate::relaunch(next);
     }
     std::process::exit(if failed { 1 } else { 0 });
+}
+
+/// The menu's systems, in its own app or over the game.
+fn add_menu(app: &mut App) {
+    app.add_systems(Startup, open_join)
+        .add_systems(PreUpdate, keys.in_set(MenuKeys).after(InputSystems).after(crate::settings_ui::capture).after(crate::browser_ui::keys).run_if(shown).run_if(crate::new_game::away))
+        .add_systems(Update, (stand_back, (act, follow_browser, host_poll, draw).chain().run_if(crate::new_game::away).run_if(shown)).chain());
+}
+
+/// Where the menu reads its keys (before the game's are held back, [`MenuLayerPlugin`]).
+#[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct MenuKeys;
+
+/// The menu over the game (#36): one program from the first logo to playing. The game starts
+/// as it always has, behind the loading screen, in the world the menu would lead to first: the
+/// autosave when there is one (Continue only takes the menu away), else a fresh world whose seed
+/// the next new game takes (Start on the new-game screen makes the survivor in it, with no start
+/// again). The menu stands over it while time stands still and the game's keys are held back.
+/// Load game takes a save up in place when it is of the same town. What needs another town or a
+/// server (New game over a world already played, Join, Host) starts the game again, as before.
+/// The pause menu's "Save and exit to menu" saves and brings the menu back up.
+#[derive(Resource)]
+pub struct MenuLayer {
+    pub up: bool,
+    /// The world behind the menu is a new one nobody has played (its seed is the next new game's).
+    fresh: bool,
+    /// Asked for by the pause menu: save and put the menu up.
+    raise: bool,
+    /// A save to take up, asked for on the Load game screen.
+    load: Option<String>,
+    /// Mods were turned on or off: the game behind the menu has the old ones, so whatever is
+    /// picked now starts the game again.
+    stale: bool,
+}
+
+impl MenuLayer {
+    /// Save the world and put the menu up over it (the pause menu's way out).
+    pub fn raise(&mut self) {
+        self.raise = true;
+    }
+}
+
+/// Is the menu not over the game (or not in this app at all)?
+pub fn layer_down(layer: Option<Res<MenuLayer>>) -> bool {
+    layer.is_none_or(|l| !l.up)
+}
+
+/// Is the menu to be drawn: in its own app always, over the game while it is up.
+fn shown(layer: Option<Res<MenuLayer>>) -> bool {
+    layer.is_none_or(|l| l.up)
+}
+
+/// This run's options for the game with the menu over it: the autosave's world when there is one
+/// that reads, else a fresh world (a new seed, as New game would roll).
+pub fn as_layer(mut options: Options) -> Options {
+    options.menu_layer = true;
+    options.seed = fresh_seed();
+    let autosave = save_file::list(&options.saves).ok().and_then(|saves| saves.into_iter().find(|s| s.name == crate::saving::AUTOSAVE && s.info.is_ok()));
+    if autosave.is_some() {
+        options.load = Some(crate::saving::AUTOSAVE.to_string());
+    }
+    options
+}
+
+/// The menu over the game ([`MenuLayer`]), in every single-player game in a window: up from the
+/// start when the game was started plainly, else ready for the pause menu's way out.
+pub struct MenuLayerPlugin;
+
+impl Plugin for MenuLayerPlugin {
+    fn build(&self, app: &mut App) {
+        let options = app.world().resource::<Options>().clone();
+        let resumed = app.world().get_resource::<crate::server_link::Resumed>().is_some_and(|r| r.0);
+        app.insert_resource(MenuLayer { up: options.menu_layer, fresh: !resumed, raise: false, load: None, stale: false })
+            .insert_resource(Menu::new(options))
+            .insert_resource(crate::new_game::Front::handing_back())
+            .add_plugins(crate::new_game::NewGamePlugin);
+        add_menu(app);
+        app.add_systems(
+            PreUpdate,
+            hold_keys
+                .after(MenuKeys)
+                .after(crate::new_game::NewGameKeys)
+                .after(crate::browser_ui::keys)
+                .after(crate::settings_ui::capture)
+                .before(crate::chat::chat_keys)
+                .before(crate::inventory_ui::TextEntry)
+                .run_if(|l: Res<MenuLayer>| l.up),
+        )
+        .add_systems(Update, (raise, start_here, load_here, lower).chain())
+        // A start-again asked for over the game: the logo, then the exit (`loading.rs`).
+        .add_systems(Last, crate::loading::leave);
+    }
+}
+
+/// While the menu is up the game's keys and buttons are its own: nothing reaches the game.
+fn hold_keys(mut keys: ResMut<ButtonInput<KeyCode>>, mut mouse: ResMut<ButtonInput<MouseButton>>) {
+    keys.reset_all();
+    mouse.reset_all();
+}
+
+/// The pause menu's way out: the world saved, and the menu up over it (Continue carries on).
+fn raise(mut layer: ResMut<MenuLayer>, mut menu: ResMut<Menu>, link: Res<crate::server_link::ServerLink>, options: Res<Options>) {
+    if !std::mem::take(&mut layer.raise) {
+        return;
+    }
+    if let Some(world) = link.world() {
+        match save_file::path_for(&options.saves, crate::saving::AUTOSAVE).and_then(|path| save_file::save(world, &path)) {
+            Ok(saved) => println!("Autosaved: {saved}"),
+            Err(e) => eprintln!("Autosave failed: {e}"),
+        }
+    }
+    menu.saves = save_file::list(&options.saves).unwrap_or_default();
+    (menu.screen, menu.dirty) = (Screen::Home, true);
+    (layer.up, layer.fresh) = (true, false);
+}
+
+/// Start on the new-game screen: the survivor made in the world behind the menu when nobody has
+/// played it (its seed is this new game's), else the game started again for a new town.
+fn start_here(mut commands: Commands, mut front: ResMut<crate::new_game::Front>, mut layer: ResMut<MenuLayer>, mut swap: crate::saving::WorldSwap, options: Res<Options>) {
+    let Some((game, args)) = front.take_started() else { return };
+    // A world already played (the autosave, or one left for the menu) gives its town to the new
+    // game too: a new run of it, fresh loot and all, so Start never has to start the game again.
+    let made = (!layer.stale).then(|| new_world(&swap, &options, &game)).flatten();
+    let Some((world, id, start)) = made else {
+        ask_relaunch(args, &options);
+        return;
+    };
+    if let Some(s) = &start {
+        let o = &s.origin;
+        println!("new game: {} ({} strengths, {} flaws), {}", o.background, o.strengths.len(), o.flaws.len(), world.config.sandbox.difficulty);
+    }
+    swap.take_up(world, Some(id));
+    commands.insert_resource(crate::new_game::StartAs(start));
+    (layer.up, layer.fresh) = (false, false);
+}
+
+/// The new game's world: the one behind the menu's town, made afresh with the choices on it.
+fn new_world(swap: &crate::saving::WorldSwap, options: &Options, game: &zombye_net::newgame::NewGame) -> Option<(zombye_sim::World, u32, Option<zombye_sim::Start>)> {
+    let mut config = swap.link.world()?.config.clone();
+    // A difficulty is put on over the game's own numbers: a town made on another one is started
+    // again instead, or its numbers would be multiplied twice.
+    if config.sandbox.changes_anything() {
+        return None;
+    }
+    let rules = zombye_net::newgame::Rules::load(&options.data, &config.items).map_err(|e| eprintln!("can't start that game: {e}")).ok()?;
+    let start = rules.begin(game, &mut config).map_err(|e| eprintln!("can't start that game: {e}")).ok()?;
+    let (mut world, id) = zombye_net::LocalServer::new_run(&config);
+    if let Some(s) = &start {
+        world.begin_as(id, s);
+    }
+    swap.fits(&world).then_some((world, id, start))
+}
+
+/// Load game: a save of this town taken up in place, any other by starting the game again.
+fn load_here(mut commands: Commands, mut layer: ResMut<MenuLayer>, mut swap: crate::saving::WorldSwap, options: Res<Options>) {
+    let Some(name) = layer.load.take() else { return };
+    let loaded = swap.link.world().map(|w| w.config.clone()).and_then(|config| save_file::resolve(&options.saves, &name).ok().and_then(|path| save_file::load(&path, &config, options.load_options()).ok()));
+    match loaded {
+        Some((loaded, ms)) if swap.fits(&loaded.world) => {
+            for note in &loaded.notes {
+                println!("note: {note}");
+            }
+            println!("loaded {name} in {ms:.0} ms: tick {}, {} zombies", loaded.world.tick, loaded.world.zombies.len());
+            swap.take_up(loaded.world, None);
+            commands.insert_resource(crate::new_game::StartAs(None));
+            (layer.up, layer.fresh) = (false, false);
+        }
+        // (Another town, or a save that won't load: the game started on it says why.)
+        _ => ask_relaunch(load_args(&std::env::args().skip(1).collect::<Vec<_>>(), &name), &options),
+    }
+}
+
+/// The menu taken away once it is down.
+fn lower(mut commands: Commands, layer: Res<MenuLayer>, root: Option<Single<Entity, With<Root>>>) {
+    if !layer.up
+        && let Some(root) = root
+    {
+        commands.entity(*root).despawn();
+    }
 }
 
 const WIDTH: f32 = 520.0;
@@ -397,6 +580,27 @@ fn camera(mut commands: Commands, target: Option<Res<crate::offscreen::Offscreen
     let mut cam = commands.spawn(Camera2d);
     if let Some(target) = target {
         cam.insert((RenderTarget::Image(target.0.clone().into()), IsDefaultUiCamera));
+    }
+}
+
+/// The menu makes way for the new-game screen in its window, and comes back when that is left.
+fn stand_back(mut commands: Commands, mut front: ResMut<crate::new_game::Front>, mut menu: ResMut<Menu>, root: Option<Single<Entity, With<Root>>>, mut was: Local<bool>) {
+    if let Some(e) = front.take_error() {
+        // (Nothing on the menu shows a line of its own yet; stderr has it too.)
+        menu.mods_note = Some(e);
+        menu.dirty = true;
+    }
+    if front.up() == *was {
+        return;
+    }
+    *was = front.up();
+    if *was {
+        if let Some(root) = root {
+            commands.entity(*root).despawn();
+        }
+    } else {
+        menu.screen = Screen::Single;
+        menu.dirty = true;
     }
 }
 
@@ -503,21 +707,39 @@ fn keys(keys: Res<ButtonInput<KeyCode>>, mut typed: MessageReader<KeyboardInput>
     }
 }
 
-fn act(mut menu: ResMut<Menu>, mut settings: ResMut<SettingsUi>, mut browser: ResMut<BrowserUi>, mut store: ResMut<SettingsStore>, mut exit: MessageWriter<AppExit>) {
+#[allow(clippy::too_many_arguments)]
+fn act(mut menu: ResMut<Menu>, mut settings: ResMut<SettingsUi>, mut browser: ResMut<BrowserUi>, mut store: ResMut<SettingsStore>, mut front: ResMut<crate::new_game::Front>, mut layer: Option<ResMut<MenuLayer>>, mut exit: MessageWriter<AppExit>) {
     let args: Vec<String> = std::env::args().skip(1).collect();
     for a in std::mem::take(&mut menu.acts) {
         let next = match a {
-            Act::Continue => Some(load_args(&args, crate::saving::AUTOSAVE)),
+            // Over the game, the autosave is the world behind the menu: it only goes away.
+            Act::Continue => match layer.as_deref_mut() {
+                Some(l) if !l.fresh && !l.stale => {
+                    l.up = false;
+                    None
+                }
+                _ => Some(load_args(&args, crate::saving::AUTOSAVE)),
+            },
             Act::New if menu.autosave().is_some() => {
                 menu.screen = Screen::ConfirmNew;
                 None
             }
-            Act::New | Act::StartNew => Some(new_game_args(&args, fresh_seed())),
+            // The new-game screen opens in this window; it starts the game with these arguments.
+            Act::New | Act::StartNew => {
+                front.open(new_game_args(&args, fresh_seed()));
+                None
+            }
             Act::LoadScreen => {
                 menu.screen = Screen::Load;
                 None
             }
-            Act::Load(name) => Some(load_args(&args, &name)),
+            Act::Load(name) => match layer.as_deref_mut() {
+                Some(l) if !l.stale => {
+                    l.load = Some(name);
+                    None
+                }
+                _ => Some(load_args(&args, &name)),
+            },
             Act::Single => {
                 menu.screen = Screen::Single;
                 None
@@ -571,11 +793,17 @@ fn act(mut menu: ResMut<Menu>, mut settings: ResMut<SettingsUi>, mut browser: Re
             Act::ToggleMod(id) => {
                 let on = menu.mods.as_ref().and_then(|f| f.entries.iter().find(|e| e.id == id)).is_some_and(|e| !e.enabled);
                 menu.change_mods(|f| f.set_enabled(&id, on));
+                if let Some(l) = layer.as_deref_mut() {
+                    l.stale = true;
+                }
                 menu.picked = Some(id);
                 None
             }
             Act::ShiftMod(id, up) => {
                 menu.change_mods(|f| f.shift(&id, up));
+                if let Some(l) = layer.as_deref_mut() {
+                    l.stale = true;
+                }
                 None
             }
             Act::PickMod(id) => {
@@ -616,8 +844,8 @@ fn act(mut menu: ResMut<Menu>, mut settings: ResMut<SettingsUi>, mut browser: Re
             }
         };
         if let Some(next) = next {
+            // `loading::leave` puts the logo up and ends this run once it has been drawn.
             ask_relaunch(next, &menu.options);
-            exit.write(AppExit::Success);
         }
         menu.dirty = true;
     }
@@ -667,11 +895,19 @@ fn draw(mut commands: Commands, mut menu: ResMut<Menu>, root: Option<Single<Enti
     menu.dirty = false;
     let root = match root {
         Some(r) => *r,
-        None => commands.spawn((Root, Node { width: percent(100), height: percent(100), flex_direction: FlexDirection::Column, ..default() })).id(),
+        // (Opaque, and over the game's HUD and panels when it is drawn over the game; under the
+        // server browser and the settings, which open over it.)
+        None => commands.spawn((Root, Node { position_type: PositionType::Absolute, left: px(0), top: px(0), width: percent(100), height: percent(100), flex_direction: FlexDirection::Column, ..default() }, BackgroundColor(skin::GROUND), GlobalZIndex(28))).id(),
     };
     commands.entity(root).despawn_children();
     let now = SystemTime::now();
     commands.entity(root).with_children(|c| {
+        // The ground printed: grain, and on the home screen the sun and the town along its foot.
+        skin::ground(c);
+        if menu.screen == Screen::Home {
+            // (Standing on the rule over the footer: 46 px of footer and the rule's 1.)
+            brand::horizon(c, 120.0, 47.0);
+        }
         c.spawn(Node { flex_grow: 1.0, padding: UiRect::left(percent(9)), flex_direction: FlexDirection::Column, justify_content: JustifyContent::Center, row_gap: px(8), ..default() }).with_children(|col| {
             // (The server browser's sheet has the Join screen to itself.)
             if menu.screen != Screen::Join {
@@ -730,9 +966,12 @@ fn title(col: &mut ChildSpawnerCommands, screen: Screen) {
     // (Out to the left by the picture's own margin, so the word starts where the buttons do,
     // and the room below that the tagline's margin gives the text title.)
     col.spawn(Node { margin: UiRect::new(px(-width * 0.04), px(0), px(0), px(18)), flex_shrink: 0.0, ..default() }).with_children(|c| drawn = brand::title(c, mark, width, DIM));
+    if drawn && screen != Screen::Home {
+        col.spawn(Node { margin: UiRect::new(px(0), px(0), px(-10), px(16)), flex_shrink: 0.0, ..default() }).with_children(|c| skin::stripes(c, 132.0));
+    }
     if !drawn {
         brand::text_title(col, 104.0, BONE, DIM);
-        col.spawn((Text::new("ZOMBIE SURVIVAL"), theme::head(20.0), TextColor(skin::GREEN), TextLayout::no_wrap(), Node { margin: UiRect::new(px(3), px(0), px(-12), px(26)), ..default() }));
+        col.spawn((Text::new("ZOMBIE SURVIVAL"), theme::brand(24.0), TextColor(skin::ACCENT), TextLayout::no_wrap(), Node { margin: UiRect::new(px(3), px(0), px(-12), px(26)), ..default() }));
     }
 }
 
@@ -759,7 +998,7 @@ fn home(col: &mut ChildSpawnerCommands, menu: &Menu, now: SystemTime) {
 
 /// Single player: your own world on this computer.
 fn single(col: &mut ChildSpawnerCommands, menu: &Menu, now: SystemTime) {
-    col.spawn((Text::new("SINGLE PLAYER"), theme::head(22.0), TextColor(BONE)));
+    col.spawn((Text::new("SINGLE PLAYER"), theme::brand(28.0), TextColor(BONE)));
     let first = match menu.autosave() {
         Some(save) => {
             button(col, "Continue", Some(&describe(save, now)), Look::Primary, Act::Continue);
@@ -776,7 +1015,7 @@ fn single(col: &mut ChildSpawnerCommands, menu: &Menu, now: SystemTime) {
 
 /// Multiplayer: someone's server, or your own for friends.
 fn multi(col: &mut ChildSpawnerCommands) {
-    col.spawn((Text::new("MULTIPLAYER"), theme::head(22.0), TextColor(BONE)));
+    col.spawn((Text::new("MULTIPLAYER"), theme::brand(28.0), TextColor(BONE)));
     button(col, "Join a game", Some("official and community servers"), Look::Primary, Act::Join);
     button(col, "Host a game", Some("on this computer, for friends"), Look::Plain, Act::HostScreen);
     button(col, "Back", None, Look::Plain, Act::Back);
@@ -795,7 +1034,7 @@ fn host_field(col: &mut ChildSpawnerCommands, label: &str, text: &str, empty: &s
             (_, true) => (format!("{text}_"), BONE),
             (false, false) => (text.to_string(), BONE),
         };
-        row.spawn((Node { width: px(WIDTH - HOST_LABEL), height: px(34), padding: UiRect::horizontal(px(12)), align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(6)), overflow: Overflow::clip(), flex_shrink: 0.0, ..default() }, BackgroundColor(skin::CELL), BorderColor::all(if focused { skin::GREEN } else { skin::LINE })))
+        row.spawn((Node { width: px(WIDTH - HOST_LABEL), height: px(34), padding: UiRect::horizontal(px(12)), align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(6)), overflow: Overflow::clip(), flex_shrink: 0.0, ..default() }, BackgroundColor(skin::CELL), BorderColor::all(if focused { skin::ACCENT } else { skin::LINE })))
             .with_children(|b| {
                 b.spawn((Text::new(shown), font(BODY), TextColor(colour), TextLayout::no_wrap(), Pickable::IGNORE));
             })
@@ -830,7 +1069,7 @@ fn host(col: &mut ChildSpawnerCommands, menu: &Menu) {
     let text = |c: &mut ChildSpawnerCommands, t: String, size: f32, colour: Color| {
         c.spawn((Text::new(t), font(size), TextColor(colour), Node { max_width: px(HOST_WIDE), ..default() }));
     };
-    col.spawn((Text::new("HOST A GAME"), theme::head(22.0), TextColor(BONE)));
+    col.spawn((Text::new("HOST A GAME"), theme::brand(28.0), TextColor(BONE)));
     text(col, format!("The game starts a server on this computer and you join it; friends join you. It goes on while anyone is playing, and saves and stops {} seconds after the last player leaves. Its world is kept apart from your single-player games.", hosting::STOP_WHEN_EMPTY_SECS), BODY, DIM);
     let h = &menu.host;
     host_field(col, "Server name", &h.name, &HostSetup { name: String::new(), ..h.clone() }.server_name(&menu.player), menu.field == Some(HostField::Server), HostField::Server);
@@ -849,7 +1088,7 @@ fn host(col: &mut ChildSpawnerCommands, menu: &Menu) {
     }
     text(col, reach_text(menu.lan, h.port), SMALL, DIM);
     if let Some((note, wrong)) = &menu.host_note {
-        text(col, note.clone(), BODY, if *wrong { PROBLEM } else { skin::GREEN });
+        text(col, note.clone(), BODY, if *wrong { PROBLEM } else { skin::ACCENT });
     }
     col.spawn(Node { column_gap: px(8), margin: UiRect::top(px(6)), ..default() }).with_children(|row| {
         if menu.hosting.is_some() {
@@ -863,7 +1102,7 @@ fn host(col: &mut ChildSpawnerCommands, menu: &Menu) {
 }
 
 fn load(col: &mut ChildSpawnerCommands, menu: &Menu, now: SystemTime) {
-    col.spawn((Text::new("LOAD GAME"), theme::head(22.0), TextColor(BONE)));
+    col.spawn((Text::new("LOAD GAME"), theme::brand(28.0), TextColor(BONE)));
     for save in menu.saves.iter().take(LISTED) {
         let line = describe(save, now);
         if save.info.is_ok() {
@@ -910,7 +1149,7 @@ fn mods(col: &mut ChildSpawnerCommands, menu: &Menu) {
     let text = |c: &mut ChildSpawnerCommands, t: String, size: f32, colour: Color, width: f32| {
         c.spawn((Text::new(t), font(size), TextColor(colour), Node { max_width: px(width), ..default() }));
     };
-    col.spawn((Text::new("MODS"), theme::head(22.0), TextColor(BONE)));
+    col.spawn((Text::new("MODS"), theme::brand(28.0), TextColor(BONE)));
     text(col, "A mod is a folder in the mods folder. Turn one on and it loads in every game you start or load from now on, in the order shown (a later mod wins where two change the same thing). A mod that doesn't load stays off, with the reason, and the game starts without it. Multiplayer servers play with their own mods.".to_string(), BODY, DIM, WIDTH + DETAILS_WIDTH + 28.0);
     let Some(folder) = &menu.mods else { return };
     for p in &folder.problems {
@@ -926,7 +1165,7 @@ fn mods(col: &mut ChildSpawnerCommands, menu: &Menu) {
                 let picked = menu.picked.as_deref() == Some(e.id.as_str());
                 list.spawn(Node { column_gap: px(6), align_items: AlignItems::Center, ..default() }).with_children(|r| {
                     // The one whose details are shown: a green mark at its left.
-                    r.spawn((Node { width: px(3), height: px(26), flex_shrink: 0.0, ..default() }, BackgroundColor(if picked { skin::GREEN } else { Color::NONE })));
+                    r.spawn((Node { width: px(3), height: px(26), flex_shrink: 0.0, ..default() }, BackgroundColor(if picked { skin::ACCENT } else { Color::NONE })));
                     let id = e.id.clone();
                     skin::button(r, if e.enabled { "On" } else { "Off" }, None, Look::Chip(e.enabled), px(58)).observe(move |_: On<PointerPress>, mut menu: ResMut<Menu>| menu.acts.push(Act::ToggleMod(id.clone())));
                     let detail = match (&e.problem, e.enabled) {
@@ -988,7 +1227,7 @@ fn mods(col: &mut ChildSpawnerCommands, menu: &Menu) {
 }
 
 fn confirm_new(col: &mut ChildSpawnerCommands) {
-    col.spawn((Text::new("START A NEW GAME?"), theme::head(22.0), TextColor(BONE)));
+    col.spawn((Text::new("START A NEW GAME?"), theme::brand(28.0), TextColor(BONE)));
     col.spawn((Text::new("The game you can continue is its autosave, and the new game's will take its place the first time you leave it. Quicksaves and other saves stay."), font(BODY), TextColor(DIM), Node { width: px(WIDTH), margin: UiRect::bottom(px(8)), ..default() }));
     button(col, "Start a new game", None, Look::Primary, Act::StartNew);
     button(col, "Back", None, Look::Plain, Act::Back);

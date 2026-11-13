@@ -195,6 +195,13 @@ impl MaterialExtension for WorldExt {
         SHADER.into()
     }
 
+    // The camera's depth and normal prepass (ambient occlusion, `camera.rs`) must leave out what
+    // the main pass does: cut walls, the faded roof over the player, thinned trees. The shader
+    // does that only with NORMAL_PREPASS set, so the shadow passes still draw all of it.
+    fn prepass_fragment_shader() -> ShaderRef {
+        SHADER.into()
+    }
+
     fn specialize(
         _pipeline: &MaterialExtensionPipeline,
         descriptor: &mut RenderPipelineDescriptor,
