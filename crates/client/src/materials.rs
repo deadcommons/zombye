@@ -94,6 +94,9 @@ pub struct WorldParams {
     /// x, y = where its banks have drifted to (metres), z, w = where it starts and where it is
     /// thickest, metres from the player.
     pub haze_at: Vec4,
+    /// xyz = unit vector toward the sun (the one directional light: the moon at night), w = 1 when
+    /// there is one. The terrain's facets are shaded by it (world.wesl, `FACET_TOWARD`).
+    pub sun: Vec4,
     /// Sight for the per-pixel fog of war (`FogState::sight`).
     pub sight: [Vec4; 3],
     /// Trees whose foliage is fading: (trunk foot x, z, fade 0..1 (1 = foliage gone), 0).
@@ -111,6 +114,7 @@ impl Default for WorldParams {
             lights: Vec4::ZERO,
             haze: Vec4::ZERO,
             haze_at: Vec4::ZERO,
+            sun: Vec4::ZERO,
             sight: [Vec4::ZERO; 3],
             trees: [Vec4::ZERO; MAX_FADING_TREES],
         }
@@ -120,7 +124,7 @@ impl Default for WorldParams {
 impl WorldParams {
     /// The struct as world.wesl declares it: every field a `vec4<f32>` (or an array of them), in order.
     fn floats(&self) -> Vec<f32> {
-        let head = [self.player, self.camera_dir, self.fog_rect, self.fog_tint, self.tree_count, self.lights, self.haze, self.haze_at];
+        let head = [self.player, self.camera_dir, self.fog_rect, self.fog_tint, self.tree_count, self.lights, self.haze, self.haze_at, self.sun];
         head.iter().chain(&self.sight).chain(&self.trees).flat_map(|v| v.to_array()).collect()
     }
 }
@@ -283,6 +287,7 @@ pub fn update_params(
     mut fades: ResMut<TreeFades>,
     player: Query<&Transform, With<Player>>,
     cams: Query<&IsoCamera>,
+    sun: Query<&GlobalTransform, With<crate::daynight::Sun>>,
 ) {
     let (Ok(p), Ok(cam)) = (player.single(), cams.single()) else { return };
     let chest = p.translation.with_y(1.1);
@@ -342,6 +347,7 @@ pub fn update_params(
             let k = if cam.low() { 1.0 } else { cam.zoom / crate::daynight::HAZE_ZOOM };
             Vec4::new(t * 0.35, t * 0.12, h.near * k, h.far * k)
         },
+        sun: sun.single().map_or(Vec4::ZERO, |t| (-t.forward().as_vec3()).extend(1.0)),
         sight: fog.sight,
         trees,
     };

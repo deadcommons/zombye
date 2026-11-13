@@ -18,8 +18,6 @@ import bevy_pbr::render::{
     forward_io::{VertexOutput, FragmentOutput},
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
 };
-@if(!PREPASS_PIPELINE)
-import bevy_pbr::mesh_view_bindings::lights;
 
 // How strongly a hill facet's turn to the sun is told again in its colour (see the fragment).
 const FACET_TOWARD: f32 = 0.9;
@@ -34,6 +32,7 @@ struct WorldParams {
     lights: vec4<f32>,
     haze: vec4<f32>,
     haze_at: vec4<f32>,
+    sun: vec4<f32>,
     sight: array<vec4<f32>, 3>,
     trees: array<vec4<f32>, 32>,
 };
@@ -338,8 +337,8 @@ fn fragment(
     // moon at night) is told again in its colour, as against level ground, a face turned away
     // darkening more than one turned toward it brightens. Level ground (all of town) is untouched.
     let facet_n = normalize(in.world_normal);
-    if (facet_n.y > 0.7 && facet_n.y < 0.99995) {
-        let l = lights.directional_lights[0].direction_to_light;
+    if (world_params.sun.w > 0.5 && facet_n.y > 0.7 && facet_n.y < 0.99995) {
+        let l = world_params.sun.xyz;
         let d = max(dot(facet_n, l), 0.0) - max(l.y, 0.0);
         let k = clamp(1.0 + select(FACET_TOWARD, FACET_AWAY, d < 0.0) * d, 0.6, 1.3);
         pbr_input.material.base_color = vec4(pbr_input.material.base_color.rgb * k, pbr_input.material.base_color.a);
