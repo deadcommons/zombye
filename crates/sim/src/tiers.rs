@@ -74,6 +74,11 @@ pub struct TierTuning {
     /// zombies, and active ones whose target is beyond their flow field. Off: straight lines with
     /// the old detours (for comparison).
     pub long_paths: bool,
+    /// While every living player sleeps and game time runs `NeedsTuning::sleep_time_scale` times as
+    /// fast, the far clock (`World::far_tick`) runs that fast too: virtual zombies wander and
+    /// migrate, attractors spread and fade, and respawn counts by game time (#57). Active and near
+    /// zombies always keep real time. Off: everything keeps real time, as before.
+    pub far_follows_sleep: bool,
 }
 
 impl Default for TierTuning {
@@ -89,7 +94,16 @@ impl Default for TierTuning {
             virtual_hearing_min: 30.0,
             interest_radius: 80.0,
             long_paths: true,
+            far_follows_sleep: true,
         }
+    }
+}
+
+impl TierTuning {
+    /// How far from a player chunk distances need to be exact: past the last range anything is
+    /// decided at (see [`ChunkDistances::update`]).
+    pub fn chunk_reach(&self) -> f32 {
+        self.active_range.max(self.near_range).max(0.0) + self.hysteresis.max(0.0) + 4.0
     }
 }
 
@@ -115,17 +129,33 @@ pub struct ChunkDistances {
 }
 
 impl ChunkDistances {
-    pub fn update(&mut self, map: &TileMap, players: impl Iterator<Item = Vec2> + Clone) {
+    /// Exact for every chunk within `reach` metres of a player; a chunk further than that from
+    /// all of them gets some distance over `reach` (infinity, mostly). Each player only touches
+    /// the chunks round it, so the cost goes by the players, not by players times the map (#70).
+    pub fn update(&mut self, map: &TileMap, players: impl Iterator<Item = Vec2>, reach: f32) {
         (self.chunks_x, self.chunks_y) = (map.chunks_x, map.chunks_y);
         self.dist.clear();
+        self.dist.resize((self.chunks_x * self.chunks_y).max(0) as usize, f32::INFINITY);
         let size = CHUNK_SIZE as f32;
-        for cy in 0..self.chunks_y {
-            for cx in 0..self.chunks_x {
-                let lo = Vec2::new(cx as f32, cy as f32) * size;
-                let hi = lo + Vec2::splat(size);
-                let d2 = players.clone().map(|p| p.clamp(lo, hi).distance_squared(p)).fold(f32::INFINITY, f32::min);
-                self.dist.push(d2.sqrt());
+        let last = IVec2::new(self.chunks_x - 1, self.chunks_y - 1);
+        // Squared distances first, the least per chunk; roots after.
+        for p in players {
+            if !p.is_finite() {
+                continue;
             }
+            let lo = ((p - Vec2::splat(reach)) / size).floor().as_ivec2().max(IVec2::ZERO);
+            let hi = ((p + Vec2::splat(reach)) / size).floor().as_ivec2().min(last);
+            for cy in lo.y..=hi.y {
+                for cx in lo.x..=hi.x {
+                    let corner = Vec2::new(cx as f32, cy as f32) * size;
+                    let d2 = p.clamp(corner, corner + Vec2::splat(size)).distance_squared(p);
+                    let d = &mut self.dist[(cy * self.chunks_x + cx) as usize];
+                    *d = d.min(d2);
+                }
+            }
+        }
+        for d in &mut self.dist {
+            *d = d.sqrt();
         }
     }
 
@@ -384,11 +414,11 @@ pub(crate) fn step_near(z: &mut Zombies, next_pos: &mut [Vec2], cx: &mut NearCtx
         } else if let Some(goal) = cx.goal {
             desired = match goal.distance(p) {
                 Some(d) if d <= GOAL_RANGE => goal.direction(p) * z.speed[i],
-                _ => ai::wander(z, i, cx.rng, t, dt),
+                _ => ai::wander(z, i, cx.rng, t, dt, None),
             };
         } else {
             match z.state[i] {
-                ZombieState::Wander => desired = ai::wander(z, i, cx.rng, t, dt),
+                ZombieState::Wander => desired = ai::wander(z, i, cx.rng, t, dt, None),
                 ZombieState::Investigate | ZombieState::Chase | ZombieState::Lunge | ZombieState::Attack => {
                     // Without sight a chaser only has the spot it remembers (hearing its player
                     // moves that spot), so both go to a point and look about there.
@@ -432,8 +462,8 @@ pub(crate) fn step_near(z: &mut Zombies, next_pos: &mut [Vec2], cx: &mut NearCtx
         let step = total / steps;
         let mut q = p;
         for _ in 0..steps as u32 {
-            let s = if cx.map.in_window_opening(q) { step.clamp_length_max(t.climb_speed * dt / steps) } else { step };
-            q = cx.map.resolve_circle(q + s, ZOMBIE_RADIUS);
+            let s = if cx.walk.in_window_opening(cx.map, q) { step.clamp_length_max(t.climb_speed * dt / steps) } else { step };
+            q = cx.walk.resolve_body(cx.map, q + s);
         }
         next_pos[i] = q;
         z.vel[i] = desired;
@@ -499,7 +529,8 @@ pub(crate) fn virtual_hearing(z: &mut Zombies, regions: &RegionIndex, map: &Tile
 }
 
 /// The virtual tier's update: each region whose turn it is (`(region + tick) %
-/// virtual_interval_ticks == 0`) moves all its zombies in one go over the whole interval. Returns
+/// virtual_interval_ticks == 0`, by the far clock, `clock`: [`crate::world::World::far_tick`], which
+/// runs ahead of `tick` while everyone sleeps) moves all its zombies in one go over the whole interval. Returns
 /// how many were updated. Randomness is a hash of (seed, tick, id), so it doesn't depend on
 /// iteration order or touch the world's RNG. With `nav`, zombies heading somewhere follow their
 /// plans ([`Nav::trace`]).
@@ -514,23 +545,24 @@ pub(crate) fn step_virtual(
     tiers: &TierTuning,
     pop: &Population,
     migration: &MigrationDef,
+    clock: u64,
     tick: u64,
     seed: u64,
 ) -> u32 {
     let every = tiers.virtual_interval_ticks.max(1) as u64;
     let mut updated = 0;
     for r in 0..regions.regions() {
-        if !(r as u64 + tick).is_multiple_of(every) || regions.count(r) == 0 {
+        if !(r as u64 + clock).is_multiple_of(every) || regions.count(r) == 0 {
             continue;
         }
         // Migration: the region feels the strongest attractor's pull, and some of its wanderers
         // set off toward it (as investigators, so they keep going on any tier).
         if !pop.attractors.is_empty() {
-            let pull = pop.pull_on(regions, r, migration, tick);
-            population::migrate_region(z, regions.members(r), pull, migration, t, tick, seed);
+            let pull = pop.pull_on(regions, r, migration, clock);
+            population::migrate_region(z, regions.members(r), pull, migration, t, clock, seed);
         }
         for &i in regions.members(r) {
-            step_one_virtual(z, i as usize, map, walk, nav.as_deref_mut(), t, every as f32 * TICK_DT, tick, seed);
+            step_one_virtual(z, i as usize, map, walk, nav.as_deref_mut(), t, every as f32 * TICK_DT, clock, tick, seed);
             updated += 1;
         }
     }
@@ -538,8 +570,8 @@ pub(crate) fn step_virtual(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn step_one_virtual(z: &mut Zombies, i: usize, map: &TileMap, walk: &WalkGrid, nav: Option<&mut Nav>, t: &ZombieTuning, dt: f32, tick: u64, seed: u64) {
-    let roll = |k: u64| hash01(seed ^ 0x5649_5254, tick, z.id[i] as u64, k);
+fn step_one_virtual(z: &mut Zombies, i: usize, map: &TileMap, walk: &WalkGrid, nav: Option<&mut Nav>, t: &ZombieTuning, dt: f32, clock: u64, tick: u64, seed: u64) {
+    let roll = |k: u64| hash01(seed ^ 0x5649_5254, clock, z.id[i] as u64, k);
     let p = z.pos[i];
     // Where along a path it walks: its own spot in each tile, so a horde doesn't pile onto one point.
     let jitter = |k: u64| (hash01(seed ^ 0x4A49_5454, 0, z.id[i] as u64, k) - 0.5) * 0.6;
@@ -658,6 +690,42 @@ mod tests {
             assert_eq!(next_tier(Near, d, &t), Near);
         }
         assert!(t.hysteresis > CHUNK_SIZE as f32, "a chunk border crossing could flip tiers");
+    }
+
+    /// Chunk distances (#70) are each player's own neighbourhood stamped in: exact wherever a
+    /// tier is decided (within the reach), and only "far" beyond it.
+    #[test]
+    fn chunk_distances_are_exact_within_reach_of_a_player() {
+        let map = TileMap::new(40, 24);
+        let t = TierTuning::default();
+        let reach = t.chunk_reach();
+        assert!(reach > t.near_range + t.hysteresis);
+        let players = [Vec2::new(3.0, 5.0), Vec2::new(300.5, 200.25), Vec2::new(310.0, 190.0), Vec2::new(639.0, 383.0), Vec2::new(f32::NAN, 1.0)];
+        let mut d = ChunkDistances::default();
+        d.update(&map, players.iter().copied(), reach);
+        let size = CHUNK_SIZE as f32;
+        let (mut near, mut far) = (0, 0);
+        for cy in 0..map.chunks_y {
+            for cx in 0..map.chunks_x {
+                let lo = Vec2::new(cx as f32, cy as f32) * size;
+                let truth = players.iter().filter(|p| p.is_finite()).map(|p| p.clamp(lo, lo + Vec2::splat(size)).distance(*p)).fold(f32::INFINITY, f32::min);
+                let got = d.of(lo + Vec2::splat(1.0));
+                if truth <= reach - 0.01 {
+                    assert_eq!(got, truth, "chunk {cx},{cy}");
+                    near += 1;
+                } else {
+                    assert!(got > reach - 0.01, "chunk {cx},{cy}: {got} for {truth}");
+                    far += 1;
+                }
+                for tier in [Tier::Active, Tier::Near, Tier::Virtual] {
+                    assert_eq!(next_tier(tier, got, &t), next_tier(tier, truth, &t), "chunk {cx},{cy}");
+                }
+            }
+        }
+        assert!(near > 200 && far > 100, "{near} near, {far} far");
+        // Nobody: everything is far.
+        d.update(&map, std::iter::empty(), reach);
+        assert_eq!(d.of(Vec2::new(100.0, 100.0)), f32::INFINITY);
     }
 
     #[test]

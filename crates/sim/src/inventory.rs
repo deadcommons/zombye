@@ -39,7 +39,7 @@ use crate::TICK_DT;
 use crate::combat::PICKUP_REACH;
 use crate::containers::{ContainerDef, ContainerSite};
 use crate::firstaid::{Treatment, treating};
-use crate::items::{BagCarry, GroundItem, ItemCategory, ItemDef, ItemStack, WearSlot};
+use crate::items::{BagCarry, GroundItem, ItemCategory, ItemDef, ItemStack, Pouch, WearSlot};
 use crate::players::{MoveMods, Player, Stance};
 use crate::senses::SoundSource;
 use crate::vision::clear_reach;
@@ -54,6 +54,8 @@ pub const CONTAINER_KEEP_OPEN: f32 = 2.2;
 /// E prefers a container within this angle of where the player faces (to the nearest point of the
 /// furniture), nearest first; with none there, the nearest in reach.
 const FACING_DEGREES: f32 = 60.0;
+/// How far up or down a flight of stairs a hand reaches for something lying on it (m).
+const STAIR_REACH: f32 = 1.2;
 /// What E says with nothing on the floor within reach and no container to search.
 pub const NOTHING_HERE: &str = "nothing to pick up or search here";
 /// Item notes kept if nobody drains them.
@@ -87,6 +89,32 @@ pub enum Place {
     Container(u32),
     /// On the floor within reach.
     Ground,
+    /// Into one pouch of what's carried (the pockets, or the bag in that place): somewhere to put
+    /// a stack, never somewhere to take one from (a carried stack is `Carried` and its index,
+    /// whichever pouch it is in). Last, so saves from before it read as they did.
+    Pouch(Pouch),
+}
+
+impl Pouch {
+    /// The slot a pouch's bag is carried in (`None` for the pockets).
+    pub fn slot(self) -> Option<Slot> {
+        match self {
+            Pouch::Pockets => None,
+            Pouch::Back => Some(Slot::Back),
+            Pouch::Shoulder => Some(Slot::Shoulder),
+            Pouch::Hand => Some(Slot::Hand),
+            Pouch::OffHand => Some(Slot::OffHand),
+        }
+    }
+
+    pub fn of_slot(s: Slot) -> Pouch {
+        match s {
+            Slot::Back => Pouch::Back,
+            Slot::Shoulder => Pouch::Shoulder,
+            Slot::Hand => Pouch::Hand,
+            Slot::OffHand => Pouch::OffHand,
+        }
+    }
 }
 
 /// Everything one player has.
@@ -163,6 +191,120 @@ impl Inventory {
         stacks_volume(items, &self.carried)
     }
 
+    /// The room pouch `p` gives (litres): the pockets', or that of the bag carried there (0 with
+    /// no bag there).
+    pub fn pouch_room(&self, items: &[ItemDef], pockets: f32, p: Pouch) -> f32 {
+        match p.slot() {
+            None => pockets,
+            Some(s) => self.slot(s).and_then(|st| items.get(st.item as usize)?.bag.as_ref().map(|b| b.capacity_l)).unwrap_or(0.0),
+        }
+    }
+
+    /// The room the stacks in pouch `p` take (litres).
+    pub fn pouch_used(&self, items: &[ItemDef], p: Pouch) -> f32 {
+        self.carried.iter().filter(|s| s.home == p).fold(0.0, |l, s| l + items.get(s.item as usize).map_or(0.0, |d| d.volume_l * s.count as f32))
+    }
+
+    /// The pouches there are (the pockets always, and each bag carried), in [`Pouch::ALL`]'s
+    /// order, with their room and what's used of it.
+    pub fn pouches(&self, items: &[ItemDef], pockets: f32) -> Vec<(Pouch, f32, f32)> {
+        Pouch::ALL.into_iter().filter(|&p| p == Pouch::Pockets || self.pouch_room(items, pockets, p) > 0.0).map(|p| (p, self.pouch_room(items, pockets, p), self.pouch_used(items, p))).collect()
+    }
+
+    /// Where `n` of `like` go when nobody says: with a stack of the same kind that has room for
+    /// them, else the first pouch (the back's bag first, pockets last) that takes them all, else
+    /// the first with any room (the rest is spread by [`Inventory::settle`]), else the pockets.
+    pub fn auto_home(&self, items: &[ItemDef], pockets: f32, like: &ItemStack, n: u16) -> Pouch {
+        let Some(def) = items.get(like.item as usize) else { return Pouch::Pockets };
+        let need = def.volume_l * n as f32;
+        let free = |p: Pouch| self.pouch_room(items, pockets, p) - self.pouch_used(items, p);
+        if let Some(s) = self.carried.iter().find(|s| s.same_kind(like) && s.count < def.stack.max(1) && free(s.home) + 1e-4 >= need) {
+            return s.home;
+        }
+        Pouch::ALL.into_iter().find(|&p| self.pouch_room(items, pockets, p) > 0.0 && free(p) + 1e-4 >= need).or_else(|| Pouch::ALL.into_iter().find(|&p| free(p) > 1e-4)).unwrap_or(Pouch::Pockets)
+    }
+
+    /// Put every carried stack in a pouch that exists and has room for it, moving as little as
+    /// can be: what a pouch holds over its room (its bag was put down, or things were added with
+    /// no say where) goes, latest stack first, into the other pouches with room, whole if one
+    /// takes it whole, else as many of it as fit. What fits nowhere stays where it is (the total
+    /// room is checked by the moves themselves), in the pockets if its bag is gone. Held and worn
+    /// stacks are in no pouch. Does nothing to an inventory already in order.
+    pub fn settle(&mut self, items: &[ItemDef], pockets: f32) {
+        for s in [&mut self.hand, &mut self.off_hand, &mut self.back, &mut self.shoulder].into_iter().flatten().chain(&mut self.worn) {
+            s.home = Pouch::Pockets;
+        }
+        let room = Pouch::ALL.map(|p| (p, self.pouch_room(items, pockets, p)));
+        let cap = |p: Pouch| room.iter().find(|r| r.0 == p).map_or(0.0, |r| r.1);
+        let mut used = [0.0f32; 5];
+        let vol = |s: &ItemStack| items.get(s.item as usize).map_or(0.0, |d| d.volume_l);
+        for s in &self.carried {
+            used[s.home as usize] += vol(s) * s.count as f32;
+        }
+        if Pouch::ALL.iter().all(|&p| used[p as usize] <= cap(p) + 1e-4) {
+            return;
+        }
+        let mut moves: Vec<(usize, Pouch, u16)> = Vec::new();
+        for i in (0..self.carried.len()).rev() {
+            let s = self.carried[i];
+            let (h, v) = (s.home, vol(&s));
+            let over = used[h as usize] - cap(h);
+            if over <= 1e-4 || v <= 0.0 {
+                continue;
+            }
+            let mut need = ((over / v - 1e-3).ceil().max(1.0) as u16).min(s.count);
+            let whole = v * s.count as f32;
+            // Whole into one pouch if one takes it, rather than split over two.
+            if let Some(d) = Pouch::ALL.into_iter().find(|&d| d != h && cap(d) - used[d as usize] + 1e-4 >= whole) {
+                moves.push((i, d, s.count));
+                used[h as usize] -= whole;
+                used[d as usize] += whole;
+                continue;
+            }
+            for d in Pouch::ALL {
+                if d == h || need == 0 {
+                    continue;
+                }
+                let fit = (((cap(d) - used[d as usize]) / v + 1e-3).floor().max(0.0) as u16).min(need);
+                if fit > 0 {
+                    moves.push((i, d, fit));
+                    used[h as usize] -= v * fit as f32;
+                    used[d as usize] += v * fit as f32;
+                    need -= fit;
+                }
+            }
+        }
+        for (i, d, n) in moves {
+            let s = self.carried[i];
+            let size = items.get(s.item as usize).map_or(1, |def| def.stack);
+            // A part-used top one stays behind unless all of the stack goes.
+            let moved = ItemStack { used: if n >= s.count { s.used } else { 0 }, home: d, ..s.with_count(n) };
+            self.carried[i].count -= n;
+            merge_home(&mut self.carried, moved, n, size);
+        }
+        self.carried.retain(|s| s.count > 0);
+        for s in &mut self.carried {
+            if s.home != Pouch::Pockets && cap(s.home) <= 0.0 {
+                s.home = Pouch::Pockets;
+            }
+        }
+    }
+
+    /// Each carried stack's pouch, in order (what a save and a snapshot keep beside the stacks).
+    pub fn homes(&self) -> Vec<u8> {
+        self.carried.iter().map(|s| s.home as u8).collect()
+    }
+
+    /// Put [`Inventory::homes`] back (a list of another length, or with a pouch there isn't, is
+    /// left out: every stack is then in the pockets until [`Inventory::settle`]).
+    pub fn set_homes(&mut self, homes: &[u8]) {
+        if homes.len() == self.carried.len() && homes.iter().all(|&h| Pouch::from_u8(h).is_some()) {
+            for (s, &h) in self.carried.iter_mut().zip(homes) {
+                s.home = Pouch::from_u8(h).unwrap_or_default();
+            }
+        }
+    }
+
     /// Speed lost to awkward bags (the sum of their `slow`).
     fn bag_slow(&self, items: &[ItemDef]) -> f32 {
         Slot::ALL.iter().filter_map(|&s| self.slot(s)).filter_map(|s| items.get(s.item as usize)?.bag.as_ref().map(|b| b.slow)).fold(0.0, |a, b| a + b)
@@ -170,7 +312,7 @@ impl Inventory {
 }
 
 pub fn stack_weight(items: &[ItemDef], s: &ItemStack) -> f32 {
-    items.get(s.item as usize).map_or(0.0, |d| d.weight_kg * s.count as f32)
+    items.get(s.item as usize).map_or(0.0, |d| (d.weight_kg + if d.fuel_l.is_some() { s.used as f32 * crate::items::FUEL_KG_PER_L } else { 0.0 }) * s.count as f32)
 }
 
 pub fn stacks_volume(items: &[ItemDef], stacks: &[ItemStack]) -> f32 {
@@ -178,10 +320,22 @@ pub fn stacks_volume(items: &[ItemDef], stacks: &[ItemStack]) -> f32 {
 }
 
 /// Add `count` of the kind of thing `like` is (its item, age and goes had; its own count doesn't
-/// matter) to a list of stacks: topping up stacks of the same kind first, then new stacks.
-pub fn merge_into(stacks: &mut Vec<ItemStack>, like: ItemStack, mut count: u16, stack_size: u16) {
+/// matter) to a list of stacks: topping up stacks of the same kind first, then new stacks. New
+/// stacks are in no pouch (the pockets): among carried things [`Inventory::settle`] finds them
+/// room, and a stack never takes its pouch along to a container or the floor.
+pub fn merge_into(stacks: &mut Vec<ItemStack>, like: ItemStack, count: u16, stack_size: u16) {
+    merge_where(stacks, ItemStack { home: Pouch::Pockets, ..like }, count, stack_size, false)
+}
+
+/// [`merge_into`] for carried stacks going into the pouch `like.home`: only stacks in that pouch
+/// are topped up, and new ones are in it.
+pub fn merge_home(stacks: &mut Vec<ItemStack>, like: ItemStack, count: u16, stack_size: u16) {
+    merge_where(stacks, like, count, stack_size, true)
+}
+
+fn merge_where(stacks: &mut Vec<ItemStack>, like: ItemStack, mut count: u16, stack_size: u16, same_home: bool) {
     let size = stack_size.max(1);
-    for s in stacks.iter_mut().filter(|s| s.same_kind(&like) && s.count < size) {
+    for s in stacks.iter_mut().filter(|s| s.same_kind(&like) && s.count < size && (!same_home || s.home == like.home)) {
         let add = count.min(size - s.count);
         s.count += add;
         count -= add;
@@ -251,8 +405,8 @@ impl Default for CarryTuning {
     fn default() -> Self {
         Self {
             limit_kg: 14.0,
-            strength_kg: 1.5,
-            pockets_l: 3.0,
+            strength_kg: 0.75,
+            pockets_l: 8.0,
             burdened_at: 1.0,
             heavy_at: 1.3,
             overloaded_at: 1.6,
@@ -334,6 +488,17 @@ pub enum JobKind {
     /// Crafting (#12): make recipe `recipe` (an index into `WorldConfig::recipes`) from what the
     /// player carries and holds (see [`crate::crafting`]).
     Craft { recipe: u16 },
+    /// Guns (#72, [`crate::ranged`]): reload the gun in hand (a magazine swapped in, or one round
+    /// pushed in, the next following by itself), or with `spare` push a round into a carried
+    /// magazine. Last, so saves from before it read as they did.
+    Reload { spare: bool },
+    /// Blinds ([`crate::blinds`]): fit a carried blind to `edge`, or (`fit: false`) take its blind
+    /// down into the bags. After `Reload`, so saves from before it read as they did.
+    Blind { edge: crate::map::EdgeRef, fit: bool },
+    /// Building ([`crate::build`]): a piece of build `build` (an index into `WorldConfig::builds`)
+    /// onto `edge`, or (`add: false`) one off it. After `Blind`, so saves from before it read as
+    /// they did.
+    Build { edge: crate::map::EdgeRef, build: u16, add: bool },
 }
 
 /// A queued job and the seconds it has left (only the first counts down).
@@ -385,8 +550,12 @@ impl World {
         &self.sites
     }
 
-    pub fn container(&self, id: u32) -> Option<&ContainerSite> {
-        self.sites.binary_search_by_key(&id, |s| s.id).ok().map(|k| &self.sites[k])
+    /// Container `id`: a piece of furniture, or a dead zombie's body (`crate::corpses`).
+    pub fn container(&self, id: u32) -> Option<ContainerSite> {
+        if crate::corpses::corpse_zombie(id).is_some() {
+            return self.corpse_site(id);
+        }
+        self.sites.binary_search_by_key(&id, |s| s.id).ok().map(|k| self.sites[k].clone())
     }
 
     pub fn container_def(&self, site: &ContainerSite) -> &ContainerDef {
@@ -409,7 +578,7 @@ impl World {
         let t = &self.config.carry;
         let weight_kg = p.inventory.weight(items);
         // Strength (#46) adds to the limit.
-        let limit_kg = t.limit(p.skills.level(crate::skills::Skill::Strength, &self.config.skills));
+        let limit_kg = (t.limit(p.skills.level(crate::skills::Skill::Strength, &self.config.skills)) + p.origin.perks.carry_kg).max(1.0);
         Carry { weight_kg, limit_kg, room_l: p.inventory.room(items, t.pockets_l), used_l: p.inventory.used(items), burden: t.burden(weight_kg / limit_kg.max(0.1)) }
     }
 
@@ -427,20 +596,48 @@ impl World {
     /// ends only in [`World::step_item_jobs`], after movement, so the modifiers a snapshot carries
     /// are always the ones the next tick moves with and client prediction stays exact.
     fn refresh_carry_as(&mut self, pi: usize, still: bool) {
+        // Everything carried in a pouch with room for it (bags come and go, things are added).
+        let pockets = self.config.carry.pockets_l;
+        self.players[pi].inventory.settle(&self.config.items, pockets);
         let p = &self.players[pi];
         let c = self.carry(p);
         let slow = p.inventory.bag_slow(&self.config.items);
         let fitness = p.skills.level(crate::skills::Skill::Fitness, &self.config.skills);
-        let load = self.config.skills.move_mods(fitness, self.config.carry.mods(c.weight_kg / c.limit_kg.max(0.1), slow));
+        let mut load = self.config.skills.move_mods(fitness, self.config.carry.mods(c.weight_kg / c.limit_kg.max(0.1), slow));
+        // Who the survivor is (`crate::origin`): running tires it more or less, breath comes back faster or slower.
+        load.run_drain *= p.origin.perks.run_drain;
+        load.regen *= p.origin.perks.recovery;
         let mut mods = self.needs_mods(pi, self.health_mods(pi, load));
-        if still && !p.dead {
+        // Reeling or down from another player's blow (PvP) doesn't move either; knocks start and
+        // end in `step_player_actions`, after movement too.
+        if (still || p.knock.is_some()) && !p.dead {
             mods = MoveMods { speed: 0.0, run_speed: 0.0, can_run: false, can_climb: false, ..mods };
+        }
+        // Seated ([`crate::sit`]): no moving, breath back faster.
+        if p.seated.is_some() && !p.dead {
+            mods = MoveMods { speed: 0.0, run_speed: 0.0, can_run: false, can_climb: false, regen: mods.regen * self.config.sit.endurance_regen, ..mods };
+        }
+        // At the wheel ([`crate::vehicles`]): the body sits in the seat, it doesn't walk.
+        if p.vehicle.is_some() && !p.dead {
+            mods = MoveMods { speed: 0.0, run_speed: 0.0, can_run: false, can_climb: false, ..mods };
+        }
+        // Tied hands (#73): a slow walk, no running, no climbing. Tied and freed in `step_bonds`,
+        // after movement too.
+        if p.restraint.is_some() {
+            mods = MoveMods { speed: mods.speed * self.config.bonds.speed, can_run: false, can_climb: false, ..mods };
         }
         let weapon = p.inventory.hand.and_then(|s| self.item_weapon(s.item));
         let p = &mut self.players[pi];
         p.state.mods = mods;
         p.weapon = weapon;
-        self.private_dirty.insert(p.id);
+        let id = p.id;
+        self.private_dirty.insert(id);
+        // Whoever is going through its things sees them change.
+        for o in &self.players {
+            if o.frisking == Some(id) {
+                self.private_dirty.insert(o.id);
+            }
+        }
     }
 
     /// Every player's derived carry state (after loading).
@@ -483,7 +680,7 @@ impl World {
     }
 
     fn within(&self, p: &Player, site: &ContainerSite, reach: f32) -> bool {
-        !p.dead && self.map.room_at(p.state.pos) == site.room && site.distance(p.state.pos) <= reach
+        !p.dead && p.state.level == site.level && self.map.room_on(p.state.level, p.state.pos) == site.room && site.distance(p.state.pos) <= reach
     }
 
     /// The container player `id` faces within reach, if any: of those within [`FACING_DEGREES`]
@@ -494,12 +691,13 @@ impl World {
         let (pos, ahead) = (p.state.pos, Vec2::from_angle(p.state.facing));
         let cone = FACING_DEGREES.to_radians().cos();
         let faced = |s: &ContainerSite| {
-            let lo = s.min.as_vec2();
-            let to = pos.clamp(lo, lo + s.size.as_vec2()) - pos;
+            let to = s.nearest(pos) - pos;
             to.length() < 0.05 || ahead.dot(to.normalize()) >= cone
         };
+        let bodies = self.corpses_near(pos, CONTAINER_REACH);
         self.sites
             .iter()
+            .chain(bodies.iter())
             .filter(|s| self.reaches(p, s))
             .min_by(|a, b| (!faced(a)).cmp(&!faced(b)).then(a.distance(pos).total_cmp(&b.distance(pos))).then(a.id.cmp(&b.id)))
             .map(|s| s.id)
@@ -508,7 +706,8 @@ impl World {
     /// The containers player `id` can reach, nearest first.
     pub fn containers_in_reach(&self, id: u32) -> Vec<u32> {
         let Some(p) = self.player(id) else { return Vec::new() };
-        let mut v: Vec<&ContainerSite> = self.sites.iter().filter(|s| self.reaches(p, s)).collect();
+        let bodies = self.corpses_near(p.state.pos, CONTAINER_REACH);
+        let mut v: Vec<&ContainerSite> = self.sites.iter().chain(bodies.iter()).filter(|s| self.reaches(p, s)).collect();
         v.sort_by(|a, b| a.distance(p.state.pos).total_cmp(&b.distance(p.state.pos)).then(a.id.cmp(&b.id)));
         v.into_iter().map(|s| s.id).collect()
     }
@@ -527,7 +726,32 @@ impl World {
     /// one rule for the floor: [`World::floor_of`], moves from the floor and `PickUp` all use it,
     /// and snapshots send each player its floor by it.
     fn floor_reaches(&self, p: &Player, it: &GroundItem) -> bool {
-        !p.dead && it.pos.distance(p.state.pos) <= PICKUP_REACH && clear_reach(&self.map, p.state.pos, it.pos)
+        if p.dead || it.pos.distance(p.state.pos) > PICKUP_REACH || self.item_level(it.id) != p.state.level {
+            return false;
+        }
+        if p.state.level > 0 {
+            return self.map.upper_clear(p.state.pos, it.pos);
+        }
+        // Something left on a flight of stairs lies at its height there.
+        (self.map.height_at(0, p.state.pos) - self.map.height_at(0, it.pos)).abs() <= STAIR_REACH && clear_reach(&self.map, p.state.pos, it.pos)
+    }
+
+    /// The floor ground item `id` lies on: 1 upstairs, else 0 (`crate::stairs`).
+    pub fn item_level(&self, id: u32) -> u8 {
+        self.upstairs.contains(&id) as u8
+    }
+
+    /// The ids of the ground items lying upstairs, in order (for snapshots).
+    pub fn upstairs_items(&self) -> Vec<u32> {
+        self.upstairs.iter().copied().collect()
+    }
+
+    /// Forget the upstairs items that are gone (taken, merged away, cleared by a script).
+    pub(crate) fn prune_upstairs(&mut self) {
+        if !self.upstairs.is_empty() {
+            let items = &self.items;
+            self.upstairs.retain(|id| items.binary_search_by_key(id, |it| it.id).is_ok());
+        }
     }
 
     /// The ids of the ground items player `id` can reach, nearest first (its floor, for snapshots).
@@ -544,6 +768,7 @@ impl World {
             Place::Slot(s) => p.inventory.slot(s),
             Place::Container(c) => (p.open == Some(c)).then(|| self.opened.get(&c)?.get(index as usize).copied()).flatten(),
             Place::Ground => self.items.iter().find(|it| it.id == index && self.floor_reaches(p, it)).map(|it| it.stack),
+            Place::Pouch(_) => None,
         }
     }
 
@@ -561,6 +786,9 @@ impl World {
         let p = &mut self.players[pi];
         let refuse = if p.dead {
             Some("dead".to_string())
+        } else if p.restraint.is_some() {
+            // Nothing with its things while its hands are tied (#73).
+            Some("your hands are tied".to_string())
         } else if p.jobs.len() >= max {
             Some(format!("busy: {max} things queued already"))
         } else {
@@ -590,6 +818,18 @@ impl World {
         let Some(pi) = self.players.iter().position(|p| p.id == id) else { return Err(format!("no player {id}")) };
         if from == to && !matches!(from, Place::Ground) {
             return self.refuse(id, "it's already there".into());
+        }
+        if matches!(from, Place::Pouch(_)) {
+            return self.refuse(id, "say which carried stack (a pouch is only somewhere to put things)".into());
+        }
+        if let Place::Pouch(p) = to {
+            let pl = &self.players[pi];
+            if pl.inventory.pouch_room(&self.config.items, self.config.carry.pockets_l, p) <= 0.0 {
+                return self.refuse(id, "you carry no bag there".into());
+            }
+            if from == Place::Carried && pl.inventory.carried.get(index as usize).is_some_and(|s| s.home == p) {
+                return self.refuse(id, "it's already there".into());
+            }
         }
         let Some(stack) = self.stack_at(pi, from, index) else { return self.refuse(id, self.missing(pi, from, index)) };
         // Asked again for what is already on its way (a repeated click, a request crossing the
@@ -623,7 +863,7 @@ impl World {
             Place::Container(c) if p.open != Some(c) => "that container isn't open (search it first)".into(),
             Place::Container(_) => "that's no longer in there".into(),
             Place::Slot(_) => "nothing there".into(),
-            Place::Carried | Place::Worn => "you don't have that any more".into(),
+            Place::Carried | Place::Worn | Place::Pouch(_) => "you don't have that any more".into(),
         }
     }
 
@@ -683,8 +923,12 @@ impl World {
             return self.refuse(id, "use what you carry or hold".into());
         }
         let Some(stack) = self.stack_at(pi, from, index) else { return self.refuse(id, format!("nothing at {from:?} {index}")) };
+        // Using a gun reloads it, a magazine fills it (#72).
+        if let Some(done) = self.use_reloads(id, from, stack.item) {
+            return done;
+        }
         let def = self.item_def(stack.item);
-        if def.consumable().is_none() {
+        if def.consumable().is_none() && !def.usable() {
             let name = def.name.clone();
             return self.refuse(id, format!("can't use the {} (yet)", lower(&name)));
         }
@@ -707,7 +951,7 @@ impl World {
             }
             return self.refuse(id, NOTHING_HERE.into());
         };
-        let Some(site) = self.container(c).cloned() else { return self.refuse(id, format!("no container {c}")) };
+        let Some(site) = self.container(c) else { return self.refuse(id, format!("no container {c}")) };
         let p = &self.players[pi];
         let name = lower(&self.container_def(&site).name);
         if p.jobs.iter().any(|j| j.kind == JobKind::Search { container: c }) {
@@ -748,7 +992,7 @@ impl World {
         {
             let p = &self.players[pi];
             if let Some(c) = p.open
-                && self.container(c).is_none_or(|s| !self.keeps_open(p, s))
+                && self.container(c).is_none_or(|s| !self.keeps_open(p, &s))
             {
                 let id = p.id;
                 self.players[pi].open = None;
@@ -775,6 +1019,9 @@ impl World {
                 JobKind::Use { from, index, item } => self.do_use(pi, from, index, item),
                 JobKind::Treat { wound, treatment, item } => self.do_treat(pi, wound, treatment, item),
                 JobKind::Craft { recipe } => self.do_craft(pi, recipe),
+                JobKind::Reload { spare } => self.do_reload(pi, spare),
+                JobKind::Blind { edge, fit } => self.do_blind(pi, edge, fit),
+                JobKind::Build { edge, build, add } => self.do_build(pi, edge, build, add),
             };
             if result.is_ok() {
                 let p = &mut self.players[pi];
@@ -791,6 +1038,8 @@ impl World {
                 }
             }
             match result {
+                // (A step with more to come, a round of several going in, has nothing to say.)
+                Ok(text) if text.is_empty() => {}
                 Ok(text) => self.note(id, true, text),
                 Err(why) => self.note(id, false, why),
             }
@@ -817,7 +1066,7 @@ impl World {
     }
 
     fn do_search(&mut self, pi: usize, c: u32) -> Result<String, String> {
-        let site = self.container(c).cloned().ok_or_else(|| format!("no container {c}"))?;
+        let site = self.container(c).ok_or_else(|| format!("no container {c}"))?;
         let def = self.container_def(&site).clone();
         let p = &self.players[pi];
         if !(self.reaches(p, &site) || self.keeps_open(p, &site)) {
@@ -825,10 +1074,18 @@ impl World {
         }
         let first = !self.opened.contains_key(&c);
         if first {
-            let room_type = self.map.rooms.get(site.room as usize).map_or("", |r| r.room_type.as_str()).to_string();
-            let mut contents = crate::loot::fill(self.config.seed(), c, &def, &room_type, &self.config.loot, &self.config.items);
+            let mut contents = if let Some(z) = crate::corpses::corpse_zombie(c) {
+                // A body: what it wears, and what its pockets hold.
+                self.fill_corpse(c, z, &site)
+            } else {
+                let room_type = self.map.rooms.get(site.room as usize).map_or("", |r| r.room_type.as_str()).to_string();
+                crate::loot::fill(self.config.loot_seed(), c, &def, &room_type, &self.config.loot, &self.config.items)
+            };
             // Food found was made before the world began (#11), some of it a while before.
             self.age_found_food(c, &mut contents);
+            // Guns and magazines found hold what they were left with (#72).
+            self.load_found(c, &mut contents);
+            self.wear_found(c, &mut contents);
             self.opened.insert(c, contents);
         }
         let p = &self.players[pi];
@@ -848,8 +1105,13 @@ impl World {
         let name = lower(&self.item_def(item).name);
         self.can_consume(pi, item)?;
         let uses = self.item_def(item).consumable().map_or(1, |c| c.uses.max(1));
+        // A thing a mod's script gives a use to (#25) and that isn't used up by it.
+        let kept = self.item_def(item).consumable().is_none() && self.item_def(item).has_tag(crate::items::TAG_REUSABLE);
         // One go: the top one of the stack, used up after its last go.
         let go = |s: &mut ItemStack| {
+            if kept {
+                return;
+            }
             s.used += 1;
             if s.used >= uses {
                 s.used = 0;
@@ -882,6 +1144,12 @@ impl World {
         p.inventory = inv;
         let id = p.id;
         self.used_items.push((id, item));
+        self.script_event(crate::script::ScriptEvent::Used { player: id, item });
+        if self.item_def(item).consumable().is_none() {
+            // What it does is its mod's script's to say (`on_use`, at the end of this tick).
+            self.refresh_carry(pi);
+            return Ok(format!("used the {name}"));
+        }
         let effect = self.consume(pi, had);
         self.refresh_carry(pi);
         let verb = if self.item_def(item).category == ItemCategory::Drink { "drank" } else { "ate" };
@@ -930,7 +1198,7 @@ impl World {
                 _ => return Err(format!("the {name} is gone")),
             },
             Place::Container(c) => {
-                if !self.container(c).is_some_and(|s| self.keeps_open(p, s)) {
+                if !self.container(c).is_some_and(|s| self.keeps_open(p, &s)) {
                     return Err("that container isn't open (or is out of reach)".into());
                 }
                 let mut list = self.opened.get(&c).cloned().unwrap_or_default();
@@ -953,8 +1221,19 @@ impl World {
                 ground_take = Some((k, n));
                 part(self.items[k].stack, n)
             }
+            Place::Pouch(_) => return Err("say which carried stack".into()),
         };
-        self.finish_move(pi, inv, before, src_box, ground_take, def, moved, from, to, spill, pos, facing)
+        // Wherever it was, it is in no pouch on its way.
+        let moved = ItemStack { home: Pouch::Pockets, ..moved };
+        // A two-handed thing taken up that the pockets and bags can't hold (a log) is carried in the hands.
+        let to_hands = to == Place::Carried && def.two_handed && moved.count == 1 && matches!(from, Place::Ground | Place::Container(_));
+        let first = self.finish_move(pi, inv.clone(), before, src_box.clone(), ground_take, def.clone(), moved, from, to, spill, pos, facing);
+        match first {
+            Err(e) if to_hands && e.starts_with("no room") => {
+                self.finish_move(pi, inv, before, src_box, ground_take, def, moved, from, Place::Slot(Slot::Hand), spill, pos, facing).map_err(|_| e)
+            }
+            r => r,
+        }
     }
 
     /// The second half of a move: put `moved` (`n` of a kind of item) at `to`, check the result and commit.
@@ -978,14 +1257,27 @@ impl World {
         let items = &self.config.items;
         let name = lower(&def.name);
         let p = &self.players[pi];
-        let open_ok = |c: u32| self.container(c).is_some_and(|s| self.keeps_open(p, s));
+        let open_ok = |c: u32| self.container(c).is_some_and(|s| self.keeps_open(p, &s));
         let mut dst_box: Option<(u32, Vec<ItemStack>)> = None;
         let mut to_ground: Vec<ItemStack> = Vec::new();
         // Whatever a slot or a layer had in the way goes into pockets and bags.
         let mut displaced: Vec<ItemStack> = Vec::new();
         let mut to = to;
         match to {
-            Place::Carried => merge_into(&mut inv.carried, moved, n, def.stack),
+            Place::Carried => {
+                let home = inv.auto_home(items, self.config.carry.pockets_l, &moved, n);
+                merge_home(&mut inv.carried, ItemStack { home, ..moved }, n, def.stack);
+            }
+            Place::Pouch(home) => {
+                let pockets = self.config.carry.pockets_l;
+                if inv.pouch_room(items, pockets, home) <= 0.0 {
+                    return Err("you carry no bag there".into());
+                }
+                merge_home(&mut inv.carried, ItemStack { home, ..moved }, n, def.stack);
+                if inv.pouch_used(items, home) > inv.pouch_room(items, pockets, home) + 1e-4 {
+                    return Err(format!("no room for the {name} in {}", self.pouch_name(&inv, home)));
+                }
+            }
             Place::Slot(s) => {
                 let ok = match s {
                     Slot::Hand | Slot::OffHand => true,
@@ -998,8 +1290,8 @@ impl World {
                 displaced.extend(inv.slot_mut(s).take());
                 match s {
                     // Both hands for a two-handed item; one already in both hands lets go.
-                    Slot::Hand if def.two_handed => displaced.extend(inv.off_hand.take()),
-                    Slot::OffHand if inv.hand.is_some_and(|h| items[h.item as usize].two_handed) => displaced.extend(inv.hand.take()),
+                    Slot::Hand if def.both_hands() => displaced.extend(inv.off_hand.take()),
+                    Slot::OffHand if inv.hand.is_some_and(|h| items[h.item as usize].both_hands()) => displaced.extend(inv.hand.take()),
                     _ => {}
                 }
                 *inv.slot_mut(s) = Some(moved.with_count(1));
@@ -1015,14 +1307,17 @@ impl World {
                 if !open_ok(c) {
                     return Err("that container isn't open (or is out of reach)".into());
                 }
+                if crate::corpses::corpse_zombie(c).is_some() {
+                    return Err(format!("you can't put the {name} on a body"));
+                }
                 let site = self.container(c).expect("open");
-                let room = self.container_def(site).room_l;
+                let room = self.container_def(&site).room_l;
                 let mut list = match &src_box {
                     Some((sc, l)) if *sc == c => l.clone(),
                     _ => self.opened.get(&c).cloned().unwrap_or_default(),
                 };
                 if stacks_volume(items, &list) + def.volume_l * n as f32 > room + 1e-4 {
-                    return Err(format!("no room for the {name} in the {}", lower(&self.container_def(site).name)));
+                    return Err(format!("no room for the {name} in the {}", lower(&self.container_def(&site).name)));
                 }
                 merge_into(&mut list, moved, n, def.stack);
                 if src_box.as_ref().is_some_and(|(sc, _)| *sc == c) {
@@ -1080,12 +1375,14 @@ impl World {
             }
         }
         for s in to_ground {
-            self.put_on_floor(s, pos, facing);
+            let level = self.players[pi].state.level;
+            self.put_on_floor(s, pos, facing, level);
         }
         self.refresh_carry(pi);
         let what = if n > 1 { format!("{n} x {name}") } else { name };
         Ok(match to {
             Place::Carried => format!("took the {what}"),
+            Place::Pouch(home) => format!("put the {what} in {}", self.pouch_name(&self.players[pi].inventory, home)),
             Place::Slot(Slot::Hand) => format!("holding the {what}"),
             Place::Slot(Slot::OffHand) => format!("holding the {what} in the other hand"),
             Place::Slot(Slot::Back) => format!("put the {what} on your back"),
@@ -1099,45 +1396,62 @@ impl World {
                     format!("put on the {what}")
                 }
             }
-            Place::Container(c) => format!("put the {what} in the {}", lower(&self.container_def(self.container(c).expect("exists")).name)),
+            Place::Container(c) => format!("put the {what} in the {}", lower(&self.container_def(&self.container(c).expect("exists")).name)),
             Place::Ground => format!("dropped the {what}"),
         })
     }
 
+    /// A pouch in words: "your pockets", "the hiking pack".
+    pub fn pouch_name(&self, inv: &Inventory, p: Pouch) -> String {
+        match p.slot().and_then(|s| inv.slot(s)) {
+            Some(bag) => format!("the {}", lower(&self.item_def(bag.item).name)),
+            None => "your pockets".into(),
+        }
+    }
+
     /// Players with container `c` open hear about its new contents.
-    fn container_changed(&mut self, c: u32) {
+    pub(crate) fn container_changed(&mut self, c: u32) {
         let ids: Vec<u32> = self.players.iter().filter(|p| p.open == Some(c)).map(|p| p.id).collect();
         self.private_dirty.extend(ids);
     }
 
     /// Put a stack on the floor at `pos`: onto a pile of the same item lying right there if it has
     /// room, else as a new ground item. Returns the ground item's id.
-    pub(crate) fn put_on_floor(&mut self, s: ItemStack, pos: Vec2, angle: f32) -> u32 {
+    pub(crate) fn put_on_floor(&mut self, s: ItemStack, pos: Vec2, angle: f32, level: u8) -> u32 {
         let size = self.config.items.get(s.item as usize).map_or(1, |d| d.stack);
-        if let Some(it) = self.items.iter_mut().find(|it| it.stack.same_kind(&s) && it.pos.distance(pos) < 0.25 && it.stack.count + s.count <= size) {
+        let upstairs = &self.upstairs;
+        if let Some(it) = self.items.iter_mut().find(|it| it.stack.same_kind(&s) && it.pos.distance(pos) < 0.25 && it.stack.count + s.count <= size && upstairs.contains(&it.id) == (level > 0)) {
             it.stack.count += s.count;
             return it.id;
         }
         let id = self.next_item_id;
         self.next_item_id += 1;
         self.items.push(GroundItem { id, stack: s, pos, angle });
+        if level > 0 {
+            self.upstairs.insert(id);
+        }
         id
     }
 
     /// Player `pi` died: everything it had falls where it lay, in a small heap.
     pub(crate) fn drop_everything(&mut self, pi: usize) {
         let p = &mut self.players[pi];
-        let (id, pos, facing) = (p.id, p.state.pos, p.state.facing);
+        let (id, pos, facing, level) = (p.id, p.state.pos, p.state.facing, p.state.level);
+        // A body that will rise keeps on what it wears: it gets up in it, and its clothes are
+        // taken off it once it is put down (`crate::corpses`), not picked off the floor too.
+        let rises = p.health.rise_in.is_some();
+        let worn = if rises { std::mem::take(&mut p.inventory.worn) } else { Vec::new() };
         let all = p.inventory.take_all();
+        p.inventory.worn = worn;
         p.open = None;
         p.jobs.clear();
         let seed = self.config.seed();
         for (k, s) in all.into_iter().enumerate() {
             let roll = |j: u64| crate::rng::hash01(seed ^ 0xD20F, id as u64, self.tick, k as u64 * 2 + j);
             let off = if k == 0 { Vec2::ZERO } else { Vec2::from_angle(roll(0) * std::f32::consts::TAU) * (0.15 + 0.3 * roll(1)) };
-            let at = self.map.resolve_circle(pos + off, 0.05);
+            let at = self.map.resolve_walker(pos + off, 0.05, level);
             let at = if self.map.in_bounds(at.floor().as_ivec2()) { at } else { pos };
-            self.put_on_floor(s, at, facing + k as f32);
+            self.put_on_floor(s, at, facing + k as f32, level);
         }
         self.refresh_carry(pi);
     }
@@ -1163,8 +1477,8 @@ impl World {
         id
     }
 
-    /// Debug and tests: put `count` of an item straight into player `id`'s pockets (no room or
-    /// weight checks). Returns whether it did.
+    /// Debug, tests and a server's start kit (`World::give_kit`): put `count` of an item straight
+    /// into player `id`'s pockets (no room or weight checks). Returns whether it did.
     pub fn give_item(&mut self, id: u32, item: &str, count: u16) -> bool {
         let Some(i) = self.item_index(item) else { return false };
         let Some(pi) = self.players.iter().position(|p| p.id == id) else { return false };
@@ -1179,7 +1493,8 @@ impl World {
     pub fn hold_item(&mut self, id: u32, slot: Slot, item: &str) -> bool {
         let Some(i) = self.item_index(item) else { return false };
         let Some(pi) = self.players.iter().position(|p| p.id == id) else { return false };
-        *self.players[pi].inventory.slot_mut(slot) = Some(ItemStack::one(i));
+        // (A gun comes loaded, #72.)
+        *self.players[pi].inventory.slot_mut(slot) = Some(ItemStack { used: self.fresh_stack(i, 1).used, ..ItemStack::one(i) });
         self.refresh_carry(pi);
         true
     }
@@ -1191,7 +1506,7 @@ impl World {
     pub fn player_pick_up(&mut self, id: u32) -> Option<u32> {
         let pi = self.players.iter().position(|p| p.id == id)?;
         let p = &self.players[pi];
-        if p.dead || p.action.is_some() {
+        if p.dead || p.action.is_some() || p.restraint.is_some() {
             return None;
         }
         let aim = p.state.pos + Vec2::from_angle(p.state.facing) * 0.5;
@@ -1202,7 +1517,7 @@ impl World {
         if self.item_weapon(it.stack.item).is_some() {
             let mut inv = p.inventory.clone();
             let mut out: Vec<ItemStack> = inv.hand.take().into_iter().collect();
-            if def.two_handed {
+            if def.both_hands() {
                 out.extend(inv.off_hand.take());
             }
             inv.hand = Some(it.stack.with_count(1));
@@ -1230,7 +1545,8 @@ impl World {
                 self.items.remove(k);
             }
             for s in left {
-                self.put_on_floor(s, pos, facing);
+                let level = self.players[pi].state.level;
+                self.put_on_floor(s, pos, facing, level);
             }
             self.players[pi].inventory = inv;
             self.players[pi].run.items_taken += 1;
@@ -1296,6 +1612,8 @@ mod tests {
         let containers = crate::containers::parse_containers(include_str!("../../../assets/data/containers.ron")).unwrap();
         let mut c = WorldConfig::new(seed, 0, templates).with_weapons(weapons).with_items(items).with_containers(containers).with_loot(crate::loot::tests::shipped()).with_map_chunks(8);
         c.start_hour = 12.0;
+        // These tests count on 3 L of pockets.
+        c.carry.pockets_l = 3.0;
         c
     }
 
@@ -1542,19 +1860,19 @@ mod tests {
         }
         assert_eq!(swung, Some((w.weapon_index("kitchen_knife").unwrap(), 1)));
         assert!(w.zombies.index_of(1).is_none_or(|i| w.zombies.hp[i] < hp));
-        // A plastic bag in the other hand, then a two-handed bat: the bag goes into the pockets.
+        // A plastic bag in the other hand, then a fire axe, which takes both: the bag goes into the pockets.
         w.give_item(id, "plastic_bag", 1);
         let k = me(&w, id).inventory.carried.iter().position(|s| w.item_def(s.item).id == "plastic_bag").unwrap();
         w.player_equip(id, k as u32).unwrap();
         settle(&mut w, id);
         assert!(me(&w, id).inventory.off_hand.is_some());
         assert_eq!(w.carry(me(&w, id)).room_l, 11.0);
-        w.give_item(id, "baseball_bat", 1);
-        let k = me(&w, id).inventory.carried.iter().position(|s| w.item_def(s.item).id == "baseball_bat").unwrap();
+        w.give_item(id, "fire_axe", 1);
+        let k = me(&w, id).inventory.carried.iter().position(|s| w.item_def(s.item).id == "fire_axe").unwrap();
         w.player_equip(id, k as u32).unwrap();
         settle(&mut w, id);
         let inv = &me(&w, id).inventory;
-        assert_eq!(w.wielded(me(&w, id).weapon).id, "baseball_bat", "{}", last_note(&w, id));
+        assert_eq!(w.wielded(me(&w, id).weapon).id, "fire_axe", "{}", last_note(&w, id));
         assert!(inv.off_hand.is_none());
         let names: Vec<&str> = inv.carried.iter().map(|s| w.item_def(s.item).id.as_str()).collect();
         assert!(names.contains(&"kitchen_knife") && names.contains(&"plastic_bag"), "{names:?}");
@@ -1741,7 +2059,7 @@ mod tests {
         let (mut w, id) = field();
         let def = w.config.containers.lookup("fridge", "kitchen").unwrap();
         // A 2 x 1 fridge east of the player, its west edge at x = 62.
-        w.sites.push(ContainerSite { id: 7, def, building: 0, room: 0, min: IVec2::new(62, 60), size: IVec2::new(2, 1) });
+        w.sites.push(ContainerSite { id: 7, def, level: 0, building: 0, room: 0, min: IVec2::new(62, 60), size: IVec2::new(2, 1), body: None });
         let at = |w: &mut World, x: f32| {
             w.players[0].state.pos = Vec2::new(x, 60.5);
             w.players[0].jobs.clear();
@@ -1782,9 +2100,9 @@ mod tests {
         let def = w.config.containers.lookup("counter", "kitchen").unwrap();
         // Player at (60.5, 60.5): one cupboard south-west (0.71 m to its corner), one east
         // (0.5 m), one further east behind it (1.5 m, in reach).
-        w.sites.push(ContainerSite { id: 1, def, building: 0, room: 0, min: IVec2::new(59, 61), size: IVec2::ONE });
-        w.sites.push(ContainerSite { id: 2, def, building: 0, room: 0, min: IVec2::new(61, 60), size: IVec2::ONE });
-        w.sites.push(ContainerSite { id: 3, def, building: 0, room: 0, min: IVec2::new(62, 59), size: IVec2::new(1, 3) });
+        w.sites.push(ContainerSite { id: 1, def, level: 0, building: 0, room: 0, min: IVec2::new(59, 61), size: IVec2::ONE, body: None });
+        w.sites.push(ContainerSite { id: 2, def, level: 0, building: 0, room: 0, min: IVec2::new(61, 60), size: IVec2::ONE, body: None });
+        w.sites.push(ContainerSite { id: 3, def, level: 0, building: 0, room: 0, min: IVec2::new(62, 59), size: IVec2::new(1, 3), body: None });
         w.players[0].state.facing = 0.0; // east
         assert_eq!(w.container_in_reach(id), Some(2), "the nearest of those ahead");
         w.players[0].state.facing = std::f32::consts::PI; // west: nothing ahead within 60 degrees but #1 (south-west, 45)

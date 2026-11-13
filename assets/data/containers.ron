@@ -8,8 +8,13 @@
 //
 // `furniture` maps (furniture kind, room type) to a container kind. `room: "any"` is the fallback
 // for a kind in any other room; a kind with no entry isn't a container (beds, sofas, tables...).
+//
+// "corpse" is a dead zombie's body (zombye_sim::corpses): searched where it lies, it holds what
+// the zombie wore (population.ron's outfits) and what its pockets hold (loot.ron's corpse table).
+// Its room only matters for what's in its pockets; nothing can be put on a body.
 (
     containers: [
+        (id: "corpse", name: "Body", room_l: 40.0, search_secs: 2.5, noise_m: 2.0),
         (id: "fridge", name: "Fridge", room_l: 60.0, search_secs: 1.0, noise_m: 3.0),
         (id: "kitchen_cupboard", name: "Kitchen cupboard", room_l: 40.0, search_secs: 1.5, noise_m: 4.0),
         (id: "oven", name: "Oven", room_l: 20.0, search_secs: 0.8, noise_m: 4.0),

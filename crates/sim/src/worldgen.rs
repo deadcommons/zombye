@@ -81,6 +81,9 @@ pub struct GenConfig {
     /// district (both sides of the street). 0: none (the core is the civic district alone).
     #[serde(default = "default_commercial_blocks")]
     pub commercial_blocks: i32,
+    /// The height of the ground: low-poly hills outside a flat town (`crate::terrain`).
+    #[serde(default)]
+    pub terrain: crate::terrain::TerrainDef,
 }
 
 fn default_commercial_blocks() -> i32 {
@@ -90,7 +93,7 @@ fn default_commercial_blocks() -> i32 {
 impl Default for GenConfig {
     fn default() -> Self {
         // 30 chunks (480 m) holds the default town (at most about 420 × 320 m) with forest round it.
-        Self { seed: 1, chunks: IVec2::new(30, 30), blocks: IVec2::new(5, 4), commercial_blocks: default_commercial_blocks() }
+        Self { seed: 1, chunks: IVec2::new(30, 30), blocks: IVec2::new(5, 4), commercial_blocks: default_commercial_blocks(), terrain: crate::terrain::TerrainDef::default() }
     }
 }
 
@@ -518,6 +521,13 @@ pub fn generate(config: &GenConfig, templates: &[BuildingTemplate]) -> Generated
 /// The town, with the street props `props` asks for (`crate::street_props`), placed last from their
 /// own random streams, so the rest of the town is the same with or without them.
 pub fn generate_with(config: &GenConfig, templates: &[BuildingTemplate], props: &StreetPropsDef) -> Generated {
+    generate_full(config, templates, props, crate::biomes::shipped())
+}
+
+/// The town with its street props, and round it what `biomes` grows (`crate::biomes`): trees,
+/// bushes and bare patches by hashes of the seed and the tile, so the town itself is the same
+/// whatever the biomes say.
+pub fn generate_full(config: &GenConfig, templates: &[BuildingTemplate], props: &StreetPropsDef, biomes: &crate::biomes::BiomeData) -> Generated {
     let mut rng = Rng::new(config.seed ^ 0x70_77_4e_00);
     let blocks = config.blocks.max(IVec2::ONE);
     let fits_row = |t: &BuildingTemplate| t.size().x <= ROW_SHOP_MAX.x && t.size().y <= ROW_SHOP_MAX.y;
@@ -760,7 +770,11 @@ pub fn generate_with(config: &GenConfig, templates: &[BuildingTemplate], props: 
     town.roads_out(size, main_y);
     let TownBuilder { mut map, mut rng, homes, plan, fronts, .. } = town;
 
-    plant_forest(&mut map, &mut rng, town_min, town_max, config.seed, &wild);
+    // The hills first: the forest thins out on their steepest faces, so the ground shows there.
+    map.terrain = crate::terrain::Terrain::generate(&config.terrain, config.seed, size, town_min, town_max);
+    let wild_rects: Vec<(IVec2, IVec2)> = wild.iter().map(|r| (r.min, r.max())).collect();
+    map.biomes = crate::biomes::BiomeMap::generate(biomes, config.seed, size, town_min, town_max, &wild_rects, &map.terrain);
+    plant_wild(&mut map);
 
     // Wake up in a ground-floor bedroom of a house.
     let candidates: Vec<usize> = homes.iter().copied().filter(|&b| !bedroom_tiles(&map, b).is_empty()).collect();
@@ -769,10 +783,16 @@ pub fn generate_with(config: &GenConfig, templates: &[BuildingTemplate], props: 
         (homes.first().copied().unwrap_or(0), fallback())
     } else {
         let b = candidates[rng.below(candidates.len() as u32) as usize];
-        let tiles = bedroom_tiles(&map, b);
+        // You wake facing east: with free floor of the same room in front of you, where it has some,
+        // not face to a wall or the furniture.
+        let all = bedroom_tiles(&map, b);
+        let room = |p: IVec2| map.tile(p).room;
+        let open: Vec<IVec2> = all.iter().copied().filter(|&p| (1..=2).all(|dx| all.contains(&(p + IVec2::new(dx, 0))) && room(p + IVec2::new(dx, 0)) == room(p))).collect();
+        let tiles = if open.is_empty() { all } else { open };
         (b, tiles[rng.below(tiles.len() as u32) as usize].as_vec2() + Vec2::splat(0.5))
     };
     street_props::place(&mut map, props, config.seed, town_min, town_max, &fronts);
+    map.index_storeys();
     Generated { map, town_min, town_max, core, player_spawn, spawn_building, plan }
 }
 
@@ -1568,7 +1588,8 @@ impl TownBuilder<'_> {
                     }
                 }
                 if let Some(path_end) = path_end {
-                    self.fronts.houses.push(HouseFront { path_end, front: lot.front });
+                    let b = &self.map.buildings[placed.building];
+                    self.fronts.houses.push(HouseFront { path_end, front: lot.front, min: b.min, max: b.min + b.size });
                 }
                 return Some(placed.building);
             }
@@ -1608,6 +1629,22 @@ impl TownBuilder<'_> {
             };
             let line = bay && along % 3 == 0 && along > 0;
             set_floor(&mut self.map, t, if line { Floor::RoadLine } else { Floor::Asphalt });
+        }
+        // The bays, for what parks in them: two tiles between each pair of lines, five deep.
+        let mut rows = Vec::new();
+        if depth >= 14 {
+            for base in (0..depth).step_by(16) {
+                rows.extend([base + 1, base + 10].into_iter().filter(|r| r + 5 < depth - 5));
+            }
+        }
+        rows.push(depth - 5);
+        for d0 in rows {
+            for m in 0..lot.frontage() / 3 {
+                if 3 * m + 3 <= lot.frontage() {
+                    let r = lot.sub(3 * m + 1, 3 * m + 3, d0, d0 + 5);
+                    self.fronts.bays.push(street_props::Bay { min: r.min, size: r.size, front: lot.front });
+                }
+            }
         }
     }
 
@@ -1829,42 +1866,60 @@ fn clear_around(map: &TileMap, p: IVec2, r: i32) -> bool {
     true
 }
 
-/// Forest everywhere outside `keep_min..keep_max` (the town and a margin) and on the `wild` parts of
-/// town (where its blocks stop short of its edge), on open grass.
-fn plant_forest(map: &mut TileMap, rng: &mut Rng, keep_min: IVec2, keep_max: IVec2, seed: u64, wild: &[Rect]) {
+/// What the biomes grow on the wild ground (`crate::biomes`: everywhere outside town and on the
+/// parts of town its blocks leave wild), on open grass: trees in their clumps, thinned on steep
+/// hillsides, each keeping its biome's spacing; bushes; patches of bare earth. All by hashes of
+/// the seed and the tile ([`BiomeMap::plant`](crate::biomes::BiomeMap::plant)), never the
+/// generator's stream, so the town draws the same numbers whatever the biomes say.
+fn plant_wild(map: &mut TileMap) {
+    use crate::biomes::Plant;
+    if map.biomes.is_empty() {
+        return;
+    }
+    let flat = map.terrain.is_flat();
     for y in 0..map.height() {
         for x in 0..map.width() {
             let p = IVec2::new(x, y);
-            let in_keep = p.x >= keep_min.x && p.y >= keep_min.y && p.x < keep_max.x && p.y < keep_max.y;
-            let in_wild = in_keep && wild.iter().any(|r| p.cmpge(r.min).all() && p.cmplt(r.max()).all());
-            if in_keep && !in_wild {
-                continue;
-            }
+            let Some(biome) = map.biomes.at(p) else { continue };
+            let spacing = biome.trees.spacing;
             if !clear_around(map, p, 1) {
                 continue;
             }
-            // Distance outside the town edge, and patchy noise for clearings and thickets.
-            let outside = IVec2::new((keep_min.x - p.x).max(p.x - keep_max.x).max(0), (keep_min.y - p.y).max(p.y - keep_max.y).max(0));
-            let dist = outside.max_element() as f32;
-            let n = value_noise(seed, p.as_vec2() / 18.0) * 0.65 + value_noise(seed ^ 0xabc, p.as_vec2() / 6.0) * 0.35;
-            let density = (0.04 + 0.5 * smoothstep(0.35, 0.75, n) + 0.2 * (dist / 40.0).min(1.0) + if in_wild { 0.12 } else { 0.0 }).min(0.55);
-            let roll = rng.f32();
-            if roll < density {
-                let pine = rng.f32() < 0.35 + 0.4 * (dist / 60.0).min(1.0);
-                if let Some(t) = map.tile_mut(p) {
-                    t.feature = if pine { Feature::PineTree } else { Feature::Tree };
+            let grade = if flat { 0.0 } else { map.terrain.broad_grade(p.as_vec2() + Vec2::splat(0.5)) };
+            match map.biomes.plant(p, grade) {
+                Some(Plant::Tree(feature)) => {
+                    if spacing <= 1 || !tree_within(map, p, spacing) {
+                        if let Some(t) = map.tile_mut(p) {
+                            t.feature = feature;
+                        }
+                    }
                 }
-            } else if roll < density + 0.03 {
-                if let Some(t) = map.tile_mut(p) {
-                    t.feature = Feature::Bush;
+                Some(Plant::Bush) => {
+                    if let Some(t) = map.tile_mut(p) {
+                        t.feature = Feature::Bush;
+                    }
                 }
-            } else if roll > 0.985 {
-                if let Some(t) = map.tile_mut(p) {
-                    t.floor = Floor::Dirt;
+                Some(Plant::Bare) => {
+                    if let Some(t) = map.tile_mut(p) {
+                        t.floor = Floor::Dirt;
+                    }
                 }
+                None => {}
             }
         }
     }
+}
+
+/// Whether a tree stands within `r` tiles of `p` (itself not counted).
+fn tree_within(map: &TileMap, p: IVec2, r: i32) -> bool {
+    for dy in -r..=r {
+        for dx in -r..=r {
+            if (dx != 0 || dy != 0) && matches!(map.tile(p + IVec2::new(dx, dy)).feature, Feature::Tree | Feature::PineTree) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// The free ground-floor bedroom tiles of a building.
@@ -1912,11 +1967,6 @@ pub fn zone_at(map: &TileMap, town: &Town, t: IVec2, core_fraction: f32, edge_wi
         let outside = (town_min - t).max(t - (town_max - IVec2::ONE)).max(IVec2::ZERO);
         if outside.max_element() as f32 <= edge_width { Zone::ForestEdge } else { Zone::DeepForest }
     }
-}
-
-fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
-    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }
 
 fn hash2(seed: u64, x: i32, y: i32) -> f32 {
@@ -2422,7 +2472,9 @@ pub(crate) mod tests {
                 }
             }
         }
-        assert!(trees_outside > 6000, "only {trees_outside} trees");
+        // (Biomes: woods in clumps with glades and meadows between, not one thick forest; the count is
+        // a floor well under what the shipped biomes grow.)
+        assert!(trees_outside > 1200, "only {trees_outside} trees");
     }
 
     /// With every shipped template, each house type turns up in the town for some seed, every

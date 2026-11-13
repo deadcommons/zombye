@@ -1,0 +1,94 @@
+// Vehicles you can drive. Schema: zombye_sim::vehicles::VehicleData (checked on load; unknown
+// fields are refused; errors name the kind). A data folder without this file has no vehicles: every
+// parked car stays a street prop. All numbers are our own.
+//
+// Each kind is parked in town as a street prop (`prop`, a kind in street_props.ron, which places
+// them); `drivable_share` (0 to 1) of the props of those kinds are real vehicles in a new world, picked by a
+// hash of the seed and where they stand (the rest stay props). Wrecks are never listed here.
+//
+// Per kind: `length` and `width` (m) are the box nothing walks through; `wheelbase` (m) how tight
+// it turns; speeds in m/s (14 is about 50 km/h); `accel`, `brake` and `coast` in m/s² (coast: how
+// fast it slows by itself, neither throttle nor brake); the wheels turn at most `steer_degrees`
+// standing still, that divided by (1 + speed / `steer_falloff`) at speed, `steer_rate_degrees` a
+// second; `driver_seat` is metres forward of its middle and to its left. `body` is how it moves:
+// Car, or Long (a bus; the same for now). `mass_kg` is its weight (heavier runs zombies over
+// harder); `tank_l` its fuel tank in litres; it burns `fuel_per_km` litres a kilometre at full
+// throttle (half that coasting) and `idle_l_per_min` a minute of play while the engine runs.
+// Left out: 1400 kg, 45 L, 1.0 L/km, 0.05 L/min. (A real car burns far less: these are a game's,
+// so a car found with a little in its tank takes you a few streets, not across the county.)
+(
+    drivable_share: 1.0,
+    kinds: [
+        (id: "car", name: "car", prop: "car", length: 4.4, width: 1.8, wheelbase: 2.7,
+         max_speed: 15.0, reverse_speed: 4.0, accel: 4.5, brake: 10.0, coast: 0.8,
+         steer_degrees: 34.0, steer_rate_degrees: 140.0, steer_falloff: 9.0, seats: 4, driver_seat: (0.1, 0.4),
+         mass_kg: 1400.0, tank_l: 45.0, fuel_per_km: 1.0, idle_l_per_min: 0.05),
+        (id: "police_car", name: "police car", prop: "police_car", length: 4.8, width: 1.85, wheelbase: 2.9,
+         max_speed: 18.0, reverse_speed: 4.5, accel: 5.5, brake: 11.0, coast: 0.8,
+         steer_degrees: 33.0, steer_rate_degrees: 140.0, steer_falloff: 10.0, seats: 4, driver_seat: (0.1, 0.42),
+         mass_kg: 1700.0, tank_l: 60.0, fuel_per_km: 1.2, idle_l_per_min: 0.06),
+        (id: "pickup", name: "pickup", prop: "pickup", length: 4.9, width: 1.95, wheelbase: 3.1,
+         max_speed: 14.0, reverse_speed: 4.0, accel: 4.0, brake: 9.0, coast: 0.9,
+         steer_degrees: 32.0, steer_rate_degrees: 120.0, steer_falloff: 8.0, seats: 2, driver_seat: (0.3, 0.45),
+         mass_kg: 2100.0, tank_l: 70.0, fuel_per_km: 1.4, idle_l_per_min: 0.07),
+        (id: "van", name: "van", prop: "van", length: 4.4, width: 1.95, wheelbase: 2.9,
+         max_speed: 12.5, reverse_speed: 3.5, accel: 3.2, brake: 8.0, coast: 1.0,
+         steer_degrees: 32.0, steer_rate_degrees: 110.0, steer_falloff: 7.0, seats: 3, driver_seat: (0.9, 0.45),
+         mass_kg: 2300.0, tank_l: 70.0, fuel_per_km: 1.4, idle_l_per_min: 0.07),
+        (id: "ambulance", name: "ambulance", prop: "ambulance", length: 4.4, width: 1.95, wheelbase: 2.9,
+         max_speed: 13.0, reverse_speed: 3.5, accel: 3.4, brake: 8.0, coast: 1.0,
+         steer_degrees: 32.0, steer_rate_degrees: 110.0, steer_falloff: 7.0, seats: 2, driver_seat: (1.0, 0.45),
+         mass_kg: 3200.0, tank_l: 80.0, fuel_per_km: 1.6, idle_l_per_min: 0.08),
+        (id: "school_bus", name: "school bus", prop: "school_bus", body: Long, length: 7.2, width: 2.5, wheelbase: 4.6,
+         max_speed: 10.0, reverse_speed: 2.5, accel: 2.0, brake: 6.0, coast: 1.0,
+         steer_degrees: 35.0, steer_rate_degrees: 90.0, steer_falloff: 6.0, seats: 20, driver_seat: (2.9, 0.6),
+         mass_kg: 11000.0, tank_l: 200.0, fuel_per_km: 3.0, idle_l_per_min: 0.12),
+    ],
+    tuning: (
+        // Metres from the side of a car a survivor gets in from, and the speeds (m/s) above which
+        // nobody gets in or out.
+        enter_reach: 1.2,
+        enter_max_speed: 1.0,
+        exit_max_speed: 2.0,
+        // The share of its speed a vehicle loses for each zombie it shoves aside, and the share
+        // of the speed into a wall that bounces back off it.
+        zombie_slow: 0.12,
+        bounce: 0.2,
+        // How full a found car's tank is: a share between these, by the seed and where it stands.
+        start_fuel: (0.05, 0.4),
+        // Noise (radii in metres; zombies within hear it, less through walls, and 25 m or more
+        // also draws the far horde): a running engine every `noise_every_secs`, from `idle_noise`
+        // standing to `drive_noise` at top speed, `rev_noise` with the throttle held hard;
+        // starting it, the horn (H at the wheel) and a crash.
+        noise_every_secs: 1.0,
+        idle_noise: 14.0,
+        drive_noise: 35.0,
+        rev_noise: 50.0,
+        start_noise: 40.0,
+        horn_noise: 80.0,
+        crash_noise: 45.0,
+        // Running a zombie over: faster than `run_over_min_speed` (m/s), a standing zombie takes
+        // `run_over_damage` HP for each m/s over it (for a vehicle of `ref_mass_kg`; heavier
+        // hits harder, as the square root of the weight), is floored at `run_over_knockdown_speed`
+        // or more and staggered under it; the body's condition (0 to 1) loses `run_over_wear`.
+        run_over_min_speed: 2.5,
+        run_over_damage: 9.0,
+        ref_mass_kg: 1400.0,
+        run_over_knockdown_speed: 6.0,
+        run_over_wear: 0.004,
+        // A crash: losing more than `crash_min_speed` (m/s) in a hit. For each m/s over it the
+        // parts (0 to 1) lose these (the engine only on a hit in front, going forward) and the
+        // driver `crash_hurt` HP. A worn engine pulls less and goes slower, worn tyres go slower
+        // and steer less, a wrecked engine doesn't run.
+        crash_min_speed: 4.0,
+        crash_engine: 0.06,
+        crash_tyres: 0.03,
+        crash_windows: 0.05,
+        crash_body: 0.05,
+        crash_hurt: 4.0,
+        // The item that holds fuel to pour into a car (Shift+E beside it), and the tag of what
+        // siphons a car's fuel out into one (Shift+E with no fuel to pour).
+        fuel_item: "petrol_can",
+        siphon_tag: "siphons",
+    ),
+)

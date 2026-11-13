@@ -52,7 +52,25 @@
 //! flow cache...), then one `ZOMB` per 64 m region holding zombies (the tiers' region grid), so a
 //! later streaming save (#3, #22) can rewrite only the regions that changed, then `RUNS` (each
 //! player's run stats and cause of death, `crate::run`; optional, so format 4 saves from before
-//! #13 still load, with empty records), then `LOOK` (what bodies that rise wore, #63; optional too).
+//! #13 still load, with empty records; written as `RUN2` since PvP added the players killed, and
+//! `RUNS` is still read), then `KNOC` (players reeling or down from another player's blow; only when
+//! there are any), then `SEAT` (players sitting down, `crate::sit`; only when there are any), then `CLMB` (climbs under way over a fence or through a window, started with E;
+//! only when there are any), then `AWAY` (#68: which survivors are out of the world, logged out and their
+//! time run out, the seconds left to those still lying in it, and spawn protection left; only when
+//! there is any of it. Survivors out of the world are stored with the players in `WRLD`, so every
+//! check and content change reaches them, and set aside again on load), then `LOOK` (what bodies
+//! that rise wore, #63; optional too),
+//! then `FARC` (how far the far clock is ahead of the tick, #57; optional, only written when it is),
+//! `TREE` (trees chopped at and felled, `crate::trees`; only when there are any) comes straight
+//! after `MAPD`, so the stumps are on the map before anything is built from it, and `VEHC`
+//! (vehicles, `crate::vehicles`; only when there are any) straight after that, for the same reason,
+//! with `VCND` (their fuel and wear, stage 2; optional) after it;
+//! then `SHOV` (zombies shoved lately, whose shoves add up toward a knockdown; only when there are any),
+//! then `LEVL` (who and what is upstairs, `crate::stairs`; only when anyone or anything is),
+//! then `BAGS` (which pocket or bag each carried stack is in; only when anything is in a bag),
+//! then `MODS` (what mod scripts keep, #25, `crate::script`; optional, only for a world with mods),
+//! and `XPLR` (what each survivor has seen of the map, `crate::explore`, written after the first
+//! nights; only players with anything marked).
 //! Payloads are
 //! [postcard](https://docs.rs/postcard), and zombies are stored column by column. A file with
 //! another format version fails with [`LoadError::Version`] (format 3 added items, inventories and
@@ -105,8 +123,127 @@ const ZOMB: [u8; 4] = *b"ZOMB";
 /// Players' run stats (#13), after the zombies. Optional: a save without it (format 4 from before
 /// #13) loads with empty records, so adding it didn't change the format version.
 const RUNS: [u8; 4] = *b"RUNS";
+/// Run stats as written since PvP (with the players killed); `RUNS` is still read.
+const RUN2: [u8; 4] = *b"RUN2";
+/// Players reeling or down from another player's blow (PvP; optional, only when there are any).
+const KNOC: [u8; 4] = *b"KNOC";
+/// Players sitting down ([`crate::sit`]), by id; only when there are any.
+const SEAT: [u8; 4] = *b"SEAT";
+/// Climbs under way (E over a fence or through a window), by player id; only when there are any.
+const CLMB: [u8; 4] = *b"CLMB";
+/// Blinds on windows and glazed doors and whether each is down (`crate::blinds`), every one, by
+/// edge key, and the doors with glass in them ([`BlindSave`]). Optional: a save without it (from before blinds) keeps the ones its map was
+/// generated with, so adding it didn't change the format version.
+const BLND: [u8; 4] = *b"BLND";
+
+/// Boarded-up windows and doors (`crate::build`), every one ([`BarricadeSave`]). Optional, only
+/// when there are any: a save without it has none, so adding it didn't change the format version.
+const BARR: [u8; 4] = *b"BARR";
+
+/// The `BARR` section: each barricade by edge key, with its build by id (so a catalog changed
+/// since still finds it), planks, hit points, the edge underneath and the side it's nailed on.
+type BarricadeSave = Vec<((i32, i32, u8), String, u8, f32, crate::map::Edge, bool)>;
+
+/// The `BLND` section: every blind (edge key, down) and every glazed door (edge key).
+type BlindSave = (Vec<((i32, i32, u8), bool)>, Vec<(i32, i32, u8)>);
+
+/// [`crate::run::RunStats`] as the `RUNS` section held it, before players killed were counted.
+#[derive(Deserialize)]
+struct RunsV1 {
+    secs: f64,
+    hours: f64,
+    kills: u32,
+    distance_m: f64,
+    items_taken: u32,
+    searched: u32,
+    wounds: u32,
+    hp_lost: f32,
+    death: Option<crate::run::Death>,
+}
+
+impl From<RunsV1> for crate::run::RunStats {
+    fn from(r: RunsV1) -> Self {
+        let RunsV1 { secs, hours, kills, distance_m, items_taken, searched, wounds, hp_lost, death } = r;
+        Self { secs, hours, kills, distance_m, items_taken, searched, wounds, hp_lost, death, player_kills: 0 }
+    }
+}
+
+/// Logged-out survivors and spawn protection (#68; optional, only when there is any).
+const AWAY: [u8; 4] = *b"AWAY";
+
+/// The `AWAY` section, by player id.
+#[derive(Default, PartialEq, Serialize, Deserialize)]
+struct AwaySave {
+    /// Out of the world (`World::parked`).
+    parked: Vec<u32>,
+    /// Lying logged out in the world, and the seconds left.
+    leaving: Vec<(u32, f32)>,
+    /// Spawn protection, and the seconds left.
+    protected: Vec<(u32, f32)>,
+}
+
+/// Tied hands (#73, `crate::bonds`; optional, only when there are any): the player, the item it
+/// is tied with by id (so a changed item list needs no remapping), who tied it, the seconds
+/// struggled and whether it is struggling.
+const BOND: [u8; 4] = *b"BOND";
+type BondSave = Vec<(u32, String, u32, f32, bool)>;
+/// Groups, their markers and the invitations out (#73, `crate::groups`; optional, only when there
+/// are any).
+const GRPS: [u8; 4] = *b"GRPS";
+
 /// What bodies that rise wore (#63; optional, like `RUNS`).
 const LOOK: [u8; 4] = *b"LOOK";
+/// Each player's first-night record (#19, `crate::firstnight`; optional, like `RUNS`: a save
+/// without it has none, and players with no record aren't listed).
+const NITE: [u8; 4] = *b"NITE";
+/// What each player has seen of the map (`crate::explore`; optional, like `RUNS`: a save without
+/// it loads with blank maps).
+const XPLR: [u8; 4] = *b"XPLR";
+/// How far the far clock has run ahead of the tick (#57; optional, like `RUNS`: a save without it
+/// has it at 0, and it is only written when it isn't).
+const FARC: [u8; 4] = *b"FARC";
+/// What mod scripts keep in the world (#25, `crate::script::ScriptState`: their store, random
+/// stream, events not yet handed to them, and which mods they were; optional, like `RUNS`: only
+/// written for a world with mods or with something of theirs in it).
+const MODS: [u8; 4] = *b"MODS";
+/// The power sources and light switches ([`crate::power`]); optional (a save without it gets a new
+/// world's: the grid as the settings say, the lights left on).
+const POWR: [u8; 4] = *b"POWR";
+/// Zombies shoved lately ([`crate::combat::Shoved`]), adding up toward a knockdown; only when
+/// there are any, so adding it didn't change the format version.
+const SHOV: [u8; 4] = *b"SHOV";
+/// The players upstairs (id and floor) and the ground items lying there (`crate::stairs`); only
+/// when there are any, so adding it didn't change the format version.
+const LEVL: [u8; 4] = *b"LEVL";
+/// The campfires ([`crate::fire`]); only when there are any, so adding it didn't change the
+/// format version.
+const FIRE: [u8; 4] = *b"FIRE";
+/// Weather set by hand ([`crate::weather::Forced`]); only while there is some, so adding it didn't
+/// change the format version.
+const WTHR: [u8; 4] = *b"WTHR";
+/// What world events have done ([`crate::events::EventState`]); only while there is any, so
+/// adding it didn't change the format version.
+const EVNT: [u8; 4] = *b"EVNT";
+/// Which pouch (pockets, or which bag) each carried stack is in, per player; only players with
+/// anything in a bag, so adding it didn't change the format version. Without it (a save from
+/// before bags had their own room) everything is put away afresh on load.
+const BAGS: [u8; 4] = *b"BAGS";
+/// Who each survivor was ([`crate::origin::Origin`]: Background, Strengths and Flaws, and what
+/// they come to); only survivors that have one, so adding it didn't change the format version.
+const ORIG: [u8; 4] = *b"ORIG";
+/// Trees chopped at and felled (`crate::trees::TreeSave`), written straight after `MAPD`; only
+/// when there are any, so adding it didn't change the format version.
+const TREE: [u8; 4] = *b"TREE";
+/// Deadwood laid out near players and taken (`crate::trees::DeadwoodSave`); only when there is
+/// any, so adding it didn't change the format version.
+const DEAD: [u8; 4] = *b"DEAD";
+/// Vehicles (`crate::vehicles::VehicleSave`), written straight after `TREE` (or `MAPD`): their
+/// props come off the regenerated map before anything is built from it. Only when there are any,
+/// so adding it didn't change the format version.
+const VEHC: [u8; 4] = *b"VEHC";
+/// The vehicles' fuel, engines and parts (`crate::vehicles::Condition`, by vehicle id), written
+/// after `VEHC`; a save without it (from before stage 2) finds them as a new world would.
+const VCND: [u8; 4] = *b"VCND";
 const END: [u8; 4] = *b"END\0";
 /// Bytes before the first section: magic and version.
 const HEADER: usize = 12;
@@ -134,7 +271,7 @@ pub struct SaveInfo {
 /// population file, plus the ids, to say what changed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ContentPrint {
-    /// The building templates and `street_props.ron` (#61) together: both decide the map.
+    /// The building templates, `street_props.ron` (#61) and `biomes.ron` together: all decide the map.
     pub templates: u64,
     pub template_ids: Vec<String>,
     pub weapons: u64,
@@ -161,7 +298,11 @@ impl ContentPrint {
         Self {
             // The street props decide the map too: hashed with the templates (no change to the save
             // layout; with none, the hash is the templates' alone, as before them).
-            templates: if config.street_props.is_empty() { fnv(&encode(&config.templates)) } else { fnv(&encode(&(&config.templates, &config.street_props))) },
+            // So do the biomes (the forest's trees are tiles); the shipped ones leave the hash as it was.
+            templates: {
+                let base = if config.street_props.is_empty() { fnv(&encode(&config.templates)) } else { fnv(&encode(&(&config.templates, &config.street_props))) };
+                if &config.biomes == crate::biomes::shipped() { base } else { base ^ fnv(&encode(&config.biomes)) }
+            },
             template_ids: config.templates.iter().map(|t| t.id.clone()).collect(),
             weapons: fnv(&encode(&weapons)),
             weapon_ids: weapons.iter().map(|w| w.id.clone()).collect(),
@@ -257,6 +398,30 @@ struct Settings {
     needs: NeedsTuning,
     #[serde(default)]
     skills: SkillTuning,
+    #[serde(default)]
+    power: crate::power::PowerDef,
+    /// The seed loot rolls from (`WorldConfig::loot_seed`); none in older saves: the world seed.
+    #[serde(default)]
+    loot_seed: Option<u64>,
+    #[serde(default)]
+    blinds: crate::blinds::BlindTuning,
+    #[serde(default)]
+    fire: crate::fire::FireTuning,
+    /// The calendar and climate (`crate::weather`); none in older saves: the defaults.
+    #[serde(default)]
+    weather: crate::weather::WeatherTuning,
+    /// World events (`crate::events`); none in older saves: none.
+    #[serde(default)]
+    events: crate::events::EventsDef,
+    /// Chopping trees (`crate::trees`); none in older saves: the defaults.
+    #[serde(default)]
+    chop: crate::trees::ChopTuning,
+    /// A difficulty's multipliers on the content (`crate::difficulty`); none in older saves.
+    #[serde(default)]
+    sandbox: crate::difficulty::Sandbox,
+    /// Speeds and endurance (`crate::players::MoveTuning`); none in older saves: the defaults.
+    #[serde(default)]
+    movement: crate::players::MoveTuning,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -422,7 +587,7 @@ fn checksum(tag: [u8; 4], payload: &[u8]) -> u64 {
 }
 
 /// A hash of every tile (floor, edges, feature, room) and the room and building counts.
-pub(crate) fn map_hash(map: &TileMap) -> u64 {
+pub fn map_hash(map: &TileMap) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mut mix = |v: u64| h = (h ^ v).wrapping_mul(0x0100_0000_01b3).rotate_left(29);
     mix(map.chunks_x as u64);
@@ -500,6 +665,14 @@ impl<'a> Reader<'a> {
     }
 
     /// The next section, which must be `tag`.
+    /// The next section's payload if it is `tag`, else nothing (and nothing read).
+    fn optional(&mut self, tag: [u8; 4]) -> Result<Option<&'a [u8]>, LoadError> {
+        if self.bytes.get(self.at..self.at + 4) != Some(&tag[..]) {
+            return Ok(None);
+        }
+        self.next().map(|(_, payload)| Some(payload))
+    }
+
     fn expect(&mut self, tag: [u8; 4]) -> Result<&'a [u8], LoadError> {
         let (found, payload) = self.next()?;
         if found != tag {
@@ -536,6 +709,7 @@ impl World {
             players,
             tick,
             clock_offset_hours,
+            far_ticks,
             items,
             next_item_id,
             opened,
@@ -567,6 +741,8 @@ impl World {
             // Replication queues and last tick's outputs: a (re)joining client gets everything.
             stats: _,
             edge_changes: _,
+            blind_changes: _,
+            barricade_changes: _,
             edge_hp_dirty: _,
             combat_events: _,
             attack_events: _,
@@ -574,21 +750,63 @@ impl World {
             break_events: _,
             action_events: _,
             hit_events: _,
+            player_hit_events: _,
             removed_corpses: _,
+            left_world: _,
             item_notes: _,
             used_items: _,
             woke: _,
             level_ups: _,
+            speech: _,
+            groups,
+            // Said again by whoever runs the world (a server's join names).
+            names: _,
             skill_mods_due: _,
             private_dirty: _,
             rise_looks,
+            shoved,
+            vehicles,
+            trees,
+            upstairs,
+            parked,
             // Scratch, refilled every tick.
             targets: _,
+            // Derived from the players and each tick's sounds (#66); nothing reads it back.
+            awareness: _,
             scratch_tiles: _,
+            scratch_marks: _,
             scratch_pos: _,
             scratch_actions: _,
             scratch_hits: _,
+            scratch_tops: _,
+            // Lag compensation (#23): a few ticks of positions, kept only while remote clients
+            // report what they see, and they report again every tick.
+            lag_history: _,
+            scratch_trades: _,
+            // The script host is made again from the content's scripts; what scripts keep is saved.
+            scripts: _,
+            script,
+            script_errors: _,
+            power,
+            fires,
+            weather_forced,
+            events,
         } = self;
+        // Survivors out of the world are saved among the players (in id order); `AWAY` says which.
+        let away = AwaySave {
+            parked: parked.iter().map(|p| p.id).collect(),
+            leaving: players.iter().filter_map(|p| p.away.map(|s| (p.id, s))).collect(),
+            protected: players.iter().filter(|p| p.protected > 0.0).map(|p| (p.id, p.protected)).collect(),
+        };
+        let all_players: Vec<Player>;
+        let players = if parked.is_empty() {
+            players
+        } else {
+            let mut all: Vec<Player> = players.iter().chain(parked).cloned().collect();
+            all.sort_by_key(|p| p.id);
+            all_players = all;
+            &all_players
+        };
         let mut w = Writer::new();
         let alive = zombies.state.iter().filter(|s| **s != ZombieState::Dead).count() as u32;
         let info = SaveInfo {
@@ -616,6 +834,15 @@ impl World {
             infection: config.infection.clone(),
             needs: config.needs,
             skills: config.skills.clone(),
+            power: config.power.clone(),
+            loot_seed: config.loot_seed,
+            blinds: config.blinds.clone(),
+            fire: config.fire.clone(),
+            weather: config.weather.clone(),
+            events: config.events.clone(),
+            chop: config.chop.clone(),
+            sandbox: config.sandbox.clone(),
+            movement: config.movement,
         };
         w.section(CONF, ron::to_string(&settings).expect("settings serialize").as_bytes());
         let layout = if *map_custom {
@@ -634,6 +861,16 @@ impl World {
         let map_save =
             MapSave { base_hash: *map_base_hash, town_min: *town_min, town_max: *town_max, player_spawn: *player_spawn, spawn_building: *spawn_building as u32, layout };
         w.section(MAPD, &encode(&map_save));
+        // Trees chopped at and felled, straight after the map: on load the stumps go on it before
+        // anything is built from it. Only when there are any.
+        if !trees.is_empty() {
+            w.section(TREE, &encode(&trees.to_save()));
+        }
+        // Vehicles, for the same reason: their props come off the map on load.
+        if !vehicles.list.is_empty() {
+            w.section(VEHC, &encode(&self.vehicle_save()));
+            w.section(VCND, &encode(&self.condition_save()));
+        }
         let world = WorldSave {
             tick: *tick,
             clock_offset_hours: *clock_offset_hours,
@@ -671,8 +908,89 @@ impl World {
             w.section(ZOMB, &encode(&ZombieBlock::gather(zombies, r as u32, indices)));
         }
         let runs: Vec<(u32, crate::run::RunStats)> = players.iter().map(|p| (p.id, p.run.clone())).collect();
-        w.section(RUNS, &encode(&runs));
+        w.section(RUN2, &encode(&runs));
+        // Players reeling or down from another's blow (PvP); none, no section.
+        let knocks: Vec<(u32, crate::players::Knock)> = players.iter().filter_map(|p| p.knock.map(|k| (p.id, k))).collect();
+        if !knocks.is_empty() {
+            w.section(KNOC, &encode(&knocks));
+        }
+        let seats: Vec<(u32, crate::sit::SeatKind)> = players.iter().filter_map(|p| p.seated.map(|s| (p.id, s))).collect();
+        if !seats.is_empty() {
+            w.section(SEAT, &encode(&seats));
+        }
+        let climbs: Vec<(u32, crate::players::Climb)> = players.iter().filter_map(|p| p.state.climb.map(|c| (p.id, c))).collect();
+        if !climbs.is_empty() {
+            w.section(CLMB, &encode(&climbs));
+        }
+        if away != AwaySave::default() {
+            w.section(AWAY, &encode(&away));
+        }
+        // Every blind (the map's own `blinds` aren't stored with its tiles), even none: the save's
+        // blinds replace those the map is generated with.
+        // The glazed doors too: a map stored whole (or regenerated anyway) needn't have them where
+        // the generated one does.
+        let blinds: BlindSave = (map.blinds.iter().map(|(k, v)| (*k, *v)).collect(), map.glazed.iter().copied().collect());
+        w.section(BLND, &encode(&blinds));
+        let barricades: BarricadeSave =
+            map.barricades.iter().map(|(&k, b)| (k, config.builds.get(b.build as usize).map(|d| d.id.clone()).unwrap_or_default(), b.planks, b.hp, b.under, b.owner_side)).collect();
+        if !barricades.is_empty() {
+            w.section(BARR, &encode(&barricades));
+        }
+        // Tied hands and groups (#73); none, no section.
+        let bonds: BondSave =
+            players.iter().filter_map(|p| p.restraint.map(|r| (p.id, config.items.get(r.item as usize).map(|d| d.id.clone()).unwrap_or_default(), r.by, r.struggled, r.struggling))).collect();
+        if !bonds.is_empty() {
+            w.section(BOND, &encode(&bonds));
+        }
+        if !groups.is_empty() {
+            w.section(GRPS, &encode(groups));
+        }
         w.section(LOOK, &encode(rise_looks));
+        let nights: Vec<(u32, crate::firstnight::FirstNight)> = players.iter().filter_map(|p| Some((p.id, p.first_night.clone()?))).collect();
+        if !nights.is_empty() {
+            w.section(NITE, &encode(&nights));
+        }
+        let origins: Vec<(u32, crate::origin::Origin)> = players.iter().filter(|p| !p.origin.is_plain()).map(|p| (p.id, p.origin.clone())).collect();
+        if !origins.is_empty() {
+            w.section(ORIG, &encode(&origins));
+        }
+        let maps: Vec<(u32, &crate::explore::Explored)> = players.iter().filter(|p| p.explored.count() > 0).map(|p| (p.id, &p.explored)).collect();
+        if !maps.is_empty() {
+            w.section(XPLR, &encode(&maps));
+        }
+        if *far_ticks != 0 {
+            w.section(FARC, &encode(far_ticks));
+        }
+        w.section(POWR, &encode(&power.to_save()));
+        if !shoved.is_empty() {
+            w.section(SHOV, &encode(shoved));
+        }
+        if !fires.list.is_empty() || fires.next_id > 1 {
+            w.section(FIRE, &encode(fires));
+        }
+        if let Some(f) = weather_forced {
+            w.section(WTHR, &encode(f));
+        }
+        if !events.is_empty() {
+            w.section(EVNT, &encode(events));
+        }
+        if !trees.deadwood_is_empty() {
+            w.section(DEAD, &encode(&trees.deadwood_save()));
+        }
+        let levels: Vec<(u32, u8)> = players.iter().filter(|p| p.state.level > 0).map(|p| (p.id, p.state.level)).collect();
+        let up_items: Vec<u32> = upstairs.iter().copied().filter(|id| items.binary_search_by_key(id, |it| it.id).is_ok()).collect();
+        if !levels.is_empty() || !up_items.is_empty() {
+            w.section(LEVL, &encode(&(levels, up_items)));
+        }
+        let bags: Vec<(u32, Vec<u8>)> = players.iter().filter(|p| p.inventory.carried.iter().any(|s| s.home != crate::items::Pouch::Pockets)).map(|p| (p.id, p.inventory.homes())).collect();
+        if !bags.is_empty() {
+            w.section(BAGS, &encode(&bags));
+        }
+        // Mod scripts (#25): what they keep, and whose they are. A world without mods has none.
+        let mods = config.scripts.as_ref().map(|e| e.mods()).unwrap_or_default();
+        if !script.is_empty() || !mods.is_empty() {
+            w.section(MODS, &encode(&crate::script::ScriptState { mods, ..script.clone() }));
+        }
         w.section(END, &[]);
         w.0
     }
@@ -692,11 +1010,15 @@ impl World {
         let force = options.force;
         let mut r = Reader::new(bytes)?;
         let info: SaveInfo = decode(INFO, r.expect(INFO)?)?;
-        let plan = save_check::plan_content(&info.content, &ContentPrint::of(content));
-        let mut notes = plan.notes.clone();
         let text = std::str::from_utf8(r.expect(CONF)?).map_err(|_| corrupt("settings aren't text"))?;
         let settings: Settings = ron::from_str(text).map_err(|e| corrupt(format!("settings: {e}")))?;
+        // The game's difficulty multiplies the content (`crate::difficulty`): put it on what we
+        // were given first, so the content is compared as the save had it.
         let mut config = content.clone();
+        settings.sandbox.check().map_err(|why| save_check::invalid(format!("settings: {why}")))?;
+        settings.sandbox.apply(&mut config);
+        let plan = save_check::plan_content(&info.content, &ContentPrint::of(&config));
+        let mut notes = plan.notes.clone();
         config.generation = settings.generation;
         config.zombies = settings.zombies;
         config.start_hour = settings.start_hour;
@@ -709,8 +1031,25 @@ impl World {
         config.infection = settings.infection;
         config.needs = settings.needs;
         config.skills = settings.skills;
+        config.power = settings.power;
+        config.power.validate().map_err(|why| save_check::invalid(format!("power settings: {why}")))?;
+        config.loot_seed = settings.loot_seed;
+        settings.blinds.check().map_err(save_check::invalid)?;
+        config.blinds = settings.blinds;
+        settings.fire.check().map_err(save_check::invalid)?;
+        config.fire = settings.fire;
+        settings.weather.check().map_err(save_check::invalid)?;
+        config.weather = settings.weather;
+        settings.events.check().map_err(save_check::invalid)?;
+        config.events = settings.events;
+        settings.chop.check().map_err(save_check::invalid)?;
+        config.chop = settings.chop;
+        config.movement = settings.movement;
         save_check::check_settings(text, &config)?;
         let map_save: MapSave = decode(MAPD, r.expect(MAPD)?)?;
+        let trees: Option<crate::trees::TreeSave> = r.optional(TREE)?.map(|p| decode(TREE, p)).transpose()?;
+        let vehicles: Option<crate::vehicles::VehicleSave> = r.optional(VEHC)?.map(|p| decode(VEHC, p)).transpose()?;
+        let conditions: Option<Vec<(u32, crate::vehicles::Condition)>> = r.optional(VCND)?.map(|p| decode(VCND, p)).transpose()?;
         let mut ws: WorldSave = decode(WRLD, r.expect(WRLD)?)?;
         // Weapons are named by index into the save's own list: move them to the content's.
         let mut blocking: Vec<String> = save_check::remap_weapons(&plan, &mut ws.players, force, &mut notes)?.into_iter().collect();
@@ -779,6 +1118,17 @@ impl World {
                     })
                     .collect();
                 map.prop_kinds = kinds;
+                // Nor is the ground's height: the generated map's.
+                map.terrain = std::mem::take(&mut w.map.terrain);
+                // Nor which biome a tile is in.
+                map.biomes = std::mem::take(&mut w.map.biomes);
+                // Glazed doors and blinds aren't stored with the tiles: the generated map's (the
+                // `BLND` section, if any, replaces the blinds below).
+                map.glazed = std::mem::take(&mut w.map.glazed);
+                map.blinds = std::mem::take(&mut w.map.blinds);
+                map.stair_speed = w.map.stair_speed;
+                map.movement = w.map.movement;
+                map.index_storeys();
                 w.map = map;
                 // Containers are the stored map's furniture, not the generated one's.
                 w.sites = crate::containers::find_sites(&w.map, &w.config.containers);
@@ -787,6 +1137,30 @@ impl World {
                 w.walk = WalkGrid::new(&w.map);
                 w.regions = RegionIndex::new(&w.map, w.config.tiers.region_size);
                 w.hash = SpatialHash::new(w.map.width() as f32, w.map.height() as f32, 1.0);
+            }
+        }
+        // Stumps where trees were felled, before the walk grid and the nav graph are built on.
+        if let Some(trees) = trees {
+            let dropped = w.restore_trees(trees, new_map).map_err(save_check::invalid)?;
+            if dropped > 0 {
+                notes.push(format!("the map changed: {dropped} felled or chopped trees no longer fit and were dropped"));
+            }
+            w.walk = WalkGrid::new(&w.map);
+        }
+        // Vehicles where they were driven to, their parked props off the map. On a new map they
+        // could stand anywhere, so they are left out.
+        if let Some(vehicles) = vehicles {
+            if new_map {
+                notes.push(format!("the map changed: {} vehicles were left out", vehicles.list.len()));
+            } else {
+                let dropped = w.restore_vehicles(vehicles).map_err(save_check::invalid)?;
+                if let Some(c) = conditions {
+                    w.restore_conditions(c).map_err(save_check::invalid)?;
+                }
+                if dropped > 0 {
+                    notes.push(format!("{dropped} vehicles of kinds the game no longer has were dropped"));
+                }
+                w.walk = WalkGrid::new(&w.map);
             }
         }
         // On a new map the town, the spawn and its house are the new map's.
@@ -838,20 +1212,131 @@ impl World {
         let mut z = Zombies::default();
         let mut runs: Option<Vec<(u32, crate::run::RunStats)>> = None;
         let mut looks: Option<crate::health::RiseLooks> = None;
+        let mut knocks: Option<Vec<(u32, crate::players::Knock)>> = None;
+        let mut seats: Option<Vec<(u32, crate::sit::SeatKind)>> = None;
+        let mut climbs: Option<Vec<(u32, crate::players::Climb)>> = None;
+        let mut far: Option<u64> = None;
+        let mut script: Option<crate::script::ScriptState> = None;
+        let mut power: Option<crate::power::PowerSave> = None;
+        let mut away: Option<AwaySave> = None;
+        let mut nights: Option<Vec<(u32, crate::firstnight::FirstNight)>> = None;
+        let mut origins: Option<Vec<(u32, crate::origin::Origin)>> = None;
+        let mut maps: Option<Vec<(u32, crate::explore::Explored)>> = None;
+        let mut bonds: Option<BondSave> = None;
+        let mut groups: Option<crate::groups::Groups> = None;
+        let mut blinds: Option<BlindSave> = None;
+        let mut barricades: Option<BarricadeSave> = None;
+        let mut shoved: Option<Vec<crate::combat::Shoved>> = None;
+        let mut levels: Option<(Vec<(u32, u8)>, Vec<u32>)> = None;
+        let mut fires: Option<crate::fire::Fires> = None;
+        let mut weather: Option<crate::weather::Forced> = None;
+        let mut event_state: Option<crate::events::EventState> = None;
+        let mut dead: Option<crate::trees::DeadwoodSave> = None;
+        let mut bags: Option<Vec<(u32, Vec<u8>)>> = None;
         loop {
             let (tag, payload) = r.next()?;
             if tag == END {
                 break;
             }
             if tag == RUNS && runs.is_none() {
-                runs = Some(decode(RUNS, payload)?);
+                // As written before PvP: no count of players killed.
+                let old: Vec<(u32, RunsV1)> = decode(RUNS, payload)?;
+                runs = Some(old.into_iter().map(|(id, r)| (id, r.into())).collect());
+                continue;
+            }
+            if tag == RUN2 && runs.is_none() {
+                runs = Some(decode(RUN2, payload)?);
+                continue;
+            }
+            if tag == KNOC && knocks.is_none() {
+                knocks = Some(decode(KNOC, payload)?);
+                continue;
+            }
+            if tag == SEAT && seats.is_none() {
+                seats = Some(decode(SEAT, payload)?);
+                continue;
+            }
+            if tag == CLMB && climbs.is_none() {
+                climbs = Some(decode(CLMB, payload)?);
+                continue;
+            }
+            if tag == AWAY && away.is_none() {
+                away = Some(decode(AWAY, payload)?);
                 continue;
             }
             if tag == LOOK && looks.is_none() {
                 looks = Some(decode(LOOK, payload)?);
                 continue;
             }
-            if tag != ZOMB || runs.is_some() || looks.is_some() {
+            if tag == FARC && far.is_none() {
+                far = Some(decode(FARC, payload)?);
+                continue;
+            }
+            if tag == NITE && nights.is_none() {
+                nights = Some(decode(NITE, payload)?);
+                continue;
+            }
+            if tag == ORIG && origins.is_none() {
+                origins = Some(decode(ORIG, payload)?);
+                continue;
+            }
+            if tag == XPLR && maps.is_none() {
+                maps = Some(decode(XPLR, payload)?);
+                continue;
+            }
+            if tag == BOND && bonds.is_none() {
+                bonds = Some(decode(BOND, payload)?);
+                continue;
+            }
+            if tag == GRPS && groups.is_none() {
+                groups = Some(decode(GRPS, payload)?);
+                continue;
+            }
+            if tag == POWR && power.is_none() {
+                power = Some(decode(POWR, payload)?);
+                continue;
+            }
+            if tag == BLND && blinds.is_none() {
+                blinds = Some(decode(BLND, payload)?);
+                continue;
+            }
+            if tag == BARR && barricades.is_none() {
+                barricades = Some(decode(BARR, payload)?);
+                continue;
+            }
+            if tag == BAGS && bags.is_none() {
+                bags = Some(decode(BAGS, payload)?);
+                continue;
+            }
+            if tag == LEVL && levels.is_none() {
+                levels = Some(decode(LEVL, payload)?);
+                continue;
+            }
+            if tag == FIRE && fires.is_none() {
+                fires = Some(decode(FIRE, payload)?);
+                continue;
+            }
+            if tag == WTHR && weather.is_none() {
+                weather = Some(decode(WTHR, payload)?);
+                continue;
+            }
+            if tag == EVNT && event_state.is_none() {
+                event_state = Some(decode(EVNT, payload)?);
+                continue;
+            }
+            if tag == DEAD && dead.is_none() {
+                dead = Some(decode(DEAD, payload)?);
+                continue;
+            }
+            if tag == SHOV && shoved.is_none() {
+                shoved = Some(decode(SHOV, payload)?);
+                continue;
+            }
+            if tag == MODS && script.is_none() {
+                script = Some(decode(MODS, payload)?);
+                continue;
+            }
+            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || origins.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || power.is_some() || shoved.is_some() || blinds.is_some() || barricades.is_some() || levels.is_some() || bags.is_some() || fires.is_some() || weather.is_some() || seats.is_some() || dead.is_some() {
                 return Err(corrupt(format!("unexpected {} section", tag_name(tag))));
             }
             let block: ZombieBlock = decode(ZOMB, payload)?;
@@ -864,15 +1349,207 @@ impl World {
         if z.len() != ws.zombies as usize {
             return Err(corrupt(format!("{} zombies stored, {} expected", z.len(), ws.zombies)));
         }
-        for (id, run) in runs.unwrap_or_default() {
+        for (id, mut run) in runs.unwrap_or_default() {
             let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("run stats for player {id}, who isn't in the save")))?;
             run.check(p.dead).map_err(|why| save_check::invalid(format!("player {id}: {why}")))?;
+            // The weapon another player killed with, in the content's list now (gone: unnamed).
+            if let (Some(map), Some(crate::run::Death { cause: crate::run::DeathCause::Survivor { weapon, .. }, .. })) = (&plan.weapon_map, &mut run.death) {
+                *weapon = map.get(*weapon as usize).copied().flatten().unwrap_or(u16::MAX);
+            }
             p.run = run;
+        }
+        for (id, night) in nights.unwrap_or_default() {
+            let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("a first night for player {id}, who isn't in the save")))?;
+            night.check().map_err(|why| save_check::invalid(format!("player {id}: {why}")))?;
+            p.first_night = Some(night);
+        }
+        for (id, origin) in origins.unwrap_or_default() {
+            let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("an origin for player {id}, who isn't in the save")))?;
+            origin.check().map_err(|why| save_check::invalid(format!("player {id}'s origin: {why}")))?;
+            p.origin = origin;
+        }
+        for (id, seen) in maps.unwrap_or_default() {
+            let (mw, mh, buildings) = (w.map.width(), w.map.height(), w.map.buildings.len());
+            let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("a map for player {id}, who isn't in the save")))?;
+            match seen.check(mw, mh, buildings) {
+                Ok(()) => p.explored = seen,
+                // Loaded anyway onto another map: what was seen of the old one means nothing here.
+                Err(_) if options.force => {}
+                Err(why) => return Err(save_check::invalid(format!("player {id}: {why}"))),
+            }
+        }
+        for (id, knock) in knocks.unwrap_or_default() {
+            let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("player {id} is knocked back, but isn't in the save")))?;
+            if p.dead || p.knock.is_some() || !knock.timer.is_finite() || !(0.0..=60.0).contains(&knock.timer) {
+                return Err(save_check::invalid(format!("player {id}: knocked back for {} s (dead: {})", knock.timer, p.dead)));
+            }
+            p.knock = Some(knock);
+        }
+        for (id, seat) in seats.unwrap_or_default() {
+            let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("player {id} is sitting down, but isn't in the save")))?;
+            if p.dead || p.seated.is_some() {
+                return Err(save_check::invalid(format!("player {id}: sitting down (dead: {})", p.dead)));
+            }
+            p.seated = Some(seat);
+        }
+        // Blinds: the save's replace the generated ones. One on an edge that takes none (a map
+        // regenerated anyway) is dropped, else the save is refused.
+        if let Some((list, glazed)) = blinds {
+            // Glass in doors first: the save's, on what are doors on this map.
+            let mut doors = std::collections::BTreeSet::new();
+            for key in glazed {
+                let e = crate::world::edge_of_key(key);
+                let door = |k: crate::map::Edge| k.is_door() || k == crate::map::Edge::DoorBroken || k == crate::map::Edge::DoorBoarded;
+                if !w.map.in_bounds(e.tile) || key.2 > 1 || !door(w.map.owned_edge(e.tile, e.edge)) {
+                    if new_map {
+                        continue;
+                    }
+                    return Err(save_check::invalid(format!("glass in a door at {} {:?}, where there's no door", e.tile, e.edge)));
+                }
+                doors.insert(key);
+            }
+            w.map.glazed = doors;
+            let mut kept = std::collections::BTreeMap::new();
+            let mut dropped = 0;
+            for (key, down) in list {
+                let e = crate::world::edge_of_key(key);
+                if !w.map.in_bounds(e.tile) || key.2 > 1 || !w.map.takes_blind(e) {
+                    if new_map {
+                        dropped += 1;
+                        continue;
+                    }
+                    return Err(save_check::invalid(format!("a blind at {} {:?}, where there's no window or glass door ({:?})", e.tile, e.edge, w.map.owned_edge(e.tile, e.edge))));
+                }
+                kept.insert(key, down);
+            }
+            if dropped > 0 {
+                notes.push(format!("{dropped} blinds dropped: their windows or doors aren't on the new map"));
+            }
+            w.map.blinds = kept;
+        }
+        // Which pouch each carried stack is in (a list that doesn't fit its player's stacks, after
+        // a forced load dropped some, is left out: `settle` puts them away afresh).
+        for (id, homes) in bags.unwrap_or_default() {
+            if let Some(p) = w.players.iter_mut().find(|p| p.id == id) {
+                p.inventory.set_homes(&homes);
+            }
+        }
+
+        // Barricades (`crate::build`): each on a boarded edge of its kind, and every boarded edge
+        // with one. On a map regenerated anyway, or with a build gone from the catalog, the misfits
+        // go back to what they were underneath, with a note.
+        save_check::load_barricades(&mut w, barricades.unwrap_or_default(), new_map, &mut notes)?;
+        // Who and what is upstairs (`crate::stairs`). On a map that no longer has a floor there
+        // (loaded anyway onto a changed one), they are on the ground floor.
+        let (levels, up_items) = levels.unwrap_or_default();
+        for (id, level) in levels {
+            let map = &w.map;
+            let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("player {id} is upstairs, but isn't in the save")))?;
+            if level != 1 || p.state.level != 0 {
+                return Err(save_check::invalid(format!("player {id} on floor {level}")));
+            }
+            if map.upper_tile(p.state.pos.floor().as_ivec2()).is_some_and(|u| u.floor && !u.blocked) {
+                p.state.level = 1;
+            } else {
+                notes.push(format!("player {id} was upstairs where there is no floor now: put on the ground floor"));
+            }
+        }
+        if up_items.windows(2).any(|p| p[0] >= p[1]) {
+            return Err(save_check::invalid("upstairs items out of order"));
+        }
+        for id in up_items {
+            let it = w.items.iter().find(|it| it.id == id).ok_or_else(|| save_check::invalid(format!("ground item {id} is upstairs, but isn't in the save")))?;
+            if w.map.upper_tile(it.pos.floor().as_ivec2()).is_some_and(|u| u.floor) {
+                w.upstairs.insert(id);
+            }
+        }
+        for (id, c) in climbs.unwrap_or_default() {
+            let (map, give_up) = (&w.map, w.config.climb.give_up_secs);
+            let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("player {id} is climbing, but isn't in the save")))?;
+            let finite = [c.at.x, c.at.y, c.dir.x, c.dir.y, c.left].iter().all(|v| v.is_finite());
+            if p.dead || p.state.climb.is_some() || !finite || !map.in_bounds(c.at.floor().as_ivec2()) || (c.dir.length() - 1.0).abs() > 1e-3 || !(0.0..=give_up.max(60.0)).contains(&c.left) {
+                return Err(save_check::invalid(format!("player {id}: climbing at {} toward {} for {} s (dead: {})", c.at, c.dir, c.left, p.dead)));
+            }
+            p.state.climb = Some(c);
+        }
+        // Tied hands (#73). An item that is gone from the content: the hands are free.
+        for (id, item, by, struggled, struggling) in bonds.unwrap_or_default() {
+            let found = w.config.items.iter().position(|d| d.id == item);
+            let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("player {id} is tied up, but isn't in the save")))?;
+            if p.dead || p.restraint.is_some() || !struggled.is_finite() || !(0.0..=36_000.0).contains(&struggled) {
+                return Err(save_check::invalid(format!("player {id}: tied up, struggled {struggled} s (dead: {})", p.dead)));
+            }
+            match found {
+                Some(item) => p.restraint = Some(crate::bonds::Restraint { item: item as u16, by, struggled, struggling }),
+                None => notes.push(format!("player {id} was tied with {item:?}, which is gone: its hands are free")),
+            }
+        }
+        if let Some(g) = groups {
+            let (players, map) = (&w.players, &w.map);
+            g.check(|id| players.iter().any(|p| p.id == id), |pos| map.in_bounds(pos.floor().as_ivec2()), &w.config.groups).map_err(save_check::invalid)?;
+            w.groups = g;
         }
         let mut order: Vec<usize> = (0..z.len()).collect();
         order.sort_by_key(|&i| z.id[i]);
         w.zombies = reorder(z, &order);
         w.rise_looks = looks.unwrap_or_default();
+        let shoved = shoved.unwrap_or_default();
+        if shoved.windows(2).any(|p| p[0].zombie >= p[1].zombie) || shoved.iter().any(|s| s.tick > w.tick || s.count == 0) {
+            return Err(save_check::invalid("shoved zombies out of order, shoved after the save, or shoved no times"));
+        }
+        w.shoved = shoved;
+        w.far_ticks = far.unwrap_or(0);
+        if let Some(f) = fires {
+            match f.check(&w.map) {
+                Ok(()) => w.fires = f,
+                Err(why) => return Err(save_check::invalid(why)),
+            }
+        }
+        if let Some(f) = weather {
+            f.check().map_err(save_check::invalid)?;
+            w.weather_forced = Some(f);
+        }
+        if let Some(e) = event_state {
+            e.check().map_err(save_check::invalid)?;
+            w.events = e;
+        }
+        if let Some(d) = dead {
+            w.restore_deadwood(d).map_err(save_check::invalid)?;
+        }
+        if let Some(p) = power {
+            match crate::power::Power::from_save(p, &w.map) {
+                Ok(p) => w.power = p,
+                // Loaded anyway onto a new map: its rooms aren't the old ones.
+                Err(_) if new_map => notes.push("the map changed: the lights are as in a new world".into()),
+                Err(why) => return Err(save_check::invalid(why)),
+            }
+        }
+        if let Some(mut state) = script {
+            state.check(w.config.items.len(), w.config.recipes.len()).map_err(|why| save_check::invalid(format!("script state: {why}")))?;
+            // Whose scripts ran the world then, against whose run it now.
+            let now = w.script_mods();
+            for (id, hash) in &state.mods {
+                match now.iter().find(|(n, _)| n == id) {
+                    None => notes.push(format!("mod {id} isn't loaded: its scripts won't run (what it stored is kept)")),
+                    Some((_, h)) if h != hash => notes.push(format!("mod {id}'s scripts changed: the new ones carry on from what the old ones stored")),
+                    Some(_) => {}
+                }
+            }
+            for (id, _) in now.iter().filter(|(n, _)| !state.mods.iter().any(|(s, _)| s == n)) {
+                notes.push(format!("mod {id} is new to this save: its scripts start now"));
+            }
+            state.mods.clear();
+            if w.scripts.is_none() {
+                // Nothing would ever take them.
+                state.pending.clear();
+            }
+            w.script = state;
+        } else {
+            for (id, _) in w.script_mods() {
+                notes.push(format!("mod {id} is new to this save: its scripts start now"));
+            }
+        }
+        save_check::check_far_clock(&w)?;
         save_check::check_looks(&w)?;
         if new_map {
             save_check::fit_to_new_map(&mut w, &mut notes);
@@ -884,13 +1561,41 @@ impl World {
         // What's in hand and what the load does to movement follow from the inventories.
         w.refresh_all_carry();
         save_check::validate(&w)?;
+        // Drivers back at their wheels.
+        w.seat_drivers().map_err(save_check::invalid)?;
+        // Logged-out survivors and spawn protection (#68); those out of the world are set aside.
+        let away = away.unwrap_or_default();
+        let limit = crate::logout::MAX_LOGOUT_SECS;
+        for (what, list) in [("logged out", &away.leaving), ("protected", &away.protected)] {
+            for &(id, secs) in list {
+                let p = w.players.iter_mut().find(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("player {id} is {what}, but isn't in the save")))?;
+                if p.dead || !secs.is_finite() || !(0.0..=limit).contains(&secs) || away.parked.contains(&id) {
+                    return Err(save_check::invalid(format!("player {id}: {what} for {secs} s (dead: {})", p.dead)));
+                }
+                if what == "protected" {
+                    p.protected = secs;
+                } else {
+                    p.away = Some(secs);
+                }
+            }
+        }
+        for (k, &id) in away.parked.iter().enumerate() {
+            let pi = w.players.iter().position(|p| p.id == id).ok_or_else(|| save_check::invalid(format!("player {id} is out of the world, but isn't in the save")))?;
+            let p = &w.players[pi];
+            if p.dead || away.parked[..k].contains(&id) || !p.jobs.is_empty() || p.action.is_some() || p.knock.is_some() {
+                return Err(save_check::invalid(format!("player {id}: out of the world, but dead, busy or listed twice")));
+            }
+            let p = w.players.remove(pi);
+            w.parked.push(p);
+        }
+        w.parked.sort_by_key(|p| p.id);
 
         // Derived state, as the end of a tick leaves it.
         let (states, tier) = (&w.zombies.state, &w.zombies.tier);
         w.hash.rebuild_where(&w.zombies.pos, |i| states[i] != ZombieState::Dead && tier[i] != Tier::Virtual);
         w.regions.rebuild_where(&w.zombies.pos, |i| states[i] != ZombieState::Dead && tier[i] == Tier::Virtual);
         if !w.players.is_empty() {
-            w.chunk_dist.update(&w.map, w.players.iter().map(|p| p.state.pos));
+            w.chunk_dist.update(&w.map, w.players.iter().map(|p| p.state.pos), w.config.tiers.chunk_reach());
         }
         // No tick has run since: only the tier counts are known.
         [w.stats.active, w.stats.near, w.stats.virtual_] = w.tier_counts();
@@ -917,7 +1622,7 @@ pub(crate) mod tests {
         parse_weapons(include_str!("../../../assets/data/items/weapons.ron")).unwrap()
     }
 
-    fn content() -> WorldConfig {
+    pub(crate) fn content() -> WorldConfig {
         let items = crate::items::parse_items(include_str!("../../../assets/data/items/items.ron"), &weapons()).unwrap();
         let containers = crate::containers::parse_containers(include_str!("../../../assets/data/containers.ron")).unwrap();
         WorldConfig::new(5, 0, templates()).with_weapons(weapons()).with_items(items).with_containers(containers).with_loot(crate::loot::tests::shipped())
@@ -1086,6 +1791,29 @@ pub(crate) mod tests {
         assert_eq!((info.tick, info.zombies, info.players), (100, w.zombies.len() as u32, 1));
     }
 
+    /// A climb under way (E over a fence or through a window) is saved and carries on after a load.
+    #[test]
+    fn a_climb_under_way_survives_a_save() {
+        let mut w = world(0);
+        let id = w.add_player(w.player_spawn);
+        let c = crate::players::Climb { at: w.player_spawn + Vec2::new(0.6, 0.0), dir: Vec2::X, left: 3.0 };
+        w.players[0].state.climb = Some(c);
+        let bytes = w.save();
+        let mut loaded = World::load(&bytes, &content()).unwrap();
+        assert_eq!(loaded.players[0].state.climb, Some(c));
+        assert_eq!(loaded.state_hash(), w.state_hash());
+        for t in 0..10 {
+            for x in [&mut w, &mut loaded] {
+                x.set_player_input(id, t + 1, PlayerInput::default());
+                x.step();
+            }
+            assert_eq!(loaded.state_hash(), w.state_hash(), "tick {t}");
+        }
+        // Climbing nowhere: refused.
+        w.players[0].state.climb = Some(crate::players::Climb { dir: Vec2::new(3.0, 0.0), ..c });
+        assert!(matches!(World::load(&w.save(), &content()), Err(LoadError::Invalid(_))));
+    }
+
     /// The real test: a saved and loaded world steps exactly like the original, through combat,
     /// broken doors, corpses, all three tiers, attractors and respawn.
     #[test]
@@ -1239,14 +1967,14 @@ pub(crate) mod tests {
         assert_eq!(loaded.state_hash(), w.state_hash());
 
         // The same save with every section but RUNS, as format 4 wrote it before #13.
-        let rewrite = |runs: Option<&[u8]>| {
+        let rewrite = |runs: Option<([u8; 4], &[u8])>| {
             let mut r = Reader::new(&bytes).unwrap();
             let mut out = Writer::new();
             loop {
                 let (tag, payload) = r.next().unwrap();
-                if tag == RUNS {
-                    if let Some(p) = runs {
-                        out.section(RUNS, p);
+                if tag == RUN2 {
+                    if let Some((tag, p)) = runs {
+                        out.section(tag, p);
                     }
                     continue;
                 }
@@ -1263,7 +1991,14 @@ pub(crate) mod tests {
         assert_eq!(old.state_hash(), w.state_hash());
 
         // A living player with a cause of death, a player who isn't there, a negative distance.
-        let forged = |runs: Vec<(u32, crate::run::RunStats)>| World::load(&rewrite(Some(&encode(&runs))), &content()).map(|_| ());
+        // A `RUNS` section as written before PvP (no count of players killed) still loads.
+        type Old = (f64, f64, u32, f64, u32, u32, u32, f32, Option<crate::run::Death>);
+        let as_old = |r: &crate::run::RunStats| -> Old { (r.secs, r.hours, r.kills, r.distance_m, r.items_taken, r.searched, r.wounds, r.hp_lost, r.death) };
+        let legacy: Vec<(u32, Old)> = vec![(a, as_old(&ra)), (b, as_old(&rb))];
+        let old = World::load(&rewrite(Some((RUNS, &encode(&legacy)))), &content()).unwrap();
+        assert_eq!((&old.player(a).unwrap().run, &old.player(b).unwrap().run), (&ra, &rb));
+
+        let forged = |runs: Vec<(u32, crate::run::RunStats)>| World::load(&rewrite(Some((RUN2, &encode(&runs)))), &content()).map(|_| ());
         assert!(matches!(forged(vec![(a, rb.clone())]), Err(LoadError::Invalid(_))));
         assert!(matches!(forged(vec![(99, ra.clone())]), Err(LoadError::Invalid(_))));
         let bad = crate::run::RunStats { distance_m: -1.0, ..ra.clone() };

@@ -9,7 +9,9 @@ bakes its procedural grey-box zombie the same way at startup). See `.claude/skil
 A clip is `(action, frames, mode)`: mode `"loop"` samples one cycle found by `zchar.loop_frames` (Meshy
 bakes several into a clip), `"cycle"` takes the action's frame range as exactly one closed cycle (its last
 frame is its first again, as a cleaned-up clip keyed at whole frames is), `"once"` spans the range first to
-last. `frames` None: one per source frame (a cycle of n frames gives n, a one-shot n + 1).
+last. `frames` None: one per source frame (a cycle of n frames gives n, a one-shot n + 1), or with
+`rate` (frames a second) that many: the crowd bakes at 15 (`crowd`'s `fps`), which the client plays by
+seconds, so only the sampling changes, not the speed.
 
 **Outfit variants** (`crowd`): one mesh per variant, the body (often its crowd LOD) with the regions a
 wearable hides cut away, plus each wearable it wears, all baked together into one `.zvat`, because the
@@ -19,12 +21,12 @@ visible body never samples (texels only the hidden regions used, or none did), a
 material has its UVs on that colour's swatch. So each variant has its own texture, `<variant>.png` beside
 `<variant>.zvat` (the client looks for `<stem>.png` there). See `crowd`.
 
-File (little-endian), version 1:
+File (little-endian), version 2 (1 had f32 positions; the client reads both):
     b"ZVAT", u32 version, u32 vertices V, u32 indices I, u32 clips C
     C × clip: 16-byte name (UTF-8, zero padded), u32 frames, f32 seconds per play,
               f32 stride (metres per loop at walking speed, 0 = fixed rate), u32 one_shot (0/1)
     V × 2 f32 UV (glTF convention: v down), I × u32 triangle indices
-    per clip, per frame, V × 3 f32 positions
+    per clip, per frame, V × 3 f16 positions (the precision the client's RGBA16F VAT holds anyway)
 Positions are game model space: metres, Y up, facing +Z, feet at y = 0 (Blender x, z, -y). Vertices
 are split where UVs differ, like a glTF export, so each one has a single UV.
 """
@@ -39,7 +41,7 @@ import numpy as np
 
 import zchar
 
-VERSION = 1
+VERSION = 2
 REGIONS = ("Head", "Torso", "Arms", "Hands", "Legs", "Feet")  # as zgarment.REGIONS (the `_region` attribute)
 
 
@@ -82,7 +84,12 @@ def _split_vertices(me, hidden=None, uv_of_material=None):
 
 def _stride(arm, action, f0, cycle, fps):
     """Metres the body would cover per loop of an in-place walk: while a foot is planted (in its lowest
-    fifth) it slides backward at the walking speed."""
+    fifth) it slides backward at the walking speed. An action with a `stride_m` custom property (metres a
+    loop, from the clip's root-motion version) is taken at its word: a dragging or limping walk keeps a
+    foot low the whole cycle, and the median slide of the low feet then says nothing."""
+    given = bpy.data.actions[action].get("stride_m")
+    if given is not None:
+        return float(given)
     pb = arm.pose.bones
     feet = [b for b in pb if "foot" in b.name.lower()]
     if not feet:
@@ -115,7 +122,7 @@ class Part:
         self.obj, self.hide, self.uv_of_material = obj, set(hide), uv_of_material
 
 
-def bake(out_path, clips, parts=None, arm=None):
+def bake(out_path, clips, parts=None, arm=None, rate=None):
     """Bakes `clips` [(action, frames | None, "loop" | "cycle" | "once")] of the Asset collection's
     character (or of `parts`, a list of `Part`s deformed by `arm`, merged into one mesh). Returns a
     summary: vertices, triangles, rows, bytes, and per clip its frames, seconds, stride, how well a loop
@@ -147,12 +154,12 @@ def bake(out_path, clips, parts=None, arm=None):
         if mode in ("loop", "cycle"):
             if mode == "cycle":
                 cycle, err = f1 - f0, None
-            frames = frames or int(round(cycle))
+            frames = frames or (max(2, int(round(cycle * rate / fps))) if rate else int(round(cycle)))
             span, times = cycle, [f0 + cycle * k / frames for k in range(frames)]
             stride = _stride(arm, name, f0, cycle, fps)
         else:
             span, err, stride = f1 - f0, 0.0, 0.0
-            frames = frames or int(round(span)) + 1
+            frames = frames or (max(2, int(round(span * rate / fps)) + 1) if rate else int(round(span)) + 1)
             times = [f0 + span * k / max(frames - 1, 1) for k in range(frames)]
         ad.action = action
         rows, tops, lows = [], [], []
@@ -172,7 +179,7 @@ def bake(out_path, clips, parts=None, arm=None):
             err = float(np.linalg.norm(rows[-1] - rows[0], axis=1).mean())
             rows = rows[:-1]
         for r in rows:
-            frames_data.append(r.astype("<f4").tobytes())
+            frames_data.append(r.astype("<f2").tobytes())
             tops.append(float(r[:, 1].max()))
             lows.append(float(r[:, 1].min()))
         secs = span / fps
@@ -321,6 +328,7 @@ def crowd(spec, export_dir, arm=None):
 
         crowd: (
             mesh: "<id>_lod1",                  // the body mesh the crowd draws (e.g. its LOD)
+            fps: 15,                            // frames a second baked (default 15; 0: every source frame)
             clips: [("idle", "cycle"), ("walk", "cycle"), ("stagger", "once"), ...],   // every source frame
             variants: [
                 (id: "<id>", wear: []),         // the body alone: its own texture, copied as <id>.<ext>
@@ -341,6 +349,7 @@ def crowd(spec, export_dir, arm=None):
     bpy.context.view_layer.update()
     wear_spec = {g["id"]: g for g in spec.get("wearables", [])}
     clips = [(c[0], None, c[1]) for c in cfg["clips"]]
+    rate = cfg.get("fps", 15) or None
     export_dir = Path(export_dir)
     out = []
     for v in cfg["variants"]:
@@ -369,7 +378,7 @@ def crowd(spec, export_dir, arm=None):
             dst = export_dir / f"{v['id']}{src.suffix.lower()}"
             shutil.copyfile(src, dst)
             note = f"texture {src.name} copied as {dst.name}"
-        info = bake(export_dir / f"{v['id']}.zvat", clips, parts, arm)
+        info = bake(export_dir / f"{v['id']}.zvat", clips, parts, arm, rate)
         info["texture"] = note
         info["wear"], info["hidden"] = wear, sorted(hide)
         out.append(info)

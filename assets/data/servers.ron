@@ -1,0 +1,21 @@
+// The server browser's list (#27; F7 in the game): the servers it shows when no other list is set.
+// Shipped empty: nobody runs a public list for the game yet, and the game asks no service of ours.
+//
+// Use another list with `--server-list FILE|http://HOST/PATH`, or `server_list: Some("...")` in
+// the client's settings.ron (in the saves folder). Anyone can keep one: it is this format, as a
+// file or behind a plain http:// address (https can't be read yet).
+//
+//   address   host or host:port (port 7777 without). Required.
+//   name      shown until the server answers with its own name.
+//   featured  true puts it in the Featured section at the top.
+//   note      one line from the list's keeper: region, who hosts it, when it restarts.
+//
+// (
+//     servers: [
+//         (address: "play.example.org", name: "Example co-op", featured: true, note: "EU, hosted by Example"),
+//         (address: "203.0.113.7:7778"),
+//     ],
+// )
+(
+    servers: [],
+)

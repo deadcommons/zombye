@@ -9,6 +9,9 @@ Not covered by this licence (MIT OR Apache-2.0, like the code):
 - assets/data/ (building templates, items, population and other game data)
 - assets/shaders/ (shader source code)
 
+Not covered either, and not ours: assets/fonts/barlow/ (the Barlow typefaces, Copyright 2017 The
+Barlow Project Authors, SIL Open Font License 1.1: assets/fonts/barlow/OFL.txt).
+
 An asset whose row in ATTRIBUTION.md names a different licence (for example CC0, or a third-party
 CC BY asset) is under that licence instead.
 
@@ -20,4 +23,5 @@ Zombye, including monetised ones, without asking. This permission is in addition
 CC BY-NC-SA 4.0.
 
 The Zombye and Dead Commons names and logos are trademarks covered by
-docs/brand/LICENSE-brand.txt, not by this licence.
+docs/brand/LICENSE-brand.txt, not by this licence, wherever a copy of them appears (the app icon
+and the logo in an official build included).

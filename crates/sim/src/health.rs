@@ -139,10 +139,12 @@ pub enum WoundKind {
     Bite,
     /// From window glass.
     GlassCut,
+    /// From standing in a fire (`crate::fire`). Added last, so saves from before read as they did.
+    Burn,
 }
 
 impl WoundKind {
-    pub const ALL: [WoundKind; 5] = [Self::Bruise, Self::Scratch, Self::Gash, Self::Bite, Self::GlassCut];
+    pub const ALL: [WoundKind; 6] = [Self::Bruise, Self::Scratch, Self::Gash, Self::Bite, Self::GlassCut, Self::Burn];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -151,6 +153,7 @@ impl WoundKind {
             Self::Gash => "gash",
             Self::Bite => "bite",
             Self::GlassCut => "glass cut",
+            Self::Burn => "burn",
         }
     }
 
@@ -557,6 +560,8 @@ pub struct HealthTuning {
     pub gash: WoundTuning,
     pub bite: WoundTuning,
     pub glass_cut: WoundTuning,
+    /// A burn from standing in a fire (`crate::fire`): doesn't bleed, hurts, heals slowly.
+    pub burn: WoundTuning,
     /// Each wound's healing time is rolled within ± this share of its kind's.
     pub heal_spread: f32,
     /// A stitched wound heals this many times as fast (#10).
@@ -627,6 +632,7 @@ impl Default for HealthTuning {
             gash: wound((9.0, 13.0), 10.0, None, 40.0, 0.15, 0.7, 1.0, true),
             bite: wound((12.0, 18.0), 14.0, None, 60.0, 0.2, 0.5, 1.0, true),
             glass_cut: wound((5.0, 8.0), 8.0, None, 18.0, 0.12, 0.8, 1.0, true),
+            burn: wound((5.0, 9.0), 0.0, None, 30.0, 0.2, 0.6, 0.5, true),
             heal_spread: 0.25,
             stitched_heal_speed: 2.0,
             dressed_gash_bleed: 0.25,
@@ -682,6 +688,7 @@ impl HealthTuning {
             WoundKind::Gash => &self.gash,
             WoundKind::Bite => &self.bite,
             WoundKind::GlassCut => &self.glass_cut,
+            WoundKind::Burn => &self.burn,
         }
     }
 
@@ -784,7 +791,7 @@ impl InfectionTuning {
             WoundKind::Bite => bite,
             WoundKind::Gash => gash,
             WoundKind::Scratch => scratch,
-            WoundKind::Bruise | WoundKind::GlassCut => 0.0,
+            WoundKind::Bruise | WoundKind::GlassCut | WoundKind::Burn => 0.0,
         }
     }
 
@@ -867,7 +874,7 @@ impl World {
         let heal_h = t.wound(kind).heal_h.max(0.01) * self.combat_rng.range(1.0 - spread, 1.0 + spread);
         let infected = match infect {
             Some(forced) => forced,
-            None => zombie && self.combat_rng.f32() < inf.chance(kind),
+            None => zombie && self.combat_rng.f32() < inf.chance(kind) * self.players[pi].origin.perks.infection,
         };
         let stages = infected.then(|| {
             let m = inf.stage_mult.clamp(0.5, 3.0);
@@ -909,7 +916,7 @@ impl World {
         let p = &self.players[pi];
         let (pos, id, god) = (p.state.pos, p.id, p.dev.god);
         let dir = (pos - from).normalize_or(Vec2::X);
-        self.push_combat_event(CombatEvent { kind: CombatEventKind::PlayerHurt, pos, dir, zombie, player: id, damage, crit: false, part: Some(part), wound: Some(kind) });
+        self.push_combat_event(CombatEvent { kind: CombatEventKind::PlayerHurt, pos, dir, zombie, player: id, damage, crit: false, part: Some(part), wound: Some(kind), by: 0 });
         if !god {
             self.add_wound(pi, part, kind, zombie != 0, None);
         }
@@ -930,7 +937,7 @@ impl World {
         let damage = self.combat_rng.range(lo, hi);
         self.add_wound(pi, part, kind, zombie, infect)?;
         let pos = self.players[pi].state.pos;
-        self.push_combat_event(CombatEvent { kind: CombatEventKind::PlayerHurt, pos, dir: Vec2::X, zombie: 0, player: id, damage, crit: false, part: Some(part), wound: Some(kind) });
+        self.push_combat_event(CombatEvent { kind: CombatEventKind::PlayerHurt, pos, dir: Vec2::X, zombie: 0, player: id, damage, crit: false, part: Some(part), wound: Some(kind), by: 0 });
         self.hurt_player_by(pi, damage, DeathCause::Wound { part, wound: kind });
         Some(damage)
     }
@@ -1021,6 +1028,9 @@ impl World {
         if let Some(wore) = self.rise_looks.bodies.remove(&self.players[pi].id) {
             self.rise_looks.risen.insert(self.zombies.id[zi], wore);
         }
+        // The clothes it kept on went with it (`drop_everything`).
+        self.players[pi].inventory.worn.clear();
+        self.refresh_carry(pi);
         self.private_dirty.insert(self.players[pi].id);
     }
 
@@ -1054,6 +1064,7 @@ impl World {
             }
             let before = signature(&p.health, t);
             let pid = p.id as u64;
+            let perks = p.origin.perks;
             let h = &mut p.health;
             let stopped = h.healing_stopped();
             // An antibiotic dose working: nothing starts festering (#10).
@@ -1073,10 +1084,10 @@ impl World {
                 match wt.bleeds_for_h {
                     // Stops by itself: it bleeds only for the part of this step before then.
                     Some(stop) if w.bleeding && w.age_h >= stop => {
-                        loss += w.bleed_per_h(t) * (stop - age).clamp(0.0, dt_h);
+                        loss += w.bleed_per_h(t) * (stop - age).clamp(0.0, dt_h) * perks.bleeding;
                         w.bleeding = false;
                     }
-                    _ => loss += w.bleed_per_h(t) * dt_h,
+                    _ => loss += w.bleed_per_h(t) * dt_h * perks.bleeding,
                 }
                 // Festering: one seeded roll per game hour of the wound's life.
                 let mut k = hour + 1.0;
@@ -1090,7 +1101,7 @@ impl World {
                     loss += t.fester_hp_per_h * dt_h;
                 }
                 if !stopped {
-                    w.healed_h += dt_h * w.heal_speed(t);
+                    w.healed_h += dt_h * w.heal_speed(t) * perks.healing;
                 }
             }
             h.wounds.retain(|w| w.healed_h < w.heal_h);
@@ -1485,7 +1496,7 @@ mod tests {
         assert!((me(&w, id).ready_in - bat.swing_seconds * e.swing_time).abs() < 1e-4);
         w.inflict_wound(id, Part::Torso, WoundKind::Bite, Some(false)).unwrap();
         // (On top of a new survivor's Fitness, #46.)
-        let fit = w.config.skills.move_mods(1, crate::players::MoveMods::default()).regen;
+        let fit = w.config.skills.move_mods(w.config.skills.start_fitness, crate::players::MoveMods::default()).regen;
         assert!((me(&w, id).state.mods.regen - 0.8 * fit).abs() < 1e-4);
     }
 
@@ -1520,7 +1531,7 @@ mod tests {
         assert!(p.hp < 100.0 - 6.0 - 1.9);
     }
 
-    /// A turned player rises in what it wore (#63), though its things fell where it lay; the look
+    /// A turned player rises in what it wore (#63), though its other things fell where it lay; the look
     /// survives a save, and goes when the corpse is cleared away.
     #[test]
     fn a_turned_player_rises_in_what_it_wore() {
@@ -1539,12 +1550,17 @@ mod tests {
         while !me(&w, id).dead {
             w.skip_time(0.01);
         }
-        assert!(me(&w, id).inventory.worn.is_empty(), "everything fell where it lay");
+        // It keeps on what it wears, to rise in it (and to be taken off it once put down), so
+        // none of it lies on the floor as well.
+        assert_eq!(me(&w, id).inventory.worn.len(), 2, "the body keeps its clothes on");
+        let hoodie = w.item_index("hoodie").unwrap();
+        assert!(w.items.iter().all(|it| it.stack.item != hoodie), "no second hoodie on the floor");
         let zombies = w.zombies.len();
         for _ in 0..(31.0 / TICK_DT) as u32 {
             w.step();
         }
         assert_eq!(w.zombies.len(), zombies + 1, "the body rose");
+        assert!(me(&w, id).inventory.worn.is_empty(), "and took its clothes with it");
         let zid = w.zombies.id[zombies];
         assert_eq!(w.risen_look(zid), Some(&["hoodie".to_string(), "glasses".to_string()][..]));
         let back = World::load(&w.save(), &w.config).unwrap();
@@ -1696,6 +1712,7 @@ mod tests {
                 w.players[0].state.pos = Vec2::new(101.8, 100.5);
                 for t in 0..80u32 {
                     w.set_player_input(id, k * 100 + t + 1, PlayerInput { move_dir: Vec2::X, facing: 0.0, run: false, sneak: false, aim: false });
+                    w.player_climb(id);
                     w.step();
                 }
                 assert!(me(&w, id).state.pos.x > 103.5, "didn't get through");
@@ -1718,7 +1735,7 @@ mod tests {
         assert!(w.poison_player(id, 1.0));
         let p = me(&w, id);
         assert!(!p.health.can_eat() && p.health.sick() && p.health.thirst_mult(&w.config.health) == 2.0);
-        let fit = w.config.skills.move_mods(1, crate::players::MoveMods::default()).regen;
+        let fit = w.config.skills.move_mods(w.config.skills.start_fitness, crate::players::MoveMods::default()).regen;
         assert!((p.state.mods.regen - 0.7 * fit).abs() < 1e-5);
         assert!(w.health_view(id).unwrap().food_poisoning);
         w.skip_time(14.5);

@@ -374,18 +374,21 @@ def creak(sec, rng, rate_lo, rate_hi):
 
 
 def door_open(rng):
-    s = silence(0.9)
+    # A modern house door (no creak): the handle pressed and the latch clicking free, a soft knock of
+    # the leaf leaving the frame, then the handle springing back up.
+    s = silence(0.5)
     place(s, latch(rng), 0.0, 0.8)
-    place(s, creak(0.7, rng, 160, 320), 0.08, 1.0)
+    place(s, thud(0.12, rng.uniform(170, 200), 120, 0.03), 0.03, 0.35)
+    place(s, latch(rng), rng.uniform(0.28, 0.34), 0.45)
     return s
 
 
 def door_close(rng):
-    s = silence(0.7)
-    place(s, creak(0.28, rng, 260, 420), 0.0, 0.6)
-    place(s, thud(0.3, 95, 50, 0.08), 0.3, 1.0)
-    place(s, burst(0.2, rng, "lp", 700, 0.7, 0.001, 0.05), 0.3, 0.6)
-    place(s, latch(rng), 0.32, 0.6)
+    # The leaf meeting the frame with a firm thud and the latch clicking home.
+    s = silence(0.55)
+    place(s, thud(0.3, 95, 50, 0.08), 0.0, 1.0)
+    place(s, burst(0.2, rng, "lp", 700, 0.7, 0.001, 0.05), 0.0, 0.6)
+    place(s, latch(rng), 0.02, 0.6)
     return s
 
 
@@ -476,6 +479,15 @@ def pickup(rng):
     return s
 
 
+def light_switch(rng):
+    """A rocker snapping over: a sharp plastic tick and a softer one as it seats."""
+    s = silence(0.12)
+    place(s, burst(0.012, rng, "bp", 4200, 1.5, 0.0002, 0.003), 0.0, 1.0)
+    place(s, ring(0.04, rng.uniform(2600, 2900), 0.008, ((1, 1), (2.3, 0.3))), 0.0, 0.5)
+    place(s, burst(0.01, rng, "bp", 1800, 1.2, 0.0003, 0.004), 0.018, 0.45)
+    return s
+
+
 def level_up(rng):
     s = silence(0.8)
     for at, f in ((0.0, 659.3), (0.12, 880.0)):
@@ -557,7 +569,6 @@ add("sfx", "body_fall", body_fall, "a body falling to the ground", 2)
 add("sfx", "stomp", stomp, "a stomp on a downed zombie", 2)
 add("sfx", "shove", shove, "a shove", 2)
 add("sfx", "player_hurt", player_hurt, "a survivor scratched or bitten, with a grunt", 3)
-add("sfx", "groan", groan, "a zombie groan", 6)
 add("sfx", "door_open", door_open, "a door opening", 2)
 add("sfx", "door_close", door_close, "a door shutting", 2)
 add("sfx", "window_open", window_open, "a window sliding open", 1)
@@ -569,6 +580,7 @@ add("sfx", "thump_window", thump_window, "a zombie battering a window", 2)
 add("sfx", "rummage", rummage, "searching a container", 3)
 add("sfx", "pickup", pickup, "picking something up", 1)
 add("sfx", "level_up", level_up, "a skill levelling up", 1)
+add("sfx", "light_switch", light_switch, "a light switch clicking", 1)
 add("sfx", "bird", bird, "a bird call by day", 3)
 add("ambience", "wind_loop", wind_loop, "wind outdoors (loop)")
 add("ambience", "room_loop", room_loop, "room tone indoors (loop)")

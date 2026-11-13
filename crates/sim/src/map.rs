@@ -5,8 +5,12 @@
 //! Collision, pathfinding and line of sight all read the same edge data, and the client builds
 //! its 3D wall meshes from it.
 //!
-//! M1 simulates the ground level only. Upper floors and roofs exist as per-building render data in
-//! [`Building`]; walking upstairs comes later.
+//! Zombies, sight, doors and windows are simulated on the ground level only. Players can also walk
+//! up a building's stairs onto its first upper floor ([`Stair`], [`TileMap::resolve_walker`]): the
+//! upper floor's tiles and walls come from the per-building data in [`Building`], indexed by
+//! [`TileMap::index_storeys`].
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use glam::{IVec2, Vec2};
 use serde::{Deserialize, Serialize};
@@ -20,6 +24,125 @@ pub const TREE_RADIUS: f32 = 0.3;
 /// A body whose centre is this close to an open or broken window's line is climbing through it.
 /// Just under a body radius plus the wall, so brushing past a window along the wall doesn't count.
 pub const CLIMB_ZONE: f32 = 0.35;
+/// Floor to floor, in metres (docs/asset-pipeline.md): how high a flight of stairs rises.
+pub const STOREY: f32 = 3.0;
+
+/// A flight of stairs from the ground floor up to the first upper floor: the tiles of a piece of
+/// `stairs` furniture, a ramp rising toward `up` from the floor at its foot end to [`STOREY`] at
+/// its top end. Bodies get on and off at the two ends only; its long sides are walls, and so is
+/// its top end to anyone on the ground floor (it is solid underneath). Upstairs it is a well in
+/// the floor, open at the top end. Derived from the buildings ([`TileMap::index_storeys`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Stair {
+    pub building: u16,
+    /// Tiles: `min..min+size`.
+    pub min: IVec2,
+    pub size: IVec2,
+    /// The way it rises.
+    pub up: Side,
+}
+
+impl Stair {
+    fn lo(&self) -> Vec2 {
+        self.min.as_vec2()
+    }
+
+    fn hi(&self) -> Vec2 {
+        (self.min + self.size).as_vec2()
+    }
+
+    /// How long the flight is over the ground, in metres.
+    pub fn length(&self) -> f32 {
+        match self.up {
+            Side::N | Side::S => self.size.y as f32,
+            Side::E | Side::W => self.size.x as f32,
+        }
+    }
+
+    /// How far up the flight a body at `p` is: 0 at the foot end, 1 at the top end (less and more
+    /// beyond them).
+    pub fn progress(&self, p: Vec2) -> f32 {
+        let (lo, hi) = (self.lo(), self.hi());
+        match self.up {
+            Side::N => (hi.y - p.y) / self.length(),
+            Side::S => (p.y - lo.y) / self.length(),
+            Side::E => (p.x - lo.x) / self.length(),
+            Side::W => (hi.x - p.x) / self.length(),
+        }
+    }
+
+    /// Is a body centred at `p` on the flight (between its sides, from the foot end up to, not
+    /// including, the top end)?
+    pub fn on(&self, p: Vec2) -> bool {
+        let (lo, hi) = (self.lo(), self.hi());
+        let across = match self.up {
+            Side::N | Side::S => p.x >= lo.x && p.x < hi.x,
+            Side::E | Side::W => p.y >= lo.y && p.y < hi.y,
+        };
+        across && (0.0..1.0).contains(&self.progress(p))
+    }
+
+    /// The upstairs tile a body steps onto from the top end.
+    pub fn landing(&self) -> IVec2 {
+        let top = match self.up {
+            Side::N | Side::W => self.min,
+            Side::S | Side::E => self.min + self.size - IVec2::ONE,
+        };
+        top + self.up.offset()
+    }
+
+    /// The ground-floor tile a body steps onto the foot end from.
+    pub fn foot(&self) -> IVec2 {
+        let bottom = match self.up {
+            Side::N | Side::W => self.min + self.size - IVec2::ONE,
+            Side::S | Side::E => self.min,
+        };
+        bottom - self.up.offset()
+    }
+
+    /// The middle of the flight's foot end and of its top end, on the ground.
+    pub fn ends(&self) -> (Vec2, Vec2) {
+        let (lo, hi) = (self.lo(), self.hi());
+        let mid = (lo + hi) * 0.5;
+        match self.up {
+            Side::N => (Vec2::new(mid.x, hi.y), Vec2::new(mid.x, lo.y)),
+            Side::S => (Vec2::new(mid.x, lo.y), Vec2::new(mid.x, hi.y)),
+            Side::E => (Vec2::new(lo.x, mid.y), Vec2::new(hi.x, mid.y)),
+            Side::W => (Vec2::new(hi.x, mid.y), Vec2::new(lo.x, mid.y)),
+        }
+    }
+
+    /// Its two long sides, its foot end and its top end, as segments on the ground.
+    fn walls(&self) -> ([(Vec2, Vec2); 2], (Vec2, Vec2), (Vec2, Vec2)) {
+        let (lo, hi) = (self.lo(), self.hi());
+        let (a, b, c, d) = (lo, Vec2::new(hi.x, lo.y), hi, Vec2::new(lo.x, hi.y));
+        // a-b is the north end, b-c the east side, c-d the south end, d-a the west side.
+        match self.up {
+            Side::N => ([(b, c), (d, a)], (c, d), (a, b)),
+            Side::S => ([(b, c), (d, a)], (a, b), (c, d)),
+            Side::E => ([(a, b), (c, d)], (d, a), (b, c)),
+            Side::W => ([(a, b), (c, d)], (b, c), (d, a)),
+        }
+    }
+}
+
+/// One tile of the first upper floor ([`TileMap::index_storeys`]): its floor, and the north and
+/// west edges it owns up there. A tile just outside a building has edges and no floor.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct UpperTile {
+    pub floor: bool,
+    /// Furniture stands on it.
+    pub blocked: bool,
+    pub room: u16,
+    pub north: Edge,
+    pub west: Edge,
+}
+
+/// Does an upper floor's edge stop a body? Walls and windows do. Upstairs doors can't be shut
+/// yet: they are open doorways.
+pub fn upper_edge_blocks(e: Edge) -> bool {
+    matches!(e, Edge::Wall | Edge::Window)
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
@@ -60,7 +183,7 @@ pub enum Edge {
     DoorOpen,
     /// An open doorway with no door.
     Arch,
-    /// Waist-high fence: blocks movement, not sight.
+    /// Waist-high fence: doesn't block sight; crossing it is a slow climb, as through an open window.
     Fence,
     /// A window slid open: climb through.
     WindowOpen,
@@ -68,16 +191,23 @@ pub enum Edge {
     WindowBroken,
     /// A door battered off its hinges: a permanent opening.
     DoorBroken,
+    /// A window boarded up with planks ([`crate::build`]): blocks movement and sight; zombies batter
+    /// the boards. What the window was underneath is in [`TileMap::barricades`]. (Last, so saved
+    /// edges of the kinds before keep their numbers.)
+    WindowBoarded,
+    /// A shut or broken door boarded up the same way.
+    DoorBoarded,
 }
 
 impl Edge {
     pub fn blocks_movement(self) -> bool {
-        matches!(self, Edge::Wall | Edge::Window | Edge::DoorClosed | Edge::Fence)
+        matches!(self, Edge::Wall | Edge::Window | Edge::DoorClosed | Edge::WindowBoarded | Edge::DoorBoarded)
     }
 
-    /// Walls and closed doors. Glass doesn't, and neither does a doorway whose door is gone.
+    /// Walls, closed doors and boarded-up openings. Glass doesn't, and neither does a doorway
+    /// whose door is gone.
     pub fn blocks_sight(self) -> bool {
-        matches!(self, Edge::Wall | Edge::DoorClosed)
+        matches!(self, Edge::Wall | Edge::DoorClosed | Edge::WindowBoarded | Edge::DoorBoarded)
     }
 
     /// A door a player can open or close.
@@ -85,19 +215,24 @@ impl Edge {
         matches!(self, Edge::DoorClosed | Edge::DoorOpen)
     }
 
-    /// Any window, whatever its state.
+    /// Any window, whatever its state (boarded up too).
     pub fn is_window(self) -> bool {
-        matches!(self, Edge::Window | Edge::WindowOpen | Edge::WindowBroken)
+        matches!(self, Edge::Window | Edge::WindowOpen | Edge::WindowBroken | Edge::WindowBoarded)
     }
 
-    /// Shut and in one piece: something zombies can batter (and that has hit points).
+    /// Shut and in one piece, or boarded up: something zombies can batter (and that has hit points).
     pub fn is_breakable(self) -> bool {
-        matches!(self, Edge::DoorClosed | Edge::Window)
+        matches!(self, Edge::DoorClosed | Edge::Window | Edge::WindowBoarded | Edge::DoorBoarded)
     }
 
-    /// An open or broken window: passable, but crossing it is a slow climb.
+    /// Boarded up with planks ([`crate::build`]).
+    pub fn is_boarded(self) -> bool {
+        matches!(self, Edge::WindowBoarded | Edge::DoorBoarded)
+    }
+
+    /// An open or broken window, or a fence: passable, but crossing it is a slow climb.
     pub fn is_climbable(self) -> bool {
-        matches!(self, Edge::WindowOpen | Edge::WindowBroken)
+        matches!(self, Edge::WindowOpen | Edge::WindowBroken | Edge::Fence)
     }
 
     /// What this edge becomes once battered or smashed in.
@@ -124,6 +259,8 @@ pub enum Feature {
     /// A street prop that blocks walking: a hydrant, a bin, a mailbox (see
     /// [`TileMap::street_props`] for which, and `crate::street_props`).
     StreetProp,
+    /// What a felled tree leaves (`crate::trees`): low enough to step past, so nothing goes round it.
+    Stump,
 }
 
 impl Feature {
@@ -133,7 +270,8 @@ impl Feature {
 }
 
 /// A street prop the town generator placed (`crate::street_props`): its kind (an index into
-/// [`TileMap::prop_kinds`]), its tile (it stands in the middle) and which way its front faces.
+/// [`TileMap::prop_kinds`]), its tile (it stands in the middle; the least corner of one that covers
+/// several) and which way its front faces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StreetProp {
     pub kind: u16,
@@ -338,6 +476,38 @@ pub struct EdgeChange {
     pub kind: Edge,
 }
 
+/// A blind on a window or a glazed door appearing, going or rolled up or down (`blind`: `None`
+/// none any more, `Some(true)` down, `Some(false)` rolled up), replicated to clients in snapshots
+/// like [`EdgeChange`]s (see [`crate::blinds`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlindChange {
+    pub tile: IVec2,
+    pub edge: OwnedEdge,
+    pub blind: Option<bool>,
+}
+
+/// Planks nailed across a window or door ([`crate::build`]): which build made them (an index into
+/// `WorldConfig::builds`), how many planks are up, the hit points they have left between them, what
+/// the edge was underneath (it goes back to that when the last plank goes), and which side they
+/// were nailed on (`true`: the owner tile's, south or east).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Barricade {
+    pub build: u16,
+    pub planks: u8,
+    pub hp: f32,
+    pub under: Edge,
+    pub owner_side: bool,
+}
+
+/// A barricade appearing, changing (a plank more or less) or going (`None`), replicated to clients
+/// in snapshots like [`BlindChange`]s. `frac` is the hit points left of the planks up.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BarricadeChange {
+    pub tile: IVec2,
+    pub edge: OwnedEdge,
+    pub barricade: Option<Barricade>,
+}
+
 /// A cul-de-sac's turning circle as the generator laid it out: tiles whose middles are within
 /// `road` of `centre` are asphalt, then sidewalk out to `walk`. The street into it comes from the
 /// `entry` side, its asphalt `stem` either side of the line through the centre and its sidewalks
@@ -373,13 +543,103 @@ pub struct TileMap {
     pub street_props: Vec<StreetProp>,
     #[serde(skip)]
     pub prop_kinds: Vec<crate::street_props::PropKind>,
+    /// Blinds on windows and glazed doors ([`crate::blinds`]), by edge key: `true` down (glass
+    /// hidden), `false` rolled up. World state, saved in its own section (`BLND`), not with the
+    /// tiles; changes go out as [`BlindChange`]s.
+    #[serde(skip)]
+    pub blinds: BTreeMap<(i32, i32, u8), bool>,
+    /// Doors with glass in them (sight passes a shut one), by edge key. Derived like the street
+    /// props: placed with the map (`blinds::place`), not saved, in no hash; a network client gets
+    /// them on joining.
+    #[serde(skip)]
+    pub glazed: BTreeSet<(i32, i32, u8)>,
+    /// Boarded-up windows and doors ([`crate::build`]), by edge key; their edge is
+    /// [`Edge::WindowBoarded`] or [`Edge::DoorBoarded`]. World state, saved in its own section
+    /// (`BARR`), not with the tiles; changes go out as [`BarricadeChange`]s.
+    #[serde(skip)]
+    pub barricades: BTreeMap<(i32, i32, u8), Barricade>,
+    /// The flights of stairs players can walk up, in building order, and the first upper floor's
+    /// tiles by `(y, x)`. Derived from `buildings` by [`TileMap::index_storeys`]: not saved, in no
+    /// hash.
+    #[serde(skip)]
+    pub stairs: Vec<Stair>,
+    #[serde(skip)]
+    upper: BTreeMap<(i32, i32), UpperTile>,
+    /// How fast a body moves on a flight of stairs, as a share of its speed on the flat
+    /// (`StairTuning::speed`; 0 until the world sets it, which reads as 1).
+    #[serde(skip)]
+    pub stair_speed: f32,
+    /// Speeds and endurance (`WorldConfig::movement`), which movement reads from here like
+    /// `stair_speed`, so the server and a client's prediction move by the same numbers.
+    #[serde(skip)]
+    pub movement: crate::players::MoveTuning,
+    /// The vehicles ([`crate::vehicles`]) as boxes that bodies are kept out of, in id order, and a
+    /// bit for each tile near one. Set by the world whenever a vehicle moves and by a client from
+    /// its snapshots ([`TileMap::set_vehicles`]), so movement and its prediction see the same
+    /// cars. Not saved (the world's `VEHC` section is), in no hash.
+    #[serde(skip)]
+    pub vehicles: Vec<VehicleBox>,
+    #[serde(skip)]
+    vehicle_cover: Vec<u64>,
+    /// The height of the ground outside town (`crate::terrain`), from the generator. Derived like
+    /// the street props: not saved (a map stored whole gets the generated map's), in no hash.
+    #[serde(skip)]
+    pub terrain: crate::terrain::Terrain,
+    /// Which biome each tile of wild ground is in, with the biomes (`crate::biomes`), from the
+    /// generator. Derived like the terrain: not saved (a map stored whole gets the generated
+    /// map's), in no hash.
+    #[serde(skip)]
+    pub biomes: crate::biomes::BiomeMap,
+}
+
+/// A vehicle as the map sees it: a box `half` (half its length, half its width) round `pos`, its
+/// length along `heading` (radians, 0 east, as a player's facing).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VehicleBox {
+    pub id: u32,
+    pub pos: Vec2,
+    pub heading: f32,
+    pub half: Vec2,
+}
+
+impl VehicleBox {
+    /// Its corners' extent, the axis-aligned box round it.
+    pub fn bounds(&self) -> (Vec2, Vec2) {
+        let (f, l) = (Vec2::from_angle(self.heading), Vec2::from_angle(self.heading).perp());
+        let ext = (f * self.half.x).abs() + (l * self.half.y).abs();
+        (self.pos - ext, self.pos + ext)
+    }
+
+    /// `p` in the box's own frame: x along its length, y across.
+    pub fn local(&self, p: Vec2) -> Vec2 {
+        Vec2::from_angle(-self.heading).rotate(p - self.pos)
+    }
+
+    /// A circle at `p` of `r` pushed out of the box (unchanged if it isn't in it).
+    pub fn push_out(&self, p: Vec2, r: f32) -> Vec2 {
+        let o = self.local(p);
+        if o.x.abs() >= self.half.x + r || o.y.abs() >= self.half.y + r {
+            return p;
+        }
+        let q = push_out_of_box(o, r, -self.half, self.half);
+        if q == o {
+            return p;
+        }
+        self.pos + Vec2::from_angle(self.heading).rotate(q)
+    }
+
+    /// How far `p` is from the box (0 inside).
+    pub fn distance(&self, p: Vec2) -> f32 {
+        let o = self.local(p);
+        (o.abs() - self.half).max(Vec2::ZERO).length()
+    }
 }
 
 impl TileMap {
     pub fn new(chunks_x: i32, chunks_y: i32) -> Self {
         let chunks = (0..chunks_x * chunks_y).map(|_| Chunk { tiles: vec![Tile::default(); CHUNK_TILES] }).collect();
         let outdoors = Room { building: u16::MAX, name: "Outdoors".into(), room_type: "outdoors".into(), floor: Floor::Grass };
-        Self { chunks_x, chunks_y, chunks, rooms: vec![outdoors], buildings: Vec::new(), turning_circles: Vec::new(), street_props: Vec::new(), prop_kinds: Vec::new() }
+        Self { chunks_x, chunks_y, chunks, rooms: vec![outdoors], buildings: Vec::new(), turning_circles: Vec::new(), street_props: Vec::new(), prop_kinds: Vec::new(), blinds: BTreeMap::new(), glazed: BTreeSet::new(), barricades: BTreeMap::new(), stairs: Vec::new(), upper: BTreeMap::new(), stair_speed: 0.0, movement: Default::default(), vehicles: Vec::new(), vehicle_cover: Vec::new(), terrain: Default::default(), biomes: Default::default() }
     }
 
     pub fn width(&self) -> i32 {
@@ -458,6 +718,70 @@ impl TileMap {
         }
     }
 
+    /// The blind on edge `e`: `Some(true)` down, `Some(false)` rolled up, `None` none.
+    pub fn blind(&self, e: EdgeRef) -> Option<bool> {
+        self.blinds.get(&e.key()).copied()
+    }
+
+    /// Put up, roll, or (`None`) take down the blind on edge `e`.
+    pub fn set_blind(&mut self, e: EdgeRef, blind: Option<bool>) {
+        match blind {
+            Some(down) => {
+                self.blinds.insert(e.key(), down);
+            }
+            None => {
+                self.blinds.remove(&e.key());
+            }
+        }
+    }
+
+    /// The planks on edge `e`, if it's boarded up.
+    pub fn barricade(&self, e: EdgeRef) -> Option<&Barricade> {
+        self.barricades.get(&e.key())
+    }
+
+    /// What edge `e` is under any planks: what to draw as its frame, leaf or pane.
+    pub fn drawn_edge(&self, e: EdgeRef) -> Edge {
+        let kind = self.owned_edge(e.tile, e.edge);
+        if kind.is_boarded() { self.barricade(e).map_or(kind, |b| b.under) } else { kind }
+    }
+
+    /// Is edge `e` a door with glass in it?
+    pub fn glazed(&self, e: EdgeRef) -> bool {
+        self.glazed.contains(&e.key())
+    }
+
+    /// Can a blind hang on edge `e`? A window (shut, open or broken: it hangs inside the frame) or
+    /// a glazed door that is still on its hinges.
+    pub fn takes_blind(&self, e: EdgeRef) -> bool {
+        let kind = self.owned_edge(e.tile, e.edge);
+        kind.is_window() || ((kind.is_door() || kind == Edge::DoorBoarded) && self.glazed(e))
+    }
+
+    /// Is there glass in edge `e` that sight passes (a window, or a glazed door that's shut)?
+    pub fn sees_through_glass(&self, e: EdgeRef) -> bool {
+        let kind = self.owned_edge(e.tile, e.edge);
+        kind.is_window() || (kind == Edge::DoorClosed && self.glazed(e))
+    }
+
+    /// Does crossing out of `t` through `side` block sight? Walls and shut doors do, unless the
+    /// door is glazed; glass (a window in any state, a shut glazed door) does behind a blind
+    /// that's down. An open door's blind swings away with it. The one rule for seeing: the fog of
+    /// war, zombies' and players' sight (`crate::vision`). Sound goes by the edges alone.
+    pub fn blocks_view(&self, t: IVec2, side: Side) -> bool {
+        let kind = self.edge(t, side);
+        match kind {
+            Edge::DoorClosed | Edge::Window | Edge::WindowOpen | Edge::WindowBroken if !(self.blinds.is_empty() && self.glazed.is_empty()) => {
+                let e = EdgeRef::of(t, side);
+                if kind == Edge::DoorClosed && !self.glazed(e) {
+                    return true;
+                }
+                self.blind(e) == Some(true)
+            }
+            _ => kind.blocks_sight(),
+        }
+    }
+
     pub fn owned_edge(&self, owner: IVec2, which: OwnedEdge) -> Edge {
         let tile = self.tile(owner);
         match which {
@@ -525,6 +849,105 @@ impl TileMap {
         self.street_prop(t).and_then(|p| self.prop_kinds.get(p.kind as usize)).map_or(STREET_PROP_RADIUS, |k| k.radius())
     }
 
+    /// The blocking street prop tile `t` is a whole tile of a prop bigger than one (a parked car):
+    /// bodies are kept out of all of it. Such a prop's first tile holds it; its others hold none.
+    pub fn street_prop_fills(&self, t: IVec2) -> bool {
+        match self.street_prop(t).and_then(|p| self.prop_kinds.get(p.kind as usize)) {
+            Some(k) => k.big(),
+            None => self.prop_kinds.iter().any(|k| k.big()),
+        }
+    }
+
+    /// The tiles a street prop covers: its least corner and size.
+    pub fn street_prop_rect(&self, p: &StreetProp) -> (IVec2, IVec2) {
+        (p.tile, self.prop_kinds.get(p.kind as usize).map_or(IVec2::ONE, |k| k.footprint(p.facing)))
+    }
+
+    /// Put the vehicles' boxes on the map (in id order), and mark the tiles near them. Does
+    /// nothing if they are as they were.
+    pub fn set_vehicles(&mut self, boxes: Vec<VehicleBox>) {
+        if boxes == self.vehicles {
+            return;
+        }
+        let (w, h) = (self.width(), self.height());
+        let words = ((w.max(0) * h.max(0)) as usize).div_ceil(64);
+        if self.vehicle_cover.len() != words {
+            self.vehicle_cover = vec![0; words];
+        }
+        for b in &self.vehicles {
+            Self::cover(&mut self.vehicle_cover, w, h, b, false);
+        }
+        for b in &boxes {
+            Self::cover(&mut self.vehicle_cover, w, h, b, true);
+        }
+        self.vehicles = boxes;
+    }
+
+    /// Set (or clear) the bits of the tiles within a tile of box `b`. Overlapping boxes are
+    /// marked again after every clear, so a clear never takes another's tiles.
+    fn cover(bits: &mut [u64], w: i32, h: i32, b: &VehicleBox, on: bool) {
+        let (lo, hi) = b.bounds();
+        let (lo, hi) = ((lo - Vec2::ONE).floor().as_ivec2().max(IVec2::ZERO), (hi + Vec2::ONE).floor().as_ivec2().min(IVec2::new(w - 1, h - 1)));
+        for y in lo.y..=hi.y {
+            for x in lo.x..=hi.x {
+                let i = (y * w + x) as usize;
+                if on {
+                    bits[i / 64] |= 1 << (i % 64);
+                } else {
+                    bits[i / 64] &= !(1 << (i % 64));
+                }
+            }
+        }
+    }
+
+    /// Is a vehicle on or beside tile `t`? Cheap: a bit a tile.
+    pub fn near_vehicle(&self, t: IVec2) -> bool {
+        if self.vehicles.is_empty() || !self.in_bounds(t) {
+            return false;
+        }
+        let i = (t.y * self.width() + t.x) as usize;
+        self.vehicle_cover.get(i / 64).is_some_and(|b| b & (1 << (i % 64)) != 0)
+    }
+
+    /// A circle pushed out of every vehicle but `skip` (0: none).
+    pub fn push_out_of_vehicles(&self, mut p: Vec2, radius: f32, skip: u32) -> Vec2 {
+        if !self.near_vehicle(p.floor().as_ivec2()) {
+            return p;
+        }
+        for b in &self.vehicles {
+            if b.id != skip {
+                p = b.push_out(p, radius);
+            }
+        }
+        p
+    }
+
+    /// A vehicle's circle (`crate::vehicles`) pushed out of what a vehicle can't drive through:
+    /// as [`resolve_circle`](Self::resolve_circle), but every edge but an empty one blocks it
+    /// (fences, open windows and doorways too), and not out of its own box (`skip`).
+    pub fn resolve_vehicle_circle(&self, mut p: Vec2, radius: f32, skip: u32) -> Vec2 {
+        for _ in 0..2 {
+            p = self.resolve_circle_skip(p, radius, skip);
+            let t = p.floor().as_ivec2();
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let n = t + IVec2::new(dx, dy);
+                    if !self.in_bounds(n) {
+                        continue;
+                    }
+                    let tile = self.tile(n);
+                    for (which, kind) in [(OwnedEdge::North, tile.north), (OwnedEdge::West, tile.west)] {
+                        if kind != Edge::None && !kind.blocks_movement() {
+                            let (a, b) = Self::edge_segment(n, which);
+                            p = push_out_of_segment(p, radius + WALL_HALF_THICKNESS, a, b);
+                        }
+                    }
+                }
+            }
+        }
+        p
+    }
+
     /// Room id at a world position (0 = outdoors).
     pub fn room_at(&self, p: Vec2) -> u16 {
         self.tile(p.floor().as_ivec2()).room
@@ -545,9 +968,239 @@ impl TileMap {
         }
     }
 
-    /// Push a circle out of blocking edges, trees, furniture, street props and the map border.
-    pub fn resolve_circle(&self, mut p: Vec2, radius: f32) -> Vec2 {
+    /// Work out the stairs and the first upper floor from the buildings (after the map is
+    /// generated, loaded or its buildings edited). A piece of `stairs` furniture on the ground
+    /// floor of a building with an upper storey is a [`Stair`] when it is one tile wide, there is
+    /// free floor upstairs to step onto from its top end and a free tile at its foot.
+    pub fn index_storeys(&mut self) {
+        let mut upper: BTreeMap<(i32, i32), UpperTile> = BTreeMap::new();
+        for b in &self.buildings {
+            for &(level, t, room) in &b.upper_floors {
+                if level == 1 {
+                    let u = upper.entry((t.y, t.x)).or_default();
+                    u.floor = true;
+                    u.room = room;
+                }
+            }
+            for (level, e) in &b.upper_edges {
+                if *level == 1 {
+                    let u = upper.entry((e.tile.y, e.tile.x)).or_default();
+                    match e.edge {
+                        OwnedEdge::North => u.north = e.kind,
+                        OwnedEdge::West => u.west = e.kind,
+                    }
+                }
+            }
+            for f in b.furniture.iter().filter(|f| f.level == 1) {
+                for y in 0..f.size.y {
+                    for x in 0..f.size.x {
+                        if let Some(u) = upper.get_mut(&(f.min.y + y, f.min.x + x)) {
+                            u.blocked = true;
+                        }
+                    }
+                }
+            }
+        }
+        let mut stairs = Vec::new();
+        for (bi, b) in self.buildings.iter().enumerate() {
+            if b.levels < 2 {
+                continue;
+            }
+            for f in b.furniture.iter().filter(|f| f.level == 0 && f.kind == "stairs") {
+                let s = Stair { building: bi as u16, min: f.min, size: f.size, up: f.facing };
+                let wide = match s.up {
+                    Side::N | Side::S => f.size.x,
+                    Side::E | Side::W => f.size.y,
+                };
+                let landing = s.landing();
+                let lands = upper.get(&(landing.y, landing.x)).is_some_and(|u| u.floor && !u.blocked);
+                if wide == 1 && s.length() >= 2.0 && lands && !self.tile_blocked(s.foot()) {
+                    stairs.push(s);
+                }
+            }
+        }
+        self.upper = upper;
+        self.stairs = stairs;
+    }
+
+    /// The flight of stairs a body centred at `p` is on, if any ([`Stair::on`]).
+    pub fn stair_at(&self, p: Vec2) -> Option<&Stair> {
+        self.stairs.iter().find(|s| s.on(p))
+    }
+
+    /// The flight of stairs covering tile `t`, if any.
+    pub fn stair_on_tile(&self, t: IVec2) -> Option<&Stair> {
+        self.stairs.iter().find(|s| t.cmpge(s.min).all() && t.cmplt(s.min + s.size).all())
+    }
+
+    /// A tile of the first upper floor (floor, furniture, room, the edges it owns), if there is
+    /// anything of it there.
+    pub fn upper_tile(&self, t: IVec2) -> Option<UpperTile> {
+        self.upper.get(&(t.y, t.x)).copied()
+    }
+
+    /// The edge of the first upper floor on `side` of tile `t` (`Edge::None`: nothing there).
+    pub fn upper_edge(&self, t: IVec2, side: Side) -> Edge {
+        let (owner, which) = side.owner(t);
+        self.upper.get(&(owner.y, owner.x)).map_or(Edge::None, |u| match which {
+            OwnedEdge::North => u.north,
+            OwnedEdge::West => u.west,
+        })
+    }
+
+    /// Every tile of the first upper floor, row by row.
+    pub fn upper_tiles(&self) -> impl Iterator<Item = (IVec2, UpperTile)> + '_ {
+        self.upper.iter().map(|(&(y, x), u)| (IVec2::new(x, y), *u))
+    }
+
+    /// The height of the ground at `p` above the town's level (0 everywhere in town; hills
+    /// outside it, `crate::terrain`). What [`height_at`](Self::height_at) is measured from.
+    pub fn ground(&self, p: Vec2) -> f32 {
+        self.terrain.height(p)
+    }
+
+    /// How high above the ground a body on `level` at `p` stands: on a flight of stairs its
+    /// height there, upstairs a storey.
+    pub fn height_at(&self, level: u8, p: Vec2) -> f32 {
+        if level > 0 {
+            return STOREY * level as f32;
+        }
+        self.stair_at(p).map_or(0.0, |s| s.progress(p).clamp(0.0, 1.0) * STOREY)
+    }
+
+    /// Room id at a position on `level` (0 = outdoors, or no floor there).
+    pub fn room_on(&self, level: u8, p: Vec2) -> u16 {
+        if level == 0 {
+            return self.room_at(p);
+        }
+        self.upper_tile(p.floor().as_ivec2()).filter(|u| u.floor).map_or(0, |u| u.room)
+    }
+
+    /// Is the straight line from `a` to `b` on the first upper floor clear of its walls and
+    /// windows, and over floor all the way? (For a hand's reach upstairs.)
+    pub fn upper_clear(&self, a: Vec2, b: Vec2) -> bool {
+        let steps = (a.distance(b) / 0.1).ceil().max(1.0) as i32;
+        let mut prev = a.floor().as_ivec2();
+        for k in 0..=steps {
+            let p = a.lerp(b, k as f32 / steps as f32);
+            let t = p.floor().as_ivec2();
+            if !self.upper_tile(t).is_some_and(|u| u.floor) {
+                return false;
+            }
+            if t != prev {
+                let d = t - prev;
+                let crossed = |owner: IVec2, north: bool| self.upper_tile(owner).is_some_and(|u| upper_edge_blocks(if north { u.north } else { u.west }));
+                if (d.x != 0 && crossed(IVec2::new(prev.x.max(t.x), prev.y), false))
+                    || (d.y != 0 && crossed(IVec2::new(prev.x, prev.y.max(t.y)), true))
+                    || (d.x != 0 && d.y != 0 && (crossed(IVec2::new(prev.x.max(t.x), t.y), false) || crossed(IVec2::new(t.x, prev.y.max(t.y)), true)))
+                {
+                    return false;
+                }
+                prev = t;
+            }
+        }
+        true
+    }
+
+    /// [`resolve_circle`](Self::resolve_circle) for a body that can use the stairs (a player), on
+    /// `level` (0 the ground floor and the stairs, 1 upstairs). On the ground a flight of stairs
+    /// is not a block of furniture but a ramp between two walls, shut at its top end to anyone not
+    /// on it; upstairs the body is kept on the floor, out of the upper walls and furniture, and
+    /// out of the stairwell but through its top end.
+    pub fn resolve_walker(&self, mut p: Vec2, radius: f32, level: u8) -> Vec2 {
+        if self.stairs.is_empty() && level == 0 {
+            return self.resolve_circle(p, radius);
+        }
+        let wall = radius + WALL_HALF_THICKNESS;
         for _ in 0..2 {
+            if level == 0 {
+                p = self.push_out_of_vehicles(p, radius, 0);
+            }
+            let t = p.floor().as_ivec2();
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let n = t + IVec2::new(dx, dy);
+                    if level == 0 {
+                        p = self.push_out_of_tile(p, radius, n, true);
+                        continue;
+                    }
+                    let Some(u) = self.upper_tile(n) else {
+                        p = push_out_of_box(p, radius, n.as_vec2(), n.as_vec2() + Vec2::ONE);
+                        continue;
+                    };
+                    if !u.floor {
+                        p = push_out_of_box(p, radius, n.as_vec2(), n.as_vec2() + Vec2::ONE);
+                    } else if u.blocked {
+                        p = push_out_of_box(p, radius, n.as_vec2() + Vec2::splat(0.05), n.as_vec2() + Vec2::splat(0.95));
+                    }
+                    for (which, kind) in [(OwnedEdge::North, u.north), (OwnedEdge::West, u.west)] {
+                        if upper_edge_blocks(kind) {
+                            let (a, b) = Self::edge_segment(n, which);
+                            p = push_out_of_segment(p, wall, a, b);
+                        }
+                    }
+                }
+            }
+            for s in &self.stairs {
+                let (lo, hi) = (s.lo() - Vec2::splat(1.0), s.hi() + Vec2::splat(1.0));
+                if p.x < lo.x || p.y < lo.y || p.x > hi.x || p.y > hi.y {
+                    continue;
+                }
+                let (sides, foot, top) = s.walls();
+                for (a, b) in sides {
+                    p = push_out_of_segment(p, wall, a, b);
+                }
+                if level > 0 {
+                    p = push_out_of_segment(p, wall, foot.0, foot.1);
+                } else if !s.on(p) {
+                    p = push_out_of_segment(p, wall, top.0, top.1);
+                }
+            }
+        }
+        p
+    }
+
+    /// One tile's part of [`resolve_circle`](Self::resolve_circle): out of what stands on tile
+    /// `n` and of the edges it owns. With `stairs`, a tile of a flight of stairs isn't a block.
+    fn push_out_of_tile(&self, mut p: Vec2, radius: f32, n: IVec2, stairs: bool) -> Vec2 {
+        if !self.in_bounds(n) {
+            return push_out_of_box(p, radius, n.as_vec2(), n.as_vec2() + Vec2::ONE);
+        }
+        let tile = self.tile(n);
+        match tile.feature {
+            Feature::Tree | Feature::PineTree => {
+                p = push_out_of_circle(p, radius, n.as_vec2() + Vec2::splat(0.5), TREE_RADIUS);
+            }
+            Feature::Furniture if stairs && self.stair_on_tile(n).is_some() => {}
+            Feature::Furniture => {
+                p = push_out_of_box(p, radius, n.as_vec2() + Vec2::splat(0.05), n.as_vec2() + Vec2::splat(0.95));
+            }
+            Feature::StreetProp if self.street_prop_fills(n) => {
+                p = push_out_of_box(p, radius, n.as_vec2(), n.as_vec2() + Vec2::ONE);
+            }
+            Feature::StreetProp => {
+                p = push_out_of_circle(p, radius, n.as_vec2() + Vec2::splat(0.5), self.street_prop_radius(n));
+            }
+            _ => {}
+        }
+        for (which, kind) in [(OwnedEdge::North, tile.north), (OwnedEdge::West, tile.west)] {
+            if kind.blocks_movement() {
+                let (a, b) = Self::edge_segment(n, which);
+                p = push_out_of_segment(p, radius + WALL_HALF_THICKNESS, a, b);
+            }
+        }
+        p
+    }
+
+    /// Push a circle out of blocking edges, trees, furniture, street props, vehicles and the map border.
+    pub fn resolve_circle(&self, p: Vec2, radius: f32) -> Vec2 {
+        self.resolve_circle_skip(p, radius, 0)
+    }
+
+    /// [`resolve_circle`](Self::resolve_circle), but not out of vehicle `skip` (0: none).
+    pub fn resolve_circle_skip(&self, mut p: Vec2, radius: f32, skip: u32) -> Vec2 {
+        for _ in 0..2 {
+            p = self.push_out_of_vehicles(p, radius, skip);
             let t = p.floor().as_ivec2();
             for dy in -1..=1 {
                 for dx in -1..=1 {
@@ -563,6 +1216,9 @@ impl TileMap {
                         }
                         Feature::Furniture => {
                             p = push_out_of_box(p, radius, n.as_vec2() + Vec2::splat(0.05), n.as_vec2() + Vec2::splat(0.95));
+                        }
+                        Feature::StreetProp if self.street_prop_fills(n) => {
+                            p = push_out_of_box(p, radius, n.as_vec2(), n.as_vec2() + Vec2::ONE);
                         }
                         Feature::StreetProp => {
                             p = push_out_of_circle(p, radius, n.as_vec2() + Vec2::splat(0.5), self.street_prop_radius(n));

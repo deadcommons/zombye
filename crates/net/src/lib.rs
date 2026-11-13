@@ -1,24 +1,42 @@
 //! Messages between clients (human or agent) and the authoritative server.
 //!
 //! Clients never touch the simulation directly: they send [`Intent`]s and receive [`Snapshot`]s.
-//! Single-player uses the same types through an in-process [`LocalServer`], so multiplayer is a
-//! transport change, not a rewrite.
+//! Single-player uses the same types through an in-process [`LocalServer`]; multiplayer sends them
+//! over the network ([`wire`]), a [`host::Host`] serving and each client holding a
+//! [`remote::Remote`].
 
+pub mod browser;
 pub mod content;
+pub mod host;
+pub mod identity;
+pub mod install;
+pub mod joining;
+pub mod modpack;
+pub mod newgame;
+pub mod remote;
+pub mod report;
 pub mod save_file;
 pub mod shutdown;
+pub mod visibility;
+pub mod wire;
+
+/// This build's version (DCM-70): the package version and the git commit it was built from,
+/// `0.1.0 (abc1234)` (`, changed` when the checkout had changes), or the package version alone
+/// without git. A server says it in its answer to a query ([`wire::ServerInfo::version`]).
+pub const BUILD: &str = env!("ZOMBYE_BUILD");
 
 use serde::{Deserialize, Serialize};
 use zombye_sim::map::{EdgeChange, OwnedEdge};
 use zombye_sim::{
-    ActionKind, Burden, Carry, CombatEvent, DevFlags, GroundItem, HealthTags, HealthView, Inventory, ItemNote, ItemStack, JobKind, LevelUp, MoveMods, NeedsTuning, NeedsView, Place, PlayerInput, RunStats, Skill, SkillView, Stance,
-    StatusInput, StatusTag, Treatment, World, WorldConfig, ZombieAnim,
+    ActionKind, Burden, Carry, CombatEvent, DevFlags, Gesture, GroundItem, HandsAct, Said, Volume, HealthTags, HealthView, Inventory, ItemNote, ItemStack, JobKind, LevelUp, MoveMods, NeedsTuning, NeedsView, Place, PlayerInput, RunStats, Skill, SkillView, Stance,
+    StatusData, StatusInput, StatusTag, Treatment, World, WorldConfig, ZombieAnim,
 };
 
 /// Something a client wants to happen. The server validates and applies it.
 ///
-/// `player` fields name the client's own player (from [`LocalServer::join`]). A network transport
-/// will check the sender owns that player (M6).
+/// `player` fields name the client's own player (from [`LocalServer::join`], or a multiplayer
+/// server's welcome). A multiplayer server overwrites them with the sender's player
+/// ([`host::Host`]), so a client can only act as itself.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Intent {
     /// Movement input, sent every tick. The server keeps the newest (by `seq`, starting at 1) and
@@ -37,8 +55,20 @@ pub enum Intent {
     /// Open or close the door or window the player faces, if it's within reach of the player's
     /// server position. Broken ones can't be shut.
     Interact { player: u32 },
+    /// Climb the fence or open or broken window the player faces, if one is within reach
+    /// (`World::player_climb`; E). Movement then takes it across by itself.
+    Climb { player: u32 },
+    /// Roll up or down, fit or take down the blind of the window or glass door the player faces
+    /// from inside (`World::player_blind`; Shift+F, or a blind's menu).
+    Blind { player: u32, op: zombye_sim::BlindOp },
     /// Smash the window the player faces (shut or open), if it's within reach. Loud.
     SmashWindow { player: u32 },
+    /// Flip the light switch of the room the player stands in (`on`: to that; `None`: the other
+    /// way). The light only comes on while the building has power (`zombye_sim::power`).
+    Light { player: u32, on: Option<bool> },
+    /// Tend campfire `fire` (`zombye_sim::fire`): put fuel on it, light it, or put it out, from
+    /// within reach (`World::player_fire`).
+    Fire { player: u32, fire: u32, op: zombye_sim::FireOp },
     /// Swing the equipped weapon (bare hands: a punch). Lands after the weapon's windup; asked for
     /// during the last moments of the previous action, it's queued.
     Attack { player: u32 },
@@ -81,6 +111,15 @@ pub enum Intent {
     /// Lie down and sleep (`sleep: true`; on a bed or sofa within reach, else the floor), or get up
     /// (`false`). Any other action while asleep also gets the player up, and does nothing else.
     Sleep { player: u32, sleep: bool },
+    /// Sit down (`Some(true)`: on the sofa, bed, toilet or bench beside you, else the ground), get
+    /// up (`Some(false)`) or the other (`None`): `zombye_sim::sit`. Moving gets you up too.
+    Sit { player: u32, sit: Option<bool> },
+    /// Get into a vehicle (the one faced, or by id) or out of the one you're in:
+    /// `zombye_sim::vehicles`. Refusals are noted for the player's client.
+    Vehicle { player: u32, op: zombye_sim::VehicleOp },
+    /// The driver's controls this tick (sent before `PlayerInput` while at a wheel, held until the
+    /// next): throttle -1 (reverse) to 1, steer -1 (left) to 1 (right), the brake.
+    Drive { player: u32, throttle: f32, steer: f32, brake: bool },
     /// Cancel the item job under way (`all: false`) or the whole queue (`all: true`): moves, searches,
     /// eating, treatments and crafts. Nothing is lost: a job only takes effect when it finishes.
     CancelJobs { player: u32, all: bool },
@@ -97,6 +136,8 @@ pub enum Intent {
     SpawnZombies { count: u32, center: [f32; 2], radius: f32 },
     /// Debug/admin: move the clock forward.
     SkipTime { hours: f32 },
+    /// Debug/admin: turn the town's grid on or off.
+    Grid { on: bool },
     /// Debug: a noise at `pos` that zombies within `radius` metres (less through walls) come to
     /// investigate. Loud ones draw the far horde in over the following minutes; `lasting` makes
     /// that pull last much longer (like an alarm left ringing).
@@ -106,6 +147,68 @@ pub enum Intent {
         #[serde(default)]
         lasting: bool,
     },
+    /// A client over the network, every tick before its `PlayerInput`: the tick of the snapshot
+    /// it is showing. Its swings, shoves and stomps then land where it saw their targets (lag
+    /// compensation, #23: `zombye_sim::lagcomp`), at most `CombatTuning::lag_comp_max_secs` back.
+    /// A client in the server's own process doesn't send it: nothing is rewound for it.
+    Seen { player: u32, tick: u64 },
+    /// Say `text` at `volume` (#67, `zombye_sim::speech`): heard by the survivors within that
+    /// volume's reach, less through walls, and a noise zombies hear. One line a tick; a
+    /// multiplayer server takes one every half second from a client.
+    Say { player: u32, text: String, volume: Volume },
+    /// Make a gesture (wave, hands up, point), or with `None` stop making one (#67).
+    Gesture { player: u32, gesture: Option<Gesture> },
+    /// Hold-ups (#73, `zombye_sim::bonds`): start tying the hands of `target` (`None`: the
+    /// survivor faced within reach), who has them up or is on the ground, with a restraint carried.
+    Restrain { player: u32, target: Option<u32> },
+    /// Start freeing a tied survivor's hands (a cable tie needs something that cuts).
+    Free { player: u32, target: Option<u32> },
+    /// Start searching a tied survivor: its things are then shown like an open container's.
+    Frisk { player: u32, target: Option<u32> },
+    /// Take `count` (0: all) of the stack at `from`/`index` (carried, worn or a slot), which is of
+    /// `item`, from the survivor being searched.
+    TakeFrom { player: u32, from: Place, index: u32, item: u16, count: u16 },
+    /// Stop tying, freeing, searching or taking, and shut the search.
+    StopHands { player: u32 },
+    /// Tied: work at getting out (`on`), or stop. It only counts while standing still.
+    Struggle { player: u32, on: bool },
+    /// Groups (#73, `zombye_sim::groups`): invite, accept, leave, put down or take away a marker.
+    Group { player: u32, op: GroupOp },
+    /// Guns (#72, `zombye_sim::ranged`): how far up (+) or down (-) of level the player aims, in
+    /// radians. With the facing of its `PlayerInput` that is the way its shots go; a client
+    /// holding a gun sends it each tick it aims. (Reloading has no intent of its own: it is `Use`
+    /// of the gun in hand, and filling a magazine `Use` of the magazine.)
+    Aim { player: u32, pitch: f32 },
+    /// Turn to `facing` (radians) and then do `then`, an action of the same player (a right-click
+    /// on something in the world: open the door, roll the blind, climb the window under the
+    /// pointer). The server turns the player (`World::set_facing`) and applies `then` as if it had
+    /// come on its own, so its own checks (reach, what is faced) decide as ever. Refused unless
+    /// `then` is an action by `player` (`Intent::action_by`), and never nested.
+    Toward { player: u32, facing: f32, then: Box<Intent> },
+    /// Building (`zombye_sim::build`): put a piece of build `build` (an id in the build catalog,
+    /// `build.ron`: "board_window" nails a plank across the window faced) on what the player
+    /// faces. A job, checked again when it's due (`World::player_build`).
+    Build { player: u32, build: String },
+    /// Prise a piece off the build the player faces (a plank off a boarded window or door), with
+    /// the build's remove tools (`World::player_unbuild`).
+    Unbuild { player: u32 },
+    /// Switch the light held in a hand (a flashlight, a candle) on (`Some(true)`), off
+    /// (`Some(false)`) or the other way (`None`): `World::player_flashlight`. F in the client.
+    Flashlight { player: u32, on: Option<bool> },
+}
+
+/// What a player asks of its group ([`Intent::Group`]).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum GroupOp {
+    /// Invite `target` (`None`: the nearest survivor in sight) into our group.
+    Invite { target: Option<u32> },
+    /// Accept the invitation from `from` (`None`: the newest).
+    Accept { from: Option<u32> },
+    Leave,
+    /// Put a shared marker at `pos`.
+    Mark { pos: [f32; 2] },
+    /// Take the marker `marker` away (`None`: the one nearest `near`, within 3 m).
+    Unmark { marker: Option<u32>, near: [f32; 2] },
 }
 
 /// What one zombie looks like to a client. Server-only state (AI memory, paths) is not included.
@@ -129,6 +232,14 @@ pub struct PlayerView {
     pub endurance: f32,
     /// Ran out of breath (can't run until endurance recovers). Needed to predict movement exactly.
     pub winded: bool,
+    /// A climb under way over a fence or through a window (E). Needed to predict movement exactly;
+    /// only a client's own player has it (others are drawn by where they are).
+    #[serde(default)]
+    pub climb: Option<zombye_sim::Climb>,
+    /// The floor it is on: 0 the ground floor (and its stairs), 1 upstairs (`zombye_sim::stairs`).
+    /// Part of what movement is predicted from, and where the client draws it.
+    #[serde(default)]
+    pub level: u8,
     /// The newest input the server has applied; the owning client replays anything after it.
     pub last_input_seq: u32,
     pub hp: f32,
@@ -143,6 +254,9 @@ pub struct PlayerView {
     pub ready_in: f32,
     /// What its load does to its movement. Needed to predict movement exactly.
     pub mods: MoveMods,
+    /// `mods.max_endurance`, which `MoveMods` doesn't carry itself (it isn't saved): the most
+    /// endurance tiredness leaves it.
+    pub endurance_cap: f32,
     /// Busy with its things: seconds left on the item job under way (0 if none), and jobs queued.
     pub busy: f32,
     pub jobs: u8,
@@ -153,8 +267,38 @@ pub struct PlayerView {
     pub health: HealthTags,
     /// Asleep (lying down; it doesn't move until it wakes).
     pub asleep: bool,
+    /// Sitting down, and on what (`zombye_sim::sit`; where is `sit::seat_at` on the map).
+    #[serde(default)]
+    pub seated: Option<zombye_sim::SeatKind>,
     /// Aiming (the right mouse held): facing its aim, at the ready.
     pub aiming: bool,
+    /// Reeling (`down` false) or on the ground after another player's blow (PvP), with the seconds
+    /// left: it doesn't move or act until then (`mods` say so too, so prediction stays exact).
+    pub knock: Option<zombye_sim::Knock>,
+    /// Spawn protection (#68): other players' blows pass it by until it runs out or it attacks.
+    pub protected: bool,
+    /// The gesture it is making (#67): wave, hands up, point.
+    pub gesture: Option<Gesture>,
+    /// Played by a program, on a server whose rules mark agents (#69, `wire::Agents::Marked`).
+    /// Set by the multiplayer server from what each client said of itself; never in single-player.
+    pub agent: bool,
+    /// Its hands are tied (#73); `struggling`: working at getting out now; `struggle`: how far
+    /// along it is, 0 to 1 (only told to its own client).
+    pub restrained: bool,
+    pub struggling: bool,
+    pub struggle: f32,
+    /// What its hands are doing to another survivor (tying, freeing, searching, taking), and for
+    /// its own client the seconds left and the whole time.
+    pub hands: Option<HandsAct>,
+    pub hands_left: f32,
+    pub hands_total: f32,
+}
+
+/// A searched survivor's things (#73), for whoever is searching it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FriskView {
+    pub target: u32,
+    pub inventory: Inventory,
 }
 
 /// What a container holds, for whoever has it open.
@@ -187,6 +331,13 @@ pub struct PrivateView {
     /// Its item jobs, the one under way first (`PlayerView::busy` has its seconds left): what the
     /// inventory panel shows as being made (#12).
     pub jobs: Vec<JobKind>,
+    /// The tied survivor it is searching, and everything that one has (#73).
+    pub frisk: Option<FriskView>,
+    /// What its own hands are tied with (an item index), if they are.
+    pub restraint: Option<u16>,
+    /// Which pouch (pockets, or which bag: `Pouch as u8`) each carried stack is in, in order: a
+    /// stack doesn't carry that over the network itself ([`PrivateView::restore_homes`]).
+    pub homes: Vec<u8>,
 }
 
 impl PrivateView {
@@ -194,7 +345,7 @@ impl PrivateView {
         let p = world.player(id)?;
         let open = p.open.and_then(|c| {
             let site = world.container(c)?;
-            let def = world.container_def(site);
+            let def = world.container_def(&site);
             Some(ContainerView { id: c, kind: def.id.clone(), name: def.name.clone(), room_l: def.room_l, stacks: world.container_contents(c).unwrap_or(&[]).to_vec() })
         });
         let carry = world.carry(p);
@@ -202,28 +353,41 @@ impl PrivateView {
         let needs = world.needs_view(id).unwrap_or_default();
         let skills = world.skills_view(id).unwrap_or_default();
         let jobs = p.jobs.iter().map(|j| j.kind).collect();
-        Some(Self { player: id, inventory: p.inventory.clone(), carry, max_kg: carry.limit_kg * world.config.carry.max_load, open, health, needs, skills, jobs })
+        let frisk = p.frisking.and_then(|t| Some(FriskView { target: t, inventory: world.player(t)?.inventory.clone() }));
+        let restraint = p.restraint.map(|r| r.item);
+        Some(Self { player: id, inventory: p.inventory.clone(), carry, max_kg: carry.limit_kg * world.config.carry.max_load, open, health, needs, skills, jobs, frisk, restraint, homes: p.inventory.homes() })
     }
 
-    /// Our status tags (hunger, thirst, tiredness, endurance, load, pain, bleeding, sick, asleep),
-    /// from this view, the predicted endurance and the snapshot's time scale: what the server's
-    /// `World::status_tags` says, worked out on the client.
-    pub fn status_tags(&self, needs: &NeedsTuning, endurance: f32, winded: bool, tired_below: f32, time_scale: f32) -> Vec<StatusTag> {
+    /// After a trip over the network: put each carried stack back in its pouch.
+    pub fn restore_homes(&mut self) {
+        self.inventory.set_homes(&self.homes);
+    }
+
+    /// What our status icons are worked out from: this view, plus the share of full HP lost, the
+    /// predicted endurance and the snapshot's time scale.
+    pub fn status_input(&self, hp_lost: f32, endurance: f32, winded: bool, time_scale: f32) -> StatusInput {
         let h = &self.health;
-        let input = StatusInput {
+        StatusInput {
             needs: self.needs,
+            hp_lost,
             pain: h.pain,
-            bleeding: h.wounds.iter().filter(|w| w.bleed_per_h > 0.0).count(),
+            painkillers: h.aid.painkillers_h.is_some(),
+            bleeding: h.wounds.iter().fold(0.0, |hp, w| hp + w.bleed_per_h),
             food_poisoned: h.food_poisoning,
             festering: h.wounds.iter().any(|w| w.festering),
             infection: h.infection,
             endurance,
             winded,
-            tired_below,
-            burden: self.carry.burden,
+            load: self.carry.weight_kg / self.carry.limit_kg.max(0.01),
             time_scale,
-        };
-        zombye_sim::needs::status_tags(needs, &input)
+        }
+    }
+
+    /// Our status icons (health, hunger, thirst, tiredness, endurance, load, pain, bleeding, sick,
+    /// queasy, asleep) by `data` (`status.ron`): what the server's `World::status_tags` says,
+    /// worked out on the client.
+    pub fn status_tags(&self, data: &StatusData, needs: &NeedsTuning, hp_lost: f32, endurance: f32, winded: bool, time_scale: f32) -> Vec<StatusTag> {
+        zombye_sim::status::status_tags(data, needs, &self.status_input(hp_lost, endurance, winded, time_scale))
     }
 
     /// Our level in `skill` (#46).
@@ -275,8 +439,22 @@ pub struct Snapshot {
     pub edge_changes: Vec<EdgeChange>,
     /// Doors and windows whose hit points changed since the previous snapshot (each once).
     pub edge_damage: Vec<EdgeDamage>,
+    /// Blinds put up, taken down or rolled up or down since the previous snapshot (each once, in
+    /// order); clients apply them to their map copy, as `edge_changes`.
+    pub blind_changes: Vec<zombye_sim::map::BlindChange>,
+    /// Barricades put up, changed or torn down since the previous snapshot (each in order);
+    /// clients apply them to their map copy, as `blind_changes` (`zombye_sim::build`).
+    #[serde(default)]
+    pub barricade_changes: Vec<zombye_sim::map::BarricadeChange>,
+    /// Trees felled since the previous snapshot (each once, `zombye_sim::trees`): stumps now, which
+    /// clients put on their map copy.
+    pub tree_changes: Vec<zombye_sim::trees::TreeChange>,
     /// Every item lying about (a short list for now; interest management later).
     pub items: Vec<GroundItem>,
+    /// Which of `items` lie on the first upper floor, by id, in order (`World::item_level`); the
+    /// rest lie on the ground floor.
+    #[serde(default)]
+    pub upstairs: Vec<u32>,
     /// Hits, kills, shoves, stomps and wounds since the previous snapshot, for hit feedback.
     pub hits: Vec<CombatEvent>,
     /// Players' private views (inventory, load, open container) that changed since the previous
@@ -295,14 +473,52 @@ pub struct Snapshot {
     pub level_ups: Vec<LevelUp>,
     /// What every player has on (#63), every snapshot: the client draws it, for us and for others.
     pub outfits: Vec<OutfitView>,
-    /// What the zombies listed above that rose from players wore (#63), every snapshot.
-    pub risen: Vec<OutfitView>,
+    /// What the zombies listed above wear when it isn't their outfit (`World::zombie_look`): those
+    /// that rose from players (#63), in what they wore, and bodies that have been searched, in what is
+    /// left on them. Every snapshot. The rest wear what `zombye_sim::corpses::default_look` gives,
+    /// which a client works out for itself.
+    pub looks: Vec<OutfitView>,
+    /// Players heard in this tick by a survivor that doesn't see them (#66): a sound at a
+    /// position, as loud as its radius, not the player. A client gets only its own.
+    #[serde(default)]
+    pub heard: Vec<zombye_sim::Heard>,
+    /// What survivors said since the previous snapshot (#67), once per listener; a client gets
+    /// only what its own survivor heard (its own lines too), and with fair information on, the
+    /// speaker's id only if its survivor sees them (else 0: a voice from a place).
+    #[serde(default)]
+    pub speech: Vec<Said>,
+    /// Groups (#73): for each player with a group or an invitation, its members' names, shared
+    /// markers and who invited it. Every snapshot; a client gets only its own.
+    pub groups: Vec<zombye_sim::GroupView>,
+    /// What each living player has seen of the map, for the map screen (`sim::explore`); a
+    /// client gets only its own.
+    pub maps: Vec<MapView>,
+    /// The rooms lit now, in order (`zombye_sim::power`): light switch on, building powered.
+    #[serde(default)]
+    pub lit_rooms: Vec<u16>,
+    /// The town's grid is on.
+    #[serde(default)]
+    pub grid_on: bool,
+    /// The town's water is running (`zombye_sim::power::WaterDef`): taps fill bottles.
+    #[serde(default)]
+    pub water_on: bool,
+    /// Fills taken from each toilet's cistern since the water went off (by furniture index:
+    /// `zombye_sim::power::cistern_near`).
+    #[serde(default)]
+    pub cisterns: Vec<(u32, u8)>,
+    /// The campfires (`zombye_sim::fire`), in id order: every snapshot (a server sends them when they change).
+    #[serde(default)]
+    pub fires: Vec<zombye_sim::FireView>,
+    /// The vehicles (`zombye_sim::vehicles`), in id order: every snapshot (a server sends them
+    /// when they change).
+    #[serde(default)]
+    pub vehicles: Vec<zombye_sim::VehicleView>,
 }
 
 /// What a body has on, for drawing it (#63): the clothing and accessories it wears in the order put
 /// on, the bags on its back and shoulder, and what it holds in each hand (the client draws a bag
 /// there; #91), as item indices (into the item definitions the client got on joining). `id` is a
-/// player's in [`Snapshot::outfits`], a zombie's in [`Snapshot::risen`].
+/// player's in [`Snapshot::outfits`], a zombie's in [`Snapshot::looks`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OutfitView {
     pub id: u32,
@@ -313,6 +529,9 @@ pub struct OutfitView {
     pub hand: Option<u16>,
     #[serde(default)]
     pub off_hand: Option<u16>,
+    /// The light in a hand is switched off (F): it isn't drawn.
+    #[serde(default)]
+    pub light_off: bool,
 }
 
 impl OutfitView {
@@ -325,8 +544,16 @@ impl OutfitView {
             shoulder: inv.shoulder.map(|s| s.item),
             hand: inv.hand.map(|s| s.item),
             off_hand: inv.off_hand.map(|s| s.item),
+            light_off: p.light_off,
         }
     }
+}
+
+/// What one player has seen of the map ([`Snapshot::maps`], `sim::explore`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct MapView {
+    pub player: u32,
+    pub explored: zombye_sim::Explored,
 }
 
 /// One player's run stats ([`Snapshot::runs`]).
@@ -334,6 +561,9 @@ impl OutfitView {
 pub struct RunView {
     pub player: u32,
     pub run: RunStats,
+    /// This life's first day and night (#19, `sim::firstnight`): objectives, when night falls and
+    /// ends, and the outcome at dawn. `None` for a save from before it.
+    pub first_night: Option<zombye_sim::FirstNight>,
 }
 
 /// The ground items one player can reach (ids into [`Snapshot::items`]), nearest first.
@@ -347,17 +577,15 @@ impl Snapshot {
     /// Capture the active zombies within `TierTuning::interest_radius` of a player (in id order;
     /// zombies that leave it, are demoted to a far tier, or are corpses the server cleared away
     /// are simply no longer listed, and clients despawn them) and take pending map edits and edge
-    /// damage. Proper per-client interest management comes with #22.
+    /// damage. A multiplayer server then cuts this down for each client (#22: `wire`,
+    /// [`Snapshot::for_client`]).
     pub fn capture(world: &mut World) -> Self {
         let z = &world.zombies;
         let zombies: Vec<ZombieView> = (0..z.len())
             .filter(|&i| world.in_interest(i))
             .map(|i| ZombieView { id: z.id[i], pos: z.pos[i].to_array(), facing: z.facing[i], speed: z.speed[i], anim: z.anim[i] })
             .collect();
-        let risen = zombies
-            .iter()
-            .filter_map(|v| world.risen_look(v.id).map(|look| OutfitView { id: v.id, worn: look.iter().filter_map(|i| world.item_index(i)).collect(), ..Default::default() }))
-            .collect();
+        let looks = zombies.iter().filter(|v| !world.zombie_look_is_default(v.id)).map(|v| OutfitView { id: v.id, worn: world.zombie_look(v.id), ..Default::default() }).collect();
         let players = world
             .players
             .iter()
@@ -368,6 +596,8 @@ impl Snapshot {
                 stance: p.state.stance,
                 endurance: p.state.endurance,
                 winded: p.state.winded,
+                climb: p.state.climb,
+                level: p.state.level,
                 last_input_seq: p.last_input_seq,
                 hp: p.hp,
                 dead: p.dead,
@@ -376,12 +606,25 @@ impl Snapshot {
                 action_left: p.action.map_or(0.0, |a| a.timer.max(0.0)),
                 ready_in: p.ready_in,
                 mods: p.state.mods,
+                endurance_cap: p.state.mods.max_endurance,
                 busy: p.jobs.first().map_or(0.0, |j| j.left.max(0.0)),
                 jobs: p.jobs.len().min(255) as u8,
                 dev: p.dev,
                 health: if p.dead { HealthTags::default() } else { p.health.tags(&world.config.health) },
-                asleep: p.needs.asleep(),
+                // A logged-out survivor (#68) lies asleep to everyone who sees it.
+                asleep: p.needs.asleep() || (p.away.is_some() && !p.dead),
+                seated: p.seated,
                 aiming: p.input.aim && !p.dead,
+                knock: p.knock,
+                protected: p.protected > 0.0,
+                gesture: p.gesture.map(|g| g.kind),
+                agent: false,
+                restrained: p.restraint.is_some(),
+                struggling: p.restraint.is_some_and(|r| r.struggling),
+                struggle: p.restraint.map_or(0.0, |r| (r.struggled / world.escape_secs(p).unwrap_or(1.0).max(0.1)).clamp(0.0, 1.0)),
+                hands: p.hands.map(|h| h.kind.act()),
+                hands_left: p.hands.map_or(0.0, |h| h.left.max(0.0)),
+                hands_total: p.hands.map_or(0.0, |h| h.total),
             })
             .collect();
         let private = world.take_private_dirty().into_iter().filter_map(|id| PrivateView::of(world, id)).collect();
@@ -394,16 +637,35 @@ impl Snapshot {
             zombies,
             edge_changes: std::mem::take(&mut world.edge_changes),
             edge_damage: world.take_edge_damage().into_iter().map(|(e, hp)| EdgeDamage { tile: e.tile, edge: e.edge, hp }).collect(),
+            blind_changes: world.take_blind_changes(),
+            barricade_changes: world.take_barricade_changes(),
+            tree_changes: world.take_tree_changes(),
             items: world.items().to_vec(),
             hits: std::mem::take(&mut world.combat_events),
             private,
             item_notes: std::mem::take(&mut world.item_notes),
+            upstairs: world.upstairs_items(),
             floor: world.players.iter().map(|p| FloorView { player: p.id, items: world.floor_ids(p.id) }).collect(),
-            runs: world.players.iter().map(|p| RunView { player: p.id, run: p.run.clone() }).collect(),
+            runs: world.players.iter().map(|p| RunView { player: p.id, run: p.run.clone(), first_night: p.first_night.clone() }).collect(),
             level_ups: world.take_level_ups(),
             outfits: world.players.iter().map(OutfitView::of).collect(),
-            risen,
+            looks,
+            heard: world.awareness().all_heard_now().copied().collect(),
+            speech: world.take_speech(),
+            groups: if world.groups().is_empty() { Vec::new() } else { world.players.iter().filter_map(|p| world.group_view(p.id)).collect() },
+            maps: world.players.iter().filter(|p| p.explored.w > 0).map(|p| MapView { player: p.id, explored: p.explored.clone() }).collect(),
+            lit_rooms: world.power().lit().to_vec(),
+            grid_on: world.power().grid_on(),
+            water_on: world.water_on(),
+            cisterns: world.cisterns_taken(),
+            fires: world.fires().iter().map(|f| f.view()).collect(),
+            vehicles: world.vehicles().iter().map(zombye_sim::VehicleView::of).collect(),
         }
+    }
+
+    /// `player`'s group and the invitations to it (#73), if it has either.
+    pub fn group_of(&self, player: u32) -> Option<&zombye_sim::GroupView> {
+        self.groups.iter().find(|g| g.player == player)
     }
 
     /// This snapshot as client `player` should get it: only its own private view and notes.
@@ -413,12 +675,26 @@ impl Snapshot {
         self.floor.retain(|f| f.player == player);
         self.runs.retain(|r| r.player == player);
         self.level_ups.retain(|l| l.player == player);
+        self.heard.retain(|h| h.listener == player);
+        self.speech.retain(|s| s.listener == player);
+        self.groups.retain(|g| g.player == player);
+        self.maps.retain(|m| m.player == player);
         self
+    }
+
+    /// What `player` has seen of the map, if it is in this snapshot.
+    pub fn map_of(&self, player: u32) -> Option<&zombye_sim::Explored> {
+        self.maps.iter().find(|m| m.player == player).map(|m| &m.explored)
     }
 
     /// `player`'s run stats, if it is in this snapshot.
     pub fn run_of(&self, player: u32) -> Option<&RunStats> {
         self.runs.iter().find(|r| r.player == player).map(|r| &r.run)
+    }
+
+    /// `player`'s first-night record, if it has one and is in this snapshot.
+    pub fn first_night_of(&self, player: u32) -> Option<&zombye_sim::FirstNight> {
+        self.runs.iter().find(|r| r.player == player).and_then(|r| r.first_night.as_ref())
     }
 
     /// The ground items `player` can reach, nearest first (empty if it isn't in this snapshot).
@@ -436,7 +712,9 @@ impl PlayerView {
             stance: self.stance,
             endurance: self.endurance,
             winded: self.winded,
-            mods: self.mods,
+            mods: MoveMods { max_endurance: self.endurance_cap, ..self.mods },
+            climb: self.climb,
+            level: self.level,
         }
     }
 }
@@ -449,18 +727,61 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
     {
         return;
     }
+    // At the wheel (`zombye_sim::vehicles`) a survivor drives and can eat, drink, treat its
+    // wounds, craft and move things between its pockets and bags; nothing else.
+    if let Some(player) = intent.action_by()
+        && world.in_vehicle(player)
+        && !matches!(intent, Intent::MoveItem { .. } | Intent::Equip { .. } | Intent::Wear { .. } | Intent::Unequip { .. } | Intent::Use { .. } | Intent::Treat { .. } | Intent::Craft { .. })
+    {
+        return;
+    }
     match intent {
+        Intent::Sleep { player, .. } | Intent::Sit { player, .. } if world.in_vehicle(*player) => {}
+        Intent::Vehicle { player, op } => {
+            let _ = world.player_vehicle(*player, *op);
+        }
+        Intent::Drive { player, throttle, steer, brake } => {
+            world.player_drive(*player, zombye_sim::DriveInput { throttle: *throttle, steer: *steer, brake: *brake });
+        }
         Intent::PlayerInput { player, seq, move_dir, facing, run, sneak, aim } => {
             let input = PlayerInput { move_dir: (*move_dir).into(), facing: *facing, run: *run, sneak: *sneak, aim: *aim };
             world.set_player_input(*player, *seq, input);
         }
-        // Only an aiming player fights.
-        Intent::Attack { player } | Intent::Shove { player } | Intent::Stomp { player } if !world.aiming(*player) => {}
+        // Only an aiming player swings or shoots; a shove or a stomp (Space) needs no aim: it
+        // goes the way the player faces.
+        Intent::Attack { player } if !world.aiming(*player) => {}
+        Intent::Toward { player, facing, then } => {
+            if then.action_by() == Some(*player) && !matches!(**then, Intent::Toward { .. }) {
+                world.set_facing(*player, *facing);
+                apply_intent(world, then);
+            }
+        }
+        Intent::Climb { player } => {
+            world.player_climb(*player);
+        }
+        Intent::Blind { player, op } => {
+            let _ = world.player_blind(*player, *op);
+        }
+        Intent::Build { player, build } => {
+            let _ = world.player_build_id(*player, build);
+        }
+        Intent::Unbuild { player } => {
+            let _ = world.player_unbuild(*player);
+        }
         Intent::Interact { player } => {
             world.player_interact(*player);
         }
         Intent::SmashWindow { player } => {
             world.player_smash_window(*player);
+        }
+        Intent::Light { player, on } => {
+            world.player_light(*player, *on);
+        }
+        Intent::Flashlight { player, on } => {
+            world.player_flashlight(*player, *on);
+        }
+        Intent::Fire { player, fire, op } => {
+            let _ = world.player_fire(*player, *fire, *op);
         }
         Intent::Attack { player } => {
             world.player_attack(*player);
@@ -509,7 +830,49 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
                 world.wake_player(*player);
             }
         }
+        Intent::Sit { player, sit } => {
+            let _ = world.player_sit(*player, *sit);
+        }
         Intent::CancelJobs { player, all } => world.player_cancel_jobs(*player, *all),
+        Intent::Seen { player, tick } => world.player_saw(*player, *tick),
+        Intent::Say { player, text, volume } => {
+            let _ = world.player_say(*player, text, *volume);
+        }
+        Intent::Gesture { player, gesture } => {
+            world.player_gesture(*player, *gesture);
+        }
+        // Refusals are noted for the player's client, as for the item intents.
+        Intent::Restrain { player, target } => {
+            let _ = world.player_restrain(*player, *target);
+        }
+        Intent::Free { player, target } => {
+            let _ = world.player_free(*player, *target);
+        }
+        Intent::Frisk { player, target } => {
+            let _ = world.player_frisk(*player, *target);
+        }
+        Intent::TakeFrom { player, from, index, item, count } => {
+            let _ = world.player_take_from(*player, *from, *index, *item, *count);
+        }
+        Intent::StopHands { player } => {
+            world.player_stop_hands(*player);
+        }
+        Intent::Struggle { player, on } => {
+            world.player_struggle(*player, *on);
+        }
+        Intent::Group { player, op } => {
+            let _ = match *op {
+                GroupOp::Invite { target } => world.group_invite(*player, target),
+                GroupOp::Accept { from } => world.group_accept(*player, from),
+                GroupOp::Leave => world.group_leave(*player),
+                GroupOp::Mark { pos } => world.group_mark(*player, pos.into()).map(|_| ()),
+                GroupOp::Unmark { marker, near } => {
+                    world.group_unmark(*player, marker, near.into());
+                    Ok(())
+                }
+            };
+        }
+        Intent::Aim { player, pitch } => world.set_pitch(*player, *pitch),
         Intent::Respawn { player } => {
             world.respawn_player(*player);
         }
@@ -524,6 +887,7 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
             world.spawn_zombies(*count, (*center).into(), *radius);
         }
         Intent::SkipTime { hours } => world.skip_time(hours.clamp(0.0, 24.0)),
+        Intent::Grid { on } => world.set_grid(*on),
         Intent::MakeNoise { pos, radius, lasting } => world.make_noise((*pos).into(), radius.clamp(0.0, 500.0), *lasting),
     }
 }
@@ -540,7 +904,15 @@ impl Intent {
     pub fn action_by(&self) -> Option<u32> {
         match *self {
             Intent::Interact { player }
+            | Intent::Toward { player, .. }
+            | Intent::Climb { player }
+            | Intent::Blind { player, .. }
+            | Intent::Build { player, .. }
+            | Intent::Unbuild { player }
             | Intent::SmashWindow { player }
+            | Intent::Light { player, .. }
+            | Intent::Flashlight { player, .. }
+            | Intent::Fire { player, .. }
             | Intent::Attack { player }
             | Intent::Shove { player }
             | Intent::Stomp { player }
@@ -553,7 +925,11 @@ impl Intent {
             | Intent::Use { player, .. }
             | Intent::Search { player, .. }
             | Intent::Treat { player, .. }
-            | Intent::Craft { player, .. } => Some(player),
+            | Intent::Craft { player, .. }
+            | Intent::Restrain { player, .. }
+            | Intent::Free { player, .. }
+            | Intent::Frisk { player, .. }
+            | Intent::TakeFrom { player, .. } => Some(player),
             _ => None,
         }
     }
@@ -563,7 +939,8 @@ impl Intent {
 pub struct LocalServer {
     pub world: World,
     inbox: Vec<Intent>,
-    /// Takes [`Intent::Dev`] (single-player: yes; a hosted server: only with `--allow-dev`).
+    /// Takes [`Intent::Dev`] and the debug intents ([`Intent::dev_only`]; single-player: yes, but
+    /// not in a packaged game without `--dev`; a hosted server: only with `--allow-dev`).
     pub allow_dev: bool,
     /// Dev intents refused so far.
     pub refused_dev: u32,
@@ -598,7 +975,8 @@ impl LocalServer {
     /// under the map and meshes it already has) with one player in the bedroom. Returns the world
     /// and that player's id; [`LocalServer::replace_world`] serves it.
     pub fn new_run(config: &WorldConfig) -> (World, u32) {
-        let mut world = World::new(config.clone());
+        // The same town, but what's in it is rolled again: a new run finds different things.
+        let mut world = World::new(config.clone().with_loot_seed(content::fresh_loot_seed()));
         let id = world.add_player(world.player_spawn);
         (world, id)
     }
@@ -617,7 +995,7 @@ impl LocalServer {
     /// Apply queued intents, advance one tick, and return the new snapshot.
     pub fn tick(&mut self) -> Snapshot {
         for intent in self.inbox.drain(..) {
-            if intent.is_dev() && !self.allow_dev {
+            if intent.dev_only() && !self.allow_dev {
                 self.refused_dev += 1;
                 continue;
             }
@@ -632,14 +1010,16 @@ impl LocalServer {
 mod tests {
     use super::*;
     use zombye_sim::players::step_movement;
-    use zombye_sim::{BuildingTemplate, TICK_DT};
+    use glam::Vec2;
+    use zombye_sim::{BuildingTemplate, CombatEventKind, TICK_DT};
 
     fn server() -> LocalServer {
         let templates = [include_str!("../../../assets/data/buildings/bungalow.ron")].iter().map(|t| BuildingTemplate::from_ron(t).unwrap()).collect();
         let weapons = zombye_sim::items::parse_weapons(include_str!("../../../assets/data/items/weapons.ron")).unwrap();
         let items = zombye_sim::items::parse_items(include_str!("../../../assets/data/items/items.ron"), &weapons).unwrap();
         let containers = zombye_sim::containers::parse_containers(include_str!("../../../assets/data/containers.ron")).unwrap();
-        LocalServer::new(WorldConfig::new(4, 50, templates).with_weapons(weapons).with_items(items).with_containers(containers))
+        let loot = zombye_sim::loot::parse_loot(include_str!("../../../assets/data/loot.ron")).unwrap();
+        LocalServer::new(WorldConfig::new(4, 50, templates).with_weapons(weapons).with_items(items).with_containers(containers).with_loot(loot))
     }
 
     /// Picking up, swinging and getting hurt all go through intents and show up in snapshots.
@@ -780,6 +1160,47 @@ mod tests {
         assert_eq!(view.health.aid.opened.len(), 1, "two uses left in the roll");
     }
 
+    /// A right-click on a door (`Intent::Toward`): the player turns to it and opens it, though it
+    /// faced the other way; one claiming to be another player, or wrapping a non-action, does nothing.
+    #[test]
+    fn toward_turns_the_player_and_opens_the_door_it_points_at() {
+        use zombye_sim::map::{Edge, Side};
+        let mut server = server();
+        let house = server.world.spawn_building;
+        let map = &server.world.map;
+        let b = &map.buildings[house];
+        let mut found = None;
+        for y in b.min.y..b.min.y + b.size.y {
+            for x in b.min.x..b.min.x + b.size.x {
+                let t = glam::IVec2::new(x, y);
+                for side in Side::ALL {
+                    if found.is_none() && map.edge(t, side) == Edge::DoorClosed && !map.tile_blocked(t) {
+                        found = Some((t, side));
+                    }
+                }
+            }
+        }
+        let (t, side) = found.expect("a shut door");
+        let from = t.as_vec2() + glam::Vec2::splat(0.5);
+        let to = side.offset().as_vec2();
+        let toward = to.y.atan2(to.x);
+        let away = toward + std::f32::consts::PI;
+        let id = server.join(Some(from.to_array()));
+        server.send(Intent::PlayerInput { player: id, seq: 1, move_dir: [0.0, 0.0], facing: away, run: false, sneak: false, aim: false });
+        server.tick();
+        let door = |s: &LocalServer| s.world.map.edge(t, side);
+        // Someone else's request, or a wrapped input, is refused.
+        server.send(Intent::Toward { player: id, facing: toward, then: Box::new(Intent::Interact { player: id + 1 }) });
+        server.send(Intent::Toward { player: id, facing: toward, then: Box::new(Intent::SkipTime { hours: 1.0 }) });
+        server.tick();
+        assert_eq!(door(&server), Edge::DoorClosed);
+        server.send(Intent::Toward { player: id, facing: toward, then: Box::new(Intent::Interact { player: id }) });
+        server.tick();
+        assert_eq!(door(&server), Edge::DoorOpen, "turned to it and opened it");
+        let f = server.world.player(id).unwrap().state.facing;
+        assert!((f - toward.rem_euclid(std::f32::consts::TAU)).abs() < 1e-4, "it stays facing the door: {f}");
+    }
+
     /// Climbing through a window predicts exactly too: the client keeps its own copy of the map,
     /// updated only from snapshot edge changes, and predicts with that.
     #[test]
@@ -829,6 +1250,13 @@ mod tests {
         drive(&mut server, &mut client_map, &mut predicted, [0.0, 0.0], 1);
         assert_eq!(client_map.edge(inside, side_toward(inside, outside)), Edge::WindowOpen, "the client heard about the window");
         let start = predicted.pos;
+        // Walking into it doesn't climb it: that takes E.
+        drive(&mut server, &mut client_map, &mut predicted, dir.to_array(), 10);
+        assert!(predicted.pos.distance(start) < 0.3 && !client_map.in_window_opening(predicted.pos), "climbed without E");
+        server.send(Intent::Climb { player: id });
+        // The climb comes back in the snapshot; the client takes its player's state from it.
+        predicted = server.tick().players.iter().find(|p| p.id == id).unwrap().state();
+        assert!(predicted.climb.is_some(), "E climbs the open window");
         let mut climbed = 0;
         for _ in 0..60 {
             drive(&mut server, &mut client_map, &mut predicted, dir.to_array(), 1);
@@ -837,6 +1265,43 @@ mod tests {
         assert!(climbed >= 15, "only {climbed} ticks climbing");
         assert_eq!(server.world.map.room_at(predicted.pos), 0, "got out");
         assert!(predicted.pos.distance(start) > 2.0);
+    }
+
+    /// Up a flight of stairs, about upstairs and down again: the client's prediction (the map it
+    /// built, the snapshot's floor) matches the server tick for tick, and the snapshot says which
+    /// floor the player and what it dropped are on.
+    #[test]
+    fn prediction_matches_server_on_the_stairs() {
+        let templates = [include_str!("../../../assets/data/buildings/bungalow.ron"), include_str!("../../../assets/data/buildings/family_two_storey.ron")].iter().map(|t| BuildingTemplate::from_ron(t).unwrap()).collect();
+        let mut server = LocalServer::new(WorldConfig::new(4, 0, templates));
+        let st = *server.world.map.stairs.first().expect("a staircase in town");
+        let foot = st.foot().as_vec2() + glam::Vec2::splat(0.5);
+        let top = st.landing().as_vec2() + glam::Vec2::splat(0.5);
+        let id = server.join(Some(foot.to_array()));
+        let client_map = server.world.map.clone();
+        let mut predicted = Snapshot::capture(&mut server.world).players.iter().find(|p| p.id == id).unwrap().state();
+        let (mut seq, mut highest, mut slow) = (0, 0.0f32, 0);
+        for (target, level) in [(top, 1), (foot, 0)] {
+            for _ in 0..400 {
+                let d = target - predicted.pos;
+                if predicted.level == level && d.length() < 0.1 {
+                    break;
+                }
+                seq += 1;
+                let (move_dir, facing) = (d.normalize_or_zero().to_array(), d.y.atan2(d.x));
+                server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run: false, sneak: false, aim: false });
+                let before = predicted.pos;
+                step_movement(&client_map, &mut predicted, &PlayerInput { move_dir: move_dir.into(), facing, run: false, sneak: false, aim: false }, TICK_DT);
+                let on_stairs = client_map.stair_at(predicted.pos).is_some() && predicted.level == 0;
+                slow += (on_stairs && predicted.pos.distance(before) < 2.0 * TICK_DT) as u32;
+                highest = highest.max(predicted.height(&client_map));
+                let snap = server.tick();
+                let view = snap.players.iter().find(|p| p.id == id).unwrap();
+                assert_eq!(view.state(), predicted, "diverged at seq {seq}");
+            }
+            assert_eq!(predicted.level, level, "didn't get to floor {level}: {:?}", predicted.pos);
+        }
+        assert!(highest >= 3.0 && slow > 20, "highest {highest}, {slow} slow ticks on the stairs");
     }
 
     fn side_toward(a: glam::IVec2, b: glam::IVec2) -> zombye_sim::map::Side {
@@ -1184,7 +1649,7 @@ mod tests {
                 let mine = snap.clone().for_player(id);
                 let own = mine.private.iter().find(|v| v.player == id).expect("our needs changed");
                 assert!(own.needs.asleep.is_some() && own.needs.tiredness == 0.5, "{:?}", own.needs);
-                let tags = own.status_tags(&server.world.config.needs, view.endurance, view.winded, server.world.config.combat.tired_below, snap.time_scale);
+                let tags = own.status_tags(zombye_sim::StatusData::builtin(), &server.world.config.needs, 1.0 - view.hp / server.world.config.combat.player_hp, view.endurance, view.winded, snap.time_scale);
                 assert_eq!(tags.iter().map(|t| t.label.clone()).collect::<Vec<_>>(), server.world.status_tags(id).iter().map(|t| t.label.clone()).collect::<Vec<_>>());
             }
         }
@@ -1216,10 +1681,14 @@ mod tests {
         let mut server = server();
         let id = server.join(None);
         let other = server.join(None);
-        // 16.5 kg: burdened at Strength 1 (a 15.5 kg limit), not at 2 (17 kg).
+        // 16.5 kg: burdened at Strength 3 (a 16.25 kg limit), not at 4 (17 kg).
         assert!(server.world.give_item(id, "wooden_plank", 7));
         assert!(server.world.hold_item(id, zombye_sim::Slot::Hand, "fire_axe"));
         let pi = server.world.players.iter().position(|p| p.id == id).unwrap();
+        // Strength 3 from the start (16.25 kg, still burdened), so the swing below takes it to 4.
+        let to3 = server.world.config.skills.xp_for(3) - server.world.players[pi].skills.xp(Skill::Strength);
+        assert_eq!(server.world.award_xp(pi, Skill::Strength, to3), Some(3));
+        server.world.take_level_ups();
         let snap = server.tick();
         let mut predicted = snap.players.iter().find(|p| p.id == id).unwrap().state();
         assert!(predicted.mods.speed < 1.0, "burdened: {:?}", predicted.mods);
@@ -1231,7 +1700,7 @@ mod tests {
             let aim = seq == 100;
             server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run, sneak: false, aim });
             if seq == 100 {
-                // A swing of a 2.5 kg axe: Strength 2 on the spot.
+                // A swing of a 2.5 kg axe: Strength 4 on the spot.
                 server.send(Intent::Attack { player: id });
             }
             step_movement(&server.world.map, &mut predicted, &PlayerInput { move_dir: move_dir.into(), facing, run, sneak: false, aim }, TICK_DT);
@@ -1242,9 +1711,9 @@ mod tests {
                 assert_eq!((view.state().pos, view.state().stance), (predicted.pos, predicted.stance), "diverged at seq {seq}");
                 predicted = view.state();
                 let mine = snap.clone().for_player(id);
-                assert_eq!(mine.level_ups, [LevelUp { player: id, skill: Skill::Strength, level: 2 }]);
+                assert_eq!(mine.level_ups, [LevelUp { player: id, skill: Skill::Strength, level: 4 }]);
                 assert!(snap.clone().for_player(other).level_ups.is_empty(), "only ours");
-                assert_eq!(mine.private.iter().find(|v| v.player == id).expect("our skills changed").skill_level(Skill::Strength), 2);
+                assert_eq!(mine.private.iter().find(|v| v.player == id).expect("our skills changed").skill_level(Skill::Strength), 4);
             } else {
                 assert_eq!(zombye_sim::PlayerState { mods: predicted.mods, ..view.state() }, predicted, "diverged at seq {seq}");
             }
@@ -1256,18 +1725,85 @@ mod tests {
             let w = &mut server.world;
             match seq {
                 99 => {
-                    let to = 249.5 - w.players[pi].skills.xp(Skill::Strength);
+                    let to = 749.5 - w.players[pi].skills.xp(Skill::Strength);
                     assert_eq!(w.award_xp(pi, Skill::Strength, to), None);
                 }
                 200 => {
-                    let to = 250.0 - w.players[pi].skills.xp(Skill::Fitness);
-                    assert_eq!(w.award_xp(pi, Skill::Fitness, to), Some(2));
+                    let to = 450.0 - w.players[pi].skills.xp(Skill::Fitness);
+                    assert_eq!(w.award_xp(pi, Skill::Fitness, to), Some(3));
                 }
                 _ => {}
             }
         }
         assert_eq!(mods_seen.len(), 3, "{mods_seen:?}");
         assert!(mods_seen[1].speed == 1.0 && mods_seen[2].run_drain < mods_seen[1].run_drain && mods_seen[2].regen > mods_seen[1].regen, "{mods_seen:?}");
+    }
+
+    /// PvP through intents and snapshots: one player hounds another with shoves and a bat. The
+    /// victim's client predicts its own movement exactly on every tick but the ones a blow pushed
+    /// it (the snapshot corrects those, and says why with a hit event): reeling and lying down
+    /// reach it as movement modifiers, switched after movement like every other. With `pvp` off
+    /// the same intents touch nobody.
+    #[test]
+    fn prediction_holds_through_pvp_blows() {
+        for pvp in [true, false] {
+            let mut server = server();
+            server.world.config.combat.pvp = pvp;
+            server.world.config.zombies = Some(0);
+            server.world = World::new(server.world.config.clone());
+            let id = server.join(None);
+            let foe = server.join(None);
+            assert!(server.world.hold_item(foe, zombye_sim::Slot::Hand, "baseball_bat"));
+            server.world.set_dev(id, Some(true), None);
+            let snap = server.tick();
+            let mut predicted = snap.players.iter().find(|p| p.id == id).unwrap().state();
+            let (mut blows, mut reeled, mut floored, mut frozen) = (0, 0, 0, 0);
+            for seq in 1..=1200u32 {
+                let a = seq as f32 * 0.03;
+                let (move_dir, facing) = ([a.cos() * 0.5, a.sin() * 0.5], a);
+                server.send(Intent::PlayerInput { player: id, seq, move_dir, facing, run: false, sneak: false, aim: false });
+                // The other closes in and hits: a shove, then swings.
+                let (me, them) = (server.world.player(id).unwrap().state.pos, server.world.player(foe).unwrap().state.pos);
+                let to = me - them;
+                let chase = if to.length() > 0.7 { to.normalize() } else { Vec2::ZERO };
+                server.send(Intent::PlayerInput { player: foe, seq, move_dir: chase.into(), facing: to.to_angle(), run: true, sneak: false, aim: true });
+                if to.length() < 1.0 {
+                    server.send(if seq % 60 < 20 { Intent::Shove { player: foe } } else { Intent::Attack { player: foe } });
+                }
+                step_movement(&server.world.map, &mut predicted, &PlayerInput { move_dir: move_dir.into(), facing, run: false, sneak: false, aim: false }, TICK_DT);
+                let snap = server.tick();
+                let view = *snap.players.iter().find(|p| p.id == id).unwrap();
+                let hit = snap.hits.iter().any(|h| h.player == id && h.by == foe && matches!(h.kind, CombatEventKind::PlayerHurt | CombatEventKind::PlayerShoved));
+                if hit {
+                    blows += 1;
+                    // Knocked back: where it stands now is the server's to say.
+                    predicted = view.state();
+                } else {
+                    assert_eq!(zombye_sim::PlayerState { mods: predicted.mods, ..view.state() }, predicted, "diverged at seq {seq} (pvp {pvp})");
+                }
+                predicted.mods = view.mods;
+                match view.knock {
+                    Some(k) => {
+                        assert_eq!(view.mods.speed, 0.0, "seq {seq}");
+                        frozen += 1;
+                        if k.down { floored += 1 } else { reeled += 1 }
+                    }
+                    None => assert!(view.mods.speed > 0.0, "seq {seq}"),
+                }
+                // Each client gets the hit (the feedback is for everyone who can see it).
+                if hit {
+                    assert!(snap.clone().for_player(foe).hits.iter().any(|h| h.by == foe));
+                }
+            }
+            let v = server.world.player(id).unwrap();
+            if pvp {
+                assert!(blows > 10 && reeled > 0 && floored > 0 && frozen > 20, "{blows} blows, {reeled} ticks reeling, {floored} down");
+                assert_eq!(v.hp, 100.0, "a god takes the blows, not the damage");
+            } else {
+                assert_eq!((blows, frozen), (0, 0));
+                assert!(v.health.wounds.is_empty());
+            }
+        }
     }
 
     /// Crafting through intents (#12): asked for by a sleeper it only gets it up; asked again it

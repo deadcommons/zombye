@@ -1,7 +1,10 @@
 //! Minimal MCP (Model Context Protocol) server over stdio: newline-delimited JSON-RPC 2.0.
+//! `mcp_http.rs` carries the same messages over HTTP ([`handle`] answers both).
 //!
 //! Every tool goes through the same [`Intent`] path a game client uses, so an agent can't do
-//! anything a client couldn't (admin tools will be gated separately).
+//! anything a client couldn't. The tools for running a multiplayer server (kick, settings, events,
+//! the log) are another endpoint, on the hosting server and behind its own token: `admin.rs` (#26),
+//! which speaks the same protocol through [`answer`].
 
 use std::io::{BufRead, Write};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -17,7 +20,7 @@ use zombye_sim::vision::line_of_sight;
 use zombye_sim::{ActionKind, Dressing, HitEffect, InfectionStage, ItemStack, LoadOptions, Part, Place, Slot, TICK_DT, Tier, Treatment, World, WoundKind, ZombieState, crafting, firstaid};
 
 use crate::screenshot::{self, Renderer};
-use crate::Persist;
+use crate::{Persist, benchmark};
 
 const MAX_STEP: u64 = 20 * 60 * 60; // one hour of game time per call
 const MAX_MOVE_TICKS: u64 = 20 * 60 * 5; // five minutes of walking per move_player call
@@ -26,8 +29,203 @@ const MAX_MOVE_TICKS: u64 = 20 * 60 * 5; // five minutes of walking per move_pla
 const COMPASS: [(&str, [f32; 2]); 8] =
     [("e", [1.0, 0.0]), ("se", [1.0, 1.0]), ("s", [0.0, 1.0]), ("sw", [-1.0, 1.0]), ("w", [-1.0, 0.0]), ("nw", [-1.0, -1.0]), ("n", [0.0, -1.0]), ("ne", [1.0, -1.0])];
 
-/// Tools that only look: they don't make the world need saving.
-const READ_ONLY: [&str; 18] = ["observe", "zombie", "edge", "weapons", "items", "inventory", "health", "skills", "containers_near", "loot", "recipes", "buildings", "regions", "stats", "saves", "save", "load", "screenshot"];
+/// The modern, stateless protocol revision (no `initialize`: every request says its version in `_meta`,
+/// and `server/discover` describes the server).
+const MODERN_VERSION: &str = "2026-07-28";
+/// The handshake revisions (`initialize`) we answer, newest first.
+const LEGACY_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+/// `_meta` keys of the 2026-07-28 revision.
+const META_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
+const META_SERVER: &str = "io.modelcontextprotocol/serverInfo";
+/// `_meta` key on a tool that is for testing, not for playing.
+const META_DEBUG: &str = "zombye/debug";
+/// JSON-RPC error codes: invalid params (an unknown tool too), and the 2026-07-28 revision's
+/// `UnsupportedProtocolVersionError`.
+const INVALID_PARAMS: i64 = -32602;
+const UNSUPPORTED_VERSION: i64 = -32022;
+/// How long a client may keep `server/discover` and `tools/list` results: neither changes while the
+/// server runs.
+const CACHE_TTL_MS: u64 = 3_600_000;
+
+/// How this server was started.
+#[derive(Clone, Copy, Debug)]
+pub struct Options {
+    /// Offer the debug tools ([`Kind::Debug`]); `--no-debug-tools` leaves them out.
+    pub debug_tools: bool,
+    /// Offer `save` and `saves`, which write and list files in the saves folder. A server others can
+    /// reach (`--mcp-http`, #87) leaves them out together with the debug tools.
+    pub save_tools: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options { debug_tools: true, save_tools: true }
+    }
+}
+
+impl Options {
+    /// A server others play on: no debug tools, nothing of the saves folder.
+    pub const PLAY_ONLY: Options = Options { debug_tools: false, save_tools: false };
+
+    /// Whether the tool `name`, of `kind`, is listed and can be called.
+    fn offers(&self, name: &str, kind: Kind) -> bool {
+        match kind {
+            Kind::Debug => self.debug_tools,
+            Kind::Saves => self.save_tools,
+            Kind::Look | Kind::Play => self.save_tools || name != "saves",
+        }
+    }
+
+    /// Whether the tool called `name` is on offer (false for a name that is no tool).
+    #[cfg(test)]
+    pub fn offers_tool(&self, name: &str) -> bool {
+        tool_kind(name).is_some_and(|kind| self.offers(name, kind))
+    }
+}
+
+/// What a tool does to the world, which is what clients are told in its annotations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    /// Only reads: no time passes, nothing changes (`readOnlyHint`), the world doesn't need saving.
+    Look,
+    /// Plays the game as a player would, or steps time.
+    Play,
+    /// Writes a save file: `save`.
+    Saves,
+    /// For setting up tests: things no player could do (`load`, which swaps the whole world, too).
+    Debug,
+}
+
+/// Every tool: name, title (shown to people by clients), kind. `tool_list` adds these to the
+/// definitions, and a test checks each tool has a row.
+const TOOLS: [(&str, &str, Kind); 76] = [
+    ("observe", "Look around (ASCII map)", Kind::Look),
+    ("screenshot", "Screenshot (rendered picture)", Kind::Look),
+    ("stats", "World and player stats", Kind::Look),
+    ("zombie", "Inspect a zombie", Kind::Look),
+    ("edge", "Inspect a tile's walls, doors and windows", Kind::Look),
+    ("buildings", "List buildings", Kind::Look),
+    ("regions", "Zombie population by region", Kind::Look),
+    ("biomes", "Biomes of the wild ground", Kind::Look),
+    ("inventory", "Show inventory", Kind::Look),
+    ("health", "Show health and wounds", Kind::Look),
+    ("skills", "Show skills", Kind::Look),
+    ("weapons", "Weapon table", Kind::Look),
+    ("items", "Item table", Kind::Look),
+    ("loot", "Loot tables", Kind::Look),
+    ("recipes", "Crafting recipes", Kind::Look),
+    ("mods", "Mods: what runs, and check one", Kind::Look),
+    ("containers_near", "Containers nearby", Kind::Look),
+    ("saves", "List saves", Kind::Look),
+    ("heard", "What a player heard said", Kind::Look),
+    ("fires", "Campfires and stoves nearby", Kind::Look),
+    ("weather", "The date, the weather and the temperature", Kind::Look),
+    ("events", "The world events and when they happen", Kind::Look),
+    ("say", "Say something to whoever is near", Kind::Play),
+    ("gesture", "Wave, put your hands up or point", Kind::Play),
+    ("restrain", "Tie another survivor's hands", Kind::Play),
+    ("free", "Free a survivor's tied hands", Kind::Play),
+    ("search_player", "Search a tied survivor", Kind::Play),
+    ("take_from", "Take something from a searched survivor", Kind::Play),
+    ("struggle", "Struggle out of tied hands", Kind::Play),
+    ("group", "Your group: invite, accept, leave, markers", Kind::Play),
+    ("step_ticks", "Let time pass", Kind::Play),
+    ("move_player", "Move", Kind::Play),
+    ("interact", "Open or close a door or window", Kind::Play),
+    ("smash_window", "Smash a window", Kind::Play),
+    ("light", "Switch the light of the room you're in", Kind::Play),
+    ("flashlight", "Switch the light in your hands on or off", Kind::Play),
+    ("blind", "Fit, roll or take down a blind", Kind::Play),
+    ("builds", "The build menu's catalog", Kind::Look),
+    ("build", "Board up a window or door", Kind::Play),
+    ("unbuild", "Prise a plank off", Kind::Play),
+    ("fire", "Tend a campfire: fuel, light, put out", Kind::Play),
+    ("climb", "Climb a fence or an open window", Kind::Play),
+    ("attack", "Attack", Kind::Play),
+    ("shove", "Shove", Kind::Play),
+    ("stomp", "Stomp", Kind::Play),
+    ("pick_up", "Pick up", Kind::Play),
+    ("search", "Search a container", Kind::Play),
+    ("take", "Take an item", Kind::Play),
+    ("move_item", "Move an item", Kind::Play),
+    ("drop", "Drop an item", Kind::Play),
+    ("equip", "Equip an item", Kind::Play),
+    ("wear", "Wear an item", Kind::Play),
+    ("unequip", "Take off or put away an item", Kind::Play),
+    ("use", "Eat or drink", Kind::Play),
+    ("sleep", "Sleep", Kind::Play),
+    ("sit", "Sit down or get up", Kind::Play),
+    ("treat", "Treat a wound", Kind::Play),
+    ("craft", "Craft", Kind::Play),
+    ("respawn", "Get up again after dying", Kind::Play),
+    ("save", "Save the world", Kind::Saves),
+    ("make_noise", "Make a noise", Kind::Debug),
+    ("set_goal", "Send zombies to a point", Kind::Debug),
+    ("spawn_zombies", "Spawn zombies", Kind::Debug),
+    ("spawn_item", "Spawn an item", Kind::Debug),
+    ("set_needs", "Set hunger, thirst and tiredness", Kind::Debug),
+    ("wound", "Wound a player", Kind::Debug),
+    ("add_player", "Add a player", Kind::Debug),
+    ("pvp", "Player against player on or off", Kind::Debug),
+    ("grid", "The town's power grid on or off", Kind::Debug),
+    ("dev", "God mode and ignored by zombies", Kind::Debug),
+    ("restrain_now", "Tie a player's hands at once", Kind::Debug),
+    ("skip_time", "Skip time", Kind::Debug),
+    ("set_weather", "Set the weather", Kind::Debug),
+    ("trigger_event", "Make a world event happen now", Kind::Debug),
+    ("schedule_event", "Move or call off a world event", Kind::Debug),
+    ("load", "Load a save (replaces the world)", Kind::Debug),
+];
+
+/// The `events` tool's text: every world event, when it is due and when it happened.
+fn events_text(world: &World) -> String {
+    let now = world.game_hours();
+    let at = |h: f64| {
+        let t = world.config.start_hour as f64 + h;
+        format!("day {} {}", (t / 24.0).floor() as i64 + 1, clock(t.rem_euclid(24.0) as f32))
+    };
+    let mut out = format!("now: {} ({:.1} game hours in); water {}, grid {}\n", at(now), now, on_off(world.water_on()), on_off(world.power().grid_on()));
+    let list = world.event_schedule();
+    if list.is_empty() {
+        out.push_str("no world events (no events.ron)\n");
+    }
+    for s in list {
+        let due = match s.due_h {
+            _ if s.fired_h.is_some() => String::new(),
+            Some(h) if h > now => format!(", due {} (in {:.1} h)", at(h), h - now),
+            Some(_) => ", due now".to_string(),
+            None => ", not in this world".to_string(),
+        };
+        let fired = s.fired_h.map_or(String::new(), |h| format!(", happened {}", at(h)));
+        out.push_str(&format!("{}: {} ({:?}){due}{fired}\n", s.id, s.name, s.effect));
+    }
+    out
+}
+
+/// A tool's kind by the name it is called by: `toggle_door` is the old name of `interact`, still taken
+/// though no longer listed.
+fn tool_kind(name: &str) -> Option<Kind> {
+    let name = if name == "toggle_door" { "interact" } else { name };
+    TOOLS.iter().find(|t| t.0 == name).map(|t| t.2)
+}
+
+/// The weather in a line: `rain (70%), cloud 85%, wind 0.4 toward the NE, 9.5 C, sight x0.86, hearing x0.90`.
+fn weather_line(w: &zombye_sim::WeatherNow) -> String {
+    const WAYS: [&str; 8] = ["E", "SE", "S", "SW", "W", "NW", "N", "NE"];
+    let way = WAYS[((w.wind_dir / std::f32::consts::TAU * 8.0).round() as usize) % 8];
+    let strength = if w.kind == zombye_sim::WeatherKind::Clear { String::new() } else { format!(" ({:.0}%)", w.intensity * 100.0) };
+    format!(
+        "{}{strength}, cloud {:.0}%, wind {:.2} toward the {way}, {:.1} C, sight x{:.2}, hearing x{:.2}{}",
+        w.kind.id(),
+        w.cloud * 100.0,
+        w.wind,
+        w.temp_c,
+        w.sight,
+        w.hearing,
+        if w.forced { " (set by set_weather)" } else { "" }
+    )
+}
+
 /// "on" / "off".
 fn on_off(b: bool) -> &'static str {
     if b { "on" } else { "off" }
@@ -44,7 +242,7 @@ pub fn add_agent_player(world: &mut World) {
     }
 }
 
-pub fn serve(mut world: World, persist: &mut Persist, renderer: &Renderer) {
+pub fn serve(mut world: World, persist: &mut Persist, renderer: &Renderer, opts: Options) {
     add_agent_player(&mut world);
     // Read stdin on its own thread, so the main loop can wake up for autosaves and Ctrl-C.
     let (tx, rx) = mpsc::channel::<Option<String>>();
@@ -66,7 +264,7 @@ pub fn serve(mut world: World, persist: &mut Persist, renderer: &Renderer) {
         };
         if let Some(line) = line.filter(|l| !l.trim().is_empty()) {
             let response = match serde_json::from_str::<Value>(&line) {
-                Ok(msg) => handle(&mut world, persist, renderer, &msg),
+                Ok(msg) => handle(&mut world, persist, renderer, opts, &msg),
                 Err(e) => Some(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": e.to_string()}})),
             };
             if let Some(response) = response {
@@ -84,83 +282,421 @@ pub fn serve(mut world: World, persist: &mut Persist, renderer: &Renderer) {
     if persist.dirty {
         persist.save_now(&world, why);
     }
+    if let Some(run) = persist.benchmark.as_mut() {
+        run.close(&world);
+    }
     shutdown::finished();
 }
 
-fn handle(world: &mut World, persist: &mut Persist, renderer: &Renderer, msg: &Value) -> Option<Value> {
+/// What `initialize` and `server/discover` tell the model about playing: short, since every client
+/// puts it in the model's context. The tools' own descriptions have the detail.
+fn instructions(opts: Options) -> String {
+    let debug: Vec<&str> = TOOLS.iter().filter(|t| t.2 == Kind::Debug).map(|t| t.0).collect();
+    let debug = if opts.debug_tools {
+        format!(
+            "Debug tools ({}; marked \"Debug\" in their titles and descriptions) do what no player can. They are for \
+             setting up tests: don't use them while playing unless asked to.",
+            debug.join(", ")
+        )
+    } else {
+        "This server runs without the debug tools: you can only do what a player can.".to_string()
+    };
+    format!(
+        "Zombye is a zombie survival game: a generated town in a forest on a tile map (1 tile = 1 m, x east, y south).\n\
+         - You are player 1 (P on the map), who wakes up in a bedroom. Tools take `player`, default 1.\n\
+         - Time is paused between calls and only moves when a tool steps it: step_ticks (20 ticks = 1 s), move_player, \
+         attack / shove / stomp, the item tools (search, take, use, treat, craft, ...) and sleep. Each says what happened meanwhile.\n\
+         - Look first: call observe (an ASCII map with players, zombies by what they're doing, doors, windows, items and \
+         containers) before acting and again after. The read-only tools (observe, stats, inventory, health, zombie, edge, ...) \
+         take no game time and change nothing. screenshot is a rendered picture, for checking how things look.\n\
+         - Zombies notice you by sight (a cone; shorter at night, when you sneak or stand still) and by sound (running, doors, \
+         breaking glass, fighting), then chase and attack; they can't open doors but batter them and windows down. \
+         Fight (pick_up a weapon; attack, shove, stomp) or get away; you have 100 HP.\n\
+         - To last: search containers for food, drink and bandages, use what you find, treat wounds (health says how), sleep.\n\
+         - {debug}\n\
+         - {}",
+        match (opts.save_tools, opts.debug_tools) {
+            (true, true) => "save keeps the whole world and load puts one back; saves lists them.",
+            (true, false) => "save keeps the whole world; saves lists them.",
+            (false, _) => "The server keeps the world saved by itself.",
+        }
+    )
+}
+
+fn server_info() -> Value {
+    json!({"name": "zombye-server", "title": "Zombye", "version": env!("CARGO_PKG_VERSION")})
+}
+
+/// One JSON-RPC message in, its response out (none for a notification). Two eras of MCP are answered side
+/// by side: the handshake revisions (`initialize`, up to 2025-11-25) and the stateless 2026-07-28 one,
+/// where a request names its protocol version in `params._meta` and `server/discover` describes the
+/// server. A request that names 2026-07-28 gets that revision's result fields (`resultType`, the server's
+/// identity in `_meta`, cache hints on lists); any other gets the older shape. Whatever carried the
+/// message: stdio here, HTTP in `mcp_http.rs`.
+pub fn handle(world: &mut World, persist: &mut Persist, renderer: &Renderer, opts: Options, msg: &Value) -> Option<Value> {
+    // A benchmark run (#29, `benchmark.rs`) is played with a player's tools only, plus its own.
+    let bench = persist.benchmark.as_ref().map(benchmark::Run::instructions);
+    let opts = if bench.is_some() { Options::PLAY_ONLY } else { opts };
+    let mut call = |name: &str, args: &Value| {
+        if name == "benchmark"
+            && let Some(run) = persist.benchmark.as_mut()
+        {
+            let _ = run.before(name, false);
+            return Ok(Called { result: Ok(text_content(run.report(world))), structured: false });
+        }
+        // An unknown tool is a protocol error, not a tool result.
+        let Some(kind) = tool_kind(name) else {
+            return Err(format!("Unknown tool: {name}"));
+        };
+        if !opts.offers(name, kind) {
+            return Err(format!("Unknown tool: {name} (this server runs without the debug tools: --no-debug-tools)"));
+        }
+        // In a benchmark run, time stops for good when the run is over.
+        if let Some(run) = persist.benchmark.as_mut()
+            && let Err(over) = run.before(name, kind == Kind::Play)
+        {
+            return Ok(Called { result: Err(over), structured: false });
+        }
+        let mut result = match name {
+            "screenshot" => screenshot_tool(world, renderer, args),
+            "save" | "load" | "saves" => save_tool(world, persist, name, args).map(text_content),
+            // Reading folders on this machine is for a local session, like the saves folder.
+            "mods" => mods_tool(args, opts.save_tools).map(text_content),
+            _ => call_tool(world, name, args).map(text_content),
+        };
+        if kind == Kind::Play
+            && let Some(run) = persist.benchmark.as_mut()
+        {
+            result = run.after(world, result);
+        }
+        // save and load say themselves whether the session's file is behind.
+        if matches!(kind, Kind::Play | Kind::Debug) && name != "load" {
+            persist.dirty = true;
+        }
+        Ok(Called { result, structured: output_schema(name).is_some() })
+    };
+    let instructions = || match &bench {
+        Some(run) => format!("{}\n- {run}", instructions(opts)),
+        None => instructions(opts),
+    };
+    let tools = || {
+        let mut list = tool_list(opts);
+        if bench.is_some()
+            && let Some(list) = list.as_array_mut()
+        {
+            list.insert(0, benchmark::tool_def());
+        }
+        list
+    };
+    answer(msg, &Service { info: server_info(), instructions: &instructions, tools: &tools }, &mut call)
+}
+
+/// What an MCP server says of itself: the game's ([`handle`]) and a hosting server's admin
+/// endpoint (`admin.rs`, #26) speak the same protocol with different tools.
+pub struct Service<'a> {
+    /// `serverInfo`.
+    pub info: Value,
+    pub instructions: &'a dyn Fn() -> String,
+    /// The `tools/list` definitions.
+    pub tools: &'a dyn Fn() -> Value,
+}
+
+/// What came of a `tools/call`.
+pub struct Called {
+    /// The content, or a tool error's text.
+    pub result: Result<Value, String>,
+    /// The tool has an output schema: its text is JSON, returned as `structuredContent` too.
+    pub structured: bool,
+}
+
+/// The protocol itself, whatever the tools: one JSON-RPC message in, its response out. `call` runs
+/// a tool by name; `Err` is the message for one that isn't on offer.
+pub fn answer(msg: &Value, service: &Service, call: &mut dyn FnMut(&str, &Value) -> Result<Called, String>) -> Option<Value> {
     let id = msg.get("id").cloned();
     let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
     // Notifications (no id) get no response.
     let id = id?;
-    let result = match method {
-        "initialize" => Ok(json!({
-            "protocolVersion": msg["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"),
+    let fail = |code: i64, message: String, data: Option<Value>| {
+        let mut error = json!({"code": code, "message": message});
+        if let Some(data) = data {
+            error["data"] = data;
+        }
+        Some(json!({"jsonrpc": "2.0", "id": id, "error": error}))
+    };
+    let supported = || std::iter::once(MODERN_VERSION).chain(LEGACY_VERSIONS).collect::<Vec<_>>();
+    // The version a request names for itself. `initialize` negotiates its own, in its params.
+    let modern = match msg["params"]["_meta"].get(META_VERSION) {
+        None => method == "server/discover",
+        Some(v) if v == MODERN_VERSION => true,
+        Some(v) if v.as_str().is_some_and(|v| LEGACY_VERSIONS.contains(&v)) => false,
+        Some(v) => return fail(UNSUPPORTED_VERSION, "Unsupported protocol version".to_string(), Some(json!({"supported": supported(), "requested": v}))),
+    };
+    let mut result = match method {
+        "initialize" => {
+            // The client's version if we speak it, else our newest handshake revision.
+            let asked = msg["params"]["protocolVersion"].as_str().unwrap_or("");
+            json!({
+                "protocolVersion": LEGACY_VERSIONS.iter().find(|v| **v == asked).unwrap_or(&LEGACY_VERSIONS[0]),
+                "capabilities": {"tools": {}},
+                "serverInfo": service.info,
+                "instructions": (service.instructions)(),
+            })
+        }
+        "server/discover" => json!({
+            "supportedVersions": supported(),
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "zombye-server", "version": env!("CARGO_PKG_VERSION")},
-            "instructions": "Zombye headless game server. The world is a tile map (1 tile = 1 m) with a \
-                generated town and forest. Time is paused between calls: use step_ticks to advance (20 ticks = 1 s). \
-                You control player 1 (P on the map), who wakes up in a bedroom: move_player walks, runs or sneaks it. \
-                Zombies notice players by sight (a view cone; shorter at night, against sneaking or standing still) and \
-                sound (footsteps: sneak quiet, run loud; doors; groans of other zombies), then investigate, chase, lunge \
-                and attack. Zombies can't open doors, but they batter shut doors and windows between them and what they're \
-                after until they break (windows go quickly, doors take a while; every thump is a noise that draws more). \
-                interact opens and closes the door or window you face; open or broken windows can be climbed through, slowly; \
-                smash_window breaks one loudly. Fight or flee: you have 100 HP and zombie strikes hurt (more of them on you, \
-                more land). Weapons (w on the map) lie in houses: pick_up equips the nearest one you face. attack swings it \
-                (or punches), shove pushes zombies back and staggers them, stomp finishes one that's down (v on the map). \
-                Each costs endurance; tired swings are slower and weaker; hits from behind crit. weapons lists their numbers. \
-                Use observe to see an ASCII map with walls, doors, windows, items and zombies \
-                (letters show what each is doing), zombie to inspect one, edge for a door's or window's state and hit points, \
-                and buildings to list houses. Zombies far from every player are simulated in less detail (tiers: active \
-                within about 60 m, near out to 150 m, virtual beyond; stats has the counts): only active ones fight, see and \
-                show their state on the map, but every zombie keeps heading where it was going. Loud noises also draw the \
-                far horde in slowly, over minutes (regions shows zombies per region, targets and the pull of loud events). \
-                craft makes things from what you carry (rags from clothes, clean rags to dress wounds with; recipes lists them). \
-                save and load keep and restore the whole world (saves lists them); with --save the server also autosaves. \
-                screenshot returns a rendered PNG of what a player sees (fog of war included), to check visuals; it takes a \
-                second or two and changes nothing."
-        })),
-        "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({"tools": tool_list()})),
+            "instructions": (service.instructions)(),
+            "ttlMs": CACHE_TTL_MS,
+            "cacheScope": "public",
+        }),
+        "ping" => json!({}),
+        "tools/list" => {
+            let mut list = json!({"tools": (service.tools)()});
+            if modern {
+                list["ttlMs"] = json!(CACHE_TTL_MS);
+                list["cacheScope"] = json!("public");
+            }
+            list
+        }
         "tools/call" => {
             let name = msg["params"]["name"].as_str().unwrap_or("");
             let args = msg["params"].get("arguments").cloned().unwrap_or(json!({}));
-            if name == "screenshot" {
-                return Some(json!({"jsonrpc": "2.0", "id": id, "result": match screenshot_tool(world, renderer, &args) {
-                    Ok(content) => json!({"content": content}),
-                    Err(text) => json!({"content": [{"type": "text", "text": text}], "isError": true}),
-                }}));
-            }
-            let result = match name {
-                "save" | "load" | "saves" => save_tool(world, persist, name, &args),
-                _ => call_tool(world, name, &args),
+            let called = match call(name, &args) {
+                Ok(called) => called,
+                Err(unknown) => return fail(INVALID_PARAMS, unknown, None),
             };
-            if !READ_ONLY.contains(&name) {
-                persist.dirty = true;
+            match called.result {
+                Ok(content) => {
+                    // Tools with an output schema: the same JSON as the text, as a value.
+                    let structured = called.structured.then(|| serde_json::from_str::<Value>(content[0]["text"].as_str()?).ok()).flatten();
+                    let mut result = json!({"content": content});
+                    if let Some(value) = structured {
+                        result["structuredContent"] = value;
+                    }
+                    result
+                }
+                Err(text) => json!({"content": text_content(text), "isError": true}),
             }
-            Ok(match result {
-                Ok(text) => json!({"content": [{"type": "text", "text": text}]}),
-                Err(text) => json!({"content": [{"type": "text", "text": text}], "isError": true}),
-            })
         }
-        _ => Err(json!({"code": -32601, "message": format!("unknown method {method}")})),
+        _ => return fail(-32601, format!("unknown method {method}"), None),
     };
-    Some(match result {
-        Ok(r) => json!({"jsonrpc": "2.0", "id": id, "result": r}),
-        Err(e) => json!({"jsonrpc": "2.0", "id": id, "error": e}),
+    if modern {
+        result["resultType"] = json!("complete");
+        result["_meta"] = json!({META_SERVER: service.info});
+    }
+    Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+}
+
+/// What this process loaded with `--mod`, and the game's data before them: what the `mods` tool
+/// lists, and checks a mod against. Set once by `main`.
+pub struct ModsInfo {
+    pub base: zombye_sim::WorldConfig,
+    pub loaded: Vec<zombye_mods::Mod>,
+}
+
+static MODS: std::sync::OnceLock<ModsInfo> = std::sync::OnceLock::new();
+
+/// Say what this process loaded (see [`ModsInfo`]).
+pub fn set_mods(info: ModsInfo) {
+    let _ = MODS.set(info);
+}
+
+/// The `mods` tool. `files`: it may read folders on this machine (`check`, `folder`).
+fn mods_tool(args: &Value, files: bool) -> Result<String, String> {
+    use zombye_mods::{Mod, apply, folder};
+    let check = args.get("check").and_then(Value::as_str);
+    let dir = args.get("folder").and_then(Value::as_str);
+    if (check.is_some() || dir.is_some()) && !files {
+        return Err("this server doesn't read folders on its machine for its callers: it can only list the mods it runs".to_string());
+    }
+    let fallback;
+    let (base, loaded): (&zombye_sim::WorldConfig, &[Mod]) = match MODS.get() {
+        Some(info) => (&info.base, &info.loaded),
+        None => {
+            fallback = zombye_net::content::load_config(&zombye_net::content::default_data_dir(), 1)?;
+            (&fallback, &[])
+        }
+    };
+    let line = |m: &Mod| {
+        let v = if m.manifest.version.is_empty() { String::new() } else { format!(" {}", m.manifest.version) };
+        format!("{}{v}: {} ({})", m.manifest.id, m.manifest.name, m.contents())
+    };
+    let mut out = if loaded.is_empty() { "This world runs no mods.\n".to_string() } else { format!("This world runs {} mod{}, in this order:\n", loaded.len(), if loaded.len() == 1 { "" } else { "s" }) };
+    for m in loaded {
+        out.push_str(&format!("- {}\n", line(m)));
+    }
+    if let Some(path) = check {
+        match Mod::load(std::path::Path::new(path)) {
+            Err(e) => out.push_str(&format!("\nCHECK {path}: it can't be read: {e}\n")),
+            Ok(m) => {
+                // With this world's other mods before it (one of the same id is this one's older copy).
+                let mut list: Vec<Mod> = loaded.iter().filter(|o| o.manifest.id != m.manifest.id).cloned().collect();
+                list.push(m.clone());
+                match apply(&mut base.clone(), &list) {
+                    Ok(()) => out.push_str(&format!("\nCHECK {path}: loads. {}\n", line(&m))),
+                    Err(e) => out.push_str(&format!("\nCHECK {path}: doesn't load: {e}\n")),
+                }
+            }
+        }
+    }
+    if let Some(path) = dir {
+        let mut f = folder::scan(std::path::Path::new(path));
+        f.check(base);
+        out.push_str(&format!("\nFOLDER {path}: {} mod{}, {} on\n", f.entries.len(), if f.entries.len() == 1 { "" } else { "s" }, f.enabled_ids().len()));
+        for p in &f.problems {
+            out.push_str(&format!("problem: {p}\n"));
+        }
+        let mut n = 0;
+        for e in &f.entries {
+            let state = if e.enabled {
+                n += 1;
+                format!("on, {n}")
+            } else {
+                "off".to_string()
+            };
+            let v = if e.version.is_empty() { String::new() } else { format!(" {}", e.version) };
+            let how = match &e.problem {
+                Some(p) if e.enabled => format!("LEFT OFF: {p}"),
+                Some(p) => format!("wouldn't load: {p}"),
+                None => e.contents(),
+            };
+            out.push_str(&format!("- [{state}] {}{v}: {} ({how})\n", e.id, e.name));
+        }
+    }
+    Ok(out)
+}
+
+pub fn text_content(text: String) -> Value {
+    json!([{"type": "text", "text": text}])
+}
+
+/// For a hosting server's admin endpoint (`admin.rs`, #26): the definitions of the tools named,
+/// which only read the world, as [`tool_list`] gives them.
+pub fn look_defs(names: &[&str]) -> Vec<Value> {
+    let Value::Array(defs) = tool_list(Options::PLAY_ONLY) else { unreachable!("tool_list is a list") };
+    defs.into_iter().filter(|d| d["name"].as_str().is_some_and(|n| names.contains(&n) && tool_kind(n) == Some(Kind::Look))).collect()
+}
+
+/// For the admin endpoint: one of the world tools here, run on the world a server hosts. The caller
+/// says which it offers.
+pub fn world_tool(world: &mut World, name: &str, args: &Value) -> Result<String, String> {
+    call_tool(world, name, args)
+}
+
+/// For the admin endpoint: `save` and `saves` (never `load`: clients couldn't follow the world
+/// being swapped under them).
+pub fn saves_tool(world: &mut World, persist: &mut Persist, name: &str, args: &Value) -> Result<String, String> {
+    if !matches!(name, "save" | "saves") {
+        return Err(format!("{name} isn't offered here"));
+    }
+    save_tool(world, persist, name, args)
+}
+
+/// The output schema of the tools whose text is JSON (they also return it as `structuredContent`).
+fn output_schema(name: &str) -> Option<Value> {
+    let number = || json!({"type": "number"});
+    let integer = || json!({"type": "integer"});
+    (name == "stats").then(|| {
+        json!({
+            "type": "object",
+            "required": ["map", "seed", "tick", "time_of_day", "daylight", "time_scale", "players", "zombies", "zombie_tiers", "zombie_states", "population", "state_hash"],
+            "properties": {
+                "map": {"type": "array", "items": integer(), "description": "Width and height in tiles (metres)"},
+                "seed": integer(),
+                "tick": {"type": "integer", "description": "20 ticks = 1 s of game time"},
+                "time_of_day": {"type": "string", "description": "The game clock"},
+                "daylight": {"type": "number", "description": "0 night to 1 day"},
+                "time_scale": {"type": "number", "description": "Game hours run this much faster (30 while everyone sleeps)"},
+                "date": {"type": "object", "description": "The world's calendar: year, month (1-12), month_name, day, season, day_number (0 the first day)"},
+                "weather": {"type": "object", "description": "The weather outdoors: kind, intensity and cloud (0-1), wind (0-1), temp_c, forced (set by set_weather)"},
+                "players": {"type": "array", "items": {
+                    "type": "object",
+                    "required": ["id", "pos", "hp", "dead", "weapon", "endurance", "hunger", "thirst", "tiredness", "tags", "run"],
+                    "properties": {
+                        "id": integer(),
+                        "pos": {"type": "array", "items": number(), "description": "x, y in metres"},
+                        "hp": number(),
+                        "dead": {"type": "boolean"},
+                        "weapon": {"type": "string", "description": "Weapon id (see weapons)"},
+                        "endurance": number(),
+                        "hunger": number(),
+                        "thirst": number(),
+                        "tiredness": number(),
+                        "tags": {"type": "array", "items": {"type": "string"}, "description": "Status tags, as the HUD shows them"},
+                        "run": {"type": "object", "description": "This life: time survived, kills, distance, and once dead the death"},
+                        "map": {"type": "object", "description": "What this survivor has seen of the town (its map screen): the share explored, 0 to 1, and buildings entered"},
+                        "cause_of_death": {"type": ["string", "null"]}
+                    }
+                }},
+                "zombies": {"type": "integer", "description": "Zombies in the world, corpses included"},
+                "zombie_tiers": {"type": "object", "description": "Counts per simulation tier (active, near, virtual) and the ranges"},
+                "zombie_states": {"type": "object", "description": "Count per AI state", "additionalProperties": integer()},
+                "population": {"type": "object", "description": "Target against alive, attractors, migration and respawn"},
+                "state_hash": {"type": "string", "description": "Same seed and same calls give the same hash"}
+            }
+        })
     })
 }
 
-fn tool_list() -> Value {
+/// The tools on offer, in a fixed order (clients cache the list): each definition from [`tool_defs`] with
+/// its title and annotations from [`TOOLS`]. Nothing here reaches outside the game (`openWorldHint` false).
+/// Debug tools say so in their title, description and `_meta`.
+fn tool_list(opts: Options) -> Value {
+    let Value::Array(defs) = tool_defs() else { unreachable!("tool_defs is a list") };
+    let mut out = Vec::new();
+    for mut def in defs {
+        let name = def["name"].as_str().unwrap_or("").to_string();
+        let Some(&(_, title, kind)) = TOOLS.iter().find(|t| t.0 == name) else { continue };
+        let debug = kind == Kind::Debug;
+        if !opts.offers(&name, kind) {
+            continue;
+        }
+        let title = if debug { format!("Debug: {title}") } else { title.to_string() };
+        def["annotations"] = match kind {
+            Kind::Look => json!({"title": title, "readOnlyHint": true, "openWorldHint": false}),
+            // Saving over a name replaces that save, loading replaces the world.
+            _ if name == "save" || name == "load" => json!({"title": title, "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false}),
+            _ => json!({"title": title, "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}),
+        };
+        def["title"] = json!(title);
+        if debug {
+            let text = def["description"].as_str().unwrap_or("");
+            let text = text.strip_prefix("Debug override: ").or(text.strip_prefix("Debug: ")).unwrap_or(text);
+            def["description"] = json!(format!("Debug tool, for setting up tests (no player could do this): {text}"));
+            def["_meta"] = json!({META_DEBUG: true});
+        }
+        if let Some(schema) = output_schema(&name) {
+            def["outputSchema"] = schema;
+        }
+        out.push(def);
+    }
+    Value::Array(out)
+}
+
+/// Every tool a server with everything on lists, for the docs (`--docs`, `docgen.rs`).
+pub fn listed_tools() -> Value {
+    tool_list(Options::default())
+}
+
+/// What such a server tells an agent on connecting, for the docs.
+pub fn listed_instructions() -> String {
+    instructions(Options::default())
+}
+
+/// Each tool's name, description and input schema.
+fn tool_defs() -> Value {
     json!([
         {
             "name": "observe",
             "description": "Look at the world around a point (default: player 1). ASCII map at double resolution: \
                 tiles sit between wall lines. Walls - |, shut windows = !, open windows o, broken windows x, \
                 shut doors D (d when damaged), open doors /, broken doors #, fences ~, \
-                floors: . grass  , road  : sidewalk/path  _ indoors; T tree, * bush, f furniture, ^ a street prop (mailbox, hydrant, bin), c a container not searched yet, \
+                floors: . grass  , road  : sidewalk/path  _ indoors; T tree, u stump, * bush, f furniture, ^ a street prop (mailbox, hydrant, bin), c a container not searched yet, \
                 o (on a tile) a searched container, w a weapon on the floor, i any other item on the floor, \
-                P player (X dead), G debug goal, @ spawn. \
+                P player (X dead), h a player heard but not seen, G debug goal, @ spawn. \
+                With PvP on it is `player`'s view (default 1), by the rule a multiplayer server tells clients by: other players only while that survivor \
+                sees them (view cone, daylight, their stance, a line of sight) or did a second ago, those it only hears as sounds at a position, \
+                and items on the floor only with a line of sight; `all: true` shows everyone and everything (the default with PvP off). \
                 Active zombies by state: Z wandering, I investigating a sound, C chasing a player, L lunging, A attacking, \
                 B battering a door or window, S staggered, v down on the ground, % corpse; zombies on the cheaper tiers \
                 far from players: n near (updated a few times a second), ? virtual (moved in bulk every few seconds). \
@@ -169,7 +705,9 @@ fn tool_list() -> Value {
             "inputSchema": {"type": "object", "properties": {
                 "x": {"type": "number", "description": "Centre x in metres"},
                 "y": {"type": "number", "description": "Centre y in metres"},
-                "radius": {"type": "integer", "minimum": 2, "maximum": 30, "default": 10}
+                "radius": {"type": "integer", "minimum": 2, "maximum": 30, "default": 10},
+                "player": {"type": "integer", "default": 1, "description": "Whose senses (and the centre, unless x and y say)"},
+                "all": {"type": "boolean", "description": "Show every player and item, seen or not (default: only with PvP off)"}
             }}
         },
         {
@@ -238,6 +776,94 @@ fn tool_list() -> Value {
             "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}}}
         },
         {
+            "name": "climb",
+            "description": "A player climbs over the fence or through the open or broken window it faces (as E does): within \
+                1.1 m of it, faced within 70 degrees of square on, with room on the far side. Walking into a fence or an open \
+                window doesn't cross it; this does. The world steps until the player is over (about a second and a half), and \
+                the reply says where it is. Too heavy a load (overloaded) can't climb. Give facing (radians) to turn first.",
+            "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}, "facing": {"type": "number"}}}
+        },
+        {
+            "name": "fires",
+            "description": "Read-only: the campfires within radius (default 30 m) of a player, nearest first: id, where, \
+                lit or not, fuel left, distance and whether it is in reach; the stoves near it and whether they have power; \
+                and whether the player has heat to cook with where it stands (recipes marked heat need a lit fire or a \
+                working stove in reach). Build a campfire with craft {recipe: build_campfire}.",
+            "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}, "radius": {"type": "number", "default": 30}}}
+        },
+        {
+            "name": "weather",
+            "description": "Read-only: the date on the world's calendar (day, month, year, season, days since the world \
+                began), the weather outdoors now (clear, cloudy, overcast, rain, storm, snow, blizzard or fog; how strong, \
+                cloud cover, wind and which way, the air in degrees C, and how far one sees and hears in it as shares of a \
+                clear day's; nothing reads those two yet), whether it was set by set_weather, and the temperature where \
+                the player stands (indoors is milder, a lit campfire warms). forecast_hours (default 0, at most 240) adds \
+                the weather every few game hours ahead (step_hours, default 3). The weather follows from the world seed and \
+                the clock by the month's climate (weather.ron): winters are deadly cold, summers very hot.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "forecast_hours": {"type": "number", "default": 0},
+                "step_hours": {"type": "number", "default": 3}
+            }}
+        },
+        {
+            "name": "fire",
+            "description": "A player tends a campfire within 1.6 m (fire: its id from the fires tool; default the nearest). \
+                action: add_fuel (one carried item tagged fuel, e.g. firewood, plank or newspaper: item id or index of a \
+                carried stack; default the first fuel carried), light (needs fuel on it and something tagged fire carried: \
+                matches or a lighter, kept) or put_out (the fuel left stays). A lit fire lights the ground round it at night \
+                (and shows you to zombies), crackles now and then, and burns whoever stands in it. Time doesn't move.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "fire": {"type": "integer"},
+                "action": {"type": "string", "enum": ["add_fuel", "light", "put_out"]},
+                "item": {"type": "string"},
+                "index": {"type": "integer"}
+            }, "required": ["action"]}
+        },
+        {
+            "name": "blind",
+            "description": "A player works the roller blind of the window or glass door it faces, from inside, within 1.6 m \
+                (face it with move_player's facing first, or give facing in radians). action: use (default: roll it up or \
+                down, or fit one if there is none), toggle (roll up or down, at once, a quiet noise), fit (one carried item \
+                tagged blind, e.g. roller_blind; takes a few seconds, fitted down) or take_down (back into the bags; a few \
+                seconds). A blind that is down stops zombies outside seeing in through that glass; sounds still carry. The \
+                world steps until a fit or take-down is done. The edge tool says which edges have blinds and glass.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "action": {"type": "string", "enum": ["use", "toggle", "fit", "take_down"], "default": "use"},
+                "facing": {"type": "number"}
+            }}
+        },
+        {
+            "name": "builds",
+            "description": "The build menu (assets/data/build.ron): every build's id, name, what it goes on, what one piece \
+                uses up and the tools it needs (kept), seconds a piece, hit points a piece, how many pieces it stacks to, and \
+                how it comes down again. Barricades for now: planks nailed across a window or door. Read-only; build builds one.",
+            "inputSchema": {"type": "object", "properties": {}}
+        },
+        {
+            "name": "build",
+            "description": "A player builds one piece of a build (see builds; e.g. board_window, board_door) on the window or \
+                door it faces, within 1.6 m, from the side it stands on: one plank nailed across, using the build's materials \
+                (a plank and nails) with a hammer to hand. An open door is shut first. The edge is then boarded up: nobody \
+                walks, climbs or sees through it, and zombies batter it, a plank's hit points at a time, before what's \
+                underneath. Call again for more planks, up to the build's max. Give facing (radians) to turn first; the world \
+                steps until the piece is up, and the reply says the planks and hit points.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "build": {"type": "string"},
+                "facing": {"type": "number"}
+            }, "required": ["build"]}
+        },
+        {
+            "name": "unbuild",
+            "description": "A player prises one plank off the boarded-up window or door it faces, within 1.6 m, with a tool \
+                that pries (a crowbar or claw hammer): the plank comes back, the nails are lost. The last plank leaves the \
+                window or door as it was. Give facing (radians) to turn first; steps until it's done.",
+            "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}, "facing": {"type": "number"}}}
+        },
+        {
             "name": "smash_window",
             "description": "A player smashes the window it faces (shut or open), within 1.6 m. Loud (22 m); it stays broken \
                 and can be climbed through.",
@@ -248,32 +874,50 @@ fn tool_list() -> Value {
             "description": "A player swings its weapon (bare hands: a punch) the way it faces, then the world steps until the \
                 swing has landed and the player can act again. Hits zombies within the weapon's reach and arc, nearest first up to its target count, with a clear \
                 line (not through glass or fences); damage, knockback and a chance to stagger or knock down. Downed zombies are \
-                below the swing: stomp them. Costs endurance; makes noise. Give facing (radians) or target (a zombie id) to turn first.",
+                below the swing: stomp them. Costs endurance; makes noise. Give facing (radians), target (a zombie id) or \
+                target_player (a player id) to turn first. With PvP on (the pvp tool, or --pvp on) other players are hit by the \
+                same rules, in the same list: a wound on a body part, HP, a chance to stagger or floor them; the reply's PLAYER HITS says so. \
+                Holding a gun (see weapons) it fires one round instead: along the facing and the pitch, through shut glass (which breaks), \
+                stopped by walls, shut doors, trees and the first body (the rifle's goes through two); a hit 1.5 m or more up a standing \
+                body is the head. Given a target it aims at aim_height on it (default the chest; 1.65 for the head, more spread than a \
+                still target allows at long range); otherwise give pitch. Very loud: every zombie within the gun's noise radius comes, and \
+                the far horde over the next minutes. An empty gun doesn't fire: reload it with use {from: \"hand\"}.",
             "inputSchema": {"type": "object", "properties": {
                 "player": {"type": "integer", "default": 1},
                 "facing": {"type": "number", "description": "Turn to this angle first (0 = east, pi/2 = south)"},
-                "target": {"type": "integer", "description": "Turn to face this zombie first"}
+                "target": {"type": "integer", "description": "Turn to face this zombie first"},
+                "target_player": {"type": "integer", "description": "Turn to face this player first"},
+                "pitch": {"type": "number", "description": "A gun: radians up (+) or down (-) of level (the muzzle is 1.4 m up); default level, or at the target"},
+                "aim_height": {"type": "number", "description": "A gun, with a target: metres up its body to aim at (default 1.15; 0.2 for one on the ground)"}
             }}
         },
         {
             "name": "shove",
-            "description": "A player shoves the zombies in front (short reach, wide arc, up to 3): no damage, pushes them back and \
-                always staggers them, with a chance to knock down (better against a staggered zombie or from behind). Cheap, \
-                quick, quiet. Steps until it lands and the player can act again. facing / target as for attack.",
+            "description": "A player shoves the zombies in front (short reach, wide arc, up to 3): no damage, pushes them back about \
+                1.2 m (further with a weapon in hand) and always staggers them, with a chance to knock down that grows with \
+                each shove on the same zombie in the last few seconds (better still against a staggered zombie or from behind, \
+                and with Strength and Brawl). Cheap, \
+                quick, quiet. Steps until it lands and the player can act again. facing / target / target_player as for attack. \
+                With PvP on it pushes other players back and staggers them too (no moving or acting for a moment), or floors them.",
             "inputSchema": {"type": "object", "properties": {
                 "player": {"type": "integer", "default": 1},
                 "facing": {"type": "number"},
-                "target": {"type": "integer"}
+                "target": {"type": "integer"},
+                "target_player": {"type": "integer"}
             }}
         },
         {
             "name": "stomp",
-            "description": "A player stamps on a downed zombie at its feet in front (within about 1 m): solid damage. A miss if \
-                none is down there when it lands. Steps until it lands and the player can act again. facing / target as for attack.",
+            "description": "A player stamps on a downed zombie in front: anywhere along its body within about 1 m, solid damage \
+                (two or three finish one), or on its head (it lies on its back, the head about 1.45 m behind its feet; stand \
+                within 0.9 m of it) for four times that, which kills. It keeps the zombie down a while longer. A miss if \
+                none is down there when it lands. Steps until it lands and the player can act again. facing / target / target_player \
+                as for attack. With PvP on, a player knocked down is stamped on the same way (a bruise).",
             "inputSchema": {"type": "object", "properties": {
                 "player": {"type": "integer", "default": 1},
                 "facing": {"type": "number"},
-                "target": {"type": "integer"}
+                "target": {"type": "integer"},
+                "target_player": {"type": "integer"}
             }}
         },
         {
@@ -335,7 +979,9 @@ fn tool_list() -> Value {
             "name": "move_item",
             "description": "Move `count` (default all) of the stack at `from`/`index` to `to`. Places: carried (pockets and bags), \
                 hand, off_hand, back, shoulder, worn, container (the open one), ground (index = ground item id). Slots take one \
-                item; whatever was in the way goes into pockets and bags. Steps the world until done.",
+                item; whatever was in the way goes into pockets and bags. Each bag has its own room: as `to`, pockets, bag_back, \
+                bag_shoulder, bag_hand or bag_off_hand puts a carried stack in that one (`inventory` says where each is). Steps \
+                the world until done.",
             "inputSchema": {"type": "object", "required": ["from", "to"], "properties": {
                 "player": {"type": "integer", "default": 1}, "from": {"type": "string"}, "index": {"type": "integer", "default": 0},
                 "to": {"type": "string"}, "count": {"type": "integer", "default": 0}
@@ -375,7 +1021,9 @@ fn tool_list() -> Value {
                 an item with several goes, like a loaf or a bottle, lasts that many). It lowers hunger and thirst by the item's amounts \
                 (see items; negative raises it). Stale food gives 70% and may poison you, mouldy 40% and usually does; food eaten with \
                 hunger under 10% does nothing for hunger; food poisoning means no eating. The reply says beforehand what it will do \
-                (freshness, waste), then what it did, with the needs before and after.",
+                (freshness, waste), then what it did, with the needs before and after. Using the gun in your hand (from: \"hand\") \
+                reloads it: the fullest magazine carried swapped in, else loose rounds pushed in one at a time until it is full; \
+                using a carried magazine fills it with loose rounds.",
             "inputSchema": {"type": "object", "properties": {
                 "player": {"type": "integer", "default": 1}, "from": {"type": "string", "default": "carried"}, "index": {"type": "integer", "default": 0}
             }}
@@ -386,10 +1034,20 @@ fn tool_list() -> Value {
                 within 1 m in its room, else the floor (slow, and you wake up sore). Steps the world until it wakes, and says why \
                 (rested below 5% tiredness, hit, a noise within 20 m that reaches it, a zombie seeing it, agony, an hour starving or \
                 parched; or max_hours of game time), how long it slept and its needs and HP before and after. While every player \
-                sleeps, game time runs 30x as fast (clock, needs, wounds; zombies keep real time), so a night is a minute or two \
+                sleeps, game time runs 30x as fast (clock, needs, wounds, and the far horde beyond 150 m: its wandering, migration and respawn; zombies nearer keep \
+                real time), and agony only stops sleep with no painkiller working, so a night is a minute or two \
                 of simulation.",
             "inputSchema": {"type": "object", "properties": {
                 "player": {"type": "integer", "default": 1}, "max_hours": {"type": "number", "default": 12, "maximum": 24}
+            }}
+        },
+        {
+            "name": "sit",
+            "description": "A player sits down (on the sofa, bed, toilet, bench or deckchair within 0.9 m, else the ground) or \
+                gets up. Seated it doesn't move, gets its breath back twice as fast and slowly loses tiredness; moving, swinging, \
+                climbing or sleeping gets it up. Eating, crafting and cooking work seated. Time doesn't move.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1}, "sit": {"type": "boolean", "description": "true sit, false get up; left out: the other"}
             }}
         },
         {
@@ -419,16 +1077,18 @@ fn tool_list() -> Value {
                 bleeds and how fast, how far healed and hours to go, dressing, festering, and what it needs next; pain, HP lost per \
                 game hour, food poisoning, the zombie infection once it shows (Feverish, then Turning; before that it is hidden and \
                 this says 'unknown'), and what the wounds do (swing power and time, walk and run speed, running, endurance recovery). \
-                Then the needs: hunger, thirst and tiredness (0-100%, with their level), asleep or not, and the status tags \
-                (Peckish/Hungry/Starving, Dry/Thirsty/Parched, Drowsy/Tired/Exhausted, Short of breath/Winded, Burdened/Heavy/\
-                Overloaded, Sore/Hurting/Agony, Bleeding xN, Queasy/Sick/Feverish/Turning, Asleep) with what each does. \
+                Then the needs: hunger, thirst and tiredness (0-100%, with their level), asleep or not, and the status icons the HUD shows \
+                (Hurt/Wounded/Badly wounded/Near death, Bleeding a little/Bleeding/Bleeding badly/Bleeding out, Sore/Hurting/\
+                In real pain/Agony, Sick/Feverish/Turning, Queasy, Peckish/Hungry/Famished/Starving, Dry/Thirsty/Very thirsty/\
+                Parched, Drowsy/Tired/Worn out/Exhausted, Short of breath/Winded, Burdened/Heavy/Overloaded/Crushed, Asleep; \
+                Well fed and Rested are good states) with their severity (1-4, 0 good) and what each means. \
                 A game hour is 150 s of game time by default.",
             "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}}}
         },
         {
             "name": "skills",
             "description": "A player's skills (#46): Fitness, Strength, Bludgeon, Edged, Brawl, Stealth, First Aid, Scavenging, \
-                Handiwork. For each: its level (0-5; levels at 100, 250, 500, 900 and 1500 XP in all), XP so far and to the next \
+                Handiwork. For each: its level (0-10 by default; the world's thresholds and any XP multipliers are in the reply), XP so far and to the next \
                 level, what its level gives now and what the next level gives, and how XP is earned (practice only: running, \
                 heavy swings and moving overloaded, hits and kills with blunt or edged weapons or fists, shoves, stomp kills, \
                 sneaking near zombies that aren't after you, treatments, first searches, crafting). Read-only.",
@@ -460,6 +1120,19 @@ fn tool_list() -> Value {
             }}
         },
         {
+            "name": "mods",
+            "description": "The mods this world runs (zombye-server --mod DIR), each with its version and what it brings. With \
+                `check` (the folder of a mod on this machine, such as one you are writing): whether it loads against the game's \
+                data and the other mods this world runs, and if not exactly why (the file and the mistake); nothing is loaded \
+                into this world. With `folder` (a game's mods folder, the one its Mods menu shows): every mod in it, which its \
+                enabled.ron turns on and in what order, and what is wrong with each. Read-only. A mod's data and scripts are \
+                described in docs/modding.md.",
+            "inputSchema": {"type": "object", "properties": {
+                "check": {"type": "string", "description": "A mod's folder (with its mod.ron) to check."},
+                "folder": {"type": "string", "description": "A mods folder to list and check."}
+            }}
+        },
+        {
             "name": "recipes",
             "description": "The crafting recipes (assets/data/items/recipes.ron): each one's id, name, inputs (used up), tools \
                 (kept: an item, or any item with a tag), outputs and seconds. Read-only; craft makes one.",
@@ -483,11 +1156,163 @@ fn tool_list() -> Value {
             "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}}}
         },
         {
+            "name": "say",
+            "description": "A player says a line of text to whoever is near (proximity chat): heard by every other living, waking \
+                survivor within the volume's reach of it (whisper 3 m, talk 12 m, shout 40 m), only 0.4 of that through a wall or shut \
+                door, and then muffled. Each listener gets the words and where the voice came from, and who spoke only if it sees \
+                the speaker (read them with heard). Speaking is a noise: zombies within 1.5 m (whisper), 7 m (talk) or 30 m (shout) \
+                hear it on the next tick and come to look, and a shout draws the far horde over the following minutes. At most one \
+                line a tick; 120 characters. Time doesn't move: step_ticks afterwards.",
+            "inputSchema": {"type": "object", "required": ["text"], "properties": {
+                "player": {"type": "integer", "default": 1},
+                "text": {"type": "string"},
+                "volume": {"type": "string", "enum": ["whisper", "talk", "shout"], "default": "talk"}
+            }}
+        },
+        {
+            "name": "heard",
+            "description": "What a player heard said lately (proximity chat), oldest first: how long ago, how loud (whispered, \
+                said, shouted), whether muffled by a wall, which way and how far off the voice was, the words, and the speaker's \
+                player id when known (with PvP on only if the player saw the speaker as they spoke; else \"a voice\"). Its own \
+                lines are listed as \"you\". The server keeps the last few hundred lines. Read-only.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "secs": {"type": "number", "description": "Only lines from the last this many seconds (default: all kept)"}
+            }}
+        },
+        {
+            "name": "gesture",
+            "description": "A player makes a gesture others can see: wave (hello, over here), hands_up (no threat; held until \
+                lowered: hands_up again, or none), point (the way it faces; turn with move_player's facing first), or none to \
+                stop. A wave and a point last 2.5 s. Starting a swing, shove or stomp ends any gesture. observe and stats show it.",
+            "inputSchema": {"type": "object", "required": ["gesture"], "properties": {
+                "player": {"type": "integer", "default": 1},
+                "gesture": {"type": "string", "enum": ["wave", "hands_up", "point", "none"]}
+            }}
+        },
+        {
+            "name": "restrain",
+            "description": "A player ties another survivor's hands (a hold-up) with a restraint it carries or holds: a cable tie or \
+                rope (an item tagged restrains). Who can be tied: a survivor within 1.6 m with its hands up (gesture hands_up), or, \
+                with PvP on, one knocked down or asleep; with PvP off only hands held up will do. It takes 3 s and is called off if \
+                they lower their hands, get up or step away. Steps the world until done and says whether they were tied. Tied, a \
+                survivor walks slowly and can't run, climb, fight, gesture or use its things; it can struggle out (struggle), be \
+                searched (search_player) and be freed (free). A cable tie is used up and has to be cut off, rope is untied and can \
+                be used again. observe and stats show who is tied.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "target": {"type": "integer", "description": "The player to tie (default: the survivor this one faces within reach)"}
+            }}
+        },
+        {
+            "name": "free",
+            "description": "A player frees another survivor's tied hands (within 1.6 m; 2.5 s). Rope is untied and falls at their \
+                feet. A cable tie has to be cut off: the player needs something tagged cuts (scissors, a kitchen knife) in its \
+                pockets or hands, and the tie is gone after. Steps the world until done and says whether they are free.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "target": {"type": "integer", "description": "The tied player (default: the survivor this one faces within reach)"}
+            }}
+        },
+        {
+            "name": "search_player",
+            "description": "A player searches a survivor whose hands are tied (see restrain; within 1.6 m, 2 s), then lists what \
+                they have as the searcher sees it: what they hold (hand, off_hand, back, shoulder), wear (worn[N]) and carry \
+                (carried[N]), with item ids and names. The search stays open while they stay tied and within 2.2 m: take_from takes \
+                a stack. Already searching them, it just lists. Steps the world until the search is open.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "target": {"type": "integer", "description": "The tied player (default: the survivor this one faces within reach)"}
+            }}
+        },
+        {
+            "name": "take_from",
+            "description": "A player takes a stack from the tied survivor it is searching (search_player first): into its pockets \
+                and bags, or to the floor at its feet when there is no room. 0.6 s for something carried, 1.5 s for something worn \
+                or held; a bag only comes off once what is in it would fit without it. Steps the world until done and says what \
+                was taken.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "from": {"type": "string", "enum": ["carried", "worn", "hand", "off_hand", "back", "shoulder"], "default": "carried"},
+                "index": {"type": "integer", "default": 0, "description": "Which stack of carried or worn, as search_player lists them"},
+                "count": {"type": "integer", "default": 0, "description": "How many of the stack; 0 = all"}
+            }}
+        },
+        {
+            "name": "struggle",
+            "description": "A player whose hands are tied works at getting out: standing still for 60 s of struggling in all for \
+                rope, 90 s for a cable tie (what it struggled before counts), making a little noise (4 m, every 2 s) zombies can \
+                hear. Steps the world until it is free, dead, or max_secs have passed, then stops struggling and says whether it \
+                got out and how far along it is. An error if the player isn't tied.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "max_secs": {"type": "number", "default": 120, "description": "Give up after this many seconds (at most 600)"}
+            }}
+        },
+        {
+            "name": "group",
+            "description": "A player's optional group: members are told each other's names and share map markers, nothing else. \
+                Groups never switch damage off: with PvP on, blows land on members as on anyone. action: show (default: the \
+                members with names and ids, the markers, invitations waiting), invite (target: a survivor within 12 m and in \
+                sight; default the nearest; the invitation stands 60 s), accept (target: who invited; default the newest \
+                invitation), leave (one member left alone is no group), mark (a shared marker at x, y; at most 8, the oldest \
+                goes), unmark (marker: its id, or x, y: the nearest within 3 m). Replies with what happened and the group as it \
+                is now. Time doesn't move.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "action": {"type": "string", "enum": ["show", "invite", "accept", "leave", "mark", "unmark"], "default": "show"},
+                "target": {"type": "integer", "description": "invite: the player to invite; accept: the player who invited"},
+                "x": {"type": "number"}, "y": {"type": "number"},
+                "marker": {"type": "integer", "description": "unmark: the marker's id"}
+            }}
+        },
+        {
+            "name": "restrain_now",
+            "description": "Debug: tie a player's hands at once with an item (default cable_tie; rope is the other one shipped), as \
+                if player `by` (default 0: nobody) had, whatever it was doing and with nobody near. For testing struggle, free and \
+                search_player.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "item": {"type": "string", "default": "cable_tie"},
+                "by": {"type": "integer", "default": 0}
+            }}
+        },
+        {
             "name": "add_player",
             "description": "Another player joins (as a second client would), standing at (x, y) (default: beside player 1), \
                 facing east. Replies with its id: give it as `player` to the other tools. For testing what several \
                 players look like together (screenshot) and how the world copes with them.",
             "inputSchema": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}}}
+        },
+        {
+            "name": "light",
+            "description": "A player flips the light switch of the room it stands in (as E at the switch does): the switch is \
+                on a wall beside a doorway, and the player must be within 1.3 m of it (out of reach, the reply says where it \
+                is: move there first). On gives the room a light while its building has power (the town's grid; later \
+                generators and solar panels), off puts it out. With no power the switch clicks and does nothing. At night zombies (and other survivors) see you in a lit room \
+                as if by day, through its windows: switch it off to hide. Give on (true/false) to set it; without, it flips. \
+                The reply says the room, whether it is lit and whether it has power.",
+            "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}, "on": {"type": "boolean"}}}
+        },
+        {
+            "name": "flashlight",
+            "description": "A player switches the light it holds (a flashlight or candle in either hand) on or off, as F does in \
+                the game. Off, it still holds it but nobody sees its beam: go dark to hide at night. Give on (true/false) to set it; \
+                without, it flips. A light taken into the hand starts on.",
+            "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}, "on": {"type": "boolean"}}}
+        },
+        {
+            "name": "grid",
+            "description": "Turn the town's power grid on or off (every building it reaches: rooms with their switch on light \
+                or go dark). With no argument: says whether it is on, and how many rooms are lit.",
+            "inputSchema": {"type": "object", "properties": {"on": {"type": "boolean"}}}
+        },
+        {
+            "name": "pvp",
+            "description": "Player against player on or off for this world (docs/PLAN.md 4.8; off by default, on with --pvp on; saved \
+                with the world's settings). On, swings, shoves and stomps hit other players as they hit zombies. With no argument: \
+                says which it is.",
+            "inputSchema": {"type": "object", "properties": {"on": {"type": "boolean"}}}
         },
         {
             "name": "dev",
@@ -507,6 +1332,40 @@ fn tool_list() -> Value {
             "inputSchema": {"type": "object", "required": ["x", "y"], "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}}}
         },
         {
+            "name": "set_weather",
+            "description": "Debug: set the weather outdoors to kind (clear, cloudy, overcast, rain, storm, snow, blizzard, \
+                fog) at intensity (0-1, default 1) for hours game hours (default 6, at most a year), and the air to temp_c \
+                degrees C if given (else the climate's). kind \"auto\" goes back to the climate's weather at once. Saved with \
+                the world.",
+            "inputSchema": {"type": "object", "required": ["kind"], "properties": {
+                "kind": {"type": "string", "enum": ["auto", "clear", "cloudy", "overcast", "rain", "storm", "snow", "blizzard", "fog"]},
+                "intensity": {"type": "number", "default": 1},
+                "hours": {"type": "number", "default": 6},
+                "temp_c": {"type": "number"}
+            }}
+        },
+        {
+            "name": "events",
+            "description": "The world's events (events.ron: the water and the power going off, and the like): each one's \
+                id, what it does, when it is due in this world (game day and hour, and how long from now) or that it won't \
+                happen here, and when it happened. Also whether the water and the grid are on now.",
+            "inputSchema": {"type": "object", "properties": {}}
+        },
+        {
+            "name": "trigger_event",
+            "description": "Debug: make world event id happen now (see events), whether it was due or has happened \
+                already: its effect (water_off, power_off; water_on and power_on put them back) and its message to everyone.",
+            "inputSchema": {"type": "object", "required": ["id"], "properties": {"id": {"type": "string"}}}
+        },
+        {
+            "name": "schedule_event",
+            "description": "Debug: move world event id to in_hours game hours from now (0: at the next check), or with \
+                cancel: true call it off in this world. Either way it can happen again, with its warning.",
+            "inputSchema": {"type": "object", "required": ["id"], "properties": {
+                "id": {"type": "string"}, "in_hours": {"type": "number"}, "cancel": {"type": "boolean"}
+            }}
+        },
+        {
             "name": "skip_time",
             "description": "Move the clock forward (0-24 hours).",
             "inputSchema": {"type": "object", "required": ["hours"], "properties": {"hours": {"type": "number"}}}
@@ -523,6 +1382,17 @@ fn tool_list() -> Value {
                 with players marked, and the zone with the most open ground; then the attractors (where, reach, how far the pull has \
                 spread, strength, time left) and the regions furthest below and above their targets.",
             "inputSchema": {"type": "object", "properties": {}}
+        },
+        {
+            "name": "biomes",
+            "description": "What grows where on the wild ground (biomes.ron): an ASCII map of the biomes, one letter for each 8 m square \
+                (`.` is town, which has none; players are `P`), then each biome's share of the wild ground, how many trees it holds \
+                and how many per 100 m2, its bushes and bare patches, and its tree settings from the file. With `x` and `y`: the biome \
+                of that tile and how much of a clump of trees it is in. For checking a change to biomes.ron; `screenshot` shows the look.",
+            "inputSchema": {"type": "object", "properties": {
+                "x": {"type": "number", "description": "A tile to name the biome of (with y)"},
+                "y": {"type": "number", "description": "A tile to name the biome of (with x)"}
+            }}
         },
         {
             "name": "save",
@@ -562,8 +1432,8 @@ fn tool_list() -> Value {
                 "y": {"type": "number"},
                 "zoom": {"type": "number", "description": "Metres of world visible top to bottom, 8 to 90. Default 26 (the game's default)"},
                 "angle": {"type": "integer", "description": "Camera angle, one of the four fixed ones: 0 (default, looking north-west), 1, 2, 3 (each a quarter turn)"},
-                "width": {"type": "integer", "description": "Pixels, 64 to 1920. Default 1280"},
-                "height": {"type": "integer", "description": "Pixels, 64 to 1080. Default 720"}
+                "width": {"type": "integer", "description": "Pixels, 64 to 1920. Default 960"},
+                "height": {"type": "integer", "description": "Pixels, 64 to 1080. Default 540 (a 960x540 PNG is about half a megabyte of base64: ask for more only when the detail matters)"}
             }}
         },
         {
@@ -690,16 +1560,22 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
     let player_id = || args.get("player").and_then(Value::as_u64).unwrap_or(1) as u32;
     match name {
         "observe" => {
-            let centre = point().map(Vec2::from).or(world.players.first().map(|p| p.state.pos)).unwrap_or(world.player_spawn);
+            // With PvP on, an agent knows of other players what its survivor's senses tell it (#66).
+            let all = args.get("all").and_then(Value::as_bool).unwrap_or(!world.config.combat.pvp);
+            let viewer = (!all).then(player_id).filter(|id| world.player(*id).is_some());
+            let own = viewer.and_then(|id| world.player(id)).or(world.players.first()).map(|p| p.state.pos);
+            let centre = point().map(Vec2::from).or(own).unwrap_or(world.player_spawn);
             let radius = args.get("radius").and_then(Value::as_i64).unwrap_or(10).clamp(2, 30) as i32;
-            Ok(observe(world, centre, radius))
+            Ok(observe(world, centre, radius, viewer))
         }
         "step_ticks" => {
             let n = args.get("n").and_then(Value::as_u64).unwrap_or(20).clamp(1, MAX_STEP);
             let start = Instant::now();
             let mut attacks = Events::default();
             for _ in 0..n {
-                world.step();
+                if !benchmark::step(world) {
+                    break;
+                }
                 attacks.add(world);
             }
             world.edge_changes.clear();
@@ -740,7 +1616,9 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             for _ in 0..ticks {
                 let intent = input(world, dir);
                 apply_intent(world, &intent);
-                world.step();
+                if !benchmark::step(world) {
+                    break;
+                }
                 attacks.add(world);
             }
             // Stop, so later step_ticks calls don't keep walking.
@@ -758,7 +1636,7 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 p.pos.y,
                 p.pos.distance(start.pos),
                 p.stance,
-                if world.map.in_window_opening(p.pos) { " (climbing through a window)" } else { "" },
+                if world.map.in_window_opening(p.pos) { " (climbing through a window or over a fence)" } else { "" },
                 p.endurance,
                 compass(p.facing),
                 place(world, p.pos),
@@ -783,6 +1661,286 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             apply_intent(world, &Intent::SpawnZombies { count, center: pos, radius: num("radius").unwrap_or(10.0) as f32 });
             Ok(format!("spawned {} zombies; total {}", world.zombies.len() - before, world.zombies.len()))
         }
+        "say" => {
+            let id = player_id();
+            let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            let text = args.get("text").and_then(Value::as_str).ok_or("text is required")?;
+            let volume = match args.get("volume").and_then(Value::as_str) {
+                Some(v) => zombye_sim::Volume::parse(v).ok_or_else(|| format!("unknown volume {v:?}: whisper, talk or shout"))?,
+                None => zombye_sim::Volume::Talk,
+            };
+            let why_not = if p.dead {
+                "it is dead"
+            } else if p.needs.asleep() {
+                "it is asleep"
+            } else if zombye_sim::speech::clean_text(text, world.config.speech.max_chars).is_none() {
+                "there is nothing to say"
+            } else {
+                "it already spoke this tick (step_ticks first)"
+            };
+            let before = world.speech.len();
+            let heard = world.player_say(id, text, volume).ok_or_else(|| format!("player {id} said nothing: {why_not}"))?;
+            let t = &world.config.speech;
+            let said = world.speech[before.min(world.speech.len())..].iter().find(|s| s.listener == id).map_or(text, |s| s.text.as_str());
+            // With PvP on, who is in earshot is for the speaker to find out, not to be told.
+            let who = if world.config.combat.pvp {
+                String::new()
+            } else {
+                let ids: Vec<String> = world.speech.iter().rev().take_while(|s| s.speaker == id && s.tick == world.tick).filter(|s| s.listener != id).map(|s| format!("P{}{}", s.listener, if s.muffled { " (muffled)" } else { "" })).collect();
+                if ids.is_empty() { "; nobody heard it".to_string() } else { format!("; heard by {heard}: {}", ids.join(", ")) }
+            };
+            Ok(format!(
+                "P{id} {} {said:?} (survivors hear it {} m off, {:.1} m through a wall; zombies within {} m hear it on the next tick){who}",
+                volume.verb(),
+                t.reach(volume),
+                t.reach(volume) * world.config.zombie.wall_muffle,
+                t.noise(volume)
+            ))
+        }
+        "weather" => {
+            let id = player_id();
+            let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            let (pos, level) = (p.state.pos, p.state.level);
+            let d = world.date();
+            let mut out = format!(
+                "{} {} of year {}, {} (day {} of this world), {}\nnow: {}\nwhere P{id} stands ({}): {:.1} C\n",
+                d.day,
+                world.month_name(),
+                d.year,
+                d.season().id(),
+                d.day_number + 1,
+                clock(world.time_of_day()),
+                weather_line(&world.weather()),
+                if level > 0 || world.map.room_at(pos) != 0 { "indoors" } else { "outdoors" },
+                world.air_temp_at(pos, level)
+            );
+            let ahead = num("forecast_hours").unwrap_or(0.0).clamp(0.0, 240.0);
+            let step = num("step_hours").unwrap_or(3.0).clamp(0.5, 48.0);
+            let now = world.clock_hours();
+            let mut h = step;
+            while h <= ahead {
+                let at = now + h;
+                let hour = (at.rem_euclid(24.0)) as f32;
+                let dd = world.config.weather.date_at(at);
+                out.push_str(&format!("+{h:.0} h ({}/{} {}): {}\n", dd.day, dd.month, clock(hour), weather_line(&world.weather_at(at))));
+                h += step;
+            }
+            Ok(out)
+        }
+        "set_weather" => {
+            let kind = args.get("kind").and_then(Value::as_str).ok_or("kind is required")?;
+            if kind == "auto" {
+                world.force_weather(None);
+            } else {
+                let k = zombye_sim::WeatherKind::from_id(kind).ok_or_else(|| format!("unknown kind {kind:?}"))?;
+                let intensity = num("intensity").unwrap_or(1.0) as f32;
+                let hours = num("hours").unwrap_or(6.0) as f32;
+                world.force_weather(Some((k, intensity, hours, num("temp_c").map(|t| t as f32))));
+            }
+            Ok(format!("now: {}", weather_line(&world.weather())))
+        }
+        "events" => Ok(events_text(world)),
+        "trigger_event" => {
+            let id = args.get("id").and_then(Value::as_str).ok_or("id is required")?;
+            let said = world.trigger_event(id)?;
+            Ok(format!("{said}\n{}", events_text(world)))
+        }
+        "schedule_event" => {
+            let id = args.get("id").and_then(Value::as_str).ok_or("id is required")?;
+            let at = if args.get("cancel").and_then(Value::as_bool).unwrap_or(false) {
+                None
+            } else {
+                let h = num("in_hours").ok_or("in_hours or cancel: true is required")?;
+                if !(0.0..=24.0 * 3650.0).contains(&h) {
+                    return Err("in_hours must be 0 to 87600".into());
+                }
+                Some(world.game_hours() + h)
+            };
+            world.schedule_event(id, at)?;
+            Ok(events_text(world))
+        }
+        "fires" => {
+            let id = player_id();
+            let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            let pos = p.state.pos;
+            let pi = world.players.iter().position(|q| q.id == id).unwrap();
+            let radius = num("radius").unwrap_or(30.0).clamp(1.0, 500.0) as f32;
+            let reach = world.config.fire.reach;
+            let mut fires: Vec<_> = world.fires().iter().filter(|f| f.pos.distance(pos) <= radius).collect();
+            fires.sort_by(|a, b| a.pos.distance(pos).total_cmp(&b.pos.distance(pos)));
+            let mut out = format!(
+                "player {id} at ({:.1}, {:.1}): {} to cook with here\n",
+                pos.x,
+                pos.y,
+                if world.heat_for(pi) { "heat" } else { "no heat" }
+            );
+            if fires.is_empty() {
+                out.push_str(&format!("no campfires within {radius:.0} m\n"));
+            }
+            for f in fires {
+                let d = f.pos.distance(pos);
+                out.push_str(&format!(
+                    "fire {} at ({:.1}, {:.1}): {}, {} of fuel, {d:.1} m{}\n",
+                    f.id,
+                    f.pos.x,
+                    f.pos.y,
+                    if f.lit { "burning" } else { "out" },
+                    zombye_sim::fire::hours_text(f.fuel_h),
+                    if d <= reach { ", in reach" } else { "" }
+                ));
+            }
+            let power = world.power();
+            for s in zombye_sim::fire::stoves(&world.map, &world.config.fire) {
+                let d = s.nearest(pos).distance(pos);
+                if d <= radius {
+                    out.push_str(&format!(
+                        "stove at ({}, {}): {}, {d:.1} m{}\n",
+                        s.min.x,
+                        s.min.y,
+                        if !world.config.fire.stoves_need_power || power.powered(s.building) { "working" } else { "no power" },
+                        if d <= reach { ", in reach" } else { "" }
+                    ));
+                }
+            }
+            Ok(out)
+        }
+        "fire" => {
+            let id = player_id();
+            let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            let pos = p.state.pos;
+            let fire = match num("fire") {
+                Some(f) => f as u32,
+                None => world
+                    .fires()
+                    .iter()
+                    .min_by(|a, b| a.pos.distance(pos).total_cmp(&b.pos.distance(pos)))
+                    .map(|f| f.id)
+                    .ok_or("there are no campfires: build one with craft {recipe: build_campfire}")?,
+            };
+            let op = match args.get("action").and_then(Value::as_str).unwrap_or("") {
+                "light" => zombye_sim::FireOp::Light,
+                "put_out" | "putout" | "out" => zombye_sim::FireOp::PutOut,
+                "add_fuel" | "fuel" => {
+                    let carried = &p.inventory.carried;
+                    let index = if let Some(i) = num("index") {
+                        i as usize
+                    } else if let Some(item) = args.get("item").and_then(Value::as_str) {
+                        let ix = world.item_index(item).ok_or_else(|| format!("no item {item:?}"))?;
+                        carried.iter().position(|s| s.item == ix).ok_or_else(|| format!("player {id} carries no {item}"))?
+                    } else {
+                        carried
+                            .iter()
+                            .position(|s| world.item_def(s.item).has_tag("fuel"))
+                            .ok_or_else(|| format!("player {id} carries nothing that burns (items tagged fuel: firewood, planks, newspaper)"))?
+                    };
+                    zombye_sim::FireOp::AddFuel { index: index as u32 }
+                }
+                other => return Err(format!("unknown action {other:?}: add_fuel, light or put_out")),
+            };
+            world.item_notes.clear();
+            let text = world.player_fire(id, fire, op).map_err(|e| format!("player {id}: {e}"))?;
+            world.item_notes.retain(|n| n.player != id);
+            Ok(format!("player {id}, fire {fire}: {text}; tick {}", world.tick))
+        }
+        "heard" => {
+            let id = player_id();
+            let me = world.player(id).ok_or_else(|| format!("no player {id}"))?.state.pos;
+            let secs = num("secs").filter(|s| *s > 0.0);
+            let since = secs.map_or(0, |s| world.tick.saturating_sub((s * zombye_sim::TICK_RATE as f64) as u64));
+            let fair = world.config.combat.pvp;
+            let lines: Vec<String> = world
+                .speech
+                .iter()
+                .filter(|s| s.listener == id && s.tick >= since)
+                .map(|s| {
+                    let ago = (world.tick - s.tick.min(world.tick)) as f32 * TICK_DT;
+                    let how = match s.volume {
+                        zombye_sim::Volume::Whisper => "whispered",
+                        zombye_sim::Volume::Talk => "said",
+                        zombye_sim::Volume::Shout => "shouted",
+                    };
+                    if s.speaker == id {
+                        return format!("{ago:.1} s ago, you {how}: {:?}", s.text);
+                    }
+                    let who = if s.seen || !fair { format!("P{}", s.speaker) } else { "a voice".to_string() };
+                    let d = s.pos - me;
+                    let from = if d.length() < 0.5 { "right here".to_string() } else { format!("{:.0} m {}", d.length(), compass(d.y.atan2(d.x))) };
+                    format!("{ago:.1} s ago, {who} {how}{} from ({:.1}, {:.1}), {from}: {:?}", if s.muffled { " (muffled, through a wall)" } else { "" }, s.pos.x, s.pos.y, s.text)
+                })
+                .collect();
+            let span = secs.map_or(String::new(), |s| format!(" in the last {s:.0} s"));
+            Ok(if lines.is_empty() { format!("P{id} heard nothing said{span}") } else { format!("P{id} heard{span} (oldest first; places are where the voice was, from where P{id} stands now):\n{}", lines.join("\n")) })
+        }
+        "gesture" => {
+            let id = player_id();
+            world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            let name = args.get("gesture").and_then(Value::as_str).ok_or("gesture is required: wave, hands_up, point or none")?;
+            let gesture = match name {
+                "none" | "stop" => None,
+                g => Some(zombye_sim::Gesture::parse(g).ok_or_else(|| format!("unknown gesture {g:?}: wave, hands_up, point or none"))?),
+            };
+            apply_intent(world, &Intent::Gesture { player: id, gesture });
+            let p = world.player(id).expect("checked");
+            match (gesture, p.gesture) {
+                (Some(g), Some(now)) if now.kind == g => Ok(format!("P{id} is {}{}", g.doing(), if now.left.is_finite() { format!(" for {:.1} s", now.left) } else { " until it lowers them (hands_up again, or none)".to_string() })),
+                (Some(zombye_sim::Gesture::HandsUp), None) => Ok(format!("P{id} lowered its hands")),
+                (Some(g), _) => Err(format!("P{id} can't make a gesture ({}) now: dead, asleep, knocked about or in the middle of a swing", g.name())),
+                (None, _) => Ok(format!("P{id} makes no gesture")),
+            }
+        }
+        "restrain" | "free" | "search_player" => hands_tool(world, player_id(), name, args.get("target").and_then(Value::as_u64).map(|t| t as u32)),
+        "take_from" => {
+            let id = player_id();
+            let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            let t = p.frisking.ok_or_else(|| format!("P{id} isn't searching anyone: search_player first (their hands have to be tied)"))?;
+            let place = args.get("from").and_then(Value::as_str).unwrap_or("carried");
+            let from = match place {
+                "carried" => Place::Carried,
+                "worn" => Place::Worn,
+                "hand" => Place::Slot(Slot::Hand),
+                "off_hand" => Place::Slot(Slot::OffHand),
+                "back" => Place::Slot(Slot::Back),
+                "shoulder" => Place::Slot(Slot::Shoulder),
+                other => return Err(format!("unknown place {other:?}: carried, worn, hand, off_hand, back or shoulder")),
+            };
+            let index = args.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let count = args.get("count").and_then(Value::as_u64).unwrap_or(0).min(u16::MAX as u64) as u16;
+            let inv = &world.player(t).ok_or_else(|| format!("P{t} is gone"))?.inventory;
+            let stack = match from {
+                Place::Carried => inv.carried.get(index as usize).copied(),
+                Place::Worn => inv.worn.get(index as usize).copied(),
+                Place::Slot(s) => inv.slot(s),
+                _ => None,
+            };
+            let item = stack.ok_or_else(|| format!("P{t} has nothing at {place} {index} (see search_player)"))?.item;
+            let (notes, ticks) = run_hands(world, id, |w| w.player_take_from(id, from, index, item, count)).map_err(|why| format!("P{id} can't take it: {why}"))?;
+            let has = |who: u32| world.player(who).map_or(0, |p| p.inventory.stacks().filter(|s| s.item == item).map(|s| s.count as u32).sum::<u32>());
+            let def = world.item_def(item);
+            let text = format!("P{id}: {} ({ticks} ticks, {:.1} s); P{id} now has {} x {} ({}), P{t} {}", if notes.is_empty() { "called off" } else { notes.as_str() }, ticks as f32 * TICK_DT, has(id), def.id, def.name, has(t));
+            if notes.is_empty() || notes.contains("refused: ") { Err(text) } else { Ok(text) }
+        }
+        "struggle" => struggle_tool(world, player_id(), num("max_secs").unwrap_or(120.0).clamp(0.05, 600.0) as f32),
+        "group" => group_tool(world, player_id(), args),
+        "restrain_now" => {
+            let id = player_id();
+            let item = args.get("item").and_then(Value::as_str).unwrap_or("cable_tie");
+            let by = args.get("by").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let index = world.item_index(item).ok_or_else(|| format!("unknown item {item:?} (see items)"))?;
+            if !world.item_def(index).has_tag(zombye_sim::bonds::TAG_RESTRAINS) {
+                return Err(format!("{item} doesn't tie hands: an item tagged {} (cable_tie, rope)", zombye_sim::bonds::TAG_RESTRAINS));
+            }
+            if !world.restrain_now(id, item, by) {
+                return Err(format!("no living player {id}"));
+            }
+            let p = world.player(id).expect("just tied");
+            Ok(format!(
+                "P{id}'s hands are tied ({}){}: {:.0} s of struggling gets it out{}",
+                world.item_def(index).name.to_lowercase(),
+                if by == 0 { String::new() } else { format!(", as if by P{by}") },
+                world.escape_secs(p).unwrap_or(0.0),
+                if world.restraint_is_cut(index) { ", or someone cutting it off" } else { ", or someone untying it" }
+            ))
+        }
         // `toggle_door` is the old name of `interact`.
         "interact" | "toggle_door" => {
             let id = player_id();
@@ -794,6 +1952,134 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 None => Err(format!("no door or window that opens or shuts within reach of player {id}")),
             }
         }
+        "climb" => {
+            let id = player_id();
+            let start = world.player(id).ok_or_else(|| format!("no player {id}"))?.state;
+            if let Some(f) = num("facing") {
+                let seq = world.player(id).map_or(1, |p| p.last_input_seq + 1);
+                apply_intent(world, &Intent::PlayerInput { player: id, seq, move_dir: [0.0, 0.0], facing: f as f32, run: false, sneak: false, aim: false });
+                if let Some(p) = world.players.iter_mut().find(|p| p.id == id) {
+                    p.state.facing = (f as f32).rem_euclid(std::f32::consts::TAU);
+                }
+            }
+            world.item_notes.clear();
+            apply_intent(world, &Intent::Climb { player: id });
+            if world.player(id).is_none_or(|p| p.state.climb.is_none()) {
+                let notes = take_notes(world, id);
+                return Err(if notes.is_empty() {
+                    format!(
+                        "no fence or open or broken window within reach that player {id} faces ({} m, within {} degrees of square on, with room beyond)",
+                        world.config.climb.reach, world.config.climb.facing_degrees
+                    )
+                } else {
+                    format!("player {id}: {notes}")
+                });
+            }
+            let mut attacks = Events::default();
+            let mut ticks = 0;
+            while world.player(id).is_some_and(|p| p.state.climb.is_some()) && ticks < 20 * 10 {
+                if !benchmark::step(world) {
+                    break;
+                }
+                attacks.add(world);
+                ticks += 1;
+            }
+            world.edge_changes.clear();
+            world.combat_events.clear();
+            let p = world.player(id).expect("player exists").state;
+            Ok(format!(
+                "player {id} climbed from ({:.1}, {:.1}) to ({:.1}, {:.1}) in {ticks} ticks; now in {}; tick {}{}",
+                start.pos.x,
+                start.pos.y,
+                p.pos.x,
+                p.pos.y,
+                place(world, p.pos),
+                world.tick,
+                attacks.summary(world)
+            ))
+        }
+        "blind" => {
+            let id = player_id();
+            world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            let op = match args.get("action").and_then(Value::as_str).unwrap_or("use") {
+                "use" => zombye_sim::BlindOp::Use,
+                "toggle" => zombye_sim::BlindOp::Toggle,
+                "fit" => zombye_sim::BlindOp::Fit,
+                "take_down" | "takedown" => zombye_sim::BlindOp::TakeDown,
+                other => return Err(format!("unknown action {other:?}: use, toggle, fit or take_down")),
+            };
+            if let Some(f) = num("facing")
+                && let Some(p) = world.players.iter_mut().find(|p| p.id == id)
+            {
+                p.state.facing = (f as f32).rem_euclid(std::f32::consts::TAU);
+            }
+            world.item_notes.clear();
+            world.player_blind(id, op).map_err(|e| format!("player {id}: {e}"))?;
+            let busy = |w: &World| w.player(id).is_some_and(|p| p.jobs.iter().any(|j| matches!(j.kind, zombye_sim::inventory::JobKind::Blind { .. })));
+            let mut ticks = 0;
+            while busy(world) && ticks < 20 * 15 {
+                if !benchmark::step(world) {
+                    break;
+                }
+                ticks += 1;
+            }
+            let notes = take_notes(world, id);
+            let changes = world.take_blind_changes();
+            let state = match changes.last() {
+                Some(c) => format!(
+                    "the blind at tile ({}, {}) {:?} edge is now {}",
+                    c.tile.x,
+                    c.tile.y,
+                    c.edge,
+                    match c.blind {
+                        Some(true) => "down",
+                        Some(false) => "up",
+                        None => "gone",
+                    }
+                ),
+                None => "nothing changed".to_string(),
+            };
+            let notes = if notes.is_empty() { String::new() } else { format!(" ({notes})") };
+            Ok(format!("player {id}: {state}{notes}; {ticks} ticks, tick {}", world.tick))
+        }
+        "build" | "unbuild" => {
+            let id = player_id();
+            world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            if let Some(f) = num("facing")
+                && let Some(p) = world.players.iter_mut().find(|p| p.id == id)
+            {
+                p.state.facing = (f as f32).rem_euclid(std::f32::consts::TAU);
+            }
+            world.item_notes.clear();
+            if name == "build" {
+                let b = args.get("build").and_then(Value::as_str).ok_or("build needs `build`: an id from the builds tool")?;
+                world.player_build_id(id, b).map_err(|e| format!("player {id}: {e}"))?;
+            } else {
+                world.player_unbuild(id).map_err(|e| format!("player {id}: {e}"))?;
+            }
+            let busy = |w: &World| w.player(id).is_some_and(|p| p.jobs.iter().any(|j| matches!(j.kind, zombye_sim::inventory::JobKind::Build { .. })));
+            let mut ticks = 0;
+            while busy(world) && ticks < 20 * 30 {
+                if !benchmark::step(world) {
+                    break;
+                }
+                ticks += 1;
+            }
+            let notes = take_notes(world, id);
+            let state = match world.take_barricade_changes().last() {
+                Some(c) => {
+                    let e = EdgeRef::new(c.tile, c.edge);
+                    match c.barricade {
+                        Some(b) => format!("the {} at tile ({}, {}) {:?} edge has {} plank(s){}", noun(b.under), c.tile.x, c.tile.y, c.edge, b.planks, hp_text(world, e)),
+                        None => format!("the {} at tile ({}, {}) {:?} edge is no longer boarded up: {}", noun(world.map.owned_edge(c.tile, c.edge)), c.tile.x, c.tile.y, c.edge, edge_name(world.map.owned_edge(c.tile, c.edge))),
+                    }
+                }
+                None => "nothing changed".to_string(),
+            };
+            let notes = if notes.is_empty() { String::new() } else { format!(" ({notes})") };
+            Ok(format!("player {id}: {state}{notes}; {ticks} ticks, tick {}", world.tick))
+        }
+        "builds" => builds_text(world),
         "smash_window" => {
             let id = player_id();
             world.player(id).ok_or_else(|| format!("no player {id}"))?;
@@ -817,18 +2103,42 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 return Err(format!("player {id} is dead (respawn to play on)"));
             }
             let (pos, seq, sneak, weapon) = (p.state.pos, p.last_input_seq, p.input.sneak, p.weapon);
-            let facing = match args.get("target").and_then(Value::as_u64) {
-                Some(t) => {
+            // (A target's distance and whether it lies down, for a gun's pitch.)
+            let mut target = None;
+            let facing = match (args.get("target").and_then(Value::as_u64), args.get("target_player").and_then(Value::as_u64)) {
+                (Some(t), _) => {
                     let i = world.zombies.index_of(t as u32).ok_or_else(|| format!("no zombie {t}"))?;
                     let to = world.zombies.pos[i] - pos;
+                    target = Some((to.length(), world.zombies.state[i] == ZombieState::Down));
                     Some(to.y.atan2(to.x))
                 }
-                None => num("facing").map(|f| f as f32),
+                (None, Some(t)) => {
+                    let o = world.player(t as u32).ok_or_else(|| format!("no player {t}"))?;
+                    let to = o.state.pos - pos;
+                    target = Some((to.length(), o.knock.is_some_and(|k| k.down) || o.needs.asleep()));
+                    Some(to.y.atan2(to.x))
+                }
+                (None, None) => num("facing").map(|f| f as f32),
             };
             // Only an aiming player fights: aim (and turn, if asked).
             let facing = facing.unwrap_or(world.player(id).map_or(0.0, |p| p.state.facing));
+            // A gun (#72) is aimed up or down too: as asked, else at the target, else level.
+            let gun = name == "attack" && world.wielded(weapon).ranged.is_some();
+            if gun {
+                if world.loaded(id).is_some_and(|l| l.0 == 0) {
+                    return Err(format!("the {} is empty: reload it with use {{from: \"hand\"}} (see inventory for the rounds and magazines carried)", world.wielded(weapon).name.to_lowercase()));
+                }
+                let pitch = num("pitch").map(|p| p as f32).or_else(|| {
+                    target.map(|(dist, down)| {
+                        let height = num("aim_height").map_or(if down { 0.2 } else { 1.15 }, |h| h as f32);
+                        ((height - zombye_sim::ranged::MUZZLE_HEIGHT) / dist.max(0.5)).atan()
+                    })
+                });
+                apply_intent(world, &Intent::Aim { player: id, pitch: pitch.unwrap_or(0.0) });
+            }
             apply_intent(world, &Intent::PlayerInput { player: id, seq: seq + 1, move_dir: [0.0, 0.0], facing, run: false, sneak, aim: true });
             let (intent, verb) = match name {
+                "attack" if gun => (Intent::Attack { player: id }, format!("fired the {}", world.wielded(weapon).name.to_lowercase())),
                 "attack" => (Intent::Attack { player: id }, format!("swung the {}", world.wielded(weapon).name.to_lowercase())),
                 "shove" => (Intent::Shove { player: id }, "shoved".to_string()),
                 _ => (Intent::Stomp { player: id }, "stomped".to_string()),
@@ -842,7 +2152,9 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             let mut events = Events::default();
             let (mut ticks, mut landed_at, mut hits) = (0, None, 0);
             loop {
-                world.step();
+                if !benchmark::step(world) {
+                    break;
+                }
                 events.add(world);
                 ticks += 1;
                 if let Some(a) = world.action_events.iter().find(|a| a.player == id) {
@@ -857,8 +2169,9 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             world.edge_changes.clear();
             world.combat_events.clear();
             let p = world.player(id).expect("player exists");
+            let rounds = if gun { world.loaded(id).map_or(String::new(), |(n, of)| format!(", {n} of {of} rounds left in it")) } else { String::new() };
             Ok(format!(
-                "player {id} {verb} facing {}: landed after {} ticks, {}; ready again after {ticks} ticks; {:.0} HP, endurance {:.2}{}; now tick {}{}; hash {:016x}",
+                "player {id} {verb} facing {}: landed after {} ticks, {}{rounds}; ready again after {ticks} ticks; {:.0} HP, endurance {:.2}{}; now tick {}{}; hash {:016x}",
                 compass(p.state.facing),
                 landed_at.map_or("never".to_string(), |t| t.to_string()),
                 if hits == 0 { "nothing hit".to_string() } else { format!("{hits} hit") },
@@ -922,6 +2235,31 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             let reach = world.containers_in_reach(id);
             let mut near: Vec<_> = world.containers().iter().filter(|s| s.distance(pos) <= radius).collect();
             near.sort_by(|a, b| a.distance(pos).total_cmp(&b.distance(pos)));
+            // Dead zombies' bodies are containers too (`zombye_sim::corpses`).
+            let mut bodies = world.corpses_near(pos, radius);
+            bodies.sort_by(|a, b| a.distance(pos).total_cmp(&b.distance(pos)).then(a.id.cmp(&b.id)));
+            let mut body_lines = String::new();
+            for s in &bodies {
+                let zombie = zombye_sim::corpses::corpse_zombie(s.id).unwrap_or(0);
+                let held = match world.container_contents(s.id) {
+                    None => {
+                        let wears = world.zombie_look(zombie).iter().map(|&i| world.config.items[i as usize].name.to_lowercase()).collect::<Vec<_>>();
+                        format!("not searched (wears {})", if wears.is_empty() { "nothing".to_string() } else { wears.join(", ") })
+                    }
+                    Some([]) => "searched: empty".to_string(),
+                    Some(v) => format!("searched: {}", stacks_text(world, v)),
+                };
+                body_lines.push_str(&format!(
+                    "  #{} body of zombie {zombie}, {:.1} m; {held}{}{}\n",
+                    s.id,
+                    s.distance(pos),
+                    if reach.contains(&s.id) { "; in reach" } else { "" },
+                    if p.open == Some(s.id) { "; OPEN" } else { "" },
+                ));
+            }
+            if near.is_empty() && !body_lines.is_empty() {
+                return Ok(format!("bodies within {radius:.0} m of player {id} (nearest first):\n{body_lines}"));
+            }
             if near.is_empty() {
                 return Ok(format!("no containers within {radius:.0} m of player {id}"));
             }
@@ -950,6 +2288,9 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                     if p.open == Some(s.id) { "; OPEN" } else { "" },
                 ));
             }
+            if !body_lines.is_empty() {
+                out.push_str(&format!("bodies:\n{body_lines}"));
+            }
             Ok(out)
         }
         "loot" => {
@@ -973,7 +2314,13 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
         "move_item" => {
             let id = player_id();
             let from = place_arg(world, id, args.get("from").and_then(Value::as_str).ok_or("from is required")?)?;
-            let to = place_arg(world, id, args.get("to").and_then(Value::as_str).ok_or("to is required")?)?;
+            let to = args.get("to").and_then(Value::as_str).ok_or("to is required")?;
+            // Into one bag carried, or the pockets (only somewhere to put things: they are taken
+            // from "carried", by index).
+            let to = match pouch_arg(to) {
+                Some(p) => Place::Pouch(p),
+                None => place_arg(world, id, to)?,
+            };
             let index = args.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
             let count = args.get("count").and_then(Value::as_u64).unwrap_or(0).min(u16::MAX as u64) as u16;
             run_item_tool(world, id, Intent::MoveItem { player: id, from, index, to, count })
@@ -1007,6 +2354,10 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 Err(t) => Err(format!("{ahead}{t}")),
             }
         }
+        "sit" => {
+            let id = player_id();
+            world.player_sit(id, args.get("sit").and_then(Value::as_bool)).map_err(|e| format!("P{id} can't sit down: {e}"))
+        }
         "sleep" => sleep_tool(world, player_id(), args.get("max_hours").and_then(Value::as_f64).unwrap_or(12.0).clamp(0.1, 24.0) as f32),
         "set_needs" => {
             let id = player_id();
@@ -1023,17 +2374,33 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
         "craft" => craft_tool(world, player_id(), args.get("recipe").and_then(Value::as_str)),
         "weapons" => {
             let mut out = String::from("id: name, category (skill) | damage | reach m | arc deg | windup/swing s | targets | knockback m | stagger/knockdown/crit (x mult) | endurance | noise m\n");
-            for w in &world.config.weapons {
+            for w in world.config.weapons.iter().filter(|w| w.ranged.is_none()) {
                 out.push_str(&format!("{}: {}, {:?} ({:?}) | {}\n", w.id, w.name, w.category, w.skill(), weapon_line(w)));
+            }
+            // Guns (#72) shoot: other numbers matter.
+            if world.config.weapons.iter().any(|w| w.ranged.is_some()) {
+                out.push_str("guns (attack fires one round; use {from: \"hand\"} reloads; no skill): id: name | damage a pellet x pellets (x head) | range m (damage left at the end) | spread deg standing +moving | shot to shot s | bodies a bullet goes through | stagger/knockdown | noise m | holds, of what | reload\n");
+            }
+            for (w, r) in world.config.weapons.iter().filter_map(|w| w.ranged.as_ref().map(|r| (w, r))) {
+                let reload = match &r.magazine {
+                    Some(m) => format!("a carried {m} swapped in {:.1} s, or a round every {:.1} s", r.reload_seconds, r.round_seconds),
+                    None => format!("a round every {:.1} s", r.round_seconds),
+                };
+                out.push_str(&format!(
+                    "{}: {} | {:.0}-{:.0} x{} (x{:.1}) | {:.0} m ({:.0}%) | {:.1} +{:.1} | {:.2} s | {} | {:.0}/{:.0}% | {:.0} m | {} {} | {reload}\n",
+                    w.id, w.name, w.damage.0, w.damage.1, r.pellets, w.crit_multiplier, r.range, r.far_damage * 100.0, r.spread_degrees, r.move_spread_degrees, w.swing_seconds, w.max_targets,
+                    w.stagger_chance * 100.0, w.knockdown_chance * 100.0, w.noise_radius, r.capacity, r.ammo
+                ));
             }
             let c = &world.config.combat;
             out.push_str(&format!(
-                "shove: reach {:.2} m, arc {:.0} deg, up to {} zombies, knockback {:.2} m, always staggers, knockdown {:.0}% (x{} if staggered, x{} from behind), {:.1} s, endurance {:.3}\n\
-                 stomp: downed zombie within {:.1} m centre to centre, damage {:.0}-{:.0}, {:.1} s, endurance {:.3}\n\
+                "shove: reach {:.2} m (+{:.2} with a weapon in hand), arc {:.0} deg, up to {} zombies, knockback {:.2} m (x{:.2} with a weapon), always staggers, knockdown {:.0}% (+{:.0}% for each shove on it in the last {:.0} s, up to {}; x{} if staggered, x{} from behind), {:.1} s, endurance {:.3}\n\
+                 stomp: a downed zombie (lying on its back, head {:.2} m behind its feet) within {:.1} m of its body, damage {:.0}-{:.0}; on the head (within {:.1} m of it) x{:.0}; keeps it down {:.1} s more; {:.1} s, endurance {:.3}\n\
                  zombie hp {:.0}-{:.0}; from behind +{:.0}% crit chance; endurance below {:.0}% weakens (down to x{:.2} damage) and slows (up to x{:.1}) actions\n\
                  zombie strikes land {:.0}% (+{:.0}% per extra zombie on you, max {:.0}%) and leave a wound (see health) on your {:.0} HP: {}",
-                c.shove_range, c.shove_arc_degrees, c.shove_targets, c.shove_knockback, c.shove_knockdown_chance * 100.0, c.staggered_knockdown_mult, c.behind_knockdown_mult, c.shove_seconds, c.shove_endurance,
-                c.stomp_range, c.stomp_damage.0, c.stomp_damage.1, c.stomp_seconds, c.stomp_endurance,
+                c.shove_range, c.shove_weapon_range, c.shove_arc_degrees, c.shove_targets, c.shove_knockback, c.shove_weapon_knockback, c.shove_knockdown_chance * 100.0,
+                c.shove_repeat_knockdown * 100.0, c.shove_repeat_secs, c.shove_repeat_max, c.staggered_knockdown_mult, c.behind_knockdown_mult, c.shove_seconds, c.shove_endurance,
+                c.down_head_offset, c.stomp_range, c.stomp_damage.0, c.stomp_damage.1, c.stomp_head_reach, c.stomp_head_mult, c.stomp_pin_secs, c.stomp_seconds, c.stomp_endurance,
                 c.zombie_hp.0, c.zombie_hp.1, c.behind_crit_bonus * 100.0, c.tired_below * 100.0, c.tired_power, c.tired_slow,
                 c.zombie_hit_chance * 100.0, c.zombie_crowd_bonus * 100.0, c.zombie_hit_max * 100.0, c.player_hp,
                 WoundKind::ALL.map(|k| { let d = world.config.health.wound(k).damage; format!("{} {:.0}-{:.0}", k.name(), d.0, d.1) }).join(", ")
@@ -1072,6 +2439,54 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             let p = world.player(id).expect("just added");
             Ok(format!("player {id} joined at ({:.1}, {:.1}) in {}", p.state.pos.x, p.state.pos.y, place(world, p.state.pos)))
         }
+        "light" => {
+            let id = player_id();
+            let p = world.player(id).ok_or_else(|| format!("no player {id}"))?.state.pos;
+            let room = world.map.room_at(p);
+            apply_intent(world, &Intent::Light { player: id, on: args.get("on").and_then(Value::as_bool) });
+            let notes = take_notes(world, id);
+            if room == 0 {
+                return Err(format!("player {id} is outdoors: no light switch here"));
+            }
+            let Some(spot) = world.power().spot(room) else { return Err(format!("the {} has no light switch", world.map.rooms[room as usize].name)) };
+            if spot.pos.distance(p) > zombye_sim::power::SWITCH_REACH {
+                return Err(format!("the {}'s light switch is at ({:.1}, {:.1}), {:.1} m away: move within {} m of it", world.map.rooms[room as usize].name, spot.pos.x, spot.pos.y, spot.pos.distance(p), zombye_sim::power::SWITCH_REACH));
+            }
+            let b = world.map.rooms[room as usize].building as usize;
+            let (switch, lit, powered) = (world.power().switches.contains(&room), world.power().is_lit(room), world.power().powered(b));
+            Ok(format!(
+                "{}: {}; switch {}, {}, {}",
+                world.map.rooms[room as usize].name,
+                if notes.is_empty() { "the switch is already that way".to_string() } else { notes },
+                on_off(switch),
+                if lit { "lit" } else { "dark" },
+                if powered { "the building has power" } else { "no power" }
+            ))
+        }
+        "flashlight" => {
+            let id = player_id();
+            world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            apply_intent(world, &Intent::Flashlight { player: id, on: args.get("on").and_then(Value::as_bool) });
+            let notes = take_notes(world, id);
+            if let Some(why) = notes.strip_prefix("refused: ") {
+                return Err(why.to_string());
+            }
+            let off = world.player(id).is_some_and(|p| p.light_off);
+            Ok(if notes.is_empty() { format!("already {}", if off { "off" } else { "on" }) } else { notes })
+        }
+        "grid" => {
+            if let Some(on) = args.get("on").and_then(Value::as_bool) {
+                apply_intent(world, &Intent::Grid { on });
+            }
+            Ok(format!("grid {}; {} rooms lit, {} switches on", on_off(world.power().grid_on()), world.power().lit().len(), world.power().switches.len()))
+        }
+        "pvp" => {
+            if let Some(on) = args.get("on").and_then(Value::as_bool) {
+                world.config.combat.pvp = on;
+            }
+            let pvp = world.config.combat.pvp;
+            Ok(format!("pvp {}: players {} hurt each other", on_off(pvp), if pvp { "can" } else { "can't" }))
+        }
         "dev" => {
             let id = player_id();
             world.player(id).ok_or_else(|| format!("no player {id}"))?;
@@ -1091,7 +2506,14 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             for side in Side::ALL {
                 let e = EdgeRef::of(t, side);
                 let kind = world.map.owned_edge(e.tile, e.edge);
-                out.push_str(&format!("  {side:?}: {}{}\n", edge_name(kind), hp_text(world, e)));
+                let glass = if world.map.glazed(e) { " with glass in it" } else { "" };
+                let blind = match world.map.blind(e) {
+                    Some(true) => ", blind down",
+                    Some(false) => ", blind up",
+                    None if world.map.takes_blind(e) => ", no blind",
+                    None => "",
+                };
+                out.push_str(&format!("  {side:?}: {}{glass}{blind}{}\n", edge_name(kind), hp_text(world, e)));
             }
             Ok(out)
         }
@@ -1111,6 +2533,7 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             Ok(format!("noise at ({:.1}, {:.1}) with radius {:.1} m; zombies hear it on the next tick{pull}", pos[0], pos[1], radius.clamp(0.0, 500.0)))
         }
         "regions" => Ok(regions(world)),
+        "biomes" => Ok(biomes(world, args)),
         "zombie" => {
             let id = args.get("id").and_then(Value::as_u64).ok_or("id is required")? as u32;
             let i = world.zombies.index_of(id).ok_or_else(|| format!("no zombie {id}"))?;
@@ -1123,7 +2546,7 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             let died: String = alive
                 .iter()
                 .filter_map(|id| world.player(*id).filter(|p| p.dead))
-                .map(|p| format!("; P{} DIED: {}", p.id, p.run.cause_of_death().unwrap_or_else(|| "cause unknown".into())))
+                .map(|p| format!("; P{} DIED: {}", p.id, p.run.cause_of_death_with(&world.config.weapons).unwrap_or_else(|| "cause unknown".into())))
                 .collect();
             Ok(format!("it is now {}{died}", clock(world.time_of_day())))
         }
@@ -1182,22 +2605,36 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 "pain": p.health.pain(&world.config.health),
                 "sick": p.health.sick(),
                 "infection": p.health.visible_infection().map_or("unknown".to_string(), |s| format!("{s:?}")),
-                "run": run_json(&p.run),
-                "cause_of_death": p.run.cause_of_death(),
+                "run": run_json(&p.run, &world.config.weapons),
+                "cause_of_death": p.run.cause_of_death_with(&world.config.weapons),
+                "first_night": p.first_night.as_ref().map(|f| first_night_json(f, &p.run)),
+                "map": json!({"explored": (p.explored.share() * 1000.0).round() / 1000.0, "buildings_entered": p.explored.entered.len()}),
+                "knocked": p.knock.map(|k| if k.down { "down" } else { "staggered" }),
+                "gesture": p.gesture.map(|g| g.kind.name()),
+                "restrained": p.restraint.map(|r| world.item_def(r.item).id.clone()),
+                "struggling": p.restraint.is_some_and(|r| r.struggling),
+                "hands": p.hands.map(|h| hands_name(h.kind.act())),
+                "searching": p.frisking,
+                "group": world.groups().of(p.id).map(|g| g.members.clone()),
                 "hunger": p.needs.hunger,
                 "thirst": p.needs.thirst,
                 "tiredness": p.needs.tiredness,
                 "asleep": p.needs.sleep.map(|s| s.spot.name()),
+                "seated": p.seated.map(|s| s.name()),
                 "tags": world.status_tags(p.id).iter().map(|t| t.label.clone()).collect::<Vec<_>>(),
                 "skills": zombye_sim::Skill::ALL.iter().map(|&s| (s.id().to_string(), json!(p.skills.level(s, &world.config.skills)))).collect::<serde_json::Map<_, _>>(),
             })).collect::<Vec<_>>(),
             "time_scale": world.time_scale(),
+            // The far tier's clock (#57): ahead of `tick` by what it ran on while everyone slept.
+            "far_tick": world.far_tick(),
             "items_on_floor": world.items().len(),
             "containers": world.containers().len(),
             "containers_opened": world.opened_containers().count(),
             "tick": world.tick,
             "time_of_day": clock(world.time_of_day()),
             "daylight": world.daylight(),
+            "date": date_json(world),
+            "weather": weather_json(world),
             "zombies": world.zombies.len(),
             "zombie_tiers": {
                 "active": world.stats.active,
@@ -1221,8 +2658,8 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                     "id": a.id,
                     "pos": a.pos.to_array(),
                     "reach_m": a.reach,
-                    "felt_m": a.felt_radius(world.tick, world.config.population.migration.spread_speed),
-                    "strength": a.strength(world.tick),
+                    "felt_m": a.felt_radius(world.far_tick(), world.config.population.migration.spread_speed),
+                    "strength": a.strength(world.far_tick()),
                 })).collect::<Vec<_>>(),
                 "migration": world.config.population.migration.enabled,
                 "respawn": world.config.population.respawn.enabled,
@@ -1240,6 +2677,9 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 "dead": state_count(world, ZombieState::Dead),
             },
             "last_tick_hits": world.hit_events.len(),
+            "last_tick_player_hits": world.player_hit_events.len(),
+            "pvp": world.config.combat.pvp,
+            "power": {"grid": world.power().grid_on(), "water": world.water_on(), "lit_rooms": world.power().lit().len(), "switches_on": world.power().switches.len()},
             "last_tick_thumps": world.stats.thumps,
             "damaged_edges": world.damaged_edges().count(),
             "chasing": world.stats.chasing,
@@ -1278,6 +2718,9 @@ struct Events {
     hits: u32,
     hit_lines: Vec<String>,
     kills: u32,
+    /// Player hits on other players (PvP), the first few spelled out.
+    player_hits: u32,
+    player_hit_lines: Vec<String>,
     deaths: Vec<u32>,
     /// Skill level-ups (#46), taken from the world as they happen.
     level_ups: Vec<zombye_sim::LevelUp>,
@@ -1348,6 +2791,43 @@ impl Events {
                 ));
             }
         }
+        for h in &world.player_hit_events {
+            self.player_hits += 1;
+            if self.player_hit_lines.len() < 12 {
+                let how = match h.kind {
+                    ActionKind::Swing => "hit",
+                    ActionKind::Shove => "shoved",
+                    ActionKind::Stomp => "stomped",
+                };
+                let wound = match (h.part, h.wound) {
+                    (Some(part), Some(kind)) => format!(" for {:.0}: a {} on the {}", h.damage, kind.name(), part.name()),
+                    _ => String::new(),
+                };
+                let effect = match h.effect {
+                    HitEffect::Hit => "",
+                    HitEffect::Staggered => ", staggered",
+                    HitEffect::KnockedDown => ", KNOCKED DOWN",
+                    HitEffect::Killed => ", KILLED",
+                };
+                let v = world.player(h.victim);
+                self.player_hit_lines.push(format!(
+                    "P{} {how} P{}{wound}{}{effect} ({:.0} HP left{})",
+                    h.player,
+                    h.victim,
+                    match (h.crit, h.behind) {
+                        (true, true) => " (crit, from behind)",
+                        (true, false) => " (crit)",
+                        (false, true) => " (from behind)",
+                        _ => "",
+                    },
+                    v.map_or(0.0, |p| p.hp),
+                    if v.is_some_and(|p| p.dev.god) { ", god" } else { "" },
+                ));
+            }
+            if h.effect == HitEffect::Killed && !self.deaths.contains(&h.victim) {
+                self.deaths.push(h.victim);
+            }
+        }
         self.thumps += world.stats.thumps;
         for c in &world.break_events {
             self.broken.push(format!("{} at ({}, {}) {:?}", noun(c.kind), c.tile.x, c.tile.y, c.edge));
@@ -1362,6 +2842,11 @@ impl Events {
         }
         if self.kills > 0 {
             out.push_str(&format!("; {} zombie(s) killed", self.kills));
+        }
+        if self.player_hits > 0 {
+            let n = self.player_hits as usize;
+            let more = if n > self.player_hit_lines.len() { format!(" and {} more", n - self.player_hit_lines.len()) } else { String::new() };
+            out.push_str(&format!("; PLAYER HITS: {}{more}", self.player_hit_lines.join(", ")));
         }
         if self.thumps > 0 {
             out.push_str(&format!("; {} thumps on doors/windows", self.thumps));
@@ -1386,21 +2871,46 @@ impl Events {
             out.push_str(&format!("; LEVEL UP: {}", ups.join(", ")));
         }
         for p in &self.deaths {
-            let cause = world.player(*p).and_then(|p| p.run.cause_of_death()).map_or(String::new(), |c| format!(": {c}"));
+            let cause = world.player(*p).and_then(|p| p.run.cause_of_death_with(&world.config.weapons)).map_or(String::new(), |c| format!(": {c}"));
             out.push_str(&format!("; P{p} DIED{cause}"));
         }
         out
     }
 }
 
+/// A player's first day and night (#19) for `stats`: the phase, when dark falls and ends, the
+/// objectives with what's done, and at dawn the outcome.
+fn first_night_json(f: &zombye_sim::FirstNight, run: &zombye_sim::RunStats) -> Value {
+    use zombye_sim::firstnight::clock;
+    json!({
+        "phase": format!("{:?}", f.phase()).to_lowercase(),
+        "dark_at": clock(f.dusk),
+        "dawn_at": clock(f.dawn),
+        "hours_to_dark": f.hours_to_dusk(),
+        "hours_to_dawn": f.hours_to_dawn(),
+        "objectives": zombye_sim::Objective::ALL.iter().map(|&o| json!({"what": f.label(o, run), "done": f.done(o, run)})).collect::<Vec<_>>(),
+        "outcome": f.outcome.map(|o| json!({
+            "text": format!("{} {}", o.headline(), o.verdict()),
+            "shelter": format!("{:?}", o.shelter).to_lowercase(),
+            "slept_hours": o.slept_h,
+            "kills": o.kills,
+            "wounds": o.wounds,
+            "hp_lost": o.hp_lost,
+            "hp": o.hp,
+            "objectives_done": o.objectives,
+        })),
+    })
+}
+
 /// A player's run stats (#13) for `stats`.
-fn run_json(r: &zombye_sim::RunStats) -> Value {
+fn run_json(r: &zombye_sim::RunStats, weapons: &[zombye_sim::WeaponDef]) -> Value {
     json!({
         "survived": r.survived(),
         "game_hours": r.hours,
         "played": r.played(),
         "seconds": r.secs,
         "kills": r.kills,
+        "player_kills": r.player_kills,
         "distance_m": r.distance_m,
         "items_taken": r.items_taken,
         "containers_searched": r.searched,
@@ -1408,7 +2918,7 @@ fn run_json(r: &zombye_sim::RunStats) -> Value {
         "hp_lost": r.hp_lost,
         "death": r.death.map(|d| json!({
             "cause": d.cause.id(),
-            "text": d.describe(),
+            "text": d.describe_with(weapons),
             "rises": d.rises,
             "tick": d.tick,
             "day": d.day,
@@ -1435,7 +2945,8 @@ fn weapon_line(w: &zombye_sim::WeaponDef) -> String {
         w.crit_multiplier,
         w.endurance_cost,
         w.noise_radius
-    )
+    ) + &if w.durability > 0 { format!(" | breaks after {} knocks, {:.0}% a hit", w.durability, w.wear_chance * 100.0) } else { " | never wears".into() }
+        + &if w.close_range > 0.0 { format!(" | cramped under {:.2} m", w.close_range) } else { String::new() }
 }
 
 fn noun(kind: Edge) -> &'static str {
@@ -1454,6 +2965,8 @@ fn edge_name(kind: Edge) -> &'static str {
         Edge::DoorBroken => "door (broken)",
         Edge::Arch => "archway",
         Edge::Fence => "fence",
+        Edge::WindowBoarded => "window (boarded up)",
+        Edge::DoorBoarded => "door (boarded up)",
     }
 }
 
@@ -1477,6 +2990,91 @@ fn heat(n: f32) -> char {
         250..=499 => '*',
         _ => '#',
     }
+}
+
+/// The `biomes` tool: where each biome is, and what grows in it.
+fn biomes(world: &World, args: &Value) -> String {
+    use zombye_sim::map::{Feature, Floor};
+    let map = &world.map;
+    let b = &map.biomes;
+    if b.is_empty() {
+        return "This map has no biomes (it wasn't made by the generator).".to_string();
+    }
+    let defs = b.defs();
+    let letter = |i: usize| (b'a' + (i % 26) as u8) as char;
+    let mut out = String::new();
+    if let (Some(x), Some(y)) = (args.get("x").and_then(Value::as_f64), args.get("y").and_then(Value::as_f64)) {
+        let t = IVec2::new(x.floor() as i32, y.floor() as i32);
+        out.push_str(&match b.at(t) {
+            Some(d) => format!("[{}, {}] is {} ({}), clump {:.2} (0 between clumps, 1 inside one).\n\n", t.x, t.y, d.label(), d.id, b.clump(t)),
+            None => format!("[{}, {}] is in town (or off the map): no biome.\n\n", t.x, t.y),
+        });
+    }
+    const STEP: i32 = 8;
+    out.push_str(&format!("{} x {} m, one letter for each {STEP} m square (x east, y south):\n", map.width(), map.height()));
+    let players: Vec<IVec2> = world.players.iter().map(|p| p.state.pos.as_ivec2() / STEP).collect();
+    for cy in 0..(map.height() + STEP - 1) / STEP {
+        let line: String = (0..(map.width() + STEP - 1) / STEP)
+            .map(|cx| {
+                if players.contains(&IVec2::new(cx, cy)) {
+                    return 'P';
+                }
+                b.index_at(IVec2::new(cx * STEP + STEP / 2, cy * STEP + STEP / 2)).map_or('.', letter)
+            })
+            .collect();
+        out.push_str(&line);
+        out.push('\n');
+    }
+    // What stands on each biome's tiles.
+    let mut n = vec![(0u32, 0u32, 0u32, 0u32, 0u32); defs.len()];
+    for y in 0..map.height() {
+        for x in 0..map.width() {
+            let t = IVec2::new(x, y);
+            let Some(i) = b.index_at(t) else { continue };
+            let tile = map.tile(t);
+            n[i].0 += 1;
+            match tile.feature {
+                Feature::Tree => n[i].1 += 1,
+                Feature::PineTree => {
+                    n[i].1 += 1;
+                    n[i].2 += 1;
+                }
+                Feature::Bush => n[i].3 += 1,
+                _ => {}
+            }
+            n[i].4 += (tile.floor == Floor::Dirt) as u32;
+        }
+    }
+    let wild: u32 = n.iter().map(|c| c.0).sum();
+    out.push_str(&format!("\n{wild} m2 of wild ground{}:\n", world.config.biomes.everywhere.as_ref().map(|id| format!(" (everywhere: {id})")).unwrap_or_default()));
+    for (i, d) in defs.iter().enumerate() {
+        let (tiles, trees, conifers, bushes, bare) = n[i];
+        let per = |k: u32| if tiles == 0 { 0.0 } else { k as f32 * 100.0 / tiles as f32 };
+        let t = &d.trees;
+        let kinds: Vec<String> = t.kinds.iter().map(|k| format!("{:?} x{} {}-{} m", k.kind, k.weight, k.height.0, k.height.1)).collect();
+        out.push_str(&format!(
+            "{} {} ({}): {:.1}% of it, {} m2; {} trees ({:.2} per 100 m2, {} conifers), {} bushes ({:.2}), {} bare patches ({:.2})\n    file: thick {} thin {} per 100 m2, clumps {} m over {:.0}% of the ground, spacing {}; {}\n",
+            letter(i),
+            d.label(),
+            d.id,
+            if wild == 0 { 0.0 } else { tiles as f32 * 100.0 / wild as f32 },
+            tiles,
+            trees,
+            per(trees),
+            conifers,
+            bushes,
+            per(bushes),
+            bare,
+            per(bare),
+            t.thick,
+            t.thin,
+            t.clump_m,
+            t.clumped * 100.0,
+            t.spacing,
+            if kinds.is_empty() { "no trees".to_string() } else { kinds.join(", ") },
+        ));
+    }
+    out
 }
 
 /// The `regions` tool: per-region population (actual vs target), attractor pull and zones.
@@ -1545,9 +3143,9 @@ fn regions(world: &World) -> String {
             a.pos.x,
             a.pos.y,
             a.reach,
-            a.felt_radius(world.tick, m.spread_speed),
-            a.strength(world.tick),
-            (a.life_secs - a.age_secs(world.tick)).max(0.0),
+            a.felt_radius(world.far_tick(), m.spread_speed),
+            a.strength(world.far_tick()),
+            (a.life_secs - a.age_secs(world.far_tick())).max(0.0),
         ));
     }
     let mut diff: Vec<(f32, usize)> = (0..actual.len()).map(|k| (actual[k] as f32 - pop.target[k], k)).collect();
@@ -1683,7 +3281,7 @@ fn zombie_detail(world: &World, i: usize) -> String {
     for pl in &world.players {
         let to = pl.state.pos - p;
         let d = to.length();
-        let target = Target { id: pl.id, pos: pl.state.pos, stance: pl.state.stance, moving: pl.input.move_dir.length_squared() > 1e-4, ignored: pl.dev.ignored, sight_mult: world.player_sight_mult(pl.id) };
+        let target = Target { id: pl.id, pos: pl.state.pos, stance: pl.state.stance, moving: pl.input.move_dir.length_squared() > 1e-4, ignored: pl.dev.ignored, sight_mult: world.player_sight_mult(pl.id), lit: if world.lit_at(pl.state.pos) { world.config.power.lit_room_seen } else { 0.0 } };
         let range = senses::sight_range(t, cone, daylight, &target, z.facing[i], to.normalize_or_zero());
         out.push_str(&format!(
             "  P{}: {:.1} m {}, line of sight {}, could be seen out to {:.1} m from here ({:?}{})\n",
@@ -1705,12 +3303,12 @@ fn compass(angle: f32) -> &'static str {
     COMPASS[i].0
 }
 
-fn place(world: &World, p: Vec2) -> String {
+pub fn place(world: &World, p: Vec2) -> String {
     let room = world.map.room_at(p);
     if room == 0 { "outdoors".to_string() } else { world.map.rooms[room as usize].name.clone() }
 }
 
-fn clock(hours: f32) -> String {
+pub fn clock(hours: f32) -> String {
     let h = hours.floor() as u32;
     let m = ((hours - h as f32) * 60.0).floor() as u32;
     format!("{h:02}:{m:02}")
@@ -1718,8 +3316,14 @@ fn clock(hours: f32) -> String {
 
 /// Double-resolution ASCII map: tile (i, j) is at (2i+1, 2j+1), its north edge at (2i+1, 2j) and
 /// its west edge at (2i, 2j+1).
-fn observe(world: &World, centre: Vec2, radius: i32) -> String {
+/// `viewer`: the player whose senses decide which other players and ground items are shown
+/// (#66, the rule a multiplayer server cuts snapshots by); `None` shows everything.
+fn observe(world: &World, centre: Vec2, radius: i32, viewer: Option<u32>) -> String {
     let map = &world.map;
+    // Seen now or a moment ago (before the first tick, by the rule alone).
+    let shown = |id: u32| viewer.is_none_or(|v| world.player_sees(v, id) || world.sees_now(v, id));
+    let eye = viewer.and_then(|v| world.player(v)).map(|p| p.state.pos);
+    let item_shown = |pos: Vec2| eye.is_none_or(|e| zombye_sim::vision::line_of_sight(map, e, pos));
     let c = centre.floor().as_ivec2();
     let n = (radius * 2 + 1) as usize;
     let size = 2 * n + 1;
@@ -1736,6 +3340,7 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
                     Feature::StreetProp => '^',
                     Feature::Tree | Feature::PineTree => 'T',
                     Feature::Bush => '*',
+                    Feature::Stump => 'u',
                     Feature::Furniture => 'f',
                     Feature::None if tile.room != 0 => '_',
                     Feature::None => match tile.floor {
@@ -1769,7 +3374,7 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
             }
         }
     }
-    for it in world.items() {
+    for it in world.items().iter().filter(|it| item_shown(it.pos)) {
         if let Some((x, y)) = to_cell(it.pos) {
             grid[y][x] = if world.item_weapon(it.stack.item).is_some() { 'w' } else { 'i' };
         }
@@ -1803,7 +3408,14 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
     if let Some((x, y)) = world.goal().and_then(|g| to_cell(g.as_vec2() + Vec2::splat(0.5))) {
         grid[y][x] = 'G';
     }
-    for p in &world.players {
+    // Players heard and not seen: where the sound came from.
+    let heard: Vec<zombye_sim::Heard> = viewer.map(|v| world.awareness().heard_lately(v).copied().collect()).unwrap_or_default();
+    for h in &heard {
+        if let Some((x, y)) = to_cell(h.pos) {
+            grid[y][x] = 'h';
+        }
+    }
+    for p in world.players.iter().filter(|p| shown(p.id)) {
         if let Some((x, y)) = to_cell(p.state.pos) {
             grid[y][x] = if p.dead { 'X' } else { 'P' };
         }
@@ -1831,8 +3443,11 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
         out.extend(row);
         out.push('\n');
     }
-    out.push_str("players:\n");
-    for p in &world.players {
+    match viewer {
+        Some(v) => out.push_str(&format!("players (as P{v} sees them; others only in its sight, see `all`):\n")),
+        None => out.push_str("players:\n"),
+    }
+    for p in world.players.iter().filter(|p| shown(p.id)) {
         let s = &p.state;
         out.push_str(&format!(
             "  P{} at ({:.1}, {:.1}) in {}, facing {}, {:?}, {:.0} HP{}, {}, endurance {:.2}{}{}{}; {}{}\n",
@@ -1853,8 +3468,12 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
             world.wielded(p.weapon).name.to_lowercase(),
             s.endurance,
             if s.winded { " (winded)" } else { "" },
-            if map.in_window_opening(s.pos) { ", climbing through a window" } else { "" },
+            format!("{}{}", if map.in_window_opening(s.pos) { ", climbing through a window or over a fence" } else { "" }, p.gesture.map_or(String::new(), |g| format!(", {}", g.kind.doing().to_uppercase())) + &p.restraint.map_or(String::new(), |r| format!(", HANDS TIED{}", if r.struggling { ", STRUGGLING" } else { "" }))),
             match p.action {
+                _ if p.knock.is_some() => {
+                    let k = p.knock.expect("checked");
+                    format!(", {} by a blow ({:.2} s)", if k.down { "KNOCKED DOWN" } else { "staggered" }, k.timer)
+                }
                 Some(a) => format!(", mid-{:?} ({:.2} s to land)", a.kind, a.timer).to_lowercase(),
                 None if p.ready_in > 0.0 => format!(", recovering {:.2} s", p.ready_in),
                 None => String::new(),
@@ -1866,11 +3485,20 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
             }
         ));
     }
+    if !heard.is_empty() {
+        out.push_str("heard, not seen (someone's footsteps, blows, doors):\n");
+        let now = world.awareness().now();
+        for h in heard.iter().rev().take(6) {
+            let from = eye.unwrap_or(centre);
+            out.push_str(&format!("  a sound at ({:.1}, {:.1}), {:.1} m {}, carrying {:.0} m, {:.1} s ago\n", h.pos.x, h.pos.y, h.pos.distance(from), compass((h.pos - from).to_angle()), h.radius, (now - h.at) as f32 * TICK_DT));
+        }
+    }
     let lo_items = origin.as_vec2();
     let hi_items = lo_items + Vec2::splat(n as f32);
     let items: Vec<String> = world
         .items()
         .iter()
+        .filter(|it| item_shown(it.pos))
         .filter(|it| it.pos.x >= lo_items.x && it.pos.y >= lo_items.y && it.pos.x < hi_items.x && it.pos.y < hi_items.y)
         .map(|it| format!("  #{} {} at ({:.1}, {:.1}), {:.1} m away\n", it.id, stack_text(world, &it.stack), it.pos.x, it.pos.y, it.pos.distance(centre)))
         .collect();
@@ -1908,7 +3536,17 @@ fn observe(world: &World, centre: Vec2, radius: i32) -> String {
 /// "Tin of beans x3" or "Baseball bat".
 fn stack_text(world: &World, s: &ItemStack) -> String {
     let name = &world.item_def(s.item).name;
-    if s.count > 1 { format!("{name} x{}", s.count) } else { name.clone() }
+    // A gun or a magazine says what's in it (#72).
+    match world.holds(s.item) {
+        Some(h) => format!("{name} ({} of {} rounds in it)", s.used, h.capacity),
+        // A weapon that wears says how it is holding up (`zombye_sim::wear`).
+        None if world.condition_of(s).is_some() => {
+            let (left, of, state) = world.condition_of(s).expect("checked");
+            format!("{name} ({}, {left} of {of} knocks left)", state.label())
+        }
+        None if s.count > 1 => format!("{name} x{}", s.count),
+        None => name.clone(),
+    }
 }
 
 fn stacks_text(world: &World, stacks: &[ItemStack]) -> String {
@@ -1923,6 +3561,11 @@ fn loot_text(world: &World, room: Option<&str>, container: Option<&str>, n: u32)
         let mut out = format!("{} loot tables (scale {}, rare_scale {}); a container uses the first of (room, container), (any, container), (room, any), (any, any):\n", loot.tables.len(), loot.scale, loot.rare_scale);
         for t in &loot.tables {
             out.push_str(&format!("  {}: empty {:.0}%, rolls {}-{}, {} entries, {} groups\n", t.key(), t.empty * 100.0, t.rolls.0, t.rolls.1, t.entries.len(), t.groups.len()));
+        }
+        let f = &loot.floor;
+        if !f.entries.is_empty() {
+            let things: Vec<String> = f.entries.iter().map(|e| if e.rooms.is_empty() { e.item.clone() } else { format!("{} (x{} in {})", e.item, f.room_bonus, e.rooms.join(", ")) }).collect();
+            out.push_str(&format!("loose on floors when the world begins: {}-{} per building, at least {} in the spawn house: {}\n", f.per_building.0, f.per_building.1, f.spawn_house_min, things.join(", ")));
         }
         out.push_str("ask for one with {room, container} (a container kind or a furniture kind) to see its entries and sample fills");
         return Ok(out);
@@ -1951,10 +3594,10 @@ fn loot_text(world: &World, room: Option<&str>, container: Option<&str>, n: u32)
         loot.rare_scale
     );
     let list = |out: &mut String, entries: &[zombye_sim::loot::LootEntry]| {
-        let weight = |e: &zombye_sim::loot::LootEntry| e.weight * if e.rare { loot.rare_scale } else { 1.0 };
+        let weight = |e: &zombye_sim::loot::LootEntry| e.weight_in(loot);
         let total: f32 = entries.iter().map(weight).sum::<f32>().max(1e-6);
         for e in entries {
-            out.push_str(&format!("    {} | weight {}{} | {:.0}% a pick | count {}-{}\n", e.item, e.weight, if e.rare { " (rare)" } else { "" }, weight(e) / total * 100.0, e.count.0, e.count.1));
+            out.push_str(&format!("    {} | weight {}{} | {:.0}% a pick | count {}-{}\n", e.item, e.weight, if e.tier != zombye_sim::loot::Rarity::Common { format!(" ({})", e.tier.label()) } else if e.rare { " (rare)".into() } else { String::new() }, weight(e) / total * 100.0, e.count.0, e.count.1));
         }
     };
     out.push_str("  entries (item | weight | chance per pick | count):\n");
@@ -1972,7 +3615,7 @@ fn loot_text(world: &World, room: Option<&str>, container: Option<&str>, n: u32)
     let mut seen: std::collections::BTreeMap<u16, (u32, u32)> = std::collections::BTreeMap::new();
     let (mut empty, mut stacks, mut litres, mut kg) = (0u32, 0u32, 0.0f32, 0.0f32);
     for k in 0..n {
-        let got = zombye_sim::loot::fill(world.config.seed(), u32::MAX - k, def, room, loot, items);
+        let got = zombye_sim::loot::fill(world.config.loot_seed(), u32::MAX - k, def, room, loot, items);
         empty += got.is_empty() as u32;
         stacks += got.len() as u32;
         let mut here = std::collections::BTreeSet::new();
@@ -2018,7 +3661,7 @@ fn load_line(world: &World, id: u32) -> String {
 fn item_details(d: &zombye_sim::ItemDef) -> String {
     let mut v = Vec::new();
     if let Some(w) = &d.weapon {
-        v.push(format!("weapon {w}{}", if d.two_handed { ", two-handed" } else { "" }));
+        v.push(format!("weapon {w}{}", if d.both_hands() { ", two-handed" } else if d.two_handed { ", two-handed (one hand will do, weaker)" } else { "" }));
     }
     if let Some(c) = d.consumable() {
         v.push(format!("hunger {:+.2}, thirst {:+.2}, {} goes{}", c.hunger, c.thirst, c.uses, c.spoils_hours.map_or(String::new(), |h| format!(", spoils in {h:.0} h"))));
@@ -2054,6 +3697,24 @@ fn item_details(d: &zombye_sim::ItemDef) -> String {
     v.join("; ")
 }
 
+/// What the tools call each place carried things are kept in (`move_item`'s `to`, and after each
+/// carried stack in `inventory`).
+const POUCH_NAMES: [(zombye_sim::Pouch, &str); 5] = [
+    (zombye_sim::Pouch::Pockets, "pockets"),
+    (zombye_sim::Pouch::Back, "bag_back"),
+    (zombye_sim::Pouch::Shoulder, "bag_shoulder"),
+    (zombye_sim::Pouch::Hand, "bag_hand"),
+    (zombye_sim::Pouch::OffHand, "bag_off_hand"),
+];
+
+fn pouch_arg(name: &str) -> Option<zombye_sim::Pouch> {
+    POUCH_NAMES.iter().find(|(_, n)| *n == name).map(|(p, _)| *p)
+}
+
+fn pouch_name(p: zombye_sim::Pouch) -> &'static str {
+    POUCH_NAMES.iter().find(|(q, _)| *q == p).map_or("pockets", |(_, n)| n)
+}
+
 /// A place named in a tool's arguments; "container" is the one the player has open.
 fn place_arg(world: &World, id: u32, name: &str) -> Result<Place, String> {
     Ok(match name {
@@ -2068,7 +3729,7 @@ fn place_arg(world: &World, id: u32, name: &str) -> Result<Place, String> {
             Some(c) => Place::Container(c),
             None => return Err(format!("player {id} has no container open: search one first")),
         },
-        other => return Err(format!("unknown place {other:?}: carried, hand, off_hand, back, shoulder, worn, container or ground")),
+        other => return Err(format!("unknown place {other:?}: carried, hand, off_hand, back, shoulder, worn, container or ground (and, to put a carried thing in one bag: pockets, bag_back, bag_shoulder, bag_hand, bag_off_hand)")),
     })
 }
 
@@ -2077,6 +3738,212 @@ fn take_notes(world: &mut World, id: u32) -> String {
     let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut world.item_notes).into_iter().partition(|n| n.player == id);
     world.item_notes = rest;
     mine.iter().map(|n| if n.ok { n.text.clone() } else { format!("refused: {}", n.text) }).collect::<Vec<_>>().join("; ")
+}
+
+/// Longest a hold-up tool waits for a player's hands job to end (ticks): the longest job is 3 s.
+const MAX_HANDS_TICKS: u64 = 20 * 5;
+
+/// "tie", "free", "frisk", "take": what a player's hands are doing to another, for `stats`.
+fn hands_name(act: zombye_sim::HandsAct) -> &'static str {
+    match act {
+        zombye_sim::HandsAct::Tie => "tie",
+        zombye_sim::HandsAct::Free => "free",
+        zombye_sim::HandsAct::Frisk => "frisk",
+        zombye_sim::HandsAct::Take => "take",
+    }
+}
+
+/// Start something player `id` does to another survivor with its hands (`start`: tie, free, search,
+/// take) and step the world until that job is over. Returns the player's notes and the ticks it
+/// took; `Err` is why it didn't start.
+fn run_hands(world: &mut World, id: u32, start: impl FnOnce(&mut World) -> Result<(), String>) -> Result<(String, u64), String> {
+    let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+    if p.dead {
+        return Err(format!("player {id} is dead (respawn to play on)"));
+    }
+    take_notes(world, id);
+    let started = start(world);
+    if let Err(why) = started {
+        // The refusal is a note too: the same words.
+        take_notes(world, id);
+        return Err(why);
+    }
+    let begin = world.tick;
+    let mut notes = Vec::new();
+    while world.player(id).is_some_and(|p| p.hands.is_some()) && world.tick - begin < MAX_HANDS_TICKS {
+        world.step();
+        let n = take_notes(world, id);
+        if !n.is_empty() {
+            notes.push(n);
+        }
+    }
+    world.edge_changes.clear();
+    world.combat_events.clear();
+    Ok((notes.join("; "), world.tick - begin))
+}
+
+/// `restrain`, `free` and `search_player`: player `id` does it to `target` (none: the survivor it
+/// faces within reach), the world stepping until it is done or called off.
+fn hands_tool(world: &mut World, id: u32, name: &str, target: Option<u32>) -> Result<String, String> {
+    let target = target.or_else(|| world.faced_player(id));
+    let verb = match name {
+        "restrain" => "tie the hands of",
+        "free" => "free",
+        _ => "search",
+    };
+    let who = target.map_or("anyone".to_string(), |t| format!("P{t}"));
+    // A search that is open already: just what it shows.
+    if let (Some(t), "search_player") = (target, name)
+        && world.player(id).is_some_and(|p| p.frisking == Some(t))
+    {
+        return Ok(frisk_text(world, id, t));
+    }
+    let (notes, ticks) = run_hands(world, id, |w| match name {
+        "restrain" => w.player_restrain(id, target),
+        "free" => w.player_free(id, target),
+        _ => w.player_frisk(id, target),
+    })
+    .map_err(|why| format!("P{id} can't {verb} {who}: {why}"))?;
+    let took = format!("({ticks} ticks, {:.1} s)", ticks as f32 * TICK_DT);
+    let called_off = |what: &str| format!("P{id} didn't {what} {who}: {} {took}", if notes.is_empty() { "called off" } else { notes.as_str() });
+    let (Some(t), Some(them)) = (target, target.and_then(|t| world.player(t))) else { return Err(called_off(verb)) };
+    match name {
+        "restrain" => match them.restraint {
+            Some(r) if !notes.contains("refused: ") => {
+                let cut = world.restraint_is_cut(r.item);
+                Ok(format!("P{id} tied P{t}'s hands ({}) {took}; {}", world.item_def(r.item).name.to_lowercase(), if cut { "it has to be cut off (free, with something that cuts)" } else { "it can be untied (free)" }))
+            }
+            _ => Err(called_off(verb)),
+        },
+        "free" => match them.restraint {
+            None if !notes.contains("refused: ") => Ok(format!("P{id} freed P{t}'s hands {took}: {notes}")),
+            _ => Err(called_off(verb)),
+        },
+        _ if world.player(id).is_some_and(|p| p.frisking == Some(t)) => Ok(format!("P{id} searched P{t} {took}\n{}", frisk_text(world, id, t))),
+        _ => Err(called_off(verb)),
+    }
+}
+
+/// What player `id` sees of the things of `t`, whom it is searching: slots, then worn and carried
+/// stacks by index, as `take_from` names them.
+fn frisk_text(world: &World, id: u32, t: u32) -> String {
+    let Some(them) = world.player(t) else { return format!("no player {t}") };
+    let inv = &them.inventory;
+    let line = |s: &ItemStack| {
+        let d = world.item_def(s.item);
+        format!("{} x {} ({})", s.count, d.id, d.name)
+    };
+    let tied = them.restraint.map_or(String::new(), |r| format!(", hands tied ({})", world.item_def(r.item).name.to_lowercase()));
+    let mut out = format!("P{id} is searching P{t}{tied}; take_from {{from, index, count}} takes a stack:\n");
+    for (name, slot) in [("hand", Slot::Hand), ("off_hand", Slot::OffHand), ("back", Slot::Back), ("shoulder", Slot::Shoulder)] {
+        out.push_str(&format!("{name}: {}\n", inv.slot(slot).map_or("-".to_string(), |s| line(&s))));
+    }
+    for (name, list) in [("worn", &inv.worn), ("carried", &inv.carried)] {
+        if list.is_empty() {
+            out.push_str(&format!("{name}: nothing\n"));
+        }
+        for (k, s) in list.iter().enumerate() {
+            out.push_str(&format!("{name}[{k}] {}\n", line(s)));
+        }
+    }
+    out
+}
+
+/// The `struggle` tool: tied player `id` works at getting out for up to `max_secs`.
+fn struggle_tool(world: &mut World, id: u32, max_secs: f32) -> Result<String, String> {
+    let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+    if p.dead {
+        return Err(format!("player {id} is dead (respawn to play on)"));
+    }
+    let Some(r) = p.restraint else { return Err(format!("P{id}'s hands aren't tied: nothing to struggle out of")) };
+    let name = world.item_def(r.item).name.to_lowercase();
+    let need = world.escape_secs(p).unwrap_or(0.0);
+    take_notes(world, id);
+    world.player_struggle(id, true);
+    let begin = world.tick;
+    let max_ticks = ((max_secs / TICK_DT).ceil() as u64).max(1);
+    let mut events = Events::default();
+    let mut notes = Vec::new();
+    while world.tick - begin < max_ticks {
+        world.step();
+        events.add(world);
+        let n = take_notes(world, id);
+        if !n.is_empty() {
+            notes.push(n);
+        }
+        if !world.player(id).is_some_and(|p| !p.dead && p.restraint.is_some()) {
+            break;
+        }
+    }
+    world.player_struggle(id, false);
+    world.edge_changes.clear();
+    world.combat_events.clear();
+    let secs = (world.tick - begin) as f32 * TICK_DT;
+    let tail = format!("; now tick {}{}", world.tick, events.summary(world));
+    let p = world.player(id).ok_or_else(|| format!("player {id} is gone"))?;
+    if p.dead {
+        return Err(format!("P{id} died with its hands tied after {secs:.1} s{tail}"));
+    }
+    Ok(match p.restraint {
+        None => format!("P{id} got out of the {name} after {secs:.1} s: {}{tail}", notes.join("; ")),
+        Some(r) => format!("P{id} is still tied ({name}) after {secs:.1} s: struggled {:.0} of {need:.0} s (it only counts standing still, awake and on its feet){tail}", r.struggled),
+    })
+}
+
+/// The `group` tool: what player `id` does with its group, then the group as it is.
+fn group_tool(world: &mut World, id: u32, args: &Value) -> Result<String, String> {
+    world.player(id).ok_or_else(|| format!("no player {id}"))?;
+    let num = |k: &str| args.get(k).and_then(Value::as_f64);
+    let target = args.get("target").and_then(Value::as_u64).map(|t| t as u32);
+    let pos = match (num("x"), num("y")) {
+        (Some(x), Some(y)) => Some(Vec2::new(x as f32, y as f32)),
+        _ => None,
+    };
+    let action = args.get("action").and_then(Value::as_str).unwrap_or("show");
+    take_notes(world, id);
+    let did = match action {
+        "show" => Ok(String::new()),
+        "invite" => world.group_invite(id, target).map(|()| {
+            let to = target.or_else(|| world.groups().invites.iter().filter(|i| i.from == id).max_by_key(|i| i.until).map(|i| i.to));
+            format!("P{id} invited {} into its group: it has {:.0} s to accept", to.map_or("them".to_string(), |t| format!("P{t} ({})", world.player_name(t))), world.config.groups.invite_secs)
+        }),
+        "accept" => world.group_accept(id, target).map(|()| format!("P{id} joined the group")),
+        "leave" => world.group_leave(id).map(|()| format!("P{id} left its group")),
+        "mark" => {
+            let pos = pos.ok_or("x and y are required")?;
+            world.group_mark(id, pos).map(|m| format!("P{id} put marker #{m} at ({:.1}, {:.1})", pos.x, pos.y))
+        }
+        "unmark" => {
+            let marker = args.get("marker").and_then(Value::as_u64).map(|m| m as u32);
+            if marker.is_none() && pos.is_none() {
+                return Err("marker (its id), or x and y (the nearest marker within 3 m), is required".into());
+            }
+            if world.group_unmark(id, marker, pos.unwrap_or_default()) { Ok(format!("P{id} took a marker away")) } else { Err("its group has no such marker".to_string()) }
+        }
+        other => return Err(format!("unknown action {other:?}: show, invite, accept, leave, mark or unmark")),
+    };
+    take_notes(world, id);
+    let group = group_text(world, id);
+    match did {
+        Ok(what) if what.is_empty() => Ok(group),
+        Ok(what) => Ok(format!("{what}\n{group}")),
+        Err(why) => Err(format!("P{id} can't {action}: {why}\n{group}")),
+    }
+}
+
+/// Player `id`'s group as it is told of it: members, markers, invitations waiting.
+fn group_text(world: &World, id: u32) -> String {
+    let Some(view) = world.group_view(id) else { return format!("P{id} is in no group and has no invitations") };
+    let names = |list: &[zombye_sim::MemberView]| list.iter().map(|m| format!("P{} ({})", m.id, m.name)).collect::<Vec<_>>().join(", ");
+    let mut out = if view.members.is_empty() { format!("P{id} is in no group") } else { format!("P{id}'s group: {}", names(&view.members)) };
+    if !view.members.is_empty() {
+        let markers: Vec<String> = view.markers.iter().map(|m| format!("#{} at ({:.1}, {:.1}) by P{}", m.id, m.pos.x, m.pos.y, m.by)).collect();
+        out.push_str(&format!("\nmarkers: {}", if markers.is_empty() { "none".to_string() } else { markers.join(", ") }));
+    }
+    if !view.invites.is_empty() {
+        out.push_str(&format!("\ninvited by: {} (group accept)", names(&view.invites)));
+    }
+    out
 }
 
 /// Send an item intent for player `id` and step the world until its queue is empty; then say what
@@ -2100,7 +3967,9 @@ fn run_job(world: &mut World, id: u32, intent: Intent, tail: fn(&World, u32) -> 
     let start = world.tick;
     let mut notes = Vec::new();
     while !world.player(id).expect("exists").jobs.is_empty() && world.tick - start < MAX_JOB_TICKS {
-        world.step();
+        if !benchmark::step(world) {
+            break;
+        }
         let n = take_notes(world, id);
         if !n.is_empty() {
             notes.push(n);
@@ -2114,6 +3983,25 @@ fn run_job(world: &mut World, id: u32, intent: Intent, tail: fn(&World, u32) -> 
 }
 
 /// The `recipes` tool: every recipe in brief.
+fn builds_text(world: &World) -> Result<String, String> {
+    let items = &world.config.items;
+    let mut out = format!("{} builds (materials are used up for each piece, tools kept; Handiwork makes them faster):\n", world.config.builds.len());
+    for d in &world.config.builds {
+        let off = zombye_sim::build::describe(&zombye_sim::BuildDef { inputs: d.remove.returns.clone(), tools: d.remove.tools.clone(), secs: d.remove.secs, ..d.clone() }, items);
+        out.push_str(&format!(
+            "{}: {} [{}] on a {}: {}; {:.0} HP a piece. Comes down a piece at a time: gives back {}\n",
+            d.id,
+            d.name,
+            d.category.label(),
+            d.on.label(),
+            zombye_sim::build::describe(d, items),
+            d.hp,
+            off
+        ));
+    }
+    Ok(out)
+}
+
 fn recipes_text(world: &World) -> Result<String, String> {
     let items = &world.config.items;
     let mut out = format!("{} recipes (inputs are used up, tools kept; Handiwork, when skills come, makes them faster):\n", world.config.recipes.len());
@@ -2153,11 +4041,13 @@ fn craft_tool(world: &mut World, id: u32, recipe: Option<&str>) -> Result<String
     let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
     let items = &world.config.items;
     let Some(name) = recipe else {
+        // What it carries, the floor in reach and the open container, as the server crafts from.
+        let stock = world.players.iter().position(|q| q.id == id).map(|pi| world.craft_stock(pi)).unwrap_or_else(|| p.inventory.clone());
         let (mut can, mut cant) = (Vec::new(), Vec::new());
         for (k, r) in world.config.recipes.iter().enumerate() {
             let secs = world.craft_secs(id, k as u16).unwrap_or(r.secs);
             let line = format!("  {}: {}: {} [{secs:.1} s for you]", r.id, r.name, crafting::describe(r, items));
-            match crafting::check(r, &p.inventory, items) {
+            match crafting::check(r, &stock, items) {
                 Ok(()) => can.push(line),
                 Err(why) => cant.push(format!("{line}\n      {why}")),
             }
@@ -2236,7 +4126,11 @@ fn skills_text(world: &World, id: u32) -> Result<String, String> {
     let t = &world.config.skills;
     let (carry, aid) = (&world.config.carry, &world.config.health.first_aid);
     let levels: Vec<String> = t.levels.iter().map(|n| format!("{n:.0}")).collect();
-    let mut out = format!("player {id}{} skills (levels 1-5 at {} XP in all; practice only, nothing is lost):\n", if p.dead { " (dead)" } else { "" }, levels.join(", "));
+    let mut out = format!("player {id}{} skills (levels 1-{} at {} XP in all; practice only, nothing is lost):\n", if p.dead { " (dead)" } else { "" }, t.top(), levels.join(", "));
+    if (t.xp_scale - 1.0).abs() > 1e-4 || !t.xp_mult.is_empty() {
+        let each: Vec<String> = t.xp_mult.iter().map(|(s, m)| format!("{} x{m}", s.id())).collect();
+        out.push_str(&format!("XP multipliers: all x{}{}{}\n", t.xp_scale, if each.is_empty() { "" } else { ", " }, each.join(", ")));
+    }
     for v in p.skills.view(t) {
         let s = v.skill;
         let next = match v.next_at {
@@ -2245,7 +4139,7 @@ fn skills_text(world: &World, id: u32) -> Result<String, String> {
         };
         out.push_str(&format!("{}: {} {}, {:.0} XP ({next})\n", s.id(), s.name(), v.level, v.xp));
         out.push_str(&format!("  now: {}\n", t.gives(s, v.level, carry, aid)));
-        if v.level < zombye_sim::skills::MAX_LEVEL {
+        if v.level < t.top() {
             out.push_str(&format!("  level {}: {}\n", v.level + 1, t.gives(s, v.level + 1, carry, aid)));
         }
         out.push_str(&format!("  earned by: {}\n", t.earned_by(s)));
@@ -2338,7 +4232,8 @@ fn health_text(world: &World, id: u32) -> Result<String, String> {
     ));
     out.push_str(&format!("\nneeds: {}", needs_line(world, id)));
     for t in world.status_tags(id) {
-        out.push_str(&format!("\n  {}: {}", t.label, t.tip));
+        // The tip is the icon's whole line ("Thirsty: ...").
+        out.push_str(&format!("\n  {} (severity {})", t.tip, t.severity));
     }
     Ok(out)
 }
@@ -2377,6 +4272,12 @@ fn use_preview(world: &World, id: u32, from: Place, index: u32) -> String {
     };
     let Some(s) = s else { return String::new() };
     let def = world.item_def(s.item);
+    // A gun is reloaded, a magazine filled (#72).
+    if let Some(h) = world.holds(s.item) {
+        let ammo = world.item_def(h.ammo);
+        let loose: u32 = p.inventory.carried.iter().filter(|c| c.item == h.ammo).map(|c| c.count as u32).sum();
+        return format!("ahead: {} with {} of {} rounds in it; {loose} loose {} carried (a gun in hand is reloaded: a fuller magazine swapped in, else rounds pushed in one by one; a carried magazine is filled)\n", def.name, s.used, h.capacity, ammo.name.to_lowercase());
+    }
     let Some(c) = def.consumable() else { return String::new() };
     let t = &world.config.needs;
     let mut bits = vec![format!("{}: hunger {:+.0}%, thirst {:+.0}% a go, {} of {} goes left", def.name, -c.hunger * 100.0, -c.thirst * 100.0, c.uses.max(1) - s.used, c.uses.max(1))];
@@ -2408,7 +4309,9 @@ fn sleep_tool(world: &mut World, id: u32, max_hours: f32) -> Result<String, Stri
     let mut events = Events::default();
     let mut why = None;
     while world.game_hours() - from < max_hours as f64 && world.tick - start < MAX_STEP {
-        world.step();
+        if !benchmark::step(world) {
+            break;
+        }
         events.add(world);
         if let Some(&(_, r)) = world.woke.iter().find(|(p, _)| *p == id) {
             why = Some(r);
@@ -2467,12 +4370,14 @@ fn inventory_text(world: &World, id: u32) -> Result<String, String> {
         slot(inv.back),
         slot(inv.shoulder),
         if inv.worn.is_empty() { "-".to_string() } else { stacks_text(world, &inv.worn) },
-        if inv.carried.is_empty() { "-".to_string() } else { stacks_text(world, &inv.carried) },
+        if inv.carried.is_empty() { "-".to_string() } else { inv.carried.iter().enumerate().map(|(k, s)| format!("[{k}] {} (in {})", stack_text(world, s), pouch_name(s.home))).collect::<Vec<_>>().join(", ") },
     );
+    // Each bag has its own room: what is where, and how full.
+    out.push_str(&format!("kept in: {}\n", inv.pouches(&world.config.items, t.pockets_l).into_iter().map(|(p, room, used)| format!("{} {used:.1} of {room:.0} L", pouch_name(p))).collect::<Vec<_>>().join(", ")));
     if let Some(cid) = p.open
         && let Some(site) = world.container(cid)
     {
-        let def = world.container_def(site);
+        let def = world.container_def(&site);
         let stacks = world.container_contents(cid).unwrap_or(&[]);
         let used = zombye_sim::inventory::stacks_volume(&world.config.items, stacks);
         out.push_str(&format!("open: #{cid} {} ({used:.1} of {:.0} L): {}\n", def.name, def.room_l, if stacks.is_empty() { "empty".to_string() } else { stacks_text(world, stacks) }));
@@ -2488,7 +4393,7 @@ fn inventory_text(world: &World, id: u32) -> Result<String, String> {
         if reach.is_empty() {
             "-".to_string()
         } else {
-            reach.iter().map(|&c| format!("#{c} {}{}", world.container_def(world.container(c).expect("exists")).name, if world.container_contents(c).is_some() { " (searched)" } else { "" })).collect::<Vec<_>>().join(", ")
+            reach.iter().map(|&c| format!("#{c} {}{}", world.container_def(&world.container(c).expect("exists")).name, if world.container_contents(c).is_some() { " (searched)" } else { "" })).collect::<Vec<_>>().join(", ")
         }
     ));
     if !p.jobs.is_empty() {
@@ -2508,6 +4413,7 @@ fn edge_char(e: Edge, horizontal: bool, damaged: bool) -> char {
         Edge::DoorOpen => '/',
         Edge::DoorBroken => '#',
         Edge::Fence => '~',
+        Edge::WindowBoarded | Edge::DoorBoarded => 'H',
     }
 }
 
@@ -2555,6 +4461,23 @@ mod tests {
         }
         let inventory = call_tool(&mut world, "inventory", &json!({})).unwrap();
         assert!(inventory.contains("(0.0 of") && !inventory.contains("-0.0"), "{inventory}");
+    }
+
+    /// Each bag has its own room: `inventory` says which one a carried thing is in and how full
+    /// each is, and `move_item` puts it in another.
+    #[test]
+    fn agents_see_and_choose_the_bag() {
+        let mut world = small_world();
+        world.give_kit(1, &[("hiking_pack".to_string(), 1)]);
+        call_tool(&mut world, "equip", &json!({"index": 0})).unwrap();
+        world.give_kit(1, &[("tinned_beans".to_string(), 2)]);
+        let inv = call_tool(&mut world, "inventory", &json!({})).unwrap();
+        assert!(inv.contains("x2 (in pockets)") && inv.contains("kept in: bag_back 0.0 of 50 L, pockets 0.8 of 8 L"), "{inv}");
+        let moved = call_tool(&mut world, "move_item", &json!({"from": "carried", "index": 0, "to": "bag_back", "count": 1})).unwrap();
+        assert!(moved.contains("(in pockets)") && moved.contains("(in bag_back)"), "{moved}");
+        // No bag on the shoulder: nothing goes there.
+        let _ = call_tool(&mut world, "move_item", &json!({"from": "carried", "to": "bag_shoulder"}));
+        assert!(!call_tool(&mut world, "inventory", &json!({})).unwrap().contains("bag_shoulder"));
     }
 
     /// A folder of its own for one test, removed when dropped (pass or fail).
@@ -2624,9 +4547,10 @@ mod tests {
             autosave: None,
             last_save: std::time::Instant::now(),
             dirty: false,
+            benchmark: None,
         };
         let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "screenshot", "arguments": {"width": 640, "height": 360, "angle": 1}}});
-        let response = handle(&mut world, &mut persist, &r, &msg).unwrap();
+        let response = handle(&mut world, &mut persist, &r, Options::default(), &msg).unwrap();
         let content = &response["result"]["content"];
         assert_eq!(response["result"].get("isError"), None, "{response}");
         assert_eq!(content[0]["type"], "image");
@@ -2673,17 +4597,296 @@ mod tests {
 
     /// A session with no `--save` file, saving into `dir`.
     fn session(world: &World, dir: &Path) -> Persist {
-        Persist { path: None, dir: dir.to_path_buf(), content: world.config.clone(), autosave: None, last_save: std::time::Instant::now(), dirty: false }
+        Persist { path: None, dir: dir.to_path_buf(), content: world.config.clone(), autosave: None, last_save: std::time::Instant::now(), dirty: false, benchmark: None }
     }
 
     /// One `tools/call` through the JSON-RPC handler: the text and whether it's a tool error.
     fn call(world: &mut World, persist: &mut Persist, name: &str, args: Value) -> (String, bool) {
         let r = Renderer::new(None, content::default_data_dir(), Duration::from_secs(1));
         let msg = json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": name, "arguments": args}});
-        let response = handle(world, persist, &r, &msg).expect("a response");
+        let response = handle(world, persist, &r, Options::default(), &msg).expect("a response");
         assert_eq!(response["id"], 7);
         let result = &response["result"];
         (result["content"][0]["text"].as_str().expect("text content").to_string(), result.get("isError") == Some(&json!(true)))
+    }
+
+    /// One JSON-RPC request through the handler, with `meta` as its `params._meta` (the 2026-07-28 way of
+    /// saying which protocol version it speaks) when given.
+    fn rpc(world: &mut World, persist: &mut Persist, opts: Options, method: &str, mut params: Value, version: Option<&str>) -> Value {
+        let r = Renderer::new(None, content::default_data_dir(), Duration::from_secs(1));
+        if let Some(v) = version {
+            params["_meta"] = json!({META_VERSION: v, "io.modelcontextprotocol/clientInfo": {"name": "test", "version": "1"}, "io.modelcontextprotocol/clientCapabilities": {}});
+        }
+        let msg = json!({"jsonrpc": "2.0", "id": "r1", "method": method, "params": params});
+        let response = handle(world, persist, &r, opts, &msg).expect("a response");
+        assert_eq!(response["id"], "r1");
+        response
+    }
+
+    fn tool<'a>(list: &'a Value, name: &str) -> &'a Value {
+        list.as_array().unwrap().iter().find(|t| t["name"] == name).unwrap_or_else(|| panic!("no tool {name}"))
+    }
+
+    /// #88: every tool has a title and annotations; the tools that only look say so, and the debug
+    /// tools can be told apart.
+    #[test]
+    fn tools_have_titles_and_annotations() {
+        let list = tool_list(Options::default());
+        let tools = list.as_array().unwrap();
+        // Every definition has a row in TOOLS and every row a definition, once.
+        assert_eq!(tools.len(), TOOLS.len());
+        for (name, _, _) in TOOLS {
+            assert_eq!(tools.iter().filter(|t| t["name"] == name).count(), 1, "{name}");
+        }
+        for t in tools {
+            let name = t["name"].as_str().unwrap();
+            assert!(t["title"].as_str().is_some_and(|s| !s.is_empty()), "{name} has no title");
+            assert_eq!(t["annotations"]["title"], t["title"], "{name}");
+            assert!(t["annotations"]["readOnlyHint"].is_boolean(), "{name}");
+            assert_eq!(t["annotations"]["openWorldHint"], false, "{name}");
+            assert_eq!(t["inputSchema"]["type"], "object", "{name}");
+            if t["annotations"]["readOnlyHint"] == false {
+                assert!(t["annotations"]["destructiveHint"].is_boolean(), "{name}");
+            }
+        }
+        for name in ["observe", "stats", "zombie", "edge", "buildings", "regions", "biomes", "inventory", "health", "skills", "weapons", "items", "loot", "recipes", "mods", "builds", "containers_near", "saves", "heard", "screenshot"] {
+            let t = tool(&list, name);
+            assert_eq!(t["annotations"]["readOnlyHint"], true, "{name}");
+            assert_eq!(t.get("_meta"), None, "{name}");
+        }
+        for name in ["spawn_zombies", "spawn_item", "dev", "wound", "set_needs", "skip_time", "set_goal", "load", "make_noise", "add_player", "pvp", "grid", "restrain_now"] {
+            let t = tool(&list, name);
+            assert!(t["title"].as_str().unwrap().starts_with("Debug: "), "{name}: {}", t["title"]);
+            assert!(t["description"].as_str().unwrap().starts_with("Debug tool, for setting up tests"), "{name}");
+            assert_eq!(t["_meta"][META_DEBUG], true, "{name}");
+            assert_eq!(t["annotations"]["readOnlyHint"], false, "{name}");
+        }
+        for name in ["step_ticks", "move_player", "attack", "search", "use", "treat", "craft", "sleep", "save"] {
+            let t = tool(&list, name);
+            assert_eq!(t["annotations"]["readOnlyHint"], false, "{name}");
+            assert!(!t["title"].as_str().unwrap().starts_with("Debug"), "{name}");
+            assert_eq!(t.get("_meta"), None, "{name}");
+        }
+        // Only what replaces a save or the world is destructive.
+        let destructive: Vec<&str> = tools.iter().filter(|t| t["annotations"]["destructiveHint"] == true).map(|t| t["name"].as_str().unwrap()).collect();
+        assert_eq!(destructive, ["save", "load"]);
+        // The same list, in the same order, every time: clients cache it.
+        assert_eq!(list, tool_list(Options::default()));
+    }
+
+    /// A tool marked read-only really is: clients skip the approval prompt on that promise.
+    #[test]
+    fn read_only_tools_change_nothing() {
+        let dir = scratch("read-only");
+        let mut world = small_world();
+        let container = beside_a_container(&mut world);
+        let mut persist = session(&world, &dir.0);
+        let zombie = world.zombies.id[0];
+        let pos = world.players[0].state.pos;
+        let hash = world.state_hash();
+        let tick = world.tick;
+        let mut called = 0;
+        for (name, _, kind) in TOOLS {
+            // The screenshot's own test checks it (it needs a game client to run).
+            if kind != Kind::Look || name == "screenshot" {
+                continue;
+            }
+            let args = match name {
+                "zombie" => json!({"id": zombie}),
+                "edge" => json!({"x": pos.x as i32, "y": pos.y as i32}),
+                "containers_near" => json!({"radius": 6}),
+                "loot" => json!({"room": "kitchen", "container": "fridge", "n": 20}),
+                _ => json!({}),
+            };
+            let (text, err) = call(&mut world, &mut persist, name, args);
+            assert!(!err, "{name}: {text}");
+            assert_eq!(world.state_hash(), hash, "{name} changed the world");
+            assert_eq!(world.tick, tick, "{name} stepped time");
+            assert!(!persist.dirty, "{name} made the world need saving");
+            called += 1;
+        }
+        assert_eq!(called, 22);
+        // A tool that isn't read-only does make it need saving.
+        let (_, err) = call(&mut world, &mut persist, "search", json!({"container": container}));
+        assert!(!err && persist.dirty);
+    }
+
+    /// The handshake revisions: `initialize` answers with the client's version when we speak it, else
+    /// our newest, with the instructions; results keep the older shape.
+    #[test]
+    fn the_initialize_handshake_still_works() {
+        let dir = scratch("initialize");
+        let mut world = small_world();
+        let mut persist = session(&world, &dir.0);
+        let opts = Options::default();
+        for (asked, answered) in [("2025-06-18", "2025-06-18"), ("2024-11-05", "2024-11-05"), ("2025-11-25", "2025-11-25"), ("2031-01-01", "2025-11-25"), ("2026-07-28", "2025-11-25")] {
+            let r = rpc(&mut world, &mut persist, opts, "initialize", json!({"protocolVersion": asked, "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}), None);
+            let result = &r["result"];
+            assert_eq!(result["protocolVersion"], answered, "asked {asked}");
+            assert_eq!(result["serverInfo"]["name"], "zombye-server");
+            assert_eq!(result["capabilities"], json!({"tools": {}}));
+            assert!(result["instructions"].as_str().unwrap().contains("You are player 1"));
+            assert_eq!(result.get("resultType"), None);
+        }
+        // A notification gets no answer.
+        let r = Renderer::new(None, content::default_data_dir(), Duration::from_secs(1));
+        assert_eq!(handle(&mut world, &mut persist, &r, opts, &json!({"jsonrpc": "2.0", "method": "notifications/initialized"})), None);
+        let list = rpc(&mut world, &mut persist, opts, "tools/list", json!({}), None);
+        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), TOOLS.len());
+        assert_eq!(list["result"].get("resultType"), None);
+        assert_eq!(list["result"].get("ttlMs"), None);
+        assert_eq!(rpc(&mut world, &mut persist, opts, "ping", json!({}), None)["result"], json!({}));
+        let (text, err) = call(&mut world, &mut persist, "observe", json!({}));
+        assert!(!err && text.contains('P'), "{text}");
+        assert_eq!(rpc(&mut world, &mut persist, opts, "resources/list", json!({}), None)["error"]["code"], -32601);
+    }
+
+    /// The 2026-07-28 revision: no handshake. `server/discover` describes the server, and any request
+    /// that names the version in `_meta` is answered at once, in that revision's shape.
+    #[test]
+    fn stateless_requests_and_discovery() {
+        let dir = scratch("stateless");
+        let mut world = small_world();
+        let mut persist = session(&world, &dir.0);
+        let opts = Options::default();
+        // Discovery, as a client probing a server it knows nothing about would send it.
+        let r = rpc(&mut world, &mut persist, opts, "server/discover", json!({}), Some(MODERN_VERSION));
+        let d = &r["result"];
+        assert_eq!(d["resultType"], "complete");
+        assert_eq!(d["supportedVersions"], json!(["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]));
+        assert_eq!(d["capabilities"], json!({"tools": {}}));
+        assert_eq!(d["_meta"][META_SERVER]["name"], "zombye-server");
+        assert_eq!(d["_meta"][META_SERVER]["version"], env!("CARGO_PKG_VERSION"));
+        assert!(d["ttlMs"].as_u64().is_some_and(|ms| ms > 0));
+        assert_eq!(d["cacheScope"], "public");
+        let text = d["instructions"].as_str().unwrap();
+        for part in ["You are player 1", "only moves when a tool steps it", "Look first: call observe", "Debug tools (", "spawn_zombies", "for setting up tests"] {
+            assert!(text.contains(part), "instructions lack {part:?}:\n{text}");
+        }
+        assert!(text.len() < 2200, "the instructions go into every model's context: {} bytes", text.len());
+        // With no _meta at all it still answers (it can only be a modern client asking).
+        let bare = rpc(&mut world, &mut persist, opts, "server/discover", json!({}), None);
+        assert_eq!(bare["result"]["resultType"], "complete");
+
+        // A first request with no handshake before it.
+        let hash = world.state_hash();
+        let r = rpc(&mut world, &mut persist, opts, "tools/list", json!({}), Some(MODERN_VERSION));
+        let list = &r["result"];
+        assert_eq!(list["resultType"], "complete");
+        assert_eq!(list["tools"].as_array().unwrap().len(), TOOLS.len());
+        assert!(list["ttlMs"].as_u64().is_some());
+        assert_eq!(list["cacheScope"], "public");
+        assert_eq!(list["_meta"][META_SERVER]["name"], "zombye-server");
+        let r = rpc(&mut world, &mut persist, opts, "tools/call", json!({"name": "step_ticks", "arguments": {"n": 5}}), Some(MODERN_VERSION));
+        assert_eq!(r["result"]["resultType"], "complete");
+        assert_eq!(r["result"].get("isError"), None);
+        assert!(r["result"]["content"][0]["text"].as_str().unwrap().starts_with("advanced 5 ticks"), "{r}");
+        assert_ne!(world.state_hash(), hash);
+        // A tool's own failure is a result too.
+        let r = rpc(&mut world, &mut persist, opts, "tools/call", json!({"name": "zombie", "arguments": {"id": 999_999}}), Some(MODERN_VERSION));
+        assert_eq!(r["result"]["isError"], true, "{r}");
+        assert_eq!(r["result"]["resultType"], "complete");
+
+        // A version we don't speak: the modern error, with what we do speak; nothing runs.
+        let tick = world.tick;
+        for method in ["server/discover", "tools/call"] {
+            let r = rpc(&mut world, &mut persist, opts, method, json!({"name": "step_ticks", "arguments": {}}), Some("2027-01-01"));
+            assert_eq!(r.get("result"), None);
+            assert_eq!(r["error"]["code"], -32022, "{r}");
+            assert_eq!(r["error"]["data"]["requested"], "2027-01-01");
+            assert_eq!(r["error"]["data"]["supported"][0], "2026-07-28");
+        }
+        assert_eq!(world.tick, tick);
+        // An unknown tool is a protocol error (invalid params), not a tool result.
+        let r = rpc(&mut world, &mut persist, opts, "tools/call", json!({"name": "teleport", "arguments": {}}), Some(MODERN_VERSION));
+        assert_eq!(r["error"]["code"], -32602, "{r}");
+        assert_eq!(r["error"]["message"], "Unknown tool: teleport");
+        // interact's old name is still a tool (`call` wants a tool result, not a protocol error).
+        call(&mut world, &mut persist, "toggle_door", json!({}));
+    }
+
+    /// `stats` is JSON: it comes as `structuredContent` too, fitting the tool's output schema, with the
+    /// same JSON as text for clients that only read that.
+    #[test]
+    fn stats_is_structured() {
+        let dir = scratch("structured");
+        let mut world = small_world();
+        let mut persist = session(&world, &dir.0);
+        let list = tool_list(Options::default());
+        let schema = &tool(&list, "stats")["outputSchema"];
+        assert_eq!(schema["type"], "object");
+        let r = rpc(&mut world, &mut persist, Options::default(), "tools/call", json!({"name": "stats", "arguments": {}}), None);
+        let result = &r["result"];
+        let value = &result["structuredContent"];
+        assert_eq!(&serde_json::from_str::<Value>(result["content"][0]["text"].as_str().unwrap()).unwrap(), value);
+        // Each required key is there, with the type the schema gives it.
+        fn check(schema: &Value, value: &Value, at: &str) {
+            let fits = |ty: &str| match ty {
+                "object" => value.is_object(),
+                "array" => value.is_array(),
+                "string" => value.is_string(),
+                "integer" => value.is_i64() || value.is_u64(),
+                "number" => value.is_number(),
+                "boolean" => value.is_boolean(),
+                "null" => value.is_null(),
+                other => panic!("{at}: type {other}"),
+            };
+            match &schema["type"] {
+                Value::String(ty) => assert!(fits(ty), "{at} should be {ty}: {value}"),
+                Value::Array(types) => assert!(types.iter().any(|ty| fits(ty.as_str().unwrap())), "{at}: {value}"),
+                _ => {}
+            }
+            for key in schema["required"].as_array().into_iter().flatten() {
+                assert!(value.get(key.as_str().unwrap()).is_some(), "{at} lacks {key}");
+            }
+            for (key, sub) in schema["properties"].as_object().into_iter().flatten() {
+                if let Some(v) = value.get(key) {
+                    check(sub, v, &format!("{at}.{key}"));
+                }
+            }
+            if let Some(items) = schema.get("items") {
+                for (i, v) in value.as_array().into_iter().flatten().enumerate() {
+                    check(items, v, &format!("{at}[{i}]"));
+                }
+            }
+        }
+        check(schema, value, "stats");
+        assert_eq!(value["players"].as_array().unwrap().len(), 1);
+        // Tools that answer in prose have neither.
+        assert_eq!(tool(&list, "observe").get("outputSchema"), None);
+        let r = rpc(&mut world, &mut persist, Options::default(), "tools/call", json!({"name": "observe", "arguments": {}}), None);
+        assert_eq!(r["result"].get("structuredContent"), None);
+    }
+
+    /// `--no-debug-tools`: the debug tools aren't listed, can't be called, and the instructions say so.
+    #[test]
+    fn debug_tools_can_be_left_out() {
+        let dir = scratch("no-debug");
+        let mut world = small_world();
+        let mut persist = session(&world, &dir.0);
+        let opts = Options { debug_tools: false, ..Options::default() };
+        let list = tool_list(opts);
+        let names: Vec<&str> = list.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+        let debug: Vec<&str> = TOOLS.iter().filter(|t| t.2 == Kind::Debug).map(|t| t.0).collect();
+        assert_eq!(debug.len(), 16);
+        assert_eq!(names.len(), TOOLS.len() - debug.len());
+        for name in &debug {
+            assert!(!names.contains(name), "{name} is listed");
+            let hash = world.state_hash();
+            let r = rpc(&mut world, &mut persist, opts, "tools/call", json!({"name": name, "arguments": {"count": 5, "x": 60, "y": 60, "hours": 2, "god": true}}), None);
+            assert_eq!(r["error"]["code"], -32602, "{name}: {r}");
+            assert!(r["error"]["message"].as_str().unwrap().contains("without the debug tools"), "{r}");
+            assert_eq!(world.state_hash(), hash, "{name} ran");
+        }
+        assert!(!persist.dirty);
+        for name in ["observe", "step_ticks", "move_player", "attack", "save", "saves", "respawn"] {
+            assert!(names.contains(&name), "{name} is missing");
+        }
+        let r = rpc(&mut world, &mut persist, opts, "server/discover", json!({}), Some(MODERN_VERSION));
+        let text = r["result"]["instructions"].as_str().unwrap();
+        assert!(text.contains("runs without the debug tools") && !text.contains("spawn_zombies") && !text.contains("load"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "step_ticks", json!({"n": 3}));
+        assert!(!err, "{text}");
     }
 
     /// Put player 1 on a free tile beside the spawn house's nearest container. Returns its id.
@@ -2752,6 +4955,447 @@ mod tests {
         assert_eq!(stats["players"][0]["wounds"][0], "gash on the left leg");
     }
 
+    /// With PvP on, `observe` is the player's own view (#66): another player behind its back or
+    /// behind a wall isn't listed or drawn, one in front of it is, and `all` shows everyone.
+    #[test]
+    fn observe_shows_other_players_only_when_seen() {
+        let mut world = small_world();
+        let dir = scratch("observe-senses");
+        let mut persist = session(&world, &dir.0);
+        let at = world.player(1).unwrap().state.pos;
+        // Player 1 faces east; player 2 stands 1 m east of it, player 3 well behind it.
+        let (_, err) = call(&mut world, &mut persist, "add_player", json!({"x": at.x + 1.0, "y": at.y}));
+        assert!(!err);
+        let (_, err) = call(&mut world, &mut persist, "add_player", json!({"x": at.x - 40.0, "y": at.y}));
+        assert!(!err);
+        // PvP off (co-op): everyone.
+        let (text, _) = call(&mut world, &mut persist, "observe", json!({"radius": 30}));
+        assert!(text.contains("P2 at") && text.contains("P3 at"), "{text}");
+        call(&mut world, &mut persist, "pvp", json!({"on": true}));
+        for text in [call(&mut world, &mut persist, "observe", json!({"radius": 30})).0, {
+            call(&mut world, &mut persist, "step_ticks", json!({"n": 5}));
+            call(&mut world, &mut persist, "observe", json!({"radius": 30})).0
+        }] {
+            assert!(text.contains("as P1 sees them") && text.contains("P1 at") && text.contains("P2 at"), "{text}");
+            assert!(!text.contains("P3 at"), "behind player 1: {text}");
+        }
+        let (text, _) = call(&mut world, &mut persist, "observe", json!({"radius": 30, "all": true}));
+        assert!(text.contains("P3 at"), "{text}");
+        // Player 3's own view has neither of the others (40 m off, walls between).
+        let (text, _) = call(&mut world, &mut persist, "observe", json!({"player": 3}));
+        assert!(text.contains("P3 at") && !text.contains("P1 at") && !text.contains("P2 at"), "{text}");
+    }
+
+    /// Guns through the tools (#72): `weapons` lists them, `attack` at a target fires a round and
+    /// says what is left in the gun, an empty one is refused with what to do, `use {from: hand}`
+    /// reloads it, and `inventory` shows the rounds in it.
+    #[test]
+    fn agents_shoot_and_reload() {
+        let mut world = small_world();
+        let dir = scratch("guns");
+        let mut persist = session(&world, &dir.0);
+        let (text, err) = call(&mut world, &mut persist, "weapons", json!({}));
+        assert!(!err && text.contains("pistol: Pistol | 34-46 x1 (x2.6) | 45 m") && text.contains("| 12 pistol_rounds |") && text.contains("shotgun: Shotgun | 16-24 x8"), "{text}");
+        assert!(!text.contains("pistol: Pistol, Firearm"), "guns aren't in the melee table: {text}");
+        let at = world.player(1).unwrap().state.pos;
+        let (_, err) = call(&mut world, &mut persist, "spawn_item", json!({"item": "pistol", "x": at.x, "y": at.y}));
+        assert!(!err);
+        let (text, err) = call(&mut world, &mut persist, "pick_up", json!({}));
+        assert!(!err && text.contains("in hand: pistol"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "inventory", json!({}));
+        assert!(text.contains("hand: Pistol (12 of 12 rounds in it)"), "a gun made now is loaded: {text}");
+        // A zombie a metre in front of it, in the same room.
+        let z = world.add_zombie(at + Vec2::new(1.0, 0.0), 0.0, 0.0);
+        let zid = world.zombies.id[z];
+        let hp = world.zombies.hp[z];
+        let (text, err) = call(&mut world, &mut persist, "attack", json!({"target": zid}));
+        assert!(!err && text.contains("fired the pistol") && text.contains("1 hit, 11 of 12 rounds left in it"), "{text}");
+        assert!(world.zombies.index_of(zid).is_none_or(|z| world.zombies.hp[z] < hp));
+        // The rest of the magazine into the wall, then the gun is empty and says so.
+        for _ in 0..11 {
+            let (text, err) = call(&mut world, &mut persist, "attack", json!({"facing": 4.0, "pitch": 0.3}));
+            assert!(!err, "{text}");
+        }
+        let (text, err) = call(&mut world, &mut persist, "attack", json!({"facing": 4.0}));
+        assert!(err && text.contains("the pistol is empty: reload it with use"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "use", json!({"from": "hand"}));
+        assert!(err && text.contains("no pistol round"), "{text}");
+        call(&mut world, &mut persist, "spawn_item", json!({"item": "pistol_rounds", "count": 5, "x": at.x, "y": at.y}));
+        let (_, err) = call(&mut world, &mut persist, "pick_up", json!({}));
+        assert!(!err);
+        let (text, err) = call(&mut world, &mut persist, "use", json!({"from": "hand"}));
+        assert!(!err && text.contains("ahead: Pistol with 0 of 12 rounds in it; 5 loose pistol round carried") && text.contains("loaded the pistol: 5 of 12"), "{text}");
+        assert!(text.contains("hand: Pistol (5 of 12 rounds in it)") && !text.contains("Pistol round"), "the rounds are in the gun now: {text}");
+    }
+
+    /// Barricades through the tools: `builds` lists the catalog, `build` boards up the window the
+    /// player faces a plank at a time, `edge` says so, and `unbuild` prises a plank off again.
+    #[test]
+    fn agents_board_up_a_window() {
+        let mut world = small_world();
+        let dir = scratch("builds");
+        let mut persist = session(&world, &dir.0);
+        let (text, err) = call(&mut world, &mut persist, "builds", json!({}));
+        assert!(!err && text.contains("board_window: Board up a window [Barricades] on a window") && text.contains("nail"), "{text}");
+        // A window of the player's room, and the player just inside it, facing it.
+        let at = world.player(1).unwrap().state.pos;
+        let room = world.map.tile(at.floor().as_ivec2()).room;
+        let mut found = None;
+        'look: for dy in -12..=12 {
+            for dx in -12..=12 {
+                let t = at.floor().as_ivec2() + IVec2::new(dx, dy);
+                for which in [OwnedEdge::North, OwnedEdge::West] {
+                    let e = EdgeRef::new(t, which);
+                    let other = if which == OwnedEdge::North { t - IVec2::Y } else { t - IVec2::X };
+                    if world.map.owned_edge(t, which) == Edge::Window && (world.map.tile(t).room == room) != (world.map.tile(other).room == room) {
+                        let inside = if world.map.tile(t).room == room { t } else { other };
+                        found = Some((e, inside));
+                        break 'look;
+                    }
+                }
+            }
+        }
+        let (e, inside) = found.expect("the room has a window");
+        let from = inside.as_vec2() + Vec2::splat(0.5);
+        let to = e.mid() - from;
+        world.players[0].state.pos = from;
+        world.players[0].state.facing = to.y.atan2(to.x);
+        let (text, err) = call(&mut world, &mut persist, "build", json!({"build": "board_window"}));
+        assert!(err && text.contains("nail"), "nothing to build with: {text}");
+        assert!(world.give_item(1, "wooden_plank", 2) && world.give_item(1, "nail", 8) && world.give_item(1, "claw_hammer", 1));
+        let (text, err) = call(&mut world, &mut persist, "build", json!({"build": "board_window"}));
+        assert!(!err && text.contains("has 1 plank(s), 60/60 HP"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "build", json!({"build": "board_window"}));
+        assert!(!err && text.contains("has 2 plank(s), 120/120 HP"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "edge", json!({"x": e.tile.x, "y": e.tile.y}));
+        assert!(text.contains("window (boarded up)"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "unbuild", json!({}));
+        assert!(!err && text.contains("has 1 plank(s)"), "{text}");
+    }
+
+    /// World events (events.ron) through the tools: listed with when they're due, made to happen
+    /// now, moved and called off.
+    #[test]
+    fn agents_see_and_drive_world_events() {
+        let mut world = small_world();
+        let dir = scratch("events");
+        let mut persist = session(&world, &dir.0);
+        let (text, err) = call(&mut world, &mut persist, "events", json!({}));
+        assert!(!err && text.contains("water on, grid on") && text.contains("water_off: The water goes off (WaterOff), due day"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "trigger_event", json!({"id": "water_off"}));
+        assert!(!err && text.contains("The water goes off happened: The taps cough") && text.contains("water off, grid on") && text.contains("water_off: The water goes off (WaterOff), happened day"), "{text}");
+        assert!(!world.water_on());
+        let (text, err) = call(&mut world, &mut persist, "trigger_event", json!({"id": "flood"}));
+        assert!(err && text.contains("no event \"flood\" (events: water_off, power_off, water_on, power_on)"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "schedule_event", json!({"id": "power_off", "cancel": true}));
+        assert!(!err && text.contains("power_off: The power goes off (PowerOff), not in this world"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "schedule_event", json!({"id": "power_off", "in_hours": 0}));
+        assert!(!err && text.contains("power_off: The power goes off (PowerOff), due now"), "{text}");
+        call(&mut world, &mut persist, "step_ticks", json!({"n": 20}));
+        assert!(!world.power().grid_on(), "it happened at the next check");
+        call(&mut world, &mut persist, "trigger_event", json!({"id": "water_on"}));
+        assert!(world.water_on());
+    }
+
+    /// Proximity chat through the tools (#67): `say` reaches those in earshot, `heard` lists it for
+    /// each (and nothing for one out of range), with PvP on an unseen speaker is only a voice, and
+    /// `mods` lists what runs (nothing here), checks a mod's folder against the game's data and
+    /// lists a mods folder, saying exactly what is wrong with a mod that doesn't load.
+    #[test]
+    fn agents_check_a_mod() {
+        let mut world = small_world();
+        let dir = scratch("mods");
+        let mut persist = session(&world, &dir.0);
+        let sample = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../mods/alarm_clock");
+        let (text, err) = call(&mut world, &mut persist, "mods", json!({"check": sample.to_string_lossy()}));
+        assert!(!err && text.contains("This world runs no mods.") && text.contains("loads. alarm_clock 1.0: Wind-up alarm clocks (2 items, 1 script)"), "{text}");
+        // A broken one, in a mods folder with the sample turned on.
+        let folder = dir.0.join("mods");
+        let broken = folder.join("broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("mod.ron"), "(id: \"broken\", name: \"Broken\")").unwrap();
+        std::fs::write(broken.join("recipes.ron"), "[(id: \"x\", name: \"X\", secs: 1.0, inputs: [(item: \"no_such_thing\", count: 1)], outputs: [(item: \"rag\", count: 1)])]").unwrap();
+        zombye_mods::folder::write_enabled(&folder, &["broken".to_string()]).unwrap();
+        let (text, err) = call(&mut world, &mut persist, "mods", json!({"check": broken.to_string_lossy()}));
+        assert!(!err && text.contains("doesn't load: mod broken: recipes.ron") && text.contains("no_such_thing"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "mods", json!({"folder": folder.to_string_lossy()}));
+        assert!(!err && text.contains("1 mod, 1 on") && text.contains("- [on, 1] broken: Broken (LEFT OFF: mod broken: recipes.ron"), "{text}");
+        // Played from afar (no saves tools), it reads no folders.
+        let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "mods", "arguments": {"folder": "/"}}});
+        let r = handle(&mut world, &mut persist, &Renderer::new(None, zombye_net::content::default_data_dir(), Duration::from_secs(1)), Options::PLAY_ONLY, &msg).unwrap();
+        assert_eq!(r["result"]["isError"], true, "{r}");
+    }
+
+    /// `gesture` shows in `observe` and `stats`.
+    #[test]
+    fn agents_talk_and_gesture() {
+        let mut world = small_world();
+        let dir = scratch("chat");
+        let mut persist = session(&world, &dir.0);
+        let at = world.player(1).unwrap().state.pos;
+        // Player 1 faces east: player 2 a metre in front of it, 3 far off, 4 five metres behind it.
+        for dx in [1.0, -40.0, -5.0] {
+            let (_, err) = call(&mut world, &mut persist, "add_player", json!({"x": at.x + dx, "y": at.y}));
+            assert!(!err);
+        }
+        call(&mut world, &mut persist, "step_ticks", json!({"n": 5}));
+        let (text, err) = call(&mut world, &mut persist, "heard", json!({}));
+        assert!(!err && text.contains("heard nothing said"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "say", json!({"text": "  Anyone\nthere? "}));
+        assert!(!err && text.contains("P1 says \"Anyone there?\"") && text.contains("P2") && !text.contains("P3"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "say", json!({"text": "again"}));
+        assert!(err && text.contains("already spoke this tick"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "say", json!({"text": "  "}));
+        assert!(err && text.contains("nothing to say"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "say", json!({"text": "la", "volume": "sing"}));
+        assert!(err && text.contains("unknown volume"), "{text}");
+        call(&mut world, &mut persist, "step_ticks", json!({"n": 20}));
+        let (text, err) = call(&mut world, &mut persist, "heard", json!({"player": 2}));
+        assert!(!err && text.contains("1.0 s ago, P1 said from") && text.contains("\"Anyone there?\"") && text.contains("1 m w:"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "heard", json!({"player": 1}));
+        assert!(text.contains("you said: \"Anyone there?\""), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "heard", json!({"player": 3}));
+        assert!(text.contains("P3 heard nothing said"), "40 m off: {text}");
+        let (text, _) = call(&mut world, &mut persist, "heard", json!({"player": 2, "secs": 0.5}));
+        assert!(text.contains("heard nothing said in the last"), "{text}");
+
+        // With PvP on, a shout from behind player 1's back is a voice, not a player.
+        call(&mut world, &mut persist, "pvp", json!({"on": true}));
+        call(&mut world, &mut persist, "step_ticks", json!({"n": 30}));
+        let (text, err) = call(&mut world, &mut persist, "say", json!({"player": 4, "text": "Drop it!", "volume": "shout"}));
+        assert!(!err && text.contains("P4 shouts \"Drop it!\"") && !text.contains("heard by"), "who is in earshot isn't told with PvP on: {text}");
+        let (text, _) = call(&mut world, &mut persist, "heard", json!({"player": 1}));
+        assert!(text.contains("a voice shouted") && text.contains("\"Drop it!\"") && !text.contains("P4"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "heard", json!({"player": 4}));
+        assert!(text.contains("you shouted: \"Drop it!\""), "{text}");
+
+        // Gestures.
+        let (text, err) = call(&mut world, &mut persist, "gesture", json!({"player": 2, "gesture": "hands_up"}));
+        assert!(!err && text.contains("P2 is hands up until"), "{text}");
+        call(&mut world, &mut persist, "step_ticks", json!({"n": 100}));
+        let (text, _) = call(&mut world, &mut persist, "observe", json!({}));
+        assert!(text.contains("HANDS UP"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "stats", json!({}));
+        let stats: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(stats["players"][1]["gesture"], "hands_up");
+        assert_eq!(stats["players"][0]["gesture"], Value::Null);
+        let (text, err) = call(&mut world, &mut persist, "gesture", json!({"player": 2, "gesture": "hands_up"}));
+        assert!(!err && text.contains("lowered its hands"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "gesture", json!({"gesture": "wave"}));
+        assert!(!err && text.contains("P1 is waving for 2.5 s"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "gesture", json!({"gesture": "dance"}));
+        assert!(err && text.contains("unknown gesture"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "gesture", json!({"gesture": "none"}));
+        assert!(!err && text.contains("makes no gesture"), "{text}");
+    }
+
+    /// Hold-ups and groups through the tools (#73): `restrain` ties a survivor with its hands up,
+    /// `search_player` lists its things and `take_from` takes them, `free` cuts a cable tie off only
+    /// with something that cuts, `struggle` gets a tied player out in time, and `group` invites,
+    /// accepts, marks and leaves. `stats` and `observe` show who is tied.
+    #[test]
+    fn agents_hold_up_search_and_group() {
+        let mut world = small_world();
+        let dir = scratch("holdup");
+        let mut persist = session(&world, &dir.0);
+        let at = world.player(1).unwrap().state.pos;
+        // Player 1 faces east: player 2 a metre in front of it. Zombies stay out of it.
+        let (_, err) = call(&mut world, &mut persist, "add_player", json!({"x": at.x + 1.0, "y": at.y}));
+        assert!(!err);
+        for player in [1, 2] {
+            call(&mut world, &mut persist, "dev", json!({"player": player, "god": true, "ignored": true}));
+        }
+        call(&mut world, &mut persist, "step_ticks", json!({"n": 5}));
+        assert!(world.give_item(1, "cable_tie", 2) && world.give_item(2, "tinned_beans", 2));
+        let stats = |world: &mut World, persist: &mut Persist| -> Value { serde_json::from_str(&call(world, persist, "stats", json!({})).0).unwrap() };
+
+        // Nobody is tied against their will in co-op: hands up first.
+        let (text, err) = call(&mut world, &mut persist, "restrain", json!({}));
+        assert!(err && text.contains("P1 can't tie the hands of P2") && text.contains("hands up"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "search_player", json!({"target": 2}));
+        assert!(err && text.contains("hands are tied"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "take_from", json!({}));
+        assert!(err && text.contains("isn't searching anyone"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "struggle", json!({"player": 2}));
+        assert!(err && text.contains("aren't tied"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "gesture", json!({"player": 2, "gesture": "hands_up"}));
+        assert!(!err, "{text}");
+        let tick = world.tick;
+        let (text, err) = call(&mut world, &mut persist, "restrain", json!({}));
+        assert!(!err && text.contains("P1 tied P2's hands (cable tie)"), "{text}");
+        assert!((60..=61).contains(&(world.tick - tick)), "tying takes 3 s: {} ticks", world.tick - tick);
+        let s = stats(&mut world, &mut persist);
+        assert_eq!(s["players"][1]["restrained"], "cable_tie");
+        assert_eq!(s["players"][1]["struggling"], false);
+        assert_eq!(s["players"][0]["restrained"], Value::Null);
+        assert_eq!(s["players"][0]["hands"], Value::Null);
+        assert_eq!(s["players"][0]["searching"], Value::Null);
+        assert_eq!(s["players"][0]["group"], Value::Null);
+        let (text, _) = call(&mut world, &mut persist, "observe", json!({}));
+        assert!(text.contains("HANDS TIED") && !text.contains("STRUGGLING"), "{text}");
+
+        // Searching the tied survivor, and taking what it has.
+        let (text, err) = call(&mut world, &mut persist, "search_player", json!({}));
+        assert!(!err && text.contains("P1 searched P2") && text.contains("carried[0] 2 x tinned_beans (Tin of beans)") && text.contains("hand: -"), "{text}");
+        assert_eq!(stats(&mut world, &mut persist)["players"][0]["searching"], 2);
+        let tick = world.tick;
+        let (again, err) = call(&mut world, &mut persist, "search_player", json!({"target": 2}));
+        assert!(!err && again.contains("carried[0] 2 x tinned_beans") && world.tick == tick, "an open search is only listed: {again}");
+        let (text, err) = call(&mut world, &mut persist, "take_from", json!({"from": "worn", "index": 9}));
+        assert!(err && text.contains("has nothing at worn 9"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "take_from", json!({"count": 1}));
+        assert!(!err && text.contains("Took their tin of beans") && text.contains("P1 now has 1 x tinned_beans (Tin of beans), P2 1"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "take_from", json!({"from": "carried", "index": 0}));
+        assert!(!err && text.contains("Took their") && text.contains("P1 now has 2 x tinned_beans"), "{text}");
+        assert!(world.player(2).unwrap().inventory.carried.is_empty());
+
+        // A cable tie has to be cut off.
+        let (text, err) = call(&mut world, &mut persist, "free", json!({}));
+        assert!(err && text.contains("P1 can't free P2") && text.contains("cuts"), "{text}");
+        assert!(world.give_item(1, "scissors", 1));
+        let (text, err) = call(&mut world, &mut persist, "free", json!({"target": 2}));
+        assert!(!err && text.contains("P1 freed P2's hands"), "{text}");
+        assert_eq!(stats(&mut world, &mut persist)["players"][1]["restrained"], Value::Null);
+        call(&mut world, &mut persist, "step_ticks", json!({"n": 1}));
+        assert_eq!(stats(&mut world, &mut persist)["players"][0]["searching"], Value::Null, "the search shuts once the tie is cut");
+
+        // Tied at once (debug), it struggles out: 90 s for a cable tie, what it did before counting.
+        let (text, err) = call(&mut world, &mut persist, "restrain_now", json!({"player": 2, "item": "tinned_beans"}));
+        assert!(err && text.contains("doesn't tie hands"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "restrain_now", json!({"player": 2, "by": 1}));
+        assert!(!err && text.contains("P2's hands are tied (cable tie), as if by P1: 90 s"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "struggle", json!({"player": 2, "max_secs": 5}));
+        assert!(!err && text.contains("P2 is still tied (cable tie) after 5.0 s: struggled 5 of 90 s"), "{text}");
+        assert_eq!(stats(&mut world, &mut persist)["players"][1]["struggling"], false, "it stops when the tool returns");
+        let (text, err) = call(&mut world, &mut persist, "struggle", json!({"player": 2, "max_secs": 200}));
+        assert!(!err && text.contains("P2 got out of the cable tie after 85") && text.contains("your hands are free"), "{text}");
+        assert!(world.player(2).unwrap().restraint.is_none());
+
+        // A group: invited, accepted, a marker shared, left.
+        let (text, err) = call(&mut world, &mut persist, "group", json!({}));
+        assert!(!err && text.contains("P1 is in no group"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "group", json!({"action": "mark", "x": at.x, "y": at.y}));
+        assert!(err && text.contains("aren't in one"), "{text}");
+        let tick = world.tick;
+        let (text, err) = call(&mut world, &mut persist, "group", json!({"action": "invite"}));
+        assert!(!err && text.contains("P1 invited P2 (Survivor 2)"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "group", json!({"player": 2}));
+        assert!(!err && text.contains("invited by: P1 (Survivor 1)"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "group", json!({"player": 2, "action": "accept"}));
+        assert!(!err && text.contains("P2 joined the group") && text.contains("P2's group: P1 (Survivor 1), P2 (Survivor 2)") && text.contains("markers: none"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "group", json!({"action": "mark", "x": at.x + 3.0, "y": at.y}));
+        assert!(!err && text.contains("put marker #1 at"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "group", json!({"player": 2, "action": "show"}));
+        assert!(!err && text.contains("#1 at") && text.contains("by P1"), "{text}");
+        assert_eq!(stats(&mut world, &mut persist)["players"][1]["group"], json!([1, 2]));
+        let (text, err) = call(&mut world, &mut persist, "group", json!({"player": 2, "action": "unmark", "x": at.x + 4.0, "y": at.y}));
+        assert!(!err && text.contains("took a marker away") && text.contains("markers: none"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "group", json!({"action": "unmark", "marker": 1}));
+        assert!(err && text.contains("no such marker"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "group", json!({"action": "dance"}));
+        assert!(err && text.contains("unknown action"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "group", json!({"action": "leave"}));
+        assert!(!err && text.contains("P1 left its group") && text.contains("P1 is in no group"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "group", json!({"player": 2}));
+        assert!(text.contains("P2 is in no group"), "one member alone is no group: {text}");
+        assert_eq!(world.tick, tick, "the group tool doesn't step time");
+    }
+
+    /// The light switch and the grid through the tools: on, off, no power, outdoors.
+    #[test]
+    fn light_and_grid_tools() {
+        let mut world = small_world();
+        let dir = scratch("light");
+        let mut persist = session(&world, &dir.0);
+        let room = world.map.room_at(world.player(1).unwrap().state.pos);
+        let spot = world.power().spot(room).unwrap();
+        world.players[0].state.pos = spot.pos + spot.normal * 3.0;
+        if world.map.room_at(world.players[0].state.pos) == room {
+            let (text, err) = call(&mut world, &mut persist, "light", json!({"on": true}));
+            assert!(err && text.contains("m away"), "{text}");
+        }
+        world.players[0].state.pos = spot.pos + spot.normal * 0.4;
+        let (text, err) = call(&mut world, &mut persist, "light", json!({"on": true}));
+        assert!(!err && text.contains("switch on, lit, the building has power"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "grid", json!({"on": false}));
+        assert!(!err && text.contains("grid off; 0 rooms lit"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "light", json!({}));
+        assert!(!err && text.contains("Nothing: no power") && text.contains("switch on, dark, no power"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "grid", json!({"on": true}));
+        assert!(text.contains("grid on") && !text.contains("; 0 rooms lit"), "{text}");
+    }
+
+    /// PvP through the tools: off, a swing at another player hits nothing; `pvp {on: true}` and the
+    /// same swing wounds it, `attack`'s reply says how, `observe` and `stats` show a knocked player,
+    /// and a death names the survivor's weapon.
+    #[test]
+    fn pvp_tools_report_player_hits() {
+        let mut world = small_world();
+        let dir = scratch("pvp");
+        let mut persist = session(&world, &dir.0);
+        let at = world.player(1).unwrap().state.pos;
+        let (text, err) = call(&mut world, &mut persist, "add_player", json!({"x": at.x + 0.8, "y": at.y}));
+        assert!(!err && text.contains("player 2 joined"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "pvp", json!({}));
+        assert!(!err && text.contains("pvp off"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "attack", json!({"target_player": 2}));
+        assert!(!err && text.contains("nothing hit") && !text.contains("PLAYER HITS"), "{text}");
+        assert_eq!(world.player(2).unwrap().hp, 100.0);
+
+        let (text, err) = call(&mut world, &mut persist, "pvp", json!({"on": true}));
+        assert!(!err && text.contains("pvp on"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "attack", json!({"target_player": 2}));
+        assert!(!err && text.contains("1 hit") && text.contains("PLAYER HITS: P1 hit P2 for ") && text.contains("a bruise on the "), "{text}");
+        assert!(world.player(2).unwrap().hp < 100.0);
+        let (text, err) = call(&mut world, &mut persist, "attack", json!({"target_player": 99}));
+        assert!(err && text.contains("no player 99"), "{text}");
+
+        // Shove until it goes down (seeded: a quarter of shoves or so), then observe and stats say so.
+        let mut down = false;
+        for _ in 0..40 {
+            let back = world.player(1).unwrap().state.pos + Vec2::new(0.8, 0.0);
+            let pi = world.players.iter().position(|p| p.id == 2).unwrap();
+            world.players[pi].state.pos = back;
+            let (text, err) = call(&mut world, &mut persist, "shove", json!({"target_player": 2}));
+            assert!(!err && text.contains("P1 shoved P2") && (text.contains(", staggered") || text.contains(", KNOCKED DOWN")), "{text}");
+            if text.contains("KNOCKED DOWN") && world.player(2).unwrap().knock.is_some() {
+                down = true;
+                break;
+            }
+        }
+        assert!(down, "40 shoves never floored player 2");
+        let (text, _) = call(&mut world, &mut persist, "observe", json!({}));
+        assert!(text.contains("KNOCKED DOWN by a blow"), "{text}");
+        let (text, _) = call(&mut world, &mut persist, "stats", json!({}));
+        let stats: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(stats["pvp"], true);
+        assert_eq!(stats["players"][1]["knocked"], "down");
+
+        // Beaten to death with a crowbar: the reply, stats and the killer's run say so.
+        assert!(world.hold_item(1, zombye_sim::Slot::Hand, "crowbar"));
+        let mut died = String::new();
+        for _ in 0..40 {
+            let back = world.player(1).unwrap().state.pos + Vec2::new(0.8, 0.0);
+            let pi = world.players.iter().position(|p| p.id == 2).unwrap();
+            world.players[pi].state.pos = back;
+            world.players[pi].knock = None;
+            world.players[0].state.endurance = 1.0;
+            let (text, err) = call(&mut world, &mut persist, "attack", json!({"target_player": 2}));
+            assert!(!err, "{text}");
+            if text.contains("P2 DIED") {
+                died = text;
+                break;
+            }
+        }
+        assert!(died.contains("KILLED") && died.contains("P2 DIED: Killed by a survivor with a crowbar: "), "{died}");
+        let (text, _) = call(&mut world, &mut persist, "stats", json!({}));
+        let stats: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(stats["players"][0]["run"]["player_kills"], 1);
+        assert_eq!(stats["players"][0]["run"]["kills"], 0);
+        assert_eq!(stats["players"][1]["run"]["death"]["cause"], "survivor");
+        assert!(stats["players"][1]["cause_of_death"].as_str().unwrap().starts_with("Killed by a survivor with a crowbar"), "{}", stats["players"][1]);
+    }
+
     /// `stats` carries each player's run (#13); dying says how, in `skip_time`'s and `step_ticks`'
     /// replies and in `stats`; `respawn` starts a new run.
     #[test]
@@ -2766,6 +5410,11 @@ mod tests {
         let run = &stats["players"][0]["run"];
         assert!(run["seconds"].as_f64().unwrap() >= 1.0 && run["death"].is_null(), "{run}");
         assert!(stats["players"][0]["cause_of_death"].is_null());
+        // The first night (#19): by day, five objectives, none done, no outcome yet.
+        let night = &stats["players"][0]["first_night"];
+        assert_eq!((night["phase"].as_str(), night["dark_at"].as_str(), night["dawn_at"].as_str()), (Some("day"), Some("20:00"), Some("06:00")), "{night}");
+        assert_eq!(night["objectives"].as_array().map(|o| o.len()), Some(5));
+        assert!(night["objectives"][4]["done"] == false && night["outcome"].is_null(), "{night}");
         world.config.infection.mode = zombye_sim::InfectionMode::Off;
         for part in ["torso", "left_leg", "right_arm"] {
             let (text, err) = call(&mut world, &mut persist, "wound", json!({"part": part, "kind": "gash", "infected": false}));
@@ -2883,23 +5532,23 @@ mod tests {
         let hash = world.state_hash();
         let (text, err) = call(&mut world, &mut persist, "skills", json!({}));
         assert!(!err && text.starts_with("player 1 skills"), "{text}");
-        assert!(text.contains("fitness: Fitness 1, 100 XP (level 2 at 250 XP, 150 to go)"), "{text}");
+        assert!(text.contains("fitness: Fitness 2, 225 XP (level 3 at 450 XP, 225 to go)"), "{text}");
         assert!(text.contains("  now: endurance drains 6% slower and recovers 6% faster"), "{text}");
-        assert!(text.contains("  level 2: carry limit 17.0 kg"), "{text}");
-        assert!(text.contains("edged: Edged 0, 0 XP") && text.contains("  now: nothing yet") && text.contains("knives and axes: damage +6%"), "{text}");
+        assert!(text.contains("  level 3: carry limit 16."), "{text}");
+        assert!(text.contains("edged: Edged 0, 0 XP") && text.contains("  now: nothing yet") && text.contains("knives and axes: damage +3%"), "{text}");
         assert!(text.contains("handiwork: Handiwork 0") && text.contains("earned by: each thing crafted (5 XP)"), "{text}");
         assert_eq!(world.state_hash(), hash);
         assert!(!persist.dirty, "read-only");
         assert!(call(&mut world, &mut persist, "skills", json!({"player": 9})).1);
-        world.award_xp(0, zombye_sim::Skill::FirstAid, 1600.0);
+        world.award_xp(0, zombye_sim::Skill::FirstAid, 6000.0);
         let (text, _) = call(&mut world, &mut persist, "skills", json!({}));
-        assert!(text.contains("first_aid: First Aid 5, 1500 XP (the top level)") && text.contains("stitching hurts half as much"), "{text}");
+        assert!(text.contains("first_aid: First Aid 10, 5400 XP (the top level)") && text.contains("stitching hurts half as much"), "{text}");
         let (text, _) = call(&mut world, &mut persist, "stats", json!({}));
         let stats: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(stats["players"][0]["skills"]["first_aid"], 5);
-        assert_eq!(stats["players"][0]["skills"]["strength"], 1);
+        assert_eq!(stats["players"][0]["skills"]["first_aid"], 10);
+        assert_eq!(stats["players"][0]["skills"]["strength"], 2);
         let (text, _) = call(&mut world, &mut persist, "step_ticks", json!({"n": 1}));
-        assert!(text.contains("LEVEL UP: P1 First Aid 5"), "{text}");
+        assert!(text.contains("LEVEL UP: P1 First Aid 10"), "{text}");
     }
 
     #[test]
@@ -3084,4 +5733,16 @@ mod tests {
         let (text, err) = call(&mut world, &mut persist, "step_ticks", json!({"n": 20}));
         assert!(!err, "{text}");
     }
+}
+
+/// The world's calendar for `stats`.
+fn date_json(world: &World) -> serde_json::Value {
+    let d = world.date();
+    json!({"year": d.year, "month": d.month, "month_name": world.month_name(), "day": d.day, "season": d.season().id(), "day_number": d.day_number})
+}
+
+/// The weather outdoors for `stats`.
+fn weather_json(world: &World) -> serde_json::Value {
+    let w = world.weather();
+    json!({"kind": w.kind.id(), "intensity": w.intensity, "cloud": w.cloud, "wind": w.wind, "temp_c": w.temp_c, "forced": w.forced})
 }

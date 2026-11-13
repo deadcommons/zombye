@@ -10,3 +10,12 @@ repository.workspace = true
 zombye-sim.workspace = true
 serde.workspace = true
 glam.workspace = true
+# The wire encoding of multiplayer messages, as for save files (already in the tree through sim).
+postcard.workspace = true
+# The server browser's list (#27) is RON like the rest of the game's data (already in the tree through sim).
+ron.workspace = true
+# Player identity (DCM-66): an Ed25519 key per install signs the server's challenge on joining,
+# so survivors and bans belong to a key rather than a name. Pure Rust (BSD-3-Clause / MIT OR Apache-2.0).
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "fast"] }
+# Fresh keys and challenges from the operating system (MIT OR Apache-2.0; already in the tree).
+getrandom = "0.3"

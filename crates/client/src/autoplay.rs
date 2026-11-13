@@ -5,16 +5,19 @@
 //!
 //! Each tick it picks the nearest zombie still standing, turns to it and closes in (running when far
 //! and rested). In reach it swings; crowded by two or more it alternates shoves and swings; a
-//! downed zombie at its feet gets stomped. Dead, it gets up again after a few seconds.
+//! downed zombie gets stomped on the head. Dead, it gets up again after a few seconds. Holding a
+//! gun (#72) it stands off instead and shoots the nearest it has a clear line to, reloading when
+//! the gun is empty.
 
 use bevy::prelude::*;
 use zombye_net::Intent;
 use zombye_sim::ai::ZOMBIE_RADIUS;
-use zombye_sim::{TICK_DT, ZombieAnim};
+use zombye_sim::ranged::{MUZZLE_HEIGHT, flight};
+use zombye_sim::{ActionKind, JobKind, Place, Slot, TICK_DT, ZombieAnim};
 
 use crate::Options;
 use crate::player::{LocalPlayer, PlayerInputSet};
-use crate::server_link::{JoinInfo, ServerLink};
+use crate::server_link::{ClientMap, JoinInfo, ServerLink};
 
 /// Movement chosen by autoplay for this tick; the player's input system uses it when `active`.
 #[derive(Resource, Default)]
@@ -22,6 +25,8 @@ pub struct AutoInput {
     pub active: bool,
     pub move_dir: Vec2,
     pub run: bool,
+    /// It aims (and faces its aim) too: `--autoplay`. A `--walk` only walks, facing the way it goes.
+    pub aim: bool,
 }
 
 /// Ignore zombies farther than this.
@@ -34,10 +39,113 @@ pub struct AutoplayPlugin;
 impl Plugin for AutoplayPlugin {
     fn build(&self, app: &mut App) {
         let active = app.world().resource::<Options>().autoplay;
-        app.insert_resource(AutoInput { active, ..default() });
+        let walking = !active && !app.world().resource::<Options>().walk.is_empty();
+        app.insert_resource(AutoInput { active: active || walking, aim: active, ..default() });
         if active {
             app.add_systems(FixedUpdate, autoplay.before(PlayerInputSet));
+            if app.world().resource::<Options>().weapons_demo {
+                app.add_systems(FixedUpdate, weapons_demo.before(autoplay));
+            }
+        } else if walking {
+            app.add_systems(FixedUpdate, walk.before(PlayerInputSet));
         }
+    }
+}
+
+/// `--walk X,Y;X,Y;...`: the local player walks from point to point by itself and then stands,
+/// opening a shut door its next step leads through (as F does) and climbing a fence or open window
+/// in its way (as E does), for recordings of things seen while moving (the cutaways as you leave a
+/// house and go round it). Only the normal movement input, `Intent::Interact` and `Intent::Climb`.
+/// Lay the points so each door, fence and window is crossed square on.
+fn walk(options: Res<Options>, mut link: ResMut<ServerLink>, me: Res<LocalPlayer>, mut auto: ResMut<AutoInput>, map: Res<ClientMap>, join: Res<JoinInfo>, mut next: Local<usize>, mut door_wait: Local<f32>) {
+    auto.move_dir = Vec2::ZERO;
+    auto.run = false;
+    *door_wait = (*door_wait - TICK_DT).max(0.0);
+    let pos = me.curr.pos;
+    while options.walk.get(*next).is_some_and(|p| p.distance(pos) < 0.25) {
+        *next += 1;
+    }
+    let Some(to) = options.walk.get(*next) else { return };
+    let dir = (*to - pos).normalize_or_zero();
+    auto.move_dir = dir;
+    // A shut door between this tile and the one the next step is in: open it.
+    let (a, b) = (pos.floor().as_ivec2(), (pos + dir * 0.9).floor().as_ivec2());
+    let side = match (b - a).to_array() {
+        [1, 0] => Some(zombye_sim::map::Side::E),
+        [-1, 0] => Some(zombye_sim::map::Side::W),
+        [0, 1] => Some(zombye_sim::map::Side::S),
+        [0, -1] => Some(zombye_sim::map::Side::N),
+        _ => None,
+    };
+    if *door_wait == 0.0 && side.is_some_and(|s| map.0.edge(a, s) == zombye_sim::map::Edge::DoorClosed) {
+        link.send(Intent::Interact { player: me.id });
+        *door_wait = 0.8;
+    }
+    // A fence or open window right ahead, the way it's going: climb it.
+    if *door_wait == 0.0 && me.curr.climb.is_none() && zombye_sim::players::climb_from(&map.0, pos, dir.to_angle(), &join.climb).is_some_and(|c| c.dir.dot(dir) > 0.7) {
+        link.send(Intent::Climb { player: me.id });
+        *door_wait = 0.3;
+    }
+}
+
+/// Seconds each weapon of `--weapons-demo` is fought with.
+const WEAPON_SECS: f32 = 9.0;
+/// The demo keeps at least this many zombies standing within `DEMO_NEAR` of the player.
+const DEMO_FOES: usize = 3;
+const DEMO_NEAR: f32 = 14.0;
+
+/// What `--weapons-demo` fights with, in order: bare hands, then every weapon the game has that is
+/// an item, melee before guns. `None` is bare hands.
+fn demo_weapons(join: &JoinInfo) -> Vec<Option<usize>> {
+    let weapon_of = |i: &zombye_sim::items::ItemDef| join.weapons.iter().find(|w| Some(&w.id) == i.weapon.as_ref());
+    let mut list: Vec<(bool, usize)> = join.items.iter().enumerate().filter_map(|(k, i)| weapon_of(i).filter(|w| w.length > 0.0).map(|w| (w.ranged.is_some(), k))).collect();
+    list.sort_by_key(|(gun, _)| *gun);
+    std::iter::once(None).chain(list.into_iter().map(|(_, k)| Some(k))).collect()
+}
+
+/// `--weapons-demo`: every `WEAPON_SECS` the next weapon is put on the floor at the player's feet and
+/// taken in hand (the debug `SpawnItem`, then the move the inventory panel sends), round and round,
+/// and zombies are called in while fewer than `DEMO_FOES` are about. `--autoplay` does the fighting.
+fn weapons_demo(join: Res<JoinInfo>, mut link: ResMut<ServerLink>, me: Res<LocalPlayer>, mut notice: ResMut<crate::saving::Notice>, time: Res<Time<Virtual>>, mut next: Local<usize>, mut wait: Local<f32>, mut taking: Local<Option<usize>>, mut foes_wait: Local<f32>) {
+    if me.dead {
+        return;
+    }
+    let pos = me.curr.pos;
+    *wait -= TICK_DT;
+    *foes_wait -= TICK_DT;
+    // The weapon asked for last tick lies at our feet by now: into the hand.
+    if let Some(item) = *taking {
+        let found = link.curr.items.iter().filter(|g| g.stack.item as usize == item && g.pos.distance(pos) < 1.0).map(|g| g.id).max();
+        if let Some(id) = found {
+            link.send(Intent::MoveItem { player: me.id, from: Place::Ground, index: id, to: Place::Slot(Slot::Hand), count: 1 });
+            *taking = None;
+        }
+    }
+    if *wait <= 0.0 {
+        let list = demo_weapons(&join);
+        let pick = list[*next % list.len()];
+        *next += 1;
+        *wait = WEAPON_SECS;
+        let name = match pick {
+            Some(item) => {
+                link.send(Intent::SpawnItem { item: join.items[item].id.clone(), count: 1, pos: pos.to_array() });
+                *taking = Some(item);
+                join.items[item].name.clone()
+            }
+            None => {
+                link.send(Intent::Drop { player: me.id, from: Place::Slot(Slot::Hand), index: 0, count: 0 });
+                "Bare hands".to_string()
+            }
+        };
+        let line = format!("Weapons demo: {name} ({} of {})", (*next - 1) % list.len() + 1, list.len());
+        notice.say(time.elapsed_secs(), line);
+    }
+    let about = link.curr.zombies.iter().filter(|z| !matches!(z.anim, ZombieAnim::Dead) && Vec2::from(z.pos).distance(pos) < DEMO_NEAR).count();
+    if about < DEMO_FOES && *foes_wait <= 0.0 {
+        *foes_wait = 3.0;
+        let from = pos + Vec2::from_angle(me.curr.facing) * 9.0;
+        link.send(Intent::SpawnZombies { count: 4, center: from.to_array(), radius: 2.0 });
+        link.send(Intent::MakeNoise { pos: pos.to_array(), radius: 16.0, lasting: false });
     }
 }
 
@@ -46,9 +154,13 @@ fn autoplay(
     mut link: ResMut<ServerLink>,
     mut me: ResMut<LocalPlayer>,
     mut auto: ResMut<AutoInput>,
+    time: Res<Time<Virtual>>,
     mut dead_for: Local<f32>,
     mut shoved_last: Local<bool>,
+    mut reload_wait: Local<f32>,
+    map: Res<ClientMap>,
 ) {
+    let now = time.elapsed_secs();
     auto.move_dir = Vec2::ZERO;
     auto.run = false;
     if me.dead {
@@ -77,6 +189,9 @@ fn autoplay(
         match z.anim {
             ZombieAnim::Dead => {}
             ZombieAnim::Down | ZombieAnim::GetUp => {
+                // Go for the head (it lies behind the feet): one stamp there finishes it.
+                let to = to - Vec2::from_angle(z.facing) * c.down_head_offset;
+                let d = to.length();
                 if downed.is_none_or(|(best, _)| d < best) {
                     downed = Some((d, to));
                 }
@@ -91,16 +206,72 @@ fn autoplay(
             }
         }
     }
+    // With PvP on, other survivors are targets too: standing ones to swing at, downed ones to stamp on.
+    // (A server we joined says so in its rules; our own world, in its combat settings.)
+    if link.net.as_ref().map_or(join.combat.pvp, |n| n.pvp) {
+        for p in link.curr.players.iter().filter(|p| p.id != me.id && !p.dead) {
+            let to = Vec2::from(p.pos) - pos;
+            let d = to.length();
+            if d > SIGHT {
+                continue;
+            }
+            if p.knock.is_some_and(|k| k.down) {
+                if downed.is_none_or(|(best, _)| d < best) {
+                    downed = Some((d, to));
+                }
+            } else {
+                if d <= c.shove_range + ZOMBIE_RADIUS + 0.15 {
+                    crowding += 1;
+                }
+                if nearest.is_none_or(|(best, _)| d < best) {
+                    nearest = Some((d, to));
+                }
+            }
+        }
+    }
     // Only ask when the server will take it (an action under way or still recovering).
-    let busy = link.curr.players.iter().find(|p| p.id == me.id).is_none_or(|v| v.action.is_some() || v.ready_in > 0.0);
+    // On a multiplayer server the snapshot is behind us: go by our own latest action too.
+    let busy = me.acting(&link, now);
+    // With a gun (#72): stand off and shoot the nearest with a clear line (a downed one when
+    // nobody stands), closing in on what is out of range or behind something; empty, reload,
+    // backing away from whatever is close.
+    *reload_wait = (*reload_wait - TICK_DT).max(0.0);
+    if let Some(r) = &weapon.ranged {
+        let Some((d, to, down)) = nearest.map(|(d, to)| (d, to, false)).or(downed.map(|(d, to)| (d, to, true))) else { return };
+        let dir = to / d.max(1e-3);
+        me.aim = to.y.atan2(to.x);
+        me.pitch = ((if down { 0.2 } else { 1.2 } - MUZZLE_HEIGHT) / d.max(0.5)).atan();
+        let own = link.own(me.id);
+        if own.and_then(|v| v.inventory.hand).is_none_or(|g| g.used == 0) {
+            let loading = own.is_some_and(|v| v.jobs.iter().any(|j| matches!(j, JobKind::Reload { .. })));
+            if !loading && *reload_wait <= 0.0 {
+                link.send(Intent::Use { player: me.id, from: Place::Slot(Slot::Hand), index: 0 });
+                *reload_wait = 1.0;
+            }
+            if d < 6.0 {
+                auto.move_dir = -dir;
+            }
+            return;
+        }
+        let clear = flight(&map.0, pos, dir, d, me.pitch.tan()).end >= d - 0.35;
+        if clear && d <= (r.range * 0.45).min(16.0) {
+            if !busy {
+                me.act(&mut link, &join, ActionKind::Swing, now);
+            }
+        } else {
+            auto.move_dir = dir;
+            auto.run = d > 22.0 && me.curr.endurance > 0.5 && !me.curr.winded;
+        }
+        return;
+    }
     // A downed zombie at our feet, and nothing standing right on top of us: finish it.
     if let Some((d, to)) = downed
-        && d <= c.stomp_range * 0.9
+        && d <= c.stomp_head_reach.min(c.stomp_range) * 0.9
         && nearest.is_none_or(|(n, _)| n > reach * 0.8)
     {
         me.aim = to.y.atan2(to.x);
         if !busy {
-            link.send(Intent::Stomp { player: me.id });
+            me.act(&mut link, &join, ActionKind::Stomp, now);
         }
         return;
     }
@@ -109,12 +280,12 @@ fn autoplay(
     if crowding >= 2 && !*shoved_last {
         // Crowded: shove them back, then swing into the gap (alternating).
         if !busy {
-            link.send(Intent::Shove { player: me.id });
+            me.act(&mut link, &join, ActionKind::Shove, now);
             *shoved_last = true;
         }
     } else if d <= reach * 0.95 {
         if !busy {
-            link.send(Intent::Attack { player: me.id });
+            me.act(&mut link, &join, ActionKind::Swing, now);
             *shoved_last = false;
         }
     } else {

@@ -31,12 +31,14 @@
 //! when hit, when a sound reaches you (within `wake_noise_m`), when a zombie sees you, in agony, or
 //! after an hour asleep starving or parched; or when you get up (`World::wake_player`, or any action
 //! through `net::apply_intent`). While every living player is asleep, game time runs
-//! `sleep_time_scale` (30) times as fast: the clock, needs, wounds and illness (not the zombies, who
-//! keep to real time). Single-player that's whenever you sleep; with others, only once everyone is.
+//! `sleep_time_scale` (30) times as fast: the clock, needs, wounds and illness, and the far
+//! horde's clock (`World::far_tick`: the virtual tier, attractors, respawn; #57). Active and near
+//! zombies keep to real time. Agony stops sleep only while no painkiller dose is working. Single-player that's whenever you sleep; with others, only once everyone is.
 //!
-//! **Status tags** ([`status_tags`]): the eight groups of the design (hunger, thirst, tiredness,
-//! endurance, load, pain, bleeding, sick) plus "Asleep", each with a level and a tooltip, from the
-//! needs and what the player's own client already knows, so the HUD and the MCP tools say the same.
+//! **Status icons** (`status.rs`, [`status_tags`]): health, hunger, thirst, tiredness, endurance,
+//! load, pain, bleeding, sick, queasy and asleep, each with up to four levels and a one-line tip,
+//! from the needs and what the player's own client already knows, so the HUD and the MCP tools say
+//! the same. Their levels are data (`assets/data/status.ron`).
 //!
 //! Every number is ours. Needs, sleep and soreness are saved with the player and in `state_hash`.
 
@@ -44,8 +46,7 @@ use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
 use crate::TICK_DT;
-use crate::health::InfectionStage;
-use crate::inventory::{Burden, ItemNote, MAX_ITEM_NOTES};
+use crate::inventory::{ItemNote, MAX_ITEM_NOTES};
 use crate::items::{ItemDef, ItemStack};
 use crate::players::{MoveMods, Stance};
 use crate::rng::hash01;
@@ -59,16 +60,16 @@ const FOOD_AGE_SALT: u64 = 0xF00D_A6E0;
 /// A bed or sofa this close (to the nearest edge of its footprint, m), in your room, is slept on.
 pub const SLEEP_REACH: f32 = 1.0;
 
-/// What someone lying down at `pos` sleeps on: the nearest kind of bed, then sofa, on the ground
-/// floor of the room `pos` is in, within [`SLEEP_REACH`] of its footprint (`None`: the floor).
+/// What someone lying down at `pos` sleeps on: the nearest kind of bed, then sofa, on the floor
+/// `level` of the room `pos` is in, within [`SLEEP_REACH`] of its footprint (`None`: the floor).
 /// The client draws a sleeper lying on it.
-pub fn sleep_furniture(map: &crate::map::TileMap, pos: Vec2) -> Option<(&crate::map::PlacedFurniture, SleepSpot)> {
-    let room = map.room_at(pos);
+pub fn sleep_furniture(map: &crate::map::TileMap, pos: Vec2, level: u8) -> Option<(&crate::map::PlacedFurniture, SleepSpot)> {
+    let room = map.room_on(level, pos);
     if room == 0 {
         return None;
     }
     let mut best: Option<(&crate::map::PlacedFurniture, SleepSpot)> = None;
-    for f in map.buildings.iter().flat_map(|b| &b.furniture).filter(|f| f.level == 0) {
+    for f in map.buildings.iter().flat_map(|b| &b.furniture).filter(|f| f.level == level as i8) {
         let spot = match f.kind.as_str() {
             "bed" => SleepSpot::Bed,
             "sofa" => SleepSpot::Sofa,
@@ -76,7 +77,7 @@ pub fn sleep_furniture(map: &crate::map::TileMap, pos: Vec2) -> Option<(&crate::
         };
         let lo = f.min.as_vec2();
         let hi = lo + f.size.as_vec2();
-        if pos.clamp(lo, hi).distance(pos) <= SLEEP_REACH && map.room_at((lo + hi) * 0.5) == room && best.is_none_or(|b| (spot as u8) < (b.1 as u8)) {
+        if pos.clamp(lo, hi).distance(pos) <= SLEEP_REACH && map.room_on(level, (lo + hi) * 0.5) == room && best.is_none_or(|b| (spot as u8) < (b.1 as u8)) {
             best = Some((f, spot));
         }
     }
@@ -286,6 +287,10 @@ pub struct NeedsTuning {
     pub exhausted_walk: f32,
     /// The client's view cone while tired or worse (a multiplier on its angle).
     pub tired_sight: f32,
+    /// The most endurance there can be while tired, and while exhausted (`MoveMods::max_endurance`):
+    /// a tired survivor runs out of breath sooner, so sleep matters for getting away too.
+    pub tired_endurance: f32,
+    pub exhausted_endurance: f32,
 
     /// Pain levels (sore, hurting, agony) and swing power at each.
     pub pain_sore: f32,
@@ -317,6 +322,9 @@ pub struct NeedsTuning {
     pub floor_sore_h: f32,
     /// Game time runs this many times as fast while every living player is asleep (1: never).
     pub sleep_time_scale: f32,
+    /// After dark you can lie down however rested you are, and being rested doesn't wake you
+    /// until sunrise (#19): a night can be slept through, unless something else wakes you.
+    pub sleep_through_night: bool,
 }
 
 impl Default for NeedsTuning {
@@ -346,6 +354,8 @@ impl Default for NeedsTuning {
             exhausted_swing_time: 1.25,
             exhausted_walk: 0.9,
             tired_sight: 0.85,
+            tired_endurance: 0.75,
+            exhausted_endurance: 0.5,
 
             pain_sore: 0.2,
             pain_hurting: 0.45,
@@ -366,6 +376,7 @@ impl Default for NeedsTuning {
             floor_sore_pain: 0.1,
             floor_sore_h: 2.0,
             sleep_time_scale: 30.0,
+            sleep_through_night: true,
         }
     }
 }
@@ -447,6 +458,9 @@ impl NeedsTuning {
         if !(0.0 <= lo && lo <= hi && hi <= 10.0) {
             return Err(format!("needs.found_food_age {:?} must be a range within 0..10", self.found_food_age));
         }
+        if !(self.exhausted_endurance.is_finite() && 0.1 <= self.exhausted_endurance && self.exhausted_endurance <= self.tired_endurance && self.tired_endurance <= 1.0) {
+            return Err(format!("needs: tired_endurance {} and exhausted_endurance {} must be 0.1 to 1, exhausted no more than tired", self.tired_endurance, self.exhausted_endurance));
+        }
         if !(1.0..=MAX_TIME_SCALE).contains(&self.sleep_time_scale) {
             return Err(format!("needs.sleep_time_scale is {} (1 to {MAX_TIME_SCALE})", self.sleep_time_scale));
         }
@@ -454,117 +468,9 @@ impl NeedsTuning {
     }
 }
 
-/// What kind of status a tag is about.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum TagKind {
-    Hunger,
-    Thirst,
-    Tiredness,
-    Endurance,
-    Load,
-    Pain,
-    Bleeding,
-    Sick,
-    Asleep,
-}
-
-/// One status tag: a short label, how bad (1 mild to 3 severe) and what it does.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct StatusTag {
-    pub kind: TagKind,
-    pub label: String,
-    pub severity: u8,
-    pub tip: String,
-}
-
-/// What the status tags are worked out from: all of it is in the player's own client's views.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct StatusInput {
-    pub needs: NeedsView,
-    /// The wounds' pain (`HealthView::pain`); soreness is added from `needs`.
-    pub pain: f32,
-    pub bleeding: usize,
-    pub food_poisoned: bool,
-    pub festering: bool,
-    pub infection: Option<InfectionStage>,
-    pub endurance: f32,
-    pub winded: bool,
-    /// `CombatTuning::tired_below`.
-    pub tired_below: f32,
-    pub burden: Burden,
-    /// The game time scale now (`World::time_scale`).
-    pub time_scale: f32,
-}
-
-fn pct(m: f32) -> String {
-    format!("{:.0}%", ((1.0 - m) * 100.0).abs())
-}
-
-/// The status tags that apply, in the HUD's order.
-pub fn status_tags(t: &NeedsTuning, s: &StatusInput) -> Vec<StatusTag> {
-    let mut out = Vec::new();
-    let mut tag = |kind, label: &str, severity: u8, tip: String| out.push(StatusTag { kind, label: label.to_string(), severity, tip });
-    let n = &s.needs;
-    match t.level(n.hunger) {
-        Level::Fine => {}
-        Level::Mild => tag(TagKind::Hunger, "Peckish", 1, "Peckish: getting hungry. Nothing yet.".into()),
-        Level::Strong => tag(TagKind::Hunger, "Hungry", 2, format!("Hungry: health doesn't come back; endurance recovers {} slower. Eat something.", pct(t.hungry_regen))),
-        Level::Severe => tag(TagKind::Hunger, "Starving", 3, format!("Starving: losing {:.0} HP a game hour; swings {} weaker. Eat now.", t.starving_hp_per_h, pct(t.starving_swing_power))),
-    }
-    match t.level(n.thirst) {
-        Level::Fine => {}
-        Level::Mild => tag(TagKind::Thirst, "Dry", 1, "Dry: getting thirsty. Nothing yet.".into()),
-        Level::Strong => tag(TagKind::Thirst, "Thirsty", 2, format!("Thirsty: endurance recovers {} slower. Drink something.", pct(t.thirsty_regen))),
-        Level::Severe => tag(TagKind::Thirst, "Parched", 3, format!("Parched: losing {:.0} HP a game hour; no running. Drink now.", t.parched_hp_per_h)),
-    }
-    match t.level(n.tiredness) {
-        Level::Fine => {}
-        Level::Mild => tag(TagKind::Tiredness, "Drowsy", 1, "Drowsy: you could sleep. Nothing yet.".into()),
-        Level::Strong => tag(TagKind::Tiredness, "Tired", 2, format!("Tired: swings {} slower; you see a narrower cone. Sleep (B).", pct(t.tired_swing_time))),
-        Level::Severe => tag(TagKind::Tiredness, "Exhausted", 3, format!("Exhausted: swings {} slower; walking {} slower. Sleep (B).", pct(t.exhausted_swing_time), pct(t.exhausted_walk))),
-    }
-    if s.winded {
-        tag(TagKind::Endurance, "Winded", 3, "Winded: out of breath, no running until you get it back.".into());
-    } else if s.endurance < s.tired_below {
-        tag(TagKind::Endurance, "Short of breath", 1, "Short of breath: swings are weaker and slower until your endurance recovers.".into());
-    }
-    match s.burden {
-        Burden::None => {}
-        Burden::Burdened => tag(TagKind::Load, "Burdened", 1, "Burdened: a little over your limit: slower, running tires you faster.".into()),
-        Burden::Heavy => tag(TagKind::Load, "Heavy", 2, "Heavy: well over your limit: slower still, no running, actions cost more.".into()),
-        Burden::Overloaded => tag(TagKind::Load, "Overloaded", 3, "Overloaded: far over your limit: very slow, no running or climbing.".into()),
-    }
-    let pain = s.pain + n.sore;
-    match t.pain_level(pain) {
-        0 => {}
-        1 => tag(TagKind::Pain, "Sore", 1, format!("Sore: swings {} weaker.", pct(t.pain_swing_power.0))),
-        2 => tag(TagKind::Pain, "Hurting", 2, format!("Hurting: swings {} weaker.", pct(t.pain_swing_power.1))),
-        _ => tag(TagKind::Pain, "Agony", 3, format!("Agony: swings {} weaker; you can't sleep.", pct(t.pain_swing_power.2))),
-    }
-    match s.bleeding {
-        0 => {}
-        1 => tag(TagKind::Bleeding, "Bleeding", 3, "Bleeding: losing HP until it's dressed (H for your wounds).".into()),
-        k => tag(TagKind::Bleeding, &format!("Bleeding x{k}"), 3, format!("Bleeding from {k} wounds: losing HP fast until they're dressed (H for your wounds).")),
-    }
-    match s.infection {
-        Some(InfectionStage::Turning) => tag(TagKind::Sick, "Turning", 3, "Turning: losing HP fast; your night sight is going.".into()),
-        Some(InfectionStage::Feverish) => tag(TagKind::Sick, "Feverish", 3, "Feverish: losing HP, no healing, slow to get your breath back.".into()),
-        _ if s.festering => tag(TagKind::Sick, "Sick", 2, "Sick: a wound is festering: it hurts, heals slowly and costs HP.".into()),
-        _ if s.food_poisoned => tag(TagKind::Sick, "Queasy", 2, "Queasy: food poisoning: you can't keep food down, you get thirsty fast.".into()),
-        _ => {}
-    }
-    if let Some(spot) = n.asleep {
-        let label = if s.time_scale > 1.0 { format!("Asleep x{:.0}", s.time_scale) } else { "Asleep".to_string() };
-        let fast = if s.time_scale > 1.0 { format!(" Time runs {:.0}x as fast.", s.time_scale) } else { String::new() };
-        tag(TagKind::Asleep, &label, 1, format!("Asleep on the {}: resting, healing faster.{fast} Move or press B to get up.", spot.name()));
-    }
-    out
-}
-
-/// The status tags as one line ("Hungry, Tired, Bleeding").
-pub fn tags_line(tags: &[StatusTag]) -> String {
-    tags.iter().map(|t| t.label.as_str()).collect::<Vec<_>>().join(", ")
-}
+// The status icons (what the HUD shows of all this) are in `status.rs`, their levels in
+// `assets/data/status.ron`.
+pub use crate::status::{status_tags, tags_line, StatusInput, StatusTag, TagKind};
 
 impl World {
     /// Game hours since tick 0 (time skips and sped-up sleep included). Never wraps.
@@ -581,14 +487,19 @@ impl World {
     /// asleep (and there is one), else 1.
     pub fn time_scale(&self) -> f32 {
         let scale = self.config.needs.sleep_time_scale.clamp(1.0, MAX_TIME_SCALE);
-        let mut living = self.players.iter().filter(|p| !p.dead).peekable();
+        // Logged-out survivors lying in the world (#68) neither hold the night up nor speed it.
+        let mut living = self.players.iter().filter(|p| !p.dead && p.away.is_none()).peekable();
         if scale > 1.0 && living.peek().is_some() && living.all(|p| p.needs.asleep()) { scale } else { 1.0 }
     }
 
     /// `count` of `item` made now: fresh if it spoils.
     pub(crate) fn fresh_stack(&self, item: u16, count: u16) -> ItemStack {
         let spoils = self.config.items.get(item as usize).and_then(|d| d.consumable()).is_some_and(|c| c.spoils_hours.is_some());
-        ItemStack { born: if spoils { self.game_minute() } else { 0 }, ..ItemStack::new(item, count) }
+        // A gun or a magazine made now comes full (#72); found ones are as they were left (`load_found`).
+        let rounds = crate::ranged::holds(&self.config.items, &self.config.weapons, item).map_or(0, |h| h.capacity);
+        // A fuel can made now is full too.
+        let rounds = self.config.items.get(item as usize).and_then(|d| d.fuel_l).unwrap_or(rounds);
+        ItemStack { born: if spoils { self.game_minute() } else { 0 }, used: rounds, ..ItemStack::new(item, count) }
     }
 
     /// How fresh a stack is now (`None`: it doesn't spoil).
@@ -600,11 +511,27 @@ impl World {
     /// began, so it goes off in its own time whenever it's found.
     pub(crate) fn age_found_food(&self, c: u32, stacks: &mut [ItemStack]) {
         let (lo, hi) = self.config.needs.found_food_age;
-        let seed = self.config.seed() ^ FOOD_AGE_SALT;
+        let seed = self.config.loot_seed() ^ FOOD_AGE_SALT;
         for (k, s) in stacks.iter_mut().enumerate() {
             let Some(h) = self.config.items.get(s.item as usize).and_then(|d| d.consumable()).and_then(|c| c.spoils_hours) else { continue };
             let share = lo + (hi - lo) * hash01(seed, c as u64, k as u64, s.item as u64);
             s.born = -((h * share * 60.0).round() as i32);
+        }
+        // A powered fridge has kept it since the world began: what `step_fridges` would have done
+        // had it been opened at minute 0, so the food is the same whenever it is first opened.
+        let f = &self.config.power.fridges;
+        let fridge = self.sites.iter().find(|s| s.id == c).is_some_and(|site| {
+            self.config.containers.containers.get(site.def as usize).is_some_and(|d| f.containers.iter().any(|k| *k == d.id))
+                && self.power.powered(site.building as usize)
+        });
+        let now = self.game_minute();
+        let shift = (now as f64 * (1.0 - f.spoil_mult as f64)).floor() as i32;
+        if fridge && shift > 0 {
+            for s in stacks.iter_mut() {
+                if self.config.items.get(s.item as usize).and_then(|d| d.consumable()).is_some_and(|c| c.spoils_hours.is_some()) {
+                    s.born = (s.born + shift).min(now);
+                }
+            }
         }
     }
 
@@ -636,10 +563,16 @@ impl World {
             Some(Freshness::Mouldy) => (t.mouldy_food, self.config.health.poison_rotten),
             _ => (1.0, 0.0),
         };
+        // Raw meat and eggs (`Consumable::poison`) on top of going off.
+        let raw = c.poison.clamp(0.0, 1.0);
+        let poison = 1.0 - (1.0 - poison) * (1.0 - raw);
         let n = &mut self.players[pi].needs;
         let mut bits = Vec::new();
         if let Some(f) = fresh.filter(|f| *f != Freshness::Fresh) {
             bits.push(format!("it was {}", f.name()));
+        }
+        if raw > 0.0 {
+            bits.push("it was raw".into());
         }
         let mut change = |need: &mut f32, amount: f32, what: &str, waste: bool| {
             if amount == 0.0 {
@@ -688,10 +621,21 @@ impl World {
             Level::Strong => m.regen *= t.thirsty_regen,
             _ => {}
         }
-        if n.tiredness_level(t) == Level::Severe {
-            m.speed *= t.exhausted_walk;
+        match n.tiredness_level(t) {
+            Level::Severe => {
+                m.speed *= t.exhausted_walk;
+                m.max_endurance = m.max_endurance.min(t.exhausted_endurance);
+            }
+            Level::Strong => m.max_endurance = m.max_endurance.min(t.tired_endurance),
+            _ => {}
         }
         m
+    }
+
+    /// Agony keeps player `pi` awake: unless a painkiller dose is working, which lets you sleep
+    /// through it until it wears off (#57), however much pain is left.
+    pub fn pain_stops_sleep(&self, pi: usize) -> bool {
+        self.config.needs.pain_level(self.pain_of(pi)) >= 3 && self.players[pi].health.aid.painkillers.is_empty()
     }
 
     /// Player `pi`'s pain: its wounds' and soreness.
@@ -718,8 +662,8 @@ impl World {
 
     /// What player `pi` would sleep on where it stands: a bed, else a sofa, within
     /// [`SLEEP_REACH`] in its room, else the floor.
-    pub fn sleep_spot(&self, pos: Vec2) -> SleepSpot {
-        sleep_furniture(&self.map, pos).map_or(SleepSpot::Floor, |(_, spot)| spot)
+    pub fn sleep_spot(&self, pos: Vec2, level: u8) -> SleepSpot {
+        sleep_furniture(&self.map, pos, level).map_or(SleepSpot::Floor, |(_, spot)| spot)
     }
 
     fn needs_note(&mut self, player: u32, ok: bool, text: String) {
@@ -740,10 +684,10 @@ impl World {
             Some("dead".to_string())
         } else if p.needs.asleep() {
             return Ok("already asleep".into());
-        } else if p.needs.tiredness < t.min_tiredness_to_sleep {
+        } else if p.needs.tiredness < t.min_tiredness_to_sleep && !(t.sleep_through_night && crate::senses::is_night(self.time_of_day())) {
             Some(format!("not tired enough to sleep (tiredness {:.0}%, sleep from {:.0}%)", p.needs.tiredness * 100.0, t.min_tiredness_to_sleep * 100.0))
-        } else if t.pain_level(self.pain_of(pi)) >= 3 {
-            Some("in too much pain to sleep".into())
+        } else if self.pain_stops_sleep(pi) {
+            Some("in too much pain to sleep (painkillers would let you)".into())
         } else if p.action.is_some() {
             Some("busy fighting".into())
         } else {
@@ -753,7 +697,7 @@ impl World {
             self.needs_note(id, false, why.clone());
             return Err(why);
         }
-        let spot = self.sleep_spot(self.players[pi].state.pos);
+        let spot = self.sleep_spot(self.players[pi].state.pos, self.players[pi].state.level);
         self.cancel_jobs(pi);
         let p = &mut self.players[pi];
         p.queued = None;
@@ -810,30 +754,6 @@ impl World {
         self.player(id).map(|p| p.needs.view(&self.config.needs))
     }
 
-    /// Player `id`'s status tags (the HUD's, and the MCP tools').
-    pub fn status_tags(&self, id: u32) -> Vec<StatusTag> {
-        let Some(pi) = self.players.iter().position(|p| p.id == id) else { return Vec::new() };
-        let p = &self.players[pi];
-        if p.dead {
-            return Vec::new();
-        }
-        let h = &self.config.health;
-        let input = StatusInput {
-            needs: p.needs.view(&self.config.needs),
-            pain: p.health.pain(h),
-            bleeding: p.health.bleeding(h),
-            food_poisoned: p.health.food_poisoned(),
-            festering: p.health.wounds.iter().any(|w| w.festering),
-            infection: p.health.visible_infection(),
-            endurance: p.state.endurance,
-            winded: p.state.winded,
-            tired_below: self.config.combat.tired_below,
-            burden: self.carry(p).burden,
-            time_scale: self.time_scale(),
-        };
-        status_tags(&self.config.needs, &input)
-    }
-
     /// Did something wake sleeper `pi` this tick: a strike landing, a sound reaching it, a zombie
     /// seeing it?
     fn disturbed(&self, pi: usize) -> Option<WakeReason> {
@@ -867,20 +787,29 @@ impl World {
                 continue;
             }
             let pain = self.pain_of(pi);
+            // A painkiller dose still working: agony doesn't wake you (#57).
+            let dosed = !self.players[pi].health.aid.painkillers.is_empty();
             let thirst_mult = self.players[pi].health.thirst_mult(&self.config.health);
+            // Rested, but it's still dark: sleep on until sunrise.
+            let sleeps_on = t.sleep_through_night && crate::senses::is_night(self.time_of_day());
             let p = &mut self.players[pi];
             let (before, view_before) = (signature(&p.needs, &t), view_key(&p.needs));
             let running = p.state.stance == Stance::Run;
+            // Who the survivor is (`crate::origin`): a big appetite, a light sleeper.
+            let perks = p.origin.perks;
+            let seated = p.seated.is_some();
             let n = &mut p.needs;
             let asleep = n.asleep();
-            n.hunger += if asleep { t.hunger_asleep_per_h } else { t.hunger_per_h } * dt_h;
-            n.thirst += (if asleep { t.thirst_asleep_per_h } else { t.thirst_per_h } * thirst_mult + if running { t.run_thirst_per_h } else { 0.0 }) * dt_h;
+            n.hunger += if asleep { t.hunger_asleep_per_h } else { t.hunger_per_h } * dt_h * perks.hunger;
+            n.thirst += (if asleep { t.thirst_asleep_per_h } else { t.thirst_per_h } * thirst_mult + if running { t.run_thirst_per_h } else { 0.0 }) * dt_h * perks.thirst;
             match &mut n.sleep {
                 Some(s) => {
                     n.tiredness -= t.rest_per_h(s.spot) * dt_h;
                     s.hours += dt_h;
                 }
-                None => n.tiredness += t.tired_per_h * dt_h,
+                // Sitting down rests you a little (`crate::sit`).
+                None if seated => n.tiredness -= self.config.sit.rest_per_h * dt_h,
+                None => n.tiredness += t.tired_per_h * dt_h * perks.tiredness,
             }
             n.hunger = n.hunger.clamp(0.0, 1.0);
             n.thirst = n.thirst.clamp(0.0, 1.0);
@@ -895,10 +824,10 @@ impl World {
             }
             let (sleep, tiredness, starving, parched) = (n.sleep, n.tiredness, n.hunger_level(&t) == Level::Severe, n.thirst_level(&t) == Level::Severe);
             let wake = match sleep {
-                Some(_) if tiredness < t.rested_below => Some(WakeReason::Rested),
+                Some(_) if tiredness < t.rested_below && !sleeps_on => Some(WakeReason::Rested),
                 Some(s) if s.hours >= t.hunger_wakes_after_h && starving => Some(WakeReason::Hunger),
                 Some(s) if s.hours >= t.hunger_wakes_after_h && parched => Some(WakeReason::Thirst),
-                Some(_) if t.pain_level(pain) >= 3 => Some(WakeReason::Pain),
+                Some(_) if t.pain_level(pain) >= 3 && !dosed => Some(WakeReason::Pain),
                 Some(_) if live => self.disturbed(pi),
                 _ => None,
             };

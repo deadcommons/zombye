@@ -68,7 +68,7 @@ fn by_a_bed(seed: u64) -> (World, u32) {
     let around = (-1..=bed.size.y).flat_map(|dy| (-1..=bed.size.x).map(move |dx| bed.min + IVec2::new(dx, dy)));
     let t = around.filter(|&t| w.map.in_bounds(t) && !w.map.tile_blocked(t) && w.map.tile(t).room == room).min_by_key(|t| (t.x, t.y)).expect("room by the bed");
     w.players[0].state.pos = t.as_vec2() + Vec2::splat(0.5);
-    assert_eq!(w.sleep_spot(w.players[0].state.pos), SleepSpot::Bed);
+    assert_eq!(w.sleep_spot(w.players[0].state.pos, 0), SleepSpot::Bed);
     (w, id)
 }
 
@@ -110,7 +110,8 @@ fn needs_rise_over_a_game_day_and_with_skip_time() {
     assert_eq!((n.hunger_level(&t), n.thirst_level(&t), n.tiredness_level(&t)), (Level::Strong, Level::Severe, Level::Severe), "{n:?}");
     let tags = b.status_tags(id);
     let labels: Vec<&str> = tags.iter().map(|t| t.label.as_str()).collect();
-    assert!(labels.contains(&"Hungry") && labels.contains(&"Parched") && labels.contains(&"Exhausted"), "{labels:?}");
+    // Hungry by the settings' level; the icons have one more level before starving (`status.ron`).
+    assert!(labels.contains(&"Famished") && labels.contains(&"Parched") && labels.contains(&"Exhausted"), "{labels:?}");
     // Starving after about 21 hours.
     b.skip_time(1.0);
     assert_eq!(me(&b, id).needs.hunger_level(&t), Level::Strong);
@@ -170,7 +171,8 @@ fn ignoring_needs_hurts_and_slows() {
     let mods = me(&w, id).state.mods;
     let t = w.config.needs;
     assert!(!mods.can_run && (mods.speed - t.exhausted_walk).abs() < 1e-5, "{mods:?}");
-    let fit = w.config.skills.move_mods(1, MoveMods::default()).regen;
+    assert!((mods.max_endurance - t.exhausted_endurance).abs() < 1e-5, "{mods:?}");
+    let fit = w.config.skills.move_mods(w.config.skills.start_fitness, MoveMods::default()).regen;
     assert!((mods.regen - t.hungry_regen * t.thirsty_regen * fit).abs() < 1e-5);
     let (power, time) = w.needs_swing(0);
     assert!((power - t.starving_swing_power).abs() < 1e-5 && (time - t.exhausted_swing_time).abs() < 1e-5);
@@ -192,7 +194,7 @@ fn ignoring_needs_hurts_and_slows() {
     w.set_needs(id, Some(0.0), None, None);
     w.skip_time(1.0);
     assert!(me(&w, id).hp > hp + 1.0);
-    assert_eq!(me(&w, id).state.mods, w.config.skills.move_mods(1, MoveMods::default()));
+    assert_eq!(me(&w, id).state.mods, w.config.skills.move_mods(w.config.skills.start_fitness, MoveMods::default()));
     // Starving to death, god mode off.
     w.set_needs(id, Some(1.0), Some(1.0), None);
     w.skip_time(40.0);
@@ -297,7 +299,7 @@ fn sleep_rests_and_speeds_time_up() {
     }
     assert_eq!(woke, Some((id, WakeReason::Rested)));
     assert!(me(&w, id).needs.tiredness < t.rested_below && w.time_scale() == 1.0);
-    assert_eq!(me(&w, id).state.mods, w.config.skills.move_mods(1, MoveMods::default()));
+    assert_eq!(me(&w, id).state.mods, w.config.skills.move_mods(w.config.skills.start_fitness, MoveMods::default()));
     // Two players: one asleep isn't enough.
     let other = w.add_player(w.player_spawn);
     w.set_needs(id, None, None, Some(0.8));
@@ -308,6 +310,34 @@ fn sleep_rests_and_speeds_time_up() {
     assert_eq!(w.time_scale(), 30.0);
     assert!(w.wake_player(other));
     assert_eq!(w.time_scale(), 1.0);
+}
+
+/// After dark (#19) you can lie down however rested you are and you sleep on, rested or not,
+/// until sunrise; `sleep_through_night: false` is the old rule.
+#[test]
+fn a_night_can_be_slept_through() {
+    let (mut w, id) = by_a_bed(6);
+    // 9:00 at the start: to 22:00.
+    w.skip_time(13.0);
+    w.set_needs(id, Some(0.0), Some(0.0), Some(0.1));
+    w.config.needs.sleep_through_night = false;
+    assert!(w.player_sleep(id).unwrap_err().contains("not tired enough"));
+    w.config.needs.sleep_through_night = true;
+    w.player_sleep(id).unwrap();
+    let mut woke = None;
+    for _ in 0..ticks_per_hour(&w) / 30 * 10 {
+        w.step();
+        if let Some(&(_, r)) = w.woke.first() {
+            woke = Some((r, w.time_of_day()));
+            break;
+        }
+    }
+    let (reason, hour) = woke.expect("wakes at sunrise");
+    assert_eq!(reason, WakeReason::Rested);
+    assert!((6.0..6.2).contains(&hour), "woke at {hour}");
+    assert_eq!(me(&w, id).needs.tiredness, 0.0);
+    // By day the old rule stands: not tired, no sleep.
+    assert!(w.player_sleep(id).unwrap_err().contains("not tired enough"));
 }
 
 /// What wakes a sleeper: a noise, a zombie's strike (god mode too), agony; the floor leaves you sore.
@@ -363,6 +393,48 @@ fn sleepers_wake_on_noise_strikes_and_pain() {
     w.step();
     assert!(w.woke.contains(&(id, WakeReason::Pain)), "{:?}", w.woke);
     assert!(w.player_sleep(id).unwrap_err().contains("pain"));
+}
+
+/// Painkillers working let you sleep through agony (#57): you can lie down, the pain doesn't wake
+/// you, and when the dose wears off with the pain still there, it does.
+#[test]
+fn painkillers_let_you_sleep_through_agony() {
+    let (mut w, id) = arena(7);
+    w.config.needs = NeedsTuning { hunger_per_h: 0.0, thirst_per_h: 0.0, ..w.config.needs };
+    w.set_dev(id, Some(true), None);
+    w.set_needs(id, None, None, Some(0.95));
+    for part in [Part::Head, Part::Head, Part::Torso, Part::LeftLeg, Part::RightLeg] {
+        w.inflict_wound(id, part, WoundKind::Bite, Some(false));
+    }
+    let t = w.config.needs;
+    assert!(w.pain_stops_sleep(0) && w.player_sleep(id).unwrap_err().contains("painkillers"));
+    let tip = |w: &World| w.status_tags(id).into_iter().find(|t| t.kind == TagKind::Pain).unwrap().tip;
+    assert!(tip(&w).contains("can't sleep without painkillers"), "{}", tip(&w));
+    // A dose: still in agony (0.4 off a lot of pain), but sleep comes.
+    w.give_item(id, "painkillers", 1);
+    w.player_treat(id, None, crate::firstaid::Treatment::Painkiller, None).unwrap();
+    for _ in 0..60 {
+        w.step();
+    }
+    assert!(!me(&w, id).health.aid.painkillers.is_empty(), "the dose is working");
+    assert_eq!(t.pain_level(w.pain_of(0)), 3, "still agony: {}", w.pain_of(0));
+    assert!(tip(&w).contains("painkillers let you sleep"), "{}", tip(&w));
+    w.player_sleep(id).unwrap();
+    let before = w.game_hours();
+    let mut woke = None;
+    for _ in 0..20 * 600 {
+        w.step();
+        if let Some(&(_, r)) = w.woke.first() {
+            woke = Some(r);
+            break;
+        }
+    }
+    // Four game hours of relief, then the pain wakes us.
+    let slept = w.game_hours() - before;
+    assert_eq!(woke, Some(WakeReason::Pain), "slept {slept} h");
+    let dose = w.config.health.first_aid.painkiller_h as f64;
+    assert!((dose - 0.3..=dose + 0.1).contains(&slept), "slept {slept} h of a {dose} h dose");
+    assert!(me(&w, id).health.aid.painkillers.is_empty() && w.pain_stops_sleep(0));
 }
 
 /// Needs, sleep and food ages are saved: a loaded world steps exactly like the original, asleep
@@ -449,20 +521,43 @@ fn tuning_checks_and_status_tags() {
     let t = NeedsTuning::default();
     let s = StatusInput {
         needs: NeedsView { hunger: 0.9, thirst: 0.4, tiredness: 0.65, asleep: None, sore: 0.0 },
+        hp_lost: 0.0,
         pain: 0.5,
-        bleeding: 2,
+        painkillers: false,
+        bleeding: 20.0,
         food_poisoned: true,
         festering: false,
         infection: None,
         endurance: 0.3,
         winded: false,
-        tired_below: 0.5,
-        burden: Burden::Heavy,
+        load: 1.4,
         time_scale: 1.0,
     };
-    let tags = status_tags(&t, &s);
-    assert_eq!(tags_line(&tags), "Starving, Dry, Tired, Short of breath, Heavy, Hurting, Bleeding x2, Queasy");
-    assert_eq!(tags.iter().map(|t| t.kind).collect::<Vec<_>>(), [TagKind::Hunger, TagKind::Thirst, TagKind::Tiredness, TagKind::Endurance, TagKind::Load, TagKind::Pain, TagKind::Bleeding, TagKind::Sick]);
-    assert_eq!(tags[0].severity, 3);
-    assert!(tags[0].tip.contains("2 HP"));
+    // The icons (`status.rs`), in the shipped file's order: what hurts first.
+    let tags = status_tags(crate::StatusData::builtin(), &t, &s);
+    assert_eq!(tags_line(&tags), "Bleeding badly, Hurting, Queasy, Starving, Dry, Tired, Short of breath, Heavy");
+    assert_eq!(tags.iter().map(|t| t.kind).collect::<Vec<_>>(), [TagKind::Bleeding, TagKind::Pain, TagKind::Queasy, TagKind::Hunger, TagKind::Thirst, TagKind::Tiredness, TagKind::Endurance, TagKind::Load]);
+    assert_eq!(tags[3].severity, 4);
+    assert!(tags[3].tip.starts_with("Starving: losing health"));
+}
+
+/// Tired, the endurance bar doesn't fill all the way; exhausted, less again; rested, all of it.
+#[test]
+fn tiredness_caps_endurance() {
+    let (mut w, id) = arena(3);
+    let t = w.config.needs;
+    w.set_needs(id, Some(0.0), Some(0.0), Some(0.7));
+    assert!((me(&w, id).state.mods.max_endurance - t.tired_endurance).abs() < 1e-5);
+    // Standing still the bar comes back only to the cap.
+    w.players[0].state.endurance = 0.2;
+    for _ in 0..(30.0 / crate::TICK_DT) as u32 {
+        w.step();
+    }
+    let e = me(&w, id).state.endurance;
+    assert!((e - t.tired_endurance).abs() < 1e-4, "tired: {e}");
+    w.set_needs(id, None, None, Some(0.9));
+    w.step();
+    assert!((me(&w, id).state.endurance - t.exhausted_endurance).abs() < 1e-4, "exhausted: {}", me(&w, id).state.endurance);
+    w.set_needs(id, None, None, Some(0.1));
+    assert_eq!(me(&w, id).state.mods.max_endurance, 1.0);
 }

@@ -230,7 +230,25 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     return out;
 }
 
-@if(!PREPASS_PIPELINE)
+// The silhouette version (crates/client/src/silhouette.rs): the same animated body in one flat
+// tint, drawn with the depth test turned round, so only where something covers the zombie. Its
+// depth is moved toward the camera first, so its own limbs don't count.
+@if(!PREPASS_PIPELINE && SILHOUETTE)
+struct SilhouetteOutput {
+    @location(0) color: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
+};
+
+@if(!PREPASS_PIPELINE && SILHOUETTE)
+@fragment
+fn fragment(in: VertexOutput) -> SilhouetteOutput {
+    var out: SilhouetteOutput;
+    out.color = settings.clips[15];
+    out.depth = in.clip_position.z + settings.clips[14].x;
+    return out;
+}
+
+@if(!PREPASS_PIPELINE && !SILHOUETTE)
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // Flat shading from screen-space derivatives: faceted low-poly look, no normals needed.

@@ -163,22 +163,47 @@ war in `fog.rs` and `world.wesl`). Numbers live there; this is what they're for.
   the eye to the player and makes the edges of the world feel far away. Bloom only on real light
   sources (a flashlight, a candle, a lit window), never on sunlit surfaces.
 - **Day:** a low, warm sun for most of the day (never overhead), long hard shadows, little fill light,
-  so a building's shadow side is clearly darker. A faint haze. Late afternoon is the look to aim for.
+  so a building's shadow side is clearly darker. A faint haze. Late afternoon is the look to aim for,
+  and since Linear DCM-59 the whole day leans that way: the sun is golden even at its highest (about
+  47° up at noon, 32° by mid-afternoon) and deep amber toward dawn and dusk, the fill is warm
+  and strong enough that a shadow keeps about a third of the light (shade, not a grey patch), shadow edges soften away
+  from what casts them, and the grade is warm over a wide range, highlights bright and blacks barely lifted
+  (`daynight::grade_at`). What you can't see is no longer a grey hole by day:
+  it keeps over half its colour, dimmed and warmed (`materials::unseen_tint`, `unseen_colour`), so the
+  town reads as one sunlit place and your own view is the brightest part of it.
+- **Film (DCM-59, `film.rs`, `film.wesl`):** one pass after the tone map: a little tilt-shift (the top
+  and bottom of the screen go soft, at most 2.6 px of a 1080-high picture, the middle band stays
+  sharp; the town reads as a small model) and fine grain (new 24 times a second, strongest in the
+  mid-tones, none in black, about half strength at night). Keep both slight: they should be felt, not
+  noticed.
+- **Contact shadows (DCM-59):** a soft dark strip, 0.6 m wide, where every ground-floor wall meets the
+  ground or a floor (`world_render::contact_shadows`), and every blade of grass is darker at its root.
+  Together they stand in for ambient occlusion without a screen-space pass.
 - **Dusk:** deep amber turning to grey-blue; shadows stretch across the street; the town goes quiet.
 - **Night:** dark. Cool, very low moonlight outdoors is enough to read the edges of roads, roofs and a
   silhouette close by, no more. Unlit interiors are darker than outdoors. What you see is what your
   light reaches: a **flashlight** is a narrow, hard-edged cone along your facing that casts shadows
   (furniture and zombies throw long ones away from you); a **candle** is a small warm pool. Without a
-  light you see a few metres. Zombies' senses are the sim's own (`ZombieTuning`); a light that draws
+  light you see a few metres, **but what is lit is seen**: the warm pool under a lit window, another
+  survivor's beam across the street and whatever stands in them show from far off, with the dark
+  between you and them. A light is company and a warning both. Zombies' senses are the sim's own (`ZombieTuning`); a light that draws
   them is a sim change of its own.
 - **Inside by day:** windows are the light; the far side of a room is dimmer; a room with no window
   is dark.
-- **Fog of war** darkens and desaturates what the player can't see, and at night turns it nearly
-  black. Every asset must still read as a silhouette dimmed, and buildings' outlines and ways in stay
+- **Fog of war** is subtle by day: what the player can't see is a little dimmer and a touch faded,
+  and the view cone ahead a little brighter than what's behind, enough to see where you look, with no ring round the player
+  (the numbers are `assets/data/fog.ron`). At night it turns what's unseen nearly black. Every asset must still read as a silhouette dimmed, and buildings' outlines and ways in stay
   readable (Gate 4: check it dimmed and at night by flashlight).
 - **Frame cost** is reported for every lighting change (offscreen 1920 × 1080 with 2,000 zombies at
-  26 m and 60 m, `ZOMBYE_FRAME_BENCH`). Screen-space effects that need a depth prepass (ambient
-  occlusion, contact shadows) wait until the cutaway works with one.
+  26 m and 60 m, `--frame-bench N` or `ZOMBYE_FRAME_BENCH`). Screen-space effects that need a depth
+  prepass (screen-space ambient occlusion) wait until the cutaway and the window glass work with one.
+- **Every effect is a setting** (`graphics.rs`): grain, tilt-shift, vignette, bloom, contact shadows
+  and the ground's per-pixel detail each switch off by themselves (`--no-post`). They are gathered
+  into presets (`--graphics low|medium|high|ultra|auto`, F8 in game): **High is the look this
+  document describes** and the default; Medium and Low trade the subtler parts (tilt-shift first,
+  then grain, ground detail, contact shadows, thinner grass, smaller shadow map) for frame rate;
+  Ultra adds denser grass and a finer shadow map. A new effect joins that list and gets a place in
+  each preset. Every change to the look reports its frame cost on a real GPU next to the pictures.
 - Review renders in Blender use the Standard view transform (asset-pipeline.md), so the palette is
   what you see there; in game the grade warms and darkens it, which is why Gate 4 is in game.
 
@@ -191,6 +216,22 @@ The world's generated parts and its props both carry the story. Targets for a de
   and grass in cracks and along kerbs; drifts of leaf litter in corners and gutters; loose paper,
   cans, bottles; a few dark stains. Lawns gone long and patchy, vacant lots and verges in tall grass
   with a few wildflowers (muted red, white, yellow) (#81).
+- **Grass, flowers and litter (Linear DCM-59, `vegetation.rs`):** over the mesher's ground
+  goes a layer of small patches, one a tile (merged into one mesh a chunk), placed from the map alone
+  (`landscape::scatter`), so the same town always grows the same grass. **Where:** long grass (to
+  half a metre) where nobody mows: along walls, fences and hedges, verges, vacant lots, the forest's
+  edge; shorter grass on lawns; thin, dry grass on dirt, under trees, beside paths and driveways and
+  over the lawn's bare patches; none on a doorstep (the ground within about 3 m of an outside door is
+  worn to earth), a driveway, a flower bed or under a porch. Wildflowers come in drifts a few metres
+  across, red in some parts of town and white in others, thick in long grass and stray on lawns.
+  Pavements get a weed in a crack now and then, a few loose sheets of paper and small stones; roads
+  less, gutters more. **Colour:** each blade runs from a dark root to a light tip, and each patch is
+  its own mix of `grass_blade` (fresh) and `grass_blade_dry` (straw), dry in broad drifts: the fields
+  should read golden, not green. **Motion:** it sways in gusts that roll across it and bends away
+  from the survivor's feet. **Not yet:** zombies don't part it, and it casts no shadows.
+- **The ground itself** is broken up per pixel (`world.wesl` `ground_detail`): broad lighter and darker
+  drifts, flat triangular facets a metre or so across (the reference's faceted earth, never smooth
+  noise), and dry yellow patches on grass and dirt. Subtle on asphalt and concrete.
 - **Things left behind:** two or three per street frame: a car left with a door open or rusting on
   flat tyres, a bike on its side, bins tipped over, a pram, suitcases, boxes, pallets, tyres, barrels;
   near the core, barricades: sandbags, boards, a police cordon (#61).
@@ -199,17 +240,37 @@ The world's generated parts and its props both carry the story. Targets for a de
   porches with railings, faded signs (#59).
 - **Inside:** clutter on floors and counters (papers, boxes, a fallen chair), drawers left open after
   a search, a few stains (#19, with the loot work).
-- **Density never costs the crowd:** clutter is merged into chunk meshes or instanced, with a budget
-  per chunk, and measured like any other rendering change.
+- **Density never costs the crowd:** clutter is merged into chunk meshes, with a budget
+  per chunk, and measured like any other rendering change. The vegetation layer is drawn only round
+  the camera (`vegetation::veg_radius`: just past the corners of the view, at most 60 m, shrinking to
+  nothing over the last sixth so nothing pops), has a density setting (`--vegetation off|low|high|N`,
+  `graphics.vegetation` in `settings.ron`) and its patches stay under 100 triangles. Zoomed out past 40 m, heavy
+  tree and prop models are drawn as lighter stand-ins made from them when they are read.
 
 ## UI
 
-- **Panels:** near-black (#141414 at 80–88% opacity), square corners, thin bone-white rules at low
-  opacity.
-- **Text:** bone white for content, a dimmer warm grey for secondary text; one plain sans-serif.
-- **Colour meanings:** red for health, blood and danger; amber for endurance and warnings; zombie
-  green for sickness; cool blue for sleep; gold for level-ups and good outcomes. No other hues.
-- **Plain words** over icons until icons exist; icons later follow these same shapes and colours.
+The full guide is **[ui-design.md](ui-design.md)**: tokens, type, the frame every screen shares, the
+components, and a checklist for a new screen. In short:
+
+- **Quiet, flat, dark chrome that gets out of the way of the world.** A screen is a see-through dark
+  veil over the game with hairlines, small radii and solid fills: no textures, bevels, glows or
+  gradients. The world stays visible behind it.
+- **Paper for what the survivor holds.** The map is ink on worn paper (printed streets, the rest
+  inked in as it is seen, red pencil for your own marks); notes, recipe cards and pages later follow
+  it. Paper always sits inside the chrome's frame; chrome controls are never drawn on paper.
+- **One frame, many tabs.** Inventory, Make, Build, Survivor (Info, Health, Skills, Protection) and Map are tabs of one frame: a
+  top bar with the title, a rail of tabs down the left, two or three columns, a footer of key hints.
+  Nothing scrolls sideways.
+- **One accent.** Zombie green #8DB06B means "this one" (the open tab, what is picked, the main
+  button). Amber is a warning, brand red is danger only, cool blue is sleep. No other hues, and a
+  word or a shape always stands beside a colour.
+- **Text:** bone white #F2E6C9 on near-black #141414, a dimmer warm grey for secondary text. Barlow
+  for text and values, Barlow Condensed SemiBold in capitals for titles, tabs and labels (SIL OFL
+  1.1, `assets/fonts/barlow/`). Nothing under 14 UI pixels. Monospace only on developer read-outs.
+- **Icons** are our own flat drawings in three tones of the item's colour, told apart by silhouette.
+- **Plain words**, every action with its key shown, and our copy never names another game.
+- This replaces the rough painted skin (Linear DCM-61). Panels move over one at a time, the
+  inventory first; one that hasn't moved yet keeps the old skin from `crates/client/src/theme.rs`.
 
 ## Building assets in Blender over MCP
 
@@ -282,3 +343,7 @@ The look asks for things the game doesn't do yet; each is its own issue on the b
 the light and grade (#83), decay and tall grass on the ground (#81), things left behind in the streets
 (#61), the building kit's details (trim, porches, chimneys, siding lines, shopfronts and awnings,
 boarded windows, #59) and the generated world's colours moved into the shared palette (#60).
+The look and feel pass (Linear DCM-59: the golden day, the film pass, contact shadows, instanced
+grass, flowers and litter, worn ground by doors) left for later: softer sun shadows (percentage-closer
+soft shadows are behind an experimental Bevy feature), zombies parting the grass, vegetation
+shadows, leaf litter and cans and bottles as litter kinds, and Blender-built clutter props.

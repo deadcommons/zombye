@@ -16,7 +16,8 @@
 //! file's clips go into [`CLIPS`]' slots by name; the slots it has no clip for get stand-ins made from what
 //! it has ([`Source`], [`sources`]), so every anim plays something sensible and nothing T-poses.
 
-use std::collections::HashMap;
+// Bevy's map: its hasher costs a fraction of the standard one's, and every zombie is looked up every frame.
+use bevy::platform::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use std::path::{Path, PathBuf};
 
@@ -55,6 +56,7 @@ impl Plugin for ZombieRenderPlugin {
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+#[bind_group_data(ZombieKey)]
 pub struct ZombieMaterial {
     #[texture(0, sample_type = "float", filterable = false)]
     pub vat: Handle<Image>,
@@ -64,6 +66,27 @@ pub struct ZombieMaterial {
     #[texture(2)]
     #[sampler(3)]
     pub base_color: Handle<Image>,
+    /// The silhouette version (`silhouette.rs`): the same animated body in one flat tint, drawn
+    /// only where something covers it. Its tint is `settings.clips[SILHOUETTE_TINT]`, and
+    /// `clips[SILHOUETTE_DEPTH].x` how far its depth is moved toward the camera.
+    pub silhouette: bool,
+}
+
+/// Two of the clip table's unused rows carry the silhouette's look (13 of 16 are clips).
+const SILHOUETTE_TINT: usize = 15;
+const SILHOUETTE_DEPTH: usize = 14;
+
+/// The pipeline key of a [`ZombieMaterial`]: the lit crowd, or its silhouette.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, Hash, PartialEq, Eq)]
+pub struct ZombieKey {
+    silhouette: bool,
+}
+
+impl From<&ZombieMaterial> for ZombieKey {
+    fn from(m: &ZombieMaterial) -> Self {
+        ZombieKey { silhouette: m.silhouette }
+    }
 }
 
 #[derive(ShaderType, Debug, Clone)]
@@ -92,15 +115,26 @@ impl Material for ZombieMaterial {
         SHADER.into()
     }
 
+    fn alpha_mode(&self) -> AlphaMode {
+        if self.silhouette { AlphaMode::Blend } else { AlphaMode::Opaque }
+    }
+
     fn specialize(
         _pipeline: &MaterialPipeline,
         descriptor: &mut RenderPipelineDescriptor,
         layout: &MeshVertexBufferLayoutRef,
-        _key: MaterialPipelineKey<Self>,
+        key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         let vertex_layout =
             layout.0.get_layout(&[Mesh::ATTRIBUTE_POSITION.at_shader_location(0), ATTRIBUTE_VAT.at_shader_location(1), Mesh::ATTRIBUTE_UV_0.at_shader_location(2)])?;
         descriptor.vertex.buffers = vec![vertex_layout];
+        // A silhouette is only ever in the main pass (blended, and it casts no shadow).
+        if key.bind_group_data.silhouette && descriptor.fragment.as_ref().is_some_and(|f| !f.shader_defs.contains(&"PREPASS_PIPELINE".into())) {
+            if let Some(fragment) = descriptor.fragment.as_mut() {
+                fragment.shader_defs.push("SILHOUETTE".into());
+            }
+            crate::silhouette::behind_only(descriptor);
+        }
         Ok(())
     }
 }
@@ -183,10 +217,17 @@ enum Clip {
     Stagger2 = 11,
     /// A roar on the spot. Baked and ready, not played yet: the sim's groans aren't in the snapshots.
     Groan = 12,
+    /// The last couple of metres at a player, arms out ([`ZombieAnim::Lunge`]).
+    Lunge = 13,
+    /// Climbing in through an open or broken window ([`ZombieAnim::Climb`] at a window).
+    Climb = 14,
+    /// Clambering over a fence ([`ZombieAnim::Climb`] at a fence).
+    Vault = 15,
 }
 
-/// How many clip slots there are (the shader's table has room for 16: 4 tag bits).
-const SLOTS: usize = 13;
+/// How many clip slots there are (the shader's table has room for 16: 4 tag bits, all used). A
+/// crowd character's `crawl` clip waits for a crawling zombie in the sim, and a slot.
+const SLOTS: usize = 16;
 
 /// Hip height at rest (the pelvis pivot).
 const HIP: f32 = 0.9;
@@ -365,6 +406,34 @@ fn pose(clip: Clip, t: f32) -> ZPose {
             peak.offset = Vec3::new(0.05, -0.04, -0.06);
             p = reach().blend(&peak, k);
         }
+        Clip::Lunge => {
+            // Thrown forward at the player, both arms out to grab.
+            let k = smooth(0.0, 0.4, t);
+            let mut peak = reach();
+            peak.rot[TORSO] = rx(0.55);
+            peak.rot[HEAD] = rx(-0.1);
+            peak.rot[ARM_L] = rx(-1.6) * rz(-0.2);
+            peak.rot[ARM_R] = rx(-1.6) * rz(0.2);
+            peak.rot[LEG_L] = rx(-0.45);
+            peak.rot[LEG_R] = rx(0.35);
+            peak.offset = Vec3::new(0.0, -0.08, 0.1);
+            p = reach().blend(&peak, k);
+        }
+        Clip::Climb | Clip::Vault => {
+            // One leg up and over the sill or rail, hands on it, and down the other side.
+            let high = if clip == Clip::Climb { 1.0 } else { 0.7 };
+            let k = (t * PI).sin().max(0.0);
+            let lead = smooth(0.0, 0.5, t);
+            let mut peak = ZPose::default();
+            peak.rot[TORSO] = rx(0.5 * high);
+            peak.rot[HEAD] = rx(0.1);
+            peak.rot[ARM_L] = rx(-0.9) * rz(-0.1);
+            peak.rot[ARM_R] = rx(-0.9) * rz(0.1);
+            peak.rot[LEG_L] = rx(-1.3 * high * (1.0 - lead) - 0.2);
+            peak.rot[LEG_R] = rx(-1.1 * high * lead);
+            peak.offset = Vec3::new(0.0, 0.25 * high * k, 0.0);
+            p = reach().blend(&peak, k.max(0.2));
+        }
         Clip::Groan => {
             // Head thrown back, chest out, arms spread: a roar, then back to reaching.
             let k = (t * PI).sin().max(0.0).powf(0.7);
@@ -399,7 +468,17 @@ const CLIPS: [(Clip, u32, f32, f32, f32); SLOTS] = [
     (Clip::DieDown, 8, 0.0, 0.0, 0.4),
     (Clip::Stagger2, 14, 0.0, 0.0, 0.6),
     (Clip::Groan, 24, 0.0, 0.0, 2.0),
+    (Clip::Lunge, 12, 0.0, 0.0, LUNGE_SECS),
+    (Clip::Climb, 24, 0.0, 0.0, CLIMB_SECS),
+    (Clip::Vault, 24, 0.0, 0.0, VAULT_SECS),
 ];
+
+/// The sim's lunge lasts at most `ZombieTuning::lunge_secs` (0.45 s) before the strike.
+const LUNGE_SECS: f32 = 0.45;
+/// Crossing a window's or fence's climb zone (`CLIMB_ZONE` either side) at the zombies'
+/// `climb_speed` (0.35 m/s) takes about 2 s; a fence is lower and the clip a little quicker.
+const CLIMB_SECS: f32 = 2.0;
+const VAULT_SECS: f32 = 1.6;
 
 const STAGGER_SECS: f32 = 0.8;
 const FALL_SECS: f32 = 0.5;
@@ -420,6 +499,9 @@ fn baked_max_secs(clip: Clip) -> f32 {
         Clip::DieFront => 1.5,
         Clip::DieDown => 1.7,
         Clip::Groan => 3.0,
+        Clip::Lunge => 0.6,
+        Clip::Climb => CLIMB_SECS,
+        Clip::Vault => VAULT_SECS,
         _ => f32::MAX,
     }
 }
@@ -552,6 +634,9 @@ fn clip_name(clip: Clip) -> &'static str {
         Clip::DieDown => "diedown",
         Clip::Stagger2 => "stagger2",
         Clip::Groan => "groan",
+        Clip::Lunge => "lunge",
+        Clip::Climb => "climb",
+        Clip::Vault => "vault",
     }
 }
 
@@ -647,7 +732,7 @@ fn build_baked(z: &Zvat) -> Result<Baked, String> {
                     first
                 });
                 let own = matches!(src[slot], Source::File(_));
-                let w = if one_shot { -1.0 } else if own { c.stride } else { 0.0 };
+                let w = if one_shot { -1.0 } else if own { walk_stride(clip, &c.name, c.stride) } else { 0.0 };
                 let rate = if w != 0.0 { 0.0 } else { 1.0 / c.secs };
                 if one_shot {
                     play[slot] = if clip == Clip::GetUp { GET_UP_SECS } else { c.secs.min(baked_max_secs(clip)) };
@@ -709,16 +794,20 @@ fn crowd_vat_paths(options: &Options) -> Vec<PathBuf> {
             .split(',')
             .flat_map(|part| std::env::split_paths(part.trim()).collect::<Vec<_>>())
             .filter(|p| !p.as_os_str().is_empty())
-            .flat_map(|p| if p.is_dir() { zvats_in(&p) } else { vec![p] })
+            .flat_map(|p| if crate::pack::is_dir(&p) { zvats_in(&p) } else { vec![p] })
             .collect(),
-        None => zvats_in(&options.data.join("../models/characters")),
+        // Nothing asked for: the release build's own crowd, if it carries one, else this repo's.
+        None => crate::release_chars::crowd_in(crate::release_chars::root())
+            .map(|dir| zvats_in(&dir))
+            .filter(|found| !found.is_empty())
+            .unwrap_or_else(|| zvats_in(&options.data.join("../models/characters"))),
     }
 }
 
 /// Every `*.zvat` in `dir`, by file name.
 fn zvats_in(dir: &Path) -> Vec<PathBuf> {
-    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map(|d| d.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "zvat")).collect())
+    let mut found: Vec<PathBuf> = crate::pack::read_dir(dir)
+        .map(|d| d.into_iter().filter(|p| p.extension().is_some_and(|e| e == "zvat")).collect())
         .unwrap_or_default();
     found.sort();
     found
@@ -727,7 +816,7 @@ fn zvats_in(dir: &Path) -> Vec<PathBuf> {
 /// A baked crowd character, its texture (if one was found) and a line saying what was loaded, or
 /// why it couldn't be.
 fn load_baked(path: &Path) -> Result<(Baked, Option<Image>, String), String> {
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let bytes = crate::pack::read(path).map_err(|e| e.to_string())?;
     let z = Zvat::parse(&bytes)?;
     let baked = build_baked(&z)?;
     let (texture, note) = match zvat::find_texture(path) {
@@ -755,6 +844,8 @@ fn load_baked(path: &Path) -> Result<(Baked, Option<Image>, String), String> {
 struct Variant {
     mesh: Handle<Mesh>,
     material: Handle<ZombieMaterial>,
+    /// Its silhouette (`silhouette.rs`).
+    ghost: Handle<ZombieMaterial>,
     timing: Timing,
     /// What it wears, from its file name past the plainest variant's (`zombie_02_hoodie` beside
     /// `zombie_02`: "hoodie"): wearable model names joined by `_`.
@@ -780,11 +871,48 @@ fn variant_of(id: u32, n: usize) -> usize {
     (id.wrapping_mul(0x85EB_CA6B).rotate_right(13) as usize) % n.max(1)
 }
 
-/// What each variant wears, from file stems: the part past the shortest stem that starts all of them
-/// (none: every stem is its own).
+/// What each variant wears, from file stems: the part past the shortest stem that starts all of them;
+/// with none, the part past a body's name and number (`zombie_03_hoodie_jeans` wears
+/// `hoodie_jeans`, `zombie_03` nothing); a stem with no number, nothing.
 fn variant_wears(stems: &[String]) -> Vec<String> {
     let base = stems.iter().min_by_key(|s| s.len()).filter(|b| stems.iter().all(|s| s.starts_with(b.as_str())));
-    stems.iter().map(|s| base.map_or(String::new(), |b| s[b.len()..].trim_matches('_').to_string())).collect()
+    let past_number = |s: &str| {
+        let tokens: Vec<&str> = s.split('_').collect();
+        tokens.iter().position(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit())).map_or(String::new(), |k| tokens[k + 1..].join("_"))
+    };
+    stems.iter().map(|s| base.map_or_else(|| past_number(s), |b| s[b.len()..].trim_matches('_').to_string())).collect()
+}
+
+/// [`variant_for`], with ties between variants that match as well (the same outfit on several
+/// bodies) broken by zombie `id`, so a crowd in one outfit isn't one body.
+fn variant_for_id(variants: &[&str], wore: &[&str], id: u32) -> Option<usize> {
+    let best = variant_for(variants, wore)?;
+    let same = |v: usize| {
+        let mut a: Vec<&str> = variants[v].split('_').collect();
+        let mut b: Vec<&str> = variants[best].split('_').collect();
+        a.sort_unstable();
+        b.sort_unstable();
+        a == b
+    };
+    let ties: Vec<usize> = (0..variants.len()).filter(|&v| same(v)).collect();
+    Some(ties[variant_of(id, ties.len())])
+}
+
+/// The variant zombie `id` is drawn as: the one nearest to what it wears (`look`, item indices; see
+/// `zombye_sim::corpses`), else by its id. `None` for `look`: it wears its outfit, worked out here.
+fn variant_of_zombie(assets: &ZombieAssets, join: &JoinInfo, id: u32, look: Option<&[u16]>) -> usize {
+    let n = assets.variants.len();
+    let default;
+    let look = match look {
+        Some(l) => l,
+        None if join.outfits.is_empty() => return variant_of(id, n),
+        None => {
+            default = zombye_sim::corpses::default_look(join.seed, id, &join.outfits, &join.items);
+            &default[..]
+        }
+    };
+    let wore: Vec<&str> = look.iter().filter_map(|&i| join.items.get(i as usize)).filter_map(|d| d.model.as_deref()).collect();
+    variant_for_id(&assets.variants.iter().map(|v| v.wears.as_str()).collect::<Vec<_>>(), &wore, id).unwrap_or_else(|| variant_of(id, n))
 }
 
 /// The variant nearest to what a player who rose wore (#63): the most of its wearables (model names)
@@ -833,12 +961,12 @@ fn setup_zombie_assets(
         .into_iter()
         .zip(wears)
         .map(|((baked, texture, _), wears)| {
-            let material = materials.add(ZombieMaterial {
-                vat: images.add(baked.image()),
-                settings: VatSettings { clips: baked.clips },
-                base_color: images.add(texture),
-            });
-            Variant { mesh: meshes.add(baked.mesh), material, timing: Timing { clips: baked.clips, play: baked.play }, wears }
+            let lit = ZombieMaterial { vat: images.add(baked.image()), settings: VatSettings { clips: baked.clips }, base_color: images.add(texture), silhouette: false };
+            let mut ghost = ZombieMaterial { silhouette: true, ..lit.clone() };
+            ghost.settings.clips[SILHOUETTE_TINT] = crate::silhouette::ZOMBIE_TINT;
+            ghost.settings.clips[SILHOUETTE_DEPTH] = Vec4::new(crate::silhouette::SELF_CLEAR, 0.0, 0.0, 0.0);
+            let (material, ghost) = (materials.add(lit), materials.add(ghost));
+            Variant { mesh: meshes.add(baked.mesh), material, ghost, timing: Timing { clips: baked.clips, play: baked.play }, wears }
         })
         .collect();
     commands.insert_resource(ZombieAssets { variants });
@@ -849,6 +977,21 @@ fn setup_zombie_assets(
 /// the first four clips, so the clip faded from fits in 2 tag bits.
 fn is_loop(clip: Clip) -> bool {
     (clip as u8) < 4
+}
+
+/// The shortest stride (metres a cycle, two steps) a baked walk is taken at its word for, and the
+/// one used instead of a shorter one or none. A walk measured with no planted foot (a shuffle) comes
+/// out at 0 or a few centimetres: played by speed / stride it would glide or race.
+const MIN_STRIDE: f32 = 0.4;
+const FALLBACK_STRIDE: f32 = 1.0;
+
+/// The stride a baked looping clip plays at: its own, unless it is the walk and that isn't one.
+fn walk_stride(clip: Clip, name: &str, stride: f32) -> f32 {
+    if clip != Clip::Walk || stride >= MIN_STRIDE {
+        return stride;
+    }
+    eprintln!("crowd: the baked walk '{name}' has a stride of {stride:.2} m; playing it at {FALLBACK_STRIDE} m");
+    FALLBACK_STRIDE
 }
 
 /// How long a switch from one clip to another crossfades.
@@ -926,6 +1069,8 @@ struct Tracked {
     entity: Entity,
     /// Its outfit variant (index into [`ZombieAssets::variants`]).
     variant: usize,
+    /// What the server said it wears, when not its outfit (`Snapshot::looks`).
+    look: Option<Vec<u16>>,
     anim: ZombieAnim,
     /// When `anim` started (seconds, `Time` clock).
     since: f32,
@@ -940,10 +1085,33 @@ struct Tracked {
     /// Which reel a stagger plays (picked per stagger), and how many it has had.
     stagger: Clip,
     staggers: u32,
+    /// Which climb a climb plays: a window's, or the vault over a fence (picked from the map).
+    climb: Clip,
     flash_until: f32,
     /// Direction and time of the last blow, for the kickback and which way it falls.
     blow: Vec2,
     blow_at: f32,
+    /// Its silhouette twin, once it has needed one, and whether something covers it from the
+    /// camera (looked at every few frames).
+    ghost: Option<Entity>,
+    covered: bool,
+    /// Its entity is hidden (out of our sight), so nothing of it needs keeping up.
+    hidden: bool,
+}
+
+/// A zombie's cover is looked at again every this many frames (each on its own frame, by id).
+const COVER_EVERY: u32 = 8;
+
+/// Is a zombie standing at `pos` covered from the camera by a building's bulk or by a wall still
+/// standing (not cut away)? The player's own building's roof and upper storeys are hidden, so
+/// they don't count.
+fn covered(map: &zombye_sim::map::TileMap, cutaway: &crate::cutaway::Cutaway, pos: Vec2, camera_dir: Vec3) -> bool {
+    if crate::cutaway::bulk_hides(map, pos, camera_dir, cutaway.inside) {
+        return true;
+    }
+    let mut wall = false;
+    crate::cutaway::body_edges(map, pos, camera_dir, |key| wall |= cutaway.amount(key) < 0.5);
+    wall
 }
 
 /// How long a hit zombie flashes, and how far and for how long it's knocked back on screen.
@@ -957,6 +1125,7 @@ impl Tracked {
             id,
             entity: Entity::PLACEHOLDER,
             variant,
+            look: None,
             anim,
             since,
             fade_from: None,
@@ -964,10 +1133,14 @@ impl Tracked {
             seen,
             death: Clip::DieBack,
             stagger: Clip::Stagger,
+            climb: Clip::Climb,
             staggers: 0,
             flash_until: 0.0,
+            ghost: None,
+            covered: false,
             blow: Vec2::ZERO,
             blow_at: -100.0,
+            hidden: false,
         }
     }
 
@@ -987,6 +1160,8 @@ impl Tracked {
             ZombieAnim::Down => (Clip::Down, Some(((e - fall) * tm.clips[Clip::Down as usize].z).fract())),
             ZombieAnim::GetUp => once(Clip::GetUp),
             ZombieAnim::Dead => once(self.death),
+            ZombieAnim::Lunge => once(Clip::Lunge),
+            ZombieAnim::Climb => once(self.climb),
         }
     }
 
@@ -1069,13 +1244,21 @@ fn sync_zombies(
     assets: Option<Res<ZombieAssets>>,
     entities: Option<ResMut<ZombieEntities>>,
     mut query: Query<(&mut Transform, &mut MeshTag, &mut Visibility)>,
+    silhouettes: Res<crate::silhouette::ZombieSilhouettes>,
+    cutaway: Res<crate::cutaway::Cutaway>,
+    map: Res<crate::server_link::ClientMap>,
+    cams: Query<&crate::camera::IsoCamera>,
+    mut frame: Local<u32>,
 ) {
     let (Some(assets), Some(mut entities)) = (assets, entities) else { return };
+    *frame = frame.wrapping_add(1);
+    // Silhouettes (off by default): only of zombies drawn at all, which is the ones the survivor sees.
+    let ghosts = cams.single().ok().filter(|cam| silhouettes.0 && !cam.low()).map(|cam| cam.offset_dir());
     let now = time.elapsed_secs();
     // The shader's clock (`globals.time`).
     let t = time.elapsed_secs_wrapped();
     for ev in &events.0 {
-        if ev.kind == CombatEventKind::PlayerHurt {
+        if matches!(ev.kind, CombatEventKind::PlayerHurt | CombatEventKind::PlayerShoved) {
             continue;
         }
         if let Some(t) = entities.0.get_mut(&ev.zombie) {
@@ -1088,6 +1271,9 @@ fn sync_zombies(
     let tick = link.curr.tick;
     let prev_list = &link.prev.zombies;
     let n = assets.variants.len();
+    // The looks the server sent: zombies that don't wear their outfit (in id order, as listed).
+    let looks = &link.curr.looks;
+    let look_of = |id: u32| looks.binary_search_by_key(&id, |o| o.id).ok().map(|k| &looks[k].worn[..]);
     for (i, z) in link.curr.zombies.iter().enumerate() {
         // Both lists are in id order; usually at the same index, unless corpses were cleared away.
         let prev = prev_list.get(i).filter(|p| p.id == z.id).or_else(|| prev_list.binary_search_by_key(&z.id, |p| p.id).ok().map(|k| &prev_list[k])).unwrap_or(z);
@@ -1095,27 +1281,24 @@ fn sync_zombies(
         let facing = lerp_angle(prev.facing, z.facing, alpha);
         let visibility = if fog.visibility(pos) > 0.35 { Visibility::Inherited } else { Visibility::Hidden };
         // Sim angle 0 = +x, counter-clockwise toward +y (= Bevy +z). The mesh faces +Z.
-        let rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - facing);
+        let rotation = || Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - facing);
+        let climb = if z.anim == ZombieAnim::Climb && map.0.window_opening(Vec2::from(z.pos)) == Some(zombye_sim::map::Edge::Fence) { Clip::Vault } else { Clip::Climb };
 
         let Some(tr) = entities.0.get_mut(&z.id) else {
+            let rotation = rotation();
             // First sight. A corpse is already lying still.
             let since = if z.anim == ZombieAnim::Dead { -100.0 } else { now };
-            // A player who turned wears what it wore, as near as the variants allow.
-            let variant = link
-                .curr
-                .risen
-                .iter()
-                .find(|r| r.id == z.id)
-                .and_then(|r| {
-                    let wore: Vec<&str> = r.worn.iter().filter_map(|&i| join.items.get(i as usize)).filter_map(|d| d.model.as_deref()).collect();
-                    variant_for(&assets.variants.iter().map(|v| v.wears.as_str()).collect::<Vec<_>>(), &wore)
-                })
-                .unwrap_or_else(|| variant_of(z.id, n));
+            // What it wears, as near as the variants allow: its outfit, what a player who turned
+            // wore, or what is left on a body that has been searched.
+            let look = look_of(z.id);
+            let variant = variant_of_zombie(&assets, &join, z.id, look);
             let v = &assets.variants[variant];
             let mut tr = Tracked::new(z.id, variant, z.anim, since, z.speed, tick);
+            tr.look = look.map(<[u16]>::to_vec);
+            tr.climb = climb;
             let (clip, play) = tr.play(now, t, &v.timing);
             let tag = pack_tag(z.id, clip, play, z.speed, false);
-            let transform = Transform { translation: Vec3::new(pos.x, 0.0, pos.y), rotation, scale: Vec3::ONE };
+            let transform = Transform { translation: Vec3::new(pos.x, map.0.ground(pos), pos.y), rotation, scale: Vec3::ONE };
             tr.entity = commands
                 .spawn((
                     Mesh3d(v.mesh.clone()),
@@ -1125,15 +1308,42 @@ fn sync_zombies(
                     visibility,
                 ))
                 .id();
+            tr.hidden = visibility == Visibility::Hidden;
             entities.0.insert(z.id, tr);
             continue;
         };
+        // What it wears changed (its body searched, something taken off it): draw the variant
+        // nearest to that now.
+        let look = look_of(z.id);
+        if look != tr.look.as_deref() {
+            tr.look = look.map(<[u16]>::to_vec);
+            let variant = variant_of_zombie(&assets, &join, z.id, look);
+            if variant != tr.variant {
+                tr.variant = variant;
+                let v = &assets.variants[variant];
+                commands.entity(tr.entity).insert((Mesh3d(v.mesh.clone()), MeshMaterial3d(v.material.clone())));
+                if let Some(ghost) = tr.ghost.take() {
+                    commands.entity(ghost).despawn();
+                }
+            }
+        }
         let timing = &assets.variants[tr.variant.min(n - 1)].timing;
         tr.seen = tick;
         tr.speed = speed_steps(z.speed);
         if z.anim != tr.anim {
+            if z.anim == ZombieAnim::Climb {
+                tr.climb = climb;
+            }
             tr.set_anim(z.anim, z.facing, now, t, timing);
         }
+        // One that was out of sight and still is has nothing to draw: its entity is left as it is
+        // (in a town most of a crowd is behind something).
+        let hidden = visibility == Visibility::Hidden;
+        if hidden && tr.hidden {
+            continue;
+        }
+        tr.hidden = hidden;
+        let rotation = rotation();
         let kick = now - tr.blow_at;
         if kick < KICK_SECS {
             let k = 1.0 - kick / KICK_SECS;
@@ -1141,8 +1351,14 @@ fn sync_zombies(
         }
         let (clip, play) = tr.play(now, t, timing);
         let tag = pack_tag(z.id, clip, play, z.speed, now < tr.flash_until);
+        let transform = Transform { translation: Vec3::new(pos.x, map.0.ground(pos), pos.y), rotation, scale: Vec3::ONE };
         if let Ok((mut tf, mut mt, mut vis)) = query.get_mut(tr.entity) {
-            *tf = Transform { translation: Vec3::new(pos.x, 0.0, pos.y), rotation, scale: Vec3::ONE };
+            // Only a zombie that is drawn and has moved gets a new Transform: a changed one is
+            // propagated, extracted and uploaded again, zombie by zombie, and in a crowd most
+            // stand still or are out of sight (one that comes into sight is placed that frame).
+            if !hidden && *tf != transform {
+                *tf = transform;
+            }
             if mt.value != tag {
                 mt.value = tag;
             }
@@ -1150,12 +1366,48 @@ fn sync_zombies(
                 *vis = visibility;
             }
         }
+        // Its silhouette: the same body once more, where something covers it from the camera.
+        let shown = match ghosts {
+            Some(camera_dir) if visibility == Visibility::Inherited && z.anim != ZombieAnim::Dead => {
+                if z.id.wrapping_add(*frame) % COVER_EVERY == 0 {
+                    tr.covered = covered(&map.0, &cutaway, pos, camera_dir);
+                }
+                tr.covered
+            }
+            _ => false,
+        };
+        match tr.ghost {
+            Some(ghost) => {
+                if let Ok((mut tf, mut mt, mut vis)) = query.get_mut(ghost) {
+                    let want = if shown { Visibility::Inherited } else { Visibility::Hidden };
+                    if *vis != want {
+                        *vis = want;
+                    }
+                    if shown {
+                        if *tf != transform {
+                            *tf = transform;
+                        }
+                        if mt.value != tag {
+                            mt.value = tag;
+                        }
+                    }
+                }
+            }
+            None if shown => {
+                let v = &assets.variants[tr.variant.min(n - 1)];
+                tr.ghost = Some(commands.spawn((Mesh3d(v.mesh.clone()), MeshMaterial3d(v.ghost.clone()), MeshTag::new(tag), transform, bevy::light::NotShadowCaster)).id());
+            }
+            None => {}
+        }
     }
     // Corpses the server cleared away (ids are never reused, so only removals shrink the list).
     if entities.0.len() > link.curr.zombies.len() {
         for id in stale(&entities.0, tick) {
             if let Some(t) = entities.0.remove(&id) {
                 commands.entity(t.entity).despawn();
+                if let Some(ghost) = t.ghost {
+                    commands.entity(ghost).despawn();
+                }
             }
         }
     }
@@ -1296,6 +1548,25 @@ mod tests {
         assert_eq!(variant_wears(&["a".into(), "b".into()]), ["", ""], "no common stem");
     }
 
+    /// Several bodies, each in several outfits (the shipped crowd): what each wears is past its
+    /// body's number, and a zombie in an outfit two bodies have is one of them by its id.
+    #[test]
+    fn zombies_wear_the_variant_of_their_outfit() {
+        let stems: Vec<String> = ["zombie_03", "zombie_03_t_shirt_jeans_trainers", "zombie_04", "zombie_04_t_shirt_jeans_trainers", "zombie_04_hoodie_jeans_trainers"].iter().map(|s| s.to_string()).collect();
+        let wears = variant_wears(&stems);
+        assert_eq!(wears, ["", "t_shirt_jeans_trainers", "", "t_shirt_jeans_trainers", "hoodie_jeans_trainers"]);
+        let v: Vec<&str> = wears.iter().map(String::as_str).collect();
+        let outfit = ["t_shirt", "jeans", "trainers"];
+        let picks: std::collections::BTreeSet<usize> = (0..40).map(|id| variant_for_id(&v, &outfit, id).unwrap()).collect();
+        assert_eq!(picks, [1, 3].into(), "either body in that outfit, by id");
+        assert_eq!(variant_for_id(&v, &["hoodie", "jeans", "trainers"], 7), Some(4));
+        let bare: std::collections::BTreeSet<usize> = (0..40).map(|id| variant_for_id(&v, &[], id).unwrap()).collect();
+        assert_eq!(bare, [0, 2].into(), "a body with nothing left on it: a plain one");
+        // The Synty crowd's names: one shared stem.
+        let sk = variant_wears(&["zombie_sk".into(), "zombie_sk_jeans_trainers".into(), "zombie_sk_hoodie_jeans_trainers_baseball_cap".into()]);
+        assert_eq!(sk, ["", "jeans_trainers", "hoodie_jeans_trainers_baseball_cap"]);
+    }
+
     #[test]
     fn variants_are_worn_by_id() {
         assert_eq!(variant_of(5, 1), 0);
@@ -1413,6 +1684,20 @@ mod tests {
         row.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(lo, hi), p| (lo.min(*p), hi.max(*p)))
     }
 
+    /// The same points to within half-float precision (a `.zvat` keeps positions as f16, #155).
+    fn near(a: &[Vec3], b: &[Vec3]) -> bool {
+        a.len() == b.len() && a.iter().zip(b).all(|(p, q)| (*p - *q).abs().max_element() <= 2e-3 * q.abs().max_element().max(1.0))
+    }
+
+    /// A walk baked with no stride (feet that drag) still steps with the ground.
+    #[test]
+    fn a_walk_without_a_stride_gets_one() {
+        assert_eq!(walk_stride(Clip::Walk, "walk", 0.0), FALLBACK_STRIDE);
+        assert_eq!(walk_stride(Clip::Walk, "walk", 0.13), FALLBACK_STRIDE);
+        assert_eq!(walk_stride(Clip::Walk, "walk", 1.2), 1.2);
+        assert_eq!(walk_stride(Clip::Idle, "idle", 0.0), 0.0);
+    }
+
     /// Every slot gets frames: the file's walk and idle as they are, stand-ins for the rest.
     #[test]
     fn a_baked_character_fills_every_clip() {
@@ -1426,10 +1711,10 @@ mod tests {
         assert_eq!(b.image().height(), b.rows);
         let walk = b.clips[Clip::Walk as usize];
         assert_eq!((walk.y, walk.z, walk.w), (6.0, 0.0, 1.0), "the file's walk, played at speed / stride");
-        assert_eq!(b.row(walk.x as u32 + 2)[..z.vertices()], *z.frame(0, 2));
+        assert!(near(&b.row(walk.x as u32 + 2)[..z.vertices()], z.frame(0, 2)));
         let idle = b.clips[Clip::Idle as usize];
         assert_eq!((idle.y, idle.z, idle.w), (4.0, 1.0 / 3.0, 0.0), "the idle at its own rate");
-        assert_eq!(b.row(idle.x as u32)[..z.vertices()], *z.frame(1, 0));
+        assert!(near(&b.row(idle.x as u32)[..z.vertices()], z.frame(1, 0)));
         for (clip, _, _, _, secs) in CLIPS {
             let c = b.clips[clip as usize];
             assert!(c.y >= 1.0 && c.x + c.y <= b.rows as f32, "{clip:?}: {c}");

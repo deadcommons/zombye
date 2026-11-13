@@ -28,12 +28,12 @@ use bevy::camera::visibility::NoFrustumCulling;
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
-use zombye_sim::{ActionKind, CombatEventKind, Stance, TICK_DT, WeaponCategory};
+use zombye_sim::{ActionKind, CombatEventKind, Gesture, ItemCategory, JobKind, Stance, TICK_DT, WeaponCategory};
 
 use crate::items_render::WeaponLooks;
 use crate::player::LocalPlayer;
 use crate::rig::{Bone, Pose, box_faces, mix, rx, ry, rz, skin_matrices, smooth};
-use crate::server_link::{CombatEventsThisFrame, JoinInfo, ServerLink};
+use crate::server_link::{ClientMap, CombatEventsThisFrame, JoinInfo, ServerLink};
 use crate::survivor_model::SurvivorModel;
 
 pub(crate) const N: usize = 12;
@@ -229,15 +229,21 @@ pub fn attach(commands: &mut Commands, assets: &SurvivorAssets, model: Option<&S
     }
     // The grip sits in the fist; the bar points along the hand's +Z (forward when the arm hangs).
     commands.spawn((HeldWeapon { player }, Transform::from_xyz(0.0, -0.07, 0.0), Visibility::Hidden, ChildOf(joints[HAND_R])));
-    commands.spawn((
-        Mesh3d(if local { assets.me.clone() } else { assets.other.clone() }),
-        MeshMaterial3d(assets.material.clone()),
-        SkinnedMesh { inverse_bindposes: assets.bindposes.clone(), joints: joints.to_vec() },
-        // Posed far from the rest pose (lying down), so don't cull by the rest-pose bounds.
-        NoFrustumCulling,
-        Transform::default(),
-        ChildOf(root),
-    ));
+    let body = commands
+        .spawn((
+            Mesh3d(if local { assets.me.clone() } else { assets.other.clone() }),
+            MeshMaterial3d(assets.material.clone()),
+            SkinnedMesh { inverse_bindposes: assets.bindposes.clone(), joints: joints.to_vec() },
+            // Posed far from the rest pose (lying down), so don't cull by the rest-pose bounds.
+            NoFrustumCulling,
+            Transform::default(),
+            ChildOf(root),
+        ))
+        .id();
+    if local {
+        // Ours shows through whatever still covers it (`silhouette.rs`).
+        commands.entity(body).insert(crate::silhouette::Silhouetted);
+    }
     commands.entity(root).insert(SurvivorAnim::new(player, Look::Grey(joints), GREY_STRIDES));
 }
 
@@ -247,6 +253,8 @@ pub(crate) enum Style {
     Punch,
     OneHand,
     TwoHand,
+    /// A gun (#72): held out level along the aim, and it kicks.
+    Gun,
 }
 
 pub(crate) fn style(category: WeaponCategory) -> Style {
@@ -254,6 +262,7 @@ pub(crate) fn style(category: WeaponCategory) -> Style {
         WeaponCategory::Unarmed => Style::Punch,
         WeaponCategory::ShortBlade | WeaponCategory::ShortBlunt => Style::OneHand,
         WeaponCategory::LongBlunt | WeaponCategory::Axe => Style::TwoHand,
+        WeaponCategory::Firearm => Style::Gun,
     }
 }
 
@@ -261,6 +270,9 @@ pub(crate) fn style(category: WeaponCategory) -> Style {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ActionClock {
     pub(crate) kind: ActionKind,
+    /// The how-manyth action this survivor began on this client: picks which of a move's variants
+    /// plays (only how it looks, so clients needn't agree).
+    pub(crate) n: u32,
     start: f32,
     land: f32,
     /// Set once the server says it landed.
@@ -268,7 +280,7 @@ pub(crate) struct ActionClock {
 }
 
 /// Where in an action clip the blow lands: the windup plays before it, the recovery after.
-const U_HIT: f32 = 0.45;
+pub(crate) const U_HIT: f32 = 0.45;
 
 impl ActionClock {
     /// Normalised clip time now.
@@ -312,12 +324,109 @@ pub struct SurvivorAnim {
     pub(crate) cycle: f32,
     pub(crate) idle: f32,
     pub(crate) action: Option<ActionClock>,
+    /// Actions begun so far ([`ActionClock::n`]).
+    begun: u32,
     last_tick: u64,
+    /// Our own survivor on a multiplayer server (#23): the action begun on the click that
+    /// `action` is playing (the input it went with, `player::OwnSwing::seq`) until the snapshots
+    /// have caught up with it, whether one has confirmed it, and the last one taken up.
+    own: Option<u32>,
+    own_confirmed: bool,
+    own_taken: u32,
     pub(crate) hurt_at: f32,
     pub(crate) dead_since: Option<f32>,
     /// Lying asleep rather than dead (#93), and when it woke (it gets up over `GET_UP_SECS`).
     pub(crate) sleeping: bool,
     pub(crate) woke_at: Option<f32>,
+    /// The gesture it makes or last made (#67), eased in and out, and its own clock (seconds).
+    pub(crate) gesture: Option<Gesture>,
+    pub(crate) gesture_w: f32,
+    pub(crate) gesture_t: f32,
+    /// Hands tied behind the back (#73), and hands at work on another survivor (tying, freeing,
+    /// searching): each eased in and out. `struggling`: working at the ties now.
+    pub(crate) tied_w: f32,
+    pub(crate) reach_w: f32,
+    pub(crate) struggling: bool,
+    /// What its hands are busy with, where we are told (its item job under way: eating, drinking,
+    /// searching, reloading), eased in and out, and how long it has been at it (seconds).
+    pub(crate) task: Option<Task>,
+    pub(crate) task_w: f32,
+    pub(crate) task_t: f32,
+    /// Lying dead (not knocked down or asleep): a body's own death clip plays.
+    pub(crate) died: bool,
+    /// Getting through an open or broken window or over a fence: which, eased in and out, how far
+    /// across (0 where it came into the climb zone, 1 where it leaves on the far side), and the
+    /// side of the edge it came from.
+    pub(crate) cross: Option<Cross>,
+    pub(crate) cross_w: f32,
+    pub(crate) cross_u: f32,
+    cross_side: f32,
+    /// On a flight of stairs and moving: going up (or down), eased in and out, and where in the
+    /// stair loop it is (a body's `stairs_up` / `stairs_down` clip; `STAIR_CYCLE_M` a loop).
+    pub(crate) stair: Option<bool>,
+    pub(crate) stair_w: f32,
+    pub(crate) stair_u: f32,
+    stair_p: Option<f32>,
+    /// Sitting down (`zombye_sim::sit`): on what, eased in and out (the whole body; moved onto
+    /// the seat by `player::sit_on_seat`).
+    pub(crate) seat: Option<zombye_sim::SeatKind>,
+    pub(crate) sit_w: f32,
+}
+
+/// Metres over the ground a stair loop (two steps) covers: what the clip it was made from rose in
+/// a loop (0.92 m), a flight rising a metre a metre, so a planted foot stays where it was put.
+pub(crate) const STAIR_CYCLE_M: f32 = 0.92;
+
+/// What a survivor is getting across (its clip in [`crate::survivor_model`]'s `CROSS_CLIPS`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Cross {
+    /// Through an open or broken window.
+    Climb,
+    /// Over a fence.
+    Vault,
+}
+
+/// The edge a body at `p` is climbing across, if any (`TileMap::window_opening`'s rule), and how
+/// far `p` is from its line (signed: which side).
+pub(crate) fn crossing(map: &zombye_sim::map::TileMap, p: Vec2) -> Option<(Cross, f32)> {
+    use zombye_sim::map::CLIMB_ZONE;
+    let t = p.floor().as_ivec2();
+    let f = p - t.as_vec2();
+    let tile = map.tile(t);
+    [
+        (f.y, tile.north),
+        (f.x, tile.west),
+        (f.y - 1.0, map.tile(t + IVec2::Y).north),
+        (f.x - 1.0, map.tile(t + IVec2::X).west),
+    ]
+    .into_iter()
+    .find(|(d, e)| d.abs() < CLIMB_ZONE && e.is_climbable())
+    .map(|(d, e)| (if e == zombye_sim::map::Edge::Fence { Cross::Vault } else { Cross::Climb }, d))
+}
+
+/// What a survivor's hands are seen to be busy with (a body's `eat`, `drink`, `loot` and `reload`
+/// clips; the grey-box has no pose for them).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Task {
+    Eat,
+    Drink,
+    Loot,
+    Reload,
+}
+
+impl Task {
+    fn of(job: &JobKind, join: &JoinInfo) -> Option<Self> {
+        match job {
+            JobKind::Search { .. } => Some(Self::Loot),
+            JobKind::Reload { .. } => Some(Self::Reload),
+            JobKind::Use { item, .. } => match join.items.get(*item as usize)?.category {
+                ItemCategory::Drink => Some(Self::Drink),
+                ItemCategory::Food => Some(Self::Eat),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
 }
 
 impl SurvivorAnim {
@@ -336,11 +445,35 @@ impl SurvivorAnim {
             cycle: 0.0,
             idle: 0.0,
             action: None,
+            begun: 0,
             last_tick: u64::MAX,
+            own: None,
+            own_confirmed: false,
+            own_taken: 0,
             hurt_at: -100.0,
             dead_since: None,
             sleeping: false,
             woke_at: None,
+            task: None,
+            task_w: 0.0,
+            task_t: 0.0,
+            died: false,
+            cross: None,
+            cross_w: 0.0,
+            cross_u: 0.0,
+            cross_side: 1.0,
+            stair: None,
+            stair_w: 0.0,
+            stair_u: 0.0,
+            stair_p: None,
+            gesture: None,
+            gesture_w: 0.0,
+            gesture_t: 0.0,
+            tied_w: 0.0,
+            reach_w: 0.0,
+            struggling: false,
+            seat: None,
+            sit_w: 0.0,
         }
     }
 }
@@ -355,7 +488,7 @@ pub struct SurvivorPlugin;
 
 impl Plugin for SurvivorPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (animate_survivors, show_held_weapons, crate::survivor_model::dress_survivors, crate::survivor_model::dim_rings));
+        app.add_systems(Update, (animate_survivors, show_held_weapons, crate::survivor_model::dress_survivors, crate::survivor_model::dim_rings, crate::survivor_model::mark_agents));
     }
 }
 
@@ -365,6 +498,7 @@ fn animate_survivors(
     link: Res<ServerLink>,
     me: Option<Res<LocalPlayer>>,
     join: Res<JoinInfo>,
+    map: Res<ClientMap>,
     events: Res<CombatEventsThisFrame>,
     model: Option<Res<SurvivorModel>>,
     options: Res<crate::Options>,
@@ -399,6 +533,61 @@ fn animate_survivors(
         a.move_w += (smooth(0.15, 0.8, a.speed) - a.move_w) * k(10.0);
         let aiming = local.map_or(view.aiming, |m| m.aiming) && !view.dead && !view.asleep;
         a.aim_w += (aiming as u8 as f32 - a.aim_w) * k(12.0);
+        // A gesture (#67): eased in while the server says so, and out after.
+        let gesturing = view.gesture.filter(|_| !view.dead && !view.asleep);
+        if let Some(g) = gesturing {
+            if a.gesture != Some(g) || a.gesture_w < 0.05 {
+                a.gesture_t = 0.0;
+            }
+            a.gesture = Some(g);
+        }
+        a.gesture_w += (gesturing.is_some() as u8 as f32 - a.gesture_w) * k(9.0);
+        a.gesture_t += dt;
+        // Tied hands, and hands at work on another survivor (#73).
+        let up = !view.dead && !view.asleep;
+        a.tied_w += ((view.restrained && up) as u8 as f32 - a.tied_w) * k(9.0);
+        a.reach_w += ((view.hands.is_some() && up) as u8 as f32 - a.reach_w) * k(9.0);
+        a.struggling = view.struggling && up;
+        let seat = view.seated.filter(|_| up);
+        if seat.is_some() {
+            a.seat = seat;
+        }
+        a.sit_w += (seat.is_some() as u8 as f32 - a.sit_w) * k(7.0);
+        // Its item job under way, where we know which (our own survivor's; single-player: anyone's).
+        let task = link.own(a.player).and_then(|v| v.jobs.first()).filter(|_| up && view.busy > 0.0).and_then(|j| Task::of(j, &join));
+        if let Some(t) = task {
+            if a.task != Some(t) || a.task_w < 0.05 {
+                a.task_t = 0.0;
+            }
+            a.task = Some(t);
+        }
+        a.task_w += (task.is_some() as u8 as f32 - a.task_w) * k(9.0);
+        a.task_t += dt;
+        a.died = view.dead;
+        // Through a window or over a fence: how far across goes by where the body is, so the clip
+        // keeps pace with the slow climb (and runs back if it backs out).
+        let cross = crossing(&map.0, pos).filter(|_| up);
+        if let Some((kind, d)) = cross {
+            if a.cross != Some(kind) || a.cross_w < 0.05 {
+                a.cross_side = if d < 0.0 { -1.0 } else { 1.0 };
+            }
+            a.cross = Some(kind);
+            a.cross_u = (0.5 - a.cross_side * d / (2.0 * zombye_sim::map::CLIMB_ZONE)).clamp(0.0, 1.0);
+        }
+        a.cross_w += (cross.is_some() as u8 as f32 - a.cross_w) * k(14.0);
+        // On a flight of stairs: which way goes by how far up it the body is and was.
+        let flight = map.0.stair_at(pos).filter(|_| up && view.level == 0).map(|s| s.progress(pos));
+        if let Some(p) = flight {
+            match a.stair_p {
+                // Just come onto it: from the foot going up, from the top coming down.
+                None => a.stair = Some(p < 0.5),
+                Some(was) if (p - was).abs() > 1e-4 => a.stair = Some(p > was),
+                _ => {}
+            }
+        }
+        a.stair_p = flight;
+        a.stair_w += ((flight.is_some() && a.speed > 0.3) as u8 as f32 - a.stair_w) * k(10.0);
+        a.stair_u = (a.stair_u + a.speed * dt / STAIR_CYCLE_M).fract();
         let cycle_m = match (&a.look, &model) {
             (Look::Model(_), Some(m)) => m.cycle_metres(a),
             _ => {
@@ -409,30 +598,71 @@ fn animate_survivors(
         a.cycle = (a.cycle + a.speed * dt / cycle_m).fract();
         a.idle = (a.idle + dt * 0.3).fract();
 
+        // On a multiplayer server our own action begins on the click (#23, `LocalPlayer::act`):
+        // our survivor is predicted, so the blow lands on screen when and where the server lands
+        // it, and the server tests the targets where this picture has them (lag compensation).
+        // Everything the snapshot says of our own timing is `lag` old by our survivor's clock.
+        let lag = local.map_or(0.0, |m| m.view_lag(&link, view));
+        if let Some(s) = local.and_then(|m| m.swing).filter(|s| link.net.is_some() && s.seq != a.own_taken) {
+            a.own_taken = s.seq;
+            a.own = Some(s.seq);
+            a.own_confirmed = false;
+            a.begun += 1;
+            a.action = Some(ActionClock { kind: s.kind, n: a.begun, start: s.at, land: s.at + s.windup, end: Some(s.at + s.total) });
+        }
         // The action under way, timed from snapshots.
         if link.curr.tick != a.last_tick {
             a.last_tick = link.curr.tick;
-            match view.action {
-                Some(kind) => match &mut a.action {
-                    Some(c) if c.kind == kind && c.end.is_none() => c.land = now + view.action_left,
-                    _ => a.action = Some(ActionClock { kind, start: now - TICK_DT, land: now + view.action_left, end: None }),
-                },
-                None => {
-                    if let Some(c) = &mut a.action
-                        && c.end.is_none()
-                    {
-                        c.land = c.land.min(now);
-                        c.end = Some(now + view.ready_in.max(0.15));
+            match a.own {
+                // A snapshot from before the click says nothing about this action.
+                Some(seq) if view.last_input_seq < seq => {}
+                Some(_) => match (view.action, &mut a.action) {
+                    // The server has it under way: its timing, moved to our survivor's clock.
+                    (Some(kind), Some(c)) if c.kind == kind => {
+                        a.own_confirmed = true;
+                        c.land = now + view.action_left - lag;
+                        c.end = Some((now + view.ready_in - lag).max(c.land + 0.1));
                     }
-                }
+                    _ => {
+                        // Landed there, or never taken (we were hit first, or too soon after the
+                        // last one): from here the snapshots say what we do.
+                        if !a.own_confirmed && view.action.is_none() && view.ready_in <= 0.0 {
+                            a.action = None;
+                        }
+                        a.own = None;
+                    }
+                },
+                None => match view.action {
+                    Some(kind) => match &mut a.action {
+                        Some(c) if c.kind == kind && c.end.is_none() => c.land = now + view.action_left - lag,
+                        _ => {
+                            a.begun += 1;
+                            a.action = Some(ActionClock { kind, n: a.begun, start: now - TICK_DT, land: now + view.action_left - lag, end: None });
+                        }
+                    },
+                    None => {
+                        if let Some(c) = &mut a.action
+                            && c.end.is_none()
+                        {
+                            c.land = c.land.min(now);
+                            c.end = Some(now + (view.ready_in - lag).max(0.15));
+                        }
+                    }
+                },
             }
+        }
+        if a.action.is_none() {
+            a.own = None;
         }
         if a.action.is_some_and(|c| c.end.is_some_and(|e| now > e)) {
             a.action = None;
         }
-        if events.0.iter().any(|e| e.kind == CombatEventKind::PlayerHurt && e.player == a.player) {
+        if events.0.iter().any(|e| matches!(e.kind, CombatEventKind::PlayerHurt | CombatEventKind::PlayerShoved) && e.player == a.player) {
             a.hurt_at = now;
         }
+        // Knocked down by another player's blow (PvP): it falls as the dead do and lies there, and
+        // gets up over the last moment of it (as a sleeper does on waking).
+        let floored = view.knock.filter(|k| k.down);
         // Asleep, a survivor lies still on its back (#93): its own short lie-down and get-up.
         if view.dead {
             if a.sleeping || a.woke_at.is_some() {
@@ -449,7 +679,18 @@ fn animate_survivors(
                 a.dead_since = Some(if fresh { now - 10.0 } else { now });
             }
             a.sleeping = true;
+        } else if floored.is_some_and(|k| k.timer > SLEEP_GET_UP_SECS) && a.woke_at.is_none() {
+            if a.dead_since.is_none() || a.sleeping {
+                a.dead_since = Some(if fresh { now - 10.0 } else { now });
+            }
+            a.sleeping = false;
+            a.action = None;
         } else if a.dead_since.is_some() {
+            if floored.is_some() && !a.sleeping {
+                // Nearly over: up it gets.
+                a.sleeping = true;
+                a.woke_at = Some(now);
+            }
             if a.sleeping && a.woke_at.is_none() {
                 a.woke_at = Some(now);
                 a.action = None;
@@ -486,7 +727,7 @@ fn animate_survivors(
             }
             Look::Model(js) => {
                 let Some(model) = &model else { continue };
-                let pose = model.compose(a, now, style(category), armed);
+                let pose = model.compose(a, now, category, armed);
                 for (b, e) in js.iter().take(pose.t.len()).enumerate() {
                     if let Ok(mut jt) = joints.get_mut(*e) {
                         jt.translation = pose.t[b];
@@ -525,35 +766,95 @@ fn hold_pose(a: &mut SurvivorAnim, pose: &str, step: f32, now: f32) {
     let u = (u + step).fract();
     let locomotion = |a: &mut SurvivorAnim, run: f32, sneak: f32, moving: f32| {
         (a.run_w, a.sneak_w, a.move_w, a.cycle) = (run, sneak, moving, u);
+        a.gesture_w = 0.0;
+        (a.tied_w, a.reach_w, a.struggling) = (0.0, 0.0, false);
         a.action = None;
         a.dead_since = None;
         a.sleeping = false;
         a.woke_at = None;
+        (a.task, a.task_w, a.died) = (None, 0.0, false);
+        (a.cross, a.cross_w) = (None, 0.0);
+        (a.seat, a.sit_w) = (None, 0.0);
+        a.hurt_at = -100.0;
     };
     let act = |a: &mut SurvivorAnim, kind: ActionKind| {
         locomotion(a, 0.0, 0.0, 0.0);
+        // `swing_b`: the how-manyth action that plays a swing's second variant.
+        let n = if name == "swing_b" { (0..).find(|&n| crate::survivor_model::variant(n)).unwrap_or(0) } else { a.begun };
         // Started, landing and recovering so that the clip is at `u` now.
         a.action = Some(if u <= U_HIT {
-            ActionClock { kind, start: now - u, land: now + (U_HIT - u), end: None }
+            ActionClock { kind, n, start: now - u, land: now + (U_HIT - u), end: None }
         } else {
-            ActionClock { kind, start: now - 1.0, land: now - (u - U_HIT), end: Some(now + (1.0 - u)) }
+            ActionClock { kind, n, start: now - 1.0, land: now - (u - U_HIT), end: Some(now + (1.0 - u)) }
         });
     };
     match name {
         "walk" => locomotion(a, 0.0, 0.0, 1.0),
         "run" => locomotion(a, 1.0, 0.0, 1.0),
         "sneak" => locomotion(a, 0.0, 1.0, 1.0),
-        "swing" => act(a, ActionKind::Swing),
+        "swing" | "swing_b" => act(a, ActionKind::Swing),
         "shove" => act(a, ActionKind::Shove),
         "stomp" => act(a, ActionKind::Stomp),
         "dead" => {
             locomotion(a, 0.0, 0.0, 0.0);
             a.dead_since = Some(now - 10.0);
+            a.died = true;
+        }
+        // Dying, `U` of a second into it; hurt, `U` of a second after the blow.
+        "die" => {
+            locomotion(a, 0.0, 0.0, 0.0);
+            a.dead_since = Some(now - u);
+            a.died = true;
+        }
+        "hurt" => {
+            locomotion(a, 0.0, 0.0, 0.0);
+            a.hurt_at = now - u;
+        }
+        // Hands busy (a body's own clips), `U` x 4 s into it.
+        "eat" | "drink" | "loot" | "reload" => {
+            locomotion(a, 0.0, 0.0, 0.0);
+            let task = match name {
+                "eat" => Task::Eat,
+                "drink" => Task::Drink,
+                "loot" => Task::Loot,
+                _ => Task::Reload,
+            };
+            (a.task, a.task_w, a.task_t) = (Some(task), 1.0, u * 4.0);
+        }
+        // Through a window, over a fence: `U` of the way across.
+        "climb" | "vault" => {
+            locomotion(a, 0.0, 0.0, 0.0);
+            (a.cross, a.cross_w, a.cross_u) = (Some(if name == "climb" { Cross::Climb } else { Cross::Vault }), 1.0, u);
+        }
+        // On a flight of stairs: `U` of the loop.
+        "stairs" | "stairs_down" => {
+            locomotion(a, 0.0, 0.0, 1.0);
+            (a.stair, a.stair_w, a.stair_u) = (Some(name == "stairs"), 1.0, u);
+        }
+        // Sitting down: on a seat (a sofa's height) or on the ground.
+        "sit" | "sit_ground" => {
+            locomotion(a, 0.0, 0.0, 0.0);
+            let kind = if name == "sit" { zombye_sim::SeatKind::Sofa } else { zombye_sim::SeatKind::Ground };
+            (a.seat, a.sit_w) = (Some(kind), 1.0);
         }
         "sleep" => {
             locomotion(a, 0.0, 0.0, 0.0);
             a.dead_since = Some(now - 10.0);
             a.sleeping = true;
+        }
+        // The gestures (#67), `U` of a second into them (the wave swings once a second).
+        "wave" | "handsup" | "hands_up" | "point" => {
+            locomotion(a, 0.0, 0.0, 0.0);
+            (a.gesture, a.gesture_w, a.gesture_t) = (Gesture::parse(name), 1.0, u);
+        }
+        // Hands tied behind the back, and hands at work on another survivor (#73).
+        "tied" => {
+            locomotion(a, 0.0, 0.0, 0.0);
+            a.tied_w = 1.0;
+        }
+        "tying" => {
+            locomotion(a, 0.0, 0.0, 0.0);
+            (a.reach_w, a.gesture_t) = (1.0, u);
         }
         _ => locomotion(a, 0.0, 0.0, 0.0),
     }
@@ -572,6 +873,14 @@ pub(crate) fn locomotion(a: &SurvivorAnim, armed: bool) -> SPose {
 
 /// The action under way: its pose, how much of the body it takes (the stomp all of it, the rest the
 /// upper body) and its weight now.
+/// The action under way: its kind, how far through it is (0 to 1, the blow at [`U_HIT`]) and how much
+/// it shows (eased in and out).
+pub(crate) fn action_clock(a: &SurvivorAnim, now: f32) -> Option<(ActionKind, u32, f32, f32)> {
+    let c = a.action?;
+    let u = c.u(now);
+    Some((c.kind, c.n, u, smooth(0.0, 0.06, u) * (1.0 - smooth(0.88, 1.0, u))))
+}
+
 pub(crate) fn action_now(a: &SurvivorAnim, now: f32, style: Style, armed: bool) -> Option<(SPose, bool, f32)> {
     let c = a.action?;
     let u = c.u(now);
@@ -589,6 +898,16 @@ pub(crate) fn guard(style: Style, armed: bool) -> SPose {
     p.rot[TORSO] = rx(0.08);
     p.rot[HEAD] = rx(-0.22);
     match (style, armed) {
+        (Style::Gun, true) => {
+            // Both arms out along the aim, the gun level in front of the chest.
+            p.rot[TORSO] = rx(0.04);
+            p.rot[HEAD] = rx(-0.08);
+            p.rot[UARM_R] = rz(0.14) * rx(-1.42);
+            p.rot[FARM_R] = rx(-0.08);
+            p.rot[HAND_R] = rx(1.5);
+            p.rot[UARM_L] = rz(-0.3) * rx(-1.36);
+            p.rot[FARM_L] = rx(-0.22);
+        }
         (Style::TwoHand, true) => {
             p.rot[UARM_R] = rz(-0.25) * rx(-0.75);
             p.rot[FARM_R] = rx(-1.45);
@@ -614,6 +933,67 @@ pub(crate) fn guard(style: Style, armed: bool) -> SPose {
     p
 }
 
+/// The bones a gesture takes: the free (left) arm for a wave or a point, both arms for hands up.
+pub(crate) const LEFT_ARM: [usize; 2] = [UARM_L, FARM_L];
+pub(crate) const ARMS: [usize; 5] = [UARM_L, FARM_L, UARM_R, FARM_R, HAND_R];
+
+/// The gesture under way (#67): its pose, whether it takes both arms (else the left), and its
+/// weight now. The left hand is the free one (the right holds the weapon), so that one waves and
+/// points; hands up raises both, whatever is in them.
+pub(crate) fn gesture_now(a: &SurvivorAnim) -> Option<(SPose, bool, f32)> {
+    let g = a.gesture.filter(|_| a.gesture_w > 0.01)?;
+    let mut p = SPose::default();
+    match g {
+        Gesture::Wave => {
+            // The arm up beside the head, the forearm swinging from side to side.
+            let s = (a.gesture_t * TAU * 1.6).sin();
+            p.rot[UARM_L] = rz(0.75) * rx(-2.55);
+            p.rot[FARM_L] = rz(0.2 + 0.5 * s) * rx(-0.35);
+        }
+        Gesture::HandsUp => {
+            // Both arms up and a little out, open, elbows soft.
+            p.rot[UARM_L] = rz(0.85) * rx(-2.5);
+            p.rot[FARM_L] = rx(-0.5);
+            p.rot[UARM_R] = rz(-0.85) * rx(-2.5);
+            p.rot[FARM_R] = rx(-0.5);
+            p.rot[HAND_R] = rx(-0.1);
+        }
+        Gesture::Point => {
+            // The arm straight out the way it faces, jabbed once as it comes up.
+            let jab = 0.12 * (1.0 - smooth(0.0, 0.5, a.gesture_t));
+            p.rot[UARM_L] = rz(-0.05) * rx(-1.5 + jab);
+            p.rot[FARM_L] = rx(-0.06);
+        }
+    }
+    Some((p, g == Gesture::HandsUp, a.gesture_w))
+}
+
+/// Hands tied behind the back, or at work on another survivor (#73): the pose of both arms and
+/// its weight now. Tied wins: a tied survivor does nothing else with its hands.
+pub(crate) fn bonds_now(a: &SurvivorAnim) -> Option<(SPose, f32)> {
+    let mut p = SPose::default();
+    if a.tied_w > 0.01 {
+        // Both arms drawn back and in, wrists crossed at the small of the back; struggling, the
+        // shoulders work from side to side.
+        let s = if a.struggling { (a.gesture_t * TAU * 2.2).sin() * 0.12 } else { 0.0 };
+        p.rot[UARM_L] = rz(-0.22 + s) * rx(0.62);
+        p.rot[FARM_L] = rz(-0.75) * rx(0.25);
+        p.rot[UARM_R] = rz(0.22 + s) * rx(0.62);
+        p.rot[FARM_R] = rz(0.75) * rx(0.25);
+        return Some((p, a.tied_w));
+    }
+    if a.reach_w > 0.01 {
+        // Both hands out in front at waist height, working.
+        let s = (a.gesture_t * TAU * 1.8).sin() * 0.1;
+        p.rot[UARM_L] = rz(-0.1) * rx(-0.95 + s);
+        p.rot[FARM_L] = rx(-0.55 - s);
+        p.rot[UARM_R] = rz(0.1) * rx(-0.95 - s);
+        p.rot[FARM_R] = rx(-0.55 + s);
+        return Some((p, a.reach_w));
+    }
+    None
+}
+
 /// How far into the hurt flinch it is now (0 = none).
 pub(crate) fn flinch_weight(a: &SurvivorAnim, now: f32) -> f32 {
     let e = now - a.hurt_at;
@@ -627,6 +1007,12 @@ pub(crate) fn flinch_weight(a: &SurvivorAnim, now: f32) -> f32 {
 fn compose(a: &SurvivorAnim, now: f32, style: Style, armed: bool) -> SPose {
     let mut pose = locomotion(a, armed);
     pose.blend_bones(&guard(style, armed), a.aim_w, &UPPER, false);
+    if let Some((g, both, w)) = gesture_now(a) {
+        pose.blend_bones(&g, w, if both { &ARMS[..] } else { &LEFT_ARM[..] }, false);
+    }
+    if let Some((b, w)) = bonds_now(a) {
+        pose.blend_bones(&b, w, &ARMS[..], false);
+    }
     if let Some((act, whole, w)) = action_now(a, now, style, armed) {
         pose.blend_bones(&act, w, if whole { &ALL } else { &UPPER }, false);
     }
@@ -641,10 +1027,50 @@ fn compose(a: &SurvivorAnim, now: f32, style: Style, armed: bool) -> SPose {
     ground(&mut pose);
     // Running has a moment in the air each step.
     pose.offset.y += a.run_w * a.move_w * 0.05 * (a.cycle * TAU * 2.0).sin().max(0.0);
+    if let Some((sit, w)) = sitting_now(a) {
+        pose = pose.blend(&sit, w);
+    }
     if let Some((lie, w)) = lying(a, now) {
         pose = pose.blend(&lie, w);
     }
     pose
+}
+
+/// The seated pose and how much of it to blend over the rest, while sitting or getting up.
+pub(crate) fn sitting_now(a: &SurvivorAnim) -> Option<(SPose, f32)> {
+    let kind = a.seat.filter(|_| a.sit_w > 0.01)?;
+    let mut p = seated(kind == zombye_sim::SeatKind::Ground);
+    ground(&mut p);
+    Some((p, a.sit_w))
+}
+
+/// Sitting: on a seat, thighs level and shins down to the floor, hands on the knees; on the
+/// ground, legs out in front and leaning back a little on straight arms. Grounded by the feet
+/// (on a seat that puts the hips at about a chair's height).
+pub(crate) fn seated(on_ground: bool) -> SPose {
+    let mut p = SPose::default();
+    if on_ground {
+        p.rot[THIGH_L] = rx(-1.45) * rz(0.12);
+        p.rot[THIGH_R] = rx(-1.45) * rz(-0.12);
+        p.rot[SHIN_L] = rx(0.25);
+        p.rot[SHIN_R] = rx(0.25);
+        p.rot[TORSO] = rx(0.12);
+        p.rot[UARM_L] = rx(0.45) * rz(0.2);
+        p.rot[UARM_R] = rx(0.45) * rz(-0.2);
+        p.offset = Vec3::new(0.0, 0.0, 0.08);
+    } else {
+        p.rot[THIGH_L] = rx(-FRAC_PI_2) * rz(0.08);
+        p.rot[THIGH_R] = rx(-FRAC_PI_2) * rz(-0.08);
+        p.rot[SHIN_L] = rx(FRAC_PI_2 - 0.1);
+        p.rot[SHIN_R] = rx(FRAC_PI_2 - 0.1);
+        p.rot[TORSO] = rx(-0.06);
+        p.rot[UARM_L] = rx(-0.35) * rz(0.1);
+        p.rot[UARM_R] = rx(-0.35) * rz(-0.1);
+        p.rot[FARM_L] = rx(-0.9);
+        p.rot[FARM_R] = rx(-0.9);
+    }
+    p.rot[HEAD] = rx(-0.05);
+    p
 }
 
 /// How long a sleeper takes to get up after waking.
@@ -714,7 +1140,7 @@ fn carry(p: &mut SPose, armed: bool, swing: f32) {
     }
 }
 
-fn idle(t: f32, armed: bool) -> SPose {
+pub(crate) fn idle(t: f32, armed: bool) -> SPose {
     let s = (t * TAU).sin();
     let mut p = SPose::default();
     p.rot[TORSO] = rx(0.04 + 0.012 * s);
@@ -822,7 +1248,7 @@ fn upper(torso: Quat, head: Quat, uarm_l: Quat, farm_l: Quat, uarm_r: Quat, farm
 }
 
 /// An action's pose at normalised time `u` (the blow lands at [`U_HIT`]).
-fn action(kind: ActionKind, style: Style, armed: bool, u: f32, ready: &SPose) -> SPose {
+pub(crate) fn action(kind: ActionKind, style: Style, armed: bool, u: f32, ready: &SPose) -> SPose {
     let ready = ready.clone();
     let q = Quat::IDENTITY;
     match (kind, style) {
@@ -845,6 +1271,30 @@ fn action(kind: ActionKind, style: Style, armed: bool, u: f32, ready: &SPose) ->
             let hit = upper(ry(0.4) * rx(0.1), ry(-0.3), rz(-0.45) * rx(-1.35), rx(-0.2), rz(0.1) * rx(-1.45), rx(-0.1), rx(1.35));
             let follow = upper(ry(0.85) * rx(0.15), ry(-0.5), rz(0.1) * rx(-1.0), rx(-0.5), rz(0.5) * rx(-1.2), rx(-0.2), rx(1.2));
             keyed(&[(0.0, ready.clone()), (0.32, windup), (U_HIT, hit), (0.62, follow), (1.0, ready)], u)
+        }
+        (ActionKind::Swing, Style::Gun) => {
+            // Levelled, the shot (at `U_HIT`), the muzzle kicking up and coming back down.
+            let level = guard(Style::Gun, true);
+            let mut kick = level.clone();
+            kick.rot[UARM_R] = rz(0.14) * rx(-1.62);
+            kick.rot[FARM_R] = rx(-0.3);
+            kick.rot[HAND_R] = rx(1.25);
+            kick.rot[UARM_L] = rz(-0.3) * rx(-1.5);
+            kick.rot[TORSO] = rx(-0.03);
+            keyed(&[(0.0, ready.clone()), (U_HIT * 0.6, level.clone()), (U_HIT, level), (0.56, kick), (1.0, ready)], u)
+        }
+        (ActionKind::Shove, style) if armed && style != Style::Gun => {
+            // A melee weapon in hand: held across the chest in both hands like a bar and driven
+            // straight out from the body. The bar points along the hand's +Z; a quarter turn about
+            // the hand's Y lays it level across to his left hand, whatever the arm's lift (the
+            // arm's lift is about X), and a little more takes out the arm's inward turn.
+            let bar = ry(FRAC_PI_2 + 0.18);
+            let gather = upper(rx(-0.05), q, rz(-0.18) * rx(-0.55), rx(-1.75), rz(0.18) * rx(-0.55), rx(-1.75), bar);
+            // The arms' lift is under the torso's lean, which swings them back as much: so they're
+            // raised by it more, to reach out level at the shoulders with the bar at chest height.
+            let push = upper(rx(0.2), rx(-0.12), rz(-0.2) * rx(-1.72), rx(-0.08), rz(0.2) * rx(-1.72), rx(-0.08), bar);
+            let hold = upper(rx(0.15), rx(-0.08), rz(-0.18) * rx(-1.55), rx(-0.25), rz(0.18) * rx(-1.55), rx(-0.25), bar);
+            keyed(&[(0.0, ready.clone()), (0.25, gather), (U_HIT, push.clone()), (0.62, hold), (1.0, ready)], u)
         }
         (ActionKind::Shove, _) => {
             let hand = if armed { rx(0.3) } else { q };
@@ -906,13 +1356,14 @@ pub(crate) fn dead(e: f32) -> SPose {
     p
 }
 
-/// Show the weapon each survivor holds (from snapshots), as a bar in the weapon's colour.
+/// Show the weapon each survivor holds (from snapshots): a release build's model of it where
+/// there is one, else a bar in the weapon's colour.
 fn show_held_weapons(
     link: Res<ServerLink>,
     looks: Option<Res<WeaponLooks>>,
     mut commands: Commands,
     mut held: Query<(Entity, &HeldWeapon, &mut Visibility, Option<&Children>)>,
-    mut bars: Query<(&mut Transform, &mut MeshMaterial3d<StandardMaterial>), Without<HeldWeapon>>,
+    mut bars: Query<(&mut Transform, &mut MeshMaterial3d<StandardMaterial>, &mut Mesh3d), Without<HeldWeapon>>,
 ) {
     let Some(looks) = looks else { return };
     for (e, h, mut vis, children) in &mut held {
@@ -924,22 +1375,32 @@ fn show_held_weapons(
             *vis = want;
         }
         let Some(w) = weapon.filter(|_| len > 0.0) else { continue };
-        let material = looks.materials.get(w as usize).cloned().unwrap_or_default();
-        // The handle sticks out a little behind the fist.
-        let bar = Transform::from_xyz(0.0, 0.0, len * 0.5 - 0.1).with_scale(Vec3::new(0.05, 0.05, len));
+        let (mesh, material, bar) = match looks.held(w) {
+            // A model is made as the hand holds it.
+            Some((mesh, material)) => (mesh, material, Transform::IDENTITY),
+            // The handle sticks out a little behind the fist.
+            None => (
+                looks.cube.clone(),
+                looks.materials.get(w as usize).cloned().unwrap_or_default(),
+                Transform::from_xyz(0.0, 0.0, len * 0.5 - 0.1).with_scale(Vec3::new(0.05, 0.05, len)),
+            ),
+        };
         match children.and_then(|c| c.first().copied()) {
             Some(child) => {
-                if let Ok((mut tf, mut m)) = bars.get_mut(child) {
+                if let Ok((mut tf, mut m, mut shape)) = bars.get_mut(child) {
                     if *tf != bar {
                         *tf = bar;
                     }
                     if m.0 != material {
                         m.0 = material;
                     }
+                    if shape.0 != mesh {
+                        shape.0 = mesh;
+                    }
                 }
             }
             None => {
-                commands.spawn((Mesh3d(looks.cube.clone()), MeshMaterial3d(material), bar, ChildOf(e)));
+                commands.spawn((Mesh3d(mesh), MeshMaterial3d(material), bar, ChildOf(e)));
             }
         }
     }
@@ -982,6 +1443,46 @@ mod tests {
         assert!(head(&low) > 1.0);
     }
 
+    /// A gun is held out level along the aim, and kicks up after the shot (#72).
+    #[test]
+    fn a_gun_is_levelled_and_kicks() {
+        let barrel = |p: &SPose| (globals(&BONES, p)[HAND_R].transform_vector3(Vec3::Z), globals(&BONES, p)[HAND_R].transform_point3(Vec3::ZERO));
+        let (dir, hand) = barrel(&guard(Style::Gun, true));
+        assert!(dir.z > 0.95 && dir.y.abs() < 0.2, "aiming, the barrel points {dir}");
+        assert!(hand.z > 0.4 && (1.2..1.6).contains(&hand.y), "held out at shoulder height: {hand}");
+        let ready = guard(Style::Gun, true);
+        let (shot, _) = barrel(&action(ActionKind::Swing, Style::Gun, true, U_HIT, &ready));
+        let (kick, _) = barrel(&action(ActionKind::Swing, Style::Gun, true, 0.56, &ready));
+        assert!(shot.z > 0.95, "level as the shot goes: {shot}");
+        assert!(kick.y > shot.y + 0.2 && kick.z > 0.5, "then the muzzle rises: {kick}");
+        assert_eq!(style(WeaponCategory::Firearm), Style::Gun);
+    }
+
+    /// A shove with a weapon in hand holds it level across the body like a bar and drives it out.
+    #[test]
+    fn a_weapon_shove_pushes_with_it_across_the_body() {
+        for style in [Style::OneHand, Style::TwoHand] {
+            let at = |u: f32| {
+                let p = action(ActionKind::Shove, style, true, u, &idle(0.0, true));
+                let g = globals(&BONES, &p);
+                (g[HAND_R].transform_vector3(Vec3::Z), g[HAND_R].transform_point3(Vec3::ZERO))
+            };
+            let (gather_dir, gather) = at(0.25);
+            let (push_dir, push) = at(U_HIT);
+            for dir in [gather_dir, push_dir] {
+                assert!(dir.x > 0.9 && dir.y.abs() < 0.2, "{style:?}: the bar lies level to his left, not {dir}");
+            }
+            assert!(push.z > gather.z + 0.2, "{style:?}: driven out from {gather} to {push}");
+            // Out at chest height, not down at the waist: the hands no lower than a little under
+            // the shoulder, and as far out in front as the arm is long, near enough.
+            let p = action(ActionKind::Shove, style, true, U_HIT, &idle(0.0, true));
+            let g = globals(&BONES, &p);
+            let shoulder = g[UARM_R].transform_point3(Vec3::ZERO);
+            assert!(push.y > shoulder.y - 0.2, "{style:?}: hands at {push} under a shoulder at {shoulder}");
+            assert!(push.z - shoulder.z > 0.45, "{style:?}: hands at {push} not out in front of {shoulder}");
+        }
+    }
+
     /// The weapon points backward in the windup and forward when the blow lands.
     #[test]
     fn swings_wind_up_and_land_in_front() {
@@ -1010,7 +1511,7 @@ mod tests {
 
     #[test]
     fn action_clock_spans_windup_and_recovery() {
-        let c = ActionClock { kind: ActionKind::Swing, start: 1.0, land: 1.5, end: Some(2.0) };
+        let c = ActionClock { kind: ActionKind::Swing, n: 0, start: 1.0, land: 1.5, end: Some(2.0) };
         assert_eq!(c.u(1.0), 0.0);
         assert!((c.u(1.5) - U_HIT).abs() < 1e-6);
         assert_eq!(c.u(3.0), 1.0);

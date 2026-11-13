@@ -1,11 +1,11 @@
 //! The world material: `StandardMaterial` plus two tricks done in the fragment shader:
 //! - **fog of war**: anything outside the player's line of sight is darkened and desaturated;
-//! - **cutaway**: walls that would hide the player drop to knee-high stubs as whole pieces, and the
-//!   foliage of trees in front of the player fades out over a quarter of a second, leaving their
-//!   trunk and branches dimmed and thinned, so your character is never hidden. Inside a building,
-//!   only the walls that hide part of your room drop: its far walls and the rest of the building's
-//!   walls stand (#84). Roofs and upper storeys are hidden whole on the CPU when they cover you
-//!   (`world_render::hide_upper_floors`).
+//! - **cutaway**: walls drop to knee-high stubs as whole pieces, by the amounts `cutaway.rs`
+//!   decides per building and per wall edge and hands over in a small texture (no hole round the
+//!   player anywhere); the foliage of trees in front of the player fades out over a quarter of a
+//!   second, leaving their trunk and branches dimmed and thinned; and building details standing
+//!   over the player (a porch roof, an awning, a post) are thinned out whole, in a stipple. The
+//!   roof and upper storeys of the building you're inside fade out (`world_render::hide_upper_floors`).
 //!
 //! Every world mesh uses one of a handful of [`WorldMaterial`]s, and their shared parameters are
 //! refreshed once per frame. Only materials that need it are built with the cutaway (`CUTAWAY` in
@@ -16,14 +16,15 @@
 use bevy::mesh::MeshVertexBufferLayoutRef;
 use bevy::pbr::{ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline};
 use bevy::prelude::*;
-use bevy::render::render_resource::{AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError};
+use bevy::asset::RenderAssetUsages;
+use bevy::render::render_resource::{AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError};
+use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 
 use crate::camera::IsoCamera;
 use crate::fog::FogState;
 use crate::player::Player;
 use crate::server_link::ClientMap;
-use zombye_sim::map::TileMap;
 
 pub type WorldMaterial = ExtendedMaterial<StandardMaterial, WorldExt>;
 
@@ -32,34 +33,47 @@ const SHADER: &str = "shaders/world.wesl";
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
 #[bind_group_data(WorldKey)]
 pub struct WorldExt {
-    #[uniform(100)]
-    pub params: WorldParams,
+    /// The shared [`WorldParams`], in a buffer of their own ([`ParamBuffer`]): they change every
+    /// frame, and changing a material asset makes Bevy extract, specialise and queue again every
+    /// mesh drawn with it, while a buffer's new contents are only uploaded.
+    #[storage(100, read_only)]
+    pub params: Handle<ShaderBuffer>,
     #[texture(101)]
     #[sampler(102)]
     pub fog: Handle<Image>,
     /// The sight rays' reach, one texel each (`fog.rs`).
     #[texture(103, sample_type = "float", filterable = false)]
     pub rays: Handle<Image>,
+    /// How far each wall edge near the player is cut, one texel a tile (`cutaway.rs`).
+    #[texture(105, sample_type = "float", filterable = false)]
+    pub cut: Handle<Image>,
     /// Built with the cutaway (walls, roofs, fading foliage)? Fixed when the material is made.
     pub cutaway: bool,
+    /// Built with the ground detail (patchy colour worked out per pixel, DCM-59)? Only the ground.
+    pub ground: bool,
+    /// The chunks' ground, whose first UVs carry the height of the terrain under each vertex
+    /// (`MeshBuilder::drape`) rather than a cutaway anchor.
+    pub terrain: bool,
 }
 
-/// The pipeline key of a [`WorldExt`]: whether its shader has the cutaway.
+/// The pipeline key of a [`WorldExt`]: whether its shader has the cutaway and the ground detail.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Hash, PartialEq, Eq)]
 pub struct WorldKey {
     pub cutaway: bool,
+    pub ground: bool,
+    pub terrain: bool,
 }
 
 impl From<&WorldExt> for WorldKey {
     fn from(ext: &WorldExt) -> Self {
-        WorldKey { cutaway: ext.cutaway }
+        WorldKey { cutaway: ext.cutaway, ground: ext.ground, terrain: ext.terrain }
     }
 }
 
-#[derive(ShaderType, Reflect, Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WorldParams {
-    /// xyz = player chest position, w = cutaway radius in metres (0 = off).
+    /// xyz = player chest position, w = the height of the floor whose walls the cutaway cuts.
     pub player: Vec4,
     /// xyz = unit vector from the scene toward the camera.
     pub camera_dir: Vec4,
@@ -67,12 +81,22 @@ pub struct WorldParams {
     pub fog_rect: Vec4,
     /// rgb = tint for unseen areas, w = how dark unseen areas get (0..1).
     pub fog_tint: Vec4,
-    /// Bounds of the ground-floor room the player is in: (min x, min z, max x, max z). min > max = outdoors.
-    pub inside_rect: Vec4,
-    /// x = how many entries of `trees` are in use.
+    /// x = how many entries of `trees` are in use. y = how much of a room other than the player's
+    /// shows (`FogLook::other_rooms`). z = how far roofs are kept out of the sight shadows now
+    /// (`FogLook::roofs_seen`, none at night).
     pub tree_count: Vec4,
-    /// x = how dark it is, 0 by day to 1 at night: lit windows glow by it (#59).
+    /// x = how dark it is, 0 by day to 1 at night: lit windows glow by it (#59). y = how much of
+    /// its colour an unseen surface keeps (`FogLook::unseen_colour`). z, w = the fog's look:
+    /// `FogState::soft`.
     pub lights: Vec4,
+    /// The haze (`daynight::haze_at`): rgb its colour, w how much it takes (0 = none).
+    pub haze: Vec4,
+    /// x, y = where its banks have drifted to (metres), z, w = where it starts and where it is
+    /// thickest, metres from the player.
+    pub haze_at: Vec4,
+    /// xyz = unit vector toward the sun (the one directional light: the moon at night), w = 1 when
+    /// there is one. The terrain's facets are shaded by it (world.wesl, `FACET_TOWARD`).
+    pub sun: Vec4,
     /// Sight for the per-pixel fog of war (`FogState::sight`).
     pub sight: [Vec4; 3],
     /// Trees whose foliage is fading: (trunk foot x, z, fade 0..1 (1 = foliage gone), 0).
@@ -86,12 +110,43 @@ impl Default for WorldParams {
             camera_dir: Vec4::ZERO,
             fog_rect: Vec4::ZERO,
             fog_tint: Vec4::ZERO,
-            inside_rect: Vec4::ZERO,
             tree_count: Vec4::ZERO,
             lights: Vec4::ZERO,
+            haze: Vec4::ZERO,
+            haze_at: Vec4::ZERO,
+            sun: Vec4::ZERO,
             sight: [Vec4::ZERO; 3],
             trees: [Vec4::ZERO; MAX_FADING_TREES],
         }
+    }
+}
+
+impl WorldParams {
+    /// The struct as world.wesl declares it: every field a `vec4<f32>` (or an array of them), in order.
+    fn floats(&self) -> Vec<f32> {
+        let head = [self.player, self.camera_dir, self.fog_rect, self.fog_tint, self.tree_count, self.lights, self.haze, self.haze_at, self.sun];
+        head.iter().chain(&self.sight).chain(&self.trees).flat_map(|v| v.to_array()).collect()
+    }
+}
+
+/// The buffer every world material (and the vegetation's) reads its [`WorldParams`] from.
+#[derive(Resource, Clone)]
+pub struct ParamBuffer(pub Handle<ShaderBuffer>);
+
+/// A buffer for shader parameters that change every frame, holding `floats`.
+pub fn param_buffer(buffers: &mut Assets<ShaderBuffer>, floats: Vec<f32>) -> Handle<ShaderBuffer> {
+    buffers.add(ShaderBuffer::new(floats, RenderAssetUsages::default()))
+}
+
+/// Put `floats` in a parameter buffer, if they aren't what it holds (the same size as it was made
+/// with, so the GPU buffer is written to, not replaced, and no bind group changes).
+pub fn write_params(buffers: &mut Assets<ShaderBuffer>, handle: &Handle<ShaderBuffer>, floats: &[f32]) {
+    if buffers.get(handle).is_some_and(|b| b.cast_slice::<f32>() == Some(floats)) {
+        return;
+    }
+    if let Some(mut buffer) = buffers.get_mut(handle) {
+        buffer.clear();
+        buffer.extend_from_slice(floats);
     }
 }
 
@@ -135,67 +190,6 @@ const CROWN_COVER: f32 = 0.95;
 const BODY_HALF_W: f32 = 0.3;
 const BODY_TOP: f32 = 1.85;
 
-/// How far behind a wall (on the ground, away from the camera) it can hide things: a 3 m wall seen
-/// from 30° up covers about 5.2 m of floor behind it. Same as `WALL_REACH` in world.wesl.
-const WALL_REACH: f32 = 5.5;
-
-/// Does the ground segment from `p` to `p - c * WALL_REACH` pass through the rectangle?
-fn behind_hits(p: Vec2, c: Vec2, lo: Vec2, hi: Vec2) -> bool {
-    let d = -c * WALL_REACH;
-    let (mut t0, mut t1) = (0.0f32, 1.0f32);
-    for i in 0..2 {
-        if d[i].abs() < 1e-5 {
-            if p[i] < lo[i] || p[i] > hi[i] {
-                return false;
-            }
-        } else {
-            let (a, b) = ((lo[i] - p[i]) / d[i], (hi[i] - p[i]) / d[i]);
-            t0 = t0.max(a.min(b));
-            t1 = t1.min(a.max(b));
-        }
-    }
-    t0 <= t1
-}
-
-/// Half a side of the square the player stands in, for the outdoor wall rule (`BODY_HALF` in world.wesl).
-const BODY_HALF: f32 = 0.3;
-
-/// The shader's wall rule (`wall_cut` in world.wesl), for things drawn as separate entities (door
-/// leaves, window panes). A piece is cut only if the floor behind it on screen runs into the
-/// player's room (`room`, its bounds, indoors) or the square the player stands in (outdoors).
-pub fn wall_is_cut(mid: Vec2, player: Vec2, camera_dir: Vec3, room: Vec4) -> bool {
-    let c = camera_dir.xz().normalize_or_zero();
-    let (lo, hi) = if room.x <= room.z {
-        (Vec2::new(room.x, room.y) + 0.03, Vec2::new(room.z, room.w) - 0.03)
-    } else {
-        (player - BODY_HALF, player + BODY_HALF)
-    };
-    let half = if (mid.x.fract() - 0.5).abs() < 0.25 { Vec2::new(0.45, 0.0) } else { Vec2::new(0.0, 0.45) };
-    [mid, mid - half, mid + half].into_iter().any(|p| behind_hits(p, c, lo, hi))
-}
-
-/// Bounds (min x, min z, max x, max z) of the ground-floor room containing `p`; min > max outdoors.
-/// An L-shaped room gives the box round it.
-pub fn inside_rect(map: &TileMap, p: Vec2) -> Vec4 {
-    let room = map.room_at(p);
-    let Some(i) = map.building_at(p) else { return Vec4::new(1.0, 1.0, 0.0, 0.0) };
-    let b = &map.buildings[i];
-    let (mut lo, mut hi) = (IVec2::MAX, IVec2::MIN);
-    for y in b.min.y..b.min.y + b.size.y {
-        for x in b.min.x..b.min.x + b.size.x {
-            let t = IVec2::new(x, y);
-            if map.tile(t).room == room {
-                lo = lo.min(t);
-                hi = hi.max(t + 1);
-            }
-        }
-    }
-    if lo.x > hi.x {
-        return Vec4::new(1.0, 1.0, 0.0, 0.0);
-    }
-    Vec4::new(lo.x as f32, lo.y as f32, hi.x as f32, hi.y as f32)
-}
-
 impl MaterialExtension for WorldExt {
     fn fragment_shader() -> ShaderRef {
         SHADER.into()
@@ -207,19 +201,24 @@ impl MaterialExtension for WorldExt {
         _layout: &MeshVertexBufferLayoutRef,
         key: MaterialExtensionKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
-        if key.bind_group_data.cutaway
-            && let Some(fragment) = descriptor.fragment.as_mut()
-        {
-            fragment.shader_defs.push("CUTAWAY".into());
+        if let Some(fragment) = descriptor.fragment.as_mut() {
+            if key.bind_group_data.cutaway {
+                fragment.shader_defs.push("CUTAWAY".into());
+            }
+            if key.bind_group_data.ground {
+                fragment.shader_defs.push("GROUND".into());
+            }
+            if key.bind_group_data.terrain {
+                fragment.shader_defs.push("TERRAIN".into());
+            }
         }
         Ok(())
     }
 }
 
-/// Every world material, so their shared parameters can be refreshed together.
+/// The world materials. Their shared parameters are in a buffer of their own ([`ParamBuffer`]).
 #[derive(Resource, Default)]
 pub struct WorldMaterials {
-    pub all: Vec<Handle<WorldMaterial>>,
     /// Terrain and floors (vertex coloured).
     pub ground: Handle<WorldMaterial>,
     /// Buildings and furniture (vertex coloured, double-sided).
@@ -238,20 +237,19 @@ pub struct WorldMaterialPlugin;
 
 impl Plugin for WorldMaterialPlugin {
     fn build(&self, app: &mut App) {
+        let floats = WorldParams::default().floats();
+        let buffer = param_buffer(&mut app.world_mut().resource_mut::<Assets<ShaderBuffer>>(), floats);
         app.add_plugins(MaterialPlugin::<WorldMaterial>::default())
+            .insert_resource(ParamBuffer(buffer))
             .init_resource::<TreeFades>()
             .add_systems(Startup, create_materials)
             .add_systems(PostUpdate, update_params);
     }
 }
 
-fn create_materials(mut commands: Commands, fog: Res<FogState>, mut materials: ResMut<Assets<WorldMaterial>>) {
-    let mut all = Vec::new();
-    let mut make = |base: StandardMaterial, cutaway: bool| {
-        let h = materials.add(ExtendedMaterial { base, extension: WorldExt { params: WorldParams::default(), fog: fog.image.clone(), rays: fog.rays.clone(), cutaway } });
-        all.push(h.clone());
-        h
-    };
+fn create_materials(mut commands: Commands, fog: Res<FogState>, cut: Res<crate::cutaway::Cutaway>, params: Res<ParamBuffer>, graphics: Res<crate::graphics::Graphics>, mut materials: ResMut<Assets<WorldMaterial>>) {
+    let mut make_with =
+        |base: StandardMaterial, cutaway: bool, ground: bool, terrain: bool| materials.add(ExtendedMaterial { base, extension: WorldExt { params: params.0.clone(), fog: fog.image.clone(), rays: fog.rays.clone(), cut: cut.image.clone(), cutaway, ground, terrain } });
     let vertex_colored = |roughness: f32, double_sided: bool| StandardMaterial {
         base_color: Color::WHITE,
         perceptual_roughness: roughness,
@@ -259,7 +257,8 @@ fn create_materials(mut commands: Commands, fog: Res<FogState>, mut materials: R
         cull_mode: if double_sided { None } else { Some(bevy::render::render_resource::Face::Back) },
         ..default()
     };
-    let ground = make(vertex_colored(0.95, false), false);
+    let ground = make_with(vertex_colored(0.95, false), false, graphics.ground_detail, true);
+    let mut make = |base: StandardMaterial, cutaway: bool| make_with(base, cutaway, false, false);
     let building = make(vertex_colored(0.85, true), true);
     let props = make(vertex_colored(0.85, false), false);
     let props_cut = make(vertex_colored(0.85, false), true);
@@ -267,7 +266,7 @@ fn create_materials(mut commands: Commands, fog: Res<FogState>, mut materials: R
     // nothing to sort), each pixel covering as many MSAA samples as its alpha asks, so panes seen
     // through other panes, zombies behind glass and the cutaway all just work.
     let glass = make(StandardMaterial { alpha_mode: AlphaMode::AlphaToCoverage, reflectance: 0.6, ..vertex_colored(0.15, true) }, true);
-    commands.insert_resource(WorldMaterials { all, ground, building, props, props_cut, glass });
+    commands.insert_resource(WorldMaterials { ground, building, props, props_cut, glass });
 }
 
 /// Each fading tree's foliage, by tile: (tile, trunk foot, 0 shown .. 1 gone).
@@ -277,17 +276,23 @@ pub struct TreeFades(pub Vec<(IVec2, Vec2, f32)>);
 #[allow(clippy::too_many_arguments)]
 pub fn update_params(
     fog: Res<FogState>,
+    cutaway: Option<Res<crate::cutaway::Cutaway>>,
     map: Res<ClientMap>,
     time: Res<Time>,
     daylight: Res<crate::daynight::Daylight>,
-    world_materials: Option<Res<WorldMaterials>>,
-    mut materials: ResMut<Assets<WorldMaterial>>,
+    look: Res<crate::fog::FogLook>,
+    haze: Res<crate::daynight::Haze>,
+    buffer: Res<ParamBuffer>,
+    mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut fades: ResMut<TreeFades>,
     player: Query<&Transform, With<Player>>,
     cams: Query<&IsoCamera>,
+    sun: Query<&GlobalTransform, With<crate::daynight::Sun>>,
 ) {
-    let (Some(wm), Ok(p), Ok(cam)) = (world_materials, player.single(), cams.single()) else { return };
+    let (Ok(p), Ok(cam)) = (player.single(), cams.single()) else { return };
     let chest = p.translation.with_y(1.1);
+    // Where the chest really is, over hills too (trees stand on the ground, `zombye_sim::terrain`).
+    let chest_world = p.translation + Vec3::Y * 1.1;
     let camera_dir = cam.offset_dir();
     // Trees in front of the player fade their foliage out; the rest fade back in.
     let step = time.delta_secs() / FADE_SECS;
@@ -300,8 +305,8 @@ pub fn update_params(
             if !map.0.in_bounds(t) {
                 continue;
             }
-            if let Some(spec) = crate::meshgen::trees::tree_at(x, y, map.0.tile(t).feature)
-                && crown_hides(&spec, chest, camera_dir)
+            if let Some(spec) = crate::meshgen::trees::tree_on(&map.0, x, y)
+                && crown_hides(&spec, chest_world - Vec3::Y * map.0.ground(spec.base.xz()), camera_dir)
             {
                 hiding.push((t, spec.base.xz()));
             }
@@ -326,22 +331,27 @@ pub fn update_params(
         *slot = Vec4::new(f.1.x, f.1.y, f.2, 0.0);
     }
     let params = WorldParams {
-        player: chest.extend(0.0),
+        // w: the height of the floor whose walls are cut (the upper floor's while up there).
+        player: chest.extend(cutaway.map_or(0.0, |c| c.level as f32 * 3.0)),
         camera_dir: camera_dir.extend(0.0),
         fog_rect: Vec4::new(fog.origin.x, fog.origin.y, fog.size_m, 0.0),
-        // What you can't see goes dim and grey by day and nearly black at night (#83).
-        fog_tint: Vec4::new(0.55, 0.6, 0.75, 0.72 + 0.14 * (1.0 - daylight.0)),
-        inside_rect: inside_rect(&map.0, p.translation.xz()),
-        tree_count: Vec4::new(n as f32, 0.0, 0.0, 0.0),
-        lights: Vec4::new(1.0 - smoothstep(0.05, 0.4, daylight.0), 0.0, 0.0, 0.0),
+        fog_tint: look.unseen_tint(daylight.0),
+        tree_count: Vec4::new(n as f32, fog.other_rooms, look.roofs_seen * smoothstep(0.05, 0.4, daylight.0), 0.0),
+        lights: Vec4::new(1.0 - smoothstep(0.05, 0.4, daylight.0), look.unseen_colour(daylight.0), fog.soft.x, fog.soft.y),
+        haze: haze.0,
+        haze_at: {
+            // The banks drift slowly with the wind; nothing to work out or upload with no haze.
+            let h = crate::daynight::look().haze;
+            let t = if haze.0.w > 0.0 { (time.elapsed_secs_wrapped() * 10.0).floor() / 10.0 } else { 0.0 };
+            // Its reach is in metres at the default zoom: scaled with the zoom, the screen is as hazy at any.
+            let k = if cam.low() { 1.0 } else { cam.zoom / crate::daynight::HAZE_ZOOM };
+            Vec4::new(t * 0.35, t * 0.12, h.near * k, h.far * k)
+        },
+        sun: sun.single().map_or(Vec4::ZERO, |t| (-t.forward().as_vec3()).extend(1.0)),
         sight: fog.sight,
         trees,
     };
-    for h in &wm.all {
-        if let Some(mut m) = materials.get_mut(h) {
-            m.extension.params = params.clone();
-        }
-    }
+    write_params(&mut buffers, &buffer.0, &params.floats());
 }
 
 #[cfg(test)]
@@ -367,58 +377,4 @@ mod tests {
         assert!(!crown_hides(&pine, pine.base + Vec3::new(1.5, 1.1, 1.5), cam));
     }
 
-    /// Inside, only walls that hide part of your room drop: its near walls and walls just in front
-    /// of it; its far walls and walls behind it stand, and so do walls well in front (#84).
-    #[test]
-    fn indoors_only_walls_hiding_your_room_drop() {
-        // The default camera: yaw 45°, so it looks from +x, +z (south-east) down at 30°.
-        let yaw = std::f32::consts::FRAC_PI_4;
-        let elev = 30f32.to_radians();
-        let cam = Vec3::new(yaw.sin() * elev.cos(), elev.sin(), yaw.cos() * elev.cos());
-        let room = Vec4::new(10.0, 10.0, 14.0, 13.0);
-        let player = Vec2::new(11.5, 11.5);
-        let cut = |x: f32, z: f32| wall_is_cut(Vec2::new(x, z), player, cam, room);
-        // Far walls: north (z = 10) and west (x = 10), every piece, the ones at the near ends too.
-        for x in [10.5, 11.5, 12.5, 13.5] {
-            assert!(!cut(x, 10.0), "north wall piece at x {x}");
-        }
-        for z in [10.5, 11.5, 12.5] {
-            assert!(!cut(10.0, z), "west wall piece at z {z}");
-        }
-        // Near walls: south (z = 13) and east (x = 14).
-        for x in [10.5, 11.5, 12.5, 13.5] {
-            assert!(cut(x, 13.0), "south wall piece at x {x}");
-        }
-        for z in [10.5, 11.5, 12.5] {
-            assert!(cut(14.0, z), "east wall piece at z {z}");
-        }
-        // A wall just in front of the room, one behind it, and one well in front.
-        assert!(cut(12.5, 15.0));
-        assert!(!cut(12.5, 7.0));
-        assert!(!cut(20.5, 20.0));
-        // Beside the room, not in front of it on screen.
-        assert!(!cut(5.0, 11.5));
-    }
-
-    /// Outdoors, a wall drops only when it covers the player: the facade you walk along stands,
-    /// the one between you and the camera goes.
-    #[test]
-    fn outdoors_only_walls_covering_you_drop() {
-        let yaw = std::f32::consts::FRAC_PI_4;
-        let elev = 30f32.to_radians();
-        let cam = Vec3::new(yaw.sin() * elev.cos(), elev.sin(), yaw.cos() * elev.cos());
-        let outdoors = Vec4::new(1.0, 1.0, 0.0, 0.0);
-        // Walking along a facade at x = 20 on its camera side (the camera looks from +x, +z), half a
-        // metre off it: the wall is behind you, so none of it drops, the pieces level with you too.
-        let player = Vec2::new(20.5, 30.5);
-        let cut = |x: f32, z: f32| wall_is_cut(Vec2::new(x, z), player, cam, outdoors);
-        for z in [28.5, 29.5, 30.5, 31.5, 32.5] {
-            assert!(!cut(20.0, z), "facade piece at z {z} beside the player");
-        }
-        // A wall a metre or two between the player and the camera (south-east).
-        assert!(cut(21.5, 32.0));
-        // One behind the player, and one off to the side.
-        assert!(!cut(18.5, 28.0));
-        assert!(!cut(24.5, 27.0));
-    }
 }

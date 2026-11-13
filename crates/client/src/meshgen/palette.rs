@@ -30,6 +30,14 @@ fn hex(s: &str) -> Option<LinearRgba> {
     Some(Color::srgb_u8(byte(0)?, byte(2)?, byte(4)?).to_linear())
 }
 
+/// An sRGB colour of 8 bits a channel as a linear one (a table: mesh building asks thousands of
+/// times a chunk for the biomes' colours, `zombye_sim::biomes::Colour`).
+pub fn srgb8([r, g, b]: [u8; 3]) -> LinearRgba {
+    static TABLE: OnceLock<[f32; 256]> = OnceLock::new();
+    let t = TABLE.get_or_init(|| std::array::from_fn(|i| Color::srgb_u8(i as u8, 0, 0).to_linear().red));
+    LinearRgba::new(t[r as usize], t[g as usize], t[b as usize], 1.0)
+}
+
 macro_rules! world_palette {
     (colours { $($c:ident),* $(,)? } sets { $($s:ident: $n:expr),* $(,)? }) => {
         /// Every colour the generated world uses, by its name in the palette file, and the named
@@ -78,12 +86,14 @@ world_palette! {
         // Ground and roads.
         asphalt, asphalt_patch, wheel_track, gutter, paint_yellow, paint_white, oil_stain, sidewalk, sidewalk_joint,
         kerb_top, kerb_face, kerb_joint, driveway, path, long_grass, verge, tuft, tuft_dry, dirt, soil, hedge, hedge_top,
-        fence_wood, needles, rock, deadwood, cut_wood,
+        fence_wood, needles, rock, cliff, deadwood, cut_wood,
+        // Instanced vegetation and litter (vegetation.rs).
+        grass_blade, grass_blade_dry, worn_ground, flower_red, flower_cream, paper,
         // Trees.
         bark, bark_dark, birch_bark, birch_mark,
         // Buildings.
         trim_light, trim_dark, shopfront, foundation, step, deck, rain_gutter, chimney, chimney_cap, flue, aerial,
-        roof_unit, coping, sign, bone, gable_glass, door_leaf, door_handle, window_glass, crack_door, crack_glass, splinter,
+        roof_unit, coping, sign, bone, gable_glass, door_leaf, door_handle, window_glass, door_glass, blind, blind_rail, crack_door, crack_glass, splinter,
         floor_road_line,
         // Grey-box furniture.
         greybox_bed, greybox_bed_sheet, greybox_wardrobe, greybox_fridge, greybox_stove, greybox_counter, greybox_washer,

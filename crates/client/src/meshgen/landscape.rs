@@ -23,7 +23,8 @@ use zombye_sim::map::{CHUNK_SIZE, Edge, Feature, Floor, OwnedEdge, Side, Tile, T
 use super::curves::{ArcSpan, Curves, Kerb, PieceBuf, Poly, Surface};
 use super::palette::{self, pal};
 use super::trees::{self, add_bush, add_tree};
-use super::{CutTag, MeshBuilder, floor_color, hash01, shade};
+use super::{CutKind, CutTag, MeshBuilder, floor_color, hash01, shade};
+use crate::vegetation::{VARIANTS, VegKind, VegSpot};
 
 /// Oil stains lie this far above the ground (everything else flat is cut into the ground itself,
 /// see [`Paint`]), so they never flicker.
@@ -46,6 +47,8 @@ const MAX_STREET: i32 = 14;
 const RUN_CAP: i32 = 20;
 /// Tiles of map cached round a chunk.
 const MARGIN: i32 = 4;
+/// How far from a door the ground is worn, in metres (within [`MARGIN`], so chunks agree).
+const WEAR_REACH: f32 = 2.8;
 
 /// Centre-line paint: dashed (3 m dashes, 9 m gaps) on ordinary streets, double solid yellow on a
 /// street the sim paints solid (the main street).
@@ -119,6 +122,9 @@ struct Land<'a> {
     /// Prefix sums over the cached area of trees and of pines, for [`Land::trees_near`].
     tree_sums: Vec<(u16, u16)>,
     curves: Curves,
+    /// The middle of every outside door's threshold in the cached area: the ground is worn there
+    /// ([`Land::wear`]).
+    doors: Vec<Vec2>,
 }
 
 const SPAN: i32 = CHUNK_SIZE + 2 * MARGIN;
@@ -148,7 +154,21 @@ impl<'a> Land<'a> {
             }
         }
         let curves = Curves::find(map, c);
-        let mut land = Land { map, min, tiles, streets: Vec::new(), driveways: Vec::new(), beds: Vec::new(), tree_sums, curves };
+        let mut land = Land { map, min, tiles, streets: Vec::new(), driveways: Vec::new(), beds: Vec::new(), tree_sums, curves, doors: Vec::new() };
+        // Doors between a room and the outdoors, whatever state they're in (the ground is built
+        // once; a door opening or breaking later mustn't change it).
+        let door = |e: Edge| matches!(e, Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken);
+        for y in 1..SPAN {
+            for x in 1..SPAN {
+                let t = min - IVec2::splat(MARGIN) + IVec2::new(x, y);
+                let tile = land.tile(t);
+                for (edge, other, mid) in [(tile.north, t - IVec2::Y, Vec2::new(0.5, 0.0)), (tile.west, t - IVec2::X, Vec2::new(0.0, 0.5))] {
+                    if door(edge) && (tile.room == 0) != (land.tile(other).room == 0) {
+                        land.doors.push(t.as_vec2() + mid);
+                    }
+                }
+            }
+        }
         let mut streets = Vec::with_capacity((SPAN * SPAN) as usize);
         for y in 0..SPAN {
             for x in 0..SPAN {
@@ -666,12 +686,26 @@ impl<'a> Land<'a> {
                     return match self.floor(n) {
                         Floor::Path => pal().path,
                         Floor::Concrete => pal().sidewalk,
-                        f => SoftLook::new(self, n, f == Floor::Dirt).colour(p),
+                        f => SoftLook::new(self, n, f == Floor::Dirt).colour(self, p),
                     };
                 }
                 pal().lawn[0]
             }
         }
+    }
+
+    /// How worn the ground is at `p` by people going in and out (DCM-59): 1 on a doorstep, fading
+    /// to nothing under three metres from the door.
+    fn wear(&self, p: Vec2) -> f32 {
+        let nearest = self.doors.iter().map(|d| d.distance_squared(p)).fold(f32::MAX, f32::min).sqrt();
+        let t = ((WEAR_REACH - nearest) / (WEAR_REACH - 0.7)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    }
+
+    /// The ground's colour at `p` with the wear by doors worked in.
+    fn worn(&self, p: Vec2, colour: LinearRgba) -> LinearRgba {
+        let w = self.wear(p);
+        if w <= 0.0 { colour } else { colour.mix(&shade(pal().worn_ground, 0.95 + 0.1 * noise(p, 1.3, 72)), 0.85 * w) }
     }
 
     fn has_fence(&self, t: IVec2) -> bool {
@@ -868,6 +902,147 @@ impl Paint {
 pub struct ChunkMeshes {
     pub ground: MeshBuilder,
     pub props: MeshBuilder,
+    /// Where the instanced grass, flowers and litter go (`crate::vegetation`).
+    pub veg: Vec<VegSpot>,
+}
+
+/// The instanced vegetation and litter of outdoor tile `t` (DCM-59), from the map alone, so a
+/// chunk always grows the same. Grass covers every soft tile: long where nobody mows (along walls
+/// and fences, verges, vacant lots, the forest's edge), shorter on lawns, thin and dry on dirt,
+/// under trees, beside paths and driveways and over the lawn's bare patches, and none on a
+/// doorstep's worn ground, a driveway, a flower bed or under a porch. Wildflowers come in drifts,
+/// red in some places and white in others. Pavements get a weed in a crack now and then, loose
+/// paper and small stones; roads a little of both, more along the gutter.
+///
+/// Each tile's first patch has a rank under 1 and a second, between the first ones, a rank from
+/// 1 to 2: the density setting draws the spots ranked below it.
+fn scatter(out: &mut Vec<VegSpot>, land: &Land, looks: &SoftLooks, paint: &Paint, t: IVec2, surface: Surface, curved: bool) {
+    use std::f32::consts::FRAC_PI_2;
+    let (x, y) = (t.x, t.y);
+    let tile = land.tile(t);
+    let h = |salt: u32| hash01(x, y, salt);
+    let centre = t.as_vec2() + Vec2::splat(0.5);
+    let veg = crate::vegetation::veg_look();
+    let mut put = |kind: VegKind, salt: u32, pos: Vec2, scale: f32, dry: f32, rank: f32, free: bool| {
+        let turn = if free { h(salt + 1) * TAU } else { (h(salt + 1) * 4.0).floor() * FRAC_PI_2 };
+        // Against a wall a patch keeps the size it was laid out at: bigger, it would poke through.
+        let grow = if !free { 1.0 } else if kind == VegKind::GrassLong { veg.scale * veg.long_scale } else { veg.scale };
+        let grass = matches!(kind, VegKind::GrassLong | VegKind::Grass | VegKind::GrassThin | VegKind::Weed);
+        let dry = if grass { (dry + veg.dry).clamp(0.0, 1.0) } else { dry };
+        out.push(VegSpot { pos, kind, variant: (h(salt + 2) * VARIANTS as f32) as u8, turn, scale: scale * grow, dry, rank, ground: 0.0 });
+    };
+    let anywhere = |salt: u32, margin: f32| t.as_vec2() + Vec2::new(margin + (1.0 - 2.0 * margin) * h(salt), margin + (1.0 - 2.0 * margin) * h(salt + 7));
+    let hard = |p: IVec2| {
+        let q = land.tile(p);
+        q.room == 0 && (land.drawn(p) == Some(Surface::Road) || matches!(q.floor, Floor::Sidewalk | Floor::Concrete | Floor::Path) || q.floor.is_road())
+    };
+    let by_wall = Side::ALL.iter().any(|s| !land.outdoors(t + s.offset()));
+    let soft = surface != Surface::Road && !tile.floor.is_road() && !matches!(tile.floor, Floor::Sidewalk | Floor::Concrete | Floor::Path);
+    if !soft {
+        // Litter and weeds on the hard ground.
+        if tile.feature != Feature::None {
+            return;
+        }
+        let road = surface == Surface::Road || tile.floor.is_road();
+        let gutter = road && Side::ALL.iter().any(|s| land.is_sidewalk(t + s.offset()));
+        let (weed, paper, stones) = match tile.floor {
+            _ if gutter => (0.03, 0.035, 0.05),
+            _ if road => (0.0, 0.007, 0.012),
+            Floor::Path => (0.14, 0.01, 0.06),
+            _ => (0.07, 0.024, 0.025),
+        };
+        if h(600) < weed && !curved {
+            put(VegKind::Weed, 601, anywhere(604, 0.1), 0.8 + 0.5 * h(611), 0.3 + 0.6 * h(612), h(613), true);
+        }
+        if h(620) < paper {
+            put(VegKind::Paper, 621, anywhere(624, 0.2), 0.9 + 0.3 * h(631), 0.0, h(633), true);
+        }
+        if h(640) < stones {
+            put(VegKind::Pebbles, 641, anywhere(644, 0.2), 0.8 + 0.6 * h(651), 0.0, h(653), true);
+        }
+        return;
+    }
+    let Some(look) = looks.get(t) else { return };
+    if curved || !paint.rects.is_empty() || tile.feature == Feature::Bush || land.on_driveway(t) {
+        return;
+    }
+    let wear = land.wear(centre);
+    if wear > 0.5 || (wear > 0.0 || by_wall) && super::building_kit::porch_covers(land.map, t) {
+        if wear > 0.5 && h(660) < 0.12 {
+            put(VegKind::Pebbles, 661, anywhere(664, 0.25), 0.8 + 0.4 * h(671), 0.0, h(673), true);
+        }
+        return;
+    }
+    let by_hard = Side::ALL.iter().any(|s| hard(t + s.offset()) || land.on_driveway(t + s.offset()));
+    let bare = bare_patch(centre);
+    // Dry in broad drifts, with every patch a little different.
+    let drift = noise(centre, 14.0, 91) * 0.75 + 0.35 * h(680);
+    let biome = look.biome(land);
+    let (kind, keep, dry) = if look.dirt {
+        (VegKind::GrassThin, 0.45, 0.6 + 0.4 * drift)
+    } else if let Some(b) = biome {
+        // Wild ground: the biome's grass (`biomes.ron`), in the open and where trees stand close.
+        use zombye_sim::biomes::GrassKind;
+        let g = &b.grass;
+        let (grass, cover) = if look.forest { (g.under_trees, g.cover_under_trees) } else { (g.open, g.cover) };
+        let dry = g.dry.0 + (g.dry.1 - g.dry.0) * drift.clamp(0.0, 1.0);
+        match grass {
+            GrassKind::None => (VegKind::GrassThin, 0.0, dry),
+            GrassKind::Thin => (VegKind::GrassThin, cover, dry),
+            GrassKind::Short => (VegKind::Grass, cover, dry),
+            GrassKind::Long => (VegKind::GrassLong, cover, dry),
+        }
+    } else if look.forest {
+        (VegKind::GrassThin, 0.6, 0.15 + 0.45 * drift)
+    } else if wear > 0.12 || bare > 0.35 || look.trees > 0 || tile.feature != Feature::None {
+        (VegKind::GrassThin, 0.85, 0.35 + 0.5 * drift)
+    } else if look.rough > veg.long_from && !(by_hard && !look.verge) {
+        (VegKind::GrassLong, 1.0, 0.25 + 0.7 * drift)
+    } else {
+        (VegKind::Grass, 1.0, 0.45 * drift * drift)
+    };
+    // Against a wall a patch keeps to its tile (it would poke through into the room); in the open
+    // it sits and turns freely, so the tiles don't show.
+    let free = !by_wall;
+    let jitter = if free && !by_hard { 0.16 } else { 0.0 };
+    let at = centre + Vec2::new(h(681) - 0.5, h(682) - 0.5) * 2.0 * jitter;
+    let scale = if free { 0.95 + 0.3 * h(683) } else { 0.92 };
+    if h(684) < keep {
+        put(kind, 685, at, scale, dry.clamp(0.0, 1.0), h(688), free);
+        // A second patch between the first ones, for the denser settings.
+        if free && !by_hard {
+            put(kind, 690, centre + Vec2::new(h(693) - 0.5, h(694) - 0.5) * 0.7, scale, (dry + 0.1).clamp(0.0, 1.0), 1.0 + h(695), true);
+        }
+    }
+    // Wildflowers: drifts a few metres across in what isn't mown, a stray few on lawns.
+    if biome.is_some() || kind != VegKind::GrassThin || look.forest {
+        let drift = noise(centre, 7.0, 93);
+        let wild = match biome {
+            Some(b) => b.grass.flowers * if look.forest { 0.5 } else { 1.0 },
+            None if kind == VegKind::GrassLong => 1.0,
+            None if look.forest => 0.3,
+            None => 0.22,
+        };
+        if h(700) < (drift - (1.0 - veg.flower_cover)) * 3.2 * wild * veg.flowers {
+            let red = noise(centre, 23.0, 94) + 0.2 * (h(701) - 0.5) > 0.5;
+            put(if red { VegKind::FlowersRed } else { VegKind::FlowersWhite }, 702, anywhere(705, if free { 0.2 } else { 0.5 }), 0.9 + 0.3 * h(712), 0.2, h(713), free);
+        }
+    }
+    // Small stones where soft ground meets hard, and on bare dirt.
+    let stones = if look.dirt { veg.dirt_stones } else if by_hard { veg.verge_stones } else { 0.0 } + biome.map_or(0.0, |b| b.litter.pebbles / 100.0);
+    if h(740) < stones {
+        put(VegKind::Pebbles, 741, anywhere(744, 0.2), 0.8 + 0.5 * h(751), 0.0, h(753), true);
+    }
+    // Something blown against the house.
+    if by_wall && h(720) < 0.035 {
+        put(VegKind::Paper, 721, anywhere(724, 0.3), 1.0, 0.0, h(733), true);
+    }
+}
+
+/// How big the bush on tile (`x`, `y`) is: its biome's sizes on wild ground (`biomes.ron`).
+fn bush_size(map: &TileMap, x: i32, y: i32) -> f32 {
+    let (lo, hi) = map.biomes.at(IVec2::new(x, y)).map_or((0.85, 1.25), |b| b.bushes.size);
+    lo + (hi - lo) * hash01(x, y, 5)
 }
 
 /// Build the ground and props of chunk `c`.
@@ -875,9 +1050,10 @@ pub fn build_chunk(map: &TileMap, c: IVec2) -> ChunkMeshes {
     let land = Land::new(map, c);
     let looks = SoftLooks::new(&land);
     let mut ground = MeshBuilder::with_capacity(1500);
-    let mut props = MeshBuilder::with_capacity(1500);
+    let mut props = MeshBuilder::with_capacity(1500).with_far();
     let mut paint = Paint::new();
     let mut pieces = PieceBuf::default();
+    let mut veg = Vec::with_capacity(320);
     for y in land.min.y..land.min.y + CHUNK_SIZE {
         for x in land.min.x..land.min.x + CHUNK_SIZE {
             let t = IVec2::new(x, y);
@@ -919,19 +1095,22 @@ pub fn build_chunk(map: &TileMap, c: IVec2) -> ChunkMeshes {
                     flat_poly(&mut ground, &piece.poly, 0.0, land.foreign_colour(t, &piece.poly, piece.surface));
                 }
             }
+            scatter(&mut veg, &land, &looks, &paint, t, surface, curved);
             match tile.feature {
                 Feature::Tree | Feature::PineTree => {
-                    if let Some(spec) = trees::tree_at(x, y, tile.feature) {
+                    if let Some(spec) = trees::tree_on(map, x, y) {
                         // Deep in the forest the neighbours hide most of a tree: fewer pieces.
                         let simple = land.trees_near(t, 2).0 >= 5;
                         add_tree(&mut props, &spec, simple);
                     }
                 }
+                // What a felled tree leaves (`zombye_sim::trees`), where its trunk stood.
+                Feature::Stump => felled_stump(&mut props, x, y),
                 // A bush gives way to a driveway (bushes are only drawn: the sim walks through them).
                 Feature::Bush if land.on_driveway(t) => {}
                 Feature::Bush => {
                     let centre = Vec3::new(x as f32 + 0.3 + 0.4 * hash01(x, y, 3), 0.0, y as f32 + 0.3 + 0.4 * hash01(x, y, 4));
-                    add_bush(&mut props, x, y, centre, 0.85 + 0.4 * hash01(x, y, 5));
+                    add_bush(&mut props, x, y, centre, bush_size(map, x, y));
                 }
                 _ => {}
             }
@@ -958,7 +1137,7 @@ pub fn build_chunk(map: &TileMap, c: IVec2) -> ChunkMeshes {
     for (ring, outer) in &land.curves.rings {
         ring_joints(&mut ground, ring, *outer, ours);
     }
-    ChunkMeshes { ground, props }
+    ChunkMeshes { ground, props, veg }
 }
 
 fn flat_tile(mb: &mut MeshBuilder, t: IVec2, colour: LinearRgba) {
@@ -1102,7 +1281,8 @@ fn road_paint(paint: &mut Paint, mb: &mut MeshBuilder, land: &Land, t: IVec2) {
                     let (u0, u1) = (u0.max(a0), u1.min(a1));
                     if u1 - u0 > 0.05 {
                         let (p, q) = (at(u0, b0, st.along_x), at(u1, b0 + 0.5, st.along_x));
-                        decal(mb, p.min(q), p.max(q), Y_OVERLAY, white);
+                        // Over the curved kerb's grit, which lies at `Y_OVERLAY`.
+                        decal(mb, p.min(q), p.max(q), Y_OVERLAY + 0.001, white);
                     }
                 }
             }
@@ -1167,8 +1347,8 @@ fn sidewalk_tile(paint: &mut Paint, mb: &mut MeshBuilder, land: &Land, t: IVec2)
 fn kerb(mb: &mut MeshBuilder, tv: Vec2, side: Side, s0: f32, s1: f32) {
     let (w, h, j) = (KERB_WIDTH, KERB_HEIGHT, KERB_JOINT);
     let (top, joint, face) = (pal().kerb_top, pal().kerb_joint, pal().kerb_face);
-    // A point `a` of the way along the edge, `d` in from it toward the sidewalk, at height `y`.
-    let p = |a: f32, d: f32, y: f32| {
+    // A point `a` of the way along the edge, at height `y`, `d` in from it toward the sidewalk.
+    let p = |a: f32, y: f32, d: f32| {
         let (x, z) = match side {
             Side::N => (a, d),
             Side::S => (a, 1.0 - d),
@@ -1331,6 +1511,18 @@ struct SoftLook {
     verge: bool,
     /// 0..1.
     rough: f32,
+    /// The biome of the tile (`zombye_sim::biomes`, an index into the map's), `NO_BIOME` in town.
+    biome: u8,
+}
+
+const NO_BIOME: u8 = u8::MAX;
+
+/// One of a biome's ground colours at `c`, in patches about `cell` metres across: the first
+/// covers most of the ground, each later one less.
+fn patch_colour(set: &[zombye_sim::biomes::Colour], c: Vec2, cell: f32) -> LinearRgba {
+    let n = noise(c, cell, 47) * 0.85 + noise(c, cell * 0.35, 48) * 0.15;
+    let i = if n < 0.52 { 0 } else if n < 0.68 { 1 } else if n < 0.8 { 2 } else { 3 };
+    palette::srgb8(set[i.min(set.len() - 1)].0)
 }
 
 impl SoftLook {
@@ -1352,16 +1544,35 @@ impl SoftLook {
         } else {
             ((overgrown - 0.62) * 3.0).clamp(0.0, 0.8)
         };
-        SoftLook { dirt, forest, trees, pines, verge, rough }
+        let biome = land.map.biomes.index_at(t).map_or(NO_BIOME, |i| i as u8);
+        SoftLook { dirt, forest, trees, pines, verge, rough, biome }
+    }
+
+    /// The tile's biome, on wild ground.
+    fn biome<'a>(&self, land: &Land<'a>) -> Option<&'a zombye_sim::biomes::BiomeDef> {
+        land.map.biomes.defs().get(self.biome as usize)
     }
 
     /// The ground's colour at `c`.
-    fn colour(&self, c: Vec2) -> LinearRgba {
+    fn colour(&self, land: &Land, c: Vec2) -> LinearRgba {
+        let ground = self.biome(land).map(|b| &b.ground);
         if self.dirt {
             shade(pal().dirt, 0.94 + 0.1 * noise(c, 2.5, 43))
         } else if self.forest {
             let n = noise(c, 4.0, 44) + 0.25 * hash01((c.x * 3.0) as i32, (c.y * 3.0) as i32, 45);
-            if self.pines > 0 && n > 0.75 { pal().needles } else { pal().forest_floor[(n > 0.6) as usize] }
+            // A biome's own floor and needles (`biomes.ron`), else the palette's.
+            let needles_from = ground.map_or(0.75, |g| 0.62 + (0.5 - g.needle_cover) * 0.9);
+            if self.pines > 0 && n > needles_from {
+                ground.and_then(|g| g.needles).map_or(pal().needles, |c| palette::srgb8(c.0))
+            } else {
+                match ground.filter(|g| !g.under_trees.is_empty()) {
+                    Some(g) => palette::srgb8(g.under_trees[if n > 0.6 { g.under_trees.len() - 1 } else { 0 }].0),
+                    None => pal().forest_floor[(n > 0.6) as usize],
+                }
+            }
+        } else if let Some(g) = ground.filter(|g| !g.colours.is_empty() && !(self.verge && noise(c, 1.8, 46) < 0.7)) {
+            // Open wild ground: the biome's colours, in patches.
+            patch_colour(&g.colours, c, g.patch_m)
         } else {
             // Small blobs (not single triangles) where long grass meets the lawn.
             let fine = noise(c, 1.8, 46);
@@ -1371,10 +1582,19 @@ impl SoftLook {
                 pal().long_grass
             } else {
                 let n = noise(c, 7.0, 47) * 0.85 + noise(c, 2.5, 48) * 0.15;
-                pal().lawn[if n < 0.4 { 1 } else if n < 0.62 { 0 } else { 2 }]
+                let lawn = pal().lawn[if n < 0.4 { 1 } else if n < 0.62 { 0 } else { 2 }];
+                // Bare patches where the lawn has given up (DCM-59).
+                let bare = bare_patch(c);
+                if bare > 0.0 { lawn.mix(&pal().worn_ground, 0.7 * bare) } else { lawn }
             }
         }
     }
+}
+
+/// How bare the lawn is at `c` (0 grass .. 1 earth): a few patches a couple of metres across in
+/// every yard. The instanced grass thins out over them (`scatter`).
+fn bare_patch(c: Vec2) -> f32 {
+    ((noise(c, 5.5, 71) * 0.8 + noise(c, 1.6, 73) * 0.2 - 0.7) * 6.0).clamp(0.0, 1.0)
 }
 
 /// The look of every grass and dirt tile of a chunk and the ring round it, so the colour at a
@@ -1407,16 +1627,21 @@ impl SoftLooks {
         }
         let mut out = SoftLooks { min, looks, corners: Vec::new() };
         let n = CHUNK_SIZE + 1;
-        out.corners = (0..n * n).map(|i| out.blend(land.min + IVec2::new(i % n, i / n))).collect();
+        out.corners = (0..n * n)
+            .map(|i| {
+                let ci = land.min + IVec2::new(i % n, i / n);
+                out.blend(land, ci).map(|c| land.worn(ci.as_vec2(), c))
+            })
+            .collect();
         out
     }
 
-    fn blend(&self, ci: IVec2) -> Option<LinearRgba> {
+    fn blend(&self, land: &Land, ci: IVec2) -> Option<LinearRgba> {
         let c = ci.as_vec2();
         let (mut sum, mut n) = (Vec4::ZERO, 0.0);
         for d in [IVec2::new(-1, -1), IVec2::new(0, -1), IVec2::new(-1, 0), IVec2::ZERO] {
             if let Some(look) = self.get(ci + d) {
-                sum += look.colour(c).to_vec4();
+                sum += look.colour(land, c).to_vec4();
                 n += 1.0;
             }
         }
@@ -1454,10 +1679,10 @@ fn soft_tile(paint: &mut Paint, mb: &mut MeshBuilder, props: &mut MeshBuilder, l
     let (dirt, forest, trees, rough) = (look.dirt, look.forest, look.trees, look.rough);
     let tv = t.as_vec2();
     if paint.rects.is_empty() {
-        split_tile(mb, t, |c| looks.corner(c).unwrap_or_else(|| look.colour(c)), paint.clipped.then_some(&paint.clip[..]));
+        split_tile(mb, t, |c| looks.corner(c).unwrap_or_else(|| land.worn(c, look.colour(land, c))), paint.clipped.then_some(&paint.clip[..]));
     } else {
         // Under a driveway or a bed: one colour for the ground left showing.
-        paint.draw(mb, look.colour(tv + Vec2::splat(0.5)));
+        paint.draw(mb, land.worn(tv + Vec2::splat(0.5), look.colour(land, tv + Vec2::splat(0.5))));
     }
     // Tufts of long grass: many at the edges, a few weeds anywhere.
     let count = if rough < 0.55 { 0 } else { (rough * 2.2 + hash01(x, y, 50) - 0.9).floor() as i32 };
@@ -1477,7 +1702,38 @@ fn soft_tile(paint: &mut Paint, mb: &mut MeshBuilder, props: &mut MeshBuilder, l
     if !paint.keeps(at.xz()) {
         return;
     }
-    if forest {
+    if let Some(b) = look.biome(land) {
+        // What lies on a biome's ground (`biomes.ron`), each so many per 100 m2 of free ground.
+        let l = &b.litter;
+        let mut left = roll;
+        let mut take = |per_100m2: f32| {
+            let p = per_100m2 / 100.0;
+            let hit = left < p;
+            left -= p;
+            hit
+        };
+        if take(if forest { l.ferns } else { l.ferns_open }) {
+            fern(mb, at, 0.45 + 0.25 * hash01(x, y, 123), hash01(x, y, 124));
+        } else if take(l.rocks) {
+            let size = |k: u32| 0.5 * (l.rock_size.0 + (l.rock_size.1 - l.rock_size.0) * hash01(x, y, k) * hash01(x, y, k + 1));
+            let r = size(125);
+            rock(mb, at, r, hash01(x, y, 126));
+            // A few smaller ones beside it.
+            if hash01(x, y, 140) < l.rock_groups {
+                for i in 0..1 + (hash01(x, y, 141) * 3.0) as u32 {
+                    let a = hash01(x, y, 142 + i) * TAU;
+                    let q = at + Vec3::new(a.cos(), 0.0, a.sin()) * (r * 1.3 + 0.12 + 0.3 * hash01(x, y, 146 + i));
+                    if paint.keeps(q.xz()) {
+                        rock(mb, q, (0.35 + 0.4 * hash01(x, y, 150 + i)) * r, hash01(x, y, 154 + i));
+                    }
+                }
+            }
+        } else if forest && take(l.stumps) {
+            stump(mb, at, 0.18 + 0.1 * hash01(x, y, 127), hash01(x, y, 128));
+        } else if trees > 0 && take(l.branches) {
+            branch(mb, at, l.branch_size.0 + (l.branch_size.1 - l.branch_size.0) * hash01(x, y, 160), hash01(x, y, 161));
+        }
+    } else if forest {
         // Forest litter.
         if roll < 0.24 {
             fern(mb, at, 0.45 + 0.25 * hash01(x, y, 123), hash01(x, y, 124));
@@ -1485,9 +1741,8 @@ fn soft_tile(paint: &mut Paint, mb: &mut MeshBuilder, props: &mut MeshBuilder, l
             rock(mb, at, 0.18 + 0.2 * hash01(x, y, 125), hash01(x, y, 126));
         } else if roll < 0.32 {
             stump(mb, at, 0.18 + 0.1 * hash01(x, y, 127), hash01(x, y, 128));
-        } else if roll < 0.34 {
-            log(mb, at, 1.1 + 0.6 * hash01(x, y, 129), 0.13 + 0.06 * hash01(x, y, 130), hash01(x, y, 131));
         }
+        // Fallen logs are real wood now, lying about the forest as ground items (`sim::trees`).
     } else if trees > 0 && !dirt && roll < 0.07 {
         // Scrub where town meets the trees.
         add_bush(props, x, y, at, 0.5 + 0.25 * hash01(x, y, 132));
@@ -1543,6 +1798,41 @@ fn rock(mb: &mut MeshBuilder, p: Vec3, r: f32, k: f32) {
     }
 }
 
+/// A fallen branch `len` metres long, lying on the ground: a bent stick of two three-sided
+/// lengths that thins to its tip, with a twig off its side.
+fn branch(mb: &mut MeshBuilder, p: Vec3, len: f32, k: f32) {
+    let a = k * TAU;
+    let dir = Vec3::new(a.cos(), 0.0, a.sin());
+    let side = Vec3::new(-dir.z, 0.0, dir.x);
+    let r = 0.025 + 0.02 * len;
+    let bend = (hash01((k * 613.0) as i32, 3, 9) - 0.5) * 0.5;
+    let start = p - dir * len * 0.5 + Vec3::Y * r;
+    let mid = p + side * bend * len * 0.3 + Vec3::Y * r * 1.4;
+    let end = p + dir * len * 0.5 + side * bend * len * 0.15 + Vec3::Y * r * 0.6;
+    let colour = shade(pal().deadwood, 0.9 + 0.25 * hash01((k * 331.0) as i32, 5, 9));
+    stick(mb, start, mid, r, r * 0.75, colour);
+    stick(mb, mid, end, r * 0.75, r * 0.3, colour);
+    let twig = mid + (dir * 0.5 - side * (0.8 + bend)).normalize() * len * 0.28 + Vec3::Y * r * 1.5;
+    stick(mb, mid, twig, r * 0.5, r * 0.2, shade(colour, 0.9));
+}
+
+/// A three-sided length of wood from `a` to `b`.
+fn stick(mb: &mut MeshBuilder, a: Vec3, b: Vec3, ra: f32, rb: f32, colour: LinearRgba) {
+    let w = (b - a).normalize_or(Vec3::X);
+    let u = w.cross(Vec3::Y).normalize_or(Vec3::Z);
+    let v = w.cross(u);
+    let ring = |c: Vec3, r: f32, i: u32| {
+        let t = i as f32 * TAU / 3.0;
+        c + (u * t.cos() + v * t.sin()) * r
+    };
+    let inside = (a + b) * 0.5;
+    for i in 0..3 {
+        let c = shade(colour, 0.85 + 0.1 * i as f32);
+        tri_out(mb, [ring(a, ra, i), ring(a, ra, i + 1), ring(b, rb, i + 1)], inside, c);
+        tri_out(mb, [ring(a, ra, i), ring(b, rb, i + 1), ring(b, rb, i)], inside, c);
+    }
+}
+
 /// A tree stump: a short five-sided trunk with a pale cut top.
 fn stump(mb: &mut MeshBuilder, p: Vec3, r: f32, k: f32) {
     let h = 0.22 + 0.2 * k;
@@ -1558,26 +1848,34 @@ fn stump(mb: &mut MeshBuilder, p: Vec3, r: f32, k: f32) {
     }
 }
 
-/// A fallen log: a six-sided tube lying on the ground with cut ends.
-fn log(mb: &mut MeshBuilder, p: Vec3, len: f32, r: f32, k: f32) {
-    let a = k * TAU;
-    let dir = Vec3::new(a.cos(), 0.0, a.sin());
-    let side = Vec3::new(-dir.z, 0.0, dir.x);
-    let centre = p + Vec3::Y * r * 0.85;
-    let ring = |i: u32, end: f32| {
-        let ang = i as f32 * TAU / 6.0;
-        centre + dir * end + (side * ang.cos() + Vec3::Y * ang.sin()) * r
-    };
-    let (e0, e1) = (-len * 0.5, len * 0.5);
-    for i in 0..6 {
-        tri_out(mb, [ring(i, e0), ring(i + 1, e0), ring(i + 1, e1)], centre, pal().deadwood);
-        tri_out(mb, [ring(i, e0), ring(i + 1, e1), ring(i, e1)], centre, pal().deadwood);
+/// The stump of a tree felled in play, standing where its trunk did (`trees::tree_at`'s foot and
+/// size for the tile): a release build's `trees/stump.glb` when there is one, else a short
+/// seven-sided trunk in bark, its sawn top pale.
+fn felled_stump(mb: &mut MeshBuilder, x: i32, y: i32) {
+    let Some(t) = trees::tree_at(x, y, Feature::Tree) else { return };
+    let wood = CutTag { kind: CutKind::Wood, anchor: t.base.xz(), radius: 0.0 };
+    let models = crate::release_models::trees();
+    let n = models.variants("stump");
+    let k = hash01(x, y, 131);
+    let h = (0.32 + 0.14 * k) * t.scale;
+    if n > 0 && models.add_standing(mb, "stump", ((k * n as f32) as u32).min(n - 1), t.base, hash01(x, y, 132) * TAU, h, wood, wood) {
+        return;
     }
-    for e in [e0, e1] {
-        let mid = centre + dir * e;
-        for i in 0..6 {
-            tri_out(mb, [mid, ring(i, e), ring(i + 1, e)], centre, pal().cut_wood);
-        }
+    mb.set_tag(wood);
+    let r = 0.19 * t.scale;
+    let p = t.base;
+    let ring = |i: u32, y: f32, rr: f32| {
+        let a = k * TAU + i as f32 * TAU / 7.0;
+        p + Vec3::new(a.cos() * rr, y, a.sin() * rr)
+    };
+    // The cut slopes a little where the last chops went in.
+    let top = |i: u32| h * (1.0 - 0.12 * (k * TAU + i as f32 * TAU / 7.0).cos());
+    let inside = p + Vec3::Y * h * 0.5;
+    for i in 0..7 {
+        let bark = shade(pal().bark, 0.9 + 0.08 * (i % 2) as f32);
+        tri_out(mb, [ring(i, 0.0, r * 1.25), ring(i + 1, 0.0, r * 1.25), ring(i + 1, top(i + 1), r)], inside, bark);
+        tri_out(mb, [ring(i, 0.0, r * 1.25), ring(i + 1, top(i + 1), r), ring(i, top(i), r)], inside, bark);
+        tri_up(mb, [p + Vec3::Y * h, ring(i, top(i), r), ring(i + 1, top(i + 1), r)], pal().cut_wood);
     }
 }
 
@@ -1599,9 +1897,37 @@ fn fence_or_hedge(mb: &mut MeshBuilder, land: &Land, t: IVec2, which: OwnedEdge)
         let (a, b) = TileMap::edge_segment(t, which);
         let h = 1.05 + 0.25 * hash01(start.x, start.y, 78);
         hedge(mb, a, b, h, back == 0, ahead == 0);
-    } else {
+    } else if !model_fence(mb, t, which, start, back, ahead) {
         fence(mb, t, which);
     }
+}
+
+/// A metre of fence from the release models (`fences/fence.glb`: a metre of it along x, standing on
+/// the origin; `fence_post.glb`: a post), one look a run, a post every other metre and at the run's
+/// end. False without the models.
+fn model_fence(mb: &mut MeshBuilder, t: IVec2, which: OwnedEdge, start: IVec2, back: i32, ahead: i32) -> bool {
+    let models = crate::release_models::fences();
+    let n = models.variants("fence");
+    if n == 0 {
+        return false;
+    }
+    let k = ((hash01(start.x, start.y, 79) * n as f32) as u32).min(n - 1);
+    let Some(h) = models.height("fence", k) else { return false };
+    let (a, b) = TileMap::edge_segment(t, which);
+    let yaw = if which == OwnedEdge::North { 0.0 } else { std::f32::consts::FRAC_PI_2 };
+    let tag = CutTag::default();
+    let mid = (a + b) * 0.5;
+    models.add_standing(mb, "fence", k, Vec3::new(mid.x, 0.0, mid.y), yaw, h, tag, tag);
+    if let Some(ph) = models.height("fence_post", k) {
+        let (lo, hi) = if a.x + a.y <= b.x + b.y { (a, b) } else { (b, a) };
+        if back % 2 == 0 {
+            models.add_standing(mb, "fence_post", k, Vec3::new(lo.x, 0.0, lo.y), yaw, ph, tag, tag);
+        }
+        if ahead == 0 {
+            models.add_standing(mb, "fence_post", k, Vec3::new(hi.x, 0.0, hi.y), yaw, ph, tag, tag);
+        }
+    }
+    true
 }
 
 fn fence(mb: &mut MeshBuilder, t: IVec2, which: OwnedEdge) {
@@ -1836,6 +2162,18 @@ mod tests {
     #[test]
     fn a_garage_facing_the_side_gets_a_bent_driveway() {
         let mut map = shipped_town();
+        // The street props were placed clear of the driveway this garage had, not of the one the
+        // test gives it: take them away.
+        for p in std::mem::take(&mut map.street_props) {
+            let (min, size) = map.street_prop_rect(&p);
+            for q in (0..size.y).flat_map(|y| (0..size.x).map(move |x| min + IVec2::new(x, y))) {
+                if let Some(t) = map.tile_mut(q) {
+                    if t.feature == zombye_sim::map::Feature::StreetProp {
+                        t.feature = zombye_sim::map::Feature::None;
+                    }
+                }
+            }
+        }
         let bi = map.buildings.iter().position(|b| b.template.contains("garage")).unwrap();
         let b = map.buildings[bi].clone();
         let front = b.look.unwrap().front;
@@ -1877,6 +2215,55 @@ mod tests {
         assert_eq!(a.ground.tri_count(), b.ground.tri_count());
         assert_eq!(a.props.tri_count(), b.props.tri_count());
         assert!(a.ground.tri_count() >= 512);
+        assert_eq!(a.veg, b.veg);
+    }
+
+    /// DCM-59: the instanced vegetation is the same every time, stays outdoors and in its chunk,
+    /// grass grows only on soft ground and never on a doorstep, and the pavement gets only weeds
+    /// and litter. The town has every kind, and spots for both density ranges.
+    #[test]
+    fn vegetation_grows_where_it_should() {
+        let map = town();
+        let mut kinds = [0usize; crate::vegetation::KINDS];
+        let (mut chunks, mut total, mut extra, mut most) = (0, 0, 0, 0);
+        for cy in 0..map.chunks_y {
+            for cx in 0..map.chunks_x {
+                let c = IVec2::new(cx, cy);
+                let veg = build_chunk(&map, c).veg;
+                let land = Land::new(&map, c);
+                chunks += 1;
+                total += veg.len();
+                most = most.max(veg.len());
+                for s in &veg {
+                    let t = s.pos.floor().as_ivec2();
+                    assert_eq!(t.div_euclid(IVec2::splat(CHUNK_SIZE)), c, "{s:?} is outside chunk {c}");
+                    let tile = map.tile(t);
+                    assert_eq!(tile.room, 0, "{s:?} is indoors");
+                    assert!((0.0..2.0).contains(&s.rank) && (0.5..1.5).contains(&s.scale) && (0.0..=1.0).contains(&s.dry), "{s:?}");
+                    assert!((s.variant as usize) < VARIANTS, "{s:?}");
+                    let hard = land.drawn(t) == Some(Surface::Road) || tile.floor.is_road() || matches!(tile.floor, Floor::Sidewalk | Floor::Concrete | Floor::Path);
+                    let litter = matches!(s.kind, VegKind::Weed | VegKind::Paper | VegKind::Pebbles);
+                    assert!(!hard || litter, "{s:?} grows on {:?}", tile.floor);
+                    if !litter {
+                        assert!(land.wear(t.as_vec2() + Vec2::splat(0.5)) <= 0.5, "{s:?} grows on a doorstep");
+                        assert!(!land.on_driveway(t), "{s:?} grows on a driveway");
+                    }
+                    kinds[s.kind as usize] += 1;
+                    extra += (s.rank >= 1.0) as usize;
+                }
+            }
+        }
+        assert!(kinds.iter().all(|&n| n > 20), "every kind somewhere in town: {kinds:?}");
+        assert!(extra > total / 5 && extra < total / 2, "{extra} of {total} are for the denser settings");
+        // Under a patch a tile and a half at the default density, and no chunk a runaway (the
+        // thickest woods put some 700 in one).
+        assert!(total / chunks > 150 && total / chunks <= 2 * (CHUNK_SIZE * CHUNK_SIZE) as usize && most <= 800, "{total} spots in {chunks} chunks, at most {most} in one");
+        // Doors wear the ground: the town has some, and wear is whole at the threshold and gone 3 m out.
+        let b = &map.buildings[0];
+        let land = Land::new(&map, (b.min + b.size / 2).div_euclid(IVec2::splat(CHUNK_SIZE)));
+        let door = *land.doors.first().expect("a house has an outside door");
+        assert!(land.wear(door) > 0.99 && land.wear(door + Vec2::new(3.0, 0.0)).min(land.wear(door + Vec2::new(0.0, 3.0))) == 0.0);
+        assert_ne!(land.worn(door, pal().lawn[0]), pal().lawn[0]);
     }
 
     /// Every tile a curve crosses is cut into pieces that cover it once, and the default town has
@@ -1908,6 +2295,54 @@ mod tests {
         assert!(cut > 1000 && kerbs > 100 && bends >= 4 && rings >= 1);
     }
 
+    /// Where the faces of the ground and props meshes fight over one plane, for the whole default
+    /// town (`cargo test -p zombye-client --release chunk_fights -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn chunk_fights() {
+        let map = town();
+        let mut seen: std::collections::BTreeMap<String, (usize, f32, Vec3)> = Default::default();
+        for cy in 0..map.chunks_y {
+            for cx in 0..map.chunks_x {
+                let m = build_chunk(&map, IVec2::new(cx, cy));
+                for (name, mesh) in [("ground", &m.ground), ("props", &m.props)] {
+                    for f in mesh.fights() {
+                        let axis = if f.normal.y.abs() > 0.9 { "flat" } else if f.normal.y.abs() < 0.1 { "upright" } else { "sloped" };
+                        let c = |c: [f32; 4]| format!("{:.2},{:.2},{:.2}", c[0], c[1], c[2]);
+                        let e = seen.entry(format!("{name} {axis} y {:.3} {} / {}", f.at.y, c(f.colours[0]), c(f.colours[1]))).or_insert((0, 0.0, f.at));
+                        (e.0, e.1) = (e.0 + 1, e.1 + f.area);
+                    }
+                }
+            }
+        }
+        let mut rows: Vec<_> = seen.into_iter().collect();
+        rows.sort_by(|a, b| b.1.1.total_cmp(&a.1.1));
+        for (k, (n, area, at)) in rows.iter().take(60) {
+            eprintln!("{area:9.3} m2 {n:6} x  {k}  e.g. {at:.3}");
+        }
+        eprintln!("{} kinds of place", rows.len());
+    }
+
+    /// The shimmer along sidewalk edges (z-fighting): a kerb stands on the sidewalk, 6 cm up, with
+    /// its face down to the road; none of it lies flat in the paving's own plane.
+    #[test]
+    fn kerbs_stand_clear_of_the_ground() {
+        let mut mb = MeshBuilder::default();
+        kerb(&mut mb, Vec2::new(10.0, 20.0), Side::W, 0.0, 1.0);
+        let (lo, hi) = mb.bounds();
+        assert!((lo - Vec3::new(10.0, 0.0, 20.0)).length() < 1e-5 && (hi - Vec3::new(10.0 + KERB_WIDTH, KERB_HEIGHT, 21.0)).length() < 1e-5, "{lo} {hi}");
+        // And over a stretch of town, nothing flat on the ground shares its plane in two colours.
+        let map = town();
+        let mid = IVec2::new(map.chunks_x, map.chunks_y) / 2;
+        for cy in mid.y - 4..mid.y + 4 {
+            for cx in mid.x - 4..mid.x + 4 {
+                let m = build_chunk(&map, IVec2::new(cx, cy));
+                let flat: Vec<_> = m.ground.fights().into_iter().filter(|f| f.normal.y > 0.9 && f.at.y < 0.01).collect();
+                assert!(flat.is_empty(), "chunk {cx},{cy}: {:?}", &flat[..flat.len().min(3)]);
+            }
+        }
+    }
+
     /// The landscape's share of chunk building, over every chunk of the default map
     /// (`cargo test -p zombye-client --release chunk_build_time -- --ignored --nocapture`).
     #[test]
@@ -1915,7 +2350,7 @@ mod tests {
     fn chunk_build_time() {
         let map = town();
         let mut times = Vec::new();
-        let (mut ground, mut props) = (0, 0);
+        let (mut ground, mut props, mut spots, mut veg_tris) = (0, 0, 0, 0);
         for _ in 0..3 {
             for cy in 0..map.chunks_y {
                 for cx in 0..map.chunks_x {
@@ -1924,6 +2359,8 @@ mod tests {
                     times.push(start.elapsed().as_secs_f64() * 1000.0);
                     ground += m.ground.tri_count();
                     props += m.props.tri_count();
+                    spots += m.veg.iter().filter(|s| s.rank < 1.0).count();
+                    veg_tris += m.veg.iter().filter(|s| s.rank < 1.0).map(|s| crate::vegetation::patch_triangles(s.kind, s.variant)).sum::<usize>();
                 }
             }
         }
@@ -1931,14 +2368,72 @@ mod tests {
         let n = times.len();
         let mean = times.iter().sum::<f64>() / n as f64;
         eprintln!(
-            "chunk build: {} chunks x 3, mean {mean:.3} ms, median {:.3} ms, slowest 1% {:.3} ms, max {:.3} ms; triangles a chunk: ground {}, props {}",
+            "chunk build: {} chunks x 3, mean {mean:.3} ms, median {:.3} ms, slowest 1% {:.3} ms, max {:.3} ms; triangles a chunk: ground {}, props {}; vegetation at the default density: {} instances a chunk, {} triangles",
             n / 3,
             times[n / 2],
             times[n * 99 / 100],
             times[n - 1],
             ground / n,
-            props / n
+            props / n,
+            spots / n,
+            veg_tris / n
         );
     }
 }
 
+
+/// How dark the ground is right at a trunk, under [`foot_shade`]'s soft blot.
+const FOOT_DARK: f32 = 0.62;
+/// How far over the ground the blot floats, so a fold between two facets never cuts into it.
+const FOOT_LIFT: f32 = 0.04;
+
+/// A soft dark blot round the foot of every tree and bush in chunk `c`, darkest at the trunk and
+/// clear at its edge: the shade a crown keeps off the ground right under it, which the sun's
+/// shadow alone doesn't give (it falls off to one side), so a trunk sits in the ground instead of
+/// on it. Drawn as the walls' contact shadows are (blended black, unlit), laid over the hills
+/// ring by ring, and only with that setting on.
+pub fn foot_shade(map: &TileMap, c: IVec2) -> MeshBuilder {
+    let land = Land::new(map, c);
+    let mut mb = MeshBuilder::default();
+    const SEGMENTS: usize = 14;
+    // The blot's rings: (share of its radius, share of its darkness).
+    const RINGS: [(f32, f32); 3] = [(0.35, 0.85), (0.7, 0.4), (1.0, 0.0)];
+    for y in land.min.y..land.min.y + CHUNK_SIZE {
+        for x in land.min.x..land.min.x + CHUNK_SIZE {
+            let t = IVec2::new(x, y);
+            let tile = land.tile(t);
+            if tile.room != 0 {
+                continue;
+            }
+            let (centre, radius) = match tile.feature {
+                Feature::Tree | Feature::PineTree => match trees::tree_on(map, x, y) {
+                    Some(spec) => (spec.base, 0.65 * spec.crown_r + 0.5),
+                    None => continue,
+                },
+                Feature::Bush if !land.on_driveway(t) => {
+                    let size = bush_size(map, x, y);
+                    (Vec3::new(x as f32 + 0.3 + 0.4 * hash01(x, y, 3), 0.0, y as f32 + 0.3 + 0.4 * hash01(x, y, 4)), 0.9 * size)
+                }
+                _ => continue,
+            };
+            let at = |r: f32, k: usize| {
+                let a = k as f32 / SEGMENTS as f32 * TAU;
+                let q = centre.xz() + Vec2::new(a.cos(), a.sin()) * r * radius;
+                Vec3::new(q.x, map.terrain.height(q) + FOOT_LIFT, q.y)
+            };
+            let shade = |d: f32| LinearRgba::new(0.0, 0.0, 0.0, FOOT_DARK * d);
+            let middle = Vec3::new(centre.x, map.terrain.height(centre.xz()) + FOOT_LIFT, centre.z);
+            for k in 0..SEGMENTS {
+                let (a, b) = (at(RINGS[0].0, k), at(RINGS[0].0, k + 1));
+                mb.triangle_shaded([middle, b, a], [shade(1.0), shade(RINGS[0].1), shade(RINGS[0].1)]);
+                for w in RINGS.windows(2) {
+                    let ((r0, d0), (r1, d1)) = (w[0], w[1]);
+                    let (i0, i1, o0, o1) = (at(r0, k), at(r0, k + 1), at(r1, k), at(r1, k + 1));
+                    mb.triangle_shaded([i0, i1, o1], [shade(d0), shade(d0), shade(d1)]);
+                    mb.triangle_shaded([i0, o1, o0], [shade(d0), shade(d1), shade(d1)]);
+                }
+            }
+        }
+    }
+    mb
+}

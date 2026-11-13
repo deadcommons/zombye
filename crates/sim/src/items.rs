@@ -3,7 +3,7 @@
 //! (`assets/data/items/weapons.ron`, [`parse_weapons`]) and an item swings like one when it names it
 //! (`weapon: Some("baseball_bat")`). Things are carried, held and worn as [`ItemStack`]s (an item and
 //! a count; see [`crate::inventory`]), lie in furniture ([`crate::containers`]) or on the floor as
-//! [`GroundItem`]s. A few weapons lie on house floors from the start ([`place_weapons`]).
+//! [`GroundItem`]s. What lies on floors from the start is loot (`loot.ron`'s `floor`, [`crate::loot::place_floor`]).
 
 use glam::{IVec2, Vec2};
 use serde::{Deserialize, Serialize};
@@ -21,16 +21,20 @@ pub enum WeaponCategory {
     ShortBlunt,
     LongBlunt,
     Axe,
+    /// A gun (#72): its `ranged` numbers say how it shoots ([`crate::ranged`]). Last, so the
+    /// categories before it keep their numbers in saves and on the wire.
+    Firearm,
 }
 
 impl WeaponCategory {
     /// The skill weapons of this category use unless the data says otherwise: Bludgeon for blunt
-    /// ones, Edged for knives and axes, Brawl for bare hands.
+    /// ones, Edged for knives and axes, Brawl for bare hands. Shooting trains no skill yet, and
+    /// none makes it better: a firearm's skill is never read (`World::fire`).
     pub fn skill(self) -> Skill {
         match self {
             Self::Unarmed => Skill::Brawl,
             Self::ShortBlade | Self::Axe => Skill::Edged,
-            Self::ShortBlunt | Self::LongBlunt => Skill::Bludgeon,
+            Self::ShortBlunt | Self::LongBlunt | Self::Firearm => Skill::Bludgeon,
         }
     }
 }
@@ -68,17 +72,28 @@ pub struct WeaponDef {
     pub endurance_cost: f32,
     /// Radius of the noise a swing makes.
     pub noise_radius: f32,
-    /// Relative chance of being placed in a house (0 = never).
-    #[serde(default)]
-    pub spawn_weight: f32,
-    /// Room types (`kitchen`, `bedroom`, ...) where it's three times as likely to turn up.
-    #[serde(default)]
-    pub found_in: Vec<String>,
     /// Grey-box look: length in metres and colour (linear-ish RGB 0..1).
     #[serde(default = "default_length")]
     pub length: f32,
     #[serde(default = "default_color")]
     pub color: (f32, f32, f32),
+    /// A gun's numbers (#72): what it is loaded with, how far and how true it shoots. With it the
+    /// weapon shoots instead of swinging (see [`crate::ranged::RangedDef`] for what the fields
+    /// above mean then). Exactly the `Firearm` weapons have it.
+    #[serde(default)]
+    pub ranged: Option<crate::ranged::RangedDef>,
+    /// Wear: how many knocks it takes before it breaks (see [`crate::wear`]). 0: it never wears
+    /// (bare hands, guns). How worn one is rides on its stack ([`ItemStack::used`]).
+    #[serde(default)]
+    pub durability: u8,
+    /// Chance (0..1) that a swing that hits something knocks it one step nearer breaking. A
+    /// weapon lasts about `durability / wear_chance` such swings in unpractised hands.
+    #[serde(default)]
+    pub wear_chance: f32,
+    /// Too close for a full swing: a target whose body is nearer than this takes a cramped blow
+    /// ([`crate::CombatTuning::cramped_damage`]). 0: none.
+    #[serde(default)]
+    pub close_range: f32,
 }
 
 fn default_length() -> f32 {
@@ -115,10 +130,12 @@ impl WeaponDef {
             crit_multiplier: 1.5,
             endurance_cost: 0.02,
             noise_radius: 3.0,
-            spawn_weight: 0.0,
-            found_in: Vec::new(),
             length: 0.0,
             color: (0.8, 0.65, 0.5),
+            ranged: None,
+            durability: 0,
+            wear_chance: 0.0,
+            close_range: 0.0,
         }
     }
 
@@ -154,11 +171,16 @@ impl WeaponDef {
         if !(self.crit_multiplier >= 1.0 && self.crit_multiplier <= 10.0) {
             return Err(format!("{id}: crit_multiplier must be in 1..10, got {}", self.crit_multiplier));
         }
-        if !(0.0..=100.0).contains(&self.noise_radius) {
-            return Err(format!("{id}: noise_radius must be in 0..100 m, got {}", self.noise_radius));
+        // A gunshot carries much further than any blow.
+        let loudest = if self.category == WeaponCategory::Firearm { crate::ranged::MAX_SHOT_NOISE } else { 100.0 };
+        if !(0.0..=loudest).contains(&self.noise_radius) {
+            return Err(format!("{id}: noise_radius must be in 0..{loudest} m, got {}", self.noise_radius));
         }
-        if !(self.spawn_weight >= 0.0 && self.spawn_weight.is_finite()) {
-            return Err(format!("{id}: spawn_weight must be >= 0"));
+        match (&self.ranged, self.category == WeaponCategory::Firearm) {
+            (Some(r), true) => r.validate(id)?,
+            (Some(_), false) => return Err(format!("{id}: `ranged` is only for Firearm weapons (this is {:?})", self.category)),
+            (None, true) => return Err(format!("{id}: a Firearm needs `ranged: Some((...))`")),
+            (None, false) => {}
         }
         if !self.skill().is_weapon_skill() {
             return Err(format!("{id}: skill {:?} isn't a weapon skill (Bludgeon, Edged or Brawl)", self.skill()));
@@ -166,11 +188,18 @@ impl WeaponDef {
         if self.category == WeaponCategory::Unarmed && self.skill() != Skill::Brawl {
             return Err(format!("{id}: bare hands are Brawl, not {:?}", self.skill()));
         }
-        if self.category == WeaponCategory::Unarmed && self.spawn_weight > 0.0 {
-            return Err(format!("{id}: an Unarmed weapon can't lie about (spawn_weight must be 0)"));
-        }
         if !(0.0..=3.0).contains(&self.length) {
             return Err(format!("{id}: length must be in 0..3 m"));
+        }
+        chance("wear_chance", self.wear_chance)?;
+        if (self.durability > 0) != (self.wear_chance > 0.0) {
+            return Err(format!("{id}: durability and wear_chance go together (both 0: it never wears), got {} and {}", self.durability, self.wear_chance));
+        }
+        if self.durability > 0 && (self.ranged.is_some() || self.category == WeaponCategory::Unarmed) {
+            return Err(format!("{id}: bare hands and guns don't wear (durability must be 0)"));
+        }
+        if !(self.close_range >= 0.0 && self.close_range < self.range) {
+            return Err(format!("{id}: close_range must be in 0..range ({} m), got {}", self.range, self.close_range));
         }
         Ok(())
     }
@@ -236,6 +265,10 @@ pub struct Consumable {
     /// Game hours until it goes off (`None`: keeps).
     #[serde(default)]
     pub spoils_hours: Option<f32>,
+    /// Chance of food poisoning each go, eaten as it is (raw meat, raw eggs: cook them first,
+    /// `crate::fire`). On top of going off.
+    #[serde(default)]
+    pub poison: f32,
 }
 
 /// A medical item. What it treats is in its tags (`bandage`, `clean`, `disinfects`, ...); the
@@ -371,6 +404,10 @@ pub struct ItemDef {
     /// Held in both hands.
     #[serde(default)]
     pub two_handed: bool,
+    /// A two-handed thing that can be swung in one hand while the other holds something, weaker
+    /// and slower ([`crate::CombatTuning::one_hand_power`]). Only read when `two_handed`.
+    #[serde(default)]
+    pub one_hand: bool,
     /// The weapon (id in `weapons.ron`) it swings as.
     #[serde(default)]
     pub weapon: Option<String>,
@@ -391,16 +428,44 @@ pub struct ItemDef {
     /// doesn't have: a grey-box in its colour.
     #[serde(default)]
     pub model: Option<String>,
+    /// The item this one becomes when filled at a running tap: an empty bottle `"water_bottle"`.
+    /// Every item with one can be filled at a sink, from its right-click menu, the sink's and the
+    /// Make list ([`crate::crafting::add_fill_recipes`] makes the recipe), so a new container (a
+    /// jug, a canteen, a pot) needs only this line.
+    #[serde(default)]
+    pub fills: Option<String>,
+    /// The item it becomes filled from a toilet's cistern once the town's water is off (a bottle
+    /// of dirty water: `power.ron`'s `water.cisterns`); [`crate::crafting::add_fill_recipes`]
+    /// makes that recipe too.
+    #[serde(default)]
+    pub fills_dirty: Option<String>,
+    /// A can of fuel for vehicles (`crate::vehicles`): the litres it holds. Its stack's `used`
+    /// counts the litres in it (as it counts a gun's rounds); each litre weighs
+    /// [`FUEL_KG_PER_L`] more. Doesn't stack.
+    #[serde(default)]
+    pub fuel_l: Option<u8>,
     /// Grey-box colour (linear-ish RGB 0..1).
     #[serde(default = "grey")]
     pub color: (f32, f32, f32),
 }
+
+/// What a litre of fuel in a can weighs, kg.
+pub const FUEL_KG_PER_L: f32 = 0.75;
+
+/// Tags that let a player use an item that is neither food nor drink ([`ItemDef::usable`]).
+pub const TAG_USABLE: &str = "usable";
+pub const TAG_REUSABLE: &str = "reusable";
 
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
 impl ItemDef {
+    /// Does holding it leave no hand free: two-handed, and not one that one hand can manage.
+    pub fn both_hands(&self) -> bool {
+        self.two_handed && !self.one_hand
+    }
+
     /// A plain item for a weapon that has none in the item data (tests, bare configs, a mod that
     /// adds a weapon but no item): 1 kg, 1.5 L.
     pub fn for_weapon(w: &WeaponDef) -> Self {
@@ -413,6 +478,7 @@ impl ItemDef {
             stack: 1,
             tags: Vec::new(),
             two_handed: w.length >= 0.8,
+            one_hand: false,
             weapon: Some(w.id.clone()),
             food: None,
             drink: None,
@@ -421,12 +487,21 @@ impl ItemDef {
             clothing: None,
             light: None,
             model: None,
+            fills: None,
+            fills_dirty: None,
+            fuel_l: None,
             color: w.color,
         }
     }
 
     pub fn has_tag(&self, tag: &str) -> bool {
         self.tags.iter().any(|t| t == tag)
+    }
+
+    /// Something a player can use that is neither food nor drink (#25): what using it does is a
+    /// mod script's `on_use` to say. [`TAG_USABLE`] ones are used up, [`TAG_REUSABLE`] ones kept.
+    pub fn usable(&self) -> bool {
+        self.has_tag(TAG_USABLE) || self.has_tag(TAG_REUSABLE)
     }
 
     /// Something to eat or drink.
@@ -445,6 +520,9 @@ impl ItemDef {
         }
         if !(self.weight_kg > 0.0 && self.weight_kg <= 100.0) {
             return Err(format!("{id}: weight_kg must be in (0, 100], got {}", self.weight_kg));
+        }
+        if self.fuel_l.is_some_and(|l| l == 0) || self.fuel_l.is_some() && self.stack != 1 {
+            return Err(format!("{id}: a fuel can holds at least a litre and doesn't stack"));
         }
         if !(self.volume_l > 0.0 && self.volume_l <= 200.0) {
             return Err(format!("{id}: volume_l must be in (0, 200], got {}", self.volume_l));
@@ -497,6 +575,9 @@ impl ItemDef {
             }
             if c.spoils_hours.is_some_and(|h| !(h > 0.0 && h.is_finite())) {
                 return Err(format!("{id}: spoils_hours must be positive"));
+            }
+            if !(0.0..=1.0).contains(&c.poison) {
+                return Err(format!("{id}: poison must be a chance in 0..1, got {}", c.poison));
             }
         }
         if let Some(m) = &self.medical
@@ -554,6 +635,20 @@ pub fn validate_items(defs: &[ItemDef], weapons: &[WeaponDef]) -> Result<(), Str
         if defs[..i].iter().any(|o| o.id == d.id) {
             return Err(format!("item id {:?} is used twice", d.id));
         }
+        // A gun's item needs what the gun is loaded with among the items too (#72).
+        if let Some(r) = d.weapon.as_ref().and_then(|w| weapons.iter().find(|x| &x.id == w)).and_then(|w| w.ranged.as_ref()) {
+            r.check_items(&d.id, defs)?;
+        }
+        if let Some(f) = &d.fills
+            && (f == &d.id || !defs.iter().any(|o| &o.id == f))
+        {
+            return Err(format!("item {}: fills names {f:?}, which isn't another item", d.id));
+        }
+        if let Some(f) = &d.fills_dirty
+            && (f == &d.id || !defs.iter().any(|o| &o.id == f))
+        {
+            return Err(format!("item {}: fills_dirty names {f:?}, which isn't another item", d.id));
+        }
     }
     Ok(())
 }
@@ -581,17 +676,57 @@ pub fn complete_items(items: &mut Vec<ItemDef>, weapons: &[WeaponDef]) -> Vec<Op
 /// doesn't spoil), which says how fresh it is ([`crate::needs::Freshness`]), and how many goes of
 /// the top one have been had (`used`, below its `uses`). Stacks only merge when all three agree
 /// ([`ItemStack::same_kind`]), so a stale loaf never hides among fresh ones.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// For a gun or a gun's magazine (#72, [`crate::ranged`]) `used` is something else: the rounds in
+/// it, 0 to what it takes ([`crate::ranged::max_used`]). Neither stacks. For a weapon that wears
+/// ([`crate::wear`]) it is the knocks it has taken, 0 to its `durability` (broken).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct ItemStack {
     pub item: u16,
     pub count: u16,
     pub born: i32,
     pub used: u8,
+    /// Which of its player's pockets and bags a carried stack is in ([`Pouch`]); `Pockets` for a
+    /// stack anywhere else. Not part of what a stack *is*: two stacks are equal whatever pouch
+    /// they are in, and it isn't written with the stack (saves keep it in their own section,
+    /// snapshots beside the inventory), so neither format changed for it.
+    #[serde(skip)]
+    pub home: Pouch,
+}
+
+impl PartialEq for ItemStack {
+    fn eq(&self, o: &Self) -> bool {
+        self.item == o.item && self.count == o.count && self.born == o.born && self.used == o.used
+    }
+}
+
+impl Eq for ItemStack {}
+
+/// Where a carried stack is: in the pockets, or in the bag in one of the four places a bag is
+/// carried. Each has its own room (`Inventory::pouch_room`). In the order things are put away
+/// when nobody says where: the bag on the back first, pockets last.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Pouch {
+    #[default]
+    Pockets,
+    Back,
+    Shoulder,
+    Hand,
+    OffHand,
+}
+
+impl Pouch {
+    /// Every pouch, in the order things are put away by themselves.
+    pub const ALL: [Pouch; 5] = [Pouch::Back, Pouch::Shoulder, Pouch::Hand, Pouch::OffHand, Pouch::Pockets];
+
+    pub fn from_u8(v: u8) -> Option<Pouch> {
+        [Pouch::Pockets, Pouch::Back, Pouch::Shoulder, Pouch::Hand, Pouch::OffHand].get(v as usize).copied()
+    }
 }
 
 impl ItemStack {
     pub fn new(item: u16, count: u16) -> Self {
-        Self { item, count, born: 0, used: 0 }
+        Self { item, count, born: 0, used: 0, home: Pouch::Pockets }
     }
 
     pub fn one(item: u16) -> Self {
@@ -620,60 +755,6 @@ pub struct GroundItem {
     pub angle: f32,
 }
 
-/// Scatter weapons over house floors: 0–2 per building on free ground-floor tiles, at least one in
-/// `spawn_building`, chosen by `spawn_weight` (three times as likely in a room of a `found_in`
-/// type), each as the item that swings it (`weapon_items`, from [`complete_items`]). Deterministic
-/// for the same map, weapons and seed; doesn't touch the world RNG.
-pub fn place_weapons(map: &TileMap, weapons: &[WeaponDef], weapon_items: &[Option<u16>], spawn_building: usize, seed: u64, first_id: u32) -> Vec<GroundItem> {
-    let mut out = Vec::new();
-    let placeable = |wi: usize, w: &WeaponDef| w.spawn_weight > 0.0 && weapon_items.get(wi).copied().flatten().is_some();
-    if !weapons.iter().enumerate().any(|(wi, w)| placeable(wi, w)) {
-        return out;
-    }
-    let mut rng = Rng::new(seed ^ 0x17E5_CA77_E2ED);
-    let mut tiles: Vec<IVec2> = Vec::new();
-    for (bi, b) in map.buildings.iter().enumerate() {
-        tiles.clear();
-        for y in b.min.y..b.min.y + b.size.y {
-            for x in b.min.x..b.min.x + b.size.x {
-                let t = IVec2::new(x, y);
-                let tile = map.tile(t);
-                if tile.room != 0 && map.rooms[tile.room as usize].building as usize == bi && tile.feature == Feature::None {
-                    tiles.push(t);
-                }
-            }
-        }
-        let mut count = rng.below(3);
-        if bi == spawn_building {
-            count = count.max(1);
-        }
-        for _ in 0..count.min(tiles.len() as u32) {
-            let k = rng.below(tiles.len() as u32) as usize;
-            let t = tiles.swap_remove(k);
-            let room_type = &map.rooms[map.tile(t).room as usize].room_type;
-            let weight = |wi: usize, w: &WeaponDef| if placeable(wi, w) { w.spawn_weight * if w.found_in.iter().any(|r| r == room_type) { 3.0 } else { 1.0 } } else { 0.0 };
-            let total: f32 = weapons.iter().enumerate().map(|(wi, w)| weight(wi, w)).sum();
-            let mut roll = rng.f32() * total;
-            let mut pick = None;
-            for (wi, w) in weapons.iter().enumerate() {
-                let wt = weight(wi, w);
-                if wt <= 0.0 {
-                    continue;
-                }
-                pick = Some(wi);
-                if roll < wt {
-                    break;
-                }
-                roll -= wt;
-            }
-            let Some(item) = pick.and_then(|wi| weapon_items[wi]) else { continue };
-            let pos = t.as_vec2() + Vec2::new(rng.range(0.3, 0.7), rng.range(0.3, 0.7));
-            out.push(GroundItem { id: first_id + out.len() as u32, stack: ItemStack::one(item), pos, angle: rng.range(0.0, std::f32::consts::TAU) });
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -687,10 +768,11 @@ mod tests {
         let w = weapons();
         assert!(w.len() >= 9, "only {} weapons", w.len());
         assert_eq!(w.iter().filter(|d| d.category == WeaponCategory::Unarmed).count(), 1);
-        assert!(w.iter().filter(|d| d.spawn_weight > 0.0).count() >= 8);
-        // Every weapon names its skill (#46), and it is the one its category hits with.
+        // Every weapon names its skill (#46), and it is the one its category hits with. A gun
+        // names none: shooting trains no skill yet (#72).
         for d in &w {
-            assert_eq!(d.skill, Some(d.category.skill()), "{} names {:?}", d.id, d.skill);
+            let want = if d.ranged.is_some() { None } else { Some(d.category.skill()) };
+            assert_eq!(d.skill, want, "{} names {:?}", d.id, d.skill);
         }
     }
 

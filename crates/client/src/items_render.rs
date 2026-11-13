@@ -1,6 +1,7 @@
 //! Items lying on the floor, drawn from the snapshot's full item list as grey-box shapes in each
-//! item's colour (real models come later): weapons as bars of their length, anything else as a
-//! small box about its size. Hidden under the fog of war like zombies.
+//! item's colour: weapons as bars of their length, anything else as a small box about its size.
+//! An item a release build has a model for (`release_models.rs`, `items/<item id>.glb`) is drawn as
+//! that, at its own size. Hidden under the fog of war like zombies.
 
 use std::collections::HashMap;
 
@@ -20,6 +21,14 @@ pub struct WeaponLooks {
     /// One material per item (by index), and the size (x, y, z) it's drawn at on the floor.
     item_materials: Vec<Handle<StandardMaterial>>,
     item_sizes: Vec<Vec3>,
+    /// A release build's model of an item (by index), where it has one, and the material they share.
+    item_models: Vec<Option<Handle<Mesh>>>,
+    /// Which items are logs (tag `log`), drawn as `log` when they have no model.
+    item_logs: Vec<bool>,
+    log: Handle<Mesh>,
+    model_material: Handle<StandardMaterial>,
+    /// A release build's model of a weapon in the hand (by weapon index), where it has one.
+    held_models: Vec<Option<Handle<Mesh>>>,
 }
 
 /// Bar thickness and the shortest bar drawn (so a frying pan still shows up).
@@ -31,6 +40,12 @@ impl WeaponLooks {
     pub fn length(&self, w: u16) -> f32 {
         let l = self.lengths.get(w as usize).copied().unwrap_or(0.0);
         if l > 0.0 { l.max(MIN_LENGTH) } else { 0.0 }
+    }
+
+    /// The model drawn for weapon `w` in a hand (its grip at the origin, pointing along +z), with
+    /// its material, where a release build has one; else the weapon is a bar.
+    pub fn held(&self, w: u16) -> Option<(Handle<Mesh>, Handle<StandardMaterial>)> {
+        Some((self.held_models.get(w as usize)?.clone()?, self.model_material.clone()))
     }
 }
 
@@ -58,6 +73,7 @@ fn setup(mut commands: Commands, join: Res<JoinInfo>, mut meshes: ResMut<Assets<
             let weapon = d.weapon.as_ref().and_then(|id| join.weapons.iter().position(|w| &w.id == id));
             match weapon {
                 Some(w) => Vec3::new(lengths[w].max(MIN_LENGTH), THICK, THICK * 1.4),
+                None if d.has_tag("log") => Vec3::ONE,
                 None => {
                     // A box of about its volume, flattened a little, never too small to see.
                     let side = (d.volume_l / 1000.0).cbrt().clamp(0.08, 0.45);
@@ -66,10 +82,18 @@ fn setup(mut commands: Commands, join: Res<JoinInfo>, mut meshes: ResMut<Assets<
             }
         })
         .collect();
-    commands.insert_resource(WeaponLooks { cube, materials: weapon_mats, lengths, item_materials, item_sizes });
+    let released = crate::release_models::items();
+    // A log (tagged `log`) with no model of its own lies as a length of trunk, 0.95 m by 0.26 m.
+    let log = meshes.add(Cylinder::new(0.13, 0.95).mesh().resolution(7).build().rotated_by(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)).translated_by(Vec3::Y * 0.13));
+    let item_models = join.items.iter().map(|d| released.mesh(&d.id).map(|m| meshes.add(m))).collect();
+    let item_logs = join.items.iter().map(|d| d.has_tag("log")).collect();
+    let in_hand = crate::release_models::held();
+    let held_models = join.weapons.iter().map(|w| join.items.iter().find(|d| d.weapon.as_deref() == Some(w.id.as_str())).and_then(|d| in_hand.mesh(&d.id)).map(|m| meshes.add(m))).collect();
+    let model_material = materials.add(StandardMaterial { base_color: Color::WHITE, perceptual_roughness: 0.8, ..default() });
+    commands.insert_resource(WeaponLooks { cube, materials: weapon_mats, lengths, item_materials, item_sizes, item_models, item_logs, log, model_material, held_models });
 }
 
-fn sync_items(mut commands: Commands, link: Res<ServerLink>, fog: Res<FogState>, looks: Option<Res<WeaponLooks>>, mut entities: ResMut<ItemEntities>, mut query: Query<(&mut Visibility, &mut Transform)>) {
+fn sync_items(mut commands: Commands, link: Res<ServerLink>, map: Res<crate::server_link::ClientMap>, fog: Res<FogState>, view: Res<crate::player::ViewFloor>, looks: Option<Res<WeaponLooks>>, mut entities: ResMut<ItemEntities>, mut query: Query<(&mut Visibility, &mut Transform)>) {
     let Some(looks) = looks else { return };
     let items = &link.curr.items;
     // Gone (picked up) or changed into another item: despawn (and respawn with the new look).
@@ -81,7 +105,10 @@ fn sync_items(mut commands: Commands, link: Res<ServerLink>, fog: Res<FogState>,
         keep
     });
     for it in items {
-        let visibility = if fog.visibility(it.pos) > 0.35 { Visibility::Inherited } else { Visibility::Hidden };
+        // Things lying upstairs (stairs) are drawn on that floor, and only while it is the one open.
+        let up = link.curr.upstairs.binary_search(&it.id).is_ok();
+        let lift = if up { zombye_sim::map::STOREY } else { 0.0 } + map.0.ground(it.pos);
+        let visibility = if fog.visibility(it.pos) > 0.35 && (!up || view.level > 0) { Visibility::Inherited } else { Visibility::Hidden };
         match entities.0.get(&it.id) {
             Some(&(e, _)) => {
                 if let Ok((mut v, mut tf)) = query.get_mut(e) {
@@ -95,10 +122,24 @@ fn sync_items(mut commands: Commands, link: Res<ServerLink>, fog: Res<FogState>,
                 }
             }
             None => {
-                let size = looks.item_sizes.get(it.stack.item as usize).copied().unwrap_or(Vec3::splat(0.15));
-                let tf = Transform::from_xyz(it.pos.x, size.y * 0.5 + 0.01, it.pos.y).with_rotation(Quat::from_rotation_y(-it.angle)).with_scale(size);
-                let material = looks.item_materials.get(it.stack.item as usize).cloned().unwrap_or_default();
-                let e = commands.spawn((Mesh3d(looks.cube.clone()), MeshMaterial3d(material), tf, visibility)).id();
+                let e = match looks.item_models.get(it.stack.item as usize).cloned().flatten() {
+                    // A model lies on the floor at its own size.
+                    Some(model) => {
+                        let tf = Transform::from_xyz(it.pos.x, 0.01 + lift, it.pos.y).with_rotation(Quat::from_rotation_y(-it.angle));
+                        commands.spawn((Mesh3d(model), MeshMaterial3d(looks.model_material.clone()), tf, visibility)).id()
+                    }
+                    None if looks.item_logs.get(it.stack.item as usize).copied().unwrap_or(false) => {
+                        let tf = Transform::from_xyz(it.pos.x, 0.01 + lift, it.pos.y).with_rotation(Quat::from_rotation_y(-it.angle));
+                        let material = looks.item_materials.get(it.stack.item as usize).cloned().unwrap_or_default();
+                        commands.spawn((Mesh3d(looks.log.clone()), MeshMaterial3d(material), tf, visibility)).id()
+                    }
+                    None => {
+                        let size = looks.item_sizes.get(it.stack.item as usize).copied().unwrap_or(Vec3::splat(0.15));
+                        let tf = Transform::from_xyz(it.pos.x, size.y * 0.5 + 0.01 + lift, it.pos.y).with_rotation(Quat::from_rotation_y(-it.angle)).with_scale(size);
+                        let material = looks.item_materials.get(it.stack.item as usize).cloned().unwrap_or_default();
+                        commands.spawn((Mesh3d(looks.cube.clone()), MeshMaterial3d(material), tf, visibility)).id()
+                    }
+                };
                 entities.0.insert(it.id, (e, it.stack));
             }
         }

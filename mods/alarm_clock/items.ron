@@ -1,0 +1,8 @@
+// Items this mod adds or replaces (the format of assets/data/items/items.ron). An id the game
+// already has replaces that item: here the game's alarm clock gets the `usable` tag, so "Use"
+// is offered for it and the script's on_use is told.
+[
+    (id: "alarm_clock", name: "Alarm clock", category: Junk, weight_kg: 0.3, volume_l: 0.4, tags: ["junk", "usable"], color: (0.8, 0.3, 0.2)),
+    // A wound-up clock, set down. Picked up again it stops; use it to set it down once more.
+    (id: "alarm_clock_set", name: "Alarm clock (wound up)", category: Junk, weight_kg: 0.3, volume_l: 0.4, tags: ["junk", "usable"], color: (0.95, 0.75, 0.15)),
+]

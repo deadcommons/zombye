@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::TICK_DT;
 use crate::health::{Health, HealthTuning, InfectionStage, InfectionTuning, Part, WoundKind};
+use crate::items::{WeaponCategory, WeaponDef};
 use crate::world::World;
 
 /// One life of a player, counted by the server.
@@ -51,6 +52,8 @@ pub struct RunStats {
     pub hp_lost: f32,
     /// How it ended; `None` while alive (or dead in a save from before #13).
     pub death: Option<Death>,
+    /// Other players this player's swings and stomps killed (PvP), counted apart from zombies.
+    pub player_kills: u32,
 }
 
 /// How and when a life ended.
@@ -83,6 +86,15 @@ pub enum DeathCause {
     Wound { part: Part, wound: WoundKind },
     /// Anything that didn't say (`World::hurt_player`).
     Other,
+    /// Another player's swing or stomp (PvP; added last, so saves from before it read as they
+    /// did): the killer's player id, what it killed with and the wound the blow left. `weapon` is
+    /// an index into `WorldConfig::weapons` (bare hands for a punch);
+    /// [`DeathCause::describe_with`] names it.
+    Survivor { by: u32, weapon: u16, stomp: bool, part: Part, wound: WoundKind },
+    /// Standing in a fire (`crate::fire`; added last, like `Survivor`).
+    Burned { part: Part },
+    /// A crash at the wheel of a vehicle (`crate::vehicles`; added last).
+    Crash,
 }
 
 /// "a gash", "an ..." for a wound kind; a clothing-stopped blow is "a blow".
@@ -93,13 +105,38 @@ fn a_wound(w: WoundKind) -> &'static str {
         WoundKind::Gash => "a gash",
         WoundKind::Bite => "a bite",
         WoundKind::GlassCut => "a glass cut",
+        WoundKind::Burn => "a burn",
     }
 }
 
 impl DeathCause {
+    /// [`DeathCause::describe`] with the weapon named when another player did it: "Killed by a
+    /// survivor with a crowbar: a gash to the head". `weapons` is `WorldConfig::weapons` (what a
+    /// client got on joining).
+    pub fn describe_with(&self, rises: bool, weapons: &[WeaponDef]) -> String {
+        match *self {
+            Self::Survivor { weapon, stomp: false, part, wound, .. } => match weapons.get(weapon as usize) {
+                Some(w) if w.ranged.is_some() => {
+                    let name = w.name.to_lowercase();
+                    let a = if name.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
+                    format!("Shot by a survivor with {a} {name}: hit in the {}", part.name())
+                }
+                Some(w) if w.category != WeaponCategory::Unarmed => {
+                    let name = w.name.to_lowercase();
+                    let a = if name.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
+                    format!("Killed by a survivor with {a} {name}: {} to the {}", a_wound(wound), part.name())
+                }
+                Some(_) => format!("Beaten to death by a survivor: {} to the {}", a_wound(wound), part.name()),
+                None => self.describe(rises),
+            },
+            _ => self.describe(rises),
+        }
+    }
+
     /// In plain words: "Bitten and turned", "Bled out from a gash on the left leg".
     pub fn describe(&self, rises: bool) -> String {
         match *self {
+            Self::Survivor { stomp: true, part, .. } => format!("Stamped to death by a survivor: a blow to the {}", part.name()),
             Self::Zombie { part, wound } => format!("Killed by zombies: {} to the {}", a_wound(wound), part.name()),
             Self::BledOut { part, wound } => format!("Bled out from {} on the {}", a_wound(wound), part.name()),
             Self::Festering { part, wound } => format!("Died of {} on the {} gone bad", a_wound(wound), part.name()),
@@ -113,6 +150,9 @@ impl DeathCause {
             Self::Glass { part } => format!("Cut down by broken glass: a cut to the {}", part.name()),
             Self::Wound { part, wound } => format!("Died of {} to the {}", a_wound(wound), part.name()),
             Self::Other => "Died".to_string(),
+            Self::Survivor { part, wound, .. } => format!("Killed by another survivor: {} to the {}", a_wound(wound), part.name()),
+            Self::Burned { part } => format!("Burned to death standing in a fire: a burn on the {}", part.name()),
+            Self::Crash => "Killed in a car crash".to_string(),
         }
     }
 
@@ -126,6 +166,9 @@ impl DeathCause {
             Self::Glass { .. } => "glass",
             Self::Wound { .. } => "wound",
             Self::Other => "other",
+            Self::Survivor { .. } => "survivor",
+            Self::Burned { .. } => "burned",
+            Self::Crash => "crash",
         }
     }
 }
@@ -134,6 +177,11 @@ impl Death {
     /// The cause in plain words.
     pub fn describe(&self) -> String {
         self.cause.describe(self.rises)
+    }
+
+    /// The cause in plain words, naming another player's weapon ([`DeathCause::describe_with`]).
+    pub fn describe_with(&self, weapons: &[WeaponDef]) -> String {
+        self.cause.describe_with(self.rises, weapons)
     }
 
     /// A second line when the body rises and the cause doesn't already say it turned.
@@ -170,6 +218,11 @@ impl RunStats {
     /// The cause of death in plain words, or `None` while alive (or unknown).
     pub fn cause_of_death(&self) -> Option<String> {
         self.death.map(|d| d.describe())
+    }
+
+    /// [`RunStats::cause_of_death`], naming another player's weapon.
+    pub fn cause_of_death_with(&self, weapons: &[WeaponDef]) -> Option<String> {
+        self.death.map(|d| d.describe_with(weapons))
     }
 
     /// Values a run could have: finite, not negative, not absurdly large. For loading saves.
@@ -228,7 +281,7 @@ impl World {
     }
 
     /// Hours on the world clock since the start of day 1 (midnight before the start hour).
-    fn clock_hours(&self) -> f64 {
+    pub fn clock_hours(&self) -> f64 {
         self.config.start_hour as f64 + self.tick as f64 * TICK_DT as f64 / self.config.day_length_secs as f64 * 24.0 + self.clock_offset_hours as f64
     }
 
@@ -255,6 +308,13 @@ impl World {
     /// The cause to record if player `pi`'s health drains to nothing now ([`health_cause`]).
     pub(crate) fn health_cause(&self, pi: usize) -> DeathCause {
         health_cause(&self.players[pi].health, &self.config.health, &self.config.infection)
+    }
+
+    /// A strike by player `id` killed another player (PvP).
+    pub(crate) fn count_player_kill(&mut self, id: u32) {
+        if let Some(p) = self.players.iter_mut().find(|p| p.id == id) {
+            p.run.player_kills += 1;
+        }
     }
 
     /// A strike by player `id` killed a zombie.

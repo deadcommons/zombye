@@ -3,16 +3,76 @@
 //! Modes:
 //! - `zombye-server --mcp` — MCP server on stdio. Time only advances when an agent calls
 //!   `step_ticks`, so agent runs are deterministic and reproducible.
+//! - `zombye-server --mcp-http [ADDR[:PORT]]` — the same MCP server over streamable HTTP
+//!   (`mcp_http.rs`, #87), for agents that reach it over the network: `POST /mcp`, by default on
+//!   `127.0.0.1:8787`. One world, shared by everyone who connects. Needs a bearer token
+//!   (`ZOMBYE_MCP_TOKEN`, or `--mcp-token T`; `--mcp-token-in-url` also takes it as `/mcp/T`) or
+//!   `--mcp-no-auth` (open, and then without the debug tools); `--mcp-no-dev` turns the debug
+//!   tools off with a token too; `--mcp-origin ORIGIN` allows a browser origin. No TLS: put a
+//!   reverse proxy or a tunnel in front.
 //! - `zombye-server --bench [--ticks N] [--players N] [--horde N]` — run N ticks and print timing.
 //!   With no players every zombie heads for a debug goal (all of them stay on the active tier);
 //!   with players they start on the road west of town (in the forest on a big map), run in
 //!   circles and make a 60 m noise every 10 s, `--horde N` spawns N more zombies round the first,
-//!   and the report breaks the tick down by tier.
+//!   and the report breaks the tick down by tier, and says what the worst tick was made of.
+//!   `--spread` is a realistic server instead (#70): the players on a grid over the whole map, one
+//!   in four running and making a noise now and then, the rest walking.
+//!   `--bench --bots N` is that bench over the real transport: a server on a loopback TCP port and
+//!   N headless bots, each its own connection (the players' places as above, the bots playing
+//!   them), ticking at the real rate; it reports the whole tick (intents, world, snapshots), the
+//!   active zombies and what each client was sent.
+//! - `zombye-server --host [ADDR[:PORT]]` — the multiplayer server (#21, `multiplayer.rs`,
+//!   `zombye_net::host`): game clients join with `zombye --connect HOST[:PORT]`. Listens on every
+//!   interface, TCP port 7777, unless told otherwise. `--max-players N` (default 32, at most 64),
+//!   `--pvp on|off` (default on: players can hurt each other; off is co-op), `--spawn
+//!   spread|together` (default: spread round the town with PvP, together by the first house
+//!   without), `--name NAME`, `--password P`, `--allow-dev` (take dev toggles and debug intents
+//!   from clients), `--budget KB` (kilobytes a second down to each client, default 32, 8 to
+//!   1000: what its snapshots are kept within, #22), `--fair-sight on|off` (#66: a client is told
+//!   of another player only while its survivor sees them, and of one it only hears as a sound;
+//!   default on with PvP, off in co-op), `--logout-secs S` (default 30: how long a
+//!   survivor lies in the world, asleep, after its player leaves), `--logout-safe-secs S` (default
+//!   5: the same when it was left somewhere safe), `--spawn-protection S` (default 10: seconds a
+//!   new survivor can't be hurt by other players; #68). New survivors start with the data folder's
+//!   `start_kit.ron`, or with `--start-kit ITEM[:N],ITEM[:N]...` (`none`: nothing). `--camera
+//!   isometric|first-person` and `--agents off|on|marked` are the camera and agents rules (#69:
+//!   told to every client that joins, and to anyone who asks with `zombye --server-info HOST`;
+//!   clients that say they are programs are refused, let in, or let in and marked). With `--save PATH` the world is loaded or made, autosaved and saved on
+//!   shutdown as below, with whose survivor is whose in `PATH.players`.
+//!   `--admin-mcp [ADDR[:PORT]]` (#26, `admin.rs`) adds the operator's MCP endpoint to the running
+//!   server, by default on `127.0.0.1:8788`: list, kick and ban players, save, change settings, set
+//!   off events, read the log. It always needs a bearer token (`ZOMBYE_ADMIN_TOKEN`, or
+//!   `--admin-token T`); `--admin-origin ORIGIN` allows a browser origin.
+//! - `zombye-server --config FILE` — the dedicated server (#20, `config.rs`, docs/self-hosting.md):
+//!   `--host` with its settings read from one RON file (written with the defaults, commented, if
+//!   it isn't there yet; `server.example.ron` beside this crate's manifest). The file stands for
+//!   the flags above, so a flag on the command line wins over it; its paths are relative to its
+//!   folder, and its world is saved in `world.zsave` there unless it says otherwise. This is what
+//!   the Docker image runs (`Dockerfile`: `--config /data/server.ron`).
+//! - `zombye-server --bots N --connect HOST[:PORT] [--secs S] [--bots-hostile] [--lag MS]` — N headless bot
+//!   clients, each on its own connection, that wander and fight; prints what each costs. `--lag MS`
+//!   makes them play as if that many milliseconds of ping away (lag compensation, #23).
+//! - `zombye-server --benchmark list | table | ID | all` — the agent survival benchmark (#29,
+//!   `benchmark.rs`, docs/benchmark.md): fixed scenarios from the data folder's `scenarios.ron`.
+//!   `list` prints them; with `--mcp` or `--mcp-http`, `--benchmark ID` serves that scenario's
+//!   world to an agent (a player's tools only, one life, time stops when the run is over) and
+//!   writes its result as JSON into `--results DIR` (default `saves/benchmark`) under `--agent
+//!   NAME`; `--benchmark ID|all --baseline idle|brawler|runner` plays it with a built-in script instead;
+//!   `table` ranks the results in the folder.
+//!
+//! - `zombye-server --docs DIR [--repo DIR] [--docs-base PATH] [--docs-strict]` — write the game's reference as Markdown pages
+//!   into DIR (`docgen.rs`): every MCP tool, every data file with its fields and shipped values, every
+//!   tuning number and these flags, from the game itself, for the docs site. Says what it found
+//!   undocumented; `--docs-strict` exits 1 if anything is. `--docs-base` is the site path the pages
+//!   are served under (default `/docs/reference/game`).
 //!
 //! Common options: `--zombies N` (default: as many as `population.ron` gives for the map, about 2,600
 //! on the default map), `--seed S` (default 1), `--map-chunks N` (a square
 //! map N × N chunks of 16 m; default 30, so 480 m; 64 is about 1 km), `--data DIR` (content
-//! folder, default the repo's `assets/data`).
+//! folder; default `$ZOMBYE_DATA`, else the repo's `assets/data`, else a `data` folder beside the
+//! binary: `content::installed_data_dir`), `--biomes FILE` (a biomes file to read in place of the
+//! data folder's `biomes.ron`) and `--biome ID` (that one biome over all the wild ground, for trying
+//! its settings; see docs/biomes.md).
 //!
 //! Saves: `--save PATH` loads that save if it exists (the world options are then ignored) or
 //! makes a new world and saves it there; the server then autosaves to it every
@@ -30,7 +90,13 @@
 // The MCP tool list is one big `json!`.
 #![recursion_limit = "256"]
 
+mod admin;
+mod benchmark;
+mod config;
+mod docgen;
 mod mcp;
+mod mcp_http;
+mod multiplayer;
 mod screenshot;
 
 use std::path::{Path, PathBuf};
@@ -53,6 +119,8 @@ pub struct Persist {
     pub last_save: Instant,
     /// The world changed since it was last saved or loaded.
     pub dirty: bool,
+    /// The benchmark scenario this MCP session plays (`--benchmark ID`, #29), if it plays one.
+    pub benchmark: Option<benchmark::Run>,
 }
 
 impl Persist {
@@ -106,12 +174,35 @@ fn load_or_create(path: &Path, config: WorldConfig, options: LoadOptions, prepar
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let admin_token = std::env::var("ZOMBYE_ADMIN_TOKEN").ok().filter(|t| !t.trim().is_empty());
+    // `--config FILE` (#20, `config.rs`): the dedicated server's settings from one file, as the
+    // flags they stand for, behind the command line's own.
+    if let Some(at) = args.iter().position(|a| a == "--config") {
+        let Some(path) = args.get(at + 1).filter(|p| !p.starts_with("--")).map(PathBuf::from) else {
+            eprintln!("--config needs a file: --config server.ron");
+            std::process::exit(2);
+        };
+        match config::load(&path, &args, admin_token.is_some()) {
+            Ok(loaded) => {
+                for note in &loaded.notes {
+                    eprintln!("{note}");
+                }
+                args = loaded.args;
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(2);
+            }
+        }
+    }
     let flag = |name: &str| args.iter().any(|a| a == name);
     let text = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
     let value = |name: &str| text(name).and_then(|v| v.parse::<u64>().ok());
 
-    let data = text("--data").map(PathBuf::from).unwrap_or_else(content::default_data_dir);
+    let data = text("--data").map(PathBuf::from).unwrap_or_else(content::installed_data_dir);
+    // What grows outside town: another biomes file, or one biome everywhere (docs/biomes.md).
+    content::set_biome_flags(text("--biomes").map(PathBuf::from), text("--biome"));
     let mut config = match content::load_config(&data, value("--seed").unwrap_or(1)) {
         Ok(c) => c,
         Err(e) => {
@@ -119,8 +210,55 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // `--docs DIR` (`docgen.rs`): the game's reference as Markdown pages, for the docs site, from the game as
+    // shipped (no mods). `--repo DIR` is the source tree (default: here); `--docs-strict` fails on anything
+    // left undocumented.
+    if let Some(out) = text("--docs") {
+        let repo = text("--repo").map_or_else(|| PathBuf::from("."), PathBuf::from);
+        let base = text("--docs-base").unwrap_or_else(|| "/docs/reference/game".to_string());
+        match docgen::write(Path::new(&out), &base, &repo, &data, &config, &mcp::listed_tools(), &mcp::listed_instructions()) {
+            Ok(report) => {
+                for w in &report.warnings {
+                    eprintln!("undocumented: {w}");
+                }
+                println!("wrote {} pages to {out} ({} undocumented)", report.pages, report.warnings.len());
+                std::process::exit(if flag("--docs-strict") && !report.warnings.is_empty() { 1 } else { 0 });
+            }
+            Err(e) => {
+                eprintln!("--docs: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    // Mods (#25, docs/modding.md): `--mod DIR`, as often as wanted, in order. Their data joins the
+    // game's and their Luau scripts run in every world made from this config.
+    let mod_dirs: Vec<PathBuf> = args.windows(2).filter(|w| w[0] == "--mod").map(|w| PathBuf::from(&w[1])).collect();
+    // What a hosting server tells whoever asks what it runs (#27: the server browser's mods), and
+    // hands to the clients that join without them (#24): each mod's data, named by its hash.
+    let base = config.clone();
+    let mod_packs: Vec<zombye_net::modpack::ModPack> = match zombye_mods::load_into(&mut config, &mod_dirs) {
+        Ok(mods) => {
+            if !mods.is_empty() {
+                eprintln!("{}", zombye_mods::describe(&mods));
+            }
+            let packs = mods.iter().map(zombye_mods::Mod::pack).collect();
+            // For the MCP `mods` tool: what runs, and the data a mod being written is checked against.
+            mcp::set_mods(mcp::ModsInfo { base, loaded: mods });
+            packs
+        }
+        Err(e) => {
+            eprintln!("failed to load mods: {e}");
+            std::process::exit(1);
+        }
+    };
+    // What a new world's containers hold: rolled from a fresh seed each time, so every game finds
+    // different things, unless `--loot-seed S` fixes it (a loaded save keeps its own).
+    config.loot_seed = Some(value("--loot-seed").unwrap_or_else(content::fresh_loot_seed));
     // Without --zombies, as many as the population file's densities give for the map.
     config.zombies = value("--zombies").map(|n| n as u32);
+    // Player against player (docs/PLAN.md §4.8) for a new world: `--pvp on` (a loaded save keeps
+    // its own setting; `--host` decides for itself, on unless `--pvp off`).
+    config.combat.pvp = text("--pvp").as_deref() == Some("on");
     if let Some(chunks) = value("--map-chunks") {
         config = config.with_map_chunks(chunks.clamp(1, 256) as i32);
     }
@@ -136,30 +274,147 @@ fn main() {
             .map(|m| Duration::from_secs_f64(m * 60.0)),
         last_save: Instant::now(),
         dirty: false,
+        benchmark: None,
     };
 
-    if flag("--mcp") {
+    // The benchmark (#29, `benchmark.rs`): `list`, `table`, or a scenario to play, by a baseline
+    // here or over MCP below (on the scenario's world instead of the one the options describe).
+    let mut scenario_world = None;
+    if let Some(what) = text("--benchmark") {
+        let results = text("--results").map_or_else(|| PathBuf::from(benchmark::DEFAULT_DIR), PathBuf::from);
+        let fail = |e: String| -> ! {
+            eprintln!("{e}");
+            std::process::exit(2);
+        };
+        if !mod_dirs.is_empty() {
+            // Results are compared across runs of the same game: a mod's scripts would change it.
+            fail("--benchmark plays the game as shipped: it can't be used with --mod".to_string());
+        }
+        let defs = content::load_scenarios(&data, &config.items, &config.weapons).unwrap_or_else(|e| fail(e));
+        let mcp = flag("--mcp") || flag("--mcp-http");
+        if what == "list" {
+            print!("{}", benchmark::list(&defs));
+            return;
+        }
+        if what == "table" {
+            print!("{}", benchmark::table(&results).unwrap_or_else(|e| fail(e)));
+            return;
+        }
+        let chosen: Vec<_> = defs.iter().filter(|d| d.id == what || (what == "all" && !mcp)).collect();
+        if chosen.is_empty() {
+            fail(format!("no scenario {what:?} (there are: {}; or list, table{})", defs.iter().map(|d| d.id.as_str()).collect::<Vec<_>>().join(", "), if mcp { "" } else { ", all" }));
+        }
+        if mcp {
+            if persist.path.is_some() {
+                fail("--benchmark starts its scenario's own world: it can't be used with --save".to_string());
+            }
+            let (world, player) = chosen[0].start(&config);
+            eprintln!("benchmark: scenario {} ({}), results to {}", chosen[0].id, chosen[0].name, results.display());
+            persist.benchmark = Some(benchmark::Run::new(chosen[0].clone(), &world, player, text("--agent").unwrap_or_else(|| "unnamed".into()), results));
+            persist.autosave = None;
+            scenario_world = Some(world);
+        } else {
+            let Some(name) = text("--baseline") else {
+                fail(format!("--benchmark {what} needs --mcp or --mcp-http (an agent plays it) or --baseline {} (a built-in script does)", benchmark::BASELINES.join("|")));
+            };
+            for def in chosen {
+                let start = Instant::now();
+                let result = benchmark::baseline(def, &config, &name).unwrap_or_else(|e| fail(e));
+                let wrote = benchmark::write_result(&results, &result).map_or_else(|e| format!("not written: {e}"), |p| p.display().to_string());
+                println!("{}\n  {:.1} s, {} ticks, hash {}; {wrote}", benchmark::line(&result), start.elapsed().as_secs_f32(), result["ticks"], result["state_hash"].as_str().unwrap_or(""));
+            }
+            return;
+        }
+    }
+    if flag("--mcp-http") {
+        // The same server as `--mcp`, reached over HTTP instead of stdio (#87, `mcp_http.rs`).
+        let http = match mcp_http::HttpArgs::parse(&args, std::env::var("ZOMBYE_MCP_TOKEN").ok()) {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(2);
+            }
+        };
         shutdown::install();
         let world = match &persist.path {
             Some(path) => load_or_create(path, config, load_options, mcp::add_agent_player),
-            None => World::new(config),
+            None => scenario_world.take().unwrap_or_else(|| World::new(config)),
         };
         let timeout = text("--screenshot-timeout").and_then(|v| v.parse::<f64>().ok()).filter(|s| *s > 0.0 && s.is_finite()).map_or(screenshot::DEFAULT_TIMEOUT, Duration::from_secs_f64);
-        let renderer = screenshot::Renderer::new(text("--client").map(PathBuf::from), data.clone(), timeout);
-        mcp::serve(world, &mut persist, &renderer);
+        let renderer = screenshot::Renderer::new(text("--client").map(PathBuf::from), data.clone(), timeout).with_mods(&mod_dirs);
+        mcp_http::serve(world, &mut persist, &renderer, &http);
+    } else if flag("--mcp") {
+        shutdown::install();
+        let world = match &persist.path {
+            Some(path) => load_or_create(path, config, load_options, mcp::add_agent_player),
+            None => scenario_world.take().unwrap_or_else(|| World::new(config)),
+        };
+        let timeout = text("--screenshot-timeout").and_then(|v| v.parse::<f64>().ok()).filter(|s| *s > 0.0 && s.is_finite()).map_or(screenshot::DEFAULT_TIMEOUT, Duration::from_secs_f64);
+        let renderer = screenshot::Renderer::new(text("--client").map(PathBuf::from), data.clone(), timeout).with_mods(&mod_dirs);
+        mcp::serve(world, &mut persist, &renderer, mcp::Options { debug_tools: !flag("--no-debug-tools"), ..mcp::Options::default() });
+    } else if flag("--bench") && flag("--bots") {
+        // The bench over the network: a real server on a loopback port, each bot its own TCP connection.
+        let bots = value("--bots").unwrap_or(1).clamp(1, zombye_net::wire::MAX_PLAYERS as u64) as u32;
+        multiplayer::bench(World::new(config), bots, value("--horde").unwrap_or(0) as u32, flag("--spread"), value("--ticks").unwrap_or(400), value("--lag").unwrap_or(0).min(2000) as u32);
+    } else if flag("--bots") {
+        let Some(addr) = text("--connect") else {
+            eprintln!("--bots N needs --connect HOST[:PORT]");
+            std::process::exit(2);
+        };
+        multiplayer::bots(multiplayer::BotArgs {
+            addr,
+            count: value("--bots").unwrap_or(1).clamp(1, zombye_net::wire::MAX_PLAYERS as u64) as usize,
+            secs: text("--secs").and_then(|v| v.parse::<f32>().ok()).filter(|s| *s > 0.0),
+            name: text("--name").unwrap_or_else(|| "bot".into()),
+            password: text("--password").unwrap_or_default(),
+            hostile: flag("--bots-hostile"),
+            lag_ms: value("--lag").unwrap_or(0).min(2000) as u32,
+            stop: None,
+        });
+    } else if flag("--host") {
+        // The flags, and what new survivors start with (the data folder's `start_kit.ron`, #68).
+        let parsed = multiplayer::HostArgs::parse(&args, admin_token).and_then(|mut a| {
+            // (`--start-kit`, or `start_kit` in the config file, says it instead: #69.)
+            a.options.kit = a.kit(content::load_start_kit(&data, &config.items)?, &config.items)?;
+            for p in &mod_packs {
+                eprintln!("mod {}: {} of data for joining clients to download, sha256 {}", p.id, zombye_net::modpack::kb(p.size()), zombye_net::modpack::hex(&p.hash()));
+            }
+            for id in a.options.with_mods(mod_packs) {
+                eprintln!("mod {id} is too big to hand out (over {}): clients need it installed and --mod", zombye_net::modpack::kb(zombye_net::modpack::MAX_PACK_BYTES));
+            }
+            Ok(a)
+        });
+        let host_args = match parsed {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(2);
+            }
+        };
+        let new_world = !persist.path.as_ref().is_some_and(|p| p.exists());
+        let world = match &persist.path {
+            Some(path) => load_or_create(path, config, load_options, |_| {}),
+            None => World::new(config),
+        };
+        multiplayer::host(world, new_world, host_args, &mut persist);
     } else if flag("--bench") {
         let ticks = value("--ticks").unwrap_or(1000);
-        bench(config, &mut persist, load_options, ticks, value("--players").unwrap_or(0) as u32, value("--horde").unwrap_or(0) as u32, flag("--save-bench"));
+        bench(config, &mut persist, load_options, ticks, value("--players").unwrap_or(0) as u32, value("--horde").unwrap_or(0) as u32, flag("--spread"), flag("--save-bench"));
     } else {
         eprintln!(
-            "usage: zombye-server (--mcp | --bench [--ticks N] [--players N] [--horde N] [--save-bench]) [--zombies N] [--seed S] [--map-chunks N] [--data DIR] \
-             [--save PATH] [--load-anyway] [--autosave-mins N] [--saves DIR] [--client PATH] [--screenshot-timeout SECS]"
+            "usage: zombye-server (--config FILE | --mcp | --mcp-http [ADDR[:PORT]] [--mcp-token T | --mcp-no-auth] [--mcp-token-in-url] [--mcp-no-dev] [--mcp-origin ORIGIN] | --bench [--ticks N] [--players N] [--horde N] [--save-bench] \
+             | --host [ADDR[:PORT]] [--no-reports] [--name NAME] [--max-players N] [--pvp on|off] [--spawn spread|together] [--password P] [--allow-dev] [--budget KB] [--fair-sight on|off] \
+             [--logout-secs S] [--logout-safe-secs S] [--spawn-protection S] [--admin-mcp [ADDR[:PORT]] [--admin-token T] [--admin-origin ORIGIN]] \
+             | --bots N --connect HOST[:PORT] [--secs S] [--name PREFIX] [--password P] [--bots-hostile] [--lag MS] \
+             | --benchmark list|table|ID|all [--baseline idle|brawler|runner] [--agent NAME] [--results DIR] (ID with --mcp or --mcp-http: an agent plays it)) \
+             [--zombies N] [--seed S] [--map-chunks N] [--pvp on] [--data DIR] \
+             [--save PATH] [--load-anyway] [--autosave-mins N] [--saves DIR] [--client PATH] [--screenshot-timeout SECS] [--no-debug-tools]"
         );
         std::process::exit(2);
     }
 }
 
-fn bench(config: WorldConfig, persist: &mut Persist, load_options: LoadOptions, ticks: u64, players: u32, horde: u32, save_bench: bool) {
+fn bench(config: WorldConfig, persist: &mut Persist, load_options: LoadOptions, ticks: u64, players: u32, horde: u32, spread: bool, save_bench: bool) {
     let zombies = config.zombies.map_or("natural".to_string(), |n| n.to_string());
     let start = Instant::now();
     let loaded = persist.path.as_ref().is_some_and(|p| p.exists());
@@ -175,33 +430,37 @@ fn bench(config: WorldConfig, persist: &mut Persist, load_options: LoadOptions, 
     } else if players == 0 {
         world.set_goal(Some(world.player_spawn));
     } else {
-        let road_y = (world.town_min.y + world.town_max.y) as f32 / 2.0;
-        for k in 0..players {
-            let p = open_ground_near(&world, Vec2::new(world.town_min.x as f32 * 0.5 + k as f32 * 40.0, road_y));
-            if k == 0 && horde > 0 {
-                world.spawn_zombies(horde, p, 45.0);
-            }
-            let id = world.add_player(p);
+        ids = place_bench_players(&mut world, players, horde, spread);
+        for p in &mut world.players {
             // Unkillable, so the run measures a horde on someone rather than a corpse.
-            world.players.last_mut().expect("just added").hp = 1e9;
-            ids.push(id);
+            p.hp = 1e9;
         }
     }
     let start = Instant::now();
     let mut worst: f32 = 0.0;
+    let (mut worst_at, mut worst_stats) = (0u64, TickStats::default());
+    let mut over = [0u32; 2];
     let mut sum = TickStats::default();
     for t in 0..ticks {
         for (k, &id) in ids.iter().enumerate() {
             let dir = Vec2::from_angle(t as f32 * 0.01 + k as f32);
             let seq = world.player(id).map_or(1, |p| p.last_input_seq + 1);
-            world.set_player_input(id, seq, PlayerInput { move_dir: dir, facing: 0.0, run: true, sneak: false, aim: false });
-            if t % 200 == 0 {
+            // Spread out: a realistic server. One in four runs, and now and then one of them makes
+            // a loud noise (staggered); the rest walk.
+            let run = !spread || k % 4 == 0;
+            world.set_player_input(id, seq, PlayerInput { move_dir: dir, facing: 0.0, run, sneak: false, aim: false });
+            let noisy = if spread { k % 4 == 0 && (t + k as u64 * 25) % 400 == 0 } else { t % 200 == 0 };
+            if noisy {
                 world.emit_sound(world.player(id).expect("joined").state.pos, 60.0);
             }
         }
         world.step();
         let s = world.stats;
-        worst = worst.max(s.tick_ms);
+        if s.tick_ms > worst {
+            (worst, worst_at, worst_stats) = (s.tick_ms, t, s);
+        }
+        over[0] += (s.tick_ms > TICK_DT * 500.0) as u32;
+        over[1] += (s.tick_ms > TICK_DT * 1000.0) as u32;
         sum.senses_ms += s.senses_ms;
         sum.flow_ms += s.flow_ms;
         sum.tier_ms += s.tier_ms;
@@ -248,6 +507,12 @@ fn bench(config: WorldConfig, persist: &mut Persist, load_options: LoadOptions, 
         world.population().attractors.len(),
         world.population().respawned,
     );
+    let w = worst_stats;
+    println!(
+        "worst tick ({worst_at}): tiers+index {:.3} ms ({} promoted, {} demoted), senses {:.3} ms, flow {:.3} ms ({} fields), nav {:.3} ms ({} plans), active AI {:.3} ms ({} active), near {:.3} ms, virtual {:.3} ms; \
+         {} ticks over half the budget, {} over it",
+        w.tier_ms, w.promoted, w.demoted, w.senses_ms, w.flow_ms, w.flow_builds, w.nav_ms, w.nav_plans, w.active_ms, w.active, w.near_ms, w.virtual_ms, over[0], over[1],
+    );
     if save_bench {
         let start = Instant::now();
         let bytes = world.save();
@@ -291,6 +556,33 @@ fn bench(config: WorldConfig, persist: &mut Persist, load_options: LoadOptions, 
     if persist.path.is_some() {
         persist.save_now(&world, "bench done");
     }
+}
+
+/// The bench's players: in a row 40 m apart on the road west of town, or with `spread` on a grid
+/// over the whole map, with `horde` more zombies round the first. Returns their ids.
+pub fn place_bench_players(world: &mut World, players: u32, horde: u32, spread: bool) -> Vec<u32> {
+    let road_y = (world.town_min.y + world.town_max.y) as f32 / 2.0;
+    let mut ids = Vec::new();
+    for k in 0..players {
+        let at = if spread { spread_point(world, k, players) } else { Vec2::new(world.town_min.x as f32 * 0.5 + k as f32 * 40.0, road_y) };
+        let p = open_ground_near(world, at);
+        if k == 0 && horde > 0 {
+            world.spawn_zombies(horde, p, 45.0);
+        }
+        ids.push(world.add_player(p));
+    }
+    ids
+}
+
+/// Where the `k`th of `n` bench players starts with `--spread`: a grid over the whole map, 60 m
+/// in from its edges, so they are in the town, on its edge and out in the forest.
+fn spread_point(world: &World, k: u32, n: u32) -> Vec2 {
+    let cols = (n as f32).sqrt().ceil().max(1.0) as u32;
+    let rows = n.div_ceil(cols).max(1);
+    let (w, h) = (world.map.width() as f32, world.map.height() as f32);
+    let margin = 60.0f32.min(w * 0.25).min(h * 0.25);
+    let cell = Vec2::new((w - 2.0 * margin) / cols as f32, (h - 2.0 * margin) / rows as f32);
+    Vec2::splat(margin) + cell * Vec2::new((k % cols) as f32 + 0.5, (k / cols) as f32 + 0.5)
 }
 
 /// The nearest open outdoor tile to `p`.

@@ -22,6 +22,10 @@ use zombye_sim::BodyPart;
 
 /// The body regions in `_REGION`'s order (`zgarment.REGIONS`, the order of [`BodyPart`]).
 pub const REGIONS: [BodyPart; 6] = [BodyPart::Head, BodyPart::Torso, BodyPart::Arms, BodyPart::Hands, BodyPart::Legs, BodyPart::Feet];
+/// One more `_REGION` value a body may use, past [`REGIONS`]: the hair a hat sits on. A body's vertices
+/// with it are left out while anything worn takes the head top, so a hat fits the head and no hair
+/// comes through it. Hair a hat leaves showing (below its rim) stays in `Head`.
+pub const HAIR_REGION: u8 = REGIONS.len() as u8;
 
 /// Sanity limits, so a broken file is refused rather than eating memory.
 const MAX_BONES: usize = 128;
@@ -568,6 +572,22 @@ pub fn parse_body(bytes: &[u8]) -> Result<Body, String> {
         }
     }
     Ok(Body { texture: read_texture(&doc), rig, mesh, regions, clips, sockets })
+}
+
+/// Read the clips of a GLB against `rig`: its nodes are matched to the rig's bones by name, so it can
+/// be a body's own file or one with the skeleton's nodes and clips alone (`zretarget.py --clips`).
+pub fn parse_clips(bytes: &[u8], rig: &Rig) -> Result<Vec<Clip>, String> {
+    let doc = gltf::Gltf::from_slice(bytes).map_err(|e| e.to_string())?;
+    let nodes: Vec<usize> = rig.bones.iter().map(|b| doc.nodes().find(|n| n.name() == Some(b.name.as_str())).map_or(usize::MAX, |n| n.index())).collect();
+    let found = nodes.iter().filter(|&&n| n != usize::MAX).count();
+    if found * 2 < rig.len() {
+        return Err(format!("only {found} of the skeleton's {} bones are in it", rig.len()));
+    }
+    let clips = read_clips(&doc, rig, &nodes)?;
+    if clips.iter().flat_map(|c| &c.frames).any(|p| p.t.iter().any(|v| !v.is_finite()) || p.r.iter().any(|q| !q.is_finite())) {
+        return Err("non-finite keys".into());
+    }
+    Ok(clips)
 }
 
 /// Read a wearable GLB against `rig` (its joints are matched to the rig's bones by name).

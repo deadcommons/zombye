@@ -4,14 +4,16 @@
 //! map's edge changes (doors swing, sash windows slide up, broken glass leaves jagged shards, a
 //! broken door's leaf is gone). Battered doors and windows show
 //! cracks (and splinters) in three stages as their hit points run down (`EdgeDamage` in snapshots).
-//! The upper floor and roof of the building you're in are hidden so you can see inside.
+//! The upper floors and roof of the building you're in fade out so you can see inside, and door
+//! leaves and panes follow their wall when it is cut away (`cutaway.rs`): down to the stub, never hidden.
 
 use std::collections::HashMap;
 use std::f32::consts::FRAC_PI_2;
 
 use bevy::light::NotShadowCaster;
+use bevy::mesh::MeshTag;
 use bevy::prelude::*;
-use zombye_sim::map::{Building, CHUNK_SIZE, Edge, OwnedEdge, RoofStyle, TileMap};
+use zombye_sim::map::{Building, CHUNK_SIZE, Edge, EdgeRef, OwnedEdge, RoofStyle, TileMap};
 
 use crate::Options;
 use crate::camera::IsoCamera;
@@ -26,6 +28,9 @@ use crate::server_link::{ClientMap, EdgeChangesThisFrame, EdgeDamageMap, EdgeDam
 pub const STOREY: f32 = 3.0;
 /// Half a wall's thickness.
 pub(crate) const WALL_T: f32 = 0.08;
+/// How far a wall piece's ends stop short of the faces of the walls it meets (see `add_wall`):
+/// far less than a pixel at any zoom, enough for the depth buffer to tell the two apart.
+const END_INSET: f32 = 0.003;
 /// Height a cut-away wall drops to; must match `STUB_HEIGHT` in world.wesl.
 pub(crate) const STUB_HEIGHT: f32 = 0.4;
 /// Chunks within this many chunks of the player are loaded.
@@ -37,8 +42,15 @@ const MAX_LOADS_PER_FRAME: usize = 4;
 #[derive(Default)]
 struct BuildingRender {
     lower: Vec<Entity>,
-    /// Upper floors and roof: hidden while the player is inside.
+    /// Upper floors: faded out while the player is inside on the ground floor (each has a
+    /// `MeshTag`).
     upper: Vec<Entity>,
+    /// The roof: faded out while the player is inside, on either floor.
+    roof: Vec<Entity>,
+    /// How far the upper floors and the roof are gone now (0 there, 1 gone), and the amounts they
+    /// were last drawn with (-1: not yet).
+    gone: [f32; 2],
+    drawn: [f32; 2],
     /// Ground-floor doors and windows, keyed in `Streamer::edges`.
     edge_keys: Vec<(IVec2, OwnedEdge)>,
 }
@@ -49,19 +61,39 @@ struct Streamer {
     buildings: HashMap<usize, BuildingRender>,
     /// Door leaf or window pane entity per ground-floor edge.
     edges: HashMap<(IVec2, OwnedEdge), Entity>,
+    /// Where each room's light switch is (the sim's rule on our map copy), worked out once.
+    switches: Option<Vec<Option<zombye_sim::power::SwitchSpot>>>,
+    /// The blind on a ground-floor edge that has one (`TileMap::blinds`): a child of a door's leaf,
+    /// or on its own inside a window.
+    blinds: HashMap<(IVec2, OwnedEdge), Entity>,
+    /// The planks nailed across a ground-floor edge that is boarded up (`TileMap::barricades`):
+    /// how many there are, which side they're on, and an entity each.
+    barricades: HashMap<(IVec2, OwnedEdge), (u8, bool, Vec<Entity>)>,
 }
 
 #[derive(Resource)]
-struct SharedMeshes {
+pub(crate) struct SharedMeshes {
     door: Handle<Mesh>,
+    /// A light switch on its wall, toggle down (off) and up (on): +z out of the wall, centred.
+    switch: [Handle<Mesh>; 2],
+    /// A door with a glass panel in it (`TileMap::glazed`).
+    door_glazed: Handle<Mesh>,
+    /// A roller blind's cloth, 1 m wide and 1 m down from its roller (scaled to its opening).
+    blind: Handle<Mesh>,
+    /// A plank of a barricade: 1 m along +x from the origin, 0.15 m high, centred on it.
+    plank: Handle<Mesh>,
     pane: Handle<Mesh>,
     pane_lit: Handle<Mesh>,
     shards: Handle<Mesh>,
+    /// A window on a cut-away wall, a framed lip of glass on the stub: plain, lit, smashed.
+    lips: [Handle<Mesh>; 3],
     /// Damage overlays per stage (see [`crack_stage`]), in the leaf's and the pane's own frames.
     door_cracks: [Handle<Mesh>; CRACK_STAGES],
     pane_cracks: [Handle<Mesh>; CRACK_STAGES],
     /// Blender-built furniture, drawn instead of the grey-box shapes where there is a model.
-    furniture: FurnitureModels,
+    pub(crate) furniture: FurnitureModels,
+    /// The blended black of contact shadows ([`contact_shadows`]); `None` with the setting off.
+    contact: Option<Handle<StandardMaterial>>,
 }
 
 /// The crack overlay drawn on a door leaf or window pane (a child entity, so it swings and slides
@@ -84,12 +116,15 @@ fn crack_stage(hp: f32) -> Option<usize> {
     }
 }
 
-/// A door leaf or window pane drawn as its own entity. Hidden when its wall is cut away (like the
-/// walls in the shader) or when `shown` is off (a broken door's leaf).
+/// A door leaf or window pane drawn as its own entity. It follows its wall down to the stub when
+/// the wall is cut away (`cut_edge_pieces`), and is hidden only when `shown` is off (a broken
+/// door's leaf).
 #[derive(Component)]
 struct EdgePiece {
-    /// Midpoint of its edge, for the cutaway rule.
-    mid: Vec2,
+    /// Its edge, for the cutaway (`Cutaway::amount`).
+    key: (IVec2, OwnedEdge),
+    /// On the ground floor: upper-storey pieces go with their storey, never with a wall.
+    ground: bool,
     shown: bool,
 }
 
@@ -99,24 +134,60 @@ struct DoorLeaf {
     closed: Quat,
     open_rot: Quat,
     open: bool,
+    /// Its edge and storey height, for where its hinge is as it swings ([`door_leaf_place`]).
+    key: (IVec2, OwnedEdge),
+    base: f32,
+}
+
+/// How far along its edge an open door's leaf stands from the edge's first corner. A leaf
+/// turned a quarter turn about that corner lies on the line of the wall that meets its own
+/// there, and a 5 cm leaf inside a 16 cm wall can't be seen: the door looked gone when opened.
+/// So the hinge moves along the edge as the leaf swings, and the open leaf lies flat against
+/// that wall's face (half the wall, half the leaf, and 5 mm of air).
+pub const OPEN_LEAF_CLEAR: f32 = 0.11;
+
+/// Where a door's leaf (and the outline of one in a cut wall) stands when it is `swing` of the
+/// way open (0 shut, 1 open), turned `rotation`: at its edge's first corner, moved along the
+/// edge by the swing.
+pub fn door_leaf_place(key: (IVec2, OwnedEdge), base: f32, rotation: Quat, swing: f32) -> Transform {
+    let along = if key.1 == OwnedEdge::North { Vec3::X } else { Vec3::Z };
+    let hinge = Vec3::new(key.0.x as f32, base, key.0.y as f32) + along * (OPEN_LEAF_CLEAR * swing.clamp(0.0, 1.0));
+    Transform { translation: hinge, rotation, scale: Vec3::ONE }
+}
+
+/// A door's leaf at rest: shut, or open.
+pub fn door_leaf_at_rest(key: (IVec2, OwnedEdge), base: f32, open: bool) -> Transform {
+    let (closed, open_rot) = door_rotations(key.1);
+    door_leaf_place(key, base, if open { open_rot } else { closed }, if open { 1.0 } else { 0.0 })
 }
 
 /// A sash window's glass: slides up when open, swaps to shards when broken.
 #[derive(Component)]
 struct WindowPane {
     base: f32,
+    /// How far the sash is up now (eased toward [`SASH_LIFT`] when open).
+    lift: f32,
     open: bool,
     broken: bool,
-    /// In a room with a light on (`building_kit::room_lit`).
+    /// In a room with a light on (`lights::LitRooms`), and the rooms either side.
     lit: bool,
+    rooms: (u16, u16),
 }
 
 impl WindowPane {
     fn mesh(&self, shared: &SharedMeshes) -> Handle<Mesh> {
-        match (self.broken, self.lit) {
-            (true, _) => shared.shards.clone(),
-            (false, true) => shared.pane_lit.clone(),
-            (false, false) => shared.pane.clone(),
+        self.mesh_ref(shared, false).clone()
+    }
+
+    /// Its mesh: the pane in its frame, or (`lip`) the low lip it is on a cut-away wall.
+    fn mesh_ref<'a>(&self, shared: &'a SharedMeshes, lip: bool) -> &'a Handle<Mesh> {
+        match (lip, self.broken, self.lit) {
+            (false, true, _) => &shared.shards,
+            (false, false, true) => &shared.pane_lit,
+            (false, false, false) => &shared.pane,
+            (true, true, _) => &shared.lips[2],
+            (true, false, true) => &shared.lips[1],
+            (true, false, false) => &shared.lips[0],
         }
     }
 }
@@ -128,6 +199,47 @@ const SASH_LIFT: f32 = 0.6;
 #[derive(Component)]
 struct ChunkProps(IVec2);
 
+/// The two meshes of a chunk's props whose models have lighter stand-ins: the full one, and the far
+/// copy drawn when the camera is zoomed far out.
+#[derive(Component)]
+struct PropsDetail {
+    full: Handle<Mesh>,
+    far: Handle<Mesh>,
+}
+
+/// Props are drawn as their far copies from this zoom (metres of world visible top to bottom) out:
+/// a metre is then under 27 pixels of a 1080-pixel-high view, and a tree's every leaf and a car's
+/// door handles are smaller than a pixel or two.
+const FAR_ZOOM: f32 = 40.0;
+/// ...and in full again only below this, so zooming to and fro about the line doesn't flip them.
+const FULL_ZOOM: f32 = 37.0;
+
+/// Whether props are drawn as their far copies at this zoom, having been (`far`) or not before.
+fn far_detail(zoom: f32, far: bool) -> bool {
+    zoom >= if far { FULL_ZOOM } else { FAR_ZOOM } + far_zoom_shift()
+}
+
+/// For measuring: `ZOMBYE_FAR_ZOOM=N` moves the line to a zoom of N (90 or
+/// more: never the far copies; 8 or less: always), to compare frame costs and pictures of the two.
+fn far_zoom_shift() -> f32 {
+    static SHIFT: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *SHIFT.get_or_init(|| std::env::var("ZOMBYE_FAR_ZOOM").ok().and_then(|v| v.parse::<f32>().ok()).map_or(0.0, |z| z - FAR_ZOOM))
+}
+
+/// Zoomed far out, chunks draw the far copy of their props (`PropsDetail`): the same things with
+/// a fraction of the triangles, in the picture and in the shadow maps. The camera is orthographic,
+/// so everything in view is at the same scale and the zoom alone decides.
+fn swap_detail(cams: Query<&IsoCamera>, mut props: Query<(&PropsDetail, &mut Mesh3d)>, mut far: Local<bool>) {
+    let Ok(cam) = cams.single() else { return };
+    *far = far_detail(cam.zoom, *far);
+    for (detail, mut mesh) in &mut props {
+        let want = if *far { &detail.far } else { &detail.full };
+        if mesh.0 != *want {
+            mesh.0 = want.clone();
+        }
+    }
+}
+
 pub struct WorldRenderPlugin;
 
 impl Plugin for WorldRenderPlugin {
@@ -135,26 +247,51 @@ impl Plugin for WorldRenderPlugin {
         app.init_resource::<Streamer>()
             .add_systems(Startup, setup_shared)
             .add_systems(PostUpdate, fade_chunks.after(materials::update_params))
-            .add_systems(Update, (stream, apply_edge_changes, apply_edge_damage, animate_doors, animate_panes, hide_upper_floors, cut_edge_pieces).chain());
+            .add_systems(Update, swap_detail.after(stream))
+            .add_systems(Update, (rebuild_felled, stream, apply_edge_changes, sync_blinds, sync_barricades, apply_edge_damage, relight_panes, update_switches, animate_doors, animate_panes, hide_upper_floors, cut_edge_pieces, animate_blinds, fade_planks).chain().after(crate::cutaway::CutawaySystems).after(crate::lights::sync_lit_rooms));
     }
 }
 
-fn setup_shared(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, options: Res<Options>) {
-    // Door leaf with its hinge at the origin, lying along +x.
+fn setup_shared(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, options: Res<Options>, graphics: Res<crate::graphics::Graphics>) {
+    // Door leaf with its hinge at the origin, lying along +x; glazed, with a dark glass panel in
+    // its upper half framed in the leaf's wood.
+    let p = pal();
+    let door_mesh = |glazed: bool| {
+        let mut mb = MeshBuilder::default();
+        mb.set_tag(CutTag { kind: CutKind::Structure, ..default() });
+        mb.add_box(Vec3::new(0.04, 0.0, -0.025), Vec3::new(0.96, 2.05, 0.025), meshgen::same(p.door_leaf));
+        mb.add_box(Vec3::new(0.8, 1.0, -0.05), Vec3::new(0.86, 1.06, 0.05), meshgen::same(p.door_handle));
+        if glazed {
+            mb.add_box(Vec3::new(DOOR_GLASS.0, DOOR_GLASS.2, -0.028), Vec3::new(DOOR_GLASS.1, DOOR_GLASS.3, 0.028), meshgen::same(p.door_glass));
+        }
+        mb.build()
+    };
+    let door = meshes.add(door_mesh(false));
+    let door_glazed = meshes.add(door_mesh(true));
+    // A roller blind: cloth hanging from its roller at the origin, along +x, down to a rail.
     let mut mb = MeshBuilder::default();
     mb.set_tag(CutTag { kind: CutKind::Structure, ..default() });
-    let p = pal();
-    mb.add_box(Vec3::new(0.04, 0.0, -0.025), Vec3::new(0.96, 2.05, 0.025), meshgen::same(p.door_leaf));
-    mb.add_box(Vec3::new(0.8, 1.0, -0.05), Vec3::new(0.86, 1.06, 0.05), meshgen::same(p.door_handle));
-    let door = meshes.add(mb.build());
+    mb.add_box(Vec3::new(0.0, -1.0, -0.006), Vec3::new(1.0, 0.0, 0.006), meshgen::same(p.blind));
+    mb.add_box(Vec3::new(0.0, -1.0, -0.012), Vec3::new(1.0, -0.96, 0.012), meshgen::same(p.blind_rail));
+    let blind = meshes.add(mb.build());
+    // A barricade's plank, with two nail heads near each end.
+    let mut mb = MeshBuilder::default();
+    mb.set_tag(CutTag { kind: CutKind::Structure, ..default() });
+    mb.add_box(Vec3::new(0.0, -0.075, -0.014), Vec3::new(1.0, 0.075, 0.014), meshgen::same(p.fence_wood));
+    for x in [0.06, 0.94] {
+        for y in [-0.035, 0.035] {
+            mb.add_box(Vec3::new(x - 0.008, y - 0.008, -0.018), Vec3::new(x + 0.008, y + 0.008, 0.018), meshgen::same(p.door_handle));
+        }
+    }
+    let plank = meshes.add(mb.build());
 
     // Window glass along +x from the edge's start, filling the frame between sill and header.
-    // Structure, like door leaves: dimmed but readable in unseen rooms, cut away with its wall.
+    // Structure, like door leaves: dimmed but readable in unseen rooms, down to the stub with its wall.
     let glass = p.window_glass.with_alpha(0.32);
     let pane_mesh = |kind: CutKind| {
         let mut mb = MeshBuilder::default();
         mb.set_tag(CutTag { kind, ..default() });
-        mb.add_box(Vec3::new(0.05, WINDOW_SILL, -0.012), Vec3::new(0.95, WINDOW_HEAD, 0.012), meshgen::same(glass));
+        mb.add_box(Vec3::new(0.05, WINDOW_SILL + SILL_LIFT, -0.012), Vec3::new(0.95, WINDOW_HEAD, 0.012), meshgen::same(glass));
         mb.build()
     };
     let pane = meshes.add(pane_mesh(CutKind::Structure));
@@ -177,18 +314,61 @@ fn setup_shared(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, option
         mb.triangle(t.map(|(x, y)| Vec3::new(x, y, 0.0)), glass);
     }
     let shards = meshes.add(mb.build());
+    // A window on a cut-away wall: a low framed lip of glass standing on the stub (two short
+    // posts, a rail, the glass between; jagged teeth for a smashed one), so you still see where
+    // the windows are. From y = 0 (the stub's top) to `LIP_HEIGHT`.
+    let lip_mesh = |kind: Option<CutKind>| {
+        let mut mb = MeshBuilder::default();
+        mb.set_tag(CutTag { kind: CutKind::Structure, ..default() });
+        let frame = meshgen::same(p.trim_light);
+        mb.add_box(Vec3::new(0.03, 0.0, -0.03), Vec3::new(0.09, LIP_HEIGHT, 0.03), frame);
+        mb.add_box(Vec3::new(0.91, 0.0, -0.03), Vec3::new(0.97, LIP_HEIGHT, 0.03), frame);
+        mb.add_box(Vec3::new(0.09, LIP_HEIGHT - 0.04, -0.03), Vec3::new(0.91, LIP_HEIGHT, 0.03), frame);
+        let lip_glass = p.window_glass.with_alpha(0.5);
+        match kind {
+            Some(kind) => {
+                mb.set_tag(CutTag { kind, ..default() });
+                mb.add_box(Vec3::new(0.09, 0.0, -0.012), Vec3::new(0.91, LIP_HEIGHT - 0.04, 0.012), meshgen::same(lip_glass));
+            }
+            None => {
+                for t in [[(0.09, 0.0), (0.3, 0.0), (0.09, 0.15)], [(0.91, 0.0), (0.91, 0.17), (0.7, 0.0)], [(0.42, 0.0), (0.56, 0.0), (0.5, 0.09)]] {
+                    mb.triangle(t.map(|(x, y)| Vec3::new(x, y, 0.0)), lip_glass);
+                }
+            }
+        }
+        mb.build()
+    };
+    let lips = [meshes.add(lip_mesh(Some(CutKind::Structure))), meshes.add(lip_mesh(Some(CutKind::Lit))), meshes.add(lip_mesh(None))];
     let door_cracks = std::array::from_fn(|k| meshes.add(crack_mesh(true, k)));
     let pane_cracks = std::array::from_fn(|k| meshes.add(crack_mesh(false, k)));
     // Models live beside the game data: `<data>/../models/furniture` (assets/models/furniture) and
     // `<data>/../models/street` (street props).
     let mut furniture = FurnitureModels::load(&options.data.join("../models/furniture"));
     furniture.extend(FurnitureModels::load(&options.data.join("../models/street")));
+    // Models only release builds carry (the private art repo's `release-models`), over the game's own.
+    let released = crate::release_models::load_into(crate::release_models::root(), &mut furniture);
+    if released > 0 {
+        println!("release models: {released} read");
+    }
     // Models still in the works, checked in game before they're promoted (see furniture_models.rs).
     for dir in std::env::var("ZOMBYE_EXTRA_MODELS").unwrap_or_default().split(':').filter(|d| !d.is_empty()) {
         furniture.extend(FurnitureModels::load(std::path::Path::new(dir)));
     }
     info!("{} furniture models", furniture.len());
-    commands.insert_resource(SharedMeshes { door, pane, pane_lit, shards, door_cracks, pane_cracks, furniture });
+    let contact = graphics.contact_shadows.then(|| {
+        materials.add(StandardMaterial { base_color: Color::WHITE, unlit: true, alpha_mode: AlphaMode::Blend, cull_mode: None, double_sided: true, ..default() })
+    });
+    // A light switch, life size: a pale plate with a toggle, dark and down for off, warm and up
+    // for on.
+    let switch = [false, true].map(|on| {
+        let mut mb = MeshBuilder::default();
+        mb.set_tag(CutTag { kind: CutKind::Structure, ..default() });
+        mb.add_box(Vec3::new(-0.045, -0.065, 0.0), Vec3::new(0.045, 0.065, 0.012), meshgen::same(p.trim_light));
+        let (y, c) = if on { (0.008, LinearRgba::new(1.0, 0.72, 0.25, 1.0)) } else { (-0.038, meshgen::shade(p.trim_light, 0.8)) };
+        mb.add_box(Vec3::new(-0.013, y, 0.012), Vec3::new(0.013, y + 0.03, 0.03), meshgen::same(c));
+        meshes.add(mb.build())
+    });
+    commands.insert_resource(SharedMeshes { switch, door, door_glazed, blind, plank, pane, pane_lit, shards, lips, door_cracks, pane_cracks, furniture, contact });
 }
 
 /// Grey-box damage for a door leaf (dark cracks, and pale splintered wood when it's nearly gone)
@@ -272,6 +452,12 @@ fn crack_mesh(door: bool, stage: usize) -> Mesh {
 
 /// Bottom and top of a window opening above its storey's floor.
 pub(crate) const WINDOW_SILL: f32 = 0.9;
+/// How far the window sill's top, the muntins' and the glass's foot stand above the top of the
+/// wall below the window: in its plane they'd fight it for the pixels (dashes along the sill).
+pub(crate) const SILL_LIFT: f32 = 0.01;
+/// How far an upper storey's floor lies above the walls of the storey below: level with their
+/// tops, the two fight for the pixels along every wall and doorway upstairs.
+pub(crate) const FLOOR_LIFT: f32 = 0.01;
 pub(crate) const WINDOW_HEAD: f32 = 2.1;
 
 #[allow(clippy::too_many_arguments)]
@@ -283,6 +469,7 @@ fn stream(
     mut streamer: ResMut<Streamer>,
     mut meshes: ResMut<Assets<Mesh>>,
     damage: Res<EdgeDamageMap>,
+    lit: Res<crate::lights::LitRooms>,
     options: Res<Options>,
     player: Query<&Transform, With<Player>>,
     cams: Query<&IsoCamera>,
@@ -310,7 +497,7 @@ fn stream(
     }
     wanted.sort_by_key(|c| (*c - here).length_squared());
     for c in wanted.into_iter().take(budget) {
-        let entities = spawn_chunk(&mut commands, &mut meshes, &mats, map, c, &shared.furniture);
+        let entities = spawn_chunk(&mut commands, &mut meshes, &mats, map, c, &shared.furniture, shared.contact.as_ref());
         streamer.chunks.insert(c, entities);
     }
     let far: Vec<IVec2> = streamer.chunks.keys().copied().filter(|c| (*c - here).abs().max_element() > LOAD_RADIUS + 1).collect();
@@ -328,28 +515,107 @@ fn stream(
         let loaded = streamer.buildings.contains_key(&i);
         if dist <= LOAD_RADIUS && !loaded && loads < budget {
             loads += 1;
-            let render = spawn_building(&mut commands, &mut meshes, &mats, &shared, map, i, b, &mut streamer.edges, &damage);
+            let switches = streamer.switches.get_or_insert_with(|| zombye_sim::power::switch_spots(map)).clone();
+            let mut render = spawn_building(&mut commands, &mut meshes, &mats, &shared, map, i, b, &mut streamer.edges, &damage, &lit);
+            for (room, spot) in switches.iter().enumerate() {
+                let Some(spot) = spot else { continue };
+                if map.rooms[room].building as usize != i {
+                    continue;
+                }
+                let on = lit.is_lit(room as u16);
+                let n = Vec3::new(spot.normal.x, 0.0, spot.normal.y);
+                let tf = Transform { translation: Vec3::new(spot.pos.x, zombye_sim::power::SWITCH_HEIGHT, spot.pos.y), rotation: Quat::from_rotation_arc(Vec3::Z, n), scale: Vec3::ONE };
+                // On a wall the cutaways drop, the switch lies on top of the stub instead, facing
+                // up with its toggle toward the room, so it can still be found and flicked.
+                let wall = Vec3::new(spot.pos.x, 0.0, spot.pos.y) - n * zombye_sim::power::SWITCH_INSET;
+                let flat = Transform { translation: wall + Vec3::Y * (STUB_HEIGHT + 0.005), rotation: { let a = n.cross(Vec3::Y); Quat::from_mat3(&Mat3::from_cols(a.cross(Vec3::Y), a, Vec3::Y)) }, scale: Vec3::ONE };
+                let (owner, which) = spot.side.owner(spot.tile);
+                let e = commands.spawn((Mesh3d(shared.switch[on as usize].clone()), MeshMaterial3d(mats.building.clone()), tf, LightSwitch { room: room as u16, key: (owner, which), on, standing: tf, flat })).id();
+                render.lower.push(e);
+            }
             streamer.buildings.insert(i, render);
         } else if dist > LOAD_RADIUS + 1 && loaded {
             let render = streamer.buildings.remove(&i).unwrap();
-            for e in render.lower.into_iter().chain(render.upper) {
+            for e in render.lower.into_iter().chain(render.upper).chain(render.roof) {
                 commands.entity(e).despawn();
             }
             for key in render.edge_keys {
                 streamer.edges.remove(&key);
+                // A door's blind went with its leaf; a window's is on its own.
+                if let Some(b) = streamer.blinds.remove(&key) {
+                    commands.entity(b).try_despawn();
+                }
+                if let Some((_, _, planks)) = streamer.barricades.remove(&key) {
+                    for e in planks {
+                        commands.entity(e).try_despawn();
+                    }
+                }
             }
         }
     }
 }
 
-fn spawn_chunk(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &WorldMaterials, map: &TileMap, c: IVec2, models: &FurnitureModels) -> Vec<Entity> {
-    let landscape::ChunkMeshes { ground, mut props } = landscape::build_chunk(map, c);
+/// Trees felled this frame (`ServerLink::felled`): build the chunks they stand in again, and a
+/// neighbour too where the tile is on its border (the ground there reads its neighbours' tiles),
+/// so the tree gives way to its stump on the spot.
+fn rebuild_felled(mut commands: Commands, map: Res<ClientMap>, link: Res<crate::server_link::ServerLink>, mats: Option<Res<WorldMaterials>>, shared: Option<Res<SharedMeshes>>, mut streamer: ResMut<Streamer>, mut meshes: ResMut<Assets<Mesh>>) {
+    let (Some(mats), Some(shared)) = (mats, shared) else { return };
+    if link.felled.is_empty() {
+        return;
+    }
+    let mut chunks: Vec<IVec2> = Vec::new();
+    for &t in &link.felled {
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let c = (t + IVec2::new(dx, dy)).div_euclid(IVec2::splat(CHUNK_SIZE));
+                if !chunks.contains(&c) {
+                    chunks.push(c);
+                }
+            }
+        }
+    }
+    for c in chunks {
+        let Some(old) = streamer.chunks.remove(&c) else { continue };
+        for e in old {
+            commands.entity(e).despawn();
+        }
+        let entities = spawn_chunk(&mut commands, &mut meshes, &mats, &map.0, c, &shared.furniture, shared.contact.as_ref());
+        streamer.chunks.insert(c, entities);
+    }
+}
+
+fn spawn_chunk(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &WorldMaterials, map: &TileMap, c: IVec2, models: &FurnitureModels, contact: Option<&Handle<StandardMaterial>>) -> Vec<Entity> {
+    let landscape::ChunkMeshes { mut ground, mut props, mut veg } = landscape::build_chunk(map, c);
     meshgen::street_props::add(&mut props, map, c, models);
+    // Outside town the ground rises in hills (`zombye_sim::terrain`): everything built on the flat
+    // is laid over it.
+    ground.drape_with(&map.terrain, Some(&map.biomes));
+    props.lift(&map.terrain);
+    for spot in &mut veg {
+        spot.ground = map.ground(spot.pos);
+    }
     // The ground is flat but for ankle-high clutter (kerbs, tufts, ferns, rocks): it receives
-    // shadows and casts none, which keeps it out of every shadow cascade.
-    let mut out = vec![commands.spawn((Mesh3d(meshes.add(ground.build())), MeshMaterial3d(mats.ground.clone()), Transform::IDENTITY, NotShadowCaster)).id()];
+    // shadows and casts none, which keeps it out of every shadow cascade. It also holds the chunk's
+    // vegetation spots, whose instances `vegetation.rs` spawns as its children when it's near.
+    let chunk_veg = crate::vegetation::ChunkVeg { chunk: c, spots: veg };
+    let mut out = vec![commands.spawn((Mesh3d(meshes.add(ground.build())), MeshMaterial3d(mats.ground.clone()), Transform::IDENTITY, NotShadowCaster, chunk_veg)).id()];
     if !props.is_empty() {
-        out.push(commands.spawn((Mesh3d(meshes.add(props.build())), MeshMaterial3d(mats.props.clone()), Transform::IDENTITY, ChunkProps(c))).id());
+        // Heavy models (trees with hundreds of leaves, cars) have lighter stand-ins in a far copy
+        // of the mesh, drawn in its place when zoomed far out (`swap_detail`).
+        let far = props.take_far().map(|far| meshes.add(far.build()));
+        let full = meshes.add(props.build());
+        let mut e = commands.spawn((Mesh3d(full.clone()), MeshMaterial3d(mats.props.clone()), Transform::IDENTITY, ChunkProps(c)));
+        if let Some(far) = far {
+            e.insert(PropsDetail { full, far });
+        }
+        out.push(e.id());
+    }
+    // Soft shade round the foot of each tree and bush, with the walls' contact shadows.
+    if let Some(material) = contact {
+        let shade = landscape::foot_shade(map, c);
+        if !shade.is_empty() {
+            out.push(commands.spawn((Mesh3d(meshes.add(shade.build())), MeshMaterial3d(material.clone()), Transform::IDENTITY, NotShadowCaster)).id());
+        }
     }
     out
 }
@@ -360,37 +626,91 @@ fn wall_side_color(map: &TileMap, room: u16, siding: LinearRgba) -> LinearRgba {
     if building_kit::outside(map, room) { siding } else { meshgen::interior_color(&map.rooms[room as usize].room_type) }
 }
 
-/// Wall pieces for one edge on one level. `rooms` = (north/west side, south/east side).
-fn add_wall(mb: &mut MeshBuilder, map: &TileMap, owner: IVec2, which: OwnedEdge, kind: Edge, base: f32, rooms: (u16, u16), siding: LinearRgba) {
+/// The height ranges of wall on an edge of this kind (window frames, door leaves and the rest are
+/// other pieces' business).
+fn wall_spans(kind: Edge) -> &'static [(f32, f32)] {
+    match kind {
+        Edge::Wall => &[(0.0, STOREY)],
+        Edge::Window | Edge::WindowOpen | Edge::WindowBroken | Edge::WindowBoarded => &[(0.0, WINDOW_SILL), (WINDOW_HEAD, STOREY)],
+        Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken | Edge::DoorBoarded => &[(2.1, STOREY)],
+        Edge::Arch => &[(2.4, STOREY)],
+        Edge::None | Edge::Fence => &[],
+    }
+}
+
+/// The walls of one level of a building by edge, for [`add_wall`] to see what each joins.
+#[derive(Default)]
+struct LevelWalls(std::collections::HashMap<(IVec2, bool), Edge>);
+
+impl LevelWalls {
+    fn add(&mut self, owner: IVec2, which: OwnedEdge, kind: Edge) {
+        self.0.insert((owner, which == OwnedEdge::North), kind);
+    }
+
+    /// What the edges in line with this one, before and after it, are.
+    fn in_line(&self, owner: IVec2, which: OwnedEdge) -> (Edge, Edge) {
+        let step = if which == OwnedEdge::North { IVec2::X } else { IVec2::Y };
+        let at = |t: IVec2| self.0.get(&(t, which == OwnedEdge::North)).copied().unwrap_or(Edge::None);
+        (at(owner - step), at(owner + step))
+    }
+}
+
+/// Wall pieces for one edge on one level. `rooms` = (north/west side, south/east side); `joins` =
+/// the edges in line with it, before and after ([`LevelWalls::in_line`]).
+///
+/// A piece is a box that runs half a wall's thickness past each end of its edge, so corners are
+/// filled. Two rules keep its faces out of the planes of other pieces' faces, where two colours
+/// in one plane would flicker in dashes (z-fighting):
+/// - its ends stop `END_INSET` short of the far face of a wall crossing there;
+/// - its two sides cover that run-on only where the wall in line with it has nothing: where it
+///   has wall, that wall's own sides (in its own rooms' colours) cover the same strip.
+#[allow(clippy::too_many_arguments)]
+fn add_wall(mb: &mut MeshBuilder, map: &TileMap, owner: IVec2, which: OwnedEdge, kind: Edge, base: f32, rooms: (u16, u16), siding: LinearRgba, joins: (Edge, Edge)) {
     let (a, b) = TileMap::edge_segment(owner, which);
-    mb.set_tag(CutTag { kind: CutKind::Wall, anchor: (a + b) * 0.5, radius: 0.0 });
+    let tag = CutTag { kind: CutKind::Wall, anchor: (a + b) * 0.5, radius: 0.0 };
+    mb.set_tag(tag);
     let (c0, c1) = (wall_side_color(map, rooms.0, siding), wall_side_color(map, rooms.1, siding));
     let cap = shade(siding, 0.75);
-    let piece = |mb: &mut MeshBuilder, h0: f32, h1: f32| {
-        let (min, max, faces) = match which {
-            // Faces: +x, -x, +y, -y, +z, -z. North edges run along x; their -z face looks north.
-            OwnedEdge::North => (Vec3::new(a.x - WALL_T, base + h0, a.y - WALL_T), Vec3::new(b.x + WALL_T, base + h1, a.y + WALL_T), [cap, cap, cap, cap, c1, c0]),
-            OwnedEdge::West => (Vec3::new(a.x - WALL_T, base + h0, a.y - WALL_T), Vec3::new(a.x + WALL_T, base + h1, b.y + WALL_T), [c1, c0, cap, cap, cap, cap]),
+    // `s` metres along the edge from its start, `t` across it (toward the south/east side).
+    let (along, across) = match which {
+        OwnedEdge::North => (Vec3::X, Vec3::Z),
+        OwnedEdge::West => (Vec3::Z, Vec3::X),
+    };
+    let p = |s: f32, y: f32, t: f32| Vec3::new(a.x, base + y, a.y) + along * s + across * t;
+    let (s0, s1) = (-WALL_T + END_INSET, 1.0 + WALL_T - END_INSET);
+    for &(h0, h1) in wall_spans(kind) {
+        // Ends, top and bottom.
+        for (s, out) in [(s0, -along), (s1, along)] {
+            mb.quad_facing([p(s, h0, -WALL_T), p(s, h1, -WALL_T), p(s, h1, WALL_T), p(s, h0, WALL_T)], out, cap);
+        }
+        for (y, out) in [(h1, Vec3::Y), (h0, Vec3::NEG_Y)] {
+            mb.quad_facing([p(s0, y, -WALL_T), p(s0, y, WALL_T), p(s1, y, WALL_T), p(s1, y, -WALL_T)], out, cap);
+        }
+        // Sides: the edge's own metre, and each run-on where the wall in line has no wall.
+        let side = |mb: &mut MeshBuilder, from: f32, to: f32, y0: f32, y1: f32| {
+            for (t, colour) in [(WALL_T, c1), (-WALL_T, c0)] {
+                mb.quad_facing([p(from, y0, t), p(from, y1, t), p(to, y1, t), p(to, y0, t)], across * t.signum(), colour);
+            }
         };
-        mb.add_box(min, max, faces);
+        side(mb, 0.0, 1.0, h0, h1);
+        for (from, to, joined) in [(s0, 0.0, joins.0), (1.0, s1, joins.1)] {
+            let mut y = h0;
+            for &(j0, j1) in wall_spans(joined) {
+                if j0 > y && j0 < h1 {
+                    side(mb, from, to, y, j0);
+                }
+                y = y.max(j1);
+            }
+            if y < h1 {
+                side(mb, from, to, y, h1);
+            }
+        }
         // A cap at stub height, shown only when the wall is cut, so the stub looks solid.
         if h0 < STUB_HEIGHT && h1 > STUB_HEIGHT {
-            let y = base + STUB_HEIGHT;
-            mb.set_tag(CutTag { kind: CutKind::WallCap, anchor: (a + b) * 0.5, radius: 0.0 });
-            mb.quad([Vec3::new(min.x, y, min.z), Vec3::new(min.x, y, max.z), Vec3::new(max.x, y, max.z), Vec3::new(max.x, y, min.z)], Vec3::Y, shade(siding, 0.6));
-            mb.set_tag(CutTag { kind: CutKind::Wall, anchor: (a + b) * 0.5, radius: 0.0 });
+            mb.set_tag(CutTag { kind: CutKind::WallCap, ..tag });
+            mb.quad([p(s0, STUB_HEIGHT, -WALL_T), p(s0, STUB_HEIGHT, WALL_T), p(s1, STUB_HEIGHT, WALL_T), p(s1, STUB_HEIGHT, -WALL_T)], Vec3::Y, shade(siding, 0.6));
+            mb.set_tag(tag);
         }
-    };
-    match kind {
-        Edge::Wall => piece(mb, 0.0, STOREY),
-        // Frames and muntins are the building kit's (`building_kit::Kit::dress_wall`).
-        Edge::Window | Edge::WindowOpen | Edge::WindowBroken => {
-            piece(mb, 0.0, WINDOW_SILL);
-            piece(mb, WINDOW_HEAD, STOREY);
-        }
-        Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken => piece(mb, 2.1, STOREY),
-        Edge::Arch => piece(mb, 2.4, STOREY),
-        Edge::None | Edge::Fence => {}
     }
     mb.set_tag(CutTag::default());
 }
@@ -439,8 +759,12 @@ pub fn build_building(map: &TileMap, index: usize, b: &Building, furniture: &Fur
     let mut upper = MeshBuilder::default();
     let mut roof = MeshBuilder::default();
     let ground = ground_edges(map, index, b);
+    let mut walls = LevelWalls::default();
+    for &(owner, which, kind, _) in &ground {
+        walls.add(owner, which, kind);
+    }
     for &(owner, which, kind, rooms) in &ground {
-        add_wall(&mut lower, map, owner, which, kind, 0.0, rooms, siding);
+        add_wall(&mut lower, map, owner, which, kind, 0.0, rooms, siding, walls.in_line(owner, which));
         kit.dress_wall(&mut lower, owner, which, kind, 0.0, rooms);
     }
     for f in b.furniture.iter() {
@@ -452,19 +776,60 @@ pub fn build_building(map: &TileMap, index: usize, b: &Building, furniture: &Fur
     }
     // Upper storeys: floor slabs and walls.
     for (level, t, room) in &b.upper_floors {
-        let y = STOREY * *level as f32;
+        // The stairwell: no floor over a flight of stairs, so a body comes up through it.
+        if *level == 1 && map.stair_on_tile(*t).is_some() {
+            continue;
+        }
+        let y = STOREY * *level as f32 + FLOOR_LIFT;
         let floor = map.rooms[*room as usize].floor;
         let (x0, z0) = (t.x as f32, t.y as f32);
         upper.quad([Vec3::new(x0, y, z0), Vec3::new(x0, y, z0 + 1.0), Vec3::new(x0 + 1.0, y, z0 + 1.0), Vec3::new(x0 + 1.0, y, z0)], Vec3::Y, floor_color(floor, t.x, t.y));
     }
+    let mut storeys: std::collections::BTreeMap<i8, LevelWalls> = Default::default();
+    for (level, e) in &b.upper_edges {
+        storeys.entry(*level).or_default().add(e.tile, e.edge, e.kind);
+    }
     for (level, e) in &b.upper_edges {
         let base = STOREY * *level as f32;
-        add_wall(&mut upper, map, e.tile, e.edge, e.kind, base, e.rooms, siding);
+        add_wall(&mut upper, map, e.tile, e.edge, e.kind, base, e.rooms, siding, storeys[level].in_line(e.tile, e.edge));
         kit.dress_wall(&mut upper, e.tile, e.edge, e.kind, base, e.rooms);
     }
     add_roof(&mut roof, b);
     kit.finish(&ground, &mut lower, &mut upper, &mut roof);
     BuildingMeshes { lower, upper, roof }
+}
+
+/// How far a contact shadow reaches from a wall's face, how dark it is against the wall, and how
+/// far above the floor it lies.
+const CONTACT_REACH: f32 = 0.6;
+const CONTACT_DARK: f32 = 0.46;
+const CONTACT_Y: f32 = 0.011;
+
+/// Ground-contact shadows for a building (DCM-59): a soft dark strip on the ground and on the
+/// floors along both faces of every ground-floor wall and window, black fading to clear, blended
+/// over whatever is there. It stands in for ambient occlusion (the screen-space kind needs MSAA
+/// off, which the window glass can't do without) at the cost of one small blended mesh a building.
+pub fn contact_shadows(map: &TileMap, index: usize, b: &Building) -> MeshBuilder {
+    let mut mb = MeshBuilder::default();
+    let dark = LinearRgba::new(0.0, 0.0, 0.0, CONTACT_DARK);
+    let clear = LinearRgba::new(0.0, 0.0, 0.0, 0.0);
+    for (owner, which, kind, _) in ground_edges(map, index, b) {
+        if !(kind == Edge::Wall || kind.is_window()) {
+            continue;
+        }
+        // The edge runs from `a` along `along`; `out` points to one side of it.
+        let a = owner.as_vec2();
+        let (along, out) = if which == OwnedEdge::North { (Vec2::X, Vec2::Y) } else { (Vec2::Y, Vec2::X) };
+        for side in [1.0, -1.0] {
+            let near = out * side * WALL_T;
+            let far = out * side * (WALL_T + CONTACT_REACH);
+            let p = |q: Vec2| Vec3::new(q.x, CONTACT_Y, q.y);
+            let (n0, n1, f0, f1) = (p(a + near), p(a + along + near), p(a + far), p(a + along + far));
+            mb.triangle_shaded([n0, n1, f1], [dark, dark, clear]);
+            mb.triangle_shaded([n0, f1, f0], [dark, clear, clear]);
+        }
+    }
+    mb
 }
 
 /// The ground-floor edges of building `index` with something on them (walls, doors, windows,
@@ -500,31 +865,54 @@ fn spawn_building(
     b: &Building,
     edges: &mut HashMap<(IVec2, OwnedEdge), Entity>,
     damage: &EdgeDamageMap,
+    lit_rooms: &crate::lights::LitRooms,
 ) -> BuildingRender {
-    let mut render = BuildingRender::default();
+    let mut render = BuildingRender { drawn: [-1.0; 2], ..default() };
     // Door leaves and window panes, one entity each.
-    let lit = |rooms: (u16, u16)| building_kit::room_lit(map, rooms.0) || building_kit::room_lit(map, rooms.1);
-    for (owner, which, kind, rooms) in ground_edges(map, index, b) {
+    for (owner, which, _, rooms) in ground_edges(map, index, b) {
         let hp = damage.0.get(&(owner, which)).copied().unwrap_or(1.0);
-        if let Some(e) = spawn_edge_piece(commands, shared, mats, owner, which, 0.0, kind, hp, lit(rooms)) {
+        let glazed = map.glazed(EdgeRef::new(owner, which));
+        // A boarded-up door or window is drawn as it was under its planks (`sync_barricades`).
+        let kind = map.drawn_edge(EdgeRef::new(owner, which));
+        if let Some(e) = spawn_edge_piece(commands, shared, mats, owner, which, 0.0, kind, hp, rooms, lit_rooms, glazed) {
             edges.insert((owner, which), e);
             render.edge_keys.push((owner, which));
             render.lower.push(e);
         }
+        // A ground-floor window throws a warm pool at night while a light is on behind it (`lights.rs`).
+        if kind.is_window() {
+            let mid = owner.as_vec2() + if which == OwnedEdge::North { Vec2::new(0.5, 0.0) } else { Vec2::new(0.0, 0.5) };
+            render.lower.push(crate::lights::spawn_window_light(commands, mid, rooms));
+        }
     }
     for (level, e) in &b.upper_edges {
         let base = STOREY * *level as f32;
-        if let Some(d) = spawn_edge_piece(commands, shared, mats, e.tile, e.edge, base, e.kind, 1.0, lit(e.rooms)) {
+        // Upstairs doors are open doorways to the sim (`zombye_sim::stairs`): drawn standing open.
+        let kind = if e.kind.is_door() { Edge::DoorOpen } else { e.kind };
+        if let Some(d) = spawn_edge_piece(commands, shared, mats, e.tile, e.edge, base, kind, 1.0, e.rooms, lit_rooms, false) {
+            commands.entity(d).insert(MeshTag::new(0));
             render.upper.push(d);
         }
     }
     let BuildingMeshes { lower, upper, roof } = build_building(map, index, b, &shared.furniture);
-    for (mb, group) in [(lower, 0), (upper, 1), (roof, 1)] {
+    for (mb, group) in [(lower, 0), (upper, 1), (roof, 2)] {
         if mb.is_empty() {
             continue;
         }
         let e = commands.spawn((Mesh3d(meshes.add(mb.build())), MeshMaterial3d(mats.building.clone()), Transform::IDENTITY)).id();
-        if group == 0 { render.lower.push(e) } else { render.upper.push(e) }
+        if group == 0 {
+            render.lower.push(e)
+        } else {
+            // The amount they're faded out by (`hide_upper_floors`).
+            commands.entity(e).insert(MeshTag::new(0));
+            if group == 1 { render.upper.push(e) } else { render.roof.push(e) }
+        }
+    }
+    if let Some(material) = &shared.contact {
+        let mb = contact_shadows(map, index, b);
+        if !mb.is_empty() {
+            render.lower.push(commands.spawn((Mesh3d(meshes.add(mb.build())), MeshMaterial3d(material.clone()), Transform::IDENTITY, NotShadowCaster)).id());
+        }
     }
     render
 }
@@ -538,19 +926,20 @@ fn door_rotations(which: OwnedEdge) -> (Quat, Quat) {
 }
 
 /// The door leaf or window pane for an edge, in the state the map has it now (`None` for edges
-/// with neither), with cracks for `hp` (fraction of its hit points left); a window `lit` glows at night.
+/// with neither), with cracks for `hp` (fraction of its hit points left); a window between `rooms`
+/// glows at night while one of them is lit, a `glazed` door has glass in it.
 #[allow(clippy::too_many_arguments)]
-fn spawn_edge_piece(commands: &mut Commands, shared: &SharedMeshes, mats: &WorldMaterials, owner: IVec2, which: OwnedEdge, base: f32, kind: Edge, hp: f32, lit: bool) -> Option<Entity> {
+fn spawn_edge_piece(commands: &mut Commands, shared: &SharedMeshes, mats: &WorldMaterials, owner: IVec2, which: OwnedEdge, base: f32, kind: Edge, hp: f32, rooms: (u16, u16), lit_rooms: &crate::lights::LitRooms, glazed: bool) -> Option<Entity> {
     let (closed, open_rot) = door_rotations(which);
     let start = owner.as_vec2();
-    let mid = start + if which == OwnedEdge::North { Vec2::new(0.5, 0.0) } else { Vec2::new(0.0, 0.5) };
-    let piece = EdgePiece { mid, shown: kind != Edge::DoorBroken };
+    let piece = EdgePiece { key: (owner, which), ground: base == 0.0, shown: kind != Edge::DoorBroken };
     match kind {
         Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken => {
             let open = kind == Edge::DoorOpen;
-            let rotation = if open { open_rot } else { closed };
-            let tf = Transform { translation: Vec3::new(start.x, base, start.y), rotation, scale: Vec3::ONE };
-            let e = commands.spawn((Mesh3d(shared.door.clone()), MeshMaterial3d(mats.building.clone()), tf, DoorLeaf { closed, open_rot, open }, piece)).id();
+            let tf = door_leaf_at_rest((owner, which), base, open);
+            let mesh = if glazed { shared.door_glazed.clone() } else { shared.door.clone() };
+            // The tag is how far the leaf is faded out of the camera's view (`cut_edge_pieces`).
+            let e = commands.spawn((Mesh3d(mesh), MeshMaterial3d(mats.building.clone()), tf, DoorLeaf { closed, open_rot, open, key: (owner, which), base }, piece, MeshTag::new(0))).id();
             add_cracks(commands, shared, mats, e, true, hp);
             Some(e)
         }
@@ -558,12 +947,208 @@ fn spawn_edge_piece(commands: &mut Commands, shared: &SharedMeshes, mats: &World
             let (open, broken) = (kind == Edge::WindowOpen, kind == Edge::WindowBroken);
             let lift = if open { SASH_LIFT } else { 0.0 };
             let tf = Transform { translation: Vec3::new(start.x, base + lift, start.y), rotation: closed, scale: Vec3::ONE };
-            let pane = WindowPane { base, open, broken, lit };
+            let pane = WindowPane { base, lift, open, broken, lit: lit_rooms.either(rooms), rooms };
             let e = commands.spawn((Mesh3d(pane.mesh(shared)), MeshMaterial3d(mats.glass.clone()), tf, pane, piece)).id();
             add_cracks(commands, shared, mats, e, false, if broken { 1.0 } else { hp });
             Some(e)
         }
         _ => None,
+    }
+}
+
+/// The glass panel in a glazed door's leaf, in the leaf's frame: x from, x to, y from, y to.
+const DOOR_GLASS: (f32, f32, f32, f32) = (0.22, 0.78, 1.05, 1.85);
+
+/// A roller blind on the inside of a ground-floor window or glazed door, rolled down to `full`
+/// metres or up to `up` (`TileMap::blinds`).
+#[derive(Component)]
+struct BlindPiece {
+    key: (IVec2, OwnedEdge),
+    down: bool,
+    /// How far it hangs now, eased toward `full` or `up`.
+    drop: f32,
+    full: f32,
+    up: f32,
+    /// On a door's leaf (it swings with it); a window's stands on its own and goes with its wall.
+    door: bool,
+}
+
+/// Which way is in from edge `e`, the side its blind hangs on: +1 or -1 along the axis across it
+/// (z for a north edge, x for a west one).
+fn inward(map: &TileMap, e: EdgeRef) -> f32 {
+    if zombye_sim::blinds::inside(map, e) == e.tile { 1.0 } else { -1.0 }
+}
+
+/// Where a blind on edge `e` hangs and how far: on a door, in its leaf's frame (`door`); on a
+/// window, in the world.
+fn blind_place(map: &TileMap, e: EdgeRef, door: bool) -> (Transform, f32, f32) {
+    let s = inward(map, e);
+    if door {
+        // The leaf's +z is the world's +z on a north edge and its -x on a west one.
+        let z = if e.edge == OwnedEdge::North { s } else { -s } * 0.034;
+        let (x0, x1, y0, y1) = DOOR_GLASS;
+        let tf = Transform { translation: Vec3::new(x0 - 0.04, y1 + 0.06, z), rotation: Quat::IDENTITY, scale: Vec3::new(x1 - x0 + 0.08, 1.0, 1.0) };
+        (tf, y1 - y0 + 0.1, 0.07)
+    } else {
+        let (closed, _) = door_rotations(e.edge);
+        let (along, across) = if e.edge == OwnedEdge::North { (Vec3::X, Vec3::Z) } else { (Vec3::Z, Vec3::X) };
+        let start = Vec3::new(e.tile.x as f32, WINDOW_HEAD - 0.02, e.tile.y as f32);
+        let tf = Transform { translation: start + along * 0.05 + across * s * (WALL_T + 0.03), rotation: closed, scale: Vec3::new(0.9, 1.0, 1.0) };
+        (tf, WINDOW_HEAD - WINDOW_SILL - 0.06, 0.12)
+    }
+}
+
+/// Blinds fitted, rolled or taken down on the client's map copy, for the ground-floor edges
+/// loaded now.
+fn sync_blinds(
+    mut commands: Commands,
+    map: Res<ClientMap>,
+    mats: Option<Res<WorldMaterials>>,
+    shared: Option<Res<SharedMeshes>>,
+    mut streamer: ResMut<Streamer>,
+    mut blinds: Query<&mut BlindPiece>,
+    leaves: Query<(), With<DoorLeaf>>,
+) {
+    let (Some(mats), Some(shared)) = (mats, shared) else { return };
+    if !map.is_changed() && !streamer.is_changed() {
+        return;
+    }
+    let map = &map.0;
+    let edges: Vec<((IVec2, OwnedEdge), Entity)> = streamer.edges.iter().map(|(k, e)| (*k, *e)).collect();
+    for (key, piece) in edges {
+        let e = EdgeRef::new(key.0, key.1);
+        match (map.blind(e), streamer.blinds.get(&key).copied()) {
+            (None, Some(b)) => {
+                commands.entity(b).try_despawn();
+                streamer.blinds.remove(&key);
+            }
+            (Some(down), Some(b)) => {
+                if let Ok(mut bp) = blinds.get_mut(b)
+                    && bp.down != down
+                {
+                    bp.down = down;
+                }
+            }
+            (Some(down), None) => {
+                let door = leaves.contains(piece);
+                let (tf, full, up) = blind_place(map, e, door);
+                let mut tf = tf;
+                let drop = if down { full } else { up };
+                tf.scale.y = drop;
+                let bp = BlindPiece { key, down, drop, full, up, door };
+                let mut b = commands.spawn((Mesh3d(shared.blind.clone()), MeshMaterial3d(mats.building.clone()), tf, bp, MeshTag::new(0)));
+                if door {
+                    b.insert(ChildOf(piece));
+                }
+                let b = b.id();
+                streamer.blinds.insert(key, b);
+            }
+            (None, None) => {}
+        }
+    }
+}
+
+/// A plank of a barricade, on the edge it boards up.
+#[derive(Component)]
+struct PlankPiece {
+    key: (IVec2, OwnedEdge),
+}
+
+/// Where plank `i` of a barricade goes on a door or window: its height and its slant. Planks fill
+/// the opening from the middle out, each a little askew (by a hash of the edge, so every client
+/// draws the same), the way they'd be nailed up in a hurry.
+fn plank_slot(e: EdgeRef, door: bool, i: usize) -> (f32, f32) {
+    let (lo, hi, order): (f32, f32, &[usize]) = if door { (0.25, 1.95, &[2, 1, 3, 0, 4]) } else { (WINDOW_SILL + 0.14, WINDOW_HEAD - 0.14, &[1, 2, 0, 3]) };
+    let slots = order.len();
+    let slot = order[i % slots];
+    let y = lo + (hi - lo) * slot as f32 / (slots - 1) as f32 + 0.04 * (i / slots) as f32;
+    let h = zombye_sim::rng::hash01(0xBA22, e.tile.x as u64 ^ (e.tile.y as u64) << 20, e.edge as u64, i as u64);
+    let slant = (h - 0.5) * 0.28 + if i % 2 == 0 { 0.06 } else { -0.06 };
+    (y, slant)
+}
+
+/// The planks of each boarded-up ground-floor edge loaded now, as the client's map copy has them:
+/// one entity a plank on each face of the wall, a little out from it.
+fn sync_barricades(
+    mut commands: Commands,
+    map: Res<ClientMap>,
+    mats: Option<Res<WorldMaterials>>,
+    shared: Option<Res<SharedMeshes>>,
+    mut streamer: ResMut<Streamer>,
+) {
+    let (Some(mats), Some(shared)) = (mats, shared) else { return };
+    if !map.is_changed() && !streamer.is_changed() {
+        return;
+    }
+    let map = &map.0;
+    let keys: Vec<(IVec2, OwnedEdge)> = streamer.edges.keys().copied().chain(streamer.barricades.keys().copied()).collect();
+    for key in keys {
+        let e = EdgeRef::new(key.0, key.1);
+        let want = map.barricade(e).filter(|_| streamer.edges.contains_key(&key)).map(|b| (b.planks, b.owner_side, b.under.is_door()));
+        let have = streamer.barricades.get(&key).map(|(n, side, _)| (*n, *side));
+        if want.map(|(n, side, _)| (n, side)) == have {
+            continue;
+        }
+        if let Some((_, _, old)) = streamer.barricades.remove(&key) {
+            for p in old {
+                commands.entity(p).try_despawn();
+            }
+        }
+        let Some((n, side, door)) = want else { continue };
+        let (closed, _) = door_rotations(e.edge);
+        let (along, across) = if e.edge == OwnedEdge::North { (Vec3::X, Vec3::Z) } else { (Vec3::Z, Vec3::X) };
+        let mut planks = Vec::with_capacity(2 * n as usize);
+        // On both faces of the wall, so a boarded-up window reads as one from the street and from
+        // inside alike; the side it was nailed from first.
+        for s in if side { [1.0, -1.0] } else { [-1.0, 1.0] } {
+            let start = Vec3::new(e.tile.x as f32, 0.0, e.tile.y as f32) - along * 0.12 + across * s * (WALL_T + 0.03);
+            for i in 0..n as usize {
+                let (y, slant) = plank_slot(e, door, i);
+                // Each plank a hair further out than the last, so crossing ones never share a plane.
+                let out = across * s * 0.004 * i as f32;
+                let rotation = closed * Quat::from_rotation_z(slant * s);
+                let middle = start + along * 0.62 + Vec3::Y * y + out;
+                let tf = Transform { translation: middle - rotation * Vec3::new(0.62, 0.0, 0.0), rotation, scale: Vec3::new(1.24, 1.0, 1.0) };
+                planks.push(commands.spawn((Mesh3d(shared.plank.clone()), MeshMaterial3d(mats.building.clone()), tf, PlankPiece { key }, MeshTag::new(0))).id());
+            }
+        }
+        streamer.barricades.insert(key, (n, side, planks));
+    }
+}
+
+/// Planks on a wall that is cut away aren't drawn (they still cast their shadows, as the wall does).
+fn fade_planks(cutaway: Res<crate::cutaway::Cutaway>, mut planks: Query<(&PlankPiece, &mut MeshTag)>) {
+    for (p, mut tag) in &mut planks {
+        let want = fade_tag(if cutaway.amount(p.key) > 0.02 { 1.0 } else { 0.0 });
+        if tag.value != want {
+            tag.value = want;
+        }
+    }
+}
+
+/// Blinds roll down and up; one on a wall that is cut away isn't drawn (a door's fades with its
+/// leaf), but still hangs there for the light: a blind down keeps the sun out of the room.
+fn animate_blinds(
+    time: Res<Time>,
+    cutaway: Res<crate::cutaway::Cutaway>,
+    mut blinds: Query<(&mut BlindPiece, &mut Transform, &mut MeshTag, Option<&ChildOf>)>,
+    leaves: Query<&DoorLeaf>,
+) {
+    let t = 1.0 - (-6.0 * time.delta_secs()).exp();
+    for (mut bp, mut tf, mut tag, on) in &mut blinds {
+        let target = if bp.down { bp.full } else { bp.up };
+        let left = target - bp.drop;
+        if left != 0.0 {
+            bp.drop = if left.abs() < 0.001 { target } else { bp.drop + left * t };
+            tf.scale.y = bp.drop;
+        }
+        let cut = cutaway.amount(bp.key);
+        let open = on.and_then(|c| leaves.get(c.parent()).ok()).is_some_and(|l| l.open);
+        let want = if bp.door { piece_look(true, cut, true, open).fade } else if cut > 0.02 { 1.0 } else { 0.0 };
+        let want = fade_tag(want);
+        if tag.value != want {
+            tag.value = want;
+        }
     }
 }
 
@@ -573,7 +1158,7 @@ fn add_cracks(commands: &mut Commands, shared: &SharedMeshes, mats: &WorldMateri
     let meshes = if door { &shared.door_cracks } else { &shared.pane_cracks };
     let vis = if stage.is_some() { Visibility::Inherited } else { Visibility::Hidden };
     let overlay = commands
-        .spawn((Mesh3d(meshes[stage.unwrap_or(0)].clone()), MeshMaterial3d(mats.building.clone()), Transform::IDENTITY, vis, ChildOf(piece)))
+        .spawn((Mesh3d(meshes[stage.unwrap_or(0)].clone()), MeshMaterial3d(mats.building.clone()), Transform::IDENTITY, vis, ChildOf(piece), MeshTag::new(0)))
         .id();
     commands.entity(piece).insert(Cracks { overlay, door });
 }
@@ -612,6 +1197,10 @@ fn apply_edge_changes(
 ) {
     let Some(shared) = shared else { return };
     for c in &changes.0 {
+        // Boarding an edge up leaves its leaf or pane as it was, under the planks.
+        if c.kind.is_boarded() {
+            continue;
+        }
         let Some(e) = streamer.edges.get(&(c.tile, c.edge)) else { continue };
         let Ok((mut piece, leaf, pane, mut mesh)) = pieces.get_mut(*e) else { continue };
         if let Some(mut leaf) = leaf {
@@ -630,12 +1219,73 @@ fn apply_edge_changes(
     }
 }
 
-fn animate_panes(time: Res<Time>, mut panes: Query<(&WindowPane, &mut Transform)>) {
+/// A room's light switch on its wall (`zombye_sim::power::switch_spots`).
+#[derive(Component)]
+struct LightSwitch {
+    room: u16,
+    /// The wall it is on, which the cutaways may drop.
+    key: (IVec2, OwnedEdge),
+    /// Drawn up (on).
+    on: bool,
+    /// On its wall, and lying on the stub while the wall is cut away.
+    standing: Transform,
+    flat: Transform,
+}
+
+/// Switches show up while their room is lit, down while dark; one on a wall that is cut away
+/// lies on top of the stub.
+fn update_switches(lit: Res<crate::lights::LitRooms>, cutaway: Res<crate::cutaway::Cutaway>, shared: Option<Res<SharedMeshes>>, mut switches: Query<(&mut LightSwitch, &mut Mesh3d, &mut Transform)>) {
+    let Some(shared) = shared else { return };
+    for (mut sw, mut mesh, mut tf) in &mut switches {
+        let on = lit.is_lit(sw.room);
+        if sw.on != on {
+            sw.on = on;
+            mesh.0 = shared.switch[on as usize].clone();
+        }
+        let want = if cutaway.amount(sw.key) < 0.5 { sw.standing } else { sw.flat };
+        if *tf != want {
+            *tf = want;
+        }
+    }
+}
+
+/// A light switched on or off, or the power gone or back: the glass of the rooms either side
+/// glows or doesn't (ground-floor panes take their mesh in `cut_edge_pieces`).
+fn relight_panes(lit: Res<crate::lights::LitRooms>, shared: Option<Res<SharedMeshes>>, mut panes: Query<(&mut WindowPane, &EdgePiece, &mut Mesh3d)>) {
+    let Some(shared) = shared else { return };
+    if !lit.is_changed() {
+        return;
+    }
+    for (mut pane, piece, mut mesh) in &mut panes {
+        let now = lit.either(pane.rooms);
+        if pane.lit != now {
+            pane.lit = now;
+            if !piece.ground {
+                mesh.0 = pane.mesh(&shared);
+            }
+        }
+    }
+}
+
+fn animate_panes(time: Res<Time>, mut panes: Query<(&mut WindowPane, &mut Transform, &EdgePiece)>) {
     let t = 1.0 - (-10.0 * time.delta_secs()).exp();
-    for (pane, mut tf) in &mut panes {
+    for (mut pane, mut tf, piece) in &mut panes {
         // Shards stay in the frame; a whole pane slides up when open.
-        let target = pane.base + if pane.open && !pane.broken { SASH_LIFT } else { 0.0 };
-        tf.translation.y += (target - tf.translation.y) * t;
+        let target = if pane.open && !pane.broken { SASH_LIFT } else { 0.0 };
+        // A pane at rest isn't written to: a changed Transform has the engine extract its mesh
+        // again, and there are hundreds of panes. Within half a millimetre it is put there.
+        let left = target - pane.lift;
+        if left == 0.0 {
+            continue;
+        }
+        pane.lift = if left.abs() < 0.0005 { target } else { pane.lift + left * t };
+        // Ground-floor panes are placed by `cut_edge_pieces`, with their wall's cut.
+        if !piece.ground {
+            let y = pane.base + pane.lift;
+            if tf.translation.y != y {
+                tf.translation.y = y;
+            }
+        }
     }
 }
 
@@ -643,48 +1293,187 @@ fn animate_doors(time: Res<Time>, mut leaves: Query<(&DoorLeaf, &mut Transform)>
     let t = 1.0 - (-12.0 * time.delta_secs()).exp();
     for (leaf, mut tf) in &mut leaves {
         let target = if leaf.open { leaf.open_rot } else { leaf.closed };
-        tf.rotation = tf.rotation.slerp(target, t);
+        // As for the panes: a door at rest is left alone, one within 0.03° of it is put there.
+        if tf.rotation == target {
+            continue;
+        }
+        let rotation = if tf.rotation.angle_between(target) < 0.0005 { target } else { tf.rotation.slerp(target, t) };
+        // The hinge moves with the swing, so the open leaf stands clear of the wall beside it.
+        let place = door_leaf_place(leaf.key, leaf.base, rotation, rotation.angle_between(leaf.closed) / FRAC_PI_2);
+        tf.rotation = place.rotation;
+        tf.translation = place.translation;
     }
 }
 
-/// Hide a building's upper storeys and roof while you're inside it, so you see the floor you're on.
-/// From outside, roofs and upper storeys that would cover you open a see-through hole round you in
-/// the shader instead (`hole_at` in world.wesl, #84), and the rest of the building stays closed.
-fn hide_upper_floors(map: Res<ClientMap>, streamer: Res<Streamer>, player: Query<&Transform, With<Player>>, mut vis: Query<&mut Visibility>) {
+/// Seconds for the roof and upper storeys of the building you walk into to fade out (and back in
+/// when you leave).
+const UPPER_FADE_SECS: f32 = 0.15;
+
+/// Fade out what is over the player's head in the building they're inside, so you see the floor
+/// they're on: on the ground floor its upper storeys and roof, upstairs (`ViewFloor`, stairs) the
+/// roof alone. The whole of them, as one, in a stipple by the amount in their `MeshTag`
+/// (world.wesl). **Only the camera stops seeing them:** the entities stay visible, so every
+/// light's shadow pass still draws them and the rooms below are lit as they are with the roof on
+/// (the sun comes in through the windows, not from above).
+/// From outside every building keeps its roof and floors: nothing opens a hole in them, and a
+/// player they cover shows as a silhouette instead (`silhouette.rs`).
+fn hide_upper_floors(
+    map: Res<ClientMap>,
+    time: Res<Time>,
+    view: Res<crate::player::ViewFloor>,
+    mut streamer: ResMut<Streamer>,
+    player: Query<&Transform, With<Player>>,
+    cams: Query<&crate::camera::IsoCamera>,
+    mut upper: Query<(&mut Visibility, &mut MeshTag)>,
+    mut started: Local<bool>,
+) {
     let Ok(p) = player.single() else { return };
-    let inside = map.0.building_at(p.translation.xz());
-    for (i, render) in &streamer.buildings {
-        let want = if Some(*i) == inside { Visibility::Hidden } else { Visibility::Inherited };
-        for e in &render.upper {
-            if let Ok(mut v) = vis.get_mut(*e) {
+    // First person: the camera is under the roof, at the survivor's eyes, so it stays.
+    let shoulder = cams.single().is_ok_and(|c| c.low());
+    let inside = if shoulder { None } else { map.0.building_at(p.translation.xz()) };
+    // The first frame's state is taken at once (a picture of a save), like the walls'.
+    let step = if *started { time.delta_secs() / UPPER_FADE_SECS } else { 1.0 };
+    *started = true;
+    for (i, render) in streamer.buildings.iter_mut() {
+        let here = Some(*i) == inside;
+        let to = [if here && view.level == 0 { 1.0 } else { 0.0 }, if here { 1.0 } else { 0.0 }];
+        for k in 0..2 {
+            if render.gone[k] != to[k] {
+                render.gone[k] = if to[k] > render.gone[k] { (render.gone[k] + step).min(1.0) } else { (render.gone[k] - step).max(0.0) };
+            }
+            // Nearly every building, nearly every frame: as it was drawn last.
+            if render.drawn[k] == render.gone[k] {
+                continue;
+            }
+            let (want, tag) = upper_look(render.gone[k]);
+            let mut all = true;
+            for e in if k == 0 { &render.upper } else { &render.roof } {
+                // A building spawned this frame has its entities from the next.
+                let Ok((mut v, mut t)) = upper.get_mut(*e) else {
+                    all = false;
+                    continue;
+                };
                 if *v != want {
                     *v = want;
                 }
+                if t.value != tag {
+                    t.value = tag;
+                }
+            }
+            if all {
+                render.drawn[k] = render.gone[k];
             }
         }
     }
 }
 
-/// Door leaves and window panes drop with their wall (same rule as the shader's wall cutaway).
+/// How a building's upper storeys and roof are drawn when they are `gone` this far (0 there, 1
+/// gone): the stipple's amount for the shader (0 = solid, [`TAG_GONE`] = every pixel left out).
+/// Never `Visibility::Hidden`: a hidden mesh casts no shadow, and what the camera doesn't draw
+/// must still block the light.
+fn upper_look(gone: f32) -> (Visibility, u32) {
+    (Visibility::Inherited, fade_tag(gone * gone * (3.0 - 2.0 * gone)))
+}
+
+/// The `MeshTag` of a piece the camera doesn't draw at all (world.wesl leaves out every pixel of
+/// it in the camera's pass; the shadow passes don't run that shader, so it still casts its shadow).
+const TAG_GONE: u32 = 255;
+
+/// The `MeshTag` for a piece faded out this far (0 solid, 1 not drawn).
+fn fade_tag(amount: f32) -> u32 {
+    (amount.clamp(0.0, 1.0) * TAG_GONE as f32).round() as u32
+}
+
+/// How tall the lip of a window on a cut-away wall stands over the stub (see `setup_shared`).
+const LIP_HEIGHT: f32 = 0.24;
+
+/// How a door leaf or window pane is drawn on a wall cut this far (0 standing, 1 a stub).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PieceLook {
+    shown: bool,
+    /// Its height, as a share of its mesh's.
+    height: f32,
+    /// How far it is lifted off its storey's floor.
+    lift: f32,
+    /// A window drawn as the low lip on the stub, not as the pane in its frame.
+    lip: bool,
+    /// How far it is faded out of the camera's view (0 solid, 1 not drawn), still casting its
+    /// shadow: a door's leaf on a wall that is cut away.
+    fade: f32,
+}
+
+/// How far a shut door's leaf fades on a wall that is cut away: it stays there, see-through, so a
+/// shut door reads as shut. An open one's fades out altogether (its outline says where it is).
+const SHUT_DOOR_FADE: f32 = 0.2;
+
+/// **A door's leaf fades with its wall once the wall is cut, and is never squashed**: a leaf squashed to
+/// the stub's height read as a low gate, so a cut door is shown at full size: a shut one's leaf
+/// see-through (`SHUT_DOOR_FADE`), an open one's not drawn, both with the door's outline
+/// (`opening_hints::cut_door`, which is what says a doorway holds a door: the
+/// playtest's "he doesn't fit through the door"). The leaf itself stays where it is, whole, and
+/// goes on casting its shadow: a shut door in a cut wall lets no sun into the room. A window is never hidden: it sinks with its wall for the first half of the way, then is a low
+/// framed lip of glass that grows out of the stub, so you still see where the windows are. Only
+/// a battered-down door has no leaf.
+fn piece_look(shown: bool, cut: f32, door: bool, open: bool) -> PieceLook {
+    if !shown {
+        return PieceLook { shown: false, height: 1.0, lift: 0.0, lip: false, fade: 0.0 };
+    }
+    if door {
+        PieceLook { shown: true, height: 1.0, lift: 0.0, lip: false, fade: if !open { cut * SHUT_DOOR_FADE } else if cut >= 0.995 { 1.0 } else { cut } }
+    } else if cut < 0.5 {
+        PieceLook { shown: true, height: 1.0 - cut, lift: 0.0, lip: false, fade: 0.0 }
+    } else {
+        PieceLook { shown: true, height: ((cut - 0.5) * 2.0).max(0.02), lift: STUB_HEIGHT, lip: true, fade: 0.0 }
+    }
+}
+
+/// Door leaves and window panes follow their wall down to the stub and up again, by the wall's
+/// own eased amount (`Cutaway::amount`, what the shader draws the wall by): the ground floor's,
+/// or the upper floor's panes while that is the floor cut open (`Cutaway::level`, stairs). A
+/// ground-floor door's leaf (with its cracks) fades out of the camera's view instead, by its
+/// `MeshTag`; an upper piece's tag and visibility are its storey's (`hide_upper_floors`), and an
+/// upstairs door's leaf is left standing open.
 fn cut_edge_pieces(
-    map: Res<ClientMap>,
-    player: Query<&Transform, With<Player>>,
-    cams: Query<&IsoCamera>,
-    mut pieces: Query<(&EdgePiece, &Transform, &mut Visibility), Without<Player>>,
+    cutaway: Res<crate::cutaway::Cutaway>,
+    shared: Option<Res<SharedMeshes>>,
+    mut pieces: Query<(Entity, &EdgePiece, Option<&WindowPane>, Option<&DoorLeaf>, Option<&Cracks>, &mut Transform, &mut Visibility, &mut Mesh3d)>,
+    mut tags: Query<&mut MeshTag>,
 ) {
-    let (Ok(p), Ok(cam)) = (player.single(), cams.single()) else { return };
-    let pos = p.translation.xz();
-    let inside = materials::inside_rect(&map.0, pos);
-    let dir = cam.offset_dir();
-    for (piece, tf, mut vis) in &mut pieces {
-        // Upper-floor pieces are handled by hiding the upper floor.
-        if tf.translation.y > 1.0 {
+    let Some(shared) = shared else { return };
+    for (entity, piece, pane, leaf, cracks, mut tf, mut vis, mut mesh) in &mut pieces {
+        if !piece.ground && pane.is_none() {
             continue;
         }
-        let cut = materials::wall_is_cut(piece.mid, pos, dir, inside);
-        let want = if piece.shown && !cut { Visibility::Inherited } else { Visibility::Hidden };
-        if *vis != want {
-            *vis = want;
+        let cut = if piece.ground == (cutaway.level == 0) { cutaway.amount(piece.key) } else { 0.0 };
+        let look = piece_look(piece.shown, cut, pane.is_none(), leaf.is_some_and(|l| l.open));
+        let height = look.height;
+        if piece.ground {
+            let tag = fade_tag(look.fade);
+            for e in [Some(entity), cracks.map(|c| c.overlay)].into_iter().flatten() {
+                if let Ok(mut t) = tags.get_mut(e)
+                    && t.value != tag
+                {
+                    t.value = tag;
+                }
+            }
+            let want = if look.shown { Visibility::Inherited } else { Visibility::Hidden };
+            if *vis != want {
+                *vis = want;
+            }
+        }
+        if tf.scale.y != height {
+            tf.scale.y = height;
+        }
+        if let Some(pane) = pane {
+            let wanted = pane.mesh_ref(&shared, look.lip);
+            if mesh.0 != *wanted {
+                mesh.0 = wanted.clone();
+            }
+            // An open sash is up in its frame; on a stub there is no frame to be up in.
+            let y = pane.base + look.lift + if look.lip { 0.0 } else { pane.lift * (1.0 - cut) };
+            if tf.translation.y != y {
+                tf.translation.y = y;
+            }
         }
     }
 }
@@ -710,6 +1499,181 @@ mod tests {
         let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/data");
         let templates = zombye_net::content::load_building_templates(&data).expect("templates");
         zombye_sim::worldgen::generate(&zombye_sim::worldgen::GenConfig::default(), &templates).map
+    }
+
+    /// An open door's leaf lies flat against the face of the wall that meets its own at the
+    /// hinge, never inside it (where it couldn't be seen); a shut one is in its doorway.
+    #[test]
+    fn an_open_door_stands_clear_of_the_wall_beside_it() {
+        for which in [OwnedEdge::North, OwnedEdge::West] {
+            let key = (IVec2::new(7, 9), which);
+            let shut = door_leaf_at_rest(key, 0.0, false);
+            assert_eq!(shut.translation, Vec3::new(7.0, 0.0, 9.0), "{which:?}");
+            let open = door_leaf_at_rest(key, 0.0, true);
+            // The leaf's middle line runs from its hinge along its own +x.
+            let (a, b) = (open.transform_point(Vec3::new(0.04, 1.0, 0.0)), open.transform_point(Vec3::new(0.96, 1.0, 0.0)));
+            // How far the leaf is from the line of the wall beside it (the other edge of its tile).
+            let off = |p: Vec3| if which == OwnedEdge::North { p.x - 7.0 } else { p.z - 9.0 };
+            for p in [a, b] {
+                assert!((off(p) - OPEN_LEAF_CLEAR).abs() < 1e-4, "{which:?}: {p:?}");
+                assert!(off(p) - 0.025 > 0.08, "outside a 16 cm wall's face");
+            }
+            // It swings into its own tile.
+            let into = if which == OwnedEdge::North { b.z - 9.0 } else { b.x - 7.0 };
+            assert!(into > 0.9, "{which:?}: {b:?}");
+            let half = door_leaf_place(key, 0.0, Quat::IDENTITY, 0.5).translation;
+            assert!((off(half) - OPEN_LEAF_CLEAR / 2.0).abs() < 1e-4);
+        }
+    }
+
+    /// A door's leaf fades out with its wall and isn't drawn once the wall is cut (no stubby leaf:
+    /// the door's outline stands in for it, `opening_hints::cut_door`), but stays whole for its
+    /// shadow; a pane still goes with its wall, and a battered-down door's leaf is gone.
+    #[test]
+    fn a_door_in_a_cut_wall_has_no_stub_of_a_leaf() {
+        let door = piece_look(true, 1.0, true, true);
+        assert_eq!(fade_tag(door.fade), TAG_GONE, "no open leaf drawn on a cut-away wall");
+        let shut = piece_look(true, 1.0, true, false);
+        assert!(shut.fade > 0.1 && shut.fade < 0.5 && shut.height == 1.0, "a shut one stays, see-through and whole");
+        assert!(door.shown && door.height == 1.0 && door.lift == 0.0, "but it stands there whole, for its shadow");
+        assert!(fade_tag(piece_look(true, 0.9, true, true).fade) < TAG_GONE, "still there on the way down");
+        let whole = PieceLook { shown: true, height: 1.0, lift: 0.0, lip: false, fade: 0.0 };
+        assert_eq!(piece_look(true, 0.0, true, true), whole, "whole in a standing wall");
+        assert_eq!(piece_look(true, 0.0, true, false), whole);
+        assert_eq!(piece_look(true, 0.0, false, false), whole);
+        assert!(!piece_look(false, 1.0, true, true).shown && !piece_look(false, 0.0, true, false).shown, "a broken door has no leaf");
+        // Half way down it is half way between.
+        let half = piece_look(true, 0.5, true, true).fade;
+        assert!(half > 0.25 && half < 0.75, "{half}");
+    }
+
+    /// The cutaway never hides a window: on a cut wall it is a low framed lip standing on the stub,
+    /// and on the way there the pane sinks with its wall (never left over the wall's top) and the
+    /// lip grows out of the stub. The roof and upper storeys fade as one and are never
+    /// hidden entities: fully gone, the camera draws none of them and they still cast shadows.
+    #[test]
+    fn a_window_in_a_cut_wall_stands_on_the_stub() {
+        let cut = piece_look(true, 1.0, false, false);
+        assert!(cut.shown && cut.lip, "a window stays on a cut-away wall, as its lip");
+        assert_eq!((cut.lift, cut.height), (STUB_HEIGHT, 1.0));
+        assert!(STUB_HEIGHT + LIP_HEIGHT < WINDOW_SILL, "the lip is lower than the sill was");
+        for k in 0..=20 {
+            let a = k as f32 / 20.0;
+            let look = piece_look(true, a, false, false);
+            assert!(look.shown && look.height > 0.0);
+            // The wall's top at this amount (world.wesl): the window is never left over it.
+            let wall_top = 3.05 + (STUB_HEIGHT - 3.05) * a;
+            let top = if look.lip { look.lift + LIP_HEIGHT * look.height } else { WINDOW_HEAD * look.height + look.lift };
+            assert!(top <= wall_top.max(STUB_HEIGHT + LIP_HEIGHT) + 1e-4, "cut {a}: the window's top {top} over the wall's {wall_top}");
+        }
+        assert_eq!(upper_look(0.0), (Visibility::Inherited, 0));
+        // Fully gone they are still visible entities (so they cast their shadow), with every
+        // pixel left out of the camera's view.
+        assert_eq!(upper_look(1.0), (Visibility::Inherited, TAG_GONE));
+        let (vis, tag) = upper_look(0.5);
+        assert!(vis == Visibility::Inherited && tag > 100 && tag < 160, "{tag}");
+    }
+
+    /// DCM-59: every building gets contact shadows, lying just over the ground along its walls
+    /// (within their reach of the footprint) and costing a few hundred triangles at most.
+    #[test]
+    fn buildings_get_contact_shadows() {
+        let map = town();
+        let mut most = 0;
+        for (i, b) in map.buildings.iter().enumerate() {
+            let mb = contact_shadows(&map, i, b);
+            assert!(mb.tri_count() >= 16, "building {i} ({}) has {} triangles of contact shadow", b.template, mb.tri_count());
+            most = most.max(mb.tri_count());
+            let (lo, hi) = mb.bounds();
+            let reach = WALL_T + CONTACT_REACH + 1e-3;
+            assert!(lo.y == CONTACT_Y && hi.y == CONTACT_Y);
+            assert!(lo.x >= b.min.x as f32 - reach && lo.z >= b.min.y as f32 - reach, "building {i}: {lo}");
+            assert!(hi.x <= (b.min.x + b.size.x) as f32 + reach && hi.z <= (b.min.y + b.size.y) as f32 + reach, "building {i}: {hi}");
+        }
+        assert!(most <= 1500, "{most} triangles of contact shadow on one building");
+    }
+
+    /// The dashed lines down walls where they meet (z-fighting): no face of a wall piece lies in
+    /// the plane of another wall piece's face in another colour, in any building of the town.
+    #[test]
+    fn wall_pieces_never_share_a_plane_in_two_colours() {
+        let map = town();
+        let mut pieces = 0;
+        for (i, b) in map.buildings.iter().enumerate() {
+            let siding = building_kit::Kit::new(&map, i, b).wall;
+            let mut levels: std::collections::BTreeMap<i8, (LevelWalls, Vec<(IVec2, OwnedEdge, Edge, (u16, u16))>)> = Default::default();
+            let all = ground_edges(&map, i, b).into_iter().map(|e| (0, e)).chain(b.upper_edges.iter().map(|(l, e)| (*l, (e.tile, e.edge, e.kind, e.rooms))));
+            for (level, e) in all {
+                let l = levels.entry(level).or_default();
+                l.0.add(e.0, e.1, e.2);
+                l.1.push(e);
+            }
+            let mut mb = MeshBuilder::default();
+            for (level, (walls, edges)) in &levels {
+                for &(owner, which, kind, rooms) in edges {
+                    add_wall(&mut mb, &map, owner, which, kind, STOREY * *level as f32, rooms, siding, walls.in_line(owner, which));
+                    pieces += 1;
+                }
+            }
+            let fights = mb.fights();
+            assert!(fights.is_empty(), "{} at {},{}: {} fights, first {:?}", b.template, b.min.x, b.min.y, fights.len(), fights[0]);
+        }
+        assert!(pieces > 5000, "{pieces} wall pieces");
+    }
+
+    /// Upstairs floors don't lie in the plane of the wall tops below them, and window sills,
+    /// muntins and glass don't lie in the plane of the wall top under the window: each showed as
+    /// flickering dashes along the walls upstairs and along every sill.
+    #[test]
+    fn floors_and_sills_clear_the_wall_tops() {
+        let map = town();
+        let furniture = FurnitureModels::default();
+        let mut worst: Vec<(f32, Vec3)> = Vec::new();
+        for (i, b) in map.buildings.iter().enumerate() {
+            let m = build_building(&map, i, b, &furniture);
+            for f in MeshBuilder::merged(&[&m.lower, &m.upper]).fights() {
+                if f.normal.y.abs() < 0.9 {
+                    continue;
+                }
+                let base = (f.at.y / STOREY).round() * STOREY;
+                // A wall's top against the bottom of the wall standing on it is buried in them.
+                let wall = CutKind::Wall as u32;
+                let storey = (f.at.y - base).abs() < 0.003 && f.at.y > 1.0 && f.kinds != [wall, wall];
+                let sill = (f.at.y - (f.at.y / STOREY).floor() * STOREY - WINDOW_SILL).abs() < 0.003;
+                if (storey || sill) && f.area > 0.002 {
+                    worst.push((f.area, f.at));
+                }
+            }
+        }
+        worst.sort_by(|a, b| b.0.total_cmp(&a.0));
+        assert!(worst.is_empty(), "{} fights at a floor or sill, biggest {:?}", worst.len(), &worst[..worst.len().min(5)]);
+    }
+
+    /// Where the faces of a building's meshes fight over one plane, by kind of place, for the
+    /// whole default town (`cargo test -p zombye-client --release building_fights -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn building_fights() {
+        let map = town();
+        let furniture = FurnitureModels::load(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/models/furniture"));
+        let mut seen: std::collections::BTreeMap<String, (usize, f32, Vec3)> = Default::default();
+        for (i, b) in map.buildings.iter().enumerate() {
+            let m = build_building(&map, i, b, &furniture);
+            let both = MeshBuilder::merged(&[&m.lower, &m.upper]);
+            for (name, mesh) in [("lower+upper", &both), ("roof", &m.roof)] {
+                for f in mesh.fights() {
+                    let axis = if f.normal.y.abs() > 0.9 { "flat" } else if f.normal.y.abs() < 0.1 { "upright" } else { "sloped" };
+                    let e = seen.entry(format!("{name} {axis} kinds {:?} y {:.2}", f.kinds, (f.at.y * 20.0).round() / 20.0)).or_insert((0, 0.0, f.at));
+                    (e.0, e.1) = (e.0 + 1, e.1 + f.area);
+                }
+            }
+        }
+        let mut rows: Vec<_> = seen.into_iter().collect();
+        rows.sort_by(|a, b| b.1.1.total_cmp(&a.1.1));
+        for (k, (n, area, at)) in rows.iter().take(60) {
+            eprintln!("{area:9.3} m2 {n:6} x  {k}  e.g. {at:.3}");
+        }
+        eprintln!("{} kinds of place", rows.len());
     }
 
     /// Building meshes (walls, trim, furniture, upper storeys, roof), over every building of the

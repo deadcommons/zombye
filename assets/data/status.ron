@@ -1,0 +1,120 @@
+// The status icons (Linear DCM-57): the small column of icons beside the weapon panel. There are no
+// stat bars in normal play; an icon appears when its value passes a level here, changes as it
+// passes the next, and goes when it drops back under the first.
+//
+// One entry per icon, drawn in this order. `levels`: one to four, each `at` higher than the last;
+// the icon shows the highest level whose `at` the value has reached. `severity` (1 to 4: the icon's
+// colour and border) is the level's place in the list unless given. `label` and `tip` are what
+// hovering shows, in one line ("Very thirsty: ..."). `good` (optional) is a dimmer icon shown while
+// the value is below `below`.
+//
+// What each kind's value is:
+//   Health     the share of full HP lost, 0 to 1
+//   Hunger, Thirst, Tiredness   the need, 0 (fine) to 1 (worst)
+//   Endurance  the share of endurance spent, 0 to 1; plus 1 while winded
+//   Load       the weight carried over the carry limit (1 = at the limit; a level is passed when over it)
+//   Pain       pain, 0 to about 1 (wounds, treatments' stings, a night on the floor, less painkillers)
+//   Bleeding   HP lost to bleeding per game hour
+//   Sick       1 a wound is festering, 2 feverish, 3 turning
+//   Queasy     1 with food poisoning
+//   Asleep     1 while asleep
+//
+// These are what the icons say, not what the game does: the effects themselves start where the
+// world's settings put them (the needs' 0.35 / 0.6 / 0.85, pain's 0.2 / 0.45 / 0.75, the load's
+// 100% / 130% / 160%), which the levels here are set to match.
+(
+    icons: [
+        (
+            kind: Health,
+            levels: [
+                (at: 0.1, label: "Hurt", tip: "you've lost some blood and skin. H for your wounds."),
+                (at: 0.35, label: "Wounded", tip: "a good part of your health is gone. See to your wounds (H) and rest."),
+                (at: 0.6, label: "Badly wounded", tip: "you can't take much more. Get away, treat your wounds (H), eat and sleep."),
+                (at: 0.8, label: "Near death", tip: "one more blow could be the last."),
+            ],
+        ),
+        (
+            kind: Bleeding,
+            levels: [
+                (at: 0.1, label: "Bleeding a little", tip: "a scratch is bleeding; it stops by itself, sooner dressed (H)."),
+                (at: 5.0, label: "Bleeding", tip: "losing health until it's dressed (H for your wounds)."),
+                (at: 12.0, label: "Bleeding badly", tip: "losing health fast until it's dressed (H for your wounds)."),
+                (at: 22.0, label: "Bleeding out", tip: "you'll be dead within hours. Dress your wounds now (H)."),
+            ],
+        ),
+        (
+            kind: Pain,
+            levels: [
+                (at: 0.2, label: "Sore", tip: "your swings are a little weaker."),
+                (at: 0.45, label: "Hurting", tip: "your swings are weaker."),
+                (at: 0.6, label: "In real pain", tip: "your swings are weaker. Painkillers would help."),
+                (at: 0.75, label: "Agony", tip: "your swings are much weaker."),
+            ],
+        ),
+        (
+            kind: Sick,
+            levels: [
+                (at: 1.0, label: "Sick", severity: 2, tip: "a wound is festering: it hurts, heals slowly and costs health. Clean dressings and antibiotics."),
+                (at: 2.0, label: "Feverish", severity: 3, tip: "losing health, nothing heals, slow to get your breath back."),
+                (at: 3.0, label: "Turning", severity: 4, tip: "losing health fast; your night sight is going."),
+            ],
+        ),
+        (
+            kind: Queasy,
+            levels: [
+                (at: 1.0, label: "Queasy", severity: 2, tip: "food poisoning: you can't keep food down and get thirsty fast."),
+            ],
+        ),
+        (
+            kind: Hunger,
+            good: Some((below: 0.05, label: "Well fed", tip: "nothing to worry about for a few hours.")),
+            levels: [
+                (at: 0.35, label: "Peckish", tip: "getting hungry. Nothing yet."),
+                (at: 0.6, label: "Hungry", tip: "health doesn't come back and you're slower to get your breath back. Eat something."),
+                (at: 0.75, label: "Famished", tip: "starving comes next. Eat something."),
+                (at: 0.85, label: "Starving", tip: "losing health; your swings are weaker. Eat now."),
+            ],
+        ),
+        (
+            kind: Thirst,
+            levels: [
+                (at: 0.35, label: "Dry", tip: "getting thirsty. Nothing yet."),
+                (at: 0.6, label: "Thirsty", tip: "you're slower to get your breath back. Drink something."),
+                (at: 0.75, label: "Very thirsty", tip: "parched comes next. Drink something."),
+                (at: 0.85, label: "Parched", tip: "losing health; no running. Drink now."),
+            ],
+        ),
+        (
+            kind: Tiredness,
+            good: Some((below: 0.05, label: "Rested", tip: "wide awake.")),
+            levels: [
+                (at: 0.35, label: "Drowsy", tip: "you could sleep. Nothing yet."),
+                (at: 0.6, label: "Tired", tip: "your swings are slower and you see a narrower cone. Sleep (B)."),
+                (at: 0.75, label: "Worn out", tip: "exhaustion comes next. Sleep (B)."),
+                (at: 0.85, label: "Exhausted", tip: "your swings are much slower and you walk slower. Sleep (B)."),
+            ],
+        ),
+        (
+            kind: Endurance,
+            levels: [
+                (at: 0.5, label: "Short of breath", severity: 1, tip: "your swings are weaker and slower until you get your breath back."),
+                (at: 1.0, label: "Winded", severity: 3, tip: "out of breath: no running until you get it back."),
+            ],
+        ),
+        (
+            kind: Load,
+            levels: [
+                (at: 1.0, label: "Burdened", tip: "a little over your limit: slower, and running tires you faster."),
+                (at: 1.3, label: "Heavy", tip: "well over your limit: slower still, no running, everything costs more effort."),
+                (at: 1.6, label: "Overloaded", tip: "far over your limit: very slow, no running or climbing."),
+                (at: 1.95, label: "Crushed", tip: "you can hardly pick anything else up. Drop something."),
+            ],
+        ),
+        (
+            kind: Asleep,
+            levels: [
+                (at: 1.0, label: "Asleep", tip: "resting, healing faster. Move or press B to get up."),
+            ],
+        ),
+    ],
+)

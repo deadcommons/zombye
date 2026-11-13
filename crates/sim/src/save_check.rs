@@ -184,7 +184,7 @@ fn job_item(kind: &JobKind) -> Option<u16> {
     match *kind {
         JobKind::Move { item, .. } | JobKind::Use { item, .. } => Some(item),
         JobKind::Treat { item, .. } => item,
-        JobKind::Search { .. } | JobKind::Craft { .. } => None,
+        JobKind::Search { .. } | JobKind::Craft { .. } | JobKind::Reload { .. } | JobKind::Blind { .. } | JobKind::Build { .. } => None,
     }
 }
 
@@ -253,7 +253,7 @@ pub(crate) fn remap_items(plan: &ContentPlan, ground: &mut Vec<GroundItem>, play
             match &mut j.kind {
                 JobKind::Move { item, .. } | JobKind::Use { item, .. } => *item = to(*item).expect("kept"),
                 JobKind::Treat { item: Some(item), .. } => *item = to(*item).expect("kept"),
-                JobKind::Treat { item: None, .. } | JobKind::Search { .. } | JobKind::Craft { .. } => {}
+                JobKind::Treat { item: None, .. } | JobKind::Search { .. } | JobKind::Craft { .. } | JobKind::Reload { .. } | JobKind::Blind { .. } | JobKind::Build { .. } => {}
             }
         }
         // Uses gone from an opened item that's no longer in the content: nothing to count.
@@ -328,12 +328,76 @@ pub(crate) fn fit_containers(w: &mut World, plan: &ContentPlan, new_map: bool, f
     Ok(None)
 }
 
+/// Put a save's barricades (`crate::build`, the `BARR` section) on the loaded map. Each must stand
+/// on a boarded edge of its kind, with a build the catalog has, its planks and hit points in range;
+/// every boarded edge must have one. A save that breaks that is refused, except where it can't
+/// help it: a build since gone from the catalog, or (`new_map`) a map regenerated anyway; there
+/// the edge goes back to what it was underneath, with a note.
+pub(crate) fn load_barricades(w: &mut World, list: Vec<((i32, i32, u8), String, u8, f32, Edge, bool)>, new_map: bool, notes: &mut Vec<String>) -> Result<(), LoadError> {
+    use crate::map::{Barricade, EdgeRef, OwnedEdge};
+    let mut dropped = 0;
+    let mut reset: Vec<(EdgeRef, Edge)> = Vec::new();
+    for (key, id, planks, hp, under, owner_side) in list {
+        if key.2 > 1 {
+            return Err(invalid(format!("a barricade on edge side {}", key.2)));
+        }
+        let e = edge_of_key(key);
+        let kind = if w.map.in_bounds(e.tile) { w.map.owned_edge(e.tile, e.edge) } else { Edge::None };
+        let Some(build) = w.config.builds.iter().position(|d| d.id == id) else {
+            dropped += 1;
+            if kind.is_boarded() {
+                reset.push((e, under));
+            }
+            continue;
+        };
+        let d = &w.config.builds[build];
+        if !kind.is_boarded() || kind != d.on.boarded() || !d.on.takes(under) {
+            if new_map {
+                dropped += 1;
+                continue;
+            }
+            return Err(invalid(format!("a barricade at {} {:?} on {kind:?} over {under:?}", e.tile, e.edge)));
+        }
+        if planks == 0 || planks > d.max || !hp.is_finite() || hp <= 0.0 || hp > d.hp * planks as f32 + 1e-3 {
+            return Err(invalid(format!("a barricade at {} {:?}: {planks} planks, {hp} hp", e.tile, e.edge)));
+        }
+        w.map.barricades.insert(key, Barricade { build: build as u16, planks, hp, under, owner_side });
+    }
+    // Boarded edges with no barricade (a map regenerated anyway; a build gone): back to a shut
+    // window or door.
+    let (wd, ht) = (w.map.width(), w.map.height());
+    for y in 0..ht {
+        for x in 0..wd {
+            for which in [OwnedEdge::North, OwnedEdge::West] {
+                let e = EdgeRef::new(IVec2::new(x, y), which);
+                let kind = w.map.owned_edge(e.tile, e.edge);
+                if kind.is_boarded() && w.map.barricade(e).is_none() && !reset.iter().any(|(r, _)| *r == e) {
+                    if !new_map && dropped == 0 {
+                        return Err(invalid(format!("a boarded edge at {} {which:?} with no barricade", e.tile)));
+                    }
+                    reset.push((e, if kind == Edge::WindowBoarded { Edge::Window } else { Edge::DoorClosed }));
+                }
+            }
+        }
+    }
+    for (e, under) in reset {
+        w.map.set_owned_edge(e.tile, e.edge, under);
+        w.map_edits.insert(e.key());
+        w.walk.update_around(&w.map, e.tile);
+        w.nav.edge_changed(&w.walk, e.tile);
+    }
+    if dropped > 0 {
+        notes.push(format!("{dropped} barricades taken down: their builds or their windows and doors aren't in the game any more"));
+    }
+    Ok(())
+}
+
 /// Can a saved map edit (`saved`, a door or window opened, shut or broken) stand on the edge as
 /// generated (`generated`)? Doors stay doors and windows windows; nothing else is ever edited.
 pub(crate) fn edit_fits(generated: Edge, saved: Edge) -> bool {
     let family = |e: Edge| match e {
-        Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken => 1,
-        Edge::Window | Edge::WindowOpen | Edge::WindowBroken => 2,
+        Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken | Edge::DoorBoarded => 1,
+        Edge::Window | Edge::WindowOpen | Edge::WindowBroken | Edge::WindowBoarded => 2,
         _ => 0,
     };
     family(generated) != 0 && family(generated) == family(saved)
@@ -406,6 +470,9 @@ pub(crate) fn check_settings(text: &str, config: &WorldConfig) -> Result<(), Loa
     config.infection.check().map_err(|e| invalid(format!("settings: {e}")))?;
     config.needs.check().map_err(|e| invalid(format!("settings: {e}")))?;
     config.skills.check().map_err(|e| invalid(format!("settings: {e}")))?;
+    config.stairs.check().map_err(|e| invalid(format!("settings: {e}")))?;
+    g.terrain.check().map_err(|e| invalid(format!("settings: generation.{e}")))?;
+    config.movement.check().map_err(|e| invalid(format!("settings: {e}")))?;
     Ok(())
 }
 
@@ -415,9 +482,10 @@ const OLDEST_FOOD_MIN: i32 = -10 * 365 * 24 * 60;
 /// A stack's age and goes had (#11): goes below the item's uses, made no later than now and not
 /// absurdly long before the world began. Run after the item index is known to be in range.
 fn check_stack_state(w: &World, s: &ItemStack, what: &dyn Fn() -> String) -> Result<(), LoadError> {
-    let uses = w.config.items[s.item as usize].consumable().map_or(1, |c| c.uses.max(1));
-    if s.used >= uses {
-        return Err(invalid(format!("{}: {} goes had of an item with {uses}", what(), s.used)));
+    // (For a gun or a magazine it counts the rounds in it, #72: at most what it takes.)
+    let most = crate::ranged::max_used(&w.config.items, &w.config.weapons, s.item);
+    if s.used > most {
+        return Err(invalid(format!("{}: {} goes had of an item with {}", what(), s.used, most as u32 + 1)));
     }
     if s.born > w.game_minute() + 1 || s.born < OLDEST_FOOD_MIN {
         return Err(invalid(format!("{}: made at game minute {}, now {}", what(), s.born, w.game_minute())));
@@ -428,11 +496,8 @@ fn check_stack_state(w: &World, s: &ItemStack, what: &dyn Fn() -> String) -> Res
 /// After items.ron changed (a compatible change): goes had of a stack's top item stay below the
 /// item's `uses` as it is now.
 pub(crate) fn fit_goes(w: &mut World) {
-    let items = &w.config.items;
-    let fit = |s: &mut ItemStack| {
-        let uses = items.get(s.item as usize).and_then(|d| d.consumable()).map_or(1, |c| c.uses.max(1));
-        s.used = s.used.min(uses - 1);
-    };
+    let (items, weapons) = (&w.config.items, &w.config.weapons);
+    let fit = |s: &mut ItemStack| s.used = s.used.min(crate::ranged::max_used(items, weapons, s.item));
     for p in &mut w.players {
         p.inventory.stacks_mut().for_each(&fit);
     }
@@ -532,6 +597,23 @@ pub(crate) fn check_looks(w: &World) -> Result<(), LoadError> {
     }
     if let Some(id) = looks.risen.keys().find(|id| w.zombies.id.binary_search(id).is_err()) {
         return Err(invalid(format!("what zombie {id} wore, which isn't in the save")));
+    }
+    Ok(())
+}
+
+/// The far clock (#57) runs ahead by at most the top time scale less one a tick, and nothing the
+/// population remembers is later than it.
+pub(crate) fn check_far_clock(w: &World) -> Result<(), LoadError> {
+    let most = w.tick.saturating_mul(crate::needs::MAX_TIME_SCALE as u64);
+    if w.far_ticks > most {
+        return Err(invalid(format!("far clock {} ticks ahead at tick {} (at most {most})", w.far_ticks, w.tick)));
+    }
+    let now = w.far_tick();
+    if let Some(a) = w.population.attractors.iter().find(|a| a.born > now) {
+        return Err(invalid(format!("attractor {}: made at far tick {}, now {now}", a.id, a.born)));
+    }
+    if let Some(r) = w.population.last_seen.iter().position(|&s| s != crate::population::NEVER && s > now) {
+        return Err(invalid(format!("region {r}: last seen at far tick {}, now {now}", w.population.last_seen[r])));
     }
     Ok(())
 }
@@ -858,14 +940,14 @@ mod tests {
         crate::items::parse_items(include_str!("../../../assets/data/items/items.ron"), &weapons()).unwrap()
     }
 
-    /// The shipped content plus one weapon that is never placed (its spawn weight is 0, and no
-    /// loot table names it), so there is always one a save doesn't use: the town has a weapon or two
+    /// The shipped content plus one weapon that is never placed (no loot table or floor entry
+    /// names it), so there is always one a save doesn't use: the town has a weapon or two
     /// in most buildings, so every shipped kind turns up somewhere.
     fn content() -> WorldConfig {
         let containers = crate::containers::parse_containers(include_str!("../../../assets/data/containers.ron")).unwrap();
         let mut weapons = weapons();
         let mut spare = weapons.iter().find(|w| w.category != crate::items::WeaponCategory::Unarmed).unwrap().clone();
-        (spare.id, spare.name, spare.spawn_weight) = ("spare_pipe".into(), "Spare pipe".into(), 0.0);
+        (spare.id, spare.name) = ("spare_pipe".into(), "Spare pipe".into());
         weapons.push(spare);
         WorldConfig::new(5, 0, templates()).with_weapons(weapons).with_items(items()).with_containers(containers).with_loot(crate::loot::tests::shipped()).with_map_chunks(8)
     }
@@ -1322,6 +1404,8 @@ mod tests {
             ("attractor id past the last", "attractor id", |w| w.population.attractors[0].id = 99),
             ("population target NaN", "target", |w| w.population.target[0] = f32::NAN),
             ("clock NaN", "clock offset", |w| w.clock_offset_hours = f32::NAN),
+            ("far clock too far ahead", "far clock", |w| w.far_ticks = w.tick * 1000 + 1),
+            ("attractor from the future", "made at far tick", |w| w.population.attractors[0].born = w.tick + 50),
             ("an edit that turns a wall into a door", "turns a Wall into a DoorOpen", |w| {
                 let wall = first_edge(w, |e| e == Edge::Wall);
                 w.map.set_owned_edge(wall.tile, wall.edge, Edge::DoorOpen);

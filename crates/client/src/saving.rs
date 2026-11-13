@@ -18,7 +18,7 @@ use bevy::input::InputSystems;
 use bevy::prelude::*;
 use zombye_net::{EdgeDamage, Intent, save_file};
 use zombye_sim::World;
-use zombye_sim::map::{CHUNK_SIZE, EdgeChange, OwnedEdge, TileMap};
+use zombye_sim::map::{CHUNK_SIZE, EdgeChange, Feature, OwnedEdge, TileMap};
 
 use crate::Options;
 use crate::fx::ClearFx;
@@ -26,7 +26,7 @@ use crate::player::LocalPlayer;
 use crate::server_link::{ClientMap, EdgeChangesThisFrame, EdgeDamageMap, EdgeDamageThisFrame, JoinInfo, ServerLink};
 
 const QUICKSAVE: &str = "quicksave";
-const AUTOSAVE: &str = "autosave";
+pub(crate) const AUTOSAVE: &str = "autosave";
 /// Seconds a "Saved" / "Loaded" line stays up.
 const NOTICE_SECS: f32 = 4.0;
 
@@ -35,7 +35,8 @@ pub struct SavingPlugin;
 impl Plugin for SavingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Notice>()
-            .add_systems(Startup, spawn_notice)
+            .init_resource::<Asked>()
+            .add_systems(Startup, spawn_notice.after(crate::hud::spawn_hud))
             // Before Update, so renderers see this frame's edge changes from a quickload.
             .add_systems(PreUpdate, quick_save_load.after(InputSystems).after(crate::inventory_ui::TextEntry))
             .add_systems(Update, show_notice);
@@ -50,6 +51,14 @@ fn add_autosave(app: &mut App) {
     app.add_systems(Last, autosave_on_exit.in_set(OnAppExitSystems));
 }
 
+/// A quicksave or quickload asked for elsewhere than the keys (the pause menu's Save and Load),
+/// done by [`quick_save_load`] as F5 and F9 are.
+#[derive(Resource, Default)]
+pub(crate) struct Asked {
+    pub save: bool,
+    pub load: bool,
+}
+
 /// A short message under the HUD ("Saved ...", "Loaded ...", or what went wrong).
 #[derive(Resource, Default)]
 pub(crate) struct Notice {
@@ -60,14 +69,30 @@ pub(crate) struct Notice {
 #[derive(Component)]
 struct NoticeText;
 
-fn spawn_notice(mut commands: Commands) {
-    commands.spawn((
+/// In the HUD's top-left column, under the stats text (so it never runs over it, however that
+/// wraps; the panels below make room for the text, not for this line, which comes and goes), drawn
+/// above everything on a dark backing so it reads over a panel too; at the top left on its own if
+/// there's no HUD.
+fn spawn_notice(mut commands: Commands, column: Query<Entity, With<crate::hud::TopLeft>>) {
+    let text = (
         NoticeText,
         Text::new(""),
-        TextFont { font_size: bevy::text::FontSize::Px(18.0), ..default() },
+        crate::theme::strong(17.0),
         TextColor(Color::srgb(0.95, 0.85, 0.45)),
-        Node { position_type: PositionType::Absolute, top: px(60), left: px(12), ..default() },
-    ));
+        BackgroundColor(crate::theme::HUD_BG),
+        GlobalZIndex(10),
+        Pickable::IGNORE,
+    );
+    match column.single() {
+        Ok(column) => {
+            commands.entity(column).with_children(|c| {
+                c.spawn(text);
+            });
+        }
+        Err(_) => {
+            commands.spawn((text, Node { position_type: PositionType::Absolute, top: px(60), left: px(12), ..default() }));
+        }
+    }
 }
 
 fn show_notice(time: Res<Time>, notice: Res<Notice>, mut text: Query<&mut Text, With<NoticeText>>) {
@@ -85,8 +110,12 @@ impl Notice {
     }
 }
 
+/// On a multiplayer server (`--connect`) there is nothing of ours to save or load.
+const ON_A_SERVER: &str = "this world is the server's, which saves it itself";
+
 fn save_to(link: &ServerLink, options: &Options, name: &str) -> Result<save_file::Saved, String> {
-    save_file::save(link.world(), &save_file::path_for(&options.saves, name)?)
+    let world = link.world().ok_or(ON_A_SERVER)?;
+    save_file::save(world, &save_file::path_for(&options.saves, name)?)
 }
 
 /// What taking up another world touches: the server link, our map copy and edge damage, our
@@ -101,9 +130,16 @@ pub(crate) struct WorldSwap<'w> {
     me: ResMut<'w, LocalPlayer>,
     join: ResMut<'w, JoinInfo>,
     clear_fx: MessageWriter<'w, ClearFx>,
+    /// The survivor this game began as (`new_game.rs`), for a new run.
+    pub start_as: Option<Res<'w, crate::new_game::StartAs>>,
 }
 
 impl WorldSwap<'_> {
+    /// The player we play.
+    pub fn player(&self) -> u32 {
+        self.me.id
+    }
+
     /// Our player is dead (the death screen is up).
     pub fn dead(&self) -> bool {
         self.me.dead
@@ -125,6 +161,14 @@ impl WorldSwap<'_> {
             self.map.0.set_owned_edge(c.tile, c.edge, c.kind);
             self.changes.0.push(c);
         }
+        // Trees felled (or standing again) in the loaded world: those chunks are built again.
+        let trees = tree_differences(&self.map.0, &world.map);
+        for &(tile, feature) in &trees {
+            self.map.0.tile_mut(tile).expect("same map").feature = feature;
+        }
+        // Blinds and glass in doors, as they are in the loaded world.
+        self.map.0.blinds = world.map.blinds.clone();
+        self.map.0.glazed = world.map.glazed.clone();
         let fresh: Vec<EdgeDamage> = EdgeDamage::all(&world);
         for &(tile, edge) in self.damage_map.0.keys() {
             if !fresh.iter().any(|d| d.tile == tile && d.edge == edge) {
@@ -136,6 +180,7 @@ impl WorldSwap<'_> {
         // Dev toggles aren't saved; they're this session's, so they carry over to the new world.
         let dev = self.me.dev;
         let want = player.unwrap_or(self.join.player_id);
+        self.link.felled.extend(trees.iter().map(|&(t, _)| t));
         let snap = self.link.replace_world(world);
         if let Some(view) = snap.players.iter().find(|p| p.id == want).or(snap.players.first()) {
             self.me.resume(view, snap.tick);
@@ -148,7 +193,7 @@ impl WorldSwap<'_> {
     }
 }
 
-fn quick_save_load(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, options: Res<Options>, mut swap: WorldSwap, mut notice: ResMut<Notice>, mut automated: Local<(bool, bool)>) {
+fn quick_save_load(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, options: Res<Options>, mut swap: WorldSwap, mut notice: ResMut<Notice>, mut asked: ResMut<Asked>, mut automated: Local<(bool, bool)>) {
     let now = time.elapsed_secs();
     // `--quicksave-after` / `--quickload-after`: the same as pressing the key, once.
     let due = |at: Option<f32>, done: &mut bool| {
@@ -156,8 +201,9 @@ fn quick_save_load(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, options: Re
         *done |= fire;
         fire
     };
-    let save = keys.just_pressed(KeyCode::F5) | due(options.quicksave_after, &mut automated.0);
-    let load = keys.just_pressed(KeyCode::F9) | due(options.quickload_after, &mut automated.1);
+    let asked = std::mem::take(&mut *asked);
+    let save = keys.just_pressed(KeyCode::F5) | due(options.quicksave_after, &mut automated.0) | asked.save;
+    let load = keys.just_pressed(KeyCode::F9) | due(options.quickload_after, &mut automated.1) | asked.load;
     if save {
         let text = match save_to(&swap.link, &options, QUICKSAVE) {
             Ok(saved) => format!("Saved: {saved}"),
@@ -168,11 +214,14 @@ fn quick_save_load(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, options: Re
     if !load {
         return;
     }
-    let loaded = save_file::path_for(&options.saves, QUICKSAVE).and_then(|path| {
+    let Some(content) = swap.link.world().map(|w| w.config.clone()) else {
+        return notice.say(now, format!("Load failed: {ON_A_SERVER}"));
+    };
+    let loaded =save_file::path_for(&options.saves, QUICKSAVE).and_then(|path| {
         if !path.exists() {
             return Err(format!("no quicksave yet ({}): press F5 first", path.display()));
         }
-        save_file::load(&path, &swap.link.world().config, options.load_options()).map_err(|e| e.hint("starting with --load-anyway"))
+        save_file::load(&path, &content, options.load_options()).map_err(|e| e.hint("starting with --load-anyway"))
     });
     let (loaded, ms) = match loaded {
         Ok(l) => l,
@@ -200,7 +249,7 @@ fn autosave_on_exit(mut exit: MessageReader<AppExit>, link: Res<ServerLink>, opt
         return;
     }
     *done = true;
-    if !options.offscreen() {
+    if !options.offscreen() && link.world().is_some() {
         match save_to(&link, &options, AUTOSAVE) {
             Ok(saved) => println!("Autosaved: {saved}"),
             Err(e) => eprintln!("Autosave failed: {e}"),
@@ -218,9 +267,31 @@ fn same_ground(a: &TileMap, b: &TileMap) -> bool {
     (0..a.chunks_y).all(|cy| {
         (0..a.chunks_x).all(|cx| {
             let (ta, tb) = (&a.chunk(cx, cy).expect("in range").tiles, &b.chunk(cx, cy).expect("in range").tiles);
-            ta.iter().zip(tb).all(|(x, y)| (x.floor, x.feature, x.room) == (y.floor, y.feature, y.room))
+            ta.iter().zip(tb).all(|(x, y)| (x.floor, ground_feature(x.feature), x.room) == (y.floor, ground_feature(y.feature), y.room))
         })
     })
+}
+
+/// A tile's feature as far as the ground goes: a tree and the stump it was felled to are one
+/// (felling changes only that chunk's meshes, which [`WorldSwap::take_up`] rebuilds).
+fn ground_feature(f: Feature) -> Feature {
+    if f == Feature::Stump || f == Feature::PineTree { Feature::Tree } else { f }
+}
+
+/// Tiles where `to` has a tree and `from` its stump, or the other way round (same ground).
+fn tree_differences(from: &TileMap, to: &TileMap) -> Vec<(IVec2, Feature)> {
+    let mut out = Vec::new();
+    for cy in 0..from.chunks_y {
+        for cx in 0..from.chunks_x {
+            let (ta, tb) = (&from.chunk(cx, cy).expect("in range").tiles, &to.chunk(cx, cy).expect("in range").tiles);
+            for (k, (x, y)) in ta.iter().zip(tb).enumerate() {
+                if x.feature != y.feature {
+                    out.push((IVec2::new(cx * CHUNK_SIZE + k as i32 % CHUNK_SIZE, cy * CHUNK_SIZE + k as i32 / CHUNK_SIZE), y.feature));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Every owned edge of `to` that differs from `from` (same-sized maps).

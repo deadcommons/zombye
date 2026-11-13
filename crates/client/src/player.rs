@@ -10,12 +10,11 @@
 //! two predicted states. Other players are drawn from snapshots, interpolated like zombies.
 //!
 //! Keys: WASD move, Shift run, C sneak, right mouse (held) aim, and while aiming left mouse swing the
-//! weapon you hold (or punch) and Space shove (or stomp, when a downed zombie lies right in front of you), E pick up the item you face (or, with
-//! nothing on the floor within reach, search the cupboard, drawer or fridge you face), Tab or I the
+//! weapon you hold (or punch) and Space shove (or stomp, when a downed zombie lies right in front of you), Tab or I the
 //! inventory panel (`inventory_ui`; the left mouse button doesn't swing while it's open),
-//! F open/close the door or window you face, G smash the window you face, T skip an hour, Z spawn zombies, F1 god mode and F2 ignored by zombies (dev toggles, sent as
-//! `Intent::Dev`; the HUD shows GOD / IGNORED from the snapshot). Climbing through an open or broken window is just
-//! walking into it (slowly, predicted like any other movement). Combat itself is all on the server;
+//! E the likeliest thing to do with what you face, held: everything (`interact.rs`), F the light in your hands on and off, G smash the window you face, T skip an hour, Z spawn zombies, F1 god mode and F2 ignored by zombies (dev toggles, sent as
+//! `Intent::Dev`; the HUD shows GOD / IGNORED from the snapshot). The keys are data (`keys.rs`, `assets/data/keys.ron`).
+//! Climbing through an open or broken window is E, then predicted like any other movement. Combat itself is all on the server;
 //! the client only sends the intents and draws what the snapshots say (the held weapon, a swing,
 //! lying dead). The body is a [`crate::survivor`] rig.
 
@@ -26,7 +25,7 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use zombye_net::Intent;
 use zombye_sim::players::step_movement;
-use zombye_sim::{ActionKind, DevFlags, PlayerInput, PlayerState, TICK_DT, ZombieAnim};
+use zombye_sim::{ActionKind, DevFlags, DriveInput, PlayerInput, PlayerState, TICK_DT, VehicleState, ZombieAnim, seat_of, step_vehicle};
 
 use crate::autoplay::AutoInput;
 use crate::camera::IsoCamera;
@@ -55,8 +54,9 @@ struct OtherPlayer(u32);
 pub struct LocalPlayer {
     pub id: u32,
     seq: u32,
-    /// Inputs sent but not yet confirmed by a snapshot, oldest first.
-    pending: VecDeque<(u32, PlayerInput)>,
+    /// Inputs sent but not yet confirmed by a snapshot, oldest first, with the driving input sent
+    /// with each while at a wheel.
+    pending: VecDeque<(u32, PlayerInput, Option<DriveInput>)>,
     /// Predicted state after the previous and the latest tick, for interpolation.
     pub prev: PlayerState,
     pub curr: PlayerState,
@@ -66,6 +66,11 @@ pub struct LocalPlayer {
     pub aim: f32,
     /// Aiming: the right mouse held (not over an open panel), or `--autoplay`.
     pub aiming: bool,
+    /// How far up or down of level a gun is aimed (#72, radians): at the body the cursor is on, at
+    /// the height it is on it (`gun_aim`), else level at chest height. Sent as `Intent::Aim`; the
+    /// last one sent is kept so a gun put away says "level" once.
+    pub pitch: f32,
+    sent_pitch: f32,
     last_snapshot_tick: u64,
     /// From the latest snapshot: health, dead, weapon held, action under way.
     pub hp: f32,
@@ -74,9 +79,153 @@ pub struct LocalPlayer {
     pub action: Option<ActionKind>,
     /// Dev toggles the server has on for us (god mode, ignored by zombies).
     pub dev: DevFlags,
+    /// On a multiplayer server: our latest swing, shove or stomp, begun on the click rather than
+    /// when the server's word of it comes back (`LocalPlayer::act`; `survivor.rs` plays it).
+    pub swing: Option<OwnSwing>,
+    /// The car we are driving (`zombye_sim::vehicles`), predicted like our body: the snapshot's
+    /// state of it with the driving inputs it hasn't applied replayed on top. Our body sits in its
+    /// seat.
+    pub car: Option<CarPred>,
+}
+
+/// Our own car, predicted (see [`LocalPlayer::car`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CarPred {
+    pub id: u32,
+    pub kind: u16,
+    pub prev: VehicleState,
+    pub curr: VehicleState,
+    /// How far the car is drawn from where we now predict it (metres, radians): what a snapshot
+    /// corrected, taken out over a few ticks ([`CarPred::correct`]) so a correction is a glide,
+    /// not a jump. Our body, and so the camera, is drawn with it.
+    pub off: Vec2,
+    pub off_heading: f32,
+}
+
+/// `a` radians as the shortest turn, in -π..π.
+pub fn short_turn(a: f32) -> f32 {
+    let d = a.rem_euclid(std::f32::consts::TAU);
+    if d > std::f32::consts::PI { d - std::f32::consts::TAU } else { d }
+}
+
+/// A correction of our car's prediction further than this (metres, or radians of heading) is
+/// taken at once: smoothing it would show the car somewhere it plainly isn't.
+pub const CAR_SNAP_M: f32 = 4.0;
+pub const CAR_SNAP_RAD: f32 = 0.8;
+/// The share of the drawn correction kept each tick: about half gone in a fifth of a second.
+pub const CAR_SMOOTH_KEEP: f32 = 0.85;
+
+impl CarPred {
+    pub fn new(id: u32, kind: u16, state: VehicleState) -> Self {
+        Self { id, kind, prev: state, curr: state, off: Vec2::ZERO, off_heading: 0.0 }
+    }
+
+    /// The prediction is now `to` (the snapshot with the driving it hasn't had replayed): keep the
+    /// car drawn where it was, and let [`CarPred::settle`] take the difference out.
+    pub fn correct(&mut self, to: VehicleState) {
+        let err = self.curr.pos - to.pos;
+        let turn = short_turn(self.curr.heading - to.heading);
+        if err.length() > CAR_SNAP_M || turn.abs() > CAR_SNAP_RAD {
+            (self.off, self.off_heading) = (Vec2::ZERO, 0.0);
+            self.prev = to;
+        } else {
+            self.off += err;
+            self.off_heading += turn;
+            // The tick being drawn from moves with it, so nothing on screen jumps.
+            self.prev.pos -= err;
+            self.prev.heading -= turn;
+        }
+        self.curr = to;
+    }
+
+    /// One tick of the drawn correction going away.
+    pub fn settle(&mut self) {
+        self.off *= CAR_SMOOTH_KEEP;
+        self.off_heading *= CAR_SMOOTH_KEEP;
+        if self.off.length_squared() < 1e-6 && self.off_heading.abs() < 1e-4 {
+            (self.off, self.off_heading) = (Vec2::ZERO, 0.0);
+        }
+    }
+}
+
+/// An action of our own begun on the click, on a multiplayer server (#23). Our survivor is
+/// predicted, so its blow lands on screen where the server will have it land; the server tests the
+/// targets where our picture had them then (lag compensation), so what we see hit is what is hit.
+#[derive(Clone, Copy, Debug)]
+pub struct OwnSwing {
+    pub kind: ActionKind,
+    /// The input that follows it: a snapshot that has applied this one knows of the action.
+    pub seq: u32,
+    /// When it began (`Time::elapsed_secs`), and our estimate of its windup and whole length.
+    pub at: f32,
+    pub windup: f32,
+    pub total: f32,
 }
 
 impl LocalPlayer {
+    /// Tests: player `id`, standing at `pos`, alive.
+    #[cfg(test)]
+    pub fn for_test(id: u32, pos: Vec2) -> Self {
+        let state = PlayerState::new(pos);
+        Self { id, seq: 0, pending: VecDeque::new(), prev: state, curr: state, sneak: false, aim: 0.0, aiming: false, pitch: 0.0, sent_pitch: 0.0, last_snapshot_tick: 0, hp: 100.0, dead: false, weapon: None, action: None, dev: DevFlags::default(), swing: None, car: None }
+    }
+
+    /// How far behind our own survivor the picture of everything else is, in seconds: the inputs
+    /// we have sent that `view` (our player in the snapshot shown) hasn't applied yet. 0 in
+    /// single-player, where the world is in step with us.
+    pub fn view_lag(&self, link: &ServerLink, view: &zombye_net::PlayerView) -> f32 {
+        if link.net.is_none() {
+            return 0.0;
+        }
+        self.seq.saturating_sub(view.last_input_seq).min(40) as f32 * TICK_DT
+    }
+
+    /// Swing, shove or stomp: ask the server, and on a multiplayer server begin it here and now
+    /// (when it looks as if the server will take it) instead of a round trip later.
+    pub fn act(&mut self, link: &mut ServerLink, join: &JoinInfo, kind: ActionKind, now: f32) {
+        link.send(match kind {
+            ActionKind::Swing => Intent::Attack { player: self.id },
+            ActionKind::Shove => Intent::Shove { player: self.id },
+            ActionKind::Stomp => Intent::Stomp { player: self.id },
+        });
+        if link.net.is_none() || self.dead || (!self.aiming && kind == ActionKind::Swing) || self.acting(link, now) {
+            return;
+        }
+        let Some(view) = link.curr.players.iter().find(|p| p.id == self.id) else { return };
+        if view.asleep || view.knock.is_some() {
+            return;
+        }
+        let c = &join.combat;
+        let (windup, total) = match kind {
+            ActionKind::Swing => {
+                let unarmed = join.weapons.iter().position(|w| w.category == zombye_sim::WeaponCategory::Unarmed).unwrap_or(0);
+                let w = &join.weapons[self.weapon.map_or(unarmed, |w| w as usize).min(join.weapons.len().saturating_sub(1))];
+                (w.windup_seconds, w.swing_seconds)
+            }
+            ActionKind::Shove => (c.shove_windup, c.shove_seconds),
+            ActionKind::Stomp => (c.stomp_windup, c.stomp_seconds),
+        };
+        // Tired arms are slower (the server's rule; wounds and skill it adds are corrected when
+        // its word comes back).
+        let slow = c.fatigue(self.curr.endurance).1;
+        self.swing = Some(OwnSwing { kind, seq: self.seq + 1, at: now, windup: windup * slow, total: total * slow });
+    }
+
+    /// Whether an action of ours is under way or we are still recovering from one, as far as we
+    /// can tell: our own latest (multiplayer), or what the snapshot says once it knows of that one.
+    pub fn acting(&self, link: &ServerLink, now: f32) -> bool {
+        let view = link.curr.players.iter().find(|p| p.id == self.id);
+        let own = self.swing.filter(|_| link.net.is_some());
+        if own.is_some_and(|s| now < s.at + s.total) {
+            return true;
+        }
+        // A snapshot from before our latest click says nothing new.
+        if own.is_some_and(|s| view.is_some_and(|v| v.last_input_seq < s.seq)) {
+            return false;
+        }
+        view.is_none_or(|v| v.action.is_some() || v.ready_in - self.view_lag(link, v) > 0.0)
+    }
+
     /// Start again from a loaded world's view of our player: forget unconfirmed inputs (they were
     /// for the old world) and keep numbering inputs above anything the save has seen.
     pub fn resume(&mut self, view: &zombye_net::PlayerView, tick: u64) {
@@ -86,6 +235,7 @@ impl LocalPlayer {
         (self.prev, self.curr) = (view.state(), view.state());
         self.aim = view.facing;
         self.last_snapshot_tick = tick;
+        self.swing = None;
         (self.hp, self.dead, self.weapon, self.action, self.dev) = (view.hp, view.dead, view.weapon, view.action, view.dev);
     }
 }
@@ -100,10 +250,12 @@ impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_player)
             .add_systems(Update, (toggle_sneak, face_cursor, actions))
-            .add_systems(FixedUpdate, (predict.in_set(PlayerInputSet).before(ServerTick).run_if(crate::live), reconcile.after(ServerTick)))
+            .add_systems(FixedUpdate, (predict.in_set(PlayerInputSet).before(ServerTick).run_if(crate::live), (vehicle_boxes, reconcile).chain().after(ServerTick)))
             // After the fixed ticks of this frame, before anything in Update reads the player's transform.
+            .init_resource::<ViewFloor>()
+            .init_resource::<Prediction>()
             .add_systems(RunFixedMainLoop, (place_player, sync_other_players).in_set(RunFixedMainLoopSystems::AfterFixedMainLoop))
-            .add_systems(PostUpdate, lie_on_bed.before(bevy::transform::TransformSystems::Propagate));
+            .add_systems(PostUpdate, (lie_on_bed, sit_on_seat).before(bevy::transform::TransformSystems::Propagate));
     }
 }
 
@@ -123,19 +275,25 @@ fn spawn_player(
     let (hp, dead, weapon, action, dev) = view.map_or((100.0, false, None, None, DevFlags::default()), |v| (v.hp, v.dead, v.weapon, v.action, v.dev));
     commands.insert_resource(LocalPlayer {
         id: join.player_id,
-        seq: 0,
+        // Above anything the server has taken from this player (a survivor taken up again on a
+        // multiplayer server, or from a save): it ignores input numbered at or below that.
+        seq: view.map_or(0, |v| v.last_input_seq),
         pending: VecDeque::new(),
         prev: state,
         curr: state,
         sneak: options.sneak,
         aim: state.facing,
         aiming: false,
+        pitch: 0.0,
+        sent_pitch: 0.0,
         last_snapshot_tick: link.curr.tick,
         hp,
         dead,
         weapon,
         action,
         dev,
+        swing: None,
+        car: None,
     });
 
     let assets = SurvivorAssets::new(&mut meshes, &mut materials, &mut bindposes);
@@ -151,7 +309,7 @@ fn spawn_player(
 }
 
 fn toggle_sneak(keys: Res<ButtonInput<KeyCode>>, mut me: ResMut<LocalPlayer>) {
-    if keys.just_pressed(KeyCode::KeyC) {
+    if crate::keys::just_pressed(&keys, crate::keys::Action::Sneak) {
         me.sneak = !me.sneak;
     }
 }
@@ -160,6 +318,7 @@ fn toggle_sneak(keys: Res<ButtonInput<KeyCode>>, mut me: ResMut<LocalPlayer>) {
 fn predict(
     keys: Res<ButtonInput<KeyCode>>,
     map: Res<ClientMap>,
+    join: Res<JoinInfo>,
     auto: Res<AutoInput>,
     cams: Query<&IsoCamera>,
     mut me: ResMut<LocalPlayer>,
@@ -168,13 +327,14 @@ fn predict(
     let mut dir = Vec3::ZERO;
     if let Ok(cam) = cams.single() {
         let (forward, right) = cam.ground_axes();
-        for (key, d) in [(KeyCode::KeyW, forward), (KeyCode::KeyS, -forward), (KeyCode::KeyD, right), (KeyCode::KeyA, -right)] {
-            if keys.pressed(key) {
+        use crate::keys::Action;
+        for (key, d) in [(Action::MoveUp, forward), (Action::MoveDown, -forward), (Action::MoveRight, right), (Action::MoveLeft, -right)] {
+            if crate::keys::pressed(&keys, key) {
                 dir += d;
             }
         }
     }
-    let mut run = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    let mut run = crate::keys::pressed(&keys, crate::keys::Action::Run);
     let mut move_dir = Vec2::new(dir.x, dir.z).normalize_or_zero();
     if auto.active {
         (move_dir, run) = (auto.move_dir, auto.run);
@@ -190,27 +350,113 @@ fn predict(
     if !me.aiming {
         me.aim = facing;
     }
-    let input = PlayerInput { move_dir, facing, run, sneak: me.sneak, aim: me.aiming };
+    let mut input = PlayerInput { move_dir, facing, run, sneak: me.sneak, aim: me.aiming };
     if me.dead {
         // The server ignores a dead player's input; nothing to predict.
         return;
     }
+    // At a wheel (the snapshot says so): W/S throttle and reverse, A/D steer, Space the brake;
+    // the body stays in the seat.
+    follow_car(&mut me, &link, &join);
+    let drive = me.car.map(|_| {
+        use crate::keys::Action;
+        let key = |a: Action| if crate::keys::pressed(&keys, a) { 1.0 } else { 0.0 };
+        if auto.active {
+            DriveInput::default()
+        } else {
+            DriveInput { throttle: key(Action::MoveUp) - key(Action::MoveDown), steer: key(Action::MoveRight) - key(Action::MoveLeft), brake: crate::keys::pressed(&keys, Action::Shove) }
+        }
+    });
+    if let Some(car) = me.car {
+        input = PlayerInput { move_dir: Vec2::ZERO, facing: car.curr.heading, run: false, sneak: me.sneak, aim: false };
+    }
     me.seq += 1;
     let seq = me.seq;
-    link.send(Intent::PlayerInput { player: me.id, seq, move_dir: input.move_dir.to_array(), facing: input.facing, run, sneak: input.sneak, aim: input.aim });
+    if link.net.is_some() {
+        // On a server: say which snapshot we are showing as this input goes, so our blows land
+        // where we see their targets (lag compensation, #23).
+        let tick = link.curr.tick;
+        link.send(Intent::Seen { player: me.id, tick });
+    }
+    // Aiming a gun (#72): the pitch goes with the facing, before the input a trigger pull follows.
+    let pitch = if me.aiming { me.pitch } else { 0.0 };
+    if pitch != 0.0 || me.sent_pitch != 0.0 {
+        link.send(Intent::Aim { player: me.id, pitch });
+        me.sent_pitch = pitch;
+    }
+    if let Some(d) = drive {
+        link.send(Intent::Drive { player: me.id, throttle: d.throttle, steer: d.steer, brake: d.brake });
+    }
+    link.send(Intent::PlayerInput { player: me.id, seq, move_dir: input.move_dir.to_array(), facing: input.facing, run: input.run, sneak: input.sneak, aim: input.aim });
 
     if me.pending.len() >= MAX_PENDING {
         me.pending.pop_front();
     }
-    me.pending.push_back((seq, input));
+    me.pending.push_back((seq, input, drive));
     me.prev = me.curr;
+    if let (Some(mut car), Some(d)) = (me.car, drive) {
+        let Some(kind) = join.vehicles.kinds.get(car.kind as usize) else { return };
+        car.prev = car.curr;
+        car.settle();
+        let perf = link.curr.vehicles.iter().find(|v| v.id == car.id).map_or(zombye_sim::Perf::NEW, |v| v.perf());
+        step_vehicle(&map.0, kind, car.id, &mut car.curr, d, perf, TICK_DT, join.vehicles.tuning.bounce);
+        me.curr.pos = seat_of(kind, &car.curr);
+        me.curr.facing = car.curr.heading;
+        me.car = Some(car);
+        return;
+    }
     let mut s = me.curr;
     step_movement(&map.0, &mut s, &input, TICK_DT);
     me.curr = s;
 }
 
+/// How far off our prediction of our own survivor was, for the desync reports (`report.rs`).
+#[derive(Resource, Default, Clone, Copy, Debug)]
+pub struct Prediction {
+    /// Metres between where we had predicted the survivor and where the server's snapshot, with
+    /// the unconfirmed inputs replayed on top, put it, at the last reconcile.
+    pub last_error: f32,
+    /// Reconciles that moved it more than [`Prediction::BIG`], ever.
+    pub big: u32,
+    /// The largest error since the count began.
+    pub worst: f32,
+}
+
+impl Prediction {
+    /// A correction this big is a desync, not rounding.
+    pub const BIG: f32 = 1.0;
+}
+
+/// Whether we are at a wheel, by the latest snapshot: start predicting the car when we got in,
+/// stop when we got out.
+fn follow_car(me: &mut LocalPlayer, link: &ServerLink, join: &JoinInfo) {
+    let view = link.curr.vehicles.iter().find(|v| v.driver == me.id && v.driver != 0);
+    match (view, me.car) {
+        (None, _) => me.car = None,
+        (Some(v), Some(c)) if c.id == v.id => {}
+        (Some(v), _) => {
+            if join.vehicles.kinds.get(v.kind as usize).is_some() {
+                me.car = Some(CarPred::new(v.id, v.kind, v.state));
+            }
+        }
+    }
+}
+
+/// The vehicles' boxes on our copy of the map, from each new snapshot, so walking (ours and the
+/// prediction of it) is kept out of them as on the server. Cars don't block sight, so nothing
+/// that redraws on a map change needs to hear of it.
+fn vehicle_boxes(link: Res<ServerLink>, join: Res<JoinInfo>, mut map: ResMut<ClientMap>) {
+    if link.curr.vehicles.is_empty() && map.0.vehicles.is_empty() {
+        return;
+    }
+    let boxes: Vec<_> = link.curr.vehicles.iter().filter_map(|v| v.boxed(&join.vehicles.kinds)).collect();
+    if boxes != map.0.vehicles {
+        map.bypass_change_detection().0.set_vehicles(boxes);
+    }
+}
+
 /// On a new snapshot: start from the server's state and replay the inputs it hasn't applied yet.
-fn reconcile(link: Res<ServerLink>, map: Res<ClientMap>, mut me: ResMut<LocalPlayer>) {
+fn reconcile(link: Res<ServerLink>, map: Res<ClientMap>, join: Res<JoinInfo>, mut me: ResMut<LocalPlayer>, mut prediction: ResMut<Prediction>) {
     if link.curr.tick == me.last_snapshot_tick {
         return;
     }
@@ -225,21 +471,79 @@ fn reconcile(link: Res<ServerLink>, map: Res<ClientMap>, mut me: ResMut<LocalPla
         me.curr = view.state();
         return;
     }
-    while me.pending.front().is_some_and(|(seq, _)| *seq <= view.last_input_seq) {
+    while me.pending.front().is_some_and(|(seq, _, _)| *seq <= view.last_input_seq) {
         me.pending.pop_front();
     }
     let mut s = view.state();
-    for (_, input) in &me.pending {
-        step_movement(&map.0, &mut s, input, TICK_DT);
+    follow_car(me, &link, &join);
+    if let Some(mut car) = me.car
+        && let Some(v) = link.curr.vehicles.iter().find(|v| v.id == car.id)
+        && let Some(kind) = join.vehicles.kinds.get(car.kind as usize)
+    {
+        // At the wheel: the server's car, and the driving it hasn't had yet.
+        let mut cs = v.state;
+        let perf = v.perf();
+        for (_, _, d) in &me.pending {
+            if let Some(d) = d {
+                step_vehicle(&map.0, kind, car.id, &mut cs, *d, perf, TICK_DT, join.vehicles.tuning.bounce);
+            }
+        }
+        car.correct(cs);
+        me.car = Some(car);
+        s.pos = seat_of(kind, &cs);
+        s.facing = cs.heading;
+        me.curr = s;
+        return;
+    }
+    for (_, input, d) in &me.pending {
+        // Inputs sent while we were still at a wheel didn't walk.
+        if d.is_none() {
+            step_movement(&map.0, &mut s, input, TICK_DT);
+        }
+    }
+    let error = me.curr.pos.distance(s.pos);
+    prediction.last_error = error;
+    if error > Prediction::BIG {
+        prediction.big += 1;
+        prediction.worst = prediction.worst.max(error);
     }
     me.curr = s;
 }
 
-fn place_player(fixed: Res<Time<Fixed>>, me: Res<LocalPlayer>, mut players: Query<&mut Transform, With<Player>>) {
+/// The storey the view is on (stairs): which floor of the building we're in is drawn open, and how
+/// high our survivor's feet are. Level 1 from half way up a flight, so the upper floor opens as
+/// the head comes through it.
+#[derive(Resource, Default, Clone, Copy, PartialEq, Debug)]
+pub struct ViewFloor {
+    pub level: u8,
+    /// How high our feet are above the ground (stairs, upstairs).
+    pub height: f32,
+    /// The height of the ground itself under us (hills outside town, `zombye_sim::terrain`).
+    pub ground: f32,
+}
+
+impl ViewFloor {
+    /// Height above the ground from which the upper floor is the one shown.
+    pub const UP_FROM: f32 = zombye_sim::map::STOREY * 0.5;
+}
+
+fn place_player(fixed: Res<Time<Fixed>>, me: Res<LocalPlayer>, map: Res<ClientMap>, mut view: ResMut<ViewFloor>, mut players: Query<&mut Transform, With<Player>>) {
     let Ok(mut tf) = players.single_mut() else { return };
-    let p = me.prev.pos.lerp(me.curr.pos, fixed.overstep_fraction());
+    let a = fixed.overstep_fraction();
+    // At the wheel, drawn with the car's correction still being taken out (and so the camera).
+    let p = me.prev.pos.lerp(me.curr.pos, a) + me.car.map_or(Vec2::ZERO, |c| c.off);
+    let (h0, h1) = (me.prev.height(&map.0), me.curr.height(&map.0));
+    let height = h0 + (h1 - h0) * a;
+    let ground = map.0.ground(p);
     tf.translation.x = p.x;
     tf.translation.z = p.y;
+    if tf.translation.y != height + ground {
+        tf.translation.y = height + ground;
+    }
+    let now = ViewFloor { level: (me.curr.level > 0 || height > ViewFloor::UP_FROM) as u8, height, ground };
+    if *view != now {
+        *view = now;
+    }
 }
 
 /// How high a sleeper lies on a bed or a sofa, and how far from the middle of it its feet are (its
@@ -261,20 +565,33 @@ fn lie_on_bed(
 ) {
     for (mut tf, other) in &mut players {
         let id = other.map_or(me.id, |o| o.0);
-        let on = link.curr.players.iter().find(|p| p.id == id).filter(|v| v.asleep && !v.dead).and_then(|v| zombye_sim::needs::sleep_furniture(&map.0, Vec2::from(v.pos)));
-        let Some((f, spot)) = on else {
-            // Up again: back on the floor (`place_player` only sets our x and z).
-            if tf.translation.y != 0.0 {
-                tf.translation.y = 0.0;
-            }
-            continue;
-        };
+        let on = link.curr.players.iter().find(|p| p.id == id).filter(|v| v.asleep && !v.dead).and_then(|v| zombye_sim::needs::sleep_furniture(&map.0, Vec2::from(v.pos), v.level).map(|on| (on, v.level)));
+        // Awake, the body stands at its floor's height (`place_player`, `sync_other_players`).
+        let Some(((f, spot), level)) = on else { continue };
         let centre = f.min.as_vec2() + f.size.as_vec2() * 0.5;
         let front = f.facing.offset().as_vec2();
         let feet = centre + front * BED_FEET;
-        let top = if spot == zombye_sim::needs::SleepSpot::Bed { BED_TOP } else { SOFA_TOP };
+        let top = if spot == zombye_sim::needs::SleepSpot::Bed { BED_TOP } else { SOFA_TOP } + zombye_sim::map::STOREY * level as f32;
         tf.translation = Vec3::new(feet.x, top, feet.y);
         tf.rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - front.y.atan2(front.x));
+    }
+}
+
+/// A survivor sitting on a sofa, bed, toilet or bench is drawn on it, facing the way it faces
+/// (`zombye_sim::sit::seat_at`, the server's rule); on the ground, where it is.
+fn sit_on_seat(link: Res<ServerLink>, map: Res<ClientMap>, me: Res<LocalPlayer>, mut players: Bodies) {
+    for (mut tf, other) in &mut players {
+        let id = other.map_or(me.id, |o| o.0);
+        let Some(v) = link.curr.players.iter().find(|p| p.id == id).filter(|v| v.seated.is_some_and(|s| s != zombye_sim::SeatKind::Ground) && !v.dead && !v.asleep) else { continue };
+        let seat = zombye_sim::sit::seat_at(&map.0, Vec2::from(v.pos), v.level);
+        if seat.kind == zombye_sim::SeatKind::Ground {
+            continue;
+        }
+        tf.translation.x = seat.at.x;
+        tf.translation.z = seat.at.y;
+        if let Some(f) = seat.facing {
+            tf.rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - f);
+        }
     }
 }
 
@@ -285,6 +602,8 @@ fn sync_other_players(
     me: Res<LocalPlayer>,
     fog: Res<FogState>,
     fixed: Res<Time<Fixed>>,
+    map: Res<ClientMap>,
+    view: Res<ViewFloor>,
     assets: Option<Res<SurvivorAssets>>,
     model: Option<Res<SurvivorModel>>,
     mut others: Query<(Entity, &OtherPlayer, &mut Transform, &mut Visibility)>,
@@ -299,9 +618,17 @@ fn sync_other_players(
         };
         let prev = link.prev.players.iter().find(|p| p.id == v.id).unwrap_or(v);
         let pos = Vec2::from(prev.pos).lerp(Vec2::from(v.pos), alpha);
-        tf.translation = Vec3::new(pos.x, 0.0, pos.y);
+        let (h0, h1) = (map.0.height_at(prev.level, Vec2::from(prev.pos)), map.0.height_at(v.level, Vec2::from(v.pos)));
+        tf.translation = Vec3::new(pos.x, h0 + (h1 - h0) * alpha + map.0.ground(pos), pos.y);
         tf.rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - lerp_angle(prev.facing, v.facing, alpha));
-        *vis = if fog.visibility(pos) > 0.35 { Visibility::Inherited } else { Visibility::Hidden };
+        // Someone upstairs is under a roof unless that floor is the one we see open.
+        // At the wheel of a car they are in it (the car is drawn).
+        let driving = link.curr.vehicles.iter().any(|c| c.driver == v.id);
+        let shown = !driving && fog.visibility(pos) > 0.35 && (v.level == 0 || view.level > 0);
+        let now = if shown { Visibility::Inherited } else { Visibility::Hidden };
+        if *vis != now {
+            *vis = now;
+        }
         seen.push(v.id);
     }
     for v in link.curr.players.iter().filter(|p| p.id != me.id && !seen.contains(&p.id)) {
@@ -316,16 +643,21 @@ fn sync_other_players(
 #[allow(clippy::too_many_arguments)]
 fn face_cursor(
     windows: Query<&Window, With<PrimaryWindow>>,
-    cams: Query<(&Camera, &GlobalTransform), With<IsoCamera>>,
+    cams: Query<(&Camera, &GlobalTransform, &IsoCamera)>,
     auto: Res<AutoInput>,
     mouse: Res<ButtonInput<MouseButton>>,
     panel: Res<crate::inventory_ui::InventoryPanel>,
-    health: Res<crate::health_ui::HealthPanel>,
+    hits: crate::hud::PanelHits,
     time: Res<Time>,
+    join: Res<JoinInfo>,
+    link: Res<ServerLink>,
     mut players: Query<(&mut Player, &mut Transform)>,
     mut me: ResMut<LocalPlayer>,
 ) {
-    me.aiming = auto.active || (mouse.pressed(MouseButton::Right) && !panel.open && !health.open);
+    // The health and skills sheets aren't modal (and come back open from the settings file): aim
+    // with them up, just not with the pointer on one. The inventory's right button is its menus'.
+    let over_panel = crate::hud::panel_under_cursor(windows.single().ok(), &hits).is_some();
+    me.aiming = (auto.active && auto.aim) || (mouse.pressed(MouseButton::Right) && !panel.open && !over_panel);
     if me.dead {
         return;
     }
@@ -343,15 +675,26 @@ fn face_cursor(
         tf.rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - player.facing);
         return;
     }
-    let (Ok(window), Ok((camera, cam_tf))) = (windows.single(), cams.single()) else { return };
+    let (Ok(window), Ok((camera, cam_tf, iso))) = (windows.single(), cams.single()) else { return };
     let Some(cursor) = window.cursor_position() else { return };
-    let Ok(ray) = camera.viewport_to_world(cam_tf, cursor) else { return };
-    if ray.direction.y.abs() < 1e-4 {
-        return;
+    let Ok(ray) = camera.viewport_to_world(cam_tf, crate::render_scale::to_view(camera, window, cursor)) else { return };
+    // The floor the pointer is on: the one we stand on (first person: the middle of the screen,
+    // see `camera.rs`).
+    let Some(hit) = iso.aim_ground(ray.origin - Vec3::Y * tf.translation.y, *ray.direction) else { return };
+    let from = Vec2::new(tf.translation.x, tf.translation.z);
+    let mut d = Vec2::new(hit.x, hit.z) - from;
+    // With a gun (#72) the aim is the body the cursor is on, at the height it is on it: the head
+    // when it's on the head. On nothing, level at chest height toward the ground under the cursor.
+    if me.weapon.and_then(|w| join.weapons.get(w as usize)).is_some_and(|w| w.ranged.is_some()) {
+        let zombies = link.curr.zombies.iter().filter(|z| z.anim != ZombieAnim::Dead).map(|z| (Vec2::from(z.pos), matches!(z.anim, ZombieAnim::Down | ZombieAnim::GetUp)));
+        let others = link.curr.players.iter().filter(|p| p.id != me.id && !p.dead).map(|p| (Vec2::from(p.pos), p.asleep || p.knock.is_some_and(|k| k.down)));
+        match gun_aim(from, ray.origin, *ray.direction, zombies.chain(others)) {
+            Some((to, pitch)) => (d, me.pitch) = (to, pitch),
+            None => me.pitch = level_pitch(d.length()),
+        }
+    } else {
+        me.pitch = 0.0;
     }
-    let t = -ray.origin.y / ray.direction.y;
-    let hit = ray.origin + *ray.direction * t;
-    let d = Vec2::new(hit.x - tf.translation.x, hit.z - tf.translation.z);
     if d.length_squared() > 0.04 {
         player.facing = d.y.atan2(d.x);
         me.aim = player.facing;
@@ -360,71 +703,219 @@ fn face_cursor(
     }
 }
 
+/// How far the cursor's ray may pass from a body's middle and still be on it (a little more than
+/// the body, so a zombie is easy to pick).
+const AIM_PICK: f32 = 0.42;
+/// With the cursor on nothing a gun is held level at this height (the chest) at the cursor's distance.
+const CHEST: f32 = 1.15;
+
+/// The pitch that puts a shot [`CHEST`] high `dist` metres off.
+pub fn level_pitch(dist: f32) -> f32 {
+    ((CHEST - zombye_sim::ranged::MUZZLE_HEIGHT) / dist.max(2.0)).atan()
+}
+
+/// What a gun held at `from` is aimed at when the cursor's ray (`origin`, unit `dir`, in the
+/// world: y up) is on one of `bodies` (where each stands, and whether it lies down): the way to
+/// that body over the ground, and the pitch to the height on it the ray passes nearest (the head,
+/// with the cursor on its head). `None`: the cursor is on nobody.
+pub fn gun_aim(from: Vec2, origin: Vec3, dir: Vec3, bodies: impl Iterator<Item = (Vec2, bool)>) -> Option<(Vec2, f32)> {
+    use zombye_sim::ranged::{BODY_HEIGHT, DOWN_HEIGHT, MUZZLE_HEIGHT};
+    let denom = 1.0 - dir.y * dir.y;
+    if denom < 1e-6 {
+        return None;
+    }
+    let mut best: Option<(f32, Vec2, f32, f32)> = None;
+    for (pos, down) in bodies {
+        let top = if down { DOWN_HEIGHT } else { BODY_HEIGHT };
+        // The nearest points of the ray and the body's upright middle line.
+        let w = origin - Vec3::new(pos.x, 0.0, pos.y);
+        let (b, d, e) = (dir.y, dir.dot(w), w.y);
+        let s = ((e - b * d) / denom).clamp(0.0, top);
+        let on_body = Vec3::new(pos.x, s, pos.y);
+        let t = (on_body - origin).dot(dir);
+        let miss = (origin + dir * t).distance(on_body);
+        if miss <= AIM_PICK && best.is_none_or(|(m, ..)| miss < m) {
+            best = Some((miss, pos, s, top));
+        }
+    }
+    let (_, pos, s, top) = best?;
+    let to = pos - from;
+    // Not at the very top of the head or the soles of the feet.
+    let height = s.clamp(0.15, top - 0.12);
+    Some((to, ((height - MUZZLE_HEIGHT) / to.length().max(0.5)).atan()))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn actions(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     panel: Res<crate::inventory_ui::InventoryPanel>,
-    health: Res<crate::health_ui::HealthPanel>,
     preview: Res<crate::dev_time::LightPreview>,
-    me: Res<LocalPlayer>,
+    morning: Option<Res<crate::firstnight_ui::FirstNightUi>>,
+    time: Res<Time>,
+    mut me: ResMut<LocalPlayer>,
     join: Res<JoinInfo>,
     players: Query<(&Transform, &Player)>,
     mut link: ResMut<ServerLink>,
 ) {
+    let now = time.elapsed_secs();
     // Dev toggles: flip what the server last said.
-    if keys.just_pressed(KeyCode::F1) {
+    // A packaged game keeps them to itself without `--dev` (the server would refuse them anyway).
+    let dev = zombye_net::install::dev_tools();
+    if dev && keys.just_pressed(KeyCode::F1) {
         link.send(Intent::Dev { player: me.id, god: Some(!me.dev.god), ignored: None });
     }
-    if keys.just_pressed(KeyCode::F2) {
+    if dev && keys.just_pressed(KeyCode::F2) {
         link.send(Intent::Dev { player: me.id, god: None, ignored: Some(!me.dev.ignored) });
     }
     // Dead: the death screen (`death.rs`) takes R (a new run) and Q / Esc (quit).
     if me.dead {
         return;
     }
+    // At the wheel of a car: E gets out (`interact.rs`), the horn's key sounds it; Space is the brake
+    // (in `predict`), nothing else here.
+    if me.car.is_some() {
+        if crate::keys::just_pressed(&keys, crate::keys::Action::Horn) {
+            link.send(Intent::Vehicle { player: me.id, op: zombye_sim::VehicleOp::Horn });
+        }
+        return;
+    }
+    use crate::keys::Action;
     // B lies down to sleep or gets up; asleep, setting off (WASD) gets up too (#11). Anything
     // else done asleep gets up on the server.
     let asleep = link.curr.players.iter().any(|p| p.id == me.id && p.asleep);
-    let moving = keys.any_just_pressed([KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD]);
-    if keys.just_pressed(KeyCode::KeyB) || (asleep && moving) {
+    let moving = [Action::MoveUp, Action::MoveDown, Action::MoveLeft, Action::MoveRight].into_iter().any(|a| crate::keys::just_pressed(&keys, a));
+    // (Shift+B is the build menu, `build_ui.rs`: the bindings keep the two apart.)
+    if crate::keys::just_pressed(&keys, Action::Sleep) || (asleep && moving) {
         link.send(Intent::Sleep { player: me.id, sleep: !asleep });
     }
+    // Q sits down (on the sofa, bed or bench beside you, else the ground) or gets up; seated,
+    // setting off (WASD) gets up too (`zombye_sim::sit`).
+    let seated = link.curr.players.iter().any(|p| p.id == me.id && p.seated.is_some());
+    if crate::keys::just_pressed(&keys, Action::Sit) || (seated && moving) {
+        link.send(Intent::Sit { player: me.id, sit: Some(!seated) });
+    }
     // Fighting is for aiming (right mouse held); the server refuses it otherwise.
-    if me.aiming && mouse.just_pressed(MouseButton::Left) && !panel.open && !health.open && !preview.hovered {
-        link.send(Intent::Attack { player: me.id });
+    if me.aiming && mouse.just_pressed(MouseButton::Left) && !panel.open && !preview.hovered {
+        me.act(&mut link, &join, ActionKind::Swing, now);
     }
-    if me.aiming && keys.just_pressed(KeyCode::Space) {
-        // Stomp if a downed zombie lies right in front, else shove (the server decides what it hits).
+    if crate::keys::just_pressed(&keys, Action::Shove) {
+        // Space with or without aiming (it goes the way he faces): stomp if a downed zombie lies
+        // in reach in front, by the server's own rule (`stomp_spot`: its body, its head first),
+        // else shove (the server decides what it hits).
         let c = &join.combat;
-        let forward = Vec2::from_angle(me.aim);
-        let half_arc = (c.stomp_arc_degrees * 0.5).to_radians().cos();
+        let facing = if me.aiming { me.aim } else { me.curr.facing };
         let downed = link.curr.zombies.iter().any(|z| {
-            let to = Vec2::from(z.pos) - me.curr.pos;
-            matches!(z.anim, ZombieAnim::Down | ZombieAnim::GetUp) && to.length() <= c.stomp_range && forward.dot(to.normalize_or_zero()) >= half_arc
+            matches!(z.anim, ZombieAnim::Down | ZombieAnim::GetUp) && zombye_sim::stomp_spot(c, me.curr.pos, facing, Vec2::from(z.pos), z.facing).is_some()
         });
-        link.send(if downed { Intent::Stomp { player: me.id } } else { Intent::Shove { player: me.id } });
+        me.act(&mut link, &join, if downed { ActionKind::Stomp } else { ActionKind::Shove }, now);
     }
-    if keys.just_pressed(KeyCode::KeyE) {
-        // Something on our floor (the snapshot's, by the server's reach rule): pick it up.
-        // Otherwise search what we face; with nothing there either, the server says so once.
-        let floor = !link.curr.floor_of(me.id).is_empty();
-        link.send(if floor { Intent::PickUp { player: me.id } } else { Intent::Search { player: me.id, container: None } });
+    // R reloads the gun in hand (#72): the ordinary use of it. (Dead, R is the death screen's;
+    // on the morning screen, a new run.)
+    let gun = me.weapon.and_then(|w| join.weapons.get(w as usize)).is_some_and(|w| w.ranged.is_some());
+    if gun && crate::keys::just_pressed(&keys, Action::Reload) && !morning.is_some_and(|m| m.morning) {
+        link.send(Intent::Use { player: me.id, from: zombye_sim::Place::Slot(zombye_sim::Slot::Hand), index: 0 });
     }
-    if keys.just_pressed(KeyCode::KeyF) {
-        // The server picks the door or window this player faces and checks it's within reach.
-        link.send(Intent::Interact { player: me.id });
-    }
-    if keys.just_pressed(KeyCode::KeyG) {
+    // E (the world: open, shut, climb, get in, flick, pick up, search) and F (the light in your
+    // hands) are `interact.rs`'s. G smashes the window faced (it's in that window's menu too).
+    if crate::keys::just_pressed(&keys, Action::Smash) {
         link.send(Intent::SmashWindow { player: me.id });
     }
-    if keys.just_pressed(KeyCode::KeyT) {
+    if dev && keys.just_pressed(KeyCode::KeyT) {
         link.send(Intent::SkipTime { hours: 1.0 });
     }
     let Ok((tf, player)) = players.single() else { return };
-    if keys.just_pressed(KeyCode::KeyZ) {
+    if dev && keys.just_pressed(KeyCode::KeyZ) {
         let p = Vec2::new(tf.translation.x, tf.translation.z);
         let center = p + Vec2::from_angle(player.facing) * 30.0;
         link.send(Intent::SpawnZombies { count: 250, center: center.to_array(), radius: 8.0 });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zombye_sim::ranged::MUZZLE_HEIGHT;
+
+    /// With a gun the aim is the body the cursor is on, at the height it is on it (#72): on the
+    /// head it is a head shot, at the feet a low one, beside the body nobody.
+    #[test]
+    fn a_gun_aims_at_what_the_cursor_is_on() {
+        // The isometric camera looks down at the ground from far off, across the map's diagonal.
+        let dir = Vec3::new(0.61, -0.5, 0.61).normalize();
+        let zombie = Vec2::new(10.0, 0.0);
+        // The cursor's ray through the point `up` metres up a body standing at `at`, `beside` off it.
+        let ray = |at: Vec2, up: f32, beside: f32| Vec3::new(at.x, up, at.y) + Vec3::new(dir.z, 0.0, -dir.x).normalize() * beside - dir * 60.0;
+        // The height a shot with that pitch passes at the body.
+        let height = |aim: Option<(Vec2, f32)>| aim.map(|(to, pitch)| MUZZLE_HEIGHT + to.length() * pitch.tan());
+        let at = |up: f32, beside: f32, down: bool| gun_aim(Vec2::ZERO, ray(zombie, up, beside), dir, [(zombie, down)].into_iter());
+        let (to, _) = at(1.2, 0.0, false).expect("on the chest");
+        assert!(to.distance(zombie) < 1e-4, "it faces the body, not the ground behind it under the cursor: {to}");
+        assert!((height(at(1.2, 0.0, false)).unwrap() - 1.2).abs() < 0.02);
+        assert!((height(at(1.62, 0.1, false)).unwrap() - 1.62).abs() < 0.02, "the cursor on its head: the head");
+        assert!((height(at(0.0, 0.0, false)).unwrap() - 0.15).abs() < 0.02, "at its feet: low, not into the ground");
+        assert!(height(at(1.8, 0.0, false)).unwrap() <= 1.69, "the top of the head: still on the head");
+        assert_eq!(at(1.0, 0.8, false), None, "beside it: nobody");
+        // One lying down: low, wherever on it the cursor is.
+        assert!((0.14..=0.3).contains(&height(at(0.2, 0.2, true)).unwrap()));
+        assert_eq!(at(1.4, 0.0, true), None, "the air over a body on the ground");
+        // Two close together: the one the cursor is nearer.
+        let other = Vec2::new(10.3, 0.0);
+        let (to, _) = gun_aim(Vec2::ZERO, ray(other, 1.0, 0.0), dir, [(zombie, false), (other, false)].into_iter()).unwrap();
+        assert!(to.distance(other) < 1e-4);
+        // On nothing: level at chest height at the cursor's distance, never steeply down close in.
+        assert!((MUZZLE_HEIGHT + 12.0 * level_pitch(12.0).tan() - CHEST).abs() < 1e-3);
+        assert_eq!(level_pitch(0.1), level_pitch(2.0));
+    }
+}
+
+/// Do we carry a fuel can with fuel in it (`VehicleTuning::fuel_item`)? Beside a car the refuel key
+/// pours it in then, else siphons the car's fuel out (`interact.rs`).
+pub(crate) fn fuel_to_pour(inv: &zombye_sim::Inventory, join: &JoinInfo) -> bool {
+    let can = join.items.iter().position(|d| d.id == join.vehicles.tuning.fuel_item);
+    can.is_some_and(|c| inv.stacks().any(|s| s.item as usize == c && s.used > 0))
+}
+
+/// The name of a parked car (a street prop of a vehicle kind, not one of the drivable ones, which
+/// are off the map) beside `pos` and faced, within the reach E gets into a car from.
+pub(crate) fn parked_car_faced(map: &zombye_sim::TileMap, data: &zombye_sim::VehicleData, pos: Vec2, facing: f32) -> Option<String> {
+    let reach = data.tuning.enter_reach;
+    let ahead = Vec2::from_angle(facing);
+    let mut best: Option<(f32, String)> = None;
+    for p in &map.street_props {
+        let Some(pk) = map.prop_kinds.get(p.kind as usize) else { continue };
+        let Some(k) = data.of_prop(&pk.id).and_then(|i| data.kinds.get(i)) else { continue };
+        let (corner, size) = map.street_prop_rect(p);
+        let (lo, hi) = (corner.as_vec2(), (corner + size).as_vec2());
+        let closest = pos.clamp(lo, hi);
+        let to = closest - pos;
+        let d = to.length();
+        if d > reach {
+            continue;
+        }
+        let faces = d < 0.05 || ahead.dot(to / d) > 75f32.to_radians().cos();
+        if faces && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+            best = Some((d, if k.name.is_empty() { k.id.replace('_', " ") } else { k.name.clone() }));
+        }
+    }
+    best.map(|(_, n)| n)
+}
+
+/// "This car won't start. The nearest one that will: a van 40 m to the north-east."
+pub(crate) fn wont_start(name: &str, link: &ServerLink, join: &JoinInfo, pos: Vec2) -> String {
+    let free = link.curr.vehicles.iter().filter(|v| v.driver == 0);
+    let near = free.min_by(|a, b| a.state.pos.distance(pos).total_cmp(&b.state.pos.distance(pos)));
+    let lower = name.to_lowercase();
+    match near {
+        Some(v) => {
+            let other = join.vehicles.kinds.get(v.kind as usize).map_or("car".to_string(), |k| if k.name.is_empty() { k.id.replace('_', " ") } else { k.name.to_lowercase() });
+            let to = v.state.pos;
+            format!(
+                "This {lower} won't start. The nearest one that will: a {other} {:.0} m {}",
+                to.distance(pos),
+                crate::chat::compass(pos, to)
+            )
+        }
+        None => format!("This {lower} won't start, and none here will"),
     }
 }

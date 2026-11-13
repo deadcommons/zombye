@@ -5,7 +5,7 @@
 import bevy_pbr::render::{
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::alpha_discard,
-    view_transformations::{position_world_to_ndc, ndc_to_frag_coord},
+    mesh_functions,
 };
 
 @if(PREPASS_PIPELINE)
@@ -19,22 +19,30 @@ import bevy_pbr::render::{
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
 };
 
+// How strongly a hill facet's turn to the sun is told again in its colour (see the fragment).
+const FACET_TOWARD: f32 = 1.2;
+const FACET_AWAY: f32 = 2.4;
+
 struct WorldParams {
     player: vec4<f32>,
     camera_dir: vec4<f32>,
     fog_rect: vec4<f32>,
     fog_tint: vec4<f32>,
-    inside_rect: vec4<f32>,
     tree_count: vec4<f32>,
     lights: vec4<f32>,
+    haze: vec4<f32>,
+    haze_at: vec4<f32>,
+    sun: vec4<f32>,
     sight: array<vec4<f32>, 3>,
     trees: array<vec4<f32>, 32>,
 };
 
-@group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> world_params: WorldParams;
+@group(constants::MATERIAL_BIND_GROUP) @binding(100) var<storage, read> world_params: WorldParams;
 @group(constants::MATERIAL_BIND_GROUP) @binding(101) var fog_tex: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(102) var fog_sampler: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(103) var rays_tex: texture_2d<f32>;
+@if(CUTAWAY)
+@group(constants::MATERIAL_BIND_GROUP) @binding(105) var cut_tex: texture_2d<f32>;
 
 // 4×4 ordered dither threshold in [0, 1).
 fn bayer4(p: vec2<u32>) -> f32 {
@@ -52,83 +60,67 @@ const PAINT_NIGHT: f32 = 0.05;
 // lightness.
 const UNSEEN_MID: f32 = 0.18;
 const UNSEEN_CONTRAST: f32 = 0.6;
-// Above the ground-floor walls: roofs and upper storeys, which open a hole round the player
-// instead of dropping (the whole of them goes only while you're inside that building, on the CPU).
+// At night a surface lit more brightly than LIT_LO (its colour over its albedo) starts to show
+// outside what the player sees unaided, in full from LIT_HI. Full moonlight is about 0.1.
+const LIT_LO: f32 = 0.16;
+const LIT_HI: f32 = 0.4;
+// Above the ground-floor walls: upper storeys and roofs, which never drop (the whole of them
+// fades out while you're inside that building: `world_render::hide_upper_floors`).
 const UPPER_Y: f32 = 3.05;
-// The hole round the player on screen, in metres: half its width, and how far it reaches below
-// and above the chest (feet to a little over the head).
-const HOLE_HALF_W: f32 = 1.0;
-const HOLE_DOWN: f32 = 1.3;
-const HOLE_UP: f32 = 1.1;
-
-// 0 outside the see-through hole round the player, 1 in the middle of it, for a fragment at `wp`
-// (pixel `frag`): only things nearer the camera than the player open up.
-fn hole_at(wp: vec3<f32>, frag: vec2<f32>) -> f32 {
-    let chest = world_params.player.xyz;
-    if (dot(wp - chest, world_params.camera_dir.xyz) < 0.5) {
-        return 0.0;
-    }
-    let centre = ndc_to_frag_coord(position_world_to_ndc(chest).xy);
-    let up = ndc_to_frag_coord(position_world_to_ndc(chest + vec3(0.0, 1.0, 0.0)).xy);
-    let metre = max(length(up - centre), 1e-3);
-    // In metres on screen from the chest, y up.
-    let o = vec2(frag.x - centre.x, centre.y - frag.y) / metre;
-    let reach = select(HOLE_DOWN, HOLE_UP, o.y > 0.0);
-    let d = length(vec2(o.x / HOLE_HALF_W, o.y / reach));
-    return 1.0 - smoothstep(0.75, 1.0, d);
-}
 
 fn ground_camera_dir() -> vec2<f32> {
     let c = world_params.camera_dir.xz;
     return c / max(length(c), 1e-4);
 }
 
-// How far behind a wall (away from the camera, on the ground) it can hide things: a 3 m wall seen
-// from 30° up covers about 5.2 m of floor behind it.
-const WALL_REACH: f32 = 5.5;
+// The cut texture (crates/client/src/cutaway.rs): one texel a tile, addressed by the tile's
+// coordinates modulo its size; red = how far the tile's north edge is cut, green = its west edge.
+const CUT_TEXELS: i32 = 128;
+// Only walls this near the player (metres, along x and z) are ever cut: beyond it the texture's
+// wrap would show.
+const CUT_NEAR: f32 = 56.0;
 
-// Does the ground segment from `p` to `p - c * WALL_REACH` pass through the rectangle (min, max)?
-fn behind_hits(p: vec2<f32>, c: vec2<f32>, lo: vec2<f32>, hi: vec2<f32>) -> bool {
-    let d = -c * WALL_REACH;
-    var t0 = 0.0;
-    var t1 = 1.0;
-    for (var i = 0; i < 2; i++) {
-        if (abs(d[i]) < 1e-5) {
-            if (p[i] < lo[i] || p[i] > hi[i]) {
-                return false;
-            }
-        } else {
-            let a = (lo[i] - p[i]) / d[i];
-            let b = (hi[i] - p[i]) / d[i];
-            t0 = max(t0, min(a, b));
-            t1 = min(t1, max(a, b));
-        }
+// How far the wall piece with this midpoint (pieces are 1 m long, along x or z) is cut down to a
+// stub: 0 standing, 1 a stub, eased. Decided on the CPU per building and per edge, never by a
+// radius round the player. `Cutaway::amount` is the same.
+@if(CUTAWAY)
+fn wall_cut(mid: vec2<f32>) -> f32 {
+    if (any(abs(mid - world_params.player.xz) > vec2(CUT_NEAR))) {
+        return 0.0;
     }
-    return t0 <= t1;
+    // A north edge (along x) has its midpoint half-way along a tile in x and on a tile line in z.
+    let north = abs(fract(mid.x) - 0.5) < 0.25;
+    var tile = vec2<i32>(i32(round(mid.x)), i32(floor(mid.y)));
+    if (north) {
+        tile = vec2<i32>(i32(floor(mid.x)), i32(round(mid.y)));
+    }
+    let v = textureLoad(cut_tex, vec2<i32>(tile.x & (CUT_TEXELS - 1), tile.y & (CUT_TEXELS - 1)), 0);
+    let a = select(v.g, v.r, north);
+    return a * a * (3.0 - 2.0 * a);
 }
 
-// The square the player stands in, for the outdoor wall rule: half a side in metres.
+// The player's body for the fades: half its width.
 const BODY_HALF: f32 = 0.3;
+// The height the tallest fading detail reaches, the width of the rule's soft edge, and how much
+// of a detail is left out at most.
+const FADE_TOP: f32 = 2.8;
+const FADE_SOFT: f32 = 0.5;
+const FADE_MOST: f32 = 0.72;
 
-// Is the wall piece with this midpoint (pieces are 1 m long, along x or z) cut down to a stub?
-// Only if it hides something that matters: the floor behind it on screen runs into the player's
-// room (indoors) or the square the player stands in (outdoors). So the room's far walls, the rest
-// of the building, and walls beside you stand. Must match `materials::wall_is_cut`.
-fn wall_cut(mid: vec2<f32>) -> bool {
+// How much a building detail (a porch roof, an awning, a canopy, a post: its middle on the ground
+// `anchor`, its half-width `radius`) is thinned out because it stands between the camera and the
+// player: the whole of it, by where it stands, not by where on screen a pixel is. The same rule
+// as `cutaway::object_fade`.
+fn object_fade(anchor: vec2<f32>, radius: f32) -> f32 {
     let c = ground_camera_dir();
-    let r = world_params.inside_rect;
-    var lo = world_params.player.xz - vec2(BODY_HALF);
-    var hi = world_params.player.xz + vec2(BODY_HALF);
-    if (r.x <= r.z) {
-        lo = r.xy + vec2(0.03);
-        hi = r.zw - vec2(0.03);
-    }
-    // A piece along x has its midpoint half-way along a tile.
-    var half = vec2(0.0, 0.45);
-    if (abs(fract(mid.x) - 0.5) < 0.25) {
-        half = vec2(0.45, 0.0);
-    }
-    return behind_hits(mid, c, lo, hi) || behind_hits(mid - half, c, lo, hi) || behind_hits(mid + half, c, lo, hi);
+    let tan_e = world_params.camera_dir.y / max(length(world_params.camera_dir.xz), 1e-4);
+    let d = anchor - world_params.player.xz;
+    let along = dot(d, c);
+    let across = abs(d.x * c.y - d.y * c.x);
+    let reach = FADE_TOP / max(tan_e, 1e-3) + radius;
+    let side = 1.0 - smoothstep(radius + BODY_HALF, radius + BODY_HALF + FADE_SOFT, across);
+    let near = smoothstep(-radius - FADE_SOFT, -radius, along) * (1.0 - smoothstep(reach, reach + FADE_SOFT, along));
+    return side * near;
 }
 
 // How far the foliage of the tree whose trunk foot is `anchor` has faded (0 shown, 1 gone).
@@ -153,6 +145,19 @@ fn fog_sample(xz: vec2<f32>) -> vec2<f32> {
     return textureSampleLevel(fog_tex, fog_sampler, uv, 0.0).rg;
 }
 
+// Is a ground point in line of sight (1) or behind something (0), by the sight rays alone: no
+// range, no view cone. `line_of_sight` in fog.rs is the same.
+fn los_at(xz: vec2<f32>) -> f32 {
+    let d = xz - world_params.sight[0].xy;
+    let n = textureDimensions(rays_tex).x;
+    let a = fract(atan2(d.y, d.x) / 6.2831853) * f32(n);
+    let i0 = u32(floor(a)) % n;
+    let i1 = (i0 + 1u) % n;
+    // The nearer of the two rays either side, so light doesn't leak past corners.
+    let reach = min(textureLoad(rays_tex, vec2<u32>(i0, 0u), 0).r, textureLoad(rays_tex, vec2<u32>(i1, 0u), 0).r);
+    return 1.0 - smoothstep(reach + 0.3, reach + 1.1, length(d));
+}
+
 // How visible a ground point is, worked out here per pixel from the sight rays (crates/client/src/
 // fog.rs: the same rule as its mask, so edges are smooth lines instead of the mask's half-metre steps).
 fn fog_at(xz: vec2<f32>) -> f32 {
@@ -173,19 +178,69 @@ fn fog_at(xz: vec2<f32>) -> f32 {
     if (dist > range_m + 1.5) {
         return 0.0;
     }
-    let n = textureDimensions(rays_tex).x;
-    let a = fract(atan2(d.y, d.x) / 6.2831853) * f32(n);
-    let i0 = u32(floor(a)) % n;
-    let i1 = (i0 + 1u) % n;
-    // The nearer of the two rays either side, so light doesn't leak past corners.
-    let reach = min(textureLoad(rays_tex, vec2<u32>(i0, 0u), 0).r, textureLoad(rays_tex, vec2<u32>(i1, 0u), 0).r);
-    let los = 1.0 - smoothstep(reach + 0.3, reach + 1.1, dist);
-    let range = 1.0 - smoothstep(range_m * 0.5, range_m, dist);
-    var cone = 1.0;
-    if (dist >= s2.z) {
-        cone = s2.y + (1.0 - s2.y) * smoothstep(s1.z, s1.w, dot(s1.xy, dir));
-    }
+    let los = los_at(xz);
+    // The look (assets/data/fog.ron): the far end fades out, and what's behind is a little dimmer
+    // than the cone ahead, easing in with distance so there is no ring round the player.
+    let range = 1.0 - smoothstep(range_m * min(world_params.lights.w, 0.99), range_m, dist);
+    var cone = s2.y + (1.0 - s2.y) * smoothstep(s1.z, s1.w, dot(s1.xy, dir));
+    cone = mix(1.0, cone, smoothstep(s2.z, s2.z + max(world_params.lights.z, 0.01), dist));
     return los * range * cone;
+}
+
+fn hash21(p: vec2<f32>) -> f32 {
+    var q = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+    q += dot(q, q.yzx + 33.33);
+    return fract((q.x + q.y) * q.z);
+}
+
+// Smooth value noise, 0..1.
+fn vnoise(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), u.x), mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+
+// One flat tone (0..1) per triangle of a grid of `size`-metre triangles, turned so its lines
+// never run along the tiles.
+fn facet(p: vec2<f32>, size: f32, salt: f32) -> f32 {
+    let q = vec2(p.x * 0.8829 - p.y * 0.4695, p.x * 0.4695 + p.y * 0.8829) / size;
+    let f = fract(q);
+    return hash21(floor(q) + vec2(salt, select(0.0, 0.37, f.x + f.y > 1.0)));
+}
+
+// The ground's colour at a point, broken up (DCM-59): broad drifts of lighter and darker, flat
+// facets a metre or so across over them, a finer set inside those, and on grass and dirt (not
+// asphalt or concrete, which have no green over blue) patches gone dry and yellow and patches
+// grown lush and dark. Hard ground instead is worn: sand and dust lying in drifts, dark stains,
+// and cracks along some of its facets.
+fn ground_detail(p: vec2<f32>, c: vec3<f32>) -> vec3<f32> {
+    let broad = vnoise(p * 0.09 + vec2(3.7, 9.2));
+    let mid = vnoise(p * 0.31 + vec2(41.0, 17.0));
+    let tone = (broad - 0.5) * 0.16 + (mid - 0.5) * 0.10 + (facet(p, 1.7, 0.0) - 0.5) * 0.11 + (facet(p, 0.55, 5.0) - 0.5) * 0.06;
+    let soft = clamp((c.g - c.b) * 14.0, 0.0, 1.0);
+    let dry = smoothstep(0.52, 0.78, broad * 0.55 + mid * 0.45) * soft;
+    var o = c * (1.0 + tone * (0.6 + 0.4 * soft)) * mix(vec3(1.0), vec3(1.16, 1.03, 0.78), dry * 0.55);
+    let lush = smoothstep(0.6, 0.82, vnoise(p * 0.2 + vec2(13.0, 77.0))) * soft * (1.0 - dry);
+    o *= mix(vec3(1.0), vec3(0.8, 0.93, 0.74), lush * 0.6);
+    let hard = 1.0 - soft;
+    if (hard > 0.01) {
+        let fine = vnoise(p * 0.9 + vec2(5.0, 31.0));
+        // Sand and dust, in drifts with ragged edges.
+        let sand = smoothstep(0.5, 0.74, vnoise(p * 0.075 + vec2(61.0, 8.0)) * 0.62 + mid * 0.2 + fine * 0.18);
+        o = mix(o, vec3(0.5, 0.42, 0.29) * (0.55 + dot(c, vec3(0.6))), sand * 0.34 * hard);
+        // Stains: oil, damp, old tar.
+        let stain = smoothstep(0.66, 0.86, vnoise(p * 0.5 + vec2(19.0, 47.0)) * 0.75 + fine * 0.25);
+        o *= 1.0 - 0.22 * stain * hard;
+        // Cracks: along the sides of wobbly triangles, where a broad mask lets them show.
+        let w = p + (vec2(fine, vnoise(p * 0.9 + vec2(70.0, 2.0))) - 0.5) * 0.5;
+        let q = vec2(w.x * 0.7986 - w.y * 0.6018, w.x * 0.6018 + w.y * 0.7986) / 3.4;
+        let f = fract(q);
+        let edge = min(min(f.x, f.y), abs(f.x + f.y - 1.0) * 0.7071) * 3.4;
+        let shown = smoothstep(0.56, 0.68, vnoise(p * 0.14 + vec2(90.0, 3.0)));
+        o *= 1.0 - 0.32 * (1.0 - smoothstep(0.02, 0.05, edge)) * shown * hard;
+    }
+    return o;
 }
 
 @fragment
@@ -194,19 +249,39 @@ fn fragment(
     @builtin(front_facing) is_front: bool,
 ) -> FragmentOutput {
     let wp = in.world_position.xyz;
+    // Height above the ground under this point: the terrain's ground carries it in its first UVs
+    // (`MeshBuilder::drape`); everything else in town stands on level ground.
+    var above = wp.y;
+@if(TERRAIN && VERTEX_UVS_A) {
+    above = wp.y - in.uv.x;
+}
 
-    // Cutaway (see crates/client/src/materials.rs, `wall_is_cut`): every vertex of a
-    // piece carries the same anchor in UV0 and its kind in UV1, so a whole wall drops to a stub at
-    // once, with a crisp, grid-aligned top edge.
+    // Cutaway (see crates/client/src/cutaway.rs): every vertex of a piece carries the same anchor
+    // in UV0 and its kind in UV1, so a whole wall drops to a stub as one piece, with a crisp,
+    // grid-aligned top edge.
     var wood_fade = 0.0;
 @if(CUTAWAY && VERTEX_UVS_A && VERTEX_UVS_B) {
     let cut_kind = u32(in.uv_b.x + 0.5);
     if (cut_kind == 1u) {
-        if (wp.y > STUB_HEIGHT && wp.y < UPPER_Y && wall_cut(in.uv)) {
-            discard;
+        // The wall sinks to its stub: everything above its top (a straight line) is left out.
+        // Only the walls of the storey the player is on (player.w: its floor's height; stairs).
+        let rel = wp.y - world_params.player.w;
+        if (rel < UPPER_Y && (world_params.player.w == 0.0 || rel > 0.02)) {
+            let cut = wall_cut(in.uv);
+            if (cut > 0.0 && rel > mix(UPPER_Y, STUB_HEIGHT, cut)) {
+                discard;
+            }
         }
     } else if (cut_kind == 4u) {
-        if (!wall_cut(in.uv)) {
+        // The stub's flat top, once the wall is down.
+        let rel = wp.y - world_params.player.w;
+        if (rel < 0.0 || rel > UPPER_Y || wall_cut(in.uv) < 0.97) {
+            discard;
+        }
+    } else if (cut_kind == 8u) {
+        // A detail standing over the player: thinned out whole, in a stipple.
+        let thin = object_fade(in.uv, in.uv_b.y) * FADE_MOST;
+        if (thin > 0.0 && thin > bayer4(vec2<u32>(in.position.xy))) {
             discard;
         }
     } else if (cut_kind == 3u) {
@@ -222,14 +297,16 @@ fn fragment(
             discard;
         }
     }
-    // Roofs and upper storeys (not trees) between the camera and the player: a soft hole round them.
-    // Roofs open it however low they are (porch roofs, awnings: building_kit.rs).
-    if ((wp.y > UPPER_Y || cut_kind == 2u) && cut_kind != 3u && cut_kind != 6u) {
-        let hole = hole_at(wp, in.position.xy);
-        if (hole > 0.0 && hole > bayer4(vec2<u32>(in.position.xy))) {
-            discard;
-        }
+@if(!PREPASS_PIPELINE) {
+    // The roof and upper storeys of the building the player is inside fade out as a whole (and
+    // back in), by the amount in their mesh's tag (`world_render::hide_upper_floors`); so do a
+    // cut wall's door leaf and blind. At 255 no pixel is drawn. Only here, in the camera's pass:
+    // the shadow passes don't run this shader, so what's faded out still casts its shadow.
+    let gone = f32(mesh_functions::get_tag(in.instance_index) & 255u) / 255.0;
+    if (gone > 0.0 && gone > bayer4(vec2<u32>(in.position.xy) + vec2<u32>(2u, 1u))) {
+        discard;
     }
+}
 }
 
     var pbr_input = pbr_input_from_standard_material(in, is_front);
@@ -239,10 +316,34 @@ fn fragment(
         pbr_input.material.base_color
     );
 
+@if(GROUND) {
+    // Ground detail (DCM-59): the flat colours of the outdoors broken up, in the same faceted
+    // style as everything else. Not indoors (floors keep their colour).
+    if (above < 0.05 && in.world_normal.y > 0.9) {
+        let outdoors = 1.0 - smoothstep(0.3, 0.7, fog_sample(wp.xz).y);
+        let c = pbr_input.material.base_color.rgb;
+        pbr_input.material.base_color = vec4(mix(c, ground_detail(wp.xz, c), outdoors), pbr_input.material.base_color.a);
+    }
+}
+
     var out: FragmentOutput;
 @if(PREPASS_PIPELINE) {
     out = deferred_output(in, pbr_input);
 } @else {
+@if(TERRAIN) {
+    // The hills' facets (DCM-83): neighbouring faces tilt only a few degrees apart, and on pale
+    // sunlit ground the tone map squeezes what that does to the light to almost nothing. So on
+    // the terrain each face's turn toward or away from the sun (the one directional light: the
+    // moon at night) is told again in its colour, as against level ground, a face turned away
+    // darkening more than one turned toward it brightens. Level ground (all of town) is untouched.
+    let facet_n = normalize(in.world_normal);
+    if (world_params.sun.w > 0.5 && facet_n.y > 0.7 && facet_n.y < 0.99995) {
+        let l = world_params.sun.xyz;
+        let d = max(dot(facet_n, l), 0.0) - max(l.y, 0.0);
+        let k = clamp(1.0 + select(FACET_TOWARD, FACET_AWAY, d < 0.0) * d, 0.6, 1.3);
+        pbr_input.material.base_color = vec4(pbr_input.material.base_color.rgb * k, pbr_input.material.base_color.a);
+    }
+}
     out.color = apply_pbr_lighting(pbr_input);
 
     // Fog of war. Vertical faces sample the mask just in front of them, so a wall's outside face
@@ -260,28 +361,80 @@ fn fragment(
     let mask = fog_sample(at);
     var seen = fog_at(at);
     var indoors = mask.y;
-    if (piece_kind == 2u) {
+    if (piece_kind == 2u || piece_kind == 8u) {
         indoors = 0.0;
     }
     // Roofs and the outside of upper storeys read as "seen" when the wall below them is, rather
     // than showing patches of whatever is visible through the windows underneath.
-    if (wp.y > 2.95 && indoors < 0.5) {
+    if (above > 2.95 && indoors < 0.5) {
         let to_player = world_params.player.xz - wp.xz;
         let dir = to_player / max(length(to_player), 1e-3);
         seen = max(fog_at(wp.xz + dir * 1.5), fog_at(wp.xz + dir * 3.0));
     }
+    // Roofs keep out of the sight shadows by day (fog.ron `roofs_seen`): nothing hides on one, and
+    // the shadows' edges across them only distract.
+    if (piece_kind == 2u || (above > 2.95 && indoors < 0.5 && n.y > 0.5)) {
+        seen = max(seen, world_params.tree_count.z);
+    }
+    // The haze (light.ron `haze`): a thin veil all day, thick and warm with a low sun. The camera
+    // is orthographic, so nothing is "far" by depth; what stands up the screen from the player
+    // (away from the camera over the ground), and a little of what stands off to the sides and
+    // below, is washed toward the haze's colour instead, in slow banks, thickest near the ground.
+    // `haze_at.zw` are metres at the zoom drawn, so it shows as much zoomed in as out. Outdoors
+    // only, and before the fog of war dims what's unseen.
+    if (world_params.haze.w > 0.0) {
+        let hz = world_params.haze_at;
+        let off = wp.xz - world_params.player.xz;
+        let up_screen = -dot(off, ground_camera_dir());
+        let away = smoothstep(hz.z, hz.w, max(up_screen, 0.5 * length(off)));
+        let q = wp.xz + hz.xy;
+        let banks = vnoise(q * 0.055) * 0.65 + vnoise(q * 0.17 + vec2(7.3, 2.1)) * 0.35;
+        let low = 1.0 - 0.6 * smoothstep(1.5, 9.0, above);
+        let a = world_params.haze.w * (0.15 + 0.85 * away) * (0.4 + 1.0 * banks) * low * (1.0 - smoothstep(0.3, 0.7, indoors));
+        out.color = vec4(mix(out.color.rgb, world_params.haze.rgb, clamp(a, 0.0, 0.9)), out.color.a);
+    }
     let grey = dot(out.color.rgb, vec3(0.299, 0.587, 0.114));
-    var unseen = mix(vec3(grey), out.color.rgb, 0.25) * world_params.fog_tint.rgb * (1.0 - world_params.fog_tint.w);
+    let albedo_lum = dot(pbr_input.material.base_color.rgb, vec3(0.299, 0.587, 0.114));
+    // What's lit is seen (#83): in the dark you see only a few metres by yourself, but a surface a
+    // light falls on (a window's pool, someone's flashlight) shows however far off, given a line of
+    // sight to it. How brightly it is lit is its colour over what it's made of; moonlight and the
+    // ambient stay well under LIT_LO.
+    let dark = world_params.lights.x;
+    if (dark > 0.0 && world_params.sight[2].w > 0.5 && seen < 1.0) {
+        let lit = smoothstep(LIT_LO, LIT_HI, grey / max(albedo_lum, 0.06)) * dark;
+        if (lit > 0.0) {
+            seen = max(seen, lit * los_at(at));
+        }
+    }
+    // Rooms other than the one the player is in stay dark whatever the sight rays say (fog.rs
+    // `other_room`: the mask's red is 0 there; `tree_count.y` is how much shows, fog.ron's
+    // `other_rooms`). Sharpened, so the mask's half-metre blur doesn't dim our own floor by a wall.
+    var own_room = mask.x;
+    // A door's leaf belongs to the rooms on both its sides: it is seen, and in our room, if either
+    // face is, so a shut door of the room we're in shows from the far side too (through a cut wall).
+    if (piece_kind == 5u && abs(n.y) < 0.5) {
+        let back = wp.xz - normalize(n.xz) * 0.3;
+        seen = max(seen, fog_at(back));
+        own_room = max(own_room, fog_sample(back).x);
+    }
+    seen *= mix(1.0, mix(world_params.tree_count.y, 1.0, smoothstep(0.25, 0.5, own_room)), smoothstep(0.3, 0.7, indoors));
+    // By day what's unseen keeps most of its colour, dimmed and warm; at night a quarter (DCM-59,
+    // materials.rs `unseen_colour`).
+    var unseen = mix(vec3(grey), out.color.rgb, world_params.lights.y) * world_params.fog_tint.rgb * (1.0 - world_params.fog_tint.w);
     // Greying flattens pale and dark surfaces toward one tone (a driveway vanishes into its lawn):
     // keep some of the difference in what they're made of (#81).
-    let albedo_lum = dot(pbr_input.material.base_color.rgb, vec3(0.299, 0.587, 0.114));
     unseen *= clamp(pow(albedo_lum / UNSEEN_MID, UNSEEN_CONTRAST), 0.6, 1.5);
     // Rooms you can't see into are near-black, as if unlit, so their contents stay hidden. Walls,
     // windows and doors stay readable (just dimmed like everything else unseen), so you can still
     // tell a building's layout and where its ways in are.
     var hide_contents = smoothstep(0.3, 0.7, indoors);
-    if (piece_kind == 1u || piece_kind == 4u || piece_kind == 5u || piece_kind == 7u) {
+    if (piece_kind == 1u || piece_kind == 4u || piece_kind == 5u || piece_kind == 7u || piece_kind == 8u) {
         hide_contents *= 0.25;
+    }
+    // ...but not the doors of other rooms: a door that isn't one of our room's is as dark as
+    // what is in those rooms.
+    if (piece_kind == 5u) {
+        hide_contents = mix(smoothstep(0.3, 0.7, indoors), hide_contents, smoothstep(0.25, 0.5, own_room));
     }
     unseen = mix(unseen, out.color.rgb * vec3(0.03, 0.03, 0.04), hide_contents);
     out.color = vec4(mix(unseen, out.color.rgb, seen), out.color.a);
@@ -293,7 +446,7 @@ fn fragment(
         out.color = vec4(mix(out.color.rgb, glow, 0.85 * night), max(out.color.a, night));
     }
     out.color = vec4(out.color.rgb * (1.0 - 0.55 * wood_fade), out.color.a);
-    if (wp.y < 0.1 && n.y > 0.9) {
+    if (above < 0.1 && n.y > 0.9) {
         let albedo = pbr_input.material.base_color.rgb;
         let pale = smoothstep(0.3, 0.5, dot(albedo, vec3(0.299, 0.587, 0.114)));
         let moon = albedo * pale * world_params.lights.x * PAINT_NIGHT * mix(0.4, 1.0, seen);

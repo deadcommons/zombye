@@ -120,6 +120,34 @@ impl ZoneDensity {
     }
 }
 
+/// Zombies are placed in groups, not one by one: each group's first is placed by density, the
+/// rest round it within `radius` (same building, in sight of the first).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GroupDef {
+    /// Zombies in a group in town (uniform, inclusive), and in the forest.
+    pub size: (u32, u32),
+    pub forest_size: (u32, u32),
+    /// How far from the group's first the rest stand (metres).
+    pub radius: f32,
+    /// Share of groups that are a single zombie.
+    pub loners: f32,
+}
+
+impl GroupDef {
+    /// Mean zombies a group, in the forest or in town.
+    pub fn mean(&self, forest: bool) -> f32 {
+        let (lo, hi) = if forest { self.forest_size } else { self.size };
+        self.loners + (1.0 - self.loners) * (lo + hi) as f32 / 2.0
+    }
+}
+
+impl Default for GroupDef {
+    fn default() -> Self {
+        Self { size: (2, 6), forest_size: (1, 3), radius: 8.0, loners: 0.35 }
+    }
+}
+
 /// Topping up emptied regions far from everyone. Off by default.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -216,8 +244,12 @@ pub struct PopulationDef {
     pub fast_share: f32,
     pub fast_speed: (f32, f32),
     pub slow_speed: (f32, f32),
+    pub groups: GroupDef,
     pub respawn: RespawnDef,
     pub migration: MigrationDef,
+    /// What zombies wear (`crate::corpses`): each zombie one of these, picked by weight from a hash of
+    /// the seed and its id, and what a dead one's body gives when searched. Empty: they wear nothing.
+    pub outfits: Vec<crate::corpses::Outfit>,
 }
 
 impl Default for PopulationDef {
@@ -232,8 +264,10 @@ impl Default for PopulationDef {
             fast_share: 0.1,
             fast_speed: (2.0, 3.0),
             slow_speed: (0.6, 1.1),
+            groups: GroupDef::default(),
             respawn: RespawnDef::default(),
             migration: MigrationDef::default(),
+            outfits: Vec::new(),
         }
     }
 }
@@ -269,6 +303,14 @@ impl PopulationDef {
                 return Err(format!("{name} must be (min, max) m/s with 0.05 <= min <= max <= 10, got ({lo}, {hi})"));
             }
         }
+        let g = &self.groups;
+        for (name, (lo, hi)) in [("groups.size", g.size), ("groups.forest_size", g.forest_size)] {
+            if !(1 <= lo && lo <= hi && hi <= 200) {
+                return Err(format!("{name} must be (min, max) with 1 <= min <= max <= 200, got ({lo}, {hi})"));
+            }
+        }
+        finite("groups.radius", g.radius, 0.0, 100.0)?;
+        finite("groups.loners", g.loners, 0.0, 1.0)?;
         let r = &self.respawn;
         finite("respawn.interval_secs", r.interval_secs, 1.0, 1e6)?;
         finite("respawn.min_distance", r.min_distance, 0.0, 1e5)?;
@@ -278,6 +320,7 @@ impl PopulationDef {
         if !(1..=10_000).contains(&r.max_per_region) || !(1..=100_000).contains(&r.max_per_check) {
             return Err(format!("respawn.max_per_region must be 1..10000 and max_per_check 1..100000, got {} and {}", r.max_per_region, r.max_per_check));
         }
+        crate::corpses::validate_outfits(&self.outfits)?;
         let m = &self.migration;
         finite("migration.min_radius", m.min_radius, 0.0, 1e4)?;
         finite("migration.reach_mult", m.reach_mult, 0.0, 50.0)?;

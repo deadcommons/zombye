@@ -34,6 +34,13 @@ const SPLAT_LAYER_STEP: f32 = 0.0012;
 /// A splat mesh reaches about this far from its centre at scale 1 (droplets included).
 const SPLAT_REACH: f32 = 0.6;
 const GRAVITY: f32 = 9.0;
+/// Bullet streaks and muzzle flashes alive at once on top of the blood (#72): two a pellet, gone
+/// in a few frames, so a room of shotguns stays under it.
+const MAX_TRACERS: usize = 96;
+/// How long a streak and a muzzle flash show, and how high the muzzle is drawn.
+const TRACER_SECS: f32 = 0.09;
+const FLASH_SECS: f32 = 0.06;
+const MUZZLE_Y: f32 = 1.4;
 
 pub struct FxPlugin;
 
@@ -44,7 +51,7 @@ impl Plugin for FxPlugin {
             .init_resource::<Decals>()
             .add_message::<ClearFx>()
             .add_systems(Startup, setup)
-            .add_systems(Update, (clear_fx, spawn_fx, move_particles, fade_flash).chain());
+            .add_systems(Update, (clear_fx, spawn_fx, move_particles, fade_tracers, fade_flash).chain());
     }
 }
 
@@ -67,6 +74,10 @@ struct HurtFlash(f32);
 struct FxAssets {
     cube: Handle<Mesh>,
     blood: Handle<StandardMaterial>,
+    /// Bullet streaks and muzzle flashes: unlit and bright enough to bloom.
+    tracer: Handle<StandardMaterial>,
+    /// Wood chips off a chopped tree (`CombatEventKind::Chop`).
+    chips: Handle<StandardMaterial>,
     splats: Vec<Handle<Mesh>>,
 }
 
@@ -93,6 +104,17 @@ fn pick_layer(overlapping: impl Iterator<Item = u8>) -> u8 {
 struct Particle {
     vel: Vec3,
     life: f32,
+    /// The height of the ground where it burst from (hills, `zombye_sim::terrain`): it's gone there.
+    floor: f32,
+}
+
+/// A bullet's streak or a muzzle flash (#72): the same cube as the blood, in the one bright
+/// material (one instanced batch), there for `life` seconds.
+#[derive(Component)]
+struct Tracer {
+    life: f32,
+    /// Set once a frame has drawn it.
+    drawn: bool,
 }
 
 #[derive(Component)]
@@ -103,6 +125,8 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials
     commands.insert_resource(FxAssets {
         cube: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
         blood: materials.add(StandardMaterial { base_color: Color::srgb(0.5, 0.02, 0.02), perceptual_roughness: 0.35, ..default() }),
+        tracer: materials.add(StandardMaterial { base_color: Color::BLACK, emissive: LinearRgba::rgb(14.0, 10.0, 4.5), perceptual_roughness: 1.0, ..default() }),
+        chips: materials.add(StandardMaterial { base_color: Color::srgb(0.78, 0.64, 0.42), perceptual_roughness: 0.9, ..default() }),
         splats,
     });
     commands.spawn((
@@ -111,6 +135,9 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials
         Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
         // Above the world, below the HUD text spawned later.
         ZIndex(-1),
+        // It covers the whole window: never what the pointer is over (or right taps on the world
+        // would count as on the UI).
+        Pickable::IGNORE,
     ));
 }
 
@@ -189,7 +216,9 @@ fn spawn_fx(
     mut decals: ResMut<Decals>,
     mut shake: ResMut<CameraShake>,
     mut flash: ResMut<HurtFlash>,
+    map: Option<Res<crate::server_link::ClientMap>>,
     particles: Query<(), With<Particle>>,
+    tracers: Query<(), With<Tracer>>,
     mut seed: Local<u32>,
 ) {
     let (Some(assets), Some(world)) = (assets, world) else { return };
@@ -199,21 +228,79 @@ fn spawn_fx(
     *seed = seed.wrapping_add(0x6D2B_79F5);
     let mut rng = Rng(*seed);
     let mut live = particles.iter().count();
+    let mut streaks = tracers.iter().count();
     for e in &events.0 {
         let dir = Vec3::new(e.dir.x, 0.0, e.dir.y);
+        let ground = map.as_ref().map_or(0.0, |m| m.0.ground(e.pos));
         // (particles, height they burst from, splats, splat size)
         let (count, height, splats, size) = match e.kind {
             CombatEventKind::ZombieHit => (if e.crit { 12 } else { 7 }, 1.35, 1, 1.0),
             CombatEventKind::ZombieKilled => (16, 1.2, 2, 1.5),
             CombatEventKind::Stomp => (9, 0.25, 1, 1.2),
             CombatEventKind::PlayerHurt => (6, 1.25, 1, 0.8),
-            CombatEventKind::Shove => (0, 0.0, 0, 0.0),
+            CombatEventKind::Shove | CombatEventKind::PlayerShoved => (0, 0.0, 0, 0.0),
+            // An axe biting into a trunk: pale chips thrown back off the bark, no blood; a little
+            // shake for our own when the tree comes down (`crit`).
+            CombatEventKind::Chop => {
+                if e.crit && me.as_ref().is_some_and(|m| m.id == e.player) {
+                    shake.trauma = (shake.trauma + 0.3).min(0.6);
+                }
+                let origin = Vec3::new(e.pos.x, 1.0 + ground, e.pos.y);
+                for _ in 0..if e.crit { 14 } else { 6 } {
+                    if live >= MAX_PARTICLES {
+                        break;
+                    }
+                    live += 1;
+                    let spread = Vec3::new(rng.range(-1.0, 1.0), 0.0, rng.range(-1.0, 1.0)) * 1.1;
+                    let vel = -dir * rng.range(0.8, 2.2) + spread + Vec3::Y * rng.range(0.6, 2.0);
+                    let s = rng.range(0.03, 0.06);
+                    commands.spawn((
+                        Particle { vel, life: rng.range(0.4, 0.8), floor: ground },
+                        Mesh3d(assets.cube.clone()),
+                        MeshMaterial3d(assets.chips.clone()),
+                        Transform::from_translation(origin + Vec3::Y * rng.range(-0.15, 0.15)).with_scale(Vec3::new(s * 1.6, s * 0.5, s)),
+                        NotShadowCaster,
+                    ));
+                }
+                continue;
+            }
+            // A bullet's flight (#72): a streak along it and a flash at the muzzle, no blood (what
+            // it hit has its own event).
+            CombatEventKind::Shot => {
+                let ours = me.as_ref().is_some_and(|m| m.id == e.player);
+                if ours {
+                    shake.trauma = (shake.trauma + 0.12).min(0.5);
+                }
+                let muzzle = e.pos - e.dir * e.damage;
+                // The gun is held out in front of the chest.
+                let from = Vec3::new(muzzle.x, MUZZLE_Y + map.as_ref().map_or(0.0, |m| m.0.ground(muzzle)), muzzle.y) + dir * 0.7;
+                let length = (e.damage - 0.7).max(0.3);
+                if streaks + 2 <= MAX_TRACERS {
+                    streaks += 2;
+                    let turn = Quat::from_rotation_y(-e.dir.y.atan2(e.dir.x));
+                    commands.spawn((
+                        Tracer { life: TRACER_SECS, drawn: false },
+                        Mesh3d(assets.cube.clone()),
+                        MeshMaterial3d(assets.tracer.clone()),
+                        Transform::from_translation(from + dir * (length * 0.5)).with_rotation(turn).with_scale(Vec3::new(length, 0.025, 0.025)),
+                        NotShadowCaster,
+                    ));
+                    commands.spawn((
+                        Tracer { life: FLASH_SECS, drawn: false },
+                        Mesh3d(assets.cube.clone()),
+                        MeshMaterial3d(assets.tracer.clone()),
+                        Transform::from_translation(from).with_rotation(turn * Quat::from_rotation_x(rng.range(0.0, 1.5))).with_scale(Vec3::new(0.34, 0.16, 0.16)),
+                        NotShadowCaster,
+                    ));
+                }
+                continue;
+            }
         };
         if e.kind == CombatEventKind::PlayerHurt && me.as_ref().is_some_and(|m| m.id == e.player) {
             shake.trauma = (shake.trauma + 0.45).min(1.0);
             flash.0 = flash.0.max(0.8);
         }
-        let origin = Vec3::new(e.pos.x, height, e.pos.y) - dir * 0.15;
+        let origin = Vec3::new(e.pos.x, height + ground, e.pos.y) - dir * 0.15;
         for _ in 0..count {
             if live >= MAX_PARTICLES {
                 break;
@@ -223,7 +310,7 @@ fn spawn_fx(
             let vel = dir * rng.range(1.0, 3.2) + spread + Vec3::Y * rng.range(0.8, 2.6);
             let s = rng.range(0.035, 0.075);
             commands.spawn((
-                Particle { vel, life: rng.range(0.5, 0.9) },
+                Particle { vel, life: rng.range(0.5, 0.9), floor: ground },
                 Mesh3d(assets.cube.clone()),
                 MeshMaterial3d(assets.blood.clone()),
                 Transform::from_translation(origin + Vec3::Y * rng.range(-0.1, 0.1)).with_scale(Vec3::splat(s)),
@@ -244,7 +331,7 @@ fn spawn_fx(
             // A height of its own among the splats it overlaps, so none of them flicker.
             let reach = SPLAT_REACH * scale * stretch.max(1.0);
             let layer = pick_layer(decals.0.iter().filter(|(_, c, r, _)| c.distance(at) < r + reach).map(|d| d.3));
-            let y = SPLAT_BASE_Y + SPLAT_LAYER_STEP * layer as f32;
+            let y = SPLAT_BASE_Y + SPLAT_LAYER_STEP * layer as f32 + map.as_ref().map_or(0.0, |m| m.0.ground(at));
             let shape = assets.splats[(rng.next() * SPLAT_SHAPES as f32) as usize % assets.splats.len()].clone();
             let entity = commands
                 .spawn((
@@ -287,8 +374,28 @@ fn move_particles(time: Res<Time>, mut commands: Commands, mut particles: Query<
         p.life -= dt;
         p.vel.y -= GRAVITY * dt;
         tf.translation += p.vel * dt;
-        if p.life <= 0.0 || tf.translation.y <= 0.02 {
+        if p.life <= 0.0 || tf.translation.y <= p.floor + 0.02 {
             commands.entity(e).despawn();
+        }
+    }
+}
+
+/// Bullet streaks and muzzle flashes last a few frames: thinner as they go, then gone.
+fn fade_tracers(time: Res<Time>, mut commands: Commands, mut tracers: Query<(Entity, &mut Tracer, &mut Transform)>) {
+    let dt = time.delta_secs();
+    for (e, mut t, mut tf) in &mut tracers {
+        // The frame it appears in doesn't count: however slow the frames, it is drawn once.
+        if !t.drawn {
+            t.drawn = true;
+            continue;
+        }
+        t.life -= dt;
+        if t.life <= 0.0 {
+            commands.entity(e).despawn();
+        } else {
+            let thin = (1.0 - 6.0 * dt).max(0.5);
+            tf.scale.y *= thin;
+            tf.scale.z *= thin;
         }
     }
 }
@@ -316,7 +423,7 @@ mod tests {
         app.init_resource::<Decals>().init_resource::<CameraShake>().init_resource::<HurtFlash>().add_message::<ClearFx>().add_systems(Update, clear_fx);
         let world = app.world_mut();
         let splats: Vec<Entity> = (0..5).map(|_| world.spawn(Transform::default()).id()).collect();
-        let drops: Vec<Entity> = (0..7).map(|_| world.spawn(Particle { vel: Vec3::ZERO, life: 1.0 }).id()).collect();
+        let drops: Vec<Entity> = (0..7).map(|_| world.spawn(Particle { vel: Vec3::ZERO, life: 1.0, floor: 0.0 }).id()).collect();
         let keep = world.spawn(Transform::default()).id();
         world.resource_mut::<Decals>().0.extend(splats.iter().map(|&e| (e, Vec2::ZERO, 0.5, 0)));
         world.resource_mut::<CameraShake>().trauma = 0.7;

@@ -92,6 +92,22 @@ pub(crate) const CLIMB_BITS: u32 = 0;
 pub(crate) const WINDOW_BITS: u32 = 4;
 pub(crate) const DOOR_BITS: u32 = 8;
 const BLOCKED_BIT: u16 = 1 << 15;
+/// Bit 14: open ground. Nothing a body standing on this tile could touch or climb: the tile and
+/// the eight round it are on the map, hold nothing that blocks, and none of their north and west
+/// edges blocks or is a window to climb through. There `TileMap::resolve_circle` gives the point
+/// back and `TileMap::in_window_opening` is false (both only read those nine tiles), so the zombie
+/// update skips them ([`WalkGrid::open`]): most of a town's streets and yards.
+const OPEN_BIT: u16 = 1 << 14;
+
+/// Is tile `t`, taken alone, clear for [`OPEN_BIT`]?
+fn clear_alone(map: &TileMap, t: IVec2) -> bool {
+    if !map.in_bounds(t) {
+        return false;
+    }
+    let tile = map.tile(t);
+    let plain = |e: Edge| !e.blocks_movement() && !e.is_climbable();
+    !tile.feature.blocks_movement() && plain(tile.north) && plain(tile.west)
+}
 
 /// The side of a tile a straight step `k` (even, in [`STEPS`] order) leaves through.
 fn step_side(k: usize) -> Side {
@@ -109,17 +125,53 @@ impl WalkGrid {
         let mut g = Self { width: map.width(), height: map.height(), mask: vec![0; n], extra: vec![0; n] };
         for y in 0..g.height {
             for x in 0..g.width {
-                g.refresh(map, IVec2::new(x, y));
+                g.refresh_steps(map, IVec2::new(x, y));
+            }
+        }
+        // Open ground, for the whole map at once: each tile's own answer, then the nine together.
+        let clear: Vec<bool> = (0..g.height).flat_map(|y| (0..g.width).map(move |x| IVec2::new(x, y))).map(|t| clear_alone(map, t)).collect();
+        let w = g.width as usize;
+        for y in 1..(g.height - 1).max(1) as usize {
+            for x in 1..(g.width - 1).max(1) as usize {
+                let i = y * w + x;
+                if (0..3).all(|dy| clear[i + dy * w - w - 1..i + dy * w - w + 2].iter().all(|c| *c)) {
+                    g.extra[i] |= OPEN_BIT;
+                }
             }
         }
         g
+    }
+
+    /// Is `t` open ground: nothing in reach of a body standing on it to push it back or to climb
+    /// (see the bit's docs)? Kept up to date with the map like the rest of the grid.
+    pub fn open(&self, t: IVec2) -> bool {
+        self.in_bounds(t) && self.extra[(t.y * self.width + t.x) as usize] & OPEN_BIT != 0
+    }
+
+    /// `TileMap::resolve_circle` for a zombie's body at `p`, skipping the work on open ground
+    /// (the same answer: there is nothing there to be pushed out of).
+    pub(crate) fn resolve_body(&self, map: &TileMap, p: Vec2) -> Vec2 {
+        let t = p.floor().as_ivec2();
+        if self.open(t) && !map.near_vehicle(t) { p } else { map.resolve_circle(p, crate::ai::ZOMBIE_RADIUS) }
+    }
+
+    /// `TileMap::in_window_opening`, skipping the work on open ground.
+    pub(crate) fn in_window_opening(&self, map: &TileMap, p: Vec2) -> bool {
+        !self.open(p.floor().as_ivec2()) && map.in_window_opening(p)
+    }
+
+    fn refresh(&mut self, map: &TileMap, t: IVec2) {
+        self.refresh_steps(map, t);
+        if (-1..=1).all(|dy| (-1..=1).all(|dx| clear_alone(map, t + IVec2::new(dx, dy)))) {
+            self.extra[(t.y * self.width + t.x) as usize] |= OPEN_BIT;
+        }
     }
 
     pub fn in_bounds(&self, t: IVec2) -> bool {
         t.x >= 0 && t.y >= 0 && t.x < self.width && t.y < self.height
     }
 
-    fn refresh(&mut self, map: &TileMap, t: IVec2) {
+    fn refresh_steps(&mut self, map: &TileMap, t: IVec2) {
         let mut m = 0u8;
         let mut extra = 0u16;
         for (k, d) in OFFSETS.iter().enumerate() {
@@ -132,7 +184,7 @@ impl WalkGrid {
                     extra |= 1 << (CLIMB_BITS + bit);
                 } else if open_beyond && edge == Edge::Window {
                     extra |= 1 << (WINDOW_BITS + bit);
-                } else if open_beyond && edge == Edge::DoorClosed {
+                } else if open_beyond && (edge == Edge::DoorClosed || edge.is_boarded()) {
                     extra |= 1 << (DOOR_BITS + bit);
                 }
                 map.can_step(t, side)
@@ -471,21 +523,25 @@ impl FlowCache {
             }
         }
         let mut budget = self.budget;
-        // 1. Players who moved to another tile (rate-limited), or whose map changed.
-        for e in &mut self.entries {
-            if budget == 0 {
-                break;
-            }
-            let moved = e.field.goals.first() != Some(&e.want) && tick >= e.built_tick + self.player_rebuild_ticks;
-            if matches!(e.key, FlowKey::Player(_)) && (moved || e.map_stale) {
-                e.field.rebuild(walk, &[e.want], self.player_range, true);
-                (e.built_tick, e.map_stale) = (tick, false);
-                budget -= 1;
-                self.builds += 1;
-            }
+        // 1. Players who moved to another tile (rate-limited), or whose map changed: the one
+        // whose field is oldest first, so with more hunted players than the budget covers each
+        // gets its turn instead of the first few taking every build (#70); and while missing
+        // fields wait, one build is kept back for them.
+        let mut for_players = if self.requests.is_empty() { budget } else { budget.saturating_sub(1).max(1).min(budget) };
+        let rebuild_ticks = self.player_rebuild_ticks;
+        while for_players > 0 {
+            let due = |e: &Entry| matches!(e.key, FlowKey::Player(_)) && (e.map_stale || (e.field.goals.first() != Some(&e.want) && tick >= e.built_tick + rebuild_ticks));
+            let Some(e) = self.entries.iter_mut().filter(|e| due(e)).min_by_key(|e| e.built_tick) else { break };
+            e.field.rebuild(walk, &[e.want], self.player_range, true);
+            (e.built_tick, e.map_stale) = (tick, false);
+            for_players -= 1;
+            budget -= 1;
+            self.builds += 1;
         }
-        // 2. Missing fields, evicting the least recently used when full.
-        let mut taken = 0;
+        // 2. Missing fields, evicting the least recently used when full. Players' fields beyond
+        // the first come on top of the capacity, so a full server doesn't leave noises and last
+        // known spots with no fields at all.
+        let capacity = self.capacity + self.entries.iter().filter(|e| matches!(e.key, FlowKey::Player(_))).count().saturating_sub(1);        let mut taken = 0;
         for &(key, goal) in &self.requests {
             if budget == 0 {
                 break;
@@ -502,7 +558,7 @@ impl FlowCache {
                 FlowKey::Player(id) => player_tile(id).unwrap_or(goal),
                 FlowKey::Point(_) => goal,
             };
-            let slot = if self.entries.len() < self.capacity {
+            let slot = if self.entries.len() < capacity {
                 self.entries.push(Entry { key, field: FlowField::default(), want, built_tick: tick, used_tick: tick, map_stale: false });
                 self.entries.len() - 1
             } else {
@@ -607,8 +663,12 @@ impl FlowCache {
     /// Restore a saved cache (into one made with the same capacity and ranges), rebuilding the
     /// fields the save left out from `walk`.
     pub(crate) fn restore(&mut self, saved: SavedFlowCache, walk: &WalkGrid) -> Result<(), String> {
-        if saved.entries.len() > self.capacity || saved.requests.len() > self.capacity {
-            return Err(format!("flow cache: {} fields, {} requests (at most {})", saved.entries.len(), saved.requests.len(), self.capacity));
+        // Players' fields beyond the first come on top of the capacity (as in `update`), so a
+        // full server's cache holds more than `capacity` fields.
+        let players = saved.entries.iter().filter(|e| matches!(e.key, FlowKey::Player(_))).count();
+        let most = self.capacity + players.saturating_sub(1);
+        if saved.entries.len() > most || saved.requests.len() > self.capacity {
+            return Err(format!("flow cache: {} fields, {} requests (at most {} fields, {} requests)", saved.entries.len(), saved.requests.len(), most, self.capacity));
         }
         self.entries.clear();
         for e in saved.entries {
@@ -720,5 +780,106 @@ mod tests {
         assert!(c.get(third, IVec2::new(50, 10), 6).is_some());
         assert!(c.get(a, IVec2::new(5, 5), 6).is_none());
         assert!(c.get(b, IVec2::new(30, 30), 6).is_some());
+    }
+
+    /// More hunted players on the move than the build budget covers (#70): every one's field
+    /// is rebuilt in turn, the oldest first, and a missing field still gets built meanwhile.
+    #[test]
+    fn many_players_fields_take_turns_within_the_budget() {
+        let m = WalkGrid::new(&TileMap::new(6, 6));
+        let mut c = FlowCache::new(4, 2, 30.0, 20.0, 1);
+        let players = 5u32;
+        let at = |id: u32, tick: u64| IVec2::new(10 + id as i32 * 12, 10 + (tick % 40) as i32);
+        for tick in 0..200u64 {
+            for id in 1..=players {
+                c.get(FlowKey::Player(id), at(id, tick), tick);
+            }
+            c.update(&m, tick, |id| Some(at(id, tick)));
+            assert!(c.builds <= 2, "tick {tick}: {} builds", c.builds);
+        }
+        // All five have a field (beyond the first they come on top of the capacity), none more
+        // than a few ticks old: five due every tick at one or two builds a tick.
+        for id in 1..=players {
+            let e = c.entries.iter().find(|e| e.key == FlowKey::Player(id)).unwrap_or_else(|| panic!("player {id} has no field"));
+            assert!(e.built_tick + 6 >= 199, "player {id}'s field was last built at tick {}", e.built_tick);
+        }
+        // A noise somewhere: its field is built at once, though the players' fields are all due.
+        let noise = FlowKey::point(Vec2::new(80.0, 80.0));
+        assert!(c.get(noise, IVec2::new(80, 80), 200).is_none());
+        for id in 1..=players {
+            c.get(FlowKey::Player(id), at(id, 200), 200);
+        }
+        c.update(&m, 200, |id| Some(at(id, 200)));
+        assert!(c.get(noise, IVec2::new(80, 80), 200).is_some(), "a build is kept back for missing fields");
+        assert_eq!(c.builds, 2);
+        // A cache over its capacity with players' fields saves and loads (a full server's save).
+        assert!(c.entries.len() > 4);
+        let mut back = FlowCache::new(4, 2, 30.0, 20.0, 1);
+        back.restore(c.to_saved(&m), &m).expect("a cache with players' fields over the capacity loads");
+        assert_eq!(back.entries.len(), c.entries.len());
+    }
+
+    /// Open ground (#70): where the grid says a tile is open, a zombie's body is never pushed
+    /// and is in no window opening, anywhere on the tile; elsewhere the shortcuts give the map's
+    /// own answers. And the bit follows the map: after edits, the grid is what a fresh one is.
+    #[test]
+    fn open_ground_skips_only_what_would_do_nothing() {
+        use crate::ai::ZOMBIE_RADIUS;
+        use crate::map::{EdgeRef, Feature, OwnedEdge};
+        let templates: Vec<_> = [include_str!("../../../assets/data/buildings/bungalow.ron"), include_str!("../../../assets/data/buildings/family_two_storey.ron")]
+            .iter()
+            .map(|t| crate::template::BuildingTemplate::from_ron(t).unwrap())
+            .collect();
+        let mut w = crate::World::new(crate::WorldConfig::new(3, 0, templates));
+        let check = |w: &crate::World| {
+            let (mut open, mut shut) = (0, 0);
+            for y in -1..=w.map.height() {
+                for x in -1..=w.map.width() {
+                    let t = IVec2::new(x, y);
+                    let is_open = w.walk.open(t);
+                    (open, shut) = (open + is_open as u32, shut + !is_open as u32);
+                    for f in [Vec2::new(0.001, 0.001), Vec2::new(0.999, 0.001), Vec2::new(0.001, 0.999), Vec2::new(0.999, 0.999), Vec2::new(0.5, 0.5), Vec2::new(0.3, 0.72)] {
+                        let p = t.as_vec2() + f;
+                        let pushed = w.map.resolve_circle(p, ZOMBIE_RADIUS);
+                        if is_open {
+                            assert_eq!(pushed, p, "pushed on open ground at {p}");
+                            assert!(!w.map.in_window_opening(p), "a window opening on open ground at {p}");
+                        }
+                        assert_eq!(w.walk.resolve_body(&w.map, p), pushed, "at {p}");
+                        assert_eq!(w.walk.in_window_opening(&w.map, p), w.map.in_window_opening(p), "at {p}");
+                    }
+                }
+            }
+            (open, shut)
+        };
+        let (open, shut) = check(&w);
+        assert!(open > shut / 4 && shut > 1000, "a town has both: {open} open, {shut} not");
+        // Edits through the world: a wall on a street, a window opened, a door broken.
+        let street = (0..w.map.width()).map(|x| IVec2::new(x, w.map.height() / 2)).find(|t| w.walk.open(*t)).expect("open ground on the middle row");
+        w.set_edge(EdgeRef::new(street, OwnedEdge::North), Edge::Wall);
+        assert!(!w.walk.open(street) && !w.walk.open(street - IVec2::Y) && !w.walk.open(street + IVec2::ONE));
+        let mut edited = 1;
+        for y in 0..w.map.height() {
+            for x in 0..w.map.width() {
+                let t = IVec2::new(x, y);
+                for which in [OwnedEdge::North, OwnedEdge::West] {
+                    let to = match w.map.owned_edge(t, which) {
+                        Edge::Window if (x + y) % 2 == 0 => Edge::WindowOpen,
+                        Edge::DoorClosed if (x + y) % 3 == 0 => Edge::DoorBroken,
+                        _ => continue,
+                    };
+                    w.set_edge(EdgeRef::new(t, which), to);
+                    edited += 1;
+                }
+            }
+        }
+        assert!(edited > 20, "{edited} edges edited");
+        check(&w);
+        let fresh = WalkGrid::new(&w.map);
+        assert!(w.walk.extra == fresh.extra && w.walk.mask == fresh.mask, "the grid kept up with the edits");
+        // A hand-edited map (a tree planted) is taken up by `map_changed`.
+        w.map.tile_mut(street + IVec2::new(0, 5)).unwrap().feature = Feature::Tree;
+        w.map_changed();
+        check(&w);
     }
 }

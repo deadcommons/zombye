@@ -1,0 +1,9 @@
+// A sample mod (docs/modding.md): the alarm clocks lying about in bedrooms can be wound up and
+// set down as a lure. Run the game or a server with `--mod mods/alarm_clock`.
+(
+    id: "alarm_clock",
+    name: "Wind-up alarm clocks",
+    version: "1.0",
+    description: "Use an alarm clock to set it down ticking: ten seconds later it rings for twenty, and the dead come to look.",
+    scripts: ["alarm_clock.luau"],
+)

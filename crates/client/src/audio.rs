@@ -66,10 +66,16 @@ pub enum Cue {
     Wind,
     Room,
     Crickets,
+    /// A gun going off, and one being loaded (#72). Placeholders made of sounds there already
+    /// are (a door breaking played fast, a window shutting): the real ones come with #78.
+    Gunshot,
+    Reload,
+    /// A light switch flicked.
+    LightSwitch,
 }
 
 impl Cue {
-    pub const ALL: [Cue; 28] = [
+    pub const ALL: [Cue; 31] = [
         Cue::FootstepHard,
         Cue::FootstepSoft,
         Cue::Shuffle,
@@ -98,6 +104,9 @@ impl Cue {
         Cue::Wind,
         Cue::Room,
         Cue::Crickets,
+        Cue::Gunshot,
+        Cue::Reload,
+        Cue::LightSwitch,
     ];
 
     /// The ambience loops, played for as long as the game runs at a volume that follows where you are.
@@ -146,7 +155,20 @@ pub struct SoundData {
 
 /// Parse and check `sounds.ron`. Every cue must be there (a missing one would be a silent hole).
 pub fn parse_sounds(text: &str) -> Result<SoundData, String> {
-    let data: SoundData = ron::from_str(text).map_err(|e| format!("sounds.ron: {e}"))?;
+    parse_sounds_over(text, None)
+}
+
+/// [`parse_sounds`] for the release audio folder's `sounds.ron` (#154), which may be older than
+/// the game: a cue it has no entry for takes the game's own (`base`), so a new cue doesn't turn
+/// the sound off.
+pub fn parse_sounds_over(text: &str, base: Option<&str>) -> Result<SoundData, String> {
+    let mut data: SoundData = ron::from_str(text).map_err(|e| format!("sounds.ron: {e}"))?;
+    if let Some(base) = base {
+        let base: SoundData = ron::from_str(base).map_err(|e| format!("the game's sounds.ron: {e}"))?;
+        for (cue, def) in base.sounds {
+            data.sounds.entry(cue).or_insert(def);
+        }
+    }
     for cue in Cue::ALL {
         if !data.sounds.contains_key(&cue) {
             return Err(format!("sounds.ron: no entry for {cue:?}"));
@@ -229,16 +251,24 @@ pub struct SoundBank {
 }
 
 impl SoundBank {
+    #[cfg(test)]
     /// Load `sounds.ron` from `data` and its files from `audio`.
     pub fn load(data: &Path, audio: &Path) -> Result<Self, String> {
-        let path = data.join("sounds.ron");
-        let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let defs = parse_sounds(&text)?.sounds;
+        Self::load_from(&data.join("sounds.ron"), audio, None)
+    }
+
+    /// Load the cues from `path` and their files from `audio`, or from the release audio folder
+    /// `overlay` where it has them (#154, `release_audio`).
+    pub fn load_from(path: &Path, audio: &Path, overlay: Option<&Path>) -> Result<Self, String> {
+        let text = crate::pack::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        // The release folder's own cues: the game's fill in what it lacks.
+        let base = overlay.filter(|o| path.starts_with(o)).and_then(|_| std::fs::read_to_string(audio.join("../data/sounds.ron")).ok());
+        let defs = parse_sounds_over(&text, base.as_deref())?.sounds;
         let mut clips = BTreeMap::new();
         for (cue, def) in &defs {
             let mut list = Vec::new();
             for file in &def.files {
-                let bytes = std::fs::read(audio.join(file)).map_err(|e| format!("{cue:?}: {file}: {e}"))?;
+                let bytes = crate::release_audio::read(overlay, audio, file).map_err(|e| format!("{cue:?}: {file}: {e}"))?;
                 list.push(parse_wav(&bytes).map_err(|e| format!("{cue:?}: {file}: {e}"))?);
             }
             clips.insert(*cue, list);
@@ -252,11 +282,14 @@ impl SoundBank {
 }
 
 /// Where `sounds.ron` and the audio files are: the `--data` folder if it has its own, else the
-/// game's. Files are found next to the data folder, in `audio/`.
+/// game's (or the release audio folder's, #154). Files are found next to the data folder, in
+/// `audio/`, unless the release audio folder has them.
 fn bank_dirs(options: &Options) -> (PathBuf, PathBuf) {
-    let data = if options.data.join("sounds.ron").exists() { options.data.clone() } else { zombye_net::content::default_data_dir() };
+    let own = options.data.join("sounds.ron").exists();
+    let data = if own { options.data.clone() } else { zombye_net::content::default_data_dir() };
     let audio = data.join("..").join("audio");
-    (data, audio)
+    let game_data = data == zombye_net::content::default_data_dir();
+    (crate::release_audio::data_file(crate::release_audio::root(), &data, game_data, "sounds.ron"), audio)
 }
 
 /// One sound being played: our own source, so we choose the panning, pitch and muffling.
@@ -479,7 +512,7 @@ pub struct AudioSettings {
 }
 
 impl AudioSettings {
-    fn master(&self) -> f32 {
+    pub fn master(&self) -> f32 {
         if self.muted { 0.0 } else { self.volume }
     }
 }
@@ -537,6 +570,10 @@ impl Dice {
     }
 }
 
+/// A sound of an unseen player at least this loud (m) is a gunshot (#72): nothing else a player
+/// does carries that far (a shout is 30 m, breaking a door about as much).
+const GUNSHOT_HEARD: f32 = 80.0;
+
 /// What the sound systems remember between frames.
 #[derive(Resource, Default)]
 struct Track {
@@ -550,6 +587,8 @@ struct Track {
     last_tick: u64,
     rummage_in: f32,
     bird_in: f32,
+    /// Seconds left of the reload step under way at the last look (#72), to hear the next begin.
+    loading: Option<f32>,
 }
 
 pub struct GameAudioPlugin;
@@ -566,26 +605,37 @@ impl Plugin for GameAudioPlugin {
             .add_systems(Update, toggle_mute)
             .add_systems(
                 PostUpdate,
-                (listen, footsteps, zombie_voices, world_events, ambience, flush).chain().run_if(resource_exists::<SoundBank>).run_if(resource_exists::<LocalPlayer>),
+                (listen, footsteps, zombie_voices, world_events, switch_clicks, ambience, flush).chain().run_if(resource_exists::<SoundBank>).run_if(resource_exists::<LocalPlayer>),
             );
     }
 }
 
-fn load_bank(mut commands: Commands, options: Res<Options>) {
+fn load_bank(mut commands: Commands, options: Res<Options>, store: Option<Res<crate::ui_scale::SettingsStore>>) {
     let (data, audio) = bank_dirs(&options);
-    commands.insert_resource(AudioSettings { volume: options.volume, muted: options.mute });
-    match SoundBank::load(&data, &audio) {
+    // The flags for this session, else what the settings screen kept.
+    let kept = store.map(|s| s.settings.clone()).unwrap_or_default();
+    commands.insert_resource(AudioSettings { volume: options.volume.unwrap_or(kept.volume), muted: options.mute || kept.muted });
+    match SoundBank::load_from(&data, &audio, crate::release_audio::root()) {
         Ok(bank) => commands.insert_resource(bank),
         Err(e) => eprintln!("sound off: {e}"),
     }
 }
 
-fn toggle_mute(keys: Res<ButtonInput<KeyCode>>, settings: Option<ResMut<AudioSettings>>) {
+fn toggle_mute(keys: Res<ButtonInput<KeyCode>>, settings: Option<ResMut<AudioSettings>>, store: Option<ResMut<crate::ui_scale::SettingsStore>>) {
     if let Some(mut s) = settings
         && keys.just_pressed(KeyCode::KeyM)
+        // M alone is the map (`map_ui.rs`).
+        && keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::SuperLeft, KeyCode::SuperRight])
     {
         s.muted = !s.muted;
         println!("sound {}", if s.muted { "off" } else { "on" });
+        // Kept, as the settings screen's switch is.
+        let muted = s.muted;
+        if let Some(mut store) = store
+            && let Err(e) = store.change(|k| k.muted = muted)
+        {
+            eprintln!("{e}");
+        }
     }
 }
 
@@ -616,6 +666,16 @@ fn footsteps(local: Res<LocalPlayer>, link: Res<ServerLink>, map: Res<ClientMap>
             let (cue, floor_loud) = footstep(floor_at(&map.0, pos));
             queue.at(cue, pos, loud * floor_loud);
         }
+    }
+    // Someone we hear and don't see (#66): a step where the sound came from, as loud as it was.
+    // (Nothing but a gun is as loud as this, #72: its shot, not a step.)
+    for h in &link.heard {
+        if h.radius >= GUNSHOT_HEARD {
+            queue.at(Cue::Gunshot, h.pos, 1.0);
+            continue;
+        }
+        let (cue, floor_loud) = footstep(floor_at(&map.0, h.pos));
+        queue.at(cue, h.pos, (h.radius / 6.0).clamp(0.4, 1.6) * floor_loud);
     }
     // Zombies close by drag their feet.
     let ear = local.curr.pos;
@@ -672,6 +732,36 @@ fn zombie_voices(time: Res<Time>, ear: Res<Listener>, link: Res<ServerLink>, ban
 }
 
 #[allow(clippy::too_many_arguments)]
+/// A light switch clicks where it is when a room's light goes on or off, and for our own flick
+/// that did nothing for want of power.
+fn switch_clicks(
+    map: Res<ClientMap>,
+    local: Res<LocalPlayer>,
+    lit: Res<crate::lights::LitRooms>,
+    notes: Res<crate::server_link::ItemNotesThisFrame>,
+    mut was: Local<Option<Vec<u16>>>,
+    mut spots: Local<Option<Vec<Option<zombye_sim::power::SwitchSpot>>>>,
+    mut queue: ResMut<Queue>,
+) {
+    let spots = spots.get_or_insert_with(|| zombye_sim::power::switch_spots(&map.0));
+    let at = |room: u16| spots.get(room as usize).copied().flatten().map(|s| s.pos);
+    if lit.is_changed() {
+        if let Some(before) = was.as_ref() {
+            // A room lit or dark now, where its switch moved (not the whole town at once: the grid).
+            let changed: Vec<u16> = lit.rooms.iter().filter(|r| !before.contains(r)).chain(before.iter().filter(|r| !lit.rooms.contains(r))).copied().collect();
+            if changed.len() <= 2 {
+                for pos in changed.into_iter().filter_map(at) {
+                    queue.at(Cue::LightSwitch, pos, 1.0);
+                }
+            }
+        }
+        *was = Some(lit.rooms.clone());
+    }
+    if notes.0.iter().any(|n| n.player == local.id && n.text.starts_with("click.")) {
+        queue.at(Cue::LightSwitch, at(map.0.room_at(local.curr.pos)).unwrap_or(local.curr.pos), 1.0);
+    }
+}
+
 fn world_events(
     time: Res<Time>,
     map: Res<ClientMap>,
@@ -716,11 +806,13 @@ fn world_events(
         }
     }
     let mut shoved = HashSet::new();
+    let mut shot = HashSet::new();
     for e in &hits.0 {
         let stomping = snap.players.iter().any(|p| p.id == e.player && p.action == Some(ActionKind::Stomp));
         let hit = match category(e.player) {
             WeaponCategory::Unarmed => Cue::Punch,
-            WeaponCategory::ShortBlade | WeaponCategory::Axe => Cue::HitBlade,
+            // (A bullet striking sounds like a blade for now.)
+            WeaponCategory::ShortBlade | WeaponCategory::Axe | WeaponCategory::Firearm => Cue::HitBlade,
             WeaponCategory::ShortBlunt | WeaponCategory::LongBlunt => Cue::HitBlunt,
         };
         let crit = if e.crit { 1.25 } else { 1.0 };
@@ -734,7 +826,30 @@ fn world_events(
             CombatEventKind::Stomp => queue.at(Cue::Stomp, e.pos, 1.0),
             CombatEventKind::Shove if shoved.insert(e.player) => queue.at(Cue::Shove, e.pos, 1.0),
             CombatEventKind::Shove => {}
+            // Another player's blow (PvP): the weapon's hit, or a boot, and the cry.
+            CombatEventKind::PlayerHurt if e.by != 0 => {
+                let by_stomp = snap.players.iter().any(|p| p.id == e.by && p.action == Some(ActionKind::Stomp));
+                let blow = match category(e.by) {
+                    _ if by_stomp => Cue::Stomp,
+                    WeaponCategory::Unarmed => Cue::Punch,
+                    WeaponCategory::ShortBlade | WeaponCategory::Axe | WeaponCategory::Firearm => Cue::HitBlade,
+                    WeaponCategory::ShortBlunt | WeaponCategory::LongBlunt => Cue::HitBlunt,
+                };
+                queue.at(blow, e.pos, crit);
+                queue.at(Cue::PlayerHurt, e.pos, 1.0);
+            }
             CombatEventKind::PlayerHurt => queue.at(Cue::PlayerHurt, e.pos, 1.0),
+            CombatEventKind::PlayerShoved if shoved.insert(e.by) => queue.at(Cue::Shove, e.pos, 1.0),
+            CombatEventKind::PlayerShoved => {}
+            // A gun going off (#72): once a shot, however many pellets, at the muzzle.
+            CombatEventKind::Shot if shot.insert(e.player) => queue.at(Cue::Gunshot, e.pos - e.dir * e.damage, 1.0),
+            CombatEventKind::Shot => {}
+            // An axe into a trunk: the blade's thunk, lower; the tree coming down a body's fall, louder.
+            CombatEventKind::Chop if e.crit => {
+                queue.at(Cue::HitBlade, e.pos, 0.8);
+                queue.at_later(Cue::BodyFall, e.pos, 1.4, 0.45);
+            }
+            CombatEventKind::Chop => queue.at(Cue::HitBlade, e.pos, 0.85),
         }
     }
     if snap.tick != track.last_tick {
@@ -746,10 +861,13 @@ fn world_events(
                 Some((was, left)) => was != p.action || p.action_left > left + 0.05,
                 None => true,
             };
-            if p.action == Some(ActionKind::Swing) && fresh {
+            // (A gun makes no whoosh: its shot is heard when it goes.)
+            if p.action == Some(ActionKind::Swing) && fresh && category(p.id) != WeaponCategory::Firearm {
                 let heavy = matches!(category(p.id), WeaponCategory::LongBlunt | WeaponCategory::Axe);
                 let cue = if heavy { Cue::SwingHeavy } else { Cue::SwingLight };
-                queue.at_later(cue, Vec2::from(p.pos), 1.0, (p.action_left - 0.12).max(0.0));
+                // Our own swing on a multiplayer server began on the click, a view lag ago (#23).
+                let lag = if p.id == local.id { local.view_lag(&link, p) } else { 0.0 };
+                queue.at_later(cue, Vec2::from(p.pos), 1.0, (p.action_left - 0.12 - lag).max(0.0));
             }
         }
         track.actions.retain(|id, _| snap.players.iter().any(|p| p.id == *id));
@@ -772,6 +890,14 @@ fn world_events(
     } else if !searching {
         track.rummage_in = 0.0;
     }
+    // Loading a gun or a magazine (#72): a click as each step starts (a magazine, or a round).
+    let loading = link.own(local.id).and_then(|v| v.jobs.first().copied()).filter(|j| matches!(j, JobKind::Reload { .. })).map(|_| me.map_or(0.0, |p| p.busy));
+    if let Some(left) = loading
+        && track.loading.is_none_or(|was| left > was + 0.05)
+    {
+        queue.at(Cue::Reload, local.curr.pos, 1.0);
+    }
+    track.loading = loading;
     if ups.0.iter().any(|u| u.player == local.id) {
         queue.around(Cue::LevelUp, 0.0, 1.0);
     }
@@ -906,7 +1032,7 @@ mod tests {
         for cue in Cue::ALL {
             let clips = &bank.clips[&cue];
             assert!(!clips.is_empty(), "{cue:?}");
-            assert!(clips.iter().all(|c| c.samples.len() > 100 && c.rate == 22_050), "{cue:?}");
+            assert!(clips.iter().all(|c| c.samples.len() > 100 && (8_000..=96_000).contains(&c.rate)), "{cue:?}");
         }
     }
 

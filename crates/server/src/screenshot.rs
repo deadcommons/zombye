@@ -25,8 +25,9 @@ use zombye_sim::save::EXTENSION;
 /// Environment variable naming the client binary (after `--client`).
 pub const CLIENT_ENV: &str = "ZOMBYE_CLIENT";
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
-/// Image size: default, smallest and largest (each side).
-pub const DEFAULT_SIZE: [u32; 2] = [1280, 720];
+/// Image size: default, smallest and largest (each side). The default is small on purpose: the PNG goes
+/// to the model as base64, and clients cap how big a tool result may be.
+pub const DEFAULT_SIZE: [u32; 2] = [960, 540];
 pub const MIN_SIDE: u32 = 64;
 pub const MAX_SIZE: [u32; 2] = [1920, 1080];
 /// Metres of world visible vertically: default and range (the game's zoom limits).
@@ -42,11 +43,18 @@ pub struct Renderer {
     pub timeout: Duration,
     /// Where the temporary save and PNG go.
     pub temp_dir: PathBuf,
+    /// The mod folders (`--mod DIR`), passed on like the data folder.
+    pub mods: Vec<PathBuf>,
 }
 
 impl Renderer {
     pub fn new(client: Option<PathBuf>, data: PathBuf, timeout: Duration) -> Self {
-        Self { client, data, timeout, temp_dir: std::env::temp_dir() }
+        Self { client, data, timeout, temp_dir: std::env::temp_dir(), mods: Vec::new() }
+    }
+
+    pub fn with_mods(mut self, mods: &[PathBuf]) -> Self {
+        self.mods = mods.to_vec();
+        self
     }
 
     /// The client binary: `--client`, else `$ZOMBYE_CLIENT`, else `zombye` next to this binary.
@@ -154,7 +162,14 @@ pub fn render(world: &World, renderer: &Renderer, req: &Request) -> Result<(Vec<
     let _cleanup = TempFiles(vec![save.clone(), png.clone()]);
     save_file::save(world, &save)?;
     let mut command = Command::new(&client);
-    command.args(req.client_args(&save, &png, &renderer.data)).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command.args(req.client_args(&save, &png, &renderer.data));
+    // The mods the world was made with (#25): the save only loads against their data too.
+    for dir in &renderer.mods {
+        command.arg("--mod").arg(dir);
+    }
+    // And with the biomes it was grown from (`--biomes`, `--biome`).
+    command.args(zombye_net::content::biome_args());
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if std::env::var_os("RUST_LOG").is_none() {
         // Only warnings and errors from the engine: they're what an error report needs.
         command.env("RUST_LOG", "warn");

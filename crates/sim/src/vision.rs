@@ -1,5 +1,6 @@
-//! Line of sight on the tile map. Walls and closed doors block sight; windows, fences, open doors
-//! and archways don't. Used for the client's fog of war and zombie senses. Also a "clear walking
+//! Line of sight on the tile map. Walls and closed doors block sight (unless the door is glazed);
+//! windows, fences, open doors and archways don't, and glass behind a blind that's down does
+//! ([`TileMap::blocks_view`]). Sound goes by the edges alone ([`sound_line`]). Used for the client's fog of war and zombie senses. Also a "clear walking
 //! line" test (anything that blocks movement blocks it), for steering straight at a target.
 
 use glam::{IVec2, Vec2};
@@ -8,7 +9,22 @@ use crate::map::{Side, TileMap};
 
 /// Distance a ray from `origin` along unit `dir` travels before hitting something opaque, capped at `max`.
 pub fn cast_ray(map: &TileMap, origin: Vec2, dir: Vec2, max: f32) -> f32 {
-    cast(map, origin, dir, max, |map, tile, side| map.edge(tile, side).blocks_sight())
+    cast(map, origin, dir, max, |map, tile, side| map.blocks_view(tile, side))
+}
+
+/// [`cast_ray`] for eyes on the first upper floor (`crate::stairs`): that floor's walls stop the
+/// ray, its windows and doorways don't. Past the building (no upper floor either side of a
+/// crossing) it is the view from a window over the street: whatever blocks sight on the ground
+/// does, so the insides of other houses stay unseen.
+pub fn cast_upper_ray(map: &TileMap, origin: Vec2, dir: Vec2, max: f32) -> f32 {
+    let floor = |t: IVec2| map.upper_tile(t).is_some_and(|u| u.floor);
+    cast(map, origin, dir, max, |map, tile, side| {
+        let next = tile + side.offset();
+        if !map.in_bounds(next) {
+            return true;
+        }
+        if floor(tile) || floor(next) { map.upper_edge(tile, side) == crate::map::Edge::Wall } else { map.blocks_view(tile, side) }
+    })
 }
 
 /// Can something walk in a straight line from `a` to `b`? Walls, windows, closed doors, fences
@@ -69,10 +85,38 @@ pub fn visibility_rays(map: &TileMap, origin: Vec2, max: f32, n: usize) -> Vec<f
         .collect()
 }
 
+/// Line of sight from `a` to `b`, and whether it looks through a window (shut, open or broken) on
+/// the way: `None` blocked, `Some(true)` through a window. Zombies see less through one.
+pub fn sight_through(map: &TileMap, a: Vec2, b: Vec2) -> Option<bool> {
+    let d = b - a;
+    let len = d.length();
+    if len < 1e-4 {
+        return Some(false);
+    }
+    let window = std::cell::Cell::new(false);
+    let reached = cast(map, a, d / len, len, |map, tile, side| {
+        let e = map.edge(tile, side);
+        if e.is_window() || (e == crate::map::Edge::DoorClosed && map.glazed(crate::map::EdgeRef::of(tile, side))) {
+            window.set(true);
+        }
+        map.blocks_view(tile, side)
+    }) >= len - 1e-3;
+    reached.then(|| window.get())
+}
+
 pub fn line_of_sight(map: &TileMap, a: Vec2, b: Vec2) -> bool {
     let d = b - a;
     let len = d.length();
     len < 1e-4 || cast_ray(map, a, d / len, len) >= len - 1e-3
+}
+
+/// Does sound carry straight from `a` to `b` (no wall or shut door between)? As line of sight
+/// before blinds and glazed doors: a blind doesn't stop a noise, and a glass door muffles one as
+/// any shut door does. For hearing's muffling through walls.
+pub fn sound_line(map: &TileMap, a: Vec2, b: Vec2) -> bool {
+    let d = b - a;
+    let len = d.length();
+    len < 1e-4 || cast(map, a, d / len, len, |map, tile, side| map.edge(tile, side).blocks_sight()) >= len - 1e-3
 }
 
 #[cfg(test)]
@@ -93,6 +137,39 @@ mod tests {
         assert!(line_of_sight(&m, eye, Vec2::new(15.5, 5.5)));
         m.set_edge(IVec2::new(10, 5), Side::W, Edge::DoorClosed);
         assert!(!line_of_sight(&m, eye, Vec2::new(15.5, 5.5)));
+    }
+
+    #[test]
+    fn a_blind_down_hides_the_glass_and_a_glazed_door_shows_through() {
+        use crate::map::{EdgeRef, OwnedEdge};
+        let mut m = TileMap::new(2, 2);
+        for y in 0..32 {
+            m.set_edge(IVec2::new(10, y), Side::W, Edge::Wall);
+        }
+        let (eye, out) = (Vec2::new(5.5, 5.5), Vec2::new(15.5, 5.5));
+        let e = EdgeRef::new(IVec2::new(10, 5), OwnedEdge::West);
+        m.set_edge(IVec2::new(10, 5), Side::W, Edge::Window);
+        m.set_blind(e, Some(false));
+        assert!(line_of_sight(&m, eye, out), "rolled up");
+        assert_eq!(sight_through(&m, eye, out), Some(true));
+        m.set_blind(e, Some(true));
+        assert!(!line_of_sight(&m, eye, out), "down");
+        assert_eq!(sight_through(&m, eye, out), None);
+        assert!(sound_line(&m, eye, out), "a blind doesn't stop sound");
+        m.set_edge(IVec2::new(10, 5), Side::W, Edge::WindowBroken);
+        assert!(!line_of_sight(&m, eye, out), "still hangs in a broken window");
+        // A shut door: opaque, unless glazed; then its blind decides.
+        m.set_edge(IVec2::new(10, 5), Side::W, Edge::DoorClosed);
+        m.set_blind(e, None);
+        assert!(!line_of_sight(&m, eye, out));
+        m.glazed.insert(e.key());
+        assert!(line_of_sight(&m, eye, out));
+        assert_eq!(sight_through(&m, eye, out), Some(true), "through glass");
+        assert!(!sound_line(&m, eye, out), "a shut door muffles sound, glass or not");
+        m.set_blind(e, Some(true));
+        assert!(!line_of_sight(&m, eye, out));
+        m.set_edge(IVec2::new(10, 5), Side::W, Edge::DoorOpen);
+        assert!(line_of_sight(&m, eye, out), "an open door's blind swings away with it");
     }
 
     #[test]

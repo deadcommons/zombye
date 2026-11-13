@@ -73,8 +73,11 @@ All code and assets are our own; see the clean-room rules in [CONTRIBUTING.md](.
 | Custom engine | Most control, most time. Bevy already gives us 80% of a custom engine with a clean ECS. |
 
 ### Supporting stack
-- **Networking:** `lightyear` or `bevy_replicon` + `renet` over UDP/QUIC (decided in the M6 spike;
-  the sim is written against our own message types so the transport is swappable).
+- **Networking:** our own messages (`Intent`, `Snapshot`) over one TCP connection per client, with
+  per-client delta snapshots (#21; AGENTS.md, Multiplayer): no networking library, nothing beyond the
+  standard library. The messages don't care what carries them, so the transport stays swappable:
+  UDP or QUIC (`renet`, `quinn`) is the next step if lossy links make TCP's head-of-line blocking
+  hurt.
 - **Physics:** no general rigid-body physics for zombies. Custom spatial-hash collision on the tile
   grid (cheap, deterministic, server-friendly). `avian3d` only for loose props/ragdoll later.
 - **Pathfinding:** tile-grid flow fields for crowds plus hierarchical A* for individuals (§4.3).
@@ -161,8 +164,8 @@ over the network, as many survival games do. This means MP isn't a retrofit.
   and an agent/MCP admin endpoint. It's promoted in the README, the launcher and the server browser.
 - Self-hosting stays free and documented. That's what makes the open-source community trust it,
   and our income comes from convenience, not lock-in.
-- **Licence:** **MIT OR Apache-2.0 for all code, server included**, like the ArtCraft apps. No CLA
-  or sign-off: contributions come in under the same licence. Art and audio are CC BY-NC-SA 4.0
+- **Licence:** **MIT OR Apache-2.0 for all code, server included**, like the ArtCraft apps. No CLA;
+  every commit is signed off under the DCO (CONTRIBUTING.md), so contributions come in under the same licence. Art and audio are CC BY-NC-SA 4.0
   (contributed art comes in under CC BY 4.0), so nobody can sell our art in a clone; videos and
   streams are always allowed. Anyone may run or resell Zombye
   servers, even modified ones. The hosting business is protected by the brand, not the licence:
@@ -299,8 +302,10 @@ them, fight them, rob them or team up with them. Nothing in the game decides who
   over strangers, no other players on the map). Agents connect through the same rules, so an AI
   survivor is a fair player, not a cheat.
 - **Alliances come from play.** Proximity text and voice chat (heard near the speaker, quieter through
-  walls) and a few gestures. You recognise people by their clothes. Later: restraints for hold-ups and an
-  optional group (shared map markers, seeing your group's names); groups never switch damage off.
+  walls) and a few gestures. You recognise people by their clothes. Hold-ups: someone with their hands up
+  (or knocked down) can be tied with cable ties or rope, searched and robbed, and freed again; tied, they
+  can still walk, talk and struggle out. An optional group shares markers and its members' names; groups
+  never switch damage off.
 - **Spawns and logging out.** New survivors start spread round the edge of the town with little, not
   in one bedroom. A survivor who logs out stays in the world for a short while (so leaving can't end a
   fight), and a fresh spawn gets a few seconds of protection.
@@ -390,9 +395,11 @@ directly.
   prompt prefix, palette, scale rules and our own reference renders, which feed every Blender build
   and every Meshy prompt.
   Higher detail can come later without changing the pipeline.
-7. **All art is ours.** No Synty or other third-party asset packs, not even as placeholders: until
-   an asset exists, the game uses simple grey-box shapes. This also keeps the open-source repo free of
-   licence problems. Blender-built assets are original work by Dead Commons or a contributor
+7. **All art in the repo is ours.** No Synty or other third-party asset packs in the repo, not even as
+   placeholders: until an asset exists, the game uses simple grey-box shapes, which keeps the open-source
+   repo free of licence problems. Since 2026-11 official builds also carry bought packs (Synty models, store
+   animations and audio) from the private art repo, packed inside the game; a build from the repo alone
+   uses its own art. Blender-built assets are original work by Dead Commons or a contributor
    (see assets/LICENSE and ATTRIBUTION.md).
 8. **Procedural in code:** walls, floors, roofs, roads and terrain stay code-generated so they snap
    exactly to the grid. Their textures follow the same style bible.
@@ -423,9 +430,10 @@ progress. Pick up an issue there, or open one to propose work.
 - **Art:** our own low-poly, readable style for v1 (improved later). All 3D art is made by us: most of it
   in Blender driven by agents over MCP; characters and detailed assets from a ChatGPT reference image
   through Meshy (Pro), finished in Blender; plus procedural kit pieces; no Synty or other third-party
-  packs (decided 2026-10-23).
+  packs in the repo (decided 2026-10-23). Official builds add bought packs as release overlays (2026-11).
 - **Studio and licence:** published by Dead Commons (GitHub org `deadcommons`). MIT OR Apache-2.0
-  for code, CC BY-NC-SA 4.0 for art and audio, server included, no CLA (§3a).
+  for code, CC BY-NC-SA 4.0 for art and audio, server included, no CLA, DCO sign-off (§3a). Dead Commons sells the
+  official build (decided 2026-11-13).
 
 - **Engine:** Rust + Bevy 0.20.
 - **Scale:** 1 tile = 1 m.

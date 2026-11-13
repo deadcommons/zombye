@@ -32,6 +32,7 @@ use crate::nav::Nav;
 use crate::needs::{NeedsTuning, WakeReason};
 use crate::players::{self, PLAYER_RADIUS, Player, PlayerInput, Stance};
 use crate::population::{NEVER, Population, PopulationDef, Zone};
+use crate::vision::line_of_sight;
 use crate::street_props::StreetPropsDef;
 use crate::rng::{Rng, hash01};
 use crate::senses::{self, Sound, SoundSource, Target};
@@ -59,7 +60,7 @@ const SPAWN_CLEAR_RADIUS: f32 = 14.0;
 /// How far a door or window can be from the player using it (to the middle of the edge).
 pub const INTERACT_REACH: f32 = 1.6;
 /// A player aims interactions this far ahead, so the door you face wins over one behind you.
-const INTERACT_AIM_AHEAD: f32 = 0.6;
+pub(crate) const INTERACT_AIM_AHEAD: f32 = 0.6;
 
 #[derive(Clone, Debug)]
 pub struct WorldConfig {
@@ -83,8 +84,17 @@ pub struct WorldConfig {
     pub containers: ContainerData,
     /// What containers hold, by room type and container kind (`assets/data/loot.ron`).
     pub loot: LootData,
+    /// The seed loot is rolled from: what containers and bodies hold, the weapons on the floor,
+    /// how worn, loaded and old what's found is. `None`: the world seed, so the same seed finds
+    /// the same things (tests, old saves). The game and the server pick a new one for every new
+    /// world and new run ([`WorldConfig::loot_seed`]), so the same town holds different things
+    /// each game. Saved with the settings.
+    pub loot_seed: Option<u64>,
     /// What can be made from what (`assets/data/items/recipes.ron`, see [`crate::crafting`]).
     pub recipes: Vec<RecipeDef>,
+    /// What can be built, and on what (`assets/data/build.ron`, see [`crate::build`]): the build
+    /// menu. A data folder without the file has none.
+    pub builds: Vec<crate::build::BuildDef>,
     /// Carry limits, burden and how long handling items takes.
     pub carry: CarryTuning,
     /// Player health and every combat number that isn't a weapon's.
@@ -105,6 +115,56 @@ pub struct WorldConfig {
     /// Mailboxes, hydrants, bins: the kinds and where the town generator puts them
     /// (`assets/data/street_props.ron`, see [`crate::street_props`]). None by default.
     pub street_props: StreetPropsDef,
+    /// What grows on the wild ground, and how (`assets/data/biomes.ron`, see [`crate::biomes`]).
+    /// The shipped biomes by default.
+    pub biomes: crate::biomes::BiomeData,
+    /// How survivors see and hear each other (#66, [`crate::awareness`]): what a server tells
+    /// each client of the other players. A server's rule, not the world's: not saved.
+    pub player_sight: crate::awareness::PlayerSightTuning,
+    /// How far a survivor's map fills in round it ([`crate::explore`]). A rule of the game, not
+    /// of one world: not saved.
+    pub explore: crate::explore::ExploreTuning,
+    /// How far voices carry and the noise they make (#67, [`crate::speech`]). Not saved either.
+    pub speech: crate::speech::SpeechTuning,
+    /// Sitting down ([`crate::sit`]): how fast breath and rest come back. Not saved, like `speech`.
+    pub sit: crate::sit::SitTuning,
+    /// Tying hands, freeing and searching a tied survivor (#73, [`crate::bonds`]). Not saved.
+    pub bonds: crate::bonds::BondTuning,
+    /// Group sizes, invitations and markers (#73, [`crate::groups`]). Not saved.
+    pub groups: crate::groups::GroupTuning,
+    /// When E climbs a fence or an open or broken window ([`crate::players::climb_from`]). Not saved.
+    pub climb: crate::players::ClimbTuning,
+    /// Walking between floors ([`crate::players::StairTuning`]). Not saved, like the climb's.
+    pub stairs: crate::players::StairTuning,
+    /// Speeds and endurance ([`crate::players::MoveTuning`]). Saved with the settings.
+    pub movement: crate::players::MoveTuning,
+    /// The grid and the lights (`assets/data/power.ron`, [`crate::power`]); saved with the settings.
+    pub power: crate::power::PowerDef,
+    /// Blinds on windows and glazed doors: where the town has them and handling them
+    /// ([`crate::blinds`]). Saved with the settings.
+    pub blinds: crate::blinds::BlindTuning,
+    /// Campfires, stoves, cooking and burns (`assets/data/fire.ron`, [`crate::fire`]); saved with
+    /// the settings.
+    pub fire: crate::fire::FireTuning,
+    /// The calendar, the climate and the weather (`assets/data/weather.ron`, [`crate::weather`]);
+    /// saved with the settings, so a world keeps its calendar.
+    pub weather: crate::weather::WeatherTuning,
+    /// World events: the water and power going off and the like (`assets/data/events.ron`,
+    /// [`crate::events`]); saved with the settings, so a world keeps its schedule.
+    pub events: crate::events::EventsDef,
+    /// Chopping trees down (`crate::trees`): their hit points, what chops, the logs they give.
+    /// Saved with the settings.
+    pub chop: crate::trees::ChopTuning,
+    /// Vehicles you can drive (`assets/data/vehicles.ron`, [`crate::vehicles`]): their kinds and
+    /// how many parked cars are real. A data folder without the file has none. Content, not
+    /// settings: a save names its vehicles' kinds by id.
+    pub vehicles: crate::vehicles::VehicleData,
+    /// A difficulty's multipliers on the content above (population, loot: [`crate::difficulty`]).
+    /// Saved with the settings and put on again when the save is loaded. Changes nothing by default.
+    pub sandbox: crate::difficulty::Sandbox,
+    /// The loaded mods' scripts (#25, [`crate::script`]): every world made from this config gets a
+    /// host of its own from it. None: no scripts, and nothing of them in the world.
+    pub scripts: Option<std::sync::Arc<dyn crate::script::ScriptEngine>>,
 }
 
 impl WorldConfig {
@@ -120,7 +180,9 @@ impl WorldConfig {
             items: Vec::new(),
             containers: ContainerData::default(),
             loot: LootData::default(),
+            loot_seed: None,
             recipes: Vec::new(),
+            builds: Vec::new(),
             carry: CarryTuning::default(),
             combat: CombatTuning::default(),
             health: HealthTuning::default(),
@@ -130,11 +192,36 @@ impl WorldConfig {
             tiers: TierTuning::default(),
             population: PopulationDef::default(),
             street_props: StreetPropsDef::default(),
+            biomes: crate::biomes::BiomeData::default(),
+            player_sight: Default::default(),
+            explore: Default::default(),
+            speech: Default::default(),
+            sit: Default::default(),
+            bonds: Default::default(),
+            groups: Default::default(),
+            climb: Default::default(),
+            stairs: Default::default(),
+            movement: Default::default(),
+            power: Default::default(),
+            blinds: Default::default(),
+            fire: Default::default(),
+            weather: Default::default(),
+            events: Default::default(),
+            chop: Default::default(),
+            vehicles: Default::default(),
+            sandbox: Default::default(),
+            scripts: None,
         }
     }
 
     /// A square map `chunks` × `chunks` chunks (16 m each) instead of the default; the town stays
     /// the same size in the middle, with more forest round it.
+    /// Player against player on or off ([`CombatTuning::pvp`]).
+    pub fn with_pvp(mut self, pvp: bool) -> Self {
+        self.combat.pvp = pvp;
+        self
+    }
+
     pub fn with_map_chunks(mut self, chunks: i32) -> Self {
         self.generation.chunks = IVec2::splat(chunks.max(1));
         self
@@ -165,8 +252,38 @@ impl WorldConfig {
         self
     }
 
+    pub fn with_builds(mut self, builds: Vec<crate::build::BuildDef>) -> Self {
+        self.builds = builds;
+        self
+    }
+
     pub fn with_population(mut self, population: PopulationDef) -> Self {
         self.population = population;
+        self
+    }
+
+    pub fn with_power(mut self, power: crate::power::PowerDef) -> Self {
+        self.power = power;
+        self
+    }
+
+    pub fn with_fire(mut self, fire: crate::fire::FireTuning) -> Self {
+        self.fire = fire;
+        self
+    }
+
+    pub fn with_vehicles(mut self, vehicles: crate::vehicles::VehicleData) -> Self {
+        self.vehicles = vehicles;
+        self
+    }
+
+    pub fn with_events(mut self, events: crate::events::EventsDef) -> Self {
+        self.events = events;
+        self
+    }
+
+    pub fn with_weather(mut self, weather: crate::weather::WeatherTuning) -> Self {
+        self.weather = weather;
         self
     }
 
@@ -175,8 +292,24 @@ impl WorldConfig {
         self
     }
 
+    pub fn with_biomes(mut self, biomes: crate::biomes::BiomeData) -> Self {
+        self.biomes = biomes;
+        self
+    }
+
     pub fn seed(&self) -> u64 {
         self.generation.seed
+    }
+
+    /// The seed loot rolls from: `loot_seed` if set, else the world seed.
+    pub fn loot_seed(&self) -> u64 {
+        self.loot_seed.unwrap_or(self.generation.seed)
+    }
+
+    /// Loot rolled from `seed` instead of the world seed (see `loot_seed`).
+    pub fn with_loot_seed(mut self, seed: u64) -> Self {
+        self.loot_seed = Some(seed);
+        self
     }
 }
 
@@ -242,8 +375,15 @@ pub struct World {
     pub stats: TickStats,
     /// Map edits since the last snapshot (door toggles), for replication.
     pub edge_changes: Vec<EdgeChange>,
+    /// Blinds put up, taken down or rolled since the last snapshot ([`crate::blinds`]), for replication.
+    pub(crate) blind_changes: Vec<crate::map::BlindChange>,
+    /// Barricades put up, changed or torn down since a snapshot last drained them ([`crate::build`]).
+    pub(crate) barricade_changes: Vec<crate::map::BarricadeChange>,
     /// Hours added by time skips.
     pub(crate) clock_offset_hours: f32,
+    /// Ticks the far clock ([`World::far_tick`]) has run ahead of `tick`: while everyone sleeps the
+    /// virtual tier, attractors and respawn follow game time (#57). Saved (the `FARC` section).
+    pub(crate) far_ticks: u64,
     /// Zombie strikes this tick (cleared at the start of each tick).
     pub attack_events: Vec<ZombieAttack>,
     /// Zombie thumps on doors and windows this tick, in the order they were applied.
@@ -253,6 +393,8 @@ pub struct World {
     /// Player swings, shoves and stomps that landed this tick, and what each hit.
     pub action_events: Vec<ActionEvent>,
     pub hit_events: Vec<HitEvent>,
+    /// Player actions that struck another player this tick (PvP).
+    pub player_hit_events: Vec<crate::combat::PlayerHitEvent>,
     /// Hits, kills, shoves, stomps and wounds since the last snapshot, for clients' hit feedback
     /// (blood, flashes, screen shake). Drained by whoever replicates the world, like
     /// `edge_changes`; at most [`crate::combat::MAX_COMBAT_EVENTS`] are kept if nobody does. Not simulation
@@ -261,6 +403,10 @@ pub struct World {
     /// Items lying about, in id order.
     pub(crate) items: Vec<GroundItem>,
     pub(crate) next_item_id: u32,
+    /// The ground items lying on the first upper floor, by id (`crate::stairs`); every other one
+    /// lies on the ground floor (or on a flight of stairs). Sparse, so the items themselves and
+    /// worlds with nothing upstairs are stored and hashed as before.
+    pub(crate) upstairs: std::collections::BTreeSet<u32>,
     /// Per item in `config.items`, the weapon it swings as (derived from the content).
     pub(crate) item_weapons: Vec<Option<u16>>,
     /// Every container in the map, in id order (derived from the map and `config.containers`).
@@ -278,6 +424,15 @@ pub struct World {
     /// Skill level-ups since the last snapshot took them (replication, not simulation state; at
     /// most [`crate::skills::MAX_LEVEL_UPS`] kept).
     pub level_ups: Vec<LevelUp>,
+    /// What survivors said since the last snapshot took it, once per listener (#67,
+    /// [`crate::speech`]; replication, not simulation state; at most
+    /// [`crate::speech::MAX_SPEECH`] kept).
+    pub speech: Vec<crate::speech::Said>,
+    /// Groups, their markers and the invitations out (#73, [`crate::groups`]). Saved.
+    pub(crate) groups: crate::groups::Groups,
+    /// What players are called, by id (a server's join names; [`World::set_player_name`]). Not
+    /// saved: whoever runs the world says again.
+    pub(crate) names: BTreeMap<u32, String>,
     /// Players whose Fitness or Strength went up this tick: their movement modifiers are refreshed
     /// at its end (`World::refresh_skill_mods`).
     pub(crate) skill_mods_due: Vec<u32>,
@@ -286,6 +441,13 @@ pub struct World {
     pub(crate) private_dirty: BTreeSet<u32>,
     /// What bodies that rise wore (#63), for drawing them: not simulation state.
     pub(crate) rise_looks: RiseLooks,
+    /// Zombies shoved in the last `CombatTuning::shove_repeat_secs`, by id: each shove makes the
+    /// next likelier to floor it. Saved (`SHOV`), in the hash while any.
+    pub(crate) shoved: Vec<crate::combat::Shoved>,
+    /// Vehicles (`crate::vehicles`). Saved (`VEHC`), in the hash while any.
+    pub(crate) vehicles: crate::vehicles::Vehicles,
+    /// Trees chopped at and felled (`crate::trees`). Saved (`TREE`), in the hash while any.
+    pub(crate) trees: crate::trees::Trees,
     /// Index of bare hands in `config.weapons`.
     pub(crate) unarmed: u16,
     /// Hit points of damaged doors and windows, by [`EdgeRef::key`]. Missing = undamaged.
@@ -295,6 +457,11 @@ pub struct World {
     pub(crate) edge_hp_dirty: BTreeSet<(i32, i32, u8)>,
     /// Corpses removed by the last tick, by id (cleared each tick).
     pub removed_corpses: Vec<u32>,
+    /// Survivors out of the world (#68, `crate::logout`): logged out and their time in the world
+    /// run out. Kept whole, in id order, until their players come back (`World::player_return`).
+    pub(crate) parked: Vec<Player>,
+    /// Players who left the world this tick (their logout time ran out), by id (cleared each tick).
+    pub left_world: Vec<u32>,
     /// Sounds made since the last tick; heard (and moved to `heard`) by the next one.
     pub(crate) sounds: Vec<Sound>,
     /// Sounds zombies listened to in the last tick.
@@ -310,6 +477,9 @@ pub struct World {
     pub(crate) nav: Nav,
     /// Players as the senses see them this tick.
     pub(crate) targets: Vec<Target>,
+    /// Which players see and heard which (#66, [`crate::awareness`]). Derived every tick; not
+    /// saved, not in the state hash, read by nothing in the simulation.
+    pub(crate) awareness: crate::awareness::Awareness,
     pub(crate) rng: Rng,
     /// Combat rolls (hits, crits, staggers, zombie strikes), apart from the AI's stream.
     pub(crate) combat_rng: Rng,
@@ -328,11 +498,39 @@ pub struct World {
     /// Hash of the map as generated, so loading can tell the generator (or its data) changed.
     pub(crate) map_base_hash: u64,
     pub(crate) scratch_tiles: Vec<IVec2>,
+    /// Scratch for the hearing pass (one mark per zombie).
+    pub(crate) scratch_marks: Vec<u8>,
     pub(crate) next_id: u32,
     pub(crate) next_player_id: u32,
     pub(crate) scratch_pos: Vec<Vec2>,
     pub(crate) scratch_actions: Vec<(usize, Action)>,
     pub(crate) scratch_hits: Vec<(f32, usize)>,
+    /// How tall each body on a shot's line stood (#72, `crate::ranged`), by its `scratch_hits` index.
+    pub(crate) scratch_tops: Vec<(usize, f32)>,
+    /// Where zombies and players stood over the last few ticks, for lag-compensated melee (#23,
+    /// [`crate::lagcomp`]). Empty until a player's client reports what it sees; not saved.
+    pub(crate) lag_history: crate::lagcomp::History,
+    /// Blows that still land though their player was just floored or killed by another's (a trade
+    /// of blows, `combat`): filled and emptied within `step_player_actions`.
+    pub(crate) scratch_trades: Vec<crate::combat::Trade>,
+    /// The mods' scripts running this world (#25, [`crate::script`]), from `config.scripts`: run at
+    /// the end of every tick. None: no scripts.
+    pub(crate) scripts: Option<Box<dyn crate::script::ScriptHost>>,
+    /// What scripts keep in the world: their store, random stream and events not yet handed to
+    /// them. Saved (the `MODS` section) and in the state hash, both only once there is any.
+    pub(crate) script: crate::script::ScriptState,
+    /// The latest script errors, for whoever asks (not saved, not simulation state).
+    pub(crate) script_errors: Vec<String>,
+    /// Power sources, light switches and the rooms lit ([`crate::power`]). Saved (the `POWR` section).
+    pub(crate) power: crate::power::Power,
+    /// Campfires ([`crate::fire`]). Saved (the optional `FIRE` section), in the hash while any.
+    pub(crate) fires: crate::fire::Fires,
+    /// Weather set by hand ([`crate::weather::Forced`], MCP `set_weather`). Saved (the optional
+    /// `WTHR` section), in the hash while set. The climate's weather follows from the seed and clock.
+    pub(crate) weather_forced: Option<crate::weather::Forced>,
+    /// What world events have done ([`crate::events`]). Saved (the optional `EVNT` section), in
+    /// the hash while there is any.
+    pub(crate) events: crate::events::EventState,
 }
 
 /// Bare hands are added to weapons that have none (as the world does on creation).
@@ -360,6 +558,10 @@ impl World {
     /// Generate the map from the config's seed and templates and scatter the zombies over it.
     pub fn new(config: WorldConfig) -> Self {
         let mut world = Self::generate(config);
+        if !world.config.vehicles.kinds.is_empty() {
+            world.place_vehicles();
+            world.walk = WalkGrid::new(&world.map);
+        }
         world.nav = Nav::new(&world.walk);
         world.populate();
         world
@@ -372,18 +574,27 @@ impl World {
         let weapon_items = items::complete_items(&mut config.items, &config.weapons);
         let item_weapons = (0..config.items.len()).map(|i| weapon_items.iter().position(|w| *w == Some(i as u16)).map(|w| w as u16)).collect();
         let unarmed = config.weapons.iter().position(|w| w.category == WeaponCategory::Unarmed).unwrap_or(0) as u16;
-        let generated = worldgen::generate_with(&config.generation, &config.templates, &config.street_props);
-        let items = items::place_weapons(&generated.map, &config.weapons, &weapon_items, generated.spawn_building, config.generation.seed, 1);
+        let generated = worldgen::generate_full(&config.generation, &config.templates, &config.street_props, &config.biomes);
+        let items = crate::loot::place_floor(&generated.map, &config.loot, &config.items, generated.spawn_building, config.loot_seed(), 1);
         let sites = containers::find_sites(&generated.map, &config.containers);
-        let map = generated.map;
+        let mut map = generated.map;
+        map.stair_speed = config.stairs.speed;
+        map.movement = config.movement;
+        crate::blinds::place(&mut map, config.generation.seed, &config.blinds);
         let hash = SpatialHash::new(map.width() as f32, map.height() as f32, 1.0);
         let regions = RegionIndex::new(&map, config.tiers.region_size);
         let walk = WalkGrid::new(&map);
         let nav = Nav::default();
+        let power = crate::power::Power::new(&map, &config.power);
         let mut world = Self {
+            power,
+            fires: Default::default(),
+            weather_forced: None,
+            events: Default::default(),
             rng: Rng::new(config.generation.seed),
             combat_rng: Rng::new(config.generation.seed ^ 0xC0_4BA7),
             next_item_id: items.len() as u32 + 1,
+            upstairs: Default::default(),
             items,
             item_weapons,
             sites,
@@ -392,15 +603,25 @@ impl World {
             used_items: Vec::new(),
             woke: Vec::new(),
             level_ups: Vec::new(),
+            speech: Vec::new(),
+            groups: Default::default(),
+            names: BTreeMap::new(),
             skill_mods_due: Vec::new(),
             private_dirty: BTreeSet::new(),
             rise_looks: RiseLooks::default(),
+            shoved: Vec::new(),
+            vehicles: Default::default(),
+            trees: Default::default(),
             unarmed,
             action_events: Vec::new(),
             hit_events: Vec::new(),
+            player_hit_events: Vec::new(),
             combat_events: Vec::new(),
             scratch_actions: Vec::new(),
             scratch_hits: Vec::new(),
+            scratch_tops: Vec::new(),
+            lag_history: Default::default(),
+            scratch_trades: Vec::new(),
             town_min: generated.town_min,
             town_max: generated.town_max,
             town_core: generated.core,
@@ -412,18 +633,24 @@ impl World {
             population: Population::default(),
             regions,
             scratch_tiles: Vec::new(),
+            scratch_marks: Vec::new(),
             zombies: Zombies::default(),
             players: Vec::new(),
             tick: 0,
             stats: TickStats::default(),
             edge_changes: Vec::new(),
+            blind_changes: Vec::new(),
+            barricade_changes: Vec::new(),
             clock_offset_hours: 0.0,
+            far_ticks: 0,
             attack_events: Vec::new(),
             thump_events: Vec::new(),
             break_events: Vec::new(),
             edge_hp: BTreeMap::new(),
             edge_hp_dirty: BTreeSet::new(),
             removed_corpses: Vec::new(),
+            parked: Vec::new(),
+            left_world: Vec::new(),
             sounds: Vec::new(),
             heard: Vec::new(),
             goal: None,
@@ -433,12 +660,16 @@ impl World {
             nav,
             flow_cache: FlowCache::new(FLOW_CACHE_SIZE, FLOW_BUILDS_PER_TICK, PLAYER_FLOW_RANGE, POINT_FLOW_RANGE, FLOW_REBUILD_TICKS),
             targets: Vec::new(),
+            awareness: Default::default(),
             next_id: 1,
             next_player_id: 1,
             scratch_pos: Vec::new(),
             map_edits: BTreeSet::new(),
             map_custom: false,
             map_base_hash: 0,
+            scripts: config.scripts.as_ref().map(|engine| engine.start()),
+            script: Default::default(),
+            script_errors: Vec::new(),
             config,
         };
         world.map_base_hash = crate::save::map_hash(&world.map);
@@ -475,7 +706,11 @@ impl World {
         while spawned < n && attempts < n as u64 * 2000 {
             attempts += 1;
             let t = IVec2::new(self.rng.below(w) as i32, self.rng.below(h) as i32);
-            let weight = self.config.population.tile_density(&self.map, &town, t) / max;
+            // Bigger groups start in fewer places, so each zone still gets its density's share.
+            let forest = matches!(self.config.population.zone_at(&self.map, &town, t), Zone::ForestRoad | Zone::ForestEdge | Zone::DeepForest);
+            let g = &self.config.population.groups;
+            let spread = g.mean(true).min(g.mean(false)) / g.mean(forest);
+            let weight = self.config.population.tile_density(&self.map, &town, t) / max * spread;
             if self.rng.f32() >= weight {
                 continue;
             }
@@ -485,6 +720,24 @@ impl World {
             }
             self.push_zombie(p);
             spawned += 1;
+            // The rest of its group round it : same building (or outdoors), in sight of it.
+            let g = self.config.population.groups.clone();
+            let (lo, hi) = if forest { g.forest_size } else { g.size };
+            let size = if self.rng.f32() < g.loners { 1 } else { lo + self.rng.below(hi - lo + 1) };
+            let building = self.map.building_at(p);
+            let mut tries = 0;
+            let mut members = 1;
+            while members < size && spawned < n && tries < size * 8 {
+                tries += 1;
+                let q = p + Vec2::from_angle(self.rng.range(0.0, TAU)) * g.radius * self.rng.f32().sqrt();
+                let qt = q.floor().as_ivec2();
+                if !self.map.in_bounds(qt) || self.map.tile_blocked(qt) || !self.spawnable(qt) || self.map.building_at(q) != building || !line_of_sight(&self.map, p, q) {
+                    continue;
+                }
+                self.push_zombie(q);
+                spawned += 1;
+                members += 1;
+            }
         }
     }
 
@@ -526,6 +779,24 @@ impl World {
         spawned
     }
 
+    /// A hash of the map as generated, before any door or window changed (what saves check). A
+    /// network client that builds the same map from the same seed and content gets the same hash.
+    pub fn map_base_hash(&self) -> u64 {
+        self.map_base_hash
+    }
+
+    /// Every door and window that isn't as the generator left it, as it is now: what a joining
+    /// network client applies to the map it generated itself.
+    pub fn map_edits_now(&self) -> Vec<crate::map::EdgeChange> {
+        self.map_edits
+            .iter()
+            .map(|&key| {
+                let e = edge_of_key(key);
+                crate::map::EdgeChange { tile: e.tile, edge: e.edge, kind: self.map.owned_edge(e.tile, e.edge) }
+            })
+            .collect()
+    }
+
     /// Add a player at `pos` (pushed out of walls and furniture). Returns its id.
     pub fn add_player(&mut self, pos: Vec2) -> u32 {
         let id = self.next_player_id;
@@ -535,6 +806,8 @@ impl World {
         self.players.push(Player { skills, ..Player::new(id, pos, self.config.combat.player_hp) });
         // Its movement from the start (Fitness, #46).
         self.refresh_carry(self.players.len() - 1);
+        self.begin_first_night(self.players.len() - 1);
+        self.script_event(crate::script::ScriptEvent::Spawned { player: id });
         id
     }
 
@@ -559,7 +832,8 @@ impl World {
     /// Sequence numbers start at 1; stale or repeated ones are ignored. Returns whether it was taken.
     pub fn set_player_input(&mut self, id: u32, seq: u32, input: PlayerInput) -> bool {
         let Some(p) = self.players.iter_mut().find(|p| p.id == id) else { return false };
-        if seq <= p.last_input_seq {
+        // A logged-out survivor takes no input (#68).
+        if seq <= p.last_input_seq || p.away.is_some() {
             return false;
         }
         p.input = input.sanitized();
@@ -593,6 +867,7 @@ impl World {
         self.nav.rebuild_all(&self.walk);
         self.flow_cache.invalidate();
         self.goal_dirty = true;
+        self.power.map_changed(&self.map);
     }
 
     /// The navigation graph and the long-range plans zombies share.
@@ -618,7 +893,7 @@ impl World {
         let m = &self.config.population.migration;
         if lasting && m.enabled && pos.is_finite() && radius > 0.0 {
             let indoors = self.map.room_at(pos) != 0;
-            self.population.attract(pos, radius, indoors, m.lasting_secs, m, self.tick);
+            self.population.attract(pos, radius, indoors, m.lasting_secs, m, self.tick + self.far_ticks);
         }
     }
 
@@ -653,22 +928,33 @@ impl World {
     /// healing, festering, the infection), and needs too (hunger, thirst, tiredness, sleep), in
     /// small steps.
     pub fn skip_time(&mut self, hours: f32) {
+        let minute = self.game_minute();
         self.clock_offset_hours += hours;
+        self.step_fridges(minute, self.game_minute());
         self.skip_health(hours);
         self.skip_needs(hours);
+        self.step_first_night(hours);
+        self.step_power();
+        self.step_events(true);
+        self.step_fires(hours, 0.0);
     }
 
-    /// Full hit points of an edge of this kind (0 for anything that can't be battered).
+    /// Full hit points of an edge of this kind (0 for anything that can't be battered). A boarded
+    /// edge's are the door's or window's under the planks (the planks have their own,
+    /// [`World::barricade_hp`]), so damage a door took before it was boarded up is kept.
     pub fn max_hp(&self, kind: Edge) -> f32 {
         match kind {
-            Edge::DoorClosed | Edge::DoorOpen => self.config.zombie.door_hp,
-            Edge::Window | Edge::WindowOpen => self.config.zombie.window_hp,
+            Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBoarded => self.config.zombie.door_hp,
+            Edge::Window | Edge::WindowOpen | Edge::WindowBoarded => self.config.zombie.window_hp,
             _ => 0.0,
         }
     }
 
     /// Hit points left and full hit points of a door or window that isn't broken, else `None`.
     pub fn edge_hp(&self, edge: EdgeRef) -> Option<(f32, f32)> {
+        if self.map.owned_edge(edge.tile, edge.edge).is_boarded() {
+            return self.barricade_hp(edge);
+        }
         let max = self.max_hp(self.map.owned_edge(edge.tile, edge.edge));
         (max > 0.0).then(|| (self.edge_hp.get(&edge.key()).copied().unwrap_or(max), max))
     }
@@ -698,11 +984,46 @@ impl World {
         Some(self.toggle_edge(edge, SoundSource::World))
     }
 
+    /// Player `id` climbs the fence or open or broken window it faces (E): within
+    /// `WorldConfig::climb`'s reach and facing ([`crate::players::climb_from`]), movement then takes
+    /// it across by itself. Refused (false) dead, asleep, knocked, tied, already climbing, with no
+    /// such edge, or too loaded to climb (with a note saying so).
+    pub fn player_climb(&mut self, id: u32) -> bool {
+        let Some(pi) = self.players.iter().position(|p| p.id == id) else { return false };
+        let p = &self.players[pi];
+        if p.dead || p.needs.asleep() || p.knock.is_some() || p.away.is_some() || p.restraint.is_some() || p.state.climb.is_some() || p.state.off_ground(&self.map) {
+            return false;
+        }
+        let Some(climb) = crate::players::climb_from(&self.map, p.state.pos, p.state.facing, &self.config.climb) else { return false };
+        if !p.state.mods.can_climb {
+            self.note(id, false, "too much on you to climb: lighten your load".to_string());
+            return false;
+        }
+        self.players[pi].state.climb = Some(climb);
+        true
+    }
+
+    /// Turn player `id` to `facing` (radians) at once, before an action aimed at something (a
+    /// right-click on a door, window or blind: `Intent::Toward`). Its input is turned too, so this
+    /// tick's movement doesn't turn it back; the client's next input carries the same facing.
+    /// Ignored for a dead, asleep, knocked, tied or climbing player, or a facing that isn't finite.
+    pub fn set_facing(&mut self, id: u32, facing: f32) -> bool {
+        let Some(p) = self.players.iter_mut().find(|p| p.id == id) else { return false };
+        if !facing.is_finite() || p.dead || p.needs.asleep() || p.knock.is_some() || p.away.is_some() || p.restraint.is_some() || p.state.climb.is_some() {
+            return false;
+        }
+        let facing = facing.rem_euclid(std::f32::consts::TAU);
+        p.state.facing = facing;
+        p.input.facing = facing;
+        true
+    }
+
     /// Player `id` opens or closes the door or window it faces, if one is within reach of where
     /// the server has it. Returns the new edge, or `None` (request ignored) if there is no such
     /// edge or player. Broken doors and windows can't be shut again.
     pub fn player_interact(&mut self, id: u32) -> Option<Edge> {
-        let s = self.player(id)?.state;
+        // The doors and windows of the map are the ground floor's (`crate::stairs`).
+        let s = self.player(id).filter(|p| !p.state.off_ground(&self.map))?.state;
         let aim = s.pos + Vec2::from_angle(s.facing) * INTERACT_AIM_AHEAD;
         let edge = self.edge_in_reach(s.pos, aim, Self::can_interact)?;
         Some(self.toggle_edge(edge, SoundSource::Player(id)))
@@ -711,7 +1032,8 @@ impl World {
     /// Player `id` smashes the window it faces (shut or open), if one is within reach. Loud.
     /// Returns the broken edge, or `None` if there is no such window or player.
     pub fn player_smash_window(&mut self, id: u32) -> Option<EdgeRef> {
-        let s = self.player(id)?.state;
+        // Not with tied hands (#73).
+        let s = self.player(id).filter(|p| p.restraint.is_none() && !p.state.off_ground(&self.map))?.state;
         let aim = s.pos + Vec2::from_angle(s.facing) * INTERACT_AIM_AHEAD;
         let edge = self.edge_in_reach(s.pos, aim, |e| matches!(e, Edge::Window | Edge::WindowOpen))?;
         self.break_edge(edge, SoundSource::Player(id));
@@ -748,8 +1070,9 @@ impl World {
     }
 
     /// Set an edge and keep everything that depends on the map in step: replication, the walk
-    /// grid, the flow fields that cover it.
-    fn set_edge(&mut self, edge: EdgeRef, kind: Edge) {
+    /// grid, the flow fields that cover it. (Public for tools and tests; play goes through
+    /// `player_interact` and the zombies' battering.)
+    pub fn set_edge(&mut self, edge: EdgeRef, kind: Edge) {
         self.map.set_owned_edge(edge.tile, edge.edge, kind);
         self.map_edits.insert(edge.key());
         self.edge_changes.push(EdgeChange { tile: edge.tile, edge: edge.edge, kind });
@@ -776,6 +1099,12 @@ impl World {
 
     /// A door or window gives way for good: loud.
     pub(crate) fn break_edge(&mut self, edge: EdgeRef, source: SoundSource) {
+        if self.map.owned_edge(edge.tile, edge.edge).is_boarded() {
+            // The planks give first, all of them; what's underneath is left as it was.
+            let hp = self.map.barricade(edge).map_or(0.0, |b| b.hp);
+            self.damage_barricade(edge, hp + 1.0, source);
+            return;
+        }
         let kind = self.map.owned_edge(edge.tile, edge.edge);
         let broken = kind.broken();
         if broken == kind {
@@ -785,6 +1114,15 @@ impl World {
             self.edge_hp_dirty.insert(edge.key());
         }
         self.set_edge(edge, broken);
+        // A door battered off its hinges takes its blind down with it, onto the floor inside.
+        if broken == Edge::DoorBroken && self.map.blind(edge).is_some() {
+            self.set_blind(edge, None);
+            let inside = crate::blinds::inside(&self.map, edge).as_vec2() + Vec2::splat(0.5);
+            if let Some(i) = self.config.items.iter().position(|d| d.has_tag(&self.config.blinds.tag)) {
+                let stack = self.fresh_stack(i as u16, 1);
+                self.put_on_floor(stack, inside, 0.0, 0);
+            }
+        }
         self.break_events.push(EdgeChange { tile: edge.tile, edge: edge.edge, kind: broken });
         let t = &self.config.zombie;
         let noise = if broken == Edge::DoorBroken { t.door_break_noise } else { t.glass_break_noise };
@@ -802,6 +1140,13 @@ impl World {
                 // Broken (or opened) earlier this tick.
                 continue;
             }
+            if kind.is_boarded() {
+                // The planks take it ([`crate::build`]); the thump is heard and lures the same.
+                let far = th.edge.far_tile(th.from).as_vec2() + Vec2::splat(0.5);
+                self.emit_sound_luring(th.edge.mid(), self.config.zombie.thump_noise, SoundSource::Zombie(th.zombie), far);
+                self.damage_barricade(th.edge, th.damage, SoundSource::Zombie(th.zombie));
+                continue;
+            }
             let max = self.max_hp(kind);
             let hp = self.edge_hp.entry(th.edge.key()).or_insert(max);
             *hp -= th.damage;
@@ -814,6 +1159,28 @@ impl World {
             }
         }
         self.thump_events = thumps;
+    }
+
+    /// Take `damage` hit points off a shut door or intact window, as a thump does but silently
+    /// (tests and tools). Returns whether it could be damaged; at 0 it breaks.
+    pub fn damage_edge(&mut self, edge: EdgeRef, damage: f32) -> bool {
+        let kind = self.map.owned_edge(edge.tile, edge.edge);
+        if !self.map.in_bounds(edge.tile) || !kind.is_breakable() || !damage.is_finite() {
+            return false;
+        }
+        if kind.is_boarded() {
+            self.damage_barricade(edge, damage, SoundSource::World);
+            return true;
+        }
+        let max = self.max_hp(kind);
+        let hp = self.edge_hp.entry(edge.key()).or_insert(max);
+        *hp -= damage.max(0.0);
+        let gone = *hp <= 0.0;
+        self.edge_hp_dirty.insert(edge.key());
+        if gone {
+            self.break_edge(edge, SoundSource::World);
+        }
+        true
     }
 
     /// Clear away corpses that have lain longer than `corpse_secs`, and the oldest beyond
@@ -840,17 +1207,23 @@ impl World {
         removed.sort_unstable();
         let gone: Vec<bool> = z.id.iter().map(|id| removed.binary_search(id).is_ok()).collect();
         self.rise_looks.risen.retain(|id, _| removed.binary_search(id).is_err());
+        // What was left on a body goes with it; whoever had it open finds it gone.
+        self.opened.retain(|&c, _| crate::corpses::corpse_zombie(c).is_none_or(|z| removed.binary_search(&z).is_err()));
         self.zombies.remove_where(|i| gone[i]);
     }
 
     pub fn step(&mut self) {
         let start = Instant::now();
+        let minute = self.game_minute();
         self.attack_events.clear();
         self.thump_events.clear();
         self.break_events.clear();
         self.removed_corpses.clear();
+        self.left_world.clear();
         self.action_events.clear();
+        self.trees.events.clear();
         self.hit_events.clear();
+        self.player_hit_events.clear();
         self.used_items.clear();
         self.woke.clear();
         // Sounds made since the last tick are heard now; groans made during this one, next tick.
@@ -859,32 +1232,50 @@ impl World {
 
         // Players move first, so zombies react to where they are now. Moving makes noise.
         self.targets.clear();
+        // Vehicles drive first (`crate::vehicles`): their drivers are put in their seats, and the
+        // map's boxes are where the cars are for everyone walking this tick.
+        let driving: Vec<(u32, Vec2)> = if self.vehicles.list.is_empty() {
+            Vec::new()
+        } else {
+            let before = self.players.iter().filter(|p| p.vehicle.is_some()).map(|p| (p.id, p.state.pos)).collect();
+            self.step_vehicles(TICK_DT);
+            before
+        };
         let t = &self.config.zombie;
         let mut climbed_glass = Vec::new();
         for (pi, p) in self.players.iter_mut().enumerate() {
             if p.dead {
                 continue;
             }
-            let before = p.state.pos;
-            players::step_movement(&self.map, &mut p.state, &p.input, TICK_DT);
+            let in_car = p.vehicle.is_some();
+            let before = if in_car { driving.iter().find(|d| d.0 == p.id).map_or(p.state.pos, |d| d.1) } else { p.state.pos };
+            if !in_car {
+                players::step_movement(&self.map, &mut p.state, &p.input, TICK_DT);
+            }
             // This life's time played and distance walked (`crate::run`).
             p.run.secs += TICK_DT as f64;
             p.run.distance_m += p.state.pos.distance(before) as f64;
             // Starting to climb through a broken window: the glass left in the frame may cut.
-            if !self.map.in_window_opening(before) && self.map.window_opening(p.state.pos) == Some(Edge::WindowBroken) {
+            let height = p.state.height(&self.map);
+            if height == 0.0 && !self.map.in_window_opening(before) && self.map.window_opening(p.state.pos) == Some(Edge::WindowBroken) {
                 climbed_glass.push(pi);
             }
             let moving = p.state.pos.distance_squared(before) > 1e-8;
             // Stealth (#46): harder to see, and quieter sneaking.
             let stealth = p.skills.level(Skill::Stealth, &self.config.skills);
-            let sight_mult = self.config.skills.sight_mult(stealth);
-            self.targets.push(Target { id: p.id, pos: p.state.pos, stance: p.state.stance, moving, ignored: p.dev.ignored, sight_mult });
-            if moving && self.heard.len() < MAX_SOUNDS {
+            let sight_mult = self.config.skills.sight_mult(stealth) * p.origin.perks.seen_from;
+            // In a lit room (`crate::power`): seen through its windows as if by day.
+            let room = self.map.room_at(p.state.pos);
+            let lit = if room != 0 && self.power.is_lit(room) { self.config.power.lit_room_seen } else { 0.0 };
+            // By a lit fire (`crate::fire`): seen in its light.
+            let lit = if self.fires.list.is_empty() { lit } else { lit.max(crate::fire::firelight(&self.fires, &self.config.fire, p.state.pos)) };
+            self.targets.push(Target { id: p.id, pos: p.state.pos, stance: p.state.stance, moving, ignored: p.dev.ignored || height > self.config.stairs.out_of_reach, sight_mult, lit });
+            if moving && !in_car && self.heard.len() < MAX_SOUNDS {
                 let radius = match p.state.stance {
                     Stance::Sneak => t.sneak_noise * self.config.skills.footstep_mult(stealth),
                     Stance::Walk => t.walk_noise,
                     Stance::Run => t.run_noise,
-                };
+                } * p.origin.perks.footsteps;
                 self.heard.push(Sound::new(p.state.pos, radius, SoundSource::Player(p.id)));
             }
         }
@@ -899,7 +1290,7 @@ impl World {
         // Which regions players are near (respawn keeps away from those for a while).
         if !self.players.is_empty() {
             let seen = self.config.population.respawn.seen_distance;
-            self.population.update_seen(&self.regions, self.players.iter().map(|p| p.state.pos), seen, self.tick);
+            self.population.update_seen(&self.regions, self.players.iter().map(|p| p.state.pos), seen, self.tick + self.far_ticks);
         }
 
         // Tiers: who gets how much of the simulation this tick, by distance to the players.
@@ -912,6 +1303,13 @@ impl World {
         self.regions.rebuild_where(&self.zombies.pos, |i| states[i] != ZombieState::Dead && tier[i] == Tier::Virtual);
         let tier_ms = tier_start.elapsed().as_secs_f32() * 1000.0;
         self.step_player_actions();
+        // A wave runs out; a swing or a blow ends any gesture (#67).
+        self.step_gestures();
+        // Tied hands worked loose, tying, freeing and searching other survivors (#73).
+        self.step_bonds();
+        // Seated survivors get up when they move, fight, fall asleep or are knocked about.
+        self.step_sit();
+        self.step_groups();
         // Ignored players (dev) aren't heard: their footsteps, swings, doors and searches are
         // dropped here, before anything listens (senses, the far tiers, migration).
         if self.players.iter().any(|p| p.dev.ignored) {
@@ -930,11 +1328,13 @@ impl World {
             let daylight = senses::daylight(self.time_of_day());
             let seed = self.config.seed();
             sight_checks = senses::sight_pass(&mut self.zombies, &self.hash, &self.map, &self.targets, t, daylight, self.tick, seed);
-            senses::hearing_pass(&mut self.zombies, &self.hash, &self.map, &self.heard, t);
+            senses::hearing_pass(&mut self.zombies, &self.hash, &self.map, &self.heard, t, seed, &mut self.scratch_marks);
         }
         let senses_ms = start.elapsed().as_secs_f32() * 1000.0 - tier_ms;
         // XP for running, moving overloaded and sneaking near zombies (#46).
         self.step_skills();
+        // Each survivor's map fills in round it.
+        self.step_explore();
 
         // Build the fields zombies asked for last tick, and follow moving players.
         let targets = &self.targets;
@@ -954,6 +1354,8 @@ impl World {
             nav: long_paths.then_some(&mut self.nav),
             hash: &self.hash,
             targets: &self.targets,
+            // Kept up to date by the tier pass whenever there are players.
+            near_players: (!self.players.is_empty()).then_some(&self.chunk_dist),
             tuning: &self.config.zombie,
             flow: &mut self.flow_cache,
             goal: self.goal_flow.as_ref(),
@@ -987,12 +1389,20 @@ impl World {
         if self.goal.is_none() {
             tiers::virtual_hearing(&mut self.zombies, &self.regions, &self.map, &self.heard, t, tt);
             // Loud sounds leave attractors that draw the far horde in over the next minutes.
-            self.population.hear(&self.heard, &self.map, migration, self.tick);
+            self.population.hear(&self.heard, &self.map, migration, self.tick + self.far_ticks);
         }
-        self.population.expire(self.tick);
+        // The far clock: one step a tick, or `sleep_time_scale` of them while everyone sleeps, so
+        // the far horde's wandering and migration, attractors and respawn keep up with the night
+        // going by (#57). Active and near zombies, which can reach a sleeper, keep real time.
+        let far_steps = self.far_steps();
+        let far_from = self.tick + self.far_ticks;
         let seed = self.config.generation.seed;
-        let nav = long_paths.then_some(&mut self.nav);
-        let virtual_updated = tiers::step_virtual(&mut self.zombies, &self.regions, &self.map, &self.walk, nav, t, tt, &self.population, migration, self.tick, seed);
+        let mut virtual_updated = 0;
+        for far in far_from..far_from + far_steps {
+            self.population.expire(far);
+            let nav = long_paths.then_some(&mut self.nav);
+            virtual_updated += tiers::step_virtual(&mut self.zombies, &self.regions, &self.map, &self.walk, nav, t, tt, &self.population, migration, far, self.tick, seed);
+        }
         let virtual_ms = virtual_start.elapsed().as_secs_f32() * 1000.0;
         self.apply_thumps();
         self.apply_zombie_attacks();
@@ -1003,13 +1413,40 @@ impl World {
         self.clock_offset_hours += hours - real;
         self.step_health(hours, TICK_DT);
         self.step_needs(hours, true);
+        self.step_first_night(hours);
+        self.step_power();
+        // World events (`crate::events`): the water and power going off.
+        self.step_events(false);
+        // Fires burn down, crackle and burn what stands in them (`crate::fire`).
+        self.step_fires(hours, TICK_DT);
+        // Fallen logs lie about the forest near players (`crate::trees`).
+        self.step_deadwood();
         // Fitness or Strength went up: the snapshot carries the new movement.
         self.refresh_skill_mods();
+        // Spawn protection runs down; logged-out survivors whose time is up leave the world (#68).
+        self.step_logout();
         // Last: indices into the zombie columns (the spatial hash) aren't needed after this.
         self.remove_old_corpses();
-        let respawned = self.respawn();
+        let respawned = (far_from..far_from + far_steps).map(|far| self.respawn(far)).sum();
+        self.far_ticks += far_steps - 1;
+        // Which players see and heard which, for what each client is told (#66).
+        self.prune_upstairs();
+        self.step_awareness();
+        // Mod scripts (#25): their hooks for what this tick did, then their tick hooks. What they
+        // change shows in the next snapshot; a noise they make is heard next tick.
+        if self.scripts.is_some() {
+            for k in 0..self.hit_events.len() {
+                let h = self.hit_events[k];
+                self.script_event(crate::script::ScriptEvent::Hit { player: h.player, zombie: h.zombie, damage: h.damage, killed: h.effect == crate::combat::HitEffect::Killed });
+            }
+            self.run_scripts();
+        }
 
         self.tick += 1;
+        // Food in fridges with power keeps (`crate::power`).
+        self.step_fridges(minute, self.game_minute());
+        // Where everybody stands now, for blows of lagging clients landing in the next few ticks (#23).
+        self.record_lag_frame();
         let tier_counts = self.tier_counts();
         self.stats = TickStats {
             tick_ms: start.elapsed().as_secs_f32() * 1000.0,
@@ -1046,13 +1483,17 @@ impl World {
     /// The tier pass: with at least one player (and tiers enabled), every zombie moves to the tier
     /// its chunk's distance to the nearest player calls for. With none, nothing changes tier.
     fn assign_tiers(&mut self) -> tiers::TierChanges {
+        // How far each chunk is from the players: the tiers go by it, and the zombie update uses
+        // it to tell where nobody is about.
+        if !self.players.is_empty() {
+            self.chunk_dist.update(&self.map, self.players.iter().map(|p| p.state.pos), self.config.tiers.chunk_reach());
+        }
         if !self.config.tiers.enabled || self.players.is_empty() {
             if !self.config.tiers.enabled {
                 self.zombies.tier.iter_mut().for_each(|t| *t = Tier::Active);
             }
             return tiers::TierChanges::default();
         }
-        self.chunk_dist.update(&self.map, self.players.iter().map(|p| p.state.pos));
         tiers::assign(&mut self.zombies, &self.chunk_dist, &self.config.tiers, &self.config.zombie, &self.map, &mut self.scratch_tiles)
     }
 
@@ -1060,14 +1501,15 @@ impl World {
     /// `unseen_secs` that has fewer than `top_up_below` of its target gets topped up, on open
     /// ground picked by density, never near where the player woke up or in that house. New
     /// zombies start on the virtual tier. Returns how many were added.
-    fn respawn(&mut self) -> u32 {
-        let r = self.config.population.respawn.clone();
+    fn respawn(&mut self, tick: u64) -> u32 {
+        let r = &self.config.population.respawn;
         let every = ((r.interval_secs / TICK_DT).round() as u64).max(1);
-        if !r.enabled || self.players.is_empty() || self.tick == 0 || !self.tick.is_multiple_of(every) {
+        if !r.enabled || self.players.is_empty() || tick == 0 || !tick.is_multiple_of(every) {
             return 0;
         }
+        let r = r.clone();
         self.population.count_into(&self.zombies, &self.regions);
-        let (town, max, seed, tick) = (self.town(), self.config.population.max_density(), self.config.seed(), self.tick);
+        let (town, max, seed) = (self.town(), self.config.population.max_density(), self.config.seed());
         let (unseen, far2) = ((r.unseen_secs / TICK_DT) as u64, r.min_distance * r.min_distance);
         let mut budget = r.max_per_check;
         let mut added = 0;
@@ -1105,6 +1547,18 @@ impl World {
         }
         self.population.respawned += added;
         added
+    }
+
+    /// The far clock, in ticks: what the virtual tier, the attractors and respawn go by. `tick`,
+    /// plus the ticks it ran ahead while every living player slept (game time then runs
+    /// `sleep_time_scale` times as fast, and the far horde with it: `TierTuning::far_follows_sleep`).
+    pub fn far_tick(&self) -> u64 {
+        self.tick + self.far_ticks
+    }
+
+    /// Steps of the far clock this tick: the whole time scale while everyone sleeps, else 1.
+    fn far_steps(&self) -> u64 {
+        if self.config.tiers.far_follows_sleep { (self.time_scale().round() as u64).max(1) } else { 1 }
     }
 
     /// The population state: per-region targets, zones and sightings, and the live attractors.
@@ -1170,8 +1624,48 @@ impl World {
             mix(p.state.pos.y.to_bits());
             mix(p.state.facing.to_bits());
             mix(p.state.endurance.to_bits());
+            // Who the survivor is (`crate::origin`), only when it is anyone: a plain one hashes as before.
+            if !p.origin.is_plain() {
+                p.origin.hash(&mut mix);
+            }
             // Dev toggles add bits only when on, so a world without them hashes as it always did.
             mix(p.state.stance as u32 | (p.state.winded as u32) << 8 | (p.dead as u32) << 9 | (p.dev.god as u32) << 10 | (p.dev.ignored as u32) << 11);
+            // Upstairs (`crate::stairs`): mixed in only then, for the same reason.
+            if p.state.level > 0 {
+                mix(0x4C45_564C);
+                mix(p.state.level as u32);
+            }
+            // Climbing (E): mixed in only then, for the same reason.
+            if let Some(c) = p.state.climb {
+                mix(0x434C_4D42);
+                for v in [c.at.x, c.at.y, c.dir.x, c.dir.y, c.left] {
+                    mix(v.to_bits());
+                }
+            }
+            // Reeling or down (PvP): mixed in only then, for the same reason.
+            if let Some(k) = p.knock {
+                mix(0x4B4E_0000 | k.down as u32);
+                mix(k.timer.to_bits());
+            }
+            // Sitting down: likewise only while seated.
+            if let Some(s) = p.seated {
+                mix(0x5345_4100 | s as u32);
+            }
+            // Logged out, or spawn protection (#68): likewise only while set.
+            if let Some(left) = p.away {
+                mix(0x4157_4159);
+                mix(left.to_bits());
+            }
+            if p.protected > 0.0 {
+                mix(0x5052_4F54);
+                mix(p.protected.to_bits());
+            }
+            // Tied hands (#73): likewise.
+            if let Some(r) = p.restraint {
+                mix(0x424F_0000 | r.item as u32);
+                mix(r.by ^ (r.struggling as u32) << 31);
+                mix(r.struggled.to_bits());
+            }
             mix(p.hp.to_bits());
             Self::hash_health(&p.health, &mut mix);
             Self::hash_needs(&p.needs, &mut mix);
@@ -1181,6 +1675,11 @@ impl World {
             mix(p.action.map_or(u32::MAX, |a| a.kind as u32 | a.timer.to_bits() << 2));
             for s in p.inventory.stacks() {
                 mix_stack(&mut mix, s);
+            }
+            // Which pouch each carried stack is in (only stacks out of the pockets, so a world with
+            // no bags hashes as it did).
+            for (k, s) in p.inventory.carried.iter().enumerate().filter(|(_, s)| s.home != crate::items::Pouch::Pockets) {
+                mix(0xBA60_0000 | (s.home as u32) << 12 | k as u32 & 0xFFF);
             }
             let inv = &p.inventory;
             mix(inv.worn.len() as u32 | (inv.carried.len() as u32) << 8 | (inv.hand.is_some() as u32) << 16 | (inv.off_hand.is_some() as u32) << 17 | (inv.back.is_some() as u32) << 18 | (inv.shoulder.is_some() as u32) << 19);
@@ -1193,6 +1692,9 @@ impl World {
                     crate::inventory::JobKind::Use { index, item, .. } => index ^ (item as u32) << 8 ^ 0x0E00_0000,
                     crate::inventory::JobKind::Treat { wound, treatment, item } => wound.unwrap_or(0xFFFF) ^ (treatment as u32) << 16 ^ item.map_or(0xFF, u32::from) << 20 ^ 0x7000_0000,
                     crate::inventory::JobKind::Craft { recipe } => recipe as u32 ^ 0xC4AF_0000,
+                    crate::inventory::JobKind::Reload { spare } => spare as u32 ^ 0x4E10_0000,
+                    crate::inventory::JobKind::Blind { edge, fit } => (edge.tile.x as u32) ^ (edge.tile.y as u32) << 12 ^ (edge.edge as u32) << 24 ^ (fit as u32) << 25 ^ 0xB100_0000,
+                    crate::inventory::JobKind::Build { edge, build, add } => (edge.tile.x as u32) ^ (edge.tile.y as u32) << 12 ^ (edge.edge as u32) << 24 ^ (add as u32) << 25 ^ (build as u32) << 26 ^ 0xBA00_0000,
                 });
             }
         }
@@ -1202,6 +1704,11 @@ impl World {
             mix(it.pos.x.to_bits());
             mix(it.pos.y.to_bits());
         }
+        // What lies upstairs (`crate::stairs`): only when something does.
+        for &id in self.upstairs.iter().filter(|id| self.items.binary_search_by_key(*id, |it| it.id).is_ok()) {
+            mix(0x5550_0000);
+            mix(id);
+        }
         for (&c, stacks) in &self.opened {
             mix(c);
             mix(stacks.len() as u32);
@@ -1209,13 +1716,73 @@ impl World {
                 mix_stack(&mut mix, s);
             }
         }
+        self.power.hash(&mut mix);
+        self.fires.hash(&mut mix);
+        if let Some(f) = &self.weather_forced {
+            f.hash(&mut mix);
+        }
+        self.events.hash(&mut mix);
+        // Shoves adding up (mixed in only while there are any, so worlds without hash as before).
+        for sh in &self.shoved {
+            mix(0x5348_0000 | sh.count as u32);
+            mix(sh.zombie);
+            mix(sh.tick as u32);
+        }
+        // Trees chopped at and felled (mixed in only while any, so worlds without hash as before).
+        self.trees.hash(&mut mix);
+        if !self.vehicles.list.is_empty() {
+            self.hash_vehicles(&mut mix);
+        }
         for (&(x, y, w), hp) in &self.edge_hp {
             mix(x as u32);
             mix(y as u32);
             mix(w as u32);
             mix(hp.to_bits());
         }
+        for (&(x, y, w), &down) in &self.map.blinds {
+            mix(x as u32 ^ 0xB11D_0000);
+            mix(y as u32);
+            mix(w as u32 | (down as u32) << 8);
+        }
+        // Barricades (`crate::build`): only while there are any, so worlds without hash as before.
+        for (&(x, y, w), b) in &self.map.barricades {
+            mix(x as u32 ^ 0xBA22_0000);
+            mix(y as u32);
+            mix(w as u32 | (b.planks as u32) << 8 | (b.build as u32) << 16 | (b.owner_side as u32) << 31);
+            mix(b.hp.to_bits());
+            mix(b.under as u32);
+        }
         self.population.hash_into(&mut mix);
+        // Only once the far clock has run ahead, so worlds nobody slept in hash as before.
+        if self.far_ticks != 0 {
+            mix(self.far_ticks as u32 ^ 0xFA2C_0000);
+            mix((self.far_ticks >> 32) as u32);
+        }
+        // Survivors out of the world (#68): only when there are any.
+        for p in &self.parked {
+            mix(0x5041_524B);
+            mix(p.id);
+            mix(p.state.pos.x.to_bits());
+            mix(p.state.pos.y.to_bits());
+            mix(p.hp.to_bits());
+        }
+        // Groups (#73): only when there are any.
+        for g in &self.groups.list {
+            mix(0x4752_5053 ^ g.id);
+            g.members.iter().for_each(|&m| mix(m));
+            for m in &g.markers {
+                mix(m.id);
+                mix(m.pos.x.to_bits());
+                mix(m.pos.y.to_bits());
+            }
+        }
+        for i in &self.groups.invites {
+            mix(0x494E_5600 ^ i.from);
+            mix(i.to);
+            mix(i.until as u32);
+        }
+        // What mod scripts keep (#25): only once there is any.
+        self.script.hash_into(&mut mix);
         h
     }
 }
@@ -1223,7 +1790,7 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::Side;
+    use crate::map::{Feature, Side};
     use crate::template::BuildingTemplate;
     use crate::zombies::{ZombieAnim, ZombieState};
 
@@ -1457,8 +2024,23 @@ mod tests {
         assert!(near(&w, b) > before_b + 10, "player 2: {before_b} -> {}", near(&w, b));
     }
 
-    /// An empty grass field at noon with no zombies, for hand-placed sense tests.
+    /// An empty grass field at noon with no zombies, for hand-placed sense tests. Its zombies have
+    /// the sharper senses of before the calmer defaults (sight 30 m, a sure 40% of it, noticing at
+    /// 0.45 a check, footsteps and groans as loud, 25 s memory, 20 s battering
+    /// interest, every zombie as alert as the next), so these tests are about what follows
+    /// noticing; `calm_arena` has the defaults.
     fn arena() -> World {
+        let mut w = calm_arena();
+        let t = &mut w.config.zombie;
+        t.alertness = (1.0, 1.0);
+        (t.sight_day, t.peripheral_mult, t.still_sight_mult, t.sure_sight_frac, t.notice_chance) = (30.0, 0.45, 0.7, 0.4, 0.45);
+        (t.walk_noise, t.run_noise, t.groan_noise) = (6.0, 14.0, 9.0);
+        (t.memory_secs, t.thump_interest_secs) = (25.0, 20.0);
+        w
+    }
+
+    /// The arena with the default (calmer) zombie senses.
+    fn calm_arena() -> World {
         let mut config = WorldConfig::new(11, 0, templates());
         config.start_hour = 12.0;
         let mut w = World::new(config);
@@ -1479,6 +2061,89 @@ mod tests {
             w.map.set_edge(IVec2::new(x, y), crate::map::Side::W, Edge::Wall);
         }
         w.map_changed();
+    }
+
+    /// With the default senses a wanderer that catches sight of a player some way off goes to
+    /// look first (no chase, no groan), and only chases once it notices them again.
+    /// Some zombies are more alert than others: alertness is spread over its range, most of them
+    /// a little dull and a few sharp, about 1 on average, the same for a zombie every time. A
+    /// sharp one hears a sound a dull one doesn't.
+    #[test]
+    fn some_zombies_are_more_alert_than_others() {
+        let t = ZombieTuning::default();
+        let a: Vec<f32> = (1..=4000).map(|id| t.alertness_of(5, id)).collect();
+        let mean = a.iter().sum::<f32>() / a.len() as f32;
+        let sharp = a.iter().filter(|x| **x > 1.3).count() as f32 / a.len() as f32;
+        let dull = a.iter().filter(|x| **x < 0.9).count() as f32 / a.len() as f32;
+        eprintln!("alertness mean {mean:.2}, sharp (> 1.3) {sharp:.2}, dull (< 0.9) {dull:.2}");
+        assert!((mean - 1.0).abs() < 0.05, "mean {mean}");
+        assert!(a.iter().all(|x| (t.alertness.0..=t.alertness.1).contains(x)));
+        assert!(sharp > 0.1 && sharp < 0.35 && dull > 0.35, "sharp {sharp}, dull {dull}");
+        assert_eq!(t.alertness_of(5, 17), t.alertness_of(5, 17));
+        // Hearing: one sound, two zombies the same distance off, one sharp and one dull.
+        let mut w = calm_arena();
+        let seed = w.config.seed();
+        let (lo_id, hi_id) = {
+            let ids: Vec<u32> = (w.next_id..w.next_id + 400).collect();
+            let lo = *ids.iter().min_by(|x, y| t.alertness_of(seed, **x).total_cmp(&t.alertness_of(seed, **y))).unwrap();
+            let hi = *ids.iter().max_by(|x, y| t.alertness_of(seed, **x).total_cmp(&t.alertness_of(seed, **y))).unwrap();
+            (lo, hi)
+        };
+        let place = |w: &mut World, id: u32, pos: Vec2| {
+            w.next_id = id;
+            add_zombie(w, pos, 0.0)
+        };
+        let (a, b) = if lo_id < hi_id { (lo_id, hi_id) } else { (hi_id, lo_id) };
+        let first = place(&mut w, a, Vec2::new(110.0, 100.5));
+        let second = place(&mut w, b, Vec2::new(90.0, 100.5));
+        let (dull_i, sharp_i) = if a == lo_id { (first, second) } else { (second, first) };
+        w.emit_sound(Vec2::new(100.0, 100.5), 10.0 / 0.8);
+        w.step();
+        w.step();
+        assert_eq!(w.zombies.state[dull_i], ZombieState::Wander, "the dull one heard it");
+        assert_eq!(w.zombies.state[sharp_i], ZombieState::Investigate, "the sharp one didn't");
+    }
+
+    #[test]
+    fn a_wanderer_glimpses_before_it_chases() {
+        let mut w = calm_arena();
+        let z = add_zombie(&mut w, Vec2::new(90.5, 100.5), 0.0);
+        let id = w.add_player(Vec2::new(100.5, 100.5));
+        let mut first = None;
+        for t in 0..20 * 60u32 {
+            w.set_player_input(id, t + 1, PlayerInput { move_dir: if (t / 20) % 2 == 0 { Vec2::Y } else { -Vec2::Y }, facing: 0.0, run: false, sneak: false, aim: false });
+            w.step();
+            if first.is_none() && w.zombies.state[z] != ZombieState::Wander {
+                first = Some((t, w.zombies.state[z]));
+            }
+            if w.zombies.state[z].is_hunting() {
+                break;
+            }
+        }
+        let (t, state) = first.expect("never noticed a player walking 10 m in front of it");
+        assert_eq!(state, ZombieState::Investigate, "chased at the first glimpse");
+        assert!(t > 2, "noticed at once: tick {t}");
+        assert!(w.zombies.state[z].is_hunting(), "never gave chase: {:?}", w.zombies.state[z]);
+        assert_eq!(w.zombies.target_player[z], id);
+    }
+
+    /// A player standing 6 m inside a window is safe from a zombie looking in; at 1.5 m it isn't.
+    #[test]
+    fn through_a_window_a_zombie_only_sees_close() {
+        for (gap, seen) in [(6.0, false), (1.5, true)] {
+            let mut w = calm_arena();
+            for y in 80..120 {
+                let edge = if y == 100 { Edge::Window } else { Edge::Wall };
+                w.map.set_edge(IVec2::new(100, y), crate::map::Side::W, edge);
+            }
+            w.map_changed();
+            let z = add_zombie(&mut w, Vec2::new(99.4, 100.5), 0.0);
+            w.add_player(Vec2::new(100.0 + gap, 100.5));
+            for _ in 0..20 * 20 {
+                w.step();
+            }
+            assert_eq!(w.zombies.state[z] != ZombieState::Wander, seen, "player {gap} m in: {:?}", w.zombies.state[z]);
+        }
     }
 
     #[test]
@@ -1917,6 +2582,10 @@ mod tests {
         // Climb out: much slower than walking the same metre.
         let start = w.player(id).unwrap().state.pos;
         let mut ticks = 0;
+        // Walking into it isn't enough: it takes E.
+        walk(&mut w, dir, 10);
+        assert!(w.player(id).unwrap().state.pos.distance(start) < 0.3, "climbed out without E");
+        assert!(w.player_climb(id), "E at the open window");
         while w.player(id).unwrap().state.pos.distance(start) < 1.2 {
             walk(&mut w, dir, 1);
             ticks += 1;
@@ -2062,16 +2731,17 @@ mod tests {
         assert_eq!(w.zombies.state[z], ZombieState::Wander);
     }
 
-    /// A player in a fenced pen (fences can't be battered down) can be seen but not reached: a
-    /// zombie gives up at once instead of pushing at the fence.
+    /// A player in a ring of trees (nothing to batter, nothing to climb) can be seen but not
+    /// reached: a zombie gives up at once instead of pushing at the trees.
     #[test]
     fn a_chaser_gives_up_on_a_player_it_cannot_reach() {
         let mut w = arena();
-        for k in 0..3 {
-            w.map.set_edge(IVec2::new(110 + k, 99), Side::N, Edge::Fence);
-            w.map.set_edge(IVec2::new(110 + k, 101), Side::S, Edge::Fence);
-            w.map.set_edge(IVec2::new(110, 99 + k), Side::W, Edge::Fence);
-            w.map.set_edge(IVec2::new(112, 99 + k), Side::E, Edge::Fence);
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                if (dx, dy) != (0, 0) {
+                    w.map.tile_mut(IVec2::new(111 + dx, 100 + dy)).unwrap().feature = Feature::Tree;
+                }
+            }
         }
         w.map_changed();
         let z = add_zombie(&mut w, Vec2::new(101.5, 100.5), 0.0);
@@ -2084,7 +2754,30 @@ mod tests {
         }
         assert!(chased, "never saw the player");
         assert!(gave_up, "kept after a player it can't reach");
-        assert!(w.zombies.pos[z].x < 108.0, "pressed up to the fence: {}", w.zombies.pos[z]);
+        assert!(w.zombies.pos[z].x < 109.0, "pressed up to the trees: {}", w.zombies.pos[z]);
+    }
+
+    /// Fences are climbed, slowly, as open windows are: a zombie chases a player into a fenced pen
+    /// over the fence and gets to it.
+    #[test]
+    fn a_chaser_climbs_a_fence_to_get_at_a_player() {
+        let mut w = arena();
+        for k in 0..3 {
+            w.map.set_edge(IVec2::new(110 + k, 99), Side::N, Edge::Fence);
+            w.map.set_edge(IVec2::new(110 + k, 101), Side::S, Edge::Fence);
+            w.map.set_edge(IVec2::new(110, 99 + k), Side::W, Edge::Fence);
+            w.map.set_edge(IVec2::new(112, 99 + k), Side::E, Edge::Fence);
+        }
+        w.map_changed();
+        assert!(w.map.in_window_opening(Vec2::new(110.1, 100.5)), "a fence is a climb");
+        let z = add_zombie(&mut w, Vec2::new(101.5, 100.5), 0.0);
+        w.add_player(Vec2::new(111.5, 100.5));
+        let mut inside = false;
+        for _ in 0..20 * 20 {
+            w.step();
+            inside |= w.zombies.pos[z].x > 110.4;
+        }
+        assert!(inside, "never climbed into the pen: {}", w.zombies.pos[z]);
     }
 
     /// Corpses are cleared away: beyond `max_corpses` the oldest go first, and any that have lain
@@ -2404,6 +3097,10 @@ mod tests {
             }
         }
         w.map_changed();
+        // A zombie that started in a doorway shut above is pushed clear of the door.
+        for i in 0..w.zombies.len() {
+            w.zombies.pos[i] = w.map.resolve_circle(w.zombies.pos[i], ZOMBIE_RADIUS);
+        }
         let size = Vec2::new(w.map.width() as f32, w.map.height() as f32);
         let stops: Vec<Vec2> = [Vec2::new(0.5, 0.5), Vec2::new(0.15, 0.2), Vec2::new(0.85, 0.5), Vec2::new(0.5, 0.85), Vec2::new(0.2, 0.8)].iter().map(|f| open_tile_near(&w, *f * size)).collect();
         w.add_player(stops[0]);
@@ -2560,9 +3257,73 @@ mod tests {
         }
     }
 
+    /// Issue #70's target: 32 players spread over a 1 km map, so nearly every zombie of 22,500
+    /// is active, keep the worst tick within the 50 ms budget. Players on a grid over the whole
+    /// map, a horde of 1,000 round the first, one in four running, and all of them making a 60 m
+    /// noise on the same tick now and then (the worst case for hearing).
+    #[test]
+    fn thirty_two_spread_out_players_keep_the_worst_tick_within_budget() {
+        let mut w = World::new(WorldConfig::new(1, 21_500, templates()).with_map_chunks(64));
+        let size = w.map.width() as f32;
+        let mut ids = Vec::new();
+        for k in 0..32u32 {
+            let cell = (size - 120.0) / Vec2::new(6.0, 6.0);
+            let p = open_tile_near(&w, Vec2::splat(60.0) + cell * Vec2::new((k % 6) as f32 + 0.5, (k / 6) as f32 + 0.5));
+            if k == 0 {
+                w.spawn_zombies(1000, p, 45.0);
+            }
+            ids.push(w.add_player(p));
+            w.players[k as usize].hp = 1e9;
+        }
+        let ticks = if cfg!(debug_assertions) { 30 } else { 300 };
+        let (mut total, mut worst, mut worst_at, mut active) = (0.0f32, 0.0f32, 0, 0u32);
+        let mut worst_stats = w.stats;
+        let mut over = 0u32;
+        for t in 0..ticks {
+            for (k, &id) in ids.iter().enumerate() {
+                let d = Vec2::from_angle(t as f32 * 0.01 + k as f32);
+                w.set_player_input(id, t + 1, PlayerInput { move_dir: d, facing: 0.0, run: k % 4 == 0, sneak: false, aim: false });
+                if t % 100 == 10 {
+                    w.emit_sound(w.player(id).unwrap().state.pos, 60.0);
+                }
+            }
+            let s = Instant::now();
+            w.step();
+            let ms = s.elapsed().as_secs_f32() * 1000.0;
+            total += ms;
+            over += (ms > 50.0) as u32;
+            if ms > worst {
+                (worst, worst_at, worst_stats) = (ms, t, w.stats);
+            }
+            active = active.max(w.stats.active);
+        }
+        let (avg, s) = (total / ticks as f32, worst_stats);
+        eprintln!(
+            "32 players spread over 1 km, {} zombies, {active} active at most: {ticks} ticks, avg {avg:.3} ms/tick, worst {worst:.3} ms (budget 50 ms)\n  \
+             worst tick ({worst_at}): tiers+index {:.3} ms, senses {:.3} ms ({} sounds), flow {:.3} ms ({} fields), nav {:.3} ms, active AI {:.3} ms, near {:.3} ms, virtual {:.3} ms",
+            w.zombies.len(),
+            s.tier_ms,
+            s.senses_ms,
+            s.sounds,
+            s.flow_ms,
+            s.flow_builds,
+            s.nav_ms,
+            s.active_ms,
+            s.near_ms,
+            s.virtual_ms,
+        );
+        assert!(active >= 12_000, "only {active} active: the players aren't spread out");
+        assert!(w.stats.flow_builds <= FLOW_BUILDS_PER_TICK, "{} fields built in a tick", w.stats.flow_builds);
+        if !cfg!(debug_assertions) {
+            // The tests run side by side on every core, so a tick now and then is this thread
+            // waiting its turn rather than working: a few may go over, not a run of them.
+            assert!(avg < 25.0 && over <= 3, "avg {avg:.2} ms, worst {worst:.2} ms, {over} ticks over the budget");
+        }
+    }
+
     // --- Population: density from data, respawn, migration toward noise (crate::population) ---
 
-    use crate::population::{PopulationDef, Zone, parse_population};
+    use crate::population::{GroupDef, PopulationDef, Zone, parse_population};
 
     /// Living zombies per open tile in each zone, and the open tiles per zone.
     fn zone_densities(w: &World) -> ([f64; 7], [u32; 7]) {
@@ -2632,6 +3393,30 @@ mod tests {
         config.zombies = None;
         let n = World::new(config).zombies.len();
         assert!((2200..3200).contains(&n), "default map: {n} zombies");
+    }
+
+    /// Zombies start in groups (`population.ron`'s `groups`), not spread out evenly: far more of
+    /// them have company within a few metres than with groups of one, at the same total. Yet
+    /// stragglers stay: at least half as many stand alone (nobody within 6 m) as when spread out.
+    #[test]
+    fn zombies_start_in_groups() {
+        let def = parse_population(include_str!("../../../assets/data/population.ron")).unwrap();
+        let layout = |def: PopulationDef| {
+            let mut config = WorldConfig::new(1, 0, templates()).with_population(def);
+            config.zombies = Some(2500);
+            let w = World::new(config);
+            assert_eq!(w.zombies.len(), 2500);
+            let pos = &w.zombies.pos;
+            let near = |p: &Vec2, r: f32| pos.iter().filter(|q| q.distance(*p) < r).count() - 1;
+            let with = pos.iter().filter(|p| near(p, 4.0) >= 3).count() as f32 / pos.len() as f32;
+            let alone = pos.iter().filter(|p| near(p, 6.0) == 0).count() as f32 / pos.len() as f32;
+            (with, alone)
+        };
+        let (grouped, alone) = layout(def.clone());
+        let (spread, alone_spread) = layout(PopulationDef { groups: GroupDef { size: (1, 1), forest_size: (1, 1), loners: 0.0, ..def.groups.clone() }, ..def });
+        eprintln!("with three or more others within 4 m: grouped {grouped:.2}, spread {spread:.2}; alone within 6 m: {alone:.2} (spread {alone_spread:.2})");
+        assert!(grouped > spread * 1.8, "grouped {grouped:.2}, spread {spread:.2}");
+        assert!(alone > alone_spread * 0.5, "only {alone:.2} stragglers (spread {alone_spread:.2})");
     }
 
     /// An empty grass field `chunks` chunks a side, at noon, with no zombies.
@@ -2799,6 +3584,96 @@ mod tests {
         off.migration.enabled = false;
         let (arrived, _) = migration_run(off, noise, from, 120.0, false, false, 20, |_| {});
         assert_eq!(*arrived.last().unwrap(), 0, "without migration: {arrived:?}");
+    }
+
+    /// While everyone sleeps and game time runs 30x (#57), the far clock runs with it: in 40 s of
+    /// real time (8 game hours) a horde 410 m from a loud noise has walked to it and the attractor
+    /// has faded, where awake (or with `far_follows_sleep` off) nobody has got anywhere. The same
+    /// run twice gives the same world, and a save made mid-sleep carries on exactly.
+    #[test]
+    fn the_far_horde_follows_game_time_while_everyone_sleeps() {
+        let (noise, from) = (Vec2::new(320.5, 600.5), Vec2::new(600.5, 300.5));
+        let run = |asleep: bool, follow: bool, save_at: Option<u32>| {
+            let mut w = big_arena(40, PopulationDef::default());
+            w.config.tiers.far_follows_sleep = follow;
+            // The emptied map has no buildings (a save checks it).
+            w.spawn_building = 0;
+            let id = w.add_player(Vec2::new(20.5, 20.5));
+            let n = w.spawn_zombies(300, from, 30.0);
+            w.step();
+            w.step();
+            w.make_noise(noise, 120.0, false);
+            if asleep {
+                w.set_needs(id, None, None, Some(0.95));
+                w.player_sleep(id).unwrap();
+            }
+            for k in 0..40 * 20 {
+                if save_at == Some(k) {
+                    let hash = w.state_hash();
+                    w = World::load(&w.save(), &w.config).unwrap();
+                    assert_eq!(w.state_hash(), hash, "the loaded world is the saved one");
+                }
+                w.step();
+            }
+            assert_eq!(w.players[0].needs.asleep(), asleep);
+            assert_eq!(w.tier_counts(), [0, 0, n], "the test should stay on the virtual tier");
+            w
+        };
+        let near = |w: &World| w.zombies.pos.iter().filter(|p| p.distance(noise) < 60.0).count();
+        let slept = run(true, true, None);
+        assert_eq!(slept.far_tick(), slept.tick + 29 * 40 * 20, "30 far steps a tick asleep");
+        assert!(near(&slept) >= 300 * 6 / 10, "only {} of 300 came while we slept", near(&slept));
+        assert!(slept.population().attractors.is_empty(), "20 far minutes on, the attractor has faded");
+        for (name, w) in [("awake", run(false, true, None)), ("asleep, real time", run(true, false, None))] {
+            assert_eq!(w.far_tick(), w.tick, "{name}");
+            assert!(w.zombies.pos.iter().all(|p| p.distance(noise) > 200.0), "{name}: 40 s is too soon to get anywhere");
+            assert_eq!(w.population().attractors.len(), 1, "{name}");
+        }
+        assert_eq!(run(true, true, None).state_hash(), slept.state_hash(), "deterministic");
+        assert_eq!(run(true, true, Some(333)).state_hash(), slept.state_hash(), "saved and loaded mid-sleep");
+    }
+
+    /// What the far clock costs at 30x (#57): asleep in the forest of a 1 km map with 21,500
+    /// zombies and a lasting noise in town drawing the far horde, a tick (30 virtual steps: about
+    /// a third of the far horde moved, many along plans) stays well inside the 50 ms budget.
+    #[test]
+    fn sleeping_through_the_far_clock_stays_in_the_tick_budget() {
+        let mut w = World::new(WorldConfig::new(1, 21_500, templates()).with_map_chunks(64));
+        let main_y = (w.town_min.y + w.town_max.y) as f32 / 2.0;
+        let camp = open_tile_near(&w, Vec2::new(w.town_min.x as f32 * 0.5, main_y));
+        let id = w.add_player(camp);
+        w.set_dev(id, Some(true), Some(true));
+        w.step();
+        let town = (w.town_min + w.town_max).as_vec2() / 2.0;
+        w.make_noise(town, 120.0, true);
+        w.set_needs(id, None, None, Some(0.95));
+        w.player_sleep(id).unwrap();
+        let ticks = if cfg!(debug_assertions) { 20 } else { 400 };
+        let (mut total, mut worst, mut moved, mut virtual_ms) = (0.0f32, 0.0f32, 0u32, 0.0f32);
+        for _ in 0..ticks {
+            let s = Instant::now();
+            w.step();
+            let ms = s.elapsed().as_secs_f32() * 1000.0;
+            (total, worst) = (total + ms, worst.max(ms));
+            moved += w.stats.virtual_updated;
+            virtual_ms += w.stats.virtual_ms;
+        }
+        assert!(w.players[0].needs.asleep(), "{:?}", w.woke);
+        assert_eq!(w.far_tick(), w.tick + 29 * ticks as u64);
+        let n = ticks as f32;
+        eprintln!(
+            "asleep at 30x, 1 km, {} zombies ({:?} by tier): {:.2} ms/tick mean, {:.2} worst; virtual {:.2} ms/tick, {:.0} moved a tick",
+            w.zombies.len(),
+            w.tier_counts(),
+            total / n,
+            worst,
+            virtual_ms / n,
+            moved as f32 / n
+        );
+        assert!(moved as f32 / n > 3000.0, "the far horde moves 30x as often: {} a tick", moved as f32 / n);
+        if !cfg!(debug_assertions) {
+            assert!(total / n < 25.0, "{:.2} ms/tick asleep", total / n);
+        }
     }
 
     /// A really loud noise inside a shut room still pulls the far horde in (muffled: from less far

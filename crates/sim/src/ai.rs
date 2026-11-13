@@ -28,6 +28,7 @@ use crate::players::PLAYER_RADIUS;
 use crate::rng::Rng;
 use crate::senses::{Sound, SoundSource, Target};
 use crate::spatial::SpatialHash;
+use crate::tiers::ChunkDistances;
 use crate::vision::{clear_path, line_of_sight};
 use crate::zombies::{GET_UP_SECS, Tier, ZombieAnim, ZombieState, Zombies};
 
@@ -68,13 +69,24 @@ pub struct ZombieTuning {
     pub run_sight_mult: f32,
     pub still_sight_mult: f32,
     /// Within this fraction of the range a check always notices; beyond it the chance per check
-    /// falls from `notice_chance` to 0 at full range.
+    /// falls from `notice_chance` to 0 at full range. A wandering zombie that notices someone
+    /// beyond it only glimpses them: it turns and shuffles over to look (investigates), and chases
+    /// only if it notices them again (or they come within this fraction).
     pub sure_sight_frac: f32,
     pub notice_chance: f32,
     /// Each zombie looks once every this many ticks.
     pub sight_interval_ticks: u8,
     /// A chaser keeps its own player in view out to this multiple of the range, without luck.
     pub chase_sight_mult: f32,
+    /// Range multiplier when it looks through a window (shut, open or broken): a survivor
+    /// indoors is hard to make out from the street.
+    pub window_sight_mult: f32,
+    /// Some zombies are sharper than others: each one's sight range, notice chance and hearing
+    /// are multiplied by its alertness, from a hash of its id, between these two. Skewed by
+    /// `alertness_skew` (1 even, higher: most near the low end, a few sharp ones), so the
+    /// defaults average about 1.
+    pub alertness: (f32, f32),
+    pub alertness_skew: f32,
 
     // Hearing.
     /// Footstep noise radius per tick while moving, by stance.
@@ -91,6 +103,14 @@ pub struct ZombieTuning {
     pub alert_groan_secs: f32,
     /// Fraction of a sound's radius that carries through walls (no line of sight).
     pub wall_muffle: f32,
+
+    // Herding.
+    /// A wanderer choosing where to shuffle next heads back toward the zombies round it (within
+    /// `herd_radius`) with this chance, when their middle is more than `herd_keep` away, so groups
+    /// stay groups instead of spreading over the map.
+    pub herd_chance: f32,
+    pub herd_radius: f32,
+    pub herd_keep: f32,
 
     // Memory and movement.
     /// How long a chaser keeps after a player it can't see.
@@ -164,46 +184,74 @@ pub struct ZombieTuning {
     /// Corpses kept at most (the oldest go first), and how long one lies before it's removed.
     pub max_corpses: u32,
     pub corpse_secs: f32,
+
+    // Knocked back.
+    /// A staggered or downed zombie's slide (from a shove or a blow) keeps this share of its speed
+    /// each tick, so it slides farther than a walker's (0.75) before it stops: a shove can push
+    /// one back about `0.25 m x slide / (1 - slide)` at most (1.5 m at 0.86).
+    pub knockback_slide: f32,
+}
+
+impl ZombieTuning {
+    /// How alert zombie `id` is (see `alertness`): a multiplier on its sight and hearing, the
+    /// same every time for that zombie in that world.
+    pub fn alertness_of(&self, seed: u64, id: u32) -> f32 {
+        let (lo, hi) = self.alertness;
+        let u = crate::rng::hash01(seed, id as u64, 0xA1E7, 0);
+        lo + (hi - lo) * u.powf(self.alertness_skew.max(0.01))
+    }
+
+    /// The most alert any zombie can be (for how far to look round a target or a sound).
+    pub fn max_alertness(&self) -> f32 {
+        self.alertness.0.max(self.alertness.1).max(0.0)
+    }
 }
 
 impl Default for ZombieTuning {
     fn default() -> Self {
         Self {
-            sight_day: 30.0,
+            sight_day: 22.0,
             sight_night: 8.0,
             sight_cone_deg: 55.0,
             peripheral_deg: 110.0,
-            peripheral_mult: 0.45,
+            peripheral_mult: 0.35,
             rear_range: 2.0,
             sneak_sight_mult: 0.4,
             run_sight_mult: 1.35,
-            still_sight_mult: 0.7,
-            sure_sight_frac: 0.4,
-            notice_chance: 0.45,
+            still_sight_mult: 0.5,
+            sure_sight_frac: 0.25,
+            notice_chance: 0.15,
             sight_interval_ticks: 4,
             chase_sight_mult: 1.25,
+            window_sight_mult: 0.35,
+            alertness: (0.7, 1.6),
+            alertness_skew: 2.0,
 
             sneak_noise: 1.2,
-            walk_noise: 6.0,
-            run_noise: 14.0,
+            walk_noise: 4.0,
+            run_noise: 11.0,
             door_noise: 10.0,
-            groan_noise: 9.0,
+            groan_noise: 7.0,
             groan_min_secs: 5.0,
             groan_max_secs: 12.0,
             alert_groan_secs: 0.8,
             wall_muffle: 0.4,
 
-            memory_secs: 25.0,
+            herd_chance: 0.3,
+            herd_radius: 10.0,
+            herd_keep: 2.5,
+
+            memory_secs: 15.0,
             investigate_secs: 15.0,
             max_travel_secs: 120.0,
             investigate_speed_mult: 0.85,
             wander_speed: 0.4,
             search_radius: 3.5,
 
-            lunge_range: 2.4,
+            lunge_range: 1.7,
             lunge_secs: 0.45,
-            lunge_speed_mult: 2.2,
-            lunge_min_speed: 2.6,
+            lunge_speed_mult: 1.6,
+            lunge_min_speed: 1.8,
             lunge_cooldown: 2.0,
             attack_reach: 0.9,
             attack_windup: 0.35,
@@ -220,7 +268,7 @@ impl Default for ZombieTuning {
             door_break_noise: 26.0,
             window_noise: 2.5,
             climb_speed: 0.35,
-            thump_interest_secs: 20.0,
+            thump_interest_secs: 12.0,
             crowd_reach: 1.6,
             crowd_thump_frac: 0.3,
 
@@ -230,6 +278,8 @@ impl Default for ZombieTuning {
 
             max_corpses: 300,
             corpse_secs: 900.0,
+
+            knockback_slide: 0.86,
         }
     }
 }
@@ -278,6 +328,9 @@ pub(crate) struct Ctx<'a> {
     pub nav: Option<&'a mut Nav>,
     pub hash: &'a SpatialHash,
     pub targets: &'a [Target],
+    /// How far each chunk is from the nearest player (dead ones too), when the world keeps that
+    /// up to date: zombies in chunks with nobody about skip the players' bodies.
+    pub near_players: Option<&'a ChunkDistances>,
     pub tuning: &'a ZombieTuning,
     pub flow: &'a mut FlowCache,
     /// The debug goal's field, when `set_goal` is active (senses are off then).
@@ -306,7 +359,7 @@ pub(crate) fn step_zombies(z: &mut Zombies, next_pos: &mut [Vec2], cx: &mut Ctx)
             // A corpse only slides to a stop if it was knocked back as it died.
             next_pos[i] = if z.vel[i].length_squared() > 1e-4 {
                 z.vel[i] *= 0.75;
-                cx.map.resolve_circle(p + z.vel[i] * TICK_DT, ZOMBIE_RADIUS)
+                cx.walk.resolve_body(cx.map, p + z.vel[i] * TICK_DT)
             } else {
                 p
             };
@@ -341,11 +394,11 @@ pub(crate) fn step_zombies(z: &mut Zombies, next_pos: &mut [Vec2], cx: &mut Ctx)
                     z.timer[i] = t.investigate_secs;
                     desired = goal.direction(p) * z.speed[i];
                 }
-                _ => desired = wander(z, i, cx.rng, t, TICK_DT),
+                _ => desired = wander(z, i, cx.rng, t, TICK_DT, Some(cx.hash)),
             }
         } else {
             match z.state[i] {
-                ZombieState::Wander => desired = wander(z, i, cx.rng, t, TICK_DT),
+                ZombieState::Wander => desired = wander(z, i, cx.rng, t, TICK_DT, Some(cx.hash)),
                 ZombieState::Investigate => {
                     z.timer[i] -= TICK_DT;
                     if z.timer[i] <= 0.0 {
@@ -422,27 +475,35 @@ pub(crate) fn step_zombies(z: &mut Zombies, next_pos: &mut [Vec2], cx: &mut Ctx)
         });
         // Zombies don't walk through players either (only the zombie gives way, so player
         // movement stays exactly predictable on the client).
+        // (Only where a player is about: with many players, asking each one for every zombie
+        // was a good part of the tick, #70.)
         let body = ZOMBIE_RADIUS + PLAYER_RADIUS;
-        for target in cx.targets {
-            let d = p - target.pos;
-            let d2 = d.length_squared();
-            if !down && d2 < body * body && d2 > 1e-8 {
-                let len = d2.sqrt();
-                push += d / len * (body - len) * 2.0;
+        if !down && cx.near_players.is_none_or(|near| near.of(p) <= body + 1.0) {
+            for target in cx.targets {
+                let d = p - target.pos;
+                let d2 = d.length_squared();
+                if d2 < body * body && d2 > 1e-8 {
+                    let len = d2.sqrt();
+                    push += d / len * (body - len) * 2.0;
+                }
             }
         }
 
         // Capped so a knockback can't carry it through a wall in one step.
-        let mut vel = z.vel[i].lerp(desired, 0.25).clamp_length_max(MAX_KNOCKBACK_SPEED);
-        if cx.map.in_window_opening(p) {
-            // Clambering through a window frame.
+        // Reeling, a knockback slides on (a shove pushes it well back); else it walks as it wants.
+        // Uphill is slower for them too (`crate::terrain`).
+        let desired = desired * cx.map.terrain.slope_factor(p, desired);
+        let mut vel = if state.is_reeling() { z.vel[i] * t.knockback_slide } else { z.vel[i].lerp(desired, 0.25) }.clamp_length_max(MAX_KNOCKBACK_SPEED);
+        let climbing = cx.walk.in_window_opening(cx.map, p);
+        if climbing {
+            // Clambering through a window frame or over a fence.
             vel = vel.clamp_length_max(t.climb_speed);
         }
         // The crowd's shove is capped too: a pile of zombies on one spot (say, near-tier ones
         // that queued up against a wall and were just promoted) spreads out over a few ticks
         // instead of flinging one through the wall.
         let new_p = p + vel * TICK_DT + (push * 0.5).clamp_length_max(MAX_CROWD_PUSH);
-        let resolved = cx.map.resolve_circle(new_p, ZOMBIE_RADIUS);
+        let resolved = cx.walk.resolve_body(cx.map, new_p);
         next_pos[i] = resolved;
         z.vel[i] = vel;
         // Giving up: pushing against a wall (not just stuck in a crowd) without getting anywhere.
@@ -461,6 +522,10 @@ pub(crate) fn step_zombies(z: &mut Zombies, next_pos: &mut [Vec2], cx: &mut Ctx)
             if z.timer[i] <= GET_UP_SECS { ZombieAnim::GetUp } else { ZombieAnim::Down }
         } else if attacking {
             if state == ZombieState::Thump { ZombieAnim::Thump } else { ZombieAnim::Attack }
+        } else if climbing && desired.length_squared() > 0.0025 {
+            ZombieAnim::Climb
+        } else if state == ZombieState::Lunge {
+            ZombieAnim::Lunge
         } else if desired.length_squared() > 0.0025 {
             ZombieAnim::Walk
         } else {
@@ -522,9 +587,12 @@ fn hunt(z: &mut Zombies, i: usize, cx: &mut Ctx) -> (Vec2, bool, Option<Vec2>, b
                     return (Vec2::ZERO, false, None, false);
                 }
             }
-            // Shuffle in to stay in contact.
-            let close_in = if d > t.attack_reach * 0.8 { dir * z.speed[i] * 0.5 } else { Vec2::ZERO };
-            (close_in, true, Some(to), false)
+            // Shuffle in to stay in contact: walking, so the feet go with the body (the attack clip is
+            // made in place); clawing once in contact.
+            if d > t.attack_reach * 0.8 {
+                return (dir * z.speed[i] * 0.5, false, Some(to), false);
+            }
+            (Vec2::ZERO, true, Some(to), false)
         }
         _ => {
             let sees = z.sees[i] > 0;
@@ -590,6 +658,9 @@ pub(crate) fn recover(z: &mut Zombies, i: usize, t: &ZombieTuning) {
 fn start_attack(z: &mut Zombies, i: usize, t: &ZombieTuning) {
     z.state[i] = ZombieState::Attack;
     z.cooldown[i] = z.cooldown[i].max(t.attack_windup);
+    // Feet planted: a lunge's speed would otherwise carry on for a few ticks under an attack clip
+    // made in place, sliding it forward.
+    z.vel[i] = Vec2::ZERO;
 }
 
 /// Lost (or lost interest in) its player: investigate the last known spot for a while.
@@ -798,13 +869,37 @@ fn steer(cx: &mut Ctx, z: &mut Zombies, i: usize, key: FlowKey, target: Vec2) ->
 
 /// Idle shuffling: pick a direction (or stand) every few seconds. `dt` is the time since its last
 /// update (one tick when active, more on the near tier).
-pub(crate) fn wander(z: &mut Zombies, i: usize, rng: &mut Rng, t: &ZombieTuning, dt: f32) -> Vec2 {
+pub(crate) fn wander(z: &mut Zombies, i: usize, rng: &mut Rng, t: &ZombieTuning, dt: f32, hash: Option<&SpatialHash>) -> Vec2 {
     z.wander_timer[i] -= dt;
     if z.wander_timer[i] <= 0.0 {
         z.wander_timer[i] = rng.range(3.0, 9.0);
-        z.wander[i] = if rng.f32() < 0.5 { Vec2::ZERO } else { Vec2::from_angle(rng.range(0.0, TAU)) * t.wander_speed };
+        let herd = rng.f32() < t.herd_chance;
+        z.wander[i] = match hash.filter(|_| herd).and_then(|h| herd_pull(z, i, h, t)) {
+            Some(dir) => dir * t.wander_speed,
+            None if rng.f32() < 0.5 => Vec2::ZERO,
+            None => Vec2::from_angle(rng.range(0.0, TAU)) * t.wander_speed,
+        };
     }
     z.wander[i]
+}
+
+/// Which way back toward the middle of the living zombies within `herd_radius` of zombie `i`,
+/// if that middle is more than `herd_keep` away (none round it, or already among them: `None`).
+fn herd_pull(z: &Zombies, i: usize, hash: &SpatialHash, t: &ZombieTuning) -> Option<Vec2> {
+    let p = z.pos[i];
+    let (mut sum, mut n) = (Vec2::ZERO, 0u32);
+    let r2 = t.herd_radius * t.herd_radius;
+    hash.for_each_within(p, t.herd_radius, |j| {
+        if j != i && z.state[j] != ZombieState::Dead && z.pos[j].distance_squared(p) <= r2 {
+            sum += z.pos[j];
+            n += 1;
+        }
+    });
+    if n == 0 {
+        return None;
+    }
+    let to = sum / n as f32 - p;
+    (to.length() > t.herd_keep).then(|| to.normalize_or_zero())
 }
 
 /// Milling about near `centre` (searching a spot): short hops, turning back when it strays.

@@ -30,7 +30,7 @@ use zombye_sim::template::{BuildingKind, BuildingLook, Porch};
 
 use super::palette::{self, pal};
 use super::{CutKind, CutTag, FaceColors, MeshBuilder, hash01, same, shade};
-use crate::world_render::{STOREY, STUB_HEIGHT, WALL_T, WINDOW_HEAD, WINDOW_SILL};
+use crate::world_render::{SILL_LIFT, STOREY, STUB_HEIGHT, WALL_T, WINDOW_HEAD, WINDOW_SILL};
 
 // Sizes, in metres.
 /// Top of the foundation and of the water-table board above it (both under the 0.4 m stub).
@@ -55,16 +55,6 @@ const ARCH_TOP: f32 = 2.4;
 /// Is this room outside, as far as the outside of a wall goes: outdoors, or a porch.
 pub fn outside(map: &TileMap, room: u16) -> bool {
     room == 0 || map.rooms[room as usize].room_type == "porch"
-}
-
-/// Is a light on in this room at night? About one room in five, by a hash of the room, never a
-/// hall, porch or garage.
-pub fn room_lit(map: &TileMap, room: u16) -> bool {
-    if room == 0 {
-        return false;
-    }
-    let r = &map.rooms[room as usize];
-    !matches!(r.room_type.as_str(), "hall" | "porch" | "garage" | "outdoors") && hash01(room as i32, r.building as i32, 71) < 0.22
 }
 
 /// Is this outdoor tile under a porch built onto a house (where no flower bed goes)?
@@ -155,15 +145,15 @@ fn wall_sides(owner: IVec2, which: OwnedEdge, kind: Edge, base: f32, rooms: (u16
 fn pieces(kind: Edge) -> &'static [(f32, f32)] {
     match kind {
         Edge::Wall => &[(0.0, STOREY)],
-        Edge::Window | Edge::WindowOpen | Edge::WindowBroken => &[(0.0, WINDOW_SILL), (WINDOW_HEAD, STOREY)],
-        Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken => &[(2.1, STOREY)],
+        Edge::Window | Edge::WindowOpen | Edge::WindowBroken | Edge::WindowBoarded => &[(0.0, WINDOW_SILL), (WINDOW_HEAD, STOREY)],
+        Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken | Edge::DoorBoarded => &[(2.1, STOREY)],
         Edge::Arch => &[(ARCH_TOP, STOREY)],
         Edge::None | Edge::Fence => &[],
     }
 }
 
 fn is_door(kind: Edge) -> bool {
-    matches!(kind, Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken)
+    matches!(kind, Edge::DoorClosed | Edge::DoorOpen | Edge::DoorBroken | Edge::DoorBoarded)
 }
 
 /// The kit for one building.
@@ -243,7 +233,7 @@ impl<'a> Kit<'a> {
                 f.cube(mb, 0.02, 0.12, sill, head, face - 0.01, face + PROUD, c);
                 f.cube(mb, 0.88, 0.98, sill, head, face - 0.01, face + PROUD, c);
                 f.cube(mb, -0.02, 1.02, head, head + 0.1, face - 0.01, face + PROUD + 0.01, c);
-                f.cube(mb, -0.05, 1.05, sill - 0.07, sill, face - 0.04, face + 0.07, c);
+                f.cube(mb, -0.05, 1.05, sill - 0.07, sill + SILL_LIFT, face - 0.04, face + 0.07, c);
                 if self.commercial && base == 0.0 && side_dir(self.look.front) == f.out && matches!(self.look.kind, BuildingKind::Shop) {
                     // A shopfront's stall riser under the glass.
                     f.cube(mb, -0.02, 1.02, FOUNDATION_TOP, sill - 0.07, face - 0.01, face + 0.03, lit_box(pal().shopfront));
@@ -259,7 +249,7 @@ impl<'a> Kit<'a> {
             // Muntins: a centre mullion and a meeting rail across, in the wall's middle.
             let f = Frame { origin: a, along: (b - a).normalize(), out: (b - a).normalize().perp() };
             let c = same(self.trim);
-            f.cube(mb, 0.47, 0.53, base + WINDOW_SILL, base + WINDOW_HEAD, -0.03, 0.03, c);
+            f.cube(mb, 0.47, 0.53, base + WINDOW_SILL + SILL_LIFT, base + WINDOW_HEAD, -0.03, 0.03, c);
             f.cube(mb, 0.04, 0.96, base + 1.47, base + 1.53, -0.03, 0.03, c);
         }
         mb.set_tag(CutTag::default());
@@ -576,9 +566,12 @@ impl<'a> Kit<'a> {
         }
         let pale = lit_box(pal().trim_light);
         let beam_y = roof_y(depth) - 0.06;
+        // Each post thins out by itself when it stands over the player (`CutKind::Fade`).
         for &t in &posts {
+            lower.set_tag(CutTag { kind: CutKind::Fade, anchor: f.at(t, post_o), radius: 0.1 });
             f.cube(lower, t - 0.07, t + 0.07, DECK_TOP, beam_y, post_o - 0.07, post_o + 0.07, pale);
         }
+        lower.set_tag(CutTag { kind: CutKind::Structure, ..default() });
         // Railing: along the front between posts but at the way in, and down both sides.
         for w in posts.windows(2) {
             if !(w[0] < entry && entry < w[1]) {
@@ -591,23 +584,31 @@ impl<'a> Kit<'a> {
         lower.set_tag(CutTag::default());
 
         // The roof: a shallow shed from the wall out past the posts, with a beam, fascia and soffit.
-        roof.set_tag(self.roof_tag());
+        // Built a stretch at a time (about a metre each), every stretch a `CutKind::Fade` piece of
+        // its own: the ones standing over the player thin out, the rest of the porch roof stays.
         let (o0, o1) = (WALL_T, depth + 0.25);
         let (t0, t1) = (-0.25, len + 0.25);
         let (y0, y1) = (roof_y(o0), roof_y(o1));
         let up = (Vec3::Y + f.normal() * PORCH_ROOF_FALL).normalize();
         let roof_c = super::roof_color(self.b.roof_color);
-        roof.quad_facing([f.world(t0, y0, o0), f.world(t1, y0, o0), f.world(t1, y1, o1), f.world(t0, y1, o1)], up, roof_c);
         let soffit = shade(pal().trim_light, 0.85);
-        roof.quad_facing([f.world(t0, y0 - 0.06, o0), f.world(t1, y0 - 0.06, o0), f.world(t1, y1 - 0.06, o1), f.world(t0, y1 - 0.06, o1)], -up, soffit);
-        f.cube(roof, 0.0, len, beam_y - 0.16, beam_y, post_o - 0.08, post_o + 0.08, pale);
-        f.cube(roof, t0 - 0.02, t1 + 0.02, y1 - 0.2, y1 + 0.02, o1 - 0.03, o1, lit_box(self.trim));
         let n = Vec3::new(f.along.x, 0.0, f.along.y);
-        for (t, s) in [(t0, -1.0), (t1, 1.0)] {
-            roof.quad_facing([f.world(t, y0 + 0.02, o0), f.world(t, y1 + 0.02, o1), f.world(t, y1 - 0.2, o1), f.world(t, y0 - 0.2, o0)], n * s, self.trim);
+        let stretches = (t1 - t0).round().max(1.0) as i32;
+        for k in 0..stretches {
+            let (a, b) = (t0 + (t1 - t0) * k as f32 / stretches as f32, t0 + (t1 - t0) * (k + 1) as f32 / stretches as f32);
+            roof.set_tag(CutTag { kind: CutKind::Fade, anchor: f.at((a + b) * 0.5, (o0 + o1) * 0.5), radius: (o1 - o0).max(b - a) * 0.5 });
+            roof.quad_facing([f.world(a, y0, o0), f.world(b, y0, o0), f.world(b, y1, o1), f.world(a, y1, o1)], up, roof_c);
+            roof.quad_facing([f.world(a, y0 - 0.06, o0), f.world(b, y0 - 0.06, o0), f.world(b, y1 - 0.06, o1), f.world(a, y1 - 0.06, o1)], -up, soffit);
+            f.cube(roof, a.max(0.0), b.min(len), beam_y - 0.16, beam_y, post_o - 0.08, post_o + 0.08, pale);
+            f.cube(roof, a - if k == 0 { 0.02 } else { 0.0 }, b + if k + 1 == stretches { 0.02 } else { 0.0 }, y1 - 0.2, y1 + 0.02, o1 - 0.03, o1, lit_box(self.trim));
+            for (t, s, end) in [(a, -1.0, k == 0), (b, 1.0, k + 1 == stretches)] {
+                if end {
+                    roof.quad_facing([f.world(t, y0 + 0.02, o0), f.world(t, y1 + 0.02, o1), f.world(t, y1 - 0.2, o1), f.world(t, y0 - 0.2, o0)], n * s, self.trim);
+                }
+            }
+            // A ridge flashing where the porch roof meets the wall.
+            f.cube(roof, a, b, y0 - 0.02, y0 + 0.06, WALL_T - 0.01, WALL_T + 0.08, lit_box(shade(roof_c, 0.7)));
         }
-        // A ridge flashing where the porch roof meets the wall.
-        f.cube(roof, t0, t1, y0 - 0.02, y0 + 0.06, WALL_T - 0.01, WALL_T + 0.08, lit_box(shade(roof_c, 0.7)));
         roof.set_tag(CutTag::default());
     }
 
@@ -688,8 +689,10 @@ impl<'a> Kit<'a> {
             if inner && (v.x + v.y) as i32 % 2 != 0 {
                 continue;
             }
+            mb.set_tag(CutTag { kind: CutKind::Fade, anchor: v, radius: 0.1 });
             id.cube(mb, v.x - 0.08, v.x + 0.08, 0.0, ARCH_TOP, v.y - 0.08, v.y + 0.08, pale);
         }
+        mb.set_tag(CutTag { kind: CutKind::Structure, ..default() });
         for (i, e) in open.iter().enumerate() {
             if Some(i) == entry {
                 continue;
@@ -714,8 +717,9 @@ impl<'a> Kit<'a> {
             f.cube(lower, -WALL_T, 1.0 + WALL_T, 2.38, 2.90, WALL_T, WALL_T + 0.07, lit_box(sign));
             lower.set_tag(CutTag::default());
             // The awning: stripes 0.5 m wide by their place along the street, so they line up.
-            roof.set_tag(self.roof_tag());
+            // Each metre of it thins out by itself when it stands over the player.
             let (y_wall, y_edge, reach) = (2.3, 2.02, 1.25);
+            roof.set_tag(CutTag { kind: CutKind::Fade, anchor: f.at(0.5, WALL_T + reach * 0.5), radius: 0.65 });
             // Wall frames run along +x or +z, so the stripe a point is in follows from its place
             // along that axis.
             let start = f.origin.dot(f.along);
@@ -735,13 +739,13 @@ impl<'a> Kit<'a> {
 
     /// A flat canopy over each front door of an office.
     fn door_canopies(&self, roof: &mut MeshBuilder, ground: &[(IVec2, OwnedEdge, Edge, (u16, u16))]) {
-        roof.set_tag(self.roof_tag());
         for &(owner, which, kind, rooms) in ground {
             if !is_door(kind) {
                 continue;
             }
             for s in wall_sides(owner, which, kind, 0.0, rooms, self.map) {
                 if self.map.tile(s.frame.at(0.5, 0.5).floor().as_ivec2()).room == 0 {
+                    roof.set_tag(CutTag { kind: CutKind::Fade, anchor: s.frame.at(0.5, 0.6), radius: 0.95 });
                     s.frame.cube(roof, -0.45, 1.45, 2.42, 2.56, WALL_T - 0.01, WALL_T + 1.1, lit_box(pal().coping));
                 }
             }
@@ -799,7 +803,7 @@ mod tests {
             let m = build_building(&map, i, b, &furniture);
             for k in &m.roof.uv1 {
                 let kind = k[0] as u32;
-                assert!(kind == CutKind::Roof as u32 || kind == CutKind::Lit as u32, "{}: a roof piece of kind {kind}", b.template);
+                assert!(kind == CutKind::Roof as u32 || kind == CutKind::Lit as u32 || kind == CutKind::Fade as u32, "{}: a roof piece of kind {kind}", b.template);
             }
             for mb in [&m.lower, &m.upper] {
                 for (uv, k) in mb.uv0.iter().zip(&mb.uv1) {
