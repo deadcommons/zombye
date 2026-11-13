@@ -128,6 +128,9 @@ pub struct ClientSettings {
     pub send_reports: bool,
     /// The yellow line has said once that reports are sent and how to turn it off.
     pub reports_notice_seen: bool,
+    /// The keys the player picked on the Controls tab (`keys.rs`): an action's id to its keys,
+    /// over `assets/data/keys.ron`. Only the ones changed.
+    pub keys: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl Default for ClientSettings {
@@ -154,6 +157,7 @@ impl Default for ClientSettings {
             old_look: crate::film::OldLook::Off,
             send_reports: true,
             reports_notice_seen: false,
+            keys: Default::default(),
         }
     }
 }

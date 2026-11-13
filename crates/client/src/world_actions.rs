@@ -177,6 +177,97 @@ pub fn pick(map: &TileMap, sites: &[ContainerSite], player: Vec2, origin: Vec3, 
     best
 }
 
+/// How far off the way a body faces something may be and still be the thing it faces (E), and
+/// how near it may be and count whatever the angle (it's against you).
+const FACE_DEGREES: f32 = 70.0;
+const TOUCHING: f32 = 0.45;
+
+/// What a body at `pos` facing `facing` (on floor `level`) would handle with E: the door, window
+/// or fence, light switch, campfire, container or body in reach and in front of it, the likeliest
+/// (nearest, and most squarely in front) first, as the server's reach rules have it. With the
+/// spot it is at (for a menu beside it). Things on the floor are the caller's (they go by the
+/// server's own floor list).
+#[allow(clippy::too_many_arguments)]
+pub fn faced(
+    map: &TileMap,
+    sites: &[ContainerSite],
+    switches: &[Option<zombye_sim::power::SwitchSpot>],
+    fires: &[zombye_sim::FireView],
+    bodies: impl IntoIterator<Item = (u32, Vec2)>,
+    fire_reach: f32,
+    pos: Vec2,
+    level: u8,
+    facing: f32,
+) -> Option<(Target, Vec2)> {
+    let ahead = Vec2::from_angle(facing);
+    let cos = FACE_DEGREES.to_radians().cos();
+    // Lower is likelier: distance, longer the further off square it is.
+    let score = |at: Vec2| -> Option<f32> {
+        let to = at - pos;
+        let d = to.length();
+        if d < TOUCHING {
+            return Some(d);
+        }
+        let c = (to / d).dot(ahead);
+        (c >= cos).then(|| d * (2.0 - c))
+    };
+    let mut best: Option<(f32, Target, Vec2)> = None;
+    let mut take = |t: Target, at: Vec2, s: Option<f32>| {
+        if let Some(s) = s
+            && best.as_ref().is_none_or(|(b, ..)| s < *b)
+        {
+            best = Some((s, t, at));
+        }
+    };
+    let room = map.room_at(pos);
+    if level == 0 {
+        let c = pos.floor().as_ivec2();
+        for dy in -2..=2 {
+            for dx in -2..=2 {
+                for which in [OwnedEdge::North, OwnedEdge::West] {
+                    let e = EdgeRef::new(c + IVec2::new(dx, dy), which);
+                    if !map.in_bounds(e.tile) {
+                        continue;
+                    }
+                    let kind = map.owned_edge(e.tile, which);
+                    // A broken door has nothing to do with it.
+                    if !actionable(kind) || kind == Edge::DoorBroken || e.mid().distance(pos) > zombye_sim::world::INTERACT_REACH {
+                        continue;
+                    }
+                    take(Target::Edge(e), e.mid(), score(e.mid()));
+                }
+            }
+        }
+        if let Some(Some(s)) = switches.get(room as usize)
+            && room != 0
+            && s.pos.distance(pos) <= zombye_sim::power::SWITCH_REACH - 0.1
+        {
+            take(Target::Switch(room, s.pos), s.pos, score(s.pos));
+        }
+        for f in fires {
+            let at = Vec2::from(f.pos);
+            if at.distance(pos) <= fire_reach {
+                take(Target::Fire(f.id, at, f.lit, f.fuel_min), at, score(at));
+            }
+        }
+        let bodies: Vec<(u32, Vec2)> = bodies.into_iter().collect();
+        if let Some(id) = zombye_sim::corpses::body_in_reach(map, pos, bodies.iter().copied())
+            && let Some(&(id, at)) = bodies.iter().find(|b| b.0 == id)
+        {
+            take(Target::Body(id, at), at, score(at).or(Some(9.0)));
+        }
+    }
+    for (k, s) in sites.iter().enumerate() {
+        if s.level != level || s.room != room || s.distance(pos) > zombye_sim::inventory::CONTAINER_REACH {
+            continue;
+        }
+        let near = pos.clamp(s.min.as_vec2(), (s.min + s.size).as_vec2());
+        // In reach but not in front: still searched (the server takes the nearest), after the rest.
+        take(Target::Container(k), near, score(near).or(Some(8.0 + s.distance(pos))));
+    }
+    best.map(|(_, t, at)| (t, at))
+}
+
 /// The body (a dead zombie's id and where it lies, from `bodies`) the pointer's ray meets first,
 /// as a low box round where it lies, with the ray parameter there.
 pub fn pick_body(bodies: impl IntoIterator<Item = (u32, Vec2)>, player: Vec2, origin: Vec3, dir: Vec3) -> Option<(Target, f32)> {
@@ -337,7 +428,7 @@ fn edge_entries(e: EdgeRef, map: &TileMap, items: &[ItemDef], builds: &[BuildDef
     if map.takes_blind(e) && zombye_sim::blinds::on_inside(map, e, pos) {
         match map.blind(e) {
             Some(down) => {
-                lines.insert(0, (if down { "Raise the blind" } else { "Lower the blind" }, Intent::Blind { player: me, op: BlindOp::Toggle }));
+                lines.insert(lines.len().min(1), (if down { "Raise the blind" } else { "Lower the blind" }, Intent::Blind { player: me, op: BlindOp::Toggle }));
                 lines.push(("Take the blind down", Intent::Blind { player: me, op: BlindOp::TakeDown }));
             }
             None => {

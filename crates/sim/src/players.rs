@@ -430,6 +430,10 @@ pub struct Player {
     /// Developer toggles. Not saved: a loaded world has them off.
     #[serde(skip)]
     pub dev: DevFlags,
+    /// The light held in a hand (a flashlight, a candle) is switched off (F; `World::player_flashlight`).
+    /// Not saved: a loaded world has it on. Only drawing reads it (zombies don't react to light yet).
+    #[serde(skip)]
+    pub light_off: bool,
     /// This life's stats and how it ended (`crate::run`). Saved in its own section of the save,
     /// not here, so the player's layout (and the format) stays as it was.
     #[serde(skip)]
@@ -522,6 +526,7 @@ impl Player {
             away: None,
             protected: 0.0,
             dev: DevFlags::default(),
+            light_off: false,
             run: RunStats::default(),
             first_night: None,
             explored: crate::explore::Explored::default(),

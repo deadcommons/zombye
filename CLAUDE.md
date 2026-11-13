@@ -2,7 +2,7 @@
 
 ## The other Dead Commons repos
 
-This repo is public. The rest of the [deadcommons](https://github.com/deadcommons) org is private: name
+This repo is going public (AGENTS.md, Open source and the official build): write as if it already is. The rest of the [deadcommons](https://github.com/deadcommons) org is private: name
 those repos here, but never copy their files, contents or plans into this repo, its issues or its PRs.
 
 | Repo | What's in it | On the Mac |

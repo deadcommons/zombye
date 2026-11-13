@@ -3,8 +3,8 @@
 **Open-source zombie survival in real 3D.** Isometric, with hundreds of zombies on screen, built in
 Rust so that anyone (and any AI agent) can read it, mod it and host it.
 
-> **Status: pre-alpha.** M0 (tech spike) and M1 (world and visibility) are done; M2 (player and
-> combat) is in progress. Not a full game yet. The roadmap lives on the
+> **Status: pre-alpha, in playtesting.** Single-player and multiplayer both run; plenty is still
+> missing. The roadmap lives on the
 > [Game development board](https://github.com/orgs/deadcommons/projects/2) and the
 > [milestones](https://github.com/deadcommons/zombye/milestones); the design is in
 > [docs/PLAN.md](docs/PLAN.md).
@@ -23,6 +23,14 @@ Rust so that anyone (and any AI agent) can read it, mod it and host it.
 - **Host it anywhere:** self-hosting is free and documented. Official one-click hosting by
   Dead Commons is coming, and it pays for development.
 
+## This repo and the official build
+
+Everything in this repo is open, and building it gives you the whole game: every system, the server,
+the MCP tools and mods, with its own models, placeholder sounds and the name as plain text.
+**The official build** from Dead Commons adds art and audio bought under licences that don't allow
+publishing the files, plus signed installers, updates and official servers. Buying it is how you pay
+for the game's development; building it yourself is always free.
+
 ## Build and run
 
 Needs a current stable Rust toolchain.
@@ -31,10 +39,10 @@ Needs a current stable Rust toolchain.
 cargo run --release --bin zombye
 ```
 
-The M0 spike is a test town and a 1,000+ zombie horde that chases you. WASD to move, Shift to run,
-mouse wheel to zoom, Z to spawn 250 more zombies. `,` and `.` to turn the camera between its
-four angles. Options: `--zombies N`, `--seed S`, `--novsync`, `--screenshot PATH`, `--exit-after SECS`. The client prints
-fps and sim timing once a second.
+It opens on the main menu. In game: WASD to move, Shift to run, right mouse to aim and left to
+swing, E to pick up or search, Tab for the inventory, Esc for the pause menu (its Controls tab lists
+every key), mouse wheel to zoom, `,` and `.` to turn the camera. Options such as `--zombies N` and
+`--seed S` start a world straight away; [AGENTS.md](AGENTS.md) lists them all.
 
 The headless server (benchmark mode, or MCP over stdio for agents):
 
@@ -72,6 +80,8 @@ cargo run --release --bin zombye -- --connect localhost        # join it
 
 Contributions from people and their agents are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md)
 first, especially the **clean-room rules**, and follow the [code of conduct](CODE_OF_CONDUCT.md).
+Sign off every commit (`git commit -s`): that's the [DCO](https://developercertificate.org/), and
+there's no CLA.
 
 Come and talk to us on **[Discord](https://discord.gg/y7NsmVG2br)**: follow the devlog, share
 ideas, or find people to mod and build with.
@@ -89,4 +99,5 @@ Zombye without asking.
 
 Copyright (c) 2026 Grillo Ltd (trading as Dead Commons) and the Zombye contributors. Required notices are in
 [NOTICE](NOTICE), and every asset is listed in [ATTRIBUTION.md](ATTRIBUTION.md). The Zombye and Dead Commons
-names and logos are trademarks; see [docs/brand/LICENSE-brand.txt](docs/brand/LICENSE-brand.txt).
+names and logos are trademarks, not open source: a fork you publish takes its own name. See
+[docs/brand/LICENSE-brand.txt](docs/brand/LICENSE-brand.txt).
