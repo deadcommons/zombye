@@ -666,7 +666,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
                     }
                 }
                 for r in rows(tab, &s) {
-                    col.spawn(Node { align_items: AlignItems::Center, column_gap: px(16), min_height: px(38), ..default() }).with_children(|row| {
+                    col.spawn(Node { align_items: AlignItems::Center, column_gap: px(16), min_height: px(38), flex_shrink: 0.0, ..default() }).with_children(|row| {
                         row.spawn(Node { width: px(LABEL_W), flex_shrink: 0.0, flex_direction: FlexDirection::Column, ..default() }).with_children(|l| {
                             l.spawn((Text::new(r.label), theme::strong(BODY), TextColor(BONE)));
                             l.spawn((Text::new(r.about), font(SMALL), TextColor(DIM)));
@@ -696,7 +696,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
                     Tab::Controls => "Click a key to change it; the game's own keys are in keys.ron. Auto plays with what you touched last.",
                     Tab::Game => "Difficulty and the world's own options are chosen when you start a new game.",
                 };
-                col.spawn((Text::new(note), font(SMALL), TextColor(DIM), Node { margin: UiRect::top(px(10)), ..default() }));
+                col.spawn((Text::new(note), font(SMALL), TextColor(DIM), Node { margin: UiRect::top(px(10)), flex_shrink: 0.0, ..default() }));
             });
         });
         skin::rule(p);
@@ -714,7 +714,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
 /// The top of the Controls tab: which the game is played with, and which list is shown.
 fn controls_head(p: &mut ChildSpawnerCommands, input: crate::pad::InputSetting, pad_view: bool) {
     // One row, so the keyboard's list below still fits a 900-pixel screen.
-    p.spawn(Node { align_items: AlignItems::Center, column_gap: px(8), min_height: px(38), ..default() }).with_children(|row| {
+    p.spawn(Node { align_items: AlignItems::Center, column_gap: px(8), min_height: px(38), flex_shrink: 0.0, ..default() }).with_children(|row| {
         row.spawn((Text::new("Play with"), theme::strong(BODY), TextColor(BONE), Node { margin: UiRect::right(px(4)), ..default() }));
         for i in crate::pad::InputSetting::ALL {
             chip(row, i.name(), i == input, Some(Act::Change(Change::Input(i))), Val::Auto);
@@ -811,7 +811,7 @@ pub const PAD_ROWS: [(&str, &[PadRow]); 3] = [
 
 /// The Controls tab's controller list: three columns, an action and its button a line.
 fn pad_list(p: &mut ChildSpawnerCommands, family: crate::pad::Family) {
-    p.spawn(Node { column_gap: px(22), align_items: AlignItems::FlexStart, ..default() }).with_children(|cols| {
+    p.spawn(Node { column_gap: px(22), align_items: AlignItems::FlexStart, flex_shrink: 0.0, ..default() }).with_children(|cols| {
         for (group, rows) in PAD_ROWS {
             cols.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(3), flex_basis: percent(33), ..default() }).with_children(|col| {
                 col.spawn((Text::new(group.to_uppercase()), theme::head(BODY + 2.0), TextColor(skin::GREEN), Node { margin: UiRect::top(px(6)), ..default() }));
@@ -832,7 +832,7 @@ fn pad_list(p: &mut ChildSpawnerCommands, family: crate::pad::Family) {
 /// the new one when clicked; one shared with another action says so.
 fn keys_list(p: &mut ChildSpawnerCommands, capture: Option<Action>) {
     let bindings = crate::keys::current();
-    p.spawn(Node { column_gap: px(22), align_items: AlignItems::FlexStart, ..default() }).with_children(|cols| {
+    p.spawn(Node { column_gap: px(22), align_items: AlignItems::FlexStart, flex_shrink: 0.0, ..default() }).with_children(|cols| {
         for pair in KEYS.chunks(2) {
             cols.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(3), flex_basis: percent(33), ..default() }).with_children(|col| {
                 for (group, keys) in pair {
