@@ -159,6 +159,7 @@ mod world_render;
 mod zombie_render;
 mod zvat;
 mod window_handoff;
+mod window_mode;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -891,7 +892,7 @@ pub(crate) fn window_plugins(options: &Options) -> bevy::app::PluginGroupBuilder
                     resolution: if options.size_given {
                         bevy::window::WindowResolution::new(options.size.x, options.size.y).with_scale_factor_override(1.0)
                     } else {
-                        (1600, 900).into()
+                        kept.window_size.unwrap_or(window_mode::DEFAULT_SIZE).into()
                     },
                     present_mode: if options.novsync || !kept.vsync { PresentMode::AutoNoVsync } else { PresentMode::AutoVsync },
                     ..default()
@@ -901,6 +902,7 @@ pub(crate) fn window_plugins(options: &Options) -> bevy::app::PluginGroupBuilder
             .set(assets)
             .disable::<bevy::app::TerminalCtrlCHandlerPlugin>()
             .add(window_handoff::HandoffPlugin)
+            .add(window_mode::WindowModePlugin { saves: options.saves.clone(), fixed: options.size_given })
     }
 }
 
@@ -918,6 +920,7 @@ pub(crate) fn relaunch(next: browser_ui::Relaunch) -> ! {
     let mut command = std::process::Command::new(exe);
     command.args(&next.args);
     window_handoff::pass_on(&mut command);
+    loading::pass_on(&mut command);
     if next.password.is_empty() {
         command.env_remove("ZOMBYE_PASSWORD");
     } else {

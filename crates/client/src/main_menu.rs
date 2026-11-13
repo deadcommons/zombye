@@ -377,10 +377,12 @@ pub fn run(options: Options) -> ! {
         app.add_plugins((ScheduleRunnerPlugin::run_loop(Duration::ZERO), crate::offscreen::OffscreenPlugin));
     }
     // (The server browser is the game's own, drawn over the menu's Join a game screen.)
-    app.add_plugins((theme::ThemePlugin, crate::release_brand::BrandPlugin, crate::ui_scale::UiScalePlugin, crate::settings_ui::SettingsUiPlugin, crate::browser_ui::BrowserUiPlugin))
+    // The logo first and over every start-again (`loading.rs`), and the new-game screen in this
+    // same window (`new_game::Front`): while it is up the menu stands back.
+    app.add_plugins((theme::ThemePlugin, crate::release_brand::BrandPlugin, crate::ui_scale::UiScalePlugin, crate::settings_ui::SettingsUiPlugin, crate::browser_ui::BrowserUiPlugin, crate::loading::FrontLoadingPlugin, crate::new_game::NewGamePlugin))
         .add_systems(Startup, (camera, open_join))
         .add_systems(First, crate::exit_on_signal)
-        .add_systems(Update, (keys, act, follow_browser, host_poll, draw).chain());
+        .add_systems(Update, (stand_back, (keys, act, follow_browser, host_poll, draw).chain().run_if(crate::new_game::away)).chain());
     let failed = app.run().is_error();
     if let Some(next) = crate::browser_ui::take_relaunch().or_else(take_relaunch) {
         crate::relaunch(next);
@@ -397,6 +399,27 @@ fn camera(mut commands: Commands, target: Option<Res<crate::offscreen::Offscreen
     let mut cam = commands.spawn(Camera2d);
     if let Some(target) = target {
         cam.insert((RenderTarget::Image(target.0.clone().into()), IsDefaultUiCamera));
+    }
+}
+
+/// The menu makes way for the new-game screen in its window, and comes back when that is left.
+fn stand_back(mut commands: Commands, mut front: ResMut<crate::new_game::Front>, mut menu: ResMut<Menu>, root: Option<Single<Entity, With<Root>>>, mut was: Local<bool>) {
+    if let Some(e) = front.take_error() {
+        // (Nothing on the menu shows a line of its own yet; stderr has it too.)
+        menu.mods_note = Some(e);
+        menu.dirty = true;
+    }
+    if front.up() == *was {
+        return;
+    }
+    *was = front.up();
+    if *was {
+        if let Some(root) = root {
+            commands.entity(*root).despawn();
+        }
+    } else {
+        menu.screen = Screen::Single;
+        menu.dirty = true;
     }
 }
 
@@ -503,7 +526,7 @@ fn keys(keys: Res<ButtonInput<KeyCode>>, mut typed: MessageReader<KeyboardInput>
     }
 }
 
-fn act(mut menu: ResMut<Menu>, mut settings: ResMut<SettingsUi>, mut browser: ResMut<BrowserUi>, mut store: ResMut<SettingsStore>, mut exit: MessageWriter<AppExit>) {
+fn act(mut menu: ResMut<Menu>, mut settings: ResMut<SettingsUi>, mut browser: ResMut<BrowserUi>, mut store: ResMut<SettingsStore>, mut front: ResMut<crate::new_game::Front>, mut exit: MessageWriter<AppExit>) {
     let args: Vec<String> = std::env::args().skip(1).collect();
     for a in std::mem::take(&mut menu.acts) {
         let next = match a {
@@ -512,7 +535,11 @@ fn act(mut menu: ResMut<Menu>, mut settings: ResMut<SettingsUi>, mut browser: Re
                 menu.screen = Screen::ConfirmNew;
                 None
             }
-            Act::New | Act::StartNew => Some(new_game_args(&args, fresh_seed())),
+            // The new-game screen opens in this window; it starts the game with these arguments.
+            Act::New | Act::StartNew => {
+                front.open(new_game_args(&args, fresh_seed()));
+                None
+            }
             Act::LoadScreen => {
                 menu.screen = Screen::Load;
                 None
@@ -616,8 +643,8 @@ fn act(mut menu: ResMut<Menu>, mut settings: ResMut<SettingsUi>, mut browser: Re
             }
         };
         if let Some(next) = next {
+            // `loading::leave` puts the logo up and ends this run once it has been drawn.
             ask_relaunch(next, &menu.options);
-            exit.write(AppExit::Success);
         }
         menu.dirty = true;
     }

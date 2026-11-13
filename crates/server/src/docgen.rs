@@ -67,6 +67,7 @@ const DATA_FILES: &[(&str, &str, Part, &str)] = &[
     ("light.ron", "daynight::LightLook", Part::Look, "Sun, fill light, colour grade and haze."),
     ("fog.ron", "fog::FogLook", Part::Look, "How the fog of war looks."),
     ("map.ron", "map_ui::MapStyle", Part::Look, "How the map screen looks."),
+    ("loading_lines.ron", "loading::LoadingLines", Part::Look, "The lines under the logo while the game loads."),
     ("palette.ron", "palette::PaletteFile", Part::Look, "Every colour in the game's art."),
     ("decay.ron", "decay::DecayLook", Part::Look, "How worn street props are drawn."),
     ("vegetation.ron", "vegetation::VegLook", Part::Look, "Where grass, flowers and stones grow."),

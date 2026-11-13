@@ -197,7 +197,7 @@ pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
                 about: crate::graphics_ui::describe(g.preset),
                 control: Control::Choice(Preset::CHOICES.into_iter().map(|p| (p.name().to_string(), p == g.preset, Change::Preset(p))).collect()),
             },
-            switch("Fullscreen", "The window fills the screen, without a border.", s, Switch::Fullscreen),
+            switch("Fullscreen", "The window fills the screen, without a border. Alt+Enter or F11 switches.", s, Switch::Fullscreen),
             switch("VSync", "Frames wait for the screen's refresh: no tearing.", s, Switch::Vsync),
             stepper("3D resolution", "The world's share of a Retina screen's pixels. The UI stays sharp.", g.render_scale, 0.5, 1.0, Change::RenderScale),
             stepper("Grass and flowers", "How dense the ground cover is. 0% is none.", g.vegetation, 0.0, MAX_VEGETATION, Change::Vegetation),

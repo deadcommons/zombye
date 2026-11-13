@@ -206,10 +206,17 @@ struct Screen {
     acts: Vec<Act>,
     dirty: bool,
     dress: bool,
+    /// The arguments the game is started with are made from these: this run's, or, opened from
+    /// the main menu in its window ([`Front`]), the ones the menu would have started us with.
+    base: Vec<String>,
 }
 
 impl Screen {
     fn new(options: Options) -> Result<Self, String> {
+        Self::with_base(options, std::env::args().skip(1).collect())
+    }
+
+    fn with_base(options: Options, base: Vec<String>) -> Result<Self, String> {
         let (_, config, _, _) = crate::server_link::local_content(&options)?;
         let rules = Rules::load(&options.data, &config.items)?;
         if rules.origins.backgrounds.is_empty() {
@@ -229,7 +236,7 @@ impl Screen {
             Some("world") => Tab::World,
             _ => Tab::Who,
         };
-        Ok(Self { items: config.items.clone(), options, rules, config, choice, setup, tab, error: None, acts: Vec::new(), dirty: true, dress: true })
+        Ok(Self { items: config.items.clone(), options, rules, config, choice, setup, tab, error: None, acts: Vec::new(), dirty: true, dress: true, base })
     }
 
     fn preset(&self) -> &DifficultyDef {
@@ -377,11 +384,12 @@ pub fn run(options: Options) -> ! {
     };
     let offscreen = options.offscreen();
     let mut app = App::new();
-    app.insert_resource(ClearColor(flat::INK)).add_plugins(crate::window_plugins(&options)).insert_resource(options).insert_resource(screen).add_plugins((theme::ThemePlugin, crate::release_brand::BrandPlugin));
+    app.insert_resource(ClearColor(flat::INK)).add_plugins(crate::window_plugins(&options)).insert_resource(options).insert_resource(screen).add_plugins((theme::ThemePlugin, crate::release_brand::BrandPlugin, crate::loading::FrontLoadingPlugin));
     if offscreen {
         app.add_plugins((bevy::app::ScheduleRunnerPlugin::run_loop(std::time::Duration::ZERO), crate::offscreen::OffscreenPlugin));
     }
     app.insert_resource(GlobalAmbientLight { color: Color::srgb(0.85, 0.82, 0.95), brightness: 420.0, ..default() })
+        .init_resource::<Front>()
         .add_systems(Startup, setup)
         .add_systems(First, crate::exit_on_signal)
         .add_systems(Update, (keys, act, draw, dress, pose).chain());
@@ -390,6 +398,100 @@ pub fn run(options: Options) -> ! {
         crate::relaunch(next);
     }
     std::process::exit(if failed { 1 } else { 0 });
+}
+
+/// The screen inside another screen's app and window (the main menu's): opened with [`Front::open`],
+/// it takes the window over, and Back gives it back, with no start-again between the two. Only
+/// Start starts the game again, as it must (a world is built once per run).
+#[derive(Resource, Default)]
+pub struct Front {
+    /// Asked for: the arguments the menu would have started the screen with.
+    ask: Option<Vec<String>>,
+    up: bool,
+    /// The cameras that were drawing before us, switched off while we are up.
+    cameras: Vec<Entity>,
+    ground: Option<Color>,
+    /// Why it couldn't open, for the menu to show (taken with [`Front::take_error`]).
+    error: Option<String>,
+}
+
+impl Front {
+    /// Open the screen in this window, as if started with `args`.
+    pub fn open(&mut self, args: Vec<String>) {
+        self.ask = Some(args);
+    }
+
+    /// Whether the screen has the window (or is about to).
+    pub fn up(&self) -> bool {
+        self.up || self.ask.is_some()
+    }
+
+    pub fn take_error(&mut self) -> Option<String> {
+        self.error.take()
+    }
+}
+
+/// Whether the screen is not up: what the host app's own systems run by.
+pub fn away(front: Res<Front>) -> bool {
+    !front.up()
+}
+
+/// What the screen put in the world, to take out again on the way back.
+#[derive(Component)]
+struct Scene;
+
+/// The new-game screen for an app that has other screens (the main menu's).
+pub struct NewGamePlugin;
+
+impl Plugin for NewGamePlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<Front>().add_systems(Update, (enter, setup.run_if(resource_added::<Screen>), (keys, act, draw, dress, pose).chain().run_if(resource_exists::<Screen>)).chain());
+    }
+}
+
+/// Take the window over when asked.
+fn enter(mut commands: Commands, mut front: ResMut<Front>, options: Res<Options>, mut cameras: Query<(Entity, &mut Camera)>, ground: Option<Res<ClearColor>>, mut keys: ResMut<ButtonInput<KeyCode>>) {
+    let Some(base) = front.ask.take() else { return };
+    // The key that opened us (Enter on the menu) isn't also our own Enter.
+    keys.clear();
+    let mut options = options.clone();
+    options.new_game = true;
+    match Screen::with_base(options, base) {
+        Ok(screen) => {
+            front.cameras = cameras.iter_mut().filter(|(_, c)| c.is_active).map(|(e, _)| e).collect();
+            for (_, mut c) in &mut cameras {
+                c.is_active = false;
+            }
+            front.ground = ground.map(|g| g.0);
+            front.up = true;
+            commands.insert_resource(ClearColor(flat::INK));
+            commands.insert_resource(GlobalAmbientLight { color: Color::srgb(0.85, 0.82, 0.95), brightness: 420.0, ..default() });
+            commands.insert_resource(screen);
+        }
+        Err(e) => {
+            eprintln!("can't start a new game: {e}");
+            front.error = Some(format!("Can't start a new game: {e}"));
+        }
+    }
+}
+
+/// Give the window back to the screen we were opened from.
+fn give_back(commands: &mut Commands, front: &mut Front, ours: &Query<Entity, Or<(With<Scene>, With<Root>)>>, cameras: &mut Query<&mut Camera>) {
+    for e in ours {
+        commands.entity(e).despawn();
+    }
+    for e in front.cameras.drain(..) {
+        if let Ok(mut c) = cameras.get_mut(e) {
+            c.is_active = true;
+        }
+    }
+    if let Some(g) = front.ground.take() {
+        commands.insert_resource(ClearColor(g));
+    }
+    commands.remove_resource::<Screen>();
+    commands.remove_resource::<Joints>();
+    commands.remove_resource::<SurvivorModel>();
+    front.up = false;
 }
 
 /// The survivor's joints, in the skeleton's order.
@@ -412,20 +514,24 @@ fn setup(
     mut bindposes: ResMut<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>,
 ) {
     let mut camera = commands.spawn((
+        Scene,
         Camera3d::default(),
         Projection::Perspective(PerspectiveProjection { fov: 0.2, ..default() }),
         Transform::from_translation(CAMERA_AT).looking_at(CAMERA_LOOKS_AT, Vec3::Y),
         Msaa::Sample4,
+        // The screen's panels are drawn by this camera, whatever other camera the app has (the
+        // main menu's own, switched off while we are up, would otherwise still be the UI's).
+        IsDefaultUiCamera,
     ));
     if let Some(target) = target {
-        camera.insert((RenderTarget::Image(target.0.clone().into()), IsDefaultUiCamera));
+        camera.insert(RenderTarget::Image(target.0.clone().into()));
     }
     // A warm key light from the front left and a cool one from behind, so the figure reads.
-    commands.spawn((DirectionalLight { illuminance: 9000.0, color: Color::srgb(1.0, 0.93, 0.8), shadow_maps_enabled: false, ..default() }, Transform::from_xyz(-2.5, 4.0, 5.0).looking_at(Vec3::new(0.0, 1.0, 0.0), Vec3::Y)));
-    commands.spawn((DirectionalLight { illuminance: 2500.0, color: Color::srgb(0.7, 0.8, 1.0), shadow_maps_enabled: false, ..default() }, Transform::from_xyz(3.0, 3.0, -4.0).looking_at(Vec3::new(0.0, 1.0, 0.0), Vec3::Y)));
+    commands.spawn((Scene, DirectionalLight { illuminance: 9000.0, color: Color::srgb(1.0, 0.93, 0.8), shadow_maps_enabled: false, ..default() }, Transform::from_xyz(-2.5, 4.0, 5.0).looking_at(Vec3::new(0.0, 1.0, 0.0), Vec3::Y)));
+    commands.spawn((Scene, DirectionalLight { illuminance: 2500.0, color: Color::srgb(0.7, 0.8, 1.0), shadow_maps_enabled: false, ..default() }, Transform::from_xyz(3.0, 3.0, -4.0).looking_at(Vec3::new(0.0, 1.0, 0.0), Vec3::Y)));
     // The survivor (none if the game has no modular body: the screen works without the figure).
     if let Some(model) = SurvivorModel::load(&screen.options, &mut meshes, &mut materials, &mut images, &mut bindposes) {
-        let root = commands.spawn((Transform::from_rotation(Quat::from_rotation_y(0.35)), Visibility::Inherited)).id();
+        let root = commands.spawn((Scene, Transform::from_rotation(Quat::from_rotation_y(0.35)), Visibility::Inherited)).id();
         let joints = crate::survivor_model::attach(&mut commands, &model, root, 1, true);
         commands.insert_resource(Joints(joints));
         commands.insert_resource(model);
@@ -487,12 +593,12 @@ fn keys(keys: Res<ButtonInput<KeyCode>>, mut screen: ResMut<Screen>) {
     }
 }
 
-fn act(mut screen: ResMut<Screen>, mut exit: MessageWriter<AppExit>) {
+fn act(mut commands: Commands, mut screen: ResMut<Screen>, mut front: ResMut<Front>, ours: Query<Entity, Or<(With<Scene>, With<Root>)>>, mut cameras: Query<&mut Camera>) {
     if screen.acts.is_empty() {
         return;
     }
     let acts = std::mem::take(&mut screen.acts);
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args = screen.base.clone();
     for a in acts {
         let next = match screen.apply(a) {
             Some(Act::Start) => {
@@ -504,13 +610,20 @@ fn act(mut screen: ResMut<Screen>, mut exit: MessageWriter<AppExit>) {
                 }
                 start_args(&args, &path.to_string_lossy())
             }
+            // In the menu's window, Back is the menu again, at once.
+            Some(Act::Back) if front.up => {
+                give_back(&mut commands, &mut front, &ours, &mut cameras);
+                return;
+            }
             Some(Act::Back) => back_args(&args),
             _ => continue,
         };
+        // The game (or the menu) is started in our place: `loading::leave` puts the logo up and
+        // ends this run once it has been drawn.
         if let Ok(mut n) = NEXT.lock() {
             *n = Some(Relaunch { args: next, password: String::new() });
         }
-        exit.write(AppExit::Success);
+        return;
     }
 }
 
