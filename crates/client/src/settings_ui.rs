@@ -14,7 +14,7 @@
 //! Gameplay tuning and difficulty aren't here: they belong to a world, so they are chosen when a
 //! new game is started (the new-game screen), and a server's are its own.
 //!
-//! `--settings graphics|audio|controls|game` starts with the screen up on that tab (pictures).
+//! `--settings graphics|effects|audio|controls|game` starts with the screen up on that tab (pictures).
 
 use bevy::prelude::*;
 use bevy::window::{MonitorSelection, PresentMode, PrimaryWindow, WindowMode};
@@ -27,25 +27,29 @@ use crate::theme::{self, BODY, SMALL, font};
 use crate::ui_scale::{self, ClientSettings, SettingsStore};
 
 /// (As wide inside the sheet's ragged edge.)
-const WIDTH: f32 = 1040.0;
+const WIDTH: f32 = 1180.0;
 const TABS_W: f32 = 190.0;
-const LABEL_W: f32 = 430.0;
+/// (Wide enough that a setting's line about itself stays one line.)
+const LABEL_W: f32 = 600.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Tab {
     #[default]
     Graphics,
+    /// The film's effects over the picture: a look, apart from what costs frame rate.
+    Effects,
     Audio,
     Controls,
     Game,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Graphics, Tab::Audio, Tab::Controls, Tab::Game];
+    pub const ALL: [Tab; 5] = [Tab::Graphics, Tab::Effects, Tab::Audio, Tab::Controls, Tab::Game];
 
     pub fn name(self) -> &'static str {
         match self {
             Tab::Graphics => "Graphics",
+            Tab::Effects => "Effects",
             Tab::Audio => "Audio",
             Tab::Controls => "Controls",
             Tab::Game => "Game",
@@ -126,7 +130,12 @@ pub fn change(s: &mut ClientSettings, c: Change) {
         Change::Defaults(tab) => {
             let d = ClientSettings::default();
             match tab {
-                Tab::Graphics => (s.graphics, s.fullscreen, s.vsync, s.old_look) = (d.graphics, d.fullscreen, d.vsync, d.old_look),
+                Tab::Graphics => (s.graphics, s.fullscreen, s.vsync) = (d.graphics, d.fullscreen, d.vsync),
+                Tab::Effects => {
+                    let g = &mut s.graphics;
+                    (g.bloom, g.grain, g.tilt_shift, g.vignette, g.haze) = (d.graphics.bloom, d.graphics.grain, d.graphics.tilt_shift, d.graphics.vignette, d.graphics.haze);
+                    s.old_look = d.old_look;
+                }
                 Tab::Audio => (s.volume, s.music, s.muted) = (d.volume, d.music, d.muted),
                 Tab::Game => (s.first_person, s.ui_scale, s.zombie_silhouettes, s.opening_hints, s.skip_menu, s.help_text, s.send_reports) = (d.first_person, d.ui_scale, d.zombie_silhouettes, d.opening_hints, d.skip_menu, d.help_text, d.send_reports),
                 Tab::Controls => s.keys.clear(),
@@ -134,7 +143,7 @@ pub fn change(s: &mut ClientSettings, c: Change) {
         }
     }
     s.graphics = s.graphics.clone().clamped();
-    if s.graphics != before && !matches!(c, Change::Preset(_) | Change::Defaults(_)) {
+    if s.graphics != before && !matches!(c, Change::Preset(_) | Change::Defaults(Tab::Graphics)) {
         s.graphics.preset = Preset::Custom;
     }
 }
@@ -211,6 +220,11 @@ pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
                 about: "Samples a pixel. Window glass looks best at 4x.",
                 control: Control::Choice([(1u32, "Off"), (2, "2x"), (4, "4x")].into_iter().map(|(n, name)| (name.to_string(), n == g.msaa, Change::Msaa(n))).collect()),
             },
+            switch("Soft shadows", "Shadow edges that soften away from what casts them. Costs frame rate.", s, Switch::SoftShadows),
+            switch("Contact shadows", "A soft dark line where walls meet the ground. Changes on the next start.", s, Switch::ContactShadows),
+            switch("Ground detail", "Patchy colour on the ground. Changes on the next start.", s, Switch::GroundDetail),
+        ],
+        Tab::Effects => vec![
             Row {
                 label: "Old look",
                 about: match s.old_look {
@@ -224,10 +238,7 @@ pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
             switch("Film grain", "A little noise over the picture.", s, Switch::Grain),
             switch("Tilt-shift", "Soft focus toward the top and bottom of the screen.", s, Switch::TiltShift),
             switch("Vignette", "Darkened corners.", s, Switch::Vignette),
-            switch("Contact shadows", "A soft dark line where walls meet the ground. Changes on the next start.", s, Switch::ContactShadows),
-            switch("Soft shadows", "Shadow edges that soften away from what casts them. Costs frame rate.", s, Switch::SoftShadows),
             switch("Haze", "A thin haze over the distance, thick and warm when the sun is low.", s, Switch::Haze),
-            switch("Ground detail", "Patchy colour on the ground. Changes on the next start.", s, Switch::GroundDetail),
         ],
         Tab::Audio => vec![
             switch("Mute", "All sound off. Ctrl+M does the same while you play.", s, Switch::Muted),
@@ -587,19 +598,19 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
         skin::rule(p);
         // The body: the tabs down the left, the open one's settings beside them.
         p.spawn(Node { align_items: AlignItems::Stretch, ..default() }).with_children(|body| {
-            body.spawn(Node { width: px(TABS_W), flex_shrink: 0.0, flex_direction: FlexDirection::Column, row_gap: px(8), padding: UiRect::all(px(16)), ..default() }).with_children(|col| {
+            body.spawn(Node { width: px(TABS_W), flex_shrink: 0.0, flex_direction: FlexDirection::Column, row_gap: px(8), padding: UiRect::all(px(20)), ..default() }).with_children(|col| {
                 for t in Tab::ALL {
                     chip(col, t.name(), t == tab, Some(Act::Tab(t)), percent(100));
                 }
             });
             skin::divider(body);
-            body.spawn(Node { flex_grow: 1.0, flex_direction: FlexDirection::Column, padding: UiRect::axes(px(24), px(14)), min_height: px(300), ..default() }).with_children(|col| {
+            body.spawn(Node { flex_grow: 1.0, flex_direction: FlexDirection::Column, padding: UiRect::axes(px(28), px(20)), row_gap: px(8), min_height: px(300), ..default() }).with_children(|col| {
                 if tab == Tab::Controls {
                     keys_list(col, ui.capture);
                 }
                 for r in rows(tab, &s) {
-                    col.spawn(Node { align_items: AlignItems::Center, column_gap: px(16), min_height: px(38), ..default() }).with_children(|row| {
-                        row.spawn(Node { width: px(LABEL_W), flex_shrink: 0.0, flex_direction: FlexDirection::Column, ..default() }).with_children(|l| {
+                    col.spawn(Node { align_items: AlignItems::Center, column_gap: px(24), min_height: px(44), ..default() }).with_children(|row| {
+                        row.spawn(Node { width: px(LABEL_W), flex_shrink: 0.0, flex_direction: FlexDirection::Column, row_gap: px(2), ..default() }).with_children(|l| {
                             l.spawn((Text::new(r.label), theme::strong(BODY), TextColor(BONE)));
                             l.spawn((Text::new(r.about), font(SMALL), TextColor(DIM)));
                         });
@@ -622,6 +633,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
                 let note = match tab {
                     Tab::Graphics if in_game => "Changes show at once round this screen.",
                     Tab::Graphics => "Auto measures the first seconds of a game and picks what this machine holds.",
+                    Tab::Effects => "A look, not a cost: no preset turns the old look on or off.",
                     Tab::Audio => "Flags on the command line win for their session.",
                     Tab::Controls if ui.capture.is_some() => "Press the new key (with Shift, Ctrl or Alt if you like). Esc keeps the old one.",
                     Tab::Controls => "Click a key to change it. Kept in your settings; the game's own keys are in keys.ron.",
@@ -763,7 +775,7 @@ mod tests {
     #[test]
     fn the_old_look_is_a_choice_of_three_no_preset_touches() {
         let mut s = ClientSettings::default();
-        let row = |s: &ClientSettings| rows(Tab::Graphics, s).into_iter().find(|r| r.label == "Old look").expect("on the Graphics tab");
+        let row = |s: &ClientSettings| rows(Tab::Effects, s).into_iter().find(|r| r.label == "Old look").expect("on the Effects tab");
         let Control::Choice(choices) = row(&s).control else { panic!("a choice") };
         assert_eq!(choices.iter().map(|(n, on, _)| (n.as_str(), *on)).collect::<Vec<_>>(), [("Off", true), ("Subtle", false), ("Strong", false)]);
         change(&mut s, choices[2].2);
@@ -776,7 +788,14 @@ mod tests {
         assert_eq!(ron::from_str::<ClientSettings>(&text).unwrap().old_look, OldLook::Strong);
         assert_eq!(ron::from_str::<ClientSettings>("(ui_scale: 110)").unwrap().old_look, OldLook::Off);
         change(&mut s, Change::Defaults(Tab::Graphics));
-        assert_eq!(s.old_look, OldLook::Off);
+        assert_eq!(s.old_look, OldLook::Strong, "the Graphics tab's defaults leave the Effects tab's look");
+        // The Effects tab's defaults put its switches and the look back.
+        change(&mut s, Change::Defaults(Tab::Effects));
+        assert_eq!((s.old_look, s.graphics.clone()), (OldLook::Off, Graphics::high()));
+        // From Low, they are a change by hand.
+        change(&mut s, Change::Preset(Preset::Low));
+        change(&mut s, Change::Defaults(Tab::Effects));
+        assert_eq!(s.graphics, Graphics { preset: Preset::Custom, bloom: true, grain: true, tilt_shift: true, vignette: true, haze: true, ..Graphics::low() });
     }
 
     #[test]

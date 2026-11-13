@@ -36,7 +36,7 @@
 //! Menus: a plain start (no flag that sets up a world or a scene) opens the main menu first
 //! (`main_menu.rs`; `--main-menu` forces it, `--no-menu` skips it); Esc while playing is the pause menu
 //! (`pause_menu.rs`; `--pause` starts with it up), whose Settings is the settings screen (`settings_ui.rs`;
-//! `--settings graphics|audio|controls|game` starts with it up).
+//! `--settings graphics|effects|audio|controls|game` starts with it up).
 //!
 //! `--render-to PATH` renders one PNG offscreen and exits, without ever opening a window
 //! (`offscreen.rs`): usually with `--load`, plus `--size WxH`, `--zoom`, `--angle`, `--player` and
@@ -356,7 +356,7 @@ pub struct Options {
     pub no_menu: bool,
     pub plain: bool,
     /// Start with the pause menu up (`--pause`), or the settings screen on a tab
-    /// (`--settings graphics|audio|controls|game`): for pictures.
+    /// (`--settings graphics|effects|audio|controls|game`): for pictures.
     pub pause: bool,
     /// Show the loading screen and hold it up (`--loading-screen`): for pictures (`loading.rs`).
     pub loading_screen: bool,
