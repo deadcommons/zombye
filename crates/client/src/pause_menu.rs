@@ -73,7 +73,7 @@ impl Plugin for PauseMenuPlugin {
         app.insert_resource(PauseMenu { open: options.pause || options.settings.is_some(), ..default() })
             .add_systems(Startup, spawn)
             // Before every other key handler: while the menu is up the keys are its own.
-            .add_systems(PreUpdate, keys.after(InputSystems).before(crate::browser_ui::keys).before(crate::chat::chat_keys).before(crate::inventory_ui::TextEntry).run_if(crate::live))
+            .add_systems(PreUpdate, keys.after(InputSystems).after(crate::settings_ui::capture).before(crate::browser_ui::keys).before(crate::chat::chat_keys).before(crate::inventory_ui::TextEntry).run_if(crate::live))
             .add_systems(Update, (act, stop_time, draw).chain());
     }
 }

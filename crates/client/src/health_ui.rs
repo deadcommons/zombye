@@ -108,7 +108,7 @@ fn preselect(mut panel: ResMut<HealthPanel>, link: Res<ServerLink>, me: Res<Loca
 }
 
 pub(crate) fn toggle(keys: Res<ButtonInput<KeyCode>>, mut panel: ResMut<HealthPanel>) {
-    if keys.just_pressed(KeyCode::KeyH) {
+    if crate::keys::just_pressed(&keys, crate::keys::Action::Health) {
         panel.open = !panel.open;
         panel.use_item = None;
     }
