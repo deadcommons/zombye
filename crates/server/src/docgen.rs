@@ -49,6 +49,7 @@ const DATA_FILES: &[(&str, &str, Part, &str)] = &[
     ("loot.ron", "loot::LootData", Part::Rules, "What containers hold, by room and container."),
     ("population.ron", "population::PopulationDef", Part::Rules, "Where zombies live, respawn and migration toward noise."),
     ("street_props.ron", "street_props::StreetPropsDef", Part::Rules, "Mailboxes, hydrants, cars, yard things and where they stand."),
+    ("vehicles.ron", "vehicles::VehicleData", Part::Rules, "Vehicles you can drive: which parked cars are real, speeds, steering."),
     ("power.ron", "power::PowerDef", Part::Rules, "The power grid and room lights."),
     ("fire.ron", "fire::FireTuning", Part::Rules, "Campfires, stoves, cooking and burns."),
     ("difficulty.ron", "difficulty::DifficultyData", Part::Rules, "Difficulty presets a new game offers."),
@@ -70,7 +71,7 @@ const DATA_FILES: &[(&str, &str, Part, &str)] = &[
 ];
 
 /// `WorldConfig` fields that are content (documented with their data file) or not settings at all.
-const NOT_TUNING: &[&str] = &["templates", "weapons", "items", "containers", "loot", "recipes", "builds", "population", "street_props", "power", "scripts", "zombies", "loot_seed"];
+const NOT_TUNING: &[&str] = &["templates", "weapons", "items", "containers", "loot", "recipes", "builds", "population", "street_props", "vehicles", "power", "scripts", "zombies", "loot_seed"];
 
 /// What a run found undocumented.
 #[derive(Default)]
