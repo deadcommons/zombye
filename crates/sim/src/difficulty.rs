@@ -183,7 +183,6 @@ pub fn check_values(values: &BTreeMap<String, String>) -> Result<(), String> {
     }
     Ok(())
 }
-}
 
 /// Tuning numbers a preset sets outright. Each is the whole tuning, with what the preset leaves
 /// out at its default: `zombie: Some((memory_secs: 30))`.
