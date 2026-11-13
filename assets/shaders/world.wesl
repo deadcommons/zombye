@@ -8,12 +8,13 @@ import bevy_pbr::render::{
     mesh_functions,
 };
 
+// In a prepass the fragment stage exists only where Bevy asks for one (PREPASS_FRAGMENT): the
+// camera's normal prepass for ambient occlusion, or a shadow pass that has to write depth itself.
 @if(PREPASS_PIPELINE)
-import bevy_pbr::{
-    prepass::io::{VertexOutput, FragmentOutput},
-    deferred::functions::deferred_output,
-};
-@else
+import bevy_pbr::{prepass::io::VertexOutput, render::pbr_prepass_functions::{prepass_alpha_discard, prepass_sample_color_and_alpha_discard}};
+@if(PREPASS_PIPELINE && PREPASS_FRAGMENT)
+import bevy_pbr::prepass::io::FragmentOutput;
+@if(!PREPASS_PIPELINE)
 import bevy_pbr::render::{
     forward_io::{VertexOutput, FragmentOutput},
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
@@ -243,6 +244,15 @@ fn ground_detail(p: vec2<f32>, c: vec3<f32>) -> vec3<f32> {
     return o;
 }
 
+// A prepass Bevy runs a fragment stage in only to leave out what's see-through (window glass in
+// a shadow pass): nothing to write, and none of the cutaway.
+@if(PREPASS_PIPELINE && !PREPASS_FRAGMENT)
+@fragment
+fn fragment(in: VertexOutput) {
+    prepass_sample_color_and_alpha_discard(in);
+}
+
+@if(!PREPASS_PIPELINE || PREPASS_FRAGMENT)
 @fragment
 fn fragment(
     in: VertexOutput,
@@ -260,7 +270,9 @@ fn fragment(
     // in UV0 and its kind in UV1, so a whole wall drops to a stub as one piece, with a crisp,
     // grid-aligned top edge.
     var wood_fade = 0.0;
-@if(CUTAWAY && VERTEX_UVS_A && VERTEX_UVS_B) {
+    // What follows leaves pixels out in the camera's passes: the main one and, for ambient
+    // occlusion, its normal prepass. Never in the shadow passes (no NORMAL_PREPASS there).
+@if(CUTAWAY && VERTEX_UVS_A && VERTEX_UVS_B && (!PREPASS_PIPELINE || NORMAL_PREPASS)) {
     let cut_kind = u32(in.uv_b.x + 0.5);
     if (cut_kind == 1u) {
         // The wall sinks to its stub: everything above its top (a straight line) is left out.
@@ -297,11 +309,11 @@ fn fragment(
             discard;
         }
     }
-@if(!PREPASS_PIPELINE) {
+@if(!PREPASS_PIPELINE || NORMAL_PREPASS) {
     // The roof and upper storeys of the building the player is inside fade out as a whole (and
     // back in), by the amount in their mesh's tag (`world_render::hide_upper_floors`); so do a
-    // cut wall's door leaf and blind. At 255 no pixel is drawn. Only here, in the camera's pass:
-    // the shadow passes don't run this shader, so what's faded out still casts its shadow.
+    // cut wall's door leaf and blind. At 255 no pixel is drawn. Only in the camera's passes:
+    // the shadow passes skip it, so what's faded out still casts its shadow.
     let gone = f32(mesh_functions::get_tag(in.instance_index) & 255u) / 255.0;
     if (gone > 0.0 && gone > bayer4(vec2<u32>(in.position.xy) + vec2<u32>(2u, 1u))) {
         discard;
@@ -316,7 +328,7 @@ fn fragment(
         pbr_input.material.base_color
     );
 
-@if(GROUND) {
+@if(GROUND && !PREPASS_PIPELINE) {
     // Ground detail (DCM-59): the flat colours of the outdoors broken up, in the same faceted
     // style as everything else. Not indoors (floors keep their colour).
     if (above < 0.05 && in.world_normal.y > 0.9) {
@@ -328,7 +340,13 @@ fn fragment(
 
     var out: FragmentOutput;
 @if(PREPASS_PIPELINE) {
-    out = deferred_output(in, pbr_input);
+    prepass_alpha_discard(pbr_input.material.flags, pbr_input.material.alpha_cutoff, pbr_input.material.base_color);
+@if(NORMAL_PREPASS) {
+    out.normal = vec4(pbr_input.N * 0.5 + vec3(0.5), 1.0);
+}
+@if(UNCLIPPED_DEPTH_ORTHO_EMULATION) {
+    out.frag_depth = in.unclipped_depth;
+}
 } @else {
 @if(TERRAIN) {
     // The hills' facets (DCM-83): neighbouring faces tilt only a few degrees apart, and on pale

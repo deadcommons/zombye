@@ -64,11 +64,22 @@ struct VertexOutput {
 };
 
 // The shadow pass only needs the animated position (and, where the GPU can't clip depth, the
-// depth to write itself, as Bevy's own prepass does).
+// depth to write itself, as Bevy's own prepass does). The camera's normal prepass (ambient
+// occlusion) also wants the world position, to face each triangle as the main pass does.
 struct ShadowOutput {
     @builtin(position) clip_position: vec4<f32>,
+    @if(NORMAL_PREPASS)
+    @location(0) world_position: vec3<f32>,
     @if(UNCLIPPED_DEPTH_ORTHO_EMULATION)
     @location(6) unclipped_depth: f32,
+};
+
+// What the prepass fragment writes: Bevy's layout (bevy_pbr prepass io), the parts we use.
+struct PrepassOutput {
+    @if(NORMAL_PREPASS)
+    @location(0) normal: vec4<f32>,
+    @if(UNCLIPPED_DEPTH_ORTHO_EMULATION)
+    @builtin(frag_depth) frag_depth: f32,
 };
 
 fn hash(n: u32) -> f32 {
@@ -179,6 +190,9 @@ fn vertex(vertex: Vertex) -> ShadowOutput {
     let world = mesh_functions::mesh_position_local_to_world(world_from_local, vec4(animate(vertex), 1.0));
     var out: ShadowOutput;
     out.clip_position = position_world_to_clip(world.xyz);
+@if(NORMAL_PREPASS) {
+    out.world_position = world.xyz;
+}
 @if(UNCLIPPED_DEPTH_ORTHO_EMULATION) {
     out.unclipped_depth = out.clip_position.z;
     out.clip_position.z = min(out.clip_position.z, 1.0);
@@ -186,10 +200,22 @@ fn vertex(vertex: Vertex) -> ShadowOutput {
     return out;
 }
 
-@if(PREPASS_PIPELINE && UNCLIPPED_DEPTH_ORTHO_EMULATION)
+@if(PREPASS_PIPELINE && (NORMAL_PREPASS || UNCLIPPED_DEPTH_ORTHO_EMULATION))
 @fragment
-fn fragment(in: ShadowOutput) -> @builtin(frag_depth) f32 {
-    return in.unclipped_depth;
+fn fragment(in: ShadowOutput) -> PrepassOutput {
+    var out: PrepassOutput;
+@if(NORMAL_PREPASS) {
+    // Flat, from screen-space derivatives, turned to face the camera: as the main pass shades.
+    var n = normalize(cross(dpdx(in.world_position), dpdy(in.world_position)));
+    if (dot(n, view.world_position - in.world_position) < 0.0) {
+        n = -n;
+    }
+    out.normal = vec4(n * 0.5 + vec3(0.5), 1.0);
+}
+@if(UNCLIPPED_DEPTH_ORTHO_EMULATION) {
+    out.frag_depth = in.unclipped_depth;
+}
+    return out;
 }
 
 @if(!PREPASS_PIPELINE)
