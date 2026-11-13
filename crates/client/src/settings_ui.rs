@@ -851,7 +851,7 @@ fn pad_list(p: &mut ChildSpawnerCommands, family: crate::pad::Family) {
     p.spawn(Node { column_gap: px(22), align_items: AlignItems::FlexStart, ..default() }).with_children(|cols| {
         for (group, rows) in PAD_ROWS {
             cols.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(3), flex_basis: percent(33), ..default() }).with_children(|col| {
-                col.spawn((Text::new(group.to_uppercase()), theme::head(BODY + 2.0), TextColor(skin::GREEN), Node { margin: UiRect::top(px(6)), ..default() }));
+                col.spawn((Text::new(group.to_uppercase()), theme::head(BODY + 2.0), TextColor(skin::ACCENT), Node { margin: UiRect::top(px(6)), ..default() }));
                 for row in rows.iter().copied() {
                     col.spawn(Node { column_gap: px(8), align_items: AlignItems::Center, min_height: px(28), ..default() }).with_children(|line| {
                         line.spawn(Node { width: px(104), flex_shrink: 0.0, ..default() }).with_children(|k| {
