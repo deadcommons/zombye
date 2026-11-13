@@ -748,6 +748,8 @@ fn main() {
     if let Some(code) = report::supervise() {
         std::process::exit(code);
     }
+    // The supervised child: a panic leaves its report for the parent to send (`report.rs`).
+    report::capture_panics();
     let options = Options::from_args();
     // `--server-info HOST`: what that server is and its rules, without joining it (#69).
     if let Some(addr) = &options.server_info {

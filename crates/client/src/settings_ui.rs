@@ -75,6 +75,7 @@ pub enum Switch {
     ZombieSilhouettes,
     OpeningHints,
     SkipMenu,
+    SendReports,
 }
 
 /// One change to the settings, as a control makes it.
@@ -127,7 +128,7 @@ pub fn change(s: &mut ClientSettings, c: Change) {
             match tab {
                 Tab::Graphics => (s.graphics, s.fullscreen, s.vsync, s.old_look) = (d.graphics, d.fullscreen, d.vsync, d.old_look),
                 Tab::Audio => (s.volume, s.music, s.muted) = (d.volume, d.music, d.muted),
-                Tab::Game => (s.first_person, s.ui_scale, s.zombie_silhouettes, s.opening_hints, s.skip_menu, s.help_text) = (d.first_person, d.ui_scale, d.zombie_silhouettes, d.opening_hints, d.skip_menu, d.help_text),
+                Tab::Game => (s.first_person, s.ui_scale, s.zombie_silhouettes, s.opening_hints, s.skip_menu, s.help_text, s.send_reports) = (d.first_person, d.ui_scale, d.zombie_silhouettes, d.opening_hints, d.skip_menu, d.help_text, d.send_reports),
                 Tab::Controls => s.keys.clear(),
             }
         }
@@ -155,6 +156,7 @@ fn switch_of(s: &mut ClientSettings, switch: Switch) -> &mut bool {
         Switch::ZombieSilhouettes => &mut s.zombie_silhouettes,
         Switch::OpeningHints => &mut s.opening_hints,
         Switch::SkipMenu => &mut s.skip_menu,
+        Switch::SendReports => &mut s.send_reports,
     }
 }
 
@@ -260,6 +262,7 @@ pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
             switch("Opening hints", "Outlines of the doors and windows a building hides from the camera.", s, Switch::OpeningHints),
             switch("Zombie silhouettes", "Zombies you can see show through what covers them from the camera.", s, Switch::ZombieSilhouettes),
             switch("Skip the main menu", "Start straight in the game, as before there was a menu. For development.", s, Switch::SkipMenu),
+            switch("Send problem reports", "Crashes, F12 reports and bad stutters go to the developers, with no name or address.", s, Switch::SendReports),
         ],
     }
 }

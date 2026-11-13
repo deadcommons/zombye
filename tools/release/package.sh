@@ -12,7 +12,13 @@
 #   ZOMBYE_ART       the private art repo (default ~/games/zombye-art); its release-models,
 #                    release-characters, release-anim and release-audio go into zombye.pak.
 #                    Without it (or with ZOMBYE_NO_PACK=1) the build has this repo's own art only.
-#   ZOMBYE_PACK_KEY  the key the pack is scrambled with (compiled into the game). Optional.
+#   ZOMBYE_PACK_KEY  the key the pack is scrambled with (compiled into the game). Needed whenever the
+#                    bought art is packed: the built-in key is in the public source, so a pack made with
+#                    it can be unpacked by anyone. Keep it out of this repo and its history.
+#   ZOMBYE_REPORT_URL  where the game and its server send problem reports (`http://HOST:7780`, the
+#                    report service, docs/bug-reports.md; compiled in). Without it nothing is sent.
+#                    Never put the address in this repo.
+#   ZOMBYE_REPORT_KEY  the key the report service asks for (compiled in). Optional.
 #   OUT              where packages go (default dist/).
 #   ZOMBYE_SIGN_ID   (mac) a "Developer ID Application: ..." identity in the keychain; without it the
 #                    app is signed ad hoc.
@@ -31,6 +37,23 @@ out="${OUT:-$root/dist}"
 commit="$(git rev-parse --short HEAD)$(git diff --quiet HEAD -- crates assets || echo '+')"
 export ZOMBYE_BUILD="playtest $(date -u +%Y-%m-%d) $commit"
 echo "building $ZOMBYE_BUILD for $platform"
+if [ -n "${ZOMBYE_REPORT_URL:-}" ]; then
+  echo "problem reports go to the report service (ZOMBYE_REPORT_URL)"
+  export ZOMBYE_REPORT_URL ZOMBYE_REPORT_KEY="${ZOMBYE_REPORT_KEY:-}"
+else
+  echo "no ZOMBYE_REPORT_URL: this build sends no problem reports"
+fi
+
+# The bought art may only ship scrambled with a key of our own (see ZOMBYE_PACK_KEY above).
+if [ "${ZOMBYE_NO_PACK:-0}" != 1 ] && [ -z "${ZOMBYE_PACK_KEY:-}" ]; then
+  for d in release-models release-characters release-anim release-audio; do
+    if [ -d "$art/$d" ]; then
+      echo "error: ZOMBYE_PACK_KEY isn't set, and the bought art in $art would be packed with the public key." >&2
+      echo "       Set ZOMBYE_PACK_KEY, or ZOMBYE_NO_PACK=1 for a build with this repo's own art only." >&2
+      exit 1
+    fi
+  done
+fi
 
 triple=""
 features=""
