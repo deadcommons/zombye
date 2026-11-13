@@ -47,7 +47,7 @@ pub struct TerrainDef {
 
 impl Default for TerrainDef {
     fn default() -> Self {
-        Self { relief_m: 18.0, cell_m: 6, wavelength_m: 130.0, flat_margin_m: 6.0, ramp_m: 70.0, max_grade: 0.22, uphill_slow: 1.5, roughness_m: 0.6 }
+        Self { relief_m: 18.0, cell_m: 6, wavelength_m: 130.0, flat_margin_m: 6.0, ramp_m: 70.0, max_grade: 0.32, uphill_slow: 1.5, roughness_m: 1.4 }
     }
 }
 

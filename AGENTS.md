@@ -473,7 +473,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   `cell_m` (6 m) grid, each square two flat facets (the diagonal alternating), from seeded value noise
   (`Terrain::generate`, `+ - * / sqrt` only, so the same on every machine). **The town is level:** corners within
   `flat_margin_m` (6 m) of the town's bounds are 0 and the hills rise over `ramp_m` (70 m) beyond to `relief_m`
-  (18 m) of relief, `wavelength_m` 130, each corner then raised or lowered at random by up to `roughness_m` (0.6 m), so neighbouring facets tilt their own ways and the light picks each out; no facet is steeper than `max_grade` (0.22, about 12°: every slope is
+  (18 m) of relief, `wavelength_m` 130, each corner then raised or lowered at random by up to `roughness_m` (1.4 m), so neighbouring facets tilt their own ways and the light picks each out; no facet is steeper than `max_grade` (0.32, about 18°: every slope is
   walkable). The forest thins out on the steepest faces (`plant_forest`, by `broad_grade`: up to 85% fewer trees from a grade of 0.11
   to 0.19), so bare ground and rock show there.
   `TerrainDef` is `GenConfig::terrain` (serde default, saved with the settings, checked on load, `TerrainDef::flat()`
