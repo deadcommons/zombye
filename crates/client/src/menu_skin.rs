@@ -101,6 +101,10 @@ pub fn button<'a>(parent: &'a mut ChildSpawnerCommands, label: &str, detail: Opt
     if look != Look::Disabled {
         e.insert(crate::focus::Focusable);
     }
+    // The main button, or the choice that is on: where the focus starts.
+    if matches!(look, Look::Primary | Look::Chip(true)) {
+        e.insert(crate::focus::Lead);
+    }
     if let Some((over_fill, over_line)) = over {
         e.observe(move |ev: On<PointerOver>, mut q: Query<(&mut BackgroundColor, &mut BorderColor)>| {
             if let Ok((mut bg, mut border)) = q.get_mut(ev.entity) {

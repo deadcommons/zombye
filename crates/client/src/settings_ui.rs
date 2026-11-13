@@ -434,7 +434,7 @@ impl Plugin for SettingsUiPlugin {
         help_text::set(options.as_ref().and_then(|o| o.help_text).unwrap_or(settings.help_text));
         let tab = options.as_ref().and_then(|o| o.settings.as_deref()).map(|t| Tab::parse(t).unwrap_or_default());
         let in_game = app.world().contains_resource::<crate::server_link::ServerLink>();
-        app.insert_resource(SettingsUi { open: tab.is_some(), tab: tab.unwrap_or_default(), in_game, ..default() }).add_systems(Startup, spawn).add_systems(PreUpdate, capture.after(bevy::input::InputSystems)).add_systems(Update, (act, apply_live, draw).chain());
+        app.insert_resource(SettingsUi { open: tab.is_some(), tab: tab.unwrap_or_default(), in_game, ..default() }).add_systems(Startup, spawn).add_systems(PreUpdate, capture.after(bevy::input::InputSystems)).add_systems(Update, ((act, apply_live, draw).chain(), scroll));
     }
 }
 
@@ -442,6 +442,29 @@ impl Plugin for SettingsUiPlugin {
 struct Root;
 #[derive(Component)]
 struct Panel;
+/// The open tab's settings, which scroll when the window is too short for them.
+#[derive(Component)]
+struct Scroll;
+
+/// The wheel over the settings scrolls them.
+fn scroll(mut wheel: MessageReader<bevy::input::mouse::MouseWheel>, ui: Res<SettingsUi>, window: Query<&Window, With<bevy::window::PrimaryWindow>>, mut scroll: Query<(&ComputedNode, &UiGlobalTransform, &mut ScrollPosition), With<Scroll>>) {
+    use bevy::input::mouse::MouseScrollUnit;
+    let px = wheel.read().map(|ev| if ev.unit == MouseScrollUnit::Line { ev.y * 40.0 } else { ev.y }).fold(0.0, |a, b| a + b);
+    if px == 0.0 || !ui.open {
+        return;
+    }
+    let Some(cursor) = window.single().ok().and_then(|w| w.physical_cursor_position()) else { return };
+    for (node, at, mut pos) in &mut scroll {
+        if node.contains_point(*at, cursor) {
+            // Physical pixels to UI pixels, as `ScrollPosition` is.
+            let max = (node.content_size.y - node.size.y) * node.inverse_scale_factor();
+            let y = crate::hud::scrolled(pos.y, px, max);
+            if pos.y != y {
+                pos.y = y;
+            }
+        }
+    }
+}
 
 fn spawn(mut commands: Commands, ui: Res<SettingsUi>) {
     // Over the whole screen, so nothing under it takes a click meant for it. In a game the world shows
@@ -454,7 +477,7 @@ fn spawn(mut commands: Commands, ui: Res<SettingsUi>) {
             GlobalZIndex(31),
         ))
         .with_children(|c| {
-            c.spawn((Panel, Node { width: px(WIDTH), flex_direction: FlexDirection::Column, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(8)), ..default() }, skin::panel()));
+            c.spawn((Panel, Node { width: px(WIDTH), max_height: percent(96), flex_direction: FlexDirection::Column, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(8)), ..default() }, skin::panel()));
         });
 }
 
@@ -625,14 +648,15 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
         });
         skin::rule(p);
         // The body: the tabs down the left, the open one's settings beside them.
-        p.spawn(Node { align_items: AlignItems::Stretch, ..default() }).with_children(|body| {
+        // (It scrolls when the window is too short for it: the wheel, or the pad's focus moving.)
+        p.spawn(Node { align_items: AlignItems::Stretch, min_height: px(0), flex_shrink: 1.0, ..default() }).with_children(|body| {
             body.spawn(Node { width: px(TABS_W), flex_shrink: 0.0, flex_direction: FlexDirection::Column, row_gap: px(8), padding: UiRect::all(px(16)), ..default() }).with_children(|col| {
                 for t in Tab::ALL {
                     chip(col, t.name(), t == tab, Some(Act::Tab(t)), percent(100));
                 }
             });
             skin::divider(body);
-            body.spawn(Node { flex_grow: 1.0, flex_direction: FlexDirection::Column, padding: UiRect::axes(px(24), px(14)), min_height: px(300), ..default() }).with_children(|col| {
+            body.spawn((Scroll, ScrollPosition::default(), Node { flex_grow: 1.0, flex_direction: FlexDirection::Column, padding: UiRect::axes(px(24), px(14)), min_height: px(0), overflow: Overflow::scroll_y(), ..default() })).with_children(|col| {
                 if tab == Tab::Controls {
                     controls_head(col, input, pad_view);
                     if pad_view {

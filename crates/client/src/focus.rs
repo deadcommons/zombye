@@ -23,6 +23,10 @@ use crate::pad::{InputMode, Pad};
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct Focusable;
 
+/// A screen's main button, or a choice that is on (the open tab): the focus starts on the first.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct Lead;
+
 /// Seconds the stick is held before the focus moves on by itself, then between steps.
 const REPEAT_FIRST: f32 = 0.4;
 const REPEAT_NEXT: f32 = 0.15;
@@ -48,13 +52,8 @@ pub struct FocusPlugin;
 
 impl Plugin for FocusPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Focus>().add_systems(Update, (navigate, outline).chain());
+        app.init_resource::<Focus>().add_systems(Update, (navigate, outline, into_view).chain());
     }
-}
-
-/// The pause menu or the settings is up.
-fn menus_up(pause: &Option<Res<crate::pause_menu::PauseMenu>>, settings: &Option<Res<crate::settings_ui::SettingsUi>>) -> bool {
-    pause.as_ref().is_some_and(|p| p.open) || settings.as_ref().is_some_and(|s| s.open)
 }
 
 /// The button to start on: the top one, then the left one (the left counts for half: the settings'
@@ -103,7 +102,7 @@ fn navigate(
     pause: Option<Res<crate::pause_menu::PauseMenu>>,
     mut settings: Option<ResMut<crate::settings_ui::SettingsUi>>,
     time: Res<Time>,
-    buttons: Query<(Entity, &ComputedNode, &UiGlobalTransform, &InheritedVisibility), With<Focusable>>,
+    buttons: Query<(Entity, &ComputedNode, &UiGlobalTransform, &InheritedVisibility, Has<Lead>), With<Focusable>>,
     parents: Query<&ChildOf>,
     z: Query<&GlobalZIndex>,
 ) {
@@ -128,19 +127,21 @@ fn navigate(
             }
         }
     };
-    let all: Vec<(Entity, Vec2, i32)> = buttons
+    let all: Vec<(Entity, Vec2, i32, bool)> = buttons
         .iter()
-        .filter(|(_, n, _, v)| v.get() && n.size().min_element() > 0.0)
-        .map(|(e, _, t, _)| (e, t.translation, layer_of(e)))
+        .filter(|(_, n, _, v, _)| v.get() && n.size().min_element() > 0.0)
+        .map(|(e, _, t, _, lead)| (e, t.translation, layer_of(e), lead))
         .collect();
     let Some(top) = all.iter().map(|b| b.2).max() else { return };
     let items: Vec<(Entity, Vec2)> = all.iter().filter(|b| b.2 == top).map(|b| (b.0, b.1)).collect();
+    let leads: Vec<(Entity, Vec2)> = all.iter().filter(|b| b.2 == top && b.3).map(|b| (b.0, b.1)).collect();
+    let start = first(&leads).or_else(|| first(&items));
     // Where the focus is: still on a button of the top screen, else nearest where it was, else the first.
     let here = focus.on.and_then(|e| items.iter().find(|i| i.0 == e).copied());
     let on = match here {
         Some(h) => Some(h),
-        None if focus.layer == Some(top) => focus.last.and_then(|l| nearest(l, &items)).or_else(|| first(&items)).and_then(|e| items.iter().find(|i| i.0 == e).copied()),
-        None => first(&items).and_then(|e| items.iter().find(|i| i.0 == e).copied()),
+        None if focus.layer == Some(top) => focus.last.and_then(|l| nearest(l, &items)).or(start).and_then(|e| items.iter().find(|i| i.0 == e).copied()),
+        None => start.and_then(|e| items.iter().find(|i| i.0 == e).copied()),
     };
     focus.layer = Some(top);
     let Some((mut on, mut at)) = on else {
@@ -201,6 +202,30 @@ fn outline(mut commands: Commands, mut focus: ResMut<Focus>, exists: Query<(), W
         commands.entity(new).insert(Outline::new(px(2), px(2), GREEN));
     }
     focus.outlined = focus.on;
+}
+
+/// The focused button scrolled into sight, in whatever scrolls round it.
+fn into_view(focus: Res<Focus>, nodes: Query<(&ComputedNode, &UiGlobalTransform)>, parents: Query<&ChildOf>, mut scrolls: Query<(&ComputedNode, &UiGlobalTransform, &mut ScrollPosition)>) {
+    let Some(on) = focus.on.filter(|_| focus.is_changed()) else { return };
+    let Ok((button, at)) = nodes.get(on) else { return };
+    let mut e = on;
+    while let Ok(p) = parents.get(e) {
+        e = p.parent();
+        let Ok((node, middle, mut pos)) = scrolls.get_mut(e) else { continue };
+        if node.content_size.y <= node.size.y {
+            continue;
+        }
+        // Physical pixels: how far the button's top is above the view's, or its foot below.
+        let margin = 12.0 / node.inverse_scale_factor();
+        let (top, foot) = (at.translation.y - button.size().y / 2.0 - margin, at.translation.y + button.size().y / 2.0 + margin);
+        let (view_top, view_foot) = (middle.translation.y - node.size.y / 2.0, middle.translation.y + node.size.y / 2.0);
+        let by = if top < view_top { top - view_top } else if foot > view_foot { foot - view_foot } else { 0.0 };
+        if by != 0.0 {
+            let max = (node.content_size.y - node.size.y) * node.inverse_scale_factor();
+            pos.y = (pos.y + by * node.inverse_scale_factor()).clamp(0.0, max.max(0.0));
+        }
+        return;
+    }
 }
 
 #[cfg(test)]
