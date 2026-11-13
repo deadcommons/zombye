@@ -54,6 +54,9 @@ use crate::map::{Feature, TileMap, VehicleBox};
 use crate::players::PLAYER_RADIUS;
 use crate::world::World;
 
+mod work;
+pub use work::*;
+
 /// How a kind of vehicle moves. Only cars for now; every kind is one of these, and everything
 /// else about it is data.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,6 +234,8 @@ pub struct VehicleData {
     pub drivable_share: f32,
     pub kinds: Vec<VehicleKind>,
     pub tuning: VehicleTuning,
+    /// Keys, hotwiring, the boot and glovebox, repairs ([`WorkTuning`]).
+    pub work: WorkTuning,
 }
 
 impl VehicleData {
@@ -256,6 +261,7 @@ pub fn check(data: &VehicleData) -> Result<(), String> {
     if !(0.0..=1.0).contains(&data.drivable_share) {
         return Err(format!("drivable_share {} must be between 0 and 1", data.drivable_share));
     }
+    data.work.check()?;
     let t = &data.tuning;
     for (what, v, lo, hi) in [
         ("enter_reach", t.enter_reach, 0.1, 5.0),
@@ -464,6 +470,8 @@ pub struct Vehicle {
     pub from: IVec2,
     /// Its fuel, engine and parts (saved in their own section, `VCND`).
     pub cond: Condition,
+    /// Its lock and key (saved in their own section, `VACC`).
+    pub access: Access,
 }
 
 impl Vehicle {
@@ -494,16 +502,23 @@ pub struct VehicleView {
     pub fuel_dl: u16,
     pub engine_on: bool,
     pub parts: [u8; 4],
+    /// Locked; and whether its engine will start (a key in it, its wires crossed, or its key on
+    /// its driver: stage 4, [`Access`]).
+    pub locked: bool,
+    pub start: bool,
+    /// Its key is in the ignition (the driver can take it).
+    pub key_in: bool,
 }
 
 impl VehicleView {
-    pub fn of(v: &Vehicle) -> Self {
-        Self { id: v.id, kind: v.kind, state: v.state, driver: v.driver.unwrap_or(0), from: v.from.to_array(), fuel_dl: v.cond.fuel_dl(), engine_on: v.cond.engine_on, parts: v.cond.percent() }
+    /// `start`: whether it will start ([`World::vehicle_views`] works it out with the driver).
+    pub fn of(v: &Vehicle, start: bool) -> Self {
+        Self { id: v.id, kind: v.kind, state: v.state, driver: v.driver.unwrap_or(0), from: v.from.to_array(), fuel_dl: v.cond.fuel_dl(), engine_on: v.cond.engine_on, parts: v.cond.percent(), locked: v.access.locked, start, key_in: v.access.ignition }
     }
 
-    /// How it goes, as the server works it out ([`Condition::perf`]).
+    /// How it goes, as the server works it out ([`Condition::perf`] and whether it starts).
     pub fn perf(&self) -> Perf {
-        Perf::of(self.fuel_dl > 0, self.parts)
+        Perf::of(self.fuel_dl > 0 && self.start, self.parts)
     }
 
     /// Litres in the tank (to a decilitre).
@@ -664,6 +679,16 @@ pub enum VehicleOp {
     Siphon { vehicle: Option<u32> },
     /// The driver sounds the horn.
     Horn,
+    /// The driver crosses the wires under the wheel (a job, with a tool tagged `work.hotwire_tag`).
+    Hotwire,
+    /// The driver takes the key out of the ignition.
+    TakeKey,
+    /// Lock or unlock a car (of `vehicle`, else the one faced or sat in): its key on you, or from inside.
+    Lock { vehicle: Option<u32> },
+    /// Smash a window of a locked car to get in.
+    BreakIn { vehicle: Option<u32> },
+    /// Repair `repair` (an index into `work.repairs`) on a car: a job.
+    Repair { vehicle: Option<u32>, repair: u8 },
 }
 
 impl World {
@@ -715,7 +740,8 @@ impl World {
             let id = self.vehicles.next_id;
             self.vehicles.next_id += 1;
             let cond = Condition::found(seed, p.tile, &data.kinds[kind], &data.tuning);
-            self.vehicles.list.push(Vehicle { id, kind: kind as u16, state, input: DriveInput::PARKED, driver: None, from: p.tile, cond });
+            let access = Access::found(seed, p.tile, &data.work);
+            self.vehicles.list.push(Vehicle { id, kind: kind as u16, state, input: DriveInput::PARKED, driver: None, from: p.tile, cond, access });
         }
         let boxes = self.vehicle_boxes();
         self.map.set_vehicles(boxes);
@@ -745,7 +771,9 @@ impl World {
             // As found until the `VCND` section (if the save has one) says otherwise.
             let data = &self.config.vehicles;
             let cond = Condition::found(self.config.generation.seed, r.from, &data.kinds[kind], &data.tuning);
-            self.vehicles.list.push(Vehicle { id: r.id, kind: kind as u16, state: s, input: r.input.sanitized(), driver: r.driver, from: r.from, cond });
+            // As found until the `VACC` section (if any) says otherwise.
+            let access = Access::found(self.config.generation.seed, r.from, &data.work);
+            self.vehicles.list.push(Vehicle { id: r.id, kind: kind as u16, state: s, input: r.input.sanitized(), driver: r.driver, from: r.from, cond, access });
         }
         self.vehicles.next_id = save.next_id;
         let boxes = self.vehicle_boxes();
@@ -824,6 +852,11 @@ impl World {
             VehicleOp::Refuel { vehicle } => self.pour_fuel(pi, vehicle, true),
             VehicleOp::Siphon { vehicle } => self.pour_fuel(pi, vehicle, false),
             VehicleOp::Horn => return self.horn(pi),
+            VehicleOp::Hotwire => self.start_hotwire(pi),
+            VehicleOp::TakeKey => self.take_key(pi),
+            VehicleOp::Lock { vehicle } => self.toggle_lock(pi, vehicle),
+            VehicleOp::BreakIn { vehicle } => self.break_in(pi, vehicle),
+            VehicleOp::Repair { vehicle, repair } => self.start_repair(pi, vehicle, repair),
         };
         match &out {
             Ok(text) => self.note(id, true, text.clone()),
@@ -877,9 +910,20 @@ impl World {
         }
         let Some(kind) = self.vehicle_kind(v).cloned() else { return Err("no such car".into()) };
         let vid = v.id;
+        let mut unlocked = false;
+        if v.access.locked {
+            if !self.carries_key(pi, vid) {
+                return Err(format!("the {} is locked: find its key, or smash a window (hold E)", kind.label()));
+            }
+            unlocked = true;
+        }
+        let v = &self.vehicles.list[vi];
         let seat = seat_of(&kind, &v.state);
         let heading = v.state.heading;
         let v = &mut self.vehicles.list[vi];
+        if unlocked {
+            v.access.locked = false;
+        }
         v.driver = Some(self.players[pi].id);
         v.input = DriveInput::PARKED;
         let p = &mut self.players[pi];
@@ -892,6 +936,8 @@ impl World {
         let c = self.vehicles.list[vi].cond;
         let state = if c.parts[0] <= 0.0 {
             "the engine is wrecked".to_string()
+        } else if !self.startable(vi) {
+            "no key: find it, or hotwire it".to_string()
         } else if c.fuel_dl() == 0 {
             "the tank is empty".to_string()
         } else {
@@ -987,18 +1033,24 @@ impl World {
                 && input.throttle != 0.0
                 && !v.cond.engine_on
                 && v.cond.perf().runs
+                && self.startable(vi)
             {
                 self.vehicles.list[vi].cond.engine_on = true;
                 self.emit_sound_from(state.pos, tune.start_noise, crate::senses::SoundSource::Player(d));
                 self.note(d, true, "the engine starts".into());
             }
-            let perf = self.vehicles.list[vi].cond.perf();
+            let mut perf = self.vehicles.list[vi].cond.perf();
+            perf.runs &= self.startable(vi);
             let before = state.speed;
             let push = step_vehicle(&self.map, &kind, id, &mut state, input, perf, dt, bounce);
             let dist = state.pos.distance(self.vehicles.list[vi].state.pos);
             self.vehicle_wear(vi, &kind, &tune, before, &state, push);
             // Fuel: the engine's idle and the distance driven, more with the throttle down.
             let c = &mut self.vehicles.list[vi].cond;
+            if c.engine_on && !perf.runs && c.fuel > 0.0 && c.parts[0] > 0.0 {
+                // The key went (taken out, or its holder got out of the passenger side): it stops.
+                c.engine_on = false;
+            }
             if c.engine_on {
                 c.fuel -= kind.idle_l_per_min / 60.0 * dt + dist / 1000.0 * kind.fuel_per_km * (0.5 + 0.5 * input.throttle.abs());
                 if c.fuel <= 0.0 || c.parts[0] <= 0.0 {
@@ -1278,6 +1330,8 @@ impl World {
                 mix(f.to_bits());
             }
             mix(v.cond.engine_on as u32);
+            let a = v.access;
+            mix(a.locked as u32 | (a.ignition as u32) << 1 | (a.hotwired as u32) << 2 | (a.glovebox_key as u32) << 3);
         }
     }
 }

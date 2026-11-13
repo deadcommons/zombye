@@ -580,3 +580,78 @@ mod tests {
         assert!(pick_switch(&spots, Vec2::new(10.5, 6.0), o, d).is_none(), "a metre and a half along the wall");
     }
 }
+
+/// What a car's menu offers (E held beside it or at its wheel, stage 4): get in or out, the lock,
+/// smashing in, the boot and glovebox, hotwiring and the key, pouring and siphoning fuel, and the
+/// repairs that would do anything, each saying what's missing. The server checks it all again.
+pub fn car_entries(v: &zombye_sim::VehicleView, data: &zombye_sim::VehicleData, items: &[ItemDef], me: u32, view: Option<&PrivateView>) -> (String, Vec<WorldEntry>) {
+    use zombye_sim::VehicleOp as Op;
+    let name = data.kinds.get(v.kind as usize).map_or_else(|| "Car".to_string(), |k| capitalise(&k.label()));
+    let w = &data.work;
+    let inside = v.driver == me && me != 0;
+    let vehicle = Some(v.id);
+    let send = |label: &str, op: Op| WorldEntry::send(label, Intent::Vehicle { player: me, op });
+    let key = items.iter().position(|d| d.id == w.key_item).map(|i| i as u16);
+    let has_key = view.zip(key).is_some_and(|(p, k)| zombye_sim::vehicles::holds_key(&p.inventory, k, v.id));
+    let has_tag = |tag: &str| view.is_some_and(|p| p.inventory.stacks().any(|s| items.get(s.item as usize).is_some_and(|d| d.has_tag(tag))));
+    let search = |label: &str, slot: u8| WorldEntry::send(label, Intent::Search { player: me, container: Some(zombye_sim::vehicles::vehicle_container(v.id, slot)) });
+    let mut lines = Vec::new();
+    if inside {
+        lines.push(send("Get out", Op::Exit));
+        if !v.start {
+            lines.push(if has_tag(&w.hotwire_tag) { send("Hotwire it", Op::Hotwire) } else { WorldEntry::say("No key: a screwdriver would cross the wires") });
+        }
+        if v.key_in {
+            lines.push(send("Take the key", Op::TakeKey));
+        }
+        lines.push(send(if v.locked { "Unlock the doors" } else { "Lock the doors" }, Op::Lock { vehicle }));
+        lines.push(search("Open the glovebox", zombye_sim::vehicles::GLOVEBOX));
+    } else {
+        if v.driver == 0 {
+            lines.push(send("Get in", Op::Enter { vehicle }));
+        }
+        if v.locked {
+            if has_key {
+                lines.push(send("Unlock it", Op::Lock { vehicle }));
+            }
+            lines.push(send("Smash a window to get in", Op::BreakIn { vehicle }));
+        } else {
+            if has_key {
+                lines.push(send("Lock it", Op::Lock { vehicle }));
+            }
+            lines.push(search("Open the boot", zombye_sim::vehicles::BOOT));
+            lines.push(search("Open the glovebox", zombye_sim::vehicles::GLOVEBOX));
+        }
+        let can = items.iter().position(|d| d.id == data.tuning.fuel_item).map(|i| i as u16);
+        if view.zip(can).is_some_and(|(p, c)| p.inventory.stacks().any(|s| s.item == c)) {
+            lines.push(send("Pour in fuel", Op::Refuel { vehicle }));
+            if has_tag(&data.tuning.siphon_tag) && v.fuel_dl > 0 {
+                lines.push(send("Siphon fuel out", Op::Siphon { vehicle }));
+            }
+        }
+    }
+    // Repairs that would mend something (from inside, only the windows).
+    let level = view.and_then(|p| p.skills.iter().find(|s| s.skill == zombye_sim::skills::Skill::Mechanics)).map_or(0, |s| s.level);
+    for (k, r) in w.repairs.iter().enumerate() {
+        let now = v.parts[r.part.index()] as f32 / 100.0;
+        if now >= r.up_to - 1e-3 || (inside && r.part != zombye_sim::vehicles::Part::Windows) {
+            continue;
+        }
+        let label = format!("{} ({} {}%)", r.name, r.part.label(), v.parts[r.part.index()]);
+        let missing = if level < r.level {
+            Some(format!("needs Mechanics {}", r.level))
+        } else {
+            view.and_then(|p| zombye_sim::build::check_have(&r.inputs, &r.tools, &p.inventory, items, 1).err())
+        };
+        lines.push(match missing {
+            None => send(&label, Op::Repair { vehicle, repair: k as u8 }),
+            Some(why) => WorldEntry::say(format!("{label}: {why}")),
+        });
+    }
+    (name, lines)
+}
+
+fn capitalise(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map_or_else(String::new, |f| f.to_uppercase().collect::<String>() + c.as_str())
+}

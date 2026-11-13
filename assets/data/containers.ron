@@ -15,6 +15,10 @@
 (
     containers: [
         (id: "corpse", name: "Body", room_l: 40.0, search_secs: 2.5, noise_m: 2.0),
+        // A car's boot and glovebox (vehicles.ron's `work`): reached from behind the car and from
+        // the driver's seat, neither while it's locked; loot.ron's (any, boot) and (any, glovebox).
+        (id: "boot", name: "Boot", room_l: 120.0, search_secs: 2.0, noise_m: 5.0),
+        (id: "glovebox", name: "Glovebox", room_l: 4.0, search_secs: 1.0, noise_m: 2.0),
         (id: "fridge", name: "Fridge", room_l: 60.0, search_secs: 1.0, noise_m: 3.0),
         (id: "kitchen_cupboard", name: "Kitchen cupboard", room_l: 40.0, search_secs: 1.5, noise_m: 4.0),
         (id: "oven", name: "Oven", room_l: 20.0, search_secs: 0.8, noise_m: 4.0),

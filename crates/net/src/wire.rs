@@ -79,8 +79,10 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// vehicles' new numbers, `DeathCause::Crash`. 36: the loot and crafting pass: running water
 /// (`Snapshot::water_on` in `SnapshotDelta::lights`), `RecipeDef::water` and `repairs`, no `spawn_weight` or `found_in` in
 /// the weapons; world events' toilet cisterns (`Snapshot::cisterns`, in `SnapshotDelta::lights`). 37: vehicles sent by
-/// need: `SnapshotDelta::vehicles` is the cars changed and the ids gone, a far moving car every `FAR_CAR_EVERY` ticks.)
-pub const PROTOCOL: u32 = 37;
+/// need: `SnapshotDelta::vehicles` is the cars changed and the ids gone, a far moving car every `FAR_CAR_EVERY` ticks. 38: cars stage 4: `VehicleView::locked` and
+/// `start`, `VehicleOp::Hotwire`, `TakeKey`, `Lock`, `BreakIn`, `Repair`, `JobKind::Hotwire` and `Repair`,
+/// `Skill::Mechanics`, `VehicleData::work`.)
+pub const PROTOCOL: u32 = 38;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.

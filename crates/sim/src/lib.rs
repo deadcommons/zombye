@@ -95,7 +95,7 @@ pub use population::{Attractor, PopulationDef, Zone};
 pub use events::{EventDef, EventEffect, EventsDef};
 pub use power::{Coverage, PowerDef, Source, SourceKind};
 pub use template::BuildingTemplate;
-pub use vehicles::{Body, Condition, DriveInput, Perf, Vehicle, VehicleData, VehicleKind, VehicleOp, VehicleState, VehicleTuning, VehicleView, parse_vehicles, seat_of, step_vehicle};
+pub use vehicles::{Body, Condition, DriveInput, Perf, Vehicle, VehicleData, VehicleKind, VehicleOp, VehicleState, VehicleTuning, VehicleView, Access, Part, RepairDef, WorkTuning, parse_vehicles, seat_of, step_vehicle};
 pub use run::{Death, DeathCause, RunStats};
 pub use save::{LoadError, LoadOptions, Loaded, SaveInfo};
 pub use world::{World, WorldConfig};

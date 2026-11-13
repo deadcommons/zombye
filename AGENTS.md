@@ -1098,8 +1098,32 @@ Stage 2: fuel, engine noise, running zombies over and crash damage.
   and gone), and a car moving beyond a client's view only every `wire::FAR_CAR_EVERY` (10) ticks; getting in or
   out, stopping and coming near go at once. `wire::PROTOCOL` 37. Tests: `net/tests/driving.rs` (a driver at
   150 ms of ping predicts its car exactly; a far car is sent now and then), `vehicles_render`'s own.
+- **Keys, hotwiring, the boot and glovebox, repairs (stage 4, #14; `vehicles/work.rs`, `vehicles.ron`'s `work`,
+  `WorkTuning`):** a found car is `locked` (0.6), has its key in the ignition (`ignition` 0.1; never locked then), in
+  its glovebox (`glovebox_key` 0.2) or nowhere (`Access::found`, by the seed and where it was parked). A key is the
+  item `car_key` whose stack's `born` is the id of the car it opens (`holds_key`; keys to two cars never stack). The
+  engine starts only with the key in the ignition, the key on the driver or the wires crossed (`World::startable`);
+  `VehicleView::start` says so, so prediction stays exact (`perf()` goes by it), and `locked` and `key_in` go too.
+  `VehicleOp::Hotwire` (at the wheel, a tool tagged `hotwires`: the screwdriver) is the job `JobKind::Hotwire`, a try
+  of `hotwire_secs` that works `hotwire_chance` (+`SkillTuning::mechanics_hotwire` a level, at most 0.95; a roll
+  hashed on the seed, car, tick and player). `TakeKey` takes the key out of the ignition; `Lock` locks or unlocks with
+  the key on you or from inside; a locked car is got into with its key (which unlocks it) or `BreakIn` (smashes a
+  window: `break_in_windows` off the windows, a 35 m noise). **The boot and glovebox** are containers (`boot`,
+  `glovebox` in `containers.ron`; loot `(any, boot)`, `(any, glovebox)`) with ids `vehicle_container(vid, slot)`
+  (`VEHICLE_BIT`), placed where the car stands (`World::vehicle_site`): the boot from behind it, the glovebox from
+  the driver's seat or the open door, neither while it's locked (`vehicle_container_open_to`, in `within`); things go
+  in both and travel with the car; a key left in the glovebox is put there when it is first searched. **Repairs** are
+  data (`work.repairs`, `RepairDef`: part, inputs, tools, `mends`, `up_to`, `secs`, Mechanics `level`): `VehicleOp::
+  Repair { vehicle, repair }` is the job `JobKind::Repair`, checked again when due (`crate::build::check_have`); shipped:
+  engine parts and a wrench (Mechanics 1), a spare tyre and a wrench, plastic and tape on a window (to 60%), a hammer on
+  the body (to 70%), tape and a plank on the body (Mechanics 2, to 90%). New items: `car_key`, `wrench`, `spare_tyre`,
+  `engine_parts` (garages, hardware shops, boots). **Saves:** an optional `VACC` section after `VCND` (each car's
+  `Access`; without it cars are as found); Mechanics XP in `MECH` (below, Skills). `wire::PROTOCOL` 38. **Client:**
+  holding E beside a car or at its wheel opens its menu (`world_actions::car_entries`: get in or out, lock, smash in,
+  boot, glovebox, hotwire, take the key, fuel, the repairs with what each is missing); the driving line says "no key".
+  Tests: `vehicles::tests` (from `the_shipped_work_settings_name_real_items` on).
 - **Not yet:** the camera pulling back with speed, MCP tools, running players over, engine and horn sounds, damage
-  drawn on the car, repairing parts, keys and hotwiring (a Mechanics skill), the radio, more vehicle kinds.
+  drawn on the car, the radio, more vehicle kinds, a key's car shown on the key, picking locks.
 - Tests: `sim::vehicles::tests`.
 
 ## Chopping trees (`sim::trees`)
@@ -1506,7 +1530,7 @@ the start, and gardens, trees, fences and buildings are inked in where the survi
 
 ## Skills (`sim::skills`; #46)
 
-- **Nine skills, levels 0-10, raised only by practice.** `Player::skills` (`Skills { xp: [f32; 9] }`, by `Skill as usize`)
+- **Ten skills, levels 0-10, raised only by practice.** `Player::skills` (`Skills { xp: [f32; 10] }`, by `Skill as usize`)
   holds XP; the level is worked out from it at the cumulative thresholds `SkillTuning::levels` (75, 225, 450, 750, 1,150,
   1,650, 2,300, 3,100, 4,100, 5,400; XP stops at the top, `SkillTuning::top`: as many levels as listed, at most
   `MAX_LEVEL` 10, so a world saved with the five levels before DCM-63 keeps its five and its numbers, read from the RON tuple
@@ -1531,6 +1555,7 @@ the start, and gardens, trees, fences and buildings are inked in where the survi
 | First Aid | each treatment done: 10 | treatment 5% faster; from 6, stitching stings half as much |
 | Scavenging | each container searched for the first time: 2 | first searches 5% faster and 5% quieter |
 | Handiwork | each craft (#12): 5 | crafting 5% faster (`SkillTuning::craft_time_mult`) |
+| Mechanics | a car hotwired: 20 (a try that fails: 4); a car repair done: 12 | hotwiring and repairs 6% quicker, repairs mend 6% more, a hotwiring try 8% likelier (cars stage 4, #14) |
 
 - **Weapon skills follow how a weapon hits:** each entry in `weapons.ron` names its `skill` (`Some(Bludgeon)`, `Some(Edged)`
   or `Some(Brawl)`; left out, `WeaponCategory::skill`: `ShortBlunt`/`LongBlunt` Bludgeon, `ShortBlade`/`Axe` Edged,
@@ -1558,7 +1583,9 @@ the start, and gardens, trees, fences and buildings are inked in where the survi
   (`World::award_xp(pi, skill, xp)`), and a craft takes its recipe's time times `SkillTuning::craft_time_mult(level)`
   (`World::craft_secs`; never below `crafting::HANDIWORK_MIN_MULT`, half). `World::skill_level(pi, skill)` and
   `award_xp` are by player index, as the item jobs are.
-- **Saves:** XP per skill with the player (format 8), in `state_hash`; checked on load (`save_check::check_skills`: finite,
+- **Saves:** XP per skill with the player (format 8), in `state_hash`; the first nine are written with the player
+  as before (`skills::legacy_zero`, `legacy_one` for a Background's multipliers), and Mechanics, the tenth, in an
+  optional `MECH` section (each player with Mechanics XP or a multiplier on it), so older saves load unchanged; checked on load (`save_check::check_skills`: finite,
   0 to the top level's XP) and `SkillTuning::check`. **MCP:** `skills {player}` (each skill's level, XP and to go, what it
   gives now and at the next level, how it's earned; read-only), `stats` (each player's `skills` levels by id),
   `step_ticks` / `move_player` / `attack` report `LEVEL UP: P1 Edged 2`, and `weapons` shows each weapon's skill.
