@@ -1,0 +1,47 @@
+// The game's keys: each action and the keys that do it (any of them).
+//
+// A key is its name as printed on it: a letter, a digit, Space, Tab, Enter, Esc, Backspace,
+// F1-F12, ",", ".", ";", "/", or Shift, Ctrl or Alt alone (either side). Put a modifier in front
+// with "+" for a chord: "Shift+B". A key without a modifier still works while Shift is held (you
+// can interact while running), unless another action has that key with Shift.
+//
+// Players change these on the settings screen's Controls tab; what they pick is kept in their
+// settings.ron and goes over this file. An action left out here keeps the game's own key; an
+// empty list leaves it with none.
+(
+    // Moving
+    move_up: ["W"],
+    move_down: ["S"],
+    move_left: ["A"],
+    move_right: ["D"],
+    run: ["Shift"],
+    sneak: ["C"],
+    sleep: ["B"],
+    sit: ["Q"],
+
+    // The world: E does the likeliest thing for what you face (open, shut, climb, get in, flick
+    // a switch, pick up, search); held, it opens the menu of everything you can do with it.
+    interact: ["E"],
+    smash: ["G"],
+    // The flashlight or candle in your hands, on and off.
+    flashlight: ["F"],
+    // Beside a car: pour the fuel you carry into it, or with none siphon its fuel into a can.
+    refuel: ["Shift+E"],
+    // At the wheel: the horn (on foot H is the Health screen).
+    horn: ["H"],
+
+    // Fighting
+    shove: ["Space"],
+    reload: ["R"],
+
+    // Doing things
+    stop: ["X"],
+
+    // Screens
+    inventory: ["Tab", "I"],
+    health: ["H"],
+    skills: ["K"],
+    build: ["Shift+B"],
+    map: ["M"],
+    objectives: ["O"],
+)

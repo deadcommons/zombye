@@ -70,6 +70,7 @@ const DATA_FILES: &[(&str, &str, Part, &str)] = &[
     ("decay.ron", "decay::DecayLook", Part::Look, "How worn street props are drawn."),
     ("vegetation.ron", "vegetation::VegLook", Part::Look, "Where grass, flowers and stones grow."),
     ("servers.ron", "browser::ServerList", Part::Look, "The server browser's list."),
+    ("keys.ron", "keys::KeysFile", Part::Look, "The game's keys: what each action is pressed with."),
 ];
 
 /// `WorldConfig` fields that are content (documented with their data file) or not settings at all.

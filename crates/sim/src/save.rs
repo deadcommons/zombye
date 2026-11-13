@@ -63,7 +63,8 @@
 //! then `FARC` (how far the far clock is ahead of the tick, #57; optional, only written when it is),
 //! `TREE` (trees chopped at and felled, `crate::trees`; only when there are any) comes straight
 //! after `MAPD`, so the stumps are on the map before anything is built from it, and `VEHC`
-//! (vehicles, `crate::vehicles`; only when there are any) straight after that, for the same reason;
+//! (vehicles, `crate::vehicles`; only when there are any) straight after that, for the same reason,
+//! with `VCND` (their fuel and wear, stage 2; optional) after it;
 //! then `SHOV` (zombies shoved lately, whose shoves add up toward a knockdown; only when there are any),
 //! then `LEVL` (who and what is upstairs, `crate::stairs`; only when anyone or anything is),
 //! then `BAGS` (which pocket or bag each carried stack is in; only when anything is in a bag),
@@ -237,6 +238,9 @@ const DEAD: [u8; 4] = *b"DEAD";
 /// props come off the regenerated map before anything is built from it. Only when there are any,
 /// so adding it didn't change the format version.
 const VEHC: [u8; 4] = *b"VEHC";
+/// The vehicles' fuel, engines and parts (`crate::vehicles::Condition`, by vehicle id), written
+/// after `VEHC`; a save without it (from before stage 2) finds them as a new world would.
+const VCND: [u8; 4] = *b"VCND";
 const END: [u8; 4] = *b"END\0";
 /// Bytes before the first section: magic and version.
 const HEADER: usize = 12;
@@ -857,6 +861,7 @@ impl World {
         // Vehicles, for the same reason: their props come off the map on load.
         if !vehicles.list.is_empty() {
             w.section(VEHC, &encode(&self.vehicle_save()));
+            w.section(VCND, &encode(&self.condition_save()));
         }
         let world = WorldSave {
             tick: *tick,
@@ -1031,6 +1036,7 @@ impl World {
         let map_save: MapSave = decode(MAPD, r.expect(MAPD)?)?;
         let trees: Option<crate::trees::TreeSave> = r.optional(TREE)?.map(|p| decode(TREE, p)).transpose()?;
         let vehicles: Option<crate::vehicles::VehicleSave> = r.optional(VEHC)?.map(|p| decode(VEHC, p)).transpose()?;
+        let conditions: Option<Vec<(u32, crate::vehicles::Condition)>> = r.optional(VCND)?.map(|p| decode(VCND, p)).transpose()?;
         let mut ws: WorldSave = decode(WRLD, r.expect(WRLD)?)?;
         // Weapons are named by index into the save's own list: move them to the content's.
         let mut blocking: Vec<String> = save_check::remap_weapons(&plan, &mut ws.players, force, &mut notes)?.into_iter().collect();
@@ -1135,6 +1141,9 @@ impl World {
                 notes.push(format!("the map changed: {} vehicles were left out", vehicles.list.len()));
             } else {
                 let dropped = w.restore_vehicles(vehicles).map_err(save_check::invalid)?;
+                if let Some(c) = conditions {
+                    w.restore_conditions(c).map_err(save_check::invalid)?;
+                }
                 if dropped > 0 {
                     notes.push(format!("{dropped} vehicles of kinds the game no longer has were dropped"));
                 }

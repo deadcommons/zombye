@@ -124,6 +124,9 @@ pub struct ClientSettings {
     pub help_text: crate::help_text::HelpText,
     /// The old look (`film.rs`): the picture as a faded print, off, subtle or strong.
     pub old_look: crate::film::OldLook,
+    /// The keys the player picked on the Controls tab (`keys.rs`): an action's id to its keys,
+    /// over `assets/data/keys.ron`. Only the ones changed.
+    pub keys: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl Default for ClientSettings {
@@ -148,6 +151,7 @@ impl Default for ClientSettings {
             skip_menu: false,
             help_text: crate::help_text::HelpText::Full,
             old_look: crate::film::OldLook::Off,
+            keys: Default::default(),
         }
     }
 }

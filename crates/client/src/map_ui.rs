@@ -391,8 +391,7 @@ fn input(
         presses.clear();
         return;
     }
-    let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::SuperLeft, KeyCode::SuperRight]);
-    if keys.just_pressed(KeyCode::KeyM) && !ctrl {
+    if crate::keys::just_pressed(&keys, crate::keys::Action::Map) {
         ui.open = !ui.open;
         ui.drag = None;
         if ui.open {

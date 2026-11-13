@@ -295,10 +295,15 @@ pub fn load_scenarios(data_dir: &Path, items: &[ItemDef], weapons: &[WeaponDef])
 /// population file gives).
 /// `vehicles.ron` (`zombye_sim::vehicles`): none if the file isn't there. Every kind must be parked
 /// as a street prop kind `street_props` has.
-pub fn load_vehicles(data_dir: &Path, street_props: &zombye_sim::street_props::StreetPropsDef) -> Result<zombye_sim::VehicleData, String> {
+pub fn load_vehicles(data_dir: &Path, street_props: &zombye_sim::street_props::StreetPropsDef, items: &[zombye_sim::ItemDef]) -> Result<zombye_sim::VehicleData, String> {
     let path = data_dir.join("vehicles.ron");
     let Ok(text) = std::fs::read_to_string(&path) else { return Ok(zombye_sim::VehicleData::default()) };
     let data = zombye_sim::parse_vehicles(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    // The fuel can, if there are items at all, must be one that holds fuel.
+    let t = &data.tuning;
+    if !data.kinds.is_empty() && !items.is_empty() && !items.iter().any(|i| i.id == t.fuel_item && i.fuel_l.is_some()) {
+        return Err(format!("{}: tuning.fuel_item {:?} isn't an item with fuel_l in items.ron", path.display(), t.fuel_item));
+    }
     for k in &data.kinds {
         if !street_props.kinds.iter().any(|p| p.id == k.prop) {
             return Err(format!("{}: vehicle {:?} is parked as {:?}, which street_props.ron doesn't have", path.display(), k.id, k.prop));
@@ -322,7 +327,7 @@ pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig
     let biomes = load_biomes(data_dir)?;
     let power = load_power(data_dir)?;
     let fire = load_fire(data_dir)?;
-    let vehicles = load_vehicles(data_dir, &street_props)?;
+    let vehicles = load_vehicles(data_dir, &street_props, &items)?;
     let weather = load_weather(data_dir)?;
     let mut config = zombye_sim::WorldConfig::new(seed, 0, templates)
         .with_weapons(weapons)

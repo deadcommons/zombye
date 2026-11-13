@@ -10,12 +10,11 @@
 //! two predicted states. Other players are drawn from snapshots, interpolated like zombies.
 //!
 //! Keys: WASD move, Shift run, C sneak, right mouse (held) aim, and while aiming left mouse swing the
-//! weapon you hold (or punch) and Space shove (or stomp, when a downed zombie lies right in front of you), E pick up the item you face (or, with
-//! nothing on the floor within reach, search the cupboard, drawer or fridge you face), Tab or I the
+//! weapon you hold (or punch) and Space shove (or stomp, when a downed zombie lies right in front of you), Tab or I the
 //! inventory panel (`inventory_ui`; the left mouse button doesn't swing while it's open),
-//! F open/close the door or window you face, G smash the window you face, T skip an hour, Z spawn zombies, F1 god mode and F2 ignored by zombies (dev toggles, sent as
-//! `Intent::Dev`; the HUD shows GOD / IGNORED from the snapshot). Climbing through an open or broken window is just
-//! walking into it (slowly, predicted like any other movement). Combat itself is all on the server;
+//! E the likeliest thing to do with what you face, held: everything (`interact.rs`), F the light in your hands on and off, G smash the window you face, T skip an hour, Z spawn zombies, F1 god mode and F2 ignored by zombies (dev toggles, sent as
+//! `Intent::Dev`; the HUD shows GOD / IGNORED from the snapshot). The keys are data (`keys.rs`, `assets/data/keys.ron`).
+//! Climbing through an open or broken window is E, then predicted like any other movement. Combat itself is all on the server;
 //! the client only sends the intents and draws what the snapshots say (the held weapon, a swing,
 //! lying dead). The body is a [`crate::survivor`] rig.
 
@@ -258,7 +257,7 @@ fn spawn_player(
 }
 
 fn toggle_sneak(keys: Res<ButtonInput<KeyCode>>, mut me: ResMut<LocalPlayer>) {
-    if keys.just_pressed(KeyCode::KeyC) {
+    if crate::keys::just_pressed(&keys, crate::keys::Action::Sneak) {
         me.sneak = !me.sneak;
     }
 }
@@ -276,13 +275,14 @@ fn predict(
     let mut dir = Vec3::ZERO;
     if let Ok(cam) = cams.single() {
         let (forward, right) = cam.ground_axes();
-        for (key, d) in [(KeyCode::KeyW, forward), (KeyCode::KeyS, -forward), (KeyCode::KeyD, right), (KeyCode::KeyA, -right)] {
-            if keys.pressed(key) {
+        use crate::keys::Action;
+        for (key, d) in [(Action::MoveUp, forward), (Action::MoveDown, -forward), (Action::MoveRight, right), (Action::MoveLeft, -right)] {
+            if crate::keys::pressed(&keys, key) {
                 dir += d;
             }
         }
     }
-    let mut run = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    let mut run = crate::keys::pressed(&keys, crate::keys::Action::Run);
     let mut move_dir = Vec2::new(dir.x, dir.z).normalize_or_zero();
     if auto.active {
         (move_dir, run) = (auto.move_dir, auto.run);
@@ -307,11 +307,12 @@ fn predict(
     // the body stays in the seat.
     follow_car(&mut me, &link, &join);
     let drive = me.car.map(|_| {
-        let key = |k: KeyCode| if keys.pressed(k) { 1.0 } else { 0.0 };
+        use crate::keys::Action;
+        let key = |a: Action| if crate::keys::pressed(&keys, a) { 1.0 } else { 0.0 };
         if auto.active {
             DriveInput::default()
         } else {
-            DriveInput { throttle: key(KeyCode::KeyW) - key(KeyCode::KeyS), steer: key(KeyCode::KeyD) - key(KeyCode::KeyA), brake: keys.pressed(KeyCode::Space) }
+            DriveInput { throttle: key(Action::MoveUp) - key(Action::MoveDown), steer: key(Action::MoveRight) - key(Action::MoveLeft), brake: crate::keys::pressed(&keys, Action::Shove) }
         }
     });
     if let Some(car) = me.car {
@@ -344,7 +345,8 @@ fn predict(
     if let (Some(mut car), Some(d)) = (me.car, drive) {
         let Some(kind) = join.vehicles.kinds.get(car.kind as usize) else { return };
         car.prev = car.curr;
-        step_vehicle(&map.0, kind, car.id, &mut car.curr, d, TICK_DT, join.vehicles.tuning.bounce);
+        let perf = link.curr.vehicles.iter().find(|v| v.id == car.id).map_or(zombye_sim::Perf::NEW, |v| v.perf());
+        step_vehicle(&map.0, kind, car.id, &mut car.curr, d, perf, TICK_DT, join.vehicles.tuning.bounce);
         me.curr.pos = seat_of(kind, &car.curr);
         me.curr.facing = car.curr.heading;
         me.car = Some(car);
@@ -410,9 +412,10 @@ fn reconcile(link: Res<ServerLink>, map: Res<ClientMap>, join: Res<JoinInfo>, mu
     {
         // At the wheel: the server's car, and the driving it hasn't had yet.
         let mut cs = v.state;
+        let perf = v.perf();
         for (_, _, d) in &me.pending {
             if let Some(d) = d {
-                step_vehicle(&map.0, kind, car.id, &mut cs, *d, TICK_DT, join.vehicles.tuning.bounce);
+                step_vehicle(&map.0, kind, car.id, &mut cs, *d, perf, TICK_DT, join.vehicles.tuning.bounce);
             }
         }
         car.curr = cs;
@@ -675,10 +678,8 @@ fn actions(
     time: Res<Time>,
     mut me: ResMut<LocalPlayer>,
     join: Res<JoinInfo>,
-    map: Res<ClientMap>,
     players: Query<(&Transform, &Player)>,
     mut link: ResMut<ServerLink>,
-    notice: Option<ResMut<crate::saving::Notice>>,
 ) {
     let now = time.elapsed_secs();
     // Dev toggles: flip what the server last said.
@@ -694,33 +695,34 @@ fn actions(
     if me.dead {
         return;
     }
-    // At the wheel of a car: E gets out; Space is the brake (in `predict`), nothing else here.
+    // At the wheel of a car: E gets out (`interact.rs`), the horn's key sounds it; Space is the brake
+    // (in `predict`), nothing else here.
     if me.car.is_some() {
-        if keys.just_pressed(KeyCode::KeyE) {
-            link.send(Intent::Vehicle { player: me.id, op: zombye_sim::VehicleOp::Exit });
+        if crate::keys::just_pressed(&keys, crate::keys::Action::Horn) {
+            link.send(Intent::Vehicle { player: me.id, op: zombye_sim::VehicleOp::Horn });
         }
         return;
     }
+    use crate::keys::Action;
     // B lies down to sleep or gets up; asleep, setting off (WASD) gets up too (#11). Anything
     // else done asleep gets up on the server.
     let asleep = link.curr.players.iter().any(|p| p.id == me.id && p.asleep);
-    let moving = keys.any_just_pressed([KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD]);
-    // (Shift+B is the build menu, `build_ui.rs`.)
-    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-    if (keys.just_pressed(KeyCode::KeyB) && !shift) || (asleep && moving) {
+    let moving = [Action::MoveUp, Action::MoveDown, Action::MoveLeft, Action::MoveRight].into_iter().any(|a| crate::keys::just_pressed(&keys, a));
+    // (Shift+B is the build menu, `build_ui.rs`: the bindings keep the two apart.)
+    if crate::keys::just_pressed(&keys, Action::Sleep) || (asleep && moving) {
         link.send(Intent::Sleep { player: me.id, sleep: !asleep });
     }
     // Q sits down (on the sofa, bed or bench beside you, else the ground) or gets up; seated,
     // setting off (WASD) gets up too (`zombye_sim::sit`).
     let seated = link.curr.players.iter().any(|p| p.id == me.id && p.seated.is_some());
-    if keys.just_pressed(KeyCode::KeyQ) || (seated && moving) {
+    if crate::keys::just_pressed(&keys, Action::Sit) || (seated && moving) {
         link.send(Intent::Sit { player: me.id, sit: Some(!seated) });
     }
     // Fighting is for aiming (right mouse held); the server refuses it otherwise.
     if me.aiming && mouse.just_pressed(MouseButton::Left) && !panel.open && !preview.hovered {
         me.act(&mut link, &join, ActionKind::Swing, now);
     }
-    if keys.just_pressed(KeyCode::Space) {
+    if crate::keys::just_pressed(&keys, Action::Shove) {
         // Space with or without aiming (it goes the way he faces): stomp if a downed zombie lies
         // in reach in front, by the server's own rule (`stomp_spot`: its body, its head first),
         // else shove (the server decides what it hits).
@@ -734,58 +736,12 @@ fn actions(
     // R reloads the gun in hand (#72): the ordinary use of it. (Dead, R is the death screen's;
     // on the morning screen, a new run.)
     let gun = me.weapon.and_then(|w| join.weapons.get(w as usize)).is_some_and(|w| w.ranged.is_some());
-    if gun && keys.just_pressed(KeyCode::KeyR) && !morning.is_some_and(|m| m.morning) {
+    if gun && crate::keys::just_pressed(&keys, Action::Reload) && !morning.is_some_and(|m| m.morning) {
         link.send(Intent::Use { player: me.id, from: zombye_sim::Place::Slot(zombye_sim::Slot::Hand), index: 0 });
     }
-    if keys.just_pressed(KeyCode::KeyE)
-        && let Some(i) = zombye_sim::vehicles::enterable(&map.0.vehicles, me.curr.pos, me.curr.facing, join.vehicles.tuning.enter_reach)
-    {
-        // A car beside us, faced (the server's rule on our copy of the boxes): get in at the wheel.
-        let vehicle = map.0.vehicles.get(i).map(|b| b.id);
-        link.send(Intent::Vehicle { player: me.id, op: zombye_sim::VehicleOp::Enter { vehicle } });
-    } else if keys.just_pressed(KeyCode::KeyE)
-        && let Some(name) = parked_car_faced(&map.0, &join.vehicles, me.curr.pos, me.curr.facing)
-    {
-        // A parked car that isn't one of the drivable ones: say so, and where the nearest that is.
-        if let Some(mut notice) = notice {
-            notice.say(now, wont_start(&name, &link, &join, me.curr.pos));
-        }
-    } else if keys.just_pressed(KeyCode::KeyE) {
-        // A fence or an open or broken window faced and in reach (the server's rule, on our copy
-        // of the map): climb it. Walking into one no longer does.
-        let climb = zombye_sim::players::climb_from(&map.0, me.curr.pos, me.curr.facing, &join.climb).is_some();
-        // Else something on our floor (the snapshot's, by the server's reach rule): pick it up.
-        // Otherwise search what we face; with nothing there either, the server says so once.
-        // Already on the way over: nothing.
-        let floor = !link.curr.floor_of(me.id).is_empty();
-        // Else the light switch of our room, in reach and faced (the server checks the reach).
-        let switch = !climb && light_switch_faced(&map.0, me.curr.pos, me.curr.facing);
-        if me.curr.climb.is_none() {
-            link.send(if climb {
-                Intent::Climb { player: me.id }
-            } else if switch {
-                Intent::Light { player: me.id, on: None }
-            } else if floor {
-                Intent::PickUp { player: me.id }
-            } else {
-                Intent::Search { player: me.id, container: None }
-            });
-        }
-    }
-    if keys.just_pressed(KeyCode::KeyF) {
-        let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-        let alt = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
-        if shift {
-            // Shift+F: roll the blind of the window or glass door we face up or down, or fit one
-            // we carry; Shift+Alt+F takes it down into the bags. The server says why not.
-            let op = if alt { zombye_sim::BlindOp::TakeDown } else { zombye_sim::BlindOp::Use };
-            link.send(Intent::Blind { player: me.id, op });
-        } else {
-            // The server picks the door or window this player faces and checks it's within reach.
-            link.send(Intent::Interact { player: me.id });
-        }
-    }
-    if keys.just_pressed(KeyCode::KeyG) {
+    // E (the world: open, shut, climb, get in, flick, pick up, search) and F (the light in your
+    // hands) are `interact.rs`'s. G smashes the window faced (it's in that window's menu too).
+    if crate::keys::just_pressed(&keys, Action::Smash) {
         link.send(Intent::SmashWindow { player: me.id });
     }
     if dev && keys.just_pressed(KeyCode::KeyT) {
@@ -836,22 +792,16 @@ mod tests {
     }
 }
 
-/// Is the light switch of the room at `pos` within reach and in front of us (within 75 degrees
-/// of `facing`, or close enough to touch)? E flips it then.
-pub fn light_switch_faced(map: &zombye_sim::TileMap, pos: Vec2, facing: f32) -> bool {
-    let room = map.room_at(pos);
-    if room == 0 {
-        return false;
-    }
-    let Some(Some(spot)) = zombye_sim::power::switch_spots(map).get(room as usize).copied() else { return false };
-    let to = spot.pos - pos;
-    let d = to.length();
-    d <= zombye_sim::power::SWITCH_REACH - 0.1 && (d < 0.5 || to.normalize_or_zero().dot(Vec2::from_angle(facing)) > 75f32.to_radians().cos())
+/// Do we carry a fuel can with fuel in it (`VehicleTuning::fuel_item`)? Beside a car the refuel key
+/// pours it in then, else siphons the car's fuel out (`interact.rs`).
+pub(crate) fn fuel_to_pour(inv: &zombye_sim::Inventory, join: &JoinInfo) -> bool {
+    let can = join.items.iter().position(|d| d.id == join.vehicles.tuning.fuel_item);
+    can.is_some_and(|c| inv.stacks().any(|s| s.item as usize == c && s.used > 0))
 }
 
 /// The name of a parked car (a street prop of a vehicle kind, not one of the drivable ones, which
 /// are off the map) beside `pos` and faced, within the reach E gets into a car from.
-fn parked_car_faced(map: &zombye_sim::TileMap, data: &zombye_sim::VehicleData, pos: Vec2, facing: f32) -> Option<String> {
+pub(crate) fn parked_car_faced(map: &zombye_sim::TileMap, data: &zombye_sim::VehicleData, pos: Vec2, facing: f32) -> Option<String> {
     let reach = data.tuning.enter_reach;
     let ahead = Vec2::from_angle(facing);
     let mut best: Option<(f32, String)> = None;
@@ -875,7 +825,7 @@ fn parked_car_faced(map: &zombye_sim::TileMap, data: &zombye_sim::VehicleData, p
 }
 
 /// "This car won't start. The nearest one that will: a van 40 m to the north-east."
-fn wont_start(name: &str, link: &ServerLink, join: &JoinInfo, pos: Vec2) -> String {
+pub(crate) fn wont_start(name: &str, link: &ServerLink, join: &JoinInfo, pos: Vec2) -> String {
     let free = link.curr.vehicles.iter().filter(|v| v.driver == 0);
     let near = free.min_by(|a, b| a.state.pos.distance(pos).total_cmp(&b.state.pos.distance(pos)));
     let lower = name.to_lowercase();

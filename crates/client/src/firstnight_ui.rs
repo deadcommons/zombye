@@ -158,6 +158,8 @@ pub struct HintInput {
 
 /// The one thing to say now: what's urgent first, then the next step of the loop.
 pub fn hint(c: &HintInput) -> Option<String> {
+    // The key the world's things are used with, as bound (`keys.rs`).
+    let e = crate::keys::short(crate::keys::Action::Interact);
     if c.phase == Phase::Morning {
         return None;
     }
@@ -181,10 +183,10 @@ pub fn hint(c: &HintInput) -> Option<String> {
         return Some("You're hungry. Press Tab, right-click some food and eat it.".to_string());
     }
     let night = match c.phase {
-        Phase::Night if !c.indoors => Some(format!("It's night: you can barely see, and they hear every step. Get indoors and shut the door behind you (F). Dawn at {}.", c.dawn)),
-        Phase::Night => Some(format!("Night. Keep the doors shut (F) and stay quiet (C sneaks), or lie down by a bed and sleep it away (B). Dawn at {}, in {}.", c.dawn, span(c.to_dawn))),
-        Phase::Evening if !c.indoors => Some(format!("Dark at {}, in {}. Be indoors by then: head home, or pick a house and shut its doors (F).", c.dusk, span(c.to_dusk))),
-        Phase::Evening => Some(format!("Dark at {}, in {}. Stay or go? Stay here and shut the doors (F), or find somewhere better while you can still see.", c.dusk, span(c.to_dusk))),
+        Phase::Night if !c.indoors => Some(format!("It's night: you can barely see, and they hear every step. Get indoors and shut the door behind you ({e}). Dawn at {}.", c.dawn)),
+        Phase::Night => Some(format!("Night. Keep the doors shut ({e}) and stay quiet (C sneaks), or lie down by a bed and sleep it away (B). Dawn at {}, in {}.", c.dawn, span(c.to_dawn))),
+        Phase::Evening if !c.indoors => Some(format!("Dark at {}, in {}. Be indoors by then: head home, or pick a house and shut its doors ({e}).", c.dusk, span(c.to_dusk))),
+        Phase::Evening => Some(format!("Dark at {}, in {}. Stay or go? Stay here and shut the doors ({e}), or find somewhere better while you can still see.", c.dusk, span(c.to_dusk))),
         _ => None,
     };
     if night.is_some() {
@@ -195,7 +197,7 @@ pub fn hint(c: &HintInput) -> Option<String> {
     } else if let (Some(name), 0) = (&c.open, c.taken) {
         format!("The {name} is open. Press Tab and click a thing to take it; right-click for what else you can do with it.")
     } else if c.searched == 0 {
-        "Search the house: stand facing a cupboard, wardrobe, fridge or shelf and press E.".to_string()
+        format!("Search the house: stand facing a cupboard, wardrobe, fridge or shelf and press {e}.")
     } else if !c.armed {
         "Find a weapon: knives in kitchen drawers, tools on shelves, a bat in a wardrobe. Press Tab, right-click it and take it in hand.".to_string()
     } else if !c.food || !c.drink {
@@ -204,7 +206,7 @@ pub fn hint(c: &HintInput) -> Option<String> {
             (false, true) => "something to eat",
             _ => "food and drink",
         };
-        format!("Pack {what}: kitchens and fridges first. The house next door has more (F opens doors).")
+        format!("Pack {what}: kitchens and fridges first. The house next door has more ({e} opens doors).")
     } else if c.searched < zombye_sim::firstnight::SEARCH_GOAL {
         "Keep searching: every room holds something. Bandages and a bag are worth finding.".to_string()
     } else if c.kills == 0 {
@@ -247,9 +249,9 @@ fn follow(options: Res<Options>, link: Res<ServerLink>, me: Res<LocalPlayer>, mu
 
 /// Enter shuts the morning screen, R there starts a new run; O hides the panel and hints.
 fn keys(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut ui: ResMut<FirstNightUi>, mut swap: WorldSwap, mut notice: ResMut<Notice>) {
-    if keys.just_pressed(KeyCode::KeyO) {
+    if crate::keys::just_pressed(&keys, crate::keys::Action::Objectives) {
         ui.hidden = !ui.hidden;
-        notice.say(time.elapsed_secs(), if ui.hidden { "Objectives and hints hidden (O shows them)".to_string() } else { "Objectives and hints shown".to_string() });
+        notice.say(time.elapsed_secs(), if ui.hidden { format!("Objectives and hints hidden ({} shows them)", crate::keys::label(crate::keys::Action::Objectives)) } else { "Objectives and hints shown".to_string() });
     }
     if !ui.morning {
         return;

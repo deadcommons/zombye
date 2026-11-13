@@ -195,6 +195,7 @@ pub fn holds(items: &[ItemDef], weapons: &[WeaponDef], item: u16) -> Option<Hold
 pub fn max_used(items: &[ItemDef], weapons: &[WeaponDef], item: u16) -> u8 {
     match holds(items, weapons, item) {
         Some(h) => h.capacity,
+        None if items.get(item as usize).is_some_and(|d| d.fuel_l.is_some()) => items[item as usize].fuel_l.unwrap_or(0),
         None if crate::wear::durability(items, weapons, item) > 0 => crate::wear::durability(items, weapons, item),
         None => items.get(item as usize).and_then(|d| d.consumable()).map_or(1, |c| c.uses.max(1)) - 1,
     }
@@ -648,7 +649,15 @@ impl World {
     pub(crate) fn load_found(&self, c: u32, stacks: &mut [ItemStack]) {
         let seed = self.config.loot_seed() ^ FOUND_SALT;
         for (k, s) in stacks.iter_mut().enumerate() {
-            let Some(h) = self.holds(s.item) else { continue };
+            let cap = match self.holds(s.item) {
+                Some(h) => h.capacity,
+                // A fuel can is found with what was left in it.
+                None => match self.config.items.get(s.item as usize).and_then(|d| d.fuel_l) {
+                    Some(l) => l,
+                    None => continue,
+                },
+            };
+            let h = Holds { capacity: cap, ammo: 0, magazine: false };
             let share = hash01(seed, c as u64, k as u64, s.item as u64);
             s.used = (share * share * (h.capacity as f32 + 1.0)) as u8;
             s.used = s.used.min(h.capacity);
