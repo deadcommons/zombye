@@ -14,7 +14,7 @@
 //! Gameplay tuning and difficulty aren't here: they belong to a world, so they are chosen when a
 //! new game is started (the new-game screen), and a server's are its own.
 //!
-//! `--settings graphics|effects|audio|controls|game` starts with the screen up on that tab (pictures).
+//! `--settings display|graphics|effects|audio|controls|game` starts with the screen up on that tab (pictures).
 
 use bevy::prelude::*;
 use bevy::window::{MonitorSelection, PresentMode, PrimaryWindow, WindowMode};
