@@ -98,7 +98,7 @@ enum Kind {
 
 /// Every tool: name, title (shown to people by clients), kind. `tool_list` adds these to the
 /// definitions, and a test checks each tool has a row.
-const TOOLS: [(&str, &str, Kind); 70] = [
+const TOOLS: [(&str, &str, Kind); 71] = [
     ("observe", "Look around (ASCII map)", Kind::Look),
     ("screenshot", "Screenshot (rendered picture)", Kind::Look),
     ("stats", "World and player stats", Kind::Look),
@@ -106,6 +106,7 @@ const TOOLS: [(&str, &str, Kind); 70] = [
     ("edge", "Inspect a tile's walls, doors and windows", Kind::Look),
     ("buildings", "List buildings", Kind::Look),
     ("regions", "Zombie population by region", Kind::Look),
+    ("biomes", "Biomes of the wild ground", Kind::Look),
     ("inventory", "Show inventory", Kind::Look),
     ("health", "Show health and wounds", Kind::Look),
     ("skills", "Show skills", Kind::Look),
@@ -1231,6 +1232,17 @@ fn tool_defs() -> Value {
             "inputSchema": {"type": "object", "properties": {}}
         },
         {
+            "name": "biomes",
+            "description": "What grows where on the wild ground (biomes.ron): an ASCII map of the biomes, one letter for each 8 m square \
+                (`.` is town, which has none; players are `P`), then each biome's share of the wild ground, how many trees it holds \
+                and how many per 100 m2, its bushes and bare patches, and its tree settings from the file. With `x` and `y`: the biome \
+                of that tile and how much of a clump of trees it is in. For checking a change to biomes.ron; `screenshot` shows the look.",
+            "inputSchema": {"type": "object", "properties": {
+                "x": {"type": "number", "description": "A tile to name the biome of (with y)"},
+                "y": {"type": "number", "description": "A tile to name the biome of (with x)"}
+            }}
+        },
+        {
             "name": "save",
             "description": "Save the whole world (map edits, players, every zombie on every tier, the clock, the RNGs) to a named save \
                 in the saves folder, or with no name to this session's --save file. Loading it gives back exactly this state: the same \
@@ -2338,6 +2350,7 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             Ok(format!("noise at ({:.1}, {:.1}) with radius {:.1} m; zombies hear it on the next tick{pull}", pos[0], pos[1], radius.clamp(0.0, 500.0)))
         }
         "regions" => Ok(regions(world)),
+        "biomes" => Ok(biomes(world, args)),
         "zombie" => {
             let id = args.get("id").and_then(Value::as_u64).ok_or("id is required")? as u32;
             let i = world.zombies.index_of(id).ok_or_else(|| format!("no zombie {id}"))?;
@@ -2794,6 +2807,91 @@ fn heat(n: f32) -> char {
         250..=499 => '*',
         _ => '#',
     }
+}
+
+/// The `biomes` tool: where each biome is, and what grows in it.
+fn biomes(world: &World, args: &Value) -> String {
+    use zombye_sim::map::{Feature, Floor};
+    let map = &world.map;
+    let b = &map.biomes;
+    if b.is_empty() {
+        return "This map has no biomes (it wasn't made by the generator).".to_string();
+    }
+    let defs = b.defs();
+    let letter = |i: usize| (b'a' + (i % 26) as u8) as char;
+    let mut out = String::new();
+    if let (Some(x), Some(y)) = (args.get("x").and_then(Value::as_f64), args.get("y").and_then(Value::as_f64)) {
+        let t = IVec2::new(x.floor() as i32, y.floor() as i32);
+        out.push_str(&match b.at(t) {
+            Some(d) => format!("[{}, {}] is {} ({}), clump {:.2} (0 between clumps, 1 inside one).\n\n", t.x, t.y, d.label(), d.id, b.clump(t)),
+            None => format!("[{}, {}] is in town (or off the map): no biome.\n\n", t.x, t.y),
+        });
+    }
+    const STEP: i32 = 8;
+    out.push_str(&format!("{} x {} m, one letter for each {STEP} m square (x east, y south):\n", map.width(), map.height()));
+    let players: Vec<IVec2> = world.players.iter().map(|p| p.state.pos.as_ivec2() / STEP).collect();
+    for cy in 0..(map.height() + STEP - 1) / STEP {
+        let line: String = (0..(map.width() + STEP - 1) / STEP)
+            .map(|cx| {
+                if players.contains(&IVec2::new(cx, cy)) {
+                    return 'P';
+                }
+                b.index_at(IVec2::new(cx * STEP + STEP / 2, cy * STEP + STEP / 2)).map_or('.', letter)
+            })
+            .collect();
+        out.push_str(&line);
+        out.push('\n');
+    }
+    // What stands on each biome's tiles.
+    let mut n = vec![(0u32, 0u32, 0u32, 0u32, 0u32); defs.len()];
+    for y in 0..map.height() {
+        for x in 0..map.width() {
+            let t = IVec2::new(x, y);
+            let Some(i) = b.index_at(t) else { continue };
+            let tile = map.tile(t);
+            n[i].0 += 1;
+            match tile.feature {
+                Feature::Tree => n[i].1 += 1,
+                Feature::PineTree => {
+                    n[i].1 += 1;
+                    n[i].2 += 1;
+                }
+                Feature::Bush => n[i].3 += 1,
+                _ => {}
+            }
+            n[i].4 += (tile.floor == Floor::Dirt) as u32;
+        }
+    }
+    let wild: u32 = n.iter().map(|c| c.0).sum();
+    out.push_str(&format!("\n{wild} m2 of wild ground{}:\n", world.config.biomes.everywhere.as_ref().map(|id| format!(" (everywhere: {id})")).unwrap_or_default()));
+    for (i, d) in defs.iter().enumerate() {
+        let (tiles, trees, conifers, bushes, bare) = n[i];
+        let per = |k: u32| if tiles == 0 { 0.0 } else { k as f32 * 100.0 / tiles as f32 };
+        let t = &d.trees;
+        let kinds: Vec<String> = t.kinds.iter().map(|k| format!("{:?} x{} {}-{} m", k.kind, k.weight, k.height.0, k.height.1)).collect();
+        out.push_str(&format!(
+            "{} {} ({}): {:.1}% of it, {} m2; {} trees ({:.2} per 100 m2, {} conifers), {} bushes ({:.2}), {} bare patches ({:.2})\n    file: thick {} thin {} per 100 m2, clumps {} m over {:.0}% of the ground, spacing {}; {}\n",
+            letter(i),
+            d.label(),
+            d.id,
+            if wild == 0 { 0.0 } else { tiles as f32 * 100.0 / wild as f32 },
+            tiles,
+            trees,
+            per(trees),
+            conifers,
+            bushes,
+            per(bushes),
+            bare,
+            per(bare),
+            t.thick,
+            t.thin,
+            t.clump_m,
+            t.clumped * 100.0,
+            t.spacing,
+            if kinds.is_empty() { "no trees".to_string() } else { kinds.join(", ") },
+        ));
+    }
+    out
 }
 
 /// The `regions` tool: per-region population (actual vs target), attractor pull and zones.
@@ -4361,7 +4459,7 @@ mod tests {
                 assert!(t["annotations"]["destructiveHint"].is_boolean(), "{name}");
             }
         }
-        for name in ["observe", "stats", "zombie", "edge", "buildings", "regions", "inventory", "health", "skills", "weapons", "items", "loot", "recipes", "builds", "containers_near", "saves", "heard", "screenshot"] {
+        for name in ["observe", "stats", "zombie", "edge", "buildings", "regions", "biomes", "inventory", "health", "skills", "weapons", "items", "loot", "recipes", "builds", "containers_near", "saves", "heard", "screenshot"] {
             let t = tool(&list, name);
             assert_eq!(t["annotations"]["readOnlyHint"], true, "{name}");
             assert_eq!(t.get("_meta"), None, "{name}");

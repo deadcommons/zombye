@@ -167,6 +167,8 @@ pub fn render(world: &World, renderer: &Renderer, req: &Request) -> Result<(Vec<
     for dir in &renderer.mods {
         command.arg("--mod").arg(dir);
     }
+    // And with the biomes it was grown from (`--biomes`, `--biome`).
+    command.args(zombye_net::content::biome_args());
     command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if std::env::var_os("RUST_LOG").is_none() {
         // Only warnings and errors from the engine: they're what an error report needs.

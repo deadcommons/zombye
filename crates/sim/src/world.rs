@@ -115,6 +115,9 @@ pub struct WorldConfig {
     /// Mailboxes, hydrants, bins: the kinds and where the town generator puts them
     /// (`assets/data/street_props.ron`, see [`crate::street_props`]). None by default.
     pub street_props: StreetPropsDef,
+    /// What grows on the wild ground, and how (`assets/data/biomes.ron`, see [`crate::biomes`]).
+    /// The shipped biomes by default.
+    pub biomes: crate::biomes::BiomeData,
     /// How survivors see and hear each other (#66, [`crate::awareness`]): what a server tells
     /// each client of the other players. A server's rule, not the world's: not saved.
     pub player_sight: crate::awareness::PlayerSightTuning,
@@ -186,6 +189,7 @@ impl WorldConfig {
             tiers: TierTuning::default(),
             population: PopulationDef::default(),
             street_props: StreetPropsDef::default(),
+            biomes: crate::biomes::BiomeData::default(),
             player_sight: Default::default(),
             explore: Default::default(),
             speech: Default::default(),
@@ -276,6 +280,11 @@ impl WorldConfig {
 
     pub fn with_street_props(mut self, street_props: StreetPropsDef) -> Self {
         self.street_props = street_props;
+        self
+    }
+
+    pub fn with_biomes(mut self, biomes: crate::biomes::BiomeData) -> Self {
+        self.biomes = biomes;
         self
     }
 
@@ -553,7 +562,7 @@ impl World {
         let weapon_items = items::complete_items(&mut config.items, &config.weapons);
         let item_weapons = (0..config.items.len()).map(|i| weapon_items.iter().position(|w| *w == Some(i as u16)).map(|w| w as u16)).collect();
         let unarmed = config.weapons.iter().position(|w| w.category == WeaponCategory::Unarmed).unwrap_or(0) as u16;
-        let generated = worldgen::generate_with(&config.generation, &config.templates, &config.street_props);
+        let generated = worldgen::generate_full(&config.generation, &config.templates, &config.street_props, &config.biomes);
         let items = items::place_weapons(&generated.map, &config.weapons, &weapon_items, generated.spawn_building, config.loot_seed(), 1);
         let sites = containers::find_sites(&generated.map, &config.containers);
         let mut map = generated.map;

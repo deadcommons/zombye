@@ -589,7 +589,7 @@ fn spawn_chunk(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &WorldM
     meshgen::street_props::add(&mut props, map, c, models);
     // Outside town the ground rises in hills (`zombye_sim::terrain`): everything built on the flat
     // is laid over it.
-    ground.drape(&map.terrain);
+    ground.drape_with(&map.terrain, Some(&map.biomes));
     props.lift(&map.terrain);
     for spot in &mut veg {
         spot.ground = map.ground(spot.pos);

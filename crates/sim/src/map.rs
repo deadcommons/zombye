@@ -585,6 +585,11 @@ pub struct TileMap {
     /// the street props: not saved (a map stored whole gets the generated map's), in no hash.
     #[serde(skip)]
     pub terrain: crate::terrain::Terrain,
+    /// Which biome each tile of wild ground is in, with the biomes (`crate::biomes`), from the
+    /// generator. Derived like the terrain: not saved (a map stored whole gets the generated
+    /// map's), in no hash.
+    #[serde(skip)]
+    pub biomes: crate::biomes::BiomeMap,
 }
 
 /// A vehicle as the map sees it: a box `half` (half its length, half its width) round `pos`, its
@@ -634,7 +639,7 @@ impl TileMap {
     pub fn new(chunks_x: i32, chunks_y: i32) -> Self {
         let chunks = (0..chunks_x * chunks_y).map(|_| Chunk { tiles: vec![Tile::default(); CHUNK_TILES] }).collect();
         let outdoors = Room { building: u16::MAX, name: "Outdoors".into(), room_type: "outdoors".into(), floor: Floor::Grass };
-        Self { chunks_x, chunks_y, chunks, rooms: vec![outdoors], buildings: Vec::new(), turning_circles: Vec::new(), street_props: Vec::new(), prop_kinds: Vec::new(), blinds: BTreeMap::new(), glazed: BTreeSet::new(), barricades: BTreeMap::new(), stairs: Vec::new(), upper: BTreeMap::new(), stair_speed: 0.0, movement: Default::default(), vehicles: Vec::new(), vehicle_cover: Vec::new(), terrain: Default::default() }
+        Self { chunks_x, chunks_y, chunks, rooms: vec![outdoors], buildings: Vec::new(), turning_circles: Vec::new(), street_props: Vec::new(), prop_kinds: Vec::new(), blinds: BTreeMap::new(), glazed: BTreeSet::new(), barricades: BTreeMap::new(), stairs: Vec::new(), upper: BTreeMap::new(), stair_speed: 0.0, movement: Default::default(), vehicles: Vec::new(), vehicle_cover: Vec::new(), terrain: Default::default(), biomes: Default::default() }
     }
 
     pub fn width(&self) -> i32 {

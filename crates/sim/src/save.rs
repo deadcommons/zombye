@@ -264,7 +264,7 @@ pub struct SaveInfo {
 /// population file, plus the ids, to say what changed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ContentPrint {
-    /// The building templates and `street_props.ron` (#61) together: both decide the map.
+    /// The building templates, `street_props.ron` (#61) and `biomes.ron` together: all decide the map.
     pub templates: u64,
     pub template_ids: Vec<String>,
     pub weapons: u64,
@@ -291,7 +291,11 @@ impl ContentPrint {
         Self {
             // The street props decide the map too: hashed with the templates (no change to the save
             // layout; with none, the hash is the templates' alone, as before them).
-            templates: if config.street_props.is_empty() { fnv(&encode(&config.templates)) } else { fnv(&encode(&(&config.templates, &config.street_props))) },
+            // So do the biomes (the forest's trees are tiles); the shipped ones leave the hash as it was.
+            templates: {
+                let base = if config.street_props.is_empty() { fnv(&encode(&config.templates)) } else { fnv(&encode(&(&config.templates, &config.street_props))) };
+                if &config.biomes == crate::biomes::shipped() { base } else { base ^ fnv(&encode(&config.biomes)) }
+            },
             template_ids: config.templates.iter().map(|t| t.id.clone()).collect(),
             weapons: fnv(&encode(&weapons)),
             weapon_ids: weapons.iter().map(|w| w.id.clone()).collect(),
@@ -1097,6 +1101,8 @@ impl World {
                 map.prop_kinds = kinds;
                 // Nor is the ground's height: the generated map's.
                 map.terrain = std::mem::take(&mut w.map.terrain);
+                // Nor which biome a tile is in.
+                map.biomes = std::mem::take(&mut w.map.biomes);
                 // Glazed doors and blinds aren't stored with the tiles: the generated map's (the
                 // `BLND` section, if any, replaces the blinds below).
                 map.glazed = std::mem::take(&mut w.map.glazed);

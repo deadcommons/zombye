@@ -305,7 +305,7 @@ pub fn update_params(
             if !map.0.in_bounds(t) {
                 continue;
             }
-            if let Some(spec) = crate::meshgen::trees::tree_at(x, y, map.0.tile(t).feature)
+            if let Some(spec) = crate::meshgen::trees::tree_on(&map.0, x, y)
                 && crown_hides(&spec, chest_world - Vec3::Y * map.0.ground(spec.base.xz()), camera_dir)
             {
                 hiding.push((t, spec.base.xz()));
