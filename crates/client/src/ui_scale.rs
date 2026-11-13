@@ -100,6 +100,9 @@ pub struct ClientSettings {
     /// Unused: the inventory's body view is gone (the gear slots took its place). Kept so older
     /// settings files read as they did.
     pub inventory_body: bool,
+    /// Where the inventory screen's Gear, You and Nearby windows were dragged to (`inv_windows.rs`,
+    /// #45): each one's top-left corner in UI pixels, `None` where it starts.
+    pub inventory_windows: [Option<(f32, f32)>; 3],
     /// Zombies you see show through what covers them from the camera (`silhouette.rs`; Shift+F10).
     pub zombie_silhouettes: bool,
     /// Doors and windows a building hides from the camera are outlined through it
@@ -158,6 +161,7 @@ impl Default for ClientSettings {
             server_list: None,
             servers: Vec::new(),
             inventory_body: false,
+            inventory_windows: [None; 3],
             zombie_silhouettes: false,
             opening_hints: true,
             volume: 1.0,

@@ -126,6 +126,14 @@ Every full screen is the same frame, and the screens are its tabs:
   straight on Health and Skills.
 - **Body:** two or three columns divided by hairlines. A column has a title and scrolls on its own,
   up and down only. **Nothing scrolls sideways, ever:** content wraps to the width it has.
+- **Windows, where a screen is used with the game in view** (the Inventory tab, `inv_windows.rs`):
+  on a screen with room for them the columns are windows instead, each as tall as its content,
+  on a light veil (22%) so the game reads round them. They start side by side in the middle of the
+  screen, never spread to its edges: what is used together sits within one glance. A window has a
+  38-pixel title strip (its name in `HEAD` capitals, a quiet note at the right), a `LINE` border,
+  an 8-pixel radius and a backing of `SOLID` at 96%; it is dragged by the strip, remembered, and
+  put back by a double-click on it. With a controller the windows are fixed where they start. A
+  window too small for them (1280 x 720) keeps the columns.
 - **Footer:** the keys that work on this screen, as keycaps with a word each. If an action has no
   place in the footer it doesn't have a hidden key.
 - **Help text** (the Game settings; `help_text.rs`): a player chooses how much the UI explains. Write

@@ -1814,6 +1814,19 @@ A new single-player game can begin with a survivor of your making in a world of 
   `SkillsPanel::open`: H, K, the rail, `--health`, `--skills`, "use on a wound"), and `inventory_ui::screens` keeps
   the frame in step: opening one opens the frame on it and shuts the other, its key again goes back to the game,
   shutting the frame shuts both. A screen's scrolling part is an `inventory_ui::scroller` (`Scrolls` keeps where each was).
+  **The Inventory tab's three parts are windows** (#45, `inv_windows.rs`) wherever the frame's middle has room for
+  them side by side (`inv_windows::fits`: from about 1600 x 900 UI pixels; a smaller window, 1280 x 720, keeps
+  the three columns, as does `--tab columns`): Gear, You and Nearby each a window as tall as what is in it, which start
+  together in the middle (`home`: about 1,450 px across however wide the screen), under a light veil
+  (`inv_windows::VEIL`) so the game shows round them, while the top bar, rail and footer keep the full veil as
+  their own backing. A window is dragged by its title strip (the strip's observer sets `Windows::pressed`,
+  `inv_windows::track` follows the pointer before `rebuild`, `place` moves the nodes after it, so a drag builds nothing
+  again) and stays where it is let go: `Windows::at`, its corner in UI pixels from the middle's corner, kept as
+  `inventory_windows` in `settings.ron`; `clamped` keeps its title in reach and 80 px of it on the screen; the one
+  touched last is on top; a double-click on a title puts it back. **Fixed** (`Windows::fixed`, `--tab fixed`): the
+  windows stand where they start and take no drag, for a controller, whose stick goes from one to the next by their
+  order: the controller's code sets it while the pad is the one in use. `--panel-at gear:X,Y;you:X,Y;nearby:X,Y`
+  places them for a picture. The other tabs are full screens on the veil. Tests: `inv_windows::tests`.
   **Gear** (left): what each hand holds, then a slot a place (`GEAR`, by `body::Spot`: head, face, neck, torso, hands,
   legs, feet, back, shoulder; several layers on one place are several tiles), the hotbar, and at the foot the load
   against the limit with the burden stage and the litres used. **You** (middle): a pane for each bag carried and for
