@@ -120,7 +120,7 @@
 
     // ---- Tools ---------------------------------------------------------------------------------
     (id: "tin_opener", name: "Tin opener", category: Tool, weight_kg: 0.15, volume_l: 0.1, tags: ["opens_tins"], color: (0.6, 0.6, 0.62)),
-    (id: "screwdriver", name: "Screwdriver", category: Tool, weight_kg: 0.15, volume_l: 0.1, color: (0.85, 0.75, 0.2)),
+    (id: "screwdriver", name: "Screwdriver", category: Tool, weight_kg: 0.15, volume_l: 0.1, tags: ["hotwires"], color: (0.85, 0.75, 0.2)),
     (id: "scissors", name: "Scissors", category: Tool, weight_kg: 0.1, volume_l: 0.1, tags: ["cuts"], color: (0.2, 0.3, 0.7)),
     (id: "saw", name: "Hand saw", category: Tool, weight_kg: 0.6, volume_l: 1.2, tags: ["saws"], color: (0.65, 0.65, 0.68)),
     (id: "lighter", name: "Lighter", category: Tool, weight_kg: 0.03, volume_l: 0.02, stack: 5, tags: ["fire"], color: (0.8, 0.2, 0.5)),
@@ -233,6 +233,13 @@
     // Shift+E beside a car pours a can into its tank, or with a hose siphons its fuel into the can.
     (id: "petrol_can", name: "Petrol can", category: Tool, weight_kg: 1.1, volume_l: 11.0, fuel_l: Some(10), tags: ["fuel_can"], color: (0.75, 0.12, 0.1)),
     (id: "siphon_hose", name: "Siphon hose", category: Tool, weight_kg: 0.4, volume_l: 0.8, tags: ["siphons"], color: (0.2, 0.45, 0.3)),
+    // Cars, stage 4 (vehicles.ron's `work`): a car key opens and starts the one car it's for (which
+    // one rides on the key itself, so keys to two cars never stack); a wrench, a spare tyre and a
+    // box of engine parts mend a car.
+    (id: "car_key", name: "Car key", category: Tool, weight_kg: 0.03, volume_l: 0.01, tags: ["car_key"], color: (0.7, 0.7, 0.72)),
+    (id: "wrench", name: "Wrench", category: Tool, weight_kg: 0.45, volume_l: 0.2, tags: ["wrenches"], color: (0.55, 0.58, 0.62)),
+    (id: "spare_tyre", name: "Spare tyre", category: Material, weight_kg: 9.0, volume_l: 30.0, two_handed: true, color: (0.12, 0.12, 0.13)),
+    (id: "engine_parts", name: "Engine parts", category: Material, weight_kg: 2.5, volume_l: 2.0, color: (0.4, 0.35, 0.3)),
 
     // ---- Junk: everyday clutter (light, mostly useless; some taken apart later) ---------------------
     (id: "mug", name: "Mug", category: Junk, weight_kg: 0.3, volume_l: 0.4, stack: 4, tags: ["junk"], color: (0.9, 0.9, 0.85)),

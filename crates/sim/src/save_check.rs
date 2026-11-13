@@ -184,7 +184,7 @@ fn job_item(kind: &JobKind) -> Option<u16> {
     match *kind {
         JobKind::Move { item, .. } | JobKind::Use { item, .. } => Some(item),
         JobKind::Treat { item, .. } => item,
-        JobKind::Search { .. } | JobKind::Craft { .. } | JobKind::Reload { .. } | JobKind::Blind { .. } | JobKind::Build { .. } => None,
+        JobKind::Search { .. } | JobKind::Craft { .. } | JobKind::Reload { .. } | JobKind::Blind { .. } | JobKind::Build { .. } | JobKind::Hotwire { .. } | JobKind::Repair { .. } => None,
     }
 }
 
@@ -253,7 +253,7 @@ pub(crate) fn remap_items(plan: &ContentPlan, ground: &mut Vec<GroundItem>, play
             match &mut j.kind {
                 JobKind::Move { item, .. } | JobKind::Use { item, .. } => *item = to(*item).expect("kept"),
                 JobKind::Treat { item: Some(item), .. } => *item = to(*item).expect("kept"),
-                JobKind::Treat { item: None, .. } | JobKind::Search { .. } | JobKind::Craft { .. } | JobKind::Reload { .. } | JobKind::Blind { .. } | JobKind::Build { .. } => {}
+                JobKind::Treat { item: None, .. } | JobKind::Search { .. } | JobKind::Craft { .. } | JobKind::Reload { .. } | JobKind::Blind { .. } | JobKind::Build { .. } | JobKind::Hotwire { .. } | JobKind::Repair { .. } => {}
             }
         }
         // Uses gone from an opened item that's no longer in the content: nothing to count.
@@ -486,6 +486,11 @@ fn check_stack_state(w: &World, s: &ItemStack, what: &dyn Fn() -> String) -> Res
     let most = crate::ranged::max_used(&w.config.items, &w.config.weapons, s.item);
     if s.used > most {
         return Err(invalid(format!("{}: {} goes had of an item with {}", what(), s.used, most as u32 + 1)));
+    }
+    // A car key's `born` is the id of the car it opens (`crate::vehicles`), not a time.
+    let key = w.config.items.get(s.item as usize).is_some_and(|d| d.id == w.config.vehicles.work.key_item);
+    if key {
+        return if s.born >= 0 { Ok(()) } else { Err(invalid(format!("{}: a key to car {}", what(), s.born))) };
     }
     if s.born > w.game_minute() + 1 || s.born < OLDEST_FOOD_MIN {
         return Err(invalid(format!("{}: made at game minute {}, now {}", what(), s.born, w.game_minute())));

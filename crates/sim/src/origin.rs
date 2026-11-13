@@ -107,7 +107,9 @@ fn short(m: f32) -> String {
 /// survivor with no Origin.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Perks {
-    /// XP multiplier per skill (index: `Skill as usize`).
+    /// XP multiplier per skill (index: `Skill as usize`). Saved as the first
+    /// [`crate::skills::LEGACY_SKILLS`]; the rest in the save's `MECH` section.
+    #[serde(with = "crate::skills::legacy_one")]
     pub xp: [f32; SKILL_COUNT],
     pub carry_kg: f32,
     pub hunger: f32,

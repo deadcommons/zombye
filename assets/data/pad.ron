@@ -1,0 +1,55 @@
+// The controller's buttons: each action and the button that does it (any of the ones listed).
+//
+// Buttons are named as on the common pad: A, B, X, Y (the four on the right face: bottom,
+// right, left, top), LB, RB (the bumpers), LT, RT (the triggers), L3, R3 (the sticks pressed
+// in), Up, Down, Left, Right (the d-pad), View and Menu (the two small buttons in the middle).
+// The game shows each pad's own names and shapes for them. "Hold " in front means holding the
+// button down for a moment; a button with a hold action does its plain action when let go
+// sooner.
+//
+// The left stick always walks (part of the way over walks slower), and the right stick aims
+// while aiming and turns the view in first person. They aren't in this file.
+//
+// An action left out has no button; the actions are the same as in keys.ron, plus the ones only
+// a controller needs (attack, aim, turn_left, turn_right, zoom_in, zoom_out, first_person,
+// pause, item_wheel, make_wheel). A player's own picks are kept in their settings.ron and go over
+// this file.
+(
+    // Moving
+    run: ["L3"],
+    sneak: ["R3"],
+    sit: ["Down"],
+    sleep: ["Hold Down"],
+
+    // Fighting: hold LT to aim with the right stick; RT swings or shoots (it aims by itself,
+    // at what is in front of you, when LT isn't held).
+    aim: ["LT"],
+    attack: ["RT"],
+    shove: ["B"],
+    reload: ["X"],
+    stop: ["Hold X"],
+
+    // The world: A does the likeliest thing for what you face; held, it opens the menu of
+    // everything you can do with it.
+    interact: ["A"],
+    flashlight: ["Up"],
+    // At the wheel (RT drives, LT brakes and reverses, B is the handbrake, A gets out).
+    horn: ["X"],
+
+    // The wheels: hold, point a stick at one, let go to use or make it (A held on a thing is the
+    // wheel of what you can do with it: A takes the one picked, B goes back).
+    item_wheel: ["Hold LB"],
+    make_wheel: ["Hold RB"],
+
+    // Screens
+    inventory: ["Y"],
+    map: ["View"],
+    pause: ["Menu"],
+
+    // The camera (LB and RB tapped; held, they are the wheels)
+    turn_left: ["LB"],
+    turn_right: ["RB"],
+    zoom_in: ["Right"],
+    zoom_out: ["Left"],
+    first_person: ["Hold View"],
+)

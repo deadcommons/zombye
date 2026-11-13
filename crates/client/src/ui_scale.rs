@@ -140,6 +140,11 @@ pub struct ClientSettings {
     pub keys: std::collections::BTreeMap<String, Vec<String>>,
     /// What the main menu's Host a game screen was last set to (`hosting.rs`).
     pub host: crate::hosting::HostSetup,
+    /// Keyboard and mouse, the controller, or whichever was touched last (`pad.rs`, #12).
+    pub input: crate::pad::InputSetting,
+    /// The buttons the player picked for the controller (`pad.rs`): an action's id to its
+    /// buttons, over `assets/data/pad.ron`. Only the ones changed.
+    pub pad: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl Default for ClientSettings {
@@ -170,6 +175,8 @@ impl Default for ClientSettings {
             reports_notice_seen: false,
             keys: Default::default(),
             host: Default::default(),
+            input: crate::pad::InputSetting::Auto,
+            pad: Default::default(),
         }
     }
 }

@@ -4,10 +4,11 @@ Zombye is an open-source, true-3D isometric zombie survival game (Rust + Bevy), 
 can read it, run it, play it and mod it. The design is in [docs/PLAN.md](docs/PLAN.md). Read it
 before making architectural changes.
 
-Work is tracked on GitHub, not in the repo: the
-[Game development project](https://github.com/orgs/deadcommons/projects/3) board and the
-[milestones](https://github.com/deadcommons/zombye/milestones). Reference issues in commits
-(`Closes #N`), and keep each issue's board status current (Todo, In Progress, Done).
+Work is tracked in GitHub issues on the public
+[Game development board](https://github.com/orgs/deadcommons/projects/3), not in the repo. Start from an issue
+(open one if there is none) and set it In Progress; reference it in commits (`Refs #N`, `Closes #N`); when
+the work is done, close it with a comment naming the commit or PR, or comment where it got to if it stops
+part way. New work you find becomes its own issue, not a TODO.
 
 ## Layout
 
@@ -201,7 +202,7 @@ cargo run -p zombye-server -- --docs ../zombye-web/src/content/docs/docs/referen
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python tools/blender/build.py -- furniture
 ```
 
-Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --angle 0..3 --turn N@SECS[,N@SECS...] --opening-hints on|off --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --weapons-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --mod DIR --mods-dir DIR --no-mods --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab rows|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --loading-screen --graphics-panel --map --map-zoom PX --map-center X,Y --map-all --skip-hours H --hover-tag N --debug-stats --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --music V --ui-scale PCT --help-text full|short|off --old-look off|subtle|strong --connect HOST[:PORT] --name NAME --password P --agent --server-info HOST[:PORT] --server-list FILE|URL --browser --browser-join N[@SECS] --joined --join-error TEXT --hotbar ID[,ID...] --hotbar-press K@SECS[,K@SECS...] --panel-at PANEL:X,Y[;PANEL:X,Y] --drag-panel PANEL:DX,DY[@SECS] --lag MS --say TEXT[@SECS] --shout TEXT[@SECS] --whisper TEXT[@SECS] --gesture NAME[@SECS] --talk-demo --talk-wall --holdup-demo --holdup-auto --graphics low|medium|high|ultra|auto --vegetation off|low|high|N --no-post LIST --msaa N --shadow-map N --render-scale F --frame-bench N --gun ID --give ID[:N],... --walls-up --zombie-silhouettes --aim-at DX,DY|zombie --first-person --view-at SECS[,SECS...] --view-mix U --new-game --new-game-tab who|picks|world --new-game-from PATH --background ID --strengths ID[,ID...] --flaws ID[,ID...] --outfit ITEM[,ITEM...] --difficulty ID --biome ID --biomes FILE --watch-biomes --walk X,Y;X,Y;...` (`--biome`, `--biomes`, `--watch-biomes`: see Biomes under The world; `--loading-screen`: see The brand under Assets built in Blender; `--give`: a new world with those items in your pockets, for trying things out, e.g. `--give firewood:2,matches,raw_chicken,frying_pan`; the eight before the last: see A new game; `--aim-at`: see The aim marker under Combat; `--first-person`: see The first-person view under Light and mood; the last walks the local player from point to point by itself, opening shut doors its way leads through, for recordings; the two before it: see Cutaways under Light and mood; the one before those: see Guns; the seven before it: see Look and feel; the two before them: see Hold-ups and groups; the six before those: see Talking and gestures) (the camera always turns with `,` and `.`, see Turning the camera under Light and mood: `--turn` does it by itself for recordings, `--opening-hints`: see Opening hints there, and `--rotate`, which turning used to need, is still accepted and does nothing; `--zoom` is the metres of world visible vertically, 8–90, default 26;
+Client flags: `--zombies N --seed S --time HOUR --at X,Y --map-chunks N --angle 0..3 --turn N@SECS[,N@SECS...] --opening-hints on|off --novsync --zoom METRES --screenshot PATH --screenshot-after SECS[,SECS...] --exit-after SECS --fight-demo --weapons-demo --siege --pvp --duel --autoplay --sneak --saves DIR --load NAME|PATH --load-anyway --player ID --data DIR --mod DIR --mods-dir DIR --no-mods --quicksave-after SECS --quickload-after SECS --new-run-after SECS --render-to PATH --size WxH --center X,Y --hud --inventory --find TEXT --filter CATEGORY[,CATEGORY...] --tab rows|floor --sort name|type|weight --expand --pick N,N --pick-range A,B[@SECS] --drop-picked-after SECS --menu SPEC --menu-pick N[@SECS] --skills --health --morning --loading-screen --graphics-panel --map --map-zoom PX --map-center X,Y --map-all --skip-hours H --hover-tag N --debug-stats --god --ignored --crowd-vat PATH[,PATH...]|DIR|none --survivor PATH|DIR|none --pose NAME[:U] --mute --volume V --music V --ui-scale PCT --help-text full|short|off --input auto|keyboard|controller --wheel items|make[:N] --old-look off|subtle|strong --connect HOST[:PORT] --name NAME --password P --agent --server-info HOST[:PORT] --server-list FILE|URL --browser --browser-join N[@SECS] --joined --join-error TEXT --hotbar ID[,ID...] --hotbar-press K@SECS[,K@SECS...] --panel-at PANEL:X,Y[;PANEL:X,Y] --drag-panel PANEL:DX,DY[@SECS] --lag MS --say TEXT[@SECS] --shout TEXT[@SECS] --whisper TEXT[@SECS] --gesture NAME[@SECS] --talk-demo --talk-wall --holdup-demo --holdup-auto --graphics low|medium|high|ultra|auto --vegetation off|low|high|N --no-post LIST --msaa N --shadow-map N --render-scale F --frame-bench N --gun ID --give ID[:N],... --walls-up --zombie-silhouettes --aim-at DX,DY|zombie --first-person --view-at SECS[,SECS...] --view-mix U --new-game --new-game-tab who|picks|world --new-game-from PATH --background ID --strengths ID[,ID...] --flaws ID[,ID...] --outfit ITEM[,ITEM...] --difficulty ID --biome ID --biomes FILE --watch-biomes --walk X,Y;X,Y;...` (`--biome`, `--biomes`, `--watch-biomes`: see Biomes under The world; `--loading-screen`: see The brand under Assets built in Blender; `--give`: a new world with those items in your pockets, for trying things out, e.g. `--give firewood:2,matches,raw_chicken,frying_pan`; the eight before the last: see A new game; `--aim-at`: see The aim marker under Combat; `--first-person`: see The first-person view under Light and mood; the last walks the local player from point to point by itself, opening shut doors its way leads through, for recordings; the two before it: see Cutaways under Light and mood; the one before those: see Guns; the seven before it: see Look and feel; the two before them: see Hold-ups and groups; the six before those: see Talking and gestures) (the camera always turns with `,` and `.`, see Turning the camera under Light and mood: `--turn` does it by itself for recordings, `--opening-hints`: see Opening hints there, and `--rotate`, which turning used to need, is still accepted and does nothing; `--zoom` is the metres of world visible vertically, 8–90, default 26;
 several `--screenshot-after` times save `PATH` numbered: `fight-1.png`, `fight-2.png`, ...; keep the last one
 a little before `--exit-after` or it's lost). `--size WxH` makes the window exactly that many pixels, at scale factor 1, so a
 `--screenshot` is WxH on a high-DPI screen too; without it the window is as The window (under Menus) says: full screen in a packaged game, else a window of the size it was last left at (1600x900 the first time).
@@ -277,7 +278,7 @@ sent to it, chasing, zombies per tier active/near/virtual, sim tick ms, and the 
 In game: WASD move (he faces the way he walks), Shift run, C sneak (toggle), right mouse held: aim (he faces the
 cursor and strafes or backs off at 2.2 m/s, no running, in a guard stance), and only while aiming left mouse attack
 (swing your weapon, or punch; with a gun in hand: shoot at what the cursor is on, see Guns); Space, aiming or not (the way he faces), shove (or stomp, when a downed zombie's body or head lies in reach in front of you: `combat::stomp_spot`), R reload the gun you hold, **E the one key for the world** (`interact.rs`): tapped, it does the likeliest thing for what you face, and a prompt over the hotbar says what ("E  Open  door"): get out of or into a car, open or shut a door or window, climb the fence or open or broken window (see Climbing under Players), flick the light switch (see Electricity and lights), tend a fire, pick up the item nearest, search the container or body (with nothing faced: search the nearest); **held** (0.3 s) it opens the menu of everything you can do with it, the same menu as a right tap (`world_actions::entries`, whose first line is what a tap does: blinds, smashing, boarding up, every fuel), 1-9 the hotbar (swap to or use what's on that slot, see Hotbar), Tab or I the inventory screen, H its Health screen, K its Skills screen, F the flashlight or candle in your hands on and off (`Intent::Flashlight`, `World::player_flashlight`; `OutfitView::light_off`, so others see it go dark), Shift+B the build menu (see Building and barricades), G smash the window you face, Esc the pause menu (see Menus), dead: R a new run and Q quits,
-B sleep (B again or WASD to get up), Q sit down on the sofa, bed or bench beside you, else the ground (Q again or WASD to get up), Enter the chat line (Tab there: whisper, talk or shout; Enter says it, Esc drops it), V wave, U hands up (again lowers them), P point (see Talking and gestures), Y tie the hands of the survivor you face or free tied ones, L search a tied survivor, J (held) struggle out of ties, N invite into your group or accept (Shift+N leaves), middle mouse a group marker (see Hold-ups and groups), T skip an hour, Z spawn zombies, wheel zoom (over the inventory, health or skills panel it scrolls that panel instead), F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), F3 the light preview (a time-of-day slider, see Light and mood), F4 the debug stats window (see Needs), F6 the server's rules (on a multiplayer server, see Multiplayer), F7 the server browser (see The server browser), `,` and `.` turn the camera a quarter turn left or right (see Turning the camera under Light and mood), `;` the first-person view and back (see The first-person view there), F10 walls up / walls cut, Shift+F10 zombie silhouettes and Ctrl+F10 opening hints (see Cutaways and Opening hints under Light and mood), M the map (see The map), Ctrl+M mute, O hide or show the objectives and hints (see The first night), Ctrl (or Cmd) + `=` / `-` the UI scale (see UI scale), Ctrl+0 back to 100%. **The keys are data** (`assets/data/keys.ron`, `keys.rs`: each action and the keys or chords that do it; a key without a modifier still works with Shift held unless another action takes it with Shift) and rebindable on the settings' Controls tab (kept in `settings.ron`'s `keys`, over the file); the camera, dev, chat and gesture keys are fixed for now. **A new key is an `Action`, a line in `keys.ron` and a row on the Controls tab.** Walking into a fence or an open window stops you as a wall would: E climbs
+B sleep (B again or WASD to get up), Q sit down on the sofa, bed or bench beside you, else the ground (Q again or WASD to get up), Enter the chat line (Tab there: whisper, talk or shout; Enter says it, Esc drops it), V wave, U hands up (again lowers them), P point (see Talking and gestures), Y tie the hands of the survivor you face or free tied ones, L search a tied survivor, J (held) struggle out of ties, N invite into your group or accept (Shift+N leaves), middle mouse a group marker (see Hold-ups and groups), T skip an hour, Z spawn zombies, wheel zoom (over the inventory, health or skills panel it scrolls that panel instead), F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), F3 the light preview (a time-of-day slider, see Light and mood), F4 the debug stats window (see Needs), F6 the server's rules (on a multiplayer server, see Multiplayer), F7 the server browser (see The server browser), `,` and `.` turn the camera a quarter turn left or right (see Turning the camera under Light and mood), `;` the first-person view and back (see The first-person view there), F10 walls up / walls cut, Shift+F10 zombie silhouettes and Ctrl+F10 opening hints (see Cutaways and Opening hints under Light and mood), M the map (see The map), Ctrl+M mute, O hide or show the objectives and hints (see The first night), Ctrl (or Cmd) + `=` / `-` the UI scale (see UI scale), Ctrl+0 back to 100%. **The keys are data** (`assets/data/keys.ron`, `keys.rs`: each action and the keys or chords that do it; a key without a modifier still works with Shift held unless another action takes it with Shift) and rebindable on the settings' Controls tab (kept in `settings.ron`'s `keys`, over the file); the camera, dev, chat and gesture keys are fixed for now. **A new key is an `Action`, a line in `keys.ron` and a row on the Controls tab.** **A controller works too** (see The controller). Walking into a fence or an open window stops you as a wall would: E climbs
 it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
 not Bevy's handler; a second Ctrl-C quits unsaved) autosaves; `--render-to` never does.
 
@@ -370,6 +371,43 @@ another slot swaps with it; `inventory_ui::HoveredItem`); right-click a slot to 
 menu is up the number keys are the menu's, and Ctrl / Cmd with a number is never the hotbar's. The slots are kept in
 `settings.ron` (`ClientSettings::hotbar`). `--hotbar ID,ID,...` (`-` an empty slot) sets them for a session (pictures:
 offscreen never reads the file), `--hotbar-press K@SECS[,K@SECS...]` presses keys by itself (recordings).
+
+**The controller (#12, `pad.rs`, `assets/data/pad.ron`):** a gamepad plays the game as well as the keys and mouse,
+switched between freely. **Its buttons are data** like the keys: `pad.ron` (`pad::PadFile`: each action's buttons, `A`
+`B` `X` `Y` `LB` `RB` `LT` `RT` `L3` `R3` `Up` `Down` `Left` `Right` `View` `Menu`, `"Hold X"` for a hold of
+`pad::HOLD_SECS`, 0.35 s; a button with a hold action does its plain one when let go sooner), the player's picks in
+`settings.ron`'s `pad` over it. An action is a keyboard one (`keys::Action`) or one only a pad needs (`pad::Only`:
+attack, aim, the camera's turns and zoom, first person, pause). **How the game hears it:** `pad::read_pad` (in
+`PreUpdate`, before every other key handler) works out what the pad started, holds and let go of each frame, and
+`keys::just_pressed` / `pressed` / `just_released` answer for the pad too, so everything that asks for an action
+follows the pad with no change of its own; the keys that aren't actions are pressed for the game (`pad::Injected`: Menu,
+and B on a screen, are Esc; the bumpers `,` and `.`; held View `;`), and the sticks, triggers, aim and zoom are the
+`pad::Pad` resource (`player.rs`: the left stick walks, part way over slower, since the sim scales the step by the
+input's length; L3 toggles running until the stick comes back; `camera.rs`: zoom held, the right stick looks round in
+first person). **Fighting:** LT held aims and the right stick turns the aim (camera-relative); RT swings or shoots,
+and pulled without LT aims by itself for `PAD_AIM_SECS` (0.6 s) and swings once an input saying so has gone to the server
+(only an aiming player's attack is taken). **Aim assist** (`player::pad_aim_at`, `pad::soft_lock`): a melee weapon turns
+onto the body nearest the facing within its reach + 0.9 m and 30° (12° with the right stick pushed), a gun within its
+range and 12° (6°) and is pitched at its chest; only bodies the fog of war shows (and other players only with PvP on). In
+first person the right stick turns the camera and the aim is the middle of the screen, as the mouse's. **At the wheel**
+RT drives and LT brakes and reverses (analog, through `Intent::Drive`), the left stick steers, B (shove) is the brake, X
+the horn, A gets out. **Which is in use** (`pad::InputMode`): the Input setting (`ClientSettings::input`: Auto, Keyboard
+and mouse, Controller; `--input` for a session): on Auto a pad button or a stick past half way makes the controller the
+one in use, a key or a click the keyboard (moving the mouse never does). A pad plugged in or out says so on the yellow
+line, and its maker picks the names its buttons go by (`pad::Family`: the common names, PlayStation's, Nintendo's).
+**The Controls tab** has the Input setting and two lists, Keyboard and mouse and Controller (`settings_ui::PAD_ROWS`),
+opening on the one in use. **The wheels** (`wheel.rs`, drawn by `wheel_ui.rs`): a ring of up to 12 choices round the
+middle of the screen, picked by pointing either stick (the one pushed further; the pick stays when the stick comes
+back; `wheel::sector`, choice 0 straight up, the rest clockwise). LB held (`pad.ron`'s `item_wheel`) is the items:
+the hotbar's things you carry, then the other weapons, lights, food, drink and medicine (`wheel::item_entries`),
+used as their hotbar key would (`hotbar::press`) when LB is let go; RB held (`make_wheel`) is what you can make here by
+the Make list's rule (`inventory_ui::make_check`), made when let go; A held on a thing is its world menu as a wheel
+(`interact.rs`, `wheel::action_entries`) that stays up after A is let go (A's thumb picks): A does it, B goes back.
+While one is up the pad does nothing else (`pad::read_pad` hands the sticks to `Pad::select`) and the game goes on.
+`--wheel items|make[:N]` brings one up with the Nth picked, for pictures (`--render-to shot.png --hud --wheel items:1`).
+Nothing of it reaches the sim, a save or a snapshot. **Not yet** (the plan's later stages): menus and screens by focus
+with an on-screen keyboard, button glyphs, rumble, quick chat, choosing the buttons on the Controls tab, a Steam Deck
+pass. Tests: `pad::tests`, `wheel::tests`, `settings_ui`'s `the_controller_list_shows_every_button`.
 
 **Panels remember (#97, `panels.rs`):** (health and skills are screens of the inventory's frame now and are neither dragged nor left open between sessions; what follows is for panels that still float) the inventory, health and skills panels (`panels::PanelId`, beside
 `hud::TopPanel` on each root) are dragged by their title (a press on the 40 UI pixels along the top that moves 4 or
@@ -466,7 +504,7 @@ A packaged game for playtesters, handed out from a restricted itch.io page (dead
   address (`ZOMBYE_REPORT_URL`, compiled in by `package.sh`; never in this repo) and "Send problem reports" on (Settings,
   Game), the game sends its panics and crashes (the child's panic hook leaves `logs/panic.zrpt` for the parent), the F12
   folder, frames over 1 s and repeated prediction corrections to the report service (`zombye-reports`), and `--host`
-  sends its own panics and ticks over 150 ms (`--no-reports` turns that off). An agent triages them into Linear with the
+  sends its own panics and ticks over 150 ms (`--no-reports` turns that off). An agent triages them into GitHub issues with the
   [triage-reports skill](.claude/skills/triage-reports/SKILL.md). **A new kind of problem worth catching** goes through
   `zombye_net::report::Report` and `queue` / `flush`, with a signature that groups it.
 - **Packaging:** `tools/release/package.sh linux|windows|mac` (Linux and Windows on the build VM, Windows cross-compiled
@@ -1120,8 +1158,32 @@ Stage 2: fuel, engine noise, running zombies over and crash damage.
   and gone), and a car moving beyond a client's view only every `wire::FAR_CAR_EVERY` (10) ticks; getting in or
   out, stopping and coming near go at once. `wire::PROTOCOL` 37. Tests: `net/tests/driving.rs` (a driver at
   150 ms of ping predicts its car exactly; a far car is sent now and then), `vehicles_render`'s own.
+- **Keys, hotwiring, the boot and glovebox, repairs (stage 4, #14; `vehicles/work.rs`, `vehicles.ron`'s `work`,
+  `WorkTuning`):** a found car is `locked` (0.6), has its key in the ignition (`ignition` 0.1; never locked then), in
+  its glovebox (`glovebox_key` 0.2) or nowhere (`Access::found`, by the seed and where it was parked). A key is the
+  item `car_key` whose stack's `born` is the id of the car it opens (`holds_key`; keys to two cars never stack). The
+  engine starts only with the key in the ignition, the key on the driver or the wires crossed (`World::startable`);
+  `VehicleView::start` says so, so prediction stays exact (`perf()` goes by it), and `locked` and `key_in` go too.
+  `VehicleOp::Hotwire` (at the wheel, a tool tagged `hotwires`: the screwdriver) is the job `JobKind::Hotwire`, a try
+  of `hotwire_secs` that works `hotwire_chance` (+`SkillTuning::mechanics_hotwire` a level, at most 0.95; a roll
+  hashed on the seed, car, tick and player). `TakeKey` takes the key out of the ignition; `Lock` locks or unlocks with
+  the key on you or from inside; a locked car is got into with its key (which unlocks it) or `BreakIn` (smashes a
+  window: `break_in_windows` off the windows, a 35 m noise). **The boot and glovebox** (the boot is called the trunk in game) are containers (`boot`,
+  `glovebox` in `containers.ron`; loot `(any, boot)`, `(any, glovebox)`) with ids `vehicle_container(vid, slot)`
+  (`VEHICLE_BIT`), placed where the car stands (`World::vehicle_site`): the boot from behind it, the glovebox from
+  the driver's seat or the open door, neither while it's locked (`vehicle_container_open_to`, in `within`); things go
+  in both and travel with the car; a key left in the glovebox is put there when it is first searched. **Repairs** are
+  data (`work.repairs`, `RepairDef`: part, inputs, tools, `mends`, `up_to`, `secs`, Mechanics `level`): `VehicleOp::
+  Repair { vehicle, repair }` is the job `JobKind::Repair`, checked again when due (`crate::build::check_have`); shipped:
+  engine parts and a wrench (Mechanics 1), a spare tyre and a wrench, plastic and tape on a window (to 60%), a hammer on
+  the body (to 70%), tape and a plank on the body (Mechanics 2, to 90%). New items: `car_key`, `wrench`, `spare_tyre`,
+  `engine_parts` (garages, hardware shops, boots). **Saves:** an optional `VACC` section after `VCND` (each car's
+  `Access`; without it cars are as found); Mechanics XP in `MECH` (below, Skills). `wire::PROTOCOL` 38. **Client:**
+  holding E beside a car or at its wheel opens its menu (`world_actions::car_entries`: get in or out, lock, smash in,
+  boot, glovebox, hotwire, take the key, fuel, the repairs with what each is missing); the driving line says "no key".
+  Tests: `vehicles::tests` (from `the_shipped_work_settings_name_real_items` on).
 - **Not yet:** the camera pulling back with speed, MCP tools, running players over, engine and horn sounds, damage
-  drawn on the car, repairing parts, keys and hotwiring (a Mechanics skill), the radio, more vehicle kinds.
+  drawn on the car, the radio, more vehicle kinds, a key's car shown on the key, picking locks.
 - Tests: `sim::vehicles::tests`.
 
 ## Chopping trees (`sim::trees`)
@@ -1528,7 +1590,7 @@ the start, and gardens, trees, fences and buildings are inked in where the survi
 
 ## Skills (`sim::skills`; #46)
 
-- **Nine skills, levels 0-10, raised only by practice.** `Player::skills` (`Skills { xp: [f32; 9] }`, by `Skill as usize`)
+- **Ten skills, levels 0-10, raised only by practice.** `Player::skills` (`Skills { xp: [f32; 10] }`, by `Skill as usize`)
   holds XP; the level is worked out from it at the cumulative thresholds `SkillTuning::levels` (75, 225, 450, 750, 1,150,
   1,650, 2,300, 3,100, 4,100, 5,400; XP stops at the top, `SkillTuning::top`: as many levels as listed, at most
   `MAX_LEVEL` 10, so a world saved with the five levels before DCM-63 keeps its five and its numbers, read from the RON tuple
@@ -1553,6 +1615,7 @@ the start, and gardens, trees, fences and buildings are inked in where the survi
 | First Aid | each treatment done: 10 | treatment 5% faster; from 6, stitching stings half as much |
 | Scavenging | each container searched for the first time: 2 | first searches 5% faster and 5% quieter |
 | Handiwork | each craft (#12): 5 | crafting 5% faster (`SkillTuning::craft_time_mult`) |
+| Mechanics | a car hotwired: 20 (a try that fails: 4); a car repair done: 12 | hotwiring and repairs 6% quicker, repairs mend 6% more, a hotwiring try 8% likelier (cars stage 4, #14) |
 
 - **Weapon skills follow how a weapon hits:** each entry in `weapons.ron` names its `skill` (`Some(Bludgeon)`, `Some(Edged)`
   or `Some(Brawl)`; left out, `WeaponCategory::skill`: `ShortBlunt`/`LongBlunt` Bludgeon, `ShortBlade`/`Axe` Edged,
@@ -1580,7 +1643,9 @@ the start, and gardens, trees, fences and buildings are inked in where the survi
   (`World::award_xp(pi, skill, xp)`), and a craft takes its recipe's time times `SkillTuning::craft_time_mult(level)`
   (`World::craft_secs`; never below `crafting::HANDIWORK_MIN_MULT`, half). `World::skill_level(pi, skill)` and
   `award_xp` are by player index, as the item jobs are.
-- **Saves:** XP per skill with the player (format 8), in `state_hash`; checked on load (`save_check::check_skills`: finite,
+- **Saves:** XP per skill with the player (format 8), in `state_hash`; the first nine are written with the player
+  as before (`skills::legacy_zero`, `legacy_one` for a Background's multipliers), and Mechanics, the tenth, in an
+  optional `MECH` section (each player with Mechanics XP or a multiplier on it), so older saves load unchanged; checked on load (`save_check::check_skills`: finite,
   0 to the top level's XP) and `SkillTuning::check`. **MCP:** `skills {player}` (each skill's level, XP and to go, what it
   gives now and at the next level, how it's earned; read-only), `stats` (each player's `skills` levels by id),
   `step_ticks` / `move_player` / `attack` report `LEVEL UP: P1 Edged 2`, and `weapons` shows each weapon's skill.
@@ -1906,7 +1971,7 @@ them yet (no body temperature, no effect on sight or hearing, nothing drawn or h
   seeded drift of up to `swing_c` (5) either way over `swing_days` (3) (cold snaps and heatwaves), all scaled about
   `mild_c` (12) by `harshness` (1; 0.6 a mild climate, 1.3 a harsh one). `World::air_temp_at(pos, level)`: indoors
   (a room, or upstairs) goes `indoor_mix` (0.6) of the way to `indoor_c` (16); a lit campfire adds `fire_c` (15) at
-  its middle, falling to nothing at `fire_radius` (4 m). **The default climate is hard** (Andres, 2026-11-13): January
+  its middle, falling to nothing at `fire_radius` (4 m). **The default climate is hard** (the owner, 2026-11-13): January
   averages about -11 C with cold-snap nights below -20 and weeks of snow and blizzards, July about 27 C with heatwave
   afternoons over 40, dry with the odd violent storm; October and November are the wettest months.
 - **Forced weather** (`World::force_weather`, MCP `set_weather`, for tests and pictures): a kind, intensity and
