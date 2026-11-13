@@ -451,7 +451,7 @@ A packaged game for playtesters, handed out from a restricted itch.io page (dead
   to `x86_64-pc-windows-gnu` with `--features zombye-client/windows-gui`, no console window; the Mac's `Zombye.app`,
   ad-hoc signed, on the Mac) builds into `dist/zombye-<platform>/`: the game and server, `assets/` without
   `source/`, `specs/` and (when the release crowd is packed) the placeholder crowd, `zombye.pak` from `$ZOMBYE_ART`,
-  `README.txt` (`tools/release/README-playtest.txt`) and `build.txt`. `ITCH_TARGET=deadcommons/zombye
+  `README.txt` (`tools/release/README-playtest.txt`) and `build.txt`. It refuses to pack the bought art without `ZOMBYE_PACK_KEY` (the built-in key is public), unless `ZOMBYE_NO_PACK=1`. `ITCH_TARGET=deadcommons/zombye
   tools/release/push.sh PLATFORM` uploads it with butler (its API key only in the environment, never here).
 
 ## The world
