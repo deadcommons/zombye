@@ -283,6 +283,11 @@ pub enum Sent {
 /// POST one report body to `url` (`http://host[:port][/path]`). `Err` is a network failure:
 /// worth trying again later.
 pub fn send(url: &str, body: &[u8], timeout: Duration) -> Result<Sent, String> {
+    send_with_key(url, &report_key(), body, timeout)
+}
+
+/// [`send`] with the key given rather than taken from `ZOMBYE_REPORT_KEY`.
+pub fn send_with_key(url: &str, key: &str, body: &[u8], timeout: Duration) -> Result<Sent, String> {
     let rest = url.strip_prefix("http://").ok_or("only http:// addresses")?;
     let (host, path) = rest.split_once('/').map_or((rest, String::new()), |(h, p)| (h, format!("/{p}")));
     let addr = if host.contains(':') { host.to_string() } else { format!("{host}:80") };
@@ -293,13 +298,21 @@ pub fn send(url: &str, body: &[u8], timeout: Duration) -> Result<Sent, String> {
     let head = format!(
         "POST {path}/v1/report HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/x-zombye-report\r\nContent-Length: {}\r\nX-Zombye-Key: {}\r\nConnection: close\r\n\r\n",
         body.len(),
-        report_key(),
+        key,
     );
-    stream.write_all(head.as_bytes()).and_then(|_| stream.write_all(body)).map_err(|e| format!("sending: {e}"))?;
+    // A service that refuses a report may answer before it has read all of it: read its answer
+    // even when writing failed, and only give the write's error when there is none.
+    let wrote = stream.write_all(head.as_bytes()).and_then(|_| stream.write_all(body));
     let mut answer = Vec::new();
-    stream.take(16 * 1024).read_to_end(&mut answer).map_err(|e| format!("reading the answer: {e}"))?;
+    let read = stream.take(16 * 1024).read_to_end(&mut answer);
     let text = String::from_utf8_lossy(&answer);
-    let status: u16 = text.split_whitespace().nth(1).and_then(|s| s.parse().ok()).ok_or("no answer")?;
+    let Some(status) = text.split_whitespace().nth(1).and_then(|s| s.parse::<u16>().ok()) else {
+        return Err(match (wrote, read) {
+            (Err(e), _) => format!("sending: {e}"),
+            (_, Err(e)) => format!("reading the answer: {e}"),
+            _ => "no answer".to_string(),
+        });
+    };
     let reply = text.split_once("\r\n\r\n").map_or("", |(_, b)| b).trim().to_string();
     match status {
         200..=299 => Ok(Sent::Taken(reply.trim_start_matches("id ").parse().unwrap_or(0))),

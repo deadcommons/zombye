@@ -273,12 +273,16 @@ fn connection(stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
         ("POST", p) if p.ends_with("/v1/report") => {}
         _ => return respond(&stream, 404, "not found"),
     }
-    if !shared.key.is_empty() && key != shared.key {
-        return respond(&stream, 403, "wrong key");
-    }
     let Some(length) = length else { return respond(&stream, 411, "length required") };
     if length > report::MAX_BODY {
         return respond(&stream, 413, "too big");
+    }
+    // The body is read before anything else can refuse it: closing a socket with data unread
+    // resets it, and the sender would see a broken connection instead of the answer.
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body)?;
+    if !shared.key.is_empty() && key != shared.key {
+        return respond(&stream, 403, "wrong key");
     }
     let now = report::now_secs();
     if let Some(ip) = ip {
@@ -290,8 +294,6 @@ fn connection(stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
             return respond(&stream, 429, "too many reports for now");
         }
     }
-    let mut body = vec![0; length];
-    reader.read_exact(&mut body)?;
     let report = match report::decode(&body) {
         Ok(r) => r,
         Err(e) => return respond(&stream, 400, &e),
@@ -506,11 +508,9 @@ mod tests {
         });
         let body = report::encode(&Report::new(report::kind::HITCH, "client", "Frame took 2 s", "hitch").file("log.txt", b"x".to_vec()));
         // Without the key: refused for good.
-        // SAFETY: tests in this binary don't read the environment at the same time.
-        unsafe { std::env::remove_var("ZOMBYE_REPORT_KEY") };
-        assert!(matches!(report::send(&format!("http://{addr}"), &body, Duration::from_secs(5)), Ok(report::Sent::Refused(_))));
-        unsafe { std::env::set_var("ZOMBYE_REPORT_KEY", "k") };
-        assert_eq!(report::send(&format!("http://{addr}"), &body, Duration::from_secs(5)), Ok(report::Sent::Taken(1)));
+        let url = format!("http://{addr}");
+        assert!(matches!(report::send_with_key(&url, "", &body, Duration::from_secs(5)), Ok(report::Sent::Refused(_))));
+        assert_eq!(report::send_with_key(&url, "k", &body, Duration::from_secs(5)), Ok(report::Sent::Taken(1)));
         let db = shared.db.lock().unwrap();
         assert_eq!(rows(&db, "SELECT kind FROM reports", &[]).unwrap()[0]["kind"], "hitch");
         drop(db);
