@@ -65,7 +65,7 @@ pub fn auto_choice(mean_ms: f32) -> Preset {
 pub fn describe(p: Preset) -> &'static str {
     match p {
         Preset::Low => "Thin grass, no post effects, 2048 shadow map, 2x MSAA, 3D at 60% on Retina. For slow machines.",
-        Preset::Medium => "Most of the look: lighter grass, no tilt-shift, 2048 shadow map, 3D at 75% on Retina.",
+        Preset::Medium => "Most of the look: lighter grass, no tilt-shift or sky light, 2048 shadow map, 3D at 75% on Retina.",
         Preset::High => "The look the game is made to: full grass and every effect, 3D at 75% on Retina, UI sharp.",
         Preset::Ultra => "Denser grass, an 8192 shadow map and the 3D at full Retina resolution.",
         Preset::Auto => "Plays a few seconds at High, measures, and keeps what this machine holds.",
@@ -202,7 +202,7 @@ fn show(mut commands: Commands, mut ui: ResMut<GraphicsUi>, graphics: Res<Graphi
             }
         });
         p.spawn((Text::new(format!("{}: {}", current.name(), describe(current))), font(BODY), TextColor(TEXT), Pickable::IGNORE));
-        let mut notes = String::from("Contact shadows and ground detail change on the next start.");
+        let mut notes = String::from("Contact shadows, ground detail and sky light change on the next start.");
         if from_flags {
             notes.push_str(" Flags on the command line win over this until you pick here.");
         }

@@ -72,4 +72,38 @@
     // their roof's shadow (the roof casts it whether the camera draws the roof or not), so only
     // the windows let the sun in. 1 = no stronger.
     indoor_fill: 1.6,
+    // The sky of the first-person view (the view from above never sees it): colours (sRGB) at
+    // the zenith and the horizon in full daylight, with the sun low and at night, blended by the
+    // hour. The horizon is also the haze's colour over the far edge of the world. `curve`: how
+    // thin the horizon's band is (1 = an even blend up to the zenith). `below`: how much darker
+    // under the horizon (0..1). `glow`: the colour round the sun or moon, `glow_strength` against
+    // its light, `glow_tightness` (more = a smaller glow); the haze glows the same. The discs:
+    // size in degrees across and brightness. `stars`: how many (0..1) and how bright. Drawn only
+    // with "Sky" on in the graphics settings.
+    sky: (
+        zenith_day: (0.33, 0.52, 0.8),
+        horizon_day: (0.68, 0.77, 0.87),
+        zenith_dusk: (0.3, 0.36, 0.58),
+        horizon_dusk: (1.0, 0.68, 0.44),
+        zenith_night: (0.02, 0.03, 0.07),
+        horizon_night: (0.07, 0.09, 0.13),
+        curve: 3.0,
+        below: 0.5,
+        glow: (1.0, 0.78, 0.55),
+        glow_strength: 0.02,
+        glow_tightness: 8.0,
+        sun_size: 2.0,
+        sun_brightness: 30.0,
+        moon_size: 1.8,
+        moon_brightness: 1.2,
+        stars: 0.35,
+        star_brightness: 1.5,
+    ),
+    // Light from the sky in the shade, in both views: `share` of the fill (0..1) comes from
+    // around instead of evenly, so what faces up takes the sky's colour, what faces the sun its
+    // glow (`sun_side`, how much brighter that side is) and what faces down the sun's light
+    // thrown back by the `ground` (sRGB, `bounce` how strongly). `tint`: how much of the sky's
+    // own colour it keeps (0 = the fill's colour from every side). The fill as a whole stays as
+    // bright as `fill_day` and `fill_night` say. Only with "Sky light" on in the graphics settings.
+    sky_light: (share: 0.6, tint: 0.5, ground: (0.5, 0.42, 0.32), bounce: 0.35, sun_side: 0.6),
 )
