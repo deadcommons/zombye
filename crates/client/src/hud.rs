@@ -323,8 +323,13 @@ fn update_vitals(
             Stance::Sneak => "sneaking",
         }
     };
+    // At a wheel: the car's speed, fuel and what is worn (`zombye_sim::vehicles`).
+    let stance = match me.car.and_then(|c| link.curr.vehicles.iter().find(|v| v.id == c.id).map(|v| (c, v))) {
+        Some((c, v)) => driving_line(&join.vehicles, v, c.curr.speed),
+        None => stance.to_string(),
+    };
     if let Ok(t) = texts.p1().single_mut() {
-        set(t,stance.to_string());
+        set(t,stance);
     }
     // This life so far, as the server counts it.
     if let (Ok(t), Some(run)) = (texts.p2().single_mut(), link.curr.run_of(me.id)) {
@@ -334,6 +339,25 @@ fn update_vitals(
     if let Ok(t) = texts.p3().single_mut() {
         set(t,dev_tags(me.dev, link.curr.players.iter().any(|p| p.id == me.id && p.protected)));
     }
+}
+
+/// "driving the van  31 km/h  fuel 12/70 L  engine off  tyres 80%": the parts only once worn.
+pub(crate) fn driving_line(data: &zombye_sim::VehicleData, v: &zombye_sim::VehicleView, speed: f32) -> String {
+    let kind = data.kinds.get(v.kind as usize);
+    let name = kind.map_or("car".to_string(), |k| k.label());
+    let tank = kind.map_or(0.0, |k| k.tank_l);
+    let mut line = format!("driving the {name}  {:.0} km/h  fuel {:.0}/{tank:.0} L", speed.abs() * 3.6, v.fuel().ceil());
+    if v.parts[0] == 0 {
+        line.push_str("  engine wrecked");
+    } else if !v.engine_on {
+        line.push_str("  engine off");
+    }
+    for (part, pct) in zombye_sim::vehicles::PARTS.iter().zip(v.parts) {
+        if pct < 100 && !(*part == "engine" && pct == 0) {
+            line.push_str(&format!("  {part} {pct}%"));
+        }
+    }
+    line
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -425,7 +449,7 @@ fn update_hud(
         }
         let rotate = ", . turn camera | ; first person | ";
         t.0 = format!(
-            "{line}\nWASD move | Shift run | C sneak{} | RMB (hold) aim | aiming: LMB attack or shoot, Space shove/stomp | R reload | E pick up / search | 1-9 hotbar | Tab inventory | H health | K skills | B sleep | Enter talk | V wave | U hands up | P point | Y tie/free | L search them | J (hold) struggle | N group | F door/window | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load | F1 god{} | F2 ignored{} | F3 light preview | F4 debug stats{} | M map | Ctrl+M mute | O objectives",
+            "{line}\nWASD move | Shift run | C sneak{} | RMB (hold) aim | aiming: LMB attack or shoot, Space shove/stomp | R reload | E use what you face (hold: everything) | 1-9 hotbar | Tab inventory | H health | K skills | B sleep | Enter talk | V wave | U hands up | P point | Y tie/free | L search them | J (hold) struggle | N group | F flashlight | G smash window | T +1 hour | wheel zoom | {rotate}Z spawn 250 zombies | F5 save | F9 load | F1 god{} | F2 ignored{} | F3 light preview | F4 debug stats{} | M map | Ctrl+M mute | O objectives",
             if me.sneak { " (on)" } else { "" },
             if me.dev.god { " (on)" } else { "" },
             if me.dev.ignored { " (on)" } else { "" },

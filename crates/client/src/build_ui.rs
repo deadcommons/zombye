@@ -86,8 +86,7 @@ fn spawn(mut commands: Commands) {
 }
 
 fn toggle(keys: Res<ButtonInput<KeyCode>>, mut menu: ResMut<BuildMenu>) {
-    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-    if shift && keys.just_pressed(KeyCode::KeyB) {
+    if crate::keys::just_pressed(&keys, crate::keys::Action::Build) {
         menu.open = !menu.open;
     }
 }

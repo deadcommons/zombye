@@ -73,8 +73,11 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// `Intent::Unbuild`, `Snapshot::barricade_changes`, `Welcome::barricades`, `JobKind::Build`, `Edge::WindowBoarded`
 /// and `Edge::DoorBoarded`. 31: movement and endurance in settings: `Tunings::movement`,
 /// `PlayerView::endurance_cap`. 32: vehicles: `Intent::Vehicle`, `Intent::Drive`, `Snapshot::vehicles`
-/// (`SnapshotDelta::vehicles`). 33: the ground's height (`GenConfig::terrain`, in `Welcome::generation`).)
-pub const PROTOCOL: u32 = 33;
+/// (`SnapshotDelta::vehicles`). 33: the ground's height (`GenConfig::terrain`, in `Welcome::generation`). 34: the held
+/// light switched on and off: `Intent::Flashlight`, `OutfitView::light_off`. 35: cars' fuel, engines and parts
+/// (`VehicleView::fuel_dl`, `engine_on`, `parts`), `VehicleOp::Refuel`, `Siphon`, `Horn`, `ItemDef::fuel_l`, the
+/// vehicles' new numbers, `DeathCause::Crash`.)
+pub const PROTOCOL: u32 = 35;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -1244,6 +1247,7 @@ impl Intent {
             | Intent::Unbuild { player }
             | Intent::SmashWindow { player }
             | Intent::Light { player, .. }
+            | Intent::Flashlight { player, .. }
             | Intent::Fire { player, .. }
             | Intent::Attack { player }
             | Intent::Shove { player }

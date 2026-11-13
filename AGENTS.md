@@ -262,9 +262,8 @@ The client prints one stats line per second to stdout (time, room, stance, hp, e
 sent to it, chasing, zombies per tier active/near/virtual, sim tick ms, and the sounds started that second: `sounds 9 (Groan 4, FootstepHard 3, ...)` or `sound off`).
 In game: WASD move (he faces the way he walks), Shift run, C sneak (toggle), right mouse held: aim (he faces the
 cursor and strafes or backs off at 2.2 m/s, no running, in a guard stance), and only while aiming left mouse attack
-(swing your weapon, or punch; with a gun in hand: shoot at what the cursor is on, see Guns); Space, aiming or not (the way he faces), shove (or stomp, when a downed zombie's body or head lies in reach in front of you: `combat::stomp_spot`), R reload the gun you hold, E climb the fence or open or broken window you face (see Climbing under Players), else flick the light switch you face (see Electricity and lights), else pick up the item you
-face (with nothing on the floor within reach: search the container you face), 1-9 the hotbar (swap to or use what's on that slot, see Hotbar), Tab or I the inventory screen, H its Health screen, K its Skills screen, F open/close the door or window you face, Shift+B the build menu (see Building and barricades), Shift+F roll the blind of the window or glass door you face up or down (or fit one you carry), Shift+Alt+F take it down (see Blinds), G smash the window you face, Esc the pause menu (see Menus), dead: R a new run and Q quits,
-B sleep (B again or WASD to get up), Q sit down on the sofa, bed or bench beside you, else the ground (Q again or WASD to get up), Enter the chat line (Tab there: whisper, talk or shout; Enter says it, Esc drops it), V wave, U hands up (again lowers them), P point (see Talking and gestures), Y tie the hands of the survivor you face or free tied ones, L search a tied survivor, J (held) struggle out of ties, N invite into your group or accept (Shift+N leaves), middle mouse a group marker (see Hold-ups and groups), T skip an hour, Z spawn zombies, wheel zoom (over the inventory, health or skills panel it scrolls that panel instead), F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), F3 the light preview (a time-of-day slider, see Light and mood), F4 the debug stats window (see Needs), F6 the server's rules (on a multiplayer server, see Multiplayer), F7 the server browser (see The server browser), `,` and `.` turn the camera a quarter turn left or right (see Turning the camera under Light and mood), `;` the first-person view and back (see The first-person view there), F10 walls up / walls cut, Shift+F10 zombie silhouettes and Ctrl+F10 opening hints (see Cutaways and Opening hints under Light and mood), M the map (see The map), Ctrl+M mute, O hide or show the objectives and hints (see The first night), Ctrl (or Cmd) + `=` / `-` the UI scale (see UI scale), Ctrl+0 back to 100%. Walking into a fence or an open window stops you as a wall would: E climbs
+(swing your weapon, or punch; with a gun in hand: shoot at what the cursor is on, see Guns); Space, aiming or not (the way he faces), shove (or stomp, when a downed zombie's body or head lies in reach in front of you: `combat::stomp_spot`), R reload the gun you hold, **E the one key for the world** (`interact.rs`): tapped, it does the likeliest thing for what you face, and a prompt over the hotbar says what ("E  Open  door"): get out of or into a car, open or shut a door or window, climb the fence or open or broken window (see Climbing under Players), flick the light switch (see Electricity and lights), tend a fire, pick up the item nearest, search the container or body (with nothing faced: search the nearest); **held** (0.3 s) it opens the menu of everything you can do with it, the same menu as a right tap (`world_actions::entries`, whose first line is what a tap does: blinds, smashing, boarding up, every fuel), 1-9 the hotbar (swap to or use what's on that slot, see Hotbar), Tab or I the inventory screen, H its Health screen, K its Skills screen, F the flashlight or candle in your hands on and off (`Intent::Flashlight`, `World::player_flashlight`; `OutfitView::light_off`, so others see it go dark), Shift+B the build menu (see Building and barricades), G smash the window you face, Esc the pause menu (see Menus), dead: R a new run and Q quits,
+B sleep (B again or WASD to get up), Q sit down on the sofa, bed or bench beside you, else the ground (Q again or WASD to get up), Enter the chat line (Tab there: whisper, talk or shout; Enter says it, Esc drops it), V wave, U hands up (again lowers them), P point (see Talking and gestures), Y tie the hands of the survivor you face or free tied ones, L search a tied survivor, J (held) struggle out of ties, N invite into your group or accept (Shift+N leaves), middle mouse a group marker (see Hold-ups and groups), T skip an hour, Z spawn zombies, wheel zoom (over the inventory, health or skills panel it scrolls that panel instead), F5 quicksave, F9 quickload, F1 god mode, F2 ignored by zombies (dev toggles), F3 the light preview (a time-of-day slider, see Light and mood), F4 the debug stats window (see Needs), F6 the server's rules (on a multiplayer server, see Multiplayer), F7 the server browser (see The server browser), `,` and `.` turn the camera a quarter turn left or right (see Turning the camera under Light and mood), `;` the first-person view and back (see The first-person view there), F10 walls up / walls cut, Shift+F10 zombie silhouettes and Ctrl+F10 opening hints (see Cutaways and Opening hints under Light and mood), M the map (see The map), Ctrl+M mute, O hide or show the objectives and hints (see The first night), Ctrl (or Cmd) + `=` / `-` the UI scale (see UI scale), Ctrl+0 back to 100%. **The keys are data** (`assets/data/keys.ron`, `keys.rs`: each action and the keys or chords that do it; a key without a modifier still works with Shift held unless another action takes it with Shift) and rebindable on the settings' Controls tab (kept in `settings.ron`'s `keys`, over the file); the camera, dev, chat and gesture keys are fixed for now. **A new key is an `Action`, a line in `keys.ron` and a row on the Controls tab.** Walking into a fence or an open window stops you as a wall would: E climbs
 it. Quitting (closing the window, `--exit-after`, or Ctrl-C, SIGTERM or SIGHUP in the terminal: `net::shutdown`,
 not Bevy's handler; a second Ctrl-C quits unsaved) autosaves; `--render-to` never does.
 
@@ -302,8 +301,7 @@ game's keys and mouse buttons are held back (`pause_menu::keys`, in `PreUpdate` 
 the first-person pointer is free. Leaving saves as quitting does. `--pause` starts with it up (`--render-to shot.png
 --hud --pause`). **The settings screen** (from either menu; `--settings graphics|audio|controls|game`) has four tabs down its left side:
 Graphics (the preset, and each of F8's settings by itself: vegetation, shadows, anti-aliasing, 3D resolution, the film
-switches, plus fullscreen and vsync), Audio (master and music volume, mute), Controls (the keys, a list to read: they
-can't be changed yet) and Game (UI scale, the view a game starts in: from above or first person, zombie silhouettes,
+switches, plus fullscreen and vsync), Audio (master and music volume, mute), Controls (every key; click one, press the new one, Esc keeps the old; a clash with another action is marked; the defaults button puts back `keys.ron`'s) and Game (UI scale, the view a game starts in: from above or first person, zombie silhouettes,
 opening hints, help text). **Help text (`help_text.rs`, `ClientSettings::help_text`; `--help-text full|short|off` for a session, not saved):** how much the UI explains. Full (as shipped) is everything; Short drops the explaining sentences (`help_text::explains()`: a skill card's next level and how its XP is earned, what a status does to you on the Health screen; the Make list says what a recipe is missing by name alone, `crafting::missing_brief`: "needs jeans, scissors") and keeps names, numbers and what is needed; Off also drops the reminders of what keys and clicks do (`help_text::keys()`: every footer's key hints, which `theme::flat::hint` then doesn't draw, the Make list's line, the first night's hint line). What a thing needs and why something was refused are never help text. **New cards and panels ask `help_text::explains()` before drawing a line that explains, and put `help_text::level()` in what they compare to rebuild.** Every change is one `settings_ui::Change` applied by the pure `settings_ui::change` to
 `ClientSettings` through `SettingsStore`, so it is saved at once, and `apply_live` hands on what changed to the
 running game (graphics, volumes, UI scale, the view, the window); contact shadows and ground detail still take the
@@ -684,7 +682,7 @@ through that glass. Boarding windows and doors up is a build (see Building and b
 - **Client** (`world_render.rs`): a glazed door's leaf has a dark glass panel (`door_glazed`); a blind is a cloth on
   the inside face (palette `blind`, `blind_rail`), on a window its own entity below the head (hidden while its wall
   is cut away), on a door a child of the leaf (swinging with it), easing down and up (`sync_blinds`,
-  `animate_blinds`). Shift+F sends `BlindOp::Use`, Shift+Alt+F `TakeDown`; a blind in the inventory has "Fit to the
+  `animate_blinds`). Holding E on the window or door (or a right tap) offers raise, lower, fit and take down; a blind in the inventory has "Fit to the
   window" in its right-click menu; the current-action bar says "Fitting a blind".
 - **MCP:** `blind {player, action: use | toggle | fit | take_down, facing}` (steps until a fit or take-down is
   done); `edge` says which edges have glass and a blind, up or down.
@@ -1000,10 +998,10 @@ upgrades and the rest come as new categories of the same list.
   wear, hitting doors.
 - Tests: `sim::wear::tests`.
 
-## Vehicles (`sim::vehicles`, `assets/data/vehicles.ron`; Linear DCM-86, stage 1 of DCM-85)
+## Vehicles (`sim::vehicles`, `assets/data/vehicles.ron`; Linear DCM-86 and DCM-87, stages 1 and 2 of DCM-85)
 
-Some of the cars parked in town can be driven. This is stage 1: getting in and out, driving, collisions, saves and
-multiplayer. Fuel, noise, running zombies over and damage come in DCM-87.
+The cars parked in town can be driven. Stage 1: getting in and out, driving, collisions, saves and multiplayer.
+Stage 2: fuel, engine noise, running zombies over and crash damage.
 
 - **Kinds are data** (`vehicles.ron`, `VehicleData`, unknown fields refused, `parse_vehicles`; loaded by
   `net::content::load_vehicles`, which checks each kind's `prop` is a street prop kind; no file: no vehicles). Each
@@ -1026,13 +1024,42 @@ multiplayer. Fuel, noise, running zombies over and damage come in DCM-87.
   first aid and crafting intents are taken; dying or respawning gets you out.
 - **Saves:** an optional `VEHC` section after `TREE` (each vehicle by the prop tile it came from, with its state and
   driver); a world without vehicles saves none. In `state_hash` while there are any. **Wire:** `Snapshot::vehicles`
-  (`VehicleView`), sent in `SnapshotDelta::vehicles` when they change; `wire::PROTOCOL` 32.
+  (`VehicleView`), sent in `SnapshotDelta::vehicles` when they change.
 - **Client:** E beside a car gets in, E again gets out; W/S throttle and reverse, A/D steer, Space brakes
   (`player.rs`: the car is predicted with `step_vehicle` and reconciled like walking). `vehicles_render.rs` draws each
   vehicle as its street prop's model (worn as `decay.ron` says) or a grey-box, ours where we predict it, the others
   between snapshots, someone else's only where our survivor sees it.
-- **Not yet:** the camera pulling back with speed, MCP tools, fuel and noise, damage, keys and hotwiring (a Mechanics
-  skill), the radio, more vehicle kinds.
+- **Fuel (stage 2):** each kind has `tank_l`, `fuel_per_km` (at full throttle, half that coasting) and
+  `idle_l_per_min` (while the engine runs), and `mass_kg`; a found car holds a seeded share of its tank between
+  `start_fuel`'s two numbers (`Condition::found`). The engine starts on the first throttle (a `start_noise`, a note) and
+  dies when the tank is dry or the engine is wrecked; with no fuel the throttle does nothing. **Cans:** an item with
+  `fuel_l` (`petrol_can`, 10 L, loot in sheds and garages; it doesn't stack) holds that many litres on its stack's
+  `used`, as a gun holds rounds (`ranged::max_used`; made full, found with a seeded few; each litre 0.75 kg,
+  `items::FUEL_KG_PER_L`). Shift+E beside a car (`VehicleOp::Refuel`) pours a carried can in; with no fuel to pour
+  (`VehicleOp::Siphon`) a carried item tagged `siphon_tag` (`siphons`: the `siphon_hose`) draws the tank out into an
+  empty or part-full can (`World::pour_fuel`, whole litres, not from the wheel).
+- **Noise:** a running engine is a player's sound every `noise_every_secs`, from `idle_noise` standing to
+  `drive_noise` at top speed, `rev_noise` with the throttle held; H at the wheel is the horn (`VehicleOp::Horn`,
+  `horn_noise` 80 m), and a crash `crash_noise`. Those of 25 m or more draw the far horde (migration).
+- **Running zombies over:** a standing zombie struck faster than `run_over_min_speed` takes `run_over_damage` HP for
+  each m/s over it, times `sqrt(mass_kg / ref_mass_kg)`; at `run_over_knockdown_speed` or more it is floored, under it
+  staggered, and the driver gets the kill (`World::run_over`, a `ZombieHit` / `ZombieKilled` combat event with the
+  driver as `player`). Each costs the body `run_over_wear`.
+- **Crashes and condition:** a vehicle's `Condition` (`fuel`, `engine_on`, `parts`: engine, tyres, windows, body, 0
+  to 1). Losing more than `crash_min_speed` in one hit takes `crash_engine` / `crash_tyres` / `crash_windows` /
+  `crash_body` for each m/s over it (the engine only on a hit in front, going forward) and hurts the driver
+  `crash_hurt` HP a m/s (`DeathCause::Crash`, "Killed in a car crash"). A worn engine pulls less and goes slower, worn
+  tyres go slower and steer less (`Perf::of`, worked out from whole per cents of the parts, which the view carries, so
+  the client predicts with exactly the server's numbers).
+- **Saves (stage 2):** an optional `VCND` section after `VEHC` (each vehicle's condition); a save without it gets
+  found cars' conditions. **Wire:** `VehicleView` carries `fuel_dl`, `engine_on` and `parts` (per cent);
+  `wire::PROTOCOL` 35. **Client:** while driving the stance text is the driving line (`hud::driving_line`: "driving the
+  van  31 km/h  fuel 12/70 L", with "engine off" and worn parts). The keys are `keys.ron`'s `horn` (H: an action read
+  only at the wheel, `Action::at_wheel`, so it shares H with the Health screen on foot) and `refuel` (Shift+E:
+  `Action::beside_car`, asked first by `interact.rs` beside a car, and it leaves E with Shift held to interact
+  everywhere else).
+- **Not yet:** the camera pulling back with speed, MCP tools, running players over, engine and horn sounds, damage
+  drawn on the car, repairing parts, keys and hotwiring (a Mechanics skill), the radio, more vehicle kinds.
 - Tests: `sim::vehicles::tests`.
 
 ## Chopping trees (`sim::trees`)
@@ -1889,8 +1916,8 @@ them yet (no body temperature, no effect on sight or hearing, nothing drawn or h
   cutaways drop); never in front of furniture (a fridge or wardrobe would hide it). On the default town 451 of 483 switches are on a north or west wall, 379 beside a doorway and none behind
   furniture. **E** at
   it (`Intent::Light { player, on }`, `World::player_light`; `on: None` flips it) flips it: the player must be in the
-  room within `SWITCH_REACH` (1.3 m) of it; the client sends it for E when the switch is in reach and faced within 75°
-  (`player::light_switch_faced`; a climb comes first, then the switch, then picking up and searching). **With no power
+  room within `SWITCH_REACH` (1.3 m) of it; the client sends it for E when the switch is the nearest thing faced
+  (`world_actions::faced`, within 70°: doors, windows, the switch, fires, containers and bodies, scored by distance and angle). **With no power
   it does nothing:** it clicks ("click. Nothing: no power") and stays as it was, and lights left on come back with the
   power. Outdoors there is no switch. The client draws each switch life size as a pale plate with a toggle, up and amber while
   the room is lit, down while not (`world_render::LightSwitch`, two shared meshes); while its wall is cut away it lies on top of the
@@ -1910,7 +1937,7 @@ them yet (no body temperature, no effect on sight or hearing, nothing drawn or h
   through the fog of war (`NightLights`).
 - **Saves:** the sources, whether the grid has failed and the switches on, in the optional `POWR` section (a save without
   it gets a new world's lights); in `state_hash` (`Power::hash`). No format change.
-- **MCP:** `light {player, on}` (the switch of the room the player is in; says the room, lit or dark, power or not),
+- **MCP:** `flashlight {player, on}` (the light in the hands on or off), `light {player, on}` (the switch of the room the player is in; says the room, lit or dark, power or not),
   `grid {on}` (debug), `stats` has `power` (grid, rooms lit, switches on).
 - **Not yet:** generators, solar panels and fuel (items that add a source), appliances that use power (fridges keeping
   food), street lights, lights upstairs anyone can switch (players are only on the ground floor).

@@ -497,6 +497,8 @@ impl World {
         let spoils = self.config.items.get(item as usize).and_then(|d| d.consumable()).is_some_and(|c| c.spoils_hours.is_some());
         // A gun or a magazine made now comes full (#72); found ones are as they were left (`load_found`).
         let rounds = crate::ranged::holds(&self.config.items, &self.config.weapons, item).map_or(0, |h| h.capacity);
+        // A fuel can made now is full too.
+        let rounds = self.config.items.get(item as usize).and_then(|d| d.fuel_l).unwrap_or(rounds);
         ItemStack { born: if spoils { self.game_minute() } else { 0 }, used: rounds, ..ItemStack::new(item, count) }
     }
 

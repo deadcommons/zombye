@@ -579,6 +579,10 @@ fn attach_player_glow(mut commands: Commands, players: Query<Entity, Added<Playe
 /// The light player `id` holds in either hand, if any (`light` on its item definition). Only the
 /// local player's inventory reaches this client; others' lights go by their outfits (`lights.rs`).
 pub fn held_light(join: &JoinInfo, link: &ServerLink, id: u32) -> Option<HeldLight> {
+    // Switched off (F): no light, though it's still in the hand.
+    if link.curr.outfits.iter().any(|o| o.id == id && o.light_off) {
+        return None;
+    }
     let inv = &link.own(id)?.inventory;
     held_light_in(join, [inv.hand.map(|s| s.item), inv.off_hand.map(|s| s.item)])
 }

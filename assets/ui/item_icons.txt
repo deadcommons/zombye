@@ -101,3 +101,5 @@ firewood
 newspaper
 log
 hatchet
+petrol_can
+siphon_hose

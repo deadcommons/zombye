@@ -442,10 +442,18 @@ pub struct ItemDef {
     /// doesn't have: a grey-box in its colour.
     #[serde(default)]
     pub model: Option<String>,
+    /// A can of fuel for vehicles (`crate::vehicles`): the litres it holds. Its stack's `used`
+    /// counts the litres in it (as it counts a gun's rounds); each litre weighs
+    /// [`FUEL_KG_PER_L`] more. Doesn't stack.
+    #[serde(default)]
+    pub fuel_l: Option<u8>,
     /// Grey-box colour (linear-ish RGB 0..1).
     #[serde(default = "grey")]
     pub color: (f32, f32, f32),
 }
+
+/// What a litre of fuel in a can weighs, kg.
+pub const FUEL_KG_PER_L: f32 = 0.75;
 
 /// Tags that let a player use an item that is neither food nor drink ([`ItemDef::usable`]).
 pub const TAG_USABLE: &str = "usable";
@@ -482,6 +490,7 @@ impl ItemDef {
             clothing: None,
             light: None,
             model: None,
+            fuel_l: None,
             color: w.color,
         }
     }
@@ -512,6 +521,9 @@ impl ItemDef {
         }
         if !(self.weight_kg > 0.0 && self.weight_kg <= 100.0) {
             return Err(format!("{id}: weight_kg must be in (0, 100], got {}", self.weight_kg));
+        }
+        if self.fuel_l.is_some_and(|l| l == 0) || self.fuel_l.is_some() && self.stack != 1 {
+            return Err(format!("{id}: a fuel can holds at least a litre and doesn't stack"));
         }
         if !(self.volume_l > 0.0 && self.volume_l <= 200.0) {
             return Err(format!("{id}: volume_l must be in (0, 200], got {}", self.volume_l));
