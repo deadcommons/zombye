@@ -1695,6 +1695,8 @@ impl World {
                     crate::inventory::JobKind::Reload { spare } => spare as u32 ^ 0x4E10_0000,
                     crate::inventory::JobKind::Blind { edge, fit } => (edge.tile.x as u32) ^ (edge.tile.y as u32) << 12 ^ (edge.edge as u32) << 24 ^ (fit as u32) << 25 ^ 0xB100_0000,
                     crate::inventory::JobKind::Build { edge, build, add } => (edge.tile.x as u32) ^ (edge.tile.y as u32) << 12 ^ (edge.edge as u32) << 24 ^ (add as u32) << 25 ^ (build as u32) << 26 ^ 0xBA00_0000,
+                    crate::inventory::JobKind::Hotwire { vehicle } => vehicle ^ 0x4807_0000,
+                    crate::inventory::JobKind::Repair { vehicle, repair } => vehicle ^ (repair as u32) << 24 ^ 0x4E9A_0000,
                 });
             }
         }

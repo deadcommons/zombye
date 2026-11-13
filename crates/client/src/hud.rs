@@ -349,6 +349,8 @@ pub(crate) fn driving_line(data: &zombye_sim::VehicleData, v: &zombye_sim::Vehic
     let mut line = format!("driving the {name}  {:.0} km/h  fuel {:.0}/{tank:.0} L", speed.abs() * 3.6, v.fuel().ceil());
     if v.parts[0] == 0 {
         line.push_str("  engine wrecked");
+    } else if !v.start {
+        line.push_str("  no key (hold E: hotwire)");
     } else if !v.engine_on {
         line.push_str("  engine off");
     }

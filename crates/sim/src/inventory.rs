@@ -499,6 +499,11 @@ pub enum JobKind {
     /// onto `edge`, or (`add: false`) one off it. After `Blind`, so saves from before it read as
     /// they did.
     Build { edge: crate::map::EdgeRef, build: u16, add: bool },
+    /// Cars (stage 4, [`crate::vehicles`]): a try at crossing the wires of vehicle `vehicle`, from
+    /// its wheel. After `Build`, so saves from before it read as they did.
+    Hotwire { vehicle: u32 },
+    /// Cars: repair `repair` (an index into `vehicles.ron`'s `work.repairs`) on vehicle `vehicle`.
+    Repair { vehicle: u32, repair: u8 },
 }
 
 /// A queued job and the seconds it has left (only the first counts down).
@@ -554,6 +559,9 @@ impl World {
     pub fn container(&self, id: u32) -> Option<ContainerSite> {
         if crate::corpses::corpse_zombie(id).is_some() {
             return self.corpse_site(id);
+        }
+        if crate::vehicles::vehicle_of_container(id).is_some() {
+            return self.vehicle_site(id);
         }
         self.sites.binary_search_by_key(&id, |s| s.id).ok().map(|k| self.sites[k].clone())
     }
@@ -680,7 +688,7 @@ impl World {
     }
 
     fn within(&self, p: &Player, site: &ContainerSite, reach: f32) -> bool {
-        !p.dead && p.state.level == site.level && self.map.room_on(p.state.level, p.state.pos) == site.room && site.distance(p.state.pos) <= reach
+        !p.dead && p.state.level == site.level && self.map.room_on(p.state.level, p.state.pos) == site.room && site.distance(p.state.pos) <= reach && self.vehicle_container_open_to(p, site.id)
     }
 
     /// The container player `id` faces within reach, if any: of those within [`FACING_DEGREES`]
@@ -694,7 +702,8 @@ impl World {
             let to = s.nearest(pos) - pos;
             to.length() < 0.05 || ahead.dot(to.normalize()) >= cone
         };
-        let bodies = self.corpses_near(pos, CONTAINER_REACH);
+        let mut bodies = self.corpses_near(pos, CONTAINER_REACH);
+        bodies.extend(self.vehicle_sites_near(pos, CONTAINER_REACH));
         self.sites
             .iter()
             .chain(bodies.iter())
@@ -706,7 +715,8 @@ impl World {
     /// The containers player `id` can reach, nearest first.
     pub fn containers_in_reach(&self, id: u32) -> Vec<u32> {
         let Some(p) = self.player(id) else { return Vec::new() };
-        let bodies = self.corpses_near(p.state.pos, CONTAINER_REACH);
+        let mut bodies = self.corpses_near(p.state.pos, CONTAINER_REACH);
+        bodies.extend(self.vehicle_sites_near(p.state.pos, CONTAINER_REACH));
         let mut v: Vec<&ContainerSite> = self.sites.iter().chain(bodies.iter()).filter(|s| self.reaches(p, s)).collect();
         v.sort_by(|a, b| a.distance(p.state.pos).total_cmp(&b.distance(p.state.pos)).then(a.id.cmp(&b.id)));
         v.into_iter().map(|s| s.id).collect()
@@ -1022,6 +1032,8 @@ impl World {
                 JobKind::Reload { spare } => self.do_reload(pi, spare),
                 JobKind::Blind { edge, fit } => self.do_blind(pi, edge, fit),
                 JobKind::Build { edge, build, add } => self.do_build(pi, edge, build, add),
+                JobKind::Hotwire { vehicle } => self.do_hotwire(pi, vehicle),
+                JobKind::Repair { vehicle, repair } => self.do_repair(pi, vehicle, repair),
             };
             if result.is_ok() {
                 let p = &mut self.players[pi];
@@ -1077,6 +1089,9 @@ impl World {
             let mut contents = if let Some(z) = crate::corpses::corpse_zombie(c) {
                 // A body: what it wears, and what its pockets hold.
                 self.fill_corpse(c, z, &site)
+            } else if crate::vehicles::vehicle_of_container(c).is_some() {
+                // A boot or glovebox: its own table, and the key if it was left there.
+                self.fill_vehicle(c, &site)
             } else {
                 let room_type = self.map.rooms.get(site.room as usize).map_or("", |r| r.room_type.as_str()).to_string();
                 crate::loot::fill(self.config.loot_seed(), c, &def, &room_type, &self.config.loot, &self.config.items)

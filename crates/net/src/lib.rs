@@ -659,7 +659,7 @@ impl Snapshot {
             water_on: world.water_on(),
             cisterns: world.cisterns_taken(),
             fires: world.fires().iter().map(|f| f.view()).collect(),
-            vehicles: world.vehicles().iter().map(zombye_sim::VehicleView::of).collect(),
+            vehicles: world.vehicle_views(),
         }
     }
 
@@ -728,10 +728,10 @@ pub fn apply_intent(world: &mut World, intent: &Intent) {
         return;
     }
     // At the wheel (`zombye_sim::vehicles`) a survivor drives and can eat, drink, treat its
-    // wounds, craft and move things between its pockets and bags; nothing else.
+    // wounds, craft, move things between its pockets and bags, and open the glovebox; nothing else.
     if let Some(player) = intent.action_by()
         && world.in_vehicle(player)
-        && !matches!(intent, Intent::MoveItem { .. } | Intent::Equip { .. } | Intent::Wear { .. } | Intent::Unequip { .. } | Intent::Use { .. } | Intent::Treat { .. } | Intent::Craft { .. })
+        && !matches!(intent, Intent::MoveItem { .. } | Intent::Equip { .. } | Intent::Wear { .. } | Intent::Unequip { .. } | Intent::Use { .. } | Intent::Treat { .. } | Intent::Craft { .. } | Intent::Search { .. })
     {
         return;
     }
