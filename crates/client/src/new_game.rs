@@ -803,6 +803,20 @@ fn button(parent: &mut ChildSpawnerCommands, label: &str, key: Option<&str>, pri
     live(&mut e, look, Some(act));
 }
 
+/// The footer's height on this screen (the frame's own is 46).
+const FOOTER_TALL: f32 = 68.0;
+
+/// The footer's one way on (Next, then Start): wider and taller than a plain button.
+fn main_button(parent: &mut ChildSpawnerCommands, label: &str, act: Act) {
+    let look = Look::PRIMARY;
+    let mut e = parent.spawn((Node { height: px(48), min_width: px(180), padding: UiRect::horizontal(px(24)), column_gap: px(12), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), ..default() }, BackgroundColor(look.fill), BorderColor::all(look.edge)));
+    e.with_children(|b| {
+        line(b, label.to_uppercase(), theme::head(flat::BUTTON + 4.0), INK);
+        keycap(b, "Enter", INK);
+    });
+    live(&mut e, look, Some(act));
+}
+
 /// A chip, 32 high: one of a few, the open one green with ink text.
 fn chip(parent: &mut ChildSpawnerCommands, label: &str, key: Option<&str>, on: bool, act: Act) {
     let look = if on { Look::PRIMARY } else { Look::CELL };
@@ -1097,7 +1111,9 @@ fn footer(p: &mut ChildSpawnerCommands, screen: &Screen) {
     who.extend(name(&screen.choice.strengths, true));
     who.extend(name(&screen.choice.flaws, false));
     let left = o.points_left(&screen.choice);
-    p.spawn((Node { height: px(flat::FOOTER), flex_shrink: 0.0, flex_direction: FlexDirection::Row, column_gap: px(18), align_items: AlignItems::Center, padding: UiRect::new(px(24), px(4), px(0), px(0)), border: UiRect::top(px(1)), ..default() }, BorderColor::all(LINE))).with_children(|row| {
+    // Taller than the frame's usual footer, and the button kept off the window's corner: it is
+    // the screen's one way on, so it is big and easy to hit.
+    p.spawn((Node { height: px(FOOTER_TALL), flex_shrink: 0.0, flex_direction: FlexDirection::Row, column_gap: px(18), align_items: AlignItems::Center, padding: UiRect::horizontal(px(24)), border: UiRect::top(px(1)), ..default() }, BorderColor::all(LINE))).with_children(|row| {
         hint(row, "1-3", "page");
         hint(row, "Tab", "next page");
         hint(row, "Esc", "back");
@@ -1111,8 +1127,8 @@ fn footer(p: &mut ChildSpawnerCommands, screen: &Screen) {
         });
         // The pages are steps: Next walks through them, and only the last one starts the game.
         match screen.tab.next() {
-            Some(_) => button(row, "Next", Some("Enter"), true, Act::Next),
-            None => button(row, "Start", Some("Enter"), true, Act::Start),
+            Some(_) => main_button(row, "Next", Act::Next),
+            None => main_button(row, "Start", Act::Start),
         }
     });
 }
