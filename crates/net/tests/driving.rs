@@ -81,6 +81,7 @@ fn a_driver_at_150_ms_predicts_its_car_exactly() {
     // What the client predicted the car to be after each input (by its number).
     let mut predicted_at: HashMap<u32, VehicleState> = HashMap::new();
     let mut predicted: Option<VehicleState> = None;
+    let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
     let mut perf = zombye_sim::Perf::NEW;
     let (mut seq, mut sent, mut checked, mut moved) = (0u32, 0u32, 0u32, 0.0f32);
     let started = Instant::now();
@@ -94,6 +95,11 @@ fn a_driver_at_150_ms_predicts_its_car_exactly() {
             let Some(view) = s.players.iter().find(|p| p.id == me) else { continue };
             let Some(car) = s.vehicles.iter().find(|v| v.id == vid) else { continue };
             assert_eq!(car.driver, me, "still at the wheel");
+            // A snapshot that brings no new input: the server held the last one for a tick (as it
+            // does once the driving stops), so there is nothing new to check against.
+            if !seen.insert(view.last_input_seq) {
+                continue;
+            }
             while pending.front().is_some_and(|(n, _)| *n <= view.last_input_seq) {
                 pending.pop_front();
             }
