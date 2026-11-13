@@ -124,6 +124,7 @@ mod help_text;
 mod hotbar;
 mod hud;
 mod inventory_ui;
+mod inv_windows;
 mod join_screen;
 mod items_render;
 mod vehicles_render;
