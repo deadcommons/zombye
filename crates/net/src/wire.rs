@@ -78,8 +78,9 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// (`VehicleView::fuel_dl`, `engine_on`, `parts`), `VehicleOp::Refuel`, `Siphon`, `Horn`, `ItemDef::fuel_l`, the
 /// vehicles' new numbers, `DeathCause::Crash`. 36: the loot and crafting pass: running water
 /// (`Snapshot::water_on` in `SnapshotDelta::lights`), `RecipeDef::water` and `repairs`, no `spawn_weight` or `found_in` in
-/// the weapons; world events' toilet cisterns (`Snapshot::cisterns`, in `SnapshotDelta::lights`).)
-pub const PROTOCOL: u32 = 36;
+/// the weapons; world events' toilet cisterns (`Snapshot::cisterns`, in `SnapshotDelta::lights`). 37: vehicles sent by
+/// need: `SnapshotDelta::vehicles` is the cars changed and the ids gone, a far moving car every `FAR_CAR_EVERY` ticks.)
+pub const PROTOCOL: u32 = 37;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -666,8 +667,10 @@ pub struct SnapshotDelta {
     pub map: Option<zombye_sim::Explored>,
     /// The campfires (`zombye_sim::fire`), when they change.
     pub fires: Option<Vec<zombye_sim::FireView>>,
-    /// The vehicles (`zombye_sim::vehicles`), when any of them changes.
-    pub vehicles: Option<Vec<zombye_sim::VehicleView>>,
+    /// The vehicles (`zombye_sim::vehicles`) that are new or changed since the last delta, and the
+    /// ids of those gone. A moving car far from the client's survivor is sent only now and then
+    /// (see [`DeltaEncoder::encode`]).
+    pub vehicles: (Vec<zombye_sim::VehicleView>, Vec<u32>),
 }
 
 impl Snapshot {
@@ -789,6 +792,9 @@ impl MapInterest {
 
 /// How often a run whose clocks alone moved is sent again (ticks).
 const RUN_EVERY: u64 = 20;
+
+/// How often (ticks) a moving car beyond a client's view is sent to it: twice a second.
+pub const FAR_CAR_EVERY: u64 = 10;
 
 /// What one snapshot for one client may cost (#22).
 #[derive(Clone, Copy, Debug)]
@@ -1077,10 +1083,22 @@ impl DeltaEncoder {
             self.fires = view.fires.clone();
             view.fires
         });
-        let vehicles = (first || view.vehicles != self.vehicles).then(|| {
-            self.vehicles = view.vehicles.clone();
-            view.vehicles
-        });
+        // Vehicles by need: a car whose only change is that it moved on, beyond the view
+        // (`limits.admit`) and still moving, is held back to every `FAR_CAR_EVERY` ticks (by its
+        // id, so they don't all go at once). Getting in, out, stopping or coming near goes at once.
+        let cars: Vec<zombye_sim::VehicleView> = view
+            .vehicles
+            .iter()
+            .map(|v| {
+                let far = me.is_some_and(|m| m.distance_squared(v.state.pos) > limits.admit * limits.admit);
+                let held = self.vehicles.iter().find(|o| o.id == v.id).filter(|o| {
+                    far && o.driver == v.driver && o.state.moving() && v.state.moving() && (view.tick + u64::from(v.id)) % FAR_CAR_EVERY != 0
+                });
+                *held.unwrap_or(v)
+            })
+            .collect();
+        let vehicles = if first { (cars.clone(), Vec::new()) } else { diff(&self.vehicles, &cars, |v| v.id) };
+        self.vehicles = cars;
         SnapshotDelta {
             vehicles,
             group,
@@ -1185,9 +1203,7 @@ impl DeltaDecoder {
         if let Some(fires) = delta.fires {
             s.fires = fires;
         }
-        if let Some(vehicles) = delta.vehicles {
-            s.vehicles = vehicles;
-        }
+        patch(&mut s.vehicles, &delta.vehicles.0, &delta.vehicles.1, |v| v.id);
         if let Some(run) = delta.run {
             s.runs = vec![RunView { player, ..run }];
         }

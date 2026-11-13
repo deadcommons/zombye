@@ -95,6 +95,57 @@ pub struct CarPred {
     pub kind: u16,
     pub prev: VehicleState,
     pub curr: VehicleState,
+    /// How far the car is drawn from where we now predict it (metres, radians): what a snapshot
+    /// corrected, taken out over a few ticks ([`CarPred::correct`]) so a correction is a glide,
+    /// not a jump. Our body, and so the camera, is drawn with it.
+    pub off: Vec2,
+    pub off_heading: f32,
+}
+
+/// `a` radians as the shortest turn, in -π..π.
+pub fn short_turn(a: f32) -> f32 {
+    let d = a.rem_euclid(std::f32::consts::TAU);
+    if d > std::f32::consts::PI { d - std::f32::consts::TAU } else { d }
+}
+
+/// A correction of our car's prediction further than this (metres, or radians of heading) is
+/// taken at once: smoothing it would show the car somewhere it plainly isn't.
+pub const CAR_SNAP_M: f32 = 4.0;
+pub const CAR_SNAP_RAD: f32 = 0.8;
+/// The share of the drawn correction kept each tick: about half gone in a fifth of a second.
+pub const CAR_SMOOTH_KEEP: f32 = 0.85;
+
+impl CarPred {
+    pub fn new(id: u32, kind: u16, state: VehicleState) -> Self {
+        Self { id, kind, prev: state, curr: state, off: Vec2::ZERO, off_heading: 0.0 }
+    }
+
+    /// The prediction is now `to` (the snapshot with the driving it hasn't had replayed): keep the
+    /// car drawn where it was, and let [`CarPred::settle`] take the difference out.
+    pub fn correct(&mut self, to: VehicleState) {
+        let err = self.curr.pos - to.pos;
+        let turn = short_turn(self.curr.heading - to.heading);
+        if err.length() > CAR_SNAP_M || turn.abs() > CAR_SNAP_RAD {
+            (self.off, self.off_heading) = (Vec2::ZERO, 0.0);
+            self.prev = to;
+        } else {
+            self.off += err;
+            self.off_heading += turn;
+            // The tick being drawn from moves with it, so nothing on screen jumps.
+            self.prev.pos -= err;
+            self.prev.heading -= turn;
+        }
+        self.curr = to;
+    }
+
+    /// One tick of the drawn correction going away.
+    pub fn settle(&mut self) {
+        self.off *= CAR_SMOOTH_KEEP;
+        self.off_heading *= CAR_SMOOTH_KEEP;
+        if self.off.length_squared() < 1e-6 && self.off_heading.abs() < 1e-4 {
+            (self.off, self.off_heading) = (Vec2::ZERO, 0.0);
+        }
+    }
 }
 
 /// An action of our own begun on the click, on a multiplayer server (#23). Our survivor is
@@ -346,6 +397,7 @@ fn predict(
     if let (Some(mut car), Some(d)) = (me.car, drive) {
         let Some(kind) = join.vehicles.kinds.get(car.kind as usize) else { return };
         car.prev = car.curr;
+        car.settle();
         let perf = link.curr.vehicles.iter().find(|v| v.id == car.id).map_or(zombye_sim::Perf::NEW, |v| v.perf());
         step_vehicle(&map.0, kind, car.id, &mut car.curr, d, perf, TICK_DT, join.vehicles.tuning.bounce);
         me.curr.pos = seat_of(kind, &car.curr);
@@ -384,7 +436,7 @@ fn follow_car(me: &mut LocalPlayer, link: &ServerLink, join: &JoinInfo) {
         (Some(v), Some(c)) if c.id == v.id => {}
         (Some(v), _) => {
             if join.vehicles.kinds.get(v.kind as usize).is_some() {
-                me.car = Some(CarPred { id: v.id, kind: v.kind, prev: v.state, curr: v.state });
+                me.car = Some(CarPred::new(v.id, v.kind, v.state));
             }
         }
     }
@@ -436,7 +488,7 @@ fn reconcile(link: Res<ServerLink>, map: Res<ClientMap>, join: Res<JoinInfo>, mu
                 step_vehicle(&map.0, kind, car.id, &mut cs, *d, perf, TICK_DT, join.vehicles.tuning.bounce);
             }
         }
-        car.curr = cs;
+        car.correct(cs);
         me.car = Some(car);
         s.pos = seat_of(kind, &cs);
         s.facing = cs.heading;
@@ -478,7 +530,8 @@ impl ViewFloor {
 fn place_player(fixed: Res<Time<Fixed>>, me: Res<LocalPlayer>, map: Res<ClientMap>, mut view: ResMut<ViewFloor>, mut players: Query<&mut Transform, With<Player>>) {
     let Ok(mut tf) = players.single_mut() else { return };
     let a = fixed.overstep_fraction();
-    let p = me.prev.pos.lerp(me.curr.pos, a);
+    // At the wheel, drawn with the car's correction still being taken out (and so the camera).
+    let p = me.prev.pos.lerp(me.curr.pos, a) + me.car.map_or(Vec2::ZERO, |c| c.off);
     let (h0, h1) = (me.prev.height(&map.0), me.curr.height(&map.0));
     let height = h0 + (h1 - h0) * a;
     let ground = map.0.ground(p);
