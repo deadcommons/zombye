@@ -39,6 +39,14 @@ const SETTLE_FRAMES: u32 = 45;
 /// Frames the fit to the screen waits for the screen to be known, then gives up.
 const FIT_FRAMES: u32 = 120;
 
+/// The sizes the settings' Resolution row steps through, in UI pixels, smallest first.
+pub const SIZES: [(u32, u32); 8] = [(1280, 720), (1366, 768), (1600, 900), (1920, 1080), (2560, 1080), (2560, 1440), (3440, 1440), (3840, 2160)];
+
+/// The next size up or down the list from `size` (which may be any size a drag left), if there is one.
+pub fn step_size(size: (u32, u32), up: bool) -> Option<(u32, u32)> {
+    if up { SIZES.into_iter().find(|s| *s > size) } else { SIZES.into_iter().rev().find(|s| *s < size) }
+}
+
 /// A remembered size held to what a window can be.
 pub fn sane_size(size: (u32, u32)) -> (u32, u32) {
     (size.0.clamp(MIN_SIZE.0, MAX_SIZE.0), size.1.clamp(MIN_SIZE.1, MAX_SIZE.1))
@@ -235,6 +243,19 @@ mod tests {
         assert_eq!(sane_size((1280, 720)), (1280, 720));
         assert_eq!(sane_size((10, 10)), MIN_SIZE);
         assert_eq!(sane_size((u32::MAX, 2000)), (MAX_SIZE.0, 2000));
+    }
+
+    #[test]
+    fn sizes_step_up_and_down_the_list_from_any_size() {
+        assert!(SIZES.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(step_size((1600, 900), true), Some((1920, 1080)));
+        assert_eq!(step_size((1600, 900), false), Some((1366, 768)));
+        // A size a drag left goes to the list's nearest either way.
+        assert_eq!(step_size((1500, 850), true), Some((1600, 900)));
+        assert_eq!(step_size((1500, 850), false), Some((1366, 768)));
+        assert_eq!(step_size(SIZES[0], false), None);
+        assert_eq!(step_size(SIZES[SIZES.len() - 1], true), None);
+        assert!(SIZES.iter().all(|s| sane_size(*s) == *s));
     }
 
     #[test]

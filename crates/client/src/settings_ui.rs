@@ -34,7 +34,9 @@ const LABEL_W: f32 = 600.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Tab {
+    /// The window: full screen or not, its size, vsync, the UI's scale.
     #[default]
+    Display,
     Graphics,
     /// The film's effects over the picture: a look, apart from what costs frame rate.
     Effects,
@@ -44,10 +46,11 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] = [Tab::Graphics, Tab::Effects, Tab::Audio, Tab::Controls, Tab::Game];
+    pub const ALL: [Tab; 6] = [Tab::Display, Tab::Graphics, Tab::Effects, Tab::Audio, Tab::Controls, Tab::Game];
 
     pub fn name(self) -> &'static str {
         match self {
+            Tab::Display => "Display",
             Tab::Graphics => "Graphics",
             Tab::Effects => "Effects",
             Tab::Audio => "Audio",
@@ -99,6 +102,8 @@ pub enum Change {
     /// Steps of 10%.
     Volume(i32),
     Music(i32),
+    /// The window's size, a step down or up the list (`window_mode::SIZES`).
+    WindowSize(i32),
     /// Steps of `ui_scale::STEP`.
     UiScale(i32),
     /// How much the UI explains (`help_text.rs`).
@@ -128,13 +133,19 @@ pub fn change(s: &mut ClientSettings, c: Change) {
         Change::Set(switch, on) => *switch_of(s, switch) = on,
         Change::Volume(n) => s.volume = stepped(s.volume, n, 10, 0, 200),
         Change::Music(n) => s.music = stepped(s.music, n, 10, 0, 200),
+        Change::WindowSize(n) => {
+            if let Some(size) = crate::window_mode::step_size(s.window_size.unwrap_or(crate::window_mode::DEFAULT_SIZE), n > 0) {
+                s.window_size = Some(size);
+            }
+        }
         Change::UiScale(n) => s.ui_scale = ui_scale::step(s.ui_scale, n > 0),
         Change::HelpText(h) => s.help_text = h,
         Change::OldLook(o) => s.old_look = o,
         Change::Defaults(tab) => {
             let d = ClientSettings::default();
             match tab {
-                Tab::Graphics => (s.graphics, s.fullscreen, s.vsync) = (d.graphics, d.fullscreen, d.vsync),
+                Tab::Display => (s.fullscreen, s.vsync, s.window_size, s.ui_scale) = (d.fullscreen, d.vsync, d.window_size, d.ui_scale),
+                Tab::Graphics => s.graphics = d.graphics,
                 Tab::Effects => {
                     let g = &mut s.graphics;
                     let dg = &d.graphics;
@@ -143,7 +154,7 @@ pub fn change(s: &mut ClientSettings, c: Change) {
                     s.old_look = d.old_look;
                 }
                 Tab::Audio => (s.volume, s.music, s.muted) = (d.volume, d.music, d.muted),
-                Tab::Game => (s.first_person, s.ui_scale, s.zombie_silhouettes, s.opening_hints, s.skip_menu, s.help_text, s.send_reports) = (d.first_person, d.ui_scale, d.zombie_silhouettes, d.opening_hints, d.skip_menu, d.help_text, d.send_reports),
+                Tab::Game => (s.first_person, s.zombie_silhouettes, s.opening_hints, s.skip_menu, s.help_text, s.send_reports) = (d.first_person, d.zombie_silhouettes, d.opening_hints, d.skip_menu, d.help_text, d.send_reports),
                 Tab::Controls => s.keys.clear(),
             }
         }
@@ -210,14 +221,42 @@ fn stepper(label: &'static str, about: &'static str, value: f32, lo: f32, hi: f3
 pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
     let g = &s.graphics;
     match tab {
+        Tab::Display => {
+            let size = s.window_size.unwrap_or(crate::window_mode::DEFAULT_SIZE);
+            let step = |up: bool| crate::window_mode::step_size(size, up).map(|_| Change::WindowSize(if up { 1 } else { -1 }));
+            vec![
+                switch("Fullscreen", "The window fills the screen, without a border. Alt+Enter or F11 switches.", s, Switch::Fullscreen),
+                if s.fullscreen {
+                    Row {
+                        label: "Resolution",
+                        about: "Full screen uses the screen's own resolution. Turn Fullscreen off to pick a window size.",
+                        control: Control::Stepper { value: "Screen".into(), down: None, up: None },
+                    }
+                } else {
+                    Row {
+                        label: "Resolution",
+                        about: "The window's size. One bigger than the screen is brought down to fit it.",
+                        control: Control::Stepper { value: format!("{} x {}", size.0, size.1), down: step(false), up: step(true) },
+                    }
+                },
+                switch("VSync", "Frames wait for the screen's refresh: no tearing.", s, Switch::Vsync),
+                Row {
+                    label: "UI scale",
+                    about: "The size of every panel and text. Ctrl and + or - while you play.",
+                    control: Control::Stepper {
+                        value: format!("{}%", s.ui_scale),
+                        down: (s.ui_scale > ui_scale::MIN_PCT).then_some(Change::UiScale(-1)),
+                        up: (s.ui_scale < ui_scale::MAX_PCT).then_some(Change::UiScale(1)),
+                    },
+                },
+            ]
+        }
         Tab::Graphics => vec![
             Row {
                 label: "Preset",
                 about: crate::graphics_ui::describe(g.preset),
                 control: Control::Choice(Preset::CHOICES.into_iter().map(|p| (p.name().to_string(), p == g.preset, Change::Preset(p))).collect()),
             },
-            switch("Fullscreen", "The window fills the screen, without a border. Alt+Enter or F11 switches.", s, Switch::Fullscreen),
-            switch("VSync", "Frames wait for the screen's refresh: no tearing.", s, Switch::Vsync),
             stepper("3D resolution", "The world's share of a Retina screen's pixels. The UI stays sharp.", g.render_scale, 0.5, 1.0, Change::RenderScale),
             stepper("Grass and flowers", "How dense the ground cover is. 0% is none.", g.vegetation, 0.0, MAX_VEGETATION, Change::Vegetation),
             Row {
@@ -265,15 +304,6 @@ pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
                 label: "View",
                 about: "The view a game starts in. The ; key switches while you play.",
                 control: Control::Choice(vec![("From above".into(), !s.first_person, Change::Set(Switch::FirstPerson, false)), ("First person".into(), s.first_person, Change::Set(Switch::FirstPerson, true))]),
-            },
-            Row {
-                label: "UI scale",
-                about: "The size of every panel and text. Ctrl and + or - while you play.",
-                control: Control::Stepper {
-                    value: format!("{}%", s.ui_scale),
-                    down: (s.ui_scale > ui_scale::MIN_PCT).then_some(Change::UiScale(-1)),
-                    up: (s.ui_scale < ui_scale::MAX_PCT).then_some(Change::UiScale(1)),
-                },
             },
             Row {
                 label: "Help text",
@@ -500,6 +530,7 @@ fn apply_live(
     old_look: Option<ResMut<OldLookNow>>,
     mut cams: Query<(&mut crate::camera::IsoCamera, &mut Projection)>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
+    monitors: Query<&bevy::window::Monitor>,
 ) {
     let (seen, was) = last.get_or_insert_with(|| (ui.changes, store.settings.clone()));
     if *seen == ui.changes {
@@ -575,6 +606,22 @@ fn apply_live(
             window.present_mode = present;
         }
     }
+    // A size picked here: the window takes it now, held to its screen as at a start.
+    if was.window_size != now.window_size
+        && !options.as_ref().is_some_and(|o| o.size_given)
+        && let Some(size) = now.window_size
+        && let Ok(mut window) = windows.single_mut()
+        && window.mode == WindowMode::Windowed
+    {
+        let mut size = (size.0 as f32, size.1 as f32);
+        if let Some(m) = monitors.iter().next() {
+            let scale = if m.scale_factor > 0.0 { m.scale_factor as f32 } else { 1.0 };
+            size = crate::window_mode::fit(size, (m.physical_width as f32 / scale, m.physical_height as f32 / scale));
+        }
+        if (window.resolution.width(), window.resolution.height()) != size {
+            window.resolution.set(size.0, size.1);
+        }
+    }
     (*seen, *was) = (ui.changes, now.clone());
 }
 
@@ -638,7 +685,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
                             }
                             Control::Stepper { value, down, up } => {
                                 chip(c, "-", false, down.map(Act::Change), Val::Auto);
-                                c.spawn(Node { width: px(64), justify_content: JustifyContent::Center, ..default() }).with_children(|v| {
+                                c.spawn(Node { min_width: px(64), justify_content: JustifyContent::Center, ..default() }).with_children(|v| {
                                     v.spawn((Text::new(value.clone()), theme::strong(BODY), TextColor(BONE), TextLayout::no_wrap()));
                                 });
                                 chip(c, "+", false, up.map(Act::Change), Val::Auto);
@@ -647,6 +694,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
                     });
                 }
                 let note = match tab {
+                    Tab::Display => "Kept between sessions. For more frame rate at the same size, lower 3D resolution on the Graphics tab.",
                     Tab::Graphics if in_game => "Changes show at once round this screen.",
                     Tab::Graphics => "Auto measures the first seconds of a game and picks what this machine holds.",
                     Tab::Effects => "The look over the picture. No preset turns the old look on or off.",
@@ -848,7 +896,7 @@ mod tests {
         let audio = rows(Tab::Audio, &s);
         assert!(matches!(&audio[1].control, Control::Stepper { up: None, down: Some(_), .. }));
         let graphics = rows(Tab::Graphics, &s);
-        assert!(matches!(&graphics[4].control, Control::Stepper { up: Some(_), down: None, .. }));
+        assert!(matches!(&graphics[2].control, Control::Stepper { up: Some(_), down: None, .. }));
     }
 
     #[test]
@@ -885,10 +933,32 @@ mod tests {
     }
 
     #[test]
+    fn a_resolution_is_picked_for_a_window_and_full_screen_has_the_screens() {
+        let mut s = ClientSettings::default();
+        let row = |s: &ClientSettings| rows(Tab::Display, s).into_iter().find(|r| r.label == "Resolution").expect("on the Display tab");
+        s.fullscreen = false;
+        assert!(matches!(row(&s).control, Control::Stepper { ref value, down: Some(_), up: Some(_) } if value == "1600 x 900"));
+        change(&mut s, Change::WindowSize(1));
+        assert_eq!(s.window_size, Some((1920, 1080)));
+        change(&mut s, Change::WindowSize(-1));
+        change(&mut s, Change::WindowSize(-1));
+        assert_eq!(s.window_size, Some((1366, 768)));
+        // It leaves the graphics preset alone.
+        assert_eq!(s.graphics, ClientSettings::default().graphics);
+        // Full screen: the screen's own, nothing to step.
+        s.fullscreen = true;
+        assert!(matches!(row(&s).control, Control::Stepper { ref value, down: None, up: None } if value == "Screen"));
+        change(&mut s, Change::Defaults(Tab::Display));
+        assert_eq!(s.window_size, None);
+    }
+
+    #[test]
     fn tabs_and_keys() {
         assert_eq!(Tab::parse("audio"), Some(Tab::Audio));
         assert_eq!(Tab::parse(" Game "), Some(Tab::Game));
         assert_eq!(Tab::parse("sound"), None);
+        // No tab is taller than the screen it must fit: ten rows at most.
+        assert!(Tab::ALL.into_iter().all(|t| rows(t, &ClientSettings::default()).len() <= 10));
         // Every group has keys, and no key or line is empty.
         assert!(KEYS.iter().all(|(g, keys)| !g.is_empty() && !keys.is_empty() && keys.iter().all(|r| !r.key().is_empty() && !r.does().is_empty())));
         // Every action that can be rebound is on the tab.
