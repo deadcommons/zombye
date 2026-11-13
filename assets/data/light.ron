@@ -106,4 +106,11 @@
     // own colour it keeps (0 = the fill's colour from every side). The fill as a whole stays as
     // bright as `fill_day` and `fill_night` say. Only with "Sky light" on in the graphics settings.
     sky_light: (share: 0.6, tint: 0.5, ground: (0.5, 0.42, 0.32), bounce: 0.35, sun_side: 0.6),
+    // Light shafts: a box of air round the player (`size`: width and height in metres) that the
+    // sun's light scatters in, showing as beams where it is broken up, through trees or between
+    // houses. `density` how thick (0 = none), `absorption` and `scattering` what it takes out of
+    // the light and throws, `asymmetry` how much goes on forward (-1..1; more = brighter looking
+    // toward the sun), `colour` (sRGB), `steps` samples a pixel (more = smoother, slower). By
+    // day only, and only with "Light shafts" on in the graphics settings (Ultra).
+    shafts: (density: 0.02, absorption: 0.1, scattering: 0.35, asymmetry: 0.7, colour: (1.0, 0.95, 0.86), size: (160.0, 24.0), steps: 48),
 )

@@ -151,6 +151,7 @@ mod build_ui;
 mod skills_ui;
 mod sky;
 mod skylight;
+mod shafts;
 mod survivor;
 mod survivor_model;
 mod theme;
@@ -836,7 +837,7 @@ fn main() {
             (fog::FogPlugin, cutaway::CutawayPlugin, silhouette::SilhouettePlugin, opening_hints::OpeningHintsPlugin),
             materials::WorldMaterialPlugin,
             world_render::WorldRenderPlugin,
-            (daynight::DayNightPlugin, lights::LightsPlugin, sky::SkyPlugin, skylight::SkyLightPlugin),
+            (daynight::DayNightPlugin, lights::LightsPlugin, sky::SkyPlugin, skylight::SkyLightPlugin, shafts::ShaftsPlugin),
             dev_time::DevTimePlugin,
             (player::PlayerPlugin, interact::InteractPlugin),
             camera::IsoCameraPlugin,

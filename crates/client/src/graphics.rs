@@ -8,7 +8,7 @@
 //! Where they come from, later ones winning: the client settings file (`graphics` in
 //! `settings.ron`, see `ui_scale.rs`; never read offscreen, whose pictures depend on the flags
 //! alone), `--graphics low|medium|high|ultra|auto` (a whole preset), `--vegetation off|low|high|N`
-//! (N from 0 to 2) and `--no-post LIST` (`grain`, `tilt`, `vignette`, `bloom`, `ao` (contact shadows), `occlusion`, `ground`, `soft`, `haze`, `sky`, `skylight`,
+//! (N from 0 to 2) and `--no-post LIST` (`grain`, `tilt`, `vignette`, `bloom`, `ao` (contact shadows), `occlusion`, `ground`, `soft`, `haze`, `sky`, `skylight`, `shafts`,
 //! or `all`). A game started with no settings file at all starts on Auto.
 
 use bevy::prelude::*;
@@ -90,6 +90,8 @@ pub struct Graphics {
     /// Light from the sky in the shade (`skylight.rs`): what faces up takes the sky's colour, what
     /// faces down the ground's. Taken on at start-up.
     pub sky_light: bool,
+    /// Beams of sunlight in the air (`shafts.rs`). Costly: Ultra only.
+    pub light_shafts: bool,
     /// Patchy colour on the ground, worked out per pixel.
     pub ground_detail: bool,
     /// The sun's shadow map, texels a side (one cascade fitted to the view, `daynight.rs`).
@@ -109,11 +111,11 @@ impl Default for Graphics {
 
 impl Graphics {
     pub fn high() -> Self {
-        Self { preset: Preset::High, vegetation: 1.0, grain: true, tilt_shift: true, vignette: true, bloom: true, contact_shadows: true, occlusion: true, soft_shadows: true, haze: true, sky: true, sky_light: true, ground_detail: true, shadow_map: 4096, msaa: 4, render_scale: 1.0 }
+        Self { preset: Preset::High, vegetation: 1.0, grain: true, tilt_shift: true, vignette: true, bloom: true, contact_shadows: true, occlusion: true, soft_shadows: true, haze: true, sky: true, sky_light: true, light_shafts: false, ground_detail: true, shadow_map: 4096, msaa: 4, render_scale: 1.0 }
     }
     /// For slow machines: a little grass, and nothing that costs a pass or a blend.
     pub fn low() -> Self {
-        Self { preset: Preset::Low, vegetation: 0.35, grain: false, tilt_shift: false, vignette: false, bloom: false, contact_shadows: false, occlusion: false, soft_shadows: false, haze: false, sky: false, sky_light: false, ground_detail: false, shadow_map: 2048, msaa: 2, render_scale: 0.6 }
+        Self { preset: Preset::Low, vegetation: 0.35, grain: false, tilt_shift: false, vignette: false, bloom: false, contact_shadows: false, occlusion: false, soft_shadows: false, haze: false, sky: false, sky_light: false, light_shafts: false, ground_detail: false, shadow_map: 2048, msaa: 2, render_scale: 0.6 }
     }
     /// Most of the look: thinner grass, no tilt-shift, half the shadow map.
     pub fn medium() -> Self {
@@ -121,7 +123,7 @@ impl Graphics {
     }
     /// More than the game was made to: denser grass and a finer shadow map.
     pub fn ultra() -> Self {
-        Self { preset: Preset::Ultra, vegetation: 1.5, shadow_map: 8192, render_scale: 1.0, ..Self::high() }
+        Self { preset: Preset::Ultra, vegetation: 1.5, shadow_map: 8192, render_scale: 1.0, light_shafts: true, ..Self::high() }
     }
     /// The settings a preset stands for. Auto starts at High (and is measured, `graphics_ui.rs`);
     /// Custom has no settings of its own, so it gives High.
@@ -200,9 +202,10 @@ impl Graphics {
                 "haze" => g.haze = false,
                 "sky" => g.sky = false,
                 "skylight" | "sky-light" => g.sky_light = false,
+                "shafts" => g.light_shafts = false,
                 "all" => g = Self { preset: g.preset, vegetation: g.vegetation, shadow_map: g.shadow_map, msaa: g.msaa, render_scale: g.render_scale, ..Self::low() },
                 "" => {}
-                other => eprintln!("--no-post {other}: grain, tilt, vignette, bloom, ao, occlusion, ground, soft, haze, sky, skylight or all"),
+                other => eprintln!("--no-post {other}: grain, tilt, vignette, bloom, ao, occlusion, ground, soft, haze, sky, skylight, shafts or all"),
             }
         }
         if let Some(n) = options.msaa {

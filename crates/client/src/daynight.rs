@@ -178,6 +178,31 @@ impl Default for SkyLightLook {
     }
 }
 
+/// Light shafts (`shafts.rs`): a box of air round the player that the sun's light scatters in,
+/// showing as beams where the light is broken up. Only with the graphics settings' light shafts on.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ShaftsLook {
+    /// How thick the air is (0 = none), what it takes out of the light, what it throws, and how
+    /// much of that goes on forward (toward a camera looking at the sun, 0..1).
+    pub density: f32,
+    pub absorption: f32,
+    pub scattering: f32,
+    pub asymmetry: f32,
+    /// The air's colour (sRGB).
+    pub colour: (f32, f32, f32),
+    /// The box's width and height (metres).
+    pub size: (f32, f32),
+    /// Samples along each pixel's ray: more is smoother and costs more.
+    pub steps: u32,
+}
+
+impl Default for ShaftsLook {
+    fn default() -> Self {
+        ShaftsLook { density: 0.02, absorption: 0.1, scattering: 0.35, asymmetry: 0.7, colour: (1.0, 0.95, 0.86), size: (160.0, 24.0), steps: 48 }
+    }
+}
+
 /// The sky of the first-person view (`sky.rs`, `assets/shaders/sky.wesl`): a gradient from the
 /// horizon to the zenith for each end of the day and for a low sun, a glow round the sun or moon,
 /// their discs and the stars. The view from above never sees it. Colours are sRGB. Drawn only with
@@ -267,6 +292,8 @@ pub struct LightLook {
     pub sky: SkyLook,
     /// Light from the sky in the shade.
     pub sky_light: SkyLightLook,
+    /// Light shafts.
+    pub shafts: ShaftsLook,
 }
 
 impl Default for SunLook {
@@ -292,6 +319,7 @@ impl Default for LightLook {
             indoor_fill: 1.6,
             sky: SkyLook::default(),
             sky_light: SkyLightLook::default(),
+            shafts: ShaftsLook::default(),
         }
     }
 }
@@ -374,6 +402,14 @@ impl LightLook {
             within(name, v, 0.0, 1.0)?;
         }
         within("sky_light.sun_side", sl.sun_side, 0.0, 4.0)?;
+        let sh = look.shafts;
+        for (name, v) in [("shafts.density", sh.density), ("shafts.absorption", sh.absorption), ("shafts.scattering", sh.scattering), ("shafts.colour", sh.colour.0), ("shafts.colour", sh.colour.1), ("shafts.colour", sh.colour.2)] {
+            within(name, v, 0.0, 1.0)?;
+        }
+        within("shafts.asymmetry", sh.asymmetry, -0.99, 0.99)?;
+        within("shafts.size width", sh.size.0, 10.0, 600.0)?;
+        within("shafts.size height", sh.size.1, 2.0, 200.0)?;
+        within("shafts.steps", sh.steps as f32, 4.0, 256.0)?;
         within("dusk temperature", look.dusk.0, -1.0, 1.0)?;
         within("dusk saturation", look.dusk.1, -1.0, 1.0)?;
         Ok(look)
