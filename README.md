@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="docs/readme/horde.jpg"><img src="docs/readme/horde.jpg" alt="A survivor backs into the street as a crowd of zombies closes in" width="860"></a>
+  <a href="docs/readme/horde.jpg"><img src="docs/readme/horde.jpg" alt="A lone survivor in the middle of a street as hundreds of zombies close in from every side" width="860"></a>
 </p>
 
 <p align="center">
@@ -79,29 +79,39 @@ is free.
 <table>
   <tr>
     <td width="50%" valign="top">
-      <a href="docs/readme/town.jpg"><img src="docs/readme/town.jpg" alt="Back yards at the edge of town, zombies drifting across the grass"></a>
+      <a href="docs/readme/town.jpg"><img src="docs/readme/town.jpg" alt="The town from high above at golden hour: shops, houses, parked cars and the dead wandering the streets"></a>
       <br><b>A town that is generated, not painted.</b> Streets, yards, shops and the woods beyond,
       different for every seed.
     </td>
     <td width="50%" valign="top">
-      <a href="docs/readme/street.jpg"><img src="docs/readme/street.jpg" alt="The main street by day, seen from above"></a>
-      <br><b>Main street, mid-afternoon.</b> Long shadows, a parked car, and nobody about. Yet.
+      <a href="docs/readme/fight.jpg"><img src="docs/readme/fight.jpg" alt="A survivor swings a baseball bat at three zombies in the road while more come up the street"></a>
+      <br><b>Swing, shove, stomp.</b> Three in reach, and more coming up the street.
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <a href="docs/readme/first-person.jpg"><img src="docs/readme/first-person.jpg" alt="First-person view across a yard toward a street with zombies in the distance"></a>
-      <br><b>Eye level.</b> The same world in first person. They're at the end of the road.
+      <a href="docs/readme/first-person.jpg"><img src="docs/readme/first-person.jpg" alt="First-person view down a suburban street filled from kerb to kerb with zombies"></a>
+      <br><b>Eye level.</b> The same world in first person, and the same crowd.
     </td>
     <td width="50%" valign="top">
-      <a href="docs/readme/night.jpg"><img src="docs/readme/night.jpg" alt="A survivor beside a campfire at night between two dark houses"></a>
-      <br><b>Night is dark.</b> You see what your fire or your flashlight shows you, and not much else.
+      <a href="docs/readme/face-to-face.jpg"><img src="docs/readme/face-to-face.jpg" alt="First-person view of a zombie an arm's length away, with a pack close behind it"></a>
+      <br><b>Too close.</b> Every one of them is simulated: it saw you, or it heard you.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="docs/readme/night.jpg"><img src="docs/readme/night.jpg" alt="A flashlight beam at night picks a group of zombies out of the dark in front of a house with lit windows"></a>
+      <br><b>Night is dark.</b> You see what your flashlight shows you, and not much else.
+    </td>
+    <td width="50%" valign="top">
+      <a href="docs/readme/campfire.jpg"><img src="docs/readme/campfire.jpg" alt="A survivor sits by a campfire at night on a lawn, with zombies lurking by a lit window nearby"></a>
+      <br><b>A fire is warmth, a hot meal and a beacon.</b> Something by the window has noticed.
     </td>
   </tr>
 </table>
 
 <p align="center">
-  <a href="docs/readme/inventory.jpg"><img src="docs/readme/inventory.jpg" alt="The inventory screen: gear slots, a rucksack's contents, and a wardrobe being searched" width="860"></a>
+  <a href="docs/readme/inventory.jpg"><img src="docs/readme/inventory.jpg" alt="The inventory screen: a crowbar in hand, worn gear, a packed rucksack and pockets" width="860"></a>
   <br><i>Everything you carry has weight and takes up room. Choose what comes with you.</i>
 </p>
 
