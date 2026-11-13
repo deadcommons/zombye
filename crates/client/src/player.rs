@@ -346,7 +346,8 @@ fn predict(
     if let (Some(mut car), Some(d)) = (me.car, drive) {
         let Some(kind) = join.vehicles.kinds.get(car.kind as usize) else { return };
         car.prev = car.curr;
-        step_vehicle(&map.0, kind, car.id, &mut car.curr, d, TICK_DT, join.vehicles.tuning.bounce);
+        let perf = link.curr.vehicles.iter().find(|v| v.id == car.id).map_or(zombye_sim::Perf::NEW, |v| v.perf());
+        step_vehicle(&map.0, kind, car.id, &mut car.curr, d, perf, TICK_DT, join.vehicles.tuning.bounce);
         me.curr.pos = seat_of(kind, &car.curr);
         me.curr.facing = car.curr.heading;
         me.car = Some(car);
@@ -429,9 +430,10 @@ fn reconcile(link: Res<ServerLink>, map: Res<ClientMap>, join: Res<JoinInfo>, mu
     {
         // At the wheel: the server's car, and the driving it hasn't had yet.
         let mut cs = v.state;
+        let perf = v.perf();
         for (_, _, d) in &me.pending {
             if let Some(d) = d {
-                step_vehicle(&map.0, kind, car.id, &mut cs, *d, TICK_DT, join.vehicles.tuning.bounce);
+                step_vehicle(&map.0, kind, car.id, &mut cs, *d, perf, TICK_DT, join.vehicles.tuning.bounce);
             }
         }
         car.curr = cs;
@@ -717,8 +719,12 @@ fn actions(
     if me.dead {
         return;
     }
-    // At the wheel of a car: E gets out (`interact.rs`); Space is the brake (in `predict`), nothing else here.
+    // At the wheel of a car: E gets out (`interact.rs`), the horn's key sounds it; Space is the brake
+    // (in `predict`), nothing else here.
     if me.car.is_some() {
+        if crate::keys::just_pressed(&keys, crate::keys::Action::Horn) {
+            link.send(Intent::Vehicle { player: me.id, op: zombye_sim::VehicleOp::Horn });
+        }
         return;
     }
     use crate::keys::Action;
@@ -808,6 +814,13 @@ mod tests {
         assert!((MUZZLE_HEIGHT + 12.0 * level_pitch(12.0).tan() - CHEST).abs() < 1e-3);
         assert_eq!(level_pitch(0.1), level_pitch(2.0));
     }
+}
+
+/// Do we carry a fuel can with fuel in it (`VehicleTuning::fuel_item`)? Beside a car the refuel key
+/// pours it in then, else siphons the car's fuel out (`interact.rs`).
+pub(crate) fn fuel_to_pour(inv: &zombye_sim::Inventory, join: &JoinInfo) -> bool {
+    let can = join.items.iter().position(|d| d.id == join.vehicles.tuning.fuel_item);
+    can.is_some_and(|c| inv.stacks().any(|s| s.item as usize == c && s.used > 0))
 }
 
 /// The name of a parked car (a street prop of a vehicle kind, not one of the drivable ones, which

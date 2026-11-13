@@ -660,7 +660,7 @@ fn guns_are_rare_loot_with_some_rounds_in() {
                 assert!(s.used <= h.capacity && s.count == 1);
                 loads.insert((s.item, s.used));
             } else {
-                assert!(s.used == 0);
+                assert!(s.used == 0 || w.config.items[s.item as usize].fuel_l.is_some());
             }
         }
     }

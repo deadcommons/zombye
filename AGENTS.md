@@ -1006,10 +1006,10 @@ upgrades and the rest come as new categories of the same list.
   wear, hitting doors.
 - Tests: `sim::wear::tests`.
 
-## Vehicles (`sim::vehicles`, `assets/data/vehicles.ron`; Linear DCM-86, stage 1 of DCM-85)
+## Vehicles (`sim::vehicles`, `assets/data/vehicles.ron`; Linear DCM-86 and DCM-87, stages 1 and 2 of DCM-85)
 
-Some of the cars parked in town can be driven. This is stage 1: getting in and out, driving, collisions, saves and
-multiplayer. Fuel, noise, running zombies over and damage come in DCM-87.
+The cars parked in town can be driven. Stage 1: getting in and out, driving, collisions, saves and multiplayer.
+Stage 2: fuel, engine noise, running zombies over and crash damage.
 
 - **Kinds are data** (`vehicles.ron`, `VehicleData`, unknown fields refused, `parse_vehicles`; loaded by
   `net::content::load_vehicles`, which checks each kind's `prop` is a street prop kind; no file: no vehicles). Each
@@ -1032,13 +1032,42 @@ multiplayer. Fuel, noise, running zombies over and damage come in DCM-87.
   first aid and crafting intents are taken; dying or respawning gets you out.
 - **Saves:** an optional `VEHC` section after `TREE` (each vehicle by the prop tile it came from, with its state and
   driver); a world without vehicles saves none. In `state_hash` while there are any. **Wire:** `Snapshot::vehicles`
-  (`VehicleView`), sent in `SnapshotDelta::vehicles` when they change; `wire::PROTOCOL` 32.
+  (`VehicleView`), sent in `SnapshotDelta::vehicles` when they change.
 - **Client:** E beside a car gets in, E again gets out; W/S throttle and reverse, A/D steer, Space brakes
   (`player.rs`: the car is predicted with `step_vehicle` and reconciled like walking). `vehicles_render.rs` draws each
   vehicle as its street prop's model (worn as `decay.ron` says) or a grey-box, ours where we predict it, the others
   between snapshots, someone else's only where our survivor sees it.
-- **Not yet:** the camera pulling back with speed, MCP tools, fuel and noise, damage, keys and hotwiring (a Mechanics
-  skill), the radio, more vehicle kinds.
+- **Fuel (stage 2):** each kind has `tank_l`, `fuel_per_km` (at full throttle, half that coasting) and
+  `idle_l_per_min` (while the engine runs), and `mass_kg`; a found car holds a seeded share of its tank between
+  `start_fuel`'s two numbers (`Condition::found`). The engine starts on the first throttle (a `start_noise`, a note) and
+  dies when the tank is dry or the engine is wrecked; with no fuel the throttle does nothing. **Cans:** an item with
+  `fuel_l` (`petrol_can`, 10 L, loot in sheds and garages; it doesn't stack) holds that many litres on its stack's
+  `used`, as a gun holds rounds (`ranged::max_used`; made full, found with a seeded few; each litre 0.75 kg,
+  `items::FUEL_KG_PER_L`). Shift+E beside a car (`VehicleOp::Refuel`) pours a carried can in; with no fuel to pour
+  (`VehicleOp::Siphon`) a carried item tagged `siphon_tag` (`siphons`: the `siphon_hose`) draws the tank out into an
+  empty or part-full can (`World::pour_fuel`, whole litres, not from the wheel).
+- **Noise:** a running engine is a player's sound every `noise_every_secs`, from `idle_noise` standing to
+  `drive_noise` at top speed, `rev_noise` with the throttle held; H at the wheel is the horn (`VehicleOp::Horn`,
+  `horn_noise` 80 m), and a crash `crash_noise`. Those of 25 m or more draw the far horde (migration).
+- **Running zombies over:** a standing zombie struck faster than `run_over_min_speed` takes `run_over_damage` HP for
+  each m/s over it, times `sqrt(mass_kg / ref_mass_kg)`; at `run_over_knockdown_speed` or more it is floored, under it
+  staggered, and the driver gets the kill (`World::run_over`, a `ZombieHit` / `ZombieKilled` combat event with the
+  driver as `player`). Each costs the body `run_over_wear`.
+- **Crashes and condition:** a vehicle's `Condition` (`fuel`, `engine_on`, `parts`: engine, tyres, windows, body, 0
+  to 1). Losing more than `crash_min_speed` in one hit takes `crash_engine` / `crash_tyres` / `crash_windows` /
+  `crash_body` for each m/s over it (the engine only on a hit in front, going forward) and hurts the driver
+  `crash_hurt` HP a m/s (`DeathCause::Crash`, "Killed in a car crash"). A worn engine pulls less and goes slower, worn
+  tyres go slower and steer less (`Perf::of`, worked out from whole per cents of the parts, which the view carries, so
+  the client predicts with exactly the server's numbers).
+- **Saves (stage 2):** an optional `VCND` section after `VEHC` (each vehicle's condition); a save without it gets
+  found cars' conditions. **Wire:** `VehicleView` carries `fuel_dl`, `engine_on` and `parts` (per cent);
+  `wire::PROTOCOL` 35. **Client:** while driving the stance text is the driving line (`hud::driving_line`: "driving the
+  van  31 km/h  fuel 12/70 L", with "engine off" and worn parts). The keys are `keys.ron`'s `horn` (H: an action read
+  only at the wheel, `Action::at_wheel`, so it shares H with the Health screen on foot) and `refuel` (Shift+E:
+  `Action::beside_car`, asked first by `interact.rs` beside a car, and it leaves E with Shift held to interact
+  everywhere else).
+- **Not yet:** the camera pulling back with speed, MCP tools, running players over, engine and horn sounds, damage
+  drawn on the car, repairing parts, keys and hotwiring (a Mechanics skill), the radio, more vehicle kinds.
 - Tests: `sim::vehicles::tests`.
 
 ## Chopping trees (`sim::trees`)

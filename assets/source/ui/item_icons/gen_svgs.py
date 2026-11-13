@@ -248,6 +248,17 @@ I['cooking_pot'] = '<rect x="9" y="17" width="30" height="22" rx="3" fill="$C"/>
 I['firewood'] = '<rect x="5" y="27" width="34" height="9" rx="1.5" fill="$C" transform="rotate(-8 22 31)"/><ellipse cx="39" cy="28.5" rx="3" ry="4.5" fill="$L" transform="rotate(-8 39 28)"/><rect x="9" y="16" width="34" height="9" rx="1.5" fill="$C" transform="rotate(10 26 20)"/><ellipse cx="9" cy="17" rx="3" ry="4.5" fill="$L" transform="rotate(10 9 17)"/><path d="M12 31h20M15 20l20 3" stroke="$D" stroke-width="1.3"/>'
 I['newspaper'] = '<path d="M7 10h30l4 4v26H11l-4-4z" fill="$C"/><path d="M37 10v4h4" fill="$D"/><rect x="11" y="14" width="24" height="5" fill="$D"/><path d="M11 23h12M11 27h12M11 31h12M11 35h12M26 23h11M26 27h11M26 31h11M26 35h11" stroke="$D" stroke-width="1.4"/>'
 
+# ---------- Fuel for cars
+I['petrol_can'] = ('<path d="M10 14l6-6h20a4 4 0 0 1 4 4v26a3 3 0 0 1-3 3H13a3 3 0 0 1-3-3z" fill="$C"/>'
+                   '<path d="M14 12l3-3h7v6h-10z" fill="$D"/><rect x="18" y="10" width="4" height="3" rx="1" fill="$K"/>'
+                   '<path d="M16 20l18 14M34 20L16 34" stroke="$D" stroke-width="2.4" stroke-linecap="round"/>'
+                   '<rect x="13" y="17" width="24" height="20" rx="2" fill="none" stroke="$D" stroke-width="1.6"/>'
+                   '<path d="M30 9l6-4 3 3-5 5z" fill="$L"/><rect x="12" y="14" width="3" height="24" rx="1.5" fill="$L"/>')
+I['siphon_hose'] = ('<ellipse cx="22" cy="27" rx="15" ry="11" fill="none" stroke="$C" stroke-width="4.5"/>'
+                    '<ellipse cx="22" cy="27" rx="8" ry="5.5" fill="none" stroke="$D" stroke-width="4"/>'
+                    '<path d="M35 22c4-4 6-9 6-14" stroke="$C" stroke-width="4.5" fill="none" stroke-linecap="round"/>'
+                    '<rect x="37" y="4" width="8" height="5" rx="1.5" fill="$L"/><path d="M12 22c4-3 16-3 20 0" stroke="$L" stroke-width="1.5" fill="none"/>')
+
 def main():
     rows = [l.rstrip('\n').split('\t') for l in open(os.path.join(HERE, 'items.tsv')) if l.strip()]
     ids = [r[0] for r in rows]
