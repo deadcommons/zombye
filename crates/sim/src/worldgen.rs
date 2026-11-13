@@ -1874,12 +1874,6 @@ fn plant_forest(map: &mut TileMap, rng: &mut Rng, keep_min: IVec2, keep_max: IVe
             let roll = rng.f32();
             if roll < density {
                 let pine = rng.f32() < 0.35 + 0.4 * (dist / 60.0).min(1.0);
-                // Steep hillsides are bare, open ground and rock: few trees take hold there. Thinned by a
-                // hash, not the stream, so the rest of the town draws the same numbers with or without hills.
-                let grade = map.terrain.broad_grade(p.as_vec2() + Vec2::splat(0.5));
-                if crate::rng::hash01(seed, p.x as u64, p.y as u64, 0x7e44) < 0.85 * smoothstep(0.11, 0.19, grade) {
-                    continue;
-                }
                 if let Some(t) = map.tile_mut(p) {
                     t.feature = if pine { Feature::PineTree } else { Feature::Tree };
                 }
@@ -1890,6 +1884,26 @@ fn plant_forest(map: &mut TileMap, rng: &mut Rng, keep_min: IVec2, keep_max: IVe
             } else if roll > 0.985 {
                 if let Some(t) = map.tile_mut(p) {
                     t.floor = Floor::Dirt;
+                }
+            }
+        }
+    }
+    // Steep hillsides are bare, open ground and rock: few trees take hold there. Thinned once the
+    // forest is planted, by a hash and not the stream (a tile left empty while planting would let its
+    // neighbours draw), so the rest of the town draws the same numbers with or without hills.
+    if map.terrain.is_flat() {
+        return;
+    }
+    for y in 0..map.height() {
+        for x in 0..map.width() {
+            let p = IVec2::new(x, y);
+            if !matches!(map.tile(p).feature, Feature::Tree | Feature::PineTree) {
+                continue;
+            }
+            let grade = map.terrain.broad_grade(p.as_vec2() + Vec2::splat(0.5));
+            if crate::rng::hash01(seed, p.x as u64, p.y as u64, 0x7e44) < 0.85 * smoothstep(0.11, 0.19, grade) {
+                if let Some(t) = map.tile_mut(p) {
+                    t.feature = Feature::None;
                 }
             }
         }
