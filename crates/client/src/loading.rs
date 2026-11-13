@@ -148,7 +148,7 @@ pub fn line_at(n: usize, seed: u64, k: u64) -> usize {
 
 /// Whether this run starts behind the loading screen.
 pub fn wanted(o: &Options) -> bool {
-    o.loading_screen || (!o.offscreen() && (o.no_menu || o.plain) && o.screenshot.is_none() && o.exit_after.is_none())
+    o.loading_screen || (!o.offscreen() && (o.no_menu || o.plain || o.menu_layer) && o.screenshot.is_none() && o.exit_after.is_none())
 }
 
 /// The loading screen's state. `up` while it covers the game (fading included).
@@ -249,7 +249,7 @@ impl Plugin for FrontLoadingPlugin {
 
 /// Once a front-end screen has asked for the game to be started again (`crate::relaunch_pending`):
 /// the logo over everything, and the exit a few frames later, when it has been drawn.
-fn leave(
+pub(crate) fn leave(
     mut commands: Commands,
     loading: Option<ResMut<Loading>>,
     lines: Option<Res<LoadingLines>>,
@@ -353,7 +353,10 @@ impl Plugin for LoadingPlugin {
             return;
         }
         let (hold, offscreen, data) = (options.loading_screen, options.offscreen(), options.data.clone());
-        install(app, hold, offscreen, &data, MIN_SHOWN, false);
+        // The game's first screen (#36: the menu over the game): the logo comes up and stands a
+        // moment while everything loads behind it, and fades into the menu.
+        let first = options.menu_layer && options.plain && !options.main_menu;
+        install(app, hold, offscreen, &data, if first { SPLASH_SHOWN } else { MIN_SHOWN }, first);
     }
 }
 

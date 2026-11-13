@@ -399,7 +399,8 @@ pub fn run(options: Options) -> ! {
         .add_systems(Startup, setup)
         .add_systems(First, crate::exit_on_signal)
         .init_resource::<PickScroll>()
-        .add_systems(Update, ((keys, act, draw, dress, pose).chain(), scroll_picks.after(draw)));
+        .add_systems(PreUpdate, keys.in_set(NewGameKeys).after(bevy::input::InputSystems))
+        .add_systems(Update, ((act, draw, dress, pose, layer_figure).chain(), scroll_picks.after(draw)));
     let failed = app.run().is_error();
     if let Some(next) = take_relaunch() {
         crate::relaunch(next);
@@ -420,6 +421,11 @@ pub struct Front {
     ground: Option<Color>,
     /// Why it couldn't open, for the menu to show (taken with [`Front::take_error`]).
     error: Option<String>,
+    /// Over the game (#36): Start hands the choices back instead of starting the game again.
+    hand_back: bool,
+    /// The choices Start handed back, and the arguments to start the game again with if they
+    /// can't be taken up in place.
+    started: Option<(NewGame, Vec<String>)>,
 }
 
 impl Front {
@@ -436,6 +442,16 @@ impl Front {
     pub fn take_error(&mut self) -> Option<String> {
         self.error.take()
     }
+
+    /// A screen whose Start hands the choices back ([`Front::take_started`]): over the game.
+    pub fn handing_back() -> Self {
+        Self { hand_back: true, ..default() }
+    }
+
+    /// What Start handed back: the new game, and the arguments to start the game again with.
+    pub fn take_started(&mut self) -> Option<(NewGame, Vec<String>)> {
+        self.started.take()
+    }
 }
 
 /// Whether the screen is not up: what the host app's own systems run by.
@@ -447,12 +463,47 @@ pub fn away(front: Res<Front>) -> bool {
 #[derive(Component)]
 struct Scene;
 
+/// Where the screen reads its keys (in `PreUpdate`, before a game under it has them held back).
+#[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct NewGameKeys;
+
+/// The figure on the screen (its root), apart from the game's survivors.
+#[derive(Component)]
+pub struct Figure;
+
+/// The render layer the screen's camera, lights and figure are on: over the game (#36) its
+/// camera sees nothing of the town, and the town's lights don't light the figure.
+const FIGURE_LAYER: usize = 9;
+
+/// The screen's own camera, which draws its panels.
+#[derive(Resource)]
+struct ScreenCamera(Entity);
+
+/// The survivor model the figure is drawn with (the game has its own `SurvivorModel`).
+#[derive(Resource)]
+struct FigureModel(SurvivorModel);
+
+/// Everything under the screen's scene on its layer (the figure's joints and meshes are spawned
+/// by `survivor_model::attach`, which knows nothing of layers).
+fn layer_figure(mut commands: Commands, scene: Query<Entity, With<Scene>>, children: Query<&Children>, layered: Query<(), With<bevy::camera::visibility::RenderLayers>>) {
+    for root in &scene {
+        for e in std::iter::once(root).chain(children.iter_descendants(root)) {
+            if !layered.contains(e) {
+                commands.entity(e).insert(bevy::camera::visibility::RenderLayers::layer(FIGURE_LAYER));
+            }
+        }
+    }
+}
+
 /// The new-game screen for an app that has other screens (the main menu's).
 pub struct NewGamePlugin;
 
 impl Plugin for NewGamePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Front>().init_resource::<PickScroll>().add_systems(Update, ((enter, setup.run_if(resource_added::<Screen>), (keys, act, draw, dress, pose).chain().run_if(resource_exists::<Screen>)).chain(), scroll_picks.after(draw)));
+        app.init_resource::<Front>()
+            .init_resource::<PickScroll>()
+            .add_systems(PreUpdate, keys.in_set(NewGameKeys).after(bevy::input::InputSystems).run_if(resource_exists::<Screen>))
+            .add_systems(Update, ((enter, setup.run_if(resource_added::<Screen>), (act, draw, dress, pose, layer_figure).chain().run_if(resource_exists::<Screen>)).chain(), scroll_picks.after(draw)));
     }
 }
 
@@ -469,10 +520,13 @@ fn enter(mut commands: Commands, mut front: ResMut<Front>, options: Res<Options>
             for (_, mut c) in &mut cameras {
                 c.is_active = false;
             }
-            front.ground = ground.map(|g| g.0);
             front.up = true;
-            commands.insert_resource(ClearColor(flat::INK));
-            commands.insert_resource(GlobalAmbientLight { color: Color::srgb(0.85, 0.82, 0.95), brightness: 420.0, ..default() });
+            // (Over the game the screen's camera has its own ground and light: the game's stay.)
+            if !front.hand_back {
+                front.ground = ground.map(|g| g.0);
+                commands.insert_resource(ClearColor(flat::INK));
+                commands.insert_resource(GlobalAmbientLight { color: Color::srgb(0.85, 0.82, 0.95), brightness: 420.0, ..default() });
+            }
             commands.insert_resource(screen);
         }
         Err(e) => {
@@ -497,7 +551,8 @@ fn give_back(commands: &mut Commands, front: &mut Front, ours: &Query<Entity, Or
     }
     commands.remove_resource::<Screen>();
     commands.remove_resource::<Joints>();
-    commands.remove_resource::<SurvivorModel>();
+    commands.remove_resource::<FigureModel>();
+    commands.remove_resource::<ScreenCamera>();
     front.up = false;
 }
 
@@ -515,40 +570,54 @@ const CAMERA_LOOKS_AT: Vec3 = Vec3::new(2.94, -0.09, 0.0);
 fn setup(
     mut commands: Commands,
     screen: Res<Screen>,
+    front: Option<Res<Front>>,
     target: Option<Res<crate::offscreen::OffscreenTarget>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut bindposes: ResMut<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>,
 ) {
+    let layer = bevy::camera::visibility::RenderLayers::layer(FIGURE_LAYER);
+    let over_game = front.is_some_and(|f| f.hand_back);
     let mut camera = commands.spawn((
         Scene,
+        layer.clone(),
         Camera3d::default(),
+        // Its own ground and light, whatever the game under it has.
+        Camera { clear_color: ClearColorConfig::Custom(INK), ..default() },
+        AmbientLight { color: Color::srgb(0.85, 0.82, 0.95), brightness: 420.0, ..default() },
         Projection::Perspective(PerspectiveProjection { fov: 0.2, ..default() }),
         Transform::from_translation(CAMERA_AT).looking_at(CAMERA_LOOKS_AT, Vec3::Y),
         Msaa::Sample4,
-        // The screen's panels are drawn by this camera, whatever other camera the app has (the
-        // main menu's own, switched off while we are up, would otherwise still be the UI's).
-        IsDefaultUiCamera,
     ));
+    // The screen's panels are drawn by this camera (`draw` names it on them), whatever other
+    // camera the app has. On its own it is the UI's too; over the game it isn't, so the game's
+    // HUD (whose camera is switched off while we are up) isn't drawn over the screen.
+    if !over_game {
+        camera.insert(IsDefaultUiCamera);
+    }
     if let Some(target) = target {
         camera.insert(RenderTarget::Image(target.0.clone().into()));
     }
+    let cam = camera.id();
+    commands.insert_resource(ScreenCamera(cam));
     // A warm key light from the front left and a cool one from behind, so the figure reads.
-    commands.spawn((Scene, DirectionalLight { illuminance: 9000.0, color: Color::srgb(1.0, 0.93, 0.8), shadow_maps_enabled: false, ..default() }, Transform::from_xyz(-2.5, 4.0, 5.0).looking_at(Vec3::new(0.0, 1.0, 0.0), Vec3::Y)));
-    commands.spawn((Scene, DirectionalLight { illuminance: 2500.0, color: Color::srgb(0.7, 0.8, 1.0), shadow_maps_enabled: false, ..default() }, Transform::from_xyz(3.0, 3.0, -4.0).looking_at(Vec3::new(0.0, 1.0, 0.0), Vec3::Y)));
+    commands.spawn((Scene, layer.clone(), DirectionalLight { illuminance: 9000.0, color: Color::srgb(1.0, 0.93, 0.8), shadow_maps_enabled: false, ..default() }, Transform::from_xyz(-2.5, 4.0, 5.0).looking_at(Vec3::new(0.0, 1.0, 0.0), Vec3::Y)));
+    commands.spawn((Scene, layer.clone(), DirectionalLight { illuminance: 2500.0, color: Color::srgb(0.7, 0.8, 1.0), shadow_maps_enabled: false, ..default() }, Transform::from_xyz(3.0, 3.0, -4.0).looking_at(Vec3::new(0.0, 1.0, 0.0), Vec3::Y)));
     // The survivor (none if the game has no modular body: the screen works without the figure).
     if let Some(model) = SurvivorModel::load(&screen.options, &mut meshes, &mut materials, &mut images, &mut bindposes) {
-        let root = commands.spawn((Scene, Transform::from_rotation(Quat::from_rotation_y(0.35)), Visibility::Inherited)).id();
-        let joints = crate::survivor_model::attach(&mut commands, &model, root, 1, true);
+        let root = commands.spawn((Scene, Figure, layer, Transform::from_rotation(Quat::from_rotation_y(0.35)), Visibility::Inherited)).id();
+        // (A player id no survivor of a game has.)
+        let joints = crate::survivor_model::attach(&mut commands, &model, root, u32::MAX, true);
         commands.insert_resource(Joints(joints));
-        commands.insert_resource(model);
+        commands.insert_resource(FigureModel(model));
     }
 }
 
 /// The idle clip on the figure.
-fn pose(time: Res<Time>, model: Option<Res<SurvivorModel>>, joints: Option<Res<Joints>>, mut transforms: Query<&mut Transform>) {
+fn pose(time: Res<Time<Real>>, model: Option<Res<FigureModel>>, joints: Option<Res<Joints>>, mut transforms: Query<&mut Transform>) {
     let (Some(model), Some(joints)) = (model, joints) else { return };
+    let model = &model.0;
     let pose = model.standing(time.elapsed_secs());
     for (b, e) in joints.0.iter().take(pose.t.len()).enumerate() {
         if let Ok(mut t) = transforms.get_mut(*e) {
@@ -564,8 +633,9 @@ fn pose(time: Res<Time>, model: Option<Res<SurvivorModel>>, joints: Option<Res<J
 }
 
 /// The figure in what was picked from the wardrobe, when that changed.
-fn dress(mut commands: Commands, mut screen: ResMut<Screen>, model: Option<Res<SurvivorModel>>, mut meshes: ResMut<Assets<Mesh>>, dressed: Query<&Dress>) {
+fn dress(mut commands: Commands, mut screen: ResMut<Screen>, model: Option<Res<FigureModel>>, mut meshes: ResMut<Assets<Mesh>>, dressed: Query<&Dress, With<Figure>>) {
     let (Some(model), Ok(d)) = (model, dressed.single()) else { return };
+    let model = &model.0;
     if !screen.dress {
         return;
     }
@@ -581,6 +651,7 @@ fn dress(mut commands: Commands, mut screen: ResMut<Screen>, model: Option<Res<S
 }
 
 fn keys(keys: Res<ButtonInput<KeyCode>>, mut screen: ResMut<Screen>) {
+    // (The key that opened the screen is cleared in `enter`, a frame after this ran.)
     if keys.just_pressed(KeyCode::Enter) {
         // Enter is the footer's button: Next until the last page, then Start.
         let act = if screen.tab.next().is_some() { Act::Next } else { Act::Start };
@@ -616,7 +687,14 @@ fn act(mut commands: Commands, mut screen: ResMut<Screen>, mut front: ResMut<Fro
                     screen.error = Some(format!("Can't keep the choices: {e}"));
                     continue;
                 }
-                start_args(&args, &path.to_string_lossy())
+                let next = start_args(&args, &path.to_string_lossy());
+                // Over the game: the choices go back to it, which makes the survivor in place.
+                if front.up && front.hand_back {
+                    front.started = Some((screen.game(), next));
+                    give_back(&mut commands, &mut front, &ours, &mut cameras);
+                    return;
+                }
+                next
             }
             // In the menu's window, Back is the menu again, at once.
             Some(Act::Back) if front.up => {
@@ -736,14 +814,16 @@ fn scroll_picks(
     }
 }
 
-fn draw(mut commands: Commands, mut screen: ResMut<Screen>, root: Option<Single<Entity, With<Root>>>) {
+fn draw(mut commands: Commands, mut screen: ResMut<Screen>, root: Option<Single<Entity, With<Root>>>, camera: Option<Res<ScreenCamera>>) {
     if !screen.dirty {
         return;
     }
+    // (Drawn by the screen's own camera: until `setup` has made it, nothing to draw with.)
+    let Some(camera) = camera else { return };
     screen.dirty = false;
     let root = match root {
         Some(r) => *r,
-        None => commands.spawn((Root, Node { width: Val::Vw(100.0), height: Val::Vh(100.0), min_width: px(0), max_width: Val::Vw(100.0), max_height: Val::Vh(100.0), flex_direction: FlexDirection::Column, overflow: Overflow::clip(), ..default() })).id(),
+        None => commands.spawn((Root, UiTargetCamera(camera.0), Node { width: Val::Vw(100.0), height: Val::Vh(100.0), min_width: px(0), max_width: Val::Vw(100.0), max_height: Val::Vh(100.0), flex_direction: FlexDirection::Column, overflow: Overflow::clip(), ..default() })).id(),
     };
     let screen = &*screen;
     commands.entity(root).despawn_children();

@@ -427,7 +427,7 @@ pub struct IsoCameraPlugin;
 
 impl Plugin for IsoCameraPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<PointerLock>().add_systems(Startup, spawn_camera).add_systems(Update, (rotate_and_zoom, follow, lock_pointer).chain());
+        app.init_resource::<PointerLock>().add_systems(Startup, spawn_camera).add_systems(Update, (rotate_and_zoom.run_if(crate::main_menu::layer_down), follow, lock_pointer).chain());
     }
 }
 
@@ -662,6 +662,7 @@ fn lock_pointer(
     browser: Option<Res<crate::browser_ui::BrowserUi>>,
     pause: Option<Res<crate::pause_menu::PauseMenu>>,
     map: Option<Res<crate::map_ui::MapUi>>,
+    layer: Option<Res<crate::main_menu::MenuLayer>>,
     mut windows: Query<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
     mut dots: Query<&mut Visibility, With<CentreDot>>,
     mut lock: ResMut<PointerLock>,
@@ -677,7 +678,8 @@ fn lock_pointer(
         || chat.is_some_and(|c| c.typing)
         || browser.is_some_and(|b| b.open)
         || pause.is_some_and(|p| p.open)
-        || map.is_some_and(|m| m.open);
+        || map.is_some_and(|m| m.open)
+        || layer.is_some_and(|l| l.up);
     let hold = cams.single().is_ok_and(|c| c.shoulder()) && !free;
     let middle = Vec2::new(window.width(), window.height()) * 0.5;
     if lock.0 != hold {

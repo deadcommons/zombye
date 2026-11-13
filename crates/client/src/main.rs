@@ -358,6 +358,8 @@ pub struct Options {
     pub main_menu: bool,
     pub no_menu: bool,
     pub plain: bool,
+    /// The game starts with the main menu over it (#36, `main_menu::as_layer`): not a flag.
+    pub menu_layer: bool,
     /// Start with the pause menu up (`--pause`), or the settings screen on a tab
     /// (`--settings display|graphics|effects|audio|controls|game`): for pictures.
     pub pause: bool,
@@ -646,6 +648,7 @@ impl Options {
             main_menu: flag("--main-menu"),
             no_menu: flag("--no-menu"),
             plain: main_menu::plain(args),
+            menu_layer: false,
             pause: flag("--pause"),
             loading_screen: flag("--loading-screen"),
             settings: value("--settings"),
@@ -815,10 +818,14 @@ fn main() {
     if join_screen::wanted(&options) {
         join_screen::run(options);
     }
-    // Started with nothing that chooses a world: the main menu first, which starts the game again
-    // with what was picked there.
+    // Started with nothing that chooses a world: the main menu first. In a window it is a layer
+    // over the game (#36), whose world is made behind it; a picture of it is its own small app.
+    let mut options = options;
     if main_menu::wanted(&options) && !main_menu::skipped(&options) {
-        main_menu::run(options);
+        if options.offscreen() {
+            main_menu::run(options);
+        }
+        options = main_menu::as_layer(options);
     }
     // `--new-game`: who the survivor is and how the world is set, before there is a world
     // (`new_game.rs`); it starts the game again with the choices made.
@@ -857,6 +864,10 @@ fn main() {
         app.add_plugins((audio::GameAudioPlugin, music::MusicPlugin));
     }
     app.add_plugins((fps_log::FpsLogPlugin, bench_live::BenchLivePlugin, report::ReportPlugin, biome_watch::BiomeWatchPlugin));
+    // The main menu over the game: up from the start, or for the pause menu's way out (#36).
+    if !offscreen && app.world().resource::<Options>().connect.is_none() {
+        app.add_plugins(main_menu::MenuLayerPlugin);
+    }
     if black_watch::wanted() && !offscreen {
         app.add_plugins(black_watch::BlackWatchPlugin);
     }

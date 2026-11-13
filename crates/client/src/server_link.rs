@@ -230,6 +230,10 @@ pub const WAKE_HOUR: f32 = 14.0;
 
 pub struct ServerLinkPlugin;
 
+/// Whether this run's world was a save taken up (`--load`), not made new.
+#[derive(Resource, Clone, Copy)]
+pub struct Resumed(pub bool);
+
 impl Plugin for ServerLinkPlugin {
     fn build(&self, app: &mut App) {
         let mut options = app.world().resource::<Options>().clone();
@@ -312,7 +316,7 @@ impl Plugin for ServerLinkPlugin {
         app.insert_resource(crate::new_game::StartAs(start_as.clone()));
         // `--load`: the saved world, with its own seed, map and players (the world options and
         // the demo setups don't apply).
-        let loaded = options.load.as_ref().map(|name| {
+        let loaded = options.load.as_ref().and_then(|name| {
             let loaded = save_file::resolve(&options.saves, name).and_then(|path| save_file::load(&path, &config, options.load_options()).map_err(|e| e.hint("--load-anyway")));
             match loaded {
                 Ok((loaded, ms)) => {
@@ -321,7 +325,13 @@ impl Plugin for ServerLinkPlugin {
                     }
                     let world = loaded.world;
                     println!("loaded {name} in {ms:.0} ms: tick {}, {} zombies", world.tick, world.zombies.len());
-                    world
+                    Some(world)
+                }
+                // Behind the menu (#36) the autosave is only the likeliest world to carry on in:
+                // one that won't load leaves a new world there instead.
+                Err(e) if options.menu_layer => {
+                    eprintln!("can't load {name} behind the menu: {e}");
+                    None
                 }
                 Err(e) => {
                     eprintln!("can't load {name}: {e}");
@@ -330,6 +340,7 @@ impl Plugin for ServerLinkPlugin {
             }
         });
         let resumed = loaded.is_some();
+        app.insert_resource(Resumed(resumed));
         let mut server = match loaded {
             Some(world) => LocalServer::from_world(world),
             None => LocalServer::new(config),
