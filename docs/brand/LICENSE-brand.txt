@@ -12,8 +12,10 @@ NOTICE or in any other file of this repository grants any right to them.
 ZOMBYE is the subject of a United Kingdom trade mark application by Grillo Ltd. Write it as
 ZOMBYE(TM), not with the registered symbol, until the registration is granted.
 
-The logo files themselves are not kept in this repository. Official builds take them from Dead
-Commons' own sources; a build made from this repository alone shows the name as plain text.
+The only logo file kept in this repository is zombye-logo.png in this directory, which the
+repository's README shows. It is one of the Marks and is covered by this license like the rest;
+the game does not use it. Official builds take their logo files from Dead Commons' own sources; a
+build made from this repository alone shows the name as plain text.
 
 What you may do without asking
 
