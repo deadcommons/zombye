@@ -17,9 +17,10 @@ token allowed to write organisation projects, which the cloud sessions' GitHub c
 A cloud session reaches the build machine through a Remote Control session on a Mac, then `ssh` (see
 docs/remote-dev.md).
 
-**The token:** a fine-grained token of the bot account (never a person's), resource owner `deadcommons`,
-repository access to the repos whose issues go on the boards with **Issues: Read-only**, and organisation
-permission **Projects: Read and write**, and an expiry of a year or less (the organisation refuses longer-lived tokens). It is read from `$GH_PROJECT_TOKEN`, else
+**The token:** a classic token of the bot account (never a person's) with the `repo` and `project` scopes
+and an expiry of a year or less. (A fine-grained one works too only if its resource owner is the
+`deadcommons` organisation, with Issues read and organisation Projects read and write; one owned by the
+account itself sees neither the boards nor the private repos.) It is read from `$GH_PROJECT_TOKEN`, else
 `~/.config/zombye/gh-project-token` (`chmod 600`; `ZOMBYE_BOARD_TOKEN_FILE` names another file). The
 owner puts it there; the script never prints it, and agents never read or echo the file. Without it the
 script stops with a message saying what is missing.
