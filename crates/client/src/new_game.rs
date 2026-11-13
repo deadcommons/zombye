@@ -783,12 +783,13 @@ mod flat {
     pub const BUTTON: f32 = 17.0;
     pub const CHIP: f32 = 15.0;
     pub const LABEL: f32 = 14.0;
-    pub const RADIUS: f32 = 6.0;
+    pub const RADIUS: f32 = crate::menu_skin::SIGN_RADIUS;
     pub const TOP_BAR: f32 = 76.0;
     /// Padding inside a column (the guide's 16, for a window under 1600 wide; the screen is laid
     /// out for 1280 x 720 and up).
     pub const PAD: f32 = 16.0;
 }
+use crate::menu_skin::{self as skin, SIGN_EDGE};
 use flat::{ACCENT, BONE, CELL, CELL_HOVER, DIM, FAINT, HOVER_LINE, INK, LINE, PAD, RADIUS, RED, RUST, STRENGTH};
 
 #[derive(Component)]
@@ -936,7 +937,9 @@ struct Look {
 impl Look {
     const CELL: Look = Look { fill: CELL, edge: LINE, lights: true };
     const PICKED: Look = Look { fill: flat::PICKED, edge: ACCENT, lights: false };
-    const PRIMARY: Look = Look { fill: ACCENT, edge: ACCENT, lights: false };
+    const PRIMARY: Look = Look { fill: ACCENT, edge: INK, lights: false };
+    /// A plain button: the road sign's cream outline.
+    const SIGN: Look = Look { fill: CELL, edge: crate::menu_skin::SIGN_LINE, lights: true };
 }
 
 /// Lights `e` under the pointer and presses it for `act`.
@@ -966,7 +969,8 @@ const FOOTER_TALL: f32 = 68.0;
 /// The footer's one way on (Next, then Start): wider and taller than a plain button.
 fn main_button(parent: &mut ChildSpawnerCommands, label: &str, act: Act) {
     let look = Look::PRIMARY;
-    let mut e = parent.spawn((Node { height: px(48), width: px(NAV_WIDTH), padding: UiRect::horizontal(px(24)), column_gap: px(12), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), ..default() }, BackgroundColor(look.fill), BorderColor::all(look.edge)));
+    let mut e = parent.spawn((Node { height: px(48), width: px(NAV_WIDTH), padding: UiRect::horizontal(px(24)), column_gap: px(12), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(SIGN_EDGE)), border_radius: BorderRadius::all(px(RADIUS)), ..default() }, BackgroundColor(look.fill), BorderColor::all(look.edge), skin::sign_shadow(skin::SIGN_SHADOW)));
+    skin::press_in(&mut e);
     e.with_children(|b| {
         line(b, label.to_uppercase(), theme::brand(flat::BUTTON + 8.0), INK);
         keycap(b, "Enter", INK);
@@ -979,8 +983,8 @@ const NAV_WIDTH: f32 = 230.0;
 
 /// The footer's way back: as tall as the way on, quieter.
 fn side_button(parent: &mut ChildSpawnerCommands, label: &str, key: &str, act: Act) {
-    let look = Look::CELL;
-    let mut e = parent.spawn((Node { height: px(48), width: px(NAV_WIDTH), padding: UiRect::horizontal(px(18)), column_gap: px(10), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), ..default() }, BackgroundColor(look.fill), BorderColor::all(look.edge)));
+    let look = Look::SIGN;
+    let mut e = parent.spawn((Node { height: px(48), width: px(NAV_WIDTH), padding: UiRect::horizontal(px(18)), column_gap: px(10), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(SIGN_EDGE)), border_radius: BorderRadius::all(px(RADIUS)), ..default() }, BackgroundColor(look.fill), BorderColor::all(look.edge)));
     e.with_children(|b| {
         line(b, label.to_uppercase(), theme::brand(flat::BUTTON + 4.0), BONE);
         keycap(b, key, BONE);
@@ -990,9 +994,13 @@ fn side_button(parent: &mut ChildSpawnerCommands, label: &str, key: &str, act: A
 
 /// A page of the screen in the top bar, numbered as a step: big enough to see it is a way there.
 fn step(parent: &mut ChildSpawnerCommands, label: &str, n: usize, on: bool, act: Act) {
-    let look = if on { Look::PRIMARY } else { Look::CELL };
+    let look = if on { Look::PRIMARY } else { Look::SIGN };
     let ink = if on { INK } else { BONE };
-    let mut e = parent.spawn((Node { height: px(42), padding: UiRect::horizontal(px(16)), column_gap: px(10), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), ..default() }, BackgroundColor(look.fill), BorderColor::all(look.edge)));
+    let mut e = parent.spawn((Node { height: px(42), padding: UiRect::horizontal(px(16)), column_gap: px(10), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(SIGN_EDGE)), border_radius: BorderRadius::all(px(RADIUS)), ..default() }, BackgroundColor(look.fill), BorderColor::all(look.edge)));
+    if on {
+        // The page you are on is the road sign: its rust shadow says "here".
+        e.insert(skin::sign_shadow(skin::SIGN_SHADOW - 1.0));
+    }
     e.with_children(|b| {
         keycap(b, &n.to_string(), ink);
         line(b, label.to_uppercase(), theme::brand(flat::CHIP + 9.0), ink);

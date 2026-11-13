@@ -1,8 +1,9 @@
 //! The flat chrome the menus are drawn in: the main menu, the pause menu and the settings screen.
 //!
 //! The brand's look (docs/ui-design.md, The screens before the game): solid
-//! warm charcoal, one-pixel hairlines, small radii, cream text and mustard as the one accent (the
-//! open tab, what is picked, the one main button of a screen). Titles and buttons are set in the
+//! warm charcoal, hairlines, cream text and mustard as the one accent (the open tab, what is
+//! picked, the one main button of a screen). Buttons are the website's road signs: nearly square
+//! corners and a 2 px outline; the main one mustard with a hard rust shadow down and right. Titles and buttons are set in the
 //! brand's Bebas Neue (`theme::brand`), text in Barlow (`theme::font`, `strong`). Everything here is plain Bevy UI
 //! (a fill, a border, a radius), so it costs a quad a node and needs no texture.
 //!
@@ -44,9 +45,23 @@ pub const VEIL: Color = Color::srgba(0.09, 0.07, 0.06, 0.74);
 /// A screen's title, in capitals.
 pub const TITLE: f32 = 30.0;
 
+/// The corners of a button: nearly square, as the brand's road signs are.
+pub const SIGN_RADIUS: f32 = 5.0;
+/// A button's outline, as the website's.
+pub const SIGN_EDGE: f32 = 2.0;
+/// How far the main button's hard rust shadow stands out down and right (no blur): printed, not glowing.
+pub const SIGN_SHADOW: f32 = 5.0;
+/// The outline of a plain button at rest: cream at 55%.
+pub const SIGN_LINE: Color = Color::srgba(0.914, 0.847, 0.733, 0.55);
+
+/// The main button's hard rust shadow, `lift` pixels out (less when pressed in).
+pub fn sign_shadow(lift: f32) -> BoxShadow {
+    BoxShadow::new(RUST, px(lift), px(lift), px(0), px(0))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Look {
-    /// The one main button of a screen: green.
+    /// The one main button of a screen: mustard, a dark outline and a hard rust shadow (the road sign).
     Primary,
     /// Any other button.
     Plain,
@@ -67,11 +82,13 @@ pub fn panel() -> (BackgroundColor, BorderColor) {
 /// wide as its label.
 pub fn button<'a>(parent: &'a mut ChildSpawnerCommands, label: &str, detail: Option<&str>, look: Look, width: Val) -> EntityCommands<'a> {
     let (fill, line, ink) = match look {
-        Look::Primary | Look::Chip(true) => (ACCENT, ACCENT, GROUND),
-        Look::Plain | Look::Row | Look::Chip(false) => (CELL, LINE, BONE),
+        Look::Primary | Look::Chip(true) => (ACCENT, GROUND, GROUND),
+        Look::Plain | Look::Chip(false) => (CELL, SIGN_LINE, BONE),
+        Look::Row => (CELL, LINE, BONE),
         Look::Disabled => (Color::NONE, LINE, FAINT),
     };
     let (height, size) = if matches!(look, Look::Chip(_) | Look::Disabled) { (32.0, 15.0) } else { (38.0, 17.0) };
+    let edge = if look == Look::Row { 1.0 } else { SIGN_EDGE };
     let wide = width != Val::Auto;
     let mut e = parent.spawn((
         Node {
@@ -82,8 +99,8 @@ pub fn button<'a>(parent: &'a mut ChildSpawnerCommands, label: &str, detail: Opt
             column_gap: px(14),
             align_items: AlignItems::Center,
             justify_content: if detail.is_some() { JustifyContent::SpaceBetween } else if wide { JustifyContent::FlexStart } else { JustifyContent::Center },
-            border: UiRect::all(px(1)),
-            border_radius: BorderRadius::all(px(6)),
+            border: UiRect::all(px(edge)),
+            border_radius: BorderRadius::all(px(SIGN_RADIUS)),
             flex_shrink: 0.0,
             overflow: Overflow::clip(),
             ..default()
@@ -91,6 +108,12 @@ pub fn button<'a>(parent: &'a mut ChildSpawnerCommands, label: &str, detail: Opt
         BackgroundColor(fill),
         BorderColor::all(line),
     ));
+    if look == Look::Primary {
+        // The road sign: a hard rust block behind it, down and to the right. Margin keeps the
+        // block clear of what follows.
+        e.insert(sign_shadow(SIGN_SHADOW));
+        e.entry::<Node>().and_modify(|mut n| n.margin = UiRect { right: px(SIGN_SHADOW), bottom: px(SIGN_SHADOW), ..default() });
+    }
     e.with_children(|b| {
         if look == Look::Row {
             b.spawn((Text::new(label.to_string()), theme::strong(BODY), TextColor(ink), TextLayout::no_wrap(), Pickable::IGNORE));
@@ -102,8 +125,9 @@ pub fn button<'a>(parent: &'a mut ChildSpawnerCommands, label: &str, detail: Opt
         }
     });
     let over = match look {
-        Look::Primary => Some((ACCENT_HOVER, ACCENT_HOVER)),
-        Look::Plain | Look::Row | Look::Chip(false) => Some((CELL_HOVER, LINE_HOVER)),
+        Look::Primary => Some((ACCENT_HOVER, GROUND)),
+        Look::Plain | Look::Chip(false) => Some((CELL_HOVER, BONE)),
+        Look::Row => Some((CELL_HOVER, LINE_HOVER)),
         Look::Chip(true) | Look::Disabled => None,
     };
     if let Some((over_fill, over_line)) = over {
@@ -118,7 +142,34 @@ pub fn button<'a>(parent: &'a mut ChildSpawnerCommands, label: &str, detail: Opt
             }
         });
     }
+    if look == Look::Primary {
+        // Pressed, the sign sinks into its shadow a little, like a key.
+        press_in(&mut e);
+    }
     e
+}
+
+/// A main button sinks toward its shadow while held: the shadow closes up and the button moves
+/// down and right by as much.
+pub fn press_in(e: &mut EntityCommands) {
+    e.observe(|ev: On<PointerPress>, mut q: Query<(&mut BoxShadow, &mut UiTransform)>| {
+        if let Ok((mut shadow, mut at)) = q.get_mut(ev.entity) {
+            *shadow = sign_shadow(SIGN_SHADOW - 3.0);
+            at.translation = Val2::px(3.0, 3.0);
+        }
+    })
+    .observe(|ev: On<PointerRelease>, mut q: Query<(&mut BoxShadow, &mut UiTransform)>| {
+        if let Ok((mut shadow, mut at)) = q.get_mut(ev.entity) {
+            *shadow = sign_shadow(SIGN_SHADOW);
+            at.translation = Val2::ZERO;
+        }
+    })
+    .observe(|ev: On<PointerOut>, mut q: Query<(&mut BoxShadow, &mut UiTransform)>| {
+        if let Ok((mut shadow, mut at)) = q.get_mut(ev.entity) {
+            *shadow = sign_shadow(SIGN_SHADOW);
+            at.translation = Val2::ZERO;
+        }
+    });
 }
 
 /// A key to press and what it does.
