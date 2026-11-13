@@ -81,6 +81,9 @@ pub struct GenConfig {
     /// district (both sides of the street). 0: none (the core is the civic district alone).
     #[serde(default = "default_commercial_blocks")]
     pub commercial_blocks: i32,
+    /// The height of the ground: low-poly hills outside a flat town (`crate::terrain`).
+    #[serde(default)]
+    pub terrain: crate::terrain::TerrainDef,
 }
 
 fn default_commercial_blocks() -> i32 {
@@ -90,7 +93,7 @@ fn default_commercial_blocks() -> i32 {
 impl Default for GenConfig {
     fn default() -> Self {
         // 30 chunks (480 m) holds the default town (at most about 420 × 320 m) with forest round it.
-        Self { seed: 1, chunks: IVec2::new(30, 30), blocks: IVec2::new(5, 4), commercial_blocks: default_commercial_blocks() }
+        Self { seed: 1, chunks: IVec2::new(30, 30), blocks: IVec2::new(5, 4), commercial_blocks: default_commercial_blocks(), terrain: crate::terrain::TerrainDef::default() }
     }
 }
 
@@ -760,6 +763,8 @@ pub fn generate_with(config: &GenConfig, templates: &[BuildingTemplate], props: 
     town.roads_out(size, main_y);
     let TownBuilder { mut map, mut rng, homes, plan, fronts, .. } = town;
 
+    // The hills first: the forest thins out on their steepest faces, so the ground shows there.
+    map.terrain = crate::terrain::Terrain::generate(&config.terrain, config.seed, size, town_min, town_max);
     plant_forest(&mut map, &mut rng, town_min, town_max, config.seed, &wild);
 
     // Wake up in a ground-floor bedroom of a house.
@@ -1879,6 +1884,26 @@ fn plant_forest(map: &mut TileMap, rng: &mut Rng, keep_min: IVec2, keep_max: IVe
             } else if roll > 0.985 {
                 if let Some(t) = map.tile_mut(p) {
                     t.floor = Floor::Dirt;
+                }
+            }
+        }
+    }
+    // Steep hillsides are bare, open ground and rock: few trees take hold there. Thinned once the
+    // forest is planted, by a hash and not the stream (a tile left empty while planting would let its
+    // neighbours draw), so the rest of the town draws the same numbers with or without hills.
+    if map.terrain.is_flat() {
+        return;
+    }
+    for y in 0..map.height() {
+        for x in 0..map.width() {
+            let p = IVec2::new(x, y);
+            if !matches!(map.tile(p).feature, Feature::Tree | Feature::PineTree) {
+                continue;
+            }
+            let grade = map.terrain.broad_grade(p.as_vec2() + Vec2::splat(0.5));
+            if crate::rng::hash01(seed, p.x as u64, p.y as u64, 0x7e44) < 0.85 * smoothstep(0.11, 0.19, grade) {
+                if let Some(t) = map.tile_mut(p) {
+                    t.feature = Feature::None;
                 }
             }
         }

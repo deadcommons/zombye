@@ -150,6 +150,8 @@ pub struct VegSpot {
     pub scale: f32,
     pub dry: f32,
     pub rank: f32,
+    /// The height of the ground under it (`TileMap::ground`), set when its chunk is built.
+    pub ground: f32,
 }
 
 /// A chunk's spots, on its ground entity (`world_render::spawn_chunk`).
@@ -298,7 +300,7 @@ fn chunk_mesh(patches: &[[Patch; VARIANTS]; KINDS], spots: &[VegSpot], density: 
         let (dry, bright) = (spot.dry.clamp(0.0, 1.0), spot_bright(spot));
         for (p, c) in patch.positions.iter().zip(&patch.colors) {
             let [x, y, z] = p.map(|v| v * spot.scale);
-            positions.push([spot.pos.x + x * cos + z * sin, y, spot.pos.y - x * sin + z * cos]);
+            positions.push([spot.pos.x + x * cos + z * sin, y + spot.ground, spot.pos.y - x * sin + z * cos]);
             colors.push(if c[3] > 0.5 { [c[0] * COLOUR_PACK, dry, bright, 1.0] } else { [c[0] * COLOUR_PACK, c[1] * COLOUR_PACK, c[2] * COLOUR_PACK, 0.0] });
         }
     }
@@ -626,7 +628,7 @@ mod tests {
     fn a_chunks_spots_merge_into_one_packed_mesh() {
         use bevy::mesh::{VertexAttributeValues, VertexFormat};
         let patches = VegKind::ALL.map(|kind| std::array::from_fn(|v| patch(kind, v as u32)));
-        let spot = |x: f32, kind: VegKind, dry: f32, rank: f32| VegSpot { pos: Vec2::new(x, 40.0), kind, variant: 1, turn: 1.0, scale: 1.5, dry, rank };
+        let spot = |x: f32, kind: VegKind, dry: f32, rank: f32| VegSpot { pos: Vec2::new(x, 40.0), kind, variant: 1, turn: 1.0, scale: 1.5, dry, rank, ground: 0.0 };
         let spots = [spot(35.0, VegKind::Grass, 0.5, 0.2), spot(38.0, VegKind::Pebbles, 0.0, 0.4), spot(44.0, VegKind::GrassLong, 7.0, 1.5)];
         let count = |kind: VegKind| patch(kind, 1).positions.len();
         assert!(chunk_mesh(&patches, &spots, 0.1).is_none());

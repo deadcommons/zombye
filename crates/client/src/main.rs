@@ -121,6 +121,7 @@ mod hud;
 mod inventory_ui;
 mod join_screen;
 mod items_render;
+mod vehicles_render;
 mod lights;
 mod loading;
 mod main_menu;
@@ -807,7 +808,7 @@ fn main() {
             player::PlayerPlugin,
             camera::IsoCameraPlugin,
             zombie_render::ZombieRenderPlugin,
-            items_render::ItemsRenderPlugin,
+            (items_render::ItemsRenderPlugin, vehicles_render::VehiclesRenderPlugin),
             (hud::HudPlugin, inventory_ui::InventoryUiPlugin, health_ui::HealthUiPlugin, death::DeathPlugin, needs_ui::NeedsUiPlugin, action_ui::ActionUiPlugin, skills_ui::SkillsUiPlugin, debug_stats::DebugStatsPlugin, build_ui::BuildUiPlugin),
             (fx::FxPlugin, heard::HeardPlugin, chat::ChatPlugin, film::FilmPlugin, graphics_ui::GraphicsUiPlugin, render_scale::RenderScalePlugin, vegetation::VegetationPlugin, rules_ui::RulesUiPlugin, browser_ui::BrowserUiPlugin, map_ui::MapUiPlugin),
             survivor::SurvivorPlugin,

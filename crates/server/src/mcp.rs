@@ -98,7 +98,7 @@ enum Kind {
 
 /// Every tool: name, title (shown to people by clients), kind. `tool_list` adds these to the
 /// definitions, and a test checks each tool has a row.
-const TOOLS: [(&str, &str, Kind); 68] = [
+const TOOLS: [(&str, &str, Kind); 70] = [
     ("observe", "Look around (ASCII map)", Kind::Look),
     ("screenshot", "Screenshot (rendered picture)", Kind::Look),
     ("stats", "World and player stats", Kind::Look),
@@ -117,6 +117,7 @@ const TOOLS: [(&str, &str, Kind); 68] = [
     ("saves", "List saves", Kind::Look),
     ("heard", "What a player heard said", Kind::Look),
     ("fires", "Campfires and stoves nearby", Kind::Look),
+    ("weather", "The date, the weather and the temperature", Kind::Look),
     ("say", "Say something to whoever is near", Kind::Play),
     ("gesture", "Wave, put your hands up or point", Kind::Play),
     ("restrain", "Tie another survivor's hands", Kind::Play),
@@ -166,6 +167,7 @@ const TOOLS: [(&str, &str, Kind); 68] = [
     ("dev", "God mode and ignored by zombies", Kind::Debug),
     ("restrain_now", "Tie a player's hands at once", Kind::Debug),
     ("skip_time", "Skip time", Kind::Debug),
+    ("set_weather", "Set the weather", Kind::Debug),
     ("load", "Load a save (replaces the world)", Kind::Debug),
 ];
 
@@ -174,6 +176,23 @@ const TOOLS: [(&str, &str, Kind); 68] = [
 fn tool_kind(name: &str) -> Option<Kind> {
     let name = if name == "toggle_door" { "interact" } else { name };
     TOOLS.iter().find(|t| t.0 == name).map(|t| t.2)
+}
+
+/// The weather in a line: `rain (70%), cloud 85%, wind 0.4 toward the NE, 9.5 C, sight x0.86, hearing x0.90`.
+fn weather_line(w: &zombye_sim::WeatherNow) -> String {
+    const WAYS: [&str; 8] = ["E", "SE", "S", "SW", "W", "NW", "N", "NE"];
+    let way = WAYS[((w.wind_dir / std::f32::consts::TAU * 8.0).round() as usize) % 8];
+    let strength = if w.kind == zombye_sim::WeatherKind::Clear { String::new() } else { format!(" ({:.0}%)", w.intensity * 100.0) };
+    format!(
+        "{}{strength}, cloud {:.0}%, wind {:.2} toward the {way}, {:.1} C, sight x{:.2}, hearing x{:.2}{}",
+        w.kind.id(),
+        w.cloud * 100.0,
+        w.wind,
+        w.temp_c,
+        w.sight,
+        w.hearing,
+        if w.forced { " (set by set_weather)" } else { "" }
+    )
 }
 
 /// "on" / "off".
@@ -476,6 +495,8 @@ fn output_schema(name: &str) -> Option<Value> {
                 "time_of_day": {"type": "string", "description": "The game clock"},
                 "daylight": {"type": "number", "description": "0 night to 1 day"},
                 "time_scale": {"type": "number", "description": "Game hours run this much faster (30 while everyone sleeps)"},
+                "date": {"type": "object", "description": "The world's calendar: year, month (1-12), month_name, day, season, day_number (0 the first day)"},
+                "weather": {"type": "object", "description": "The weather outdoors: kind, intensity and cloud (0-1), wind (0-1), temp_c, forced (set by set_weather)"},
                 "players": {"type": "array", "items": {
                     "type": "object",
                     "required": ["id", "pos", "hp", "dead", "weapon", "endurance", "hunger", "thirst", "tiredness", "tags", "run"],
@@ -657,6 +678,21 @@ fn tool_defs() -> Value {
                 and whether the player has heat to cook with where it stands (recipes marked heat need a lit fire or a \
                 working stove in reach). Build a campfire with craft {recipe: build_campfire}.",
             "inputSchema": {"type": "object", "properties": {"player": {"type": "integer", "default": 1}, "radius": {"type": "number", "default": 30}}}
+        },
+        {
+            "name": "weather",
+            "description": "Read-only: the date on the world's calendar (day, month, year, season, days since the world \
+                began), the weather outdoors now (clear, cloudy, overcast, rain, storm, snow, blizzard or fog; how strong, \
+                cloud cover, wind and which way, the air in degrees C, and how far one sees and hears in it as shares of a \
+                clear day's; nothing reads those two yet), whether it was set by set_weather, and the temperature where \
+                the player stands (indoors is milder, a lit campfire warms). forecast_hours (default 0, at most 240) adds \
+                the weather every few game hours ahead (step_hours, default 3). The weather follows from the world seed and \
+                the clock by the month's climate (weather.ron): winters are deadly cold, summers very hot.",
+            "inputSchema": {"type": "object", "properties": {
+                "player": {"type": "integer", "default": 1},
+                "forecast_hours": {"type": "number", "default": 0},
+                "step_hours": {"type": "number", "default": 3}
+            }}
         },
         {
             "name": "fire",
@@ -1164,6 +1200,19 @@ fn tool_defs() -> Value {
             "inputSchema": {"type": "object", "required": ["x", "y"], "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}}}
         },
         {
+            "name": "set_weather",
+            "description": "Debug: set the weather outdoors to kind (clear, cloudy, overcast, rain, storm, snow, blizzard, \
+                fog) at intensity (0-1, default 1) for hours game hours (default 6, at most a year), and the air to temp_c \
+                degrees C if given (else the climate's). kind \"auto\" goes back to the climate's weather at once. Saved with \
+                the world.",
+            "inputSchema": {"type": "object", "required": ["kind"], "properties": {
+                "kind": {"type": "string", "enum": ["auto", "clear", "cloudy", "overcast", "rain", "storm", "snow", "blizzard", "fog"]},
+                "intensity": {"type": "number", "default": 1},
+                "hours": {"type": "number", "default": 6},
+                "temp_c": {"type": "number"}
+            }}
+        },
+        {
             "name": "skip_time",
             "description": "Move the clock forward (0-24 hours).",
             "inputSchema": {"type": "object", "required": ["hours"], "properties": {"hours": {"type": "number"}}}
@@ -1483,6 +1532,48 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 t.reach(volume) * world.config.zombie.wall_muffle,
                 t.noise(volume)
             ))
+        }
+        "weather" => {
+            let id = player_id();
+            let p = world.player(id).ok_or_else(|| format!("no player {id}"))?;
+            let (pos, level) = (p.state.pos, p.state.level);
+            let d = world.date();
+            let mut out = format!(
+                "{} {} of year {}, {} (day {} of this world), {}\nnow: {}\nwhere P{id} stands ({}): {:.1} C\n",
+                d.day,
+                world.month_name(),
+                d.year,
+                d.season().id(),
+                d.day_number + 1,
+                clock(world.time_of_day()),
+                weather_line(&world.weather()),
+                if level > 0 || world.map.room_at(pos) != 0 { "indoors" } else { "outdoors" },
+                world.air_temp_at(pos, level)
+            );
+            let ahead = num("forecast_hours").unwrap_or(0.0).clamp(0.0, 240.0);
+            let step = num("step_hours").unwrap_or(3.0).clamp(0.5, 48.0);
+            let now = world.clock_hours();
+            let mut h = step;
+            while h <= ahead {
+                let at = now + h;
+                let hour = (at.rem_euclid(24.0)) as f32;
+                let dd = world.config.weather.date_at(at);
+                out.push_str(&format!("+{h:.0} h ({}/{} {}): {}\n", dd.day, dd.month, clock(hour), weather_line(&world.weather_at(at))));
+                h += step;
+            }
+            Ok(out)
+        }
+        "set_weather" => {
+            let kind = args.get("kind").and_then(Value::as_str).ok_or("kind is required")?;
+            if kind == "auto" {
+                world.force_weather(None);
+            } else {
+                let k = zombye_sim::WeatherKind::from_id(kind).ok_or_else(|| format!("unknown kind {kind:?}"))?;
+                let intensity = num("intensity").unwrap_or(1.0) as f32;
+                let hours = num("hours").unwrap_or(6.0) as f32;
+                world.force_weather(Some((k, intensity, hours, num("temp_c").map(|t| t as f32))));
+            }
+            Ok(format!("now: {}", weather_line(&world.weather())))
         }
         "fires" => {
             let id = player_id();
@@ -2346,6 +2437,8 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
             "tick": world.tick,
             "time_of_day": clock(world.time_of_day()),
             "daylight": world.daylight(),
+            "date": date_json(world),
+            "weather": weather_json(world),
             "zombies": world.zombies.len(),
             "zombie_tiers": {
                 "active": world.stats.active,
@@ -4329,7 +4422,7 @@ mod tests {
             assert!(!persist.dirty, "{name} made the world need saving");
             called += 1;
         }
-        assert_eq!(called, 18);
+        assert_eq!(called, 19);
         // A tool that isn't read-only does make it need saving.
         let (_, err) = call(&mut world, &mut persist, "search", json!({"container": container}));
         assert!(!err && persist.dirty);
@@ -4492,7 +4585,7 @@ mod tests {
         let list = tool_list(opts);
         let names: Vec<&str> = list.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
         let debug: Vec<&str> = TOOLS.iter().filter(|t| t.2 == Kind::Debug).map(|t| t.0).collect();
-        assert_eq!(debug.len(), 13);
+        assert_eq!(debug.len(), 14);
         assert_eq!(names.len(), TOOLS.len() - debug.len());
         for name in &debug {
             assert!(!names.contains(name), "{name} is listed");
@@ -5306,4 +5399,16 @@ mod tests {
         let (text, err) = call(&mut world, &mut persist, "step_ticks", json!({"n": 20}));
         assert!(!err, "{text}");
     }
+}
+
+/// The world's calendar for `stats`.
+fn date_json(world: &World) -> serde_json::Value {
+    let d = world.date();
+    json!({"year": d.year, "month": d.month, "month_name": world.month_name(), "day": d.day, "season": d.season().id(), "day_number": d.day_number})
+}
+
+/// The weather outdoors for `stats`.
+fn weather_json(world: &World) -> serde_json::Value {
+    let w = world.weather();
+    json!({"kind": w.kind.id(), "intensity": w.intensity, "cloud": w.cloud, "wind": w.wind, "temp_c": w.temp_c, "forced": w.forced})
 }

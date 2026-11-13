@@ -471,6 +471,7 @@ pub(crate) fn check_settings(text: &str, config: &WorldConfig) -> Result<(), Loa
     config.needs.check().map_err(|e| invalid(format!("settings: {e}")))?;
     config.skills.check().map_err(|e| invalid(format!("settings: {e}")))?;
     config.stairs.check().map_err(|e| invalid(format!("settings: {e}")))?;
+    g.terrain.check().map_err(|e| invalid(format!("settings: generation.{e}")))?;
     config.movement.check().map_err(|e| invalid(format!("settings: {e}")))?;
     Ok(())
 }

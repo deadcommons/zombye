@@ -13,13 +13,13 @@ Work is tracked on GitHub, not in the repo: the
 
 | Path | What | Licence |
 |---|---|---|
-| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `awareness.rs`: which players see and heard which, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), weapons wearing out and breaking (`wear.rs`, see Weapons in the hand), lag compensation for it (`lagcomp.rs`: a few ticks of positions, so a remote client's blow lands where it saw the target), guns (`ranged.rs`: a shot's flight over the map and through bodies, rounds, magazines and reloading, see Guns), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), campfires, stoves and cooking over heat (`fire.rs` + `FireTuning`, see Fire and cooking), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), sitting down (`sit.rs` + `SitTuning`, see Sitting down under Needs), the status icons a client shows of all that, their levels from data (`status.rs`), skills that improve with practice (`skills.rs` + `SkillTuning`), street props placed by the town generator from data (`street_props.rs`), electricity: power sources, light switches and lit rooms (`power.rs`, see Electricity and lights), run stats and the cause of death (`run.rs`), what each survivor has seen of the town, for the map screen (`explore.rs`, see The map), the first night's objectives and outcome (`firstnight.rs`), who a survivor was: Background, Strengths and Flaws (`origin.rs`) and difficulty presets (`difficulty.rs`; both: see A new game), logging out, spawn protection and the start kit on a server (`logout.rs`), the benchmark's scenarios and score (`scenario.rs`, see The agent survival benchmark), proximity chat and gestures (`speech.rs`: who hears a line, the noise it makes, see Talking and gestures), roller blinds on windows and glazed doors (`blinds.rs`, see Blinds), the build catalog and barricades (`build.rs`, see Building and barricades), tying hands, freeing and searching a tied survivor (`bonds.rs`) and optional groups with names and shared markers (`groups.rs`; both: see Hold-ups and groups), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`), the hook mod scripts run through (`script.rs`: events, the checked `script_*` functions, what scripts keep; see Mods and scripts). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
+| `crates/sim` | Pure simulation: chunked tile map with edge walls, building templates, town generator, line of sight, players (`players.rs`: shared movement + endurance), zombies (`zombies.rs` storage, `senses.rs` sight + hearing, `awareness.rs`: which players see and heard which, `ai.rs` state machine + `ZombieTuning`, `tiers.rs` active/near/virtual simulation tiers + `TierTuning`), population (`population.rs`: density per zone from data, respawn, migration toward noise), flow fields + cache (`flow.rs`), item and weapon definitions and ground items (`items.rs`), inventories, carry weight and item jobs (`inventory.rs` + `CarryTuning`), furniture containers (`containers.rs`), loot tables (`loot.rs`), melee combat and player health (`combat.rs` + `CombatTuning`), weapons wearing out and breaking (`wear.rs`, see Weapons in the hand), lag compensation for it (`lagcomp.rs`: a few ticks of positions, so a remote client's blow lands where it saw the target), guns (`ranged.rs`: a shot's flight over the map and through bodies, rounds, magazines and reloading, see Guns), wounds and illness (`health.rs`), first aid (`firstaid.rs` + `FirstAidTuning`), crafting recipes and craft jobs (`crafting.rs`), campfires, stoves and cooking over heat (`fire.rs` + `FireTuning`, see Fire and cooking), the calendar, the climate and the weather (`weather.rs` + `WeatherTuning`, see Weather and seasons), hunger, thirst, tiredness, food going off and sleep (`needs.rs` + `NeedsTuning`), sitting down (`sit.rs` + `SitTuning`, see Sitting down under Needs), the status icons a client shows of all that, their levels from data (`status.rs`), skills that improve with practice (`skills.rs` + `SkillTuning`), street props placed by the town generator from data (`street_props.rs`), electricity: power sources, light switches and lit rooms (`power.rs`, see Electricity and lights), run stats and the cause of death (`run.rs`), what each survivor has seen of the town, for the map screen (`explore.rs`, see The map), the first night's objectives and outcome (`firstnight.rs`), who a survivor was: Background, Strengths and Flaws (`origin.rs`) and difficulty presets (`difficulty.rs`; both: see A new game), logging out, spawn protection and the start kit on a server (`logout.rs`), the benchmark's scenarios and score (`scenario.rs`, see The agent survival benchmark), proximity chat and gestures (`speech.rs`: who hears a line, the noise it makes, see Talking and gestures), roller blinds on windows and glazed doors (`blinds.rs`, see Blinds), the build catalog and barricades (`build.rs`, see Building and barricades), tying hands, freeing and searching a tied survivor (`bonds.rs`) and optional groups with names and shared markers (`groups.rs`; both: see Hold-ups and groups), saving and loading the world to and from bytes (`save.rs`; content-change and value checks on load in `save_check.rs`), the hook mod scripts run through (`script.rs`: events, the checked `script_*` functions, what scripts keep; see Mods and scripts). No engine, no I/O. Deterministic. | MIT OR Apache-2.0 |
 | `crates/net` | `Intent` (client → server) and `Snapshot` (server → client) types, `LocalServer` (with `join`), multiplayer over the network (see Multiplayer: the messages, framing and per-client delta snapshots in `wire.rs`, a client's view cut to what its survivor sees and hears of other players in `visibility.rs`, the server's connections in `host.rs`, a client's in `remote.rs`; the server browser's list and probes in `browser.rs`, see The server browser; a mod's data as a server hands it to joining clients, its hash and the client's cache in `modpack.rs`, see Mods downloaded on joining; what went wrong with a join, in a player's words, in `joining.rs`, see The join screen), content loading (`content.rs`), save files on disk (`save_file.rs`), Ctrl-C/SIGTERM/SIGHUP as a request to save and stop, for the server and the client (`shutdown.rs`). | MIT OR Apache-2.0 |
 | `crates/mods` | Mods (see Mods and scripts): reads a mod's folder (`mod.ron`, `items.ron`, `recipes.ron`, `loot.ron`, `buildings/*.ron`, `*.luau`), merges its data into a `WorldConfig` (`lib.rs`: `Mod`, `apply`, `load_into`; `Mod::pack` / `from_pack` / `apply_packs`: the data a server hands to joining clients, #24) and runs its Luau scripts sandboxed, one VM a mod, as the world's script host (`luau.rs`, on `mlua`; Luau is built from source, so a C++ compiler is needed). The one crate with Luau in it. | MIT OR Apache-2.0 |
 | `mods/` | Sample mods: `alarm_clock` (an item behaviour by script; the worked example of [docs/modding.md](docs/modding.md)). | MIT OR Apache-2.0 |
 | `crates/server` | `zombye-server` headless binary: bench mode (`--bench`, with `--players`/`--horde` for the tiers) and the MCP endpoint (`--mcp` on stdio, `mcp.rs`; `--mcp-http` over streamable HTTP for remote agents, `mcp_http.rs`, see Connecting an agent); the multiplayer server (`--host`) and bot clients (`--bots N --connect ADDR`; `multiplayer.rs`, see Multiplayer); the operator's MCP admin endpoint on a hosting server (`--host --admin-mcp`, `admin.rs`, see Administering a server); the dedicated server from one config file (`--config FILE`, `config.rs`, and the `Dockerfile` at the root that runs it, see The dedicated server under Multiplayer); `--save` with autosave; the MCP `screenshot` tool runs the client offscreen (`screenshot.rs`); the agent survival benchmark (`--benchmark`, `benchmark.rs`, see The agent survival benchmark). | MIT OR Apache-2.0 |
 | `crates/client` | `zombye` Bevy client: camera, chunk streaming, building meshes (`world_render.rs`; their details, trim, siding lines, porches, chimneys, shopfronts and lit windows, from `meshgen/building_kit.rs`, see Buildings dressed under The world), the outdoors per chunk from the tile map alone (`meshgen/landscape.rs`: lawns, verges, forest floor and litter, road paint at real scale, kerbs, slab joints, driveways, front beds, fences and hedges; `meshgen/curves.rs`: what's drawn round over the tiles, see Curves under The world; `meshgen/trees.rs`: faceted broadleaves, birches, pines, spruces; colours from `assets/data/palette.ron` through `meshgen/palette.rs`), fog of war, cutaways (`cutaway.rs`: which walls drop, per building and wall edge; `silhouette.rs`: the player's shape through what still covers them; see Cutaways under Light and mood; `opening_hints.rs`: outlines of the doors and windows a building hides from the camera, see Opening hints there), day/night, input + player prediction (`player.rs`), grey-box characters (`rig.rs` bones + boxes; `zombie_render.rs` VAT crowd, or a character baked offline read from a `.zvat` (`zvat.rs`); `survivor.rs` skinned, CPU-posed players; `character.rs` reads a modular character's body and wearable GLBs and `survivor_model.rs` draws players as it, dressed in what they wear), hit feedback (`fx.rs`), the aim marker (`aim_marker.rs`, see Combat), lights in the dark (`lights.rs`, see Light and mood), instanced grass, flowers and litter (`vegetation.rs`), the film pass (`film.rs`) and the graphics settings (`graphics.rs`; all three: see Look and feel), ground items (`items_render.rs`), Blender-built furniture models merged into building meshes (`furniture_models.rs`, grey-box for kinds without one), street props merged into each chunk's props mesh from the same models (`meshgen/street_props.rs`, see Street props under The world), HUD (`hud.rs`; the hotbar on keys 1-9, `hotbar.rs`; panels dragged by their titles and remembered, `panels.rs`; the UI's one skin, `theme.rs`: text sizes and colours, and the painted sheets, buttons, slots and bars every panel uses, see The skin), the death screen and run summary (`death.rs`), the first night's objectives, hints and morning screen (`firstnight_ui.rs`), the skills panel and level-up line (`skills_ui.rs`), the chat line, speech bubbles and gesture keys (`chat.rs`, see Talking and gestures), tying, searching and group keys, the search panel, name tags and markers (`holdup.rs`, see Hold-ups and groups), the build menu (`build_ui.rs`, Shift+B, see Building and barricades), the server browser (`browser_ui.rs`, F7, see The server browser), the map screen (`map_ui.rs`, M, see The map), the main menu, pause menu and settings screen (`main_menu.rs`, `pause_menu.rs`, `settings_ui.rs`, drawn with `menu_skin.rs`, see Menus), the new-game screen (`new_game.rs`, see A new game), the join screen before the game on `--connect` (`join_screen.rs`, see The join screen there), sound (`audio.rs`, see Sound), `--autoplay` (`autoplay.rs`), quicksave / quickload / autosave (`saving.rs`), offscreen rendering to a PNG with no window (`--render-to`, `offscreen.rs`). | MIT OR Apache-2.0 |
-| `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/items/recipes.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`, `data/street_props.ron`, `data/power.ron`: the grid and the lights, `data/fire.ron`: campfires, burns and cooking heat, `data/scenarios.ron`: the benchmark's scenarios, `data/status.ron`: the status icons' levels, labels and tips, `data/fog.ron`: how the fog of war looks, `data/light.ron`: the sun, fill, grade, haze and firelight, `data/decay.ron`: how worn street props are drawn, `data/vegetation.ron`: where ground cover grows, `data/palette.ron`: every colour, for Blender assets and the generated world), models (`models/furniture/*.glb`, street props `models/street/*.glb`; the survivor's body `models/characters/survivor_01.glb` and its wearables `models/wearables/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), sound (`audio/sfx/*.wav`, `audio/ambience/*.wav`, listed in `data/sounds.ron`), the UI's typefaces (`fonts/barlow/`, see The skin), later textures. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); the Barlow fonts: SIL OFL 1.1; each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
+| `assets/` | Shaders, data files (`data/buildings/*.ron` templates, `data/items/items.ron`, `data/items/weapons.ron`, `data/items/recipes.ron`, `data/containers.ron`, `data/loot.ron`, `data/population.ron`, `data/street_props.ron`, `data/power.ron`: the grid and the lights, `data/fire.ron`: campfires, burns and cooking heat, `data/vehicles.ron`: the vehicles you can drive, `data/weather.ron`: the calendar and the climate by month, `data/scenarios.ron`: the benchmark's scenarios, `data/status.ron`: the status icons' levels, labels and tips, `data/fog.ron`: how the fog of war looks, `data/light.ron`: the sun, fill, grade, haze and firelight, `data/decay.ron`: how worn street props are drawn, `data/vegetation.ron`: where ground cover grows, `data/palette.ron`: every colour, for Blender assets and the generated world), models (`models/furniture/*.glb`, street props `models/street/*.glb`; the survivor's body `models/characters/survivor_01.glb` and its wearables `models/wearables/*.glb`) with their specs (`specs/`) and Blender sources (`source/`: build script, `.blend`, renders), sound (`audio/sfx/*.wav`, `audio/ambience/*.wav`, listed in `data/sounds.ron`), the UI's typefaces (`fonts/barlow/`, see The skin), later textures. | Code, data and shaders: MIT OR Apache-2.0. Art and audio: CC BY-NC-SA 4.0 ([assets/LICENSE](assets/LICENSE)); the Barlow fonts: SIL OFL 1.1; each asset listed in [ATTRIBUTION.md](ATTRIBUTION.md) |
 | `tools/blender/` | Python to build assets: run inside Blender, mesh builder, palette, renders, validation, GLB export (`zasset.py`, `palette.py`: reads `assets/data/palette.ron`, `build.py`), character clean-up, validation and skinned export (`zchar.py`), library animation clips retargeted onto a character's skeleton (`zretarget.py`, plain Python), VAT bake for the crowd, outfit variants with palette swatches (`zvat.py`, `build.py -- --crowd`); plain Python, art-repo work folders and promotion (`artrepo.py`). | MIT OR Apache-2.0 |
 | `tools/audio/` | `synth.py`: the placeholder sounds, synthesised from noise, tones and filters (plain Python, deterministic); `zsound.py`: the real sounds (#78), from a generator's raw takes to game-ready WAVs: slice, clean, audition, promote with ATTRIBUTION.md rows, check (plain Python; see the elevenlabs-sounds skill). | MIT OR Apache-2.0 |
 | `tools/remote/` | The remote machines (see Remote machines): `setup.sh` (a build or GPU box), `zgpu` (the client on the GPU box, as if local), `zwork` (an agent per issue, each in its own worktree), `zboard` (the owner's dashboard: a screen of review pictures or the game streamed, the issues' progress, feedback, approve), `dcv.sh` (a GPU machine's desktop shared by Amazon DCV, for remote play). | MIT OR Apache-2.0 |
@@ -500,6 +500,26 @@ A packaged game for playtesters, handed out from a restricted itch.io page (dead
   included). Changing the generator changes every map: saves made before #80 load only with `--load-anyway` /
   `load {force: true}`. Lot details use coordinates relative to their lot, so a bigger map gives the same
   town. `print_town` (an ignored test; `ZOMBYE_SEED`, and `ZOMBYE_PPM=PATH` for a one-pixel-a-tile picture) prints it.
+- **Terrain (DCM-83, `sim::terrain`; stage 1):** the ground has hills, low-poly: heights at the corners of a
+  `cell_m` (6 m) grid, each square two flat facets (the diagonal alternating), from seeded value noise
+  (`Terrain::generate`, `+ - * / sqrt` only, so the same on every machine). **The town is level:** corners within
+  `flat_margin_m` (6 m) of the town's bounds are 0 and the hills rise over `ramp_m` (70 m) beyond to `relief_m`
+  (18 m) of relief, `wavelength_m` 130, each corner then raised or lowered at random by up to `roughness_m` (1.4 m), so neighbouring facets tilt their own ways and the light picks each out; no facet is steeper than `max_grade` (0.32, about 18°: every slope is
+  walkable). The forest thins out on the steepest faces (`plant_forest`, by `broad_grade`: up to 85% fewer trees from a grade of 0.11
+  to 0.19), so bare ground and rock show there.
+  `TerrainDef` is `GenConfig::terrain` (serde default, saved with the settings, checked on load, `TerrainDef::flat()`
+  none); the heights are derived from the seed and the town, never saved or sent: a client builds them with the map
+  from `Welcome::generation` (`wire::PROTOCOL` 33). `TileMap::terrain`, `TileMap::ground(p)` (the height of the
+  facet under p); `height_at` stays height above the ground (stairs, `out_of_reach`, blows). Walking uphill is slower
+  (`Terrain::slope_factor`: `1 - uphill_slow (1.5) x climb`, never under half), for players in `step_movement` (so
+  prediction stays exact) and active zombies; downhill and across are as on the flat. **Client:** `MeshBuilder::drape`
+  lays a chunk's ground over the facets (every triangle that would cross a fold cut along it, flat faces taking their
+  facet's normal and drifting to the palette's `dirt` then pale `cliff` stone as the hillside's grade (`Terrain::broad_grade`, over a few cells, not one facet's tilt) passes 0.06 and 0.11), on the terrain each facet's turn toward or away from the sun is told again in its colour (`world.wesl`, `FACET_TOWARD` 1.2, `FACET_AWAY` 2.4, as against level ground: the tone map squeezes a few degrees' difference on pale ground to nothing, and the low-poly look is each face catching the light its own way), its first UVs
+  carrying the ground's height so `world.wesl` tests height above the ground (`above`, under `TERRAIN`: ground
+  detail, roofs, haze, moon paint); `MeshBuilder::lift` stands props and trees on it (by their anchor, the lowest
+  5 cm following the slope); players, zombies, items, grass, effects, lights and the aim marker add
+  `ground(pos)`. **Not yet:** near-tier zombies slowed by slopes, bullets over hills (they fly level), water and
+  sand, cliffs, a gentle grade in town with a level pad per lot (stage 2).
 - **Curves (#82, `meshgen/curves.rs`):** the tiles stay square (walking, sight and the sim go by them), but what's
   drawn follows real curves, faceted, never stepped. Turning circles are true circles (48 facets) of asphalt, kerb and
   a sidewalk ring with slab joints across it, opening into their street through a 4 m reverse curve each side. Every
@@ -949,6 +969,41 @@ upgrades and the rest come as new categories of the same list.
 - **Not yet:** repairing or sharpening, a separate head and handle, a skill for looking after weapons, guns that
   wear, hitting doors.
 - Tests: `sim::wear::tests`.
+
+## Vehicles (`sim::vehicles`, `assets/data/vehicles.ron`; Linear DCM-86, stage 1 of DCM-85)
+
+Some of the cars parked in town can be driven. This is stage 1: getting in and out, driving, collisions, saves and
+multiplayer. Fuel, noise, running zombies over and damage come in DCM-87.
+
+- **Kinds are data** (`vehicles.ron`, `VehicleData`, unknown fields refused, `parse_vehicles`; loaded by
+  `net::content::load_vehicles`, which checks each kind's `prop` is a street prop kind; no file: no vehicles). Each
+  kind names the street prop it is parked as, its box (`length`, `width`), `wheelbase`, speeds, `accel`, `brake`,
+  `coast`, steering (`steer_degrees`, `steer_rate_degrees`, `steer_falloff`), `seats`, `driver_seat` and `body`
+  (`Car`, `Long`; more later). `drivable_share` (1: every one; the data allows fewer) of the props of those kinds are vehicles in a new world, picked by
+  a hash of the seed and where they stand. Wrecks are never listed.
+- **On the map:** `World::new` takes the picked props off the map (`place_vehicles`) after the map's base hash is
+  worked out, so saves and the content fingerprint are unchanged. Each vehicle is a turned box in
+  `TileMap::vehicles` (`VehicleBox`, set every tick by the server and the client alike): `resolve_circle` pushes bodies
+  out of it, and the zombies' open-ground fast path doesn't apply near one (`TileMap::near_vehicle`).
+- **Driving** (`step_vehicle`, pure, for the server and the client's prediction): an arcade bicycle model, moved in
+  steps of at most 0.25 m and stopped by walls, props and other vehicles (`resolve_vehicle_circle`; `bounce` of the
+  speed comes back off a wall). Heading 0 is east and positive steering turns clockwise. Zombies and players in its way
+  are shoved aside, each zombie costing it `zombie_slow` of its speed. A driver doesn't walk (`MoveMods` speed 0), makes
+  no footsteps, sits at `seat_of` and is not drawn.
+- **Intents:** `Intent::Vehicle { player, op }` (`VehicleOp::Enter { vehicle }` within `enter_reach` of its side and
+  slower than `enter_max_speed`; `Exit` below `exit_max_speed`, out the driver's side or the other) and
+  `Intent::Drive { player, throttle, steer, brake }` every tick while driving. In a vehicle only inventory, use,
+  first aid and crafting intents are taken; dying or respawning gets you out.
+- **Saves:** an optional `VEHC` section after `TREE` (each vehicle by the prop tile it came from, with its state and
+  driver); a world without vehicles saves none. In `state_hash` while there are any. **Wire:** `Snapshot::vehicles`
+  (`VehicleView`), sent in `SnapshotDelta::vehicles` when they change; `wire::PROTOCOL` 32.
+- **Client:** E beside a car gets in, E again gets out; W/S throttle and reverse, A/D steer, Space brakes
+  (`player.rs`: the car is predicted with `step_vehicle` and reconciled like walking). `vehicles_render.rs` draws each
+  vehicle as its street prop's model (worn as `decay.ron` says) or a grey-box, ours where we predict it, the others
+  between snapshots, someone else's only where our survivor sees it.
+- **Not yet:** the camera pulling back with speed, MCP tools, fuel and noise, damage, keys and hotwiring (a Mechanics
+  skill), the radio, more vehicle kinds.
+- Tests: `sim::vehicles::tests`.
 
 ## Chopping trees (`sim::trees`)
 
@@ -1624,7 +1679,7 @@ A new single-player game can begin with a survivor of your making in a world of 
   bottle). A rag dresses a wound dirty, a clean rag clean (first aid's `bandage` / `clean` tags).
 - **Water, mending and made weapons** (the loot and crafting pass): `water: true` recipes need a running tap within
   reach (`power::water_near`: `power.ron`'s `water.taps`, sinks and baths, same room and floor, while
-  `water.on` and before `water.fails_after_hours`; stateless, from the clock; `Snapshot::water_on`): fill a bottle.
+  `water.on` and before `water.fails_after_hours`; stateless, from the clock; `Snapshot::water_on`, `wire::PROTOCOL` 34): fill a bottle, from the Make list or the sink's right-click menu (`world_actions::tap_entries`).
   `repairs: Some((tag, knocks))` mends the most worn weapon held or carried with that item tag
   (`crafting::mend_target`, the same pure rule for the Make list; `mend_wood`, `mend_handle`, `mend_metal` in
   `items.ron`), taking knocks off its wear (`ItemStack::used`, see weapon wear): duct tape on a bat or plank, a
@@ -1706,6 +1761,48 @@ Campfires to cook on and to see by, stoves in kitchens, and fire that burns.
 - **Not yet:** fire spreading to buildings and furniture, burning zombies running about, molotovs, using up matches,
   a fire sound, a model for the built fire, fridges keeping food, stoves on gas or a generator.
 - Tests: `sim::fire::tests`.
+
+## Weather and seasons (`sim::weather`, `assets/data/weather.ron`; Linear DCM-91)
+
+The first stage of the weather: the calendar, the climate and the air temperature, in the simulation only. Nothing reads
+them yet (no body temperature, no effect on sight or hearing, nothing drawn or heard): those are the next stages.
+
+- **The calendar** runs on the world's one clock (`World::clock_hours`: the start hour plus the game hours, sleep and
+  skips included), so everyone on a server has the same date. Twelve months of `days_per_month` (30) days; a world
+  starts on `start_month` / `start_day` (20 September, early autumn). `World::date()` (`Date`: year from 1, month,
+  day, `day_number` from 0), `season()` (`Season`: spring March to May, summer June to August, autumn, winter
+  December to February), `month_name()`. A new game's `Setup` takes `start_month` (the world then starts on that
+  month's 1st) and `climate` (the harshness), with no screen for them yet.
+- **The weather is worked out, not stored** (`WeatherTuning::at(seed, clock_hours)`, pure): time is cut into slots of
+  `slot_hours` (4); a slot keeps the one before's weather with chance `persist` (0.65, at most 16 slots back), else
+  draws a kind from its month's `odds` (blended between mid-months), seeded by the world seed. `WeatherKind`: `Clear`,
+  `Cloudy`, `Overcast`, `Rain`, `Storm`, `Fog`, and `Snow` / `Blizzard`, which are rain and storms when the air is
+  below `snow_below_c` (1 C; so a rainy evening can turn to snow overnight). The weather fades in and out over
+  `blend_hours` (1) at a change: `intensity` goes to 0 at the change and cloud, temperature offset and swing blend
+  across it. `WeatherNow`: kind, intensity, cloud, wind (0-1) and its way, `temp_c`, `sight` and `hearing` (shares
+  at full strength, for the senses later), `forced`. Being a function of the seed and the clock, it costs nothing to
+  save or hash, and a client could work it out the same way.
+- **Air temperature:** the month's `low_c` / `high_c` blended day by day, a daily swing (coldest about 3:00, warmest
+  about 15:00) times the kind's `swing` (a clear sky widens it, cloud narrows it), the kind's `temp_c`, and a slow
+  seeded drift of up to `swing_c` (5) either way over `swing_days` (3) (cold snaps and heatwaves), all scaled about
+  `mild_c` (12) by `harshness` (1; 0.6 a mild climate, 1.3 a harsh one). `World::air_temp_at(pos, level)`: indoors
+  (a room, or upstairs) goes `indoor_mix` (0.6) of the way to `indoor_c` (16); a lit campfire adds `fire_c` (15) at
+  its middle, falling to nothing at `fire_radius` (4 m). **The default climate is hard** (Andres, 2026-11-13): January
+  averages about -11 C with cold-snap nights below -20 and weeks of snow and blizzards, July about 27 C with heatwave
+  afternoons over 40, dry with the odd violent storm; October and November are the wettest months.
+- **Forced weather** (`World::force_weather`, MCP `set_weather`, for tests and pictures): a kind, intensity and
+  optionally the air's temperature until a time on the clock (`weather::Forced`). Saved in an optional `WTHR` section
+  (no format bump), in `state_hash` only while set, checked on load.
+- **Saves:** `WeatherTuning` is `WorldConfig::weather`, saved with the settings (so a world keeps its calendar and
+  climate) and checked on load (`WeatherTuning::check`). Without the file, the defaults (`net::content::load_weather`).
+- **MCP:** `weather {player, forecast_hours, step_hours}` (the date, the weather now, the temperature where the player
+  stands, and a forecast), `set_weather {kind, intensity, hours, temp_c}` (debug; `kind: "auto"` back to the climate),
+  and `stats` has `date` and `weather`.
+- **Next** (DCM-91): body temperature (clothing warmth, getting wet and drying by a fire, cold and heat status tags),
+  weather in snapshots, rain, snow and fire particles, sounds, the look (overcast light, wet ground, snow cover), and
+  the senses (`sight`, `hearing`).
+- Tests: `sim::weather::tests` (`winter_is_devastating_and_summer_very_hot` samples a year for three seeds);
+  `print_year` (ignored; `ZOMBYE_SEED`) prints a line a week.
 
 ## Loot (`sim::loot`, `assets/data/loot.ron`; #8)
 
@@ -2105,7 +2202,7 @@ and mood, and docs/art-direction.md). All of it is client only: nothing here is 
   frame, and nothing of it in the sim or a save. A data folder without the file gets the shipped one.
 - **Contact shadows** (`world_render::contact_shadows`): a strip of black fading to clear, 0.6 m wide, on the ground
   and floors along both faces of every ground-floor wall and window: one small blended, unlit mesh a building (16 to
-  about 1,000 triangles), spawned and despawned with it. They stand in for ambient occlusion: the screen-space kind
+  about 1,000 triangles), spawned and despawned with it. Trees and bushes get the same: a soft blot round each foot, darkest at the trunk, out to two thirds of the crown's radius plus half a metre, laid over the hills (`landscape::foot_shade`, one mesh a chunk, with the setting). They stand in for ambient occlusion: the screen-space kind
   needs MSAA off, and the window glass is alpha to coverage.
 - **Vegetation and litter, a mesh a chunk** (`vegetation.rs`, `assets/shaders/vegetation.wesl`): eight kinds
   (`VegKind`: long grass, lawn grass, thin grass, a weed, red and white flowers, loose paper, small stones), four
@@ -3184,13 +3281,13 @@ with a line of sight; `all: true` shows everyone (the default with PvP off). The
 **What clients are told about the tools (#88, `mcp.rs`):** the `TOOLS` table gives every tool a `title` and a kind, and
 `tool_list` turns the kind into MCP annotations on the definitions in `tool_defs`: `Look` tools are `readOnlyHint: true`
 (`observe`, `screenshot`, `stats`, `zombie`, `edge`, `buildings`, `regions`, `inventory`, `health`, `skills`, `weapons`,
-`items`, `loot`, `recipes`, `containers_near`, `saves`, `heard`, `fires`; clients skip the approval prompt for them, and a test calls each
+`items`, `loot`, `recipes`, `containers_near`, `saves`, `heard`, `fires`, `weather`; clients skip the approval prompt for them, and a test calls each
 and checks the state hash, the tick and the session's dirty flag don't move), `Play` tools act as a player or step time,
 `save` writes a file, and `Debug` tools (`make_noise`, `set_goal`, `spawn_zombies`, `spawn_item`, `set_needs`, `wound`,
-`add_player`, `pvp`, `dev`, `skip_time`, `load`, `restrain_now`) get a title starting `Debug:`, a description starting "Debug tool, for setting
+`add_player`, `pvp`, `dev`, `skip_time`, `load`, `restrain_now`, `set_weather`) get a title starting `Debug:`, a description starting "Debug tool, for setting
 up tests" and `_meta: {"zombye/debug": true}`. Only `save` and `load` are `destructiveHint: true`; every tool is
 `openWorldHint: false`. **A new tool needs a row in `TOOLS`** (a test fails without one). `--no-debug-tools` leaves the
-debug tools out: not listed (56 tools instead of 68), and calling one is the unknown-tool error. `stats` has an
+debug tools out: not listed (56 tools instead of 70), and calling one is the unknown-tool error. `stats` has an
 `outputSchema` and returns its JSON as `structuredContent` beside the text (`output_schema`). The server's `instructions`
 (`mcp::instructions`, under 2,200 bytes: every client puts them in the model's context) say you are player 1, time only
 moves when a tool steps it, look with `observe` first, and the debug tools are for testing; detail belongs in the tools'

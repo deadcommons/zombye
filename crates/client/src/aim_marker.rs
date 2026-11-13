@@ -305,7 +305,9 @@ fn show(
             .and_then(|(w, cursor)| camera.viewport_to_world(cam_tf, crate::render_scale::to_view(camera, w, cursor)).ok())
             .map(|ray| (ray.origin, *ray.direction)),
     };
-    let ground = sight.and_then(|(origin, dir)| iso.aim_ground(origin, dir));
+    // On the plane of our feet (hills: `zombye_sim::terrain`), as `player::face_cursor` aims.
+    let feet = player_tf.translation.y;
+    let ground = sight.and_then(|(origin, dir)| iso.aim_ground(origin - Vec3::Y * feet, dir)).map(|g| g + Vec3::Y * feet);
     let facing = match (staged, ground) {
         (Some(_), Some(g)) => (g.z - from.y).atan2(g.x - from.x),
         _ => player.facing,
@@ -366,7 +368,7 @@ fn show(
             meshes.remove(&old);
             marker.wedge_for = Some((reach, arc));
         }
-        set(&mut parts, marker.wedge, true, Some(Transform::from_xyz(from.x, WEDGE_Y, from.y).with_rotation(Quat::from_rotation_y(-facing))));
+        set(&mut parts, marker.wedge, true, Some(Transform::from_xyz(from.x, WEDGE_Y + feet, from.y).with_rotation(Quat::from_rotation_y(-facing))));
         tint(&mut materials, &marker.ground, color);
         marker.gap = None;
     }

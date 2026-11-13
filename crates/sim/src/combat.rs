@@ -531,6 +531,8 @@ impl World {
         if !self.players[pi].dead {
             return false;
         }
+        // Out of any car it died in.
+        self.leave_vehicle(pi, None);
         // An infected body left behind gets up now.
         self.rise(pi);
         // A new survivor: its skills start over (#46).

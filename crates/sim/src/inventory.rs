@@ -617,6 +617,10 @@ impl World {
         if p.seated.is_some() && !p.dead {
             mods = MoveMods { speed: 0.0, run_speed: 0.0, can_run: false, can_climb: false, regen: mods.regen * self.config.sit.endurance_regen, ..mods };
         }
+        // At the wheel ([`crate::vehicles`]): the body sits in the seat, it doesn't walk.
+        if p.vehicle.is_some() && !p.dead {
+            mods = MoveMods { speed: 0.0, run_speed: 0.0, can_run: false, can_climb: false, ..mods };
+        }
         // Tied hands (#73): a slow walk, no running, no climbing. Tied and freed in `step_bonds`,
         // after movement too.
         if p.restraint.is_some() {

@@ -491,6 +491,8 @@ pub(crate) fn step_zombies(z: &mut Zombies, next_pos: &mut [Vec2], cx: &mut Ctx)
 
         // Capped so a knockback can't carry it through a wall in one step.
         // Reeling, a knockback slides on (a shove pushes it well back); else it walks as it wants.
+        // Uphill is slower for them too (`crate::terrain`).
+        let desired = desired * cx.map.terrain.slope_factor(p, desired);
         let mut vel = if state.is_reeling() { z.vel[i] * t.knockback_slide } else { z.vel[i].lerp(desired, 0.25) }.clamp_length_max(MAX_KNOCKBACK_SPEED);
         let climbing = cx.walk.in_window_opening(cx.map, p);
         if climbing {

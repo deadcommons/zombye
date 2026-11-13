@@ -151,7 +151,8 @@ impl WalkGrid {
     /// `TileMap::resolve_circle` for a zombie's body at `p`, skipping the work on open ground
     /// (the same answer: there is nothing there to be pushed out of).
     pub(crate) fn resolve_body(&self, map: &TileMap, p: Vec2) -> Vec2 {
-        if self.open(p.floor().as_ivec2()) { p } else { map.resolve_circle(p, crate::ai::ZOMBIE_RADIUS) }
+        let t = p.floor().as_ivec2();
+        if self.open(t) && !map.near_vehicle(t) { p } else { map.resolve_circle(p, crate::ai::ZOMBIE_RADIUS) }
     }
 
     /// `TileMap::in_window_opening`, skipping the work on open ground.

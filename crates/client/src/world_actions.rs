@@ -293,6 +293,23 @@ pub fn entries(target: Target, map: &TileMap, sites: &[ContainerSite], data: &Co
     }
 }
 
+/// A container that is a tap (a sink or a bath, `power.ron`'s `water.taps`): the recipes that
+/// need running water (`water: true`, filling a bottle), each a line that makes it, or says what's
+/// missing; none when the tap isn't one or the player isn't at it with the water on
+/// (`power::water_near`, the server's rule).
+#[allow(clippy::too_many_arguments)]
+pub fn tap_entries(site: &ContainerSite, map: &TileMap, water: &zombye_sim::power::WaterDef, running: bool, recipes: &[zombye_sim::RecipeDef], items: &[ItemDef], me: u32, pos: Vec2, level: u8, view: Option<&PrivateView>) -> Vec<WorldEntry> {
+    let tap = map.buildings.iter().flat_map(|b| b.furniture.iter()).any(|f| f.min == site.min && f.level == site.level as i8 && water.taps.iter().any(|t| *t == f.kind));
+    if !tap || !zombye_sim::power::water_near(map, water, running, pos, level) {
+        return Vec::new();
+    }
+    let Some(v) = view else { return Vec::new() };
+    recipes.iter().enumerate().filter(|(_, r)| r.water).map(|(i, r)| match zombye_sim::crafting::check(r, &v.inventory, items) {
+        Ok(()) => WorldEntry::send(r.name.clone(), Intent::Craft { player: me, recipe: i as u16 }),
+        Err(why) => WorldEntry::say(format!("{}: {why}", r.name)),
+    }).collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn edge_entries(e: EdgeRef, map: &TileMap, items: &[ItemDef], builds: &[BuildDef], blind_tag: &str, me: u32, pos: Vec2, view: Option<&PrivateView>) -> (String, Vec<WorldEntry>) {
     let kind = map.owned_edge(e.tile, e.edge);

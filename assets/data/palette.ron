@@ -116,6 +116,7 @@
         "fern_1": ("#405c2e", 0.9, 0.0),
         "fern_2": ("#4f6130", 0.9, 0.0),
         "rock": ("#808078", 0.9, 0.0),
+        "cliff": ("#a8a290", 0.9, 0.0),                  // pale bare stone on the steepest hill faces (terrain)
         "deadwood": ("#5c4733", 0.9, 0.0),
         "cut_wood": ("#9e8057", 0.9, 0.0),               // the cut face of a stump or log
 
