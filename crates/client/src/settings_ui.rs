@@ -618,7 +618,9 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
                 }
             });
             skin::divider(body);
-            body.spawn(Node { flex_grow: 1.0, flex_direction: FlexDirection::Column, padding: UiRect::axes(px(28), px(20)), row_gap: px(8), min_height: px(300), ..default() }).with_children(|col| {
+            // The key list is the tallest thing here: it keeps tight margins so it fits 1280 x 720.
+            let (pad, gap) = if tab == Tab::Controls { (12, 0) } else { (20, 8) };
+            body.spawn(Node { flex_grow: 1.0, flex_direction: FlexDirection::Column, padding: UiRect::axes(px(28), px(pad)), row_gap: px(gap), min_height: px(300), ..default() }).with_children(|col| {
                 if tab == Tab::Controls {
                     keys_list(col, ui.capture);
                 }
@@ -653,7 +655,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
                     Tab::Controls => "Click a key to change it. Kept in your settings; the game's own keys are in keys.ron.",
                     Tab::Game => "Difficulty and the world's own options are chosen when you start a new game.",
                 };
-                col.spawn((Text::new(note), font(SMALL), TextColor(DIM), Node { margin: UiRect::top(px(10)), ..default() }));
+                col.spawn((Text::new(note), font(SMALL), TextColor(DIM), Node { margin: UiRect::top(px(if tab == Tab::Controls { 6 } else { 10 })), ..default() }));
             });
         });
         skin::rule(p);
@@ -674,7 +676,7 @@ fn keys_list(p: &mut ChildSpawnerCommands, capture: Option<Action>) {
     let bindings = crate::keys::current();
     p.spawn(Node { column_gap: px(22), align_items: AlignItems::FlexStart, ..default() }).with_children(|cols| {
         for pair in KEYS.chunks(2) {
-            cols.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(3), flex_basis: percent(33), ..default() }).with_children(|col| {
+            cols.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(2), flex_basis: percent(33), ..default() }).with_children(|col| {
                 for (group, keys) in pair {
                     col.spawn((Text::new(group.to_uppercase()), theme::head(BODY + 2.0), TextColor(skin::GREEN), Node { margin: UiRect::top(px(6)), ..default() }));
                     for row in keys.iter().copied() {
