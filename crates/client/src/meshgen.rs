@@ -90,9 +90,9 @@ impl Bary {
 fn slope_tint(c: LinearRgba, normal: Vec3) -> LinearRgba {
     let grade = normal.xz().length() / normal.y.max(1e-3);
     let earth = smooth(0.06, 0.12, grade);
-    let rock = smooth(0.12, 0.20, grade);
+    let rock = smooth(0.11, 0.18, grade);
     let p = pal();
-    c.mix(&p.dirt, 0.45 * earth).mix(&p.rock, 0.55 * rock)
+    c.mix(&p.dirt, 0.45 * earth).mix(&p.cliff, 0.85 * rock)
 }
 
 fn smooth(e0: f32, e1: f32, x: f32) -> f32 {

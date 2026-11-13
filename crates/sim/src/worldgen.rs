@@ -1871,12 +1871,15 @@ fn plant_forest(map: &mut TileMap, rng: &mut Rng, keep_min: IVec2, keep_max: IVe
             let dist = outside.max_element() as f32;
             let n = value_noise(seed, p.as_vec2() / 18.0) * 0.65 + value_noise(seed ^ 0xabc, p.as_vec2() / 6.0) * 0.35;
             let density = (0.04 + 0.5 * smoothstep(0.35, 0.75, n) + 0.2 * (dist / 40.0).min(1.0) + if in_wild { 0.12 } else { 0.0 }).min(0.55);
-            // Steep hillsides are bare, open ground and rock: few trees take hold there.
-            let grade = map.terrain.gradient(p.as_vec2() + Vec2::splat(0.5)).length();
-            let density = density * (1.0 - 0.85 * smoothstep(0.11, 0.19, grade));
             let roll = rng.f32();
             if roll < density {
                 let pine = rng.f32() < 0.35 + 0.4 * (dist / 60.0).min(1.0);
+                // Steep hillsides are bare, open ground and rock: few trees take hold there. Thinned by a
+                // hash, not the stream, so the rest of the town draws the same numbers with or without hills.
+                let grade = map.terrain.gradient(p.as_vec2() + Vec2::splat(0.5)).length();
+                if crate::rng::hash01(seed, p.x as u64, p.y as u64, 0x7e44) < 0.85 * smoothstep(0.11, 0.19, grade) {
+                    continue;
+                }
                 if let Some(t) = map.tile_mut(p) {
                     t.feature = if pine { Feature::PineTree } else { Feature::Tree };
                 }
