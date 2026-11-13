@@ -286,6 +286,17 @@ pub fn load_difficulty(data_dir: &Path) -> Result<zombye_sim::difficulty::Diffic
     zombye_sim::difficulty::parse_difficulty(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// What the Sandbox page offers by name (`<data>/sandbox.ron`, [`zombye_sim::difficulty::SandboxOptions`]).
+/// A data folder without the file has none: every value is still under "Everything".
+pub fn load_sandbox(data_dir: &Path) -> Result<zombye_sim::difficulty::SandboxOptions, String> {
+    let path = data_dir.join("sandbox.ron");
+    if !path.exists() {
+        return Ok(Default::default());
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    zombye_sim::difficulty::parse_sandbox(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// The benchmark scenarios in `<data>/scenarios.ron` (#29), validated, the items they name checked
 /// against `items` (and the plain items weapons without one get). A data folder without the file
 /// has none.

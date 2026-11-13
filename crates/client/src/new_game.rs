@@ -4,7 +4,9 @@
 //! of its own that `main` runs instead of the game (`--new-game`, [`wanted`]). Three tabs on one
 //! sheet: **Who you were** (a Background, with the skills you start with), **Strengths and
 //! Flaws** (a Strength costs points, a Flaw gives them; the Background says how many you begin
-//! with) and **The world** (a difficulty preset, and the few options that go over it). Beside
+//! with) and **The world** (a difficulty preset, and the few options that go over it); and,
+//! off the walk the footer's Next takes, a fourth, **Sandbox** ([`sandbox`]): every tuning number
+//! the world has, by name, set one by one over the preset. Beside
 //! it stands the survivor as it will wake up, in the clothes picked from the starting wardrobe
 //! under it. Everything listed is data (`zombye_sim::origin`, `zombye_sim::difficulty`); the one
 //! rule for what may be picked is the sim's (`OriginData::resolve`), asked here before Start and
@@ -28,6 +30,8 @@ use zombye_sim::origin::{BackgroundDef, Choice, PickDef, Start};
 use zombye_sim::{ItemDef, Skill, SkillTuning, WorldConfig};
 
 use crate::Options;
+
+mod sandbox;
 use crate::browser_ui::Relaunch;
 use crate::join_screen::args_without;
 use crate::survivor_model::{Dress, SurvivorModel};
@@ -94,14 +98,20 @@ enum Tab {
     Who,
     Picks,
     World,
+    Sandbox,
 }
 
 impl Tab {
-    const ALL: [Tab; 3] = [Tab::Who, Tab::Picks, Tab::World];
+    const ALL: [Tab; 4] = [Tab::Who, Tab::Picks, Tab::World, Tab::Sandbox];
 
-    /// The page after this one; none after the last, where the game starts.
+    /// The page after this one; none after The world, where the game starts (the Sandbox is a
+    /// page to go to, not a step on the way).
     fn next(self) -> Option<Tab> {
-        Tab::ALL.iter().position(|t| *t == self).and_then(|at| Tab::ALL.get(at + 1).copied())
+        match self {
+            Tab::Who => Some(Tab::Picks),
+            Tab::Picks => Some(Tab::World),
+            Tab::World | Tab::Sandbox => None,
+        }
     }
 
     fn label(self) -> &'static str {
@@ -109,6 +119,7 @@ impl Tab {
             Tab::Who => "Who you were",
             Tab::Picks => "Strengths and Flaws",
             Tab::World => "The world",
+            Tab::Sandbox => "Sandbox",
         }
     }
 }
@@ -189,6 +200,8 @@ enum Act {
     Wear(usize, i32),
     Preset(usize),
     Step(Opt, i32),
+    /// Something on the Sandbox page.
+    Sandbox(sandbox::Do),
     Start,
     Back,
 }
@@ -202,6 +215,7 @@ struct Screen {
     choice: Choice,
     setup: Setup,
     tab: Tab,
+    sandbox: sandbox::State,
     error: Option<String>,
     acts: Vec<Act>,
     dirty: bool,
@@ -227,9 +241,11 @@ impl Screen {
         let tab = match options.new_game_tab.as_deref() {
             Some("picks") => Tab::Picks,
             Some("world") => Tab::World,
+            Some("sandbox" | "everything") => Tab::Sandbox,
             _ => Tab::Who,
         };
-        Ok(Self { items: config.items.clone(), options, rules, config, choice, setup, tab, error: None, acts: Vec::new(), dirty: true, dress: true })
+        let sandbox = sandbox::State { everything: options.new_game_tab.as_deref() == Some("everything"), ..Default::default() };
+        Ok(Self { items: config.items.clone(), options, rules, config, choice, setup, tab, sandbox, error: None, acts: Vec::new(), dirty: true, dress: true })
     }
 
     fn preset(&self) -> &DifficultyDef {
@@ -340,6 +356,7 @@ impl Screen {
                 let next = (opt.nearest(self.value(opt)) as i32 + dir).clamp(0, steps.len() as i32 - 1) as usize;
                 self.set(opt, steps[next].0);
             }
+            Act::Sandbox(d) => self.sandbox_do(d),
             Act::Start => match self.check() {
                 Ok(_) => return Some(Act::Start),
                 Err(e) => self.error = Some(e),
@@ -384,7 +401,7 @@ pub fn run(options: Options) -> ! {
     app.insert_resource(GlobalAmbientLight { color: Color::srgb(0.85, 0.82, 0.95), brightness: 420.0, ..default() })
         .add_systems(Startup, setup)
         .add_systems(First, crate::exit_on_signal)
-        .add_systems(Update, (keys, act, draw, dress, pose).chain());
+        .add_systems(Update, (keys, sandbox::wheel, act, draw, dress, pose).chain());
     let failed = app.run().is_error();
     if let Some(next) = NEXT.lock().ok().and_then(|mut n| n.take()) {
         crate::relaunch(next);
@@ -480,7 +497,7 @@ fn keys(keys: Res<ButtonInput<KeyCode>>, mut screen: ResMut<Screen>) {
         let next = if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) { at + Tab::ALL.len() - 1 } else { at + 1 };
         screen.acts.push(Act::Tab(Tab::ALL[next % Tab::ALL.len()]));
     }
-    for (k, key) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3].into_iter().enumerate() {
+    for (k, key) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4].into_iter().enumerate() {
         if keys.just_pressed(key) {
             screen.acts.push(Act::Tab(Tab::ALL[k]));
         }
@@ -589,11 +606,13 @@ fn draw(mut commands: Commands, mut screen: ResMut<Screen>, root: Option<Single<
                     Tab::Who => who(cols, screen),
                     Tab::Picks => picks(cols, screen),
                     Tab::World => world(cols, screen),
+                    Tab::Sandbox => sandbox::page(cols, screen),
                 });
                 detail_line(right, match screen.tab {
                     Tab::Who => "A Background is what you did before: the skills you start with, a few things in your pockets, and points to spend on Strengths.",
                     Tab::Picks => "Point at a Strength or a Flaw to read about it. Click to take it, click again to drop it.",
                     Tab::World => "The town is the same town; what is in its cupboards is rolled anew every game.",
+                    Tab::Sandbox => "Every number here is the world's from its first tick: saved with it, and on a server the same for everyone. Point at one to read about it.",
                 });
             });
         });
@@ -902,11 +921,21 @@ fn world(cols: &mut ChildSpawnerCommands, screen: &Screen) {
         }
         // What the preset does that has no option of its own.
         let mut also = Vec::new();
-        for (what, v) in [("sharper senses", d.zombie_senses), ("tougher", d.zombie_toughness), ("surer strikes", d.zombie_accuracy)] {
+        let more = [
+            (("more alert", "less alert"), d.zombie_senses),
+            (("see further", "see less far"), d.zombie_sight),
+            (("hear further", "hear less far"), d.zombie_hearing),
+            (("remember longer", "forget sooner"), d.zombie_memory),
+            (("faster", "slower"), d.zombie_speed),
+            (("tougher", "weaker"), d.zombie_toughness),
+            (("surer strikes", "wilder strikes"), d.zombie_accuracy),
+            (("harder hits", "softer hits"), d.zombie_damage),
+        ];
+        for ((up, down), v) in more {
             if v > 1.0 {
-                also.push(format!("{what} (+{:.0}%)", (v - 1.0) * 100.0));
+                also.push(format!("{up} (+{:.0}%)", (v - 1.0) * 100.0));
             } else if v < 1.0 {
-                also.push(format!("{} ({:.0}%)", what.replace("sharper", "duller").replace("tougher", "weaker").replace("surer", "wilder"), (v - 1.0) * 100.0));
+                also.push(format!("{down} ({:.0}%)", (v - 1.0) * 100.0));
             }
         }
         if let Some(f) = d.fast_zombies {
@@ -917,6 +946,9 @@ fn world(cols: &mut ChildSpawnerCommands, screen: &Screen) {
         }
         if d.rare_loot != 1.0 {
             also.push(format!("rare finds x{}", d.rare_loot));
+        }
+        if !d.values.is_empty() {
+            also.push(format!("{} more numbers set (see Sandbox)", d.values.len()));
         }
         if !also.is_empty() {
             list.spawn(Node { height: px(4), flex_shrink: 0.0, ..default() });
@@ -979,7 +1011,7 @@ fn footer(p: &mut ChildSpawnerCommands, screen: &Screen) {
     who.extend(name(&screen.choice.flaws, false));
     let left = o.points_left(&screen.choice);
     p.spawn((Node { height: px(flat::FOOTER), flex_shrink: 0.0, flex_direction: FlexDirection::Row, column_gap: px(18), align_items: AlignItems::Center, padding: UiRect::new(px(24), px(4), px(0), px(0)), border: UiRect::top(px(1)), ..default() }, BorderColor::all(LINE))).with_children(|row| {
-        hint(row, "1-3", "page");
+        hint(row, "1-4", "page");
         hint(row, "Tab", "next page");
         hint(row, "Esc", "back");
         row.spawn((Node { flex_grow: 1.0, flex_basis: px(0), min_width: px(0), justify_content: JustifyContent::FlexEnd, overflow: Overflow::clip(), ..default() }, Pickable::IGNORE)).with_children(|s| {

@@ -126,6 +126,9 @@ pub struct CombatTuning {
     /// Chance a strike lands, plus this for every other zombie attacking the same player, at most
     /// `zombie_hit_max`. What a landed strike does is up to the wound it leaves (`HealthTuning`).
     pub zombie_hit_chance: f32,
+    /// A multiplier on the HP a zombie's wound takes (1: the wound's own; a difficulty's
+    /// `zombie_damage`).
+    pub zombie_damage: f32,
     pub zombie_crowd_bonus: f32,
     pub zombie_hit_max: f32,
 
@@ -238,6 +241,7 @@ impl Default for CombatTuning {
             stomp_noise: 4.0,
 
             zombie_hit_chance: 0.5,
+            zombie_damage: 1.0,
             zombie_crowd_bonus: 0.12,
             zombie_hit_max: 0.9,
 

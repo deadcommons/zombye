@@ -1588,14 +1588,37 @@ A new single-player game can begin with a survivor of your making in a world of 
   file; no format bump), in `state_hash` only for a survivor that has one.
 - **Difficulty is data** (`assets/data/difficulty.ron`, a list of `difficulty::DifficultyDef`; none: the built-in
   ones): a name, a line about it and multipliers on what the settings already hold (`zombies`, `fast_zombies`,
-  `zombie_senses`, `zombie_toughness`, `zombie_accuracy`, `respawn`, `loot`, `rare_loot`, `xp`, `needs`, `infection`,
-  `day_minutes`), plus `tuning`: any whole tuning struct set outright. Shipped: Easy street, Survivor (changes
+  `zombie_senses` (alertness), `zombie_sight`, `zombie_hearing` (`ZombieTuning::hearing`, on every sound a zombie
+  hears, on every tier), `zombie_memory`, `zombie_speed`, `zombie_toughness`, `zombie_accuracy`, `zombie_damage`
+  (`CombatTuning::zombie_damage`, on every wound one leaves), `respawn`, `loot`, `rare_loot`, `xp`, `needs`,
+  `infection`, `day_minutes`), plus `tuning`: any whole tuning struct set outright, and `values`: any single number
+  by its path. Shipped: Easy street, Survivor (changes
   nothing), Hard times, Last one left. A new game's world is a `difficulty::Setup` (a preset's id and the options
   changed on top of it); `DifficultyData::apply` puts it on a `WorldConfig` before the world is made. **The numbers
   that multiply content** (population scale, fast share, respawn; loot scales) are a `difficulty::Sandbox`
   (`WorldConfig::sandbox`), saved with the settings and put on the content again on load, so the content fingerprint
   holds; putting it on twice gives the same (it remembers the file's own values). **A new tuning number is reachable
-  from a preset's `tuning` with no code.**
+  from a preset's `tuning` and the Sandbox with no code.**
+- **Any number by its path** (`sim::tune`): every tuning section of `WorldConfig` (`tune::SECTIONS`: zombie,
+  population, combat, health, infection, needs, movement, carry, skills, loot, fire, weather, chop, blinds, tiers, and
+  the server's rules player_sight, speech, sit, bonds, groups, explore) is walked by its serde fields
+  (`tune::leaves`: hundreds of numbers and switches; lists aren't gone into), read by path (`tune::get`,
+  `"zombie.sight_day"`, a tuple's parts by number: `"combat.zombie_hp.1"`) and set by path (`tune::set`: the text
+  read as RON into the field, then the section checked as its own data would be, and nothing changed on a refusal).
+  `combat.pvp` is the server's, never a difficulty's (`tune::FIXED`). A setup's or preset's `values` (path to text)
+  go on after the multipliers and are kept by the `Sandbox` (`Sandbox::values`, at most 1,000, each checked), so a
+  load puts them on again whatever section they are in: saved sections, content (population, loot: the fingerprint
+  holds) and the rules a save doesn't keep. `Sandbox::describe` names the world's difficulty ("Hard times, with 3
+  numbers set in the Sandbox"), which a server's rules show (`Rules::difficulty`, `wire::PROTOCOL` 38).
+- **The Sandbox page's names are data** (`assets/data/sandbox.ron`, `difficulty::SandboxOptions`, checked by
+  `parse_sandbox`: every path a leaf, none twice, numbers with `min < max` and a step in range, whole numbers stepped
+  whole): groups of the numbers a player is likeliest to want, each with a name, a line, a range, a step and a unit.
+  **A number worth a name gets a line there**; every other one is on the page anyway, under Everything.
+- **A server's difficulty** (`zombye-server --host`, the dedicated server's config): `--difficulty ID`,
+  `--sandbox FILE` (a `Setup` as RON, or a whole `NewGame` file such as the screen's `new_game.ron`, whose world it
+  takes) and `--set PATH=VALUE` (as often as wanted, over both), or `difficulty`, `sandbox` and `set: {...}` in the
+  config file. Only for a new world: a save keeps its own, and the server says so when the flags are given. Refused
+  with `--benchmark` (results compare the game as shipped).
 - **The file and the flags** (`net::newgame`): `NewGame { survivor: Option<Choice>, world: Setup }` as RON.
   `--new-game-from PATH` starts a new world from one; `--background ID`, `--strengths ID,ID`, `--flaws ID,ID`,
   `--outfit ITEM,ITEM` and `--difficulty ID` go over it (or stand alone, for pictures and tests):
@@ -1604,18 +1627,24 @@ A new single-player game can begin with a survivor of your making in a world of 
   everyone is a plain survivor (choosing there needs a message of its own).
 - **The screen** (`new_game.rs`; `--new-game`): a small app of its own before the game, like the join screen, since
   a world is built once per process. Left, the survivor as the game draws it (the body and wearables,
-  `SurvivorModel::dressed`), turning slowly, over "What you wake up in" (the wardrobe's slots). Right, three pages
-  (1-3 or Tab): **Who you were** (the Backgrounds, with the skills each starts with), **Strengths and Flaws** (points
+  `SurvivorModel::dressed`), turning slowly, over "What you wake up in" (the wardrobe's slots). Right, four pages
+  (1-4 or Tab): **Who you were** (the Backgrounds, with the skills each starts with), **Strengths and Flaws** (points
   left; one that can't go with another says so; point at one to read about it) and **The world** (the presets, and
   steppers over them: zombies, things to find, how fast skills grow, whether zombies come back, the infection, the
-  day's length, the hour you wake). Enter or Start writes `new_game.ron` in the saves folder (also the choices the
+  day's length, the hour you wake), and, a page to go to rather than a step (Next stops at The world),
+  **Sandbox** (`new_game/sandbox.rs`): the named groups of `sandbox.ron` or, with Everything, every section, each
+  number or switch with arrows (by the file's step and range, else `sandbox::nudge`: half its leading power of ten),
+  shown as it stands with the preset and the other changes on; a change goes into the setup's `values`, one stepped
+  back to the preset's value is no change, and every one is checked by `tune::set` (refused on the footer with the
+  reason); Reset and Reset all. Enter or Start writes `new_game.ron` in the saves folder (also the choices the
   screen opens with next time) and starts the game again with `--new-game-from` (`start_args`); Esc or Back starts it
   again with `--main-menu` (`back_args`). Start is refused, with the reason, while points are overspent.
-  `--new-game-tab who|picks|world` opens a page (pictures: `--new-game --new-game-tab picks --render-to shot.png`).
+  `--new-game-tab who|picks|world|sandbox|everything` opens a page (pictures: `--new-game --new-game-tab picks --render-to shot.png`).
   **It is drawn to docs/ui-design.md** (flat dark chrome on opaque ink: a top bar with the pages as chips, columns divided
   by hairlines, a footer of keycaps with the one green button, Start; a Strength a green plus, a Flaw an amber minus),
   from the tokens in `new_game::flat` until `theme.rs` has the guide's components for every panel.
-- Tests: `sim::origin::tests`, `sim::difficulty::tests`, `net::newgame::tests`, `new_game.rs`'s own.
+- Tests: `sim::origin::tests`, `sim::difficulty::tests`, `sim::tune::tests`, `net::newgame::tests`, `new_game.rs`'s
+  and `new_game/sandbox.rs`'s own.
 
 ## Items, inventory and containers (`sim::items`, `sim::inventory`, `sim::containers`; #7)
 

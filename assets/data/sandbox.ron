@@ -1,0 +1,125 @@
+// The Sandbox (sim::difficulty::SandboxOptions): the numbers a new game's Sandbox page offers
+// first, by name, with the range it steps them over. Every other tuning number is there too,
+// under "Everything", by its path (sim::tune); this file only gives the ones a player is most
+// likely to want a name, a line and a sensible range.
+//
+//   path    the tuning value: section.field[.field...] (a tuple's parts by number: zombie_hp.1)
+//   name    what the page calls it
+//   about   a line about it (optional)
+//   min, max, step   the range and step the page uses (numbers; a switch needs none). The value
+//           itself may be set outside them by hand (a setup file, a server's config).
+//   unit    after the number: "m", "s", "%"... (optional)
+//
+// A value changed here is the world's from then on: saved with it, and a server's for everyone
+// on it. Names and numbers are ours.
+(
+    groups: [
+        (name: "Zombies: how many and how fast", options: [
+            (path: "population.scale", name: "How many", about: "A multiplier on how many live in each part of the map.",
+                min: 0.0, max: 5.0, step: 0.1, unit: "x"),
+            (path: "population.fast_share", name: "Share that are fast", about: "Of every zombie, how many run.",
+                min: 0.0, max: 1.0, step: 0.05),
+            (path: "population.slow_speed.0", name: "Slowest walk", min: 0.1, max: 5.0, step: 0.1, unit: "m/s"),
+            (path: "population.slow_speed.1", name: "Fastest walk", min: 0.1, max: 5.0, step: 0.1, unit: "m/s"),
+            (path: "population.fast_speed.0", name: "Slowest run", min: 0.5, max: 8.0, step: 0.1, unit: "m/s"),
+            (path: "population.fast_speed.1", name: "Fastest run", min: 0.5, max: 8.0, step: 0.1, unit: "m/s"),
+            (path: "population.groups.loners", name: "Share that walk alone", min: 0.0, max: 1.0, step: 0.05),
+            (path: "population.density.town_core", name: "In the town centre", about: "Zombies per square km of open ground.",
+                min: 0.0, max: 200000.0, step: 2000.0, unit: "/sq km"),
+            (path: "population.density.street", name: "On the streets", min: 0.0, max: 200000.0, step: 2000.0, unit: "/sq km"),
+            (path: "population.density.yard", name: "In gardens", min: 0.0, max: 200000.0, step: 1000.0, unit: "/sq km"),
+            (path: "population.density.indoors", name: "Indoors", min: 0.0, max: 200000.0, step: 1000.0, unit: "/sq km"),
+            (path: "population.density.deep_forest", name: "Deep in the forest", min: 0.0, max: 20000.0, step: 50.0, unit: "/sq km"),
+        ]),
+        (name: "Zombies: senses", options: [
+            (path: "zombie.sight_day", name: "Sight by day", about: "How far an ordinary zombie sees a survivor by day.",
+                min: 2.0, max: 80.0, step: 1.0, unit: "m"),
+            (path: "zombie.sight_night", name: "Sight at night", min: 1.0, max: 40.0, step: 0.5, unit: "m"),
+            (path: "zombie.sight_cone_deg", name: "Field of view", about: "Half the angle it sees well in.",
+                min: 10.0, max: 180.0, step: 5.0, unit: "°"),
+            (path: "zombie.notice_chance", name: "Chance to notice", about: "At the edge of sight, each look.",
+                min: 0.0, max: 1.0, step: 0.05),
+            (path: "zombie.hearing", name: "Hearing", about: "A multiplier on how far every sound carries to them.",
+                min: 0.0, max: 5.0, step: 0.1, unit: "x"),
+            (path: "zombie.wall_muffle", name: "Sound through walls", about: "Of a sound's reach, how much gets through a wall.",
+                min: 0.0, max: 1.0, step: 0.05),
+            (path: "zombie.alertness.0", name: "Dullest", about: "Each zombie's sight and hearing are multiplied by its alertness, somewhere between these two.",
+                min: 0.0, max: 5.0, step: 0.05, unit: "x"),
+            (path: "zombie.alertness.1", name: "Sharpest", min: 0.0, max: 5.0, step: 0.05, unit: "x"),
+            (path: "zombie.sneak_sight_mult", name: "Seen sneaking", about: "Sight range against someone sneaking.",
+                min: 0.0, max: 2.0, step: 0.05, unit: "x"),
+        ]),
+        (name: "Zombies: attention", options: [
+            (path: "zombie.memory_secs", name: "Memory", about: "How long one keeps after someone it lost sight of.",
+                min: 0.0, max: 300.0, step: 5.0, unit: "s"),
+            (path: "zombie.investigate_secs", name: "Looking round a noise", min: 0.0, max: 300.0, step: 5.0, unit: "s"),
+            (path: "zombie.thump_interest_secs", name: "Battering a door", about: "How long one keeps at a door after it last saw or heard someone.",
+                min: 0.0, max: 300.0, step: 2.0, unit: "s"),
+            (path: "zombie.give_up_secs", name: "Giving up when stuck", min: 1.0, max: 120.0, step: 1.0, unit: "s"),
+            (path: "zombie.bored_secs", name: "Bored afterwards", min: 0.0, max: 300.0, step: 5.0, unit: "s"),
+            (path: "zombie.herd_chance", name: "Keeping together", about: "How often a wanderer heads back to the zombies round it.",
+                min: 0.0, max: 1.0, step: 0.05),
+        ]),
+        (name: "Zombies: strength", options: [
+            (path: "combat.zombie_hp.0", name: "Least hit points", min: 1.0, max: 1000.0, step: 5.0),
+            (path: "combat.zombie_hp.1", name: "Most hit points", min: 1.0, max: 1000.0, step: 5.0),
+            (path: "combat.zombie_hit_chance", name: "Strikes that land", min: 0.0, max: 1.0, step: 0.05),
+            (path: "combat.zombie_crowd_bonus", name: "More for each one on you", min: 0.0, max: 1.0, step: 0.02),
+            (path: "combat.zombie_damage", name: "Damage", about: "A multiplier on what a wound from a zombie takes.",
+                min: 0.0, max: 5.0, step: 0.1, unit: "x"),
+            (path: "zombie.door_hp", name: "Doors hold", about: "Thumps a shut door takes before it breaks.",
+                min: 1.0, max: 500.0, step: 5.0),
+            (path: "zombie.window_hp", name: "Windows hold", min: 1.0, max: 100.0, step: 1.0),
+            (path: "zombie.attack_cooldown", name: "Time between strikes", min: 0.2, max: 10.0, step: 0.1, unit: "s"),
+        ]),
+        (name: "Zombies: coming back and drawn to noise", options: [
+            (path: "population.respawn.enabled", name: "Far regions fill up again"),
+            (path: "population.respawn.interval_secs", name: "How often they're checked", min: 10.0, max: 3600.0, step: 10.0, unit: "s"),
+            (path: "population.respawn.unseen_secs", name: "Unseen this long first", min: 0.0, max: 36000.0, step: 300.0, unit: "s"),
+            (path: "population.respawn.min_distance", name: "At least this far off", min: 50.0, max: 2000.0, step: 25.0, unit: "m"),
+            (path: "population.respawn.top_up_below", name: "Topped up below", about: "Of a region's own number.",
+                min: 0.0, max: 1.0, step: 0.05),
+            (path: "population.migration.enabled", name: "Loud noises draw the far horde"),
+            (path: "population.migration.reach_mult", name: "How far a noise draws them", about: "Times the noise's own reach.",
+                min: 0.0, max: 20.0, step: 0.5, unit: "x"),
+            (path: "population.migration.join_chance", name: "How many set off", min: 0.0, max: 1.0, step: 0.05),
+            (path: "zombie.corpse_secs", name: "Bodies lie for", min: 10.0, max: 36000.0, step: 60.0, unit: "s"),
+        ]),
+        (name: "Survivors", options: [
+            (path: "combat.player_hp", name: "Health", min: 10.0, max: 1000.0, step: 10.0),
+            (path: "health.regen_awake_per_h", name: "Healing awake", min: 0.0, max: 50.0, step: 0.5, unit: "HP/h"),
+            (path: "health.regen_asleep_per_h", name: "Healing asleep", min: 0.0, max: 50.0, step: 0.5, unit: "HP/h"),
+            (path: "movement.walk_speed", name: "Walking", min: 0.5, max: 10.0, step: 0.1, unit: "m/s"),
+            (path: "movement.run_speed", name: "Running", min: 0.5, max: 15.0, step: 0.1, unit: "m/s"),
+            (path: "movement.sneak_speed", name: "Sneaking", min: 0.5, max: 10.0, step: 0.1, unit: "m/s"),
+            (path: "movement.run_drain", name: "Running tires", about: "Breath lost a second running.",
+                min: 0.0, max: 1.0, step: 0.01),
+            (path: "carry.limit_kg", name: "Carrying", min: 1.0, max: 200.0, step: 1.0, unit: "kg"),
+            (path: "carry.pockets_l", name: "Pockets", min: 0.0, max: 100.0, step: 1.0, unit: "L"),
+            (path: "skills.xp_scale", name: "Skills grow", min: 0.0, max: 20.0, step: 0.1, unit: "x"),
+        ]),
+        (name: "Hunger, thirst and sleep", options: [
+            (path: "needs.hunger_per_h", name: "Hunger an hour", min: 0.0, max: 1.0, step: 0.005),
+            (path: "needs.thirst_per_h", name: "Thirst an hour", min: 0.0, max: 1.0, step: 0.005),
+            (path: "needs.tired_per_h", name: "Tiredness an hour", min: 0.0, max: 1.0, step: 0.005),
+            (path: "needs.sleep_time_scale", name: "Time asleep goes", min: 1.0, max: 120.0, step: 1.0, unit: "x"),
+            (path: "needs.sleep_through_night", name: "Sleep through the night"),
+        ]),
+        (name: "The infection", options: [
+            (path: "infection.fatal", name: "Deadly", about: "Off: it burns out after the fever."),
+            (path: "infection.stage_mult", name: "How long it takes", min: 0.5, max: 3.0, step: 0.1, unit: "x"),
+            (path: "infection.survivor_hp", name: "HP left if it burns out", min: 1.0, max: 100.0, step: 1.0),
+        ]),
+        (name: "Things to find", options: [
+            (path: "loot.scale", name: "How much", about: "A multiplier on what every cupboard holds.",
+                min: 0.0, max: 10.0, step: 0.1, unit: "x"),
+            (path: "loot.rare_scale", name: "Rare things", min: 0.0, max: 10.0, step: 0.1, unit: "x"),
+            (path: "loot.tiers.very_rare", name: "Very rare weight", min: 0.0, max: 1.0, step: 0.01),
+        ]),
+        (name: "The world", options: [
+            (path: "weather.harshness", name: "Climate", about: "0.6 mild, 1 the game's, 1.3 harsh.",
+                min: 0.0, max: 3.0, step: 0.1, unit: "x"),
+            (path: "weather.days_per_month", name: "Days a month", min: 1.0, max: 90.0, step: 1.0),
+        ]),
+    ],
+)

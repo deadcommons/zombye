@@ -43,6 +43,10 @@ pub struct ServerConfig {
     pub seed: Option<u64>,
     pub map_chunks: Option<u32>,
     pub zombies: Option<u32>,
+    /// A new world's difficulty (#38): a preset's id, a Sandbox setup file and tuning numbers by path.
+    pub difficulty: Option<String>,
+    pub sandbox: Option<PathBuf>,
+    pub set: std::collections::BTreeMap<String, String>,
     pub load_anyway: bool,
     pub data: Option<PathBuf>,
     pub admin: Option<AdminConfig>,
@@ -71,6 +75,9 @@ impl Default for ServerConfig {
             seed: None,
             map_chunks: None,
             zombies: None,
+            difficulty: None,
+            sandbox: None,
+            set: Default::default(),
             load_anyway: false,
             data: None,
             admin: None,
@@ -171,6 +178,11 @@ impl ServerConfig {
         put("--seed", self.seed.map(|s| s.to_string()));
         put("--map-chunks", self.map_chunks.map(|n| n.to_string()));
         put("--zombies", self.zombies.map(|n| n.to_string()));
+        put("--difficulty", self.difficulty.clone().filter(|d| !d.trim().is_empty()));
+        put("--sandbox", self.sandbox.as_ref().map(path));
+        for (k, v) in &self.set {
+            put("--set", Some(format!("{k}={v}")));
+        }
         put("--data", self.data.as_ref().map(path));
         if let Some(admin) = &self.admin {
             put("--admin-mcp", Some(admin.listen.clone().unwrap_or_default()));
@@ -273,7 +285,7 @@ mod tests {
         // Every field is in it, set or as a commented example.
         for field in [
             "name", "listen", "max_players", "password", "pvp", "spawn", "fair_sight", "logout_secs", "logout_safe_secs", "spawn_protection_secs", "start_kit", "camera", "agents", "budget_kb", "allow_dev", "save",
-            "autosave_mins", "seed", "map_chunks", "zombies", "load_anyway", "data", "admin", "token", "origins",
+            "autosave_mins", "seed", "map_chunks", "zombies", "difficulty", "sandbox", "set", "load_anyway", "data", "admin", "token", "origins",
         ] {
             assert!(TEMPLATE.contains(&format!("{field}:")), "{field} is explained in the template");
         }
@@ -281,6 +293,9 @@ mod tests {
         let all: String = TEMPLATE.lines().map(|l| l.trim_start().strip_prefix("// ").filter(|rest| rest.split_once(':').is_some_and(|(k, _)| !k.is_empty() && k.chars().all(|c| c.is_ascii_lowercase() || c == '_'))).unwrap_or(l)).collect::<Vec<_>>().join("\n");
         let all = ServerConfig::parse(&all).unwrap_or_else(|e| panic!("{e} in:\n{all}"));
         assert_eq!((all.pvp, all.spawn, all.fair_sight, all.zombies), (Some(true), Some(SpawnRule::Spread), Some(true), Some(3000)));
+        assert_eq!((all.difficulty.as_deref(), all.set.get("zombie.memory_secs").map(String::as_str)), (Some("hard_times"), Some("30")));
+        let with = merge(&[], ServerConfig { set: all.set.clone(), difficulty: all.difficulty.clone(), ..ServerConfig::default() }.flags(Path::new("."), false));
+        assert!(with.windows(2).any(|w| w[0] == "--set" && w[1] == "zombie.memory_secs=30") && with.windows(2).any(|w| w[0] == "--difficulty" && w[1] == "hard_times"));
         assert_eq!(all.admin.unwrap().token.as_deref(), Some("a-long-secret-token"));
         assert_eq!((all.camera, all.agents), (Some(CameraRule::Isometric), Some(AgentsRule::Marked)));
         assert_eq!(all.start_kit, Some(vec![KitItem { item: "water_bottle".into(), count: 1 }, KitItem { item: "rag".into(), count: 2 }]));

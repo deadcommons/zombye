@@ -92,6 +92,9 @@ the file's folder. It is read once, at start.
 | `save` | `"world.zsave"` | The world's file: loaded if there, else made. `None`: never saved. |
 | `autosave_mins` | `5` | Minutes between autosaves; `0`: only on shutdown. |
 | `seed`, `map_chunks`, `zombies` | `1`, `30`, by the data | A new world only. The map is `map_chunks` × 16 m each way (64: about 1 km). |
+| `difficulty` | the data's plain preset | A new world only: a preset's id from `difficulty.ron` (`"easy_street"`, `"survivor"`, `"hard_times"`, `"last_one_left"`). |
+| `sandbox` | none | A new world only: a file of a whole difficulty, the preset and every number changed over it. The game's new-game screen writes one (`new_game.ron` in its saves folder) from its World and Sandbox pages. |
+| `set` | `{}` | A new world only, over both: single tuning numbers by name, `{"zombie.sight_day": "30", "population.scale": "1.5"}`. Every name is on the game's Sandbox page and in the docs' tuning reference. |
 | `load_anyway` | `false` | Load a save whose game data changed incompatibly, dropping what no longer fits. |
 | `data` | `$ZOMBYE_DATA`, else shipped | The game data folder. |
 | `admin` | none | `(listen: "127.0.0.1:8788", token: "...", origins: [])`: the operator's MCP admin endpoint. |
@@ -100,7 +103,8 @@ The same settings are flags (`zombye-server --host --max-players 8 ...`; the lis
 `crates/server/src/main.rs`), and a flag on the command line wins over the file.
 
 **What players are told.** The rules (players, PvP, the camera, agents, what they're shown of other
-players, logging out, how new survivors start and with what, the map and its zombies) go to every
+players, logging out, how new survivors start and with what, the map and its zombies, the
+difficulty) go to every
 client as it joins, which shows them in a panel (F6 brings it back). Anyone can also ask before
 joining, with no password: `zombye --server-info HOST[:PORT]` prints them, and the server prints
 the same lines when it starts.
