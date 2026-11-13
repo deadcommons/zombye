@@ -28,7 +28,9 @@
 //!   spread|together` (default: spread round the town with PvP, together by the first house
 //!   without), `--name NAME`, `--password P`, `--allow-dev` (take dev toggles and debug intents
 //!   from clients), `--budget KB` (kilobytes a second down to each client, default 32, 8 to
-//!   1000: what its snapshots are kept within, #22), `--fair-sight on|off` (#66: a client is told
+//!   1000: what its snapshots are kept within, #22), `--snapshot-threads N` (threads cutting and
+//!   encoding the clients' snapshots, #18: default the cores up to 8, 1 to 64; the frames are the
+//!   same whatever the count), `--fair-sight on|off` (#66: a client is told
 //!   of another player only while its survivor sees them, and of one it only hears as a sound;
 //!   default on with PvP, off in co-op), `--logout-secs S` (default 30: how long a
 //!   survivor lies in the world, asleep, after its player leaves), `--logout-safe-secs S` (default
@@ -355,7 +357,7 @@ fn main() {
     } else if flag("--bench") && flag("--bots") {
         // The bench over the network: a real server on a loopback port, each bot its own TCP connection.
         let bots = value("--bots").unwrap_or(1).clamp(1, zombye_net::wire::MAX_PLAYERS as u64) as u32;
-        multiplayer::bench(World::new(config), bots, value("--horde").unwrap_or(0) as u32, flag("--spread"), value("--ticks").unwrap_or(400), value("--lag").unwrap_or(0).min(2000) as u32);
+        multiplayer::bench(World::new(config), bots, value("--horde").unwrap_or(0) as u32, flag("--spread"), value("--ticks").unwrap_or(400), value("--lag").unwrap_or(0).min(2000) as u32, value("--snapshot-threads").map(|n| n as usize));
     } else if flag("--bots") {
         let Some(addr) = text("--connect") else {
             eprintln!("--bots N needs --connect HOST[:PORT]");
@@ -403,7 +405,7 @@ fn main() {
     } else {
         eprintln!(
             "usage: zombye-server (--config FILE | --mcp | --mcp-http [ADDR[:PORT]] [--mcp-token T | --mcp-no-auth] [--mcp-token-in-url] [--mcp-no-dev] [--mcp-origin ORIGIN] | --bench [--ticks N] [--players N] [--horde N] [--save-bench] \
-             | --host [ADDR[:PORT]] [--no-reports] [--name NAME] [--max-players N] [--pvp on|off] [--spawn spread|together] [--password P] [--allow-dev] [--budget KB] [--fair-sight on|off] \
+             | --host [ADDR[:PORT]] [--no-reports] [--name NAME] [--max-players N] [--pvp on|off] [--spawn spread|together] [--password P] [--allow-dev] [--budget KB] [--snapshot-threads N] [--fair-sight on|off] \
              [--logout-secs S] [--logout-safe-secs S] [--spawn-protection S] [--admin-mcp [ADDR[:PORT]] [--admin-token T] [--admin-origin ORIGIN]] \
              | --bots N --connect HOST[:PORT] [--secs S] [--name PREFIX] [--password P] [--bots-hostile] [--lag MS] \
              | --benchmark list|table|ID|all [--baseline idle|brawler|runner] [--agent NAME] [--results DIR] (ID with --mcp or --mcp-http: an agent plays it)) \

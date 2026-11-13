@@ -43,6 +43,9 @@
     agents: Marked,
     // Kilobytes a second sent down to each client at most, 8 to 1000.
     budget_kb: 32,
+    // Threads that cut and encode the clients' snapshots each tick, 1 to 64 (1: on the tick's own
+    // thread). Left out: the machine's cores, at most 8.
+    // snapshot_threads: 4,
     // Take the dev toggles (god mode and the like) and debug intents from clients. For testing.
     allow_dev: false,
 

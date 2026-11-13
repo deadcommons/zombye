@@ -2961,6 +2961,12 @@ snapshots over the network: `zombye-server --host` serves a world and `zombye --
 - **Threads** (`host.rs`): each connection has a thread reading frames into one channel and a thread writing them from
   a queue of 100 (5 s of snapshots); a client whose queue fills, that floods (400 intents waiting) or that says nothing
   for 20 s (clients ping every second) is dropped. The tick itself never waits on a socket.
+  Each client's snapshot (cut to what it may know, then delta-encoded within its budget) is built on
+  `--snapshot-threads N` threads (#18; `snapshot_threads` in the config; default the cores up to 8, 1 to 64; 1: on the
+  tick's thread): runs of clients, each only reading the world, their frames sent in the clients' order, byte for byte
+  the same whatever the count (`host::tests::snapshot_threads_send_the_same_frames`). Measured on the shared 32-core
+  VM (`--bench --bots N --spread --horde 1000`, medians of 3): the per-client part of a tick, 32 bots, 1 thread to 8:
+  4 km 1.8 to 0.9 ms, 1 km 1.4 to 0.7 ms; 64 bots, 4 km 3.5 to 1.6 ms, 1 km 4.1 to 1.2 ms. Bandwidth is unchanged.
 - **Melee is lag-compensated** (#23, see Combat): clients say which snapshot they show, blows land where the attacker
   saw the target (at most 0.35 s back), trades of blows go by what each side saw. `wire::PROTOCOL` 13 (12: mods
   downloaded on joining, #24; 7: #68's spawn

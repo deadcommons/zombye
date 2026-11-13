@@ -92,6 +92,19 @@ pub struct HostOptions {
     /// set both with [`HostOptions::with_mods`]. A mod listed in `mods` with no pack here must be
     /// installed by hand on each client. Read once, when the host starts.
     pub packs: Vec<ModPack>,
+    /// Threads that cut and encode the clients' snapshots each tick (#18, `--snapshot-threads`):
+    /// each client's frame is its own work and only reads the world, so they are shared out in
+    /// runs of clients and sent in the same order, byte for byte the same whatever the count. 1:
+    /// all on the tick's own thread. Default [`default_snapshot_threads`].
+    pub snapshot_threads: usize,
+}
+
+/// Snapshot threads at most.
+pub const MAX_SNAPSHOT_THREADS: usize = 64;
+
+/// The cores there are, at most 8 (one tick's snapshots don't need more).
+pub fn default_snapshot_threads() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get()).min(8)
 }
 
 impl HostOptions {
@@ -134,6 +147,7 @@ impl Default for HostOptions {
             agents: Agents::default(),
             mods: Vec::new(),
             packs: Vec::new(),
+            snapshot_threads: default_snapshot_threads(),
         }
     }
 }
@@ -881,28 +895,25 @@ impl Host {
         let budget = self.options.budget.clamp(BUDGET_RANGE.0, BUDGET_RANGE.1) as f32;
         let a_tick = budget * TICK_DT;
         let fair = self.fair_sight();
-        for c in &mut self.conns {
-            // Its area of interest: what is within the radius of its survivor, and of the map
-            // the chunks that are (with what it missed in those that have just come in).
-            let mut view = full.for_client(c.player, radius);
-            // Of the other players, only those its survivor sees; those it hears, as sounds (#66).
-            if fair {
-                view = view.through_senses(c.player, &self.world);
-            } else {
-                view.heard.clear();
-            }
-            let me = self.world.player(c.player).map(|p| p.state.pos);
-            c.map.cut(&mut view, me, radius, &self.world);
-            // Its budget: zombies get what is left of it this tick, and never less than a
-            // quarter of a tick's share, so the ones close by are always told.
-            c.tokens = (c.tokens + a_tick).min(budget);
-            let zombie_bytes = (c.tokens - FRAME_BYTES).max(a_tick * 0.25) as usize;
-            let delta = c.encoder.encode(view, c.player, Limits { admit: radius - ADMIT_INSIDE, zombie_bytes });
-            let held = c.encoder.stats.held as u64;
-            c.held += held;
+        let cut = Cut { full: &full, world: &self.world, radius, budget, a_tick, fair };
+        // Each client's frame is cut and encoded on its own (it reads the world and changes only
+        // that client's encoder, map interest and tokens), so runs of clients go to threads (#18);
+        // the frames come back in the clients' order and are sent from here as before.
+        let threads = self.options.snapshot_threads.clamp(1, MAX_SNAPSHOT_THREADS).min(self.conns.len());
+        let frames: Vec<(Vec<u8>, u64)> = if threads <= 1 {
+            self.conns.iter_mut().map(|c| cut.frame(c)).collect()
+        } else {
+            let run = self.conns.len().div_ceil(threads);
+            std::thread::scope(|s| {
+                let cut = &cut;
+                let handles: Vec<_> = self.conns.chunks_mut(run).map(|conns| s.spawn(move || conns.iter_mut().map(|c| cut.frame(c)).collect::<Vec<_>>())).collect();
+                handles.into_iter().flat_map(|h| h.join().expect("a snapshot thread panicked")).collect()
+            })
+        };
+        for (c, (frame, held)) in self.conns.iter_mut().zip(frames) {
             self.stats.held += held;
             let before = c.bytes_out;
-            send(c, &mut self.stats, &ServerMsg::Snapshot(Box::new(delta)));
+            send_frame(c, &mut self.stats, frame);
             c.tokens = (c.tokens - (c.bytes_out - before) as f32).max(-budget);
         }
     }
@@ -930,9 +941,48 @@ impl Host {
     }
 }
 
-/// Queue a frame for a client; one whose queue is full (or whose writer is gone) is dropped.
+/// What every client's snapshot this tick is cut from (#18: shared by the snapshot threads).
+struct Cut<'a> {
+    full: &'a Snapshot,
+    world: &'a World,
+    radius: f32,
+    budget: f32,
+    a_tick: f32,
+    fair: bool,
+}
+
+impl Cut<'_> {
+    /// Client `c`'s frame this tick, and the zombie updates held back from it for the budget.
+    fn frame(&self, c: &mut Conn) -> (Vec<u8>, u64) {
+        // Its area of interest: what is within the radius of its survivor, and of the map
+        // the chunks that are (with what it missed in those that have just come in).
+        let mut view = self.full.for_client(c.player, self.radius);
+        // Of the other players, only those its survivor sees; those it hears, as sounds (#66).
+        if self.fair {
+            view = view.through_senses(c.player, self.world);
+        } else {
+            view.heard.clear();
+        }
+        let me = self.world.player(c.player).map(|p| p.state.pos);
+        c.map.cut(&mut view, me, self.radius, self.world);
+        // Its budget: zombies get what is left of it this tick, and never less than a
+        // quarter of a tick's share, so the ones close by are always told.
+        c.tokens = (c.tokens + self.a_tick).min(self.budget);
+        let zombie_bytes = (c.tokens - FRAME_BYTES).max(self.a_tick * 0.25) as usize;
+        let delta = c.encoder.encode(view, c.player, Limits { admit: self.radius - ADMIT_INSIDE, zombie_bytes });
+        let held = c.encoder.stats.held as u64;
+        c.held += held;
+        (wire::encode_frame(&ServerMsg::Snapshot(Box::new(delta))), held)
+    }
+}
+
+/// Queue a message for a client; one whose queue is full (or whose writer is gone) is dropped.
 fn send(c: &mut Conn, stats: &mut HostStats, msg: &ServerMsg) {
-    let frame = wire::encode_frame(msg);
+    send_frame(c, stats, wire::encode_frame(msg));
+}
+
+/// Queue an encoded frame for a client, as [`send`].
+fn send_frame(c: &mut Conn, stats: &mut HostStats, frame: Vec<u8>) {
     let n = frame.len() as u64;
     match c.out.try_send(frame) {
         Ok(()) => {
@@ -1008,4 +1058,68 @@ fn open_ground_near(world: &World, p: Vec2, clear: i32) -> Vec2 {
         }
     }
     p
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zombye_sim::PlayerInput;
+
+    /// Every client's frames, tick by tick, from a host that cuts snapshots on `threads` threads.
+    /// The clients are put straight in as connections (no sockets), so nothing but the thread
+    /// count differs between two runs.
+    fn frames_with(threads: usize, clients: usize, ticks: u32) -> Vec<Vec<Vec<u8>>> {
+        let mut config = crate::content::load_config(&crate::content::default_data_dir(), 3).expect("the shipped content");
+        config.zombies = Some(1500);
+        config.combat.pvp = true;
+        let world = World::new(config);
+        let options = HostOptions { snapshot_threads: threads, ..HostOptions::default() };
+        let mut host = Host::bind(world, "127.0.0.1:0", options).expect("a free port");
+        let spawn = host.world.player_spawn;
+        let mut inboxes = Vec::new();
+        for k in 0..clients {
+            // A ring round the spawn, some close enough to see each other.
+            let at = spawn + Vec2::from_angle(k as f32 * 0.9) * (3.0 + 4.0 * k as f32);
+            let player = host.world.add_player(at);
+            let (out, frames) = mpsc::sync_channel::<Vec<u8>>(OUT_QUEUE);
+            let tokens = host.options.budget as f32;
+            host.conns.push(Conn { id: k as u64, player, name: format!("c{k}"), key: Key::default(), addr: format!("test {k}"), out, queue: VecDeque::new(), encoder: DeltaEncoder::default(), map: MapInterest::default(), tokens, said_at: None, held: 0, bytes_out: 0, bytes_in: 0, intents: 0, closing: None, joined: Instant::now() });
+            inboxes.push(frames);
+        }
+        host.world.mark_all_private_dirty();
+        let mut got = vec![Vec::new(); clients];
+        for t in 0..ticks {
+            for k in 0..clients {
+                let player = host.conns[k].player;
+                let dir = Vec2::from_angle(t as f32 * 0.05 + k as f32);
+                host.world.set_player_input(player, t + 1, PlayerInput { move_dir: dir, facing: dir.to_angle(), run: k % 2 == 0, sneak: false, aim: false });
+            }
+            host.tick();
+            for (k, inbox) in inboxes.iter().enumerate() {
+                let mut tick = Vec::new();
+                while let Ok(frame) = inbox.try_recv() {
+                    tick.extend_from_slice(&frame);
+                }
+                got[k].push(tick);
+            }
+        }
+        assert!(host.conns.iter().all(|c| c.closing.is_none()), "every client stayed");
+        got
+    }
+
+    /// Snapshots cut on threads (#18) are the same bytes, client by client and tick by tick, as
+    /// those cut on the tick's own thread.
+    #[test]
+    fn snapshot_threads_send_the_same_frames() {
+        let one = frames_with(1, 7, 60);
+        assert!(one.iter().all(|c| c.iter().all(|t| !t.is_empty())), "a frame every tick");
+        for threads in [2, 4, 7, 16] {
+            let many = frames_with(threads, 7, 60);
+            for (k, (a, b)) in one.iter().zip(&many).enumerate() {
+                for (t, (x, y)) in a.iter().zip(b).enumerate() {
+                    assert!(x == y, "{threads} threads: client {k} tick {t} differs ({} vs {} bytes)", x.len(), y.len());
+                }
+            }
+        }
+    }
 }
