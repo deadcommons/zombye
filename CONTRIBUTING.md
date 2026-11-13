@@ -2,7 +2,7 @@
 
 Thanks for helping. Contributions from people and from AI agents working for people are both
 welcome. Whoever opens the pull request is responsible for everything in it, including what their
-agent wrote.
+agent wrote. How we use AI, and what we ask of work made with it, is in [AI.md](AI.md).
 
 ## Licence of your contribution
 
@@ -72,7 +72,8 @@ placeholders.
 3. Run `cargo clippy` and `cargo test --release --workspace` before you push. Match the style of
    the code round your change; don't run `cargo fmt` over the tree (the code isn't rustfmt-formatted,
    and it would rewrite every file).
-4. Sign off every commit (`git commit -s`, see above).
+4. Sign off every commit (`git commit -s`, see above), and add an `Assisted-by:` line where a tool
+   did a real part of it ([AI.md](AI.md)).
 5. Describe what you changed and how you tested it. For gameplay changes, say what a player will
    notice.
 

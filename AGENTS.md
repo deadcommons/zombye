@@ -67,6 +67,8 @@ The direction, set by the owner on 2026-11-13; every change here follows it.
 - **Contributions** come under the [DCO](https://developercertificate.org/): every commit is signed off
   (`git commit -s`), agents' commits too ([CONTRIBUTING.md](CONTRIBUTING.md)). Code stays MIT OR Apache-2.0:
   no GPL-family code or dependencies.
+- **AI use** follows [AI.md](AI.md): a person answers for every change and signs it off, and a commit an agent
+  wrote carries an `Assisted-by:` trailer naming the tool (`Assisted-by: Claude (Anthropic)`), never `Co-authored-by:`.
 - **Agents writing code:** a new loader of bought files reads through `pack::read` and friends and works
   without them (falls back to this repo's art). Official builds set `ZOMBYE_PACK_KEY` at compile time; the
   built-in key is only for development.
