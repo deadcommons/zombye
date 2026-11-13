@@ -434,18 +434,16 @@ fn dab_pixels() -> Canvas {
     c
 }
 
-/// The grain of an old print, to lay over a screen's ground: pale specks and dark ones, and
-/// faint blotches where the ink took more or less. Repeats without a seam.
+/// The grain of an old print, to lay over a screen's ground: fine pale specks and dark ones.
+/// Repeats without a seam (and has nothing big enough to show that it repeats).
 fn grain_pixels() -> Canvas {
     let n = GRAIN_SIZE;
     let mut c = Canvas::new(n, n);
     for y in 0..n {
         for x in 0..n {
-            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-            let blotch = noise(px, py, (48.0, 48.0), n as f32, 81) - 0.5;
             let speck = hash(x as i32, y as i32, 82);
-            let pale = smooth(0.93, 1.0, speck) * 0.10 + blotch.max(0.0) * 0.07;
-            let dark = smooth(0.92, 0.0, speck * 12.0) * 0.16 + (-blotch).max(0.0) * 0.12;
+            let pale = smooth(0.95, 1.0, speck) * 0.07;
+            let dark = smooth(0.06, 0.0, speck) * 0.12;
             if pale >= dark {
                 c.push((0.914, 0.847, 0.733), pale);
             } else {

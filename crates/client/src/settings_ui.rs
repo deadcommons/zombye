@@ -479,6 +479,10 @@ fn spawn(mut commands: Commands, ui: Res<SettingsUi>) {
             GlobalZIndex(31),
         ))
         .with_children(|c| {
+            // Before a game, the menu's printed ground round the panel.
+            if !ui.in_game {
+                skin::ground(c);
+            }
             c.spawn((Panel, Node { width: px(WIDTH), flex_direction: FlexDirection::Column, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(8)), ..default() }, skin::panel()));
         });
 }
