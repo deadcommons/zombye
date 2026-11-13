@@ -236,7 +236,13 @@ prints `frame cost: M ms mean, W ms worst` (how frame costs in this file are mea
 `walk`, `run`, `sneak` at `U` (0..1) of the locomotion cycle, `swing`, `swing_b` (a swing's second variant), `shove`, `stomp` at `U` of the action (the blow
 lands at 0.45), `idle`, `dead`.
 `--map-chunks N` makes the map N × N chunks of 16 m (default 30, 480 m; 64 is about 1 km): the same town in the
-middle with more forest round it (a map too small for the town is grown to fit). The server takes it too.
+middle with more forest round it (a map too small for the town is grown to fit). The server takes it too. At most 512 a side (8 km;
+`map::MAX_MAP_CHUNKS`, also checked in a save's settings). Room and building ids are `u32` (`map::RoomId`, `map::BuildingId`; the
+outdoors and corpse sites have `NO_BUILDING`), so a city can have more than 65,536 rooms; a tile is 8 bytes. Measured on the
+32-core build box (Linear DCM-94; `net's map_size` test, ignored, times a big map): 128 chunks (2 km) generates in ~1.8 s, 0.2 GB;
+256 (4 km) ~7 s, 0.8 GB, a 1.4 MB save that loads in ~7 s (nearly all regenerating the map); 512 (8 km) ~29 s, 3.0 GB. The town
+stays ~390 x 275 m, so a 256-chunk map is over 99% forest and wild ground. A joining client builds the same map (`World::new`).
+32 bots on 256 chunks: 7.4 ms a tick on average, but ~34 KB/s down each, over the 32 KB/s budget.
 Without `--zombies` (client and server) the world holds as many zombies as `assets/data/population.ron` gives for the
 map: about 2,950 on the default map, about 3,450 on a 1 km one (the extra ground is sparse forest); `--zombies N`
 sets the total and keeps the file's proportions.
