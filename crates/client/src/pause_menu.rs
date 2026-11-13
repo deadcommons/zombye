@@ -62,7 +62,8 @@ pub fn entries(on_server: bool) -> Vec<Act> {
 pub struct PauseMenu {
     pub open: bool,
     acts: Vec<Act>,
-    shown: Option<bool>,
+    /// Up or not, and the controller in use (its footer names the button), as last drawn.
+    shown: Option<(bool, bool)>,
 }
 
 pub struct PauseMenuPlugin;
@@ -194,10 +195,11 @@ fn stop_time(menu: Res<PauseMenu>, layer: Option<Res<crate::main_menu::MenuLayer
 fn draw(mut commands: Commands, mut menu: ResMut<PauseMenu>, settings: Res<SettingsUi>, link: Res<ServerLink>, mut root: Query<&mut Node, With<Root>>, panel: Query<Entity, With<Panel>>) {
     // (The settings screen stands in its place, not over it.)
     let up = menu.open && !settings.open;
-    if menu.shown == Some(up) {
+    let want = (up, crate::pad::showing());
+    if menu.shown == Some(want) {
         return;
     }
-    menu.shown = Some(up);
+    menu.shown = Some(want);
     let (Ok(mut node), Ok(panel)) = (root.single_mut(), panel.single()) else { return };
     node.display = if up { Display::Flex } else { Display::None };
     commands.entity(panel).despawn_related::<Children>();

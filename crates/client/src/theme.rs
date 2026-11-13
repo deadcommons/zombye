@@ -564,7 +564,17 @@ pub fn title(c: &mut ChildSpawnerCommands, text: &str) {
 }
 
 /// A key to press, as a small light button, then what it does: "[Enter] carry on".
+///
+/// The key is as the keyboard calls it; with the controller in use it shows the button that does
+/// the same, and nothing when none does (`pad::prompt`).
 pub fn keycap(c: &mut ChildSpawnerCommands, key: &str, does: &str) {
+    if let Some(key) = crate::pad::prompt(key) {
+        keycap_as_is(c, &key, does);
+    }
+}
+
+/// [`keycap`] with the key's name shown as it is given (a controller's button, already named).
+pub fn keycap_as_is(c: &mut ChildSpawnerCommands, key: &str, does: &str) {
     c.spawn((Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(10), ..default() }, Pickable::IGNORE)).with_children(|row| {
         row.spawn((Node { padding: UiRect::axes(px(10), px(4)), justify_content: JustifyContent::Center, min_width: px(34), ..default() }, button(false), Pickable::IGNORE)).with_children(|k| {
             k.spawn((Text::new(key.to_string()), strong(BODY), TextColor(INK), TextLayout::no_wrap(), Pickable::IGNORE));

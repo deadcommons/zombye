@@ -120,7 +120,39 @@ impl Plugin for DeathPlugin {
         app.add_systems(Startup, spawn_screen)
             // Before Update (as F9 is), so renderers see a new run's edge changes in the same frame.
             .add_systems(PreUpdate, death_keys.after(InputSystems).after(crate::inventory_ui::TextEntry).run_if(crate::live))
-            .add_systems(Update, update_screen);
+            .add_systems(Update, (update_screen, key_row));
+    }
+}
+
+/// The death screen's keys, as the keyboard or the controller in use names them.
+#[derive(Component)]
+struct KeyRow {
+    again: &'static str,
+    /// Drawn for the controller (Some(true)) or the keyboard, or not yet.
+    pad: Option<bool>,
+}
+
+fn key_row(mut commands: Commands, mut rows: Query<(Entity, &mut KeyRow)>) {
+    let pad = crate::pad::showing();
+    for (e, mut row) in &mut rows {
+        if row.pad == Some(pad) {
+            continue;
+        }
+        row.pad = Some(pad);
+        let again = row.again;
+        commands.entity(e).despawn_children();
+        commands.entity(e).with_children(|row| {
+            if pad {
+                // (The controller: A again; its pause button is the menu, which quits too.)
+                use crate::pad::{Button, button};
+                theme::keycap_as_is(row, &button(Button::A), again);
+                theme::keycap_as_is(row, &button(Button::Menu), "menu");
+            } else {
+                theme::keycap(row, "R", again);
+                theme::keycap(row, "Q", "quit");
+                theme::keycap(row, "Esc", "menu");
+            }
+        });
     }
 }
 
@@ -170,11 +202,8 @@ fn spawn_screen(mut commands: Commands, link: Option<Res<crate::server_link::Ser
                         });
                     }
                     rule(c);
-                    c.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, column_gap: px(40), margin: UiRect::top(px(4)), ..default() }).with_children(|row| {
-                        theme::keycap(row, "R", again);
-                        theme::keycap(row, "Q", "quit");
-                        theme::keycap(row, "Esc", "menu");
-                    });
+                    // (Its keys are put in by `key_row`, and again when the controller is picked up.)
+                    c.spawn((KeyRow { again, pad: None }, Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, column_gap: px(40), margin: UiRect::top(px(4)), ..default() }));
                 });
         });
 }
@@ -279,6 +308,7 @@ fn death_keys(
     mut notice: ResMut<Notice>,
     mut exit: MessageWriter<AppExit>,
     mut automated: Local<bool>,
+    pad: Option<Res<crate::pad::Pad>>,
 ) {
     if !swap.dead() {
         return;
@@ -291,7 +321,8 @@ fn death_keys(
     }
     let due = !*automated && options.new_run_after.is_some_and(|t| now >= t);
     *automated |= due;
-    if keys.just_pressed(KeyCode::KeyR) || due {
+    let pad_again = pad.is_some_and(|p| p.just(crate::pad::Button::A));
+    if keys.just_pressed(KeyCode::KeyR) || pad_again || due {
         start_new_run(&mut swap, &mut notice, now);
     }
 }

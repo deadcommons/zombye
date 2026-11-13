@@ -158,35 +158,69 @@ pub struct HintInput {
     pub open: Option<String>,
 }
 
+/// The words a hint uses for the keys and buttons: the keyboard's, or the controller's while it
+/// is the one in use (`pad::showing`).
+struct Words {
+    e: String,
+    sleep: String,
+    sneak: String,
+    shove: String,
+    pad: bool,
+}
+
+impl Words {
+    fn now() -> Words {
+        use crate::keys::Action;
+        let pad = crate::pad::showing();
+        let k = |a: Action| crate::pad::prompt_action(a).unwrap_or_else(|| crate::keys::short(a));
+        Words { e: k(Action::Interact), sleep: k(Action::Sleep), sneak: k(Action::Sneak), shove: k(Action::Shove), pad }
+    }
+}
+
 /// The one thing to say now: what's urgent first, then the next step of the loop.
 pub fn hint(c: &HintInput) -> Option<String> {
-    // The key the world's things are used with, as bound (`keys.rs`).
-    let e = crate::keys::short(crate::keys::Action::Interact);
+    // The keys the world's things are used with, as bound (`keys.rs`), or the controller's buttons.
+    let w = Words::now();
+    let e = &w.e;
+    let (sleep, sneak, shove) = (&w.sleep, &w.sneak, &w.shove);
+    let pad = |b: crate::pad::Button| crate::pad::button(b);
+    let aim = crate::pad::button_for(crate::pad::PadAction::Only(crate::pad::Only::Aim)).unwrap_or_else(|| pad(crate::pad::Button::LT));
+    let attack = crate::pad::button_for(crate::pad::PadAction::Only(crate::pad::Only::Attack)).unwrap_or_else(|| pad(crate::pad::Button::RT));
+    let items = crate::pad::button_for(crate::pad::PadAction::Only(crate::pad::Only::ItemWheel)).unwrap_or_else(|| "Hold LB".to_string());
     if c.phase == Phase::Morning {
         return None;
     }
     if c.asleep {
-        return Some(format!("Asleep: the hours fly by. A noise or a blow wakes you; B or WASD gets you up. Dawn at {}.", c.dawn));
+        return Some(if w.pad {
+            format!("Asleep: the hours fly by. A noise or a blow wakes you; {sleep} or the left stick gets you up. Dawn at {}.", c.dawn)
+        } else {
+            format!("Asleep: the hours fly by. A noise or a blow wakes you; {sleep} or WASD gets you up. Dawn at {}.", c.dawn)
+        });
     }
     if c.threat {
-        return Some(if c.armed {
-            "Zombie! Hold the right mouse button to aim, left click to swing, Space to shove it back.".to_string()
-        } else {
-            "Zombie, and nothing in your hands! Space shoves it back (again and again to floor it, then Space stamps on it), or get away: they are slow.".to_string()
+        return Some(match (c.armed, w.pad) {
+            (true, false) => "Zombie! Hold the right mouse button to aim, left click to swing, Space to shove it back.".to_string(),
+            (true, true) => format!("Zombie! {aim} to aim, {attack} to swing, {shove} to shove it back."),
+            (false, false) => "Zombie, and nothing in your hands! Space shoves it back (again and again to floor it, then Space stamps on it), or get away: they are slow.".to_string(),
+            (false, true) => format!("Zombie, and nothing in your hands! {shove} shoves it back (again and again to floor it, then {shove} stamps on it), or get away: they are slow."),
         });
     }
     if c.bleeding {
-        return Some("You're bleeding. Press H: click the wound, then a bandage or rag to dress it.".to_string());
+        return Some(if w.pad {
+            format!("You're bleeding. {items} and pick a bandage or rag to dress it.")
+        } else {
+            "You're bleeding. Press H: click the wound, then a bandage or rag to dress it.".to_string()
+        });
     }
     if c.thirsty && c.drink {
-        return Some("You're thirsty. Press Tab, right-click a drink and drink it.".to_string());
+        return Some(if w.pad { format!("You're thirsty. {items} and pick a drink.") } else { "You're thirsty. Press Tab, right-click a drink and drink it.".to_string() });
     }
     if c.hungry && c.food {
-        return Some("You're hungry. Press Tab, right-click some food and eat it.".to_string());
+        return Some(if w.pad { format!("You're hungry. {items} and pick some food.") } else { "You're hungry. Press Tab, right-click some food and eat it.".to_string() });
     }
     let night = match c.phase {
         Phase::Night if !c.indoors => Some(format!("It's night: you can barely see, and they hear every step. Get indoors and shut the door behind you ({e}). Dawn at {}.", c.dawn)),
-        Phase::Night => Some(format!("Night. Keep the doors shut ({e}) and stay quiet (C sneaks), or lie down by a bed and sleep it away (B). Dawn at {}, in {}.", c.dawn, span(c.to_dawn))),
+        Phase::Night => Some(format!("Night. Keep the doors shut ({e}) and stay quiet ({sneak} sneaks), or lie down by a bed and sleep it away ({sleep}). Dawn at {}, in {}.", c.dawn, span(c.to_dawn))),
         Phase::Evening if !c.indoors => Some(format!("Dark at {}, in {}. Be indoors by then: head home, or pick a house and shut its doors ({e}).", c.dusk, span(c.to_dusk))),
         Phase::Evening => Some(format!("Dark at {}, in {}. Stay or go? Stay here and shut the doors ({e}), or find somewhere better while you can still see.", c.dusk, span(c.to_dusk))),
         _ => None,
@@ -195,13 +229,21 @@ pub fn hint(c: &HintInput) -> Option<String> {
         return night;
     }
     Some(if c.moved_m < 1.5 && c.searched == 0 {
-        "You wake up at home. It's too quiet. WASD to walk; the mouse wheel zooms.".to_string()
+        if w.pad { "You wake up at home. It's too quiet. The left stick walks; the d-pad zooms.".to_string() } else { "You wake up at home. It's too quiet. WASD to walk; the mouse wheel zooms.".to_string() }
     } else if let (Some(name), 0) = (&c.open, c.taken) {
-        format!("The {name} is open. Press Tab and click a thing to take it; right-click for what else you can do with it.")
+        if w.pad {
+            format!("The {name} is open. {e} takes what's in it, one thing a press.")
+        } else {
+            format!("The {name} is open. Press Tab and click a thing to take it; right-click for what else you can do with it.")
+        }
     } else if c.searched == 0 {
         format!("Search the house: stand facing a cupboard, wardrobe, fridge or shelf and press {e}.")
     } else if !c.armed {
-        "Find a weapon: knives in kitchen drawers, tools on shelves, a bat in a wardrobe. Press Tab, right-click it and take it in hand.".to_string()
+        if w.pad {
+            format!("Find a weapon: knives in kitchen drawers, tools on shelves, a bat in a wardrobe. {items} puts one in your hand.")
+        } else {
+            "Find a weapon: knives in kitchen drawers, tools on shelves, a bat in a wardrobe. Press Tab, right-click it and take it in hand.".to_string()
+        }
     } else if !c.food || !c.drink {
         let what = match (c.food, c.drink) {
             (true, false) => "something to drink",
@@ -212,7 +254,7 @@ pub fn hint(c: &HintInput) -> Option<String> {
     } else if c.searched < zombye_sim::firstnight::SEARCH_GOAL {
         "Keep searching: every room holds something. Bandages and a bag are worth finding.".to_string()
     } else if c.kills == 0 {
-        format!("You're set for now. Dark at {}: stay here, or look further afield while it's light. Outside, sneak (C) and keep away from groups.", c.dusk)
+        format!("You're set for now. Dark at {}: stay here, or look further afield while it's light. Outside, sneak ({sneak}) and keep away from groups.", c.dusk)
     } else {
         format!("Dark at {}, in {}. Use the daylight; be indoors when it goes.", c.dusk, span(c.to_dusk))
     })
@@ -250,7 +292,7 @@ fn follow(options: Res<Options>, link: Res<ServerLink>, me: Res<LocalPlayer>, mu
 }
 
 /// Enter shuts the morning screen, R there starts a new run; O hides the panel and hints.
-fn keys(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut ui: ResMut<FirstNightUi>, mut swap: WorldSwap, mut notice: ResMut<Notice>) {
+fn keys(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut ui: ResMut<FirstNightUi>, mut swap: WorldSwap, mut notice: ResMut<Notice>, pad: Option<Res<crate::pad::Pad>>) {
     if crate::keys::just_pressed(&keys, crate::keys::Action::Objectives) {
         ui.hidden = !ui.hidden;
         notice.say(time.elapsed_secs(), if ui.hidden { format!("Objectives and hints hidden ({} shows them)", crate::keys::label(crate::keys::Action::Objectives)) } else { "Objectives and hints shown".to_string() });
@@ -258,7 +300,7 @@ fn keys(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut ui: ResMut<FirstNi
     if !ui.morning {
         return;
     }
-    if keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) {
+    if keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) || pad.is_some_and(|p| p.just(crate::pad::Button::A)) {
         (ui.morning, ui.over) = (false, true);
     } else if keys.just_pressed(KeyCode::KeyR) && swap.link.world().is_some() {
         // (Single-player only: on a server the world goes on, and the living don't respawn.)
@@ -387,7 +429,7 @@ fn update_morning(
     ui: Res<FirstNightUi>,
     mut screen: Query<&mut Visibility, With<MorningScreen>>,
     body: Query<Entity, With<MorningBody>>,
-    mut built: Local<Option<u64>>,
+    mut built: Local<Option<(u64, bool)>>,
 ) {
     let (Ok(mut vis), Ok(body)) = (screen.single_mut(), body.single()) else { return };
     let rec = record(&options, &link, &me).filter(|(f, _)| ui.morning && f.outcome.is_some());
@@ -400,10 +442,12 @@ fn update_morning(
         return;
     };
     let Some(o) = f.outcome else { return };
-    if *built == Some(o.tick) {
+    // (Drawn again when the controller is picked up or put down: its keys name its buttons.)
+    let want = (o.tick, crate::pad::showing());
+    if *built == Some(want) {
         return;
     }
-    *built = Some(o.tick);
+    *built = Some(want);
     let rule = theme::spawn_rule;
     let centred = || Node { align_self: AlignSelf::Center, ..default() };
     commands.entity(body).despawn_children();
@@ -423,7 +467,10 @@ fn update_morning(
         c.spawn((Text::new("The town is still out there, and so are they. How long can you last?"), font(15.0), TextColor(DIM), centred()));
         c.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, column_gap: px(40), margin: UiRect::top(px(10)), ..default() }).with_children(|row| {
             theme::keycap(row, "Enter", "carry on");
-            theme::keycap(row, "R", "new run (same town, from the start)");
+            // (The controller's A carries on; a new run is the keyboard's alone here.)
+            if !crate::pad::showing() {
+                theme::keycap(row, "R", "new run (same town, from the start)");
+            }
         });
     });
 }

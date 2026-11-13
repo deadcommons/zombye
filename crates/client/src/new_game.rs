@@ -856,7 +856,12 @@ fn scroll_picks(
     }
 }
 
-fn draw(mut commands: Commands, mut screen: ResMut<Screen>, root: Option<Single<Entity, With<Root>>>, camera: Option<Res<ScreenCamera>>) {
+fn draw(mut commands: Commands, mut screen: ResMut<Screen>, root: Option<Single<Entity, With<Root>>>, camera: Option<Res<ScreenCamera>>, mut pad_shown: Local<bool>) {
+    // (Drawn again when the controller is picked up or put down: the footer names its buttons.)
+    if *pad_shown != crate::pad::showing() {
+        *pad_shown = crate::pad::showing();
+        screen.dirty = true;
+    }
     if !screen.dirty {
         return;
     }
@@ -926,6 +931,9 @@ fn keycap(c: &mut ChildSpawnerCommands, key: &str, colour: Color) {
 
 /// A key and the word for what it does, in the footer.
 fn hint(c: &mut ChildSpawnerCommands, key: &str, does: &str) {
+    // (The key as the keyboard calls it; with the controller, its button, or no hint: `pad.rs`.)
+    let Some(key) = crate::pad::prompt(key) else { return };
+    let key = key.as_str();
     c.spawn((Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(8), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|row| {
         keycap(row, key, BONE);
         line(row, does, font(SMALL), DIM);
@@ -985,7 +993,9 @@ fn main_button(parent: &mut ChildSpawnerCommands, label: &str, act: Act) {
     skin::press_in(&mut e);
     e.with_children(|b| {
         line(b, label.to_uppercase(), theme::brand(flat::BUTTON + 8.0), INK);
-        keycap(b, "Enter", INK);
+        if let Some(k) = crate::pad::prompt("Enter") {
+            keycap(b, &k, INK);
+        }
     });
     live(&mut e, look, Some(act));
 }
@@ -999,7 +1009,9 @@ fn side_button(parent: &mut ChildSpawnerCommands, label: &str, key: &str, act: A
     let mut e = parent.spawn((Node { height: px(48), width: px(NAV_WIDTH), padding: UiRect::horizontal(px(18)), column_gap: px(10), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(SIGN_EDGE)), border_radius: BorderRadius::all(px(RADIUS)), ..default() }, BackgroundColor(look.fill), BorderColor::all(look.edge)));
     e.with_children(|b| {
         line(b, label.to_uppercase(), theme::brand(flat::BUTTON + 4.0), BONE);
-        keycap(b, key, BONE);
+        if let Some(k) = crate::pad::prompt(key) {
+            keycap(b, &k, BONE);
+        }
     });
     live(&mut e, look, Some(act));
 }
@@ -1014,7 +1026,10 @@ fn step(parent: &mut ChildSpawnerCommands, label: &str, n: usize, on: bool, act:
         e.insert(skin::sign_shadow(skin::SIGN_SHADOW - 1.0));
     }
     e.with_children(|b| {
-        keycap(b, &n.to_string(), ink);
+        // (The controller turns the pages with its bumpers: no number to press.)
+        if !crate::pad::showing() {
+            keycap(b, &n.to_string(), ink);
+        }
         line(b, label.to_uppercase(), theme::brand(flat::CHIP + 9.0), ink);
     });
     live(&mut e, look, Some(act));

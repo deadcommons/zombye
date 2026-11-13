@@ -418,7 +418,7 @@ Up opens: `pad.ron`'s `chat`; the inventory's search; the server browser's field
 of the screen: the d-pad or stick moves over it, A types, X deletes, Y is a space, LB shifts, Menu is done (Enter),
 B cancels (Esc). It writes keyboard messages with `KeyCode::Unidentified` key codes, so text fields take it as they
 are, no game key is pressed and the pad stays the one in use. `--osk` shows it, for pictures. Nothing of it reaches
-the sim, a save or a snapshot. **Not yet** (the plan's later stages): focus on the
+the sim, a save or a snapshot. **Prompts name the buttons** (`pad::prompt`, `prompt_action`, `showing`): while the controller is in use every keycap and key hint (`theme::keycap`, `menu_skin::keycap`, the new-game footer, the E prompt, the current action, the first night's hints, the death and morning screens, the inventory's footer) shows the button that does the same, by the pad's maker's names, and leaves out a hint no button does; screens draw again when the pad is picked up or put down. **A new hint passes the key as the keyboard calls it** to one of those (or `keycap_as_is` for a button already named). A line in the top right corner (`pad::Toast`) says when a pad is plugged in or out and which the game follows. A on the death screen starts again, A on the morning screen carries on (`Pad::just`). **Not yet** (the plan's later stages): focus on the
 inventory and the server browser's list, button glyphs, rumble, quick chat, choosing the buttons on the Controls tab,
 a Steam Deck pass. Tests: `pad::tests`, `wheel::tests`, `focus::tests`, `osk::tests`, `settings_ui`'s
 `the_controller_list_shows_every_button`.

@@ -883,7 +883,12 @@ fn start_host(menu: &mut Menu, store: &mut SettingsStore, exit: &mut MessageWrit
 #[derive(Component)]
 struct Root;
 
-fn draw(mut commands: Commands, mut menu: ResMut<Menu>, root: Option<Single<Entity, With<Root>>>) {
+fn draw(mut commands: Commands, mut menu: ResMut<Menu>, root: Option<Single<Entity, With<Root>>>, mut pad_shown: Local<bool>) {
+    // (Drawn again when the controller is picked up or put down: the footer names its buttons.)
+    if *pad_shown != crate::pad::showing() {
+        *pad_shown = crate::pad::showing();
+        menu.dirty = true;
+    }
     if !menu.dirty {
         return;
     }
@@ -937,7 +942,7 @@ fn draw(mut commands: Commands, mut menu: ResMut<Menu>, root: Option<Single<Enti
                     if !does.is_empty() {
                         skin::keycap(row, "Enter", does);
                     }
-                    if menu.screen == Screen::Host && menu.field.is_none() && menu.hosting.is_none() {
+                    if menu.screen == Screen::Host && menu.field.is_none() && menu.hosting.is_none() && !crate::pad::showing() {
                         skin::keycap(row, "Tab", "type a name or password");
                     }
                     skin::keycap(row, "Esc", if menu.hosting.is_some() { "call it off" } else { "back" });

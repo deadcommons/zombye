@@ -246,8 +246,9 @@ fn draw(mut commands: Commands, mut osk: ResMut<Osk>, mut root: Query<(Entity, &
                 });
             }
             p.spawn((Node { column_gap: px(18), margin: UiRect::top(px(4)), justify_content: JustifyContent::Center, ..default() }, Pickable::IGNORE)).with_children(|h| {
-                for (k, does) in [("A", "type"), ("X", "delete"), ("Y", "space"), ("LB", "shift"), ("Menu", "done"), ("B", "cancel")] {
-                    skin::keycap(h, k, does);
+                use crate::pad::Button as B;
+                for (k, does) in [(B::A, "type"), (B::X, "delete"), (B::Y, "space"), (B::LB, "shift"), (B::Menu, "done"), (B::B, "cancel")] {
+                    skin::keycap_as_is(h, &crate::pad::button(k), does);
                 }
             });
         });

@@ -180,8 +180,16 @@ pub fn press_in(e: &mut EntityCommands) {
     });
 }
 
-/// A key to press and what it does.
+/// A key to press and what it does. The key is as the keyboard calls it; with the controller in
+/// use it shows the button that does the same, and nothing when none does (`pad::prompt`).
 pub fn keycap(parent: &mut ChildSpawnerCommands, key: &str, does: &str) {
+    if let Some(key) = crate::pad::prompt(key) {
+        keycap_as_is(parent, &key, does);
+    }
+}
+
+/// [`keycap`] with the key's name shown as it is given (a controller's button, already named).
+pub fn keycap_as_is(parent: &mut ChildSpawnerCommands, key: &str, does: &str) {
     parent.spawn((Node { align_items: AlignItems::Center, column_gap: px(8), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|row| {
         row.spawn((Node { height: px(24), min_width: px(24), padding: UiRect::horizontal(px(7)), align_items: AlignItems::Center, justify_content: JustifyContent::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(5)), ..default() }, BorderColor::all(LINE_HOVER), Pickable::IGNORE))
             .with_children(|k| {

@@ -689,7 +689,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
     // The Controls tab opens on the list of what is in use; the controller's buttons by its maker's names.
     let (in_use, family, input) = mode.map_or((false, crate::pad::Family::Xbox, store.settings.input), |m| (m.pad, m.family, m.setting));
     let pad_view = ui.pad_view.unwrap_or(in_use);
-    let want = (ui.open, ui.tab, ui.changes + ((pad_view as u32) << 30) + ((family as u32) << 28) + ((input as u32) << 26));
+    let want = (ui.open, ui.tab, ui.changes + ((pad_view as u32) << 30) + ((family as u32) << 28) + ((input as u32) << 26) + ((in_use as u32) << 25));
     if ui.shown == Some(want) {
         return;
     }

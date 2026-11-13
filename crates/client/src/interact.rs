@@ -306,7 +306,7 @@ fn prompt(
     };
     let (does, thing) = f.primary();
     let more = f.has_more() && crate::help_text::keys();
-    let key = keys::short(Action::Interact);
+    let key = crate::pad::prompt_action(Action::Interact).unwrap_or_else(|| keys::short(Action::Interact));
     let now = (does, thing, more, key);
     *vis = Visibility::Inherited;
     if shown.as_ref() == Some(&now) {
