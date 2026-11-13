@@ -1885,7 +1885,7 @@ them yet (no body temperature, no effect on sight or hearing, nothing drawn or h
   seeded drift of up to `swing_c` (5) either way over `swing_days` (3) (cold snaps and heatwaves), all scaled about
   `mild_c` (12) by `harshness` (1; 0.6 a mild climate, 1.3 a harsh one). `World::air_temp_at(pos, level)`: indoors
   (a room, or upstairs) goes `indoor_mix` (0.6) of the way to `indoor_c` (16); a lit campfire adds `fire_c` (15) at
-  its middle, falling to nothing at `fire_radius` (4 m). **The default climate is hard** (Andres, 2026-11-13): January
+  its middle, falling to nothing at `fire_radius` (4 m). **The default climate is hard** (the owner, 2026-11-13): January
   averages about -11 C with cold-snap nights below -20 and weeks of snow and blizzards, July about 27 C with heatwave
   afternoons over 40, dry with the odd violent storm; October and November are the wettest months.
 - **Forced weather** (`World::force_weather`, MCP `set_weather`, for tests and pictures): a kind, intensity and
