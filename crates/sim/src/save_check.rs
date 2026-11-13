@@ -940,14 +940,14 @@ mod tests {
         crate::items::parse_items(include_str!("../../../assets/data/items/items.ron"), &weapons()).unwrap()
     }
 
-    /// The shipped content plus one weapon that is never placed (its spawn weight is 0, and no
-    /// loot table names it), so there is always one a save doesn't use: the town has a weapon or two
+    /// The shipped content plus one weapon that is never placed (no loot table or floor entry
+    /// names it), so there is always one a save doesn't use: the town has a weapon or two
     /// in most buildings, so every shipped kind turns up somewhere.
     fn content() -> WorldConfig {
         let containers = crate::containers::parse_containers(include_str!("../../../assets/data/containers.ron")).unwrap();
         let mut weapons = weapons();
         let mut spare = weapons.iter().find(|w| w.category != crate::items::WeaponCategory::Unarmed).unwrap().clone();
-        (spare.id, spare.name, spare.spawn_weight) = ("spare_pipe".into(), "Spare pipe".into(), 0.0);
+        (spare.id, spare.name) = ("spare_pipe".into(), "Spare pipe".into());
         weapons.push(spare);
         WorldConfig::new(5, 0, templates()).with_weapons(weapons).with_items(items()).with_containers(containers).with_loot(crate::loot::tests::shipped()).with_map_chunks(8)
     }

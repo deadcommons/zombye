@@ -1,0 +1,18 @@
+[package]
+name = "zombye-reports"
+description = "Zombye's problem-report service: takes crash, F12, hitch and desync reports from games and servers into SQLite, and answers an agent's questions about them."
+license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "zombye-reports"
+path = "src/main.rs"
+
+[dependencies]
+# The report format (`zombye_net::report`).
+zombye-net.workspace = true
+serde_json.workspace = true
+# The store: SQLite, built from source so the service needs nothing installed (MIT).
+rusqlite = { version = "0.32", features = ["bundled"] }
