@@ -98,7 +98,7 @@ enum Kind {
 
 /// Every tool: name, title (shown to people by clients), kind. `tool_list` adds these to the
 /// definitions, and a test checks each tool has a row.
-const TOOLS: [(&str, &str, Kind); 70] = [
+const TOOLS: [(&str, &str, Kind); 71] = [
     ("observe", "Look around (ASCII map)", Kind::Look),
     ("screenshot", "Screenshot (rendered picture)", Kind::Look),
     ("stats", "World and player stats", Kind::Look),
@@ -113,6 +113,7 @@ const TOOLS: [(&str, &str, Kind); 70] = [
     ("items", "Item table", Kind::Look),
     ("loot", "Loot tables", Kind::Look),
     ("recipes", "Crafting recipes", Kind::Look),
+    ("mods", "Mods: what runs, and check one", Kind::Look),
     ("containers_near", "Containers nearby", Kind::Look),
     ("saves", "List saves", Kind::Look),
     ("heard", "What a player heard said", Kind::Look),
@@ -329,6 +330,8 @@ pub fn handle(world: &mut World, persist: &mut Persist, renderer: &Renderer, opt
         let mut result = match name {
             "screenshot" => screenshot_tool(world, renderer, args),
             "save" | "load" | "saves" => save_tool(world, persist, name, args).map(text_content),
+            // Reading folders on this machine is for a local session, like the saves folder.
+            "mods" => mods_tool(args, opts.save_tools).map(text_content),
             _ => call_tool(world, name, args).map(text_content),
         };
         if kind == Kind::Play
@@ -452,6 +455,85 @@ pub fn answer(msg: &Value, service: &Service, call: &mut dyn FnMut(&str, &Value)
         result["_meta"] = json!({META_SERVER: service.info});
     }
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+}
+
+/// What this process loaded with `--mod`, and the game's data before them: what the `mods` tool
+/// lists, and checks a mod against. Set once by `main`.
+pub struct ModsInfo {
+    pub base: zombye_sim::WorldConfig,
+    pub loaded: Vec<zombye_mods::Mod>,
+}
+
+static MODS: std::sync::OnceLock<ModsInfo> = std::sync::OnceLock::new();
+
+/// Say what this process loaded (see [`ModsInfo`]).
+pub fn set_mods(info: ModsInfo) {
+    let _ = MODS.set(info);
+}
+
+/// The `mods` tool. `files`: it may read folders on this machine (`check`, `folder`).
+fn mods_tool(args: &Value, files: bool) -> Result<String, String> {
+    use zombye_mods::{Mod, apply, folder};
+    let check = args.get("check").and_then(Value::as_str);
+    let dir = args.get("folder").and_then(Value::as_str);
+    if (check.is_some() || dir.is_some()) && !files {
+        return Err("this server doesn't read folders on its machine for its callers: it can only list the mods it runs".to_string());
+    }
+    let fallback;
+    let (base, loaded): (&zombye_sim::WorldConfig, &[Mod]) = match MODS.get() {
+        Some(info) => (&info.base, &info.loaded),
+        None => {
+            fallback = zombye_net::content::load_config(&zombye_net::content::default_data_dir(), 1)?;
+            (&fallback, &[])
+        }
+    };
+    let line = |m: &Mod| {
+        let v = if m.manifest.version.is_empty() { String::new() } else { format!(" {}", m.manifest.version) };
+        format!("{}{v}: {} ({})", m.manifest.id, m.manifest.name, m.contents())
+    };
+    let mut out = if loaded.is_empty() { "This world runs no mods.\n".to_string() } else { format!("This world runs {} mod{}, in this order:\n", loaded.len(), if loaded.len() == 1 { "" } else { "s" }) };
+    for m in loaded {
+        out.push_str(&format!("- {}\n", line(m)));
+    }
+    if let Some(path) = check {
+        match Mod::load(std::path::Path::new(path)) {
+            Err(e) => out.push_str(&format!("\nCHECK {path}: it can't be read: {e}\n")),
+            Ok(m) => {
+                // With this world's other mods before it (one of the same id is this one's older copy).
+                let mut list: Vec<Mod> = loaded.iter().filter(|o| o.manifest.id != m.manifest.id).cloned().collect();
+                list.push(m.clone());
+                match apply(&mut base.clone(), &list) {
+                    Ok(()) => out.push_str(&format!("\nCHECK {path}: loads. {}\n", line(&m))),
+                    Err(e) => out.push_str(&format!("\nCHECK {path}: doesn't load: {e}\n")),
+                }
+            }
+        }
+    }
+    if let Some(path) = dir {
+        let mut f = folder::scan(std::path::Path::new(path));
+        f.check(base);
+        out.push_str(&format!("\nFOLDER {path}: {} mod{}, {} on\n", f.entries.len(), if f.entries.len() == 1 { "" } else { "s" }, f.enabled_ids().len()));
+        for p in &f.problems {
+            out.push_str(&format!("problem: {p}\n"));
+        }
+        let mut n = 0;
+        for e in &f.entries {
+            let state = if e.enabled {
+                n += 1;
+                format!("on, {n}")
+            } else {
+                "off".to_string()
+            };
+            let v = if e.version.is_empty() { String::new() } else { format!(" {}", e.version) };
+            let how = match &e.problem {
+                Some(p) if e.enabled => format!("LEFT OFF: {p}"),
+                Some(p) => format!("wouldn't load: {p}"),
+                None => e.contents(),
+            };
+            out.push_str(&format!("- [{state}] {}{v}: {} ({how})\n", e.id, e.name));
+        }
+    }
+    Ok(out)
 }
 
 pub fn text_content(text: String) -> Value {
@@ -1005,6 +1087,19 @@ fn tool_defs() -> Value {
             "inputSchema": {"type": "object", "properties": {
                 "player": {"type": "integer", "default": 1}, "action": {"type": "string"}, "wound": {"type": "integer"},
                 "part": {"type": "string"}, "item": {"type": "string"}
+            }}
+        },
+        {
+            "name": "mods",
+            "description": "The mods this world runs (zombye-server --mod DIR), each with its version and what it brings. With \
+                `check` (the folder of a mod on this machine, such as one you are writing): whether it loads against the game's \
+                data and the other mods this world runs, and if not exactly why (the file and the mistake); nothing is loaded \
+                into this world. With `folder` (a game's mods folder, the one its Mods menu shows): every mod in it, which its \
+                enabled.ron turns on and in what order, and what is wrong with each. Read-only. A mod's data and scripts are \
+                described in docs/modding.md.",
+            "inputSchema": {"type": "object", "properties": {
+                "check": {"type": "string", "description": "A mod's folder (with its mod.ron) to check."},
+                "folder": {"type": "string", "description": "A mods folder to list and check."}
             }}
         },
         {
@@ -4361,7 +4456,7 @@ mod tests {
                 assert!(t["annotations"]["destructiveHint"].is_boolean(), "{name}");
             }
         }
-        for name in ["observe", "stats", "zombie", "edge", "buildings", "regions", "inventory", "health", "skills", "weapons", "items", "loot", "recipes", "builds", "containers_near", "saves", "heard", "screenshot"] {
+        for name in ["observe", "stats", "zombie", "edge", "buildings", "regions", "inventory", "health", "skills", "weapons", "items", "loot", "recipes", "mods", "builds", "containers_near", "saves", "heard", "screenshot"] {
             let t = tool(&list, name);
             assert_eq!(t["annotations"]["readOnlyHint"], true, "{name}");
             assert_eq!(t.get("_meta"), None, "{name}");
@@ -4787,6 +4882,33 @@ mod tests {
 
     /// Proximity chat through the tools (#67): `say` reaches those in earshot, `heard` lists it for
     /// each (and nothing for one out of range), with PvP on an unseen speaker is only a voice, and
+    /// `mods` lists what runs (nothing here), checks a mod's folder against the game's data and
+    /// lists a mods folder, saying exactly what is wrong with a mod that doesn't load.
+    #[test]
+    fn agents_check_a_mod() {
+        let mut world = small_world();
+        let dir = scratch("mods");
+        let mut persist = session(&world, &dir.0);
+        let sample = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../mods/alarm_clock");
+        let (text, err) = call(&mut world, &mut persist, "mods", json!({"check": sample.to_string_lossy()}));
+        assert!(!err && text.contains("This world runs no mods.") && text.contains("loads. alarm_clock 1.0: Wind-up alarm clocks (2 items, 1 script)"), "{text}");
+        // A broken one, in a mods folder with the sample turned on.
+        let folder = dir.0.join("mods");
+        let broken = folder.join("broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("mod.ron"), "(id: \"broken\", name: \"Broken\")").unwrap();
+        std::fs::write(broken.join("recipes.ron"), "[(id: \"x\", name: \"X\", secs: 1.0, inputs: [(item: \"no_such_thing\", count: 1)], outputs: [(item: \"rag\", count: 1)])]").unwrap();
+        zombye_mods::folder::write_enabled(&folder, &["broken".to_string()]).unwrap();
+        let (text, err) = call(&mut world, &mut persist, "mods", json!({"check": broken.to_string_lossy()}));
+        assert!(!err && text.contains("doesn't load: mod broken: recipes.ron") && text.contains("no_such_thing"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "mods", json!({"folder": folder.to_string_lossy()}));
+        assert!(!err && text.contains("1 mod, 1 on") && text.contains("- [on, 1] broken: Broken (LEFT OFF: mod broken: recipes.ron"), "{text}");
+        // Played from afar (no saves tools), it reads no folders.
+        let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "mods", "arguments": {"folder": "/"}}});
+        let r = handle(&mut world, &mut persist, &Renderer::new(None, zombye_net::content::default_data_dir(), Duration::from_secs(1)), Options::PLAY_ONLY, &msg).unwrap();
+        assert_eq!(r["result"]["isError"], true, "{r}");
+    }
+
     /// `gesture` shows in `observe` and `stats`.
     #[test]
     fn agents_talk_and_gesture() {

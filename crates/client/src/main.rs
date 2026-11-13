@@ -291,6 +291,11 @@ pub struct Options {
     /// Mod folders (`--mod DIR`, as often as wanted, in order; #25, docs/modding.md): their data
     /// joins the game's and, in single-player, their scripts run in the world.
     pub mods: Vec<PathBuf>,
+    /// The mods folder (`--mods-dir DIR`, default `zombye_net::install::mods_dir`): the mods in it
+    /// that its `enabled.ron` turns on load before the `--mod` ones (`zombye_mods::folder`).
+    pub mods_dir: PathBuf,
+    /// Leave the mods folder alone this run (`--no-mods`); `--mod` folders still load.
+    pub no_mods: bool,
     /// Render one frame offscreen to this PNG and exit, with no window (`--render-to`).
     pub render_to: Option<PathBuf>,
     /// Size of that image (`--size WxH`, default 1280x720).
@@ -597,6 +602,8 @@ impl Options {
             player: value("--player").and_then(|v| v.parse().ok()),
             data: value("--data").map(Into::into).unwrap_or_else(zombye_net::content::default_data_dir),
             mods: values("--mod").into_iter().map(Into::into).collect(),
+            mods_dir: value("--mods-dir").map(Into::into).unwrap_or_else(zombye_net::install::mods_dir),
+            no_mods: flag("--no-mods"),
             render_to: value("--render-to").map(Into::into),
             size: value("--size").and_then(|v| parse_size(&v)).unwrap_or(DEFAULT_RENDER_SIZE),
             size_given: value("--size").and_then(|v| parse_size(&v)).is_some(),
@@ -683,6 +690,13 @@ impl Options {
     /// Rendering one frame offscreen (`--render-to`) rather than playing in a window.
     pub fn offscreen(&self) -> bool {
         self.render_to.is_some()
+    }
+
+    /// The mods folder to load from, if this run reads it: not with `--no-mods`, and not offscreen,
+    /// whose pictures depend on the flags alone (the MCP `screenshot` tool passes its world's
+    /// `--mod`s), as they never read the settings file either.
+    pub fn mods_folder(&self) -> Option<&std::path::Path> {
+        (!self.no_mods && !self.offscreen()).then_some(self.mods_dir.as_path())
     }
 }
 

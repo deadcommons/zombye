@@ -1,7 +1,8 @@
 //! The main menu: what the game starts on when nothing on the command line chooses a world.
 //!
 //! Continue (the autosave quitting left), New game, Load game (every save in the saves folder),
-//! Multiplayer (the server browser), Settings (`settings_ui.rs`) and Quit.
+//! Multiplayer (the server browser), Mods (the mods folder: which are on, their order, what is
+//! wrong with one; `zombye_mods::folder`), Settings (`settings_ui.rs`) and Quit.
 //!
 //! The game builds its map and meshes once per world at start-up, so like the join screen
 //! (`join_screen.rs`) this is its own small Bevy app in front of the game: a window, the skin, the
@@ -21,7 +22,7 @@
 //! ignored and a fresh world with the seed given starts.
 //!
 //! For pictures: `--main-menu --render-to shot.png` draws it offscreen (`offscreen.rs`), with
-//! `--menu-screen load|new` on one of its other screens or `--settings TAB` under the settings.
+//! `--menu-screen load|new|mods` on one of its other screens or `--settings TAB` under the settings.
 
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
@@ -38,16 +39,23 @@ use crate::settings_ui::SettingsUi;
 use crate::menu_skin::{self as skin, BONE, DIM, Look};
 use crate::release_brand::{self as brand, Mark};
 use crate::theme::{self, BODY, SMALL, font};
+use zombye_mods::folder::{self as mods_folder, Folder};
 
 /// Flags (with a value, and alone) that only set the scene: with nothing but these, the game
 /// starts on the menu.
-const SCENE_WITH_VALUE: [&str; 20] = ["--size", "--saves", "--data", "--mod", "--graphics", "--vegetation", "--no-post", "--msaa", "--shadow-map", "--render-scale", "--ui-scale", "--volume", "--music", "--name", "--server-list", "--crowd-vat", "--survivor", "--opening-hints", "--help-text", "--old-look"];
-const SCENE_ALONE: [&str; 9] = ["--dev", "--novsync", "--mute", "--load-anyway", "--first-person", "--third-person", "--zombie-silhouettes", "--walls-up", "--rotate"];
+const SCENE_WITH_VALUE: [&str; 21] = ["--size", "--saves", "--data", "--mod", "--mods-dir", "--graphics", "--vegetation", "--no-post", "--msaa", "--shadow-map", "--render-scale", "--ui-scale", "--volume", "--music", "--name", "--server-list", "--crowd-vat", "--survivor", "--opening-hints", "--help-text", "--old-look"];
+const SCENE_ALONE: [&str; 10] = ["--dev", "--no-mods", "--novsync", "--mute", "--load-anyway", "--first-person", "--third-person", "--zombie-silhouettes", "--walls-up", "--rotate"];
 /// What chose this run's world or screen, dropped when another is chosen.
 const WORLD_WITH_VALUE: [&str; 13] = ["--connect", "--password", "--load", "--from-browser", "--browser-join", "--join-error", "--seed", "--new-game-from", "--settings", "--menu-screen", "--server-info", "--skip-hours", "--at"];
 const WORLD_ALONE: [&str; 6] = ["--joined", "--browser", "--no-menu", "--main-menu", "--new-game", "--pause"];
 /// Saves listed on the Load screen (the newest).
 const LISTED: usize = 9;
+/// Mods listed on the Mods screen.
+const LISTED_MODS: usize = 10;
+/// The Mods screen's details pane.
+const DETAILS_WIDTH: f32 = 440.0;
+/// A mod that won't load, on the Mods screen.
+const PROBLEM: Color = theme::flat::RED_TEXT;
 
 /// Every argument is a flag that only sets the scene (or there are none).
 pub fn plain(args: &[String]) -> bool {
@@ -169,6 +177,8 @@ enum Screen {
     Load,
     /// Asking before a new game when there is an autosave it would come to replace.
     ConfirmNew,
+    /// The mods folder: which mods are on and in what order.
+    Mods,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -179,6 +189,16 @@ enum Act {
     LoadScreen,
     Load(String),
     Multiplayer,
+    Mods,
+    /// Turn a mod on or off (by id).
+    ToggleMod(String),
+    /// Move a mod that is on one place earlier (true) or later in the load order.
+    ShiftMod(String, bool),
+    /// Show a mod's details.
+    PickMod(String),
+    OpenModsFolder,
+    /// Read the mods folder again (after putting a mod in it).
+    RescanMods,
     Settings,
     Back,
     Quit,
@@ -192,6 +212,16 @@ struct Menu {
     screen: Screen,
     acts: Vec<Act>,
     dirty: bool,
+    /// How many mods `enabled.ron` turns on (the home screen's Mods button says).
+    mods_on: usize,
+    /// The mods folder, read and checked when the Mods screen opens.
+    mods: Option<Folder>,
+    /// The game's data the mods are checked against (read once, when first needed).
+    base: Option<Result<zombye_sim::WorldConfig, String>>,
+    /// The mod whose details are shown.
+    picked: Option<String>,
+    /// What went wrong saving the list or opening the folder.
+    mods_note: Option<String>,
 }
 
 impl Menu {
@@ -203,9 +233,39 @@ impl Menu {
         let screen = match std::env::args().skip_while(|a| a != "--menu-screen").nth(1).as_deref() {
             Some("load") => Screen::Load,
             Some("new") => Screen::ConfirmNew,
+            Some("mods") => Screen::Mods,
             _ => Screen::Home,
         };
-        Menu { options, saves, screen, acts: Vec::new(), dirty: true }
+        let mods_on = mods_folder::read_enabled(&options.mods_dir).map_or(0, |v| v.len());
+        let mut menu = Menu { options, saves, screen, acts: Vec::new(), dirty: true, mods_on, mods: None, base: None, picked: None, mods_note: None };
+        if screen == Screen::Mods {
+            menu.read_mods();
+        }
+        menu
+    }
+
+    /// Read the mods folder and check every mod in it against the game's data.
+    fn read_mods(&mut self) {
+        let mut folder = mods_folder::scan(&self.options.mods_dir);
+        let base = self.base.get_or_insert_with(|| zombye_net::content::load_config(&self.options.data, 1));
+        match base {
+            Ok(base) => folder.check(base),
+            Err(e) => folder.problems.push(format!("can't read the game's data to check the mods against: {e}")),
+        }
+        if self.picked.as_ref().is_none_or(|id| !folder.entries.iter().any(|e| &e.id == id)) {
+            self.picked = folder.entries.first().map(|e| e.id.clone());
+        }
+        self.mods_on = folder.enabled_ids().len();
+        self.mods = Some(folder);
+    }
+
+    /// Change which mods are on, save it, and check them all again.
+    fn change_mods(&mut self, change: impl FnOnce(&mut Folder) -> bool) {
+        let Some(folder) = self.mods.as_mut() else { return };
+        if change(folder) {
+            self.mods_note = folder.save().err().map(|e| format!("Couldn't save which mods are on: {e}"));
+            self.read_mods();
+        }
     }
 
     /// The autosave, if it is there and can be read.
@@ -258,7 +318,7 @@ fn keys(keys: Res<ButtonInput<KeyCode>>, mut menu: ResMut<Menu>, mut settings: R
             Screen::Home if menu.autosave().is_some() => Act::Continue,
             Screen::Home => Act::New,
             Screen::ConfirmNew => Act::StartNew,
-            Screen::Load => return,
+            Screen::Load | Screen::Mods => return,
         };
         menu.acts.push(a);
     }
@@ -280,6 +340,37 @@ fn act(mut menu: ResMut<Menu>, mut settings: ResMut<SettingsUi>, mut exit: Messa
             }
             Act::Load(name) => Some(load_args(&args, &name)),
             Act::Multiplayer => Some(multiplayer_args(&args, menu.autosave().is_some())),
+            Act::Mods => {
+                menu.read_mods();
+                menu.screen = Screen::Mods;
+                None
+            }
+            Act::ToggleMod(id) => {
+                let on = menu.mods.as_ref().and_then(|f| f.entries.iter().find(|e| e.id == id)).is_some_and(|e| !e.enabled);
+                menu.change_mods(|f| f.set_enabled(&id, on));
+                menu.picked = Some(id);
+                None
+            }
+            Act::ShiftMod(id, up) => {
+                menu.change_mods(|f| f.shift(&id, up));
+                None
+            }
+            Act::PickMod(id) => {
+                menu.picked = Some(id);
+                None
+            }
+            Act::OpenModsFolder => {
+                let dir = menu.options.mods_dir.clone();
+                match std::fs::create_dir_all(&dir) {
+                    Ok(()) => crate::report::reveal(&dir),
+                    Err(e) => menu.mods_note = Some(format!("Couldn't make the mods folder {}: {e}", dir.display())),
+                }
+                None
+            }
+            Act::RescanMods => {
+                menu.read_mods();
+                None
+            }
             Act::Settings => {
                 settings.open = true;
                 None
@@ -322,13 +413,14 @@ fn draw(mut commands: Commands, mut menu: ResMut<Menu>, root: Option<Single<Enti
                 Screen::Home => home(col, &menu, now),
                 Screen::Load => load(col, &menu, now),
                 Screen::ConfirmNew => confirm_new(col),
+                Screen::Mods => mods(col, &menu),
             }
         });
         skin::rule(c);
         c.spawn(Node { height: px(46), padding: UiRect::horizontal(percent(9)), align_items: AlignItems::Center, column_gap: px(22), flex_shrink: 0.0, ..default() }).with_children(|row| {
             match menu.screen {
                 Screen::Home => skin::keycap(row, "Enter", if menu.autosave().is_some() { "continue" } else { "new game" }),
-                Screen::Load => skin::keycap(row, "Esc", "back"),
+                Screen::Load | Screen::Mods => skin::keycap(row, "Esc", "back"),
                 Screen::ConfirmNew => {
                     skin::keycap(row, "Enter", "start a new game");
                     skin::keycap(row, "Esc", "back");
@@ -376,6 +468,8 @@ fn home(col: &mut ChildSpawnerCommands, menu: &Menu, now: SystemTime) {
         button(col, "Load game", None, Look::Plain, Act::LoadScreen);
     }
     button(col, "Multiplayer", None, Look::Plain, Act::Multiplayer);
+    let on = (menu.mods_on > 0).then(|| format!("{} on", menu.mods_on));
+    button(col, "Mods", on.as_deref(), Look::Plain, Act::Mods);
     button(col, "Settings", None, Look::Plain, Act::Settings);
     button(col, "Quit", None, Look::Plain, Act::Quit);
 }
@@ -395,6 +489,113 @@ fn load(col: &mut ChildSpawnerCommands, menu: &Menu, now: SystemTime) {
     }
     col.spawn(Node { margin: UiRect::top(px(8)), ..default() }).with_children(|row| {
         skin::button(row, "Back", None, Look::Plain, Val::Auto).observe(|_: On<PointerPress>, mut menu: ResMut<Menu>| menu.acts.push(Act::Back));
+    });
+}
+
+/// "1st", "2nd", "3rd", "4th".
+fn ordinal(n: usize) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
+}
+
+/// A small button that pushes `act`, or a faint one that does nothing.
+fn small_button(parent: &mut ChildSpawnerCommands, label: &str, act: Option<Act>, width: Val) {
+    match act {
+        Some(act) => {
+            skin::button(parent, label, None, Look::Plain, width).observe(move |_: On<PointerPress>, mut menu: ResMut<Menu>| menu.acts.push(act.clone()));
+        }
+        None => {
+            skin::button(parent, label, None, Look::Disabled, width);
+        }
+    }
+}
+
+/// The Mods screen: the mods in the folder, on or off, in load order, each with what is wrong with
+/// it; the one picked in a pane beside them; and the folder.
+fn mods(col: &mut ChildSpawnerCommands, menu: &Menu) {
+    let text = |c: &mut ChildSpawnerCommands, t: String, size: f32, colour: Color, width: f32| {
+        c.spawn((Text::new(t), font(size), TextColor(colour), Node { max_width: px(width), ..default() }));
+    };
+    col.spawn((Text::new("MODS"), theme::head(22.0), TextColor(BONE)));
+    text(col, "A mod is a folder in the mods folder. Turn one on and it loads in every game you start or load from now on, in the order shown (a later mod wins where two change the same thing). A mod that doesn't load stays off, with the reason, and the game starts without it. Multiplayer servers play with their own mods.".to_string(), BODY, DIM, WIDTH + DETAILS_WIDTH + 28.0);
+    let Some(folder) = &menu.mods else { return };
+    for p in &folder.problems {
+        text(col, p.clone(), SMALL, PROBLEM, WIDTH + DETAILS_WIDTH + 28.0);
+    }
+    let on = folder.entries.iter().filter(|e| e.enabled).count();
+    col.spawn(Node { column_gap: px(28), align_items: AlignItems::FlexStart, margin: UiRect::vertical(px(8)), ..default() }).with_children(|row| {
+        row.spawn(Node { width: px(WIDTH), flex_direction: FlexDirection::Column, row_gap: px(6), flex_shrink: 0.0, ..default() }).with_children(|list| {
+            if folder.entries.is_empty() {
+                text(list, format!("No mods yet. Put a mod's folder in {}, then press Look again.", folder.dir.display()), BODY, DIM, WIDTH);
+            }
+            for (k, e) in folder.entries.iter().take(LISTED_MODS).enumerate() {
+                let picked = menu.picked.as_deref() == Some(e.id.as_str());
+                list.spawn(Node { column_gap: px(6), align_items: AlignItems::Center, ..default() }).with_children(|r| {
+                    // The one whose details are shown: a green mark at its left.
+                    r.spawn((Node { width: px(3), height: px(26), flex_shrink: 0.0, ..default() }, BackgroundColor(if picked { skin::GREEN } else { Color::NONE })));
+                    let id = e.id.clone();
+                    skin::button(r, if e.enabled { "On" } else { "Off" }, None, Look::Chip(e.enabled), px(58)).observe(move |_: On<PointerPress>, mut menu: ResMut<Menu>| menu.acts.push(Act::ToggleMod(id.clone())));
+                    let detail = match (&e.problem, e.enabled) {
+                        (Some(_), true) => "left off".to_string(),
+                        (Some(_), false) => "won't load".to_string(),
+                        (None, true) => format!("loads {}", ordinal(k + 1)),
+                        (None, false) => e.version.clone(),
+                    };
+                    let id = e.id.clone();
+                    skin::button(r, &e.name, Some(&detail), Look::Row, px(WIDTH - 3.0 - 58.0 - 2.0 * 70.0 - 4.0 * 6.0)).observe(move |_: On<PointerPress>, mut menu: ResMut<Menu>| menu.acts.push(Act::PickMod(id.clone())));
+                    small_button(r, "Up", (e.enabled && k > 0).then(|| Act::ShiftMod(e.id.clone(), true)), px(70));
+                    small_button(r, "Down", (e.enabled && k + 1 < on).then(|| Act::ShiftMod(e.id.clone(), false)), px(70));
+                });
+                if let Some(p) = &e.problem {
+                    let short: String = p.chars().take(110).collect();
+                    let more = if short.len() < p.len() { "..." } else { "" };
+                    list.spawn((Text::new(format!("{short}{more}")), font(SMALL), TextColor(PROBLEM), Node { margin: UiRect::left(px(9)), max_width: px(WIDTH - 9.0), ..default() }));
+                }
+            }
+            if folder.entries.len() > LISTED_MODS {
+                text(list, format!("and {} more in {}", folder.entries.len() - LISTED_MODS, folder.dir.display()), SMALL, DIM, WIDTH);
+            }
+        });
+        if let Some(e) = menu.picked.as_ref().and_then(|id| folder.entries.iter().find(|e| &e.id == id)) {
+            let (bg, border) = skin::panel();
+            row.spawn((Node { width: px(DETAILS_WIDTH), flex_direction: FlexDirection::Column, row_gap: px(8), padding: UiRect::all(px(16)), border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(6)), flex_shrink: 0.0, ..default() }, bg, border)).with_children(|d| {
+                d.spawn((Text::new(e.name.to_uppercase()), theme::head(20.0), TextColor(BONE), Node { max_width: px(DETAILS_WIDTH - 32.0), ..default() }));
+                let version = if e.version.is_empty() { String::new() } else { format!("version {}, ", e.version) };
+                text(d, format!("{version}id {}", e.id), SMALL, DIM, DETAILS_WIDTH - 32.0);
+                if !e.description.is_empty() {
+                    text(d, e.description.clone(), BODY, BONE, DETAILS_WIDTH - 32.0);
+                }
+                if e.loaded.is_some() {
+                    text(d, format!("Has {}.", e.contents()), SMALL, DIM, DETAILS_WIDTH - 32.0);
+                }
+                let state = match (&e.problem, e.enabled) {
+                    (Some(_), true) => "On, but left off: it doesn't load.".to_string(),
+                    (Some(_), false) => "Off. It wouldn't load if turned on.".to_string(),
+                    (None, true) => format!("On: loads {} of {on}.", ordinal(folder.entries.iter().position(|o| o.id == e.id).unwrap_or(0) + 1)),
+                    (None, false) => "Off.".to_string(),
+                };
+                text(d, state, BODY, BONE, DETAILS_WIDTH - 32.0);
+                if let Some(p) = &e.problem {
+                    text(d, p.clone(), SMALL, PROBLEM, DETAILS_WIDTH - 32.0);
+                }
+                text(d, e.dir.display().to_string(), SMALL, skin::FAINT, DETAILS_WIDTH - 32.0);
+            });
+        }
+    });
+    if let Some(note) = &menu.mods_note {
+        text(col, note.clone(), SMALL, PROBLEM, WIDTH + DETAILS_WIDTH + 28.0);
+    }
+    text(col, format!("Mods folder: {}", folder.dir.display()), SMALL, DIM, WIDTH + DETAILS_WIDTH + 28.0);
+    col.spawn(Node { column_gap: px(8), margin: UiRect::top(px(4)), ..default() }).with_children(|row| {
+        small_button(row, "Open mods folder", Some(Act::OpenModsFolder), Val::Auto);
+        small_button(row, "Look again", Some(Act::RescanMods), Val::Auto);
+        small_button(row, "Back", Some(Act::Back), Val::Auto);
     });
 }
 
@@ -471,6 +672,7 @@ mod tests {
         assert_eq!(clock(14.5), "14:30");
         assert_eq!(clock(0.0), "00:00");
         assert_eq!(clock(23.999), "23:59");
+        assert_eq!([1, 2, 3, 4, 11, 12, 13, 21, 22, 101].map(ordinal), ["1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "22nd", "101st"]);
         let now = SystemTime::now();
         let bad = SaveEntry { name: "x".into(), path: "x.zsave".into(), bytes: 3, modified: None, info: Err("not a Zombye save".into()) };
         assert_eq!(describe(&bad, now), "can't be read: not a Zombye save");
