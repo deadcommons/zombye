@@ -334,7 +334,7 @@ impl Timeline {
 struct Waiting(Arc<AtomicUsize>);
 
 #[derive(Component)]
-struct Root;
+pub(crate) struct Root;
 
 /// The loading line's text.
 #[derive(Component)]
