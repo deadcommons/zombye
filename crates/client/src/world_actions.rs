@@ -619,7 +619,7 @@ pub fn car_entries(v: &zombye_sim::VehicleView, data: &zombye_sim::VehicleData, 
             if has_key {
                 lines.push(send("Lock it", Op::Lock { vehicle }));
             }
-            lines.push(search("Open the boot", zombye_sim::vehicles::BOOT));
+            lines.push(search("Open the trunk", zombye_sim::vehicles::BOOT));
             lines.push(search("Open the glovebox", zombye_sim::vehicles::GLOVEBOX));
         }
         let can = items.iter().position(|d| d.id == data.tuning.fuel_item).map(|i| i as u16);

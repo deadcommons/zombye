@@ -1108,7 +1108,7 @@ Stage 2: fuel, engine noise, running zombies over and crash damage.
   of `hotwire_secs` that works `hotwire_chance` (+`SkillTuning::mechanics_hotwire` a level, at most 0.95; a roll
   hashed on the seed, car, tick and player). `TakeKey` takes the key out of the ignition; `Lock` locks or unlocks with
   the key on you or from inside; a locked car is got into with its key (which unlocks it) or `BreakIn` (smashes a
-  window: `break_in_windows` off the windows, a 35 m noise). **The boot and glovebox** are containers (`boot`,
+  window: `break_in_windows` off the windows, a 35 m noise). **The boot and glovebox** (the boot is called the trunk in game) are containers (`boot`,
   `glovebox` in `containers.ron`; loot `(any, boot)`, `(any, glovebox)`) with ids `vehicle_container(vid, slot)`
   (`VEHICLE_BIT`), placed where the car stands (`World::vehicle_site`): the boot from behind it, the glovebox from
   the driver's seat or the open door, neither while it's locked (`vehicle_container_open_to`, in `within`); things go
