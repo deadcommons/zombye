@@ -15,23 +15,28 @@ Work goes in the repo it belongs to: art in zombye-art, brand and business in st
 hosting, the game here. Read another repo when the work needs it (the asset tools find zombye-art through
 `$ZOMBYE_ART`); change it only when the task is about it.
 
-## Working from the GitHub project
+## Working from the GitHub projects
 
-All development work goes through the
-[Game development project](https://github.com/orgs/deadcommons/projects/3) on GitHub
-(`gh project … --owner deadcommons`, project number 3). The repo doesn't keep task lists.
+Work is tracked in GitHub issues on two boards, nowhere else (not Linear, not lists in docs or code):
 
-- **Before starting:** find the issue for the work, or create one in the right milestone and add it
-  to the project. Set its board Status to **In Progress**.
-- **While working:** reference the issue in commit messages (`Refs #N`, or `Closes #N` on the
-  commit that finishes it). New follow-up work you discover becomes its own issue on the board,
-  not a TODO in the code or a list in a doc.
-- **When done:** close the issue with a comment naming the commit, and set Status to **Done**.
-- **On the remote machines** (docs/remote-dev.md) an issue ends differently: the agent commits with
-  `Refs #N` and opens a draft PR saying `Closes #N`; the owner approves the review pictures, and merging
-  the PR closes the issue (then set Status to **Done**).
-- Only the **Game development** board (project 3) is for development. "Dead Commons roadmap"
-  (project 1) is private admin work; don't touch it.
+| Board | For | Issues live in |
+|---|---|---|
+| [Game development](https://github.com/orgs/deadcommons/projects/3) (project 3, public) | the game: code, data, docs, art promoted here | deadcommons/zombye (added to the board by itself) |
+| [Dead Commons roadmap](https://github.com/orgs/deadcommons/projects/1) (project 1, private) | the business: Steam, itch, trademarks, marketing, hosting, accounts | deadcommons/zombye-art, label `business` |
+
+- **Before starting:** find the issue for the work, or open one in the right repo (and on the right
+  board), and set its board Status to **In Progress**.
+- **While working:** reference the issue in commit messages (`Refs #N`, or `Closes #N` on the commit
+  that finishes it). Follow-up work you find becomes its own issue, not a TODO in the code.
+- **When done:** close the issue with a comment saying what was done and naming the commit or PR (a
+  PR that says `Closes #N` does it when merged), and set Status to **Done**. Work stopped part way gets
+  a comment saying where it got to.
+- **New ideas** from the project chat are triaged into issues the same day: the game's in
+  deadcommons/zombye, the business's in zombye-art with the `business` label.
+- **On the remote machines** (docs/remote-dev.md) the agent commits with `Refs #N` and opens a draft
+  PR saying `Closes #N`; the owner approves the review pictures, and merging the PR closes the issue.
+- deadcommons/zombye is public: business plans, keys, addresses and private repo contents never go in
+  its issues; they go in the private board's issues.
 
 ## Working on the remote machines from the Mac
 

@@ -4,10 +4,11 @@ Zombye is an open-source, true-3D isometric zombie survival game (Rust + Bevy), 
 can read it, run it, play it and mod it. The design is in [docs/PLAN.md](docs/PLAN.md). Read it
 before making architectural changes.
 
-Work is tracked on GitHub, not in the repo: the
-[Game development project](https://github.com/orgs/deadcommons/projects/3) board and the
-[milestones](https://github.com/deadcommons/zombye/milestones). Reference issues in commits
-(`Closes #N`), and keep each issue's board status current (Todo, In Progress, Done).
+Work is tracked in GitHub issues on the public
+[Game development board](https://github.com/orgs/deadcommons/projects/3), not in the repo. Start from an issue
+(open one if there is none) and set it In Progress; reference it in commits (`Refs #N`, `Closes #N`); when
+the work is done, close it with a comment naming the commit or PR, or comment where it got to if it stops
+part way. New work you find becomes its own issue, not a TODO.
 
 ## Layout
 
@@ -444,7 +445,7 @@ A packaged game for playtesters, handed out from a restricted itch.io page (dead
   address (`ZOMBYE_REPORT_URL`, compiled in by `package.sh`; never in this repo) and "Send problem reports" on (Settings,
   Game), the game sends its panics and crashes (the child's panic hook leaves `logs/panic.zrpt` for the parent), the F12
   folder, frames over 1 s and repeated prediction corrections to the report service (`zombye-reports`), and `--host`
-  sends its own panics and ticks over 150 ms (`--no-reports` turns that off). An agent triages them into Linear with the
+  sends its own panics and ticks over 150 ms (`--no-reports` turns that off). An agent triages them into GitHub issues with the
   [triage-reports skill](.claude/skills/triage-reports/SKILL.md). **A new kind of problem worth catching** goes through
   `zombye_net::report::Report` and `queue` / `flush`, with a signature that groups it.
 - **Packaging:** `tools/release/package.sh linux|windows|mac` (Linux and Windows on the build VM, Windows cross-compiled

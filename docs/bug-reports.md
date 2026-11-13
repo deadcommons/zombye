@@ -1,7 +1,7 @@
 # Problem reports
 
 The game and its server report their own problems to a small service of ours, so we don't depend on
-players sending logs (Linear DCM-92). An agent reads the reports there and turns them into issues.
+players sending logs. An agent reads the reports there and turns them into issues.
 
 ## What is sent
 
@@ -68,7 +68,7 @@ Every command prints JSON. Run them over ssh on the machine with the store.
 zombye-reports problems [--since 7] [--status new|filed|fixed|ignored|regressed] [--kind panic]
 zombye-reports list --problem 12           # the reports of problem #12 (or --signature SIG, --kind K)
 zombye-reports show 345                    # one report: everything, and files_dir with its files
-zombye-reports mark '#12' --status filed --issue DCM-120 --note "first seen in playtest 11-13"
+zombye-reports mark '#12' --status filed --issue zombye#120 --note "first seen in playtest 11-13"
 zombye-reports sql "SELECT build, COUNT(*) FROM reports WHERE kind = 'hitch' GROUP BY build"   # read-only
 zombye-reports prune --days 90             # drop old reports and their files; problems stay
 ```
@@ -81,9 +81,9 @@ The tables are `reports` (one row a report; `details` and `files` are JSON) and 
 signature: `status`, `issue`, `note`, `count`, `first_seen`, `last_seen`). See `SCHEMA` in
 `crates/reports/src/main.rs`.
 
-## Triage into Linear
+## Triage into GitHub issues
 
 Follow the [triage-reports skill](../.claude/skills/triage-reports/SKILL.md). Briefly: take the new and
 regressed problems, read a report or two of each (`show`, then its files), file one issue a problem in
-the DCM team or add to the one it matches, and `mark` the problem with the issue. A player's F12 report
+deadcommons/zombye or add to the one it matches, and `mark` the problem with the issue. A player's F12 report
 is read like a bug report: the screenshot, `about.txt` and the save.
