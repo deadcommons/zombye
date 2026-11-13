@@ -384,7 +384,7 @@ pub fn run(options: Options) -> ! {
         .add_systems(First, crate::exit_on_signal)
         .add_systems(Update, (stand_back, (keys, act, follow_browser, host_poll, draw).chain().run_if(crate::new_game::away)).chain());
     let failed = app.run().is_error();
-    if let Some(next) = crate::browser_ui::take_relaunch().or_else(take_relaunch) {
+    if let Some(next) = crate::browser_ui::take_relaunch().or_else(take_relaunch).or_else(crate::new_game::take_relaunch) {
         crate::relaunch(next);
     }
     std::process::exit(if failed { 1 } else { 0 });

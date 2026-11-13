@@ -864,7 +864,7 @@ fn main() {
     let failed = app.run().is_error();
     // A join asked for in the server browser (#27): the game has shut down (and autosaved); start
     // it again on that server.
-    if let Some(next) = browser_ui::take_relaunch().or_else(main_menu::take_relaunch) {
+    if let Some(next) = browser_ui::take_relaunch().or_else(main_menu::take_relaunch).or_else(new_game::take_relaunch) {
         relaunch(next);
     }
     if failed {

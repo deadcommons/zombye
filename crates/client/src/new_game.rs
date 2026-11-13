@@ -373,6 +373,12 @@ pub fn relaunch_asked() -> bool {
     NEXT.lock().is_ok_and(|n| n.is_some())
 }
 
+/// The game to start once this run ends, if Start was pressed (the stand-alone screen, or the
+/// screen inside the main menu's window: the menu's run must take it too).
+pub fn take_relaunch() -> Option<Relaunch> {
+    NEXT.lock().ok().and_then(|mut n| n.take())
+}
+
 /// Runs the screen and then the game it ended in (or nothing, if the window was closed).
 pub fn run(options: Options) -> ! {
     let screen = match Screen::new(options.clone()) {
@@ -394,7 +400,7 @@ pub fn run(options: Options) -> ! {
         .add_systems(First, crate::exit_on_signal)
         .add_systems(Update, (keys, act, draw, dress, pose).chain());
     let failed = app.run().is_error();
-    if let Some(next) = NEXT.lock().ok().and_then(|mut n| n.take()) {
+    if let Some(next) = take_relaunch() {
         crate::relaunch(next);
     }
     std::process::exit(if failed { 1 } else { 0 });
