@@ -19,7 +19,7 @@ docs/remote-dev.md).
 
 **The token:** a fine-grained token of the bot account (never a person's), resource owner `deadcommons`,
 repository access to the repos whose issues go on the boards with **Issues: Read-only**, and organisation
-permission **Projects: Read and write**. It is read from `$GH_PROJECT_TOKEN`, else
+permission **Projects: Read and write**, and an expiry of a year or less (the organisation refuses longer-lived tokens). It is read from `$GH_PROJECT_TOKEN`, else
 `~/.config/zombye/gh-project-token` (`chmod 600`; `ZOMBYE_BOARD_TOKEN_FILE` names another file). The
 owner puts it there; the script never prints it, and agents never read or echo the file. Without it the
 script stops with a message saying what is missing.
