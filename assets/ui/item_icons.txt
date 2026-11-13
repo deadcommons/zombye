@@ -101,3 +101,6 @@ firewood
 newspaper
 log
 hatchet
+nail
+nailed_bat
+spear
