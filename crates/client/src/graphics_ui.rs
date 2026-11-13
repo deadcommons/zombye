@@ -3,11 +3,13 @@
 //! measures the frame time for a few seconds and settles on a preset (`graphics.rs`).
 //!
 //! Applied live: the grass and flowers' density, the film pass (grain, tilt-shift), the vignette,
-//! bloom, the sun's shadow map, multisampling and the render scale (`render_scale.rs`). Contact shadows and ground detail are built into
+//! bloom, ambient occlusion, the sun's shadow map, multisampling and the render scale (`render_scale.rs`). Contact shadows and ground detail are built into
 //! the meshes and materials when the town is, so they change on the next start; the panel says so.
 
 use bevy::input::InputSystems;
 use bevy::light::DirectionalLightShadowMap;
+use bevy::anti_alias::smaa::Smaa;
+use bevy::pbr::ScreenSpaceAmbientOcclusion;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 
@@ -50,6 +52,12 @@ pub fn msaa(samples: u32) -> Msaa {
     }
 }
 
+/// The camera's multisampling for these settings: off with ambient occlusion on (Bevy's SSAO
+/// can't run with it; SMAA smooths edges then), else [`msaa`] of the setting.
+pub fn camera_msaa(graphics: &Graphics) -> Msaa {
+    if graphics.occlusion { Msaa::Off } else { msaa(graphics.msaa) }
+}
+
 /// Auto's pick for a mean frame time (ms).
 pub fn auto_choice(mean_ms: f32) -> Preset {
     if mean_ms <= AUTO_HIGH_MS {
@@ -65,9 +73,9 @@ pub fn auto_choice(mean_ms: f32) -> Preset {
 pub fn describe(p: Preset) -> &'static str {
     match p {
         Preset::Low => "Thin grass, no post effects, 2048 shadow map, 2x MSAA, 3D at 60% on Retina. For slow machines.",
-        Preset::Medium => "Most of the look: lighter grass, no tilt-shift, 2048 shadow map, 3D at 75% on Retina.",
-        Preset::High => "The look the game is made to: full grass and every effect, 3D at 75% on Retina, UI sharp.",
-        Preset::Ultra => "Denser grass, an 8192 shadow map and the 3D at full Retina resolution.",
+        Preset::Medium => "Most of the look: lighter grass, no tilt-shift or sky light, 2048 shadow map, 3D at 75% on Retina.",
+        Preset::High => "The look the game is made to: full grass and every effect but sky light, 3D at 75% on Retina, UI sharp.",
+        Preset::Ultra => "Denser grass, an 8192 shadow map, sky light in the shade and the 3D at full Retina resolution.",
         Preset::Auto => "Plays a few seconds at High, measures, and keeps what this machine holds.",
         Preset::Custom => "Set by command-line flags or by hand in settings.ron.",
     }
@@ -151,18 +159,35 @@ fn auto_pick(time: Res<Time<Real>>, mut auto: ResMut<AutoMeasure>, mut graphics:
 }
 
 /// Put the settings into effect when they change.
-fn apply(graphics: Res<Graphics>, mut shadow: ResMut<DirectionalLightShadowMap>, mut commands: Commands, mut cams: Query<(Entity, &mut Msaa, Has<Bloom>), With<IsoCamera>>) {
+fn apply(
+    graphics: Res<Graphics>,
+    mut shadow: ResMut<DirectionalLightShadowMap>,
+    mut commands: Commands,
+    mut cams: Query<(Entity, &mut Msaa, Has<Bloom>, Has<ScreenSpaceAmbientOcclusion>), With<IsoCamera>>,
+) {
     if !graphics.is_changed() {
         return;
     }
     if shadow.size != graphics.shadow_map as usize {
         shadow.size = graphics.shadow_map as usize;
     }
-    for (cam, mut msaa, has_bloom) in &mut cams {
-        let want = self::msaa(graphics.msaa);
+    for (entity, mut msaa, has_bloom, has_ssao) in &mut cams {
+        // Occlusion first when it comes on, multisampling first when it goes: SSAO never sees
+        // a multisampled camera.
+        match (graphics.occlusion, has_ssao) {
+            (true, false) => {
+                commands.entity(entity).insert(crate::camera::occlusion());
+            }
+            (false, true) => {
+                commands.entity(entity).remove::<(ScreenSpaceAmbientOcclusion, Smaa)>();
+            }
+            _ => {}
+        }
+        let want = camera_msaa(&graphics);
         if *msaa != want {
             *msaa = want;
         }
+        let cam = entity;
         match (graphics.bloom, has_bloom) {
             (true, false) => {
                 commands.entity(cam).insert(crate::camera::bloom());
@@ -202,7 +227,7 @@ fn show(mut commands: Commands, mut ui: ResMut<GraphicsUi>, graphics: Res<Graphi
             }
         });
         p.spawn((Text::new(format!("{}: {}", current.name(), describe(current))), font(BODY), TextColor(TEXT), Pickable::IGNORE));
-        let mut notes = String::from("Contact shadows and ground detail change on the next start.");
+        let mut notes = String::from("Contact shadows, ground detail and sky light change on the next start.");
         if from_flags {
             notes.push_str(" Flags on the command line win over this until you pick here.");
         }

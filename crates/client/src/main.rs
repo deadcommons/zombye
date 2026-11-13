@@ -149,6 +149,9 @@ mod settings_ui;
 mod silhouette;
 mod build_ui;
 mod skills_ui;
+mod sky;
+mod skylight;
+mod shafts;
 mod survivor;
 mod survivor_model;
 mod theme;
@@ -824,6 +827,8 @@ fn main() {
     let graphics = graphics::Graphics::from_options(&options);
     let mut app = App::new();
     app.insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06))).add_plugins(plugins).insert_resource(options).insert_resource(fog_look).insert_resource(graphics).add_systems(First, exit_on_signal);
+    // Bevy's SSAO shader as patched for our orthographic camera (ambient occlusion, `camera.rs`).
+    camera::patch_ssao_shader(&mut app);
     if offscreen {
         app.add_plugins((ScheduleRunnerPlugin::run_loop(Duration::ZERO), offscreen::OffscreenPlugin));
     }
@@ -832,7 +837,7 @@ fn main() {
             (fog::FogPlugin, cutaway::CutawayPlugin, silhouette::SilhouettePlugin, opening_hints::OpeningHintsPlugin),
             materials::WorldMaterialPlugin,
             world_render::WorldRenderPlugin,
-            (daynight::DayNightPlugin, lights::LightsPlugin),
+            (daynight::DayNightPlugin, lights::LightsPlugin, sky::SkyPlugin, skylight::SkyLightPlugin, shafts::ShaftsPlugin),
             dev_time::DevTimePlugin,
             (player::PlayerPlugin, interact::InteractPlugin),
             camera::IsoCameraPlugin,

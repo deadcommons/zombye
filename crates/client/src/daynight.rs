@@ -153,6 +153,117 @@ impl Default for OldLookStyle {
     }
 }
 
+/// Light from the sky in the shade (`skylight.rs`): part of the fill comes from around instead of
+/// evenly, so what faces up takes the sky's colour, what faces the low sun its glow, and what faces
+/// down the warm light the ground throws back. The fill as a whole stays as bright as `fill_day` /
+/// `fill_night` say. Only with the graphics settings' sky light on.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SkyLightLook {
+    /// How much of the fill comes from the sky (0 = none, all of it even as before; 1 = all).
+    pub share: f32,
+    /// How much of the sky's own colour it keeps (0 = the fill's colour from every side, only
+    /// lighter above and darker below; 1 = the sky's colours as they are).
+    pub tint: f32,
+    /// The colour of the ground that throws the sun's light back up (sRGB), and how strongly.
+    pub ground: (f32, f32, f32),
+    pub bounce: f32,
+    /// How much brighter the side facing the sun is (its glow), against the other sides.
+    pub sun_side: f32,
+}
+
+impl Default for SkyLightLook {
+    fn default() -> Self {
+        SkyLightLook { share: 0.6, tint: 0.5, ground: (0.5, 0.42, 0.32), bounce: 0.35, sun_side: 0.6 }
+    }
+}
+
+/// Light shafts (`shafts.rs`): a box of air round the player that the sun's light scatters in,
+/// showing as beams where the light is broken up. Only with the graphics settings' light shafts on.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ShaftsLook {
+    /// How thick the air is (0 = none), what it takes out of the light, what it throws, and how
+    /// much of that goes on forward (toward a camera looking at the sun, 0..1).
+    pub density: f32,
+    pub absorption: f32,
+    pub scattering: f32,
+    pub asymmetry: f32,
+    /// The air's colour (sRGB).
+    pub colour: (f32, f32, f32),
+    /// The box's width and height (metres).
+    pub size: (f32, f32),
+    /// Samples along each pixel's ray: more is smoother and costs more.
+    pub steps: u32,
+}
+
+impl Default for ShaftsLook {
+    fn default() -> Self {
+        ShaftsLook { density: 0.02, absorption: 0.1, scattering: 0.35, asymmetry: 0.7, colour: (1.0, 0.95, 0.86), size: (160.0, 24.0), steps: 48 }
+    }
+}
+
+/// The sky of the first-person view (`sky.rs`, `assets/shaders/sky.wesl`): a gradient from the
+/// horizon to the zenith for each end of the day and for a low sun, a glow round the sun or moon,
+/// their discs and the stars. The view from above never sees it. Colours are sRGB. Drawn only with
+/// the graphics settings' sky on; without, first person has the flat colour of before.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SkyLook {
+    /// The zenith and the horizon in full daylight with the sun high.
+    pub zenith_day: (f32, f32, f32),
+    pub horizon_day: (f32, f32, f32),
+    /// The same with the sun low (dawn and dusk), blended in as the sun's light warms.
+    pub zenith_dusk: (f32, f32, f32),
+    pub horizon_dusk: (f32, f32, f32),
+    /// The same at night.
+    pub zenith_night: (f32, f32, f32),
+    pub horizon_night: (f32, f32, f32),
+    /// How quickly the horizon's colour gives way to the zenith's going up (1 = evenly, more =
+    /// a thinner band at the horizon).
+    pub curve: f32,
+    /// How much darker it is below the horizon (0 = not at all, 1 = black), past the drawn world.
+    pub below: f32,
+    /// The glow round the sun or moon (sRGB), its strength against the light's own brightness and
+    /// how tight it is (more = tighter). The haze over the far edge of the world glows the same.
+    pub glow: (f32, f32, f32),
+    pub glow_strength: f32,
+    pub glow_tightness: f32,
+    /// The sun's disc: its size (degrees across) and brightness against its light.
+    pub sun_size: f32,
+    pub sun_brightness: f32,
+    /// The moon's disc: its size (degrees across) and brightness.
+    pub moon_size: f32,
+    pub moon_brightness: f32,
+    /// How many stars (0 = none, 1 = the most) and how bright.
+    pub stars: f32,
+    pub star_brightness: f32,
+}
+
+impl Default for SkyLook {
+    fn default() -> Self {
+        SkyLook {
+            zenith_day: (0.33, 0.52, 0.8),
+            horizon_day: (0.68, 0.77, 0.87),
+            zenith_dusk: (0.3, 0.36, 0.58),
+            horizon_dusk: (1.0, 0.68, 0.44),
+            zenith_night: (0.02, 0.03, 0.07),
+            horizon_night: (0.07, 0.09, 0.13),
+            curve: 3.0,
+            below: 0.5,
+            glow: (1.0, 0.78, 0.55),
+            glow_strength: 0.02,
+            glow_tightness: 8.0,
+            sun_size: 2.0,
+            sun_brightness: 30.0,
+            moon_size: 1.8,
+            moon_brightness: 1.2,
+            stars: 0.35,
+            star_brightness: 1.0,
+        }
+    }
+}
+
 /// How the light looks, from the data folder's `light.ron` (every field optional: one left out
 /// takes its default, no file at all the shipped one). Only the look: the sim's own daylight
 /// (what zombies see by) is `sim::senses::daylight`.
@@ -177,6 +288,12 @@ pub struct LightLook {
     /// How many times stronger the fill is by day while the player is inside a building: rooms
     /// lie in their roof's shadow, hidden from the camera or not (1 = no stronger).
     pub indoor_fill: f32,
+    /// The first-person view's sky.
+    pub sky: SkyLook,
+    /// Light from the sky in the shade.
+    pub sky_light: SkyLightLook,
+    /// Light shafts.
+    pub shafts: ShaftsLook,
 }
 
 impl Default for SunLook {
@@ -200,6 +317,9 @@ impl Default for LightLook {
             old_look: OldLookStyle::default(),
             fire: FireLook { colour: (1.0, 0.55, 0.22), lumens: 600_000.0, range: 14.0, height: 0.7, seen: 7.0 },
             indoor_fill: 1.6,
+            sky: SkyLook::default(),
+            sky_light: SkyLightLook::default(),
+            shafts: ShaftsLook::default(),
         }
     }
 }
@@ -261,6 +381,35 @@ impl LightLook {
             within(&format!("{name}.grain"), o.grain, 0.0, 0.5)?;
             within(&format!("{name}.glow"), o.glow, 0.0, 2.0)?;
         }
+        let sky = look.sky;
+        for (name, c) in [("sky.zenith_day", sky.zenith_day), ("sky.horizon_day", sky.horizon_day), ("sky.zenith_dusk", sky.zenith_dusk), ("sky.horizon_dusk", sky.horizon_dusk), ("sky.zenith_night", sky.zenith_night), ("sky.horizon_night", sky.horizon_night), ("sky.glow", sky.glow)] {
+            for v in [c.0, c.1, c.2] {
+                within(name, v, 0.0, 1.0)?;
+            }
+        }
+        within("sky.curve", sky.curve, 0.2, 20.0)?;
+        within("sky.below", sky.below, 0.0, 1.0)?;
+        within("sky.glow_strength", sky.glow_strength, 0.0, 1.0)?;
+        within("sky.glow_tightness", sky.glow_tightness, 1.0, 200.0)?;
+        within("sky.sun_size", sky.sun_size, 0.0, 20.0)?;
+        within("sky.sun_brightness", sky.sun_brightness, 0.0, 1000.0)?;
+        within("sky.moon_size", sky.moon_size, 0.0, 20.0)?;
+        within("sky.moon_brightness", sky.moon_brightness, 0.0, 100.0)?;
+        within("sky.stars", sky.stars, 0.0, 1.0)?;
+        within("sky.star_brightness", sky.star_brightness, 0.0, 100.0)?;
+        let sl = look.sky_light;
+        for (name, v) in [("sky_light.share", sl.share), ("sky_light.tint", sl.tint), ("sky_light.ground", sl.ground.0), ("sky_light.ground", sl.ground.1), ("sky_light.ground", sl.ground.2), ("sky_light.bounce", sl.bounce)] {
+            within(name, v, 0.0, 1.0)?;
+        }
+        within("sky_light.sun_side", sl.sun_side, 0.0, 4.0)?;
+        let sh = look.shafts;
+        for (name, v) in [("shafts.density", sh.density), ("shafts.absorption", sh.absorption), ("shafts.scattering", sh.scattering), ("shafts.colour", sh.colour.0), ("shafts.colour", sh.colour.1), ("shafts.colour", sh.colour.2)] {
+            within(name, v, 0.0, 1.0)?;
+        }
+        within("shafts.asymmetry", sh.asymmetry, -0.99, 0.99)?;
+        within("shafts.size width", sh.size.0, 10.0, 600.0)?;
+        within("shafts.size height", sh.size.1, 2.0, 200.0)?;
+        within("shafts.steps", sh.steps as f32, 4.0, 256.0)?;
         within("dusk temperature", look.dusk.0, -1.0, 1.0)?;
         within("dusk saturation", look.dusk.1, -1.0, 1.0)?;
         Ok(look)
@@ -298,7 +447,7 @@ pub struct Sun;
 
 /// The faint glow that lets you make out your own feet in the dark.
 #[derive(Component)]
-struct PlayerGlow;
+pub(crate) struct PlayerGlow;
 
 /// The light the local player holds: a flashlight's cone or a candle's pool.
 #[derive(Component)]
@@ -373,6 +522,26 @@ pub fn sky_at(hour: f32) -> (Vec3, Color, f32, f32) {
         let moon = look().moon;
         (Vec3::new(0.35, -1.0, 0.25).normalize(), Color::srgb(moon.colour.0, moon.colour.1, moon.colour.2), moon.lux, 0.0)
     }
+}
+
+/// How far the sun is up (0 at the horizon, 1 at its highest) and how warm its light is (0 high,
+/// 1 at the horizon) at this hour, as `sky_at` works them out.
+fn sun_height(hour: f32) -> (f32, f32) {
+    let day = ((hour - SUNRISE) / (SUNSET - SUNRISE)).clamp(0.0, 1.0);
+    let elevation = (day * PI).sin();
+    (elevation, 1.0 - smoothstep(0.1, 0.8, elevation))
+}
+
+/// The first-person sky's zenith and horizon at this hour (linear rgb; light.ron `sky`). The
+/// horizon is also the colour of the haze over the far edge of the drawn world.
+pub fn sky_colours(hour: f32) -> (Vec3, Vec3) {
+    let (_, warm) = sun_height(hour);
+    let day = sky_at(hour).3;
+    let s = look().sky;
+    let lin = |c: (f32, f32, f32)| Color::srgb(c.0, c.1, c.2).to_linear().to_vec3();
+    let zenith = lin(s.zenith_night).lerp(lin(s.zenith_day).lerp(lin(s.zenith_dusk), warm), day);
+    let horizon = lin(s.horizon_night).lerp(lin(s.horizon_day).lerp(lin(s.horizon_dusk), warm), day);
+    (zenith, horizon)
 }
 
 /// The haze at this hour (`HazeLook`): rgb its colour in the scene's light (linear, by the sun's
@@ -477,7 +646,7 @@ pub fn sky_colour(day: f32) -> Color {
 const INDOOR_EASE_SECS: f32 = 0.6;
 
 #[allow(clippy::too_many_arguments)]
-fn update_lights(
+pub(crate) fn update_lights(
     link: Res<ServerLink>,
     preview: Res<crate::dev_time::LightPreview>,
     mut daylight: ResMut<Daylight>,
@@ -544,21 +713,31 @@ fn update_lights(
     // of view): in the view from above it starts too far off to touch anything, and on the way
     // between the views it keeps its distance from what the camera looks at.
     if let Ok((entity, cam, haze)) = cams.single_mut() {
-        let sky = sky_colour(day);
+        // With the sky drawn (`sky.rs`) the haze takes its horizon's colour and the glow round
+        // the sun, so the edge of the world melts into it; the sky also covers the clear colour.
+        let (sky, glow, tight) = if graphics.sky {
+            let s = look.sky;
+            let h = sky_colours(hour).1;
+            (Color::from(LinearRgba::rgb(h.x, h.y, h.z)), Color::srgba(s.glow.0, s.glow.1, s.glow.2, s.glow_strength), s.glow_tightness)
+        } else {
+            (sky_colour(day), Color::NONE, 8.0)
+        };
         let falloff = match cam.boom() {
             None => FogFalloff::Linear { start: 1.0e6, end: 2.0e6 },
             Some(boom) => FogFalloff::Linear { start: HAZE.0 + boom, end: HAZE.1 + boom },
         };
-        clear.0 = Color::from(clear.0.to_linear().mix(&sky.to_linear(), cam.eased()));
+        if !graphics.sky {
+            clear.0 = Color::from(clear.0.to_linear().mix(&sky.to_linear(), cam.eased()));
+        }
         match haze {
             Some(mut haze) => {
                 let same = matches!((&haze.falloff, &falloff), (FogFalloff::Linear { start: a, .. }, FogFalloff::Linear { start: b, .. }) if a == b);
-                if haze.color != sky || !same {
-                    (haze.color, haze.falloff) = (sky, falloff);
+                if haze.color != sky || !same || haze.directional_light_color != glow || haze.directional_light_exponent != tight {
+                    (haze.color, haze.falloff, haze.directional_light_color, haze.directional_light_exponent) = (sky, falloff, glow, tight);
                 }
             }
             None => {
-                commands.entity(entity).insert(DistanceFog { color: sky, falloff, ..default() });
+                commands.entity(entity).insert(DistanceFog { color: sky, falloff, directional_light_color: glow, directional_light_exponent: tight });
             }
         }
     }

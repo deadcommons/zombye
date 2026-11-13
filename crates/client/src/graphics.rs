@@ -8,8 +8,8 @@
 //! Where they come from, later ones winning: the client settings file (`graphics` in
 //! `settings.ron`, see `ui_scale.rs`; never read offscreen, whose pictures depend on the flags
 //! alone), `--graphics low|medium|high|ultra|auto` (a whole preset), `--vegetation off|low|high|N`
-//! (N from 0 to 2) and `--no-post LIST` (`grain`, `tilt`, `vignette`, `bloom`, `ao`, `ground`, or
-//! `all`). A game started with no settings file at all starts on Auto.
+//! (N from 0 to 2) and `--no-post LIST` (`grain`, `tilt`, `vignette`, `bloom`, `ao` (contact shadows), `occlusion`, `ground`, `soft`, `haze`, `sky`, `skylight`, `shafts`,
+//! or `all`). A game started with no settings file at all starts on Auto.
 
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -77,10 +77,22 @@ pub struct Graphics {
     pub bloom: bool,
     /// The soft dark line where walls meet the ground and floors.
     pub contact_shadows: bool,
+    /// Ambient occlusion: soft shade in corners, under cars and props and where things meet the
+    /// ground (Bevy's SSAO, `camera.rs`). Needs multisampling off; SMAA smooths edges instead.
+    pub occlusion: bool,
     /// Shadows of the sun and moon with soft edges that widen away from what casts them.
     pub soft_shadows: bool,
     /// The haze over the distance (`daynight::HazeLook`).
     pub haze: bool,
+    /// The first-person view's sky (`sky.rs`): a gradient that follows the hour, the sun or moon
+    /// and the stars, in place of a flat colour.
+    pub sky: bool,
+    /// Light from the sky in the shade (`skylight.rs`): what faces up takes the sky's colour, what
+    /// faces down the ground's. Taken on at start-up. About 1.5-3 ms on an M1 Max: Ultra only.
+    pub sky_light: bool,
+    /// Light scattering in the air (`shafts.rs`). In no preset: about 8 ms on an M1 Max, and it
+    /// gives an even warm veil rather than beams so far. A switch to try it with.
+    pub light_shafts: bool,
     /// Patchy colour on the ground, worked out per pixel.
     pub ground_detail: bool,
     /// The sun's shadow map, texels a side (one cascade fitted to the view, `daynight.rs`).
@@ -100,19 +112,19 @@ impl Default for Graphics {
 
 impl Graphics {
     pub fn high() -> Self {
-        Self { preset: Preset::High, vegetation: 1.0, grain: true, tilt_shift: true, vignette: true, bloom: true, contact_shadows: true, soft_shadows: true, haze: true, ground_detail: true, shadow_map: 4096, msaa: 4, render_scale: 1.0 }
+        Self { preset: Preset::High, vegetation: 1.0, grain: true, tilt_shift: true, vignette: true, bloom: true, contact_shadows: true, occlusion: true, soft_shadows: true, haze: true, sky: true, sky_light: false, light_shafts: false, ground_detail: true, shadow_map: 4096, msaa: 4, render_scale: 1.0 }
     }
     /// For slow machines: a little grass, and nothing that costs a pass or a blend.
     pub fn low() -> Self {
-        Self { preset: Preset::Low, vegetation: 0.35, grain: false, tilt_shift: false, vignette: false, bloom: false, contact_shadows: false, soft_shadows: false, haze: false, ground_detail: false, shadow_map: 2048, msaa: 2, render_scale: 0.6 }
+        Self { preset: Preset::Low, vegetation: 0.35, grain: false, tilt_shift: false, vignette: false, bloom: false, contact_shadows: false, occlusion: false, soft_shadows: false, haze: false, sky: false, sky_light: false, light_shafts: false, ground_detail: false, shadow_map: 2048, msaa: 2, render_scale: 0.6 }
     }
     /// Most of the look: thinner grass, no tilt-shift, half the shadow map.
     pub fn medium() -> Self {
-        Self { preset: Preset::Medium, vegetation: 0.6, tilt_shift: false, soft_shadows: false, shadow_map: 2048, ..Self::high() }
+        Self { preset: Preset::Medium, vegetation: 0.6, tilt_shift: false, soft_shadows: false, occlusion: false, sky_light: false, shadow_map: 2048, ..Self::high() }
     }
     /// More than the game was made to: denser grass and a finer shadow map.
     pub fn ultra() -> Self {
-        Self { preset: Preset::Ultra, vegetation: 1.5, shadow_map: 8192, render_scale: 1.0, ..Self::high() }
+        Self { preset: Preset::Ultra, vegetation: 1.5, shadow_map: 8192, render_scale: 1.0, sky_light: true, ..Self::high() }
     }
     /// The settings a preset stands for. Auto starts at High (and is measured, `graphics_ui.rs`);
     /// Custom has no settings of its own, so it gives High.
@@ -186,11 +198,15 @@ impl Graphics {
                 "bloom" => g.bloom = false,
                 "ao" | "contact" => g.contact_shadows = false,
                 "ground" => g.ground_detail = false,
+                "occlusion" | "ssao" => g.occlusion = false,
                 "soft" | "soft-shadows" => g.soft_shadows = false,
                 "haze" => g.haze = false,
+                "sky" => g.sky = false,
+                "skylight" | "sky-light" => g.sky_light = false,
+                "shafts" => g.light_shafts = false,
                 "all" => g = Self { preset: g.preset, vegetation: g.vegetation, shadow_map: g.shadow_map, msaa: g.msaa, render_scale: g.render_scale, ..Self::low() },
                 "" => {}
-                other => eprintln!("--no-post {other}: grain, tilt, vignette, bloom, ao, ground, soft, haze or all"),
+                other => eprintln!("--no-post {other}: grain, tilt, vignette, bloom, ao, occlusion, ground, soft, haze, sky, skylight, shafts or all"),
             }
         }
         if let Some(n) = options.msaa {
