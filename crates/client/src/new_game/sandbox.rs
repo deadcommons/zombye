@@ -189,7 +189,7 @@ pub(super) fn page(cols: &mut ChildSpawnerCommands, screen: &Screen) {
                 row(l, k == view, Some(Act::Sandbox(Do::View(k))), about).with_children(|r| {
                     r.spawn((Node { flex_grow: 1.0, flex_basis: px(0), min_width: px(0), overflow: Overflow::clip(), ..default() }, Pickable::IGNORE)).with_children(|n| line(n, name.clone(), font(BODY), BONE));
                     if *changed > 0 {
-                        line(r, format!("{changed}"), theme::strong(SMALL), GREEN);
+                        line(r, format!("{changed}"), theme::strong(SMALL), ACCENT);
                     }
                 });
             }
@@ -225,7 +225,7 @@ pub(super) fn page(cols: &mut ChildSpawnerCommands, screen: &Screen) {
                 let Some(leaf) = leaves.iter().find(|x| x.path == it.path) else { continue };
                 let own = screen.setup.values.contains_key(&it.path);
                 let about = format!("{}{}{}  ({})", it.name, if it.about.is_empty() { "" } else { ": " }, it.about, it.path);
-                l.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(8), height: px(ROW_H + 2.0), align_items: AlignItems::Center, padding: UiRect::horizontal(px(10)), border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), flex_shrink: 0.0, ..default() }, BackgroundColor(CELL), BorderColor::all(if own { GREEN } else { Color::NONE })))
+                l.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(8), height: px(ROW_H + 2.0), align_items: AlignItems::Center, padding: UiRect::horizontal(px(10)), border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), flex_shrink: 0.0, ..default() }, BackgroundColor(CELL), BorderColor::all(if own { ACCENT } else { Color::NONE })))
                     .observe(move |_: On<PointerOver>, mut detail: Query<&mut Text, With<Detail>>| {
                         for mut t in &mut detail {
                             if t.0 != about {
@@ -239,7 +239,7 @@ pub(super) fn page(cols: &mut ChildSpawnerCommands, screen: &Screen) {
                             small(r, "Reset", Act::Sandbox(Do::Reset(it.path.clone())));
                         }
                         arrow(r, "<", Act::Sandbox(Do::Step(it.path.clone(), -1)));
-                        r.spawn((Node { width: px(118), justify_content: JustifyContent::Center, flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|n| line(n, shown(leaf.value, &it.unit), theme::strong(BODY), if own { GREEN } else { BONE }));
+                        r.spawn((Node { width: px(118), justify_content: JustifyContent::Center, flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|n| line(n, shown(leaf.value, &it.unit), theme::strong(BODY), if own { ACCENT } else { BONE }));
                         arrow(r, ">", Act::Sandbox(Do::Step(it.path.clone(), 1)));
                     });
             }
@@ -266,6 +266,20 @@ pub(super) fn wheel(mut wheel: MessageReader<MouseWheel>, window: Query<&Window,
         // Not `dirty`: nothing is drawn again for a scroll.
         screen.bypass_change_detection().sandbox.scroll[which.0] = y;
     }
+}
+
+/// A chip that picks one of two lists (the named groups or every number).
+fn chip(parent: &mut ChildSpawnerCommands, label: &str, key: Option<&str>, on: bool, act: Act) {
+    let look = if on { Look::PRIMARY } else { Look::CELL };
+    let ink = if on { INK } else { BONE };
+    let mut e = parent.spawn((Node { height: px(32), padding: UiRect::horizontal(px(12)), column_gap: px(8), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), ..default() }, BackgroundColor(look.fill), BorderColor::all(look.edge)));
+    e.with_children(|b| {
+        if let Some(key) = key {
+            keycap(b, key, ink);
+        }
+        line(b, label.to_uppercase(), theme::head(flat::CHIP), ink);
+    });
+    live(&mut e, look, Some(act));
 }
 
 #[cfg(test)]
