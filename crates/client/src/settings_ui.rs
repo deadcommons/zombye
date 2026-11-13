@@ -726,7 +726,7 @@ fn keys_list(p: &mut ChildSpawnerCommands, capture: Option<Action>) {
         for pair in KEYS.chunks(2) {
             cols.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(2), flex_basis: percent(33), ..default() }).with_children(|col| {
                 for (group, keys) in pair {
-                    col.spawn((Text::new(group.to_uppercase()), theme::head(BODY + 2.0), TextColor(skin::GREEN), Node { margin: UiRect::top(px(6)), ..default() }));
+                    col.spawn((Text::new(group.to_uppercase()), theme::brand(BODY + 6.0), TextColor(skin::ACCENT), Node { margin: UiRect::top(px(6)), ..default() }));
                     for row in keys.iter().copied() {
                         col.spawn(Node { column_gap: px(8), align_items: AlignItems::Center, ..default() }).with_children(|line| {
                             line.spawn(Node { width: px(104), flex_shrink: 0.0, ..default() }).with_children(|k| match row {

@@ -54,8 +54,8 @@ const FADE_SECS: f32 = 0.35;
 /// so it has been drawn when the window goes.
 const COVER_FRAMES: u32 = 3;
 /// The loading line: big and bright enough to be read from a chair, quieter than the logo.
-const LINE_SIZE: f32 = 26.0;
-const LINE_COLOUR: Color = Color::srgb(0.86, 0.82, 0.71);
+const LINE_SIZE: f32 = 24.0;
+const LINE_COLOUR: Color = BONE;
 /// What the next run takes the line up from (`pass_on`, `handed`): "seed:milliseconds shown".
 const HANDED: &str = "ZOMBYE_LOADING_LINE";
 /// How wide the logo is drawn, in UI pixels.
@@ -380,7 +380,7 @@ fn put_up(commands: &mut Commands, line: String, shown: f32) {
             if !brand::title(c, Mark::Logo, LOGO_WIDTH, DIM) {
                 brand::text_title(c, 104.0, BONE, DIM);
             }
-            c.spawn((Line, Text::new(line), theme::head(LINE_SIZE), TextColor(LINE_COLOUR.with_alpha(shown)), TextLayout::no_wrap(), Pickable::IGNORE));
+            c.spawn((Line, Text::new(line), theme::note(LINE_SIZE), TextColor(LINE_COLOUR.with_alpha(shown)), TextLayout::no_wrap(), Pickable::IGNORE));
         })
         .insert(Coming(shown));
 }

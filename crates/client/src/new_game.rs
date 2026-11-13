@@ -639,25 +639,28 @@ fn act(mut commands: Commands, mut screen: ResMut<Screen>, mut front: ResMut<Fro
 mod flat {
     use bevy::prelude::*;
 
-    /// The ground of a menu, and text on a green button.
-    pub const INK: Color = Color::srgb(0.078, 0.078, 0.078);
-    pub const BONE: Color = Color::srgb(0.949, 0.902, 0.788);
-    pub const DIM: Color = Color::srgb(0.725, 0.690, 0.604);
-    pub const FAINT: Color = Color::srgb(0.490, 0.467, 0.416);
-    // The guide's see-through tints of bone, as they come out over the opaque ink of a menu
-    // (worked out in sRGB, as the guide's sheets are drawn).
-    /// Bone at 11%: hairlines.
-    pub const LINE: Color = Color::srgb(0.174, 0.169, 0.156);
-    /// Bone at 4.5%: a tile, slot, chip or secondary button.
-    pub const CELL: Color = Color::srgb(0.117, 0.115, 0.110);
-    /// Bone at 9%, and the border at 50%: the thing under the pointer.
-    pub const CELL_HOVER: Color = Color::srgb(0.156, 0.152, 0.142);
-    pub const HOVER_LINE: Color = Color::srgb(0.514, 0.490, 0.433);
-    /// Green at 10%: the fill of what is picked.
-    pub const PICKED: Color = Color::srgb(0.126, 0.139, 0.112);
+    // The brand's look, as the menus (`menu_skin.rs`): warm charcoal, cream, mustard the accent.
+    /// The ground of a menu, and text on a mustard button.
+    pub const INK: Color = crate::menu_skin::GROUND;
+    pub const BONE: Color = crate::menu_skin::BONE;
+    pub const DIM: Color = crate::menu_skin::DIM;
+    pub const FAINT: Color = crate::menu_skin::FAINT;
+    // Cream tints as they come out over the charcoal (worked out in sRGB).
+    /// Cream at 14%: hairlines.
+    pub const LINE: Color = Color::srgb(0.273, 0.240, 0.214);
+    /// Cream at 5%: a tile, slot, chip or secondary button.
+    pub const CELL: Color = Color::srgb(0.206, 0.176, 0.159);
+    /// Cream at 10%, and the border at 50%: the thing under the pointer.
+    pub const CELL_HOVER: Color = Color::srgb(0.244, 0.212, 0.189);
+    pub const HOVER_LINE: Color = Color::srgb(0.541, 0.494, 0.431);
+    /// Mustard at 12%: the fill of what is picked.
+    pub const PICKED: Color = Color::srgb(0.254, 0.202, 0.147);
     /// The one accent: the open page, what is picked, the main button.
-    pub const GREEN: Color = Color::srgb(0.553, 0.690, 0.420);
-    pub const AMBER: Color = Color::srgb(0.878, 0.690, 0.290);
+    pub const ACCENT: Color = crate::menu_skin::ACCENT;
+    /// A Strength's plus (zombie green: it points into the game).
+    pub const STRENGTH: Color = Color::srgb(0.553, 0.690, 0.420);
+    /// A Flaw's minus, and what costs you.
+    pub const RUST: Color = crate::menu_skin::RUST;
     pub const RED: Color = Color::srgb(0.843, 0.149, 0.169);
 
     pub const SCREEN_TITLE: f32 = 30.0;
@@ -672,7 +675,7 @@ mod flat {
     /// out for 1280 x 720 and up).
     pub const PAD: f32 = 16.0;
 }
-use flat::{AMBER, BONE, CELL, CELL_HOVER, DIM, FAINT, GREEN, HOVER_LINE, INK, LINE, PAD, RADIUS, RED};
+use flat::{ACCENT, BONE, CELL, CELL_HOVER, DIM, FAINT, HOVER_LINE, INK, LINE, PAD, RADIUS, RED, RUST, STRENGTH};
 
 #[derive(Component)]
 struct Root;
@@ -730,7 +733,7 @@ fn line(c: &mut ChildSpawnerCommands, s: impl Into<String>, f: TextFont, colour:
 
 /// A column's title: GEAR, YOU, NEARBY.
 fn column_title(c: &mut ChildSpawnerCommands, s: &str) {
-    c.spawn((Text::new(s.to_uppercase()), theme::head(flat::COLUMN_TITLE), TextColor(BONE), TextLayout::no_wrap(), Node { margin: UiRect::bottom(px(6)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
+    c.spawn((Text::new(s.to_uppercase()), theme::brand(flat::COLUMN_TITLE + 4.0), TextColor(BONE), TextLayout::no_wrap(), Node { margin: UiRect::bottom(px(6)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
 }
 
 /// A label over a group of things: HEAD, MAIN HAND.
@@ -763,8 +766,8 @@ struct Look {
 
 impl Look {
     const CELL: Look = Look { fill: CELL, edge: LINE, lights: true };
-    const PICKED: Look = Look { fill: flat::PICKED, edge: GREEN, lights: false };
-    const PRIMARY: Look = Look { fill: GREEN, edge: GREEN, lights: false };
+    const PICKED: Look = Look { fill: flat::PICKED, edge: ACCENT, lights: false };
+    const PRIMARY: Look = Look { fill: ACCENT, edge: ACCENT, lights: false };
 }
 
 /// Lights `e` under the pointer and presses it for `act`.
@@ -795,7 +798,7 @@ fn button(parent: &mut ChildSpawnerCommands, label: &str, key: Option<&str>, pri
     let ink = if primary { INK } else { BONE };
     let mut e = parent.spawn((Node { height: px(38), padding: UiRect::horizontal(px(14)), column_gap: px(10), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), ..default() }, BackgroundColor(look.fill), BorderColor::all(look.edge)));
     e.with_children(|b| {
-        line(b, label.to_uppercase(), theme::head(flat::BUTTON), ink);
+        line(b, label.to_uppercase(), theme::brand(flat::BUTTON + 3.0), ink);
         if let Some(key) = key {
             keycap(b, key, ink);
         }
@@ -811,7 +814,7 @@ fn main_button(parent: &mut ChildSpawnerCommands, label: &str, act: Act) {
     let look = Look::PRIMARY;
     let mut e = parent.spawn((Node { height: px(48), min_width: px(180), padding: UiRect::horizontal(px(24)), column_gap: px(12), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), ..default() }, BackgroundColor(look.fill), BorderColor::all(look.edge)));
     e.with_children(|b| {
-        line(b, label.to_uppercase(), theme::head(flat::BUTTON + 4.0), INK);
+        line(b, label.to_uppercase(), theme::brand(flat::BUTTON + 8.0), INK);
         keycap(b, "Enter", INK);
     });
     live(&mut e, look, Some(act));
@@ -826,7 +829,7 @@ fn chip(parent: &mut ChildSpawnerCommands, label: &str, key: Option<&str>, on: b
         if let Some(key) = key {
             keycap(b, key, ink);
         }
-        line(b, label.to_uppercase(), theme::head(flat::CHIP), ink);
+        line(b, label.to_uppercase(), theme::brand(flat::CHIP + 3.0), ink);
     });
     live(&mut e, look, Some(act));
 }
@@ -857,9 +860,9 @@ fn row<'a>(list: &'a mut ChildSpawnerCommands, picked: bool, act: Option<Act>, a
 /// The shape that says picked or not beside the green: a box, filled when picked (round for one
 /// of several, square for any of several).
 fn mark(r: &mut ChildSpawnerCommands, on: bool, round: bool) {
-    r.spawn((Node { width: px(14), height: px(14), flex_shrink: 0.0, border: UiRect::all(px(1.5)), border_radius: BorderRadius::all(px(if round { 7.0 } else { 3.0 })), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, BorderColor::all(if on { GREEN } else { FAINT }), Pickable::IGNORE)).with_children(|m| {
+    r.spawn((Node { width: px(14), height: px(14), flex_shrink: 0.0, border: UiRect::all(px(1.5)), border_radius: BorderRadius::all(px(if round { 7.0 } else { 3.0 })), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, BorderColor::all(if on { ACCENT } else { FAINT }), Pickable::IGNORE)).with_children(|m| {
         if on {
-            m.spawn((Node { width: px(7), height: px(7), border_radius: BorderRadius::all(px(if round { 3.5 } else { 1.5 })), ..default() }, BackgroundColor(GREEN), Pickable::IGNORE));
+            m.spawn((Node { width: px(7), height: px(7), border_radius: BorderRadius::all(px(if round { 3.5 } else { 1.5 })), ..default() }, BackgroundColor(ACCENT), Pickable::IGNORE));
         }
     });
 }
@@ -892,7 +895,7 @@ fn points_word(n: i32) -> String {
 /// The frame's top bar: the screen's title, its pages as chips, and the way back.
 fn top_bar(c: &mut ChildSpawnerCommands, screen: &Screen) {
     c.spawn((Node { height: px(flat::TOP_BAR), flex_shrink: 0.0, flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(8), padding: UiRect::horizontal(px(24)), border: UiRect::bottom(px(1)), ..default() }, BorderColor::all(LINE))).with_children(|bar| {
-        bar.spawn((Text::new("NEW GAME"), theme::head(flat::SCREEN_TITLE), TextColor(BONE), TextLayout::no_wrap(), Node { margin: UiRect::right(px(20)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
+        bar.spawn((Text::new("NEW GAME"), theme::brand(flat::SCREEN_TITLE + 6.0), TextColor(BONE), TextLayout::no_wrap(), Node { margin: UiRect::right(px(20)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
         for (k, tab) in Tab::ALL.into_iter().enumerate() {
             chip(bar, tab.label(), Some(&format!("{}", k + 1)), tab == screen.tab, Act::Tab(tab));
         }
@@ -957,14 +960,14 @@ fn who(cols: &mut ChildSpawnerCommands, screen: &Screen) {
                 r.spawn((Node { flex_direction: FlexDirection::Row, column_gap: px(3), ..default() }, Pickable::IGNORE)).with_children(|pips| {
                     for k in 0..t.top() {
                         // What every survivor has in bone, what this one adds in green.
-                        let colour = if k < base.min(level) { BONE } else if k < level { GREEN } else { LINE };
+                        let colour = if k < base.min(level) { BONE } else if k < level { ACCENT } else { LINE };
                         pips.spawn((Node { width: px(13), height: px(8), border_radius: BorderRadius::all(px(3)), ..default() }, BackgroundColor(colour), Pickable::IGNORE));
                     }
                 });
                 let mult = start.origin.perks.xp[s as usize];
                 line(r, format!("{level}"), theme::strong(SMALL), if level > 0 { BONE } else { DIM });
                 if mult != 1.0 {
-                    line(r, format!("learns x{}", (mult * 100.0).round() / 100.0), font(SMALL), if mult < 1.0 { AMBER } else { DIM });
+                    line(r, format!("learns x{}", (mult * 100.0).round() / 100.0), font(SMALL), if mult < 1.0 { RUST } else { DIM });
                 }
             });
         }
@@ -1001,7 +1004,7 @@ fn picks(cols: &mut ChildSpawnerCommands, screen: &Screen) {
                     about = format!("{about}  Can't go with {}.", c.name);
                 }
                 let off = clash.is_some();
-                let kind = if strengths { GREEN } else { AMBER };
+                let kind = if strengths { STRENGTH } else { RUST };
                 row(list, on, act, about).with_children(|r| {
                     mark(r, on, false);
                     sign(r, strengths, if off { FAINT } else { kind });
@@ -1027,7 +1030,7 @@ fn world(cols: &mut ChildSpawnerCommands, screen: &Screen) {
             e.with_children(|r| {
                 mark(r, on, true);
                 r.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(2), flex_grow: 1.0, flex_basis: px(0), min_width: px(0), ..default() }, Pickable::IGNORE)).with_children(|t| {
-                    line(t, p.name.to_uppercase(), theme::head(flat::BUTTON), BONE);
+                    line(t, p.name.to_uppercase(), theme::brand(flat::BUTTON + 3.0), BONE);
                     text(t, p.about.clone(), font(SMALL), DIM);
                 });
             });

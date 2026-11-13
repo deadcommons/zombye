@@ -293,7 +293,7 @@ and blood splats and particles are cleared (`fx::ClearFx`): they belong to the t
 `--quicksave-after SECS` / `--quickload-after SECS` press F5 / F9 by themselves, for verification. A yellow line
 under the HUD says what was saved or loaded (or why not), and stdout gets the same line.
 
-**Menus (`main_menu.rs`, `pause_menu.rs`, `settings_ui.rs`):** three screens in flat, dark chrome (`menu_skin.rs`: solid fills, hairlines, bone-white text, zombie green for the one main button and what is picked; the typefaces are `theme.rs`'s; the menus' pieces only, until `theme.rs` has flat components for every panel).
+**Menus (`main_menu.rs`, `pause_menu.rs`, `settings_ui.rs`):** three screens in the brand's look (`menu_skin.rs`, docs/ui-design.md, The screens before the game: warm charcoal, hairlines, cream text, mustard for the one main button and what is picked, titles and buttons in Bebas Neue (`theme::brand`), text in Barlow; the new-game screen and the loading screen take the same, its lines in Special Elite, `theme::note`; once in the game every panel is the flat chrome again).
 **The main menu** comes first on a plain start: a run with no flag that sets up a world or a scene (`main_menu::plain`:
 an allowlist of flags a menu can carry on, such as `--saves`, `--data`, `--mod`, `--size`, `--ui-scale`, `--name`,
 `--graphics`; anything else, `--load`, `--connect`, `--seed`, `--zombies`, `--fight-demo`, `--render-to` alone and the
@@ -415,7 +415,7 @@ weights used in `assets/fonts/barlow/` with `OFL.txt`, compiled into the client 
 like the textures, so offscreen renders and tests have them). Figures are tabular (the `tnum` feature, on in every
 `theme` face), so counts, weights and clocks line up and don't shuffle as they change. Bevy's built-in monospace
 (`theme::mono`) is kept only for the developer's read-outs: the stats line and keys at the top left, the debug stats
-window (F4) and the light preview's label (F3). **Every text takes its `TextFont` from one of those four functions.**
+window (F4) and the light preview's label (F3). **Every text takes its `TextFont` from one of those four functions** (the screens before the game add `theme::brand`, Bebas Neue, and `theme::note`, Special Elite: see Menus).
 Nothing may assume a letter's width: lay text out with flex, and where a size must be known before layout (the
 inventory's turned tabs, the hotbar's slot test) ask `theme::width(face, text, size)`, which reads the advances from
 the face's own tables. Cost: nothing measurable (the inventory open

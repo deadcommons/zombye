@@ -759,7 +759,7 @@ fn title(col: &mut ChildSpawnerCommands, screen: Screen) {
     col.spawn(Node { margin: UiRect::new(px(-width * 0.04), px(0), px(0), px(18)), flex_shrink: 0.0, ..default() }).with_children(|c| drawn = brand::title(c, mark, width, DIM));
     if !drawn {
         brand::text_title(col, 104.0, BONE, DIM);
-        col.spawn((Text::new("ZOMBIE SURVIVAL"), theme::head(20.0), TextColor(skin::GREEN), TextLayout::no_wrap(), Node { margin: UiRect::new(px(3), px(0), px(-12), px(26)), ..default() }));
+        col.spawn((Text::new("ZOMBIE SURVIVAL"), theme::brand(24.0), TextColor(skin::ACCENT), TextLayout::no_wrap(), Node { margin: UiRect::new(px(3), px(0), px(-12), px(26)), ..default() }));
     }
 }
 
@@ -786,7 +786,7 @@ fn home(col: &mut ChildSpawnerCommands, menu: &Menu, now: SystemTime) {
 
 /// Single player: your own world on this computer.
 fn single(col: &mut ChildSpawnerCommands, menu: &Menu, now: SystemTime) {
-    col.spawn((Text::new("SINGLE PLAYER"), theme::head(22.0), TextColor(BONE)));
+    col.spawn((Text::new("SINGLE PLAYER"), theme::brand(28.0), TextColor(BONE)));
     let first = match menu.autosave() {
         Some(save) => {
             button(col, "Continue", Some(&describe(save, now)), Look::Primary, Act::Continue);
@@ -803,7 +803,7 @@ fn single(col: &mut ChildSpawnerCommands, menu: &Menu, now: SystemTime) {
 
 /// Multiplayer: someone's server, or your own for friends.
 fn multi(col: &mut ChildSpawnerCommands) {
-    col.spawn((Text::new("MULTIPLAYER"), theme::head(22.0), TextColor(BONE)));
+    col.spawn((Text::new("MULTIPLAYER"), theme::brand(28.0), TextColor(BONE)));
     button(col, "Join a game", Some("official and community servers"), Look::Primary, Act::Join);
     button(col, "Host a game", Some("on this computer, for friends"), Look::Plain, Act::HostScreen);
     button(col, "Back", None, Look::Plain, Act::Back);
@@ -822,7 +822,7 @@ fn host_field(col: &mut ChildSpawnerCommands, label: &str, text: &str, empty: &s
             (_, true) => (format!("{text}_"), BONE),
             (false, false) => (text.to_string(), BONE),
         };
-        row.spawn((Node { width: px(WIDTH - HOST_LABEL), height: px(34), padding: UiRect::horizontal(px(12)), align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(6)), overflow: Overflow::clip(), flex_shrink: 0.0, ..default() }, BackgroundColor(skin::CELL), BorderColor::all(if focused { skin::GREEN } else { skin::LINE })))
+        row.spawn((Node { width: px(WIDTH - HOST_LABEL), height: px(34), padding: UiRect::horizontal(px(12)), align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(6)), overflow: Overflow::clip(), flex_shrink: 0.0, ..default() }, BackgroundColor(skin::CELL), BorderColor::all(if focused { skin::ACCENT } else { skin::LINE })))
             .with_children(|b| {
                 b.spawn((Text::new(shown), font(BODY), TextColor(colour), TextLayout::no_wrap(), Pickable::IGNORE));
             })
@@ -857,7 +857,7 @@ fn host(col: &mut ChildSpawnerCommands, menu: &Menu) {
     let text = |c: &mut ChildSpawnerCommands, t: String, size: f32, colour: Color| {
         c.spawn((Text::new(t), font(size), TextColor(colour), Node { max_width: px(HOST_WIDE), ..default() }));
     };
-    col.spawn((Text::new("HOST A GAME"), theme::head(22.0), TextColor(BONE)));
+    col.spawn((Text::new("HOST A GAME"), theme::brand(28.0), TextColor(BONE)));
     text(col, format!("The game starts a server on this computer and you join it; friends join you. It goes on while anyone is playing, and saves and stops {} seconds after the last player leaves. Its world is kept apart from your single-player games.", hosting::STOP_WHEN_EMPTY_SECS), BODY, DIM);
     let h = &menu.host;
     host_field(col, "Server name", &h.name, &HostSetup { name: String::new(), ..h.clone() }.server_name(&menu.player), menu.field == Some(HostField::Server), HostField::Server);
@@ -876,7 +876,7 @@ fn host(col: &mut ChildSpawnerCommands, menu: &Menu) {
     }
     text(col, reach_text(menu.lan, h.port), SMALL, DIM);
     if let Some((note, wrong)) = &menu.host_note {
-        text(col, note.clone(), BODY, if *wrong { PROBLEM } else { skin::GREEN });
+        text(col, note.clone(), BODY, if *wrong { PROBLEM } else { skin::ACCENT });
     }
     col.spawn(Node { column_gap: px(8), margin: UiRect::top(px(6)), ..default() }).with_children(|row| {
         if menu.hosting.is_some() {
@@ -890,7 +890,7 @@ fn host(col: &mut ChildSpawnerCommands, menu: &Menu) {
 }
 
 fn load(col: &mut ChildSpawnerCommands, menu: &Menu, now: SystemTime) {
-    col.spawn((Text::new("LOAD GAME"), theme::head(22.0), TextColor(BONE)));
+    col.spawn((Text::new("LOAD GAME"), theme::brand(28.0), TextColor(BONE)));
     for save in menu.saves.iter().take(LISTED) {
         let line = describe(save, now);
         if save.info.is_ok() {
@@ -937,7 +937,7 @@ fn mods(col: &mut ChildSpawnerCommands, menu: &Menu) {
     let text = |c: &mut ChildSpawnerCommands, t: String, size: f32, colour: Color, width: f32| {
         c.spawn((Text::new(t), font(size), TextColor(colour), Node { max_width: px(width), ..default() }));
     };
-    col.spawn((Text::new("MODS"), theme::head(22.0), TextColor(BONE)));
+    col.spawn((Text::new("MODS"), theme::brand(28.0), TextColor(BONE)));
     text(col, "A mod is a folder in the mods folder. Turn one on and it loads in every game you start or load from now on, in the order shown (a later mod wins where two change the same thing). A mod that doesn't load stays off, with the reason, and the game starts without it. Multiplayer servers play with their own mods.".to_string(), BODY, DIM, WIDTH + DETAILS_WIDTH + 28.0);
     let Some(folder) = &menu.mods else { return };
     for p in &folder.problems {
@@ -953,7 +953,7 @@ fn mods(col: &mut ChildSpawnerCommands, menu: &Menu) {
                 let picked = menu.picked.as_deref() == Some(e.id.as_str());
                 list.spawn(Node { column_gap: px(6), align_items: AlignItems::Center, ..default() }).with_children(|r| {
                     // The one whose details are shown: a green mark at its left.
-                    r.spawn((Node { width: px(3), height: px(26), flex_shrink: 0.0, ..default() }, BackgroundColor(if picked { skin::GREEN } else { Color::NONE })));
+                    r.spawn((Node { width: px(3), height: px(26), flex_shrink: 0.0, ..default() }, BackgroundColor(if picked { skin::ACCENT } else { Color::NONE })));
                     let id = e.id.clone();
                     skin::button(r, if e.enabled { "On" } else { "Off" }, None, Look::Chip(e.enabled), px(58)).observe(move |_: On<PointerPress>, mut menu: ResMut<Menu>| menu.acts.push(Act::ToggleMod(id.clone())));
                     let detail = match (&e.problem, e.enabled) {
@@ -1015,7 +1015,7 @@ fn mods(col: &mut ChildSpawnerCommands, menu: &Menu) {
 }
 
 fn confirm_new(col: &mut ChildSpawnerCommands) {
-    col.spawn((Text::new("START A NEW GAME?"), theme::head(22.0), TextColor(BONE)));
+    col.spawn((Text::new("START A NEW GAME?"), theme::brand(28.0), TextColor(BONE)));
     col.spawn((Text::new("The game you can continue is its autosave, and the new game's will take its place the first time you leave it. Quicksaves and other saves stay."), font(BODY), TextColor(DIM), Node { width: px(WIDTH), margin: UiRect::bottom(px(8)), ..default() }));
     button(col, "Start a new game", None, Look::Primary, Act::StartNew);
     button(col, "Back", None, Look::Plain, Act::Back);
