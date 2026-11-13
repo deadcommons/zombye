@@ -1,8 +1,9 @@
 //! The flat chrome the menus are drawn in: the main menu, the pause menu and the settings screen.
 //!
-//! Quiet, flat and dark: solid fills, one-pixel hairlines, small radii, bone-white text and zombie
-//! green as the one accent (the open tab, what is picked, the one main button of a screen). The
-//! typefaces are the skin's own (`theme::font`, `strong`, `head`). Everything here is plain Bevy UI
+//! The brand's look (docs/ui-design.md, The screens before the game): solid
+//! warm charcoal, one-pixel hairlines, small radii, cream text and mustard as the one accent (the
+//! open tab, what is picked, the one main button of a screen). Titles and buttons are set in the
+//! brand's Bebas Neue (`theme::brand`), text in Barlow (`theme::font`, `strong`). Everything here is plain Bevy UI
 //! (a fill, a border, a radius), so it costs a quad a node and needs no texture.
 //!
 //! These are the menus' pieces only. When `theme.rs` has flat components for every panel, the menus
@@ -12,25 +13,33 @@ use bevy::prelude::*;
 
 use crate::theme::{self, BODY, SMALL};
 
-/// Near-black: a menu's ground and its panels.
-pub const GROUND: Color = Color::srgb(0.078, 0.078, 0.078);
-/// Text and values.
-pub const BONE: Color = Color::srgb(0.949, 0.902, 0.788);
-/// Secondary text: what a setting does, hints.
-pub const DIM: Color = Color::srgb(0.725, 0.69, 0.604);
+// The brand's colours (docs/ui-design.md, The screens before the game; the brand guide's
+// palette): warm charcoal ground, cream text, mustard the one accent. The game's own panels keep
+// the flat near-black, bone and zombie green.
+/// Warm charcoal (#2B2421): a menu's ground and its panels, and the text on a mustard button.
+pub const GROUND: Color = Color::srgb(0.169, 0.141, 0.129);
+/// Cream (#E9D8BB): text and values.
+pub const BONE: Color = Color::srgb(0.914, 0.847, 0.733);
+/// Secondary text: what a setting does, hints (8:1 on the ground).
+pub const DIM: Color = Color::srgb(0.804, 0.737, 0.627);
 /// What needn't be read: a control with nothing to do.
-pub const FAINT: Color = Color::srgb(0.49, 0.467, 0.416);
-/// Hairlines.
-pub const LINE: Color = Color::srgba(0.949, 0.902, 0.788, 0.11);
-/// The fill of a button or chip at rest.
-pub const CELL: Color = Color::srgba(0.949, 0.902, 0.788, 0.045);
-const CELL_HOVER: Color = Color::srgba(0.949, 0.902, 0.788, 0.09);
-const LINE_HOVER: Color = Color::srgba(0.949, 0.902, 0.788, 0.5);
-/// The accent: this one.
-pub const GREEN: Color = Color::srgb(0.553, 0.69, 0.42);
-const GREEN_HOVER: Color = Color::srgb(0.64, 0.77, 0.51);
+pub const FAINT: Color = Color::srgb(0.592, 0.537, 0.478);
+/// Hairlines: cream at 14%.
+pub const LINE: Color = Color::srgba(0.914, 0.847, 0.733, 0.14);
+/// The fill of a button or chip at rest: cream at 5% over the ground, made solid, so nothing
+/// behind (the grain, the horizon) shows through.
+pub const CELL: Color = Color::srgb(0.206, 0.176, 0.159);
+const CELL_HOVER: Color = Color::srgb(0.244, 0.212, 0.189);
+const LINE_HOVER: Color = Color::srgba(0.914, 0.847, 0.733, 0.5);
+/// The accent, mustard (#E0A646): this one, the open tab, the main button.
+pub const ACCENT: Color = Color::srgb(0.878, 0.651, 0.275);
+const ACCENT_HOVER: Color = Color::srgb(0.922, 0.722, 0.388);
+/// Rust (#D45B2C): the brand's second colour, for a line that should catch the eye.
+pub const RUST: Color = Color::srgb(0.831, 0.357, 0.173);
+/// Brick (#9B3A2D): the last of the four stripes.
+pub const BRICK: Color = Color::srgb(0.608, 0.227, 0.176);
 /// The veil between a menu's panel and the game behind it.
-pub const VEIL: Color = Color::srgba(0.03, 0.03, 0.03, 0.72);
+pub const VEIL: Color = Color::srgba(0.09, 0.07, 0.06, 0.74);
 
 /// A screen's title, in capitals.
 pub const TITLE: f32 = 30.0;
@@ -58,7 +67,7 @@ pub fn panel() -> (BackgroundColor, BorderColor) {
 /// wide as its label.
 pub fn button<'a>(parent: &'a mut ChildSpawnerCommands, label: &str, detail: Option<&str>, look: Look, width: Val) -> EntityCommands<'a> {
     let (fill, line, ink) = match look {
-        Look::Primary | Look::Chip(true) => (GREEN, GREEN, GROUND),
+        Look::Primary | Look::Chip(true) => (ACCENT, ACCENT, GROUND),
         Look::Plain | Look::Row | Look::Chip(false) => (CELL, LINE, BONE),
         Look::Disabled => (Color::NONE, LINE, FAINT),
     };
@@ -86,14 +95,14 @@ pub fn button<'a>(parent: &'a mut ChildSpawnerCommands, label: &str, detail: Opt
         if look == Look::Row {
             b.spawn((Text::new(label.to_string()), theme::strong(BODY), TextColor(ink), TextLayout::no_wrap(), Pickable::IGNORE));
         } else {
-            b.spawn((Text::new(label.to_uppercase()), theme::head(size), TextColor(ink), TextLayout::no_wrap(), Pickable::IGNORE));
+            b.spawn((Text::new(label.to_uppercase()), theme::brand(size + 3.0), TextColor(ink), TextLayout::no_wrap(), Pickable::IGNORE));
         }
         if let Some(detail) = detail {
-            b.spawn((Text::new(detail.to_string()), theme::font(SMALL), TextColor(if fill == GREEN { GROUND } else { DIM }), TextLayout::no_wrap(), Pickable::IGNORE));
+            b.spawn((Text::new(detail.to_string()), theme::font(SMALL), TextColor(if fill == ACCENT { GROUND } else { DIM }), TextLayout::no_wrap(), Pickable::IGNORE));
         }
     });
     let over = match look {
-        Look::Primary => Some((GREEN_HOVER, GREEN_HOVER)),
+        Look::Primary => Some((ACCENT_HOVER, ACCENT_HOVER)),
         Look::Plain | Look::Row | Look::Chip(false) => Some((CELL_HOVER, LINE_HOVER)),
         Look::Chip(true) | Look::Disabled => None,
     };
@@ -143,7 +152,25 @@ pub fn divider(parent: &mut ChildSpawnerCommands) {
 
 /// A screen's title.
 pub fn title(parent: &mut ChildSpawnerCommands, text: &str) {
-    parent.spawn((Text::new(text.to_uppercase()), theme::head(TITLE), TextColor(BONE), TextLayout::no_wrap(), Pickable::IGNORE));
+    parent.spawn((Text::new(text.to_uppercase()), theme::brand(TITLE + 6.0), TextColor(BONE), TextLayout::no_wrap(), Pickable::IGNORE));
+}
+
+/// The ground of a screen before the game, printed: the grain over its whole parent, behind what
+/// the parent holds (spawn it first; the parent gives the colour).
+pub fn ground(parent: &mut ChildSpawnerCommands) {
+    parent.spawn((theme::grain(), Node { position_type: PositionType::Absolute, left: px(0), top: px(0), width: percent(100), height: percent(100), ..default() }, Pickable::IGNORE));
+}
+
+/// The brand's four stripes (cream, mustard, rust, brick), `width` wide, cut off at a slant at
+/// their right end: under a screen's title.
+pub fn stripes(parent: &mut ChildSpawnerCommands, width: f32) {
+    const BAND: f32 = 3.0;
+    parent.spawn((Node { flex_direction: FlexDirection::Column, width: px(width), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|s| {
+        for (k, colour) in [BONE, ACCENT, RUST, BRICK].into_iter().enumerate() {
+            // Each band a little shorter than the one over it: the slant.
+            s.spawn((Node { width: px(width - k as f32 * BAND), height: px(BAND), ..default() }, BackgroundColor(colour), Pickable::IGNORE));
+        }
+    });
 }
 
 /// Empty room that pushes what follows to the far end of a row.
@@ -167,10 +194,11 @@ mod tests {
     }
 
     #[test]
-    fn text_reads_on_the_ground_and_on_green() {
+    fn text_reads_on_the_ground_and_on_the_accent() {
         assert!(contrast(BONE, GROUND) >= 7.0);
         assert!(contrast(DIM, GROUND) >= 7.0);
-        // A green button's label is the ground's colour.
-        assert!(contrast(GROUND, GREEN) >= 7.0);
+        // A mustard button's label is the ground's colour.
+        assert!(contrast(GROUND, ACCENT) >= 7.0);
+        assert!(contrast(GROUND, ACCENT_HOVER) >= 7.0);
     }
 }

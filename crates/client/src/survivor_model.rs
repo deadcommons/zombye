@@ -1309,7 +1309,8 @@ pub(crate) fn dress_survivors(
     model: Option<Res<SurvivorModel>>,
     mut built: Local<OutfitMeshes>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut dressed: Query<&mut Dress>,
+    // (Not the new-game screen's figure, over the game: it is dressed in what is picked there.)
+    mut dressed: Query<&mut Dress, Without<crate::new_game::Figure>>,
 ) {
     let Some(model) = model else { return };
     for mut d in &mut dressed {

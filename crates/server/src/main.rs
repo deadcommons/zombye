@@ -33,7 +33,9 @@
 //!   default on with PvP, off in co-op), `--logout-secs S` (default 30: how long a
 //!   survivor lies in the world, asleep, after its player leaves), `--logout-safe-secs S` (default
 //!   5: the same when it was left somewhere safe), `--spawn-protection S` (default 10: seconds a
-//!   new survivor can't be hurt by other players; #68). New survivors start with the data folder's
+//!   new survivor can't be hurt by other players; #68), `--stop-when-empty S` (stop, saving, once
+//!   nobody has been on for S seconds, and at least two minutes after starting: how a game hosted
+//!   from the game's menu ends). New survivors start with the data folder's
 //!   `start_kit.ron`, or with `--start-kit ITEM[:N],ITEM[:N]...` (`none`: nothing). `--camera
 //!   isometric|first-person` and `--agents off|on|marked` are the camera and agents rules (#69:
 //!   told to every client that joins, and to anyone who asks with `zombye --server-info HOST`;
@@ -404,7 +406,7 @@ fn main() {
         eprintln!(
             "usage: zombye-server (--config FILE | --mcp | --mcp-http [ADDR[:PORT]] [--mcp-token T | --mcp-no-auth] [--mcp-token-in-url] [--mcp-no-dev] [--mcp-origin ORIGIN] | --bench [--ticks N] [--players N] [--horde N] [--save-bench] \
              | --host [ADDR[:PORT]] [--no-reports] [--name NAME] [--max-players N] [--pvp on|off] [--spawn spread|together] [--password P] [--allow-dev] [--budget KB] [--fair-sight on|off] \
-             [--logout-secs S] [--logout-safe-secs S] [--spawn-protection S] [--admin-mcp [ADDR[:PORT]] [--admin-token T] [--admin-origin ORIGIN]] \
+             [--logout-secs S] [--logout-safe-secs S] [--spawn-protection S] [--stop-when-empty S] [--admin-mcp [ADDR[:PORT]] [--admin-token T] [--admin-origin ORIGIN]] \
              | --bots N --connect HOST[:PORT] [--secs S] [--name PREFIX] [--password P] [--bots-hostile] [--lag MS] \
              | --benchmark list|table|ID|all [--baseline idle|brawler|runner] [--agent NAME] [--results DIR] (ID with --mcp or --mcp-http: an agent plays it)) \
              [--zombies N] [--seed S] [--map-chunks N] [--pvp on] [--data DIR] \

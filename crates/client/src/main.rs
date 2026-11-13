@@ -36,7 +36,7 @@
 //! Menus: a plain start (no flag that sets up a world or a scene) opens the main menu first
 //! (`main_menu.rs`; `--main-menu` forces it, `--no-menu` skips it); Esc while playing is the pause menu
 //! (`pause_menu.rs`; `--pause` starts with it up), whose Settings is the settings screen (`settings_ui.rs`;
-//! `--settings graphics|audio|controls|game` starts with it up).
+//! `--settings display|graphics|effects|audio|controls|game` starts with it up).
 //!
 //! `--render-to PATH` renders one PNG offscreen and exits, without ever opening a window
 //! (`offscreen.rs`): usually with `--load`, plus `--size WxH`, `--zoom`, `--angle`, `--player` and
@@ -94,6 +94,7 @@ mod autoplay;
 mod browser_ui;
 mod duel;
 mod holdup;
+mod hosting;
 mod camera;
 mod campfire;
 mod character;
@@ -166,6 +167,7 @@ mod world_render;
 mod zombie_render;
 mod zvat;
 mod window_handoff;
+mod window_mode;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -361,8 +363,10 @@ pub struct Options {
     pub main_menu: bool,
     pub no_menu: bool,
     pub plain: bool,
+    /// The game starts with the main menu over it (#36, `main_menu::as_layer`): not a flag.
+    pub menu_layer: bool,
     /// Start with the pause menu up (`--pause`), or the settings screen on a tab
-    /// (`--settings graphics|audio|controls|game`): for pictures.
+    /// (`--settings display|graphics|effects|audio|controls|game`): for pictures.
     pub pause: bool,
     /// Show the loading screen and hold it up (`--loading-screen`): for pictures (`loading.rs`).
     pub loading_screen: bool,
@@ -657,6 +661,7 @@ impl Options {
             main_menu: flag("--main-menu"),
             no_menu: flag("--no-menu"),
             plain: main_menu::plain(args),
+            menu_layer: false,
             pause: flag("--pause"),
             loading_screen: flag("--loading-screen"),
             settings: value("--settings"),
@@ -759,6 +764,7 @@ pub(crate) fn exit_on_signal(mut exit: MessageWriter<AppExit>, mut sent: Local<b
 }
 
 fn main() {
+    let _ = loading::PROCESS_START.set(std::time::Instant::now());
     // `--write-pack OUT DIR...`: pack the release folders for a packaged build (`pack.rs`).
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).is_some_and(|a| a == "--write-pack") {
@@ -828,10 +834,14 @@ fn main() {
     if join_screen::wanted(&options) {
         join_screen::run(options);
     }
-    // Started with nothing that chooses a world: the main menu first, which starts the game again
-    // with what was picked there.
+    // Started with nothing that chooses a world: the main menu first. In a window it is a layer
+    // over the game (#36), whose world is made behind it; a picture of it is its own small app.
+    let mut options = options;
     if main_menu::wanted(&options) && !main_menu::skipped(&options) {
-        main_menu::run(options);
+        if options.offscreen() {
+            main_menu::run(options);
+        }
+        options = main_menu::as_layer(options);
     }
     // `--new-game`: who the survivor is and how the world is set, before there is a world
     // (`new_game.rs`); it starts the game again with the choices made.
@@ -870,13 +880,18 @@ fn main() {
         app.add_plugins((audio::GameAudioPlugin, music::MusicPlugin));
     }
     app.add_plugins((fps_log::FpsLogPlugin, bench_live::BenchLivePlugin, report::ReportPlugin, biome_watch::BiomeWatchPlugin));
+    // The main menu over the game: up from the start, or for the pause menu's way out (#36).
+    if !offscreen && app.world().resource::<Options>().connect.is_none() {
+        app.add_plugins(main_menu::MenuLayerPlugin);
+    }
     if black_watch::wanted() && !offscreen {
         app.add_plugins(black_watch::BlackWatchPlugin);
     }
+    let _ = loading::PLUGINS_BUILT.set(std::time::Instant::now());
     let failed = app.run().is_error();
     // A join asked for in the server browser (#27): the game has shut down (and autosaved); start
     // it again on that server.
-    if let Some(next) = browser_ui::take_relaunch().or_else(main_menu::take_relaunch) {
+    if let Some(next) = browser_ui::take_relaunch().or_else(main_menu::take_relaunch).or_else(new_game::take_relaunch) {
         relaunch(next);
     }
     if failed {
@@ -907,11 +922,13 @@ pub(crate) fn window_plugins(options: &Options) -> bevy::app::PluginGroupBuilder
             .set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "Zombye".into(),
-                    mode: settings_ui::window_mode((kept.fullscreen || window_handoff::fullscreen_asked()) && !options.size_given),
+                    // On the main monitor, or where the screen before this one was.
+                    position: window_handoff::first_position(),
+                    mode: window_handoff::first_mode(kept.fullscreen && !options.size_given),
                     resolution: if options.size_given {
                         bevy::window::WindowResolution::new(options.size.x, options.size.y).with_scale_factor_override(1.0)
                     } else {
-                        (1600, 900).into()
+                        kept.window_size.unwrap_or(window_mode::DEFAULT_SIZE).into()
                     },
                     present_mode: if options.novsync || !kept.vsync { PresentMode::AutoNoVsync } else { PresentMode::AutoVsync },
                     ..default()
@@ -921,6 +938,7 @@ pub(crate) fn window_plugins(options: &Options) -> bevy::app::PluginGroupBuilder
             .set(assets)
             .disable::<bevy::app::TerminalCtrlCHandlerPlugin>()
             .add(window_handoff::HandoffPlugin)
+            .add(window_mode::WindowModePlugin { saves: options.saves.clone(), fixed: options.size_given })
     }
 }
 
@@ -938,6 +956,7 @@ pub(crate) fn relaunch(next: browser_ui::Relaunch) -> ! {
     let mut command = std::process::Command::new(exe);
     command.args(&next.args);
     window_handoff::pass_on(&mut command);
+    loading::pass_on(&mut command);
     if next.password.is_empty() {
         command.env_remove("ZOMBYE_PASSWORD");
     } else {

@@ -1,7 +1,13 @@
-//! The server browser (#27, docs/PLAN.md §3a): F7 lists the servers a list names, featured ones
-//! first, each with its players, ping, PvP or co-op and mods, and joins the one you pick.
+//! The server browser (#27, docs/PLAN.md §3a): F7 in the game, and Multiplayer, Join a game on the
+//! main menu, list the official servers and the community's, each with its players, ping, PvP or
+//! co-op and mods, and join the one you pick.
 //!
-//! **Where the servers come from:** a list anyone can keep (`zombye_net::browser`, RON): the file
+//! **Official servers** ([`official_source`]) are the ones the game's own files name
+//! (`official_servers.ron`, `zombye_net::browser::read_official`): this repo ships that list
+//! empty, the official build carries its makers'. They have the section at the top, and nothing a
+//! community list or a player says can put a server there or change one of them.
+//!
+//! **Community servers:** a list anyone can keep (`zombye_net::browser`, RON): the file
 //! or `http://` address given with `--server-list`, else `server_list` in the client's
 //! `settings.ron`, else the data folder's `servers.ron` (shipped empty: there is no hosted
 //! service, and the game asks none of ours). Servers you type in yourself (the Address field) are
@@ -39,7 +45,7 @@ use crate::ui_scale::SettingsStore;
 /// (As wide inside the sheet's ragged edge as before it had one.)
 const WIDTH: f32 = 932.0 + 2.0 * theme::SHEET_PAD.0;
 /// Lines of the list on show at once (servers and the two section headings).
-const VISIBLE: usize = 8;
+const VISIBLE: usize = 10;
 const LINE_H: f32 = 24.0;
 // The skin is `theme.rs`'s (Linear DCM-61): a sheet, light worn buttons, flat rows.
 const GOOD: Color = Color::srgb(0.6, 0.85, 0.55);
@@ -131,6 +137,13 @@ pub struct BrowserUi {
     scripted: bool,
 }
 
+impl BrowserUi {
+    /// Open at the next frame (the main menu's Join a game).
+    pub fn ask_open(&mut self) {
+        self.want_open = true;
+    }
+}
+
 #[derive(Component)]
 struct Root;
 
@@ -154,10 +167,11 @@ pub fn take_relaunch() -> Option<Relaunch> {
 
 /// The arguments to start again with on `addr`: this run's, without what chose its world or was
 /// for this run only, and with the server, the name and where to come back to if it refuses
-/// (`single`: our own autosaved world).
-pub fn relaunch_args(args: &[String], addr: &str, name: &str, single: bool) -> Vec<String> {
-    const WITH_VALUE: [&str; 10] = ["--connect", "--name", "--password", "--load", "--from-browser", "--browser-join", "--server-info", "--skip-hours", "--at", "--join-error"];
-    const ALONE: [&str; 10] = ["--joined", "--browser", "--load-anyway", "--fight-demo", "--siege", "--duel", "--talk-demo", "--talk-wall", "--morning", "--pvp"];
+/// (`from`: `single`, our own autosaved world; `server`, nothing; `menu`, the main menu's
+/// Multiplayer screen, where the join was asked for).
+pub fn relaunch_args(args: &[String], addr: &str, name: &str, from: &str) -> Vec<String> {
+    const WITH_VALUE: [&str; 11] = ["--connect", "--name", "--password", "--load", "--from-browser", "--browser-join", "--server-info", "--skip-hours", "--at", "--join-error", "--menu-screen"];
+    const ALONE: [&str; 11] = ["--joined", "--browser", "--load-anyway", "--fight-demo", "--siege", "--duel", "--talk-demo", "--talk-wall", "--morning", "--pvp", "--main-menu"];
     let mut out = Vec::new();
     let mut k = 0;
     while k < args.len() {
@@ -175,8 +189,21 @@ pub fn relaunch_args(args: &[String], addr: &str, name: &str, single: bool) -> V
     if !name.trim().is_empty() {
         out.extend(["--name".to_string(), name.trim().to_string()]);
     }
-    out.extend(["--from-browser".to_string(), if single { "single" } else { "server" }.to_string()]);
+    out.extend(["--from-browser".to_string(), from.to_string()]);
     out
+}
+
+/// The official servers' file: `$ZOMBYE_OFFICIAL_SERVERS`, else `official_servers.ron` in the
+/// release brand folder (the official build's; `release_brand.rs`), else the data folder's, which
+/// this repo ships empty.
+pub fn official_source(options: &Options) -> std::path::PathBuf {
+    if let Some(p) = std::env::var_os("ZOMBYE_OFFICIAL_SERVERS").filter(|p| !p.is_empty()) {
+        return p.into();
+    }
+    match crate::release_brand::root().map(|d| d.join(browser::OFFICIAL_FILE)).filter(|p| p.is_file()) {
+        Some(p) => p,
+        None => options.data.join(browser::OFFICIAL_FILE),
+    }
 }
 
 /// Where the list comes from: `--server-list`, else the settings file's, else the data folder's
@@ -194,19 +221,24 @@ pub fn list_source(options: &Options, settings: Option<&str>) -> String {
 enum Line {
     Head(&'static str, usize),
     Server(String),
+    /// A section with nothing in it says why.
+    Note(&'static str),
 }
 
+/// The two sections, each under its heading: the official servers, then the community's (a
+/// list's featured ones first).
 fn lines(b: &Browser) -> Vec<Line> {
-    let (featured, others) = (b.featured(), b.others());
-    let mut out = Vec::new();
-    if !featured.is_empty() {
-        out.push(Line::Head("Featured", featured.len()));
-        out.extend(featured.iter().map(|r| Line::Server(r.addr.clone())));
+    let (official, community) = (b.official(), b.community());
+    let mut out = vec![Line::Head("Official servers", official.len())];
+    if official.is_empty() {
+        out.push(Line::Note("This build lists none."));
     }
-    if !others.is_empty() {
-        out.push(Line::Head(if featured.is_empty() { "Servers" } else { "More servers" }, others.len()));
-        out.extend(others.iter().map(|r| Line::Server(r.addr.clone())));
+    out.extend(official.iter().map(|r| Line::Server(r.addr.clone())));
+    out.push(Line::Head("Community servers", community.len()));
+    if community.is_empty() {
+        out.push(Line::Note(if b.list == ListState::Loading { "Reading the list..." } else { "None yet. Type a server's address in the Address field below and press Enter to add it." }));
     }
+    out.extend(community.iter().map(|r| Line::Server(r.addr.clone())));
     out
 }
 
@@ -339,7 +371,7 @@ impl BrowserUi {
         }
         match &mut self.browser {
             Some(b) => b.refresh(),
-            None => self.browser = Some(Browser::open(&list_source(options, store.settings.server_list.as_deref()), &store.settings.servers)),
+            None => self.browser = Some(Browser::open_with(&browser::read_official(&official_source(options)), &list_source(options, store.settings.server_list.as_deref()), &store.settings.servers)),
         }
     }
 
@@ -534,6 +566,8 @@ fn act(mut ui: ResMut<BrowserUi>, options: Res<Options>, mods: Res<LoadedMods>, 
                     if let Err(e) = store.change(|s| s.servers = mine) {
                         ui.say(format!("The settings file couldn't be written: {e}"), true);
                     }
+                } else if ui.browser.as_ref().and_then(|b| b.row(&addr)).is_some_and(|r| r.official) {
+                    ui.say("That is an official server: only ones you added can be taken off", true);
                 } else {
                     ui.say("That server is from the list: only ones you added can be taken off", true);
                 }
@@ -567,8 +601,10 @@ fn join(ui: &mut BrowserUi, options: &Options, mods: &LoadedMods, link: Option<&
     if let Err(e) = store.change(|s| s.name = name.clone()) {
         eprintln!("can't write the settings: {e}");
     }
+    // (No world here: the main menu, which a join that fails comes back to.)
     let single = link.is_some_and(|l| l.net.is_none());
-    let args = relaunch_args(&std::env::args().skip(1).collect::<Vec<_>>(), &row.addr, &name, single);
+    let from = if link.is_none() { "menu" } else if single { "single" } else { "server" };
+    let args = relaunch_args(&std::env::args().skip(1).collect::<Vec<_>>(), &row.addr, &name, from);
     println!("server browser: joining {} at {}{}", row.name(), row.addr, if single { " (your world is autosaved)" } else { "" });
     if let Ok(mut r) = RELAUNCH.lock() {
         *r = Some(Relaunch { args, password: ui.password.clone() });
@@ -635,18 +671,16 @@ fn draw(mut commands: Commands, mut ui: ResMut<BrowserUi>, mods: Res<LoadedMods>
     let at = selected.as_ref().and_then(|s| all.iter().position(|l| *l == Line::Server(s.clone())));
     let top = scrolled(ui.top, at, all.len());
     let source = match (&b.list, b.source()) {
-        (_, "") => "No list set (--server-list FILE or http://..., or server_list in settings.ron): only servers you add".to_string(),
-        (ListState::Loading, s) => format!("Reading the list: {s}"),
-        (ListState::Ready, s) => format!("List: {s}"),
-        (ListState::Failed(e), _) => format!("Can't use the list: {e}"),
+        (_, "") => "Community list: none set (--server-list FILE or http://..., or server_list in settings.ron), so only servers you add".to_string(),
+        (ListState::Loading, s) => format!("Reading the community list: {s}"),
+        (ListState::Ready, s) => format!("Community list: {s}"),
+        (ListState::Failed(e), _) => format!("Can't use the community list: {e}"),
     };
     let source_colour = if matches!(b.list, ListState::Failed(_)) { WARN } else { DIM };
     let summary = b.summary();
     let picked = selected.as_ref().and_then(|s| b.row(s)).map(|r| details(r, &mods.0, agent));
     let rows: Vec<(Line, Option<Cells>)> = all.iter().skip(top).take(VISIBLE).map(|l| (l.clone(), if let Line::Server(a) = l { b.row(a).map(|r| cells(r, &mods.0, agent)) } else { None })).collect();
     let more = (top, all.len().saturating_sub(top + VISIBLE));
-    let empty = all.is_empty();
-    let loading = b.list == ListState::Loading;
     let (focus, name, password, address, note, warn) = (ui.field, ui.name.clone(), "*".repeat(ui.password.chars().count()), ui.address.clone(), ui.note.clone(), ui.warn);
     ui.top = top;
     ui.selected = selected.clone();
@@ -681,12 +715,13 @@ fn draw(mut commands: Commands, mut ui: ResMut<BrowserUi>, mods: Res<LoadedMods>
         });
         // The list: always the same height, so the rest doesn't jump as answers come.
         c.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(2), height: px(VISIBLE as f32 * (LINE_H + 2.0)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|list| {
-            if empty {
-                let text = if loading { "Reading the list..." } else { "No servers. Type a server's address in the Address field below and press Enter to add it." };
-                list.spawn((Text::new(text), font(BODY), TextColor(DIM), Node { margin: UiRect::all(px(8)), ..default() }, Pickable::IGNORE));
-            }
             for (line, cells) in rows {
                 match (line, cells) {
+                    (Line::Note(text), _) => {
+                        list.spawn((Node { height: px(LINE_H), align_items: AlignItems::Center, padding: UiRect::horizontal(px(8)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|h| {
+                            h.spawn((Text::new(text), font(BODY), TextColor(DIM), TextLayout::no_wrap(), Pickable::IGNORE));
+                        });
+                    }
                     (Line::Head(title, n), _) => {
                         list.spawn((Node { height: px(LINE_H), align_items: AlignItems::End, padding: UiRect::horizontal(px(8)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|h| {
                             h.spawn((Text::new(format!("{title}  ({n})").to_uppercase()), theme::head(BODY + 1.0), TextColor(GOLD), Pickable::IGNORE));
@@ -783,17 +818,21 @@ mod tests {
     #[test]
     fn starting_again_on_a_server_keeps_the_session_and_drops_the_world() {
         let was = args("--novsync --saves my/saves --load autosave --fight-demo --zoom 12 --server-list lists/a.ron --browser --name old --password hunter2 --mod mods/alarm_clock --at 3,4");
-        let now = relaunch_args(&was, "play.example:7777", " ann ", true);
+        let now = relaunch_args(&was, "play.example:7777", " ann ", "single");
         assert_eq!(now, args("--novsync --saves my/saves --zoom 12 --server-list lists/a.ron --mod mods/alarm_clock --connect play.example:7777 --name ann --from-browser single"));
         // The password never goes on the command line.
         assert!(!now.iter().any(|a| a.contains("hunter2") || a == "--password"));
         // Hopping from one server to another: no name given, nothing to come back to.
-        let hop = relaunch_args(&args("--connect a.example --from-browser single --mute"), "b.example:7777", "", false);
+        let hop = relaunch_args(&args("--connect a.example --from-browser single --mute"), "b.example:7777", "", "server");
         assert_eq!(hop, args("--mute --connect b.example:7777 --from-browser server"));
+        // From the main menu's Multiplayer screen: the menu's own flags go, and it is where a join
+        // that fails comes back to.
+        let menu = relaunch_args(&args("--saves s --main-menu --menu-screen multiplayer"), "b.example:7777", "ann", "menu");
+        assert_eq!(menu, args("--saves s --connect b.example:7777 --name ann --from-browser menu"));
     }
 
     fn row(status: Status, mine: bool) -> Row {
-        Row { entry: ListEntry { address: "play.example".into(), name: "Listed name".into(), featured: false, note: "EU".into() }, addr: "play.example:7777".into(), mine, status }
+        Row { entry: ListEntry { address: "play.example".into(), name: "Listed name".into(), featured: false, note: "EU".into() }, addr: "play.example:7777".into(), mine, official: false, status }
     }
 
     fn online(info: ServerInfo) -> Status {
@@ -835,6 +874,26 @@ mod tests {
         let full = ServerInfo { online: 32, ..info() };
         let (_, line, colour, _) = details(&row(online(full), false), &[], false);
         assert!(line.starts_with("Can't join: it is full") && colour == WARN);
+    }
+
+    #[test]
+    fn the_browser_has_an_official_and_a_community_section() {
+        use std::time::Duration;
+        // Nothing listens on port 1, so every server is "no answer" at once.
+        let official = [ListEntry { address: "127.0.0.1:1".into(), name: "Ours".into(), ..Default::default() }];
+        let mut b = Browser::with_all(&official, "", &["127.0.0.2:1".into()], Duration::from_secs(2));
+        assert!(b.wait(Duration::from_secs(20)));
+        assert_eq!(lines(&b), [Line::Head("Official servers", 1), Line::Server("127.0.0.1:1".into()), Line::Head("Community servers", 1), Line::Server("127.0.0.2:1".into())]);
+        // Both headings stay when a section is empty, each saying so.
+        let mut none = Browser::with_timeout("", &[], Duration::from_secs(2));
+        assert!(none.wait(Duration::from_secs(20)));
+        let all = lines(&none);
+        assert_eq!((all.len(), &all[0], &all[2]), (4, &Line::Head("Official servers", 0), &Line::Head("Community servers", 0)));
+        assert!(matches!((&all[1], &all[3]), (Line::Note(_), Line::Note(_))));
+        // This repo ships no official servers, in a file that is a list.
+        let shipped = zombye_net::content::default_data_dir().join(browser::OFFICIAL_FILE);
+        assert!(shipped.is_file() && browser::read_official(&shipped).is_empty());
+        assert_eq!(browser::parse_list(&std::fs::read_to_string(shipped).unwrap()).unwrap().servers.len(), 0);
     }
 
     #[test]
