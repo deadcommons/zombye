@@ -1131,13 +1131,15 @@ fn ground(pose: &mut SPose) {
     pose.offset.y -= lowest;
 }
 
-/// The right arm when it isn't doing anything: a weapon held at the ready (pointing up and
-/// forward), or a loose hand.
+/// The right arm when it isn't doing anything: a weapon held at the ready (pointing forward and
+/// down), or a loose hand.
 fn carry(p: &mut SPose, armed: bool, swing: f32) {
     if armed {
         p.rot[UARM_R] = rx(-0.2 - 0.1 * swing) * rz(-0.08);
         p.rot[FARM_R] = rx(-0.55);
-        p.rot[HAND_R] = rx(0.15);
+        // Forward and down about 25 degrees at rest: tilted up, it lined up with the camera's
+        // line of sight and hid end-on behind the fist of a survivor facing the camera (#35).
+        p.rot[HAND_R] = rx(1.25);
     } else {
         p.rot[UARM_R] = rx(-0.38 * swing) * rz(-0.1);
         p.rot[FARM_R] = rx(-0.3);
