@@ -146,6 +146,10 @@ pub struct WorldConfig {
     /// Chopping trees down (`crate::trees`): their hit points, what chops, the logs they give.
     /// Saved with the settings.
     pub chop: crate::trees::ChopTuning,
+    /// Vehicles you can drive (`assets/data/vehicles.ron`, [`crate::vehicles`]): their kinds and
+    /// how many parked cars are real. A data folder without the file has none. Content, not
+    /// settings: a save names its vehicles' kinds by id.
+    pub vehicles: crate::vehicles::VehicleData,
     /// A difficulty's multipliers on the content above (population, loot: [`crate::difficulty`]).
     /// Saved with the settings and put on again when the save is loaded. Changes nothing by default.
     pub sandbox: crate::difficulty::Sandbox,
@@ -192,6 +196,7 @@ impl WorldConfig {
             blinds: Default::default(),
             fire: Default::default(),
             chop: Default::default(),
+            vehicles: Default::default(),
             sandbox: Default::default(),
             scripts: None,
         }
@@ -252,6 +257,11 @@ impl WorldConfig {
 
     pub fn with_fire(mut self, fire: crate::fire::FireTuning) -> Self {
         self.fire = fire;
+        self
+    }
+
+    pub fn with_vehicles(mut self, vehicles: crate::vehicles::VehicleData) -> Self {
+        self.vehicles = vehicles;
         self
     }
 
@@ -407,6 +417,8 @@ pub struct World {
     /// Zombies shoved in the last `CombatTuning::shove_repeat_secs`, by id: each shove makes the
     /// next likelier to floor it. Saved (`SHOV`), in the hash while any.
     pub(crate) shoved: Vec<crate::combat::Shoved>,
+    /// Vehicles (`crate::vehicles`). Saved (`VEHC`), in the hash while any.
+    pub(crate) vehicles: crate::vehicles::Vehicles,
     /// Trees chopped at and felled (`crate::trees`). Saved (`TREE`), in the hash while any.
     pub(crate) trees: crate::trees::Trees,
     /// Index of bare hands in `config.weapons`.
@@ -513,6 +525,10 @@ impl World {
     /// Generate the map from the config's seed and templates and scatter the zombies over it.
     pub fn new(config: WorldConfig) -> Self {
         let mut world = Self::generate(config);
+        if !world.config.vehicles.kinds.is_empty() {
+            world.place_vehicles();
+            world.walk = WalkGrid::new(&world.map);
+        }
         world.nav = Nav::new(&world.walk);
         world.populate();
         world
@@ -559,6 +575,7 @@ impl World {
             private_dirty: BTreeSet::new(),
             rise_looks: RiseLooks::default(),
             shoved: Vec::new(),
+            vehicles: Default::default(),
             trees: Default::default(),
             unarmed,
             action_events: Vec::new(),
@@ -1176,14 +1193,26 @@ impl World {
 
         // Players move first, so zombies react to where they are now. Moving makes noise.
         self.targets.clear();
+        // Vehicles drive first (`crate::vehicles`): their drivers are put in their seats, and the
+        // map's boxes are where the cars are for everyone walking this tick.
+        let driving: Vec<(u32, Vec2)> = if self.vehicles.list.is_empty() {
+            Vec::new()
+        } else {
+            let before = self.players.iter().filter(|p| p.vehicle.is_some()).map(|p| (p.id, p.state.pos)).collect();
+            self.step_vehicles(TICK_DT);
+            before
+        };
         let t = &self.config.zombie;
         let mut climbed_glass = Vec::new();
         for (pi, p) in self.players.iter_mut().enumerate() {
             if p.dead {
                 continue;
             }
-            let before = p.state.pos;
-            players::step_movement(&self.map, &mut p.state, &p.input, TICK_DT);
+            let in_car = p.vehicle.is_some();
+            let before = if in_car { driving.iter().find(|d| d.0 == p.id).map_or(p.state.pos, |d| d.1) } else { p.state.pos };
+            if !in_car {
+                players::step_movement(&self.map, &mut p.state, &p.input, TICK_DT);
+            }
             // This life's time played and distance walked (`crate::run`).
             p.run.secs += TICK_DT as f64;
             p.run.distance_m += p.state.pos.distance(before) as f64;
@@ -1202,7 +1231,7 @@ impl World {
             // By a lit fire (`crate::fire`): seen in its light.
             let lit = if self.fires.list.is_empty() { lit } else { lit.max(crate::fire::firelight(&self.fires, &self.config.fire, p.state.pos)) };
             self.targets.push(Target { id: p.id, pos: p.state.pos, stance: p.state.stance, moving, ignored: p.dev.ignored || height > self.config.stairs.out_of_reach, sight_mult, lit });
-            if moving && self.heard.len() < MAX_SOUNDS {
+            if moving && !in_car && self.heard.len() < MAX_SOUNDS {
                 let radius = match p.state.stance {
                     Stance::Sneak => t.sneak_noise * self.config.skills.footstep_mult(stealth),
                     Stance::Walk => t.walk_noise,
@@ -1654,6 +1683,9 @@ impl World {
         }
         // Trees chopped at and felled (mixed in only while any, so worlds without hash as before).
         self.trees.hash(&mut mix);
+        if !self.vehicles.list.is_empty() {
+            self.hash_vehicles(&mut mix);
+        }
         for (&(x, y, w), hp) in &self.edge_hp {
             mix(x as u32);
             mix(y as u32);

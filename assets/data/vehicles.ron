@@ -1,0 +1,48 @@
+// Vehicles you can drive. Schema: zombye_sim::vehicles::VehicleData (checked on load; unknown
+// fields are refused; errors name the kind). A data folder without this file has no vehicles: every
+// parked car stays a street prop. All numbers are our own.
+//
+// Each kind is parked in town as a street prop (`prop`, a kind in street_props.ron, which places
+// them); `drivable_share` of the props of those kinds are real vehicles in a new world, picked by a
+// hash of the seed and where they stand (the rest stay props). Wrecks are never listed here.
+//
+// Per kind: `length` and `width` (m) are the box nothing walks through; `wheelbase` (m) how tight
+// it turns; speeds in m/s (14 is about 50 km/h); `accel`, `brake` and `coast` in m/s² (coast: how
+// fast it slows by itself, neither throttle nor brake); the wheels turn at most `steer_degrees`
+// standing still, that divided by (1 + speed / `steer_falloff`) at speed, `steer_rate_degrees` a
+// second; `driver_seat` is metres forward of its middle and to its left. `body` is how it moves:
+// Car, or Long (a bus; the same for now).
+(
+    drivable_share: 0.1,
+    kinds: [
+        (id: "car", name: "car", prop: "car", length: 4.4, width: 1.8, wheelbase: 2.7,
+         max_speed: 15.0, reverse_speed: 4.0, accel: 4.5, brake: 10.0, coast: 0.8,
+         steer_degrees: 34.0, steer_rate_degrees: 140.0, steer_falloff: 9.0, seats: 4, driver_seat: (0.1, 0.4)),
+        (id: "police_car", name: "police car", prop: "police_car", length: 4.8, width: 1.85, wheelbase: 2.9,
+         max_speed: 18.0, reverse_speed: 4.5, accel: 5.5, brake: 11.0, coast: 0.8,
+         steer_degrees: 33.0, steer_rate_degrees: 140.0, steer_falloff: 10.0, seats: 4, driver_seat: (0.1, 0.42)),
+        (id: "pickup", name: "pickup", prop: "pickup", length: 4.9, width: 1.95, wheelbase: 3.1,
+         max_speed: 14.0, reverse_speed: 4.0, accel: 4.0, brake: 9.0, coast: 0.9,
+         steer_degrees: 32.0, steer_rate_degrees: 120.0, steer_falloff: 8.0, seats: 2, driver_seat: (0.3, 0.45)),
+        (id: "van", name: "van", prop: "van", length: 4.4, width: 1.95, wheelbase: 2.9,
+         max_speed: 12.5, reverse_speed: 3.5, accel: 3.2, brake: 8.0, coast: 1.0,
+         steer_degrees: 32.0, steer_rate_degrees: 110.0, steer_falloff: 7.0, seats: 3, driver_seat: (0.9, 0.45)),
+        (id: "ambulance", name: "ambulance", prop: "ambulance", length: 4.4, width: 1.95, wheelbase: 2.9,
+         max_speed: 13.0, reverse_speed: 3.5, accel: 3.4, brake: 8.0, coast: 1.0,
+         steer_degrees: 32.0, steer_rate_degrees: 110.0, steer_falloff: 7.0, seats: 2, driver_seat: (1.0, 0.45)),
+        (id: "school_bus", name: "school bus", prop: "school_bus", body: Long, length: 7.2, width: 2.5, wheelbase: 4.6,
+         max_speed: 10.0, reverse_speed: 2.5, accel: 2.0, brake: 6.0, coast: 1.0,
+         steer_degrees: 35.0, steer_rate_degrees: 90.0, steer_falloff: 6.0, seats: 20, driver_seat: (2.9, 0.6)),
+    ],
+    tuning: (
+        // Metres from the side of a car a survivor gets in from, and the speeds (m/s) above which
+        // nobody gets in or out.
+        enter_reach: 1.2,
+        enter_max_speed: 1.0,
+        exit_max_speed: 2.0,
+        // The share of its speed a vehicle loses for each zombie it shoves aside (running them
+        // over comes later), and the share of the speed into a wall that bounces back off it.
+        zombie_slow: 0.12,
+        bounce: 0.2,
+    ),
+)
