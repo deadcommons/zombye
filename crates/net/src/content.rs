@@ -419,7 +419,8 @@ mod tests {
     fn recipes_load_and_name_their_mistakes() {
         let c = load_config(&default_data_dir(), 1).unwrap();
         assert!(c.recipes.len() >= 7 && c.recipes.iter().any(|r| r.id == "rip_t_shirt"));
-        assert!(load_recipes(Path::new("/nonexistent-zombye-data"), &c.items, &c.weapons).unwrap().is_empty());
+        let none = load_recipes(Path::new("/nonexistent-zombye-data"), &c.items, &c.weapons).unwrap();
+        assert!(!none.is_empty() && none.iter().all(|r| r.water && r.id.starts_with("fill_")), "no file: only the made-up fill recipes");
         let dir = std::env::temp_dir().join(format!("zombye-recipes-test-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("items")).unwrap();
         let write = |text: &str| {
