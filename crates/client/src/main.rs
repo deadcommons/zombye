@@ -79,6 +79,7 @@
 
 mod interact;
 mod keys;
+mod pad;
 mod aim_marker;
 mod audio;
 mod music;
@@ -365,6 +366,9 @@ pub struct Options {
     /// How much the UI explains, for this session, not saved (`--help-text full|short|off`; without
     /// it the settings file's, else full). See `help_text.rs`.
     pub help_text: Option<help_text::HelpText>,
+    /// Keyboard and mouse, the controller or auto, for this session, not saved (`--input
+    /// auto|keyboard|controller`; without it the settings file's). See `pad.rs`.
+    pub input: Option<pad::InputSetting>,
     /// The old look for this session, not saved (`--old-look off|subtle|strong`; without it the
     /// settings file's, else off). See `film.rs`.
     pub old_look: Option<film::OldLook>,
@@ -648,6 +652,7 @@ impl Options {
             loading_screen: flag("--loading-screen"),
             settings: value("--settings"),
             help_text: value("--help-text").and_then(|v| help_text::HelpText::parse(&v)),
+            input: value("--input").and_then(|v| pad::InputSetting::parse(&v)),
             old_look: value("--old-look").and_then(|v| film::OldLook::parse(&v)),
             ui_scale: value("--ui-scale").and_then(|v| ui_scale::parse_pct(&v)),
             hotbar: value("--hotbar"),
@@ -839,7 +844,7 @@ fn main() {
             world_render::WorldRenderPlugin,
             (daynight::DayNightPlugin, lights::LightsPlugin, sky::SkyPlugin, skylight::SkyLightPlugin, shafts::ShaftsPlugin),
             dev_time::DevTimePlugin,
-            (player::PlayerPlugin, interact::InteractPlugin),
+            (player::PlayerPlugin, interact::InteractPlugin, pad::PadPlugin),
             camera::IsoCameraPlugin,
             zombie_render::ZombieRenderPlugin,
             (items_render::ItemsRenderPlugin, vehicles_render::VehiclesRenderPlugin),

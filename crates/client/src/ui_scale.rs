@@ -131,6 +131,11 @@ pub struct ClientSettings {
     /// The keys the player picked on the Controls tab (`keys.rs`): an action's id to its keys,
     /// over `assets/data/keys.ron`. Only the ones changed.
     pub keys: std::collections::BTreeMap<String, Vec<String>>,
+    /// Keyboard and mouse, the controller, or whichever was touched last (`pad.rs`, #12).
+    pub input: crate::pad::InputSetting,
+    /// The buttons the player picked for the controller (`pad.rs`): an action's id to its
+    /// buttons, over `assets/data/pad.ron`. Only the ones changed.
+    pub pad: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl Default for ClientSettings {
@@ -158,6 +163,8 @@ impl Default for ClientSettings {
             send_reports: true,
             reports_notice_seen: false,
             keys: Default::default(),
+            input: crate::pad::InputSetting::Auto,
+            pad: Default::default(),
         }
     }
 }
