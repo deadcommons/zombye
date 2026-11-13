@@ -3,7 +3,7 @@
 //! Every button made with `menu_skin::button` (except a faint one with nothing to do) is
 //! [`Focusable`], and so is every pressable cell of the new-game screen. While the controller is
 //! the one in use and the main menu, the new-game screen, the pause menu or the settings is up, one
-//! of them has the focus, outlined in green: the d-pad or the left stick moves it to the nearest
+//! of them has the focus, outlined in the menus' mustard: the d-pad or the left stick moves it to the nearest
 //! button that way (as if the pointer were over it: lit, and on the new-game screen its line shown),
 //! A presses it (the same press a click makes, so every button works with no change of its own),
 //! the bumpers change the settings' tab or the new-game page, and B goes back (Esc, `pad.rs`).
@@ -18,7 +18,7 @@ use bevy::picking::events::{Pointer, PointerOut, PointerOver, PointerPress};
 use bevy::picking::pointer::{Location, PointerButton, PointerId};
 use bevy::prelude::*;
 
-use crate::menu_skin::GREEN;
+use crate::menu_skin::ACCENT;
 use crate::pad::{InputMode, Pad};
 
 /// A button the pad can move to and press.
@@ -211,7 +211,7 @@ fn hit() -> HitData {
     HitData::new(Entity::PLACEHOLDER, 0.0, None, None)
 }
 
-/// The green outline round the button with the focus (and none round the one that had it).
+/// The mustard outline round the button with the focus (and none round the one that had it).
 fn outline(mut commands: Commands, mut focus: ResMut<Focus>, exists: Query<(), With<Focusable>>) {
     if focus.outlined == focus.on {
         return;
@@ -222,7 +222,7 @@ fn outline(mut commands: Commands, mut focus: ResMut<Focus>, exists: Query<(), W
         commands.entity(old).remove::<Outline>();
     }
     if let Some(new) = focus.on {
-        commands.entity(new).insert(Outline::new(px(2), px(2), GREEN));
+        commands.entity(new).insert(Outline::new(px(2), px(2), ACCENT));
     }
     focus.outlined = focus.on;
 }

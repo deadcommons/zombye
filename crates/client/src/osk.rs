@@ -15,7 +15,7 @@ use bevy::input::keyboard::{Key, KeyboardInput, NativeKeyCode};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
-use crate::menu_skin::{self as skin, BONE, CELL, GREEN, GROUND, LINE};
+use crate::menu_skin::{self as skin, ACCENT, BONE, CELL, GROUND, LINE};
 use crate::pad::{InputMode, dead_zone};
 use crate::theme;
 
@@ -231,11 +231,11 @@ fn draw(mut commands: Commands, mut osk: ResMut<Osk>, mut root: Query<(Entity, &
                         };
                         let span = (to - from + 1) as f32;
                         let on = k == OskKey::Shift && shift;
-                        let (fill, ink) = if picked { (GREEN, GROUND) } else if on { (LINE, BONE) } else { (CELL, BONE) };
+                        let (fill, ink) = if picked { (ACCENT, GROUND) } else if on { (LINE, BONE) } else { (CELL, BONE) };
                         r.spawn((
                             Node { width: px(KEY * span + GAP * (span - 1.0)), height: px(KEY), align_items: AlignItems::Center, justify_content: JustifyContent::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(6)), ..default() },
                             BackgroundColor(fill),
-                            BorderColor::all(if picked { GREEN } else { LINE }),
+                            BorderColor::all(if picked { ACCENT } else { LINE }),
                             Pickable::IGNORE,
                         ))
                         .with_children(|b| {

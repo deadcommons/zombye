@@ -408,7 +408,7 @@ While one is up the pad does nothing else (`pad::read_pad` hands the sticks to `
 **Menus by focus** (`focus.rs`): every `menu_skin::button` that does something is `focus::Focusable`, and so is every
 pressable cell of the new-game screen (`new_game::live`; what is picked is `focus::Lead`, where the focus starts); while
 the pad is in use and the main menu (`MenuLayer::up`), the new-game screen (`Front::up`), the pause menu or the settings
-is up, one has the focus (a green outline): the d-pad or the left stick moves it to the nearest button that way (held:
+is up, one has the focus (a mustard outline, the menus' accent): the d-pad or the left stick moves it to the nearest button that way (held:
 repeating; the focus is a `PointerOver`, so a button lights as under the mouse and the new-game screen shows the line
 about it), A presses it (the same `PointerPress` a click triggers, so buttons need nothing of their own), LB / RB
 change the settings' tab or the new-game page, B goes back. Only the screen on
