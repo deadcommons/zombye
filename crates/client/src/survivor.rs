@@ -1406,7 +1406,14 @@ fn show_held_items(
         if *vis != want {
             *vis = want;
         }
-        let Some((mesh, material, place)) = look else { continue };
+        let Some((mesh, material, mut place)) = look else { continue };
+        // Food at the mouth sits in front of it (`held::EATING`), unless its grip says otherwise.
+        if let Some(def) = busy.and_then(|i| join.items.get(i as usize))
+            && def.category == ItemCategory::Food
+            && !crate::held::has(&def.id)
+        {
+            place = Transform::from_matrix(crate::held::EATING.transform().to_matrix() * place.to_matrix());
+        }
         match children.and_then(|c| c.first().copied()) {
             Some(child) => {
                 if let Ok((mut tf, mut m, mut shape)) = shapes.get_mut(child) {

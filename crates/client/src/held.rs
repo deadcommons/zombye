@@ -93,6 +93,15 @@ pub fn grip(id: &str) -> Grip {
     GRIPS.get_or_init(shipped).get(id).copied().unwrap_or_default()
 }
 
+/// Whether the grips name item `id`.
+pub fn has(id: &str) -> bool {
+    GRIPS.get_or_init(shipped).contains_key(id)
+}
+
+/// Food being eaten without a grip of its own: out toward the thumb, in front of the mouth rather
+/// than in the face, and a little bigger so it reads (tuned on the tin of beans, #35).
+pub const EATING: Grip = Grip { offset: (0.08, 0.0, -0.02), turn: (0.0, 0.0, 0.0), scale: 1.3 };
+
 #[cfg(test)]
 mod tests {
     use super::*;
