@@ -483,7 +483,7 @@ tag beside the stance (and in the stats line) while a dev toggle is on.
   (`Terrain::slope_factor`: `1 - uphill_slow (1.5) x climb`, never under half), for players in `step_movement` (so
   prediction stays exact) and active zombies; downhill and across are as on the flat. **Client:** `MeshBuilder::drape`
   lays a chunk's ground over the facets (every triangle that would cross a fold cut along it, flat faces taking their
-  facet's normal and drifting to the palette's `dirt` then pale `cliff` stone as the grade passes 0.06 and 0.11, and each facet a shade lighter or darker than its neighbours, `meshgen::facet_shade`, so the faces read on gentle slopes), its first UVs
+  facet's normal and drifting to the palette's `dirt` then pale `cliff` stone as the grade passes 0.06 and 0.11), its first UVs
   carrying the ground's height so `world.wesl` tests height above the ground (`above`, under `TERRAIN`: ground
   detail, roofs, haze, moon paint); `MeshBuilder::lift` stands props and trees on it (by their anchor, the lowest
   5 cm following the slope); players, zombies, items, grass, effects, lights and the aim marker add
