@@ -217,6 +217,9 @@ const LEVL: [u8; 4] = *b"LEVL";
 /// The campfires ([`crate::fire`]); only when there are any, so adding it didn't change the
 /// format version.
 const FIRE: [u8; 4] = *b"FIRE";
+/// Weather set by hand ([`crate::weather::Forced`]); only while there is some, so adding it didn't
+/// change the format version.
+const WTHR: [u8; 4] = *b"WTHR";
 /// Which pouch (pockets, or which bag) each carried stack is in, per player; only players with
 /// anything in a bag, so adding it didn't change the format version. Without it (a save from
 /// before bags had their own room) everything is put away afresh on load.
@@ -393,6 +396,9 @@ struct Settings {
     blinds: crate::blinds::BlindTuning,
     #[serde(default)]
     fire: crate::fire::FireTuning,
+    /// The calendar and climate (`crate::weather`); none in older saves: the defaults.
+    #[serde(default)]
+    weather: crate::weather::WeatherTuning,
     /// Chopping trees (`crate::trees`); none in older saves: the defaults.
     #[serde(default)]
     chop: crate::trees::ChopTuning,
@@ -769,6 +775,7 @@ impl World {
             script_errors: _,
             power,
             fires,
+            weather_forced,
         } = self;
         // Survivors out of the world are saved among the players (in id order); `AWAY` says which.
         let away = AwaySave {
@@ -816,6 +823,7 @@ impl World {
             loot_seed: config.loot_seed,
             blinds: config.blinds.clone(),
             fire: config.fire.clone(),
+            weather: config.weather.clone(),
             chop: config.chop.clone(),
             sandbox: config.sandbox.clone(),
             movement: config.movement,
@@ -943,6 +951,9 @@ impl World {
         if !fires.list.is_empty() || fires.next_id > 1 {
             w.section(FIRE, &encode(fires));
         }
+        if let Some(f) = weather_forced {
+            w.section(WTHR, &encode(f));
+        }
         if !trees.deadwood_is_empty() {
             w.section(DEAD, &encode(&trees.deadwood_save()));
         }
@@ -1007,6 +1018,8 @@ impl World {
         config.blinds = settings.blinds;
         settings.fire.check().map_err(save_check::invalid)?;
         config.fire = settings.fire;
+        settings.weather.check().map_err(save_check::invalid)?;
+        config.weather = settings.weather;
         settings.chop.check().map_err(save_check::invalid)?;
         config.chop = settings.chop;
         config.movement = settings.movement;
@@ -1186,6 +1199,7 @@ impl World {
         let mut shoved: Option<Vec<crate::combat::Shoved>> = None;
         let mut levels: Option<(Vec<(u32, u8)>, Vec<u32>)> = None;
         let mut fires: Option<crate::fire::Fires> = None;
+        let mut weather: Option<crate::weather::Forced> = None;
         let mut dead: Option<crate::trees::DeadwoodSave> = None;
         let mut bags: Option<Vec<(u32, Vec<u8>)>> = None;
         loop {
@@ -1271,6 +1285,10 @@ impl World {
                 fires = Some(decode(FIRE, payload)?);
                 continue;
             }
+            if tag == WTHR && weather.is_none() {
+                weather = Some(decode(WTHR, payload)?);
+                continue;
+            }
             if tag == DEAD && dead.is_none() {
                 dead = Some(decode(DEAD, payload)?);
                 continue;
@@ -1283,7 +1301,7 @@ impl World {
                 script = Some(decode(MODS, payload)?);
                 continue;
             }
-            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || origins.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || power.is_some() || shoved.is_some() || blinds.is_some() || barricades.is_some() || levels.is_some() || bags.is_some() || fires.is_some() || seats.is_some() || dead.is_some() {
+            if tag != ZOMB || runs.is_some() || looks.is_some() || knocks.is_some() || climbs.is_some() || far.is_some() || nights.is_some() || origins.is_some() || away.is_some() || bonds.is_some() || groups.is_some() || script.is_some() || power.is_some() || shoved.is_some() || blinds.is_some() || barricades.is_some() || levels.is_some() || bags.is_some() || fires.is_some() || weather.is_some() || seats.is_some() || dead.is_some() {
                 return Err(corrupt(format!("unexpected {} section", tag_name(tag))));
             }
             let block: ZombieBlock = decode(ZOMB, payload)?;
@@ -1451,6 +1469,10 @@ impl World {
                 Ok(()) => w.fires = f,
                 Err(why) => return Err(save_check::invalid(why)),
             }
+        }
+        if let Some(f) = weather {
+            f.check().map_err(save_check::invalid)?;
+            w.weather_forced = Some(f);
         }
         if let Some(d) = dead {
             w.restore_deadwood(d).map_err(save_check::invalid)?;

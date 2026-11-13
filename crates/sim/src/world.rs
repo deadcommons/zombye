@@ -143,6 +143,9 @@ pub struct WorldConfig {
     /// Campfires, stoves, cooking and burns (`assets/data/fire.ron`, [`crate::fire`]); saved with
     /// the settings.
     pub fire: crate::fire::FireTuning,
+    /// The calendar, the climate and the weather (`assets/data/weather.ron`, [`crate::weather`]);
+    /// saved with the settings, so a world keeps its calendar.
+    pub weather: crate::weather::WeatherTuning,
     /// Chopping trees down (`crate::trees`): their hit points, what chops, the logs they give.
     /// Saved with the settings.
     pub chop: crate::trees::ChopTuning,
@@ -195,6 +198,7 @@ impl WorldConfig {
             power: Default::default(),
             blinds: Default::default(),
             fire: Default::default(),
+            weather: Default::default(),
             chop: Default::default(),
             vehicles: Default::default(),
             sandbox: Default::default(),
@@ -262,6 +266,11 @@ impl WorldConfig {
 
     pub fn with_vehicles(mut self, vehicles: crate::vehicles::VehicleData) -> Self {
         self.vehicles = vehicles;
+        self
+    }
+
+    pub fn with_weather(mut self, weather: crate::weather::WeatherTuning) -> Self {
+        self.weather = weather;
         self
     }
 
@@ -498,6 +507,9 @@ pub struct World {
     pub(crate) power: crate::power::Power,
     /// Campfires ([`crate::fire`]). Saved (the optional `FIRE` section), in the hash while any.
     pub(crate) fires: crate::fire::Fires,
+    /// Weather set by hand ([`crate::weather::Forced`], MCP `set_weather`). Saved (the optional
+    /// `WTHR` section), in the hash while set. The climate's weather follows from the seed and clock.
+    pub(crate) weather_forced: Option<crate::weather::Forced>,
 }
 
 /// Bare hands are added to weapons that have none (as the world does on creation).
@@ -556,6 +568,7 @@ impl World {
         let mut world = Self {
             power,
             fires: Default::default(),
+            weather_forced: None,
             rng: Rng::new(config.generation.seed),
             combat_rng: Rng::new(config.generation.seed ^ 0xC0_4BA7),
             next_item_id: items.len() as u32 + 1,
@@ -1675,6 +1688,9 @@ impl World {
         }
         self.power.hash(&mut mix);
         self.fires.hash(&mut mix);
+        if let Some(f) = &self.weather_forced {
+            f.hash(&mut mix);
+        }
         // Shoves adding up (mixed in only while there are any, so worlds without hash as before).
         for sh in &self.shoved {
             mix(0x5348_0000 | sh.count as u32);
