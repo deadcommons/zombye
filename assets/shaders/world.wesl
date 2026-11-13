@@ -18,6 +18,12 @@ import bevy_pbr::render::{
     forward_io::{VertexOutput, FragmentOutput},
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
 };
+@if(!PREPASS_PIPELINE)
+import bevy_pbr::mesh_view_bindings::lights;
+
+// How strongly a hill facet's turn to the sun is told again in its colour (see the fragment).
+const FACET_TOWARD: f32 = 0.9;
+const FACET_AWAY: f32 = 1.8;
 
 struct WorldParams {
     player: vec4<f32>,
@@ -325,6 +331,20 @@ fn fragment(
 @if(PREPASS_PIPELINE) {
     out = deferred_output(in, pbr_input);
 } @else {
+@if(TERRAIN) {
+    // The hills' facets (DCM-83): neighbouring faces tilt only a few degrees apart, and on pale
+    // sunlit ground the tone map squeezes what that does to the light to almost nothing. So on
+    // the terrain each face's turn toward or away from the sun (the one directional light: the
+    // moon at night) is told again in its colour, as against level ground, a face turned away
+    // darkening more than one turned toward it brightens. Level ground (all of town) is untouched.
+    let facet_n = normalize(in.world_normal);
+    if (facet_n.y > 0.7 && facet_n.y < 0.99995) {
+        let l = lights.directional_lights[0].direction_to_light;
+        let d = max(dot(facet_n, l), 0.0) - max(l.y, 0.0);
+        let k = clamp(1.0 + select(FACET_TOWARD, FACET_AWAY, d < 0.0) * d, 0.6, 1.3);
+        pbr_input.material.base_color = vec4(pbr_input.material.base_color.rgb * k, pbr_input.material.base_color.a);
+    }
+}
     out.color = apply_pbr_lighting(pbr_input);
 
     // Fog of war. Vertical faces sample the mask just in front of them, so a wall's outside face
