@@ -939,7 +939,7 @@ const FOOTER_TALL: f32 = 68.0;
 /// The footer's one way on (Next, then Start): wider and taller than a plain button.
 fn main_button(parent: &mut ChildSpawnerCommands, label: &str, act: Act) {
     let look = Look::PRIMARY;
-    let mut e = parent.spawn((Node { height: px(48), min_width: px(180), padding: UiRect::horizontal(px(24)), column_gap: px(12), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), ..default() }, BackgroundColor(look.fill), BorderColor::all(look.edge)));
+    let mut e = parent.spawn((Node { height: px(48), width: px(NAV_WIDTH), padding: UiRect::horizontal(px(24)), column_gap: px(12), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), ..default() }, BackgroundColor(look.fill), BorderColor::all(look.edge)));
     e.with_children(|b| {
         line(b, label.to_uppercase(), theme::brand(flat::BUTTON + 8.0), INK);
         keycap(b, "Enter", INK);
@@ -947,10 +947,13 @@ fn main_button(parent: &mut ChildSpawnerCommands, label: &str, act: Act) {
     live(&mut e, look, Some(act));
 }
 
+/// The footer's two buttons are one width on every page, so neither moves as the pages change.
+const NAV_WIDTH: f32 = 230.0;
+
 /// The footer's way back: as tall as the way on, quieter.
 fn side_button(parent: &mut ChildSpawnerCommands, label: &str, key: &str, act: Act) {
     let look = Look::CELL;
-    let mut e = parent.spawn((Node { height: px(48), padding: UiRect::horizontal(px(18)), column_gap: px(10), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), ..default() }, BackgroundColor(look.fill), BorderColor::all(look.edge)));
+    let mut e = parent.spawn((Node { height: px(48), width: px(NAV_WIDTH), padding: UiRect::horizontal(px(18)), column_gap: px(10), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), ..default() }, BackgroundColor(look.fill), BorderColor::all(look.edge)));
     e.with_children(|b| {
         line(b, label.to_uppercase(), theme::brand(flat::BUTTON + 4.0), BONE);
         keycap(b, key, BONE);
@@ -1271,11 +1274,11 @@ fn footer(p: &mut ChildSpawnerCommands, screen: &Screen) {
         // (to the menu from the first page), on to the next page named, and Start on the last.
         row.spawn((Node { flex_shrink: 0.0, column_gap: px(12), align_items: AlignItems::Center, ..default() }, Pickable::IGNORE)).with_children(|nav| {
             match screen.tab.prev() {
-                Some(t) => side_button(nav, &format!("< {}", t.label()), "Shift+Tab", Act::Prev),
+                Some(_) => side_button(nav, "< Back", "Shift+Tab", Act::Prev),
                 None => side_button(nav, "< Menu", "Esc", Act::Back),
             }
             match screen.tab.next() {
-                Some(t) => main_button(nav, &format!("{} >", t.label()), Act::Next),
+                Some(_) => main_button(nav, "Next >", Act::Next),
                 None => main_button(nav, "Start", Act::Start),
             }
         });
