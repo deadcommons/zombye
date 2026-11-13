@@ -104,6 +104,10 @@ impl Tab {
         Tab::ALL.iter().position(|t| *t == self).and_then(|at| Tab::ALL.get(at + 1).copied())
     }
 
+    fn prev(self) -> Option<Tab> {
+        Tab::ALL.iter().position(|t| *t == self).and_then(|at| at.checked_sub(1)).map(|at| Tab::ALL[at])
+    }
+
     fn label(self) -> &'static str {
         match self {
             Tab::Who => "Who you were",
@@ -182,6 +186,8 @@ enum Act {
     Tab(Tab),
     /// On to the page after this one (the first two pages' button; the last one's is Start).
     Next,
+    /// Back to the page before this one (the footer's other button, past the first page).
+    Prev,
     Background(usize),
     Strength(usize),
     Flaw(usize),
@@ -305,6 +311,11 @@ impl Screen {
             Act::Tab(t) => self.tab = t,
             Act::Next => {
                 if let Some(t) = self.tab.next() {
+                    self.tab = t;
+                }
+            }
+            Act::Prev => {
+                if let Some(t) = self.tab.prev() {
                     self.tab = t;
                 }
             }
@@ -503,7 +514,7 @@ impl Plugin for NewGamePlugin {
         app.init_resource::<Front>()
             .init_resource::<PickScroll>()
             .add_systems(PreUpdate, keys.in_set(NewGameKeys).after(bevy::input::InputSystems).run_if(resource_exists::<Screen>))
-            .add_systems(Update, ((enter, setup.run_if(resource_added::<Screen>), (act, draw, dress, pose, layer_figure).chain().run_if(resource_exists::<Screen>)).chain(), scroll_picks.after(draw)));
+            .add_systems(Update, ((enter, setup.run_if(resource_added::<Screen>), (act, draw, dress, pose, layer_figure).chain().distributive_run_if(resource_exists::<Screen>)).chain(), scroll_picks.after(draw).run_if(resource_exists::<Screen>)));
     }
 }
 
@@ -750,7 +761,6 @@ mod flat {
     pub const LABEL: f32 = 14.0;
     pub const RADIUS: f32 = 6.0;
     pub const TOP_BAR: f32 = 76.0;
-    pub const FOOTER: f32 = 46.0;
     /// Padding inside a column (the guide's 16, for a window under 1600 wide; the screen is laid
     /// out for 1280 x 720 and up).
     pub const PAD: f32 = 16.0;
@@ -923,21 +933,6 @@ fn live(e: &mut EntityCommands, look: Look, act: Option<Act>) {
     }
 }
 
-/// A button, 38 high: the screen's one primary (green, ink text) or a secondary (a cell), its
-/// key in it as a keycap.
-fn button(parent: &mut ChildSpawnerCommands, label: &str, key: Option<&str>, primary: bool, act: Act) {
-    let look = if primary { Look::PRIMARY } else { Look::CELL };
-    let ink = if primary { INK } else { BONE };
-    let mut e = parent.spawn((Node { height: px(38), padding: UiRect::horizontal(px(14)), column_gap: px(10), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), ..default() }, BackgroundColor(look.fill), BorderColor::all(look.edge)));
-    e.with_children(|b| {
-        line(b, label.to_uppercase(), theme::brand(flat::BUTTON + 3.0), ink);
-        if let Some(key) = key {
-            keycap(b, key, ink);
-        }
-    });
-    live(&mut e, look, Some(act));
-}
-
 /// The footer's height on this screen (the frame's own is 46).
 const FOOTER_TALL: f32 = 68.0;
 
@@ -952,16 +947,25 @@ fn main_button(parent: &mut ChildSpawnerCommands, label: &str, act: Act) {
     live(&mut e, look, Some(act));
 }
 
-/// A chip, 32 high: one of a few, the open one green with ink text.
-fn chip(parent: &mut ChildSpawnerCommands, label: &str, key: Option<&str>, on: bool, act: Act) {
+/// The footer's way back: as tall as the way on, quieter.
+fn side_button(parent: &mut ChildSpawnerCommands, label: &str, key: &str, act: Act) {
+    let look = Look::CELL;
+    let mut e = parent.spawn((Node { height: px(48), padding: UiRect::horizontal(px(18)), column_gap: px(10), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), ..default() }, BackgroundColor(look.fill), BorderColor::all(look.edge)));
+    e.with_children(|b| {
+        line(b, label.to_uppercase(), theme::brand(flat::BUTTON + 4.0), BONE);
+        keycap(b, key, BONE);
+    });
+    live(&mut e, look, Some(act));
+}
+
+/// A page of the screen in the top bar, numbered as a step: big enough to see it is a way there.
+fn step(parent: &mut ChildSpawnerCommands, label: &str, n: usize, on: bool, act: Act) {
     let look = if on { Look::PRIMARY } else { Look::CELL };
     let ink = if on { INK } else { BONE };
-    let mut e = parent.spawn((Node { height: px(32), padding: UiRect::horizontal(px(12)), column_gap: px(8), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), ..default() }, BackgroundColor(look.fill), BorderColor::all(look.edge)));
+    let mut e = parent.spawn((Node { height: px(42), padding: UiRect::horizontal(px(16)), column_gap: px(10), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(RADIUS)), ..default() }, BackgroundColor(look.fill), BorderColor::all(look.edge)));
     e.with_children(|b| {
-        if let Some(key) = key {
-            keycap(b, key, ink);
-        }
-        line(b, label.to_uppercase(), theme::brand(flat::CHIP + 3.0), ink);
+        keycap(b, &n.to_string(), ink);
+        line(b, label.to_uppercase(), theme::brand(flat::CHIP + 9.0), ink);
     });
     live(&mut e, look, Some(act));
 }
@@ -1030,10 +1034,8 @@ fn top_bar(c: &mut ChildSpawnerCommands, screen: &Screen) {
         bar.spawn((Text::new("NEW GAME"), theme::brand(flat::SCREEN_TITLE + 6.0), TextColor(BONE), TextLayout::no_wrap(), Node { margin: UiRect::right(px(4)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
         bar.spawn((Node { margin: UiRect::right(px(20)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|s| crate::menu_skin::stripes(s, 44.0));
         for (k, tab) in Tab::ALL.into_iter().enumerate() {
-            chip(bar, tab.label(), Some(&format!("{}", k + 1)), tab == screen.tab, Act::Tab(tab));
+            step(bar, tab.label(), k + 1, tab == screen.tab, Act::Tab(tab));
         }
-        bar.spawn(Node { flex_grow: 1.0, ..default() });
-        button(bar, "Back", Some("Esc"), false, Act::Back);
     });
 }
 
@@ -1261,9 +1263,22 @@ fn footer(p: &mut ChildSpawnerCommands, screen: &Screen) {
     // Taller than the frame's usual footer, and the button kept off the window's corner: it is
     // the screen's one way on, so it is big and easy to hit.
     p.spawn((Node { height: px(FOOTER_TALL), flex_shrink: 0.0, flex_direction: FlexDirection::Row, column_gap: px(18), align_items: AlignItems::Center, padding: UiRect::horizontal(px(24)), border: UiRect::top(px(1)), ..default() }, BorderColor::all(LINE))).with_children(|row| {
-        hint(row, "1-3", "page");
-        hint(row, "Tab", "next page");
-        hint(row, "Esc", "back");
+        row.spawn((Node { flex_grow: 1.0, flex_basis: px(0), min_width: px(0), column_gap: px(18), align_items: AlignItems::Center, overflow: Overflow::clip(), ..default() }, Pickable::IGNORE)).with_children(|h| {
+            hint(h, "1-3", "page");
+            hint(h, "Tab", "next page");
+        });
+        // The way between the pages, in the middle where the eye already is: back on the left
+        // (to the menu from the first page), on to the next page named, and Start on the last.
+        row.spawn((Node { flex_shrink: 0.0, column_gap: px(12), align_items: AlignItems::Center, ..default() }, Pickable::IGNORE)).with_children(|nav| {
+            match screen.tab.prev() {
+                Some(t) => side_button(nav, &format!("< {}", t.label()), "Shift+Tab", Act::Prev),
+                None => side_button(nav, "< Menu", "Esc", Act::Back),
+            }
+            match screen.tab.next() {
+                Some(t) => main_button(nav, &format!("{} >", t.label()), Act::Next),
+                None => main_button(nav, "Start", Act::Start),
+            }
+        });
         row.spawn((Node { flex_grow: 1.0, flex_basis: px(0), min_width: px(0), justify_content: JustifyContent::FlexEnd, overflow: Overflow::clip(), ..default() }, Pickable::IGNORE)).with_children(|s| {
             let world = format!("{}{}", screen.preset().name, if screen.setup.custom() { ", your own way" } else { "" });
             match &screen.error {
@@ -1272,11 +1287,6 @@ fn footer(p: &mut ChildSpawnerCommands, screen: &Screen) {
                 None => line(s, format!("{}  ·  {world}", who.join("  ·  ")), font(SMALL), DIM),
             }
         });
-        // The pages are steps: Next walks through them, and only the last one starts the game.
-        match screen.tab.next() {
-            Some(_) => main_button(row, "Next", Act::Next),
-            None => main_button(row, "Start", Act::Start),
-        }
     });
 }
 
@@ -1291,6 +1301,19 @@ mod tests {
     fn screen(line: &str) -> Screen {
         let saves = std::env::temp_dir().join(format!("zombye-new-game-test-{}-{}", std::process::id(), line.len()));
         Screen::new(Options::parse(&[args(line), vec!["--saves".into(), saves.to_string_lossy().into_owned()]].concat())).expect("the shipped data")
+    }
+
+    #[test]
+    fn prev_walks_back_and_the_first_page_has_none() {
+        let mut s = screen("--new-game --seed 5");
+        s.tab = Tab::World;
+        assert_eq!(s.apply(Act::Prev), None);
+        assert_eq!(s.tab, Tab::Picks);
+        assert_eq!(s.apply(Act::Prev), None);
+        assert_eq!(s.tab, Tab::Who);
+        assert_eq!(s.tab.prev(), None);
+        assert_eq!(s.apply(Act::Prev), None);
+        assert_eq!(s.tab, Tab::Who);
     }
 
     #[test]
