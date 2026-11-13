@@ -64,7 +64,7 @@ The direction, set by the owner on 2026-11-13; every change here follows it.
   private repos (CLAUDE.md lists them). Work-in-progress review pictures go to the art repo or `saves/`
   (git-ignored), not here. Never name other games in anything in this repo.
 - **The name is not open:** ZOMBYE and Dead Commons, their logos and taglines are trademarks
-  ([docs/brand/LICENSE-brand.txt](docs/brand/LICENSE-brand.txt)). Forks rename. Logo files stay in the art repo.
+  ([docs/brand/LICENSE-brand.txt](docs/brand/LICENSE-brand.txt)). Forks rename. Logo files stay in the art repo; the one exception is `docs/brand/zombye-logo.png`, which the README shows and the game never reads.
 - **Contributions** come under the [DCO](https://developercertificate.org/): every commit is signed off
   (`git commit -s`), agents' commits too ([CONTRIBUTING.md](CONTRIBUTING.md)). Code stays MIT OR Apache-2.0:
   no GPL-family code or dependencies.
@@ -116,7 +116,7 @@ card cut to the outline of its texture's opaque part, as plain triangles. **Far 
 a folder and checks every file.
 
 **The brand** (`release_brand.rs`, docs/brand/README.md): the Zombye name and logos are trade marks of Grillo Ltd, all
-rights reserved, so no logo file is in this repo (never under `assets/`, whose art licence would cover it). They live
+rights reserved, so no logo file the game uses is in this repo (never under `assets/`, whose art licence would cover it; `docs/brand/zombye-logo.png` is only the README's picture, and `docs/readme/` its screenshots of the official build, neither open source). They live
 in the art repo's `release-brand/` (made from its `brand/` kit by `brand/src/release_brand.py`) and release builds
 carry that folder: the client reads `$ZOMBYE_RELEASE_BRAND`, else `release-brand` beside its binary (stdout says
 `release brand: ...`). `logo.png` is drawn on the main menu's home screen and the loading screen, `wordmark.png` on
