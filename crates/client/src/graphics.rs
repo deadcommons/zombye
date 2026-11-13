@@ -88,9 +88,10 @@ pub struct Graphics {
     /// and the stars, in place of a flat colour.
     pub sky: bool,
     /// Light from the sky in the shade (`skylight.rs`): what faces up takes the sky's colour, what
-    /// faces down the ground's. Taken on at start-up.
+    /// faces down the ground's. Taken on at start-up. About 1.5-3 ms on an M1 Max: Ultra only.
     pub sky_light: bool,
-    /// Beams of sunlight in the air (`shafts.rs`). Costly: Ultra only.
+    /// Light scattering in the air (`shafts.rs`). In no preset: about 8 ms on an M1 Max, and it
+    /// gives an even warm veil rather than beams so far. A switch to try it with.
     pub light_shafts: bool,
     /// Patchy colour on the ground, worked out per pixel.
     pub ground_detail: bool,
@@ -111,7 +112,7 @@ impl Default for Graphics {
 
 impl Graphics {
     pub fn high() -> Self {
-        Self { preset: Preset::High, vegetation: 1.0, grain: true, tilt_shift: true, vignette: true, bloom: true, contact_shadows: true, occlusion: true, soft_shadows: true, haze: true, sky: true, sky_light: true, light_shafts: false, ground_detail: true, shadow_map: 4096, msaa: 4, render_scale: 1.0 }
+        Self { preset: Preset::High, vegetation: 1.0, grain: true, tilt_shift: true, vignette: true, bloom: true, contact_shadows: true, occlusion: true, soft_shadows: true, haze: true, sky: true, sky_light: false, light_shafts: false, ground_detail: true, shadow_map: 4096, msaa: 4, render_scale: 1.0 }
     }
     /// For slow machines: a little grass, and nothing that costs a pass or a blend.
     pub fn low() -> Self {
@@ -123,7 +124,7 @@ impl Graphics {
     }
     /// More than the game was made to: denser grass and a finer shadow map.
     pub fn ultra() -> Self {
-        Self { preset: Preset::Ultra, vegetation: 1.5, shadow_map: 8192, render_scale: 1.0, light_shafts: true, ..Self::high() }
+        Self { preset: Preset::Ultra, vegetation: 1.5, shadow_map: 8192, render_scale: 1.0, sky_light: true, ..Self::high() }
     }
     /// The settings a preset stands for. Auto starts at High (and is measured, `graphics_ui.rs`);
     /// Custom has no settings of its own, so it gives High.

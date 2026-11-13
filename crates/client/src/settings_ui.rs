@@ -238,7 +238,7 @@ pub fn rows(tab: Tab, s: &ClientSettings) -> Vec<Row> {
             switch("Haze", "A thin haze over the distance, thick and warm when the sun is low.", s, Switch::Haze),
             switch("Sky", "In first person, a sky that follows the hour, with the sun, moon and stars.", s, Switch::Sky),
             switch("Sky light", "The shade lit by the sky: bluer facing up, warmer facing down. Changes on the next start.", s, Switch::SkyLight),
-            switch("Light shafts", "Beams of sunlight in the air, through trees and between houses. Costs frame rate.", s, Switch::LightShafts),
+            switch("Light shafts", "Sunlight scattering in the air. Experimental, and costs a lot of frame rate.", s, Switch::LightShafts),
             switch("Ground detail", "Patchy colour on the ground. Changes on the next start.", s, Switch::GroundDetail),
         ],
         Tab::Audio => vec![
