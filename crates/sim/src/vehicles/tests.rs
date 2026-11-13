@@ -450,6 +450,8 @@ fn workshop(locked: bool) -> (World, u32, u32) {
     w.config.loot = crate::loot::parse_loot(include_str!("../../../../assets/data/loot.ron")).unwrap();
     let vi = w.vehicles.list.iter().position(|v| v.id == vid).unwrap();
     w.vehicles.list[vi].access = Access { locked, ..Access::default() };
+    // Facing the car through its input too, so it still faces it after the world steps.
+    w.set_facing(id, std::f32::consts::FRAC_PI_2);
     (w, id, vid)
 }
 
@@ -510,7 +512,8 @@ fn without_a_key_it_wont_start_until_hotwired() {
     assert!(w.player_vehicle(id, VehicleOp::Hotwire).unwrap_err().contains("screwdriver"));
     w.give_item(id, "screwdriver", 1);
     w.player_vehicle(id, VehicleOp::Hotwire).unwrap();
-    run(&mut w, w.config.vehicles.work.hotwire_secs + 0.5);
+    let secs = w.config.vehicles.work.hotwire_secs + 0.5;
+    run(&mut w, secs);
     assert!(access(&w, vid).hotwired);
     let i = pi(&w, id);
     assert!(w.players[i].skills.xp(crate::skills::Skill::Mechanics) > 0.0, "hotwiring trains Mechanics");
@@ -544,7 +547,12 @@ fn a_key_found_in_the_glovebox_starts_and_locks_its_car() {
     assert!(car(&w, vid).pos.distance(at) > 1.0);
     // Someone else without it is kept out of the locked car.
     let other = w.add_player(Vec2::new(103.0, 98.4));
-    drive(&mut w, id, 0.0, 0.0, 3.0);
+    // Brake to a stop first: nobody gets out of a moving car.
+    for _ in 0..(3.0 / crate::TICK_DT).ceil() as u32 {
+        w.player_drive(id, DriveInput { throttle: 0.0, steer: 0.0, brake: true });
+        w.step();
+    }
+    assert_eq!(car(&w, vid).speed, 0.0);
     w.player_vehicle(id, VehicleOp::Lock { vehicle: None }).unwrap();
     w.player_vehicle(id, VehicleOp::Exit).unwrap();
     assert!(w.player_vehicle(other, VehicleOp::Enter { vehicle: Some(vid) }).is_err());
