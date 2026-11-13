@@ -37,9 +37,9 @@
     // January first. low_c / high_c: the usual coldest of a night and warmest of a day (C); odds:
     // how usual each kind of weather is (relative); wind: how windy it usually is.
     months: [
-        (name: "January", low_c: -14.0, high_c: -4.0, wind: 0.45,
+        (name: "January", low_c: -17.0, high_c: -6.0, wind: 0.45,
             odds: (clear: 3.0, cloudy: 2.0, overcast: 3.0, rain: 3.0, storm: 2.0, fog: 1.0)),
-        (name: "February", low_c: -12.0, high_c: -2.0, wind: 0.45,
+        (name: "February", low_c: -15.0, high_c: -4.0, wind: 0.45,
             odds: (clear: 3.0, cloudy: 2.0, overcast: 3.0, rain: 3.0, storm: 2.0, fog: 1.0)),
         (name: "March", low_c: -5.0, high_c: 5.0, wind: 0.4,
             odds: (clear: 3.0, cloudy: 3.0, overcast: 3.0, rain: 3.0, storm: 1.0, fog: 2.0)),
@@ -59,7 +59,7 @@
             odds: (clear: 3.0, cloudy: 3.0, overcast: 3.0, rain: 4.0, storm: 1.0, fog: 2.0)),
         (name: "November", low_c: -2.0, high_c: 7.0, wind: 0.4,
             odds: (clear: 2.0, cloudy: 3.0, overcast: 4.0, rain: 4.0, storm: 1.5, fog: 2.0)),
-        (name: "December", low_c: -10.0, high_c: -1.0, wind: 0.45,
+        (name: "December", low_c: -12.0, high_c: -3.0, wind: 0.45,
             odds: (clear: 3.0, cloudy: 2.0, overcast: 3.0, rain: 3.0, storm: 2.0, fog: 1.0)),
     ],
     // What each kind of weather does: cloud (0-1), temp_c (added to the air), swing (times the daily

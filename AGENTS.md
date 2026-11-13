@@ -1725,7 +1725,7 @@ them yet (no body temperature, no effect on sight or hearing, nothing drawn or h
   `mild_c` (12) by `harshness` (1; 0.6 a mild climate, 1.3 a harsh one). `World::air_temp_at(pos, level)`: indoors
   (a room, or upstairs) goes `indoor_mix` (0.6) of the way to `indoor_c` (16); a lit campfire adds `fire_c` (15) at
   its middle, falling to nothing at `fire_radius` (4 m). **The default climate is hard** (Andres, 2026-11-13): January
-  averages about -9 C with cold-snap nights below -20 and weeks of snow and blizzards, July about 27 C with heatwave
+  averages about -11 C with cold-snap nights below -20 and weeks of snow and blizzards, July about 27 C with heatwave
   afternoons over 40, dry with the odd violent storm; October and November are the wettest months.
 - **Forced weather** (`World::force_weather`, MCP `set_weather`, for tests and pictures): a kind, intensity and
   optionally the air's temperature until a time on the clock (`weather::Forced`). Saved in an optional `WTHR` section
@@ -3215,13 +3215,13 @@ with a line of sight; `all: true` shows everyone (the default with PvP off). The
 **What clients are told about the tools (#88, `mcp.rs`):** the `TOOLS` table gives every tool a `title` and a kind, and
 `tool_list` turns the kind into MCP annotations on the definitions in `tool_defs`: `Look` tools are `readOnlyHint: true`
 (`observe`, `screenshot`, `stats`, `zombie`, `edge`, `buildings`, `regions`, `inventory`, `health`, `skills`, `weapons`,
-`items`, `loot`, `recipes`, `containers_near`, `saves`, `heard`, `fires`; clients skip the approval prompt for them, and a test calls each
+`items`, `loot`, `recipes`, `containers_near`, `saves`, `heard`, `fires`, `weather`; clients skip the approval prompt for them, and a test calls each
 and checks the state hash, the tick and the session's dirty flag don't move), `Play` tools act as a player or step time,
 `save` writes a file, and `Debug` tools (`make_noise`, `set_goal`, `spawn_zombies`, `spawn_item`, `set_needs`, `wound`,
-`add_player`, `pvp`, `dev`, `skip_time`, `load`, `restrain_now`) get a title starting `Debug:`, a description starting "Debug tool, for setting
+`add_player`, `pvp`, `dev`, `skip_time`, `load`, `restrain_now`, `set_weather`) get a title starting `Debug:`, a description starting "Debug tool, for setting
 up tests" and `_meta: {"zombye/debug": true}`. Only `save` and `load` are `destructiveHint: true`; every tool is
 `openWorldHint: false`. **A new tool needs a row in `TOOLS`** (a test fails without one). `--no-debug-tools` leaves the
-debug tools out: not listed (56 tools instead of 68), and calling one is the unknown-tool error. `stats` has an
+debug tools out: not listed (56 tools instead of 70), and calling one is the unknown-tool error. `stats` has an
 `outputSchema` and returns its JSON as `structuredContent` beside the text (`output_schema`). The server's `instructions`
 (`mcp::instructions`, under 2,200 bytes: every client puts them in the model's context) say you are player 1, time only
 moves when a tool steps it, look with `observe` first, and the debug tools are for testing; detail belongs in the tools'

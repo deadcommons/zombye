@@ -163,13 +163,17 @@ impl Default for MonthClimate {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Odds {
+    /// A clear sky.
     pub clear: f32,
+    /// Broken cloud.
     pub cloudy: f32,
+    /// A grey sky, all over.
     pub overcast: f32,
     /// Rain, or snow in the cold.
     pub rain: f32,
     /// A storm, or a blizzard in the cold.
     pub storm: f32,
+    /// Fog.
     pub fog: f32,
 }
 
@@ -283,8 +287,8 @@ impl Default for WeatherTuning {
     fn default() -> Self {
         // (name, low, high, clear, cloudy, overcast, rain, storm, fog, wind)
         const MONTHS: [(&str, f32, f32, [f32; 6], f32); 12] = [
-            ("January", -14.0, -4.0, [3.0, 2.0, 3.0, 3.0, 2.0, 1.0], 0.45),
-            ("February", -12.0, -2.0, [3.0, 2.0, 3.0, 3.0, 2.0, 1.0], 0.45),
+            ("January", -17.0, -6.0, [3.0, 2.0, 3.0, 3.0, 2.0, 1.0], 0.45),
+            ("February", -15.0, -4.0, [3.0, 2.0, 3.0, 3.0, 2.0, 1.0], 0.45),
             ("March", -5.0, 5.0, [3.0, 3.0, 3.0, 3.0, 1.0, 2.0], 0.4),
             ("April", 2.0, 13.0, [3.0, 3.0, 2.0, 4.0, 1.0, 1.0], 0.35),
             ("May", 8.0, 20.0, [4.0, 3.0, 2.0, 3.0, 1.0, 1.0], 0.3),
@@ -294,7 +298,7 @@ impl Default for WeatherTuning {
             ("September", 12.0, 25.0, [4.0, 3.0, 2.0, 2.0, 1.0, 1.0], 0.3),
             ("October", 5.0, 16.0, [3.0, 3.0, 3.0, 4.0, 1.0, 2.0], 0.35),
             ("November", -2.0, 7.0, [2.0, 3.0, 4.0, 4.0, 1.5, 2.0], 0.4),
-            ("December", -10.0, -1.0, [3.0, 2.0, 3.0, 3.0, 2.0, 1.0], 0.45),
+            ("December", -12.0, -3.0, [3.0, 2.0, 3.0, 3.0, 2.0, 1.0], 0.45),
         ];
         let months = MONTHS
             .iter()
@@ -482,12 +486,15 @@ impl WeatherTuning {
         // How much of the slot's own weather shows, 0.5 at a change, 1 inside the slot; and the
         // neighbour it is shared with.
         let (other, mix) = if into < 1.0 { (0, 0.5 + 0.5 * into) } else if out < 1.0 { (2, 0.5 + 0.5 * out) } else { (1, 1.0) };
-        let mix = if kinds[other] == kinds[1] { 1.0 } else { mix * mix * (3.0 - 2.0 * mix) };
+        let same = kinds[other] == kinds[1];
+        let raw_mix = mix;
+        let mix = if same { 1.0 } else { mix * mix * (3.0 - 2.0 * mix) };
         let blend = |f: fn(&KindDef) -> f32| f(&defs[other]) + (f(&defs[1]) - f(&defs[other])) * mix;
 
         // Intensity: a seeded strength for the spell, fading out at a change of kind.
         let strength = 0.45 + 0.55 * hash01(seed, SALT, slot as u64, 4);
-        let fade = if kinds[other] == kinds[1] { 1.0 } else { (2.0 * mix - 1.0).clamp(0.0, 1.0) };
+        // Eased so rain and snow thin out to nothing at the change, not stop at a fifth.
+        let fade = if same { 1.0 } else { (2.0 * raw_mix - 1.0).clamp(0.0, 1.0).powi(2) };
         let intensity = if kinds[1] == WeatherKind::Clear { 0.0 } else { strength * fade };
 
         // Temperature.

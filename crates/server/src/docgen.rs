@@ -595,6 +595,7 @@ fn tuning_values(c: &zombye_sim::WorldConfig) -> Vec<(&'static str, Value)> {
         stairs,
         blinds,
         fire,
+        weather,
         chop,
         sandbox,
     ]
