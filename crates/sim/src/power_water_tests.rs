@@ -15,7 +15,8 @@ const POWER: &str = include_str!("../../../assets/data/power.ron");
 fn world() -> World {
     let weapons = items::parse_weapons(WEAPONS).unwrap();
     let items = items::parse_items(ITEMS, &weapons).unwrap();
-    let recipes = crate::crafting::parse_recipes_for(RECIPES, &items).unwrap();
+    let mut recipes = crate::crafting::parse_recipes_for(RECIPES, &items).unwrap();
+    crate::crafting::add_fill_recipes(&mut recipes, &items);
     let containers = crate::containers::parse_containers(CONTAINERS).unwrap();
     let mut c = WorldConfig::new(7, 0, crate::worldgen::tests::templates()).with_weapons(weapons).with_items(items).with_recipes(recipes).with_containers(containers);
     c.power = super::parse_power(POWER).unwrap();
@@ -71,20 +72,20 @@ fn a_running_tap_fills_a_bottle_until_the_water_goes_off() {
     let id = w.add_player(at);
     assert!(w.water_on() && w.water_for(pi(&w, id)));
     assert!(w.give_item(id, "empty_bottle", 2));
-    craft(&mut w, id, "fill_bottle").unwrap();
+    craft(&mut w, id, "fill_empty_bottle").unwrap();
     run(&mut w, 6.0);
     assert_eq!((carried(&w, id, "water_bottle"), carried(&w, id, "empty_bottle")), (1, 1));
     // Away from the tap: no water.
     let p = pi(&w, id);
     w.players[p].state.pos = Vec2::new(5.5, 5.5);
-    assert!(craft(&mut w, id, "fill_bottle").unwrap_err().ends_with(super::NEEDS_WATER));
+    assert!(craft(&mut w, id, "fill_empty_bottle").unwrap_err().ends_with(super::NEEDS_WATER));
     // The water goes off after a day.
     w.players[p].state.pos = at;
     w.config.power.water.fails_after_hours = Some(24.0);
     assert!(w.water_for(p));
     w.skip_time(25.0);
     assert!(!w.water_on() && !w.water_for(p));
-    assert!(craft(&mut w, id, "fill_bottle").unwrap_err().ends_with(super::NEEDS_WATER));
+    assert!(craft(&mut w, id, "fill_empty_bottle").unwrap_err().ends_with(super::NEEDS_WATER));
 }
 
 #[test]

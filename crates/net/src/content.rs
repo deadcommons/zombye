@@ -161,13 +161,17 @@ pub fn load_loot(data_dir: &Path, items: &[ItemDef], weapons: &[WeaponDef], cont
 /// items' tags. A data folder without the file has no recipes.
 pub fn load_recipes(data_dir: &Path, items: &[ItemDef], weapons: &[WeaponDef]) -> Result<Vec<RecipeDef>, String> {
     let path = data_dir.join("items/recipes.ron");
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut all = items.to_vec();
     zombye_sim::items::complete_items(&mut all, weapons);
-    parse_recipes_for(&text, &all).map_err(|e| format!("{}: {e}", path.display()))
+    let mut recipes = if path.exists() {
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        parse_recipes_for(&text, &all).map_err(|e| format!("{}: {e}", path.display()))?
+    } else {
+        Vec::new()
+    };
+    // Filling a bottle (or anything with `fills`) at a tap is a recipe of its own.
+    zombye_sim::crafting::add_fill_recipes(&mut recipes, &all);
+    Ok(recipes)
 }
 
 /// What can be built (the build menu, `zombye_sim::build`): `<data>/build.ron`, validated, every

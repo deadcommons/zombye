@@ -269,7 +269,7 @@ pub const KEYS: [(&str, &[(&str, &str)]); 6] = [
     ("Moving", &[("W A S D", "Walk"), ("Shift", "Run"), ("C", "Sneak"), ("E", "Climb a fence or window"), ("B", "Sleep, and get up")]),
     ("Fighting", &[("Right mouse", "Aim"), ("Left mouse", "Attack or shoot, while aiming"), ("Space", "Shove, or stomp one that's down"), ("R", "Reload")]),
     ("Things", &[("E", "Pick up, search, flick a switch"), ("F", "Open or shut a door or window"), ("Shift + F", "Roll a blind, or fit one"), ("G", "Smash a window"), ("1 - 9", "Hotbar"), ("X", "Stop what you're doing")]),
-    ("Panels", &[("Tab or I", "Inventory"), ("H", "Health"), ("K", "Skills"), ("O", "Objectives and hints"), ("Esc", "Pause menu")]),
+    ("Panels", &[("Tab or I", "Inventory"), ("H", "Health"), ("K", "Skills"), ("Shift + C", "Make"), ("Shift + B", "Build"), ("O", "Objectives and hints"), ("Esc", "Pause menu")]),
     ("Camera", &[(", and .", "Turn a quarter"), (";", "First person and back"), ("Wheel", "Zoom"), ("F10", "Walls up or cut away")]),
     ("Other", &[("Enter", "Chat"), ("V  U  P", "Wave, hands up, point"), ("M", "Map"), ("Ctrl + M", "Mute"), ("F5 / F9", "Quicksave / quickload"), ("F7", "Server browser"), ("Ctrl + / -", "UI scale")]),
 ];

@@ -634,7 +634,7 @@ impl Plugin for InventoryUiPlugin {
             .add_systems(Startup, spawn.after(crate::hud::spawn_hud))
             .add_systems(PreUpdate, (type_search, menu_keys).chain().in_set(TextEntry).after(bevy::input::InputSystems))
             .add_systems(PreUpdate, click_away.after(bevy::input::InputSystems).after(bevy::picking::PickingSystems::Hover))
-            .add_systems(Update, ((toggle, screens.after(crate::health_ui::toggle).after(crate::skills_ui::toggle)).chain(), keep_note, track_flight, follow_open, prune_picked, script_picks, menu_from_options, drag, send_clicks, world_menu, script_menu, menu_act, follow_up, send_picked, flush, scroll_frame, rebuild, draw_menu, draw_card, hide_hud).chain())
+            .add_systems(Update, ((toggle, make_key, screens.after(crate::health_ui::toggle).after(crate::skills_ui::toggle)).chain(), keep_note, track_flight, follow_open, prune_picked, script_picks, menu_from_options, drag, send_clicks, world_menu, script_menu, menu_act, follow_up, send_picked, flush, scroll_frame, rebuild, draw_menu, draw_card, hide_hud).chain())
             .add_systems(Update, count_down.after(rebuild));
     }
 }
@@ -711,6 +711,19 @@ fn toggle(keys: Res<ButtonInput<KeyCode>>, mut panel: ResMut<InventoryPanel>, li
         {
             out.0.push(intent);
         }
+    }
+}
+
+/// Shift+C: the Make screen, or back to the game when it is the one shown.
+fn make_key(keys: Res<ButtonInput<KeyCode>>, mut panel: ResMut<InventoryPanel>, make: Res<MakeUi>, mut goto: ResMut<Goto>, health: Option<Res<crate::health_ui::HealthPanel>>, skills: Option<Res<crate::skills_ui::SkillsPanel>>, build: Option<Res<crate::build_ui::BuildMenu>>) {
+    if !(keys.just_pressed(KeyCode::KeyC) && keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight])) {
+        return;
+    }
+    let other = health.is_some_and(|h| h.open) || skills.is_some_and(|s| s.open) || build.is_some_and(|b| b.open);
+    if panel.open && make.shown && !other {
+        panel.open = false;
+    } else {
+        goto.0 = Some(Tab::Make);
     }
 }
 
@@ -1216,7 +1229,7 @@ fn top(c: &mut ChildSpawnerCommands, title: &str, clock: &str) {
 /// The rail down the left: the frame's screens.
 fn rail(mid: &mut ChildSpawnerCommands, tab: Tab) {
     mid.spawn((Node { width: px(flat::RAIL), flex_direction: FlexDirection::Column, row_gap: px(4), padding: UiRect::top(px(12)), border: UiRect::right(px(1)), flex_shrink: 0.0, ..default() }, BorderColor::all(LINE))).with_children(|r| {
-        for (to, icon, key) in [(Tab::Inventory, "hiking_pack", Some("Tab")), (Tab::Make, "claw_hammer", None), (Tab::Build, "wooden_plank", None), (Tab::Health, "plasters", Some("H")), (Tab::Skills, "magazine", Some("K"))] {
+        for (to, icon, key) in [(Tab::Inventory, "hiking_pack", Some("Tab")), (Tab::Make, "claw_hammer", Some("Shift+C")), (Tab::Build, "wooden_plank", Some("Shift+B")), (Tab::Health, "plasters", Some("H")), (Tab::Skills, "magazine", Some("K"))] {
             rail_tab(r, &format!("{to:?}"), icon, key, tab == to).observe(move |_: On<PointerPress>, mut goto: ResMut<Goto>| goto.0 = Some(to));
         }
     });
@@ -1619,10 +1632,12 @@ impl Ctx<'_> {
         RowAction { stack: l.stack, title: name_of(self.items, self.wear, self.now, &l.stack), left: Some((l.from, l.index, to)), more, menu: menu_entries(self.me, self.items, l.from, l.index, &l.stack, self.open, self.pouches, &self.makes(l)), craft: None }
     }
 
-    /// The recipes a thing lying nearby would let us make ([`makes_with`]); none for our own.
+    /// The recipes a thing lying nearby would let us make ([`makes_with`]), or one of our own starts
+    /// ([`makes_from`]).
     fn makes(&self, l: &Line) -> Vec<(u16, String, u16)> {
         match (l.from, self.view) {
             (Place::Container(_) | Place::Ground, Some(v)) => makes_with(self.recipes, self.items, &v.inventory, &v.inventory, &l.stack),
+            (_, Some(v)) => makes_from(self.recipes, self.items, &v.inventory, &l.stack),
             _ => Vec::new(),
         }
     }
@@ -2609,6 +2624,22 @@ fn makes_with(recipes: &[crafting::RecipeDef], items: &[ItemDef], inv: &zombye_s
     out
 }
 
+/// The recipes one of our own things goes into that we can make now with what we have and what
+/// lies in reach (`near`): opening a box of nails, ripping a shirt into rags, mending a bat. Each is
+/// made where it is (0 to take). Recipes that need heat or running water are left to the Make list
+/// and the fire's and the sink's own menus, which know whether there is any.
+fn makes_from(recipes: &[crafting::RecipeDef], items: &[ItemDef], near: &zombye_sim::Inventory, s: &ItemStack) -> Vec<(u16, String, u16)> {
+    let Some(def) = items.get(s.item as usize) else { return Vec::new() };
+    recipes
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| !r.heat && !r.water && r.places.is_none())
+        .filter(|(_, r)| r.inputs.iter().any(|x| x.item == def.id) || r.repairs.as_ref().is_some_and(|m| def.has_tag(&m.tag)))
+        .filter(|(_, r)| crafting::check(r, near, items).is_ok())
+        .map(|(k, r)| (k as u16, r.name.clone(), 0))
+        .collect()
+}
+
 /// One line of the menu.
 #[derive(Clone, Debug)]
 struct MenuEntry {
@@ -2632,6 +2663,12 @@ fn menu_entries(player: u32, items: &[ItemDef], from: Place, index: u32, s: &Ite
     if matches!(from, Place::Carried | Place::Slot(_)) && def.has_tag(&zombye_sim::BlindTuning::default().tag) {
         out.extend(mk("Fit to the window".into(), Some(Intent::Blind { player, op: zombye_sim::BlindOp::Fit }), false));
     }
+    // The recipes it goes into that can be made now (opening a box of nails, ripping a shirt, mending).
+    let crafts = |out: &mut Vec<MenuEntry>| {
+        for (recipe, name, _) in makes {
+            out.push(MenuEntry { label: name.clone(), act: MenuDo::Send { intent: Intent::Craft { player, recipe: *recipe }, from, index, whole: false } });
+        }
+    };
     match from {
         Place::Carried => {
             match (Treatment::of_item(def), def.category) {
@@ -2647,6 +2684,7 @@ fn menu_entries(player: u32, items: &[ItemDef], from: Place, index: u32, s: &Ite
                 (None, ItemCategory::Bag) => out.extend(mk("Put it on".into(), Some(Intent::Equip { player, index }), false)),
                 (None, _) => out.extend(mk("Hold in hand".into(), Some(Intent::Equip { player, index }), false)),
             }
+            crafts(&mut out);
             if let Some((id, name)) = open {
                 out.extend(mk(format!("Put in {name}"), into(Place::Container(id), 0), true));
             }
@@ -2670,6 +2708,7 @@ fn menu_entries(player: u32, items: &[ItemDef], from: Place, index: u32, s: &Ite
         }
         Place::Slot(_) | Place::Worn => {
             out.extend(mk(if from == Place::Worn { "Take off".into() } else { "Put in bags".into() }, into(Place::Carried, 0), true));
+            crafts(&mut out);
             if let Some((id, name)) = open {
                 out.extend(mk(format!("Put in {name}"), into(Place::Container(id), 0), true));
             }
@@ -2815,7 +2854,7 @@ fn open_menu(menu: &mut ItemMenu, link: &ServerLink, join: &JoinInfo, me: u32, f
     let open = v.open.as_ref().map(|c| (c.id, c.name.to_lowercase()));
     let pouches = pouch_names(&join.items, &v.inventory, join.carry.pockets_l);
     let near = crafting::with_floor(&v.inventory, floor.iter().map(|f| f.1));
-    let makes = if matches!(from, Place::Container(_) | Place::Ground) { makes_with(&join.recipes, &join.items, &v.inventory, &near, &s) } else { Vec::new() };
+    let makes = if matches!(from, Place::Container(_) | Place::Ground) { makes_with(&join.recipes, &join.items, &v.inventory, &near, &s) } else { makes_from(&join.recipes, &join.items, &near, &s) };
     let entries = menu_entries(me, &join.items, from, index, &s, open.as_ref().map(|(id, n)| (*id, n.as_str())), &pouches, &makes);
     if entries.is_empty() {
         return false;
@@ -3576,6 +3615,15 @@ mod tests {
         let mut inv = zombye_sim::Inventory::default();
         inv.carried.push(tee);
         assert!(makes_with(&config.recipes, items, &inv, &inv, &tee).is_empty());
+        // Our own things offer what they make, made where they are: a box of nails opened.
+        let nails = stack("nails", 1);
+        let mut inv = zombye_sim::Inventory::default();
+        inv.carried.push(nails);
+        let makes = makes_from(&config.recipes, items, &inv, &nails);
+        assert_eq!(makes.iter().map(|m| m.1.as_str()).collect::<Vec<_>>(), ["Open a box of nails"]);
+        let e = menu_entries(1, items, Place::Carried, 0, &nails, None, &[], &makes);
+        assert_eq!(e[1].label, "Open a box of nails");
+        assert!(matches!(e[1].act, MenuDo::Send { intent: Intent::Craft { .. }, .. }));
         // The intents are the ones a drag or a click would send.
         let e = menu_entries(1, items, Place::Carried, 2, &stack("tinned_beans", 4), None, &[], &[]);
         assert!(matches!(e[0].act, MenuDo::Send { intent: Intent::Use { index: 2, .. }, whole: false, .. }));

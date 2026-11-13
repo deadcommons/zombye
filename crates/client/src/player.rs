@@ -258,7 +258,8 @@ fn spawn_player(
 }
 
 fn toggle_sneak(keys: Res<ButtonInput<KeyCode>>, mut me: ResMut<LocalPlayer>) {
-    if keys.just_pressed(KeyCode::KeyC) {
+    // (Shift+C is the Make screen's.)
+    if keys.just_pressed(KeyCode::KeyC) && !keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
         me.sneak = !me.sneak;
     }
 }

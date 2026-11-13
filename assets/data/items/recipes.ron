@@ -41,8 +41,8 @@
         inputs: [(item: "rag", count: 3), (item: "water_bottle")], outputs: [(item: "clean_rag", count: 3), (item: "empty_bottle")]),
 
     // ---- Water ----------------------------------------------------------------------------------
-    (id: "fill_bottle", name: "Fill a bottle at the tap", secs: 3.0, water: true,
-        inputs: [(item: "empty_bottle")], outputs: [(item: "water_bottle")]),
+    // Filling a container at a tap isn't written here: an item's `fills` in items.ron makes its
+    // recipe (`fill_<item id>`, zombye_sim::crafting::add_fill_recipes).
 
     // ---- Mending weapons (zombye_sim::wear) --------------------------------------------------------
     // Duct tape round a split handle or a cracked bat buys a few more fights. A worn weapon can't be

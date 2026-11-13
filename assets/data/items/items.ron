@@ -24,6 +24,8 @@
 //               take a place; a hood covers the head while nothing is on the head top.
 //   model       Some("name"): what the client draws while it's worn, held or on your back
 //               (assets/models/wearables/<name>.glb); none (or no file): a grey-box in its colour.
+//   fills       Some("id"): the item this one becomes filled at a running tap (an empty bottle
+//               "water_bottle"). It gets a recipe "fill_<id>" by itself: a jug, a canteen, a pot.
 //   light       Some((radius_m, hours)): a light source (comes with night lighting).
 //   color       grey-box colour on the floor, linear-ish RGB 0..1
 [
@@ -83,7 +85,7 @@
     (id: "water_bottle", name: "Bottle of water", category: Drink, weight_kg: 1.05, volume_l: 1.0, stack: 4, tags: ["refillable"],
         drink: Some((thirst: 0.5, uses: 2)), color: (0.55, 0.75, 0.9)),
     (id: "empty_bottle", name: "Empty bottle", category: Junk, weight_kg: 0.05, volume_l: 1.0, stack: 4, tags: ["refillable"],
-        color: (0.7, 0.8, 0.85)),
+        fills: Some("water_bottle"), color: (0.7, 0.8, 0.85)),
     (id: "soda_can", name: "Can of soda", category: Drink, weight_kg: 0.35, volume_l: 0.35, stack: 6,
         drink: Some((thirst: 0.25, hunger: 0.03)), color: (0.75, 0.15, 0.15)),
     (id: "juice_carton", name: "Carton of juice", category: Drink, weight_kg: 1.05, volume_l: 1.0, stack: 3,

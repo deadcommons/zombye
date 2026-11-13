@@ -428,6 +428,12 @@ pub struct ItemDef {
     /// doesn't have: a grey-box in its colour.
     #[serde(default)]
     pub model: Option<String>,
+    /// The item this one becomes when filled at a running tap: an empty bottle `"water_bottle"`.
+    /// Every item with one can be filled at a sink, from its right-click menu, the sink's and the
+    /// Make list ([`crate::crafting::add_fill_recipes`] makes the recipe), so a new container (a
+    /// jug, a canteen, a pot) needs only this line.
+    #[serde(default)]
+    pub fills: Option<String>,
     /// Grey-box colour (linear-ish RGB 0..1).
     #[serde(default = "grey")]
     pub color: (f32, f32, f32),
@@ -468,6 +474,7 @@ impl ItemDef {
             clothing: None,
             light: None,
             model: None,
+            fills: None,
             color: w.color,
         }
     }
@@ -613,6 +620,11 @@ pub fn validate_items(defs: &[ItemDef], weapons: &[WeaponDef]) -> Result<(), Str
         // A gun's item needs what the gun is loaded with among the items too (#72).
         if let Some(r) = d.weapon.as_ref().and_then(|w| weapons.iter().find(|x| &x.id == w)).and_then(|w| w.ranged.as_ref()) {
             r.check_items(&d.id, defs)?;
+        }
+        if let Some(f) = &d.fills
+            && (f == &d.id || !defs.iter().any(|o| &o.id == f))
+        {
+            return Err(format!("item {}: fills names {f:?}, which isn't another item", d.id));
         }
     }
     Ok(())

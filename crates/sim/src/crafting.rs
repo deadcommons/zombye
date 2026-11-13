@@ -224,6 +224,31 @@ pub fn parse_recipes_for(text: &str, items: &[ItemDef]) -> Result<Vec<RecipeDef>
     Ok(defs)
 }
 
+/// Add a recipe that fills each item with a `fills` ([`ItemDef::fills`]) at a running tap:
+/// `fill_<item id>`, 3 s, the empty one in, the filled one out. A recipe of that id already there
+/// (written out in a recipes file) is left as it is.
+pub fn add_fill_recipes(recipes: &mut Vec<RecipeDef>, items: &[ItemDef]) {
+    for d in items {
+        let Some(full) = &d.fills else { continue };
+        let id = format!("fill_{}", d.id);
+        if recipes.iter().any(|r| r.id == id) || !items.iter().any(|o| &o.id == full) {
+            continue;
+        }
+        recipes.push(RecipeDef {
+            id,
+            name: format!("Fill the {} at the tap", d.name.to_lowercase()),
+            secs: 3.0,
+            inputs: vec![RecipeItem { item: d.id.clone(), count: 1 }],
+            tools: Vec::new(),
+            outputs: vec![RecipeItem { item: full.clone(), count: 1 }],
+            heat: false,
+            water: true,
+            repairs: None,
+            places: None,
+        });
+    }
+}
+
 fn index_of(items: &[ItemDef], id: &str) -> Option<u16> {
     items.iter().position(|d| d.id == id).map(|i| i as u16)
 }

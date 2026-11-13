@@ -1586,7 +1586,7 @@ A new single-player game can begin with a survivor of your making in a world of 
   optional `BAGS` section (which place each carried stack is in; only when anything is in a bag; no format bump: an
   older save's things are settled on load). `wire::PROTOCOL` 27 (`Place::Pouch`, the stacks' homes in the private
   view, `PrivateView::homes`).
-- **Client: the inventory screen** (`inventory_ui.rs`; Tab or I, and it opens by itself when a container search
+- **Client: the inventory screen** (`inventory_ui.rs`; Tab or I, Shift+C on its Make screen, Shift+B Build, and it opens by itself when a container search
   finishes: `search_done`). The first screen of the **flat frame** every full screen is to use: read
   **[docs/ui-design.md](docs/ui-design.md)** before building or changing one (colours, type, the frame, components,
   icons, behaviour, and a checklist). Its tokens and helpers are `theme::flat` (`VEIL`, `SOLID`, `TEXT`, `DIM`,
@@ -1624,7 +1624,7 @@ A new single-player game can begin with a survivor of your making in a world of 
   Ctrl-click picks, Shift-click picks the range from the last one picked in that column, and with something picked a
   bar at the foot of You sends them all to a bag, the container or the floor; right-click for the menu (#95,
   `menu_entries`): one flat list of what can be done with it, the likeliest first (eat or drink, wear, hold, take a
-  pill, use on a wound, put in the open container, **put in each other bag carried or the pockets**, drop, take, take
+  pill, use on a wound, **the recipes it goes into that can be made now** (`makes_from`: open a box of nails, rip a shirt, mend a bat; not heat or water recipes), put in the open container, **put in each other bag carried or the pockets**, drop, take, take
   in hand, split: one, or half of four or more), 1-9 to pick, Esc or a click elsewhere to close; the same menu on a
   ground item in reach in the world (right-click it with the screen open, or a quick right tap with it shut; held,
   right mouse aims). **A thing lying nearby** (in the open container or on the floor) offers what can be done with it
@@ -1679,7 +1679,7 @@ A new single-player game can begin with a survivor of your making in a world of 
   bottle). A rag dresses a wound dirty, a clean rag clean (first aid's `bandage` / `clean` tags).
 - **Water, mending and made weapons** (the loot and crafting pass): `water: true` recipes need a running tap within
   reach (`power::water_near`: `power.ron`'s `water.taps`, sinks and baths, same room and floor, while
-  `water.on` and before `water.fails_after_hours`; stateless, from the clock; `Snapshot::water_on`, `wire::PROTOCOL` 34): fill a bottle, from the Make list or the sink's right-click menu (`world_actions::tap_entries`).
+  `water.on` and before `water.fails_after_hours`; stateless, from the clock; `Snapshot::water_on`, `wire::PROTOCOL` 34): fill a bottle, from the Make list or the sink's right-click menu (`world_actions::tap_entries`). **What can be filled is data:** an item's `fills: Some("water_bottle")` in `items.ron` (the empty bottle's) gets a recipe `fill_<id>` by itself (`crafting::add_fill_recipes`, from `content::load_recipes` and a mod's `apply`), so a jug or canteen is one line.
   `repairs: Some((tag, knocks))` mends the most worn weapon held or carried with that item tag
   (`crafting::mend_target`, the same pure rule for the Make list; `mend_wood`, `mend_handle`, `mend_metal` in
   `items.ron`), taking knocks off its wear (`ItemStack::used`, see weapon wear): duct tape on a bat or plank, a
