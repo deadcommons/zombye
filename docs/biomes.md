@@ -171,7 +171,7 @@ right.
 | `birch_grove` | Small patches | Bright close stands of birch, ferns. |
 | `meadow` | Gentle ground | Long grass and wildflowers, a lone tree, knots of bushes. |
 | `deep_woods` | From 90 m out | Old, close woods, dark floor, ferns and deadwood. |
-| `rocky_slope` | Grades over 0.13 | Thin dry grass, bare earth, rocks, stunted conifers. |
+| `rocky_slope` | Grades over 0.16 | Thin dry grass, bare earth, rocks, stunted conifers. |
 
 ## Mistakes
 
