@@ -506,7 +506,7 @@ mod tests {
         assert_eq!(sway_target(0.0, 0.3, 2.6, 0.0), (0.0, 0.0));
         // Heading east, turning toward +y: the turn's middle is on the +y side.
         let (roll, _) = sway_target(12.0, 0.3, 2.6, 0.0);
-        assert!(roll < 0.0 && roll >= -MAX_ROLL);
+        assert!((-MAX_ROLL..0.0).contains(&roll));
         let heading = 0.0f32;
         let turn = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 - heading) * Sway { roll, ..default() }.turn();
         let roof = turn * Vec3::Y;
