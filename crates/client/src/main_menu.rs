@@ -510,7 +510,9 @@ fn raise(mut layer: ResMut<MenuLayer>, mut menu: ResMut<Menu>, link: Res<crate::
 /// played it (its seed is this new game's), else the game started again for a new town.
 fn start_here(mut commands: Commands, mut front: ResMut<crate::new_game::Front>, mut layer: ResMut<MenuLayer>, mut swap: crate::saving::WorldSwap, options: Res<Options>) {
     let Some((game, args)) = front.take_started() else { return };
-    let made = (layer.fresh && !layer.stale).then(|| new_world(&swap, &options, &game)).flatten();
+    // A world already played (the autosave, or one left for the menu) gives its town to the new
+    // game too: a new run of it, fresh loot and all, so Start never has to start the game again.
+    let made = (!layer.stale).then(|| new_world(&swap, &options, &game)).flatten();
     let Some((world, id, start)) = made else {
         ask_relaunch(args, &options);
         return;
