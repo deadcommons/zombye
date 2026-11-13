@@ -1,0 +1,78 @@
+// The calendar, the seasons and the weather. Schema: zombye_sim::weather::WeatherTuning (checked on
+// load; unknown fields are refused; every field may be left out for the default below). Saved with a
+// world's settings, so a world keeps the calendar and climate it began with. All numbers are our own.
+//
+// The weather is worked out from the world seed and the clock: every `slot_hours` it may change,
+// keeping the last slot's weather with chance `persist`, else drawing from the month's `odds`. Rain
+// and storms fall as snow and blizzards below `snow_below_c`. The default climate is hard: winter
+// nights fall below -20 C in a cold snap, summer days pass 40 C in a heatwave.
+(
+    // A new world's first day: 20 September (early autumn). Twelve months of `days_per_month` days
+    // make a year; fewer days a month bring the seasons round faster.
+    start_month: 9,
+    start_day: 20,
+    days_per_month: 30,
+    // How often the weather may change (game hours), the chance it stays as it was, and how long it
+    // takes to fade in or out.
+    slot_hours: 4.0,
+    persist: 0.65,
+    blend_hours: 1.0,
+    // Below this (C) rain is snow and a storm a blizzard.
+    snow_below_c: 1.0,
+    // How far temperatures stray from `mild_c` (1: as the months say; 0.6 a mild climate, 1.3 a
+    // harsh one), and a slow drift of up to `swing_c` either way over `swing_days` (cold snaps,
+    // heatwaves).
+    harshness: 1.0,
+    mild_c: 12.0,
+    swing_c: 5.0,
+    swing_days: 3.0,
+    // What storms add to the wind (0 still to 1 a gale).
+    storm_wind: 0.45,
+    // Indoors the air goes `indoor_mix` of the way to `indoor_c`; a lit campfire adds `fire_c` at
+    // its middle, falling to nothing `fire_radius` metres off.
+    indoor_c: 16.0,
+    indoor_mix: 0.6,
+    fire_c: 15.0,
+    fire_radius: 4.0,
+    // January first. low_c / high_c: the usual coldest of a night and warmest of a day (C); odds:
+    // how usual each kind of weather is (relative); wind: how windy it usually is.
+    months: [
+        (name: "January", low_c: -14.0, high_c: -4.0, wind: 0.45,
+            odds: (clear: 3.0, cloudy: 2.0, overcast: 3.0, rain: 3.0, storm: 2.0, fog: 1.0)),
+        (name: "February", low_c: -12.0, high_c: -2.0, wind: 0.45,
+            odds: (clear: 3.0, cloudy: 2.0, overcast: 3.0, rain: 3.0, storm: 2.0, fog: 1.0)),
+        (name: "March", low_c: -5.0, high_c: 5.0, wind: 0.4,
+            odds: (clear: 3.0, cloudy: 3.0, overcast: 3.0, rain: 3.0, storm: 1.0, fog: 2.0)),
+        (name: "April", low_c: 2.0, high_c: 13.0, wind: 0.35,
+            odds: (clear: 3.0, cloudy: 3.0, overcast: 2.0, rain: 4.0, storm: 1.0, fog: 1.0)),
+        (name: "May", low_c: 8.0, high_c: 20.0, wind: 0.3,
+            odds: (clear: 4.0, cloudy: 3.0, overcast: 2.0, rain: 3.0, storm: 1.0, fog: 1.0)),
+        (name: "June", low_c: 15.0, high_c: 28.0, wind: 0.25,
+            odds: (clear: 5.0, cloudy: 3.0, overcast: 1.0, rain: 2.0, storm: 1.0, fog: 0.5)),
+        (name: "July", low_c: 20.0, high_c: 34.0, wind: 0.2,
+            odds: (clear: 7.0, cloudy: 2.0, overcast: 1.0, rain: 1.0, storm: 1.5, fog: 0.2)),
+        (name: "August", low_c: 19.0, high_c: 33.0, wind: 0.2,
+            odds: (clear: 7.0, cloudy: 2.0, overcast: 1.0, rain: 1.0, storm: 1.5, fog: 0.3)),
+        (name: "September", low_c: 12.0, high_c: 25.0, wind: 0.3,
+            odds: (clear: 4.0, cloudy: 3.0, overcast: 2.0, rain: 2.0, storm: 1.0, fog: 1.0)),
+        (name: "October", low_c: 5.0, high_c: 16.0, wind: 0.35,
+            odds: (clear: 3.0, cloudy: 3.0, overcast: 3.0, rain: 4.0, storm: 1.0, fog: 2.0)),
+        (name: "November", low_c: -2.0, high_c: 7.0, wind: 0.4,
+            odds: (clear: 2.0, cloudy: 3.0, overcast: 4.0, rain: 4.0, storm: 1.5, fog: 2.0)),
+        (name: "December", low_c: -10.0, high_c: -1.0, wind: 0.45,
+            odds: (clear: 3.0, cloudy: 2.0, overcast: 3.0, rain: 3.0, storm: 2.0, fog: 1.0)),
+    ],
+    // What each kind of weather does: cloud (0-1), temp_c (added to the air), swing (times the daily
+    // swing: a clear sky widens it), sight and hearing (shares at full strength; nothing reads them
+    // yet). A kind left out keeps these built-in numbers.
+    kinds: [
+        (kind: Clear, cloud: 0.05, temp_c: 0.0, swing: 1.25, sight: 1.0, hearing: 1.0),
+        (kind: Cloudy, cloud: 0.45, temp_c: 0.0, swing: 0.9, sight: 1.0, hearing: 1.0),
+        (kind: Overcast, cloud: 0.9, temp_c: -0.5, swing: 0.5, sight: 0.95, hearing: 1.0),
+        (kind: Rain, cloud: 0.85, temp_c: -2.0, swing: 0.4, sight: 0.8, hearing: 0.85),
+        (kind: Storm, cloud: 1.0, temp_c: -3.0, swing: 0.35, sight: 0.6, hearing: 0.7),
+        (kind: Snow, cloud: 0.9, temp_c: -1.0, swing: 0.4, sight: 0.7, hearing: 0.8),
+        (kind: Blizzard, cloud: 1.0, temp_c: -5.0, swing: 0.3, sight: 0.3, hearing: 0.6),
+        (kind: Fog, cloud: 0.9, temp_c: -1.0, swing: 0.5, sight: 0.4, hearing: 0.95),
+    ],
+)

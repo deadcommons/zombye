@@ -277,6 +277,11 @@ pub struct Setup {
     pub day_minutes: Option<f32>,
     /// The hour the survivor wakes at.
     pub start_hour: Option<f32>,
+    /// The month the world starts in (1-12; `weather.ron`'s `start_month` otherwise), on its first day
+    /// unless that is the shipped start month.
+    pub start_month: Option<u8>,
+    /// How harsh the climate is (`weather.ron`'s `harshness`: 0.6 mild, 1 normal, 1.3 harsh).
+    pub climate: Option<f32>,
 }
 
 impl Setup {
@@ -339,6 +344,12 @@ impl DifficultyData {
         if setup.start_hour.is_some_and(|h| !h.is_finite() || !(0.0..24.0).contains(&h)) {
             return Err("the start hour must be 0 to 24".into());
         }
+        if setup.start_month.is_some_and(|m| !(1..=12).contains(&m)) {
+            return Err("the start month must be 1 to 12".into());
+        }
+        if setup.climate.is_some_and(|c| !c.is_finite() || !(0.0..=3.0).contains(&c)) {
+            return Err("the climate's harshness must be 0 to 3".into());
+        }
         Ok(d)
     }
 
@@ -348,6 +359,13 @@ impl DifficultyData {
         d.apply(config);
         if let Some(h) = setup.start_hour {
             config.start_hour = h;
+        }
+        if let Some(m) = setup.start_month.filter(|&m| m != config.weather.start_month) {
+            config.weather.start_month = m;
+            config.weather.start_day = 1;
+        }
+        if let Some(c) = setup.climate {
+            config.weather.harshness = c;
         }
         Ok(())
     }
@@ -390,6 +408,11 @@ mod tests {
         assert_eq!(config.infection.mode, InfectionMode::Off);
         assert_eq!((config.start_hour, config.day_length_secs), (7.0, 1800.0));
         assert_eq!(config.sandbox.difficulty, hard.id);
+        let mut winter = WorldConfig::new(1, 0, Vec::new());
+        data.apply(&Setup { start_month: Some(12), climate: Some(1.3), ..Default::default() }, &mut winter).unwrap();
+        assert_eq!((winter.weather.start_month, winter.weather.start_day, winter.weather.harshness), (12, 1, 1.3));
+        assert!(data.apply(&Setup { start_month: Some(13), ..Default::default() }, &mut winter).is_err());
+        assert!(data.apply(&Setup { climate: Some(-1.0), ..Default::default() }, &mut winter).is_err());
         assert!(data.apply(&Setup { difficulty: "no_such".into(), ..Default::default() }, &mut config).is_err());
         assert!(data.apply(&Setup { zombies: Some(1000.0), ..Default::default() }, &mut config).is_err());
         assert!(parse_difficulty("[(id: \"a\", name: \"A\", about: \"x\", gore: 2)]").is_err(), "unknown fields are refused");
