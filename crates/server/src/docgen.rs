@@ -51,6 +51,7 @@ const DATA_FILES: &[(&str, &str, Part, &str)] = &[
     ("street_props.ron", "street_props::StreetPropsDef", Part::Rules, "Mailboxes, hydrants, cars, yard things and where they stand."),
     ("power.ron", "power::PowerDef", Part::Rules, "The power grid and room lights."),
     ("fire.ron", "fire::FireTuning", Part::Rules, "Campfires, stoves, cooking and burns."),
+    ("weather.ron", "weather::WeatherTuning", Part::Rules, "The calendar, the climate by month and the weather."),
     ("difficulty.ron", "difficulty::DifficultyData", Part::Rules, "Difficulty presets a new game offers."),
     ("backgrounds.ron", "[origin::BackgroundDef]", Part::Rules, "Backgrounds: who a survivor was before."),
     ("strengths_and_flaws.ron", "origin::PicksFile", Part::Rules, "Strengths and Flaws a new survivor can pick."),
@@ -594,6 +595,7 @@ fn tuning_values(c: &zombye_sim::WorldConfig) -> Vec<(&'static str, Value)> {
         stairs,
         blinds,
         fire,
+        weather,
         chop,
         sandbox,
     ]
