@@ -233,6 +233,9 @@ const BUTTON: Handle<Image> = uuid_handle!("6f1f8a52-51c1-4c0e-9a57-2f6f3a1d0c63
 const SLOT: Handle<Image> = uuid_handle!("6f1f8a52-51c1-4c0e-9a57-2f6f3a1d0c64");
 const BAR: Handle<Image> = uuid_handle!("6f1f8a52-51c1-4c0e-9a57-2f6f3a1d0c65");
 const DAB: Handle<Image> = uuid_handle!("6f1f8a52-51c1-4c0e-9a57-2f6f3a1d0c66");
+const GRAIN: Handle<Image> = uuid_handle!("6f1f8a52-51c1-4c0e-9a57-2f6f3a1d0c67");
+/// The grain's tile, texels a side.
+const GRAIN_SIZE: u32 = 256;
 
 /// A sheet of paint cut in nine: `border` texels of ragged edge each side, and a middle of
 /// `period` texels that repeats.
@@ -431,6 +434,28 @@ fn dab_pixels() -> Canvas {
     c
 }
 
+/// The grain of an old print, to lay over a screen's ground: pale specks and dark ones, and
+/// faint blotches where the ink took more or less. Repeats without a seam.
+fn grain_pixels() -> Canvas {
+    let n = GRAIN_SIZE;
+    let mut c = Canvas::new(n, n);
+    for y in 0..n {
+        for x in 0..n {
+            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+            let blotch = noise(px, py, (48.0, 48.0), n as f32, 81) - 0.5;
+            let speck = hash(x as i32, y as i32, 82);
+            let pale = smooth(0.93, 1.0, speck) * 0.10 + blotch.max(0.0) * 0.07;
+            let dark = smooth(0.92, 0.0, speck * 12.0) * 0.16 + (-blotch).max(0.0) * 0.12;
+            if pale >= dark {
+                c.push((0.914, 0.847, 0.733), pale);
+            } else {
+                c.push((0.0, 0.0, 0.0), dark);
+            }
+        }
+    }
+    c
+}
+
 /// Makes the skin's textures. Add it before the UI's plugins (it needs Bevy's image assets).
 pub struct ThemePlugin;
 
@@ -442,7 +467,7 @@ impl Plugin for ThemePlugin {
             }
         }
         let Some(mut images) = app.world_mut().get_resource_mut::<Assets<Image>>() else { return };
-        for (handle, canvas) in [(SHEET, paint(&SHEET_PAINT)), (STRIP, paint(&STRIP_PAINT)), (BUTTON, paint(&BUTTON_PAINT)), (SLOT, slot_pixels()), (BAR, bar_pixels()), (DAB, dab_pixels())] {
+        for (handle, canvas) in [(SHEET, paint(&SHEET_PAINT)), (STRIP, paint(&STRIP_PAINT)), (BUTTON, paint(&BUTTON_PAINT)), (SLOT, slot_pixels()), (BAR, bar_pixels()), (DAB, dab_pixels()), (GRAIN, grain_pixels())] {
             let _ = images.insert(handle.id(), canvas.image());
         }
         flat::load(&mut images);
@@ -462,6 +487,12 @@ fn sliced(image: Handle<Image>, border: BorderRect, color: Color, tile: bool) ->
         visual_box: VisualBox::BorderBox,
         ..default()
     }
+}
+
+/// The grain of an old print, repeated over its whole node: lay it over the ground of a screen
+/// before the game (the brand's side), under everything else on it.
+pub fn grain() -> ImageNode {
+    ImageNode { image: GRAIN, image_mode: NodeImageMode::Tiled { tile_x: true, tile_y: true, stretch_value: 1.0 }, ..default() }
 }
 
 /// A panel's backing: a charcoal sheet with brushed, torn edges. Give the node [`SHEET_PAD`] of

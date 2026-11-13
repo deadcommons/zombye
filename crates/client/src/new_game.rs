@@ -748,6 +748,8 @@ fn draw(mut commands: Commands, mut screen: ResMut<Screen>, root: Option<Single<
     let screen = &*screen;
     commands.entity(root).despawn_children();
     commands.entity(root).with_children(|c| {
+        // The ground printed (behind everything: the first child, out of the flow).
+        crate::menu_skin::ground(c);
         top_bar(c, screen);
         c.spawn(Node { flex_grow: 1.0, min_height: px(0), flex_direction: FlexDirection::Row, ..default() }).with_children(|body| {
             // You: the figure stands in this column, the wardrobe under it.
@@ -945,7 +947,8 @@ fn points_word(n: i32) -> String {
 /// The frame's top bar: the screen's title, its pages as chips, and the way back.
 fn top_bar(c: &mut ChildSpawnerCommands, screen: &Screen) {
     c.spawn((Node { height: px(flat::TOP_BAR), flex_shrink: 0.0, flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(8), padding: UiRect::horizontal(px(24)), border: UiRect::bottom(px(1)), ..default() }, BorderColor::all(LINE))).with_children(|bar| {
-        bar.spawn((Text::new("NEW GAME"), theme::brand(flat::SCREEN_TITLE + 6.0), TextColor(BONE), TextLayout::no_wrap(), Node { margin: UiRect::right(px(20)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
+        bar.spawn((Text::new("NEW GAME"), theme::brand(flat::SCREEN_TITLE + 6.0), TextColor(BONE), TextLayout::no_wrap(), Node { margin: UiRect::right(px(4)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
+        bar.spawn((Node { margin: UiRect::right(px(20)), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|s| crate::menu_skin::stripes(s, 44.0));
         for (k, tab) in Tab::ALL.into_iter().enumerate() {
             chip(bar, tab.label(), Some(&format!("{}", k + 1)), tab == screen.tab, Act::Tab(tab));
         }

@@ -49,6 +49,21 @@ fn parse_at(s: &str) -> Option<IVec2> {
     Some(IVec2::new(x.trim().parse().ok()?, y.trim().parse().ok()?))
 }
 
+/// The mode a new window is made in. A window made full screen can't tell which monitor is the
+/// current one yet (and a Mac opened the game's on a Space of its own that never came to the
+/// front, so it drew nothing); so it is made on the main monitor, or as a plain window where the
+/// last run's stood that goes full screen once it is up ([`arrive`]).
+pub fn first_mode(fullscreen: bool) -> bevy::window::WindowMode {
+    use bevy::window::{MonitorSelection, WindowMode};
+    if fullscreen_asked() {
+        WindowMode::Windowed
+    } else if fullscreen {
+        WindowMode::BorderlessFullscreen(MonitorSelection::Primary)
+    } else {
+        WindowMode::Windowed
+    }
+}
+
 /// Where a new window opens: where the last run's was, else in the middle of the main monitor.
 pub fn first_position() -> bevy::window::WindowPosition {
     match position_asked() {
@@ -102,8 +117,34 @@ impl Plugin for HandoffPlugin {
         // nobody until it goes on. (Everywhere it notes where the window is; only where
         // `enabled` does it hold the exit for full screen.)
         app.add_systems(Last, hold_exit.before(OnAppExitSystems));
+        app.add_systems(Update, arrive);
     }
 }
+
+/// A window that follows another run's: brought to the front (a program started again in its own
+/// place isn't, and a window behind others on a Mac draws nothing), then made full screen if the
+/// last one was, on the monitor it opened on. Once, a few frames in.
+fn arrive(_main: NonSendMarker, mut windows: Query<(Entity, &mut Window), With<PrimaryWindow>>, mut frames: Local<u32>) {
+    if *frames > ARRIVE_FRAMES {
+        return;
+    }
+    *frames += 1;
+    if *frames != ARRIVE_FRAMES || (position_asked().is_none() && !fullscreen_asked()) {
+        return;
+    }
+    let Ok((entity, mut window)) = windows.single_mut() else { return };
+    bevy::winit::WINIT_WINDOWS.with_borrow(|w| {
+        if let Some(w) = w.get_window(entity) {
+            w.focus_window();
+        }
+    });
+    if fullscreen_asked() && window.mode == bevy::window::WindowMode::Windowed {
+        window.mode = bevy::window::WindowMode::BorderlessFullscreen(bevy::window::MonitorSelection::Current);
+    }
+}
+
+/// Frames after its first that a following window is brought forward and made full screen.
+const ARRIVE_FRAMES: u32 = 2;
 
 fn hold_exit(_main: NonSendMarker, mut exits: ResMut<Messages<AppExit>>, window: Query<Entity, With<PrimaryWindow>>, mut held: Local<Held>) {
     if held.let_go {

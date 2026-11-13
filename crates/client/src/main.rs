@@ -897,7 +897,7 @@ pub(crate) fn window_plugins(options: &Options) -> bevy::app::PluginGroupBuilder
                     title: "Zombye".into(),
                     // On the main monitor, or where the screen before this one was.
                     position: window_handoff::first_position(),
-                    mode: settings_ui::window_mode((kept.fullscreen || window_handoff::fullscreen_asked()) && !options.size_given),
+                    mode: window_handoff::first_mode(kept.fullscreen && !options.size_given),
                     resolution: if options.size_given {
                         bevy::window::WindowResolution::new(options.size.x, options.size.y).with_scale_factor_override(1.0)
                     } else {

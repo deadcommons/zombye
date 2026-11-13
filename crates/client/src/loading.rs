@@ -377,6 +377,9 @@ fn put_up(commands: &mut Commands, line: String, shown: f32) {
             GlobalZIndex(i32::MAX - 8),
         ))
         .with_children(|c| {
+            // The ground printed: grain, and the sun and the town along its foot.
+            crate::menu_skin::ground(c);
+            brand::horizon(c, 1.0);
             if !brand::title(c, Mark::Logo, LOGO_WIDTH, DIM) {
                 brand::text_title(c, 104.0, BONE, DIM);
             }

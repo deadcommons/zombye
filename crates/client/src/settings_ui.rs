@@ -652,6 +652,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
         // The top bar: what this is, and the way out.
         p.spawn(Node { height: px(58), padding: UiRect::horizontal(px(24)), align_items: AlignItems::Center, column_gap: px(16), flex_shrink: 0.0, ..default() }).with_children(|bar| {
             skin::title(bar, "Settings");
+            skin::stripes(bar, 44.0);
             bar.spawn((Text::new("Kept as you change them."), font(SMALL), TextColor(DIM), TextLayout::no_wrap()));
             skin::spacer(bar);
             skin::button(bar, "Close", None, Look::Plain, Val::Auto).observe(|_: On<PointerPress>, mut ui: ResMut<SettingsUi>| ui.acts.push(Act::Close));

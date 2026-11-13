@@ -35,6 +35,8 @@ pub const ACCENT: Color = Color::srgb(0.878, 0.651, 0.275);
 const ACCENT_HOVER: Color = Color::srgb(0.922, 0.722, 0.388);
 /// Rust (#D45B2C): the brand's second colour, for a line that should catch the eye.
 pub const RUST: Color = Color::srgb(0.831, 0.357, 0.173);
+/// Brick (#9B3A2D): the last of the four stripes.
+pub const BRICK: Color = Color::srgb(0.608, 0.227, 0.176);
 /// The veil between a menu's panel and the game behind it.
 pub const VEIL: Color = Color::srgba(0.09, 0.07, 0.06, 0.74);
 
@@ -142,6 +144,24 @@ pub fn divider(parent: &mut ChildSpawnerCommands) {
 /// A screen's title.
 pub fn title(parent: &mut ChildSpawnerCommands, text: &str) {
     parent.spawn((Text::new(text.to_uppercase()), theme::brand(TITLE + 6.0), TextColor(BONE), TextLayout::no_wrap(), Pickable::IGNORE));
+}
+
+/// The ground of a screen before the game, printed: the grain over its whole parent, behind what
+/// the parent holds (spawn it first; the parent gives the colour).
+pub fn ground(parent: &mut ChildSpawnerCommands) {
+    parent.spawn((theme::grain(), Node { position_type: PositionType::Absolute, left: px(0), top: px(0), width: percent(100), height: percent(100), ..default() }, Pickable::IGNORE));
+}
+
+/// The brand's four stripes (cream, mustard, rust, brick), `width` wide, cut off at a slant at
+/// their right end: under a screen's title.
+pub fn stripes(parent: &mut ChildSpawnerCommands, width: f32) {
+    const BAND: f32 = 3.0;
+    parent.spawn((Node { flex_direction: FlexDirection::Column, width: px(width), flex_shrink: 0.0, ..default() }, Pickable::IGNORE)).with_children(|s| {
+        for (k, colour) in [BONE, ACCENT, RUST, BRICK].into_iter().enumerate() {
+            // Each band a little shorter than the one over it: the slant.
+            s.spawn((Node { width: px(width - k as f32 * BAND), height: px(BAND), ..default() }, BackgroundColor(colour), Pickable::IGNORE));
+        }
+    });
 }
 
 /// Empty room that pushes what follows to the far end of a row.

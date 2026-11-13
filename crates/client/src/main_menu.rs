@@ -699,6 +699,11 @@ fn draw(mut commands: Commands, mut menu: ResMut<Menu>, root: Option<Single<Enti
     commands.entity(root).despawn_children();
     let now = SystemTime::now();
     commands.entity(root).with_children(|c| {
+        // The ground printed: grain, and on the home screen the sun and the town along its foot.
+        skin::ground(c);
+        if menu.screen == Screen::Home {
+            brand::horizon(c, 1.0);
+        }
         c.spawn(Node { flex_grow: 1.0, padding: UiRect::left(percent(9)), flex_direction: FlexDirection::Column, justify_content: JustifyContent::Center, row_gap: px(8), ..default() }).with_children(|col| {
             // (The server browser's sheet has the Join screen to itself.)
             if menu.screen != Screen::Join {
@@ -757,6 +762,9 @@ fn title(col: &mut ChildSpawnerCommands, screen: Screen) {
     // (Out to the left by the picture's own margin, so the word starts where the buttons do,
     // and the room below that the tagline's margin gives the text title.)
     col.spawn(Node { margin: UiRect::new(px(-width * 0.04), px(0), px(0), px(18)), flex_shrink: 0.0, ..default() }).with_children(|c| drawn = brand::title(c, mark, width, DIM));
+    if drawn && screen != Screen::Home {
+        col.spawn(Node { margin: UiRect::new(px(0), px(0), px(-10), px(16)), flex_shrink: 0.0, ..default() }).with_children(|c| skin::stripes(c, 132.0));
+    }
     if !drawn {
         brand::text_title(col, 104.0, BONE, DIM);
         col.spawn((Text::new("ZOMBIE SURVIVAL"), theme::brand(24.0), TextColor(skin::ACCENT), TextLayout::no_wrap(), Node { margin: UiRect::new(px(3), px(0), px(-12), px(26)), ..default() }));
