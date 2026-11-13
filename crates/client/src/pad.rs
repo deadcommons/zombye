@@ -31,6 +31,7 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 const SHIPPED: &str = include_str!("../../../assets/data/pad.ron");
 
@@ -242,10 +243,12 @@ pub enum Only {
     ItemWheel,
     /// The make wheel, held.
     MakeWheel,
+    /// The chat line, with the on-screen keyboard (`osk.rs`).
+    Chat,
 }
 
 impl Only {
-    pub const ALL: [Only; 10] = [Only::Attack, Only::Aim, Only::TurnLeft, Only::TurnRight, Only::ZoomIn, Only::ZoomOut, Only::FirstPerson, Only::Pause, Only::ItemWheel, Only::MakeWheel];
+    pub const ALL: [Only; 11] = [Only::Attack, Only::Aim, Only::TurnLeft, Only::TurnRight, Only::ZoomIn, Only::ZoomOut, Only::FirstPerson, Only::Pause, Only::ItemWheel, Only::MakeWheel, Only::Chat];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -259,6 +262,7 @@ impl Only {
             Only::Pause => "pause",
             Only::ItemWheel => "item_wheel",
             Only::MakeWheel => "make_wheel",
+            Only::Chat => "chat",
         }
     }
 }
@@ -355,6 +359,8 @@ pub struct PadFile {
     pub item_wheel: Option<Vec<String>>,
     /// The make wheel, held: what you can make here; letting go makes it.
     pub make_wheel: Option<Vec<String>>,
+    /// The chat line, typed on the on-screen keyboard.
+    pub chat: Option<Vec<String>>,
 }
 
 impl PadFile {
@@ -394,6 +400,7 @@ impl PadFile {
             (PadAction::Only(Only::Pause), self.pause),
             (PadAction::Only(Only::ItemWheel), self.item_wheel),
             (PadAction::Only(Only::MakeWheel), self.make_wheel),
+            (PadAction::Only(Only::Chat), self.chat),
         ];
         all.into_iter().filter_map(|(a, b)| b.map(|b| (a.id().to_string(), b))).collect()
     }
@@ -588,6 +595,11 @@ pub struct InputMode {
 }
 
 impl InputMode {
+    /// The pad read: the one last touched, if any has been.
+    pub fn gamepad(&self) -> Option<Entity> {
+        self.gamepad
+    }
+
     /// The setting and what was touched last: is the controller the one in use?
     pub fn follow(setting: InputSetting, was_pad: bool, pad_touched: bool, keys_touched: bool) -> bool {
         match setting {
@@ -628,6 +640,21 @@ pub struct Pad {
     pub select: Vec2,
     pub confirm: bool,
     pub cancel: bool,
+    /// In the pause menu and the settings (`focus.rs`): the d-pad pressed this frame as a step
+    /// (x right, y up), the left stick held, and the shoulder buttons tapped (a tab either way).
+    pub nav_step: IVec2,
+    pub nav_stick: Vec2,
+    pub nav_tab: i32,
+    /// The buttons pressed this frame, a bit each by [`Button`]'s order (for screens that take a
+    /// button whatever it is bound to: the death and morning screens).
+    pub pressed: u16,
+}
+
+impl Pad {
+    /// Was this button pressed this frame?
+    pub fn just(&self, b: Button) -> bool {
+        self.pressed & (1 << b as u16) != 0
+    }
 }
 
 /// Keys the pad pressed for the game this frame, let go of next frame.
@@ -672,8 +699,87 @@ impl Plugin for PadPlugin {
                     .before(crate::inventory_ui::TextEntry)
                     .run_if(crate::live),
             )
-            .add_systems(Update, (connected, follow_setting));
+            .init_resource::<Toast>()
+            .add_systems(Startup, spawn_toast)
+            .add_systems(Update, (connected, follow_setting, publish, show_toast).chain());
     }
+}
+
+// --- Prompts: what the UI calls a key, while the controller is in use ---------------------------
+
+/// The controller is the one in use (a copy of [`InputMode::pad`], for the small spawn helpers
+/// that every panel shares, as `help_text.rs` keeps its level).
+static SHOWING: AtomicBool = AtomicBool::new(false);
+static FAMILY: AtomicU8 = AtomicU8::new(0);
+
+/// Keep the copies in step with [`InputMode`].
+fn publish(mode: Res<InputMode>) {
+    if mode.is_changed() {
+        show(mode.pad, mode.family);
+    }
+}
+
+/// Set what the prompts follow (also for tests and pictures).
+pub fn show(pad: bool, family: Family) {
+    SHOWING.store(pad, Ordering::Relaxed);
+    FAMILY.store(family as u8, Ordering::Relaxed);
+}
+
+/// Prompts name the controller's buttons: it is the one in use.
+pub fn showing() -> bool {
+    SHOWING.load(Ordering::Relaxed)
+}
+
+/// The names the pad in use gives its buttons.
+pub fn family() -> Family {
+    match FAMILY.load(Ordering::Relaxed) {
+        1 => Family::PlayStation,
+        2 => Family::Nintendo,
+        _ => Family::Xbox,
+    }
+}
+
+/// A button by its common name, as the pad in use calls it ("B" is "Circle" on a PlayStation pad).
+pub fn button(b: Button) -> String {
+    b.label(family()).to_string()
+}
+
+/// The first button that does this action, as the pad in use calls it ("Hold LB"); none bound: None.
+pub fn button_for(a: PadAction) -> Option<String> {
+    current().binds(a).first().map(|b| b.label(family()))
+}
+
+/// What to show for a key the UI names (as the keyboard calls it: "Esc", "Enter", "E", "Shift +
+/// B"): itself while the keyboard is in use; with the controller, the button that does the same,
+/// or None when no button does (the hint is then left out). On the screens before and over the
+/// game the pad's B is Esc and A is Enter (`focus.rs`).
+pub fn prompt(key: &str) -> Option<String> {
+    if !showing() {
+        return Some(key.to_string());
+    }
+    prompt_for(&current(), &crate::keys::current(), family(), key)
+}
+
+/// [`prompt`] with what it reads handed in.
+pub fn prompt_for(pad: &PadBindings, keys: &crate::keys::Bindings, family: Family, key: &str) -> Option<String> {
+    let k = key.trim();
+    match k.to_lowercase().as_str() {
+        "esc" | "escape" => return Some(Button::B.label(family).to_string()),
+        "enter" | "return" | "click" => return Some(Button::A.label(family).to_string()),
+        // Tabs and pages: the bumpers.
+        "tab" => return Some(Button::RB.label(family).to_string()),
+        "shift+tab" | "shift + tab" => return Some(Button::LB.label(family).to_string()),
+        _ => {}
+    }
+    // An action's key: that action's button.
+    let a = Action::ALL.into_iter().find(|&a| keys.chords(a).iter().any(|c| c.text.replace('+', " + ").eq_ignore_ascii_case(k) || c.text.eq_ignore_ascii_case(k)))?;
+    pad.binds(PadAction::Key(a)).first().map(|b| b.label(family))
+}
+
+/// What to show for an action's key: its keyboard key, or with the controller its button ("Y");
+/// an action no button does: None.
+pub fn prompt_action(a: Action) -> Option<String> {
+    if showing() { button_for(PadAction::Key(a)) } else { Some(crate::keys::short(a)) }
 }
 
 /// The setting changed on the settings screen: follow it.
@@ -688,7 +794,7 @@ fn follow_setting(store: Res<crate::ui_scale::SettingsStore>, options: Res<crate
 }
 
 /// A pad plugged in or out: say so on the yellow line.
-fn connected(mut events: MessageReader<GamepadConnectionEvent>, time: Res<Time>, mut mode: ResMut<InputMode>, notice: Option<ResMut<crate::saving::Notice>>) {
+fn connected(mut events: MessageReader<GamepadConnectionEvent>, time: Res<Time>, real: Res<Time<Real>>, mut mode: ResMut<InputMode>, notice: Option<ResMut<crate::saving::Notice>>, mut toast: ResMut<Toast>) {
     let mut said = None;
     for ev in events.read() {
         match &ev.connection {
@@ -707,8 +813,82 @@ fn connected(mut events: MessageReader<GamepadConnectionEvent>, time: Res<Time>,
             }
         }
     }
-    if let (Some(text), Some(mut n)) = (said, notice) {
-        n.say(time.elapsed_secs(), text);
+    if let Some(text) = said {
+        toast.say(real.elapsed_secs(), text.clone());
+        if let Some(mut n) = notice {
+            n.say(time.elapsed_secs(), text);
+        }
+    }
+}
+
+/// A short line in the top right corner, over every screen (the menus, the new-game screen, the
+/// game): a controller plugged in or out, and which the game now follows when that changes.
+#[derive(Resource, Default)]
+pub struct Toast {
+    text: String,
+    until: f32,
+    changed: bool,
+    /// The controller in use, as last said (None: nothing said yet, so the start says nothing).
+    was_pad: Option<bool>,
+}
+
+impl Toast {
+    pub fn say(&mut self, now: f32, text: String) {
+        (self.text, self.until, self.changed) = (text, now + TOAST_SECS, true);
+    }
+}
+
+/// How long the corner line stays up (seconds).
+const TOAST_SECS: f32 = 4.0;
+
+#[derive(Component)]
+struct ToastNode;
+
+fn spawn_toast(mut commands: Commands) {
+    use crate::menu_skin as skin;
+    commands
+        .spawn((
+            ToastNode,
+            Node { position_type: PositionType::Absolute, top: px(18), right: px(18), padding: UiRect::axes(px(14), px(8)), border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(6)), display: Display::None, ..default() },
+            BackgroundColor(skin::GROUND.with_alpha(0.94)),
+            BorderColor::all(skin::ACCENT),
+            GlobalZIndex(60),
+            Pickable::IGNORE,
+        ))
+        .with_children(|t| {
+            t.spawn((Text::new(""), crate::theme::strong(crate::theme::BODY), TextColor(skin::BONE), TextLayout::no_wrap(), Pickable::IGNORE));
+        });
+}
+
+fn show_toast(time: Res<Time<Real>>, mode: Res<InputMode>, mut toast: ResMut<Toast>, mut node: Query<(&mut Node, &Children), With<ToastNode>>, mut texts: Query<&mut Text>) {
+    let now = time.elapsed_secs();
+    // The game follows the other now: say so (not at the start).
+    if toast.was_pad != Some(mode.pad) {
+        if toast.was_pad.is_some() {
+            let text = if mode.pad { format!("Controller in use: {} buttons", family_name(mode.family)) } else { "Keyboard and mouse in use".to_string() };
+            toast.say(now, text);
+        }
+        toast.was_pad = Some(mode.pad);
+    }
+    let Ok((mut n, children)) = node.single_mut() else { return };
+    let up = now < toast.until;
+    let display = if up { Display::Flex } else { Display::None };
+    if n.display != display {
+        n.display = display;
+    }
+    if toast.changed {
+        toast.changed = false;
+        if let Some(mut t) = children.first().and_then(|c| texts.get_mut(*c).ok()) {
+            t.0 = toast.text.clone();
+        }
+    }
+}
+
+fn family_name(f: Family) -> &'static str {
+    match f {
+        Family::Xbox => "Xbox",
+        Family::PlayStation => "PlayStation",
+        Family::Nintendo => "Nintendo",
     }
 }
 
@@ -725,6 +905,8 @@ pub(crate) struct Screens<'w> {
     chat: Option<Res<'w, crate::chat::ChatEntry>>,
     find: Option<Res<'w, crate::inventory_ui::Find>>,
     wheel: Option<Res<'w, crate::wheel::Wheel>>,
+    menu: Option<Res<'w, crate::main_menu::MenuLayer>>,
+    front: Option<Res<'w, crate::new_game::Front>>,
 }
 
 impl Screens<'_> {
@@ -738,9 +920,13 @@ impl Screens<'_> {
             || self.menus()
     }
 
-    /// The pause menu or the settings: they take the pad whole (Menu and B are Esc there).
+    /// The main menu, the new-game screen, the pause menu or the settings: they take the pad whole
+    /// (Menu and B are Esc there).
     fn menus(&self) -> bool {
-        self.pause.as_ref().is_some_and(|p| p.open) || self.settings.as_ref().is_some_and(|s| s.open)
+        self.pause.as_ref().is_some_and(|p| p.open)
+            || self.settings.as_ref().is_some_and(|s| s.open)
+            || self.menu.as_ref().is_some_and(|m| m.up)
+            || self.front.as_ref().is_some_and(|f| f.up())
     }
 
     /// A wheel is up: the sticks pick and A and B are its own.
@@ -750,7 +936,7 @@ impl Screens<'_> {
 
     /// A line being typed: the pad does nothing meanwhile.
     fn typing(&self) -> bool {
-        self.chat.as_ref().is_some_and(|c| c.typing) || self.find.as_ref().is_some_and(|f| f.typing)
+        self.chat.as_ref().is_some_and(|c| c.typing) || self.find.as_ref().is_some_and(|f| f.typing) || self.browser.as_ref().is_some_and(|b| b.typing())
     }
 }
 
@@ -780,7 +966,8 @@ fn read_pad(
     }
     let gamepad = mode.gamepad.and_then(|e| gamepads.get(e).ok()).or_else(|| gamepads.iter().next()).map(|(_, g)| g);
     // Which is in use: real keys and clicks (the pad's own presses come after this).
-    let keys_touched = keys.get_just_pressed().next().is_some() || mouse.get_just_pressed().next().is_some();
+    // (The on-screen keyboard types as keys no keyboard has: `osk.rs`. They aren't the keyboard.)
+    let keys_touched = keys.get_just_pressed().any(|k| !matches!(k, KeyCode::Unidentified(_))) || mouse.get_just_pressed().next().is_some();
     let pad_touched = gamepad.is_some_and(touched);
     let was = mode.pad;
     let now_pad = InputMode::follow(mode.setting, was, pad_touched, keys_touched);
@@ -848,6 +1035,7 @@ fn read_pad(
     out.items_held = holding.contains(&PadAction::Only(Only::ItemWheel));
     out.make_start = started.contains(&PadAction::Only(Only::MakeWheel));
     out.make_held = holding.contains(&PadAction::Only(Only::MakeWheel));
+    out.pressed = Button::ALL.iter().filter(|b| g.just_pressed(b.gamepad())).fold(0, |m, b| m | 1 << *b as u16);
     // A wheel up: the sticks pick (the one pushed further), A and B are its own, nothing else.
     if screens.wheel() {
         let (l, r) = (dead_zone(g.left_stick()), dead_zone(g.right_stick()));
@@ -861,7 +1049,7 @@ fn read_pad(
         return;
     }
     // B on a screen, and Menu anywhere, are Esc; in the pause menu and the settings the pad does
-    // nothing else (their own keys go by focus, a later stage).
+    // nothing else but move the focus (below).
     let back = g.just_pressed(Button::B.gamepad()) && screens.open();
     let menus = screens.menus();
     let mut press = |k: KeyCode, keys: &mut ButtonInput<KeyCode>| {
@@ -871,6 +1059,15 @@ fn read_pad(
     if back || started.contains(&PadAction::Only(Only::Pause)) {
         press(KeyCode::Escape, &mut keys);
     }
+    if menus {
+        // The pause menu and the settings go by focus (`focus.rs`): the d-pad or the left stick
+        // moves it, A presses what has it, the bumpers change tab.
+        let step = |b: Button| g.just_pressed(b.gamepad()) as i32;
+        out.nav_step = IVec2::new(step(Button::Right) - step(Button::Left), step(Button::Up) - step(Button::Down));
+        out.nav_stick = dead_zone(g.left_stick());
+        out.confirm = g.just_pressed(Button::A.gamepad());
+        out.nav_tab = step(Button::RB) - step(Button::LB);
+    }
     if menus || back {
         *KEYS.write().unwrap() = KeyFrame::default();
         if *pad != out {
@@ -878,7 +1075,7 @@ fn read_pad(
         }
         return;
     }
-    for (only, key) in [(Only::TurnLeft, KeyCode::Comma), (Only::TurnRight, KeyCode::Period), (Only::FirstPerson, KeyCode::Semicolon)] {
+    for (only, key) in [(Only::TurnLeft, KeyCode::Comma), (Only::TurnRight, KeyCode::Period), (Only::FirstPerson, KeyCode::Semicolon), (Only::Chat, KeyCode::Enter)] {
         if started.contains(&PadAction::Only(only)) {
             press(key, &mut keys);
         }
@@ -940,6 +1137,21 @@ pub fn soft_lock(from: Vec2, facing: f32, reach: f32, cone: f32, targets: impl I
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompts_name_the_button_that_does_the_same() {
+        let (pad, keys) = (shipped(), crate::keys::shipped());
+        let p = |f: Family, k: &str| prompt_for(&pad, &keys, f, k);
+        assert_eq!(p(Family::Xbox, "Esc").as_deref(), Some("B"));
+        assert_eq!(p(Family::PlayStation, "Enter").as_deref(), Some("Cross"));
+        assert_eq!(p(Family::Xbox, "E").as_deref(), Some("A"));
+        assert_eq!(p(Family::Xbox, "Tab").as_deref(), Some("RB"));
+        assert_eq!(p(Family::Xbox, "Shift+Tab").as_deref(), Some("LB"));
+        // An action the pad has a button for, through its key; keys no button does: no prompt.
+        assert_eq!(p(Family::Xbox, "Space").as_deref(), Some("B"));
+        assert_eq!(p(Family::Xbox, "1-3"), None);
+        assert_eq!(p(Family::Xbox, "Alt"), None);
+    }
 
     #[test]
     fn the_shipped_buttons_parse_and_name_their_actions() {

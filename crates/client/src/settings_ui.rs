@@ -445,6 +445,13 @@ impl SettingsUi {
     pub fn close(&mut self) {
         self.open = false;
     }
+
+    /// The tab `by` along from this one, round the end (the pad's bumpers: `focus.rs`).
+    pub fn step_tab(&mut self, by: i32) {
+        let n = Tab::ALL.len() as i32;
+        let at = Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0) as i32;
+        self.acts.push(Act::Tab(Tab::ALL[(at + by).rem_euclid(n) as usize]));
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -470,7 +477,7 @@ impl Plugin for SettingsUiPlugin {
         help_text::set(options.as_ref().and_then(|o| o.help_text).unwrap_or(settings.help_text));
         let tab = options.as_ref().and_then(|o| o.settings.as_deref()).map(|t| Tab::parse(t).unwrap_or_default());
         let in_game = app.world().contains_resource::<crate::server_link::ServerLink>();
-        app.insert_resource(SettingsUi { open: tab.is_some(), tab: tab.unwrap_or_default(), in_game, ..default() }).add_systems(Startup, spawn).add_systems(PreUpdate, capture.after(bevy::input::InputSystems)).add_systems(Update, (act, apply_live, draw).chain());
+        app.insert_resource(SettingsUi { open: tab.is_some(), tab: tab.unwrap_or_default(), in_game, ..default() }).add_systems(Startup, spawn).add_systems(PreUpdate, capture.after(bevy::input::InputSystems)).add_systems(Update, ((act, apply_live, draw).chain(), scroll));
     }
 }
 
@@ -478,6 +485,29 @@ impl Plugin for SettingsUiPlugin {
 struct Root;
 #[derive(Component)]
 struct Panel;
+/// The open tab's settings, which scroll when the window is too short for them.
+#[derive(Component)]
+struct Scroll;
+
+/// The wheel over the settings scrolls them.
+fn scroll(mut wheel: MessageReader<bevy::input::mouse::MouseWheel>, ui: Res<SettingsUi>, window: Query<&Window, With<bevy::window::PrimaryWindow>>, mut scroll: Query<(&ComputedNode, &UiGlobalTransform, &mut ScrollPosition), With<Scroll>>) {
+    use bevy::input::mouse::MouseScrollUnit;
+    let px = wheel.read().map(|ev| if ev.unit == MouseScrollUnit::Line { ev.y * 40.0 } else { ev.y }).fold(0.0, |a, b| a + b);
+    if px == 0.0 || !ui.open {
+        return;
+    }
+    let Some(cursor) = window.single().ok().and_then(|w| w.physical_cursor_position()) else { return };
+    for (node, at, mut pos) in &mut scroll {
+        if node.contains_point(*at, cursor) {
+            // Physical pixels to UI pixels, as `ScrollPosition` is.
+            let max = (node.content_size.y - node.size.y) * node.inverse_scale_factor();
+            let y = crate::hud::scrolled(pos.y, px, max);
+            if pos.y != y {
+                pos.y = y;
+            }
+        }
+    }
+}
 
 fn spawn(mut commands: Commands, ui: Res<SettingsUi>) {
     // Over the whole screen, so nothing under it takes a click meant for it. In a game the world shows
@@ -494,7 +524,7 @@ fn spawn(mut commands: Commands, ui: Res<SettingsUi>) {
             if !ui.in_game {
                 skin::ground(c);
             }
-            c.spawn((Panel, Node { width: px(WIDTH), flex_direction: FlexDirection::Column, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(8)), ..default() }, skin::panel()));
+            c.spawn((Panel, Node { width: px(WIDTH), max_height: percent(96), flex_direction: FlexDirection::Column, border: UiRect::all(px(1)), border_radius: BorderRadius::all(px(8)), ..default() }, skin::panel()));
         });
 }
 
@@ -659,7 +689,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
     // The Controls tab opens on the list of what is in use; the controller's buttons by its maker's names.
     let (in_use, family, input) = mode.map_or((false, crate::pad::Family::Xbox, store.settings.input), |m| (m.pad, m.family, m.setting));
     let pad_view = ui.pad_view.unwrap_or(in_use);
-    let want = (ui.open, ui.tab, ui.changes + ((pad_view as u32) << 30) + ((family as u32) << 28) + ((input as u32) << 26));
+    let want = (ui.open, ui.tab, ui.changes + ((pad_view as u32) << 30) + ((family as u32) << 28) + ((input as u32) << 26) + ((in_use as u32) << 25));
     if ui.shown == Some(want) {
         return;
     }
@@ -683,7 +713,8 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
         });
         skin::rule(p);
         // The body: the tabs down the left, the open one's settings beside them.
-        p.spawn(Node { align_items: AlignItems::Stretch, ..default() }).with_children(|body| {
+        // (It scrolls when the window is too short for it: the wheel, or the pad's focus moving.)
+        p.spawn(Node { align_items: AlignItems::Stretch, min_height: px(0), flex_shrink: 1.0, ..default() }).with_children(|body| {
             body.spawn(Node { width: px(TABS_W), flex_shrink: 0.0, flex_direction: FlexDirection::Column, row_gap: px(8), padding: UiRect::all(px(20)), ..default() }).with_children(|col| {
                 for t in Tab::ALL {
                     chip(col, t.name(), t == tab, Some(Act::Tab(t)), percent(100));
@@ -692,7 +723,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
             skin::divider(body);
             // The key list is the tallest thing here: it keeps tight margins so it fits 1280 x 720.
             let (pad, gap) = if tab == Tab::Controls { (12, 0) } else { (20, 8) };
-            body.spawn(Node { flex_grow: 1.0, flex_direction: FlexDirection::Column, padding: UiRect::axes(px(28), px(pad)), row_gap: px(gap), min_height: px(300), ..default() }).with_children(|col| {
+            body.spawn((Scroll, ScrollPosition::default(), Node { flex_grow: 1.0, flex_direction: FlexDirection::Column, padding: UiRect::axes(px(28), px(pad)), row_gap: px(gap), min_height: px(0), overflow: Overflow::scroll_y(), ..default() })).with_children(|col| {
                 if tab == Tab::Controls {
                     controls_head(col, input, pad_view);
                     if pad_view {
@@ -702,7 +733,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
                     }
                 }
                 for r in rows(tab, &s) {
-                    col.spawn(Node { align_items: AlignItems::Center, column_gap: px(24), min_height: px(44), ..default() }).with_children(|row| {
+                    col.spawn(Node { align_items: AlignItems::Center, column_gap: px(24), min_height: px(44), flex_shrink: 0.0, ..default() }).with_children(|row| {
                         row.spawn(Node { width: px(LABEL_W), flex_shrink: 0.0, flex_direction: FlexDirection::Column, row_gap: px(2), ..default() }).with_children(|l| {
                             l.spawn((Text::new(r.label), theme::strong(BODY), TextColor(BONE)));
                             l.spawn((Text::new(r.about), font(SMALL), TextColor(DIM)));
@@ -734,7 +765,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
                     Tab::Controls => "Click a key to change it; the game's own keys are in keys.ron. Auto plays with what you touched last.",
                     Tab::Game => "Difficulty and the world's own options are chosen when you start a new game.",
                 };
-                col.spawn((Text::new(note), font(SMALL), TextColor(DIM), Node { margin: UiRect::top(px(if tab == Tab::Controls { 6 } else { 10 })), ..default() }));
+                col.spawn((Text::new(note), font(SMALL), TextColor(DIM), Node { margin: UiRect::top(px(if tab == Tab::Controls { 6 } else { 10 })), flex_shrink: 0.0, ..default() }));
             });
         });
         skin::rule(p);
@@ -752,7 +783,7 @@ fn draw(mut commands: Commands, mut ui: ResMut<SettingsUi>, store: Res<SettingsS
 /// The top of the Controls tab: which the game is played with, and which list is shown.
 fn controls_head(p: &mut ChildSpawnerCommands, input: crate::pad::InputSetting, pad_view: bool) {
     // One row, so the keyboard's list below still fits a 900-pixel screen.
-    p.spawn(Node { align_items: AlignItems::Center, column_gap: px(8), min_height: px(38), ..default() }).with_children(|row| {
+    p.spawn(Node { align_items: AlignItems::Center, column_gap: px(8), min_height: px(38), flex_shrink: 0.0, ..default() }).with_children(|row| {
         row.spawn((Text::new("Play with"), theme::strong(BODY), TextColor(BONE), Node { margin: UiRect::right(px(4)), ..default() }));
         for i in crate::pad::InputSetting::ALL {
             chip(row, i.name(), i == input, Some(Act::Change(Change::Input(i))), Val::Auto);
@@ -813,6 +844,7 @@ pub const PAD_ROWS: [(&str, &[PadRow]); 3] = [
             PadRow::Held(Pa::Key(Action::Interact), "A wheel of everything you can do with what you face"),
             PadRow::Bound(Pa::Only(Only::ItemWheel), "Item wheel: point at one, let go to use it"),
             PadRow::Bound(Pa::Only(Only::MakeWheel), "Make wheel: point at one, let go to make it"),
+            PadRow::Bound(Pa::Only(Only::Chat), "Say something, on the on-screen keyboard"),
             PadRow::Bound(Pa::Key(Action::Flashlight), "Flashlight or candle on and off"),
             PadRow::Bound(Pa::Key(Action::Sit), "Sit down, and get up"),
             PadRow::Bound(Pa::Key(Action::Sleep), "Sleep, and get up"),
@@ -848,7 +880,7 @@ pub const PAD_ROWS: [(&str, &[PadRow]); 3] = [
 
 /// The Controls tab's controller list: three columns, an action and its button a line.
 fn pad_list(p: &mut ChildSpawnerCommands, family: crate::pad::Family) {
-    p.spawn(Node { column_gap: px(22), align_items: AlignItems::FlexStart, ..default() }).with_children(|cols| {
+    p.spawn(Node { column_gap: px(22), align_items: AlignItems::FlexStart, flex_shrink: 0.0, ..default() }).with_children(|cols| {
         for (group, rows) in PAD_ROWS {
             cols.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(3), flex_basis: percent(33), ..default() }).with_children(|col| {
                 col.spawn((Text::new(group.to_uppercase()), theme::head(BODY + 2.0), TextColor(skin::ACCENT), Node { margin: UiRect::top(px(6)), ..default() }));
@@ -869,7 +901,7 @@ fn pad_list(p: &mut ChildSpawnerCommands, family: crate::pad::Family) {
 /// the new one when clicked; one shared with another action says so.
 fn keys_list(p: &mut ChildSpawnerCommands, capture: Option<Action>) {
     let bindings = crate::keys::current();
-    p.spawn(Node { column_gap: px(22), align_items: AlignItems::FlexStart, ..default() }).with_children(|cols| {
+    p.spawn(Node { column_gap: px(22), align_items: AlignItems::FlexStart, flex_shrink: 0.0, ..default() }).with_children(|cols| {
         for pair in KEYS.chunks(2) {
             cols.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(2), flex_basis: percent(33), ..default() }).with_children(|col| {
                 for (group, keys) in pair {

@@ -12,7 +12,7 @@
 //
 // An action left out has no button; the actions are the same as in keys.ron, plus the ones only
 // a controller needs (attack, aim, turn_left, turn_right, zoom_in, zoom_out, first_person,
-// pause, item_wheel, make_wheel). A player's own picks are kept in their settings.ron and go over
+// pause, item_wheel, make_wheel, chat). A player's own picks are kept in their settings.ron and go over
 // this file.
 (
     // Moving
@@ -33,6 +33,8 @@
     // everything you can do with it.
     interact: ["A"],
     flashlight: ["Up"],
+    // The chat line, typed on the on-screen keyboard.
+    chat: ["Hold Up"],
     // At the wheel (RT drives, LT brakes and reverses, B is the handbrake, A gets out).
     horn: ["X"],
 

@@ -351,6 +351,11 @@ fn spawn(mut commands: Commands) {
 }
 
 impl BrowserUi {
+    /// A field of it is being typed into (the on-screen keyboard comes up: `osk.rs`).
+    pub fn typing(&self) -> bool {
+        self.open && self.field.is_some()
+    }
+
     fn say(&mut self, text: impl Into<String>, warn: bool) {
         self.note = text.into();
         self.warn = warn;

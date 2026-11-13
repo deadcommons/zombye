@@ -1125,7 +1125,7 @@ fn rebuild(
     if veil.0 != want {
         veil.0 = want;
     }
-    let signature = format!("{windows}|{}|{heat}|{water:?}|{tab:?}|{view:?}|{floor:?}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|{clock}|{hotbar:?}|{:?}", wins.fixed, busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.keys, make_ui.open, make_ui.favs, make_ui.shown, *ui, crate::help_text::level());
+    let signature = format!("{windows}|{}|{heat}|{water:?}|{tab:?}|{view:?}|{floor:?}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|{clock}|{hotbar:?}|{:?}", wins.fixed, busy.1, if note_fresh { last.text.as_str() } else { "" }, me.dead, flight.asked, flight.crafts, now / 60, *find, picked.keys, make_ui.open, make_ui.favs, make_ui.shown, *ui, (crate::help_text::level(), crate::pad::showing()));
     if shown.0 == signature {
         return;
     }
@@ -1289,7 +1289,9 @@ fn top(c: &mut ChildSpawnerCommands, title: &str, clock: &str, back: Color) {
         b.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(8), padding: UiRect::axes(px(8), px(6)), ..default() })
             .with_children(|r| {
                 r.spawn((Text::new("Close"), font(flat::BODY), TextColor(DIM), Pickable::IGNORE));
-                flat::key(r, "Tab");
+                if let Some(k) = crate::pad::prompt_action(crate::keys::Action::Inventory) {
+                    flat::key(r, &k);
+                }
             })
             .observe(|_: On<PointerPress>, mut panel: ResMut<InventoryPanel>| panel.open = false);
     });
@@ -1335,6 +1337,18 @@ fn footer(c: &mut ChildSpawnerCommands, note: Option<(String, bool)>, tab: Tab, 
     c.spawn((Node { height: px(flat::FOOTER), flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(22), padding: UiRect::axes(px(28), px(0)), border: UiRect::top(px(1)), flex_shrink: 0.0, overflow: Overflow::clip_x(), ..default() }, BorderColor::all(LINE), BackgroundColor(back))).with_children(|f| {
         if let Some((text, ok)) = note {
             f.spawn((Text::new(text), theme::strong(flat::BODY), TextColor(if ok { OK } else { NO }), TextLayout::no_wrap(), Node { flex_shrink: 0.0, ..default() }, Pickable::IGNORE));
+        }
+        // The controller doesn't move round this screen yet: only the way back.
+        if crate::pad::showing() {
+            let back = match tab {
+                Tab::Health => crate::keys::Action::Health,
+                Tab::Skills => crate::keys::Action::Skills,
+                Tab::Build => crate::keys::Action::Build,
+                _ => crate::keys::Action::Inventory,
+            };
+            let b = crate::pad::prompt_action(back).or_else(|| crate::pad::prompt_action(crate::keys::Action::Inventory)).unwrap_or_else(|| crate::pad::button(crate::pad::Button::B));
+            flat::hint(f, &[&b], "back to the game");
+            return;
         }
         match tab {
             Tab::Health => {
@@ -1526,7 +1540,7 @@ fn find_row(h: &mut ChildSpawnerCommands, find: &Find, ui: &PanelUi) {
         ))
         .with_children(|b| {
             b.spawn((Text::new(text), font(flat::BODY), TextColor(color), TextLayout::no_wrap(), Pickable::IGNORE));
-            if !find.typing {
+            if !find.typing && !crate::pad::showing() {
                 flat::key(b, "/");
             }
         })
