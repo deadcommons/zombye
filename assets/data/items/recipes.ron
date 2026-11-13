@@ -80,6 +80,8 @@
         inputs: [(item: "dry_pasta"), (item: "water_bottle")], tools: [Tag("pot")], outputs: [(item: "cooked_pasta"), (item: "empty_bottle")]),
     (id: "boil_rice", name: "Boil rice", secs: 25.0, heat: true,
         inputs: [(item: "dry_rice"), (item: "water_bottle")], tools: [Tag("pot")], outputs: [(item: "cooked_rice"), (item: "empty_bottle")]),
+    (id: "boil_water", name: "Boil dirty water", secs: 20.0, heat: true,
+        inputs: [(item: "dirty_water_bottle")], tools: [Tag("pot")], outputs: [(item: "water_bottle")]),
     (id: "heat_soup", name: "Heat a tin of soup", secs: 10.0, heat: true,
         inputs: [(item: "tinned_soup")], tools: [Tag("opens_tins"), Tag("cookware")], outputs: [(item: "hot_soup")]),
     (id: "heat_beans", name: "Heat a tin of beans", secs: 10.0, heat: true,

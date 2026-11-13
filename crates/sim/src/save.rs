@@ -220,6 +220,9 @@ const FIRE: [u8; 4] = *b"FIRE";
 /// Weather set by hand ([`crate::weather::Forced`]); only while there is some, so adding it didn't
 /// change the format version.
 const WTHR: [u8; 4] = *b"WTHR";
+/// What world events have done ([`crate::events::EventState`]); only while there is any, so
+/// adding it didn't change the format version.
+const EVNT: [u8; 4] = *b"EVNT";
 /// Which pouch (pockets, or which bag) each carried stack is in, per player; only players with
 /// anything in a bag, so adding it didn't change the format version. Without it (a save from
 /// before bags had their own room) everything is put away afresh on load.
@@ -399,6 +402,9 @@ struct Settings {
     /// The calendar and climate (`crate::weather`); none in older saves: the defaults.
     #[serde(default)]
     weather: crate::weather::WeatherTuning,
+    /// World events (`crate::events`); none in older saves: none.
+    #[serde(default)]
+    events: crate::events::EventsDef,
     /// Chopping trees (`crate::trees`); none in older saves: the defaults.
     #[serde(default)]
     chop: crate::trees::ChopTuning,
@@ -776,6 +782,7 @@ impl World {
             power,
             fires,
             weather_forced,
+            events,
         } = self;
         // Survivors out of the world are saved among the players (in id order); `AWAY` says which.
         let away = AwaySave {
@@ -824,6 +831,7 @@ impl World {
             blinds: config.blinds.clone(),
             fire: config.fire.clone(),
             weather: config.weather.clone(),
+            events: config.events.clone(),
             chop: config.chop.clone(),
             sandbox: config.sandbox.clone(),
             movement: config.movement,
@@ -954,6 +962,9 @@ impl World {
         if let Some(f) = weather_forced {
             w.section(WTHR, &encode(f));
         }
+        if !events.is_empty() {
+            w.section(EVNT, &encode(events));
+        }
         if !trees.deadwood_is_empty() {
             w.section(DEAD, &encode(&trees.deadwood_save()));
         }
@@ -1020,6 +1031,8 @@ impl World {
         config.fire = settings.fire;
         settings.weather.check().map_err(save_check::invalid)?;
         config.weather = settings.weather;
+        settings.events.check().map_err(save_check::invalid)?;
+        config.events = settings.events;
         settings.chop.check().map_err(save_check::invalid)?;
         config.chop = settings.chop;
         config.movement = settings.movement;
@@ -1202,6 +1215,7 @@ impl World {
         let mut levels: Option<(Vec<(u32, u8)>, Vec<u32>)> = None;
         let mut fires: Option<crate::fire::Fires> = None;
         let mut weather: Option<crate::weather::Forced> = None;
+        let mut event_state: Option<crate::events::EventState> = None;
         let mut dead: Option<crate::trees::DeadwoodSave> = None;
         let mut bags: Option<Vec<(u32, Vec<u8>)>> = None;
         loop {
@@ -1289,6 +1303,10 @@ impl World {
             }
             if tag == WTHR && weather.is_none() {
                 weather = Some(decode(WTHR, payload)?);
+                continue;
+            }
+            if tag == EVNT && event_state.is_none() {
+                event_state = Some(decode(EVNT, payload)?);
                 continue;
             }
             if tag == DEAD && dead.is_none() {
@@ -1475,6 +1493,10 @@ impl World {
         if let Some(f) = weather {
             f.check().map_err(save_check::invalid)?;
             w.weather_forced = Some(f);
+        }
+        if let Some(e) = event_state {
+            e.check().map_err(save_check::invalid)?;
+            w.events = e;
         }
         if let Some(d) = dead {
             w.restore_deadwood(d).map_err(save_check::invalid)?;

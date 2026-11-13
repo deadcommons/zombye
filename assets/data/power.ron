@@ -18,6 +18,9 @@
         taps: ["sink", "bathtub", "toilet"],
         // Metres from a tap's footprint you can use it from.
         reach: 1.6,
+        // Once the water is off, each piece of furniture of these kinds still holds `fills` fills
+        // of dirty water in its cistern (an item's `fills_dirty` in items.ron: boil it to drink).
+        cisterns: (kinds: ["toilet"], fills: 3),
     ),
     // Fridges keep food while their building has power: food in one goes off `spoil_mult` as
     // fast (0.25: it lasts four times as long). `containers`: container kinds (containers.ron).

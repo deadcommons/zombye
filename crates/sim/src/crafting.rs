@@ -80,6 +80,10 @@ pub struct RecipeDef {
     /// (`crate::power::water_near`): filling a bottle.
     #[serde(default)]
     pub water: bool,
+    /// Needs a toilet's cistern with water left in it, the town's water being off
+    /// (`crate::power::cistern_near`); each one made takes a fill from it.
+    #[serde(default)]
+    pub cistern: bool,
     /// Mends a worn or broken weapon carried or held (`crate::wear`): the most worn one with this
     /// item tag loses `knocks` knocks.
     #[serde(default)]
@@ -229,23 +233,27 @@ pub fn parse_recipes_for(text: &str, items: &[ItemDef]) -> Result<Vec<RecipeDef>
 /// (written out in a recipes file) is left as it is.
 pub fn add_fill_recipes(recipes: &mut Vec<RecipeDef>, items: &[ItemDef]) {
     for d in items {
-        let Some(full) = &d.fills else { continue };
-        let id = format!("fill_{}", d.id);
-        if recipes.iter().any(|r| r.id == id) || !items.iter().any(|o| &o.id == full) {
-            continue;
+        for (full, cistern) in [(&d.fills, false), (&d.fills_dirty, true)] {
+            let Some(full) = full else { continue };
+            let id = if cistern { format!("fill_dirty_{}", d.id) } else { format!("fill_{}", d.id) };
+            if recipes.iter().any(|r| r.id == id) || !items.iter().any(|o| &o.id == full) {
+                continue;
+            }
+            let name = d.name.to_lowercase();
+            recipes.push(RecipeDef {
+                id,
+                name: if cistern { format!("Fill the {name} from the toilet cistern") } else { format!("Fill the {name} at the tap") },
+                secs: 3.0,
+                inputs: vec![RecipeItem { item: d.id.clone(), count: 1 }],
+                tools: Vec::new(),
+                outputs: vec![RecipeItem { item: full.clone(), count: 1 }],
+                heat: false,
+                water: !cistern,
+                cistern,
+                repairs: None,
+                places: None,
+            });
         }
-        recipes.push(RecipeDef {
-            id,
-            name: format!("Fill the {} at the tap", d.name.to_lowercase()),
-            secs: 3.0,
-            inputs: vec![RecipeItem { item: d.id.clone(), count: 1 }],
-            tools: Vec::new(),
-            outputs: vec![RecipeItem { item: full.clone(), count: 1 }],
-            heat: false,
-            water: true,
-            repairs: None,
-            places: None,
-        });
     }
 }
 
@@ -314,7 +322,7 @@ pub fn describe(r: &RecipeDef, items: &[ItemDef]) -> String {
         let what = format!("mends {} knocks off a {} thing", rp.knocks, rp.tag);
         made = if made.is_empty() { what } else { format!("{made} + {what}") };
     }
-    let heat = if r.heat { ", over a fire or a stove" } else if r.water { ", at a running tap" } else { "" };
+    let heat = if r.heat { ", over a fire or a stove" } else if r.water { ", at a running tap" } else if r.cistern { ", at a toilet once the water is off" } else { "" };
     format!("{} -> {made} ({:.0} s{tools}{heat})", list(&r.inputs), r.secs)
 }
 
@@ -519,6 +527,9 @@ impl World {
         if r.water && !self.water_for(pi) {
             return Err(crate::power::NEEDS_WATER.into());
         }
+        if r.cistern && self.cistern_for(pi).is_none() {
+            return Err(crate::power::NEEDS_CISTERN.into());
+        }
         match r.places {
             Some(crate::fire::Placed::Campfire) => self.campfire_spot(pi).map(Some),
             None => Ok(None),
@@ -540,6 +551,7 @@ impl World {
         check(&r, &self.craft_stock(pi), items).map_err(|why| format!("can't {}: {why}", lower(&r.name)))?;
         // What it carries and holds first, then what lies on its floor, then the open container.
         let place = self.craft_place_ok(pi, &r).map_err(|why| format!("can't {}: {why}", lower(&r.name)))?;
+        let cistern = if r.cistern { self.cistern_for(pi) } else { None };
         for x in &r.inputs {
             let i = index_of(items, &x.item).ok_or_else(|| format!("no item {}", x.item))?;
             let own = (have(&inv, i).min(x.count as u32)) as u16;
@@ -580,6 +592,9 @@ impl World {
             }
         }
         let used = r.inputs.iter().map(|x| if x.count > 1 { amount(items, &x.item, x.count) } else { format!("the {}", amount(items, &x.item, 1)) }).collect::<Vec<_>>().join(" and ");
+        if let Some(k) = cistern {
+            *self.events.cisterns.entry(k).or_insert(0) += 1;
+        }
         if let Some(c) = open.filter(|_| took_shelf) {
             shelf.retain(|c| c.count > 0);
             self.opened.insert(c, shelf);

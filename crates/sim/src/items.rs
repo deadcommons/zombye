@@ -434,6 +434,11 @@ pub struct ItemDef {
     /// jug, a canteen, a pot) needs only this line.
     #[serde(default)]
     pub fills: Option<String>,
+    /// The item it becomes filled from a toilet's cistern once the town's water is off (a bottle
+    /// of dirty water: `power.ron`'s `water.cisterns`); [`crate::crafting::add_fill_recipes`]
+    /// makes that recipe too.
+    #[serde(default)]
+    pub fills_dirty: Option<String>,
     /// Grey-box colour (linear-ish RGB 0..1).
     #[serde(default = "grey")]
     pub color: (f32, f32, f32),
@@ -475,6 +480,7 @@ impl ItemDef {
             light: None,
             model: None,
             fills: None,
+            fills_dirty: None,
             color: w.color,
         }
     }
@@ -625,6 +631,11 @@ pub fn validate_items(defs: &[ItemDef], weapons: &[WeaponDef]) -> Result<(), Str
             && (f == &d.id || !defs.iter().any(|o| &o.id == f))
         {
             return Err(format!("item {}: fills names {f:?}, which isn't another item", d.id));
+        }
+        if let Some(f) = &d.fills_dirty
+            && (f == &d.id || !defs.iter().any(|o| &o.id == f))
+        {
+            return Err(format!("item {}: fills_dirty names {f:?}, which isn't another item", d.id));
         }
     }
     Ok(())

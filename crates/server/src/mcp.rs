@@ -118,6 +118,7 @@ const TOOLS: [(&str, &str, Kind); 70] = [
     ("heard", "What a player heard said", Kind::Look),
     ("fires", "Campfires and stoves nearby", Kind::Look),
     ("weather", "The date, the weather and the temperature", Kind::Look),
+    ("events", "The world events and when they happen", Kind::Look),
     ("say", "Say something to whoever is near", Kind::Play),
     ("gesture", "Wave, put your hands up or point", Kind::Play),
     ("restrain", "Tie another survivor's hands", Kind::Play),
@@ -168,8 +169,35 @@ const TOOLS: [(&str, &str, Kind); 70] = [
     ("restrain_now", "Tie a player's hands at once", Kind::Debug),
     ("skip_time", "Skip time", Kind::Debug),
     ("set_weather", "Set the weather", Kind::Debug),
+    ("trigger_event", "Make a world event happen now", Kind::Debug),
+    ("schedule_event", "Move or call off a world event", Kind::Debug),
     ("load", "Load a save (replaces the world)", Kind::Debug),
 ];
+
+/// The `events` tool's text: every world event, when it is due and when it happened.
+fn events_text(world: &World) -> String {
+    let now = world.game_hours();
+    let at = |h: f64| {
+        let t = world.config.start_hour as f64 + h;
+        format!("day {} {}", (t / 24.0).floor() as i64 + 1, clock(t.rem_euclid(24.0) as f32))
+    };
+    let mut out = format!("now: {} ({:.1} game hours in); water {}, grid {}\n", at(now), now, on_off(world.water_on()), on_off(world.power().grid_on()));
+    let list = world.event_schedule();
+    if list.is_empty() {
+        out.push_str("no world events (no events.ron)\n");
+    }
+    for s in list {
+        let due = match s.due_h {
+            _ if s.fired_h.is_some() => String::new(),
+            Some(h) if h > now => format!(", due {} (in {:.1} h)", at(h), h - now),
+            Some(_) => ", due now".to_string(),
+            None => ", not in this world".to_string(),
+        };
+        let fired = s.fired_h.map_or(String::new(), |h| format!(", happened {}", at(h)));
+        out.push_str(&format!("{}: {} ({:?}){due}{fired}\n", s.id, s.name, s.effect));
+    }
+    out
+}
 
 /// A tool's kind by the name it is called by: `toggle_door` is the old name of `interact`, still taken
 /// though no longer listed.
@@ -1213,6 +1241,27 @@ fn tool_defs() -> Value {
             }}
         },
         {
+            "name": "events",
+            "description": "The world's events (events.ron: the water and the power going off, and the like): each one's \
+                id, what it does, when it is due in this world (game day and hour, and how long from now) or that it won't \
+                happen here, and when it happened. Also whether the water and the grid are on now.",
+            "inputSchema": {"type": "object", "properties": {}}
+        },
+        {
+            "name": "trigger_event",
+            "description": "Debug: make world event id happen now (see events), whether it was due or has happened \
+                already: its effect (water_off, power_off; water_on and power_on put them back) and its message to everyone.",
+            "inputSchema": {"type": "object", "required": ["id"], "properties": {"id": {"type": "string"}}}
+        },
+        {
+            "name": "schedule_event",
+            "description": "Debug: move world event id to in_hours game hours from now (0: at the next check), or with \
+                cancel: true call it off in this world. Either way it can happen again, with its warning.",
+            "inputSchema": {"type": "object", "required": ["id"], "properties": {
+                "id": {"type": "string"}, "in_hours": {"type": "number"}, "cancel": {"type": "boolean"}
+            }}
+        },
+        {
             "name": "skip_time",
             "description": "Move the clock forward (0-24 hours).",
             "inputSchema": {"type": "object", "required": ["hours"], "properties": {"hours": {"type": "number"}}}
@@ -1574,6 +1623,26 @@ fn call_tool(world: &mut World, name: &str, args: &Value) -> Result<String, Stri
                 world.force_weather(Some((k, intensity, hours, num("temp_c").map(|t| t as f32))));
             }
             Ok(format!("now: {}", weather_line(&world.weather())))
+        }
+        "events" => Ok(events_text(world)),
+        "trigger_event" => {
+            let id = args.get("id").and_then(Value::as_str).ok_or("id is required")?;
+            let said = world.trigger_event(id)?;
+            Ok(format!("{said}\n{}", events_text(world)))
+        }
+        "schedule_event" => {
+            let id = args.get("id").and_then(Value::as_str).ok_or("id is required")?;
+            let at = if args.get("cancel").and_then(Value::as_bool).unwrap_or(false) {
+                None
+            } else {
+                let h = num("in_hours").ok_or("in_hours or cancel: true is required")?;
+                if !(0.0..=24.0 * 3650.0).contains(&h) {
+                    return Err("in_hours must be 0 to 87600".into());
+                }
+                Some(world.game_hours() + h)
+            };
+            world.schedule_event(id, at)?;
+            Ok(events_text(world))
         }
         "fires" => {
             let id = player_id();
@@ -4587,7 +4656,7 @@ mod tests {
         let list = tool_list(opts);
         let names: Vec<&str> = list.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
         let debug: Vec<&str> = TOOLS.iter().filter(|t| t.2 == Kind::Debug).map(|t| t.0).collect();
-        assert_eq!(debug.len(), 14);
+        assert_eq!(debug.len(), 16);
         assert_eq!(names.len(), TOOLS.len() - debug.len());
         for name in &debug {
             assert!(!names.contains(name), "{name} is listed");
@@ -4790,6 +4859,30 @@ mod tests {
         assert!(text.contains("window (boarded up)"), "{text}");
         let (text, err) = call(&mut world, &mut persist, "unbuild", json!({}));
         assert!(!err && text.contains("has 1 plank(s)"), "{text}");
+    }
+
+    /// World events (events.ron) through the tools: listed with when they're due, made to happen
+    /// now, moved and called off.
+    #[test]
+    fn agents_see_and_drive_world_events() {
+        let mut world = small_world();
+        let dir = scratch("events");
+        let mut persist = session(&world, &dir.0);
+        let (text, err) = call(&mut world, &mut persist, "events", json!({}));
+        assert!(!err && text.contains("water on, grid on") && text.contains("water_off: The water goes off (WaterOff), due day"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "trigger_event", json!({"id": "water_off"}));
+        assert!(!err && text.contains("The water goes off happened: The taps cough") && text.contains("water off, grid on") && text.contains("water_off: The water goes off (WaterOff), happened day"), "{text}");
+        assert!(!world.water_on());
+        let (text, err) = call(&mut world, &mut persist, "trigger_event", json!({"id": "flood"}));
+        assert!(err && text.contains("no event \"flood\" (events: water_off, power_off, water_on, power_on)"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "schedule_event", json!({"id": "power_off", "cancel": true}));
+        assert!(!err && text.contains("power_off: The power goes off (PowerOff), not in this world"), "{text}");
+        let (text, err) = call(&mut world, &mut persist, "schedule_event", json!({"id": "power_off", "in_hours": 0}));
+        assert!(!err && text.contains("power_off: The power goes off (PowerOff), due now"), "{text}");
+        call(&mut world, &mut persist, "step_ticks", json!({"n": 20}));
+        assert!(!world.power().grid_on(), "it happened at the next check");
+        call(&mut world, &mut persist, "trigger_event", json!({"id": "water_on"}));
+        assert!(world.water_on());
     }
 
     /// Proximity chat through the tools (#67): `say` reaches those in earshot, `heard` lists it for

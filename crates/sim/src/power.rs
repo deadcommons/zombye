@@ -65,11 +65,29 @@ pub struct WaterDef {
     pub taps: Vec<String>,
     /// Metres from a tap's footprint a survivor can use it from (same room, same floor).
     pub reach: f32,
+    /// Toilets' cisterns: water left in them once the town's water is off.
+    pub cisterns: CisternDef,
+}
+
+/// Toilet cisterns (`water.cisterns` in `power.ron`): once the town's water is off, each piece of
+/// furniture of these kinds still holds `fills` fills of dirty water (an item's `fills_dirty`:
+/// boil it before drinking). While the water runs they are plain taps (if listed in `taps`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CisternDef {
+    pub kinds: Vec<String>,
+    pub fills: u8,
+}
+
+impl Default for CisternDef {
+    fn default() -> Self {
+        Self { kinds: vec!["toilet".into()], fills: 3 }
+    }
 }
 
 impl Default for WaterDef {
     fn default() -> Self {
-        Self { on: true, fails_after_hours: None, taps: vec!["sink".into(), "bathtub".into(), "toilet".into()], reach: 1.6 }
+        Self { on: true, fails_after_hours: None, taps: vec!["sink".into(), "bathtub".into(), "toilet".into()], reach: 1.6, cisterns: CisternDef::default() }
     }
 }
 
@@ -98,6 +116,32 @@ impl Default for FridgeDef {
 
 /// Why a recipe that needs running water (`water`) can't be made here.
 pub const NEEDS_WATER: &str = "needs a running tap within reach (a sink or a bath, while the water's on)";
+
+/// Why a recipe that needs a cistern (`cistern`) can't be made here.
+pub const NEEDS_CISTERN: &str = "needs a toilet with water left in its cistern within reach (once the town's water is off)";
+
+/// The toilet (its furniture index, buildings in order and each one's furniture in order) whose
+/// cistern player at `pos` on floor `level` can fill from: the town's water off (`running`
+/// false), within `def.reach` in the same room, with fills left (`taken`: fills already taken
+/// from it). The nearest such. The one rule for the server and the client.
+pub fn cistern_near(map: &TileMap, def: &WaterDef, running: bool, taken: impl Fn(u32) -> u8, pos: Vec2, level: u8) -> Option<u32> {
+    if running || def.cisterns.fills == 0 {
+        return None;
+    }
+    let room = map.room_at(pos);
+    if room == 0 {
+        return None;
+    }
+    map.buildings
+        .iter()
+        .flat_map(|b| b.furniture.iter())
+        .enumerate()
+        .filter(|(k, f)| f.level == level as i8 && def.cisterns.kinds.iter().any(|t| *t == f.kind) && taken(*k as u32) < def.cisterns.fills)
+        .map(|(k, f)| (k as u32, pos.clamp(f.min.as_vec2(), (f.min + f.size).as_vec2()).distance(pos), f))
+        .filter(|(_, d, f)| *d <= def.reach && map.room_at(f.min.as_vec2() + f.size.as_vec2() * 0.5) == room)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(k, _, _)| k)
+}
 
 /// Is there a tap with water running within `def.reach` of `pos` on floor `level`, in the same room?
 /// The one rule for the server and the client's Make list.
@@ -530,7 +574,19 @@ impl crate::world::World {
     /// Each tick: the grid fails when its time comes (`GridDef::fails_after_hours`).
     /// Is the town's water running now?
     pub fn water_on(&self) -> bool {
-        self.config.power.water.running(self.game_hours())
+        self.config.power.water.running(self.game_hours()) && !self.events.water_off
+    }
+
+    /// The toilet whose cistern player `pi` can fill from now ([`cistern_near`]).
+    pub fn cistern_for(&self, pi: usize) -> Option<u32> {
+        let p = &self.players[pi];
+        let taken = |k: u32| self.events.cisterns.get(&k).copied().unwrap_or(0);
+        cistern_near(&self.map, &self.config.power.water, self.water_on(), taken, p.state.pos, p.state.level)
+    }
+
+    /// Fills taken from each toilet's cistern (by furniture index), for clients.
+    pub fn cisterns_taken(&self) -> Vec<(u32, u8)> {
+        self.events.cisterns.iter().map(|(k, n)| (*k, *n)).collect()
     }
 
     /// Is there running water where player `pi` stands ([`water_near`])?

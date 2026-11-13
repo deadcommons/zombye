@@ -17,6 +17,7 @@ pub mod containers;
 pub mod corpses;
 pub mod crafting;
 pub mod difficulty;
+pub mod events;
 pub mod explore;
 pub mod fire;
 pub mod sit;
@@ -90,6 +91,7 @@ pub use needs::{Freshness, Needs, NeedsTuning, NeedsView, SleepSpot, WakeReason}
 pub use status::{StatusData, StatusInput, StatusTag, TagKind};
 pub use players::{Action, ActionKind, Climb, ClimbTuning, DevFlags, StairTuning, Knock, MoveMods, MoveTuning, Player, PlayerInput, PlayerState, Stance};
 pub use population::{Attractor, PopulationDef, Zone};
+pub use events::{EventDef, EventEffect, EventsDef};
 pub use power::{Coverage, PowerDef, Source, SourceKind};
 pub use template::BuildingTemplate;
 pub use vehicles::{Body, DriveInput, Vehicle, VehicleData, VehicleKind, VehicleOp, VehicleState, VehicleTuning, VehicleView, parse_vehicles, seat_of, step_vehicle};

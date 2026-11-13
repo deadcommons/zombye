@@ -498,6 +498,10 @@ pub struct Snapshot {
     /// The town's water is running (`zombye_sim::power::WaterDef`): taps fill bottles.
     #[serde(default)]
     pub water_on: bool,
+    /// Fills taken from each toilet's cistern since the water went off (by furniture index:
+    /// `zombye_sim::power::cistern_near`).
+    #[serde(default)]
+    pub cisterns: Vec<(u32, u8)>,
     /// The campfires (`zombye_sim::fire`), in id order: every snapshot (a server sends them when they change).
     #[serde(default)]
     pub fires: Vec<zombye_sim::FireView>,
@@ -645,6 +649,7 @@ impl Snapshot {
             lit_rooms: world.power().lit().to_vec(),
             grid_on: world.power().grid_on(),
             water_on: world.water_on(),
+            cisterns: world.cisterns_taken(),
             fires: world.fires().iter().map(|f| f.view()).collect(),
             vehicles: world.vehicles().iter().map(zombye_sim::VehicleView::of).collect(),
         }

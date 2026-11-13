@@ -104,3 +104,4 @@ hatchet
 nail
 nailed_bat
 spear
+dirty_water_bottle

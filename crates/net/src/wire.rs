@@ -76,7 +76,7 @@ use crate::{EdgeDamage, FloorView, Intent, OutfitView, PlayerView, PrivateView, 
 /// (`SnapshotDelta::vehicles`). 33: the ground's height (`GenConfig::terrain`, in `Welcome::generation`).
 /// 34: the loot and crafting pass: running water (`Snapshot::water_on` in `SnapshotDelta::lights`),
 /// `RecipeDef::water` and `repairs`, no `spawn_weight` or `found_in` in the weapons.)
-pub const PROTOCOL: u32 = 34;
+pub const PROTOCOL: u32 = 35;
 /// The port a server listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7777;
 /// The most players a server takes (the design size, docs/PLAN.md §4.8), and the default.
@@ -658,7 +658,7 @@ pub struct SnapshotDelta {
     pub group: Option<Option<zombye_sim::GroupView>>,
     /// The rooms lit, whether the grid is on and whether the water runs (`zombye_sim::power`),
     /// when they change.
-    pub lights: Option<(Vec<u16>, bool, bool)>,
+    pub lights: Option<(Vec<u16>, bool, bool, Vec<(u32, u8)>)>,
     /// What the client's survivor has seen of the map (`zombye_sim::explore`), when it changes.
     pub map: Option<zombye_sim::Explored>,
     /// The campfires (`zombye_sim::fire`), when they change.
@@ -708,6 +708,7 @@ impl Snapshot {
             lit_rooms: self.lit_rooms.clone(),
             grid_on: self.grid_on,
             water_on: self.water_on,
+            cisterns: self.cisterns.clone(),
             fires: self.fires.clone(),
             vehicles: self.vehicles.clone(),
         }
@@ -860,7 +861,7 @@ pub struct DeltaEncoder {
     outfits: Vec<OutfitView>,
     looks: Vec<OutfitView>,
     group: Option<zombye_sim::GroupView>,
-    lights: (Vec<u16>, bool, bool),
+    lights: (Vec<u16>, bool, bool, Vec<(u32, u8)>),
     map: zombye_sim::Explored,
     fires: Vec<zombye_sim::FireView>,
     vehicles: Vec<zombye_sim::VehicleView>,
@@ -1059,7 +1060,7 @@ impl DeltaEncoder {
             self.group = group.clone();
             group
         });
-        let lights = (view.lit_rooms.clone(), view.grid_on, view.water_on);
+        let lights = (view.lit_rooms.clone(), view.grid_on, view.water_on, view.cisterns.clone());
         let lights = (first || lights != self.lights).then(|| {
             self.lights = lights.clone();
             lights
@@ -1175,8 +1176,8 @@ impl DeltaDecoder {
         if let Some(up) = delta.upstairs {
             s.upstairs = up;
         }
-        if let Some((rooms, grid, water)) = delta.lights {
-            (s.lit_rooms, s.grid_on, s.water_on) = (rooms, grid, water);
+        if let Some((rooms, grid, water, cisterns)) = delta.lights {
+            (s.lit_rooms, s.grid_on, s.water_on, s.cisterns) = (rooms, grid, water, cisterns);
         }
         if let Some(fires) = delta.fires {
             s.fires = fires;

@@ -49,6 +49,9 @@ I['cheese'] = ('<path d="M7 25h27v15H7z" fill="$C"/><path d="M7 25l8-10h27l-8 10
 # ---------- Drink
 I['water_bottle'] = ('<path d="M20 6h8v7l5 6v20a3 3 0 0 1-3 3H18a3 3 0 0 1-3-3V19l5-6z" fill="$L"/><path d="M15 24h18v15a3 3 0 0 1-3 3H18a3 3 0 0 1-3-3z" fill="$C"/>'
                      '<rect x="19" y="4" width="10" height="5" rx="1.5" fill="$D"/><rect x="15" y="29" width="18" height="6" fill="$D"/><path d="M15 24c3-2 5 2 9 0s6 2 9 0v2H15z" fill="$L"/>')
+I['dirty_water_bottle'] = ('<path d="M20 6h8v7l5 6v20a3 3 0 0 1-3 3H18a3 3 0 0 1-3-3V19l5-6z" fill="#cfd6d8"/><path d="M15 24h18v15a3 3 0 0 1-3 3H18a3 3 0 0 1-3-3z" fill="$C"/>'
+                     '<rect x="19" y="4" width="10" height="5" rx="1.5" fill="#4c5a66"/><path d="M15 24c3-2 5 2 9 0s6 2 9 0v2H15z" fill="$L"/>'
+                     '<circle cx="19" cy="31" r="1.2" fill="$D"/><circle cx="27" cy="34" r="1.6" fill="$D"/><circle cx="23" cy="38" r="1.1" fill="$D"/><circle cx="29" cy="29" r="0.9" fill="$D"/><path d="M15 39h18v0a3 3 0 0 1-3 3H18a3 3 0 0 1-3-3z" fill="$D"/>')
 I['empty_bottle'] = rot('<path d="M4 20h8l5-3h17a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4H17l-5-3H4z" fill="$C"/><path d="M17 17h17a4 4 0 0 1 4 4v1H17z" fill="$L"/>'
                         '<rect x="0" y="19" width="6" height="10" rx="1.5" fill="$D"/><rect x="21" y="25" width="14" height="2" rx="1" fill="$L"/><path d="M17 17v14" stroke="$D" stroke-width="1.6"/>', -35)
 I['soda_can'] = ('<rect x="14" y="9" width="20" height="31" rx="3" fill="$C"/><rect x="14" y="17" width="20" height="14" fill="$D"/><ellipse cx="24" cy="9" rx="10" ry="3" fill="$L"/>'

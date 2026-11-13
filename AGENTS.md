@@ -1850,6 +1850,34 @@ them yet (no body temperature, no effect on sight or hearing, nothing drawn or h
   with a note: opened containers keep what they hold, unopened ones fill from the tables as they are now. Not yet:
   food starting partly spoiled (needs item freshness, #11).
 
+## World events (`sim::events`, `assets/data/events.ron`)
+
+Things that happen to the whole town on a day of their own: the water going off, the grid failing. Data, not code.
+
+- **The file** (`EventsDef`, `parse_events`, unknown fields refused; `net::content::load_events`, none: no events;
+  `WorldConfig::events`, saved with the settings): a list of `EventDef` with `id`, `name`, `message` (told to every
+  living survivor when it happens), `days: (min, max)` (game days from the start; the day is rolled once per world
+  from the loot seed and the id, `EventsDef::when`), `chance` (that it happens at all, default 1), `effect`
+  (`EventEffect`: `Notice`, `WaterOff`, `WaterOn`, `PowerOff`, `PowerOn`) and `warn: Some((hours, text))`, a line told
+  that many hours before. Shipped (ours): `water_off` days 3-7, `power_off` days 2-5, each warned beforehand;
+  `water_on` and `power_on` with chance 0, for an admin or a test to trigger. A new effect is an `EventEffect`
+  variant and its line in `World::apply_event`.
+- **Running:** `World::step_events` every 20 ticks (and after a skip) fires what is due and gives warnings.
+  `trigger_event(id)` fires one now, `schedule_event(id, Some(hours) | None)` moves or cancels it.
+  `WaterOff` makes `water_on()` false (the taps run dry), `PowerOff` fails the grid (`set_grid`). The old
+  `power.ron` / water `fails_after_hours` fields still work beside it.
+- **Toilet cisterns:** once the water is off a toilet still holds `power.ron`'s `water.cisterns.fills` (3) fills of
+  dirty water (`cisterns.kinds`, toilets). An item's `fills_dirty: Some("dirty_water_bottle")` gets a recipe
+  `fill_dirty_<id>` (`cistern: true`, `power::cistern_near`, refused with `NEEDS_CISTERN`). Each fill is counted per
+  toilet (`EventState::cisterns`, by furniture index; `Snapshot::cisterns`, the `lights` delta, `wire::PROTOCOL` 35).
+  Dirty water (`poison` 0.5) is boiled into clean in a pot (`boil_water`, a heat recipe). Right-click the toilet for it.
+- **Saves:** an optional `EVNT` section (`EventState`: what fired and when, warnings given, moved times, the water off,
+  cisterns used; no format bump), in `state_hash` only while any.
+- **MCP:** `events` (read-only: each event's day and hour, done or not, water and grid now), and the debug
+  `trigger_event {id}` and `schedule_event {id, in_hours, cancel}`; the admin endpoint has all three.
+- Weather is apart from this (`weather.ron`); an event that forces weather would use `World::force_weather`.
+- Tests: `sim::events::tests`, `mcp::tests::agents_see_and_drive_world_events`.
+
 ## Electricity and lights (`sim::power`, `assets/data/power.ron`)
 
 - **Power sources** (`power::Source { kind, covers, on }`): `SourceKind::Grid`, `Generator`, `Solar`, each covering
@@ -3287,7 +3315,7 @@ and checks the state hash, the tick and the session's dirty flag don't move), `P
 `add_player`, `pvp`, `dev`, `skip_time`, `load`, `restrain_now`, `set_weather`) get a title starting `Debug:`, a description starting "Debug tool, for setting
 up tests" and `_meta: {"zombye/debug": true}`. Only `save` and `load` are `destructiveHint: true`; every tool is
 `openWorldHint: false`. **A new tool needs a row in `TOOLS`** (a test fails without one). `--no-debug-tools` leaves the
-debug tools out: not listed (56 tools instead of 70), and calling one is the unknown-tool error. `stats` has an
+debug tools out: not listed (57 tools instead of 73), and calling one is the unknown-tool error. `stats` has an
 `outputSchema` and returns its JSON as `structuredContent` beside the text (`output_schema`). The server's `instructions`
 (`mcp::instructions`, under 2,200 bytes: every client puts them in the model's context) say you are player 1, time only
 moves when a tool steps it, look with `observe` first, and the debug tools are for testing; detail belongs in the tools'

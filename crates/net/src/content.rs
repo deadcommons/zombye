@@ -90,6 +90,14 @@ pub fn load_weather(data_dir: &Path) -> Result<zombye_sim::WeatherTuning, String
     zombye_sim::weather::parse_weather(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// World events in `<data>/events.ron` (`zombye_sim::events`): the water and power going off and
+/// the like. Without the file, none.
+pub fn load_events(data_dir: &Path) -> Result<zombye_sim::EventsDef, String> {
+    let path = data_dir.join("events.ron");
+    let Ok(text) = std::fs::read_to_string(&path) else { return Ok(zombye_sim::EventsDef::default()) };
+    zombye_sim::events::parse_events(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// The street props in `<data>/street_props.ron` (#61: mailboxes, hydrants, bins and where the town
 /// generator puts them), validated. A data folder without the file has none.
 pub fn load_street_props(data_dir: &Path) -> Result<StreetPropsDef, String> {
@@ -272,6 +280,7 @@ pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig
     let fire = load_fire(data_dir)?;
     let vehicles = load_vehicles(data_dir, &street_props)?;
     let weather = load_weather(data_dir)?;
+    let events = load_events(data_dir)?;
     let mut config = zombye_sim::WorldConfig::new(seed, 0, templates)
         .with_weapons(weapons)
         .with_items(items)
@@ -284,7 +293,8 @@ pub fn load_config(data_dir: &Path, seed: u64) -> Result<zombye_sim::WorldConfig
         .with_power(power)
         .with_fire(fire)
         .with_vehicles(vehicles)
-        .with_weather(weather);
+        .with_weather(weather)
+        .with_events(events);
     config.zombies = None;
     Ok(config)
 }
