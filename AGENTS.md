@@ -287,12 +287,11 @@ an allowlist of flags a menu can carry on, such as `--saves`, `--data`, `--mod`,
 rest, starts the game as before, so every recipe in this file and every tool is unchanged). `--main-menu` forces it (over `--no-menu` too: the new-game screen's Back adds it),
 `--no-menu` skips it. For development, `ZOMBYE_NO_MENU=1` or "Skip the main menu" on the settings' Game tab (`skip_menu` in `settings.ron`) skips it on every plain start (`main_menu::skipped`); `--main-menu` and the pause menu's way back still show it. It is a small app of its own before the game, like the join screen (the game builds its map
 once a start), and every choice starts the game again with the arguments for it (`main_menu::load_args`,
-`new_game_args`, `multiplayer_args`; on Unix an `exec`): **Continue** (the autosave, which leaving a game writes; not shown
-without one), **New game** (asks first when an autosave would be overwritten; `--new-game --seed <a fresh one>
---no-menu`: the character and world screen of a new game hangs on `--new-game`), **Load game** (the folder's saves,
-newest first, each with its hour in the game, its zombies and how long ago it was saved; a click loads one), **Multiplayer** (the
-game with the server browser open, `--browser`), **Mods** (the mods folder: which are on and in what order, see Mods and scripts), **Settings**, **Quit**. Enter is the green button, Esc goes back a screen. `--menu-screen
-load|new|mods` starts on that screen and `--main-menu --render-to PATH [--settings TAB]` draws it offscreen, for pictures.
+`new_game_args`, `browser_ui::relaunch_args`; on Unix an `exec`). Home: **Continue** (the autosave, which leaving a game writes; not shown
+without one), **Single player**, **Multiplayer**, Mods, Settings, Quit. **Single player** is Continue, **New game** (asks first when an autosave would be overwritten; `--new-game --seed <a fresh one>
+--no-menu`: the character and world screen of a new game hangs on `--new-game`) and **Load game** (the folder's saves,
+newest first, each with its hour in the game, its zombies and how long ago it was saved; a click loads one). **Multiplayer** is **Join a game** (the server browser drawn over the menu, `BrowserUiPlugin` in the menu's app: official servers, then community servers, see The server browser; a join starts the game again with `--connect ADDR --from-browser menu`, and one that doesn't come off comes back to this screen, `main_menu::multiplayer_screen_args`) and **Host a game** (see Hosting from the menu under Multiplayer). **Mods** (the mods folder: which are on and in what order, see Mods and scripts), **Settings**, **Quit**. Enter is the green button, Esc goes back a screen. `--menu-screen
+single|load|new|mods|multiplayer|join|host` starts on that screen and `--main-menu --render-to PATH [--settings TAB]` draws it offscreen, for pictures.
 **The pause menu** is Esc while playing (also when dead): Resume, Save game and Load last save (the quicksave, as F5
 and F9: `saving::Asked`), Settings, Save and exit to menu, Save and quit. **In your own world the game stops while it
 is up** (`Time<Virtual>` paused: the local server doesn't tick, nothing is predicted); on a server the world goes on,
@@ -2981,7 +2980,7 @@ the admin endpoint in a container). Change a setting or the image, change it the
   unknown fields refused, every field optional, options written bare: `pvp: true`): `name`, `listen`, `max_players`,
   `password`, `pvp`, `spawn` (`Spread` / `Together`), `fair_sight`, `logout_secs`, `logout_safe_secs`,
   `spawn_protection_secs`, `start_kit`, `camera` (`Isometric` / `FirstPerson`), `agents` (`Refused` / `Allowed` /
-  `Marked`), `budget_kb`, `allow_dev`, `save` (default `world.zsave`; `None`: never saved),
+  `Marked`), `budget_kb`, `allow_dev`, `stop_when_empty_secs` (`--stop-when-empty S`, 5 to 86400: the server saves and stops once nobody has been on for that long, and before anyone has joined waits at least two minutes, `multiplayer::FIRST_JOIN_WAIT`; left out: it runs until stopped), `save` (default `world.zsave`; `None`: never saved),
   `autosave_mins`, `seed`, `map_chunks`, `zombies`, `load_anyway`, `data`, `admin: (listen, token, origins)`.
   **The file is turned into the flags it stands for** (`ServerConfig::flags`) and those go behind the command line
   (`config::merge`), so every value is parsed and checked where the flags are (`HostArgs::parse`, `main`), **a flag on
@@ -3004,10 +3003,39 @@ the admin endpoint in a container). Change a setting or the image, change it the
   server is stopped with SIGTERM and started again on the saved world; an empty folder becomes a server; mistakes
   stop it). **The image itself is not built by any test.**
 
+### Hosting from the menu (`crates/client/src/hosting.rs`)
+
+Multiplayer, Host a game on the main menu hosts a game on the player's own computer for friends. **It is the
+dedicated server, not a second kind:** the screen's choices (`hosting::HostSetup`, kept as `host` in `settings.ron`:
+server name, password, co-op or PvP, 2 to 32 players; `port`, 7777, only in the file) are written as a config
+(`hosting::config_text`: `name`, `listen`, `max_players`, `password`, `pvp`, `stop_when_empty_secs: 60`, `save`, a
+`seed` for a new world, and `data`, this game's own data folder, so the server's is the same) to `hosted/server.ron` in
+the saves folder, beside its world (`world.zsave`; "New world" sets the old one aside as `world.old.zsave`) and its log
+(`server.log`). `hosting::start` runs `zombye-server --config` on it as a process of its own (`$ZOMBYE_SERVER`, else
+`zombye-server` beside the game: packages carry it; from a checkout build it first), asks it on `127.0.0.1:PORT` until
+it answers (90 s at most; a server that stops first has its last log lines shown), and the menu then joins it like any
+server (`--connect 127.0.0.1:PORT --from-browser menu`, the password through `ZOMBYE_PASSWORD`). A server already
+answering on the port is joined as it is. **The server stops itself** (`stop_when_empty_secs`) a minute after the last
+player leaves: the game starts again for every screen, so no process of the game's could own it, and friends still on
+when the host leaves play on. The screen says who can reach it: friends on the same network at
+`hosting::local_address()`:PORT (typed into the browser's Address field), and over the internet only with the router
+forwarding the port. Mods on a hosted game, finding games on the local network by themselves and a port field are not
+there yet. Tests: `hosting::tests`, `main_menu::tests`, `config.rs`'s `the_game_menus_hosted_config_is_read`.
+
 ### The server browser (`net::browser`, `crates/client/src/browser_ui.rs`; #27)
 
-F7 in the game lists servers, featured ones first, each with its players, ping, PvP or co-op, whether it wants a
-password and its mods, and joins the one you pick. **There is no hosted service:** the game asks nothing of ours.
+F7 in the game, and Multiplayer, Join a game on the main menu, list servers in two sections, **Official servers** and
+**Community servers**, each with its players, ping, PvP or co-op, whether it wants a password and its mods, and join the
+one you pick. **There is no hosted service:** the game asks nothing of ours.
+
+- **Official servers are a file too** (`browser::OFFICIAL_FILE`, `official_servers.ron`, the list's format; read by
+  `browser::read_official`, a file that is missing or wrong: none): the servers the build's maker hosts, always the
+  first section, never taken off or pushed down by a community list. **This repo's is empty and stays empty** (no server
+  address is kept here): the official build's list is the art repo's `release-brand/official_servers.ron`, which
+  `tools/release/package.sh` copies over the packaged `assets/data/official_servers.ron`. The client reads
+  `$ZOMBYE_OFFICIAL_SERVERS`, else `official_servers.ron` in the release brand folder, else the data folder's
+  (`browser_ui::official_source`). A fork lists its own servers by shipping its own file. With none, the section says
+  "This build lists none."
 
 - **The list is a file anyone can keep** (`browser::parse_list`, RON): `(servers: [(address: "host[:port]", name:
   "...", featured: true, note: "..."), ...])`. Only `address` is needed; `name` shows until the server answers with
@@ -3036,6 +3064,7 @@ password and its mods, and joins the one you pick. **There is no hosted service:
   folders and of the download cache); only a mod too big for a server to hand out blocks a row, unless we have it. A
   server that fails is shown in orange
   with the reason in its details. A wrong password, a name in use and other game data are only found by joining.
+- **Community servers** are everything else: the list's servers (featured ones first) and the ones added by hand.
 - **Your own servers:** type `host[:port]` in the Address field and Enter adds it (kept in `settings.ron`,
   `ClientSettings::servers`; Delete takes one off; the list's can't be taken off). The Name field is the name you
   join under (`ClientSettings::name`, saved on joining; `--name` wins), Password the join password.
@@ -3043,7 +3072,7 @@ password and its mods, and joins the one you pick. **There is no hosted service:
   (as R's new run keeps the same map), so a join from the browser shuts the game down as quitting does
   (single-player: autosaved to `autosave.zsave`) and `main` runs the same program again in its place
   (`browser_ui::relaunch_args`: this run's arguments without what chose its world, plus `--connect ADDR --name NAME
-  --from-browser single|server`; on Unix an `exec`, so it is the same process; the password goes in the
+  --from-browser single|server|menu`: `menu` when the join was asked for on the main menu, where the join screen's Back then leads; on Unix an `exec`, so it is the same process; the password goes in the
   `ZOMBYE_PASSWORD` environment variable, never on the command line). **If the server then refuses** (wrong
   password, name in use, other game data, gone), `--from-browser` keeps the game from stopping: it starts in its own
   world instead (`single`: the autosave the join left) with the browser open, that server picked and the reason on

@@ -70,7 +70,8 @@ const DATA_FILES: &[(&str, &str, Part, &str)] = &[
     ("palette.ron", "palette::PaletteFile", Part::Look, "Every colour in the game's art."),
     ("decay.ron", "decay::DecayLook", Part::Look, "How worn street props are drawn."),
     ("vegetation.ron", "vegetation::VegLook", Part::Look, "Where grass, flowers and stones grow."),
-    ("servers.ron", "browser::ServerList", Part::Look, "The server browser's list."),
+    ("servers.ron", "browser::ServerList", Part::Look, "The server browser's community list."),
+    ("official_servers.ron", "browser::ServerList", Part::Look, "The server browser's official servers (shipped empty)."),
     ("keys.ron", "keys::KeysFile", Part::Look, "The game's keys: what each action is pressed with."),
 ];
 

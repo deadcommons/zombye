@@ -93,6 +93,7 @@ mod autoplay;
 mod browser_ui;
 mod duel;
 mod holdup;
+mod hosting;
 mod camera;
 mod campfire;
 mod character;

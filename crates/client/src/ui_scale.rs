@@ -131,6 +131,8 @@ pub struct ClientSettings {
     /// The keys the player picked on the Controls tab (`keys.rs`): an action's id to its keys,
     /// over `assets/data/keys.ron`. Only the ones changed.
     pub keys: std::collections::BTreeMap<String, Vec<String>>,
+    /// What the main menu's Host a game screen was last set to (`hosting.rs`).
+    pub host: crate::hosting::HostSetup,
 }
 
 impl Default for ClientSettings {
@@ -158,6 +160,7 @@ impl Default for ClientSettings {
             send_reports: true,
             reports_notice_seen: false,
             keys: Default::default(),
+            host: Default::default(),
         }
     }
 }
