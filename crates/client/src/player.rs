@@ -189,6 +189,7 @@ impl Plugin for PlayerPlugin {
             .add_systems(FixedUpdate, (predict.in_set(PlayerInputSet).before(ServerTick).run_if(crate::live), reconcile.after(ServerTick)))
             // After the fixed ticks of this frame, before anything in Update reads the player's transform.
             .init_resource::<ViewFloor>()
+            .init_resource::<Prediction>()
             .add_systems(RunFixedMainLoop, (place_player, sync_other_players).in_set(RunFixedMainLoopSystems::AfterFixedMainLoop))
             .add_systems(PostUpdate, (lie_on_bed, sit_on_seat).before(bevy::transform::TransformSystems::Propagate));
     }
@@ -313,8 +314,25 @@ fn predict(
     me.curr = s;
 }
 
+/// How far off our prediction of our own survivor was, for the desync reports (`report.rs`).
+#[derive(Resource, Default, Clone, Copy, Debug)]
+pub struct Prediction {
+    /// Metres between where we had predicted the survivor and where the server's snapshot, with
+    /// the unconfirmed inputs replayed on top, put it, at the last reconcile.
+    pub last_error: f32,
+    /// Reconciles that moved it more than [`Prediction::BIG`], ever.
+    pub big: u32,
+    /// The largest error since the count began.
+    pub worst: f32,
+}
+
+impl Prediction {
+    /// A correction this big is a desync, not rounding.
+    pub const BIG: f32 = 1.0;
+}
+
 /// On a new snapshot: start from the server's state and replay the inputs it hasn't applied yet.
-fn reconcile(link: Res<ServerLink>, map: Res<ClientMap>, mut me: ResMut<LocalPlayer>) {
+fn reconcile(link: Res<ServerLink>, map: Res<ClientMap>, mut me: ResMut<LocalPlayer>, mut prediction: ResMut<Prediction>) {
     if link.curr.tick == me.last_snapshot_tick {
         return;
     }
@@ -335,6 +353,12 @@ fn reconcile(link: Res<ServerLink>, map: Res<ClientMap>, mut me: ResMut<LocalPla
     let mut s = view.state();
     for (_, input) in &me.pending {
         step_movement(&map.0, &mut s, input, TICK_DT);
+    }
+    let error = me.curr.pos.distance(s.pos);
+    prediction.last_error = error;
+    if error > Prediction::BIG {
+        prediction.big += 1;
+        prediction.worst = prediction.worst.max(error);
     }
     me.curr = s;
 }

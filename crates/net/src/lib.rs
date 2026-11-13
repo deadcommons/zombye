@@ -14,6 +14,7 @@ pub mod joining;
 pub mod modpack;
 pub mod newgame;
 pub mod remote;
+pub mod report;
 pub mod save_file;
 pub mod shutdown;
 pub mod visibility;
