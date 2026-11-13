@@ -316,6 +316,10 @@ pub fn load_vehicles(data_dir: &Path, street_props: &zombye_sim::street_props::S
     if !data.kinds.is_empty() && !items.is_empty() && !items.iter().any(|i| i.id == t.fuel_item && i.fuel_l.is_some()) {
         return Err(format!("{}: tuning.fuel_item {:?} isn't an item with fuel_l in items.ron", path.display(), t.fuel_item));
     }
+    // Keys, hotwiring and repairs name items that must be there (stage 4).
+    if !data.kinds.is_empty() && !items.is_empty() {
+        data.work.check_items(items).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
     for k in &data.kinds {
         if !street_props.kinds.iter().any(|p| p.id == k.prop) {
             return Err(format!("{}: vehicle {:?} is parked as {:?}, which street_props.ron doesn't have", path.display(), k.id, k.prop));

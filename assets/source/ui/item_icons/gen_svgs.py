@@ -269,6 +269,23 @@ I['siphon_hose'] = ('<ellipse cx="22" cy="27" rx="15" ry="11" fill="none" stroke
                     '<path d="M35 22c4-4 6-9 6-14" stroke="$C" stroke-width="4.5" fill="none" stroke-linecap="round"/>'
                     '<rect x="37" y="4" width="8" height="5" rx="1.5" fill="$L"/><path d="M12 22c4-3 16-3 20 0" stroke="$L" stroke-width="1.5" fill="none"/>')
 
+# ---------- Cars, stage 4
+I['car_key'] = rot('<path d="M4 18a8 8 0 0 1 8-8h6a8 8 0 0 1 8 8v12a8 8 0 0 1-8 8h-6a8 8 0 0 1-8-8z" fill="#55575d"/><circle cx="11" cy="24" r="2.6" fill="$K"/>'
+                   '<rect x="25" y="21" width="20" height="6" rx="1" fill="$C"/><path d="M30 27v4h3v-4M37 27v3h3v-3" fill="$C"/>'
+                   '<rect x="25" y="21" width="20" height="2" fill="$L"/><path d="M8 16h12" stroke="#4a4b50" stroke-width="2" stroke-linecap="round"/>', 0)
+I['wrench'] = rot('<rect x="11" y="21" width="26" height="6" rx="2" fill="$C"/><rect x="11" y="21" width="26" height="2" fill="$L"/>'
+                  '<path d="M37 16a8 8 0 1 1 0 16l-1-5h4v-6h-4z" fill="$C"/><path d="M11 16a8 8 0 1 0 0 16l1-5h-4v-6h4z" fill="$C"/>'
+                  '<path d="M37 16a8 8 0 0 1 7 4" stroke="$L" stroke-width="1.6" fill="none"/><path d="M18 24h12" stroke="$D" stroke-width="1"/>')
+I['spare_tyre'] = ('<circle cx="24" cy="24" r="19" fill="#3b3c40"/><circle cx="24" cy="24" r="10" fill="#8e9298"/><circle cx="24" cy="24" r="4" fill="#5d6066"/>'
+                   + ''.join(f'<rect x="22.5" y="5.5" width="3" height="5" rx="1" fill="#6a6c72" transform="rotate({a} 24 24)"/>' for a in range(0, 360, 30))
+                   + ''.join(f'<circle cx="{24 + 6.5 * c}" cy="{24 + 6.5 * s}" r="1.3" fill="#5d6066"/>' for c, s in ((1, 0), (-1, 0), (0, 1), (0, -1)))
+                   + '<path d="M11 13a17 17 0 0 1 9-6" stroke="$L" stroke-width="2" fill="none" stroke-linecap="round"/>')
+I['engine_parts'] = ('<path d="M7 17h34v22a3 3 0 0 1-3 3H10a3 3 0 0 1-3-3z" fill="$D"/><path d="M7 17l5-6h24l5 6z" fill="$C"/>'
+                     '<circle cx="18" cy="27" r="6" fill="#9a9ea5"/><circle cx="18" cy="27" r="2.4" fill="$D"/>'
+                     + ''.join(f'<rect x="16.8" y="19" width="2.4" height="3" fill="#9a9ea5" transform="rotate({a} 18 27)"/>' for a in range(0, 360, 45))
+                     + '<rect x="27" y="22" width="9" height="4" rx="1" fill="#b9bcc2"/><rect x="27" y="29" width="9" height="4" rx="1" fill="#b9bcc2"/>'
+                     '<rect x="12" y="13" width="24" height="2" fill="$L"/>')
+
 def main():
     rows = [l.rstrip('\n').split('\t') for l in open(os.path.join(HERE, 'items.tsv')) if l.strip()]
     ids = [r[0] for r in rows]

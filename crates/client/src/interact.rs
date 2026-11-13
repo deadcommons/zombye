@@ -62,6 +62,8 @@ impl Faced {
         match self {
             Faced::Thing { lines, .. } => lines.len() > 1,
             Faced::Floor(..) => true,
+            // A car's menu: the lock, the boot and glovebox, hotwiring, repairs (stage 4).
+            Faced::Exit | Faced::Enter(Some(_)) => true,
             _ => false,
         }
     }
@@ -188,6 +190,19 @@ fn press(
             Some(Faced::Floor(id, _)) => {
                 let at = link.curr.items.iter().find(|i| i.id == *id).map(|i| i.pos).unwrap_or(me.curr.pos);
                 crate::inventory_ui::open_menu(&mut menu, &link, &join, me.id, Place::Ground, *id, spot(at));
+            }
+            Some(Faced::Exit | Faced::Enter(Some(_))) => {
+                let id = match &facing.0 {
+                    Some(Faced::Enter(Some(id))) => Some(*id),
+                    _ => me.car.map(|c| c.id),
+                };
+                match id.and_then(|id| link.curr.vehicles.iter().find(|v| v.id == id)) {
+                    Some(v) => {
+                        let (title, lines) = world_actions::car_entries(v, &join.vehicles, &join.items, me.id, link.own(me.id));
+                        menu.show_world(title, lines, spot(v.state.pos).unwrap_or(Vec2::splat(200.0)));
+                    }
+                    None => *held = false,
+                }
             }
             // Nothing with more than one thing to do: a hold is a tap.
             _ => *held = false,

@@ -73,7 +73,7 @@ fn a_driver_at_150_ms_predicts_its_car_exactly() {
     host.world.set_dev(me, Some(true), Some(true));
     let vid = seat(&mut host.world, me);
     let map = host.world.map.clone();
-    let kind = host.world.config.vehicles.kinds[host.world.vehicle_of(vid).unwrap().kind as usize].clone();
+    let kind = host.world.config.vehicles.kinds[host.world.vehicle_of(me).unwrap().kind as usize].clone();
     let bounce = host.world.config.vehicles.tuning.bounce;
 
     let mut waiting: VecDeque<Snapshot> = VecDeque::new();
@@ -149,7 +149,7 @@ fn a_far_car_is_sent_now_and_then() {
     host.world.set_dev(me, Some(true), Some(true));
     host.world.set_dev(them, Some(true), Some(true));
     let vid = seat(&mut host.world, me);
-    let car_at = host.world.vehicle_of(vid).unwrap().state.pos;
+    let car_at = host.world.vehicle_of(me).unwrap().state.pos;
     // Bob is put far off; then near.
     let far = host.world.config.tiers.interest_radius * 2.0;
     for (spot, every) in [(far, FAR_CAR_EVERY as usize), (3.0, 1)] {
@@ -163,7 +163,7 @@ fn a_far_car_is_sent_now_and_then() {
             host.pump();
             host.tick();
             // Keep Bob where he is.
-            let car = host.world.vehicle_of(vid).unwrap().state.pos;
+            let car = host.world.vehicle_of(me).unwrap().state.pos;
             let p = host.world.players.iter_mut().find(|p| p.id == them).unwrap();
             p.state.pos = car + Vec2::new(0.0, spot);
             let s = watcher.wait_snapshot(Duration::from_secs(5)).unwrap();
@@ -171,8 +171,11 @@ fn a_far_car_is_sent_now_and_then() {
                 states.push(s.vehicles.iter().find(|v| v.id == vid).unwrap().state);
             }
         }
-        let changes = states.windows(2).filter(|w| w[0] != w[1]).count();
-        let want = (states.len() - 1) / every;
+        // Only a car moving on is held back: stopping and starting again go at once, so count the
+        // ticks where it was moving at both ends.
+        let moving: Vec<_> = states.windows(2).filter(|w| w[0].moving() && w[1].moving()).collect();
+        let changes = moving.iter().filter(|w| w[0] != w[1]).count();
+        let want = moving.len() / every;
         assert!(changes.abs_diff(want) <= 2, "{changes} updates in {} ticks at {spot} m, want about {want}", states.len());
     }
 }
